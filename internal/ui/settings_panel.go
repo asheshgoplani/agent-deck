@@ -101,10 +101,10 @@ type SettingsPanel struct {
 	statsShowGPU        bool
 	statsShowLoad       bool
 
-	showSessionTimestamps   bool
-	showPaneTitles          bool
-	showOnlyInstalledTools  bool
-	pendingToolVisibility   bool
+	showSessionTimestamps  bool
+	showPaneTitles         bool
+	showOnlyInstalledTools bool
+	pendingToolVisibility  bool
 
 	// Text input state
 	editingText bool

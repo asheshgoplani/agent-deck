@@ -123,6 +123,12 @@ func NewClaudeOptions(config *UserConfig) *ClaudeOptions {
 		opts.AllowSkipPermissions = config.Claude.AllowDangerousMode
 		opts.UseChrome = config.Claude.UseChrome
 		opts.UseTeammateMode = config.Claude.UseTeammateMode
+		// Apply [claude].default_model so sessions spawned without per-session
+		// options (CLI / programmatic / resume) honor the configured model. This
+		// matches OpenCode/Copilot, which already wire their default_model here;
+		// without it `--model` was never passed and Claude fell back to Opus even
+		// when default_model was set (#1172 parsed the key but never applied it).
+		opts.Model = config.Claude.DefaultModel
 	}
 	return opts
 }

@@ -127,6 +127,55 @@ func TestSessionDataService_LoadMenuSnapshot(t *testing.T) {
 	}
 }
 
+func TestSessionDataService_LoadMenuSnapshotExcludesArchived(t *testing.T) {
+	active := session.NewInstanceWithGroupAndTool("active", "/tmp/a", "work", "claude")
+	active.ID = "sess-active"
+	archived := session.NewInstanceWithGroupAndTool("archived", "/tmp/b", "work", "claude")
+	archived.ID = "sess-archived"
+	archived.ArchivedAt = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	fake := &fakeStorage{
+		instances: []*session.Instance{active, archived},
+		groups:    []*session.GroupData{{Name: "work", Path: "work", Expanded: true, Order: 0}},
+	}
+	svc := &SessionDataService{
+		profile:     "p",
+		openStorage: func(string) (storageLoader, error) { return fake, nil },
+		now:         func() time.Time { return time.Now() },
+	}
+
+	menu, err := svc.LoadMenuSnapshot()
+	if err != nil {
+		t.Fatalf("LoadMenuSnapshot: %v", err)
+	}
+	if menu.TotalSessions != 1 {
+		t.Fatalf("active menu sessions: got %d want 1", menu.TotalSessions)
+	}
+	for _, item := range menu.Items {
+		if item.Session != nil && item.Session.ID == "sess-archived" {
+			t.Fatal("archived session must not appear in active menu")
+		}
+	}
+
+	archSnap, err := svc.LoadArchivedMenuSnapshot()
+	if err != nil {
+		t.Fatalf("LoadArchivedMenuSnapshot: %v", err)
+	}
+	if archSnap.TotalSessions != 1 {
+		t.Fatalf("archived menu sessions: got %d want 1", archSnap.TotalSessions)
+	}
+	var foundArchived bool
+	for _, item := range archSnap.Items {
+		if item.Session != nil && item.Session.ID == "sess-archived" {
+			foundArchived = true
+			break
+		}
+	}
+	if !foundArchived {
+		t.Fatalf("sess-archived not in archived snapshot items: %+v", archSnap.Items)
+	}
+}
+
 func TestSessionDataService_LoadMenuSnapshotOpenStorageError(t *testing.T) {
 	svc := &SessionDataService{
 		profile: "test",

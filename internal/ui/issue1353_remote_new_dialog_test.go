@@ -85,7 +85,11 @@ func TestIssue1353_NOnRemoteSession_OpensDialog(t *testing.T) {
 
 // TestIssue1353_RemoteDialogDefaults: for a remote target the path field
 // defaults to "." (remote CWD) so a local filesystem path is never sent to the
-// remote, and the dialog is parented under the remote's group label.
+// remote. The dialog must NOT be seeded with the synthetic "remotes/<host>"
+// label: that path is a local UI bucket, not a user-defined remote group, and
+// handleNewDialogKey forwards the selected group unchanged to
+// CreateSessionWithOptions — so seeding it would create a bogus "remotes/<host>"
+// group on the remote. It defaults to the standard group instead.
 func TestIssue1353_RemoteDialogDefaults(t *testing.T) {
 	setXDGTestHome(t)
 	home := NewHome()
@@ -99,8 +103,8 @@ func TestIssue1353_RemoteDialogDefaults(t *testing.T) {
 	if path != "." {
 		t.Fatalf("remote dialog path default = %q, want %q (remote CWD)", path, ".")
 	}
-	if got := h.newDialog.GetSelectedGroup(); got != "remotes/myserver" {
-		t.Fatalf("remote dialog group = %q, want %q", got, "remotes/myserver")
+	if got := h.newDialog.GetSelectedGroup(); got != session.DefaultGroupPath {
+		t.Fatalf("remote dialog group = %q, want %q (no synthetic remotes/<host> group)", got, session.DefaultGroupPath)
 	}
 }
 
@@ -145,7 +149,10 @@ func TestIssue1353_SubmitRoutesToRemote(t *testing.T) {
 	for _, r := range "my-remote-task" {
 		h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	model, cmd := h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyEnter})
+	// Submit with Ctrl+S, the explicit create shortcut. Enter-advances is the
+	// default now (UX top-3 #1), so Enter on the Name field advances focus
+	// rather than submitting; Ctrl+S submits from any field in both modes.
+	model, cmd := h.handleNewDialogKey(tea.KeyMsg{Type: tea.KeyCtrlS})
 	h = model.(*Home)
 
 	if h.newDialog.IsVisible() {

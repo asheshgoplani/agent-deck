@@ -25,6 +25,9 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | Restart fresh | `internal/ui/home.go:6494` (`T` key) | MISSING | `RestartSessionFresh` | N/A | Discards tool binding, no web equivalent |
 | Delete session | `internal/ui/home.go:6302` (`d` key) | DELETE `/api/sessions/{id}` | `DeleteSession` | `handlers_sessions_test.go` | Kills + removes from storage |
 | Close session | `internal/ui/home.go:6318` (`D` key) | POST `/api/sessions/{id}/close` | `CloseSession` | `handlers_sessions_test.go`, `tests/web/e2e/close-undo.spec.js` | Non-destructive close (stops process, keeps metadata); Shift+D in web UI |
+| Archive session | `internal/ui/home.go` (`A` key) | POST `/api/sessions/{id}/archive` | `ArchiveSession` | `handlers_sessions_test.go`, `tests/e2e/session-lifecycle.spec.ts` | Stops tmux/agent then hides from active lists (`archived_at`); web sidebar ⌂ button |
+| Unarchive session | `internal/ui/home.go` (`shift+u` in archived view) | POST `/api/sessions/{id}/unarchive` | `UnarchiveSession` | `handlers_sessions_test.go`, `tests/e2e/session-lifecycle.spec.ts` | Clears `archived_at`; does not auto-start |
+| View archived sessions | `internal/ui/home.go` (`^` filter) | GET `/api/sessions/archived` | `LoadArchivedMenuSnapshot` | `handlers_sessions_test.go`, `tests/e2e/session-lifecycle.spec.ts` | Web Archived tab + TUI archived-only list |
 | Fork session | `internal/ui/home.go` (`f` key, quick) | POST `/api/sessions/{id}/fork` | `ForkSession` | `handlers_sessions_test.go`, WebUI action tests | Web creates a plain tool-native fork; TUI quick fork also applies `[fork]` defaults |
 | Fork with dialog | `internal/ui/home.go` (`F`/`shift+f`) | MISSING | N/A | N/A | Shift+F title/group/branch/worktree controls are TUI-only until Web gets a dedicated async fork workflow |
 | Rename session | `internal/ui/home.go:6119` (`r` key) | MISSING | N/A | N/A | Title edit via GroupDialog |
@@ -92,6 +95,7 @@ Every observable session field shown in the TUI must appear in the web API JSON 
 | `project_path` | Preview pane | `MenuSession.projectPath` | ✅ Present |
 | `created_at` | Info section | `MenuSession.createdAt` | ✅ Present |
 | `last_accessed_at` | Info section | `MenuSession.lastAccessedAt` | ✅ Present |
+| `archived_at` | Archived list / filter | `MenuSession.archivedAt` | ✅ Present; non-zero when session is archived (omitempty on active menu) |
 | **RELATIONSHIPS** |
 | `parent_session_id` | Sub-session indicator | `MenuSession.parentSessionId` + `GET /api/sessions/{id}/children` | ✅ Present; tree endpoint surfaces full conductor child topology in the right-rail Children card (`internal/web/handlers_children.go`, `tests/web/e2e/children-panel.spec.js`) |
 | `is_conductor` | (Not shown in TUI) | `MenuSession.isConductor` | ✅ Present; conductor metadata. Tree topology also surfaced at `GET /api/sessions/{id}/children` (kind derived UI-side from title/groupPath in `dataModel.js`) |

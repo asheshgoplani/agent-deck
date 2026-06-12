@@ -29,17 +29,18 @@ export function SearchPane() {
   }
 
   return html`
-    <div class="search-wrap">
+    <div class="search-wrap" data-testid="search-pane">
       <div class="field">
         <label>SESSION SEARCH</label>
         <input autofocus placeholder="Search sessions by title, path, tool, group…"
+               data-testid="search-input"
                value=${q} onInput=${e => setQ(e.target.value)}/>
       </div>
-      <div style="font-family: var(--mono); font-size: 10.5px; color: var(--muted); letter-spacing: 0.08em;">
+      <div data-testid="search-result-count" style="font-family: var(--mono); font-size: 10.5px; color: var(--muted); letter-spacing: 0.08em;">
         ${filtered.length} MATCH${filtered.length === 1 ? '' : 'ES'} · cross-profile search not exposed via web API
       </div>
       ${filtered.map(s => html`
-        <div key=${s.id} class="sr" onClick=${() => onSelect(s.id)}>
+        <div key=${s.id} class="sr" data-testid="search-result" data-session-id=${s.id} onClick=${() => onSelect(s.id)}>
           <div class="sr-h">
             <span class="s">${s.title}</span>
             <span class="w">${s.tool || '—'} · ${s.status}</span>

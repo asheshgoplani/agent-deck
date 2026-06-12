@@ -196,6 +196,7 @@ func (h *HelpOverlay) View() string {
 	}
 	editPathsKey := h.key(hotkeyEditPaths, "p")
 	editSessionKey := h.key(hotkeyEditSession, "P")
+	worktreeSetupKey := h.key(hotkeyWorktreeSetup, "b")
 	worktreeKey := h.key(hotkeyWorktreeFinish, "W")
 	watcherPanelKey := h.key(hotkeyWatcherPanel, "w")
 	groupKey := h.key(hotkeyCreateGroup, "g")
@@ -267,6 +268,7 @@ func (h *HelpOverlay) View() string {
 		{
 			title: "WORKTREES",
 			items: [][2]string{
+				{worktreeSetupKey, "Re-run worktree setup script"},
 				{worktreeKey, "Finish worktree (merge + cleanup)"},
 				{"n → w", "Create session in worktree"},
 				{"F → w", "Fork session into worktree"},

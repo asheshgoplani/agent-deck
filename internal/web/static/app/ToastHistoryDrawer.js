@@ -40,6 +40,7 @@ export function ToastHistoryDrawer() {
   const close = () => { toastHistoryOpenSignal.value = false }
   return html`
     <div class="overlay" role="dialog" aria-modal="true" aria-label="Toast history"
+         data-testid="toast-history-drawer"
          style="justify-content: flex-end; padding: 0;"
          onClick=${(e) => { if (e.target === e.currentTarget) close() }}>
       <div class="dialog" style="width: 420px; max-width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; border-right: 0;"
@@ -59,6 +60,7 @@ export function ToastHistoryDrawer() {
           `}
           ${history.slice().reverse().map(t => html`
             <div key=${t.id}
+                 data-testid="toast-history-entry"
                  style=${{
                    padding: '10px 14px',
                    borderBottom: '1px solid var(--border)',

@@ -23,6 +23,7 @@ const TABS = [
   { id: 'watchers',  label: 'Watchers'  },
   { id: 'costs',     label: 'Costs'     },
   { id: 'search',    label: 'Search'    },
+  { id: 'archived',  label: 'Archived'  },
 ]
 
 export function Topbar() {
@@ -69,16 +70,22 @@ export function Topbar() {
         ${(() => {
           const p = profilesSignal.value
           const list = p && Array.isArray(p.profiles) ? p.profiles : null
-          // Hold the dropdown until /api/profiles resolves so we never
-          // flash a hardcoded default on cold load.
+          // Hold until /api/profiles resolves so we never flash a hardcoded
+          // default on cold load.
           if (!list || list.length === 0) return null
+          // The profile is bound once at server startup (buildWebServer); the
+          // web UI has no server-side switch endpoint. Render the current
+          // profile as static, read-only text rather than an interactive
+          // <select> so users aren't misled into thinking a switch silently
+          // failed (issue #1365). The breadcrumb label still reads
+          // profileSignal, which AppShell seeds from /api/profiles' `current`.
+          const current = profileSignal.value || p.current || list[0]
           return html`
-            <select class="icon-btn"
-              style=${{ width: 'auto', padding: '0 8px', fontFamily: 'var(--mono)', fontSize: '11px' }}
-              value=${profileSignal.value || (p.current || list[0])}
-              onChange=${e => (profileSignal.value = e.target.value)}>
-              ${list.map(name => html`<option key=${name} value=${name}>${name}</option>`)}
-            </select>
+            <span class="icon-btn"
+              style=${{ width: 'auto', padding: '0 8px', fontFamily: 'var(--mono)', fontSize: '11px', cursor: 'default' }}
+              title="Active profile (bound at startup; not switchable from the web UI)">
+              ${current}
+            </span>
           `
         })()}
         <${ToastHistoryDrawerToggle}/>

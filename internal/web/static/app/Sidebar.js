@@ -43,6 +43,21 @@ function doAction(action, s) {
   if (action === 'stop')    return apiFetch('POST', `/api/sessions/${id}/stop`).catch(() => {})
   if (action === 'restart') return apiFetch('POST', `/api/sessions/${id}/restart`).catch(() => {})
   if (action === 'fork')    return apiFetch('POST', `/api/sessions/${id}/fork`, { title: s.title + '-fork' }).catch(() => {})
+  if (action === 'archive') {
+    confirmDialogSignal.value = {
+      message: `Archive session "${s.title}"? The process will be stopped and hidden from the active list.`,
+      onConfirm: () => apiFetch('POST', `/api/sessions/${id}/archive`)
+        .then(() => {
+          if (selectedIdSignal.value === id) {
+            selectedIdSignal.value = null
+            if (window.location.pathname.startsWith('/s/')) {
+              history.replaceState(null, '', '/')
+            }
+          }
+        })
+        .catch(() => {}),
+    }
+  }
   if (action === 'delete') {
     confirmDialogSignal.value = {
       message: `Delete session "${s.title}"? This stops the tmux session and removes metadata.`,
@@ -106,13 +121,14 @@ function SessionItem({ s, sel, onSelect, showCols }) {
       `}
       <div class="actions" onClick=${e => e.stopPropagation()}>
         ${(s.status === 'running' || s.status === 'waiting')
-          ? html`<button class="mini" title="Stop" onClick=${() => doAction('stop', s)}><${Icon} d=${ICONS.stop} size=${12}/></button>`
-          : html`<button class="mini good" title="Start" onClick=${() => doAction('start', s)}><${Icon} d=${ICONS.play} size=${12}/></button>`}
-        <button class="mini good" title="Restart" onClick=${() => doAction('restart', s)}><${Icon} d=${ICONS.restart} size=${12}/></button>
+          ? html`<button class="mini" title="Stop" data-testid="session-stop-btn" onClick=${() => doAction('stop', s)}><${Icon} d=${ICONS.stop} size=${12}/></button>`
+          : html`<button class="mini good" title="Start" data-testid="session-start-btn" onClick=${() => doAction('start', s)}><${Icon} d=${ICONS.play} size=${12}/></button>`}
+        <button class="mini good" title="Restart" data-testid="session-restart-btn" onClick=${() => doAction('restart', s)}><${Icon} d=${ICONS.restart} size=${12}/></button>
         <button class="mini" title="Edit" data-testid="edit-session-btn" onClick=${() => doAction('edit', s)}><${Icon} d=${ICONS.edit} size=${12}/></button>
-        ${s.canFork && html`<button class="mini fork" title="Fork" onClick=${() => doAction('fork', s)}><${Icon} d=${ICONS.fork} size=${12}/></button>`}
-        ${s.worktree && html`<button class="mini" title="Finish worktree (merge + cleanup)" onClick=${() => doAction('worktreeFinish', s)} data-action="worktree-finish">⎇✓</button>`}
-        <button class="mini danger" title="Delete" onClick=${() => doAction('delete', s)}><${Icon} d=${ICONS.trash} size=${12}/></button>
+        ${s.canFork && html`<button class="mini fork" title="Fork" data-testid="session-fork-btn" onClick=${() => doAction('fork', s)}><${Icon} d=${ICONS.fork} size=${12}/></button>`}
+        ${s.worktree && html`<button class="mini" title="Finish worktree (merge + cleanup)" onClick=${() => doAction('worktreeFinish', s)} data-action="worktree-finish" data-testid="session-worktree-finish-btn">⎇✓</button>`}
+        <button class="mini" title="Archive" onClick=${() => doAction('archive', s)}>⌂</button>
+        <button class="mini danger" title="Delete" data-testid="session-delete-btn" onClick=${() => doAction('delete', s)}><${Icon} d=${ICONS.trash} size=${12}/></button>
       </div>
     </div>
   `
@@ -140,7 +156,11 @@ export function Sidebar() {
     const cur = statusFiltersSignal.value
     statusFiltersSignal.value = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]
   }
-  const toggleGroup = (p) => setExpanded(s => ({ ...s, [p]: !s[p] }))
+  // Open is defined as `expanded[p] !== false` (undefined counts as open: groups
+  // arrive after the initial render, so most paths are never seeded). The toggle
+  // must mirror that read — plain `!s[p]` maps undefined → true, which is still
+  // "open", making the first click on a never-toggled group a silent no-op.
+  const toggleGroup = (p) => setExpanded(s => ({ ...s, [p]: s[p] === false }))
   const onSelect = (id) => {
     selectedIdSignal.value = id
     activeTabSignal.value = 'terminal'
@@ -157,14 +177,15 @@ export function Sidebar() {
         <div class="spacer"/>
         <div style="position: relative;">
           <button class=${`icon-btn ${showMenu ? 'active' : ''}`} title="Show columns" aria-label="Show columns"
+                  data-testid="show-cols-btn"
                   onClick=${() => setShowMenu(m => !m)}>
             <${Icon} d=${ICONS.filter}/>
           </button>
           ${showMenu && html`
-            <div class="show-menu" onClick=${e => e.stopPropagation()}>
+            <div class="show-menu" data-testid="show-cols-menu" onClick=${e => e.stopPropagation()}>
               <div class="sm-head">SHOW IN ROW</div>
               ${SHOW_COL_OPTIONS.map(c => html`
-                <label key=${c.id} class="sm-row">
+                <label key=${c.id} class="sm-row" data-testid=${`show-col-${c.id}`}>
                   <input type="checkbox" checked=${!!showCols[c.id]} onChange=${() => setShowCol(c.id)}/>
                   <span>${c.label}</span>
                 </label>
@@ -183,12 +204,14 @@ export function Sidebar() {
       <div class="side-filter">
         <input
           placeholder="/ filter"
+          data-testid="sidebar-filter-input"
           value=${filter}
           onInput=${e => setFilter(e.target.value)}
         />
         ${STATUS_CHIPS.map(s => html`
           <span key=${s.id}
                 class=${`side-chip ${statusFilters.includes(s.id) ? 'on' : ''}`}
+                data-testid=${`status-chip-${s.id}`}
                 onClick=${() => toggleStatus(s.id)}
                 title=${s.id}>
             ${s.sym}
@@ -202,7 +225,7 @@ export function Sidebar() {
           const open = expanded[g.path] !== false
           return html`
             <div key=${g.path}>
-              <div class=${`side-group-head ${g.kind || ''}`} onClick=${() => toggleGroup(g.path)}>
+              <div class=${`side-group-head ${g.kind || ''}`} data-testid=${`group-head-${g.path}`} onClick=${() => toggleGroup(g.path)}>
                 <span class="chev">${open ? '▾' : '▸'}</span>
                 <span class="name">${g.label}</span>
                 <span class="badge">(${members.length})</span>

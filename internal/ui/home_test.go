@@ -1315,10 +1315,81 @@ func TestRemoteRestartReturnsRemoteCommand(t *testing.T) {
 	_ = h
 }
 
-// TestRemoteSelectionNOpensNewDialog was removed with the #743 fix: it
-// codified d9a5de8's broken contract (n on a remote session opens the local
-// dialog). The regression guard now lives in
-// TestRegression743_NOnRemoteSession_QuickCreatesNoDialog.
+func TestRemoteSelectionNOpensRemoteAwareNewDialog(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	remote := session.RemoteSessionInfo{
+		ID:         "remote-123",
+		Title:      "remote-session",
+		RemoteName: "myserver",
+		Path:       "/srv/project",
+		Group:      "work",
+	}
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
+	home.cursor = 0
+
+	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	h, ok := model.(*Home)
+	if !ok {
+		t.Fatal("handleMainKey should return *Home")
+	}
+	if cmd != nil {
+		t.Fatal("pressing n on a remote session should open the dialog, not quick-create")
+	}
+	if !h.newDialog.IsVisible() {
+		t.Fatal("pressing n on a remote session should open the new-session dialog")
+	}
+	if h.pendingRemoteName != "myserver" {
+		t.Fatalf("pendingRemoteName = %q, want myserver", h.pendingRemoteName)
+	}
+	if got := h.newDialog.GetSelectedGroup(); got != "work" {
+		t.Fatalf("selected group = %q, want work", got)
+	}
+	_, gotPath, _ := h.newDialog.GetRemoteValues()
+	if gotPath != "/srv/project" {
+		t.Fatalf("dialog path = %q, want /srv/project", gotPath)
+	}
+}
+
+func TestRemoteNewDialogCustomizationPreservesRemoteValues(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	remote := session.RemoteSessionInfo{
+		ID:         "remote-123",
+		Title:      "remote-session",
+		RemoteName: "myserver",
+		Path:       "/srv/project",
+		Group:      "work",
+	}
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
+	home.cursor = 0
+
+	model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	h := model.(*Home)
+	h.newDialog.nameInput.SetValue("custom remote")
+	h.newDialog.pathInput.SetValue("~/custom-project")
+	h.newDialog.SetDefaultTool("codex")
+
+	name, path, command := h.newDialog.GetRemoteValues()
+	if name != "custom remote" {
+		t.Fatalf("name = %q, want custom remote", name)
+	}
+	if path != "~/custom-project" {
+		t.Fatalf("path = %q, want ~/custom-project", path)
+	}
+	if command != "codex" {
+		t.Fatalf("command = %q, want codex", command)
+	}
+	group := h.newDialog.GetSelectedGroup()
+	if group != "work" {
+		t.Fatalf("group = %q, want work", group)
+	}
+
+}
 
 func TestSelectedRemotePreviewTarget(t *testing.T) {
 	home := NewHome()
@@ -1392,9 +1463,8 @@ func TestRenderRemotePreviewIncludesCachedResponse(t *testing.T) {
 	}
 }
 
-// TestRemoteGroupSelectionNOpensNewDialog was removed with the #743 fix —
-// see the note on TestRemoteSelectionNOpensNewDialog above. Guard lives in
-// TestRegression743_NOnRemoteGroup_QuickCreatesNoDialog.
+// Remote group `n` behavior is covered by
+// TestRegression743_NOnRemoteGroup_OpensRemoteDialog.
 
 func TestRenderRemotePreviewShowsEmptyStateAfterFetch(t *testing.T) {
 	home := NewHome()
@@ -3018,6 +3088,92 @@ func TestRebuildFlatItemsGroupScope(t *testing.T) {
 	}
 }
 
+// RemoteSession N/A for collapsed-group headers: archive partitioning applies to
+// local ItemTypeSession rows; remote rows are excluded (see
+// TestRebuildFlatItemsArchivedViewOmitsRemoteSessions).
+func TestRebuildFlatItemsCollapsedGroupKeepsHeaderWithArchivedSessions(t *testing.T) {
+	h := &Home{}
+	instances := []*session.Instance{
+		session.NewInstanceWithGroup("active", "/tmp/a", "work"),
+		session.NewInstanceWithGroup("archived", "/tmp/b", "work"),
+	}
+	instances[1].ArchivedAt = time.Now().UTC()
+
+	h.groupTree = session.NewGroupTree(instances)
+	h.groupTree.CollapseGroup("work")
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	if len(h.flatItems) != 1 {
+		t.Fatalf("collapsed group with active sessions: got %d flat items, want 1 group header", len(h.flatItems))
+	}
+	if h.flatItems[0].Type != session.ItemTypeGroup || h.flatItems[0].Path != "work" {
+		t.Fatalf("expected collapsed work group header, got %+v", h.flatItems[0])
+	}
+}
+
+func TestRebuildFlatItemsCollapsedGroupKeepsHeaderInArchivedView(t *testing.T) {
+	h := NewHome()
+	h.statusFilter = FilterModeArchived
+
+	instances := []*session.Instance{
+		session.NewInstanceWithGroup("active", "/tmp/a", "work"),
+		session.NewInstanceWithGroup("archived", "/tmp/b", "work"),
+	}
+	instances[1].ArchivedAt = time.Now().UTC()
+	h.instancesMu.Lock()
+	h.instances = instances
+	h.instanceByID[instances[0].ID] = instances[0]
+	h.instanceByID[instances[1].ID] = instances[1]
+	h.instancesMu.Unlock()
+
+	h.groupTree = session.NewGroupTree(instances)
+	h.groupTree.CollapseGroup("work")
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+	if h.statusFilter != FilterModeArchived {
+		t.Fatalf("statusFilter = %q, want %q", h.statusFilter, FilterModeArchived)
+	}
+
+	if len(h.flatItems) != 1 {
+		t.Fatalf("archived view + collapsed group: got %d flat items, want 1 group header", len(h.flatItems))
+	}
+	if h.flatItems[0].Type != session.ItemTypeGroup || h.flatItems[0].Path != "work" {
+		t.Fatalf("expected group header in archived view, got %+v", h.flatItems[0])
+	}
+}
+
+func TestRebuildFlatItemsArchivedViewOmitsRemoteSessions(t *testing.T) {
+	h := NewHome()
+	h.statusFilter = FilterModeArchived
+
+	inst := session.NewInstanceWithGroup("archived", "/tmp/b", "work")
+	inst.ArchivedAt = time.Now().UTC()
+	h.instancesMu.Lock()
+	h.instances = []*session.Instance{inst}
+	h.instanceByID[inst.ID] = inst
+	h.instancesMu.Unlock()
+
+	h.groupTree = session.NewGroupTree(h.instances)
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.remoteSessionsMu.Lock()
+	h.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"dev": {{ID: "remote-1", Title: "remote-session", RemoteName: "dev"}},
+	}
+	h.remoteSessionsMu.Unlock()
+
+	h.rebuildFlatItems()
+
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
+			t.Fatalf("archived view should omit remote rows, got %+v", item)
+		}
+	}
+}
+
 func TestRebuildFlatItemsGroupScopeComposesWithStatusFilter(t *testing.T) {
 	h := &Home{}
 	h.groupScope = "work"
@@ -3482,35 +3638,86 @@ func defaultGroupItem() session.Item {
 	}
 }
 
-// TestDeleteBindingOnDefaultGroupReportsError guards against the silent no-op
-// where pressing the delete binding ('d') on the protected "My Sessions"
-// default group did nothing: no dialog, no message. The handler must surface an
-// explanatory error (mirroring the scoped-root case) and must not open the
-// delete-group dialog.
-func TestDeleteBindingOnDefaultGroupReportsError(t *testing.T) {
+// TestDeleteBindingOnDefaultGroupShowsNotice guards against the silent no-op
+// where pressing the delete binding ('d') on the protected "My Sessions" default
+// group did nothing: no dialog, no message. The handler must open the
+// acknowledge-only notice modal (the same centered modal used for the delete
+// confirmation, so it can't be clamped off the viewport) and must not set a
+// transient error banner.
+func TestDeleteBindingOnDefaultGroupShowsNotice(t *testing.T) {
 	home := newTestHomeWithItems(100, 30, []session.Item{defaultGroupItem()})
 	home.cursor = 0
 
 	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	h := model.(*Home)
 
-	if h.err == nil {
-		t.Fatal("'d' on the default group must set an error, got nil (silent no-op)")
+	if !h.confirmDialog.IsVisible() {
+		t.Fatal("'d' on the default group must open the notice modal, got nothing (silent no-op)")
 	}
-	if !strings.Contains(h.err.Error(), session.DefaultGroupName) {
-		t.Errorf("error %q must name the default group %q", h.err.Error(), session.DefaultGroupName)
+	if got := h.confirmDialog.GetConfirmType(); got != ConfirmNotice {
+		t.Errorf("default-group block must use ConfirmNotice, got %v", got)
 	}
-	if h.confirmDialog.IsVisible() {
-		t.Error("delete-group confirmation must not open for the protected default group")
+	if h.err != nil {
+		t.Errorf("notice modal must not also set a transient error banner, got %v", h.err)
 	}
 }
 
-// TestDeleteBindingOnDefaultGroupWhenScopedNamesDefault locks in the ordering of
+// TestDeleteBindingOnDefaultGroupRendersNotice closes the gap left by #1334: the
+// handler set h.err, but the error banner is appended below a full-height panel
+// and clampViewToViewport sliced it off the bottom of the viewport, so the user
+// saw nothing - the no-op stayed silent in practice. Routing through the modal
+// fixes that. Assert the rendered View actually contains the message.
+func TestDeleteBindingOnDefaultGroupRendersNotice(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, []session.Item{defaultGroupItem()})
+	home.cursor = 0
+
+	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	h := model.(*Home)
+
+	out := h.View()
+	if !strings.Contains(out, session.DefaultGroupName) {
+		t.Errorf("rendered View must show the default-group notice naming %q; got none", session.DefaultGroupName)
+	}
+	if !strings.Contains(out, "can't be deleted") {
+		t.Error("rendered View must explain the group can't be deleted")
+	}
+}
+
+// TestNoticeModalDismisses verifies the acknowledge-only modal closes on the
+// usual dismiss keys and leaves no lingering error state.
+func TestNoticeModalDismisses(t *testing.T) {
+	for _, key := range []rune{'\r', '\x1b', 'o'} { // Enter, Esc, o
+		home := newTestHomeWithItems(100, 30, []session.Item{defaultGroupItem()})
+		home.cursor = 0
+		model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+		h := model.(*Home)
+		if !h.confirmDialog.IsVisible() {
+			t.Fatal("precondition: notice modal must be open")
+		}
+
+		var msg tea.KeyMsg
+		switch key {
+		case '\r':
+			msg = tea.KeyMsg{Type: tea.KeyEnter}
+		case '\x1b':
+			msg = tea.KeyMsg{Type: tea.KeyEsc}
+		default:
+			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}}
+		}
+		model, _ = h.Update(msg)
+		h = model.(*Home)
+		if h.confirmDialog.IsVisible() {
+			t.Errorf("notice modal must close after dismiss key %q", string(key))
+		}
+	}
+}
+
+// TestDeleteBindingOnDefaultGroupWhenScopedShowsNotice locks in the ordering of
 // the delete handler: when the TUI is scoped to the default group itself
 // (groupScope == DefaultGroupPath), both the default-group and scoped-root
-// conditions match. The default-group message must win so the feedback stays
+// conditions match. The default-group notice must win so the feedback stays
 // specific.
-func TestDeleteBindingOnDefaultGroupWhenScopedNamesDefault(t *testing.T) {
+func TestDeleteBindingOnDefaultGroupWhenScopedShowsNotice(t *testing.T) {
 	home := newTestHomeWithItems(100, 30, []session.Item{defaultGroupItem()})
 	home.cursor = 0
 	home.groupScope = session.DefaultGroupPath
@@ -3518,11 +3725,15 @@ func TestDeleteBindingOnDefaultGroupWhenScopedNamesDefault(t *testing.T) {
 	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	h := model.(*Home)
 
-	if h.err == nil {
-		t.Fatal("'d' on the scoped default group must set an error, got nil")
+	if got := h.confirmDialog.GetConfirmType(); got != ConfirmNotice {
+		t.Fatalf("scoped default group must show the default-group notice, got type %v", got)
 	}
-	if !strings.Contains(h.err.Error(), session.DefaultGroupName) {
-		t.Errorf("scoped default group error %q must name the default group, not the scoped-root message", h.err.Error())
+	out := h.View()
+	if !strings.Contains(out, session.DefaultGroupName) {
+		t.Error("scoped default-group notice must name the default group, not the scoped-root message")
+	}
+	if h.err != nil {
+		t.Errorf("notice path must not set a transient error, got %v", h.err)
 	}
 }
 
@@ -3546,6 +3757,9 @@ func TestDeleteBindingOnNonDefaultGroupOpensDialog(t *testing.T) {
 
 	if !h.confirmDialog.IsVisible() {
 		t.Error("delete-group confirmation must open for a non-default group")
+	}
+	if got := h.confirmDialog.GetConfirmType(); got != ConfirmDeleteGroup {
+		t.Errorf("non-default group must open the real delete confirmation, got type %v", got)
 	}
 	if h.err != nil {
 		t.Errorf("non-default group delete must not set an error, got %v", h.err)

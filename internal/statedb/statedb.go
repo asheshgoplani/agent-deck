@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -103,7 +104,7 @@ func withBusyRetry(op func() error) error {
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 9
+const SchemaVersion = 11
 
 // StateDB wraps a SQLite database for session/group persistence.
 // Thread-safe for concurrent use from multiple goroutines within one process.
@@ -157,8 +158,14 @@ type InstanceRow struct {
 	// `[profiles.<account>.claude].config_dir` at spawn time and becomes the
 	// most-specific level in the CLAUDE_CONFIG_DIR resolution chain. Empty
 	// means "fall through to conductor/group/env/profile/global/default".
-	Account  string
+	Account string
+	// Pin anchors the session to the top/bottom of its group (pin-sessions
+	// feature). "", "top", or "bottom"; empty (the column default) means not
+	// pinned, so legacy rows need no backfill.
+	Pin      string
 	ToolData json.RawMessage // JSON blob for tool-specific data
+	// ArchivedAt is non-zero when the session is archived (hidden from active lists).
+	ArchivedAt time.Time
 }
 
 // WatcherRow represents a watcher row in the database.
@@ -343,6 +350,8 @@ func (s *StateDB) Migrate() error {
 			worktree_repo     TEXT NOT NULL DEFAULT '',
 			worktree_branch   TEXT NOT NULL DEFAULT '',
 			account           TEXT NOT NULL DEFAULT '',
+			archived_at       INTEGER NOT NULL DEFAULT 0,
+			pin               TEXT NOT NULL DEFAULT '',
 			tool_data       TEXT NOT NULL DEFAULT '{}',
 			acknowledged    INTEGER NOT NULL DEFAULT 0
 		)
@@ -495,6 +504,11 @@ func (s *StateDB) Migrate() error {
 		// the pre-v1.9.22 behavior for legacy rows (fall through to
 		// conductor/group/env/profile/global/default).
 		"ALTER TABLE instances ADD COLUMN account TEXT NOT NULL DEFAULT ''",
+		// v10: user-archived sessions (hidden from active lists; 0 = active).
+		"ALTER TABLE instances ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0",
+		// v11 (pin-sessions): per-session pin to top/bottom of group. Default ''
+		// means "not pinned" for all pre-existing rows.
+		"ALTER TABLE instances ADD COLUMN pin TEXT NOT NULL DEFAULT ''",
 	}
 	for _, stmt := range alterMigrations {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -555,6 +569,20 @@ func (s *StateDB) Migrate() error {
 				}
 			}
 		}
+		if oldVer < 10 {
+			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("statedb: migrate v10 archived_at: %w", err)
+				}
+			}
+		}
+		if oldVer < 11 {
+			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN pin TEXT NOT NULL DEFAULT ''`); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("statedb: migrate v11 pin: %w", err)
+				}
+			}
+		}
 		if _, err := tx.Exec(`
 			UPDATE metadata SET value = ? WHERE key = 'schema_version'
 		`, schemaVersion); err != nil {
@@ -576,6 +604,13 @@ func (s *StateDB) IsEmpty() (bool, error) {
 }
 
 // --- Instance CRUD ---
+
+func archivedAtUnix(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UTC().Unix()
+}
 
 // SaveInstance inserts or replaces a single instance.
 func (s *StateDB) SaveInstance(inst *InstanceRow) error {
@@ -611,15 +646,15 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			tool_data, title_locked
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			archived_at, pin, tool_data, title_locked
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 		inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 		inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-		string(toolData), titleLockedInt,
+		archivedAtUnix(inst.ArchivedAt), inst.Pin, string(toolData), titleLockedInt,
 	)
 	return err
 }
@@ -753,8 +788,8 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			tool_data, title_locked
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			archived_at, pin, tool_data, title_locked
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -787,7 +822,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 			inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-			string(toolData), titleLockedInt,
+			archivedAtUnix(inst.ArchivedAt), inst.Pin, string(toolData), titleLockedInt,
 		); err != nil {
 			return err
 		}
@@ -816,7 +851,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			tool_data, title_locked
+			archived_at, pin, tool_data, title_locked
 		FROM instances ORDER BY sort_order
 	`)
 	if err != nil {
@@ -827,7 +862,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 	var result []*InstanceRow
 	for rows.Next() {
 		r := &InstanceRow{}
-		var createdUnix, accessedUnix int64
+		var createdUnix, accessedUnix, archivedUnix int64
 		var toolDataStr string
 		var isConductorInt, noTransitionNotifyInt, titleLockedInt int
 		if err := rows.Scan(
@@ -836,13 +871,16 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 			&createdUnix, &accessedUnix,
 			&r.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
 			&r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch, &r.Account,
-			&toolDataStr, &titleLockedInt,
+			&archivedUnix, &r.Pin, &toolDataStr, &titleLockedInt,
 		); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = time.Unix(createdUnix, 0)
 		if accessedUnix > 0 {
 			r.LastAccessed = time.Unix(accessedUnix, 0)
+		}
+		if archivedUnix > 0 {
+			r.ArchivedAt = time.Unix(archivedUnix, 0).UTC()
 		}
 		r.IsConductor = isConductorInt != 0
 		r.NoTransitionNotify = noTransitionNotifyInt != 0
@@ -1227,7 +1265,7 @@ func (s *StateDB) ElectPrimary(timeout time.Duration) (bool, error) {
 		return false, fmt.Errorf("statedb: clear stale primary: %w", err)
 	}
 
-	// Check if any alive instance already has is_primary=1
+	// Find a candidate primary that is still fresh by heartbeat.
 	var existingPID int
 	err = tx.QueryRow(
 		"SELECT pid FROM instance_heartbeats WHERE is_primary = 1 AND heartbeat >= ? LIMIT 1",
@@ -1235,14 +1273,32 @@ func (s *StateDB) ElectPrimary(timeout time.Duration) (bool, error) {
 	).Scan(&existingPID)
 
 	if err == nil {
-		// An alive primary exists
-		if err := tx.Commit(); err != nil {
-			return false, fmt.Errorf("statedb: commit elect: %w", err)
+		// A fresh-by-heartbeat primary row exists. Trust it as a live owner only
+		// if it is our own process OR the recorded PID is actually alive. A row
+		// left behind by an unclean exit (SIGKILL, OOM, terminal force-close,
+		// crash/panic) never ran ResignPrimary, so its heartbeat can stay within
+		// `timeout` for up to the full window after the process is gone. Without
+		// the liveness check, the next start sees that ghost as a live primary
+		// and exits "already running" — which is why users had to pkill (or wait
+		// out the window) before a restart would take. Verifying liveness here
+		// reclaims a dead primary immediately. The time-based clear above remains
+		// as a safety net against PID reuse.
+		if existingPID == s.pid || pidAlive(existingPID) {
+			if err := tx.Commit(); err != nil {
+				return false, fmt.Errorf("statedb: commit elect: %w", err)
+			}
+			return existingPID == s.pid, nil
 		}
-		return existingPID == s.pid, nil
+		// Dead primary: clear its flag and fall through to claim.
+		if _, err := tx.Exec(
+			"UPDATE instance_heartbeats SET is_primary = 0 WHERE pid = ?",
+			existingPID,
+		); err != nil {
+			return false, fmt.Errorf("statedb: clear dead primary: %w", err)
+		}
 	}
 
-	// No alive primary exists: claim it
+	// No live primary exists: claim it
 	if _, err := tx.Exec(
 		"UPDATE instance_heartbeats SET is_primary = 1 WHERE pid = ?",
 		s.pid,
@@ -1254,6 +1310,23 @@ func (s *StateDB) ElectPrimary(timeout time.Duration) (bool, error) {
 		return false, fmt.Errorf("statedb: commit elect: %w", err)
 	}
 	return true, nil
+}
+
+// pidAlive reports whether pid refers to a live process on this host. It uses
+// the kill -0 idiom (signal 0 performs permission/existence checks only and is
+// never delivered), mirroring filterAliveOurProcesses in
+// internal/tmux/ensure_pids_dead.go. A dead or reaped PID returns false so a
+// crashed primary is reclaimed immediately by ElectPrimary instead of lingering
+// for the full heartbeat-staleness window.
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
 }
 
 // ResignPrimary clears the is_primary flag for this process.

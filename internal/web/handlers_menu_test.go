@@ -10,8 +10,9 @@ import (
 )
 
 type fakeMenuDataLoader struct {
-	snapshot *MenuSnapshot
-	err      error
+	snapshot         *MenuSnapshot
+	archivedSnapshot *MenuSnapshot
+	err              error
 }
 
 func (f *fakeMenuDataLoader) LoadMenuSnapshot() (*MenuSnapshot, error) {
@@ -19,6 +20,16 @@ func (f *fakeMenuDataLoader) LoadMenuSnapshot() (*MenuSnapshot, error) {
 		return nil, f.err
 	}
 	return f.snapshot, nil
+}
+
+func (f *fakeMenuDataLoader) LoadArchivedMenuSnapshot() (*MenuSnapshot, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.archivedSnapshot != nil {
+		return f.archivedSnapshot, nil
+	}
+	return &MenuSnapshot{}, nil
 }
 
 func TestMenuEndpointSuccess(t *testing.T) {

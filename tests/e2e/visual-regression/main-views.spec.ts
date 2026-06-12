@@ -1,17 +1,39 @@
+// Main views — rewritten for the redesigned Preact shell (issue #1298).
+//
+// The old suite targeted the pre-redesign Tailwind UI (hamburger button,
+// "Open info panel" button, Tailwind cost grid). The redesigned shell
+// (internal/web/static/app/) boots into the Fleet tab, uses topbar tabs
+// for navigation, opens Settings via the command palette, and replaces
+// the mobile hamburger/sidebar-drawer with a bottom tab bar (.mob-tabs).
+//
+// Mapping from the legacy suite:
+//   empty state            -> fleet empty state (Fleet pane is the new landing view)
+//   sidebar with sessions  -> kept (new .sidebar markup)
+//   cost dashboard         -> costs pane via the "Costs" topbar tab
+//                             (Chart.js canvases masked — canvas AA is not
+//                             bit-stable; stat cards + chrome stay protected)
+//   mobile sidebar         -> DROPPED: no hamburger / mobile sidebar drawer
+//                             exists anymore (sidebar is display:none <=720px,
+//                             MobileTabs.js bottom bar is the mobile nav).
+//                             Replaced by "mobile fleet with bottom tabs".
+//   settings panel         -> settings drawer via command palette (the only
+//                             entry point in the new shell, CommandPalette.js)
 import { test, expect } from '@playwright/test';
 import {
   freezeClock, mockEndpoints, prepareForScreenshot,
-  getDynamicContentMasks, EMPTY_MENU,
+  getDynamicContentMasks, chartMasks, EMPTY_MENU,
 } from './visual-helpers.js';
 
 test.describe('Main views visual baselines', () => {
-  test('empty state — desktop dark 1280x800', async ({ page }) => {
+  test('fleet empty state — desktop dark 1280x800', async ({ page }) => {
     await freezeClock(page);
     await mockEndpoints(page, { menu: EMPTY_MENU });
     await page.goto('/?token=test');
     await prepareForScreenshot(page);
+    // FleetPane.js renders the stat tiles and the "No sessions yet" hint
+    await expect(page.locator('.fleet-stats')).toBeVisible();
     const masks = await getDynamicContentMasks(page);
-    await expect(page).toHaveScreenshot('empty-state-dark-1280x800.png', { mask: masks });
+    await expect(page).toHaveScreenshot('fleet-empty-dark-1280x800.png', { mask: masks });
   });
 
   test('sidebar with sessions — desktop dark 1280x800', async ({ page }) => {
@@ -19,59 +41,59 @@ test.describe('Main views visual baselines', () => {
     await mockEndpoints(page);
     await page.goto('/?token=test');
     await prepareForScreenshot(page);
+    // Sidebar.js renders one .sess row per fixture session
+    await expect(page.locator('.sidebar .sess')).toHaveCount(4);
     const masks = await getDynamicContentMasks(page);
     await expect(page).toHaveScreenshot('sidebar-sessions-dark-1280x800.png', { mask: masks });
   });
 
-  test('cost dashboard — desktop dark 1280x800', async ({ page }) => {
+  test('costs pane — desktop dark 1280x800', async ({ page }) => {
     await freezeClock(page);
     await mockEndpoints(page);
     await page.goto('/?token=test');
     await prepareForScreenshot(page);
-    await page.locator('button[title="Cost Dashboard"]').click();
-    await page.waitForFunction(
-      () => {
-        const grid = document.querySelector('.grid.grid-cols-2');
-        return !!(grid && grid.textContent && grid.textContent.includes('events'));
-      },
-      { timeout: 10000 },
-    );
-    // Re-stabilize after tab switch
+    // Topbar.js: tab buttons are .top-tab with text labels
+    await page.locator('.top-tab', { hasText: 'Costs' }).click();
+    // CostDashboard.js: summary cards render in .stat-grid with "N events" deltas
+    await page.waitForFunction(() => {
+      const grid = document.querySelector('.costs .stat-grid');
+      return !!(grid && grid.textContent && grid.textContent.includes('events'));
+    }, { timeout: 10000 });
+    // Let Chart.js finish its (masked) initial render
+    await page.waitForSelector('.chart-card canvas', { state: 'attached', timeout: 10000 });
+    await page.waitForTimeout(1000);
     await prepareForScreenshot(page);
-    const masks = await getDynamicContentMasks(page);
-    await expect(page).toHaveScreenshot('cost-dashboard-dark-1280x800.png', { mask: masks });
+    const masks = [...await getDynamicContentMasks(page), ...await chartMasks(page)];
+    await expect(page).toHaveScreenshot('costs-pane-dark-1280x800.png', { mask: masks });
   });
 
-  test('mobile sidebar — 375x812 dark', async ({ page }) => {
+  test('mobile fleet with bottom tabs — 375x812 dark', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await freezeClock(page);
     await mockEndpoints(page);
     await page.goto('/?token=test');
     await prepareForScreenshot(page);
-    // Open mobile sidebar via hamburger — the actual aria-label is "Open sidebar"
-    const hamburger = page.locator('button[aria-label="Open sidebar"]');
-    await hamburger.waitFor({ state: 'visible', timeout: 5000 });
-    await hamburger.click();
-    // Wait for sidebar drawer to animate open
-    await page.waitForTimeout(300);
-    await prepareForScreenshot(page);
+    // MobileTabs.js: bottom bar replaces the old hamburger/sidebar drawer
+    await expect(page.locator('.mob-tabs')).toBeVisible();
+    await expect(page.locator('.mob-tab')).toHaveCount(4);
     const masks = await getDynamicContentMasks(page);
-    await expect(page).toHaveScreenshot('mobile-sidebar-dark-375x812.png', { mask: masks });
+    await expect(page).toHaveScreenshot('mobile-fleet-dark-375x812.png', { mask: masks });
   });
 
-  test('settings panel — desktop dark 1280x800', async ({ page }) => {
+  test('settings drawer — desktop dark 1280x800', async ({ page }) => {
     await freezeClock(page);
     await mockEndpoints(page, { menu: EMPTY_MENU });
     await page.goto('/?token=test');
     await prepareForScreenshot(page);
-    // Open the info panel which contains the settings — aria-label is "Open info panel"
-    const infoBtn = page.locator('button[aria-label="Open info panel"]');
-    await infoBtn.waitFor({ state: 'visible', timeout: 5000 });
-    await infoBtn.click();
-    // Wait for settings panel to render
-    await page.waitForTimeout(300);
+    // The settings drawer opens via the command palette (CommandPalette.js
+    // "Settings drawer" command -> infoDrawerOpenSignal in AppShell.js).
+    await page.keyboard.press('Control+k');
+    await page.waitForSelector('.cmdk', { state: 'visible', timeout: 5000 });
+    await page.locator('.cmdk .row', { hasText: 'Settings drawer' }).click();
+    // SettingsPanel.js renders .kv rows once /api/settings (mocked) resolves
+    await page.waitForSelector('.dialog .kv', { state: 'visible', timeout: 5000 });
     await prepareForScreenshot(page);
     const masks = await getDynamicContentMasks(page);
-    await expect(page).toHaveScreenshot('settings-panel-dark-1280x800.png', { mask: masks });
+    await expect(page).toHaveScreenshot('settings-drawer-dark-1280x800.png', { mask: masks });
   });
 });

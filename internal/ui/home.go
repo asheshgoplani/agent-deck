@@ -139,11 +139,17 @@ const (
 // (shows all sessions except error/stopped). Change this constant to rebind.
 const FilterKeyActive = "%"
 
+// FilterKeyArchived toggles the archived-sessions list view.
+const FilterKeyArchived = "^"
+
 // FilterModeActive is the filter value for "open" sessions: excludes the
 // configured set of statuses (see DisplaySettings.ActiveFilterExcludes; default
 // {error}). This is NOT a session status (never assigned to a session), just a
 // filter mode.
 const FilterModeActive session.Status = "active"
+
+// FilterModeArchived shows only user-archived sessions (not a real session status).
+const FilterModeArchived session.Status = "archived"
 
 // Mouse interaction thresholds
 const doubleClickThreshold = 500 * time.Millisecond
@@ -351,12 +357,13 @@ type Home struct {
 	updateNudgeDismissed bool
 
 	// Launching animation state (for newly created sessions)
-	launchingSessions  map[string]time.Time        // sessionID -> creation time
-	resumingSessions   map[string]time.Time        // sessionID -> resume time (for restart/resume)
-	mcpLoadingSessions map[string]time.Time        // sessionID -> MCP reload time
-	forkingSessions    map[string]time.Time        // sessionID -> fork start time (fork in progress)
-	creatingSessions   map[string]*CreatingSession // tempID -> placeholder for worktree creation in progress
-	animationFrame     int                         // Current frame for spinner animation
+	launchingSessions    map[string]time.Time        // sessionID -> creation time
+	resumingSessions     map[string]time.Time        // sessionID -> resume time (for restart/resume)
+	mcpLoadingSessions   map[string]time.Time        // sessionID -> MCP reload time
+	forkingSessions      map[string]time.Time        // sessionID -> fork start time (fork in progress)
+	setupRunningSessions map[string]time.Time        // sessionID -> setup script start time
+	creatingSessions     map[string]*CreatingSession // tempID -> placeholder for worktree creation in progress
+	animationFrame       int                         // Current frame for spinner animation
 
 	// Context for cleanup
 	ctx    context.Context
@@ -581,6 +588,12 @@ type Home struct {
 	// nil, the dispatch calls terminal.OpenSessionInNewWindow directly.
 	// See issue #1093.
 	openInNewWindowSink func(req terminal.AttachRequest) error
+	// quickApproveSink is an optional override used by tests to capture the
+	// quick-approve (`a`) dispatch — the (instance, windowIndex) it would send
+	// "1"+Enter to — without driving real tmux. windowIndex < 0 means the
+	// session's active window; >= 0 targets that specific window. When nil, the
+	// dispatch calls the tmux session directly. See issue #1369.
+	quickApproveSink func(inst *session.Instance, windowIndex int) error
 }
 
 // reloadState preserves UI state during storage reload
@@ -656,6 +669,30 @@ func (h *Home) openInNewWindow(req terminal.AttachRequest, sessionExists bool) e
 		return nil
 	}
 	return terminal.OpenSessionInNewWindow(req)
+}
+
+// quickApprove delivers "1"+Enter to approve a Claude permission prompt without
+// attaching. windowIndex < 0 targets the session's active window (the
+// session-row path); >= 0 targets that specific tmux window (the window-row
+// path, #1369). Routed through quickApproveSink in tests. A nil instance or
+// absent tmux session is a silent no-op.
+func (h *Home) quickApprove(inst *session.Instance, windowIndex int) {
+	if inst == nil {
+		return
+	}
+	if h.quickApproveSink != nil {
+		_ = h.quickApproveSink(inst, windowIndex)
+		return
+	}
+	tmuxSess := inst.GetTmuxSession()
+	if tmuxSess == nil {
+		return
+	}
+	if windowIndex < 0 {
+		_ = tmuxSess.SendKeysAndEnter("1")
+		return
+	}
+	_ = tmuxSess.SendKeysAndEnterToWindow(windowIndex, "1")
 }
 
 // resolveITermOpenAs reads the [ui] iterm_open_as setting from the user
@@ -871,6 +908,13 @@ type worktreeDirtyCheckMsg struct {
 	err       error
 }
 
+// worktreeSetupResultMsg is sent when re-running the worktree setup script completes
+type worktreeSetupResultMsg struct {
+	sessionID    string
+	sessionTitle string
+	err          error
+}
+
 // worktreeFinishResultMsg is sent when the worktree finish operation completes
 type worktreeFinishResultMsg struct {
 	sessionID    string
@@ -988,6 +1032,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		resumingSessions:     make(map[string]time.Time),
 		mcpLoadingSessions:   make(map[string]time.Time),
 		forkingSessions:      make(map[string]time.Time),
+		setupRunningSessions: make(map[string]time.Time),
 		creatingSessions:     make(map[string]*CreatingSession),
 		lastLogActivity:      make(map[string]time.Time),
 		windowsCollapsed:     make(map[string]bool),
@@ -1651,8 +1696,30 @@ func (h *Home) rebuildFlatItems() {
 
 	allItems := h.groupTree.Flatten()
 
-	// Apply status filter if active
-	if h.statusFilter != "" {
+	// Partition archived vs active before status filters. Group membership is
+	// resolved from the full group tree — not the flattened view — so
+	// collapsed groups still show their headers when they contain matches.
+	viewArchived := h.statusFilter == FilterModeArchived
+	if viewArchived || h.hasArchivedSessions() {
+		groupsWithMatches := h.archiveGroupsWithMatches(viewArchived)
+		partitioned := make([]session.Item, 0, len(allItems))
+		for _, item := range allItems {
+			if item.Type == session.ItemTypeGroup {
+				if groupsWithMatches[item.Path] {
+					partitioned = append(partitioned, item)
+				}
+			} else if item.Type == session.ItemTypeSession && item.Session != nil {
+				isArchived := item.Session.IsArchived()
+				if viewArchived == isArchived {
+					partitioned = append(partitioned, item)
+				}
+			}
+		}
+		allItems = partitioned
+	}
+
+	// Apply status filter if active (skip when browsing archived list).
+	if h.statusFilter != "" && h.statusFilter != FilterModeArchived {
 		// First pass: identify groups that have matching sessions
 		groupsWithMatches := make(map[string]bool)
 		for _, item := range allItems {
@@ -1754,7 +1821,7 @@ func (h *Home) rebuildFlatItems() {
 	}
 	h.remoteSessionsMu.RUnlock()
 	sort.Strings(remoteNames)
-	if len(remotes) > 0 {
+	if len(remotes) > 0 && h.statusFilter != FilterModeArchived {
 		for _, remoteName := range remoteNames {
 			sessions := remotes[remoteName]
 			// Add remote group header
@@ -2876,6 +2943,12 @@ func (h *Home) selectedRemotePreviewTarget() (string, string, string, bool) {
 // fetchSelectedPreview debounces a preview fetch for the currently selected item.
 // Handles both session and window items transparently.
 func (h *Home) fetchSelectedPreview() tea.Cmd {
+	// Issue #1366: in single-column layout there is no preview pane, so there is
+	// nothing to fill — skip the `tmux capture-pane` entirely. The preview is
+	// re-fetched on resize back into a preview layout (see WindowSizeMsg).
+	if h.getLayoutMode() == LayoutModeSingle {
+		return nil
+	}
 	inst, _, winIdx := h.selectedPreviewTarget()
 	if inst == nil {
 		remoteName, remoteSessionID, _, ok := h.selectedRemotePreviewTarget()
@@ -3155,25 +3228,56 @@ func (h *Home) getDefaultPathForGroup(groupPath string) string {
 	return p
 }
 
-// statusWorker runs in a background goroutine with its own ticker
+// Status-sweep cadence (issue #1366). The sweep normally runs every
+// baseStatusInterval. When a sweep overruns that interval — which happens at
+// large session counts when the tmux control-mode pipe is unavailable/degraded
+// and capture-pane falls back to subprocesses — sweeps would otherwise pile up
+// and pin the tmux server. nextStatusInterval backs the cadence off so the
+// gap between sweeps is at least twice the last sweep's duration (≈50% duty
+// cycle), capped at maxStatusInterval. Fast sweeps keep the base cadence, so
+// there is no behaviour change in the common (piped) case.
+const (
+	baseStatusInterval = 2 * time.Second
+	maxStatusInterval  = 10 * time.Second
+)
+
+// nextStatusInterval returns how long to wait before the next status sweep,
+// given how long the last sweep took. It returns base when the sweep finished
+// within base, otherwise 2×lastSweep capped at max.
+func nextStatusInterval(lastSweep, base, ceiling time.Duration) time.Duration {
+	if lastSweep <= base {
+		return base
+	}
+	next := 2 * lastSweep
+	if next > ceiling {
+		return ceiling
+	}
+	return next
+}
+
+// statusWorker runs in a background goroutine with its own timer
 // This ensures status updates continue even when TUI is paused (tea.Exec)
 func (h *Home) statusWorker() {
 	defer close(h.statusWorkerDone)
 
-	// Internal ticker - independent of Bubble Tea event loop
+	// Internal timer - independent of Bubble Tea event loop
 	// This is the key insight: when tea.Exec suspends the TUI (user attaches to session),
-	// the Bubble Tea tick messages stop firing, but this goroutine keeps running
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	// the Bubble Tea tick messages stop firing, but this goroutine keeps running.
+	// A timer (reset after each sweep) rather than a fixed ticker lets the cadence
+	// adapt when a sweep overruns the interval (#1366).
+	timer := time.NewTimer(baseStatusInterval)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-h.ctx.Done():
 			return
 
-		case <-ticker.C:
+		case <-timer.C:
 			// Self-triggered update - runs even when TUI is paused
+			sweepStart := time.Now()
 			h.backgroundStatusUpdate()
+			timer.Reset(nextStatusInterval(time.Since(sweepStart), baseStatusInterval, maxStatusInterval))
 			// Coalesce a queued immediate request after full sweep.
 			select {
 			case <-h.statusTrigger:
@@ -3895,7 +3999,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.toolVisibilityPanel.SetSize(msg.Width, msg.Height)
 		}
 		h.geminiModelDialog.SetSize(msg.Width, msg.Height)
-		return h, nil
+		// Issue #1366: a resize can reveal the preview pane (single -> stacked/dual).
+		// fetchSelectedPreview self-guards to nil in single-column, so this only
+		// fetches when a preview pane is actually visible.
+		return h, h.fetchSelectedPreview()
 
 	case tea.MouseMsg:
 		// Route mouse wheel events to the active scrollable area.
@@ -4475,6 +4582,28 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case sessionArchivedMsg:
+		if msg.killErr != nil {
+			h.setError(fmt.Errorf("failed to archive: %w", msg.killErr))
+			return h, nil
+		}
+		h.cachedStatusCounts.valid.Store(false)
+		h.invalidatePreviewCache(msg.sessionID)
+		h.rebuildFlatItems()
+		h.saveInstances()
+		if inst := h.getInstanceByID(msg.sessionID); inst != nil {
+			h.setError(fmt.Errorf("archived '%s' (^ to view)", inst.Title))
+		}
+		return h, nil
+
+	case sessionUnarchivedMsg:
+		h.rebuildFlatItems()
+		h.saveInstances()
+		if inst := h.getInstanceByID(msg.sessionID); inst != nil {
+			h.setError(fmt.Errorf("unarchived '%s'", inst.Title))
+		}
+		return h, nil
+
 	case sessionRestoredMsg:
 		h.reloadMu.Lock()
 		reloading := h.isReloading
@@ -4670,6 +4799,25 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		h.setError(fmt.Errorf("restarted '%s' on %s", msg.title, msg.remoteName))
 		return h, h.fetchRemoteSessions
+
+	case remoteSessionCreatedMsg:
+		if msg.err != nil {
+			h.setError(msg.err)
+		}
+		// This message is returned after tea.Exec finishes the remote
+		// create+attach. Mirror the statusUpdateMsg attach-return cleanup so
+		// detaching from a newly created remote session leaves the terminal in
+		// the same state as detaching from an existing one: re-enable mouse
+		// reporting, restore legacy keyboard mode, force a resize, and schedule
+		// the delayed repaint (see the statusUpdateMsg case for the rationale).
+		h.beginAttachReturnGrace(time.Now())
+		return h, tea.Batch(
+			h.fetchRemoteSessions,
+			tea.EnableMouseCellMotion,
+			RestoreLegacyKeyboardCmd(os.Stdout),
+			tea.WindowSize(),
+			tea.Tick(attachReturnRefreshDelay, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} }),
+		)
 
 	case MaintenanceCompleteMsg:
 		return h, func() tea.Msg {
@@ -5090,6 +5238,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case worktreeSetupResultMsg:
+		delete(h.setupRunningSessions, msg.sessionID)
+		if msg.err != nil {
+			h.setError(msg.err)
+		} else {
+			h.setError(fmt.Errorf("worktree setup completed for '%s'", msg.sessionTitle))
+		}
+		return h, nil
+
 	case worktreeFinishResultMsg:
 		if msg.err != nil {
 			// Show error in dialog (user can go back or cancel)
@@ -5346,6 +5503,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.cleanupExpiredAnimations(h.resumingSessions, claudeTimeout, defaultTimeout)
 		h.cleanupExpiredAnimations(h.mcpLoadingSessions, claudeTimeout, defaultTimeout)
 		h.cleanupExpiredAnimations(h.forkingSessions, claudeTimeout, defaultTimeout)
+		// setupRunningSessions is deliberately NOT timer-pruned: it doubles as
+		// the b-hotkey re-entrancy lock, and the setup script may legitimately
+		// run past any UI timeout (setup_timeout_seconds is user-configurable,
+		// including unlimited). It is cleared only by worktreeSetupResultMsg,
+		// which runWorktreeSetup always delivers; the script-runner timeout
+		// bounds runaway scripts.
 
 		// Notification bar sync handled by background worker (syncNotificationsBackground)
 		// which runs even when TUI is paused during tea.Exec
@@ -5852,9 +6015,6 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 
-		// Get values including worktree settings.
-		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
-
 		// #1353: when the dialog was opened on a remote group/session, create
 		// the session on that remote via SSH with the chosen tool. All
 		// local-only logic below (worktree resolution, directory-exists
@@ -5862,11 +6022,23 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// filesystem (#743).
 		if h.pendingRemoteName != "" {
 			remoteName := h.pendingRemoteName
-			h.pendingRemoteName = ""
+			name, path, command := h.newDialog.GetRemoteValues()
+			groupPath := h.newDialog.GetSelectedGroup()
+			// Remember the submitted tool for the next dialog open (UX top-3 #2).
+			rememberTool(h.stateDB(), command)
 			h.newDialog.Hide()
+			h.pendingRemoteName = ""
 			h.clearError()
-			return h, h.createRemoteSessionWithOptions(remoteName, command, name, path)
+			return h, h.createRemoteSessionWithOptions(remoteName, command, name, path, groupPath)
 		}
+
+		// Get values including worktree settings.
+		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
+
+		// Remember the submitted tool so the next new-session dialog preselects
+		// it (UX top-3 #2). Best-effort: persisted in the profile StateDB, never
+		// config.toml. An explicit [default_tool] still wins on the next open.
+		rememberTool(h.stateDB(), command)
 
 		groupPath := h.newDialog.GetSelectedGroup()
 		claudeOpts := h.newDialog.GetClaudeOptions() // Get Claude options if applicable.
@@ -6001,6 +6173,76 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	h.newDialog, cmd = h.newDialog.Update(msg)
 	return h, cmd
+}
+
+func (h *Home) showRemoteNewSessionDialog(item session.Item) {
+	remoteName := item.RemoteName
+	if remoteName == "" {
+		return
+	}
+
+	paths := h.remotePathSuggestions(remoteName)
+	h.newDialog.SetPathSuggestions(paths)
+	h.newDialog.SetRecentSessions(nil)
+	// Preselect the last-used tool (UX top-3 #2); explicit [default_tool] wins.
+	h.newDialog.SetDefaultTool(resolveInitialTool(session.GetDefaultTool(), rememberedTool(h.stateDB())))
+	h.pendingRemoteName = remoteName
+
+	groupPath := session.DefaultGroupPath
+	groupName := session.DefaultGroupName
+	defaultPath := ""
+	if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+		if item.RemoteSession.Group != "" {
+			groupPath = item.RemoteSession.Group
+			groupName = item.RemoteSession.Group
+		}
+		defaultPath = item.RemoteSession.Path
+	} else if item.Type == session.ItemTypeRemoteGroup {
+		// "remotes/<host>" is a synthetic local UI bucket, not a user-defined
+		// remote group. Keep the default group so handleNewDialogKey doesn't
+		// forward it to CreateSessionWithOptions and create a bogus remote group.
+		groupPath = session.DefaultGroupPath
+		groupName = session.DefaultGroupName
+		defaultPath = "."
+	} else if len(paths) > 0 {
+		defaultPath = paths[0]
+	}
+
+	h.newDialog.ShowInGroup(groupPath, groupName, defaultPath, nil, "")
+	if defaultPath == "" {
+		h.newDialog.pathInput.SetValue(".")
+		h.newDialog.pathSoftSelected = true
+	}
+	// Remote creation goes through the remote CLI. Disable local-only defaults
+	// that ShowInGroup may have inherited from this machine's config.
+	h.newDialog.worktreeEnabled = false
+	h.newDialog.worktreeToggled = false
+	h.newDialog.sandboxEnabled = false
+	h.newDialog.multiRepoEnabled = false
+	h.newDialog.multiRepoPaths = nil
+	h.newDialog.rebuildFocusTargets()
+}
+
+func (h *Home) remotePathSuggestions(remoteName string) []string {
+	h.remoteSessionsMu.RLock()
+	sessions := append([]session.RemoteSessionInfo(nil), h.remoteSessions[remoteName]...)
+	h.remoteSessionsMu.RUnlock()
+
+	seen := make(map[string]struct{}, len(sessions))
+	paths := make([]string, 0, len(sessions))
+	for _, rs := range sessions {
+		path := strings.TrimSpace(rs.Path)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func persistClaudeDialogDefaults(opts *session.ClaudeOptions, args []string) {
@@ -6931,6 +7173,27 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case "b":
+		// Re-run worktree setup script (bootstrap)
+		if h.cursor >= len(h.flatItems) {
+			return h, nil
+		}
+		item := h.flatItems[h.cursor]
+		if item.Type != session.ItemTypeSession || item.Session == nil {
+			return h, nil
+		}
+		inst := item.Session
+		if !inst.IsWorktree() {
+			h.setError(fmt.Errorf("session '%s' is not a worktree", inst.Title))
+			return h, nil
+		}
+		if _, running := h.setupRunningSessions[inst.ID]; running {
+			h.setError(fmt.Errorf("setup script already running for '%s'", inst.Title))
+			return h, nil
+		}
+		h.setupRunningSessions[inst.ID] = time.Now()
+		return h, h.runWorktreeSetup(inst)
+
 	case "W", "shift+w":
 		// Worktree finish - merge + cleanup for worktree sessions
 		if h.cursor < len(h.flatItems) {
@@ -7100,14 +7363,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor >= 0 && h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
-				h.pendingRemoteName = item.RemoteName
-				// Local path suggestions and recent sessions don't apply on
-				// the remote filesystem; default the path to "." (remote CWD)
-				// so no local path leaks into the SSH create.
-				h.newDialog.SetPathSuggestions(nil)
-				h.newDialog.SetRecentSessions(nil)
-				h.newDialog.SetDefaultTool(session.GetDefaultTool())
-				h.newDialog.ShowInGroup("remotes/"+item.RemoteName, "remotes/"+item.RemoteName, ".", nil, "")
+				h.showRemoteNewSessionDialog(item)
 				return h, nil
 			}
 		}
@@ -7172,8 +7428,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.newDialog.SetRecentSessions(recents)
 		}
 
-		// Apply user's preferred default tool from config
-		h.newDialog.SetDefaultTool(session.GetDefaultTool())
+		// Apply the preselected tool: explicit [default_tool] config wins,
+		// otherwise fall back to the last successfully-submitted tool remembered
+		// in the profile StateDB (UX top-3 #2). First run (neither set) leaves
+		// shell selected, unchanged.
+		h.newDialog.SetDefaultTool(resolveInitialTool(session.GetDefaultTool(), rememberedTool(h.stateDB())))
 
 		// Auto-select parent group from current cursor position
 		groupPath := session.DefaultGroupPath
@@ -7230,11 +7489,16 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			} else if item.Type == session.ItemTypeGroup && item.Path == session.DefaultGroupPath {
-				// Protected default group: report instead of silently doing nothing.
-				// Checked before the scoped-root case so the message stays specific
-				// even when the TUI is scoped to the default group
-				// (groupScope == DefaultGroupPath), where both conditions would match.
-				h.setError(fmt.Errorf("cannot delete the default %q group", session.DefaultGroupName))
+				// Protected default group: surface the block in the same centered modal
+				// used for the delete confirmation, so it can't be clamped off the bottom
+				// of the viewport like a transient error banner. Checked before the
+				// scoped-root case so the message stays specific even when the TUI is
+				// scoped to the default group (groupScope == DefaultGroupPath), where both
+				// conditions would match.
+				h.confirmDialog.ShowNotice(
+					"⚠  Can't Delete Group",
+					fmt.Sprintf("%q is the default\ngroup and can't be deleted.\n\nSessions always need a home.", session.DefaultGroupName),
+				)
 			} else if item.Type == session.ItemTypeGroup && item.Path != h.groupScope {
 				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
 			} else if item.Type == session.ItemTypeGroup && item.Path == h.groupScope {
@@ -7251,6 +7515,27 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowCloseSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed())
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowCloseRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+			}
+		}
+		return h, nil
+
+	case "A":
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil && !item.Session.IsArchived() {
+				h.confirmDialog.ShowArchiveSession(item.Session.ID, item.Session.Title)
+			}
+		}
+		return h, nil
+
+	case "shift+u":
+		if h.statusFilter != FilterModeArchived {
+			return h, nil
+		}
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.IsArchived() {
+				h.confirmDialog.ShowUnarchiveSession(item.Session.ID, item.Session.Title)
 			}
 		}
 		return h, nil
@@ -7322,7 +7607,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case defaultHotkeyBindings[hotkeyQuickApprove]:
-		// Quick approve: send "1" + Enter to the highlighted Claude session
+		// Quick approve: send "1" + Enter to the highlighted Claude session/window
 		// without attaching. Gated to Claude-compatible tools so a stray press
 		// on a vim/shell session cannot dump a "1" into the buffer. No status
 		// guard - Bash-tool permission prompts in Claude Code don't transition
@@ -7331,10 +7616,20 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// CLI, which has no status guard either.
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeSession && item.Session != nil &&
-				session.IsClaudeCompatible(item.Session.Tool) {
-				if tmuxSess := item.Session.GetTmuxSession(); tmuxSess != nil {
-					_ = tmuxSess.SendKeysAndEnter("1")
+			switch item.Type {
+			case session.ItemTypeWindow:
+				// On a window sub-row, approve the window the cursor is on. Gate
+				// on that window's detected tool (WindowTool) rather than the
+				// session's stored Tool — a session created as "shell" that later
+				// runs claude in an added window keeps Tool="shell", so the
+				// session-level gate would wrongly reject it. Target the window by
+				// index so a prompt in a non-active window is reachable. (#1369)
+				if session.IsClaudeCompatible(item.WindowTool) {
+					h.quickApprove(h.getInstanceByID(item.WindowSessionID), item.WindowIndex)
+				}
+			case session.ItemTypeSession:
+				if item.Session != nil && session.IsClaudeCompatible(item.Session.Tool) {
+					h.quickApprove(item.Session, -1)
 				}
 			}
 		}
@@ -7660,6 +7955,15 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.rebuildFlatItems()
 		return h, nil
+
+	case FilterKeyArchived, "shift+6":
+		if h.statusFilter == FilterModeArchived {
+			h.statusFilter = ""
+		} else {
+			h.statusFilter = FilterModeArchived
+		}
+		h.rebuildFlatItems()
+		return h, nil
 	}
 
 	return h, nil
@@ -7705,6 +8009,15 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.confirmDialog.Hide()
 			return h, nil
 		case "n", "N", "esc":
+			h.confirmDialog.Hide()
+			return h, nil
+		}
+		return h, nil
+
+	case ConfirmNotice:
+		// Acknowledge-only: any of the usual dismiss keys closes it.
+		switch msg.String() {
+		case "enter", "esc", "o", "O", "y", "Y", "n", "N", " ":
 			h.confirmDialog.Hide()
 			return h, nil
 		}
@@ -7758,6 +8071,18 @@ func (h *Home) confirmAction() tea.Cmd {
 		if inst := h.getInstanceByID(sessionID); inst != nil {
 			h.confirmDialog.Hide()
 			return h.closeSession(inst)
+		}
+	case ConfirmArchiveSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		if inst := h.getInstanceByID(sessionID); inst != nil {
+			h.confirmDialog.Hide()
+			return h.archiveSession(inst)
+		}
+	case ConfirmUnarchiveSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		if inst := h.getInstanceByID(sessionID); inst != nil {
+			h.confirmDialog.Hide()
+			return h.unarchiveSession(inst)
 		}
 	case ConfirmDeleteGroup:
 		groupPath := h.confirmDialog.GetTargetID()
@@ -10265,6 +10590,15 @@ type sessionClosedMsg struct {
 	killErr   error
 }
 
+type sessionArchivedMsg struct {
+	sessionID string
+	killErr   error
+}
+
+type sessionUnarchivedMsg struct {
+	sessionID string
+}
+
 // sessionRestoredMsg signals that an undo-delete restore completed
 type sessionRestoredMsg struct {
 	instance *session.Instance
@@ -10322,6 +10656,27 @@ func (h *Home) closeSession(inst *session.Instance) tea.Cmd {
 	return func() tea.Msg {
 		killErr := inst.Kill()
 		return sessionClosedMsg{sessionID: id, killErr: killErr}
+	}
+}
+
+// archiveSession stops a session and marks it archived.
+func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
+	id := inst.ID
+	return func() tea.Msg {
+		if killErr := inst.Kill(); killErr != nil {
+			return sessionArchivedMsg{sessionID: id, killErr: killErr}
+		}
+		inst.ArchivedAt = time.Now().UTC()
+		return sessionArchivedMsg{sessionID: id}
+	}
+}
+
+// unarchiveSession clears the archive flag without restarting tmux.
+func (h *Home) unarchiveSession(inst *session.Instance) tea.Cmd {
+	id := inst.ID
+	return func() tea.Msg {
+		inst.ArchivedAt = time.Time{}
+		return sessionUnarchivedMsg{sessionID: id}
 	}
 }
 
@@ -10455,6 +10810,10 @@ type remoteSessionRestartedMsg struct {
 	sessionID  string
 	title      string
 	err        error
+}
+
+type remoteSessionCreatedMsg struct {
+	err error
 }
 
 // deleteRemoteSession deletes a remote session and refreshes the remote list.
@@ -10702,14 +11061,57 @@ func (a attachCmd) SetStderr(w io.Writer) {}
 // createRemoteSession creates a new session on a remote and auto-attaches to it.
 // Used by quick-create (N): auto-generated name, remote defaults (shell).
 func (h *Home) createRemoteSession(remoteName string) tea.Cmd {
-	return h.createRemoteSessionWithOptions(remoteName, "", "", "")
+	return h.createRemoteSessionWithOptions(remoteName, "", "", "", "")
 }
 
+// remoteCreateAndAttachCmd creates a session on the remote, then attaches to it.
+type remoteCreateAndAttachCmd struct {
+	runner    *session.SSHRunner
+	tool      string
+	title     string
+	path      string
+	group     string
+	createCtx context.Context
+}
+
+type remoteAttachFailedError struct {
+	err error
+}
+
+func (e remoteAttachFailedError) Error() string {
+	return e.err.Error()
+}
+
+func (e remoteAttachFailedError) Unwrap() error {
+	return e.err
+}
+
+func (r remoteCreateAndAttachCmd) Run() error {
+	baseCtx := r.createCtx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 20*time.Second)
+	defer cancel()
+	sessionID, err := r.runner.CreateSessionWithOptions(ctx, r.tool, r.title, r.path, r.group)
+	if err != nil {
+		return err
+	}
+	if err := r.runner.Attach(sessionID); err != nil {
+		return remoteAttachFailedError{err: err}
+	}
+	return nil
+}
+
+func (r remoteCreateAndAttachCmd) SetStdin(reader io.Reader)  {}
+func (r remoteCreateAndAttachCmd) SetStdout(writer io.Writer) {}
+func (r remoteCreateAndAttachCmd) SetStderr(writer io.Writer) {}
+
 // createRemoteSessionWithOptions creates a new session on a remote with an
-// explicit tool/title/path from the new-session dialog (#1353), then
+// explicit tool/title/path/group from the new-session dialog (#1353), then
 // auto-attaches to it. Empty values fall back to remote defaults (shell,
 // auto-generated name, remote CWD).
-func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path string) tea.Cmd {
+func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path, group string) tea.Cmd {
 	config, err := session.LoadUserConfig()
 	if err != nil || config == nil || config.Remotes == nil {
 		return func() tea.Msg {
@@ -10724,37 +11126,18 @@ func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path stri
 	}
 	runner := session.NewSSHRunner(remoteName, rc)
 	h.isAttaching.Store(true)
-	return tea.Exec(remoteCreateAndAttachCmd{runner: runner, tool: tool, title: title, path: path}, func(err error) tea.Msg {
+	return tea.Exec(remoteCreateAndAttachCmd{runner: runner, tool: tool, title: title, path: path, group: group, createCtx: h.ctx}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
 		if err != nil {
+			var attachErr remoteAttachFailedError
+			if errors.As(err, &attachErr) {
+				return remoteSessionCreatedMsg{err: fmt.Errorf("failed to attach to remote session after creating it: %w", attachErr)}
+			}
 			return sessionCreatedMsg{err: fmt.Errorf("failed to create remote session: %w", err)}
 		}
-		return statusUpdateMsg{}
+		return remoteSessionCreatedMsg{}
 	})
 }
-
-// remoteCreateAndAttachCmd creates a session on the remote, then attaches to it.
-// tool/title/path are optional overrides from the new-session dialog (#1353);
-// empty values use remote defaults.
-type remoteCreateAndAttachCmd struct {
-	runner *session.SSHRunner
-	tool   string
-	title  string
-	path   string
-}
-
-func (r remoteCreateAndAttachCmd) Run() error {
-	ctx := context.Background()
-	sessionID, err := r.runner.CreateSessionWithOptions(ctx, r.tool, r.title, r.path)
-	if err != nil {
-		return err
-	}
-	return r.runner.Attach(sessionID)
-}
-
-func (r remoteCreateAndAttachCmd) SetStdin(reader io.Reader)  {}
-func (r remoteCreateAndAttachCmd) SetStdout(writer io.Writer) {}
-func (r remoteCreateAndAttachCmd) SetStderr(writer io.Writer) {}
 
 // attachWindowCmd implements tea.ExecCommand for attaching to a specific tmux window
 type attachWindowCmd struct {
@@ -13523,7 +13906,13 @@ func (h *Home) renderSessionItem(
 		}
 	}
 
-	title := titleStyle.Render(inst.Title)
+	// Pin marker (pin-sessions): a 📌 prefix flags any pinned row. Position in
+	// the list conveys top vs bottom; the emoji conveys "this is pinned".
+	displayTitle := inst.Title
+	if inst.Pin != session.PinNone {
+		displayTitle = "📌 " + displayTitle
+	}
+	title := titleStyle.Render(displayTitle)
 	tool := toolStyle.Render(" " + instTool)
 
 	// YOLO badge for Gemini/Codex sessions with YOLO mode enabled
@@ -14153,6 +14542,50 @@ func (h *Home) renderMcpLoadingState(inst *session.Instance, width int, startTim
 }
 
 // renderForkingState renders the forking animation when session is being forked
+func (h *Home) renderSetupRunningState(inst *session.Instance, width int, startTime time.Time) string {
+	var b strings.Builder
+	centerStyle := lipgloss.NewStyle().
+		Width(width - 4).
+		Align(lipgloss.Center)
+
+	spinnerFrames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+	spinner := spinnerFrames[h.animationFrame]
+
+	spinnerStyle := lipgloss.NewStyle().
+		Foreground(ColorGreen).
+		Bold(true)
+	spinnerLine := spinnerStyle.Render(spinner + "  " + spinner + "  " + spinner)
+	b.WriteString(centerStyle.Render(spinnerLine))
+	b.WriteString("\n\n")
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(ColorGreen).
+		Bold(true)
+	b.WriteString(centerStyle.Render(titleStyle.Render("Running Worktree Setup")))
+	b.WriteString("\n\n")
+
+	descStyle := lipgloss.NewStyle().
+		Foreground(ColorText).
+		Italic(true)
+	b.WriteString(centerStyle.Render(descStyle.Render("Executing .agent-deck/worktree-setup.sh...")))
+	b.WriteString("\n\n")
+
+	dotsCount := (h.animationFrame % 4) + 1
+	dots := strings.Repeat("●", dotsCount) + strings.Repeat("○", 4-dotsCount)
+	dotsStyle := lipgloss.NewStyle().
+		Foreground(ColorGreen)
+	b.WriteString(centerStyle.Render(dotsStyle.Render(dots)))
+	b.WriteString("\n\n")
+
+	elapsed := time.Since(startTime).Round(time.Second)
+	timeStyle := lipgloss.NewStyle().
+		Foreground(ColorYellow).
+		Italic(true)
+	b.WriteString(centerStyle.Render(timeStyle.Render(fmt.Sprintf("Running... %s", elapsed))))
+
+	return b.String()
+}
+
 func (h *Home) renderForkingState(inst *session.Instance, width int, startTime time.Time) string {
 	var b strings.Builder
 
@@ -14484,6 +14917,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		b.WriteString(wtLabelStyle.Render("Status:  "))
 		b.WriteString(dirtyStyle.Render(dirtyLabel))
 		b.WriteString("\n")
+
+		// Setup hint
+		if setupKey := h.actionKey(hotkeyWorktreeSetup); setupKey != "" {
+			b.WriteString(wtHintStyle.Render("Setup:   "))
+			b.WriteString(wtKeyStyle.Render(setupKey))
+			b.WriteString(wtHintStyle.Render(" re-run setup script"))
+			b.WriteString("\n")
+		}
 
 		// Finish hint
 		if finishKey := h.actionKey(hotkeyWorktreeFinish); finishKey != "" {
@@ -15224,8 +15665,12 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	preview, hasCached := h.previewCache[pvKey]
 	h.previewCacheMu.RUnlock()
 
-	// Show forking animation when fork is in progress (highest priority)
-	if showForkingAnimation {
+	// Show worktree setup animation when setup script is running
+	setupTime, isSetupRunning := h.setupRunningSessions[selected.ID]
+	if isSetupRunning {
+		b.WriteString("\n")
+		b.WriteString(h.renderSetupRunningState(selected, width, setupTime))
+	} else if showForkingAnimation {
 		b.WriteString("\n")
 		b.WriteString(h.renderForkingState(selected, width, forkTime))
 	} else if showMcpLoadingAnimation {
@@ -16066,6 +16511,31 @@ func (h *Home) handleWorktreeFinishDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 	return h, nil
 }
 
+// runWorktreeSetup re-runs the repo's worktree setup script for an existing
+// worktree session, reporting completion via worktreeSetupResultMsg.
+func (h *Home) runWorktreeSetup(inst *session.Instance) tea.Cmd {
+	id := inst.ID
+	repoRoot := inst.WorktreeRepoRoot
+	wtPath := inst.WorktreePath
+	title := inst.Title
+	return func() tea.Msg {
+		scriptPath, scriptMode := git.FindWorktreeSetupScript(repoRoot)
+		if scriptPath == "" {
+			return worktreeSetupResultMsg{
+				sessionID:    id,
+				sessionTitle: title,
+				err:          fmt.Errorf("no setup script found at .agent-deck/worktree-setup.sh"),
+			}
+		}
+		var buf bytes.Buffer
+		err := git.RunWorktreeSetupScript(scriptPath, scriptMode, repoRoot, wtPath, &buf, &buf, session.GetWorktreeSettings().SetupTimeout())
+		if err != nil {
+			return worktreeSetupResultMsg{sessionID: id, sessionTitle: title, err: err}
+		}
+		return worktreeSetupResultMsg{sessionID: id, sessionTitle: title}
+	}
+}
+
 // finishWorktree performs the worktree finish operation asynchronously:
 // merge branch, remove worktree, delete branch, kill session, remove from storage
 func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, branchName, repoRoot, worktreePath string, mergeEnabled bool, targetBranch string, keepBranch bool) tea.Cmd {
@@ -16273,6 +16743,57 @@ func renderBar(percent float64, width int) string {
 	return filledStyle.Render(strings.Repeat("█", filled)) + emptyStyle.Render(strings.Repeat("░", empty))
 }
 
+func (h *Home) hasArchivedSessions() bool {
+	if h == nil || h.groupTree == nil {
+		return false
+	}
+	for _, group := range h.groupTree.GroupList {
+		if group == nil {
+			continue
+		}
+		for _, sess := range group.Sessions {
+			if sess != nil && sess.IsArchived() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// archiveGroupsWithMatches returns group paths that contain at least one
+// session matching the archive partition (active vs archived-only view).
+func (h *Home) archiveGroupsWithMatches(viewArchived bool) map[string]bool {
+	groupsWithMatches := make(map[string]bool)
+	if h == nil || h.groupTree == nil {
+		return groupsWithMatches
+	}
+	for _, group := range h.groupTree.GroupList {
+		if group == nil {
+			continue
+		}
+		for _, sess := range group.Sessions {
+			if sess == nil {
+				continue
+			}
+			if viewArchived != sess.IsArchived() {
+				continue
+			}
+			markGroupPathAndAncestors(groupsWithMatches, group.Path)
+		}
+	}
+	return groupsWithMatches
+}
+
+func markGroupPathAndAncestors(groupsWithMatches map[string]bool, groupPath string) {
+	if groupsWithMatches == nil || groupPath == "" {
+		return
+	}
+	parts := strings.Split(groupPath, "/")
+	for i := range parts {
+		groupsWithMatches[strings.Join(parts[:i+1], "/")] = true
+	}
+}
+
 // matchesStatusFilter reports whether status passes the current filter.
 // FilterModeActive consults [display].active_filter_excludes; concrete
 // filters require exact match.
@@ -16306,5 +16827,7 @@ func (h *Home) renderFilterBarHint() string {
 		mark("0", h.statusFilter == "") +
 		dim.Render(" all • ") +
 		mark(FilterKeyActive, h.statusFilter == FilterModeActive) +
-		dim.Render(" open")
+		dim.Render(" open • ") +
+		mark(FilterKeyArchived, h.statusFilter == FilterModeArchived) +
+		dim.Render(" archived")
 }
