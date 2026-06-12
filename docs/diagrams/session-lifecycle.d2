@@ -1,0 +1,90 @@
+# Session lifecycle — create → run → stop, with archive (v1.9.55), fork, and delete.
+# Regenerate: d2 session-lifecycle.d2 session-lifecycle.svg
+
+direction: right
+
+classes: {
+  state: {
+    style: {
+      fill: "#e7edff"
+      stroke: "#7aa2f7"
+      stroke-width: 2
+      border-radius: 10
+      font-color: "#1a1b26"
+    }
+  }
+  rest: {
+    style: {
+      fill: "#f2f0fa"
+      stroke: "#bb9af7"
+      stroke-width: 2
+      border-radius: 10
+      font-color: "#1a1b26"
+    }
+  }
+  gone: {
+    style: {
+      fill: "#fdeaee"
+      stroke: "#f7768e"
+      border-radius: 10
+      font-color: "#1a1b26"
+    }
+  }
+  side: {
+    style: {
+      fill: "#eaf6e6"
+      stroke: "#9ece6a"
+      border-radius: 10
+      font-color: "#1a1b26"
+    }
+  }
+}
+
+created: "Created\nn / N / agent-deck add / launch" { class: state }
+running: "Running\n● working   ◐ waiting   ○ idle   ✕ error" { class: state }
+stopped: "Stopped\ntmux gone, record + transcript kept" { class: rest }
+archived: "Archived  (v1.9.55)\nhidden from default list,\neverything preserved (archived_at)" { class: rest }
+deleted: "Deleted\nremoved from registry" { class: gone }
+fork: "Forked sibling\nnew worktree + branch,\ncarries uncommitted state" { class: side }
+
+created -> running: "tmux spawns,\ntool boots" {
+  style.stroke: "#7aa2f7"
+}
+running -> stopped: "D close / session stop" {
+  style.stroke: "#bb9af7"
+}
+stopped -> running: "R restart\n(Claude resumes via --resume)" {
+  style.stroke: "#7aa2f7"
+}
+running -> fork: "f quick fork / F dialog" {
+  style.stroke: "#9ece6a"
+}
+running -> archived: "A  (stops tmux first)" {
+  style.stroke: "#bb9af7"
+}
+stopped -> archived: "A" {
+  style.stroke: "#bb9af7"
+}
+archived -> stopped: "Shift+U restore\n(does NOT auto-start)" {
+  style.stroke: "#7aa2f7"
+}
+stopped -> deleted: "d" {
+  style.stroke: "#f7768e"
+}
+archived -> deleted: "d" {
+  style.stroke: "#f7768e"
+}
+deleted -> stopped: "Ctrl+Z undo\n(30 s window)" {
+  style: {
+    stroke: "#f7768e"
+    stroke-dash: 4
+  }
+}
+
+legend: "View archived: ^ filter (TUI) / Archived tab (web UI)" {
+  shape: text
+  style: {
+    font-size: 14
+    font-color: "#565a6e"
+  }
+}

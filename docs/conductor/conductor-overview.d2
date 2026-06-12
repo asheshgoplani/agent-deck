@@ -1,0 +1,128 @@
+# Conductor overview — what a conductor is made of and how messages flow.
+# Regenerate: d2 conductor-overview.d2 conductor-overview.svg
+
+direction: right
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+classes: {
+  brain: {
+    style: {
+      fill: "#e7edff"
+      stroke: "#7aa2f7"
+      stroke-width: 2
+      border-radius: 8
+      font-color: "#1a1b26"
+    }
+  }
+  file: {
+    shape: page
+    style: {
+      fill: "#fffdf5"
+      stroke: "#e0af68"
+      font-color: "#1a1b26"
+      font-size: 14
+    }
+  }
+  infra: {
+    style: {
+      fill: "#f2f0fa"
+      stroke: "#bb9af7"
+      border-radius: 8
+      font-color: "#1a1b26"
+    }
+  }
+  worker: {
+    style: {
+      fill: "#eaf6e6"
+      stroke: "#9ece6a"
+      border-radius: 8
+      font-color: "#1a1b26"
+    }
+  }
+}
+
+you: "You" {
+  shape: person
+  style.font-color: "#1a1b26"
+}
+
+bot: "Telegram bot\n(one per conductor)" { class: infra }
+
+tmux: "tmux: conductor-<name>" {
+  style: {
+    fill: "#fafbff"
+    stroke: "#c0caf5"
+    border-radius: 12
+    font-color: "#565a6e"
+  }
+  claude: "Long-lived claude process\nreads CLAUDE.md on every start" { class: brain }
+}
+
+dir: "conductor/<name>/  (durable state)" {
+  style: {
+    fill: "transparent"
+    stroke: "#e0af68"
+    stroke-dash: 3
+    border-radius: 12
+    font-color: "#565a6e"
+  }
+  claude-md: "CLAUDE.md\nstartup checklist" { class: file }
+  policy: "POLICY.md\nauto-respond vs escalate" { class: file }
+  learnings: "LEARNINGS.md\ninstitutional memory" { class: file }
+  state: "state.json\nworking memory" { class: file }
+  tasklog: "task-log.md\naudit trail" { class: file }
+}
+
+inbox: "Durable inbox\ninboxes/<id>.jsonl" { class: infra }
+heartbeat: "Heartbeat\nevery 15 min" { class: infra }
+
+children: "Child sessions" {
+  style: {
+    fill: "transparent"
+    stroke: "#9ece6a"
+    stroke-dash: 3
+    border-radius: 12
+    font-color: "#565a6e"
+  }
+  c1: "worker A" { class: worker }
+  c2: "worker B" { class: worker }
+}
+
+you <-> bot: "chat" {
+  style: {
+    stroke: "#7aa2f7"
+    stroke-width: 2
+  }
+}
+bot <-> tmux.claude: "bridge.py routes\nboth directions" {
+  style.stroke: "#7aa2f7"
+}
+tmux.claude -> dir: "reads on start,\nwrites as it works" {
+  style.stroke: "#e0af68"
+}
+tmux.claude -> children: "spawns + monitors\n(launch -parent)" {
+  style.stroke: "#9ece6a"
+}
+children -> inbox: "completions\n(pull, not push)" {
+  style.stroke: "#9ece6a"
+}
+inbox -> tmux.claude: "drained at turn boundary\nor on heartbeat" {
+  style.stroke: "#bb9af7"
+}
+heartbeat -> tmux.claude: "[HEARTBEAT]" {
+  style: {
+    stroke: "#bb9af7"
+    stroke-dash: 3
+  }
+}
+tmux.claude -> you: "NEED: <decision>\n(escalation)" {
+  style: {
+    stroke: "#f7768e"
+    stroke-dash: 3
+  }
+}
