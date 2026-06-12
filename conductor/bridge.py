@@ -317,6 +317,20 @@ def get_session_output(session: str, profile: str | None = None) -> str:
 ReplyCallback = Callable[[str], Coroutine[Any, Any, None]]
 
 
+def _is_still_running_timeout(stderr: str) -> bool:
+    """True when a blocking `--wait` failed *only* because the turn outran the
+    timeout while the agent keeps working — the message WAS delivered.
+
+    The CLI reports this with stderr like:
+        "timeout waiting for completion: agent still running after 5m0s"
+
+    Distinguishing this benign case from a genuine send failure lets callers
+    deliver the reply asynchronously instead of reporting a false failure.
+    """
+    s = stderr.lower()
+    return "timeout waiting for completion" in s or "still running" in s
+
+
 def send_to_conductor(
     session: str,
     message: str,
@@ -325,10 +339,14 @@ def send_to_conductor(
     response_timeout: int = RESPONSE_TIMEOUT,
     reply_callback: ReplyCallback | None = None,
     force_queue: bool = False,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, bool]:
     """Send a message to the conductor session.
 
-    Returns (success, response_text). When wait_for_reply=False, response_text is "".
+    Returns (success, response_text, still_running). When wait_for_reply=False,
+    response_text is "". still_running is True only on the wait path when the
+    blocking `--wait` timed out because the agent is still working (the message
+    was delivered and the reply should be awaited asynchronously); it is False
+    in every other case.
 
     When wait_for_reply=False and the conductor is busy (running/active/starting),
     the message is queued in-memory and delivered automatically once the conductor
@@ -344,7 +362,7 @@ def send_to_conductor(
         if force_queue:
             log.info("Conductor %s: force-queueing message", session)
             _enqueue_message(session, message, profile, reply_callback)
-            return True, ""
+            return True, "", False
 
         # For non-blocking sends (user messages), check if conductor is busy
         # and queue instead of dropping.
@@ -354,7 +372,7 @@ def send_to_conductor(
                 "Conductor %s is busy (%s), queueing message", session, status,
             )
             _enqueue_message(session, message, profile, reply_callback)
-            return True, ""  # queued, not failed
+            return True, "", False  # queued, not failed
 
         result = run_cli(
             "session", "send", session, message, "--no-wait",
@@ -370,13 +388,13 @@ def send_to_conductor(
                     session,
                 )
                 _enqueue_message(session, message, profile, reply_callback)
-                return True, ""
+                return True, "", False
             log.error("Failed to send to conductor: %s", stderr)
-            return False, ""
-        return True, ""
+            return False, "", False
+        return True, "", False
 
-    # wait_for_reply=True: single-call flow used by heartbeats.
-    # Send + wait + capture raw response. Avoids extra polling round-trips.
+    # wait_for_reply=True: single-call flow used by heartbeats and the idle
+    # user-message path. Send + wait + capture raw response.
     result = run_cli(
         "session", "send", session, message,
         "--wait", "--timeout", f"{response_timeout}s", "-q",
@@ -384,11 +402,20 @@ def send_to_conductor(
         timeout=max(response_timeout + 30, 60),
     )
     if result.returncode != 0:
-        log.error(
-            "Failed to send to conductor: %s", result.stderr.strip()
-        )
-        return False, ""
-    return True, result.stdout.strip()
+        stderr = result.stderr.strip()
+        # The turn outran --timeout but the message was delivered and the agent
+        # is still working. Signal still_running so the caller can await the
+        # reply asynchronously rather than reporting a false failure.
+        if _is_still_running_timeout(stderr):
+            log.info(
+                "Conductor %s: --wait timed out but agent still running "
+                "(message delivered, reply pending): %s",
+                session, stderr,
+            )
+            return False, "", True
+        log.error("Failed to send to conductor: %s", stderr)
+        return False, "", False
+    return True, result.stdout.strip(), False
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +599,100 @@ async def _drain_queue() -> None:
         if not _message_queue:
             log.info("Queue drain task finished (queue empty)")
             return
+
+
+# ---------------------------------------------------------------------------
+# Pending reply watchers for in-flight turns
+# ---------------------------------------------------------------------------
+#
+# When the conductor is IDLE on arrival the handler delivers the message with a
+# blocking `session send --wait --timeout {RESPONSE_TIMEOUT}s`. If that single
+# turn outruns the timeout the message is already delivered and the agent keeps
+# working — only the synchronous reply is lost. send_to_conductor flags this
+# (still_running=True); the handler then registers a reply-only watcher here.
+#
+# Unlike _drain_queue this NEVER sends a message — the message is already
+# in-flight, so re-sending would double-process it. The watcher only polls
+# until the turn finishes and delivers the captured output via reply_callback.
+
+# Generous ceiling: the whole point is the turn already outran RESPONSE_TIMEOUT,
+# so wait well beyond it before giving up.
+PENDING_REPLY_MAX_WAIT = 3600  # seconds
+PENDING_REPLY_POLL_INTERVAL = 5  # seconds
+
+# Keeps watcher tasks referenced so the event loop doesn't GC them mid-flight.
+_pending_reply_tasks: set[asyncio.Task] = set()
+
+
+async def _watch_pending_reply(
+    session: str,
+    profile: str | None,
+    reply_callback: ReplyCallback,
+) -> None:
+    """Wait for an in-flight conductor turn to finish, then deliver its output.
+
+    Used when a blocking `--wait` send timed out because the agent is still
+    running (not a send failure). The message was already delivered, so this
+    does NOT re-send — it polls until the conductor leaves the busy state and
+    then fires reply_callback exactly once with the captured output.
+
+    Mirrors _drain_queue's polling/backoff but never sends a message. Caps the
+    total wait at PENDING_REPLY_MAX_WAIT and logs if it gives up.
+    """
+    loop = asyncio.get_running_loop()
+    max_polls = max(1, PENDING_REPLY_MAX_WAIT // PENDING_REPLY_POLL_INTERVAL)
+    for _ in range(max_polls):
+        status = await loop.run_in_executor(
+            None, functools.partial(get_session_status, session, profile=profile),
+        )
+        # Still working, or a transient CLI failure — keep waiting. This also
+        # naturally handles the race where the conductor finishes between the
+        # timeout and this first poll: a non-busy status falls straight through
+        # to fetching the output below.
+        if status in ("running", "active", "starting", "unknown"):
+            await asyncio.sleep(PENDING_REPLY_POLL_INTERVAL)
+            continue
+        # The turn is no longer running (idle/waiting/error/...) — fetch whatever
+        # output is available and deliver it once.
+        output = await loop.run_in_executor(
+            None, functools.partial(get_session_output, session, profile=profile),
+        )
+        text = output.strip() or "[No output from conductor.]"
+        await _fire_callback(reply_callback, text)
+        log.info(
+            "Pending reply for %s delivered after in-flight turn finished", session,
+        )
+        return
+
+    log.warning(
+        "Pending reply watcher for %s gave up after %ds — turn still running",
+        session, PENDING_REPLY_MAX_WAIT,
+    )
+    await _fire_callback(
+        reply_callback,
+        "[Conductor is still working after a long time — reply not captured. "
+        "Check the session directly.]",
+    )
+
+
+def _register_pending_reply(
+    session: str,
+    profile: str | None,
+    reply_callback: ReplyCallback,
+) -> None:
+    """Schedule a reply-only watcher for an in-flight turn (no message re-send).
+
+    Safe to call from a running-loop context; skips with a warning if there is
+    no event loop (e.g. called from a bare sync context).
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        log.warning("No running event loop — cannot watch for pending reply on %s", session)
+        return
+    task = loop.create_task(_watch_pending_reply(session, profile, reply_callback))
+    _pending_reply_tasks.add(task)
+    task.add_done_callback(_pending_reply_tasks.discard)
 
 
 def get_status_summary(profile: str | None = None) -> dict:
@@ -1262,7 +1383,7 @@ def create_telegram_bot(config: dict):
                 for chunk in split_message(html):
                     await tg_bot.send_message(tg_chat_id, chunk, parse_mode="HTML")
 
-            ok, _ = send_to_conductor(
+            ok, _, _ = send_to_conductor(
                 session_title,
                 cleaned_msg,
                 profile=target_profile,
@@ -1282,7 +1403,8 @@ def create_telegram_bot(config: dict):
 
         # Conductor is free — send and wait for reply (non-blocking via executor)
         await message.answer(f"{profile_tag}\u23f3")  # typing indicator before blocking
-        ok, response = await loop.run_in_executor(
+        wait_started_at = time.monotonic()
+        ok, response, still_running = await loop.run_in_executor(
             None,
             functools.partial(
                 send_to_conductor,
@@ -1294,6 +1416,31 @@ def create_telegram_bot(config: dict):
             ),
         )
         if not ok:
+            if still_running:
+                # The message WAS delivered; the single turn just outran the
+                # blocking wait. Don't report a false failure and don't re-send
+                # (that would double-process) — watch for the reply async-ly.
+                tg_bot = message.bot
+                tg_chat_id = message.chat.id
+                profile_tag_captured = profile_tag
+
+                async def _tg_late_reply(response_text: str):
+                    elapsed = int(time.monotonic() - wait_started_at)
+                    waited = f"{elapsed // 60}m {elapsed % 60}s" if elapsed >= 60 else f"{elapsed}s"
+                    header = (
+                        f"{profile_tag_captured}Queued response (waited {waited}):\n"
+                        if profile_tag_captured
+                        else f"Queued response (waited {waited}):\n"
+                    )
+                    html = md_to_tg_html(f"{header}{response_text}")
+                    for chunk in split_message(html):
+                        await tg_bot.send_message(tg_chat_id, chunk, parse_mode="HTML")
+
+                _register_pending_reply(session_title, target_profile, _tg_late_reply)
+                await message.answer(
+                    f"{profile_tag}⏳ Still working — will reply here when done."
+                )
+                return
             await message.answer(
                 f"[Failed to send message to conductor [{target_profile}].]"
             )
@@ -1457,7 +1604,7 @@ def create_slack_app(config: dict):
                     text = f"{header}{chunk}" if i == 0 else chunk
                     await _safe_say(say, text=text, thread_ts=thread_ts)
 
-            ok, _ = send_to_conductor(
+            ok, _, _ = send_to_conductor(
                 session_title, cleaned_msg, profile=profile,
                 wait_for_reply=False, reply_callback=_slack_reply,
                 force_queue=True,
@@ -1477,7 +1624,8 @@ def create_slack_app(config: dict):
             return
 
         await _safe_say(say, text=f"{name_tag}\u23f3", thread_ts=thread_ts)  # before blocking
-        ok, response = await loop.run_in_executor(
+        wait_started_at = time.monotonic()
+        ok, response, still_running = await loop.run_in_executor(
             None,
             functools.partial(
                 send_to_conductor,
@@ -1486,6 +1634,32 @@ def create_slack_app(config: dict):
             ),
         )
         if not ok:
+            if still_running:
+                # The message WAS delivered; the single turn just outran the
+                # blocking wait. Don't report a false failure and don't re-send
+                # (that would double-process) \u2014 watch for the reply async-ly.
+                name_tag_captured = name_tag
+
+                async def _slack_late_reply(response_text: str):
+                    elapsed = int(time.monotonic() - wait_started_at)
+                    waited = f"{elapsed // 60}m {elapsed % 60}s" if elapsed >= 60 else f"{elapsed}s"
+                    header = (
+                        f"{name_tag_captured}Queued response (waited {waited}):\n"
+                        if name_tag_captured
+                        else f"Queued response (waited {waited}):\n"
+                    )
+                    chunks = split_message(response_text, max_len=SLACK_MAX_LENGTH)
+                    for i, chunk in enumerate(chunks):
+                        text = f"{header}{chunk}" if i == 0 else chunk
+                        await _safe_say(say, text=text, thread_ts=thread_ts)
+
+                _register_pending_reply(session_title, profile, _slack_late_reply)
+                await _safe_say(
+                    say,
+                    text=f"{name_tag}\u23f3 Still working \u2014 will reply here when done.",
+                    thread_ts=thread_ts,
+                )
+                return
             await _safe_say(
                 say,
                 text=f"[Failed to send message to conductor {target['name']}.]",
@@ -1854,7 +2028,7 @@ async def heartbeat_loop(config: dict, telegram_bot=None, slack_app=None, slack_
                 # Send heartbeat to conductor (wrapped in executor — blocks up to
                 # RESPONSE_TIMEOUT seconds and must not freeze the event loop)
                 loop = asyncio.get_running_loop()
-                ok, response = await loop.run_in_executor(
+                ok, response, _ = await loop.run_in_executor(
                     None,
                     functools.partial(
                         send_to_conductor,
