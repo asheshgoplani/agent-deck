@@ -305,6 +305,7 @@ func (h *HelpOverlay) View() string {
 				{reloadKey, "Reload from disk"},
 				{importKey, "Import tmux sessions"},
 				{"Ctrl+Q", "Detach from session"},
+				{"Ctrl+S", "Switch session (here or attached)"},
 				{quitKey, "Quit"},
 				{helpKey, "This help"},
 			},

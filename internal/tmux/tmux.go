@@ -116,7 +116,7 @@ func currentTmuxThemeStyle() tmuxThemeStyle {
 }
 
 func (s *Session) themedStatusRight(themeStyle tmuxThemeStyle) string {
-	return fmt.Sprintf("#[fg=%s]ctrl+q detach#[default] │ 📁 %s | %s ", themeStyle.hintColor, s.DisplayName, s.projectDisplayName())
+	return fmt.Sprintf("#[fg=%s]ctrl+q detach#[default] · #[fg=%s]ctrl+s switch#[default] │ 📁 %s | %s ", themeStyle.hintColor, themeStyle.hintColor, s.DisplayName, s.projectDisplayName())
 }
 
 func (s *Session) projectDisplayName() string {
@@ -2137,7 +2137,7 @@ func (s *Session) buildStatusBarArgs() []string {
 		{"status-style", themeStyle.statusStyle},
 		{"status-left-length", "120"},
 		{"status-right", rightStatus},
-		{"status-right-length", "80"},
+		{"status-right-length", "100"},
 	}
 
 	var args []string
