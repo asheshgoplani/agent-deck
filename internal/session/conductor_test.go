@@ -2397,8 +2397,8 @@ func TestConductorHeartbeatScript_GroupScoped(t *testing.T) {
 	}
 }
 
-// TestGetHeartbeatInterval_ZeroMeansDisabled verifies nil and non-positive
-// values mean disabled, and positive values are returned as configured.
+// TestGetHeartbeatInterval_ZeroMeansDisabled verifies nil and zero mean
+// disabled, negative means default (15), and positive values pass through.
 func TestGetHeartbeatInterval_ZeroMeansDisabled(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -2406,7 +2406,7 @@ func TestGetHeartbeatInterval_ZeroMeansDisabled(t *testing.T) {
 		expected int
 	}{
 		{"nil means disabled", nil, 0},
-		{"negative means disabled", intPtr(-1), 0},
+		{"negative means default", intPtr(-1), 15},
 		{"zero means disabled", intPtr(0), 0},
 		{"custom value", intPtr(30), 30},
 		{"explicit fifteen", intPtr(15), 15},

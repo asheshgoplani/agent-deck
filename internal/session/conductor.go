@@ -237,10 +237,15 @@ func GetConductorAgentSpec(agent string) (ConductorAgentSpec, error) {
 var conductorNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 // GetHeartbeatInterval returns the heartbeat interval in minutes.
-// nil or <= 0 = disabled, >0 = configured.
+// nil = disabled (field absent), 0 = disabled, negative = default (15),
+// positive = configured.
+// TODO(breaking): collapse negative→disabled once a major version allows it.
 func (c *ConductorSettings) GetHeartbeatInterval() int {
-	if c.HeartbeatInterval == nil || *c.HeartbeatInterval <= 0 {
+	if c.HeartbeatInterval == nil || *c.HeartbeatInterval == 0 {
 		return 0
+	}
+	if *c.HeartbeatInterval < 0 {
+		return 15
 	}
 	return *c.HeartbeatInterval
 }
