@@ -38,6 +38,14 @@ const doneScanTailLines = 25
 // path must live under ~/.claude (where Claude Code keeps transcripts). Both
 // the hook handler (payload-supplied path) and the daemon (path re-read from
 // a hook status file) gate on this before opening the file.
+//
+// Containment is fail-closed and boundary-aware. A raw HasPrefix against
+// ~/.claude wrongly accepts sibling directories (e.g. ~/.claude-spoof/x.jsonl,
+// whose string prefix matches but which lives outside the transcript root), so
+// the path must equal the root exactly OR begin with root + path separator. If
+// the home directory cannot be resolved we cannot establish the containment
+// root, so we REJECT rather than fall through (a missing root must never
+// disable containment for a payload-supplied path).
 func ValidateTranscriptPath(path string) (string, bool) {
 	if strings.TrimSpace(path) == "" {
 		return "", false
@@ -46,10 +54,13 @@ func ValidateTranscriptPath(path string) (string, bool) {
 	if strings.Contains(cleanPath, "..") {
 		return "", false
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		if !strings.HasPrefix(cleanPath, filepath.Join(home, ".claude")) {
-			return "", false
-		}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false
+	}
+	root := filepath.Join(home, ".claude")
+	if cleanPath != root && !strings.HasPrefix(cleanPath, root+string(os.PathSeparator)) {
+		return "", false
 	}
 	return cleanPath, true
 }

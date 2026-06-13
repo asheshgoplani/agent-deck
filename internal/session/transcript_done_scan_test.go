@@ -238,6 +238,35 @@ func TestValidateTranscriptPath(t *testing.T) {
 	if _, ok := ValidateTranscriptPath(filepath.Join(home, "elsewhere", "t.jsonl")); ok {
 		t.Errorf("path outside ~/.claude must be rejected")
 	}
+
+	// Boundary bypass: a SIBLING directory whose name has ~/.claude as a string
+	// prefix (e.g. ~/.claude-spoof) lives OUTSIDE the transcript root and must
+	// be rejected. A raw HasPrefix(cleanPath, "$HOME/.claude") wrongly accepts
+	// it — this case fails against that logic and passes with the boundary-aware
+	// check.
+	for _, sibling := range []string{".claude-spoof", ".claude-backup", ".claudex"} {
+		spoof := filepath.Join(home, sibling, "transcript.jsonl")
+		if _, ok := ValidateTranscriptPath(spoof); ok {
+			t.Errorf("sibling-prefix path %q must be rejected", spoof)
+		}
+	}
+
+	// The transcript root itself is contained.
+	root := filepath.Join(home, ".claude")
+	if cleaned, ok := ValidateTranscriptPath(root); !ok || cleaned != root {
+		t.Errorf("transcript root %q must be accepted, got ok=%v cleaned=%q", root, ok, cleaned)
+	}
+
+	// Fail-closed: when the home directory cannot be resolved we cannot
+	// establish the containment root, so even a ~/.claude-shaped path is
+	// rejected rather than falling through to acceptance. On Unix os.UserHomeDir
+	// resolves HOME; clearing it makes resolution fail.
+	t.Run("home_unresolvable_fails_closed", func(t *testing.T) {
+		t.Setenv("HOME", "")
+		if _, ok := ValidateTranscriptPath(filepath.Join(home, ".claude", "projects", "p", "t.jsonl")); ok {
+			t.Errorf("path must be rejected when home dir cannot be resolved")
+		}
+	})
 }
 
 func TestTranscriptTailLines_BoundsAndOrder(t *testing.T) {

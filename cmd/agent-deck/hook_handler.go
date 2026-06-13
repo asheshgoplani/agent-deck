@@ -571,20 +571,14 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 		return
 	}
 
-	// Validate transcript path to prevent path traversal.
-	// Claude stores transcripts under ~/.claude/projects/{hash}/{session}.jsonl
-	cleanPath := filepath.Clean(stop.TranscriptPath)
-	if strings.Contains(cleanPath, "..") {
-		logCostDebug("rejected transcript_path with path traversal: %s", stop.TranscriptPath)
+	// Validate transcript path through the shared fail-closed, boundary-aware
+	// containment guard (same check the done-sentinel reader uses) so a crafted
+	// payload can't coax this reader into opening an arbitrary file. Claude
+	// stores transcripts under ~/.claude/projects/{hash}/{session}.jsonl.
+	cleanPath, ok := session.ValidateTranscriptPath(stop.TranscriptPath)
+	if !ok {
+		logCostDebug("rejected transcript_path outside ~/.claude or traversal: %s", stop.TranscriptPath)
 		return
-	}
-	home, homeErr := os.UserHomeDir()
-	if homeErr == nil {
-		claudeDir := filepath.Join(home, ".claude")
-		if !strings.HasPrefix(cleanPath, claudeDir) {
-			logCostDebug("rejected transcript_path outside ~/.claude: %s", stop.TranscriptPath)
-			return
-		}
 	}
 	logCostDebug("transcript_path: %s", cleanPath)
 
