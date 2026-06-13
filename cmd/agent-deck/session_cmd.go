@@ -78,6 +78,8 @@ func handleSession(profile string, args []string) {
 		handleSessionSendKeys(profile, args[1:])
 	case "output":
 		handleSessionOutput(profile, args[1:])
+	case "children":
+		handleSessionChildren(profile, args[1:])
 	case "search":
 		handleSessionSearch(profile, args[1:])
 	case "help", "--help", "-h":
@@ -110,6 +112,7 @@ func printSessionHelp() {
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session")
 	fmt.Println("  output <id>             Get the last response from a session")
+	fmt.Println("  children [id]           List sub-sessions with status + last completion")
 	fmt.Println("  search <query>          Search message content across Claude sessions")
 	fmt.Println("  set-parent <id> <parent>  Link session as sub-session of parent")
 	fmt.Println("  unset-parent <id>       Remove sub-session link")
@@ -3506,6 +3509,92 @@ func matchInstanceDataByTmuxName(instances []*session.InstanceData, tmuxSessionN
 // TestIsValidSessionColor table in session_color_test.go keep working.
 func isValidSessionColor(v string) bool {
 	return session.IsValidSessionColor(v)
+}
+
+// childrenOf returns the direct sub-sessions of parentID, preserving the input
+// order. Pure helper so the filtering is unit-testable without a live registry.
+func childrenOf(parentID string, instances []*session.Instance) []*session.Instance {
+	var out []*session.Instance
+	for _, inst := range instances {
+		if inst != nil && inst.ParentSessionID == parentID {
+			out = append(out, inst)
+		}
+	}
+	return out
+}
+
+// handleSessionChildren implements `session children [id]` — a read-only fleet
+// view that lists a session's sub-sessions with live status and each child's
+// last asserted completion (from the non-destructive completion ledger). It
+// defaults to the current session and never clears the inbox, so a parent can
+// poll it from any chat without disturbing delivery.
+func handleSessionChildren(profile string, args []string) {
+	fs := flag.NewFlagSet("session children", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	quiet := fs.Bool("quiet", false, "Minimal output")
+	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck session children [id|title] [options]")
+		fmt.Println()
+		fmt.Println("List a session's sub-sessions with live status and last completion.")
+		fmt.Println("Defaults to the current session. Read-only; does not clear the inbox.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+	identifier := fs.Arg(0)
+	quietMode := *quiet || *quietShort
+	out := NewCLIOutput(*jsonOutput, quietMode)
+
+	_, instances, _, err := loadSessionData(profile)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeNotFound)
+		os.Exit(1)
+	}
+	parent, errMsg, errCode := ResolveSessionOrCurrent(identifier, instances)
+	if parent == nil {
+		out.Error(errMsg, errCode)
+		os.Exit(2)
+	}
+
+	kids := childrenOf(parent.ID, instances)
+	session.RefreshInstancesForCLIStatus(kids)
+
+	type childRow struct {
+		ID          string `json:"id"`
+		Title       string `json:"title"`
+		Status      string `json:"status"`
+		DoneStatus  string `json:"done_status,omitempty"`
+		DoneSummary string `json:"done_summary,omitempty"`
+		DoneAt      string `json:"done_at,omitempty"`
+	}
+	rows := make([]childRow, 0, len(kids))
+	var human strings.Builder
+	fmt.Fprintf(&human, "Children of %s (%s):\n", parent.Title, parent.ID)
+	for _, k := range kids {
+		_ = k.UpdateStatus()
+		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status)}
+		if e, ok := session.ReadLedgerEntry(k.ID); ok {
+			row.DoneStatus = e.Status
+			row.DoneSummary = e.Summary
+			if !e.FinishedAt.IsZero() {
+				row.DoneAt = e.FinishedAt.Format(time.RFC3339)
+			}
+		}
+		rows = append(rows, row)
+		done := row.DoneStatus
+		if done == "" {
+			done = "-"
+		}
+		fmt.Fprintf(&human, "  %s  %-20s  %-8s  done=%s  %s\n", k.ID, k.Title, row.Status, done, row.DoneSummary)
+	}
+	if len(kids) == 0 {
+		human.WriteString("  (no sub-sessions)\n")
+	}
+	out.Print(human.String(), map[string]interface{}{"parent": parent.ID, "children": rows})
 }
 
 // handleSessionSearch implements issue #483 — search across Claude session
