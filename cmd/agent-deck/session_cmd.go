@@ -3554,7 +3554,18 @@ func handleSessionChildren(profile string, args []string) {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
 	}
-	parent, errMsg, errCode := ResolveSessionOrCurrent(identifier, instances)
+	// Default to the caller's own session. resolveSelfSessionID prefers
+	// AGENTDECK_INSTANCE_ID (the authoritative full id) over the tmux session
+	// name, whose suffix is only a short hash and won't resolve.
+	if strings.TrimSpace(identifier) == "" {
+		self, err := resolveSelfSessionID()
+		if err != nil {
+			out.Error(err.Error(), ErrCodeNotFound)
+			os.Exit(2)
+		}
+		identifier = self
+	}
+	parent, errMsg, errCode := ResolveSession(identifier, instances)
 	if parent == nil {
 		out.Error(errMsg, errCode)
 		os.Exit(2)
