@@ -2099,3 +2099,20 @@ func TestDemoteSession_WithChildrenNoOp(t *testing.T) {
 		t.Errorf("p2's children should be unchanged; got %v, want %v", gotKids, wantKids)
 	}
 }
+
+func TestGroupSortMode_DefaultAndSet(t *testing.T) {
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+
+	SetGroupSortMode("creation") // normalize starting point
+	if got := currentGroupSortMode(); got != "creation" {
+		t.Fatalf("default/creation mode = %q, want creation", got)
+	}
+	SetGroupSortMode("actionable")
+	if got := currentGroupSortMode(); got != "actionable" {
+		t.Fatalf("after set actionable = %q, want actionable", got)
+	}
+	SetGroupSortMode("garbage")
+	if got := currentGroupSortMode(); got != "creation" {
+		t.Fatalf("garbage normalizes to %q, want creation", got)
+	}
+}

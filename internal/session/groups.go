@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"unicode"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
@@ -199,6 +200,31 @@ func SortInstancesByActionable(insts []*Instance) {
 		}
 		return insts[i].Order < insts[j].Order
 	})
+}
+
+// groupSortMode caches the active within-group sort mode ("creation" or
+// "actionable"). It is refreshed from LoadUserConfig on every config (re)load,
+// so SortInstancesByActionable can read it without a disk hit and without
+// threading a parameter through the tree constructors. Defaults to "creation"
+// until SetGroupSortMode is first called.
+var groupSortMode atomic.Value // holds string
+
+// SetGroupSortMode updates the cached within-group sort mode. Any value other
+// than "actionable" normalizes to "creation".
+func SetGroupSortMode(mode string) {
+	if mode != "actionable" {
+		mode = "creation"
+	}
+	groupSortMode.Store(mode)
+}
+
+// currentGroupSortMode returns the cached mode, defaulting to "creation" when
+// it has never been set.
+func currentGroupSortMode() string {
+	if v, ok := groupSortMode.Load().(string); ok && v != "" {
+		return v
+	}
+	return "creation"
 }
 
 // NewGroupTree creates a new group tree from instances
