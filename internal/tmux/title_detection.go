@@ -242,6 +242,32 @@ func AnalyzePaneTitle(title, _ string) TitleState {
 	return TitleStateUnknown
 }
 
+// CleanPaneTitle strips spinner/done-marker characters from a tmux pane title
+// and returns the task description. Returns "" for empty or generic tool titles
+// ("Claude Code", "Gemini CLI", "Codex CLI").
+//
+// This is the canonical implementation shared by internal/ui (TUI) and
+// internal/web (web server). Both packages import internal/tmux, so placing
+// the logic here avoids a circular dependency.
+func CleanPaneTitle(title string) string {
+	if title == "" {
+		return ""
+	}
+	// Strip known spinner/done-marker runes (·✳✽✶✻✢ and braille ⠋⠙⠹…).
+	cleaned := StripSpinnerRunes(title)
+	// Also strip any remaining Braille characters (U+2800-28FF) that Claude Code
+	// may use as spinner frames beyond the canonical set.
+	cleaned = strings.TrimLeftFunc(cleaned, func(r rune) bool {
+		return r >= 0x2800 && r <= 0x28FF
+	})
+	cleaned = strings.TrimSpace(cleaned)
+	switch cleaned {
+	case "", "Claude Code", "Gemini CLI", "Codex CLI":
+		return ""
+	}
+	return cleaned
+}
+
 // containsBrailleChar returns true if the string contains any Unicode Braille
 // character (U+2800 to U+28FF). Claude Code uses these as spinner frames
 // in the pane title while actively processing.

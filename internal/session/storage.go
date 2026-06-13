@@ -37,23 +37,25 @@ type StorageData struct {
 
 // InstanceData represents the serializable session data
 type InstanceData struct {
-	ID                 string    `json:"id"`
-	Title              string    `json:"title"`
-	ProjectPath        string    `json:"project_path"`
-	GroupPath          string    `json:"group_path"`
-	Order              int       `json:"order"`
-	ParentSessionID    string    `json:"parent_session_id,omitempty"`    // Links to parent session (sub-session support)
-	IsConductor        bool      `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
-	NoTransitionNotify bool      `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch
-	TitleLocked        bool      `json:"title_locked,omitempty"`         // #697: block Claude session-name sync into Title
-	Command            string    `json:"command"`
-	Wrapper            string    `json:"wrapper,omitempty"`
-	Tool               string    `json:"tool"`
-	Status             Status    `json:"status"`
-	CreatedAt          time.Time `json:"created_at"`
-	LastAccessedAt     time.Time `json:"last_accessed_at,omitempty"`
-	ArchivedAt         time.Time `json:"archived_at,omitempty"`
-	TmuxSession        string    `json:"tmux_session"`
+	ID                  string    `json:"id"`
+	Title               string    `json:"title"`
+	ProjectPath         string    `json:"project_path"`
+	GroupPath           string    `json:"group_path"`
+	Order               int       `json:"order"`
+	ParentSessionID     string    `json:"parent_session_id,omitempty"`     // Links to parent session (sub-session support)
+	IsConductor         bool      `json:"is_conductor,omitempty"`          // True if this session is a conductor orchestrator
+	NoTransitionNotify  bool      `json:"no_transition_notify,omitempty"`  // Suppress transition event dispatch
+	TitleLocked         bool      `json:"title_locked,omitempty"`          // #697: block Claude session-name sync into Title
+	AutoName            bool      `json:"auto_name,omitempty"`             // marks Title as a machine-generated quick-session handle
+	AutoNameDescription string    `json:"auto_name_description,omitempty"` // last captured Claude task description for an AutoName session
+	Command             string    `json:"command"`
+	Wrapper             string    `json:"wrapper,omitempty"`
+	Tool                string    `json:"tool"`
+	Status              Status    `json:"status"`
+	CreatedAt           time.Time `json:"created_at"`
+	LastAccessedAt      time.Time `json:"last_accessed_at,omitempty"`
+	ArchivedAt          time.Time `json:"archived_at,omitempty"`
+	TmuxSession         string    `json:"tmux_session"`
 	// TmuxSocketName is the tmux -L selector captured at Instance creation
 	// (issue #687, v1.7.50). Empty for pre-v1.7.50 rows — those keep hitting
 	// the default server after upgrade.
@@ -362,6 +364,26 @@ func (s *Storage) DeleteInstance(id string) error {
 
 	if err := s.db.DeleteInstance(id); err != nil {
 		return fmt.Errorf("failed to delete instance %s: %w", id, err)
+	}
+
+	_ = s.db.Touch()
+	return nil
+}
+
+// WriteAutoNameDescription persists a single auto-named session's last captured
+// Claude task description via a targeted column update — no whole-row rewrite,
+// no full-table reconcile (see statedb.WriteAutoNameDescription). This lets the
+// archive path snapshot the display name without a full save.
+func (s *Storage) WriteAutoNameDescription(id, description string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return fmt.Errorf("storage database not initialized")
+	}
+
+	if err := s.db.WriteAutoNameDescription(id, description); err != nil {
+		return fmt.Errorf("failed to persist auto-name description for %s: %w", id, err)
 	}
 
 	_ = s.db.Touch()
@@ -699,30 +721,32 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	toolData = WriteIdleTimeoutSecsToToolData(toolData, inst.IdleTimeoutSecs)
 
 	return &statedb.InstanceRow{
-		ID:                 inst.ID,
-		Title:              inst.Title,
-		ProjectPath:        inst.ProjectPath,
-		GroupPath:          inst.GroupPath,
-		Order:              inst.Order,
-		Command:            inst.Command,
-		Wrapper:            inst.Wrapper,
-		Tool:               inst.Tool,
-		Status:             string(inst.Status),
-		TmuxSession:        tmuxName,
-		TmuxSocketName:     inst.TmuxSocketName,
-		CreatedAt:          inst.CreatedAt,
-		LastAccessed:       inst.LastAccessedAt,
-		ParentSessionID:    inst.ParentSessionID,
-		IsConductor:        inst.IsConductor,
-		NoTransitionNotify: inst.NoTransitionNotify,
-		TitleLocked:        inst.TitleLocked,
-		WorktreePath:       inst.WorktreePath,
-		WorktreeRepo:       inst.WorktreeRepoRoot,
-		WorktreeBranch:     inst.WorktreeBranch,
-		Account:            inst.Account,
-		ArchivedAt:         inst.ArchivedAt,
-		Pin:                string(inst.Pin),
-		ToolData:           toolData,
+		ID:                  inst.ID,
+		Title:               inst.Title,
+		ProjectPath:         inst.ProjectPath,
+		GroupPath:           inst.GroupPath,
+		Order:               inst.Order,
+		Command:             inst.Command,
+		Wrapper:             inst.Wrapper,
+		Tool:                inst.Tool,
+		Status:              string(inst.Status),
+		TmuxSession:         tmuxName,
+		TmuxSocketName:      inst.TmuxSocketName,
+		CreatedAt:           inst.CreatedAt,
+		LastAccessed:        inst.LastAccessedAt,
+		ParentSessionID:     inst.ParentSessionID,
+		IsConductor:         inst.IsConductor,
+		NoTransitionNotify:  inst.NoTransitionNotify,
+		TitleLocked:         inst.TitleLocked,
+		AutoName:            inst.GetAutoName(),
+		AutoNameDescription: inst.GetAutoNameDescription(),
+		WorktreePath:        inst.WorktreePath,
+		WorktreeRepo:        inst.WorktreeRepoRoot,
+		WorktreeBranch:      inst.WorktreeBranch,
+		Account:             inst.Account,
+		ArchivedAt:          inst.ArchivedAt,
+		Pin:                 string(inst.Pin),
+		ToolData:            toolData,
 	}, nil
 }
 
@@ -821,6 +845,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			IsConductor:               r.IsConductor,
 			NoTransitionNotify:        r.NoTransitionNotify,
 			TitleLocked:               r.TitleLocked,
+			AutoName:                  r.AutoName,
+			AutoNameDescription:       r.AutoNameDescription,
 			Command:                   r.Command,
 			Wrapper:                   r.Wrapper,
 			Tool:                      r.Tool,
@@ -938,6 +964,8 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			IsConductor:               r.IsConductor,
 			NoTransitionNotify:        r.NoTransitionNotify,
 			TitleLocked:               r.TitleLocked,
+			AutoName:                  r.AutoName,
+			AutoNameDescription:       r.AutoNameDescription,
 			Command:                   r.Command,
 			Wrapper:                   r.Wrapper,
 			Tool:                      r.Tool,
@@ -1191,6 +1219,8 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			IsConductor:               instData.IsConductor,
 			NoTransitionNotify:        instData.NoTransitionNotify,
 			TitleLocked:               instData.TitleLocked,
+			AutoName:                  instData.AutoName,
+			autoNameDescription:       instData.AutoNameDescription,
 			Command:                   instData.Command,
 			Wrapper:                   instData.Wrapper,
 			Tool:                      instData.Tool,

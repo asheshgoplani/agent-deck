@@ -643,6 +643,49 @@ func TestHomeRenamePendingChangesSurviveReload(t *testing.T) {
 	}
 }
 
+func TestHomeRenamePendingChangeClearsAutoName(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	// Create a quick-named session (AutoName=true with a machine-generated title)
+	inst := session.NewInstance("quick-adjective-noun", "/tmp/project")
+	inst.AutoName = true
+	home.instancesMu.Lock()
+	home.instances = []*session.Instance{inst}
+	home.instanceByID[inst.ID] = inst
+	home.instancesMu.Unlock()
+	home.groupTree = session.NewGroupTree(home.instances)
+	home.rebuildFlatItems()
+
+	// User renamed the session; the rename was stored as a pending change
+	// (save was skipped because isReloading=true at the time)
+	home.pendingTitleChanges[inst.ID] = "my-chosen-name"
+
+	// A reload replaces the instance with the stale disk version (AutoName=true, old title)
+	reloadInst := session.NewInstance("quick-adjective-noun", "/tmp/project")
+	reloadInst.ID = inst.ID
+	reloadInst.AutoName = true
+
+	reloadMsg := loadSessionsMsg{
+		instances:    []*session.Instance{reloadInst},
+		groups:       nil,
+		restoreState: &reloadState{cursorSessionID: inst.ID},
+	}
+
+	model, _ := home.Update(reloadMsg)
+	h := model.(*Home)
+
+	// The user-chosen title must be re-applied
+	if h.instances[0].Title != "my-chosen-name" {
+		t.Errorf("Session title = %q, want %q", h.instances[0].Title, "my-chosen-name")
+	}
+	// AutoName must be cleared so the TUI shows the user-chosen name, not the live pane title
+	if h.instances[0].AutoName {
+		t.Error("AutoName = true after pending-rename re-apply, want false (user-chosen name should stick)")
+	}
+}
+
 func TestHomeRenamePendingChangesNoop(t *testing.T) {
 	home := NewHome()
 	home.width = 100

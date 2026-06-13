@@ -308,6 +308,11 @@ type Home struct {
 	statusWorkerDone    chan struct{}            // Signals worker has stopped
 	lastFullStatusSweep atomic.Int64             // UnixNano timestamp of last full background status sweep
 	lastPersistedStatus map[string]string        // instanceID -> last status written to SQLite
+	// lastPersistedAutoNameDesc tracks the last auto-name description written to
+	// SQLite per instance, so the background loop only issues a targeted write
+	// when the live Claude task description actually changes (mirrors
+	// lastPersistedStatus). Keyed by instance ID.
+	lastPersistedAutoNameDesc map[string]string
 
 	// Issue #1143: auto-stop dormant child sessions via central poll.
 	// Coalesced into the existing 2-second statusWorker tick by way of
@@ -1030,72 +1035,73 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	}
 
 	h := &Home{
-		profile:              actualProfile,
-		storage:              storage,
-		storageWarning:       storageWarning,
-		search:               NewSearch(),
-		newDialog:            NewNewDialog(),
-		groupDialog:          NewGroupDialog(),
-		forkDialog:           NewForkDialog(),
-		confirmDialog:        NewConfirmDialog(),
-		helpOverlay:          NewHelpOverlay(),
-		mcpDialog:            NewMCPDialog(),
-		pluginDialog:         NewPluginDialog(),
-		editPathsDialog:      NewEditPathsDialog(),
-		editSessionDialog:    NewEditSessionDialog(),
-		skillDialog:          NewSkillDialog(),
-		setupWizard:          NewSetupWizard(),
-		settingsPanel:        NewSettingsPanel(),
-		analyticsPanel:       NewAnalyticsPanel(),
-		geminiModelDialog:    NewGeminiModelDialog(),
-		sessionPickerDialog:  NewSessionPickerDialog(),
-		sessionSwitcher:      NewSessionSwitcher(),
-		worktreeFinishDialog: NewWorktreeFinishDialog(),
-		feedbackDialog:       NewFeedbackDialog(),
-		zoxidePicker:         NewZoxidePicker(),
-		feedbackSender:       feedback.NewSender(),
-		watcherPanel:         NewWatcherPanel(),
-		toolVisibilityPanel:  NewToolVisibilityPanel(),
-		insertBatchDuration:  defaultInsertBatchDuration,
-		insertOpenKeySender:  defaultInsertOpenKeySender,
-		cursor:               0,
-		initialLoading:       true, // Show splash until sessions load
-		ctx:                  ctx,
-		cancel:               cancel,
-		instances:            []*session.Instance{},
-		instanceByID:         make(map[string]*session.Instance),
-		groupTree:            session.NewGroupTree([]*session.Instance{}),
-		flatItems:            []session.Item{},
-		previewCache:         make(map[string]string),
-		previewCacheTime:     make(map[string]time.Time),
-		analyticsCache:       make(map[string]*session.SessionAnalytics),
-		geminiAnalyticsCache: make(map[string]*session.GeminiSessionAnalytics),
-		analyticsCacheTime:   make(map[string]time.Time),
-		clearOnCompactSent:   make(map[string]time.Time),
-		launchingSessions:    make(map[string]time.Time),
-		resumingSessions:     make(map[string]time.Time),
-		mcpLoadingSessions:   make(map[string]time.Time),
-		forkingSessions:      make(map[string]time.Time),
-		setupRunningSessions: make(map[string]time.Time),
-		creatingSessions:     make(map[string]*CreatingSession),
-		lastLogActivity:      make(map[string]time.Time),
-		windowsCollapsed:     make(map[string]bool),
-		worktreeDirtyCache:   make(map[string]bool),
-		worktreeDirtyCacheTs: make(map[string]time.Time),
-		statusTrigger:        make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
-		statusWorkerDone:     make(chan struct{}),
-		idleTimeoutWatcher:   session.NewIdleTimeoutWatcher(session.IdleTimeoutWatcherConfig{}),
-		lastPersistedStatus:  make(map[string]string),
-		logUpdateChan:        make(chan *session.Instance, 100), // Buffered to absorb bursts
-		hotkeys:              make(map[string]string),
-		hotkeyLookup:         make(map[string]string),
-		blockedHotkeys:       make(map[string]bool),
-		notesEditor:          newNotesEditor(),
-		boundKeys:            make(map[string]string),
-		undoStack:            make([]deletedSessionEntry, 0, 10),
-		pendingTitleChanges:  make(map[string]string),
-		debugMode:            logging.IsDebugEnabled(),
-		lastClickIndex:       -1,
+		profile:                   actualProfile,
+		storage:                   storage,
+		storageWarning:            storageWarning,
+		search:                    NewSearch(),
+		newDialog:                 NewNewDialog(),
+		groupDialog:               NewGroupDialog(),
+		forkDialog:                NewForkDialog(),
+		confirmDialog:             NewConfirmDialog(),
+		helpOverlay:               NewHelpOverlay(),
+		mcpDialog:                 NewMCPDialog(),
+		pluginDialog:              NewPluginDialog(),
+		editPathsDialog:           NewEditPathsDialog(),
+		editSessionDialog:         NewEditSessionDialog(),
+		skillDialog:               NewSkillDialog(),
+		setupWizard:               NewSetupWizard(),
+		settingsPanel:             NewSettingsPanel(),
+		analyticsPanel:            NewAnalyticsPanel(),
+		geminiModelDialog:         NewGeminiModelDialog(),
+		sessionPickerDialog:       NewSessionPickerDialog(),
+		sessionSwitcher:           NewSessionSwitcher(),
+		worktreeFinishDialog:      NewWorktreeFinishDialog(),
+		feedbackDialog:            NewFeedbackDialog(),
+		zoxidePicker:              NewZoxidePicker(),
+		feedbackSender:            feedback.NewSender(),
+		watcherPanel:              NewWatcherPanel(),
+		toolVisibilityPanel:       NewToolVisibilityPanel(),
+		insertBatchDuration:       defaultInsertBatchDuration,
+		insertOpenKeySender:       defaultInsertOpenKeySender,
+		cursor:                    0,
+		initialLoading:            true, // Show splash until sessions load
+		ctx:                       ctx,
+		cancel:                    cancel,
+		instances:                 []*session.Instance{},
+		instanceByID:              make(map[string]*session.Instance),
+		groupTree:                 session.NewGroupTree([]*session.Instance{}),
+		flatItems:                 []session.Item{},
+		previewCache:              make(map[string]string),
+		previewCacheTime:          make(map[string]time.Time),
+		analyticsCache:            make(map[string]*session.SessionAnalytics),
+		geminiAnalyticsCache:      make(map[string]*session.GeminiSessionAnalytics),
+		analyticsCacheTime:        make(map[string]time.Time),
+		clearOnCompactSent:        make(map[string]time.Time),
+		launchingSessions:         make(map[string]time.Time),
+		resumingSessions:          make(map[string]time.Time),
+		mcpLoadingSessions:        make(map[string]time.Time),
+		forkingSessions:           make(map[string]time.Time),
+		setupRunningSessions:      make(map[string]time.Time),
+		creatingSessions:          make(map[string]*CreatingSession),
+		lastLogActivity:           make(map[string]time.Time),
+		windowsCollapsed:          make(map[string]bool),
+		worktreeDirtyCache:        make(map[string]bool),
+		worktreeDirtyCacheTs:      make(map[string]time.Time),
+		statusTrigger:             make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
+		statusWorkerDone:          make(chan struct{}),
+		idleTimeoutWatcher:        session.NewIdleTimeoutWatcher(session.IdleTimeoutWatcherConfig{}),
+		lastPersistedStatus:       make(map[string]string),
+		lastPersistedAutoNameDesc: make(map[string]string),
+		logUpdateChan:             make(chan *session.Instance, 100), // Buffered to absorb bursts
+		hotkeys:                   make(map[string]string),
+		hotkeyLookup:              make(map[string]string),
+		blockedHotkeys:            make(map[string]bool),
+		notesEditor:               newNotesEditor(),
+		boundKeys:                 make(map[string]string),
+		undoStack:                 make([]deletedSessionEntry, 0, 10),
+		pendingTitleChanges:       make(map[string]string),
+		debugMode:                 logging.IsDebugEnabled(),
+		lastClickIndex:            -1,
 	}
 	h.sessionRenderSnapshot.Store(make(map[string]sessionRenderState))
 
@@ -3204,6 +3210,45 @@ type sessionRenderState struct {
 	paneTitle string // Current task description from tmux pane title (stripped of spinner/done markers)
 }
 
+// displaySessionTitle returns the label to render for a session row. For an
+// auto-named quick session (AutoName) it returns, in order of preference: the
+// live Claude task description (paneTitle), the last description we persisted,
+// then the session's own Title. Non-auto-named sessions always return Title
+// (the CLI handle or a user/Claude-chosen name).
+//
+// paneTitle must already be cleaned by cleanPaneTitle: an empty paneTitle means
+// idle/just-started. The persisted-description fallback keeps the meaningful
+// name visible on reopen before the session resumes and re-emits a live title.
+// shouldPersistAutoNameDesc decides whether the background status loop should
+// write a new task description for an auto-named session, given the live
+// (already-cleaned) pane title and the value last persisted for it. It returns
+// the description to write and whether to write at all. Kept as a pure function
+// so the capture branching is testable without a live DB/tmux: the loop itself
+// only runs on a background tick. Rules: only auto-named sessions; never write
+// an empty pane (idle/just-started must not clobber a saved description); skip
+// when unchanged to avoid SQLite write pressure (mirrors the status loop).
+func shouldPersistAutoNameDesc(autoName bool, paneTitle, lastPersisted string) (string, bool) {
+	if !autoName || paneTitle == "" || paneTitle == lastPersisted {
+		return "", false
+	}
+	return paneTitle, true
+}
+
+func displaySessionTitle(inst *session.Instance, paneTitle string) string {
+	if inst.GetAutoName() {
+		// Prefer the live task description; fall back to the last one we
+		// persisted so the name still shows on reopen when the session is
+		// stopped/idle (no live pane title); finally fall back to the handle.
+		if paneTitle != "" {
+			return paneTitle
+		}
+		if desc := inst.GetAutoNameDescription(); desc != "" {
+			return desc
+		}
+	}
+	return inst.Title
+}
+
 // cleanPaneTitle strips spinner/done marker characters from a tmux pane title
 // and returns the task description. Returns "" for default/generic titles.
 func cleanPaneTitle(title string) string {
@@ -3688,6 +3733,36 @@ func (h *Home) backgroundStatusUpdate() {
 		for id := range h.lastPersistedStatus {
 			if _, ok := currentIDs[id]; !ok {
 				delete(h.lastPersistedStatus, id)
+			}
+		}
+
+		// Persist the live Claude task description for auto-named sessions so the
+		// meaningful name survives an app reopen (it would otherwise live only in
+		// the in-memory render snapshot). The snapshot was refreshed just above,
+		// so getSessionRenderState returns the freshly-cleaned pane title. Only
+		// write on change (mirrors the status loop) and only when non-empty — an
+		// empty/idle pane must not clobber a previously captured description.
+		for _, inst := range instances {
+			desc, write := shouldPersistAutoNameDesc(
+				inst.GetAutoName(),
+				h.getSessionRenderState(inst).paneTitle,
+				h.lastPersistedAutoNameDesc[inst.ID],
+			)
+			if !write {
+				continue
+			}
+			inst.SetAutoNameDescription(desc)
+			if err := db.WriteAutoNameDescription(inst.ID, desc); err != nil {
+				uiLog.Warn("autoname_persist_failed",
+					slog.String("id", inst.ID),
+					slog.String("error", err.Error()))
+				continue
+			}
+			h.lastPersistedAutoNameDesc[inst.ID] = desc
+		}
+		for id := range h.lastPersistedAutoNameDesc {
+			if _, ok := currentIDs[id]; !ok {
+				delete(h.lastPersistedAutoNameDesc, id)
 			}
 		}
 
@@ -4375,13 +4450,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(h.pendingTitleChanges) > 0 {
 				applied := false
 				for id, title := range h.pendingTitleChanges {
-					if inst := h.getInstanceByID(id); inst != nil && inst.Title != title {
-						inst.Title = title
-						inst.SyncTmuxDisplayName()
-						applied = true
-						uiLog.Info("pending_rename_reapplied",
-							slog.String("session_id", id),
-							slog.String("title", title))
+					if inst := h.getInstanceByID(id); inst != nil {
+						if inst.Title != title {
+							inst.Title = title
+							inst.SyncTmuxDisplayName()
+							applied = true
+							uiLog.Info("pending_rename_reapplied",
+								slog.String("session_id", id),
+								slog.String("title", title))
+						}
+						inst.SetAutoName(false) // pending title is a genuine rename; keep the user-chosen name
 					}
 				}
 				// Clear pending changes and persist if any were re-applied
@@ -6315,6 +6393,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			parentSessionID,
 			parentProjectPath,
 			tempID,
+			false, // not auto-named — user went through the full create dialog
 		)
 
 	case msg.String() == "esc":
@@ -8355,7 +8434,8 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 		nil,
 		parentSessionID,
 		parentProjectPath,
-		"", // no placeholder — non-worktree sessions are fast
+		"",    // no placeholder — non-worktree sessions are fast
+		false, // not auto-named
 	)
 }
 
@@ -9566,6 +9646,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	additionalPaths []string,
 	parentSessionID, parentProjectPath string,
 	tempID string,
+	autoName bool,
 ) tea.Cmd {
 	return func() tea.Msg {
 		uiLog.Info("create_session_start",
@@ -9614,6 +9695,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			inst = session.NewInstanceWithTool(name, path, tool)
 		}
 		inst.Command = command
+		inst.SetAutoName(autoName) // quick-create paths pass true; see render substitution
 
 		// Set worktree fields if provided
 		if worktreePath != "" {
@@ -10076,7 +10158,8 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		"",         // no explicit model override
 		false, nil, // no multi-repo
 		"", "", // no parent
-		"", // no placeholder
+		"",   // no placeholder
+		true, // quick-create → auto-named handle
 	)
 }
 
@@ -10159,6 +10242,7 @@ func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
 		false, nil,
 		"", "",
 		"",
+		true, // quick-create → auto-named handle
 	)
 }
 
@@ -10866,6 +10950,49 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 	}
 }
 
+// captureAutoNameBeforeStop persists an auto-named session's live Claude task
+// description right before its process is stopped. Auto-named rows render the
+// live tmux pane title; once Kill() tears the process down that live title is
+// gone and displaySessionTitle falls back to the persisted auto-name
+// description. The background status tick is the only other writer, so a
+// session stopped before that tick fires would revert to its bare random
+// handle. Capturing here closes that window for archive (and any future stop
+// path that calls it).
+//
+// No-op unless the session is auto-named with a non-empty live title that
+// differs from what is already stored — an empty/idle pane must never clobber a
+// previously captured description (mirrors shouldPersistAutoNameDesc). Writes
+// the in-memory field (instance-locked) and the DB column via h.storage;
+// deliberately does NOT touch h.lastPersistedAutoNameDesc, which is owned by
+// the statusWorker goroutine — writing it from the UI goroutine would be a
+// data race.
+func (h *Home) captureAutoNameBeforeStop(inst *session.Instance) {
+	if inst == nil || !inst.GetAutoName() {
+		return
+	}
+	live := ""
+	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+		tmux.RefreshPaneInfoCache()
+		if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
+			live = cleanPaneTitle(paneInfo.Title)
+		}
+	}
+	if live == "" {
+		live = h.getSessionRenderState(inst).paneTitle
+	}
+	if live == "" || live == inst.GetAutoNameDescription() {
+		return
+	}
+	inst.SetAutoNameDescription(live)
+	if h.storage == nil {
+		return
+	}
+	if err := h.storage.WriteAutoNameDescription(inst.ID, live); err != nil {
+		uiLog.Warn("autoname_capture_failed",
+			slog.String("id", inst.ID), slog.String("error", err.Error()))
+	}
+}
+
 // closeSession stops a session process but keeps metadata in list/storage.
 func (h *Home) closeSession(inst *session.Instance) tea.Cmd {
 	id := inst.ID
@@ -10877,6 +11004,9 @@ func (h *Home) closeSession(inst *session.Instance) tea.Cmd {
 
 // archiveSession stops a session and marks it archived.
 func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
+	// Snapshot the live Claude task description on the UI goroutine before the
+	// background Kill tears down the pane that title comes from.
+	h.captureAutoNameBeforeStop(inst)
 	id := inst.ID
 	return func() tea.Msg {
 		if killErr := inst.Kill(); killErr != nil {
@@ -14194,17 +14324,6 @@ func (h *Home) renderSessionItem(
 		}
 	}
 
-	// Pin marker (pin-sessions): a 📌 prefix flags any pinned row. Position in
-	// the list conveys top vs bottom; the emoji conveys "this is pinned".
-	displayTitle := inst.Title
-	if inst.Pin != session.PinNone {
-		displayTitle = "📌 " + displayTitle
-	}
-	// Maestro (fleet supervisor): ⬢ glyph leads the title.
-	if isMaestro {
-		displayTitle = "⬢ " + displayTitle
-	}
-	title := titleStyle.Render(displayTitle)
 	tool := toolStyle.Render(" " + instTool)
 
 	// Supervisor badge for the maestro row.
@@ -14326,6 +14445,39 @@ func (h *Home) renderSessionItem(
 		windowChevron = chevronStyle.Render(chevronChar)
 	}
 
+	// Auto-named quick sessions display Claude's live task description (the
+	// tmux pane title) in place of the random handle. instState.paneTitle is
+	// already cleaned by cleanPaneTitle, so an idle/just-started session (empty
+	// paneTitle) falls back to the handle automatically.
+	displayTitle := displaySessionTitle(inst, instState.paneTitle)
+	// Pin marker (pin-sessions): a 📌 prefix flags any pinned row. Position in
+	// the list conveys top vs bottom; the emoji conveys "this is pinned".
+	// Prepended before the AutoName truncation budget so width accounting below
+	// stays correct.
+	if inst.Pin != session.PinNone {
+		displayTitle = "📌 " + displayTitle
+	}
+	// Maestro (fleet supervisor): ⬢ glyph leads the title.
+	if isMaestro {
+		displayTitle = "⬢ " + displayTitle
+	}
+	if inst.GetAutoName() && listWidth > 0 {
+		// Task descriptions can be long; truncate to the row's free width so the
+		// tool label and badges stay on-row. Keep the reserved terms below in
+		// sync with the row format that follows.
+		reserved := leftGutterWidth + cellWidth(baseIndent) + cellWidth(selectionPrefix) +
+			cellWidth(treeStyle.Render(treeConnector)) + cellWidth(windowChevron) +
+			cellWidth(status) + 1 /* space before title */ + cellWidth(tool) +
+			cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
+			cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
+			cellWidth(timestampBadge)
+		budget := listWidth - reserved - 1 // -1 trailing margin
+		if budget > 0 && cellWidth(displayTitle) > budget {
+			displayTitle = cellTruncate(displayTitle, budget, "…")
+		}
+	}
+	title := titleStyle.Render(displayTitle)
+
 	// Build row: [gutter][baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
@@ -14356,7 +14508,7 @@ func (h *Home) renderSessionItem(
 	// so the prior measurement let the trailing pane-title text overflow
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
-	if (selected || h.showPaneTitles) && instState.paneTitle != "" {
+	if (selected || h.showPaneTitles) && instState.paneTitle != "" && !inst.GetAutoName() {
 		// Dual layout: sidebar is narrower than h.width (#937). Using full
 		// terminal width here overflows the SESSIONS pane, then lipgloss
 		// truncation disagrees from terminal cells — wrapped lines duplicate

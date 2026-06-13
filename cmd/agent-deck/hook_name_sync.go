@@ -90,6 +90,7 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 		// session — act and stop, never fall through to another profile.
 		newName, changed := target.ReconcileTitleFromClaude(sessionID)
 		if changed {
+			target.SetAutoName(false) // Claude/user-chosen name replaces the auto handle
 			groupTree := session.NewGroupTreeWithGroups(instances, groups)
 			_ = storage.SaveWithGroups(instances, groupTree)
 		}

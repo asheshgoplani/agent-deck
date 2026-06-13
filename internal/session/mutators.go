@@ -131,6 +131,7 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 	case FieldTitle:
 		oldValue = inst.Title
 		inst.Title = value
+		inst.SetAutoName(false) // a user/explicit name replaces the auto handle
 		// An explicit rename is user intent: lock the title so the #572
 		// Claude-name sync (plan titles, /rename) can't revert it on the
 		// next hook event. Unlock via `session set <id> title-locked false`.

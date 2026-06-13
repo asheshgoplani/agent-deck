@@ -107,6 +107,25 @@ type Instance struct {
 	// `--title-lock` on add/launch or `session set-title-lock`.
 	TitleLocked bool `json:"title_locked,omitempty"`
 
+	// AutoName, when true, marks Title as a machine-generated adjective-noun
+	// handle (from a --quick / TUI-Q create). The TUI then displays the
+	// session's live Claude task description (tmux pane title) in place of the
+	// handle. Any explicit rename clears this so the user-chosen name is shown
+	// verbatim. See docs/superpowers/specs/2026-06-01-quick-session-claude-name-design.md.
+	// Guarded by i.mu for runtime reads/writes; use GetAutoName/SetAutoName once
+	// an Instance is shared with background workers or the TUI render loop.
+	AutoName bool `json:"auto_name,omitempty"`
+
+	// autoNameDescription is the last non-empty Claude task description (the
+	// cleaned tmux pane title) captured for an AutoName session. It is persisted
+	// via the auto_name_description column so the meaningful name survives an
+	// app reopen even when the session is stopped/idle and no live pane title is
+	// available — render order is live pane title → this saved description →
+	// handle. Guarded by i.mu: written from the background status loop, read
+	// during render. Unexported because persistence flows through InstanceData,
+	// not Instance's own JSON tags.
+	autoNameDescription string
+
 	// Git worktree support
 	WorktreePath     string `json:"worktree_path,omitempty"`      // Path to worktree (if session is in worktree)
 	WorktreeRepoRoot string `json:"worktree_repo_root,omitempty"` // Original repo root
@@ -4172,6 +4191,40 @@ func (i *Instance) GetHookStatus() (string, bool) {
 	}
 	fresh := time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus)
 	return i.hookStatus, fresh
+}
+
+// GetAutoNameDescription returns the last captured Claude task description for
+// an AutoName session (empty if none captured yet). Thread-safe.
+func (i *Instance) GetAutoNameDescription() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.autoNameDescription
+}
+
+// GetAutoName reports whether this session should display a captured/live task
+// description instead of its machine-generated handle. Thread-safe.
+func (i *Instance) GetAutoName() bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.AutoName
+}
+
+// SetAutoName updates whether this session should display a captured/live task
+// description instead of its machine-generated handle. Thread-safe.
+func (i *Instance) SetAutoName(autoName bool) {
+	i.mu.Lock()
+	i.AutoName = autoName
+	i.mu.Unlock()
+}
+
+// SetAutoNameDescription records the latest Claude task description for an
+// AutoName session so it can be persisted and shown on reopen. Thread-safe.
+func (i *Instance) SetAutoNameDescription(desc string) {
+	i.mu.Lock()
+	if strings.TrimSpace(desc) != "" {
+		i.autoNameDescription = desc
+	}
+	i.mu.Unlock()
 }
 
 // ClearHookStatus resets the hook-based status and removes the persisted hook

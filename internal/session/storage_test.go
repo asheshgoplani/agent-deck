@@ -385,6 +385,87 @@ func TestStorageSaveWithGroups_PersistsTitleLocked(t *testing.T) {
 	}
 }
 
+// TestStorageSaveWithGroups_PersistsAutoName locks that the AutoName flag and
+// its captured description survive Save → Load via the real SQLite path (the
+// path the app actually uses on reopen), through both LoadWithGroups (canonical)
+// and LoadLite (CLI fast-path). This is the regression that made auto-named
+// quick sessions revert to their random handle on reopen: the flag and
+// description lived only in memory and were never written to / read from the DB.
+func TestStorageSaveWithGroups_PersistsAutoName(t *testing.T) {
+	s := newTestStorage(t)
+
+	auto := &Instance{
+		ID:          "auto-1",
+		Title:       "lively-fjord",
+		ProjectPath: "/tmp/auto",
+		GroupPath:   "grp",
+		Command:     "claude",
+		Tool:        "claude",
+		Status:      StatusIdle,
+		CreatedAt:   time.Now(),
+		AutoName:    true,
+	}
+	auto.SetAutoNameDescription("Review and improve SketchUp house models")
+
+	plain := &Instance{
+		ID:          "plain-1",
+		Title:       "Auth",
+		ProjectPath: "/tmp/plain",
+		GroupPath:   "grp",
+		Command:     "claude",
+		Tool:        "claude",
+		Status:      StatusIdle,
+		CreatedAt:   time.Now(),
+	}
+
+	if err := s.SaveWithGroups([]*Instance{auto, plain}, nil); err != nil {
+		t.Fatalf("SaveWithGroups failed: %v", err)
+	}
+
+	loaded, _, err := s.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("LoadWithGroups failed: %v", err)
+	}
+	byID := map[string]*Instance{}
+	for _, inst := range loaded {
+		byID[inst.ID] = inst
+	}
+	if !byID["auto-1"].AutoName {
+		t.Errorf("auto-1.AutoName = false after round-trip, want true")
+	}
+	if got := byID["auto-1"].GetAutoNameDescription(); got != "Review and improve SketchUp house models" {
+		t.Errorf("auto-1 description = %q after round-trip, want the saved task title", got)
+	}
+	if byID["plain-1"].AutoName {
+		t.Errorf("plain-1.AutoName = true after round-trip, want false (default must not leak)")
+	}
+	if got := byID["plain-1"].GetAutoNameDescription(); got != "" {
+		t.Errorf("plain-1 description = %q, want empty", got)
+	}
+
+	// LoadLite (CLI fast-path) must preserve both fields too.
+	lite, _, err := s.LoadLite()
+	if err != nil {
+		t.Fatalf("LoadLite failed: %v", err)
+	}
+	liteByID := map[string]*InstanceData{}
+	for _, d := range lite {
+		liteByID[d.ID] = d
+	}
+	if !liteByID["auto-1"].AutoName {
+		t.Errorf("LoadLite auto-1.AutoName = false, want true")
+	}
+	if got := liteByID["auto-1"].AutoNameDescription; got != "Review and improve SketchUp house models" {
+		t.Errorf("LoadLite auto-1.AutoNameDescription = %q, want the saved task title", got)
+	}
+	if liteByID["plain-1"].AutoName {
+		t.Errorf("LoadLite plain-1.AutoName = true, want false")
+	}
+	if got := liteByID["plain-1"].AutoNameDescription; got != "" {
+		t.Errorf("LoadLite plain-1.AutoNameDescription = %q, want empty", got)
+	}
+}
+
 // TestSaveSessionData_PreservesGroupSortOrder verifies that saving session data
 // with stored groups preserves the sort_order, matching the fix in #465.
 func TestSaveSessionData_PreservesGroupSortOrder(t *testing.T) {

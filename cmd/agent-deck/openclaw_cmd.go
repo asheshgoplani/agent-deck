@@ -130,6 +130,7 @@ func handleOpenClawSync(profile string, args []string) {
 				existing.Title = agentDisplayName
 				updated++
 			}
+			existing.SetAutoName(false) // openclaw assigns a real agent name
 		}
 	}
 

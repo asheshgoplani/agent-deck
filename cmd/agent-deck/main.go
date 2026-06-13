@@ -1148,8 +1148,8 @@ func handleAdd(profile string, args []string) {
 	// is an alias for discoverability.
 	titleLock := fs.Bool("title-lock", false, "Lock session title so Claude's session name never overrides it (#697)")
 	noTitleSync := fs.Bool("no-title-sync", false, "Alias for --title-lock")
-	quickCreate := fs.Bool("quick", false, "Auto-generate session name (adjective-noun)")
-	quickCreateShort := fs.Bool("Q", false, "Auto-generate session name (short)")
+	quickCreate := fs.Bool("quick", false, "Create a quick session with a machine-generated handle; TUI shows Claude's live task description when available")
+	quickCreateShort := fs.Bool("Q", false, "Create a quick session (short)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -1252,7 +1252,7 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("  agent-deck add -c gemini --yolo .")
 		fmt.Println("  agent-deck add -c claude -g work .   # -c is shorthand for --cmd")
 		fmt.Println("  agent-deck add -g ard --no-parent -c claude .")
-		fmt.Println("  agent-deck add --quick -c claude .   # Auto-generated name")
+		fmt.Println("  agent-deck add --quick -c claude .   # Quick session; TUI shows Claude's live task description")
 		fmt.Println()
 		fmt.Println("Worktree Examples:")
 		fmt.Println("  agent-deck add -w feature/login .    # Create worktree for existing branch")
@@ -1513,6 +1513,13 @@ func handleAdd(profile string, args []string) {
 		newInstance = session.NewInstanceWithGroup(sessionTitle, path, sessionGroup)
 	} else {
 		newInstance = session.NewInstance(sessionTitle, path)
+	}
+
+	// Quick mode generated a machine-named adjective-noun handle; mark it so the
+	// TUI shows Claude's live task description in place of the random name. This
+	// mirrors the exact condition used above to generate sessionTitle.
+	if isQuick && !userProvidedTitle {
+		newInstance.SetAutoName(true)
 	}
 
 	// Socket-isolation CLI override (issue #687 phase 1, v1.7.50). The
