@@ -7,7 +7,7 @@ import (
 
 // ToolSupportsMCPManager reports whether the TUI/CLI MCP surfaces apply to this tool.
 func ToolSupportsMCPManager(toolName string) bool {
-	return IsClaudeCompatible(toolName) || toolName == "gemini" || toolName == "cursor"
+	return IsClaudeCompatible(toolName) || toolName == "gemini" || toolName == "cursor" || toolName == "opencode"
 }
 
 // MCPLocalConfigPathForTool returns the project-local MCP config path for display and writes.
@@ -21,6 +21,8 @@ func MCPLocalConfigPathForTool(toolName, projectPath string) string {
 		return filepath.Join(projectPath, ".mcp.json")
 	case toolName == "cursor":
 		return filepath.Join(projectPath, ".cursor", "mcp.json")
+	case toolName == "opencode":
+		return filepath.Join(projectPath, "opencode.json")
 	default:
 		return ""
 	}
@@ -35,6 +37,8 @@ func MCPGlobalConfigPathForTool(toolName string) string {
 		return filepath.Join(GetGeminiConfigDir(), "settings.json")
 	case toolName == "cursor":
 		return filepath.Join(GetCursorConfigDir(), "mcp.json")
+	case toolName == "opencode":
+		return filepath.Join(GetOpenCodeConfigDir(), "opencode.json")
 	default:
 		return ""
 	}
@@ -50,6 +54,8 @@ func MCPInfoForLocalAttach(toolName, projectPath string) *MCPInfo {
 	switch {
 	case toolName == "cursor":
 		return GetCursorMCPInfo(projectPath)
+	case toolName == "opencode":
+		return GetOpenCodeMCPInfo(projectPath)
 	case IsClaudeCompatible(toolName):
 		return GetMCPInfo(projectPath)
 	default:
@@ -62,6 +68,8 @@ func WriteLocalMCPConfigForTool(toolName, projectPath string, names []string) er
 	switch {
 	case toolName == "cursor":
 		return WriteCursorProjectMCP(projectPath, names)
+	case toolName == "opencode":
+		return WriteOpenCodeProjectMCP(projectPath, names)
 	case IsClaudeCompatible(toolName) || toolName == "gemini":
 		return WriteMCPJsonFromConfig(projectPath, names)
 	default:
@@ -78,15 +86,18 @@ func WriteGlobalMCPConfigForTool(toolName string, names []string) error {
 		return WriteGeminiMCPSettings(names)
 	case toolName == "cursor":
 		return WriteCursorGlobalMCP(names)
+	case toolName == "opencode":
+		return WriteOpenCodeGlobalMCP(names)
 	default:
 		return fmt.Errorf("global MCP: unsupported tool %q", toolName)
 	}
 }
 
-// InvalidateProjectMCPIntegrationsCache clears session caches used by Claude-style and Cursor MCP reads.
+// InvalidateProjectMCPIntegrationsCache clears session caches used by Claude-style, Cursor, and OpenCode MCP reads.
 func InvalidateProjectMCPIntegrationsCache(projectPath string) {
 	ClearMCPCache(projectPath)
 	ClearCursorMCPCache(projectPath)
+	ClearOpenCodeMCPCache(projectPath)
 }
 
 // MCPLocalConfigPath returns the project-local MCP file path for this instance's tool.
