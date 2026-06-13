@@ -610,10 +610,12 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 	}
 	profile = normalizeConductorProfile(profile)
 
-	if existing, err := LoadConductorMeta(name); err == nil {
-		if existing.Profile != profile {
-			return fmt.Errorf("conductor %q already exists for profile %q (requested profile: %q)", name, existing.Profile, profile)
-		}
+	// Load any existing meta up front: it gates the profile-mismatch guard AND
+	// lets a re-run preserve user-state fields that aren't re-passed as flags
+	// (merge, don't clobber).
+	existing, _ := LoadConductorMeta(name)
+	if existing != nil && existing.Profile != profile {
+		return fmt.Errorf("conductor %q already exists for profile %q (requested profile: %q)", name, existing.Profile, profile)
 	}
 
 	dir, err := ConductorNameDir(name)
@@ -650,8 +652,10 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 		if err := createSymlinkWithExpansion(targetPath, customInstructionsMD); err != nil {
 			return err
 		}
-	} else if info, err := os.Lstat(targetPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
-		// No custom path - write default template (but preserve existing symlink)
+	} else {
+		// No custom path - write the default template only if absent. An existing
+		// symlink keeps the user's customization; an existing regular file may
+		// carry in-place edits, so re-running setup must not clobber it.
 		var perNameTemplate string
 		if spec.Agent == ConductorAgentHermes {
 			perNameTemplate = conductorPerNameHermesMDTemplate
@@ -659,7 +663,7 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 			perNameTemplate = conductorPerNameClaudeMDTemplate
 		}
 		content := renderConductorInstructionsTemplate(perNameTemplate, name, profile, spec)
-		if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
+		if err := writeFileIfAbsent(targetPath, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", spec.InstructionsFileName, err)
 		}
 	}
@@ -691,7 +695,10 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 		}
 	}
 
-	// Write meta.json
+	// Write meta.json. On a re-run, preserve user-state that setup callers don't
+	// necessarily re-pass: CreatedAt, Description, Env, EnvFile, ClearOnCompact,
+	// HeartbeatInterval and HeartbeatIdleMinutes are kept from the existing meta
+	// when the corresponding flag is unset, rather than reset to zero.
 	meta := &ConductorMeta{
 		Name:             name,
 		Agent:            spec.Agent,
@@ -702,12 +709,33 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 		Env:              env,
 		EnvFile:          envFile,
 	}
+	if existing != nil {
+		if existing.CreatedAt != "" {
+			meta.CreatedAt = existing.CreatedAt
+		}
+		if description == "" {
+			meta.Description = existing.Description
+		}
+		if len(env) == 0 {
+			meta.Env = existing.Env
+		}
+		if envFile == "" {
+			meta.EnvFile = existing.EnvFile
+		}
+		meta.HeartbeatInterval = existing.HeartbeatInterval
+	}
 	if !clearOnCompact {
 		meta.ClearOnCompact = &clearOnCompact
+	} else if existing != nil {
+		// Flag not used to disable: keep any explicit prior setting.
+		meta.ClearOnCompact = existing.ClearOnCompact
 	}
-	// Set heartbeat idle minutes if provided (non-negative value)
+	// Set heartbeat idle minutes if provided (non-negative value); otherwise
+	// preserve the existing value on a re-run.
 	if len(heartbeatIdleMinutes) > 0 && heartbeatIdleMinutes[0] >= 0 {
 		meta.HeartbeatIdleMinutes = heartbeatIdleMinutes[0]
+	} else if existing != nil {
+		meta.HeartbeatIdleMinutes = existing.HeartbeatIdleMinutes
 	}
 	if err := SaveConductorMeta(meta); err != nil {
 		return fmt.Errorf("failed to write meta.json: %w", err)
@@ -1118,6 +1146,24 @@ func createSymlinkWithExpansion(target, source string) error {
 	return nil
 }
 
+// writeFileIfAbsent writes content to path only when path does not already
+// exist, using O_CREATE|O_EXCL so an existing (possibly user-edited) regular
+// file is never clobbered — the TOCTOU-safe if-absent primitive mirroring
+// watcher.writeIfAbsent. A pre-existing path (regular file or symlink) is left
+// untouched and reported as success.
+func writeFileIfAbsent(path string, content []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(content)
+	return err
+}
+
 // InstallSharedConductorInstructions writes the shared instructions file for the given conductor agent,
 // or creates a symlink if customPath is provided.
 func InstallSharedConductorInstructions(agent, customPath string) error {
@@ -1139,12 +1185,12 @@ func InstallSharedConductorInstructions(agent, customPath string) error {
 		return createSymlinkWithExpansion(targetPath, customPath)
 	}
 
-	// No custom path - write default template (but preserve existing symlink)
-	if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return nil
-	}
+	// No custom path - write the default template only if nothing is there yet.
+	// An existing file is preserved: a symlink keeps the user's customization,
+	// and a regular file may carry in-place edits we must not clobber on re-run.
+	// writeFileIfAbsent's O_EXCL makes both cases a no-op.
 	content := renderConductorInstructionsTemplate(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
-	if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
+	if err := writeFileIfAbsent(targetPath, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("failed to write shared %s: %w", spec.InstructionsFileName, err)
 	}
 	return nil
@@ -1192,11 +1238,10 @@ func InstallPolicyMD(customPath string) error {
 		return createSymlinkWithExpansion(targetPath, customPath)
 	}
 
-	// No custom path - write default template (but preserve existing symlink)
-	if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return nil
-	}
-	if err := os.WriteFile(targetPath, []byte(conductorPolicyTemplate), 0o644); err != nil {
+	// No custom path - write the default template only if nothing is there yet.
+	// Preserve an existing symlink (user customization) or regular file (possible
+	// in-place edits) so re-running setup is non-destructive.
+	if err := writeFileIfAbsent(targetPath, []byte(conductorPolicyTemplate), 0o644); err != nil {
 		return fmt.Errorf("failed to write POLICY.md: %w", err)
 	}
 	return nil
