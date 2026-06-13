@@ -393,6 +393,33 @@ func copyMigrationFile(source, destination string, mode fs.FileMode) error {
 	return nil
 }
 
+// MergeTree merges source into destination using the same non-destructive,
+// no-clobber semantics as the legacy layout migration: an existing destination
+// file/symlink is PRESERVED (the source copy is skipped and reported via
+// conflicted=true), directories are merged recursively, and a TOCTOU race on a
+// leaf surfaces as a conflict rather than a truncation. It never removes the
+// destination tree. Exposed for reuse by conductor dir relocation, which needs
+// the identical "newer destination wins, report conflicts" guarantee.
+func MergeTree(source, destination string) (conflicted bool, err error) {
+	return mergeMigrationPath(source, destination)
+}
+
+// CopyTree copies source to destination, refusing to overwrite any destination
+// leaf that already exists (atomic O_EXCL/Link publish). It returns
+// ErrMigrationConflict if a leaf already exists, so callers can treat a
+// pre-existing destination as a conflict to preserve rather than a hard error.
+// Use for the no-prior-destination fast path; use MergeTree when the
+// destination may already hold (newer) data to merge into.
+func CopyTree(source, destination string) error {
+	if err := copyMigrationPath(source, destination); err != nil {
+		if errors.Is(err, errDestinationExists) {
+			return ErrMigrationConflict
+		}
+		return err
+	}
+	return nil
+}
+
 func copyMigrationSymlink(source, destination string) error {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return fmt.Errorf("create destination parent %q: %w", filepath.Dir(destination), err)
