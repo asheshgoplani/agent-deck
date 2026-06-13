@@ -47,6 +47,8 @@ func handleConductor(profile string, args []string) {
 		handleConductorList(profile, args[1:])
 	case "move":
 		handleConductorMove(profile, args[1:])
+	case "migrate-dir":
+		handleConductorMigrateDir(profile, args[1:])
 	case "help", "--help", "-h":
 		printConductorHelp()
 	default:
@@ -916,6 +918,7 @@ func handleConductorStatus(_ string, args []string) {
 	// Auto-migrate before status check so stale heartbeat scripts self-heal even
 	// when conductors are globally disabled in config.
 	runAutoMigration(*jsonOutput)
+	printConductorSplitBrainWarning(*jsonOutput)
 
 	settings := session.GetConductorSettings()
 	if !settings.Enabled {
@@ -1101,6 +1104,7 @@ func handleConductorList(profile string, args []string) {
 
 	// Auto-migrate
 	runAutoMigration(*jsonOutput)
+	printConductorSplitBrainWarning(*jsonOutput)
 
 	var conductors []session.ConductorMeta
 	var err error
@@ -1376,6 +1380,8 @@ func printConductorHelp() {
 	fmt.Println("  teardown <name>  Stop and optionally remove a conductor (or --all)")
 	fmt.Println("  status [name]    Show conductor health (all or specific)")
 	fmt.Println("  list             List all configured conductors")
+	fmt.Println("  move <name>      Move a conductor to another profile (--to-profile)")
+	fmt.Println("  migrate-dir <path>  Relocate the conductor base dir (move homes + reconcile daemons)")
 	fmt.Println("  help             Show this help")
 	fmt.Println()
 	fmt.Println("Examples:")
@@ -1387,6 +1393,220 @@ func printConductorHelp() {
 	fmt.Println("  agent-deck conductor teardown infra --remove")
 	fmt.Println("  agent-deck conductor teardown --all --remove")
 	fmt.Println("  agent-deck conductor move ryan --to-profile march")
+	fmt.Println("  agent-deck conductor migrate-dir ~/vault/conductors          # dry-run plan")
+	fmt.Println("  agent-deck conductor migrate-dir ~/vault/conductors --apply  # perform")
+}
+
+// printConductorSplitBrainWarning prints a one-line warning when [conductor].dir
+// resolves to an empty base while the default base still holds conductor homes
+// — the declarative-flip split-brain. Detection-only; suppressed in JSON mode.
+func printConductorSplitBrainWarning(jsonOutput bool) {
+	if jsonOutput {
+		return
+	}
+	if msg, ok := session.DetectConductorDirSplitBrain(); ok {
+		fmt.Fprintf(os.Stderr, "⚠  %s\n", msg)
+	}
+}
+
+// bridgeDaemonInstalled reports whether a conductor bridge daemon is currently
+// installed (launchd plist or systemd unit present on disk).
+func bridgeDaemonInstalled() bool {
+	if p, err := session.LaunchdPlistPath(); err == nil {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	if p, err := session.SystemdBridgeServicePath(); err == nil {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// handleConductorMigrateDir relocates the conductor base directory as one
+// explicit transaction: move/merge homes old→new, set [conductor].dir, and
+// reconcile path-baked artifacts (heartbeat scripts + daemons, bridge daemon)
+// so launchd/systemd invoke the new paths. Defaults to a dry-run; --apply
+// performs the move. This is the deliberate, destructive path the declarative
+// [conductor].dir override intentionally avoids.
+func handleConductorMigrateDir(_ string, args []string) {
+	fs := flag.NewFlagSet("conductor migrate-dir", flag.ExitOnError)
+	apply := fs.Bool("apply", false, "Perform the relocation (default is a dry-run that changes nothing)")
+	force := fs.Bool("force", false, "Merge into an existing destination per-file (destination wins on conflicts) instead of skipping")
+	from := fs.String("from", "", "Override the auto-detected source base directory")
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck conductor migrate-dir <new-path> [options]")
+		fmt.Println()
+		fmt.Println("Relocate the conductor base directory: move conductor homes to <new-path>,")
+		fmt.Println("set [conductor].dir, and reconcile path-baked heartbeat scripts/daemons and")
+		fmt.Println("the bridge daemon so the OS service managers invoke the new paths.")
+		fmt.Println()
+		fmt.Println("Runs as a DRY-RUN unless --apply is given.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+	}
+
+	// Extract positional new-path before flags (mirrors status).
+	var target string
+	var flagArgs []string
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			flagArgs = append(flagArgs, arg)
+		} else if target == "" {
+			target = arg
+		} else {
+			flagArgs = append(flagArgs, arg)
+		}
+	}
+	if err := fs.Parse(normalizeArgs(fs, flagArgs)); err != nil {
+		os.Exit(1)
+	}
+	if strings.TrimSpace(target) == "" {
+		fmt.Fprintln(os.Stderr, "Error: migrate-dir requires a target path")
+		fmt.Fprintln(os.Stderr)
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	res, err := session.MigrateConductorDir(session.ConductorDirMigrateOptions{
+		Target: target,
+		From:   *from,
+		Apply:  *apply,
+		Force:  *force,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: migrate-dir failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Daemon reconcile (apply only). This is the one place the launchctl/
+	// systemctl reload belongs — an explicit user command, not routine list/
+	// status. Each installer is idempotent (unload/write/load).
+	var reloadedHeartbeats []string
+	bridgeReloaded := false
+	if *apply {
+		globalInterval := 0
+		if cfg, cerr := session.LoadUserConfig(); cerr == nil {
+			globalInterval = cfg.Conductor.GetHeartbeatInterval()
+		}
+		for _, name := range res.Conductors {
+			meta, merr := session.LoadConductorMeta(name)
+			if merr != nil || !meta.HeartbeatEnabled {
+				continue
+			}
+			interval := meta.HeartbeatInterval
+			if interval <= 0 {
+				interval = globalInterval
+			}
+			if interval <= 0 {
+				continue
+			}
+			if derr := session.InstallHeartbeatDaemon(name, meta.Profile, interval); derr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to reload heartbeat daemon for %s: %v\n", name, derr)
+				continue
+			}
+			reloadedHeartbeats = append(reloadedHeartbeats, name)
+		}
+		// Reload the bridge daemon only if one is already installed.
+		if bridgeDaemonInstalled() {
+			if _, derr := session.InstallBridgeDaemon(); derr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to reload bridge daemon: %v\n", derr)
+			} else {
+				bridgeReloaded = true
+			}
+		}
+	}
+
+	if *jsonOutput {
+		out := map[string]any{
+			"dry_run":             res.DryRun,
+			"source":              res.Source,
+			"target":              res.Target,
+			"config_written":      res.ConfigWritten,
+			"bridge_reinstalled":  res.BridgeReinstalled,
+			"conductors":          res.Conductors,
+			"actions":             res.Actions,
+			"heartbeats_reloaded": reloadedHeartbeats,
+			"bridge_reloaded":     bridgeReloaded,
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+
+	printMigrateDirSummary(res, reloadedHeartbeats, bridgeReloaded)
+}
+
+// printMigrateDirSummary renders a human-readable migrate-dir result.
+func printMigrateDirSummary(res *session.ConductorDirMigrateResult, reloadedHeartbeats []string, bridgeReloaded bool) {
+	if res.DryRun {
+		fmt.Println("DRY-RUN — no changes made. Re-run with --apply to perform the relocation.")
+	} else {
+		fmt.Println("Conductor dir relocation complete.")
+	}
+	fmt.Println()
+	fmt.Printf("  Source: %s\n", res.Source)
+	fmt.Printf("  Target: %s\n", res.Target)
+	fmt.Println()
+
+	anySkipped := false
+	if len(res.Actions) == 0 {
+		fmt.Println("  (nothing to move — source and target match or source is empty)")
+	} else {
+		var moved, merged, skipped, transient int
+		for _, a := range res.Actions {
+			label := a.Name
+			if a.IsHome {
+				label += " (conductor)"
+			}
+			switch a.Action {
+			case "move":
+				moved++
+				fmt.Printf("  [move]  %s\n", label)
+			case "merge":
+				merged++
+				note := ""
+				if a.Conflict {
+					note = " — existing destination files preserved"
+				}
+				fmt.Printf("  [merge] %s%s\n", label, note)
+			case "skip-exists":
+				skipped++
+				anySkipped = true
+				fmt.Printf("  [skip]  %s — destination exists (use --force to merge)\n", label)
+			case "skip-transient":
+				transient++
+			}
+		}
+		fmt.Println()
+		fmt.Printf("  Summary: %d moved, %d merged, %d skipped, %d transient ignored\n", moved, merged, skipped, transient)
+	}
+
+	if !res.DryRun {
+		fmt.Println()
+		if res.ConfigWritten {
+			fmt.Println("  [ok] [conductor].dir written to config.toml")
+		}
+		if res.BridgeReinstalled {
+			fmt.Println("  [ok] bridge.py reinstalled at new base")
+		}
+		if len(reloadedHeartbeats) > 0 {
+			fmt.Printf("  [ok] heartbeat daemons reloaded: %s\n", strings.Join(reloadedHeartbeats, ", "))
+		}
+		if bridgeReloaded {
+			fmt.Println("  [ok] bridge daemon reloaded")
+		}
+	}
+
+	if anySkipped && res.DryRun {
+		fmt.Println()
+		fmt.Println("  Note: some destinations already exist; re-run with --apply --force to merge them.")
+	}
 }
 
 // handleConductorMove migrates a conductor (session row + all child sessions
