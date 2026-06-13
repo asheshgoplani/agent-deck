@@ -11227,8 +11227,13 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 			// view — not the one we first attached to — so the pre-highlight,
 			// Esc-reattach, and follow-CWD all target the right session.
 			fromID, fromWorkDir := inst.ID, currentWorkDir
+			// Consume the value: clear it so a switcher exit that bypasses the
+			// statusUpdateMsg path (e.g. Ctrl+Q out of the switcher) can't leave
+			// a stale ID to pre-highlight the wrong session on a later attach.
+			// The commit/Esc-reattach paths re-set it via attachToSwitchTarget.
 			h.lastNotifSwitchMu.Lock()
 			switchedID := h.lastNotifSwitchID
+			h.lastNotifSwitchID = ""
 			h.lastNotifSwitchMu.Unlock()
 			if switchedID != "" && switchedID != inst.ID {
 				h.instancesMu.RLock()
