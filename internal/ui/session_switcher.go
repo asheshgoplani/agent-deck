@@ -83,6 +83,13 @@ func NewSessionSwitcher() *SessionSwitcher { return &SessionSwitcher{} }
 // the overview shows next to an entry); a nil map renders no subtitles. It
 // returns false (and stays hidden) when fewer than two sessions are available —
 // there is nothing to switch between, so the caller falls back to a normal detach.
+//
+// Scope: the switcher is local-only by design — it takes local
+// *session.Instance rows and re-attaches via the local tmux attach loop. Remote
+// (SSH) sessions reach a session over a different attach path, so they are
+// intentionally excluded from the picker for now (see
+// TestSessionSwitcher_RemoteSessionsUnsupported); supporting them needs a remote
+// re-attach path and is tracked as a follow-up.
 func (s *SessionSwitcher) Show(fromID string, allInstances []*session.Instance, subtitles map[string]string) bool {
 	list := make([]*session.Instance, 0, len(allInstances))
 	for _, inst := range allInstances {
@@ -97,6 +104,10 @@ func (s *SessionSwitcher) Show(fromID string, allInstances []*session.Instance, 
 		list = append(list, inst)
 	}
 	if len(list) < 2 {
+		// Nothing to switch between. Clear any prior selection so a switcher that
+		// was already open (e.g. live-session count just dropped below two) does
+		// not linger on stale state — Show's contract is "stays hidden" here.
+		s.Hide()
 		return false
 	}
 
@@ -229,8 +240,17 @@ func (s *SessionSwitcher) View() string {
 	}
 
 	lines = append(lines, "")
+	// The forward/back cycle keys are fixed (the attach loop and
+	// handleSessionSwitcherKey both match Ctrl+S / Ctrl+A regardless of the
+	// configurable open binding), so the labels stay literal. Esc, however,
+	// re-attaches to the origin only when the picker was opened while attached;
+	// from the overview it just closes, so the hint reflects that.
+	escHint := "Esc close"
+	if s.reattachOnCancel {
+		escHint = "Esc back"
+	}
 	lines = append(lines, footerStyle.Render("Ctrl+S next · Ctrl+A prev"))
-	lines = append(lines, footerStyle.Render("↑/↓ browse · Enter attach · Esc back"))
+	lines = append(lines, footerStyle.Render("↑/↓ browse · Enter attach · "+escHint))
 
 	content := strings.Join(lines, "\n")
 

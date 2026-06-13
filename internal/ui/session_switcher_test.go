@@ -242,3 +242,68 @@ func TestSessionSwitcher_ViewRendersTitlesAndFooter(t *testing.T) {
 		t.Error("view should render the session's conversation subtitle")
 	}
 }
+
+// TestSessionSwitcher_FooterEscReflectsContext pins the Esc hint: it says
+// "Esc back" only when the picker was opened while attached (Esc re-attaches),
+// and "Esc close" when opened from the overview (Esc just closes).
+func TestSessionSwitcher_FooterEscReflectsContext(t *testing.T) {
+	InitTheme("dark")
+	sw := NewSessionSwitcher()
+	sw.SetSize(80, 24)
+
+	sw.Show("a", mruThree(), nil) // reattachOnCancel defaults to false (overview)
+	if v := sw.View(); !strings.Contains(v, "Esc close") || strings.Contains(v, "Esc back") {
+		t.Errorf("overview-opened footer should say 'Esc close', got:\n%s", v)
+	}
+
+	sw.reattachOnCancel = true // opened while attached
+	if v := sw.View(); !strings.Contains(v, "Esc back") {
+		t.Errorf("attached-opened footer should say 'Esc back', got:\n%s", v)
+	}
+}
+
+// TestSessionSwitcher_RemoteSessionsUnsupported documents a deliberate scope
+// decision flagged by the Remote_parity check: the in-attach switcher operates
+// on local *session.Instance rows and re-attaches via the local tmux attach
+// loop only. Remote (SSH) sessions use a separate attach path, so they are
+// intentionally excluded from the picker for now — mirroring them would require
+// a remote re-attach path that is out of scope for this feature. Tracked as a
+// follow-up. See SessionSwitcher.Show / Home.openSessionSwitcher.
+func TestSessionSwitcher_RemoteSessionsUnsupported(t *testing.T) {
+	t.Skip("by design: the session switcher is local-only; remote (SSH) sessions use a separate attach path — follow-up tracked")
+}
+
+// TestCtrlS_NewDialogOpen_DoesNotOpenSwitcher guards the binding collision the
+// maintainer flagged: as of v1.9.57 the new-session dialog uses Ctrl+S as its
+// submit key, so the overview Ctrl+S switcher must never fire while that dialog
+// is open. The protection is the modal-dispatch order in Update (newDialog is
+// checked before handleMainKey, where the overview Ctrl+S lives); this pins
+// that contract end-to-end through Update.
+func TestCtrlS_NewDialogOpen_DoesNotOpenSwitcher(t *testing.T) {
+	h := &Home{
+		setupWizard:     NewSetupWizard(),
+		watcherPanel:    NewWatcherPanel(),
+		settingsPanel:   NewSettingsPanel(),
+		helpOverlay:     NewHelpOverlay(),
+		search:          NewSearch(),
+		globalSearch:    NewGlobalSearch(),
+		newDialog:       NewNewDialog(),
+		sessionSwitcher: NewSessionSwitcher(),
+	}
+	// Two live sessions, so the switcher *could* open if routing were wrong.
+	h.instances = []*session.Instance{
+		{ID: "a", Status: session.StatusRunning, LastAccessedAt: time.Unix(1000, 0)},
+		{ID: "b", Status: session.StatusRunning, LastAccessedAt: time.Unix(900, 0)},
+	}
+	h.instanceByID = map[string]*session.Instance{"a": h.instances[0], "b": h.instances[1]}
+	h.newDialog.Show() // the new-session dialog is now the active modal
+
+	if _, _ = h.Update(tea.KeyMsg{Type: tea.KeyCtrlS}); h.sessionSwitcher.IsVisible() {
+		t.Fatal("Ctrl+S while the new-session dialog is open must NOT open the session switcher (dialog submit takes precedence)")
+	}
+	// The dialog stays open: an empty-name submit is a validation no-op, proving
+	// Ctrl+S was routed to the dialog rather than the switcher.
+	if !h.newDialog.IsVisible() {
+		t.Fatal("the new-session dialog should remain open after an empty-name Ctrl+S submit")
+	}
+}

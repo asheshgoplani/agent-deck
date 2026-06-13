@@ -115,8 +115,45 @@ func currentTmuxThemeStyle() tmuxThemeStyle {
 	}
 }
 
+// Status-bar hint labels. The attach loop's detach/switch keys are configurable
+// ([hotkeys].detach / [hotkeys].switch_session), so the status-right hint must
+// follow the resolved bindings instead of hardcoding them. The UI layer pushes
+// the resolved labels here via SetStatusHints whenever hotkeys are (re)resolved;
+// the defaults keep the hint correct for the default config before that first
+// call. switchHintEnabled is false when the switch key is unbound or collides
+// with detach (the attach loop drops it in those cases), so the hint then omits
+// the switch segment.
+var (
+	statusHintMu      sync.RWMutex
+	detachHintLabel   = "ctrl+q"
+	switchHintLabel   = "ctrl+s"
+	switchHintEnabled = true
+)
+
+// SetStatusHints updates the detach/switch key labels shown in the tmux
+// status-right bar. Empty labels are ignored (the existing value is kept).
+func SetStatusHints(detach, switchKey string, switchEnabled bool) {
+	statusHintMu.Lock()
+	defer statusHintMu.Unlock()
+	if detach != "" {
+		detachHintLabel = detach
+	}
+	if switchKey != "" {
+		switchHintLabel = switchKey
+	}
+	switchHintEnabled = switchEnabled
+}
+
 func (s *Session) themedStatusRight(themeStyle tmuxThemeStyle) string {
-	return fmt.Sprintf("#[fg=%s]ctrl+q detach#[default] · #[fg=%s]ctrl+s switch#[default] │ 📁 %s | %s ", themeStyle.hintColor, themeStyle.hintColor, s.DisplayName, s.projectDisplayName())
+	statusHintMu.RLock()
+	detach, switchKey, switchOn := detachHintLabel, switchHintLabel, switchHintEnabled
+	statusHintMu.RUnlock()
+
+	hints := fmt.Sprintf("#[fg=%s]%s detach#[default]", themeStyle.hintColor, detach)
+	if switchOn {
+		hints += fmt.Sprintf(" · #[fg=%s]%s switch#[default]", themeStyle.hintColor, switchKey)
+	}
+	return fmt.Sprintf("%s │ 📁 %s | %s ", hints, s.DisplayName, s.projectDisplayName())
 }
 
 func (s *Session) projectDisplayName() string {
