@@ -1,0 +1,68 @@
+direction: down
+
+title: {
+  label: Conductor Overview
+  near: top-center
+  style.font-size: 20
+  style.bold: true
+}
+
+user: User {
+  shape: person
+}
+
+tui: TUI / CLI {
+  shape: rectangle
+  style.border-radius: 8
+}
+
+channels: Remote Channels {
+  style.border-radius: 8
+  telegram: Telegram
+  slack: Slack
+  discord: Discord
+}
+
+conductor: Conductor {
+  style.border-radius: 8
+  style.font-size: 16
+  style.bold: true
+
+  state: |md
+    - status: running
+    - pid: 4242
+    - uptime: 2d 14h 32m
+    - children: 4
+    - events: 12847
+  |
+}
+
+watchers: Watchers {
+  style.border-radius: 8
+  gmail: Gmail (IMAP)
+  github: GitHub Webhook
+  cron: Cron (Schedule)
+}
+
+children: {
+  style.border-radius: 8
+  child1: "Child 1\nrunning" {
+    style.border-radius: 8
+  }
+  child2: "Child 2\nbusy" {
+    style.border-radius: 8
+  }
+  child3: "Child 3\nidle" {
+    style.border-radius: 8
+  }
+  child4: "Child 4\noffline" {
+    style.border-radius: 8
+  }
+}
+
+user -> tui: direct
+user -> channels: remote (optional)
+tui -> conductor
+channels -> conductor: bridge
+watchers -> conductor: doorbell
+conductor -> children: launch / monitor
