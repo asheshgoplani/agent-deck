@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -63,16 +64,23 @@ type TransitionDaemon struct {
 	// created). Driven by this poll loop — NOT a new daemon (F3: no watchdog
 	// stacking). nil until the first enabled pass.
 	selfheal *selfHealRegistry
+
+	// lastProbeStall rate-limits the probe-stall breadcrumb per (profile|key)
+	// so a permanently wedged instance — which times out again on every poll —
+	// logs at most once per probeStallLogInterval instead of flooding the log
+	// every few seconds. Accessed only from the single-threaded Run loop.
+	lastProbeStall map[string]time.Time
 }
 
 func NewTransitionDaemon() *TransitionDaemon {
 	return &TransitionDaemon{
-		notifier:     NewTransitionNotifier(),
-		storages:     map[string]*Storage{},
-		lastStatus:   map[string]map[string]string{},
-		initialized:  map[string]bool{},
-		lastDone:     map[string]map[string]DoneSignal{},
-		lastDoneScan: map[string]map[string]time.Time{},
+		notifier:       NewTransitionNotifier(),
+		storages:       map[string]*Storage{},
+		lastStatus:     map[string]map[string]string{},
+		initialized:    map[string]bool{},
+		lastDone:       map[string]map[string]DoneSignal{},
+		lastDoneScan:   map[string]map[string]time.Time{},
+		lastProbeStall: map[string]time.Time{},
 	}
 }
 
@@ -179,6 +187,121 @@ func (d *TransitionDaemon) maybeSweepInboxTTL() {
 	_, _ = SweepInboxByTTL(InboxTTL())
 }
 
+// statusProbeBudget bounds a single instance's status refresh in the
+// no-live-TUI sync path. The notify-daemon recurring-freeze bug: Run is a
+// single-threaded poll loop, so a status probe that never returns — a wedged
+// tmux pane, a stuck tmux server, a session whose query hangs, or lock
+// contention on inst.mu behind an earlier hung probe — froze the entire
+// delivery loop and muted every profile until launchctl kickstart. The
+// underlying tmux subprocesses are individually context-bounded (CapturePane
+// 3s, Exists 2s, IsPaneDead 2s, WaitDelay 2s); this budget is the loop-level
+// backstop that keeps the daemon alive even if some future call site is added
+// without its own timeout, or several probes pile up at once.
+var statusProbeBudget = 6 * time.Second
+
+// syncPassBudget bounds the cumulative time one no-live-TUI pass spends probing
+// instance status. Past it the remaining instances keep their last-known status
+// for this pass and are retried next pass, so a burst of simultaneously wedged
+// tmux servers can't stretch a single pass without bound (worst case otherwise
+// is instanceCount × statusProbeBudget).
+var syncPassBudget = 30 * time.Second
+
+// probeStallLogInterval rate-limits the per-(profile,instance) probe-stall
+// breadcrumb so a permanently wedged instance doesn't flood the log.
+const probeStallLogInterval = time.Minute
+
+// statusProbeFunc is the signature of the swappable status-probe seam.
+type statusProbeFunc = func(inst *Instance) error
+
+// updateInstanceStatus is the swappable status-probe seam used by the
+// no-live-TUI sync path, held in an atomic.Value so the production read at
+// probe-spawn time stays race-free against tests that swap it (a detached probe
+// goroutine may still be parked when a test restores the seam). Production
+// points it at (*Instance).UpdateStatus, set once in init; tests Store a
+// controllable blocking probe to prove a hung tmux call can't freeze the loop.
+var updateInstanceStatus atomic.Value
+
+func init() {
+	updateInstanceStatus.Store(statusProbeFunc(func(inst *Instance) error { return inst.UpdateStatus() }))
+}
+
+// refreshInstanceStatusBounded runs the status probe for inst under
+// statusProbeBudget. It returns timedOut=true when the probe didn't finish in
+// time, in which case a detached goroutine is still inside UpdateStatus —
+// possibly holding inst.mu — and the caller must NOT read lock-guarded instance
+// state (it would block on that same lock and re-freeze the loop).
+//
+// Why a goroutine budget and not only the per-subprocess timeouts: the tmux
+// execs already use exec.CommandContext, but UpdateStatus also takes inst.mu and
+// can serialize behind a previous hung probe on the same instance, and not every
+// reachable call site (e.g. a future helper) is guaranteed to carry its own
+// deadline. We deliberately accept a possibly-leaked goroutine over a leaked
+// lock: we never block the loop waiting on inst.mu, a still-hung instance simply
+// times out again next pass instead of wedging the daemon, and the leak is
+// bounded in practice because the subprocess context timeouts let the detached
+// probe return within a few seconds.
+func (d *TransitionDaemon) refreshInstanceStatusBounded(profile string, inst *Instance) (timedOut bool) {
+	probe := updateInstanceStatus.Load().(statusProbeFunc)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = probe(inst)
+	}()
+	select {
+	case <-done:
+		return false
+	case <-time.After(statusProbeBudget):
+		d.logProbeStall(profile, inst.ID, "probe_budget")
+		return true
+	}
+}
+
+// logProbeStall appends a breadcrumb to notifier-probe-stalls.log when a status
+// probe (or a whole pass) exceeds its budget, mirroring the notifier-missed.log
+// diagnostic idiom so a future hang is visible and the daemon's self-recovery is
+// auditable. Rate-limited per (profile|key) to probeStallLogInterval.
+func (d *TransitionDaemon) logProbeStall(profile, instanceID, reason string) {
+	dedupKey := profile + "|" + instanceID + "|" + reason
+	now := time.Now()
+	if d.lastProbeStall == nil {
+		d.lastProbeStall = map[string]time.Time{}
+	}
+	if last, ok := d.lastProbeStall[dedupKey]; ok && now.Sub(last) < probeStallLogInterval {
+		return
+	}
+	d.lastProbeStall[dedupKey] = now
+
+	path := notifierProbeStallLogPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	entry := map[string]any{
+		"ts":       now.Format(time.RFC3339Nano),
+		"profile":  profile,
+		"instance": instanceID,
+		"reason":   reason,
+		"budget":   statusProbeBudget.String(),
+	}
+	line, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(line, '\n'))
+}
+
+func notifierProbeStallLogPath() string {
+	path, err := logDataPath("notifier-probe-stalls.log")
+	if err != nil {
+		return tempAgentDeckPath("logs", "notifier-probe-stalls.log")
+	}
+	return path
+}
+
 func profilesForTransitionDaemon() []string {
 	profiles, err := ListProfiles()
 	if err != nil || len(profiles) == 0 {
@@ -249,9 +372,38 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			}
 		}
 	} else {
+		// No live TUI: the daemon is the only thing refreshing status, so it
+		// must probe each instance via tmux itself. This loop is the freeze
+		// surface — Run is single-threaded (SyncOnce → syncProfile →
+		// UpdateStatus per instance), so any probe that blocks here mutes the
+		// whole daemon for every profile until launchctl kickstart. Bound each
+		// probe (statusProbeBudget) and the cumulative pass (syncPassBudget) so
+		// one wedged tmux call — or a burst of them during a busy sprint — can't
+		// wedge delivery. See refreshInstanceStatusBounded for the lock
+		// reasoning.
+		passStart := time.Now()
+		passBudgetSpent := false
 		for _, inst := range instances {
 			previousStatus := normalizeStatusString(string(inst.Status))
-			_ = inst.UpdateStatus()
+			if passBudgetSpent || time.Since(passStart) > syncPassBudget {
+				if !passBudgetSpent {
+					passBudgetSpent = true
+					d.logProbeStall(profile, "", "pass_budget")
+				}
+				// Out of pass budget: keep last-known status for the remaining
+				// instances and retry them next pass rather than stretching this
+				// one without bound.
+				statuses[inst.ID] = previousStatus
+				continue
+			}
+			if d.refreshInstanceStatusBounded(profile, inst) {
+				// Probe exceeded its per-instance budget. A detached goroutine is
+				// still inside UpdateStatus and may hold inst.mu, so reading
+				// GetStatusThreadSafe would block on that same lock — fall back to
+				// the last-known status and keep the loop delivering.
+				statuses[inst.ID] = previousStatus
+				continue
+			}
 			status := normalizeStatusString(string(inst.GetStatusThreadSafe()))
 			statuses[inst.ID] = status
 			if db != nil && status != previousStatus {

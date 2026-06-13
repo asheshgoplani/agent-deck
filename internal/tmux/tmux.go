@@ -2153,8 +2153,15 @@ func (s *Session) IsPaneDead() bool {
 	if info, ok := GetCachedPaneInfo(s.Name); ok {
 		return info.Dead
 	}
-	// Cache miss: direct tmux check targeting the primary pane.
-	out, err := s.tmuxCmd("list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}").Output()
+	// Cache miss: direct tmux check targeting the primary pane. Bound it the
+	// same way Exists() bounds has-session — a wedged tmux server must not hang
+	// this probe, since it runs under the notify-daemon's single-threaded poll
+	// loop (via UpdateStatus → GetStatus) where a stall freezes all delivery.
+	// A timed-out (indeterminate) probe is treated as "not dead": reporting a
+	// live pane as dead would flip the session to an error state.
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+	out, err := s.tmuxCmdContext(ctx, "list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}").Output()
 	if err != nil {
 		return false
 	}
