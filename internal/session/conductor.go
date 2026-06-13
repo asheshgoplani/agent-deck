@@ -457,8 +457,23 @@ func LoadConductorMeta(name string) (*ConductorMeta, error) {
 	return &meta, nil
 }
 
-// SaveConductorMeta writes meta.json for a conductor
+// SaveConductorMeta writes meta.json for a conductor. It takes the conductor
+// base lock so a write cannot interleave with an in-flight `migrate-dir`
+// (enumerate→copy→verify→commit→remove) and be stranded at the old base or
+// deleted with the source tree (finding #5). Internal callers that already hold
+// the lock must use saveConductorMetaLocked instead.
 func SaveConductorMeta(meta *ConductorMeta) error {
+	lock, err := acquireConductorBaseLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	return saveConductorMetaLocked(meta)
+}
+
+// saveConductorMetaLocked is the unlocked body of SaveConductorMeta. The caller
+// MUST already hold the conductor base lock.
+func saveConductorMetaLocked(meta *ConductorMeta) error {
 	if meta == nil {
 		return fmt.Errorf("conductor metadata cannot be nil")
 	}
@@ -610,6 +625,16 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 	}
 	profile = normalizeConductorProfile(profile)
 
+	// Hold the conductor base lock for the whole setup so a concurrent
+	// `migrate-dir` cannot relocate the base out from under a half-written home
+	// (finding #5). The meta write below uses the unlocked saveConductorMetaLocked
+	// to avoid re-acquiring the non-reentrant lock.
+	lock, err := acquireConductorBaseLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+
 	// Load any existing meta up front: it gates the profile-mismatch guard AND
 	// lets a re-run preserve user-state fields that aren't re-passed as flags
 	// (merge, don't clobber).
@@ -737,7 +762,7 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 	} else if existing != nil {
 		meta.HeartbeatIdleMinutes = existing.HeartbeatIdleMinutes
 	}
-	if err := SaveConductorMeta(meta); err != nil {
+	if err := saveConductorMetaLocked(meta); err != nil {
 		return fmt.Errorf("failed to write meta.json: %w", err)
 	}
 

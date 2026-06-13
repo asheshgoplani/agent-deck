@@ -1484,12 +1484,14 @@ func handleConductorMigrateDir(_ string, args []string) {
 		os.Exit(1)
 	}
 
-	// Daemon reconcile (apply only). This is the one place the launchctl/
-	// systemctl reload belongs — an explicit user command, not routine list/
-	// status. Each installer is idempotent (unload/write/load).
+	// Daemon reconcile (apply only, and only when the migration actually
+	// committed — a refused migration mutated nothing, so there is nothing to
+	// reload). This is the one place the launchctl/systemctl reload belongs — an
+	// explicit user command, not routine list/status. Each installer is
+	// idempotent (unload/write/load).
 	var reloadedHeartbeats []string
 	bridgeReloaded := false
-	if *apply {
+	if *apply && !res.Refused {
 		globalInterval := 0
 		if cfg, cerr := session.LoadUserConfig(); cerr == nil {
 			globalInterval = cfg.Conductor.GetHeartbeatInterval()
@@ -1524,29 +1526,45 @@ func handleConductorMigrateDir(_ string, args []string) {
 
 	if *jsonOutput {
 		out := map[string]any{
-			"dry_run":             res.DryRun,
-			"source":              res.Source,
-			"target":              res.Target,
-			"config_written":      res.ConfigWritten,
-			"bridge_reinstalled":  res.BridgeReinstalled,
-			"conductors":          res.Conductors,
-			"actions":             res.Actions,
-			"heartbeats_reloaded": reloadedHeartbeats,
-			"bridge_reloaded":     bridgeReloaded,
+			"dry_run":                 res.DryRun,
+			"source":                  res.Source,
+			"target":                  res.Target,
+			"config_written":          res.ConfigWritten,
+			"bridge_reinstalled":      res.BridgeReinstalled,
+			"conductors":              res.Conductors,
+			"actions":                 res.Actions,
+			"refused":                 res.Refused,
+			"blockers":                res.Blockers,
+			"source_removal_warnings": res.SourceRemovalWarnings,
+			"heartbeats_reloaded":     reloadedHeartbeats,
+			"bridge_reloaded":         bridgeReloaded,
 		}
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))
+		// An apply that refused to mutate is a failure for scripting purposes.
+		if *apply && res.Refused {
+			os.Exit(1)
+		}
 		return
 	}
 
 	printMigrateDirSummary(res, reloadedHeartbeats, bridgeReloaded)
+
+	// An apply that refused to mutate exits non-zero so the operator (or a
+	// script) sees it did NOT relocate anything.
+	if *apply && res.Refused {
+		os.Exit(1)
+	}
 }
 
 // printMigrateDirSummary renders a human-readable migrate-dir result.
 func printMigrateDirSummary(res *session.ConductorDirMigrateResult, reloadedHeartbeats []string, bridgeReloaded bool) {
-	if res.DryRun {
+	switch {
+	case res.DryRun:
 		fmt.Println("DRY-RUN — no changes made. Re-run with --apply to perform the relocation.")
-	} else {
+	case res.Refused:
+		fmt.Println("REFUSED — nothing was moved and [conductor].dir was NOT changed.")
+	default:
 		fmt.Println("Conductor dir relocation complete.")
 	}
 	fmt.Println()
@@ -1555,10 +1573,11 @@ func printMigrateDirSummary(res *session.ConductorDirMigrateResult, reloadedHear
 	fmt.Println()
 
 	anySkipped := false
+	anyReject := false
 	if len(res.Actions) == 0 {
 		fmt.Println("  (nothing to move — source and target match or source is empty)")
 	} else {
-		var moved, merged, skipped, transient int
+		var moved, merged, skipped, rejected, transient int
 		for _, a := range res.Actions {
 			label := a.Name
 			if a.IsHome {
@@ -1567,27 +1586,41 @@ func printMigrateDirSummary(res *session.ConductorDirMigrateResult, reloadedHear
 			switch a.Action {
 			case "move":
 				moved++
-				fmt.Printf("  [move]  %s\n", label)
+				fmt.Printf("  [move]   %s\n", label)
 			case "merge":
 				merged++
 				note := ""
 				if a.Conflict {
 					note = " — existing destination files preserved"
 				}
-				fmt.Printf("  [merge] %s%s\n", label, note)
+				fmt.Printf("  [merge]  %s%s\n", label, note)
 			case "skip-exists":
 				skipped++
 				anySkipped = true
-				fmt.Printf("  [skip]  %s — destination exists (use --force to merge)\n", label)
+				fmt.Printf("  [skip]   %s — destination exists (use --force to merge)\n", label)
+			case "reject-conflict":
+				rejected++
+				anyReject = true
+				fmt.Printf("  [reject] %s — %s\n", label, a.Reason)
 			case "skip-transient":
 				transient++
 			}
 		}
 		fmt.Println()
-		fmt.Printf("  Summary: %d moved, %d merged, %d skipped, %d transient ignored\n", moved, merged, skipped, transient)
+		fmt.Printf("  Summary: %d moved, %d merged, %d skipped, %d rejected, %d transient ignored\n",
+			moved, merged, skipped, rejected, transient)
 	}
 
-	if !res.DryRun {
+	// Blockers explain why an apply refused (or why a dry-run would refuse).
+	if len(res.Blockers) > 0 {
+		fmt.Println()
+		fmt.Println("  Blockers (the migration cannot proceed until these are resolved):")
+		for _, b := range res.Blockers {
+			fmt.Printf("    - %s\n", b)
+		}
+	}
+
+	if !res.DryRun && !res.Refused {
 		fmt.Println()
 		if res.ConfigWritten {
 			fmt.Println("  [ok] [conductor].dir written to config.toml")
@@ -1601,11 +1634,23 @@ func printMigrateDirSummary(res *session.ConductorDirMigrateResult, reloadedHear
 		if bridgeReloaded {
 			fmt.Println("  [ok] bridge daemon reloaded")
 		}
+		if len(res.SourceRemovalWarnings) > 0 {
+			fmt.Println()
+			fmt.Println("  Warning: config committed and durable records are at the target, but some")
+			fmt.Println("  sources could not be removed (harmless duplicates at the old base):")
+			for _, w := range res.SourceRemovalWarnings {
+				fmt.Printf("    - %s\n", w)
+			}
+		}
 	}
 
-	if anySkipped && res.DryRun {
+	if res.DryRun && (anySkipped || anyReject) {
 		fmt.Println()
-		fmt.Println("  Note: some destinations already exist; re-run with --apply --force to merge them.")
+		if anySkipped && !anyReject {
+			fmt.Println("  Note: some destinations already exist; re-run with --apply --force to merge them.")
+		} else {
+			fmt.Println("  Note: this plan would be REFUSED as-is — resolve the blockers above first.")
+		}
 	}
 }
 

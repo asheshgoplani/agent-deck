@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -209,6 +210,267 @@ func TestMigrateConductorDir_ForceMergesPreservingDest(t *testing.T) {
 	}
 	if !merged {
 		t.Fatal("expected a merge action for alpha")
+	}
+}
+
+// Finding #1: a conductor whose meta.json differs in source AND target must NOT
+// be merge-then-deleted under --force — the source's only durable record would
+// be destroyed. It is rejected, the whole migration refused, and both copies
+// survive.
+func TestMigrateConductorDir_ForceRejectsDifferingMetaPreservesSource(t *testing.T) {
+	_, _, xdgDataHome := setupSessionXDGPathEnv(t)
+	defaultBase := filepath.Join(xdgDataHome, "agent-deck", "conductor")
+	srcMeta := `{"name":"alpha","profile":"default","description":"SOURCE record"}`
+	dstMeta := `{"name":"alpha","profile":"default","description":"DEST record"}`
+	writeConductorHome(t, defaultBase, "alpha", map[string]string{"meta.json": srcMeta})
+	target := filepath.Join(t.TempDir(), "vault-conductors")
+	writeConductorHome(t, target, "alpha", map[string]string{"meta.json": dstMeta})
+
+	res, err := MigrateConductorDir(ConductorDirMigrateOptions{Target: target, Apply: true, Force: true})
+	if err != nil {
+		t.Fatalf("MigrateConductorDir: %v", err)
+	}
+	if !res.Refused {
+		t.Fatal("expected the migration to be refused (differing meta.json under --force)")
+	}
+	if res.ConfigWritten {
+		t.Fatal("config must NOT be repointed when a conductor is rejected")
+	}
+	if len(res.Blockers) == 0 {
+		t.Fatal("expected a blocker explaining the refusal")
+	}
+	// The source's durable record survives byte-for-byte; nothing deleted.
+	assertFileContains(t, filepath.Join(defaultBase, "alpha", "meta.json"), "SOURCE record")
+	assertFileContains(t, filepath.Join(target, "alpha", "meta.json"), "DEST record")
+	// Resolver still points at the (unchanged) default base.
+	if cd, _ := ConductorDir(); cd != defaultBase {
+		t.Fatalf("ConductorDir() = %q, want unchanged default %q", cd, defaultBase)
+	}
+	// The action records the rejection with a reason.
+	var rejected bool
+	for _, a := range res.Actions {
+		if a.Name == "alpha" {
+			if a.Action != "reject-conflict" {
+				t.Fatalf("alpha action = %q, want reject-conflict", a.Action)
+			}
+			if !strings.Contains(a.Reason, "differs") {
+				t.Fatalf("reject reason = %q, want it to mention the meta.json differs", a.Reason)
+			}
+			rejected = true
+		}
+	}
+	if !rejected {
+		t.Fatal("no reject-conflict action recorded for alpha")
+	}
+}
+
+// Finding #2: if ANY home is skipped/left behind, [conductor].dir must NOT be
+// repointed — the flip is all-or-nothing. Here a clean home (beta) and a
+// dest-exists home (alpha, no --force) share the source; the whole migration is
+// refused and the resolver is left unchanged so no home is stranded invisibly.
+func TestMigrateConductorDir_SkippedHomeAbortsConfigFlip(t *testing.T) {
+	_, _, xdgDataHome := setupSessionXDGPathEnv(t)
+	defaultBase := filepath.Join(xdgDataHome, "agent-deck", "conductor")
+	writeConductorHome(t, defaultBase, "alpha", map[string]string{"meta.json": `{"name":"alpha","profile":"default"}`})
+	writeConductorHome(t, defaultBase, "beta", map[string]string{"meta.json": `{"name":"beta","profile":"default"}`})
+	target := filepath.Join(t.TempDir(), "vault-conductors")
+	// alpha already exists at target → skip-exists without --force.
+	writeConductorHome(t, target, "alpha", map[string]string{"meta.json": `{"name":"alpha","profile":"default"}`})
+
+	res, err := MigrateConductorDir(ConductorDirMigrateOptions{Target: target, Apply: true})
+	if err != nil {
+		t.Fatalf("MigrateConductorDir: %v", err)
+	}
+	if !res.Refused || res.ConfigWritten {
+		t.Fatalf("expected refusal with no config flip: Refused=%v ConfigWritten=%v", res.Refused, res.ConfigWritten)
+	}
+	// Both sources untouched (clean home NOT moved either — all-or-nothing).
+	assertFileContains(t, filepath.Join(defaultBase, "alpha", "meta.json"), "alpha")
+	assertFileContains(t, filepath.Join(defaultBase, "beta", "meta.json"), "beta")
+	assertNotExist(t, filepath.Join(target, "beta"))
+	// Resolver unchanged → the stranded-at-old-base failure mode cannot happen.
+	if cd, _ := ConductorDir(); cd != defaultBase {
+		t.Fatalf("ConductorDir() = %q, want unchanged default %q", cd, defaultBase)
+	}
+}
+
+// Finding #3: a failure BEFORE the config commit (here the copy phase fails
+// because the target's parent is a regular file) leaves every source intact and
+// the config unchanged — fully recoverable, never a half-applied durable record.
+func TestMigrateConductorDir_CopyFailureLeavesSourcesIntact(t *testing.T) {
+	_, _, xdgDataHome := setupSessionXDGPathEnv(t)
+	defaultBase := filepath.Join(xdgDataHome, "agent-deck", "conductor")
+	writeConductorHome(t, defaultBase, "alpha", map[string]string{
+		"meta.json": `{"name":"alpha","profile":"default","description":"durable"}`,
+		"CLAUDE.md": "edited",
+	})
+	// A regular file standing where the target's parent dir must be → MkdirAll
+	// (and thus the copy) fails deterministically, before any config commit.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(blocker, "conductors")
+
+	res, err := MigrateConductorDir(ConductorDirMigrateOptions{Target: target, Apply: true})
+	if err == nil {
+		t.Fatal("expected the copy phase to fail")
+	}
+	if res != nil && res.ConfigWritten {
+		t.Fatal("config must NOT be committed when the copy phase fails")
+	}
+	// Source survives intact — durable record AND user state recoverable.
+	assertFileContains(t, filepath.Join(defaultBase, "alpha", "meta.json"), "durable")
+	assertFileContains(t, filepath.Join(defaultBase, "alpha", "CLAUDE.md"), "edited")
+	if cd, _ := ConductorDir(); cd != defaultBase {
+		t.Fatalf("ConductorDir() = %q, want unchanged default %q", cd, defaultBase)
+	}
+}
+
+// Finding #4: source/target overlap is rejected up front (containment in either
+// direction), while the exact no-op is allowed.
+func TestMigrateConductorDir_RejectsOverlap(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	root := t.TempDir()
+	parent := filepath.Join(root, "a")
+	child := filepath.Join(parent, "sub")
+
+	// target inside source.
+	if _, err := MigrateConductorDir(ConductorDirMigrateOptions{From: parent, Target: child, Apply: false}); err == nil {
+		t.Fatal("expected target-inside-source to be rejected")
+	} else if !strings.Contains(err.Error(), "inside") {
+		t.Fatalf("error = %v, want it to mention containment", err)
+	}
+	// source inside target.
+	if _, err := MigrateConductorDir(ConductorDirMigrateOptions{From: child, Target: parent, Apply: false}); err == nil {
+		t.Fatal("expected source-inside-target to be rejected")
+	} else if !strings.Contains(err.Error(), "inside") {
+		t.Fatalf("error = %v, want it to mention containment", err)
+	}
+	// Exact no-op (target == source) is allowed.
+	if _, err := MigrateConductorDir(ConductorDirMigrateOptions{From: parent, Target: parent, Apply: false}); err != nil {
+		t.Fatalf("exact no-op should be allowed, got %v", err)
+	}
+}
+
+// Finding #7: a dry-run with a conflicting destination enumerates and reports the
+// would-be rejection and mutates nothing.
+func TestMigrateConductorDir_DryRunReportsConflictsNoMutation(t *testing.T) {
+	_, _, xdgDataHome := setupSessionXDGPathEnv(t)
+	defaultBase := filepath.Join(xdgDataHome, "agent-deck", "conductor")
+	writeConductorHome(t, defaultBase, "alpha", map[string]string{"meta.json": `{"name":"alpha","profile":"default","description":"src"}`})
+	target := filepath.Join(t.TempDir(), "vault-conductors")
+	writeConductorHome(t, target, "alpha", map[string]string{"meta.json": `{"name":"alpha","profile":"default","description":"dst"}`})
+
+	res, err := MigrateConductorDir(ConductorDirMigrateOptions{Target: target, Apply: false, Force: true})
+	if err != nil {
+		t.Fatalf("MigrateConductorDir: %v", err)
+	}
+	if !res.DryRun {
+		t.Fatal("expected a dry-run result")
+	}
+	if !res.Refused || len(res.Blockers) == 0 {
+		t.Fatalf("dry-run should flag the would-be refusal: Refused=%v Blockers=%v", res.Refused, res.Blockers)
+	}
+	var sawReject bool
+	for _, a := range res.Actions {
+		if a.Name == "alpha" && a.Action == "reject-conflict" {
+			sawReject = true
+		}
+	}
+	if !sawReject {
+		t.Fatal("dry-run did not report the reject-conflict for alpha")
+	}
+	// Nothing mutated: both metas as authored, config untouched.
+	assertFileContains(t, filepath.Join(defaultBase, "alpha", "meta.json"), "src")
+	assertFileContains(t, filepath.Join(target, "alpha", "meta.json"), "dst")
+	if cd, _ := ConductorDir(); cd != defaultBase {
+		t.Fatalf("ConductorDir() = %q, want unchanged default %q", cd, defaultBase)
+	}
+}
+
+// Finding #6: a symlink inside a source home that points OUTSIDE the base is
+// relocated verbatim as a symlink — never followed/copied-through — so the
+// external target's contents are not pulled into the new base and nothing is
+// written outside it.
+func TestMigrateConductorDir_DoesNotFollowSymlinksOutOfBase(t *testing.T) {
+	_, _, xdgDataHome := setupSessionXDGPathEnv(t)
+	defaultBase := filepath.Join(xdgDataHome, "agent-deck", "conductor")
+
+	external := t.TempDir()
+	secret := filepath.Join(external, "secret.txt")
+	if err := os.WriteFile(secret, []byte("OUTSIDE DATA"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	home := writeConductorHome(t, defaultBase, "alpha", map[string]string{"meta.json": `{"name":"alpha","profile":"default"}`})
+	link := filepath.Join(home, "escape")
+	if err := os.Symlink(external, link); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(t.TempDir(), "vault-conductors")
+	if _, err := MigrateConductorDir(ConductorDirMigrateOptions{Target: target, Apply: true}); err != nil {
+		t.Fatalf("MigrateConductorDir: %v", err)
+	}
+
+	// The link is recreated AS a symlink, not dereferenced into a real dir/file.
+	dstLink := filepath.Join(target, "alpha", "escape")
+	info, err := os.Lstat(dstLink)
+	if err != nil {
+		t.Fatalf("Lstat(%q): %v", dstLink, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected %q to remain a symlink, got mode %v", dstLink, info.Mode())
+	}
+	// The external content was NOT copied through into the new base as a real file.
+	if _, err := os.Lstat(filepath.Join(target, "alpha", "escape", "secret.txt")); err == nil {
+		// Reachable only THROUGH the symlink; assert it is not a real copied file.
+		realCopy := filepath.Join(target, "alpha", "secret.txt")
+		if _, err := os.Lstat(realCopy); err == nil {
+			t.Fatal("symlink target contents were copied through into the base")
+		}
+	}
+	// The external data is untouched.
+	assertFileContains(t, secret, "OUTSIDE DATA")
+}
+
+// Finding #5: a concurrent meta write racing the migration cannot strand or lose
+// the conductor's durable record. Regardless of which side wins the conductor
+// base lock first, the racing conductor's meta.json ends up readable at the
+// committed target. Run under -race to confirm no data race on the shared lock.
+func TestMigrateConductorDir_ConcurrentMetaWriteNotStranded(t *testing.T) {
+	_, _, xdgDataHome := setupSessionXDGPathEnv(t)
+	defaultBase := filepath.Join(xdgDataHome, "agent-deck", "conductor")
+	writeConductorHome(t, defaultBase, "alpha", map[string]string{"meta.json": `{"name":"alpha","agent":"claude","profile":"default"}`})
+	target := filepath.Join(t.TempDir(), "vault-conductors")
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var migErr error
+	go func() {
+		defer wg.Done()
+		_, migErr = MigrateConductorDir(ConductorDirMigrateOptions{Target: target, Apply: true})
+	}()
+	go func() {
+		defer wg.Done()
+		// A concurrent `conductor setup`-style durable write for a NEW conductor.
+		_ = SaveConductorMeta(&ConductorMeta{Name: "beta", Agent: "claude", Profile: "default"})
+	}()
+	wg.Wait()
+
+	if migErr != nil {
+		t.Fatalf("MigrateConductorDir: %v", migErr)
+	}
+	// The migration committed the config → the resolver is at target. beta's
+	// durable record must live there, whichever side acquired the lock first.
+	if cd, _ := ConductorDir(); cd != target {
+		t.Fatalf("ConductorDir() = %q, want %q", cd, target)
+	}
+	if _, err := os.Stat(filepath.Join(target, "beta", "meta.json")); err != nil {
+		t.Fatalf("beta's durable record was stranded/lost: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "alpha", "meta.json")); err != nil {
+		t.Fatalf("alpha's durable record missing at target: %v", err)
 	}
 }
 
