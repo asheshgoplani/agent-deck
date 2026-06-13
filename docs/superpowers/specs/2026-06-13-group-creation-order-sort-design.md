@@ -158,6 +158,13 @@ orphans, so `IsLastInGroup` math is unaffected.
 | `internal/session/groups.go` | cached mode (`SetGroupSortMode`/`currentGroupSortMode`); normal-band sort branch; deterministic orphan emission in `Flatten` |
 | `internal/ui/home.go` | call `SetGroupSortMode` on config load/reload |
 | `internal/web/menu_snapshot_builder.go` | call `SetGroupSortMode` before building tree |
+| `CHANGELOG.md` | `## [Unreleased]` entry: **Added** `group_sort` config; **Fixed** orphan sub-session shuffle |
+| `README.md` | document `group_sort` in the config-options reference |
+
+> **CODEOWNERS note:** `internal/session/` is a protected hot path owned by
+> `@asheshgoplani`; this PR edits it, so maintainer review is mandatory. New
+> exported symbols (`SetGroupSortMode`, `UserConfig.GetGroupSort`) carry Go doc
+> comments (CodeRabbit nudges for docstrings + unit tests).
 
 ## Testing
 
@@ -173,6 +180,23 @@ orphans, so `IsLastInGroup` math is unaffected.
 - **K/J survives:** after a manual reorder (which rewrites `Order`), creation
   mode renders in the new manual order, and it persists across a tree rebuild.
 - **Pins/Maestro:** pin-top/pin-bottom/maestro still surface in creation mode.
+
+## Definition of done (agent-deck PR requirements)
+
+- **Local CI green** via `make ci` (lefthook): `gofmt` clean, `go vet ./...`,
+  `make css-verify`, `golangci-lint run`, `go build ./cmd/agent-deck/`,
+  `go test -race -count=1 ./...`, release-tests YAML lint. Tests are
+  deterministic and depend on no external state (orphan-determinism test
+  satisfies this explicitly).
+- **CHANGELOG.md** updated under `## [Unreleased]` (Added + Fixed bullets, with
+  the PR link once opened).
+- **Docs**: `group_sort` documented in the README config reference; doc comments
+  on new exported symbols.
+- **Conventional-commit** messages (`feat:` for the toggle, `fix:` for the
+  orphan determinism, or a single squashed `feat:` referencing both); branch
+  `feature/group-creation-order-sort` off `main`.
+- **PR**: clear description, reference the related issue, maintainer
+  (`@asheshgoplani`) review for the `internal/session/` change.
 
 ## Out of scope
 
