@@ -81,6 +81,12 @@ type UserConfig struct {
 	// Default: true (nil = true)
 	SyncTitle *bool `toml:"sync_title,omitempty"`
 
+	// GroupSort controls the order of sessions within a group.
+	//   "creation"   (default) — fixed creation order; honors K/J manual reorder.
+	//   "actionable"           — issue #857 status→recency→Order surfacing.
+	// Empty or unrecognized values normalize to "creation".
+	GroupSort string `toml:"group_sort"`
+
 	// MCPs defines available MCP servers for the MCP Manager
 	// These can be attached/detached per-project via the MCP Manager (M key)
 	MCPs map[string]MCPDef `toml:"mcps,omitempty"`
@@ -1144,6 +1150,15 @@ func (c *UserConfig) GetSyncTitle() bool {
 		return true
 	}
 	return *c.SyncTitle
+}
+
+// GetGroupSort returns the normalized within-group sort mode: "actionable" only
+// when explicitly set, otherwise "creation" (the default).
+func (c *UserConfig) GetGroupSort() string {
+	if c.GroupSort == "actionable" {
+		return "actionable"
+	}
+	return "creation"
 }
 
 // ClaudeSettings defines Claude Code configuration

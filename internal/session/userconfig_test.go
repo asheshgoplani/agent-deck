@@ -2486,3 +2486,19 @@ func TestSaveUserConfig_PreservesDefaultTrueBoolsSetToFalse(t *testing.T) {
 		t.Error("GlobalSearch.Enabled: expected false after round-trip, got true")
 	}
 }
+
+func TestUserConfig_GetGroupSort(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", "creation"},
+		{"creation", "creation"},
+		{"actionable", "actionable"},
+		{"garbage", "creation"},
+		{"ACTIONABLE", "creation"}, // case-sensitive; only exact "actionable" opts in
+	}
+	for _, c := range cases {
+		cfg := &UserConfig{GroupSort: c.in}
+		if got := cfg.GetGroupSort(); got != c.want {
+			t.Errorf("GetGroupSort(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
