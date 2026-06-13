@@ -334,6 +334,7 @@ func TestResolveGroupSelection(t *testing.T) {
 		cwdDerivedGroup       string
 		parentGroup           string
 		explicitGroupProvided bool
+		inheritGroup          bool
 		want                  string
 	}{
 		{
@@ -359,10 +360,10 @@ func TestResolveGroupSelection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveGroupSelection(tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided)
+			got := resolveGroupSelection(tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided, tt.inheritGroup)
 			if got != tt.want {
-				t.Fatalf("resolveGroupSelection(%q, %q, %q, %v) = %q, want %q",
-					tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided, got, tt.want)
+				t.Fatalf("resolveGroupSelection(%q, %q, %q, %v, %v) = %q, want %q",
+					tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided, tt.inheritGroup, got, tt.want)
 			}
 		})
 	}

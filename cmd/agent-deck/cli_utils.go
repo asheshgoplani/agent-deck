@@ -127,15 +127,24 @@ func splitFirstWord(raw string) (string, string) {
 // resolveGroupSelection picks the group for a new session using a fixed
 // priority order. Priority (issue #972):
 //  1. Explicit -g/--group always wins.
-//  2. Otherwise the cwd-derived project group wins.
-//  3. Parent-session group is the fallback only when no cwd-derived group is
+//  2. inheritGroup (launch --inherit-group): the parent-session group wins
+//     over the cwd-derived group. This keeps a fanned-out fleet co-located
+//     with its parent even when each child runs in its own worktree
+//     (e.g. .worktrees/<branch>, whose leaf folder would otherwise derive a
+//     junk per-branch group). Opt-in so it never regresses #972's conductor
+//     case, which relies on the cwd-derived group winning by default.
+//  3. Otherwise the cwd-derived project group wins.
+//  4. Parent-session group is the fallback only when no cwd-derived group is
 //     available (e.g. an empty project path mapping).
 //
-// Prior to #972 step 2 did not exist, so every conductor-spawned child
+// Prior to #972 step 3 did not exist, so every conductor-spawned child
 // silently inherited the conductor's `conductor` group.
-func resolveGroupSelection(currentGroup, cwdDerivedGroup, parentGroup string, explicitGroupProvided bool) string {
+func resolveGroupSelection(currentGroup, cwdDerivedGroup, parentGroup string, explicitGroupProvided, inheritGroup bool) string {
 	if explicitGroupProvided {
 		return currentGroup
+	}
+	if inheritGroup && parentGroup != "" {
+		return parentGroup
 	}
 	if cwdDerivedGroup != "" {
 		return cwdDerivedGroup

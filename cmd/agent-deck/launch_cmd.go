@@ -50,6 +50,12 @@ func handleLaunch(profile string, args []string) {
 	parent := fs.String("parent", "", "Parent session (creates sub-session, inherits group)")
 	parentShort := fs.String("p", "", "Parent session (short)")
 	noParent := fs.Bool("no-parent", false, "Disable automatic parent linking")
+	// Keep a fanned-out child in the parent's group instead of the cwd-derived
+	// group. Without this, a child launched into a worktree (.worktrees/<branch>)
+	// derives its group from that leaf folder and lands in a per-branch group
+	// detached from the parent. Opt-in so #972 (conductor children -> project
+	// group) is preserved by default. Used by the fleet skill.
+	inheritGroup := fs.Bool("inherit-group", false, "Place the child in the parent session's group instead of the cwd-derived group (keeps a fleet co-located with its parent)")
 	noTransitionNotify := fs.Bool("no-transition-notify", false, "Suppress transition event notifications to parent session")
 	// #697: conductor-friendly title lock. Prevents Claude's session name
 	// from overwriting the agent-deck title.
@@ -324,11 +330,11 @@ func handleLaunch(profile string, args []string) {
 			out.Error("cannot create sub-session of a sub-session (single level only)", ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided)
+		sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, *inheritGroup)
 	} else if !*noParent {
 		parentInstance = resolveAutoParentInstance(instances)
 		if parentInstance != nil && !parentInstance.IsSubSession() {
-			sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided)
+			sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, *inheritGroup)
 		} else {
 			parentInstance = nil
 		}
