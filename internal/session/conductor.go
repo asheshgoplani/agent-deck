@@ -1159,9 +1159,15 @@ func writeFileIfAbsent(path string, content []byte, perm os.FileMode) error {
 		}
 		return err
 	}
-	defer f.Close()
-	_, err = f.Write(content)
-	return err
+	// Surface both the write and the close error: a buffered write only fully
+	// commits on a successful Close, so a swallowed Close() error can mask data
+	// loss. Return the write error first (more specific), else the close error.
+	_, writeErr := f.Write(content)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
 }
 
 // InstallSharedConductorInstructions writes the shared instructions file for the given conductor agent,
