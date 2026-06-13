@@ -651,19 +651,28 @@ func (t *GroupTree) Flatten() []Item {
 				topLevelIndex++
 			}
 
-			// Add any orphaned sub-sessions (parent not in this group)
+			// Add any orphaned sub-sessions (parent not in this group). Collect
+			// the remaining map entries into a slice and sort by Order so the
+			// emission order is deterministic — iterating subSessionsByParent
+			// directly would use Go's randomized map order and shuffle these
+			// rows between renders.
+			orphans := make([]*Instance, 0, len(subSessionsByParent))
 			for _, subs := range subSessionsByParent {
-				for _, sub := range subs {
-					topLevelIndex++
-					items = append(items, Item{
-						Type:          ItemTypeSession,
-						Session:       sub,
-						Level:         groupLevel + 1,
-						Path:          group.Path,
-						IsLastInGroup: topLevelIndex == topLevelCount,
-						IsSubSession:  true, // Still a sub-session, just orphaned in this group
-					})
-				}
+				orphans = append(orphans, subs...)
+			}
+			sort.SliceStable(orphans, func(i, j int) bool {
+				return orphans[i].Order < orphans[j].Order
+			})
+			for _, sub := range orphans {
+				topLevelIndex++
+				items = append(items, Item{
+					Type:          ItemTypeSession,
+					Session:       sub,
+					Level:         groupLevel + 1,
+					Path:          group.Path,
+					IsLastInGroup: topLevelIndex == topLevelCount,
+					IsSubSession:  true, // Still a sub-session, just orphaned in this group
+				})
 			}
 		}
 	}

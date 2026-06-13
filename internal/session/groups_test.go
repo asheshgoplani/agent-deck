@@ -2139,3 +2139,45 @@ func TestSortInstancesByActionable_CreationOrderDefault(t *testing.T) {
 		t.Fatalf("creation mode must order by Order asc; got %v want %v", got, want)
 	}
 }
+
+func TestFlatten_OrphanSubSessionsDeterministic(t *testing.T) {
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+	SetGroupSortMode("creation")
+
+	// Three sub-sessions whose parent lives in a DIFFERENT group than they do,
+	// so they render as orphaned top-level rows in group "g". Their Order
+	// values fix the expected display order.
+	mk := func(id string, order int, parent string) *Instance {
+		return &Instance{ID: id, Title: id, GroupPath: "g", Order: order, ParentSessionID: parent}
+	}
+	instances := []*Instance{
+		mk("s0", 0, "absent-p0"),
+		mk("s1", 1, "absent-p1"),
+		mk("s2", 2, "absent-p2"),
+	}
+
+	tree := NewGroupTree(instances)
+
+	var first []string
+	for _, it := range tree.Flatten() {
+		if it.Type == ItemTypeSession {
+			first = append(first, it.Session.ID)
+		}
+	}
+	if !equalStrings(first, []string{"s0", "s1", "s2"}) {
+		t.Fatalf("orphan order = %v, want [s0 s1 s2]", first)
+	}
+	// Repeat many times — map-iteration nondeterminism would surface a
+	// different order on some iteration.
+	for i := 0; i < 50; i++ {
+		var got []string
+		for _, it := range tree.Flatten() {
+			if it.Type == ItemTypeSession {
+				got = append(got, it.Session.ID)
+			}
+		}
+		if !equalStrings(got, first) {
+			t.Fatalf("Flatten order not stable across calls: iter %d got %v, want %v", i, got, first)
+		}
+	}
+}
