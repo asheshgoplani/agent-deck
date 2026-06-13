@@ -13,6 +13,24 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
+// assertDoneInstruction is appended to a child's initial message so it ends its
+// final turn with the #1186 completion sentinel. The completion ledger and the
+// parent inbox both key off this line; without it "done" is never trustworthy.
+const assertDoneInstruction = "\n\n## Final step — assert completion\n" +
+	"When the task is fully done, print exactly this as the last line of your final message:\n" +
+	"  ===AGENTDECK_DONE=== status=ok summary=<what you accomplished, one line>\n" +
+	"Use status=fail if you could not complete it; put the blocker in the summary."
+
+// applyAssertDone appends the completion-sentinel instruction when enabled and
+// there is an initial message to attach it to. A no-op for an empty message
+// (nothing to append to) or when disabled.
+func applyAssertDone(message string, enabled bool) string {
+	if !enabled || strings.TrimSpace(message) == "" {
+		return message
+	}
+	return message + assertDoneInstruction
+}
+
 // handleLaunch combines add + start + optional send into a single command.
 // It creates a new session, starts it, and optionally sends an initial message.
 func handleLaunch(profile string, args []string) {
@@ -27,6 +45,8 @@ func handleLaunch(profile string, args []string) {
 	message := fs.String("message", "", "Initial message to send once agent is ready")
 	messageShort := fs.String("m", "", "Initial message to send (short)")
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready before sending message")
+	assertDone := fs.Bool("assert-done", false, "Append a completion-sentinel instruction to the message (default on for -c claude)")
+	noAssertDone := fs.Bool("no-assert-done", false, "Disable the completion-sentinel instruction")
 	parent := fs.String("parent", "", "Parent session (creates sub-session, inherits group)")
 	parentShort := fs.String("p", "", "Parent session (short)")
 	noParent := fs.Bool("no-parent", false, "Disable automatic parent linking")
@@ -123,6 +143,7 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("  agent-deck launch . -c claude --mcp memory -m \"Research topic X\"")
 		fmt.Println("  agent-deck launch . -c claude --channel plugin:telegram@user/repo -m \"Listen for messages\"")
 		fmt.Println("  agent-deck launch . -c claude -m \"Fix bug\" --no-wait")
+		fmt.Println("  agent-deck launch . -c claude -m \"Refactor X\"   # auto-appends completion sentinel (see session children)")
 		fmt.Println("  agent-deck launch . -c \"codex --dangerously-bypass-approvals-and-sandbox\"")
 		fmt.Println("  agent-deck launch . -g ard --no-parent -c claude -m \"Run review\"")
 		fmt.Println("  agent-deck launch . -c claude -w feature/new -b -m \"Start work\"")
@@ -179,6 +200,20 @@ func handleLaunch(profile string, args []string) {
 		os.Exit(1)
 	}
 	initialMessage := mergeFlags(*message, *messageShort)
+
+	// --assert-done: append the completion-sentinel instruction so the child
+	// reliably reports back via the ledger / parent inbox. Default-on for
+	// Claude children (a completion signal nobody requests is useless);
+	// --no-assert-done always wins.
+	assertDoneTool := firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
+	assertDoneOn := *assertDone
+	if !*assertDone && !*noAssertDone && session.IsClaudeCompatible(assertDoneTool) {
+		assertDoneOn = true
+	}
+	if *noAssertDone {
+		assertDoneOn = false
+	}
+	initialMessage = applyAssertDone(initialMessage, assertDoneOn)
 
 	// Resolve worktree flags
 	wtBranch := *worktreeBranch
