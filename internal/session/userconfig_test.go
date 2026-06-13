@@ -2502,3 +2502,29 @@ func TestUserConfig_GetGroupSort(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadUserConfig_SetsGroupSortMode(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("group_sort = \"actionable\"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, err := LoadUserConfig(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := currentGroupSortMode(); got != "actionable" {
+		t.Fatalf("LoadUserConfig did not apply group_sort: mode = %q, want actionable", got)
+	}
+}

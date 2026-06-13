@@ -2515,6 +2515,11 @@ func LoadUserConfig() (*UserConfig, error) {
 
 	normalizeUIHiddenTools(&config.UI, config.Tools)
 
+	// Keep the in-group sort mode in lockstep with the loaded config. This is
+	// the single funnel for TUI, web, and CLI; ReloadUserConfig routes through
+	// here too, so an external edit to group_sort takes effect on next load.
+	SetGroupSortMode(config.GetGroupSort())
+
 	userConfigCache = &config
 	userConfigCacheMtime = currentMtime
 	return userConfigCache, nil
