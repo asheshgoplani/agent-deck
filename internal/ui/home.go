@@ -679,6 +679,23 @@ func (h *Home) setHotkeys(bindings map[string]string) {
 	if h.helpOverlay != nil {
 		h.helpOverlay.SetHotkeys(bindings)
 	}
+	h.syncStatusHints(bindings)
+}
+
+// syncStatusHints pushes the resolved detach/switch key labels into the tmux
+// package so the attached status bar reflects the user's [hotkeys] config
+// instead of the hardcoded "ctrl+q"/"ctrl+s". The switch hint mirrors
+// attachOptions: it is suppressed when the switch key has no portable control
+// byte or collides with detach, since the attach loop drops it in those cases.
+func (h *Home) syncStatusHints(bindings map[string]string) {
+	detachByte := DetachByteFromBinding(actionHotkey(bindings, hotkeyDetach))
+	switchByte := ctrlByteFromBinding(actionHotkey(bindings, hotkeySwitchSession))
+	switchEnabled := switchByte != 0 && switchByte != detachByte
+	tmux.SetStatusHints(
+		strings.ToLower(DetachByteLabel(detachByte)),
+		strings.ToLower(DetachByteLabel(switchByte)),
+		switchEnabled,
+	)
 }
 
 // openInNewWindow dispatches the Shift+Enter new-window launch through an
@@ -11204,9 +11221,31 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		// The user pressed the session-switch key while attached: surface the
 		// in-attach switcher instead of just returning to the list.
 		if res.intent != tmux.SwitchNone {
+			// While attached the user may have switched the tmux client to
+			// another session via the notification bar (Ctrl+b 1-6), recorded
+			// in lastNotifSwitchID. Open the switcher on the session actually in
+			// view — not the one we first attached to — so the pre-highlight,
+			// Esc-reattach, and follow-CWD all target the right session.
+			fromID, fromWorkDir := inst.ID, currentWorkDir
+			h.lastNotifSwitchMu.Lock()
+			switchedID := h.lastNotifSwitchID
+			h.lastNotifSwitchMu.Unlock()
+			if switchedID != "" && switchedID != inst.ID {
+				h.instancesMu.RLock()
+				switched := h.instanceByID[switchedID]
+				h.instancesMu.RUnlock()
+				if switched != nil {
+					fromID = switched.ID
+					if ts := switched.GetTmuxSession(); ts != nil {
+						if wd := strings.TrimSpace(ts.GetWorkDir()); wd != "" {
+							fromWorkDir = wd
+						}
+					}
+				}
+			}
 			return openSwitcherMsg{
-				fromSessionID:   inst.ID,
-				attachedWorkDir: currentWorkDir,
+				fromSessionID:   fromID,
+				attachedWorkDir: fromWorkDir,
 			}
 		}
 
@@ -11681,6 +11720,12 @@ func (h *Home) updateSizes() {
 	h.groupDialog.SetSize(h.width, h.height)
 	h.confirmDialog.SetSize(h.width, h.height)
 	h.geminiModelDialog.SetSize(h.width, h.height)
+	if h.sessionSwitcher != nil {
+		// The switcher is a centered full-screen overlay; keep it sized so a
+		// resize while it is open (notably from the overview, where it can stay
+		// up) re-centers it instead of leaving it on stale dimensions.
+		h.sessionSwitcher.SetSize(h.width, h.height)
+	}
 	h.worktreeFinishDialog.SetSize(h.width, h.height)
 	if h.feedbackDialog != nil {
 		h.feedbackDialog.SetSize(h.width, h.height)
@@ -16812,6 +16857,11 @@ func (h *Home) handleSessionPickerDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 // only once the user cycles (Ctrl+S/Ctrl+A) at least once inside the picker
 // (see handleSessionSwitcherKey). When fewer than two switchable sessions exist
 // the picker stays closed.
+//
+// Local-only by design: this feeds local h.instances and re-attaches via the
+// local tmux attach loop. Remote (ItemTypeRemoteSession) rows are intentionally
+// excluded for now — see SessionSwitcher.Show and
+// TestSessionSwitcher_RemoteSessionsUnsupported.
 func (h *Home) openSessionSwitcher(fromID string, reattachOnCancel bool) {
 	h.instancesMu.RLock()
 	instances := make([]*session.Instance, len(h.instances))

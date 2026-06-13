@@ -3270,7 +3270,7 @@ func CreateExampleConfig() error {
                       # Alias [tmux].detach_key exists; [hotkeys].detach wins.
 # In-attach session switcher (cycle sessions without first detaching to the list):
 # switch_session = "ctrl+s"   # opens the switcher while attached. Tap again to cycle
-#                             # forward (Shift+Tab / Up to go back); it auto-attaches
+#                             # forward (Ctrl+A to go back); it auto-attaches
 #                             # ~1s after you stop, Enter attaches now, Esc cancels.
 #                             # Must be a "ctrl+<letter>" chord.
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Session switcher review-feedback fixes** ([#1426](https://github.com/asheshgoplani/agent-deck/pull/1426), follow-up to [#1411](https://github.com/asheshgoplani/agent-deck/pull/1411)). Restores `SIGINT` handling on the attach raw-mode setup failure paths — a failure there could otherwise leave the process permanently ignoring `Ctrl+C`. Opens the in-attach switcher on the session actually in view after a notification-bar switch (`Ctrl+b 1-6`) rather than the original attach target, fixing pre-highlight / `Esc`-reattach / follow-CWD. The attached status-bar hint now reflects the configured `[hotkeys]` detach/switch bindings instead of hardcoded `ctrl+q`/`ctrl+s` (and is omitted when the switch key is unbound or collides with detach). The switcher resizes with the window; `Show` clears stale picker state when fewer than two sessions remain; and the footer `Esc` hint is context-sensitive ("back" while attached vs "close" from the overview). Documents the switcher as local-only (remote/SSH sessions use a separate attach path).
+
 ## [1.9.58] - 2026-06-13
 
 ### Added

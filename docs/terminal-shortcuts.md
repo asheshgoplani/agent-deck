@@ -44,6 +44,9 @@ The same `Ctrl-S` also works **from the overview list** — it opens the
 switcher pre-highlighted on the session under the cursor, so you can hop
 to a recent session without scrolling the grouped list.
 
+> The switcher currently lists **local sessions only**. Remote (SSH) sessions
+> use a separate attach path and aren't yet included in the picker.
+
 A single `Ctrl-S` just opens the switcher (highlighting the session you're
 already in, so an immediate `Enter` is a no-op) and waits — it only starts
 the auto-attach countdown once you actually cycle inside it, so an

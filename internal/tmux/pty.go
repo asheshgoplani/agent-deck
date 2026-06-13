@@ -253,12 +253,17 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	// restoring the terminal and Attach() calling term.MakeRaw().
 	// SIGINT is restored in cleanupAttach() via signal.Reset(syscall.SIGINT).
 	signal.Ignore(syscall.SIGINT)
+	// Safety net: restore SIGINT on every return path. cleanupAttach() resets it
+	// first thing on the normal teardown, but the raw-mode setup failures below
+	// return before cleanupAttach runs — without this defer they would leave the
+	// process permanently ignoring Ctrl+C. signal.Reset is idempotent, so the
+	// extra call on the happy path is harmless.
+	defer signal.Reset(syscall.SIGINT)
 
 	// Start command with PTY, pre-sized to the controlling terminal so the
 	// tmux client connects full-width from frame one (#1167).
 	ptmx, err := StartAttachPTY(cmd, os.Stdin)
 	if err != nil {
-		signal.Reset(syscall.SIGINT)
 		return SwitchNone, fmt.Errorf("failed to start pty: %w", err)
 	}
 	defer ptmx.Close()
