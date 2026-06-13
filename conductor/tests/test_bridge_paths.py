@@ -50,8 +50,9 @@ def _run_probe(env_overrides: dict[str, str]) -> dict:
         "print('PROBE_JSON:' + json.dumps(out))\n"
     )
     env = dict(os.environ)
-    # Clear inherited XDG so the sandbox is deterministic.
-    for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
+    # Clear inherited XDG and conductor-dir override so the sandbox is deterministic
+    # (an inherited AGENT_DECK_CONDUCTOR_DIR would shadow XDG and make tests host-dependent).
+    for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "AGENT_DECK_CONDUCTOR_DIR"):
         env.pop(key, None)
     env.update(env_overrides)
     result = subprocess.run(
