@@ -28,9 +28,12 @@
 # To keep it running after logout (so it warms tokens while you are away):
 #   loginctl enable-linger "$USER"
 #
-# By default it keeps ~/.claude and ~/.claude-work warm (whichever has a
-# .credentials.json). To pin specific profiles, add repeated --config-dir flags
-# to ExecStart, e.g.:
+# By default it keeps ~/.claude, ~/.claude-work AND every Claude config_dir
+# declared in ~/.agent-deck/config.toml ([profiles.*.claude], [groups.*.claude],
+# [conductors.*.claude]) warm — whichever has a .credentials.json (issue #1414:
+# extra account profiles like ~/.claude-seminno used to be silently excluded).
+# Prefer the defaults; explicit --config-dir flags PIN the set and disable the
+# config.toml derivation, so a profile added later would be missed:
 #   ExecStart=%h/.local/bin/agent-deck creds-refresh --config-dir %h/.claude
 # ─────────────────────────────────────────────────────────────────────────────
 
