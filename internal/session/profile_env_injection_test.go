@@ -3,6 +3,7 @@ package session
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // Profile env injection (AGENTDECK_PROFILE) at spawn time.
@@ -68,6 +69,98 @@ func TestBuildBashExportPrefix_ExportsProfile(t *testing.T) {
 
 	if !strings.Contains(prefix, "export AGENTDECK_PROFILE=work;") {
 		t.Errorf("bash export prefix should export AGENTDECK_PROFILE=work, got: %s", prefix)
+	}
+}
+
+// --- Host-side (tool-agnostic) profile injection ---
+//
+// Some respawn-pane branches in Restart() rebuild a bare resume command that
+// carries NO inline AGENTDECK_PROFILE prefix (gemini, opencode, generic), and
+// every respawn branch returns before reaching the fallback recreate path that
+// sets it host-side. ensureProfileEnv() is the shared safety net those branches
+// (and the spawn paths) call so the tmux session always carries the var.
+
+// TestEnsureProfileEnv_SetsHostSideEnv pins that ensureProfileEnv writes
+// AGENTDECK_PROFILE into the live tmux session environment as the session's own
+// resolved profile. This is the exact call every Restart() respawn-pane branch
+// now makes, so it stands in for the tmux-dependent respawn paths (gemini/
+// opencode/codex/generic) that CI cannot launch (no tool binary).
+func TestEnsureProfileEnv_SetsHostSideEnv(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	isolateUserHomeForShellRestart(t)
+	withProfileEnv(t, "work")
+
+	title := uniqueShellTestTitle("EnsureProfileEnv")
+	inst := NewInstance(title, t.TempDir())
+	inst.Command = ""
+	if err := inst.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { cleanupShellSessions(title) })
+
+	if !waitForTmuxSession(inst.tmuxSession.Name, 1*time.Second) {
+		t.Fatalf("tmux session %q never appeared after Start", inst.tmuxSession.Name)
+	}
+
+	// Clear it first so we prove ensureProfileEnv is what sets it (Start also
+	// sets it, but we want to isolate the helper the respawn branches call).
+	if err := inst.tmuxSession.SetEnvironment("AGENTDECK_PROFILE", "stale"); err != nil {
+		t.Fatalf("seed SetEnvironment failed: %v", err)
+	}
+
+	inst.ensureProfileEnv()
+
+	got, err := inst.tmuxSession.GetEnvironment("AGENTDECK_PROFILE")
+	if err != nil {
+		t.Fatalf("GetEnvironment(AGENTDECK_PROFILE) failed: %v", err)
+	}
+	if got != "work" {
+		t.Errorf("AGENTDECK_PROFILE in tmux env = %q, want %q", got, "work")
+	}
+}
+
+// TestEnsureProfileEnv_NilTmuxSession_NoPanic pins the nil guard: a respawn
+// branch must never panic if the instance has no tmux session.
+func TestEnsureProfileEnv_NilTmuxSession_NoPanic(t *testing.T) {
+	inst := NewInstanceWithTool("test", "/tmp/test", "claude")
+	inst.tmuxSession = nil
+	inst.ensureProfileEnv() // must not panic
+}
+
+// TestRestart_ShellSession_CarriesProfileEnv is the end-to-end contract: after
+// Restart(), the session's tmux environment carries AGENTDECK_PROFILE set to the
+// session's own resolved profile. Shell sessions take the fallback recreate path
+// (no resume support), but this proves ensureProfileEnv is wired through Restart.
+func TestRestart_ShellSession_CarriesProfileEnv(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	isolateUserHomeForShellRestart(t)
+	withProfileEnv(t, "personal")
+
+	title := uniqueShellTestTitle("RestartProfileEnv")
+	inst := NewInstance(title, t.TempDir())
+	inst.Command = ""
+	if err := inst.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { cleanupShellSessions(title) })
+
+	if !waitForTmuxSession(inst.tmuxSession.Name, 1*time.Second) {
+		t.Fatalf("tmux session %q never appeared after Start", inst.tmuxSession.Name)
+	}
+
+	if err := inst.Restart(); err != nil {
+		t.Fatalf("Restart returned error: %v", err)
+	}
+	if !waitForTmuxSession(inst.tmuxSession.Name, 1*time.Second) {
+		t.Fatalf("tmux session %q does not exist after Restart", inst.tmuxSession.Name)
+	}
+
+	got, err := inst.tmuxSession.GetEnvironment("AGENTDECK_PROFILE")
+	if err != nil {
+		t.Fatalf("GetEnvironment(AGENTDECK_PROFILE) after Restart failed: %v", err)
+	}
+	if got != "personal" {
+		t.Errorf("after Restart, AGENTDECK_PROFILE = %q, want %q", got, "personal")
 	}
 }
 

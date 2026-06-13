@@ -989,6 +989,24 @@ func sessionProfileEnvValue() string {
 	return GetEffectiveProfile("")
 }
 
+// ensureProfileEnv sets AGENTDECK_PROFILE host-side on the instance's tmux
+// session so a bare `agent-deck` command run inside the session resolves the
+// session's own profile rather than falling back to "default". It is the
+// tool-agnostic safety net complementing the inline command-prefix injection in
+// the spawn-command builders (which only some tools carry — e.g. gemini/opencode/
+// generic respawn rebuild a bare resume command with no AGENTDECK_PROFILE prefix).
+// Must run on every spawn/respawn success path, including the Restart()
+// respawn-pane branches that return early before reaching the fallback recreate
+// path. Best-effort: a failure is logged, not fatal.
+func (i *Instance) ensureProfileEnv() {
+	if i.tmuxSession == nil {
+		return
+	}
+	if err := i.tmuxSession.SetEnvironment("AGENTDECK_PROFILE", sessionProfileEnvValue()); err != nil {
+		sessionLog.Warn("set_profile_failed", slog.String("error", err.Error()))
+	}
+}
+
 // logClaudeConfigResolution emits the CFG-07 observability line documenting
 // which priority level resolved CLAUDE_CONFIG_DIR for this session.
 // Owns the single CFG-07 slog message literal for this package.
@@ -3048,9 +3066,7 @@ func (i *Instance) Start() error {
 	// command run inside this session resolves the session's own profile rather
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
-	if err := i.tmuxSession.SetEnvironment("AGENTDECK_PROFILE", sessionProfileEnvValue()); err != nil {
-		sessionLog.Warn("set_profile_failed", slog.String("error", err.Error()))
-	}
+	i.ensureProfileEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
 	// sandbox and non-sandbox sessions). This replaces the previous approach of embedding
@@ -3291,9 +3307,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// command run inside this session resolves the session's own profile rather
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
-	if err := i.tmuxSession.SetEnvironment("AGENTDECK_PROFILE", sessionProfileEnvValue()); err != nil {
-		sessionLog.Warn("set_profile_failed", slog.String("error", err.Error()))
-	}
+	i.ensureProfileEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
 	// sandbox and non-sandbox sessions).
@@ -5701,6 +5715,10 @@ func (i *Instance) Restart() error {
 
 		mcpLog.Debug("respawn_pane_claude_succeeded")
 
+		// Re-assert AGENTDECK_PROFILE host-side: this respawn branch returns
+		// before the fallback recreate path that would otherwise set it.
+		i.ensureProfileEnv()
+
 		// Persist .sid sidecar so hook events after restart can be correlated
 		WriteHookSessionAnchor(i.ID, i.ClaudeSessionID)
 
@@ -5740,6 +5758,11 @@ func (i *Instance) Restart() error {
 		}
 
 		sessionLog.Info("restart_gemini_respawn_succeeded")
+
+		// Re-assert AGENTDECK_PROFILE host-side: gemini's rebuilt resume command
+		// carries no inline AGENTDECK_PROFILE prefix, and this branch returns
+		// before the fallback recreate path that would otherwise set it.
+		i.ensureProfileEnv()
 
 		// Persist .sid sidecar so hook events after restart can be correlated
 		WriteHookSessionAnchor(i.ID, i.GeminiSessionID)
@@ -5794,6 +5817,11 @@ func (i *Instance) Restart() error {
 		}
 
 		sessionLog.Info("restart_opencode_respawn_succeeded")
+
+		// Re-assert AGENTDECK_PROFILE host-side: opencode's rebuilt resume command
+		// carries no inline AGENTDECK_PROFILE prefix, and this branch returns
+		// before the fallback recreate path that would otherwise set it.
+		i.ensureProfileEnv()
 
 		// Persist .sid sidecar so hook events after restart can be correlated
 		if i.OpenCodeSessionID != "" {
@@ -5859,6 +5887,11 @@ func (i *Instance) Restart() error {
 
 		sessionLog.Info("restart_codex_respawn_succeeded")
 
+		// Re-assert AGENTDECK_PROFILE host-side as a belt-and-suspenders to the
+		// inline prefix buildCodexCommand already injects; this branch returns
+		// before the fallback recreate path that would otherwise set it.
+		i.ensureProfileEnv()
+
 		// Persist .sid sidecar so hook events after restart can be correlated
 		WriteHookSessionAnchor(i.ID, i.CodexSessionID)
 
@@ -5903,6 +5936,12 @@ func (i *Instance) Restart() error {
 		}
 
 		sessionLog.Info("restart_generic_respawn_succeeded", slog.String("tool", i.Tool))
+
+		// Re-assert AGENTDECK_PROFILE host-side: the generic resume command is a
+		// bare `<cmd> <resumeFlag> <sid>` with no inline AGENTDECK_PROFILE prefix,
+		// and this branch returns before the fallback recreate path.
+		i.ensureProfileEnv()
+
 		i.loadCustomPatternsFromConfig() // Reload custom patterns
 		i.Status = StatusWaiting
 		return nil
@@ -6011,9 +6050,7 @@ func (i *Instance) Restart() error {
 	// command run inside this session resolves the session's own profile rather
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
-	if err := i.tmuxSession.SetEnvironment("AGENTDECK_PROFILE", sessionProfileEnvValue()); err != nil {
-		sessionLog.Warn("set_profile_failed", slog.String("error", err.Error()))
-	}
+	i.ensureProfileEnv()
 
 	// Propagate all known tool session IDs to the tmux environment (host-side).
 	// This covers Restart() which uses buildClaudeResumeCommand() and similar
