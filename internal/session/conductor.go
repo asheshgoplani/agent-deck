@@ -66,77 +66,77 @@ var conductorAgentSpecs = map[string]ConductorAgentSpec{
 // ConductorSettings defines conductor (meta-agent orchestration) configuration
 type ConductorSettings struct {
 	// Enabled activates the conductor system
-	Enabled bool `toml:"enabled"`
+	Enabled bool `toml:"enabled,omitempty"`
 
 	// HeartbeatInterval is the interval in minutes between heartbeat checks
-	// Default: 15
-	HeartbeatInterval int `toml:"heartbeat_interval"`
+	// nil/absent = disabled (preserves pre-*int behavior), 0 = disabled, >0 = configured
+	HeartbeatInterval *int `toml:"heartbeat_interval,omitempty"`
 
 	// Profiles is the list of agent-deck profiles to manage
 	// Kept for backward compat but ignored after migration to meta.json-based discovery
-	Profiles []string `toml:"profiles"`
+	Profiles []string `toml:"profiles,omitempty"`
 
 	// Telegram defines Telegram bot integration settings
-	Telegram TelegramSettings `toml:"telegram"`
+	Telegram TelegramSettings `toml:"telegram,omitempty"`
 
 	// Slack defines Slack bot integration settings
-	Slack SlackSettings `toml:"slack"`
+	Slack SlackSettings `toml:"slack,omitempty"`
 
 	// Discord defines Discord bot integration settings
-	Discord DiscordSettings `toml:"discord"`
+	Discord DiscordSettings `toml:"discord,omitempty"`
 }
 
 // TelegramSettings defines Telegram bot configuration for the conductor bridge
 type TelegramSettings struct {
 	// Token is the Telegram bot token from @BotFather
-	Token string `toml:"token"`
+	Token string `toml:"token,omitempty"`
 
 	// UserID is the authorized Telegram user ID from @userinfobot
-	UserID int64 `toml:"user_id"`
+	UserID int64 `toml:"user_id,omitzero"`
 }
 
 // SlackSettings defines Slack bot configuration for the conductor bridge
 type SlackSettings struct {
 	// BotToken is the Slack bot token (xoxb-...)
-	BotToken string `toml:"bot_token"`
+	BotToken string `toml:"bot_token,omitempty"`
 
 	// AppToken is the Slack app-level token for Socket Mode (xapp-...)
-	AppToken string `toml:"app_token"`
+	AppToken string `toml:"app_token,omitempty"`
 
 	// ChannelID is the Slack channel where the bot listens and posts (C01234...)
-	ChannelID string `toml:"channel_id"`
+	ChannelID string `toml:"channel_id,omitempty"`
 
 	// ListenMode controls when the bot responds: "mentions" (only @mentions) or "all" (all channel messages)
 	// Default: "mentions"
-	ListenMode string `toml:"listen_mode"`
+	ListenMode string `toml:"listen_mode,omitempty"`
 
 	// AllowedUserIDs is a list of Slack user IDs authorized to use the bot.
 	// If empty, all users are allowed (backward compatible).
 	// Get user ID from Slack: Right-click user → View profile → More → Copy member ID
-	AllowedUserIDs []string `toml:"allowed_user_ids"`
+	AllowedUserIDs []string `toml:"allowed_user_ids,omitempty"`
 }
 
 // DiscordSettings defines Discord bot configuration for the conductor bridge
 type DiscordSettings struct {
 	// BotToken is the Discord bot token from the Developer Portal
-	BotToken string `toml:"bot_token"`
+	BotToken string `toml:"bot_token,omitempty"`
 
 	// GuildID is the Discord server (guild) where the bot operates
-	GuildID int64 `toml:"guild_id"`
+	GuildID int64 `toml:"guild_id,omitzero"`
 
 	// ChannelID is the Discord channel where the bot listens and posts
-	ChannelID int64 `toml:"channel_id"`
+	ChannelID int64 `toml:"channel_id,omitzero"`
 
 	// UserID is the authorized Discord user ID
-	UserID int64 `toml:"user_id"`
+	UserID int64 `toml:"user_id,omitzero"`
 
 	// ListenMode controls when the bot responds: "mentions" (only @mentions) or "all" (all channel messages)
 	// Default: "all"
-	ListenMode string `toml:"listen_mode"`
+	ListenMode string `toml:"listen_mode,omitempty"`
 
 	// IgnoreRepliesToOthers skips forwarding replies unless they reply to the bot itself.
 	// Default: false
-	IgnoreRepliesToOthers bool `toml:"ignore_replies_to_others"`
+	IgnoreRepliesToOthers bool `toml:"ignore_replies_to_others,omitempty"`
 }
 
 // ConductorMeta holds metadata for a named conductor instance
@@ -237,17 +237,17 @@ func GetConductorAgentSpec(agent string) (ConductorAgentSpec, error) {
 var conductorNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 // GetHeartbeatInterval returns the heartbeat interval in minutes.
-// Returns 0 when HeartbeatInterval is 0 (explicitly disabled).
-// Returns 15 (default) when HeartbeatInterval is negative.
-// Returns the configured value when HeartbeatInterval is positive.
+// nil = disabled (field absent), 0 = disabled, negative = default (15),
+// positive = configured.
+// TODO(breaking): collapse negative→disabled once a major version allows it.
 func (c *ConductorSettings) GetHeartbeatInterval() int {
-	if c.HeartbeatInterval == 0 {
-		return 0 // explicitly disabled
+	if c.HeartbeatInterval == nil || *c.HeartbeatInterval == 0 {
+		return 0
 	}
-	if c.HeartbeatInterval < 0 {
-		return 15 // negative = use default
+	if *c.HeartbeatInterval < 0 {
+		return 15
 	}
-	return c.HeartbeatInterval
+	return *c.HeartbeatInterval
 }
 
 // GetHeartbeatIdleMinutes returns the heartbeat idle threshold in minutes.

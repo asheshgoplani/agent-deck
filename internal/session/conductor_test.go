@@ -300,22 +300,27 @@ func TestConductorMetaSaveAndLoad(t *testing.T) {
 	}
 }
 
+func intPtr(v int) *int { return &v }
+
 func TestGetHeartbeatInterval(t *testing.T) {
 	tests := []struct {
-		interval int
+		name     string
+		interval *int
 		expected int
 	}{
-		{0, 0},   // zero means disabled
-		{-1, 15}, // negative defaults to 15
-		{10, 10}, // custom
-		{30, 30}, // custom
+		{"nil means disabled", nil, 0},
+		{"zero means disabled", intPtr(0), 0},
+		{"custom 10", intPtr(10), 10},
+		{"custom 30", intPtr(30), 30},
 	}
 
 	for _, tt := range tests {
-		settings := &ConductorSettings{HeartbeatInterval: tt.interval}
-		if got := settings.GetHeartbeatInterval(); got != tt.expected {
-			t.Errorf("GetHeartbeatInterval() with %d = %d, want %d", tt.interval, got, tt.expected)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			settings := &ConductorSettings{HeartbeatInterval: tt.interval}
+			if got := settings.GetHeartbeatInterval(); got != tt.expected {
+				t.Errorf("GetHeartbeatInterval() = %d, want %d", got, tt.expected)
+			}
+		})
 	}
 }
 
@@ -2392,18 +2397,19 @@ func TestConductorHeartbeatScript_GroupScoped(t *testing.T) {
 	}
 }
 
-// TestGetHeartbeatInterval_ZeroMeansDisabled verifies interval=0 means disabled,
-// negative means use default, and positive means use the configured value.
+// TestGetHeartbeatInterval_ZeroMeansDisabled verifies nil and zero mean
+// disabled, negative means default (15), and positive values pass through.
 func TestGetHeartbeatInterval_ZeroMeansDisabled(t *testing.T) {
 	tests := []struct {
 		name     string
-		interval int
+		interval *int
 		expected int
 	}{
-		{"zero means disabled", 0, 0},
-		{"negative means default", -1, 15},
-		{"custom value", 30, 30},
-		{"explicit default", 15, 15},
+		{"nil means disabled", nil, 0},
+		{"negative means default", intPtr(-1), 15},
+		{"zero means disabled", intPtr(0), 0},
+		{"custom value", intPtr(30), 30},
+		{"explicit fifteen", intPtr(15), 15},
 	}
 
 	for _, tt := range tests {
@@ -2411,7 +2417,7 @@ func TestGetHeartbeatInterval_ZeroMeansDisabled(t *testing.T) {
 			settings := ConductorSettings{HeartbeatInterval: tt.interval}
 			got := settings.GetHeartbeatInterval()
 			if got != tt.expected {
-				t.Errorf("GetHeartbeatInterval() with %d = %d, want %d", tt.interval, got, tt.expected)
+				t.Errorf("GetHeartbeatInterval() = %d, want %d", got, tt.expected)
 			}
 		})
 	}

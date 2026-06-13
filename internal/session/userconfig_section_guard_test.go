@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -236,5 +237,69 @@ func TestSaveUserConfig_BackupHoldsPreSaveSections(t *testing.T) {
 	}
 	if len(fromBak.MCPs) != 2 || len(fromBak.Groups) != 2 {
 		t.Fatalf("expected .bak to preserve pre-save sections, got mcps=%d groups=%d", len(fromBak.MCPs), len(fromBak.Groups))
+	}
+}
+
+// (g) S3 edge case: a user hand-edits config.toml to add a bare [mcps.stub]
+// header (all-zero MCPDef). On the next save, stripEmptyTOMLSections removes it
+// (no key=value content), but the guard must NOT refuse — the lost entry was
+// non-functional (all fields zero).
+func TestSaveUserConfig_AllZeroMCPEntry_DoesNotBlockSaves(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	isolateConfigHomeXDG(t)
+
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Simulate hand-editing: write a config with a bare [mcps.stub] section.
+	handEdited := []byte("# Agent Deck Configuration\n\ntheme = \"dark\"\n\n[mcps.stub]\n")
+	if err := os.WriteFile(configPath, handEdited, 0o600); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	ReloadUserConfig()
+
+	// A normal save (changing theme) must succeed — the guard should not
+	// refuse because the "lost" entry was non-functional (all-zero).
+	loaded, err := LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig: %v", err)
+	}
+	loaded.Theme = "light"
+	if err := SaveUserConfig(loaded); err != nil {
+		t.Fatalf("expected save to succeed when sole MCP entry is all-zero, got: %v", err)
+	}
+}
+
+// Same scenario for groups.
+func TestSaveUserConfig_AllZeroGroupEntry_DoesNotBlockSaves(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	isolateConfigHomeXDG(t)
+
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	handEdited := []byte("# Agent Deck Configuration\n\ntheme = \"dark\"\n\n[groups.placeholder]\n")
+	if err := os.WriteFile(configPath, handEdited, 0o600); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	ReloadUserConfig()
+
+	loaded, err := LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig: %v", err)
+	}
+	loaded.Theme = "light"
+	if err := SaveUserConfig(loaded); err != nil {
+		t.Fatalf("expected save to succeed when sole group entry is all-zero, got: %v", err)
 	}
 }

@@ -46,65 +46,65 @@ type UserConfig struct {
 	// DefaultTool is the pre-selected AI tool when creating new sessions
 	// Valid values: "claude", "gemini", "opencode", "codex", "pi", or any custom tool name
 	// If empty or invalid, defaults to "shell" (no pre-selection)
-	DefaultTool string `toml:"default_tool"`
+	DefaultTool string `toml:"default_tool,omitempty"`
 
 	// DefaultPath is the global fallback project directory for `agent-deck add`
 	// when no explicit path or group default_path is provided.
-	DefaultPath string `toml:"default_path"`
+	DefaultPath string `toml:"default_path,omitempty"`
 
 	// Hotkeys overrides default keyboard shortcuts in the TUI.
 	// Keys are action names, values are key bindings (e.g., "delete" = "backspace").
 	// Set an action to "" to explicitly unbind it.
-	Hotkeys map[string]string `toml:"hotkeys"`
+	Hotkeys map[string]string `toml:"hotkeys,omitempty"`
 
 	// Theme sets the color scheme: "dark" (default), "light", or "system"
-	Theme string `toml:"theme"`
+	Theme string `toml:"theme,omitempty"`
 
 	// Tools defines custom AI tool configurations
-	Tools map[string]ToolDef `toml:"tools"`
+	Tools map[string]ToolDef `toml:"tools,omitempty"`
 
 	// MCPDefaultScope sets the default scope for MCP operations
 	// Valid values: "local" (default), "global", "user"
-	MCPDefaultScope string `toml:"mcp_default_scope"`
+	MCPDefaultScope string `toml:"mcp_default_scope,omitempty"`
 
 	// ManageMCPJson controls whether agent-deck writes to .mcp.json in project directories.
 	// Set to false to prevent agent-deck from touching any .mcp.json files, which is useful
 	// when you manage that file manually or via another tool.
 	// Default: true (nil = true)
-	ManageMCPJson *bool `toml:"manage_mcp_json"`
+	ManageMCPJson *bool `toml:"manage_mcp_json,omitempty"`
 
 	// SyncTitle controls whether agent-deck overwrites a session's Title with the
 	// agent's own session-name (e.g. Claude's `--name` / `/rename`, issues #572/#697).
 	// Tool-agnostic, global switch. Set false to keep the title you gave the session.
 	// The per-session TitleLocked flag remains available as a finer-grained override.
 	// Default: true (nil = true)
-	SyncTitle *bool `toml:"sync_title"`
+	SyncTitle *bool `toml:"sync_title,omitempty"`
 
 	// MCPs defines available MCP servers for the MCP Manager
 	// These can be attached/detached per-project via the MCP Manager (M key)
-	MCPs map[string]MCPDef `toml:"mcps"`
+	MCPs map[string]MCPDef `toml:"mcps,omitempty"`
 
 	// Plugins defines available Claude Code plugins for per-session attach
 	// (RFC docs/rfc/PLUGIN_ATTACH.md). Catalog-only in v1: every name passed
 	// via `--plugin <name>` must resolve to an entry here. Each entry maps a
 	// short catalog name (e.g. "octopus") to a Claude Code plugin id
 	// (`<name>@<source>`) plus per-plugin policy (auto-install, channel link).
-	Plugins map[string]PluginDef `toml:"plugins"`
+	Plugins map[string]PluginDef `toml:"plugins,omitempty"`
 
 	// Claude defines Claude Code integration settings
-	Claude ClaudeSettings `toml:"claude"`
+	Claude ClaudeSettings `toml:"claude,omitempty"`
 
 	// Profiles defines optional per-profile overrides.
 	// Example:
 	// [profiles.work.claude]
 	// config_dir = "~/.claude-work"
-	Profiles map[string]ProfileSettings `toml:"profiles"`
+	Profiles map[string]ProfileSettings `toml:"profiles,omitempty"`
 
 	// Groups defines optional per-group overrides.
 	// Example:
 	// [groups."my-group".claude]
 	// config_dir = "~/.claude-my-group"
-	Groups map[string]GroupSettings `toml:"groups"`
+	Groups map[string]GroupSettings `toml:"groups,omitempty"`
 
 	// Conductors defines optional per-conductor overrides.
 	// Keyed by conductor name (matches Instance.Title minus "conductor-" prefix).
@@ -114,107 +114,107 @@ type UserConfig struct {
 	// [conductors.gsd-v154.claude]
 	// config_dir = "~/.claude-work"
 	// env_file   = "~/git/work/.envrc"
-	Conductors map[string]ConductorOverrides `toml:"conductors"`
+	Conductors map[string]ConductorOverrides `toml:"conductors,omitempty"`
 
 	// Gemini defines Gemini CLI integration settings
-	Gemini GeminiSettings `toml:"gemini"`
+	Gemini GeminiSettings `toml:"gemini,omitempty"`
 
 	// OpenCode defines OpenCode CLI integration settings
-	OpenCode OpenCodeSettings `toml:"opencode"`
+	OpenCode OpenCodeSettings `toml:"opencode,omitempty"`
 
 	// Codex defines Codex CLI integration settings
-	Codex CodexSettings `toml:"codex"`
+	Codex CodexSettings `toml:"codex,omitempty"`
 
 	// Copilot defines GitHub Copilot CLI integration settings (Issue #556)
-	Copilot CopilotSettings `toml:"copilot"`
+	Copilot CopilotSettings `toml:"copilot,omitempty"`
 
 	// Crush defines charmbracelet/crush CLI integration settings (Issue #940)
-	Crush CrushSettings `toml:"crush"`
+	Crush CrushSettings `toml:"crush,omitempty"`
 
 	// Hermes defines Hermes Agent CLI integration settings
-	Hermes HermesSettings `toml:"hermes"`
+	Hermes HermesSettings `toml:"hermes,omitempty"`
 
 	// Worktree defines git worktree preferences
-	Worktree WorktreeSettings `toml:"worktree"`
+	Worktree WorktreeSettings `toml:"worktree,omitempty"`
 
 	// GlobalSearch defines global conversation search settings
-	GlobalSearch GlobalSearchSettings `toml:"global_search"`
+	GlobalSearch GlobalSearchSettings `toml:"global_search,omitempty"`
 
 	// Logs defines session log management settings
-	Logs LogSettings `toml:"logs"`
+	Logs LogSettings `toml:"logs,omitempty"`
 
 	// MCPPool defines HTTP MCP pool settings for shared MCP servers
-	MCPPool MCPPoolSettings `toml:"mcp_pool"`
+	MCPPool MCPPoolSettings `toml:"mcp_pool,omitempty"`
 
 	// Updates defines auto-update settings
-	Updates UpdateSettings `toml:"updates"`
+	Updates UpdateSettings `toml:"updates,omitempty"`
 
 	// Preview defines preview pane display settings
-	Preview PreviewSettings `toml:"preview"`
+	Preview PreviewSettings `toml:"preview,omitempty"`
 
 	// Experiments defines experiment folder settings for 'try' command
-	Experiments ExperimentsSettings `toml:"experiments"`
+	Experiments ExperimentsSettings `toml:"experiments,omitempty"`
 
 	// Notifications defines waiting session notification bar settings
-	Notifications NotificationsConfig `toml:"notifications"`
+	Notifications NotificationsConfig `toml:"notifications,omitempty"`
 
 	// Instances defines multiple instance behavior settings
-	Instances InstanceSettings `toml:"instances"`
+	Instances InstanceSettings `toml:"instances,omitempty"`
 
 	// Shell defines global shell environment settings for sessions
-	Shell ShellSettings `toml:"shell"`
+	Shell ShellSettings `toml:"shell,omitempty"`
 
 	// Maintenance defines automatic maintenance worker settings
-	Maintenance MaintenanceSettings `toml:"maintenance"`
+	Maintenance MaintenanceSettings `toml:"maintenance,omitempty"`
 
 	// Status defines session status detection settings
-	Status StatusSettings `toml:"status"`
+	Status StatusSettings `toml:"status,omitempty"`
 
 	// Conductor defines conductor (meta-agent orchestration) settings
-	Conductor ConductorSettings `toml:"conductor"`
+	Conductor ConductorSettings `toml:"conductor,omitempty"`
 
 	// Tmux defines tmux option overrides applied to every session
-	Tmux TmuxSettings `toml:"tmux"`
+	Tmux TmuxSettings `toml:"tmux,omitempty"`
 
 	// Docker defines Docker sandbox settings for containerized sessions
-	Docker DockerSettings `toml:"docker"`
+	Docker DockerSettings `toml:"docker,omitempty"`
 
 	// Fork defines quick-fork (f) and fork-dialog (Shift+F) default behavior.
-	Fork ForkSettings `toml:"fork"`
+	Fork ForkSettings `toml:"fork,omitempty"`
 
 	// Remotes defines named SSH remote agent-deck instances
-	Remotes map[string]RemoteConfig `toml:"remotes"`
+	Remotes map[string]RemoteConfig `toml:"remotes,omitempty"`
 
 	// OpenClaw defines OpenClaw gateway integration settings
-	OpenClaw OpenClawSettings `toml:"openclaw"`
+	OpenClaw OpenClawSettings `toml:"openclaw,omitempty"`
 
 	// Display defines rendering and display settings
-	Display DisplaySettings `toml:"display"`
+	Display DisplaySettings `toml:"display,omitempty"`
 
 	// Costs defines cost tracking and budget settings
-	Costs CostsSettings `toml:"costs"`
+	Costs CostsSettings `toml:"costs,omitempty"`
 
 	// SystemStats defines system stats display settings (CPU, RAM, etc.)
-	SystemStats SystemStatsSettings `toml:"system_stats"`
+	SystemStats SystemStatsSettings `toml:"system_stats,omitempty"`
 
 	// Watcher defines event watcher settings
-	Watcher WatcherSettings `toml:"watcher"`
+	Watcher WatcherSettings `toml:"watcher,omitempty"`
 
 	// Feedback defines in-product feedback prompt settings (v1.7.38+).
 	// Mirrors the opt-out in ~/.agent-deck/feedback-state.json so it is visible
 	// to the user and editable without running `agent-deck feedback`.
-	Feedback FeedbackSettings `toml:"feedback"`
+	Feedback FeedbackSettings `toml:"feedback,omitempty"`
 
 	// Terminal defines outer-terminal chrome settings — sequences agent-deck
 	// writes directly to the host terminal (iTerm2 badge, etc), distinct
 	// from anything tmux draws. Empty/absent uses defaults; see TerminalSettings.
-	Terminal TerminalSettings `toml:"terminal"`
+	Terminal TerminalSettings `toml:"terminal,omitempty"`
 
 	// Web defines `agent-deck web` HTTP server settings.
-	Web WebSettings `toml:"web"`
+	Web WebSettings `toml:"web,omitempty"`
 
 	// UI defines TUI layout settings (split ratios, etc).
-	UI UISettings `toml:"ui"`
+	UI UISettings `toml:"ui,omitempty"`
 }
 
 // UISettings controls TUI layout proportions.
@@ -224,24 +224,24 @@ type UISettings struct {
 	// preview pane (sessions list gets the remainder). Valid range: 10-90.
 	// Default: 65 (current behavior — sessions 35 / preview 65).
 	// Adjustable at runtime via < and > keybindings (5% step).
-	PreviewPct int `toml:"preview_pct"`
+	PreviewPct int `toml:"preview_pct,omitzero"`
 
 	// ITermOpenAs controls whether Shift+Enter pops the focused session
 	// into a new iTerm2 *tab* or a new iTerm2 *window* on macOS. Valid
 	// values: "tab", "window". Empty defaults to "tab" (iTerm's natural
 	// UX). Issue #1100, follow-up to #1098 — credit @ddorman-dn.
-	ITermOpenAs string `toml:"iterm_open_as"`
+	ITermOpenAs string `toml:"iterm_open_as,omitempty"`
 	// RemoteLatencyRefreshSecs sets how often the TUI re-measures the
 	// round-trip latency to each configured remote (issue #1103). Valid
 	// range: 2-300. Default: matches [system_stats].refresh_seconds (5s)
 	// so the latency marker ticks alongside CPU/RAM/load.
-	RemoteLatencyRefreshSecs int `toml:"remote_latency_refresh_secs"`
+	RemoteLatencyRefreshSecs int `toml:"remote_latency_refresh_secs,omitzero"`
 	// RemoteSessionRefreshSecs sets how often the TUI re-fetches the remote
 	// session list over SSH (issue #1170). Remote sessions created after the
 	// TUI launched were invisible until quit+relaunch; this is the poll
 	// cadence that reconciles the list. Valid range: 5-300. Default: 15s,
 	// tightening the visibility latency reported on v1.9.30.
-	RemoteSessionRefreshSecs int `toml:"remote_session_refresh_secs"`
+	RemoteSessionRefreshSecs int `toml:"remote_session_refresh_secs,omitzero"`
 
 	// ShowOnlyInstalledTools, when true, hides tools from the new-session
 	// dialogs (TUI + web) whose command does not resolve on the host PATH
@@ -250,12 +250,12 @@ type UISettings struct {
 	// the dialog falls back to showing all tools plus a one-line hint. This is a
 	// display filter only — `agent-deck launch -c <tool>` still spawns a hidden
 	// tool.
-	ShowOnlyInstalledTools bool `toml:"show_only_installed_tools"`
+	ShowOnlyInstalledTools bool `toml:"show_only_installed_tools,omitempty"`
 
 	// HiddenTools lists tool names to hide from the new-session picker (TUI + web).
 	// Denylist: absent or empty shows every tool (subject to show_only_installed_tools).
 	// shell is always shown and cannot be hidden.
-	HiddenTools []string `toml:"hidden_tools"`
+	HiddenTools []string `toml:"hidden_tools,omitempty"`
 
 	// Footer controls the style of the bottom hint bar. Valid values:
 	//   "full" (default)    — the historic verbose bar: filled key chips,
@@ -271,7 +271,7 @@ type UISettings struct {
 	// rendering preference (TUI UX initiative, item 1): no keybinding is
 	// added, removed, or changed — only what the footer advertises. Every
 	// action remains reachable by its key and is fully listed under help (?).
-	Footer string `toml:"footer"`
+	Footer string `toml:"footer,omitempty"`
 
 	// NewSessionEnterAdvances controls what Enter does on the free-text
 	// Name/Branch fields of the new-session dialog. As of the UX top-3 pass this
@@ -466,7 +466,7 @@ func (u UISettings) GetRemoteLatencyRefreshSecs(fallbackSecs int) int {
 type WebSettings struct {
 	// MutationsEnabled controls whether POST/PATCH/DELETE endpoints accept
 	// requests. nil (omitted) defaults to true. Forced off by --read-only.
-	MutationsEnabled *bool `toml:"mutations_enabled"`
+	MutationsEnabled *bool `toml:"mutations_enabled,omitempty"`
 }
 
 // FeedbackSettings controls the in-product feedback prompts.
@@ -476,36 +476,36 @@ type WebSettings struct {
 type FeedbackSettings struct {
 	// Disabled suppresses all passive feedback prompts when true.
 	// Defaults to false. Set by RecordOptOut paths; cleared on re-enable.
-	Disabled bool `toml:"disabled"`
+	Disabled bool `toml:"disabled,omitempty"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.
 type OpenClawSettings struct {
 	// GatewayURL is the WebSocket URL of the OpenClaw gateway (default: "ws://127.0.0.1:31337")
-	GatewayURL string `toml:"gateway_url"`
+	GatewayURL string `toml:"gateway_url,omitempty"`
 
 	// Password is the gateway authentication password.
 	// Supports env var references (e.g. "$OPENCLAW_PASSWORD" or "${OPENCLAW_PASSWORD}").
 	// Falls back to OPENCLAW_PASSWORD env var if not set.
-	Password string `toml:"password"`
+	Password string `toml:"password,omitempty"`
 
 	// AutoSync syncs OpenClaw agents as agent-deck sessions on TUI startup
-	AutoSync bool `toml:"auto_sync"`
+	AutoSync bool `toml:"auto_sync,omitempty"`
 
 	// GroupName is the agent-deck group name for OpenClaw sessions (default: "openclaw")
-	GroupName string `toml:"group_name"`
+	GroupName string `toml:"group_name,omitempty"`
 }
 
 // RemoteConfig defines a remote agent-deck instance accessible via SSH.
 type RemoteConfig struct {
 	// Host is the SSH destination (e.g., "user@host" or "user@host:port")
-	Host string `toml:"host"`
+	Host string `toml:"host,omitempty"`
 
 	// AgentDeckPath is the path to agent-deck binary on the remote (default: "agent-deck")
-	AgentDeckPath string `toml:"agent_deck_path"`
+	AgentDeckPath string `toml:"agent_deck_path,omitempty"`
 
 	// Profile is the remote profile to use (default: "default")
-	Profile string `toml:"profile"`
+	Profile string `toml:"profile,omitempty"`
 }
 
 // GetAgentDeckPath returns the agent-deck binary path, defaulting to "agent-deck".
@@ -527,52 +527,52 @@ func (rc RemoteConfig) GetProfile() string {
 // ProfileSettings defines per-profile configuration overrides.
 type ProfileSettings struct {
 	// Claude defines Claude Code overrides for a specific profile.
-	Claude ProfileClaudeSettings `toml:"claude"`
+	Claude ProfileClaudeSettings `toml:"claude,omitempty"`
 	// Codex defines Codex CLI overrides for a specific profile.
-	Codex ProfileCodexSettings `toml:"codex"`
+	Codex ProfileCodexSettings `toml:"codex,omitempty"`
 	// Costs defines profile-specific cost-tracking overrides.
 	// Nil pointer means "no [profiles.<name>.costs] block in TOML"; the
 	// resolver falls through to global [costs] settings.
-	Costs *ProfileCosts `toml:"costs"`
+	Costs *ProfileCosts `toml:"costs,omitempty"`
 }
 
 // ProfileClaudeSettings defines profile-specific Claude overrides.
 type ProfileClaudeSettings struct {
 	// ConfigDir overrides [claude].config_dir for this profile only.
-	ConfigDir string `toml:"config_dir"`
+	ConfigDir string `toml:"config_dir,omitempty"`
 }
 
 // ProfileCodexSettings defines profile-specific Codex overrides.
 type ProfileCodexSettings struct {
 	// ConfigDir overrides [codex].config_dir for this profile only.
-	ConfigDir string `toml:"config_dir"`
+	ConfigDir string `toml:"config_dir,omitempty"`
 }
 
 // GroupSettings defines per-group configuration overrides.
 type GroupSettings struct {
 	// Claude defines Claude Code overrides for a specific group.
-	Claude GroupClaudeSettings `toml:"claude"`
+	Claude GroupClaudeSettings `toml:"claude,omitempty"`
 	// Hermes defines Hermes overrides for a specific group.
-	Hermes GroupHermesSettings `toml:"hermes"`
+	Hermes GroupHermesSettings `toml:"hermes,omitempty"`
 }
 
 // GroupClaudeSettings defines group-specific Claude overrides.
 type GroupClaudeSettings struct {
 	// ConfigDir overrides [claude].config_dir for sessions in this group.
-	ConfigDir string `toml:"config_dir"`
+	ConfigDir string `toml:"config_dir,omitempty"`
 
 	// EnvFile overrides [claude].env_file for sessions in this group.
-	EnvFile string `toml:"env_file"`
+	EnvFile string `toml:"env_file,omitempty"`
 }
 
 // GroupHermesSettings defines group-specific Hermes overrides.
 type GroupHermesSettings struct {
-	Command      string `toml:"command"`
-	EnvFile      string `toml:"env_file"`
-	YoloMode     bool   `toml:"yolo_mode"`
-	GatewayURL   string `toml:"gateway_url"`
-	DashboardURL string `toml:"dashboard_url"`
-	APITokenEnv  string `toml:"api_token_env"`
+	Command      string `toml:"command,omitempty"`
+	EnvFile      string `toml:"env_file,omitempty"`
+	YoloMode     bool   `toml:"yolo_mode,omitempty"`
+	GatewayURL   string `toml:"gateway_url,omitempty"`
+	DashboardURL string `toml:"dashboard_url,omitempty"`
+	APITokenEnv  string `toml:"api_token_env,omitempty"`
 }
 
 // ConductorOverrides defines per-conductor configuration overrides.
@@ -586,9 +586,9 @@ type GroupHermesSettings struct {
 // Closes issue #602.
 type ConductorOverrides struct {
 	// Claude defines Claude Code overrides for a specific conductor.
-	Claude ConductorClaudeSettings `toml:"claude"`
+	Claude ConductorClaudeSettings `toml:"claude,omitempty"`
 	// Hermes defines Hermes overrides for a specific conductor.
-	Hermes ConductorHermesSettings `toml:"hermes"`
+	Hermes ConductorHermesSettings `toml:"hermes,omitempty"`
 }
 
 // ConductorClaudeSettings defines conductor-specific Claude overrides.
@@ -597,61 +597,61 @@ type ConductorOverrides struct {
 // builder (resolvePath handles path expansion at use).
 type ConductorClaudeSettings struct {
 	// ConfigDir overrides [claude].config_dir for this conductor only.
-	ConfigDir string `toml:"config_dir"`
+	ConfigDir string `toml:"config_dir,omitempty"`
 
 	// EnvFile is sourced before claude exec for this conductor.
 	// Matches CFG-03 semantics — missing file logs a warning, does not block.
-	EnvFile string `toml:"env_file"`
+	EnvFile string `toml:"env_file,omitempty"`
 }
 
 // ConductorHermesSettings defines conductor-specific Hermes overrides.
 type ConductorHermesSettings struct {
-	Command      string `toml:"command"`
-	EnvFile      string `toml:"env_file"`
-	YoloMode     bool   `toml:"yolo_mode"`
-	GatewayURL   string `toml:"gateway_url"`
-	DashboardURL string `toml:"dashboard_url"`
-	APITokenEnv  string `toml:"api_token_env"`
+	Command      string `toml:"command,omitempty"`
+	EnvFile      string `toml:"env_file,omitempty"`
+	YoloMode     bool   `toml:"yolo_mode,omitempty"`
+	GatewayURL   string `toml:"gateway_url,omitempty"`
+	DashboardURL string `toml:"dashboard_url,omitempty"`
+	APITokenEnv  string `toml:"api_token_env,omitempty"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
 type MCPPoolSettings struct {
 	// Enabled enables HTTP pool mode (default: false)
-	Enabled bool `toml:"enabled"`
+	Enabled bool `toml:"enabled,omitempty"`
 
 	// AutoStart starts pool when agent-deck launches (default: true)
-	AutoStart bool `toml:"auto_start"`
+	AutoStart bool `toml:"auto_start,omitempty"`
 
 	// PortStart is the first port in the pool range (default: 8001)
-	PortStart int `toml:"port_start"`
+	PortStart int `toml:"port_start,omitzero"`
 
 	// PortEnd is the last port in the pool range (default: 8050)
-	PortEnd int `toml:"port_end"`
+	PortEnd int `toml:"port_end,omitzero"`
 
 	// StartOnDemand starts MCPs lazily on first attach (default: false)
-	StartOnDemand bool `toml:"start_on_demand"`
+	StartOnDemand bool `toml:"start_on_demand,omitempty"`
 
 	// ShutdownOnExit stops HTTP servers when agent-deck quits (default: true)
-	ShutdownOnExit bool `toml:"shutdown_on_exit"`
+	ShutdownOnExit bool `toml:"shutdown_on_exit,omitempty"`
 
 	// PoolMCPs is the list of MCPs to run in pool mode
 	// Empty = auto-detect common MCPs (memory, exa, firecrawl, etc.)
-	PoolMCPs []string `toml:"pool_mcps"`
+	PoolMCPs []string `toml:"pool_mcps,omitempty"`
 
 	// FallbackStdio uses stdio for MCPs without socket support (default: true)
-	FallbackStdio bool `toml:"fallback_to_stdio"`
+	FallbackStdio bool `toml:"fallback_to_stdio,omitempty"`
 
 	// ShowStatus shows pool status in TUI (default: true)
-	ShowStatus bool `toml:"show_pool_status"`
+	ShowStatus bool `toml:"show_pool_status,omitempty"`
 
 	// PoolAll pools all MCPs by default (default: false)
-	PoolAll bool `toml:"pool_all"`
+	PoolAll bool `toml:"pool_all,omitempty"`
 
 	// ExcludeMCPs excludes specific MCPs from pool when pool_all = true
-	ExcludeMCPs []string `toml:"exclude_mcps"`
+	ExcludeMCPs []string `toml:"exclude_mcps,omitempty"`
 
 	// SocketWaitTimeout is seconds to wait for socket to become ready (default: 5)
-	SocketWaitTimeout int `toml:"socket_wait_timeout"`
+	SocketWaitTimeout int `toml:"socket_wait_timeout,omitzero"`
 }
 
 // LogSettings defines log file management configuration
@@ -659,148 +659,164 @@ type LogSettings struct {
 	// MaxSizeMB is the maximum size in MB before a log file is truncated
 	// When a log exceeds this size, it keeps only the last MaxLines lines
 	// Default: 10 (10MB)
-	MaxSizeMB int `toml:"max_size_mb"`
+	MaxSizeMB int `toml:"max_size_mb,omitzero"`
 
 	// MaxLines is the number of lines to keep when truncating
 	// Default: 10000
-	MaxLines int `toml:"max_lines"`
+	MaxLines int `toml:"max_lines,omitzero"`
 
 	// RemoveOrphans removes log files for sessions that no longer exist
-	// Default: true
-	RemoveOrphans bool `toml:"remove_orphans"`
+	// Default: true (nil = true)
+	RemoveOrphans *bool `toml:"remove_orphans,omitempty"`
 
 	// DebugLevel sets the minimum log level: "debug", "info", "warn", "error"
 	// Default: "info"
-	DebugLevel string `toml:"debug_level"`
+	DebugLevel string `toml:"debug_level,omitempty"`
 
 	// DebugFormat sets the log format: "json" (default) or "text"
-	DebugFormat string `toml:"debug_format"`
+	DebugFormat string `toml:"debug_format,omitempty"`
 
 	// DebugMaxMB is the max size in MB for debug.log before rotation
 	// Default: 10
-	DebugMaxMB int `toml:"debug_max_mb"`
+	DebugMaxMB int `toml:"debug_max_mb,omitzero"`
 
 	// DebugBackups is the number of rotated debug.log files to keep
 	// Default: 5
-	DebugBackups int `toml:"debug_backups"`
+	DebugBackups int `toml:"debug_backups,omitzero"`
 
 	// DebugRetentionDays is the number of days to keep rotated debug logs
 	// Default: 10
-	DebugRetentionDays int `toml:"debug_retention_days"`
+	DebugRetentionDays int `toml:"debug_retention_days,omitzero"`
 
 	// DebugCompress enables gzip compression for rotated debug logs
 	// Default: true
-	DebugCompress bool `toml:"debug_compress"`
+	DebugCompress bool `toml:"debug_compress,omitempty"`
 
 	// RingBufferMB is the in-memory ring buffer size in MB for crash dumps
 	// Default: 10
-	RingBufferMB int `toml:"ring_buffer_mb"`
+	RingBufferMB int `toml:"ring_buffer_mb,omitzero"`
 
 	// PprofEnabled starts a pprof server on localhost:6060 when debug mode is active
 	// Default: false
-	PprofEnabled bool `toml:"pprof_enabled"`
+	PprofEnabled bool `toml:"pprof_enabled,omitempty"`
 
 	// AggregateIntervalS is the event aggregation flush interval in seconds
 	// Default: 30
-	AggregateIntervalS int `toml:"aggregate_interval_secs"`
+	AggregateIntervalS int `toml:"aggregate_interval_secs,omitzero"`
 }
 
 // UpdateSettings defines auto-update configuration
 type UpdateSettings struct {
 	// AutoUpdate automatically installs updates without prompting
 	// Default: false
-	AutoUpdate bool `toml:"auto_update"`
+	AutoUpdate bool `toml:"auto_update,omitempty"`
 
 	// CheckEnabled enables automatic update checks on startup
-	// Default: true
-	CheckEnabled bool `toml:"check_enabled"`
+	// Default: true (nil = true)
+	CheckEnabled *bool `toml:"check_enabled,omitempty"`
 
 	// CheckIntervalHours is how often to check for updates (in hours)
 	// Default: 24
-	CheckIntervalHours int `toml:"check_interval_hours"`
+	CheckIntervalHours int `toml:"check_interval_hours,omitzero"`
 
 	// NotifyInCLI shows update notification in CLI commands (not just TUI)
-	// Default: true
-	NotifyInCLI bool `toml:"notify_in_cli"`
+	// Default: true (nil = true)
+	NotifyInCLI *bool `toml:"notify_in_cli,omitempty"`
+}
+
+// GetCheckEnabled returns whether update checks are enabled (default: true).
+func (u UpdateSettings) GetCheckEnabled() bool {
+	if u.CheckEnabled == nil {
+		return true
+	}
+	return *u.CheckEnabled
+}
+
+// GetNotifyInCLI returns whether CLI update notifications are enabled (default: true).
+func (u UpdateSettings) GetNotifyInCLI() bool {
+	if u.NotifyInCLI == nil {
+		return true
+	}
+	return *u.NotifyInCLI
 }
 
 // PreviewSettings defines preview pane configuration
 type PreviewSettings struct {
 	// ShowOutput shows terminal output in preview pane (including launch animation)
 	// Default: true (pointer to distinguish "not set" from "explicitly false")
-	ShowOutput *bool `toml:"show_output"`
+	ShowOutput *bool `toml:"show_output,omitempty"`
 
 	// ShowAnalytics shows session analytics panel for Claude sessions
 	// Default: false (pointer to distinguish "not set" from "explicitly false")
-	ShowAnalytics *bool `toml:"show_analytics"`
+	ShowAnalytics *bool `toml:"show_analytics,omitempty"`
 
 	// ShowNotes shows session notes section in preview pane
 	// Default: false (pointer to distinguish "not set" from "explicitly true")
-	ShowNotes *bool `toml:"show_notes"`
+	ShowNotes *bool `toml:"show_notes,omitempty"`
 
 	// Analytics configures which sections to show in the analytics panel
-	Analytics AnalyticsDisplaySettings `toml:"analytics"`
+	Analytics AnalyticsDisplaySettings `toml:"analytics,omitempty"`
 
 	// NotesOutputSplit controls vertical space allocation between notes and output
 	// in the preview pane when output is visible.
 	// Range: 0.1 - 0.9 (fraction reserved for notes). Default: 0.33
-	NotesOutputSplit float64 `toml:"notes_output_split"`
+	NotesOutputSplit float64 `toml:"notes_output_split,omitzero"`
 }
 
 // AnalyticsDisplaySettings configures which analytics sections to display
 // All settings use pointers to distinguish "not set" from "explicitly false"
 type AnalyticsDisplaySettings struct {
 	// ShowContextBar shows the context window usage bar (default: true)
-	ShowContextBar *bool `toml:"show_context_bar"`
+	ShowContextBar *bool `toml:"show_context_bar,omitempty"`
 
 	// ShowTokens shows the token breakdown (In/Out/Cache/Total) (default: false)
-	ShowTokens *bool `toml:"show_tokens"`
+	ShowTokens *bool `toml:"show_tokens,omitempty"`
 
 	// ShowSessionInfo shows duration, turns, start time (default: false)
-	ShowSessionInfo *bool `toml:"show_session_info"`
+	ShowSessionInfo *bool `toml:"show_session_info,omitempty"`
 
-	// ShowTools shows the top tool calls (default: true)
-	ShowTools *bool `toml:"show_tools"`
+	// ShowTools shows the top tool calls (default: false)
+	ShowTools *bool `toml:"show_tools,omitempty"`
 
 	// ShowCost shows the estimated cost (default: false)
-	ShowCost *bool `toml:"show_cost"`
+	ShowCost *bool `toml:"show_cost,omitempty"`
 }
 
 // ExperimentsSettings defines experiment folder configuration
 type ExperimentsSettings struct {
 	// Directory is the base directory for experiments
 	// Default: ~/src/tries
-	Directory string `toml:"directory"`
+	Directory string `toml:"directory,omitempty"`
 
 	// DatePrefix adds YYYY-MM-DD- prefix to new experiment folders
-	// Default: true
-	DatePrefix bool `toml:"date_prefix"`
+	// Default: true (nil = true)
+	DatePrefix *bool `toml:"date_prefix,omitempty"`
 
 	// DefaultTool is the AI tool to use for experiment sessions
 	// Default: "claude"
-	DefaultTool string `toml:"default_tool"`
+	DefaultTool string `toml:"default_tool,omitempty"`
 }
 
 // NotificationsConfig configures the waiting session notification bar
 type NotificationsConfig struct {
-	// Enabled shows notification bar in tmux status (default: true)
-	Enabled bool `toml:"enabled"`
+	// Enabled shows notification bar in tmux status (default: true, nil = true)
+	Enabled *bool `toml:"enabled,omitempty"`
 
 	// MaxShown is the maximum number of sessions shown in the bar (default: 6)
-	MaxShown int `toml:"max_shown"`
+	MaxShown int `toml:"max_shown,omitzero"`
 
 	// ShowAll displays all sessions (with status icons) instead of only waiting sessions (default: false)
-	ShowAll bool `toml:"show_all"`
+	ShowAll bool `toml:"show_all,omitempty"`
 
 	// Minimal shows a compact icon+count summary instead of session names: ● 2 │ ◐ 3 │ ○ 1
 	// When true, key bindings (Ctrl+b 1-6) are disabled. ShowAll is ignored. (default: false)
-	Minimal bool `toml:"minimal"`
+	Minimal bool `toml:"minimal,omitempty"`
 
 	// TransitionEvents controls whether the transition daemon sends tmux messages
 	// to parent sessions when a child transitions (e.g., running → waiting).
 	// Default: true (nil = true). Set to false to suppress dispatch globally.
 	// Per-session override: Instance.NoTransitionNotify
-	TransitionEvents *bool `toml:"transition_events"`
+	TransitionEvents *bool `toml:"transition_events,omitempty"`
 }
 
 // GetTransitionEventsEnabled returns whether transition event dispatch is enabled.
@@ -820,12 +836,12 @@ type InstanceSettings struct {
 	// sessions (issue #1246). When true (explicit opt-in), multiple instances can run,
 	// but only the first (primary) manages the notification bar — useful for multi-pane
 	// workflows (e.g. PC + phone-over-SSH).
-	AllowMultiple *bool `toml:"allow_multiple"`
+	AllowMultiple *bool `toml:"allow_multiple,omitempty"`
 
 	// FollowCwdOnAttach updates the session's ProjectPath from tmux pane_current_path
 	// after returning from attach, and persists the new path.
 	// Default: false
-	FollowCwdOnAttach *bool `toml:"follow_cwd_on_attach"`
+	FollowCwdOnAttach *bool `toml:"follow_cwd_on_attach,omitempty"`
 }
 
 // GetAllowMultiple returns whether multiple instances are allowed, defaulting to false.
@@ -853,17 +869,17 @@ type ShellSettings struct {
 	// EnvFiles is a list of .env files to source for ALL sessions
 	// Paths can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
 	// Files are sourced in order; later files override earlier ones
-	EnvFiles []string `toml:"env_files"`
+	EnvFiles []string `toml:"env_files,omitempty"`
 
 	// InitScript is an optional shell script or command to run before each session
 	// Useful for direnv, nvm, pyenv, etc.
 	// Can be a file path (e.g., "~/.agent-deck/init.sh") or inline command
 	// (e.g., 'eval "$(direnv hook bash)"')
-	InitScript string `toml:"init_script"`
+	InitScript string `toml:"init_script,omitempty"`
 
 	// IgnoreMissingEnvFiles silently ignores missing .env files (default: true)
 	// When false, sessions will error if an env_file doesn't exist
-	IgnoreMissingEnvFiles *bool `toml:"ignore_missing_env_files"`
+	IgnoreMissingEnvFiles *bool `toml:"ignore_missing_env_files,omitempty"`
 
 	// ExitToShell, when true, wraps built-in agent spawn commands so that
 	// exiting the agent (e.g. `/exit` from Claude Code) drops the pane back to
@@ -872,7 +888,7 @@ type ShellSettings struct {
 	// work (aws-vault exec, direnv, …) → `claude --resume` the same session.
 	// Default: false (opt-in). Issue #1161, design doc
 	// docs/decisions/1161-exit-to-shell-then-resume.md.
-	ExitToShell *bool `toml:"exit_to_shell"`
+	ExitToShell *bool `toml:"exit_to_shell,omitempty"`
 
 	// LaunchShell, when true, wraps agent spawn commands with an interactive
 	// shell invocation so that environment variables from ~/.zshrc, ~/.bashrc
@@ -881,7 +897,7 @@ type ShellSettings struct {
 	// the TUI because the agent doesn't inherit the interactive shell's
 	// environment.
 	// Default: false (opt-in). Issue #1218.
-	LaunchShell *bool `toml:"launch_shell"`
+	LaunchShell *bool `toml:"launch_shell,omitempty"`
 }
 
 // GetIgnoreMissingEnvFiles returns whether to ignore missing env files, defaulting to true
@@ -1024,64 +1040,64 @@ type ClaudeSettings struct {
 	// Command is the Claude CLI command or alias to use (e.g., "claude", "cdw", "cdp")
 	// Default: "claude"
 	// This allows using shell aliases that set CLAUDE_CONFIG_DIR automatically
-	Command string `toml:"command"`
+	Command string `toml:"command,omitempty"`
 
 	// ConfigDir is the path to Claude's config directory
 	// Default: ~/.claude (or CLAUDE_CONFIG_DIR env var)
-	ConfigDir string `toml:"config_dir"`
+	ConfigDir string `toml:"config_dir,omitempty"`
 
 	// DangerousMode enables --dangerously-skip-permissions flag for Claude sessions
 	// Default: true (nil = use default true, explicitly set false to disable)
 	// Power users typically want this enabled for faster iteration
-	DangerousMode *bool `toml:"dangerous_mode"`
+	DangerousMode *bool `toml:"dangerous_mode,omitempty"`
 
 	// AllowDangerousMode enables --allow-dangerously-skip-permissions flag
 	// This unlocks bypass as an option without activating it by default.
 	// Ignored when dangerous_mode is true (the stronger flag takes precedence).
 	// Default: false
-	AllowDangerousMode bool `toml:"allow_dangerous_mode"`
+	AllowDangerousMode bool `toml:"allow_dangerous_mode,omitempty"`
 
 	// AutoMode enables --permission-mode auto flag for Claude sessions
 	// A classifier model reviews commands before they run, blocking scope escalation
 	// and hostile-content-driven actions while letting routine work proceed without prompts.
 	// Ignored when dangerous_mode is true (the stronger flag takes precedence).
 	// Default: false
-	AutoMode bool `toml:"auto_mode"`
+	AutoMode bool `toml:"auto_mode,omitempty"`
 
 	// ExtraArgs are user-supplied Claude CLI flags used as the New Session
 	// dialog default. They are persisted as discrete TOML array entries and
 	// copied to Instance.ExtraArgs when a Claude session is created.
-	ExtraArgs []string `toml:"extra_args"`
+	ExtraArgs []string `toml:"extra_args,omitempty"`
 
 	// DefaultModel is the model to preselect for new Claude sessions
 	// (e.g., "claude-opus-4-7"). Mirrors [gemini]/[opencode]/[copilot]
 	// default_model. When empty, the dialog leaves the model unset and Claude
 	// Code falls back to its own default (#1172).
-	DefaultModel string `toml:"default_model"`
+	DefaultModel string `toml:"default_model,omitempty"`
 
 	// UseChrome enables --chrome by default for Claude sessions.
-	UseChrome bool `toml:"use_chrome"`
+	UseChrome bool `toml:"use_chrome,omitempty"`
 
 	// UseTeammateMode enables --teammate-mode tmux by default for Claude sessions.
-	UseTeammateMode bool `toml:"use_teammate_mode"`
+	UseTeammateMode bool `toml:"use_teammate_mode,omitempty"`
 
 	// EnvFile is a .env file specific to Claude sessions
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
-	EnvFile string `toml:"env_file"`
+	EnvFile string `toml:"env_file,omitempty"`
 
 	// HooksEnabled enables Claude Code hooks for real-time status detection.
 	// When enabled, agent-deck uses lifecycle hooks (SessionStart, Stop, etc.)
 	// for instant, deterministic status updates instead of polling tmux content.
 	// Default: true (nil = use default true, set false to disable)
-	HooksEnabled *bool `toml:"hooks_enabled"`
+	HooksEnabled *bool `toml:"hooks_enabled,omitempty"`
 
 	// AutoResumeSummary auto-presses Enter on Claude's "Resume from summary"
 	// picker that appears after `claude --resume` on long-running sessions
 	// (>~250k tokens). Critical for unattended conductors which would
 	// otherwise sit frozen on the picker forever (closes #67).
 	// Default: true (nil = use default true, set false to disable).
-	AutoResumeSummary *bool `toml:"auto_resume_summary"`
+	AutoResumeSummary *bool `toml:"auto_resume_summary,omitempty"`
 
 	// VimMode tells agent-deck the inner Claude Code prompt uses vim keybindings
 	// ("editorMode": "vim"). When true, every message send guarantees the
@@ -1090,7 +1106,7 @@ type ClaudeSettings struct {
 	// after a turn finishes) actually submits instead of being typed-but-unsent
 	// (issue #1264). Off by default — only enable for sessions running Claude
 	// Code with vim editor mode. Other tools and non-vim Claude are unaffected.
-	VimMode bool `toml:"vim_mode"`
+	VimMode bool `toml:"vim_mode,omitempty"`
 }
 
 // GetVimMode reports whether vim-mode insert-guard sends are enabled. Off by
@@ -1239,20 +1255,20 @@ func (c *ClaudeSettings) GetAutoResumeSummary() bool {
 type GeminiSettings struct {
 	// YoloMode enables --yolo flag for Gemini sessions (auto-approve all actions)
 	// Default: false
-	YoloMode bool `toml:"yolo_mode"`
+	YoloMode bool `toml:"yolo_mode,omitempty"`
 
 	// DefaultModel is the model to use for new Gemini sessions (e.g., "gemini-2.5-flash")
 	// If empty, Gemini CLI uses its own default
-	DefaultModel string `toml:"default_model"`
+	DefaultModel string `toml:"default_model,omitempty"`
 
 	// EnvFile is a .env file specific to Gemini sessions
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
-	EnvFile string `toml:"env_file"`
+	EnvFile string `toml:"env_file,omitempty"`
 
 	// Command overrides the default binary/invocation for Gemini sessions.
 	// Supports flags (e.g., "gemini --custom-flag"). Default: "gemini"
-	Command string `toml:"command"`
+	Command string `toml:"command,omitempty"`
 }
 
 // OpenCodeSettings defines OpenCode CLI configuration
@@ -1260,40 +1276,40 @@ type OpenCodeSettings struct {
 	// DefaultModel is the model to use for new OpenCode sessions
 	// Format: "provider/model" (e.g., "anthropic/claude-sonnet-4-5-20250929")
 	// If empty, OpenCode uses its own default
-	DefaultModel string `toml:"default_model"`
+	DefaultModel string `toml:"default_model,omitempty"`
 
 	// DefaultAgent is the agent to use for new OpenCode sessions
 	// If empty, OpenCode uses its own default
-	DefaultAgent string `toml:"default_agent"`
+	DefaultAgent string `toml:"default_agent,omitempty"`
 
 	// EnvFile is a .env file specific to OpenCode sessions
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
-	EnvFile string `toml:"env_file"`
+	EnvFile string `toml:"env_file,omitempty"`
 
 	// Command overrides the default binary/invocation for OpenCode sessions.
 	// Supports flags (e.g., "opencode --custom-flag"). Default: "opencode"
-	Command string `toml:"command"`
+	Command string `toml:"command,omitempty"`
 }
 
 // CodexSettings defines Codex CLI configuration
 type CodexSettings struct {
 	// Command is the Codex CLI command or alias to use (e.g., "codex", "codex-v2")
 	// Default: "codex"
-	Command string `toml:"command"`
+	Command string `toml:"command,omitempty"`
 
 	// ConfigDir is the path to Codex home directory.
 	// Default: ~/.codex (or CODEX_HOME env var)
-	ConfigDir string `toml:"config_dir"`
+	ConfigDir string `toml:"config_dir,omitempty"`
 
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
-	YoloMode bool `toml:"yolo_mode"`
+	YoloMode bool `toml:"yolo_mode,omitempty"`
 
 	// EnvFile is a .env file specific to Codex sessions
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
-	EnvFile string `toml:"env_file"`
+	EnvFile string `toml:"env_file,omitempty"`
 }
 
 // GetProfileCodexConfigDir returns the profile-specific Codex config directory, if configured.
@@ -1314,20 +1330,20 @@ func (c *UserConfig) GetProfileCodexConfigDir(profile string) string {
 type CopilotSettings struct {
 	// EnvFile is a .env file specific to Copilot sessions (sourced before
 	// the `copilot` command runs, like [gemini].env_file). Optional.
-	EnvFile string `toml:"env_file"`
+	EnvFile string `toml:"env_file,omitempty"`
 
 	// Command overrides the default binary/invocation for Copilot sessions.
 	// Supports flags (e.g., "copilot --custom-flag"). Default: "copilot"
-	Command string `toml:"command"`
+	Command string `toml:"command,omitempty"`
 
 	// DefaultModel sets the Copilot model for new sessions (e.g., "claude-opus-4.6",
 	// "gpt-5.2"). Passed as --model <value>. Can be overridden per-session.
-	DefaultModel string `toml:"default_model"`
+	DefaultModel string `toml:"default_model,omitempty"`
 
 	// AllowAll enables --allow-all by default for new sessions (equivalent to
 	// --allow-all-tools --allow-all-paths --allow-all-urls). Can be overridden
 	// per-session.
-	AllowAll bool `toml:"allow_all"`
+	AllowAll bool `toml:"allow_all,omitempty"`
 }
 
 // HermesSettings defines Hermes Agent CLI configuration.
@@ -1337,25 +1353,25 @@ type HermesSettings struct {
 	// Command is the Hermes CLI command or invocation to use.
 	// Supports flags (e.g., "hermes --model gpt-5.5-pro --provider openai").
 	// Default: "hermes"
-	Command string `toml:"command"`
+	Command string `toml:"command,omitempty"`
 	// EnvFile is a .env file specific to Hermes sessions (sourced before
 	// the `hermes` command runs). Optional.
-	EnvFile string `toml:"env_file"`
+	EnvFile string `toml:"env_file,omitempty"`
 	// YoloMode enables --yolo flag for Hermes sessions (auto-approve all tool calls).
 	// Default: false
-	YoloMode bool `toml:"yolo_mode"`
+	YoloMode bool `toml:"yolo_mode,omitempty"`
 	// GatewayURL is the WebSocket URL of the Hermes gateway for health checks.
 	// Default: "" (no gateway health check)
-	GatewayURL string `toml:"gateway_url"`
+	GatewayURL string `toml:"gateway_url,omitempty"`
 	// DashboardURL is the Hermes dashboard API endpoint.
 	// Default: "" (dashboard integration disabled)
-	DashboardURL string `toml:"dashboard_url"`
+	DashboardURL string `toml:"dashboard_url,omitempty"`
 	// APITokenEnv is the environment variable name containing the Hermes API token.
 	// Default: "" (uses HERMES_API_TOKEN if set)
-	APITokenEnv string `toml:"api_token_env"`
+	APITokenEnv string `toml:"api_token_env,omitempty"`
 	// WorkspaceDir is the base directory for Hermes shared workspace sessions.
 	// Default: "" (uses os.TempDir()/hermes-workspaces)
-	WorkspaceDir string `toml:"workspace_dir"`
+	WorkspaceDir string `toml:"workspace_dir,omitempty"`
 }
 
 // CrushSettings defines charmbracelet/crush CLI configuration (Issue #940).
@@ -1364,30 +1380,30 @@ type HermesSettings struct {
 type CrushSettings struct {
 	// Command overrides the default binary/invocation for Crush sessions.
 	// Supports flags (e.g., "crush --debug"). Default: "crush"
-	Command string `toml:"command"`
+	Command string `toml:"command,omitempty"`
 
 	// EnvFile is a .env file specific to Crush sessions (sourced before
 	// the `crush` command runs, like [gemini].env_file). Optional.
-	EnvFile string `toml:"env_file"`
+	EnvFile string `toml:"env_file,omitempty"`
 
 	// YoloMode enables --yolo flag for Crush sessions (auto-accept all
 	// permission prompts). Default: false
-	YoloMode bool `toml:"yolo_mode"`
+	YoloMode bool `toml:"yolo_mode,omitempty"`
 }
 
 // WorktreeSettings contains git worktree preferences.
 type WorktreeSettings struct {
-	// AutoCleanup: remove worktree when session is deleted
-	AutoCleanup bool `toml:"auto_cleanup"`
+	// AutoCleanup: remove worktree when session is deleted (default: true, nil = true)
+	AutoCleanup *bool `toml:"auto_cleanup,omitempty"`
 
 	// DefaultEnabled controls whether worktree creation is pre-selected in
 	// new-session and fork dialogs by default.
 	// Default: false
-	DefaultEnabled bool `toml:"default_enabled"`
+	DefaultEnabled bool `toml:"default_enabled,omitempty"`
 
 	// DefaultLocation: "sibling" (next to repo), "subdirectory" (inside .worktrees/),
 	// or a custom path (e.g., "~/worktrees") creating <path>/<repo_name>/<branch>
-	DefaultLocation string `toml:"default_location"`
+	DefaultLocation string `toml:"default_location,omitempty"`
 
 	// PathTemplate: custom path template for worktree location.
 	// Variables:
@@ -1396,13 +1412,13 @@ type WorktreeSettings struct {
 	//   {branch-escaped} -> URL-escaped (collision-resistant, reversible)
 	// Unknown variables like {foo} are left as-is in the path.
 	// If set, overrides DefaultLocation.
-	PathTemplate *string `toml:"path_template"`
+	PathTemplate *string `toml:"path_template,omitempty"`
 
 	// BranchPrefix is the prefix for auto-generated branch names when creating
 	// worktree sessions. For example, "feature/" produces "feature/my-session".
 	// Set to "" to disable auto-prefixing (just the session name).
 	// Default: "feature/" when not set.
-	BranchPrefix *string `toml:"branch_prefix"`
+	BranchPrefix *string `toml:"branch_prefix,omitempty"`
 
 	// SetupTimeoutSeconds caps how long .agent-deck/worktree-setup.sh may run.
 	// Pointer (not plain int) so the loader can distinguish three cases:
@@ -1413,7 +1429,7 @@ type WorktreeSettings struct {
 	// The `*0 = unlimited` convention matches standard CLI tooling (curl,
 	// systemd, docker). Reporter @Clindbergh flagged the v1.7.65 behaviour
 	// (`0 = default`) as counter-convention in the PR review for #727.
-	SetupTimeoutSeconds *int `toml:"setup_timeout_seconds"`
+	SetupTimeoutSeconds *int `toml:"setup_timeout_seconds,omitempty"`
 }
 
 // DefaultWorktreeSetupTimeout is the fallback used when no explicit value is
@@ -1476,150 +1492,150 @@ func (w *WorktreeSettings) ApplyBranchPrefix(branch string) string {
 // GlobalSearchSettings defines global conversation search configuration
 type GlobalSearchSettings struct {
 	// Enabled enables/disables global search feature (default: true when loaded via LoadUserConfig)
-	Enabled bool `toml:"enabled"`
+	Enabled bool `toml:"enabled,omitempty"`
 
 	// Tier controls search strategy: "auto", "instant", "balanced", "disabled"
 	// auto: Auto-detect based on data size (recommended)
 	// instant: Force full in-memory (fast, uses more RAM)
 	// balanced: Force LRU cache mode (slower, capped RAM)
 	// disabled: Disable global search entirely
-	Tier string `toml:"tier"`
+	Tier string `toml:"tier,omitempty"`
 
 	// MemoryLimitMB caps memory usage for search index (default: 100)
 	// Only applies to balanced tier
-	MemoryLimitMB int `toml:"memory_limit_mb"`
+	MemoryLimitMB int `toml:"memory_limit_mb,omitzero"`
 
 	// RecentDays limits search to sessions from last N days (0 = all)
 	// Reduces index size for users with long history (default: 90)
-	RecentDays int `toml:"recent_days"`
+	RecentDays int `toml:"recent_days,omitzero"`
 
 	// IndexRateLimit limits files indexed per second during background indexing
 	// Lower = less CPU impact (default: 20)
-	IndexRateLimit int `toml:"index_rate_limit"`
+	IndexRateLimit int `toml:"index_rate_limit,omitzero"`
 }
 
 // ToolDef defines a custom AI tool
 type ToolDef struct {
 	// Command is the shell command to run
-	Command string `toml:"command"`
+	Command string `toml:"command,omitempty"`
 
 	// CompatibleWith opts this tool into compatibility behavior for a built-in
 	// tool even when the configured command is a wrapper script rather than the
 	// literal executable name. Supported values currently include "claude" and
 	// "codex".
-	CompatibleWith string `toml:"compatible_with"`
+	CompatibleWith string `toml:"compatible_with,omitempty"`
 
 	// Wrapper is an optional command that wraps the tool command.
 	// Use {command} placeholder to include the tool command, or omit it to replace the command.
 	// Example: wrapper = "nvim +'terminal {command}' +'startinsert'"
-	Wrapper string `toml:"wrapper"`
+	Wrapper string `toml:"wrapper,omitempty"`
 
 	// Icon is the emoji/symbol to display
-	Icon string `toml:"icon"`
+	Icon string `toml:"icon,omitempty"`
 
 	// BusyPatterns are strings that indicate the tool is busy
-	BusyPatterns []string `toml:"busy_patterns"`
+	BusyPatterns []string `toml:"busy_patterns,omitempty"`
 
 	// PromptPatterns are strings that indicate the tool is waiting for input
-	PromptPatterns []string `toml:"prompt_patterns"`
+	PromptPatterns []string `toml:"prompt_patterns,omitempty"`
 
 	// DetectPatterns are regex patterns to auto-detect this tool from terminal content
-	DetectPatterns []string `toml:"detect_patterns"`
+	DetectPatterns []string `toml:"detect_patterns,omitempty"`
 
 	// ResumeFlag is the CLI flag to resume a session (e.g., "--resume")
-	ResumeFlag string `toml:"resume_flag"`
+	ResumeFlag string `toml:"resume_flag,omitempty"`
 
 	// SessionIDEnv is the tmux environment variable name storing the session ID
-	SessionIDEnv string `toml:"session_id_env"`
+	SessionIDEnv string `toml:"session_id_env,omitempty"`
 
 	// DangerousMode enables dangerous mode flag for this tool
-	DangerousMode bool `toml:"dangerous_mode"`
+	DangerousMode bool `toml:"dangerous_mode,omitempty"`
 
 	// DangerousFlag is the CLI flag for dangerous mode (e.g., "--dangerously-skip-permissions")
-	DangerousFlag string `toml:"dangerous_flag"`
+	DangerousFlag string `toml:"dangerous_flag,omitempty"`
 
 	// OutputFormatFlag is the CLI flag for JSON output format (e.g., "--output-format json")
-	OutputFormatFlag string `toml:"output_format_flag"`
+	OutputFormatFlag string `toml:"output_format_flag,omitempty"`
 
 	// SessionIDJsonPath is the jq path to extract session ID from JSON output
-	SessionIDJsonPath string `toml:"session_id_json_path"`
+	SessionIDJsonPath string `toml:"session_id_json_path,omitempty"`
 
 	// EnvFile is a .env file specific to this tool
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
-	EnvFile string `toml:"env_file"`
+	EnvFile string `toml:"env_file,omitempty"`
 
 	// Env is inline environment variables for this tool
 	// These are exported AFTER env_file (highest priority)
 	// Example: env = { ANTHROPIC_BASE_URL = "https://...", API_KEY = "token" }
-	Env map[string]string `toml:"env"`
+	Env map[string]string `toml:"env,omitempty"`
 
 	// Pattern override fields (extend built-in defaults for claude/gemini/opencode/codex/pi)
 	// Patterns prefixed with "re:" are compiled as regex; everything else uses strings.Contains.
 
 	// BusyPatternsExtra appends additional busy patterns to the built-in defaults
-	BusyPatternsExtra []string `toml:"busy_patterns_extra"`
+	BusyPatternsExtra []string `toml:"busy_patterns_extra,omitempty"`
 
 	// PromptPatternsExtra appends additional prompt patterns to the built-in defaults
-	PromptPatternsExtra []string `toml:"prompt_patterns_extra"`
+	PromptPatternsExtra []string `toml:"prompt_patterns_extra,omitempty"`
 
 	// SpinnerChars replaces the default spinner characters entirely (use with caution)
-	SpinnerChars []string `toml:"spinner_chars"`
+	SpinnerChars []string `toml:"spinner_chars,omitempty"`
 
 	// SpinnerCharsExtra appends additional spinner characters to the built-in defaults
-	SpinnerCharsExtra []string `toml:"spinner_chars_extra"`
+	SpinnerCharsExtra []string `toml:"spinner_chars_extra,omitempty"`
 }
 
 // HTTPServerConfig defines how to auto-start an HTTP MCP server
 type HTTPServerConfig struct {
 	// Command is the executable to run (e.g., "uvx", "python", "node")
-	Command string `toml:"command"`
+	Command string `toml:"command,omitempty"`
 
 	// Args are command-line arguments for the server
-	Args []string `toml:"args"`
+	Args []string `toml:"args,omitempty"`
 
 	// Env is environment variables for the server process
-	Env map[string]string `toml:"env"`
+	Env map[string]string `toml:"env,omitempty"`
 
 	// StartupTimeout is milliseconds to wait for server to become ready (default: 5000)
-	StartupTimeout int `toml:"startup_timeout"`
+	StartupTimeout int `toml:"startup_timeout,omitzero"`
 
 	// HealthCheck is an optional health endpoint URL to poll (e.g., "http://localhost:30000/health")
 	// If not set, the main URL is used for health checking
-	HealthCheck string `toml:"health_check"`
+	HealthCheck string `toml:"health_check,omitempty"`
 }
 
 // MCPDef defines an MCP server configuration for the MCP Manager
 type MCPDef struct {
 	// Command is the executable to run (e.g., "npx", "docker", "node")
 	// Required for stdio MCPs, optional for HTTP/SSE MCPs
-	Command string `toml:"command"`
+	Command string `toml:"command,omitempty"`
 
 	// Args are command-line arguments
-	Args []string `toml:"args"`
+	Args []string `toml:"args,omitempty"`
 
 	// Env is optional environment variables
-	Env map[string]string `toml:"env"`
+	Env map[string]string `toml:"env,omitempty"`
 
 	// Description is optional help text shown in the MCP Manager
-	Description string `toml:"description"`
+	Description string `toml:"description,omitempty"`
 
 	// URL is the endpoint for HTTP/SSE MCPs (e.g., "http://localhost:8000/mcp")
 	// If set, this MCP uses HTTP or SSE transport instead of stdio
-	URL string `toml:"url"`
+	URL string `toml:"url,omitempty"`
 
 	// Transport specifies the MCP transport type: "stdio" (default), "http", or "sse"
 	// Only needed when URL is set; defaults to "http" if URL is present
-	Transport string `toml:"transport"`
+	Transport string `toml:"transport,omitempty"`
 
 	// Headers is optional HTTP headers for HTTP/SSE MCPs (e.g., for authentication)
 	// Example: { Authorization = "Bearer token123" }
-	Headers map[string]string `toml:"headers"`
+	Headers map[string]string `toml:"headers,omitempty"`
 
 	// Server defines how to auto-start an HTTP MCP server process
 	// When set, agent-deck will start the server before connecting via HTTP
 	// This is optional - you can also connect to externally managed servers
-	Server *HTTPServerConfig `toml:"server"`
+	Server *HTTPServerConfig `toml:"server,omitempty"`
 }
 
 // GetStartupTimeout returns the startup timeout in milliseconds, defaulting to 5000ms
@@ -1664,29 +1680,29 @@ func (m *MCPDef) HasAutoStartServer() bool {
 type PluginDef struct {
 	// Name is the short plugin name as exposed by the upstream marketplace's
 	// plugin.json (e.g. "telegram", "octopus"). Required.
-	Name string `toml:"name"`
+	Name string `toml:"name,omitempty"`
 
 	// Source is the marketplace identifier the plugin lives in. Either a
 	// curated marketplace name (e.g. "claude-plugins-official") or a github
 	// "owner/repo" pair (e.g. "nyldn/claude-octopus"). Required.
-	Source string `toml:"source"`
+	Source string `toml:"source,omitempty"`
 
 	// EmitsChannel hints that this plugin participates in the inbound
 	// `notifications/claude/channel` protocol — when true, attaching the
 	// plugin via --plugin auto-populates Instance.Channels with
 	// "plugin:<Name>@<Source>" so the harness registers the inbound handler.
 	// Catalog hint only; agent-deck does not introspect the plugin source.
-	EmitsChannel bool `toml:"emits_channel"`
+	EmitsChannel bool `toml:"emits_channel,omitempty"`
 
 	// AutoInstall enables shell-out to `claude plugin install <Name>@<Source>`
 	// at session spawn when the plugin code is not yet present under the
 	// source profile's plugins/ directory. Best-effort: install failure is
 	// logged but does not block session start.
-	AutoInstall bool `toml:"auto_install"`
+	AutoInstall bool `toml:"auto_install,omitempty"`
 
 	// Description is optional help text shown in the Edit Session dialog
 	// pill list.
-	Description string `toml:"description"`
+	Description string `toml:"description,omitempty"`
 }
 
 // ID returns the fully-qualified plugin identifier "<Name>@<Source>" used
@@ -1717,7 +1733,7 @@ type TmuxSettings struct {
 	// disables Agent Deck's global tmux notification bar and key bindings so the
 	// runtime stops mutating global tmux options.
 	// Default: true (nil = use default true)
-	InjectStatusLine *bool `toml:"inject_status_line"`
+	InjectStatusLine *bool `toml:"inject_status_line,omitempty"`
 
 	// Mouse controls whether agent-deck enables tmux mouse mode on new
 	// sessions. When false, tmux `mouse on` is never set, so the terminal
@@ -1726,7 +1742,7 @@ type TmuxSettings struct {
 	// (issue #730). Affects both the inline set-option during session
 	// creation and the separate EnableMouseMode() path used on reconnect.
 	// Default: true (nil = use default true, preserves pre-#730 behavior)
-	Mouse *bool `toml:"mouse"`
+	Mouse *bool `toml:"mouse,omitempty"`
 
 	// LaunchInUserScope starts new tmux servers via `systemd-run --user --scope`
 	// so the tmux server lives under the user's systemd manager instead of the
@@ -1738,7 +1754,7 @@ type TmuxSettings struct {
 	// `launch_in_user_scope = true` or `launch_in_user_scope = false` in
 	// config.toml is always honored. Pointer type is required to distinguish
 	// "field absent" from "explicit false".
-	LaunchInUserScope *bool `toml:"launch_in_user_scope"`
+	LaunchInUserScope *bool `toml:"launch_in_user_scope,omitempty"`
 
 	// LaunchAs selects the spawn form for new tmux servers (v1.7.21+).
 	// Valid values (case-insensitive, whitespace-trimmed):
@@ -1759,7 +1775,7 @@ type TmuxSettings struct {
 	//
 	// This is additive — v1.7.20 users get zero behavior change until
 	// they explicitly set launch_as.
-	LaunchAs *string `toml:"launch_as"`
+	LaunchAs *string `toml:"launch_as,omitempty"`
 
 	// WindowStyleOverride sets the tmux window-style (and window-active-style) for
 	// all sessions, overriding the theme default. Use "default" to let your terminal
@@ -1767,13 +1783,13 @@ type TmuxSettings struct {
 	// Empty string (default) means use the theme's built-in value.
 	// Takes precedence over the same keys in Options if both are set.
 	// Example: window_style_override = "default"
-	WindowStyleOverride string `toml:"window_style_override"`
+	WindowStyleOverride string `toml:"window_style_override,omitempty"`
 
 	// ClearOnRestart clears the tmux scrollback buffer when a session is
 	// restarted (respawn-pane). When false (default), the previous session's
 	// output is preserved in scrollback. When true, scrollback is wiped so
 	// the new session starts with a clean buffer.
-	ClearOnRestart bool `toml:"clear_on_restart"`
+	ClearOnRestart bool `toml:"clear_on_restart,omitempty"`
 
 	// DetachKey overrides the PTY-attach detach key (issue #434). Accepts
 	// the same lowercase "ctrl+<letter>" form as `[hotkeys].detach` (e.g.
@@ -1785,11 +1801,11 @@ type TmuxSettings struct {
 	// Why the alias exists: #434 reporters asked for a `[tmux]` section
 	// entry because they think of the detach as a tmux-attach concern.
 	// Keeping `[hotkeys].detach` authoritative avoids two sources of truth.
-	DetachKey string `toml:"detach_key"`
+	DetachKey string `toml:"detach_key,omitempty"`
 
 	// Options is a map of tmux option names to values.
 	// These are passed to `tmux set-option -t <session>` after defaults.
-	Options map[string]string `toml:"options"`
+	Options map[string]string `toml:"options,omitempty"`
 
 	// SocketName is the tmux `-L <name>` socket selector for every
 	// agent-deck tmux spawn (v1.7.50+, issue #687). Empty string — the
@@ -1813,7 +1829,7 @@ type TmuxSettings struct {
 	//
 	// Precedence at Instance creation: CLI flag `--tmux-socket <name>`
 	// wins, else this config value, else empty.
-	SocketName string `toml:"socket_name"`
+	SocketName string `toml:"socket_name,omitempty"`
 }
 
 // GetInjectStatusLine returns whether to inject status line, defaulting to true.
@@ -1981,38 +1997,38 @@ func LogCgroupIsolationDecision() {
 // DockerSettings defines Docker sandbox configuration.
 type DockerSettings struct {
 	// DefaultImage is the sandbox image to use when not specified per-session.
-	DefaultImage string `toml:"default_image"`
+	DefaultImage string `toml:"default_image,omitempty"`
 
 	// DefaultEnabled enables sandbox by default for new sessions.
-	DefaultEnabled bool `toml:"default_enabled"`
+	DefaultEnabled bool `toml:"default_enabled,omitempty"`
 
 	// CPULimit is the default CPU limit for sandboxed containers (e.g. "2.0").
-	CPULimit string `toml:"cpu_limit"`
+	CPULimit string `toml:"cpu_limit,omitempty"`
 
 	// MemoryLimit is the default memory limit for sandboxed containers (e.g. "4g").
-	MemoryLimit string `toml:"memory_limit"`
+	MemoryLimit string `toml:"memory_limit,omitempty"`
 
 	// VolumeIgnores is a list of directories to exclude from the project mount.
-	VolumeIgnores []string `toml:"volume_ignores"`
+	VolumeIgnores []string `toml:"volume_ignores,omitempty"`
 
 	// Environment lists host environment variable names whose values are forwarded to the
 	// container at runtime via docker exec -e. The actual values are read from the host
 	// on each command invocation, so changes take effect without recreating the container.
-	Environment []string `toml:"environment"`
+	Environment []string `toml:"environment,omitempty"`
 
 	// ExtraVolumes maps host paths to container paths for additional bind mounts.
-	ExtraVolumes map[string]string `toml:"extra_volumes"`
+	ExtraVolumes map[string]string `toml:"extra_volumes,omitempty"`
 
 	// EnvironmentValues are static key=value pairs baked into the container at creation
 	// time via docker create -e. Unlike Environment (which forwards by name at runtime),
 	// these are fixed when the container is created.
-	EnvironmentValues map[string]string `toml:"environment_values"`
+	EnvironmentValues map[string]string `toml:"environment_values,omitempty"`
 
 	// MountSSH mounts ~/.ssh read-only inside the container.
-	MountSSH bool `toml:"mount_ssh"`
+	MountSSH bool `toml:"mount_ssh,omitempty"`
 
 	// AutoCleanup removes sandbox containers on session kill (default: true).
-	AutoCleanup *bool `toml:"auto_cleanup"`
+	AutoCleanup *bool `toml:"auto_cleanup,omitempty"`
 }
 
 // GetAutoCleanup returns whether to auto-remove sandbox containers, defaulting to true.
@@ -2030,21 +2046,21 @@ func (d DockerSettings) GetAutoCleanup() bool {
 type ForkSettings struct {
 	// InheritFromParent, when true, makes the fork mirror the parent session and
 	// ignores the structural keys below. See Resolve.
-	InheritFromParent bool `toml:"inherit_from_parent"`
+	InheritFromParent bool `toml:"inherit_from_parent,omitempty"`
 
 	// Worktree creates a new worktree + branch. nil => true.
-	Worktree *bool `toml:"worktree"`
+	Worktree *bool `toml:"worktree,omitempty"`
 	// WithState carries the parent's tracked uncommitted changes. nil => true.
-	WithState *bool `toml:"with_state"`
+	WithState *bool `toml:"with_state,omitempty"`
 	// WithIgnored also copies gitignored files (implies WithState). nil => false:
 	// the gitignored tree is unbounded (data sets, virtual envs, node_modules)
 	// and may carry secrets (.env), so copying it is opt-in. See GetWithIgnored.
-	WithIgnored *bool `toml:"with_ignored"`
+	WithIgnored *bool `toml:"with_ignored,omitempty"`
 	// Docker selects sandbox behavior: "auto" (match parent) | "on" | "off".
 	// nil/unknown => "auto". Mirrors the [tmux].launch_as string-enum convention.
-	Docker *string `toml:"docker"`
+	Docker *string `toml:"docker,omitempty"`
 	// BranchPrefix is the auto branch-name prefix. "" => "fork/".
-	BranchPrefix string `toml:"branch_prefix"`
+	BranchPrefix string `toml:"branch_prefix,omitempty"`
 }
 
 // GetWorktree reports whether forks create a worktree (default ON).
@@ -2139,7 +2155,7 @@ type StatusSettings struct {
 type MaintenanceSettings struct {
 	// Enabled enables the maintenance worker (default: false)
 	// Prunes Gemini logs, cleans old backups, archives bloated sessions
-	Enabled bool `toml:"enabled"`
+	Enabled bool `toml:"enabled,omitempty"`
 }
 
 // DisplaySettings controls TUI rendering behavior.
@@ -2150,17 +2166,17 @@ type DisplaySettings struct {
 	// Ghostty 1.3+ with grapheme-width-method=unicode).
 	// Can also be enabled via AGENTDECK_REPAINT=full env var.
 	// Default: false
-	FullRepaint bool `toml:"full_repaint"`
+	FullRepaint bool `toml:"full_repaint,omitempty"`
 
 	// DefaultFilter sets the initial status filter when the TUI opens.
 	// Valid values: "" (all, default), "active" (hides error/stopped),
 	// "running", "waiting", "idle", "error".
 	// If set to "active" and no non-error sessions exist, falls back to showing all.
-	DefaultFilter string `toml:"default_filter"`
+	DefaultFilter string `toml:"default_filter,omitempty"`
 
 	// ActiveFilterLabel sets the label shown on the filter pill when the active
 	// filter is engaged. Default: "Open". Examples: "Active", "Live", "Open".
-	ActiveFilterLabel string `toml:"active_filter_label"`
+	ActiveFilterLabel string `toml:"active_filter_label,omitempty"`
 
 	// ActiveFilterExcludes is the list of session statuses that the % "Open"
 	// filter hides. Default: ["error", "stopped"] — matches the original
@@ -2170,23 +2186,23 @@ type DisplaySettings struct {
 	// are dropped silently; if all entries are unknown the default applies.
 	// Valid statuses: "running", "waiting", "idle", "error", "starting",
 	// "stopped".
-	ActiveFilterExcludes []string `toml:"active_filter_excludes"`
+	ActiveFilterExcludes []string `toml:"active_filter_excludes,omitempty"`
 
 	// IncludeCwdPrefix controls whether the terminal/pane title is prefixed
 	// with "[<cwd-basename>]" (e.g. "[my-project] feature work"). Default true
 	// preserves the historical format; set false to show only the session
 	// title. Consumed by the tmux set-titles-string builder.
-	IncludeCwdPrefix *bool `toml:"include_cwd_prefix"`
+	IncludeCwdPrefix *bool `toml:"include_cwd_prefix,omitempty"`
 
 	// ShowSessionTimestamps appends a dim "Nm ago" badge to every session row.
 	// Default: false — opt-in to avoid crowding existing badges. See
 	// renderSessionItem for the timestamp source.
-	ShowSessionTimestamps bool `toml:"show_session_timestamps"`
+	ShowSessionTimestamps bool `toml:"show_session_timestamps,omitempty"`
 
 	// ShowPaneTitles shows the dim tmux pane-title (task description) suffix on
 	// every session row, not just the selected one. Default: false — opt-in to
 	// avoid crowding narrow sidebars. See renderSessionItem for the source.
-	ShowPaneTitles bool `toml:"show_pane_titles"`
+	ShowPaneTitles bool `toml:"show_pane_titles,omitempty"`
 }
 
 // GetActiveFilterExcludes returns the resolved set of statuses the % filter
@@ -2419,7 +2435,7 @@ func SaveUserConfigWithIntent(config *UserConfig, allowSectionDrop bool) error {
 	if _, err := buf.WriteString("# Agent Deck Configuration\n"); err != nil {
 		return fmt.Errorf("failed to write header: %w", err)
 	}
-	if _, err := buf.WriteString("# Edit this file or use Settings (press S) in the TUI\n\n"); err != nil {
+	if _, err := buf.WriteString("# All options: https://github.com/asheshgoplani/agent-deck/blob/main/skills/agent-deck/references/config-reference.md\n\n"); err != nil {
 		return fmt.Errorf("failed to write header: %w", err)
 	}
 
@@ -2428,6 +2444,11 @@ func SaveUserConfigWithIntent(config *UserConfig, allowSectionDrop bool) error {
 	if err := encoder.Encode(config); err != nil {
 		return fmt.Errorf("failed to encode config: %w", err)
 	}
+
+	// Strip empty TOML sections left behind by omitempty/omitzero (the encoder
+	// emits section headers even when all fields within are skipped).
+	stripped := stripEmptyTOMLSections(buf.Bytes())
+	buf = *bytes.NewBuffer(stripped)
 
 	// ═══════════════════════════════════════════════════════════════════
 	// S3 data-loss safeguard (2026-06-04 incident): refuse a save that would
@@ -2500,13 +2521,77 @@ func guardConfigSectionDrop(configPath string, newContent []byte) error {
 		return fmt.Errorf("session: failed to round-trip new config for section-drop guard: %w", err)
 	}
 
-	if len(onDisk.MCPs) > 0 && len(next.MCPs) == 0 {
-		return fmt.Errorf("%w: [mcps] had %d entries on disk, new config has none", ErrRefusingConfigSectionDrop, len(onDisk.MCPs))
+	if countFunctionalMCPs(onDisk.MCPs) > 0 && len(next.MCPs) == 0 {
+		return fmt.Errorf("%w: [mcps] had %d entries on disk, new config has none", ErrRefusingConfigSectionDrop, countFunctionalMCPs(onDisk.MCPs))
 	}
-	if len(onDisk.Groups) > 0 && len(next.Groups) == 0 {
-		return fmt.Errorf("%w: [groups] had %d entries on disk, new config has none", ErrRefusingConfigSectionDrop, len(onDisk.Groups))
+	if countFunctionalGroups(onDisk.Groups) > 0 && len(next.Groups) == 0 {
+		return fmt.Errorf("%w: [groups] had %d entries on disk, new config has none", ErrRefusingConfigSectionDrop, countFunctionalGroups(onDisk.Groups))
 	}
 	return nil
+}
+
+func countFunctionalMCPs(mcps map[string]MCPDef) int {
+	count := 0
+	for _, m := range mcps {
+		if m.Command != "" || m.URL != "" || len(m.Args) > 0 || len(m.Env) > 0 || m.Description != "" || len(m.Headers) > 0 || m.Transport != "" || m.Server != nil {
+			count++
+		}
+	}
+	return count
+}
+
+func countFunctionalGroups(groups map[string]GroupSettings) int {
+	var zero GroupSettings
+	count := 0
+	for _, g := range groups {
+		if g.Claude != zero.Claude || g.Hermes != zero.Hermes {
+			count++
+		}
+	}
+	return count
+}
+
+// stripEmptyTOMLSections removes TOML section headers that have no key=value
+// content. The BurntSushi/toml encoder emits headers for struct fields even when
+// all their sub-fields are omitted by omitempty/omitzero, leaving orphan headers
+// like "[mcp_pool]\n\n[conductor]\n". This strips those to keep the output minimal.
+func stripEmptyTOMLSections(data []byte) []byte {
+	lines := bytes.Split(data, []byte("\n"))
+	out := make([][]byte, 0, len(lines))
+
+	for idx := 0; idx < len(lines); idx++ {
+		trimmed := bytes.TrimSpace(lines[idx])
+		if len(trimmed) == 0 || trimmed[0] != '[' {
+			out = append(out, lines[idx])
+			continue
+		}
+
+		// This line is a section header. Check if it has any content before
+		// the next section header (or EOF).
+		hasContent := false
+		for peek := idx + 1; peek < len(lines); peek++ {
+			nextLine := bytes.TrimSpace(lines[peek])
+			if len(nextLine) == 0 {
+				continue
+			}
+			if nextLine[0] == '[' {
+				break
+			}
+			hasContent = true
+			break
+		}
+
+		if hasContent {
+			out = append(out, lines[idx])
+		}
+	}
+
+	// Collapse runs of 3+ blank lines down to 2 (one visual separator).
+	result := bytes.Join(out, []byte("\n"))
+	for bytes.Contains(result, []byte("\n\n\n")) {
+		result = bytes.ReplaceAll(result, []byte("\n\n\n"), []byte("\n\n"))
+	}
+	return result
 }
 
 // backupConfigFile copies config.toml to config.toml.bak (write-temp + rename
@@ -2934,34 +3019,42 @@ func ResolveTheme() string {
 	return "light"
 }
 
+// GetRemoveOrphans returns whether orphan log removal is enabled (default: true).
+func (l LogSettings) GetRemoveOrphans() bool {
+	if l.RemoveOrphans == nil {
+		return true
+	}
+	return *l.RemoveOrphans
+}
+
 // GetLogSettings returns log management settings with defaults applied
 func GetLogSettings() LogSettings {
 	config, err := LoadUserConfig()
 	if err != nil || config == nil {
 		return LogSettings{
-			MaxSizeMB:     10,
-			MaxLines:      10000,
-			RemoveOrphans: true,
+			MaxSizeMB: 10,
+			MaxLines:  10000,
 		}
 	}
 
 	settings := config.Logs
 
-	// Apply defaults for unset values
 	if settings.MaxSizeMB <= 0 {
 		settings.MaxSizeMB = 10
 	}
 	if settings.MaxLines <= 0 {
 		settings.MaxLines = 10000
 	}
-	// RemoveOrphans defaults to true (Go zero value is false, so we check if config was loaded)
-	// If the config file doesn't have this key, we want it to be true by default
-	// We detect this by checking if the entire Logs section is empty
-	if config.Logs.MaxSizeMB == 0 && config.Logs.MaxLines == 0 {
-		settings.RemoveOrphans = true
-	}
 
 	return settings
+}
+
+// GetAutoCleanup returns whether worktree auto-cleanup is enabled (default: true).
+func (w WorktreeSettings) GetAutoCleanup() bool {
+	if w.AutoCleanup == nil {
+		return true
+	}
+	return *w.AutoCleanup
 }
 
 // GetWorktreeSettings returns worktree settings with defaults applied
@@ -2970,7 +3063,6 @@ func GetWorktreeSettings() WorktreeSettings {
 	if err != nil || config == nil {
 		return WorktreeSettings{
 			DefaultLocation: "subdirectory",
-			AutoCleanup:     true,
 		}
 	}
 
@@ -2978,11 +3070,6 @@ func GetWorktreeSettings() WorktreeSettings {
 
 	if settings.DefaultLocation == "" {
 		settings.DefaultLocation = "subdirectory"
-	}
-	// AutoCleanup defaults to true (Go zero value is false)
-	// We detect if section was not present by checking if DefaultLocation is empty
-	if config.Worktree.DefaultLocation == "" {
-		settings.AutoCleanup = true
 	}
 
 	return settings
@@ -2993,22 +3080,12 @@ func GetUpdateSettings() UpdateSettings {
 	config, err := LoadUserConfig()
 	if err != nil || config == nil {
 		return UpdateSettings{
-			AutoUpdate:         false,
-			CheckEnabled:       true,
 			CheckIntervalHours: 24,
-			NotifyInCLI:        true,
 		}
 	}
 
 	settings := config.Updates
 
-	// Apply defaults for unset values
-	// CheckEnabled defaults to true (need to detect if section exists)
-	if config.Updates.CheckIntervalHours == 0 {
-		settings.CheckEnabled = true
-		settings.CheckIntervalHours = 24
-		settings.NotifyInCLI = true
-	}
 	if settings.CheckIntervalHours <= 0 {
 		settings.CheckIntervalHours = 24
 	}
@@ -3029,6 +3106,14 @@ func GetPreviewSettings() PreviewSettings {
 	return config.Preview
 }
 
+// GetDatePrefix returns whether date prefixing is enabled (default: true).
+func (e ExperimentsSettings) GetDatePrefix() bool {
+	if e.DatePrefix == nil {
+		return true
+	}
+	return *e.DatePrefix
+}
+
 // GetExperimentsSettings returns experiments settings with defaults applied
 func GetExperimentsSettings() ExperimentsSettings {
 	config, err := LoadUserConfig()
@@ -3036,25 +3121,17 @@ func GetExperimentsSettings() ExperimentsSettings {
 		homeDir, _ := os.UserHomeDir()
 		return ExperimentsSettings{
 			Directory:   filepath.Join(homeDir, "src", "tries"),
-			DatePrefix:  true,
 			DefaultTool: "claude",
 		}
 	}
 
 	settings := config.Experiments
 
-	// Apply defaults for unset values
 	if settings.Directory == "" {
 		homeDir, _ := os.UserHomeDir()
 		settings.Directory = filepath.Join(homeDir, "src", "tries")
 	} else {
 		settings.Directory = ExpandPath(settings.Directory)
-	}
-
-	// DatePrefix defaults to true (Go zero value is false, need explicit check)
-	// If directory is default, assume DatePrefix should be true
-	if config.Experiments.Directory == "" {
-		settings.DatePrefix = true
 	}
 
 	if settings.DefaultTool == "" {
@@ -3064,30 +3141,28 @@ func GetExperimentsSettings() ExperimentsSettings {
 	return settings
 }
 
+// GetEnabled returns whether notifications are enabled (default: true).
+func (n NotificationsConfig) GetEnabled() bool {
+	if n.Enabled == nil {
+		return true
+	}
+	return *n.Enabled
+}
+
 // GetNotificationsSettings returns notification bar settings with defaults applied
 func GetNotificationsSettings() NotificationsConfig {
 	config, err := LoadUserConfig()
 	if err != nil || config == nil {
 		return NotificationsConfig{
-			Enabled:  true,
 			MaxShown: 6,
-			ShowAll:  false,
 		}
 	}
 
 	settings := config.Notifications
 
-	// Apply defaults for unset values
-	// Enabled defaults to true for better UX (users expect to see waiting sessions)
-	// Users who have a config file but no [notifications] section get enabled=true
-	if !settings.Enabled && settings.MaxShown == 0 {
-		// Section not explicitly configured, apply default
-		settings.Enabled = true
-	}
 	if settings.MaxShown <= 0 {
 		settings.MaxShown = 6
 	}
-	// ShowAll defaults to false (backward compatible) - bool zero value handles this
 
 	return settings
 }
@@ -3155,7 +3230,7 @@ type TerminalSettings struct {
 	// (e.g. host/cwd via shell PROMPT_COMMAND), so silently overwriting it on
 	// every attach is too presumptuous a default. Users who want the
 	// per-session badge set this to true explicitly.
-	ITermBadge *bool `toml:"iterm_badge"`
+	ITermBadge *bool `toml:"iterm_badge,omitempty"`
 }
 
 // GetITermBadge returns whether the iTerm2 badge integration is enabled,
@@ -3748,26 +3823,26 @@ func GetPluginDef(name string) *PluginDef {
 
 // CostsSettings configures cost tracking, budgets, and pricing overrides.
 type CostsSettings struct {
-	Currency      string `toml:"currency"`
-	Timezone      string `toml:"timezone"`
-	RetentionDays int    `toml:"retention_days"`
+	Currency      string `toml:"currency,omitempty"`
+	Timezone      string `toml:"timezone,omitempty"`
+	RetentionDays int    `toml:"retention_days,omitzero"`
 	// CostLineTemplate overrides the home status-bar cost segment.
 	// Three-state pointer: nil falls through to the next layer
 	// (profile -> global -> hardcoded); explicit empty string disables.
-	CostLineTemplate *string `toml:"cost_line_template"`
+	CostLineTemplate *string `toml:"cost_line_template,omitempty"`
 	// CostLineHideWhenZero hides the segment when every recognized variable
 	// in the active template renders to $0.00. Three-state pointer; default
 	// is true (preserves the legacy "no events, no segment" behavior).
-	CostLineHideWhenZero *bool           `toml:"cost_line_hide_when_zero"`
-	Budgets              BudgetSettings  `toml:"budgets"`
-	Pricing              PricingSettings `toml:"pricing"`
+	CostLineHideWhenZero *bool           `toml:"cost_line_hide_when_zero,omitempty"`
+	Budgets              BudgetSettings  `toml:"budgets,omitempty"`
+	Pricing              PricingSettings `toml:"pricing,omitempty"`
 }
 
 // ProfileCosts holds per-profile overrides for cost-related settings.
 // Pointer fields use the same fall-through semantics as CostsSettings.
 type ProfileCosts struct {
-	CostLineTemplate     *string `toml:"cost_line_template"`
-	CostLineHideWhenZero *bool   `toml:"cost_line_hide_when_zero"`
+	CostLineTemplate     *string `toml:"cost_line_template,omitempty"`
+	CostLineHideWhenZero *bool   `toml:"cost_line_hide_when_zero,omitempty"`
 }
 
 // defaultCostLineTemplate is the hardcoded fallback that preserves the
@@ -3821,30 +3896,30 @@ func ResolveCostLineTemplate(cfg *UserConfig, profile string) (template string, 
 }
 
 type BudgetSettings struct {
-	DailyLimit   float64                  `toml:"daily_limit"`
-	WeeklyLimit  float64                  `toml:"weekly_limit"`
-	MonthlyLimit float64                  `toml:"monthly_limit"`
-	Groups       map[string]GroupBudget   `toml:"groups"`
-	Sessions     map[string]SessionBudget `toml:"sessions"`
+	DailyLimit   float64                  `toml:"daily_limit,omitzero"`
+	WeeklyLimit  float64                  `toml:"weekly_limit,omitzero"`
+	MonthlyLimit float64                  `toml:"monthly_limit,omitzero"`
+	Groups       map[string]GroupBudget   `toml:"groups,omitempty"`
+	Sessions     map[string]SessionBudget `toml:"sessions,omitempty"`
 }
 
 type GroupBudget struct {
-	DailyLimit float64 `toml:"daily_limit"`
+	DailyLimit float64 `toml:"daily_limit,omitzero"`
 }
 
 type SessionBudget struct {
-	TotalLimit float64 `toml:"total_limit"`
+	TotalLimit float64 `toml:"total_limit,omitzero"`
 }
 
 type PricingSettings struct {
-	Overrides map[string]PricingOverride `toml:"overrides"`
+	Overrides map[string]PricingOverride `toml:"overrides,omitempty"`
 }
 
 type PricingOverride struct {
-	InputPerMtok      float64 `toml:"input_per_mtok"`
-	OutputPerMtok     float64 `toml:"output_per_mtok"`
-	CacheReadPerMtok  float64 `toml:"cache_read_per_mtok"`
-	CacheWritePerMtok float64 `toml:"cache_write_per_mtok"`
+	InputPerMtok      float64 `toml:"input_per_mtok,omitzero"`
+	OutputPerMtok     float64 `toml:"output_per_mtok,omitzero"`
+	CacheReadPerMtok  float64 `toml:"cache_read_per_mtok,omitzero"`
+	CacheWritePerMtok float64 `toml:"cache_write_per_mtok,omitzero"`
 }
 
 func (c CostsSettings) GetRetentionDays() int {
@@ -3864,16 +3939,16 @@ func (c CostsSettings) GetTimezone() string {
 // SystemStatsSettings configures the system stats display in the status bar.
 type SystemStatsSettings struct {
 	// Enabled controls whether system stats are collected and displayed (default: true)
-	Enabled *bool `toml:"enabled"`
+	Enabled *bool `toml:"enabled,omitempty"`
 
 	// RefreshSeconds sets the collection interval in seconds (default: 5, min: 2)
-	RefreshSeconds int `toml:"refresh_seconds"`
+	RefreshSeconds int `toml:"refresh_seconds,omitzero"`
 
 	// Format controls display density: "compact" (icons), "full" (labels), "minimal" (values only)
-	Format string `toml:"format"`
+	Format string `toml:"format,omitempty"`
 
 	// Show lists which stats to display: "cpu", "ram", "disk", "load", "gpu", "network"
-	Show []string `toml:"show"`
+	Show []string `toml:"show,omitempty"`
 }
 
 // GetEnabled returns whether system stats display is enabled (default: true).
@@ -3916,16 +3991,16 @@ func (s SystemStatsSettings) GetShow() []string {
 // WatcherSettings configures the event watcher system.
 type WatcherSettings struct {
 	// MaxEventsPerWatcher is the maximum number of events to retain per watcher (default: 500)
-	MaxEventsPerWatcher int `toml:"max_events_per_watcher"`
+	MaxEventsPerWatcher int `toml:"max_events_per_watcher,omitzero"`
 
 	// MaxSilenceMinutes triggers a health warning when no events received (default: 60)
-	MaxSilenceMinutes int `toml:"max_silence_minutes"`
+	MaxSilenceMinutes int `toml:"max_silence_minutes,omitzero"`
 
 	// HealthCheckIntervalSeconds is the interval between health checks in seconds (default: 30)
-	HealthCheckIntervalSeconds int `toml:"health_check_interval_seconds"`
+	HealthCheckIntervalSeconds int `toml:"health_check_interval_seconds,omitzero"`
 
 	// Alerts configures the health alerts bridge (opt-in). See WatcherAlertsSettings.
-	Alerts WatcherAlertsSettings `toml:"alerts"`
+	Alerts WatcherAlertsSettings `toml:"alerts,omitempty"`
 }
 
 // GetMaxEventsPerWatcher returns the max events per watcher (default: 500).
@@ -3956,15 +4031,15 @@ func (w WatcherSettings) GetHealthCheckIntervalSeconds() int {
 // Opt-in via [watcher.alerts] in config.toml.
 type WatcherAlertsSettings struct {
 	// Enabled turns the bridge on. Default: false (no alerts emitted).
-	Enabled bool `toml:"enabled"`
+	Enabled bool `toml:"enabled,omitempty"`
 
 	// Channels lists notification channel names the bridge's notifier should fan out to
 	// (e.g. "telegram", "slack", "discord"). Semantics are owned by the Notifier
 	// implementation; the bridge only passes the list to the notifier.
-	Channels []string `toml:"channels"`
+	Channels []string `toml:"channels,omitempty"`
 
 	// DebounceMinutes is the per-(watcher x trigger) debounce window. Default: 15.
-	DebounceMinutes int `toml:"debounce_minutes"`
+	DebounceMinutes int `toml:"debounce_minutes,omitzero"`
 }
 
 // GetDebounceMinutes returns the debounce window in minutes (default: 15).

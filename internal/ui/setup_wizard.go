@@ -160,15 +160,12 @@ func (w *SetupWizard) GetConfig() *session.UserConfig {
 	}
 
 	config.Logs = session.LogSettings{
-		MaxSizeMB:     10,
-		MaxLines:      10000,
-		RemoveOrphans: true,
+		MaxSizeMB: 10,
+		MaxLines:  10000,
 	}
 
 	config.Updates = session.UpdateSettings{
-		CheckEnabled:       true,
 		CheckIntervalHours: 24,
-		NotifyInCLI:        true,
 	}
 
 	// Set MCP pool settings based on platform

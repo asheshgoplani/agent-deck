@@ -48,13 +48,17 @@ func MergePanelConfigOntoDisk(panel *UserConfig) (*UserConfig, error) {
 	merged.Codex.YoloMode = panel.Codex.YoloMode
 
 	// ── Updates (panel manages CheckEnabled + AutoUpdate) ──────────────
-	merged.Updates.CheckEnabled = panel.Updates.CheckEnabled
+	if panel.Updates.CheckEnabled != nil {
+		merged.Updates.CheckEnabled = panel.Updates.CheckEnabled
+	}
 	merged.Updates.AutoUpdate = panel.Updates.AutoUpdate
 
 	// ── Logs (panel manages 3 fields; other Logs.* preserved) ──────────
 	merged.Logs.MaxSizeMB = panel.Logs.MaxSizeMB
 	merged.Logs.MaxLines = panel.Logs.MaxLines
-	merged.Logs.RemoveOrphans = panel.Logs.RemoveOrphans
+	if panel.Logs.RemoveOrphans != nil {
+		merged.Logs.RemoveOrphans = panel.Logs.RemoveOrphans
+	}
 
 	// ── GlobalSearch ───────────────────────────────────────────────────
 	merged.GlobalSearch.Enabled = panel.GlobalSearch.Enabled
