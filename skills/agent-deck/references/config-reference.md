@@ -347,9 +347,9 @@ dir = ""   # Override the base conductor directory (default: <data-dir>/conducto
 |-----|------|---------|-------------|
 | `dir` | string | `""` | Base directory for conductor homes (`meta.json`, `CLAUDE.md`, heartbeat scripts). Empty uses the default resolution: `$XDG_DATA_HOME/agent-deck/conductor` with a legacy `~/.agent-deck/conductor` fallback. Tilde and `$VAR` are expanded. |
 
-> **Note:** Each conductor's `heartbeat.sh` embeds the resolved conductor root as a literal at install time. If you change `dir` after conductors are set up, re-run `agent-deck conductor setup` for each conductor (or reinstall its heartbeat script) so the scripts point at the new root.
+> **Note:** Each conductor's `heartbeat.sh` honors `[conductor].dir` and self-heals — when you change `dir`, the script content is auto-refreshed by the migration that runs on the next `agent-deck conductor list` / `status` / `setup` / `teardown`. The surface that goes **stale** is the daemon, not the script: the launchd heartbeat plist (and the Linux systemd unit) bakes absolute script/log paths at install time and is regenerated only by `agent-deck conductor setup`. After changing `dir`, re-run `agent-deck conductor setup <name>` per conductor to regenerate and reload the daemon. (A `conductor migrate-dir` helper to automate this is planned.) A `conductor list`/`status` after a dir change will flag a stale heartbeat daemon in its `[migrated]` output.
 
-> **Note:** The Telegram/Discord bridge (`bridge.py`) resolves the conductor directory itself (XDG with legacy fallback, #1350) and does not read `[conductor].dir` yet — with an override set, bridge-routed conductors are still looked up under the default root. Teaching the bridge resolver to honor the key is a planned follow-up.
+> **Note:** The Telegram/Slack/Discord bridge daemon (`bridge.py`) now honors `[conductor].dir`: the Go side injects the resolved override into the daemon environment as `AGENT_DECK_CONDUCTOR_DIR`, and the bridge prefers it over its XDG/legacy resolver (#1350). Caveat: the daemon's environment is frozen at install time, so if you change `[conductor].dir` after the bridge is set up, regenerate the bridge daemon (re-run conductor setup, or the planned `conductor migrate-dir`) for the daemon to pick up the new directory.
 
 ## [logs] Section
 

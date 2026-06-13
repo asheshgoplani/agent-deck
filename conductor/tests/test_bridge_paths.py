@@ -155,6 +155,83 @@ def test_defaults_to_xdg_when_nothing_populated(tmp_path: Path) -> None:
     assert out["conductors"] == [], out
 
 
+def test_conductor_dir_override_wins_over_xdg(tmp_path: Path) -> None:
+    """AGENT_DECK_CONDUCTOR_DIR (injected from [conductor].dir) overrides the
+    XDG/legacy resolver: the bridge scans the relocated dir and discovers the
+    conductors that live there, not under the default XDG root."""
+    home = tmp_path / "home"
+    xdg_data = tmp_path / "xdgdata"
+    xdg_config = tmp_path / "xdgconfig"
+    home.mkdir()
+
+    # A populated XDG conductor root that must be IGNORED in favor of the override.
+    xdg_conductor = xdg_data / "agent-deck" / "conductor"
+    _write_conductor(xdg_conductor, "xdgc")
+    xdg_cfg_dir = xdg_config / "agent-deck"
+    xdg_cfg_dir.mkdir(parents=True)
+    (xdg_cfg_dir / "config.toml").write_text("[telegram]\n")
+
+    # The relocated conductor home (what [conductor].dir points at).
+    override = tmp_path / "vault" / "conductor"
+    _write_conductor(override, "relocated")
+
+    out = _run_probe(
+        {
+            "HOME": str(home),
+            "XDG_DATA_HOME": str(xdg_data),
+            "XDG_CONFIG_HOME": str(xdg_config),
+            "AGENT_DECK_CONDUCTOR_DIR": str(override),
+        }
+    )
+
+    assert out["conductor_dir"] == str(override), out
+    assert out["conductors"] == ["relocated"], out
+    # CONFIG_PATH still resolves via XDG (the override only governs CONDUCTOR_DIR).
+    assert out["config_path"] == str(xdg_cfg_dir / "config.toml"), out
+
+
+def test_conductor_dir_override_expands_user_tilde(tmp_path: Path) -> None:
+    """The override honors ~ expansion (it may carry an unexpanded tilde if the
+    Go side ever passed one through)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    override = home / "vault" / "conductor"
+    _write_conductor(override, "tildec")
+
+    out = _run_probe(
+        {
+            "HOME": str(home),
+            "AGENT_DECK_CONDUCTOR_DIR": "~/vault/conductor",
+        }
+    )
+
+    assert out["conductor_dir"] == str(override), out
+    assert out["conductors"] == ["tildec"], out
+
+
+def test_empty_conductor_dir_override_falls_through_to_xdg(tmp_path: Path) -> None:
+    """An empty / whitespace-only override must not shadow the XDG resolver."""
+    home = tmp_path / "home"
+    xdg_data = tmp_path / "xdgdata"
+    xdg_config = tmp_path / "xdgconfig"
+    home.mkdir()
+
+    xdg_conductor = xdg_data / "agent-deck" / "conductor"
+    _write_conductor(xdg_conductor, "xdgc")
+
+    out = _run_probe(
+        {
+            "HOME": str(home),
+            "XDG_DATA_HOME": str(xdg_data),
+            "XDG_CONFIG_HOME": str(xdg_config),
+            "AGENT_DECK_CONDUCTOR_DIR": "   ",
+        }
+    )
+
+    assert out["conductor_dir"] == str(xdg_conductor), out
+    assert out["conductors"] == ["xdgc"], out
+
+
 def test_unset_xdg_defaults_to_local_share_and_config(tmp_path: Path) -> None:
     """Unset XDG_* -> default to ~/.local/share and ~/.config per spec."""
     home = tmp_path / "home"

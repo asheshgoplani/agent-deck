@@ -164,3 +164,102 @@ func TestRenderConductorHeartbeatScript_UsesConfigOverrideConductorRoot(t *testi
 		t.Fatalf("heartbeat script should retain legacy fallback:\n%s", script)
 	}
 }
+
+// TestGenerateLaunchdPlist_InjectsConductorDirOverride asserts the bridge
+// daemon's launchd plist exports AGENT_DECK_CONDUCTOR_DIR set to the resolved
+// [conductor].dir override. The running Python bridge reads this env var (with
+// the #1350 XDG resolver as fallback) so a relocated conductor is scanned where
+// it actually lives. Mirrors TestRenderConductorHeartbeatScript_UsesConfigOverrideConductorRoot.
+func TestGenerateLaunchdPlist_InjectsConductorDirOverride(t *testing.T) {
+	_, xdgConfigHome, _ := setupSessionXDGPathEnv(t)
+
+	override := filepath.Join(t.TempDir(), "conductor homes", "conductor")
+	writeConductorDirConfig(t, xdgConfigHome, override)
+
+	plist, err := GenerateLaunchdPlist()
+	if err != nil {
+		if strings.Contains(err.Error(), "not found in PATH") {
+			t.Skipf("skipping: %v", err)
+		}
+		t.Fatalf("GenerateLaunchdPlist(): %v", err)
+	}
+
+	if strings.Contains(plist, "__CONDUCTOR_DIR__") {
+		t.Errorf("plist still contains __CONDUCTOR_DIR__ placeholder:\n%s", plist)
+	}
+	wantKey := "<key>AGENT_DECK_CONDUCTOR_DIR</key>"
+	wantVal := "<string>" + override + "</string>"
+	if !strings.Contains(plist, wantKey) || !strings.Contains(plist, wantVal) {
+		t.Errorf("plist should export AGENT_DECK_CONDUCTOR_DIR=%q, plist:\n%s", override, plist)
+	}
+}
+
+// TestGenerateSystemdBridgeService_InjectsConductorDirOverride is the Linux
+// counterpart: the systemd bridge unit must carry an
+// Environment=AGENT_DECK_CONDUCTOR_DIR=<override> line.
+func TestGenerateSystemdBridgeService_InjectsConductorDirOverride(t *testing.T) {
+	_, xdgConfigHome, _ := setupSessionXDGPathEnv(t)
+
+	override := filepath.Join(t.TempDir(), "conductor homes", "conductor")
+	writeConductorDirConfig(t, xdgConfigHome, override)
+
+	unit, err := GenerateSystemdBridgeService()
+	if err != nil {
+		if strings.Contains(err.Error(), "not found in PATH") {
+			t.Skipf("skipping: %v", err)
+		}
+		t.Fatalf("GenerateSystemdBridgeService(): %v", err)
+	}
+
+	want := "Environment=AGENT_DECK_CONDUCTOR_DIR=" + override
+	if !strings.Contains(unit, want) {
+		t.Errorf("systemd bridge unit should contain %q, unit:\n%s", want, unit)
+	}
+}
+
+// TestHeartbeatDaemonStale_DetectsDirChange pins the side-effect-free staleness
+// detector that powers the honest '[migrated]' caveat: when an installed
+// heartbeat plist references a script path other than the conductor's
+// currently-resolved <ConductorNameDir>/heartbeat.sh (as happens after a
+// [conductor].dir change), HeartbeatDaemonStale reports true; a fresh plist and
+// a missing daemon both report false.
+func TestHeartbeatDaemonStale_DetectsDirChange(t *testing.T) {
+	_, _, _ = setupSessionXDGPathEnv(t)
+
+	name := "alpha"
+
+	// No daemon installed -> nothing to warn about.
+	if HeartbeatDaemonStale(name) {
+		t.Fatalf("HeartbeatDaemonStale(%q) = true with no daemon installed, want false", name)
+	}
+
+	plistPath, err := HeartbeatPlistPath(name)
+	if err != nil {
+		t.Fatalf("HeartbeatPlistPath(): %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", filepath.Dir(plistPath), err)
+	}
+
+	// A plist pointing at a STALE (old-root) script path -> stale.
+	staleScript := filepath.Join(t.TempDir(), "old-root", name, "heartbeat.sh")
+	if err := os.WriteFile(plistPath, []byte("<string>"+staleScript+"</string>"), 0o644); err != nil {
+		t.Fatalf("WriteFile(plist): %v", err)
+	}
+	if !HeartbeatDaemonStale(name) {
+		t.Fatalf("HeartbeatDaemonStale(%q) = false for plist referencing a stale script path, want true", name)
+	}
+
+	// A plist pointing at the currently-resolved script path -> fresh.
+	dir, err := ConductorNameDir(name)
+	if err != nil {
+		t.Fatalf("ConductorNameDir(): %v", err)
+	}
+	freshScript := filepath.Join(dir, "heartbeat.sh")
+	if err := os.WriteFile(plistPath, []byte("<string>"+freshScript+"</string>"), 0o644); err != nil {
+		t.Fatalf("WriteFile(plist): %v", err)
+	}
+	if HeartbeatDaemonStale(name) {
+		t.Fatalf("HeartbeatDaemonStale(%q) = true for plist referencing the current script path, want false", name)
+	}
+}

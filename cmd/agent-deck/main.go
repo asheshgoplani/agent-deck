@@ -58,6 +58,7 @@ func initUpdateSettings() {
 	settings := session.GetUpdateSettings()
 	update.SetCheckInterval(settings.CheckIntervalHours)
 	update.SetBridgeScriptInstaller(session.InstallBridgeScript)
+	update.SetConductorDirResolver(session.ConductorDir)
 }
 
 // writeVersionOutput prints `Agent Deck vX.Y.Z` to `w`, appending

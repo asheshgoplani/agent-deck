@@ -116,7 +116,11 @@ def resolve_data_dir(*markers: str) -> Path:
     return data_dir
 
 
-CONDUCTOR_DIR = resolve_data_dir("conductor") / "conductor"
+# Prefer the [conductor].dir override injected by the Go side as
+# AGENT_DECK_CONDUCTOR_DIR (frozen into the daemon env at install time). When
+# unset, fall back to the byte-identical issue #1350 XDG/legacy resolver.
+_override = os.environ.get("AGENT_DECK_CONDUCTOR_DIR", "").strip()
+CONDUCTOR_DIR = Path(os.path.expanduser(_override)) if _override else resolve_data_dir("conductor") / "conductor"
 CONFIG_PATH = resolve_config_path("config.toml")
 # --- end issue #1350 resolver ---
 LOG_PATH = CONDUCTOR_DIR / "bridge.log"

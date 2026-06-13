@@ -44,6 +44,13 @@ var detectHomebrewManagedInstall = DetectHomebrewManagedInstall
 // by the CLI layer so this package stays independent of internal/session.
 var bridgeScriptInstaller func() error
 
+// conductorDirResolver resolves the base conductor directory, honoring the
+// [conductor].dir config override. It is injected by the CLI layer (same
+// pattern as bridgeScriptInstaller) so this package stays independent of
+// internal/session and avoids an import cycle. When nil (non-CLI callers),
+// UpdateBridgePy falls back to the default XDG/legacy resolution.
+var conductorDirResolver func() (string, error)
+
 // SetCheckInterval sets the update check interval from config
 func SetCheckInterval(hours int) {
 	if hours > 0 {
@@ -54,6 +61,12 @@ func SetCheckInterval(hours int) {
 // SetBridgeScriptInstaller configures the bridge.py installer used after updates.
 func SetBridgeScriptInstaller(installer func() error) {
 	bridgeScriptInstaller = installer
+}
+
+// SetConductorDirResolver configures the resolver used to locate the base
+// conductor directory (honoring the [conductor].dir override) after updates.
+func SetConductorDirResolver(resolver func() (string, error)) {
+	conductorDirResolver = resolver
 }
 
 // Release represents a GitHub release
@@ -859,7 +872,17 @@ func extractBinaryFromTarGzReader(r io.Reader) ([]byte, error) {
 // UpdateBridgePy refreshes the installed bridge.py from the embedded runtime template.
 // This keeps bridge behavior in sync with the currently running binary.
 func UpdateBridgePy() error {
-	conductorDir, err := agentpaths.EffectiveDataPath("conductor", "conductor")
+	// Resolve the conductor dir via the injected resolver so the existence
+	// guard, the .backup, and the refresh all target the [conductor].dir
+	// override when set. Fall back to the default XDG/legacy path only for
+	// non-CLI callers that never injected a resolver.
+	var conductorDir string
+	var err error
+	if conductorDirResolver != nil {
+		conductorDir, err = conductorDirResolver()
+	} else {
+		conductorDir, err = agentpaths.EffectiveDataPath("conductor", "conductor")
+	}
 	if err != nil {
 		return fmt.Errorf("failed to resolve conductor directory: %w", err)
 	}

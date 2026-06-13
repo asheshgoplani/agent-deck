@@ -259,6 +259,87 @@ func TestUpdateBridgePy_NoOpLeavesExistingBackupUntouched(t *testing.T) {
 	assert.Equal(t, "# current bridge\n", string(gotBridge), "no-op must not touch bridge.py")
 }
 
+// TestUpdateBridgePy_HonorsConductorDirOverride is the regression test for the
+// update-path bypass: UpdateBridgePy previously resolved its conductor dir via
+// agentpaths.EffectiveDataPath (the default XDG/legacy path), ignoring
+// [conductor].dir. With an override pointing outside the default, the existence
+// guard, the .backup, and the refresh all targeted the wrong directory. The fix
+// routes through the injected conductorDirResolver (session.ConductorDir).
+//
+// This test pins the behavior WITHOUT importing internal/session: it injects a
+// resolver returning a custom override dir and asserts the backup + refresh land
+// there, not under the default conductor root.
+func TestUpdateBridgePy_HonorsConductorDirOverride(t *testing.T) {
+	tmpHome := isolateUpdatePaths(t)
+
+	// The override lives OUTSIDE the default XDG/legacy conductor roots.
+	override := filepath.Join(t.TempDir(), "conductor homes", "conductor")
+	require.NoError(t, os.MkdirAll(override, 0o755))
+
+	overrideBridge := filepath.Join(override, "bridge.py")
+	legacyContent := "# pre-existing override bridge\n"
+	require.NoError(t, os.WriteFile(overrideBridge, []byte(legacyContent), 0o755))
+
+	SetConductorDirResolver(func() (string, error) { return override, nil })
+	SetBridgeScriptInstaller(func() error {
+		return os.WriteFile(overrideBridge, []byte("# refreshed override bridge\n"), 0o755)
+	})
+	t.Cleanup(func() {
+		SetConductorDirResolver(nil)
+		SetBridgeScriptInstaller(nil)
+	})
+
+	require.NoError(t, UpdateBridgePy())
+
+	// Backup + refresh must land under the OVERRIDE dir.
+	backup, err := os.ReadFile(overrideBridge + ".backup")
+	require.NoError(t, err)
+	assert.Equal(t, legacyContent, string(backup), "backup must be written under the override dir")
+
+	refreshed, err := os.ReadFile(overrideBridge)
+	require.NoError(t, err)
+	assert.Equal(t, "# refreshed override bridge\n", string(refreshed), "refresh must target the override dir")
+
+	// The default conductor roots must be untouched — proving the guard used the
+	// override, not agentpaths' default resolution.
+	legacyCondDir := filepath.Join(tmpHome, ".agent-deck", "conductor")
+	xdgCondDir := filepath.Join(os.Getenv("XDG_DATA_HOME"), "agent-deck", "conductor")
+	_, legacyErr := os.Stat(legacyCondDir)
+	_, xdgErr := os.Stat(xdgCondDir)
+	assert.True(t, os.IsNotExist(legacyErr), "default legacy conductor dir must not be touched")
+	assert.True(t, os.IsNotExist(xdgErr), "default XDG conductor dir must not be touched")
+}
+
+// TestUpdateBridgePy_OverrideGuardSkipsWhenOverrideMissing complements the
+// positive test: when the override dir does NOT exist, UpdateBridgePy must skip
+// (early return) EVEN IF the default conductor root exists. Pre-fix, the guard
+// keyed off the default dir and would have refreshed it; the fix keys off the
+// resolved override.
+func TestUpdateBridgePy_OverrideGuardSkipsWhenOverrideMissing(t *testing.T) {
+	tmpHome := isolateUpdatePaths(t)
+
+	// Default legacy conductor root EXISTS...
+	defaultCondDir := filepath.Join(tmpHome, ".agent-deck", "conductor")
+	require.NoError(t, os.MkdirAll(defaultCondDir, 0o755))
+
+	// ...but the override points at a non-existent dir.
+	override := filepath.Join(t.TempDir(), "missing", "conductor")
+	SetConductorDirResolver(func() (string, error) { return override, nil })
+
+	installerCalled := false
+	SetBridgeScriptInstaller(func() error {
+		installerCalled = true
+		return nil
+	})
+	t.Cleanup(func() {
+		SetConductorDirResolver(nil)
+		SetBridgeScriptInstaller(nil)
+	})
+
+	require.NoError(t, UpdateBridgePy())
+	assert.False(t, installerCalled, "installer must not run when the override dir is missing (guard must key off the override, not the default)")
+}
+
 func TestNormalizeReleaseTag(t *testing.T) {
 	tests := []struct {
 		name  string

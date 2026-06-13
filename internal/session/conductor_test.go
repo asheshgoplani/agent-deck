@@ -2817,9 +2817,15 @@ func TestBridgeTemplate_DoesNotHardcodeLegacyAgentDeckRoot(t *testing.T) {
 		t.Error("template must retain a legacy ~/.agent-deck fallback (issue #1350)")
 	}
 
-	// CONDUCTOR_DIR / CONFIG_PATH must be computed via the resolvers.
-	if !strings.Contains(template, `CONDUCTOR_DIR = resolve_data_dir("conductor")`) {
-		t.Error("template must compute CONDUCTOR_DIR via resolve_data_dir (issue #1350)")
+	// CONDUCTOR_DIR / CONFIG_PATH must be computed via the resolvers. CONDUCTOR_DIR
+	// now prefers the AGENT_DECK_CONDUCTOR_DIR override (injected by the Go side
+	// from [conductor].dir) but must still fall back through resolve_data_dir so
+	// the #1350 XDG/legacy behavior is preserved when no override is set.
+	if !strings.Contains(template, `resolve_data_dir("conductor") / "conductor"`) {
+		t.Error("template must retain the resolve_data_dir CONDUCTOR_DIR fallback (issue #1350)")
+	}
+	if !strings.Contains(template, `os.environ.get("AGENT_DECK_CONDUCTOR_DIR"`) {
+		t.Error("template must honor the AGENT_DECK_CONDUCTOR_DIR override before the XDG fallback")
 	}
 	if !strings.Contains(template, `CONFIG_PATH = resolve_config_path("config.toml")`) {
 		t.Error("template must compute CONFIG_PATH via resolve_config_path (issue #1350)")
