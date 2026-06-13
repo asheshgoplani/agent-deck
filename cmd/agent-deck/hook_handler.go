@@ -72,6 +72,11 @@ type hookStatusFile struct {
 	// "no finished event to emit."
 	DoneStatus  string `json:"done_status,omitempty"`
 	DoneSummary string `json:"done_summary,omitempty"`
+	// TranscriptPath is persisted ONLY when the Stop-edge sentinel scan was
+	// inconclusive because the turn's assistant record had not flushed yet
+	// (issue #1186 flush race). The daemon re-scans this path on its poll
+	// loop; the synchronous Stop hook (#1225) must not wait out the flush.
+	TranscriptPath string `json:"transcript_path,omitempty"`
 }
 
 // mapEventToStatus maps a Claude Code hook event to an agent-deck status string.
@@ -181,14 +186,14 @@ func handleHookHandler() {
 	// tail for a worker-printed completion sentinel. When present, persist the
 	// parsed outcome into the hook status file so the daemon can emit a
 	// distinct "finished" event to the parent instead of the conductor having
-	// to poll artifacts. Absent on ordinary mid-task Stops, so the existing
-	// "waiting" behavior is unchanged.
+	// to poll artifacts. When the turn's assistant record has not flushed yet
+	// (Claude Code can fire Stop before appending it), persist the transcript
+	// path instead and let the daemon finish the scan — the Stop hook runs
+	// SYNCHRONOUSLY (#1225), so waiting out the flush here would add turn-end
+	// latency to every managed session. Absent on ordinary mid-task Stops, so
+	// the existing "waiting" behavior is unchanged.
 	if payload.HookEventName == "Stop" {
-		if sig, ok := detectDoneSentinel(data); ok {
-			writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName, sig)
-		} else {
-			writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName)
-		}
+		writeHookStatusWithScan(instanceID, status, payload.SessionID, payload.HookEventName, detectDoneSentinel(data))
 	} else {
 		writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName)
 	}
@@ -257,6 +262,18 @@ func parentIsDSP() bool {
 // The optional done argument carries a completion sentinel (issue #1186);
 // when supplied its status/summary are persisted alongside the hook status.
 func writeHookStatus(instanceID, status, sessionID, event string, done ...session.DoneSignal) {
+	scan := doneScanResult{}
+	if len(done) > 0 {
+		scan.signal = &done[0]
+	}
+	writeHookStatusWithScan(instanceID, status, sessionID, event, scan)
+}
+
+// writeHookStatusWithScan is writeHookStatus plus the full Stop-edge scan
+// outcome: a parsed sentinel persists as done_status/done_summary; an
+// unflushed tail persists as transcript_path so the daemon can finish the
+// scan (issue #1186 flush race).
+func writeHookStatusWithScan(instanceID, status, sessionID, event string, scan doneScanResult) {
 	if instanceID == "" || status == "" {
 		return
 	}
@@ -284,10 +301,11 @@ func writeHookStatus(instanceID, status, sessionID, event string, done ...sessio
 		Event:     event,
 		Timestamp: time.Now().Unix(),
 	}
-	if len(done) > 0 {
-		statusFile.DoneStatus = done[0].Status
-		statusFile.DoneSummary = done[0].Summary
+	if scan.signal != nil {
+		statusFile.DoneStatus = scan.signal.Status
+		statusFile.DoneSummary = scan.signal.Summary
 	}
+	statusFile.TranscriptPath = scan.pendingTranscript
 
 	jsonData, err := json.Marshal(statusFile)
 	if err != nil {
@@ -654,133 +672,53 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 	logCostDebug("wrote cost event: %s model=%s in=%d out=%d", finalPath, cf.Model, cf.InputTokens, cf.OutputTokens)
 }
 
-// transcriptContentMessage extracts the assistant message content blocks from
-// the last transcript line, for completion-sentinel detection (issue #1186).
-type transcriptContentMessage struct {
-	Type    string `json:"type"`
-	Message struct {
-		Content json.RawMessage `json:"content"`
-	} `json:"message"`
+// doneScanResult carries the Stop-edge sentinel-scan outcome into the hook
+// status file. At most one field is set: signal when a sentinel was parsed
+// from the flushed assistant turn; pendingTranscript (the validated
+// transcript path) when the tail was unflushed at hook time — issue #1186
+// flush race — so the daemon can finish the scan on its poll loop. The zero
+// value is an ordinary Stop with nothing extra to persist.
+type doneScanResult struct {
+	signal            *session.DoneSignal
+	pendingTranscript string
 }
 
 // detectDoneSentinel parses transcript_path out of a Stop hook payload and
-// scans the transcript tail for a worker-printed completion sentinel. It
-// applies the same path-traversal / ~/.claude containment guards as the cost
-// path so a crafted payload can't read arbitrary files.
-func detectDoneSentinel(rawPayload []byte) (session.DoneSignal, bool) {
+// scans the transcript tail for a worker-printed completion sentinel
+// (issue #1186). Path-traversal / ~/.claude containment guards mirror the
+// cost path so a crafted payload can't read arbitrary files. The scan itself
+// lives in internal/session, shared with the transition daemon's flush-race
+// rescan.
+func detectDoneSentinel(rawPayload []byte) doneScanResult {
 	var stop stopHookPayload
 	if err := json.Unmarshal(rawPayload, &stop); err != nil {
-		return session.DoneSignal{}, false
+		return doneScanResult{}
 	}
-	if stop.TranscriptPath == "" {
-		return session.DoneSignal{}, false
+	cleanPath, ok := session.ValidateTranscriptPath(stop.TranscriptPath)
+	if !ok {
+		return doneScanResult{}
 	}
-	cleanPath := filepath.Clean(stop.TranscriptPath)
-	if strings.Contains(cleanPath, "..") {
-		return session.DoneSignal{}, false
+	sig, found, pending := session.ScanTranscriptTailForDone(cleanPath)
+	switch {
+	case pending:
+		return doneScanResult{pendingTranscript: cleanPath}
+	case found:
+		return doneScanResult{signal: &sig}
+	default:
+		return doneScanResult{}
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		if !strings.HasPrefix(cleanPath, filepath.Join(home, ".claude")) {
-			return session.DoneSignal{}, false
-		}
-	}
-	return scanTranscriptForDone(cleanPath)
-}
-
-// scanTranscriptForDone reads the last transcript line, and if it is an
-// assistant turn, scans its text content for a completion sentinel. The path
-// is the injectable source: tests point it at a temp file, no live agent
-// required. A missing/unreadable file or a non-assistant tail yields no
-// sentinel rather than an error.
-func scanTranscriptForDone(path string) (session.DoneSignal, bool) {
-	lastLine, err := readLastLine(path)
-	if err != nil {
-		return session.DoneSignal{}, false
-	}
-	var msg transcriptContentMessage
-	if err := json.Unmarshal([]byte(lastLine), &msg); err != nil {
-		return session.DoneSignal{}, false
-	}
-	if msg.Type != "assistant" {
-		return session.DoneSignal{}, false
-	}
-	return session.ScanDoneSentinel(transcriptText(msg.Message.Content))
-}
-
-// transcriptText flattens an assistant message's content into plain text.
-// Claude transcripts encode content either as a string or as an array of
-// typed blocks ({"type":"text","text":"..."}); only text blocks contribute.
-func transcriptText(content json.RawMessage) string {
-	if len(content) == 0 {
-		return ""
-	}
-	var asString string
-	if err := json.Unmarshal(content, &asString); err == nil {
-		return asString
-	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(content, &blocks); err != nil {
-		return ""
-	}
-	var sb strings.Builder
-	for _, b := range blocks {
-		if b.Type == "text" {
-			sb.WriteString(b.Text)
-			sb.WriteByte('\n')
-		}
-	}
-	return sb.String()
 }
 
 // readLastLine reads the last non-empty line from a file.
 func readLastLine(path string) (string, error) {
-	f, err := os.Open(path)
+	lines, err := session.TranscriptTailLines(path, 1)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
-
-	stat, err := f.Stat()
-	if err != nil {
-		return "", err
+	if len(lines) == 0 {
+		return "", fmt.Errorf("no non-empty line")
 	}
-
-	size := stat.Size()
-	if size == 0 {
-		return "", fmt.Errorf("empty file")
-	}
-
-	// Read backwards in chunks to find the last complete line
-	buf := make([]byte, 0, 16384)
-	offset := size
-
-	for offset > 0 {
-		readSize := int64(16384)
-		if readSize > offset {
-			readSize = offset
-		}
-		offset -= readSize
-
-		chunk := make([]byte, readSize)
-		if _, err := f.ReadAt(chunk, offset); err != nil {
-			return "", err
-		}
-		buf = append(chunk, buf...)
-
-		// Strip trailing whitespace/newlines for consistent handling
-		trimmed := strings.TrimRight(string(buf), "\n\r ")
-		// Find the last newline in the trimmed content
-		lastNL := strings.LastIndexByte(trimmed, '\n')
-		if lastNL >= 0 {
-			return trimmed[lastNL+1:], nil
-		}
-	}
-
-	// Entire file is one line
-	return strings.TrimSpace(string(buf)), nil
+	return lines[0], nil
 }
 
 // logCostDebug writes debug messages to the XDG cache cost-debug.log.

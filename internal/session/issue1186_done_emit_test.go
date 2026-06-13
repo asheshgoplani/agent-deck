@@ -241,3 +241,210 @@ func TestDaemon_EmitDoneSignals_NoSentinelNoEmit(t *testing.T) {
 	}
 	_ = strings.TrimSpace // keep imports stable across edits
 }
+
+// --- Flush-race rescan (issue #1186, Stop hook outrunning the transcript flush) ---
+//
+// Claude Code can fire the Stop hook before appending the turn's final
+// assistant record. The hook is synchronous (#1225) so it must not wait out
+// the flush; it persists the transcript path into the hook status file and
+// the daemon finishes the scan on its poll loop. These tests pin that retry:
+// pending tail -> no emit (and no resolved marker, so the next poll retries);
+// flushed sentinel -> exactly-once emit; stale or unsafe paths -> ignored.
+
+// writePendingTranscript writes JSONL lines under the test HOME's ~/.claude
+// (so the daemon's containment guard passes) and returns the path.
+func writePendingTranscript(t *testing.T, lines ...string) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("user home: %v", err)
+	}
+	dir := home + "/.claude/projects/p"
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := dir + "/transcript.jsonl"
+	content := ""
+	for _, l := range lines {
+		content += l + "\n"
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	return path
+}
+
+func appendTranscriptLine(t *testing.T, path, line string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open transcript for append: %v", err)
+	}
+	if _, err := f.WriteString(line + "\n"); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	_ = f.Close()
+}
+
+func loadInstancesByID(t *testing.T, profile string) map[string]*Instance {
+	t.Helper()
+	storage, err := NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	defer storage.Close()
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	byID := map[string]*Instance{}
+	for _, inst := range instances {
+		byID[inst.ID] = inst
+	}
+	return byID
+}
+
+// TestDaemon_FlushRaceRescan_EmitsAfterFlush: a pending hook status emits
+// nothing while the tail is unflushed (and stays retryable), then emits the
+// finished event exactly once after the sentinel turn lands in the file.
+func TestDaemon_FlushRaceRescan_EmitsAfterFlush(t *testing.T) {
+	profile := "_test-1186-rescan-flush"
+	parentID, childID := seedDoneParentChild(t, profile)
+
+	d := NewTransitionDaemon()
+	t.Cleanup(d.notifier.Close)
+	byID := loadInstancesByID(t, profile)
+
+	path := writePendingTranscript(t,
+		scanAssistantLine(t, "previous turn, no sentinel"),
+		scanUserLine,
+	)
+	hs := &HookStatus{
+		Status:         "waiting",
+		Event:          "Stop",
+		TranscriptPath: path,
+		UpdatedAt:      time.Now(),
+	}
+	hookStatuses := map[string]*HookStatus{childID: hs}
+
+	// Unflushed: no emit, and the scan must NOT be marked resolved so the
+	// next poll retries.
+	d.emitDoneSignals(profile, byID, hookStatuses)
+	d.notifier.Flush()
+	if got := readInboxLines(t, parentID); len(got) != 0 {
+		t.Fatalf("pending tail must not emit; inbox has %d records", len(got))
+	}
+	if _, resolved := d.lastDoneScan[profile][childID]; resolved {
+		t.Fatalf("unresolved scan must not be marked resolved (it would never retry)")
+	}
+
+	// The flush lands; the next poll emits exactly once.
+	appendTranscriptLine(t, path, scanAssistantLine(t, "wrapped up\n===AGENTDECK_DONE=== status=ok summary=after the flush"))
+	d.emitDoneSignals(profile, byID, hookStatuses)
+	d.notifier.Flush()
+	got := readInboxLines(t, parentID)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 finished record after flush, got %d", len(got))
+	}
+	if got[0].Kind != transitionKindFinished || got[0].DoneStatus != "ok" || got[0].DoneSummary != "after the flush" {
+		t.Fatalf("wrong record: %+v", got[0])
+	}
+
+	// Re-poll: resolved marker + lastDone dedup keep it at one record.
+	d.emitDoneSignals(profile, byID, hookStatuses)
+	d.notifier.Flush()
+	if got := readInboxLines(t, parentID); len(got) != 1 {
+		t.Fatalf("re-poll after resolution must not duplicate; inbox has %d records", len(got))
+	}
+}
+
+// TestDaemon_FlushRaceRescan_NoSentinelResolvesQuiet: an ordinary turn (no
+// sentinel) that flushes resolves the pending scan with no emission, and the
+// resolved marker stops further transcript reads for that Stop edge.
+func TestDaemon_FlushRaceRescan_NoSentinelResolvesQuiet(t *testing.T) {
+	profile := "_test-1186-rescan-quiet"
+	parentID, childID := seedDoneParentChild(t, profile)
+
+	d := NewTransitionDaemon()
+	t.Cleanup(d.notifier.Close)
+	byID := loadInstancesByID(t, profile)
+
+	path := writePendingTranscript(t,
+		scanAssistantLine(t, "previous turn"),
+		scanUserLine,
+		scanAssistantLine(t, "just a normal answer, nothing to report"),
+	)
+	hs := &HookStatus{
+		Status:         "waiting",
+		Event:          "Stop",
+		TranscriptPath: path,
+		UpdatedAt:      time.Now(),
+	}
+	d.emitDoneSignals(profile, byID, map[string]*HookStatus{childID: hs})
+	d.notifier.Flush()
+	if got := readInboxLines(t, parentID); len(got) != 0 {
+		t.Fatalf("sentinel-less turn must not emit; inbox has %d records", len(got))
+	}
+	resolved, ok := d.lastDoneScan[profile][childID]
+	if !ok || !resolved.Equal(hs.UpdatedAt) {
+		t.Fatalf("conclusive no-sentinel scan must be marked resolved at the hook timestamp; got %v ok=%v", resolved, ok)
+	}
+}
+
+// TestDaemon_FlushRaceRescan_StaleHookIgnored: a pending hook status older
+// than hookFreshWindow is never rescanned — the freshness window is the
+// retry bound, same as the pre-existing done-fields path.
+func TestDaemon_FlushRaceRescan_StaleHookIgnored(t *testing.T) {
+	profile := "_test-1186-rescan-stale"
+	parentID, childID := seedDoneParentChild(t, profile)
+
+	d := NewTransitionDaemon()
+	t.Cleanup(d.notifier.Close)
+	byID := loadInstancesByID(t, profile)
+
+	path := writePendingTranscript(t,
+		scanAssistantLine(t, "late turn\n===AGENTDECK_DONE=== status=ok summary=too late"),
+	)
+	hs := &HookStatus{
+		Status:         "waiting",
+		Event:          "Stop",
+		TranscriptPath: path,
+		UpdatedAt:      time.Now().Add(-2 * hookFreshWindow),
+	}
+	d.emitDoneSignals(profile, byID, map[string]*HookStatus{childID: hs})
+	d.notifier.Flush()
+	if got := readInboxLines(t, parentID); len(got) != 0 {
+		t.Fatalf("stale pending hook must not emit; inbox has %d records", len(got))
+	}
+}
+
+// TestDaemon_FlushRaceRescan_PathOutsideClaudeRejected: the daemon re-applies
+// the ~/.claude containment guard before reading a path it found in a hook
+// status file — a sentinel-bearing file elsewhere on disk must not emit.
+func TestDaemon_FlushRaceRescan_PathOutsideClaudeRejected(t *testing.T) {
+	profile := "_test-1186-rescan-guard"
+	parentID, childID := seedDoneParentChild(t, profile)
+
+	d := NewTransitionDaemon()
+	t.Cleanup(d.notifier.Close)
+	byID := loadInstancesByID(t, profile)
+
+	outside := t.TempDir() + "/transcript.jsonl"
+	if err := os.WriteFile(outside, []byte(scanAssistantLine(t, "===AGENTDECK_DONE=== status=ok summary=spoof")+"\n"), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	hs := &HookStatus{
+		Status:         "waiting",
+		Event:          "Stop",
+		TranscriptPath: outside,
+		UpdatedAt:      time.Now(),
+	}
+	d.emitDoneSignals(profile, byID, map[string]*HookStatus{childID: hs})
+	d.notifier.Flush()
+	if got := readInboxLines(t, parentID); len(got) != 0 {
+		t.Fatalf("out-of-containment path must not emit; inbox has %d records", len(got))
+	}
+	if _, resolved := d.lastDoneScan[profile][childID]; !resolved {
+		t.Fatalf("rejected path should be marked resolved so the daemon does not retry it")
+	}
+}
