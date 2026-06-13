@@ -2116,3 +2116,26 @@ func TestGroupSortMode_DefaultAndSet(t *testing.T) {
 		t.Fatalf("garbage normalizes to %q, want creation", got)
 	}
 }
+
+func TestSortInstancesByActionable_CreationOrderDefault(t *testing.T) {
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+	SetGroupSortMode("creation")
+	now := time.Now()
+
+	// Statuses + recency are arranged so an actionable sort would reorder these,
+	// but creation mode must keep strict Order ascending.
+	instances := []*Instance{
+		{ID: "a", GroupPath: "g", Order: 0, Status: StatusStopped, LastAccessedAt: now.Add(-5 * time.Hour)},
+		{ID: "b", GroupPath: "g", Order: 1, Status: StatusError, LastAccessedAt: now},
+		{ID: "c", GroupPath: "g", Order: 2, Status: StatusWaiting, LastAccessedAt: now.Add(-1 * time.Minute)},
+	}
+	tree := NewGroupTree(instances)
+	got := []string{}
+	for _, s := range tree.Groups["g"].Sessions {
+		got = append(got, s.ID)
+	}
+	want := []string{"a", "b", "c"}
+	if !equalStrings(got, want) {
+		t.Fatalf("creation mode must order by Order asc; got %v want %v", got, want)
+	}
+}

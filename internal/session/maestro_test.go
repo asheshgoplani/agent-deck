@@ -38,6 +38,8 @@ func TestIsMaestro_ExactTitleOnly(t *testing.T) {
 // a stopped supervisor still outranks a running worker, because the row is
 // a fixed point of reference (the fleet supervisor), not an activity item.
 func TestSortInstancesByActionable_MaestroFirst(t *testing.T) {
+	SetGroupSortMode("actionable")
+	t.Cleanup(func() { SetGroupSortMode("creation") })
 	now := time.Now()
 	maestro := &Instance{Title: "conductor-maestro", Status: StatusStopped, LastAccessedAt: now.Add(-24 * time.Hour), Order: 5}
 	worker := &Instance{Title: "busy-worker", Status: StatusRunning, LastAccessedAt: now, Order: 0}

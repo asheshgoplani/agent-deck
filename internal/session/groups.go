@@ -159,15 +159,21 @@ func stablePinPartition(insts []*Instance) {
 	})
 }
 
-// SortInstancesByActionable sorts the given slice in place so the most
-// recently actionable sessions surface first within a group (issue #857),
-// while honoring per-session pins (pin-sessions feature). The outermost key is
-// the pin zone (see pinZone); within the normal zone the existing actionable
-// tiers apply, and within the pin-top/pin-bottom bands sessions are ordered by
-// Order alone (fully fixed — status and recency are ignored, so K/J reordering
-// still works inside a band).
+// SortInstancesByActionable sorts the given slice in place according to the
+// active within-group sort mode (see SetGroupSortMode), while honoring
+// per-session pins (pin-sessions feature). The outermost key is the pin zone
+// (see pinZone); within the normal zone the sort depends on mode:
 //
-// Normal zone key precedence:
+//   - "creation" (default): Order asc only — sessions keep their creation /
+//     K/J manual order unchanged.
+//   - "actionable" (issue #857): status→recency tiers apply before Order so
+//     the most recently actionable sessions surface first.
+//
+// Pin-top and pin-bottom bands are always ordered by Order alone (fully fixed
+// — status and recency are ignored, so K/J reordering still works inside a
+// band).
+//
+// Actionable-mode normal-zone key precedence:
 //
 //  1. actionablePriority(Status)   asc  — error/waiting/running first
 //  2. LastAccessedAt              desc  — recent attention first
@@ -176,6 +182,7 @@ func stablePinPartition(insts []*Instance) {
 //     (TestSessionOrderPersistence,
 //     TestSessionOrderMigration)
 func SortInstancesByActionable(insts []*Instance) {
+	mode := currentGroupSortMode()
 	sort.SliceStable(insts, func(i, j int) bool {
 		// The outermost key is the band: maestro (the fleet supervisor, a fixed
 		// point of reference that surfaces first regardless of status), then
@@ -189,14 +196,18 @@ func SortInstancesByActionable(insts []*Instance) {
 		if zi != 1 {
 			return insts[i].Order < insts[j].Order
 		}
-		// Normal (1) band keeps the actionable tiers.
-		pi, pj := actionablePriority(insts[i].Status), actionablePriority(insts[j].Status)
-		if pi != pj {
-			return pi < pj
-		}
-		ai, aj := insts[i].LastAccessedAt, insts[j].LastAccessedAt
-		if !ai.Equal(aj) {
-			return ai.After(aj)
+		// Normal band. In actionable mode (issue #857) the status→recency tiers
+		// apply before Order; in creation mode (default) Order alone decides, so
+		// sessions keep their creation order (or K/J manual order).
+		if mode == "actionable" {
+			pi, pj := actionablePriority(insts[i].Status), actionablePriority(insts[j].Status)
+			if pi != pj {
+				return pi < pj
+			}
+			ai, aj := insts[i].LastAccessedAt, insts[j].LastAccessedAt
+			if !ai.Equal(aj) {
+				return ai.After(aj)
+			}
 		}
 		return insts[i].Order < insts[j].Order
 	})

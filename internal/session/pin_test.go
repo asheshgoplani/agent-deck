@@ -9,6 +9,8 @@ import (
 // sessions first, then normal (status/recency), then pin-bottom — regardless
 // of each session's status. The pin bands are "fully fixed".
 func TestSortInstancesByActionable_PinZones(t *testing.T) {
+	SetGroupSortMode("actionable")
+	t.Cleanup(func() { SetGroupSortMode("creation") })
 	now := time.Now()
 	// A pin-bottom session in error state would, under the plain status sort,
 	// jump to the very top. It must instead sink to the pin-bottom band.
