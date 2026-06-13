@@ -1767,15 +1767,15 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStartPre=-/bin/mkdir -p __LOG_DIR__
-ExecStart=__PYTHON3__ __BRIDGE_PATH__
+ExecStartPre=-/bin/mkdir -p "__LOG_DIR__"
+ExecStart="__PYTHON3__" "__BRIDGE_PATH__"
 Restart=always
 RestartSec=10
 WorkingDirectory=__HOME__
 StandardOutput=append:__LOG_PATH__
 StandardError=append:__LOG_PATH__
-Environment=PATH=__PATH__
-Environment=HOME=__HOME__
+Environment="PATH=__PATH__"
+Environment="HOME=__HOME__"
 __XDG_ENV__
 [Install]
 WantedBy=default.target
@@ -1793,16 +1793,16 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStartPre=-/bin/mkdir -p __LOG_DIR__
-ExecStart=__AGENT_DECK__ notify-daemon
+ExecStartPre=-/bin/mkdir -p "__LOG_DIR__"
+ExecStart="__AGENT_DECK__" notify-daemon
 Restart=always
 RestartSec=5
 RuntimeMaxSec=86400
 WorkingDirectory=__HOME__
 StandardOutput=append:__LOG_PATH__
 StandardError=append:__LOG_PATH__
-Environment=PATH=__PATH__
-Environment=HOME=__HOME__
+Environment="PATH=__PATH__"
+Environment="HOME=__HOME__"
 
 [Install]
 WantedBy=default.target
@@ -1824,10 +1824,10 @@ Description=Agent Deck Conductor Heartbeat (__NAME__)
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash __SCRIPT_PATH__
+ExecStart=/bin/bash "__SCRIPT_PATH__"
 WorkingDirectory=__HOME__
-Environment=PATH=__PATH__
-Environment=HOME=__HOME__
+Environment="PATH=__PATH__"
+Environment="HOME=__HOME__"
 `
 
 // --- Systemd path helpers ---
@@ -1913,8 +1913,11 @@ func GenerateSystemdBridgeService() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	xdgEnv := "Environment=XDG_DATA_HOME=" + dataBase + "\nEnvironment=XDG_CONFIG_HOME=" + configBase +
-		"\nEnvironment=AGENT_DECK_CONDUCTOR_DIR=" + condDir
+	// Quote each value: systemd splits Environment= on unquoted whitespace, so a
+	// conductor/XDG path containing spaces would otherwise corrupt the unit.
+	xdgEnv := `Environment="XDG_DATA_HOME=` + dataBase + `"` +
+		"\n" + `Environment="XDG_CONFIG_HOME=` + configBase + `"` +
+		"\n" + `Environment="AGENT_DECK_CONDUCTOR_DIR=` + condDir + `"`
 
 	unit := strings.ReplaceAll(systemdBridgeServiceTemplate, "__PYTHON3__", python3Path)
 	unit = strings.ReplaceAll(unit, "__BRIDGE_PATH__", bridgePath)

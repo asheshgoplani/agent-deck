@@ -2894,11 +2894,12 @@ func TestGenerateSystemdBridgeService_InjectsXDGEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateSystemdBridgeService: %v", err)
 	}
-	if !strings.Contains(unit, "Environment=XDG_DATA_HOME="+xdgData) {
-		t.Errorf("systemd unit must inject XDG_DATA_HOME=%q:\n%s", xdgData, unit)
+	// Values are double-quoted so systemd does not split paths on whitespace.
+	if !strings.Contains(unit, `Environment="XDG_DATA_HOME=`+xdgData+`"`) {
+		t.Errorf("systemd unit must inject quoted XDG_DATA_HOME=%q:\n%s", xdgData, unit)
 	}
-	if !strings.Contains(unit, "Environment=XDG_CONFIG_HOME="+xdgConfig) {
-		t.Errorf("systemd unit must inject XDG_CONFIG_HOME=%q:\n%s", xdgConfig, unit)
+	if !strings.Contains(unit, `Environment="XDG_CONFIG_HOME=`+xdgConfig+`"`) {
+		t.Errorf("systemd unit must inject quoted XDG_CONFIG_HOME=%q:\n%s", xdgConfig, unit)
 	}
 }
 

@@ -211,9 +211,58 @@ func TestGenerateSystemdBridgeService_InjectsConductorDirOverride(t *testing.T) 
 		t.Fatalf("GenerateSystemdBridgeService(): %v", err)
 	}
 
-	want := "Environment=AGENT_DECK_CONDUCTOR_DIR=" + override
+	// The override path here contains a space ("conductor homes"); the unit must
+	// double-quote the value so systemd does not split it (CodeRabbit #1429).
+	want := `Environment="AGENT_DECK_CONDUCTOR_DIR=` + override + `"`
 	if !strings.Contains(unit, want) {
 		t.Errorf("systemd bridge unit should contain %q, unit:\n%s", want, unit)
+	}
+	// The bridge.py path lives under the space-bearing override, so the ExecStart
+	// argument must be quoted too — otherwise systemd would split it.
+	wantExec := `"` + filepath.Join(override, "bridge.py") + `"`
+	if !strings.Contains(unit, wantExec) {
+		t.Errorf("systemd bridge unit ExecStart should quote bridge path %q, unit:\n%s", wantExec, unit)
+	}
+}
+
+// TestSystemdUnits_QuoteEnvironmentAndExecStart pins the systemd quoting fix
+// (CodeRabbit #1429): systemd splits unquoted whitespace, so every Environment=
+// value and every space-capable ExecStart argument must be double-quoted.
+func TestSystemdUnits_QuoteEnvironmentAndExecStart(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+
+	bridge, err := GenerateSystemdBridgeService()
+	if err != nil {
+		if strings.Contains(err.Error(), "not found in PATH") {
+			t.Skipf("skipping: %v", err)
+		}
+		t.Fatalf("GenerateSystemdBridgeService(): %v", err)
+	}
+	for _, want := range []string{
+		`Environment="PATH=`,
+		`Environment="HOME=`,
+		`Environment="XDG_DATA_HOME=`,
+		`Environment="XDG_CONFIG_HOME=`,
+		`Environment="AGENT_DECK_CONDUCTOR_DIR=`,
+		"ExecStart=\"", // quoted python3 executable + bridge path
+	} {
+		if !strings.Contains(bridge, want) {
+			t.Errorf("systemd bridge unit must contain %q, unit:\n%s", want, bridge)
+		}
+	}
+
+	hb, err := GenerateSystemdHeartbeatService("test-conductor")
+	if err != nil {
+		t.Fatalf("GenerateSystemdHeartbeatService(): %v", err)
+	}
+	for _, want := range []string{
+		`Environment="PATH=`,
+		`Environment="HOME=`,
+		`ExecStart=/bin/bash "`, // quoted script path
+	} {
+		if !strings.Contains(hb, want) {
+			t.Errorf("systemd heartbeat unit must contain %q, unit:\n%s", want, hb)
+		}
 	}
 }
 
