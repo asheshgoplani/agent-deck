@@ -1,7 +1,10 @@
 package ui
 
 import (
+	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -168,6 +171,50 @@ func TestJumpHintMatchAllSingleChar(t *testing.T) {
 		if !got.matched || got.index != i {
 			t.Errorf("matchJumpHint(%q) with 5 hints = %+v, want match at %d", h, got, i)
 		}
+	}
+}
+
+func TestJumpModeRenderDoesNotSpendHintOnDivider(t *testing.T) {
+	home := NewHome()
+	home.width = 120
+	home.height = 20
+	home.initialLoading = false
+	home.jumpMode = true
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeGroup, Group: &session.Group{Name: "alpha", Path: "alpha"}, Path: "alpha", Level: 0},
+		{Type: session.ItemTypeDivider, DividerLabel: "idle / done"},
+		{Type: session.ItemTypeGroup, Group: &session.Group{Name: "beta", Path: "beta"}, Path: "beta", Level: 0},
+	}
+
+	rendered := home.renderSessionList(120, 20)
+	selectableHints := generateJumpHints(2)
+	allRowHints := generateJumpHints(3)
+
+	if !strings.Contains(rendered, selectableHints[1]) {
+		t.Fatalf("rendered jump hints should include second selectable hint %q\n--- render ---\n%s", selectableHints[1], rendered)
+	}
+	if selectableHints[1] != allRowHints[2] && strings.Contains(rendered, allRowHints[2]) {
+		t.Fatalf("rendered jump hints consumed divider row hint %q\n--- render ---\n%s", allRowHints[2], rendered)
+	}
+}
+
+func TestJumpKeyDoesNotSpendHintOnDivider(t *testing.T) {
+	home := NewHome()
+	home.width = 120
+	home.height = 20
+	home.initialLoading = false
+	home.jumpMode = true
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeGroup, Group: &session.Group{Name: "alpha", Path: "alpha"}, Path: "alpha", Level: 0},
+		{Type: session.ItemTypeDivider, DividerLabel: "idle / done"},
+		{Type: session.ItemTypeGroup, Group: &session.Group{Name: "beta", Path: "beta"}, Path: "beta", Level: 0},
+	}
+	hint := generateJumpHints(2)[1]
+
+	home.handleJumpKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(hint)})
+
+	if home.cursor != 2 {
+		t.Fatalf("second selectable jump hint should land on beta at index 2, got cursor=%d", home.cursor)
 	}
 }
 

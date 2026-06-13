@@ -185,6 +185,7 @@ func (h *HelpOverlay) View() string {
 	pluginKey := h.key(hotkeyPluginManager, "L")
 	skillsKey := h.key(hotkeySkillsManager, "s")
 	previewKey := h.key(hotkeyTogglePreview, "v")
+	groupViewKey := h.key(hotkeyCycleGroupView, "t")
 	unreadKey := h.key(hotkeyMarkUnread, "u")
 	quickApproveKey := h.key(hotkeyQuickApprove, "a")
 	copyKey := h.key(hotkeyCopyOutput, "c")
@@ -296,6 +297,7 @@ func (h *HelpOverlay) View() string {
 				{"/waiting", "Filter waiting"},
 				{"/running", "Filter running"},
 				{"/idle", "Filter idle"},
+				{groupViewKey, "Cycle view: active-on-top / populated-on-top"},
 			},
 		},
 		{
@@ -305,6 +307,7 @@ func (h *HelpOverlay) View() string {
 				{reloadKey, "Reload from disk"},
 				{importKey, "Import tmux sessions"},
 				{"Ctrl+Q", "Detach from session"},
+				{"Ctrl+S", "Switch session (here or attached)"},
 				{quitKey, "Quit"},
 				{helpKey, "This help"},
 			},

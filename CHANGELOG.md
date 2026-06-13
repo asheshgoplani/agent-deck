@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.58] - 2026-06-13
+
+### Added
+
+- **Session switcher: hop between sessions without detaching (`Ctrl+S`)** ([#1411](https://github.com/asheshgoplani/agent-deck/pull/1411)). Press `Ctrl+S` while attached to open an MRU-ordered picker pre-highlighted on the current session. `Ctrl+S`/`Ctrl+A` cycle forward/backward; arrow keys browse without auto-committing; `Enter` attaches immediately; after cycling, the switcher auto-attaches ~1s after the last keypress. `Esc` re-attaches to the originating session when opened while attached, or just closes from the overview. Configurable via `[hotkeys].switch_session`; detach key always wins on conflict. No storage paths touched.
+- **Cycle group view modes with `t`** ([#1417](https://github.com/asheshgoplani/agent-deck/pull/1417), closes [#1415](https://github.com/asheshgoplani/agent-deck/issues/1415)). Cycles the session list through Normal / Active-on-Top / Populated-on-Top. Active-on-top surfaces running/waiting sessions above a dim divider within each group; populated-on-top floats non-empty groups above empty ones. Pin positions (#1336) are respected across modes. Mode persists to UI state. Pure partition layer — sorting, collapse, and manual K/J order are unchanged within each section.
+- **Shell sessions show a running indicator when a non-interactive foreground process is active** ([#1308](https://github.com/asheshgoplani/agent-deck/pull/1308)). Opt-in via `[status] shell_running_indicator = true` (default false to preserve existing shell→idle default). When enabled, a shell session running `yarn dev` (→ `node`), `mvn spring-boot:run` (→ `java`), etc., shows the running indicator instead of idle; interactive programs (editors, pagers, `ssh`, multiplexers) stay idle. Uses the existing pane-info cache — no new tmux queries per tick. Staleness guards prevent a cache snapshot predating the session's last start from promoting a freshly started session.
+
 ## [1.9.57] - 2026-06-12
 
 ### Fixed

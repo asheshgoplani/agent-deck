@@ -2121,6 +2121,18 @@ func (f ForkSettings) Resolve(parentSandboxed bool) ResolvedForkPlan {
 type StatusSettings struct {
 	// Reserved for future status detection settings.
 	// Control mode pipes are always enabled (no longer configurable).
+
+	// ShellRunningIndicator promotes "shell" tool sessions from idle to
+	// running when the pane's foreground command is a genuine non-interactive
+	// process (e.g. "node" from `yarn dev`, "java" from `mvn spring-boot:run`).
+	// Opt-in (default false): the interactive-program denylist is necessarily
+	// incomplete, so a shell sitting at a psql/REPL/fzf prompt would otherwise
+	// read "running" while the user is idle. Users who want dev-server
+	// detection accept that tradeoff explicitly:
+	//
+	//	[status]
+	//	shell_running_indicator = true
+	ShellRunningIndicator bool `toml:"shell_running_indicator"`
 }
 
 // MaintenanceSettings controls the automatic maintenance worker
@@ -2567,6 +2579,44 @@ func IsCodexCompatible(toolName string) bool {
 	}
 	if def := GetToolDef(toolName); def != nil {
 		return strings.EqualFold(strings.TrimSpace(def.CompatibleWith), "codex") || isCodexCommand(def.Command)
+	}
+	return false
+}
+
+// isShellBinary returns true if cmd is a known interactive shell process name.
+// Used to distinguish "shell at a prompt" from "shell running a foreground command"
+// (e.g. "node" from "yarn dev", "java" from "mvn spring-boot:run").
+func isShellBinary(cmd string) bool {
+	switch strings.ToLower(cmd) {
+	case "bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "nushell", "pwsh", "powershell":
+		return true
+	}
+	return false
+}
+
+// isInteractiveForegroundProgram returns true for foreground commands that are
+// interactive and effectively waiting for the user rather than doing background
+// work: editors, pagers, system monitors, remote shells, and terminal
+// multiplexers. A shell session sitting in one of these should NOT show a
+// "running" indicator (an idle ssh prompt or an open editor is not busy work).
+//
+// REPLs and interpreters (node, python, ruby, …) are deliberately NOT listed:
+// they share a process name with the long-running servers this feature targets
+// (`yarn dev` runs as "node", `python manage.py runserver` runs as "python"),
+// so denylisting them would defeat the primary use case. The rare REPL false
+// positive is the lesser evil versus failing to flag a running dev server.
+func isInteractiveForegroundProgram(cmd string) bool {
+	switch strings.ToLower(cmd) {
+	case
+		// remote shells / terminal multiplexers
+		"ssh", "mosh", "mosh-client", "et", "tmux", "screen", "zellij",
+		// editors
+		"vi", "vim", "nvim", "nano", "emacs", "emacsclient", "helix", "hx", "micro", "kak",
+		// pagers / viewers
+		"less", "more", "most", "man", "bat",
+		// system monitors
+		"top", "htop", "btop", "btm", "glances", "atop":
+		return true
 	}
 	return false
 }
@@ -3218,6 +3268,11 @@ func CreateExampleConfig() error {
 # restart = "R"
 # detach = "ctrl+d"   # PTY-attach detach key, default ctrl+q (issue #434).
                       # Alias [tmux].detach_key exists; [hotkeys].detach wins.
+# In-attach session switcher (cycle sessions without first detaching to the list):
+# switch_session = "ctrl+s"   # opens the switcher while attached. Tap again to cycle
+#                             # forward (Shift+Tab / Up to go back); it auto-attaches
+#                             # ~1s after you stop, Enter attaches now, Esc cancels.
+#                             # Must be a "ctrl+<letter>" chord.
 
 # Instance behavior (optional)
 # [instances]

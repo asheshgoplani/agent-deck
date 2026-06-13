@@ -14,6 +14,59 @@ quirks that can surprise users.
 works in every terminal emulator we ship support for (iTerm2, Terminal.app,
 Alacritty, Ghostty, gnome-terminal, kitty, WezTerm, the Linux console).
 
+## Switch sessions without detaching
+
+Cycle between sessions while staying attached — no detach-then-reattach
+round trip through the list.
+
+| Keystroke | What happens |
+| --------- | ------------ |
+| `Ctrl-S` | Open the session switcher, pre-highlighted on the session you're currently in. |
+
+With the switcher open:
+
+- **`Ctrl-S`** again — cycle **forward** (the first step lands on the
+  most-recently-used *other* session); **`Ctrl-A`** — cycle **backward**.
+  Once you've cycled at least once this way, the switcher **auto-attaches
+  ~1 second after you stop** (the closest we can get to "switch when you
+  let go of the key"; see below). Holding the key down advances a step and
+  then stops — it does not spin through the list.
+- **`Up` / `Down`** — browse without auto-committing. Touching an arrow
+  cancels the pending auto-commit, so you stay put until you press Enter.
+- **`Enter`** — attach to the highlight immediately.
+- **`Esc`** — when you opened the switcher *while attached*, re-attach to
+  the session you came from (you meant to switch, not to leave). When you
+  opened it from the overview, it just closes.
+- **`Ctrl-Q`** (the detach key) — leave the switcher *and* the session,
+  dropping you in the overview.
+
+The same `Ctrl-S` also works **from the overview list** — it opens the
+switcher pre-highlighted on the session under the cursor, so you can hop
+to a recent session without scrolling the grouped list.
+
+A single `Ctrl-S` just opens the switcher (highlighting the session you're
+already in, so an immediate `Enter` is a no-op) and waits — it only starts
+the auto-attach countdown once you actually cycle inside it, so an
+accidental press never yanks you away.
+
+**Why `Ctrl-S` and not `Ctrl-Tab` / `Ctrl-Shift-Tab`?** Those chords only
+produce a distinct keystroke on terminals running an enhanced keyboard
+protocol (kitty / Ghostty / WezTerm / foot), and not reliably through an
+attach — everywhere else `Ctrl-Tab` is indistinguishable from a plain
+`Tab`. A `ctrl+<letter>` byte is the only portable trigger. (`Ctrl-S`'s
+legacy XON/XOFF flow-control meaning is moot: the attach runs the
+terminal in raw mode.)
+
+**Why does it auto-commit instead of switching on key release?**
+Terminals don't deliver key-*release* events without an enhanced
+keyboard protocol that isn't available here, so "switch the moment you
+release Ctrl" can't be detected. The idle auto-commit (~1s) approximates
+it: tap to cycle, stop, and it lands. Press `Enter` to commit instantly
+or `Esc` to back out.
+
+The trigger is configurable under `[hotkeys]` as `switch_session` (must
+be a `ctrl+<letter>` chord); it never overrides the detach key.
+
 ## Known terminal gotchas
 
 ### iTerm2 tabs disconnect on `Ctrl-Q` (expected)
@@ -56,7 +109,9 @@ choices) to keep `Ctrl-Q` reserved for agent-deck's detach.
 ## Related references
 
 - `internal/tmux/pty.go` — the agent-deck-side intercept for `Ctrl-Q`
-  across keyboard-encoding modes (raw bytes, xterm, kitty).
+  and the session-switch keys across keyboard-encoding modes (raw bytes,
+  xterm, kitty).
+- `internal/ui/session_switcher.go` — the in-attach switcher overlay.
 - GitHub #356, #357 — earlier hardening of `Ctrl-Q` detection across
   encodings.
 - GitHub #1112 — the cluster of remote / direct-type bugs that

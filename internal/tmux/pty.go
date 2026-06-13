@@ -66,6 +66,46 @@ func IndexCtrlQ(data []byte) int {
 	return IndexDetachKey(data, 17)
 }
 
+// SwitchIntent reports whether the attach loop handed control back to the
+// caller to open the in-attach session switcher.
+type SwitchIntent int
+
+const (
+	// SwitchNone means no switch was requested (normal detach / process exit).
+	SwitchNone SwitchIntent = iota
+	// SwitchRequested means the user pressed the switch key while attached.
+	SwitchRequested
+)
+
+// AttachOptions configures AttachWithOptions. The zero value attaches with the
+// default Ctrl+Q detach key and no session-switch key.
+type AttachOptions struct {
+	// DetachByte is the raw control byte that detaches (0 => default Ctrl+Q).
+	DetachByte byte
+	// SwitchKeyByte is the control byte (e.g. Ctrl+S, 0x13) that hands control
+	// back to the caller to open the in-attach session switcher. 0 disables it.
+	//
+	// This is deliberately a plain control byte, not Ctrl+Tab: terminals only
+	// emit a distinct sequence for Ctrl+Tab under an enhanced keyboard protocol
+	// that is not reliably available during attach, so a control byte is the
+	// only portable trigger (the cycling/commit UX then lives in the TUI).
+	SwitchKeyByte byte
+}
+
+// indexSwitchKey returns the index of the switch key in data and
+// SwitchRequested, or (-1, SwitchNone) if it is absent or disabled. It handles
+// the raw byte plus the xterm modifyOtherKeys and kitty CSI-u encodings (via
+// IndexDetachKey). The caller resolves precedence against the detach key.
+func indexSwitchKey(data []byte, opts AttachOptions) (int, SwitchIntent) {
+	if opts.SwitchKeyByte == 0 {
+		return -1, SwitchNone
+	}
+	if idx := IndexDetachKey(data, opts.SwitchKeyByte); idx >= 0 {
+		return idx, SwitchRequested
+	}
+	return -1, SwitchNone
+}
+
 func waitForAttachOutputDrain(outputDone <-chan struct{}, timeout time.Duration) (bool, time.Duration) {
 	start := time.Now()
 	timer := time.NewTimer(timeout)
@@ -132,14 +172,30 @@ func StartAttachPTY(cmd *exec.Cmd, tty *os.File) (*os.File, error) {
 // Attach attaches to the tmux session with full PTY support.
 // The configured detach key (default Ctrl+Q) will detach and return to the caller.
 // Pass an optional detachByte to override the default (0x11 / Ctrl+Q).
+//
+// Attach is a thin wrapper over AttachWithOptions that ignores the returned
+// SwitchIntent — use it when session-switch keys are not needed.
 func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
-	detach := byte(17) // Ctrl+Q default
-	if len(detachByte) > 0 && detachByte[0] != 0 {
+	var detach byte
+	if len(detachByte) > 0 {
 		detach = detachByte[0]
+	}
+	_, err := s.AttachWithOptions(ctx, AttachOptions{DetachByte: detach})
+	return err
+}
+
+// AttachWithOptions attaches to the tmux session with full PTY support and the
+// session-switch keys configured in opts. It returns the SwitchIntent the user
+// requested (SwitchNone on a normal detach or when the pane process exits) so
+// the caller can open an in-attach session switcher.
+func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (SwitchIntent, error) {
+	detach := byte(17) // Ctrl+Q default
+	if opts.DetachByte != 0 {
+		detach = opts.DetachByte
 	}
 
 	if !s.Exists() {
-		return fmt.Errorf("session %s does not exist", s.Name)
+		return SwitchNone, fmt.Errorf("session %s does not exist", s.Name)
 	}
 
 	// Clear the outer terminal emulator's scrollback buffer to prevent
@@ -203,7 +259,7 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	ptmx, err := StartAttachPTY(cmd, os.Stdin)
 	if err != nil {
 		signal.Reset(syscall.SIGINT)
-		return fmt.Errorf("failed to start pty: %w", err)
+		return SwitchNone, fmt.Errorf("failed to start pty: %w", err)
 	}
 	defer ptmx.Close()
 
@@ -212,13 +268,13 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	// interpret Ctrl+Z as SUSP and send SIGTSTP to the tmux attach process,
 	// causing it to exit and returning the user to the session list.
 	if _, err := term.MakeRaw(int(ptmx.Fd())); err != nil {
-		return fmt.Errorf("failed to set pty raw mode: %w", err)
+		return SwitchNone, fmt.Errorf("failed to set pty raw mode: %w", err)
 	}
 
 	// Save original terminal state and set raw mode
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
-		return fmt.Errorf("failed to set raw mode: %w", err)
+		return SwitchNone, fmt.Errorf("failed to set raw mode: %w", err)
 	}
 	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
 
@@ -258,6 +314,13 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 
 	// Channel to signal detach
 	detachCh := make(chan struct{})
+
+	// switchOutcome is written by the stdin goroutine before it closes
+	// detachCh when a session-switch key is pressed. The close establishes a
+	// happens-before edge, so the main goroutine can read it after <-detachCh
+	// without additional synchronization. It stays SwitchNone for a plain
+	// detach or a pane-process exit.
+	var switchOutcome SwitchIntent
 
 	// Channel for I/O errors (buffered to prevent goroutine leaks)
 	ioErrors := make(chan error, 2)
@@ -314,19 +377,40 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 				continue
 			}
 
-			// Check for the detach key anywhere in the input chunk.
-			// Some terminals coalesce reads, so detach must not require a single-byte read.
-			// Handles raw byte, xterm modifyOtherKeys, and kitty CSI u encodings.
-			if idx := IndexDetachKey(chunk, detach); idx >= 0 {
-				// Forward any bytes before the detach key, then detach.
-				if idx > 0 {
-					if _, err := ptmx.Write(chunk[:idx]); err != nil {
+			// Check for the detach key and any session-switch keys anywhere in
+			// the input chunk. Some terminals coalesce reads, so these must not
+			// require a single-byte read. Handles raw byte, xterm
+			// modifyOtherKeys, and kitty CSI u encodings.
+			detachIdx := IndexDetachKey(chunk, detach)
+			switchIdx, switchIn := indexSwitchKey(chunk, opts)
+
+			// Whichever interrupt key appears first in the buffer wins; detach
+			// takes precedence on a tie (distinct keys can't share an index,
+			// but guard anyway so a misconfigured switch byte can't shadow
+			// detach).
+			interruptIdx := -1
+			isSwitch := false
+			if detachIdx >= 0 {
+				interruptIdx = detachIdx
+			}
+			if switchIdx >= 0 && (interruptIdx == -1 || switchIdx < interruptIdx) {
+				interruptIdx = switchIdx
+				isSwitch = true
+			}
+
+			if interruptIdx >= 0 {
+				// Forward any bytes before the interrupt key, then stop.
+				if interruptIdx > 0 {
+					if _, err := ptmx.Write(chunk[:interruptIdx]); err != nil {
 						select {
 						case ioErrors <- fmt.Errorf("PTY write error: %w", err):
 						default:
 						}
 						return
 					}
+				}
+				if isSwitch {
+					switchOutcome = switchIn
 				}
 				close(detachCh)
 				cancel()
@@ -419,7 +503,7 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	}
 
 	cleanupAttach()
-	return attachErr
+	return switchOutcome, attachErr
 }
 
 // AttachWindow attaches to a specific window within this tmux session.
