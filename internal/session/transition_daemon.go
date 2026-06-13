@@ -502,7 +502,16 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		}
 
 		to := normalizeStatusString(candidate.ToStatus)
-		if curr := normalizeStatusString(current[id]); curr != "" {
+		// A live TUI heartbeat routes `current` through DB status rows. A TUI
+		// that holds the heartbeat without refreshing its rows (orphaned tab,
+		// or sessions created after it loaded its list) leaves rows frozen at
+		// `running`, and letting that stale row override a FRESH terminal hook
+		// status drops the child's completion entirely — no transition event,
+		// no log line. The hook file is the child's own runtime asserting its
+		// state; only defer to the row when the row itself is notify-terminal
+		// (it may be MORE final, e.g. error). A non-terminal row never vetoes
+		// a fresh terminal hook status.
+		if curr := normalizeStatusString(current[id]); curr != "" && isNotifyTerminalStatus(curr) {
 			to = curr
 		}
 		if !isNotifyTerminalStatus(to) {
