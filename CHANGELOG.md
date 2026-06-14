@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.65] - 2026-06-14
+
 ### Fixed
 
 - **Worktree finish on a shared worktree no longer strands sibling sessions** ([#1449](https://github.com/asheshgoplani/agent-deck/issues/1449)). Finishing (or deleting) one of several sessions that share a single git worktree used to remove the shared worktree directory and delete the branch, leaving the remaining sessions pointing at a missing worktree. Both teardown paths now count other live sessions whose worktree path resolves (via `EvalSymlinks`) to the same directory; while any sibling remains, the destructive `git worktree remove` + branch delete are skipped and only the finished session's record is dropped. The last sharer cleans up as before, and the existing "never delete the original repo" guard is preserved.
