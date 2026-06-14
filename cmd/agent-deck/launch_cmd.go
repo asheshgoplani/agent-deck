@@ -55,7 +55,7 @@ func handleLaunch(profile string, args []string) {
 	// derives its group from that leaf folder and lands in a per-branch group
 	// detached from the parent. Opt-in so #972 (conductor children -> project
 	// group) is preserved by default. Used by the fleet skill.
-	inheritGroup := fs.Bool("inherit-group", false, "Place the child in the parent session's group instead of the cwd-derived group (keeps a fleet co-located with its parent)")
+	inheritGroup := fs.Bool("inherit-group", false, "Place the child in the parent session's group instead of the cwd-derived group (auto-applied for git worktree children; use this to force it for non-worktree paths)")
 	noTransitionNotify := fs.Bool("no-transition-notify", false, "Suppress transition event notifications to parent session")
 	// #697: conductor-friendly title lock. Prevents Claude's session name
 	// from overwriting the agent-deck title.
@@ -318,6 +318,16 @@ func handleLaunch(profile string, args []string) {
 	// conductor's own group (`conductor`). The parent group is now a
 	// fallback for path mappings that produce no group.
 	cwdDerivedGroup := session.GroupPathForProject(path)
+	// A worktree child auto-inherits its parent's group (issue: fleets fanned
+	// into worktrees scattered into junk per-branch / `worktrees` groups, or
+	// a deliberately-named group, detached from the parent). `path` is already
+	// the final worktree path here (the -w branch above reassigns it before
+	// this point). git.IsLinkedWorktree returns false for main working trees,
+	// so #972's conductor children (separate real repos) keep cwd-derived group.
+	// The thunk defers the git probe until shouldInheritParentGroup needs it.
+	inheritParentGroup := shouldInheritParentGroup(explicitGroupProvided, *inheritGroup, func() bool {
+		return git.IsLinkedWorktree(path)
+	})
 	var parentInstance *session.Instance
 	if sessionParent != "" {
 		var errMsg string
@@ -330,11 +340,11 @@ func handleLaunch(profile string, args []string) {
 			out.Error("cannot create sub-session of a sub-session (single level only)", ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, *inheritGroup)
+		sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, inheritParentGroup)
 	} else if !*noParent {
 		parentInstance = resolveAutoParentInstance(instances)
 		if parentInstance != nil && !parentInstance.IsSubSession() {
-			sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, *inheritGroup)
+			sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, inheritParentGroup)
 		} else {
 			parentInstance = nil
 		}
