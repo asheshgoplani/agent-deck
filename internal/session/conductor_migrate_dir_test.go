@@ -474,6 +474,86 @@ func TestMigrateConductorDir_ConcurrentMetaWriteNotStranded(t *testing.T) {
 	}
 }
 
+// Blocker 1: a source and target that are lexically distinct but resolve to the
+// SAME physical tree (here via a symlinked base) must be rejected under --force,
+// not silently merged-then-deleted — which would delete the one shared meta.json.
+func TestMigrateConductorDir_RejectsSymlinkAliasedSameTree(t *testing.T) {
+	_, _, xdgDataHome := setupSessionXDGPathEnv(t)
+	defaultBase := filepath.Join(xdgDataHome, "agent-deck", "conductor")
+	writeConductorHome(t, defaultBase, "alpha", map[string]string{
+		"meta.json": `{"name":"alpha","profile":"default","description":"SHARED"}`,
+	})
+	// A second, lexically-distinct path that resolves to the SAME physical base.
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(defaultBase, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := MigrateConductorDir(ConductorDirMigrateOptions{
+		From: defaultBase, Target: alias, Apply: true, Force: true,
+	})
+	if err == nil {
+		t.Fatal("expected the symlink-aliased same-tree migration to be rejected")
+	}
+	if !strings.Contains(err.Error(), "same directory") {
+		t.Fatalf("error = %v, want it to flag the alias", err)
+	}
+	if res != nil && res.ConfigWritten {
+		t.Fatal("config must NOT be written when the alias is rejected")
+	}
+	// The single shared meta.json (source and target are one physical tree)
+	// survives — nothing was merged or deleted.
+	assertFileContains(t, filepath.Join(defaultBase, "alpha", "meta.json"), "SHARED")
+	assertFileContains(t, filepath.Join(alias, "alpha", "meta.json"), "SHARED")
+}
+
+// Blocker 2: a conductor home whose meta.json is a RELATIVE symlink resolves to a
+// different file once the home is relocated (CopyTree preserves the link). A
+// content-blind verify would pass against the unrelated record while the real
+// identity is stranded at the source; the bytes-equal verify must reject and
+// leave the source's record intact.
+func TestMigrateConductorDir_VerifyRejectsRelocatedMetaSymlink(t *testing.T) {
+	_, _, xdgDataHome := setupSessionXDGPathEnv(t)
+	defaultBase := filepath.Join(xdgDataHome, "agent-deck", "conductor")
+
+	alphaDir := filepath.Join(defaultBase, "alpha")
+	if err := os.MkdirAll(alphaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// "../../external-id" from <base>/alpha resolves to <xdgDataHome>/agent-deck/external-id.
+	srcID := filepath.Join(xdgDataHome, "agent-deck", "external-id")
+	if err := os.WriteFile(srcID, []byte(`{"name":"alpha","profile":"default","id":"REAL-SOURCE"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../external-id", filepath.Join(alphaDir, "meta.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(t.TempDir(), "vault-conductors")
+	// After the move, alpha/meta.json -> ../../external-id resolves to
+	// <dir(target)>/external-id, where a DIFFERENT record waits. A content-blind
+	// verify would accept it; the bytes-equal verify must reject.
+	decoy := filepath.Join(filepath.Dir(target), "external-id")
+	if err := os.WriteFile(decoy, []byte(`{"name":"alpha","profile":"default","id":"DECOY"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := MigrateConductorDir(ConductorDirMigrateOptions{Target: target, Apply: true})
+	if err == nil {
+		t.Fatal("expected verify to reject the relocated meta.json symlink mismatch")
+	}
+	if res != nil && res.ConfigWritten {
+		t.Fatal("config must NOT be committed when verify fails")
+	}
+	// The source's real identity record is untouched (not deleted/stranded), and
+	// the source home still resolves to it.
+	assertFileContains(t, srcID, "REAL-SOURCE")
+	assertFileContains(t, filepath.Join(alphaDir, "meta.json"), "REAL-SOURCE")
+	if cd, _ := ConductorDir(); cd != defaultBase {
+		t.Fatalf("ConductorDir() = %q, want unchanged default %q", cd, defaultBase)
+	}
+}
+
 func TestDetectConductorDirSplitBrain(t *testing.T) {
 	_, xdgConfigHome, xdgDataHome := setupSessionXDGPathEnv(t)
 	defaultBase := filepath.Join(xdgDataHome, "agent-deck", "conductor")

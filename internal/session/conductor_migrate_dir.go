@@ -162,7 +162,12 @@ type ConductorDirMigrateAction struct {
 	IsHome bool   // conductor home (dir with meta.json) vs base file/symlink
 	// Action is one of:
 	//   "move"           dest absent → copy then remove source
-	//   "merge"          dest exists + --force, safe → merge (dest wins per-file)
+	//   "merge"          dest exists + --force, safe → merge (dest wins per-file).
+	//                    The conductor's meta.json is always preserved (a differing
+	//                    one is a reject-conflict, never a merge), but for NON-meta
+	//                    files the merge is destination-wins: a source state.json /
+	//                    CLAUDE.md that differs from the destination's is dropped,
+	//                    and its source copy is removed with the rest of the source.
 	//   "skip-exists"    dest exists, no --force → left in place (blocks the migration)
 	//   "skip-transient" runtime log/temp → ignored (regenerated at the new base)
 	//   "reject-conflict" dest exists + --force, but merging would clobber the
@@ -302,9 +307,10 @@ func MigrateConductorDir(opts ConductorDirMigrateOptions) (*ConductorDirMigrateR
 		if err := copyPlan(plan); err != nil {
 			return res, fmt.Errorf("copy conductor homes to target: %w", err)
 		}
-		// 2. VERIFY each migrated home's meta.json landed readable at the target
-		//    BEFORE we commit the config or remove any source.
-		if err := verifyPlan(plan, target); err != nil {
+		// 2. VERIFY each migrated home's meta.json at the target is byte-identical
+		//    to the source's durable record BEFORE we commit the config or remove
+		//    any source (blocker 2).
+		if err := verifyPlan(plan); err != nil {
 			return res, fmt.Errorf("verify migrated conductor homes: %w", err)
 		}
 		// Reflect the per-file merge conflicts discovered during copy.
@@ -360,11 +366,25 @@ func MigrateConductorDir(opts ConductorDirMigrateOptions) (*ConductorDirMigrateR
 	return res, nil
 }
 
-// validateMigratePaths rejects a source/target pair that overlaps (finding #4):
-// the exact no-op is allowed, but containment in either direction is not. A
-// target inside the source tree would self-copy as the walk descends into it; a
-// source inside the target tree would merge the target into itself destructively.
+// validateMigratePaths rejects a source/target pair that overlaps (finding #4,
+// hardened per blocker 1). Only the EXACT lexical no-op is allowed. A pair that
+// is lexically distinct but resolves to the same physical tree (a symlinked base
+// or bind-mount alias) is rejected outright: a lexical-only check would miss the
+// no-op short-circuit, pass the containment checks, then — under --force — merge
+// the tree into itself and let removePlanSources delete what is physically the
+// target's own meta.json. Containment is enforced on BOTH the lexical and the
+// symlink-resolved paths so a symlinked target nested inside the resolved source
+// (or vice versa) cannot slip through either.
 func validateMigratePaths(source, target string) error {
+	if sameConductorPath(source, target) {
+		return nil // exact lexical no-op
+	}
+	if samePhysicalDir(source, target) {
+		return fmt.Errorf(
+			"source %q and target %q resolve to the same directory (symlink or bind-mount alias) — pass the exact same path for a no-op, or genuinely distinct trees",
+			source, target)
+	}
+
 	sAbs, err := filepath.Abs(filepath.Clean(source))
 	if err != nil {
 		return fmt.Errorf("resolve source path %q: %w", source, err)
@@ -373,16 +393,44 @@ func validateMigratePaths(source, target string) error {
 	if err != nil {
 		return fmt.Errorf("resolve target path %q: %w", target, err)
 	}
-	if sAbs == tAbs {
-		return nil // exact no-op
-	}
-	if pathContains(sAbs, tAbs) {
-		return fmt.Errorf("target %q is inside the source conductor dir %q; choose a target outside the source tree", target, source)
-	}
-	if pathContains(tAbs, sAbs) {
-		return fmt.Errorf("source %q is inside the target conductor dir %q; choose a source outside the target tree", source, target)
+	sReal := resolveCanonical(source)
+	tReal := resolveCanonical(target)
+	for _, pair := range [][2]string{{sAbs, tAbs}, {sReal, tReal}} {
+		s, t := pair[0], pair[1]
+		if pathContains(s, t) {
+			return fmt.Errorf("target %q is inside the source conductor dir %q; choose a target outside the source tree", target, source)
+		}
+		if pathContains(t, s) {
+			return fmt.Errorf("source %q is inside the target conductor dir %q; choose a source outside the target tree", source, target)
+		}
 	}
 	return nil
+}
+
+// resolveCanonical returns the symlink-resolved absolute path when it exists,
+// else the lexical absolute path (EvalSymlinks only works on existing paths).
+func resolveCanonical(path string) string {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		abs = filepath.Clean(path)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
+}
+
+// samePhysicalDir reports whether two paths refer to the same physical directory
+// even when they are lexically distinct — catching symlink/bind-mount aliases.
+// It uses os.SameFile (inode identity) when both exist, then resolved-path
+// equality as a fallback.
+func samePhysicalDir(a, b string) bool {
+	ai, aerr := os.Stat(a)
+	bi, berr := os.Stat(b)
+	if aerr == nil && berr == nil && os.SameFile(ai, bi) {
+		return true
+	}
+	return resolveCanonical(a) == resolveCanonical(b)
 }
 
 // pathContains reports whether child is strictly nested under parent. Both must
@@ -532,9 +580,16 @@ func copyPlan(plan []migratePlanEntry) error {
 	return nil
 }
 
-// verifyPlan confirms every migrated conductor home has a readable, non-empty
-// meta.json at the target before the config is committed or any source removed.
-func verifyPlan(plan []migratePlanEntry, target string) error {
+// verifyPlan confirms every migrated conductor home's meta.json at the target is
+// BYTE-IDENTICAL to the source's durable record before the config is committed
+// or any source removed (blocker 2). A non-empty check is not enough: CopyTree
+// preserves symlinks, so a relative meta.json symlink can resolve to a DIFFERENT
+// file once the home moves, passing a content-blind check against an unrelated
+// record while the real identity is stranded at the source — which
+// removePlanSources would then delete. Reading both is cheap (we follow the
+// symlink on each side, exactly what a later LoadConductorMeta does), and an
+// unreadable/dangling target meta.json fails here too.
+func verifyPlan(plan []migratePlanEntry) error {
 	for _, e := range plan {
 		if !e.action.IsHome {
 			continue
@@ -542,13 +597,23 @@ func verifyPlan(plan []migratePlanEntry, target string) error {
 		if e.action.Action != "move" && e.action.Action != "merge" {
 			continue
 		}
-		metaPath := filepath.Join(target, e.action.Name, "meta.json")
-		data, err := os.ReadFile(metaPath)
+		srcMeta := filepath.Join(e.srcPath, "meta.json")
+		dstMeta := filepath.Join(e.dstPath, "meta.json")
+		srcBytes, err := os.ReadFile(srcMeta)
 		if err != nil {
-			return fmt.Errorf("conductor %q: meta.json not readable at target %q: %w", e.action.Name, metaPath, err)
+			return fmt.Errorf("conductor %q: source meta.json not readable at %q: %w", e.action.Name, srcMeta, err)
 		}
-		if len(data) == 0 {
-			return fmt.Errorf("conductor %q: meta.json empty at target %q", e.action.Name, metaPath)
+		dstBytes, err := os.ReadFile(dstMeta)
+		if err != nil {
+			return fmt.Errorf("conductor %q: meta.json not readable at target %q: %w", e.action.Name, dstMeta, err)
+		}
+		if len(dstBytes) == 0 {
+			return fmt.Errorf("conductor %q: meta.json empty at target %q", e.action.Name, dstMeta)
+		}
+		if !bytes.Equal(srcBytes, dstBytes) {
+			return fmt.Errorf(
+				"conductor %q: target meta.json does not match the source's durable record (a relocated symlink may resolve to a different file) — refusing to commit and strand the source",
+				e.action.Name)
 		}
 	}
 	return nil
