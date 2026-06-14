@@ -1,0 +1,52 @@
+direction: down
+
+title: {
+  label: Channels Topology
+  near: top-center
+  style.font-size: 20
+  style.bold: true
+}
+
+users: {
+  user-a: "User A\n/start status\nrun report" {
+    shape: person
+  }
+  user-b: "User B\ndeploy prod\ntail logs\nalerts on" {
+    shape: person
+  }
+  user-c: "User C\nwhat's next?\nshow plan\npause all" {
+    shape: person
+  }
+}
+
+bots: {
+  bot-a: Telegram Bot
+  bot-b: Slack Bot
+  bot-c: Discord Bot
+}
+
+conductors: {
+  cond-a: "Conductor A\nstatus: running\nuptime: 2d 14h 32m\nchildren: 4\nevents: 12867" {
+    style.border-radius: 8
+  }
+  cond-b: "Conductor B\nstatus: running\nuptime: 1d 8h 11m\nchildren: 3\nevents: 9421" {
+    style.border-radius: 8
+  }
+  cond-c: "Conductor C\nstatus: running\nuptime: 3d 01h 44m\nchildren: 2\nevents: 7633" {
+    style.border-radius: 8
+  }
+}
+
+users.user-a -> bots.bot-a
+users.user-b -> bots.bot-b
+users.user-c -> bots.bot-c
+bots.bot-a -> conductors.cond-a: remote control
+bots.bot-b -> conductors.cond-b: remote control
+bots.bot-c -> conductors.cond-c: remote control
+
+footer: {
+  label: "One bot per conductor. Bots never share tokens."
+  near: bottom-center
+  style.font-size: 14
+  style.italic: true
+}
