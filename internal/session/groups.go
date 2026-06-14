@@ -117,7 +117,8 @@ func actionablePriority(s Status) int {
 //	-1 maestro      the fleet supervisor — a fixed point of reference that
 //	                surfaces above everything, including pin-top
 //	0  pin-top      fixed at the top, exempt from status/recency
-//	1  normal       the existing actionable sort (status → recency → Order)
+//	1  normal       the within-group sort (creation Order, or actionable
+//	                status → recency → Order — see group_sort config)
 //	2  pin-bottom   fixed at the bottom, exempt from status/recency
 func pinZone(inst *Instance) int {
 	if inst.IsMaestro() {
@@ -137,9 +138,10 @@ func pinZone(inst *Instance) int {
 // pin-bottom bands (pinZone), preserving the relative order of sessions within
 // each band. Unlike SortInstancesByActionable it never reorders by
 // status/recency, so it is safe to run on every render (Flatten): it moves only
-// pinned rows, leaving the load-time actionable order — and any live K/J manual
-// order — of the normal band untouched. This is what makes a pin edit take
-// effect live instead of only after a restart.
+// pinned rows, leaving the load-time order (creation or actionable, per the
+// group_sort config) — and any live K/J manual order — of the normal band
+// untouched. This is what makes a pin edit take effect live instead of only
+// after a restart.
 func stablePinPartition(insts []*Instance) {
 	sort.SliceStable(insts, func(i, j int) bool {
 		zi, zj := pinZone(insts[i]), pinZone(insts[j])
@@ -153,8 +155,9 @@ func stablePinPartition(insts []*Instance) {
 		if zi != 1 {
 			return insts[i].Order < insts[j].Order
 		}
-		// Normal (1) band is already actionable-sorted at load; return false so
-		// SliceStable leaves its relative order untouched.
+		// Normal (1) band is already sorted at load (creation Order, or actionable
+		// per group_sort); return false so SliceStable leaves its relative order
+		// untouched.
 		return false
 	})
 }
