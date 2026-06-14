@@ -153,8 +153,9 @@ func (w *SetupWizard) GetConfig() *session.UserConfig {
 	}
 
 	// Set reasonable defaults for other settings
+	globalSearchEnabled := true
 	config.GlobalSearch = session.GlobalSearchSettings{
-		Enabled:    true,
+		Enabled:    &globalSearchEnabled,
 		Tier:       "auto",
 		RecentDays: 90,
 	}
@@ -170,9 +171,10 @@ func (w *SetupWizard) GetConfig() *session.UserConfig {
 
 	// Set MCP pool settings based on platform
 	// Only enable on platforms that support Unix sockets
+	fallbackStdio := true
 	config.MCPPool = session.MCPPoolSettings{
 		Enabled:       false, // Disabled by default, user can enable if desired
-		FallbackStdio: true,  // Always fall back to stdio if sockets fail
+		FallbackStdio: &fallbackStdio,
 	}
 	// Note: Even on supported platforms, we don't enable by default
 	// Users can enable it manually if they want the optimization

@@ -698,8 +698,9 @@ func TestHomeSearchOpensGlobalWhenAvailable(t *testing.T) {
 
 	// Create a mock index
 	tmpDir := t.TempDir()
+	searchEnabled := true
 	config := session.GlobalSearchSettings{
-		Enabled:        true,
+		Enabled:        &searchEnabled,
 		Tier:           "instant",
 		MemoryLimitMB:  100,
 		IndexRateLimit: 100,
@@ -760,8 +761,9 @@ func TestHomeGlobalSearchEscape(t *testing.T) {
 
 	// Create a mock index
 	tmpDir := t.TempDir()
+	searchEnabled := true
 	config := session.GlobalSearchSettings{
-		Enabled:        true,
+		Enabled:        &searchEnabled,
 		Tier:           "instant",
 		MemoryLimitMB:  100,
 		IndexRateLimit: 100,

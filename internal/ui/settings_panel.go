@@ -283,7 +283,7 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.removeOrphans = config.Logs.GetRemoveOrphans()
 
 	// Global search settings
-	s.globalSearchEnabled = config.GlobalSearch.Enabled
+	s.globalSearchEnabled = config.GlobalSearch.GetEnabled()
 	s.searchTier = 0 // auto by default
 	for i, val := range tierValues {
 		if val == config.GlobalSearch.Tier {
@@ -420,7 +420,8 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	config.Logs.RemoveOrphans = &removeOrphans
 
 	// Global search settings
-	config.GlobalSearch.Enabled = s.globalSearchEnabled
+	globalSearchEnabled := s.globalSearchEnabled
+	config.GlobalSearch.Enabled = &globalSearchEnabled
 	if s.searchTier >= 0 && s.searchTier < len(tierValues) {
 		config.GlobalSearch.Tier = tierValues[s.searchTier]
 	}

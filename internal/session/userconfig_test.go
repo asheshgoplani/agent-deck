@@ -456,7 +456,7 @@ index_rate_limit = 30
 		t.Fatalf("Failed to decode: %v", err)
 	}
 
-	if !config.GlobalSearch.Enabled {
+	if !config.GlobalSearch.GetEnabled() {
 		t.Error("Expected GlobalSearch.Enabled to be true")
 	}
 	if config.GlobalSearch.Tier != "auto" {
@@ -489,9 +489,9 @@ func TestGlobalSearchConfigDefaults(t *testing.T) {
 		t.Fatalf("Failed to decode: %v", err)
 	}
 
-	// When parsing directly without LoadUserConfig, values should be zero
-	if config.GlobalSearch.Enabled {
-		t.Error("GlobalSearch.Enabled should be false when not specified (zero value)")
+	// When parsing directly without LoadUserConfig, pointer should be nil
+	if config.GlobalSearch.Enabled != nil {
+		t.Error("GlobalSearch.Enabled should be nil when not specified")
 	}
 	if config.GlobalSearch.MemoryLimitMB != 0 {
 		t.Errorf("Expected default MemoryLimitMB 0 (zero value), got %d", config.GlobalSearch.MemoryLimitMB)
@@ -517,7 +517,7 @@ tier = "disabled"
 		t.Fatalf("Failed to decode: %v", err)
 	}
 
-	if config.GlobalSearch.Enabled {
+	if config.GlobalSearch.GetEnabled() {
 		t.Error("Expected GlobalSearch.Enabled to be false")
 	}
 	if config.GlobalSearch.Tier != "disabled" {
@@ -2427,5 +2427,62 @@ func TestSaveUserConfig_PreservesPointerFalse(t *testing.T) {
 	}
 	if *loaded.Claude.DangerousMode {
 		t.Fatal("DangerousMode should be *false, got *true")
+	}
+}
+
+func TestSaveUserConfig_PreservesDefaultTrueBoolsSetToFalse(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	explicitFalse := false
+	config := &UserConfig{
+		MCPPool: MCPPoolSettings{
+			Enabled:        true,
+			AutoStart:      &explicitFalse,
+			ShutdownOnExit: &explicitFalse,
+			FallbackStdio:  &explicitFalse,
+			ShowStatus:     &explicitFalse,
+		},
+		Logs: LogSettings{
+			DebugCompress: &explicitFalse,
+		},
+		GlobalSearch: GlobalSearchSettings{
+			Enabled: &explicitFalse,
+		},
+	}
+
+	if err := SaveUserConfig(config); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	ClearUserConfigCache()
+	loaded, err := LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig: %v", err)
+	}
+
+	if loaded.MCPPool.GetAutoStart() {
+		t.Error("MCPPool.AutoStart: expected false after round-trip, got true")
+	}
+	if loaded.MCPPool.GetShutdownOnExit() {
+		t.Error("MCPPool.ShutdownOnExit: expected false after round-trip, got true")
+	}
+	if loaded.MCPPool.GetFallbackStdio() {
+		t.Error("MCPPool.FallbackStdio: expected false after round-trip, got true")
+	}
+	if loaded.MCPPool.GetShowStatus() {
+		t.Error("MCPPool.ShowStatus: expected false after round-trip, got true")
+	}
+	if loaded.Logs.GetDebugCompress() {
+		t.Error("Logs.DebugCompress: expected false after round-trip, got true")
+	}
+	if loaded.GlobalSearch.GetEnabled() {
+		t.Error("GlobalSearch.Enabled: expected false after round-trip, got true")
 	}
 }

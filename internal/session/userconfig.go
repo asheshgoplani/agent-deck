@@ -620,7 +620,7 @@ type MCPPoolSettings struct {
 	Enabled bool `toml:"enabled,omitempty"`
 
 	// AutoStart starts pool when agent-deck launches (default: true)
-	AutoStart bool `toml:"auto_start,omitempty"`
+	AutoStart *bool `toml:"auto_start,omitempty"`
 
 	// PortStart is the first port in the pool range (default: 8001)
 	PortStart int `toml:"port_start,omitzero"`
@@ -632,17 +632,17 @@ type MCPPoolSettings struct {
 	StartOnDemand bool `toml:"start_on_demand,omitempty"`
 
 	// ShutdownOnExit stops HTTP servers when agent-deck quits (default: true)
-	ShutdownOnExit bool `toml:"shutdown_on_exit,omitempty"`
+	ShutdownOnExit *bool `toml:"shutdown_on_exit,omitempty"`
 
 	// PoolMCPs is the list of MCPs to run in pool mode
 	// Empty = auto-detect common MCPs (memory, exa, firecrawl, etc.)
 	PoolMCPs []string `toml:"pool_mcps,omitempty"`
 
 	// FallbackStdio uses stdio for MCPs without socket support (default: true)
-	FallbackStdio bool `toml:"fallback_to_stdio,omitempty"`
+	FallbackStdio *bool `toml:"fallback_to_stdio,omitempty"`
 
 	// ShowStatus shows pool status in TUI (default: true)
-	ShowStatus bool `toml:"show_pool_status,omitempty"`
+	ShowStatus *bool `toml:"show_pool_status,omitempty"`
 
 	// PoolAll pools all MCPs by default (default: false)
 	PoolAll bool `toml:"pool_all,omitempty"`
@@ -652,6 +652,34 @@ type MCPPoolSettings struct {
 
 	// SocketWaitTimeout is seconds to wait for socket to become ready (default: 5)
 	SocketWaitTimeout int `toml:"socket_wait_timeout,omitzero"`
+}
+
+func (p MCPPoolSettings) GetAutoStart() bool {
+	if p.AutoStart == nil {
+		return true
+	}
+	return *p.AutoStart
+}
+
+func (p MCPPoolSettings) GetShutdownOnExit() bool {
+	if p.ShutdownOnExit == nil {
+		return true
+	}
+	return *p.ShutdownOnExit
+}
+
+func (p MCPPoolSettings) GetFallbackStdio() bool {
+	if p.FallbackStdio == nil {
+		return true
+	}
+	return *p.FallbackStdio
+}
+
+func (p MCPPoolSettings) GetShowStatus() bool {
+	if p.ShowStatus == nil {
+		return true
+	}
+	return *p.ShowStatus
 }
 
 // LogSettings defines log file management configuration
@@ -690,7 +718,7 @@ type LogSettings struct {
 
 	// DebugCompress enables gzip compression for rotated debug logs
 	// Default: true
-	DebugCompress bool `toml:"debug_compress,omitempty"`
+	DebugCompress *bool `toml:"debug_compress,omitempty"`
 
 	// RingBufferMB is the in-memory ring buffer size in MB for crash dumps
 	// Default: 10
@@ -1491,8 +1519,8 @@ func (w *WorktreeSettings) ApplyBranchPrefix(branch string) string {
 
 // GlobalSearchSettings defines global conversation search configuration
 type GlobalSearchSettings struct {
-	// Enabled enables/disables global search feature (default: true when loaded via LoadUserConfig)
-	Enabled bool `toml:"enabled,omitempty"`
+	// Enabled enables/disables global search feature (default: true)
+	Enabled *bool `toml:"enabled,omitempty"`
 
 	// Tier controls search strategy: "auto", "instant", "balanced", "disabled"
 	// auto: Auto-detect based on data size (recommended)
@@ -1512,6 +1540,13 @@ type GlobalSearchSettings struct {
 	// IndexRateLimit limits files indexed per second during background indexing
 	// Lower = less CPU impact (default: 20)
 	IndexRateLimit int `toml:"index_rate_limit,omitzero"`
+}
+
+func (g GlobalSearchSettings) GetEnabled() bool {
+	if g.Enabled == nil {
+		return true
+	}
+	return *g.Enabled
 }
 
 // ToolDef defines a custom AI tool
@@ -2975,6 +3010,13 @@ func (l LogSettings) GetRemoveOrphans() bool {
 		return true
 	}
 	return *l.RemoveOrphans
+}
+
+func (l LogSettings) GetDebugCompress() bool {
+	if l.DebugCompress == nil {
+		return true
+	}
+	return *l.DebugCompress
 }
 
 // GetLogSettings returns log management settings with defaults applied

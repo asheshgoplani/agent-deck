@@ -78,7 +78,7 @@ func TestSettingsPanel_LoadConfig(t *testing.T) {
 			RemoveOrphans: boolPtr(false),
 		},
 		GlobalSearch: session.GlobalSearchSettings{
-			Enabled:    true,
+			Enabled:    boolPtr(true),
 			Tier:       "instant",
 			RecentDays: 60,
 		},
@@ -285,8 +285,8 @@ func TestSettingsPanel_GetConfig(t *testing.T) {
 	if config.Logs.RemoveOrphans == nil || *config.Logs.RemoveOrphans {
 		t.Error("RemoveOrphans should be *false")
 	}
-	if !config.GlobalSearch.Enabled {
-		t.Error("GlobalSearch.Enabled should be true")
+	if config.GlobalSearch.Enabled == nil || !*config.GlobalSearch.Enabled {
+		t.Error("GlobalSearch.Enabled should be *true")
 	}
 	if config.GlobalSearch.Tier != "balanced" {
 		t.Errorf("Tier: got %q, want %q", config.GlobalSearch.Tier, "balanced")

@@ -109,7 +109,7 @@ func tryPoolSocket(pool *mcppool.Pool, name, scope string) (MCPServerConfig, boo
 					Args:    []string{"mcp-proxy", socketPath},
 				}, true
 			}
-			if !config.MCPPool.FallbackStdio {
+			if !config.MCPPool.GetFallbackStdio() {
 				mcpCatLog.Error("socket_not_found_no_fallback", slog.String("mcp", name), slog.String("scope", scope))
 				return MCPServerConfig{}, false
 			}

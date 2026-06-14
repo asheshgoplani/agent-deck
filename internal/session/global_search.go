@@ -514,7 +514,7 @@ type FileTracker struct {
 
 // NewGlobalSearchIndex creates a new search index
 func NewGlobalSearchIndex(claudeDir string, config GlobalSearchSettings) (*GlobalSearchIndex, error) {
-	if !config.Enabled {
+	if !config.GetEnabled() {
 		return nil, nil
 	}
 

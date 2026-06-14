@@ -531,9 +531,7 @@ func main() {
 			if ls.DebugRetentionDays > 0 {
 				logCfg.MaxAgeDays = ls.DebugRetentionDays
 			}
-			if ls.DebugCompress {
-				logCfg.Compress = ls.DebugCompress
-			}
+			logCfg.Compress = ls.GetDebugCompress()
 			if ls.RingBufferMB > 0 {
 				logCfg.RingBufferSize = ls.RingBufferMB * 1024 * 1024
 			}

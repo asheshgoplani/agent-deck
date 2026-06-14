@@ -310,6 +310,8 @@ func TestGetHeartbeatInterval(t *testing.T) {
 	}{
 		{"nil means disabled", nil, 0},
 		{"zero means disabled", intPtr(0), 0},
+		{"negative means default 15", intPtr(-1), 15},
+		{"setup default 15", intPtr(15), 15},
 		{"custom 10", intPtr(10), 10},
 		{"custom 30", intPtr(30), 30},
 	}

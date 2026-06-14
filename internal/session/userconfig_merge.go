@@ -61,7 +61,9 @@ func MergePanelConfigOntoDisk(panel *UserConfig) (*UserConfig, error) {
 	}
 
 	// ── GlobalSearch ───────────────────────────────────────────────────
-	merged.GlobalSearch.Enabled = panel.GlobalSearch.Enabled
+	if panel.GlobalSearch.Enabled != nil {
+		merged.GlobalSearch.Enabled = panel.GlobalSearch.Enabled
+	}
 	merged.GlobalSearch.Tier = panel.GlobalSearch.Tier
 	merged.GlobalSearch.RecentDays = panel.GlobalSearch.RecentDays
 

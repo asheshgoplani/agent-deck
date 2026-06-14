@@ -176,7 +176,7 @@ func TestGlobalSearchIndexInstantTier(t *testing.T) {
 
 	// Create index
 	config := GlobalSearchSettings{
-		Enabled:        true,
+		Enabled:        boolPtr(true),
 		Tier:           "auto",
 		MemoryLimitMB:  100,
 		RecentDays:     0, // All sessions
@@ -221,7 +221,7 @@ func TestGlobalSearchIndexFuzzyMatch(t *testing.T) {
 	jsonl := `{"sessionId":"c3d4e5f6-a7b8-9012-cdef-345678901234","type":"user","message":{"role":"user","content":"authentication system implementation"}}`
 	_ = os.WriteFile(filepath.Join(projectDir, "c3d4e5f6-a7b8-9012-cdef-345678901234.jsonl"), []byte(jsonl), 0644)
 
-	config := GlobalSearchSettings{Enabled: true, Tier: "auto", MemoryLimitMB: 100, IndexRateLimit: 100}
+	config := GlobalSearchSettings{Enabled: boolPtr(true), Tier: "auto", MemoryLimitMB: 100, IndexRateLimit: 100}
 	index, err := NewGlobalSearchIndex(tmpDir, config)
 	if err != nil {
 		t.Fatalf("Failed to create index: %v", err)
@@ -237,7 +237,7 @@ func TestGlobalSearchIndexFuzzyMatch(t *testing.T) {
 }
 
 func TestGlobalSearchIndexDisabled(t *testing.T) {
-	config := GlobalSearchSettings{Enabled: false}
+	config := GlobalSearchSettings{Enabled: boolPtr(false)}
 	index, err := NewGlobalSearchIndex("/tmp", config)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -252,7 +252,7 @@ func TestGlobalSearchIndexEmptyQuery(t *testing.T) {
 	projectDir := filepath.Join(tmpDir, "projects", "-Users-test-project")
 	_ = os.MkdirAll(projectDir, 0755)
 
-	config := GlobalSearchSettings{Enabled: true, Tier: "auto", MemoryLimitMB: 100, IndexRateLimit: 100}
+	config := GlobalSearchSettings{Enabled: boolPtr(true), Tier: "auto", MemoryLimitMB: 100, IndexRateLimit: 100}
 	index, _ := NewGlobalSearchIndex(tmpDir, config)
 	if index == nil {
 		t.Fatal("Index should not be nil")
@@ -279,7 +279,7 @@ func TestGlobalSearchIndexBalancedTier(t *testing.T) {
 
 	// Force balanced tier
 	config := GlobalSearchSettings{
-		Enabled:        true,
+		Enabled:        boolPtr(true),
 		Tier:           "balanced",
 		MemoryLimitMB:  1, // Very low limit
 		RecentDays:     0,
@@ -317,7 +317,7 @@ func TestGlobalSearchIndexTierAutoDetect(t *testing.T) {
 
 	// Small dataset should auto-detect as instant
 	config := GlobalSearchSettings{
-		Enabled:        true,
+		Enabled:        boolPtr(true),
 		Tier:           "auto",
 		MemoryLimitMB:  100,
 		IndexRateLimit: 100,
