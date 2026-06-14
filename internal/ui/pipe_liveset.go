@@ -45,6 +45,9 @@ func (s *pipeLiveSet) touch(name string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Filter in-place: out shares lru's backing array. Safe because we skip at
+	// most one element (the existing copy of name), so the write index never
+	// overtakes the read index.
 	out := s.lru[:0]
 	for _, n := range s.lru {
 		if n != name {

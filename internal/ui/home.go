@@ -2237,6 +2237,10 @@ func (h *Home) getAttachedSessionID() string {
 
 // getAttachedSessionName returns the tmux session name of the currently
 // attached agentdeck session (the name, not the instance ID), or "".
+// NOTE: GetAttachedSessions only queries the default tmux socket, so a session
+// living on an isolated agent-deck socket won't be detected as attached here.
+// Such a session is still kept live once focused (via the LRU), so the only
+// effect is the attached-pin guarantee not applying to non-default sockets.
 func (h *Home) getAttachedSessionName() string {
 	attached, err := tmux.GetAttachedSessions()
 	if err != nil || len(attached) == 0 {
@@ -5919,7 +5923,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.lastCachePrune = time.Now()
 			h.pruneAnalyticsCache()
 
-			// Prune dead pipes and connect new sessions
+			// Fallback safety net for live-set pipes that died between reconciler
+			// ticks. The reconciler (livePipeReconciler) is the primary path that
+			// connects focused/attached sessions; this only reconnects wanted
+			// sessions whose pipe dropped.
 			if pm := tmux.GetPipeManager(); pm != nil {
 				h.instancesMu.RLock()
 				for _, inst := range h.instances {
