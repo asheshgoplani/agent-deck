@@ -169,8 +169,11 @@ func (d *CodeBlockDialog) Hide() {
 	d.sessionTitle = ""
 }
 
-// IsVisible reports whether the dialog is shown.
-func (d *CodeBlockDialog) IsVisible() bool { return d.visible }
+// IsVisible reports whether the dialog is shown. Nil-safe: partially
+// constructed Home values in tests (and any future construction path that does
+// not initialize this dialog) call this from updateInner's key dispatch, so a
+// nil receiver must report "not visible" rather than panic.
+func (d *CodeBlockDialog) IsVisible() bool { return d != nil && d.visible }
 
 // SetSize updates the dialog dimensions for centering.
 func (d *CodeBlockDialog) SetSize(w, h int) {

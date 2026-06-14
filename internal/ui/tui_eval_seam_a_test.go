@@ -105,6 +105,7 @@ func newSeamATestHome() *Home {
 		analyticsPanel:       NewAnalyticsPanel(),
 		geminiModelDialog:    NewGeminiModelDialog(),
 		sessionPickerDialog:  NewSessionPickerDialog(),
+		codeBlockDialog:      NewCodeBlockDialog(),
 		worktreeFinishDialog: NewWorktreeFinishDialog(),
 		feedbackDialog:       NewFeedbackDialog(),
 		zoxidePicker:         NewZoxidePicker(),
