@@ -21,7 +21,7 @@ import (
 // Falls back to subprocess execution when pipes are unavailable.
 type PipeManager struct {
 	pipes map[string]*ControlPipe // sessionName -> pipe
-	mu    sync.RWMutex
+	mu    sync.RWMutex            // protects pipes and wantPipe
 
 	// Callback for output events (invoked when %output detected from a session)
 	onOutput func(sessionName string)
@@ -413,6 +413,14 @@ func shouldConcludeSessionGone(probeFoundSession bool, attempt, maxRetries int) 
 	return attempt >= maxRetries-1
 }
 
+// wantsReconnect reports whether a dead pipe for sessionName should be
+// reconnected. nil predicate => yes (legacy). A false result means the session
+// fell out of the live set (intentional Disconnect, or a background pipe died)
+// and must stay gone.
+func wantsReconnect(wantPipe func(string) bool, sessionName string) bool {
+	return wantPipe == nil || wantPipe(sessionName)
+}
+
 // watchPipe monitors a pipe and attempts reconnection when it dies.
 // Uses exponential backoff: 2s, 4s, 8s, 16s, 30s max.
 // Stops retrying if the tmux session no longer exists.
@@ -425,6 +433,19 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 	}
 
 	pipeLog.Debug("pipe_died_scheduling_reconnect", slog.String("session", sessionName))
+
+	// If the session is no longer wanted (intentional Disconnect, or a
+	// background pipe that died), do not resurrect it.
+	pm.mu.RLock()
+	wantFn := pm.wantPipe
+	pm.mu.RUnlock()
+	if !wantsReconnect(wantFn, sessionName) {
+		pipeLog.Debug("pipe_not_wanted_skipping_reconnect", slog.String("session", sessionName))
+		pm.mu.Lock()
+		delete(pm.pipes, sessionName)
+		pm.mu.Unlock()
+		return
+	}
 
 	// Check if already reconnecting
 	pm.reconnectMu.Lock()

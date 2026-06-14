@@ -61,3 +61,16 @@ func TestPipeManager_NilWantPipeConnectsAll(t *testing.T) {
 		t.Fatal("with nil wantPipe, connect must work as before")
 	}
 }
+
+func TestWantsReconnect(t *testing.T) {
+	if !wantsReconnect(nil, "x") {
+		t.Fatal("nil predicate must allow reconnect (legacy)")
+	}
+	allow := func(n string) bool { return n == "keep" }
+	if !wantsReconnect(allow, "keep") {
+		t.Fatal("wanted session should reconnect")
+	}
+	if wantsReconnect(allow, "drop") {
+		t.Fatal("unwanted session must not reconnect")
+	}
+}
