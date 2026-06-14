@@ -48,6 +48,14 @@ test.describe('P0 bug regression baselines', () => {
   test('WEB-P0-2: current profile indicator shown at 1280x800', async ({ page }) => {
     await freezeClock(page);
     await mockEndpoints(page);
+    // Override /api/profiles with a distinctive `current` that is NOT a UI
+    // fallback ('default' / first-in-list), so the assertion proves the value
+    // flowed from /api/profiles rather than a hardcoded default (Topbar.js:
+    // `profileSignal.value || p.current || list[0]`). Registered after
+    // mockEndpoints so Playwright's last-registered route wins.
+    await page.route('**/api/profiles*', r => r.fulfill({
+      json: { current: 'ci-active-profile', profiles: ['default', 'ci-active-profile', 'work'] },
+    }));
     await page.goto('/?token=test');
     await prepareForScreenshot(page);
     // Topbar.js renders the current profile as a read-only span only after
@@ -55,8 +63,9 @@ test.describe('P0 bug regression baselines', () => {
     // interactive <select> — there is no web profile-switch endpoint.
     const profile = page.locator('.top-right .icon-btn[title^="Active profile"]');
     await expect(profile).toBeVisible();
-    // FIXTURE_PROFILES.current === 'default'
-    await expect(profile).toHaveText('default');
+    // Must equal the fixture's `current`, not 'default'/first-in-list: this
+    // catches a broken /api/profiles -> indicator binding (codex review #1444).
+    await expect(profile).toHaveText('ci-active-profile');
     const masks = await getDynamicContentMasks(page);
     await expect(page).toHaveScreenshot('profile-indicator-1280x800.png', { mask: masks });
   });
