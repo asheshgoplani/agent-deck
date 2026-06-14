@@ -269,6 +269,11 @@ func handleRemoteSessions(args []string) {
 		return
 	}
 
+	// #1421: sweep orphaned SSH ControlMaster sockets first so a stale socket
+	// (master died on a remote update / network drop) doesn't hang this command
+	// forever on the ControlMaster=auto reuse.
+	session.CleanStaleSSHSockets()
+
 	// Filter to specific remote if name provided
 	remoteName := ""
 	if len(fs.Args()) > 0 {

@@ -2546,6 +2546,13 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 		return remoteSessionsFetchedMsg{sessions: nil}
 	}
 
+	// #1421: sweep orphaned SSH ControlMaster sockets before fetching. A stale
+	// socket (master died on a remote update / network drop) makes the next
+	// ControlMaster=auto connect hang forever — ConnectTimeout does not bound
+	// the Unix-socket dial — which would block this whole periodic fetch and
+	// make every remote session vanish until the TUI restarts.
+	session.CleanStaleSSHSockets()
+
 	results := make(map[string][]session.RemoteSessionInfo, len(config.Remotes))
 	// #1101: remote cost summaries piggy-back on the existing remote-fetch
 	// channel so the status-line cost segment doesn't lag behind the session
