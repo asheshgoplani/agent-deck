@@ -209,12 +209,15 @@ type Home struct {
 	profile string // The profile this Home is displaying
 
 	// Data (protected by instancesMu for background worker access)
-	instances    []*session.Instance
-	instanceByID map[string]*session.Instance // O(1) instance lookup by ID
-	instancesMu  sync.RWMutex                 // Protects instances slice for thread-safe background access
-	storage      *session.Storage
-	groupTree    *session.GroupTree
-	flatItems    []session.Item // Flattened view for cursor navigation
+	instances          []*session.Instance
+	instanceByID       map[string]*session.Instance // O(1) instance lookup by ID
+	instancesMu        sync.RWMutex                 // Protects instances slice for thread-safe background access
+	storage            *session.Storage
+	groupTree          *session.GroupTree
+	flatItems          []session.Item // Flattened view for cursor navigation
+	liveSet            *pipeLiveSet   // sessions that should hold a live control pipe
+	focusedSessionName string         // tmux name of the cursor-selected session (focusMu)
+	focusMu            sync.Mutex     // protects focusedSessionName for the reconciler goroutine
 
 	// headless is true when running `web --no-tui`: no bubbletea loop ever
 	// boots, so the in-memory instances/groupTree are never populated by the
@@ -1216,6 +1219,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// This is unconditional — the status-right always shows the detach hint
 	_ = tmux.BindMouseStatusRightDetach()
 
+	h.liveSet = newPipeLiveSet(livePipeLRUCapacity)
+
 	// Initialize event-driven status detection
 	// Output callback: invoked when PipeManager detects %output from a session
 	outputCallback := func(sessionName string) {
@@ -1251,25 +1256,14 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 
 	tmux.SetPipeManager(pm)
 
-	// Connect pipes for all existing running sessions in background
-	safego.Go(pipeUILog, "startup_pipe_connect", func() {
-		time.Sleep(500 * time.Millisecond) // Let TUI render first
-		h.instancesMu.RLock()
-		instances := make([]*session.Instance, len(h.instances))
-		copy(instances, h.instances)
-		h.instancesMu.RUnlock()
+	// Only the focused / attached / recently-viewed sessions hold a live pipe.
+	pm.SetWantPipe(func(name string) bool { return h.liveSet.want(name) })
 
-		for _, inst := range instances {
-			if ts := inst.GetTmuxSession(); ts != nil && ts.Exists() {
-				if err := pm.Connect(ts.Name, inst.TmuxSocketName); err != nil {
-					pipeUILog.Debug("startup_pipe_connect_failed",
-						slog.String("session", ts.Name),
-						slog.String("error", err.Error()))
-				}
-			}
-		}
-		pipeUILog.Debug("startup_pipes_connected", slog.Int("count", pm.ConnectedCount()))
-	})
+	// Live pipes are managed lazily by the reconciler: it connects the focused/
+	// attached session (and a few recent ones) and lets everything else ride the
+	// 2s status poll. This replaces the old "connect every session at startup"
+	// burst that opened ~N pipes at once and triggered attach-storm freezes.
+	go h.livePipeReconciler()
 
 	// Start background status worker (Priority 1C)
 	go h.statusWorker()
@@ -2239,6 +2233,85 @@ func (h *Home) getAttachedSessionID() string {
 		}
 	}
 	return ""
+}
+
+// getAttachedSessionName returns the tmux session name of the currently
+// attached agentdeck session (the name, not the instance ID), or "".
+func (h *Home) getAttachedSessionName() string {
+	attached, err := tmux.GetAttachedSessions()
+	if err != nil || len(attached) == 0 {
+		return ""
+	}
+	h.instancesMu.RLock()
+	defer h.instancesMu.RUnlock()
+	for _, sessName := range attached {
+		for _, inst := range h.instances {
+			if ts := inst.GetTmuxSession(); ts != nil && ts.Name == sessName {
+				return ts.Name
+			}
+		}
+	}
+	return ""
+}
+
+// socketForSession returns the tmux -L socket selector for a session name, or
+// "" (default server) if unknown.
+func (h *Home) socketForSession(name string) string {
+	h.instancesMu.RLock()
+	defer h.instancesMu.RUnlock()
+	for _, inst := range h.instances {
+		if ts := inst.GetTmuxSession(); ts != nil && ts.Name == name {
+			return inst.TmuxSocketName
+		}
+	}
+	return ""
+}
+
+// recordFocusedSession snapshots the cursor-selected session name for the
+// reconciler goroutine. Must run on the main (Update) goroutine — getSelected-
+// Session reads h.cursor/h.flatItems without a lock.
+func (h *Home) recordFocusedSession() {
+	name := ""
+	if s := h.getSelectedSession(); s != nil {
+		if ts := s.GetTmuxSession(); ts != nil {
+			name = ts.Name
+		}
+	}
+	h.focusMu.Lock()
+	h.focusedSessionName = name
+	h.focusMu.Unlock()
+}
+
+// reconcileLivePipes refreshes the live set from the current focus + attach and
+// syncs the PipeManager's pipes to match.
+func (h *Home) reconcileLivePipes() {
+	pm := tmux.GetPipeManager()
+	if pm == nil {
+		return
+	}
+	h.focusMu.Lock()
+	focused := h.focusedSessionName
+	h.focusMu.Unlock()
+
+	h.liveSet.touch(focused)
+	h.liveSet.setAttached(h.getAttachedSessionName())
+
+	reconcilePipes(pm, h.liveSet.members(), h.socketForSession)
+}
+
+// livePipeReconciler periodically reconciles live pipes. The tick interval
+// doubles as the focus debounce. Runs until h.ctx is cancelled (TUI exit).
+func (h *Home) livePipeReconciler() {
+	ticker := time.NewTicker(livePipeReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case <-ticker.C:
+			h.reconcileLivePipes()
+		}
+	}
 }
 
 // NOTE: updateTmuxNotifications (foreground) was removed in v0.9.2 as a CPU optimization.
@@ -4266,6 +4339,7 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 // clears (issue #607). Under the default (full_repaint = false) this wrapper
 // is a pass-through — no regression for users who never opt in.
 func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	defer h.recordFocusedSession()
 	model, cmd := h.updateInner(msg)
 	if !h.fullRepaint {
 		return model, cmd
@@ -5850,7 +5924,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.instancesMu.RLock()
 				for _, inst := range h.instances {
 					if ts := inst.GetTmuxSession(); ts != nil && ts.Exists() {
-						if !pm.IsConnected(ts.Name) {
+						if h.liveSet.want(ts.Name) && !pm.IsConnected(ts.Name) {
 							go func(name, socket string) {
 								_ = pm.Connect(name, socket)
 							}(ts.Name, inst.TmuxSocketName)
