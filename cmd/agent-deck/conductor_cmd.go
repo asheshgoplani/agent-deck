@@ -271,8 +271,11 @@ func handleConductorSetup(profile string, args []string) {
 		}
 	}
 
-	// Step 2: If conductor system not enabled, run first-time setup
-	if !settings.Enabled {
+	// Step 2: If no conductors exist yet, run first-time channel setup.
+	// "Enabled" is no longer a config flag (#1361); the conductor system is
+	// active whenever a conductor exists on disk. First-time setup is therefore
+	// gated on "no conductors yet" rather than a stored flag.
+	if !session.ConductorSystemActive() {
 		fmt.Println("Conductor Setup")
 		fmt.Println("===============")
 		fmt.Println()
@@ -414,10 +417,11 @@ func handleConductorSetup(profile string, args []string) {
 			discordConfigured = true
 		}
 
-		// Update config (no longer stores profiles list, conductors are on disk)
+		// Update config (no longer stores profiles list or an enabled flag;
+		// conductors are discovered on disk and enabled-state is derived from
+		// their presence — #1361). Channel tokens are still legitimate config.
 		heartbeatDefault := 15
 		settings = session.ConductorSettings{
-			Enabled:           true,
 			HeartbeatInterval: &heartbeatDefault,
 			Telegram:          telegram,
 			Slack:             slack,
@@ -910,8 +914,11 @@ func handleConductorStatus(_ string, args []string) {
 	// when conductors are globally disabled in config.
 	runAutoMigration(*jsonOutput)
 
-	settings := session.GetConductorSettings()
-	if !settings.Enabled {
+	// Enabled-state is derived from conductor presence (#1361), not a config
+	// flag. When no conductors exist, report disabled exactly as before so the
+	// generated heartbeat.sh (which greps for `"enabled".*true`) and any other
+	// consumers keep the same byte-stable contract.
+	if !session.ConductorSystemActive() {
 		if *jsonOutput {
 			fmt.Println(`{"enabled": false}`)
 		} else {

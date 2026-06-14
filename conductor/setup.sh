@@ -105,7 +105,8 @@ else
 # sessions per profile, auto-respond when possible, and escalate via Telegram.
 
 [conductor]
-enabled = true
+# The conductor system is active whenever a conductor exists on disk; there is
+# no longer an `enabled` flag (#1361).
 heartbeat_interval = 15
 profiles = ["default", "work"]
 
