@@ -698,6 +698,21 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 		}
 	}
 
+	// Write the conductor's .claude/settings.json permission allowlist (#1358).
+	// Claude-only (codex/hermes don't use this file). Auto-allows read-only and
+	// safe CLI commands plus scoped data-file writes so the conductor's heartbeat
+	// read loop doesn't drown the user in permission prompts, while keeping
+	// lifecycle/mutating commands and executable/config writes behind prompts.
+	// Non-fatal: setup still succeeds if this fails.
+	if spec.Agent == ConductorAgentClaude {
+		if err := writeConductorClaudeSettingsAt(dir); err != nil {
+			sessionLog.Warn("conductor_claude_settings_failed",
+				slog.String("conductor", name),
+				slog.String("dir", dir),
+				slog.String("error", err.Error()))
+		}
+	}
+
 	return nil
 }
 
