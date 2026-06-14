@@ -69,8 +69,7 @@ Commands accept: **exact title**, **ID prefix** (e.g., first 4 chars), **path**,
 
 ## Heartbeat Protocol
 
-**Note:** Heartbeats are configured during setup.
-In local-only mode (no remote channels), heartbeats may not be active — the user monitors session status directly in the TUI.
+**Note:** Heartbeats are configured during setup and enabled by default for all conductors.
 
 Every N minutes, the bridge sends you a message like:
 

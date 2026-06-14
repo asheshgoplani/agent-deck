@@ -115,7 +115,7 @@ func handleConductorSetup(profile string, args []string) {
 	agent := fs.String("agent", session.ConductorAgentClaude, "Conductor agent runtime (claude or codex)")
 	noClearOnCompact := fs.Bool("no-clear-on-compact", false, "Claude-only: allow normal compaction instead of /clear when context fills up")
 	description := fs.String("description", "", "Description for this conductor")
-	heartbeat := fs.Bool("heartbeat", false, "Force-enable heartbeat even without remote channels")
+	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
 	noHeartbeat := fs.Bool("no-heartbeat", false, "Disable heartbeat for this conductor")
 	heartbeatIdleMinutes := fs.Int("heartbeat-idle-minutes", 0, "Minutes of idle time before pausing heartbeats (default 0=disabled, negative also disabled)")
 	instructionsMD := fs.String("instructions-md", "", "Custom instructions file for this conductor (agent-specific, e.g., ~/docs/conductor-ops.md)")
@@ -145,7 +145,7 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("  -description string")
 		fmt.Println("        Description for this conductor")
 		fmt.Println("  -heartbeat")
-		fmt.Println("        Force-enable heartbeat even without remote channels")
+		fmt.Println("        Enable heartbeat for this conductor (default)")
 		fmt.Println("  -no-heartbeat")
 		fmt.Println("        Disable heartbeat for this conductor")
 		fmt.Println("  -heartbeat-idle-minutes int")
@@ -231,14 +231,8 @@ func handleConductorSetup(profile string, args []string) {
 	// Auto-migrate legacy conductors
 	runAutoMigration(*jsonOutput)
 
-	// Determine heartbeat setting
-	// --heartbeat forces heartbeat even without channels;
-	// --heartbeat-idle-minutes implies the same intent
-	heartbeatExplicit := *heartbeat || *heartbeatIdleMinutes > 0
-	heartbeatEnabled := true
-	if *noHeartbeat {
-		heartbeatEnabled = false
-	}
+	// Determine heartbeat setting (on by default; --no-heartbeat disables, --heartbeat re-confirms)
+	heartbeatEnabled := !*noHeartbeat || *heartbeat
 
 	// Step 1: Load config and check if conductor system is enabled
 	config, err := session.LoadUserConfig()
@@ -490,12 +484,6 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("[ok] Shared LEARNINGS.md installed")
 	}
 
-	// Heartbeat only takes effect when remote channels are configured or explicitly forced
-	channelsConfigured := telegramConfigured || slackConfigured || discordConfigured
-	if heartbeatEnabled && !channelsConfigured && !heartbeatExplicit {
-		heartbeatEnabled = false
-	}
-
 	// Step 4: Set up the named conductor
 	if !*jsonOutput {
 		fmt.Printf("\nSetting up conductor: %s (profile: %s)\n", name, resolvedProfile)
@@ -595,8 +583,6 @@ func handleConductorSetup(profile string, args []string) {
 				fmt.Printf("  [ok] Heartbeat timer installed (every %d min)\n", interval)
 			}
 		}
-	} else if !channelsConfigured && !*noHeartbeat && !*jsonOutput {
-		fmt.Println("  [skip] Heartbeat skipped (no remote channels configured; pass --heartbeat to force)")
 	}
 
 	// Step 7: Install bridge (if Telegram, Slack, or Discord is configured)
