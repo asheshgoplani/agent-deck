@@ -117,3 +117,23 @@ func TestIssue1431_ExplicitModelBeatsDefault(t *testing.T) {
 		t.Fatalf("default_model wrongly overrode explicit per-session model:\n%s", cmd)
 	}
 }
+
+// Guard: when the operator supplies --model through --extra-arg (the form the
+// ValidateClaudeExtraArgToken error message recommends), the default_model
+// fallback must NOT also inject a second --model. claude is last-wins so the
+// duplicate is harmless, but the command must carry exactly one --model and it
+// must be the user's, not the default.
+func TestIssue1431_ExtraArgModelSuppressesDefault(t *testing.T) {
+	issue1431ConfigEnv(t, "claude-opus-4-8")
+
+	inst := NewInstanceWithTool("dm-extraarg", t.TempDir(), "claude")
+	inst.ExtraArgs = []string{"--model", "claude-haiku-4-5"}
+
+	cmd := inst.buildClaudeCommand("claude")
+	if strings.Contains(cmd, "claude-opus-4-8") {
+		t.Fatalf("default_model injected alongside user --extra-arg --model:\n%s", cmd)
+	}
+	if strings.Count(cmd, "--model") != 1 {
+		t.Fatalf("expected exactly one --model, got %d:\n%s", strings.Count(cmd, "--model"), cmd)
+	}
+}

@@ -1066,6 +1066,20 @@ func ValidateClaudeExtraArgToken(token string) error {
 	return nil
 }
 
+// extraArgsSupplyModel reports whether the persisted --extra-arg tokens already
+// carry a `--model` override. ValidateClaudeExtraArgToken forces flag and value
+// into separate tokens, so a user-supplied model appears as a bare "--model"
+// (or "--model=..." form) token. When present we must NOT also inject
+// [claude].default_model, or the launch command would carry two --model flags.
+func extraArgsSupplyModel(extraArgs []string) bool {
+	for _, tok := range extraArgs {
+		if tok == "--model" || strings.HasPrefix(tok, "--model=") {
+			return true
+		}
+	}
+	return false
+}
+
 // buildClaudeExtraFlags builds extra command-line flags string from ClaudeOptions
 // Also handles instance-level flags like --add-dir for subagent access
 func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
@@ -1108,17 +1122,28 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	// registry still showed it running. Because every start/restart/resume
 	// command delegates flag assembly here, this single point keeps them all
 	// in lockstep.
-	launchModel := ""
-	if opts != nil {
-		launchModel = opts.Model
-	}
-	if launchModel == "" {
-		if cfg, _ := LoadUserConfig(); cfg != nil {
-			launchModel = cfg.Claude.DefaultModel
+	// A user-supplied --model via --extra-arg (the form the
+	// ValidateClaudeExtraArgToken error message recommends) is an explicit
+	// override that must stand alone: the extra-arg tokens are appended verbatim
+	// below, so emitting any resolved --model here too would produce a duplicate
+	// --model on the command line. claude is last-wins so it would be harmless,
+	// but it is confusing and the operator's intent is unambiguous. Suppress the
+	// resolved model entirely (whether it came from opts.Model, the
+	// NewClaudeOptions default, or [claude].default_model) when extra-args carry
+	// their own.
+	if !extraArgsSupplyModel(i.ExtraArgs) {
+		launchModel := ""
+		if opts != nil {
+			launchModel = opts.Model
 		}
-	}
-	if launchModel != "" {
-		flags = append(flags, "--model "+shellescape.Quote(launchModel))
+		if launchModel == "" {
+			if cfg, _ := LoadUserConfig(); cfg != nil {
+				launchModel = cfg.Claude.DefaultModel
+			}
+		}
+		if launchModel != "" {
+			flags = append(flags, "--model "+shellescape.Quote(launchModel))
+		}
 	}
 
 	// Options-level flags
