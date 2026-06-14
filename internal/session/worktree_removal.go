@@ -108,5 +108,14 @@ func canonicalPath(p string) string {
 	if resolved, err := filepath.EvalSymlinks(p); err == nil {
 		return filepath.Clean(resolved)
 	}
+	// EvalSymlinks failed (e.g. the path no longer exists, or a broken/
+	// inaccessible symlink alias). Fall back to an absolute lexical clean so a
+	// relative vs absolute spelling of the same path still compares equal. For
+	// the shared-worktree check this matters: a false negative here would let a
+	// still-shared worktree reach destructive cleanup, so normalize before the
+	// lexical compare rather than trusting the raw input.
+	if abs, err := filepath.Abs(p); err == nil {
+		return filepath.Clean(abs)
+	}
 	return filepath.Clean(p)
 }
