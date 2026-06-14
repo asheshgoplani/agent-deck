@@ -216,6 +216,13 @@ type Home struct {
 	groupTree    *session.GroupTree
 	flatItems    []session.Item // Flattened view for cursor navigation
 
+	// headless is true when running `web --no-tui`: no bubbletea loop ever
+	// boots, so the in-memory instances/groupTree are never populated by the
+	// TUI's loadSessions cycle. The WebMutator hydrates them from storage on
+	// each mutation instead (#1397). In live-TUI mode this stays false and the
+	// bubbletea loop owns this state.
+	headless bool
+
 	// Components
 	search               *Search
 	globalSearch         *GlobalSearch              // Global session search across all Claude conversations
@@ -2703,6 +2710,50 @@ func (h *Home) loadSessions() tea.Msg {
 	}
 
 	return msg
+}
+
+// SetHeadless marks this Home as backing a headless (`web --no-tui`) server.
+// In headless mode no bubbletea loop runs, so the WebMutator must hydrate the
+// in-memory registry from storage on each mutation (#1397).
+func (h *Home) SetHeadless(v bool) { h.headless = v }
+
+// IsHeadless reports whether this Home backs a headless web server.
+func (h *Home) IsHeadless() bool { return h.headless }
+
+// HydrateInstancesFromStorage reloads the in-memory instances, instanceByID
+// map, and groupTree from storage. It is the headless-mode equivalent of the
+// loadSessions/loadSessionsMsg cycle that the bubbletea loop runs in TUI mode:
+// without a running TUI, h.instances stays empty and every WebMutator lookup
+// fails with "session not found" while persistAllInstances ([]) trips the
+// empty-sweep guard (#1397). Safe to call repeatedly; it picks up out-of-band
+// changes (e.g. a concurrent CLI `add`/`rm`) so each web mutation operates on
+// the current registry.
+//
+// No-op (returns nil) when storage is unavailable so the caller can proceed
+// with whatever it already has rather than panicking.
+func (h *Home) HydrateInstancesFromStorage() error {
+	if h.storage == nil {
+		return nil
+	}
+	instances, groups, err := h.storage.LoadWithGroups()
+	if err != nil {
+		return fmt.Errorf("hydrate instances from storage: %w", err)
+	}
+
+	h.instancesMu.Lock()
+	h.instances = instances
+	h.instanceByID = make(map[string]*session.Instance, len(instances))
+	for _, inst := range instances {
+		h.instanceByID[inst.ID] = inst
+	}
+	h.instancesMu.Unlock()
+
+	if len(groups) > 0 {
+		h.groupTree = session.NewGroupTreeWithGroups(instances, groups)
+	} else {
+		h.groupTree = session.NewGroupTree(instances)
+	}
+	return nil
 }
 
 // tick returns a command that sends a tick message at regular intervals

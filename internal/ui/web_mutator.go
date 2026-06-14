@@ -31,6 +31,14 @@ type WebMutator struct {
 	undoMu     sync.Mutex
 	undoStack  []webDeletedEntry
 	undoWindow time.Duration
+
+	// headlessTxMu serializes the full hydrate -> mutate -> persist transaction
+	// in headless (`web --no-tui`) mode (#1397). Without it, two concurrent HTTP
+	// handlers could each hydrate (replacing h.instances/instanceByID/groupTree),
+	// mutate a now-detached snapshot, and persist over each other — a lost
+	// update. Only contended in headless mode; in live-TUI mode the Tea loop
+	// owns that state and the mutator never hydrates, so this is uncontended.
+	headlessTxMu sync.Mutex
 }
 
 type webDeletedEntry struct {
@@ -51,8 +59,45 @@ func (m *WebMutator) WithUndoWindow(d time.Duration) *WebMutator {
 	return m
 }
 
+// beginHeadlessTx serializes and hydrates a headless mutation (#1397). It
+// returns an unlock function the caller MUST defer.
+//
+// In `web --no-tui` mode no bubbletea loop ever populates
+// h.instances/instanceByID/groupTree, so every lookup would miss pre-existing
+// sessions and persistAllInstances([]) would trip the empty-sweep guard. This
+// helper:
+//
+//  1. takes headlessTxMu so the whole hydrate -> mutate -> persist sequence runs
+//     as one critical section (no concurrent handler can replace the in-memory
+//     snapshot mid-mutation — prevents lost updates), and
+//  2. reloads the registry from storage so the mutation sees the current state,
+//     including out-of-band changes from a concurrent CLI add/rm.
+//
+// In live-TUI mode it is a pure no-op (returns a no-op unlock and does NOT
+// hydrate): the Tea loop owns that state and re-reading/locking here would
+// race it.
+//
+// Callers in live mode pay only a nil check and a closure; the mutex is never
+// contended because hydration never runs there.
+func (m *WebMutator) beginHeadlessTx() (unlock func(), err error) {
+	if m.h == nil || !m.h.IsHeadless() {
+		return func() {}, nil
+	}
+	m.headlessTxMu.Lock()
+	if hErr := m.h.HydrateInstancesFromStorage(); hErr != nil {
+		m.headlessTxMu.Unlock()
+		return func() {}, hErr
+	}
+	return m.headlessTxMu.Unlock, nil
+}
+
 // CreateSession creates and starts a new session, persisting it to storage.
 func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	var inst *session.Instance
 	if groupPath != "" {
 		inst = session.NewInstanceWithGroupAndTool(title, projectPath, groupPath, tool)
@@ -93,6 +138,11 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID 
 
 // StartSession starts a stopped/idle session by ID.
 func (m *WebMutator) StartSession(id string) error {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m.h.instancesMu.RLock()
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
@@ -104,6 +154,11 @@ func (m *WebMutator) StartSession(id string) error {
 
 // StopSession kills (stops) a running session by ID.
 func (m *WebMutator) StopSession(id string) error {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m.h.instancesMu.RLock()
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
@@ -115,6 +170,11 @@ func (m *WebMutator) StopSession(id string) error {
 
 // RestartSession restarts a session by ID.
 func (m *WebMutator) RestartSession(id string) error {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m.h.instancesMu.RLock()
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
@@ -128,6 +188,11 @@ func (m *WebMutator) RestartSession(id string) error {
 // Before removal, the instance is pushed onto the web undo stack so a
 // subsequent UndoDelete (POST /api/sessions/undelete) can restore it.
 func (m *WebMutator) DeleteSession(id string) error {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m.h.instancesMu.RLock()
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
@@ -158,6 +223,11 @@ func (m *WebMutator) DeleteSession(id string) error {
 // the front-end can express the user-visible intent ("close, but don't
 // delete").
 func (m *WebMutator) CloseSession(id string) error {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m.h.instancesMu.RLock()
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
@@ -170,6 +240,11 @@ func (m *WebMutator) CloseSession(id string) error {
 // ArchiveSession stops the session process and marks it archived so it
 // is hidden from active lists but retained in storage.
 func (m *WebMutator) ArchiveSession(id string) error {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m.h.instancesMu.RLock()
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
@@ -187,6 +262,11 @@ func (m *WebMutator) ArchiveSession(id string) error {
 
 // UnarchiveSession clears the archive flag without starting tmux.
 func (m *WebMutator) UnarchiveSession(id string) error {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m.h.instancesMu.RLock()
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
@@ -252,6 +332,16 @@ func (m *WebMutator) UndoDelete() (string, error) {
 		return "", fmt.Errorf("restart session: %w", err)
 	}
 
+	// #1397: hydrate + serialize before reading/persisting the in-memory list so
+	// the restored row is appended to the CURRENT registry (in headless mode the
+	// list would otherwise be empty, dropping every other session) and so this
+	// re-persist does not race a concurrent mutation.
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {
 		return "", fmt.Errorf("open storage: %w", err)
@@ -285,6 +375,11 @@ func (m *WebMutator) pushUndo(inst *session.Instance) {
 
 // ForkSession forks an existing session using the proper tool-specific fork command.
 func (m *WebMutator) ForkSession(id string) (string, error) {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	m.h.instancesMu.RLock()
 	parent := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
@@ -330,6 +425,11 @@ func (m *WebMutator) UpdateSession(id string, updates map[string]string) ([]stri
 	if len(updates) == 0 {
 		return nil, false, nil
 	}
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return nil, false, err
+	}
+	defer unlock()
 	m.h.instancesMu.RLock()
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
@@ -389,6 +489,11 @@ func (m *WebMutator) UpdateSession(id string, updates map[string]string) ([]stri
 // CreateGroup creates a new group (or subgroup if parentPath is non-empty) and
 // persists the group tree to storage.
 func (m *WebMutator) CreateGroup(name, parentPath string) (string, error) {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	var grp *session.Group
 	if parentPath != "" {
 		grp = m.h.groupTree.CreateSubgroup(parentPath, name)
@@ -418,6 +523,11 @@ func (m *WebMutator) CreateGroup(name, parentPath string) (string, error) {
 
 // RenameGroup renames a group identified by groupPath to newName and persists.
 func (m *WebMutator) RenameGroup(groupPath, newName string) error {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m.h.groupTree.RenameGroup(groupPath, newName)
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
@@ -441,6 +551,11 @@ func (m *WebMutator) RenameGroup(groupPath, newName string) error {
 // orchestration is duplicated rather than refactored to keep the
 // fix minimally invasive (issue #1126).
 func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (web.WorktreeFinishResult, error) {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return web.WorktreeFinishResult{}, err
+	}
+	defer unlock()
 	m.h.instancesMu.RLock()
 	inst := m.h.instanceByID[id]
 	m.h.instancesMu.RUnlock()
@@ -561,6 +676,11 @@ func (m *WebMutator) DeleteGroup(groupPath string) error {
 	if groupPath == session.DefaultGroupPath {
 		return fmt.Errorf("cannot delete default group")
 	}
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	m.h.groupTree.DeleteGroup(groupPath)
 

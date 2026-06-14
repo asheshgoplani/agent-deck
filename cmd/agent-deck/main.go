@@ -757,6 +757,15 @@ func main() {
 		liveMenuData := web.NewMemoryMenuData(fallbackMenuData)
 		homeModel.SetWebMenuData(liveMenuData)
 
+		// #1397: in headless mode no bubbletea loop ever populates the Home's
+		// in-memory registry, so the WebMutator must hydrate it from storage on
+		// each mutation. Flag the model so WebMutator.ensureHydrated activates;
+		// otherwise delete/restart/close/group-mutate on pre-existing sessions
+		// fail ("session not found" / empty-sweep guard).
+		if webHeadless {
+			homeModel.SetHeadless(true)
+		}
+
 		server, err := buildWebServer(effectiveProfile, webArgs, liveMenuData, ui.NewWebMutator(homeModel))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: web server setup failed: %v\n", err)
