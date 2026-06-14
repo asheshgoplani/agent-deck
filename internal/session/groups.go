@@ -664,7 +664,13 @@ func (t *GroupTree) Flatten() []Item {
 				orphans = append(orphans, subs...)
 			}
 			sort.SliceStable(orphans, func(i, j int) bool {
-				return orphans[i].Order < orphans[j].Order
+				if orphans[i].Order != orphans[j].Order {
+					return orphans[i].Order < orphans[j].Order
+				}
+				// Tie-break on ID so equal-Order orphans (collected from the
+				// randomized subSessionsByParent map) still emit in a stable,
+				// run-independent order rather than leaking map-iteration order.
+				return orphans[i].ID < orphans[j].ID
 			})
 			for _, sub := range orphans {
 				topLevelIndex++

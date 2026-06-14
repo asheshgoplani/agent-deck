@@ -2181,3 +2181,42 @@ func TestFlatten_OrphanSubSessionsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// When orphaned sub-sessions share the same Order, the sort must still be
+// deterministic: without an ID tie-break, SliceStable would preserve the
+// randomized map-iteration order of subSessionsByParent and the rows could
+// drift between renders. They must emit in ID order.
+func TestFlatten_OrphanSubSessionsDeterministic_TiedOrder(t *testing.T) {
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+	SetGroupSortMode("creation")
+
+	// All orphans share Order 0 and live in distinct parent buckets, so the only
+	// stable discriminator is ID.
+	mk := func(id, parent string) *Instance {
+		return &Instance{ID: id, Title: id, GroupPath: "g", Order: 0, ParentSessionID: parent}
+	}
+	instances := []*Instance{
+		mk("s2", "absent-p2"),
+		mk("s0", "absent-p0"),
+		mk("s1", "absent-p1"),
+	}
+
+	tree := NewGroupTree(instances)
+
+	collect := func() []string {
+		var got []string
+		for _, it := range tree.Flatten() {
+			if it.Type == ItemTypeSession {
+				got = append(got, it.Session.ID)
+			}
+		}
+		return got
+	}
+
+	want := []string{"s0", "s1", "s2"} // ID order, independent of input/map order
+	for i := 0; i < 50; i++ {
+		if got := collect(); !equalStrings(got, want) {
+			t.Fatalf("tied-Order orphans not deterministic: iter %d got %v, want %v", i, got, want)
+		}
+	}
+}
