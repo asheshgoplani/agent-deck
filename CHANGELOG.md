@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Worktree finish on a shared worktree no longer strands sibling sessions** ([#1449](https://github.com/asheshgoplani/agent-deck/issues/1449)). Finishing (or deleting) one of several sessions that share a single git worktree used to remove the shared worktree directory and delete the branch, leaving the remaining sessions pointing at a missing worktree. Both teardown paths now count other live sessions whose worktree path resolves (via `EvalSymlinks`) to the same directory; while any sibling remains, the destructive `git worktree remove` + branch delete are skipped and only the finished session's record is dropped. The last sharer cleans up as before, and the existing "never delete the original repo" guard is preserved.
+- **Help overlay documents the archive shortcuts.** The `?` help overlay now lists the archive family — `A` (archive), `Shift+U` (unarchive), and `^` (toggle archived view) — which were reachable in the TUI and shown in the top filter bar but missing from help.
+- **A session that was added but never started shows idle, not error.** A freshly added session with no running tmux is now classified as idle (`○`) instead of error (`✕`); a session that was started and then lost its tmux still surfaces as error.
+
 ## [1.9.64] - 2026-06-14
 
 ### Changed

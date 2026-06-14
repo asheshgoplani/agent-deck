@@ -11138,15 +11138,33 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 	isMultiRepo := inst.IsMultiRepo()
 	multiRepoTempDir := inst.MultiRepoTempDir
 	multiRepoWorktrees := inst.MultiRepoWorktrees
+	// #1449: snapshot whether another live session still shares this worktree,
+	// under the lock, before the async closure runs (which must not touch
+	// h.instances). When shared, the worktree dir + branch are left intact and
+	// only this session's record is dropped.
+	sharedWorktree := false
+	if isWorktree {
+		h.instancesMu.RLock()
+		sharedWorktree = session.OtherSessionsShareWorktree(
+			&session.Instance{ID: id, WorktreePath: worktreePath, WorktreeRepoRoot: worktreeRepoRoot},
+			h.instances,
+		)
+		h.instancesMu.RUnlock()
+	}
 	return func() tea.Msg {
 		killErr := inst.Kill()
-		if isWorktree {
+		if isWorktree && sharedWorktree {
+			// #1449: another live session still references this worktree; skip
+			// the destructive removal + branch delete and merely drop this
+			// session's record so the siblings are not stranded.
+			uiLog.Info("worktree_remove_skipped", slog.String("path", worktreePath), slog.String("repo", worktreeRepoRoot), slog.String("reason", "another live session still references this worktree (#1449)"))
+		} else if isWorktree {
 			// #1200: route worktree teardown through the session guard so a
 			// worktree_reuse session (WorktreePath == the user's original repo)
 			// is never os.RemoveAll'd. Only genuine agent-deck-created linked
 			// worktrees are removed; a reused repo is left intact and merely
 			// dropped from the registry.
-			snap := &session.Instance{WorktreePath: worktreePath, WorktreeRepoRoot: worktreeRepoRoot}
+			snap := &session.Instance{ID: id, WorktreePath: worktreePath, WorktreeRepoRoot: worktreeRepoRoot}
 			switch removed, err := session.RemoveSessionWorktree(snap); {
 			case err != nil:
 				uiLog.Warn("worktree_remove_err", slog.String("path", worktreePath), slog.String("err", err.Error()))
@@ -17384,12 +17402,18 @@ func (h *Home) handleWorktreeFinishDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		repoRoot := h.worktreeFinishDialog.repoRoot
 		wtPath := h.worktreeFinishDialog.worktreePath
 
-		// Find the instance for kill/remove
+		// Find the instance for kill/remove, and snapshot whether any OTHER
+		// live session still shares this worktree (#1449). Computed here under
+		// the lock so the async finishWorktree closure never touches h.instances.
 		h.instancesMu.RLock()
 		inst := h.instanceByID[sid]
+		shared := session.OtherSessionsShareWorktree(
+			&session.Instance{ID: sid, WorktreePath: wtPath, WorktreeRepoRoot: repoRoot},
+			h.instances,
+		)
 		h.instancesMu.RUnlock()
 
-		return h, h.finishWorktree(inst, sid, sTitle, branch, repoRoot, wtPath, mergeEnabled, targetBranch, keepBranch)
+		return h, h.finishWorktree(inst, sid, sTitle, branch, repoRoot, wtPath, mergeEnabled, targetBranch, keepBranch, shared)
 
 	case "input":
 		// Pass through to text input
@@ -17427,7 +17451,7 @@ func (h *Home) runWorktreeSetup(inst *session.Instance) tea.Cmd {
 
 // finishWorktree performs the worktree finish operation asynchronously:
 // merge branch, remove worktree, delete branch, kill session, remove from storage
-func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, branchName, repoRoot, worktreePath string, mergeEnabled bool, targetBranch string, keepBranch bool) tea.Cmd {
+func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, branchName, repoRoot, worktreePath string, mergeEnabled bool, targetBranch string, keepBranch bool, sharedWorktree bool) tea.Cmd {
 	return func() tea.Msg {
 		merged := false
 
@@ -17444,16 +17468,29 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 			merged = true
 		}
 
-		// Step 2: Remove worktree
-		if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
-			_ = git.RemoveWorktree(repoRoot, worktreePath, false)
-		}
-		_ = git.PruneWorktrees(repoRoot)
+		// #1449: when other live sessions still share this worktree, the
+		// destructive git steps (remove the shared dir + delete the branch)
+		// would strand those siblings (their `worktree info` → MISSING). Skip
+		// them and merely detach THIS session; the last sharer to finish runs
+		// the real cleanup. sharedWorktree is snapshotted by the caller under
+		// instancesMu so this async closure never touches h.instances.
+		if sharedWorktree {
+			uiLog.Info("worktree_finish_skipped_shared",
+				slog.String("id", sessionID),
+				slog.String("path", worktreePath),
+				slog.String("reason", "another live session still references this worktree (#1449)"))
+		} else {
+			// Step 2: Remove worktree
+			if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
+				_ = git.RemoveWorktree(repoRoot, worktreePath, false)
+			}
+			_ = git.PruneWorktrees(repoRoot)
 
-		// Step 3: Delete branch (if not keeping)
-		if !keepBranch {
-			// Use force delete if we merged (branch is fully merged), regular delete otherwise
-			_ = git.DeleteBranch(repoRoot, branchName, merged)
+			// Step 3: Delete branch (if not keeping)
+			if !keepBranch {
+				// Use force delete if we merged (branch is fully merged), regular delete otherwise
+				_ = git.DeleteBranch(repoRoot, branchName, merged)
+			}
 		}
 
 		// Step 4: Kill tmux session

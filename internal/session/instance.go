@@ -395,6 +395,16 @@ type Instance struct {
 	// Not serialized - only relevant for current TUI session
 	lastStartTime time.Time
 
+	// addedThisProcess is true only for instances built by a NewInstance*
+	// constructor in the current process (i.e. just `add`ed), and false for
+	// instances reloaded from storage (built as struct literals). Combined with
+	// a zero lastStartTime it identifies a session that was added but never
+	// started, whose absent tmux is expected (idle), not a fault (error).
+	// Not serialized — a reloaded "never started" row that genuinely ran would
+	// surface a stored non-idle status; a brand-new row reloads as idle and
+	// re-derives correctly once the user starts it.
+	addedThisProcess bool
+
 	// Rate-limits expensive session metadata sync work (Claude/Gemini/Codex)
 	// that runs from UpdateStatus while this instance lock is held.
 	lastSessionMetaSync time.Time
@@ -643,15 +653,16 @@ func NewInstance(title, projectPath string) *Instance {
 	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 
 	inst := &Instance{
-		ID:             id,
-		Title:          title,
-		ProjectPath:    projectPath,
-		GroupPath:      extractGroupPath(projectPath), // Auto-assign group from path
-		Tool:           "shell",
-		Status:         StatusIdle,
-		CreatedAt:      time.Now(),
-		TmuxSocketName: socket,
-		tmuxSession:    tmuxSess,
+		ID:               id,
+		Title:            title,
+		ProjectPath:      projectPath,
+		GroupPath:        extractGroupPath(projectPath), // Auto-assign group from path
+		Tool:             "shell",
+		Status:           StatusIdle,
+		CreatedAt:        time.Now(),
+		TmuxSocketName:   socket,
+		tmuxSession:      tmuxSess,
+		addedThisProcess: true,
 	}
 	logSessionCreated(inst)
 	return inst
@@ -721,15 +732,16 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 
 	inst := &Instance{
-		ID:             id,
-		Title:          title,
-		ProjectPath:    projectPath,
-		GroupPath:      extractGroupPath(projectPath),
-		Tool:           tool,
-		Status:         StatusIdle,
-		CreatedAt:      time.Now(),
-		TmuxSocketName: socket,
-		tmuxSession:    tmuxSess,
+		ID:               id,
+		Title:            title,
+		ProjectPath:      projectPath,
+		GroupPath:        extractGroupPath(projectPath),
+		Tool:             tool,
+		Status:           StatusIdle,
+		CreatedAt:        time.Now(),
+		TmuxSocketName:   socket,
+		tmuxSession:      tmuxSess,
+		addedThisProcess: true,
 	}
 
 	// Claude session ID will be detected from files Claude creates
@@ -3682,6 +3694,23 @@ func (i *Instance) shellForegroundRunning() bool {
 	return true
 }
 
+// neverStarted reports whether this session was added but never started, so an
+// absent tmux session is expected rather than a fault. Two conditions must both
+// hold (caller holds i.mu):
+//
+//  1. The instance was added in THIS process (addedThisProcess), not reloaded
+//     from storage. A reloaded session whose tmux later dies is a genuine error
+//     (instance_cli_parity_test.go TestUpdateStatus_CLIvsTUIParity_Error builds
+//     a reloaded struct literal, so addedThisProcess is false there).
+//  2. Start() was never called (lastStartTime is zero). A started-then-killed
+//     session has a non-zero lastStartTime and must surface as error
+//     (lifecycle_regression_test.go phase5).
+//  3. The status is still the pristine post-add state (idle or starting).
+func (i *Instance) neverStarted() bool {
+	return i.addedThisProcess && i.lastStartTime.IsZero() &&
+		(i.Status == StatusIdle || i.Status == StatusStarting)
+}
+
 // UpdateStatus updates the session status by checking tmux.
 // Thread-safe: acquires write lock to protect Status, Tool, and internal cache fields.
 func (i *Instance) UpdateStatus() error {
@@ -3708,7 +3737,11 @@ func (i *Instance) UpdateStatus() error {
 	}
 
 	if i.tmuxSession == nil {
-		if i.Status != StatusStopped {
+		if i.neverStarted() {
+			// A session that was added but never started has no tmux yet; it is
+			// not an error, just not-yet-running. Keep it idle (✕ → ○).
+			i.Status = StatusIdle
+		} else if i.Status != StatusStopped {
 			i.Status = StatusError
 		}
 		return nil
@@ -3724,7 +3757,11 @@ func (i *Instance) UpdateStatus() error {
 
 	// Check if tmux session exists
 	if !i.tmuxSession.Exists() {
-		if i.Status != StatusStopped {
+		if i.neverStarted() {
+			// Added but never started: no tmux session was ever created, so an
+			// absent tmux is expected — classify as idle, not error (✕ → ○).
+			i.Status = StatusIdle
+		} else if i.Status != StatusStopped {
 			i.Status = StatusError
 		}
 		i.lastErrorCheck = time.Now() // Record when we confirmed error/stopped

@@ -203,6 +203,9 @@ func (h *HelpOverlay) View() string {
 	watcherPanelKey := h.key(hotkeyWatcherPanel, "w")
 	groupKey := h.key(hotkeyCreateGroup, "g")
 	undoKey := h.key(hotkeyUndoDelete, "Ctrl+Z")
+	archiveKey := h.key(hotkeyArchiveSession, "A")
+	unarchiveKey := h.key(hotkeyUnarchiveSession, "Shift+U")
+	viewArchivedKey := h.key(hotkeyViewArchived, "^")
 
 	sections := []struct {
 		title string
@@ -245,6 +248,9 @@ func (h *HelpOverlay) View() string {
 				{deleteKey, "Delete session"},
 				{closeKey, "Close session process"},
 				{undoKey, "Undo delete"},
+				{archiveKey, "Archive session"},
+				{unarchiveKey, "Unarchive session"},
+				{viewArchivedKey, "Toggle archived view"},
 				{moveKey, "Move to group"},
 				{mcpKey, "MCP Manager (Claude/Gemini/Cursor)"},
 				{pluginKey, "Plugin Manager (Claude — RFC PLUGIN_ATTACH.md)"},

@@ -38,6 +38,39 @@ func IsRemovableWorktree(inst *Instance) bool {
 	return git.IsLinkedWorktree(wt)
 }
 
+// OtherSessionsShareWorktree reports whether any instance in others (other than
+// target itself) still references target's worktree directory. Paths are
+// compared canonically (EvalSymlinks), so a symlinked alias to the same
+// directory counts as a sharer. nil entries, target's own ID, and non-worktree
+// instances are skipped.
+//
+// This is the missing guard behind issue #1449: finishing one of several
+// sessions that share a single worktree must not remove the shared directory or
+// delete the branch while a sibling session still uses it.
+func OtherSessionsShareWorktree(target *Instance, others []*Instance) bool {
+	if target == nil {
+		return false
+	}
+	wt := strings.TrimSpace(target.WorktreePath)
+	if wt == "" {
+		return false
+	}
+	targetCanon := canonicalPath(wt)
+	for _, o := range others {
+		if o == nil || o.ID == target.ID {
+			continue
+		}
+		owt := strings.TrimSpace(o.WorktreePath)
+		if owt == "" {
+			continue
+		}
+		if canonicalPath(owt) == targetCanon {
+			return true
+		}
+	}
+	return false
+}
+
 // RemoveSessionWorktree removes the session's worktree directory if and only if
 // IsRemovableWorktree permits it. It returns whether a removal was performed.
 // A reused original repo (or any non-linked-worktree path) is left untouched —
@@ -52,6 +85,19 @@ func RemoveSessionWorktree(inst *Instance) (removed bool, err error) {
 	// Best-effort: drop the now-stale worktree administrative reference.
 	_ = git.PruneWorktrees(inst.WorktreeRepoRoot)
 	return true, nil
+}
+
+// RemoveSessionWorktreeUnlessShared is the shared-worktree-safe entry point
+// (issue #1449). It removes the session's worktree directory only when no OTHER
+// live session still references that worktree; otherwise it skips the
+// destructive git steps and reports removed=false so the caller merely detaches
+// this session from the registry. When this is the last sharer, behaviour is
+// identical to RemoveSessionWorktree (including the #1200 reuse guard).
+func RemoveSessionWorktreeUnlessShared(inst *Instance, others []*Instance) (removed bool, err error) {
+	if OtherSessionsShareWorktree(inst, others) {
+		return false, nil
+	}
+	return RemoveSessionWorktree(inst)
 }
 
 // canonicalPath resolves symlinks and cleans a path for equality comparison so

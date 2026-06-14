@@ -47,6 +47,29 @@ func TestHelpOverlayShowsNotesShortcutWhenEnabled(t *testing.T) {
 	}
 }
 
+// TestHelpOverlayShowsArchiveKeys is the regression for the #1325 help gap: the
+// archive family (A / Shift+U / ^) was reachable in the TUI and shown in the
+// top filter bar but missing from the `?` help overlay.
+func TestHelpOverlayShowsArchiveKeys(t *testing.T) {
+	overlay := NewHelpOverlay()
+	overlay.SetSize(100, 120) // tall enough to render the full SESSIONS section
+	overlay.Show()
+
+	view := overlay.View()
+	for _, want := range []string{"Archive session", "Unarchive session", "Toggle archived view"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("help overlay should document archive key %q (#1325), got %q", want, view)
+		}
+	}
+	// The archive default keybindings must surface too. Keys render exactly as
+	// stored in the keymap (lowercase chord names, matching ctrl+z / ctrl+r).
+	for _, key := range []string{"shift+u", "^"} {
+		if !strings.Contains(view, key) {
+			t.Fatalf("help overlay should show archive keybinding %q, got %q", key, view)
+		}
+	}
+}
+
 func TestWrapWithHangingIndent_ShortText_NoWrap(t *testing.T) {
 	got := wrapWithHangingIndent("Short text", 40, "    ")
 	want := "Short text"
