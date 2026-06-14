@@ -236,6 +236,7 @@ type Home struct {
 	analyticsPanel       *AnalyticsPanel       // For displaying session analytics
 	geminiModelDialog    *GeminiModelDialog    // For selecting Gemini model
 	sessionPickerDialog  *SessionPickerDialog  // For sending output to another session
+	codeBlockDialog      *CodeBlockDialog      // For copying a fenced code block from session output (#1412)
 	sessionSwitcher      *SessionSwitcher      // In-attach session switcher (Ctrl+Tab / Ctrl+S)
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
 	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
@@ -1071,6 +1072,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		analyticsPanel:            NewAnalyticsPanel(),
 		geminiModelDialog:         NewGeminiModelDialog(),
 		sessionPickerDialog:       NewSessionPickerDialog(),
+		codeBlockDialog:           NewCodeBlockDialog(),
 		sessionSwitcher:           NewSessionSwitcher(),
 		worktreeFinishDialog:      NewWorktreeFinishDialog(),
 		feedbackDialog:            NewFeedbackDialog(),
@@ -5981,6 +5983,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.sessionPickerDialog.IsVisible() {
 			return h.handleSessionPickerDialogKey(msg)
 		}
+		if h.codeBlockDialog.IsVisible() {
+			return h.handleCodeBlockDialogKey(msg)
+		}
 		if h.worktreeFinishDialog.IsVisible() {
 			return h.handleWorktreeFinishDialogKey(msg)
 		}
@@ -6687,6 +6692,7 @@ func (h *Home) hasModalVisible() bool {
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
 		h.geminiModelDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
+		h.codeBlockDialog.IsVisible() ||
 		h.sessionSwitcher.IsVisible() ||
 		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible() ||
 		h.editSessionDialog.IsVisible() ||
@@ -8071,6 +8077,19 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				return h, h.copySessionInfo(item.Session)
+			}
+		}
+		return h, nil
+
+	case "Y", "shift+y":
+		// Extract fenced code blocks from this session's recent output and
+		// copy one (OSC52, SSH-safe). Single block -> copy directly; multiple
+		// -> open the picker. Pairs with `c`/`C` in the copy family (#1412).
+		// `y` (lowercase) is the YOLO toggle, so this uses the shift variant.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				return h, h.startCodeBlockCopy(item.Session)
 			}
 		}
 		return h, nil
@@ -12027,6 +12046,9 @@ func (h *Home) View() string {
 	}
 	if h.sessionPickerDialog.IsVisible() {
 		return h.sessionPickerDialog.View()
+	}
+	if h.codeBlockDialog.IsVisible() {
+		return h.codeBlockDialog.View()
 	}
 	if h.worktreeFinishDialog.IsVisible() {
 		return h.worktreeFinishDialog.View()

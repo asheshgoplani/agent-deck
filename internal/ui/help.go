@@ -259,6 +259,7 @@ func (h *HelpOverlay) View() string {
 				{forkKeys, "Fork session (Claude/Pi)"},
 				{copyKey, "Copy output to clipboard"},
 				{"C", "Copy preview info (Repo / Path / Branch)"},
+				{"Y", "Copy a code block from output"},
 				{sendKey, "Send output to session"},
 				{execShellKey, "Exec shell in sandbox container"},
 				{editPathsKey, "Edit multi-repo paths"},
