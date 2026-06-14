@@ -532,7 +532,13 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		}
 	}
 	m.h.instancesMu.RUnlock()
-	if sErr := storage.SaveWithGroups(existing, m.h.groupTree); sErr != nil {
+	// #1396: use the targeted RemoveSessionAndVerify path, NOT
+	// SaveWithGroups(existing, ...). When the finished worktree is the LAST
+	// session, `existing` is empty and SaveWithGroups → SaveInstances([]) trips
+	// the S1 empty-sweep data-loss guard AFTER the irreversible git steps,
+	// orphaning the row. The targeted DELETE + SaveGroupsOnly path persists the
+	// last-session removal without ever calling SaveInstances([]).
+	if sErr := storage.RemoveSessionAndVerify(id, existing, m.h.groupTree); sErr != nil {
 		return web.WorktreeFinishResult{}, fmt.Errorf("save session data: %w", sErr)
 	}
 

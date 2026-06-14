@@ -666,14 +666,20 @@ func handleWorktreeFinish(profile string, args []string) {
 		}
 	}
 
-	// Step 5: Remove session from agent-deck
-	var remaining []*session.Instance
-	for _, i := range instances {
-		if i.ID != inst.ID {
-			remaining = append(remaining, i)
-		}
-	}
-	if err := saveSessionData(storage, remaining, groups); err != nil {
+	// Step 5: Remove session from agent-deck.
+	//
+	// #1396: this must use the targeted RemoveSessionAndVerify path (the same
+	// one `session remove` uses), NOT saveSessionData/SaveWithGroups. When the
+	// finished worktree is the LAST session in the registry, `remaining` is
+	// empty and SaveWithGroups → SaveInstances([]) trips the S1 empty-sweep
+	// data-loss guard (ErrRefusingEmptySweep) — but only AFTER the irreversible
+	// merge/remove-worktree/delete-branch steps have already run, leaving an
+	// orphaned row pointing at a deleted worktree. RemoveSessionAndVerify
+	// issues a targeted DELETE + SaveGroupsOnly, so the last-session delete
+	// succeeds without ever calling SaveInstances([]).
+	remaining := dropInstance(instances, inst.ID)
+	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
+	if err := storage.RemoveSessionAndVerify(inst.ID, remaining, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save session data: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
