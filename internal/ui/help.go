@@ -188,6 +188,7 @@ func (h *HelpOverlay) View() string {
 	groupViewKey := h.key(hotkeyCycleGroupView, "t")
 	unreadKey := h.key(hotkeyMarkUnread, "u")
 	quickApproveKey := h.key(hotkeyQuickApprove, "a")
+	promptSessionKey := h.key(hotkeyPromptSession, "o")
 	copyKey := h.key(hotkeyCopyOutput, "c")
 	sendKey := h.key(hotkeySendOutput, "x")
 	execShellKey := h.key(hotkeyExecShell, "E")
@@ -253,6 +254,7 @@ func (h *HelpOverlay) View() string {
 				{"< / >", "Shrink / grow preview pane by 5% (issue #1092)"},
 				{unreadKey, "Mark unread"},
 				{quickApproveKey, "Quick approve (send '1' to Claude)"},
+				{promptSessionKey, "Prompt session (send a one-line prompt without attaching)"},
 				{reorderUpKeys, "Reorder up (auto-promote at edge)"},
 				{reorderDownKeys, "Reorder down (auto-promote at edge)"},
 				{indentKeys, "Indent / outdent (in group)"},

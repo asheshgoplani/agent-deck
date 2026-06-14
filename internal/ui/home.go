@@ -242,6 +242,7 @@ type Home struct {
 	settingsPanel        *SettingsPanel        // For editing settings
 	analyticsPanel       *AnalyticsPanel       // For displaying session analytics
 	geminiModelDialog    *GeminiModelDialog    // For selecting Gemini model
+	promptInputDialog    *PromptInputDialog    // For prompting the highlighted session from the list without attaching (#1410)
 	sessionPickerDialog  *SessionPickerDialog  // For sending output to another session
 	codeBlockDialog      *CodeBlockDialog      // For copying a fenced code block from session output (#1412)
 	sessionSwitcher      *SessionSwitcher      // In-attach session switcher (Ctrl+Tab / Ctrl+S)
@@ -752,6 +753,21 @@ func (h *Home) quickApprove(inst *session.Instance, windowIndex int) {
 	_ = tmuxSess.SendKeysAndEnterToWindow(windowIndex, "1")
 }
 
+// openPromptInput opens the inline one-line prompt input bound to inst (#1410).
+// The prompt is delivered to the live tmux pane on submit, so a session that
+// isn't running is rejected up front with a clear message rather than silently
+// dropping the prompt.
+func (h *Home) openPromptInput(inst *session.Instance, windowIndex int) {
+	if inst == nil {
+		return
+	}
+	if ts := inst.GetTmuxSession(); ts == nil || ts.Name == "" {
+		h.setError(fmt.Errorf("session %q is not running; start it before prompting", inst.Title))
+		return
+	}
+	h.promptInputDialog.Show(inst.ID, inst.Title, windowIndex)
+}
+
 // resolveITermOpenAs reads the [ui] iterm_open_as setting from the user
 // config, returning "tab" by default if the config can't be loaded or
 // the value is unset/unknown. Issue #1100.
@@ -1078,6 +1094,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		settingsPanel:             NewSettingsPanel(),
 		analyticsPanel:            NewAnalyticsPanel(),
 		geminiModelDialog:         NewGeminiModelDialog(),
+		promptInputDialog:         NewPromptInputDialog(),
 		sessionPickerDialog:       NewSessionPickerDialog(),
 		codeBlockDialog:           NewCodeBlockDialog(),
 		sessionSwitcher:           NewSessionSwitcher(),
@@ -4272,6 +4289,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.toolVisibilityPanel.SetSize(msg.Width, msg.Height)
 		}
 		h.geminiModelDialog.SetSize(msg.Width, msg.Height)
+		h.promptInputDialog.SetSize(msg.Width, msg.Height)
 		// Issue #1366: a resize can reveal the preview pane (single -> stacked/dual).
 		// fetchSelectedPreview self-guards to nil in single-column, so this only
 		// fetches when a preview pane is actually visible.
@@ -5185,6 +5203,35 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case promptSubmitMsg:
+		// #1410: deliver a one-line prompt to the highlighted session without
+		// attaching, reusing the prompt-state-aware send path (the #1409/#1432
+		// composer-draft guard) so the prompt never merges with a half-typed
+		// operator draft and delivery is verified. Dispatch in a goroutine —
+		// the guard holds briefly and the verify loop polls the pane.
+		h.instancesMu.RLock()
+		inst := h.instanceByID[msg.instanceID]
+		h.instancesMu.RUnlock()
+		if inst == nil {
+			h.setError(fmt.Errorf("prompt target session no longer exists"))
+			return h, nil
+		}
+		ts := inst.GetTmuxSession()
+		if ts == nil || ts.Name == "" {
+			h.setError(fmt.Errorf("session %q is not running; start it before prompting", inst.Title))
+			return h, nil
+		}
+		text := msg.text
+		tmuxName := ts.Name
+		go func() {
+			if err := deliverToConductorPane(ts, text); err != nil {
+				uiLog.Warn("list_prompt_send_failed",
+					slog.String("tmux_session", tmuxName),
+					slog.String("error", err.Error()))
+			}
+		}()
+		return h, nil
+
 	case refreshMsg:
 		return h, h.loadSessions
 
@@ -6035,6 +6082,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.geminiModelDialog = d
 			return h, cmd
 		}
+		if h.promptInputDialog.IsVisible() {
+			d, cmd := h.promptInputDialog.Update(msg)
+			h.promptInputDialog = d
+			return h, cmd
+		}
 		if h.sessionSwitcher.IsVisible() {
 			return h.handleSessionSwitcherKey(msg)
 		}
@@ -6749,7 +6801,7 @@ func (h *Home) hasModalVisible() bool {
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
-		h.geminiModelDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
+		h.geminiModelDialog.IsVisible() || h.promptInputDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
 		h.codeBlockDialog.IsVisible() ||
 		h.sessionSwitcher.IsVisible() ||
 		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible() ||
@@ -7978,6 +8030,29 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case session.ItemTypeSession:
 				if item.Session != nil && session.IsClaudeCompatible(item.Session.Tool) {
 					h.quickApprove(item.Session, -1)
+				}
+			}
+		}
+		return h, nil
+
+	case defaultHotkeyBindings[hotkeyPromptSession]:
+		// #1410: open a one-line prompt input for the highlighted session and
+		// send it via the prompt-state-aware send path WITHOUT attaching. Gated
+		// to Claude-compatible tools — the composer-draft guard (#1409) and the
+		// delivery verify are Claude-shaped — and to running sessions, since the
+		// prompt goes into the live tmux pane. Mirrors quickApprove's targeting.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			switch item.Type {
+			case session.ItemTypeWindow:
+				if session.IsClaudeCompatible(item.WindowTool) {
+					if inst := h.getInstanceByID(item.WindowSessionID); inst != nil {
+						h.openPromptInput(inst, item.WindowIndex)
+					}
+				}
+			case session.ItemTypeSession:
+				if item.Session != nil && session.IsClaudeCompatible(item.Session.Tool) {
+					h.openPromptInput(item.Session, -1)
 				}
 			}
 		}
@@ -12385,7 +12460,15 @@ func (h *Home) View() string {
 	// CRITICAL: Use ensureExactHeight for robust, consistent output across all platforms
 	// This is the single source of truth for output height - guarantees exactly h.height lines
 	// regardless of component content, ANSI codes, or terminal differences
-	return clampViewToViewport(b.String(), h.width, h.height)
+	rendered := clampViewToViewport(b.String(), h.width, h.height)
+
+	// #1410: when the inline prompt input is open, overlay it at the bottom of
+	// the (already viewport-clamped) list so the operator types without
+	// attaching. Rendered last so it sits above the status line.
+	if h.promptInputDialog.IsVisible() {
+		rendered = h.promptInputDialog.View(rendered)
+	}
+	return rendered
 }
 
 // renderPanelTitle creates a styled section title with underline
