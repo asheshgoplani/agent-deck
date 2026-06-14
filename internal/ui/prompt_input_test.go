@@ -23,12 +23,11 @@ func typeInto(d *PromptInputDialog, runes string) {
 }
 
 // TestPromptInputDialog_SubmitEmitsMsg: Show, type, Enter → a promptSubmitMsg
-// carrying the bound instance id, window index, and trimmed text; the dialog
-// hides.
+// carrying the bound instance id and trimmed text; the dialog hides.
 func TestPromptInputDialog_SubmitEmitsMsg(t *testing.T) {
 	d := NewPromptInputDialog()
 	d.SetSize(120, 40)
-	d.Show("sess-123", "my-session", -1)
+	d.Show("sess-123", "my-session")
 	if !d.IsVisible() {
 		t.Fatal("dialog should be visible after Show")
 	}
@@ -51,9 +50,6 @@ func TestPromptInputDialog_SubmitEmitsMsg(t *testing.T) {
 	if sub.instanceID != "sess-123" {
 		t.Errorf("instanceID = %q, want sess-123", sub.instanceID)
 	}
-	if sub.windowIndex != -1 {
-		t.Errorf("windowIndex = %d, want -1", sub.windowIndex)
-	}
 	if sub.text != "run the tests" {
 		t.Errorf("text = %q, want %q", sub.text, "run the tests")
 	}
@@ -62,7 +58,7 @@ func TestPromptInputDialog_SubmitEmitsMsg(t *testing.T) {
 // TestPromptInputDialog_EscCancels: Esc closes the dialog and emits no submit.
 func TestPromptInputDialog_EscCancels(t *testing.T) {
 	d := NewPromptInputDialog()
-	d.Show("sess-1", "s", -1)
+	d.Show("sess-1", "s")
 	typeInto(d, "abc")
 
 	d, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -80,7 +76,7 @@ func TestPromptInputDialog_EscCancels(t *testing.T) {
 // cancels without emitting a submit (no empty prompt sent).
 func TestPromptInputDialog_EmptySubmitIsNoOp(t *testing.T) {
 	d := NewPromptInputDialog()
-	d.Show("sess-1", "s", -1)
+	d.Show("sess-1", "s")
 	typeInto(d, "   ")
 
 	d, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -94,19 +90,21 @@ func TestPromptInputDialog_EmptySubmitIsNoOp(t *testing.T) {
 	}
 }
 
-// TestPromptInputDialog_WindowIndexCarried: a window-row target carries its
-// window index through to the submit message.
-func TestPromptInputDialog_WindowIndexCarried(t *testing.T) {
+// TestPromptInputDialog_ReopenRebinds: Show on a second session rebinds the
+// target so a stale id from a prior open can't leak into the next submit.
+func TestPromptInputDialog_ReopenRebinds(t *testing.T) {
 	d := NewPromptInputDialog()
-	d.Show("sess-9", "win-session", 4)
+	d.Show("sess-A", "a")
+	d.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	d.Show("sess-B", "b")
 	typeInto(d, "hi")
 	_, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected a submit command")
 	}
 	sub := cmd().(promptSubmitMsg)
-	if sub.windowIndex != 4 {
-		t.Errorf("windowIndex = %d, want 4", sub.windowIndex)
+	if sub.instanceID != "sess-B" {
+		t.Errorf("instanceID = %q, want sess-B (reopen must rebind target)", sub.instanceID)
 	}
 }
 
@@ -174,7 +172,7 @@ func TestPromptSubmitMsg_RoutesToTargetSession(t *testing.T) {
 	home, inst := armHomeWithRunningClaudeSession(t, "claude")
 	home.err = nil
 
-	model, _ := home.updateInner(promptSubmitMsg{instanceID: inst.ID, windowIndex: -1, text: "hello"})
+	model, _ := home.updateInner(promptSubmitMsg{instanceID: inst.ID, text: "hello"})
 	h := model.(*Home)
 	if h.err != nil {
 		t.Errorf("routing a prompt to a running session surfaced an error: %v", h.err)
@@ -187,7 +185,7 @@ func TestPromptSubmitMsg_MissingSessionErrors(t *testing.T) {
 	home, _ := armHomeWithRunningClaudeSession(t, "claude")
 	home.err = nil
 
-	model, _ := home.updateInner(promptSubmitMsg{instanceID: "does-not-exist", windowIndex: -1, text: "hello"})
+	model, _ := home.updateInner(promptSubmitMsg{instanceID: "does-not-exist", text: "hello"})
 	h := model.(*Home)
 	if h.err == nil {
 		t.Error("prompt to a missing session should surface an error")

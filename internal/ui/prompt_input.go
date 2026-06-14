@@ -3,7 +3,6 @@ package ui
 import (
 	"strings"
 
-	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -12,11 +11,12 @@ import (
 // promptSubmitMsg is emitted when the operator submits a one-line prompt from
 // the main list (issue #1410). Home routes it to the target session via the
 // existing prompt-state-aware send path (the #1409/#1432 composer guard), with
-// no attach.
+// no attach. Delivery targets the session's default pane — the guarded send
+// (deliverToConductorPane) does not address individual tmux windows — so there
+// is no per-window target here.
 type promptSubmitMsg struct {
-	instanceID  string
-	windowIndex int // -1 for the session's main pane
-	text        string
+	instanceID string
+	text       string
 }
 
 // PromptInputDialog is a one-line input anchored at the bottom of the list that
@@ -24,13 +24,12 @@ type promptSubmitMsg struct {
 // Lawrence-Dawson feedback). It mirrors the Search component: a focused
 // textinput.Model that consumes keys while visible and surfaces submit/cancel.
 type PromptInputDialog struct {
-	input       textinput.Model
-	visible     bool
-	width       int
-	height      int
-	instanceID  string
-	title       string
-	windowIndex int
+	input      textinput.Model
+	visible    bool
+	width      int
+	height     int
+	instanceID string
+	title      string
 }
 
 // NewPromptInputDialog creates the inline prompt input (hidden).
@@ -42,12 +41,11 @@ func NewPromptInputDialog() *PromptInputDialog {
 	return &PromptInputDialog{input: ti}
 }
 
-// Show opens the input targeting the given session/window and focuses it.
-func (d *PromptInputDialog) Show(instanceID, title string, windowIndex int) {
+// Show opens the input targeting the given session and focuses it.
+func (d *PromptInputDialog) Show(instanceID, title string) {
 	d.visible = true
 	d.instanceID = instanceID
 	d.title = title
-	d.windowIndex = windowIndex
 	d.input.SetValue("")
 	d.input.Focus()
 }
@@ -58,7 +56,6 @@ func (d *PromptInputDialog) Hide() {
 	d.input.Blur()
 	d.instanceID = ""
 	d.title = ""
-	d.windowIndex = -1
 }
 
 // IsVisible reports whether the input is open. Nil-safe: some test paths and
@@ -97,14 +94,13 @@ func (d *PromptInputDialog) Update(msg tea.KeyMsg) (*PromptInputDialog, tea.Cmd)
 	case "enter":
 		text := strings.TrimSpace(d.input.Value())
 		instanceID := d.instanceID
-		windowIndex := d.windowIndex
 		if text == "" {
 			d.Hide()
 			return d, nil
 		}
 		d.Hide()
 		return d, func() tea.Msg {
-			return promptSubmitMsg{instanceID: instanceID, windowIndex: windowIndex, text: text}
+			return promptSubmitMsg{instanceID: instanceID, text: text}
 		}
 	default:
 		var cmd tea.Cmd
@@ -113,8 +109,8 @@ func (d *PromptInputDialog) Update(msg tea.KeyMsg) (*PromptInputDialog, tea.Cmd)
 	}
 }
 
-// View renders the prompt bar anchored at the bottom of the screen, with the
-// session list area left blank above it (the caller composites the list).
+// View overlays the prompt bar at the bottom of the (already rendered) list
+// body, trimming the body so the composite fits the viewport height.
 func (d *PromptInputDialog) View(listBody string) string {
 	if d == nil || !d.visible {
 		return listBody
@@ -123,17 +119,21 @@ func (d *PromptInputDialog) View(listBody string) string {
 	labelStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
 	dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
 
+	barWidth := d.width - 2
+	if barWidth < 1 {
+		barWidth = d.width
+	}
 	label := "Prompt → " + d.title
 	bar := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ColorAccent).
 		Padding(0, 1).
-		Width(d.width - 2).
+		Width(barWidth).
 		Render(labelStyle.Render(label) + "\n" + d.input.View() + "\n" +
 			dimStyle.Render("Enter Send   Esc Cancel   (sends without attaching)"))
 
 	// Reserve space for the bar at the bottom: trim the list body so the
-	// composite fits the viewport height.
+	// composite stays within the viewport height.
 	barHeight := lipgloss.Height(bar)
 	bodyLines := strings.Split(listBody, "\n")
 	maxBody := d.height - barHeight
@@ -144,14 +144,4 @@ func (d *PromptInputDialog) View(listBody string) string {
 		bodyLines = bodyLines[:maxBody]
 	}
 	return strings.Join(bodyLines, "\n") + "\n" + bar
-}
-
-// targetSession returns the live session this input is bound to, or nil.
-func (d *PromptInputDialog) targetSession(instances []*session.Instance) *session.Instance {
-	for _, inst := range instances {
-		if inst != nil && inst.ID == d.instanceID {
-			return inst
-		}
-	}
-	return nil
 }

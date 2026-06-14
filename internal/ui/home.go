@@ -754,10 +754,10 @@ func (h *Home) quickApprove(inst *session.Instance, windowIndex int) {
 }
 
 // openPromptInput opens the inline one-line prompt input bound to inst (#1410).
-// The prompt is delivered to the live tmux pane on submit, so a session that
-// isn't running is rejected up front with a clear message rather than silently
-// dropping the prompt.
-func (h *Home) openPromptInput(inst *session.Instance, windowIndex int) {
+// The prompt is delivered to the session's live tmux pane on submit, so a
+// session that isn't running is rejected up front with a clear message rather
+// than silently dropping the prompt.
+func (h *Home) openPromptInput(inst *session.Instance) {
 	if inst == nil {
 		return
 	}
@@ -765,7 +765,7 @@ func (h *Home) openPromptInput(inst *session.Instance, windowIndex int) {
 		h.setError(fmt.Errorf("session %q is not running; start it before prompting", inst.Title))
 		return
 	}
-	h.promptInputDialog.Show(inst.ID, inst.Title, windowIndex)
+	h.promptInputDialog.Show(inst.ID, inst.Title)
 }
 
 // resolveITermOpenAs reads the [ui] iterm_open_as setting from the user
@@ -8040,19 +8040,19 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// send it via the prompt-state-aware send path WITHOUT attaching. Gated
 		// to Claude-compatible tools — the composer-draft guard (#1409) and the
 		// delivery verify are Claude-shaped — and to running sessions, since the
-		// prompt goes into the live tmux pane. Mirrors quickApprove's targeting.
+		// prompt goes into the live tmux pane. The guarded send targets the
+		// session's default pane, so a window sub-row routes to its parent
+		// session (gated on that window's detected tool, like quickApprove).
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			switch item.Type {
 			case session.ItemTypeWindow:
 				if session.IsClaudeCompatible(item.WindowTool) {
-					if inst := h.getInstanceByID(item.WindowSessionID); inst != nil {
-						h.openPromptInput(inst, item.WindowIndex)
-					}
+					h.openPromptInput(h.getInstanceByID(item.WindowSessionID))
 				}
 			case session.ItemTypeSession:
 				if item.Session != nil && session.IsClaudeCompatible(item.Session.Tool) {
-					h.openPromptInput(item.Session, -1)
+					h.openPromptInput(item.Session)
 				}
 			}
 		}
