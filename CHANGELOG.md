@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.64] - 2026-06-14
+
+### Changed
+
+- **Conductor enabled-state is derived from filesystem presence; the `[conductor].enabled` flag is removed** ([#1448](https://github.com/asheshgoplani/agent-deck/pull/1448), closes [#1361](https://github.com/asheshgoplani/agent-deck/issues/1361)). The flag was redundant and a footgun: write-once-true, never legitimately set false, and its only reachable "off" value silently broke the heartbeat (`heartbeat.sh` exits 0 with no log) and killed the bridge daemon. The conductor system is now active exactly when a conductor exists on disk, via a new `ConductorSystemActive()` helper (`len(ListConductors()) > 0`). All four former gate sites were converted: the setup wizard (runs first-time channel setup when no conductors exist), `conductor status` (the `--json` `enabled` field stays byte-stable — true exactly when conductors exist — so the generated `heartbeat.sh` is unchanged), and the Python bridge daemon (gates on conductor presence). Graceful migration: pre-existing configs carrying `enabled = true/false` still load without error (the field is retained but ignored), and a stale `enabled = false` no longer disables a conductor that exists on disk.
+
+### Added
+
+- **Conductors auto-allow read-only and safe CLI commands in their `.claude/settings.json`** ([#1450](https://github.com/asheshgoplani/agent-deck/pull/1450), closes [#1358](https://github.com/asheshgoplani/agent-deck/issues/1358)). A Claude conductor's heartbeat read loop (status → list → session output) no longer drowns the user in permission prompts under `dangerous_mode = false`. `conductor setup` now writes (or merges into) the conductor's `.claude/settings.json` with a scoped policy: read-only commands plus `session restart` are auto-allowed; lifecycle/mutating commands (`session start`/`stop`/`send`, `launch`, `add`, `mcp attach`/`detach`, `session set`/`move`/`switch-account`/`fork`/`remove`) still prompt — `start` because it replays the stored command and accepts `-m` prompt injection, `send` because it types raw keystrokes into the target pane, `launch`/`add` because they accept arbitrary permission-skipping tool commands. File writes are scoped to the conductor's own data files (`*.md`, `state.json`, `task-log.md`), and the conductor's executable/config paths (`.claude/**`, `.mcp.json`, `.envrc`, `*.sh`) are explicitly denied to prevent self-escalation. Shell rules are `Bash(...)`-wrapped, and the merge preserves all unmanaged top-level and nested `permissions` keys (`defaultMode`, `additionalDirectories`, `disableBypassPermissionsMode`, user-added entries) idempotently. Claude-only; codex/hermes conductors are unaffected.
+
 ## [1.9.63] - 2026-06-14
 
 ### Added
