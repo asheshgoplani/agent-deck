@@ -94,7 +94,7 @@ agent-deck web                    # Start web UI on http://127.0.0.1:8420
 | `M` | Move session to group |
 | `S` | Settings |
 | `/` / `G` | Search / Global search |
-| `r` | Restart session |
+| `r` / `R` | Rename / Restart session |
 | `d` | Delete |
 | `b` | Re-run worktree setup script |
 | `E` | Container shell (sandboxed sessions) |
