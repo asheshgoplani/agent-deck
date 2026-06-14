@@ -105,9 +105,10 @@ export async function chartMasks(page: Page): Promise<Locator[]> {
  * Wait for the page to reach a visually stable state.
  *
  * - Topbar mounted (<header class="topbar">, Topbar.js).
- * - Profile <select> rendered (Topbar.js renders it only after
- *   /api/profiles resolves — mocked, so it always arrives). On phones it
- *   is display:none but still attached.
+ * - Profile indicator rendered (Topbar.js renders it only after
+ *   /api/profiles resolves — mocked, so it always arrives). Since #1392
+ *   (issue #1365) this is a read-only `.icon-btn[title^="Active profile"]`
+ *   span, not the legacy interactive <select>.
  * - Connection pill settled on "disconnected" (mockEndpoints aborts
  *   /events/menu, and connectionSignal only ever moves from "connecting"
  *   to "disconnected" in that setup — waiting removes the race between
@@ -119,8 +120,12 @@ export async function waitForStable(page: Page): Promise<void> {
   // Preact shell bootstrapped (Topbar.js renders <header class="topbar">)
   await page.waitForSelector('header.topbar', { state: 'attached', timeout: 15000 });
 
-  // Profile dropdown present => /api/profiles fixture applied (Topbar.js)
-  await page.waitForSelector('.top-right select', { state: 'attached', timeout: 15000 });
+  // Profile indicator present => /api/profiles fixture applied (Topbar.js).
+  // Read-only span since #1392 (issue #1365); the legacy <select> is gone.
+  await page.waitForSelector('.top-right .icon-btn[title^="Active profile"]', {
+    state: 'attached',
+    timeout: 15000,
+  });
 
   // SSE is aborted by mockEndpoints, so the pill deterministically ends
   // on "ws · disconnected". Wait for it so we never capture "connecting".

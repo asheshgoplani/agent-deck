@@ -167,7 +167,7 @@ visual-regression/__screenshots__/
     settings-drawer-dark-1280x800.png
   p0-regressions.spec.ts/
     mobile-tab-nav-costs-375x667.png
-    profile-select-1280x800.png
+    profile-indicator-1280x800.png
     title-no-truncation-1280x800.png
     toast-cap-3-1280x800.png
   p1-regressions.spec.ts/
