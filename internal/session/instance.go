@@ -6426,6 +6426,44 @@ func (i *Instance) ApplyLaunchModel(model string) error {
 	}
 }
 
+// ClearLaunchModel removes any per-session model override so the session falls
+// back to the configured default ([claude].default_model, etc.) on the next
+// start/restart (#1436). Mirrors ApplyLaunchModel across tools; a no-op when
+// no override is set.
+func (i *Instance) ClearLaunchModel() error {
+	if i == nil {
+		return nil
+	}
+	switch {
+	case IsClaudeCompatible(i.Tool):
+		opts := i.GetClaudeOptions()
+		if opts == nil {
+			return nil
+		}
+		opts.Model = ""
+		return i.SetClaudeOptions(opts)
+	case i.Tool == "gemini":
+		i.GeminiModel = ""
+		return nil
+	case i.Tool == "opencode":
+		opts := i.GetOpenCodeOptions()
+		if opts == nil {
+			return nil
+		}
+		opts.Model = ""
+		return i.SetOpenCodeOptions(opts)
+	case IsCodexCompatible(i.Tool):
+		opts := i.GetCodexOptions()
+		if opts == nil {
+			return nil
+		}
+		opts.Model = ""
+		return i.SetCodexOptions(opts)
+	default:
+		return nil
+	}
+}
+
 // CanRestart returns true if the session can be restarted
 // For Claude sessions with known ID: can always restart (interrupt and resume)
 // For Gemini sessions with known ID: can always restart (interrupt and resume)
