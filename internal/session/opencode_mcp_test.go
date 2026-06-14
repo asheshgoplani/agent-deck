@@ -260,6 +260,75 @@ func TestWriteOpenCodeGlobalMCP_PreservesOtherKeys(t *testing.T) {
 	}
 }
 
+// Regression: an existing-but-unparseable opencode.json must NOT be
+// overwritten. Earlier the parse-error branch reset rawConfig to an empty map
+// and wrote it back, destroying every non-mcp key (model, theme, keybinds). The
+// write must now fail closed and leave the file byte-for-byte untouched.
+func TestWriteOpenCodeProjectMCP_RefusesOverwriteOfUnparseableConfig(t *testing.T) {
+	tmp := t.TempDir()
+	proj := filepath.Join(tmp, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opencodeMCPConfigDirOverride = tmp
+	defer func() { opencodeMCPConfigDirOverride = "" }()
+
+	cfg := &UserConfig{MCPs: map[string]MCPDef{
+		"cat": {Command: "echo", Args: []string{"meow"}},
+	}}
+	restoreCfg := resetUserConfigCache(t, cfg)
+	t.Cleanup(restoreCfg)
+
+	// Garbage / partially-written JSON that still holds the user's real config.
+	garbage := []byte(`{"theme":"dark","model":"opus",`) // truncated, unparseable
+	mcpFile := filepath.Join(proj, "opencode.json")
+	if err := os.WriteFile(mcpFile, garbage, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteOpenCodeProjectMCP(proj, []string{"cat"}); err == nil {
+		t.Fatal("expected error when overwriting unparseable project config, got nil")
+	}
+
+	after, err := os.ReadFile(mcpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(garbage) {
+		t.Fatalf("unparseable project config was modified:\nbefore: %s\nafter:  %s", garbage, after)
+	}
+}
+
+func TestWriteOpenCodeGlobalMCP_RefusesOverwriteOfUnparseableConfig(t *testing.T) {
+	tmp := t.TempDir()
+	opencodeMCPConfigDirOverride = tmp
+	defer func() { opencodeMCPConfigDirOverride = "" }()
+
+	cfg := &UserConfig{MCPs: map[string]MCPDef{
+		"cat": {Command: "echo", Args: []string{"purr"}},
+	}}
+	restoreCfg := resetUserConfigCache(t, cfg)
+	t.Cleanup(restoreCfg)
+
+	path := filepath.Join(tmp, "opencode.json")
+	garbage := []byte(`{"foo":1, this is not json`)
+	if err := os.WriteFile(path, garbage, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteOpenCodeGlobalMCP([]string{"cat"}); err == nil {
+		t.Fatal("expected error when overwriting unparseable global config, got nil")
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(garbage) {
+		t.Fatalf("unparseable global config was modified:\nbefore: %s\nafter:  %s", garbage, after)
+	}
+}
+
 func TestOpenCodeRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	proj := filepath.Join(tmp, "proj")

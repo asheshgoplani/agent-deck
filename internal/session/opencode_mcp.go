@@ -236,14 +236,22 @@ func WriteOpenCodeProjectMCP(projectPath string, enabledNames []string) error {
 		return err
 	}
 
-	// Read existing file to preserve non-mcp keys.
+	// Read existing file to preserve non-mcp keys. An existing-but-unparseable
+	// file must fail closed: resetting rawConfig to an empty map on an unmarshal
+	// error and writing it back would destroy every non-mcp key the user has
+	// (model, theme, keybinds, ...). A transient/partial write or a
+	// hand-edited-with-comments file (opencode tolerates JSONC in practice)
+	// would otherwise trigger total config loss. Only initialize an empty config
+	// when the file genuinely does not exist.
 	var rawConfig map[string]interface{}
 	if data, readErr := os.ReadFile(mcpFile); readErr == nil {
 		if jsonErr := json.Unmarshal(data, &rawConfig); jsonErr != nil {
-			rawConfig = make(map[string]interface{})
+			return fmt.Errorf("refusing to overwrite unparseable opencode project config %s: %w", mcpFile, jsonErr)
 		}
-	} else {
+	} else if os.IsNotExist(readErr) {
 		rawConfig = make(map[string]interface{})
+	} else {
+		return fmt.Errorf("read opencode project mcp %s: %w", mcpFile, readErr)
 	}
 
 	rawConfig["mcp"] = buildOpenCodeMCPServers(enabledNames)
@@ -275,13 +283,17 @@ func WriteOpenCodeGlobalMCP(enabledNames []string) error {
 		return fmt.Errorf("create opencode config dir: %w", err)
 	}
 
+	// Fail closed on an existing-but-unparseable file — see the rationale in
+	// WriteOpenCodeProjectMCP. Overwriting it would drop every non-mcp key.
 	var rawConfig map[string]interface{}
-	if data, err := os.ReadFile(configFile); err == nil {
-		if err := json.Unmarshal(data, &rawConfig); err != nil {
-			rawConfig = make(map[string]interface{})
+	if data, readErr := os.ReadFile(configFile); readErr == nil {
+		if jsonErr := json.Unmarshal(data, &rawConfig); jsonErr != nil {
+			return fmt.Errorf("refusing to overwrite unparseable opencode global config %s: %w", configFile, jsonErr)
 		}
-	} else {
+	} else if os.IsNotExist(readErr) {
 		rawConfig = make(map[string]interface{})
+	} else {
+		return fmt.Errorf("read opencode global mcp %s: %w", configFile, readErr)
 	}
 
 	rawConfig["mcp"] = buildOpenCodeMCPServers(enabledNames)
