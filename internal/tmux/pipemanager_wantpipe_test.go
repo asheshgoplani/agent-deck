@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -72,5 +73,52 @@ func TestWantsReconnect(t *testing.T) {
 	}
 	if wantsReconnect(allow, "drop") {
 		t.Fatal("unwanted session must not reconnect")
+	}
+}
+
+func TestPipeManager_ReconcileKeepsOnlyLiveSet(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	const k = 4
+	names := make([]string, k)
+	for i := range names {
+		names[i] = createTestSessionStrict(t, fmt.Sprintf("liveset%d", i))
+	}
+
+	pm := NewPipeManager(context.Background(), nil)
+	defer pm.Close()
+
+	// live set = only names[1]
+	live := names[1]
+	pm.SetWantPipe(func(n string) bool { return n == live })
+
+	// Connect-all: the gate ensures only `live` actually attaches a pipe.
+	for _, n := range names {
+		_ = pm.Connect(n, "")
+	}
+
+	if !waitFor(2*time.Second, func() bool { return pm.IsConnected(live) }) {
+		t.Fatalf("live session %s should be connected", live)
+	}
+	got := pm.ConnectedSessions()
+	if len(got) != 1 || got[0] != live {
+		t.Fatalf("only the live session should hold a pipe; got %v", got)
+	}
+
+	// Move the live set to names[2]: connect the new one, disconnect the old.
+	live2 := names[2]
+	pm.SetWantPipe(func(n string) bool { return n == live2 })
+	_ = pm.Connect(live2, "")
+	pm.Disconnect(live) // old one leaves the set
+
+	if !waitFor(2*time.Second, func() bool {
+		return pm.IsConnected(live2) && !pm.IsConnected(live)
+	}) {
+		t.Fatalf("after move: want only %s connected, got %v", live2, pm.ConnectedSessions())
+	}
+
+	// Critical: the disconnected pipe must NOT be auto-reconnected by watchPipe
+	// (it is no longer wanted). watchPipe's first backoff is ~2s; give it 3s.
+	if waitFor(3*time.Second, func() bool { return pm.IsConnected(live) }) {
+		t.Fatal("disconnected session was resurrected by watchPipe; wantPipe gate failed")
 	}
 }
