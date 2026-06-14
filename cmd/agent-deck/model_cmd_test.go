@@ -181,8 +181,14 @@ func TestSessionSetModelPersists(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("re-set model failed (exit %d)\nstderr: %s", code, stderr)
 	}
-	stdout, _, _ = runAgentDeck(t, home, "session", "show", addResp.ID, "--json")
-	_ = json.Unmarshal([]byte(stdout), &showResp)
+	stdout, stderr, code = runAgentDeck(t, home, "session", "show", addResp.ID, "--json")
+	if code != 0 {
+		t.Fatalf("session show after re-set failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	showResp.ModelID = "<unparsed>"
+	if err := json.Unmarshal([]byte(stdout), &showResp); err != nil {
+		t.Fatalf("parse show response after re-set: %v\nstdout: %s", err, stdout)
+	}
 	if showResp.ModelID != "sonnet" {
 		t.Errorf("re-set model did not persist sonnet; model_id = %q", showResp.ModelID)
 	}
@@ -194,9 +200,19 @@ func TestSessionSetModelPersists(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("clear model failed (exit %d)\nstderr: %s", code, stderr)
 	}
-	stdout, _, _ = runAgentDeck(t, home, "session", "show", addResp.ID, "--json")
+	stdout, stderr, code = runAgentDeck(t, home, "session", "show", addResp.ID, "--json")
+	if code != 0 {
+		t.Fatalf("session show after clear failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	// Codex review of #1445: guard against a failed show / malformed response
+	// silently passing by asserting the show succeeded and the JSON parses
+	// (above + here). A cleared override surfaces as an empty/omitted model_id
+	// (omitempty), so "" is the cleared signal — pre-seed "" rather than a
+	// sentinel that an omitted field would not overwrite.
 	showResp.ModelID = ""
-	_ = json.Unmarshal([]byte(stdout), &showResp)
+	if err := json.Unmarshal([]byte(stdout), &showResp); err != nil {
+		t.Fatalf("parse show response after clear: %v\nstdout: %s", err, stdout)
+	}
 	if showResp.ModelID != "" {
 		t.Errorf("clear via \"\" did not reset model; model_id = %q", showResp.ModelID)
 	}
