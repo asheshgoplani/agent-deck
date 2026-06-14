@@ -29,6 +29,11 @@ type PipeManager struct {
 	// Callback for window change events (invoked when %window-add or %window-close detected)
 	onWindowChange func()
 
+	// wantPipe, when non-nil, gates which sessions may hold a live pipe.
+	// Connect and watchPipe consult it so background sessions are never
+	// connected or auto-reconnected. nil = legacy behaviour (want everything).
+	wantPipe func(sessionName string) bool
+
 	// Reconnection tracking
 	reconnectMu  sync.Mutex
 	reconnecting map[string]bool
@@ -58,6 +63,13 @@ func NewPipeManager(ctx context.Context, onOutput func(sessionName string)) *Pip
 // by socketName (Session.SocketName). Pass "" to target the user's default
 // server. Safe to call repeatedly; a live pipe short-circuits and returns nil.
 func (pm *PipeManager) Connect(sessionName, socketName string) error {
+	// Background sessions are not wanted — connecting them is what scaled pipe
+	// count to instances×sessions. Silent no-op so existing callers (startup
+	// loop, new-session hook, reviver, sweep) need no per-call gating.
+	if !pm.wants(sessionName) {
+		return nil
+	}
+
 	pm.mu.Lock()
 
 	// Already connected and alive?
@@ -328,6 +340,36 @@ func (pm *PipeManager) Close() {
 // Must be called before Connect to ensure all pipes forward events.
 func (pm *PipeManager) SetWindowChangeCallback(cb func()) {
 	pm.onWindowChange = cb
+}
+
+// SetWantPipe installs the predicate that decides which sessions hold a live
+// pipe. Call once at startup before Connect. nil-safe: an unset predicate means
+// every session is wanted (legacy behaviour).
+func (pm *PipeManager) SetWantPipe(fn func(sessionName string) bool) {
+	pm.mu.Lock()
+	pm.wantPipe = fn
+	pm.mu.Unlock()
+}
+
+// wants reports whether sessionName is currently wanted. nil predicate => true.
+func (pm *PipeManager) wants(sessionName string) bool {
+	pm.mu.RLock()
+	fn := pm.wantPipe
+	pm.mu.RUnlock()
+	return fn == nil || fn(sessionName)
+}
+
+// ConnectedSessions returns the names of sessions with an alive pipe.
+func (pm *PipeManager) ConnectedSessions() []string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	out := make([]string, 0, len(pm.pipes))
+	for name, p := range pm.pipes {
+		if p.IsAlive() {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // forwardOutputEvents reads from a pipe's output and window events channels
