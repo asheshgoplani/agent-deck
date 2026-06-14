@@ -65,7 +65,12 @@ var conductorAgentSpecs = map[string]ConductorAgentSpec{
 
 // ConductorSettings defines conductor (meta-agent orchestration) configuration
 type ConductorSettings struct {
-	// Enabled activates the conductor system
+	// Deprecated: Enabled is retained only so pre-#1361 configs that still carry
+	// `enabled = true/false` continue to load without error. The flag is no
+	// longer read anywhere — the conductor system's active state is derived from
+	// filesystem presence via ConductorSystemActive(). Setup no longer writes
+	// this field. TOML decoding ignores unknown keys, but keeping the field
+	// avoids a "field not found" surprise for anyone round-tripping old configs.
 	Enabled bool `toml:"enabled,omitempty"`
 
 	// HeartbeatInterval is the interval in minutes between heartbeat checks
@@ -561,6 +566,26 @@ func ListConductors() ([]ConductorMeta, error) {
 		conductors = append(conductors, *meta)
 	}
 	return conductors, nil
+}
+
+// ConductorSystemActive reports whether the conductor system is active by
+// deriving the answer from filesystem/registry state instead of a config flag.
+// The system is "active" exactly when at least one conductor exists on disk
+// (a directory under ConductorDir containing a valid meta.json).
+//
+// This replaces the former [conductor].enabled config flag (issue #1361),
+// which was write-once-true and whose only reachable "off" value silently
+// broke the heartbeat. Deriving from presence means enabled-state cannot drift
+// from reality: it is true iff there is something to conduct.
+func ConductorSystemActive() bool {
+	conductors, err := ListConductors()
+	if err != nil {
+		// A read error is not a license to silently disable. Treat the system
+		// as active so the failure surfaces downstream rather than masquerading
+		// as "no conductors configured".
+		return true
+	}
+	return len(conductors) > 0
 }
 
 // ListConductorsForProfile returns conductors belonging to a specific profile
