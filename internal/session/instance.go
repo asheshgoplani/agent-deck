@@ -3469,164 +3469,92 @@ func (i *Instance) StartWithMessage(message string) error {
 	return nil
 }
 
-// sendMessageWhenReady waits for the agent to be ready and sends the message
-// Uses the existing status detection system which is robust and works for all tools
-//
-// The status flow for a new session:
-//  1. Initial "waiting" (session just started, hash set)
-//  2. "active" (content changing as agent loads)
-//  3. "waiting" (content stable, agent ready for input)
-//
-// We wait for this full cycle: initial → active → waiting
-// Exception: If Claude already finished processing "." from session capture,
-// we may see "waiting" immediately - detect this by checking for input prompt
+// sendMessageWhenReady waits for the agent to be ready and sends the message.
+// Uses the shared WaitForAgentReady helper (same semantics as `session send`).
 func (i *Instance) sendMessageWhenReady(message string) error {
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
 
-	// Track state transitions: we need to see "active" before accepting "waiting"
-	// This ensures we don't send the message during initial startup (false "waiting")
-	sawActive := false
-	readyCount := 0    // Track consecutive waiting/idle states to detect already-ready sessions
-	maxAttempts := 300 // 60 seconds max (300 * 200ms) - Claude with MCPs can take 40-60s
+	if err := send.WaitForAgentReady(i.tmuxSession, i.Tool, send.DefaultAgentReadyTimeout, send.PromptGates{
+		ClaudeComposer: IsClaudeCompatible(i.Tool),
+		CodexPrompt:    IsCodexCompatible(i.Tool),
+	}); err != nil {
+		return fmt.Errorf("timeout waiting for agent to be ready")
+	}
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		time.Sleep(200 * time.Millisecond)
+	if err := i.tmuxSession.SendKeysAndEnter(message); err != nil {
+		return fmt.Errorf("failed to send message: %w", err)
+	}
 
-		// Use the existing robust status detection
-		status, err := i.tmuxSession.GetStatus()
-		if err != nil {
-			readyCount = 0 // Reset on error
+	// The verify loop below keys off Claude-specific signals (an
+	// "active" transition, composer glyph, unsent-paste markers). Non-
+	// Claude tools never surface those, so the loop false-negatives a
+	// delivered message and Enter-spams the composer; skip it for every
+	// non-Claude tool (#1238 — generalizes #1228's codex-only skip).
+	if !UsesClaudeDeliveryVerify(i.Tool) {
+		return nil
+	}
+
+	// Verify the agent accepted Enter and began processing.
+	const verifyRetries = 50
+	const verifyDelay = 300 * time.Millisecond
+	const activeSuccessThreshold = 2
+	const waitingAfterActiveThreshold = 2
+	waitingNoMarkerChecks := 0
+	activeChecks := 0
+	sawActiveAfterSend := false
+
+	for retry := 0; retry < verifyRetries; retry++ {
+		time.Sleep(verifyDelay)
+
+		unsentPromptDetected := false
+		if rawContent, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
+			content := tmux.StripANSI(rawContent)
+			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
+		}
+		verifiedStatus, statusErr := i.tmuxSession.GetStatus()
+
+		if unsentPromptDetected {
+			waitingNoMarkerChecks = 0
+			activeChecks = 0
+			_ = i.tmuxSession.SendEnter()
 			continue
 		}
 
-		if status == "active" {
-			sawActive = true
-			readyCount = 0
-			continue
-		}
-
-		if status == "waiting" || status == "idle" {
-			readyCount++
-		} else {
-			readyCount = 0
-		}
-
-		// Agent is ready when either:
-		// 1. We've seen "active" (loading) and now see "waiting" (ready)
-		// 2. We've seen waiting/idle 10+ times consecutively (already processed initial ".")
-		//    This handles the race where Claude finishes before we start checking
-		alreadyReady := readyCount >= 10 && attempt >= 15 // At least 3s elapsed
-		if (sawActive && (status == "waiting" || status == "idle")) || alreadyReady {
-			if IsClaudeCompatible(i.Tool) {
-				if rawContent, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil && !send.HasCurrentComposerPrompt(tmux.StripANSI(rawContent)) {
-					// Claude can report waiting before the interactive prompt is visible.
-					// Keep polling until the prompt line is present.
-					continue
-				}
-			}
-			// Gate Codex sends on prompt readiness: wait for "codex>" or
-			// "Continue?" to be visible before considering the agent ready.
-			if IsCodexCompatible(i.Tool) {
-				if rawContent, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
-					content := tmux.StripANSI(rawContent)
-					detector := tmux.NewPromptDetector("codex")
-					if !detector.HasPrompt(content) {
-						continue
-					}
-				}
-			}
-			// Small delay to ensure UI is fully rendered
-			time.Sleep(300 * time.Millisecond)
-
-			// Send message atomically (text + Enter in single tmux invocation)
-			if err := i.tmuxSession.SendKeysAndEnter(message); err != nil {
-				return fmt.Errorf("failed to send message: %w", err)
-			}
-
-			// The verify loop below keys off Claude-specific signals (an
-			// "active" transition, composer glyph, unsent-paste markers). Non-
-			// Claude tools never surface those, so the loop false-negatives a
-			// delivered message and Enter-spams the composer; skip it for every
-			// non-Claude tool (#1238 — generalizes #1228's codex-only skip).
-			if !UsesClaudeDeliveryVerify(i.Tool) {
+		if statusErr == nil && verifiedStatus == "active" {
+			sawActiveAfterSend = true
+			waitingNoMarkerChecks = 0
+			activeChecks++
+			if activeChecks >= activeSuccessThreshold {
 				return nil
 			}
+			continue
+		}
+		activeChecks = 0
 
-			// Verify the agent accepted Enter and began processing.
-			// Strategy:
-			// - If unsent prompt is visible, press Enter again immediately.
-			// - Consider success only after sustained post-send activity ("active").
-			// - If we never observe active and remain in waiting/idle, keep a
-			//   periodic fallback Enter cadence instead of returning early.
-			const verifyRetries = 50
-			const verifyDelay = 300 * time.Millisecond
-			const activeSuccessThreshold = 2
-			const waitingAfterActiveThreshold = 2
-			waitingNoMarkerChecks := 0
-			activeChecks := 0
-			sawActiveAfterSend := false
-
-			for retry := 0; retry < verifyRetries; retry++ {
-				time.Sleep(verifyDelay)
-
-				unsentPromptDetected := false
-				if rawContent, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
-					content := tmux.StripANSI(rawContent)
-					unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
+		if statusErr == nil && (verifiedStatus == "waiting" || verifiedStatus == "idle") {
+			if sawActiveAfterSend {
+				waitingNoMarkerChecks++
+				if waitingNoMarkerChecks >= waitingAfterActiveThreshold {
+					return nil
 				}
-				verifiedStatus, statusErr := i.tmuxSession.GetStatus()
-
-				if unsentPromptDetected {
-					waitingNoMarkerChecks = 0
-					activeChecks = 0
-					_ = i.tmuxSession.SendEnter()
-					continue
-				}
-
-				if statusErr == nil && verifiedStatus == "active" {
-					sawActiveAfterSend = true
-					waitingNoMarkerChecks = 0
-					activeChecks++
-					if activeChecks >= activeSuccessThreshold {
-						return nil
-					}
-					continue
-				}
-				activeChecks = 0
-
-				if statusErr == nil && (verifiedStatus == "waiting" || verifiedStatus == "idle") {
-					if sawActiveAfterSend {
-						waitingNoMarkerChecks++
-						if waitingNoMarkerChecks >= waitingAfterActiveThreshold {
-							return nil
-						}
-					} else {
-						waitingNoMarkerChecks = 0
-						// We haven't observed any post-send activity yet.
-						// Nudge Enter aggressively in the early window (every
-						// iteration for first 5 retries) then every 2nd iteration.
-						if retry < 5 || retry%2 == 0 {
-							_ = i.tmuxSession.SendEnter()
-						}
-					}
-					continue
-				}
-
+			} else {
 				waitingNoMarkerChecks = 0
-				// Increased from 2 to 4 for TUI frameworks needing more time.
-				if retry < 4 {
+				if retry < 5 || retry%2 == 0 {
 					_ = i.tmuxSession.SendEnter()
 				}
 			}
+			continue
+		}
 
-			// Best effort: don't fail if verification remains inconclusive.
-			return nil
+		waitingNoMarkerChecks = 0
+		if retry < 4 {
+			_ = i.tmuxSession.SendEnter()
 		}
 	}
 
-	return fmt.Errorf("timeout waiting for agent to be ready")
+	return nil
 }
 
 // errorRecheckInterval - how often to recheck sessions that don't exist

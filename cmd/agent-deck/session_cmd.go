@@ -2190,7 +2190,10 @@ func handleSessionSend(profile string, args []string) {
 	// post-ready completion wait. Otherwise --timeout 5m against a busy
 	// recipient silently fails at ~80s.
 	if !*noWait {
-		if err := waitForAgentReady(tmuxSess, inst.Tool, *timeout); err != nil {
+		if err := send.WaitForAgentReady(tmuxSess, inst.Tool, *timeout, send.PromptGates{
+			ClaudeComposer: inst.Tool == "claude",
+			CodexPrompt:    inst.Tool == "codex",
+		}); err != nil {
 			out.Error(fmt.Sprintf("timeout waiting for agent: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -2883,87 +2886,6 @@ func messageDeliveryToken(message string) string {
 	return trimmed
 }
 
-// agentReadyChecker abstracts the tmux surface that waitForAgentReady needs.
-// Lets tests exercise the readiness/timeout loop without a real tmux session.
-// *tmux.Session satisfies this interface naturally.
-type agentReadyChecker interface {
-	GetStatus() (string, error)
-	CapturePaneFresh() (string, error)
-}
-
-// waitForAgentReady waits for Claude/Gemini/other agents to be ready for input
-// Uses status detection: waits for "active" → "waiting" transition.
-//
-// Issue #957: before v1.9.x this loop was hardcoded to 80s and silently
-// overrode the caller's --timeout. `--timeout` now bounds the agent-ready
-// phase too, so `session send --timeout 5m` against a busy recipient actually
-// waits up to 5m for readiness before giving up.
-func waitForAgentReady(target agentReadyChecker, tool string, timeout time.Duration) error {
-	const pollInterval = 200 * time.Millisecond
-	if timeout <= 0 {
-		timeout = 80 * time.Second // preserve historical default if caller passes zero
-	}
-	maxAttempts := int(timeout / pollInterval)
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
-
-	sawActive := false
-	readyCount := 0
-
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		time.Sleep(pollInterval)
-
-		status, err := target.GetStatus()
-		if err != nil {
-			readyCount = 0
-			continue
-		}
-
-		if status == "active" {
-			sawActive = true
-			readyCount = 0
-			continue
-		}
-
-		if status == "waiting" || status == "idle" {
-			readyCount++
-		} else {
-			readyCount = 0
-		}
-
-		// Agent is ready when:
-		// 1. We've seen "active" (loading) and now see "waiting" (ready)
-		// 2. We've seen stable waiting/idle 10+ times (already ready)
-		alreadyReady := readyCount >= 10 && attempt >= 15 // At least 3s elapsed
-		if (sawActive && (status == "waiting" || status == "idle")) || alreadyReady {
-			if tool == "claude" {
-				if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil && !send.HasCurrentComposerPrompt(tmux.StripANSI(rawContent)) {
-					// Claude can report waiting before the interactive prompt is visible.
-					// Keep polling until the prompt line is present.
-					continue
-				}
-			}
-			// Gate Codex sends on prompt readiness: wait for "codex>" or
-			// "Continue?" to be visible before considering the agent ready.
-			if tool == "codex" {
-				if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil {
-					content := tmux.StripANSI(rawContent)
-					detector := tmux.NewPromptDetector("codex")
-					if !detector.HasPrompt(content) {
-						// Codex hasn't shown its prompt yet; keep polling.
-						continue
-					}
-				}
-			}
-			time.Sleep(300 * time.Millisecond) // Small delay for UI to render
-			return nil
-		}
-	}
-
-	return fmt.Errorf("agent not ready after %s", timeout)
-}
-
 // shouldGateSlashRegistration reports whether a send needs to wait for
 // Claude's slash-command parser to finish registering before relaying.
 //
@@ -2985,13 +2907,13 @@ func shouldGateSlashRegistration(tool, message string) bool {
 
 // waitForSlashCommandReady polls the pane until the composer prompt has been
 // continuously visible for the slash-registration settle window, then returns.
-// Callers must have already passed waitForAgentReady; this is an additional
+// Callers must have already passed send.WaitForAgentReady; this is an additional
 // hold-back specifically for the #966 race.
 //
 // The function probes (rather than blind-sleeps) so a long-already-ready
 // Claude returns near-immediately on retries, while a freshly restarted
 // Claude pays the full settle window.
-func waitForSlashCommandReady(target agentReadyChecker, tool string, timeout time.Duration) error {
+func waitForSlashCommandReady(target send.AgentReadyChecker, tool string, timeout time.Duration) error {
 	const pollInterval = 100 * time.Millisecond
 	// Eight stable composer observations (~800ms) is the empirical floor
 	// for Claude to finish registering its slash-command parser after the

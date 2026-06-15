@@ -81,6 +81,9 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 		// with a status bar (model · path · branch · usage) below it.
 		return d.hasCodexPromptMarker(content)
 
+	case "cursor":
+		return d.hasCursorPrompt(content)
+
 	default:
 		// Generic shell - check for common prompts
 		return d.hasShellPrompt(content)
@@ -480,6 +483,23 @@ func (d *PromptDetector) hasCodexPromptMarker(content string) bool {
 		}
 	}
 	return false
+}
+
+// hasCursorPrompt detects when the Cursor Agent CLI is waiting for input.
+// Patterns mirror internal/tmux/patterns.go (cursor tool defaults).
+func (d *PromptDetector) hasCursorPrompt(content string) bool {
+	lower := strings.ToLower(content)
+	if strings.Contains(lower, "esc to interrupt") ||
+		strings.Contains(lower, "ctrl+c to interrupt") {
+		return false
+	}
+	if strings.Contains(content, "How can I help") ||
+		strings.Contains(content, "Ask questions") ||
+		strings.Contains(content, "Plan mode") ||
+		strings.Contains(content, "Switch modes") {
+		return true
+	}
+	return d.hasCodexPromptMarker(content)
 }
 
 // hasGeminiPrompt detects if Gemini CLI is waiting for input.
