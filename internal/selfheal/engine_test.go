@@ -119,7 +119,7 @@ func TestObserve_ConfirmRequiresSameSubstate(t *testing.T) {
 	mk := func(sub tmux.Substate) Candidate {
 		return Candidate{SessionID: sid, Substate: sub, OutputSig: "x"}
 	}
-	_ = e.ProcessRead(mk(tmux.SubstateModelUnavailable), now)               // anchor
+	_ = e.ProcessRead(mk(tmux.SubstateModelUnavailable), now)                    // anchor
 	_ = e.ProcessRead(mk(tmux.SubstateModelUnavailable), now.Add(2*time.Minute)) // dwelled → first confirm
 	// Now the substate FLIPS to auth_401 on the would-be confirming read. Because
 	// auth_401's anchor just started, it is not dwelled AND the diagnosis differs,
@@ -217,7 +217,7 @@ func TestObserve_TwoReadDrop_OnMovement(t *testing.T) {
 
 	c := dwelledModelCand(now)
 	c.OutputSig = "sigA"
-	_ = e.ProcessRead(c, now)                    // anchor (dwell 0)
+	_ = e.ProcessRead(c, now)                       // anchor (dwell 0)
 	ev2 := e.ProcessRead(c, now.Add(2*time.Minute)) // dwelled → first confirm
 	if ev2.Decision != DecisionSkipConfirm {
 		t.Fatalf("read2 (dwelled, first candidate): want skip_confirm, got %s", ev2.Decision)

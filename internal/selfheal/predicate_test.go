@@ -11,18 +11,18 @@ import (
 // flip one field to assert each disqualifier in isolation.
 func base(now time.Time) Candidate {
 	return Candidate{
-		SessionID:       "s1-1780000000",
-		Title:           "exec-fix",
-		Group:           "agent-deck",
-		Profile:         "personal",
-		Status:          "error",
-		Substate:        tmux.SubstateModelUnavailable,
-		Busy:            false,
+		SessionID:        "s1-1780000000",
+		Title:            "exec-fix",
+		Group:            "agent-deck",
+		Profile:          "personal",
+		Status:           "error",
+		Substate:         tmux.SubstateModelUnavailable,
+		Busy:             false,
 		HookRunningFresh: false,
-		OutputMoved:     false,
-		Stopped:         false,
-		OptedOut:        false,
-		StatusChangedAt: now.Add(-5 * time.Minute), // well past 90s
+		OutputMoved:      false,
+		Stopped:          false,
+		OptedOut:         false,
+		StatusChangedAt:  now.Add(-5 * time.Minute), // well past 90s
 	}
 }
 
@@ -114,7 +114,7 @@ func TestEvaluate_IdleNoSend_NeverCandidate(t *testing.T) {
 	c.Substate = tmux.SubstateIdleAtEmptyPrompt
 	c.Status = "waiting"
 	c.StatusChangedAt = now.Add(-3 * time.Hour) // waiting for ages
-	c.LastSentAt = time.Time{}                   // but we never sent anything
+	c.LastSentAt = time.Time{}                  // but we never sent anything
 	res := Evaluate(c, now)
 	if res.Candidate || res.Decision != DecisionSkipDwell {
 		t.Fatalf("deliberate idle (no send) must never be a candidate, got %v/%s", res.Candidate, res.Decision)

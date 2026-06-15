@@ -37,11 +37,11 @@ type Event struct {
 	Decision Decision `json:"decision"`
 	// Action is the action TAKEN (null/empty on skip and in observe mode — observe
 	// never takes an action). WouldHave carries the observe-mode would-be action.
-	Action       Action            `json:"action,omitempty"`
-	ActionParams map[string]any    `json:"action_params,omitempty"`
-	Caps         CapsState         `json:"caps"`
-	Outcome      string            `json:"outcome,omitempty"`
-	Stage        Mode              `json:"stage"`
+	Action       Action         `json:"action,omitempty"`
+	ActionParams map[string]any `json:"action_params,omitempty"`
+	Caps         CapsState      `json:"caps"`
+	Outcome      string         `json:"outcome,omitempty"`
+	Stage        Mode           `json:"stage"`
 	// WouldHave is present in observe mode: the action self-heal WOULD have taken
 	// had it been authorized. Empty when the decision was a skip.
 	WouldHave Action `json:"would_have,omitempty"`

@@ -87,10 +87,10 @@ type Config struct {
 // constructor the daemon uses in v1.9.67.
 func NewObserveEngine(caps Caps, sink EventSink) *Engine {
 	return &Engine{
-		mode:      ModeObserve,
-		caps:      caps,
-		policy:    NewPolicyMachine(caps),
-		sink:      sink,
+		mode:         ModeObserve,
+		caps:         caps,
+		policy:       NewPolicyMachine(caps),
+		sink:         sink,
 		exec:         nil,
 		prevSig:      map[string]string{},
 		confirmed:    map[string]confirmState{},

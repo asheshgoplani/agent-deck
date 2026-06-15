@@ -64,16 +64,16 @@ const (
 type Decision string
 
 const (
-	DecisionAct          Decision = "act"          // would act (observe: would_have set)
-	DecisionSkipHealthy  Decision = "skip_healthy"  // substate not a stuck class
-	DecisionSkipBusy     Decision = "skip_busy"     // live busy indicator (authoritative)
-	DecisionSkipMidTurn  Decision = "skip_midturn"  // fresh hook-running / output moved
-	DecisionSkipDwell    Decision = "skip_dwell"    // not dwelled past threshold yet
-	DecisionSkipConfirm  Decision = "skip_confirm"  // second read disagreed (2-read drop)
-	DecisionSkipStopped  Decision = "skip_stopped"  // session stopped (user-intentional)
-	DecisionSkipOptOut   Decision = "skip_optout"   // per-session/group opt-out
-	DecisionCapHit       Decision = "cap_hit"       // per-session or global cap exceeded
-	DecisionBreakerOpen  Decision = "breaker_open"  // circuit breaker / flicker quarantine
+	DecisionAct         Decision = "act"          // would act (observe: would_have set)
+	DecisionSkipHealthy Decision = "skip_healthy" // substate not a stuck class
+	DecisionSkipBusy    Decision = "skip_busy"    // live busy indicator (authoritative)
+	DecisionSkipMidTurn Decision = "skip_midturn" // fresh hook-running / output moved
+	DecisionSkipDwell   Decision = "skip_dwell"   // not dwelled past threshold yet
+	DecisionSkipConfirm Decision = "skip_confirm" // second read disagreed (2-read drop)
+	DecisionSkipStopped Decision = "skip_stopped" // session stopped (user-intentional)
+	DecisionSkipOptOut  Decision = "skip_optout"  // per-session/group opt-out
+	DecisionCapHit      Decision = "cap_hit"      // per-session or global cap exceeded
+	DecisionBreakerOpen Decision = "breaker_open" // circuit breaker / flicker quarantine
 )
 
 // stuckDwellThresholds are the §1.3 cause-specific dwell windows. usage_limit is

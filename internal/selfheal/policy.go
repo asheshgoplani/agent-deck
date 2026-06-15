@@ -22,8 +22,8 @@ type Caps struct {
 	GlobalPerHour int
 	// BreakerK is the consecutive-failed-recovery count that opens the per-session
 	// circuit breaker (default 2; 1 for auth_401, BreakerKAuth401) (§3.4).
-	BreakerK         int
-	BreakerKAuth401  int
+	BreakerK        int
+	BreakerKAuth401 int
 }
 
 // DefaultCaps returns the §3.3/§7 starting dials (tuned later from observe data).
@@ -40,10 +40,10 @@ func DefaultCaps() Caps {
 // CapsState is a read-only view of the cap counters for one decision, recorded in
 // the audit event's "caps" field.
 type CapsState struct {
-	Session6h   int `json:"session_6h"`
-	GlobalHour  int `json:"global_hour"`
-	BreakerFails int `json:"breaker_fails"`
-	BreakerOpen bool `json:"breaker_open"`
+	Session6h    int  `json:"session_6h"`
+	GlobalHour   int  `json:"global_hour"`
+	BreakerFails int  `json:"breaker_fails"`
+	BreakerOpen  bool `json:"breaker_open"`
 }
 
 // recovery is a single recorded would-be recovery attempt (timestamped for the
@@ -51,7 +51,7 @@ type CapsState struct {
 // state-machine still RECORDS would-be attempts so caps/backoff/breaker are
 // exercised and their decisions are logged (§ Stage 1 brief item 4).
 type recovery struct {
-	at      time.Time
+	at       time.Time
 	substate tmux.Substate
 }
 
