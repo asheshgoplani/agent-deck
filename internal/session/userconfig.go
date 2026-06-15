@@ -22,6 +22,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
+	"github.com/asheshgoplani/agent-deck/internal/safeio"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -2633,23 +2634,11 @@ func stripEmptyTOMLSections(data []byte) []byte {
 // so the .bak is never torn). No-op when the source does not exist yet (first
 // save). Part of the S2 data-loss safeguard.
 func backupConfigFile(configPath string) error {
-	src, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // nothing to back up yet
-		}
-		return err
-	}
-	bak := configPath + ".bak"
-	tmp := bak + ".tmp"
-	if err := os.WriteFile(tmp, src, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, bak); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
+	// safeio.Backup is the shared read → temp-write → rename copy (no torn .bak,
+	// 0600). A missing config.toml returns ("", nil) — a benign no-op, same as
+	// the previous bespoke implementation.
+	_, err := safeio.Backup(configPath)
+	return err
 }
 
 // ClearUserConfigCache clears the cached user config, allowing tests to reset state.

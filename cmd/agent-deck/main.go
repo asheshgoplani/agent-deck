@@ -1892,6 +1892,7 @@ func handleList(profile string, args []string) {
 			Model         string    `json:"model,omitempty"`
 			ModelVersion  string    `json:"model_version,omitempty"`
 			Status        string    `json:"status"`
+			Substate      string    `json:"substate,omitempty"` // Honest Status v2: additive refinement
 			TmuxSession   string    `json:"tmux_session,omitempty"`
 			Profile       string    `json:"profile"`
 			CreatedAt     time.Time `json:"created_at"`
@@ -1915,6 +1916,7 @@ func handleList(profile string, args []string) {
 				Tool:          inst.Tool,
 				Command:       inst.Command,
 				Status:        StatusString(inst.Status),
+				Substate:      string(inst.Substate()),
 				Profile:       storage.Profile(),
 				CreatedAt:     inst.CreatedAt,
 				SSHHost:       inst.SSHHost,
@@ -2387,7 +2389,12 @@ func handleStatus(profile string, args []string) {
 			Model        string `json:"model,omitempty"`
 			ModelVersion string `json:"model_version,omitempty"`
 			Status       string `json:"status"`
-			Path         string `json:"path"`
+			// Substate is the additive Honest-Status-v2 refinement
+			// (model-unavailable, auth-401, idle-at-empty-prompt, running).
+			// ADDED, never renamed: existing fields stay byte-stable; omitempty
+			// so the default "" never appears in output.
+			Substate string `json:"substate,omitempty"`
+			Path     string `json:"path"`
 		}
 		type statusJSON struct {
 			Waiting  int                 `json:"waiting"`
@@ -2412,11 +2419,12 @@ func handleStatus(profile string, args []string) {
 			for _, inst := range instances {
 				_ = inst.UpdateStatus()
 				sj := statusSessionJSON{
-					ID:     inst.ID,
-					Title:  inst.Title,
-					Tool:   inst.Tool,
-					Status: StatusString(inst.Status),
-					Path:   inst.ProjectPath,
+					ID:       inst.ID,
+					Title:    inst.Title,
+					Tool:     inst.Tool,
+					Status:   StatusString(inst.Status),
+					Substate: string(inst.Substate()),
+					Path:     inst.ProjectPath,
 				}
 				if modelInfo := inst.LaunchModelInfo(); modelInfo.ModelID != "" {
 					sj.ModelID = modelInfo.ModelID
@@ -2449,7 +2457,11 @@ func handleStatus(profile string, args []string) {
 				if strings.HasPrefix(path, home) {
 					path = "~" + path[len(home):]
 				}
-				fmt.Printf("  %s %-16s %-10s %-22s %s\n", symbol, inst.Title, inst.Tool, truncate(modelStatusDisplay(inst), 22), path)
+				suffix := ""
+				if lbl := SubstateLabel(inst.Substate()); lbl != "" {
+					suffix = "  [" + lbl + "]"
+				}
+				fmt.Printf("  %s %-16s %-10s %-22s %s%s\n", symbol, inst.Title, inst.Tool, truncate(modelStatusDisplay(inst), 22), path, suffix)
 			}
 			fmt.Println()
 		}

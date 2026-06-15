@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/safeio"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -47,21 +49,11 @@ func (s *StateDB) backupDBFile() error {
 	// doesn't depend on a sidecar -wal that the next write will overwrite.
 	_, _ = s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 
-	src, err := os.ReadFile(s.path)
-	if err != nil {
-		// Nothing to back up (file not created yet) or unreadable; either way,
-		// don't block the save.
-		return err
-	}
-	bak := s.path + ".bak"
-	// 0600: the db may carry session metadata; keep the backup as private as
-	// the original. Write+rename to avoid leaving a torn .bak.
-	tmp := bak + ".tmp"
-	if err := os.WriteFile(tmp, src, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, bak); err != nil {
-		_ = os.Remove(tmp)
+	// safeio.Backup performs the shared read → temp-write → rename copy (no torn
+	// .bak, 0600 to keep the snapshot as private as the original). The
+	// sqlite-specific WAL checkpoint above stays here; the copy itself is the
+	// generic primitive. A missing source returns ("", nil) — a benign no-op.
+	if _, err := safeio.Backup(s.path); err != nil {
 		return err
 	}
 	return nil

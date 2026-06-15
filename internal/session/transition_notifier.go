@@ -45,6 +45,14 @@ type TransitionNotificationEvent struct {
 	ToStatus       string    `json:"to_status"`
 	Timestamp      time.Time `json:"timestamp"`
 
+	// Substate is the additive Honest-Status-v2 refinement of ToStatus
+	// (model-unavailable, auth-401, idle-at-empty-prompt, running). It makes
+	// each status-transition event structured and substate-bearing so fleet
+	// telemetry (a future operational-KG sink) can distinguish a dead-model
+	// no-op loop from a genuinely-running session. Empty when no refinement
+	// applies. Observability hook only — does not affect delivery/dedup.
+	Substate string `json:"substate,omitempty"`
+
 	// LastOutputHash is a cheap stable signal (e.g. SHA-1 of the last N
 	// bytes of the child's tmux pane at transition time) used by the
 	// notifier's #1142 dedup to suppress repeated [EVENT] notifications

@@ -57,6 +57,21 @@ const (
 	StatusQueued Status = "queued"
 )
 
+// Substate is the additive Honest-Status-v2 refinement of a session's coarse
+// status (see tmux.Substate). It explains WHY a session is in its status
+// (model-unavailable, auth-401, idle-at-empty-prompt, running) without altering
+// the byte-stable canonical status. Re-exported here so the CLI/TUI can consume
+// it without importing the tmux package directly.
+type Substate = tmux.Substate
+
+const (
+	SubstateNone              = tmux.SubstateNone
+	SubstateRunning           = tmux.SubstateRunning
+	SubstateIdleAtEmptyPrompt = tmux.SubstateIdleAtEmptyPrompt
+	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
+	SubstateAuth401           = tmux.SubstateAuth401
+)
+
 const wrapperPlaceholder = "{command}"
 
 // PinMode anchors a session to a fixed slot within its group, exempt from the
@@ -7134,6 +7149,30 @@ func (i *Instance) Exists() bool {
 // GetTmuxSession returns the tmux session object
 func (i *Instance) GetTmuxSession() *tmux.Session {
 	return i.tmuxSession
+}
+
+// Substate returns the additive Honest-Status-v2 refinement for this session
+// (see Substate). It reads the live tmux pane and classifies it; SubstateNone
+// when there is no tmux session, the pane is dead, or the tool has no substate
+// heuristics. This is an enrichment of Status, not a replacement — it never
+// changes the canonical status reported by GetStatus/UpdateStatus.
+func (i *Instance) Substate() Substate {
+	tmuxSess := i.GetTmuxSession()
+	if tmuxSess == nil {
+		return SubstateNone
+	}
+	return tmuxSess.GetSubstate()
+}
+
+// CachedSubstate returns the last substate computed by a prior status check
+// WITHOUT capturing the pane. Use it on the TUI render hot path; the background
+// status loop keeps the value fresh.
+func (i *Instance) CachedSubstate() Substate {
+	tmuxSess := i.GetTmuxSession()
+	if tmuxSess == nil {
+		return SubstateNone
+	}
+	return tmuxSess.CachedSubstate()
 }
 
 // SetAcknowledgedFromShared applies an acknowledgment from another TUI instance

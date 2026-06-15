@@ -1182,6 +1182,11 @@ func handleSessionShow(profile string, args []string) {
 		"tool":                 inst.Tool,
 		"created_at":           inst.CreatedAt.Format(time.RFC3339),
 	}
+	// Honest Status v2: additive substate refinement (omit when none so the
+	// existing keys stay byte-stable for consumers that don't expect it).
+	if sub := string(inst.Substate()); sub != "" {
+		jsonData["substate"] = sub
+	}
 	modelInfo := inst.LaunchModelInfo()
 	addModelInfoJSON(jsonData, modelInfo)
 

@@ -283,6 +283,12 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			ToStatus:       to,
 			Timestamp:      time.Now(),
 			LastOutputHash: transitionEventOutputHash(inst),
+			// Honest Status v2 observability hook: stamp the additive substate so
+			// the emitted transition event is structured + substate-bearing. Use
+			// the CACHED value (no pane capture) — the daemon's own status poll
+			// just refreshed it, and an extra capture per transition would make
+			// this hot path heavier than the transcript-stat dedup signal above.
+			Substate: string(inst.CachedSubstate()),
 		}
 		_ = d.notifier.NotifyTransition(event)
 	}

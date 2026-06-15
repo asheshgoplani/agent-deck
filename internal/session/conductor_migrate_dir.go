@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/safeio"
 )
 
 // ConductorDefaultDir returns the default conductor base directory, IGNORING any
@@ -813,13 +814,23 @@ func removePlanSources(plan []migratePlanEntry) []string {
 		if e.action.Action != "move" && e.action.Action != "merge" {
 			continue
 		}
-		if alias, reason := destAliasesSource(e.srcPath, e.dstPath); alias {
+		// safeio.SafeRemove enforces the refusal; the per-entry alias check
+		// (destination still resolves back INTO this source → removing it would
+		// orphan the alias) is the StillReferenced predicate. Behavior is
+		// identical to the prior inline guard, including the warning text.
+		dstPath := e.dstPath
+		err := safeio.SafeRemove(e.srcPath, safeio.RemoveOptions{
+			StillReferenced: func(src string) (bool, string) {
+				return destAliasesSource(src, dstPath)
+			},
+		})
+		switch {
+		case errors.Is(err, safeio.ErrStillReferenced):
+			_, reason := destAliasesSource(e.srcPath, dstPath)
 			warns = append(warns, fmt.Sprintf(
 				"%s: NOT removing source %q — destination still aliases it (%s); left in place to avoid orphaning the only copy",
 				e.action.Name, e.srcPath, reason))
-			continue
-		}
-		if err := os.RemoveAll(e.srcPath); err != nil {
+		case err != nil:
 			warns = append(warns, fmt.Sprintf("%s: failed to remove migrated source %q: %v", e.action.Name, e.srcPath, err))
 		}
 	}

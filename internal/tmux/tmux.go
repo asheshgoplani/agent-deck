@@ -848,6 +848,13 @@ type Session struct {
 	// Last status returned (for debugging)
 	lastStableStatus string
 
+	// lastSubstate is the additive Honest-Status-v2 refinement computed
+	// alongside the coarse status during GetStatus (model-unavailable,
+	// auth-401, idle-at-empty-prompt, running). Surfaced via GetSubstate so the
+	// CLI/TUI/transition-event layers can report WHY a session is in its status
+	// without changing the byte-stable canonical status string.
+	lastSubstate Substate
+
 	// hashFallbackOnce gates the one-time hash_fallback_used WARN landmark.
 	// See logging_additions.go and logging-review G8.
 	hashFallbackOnce sync.Once
@@ -2928,6 +2935,10 @@ func (s *Session) GetStatus() (string, error) {
 	if !s.Exists() {
 		s.mu.Lock()
 		s.lastStableStatus = "inactive"
+		// No live pane → no live substate; clear it so CachedSubstate (used by
+		// the transition daemon + TUI) cannot emit/show a stale error substate
+		// for a stopped session.
+		s.lastSubstate = SubstateNone
 		s.mu.Unlock()
 		statusLog.Debug("session_inactive", slog.String("session", shortName))
 		return "inactive", nil
@@ -2937,6 +2948,7 @@ func (s *Session) GetStatus() (string, error) {
 	if s.IsPaneDead() {
 		s.mu.Lock()
 		s.lastStableStatus = "inactive"
+		s.lastSubstate = SubstateNone
 		s.mu.Unlock()
 		statusLog.Debug("pane_dead", slog.String("session", shortName))
 		return "inactive", nil
@@ -3027,6 +3039,44 @@ func (s *Session) GetStatus() (string, error) {
 		} else if err == nil {
 			s.ensureStateTrackerLocked()
 
+			// Honest Status v2: compute the additive substate from the content we
+			// already captured (pure string ops; no extra pane capture). This
+			// keeps lastSubstate fresh for the reporting layers.
+			s.lastSubstate = s.classifySubstate(content)
+
+			// Honest Status v2: a model-unavailable no-op loop ("X is currently
+			// unavailable" / "Crunched for 0s") is the Fable-down case that this
+			// feature exists to surface. It must short-circuit to "error" BEFORE
+			// the busy check: the "✶ Crunched for 0s" completion line carries a
+			// decorative asterisk that hasBusyIndicator would otherwise misread
+			// as an active spinner and report "running" — the exact false-alive
+			// this feature fixes. classifySubstate already excluded a real
+			// (non-zero) crunch, so only the genuine no-op reaches here.
+			if s.lastSubstate == SubstateModelUnavailable {
+				s.resetPromptNoBusyHoldLocked()
+				s.lastStableStatus = "error"
+				s.startupAt = time.Time{}
+				statusLog.Debug("model_unavailable_noop", slog.String("session", shortName))
+				return "error", nil
+			}
+
+			// A TERMINAL auth/connection-failure banner (#1400) routes to "error"
+			// BEFORE the busy check: a real 401 stops the spinner, so a stale busy
+			// glyph lingering in the same window must not mask the failure as
+			// "running". hasErrorBannerIndicator already EXCLUDES the in-flight
+			// retry case (rendered behind the "⎿" tool-result connector with a
+			// live spinner), so a session that is genuinely retrying is NOT
+			// matched here and still reaches the busy check below — preserving
+			// #1400's "a retry in progress is still working" intent. The substate
+			// (in s.lastSubstate) names WHICH failure for the TUI glyph.
+			if s.hasErrorBannerIndicator(content) {
+				s.resetPromptNoBusyHoldLocked()
+				s.lastStableStatus = "error"
+				s.startupAt = time.Time{}
+				statusLog.Debug("error_banner_detected", slog.String("session", shortName), slog.String("substate", string(s.lastSubstate)))
+				return "error", nil
+			}
+
 			// Check for explicit busy indicator (spinner, "ctrl+c to interrupt")
 			isExplicitlyBusy := s.hasBusyIndicator(content)
 			// Debug: show last line of content for this session
@@ -3073,17 +3123,9 @@ func (s *Session) GetStatus() (string, error) {
 				s.stateTracker.lastHash = currentHash
 			}
 
-			// Not busy. Error banner takes precedence over prompt detection
-			// (#1400): after an auth/connection failure the tool redraws its
-			// input prompt below the banner, so prompt detection alone would
-			// report "waiting" for a session that cannot make progress.
-			if s.hasErrorBannerIndicator(content) {
-				s.resetPromptNoBusyHoldLocked()
-				s.lastStableStatus = "error"
-				s.startupAt = time.Time{}
-				statusLog.Debug("error_banner_detected", slog.String("session", shortName))
-				return "error", nil
-			}
+			// (Auth/connection-failure banners and the model-unavailable no-op
+			// already routed to "error" above, before the busy check, so by here
+			// the session is neither wedged nor busy.)
 
 			// Not busy. Check for prompt indicators to distinguish YELLOW vs fall-through.
 			hasPrompt := s.hasPromptIndicator(content)
@@ -3912,6 +3954,65 @@ func (s *Session) hasErrorBannerIndicator(content string) bool {
 		s.cachedPromptDetectorTool = tool
 	}
 	return s.cachedPromptDetector.HasErrorBanner(content)
+}
+
+// classifySubstate computes the additive Honest-Status-v2 substate for the
+// pane content (model-unavailable, auth-401, idle-at-empty-prompt, running).
+// Tool is inferred from the session's fields; non-claude tools yield
+// SubstateNone. Pure with respect to session state.
+func (s *Session) classifySubstate(content string) Substate {
+	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
+	if tool == "" {
+		return SubstateNone
+	}
+	if s.cachedPromptDetector == nil || s.cachedPromptDetectorTool != tool {
+		s.cachedPromptDetector = NewPromptDetector(tool)
+		s.cachedPromptDetectorTool = tool
+	}
+	return s.cachedPromptDetector.ClassifySubstate(content)
+}
+
+// GetSubstate captures the pane once and returns the additive Honest-Status-v2
+// substate (see Substate). It is an independent read used by the status-reporting
+// layers (CLI status --json, TUI label/glyph, transition events); it does NOT
+// influence the canonical status returned by GetStatus, so existing status
+// behavior stays byte-stable. Returns SubstateNone on a dead/absent pane, a
+// capture failure, or a non-claude tool.
+func (s *Session) GetSubstate() Substate {
+	if !s.Exists() || s.IsPaneDead() {
+		// A dead/absent pane has no live substate; clear the cached value so a
+		// stale auth/model-unavailable glyph does not linger on a stopped
+		// session in the TUI.
+		s.mu.Lock()
+		s.lastSubstate = SubstateNone
+		s.mu.Unlock()
+		return SubstateNone
+	}
+	rawContent, err := s.CapturePane()
+	if err != nil {
+		s.mu.Lock()
+		cached := s.lastSubstate
+		s.mu.Unlock()
+		return cached
+	}
+	content := StripANSI(rawContent)
+	// Hold s.mu across classifySubstate: it mutates the shared
+	// cachedPromptDetector, which GetStatus also touches under the same lock.
+	s.mu.Lock()
+	sub := s.classifySubstate(content)
+	s.lastSubstate = sub
+	s.mu.Unlock()
+	return sub
+}
+
+// CachedSubstate returns the last substate computed by GetStatus/GetSubstate
+// WITHOUT capturing the pane. Use it on the TUI render hot path, where the
+// background status loop already keeps the value fresh and a per-row capture
+// would be too expensive.
+func (s *Session) CachedSubstate() Substate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastSubstate
 }
 
 // lastNLines splits content into lines, trims trailing blank lines, and returns

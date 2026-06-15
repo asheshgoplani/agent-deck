@@ -3300,6 +3300,7 @@ func (h *Home) getSelectedSession() *session.Instance {
 
 type sessionRenderState struct {
 	status    session.Status
+	substate  session.Substate // Honest Status v2: additive refinement (model-unavailable, auth-401, ...)
 	tool      string
 	paneTitle string // Current task description from tmux pane title (stripped of spinner/done markers)
 }
@@ -3386,8 +3387,9 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			continue
 		}
 		state := sessionRenderState{
-			status: inst.GetStatusThreadSafe(),
-			tool:   inst.GetToolThreadSafe(),
+			status:   inst.GetStatusThreadSafe(),
+			substate: inst.CachedSubstate(),
+			tool:     inst.GetToolThreadSafe(),
 		}
 		// Look up pane title from the already-refreshed tmux cache.
 		// Only RefreshPaneInfoCache (called from backgroundStatusUpdate) keeps
@@ -14488,6 +14490,7 @@ func (h *Home) renderSessionItem(
 		instState = h.getSessionRenderState(inst)
 	}
 	instStatus := instState.status
+	instSubstate := instState.substate
 	instTool := instState.tool
 
 	// Tree style for connectors - Use ColorText for clear visibility of box-drawing characters
@@ -14549,6 +14552,21 @@ func (h *Home) renderSessionItem(
 	default:
 		statusIcon = "○"
 		statusStyle = SessionStatusIdle
+	}
+
+	// Honest Status v2: a distinct glyph for the two error substates a
+	// supervisor must act on differently — a dead-model no-op loop and an
+	// auth/login failure both render as "error", but a generic "✕" hides which.
+	// "⚡" = model unavailable (the Fable-down no-op), "🔒" = auth/login needed.
+	// Gated on StatusError so a stale cached substate cannot leak the glyph onto
+	// a session that is no longer in error (e.g. a stopped session).
+	if instStatus == session.StatusError {
+		switch instSubstate {
+		case session.SubstateModelUnavailable:
+			statusIcon = "⚡"
+		case session.SubstateAuth401:
+			statusIcon = "🔒"
+		}
 	}
 
 	status := statusStyle.Render(statusIcon)

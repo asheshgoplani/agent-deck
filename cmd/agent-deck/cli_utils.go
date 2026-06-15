@@ -392,6 +392,25 @@ func StatusString(status session.Status) string {
 	}
 }
 
+// SubstateLabel returns a short human label for an additive Honest-Status-v2
+// substate, or "" when there is no distinct refinement to show. Used by the
+// verbose CLI status output (and mirrored in the TUI) so a supervisor can tell
+// a dead-model no-op loop apart from a genuinely-running session.
+func SubstateLabel(sub session.Substate) string {
+	switch sub {
+	case session.SubstateModelUnavailable:
+		return "model unavailable"
+	case session.SubstateAuth401:
+		return "auth (login)"
+	case session.SubstateIdleAtEmptyPrompt:
+		return "idle at prompt"
+	case session.SubstateRunning:
+		return "working"
+	default:
+		return ""
+	}
+}
+
 // TruncateID returns a shortened ID for display
 func TruncateID(id string) string {
 	if len(id) > 12 {
