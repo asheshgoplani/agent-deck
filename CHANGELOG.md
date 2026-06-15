@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.68] - 2026-06-15
+
+### Added
+
+- **Command Center v1: live fleet status panel — SSE auto-update, completion notifications, filtered active-session lists, two-way input.** A new first-tab "Command Center" in `agent-deck web` that productizes the hand-made fleet status views into a live feature. It renders the synthesized cross-project god-view off a new fingerprint-diffed SSE stream (`/events/command-center`), so conductor lights and per-conductor session lists update instantly with no page reload and no polling. Each conductor row shows its plain-language "currently working on" plus its active children, with error/stopped sessions filtered out (no noise) and Honest-Status v2 substates (model-unavailable / auth-401 / idle-at-empty-prompt) surfaced distinctly. Running→done/waiting transitions fire "X just finished" completion toasts. A "decisions waiting on you" column is parsed live from the agent-deck conductor's OPEN-ITEMS. The two-way input box routes a typed instruction to Maestro (default) or a chosen conductor through the supported `session send` primitive — argv-safe and validated against a server-authoritative target allowlist — with the reply reflected via the SSE feed. The panel is reachable on phone, tablet, and desktop. Privacy is structural: it inherits the existing web server loopback/Tailscale + token + CSRF + mutation gates and ships no secrets in its payload. Server side adds `GET /api/command-center/status`, `GET /events/command-center`, and `POST /api/command-center/ask`, all behind the existing auth/CSRF/mutation/rate-limit middleware. Read endpoints are read-only over the registry and conductor artifacts; the status.json read and failed-send audit log are size-bounded on the hot path.
+
 ## [1.9.67] - 2026-06-15
 
 ### Added
