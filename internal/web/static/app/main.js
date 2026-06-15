@@ -9,7 +9,9 @@ import {
   selectedIdSignal,
   connectionSignal,
   authTokenSignal,
+  commandCenterSignal,
 } from './state.js'
+import { addToast } from './Toast.js'
 
 // ---------- Auth token extraction ----------
 
@@ -79,6 +81,60 @@ export function stopSSE() {
     _menuSource.close()
     _menuSource = null
   }
+  if (_ccSource) {
+    _ccSource.close()
+    _ccSource = null
+  }
+}
+
+// ---------- Command Center SSE ----------
+// A second stream alongside the menu SSE, carrying the synthesized cross-
+// project god-view snapshot. Live by construction (fingerprint-diffed
+// server-side), so the panel never polls. recentlyCompleted entries drive
+// "✅ X just finished" notifications.
+
+let _ccSource = null
+// Track which completion ids we've already toasted so a steady-state re-emit
+// of the same snapshot (or a reconnect) doesn't re-fire notifications.
+const _ccSeenCompletions = new Set()
+
+export function startCommandCenterSSE() {
+  if (_ccSource) return
+
+  const token = authTokenSignal.value
+  const url = token
+    ? '/events/command-center?token=' + encodeURIComponent(token)
+    : '/events/command-center'
+
+  const source = new EventSource(url)
+  _ccSource = source
+
+  // CRITICAL: the Go server emits this event with type "command-center"
+  // (handlers_command_center.go: writeSSEEvent(w, flusher, "command-center", snapshot)).
+  source.addEventListener('command-center', (event) => {
+    try {
+      const snapshot = JSON.parse(event.data)
+      if (snapshot && typeof snapshot === 'object') {
+        commandCenterSignal.value = snapshot
+        const done = Array.isArray(snapshot.recentlyCompleted) ? snapshot.recentlyCompleted : []
+        for (const c of done) {
+          const key = (c && (c.id || '')) + ':' + (c && (c.at || ''))
+          if (_ccSeenCompletions.has(key)) continue
+          _ccSeenCompletions.add(key)
+          if (c && c.title) addToast(`✅ ${c.title} just finished`, 'success')
+        }
+        // Bound the seen-set so it can't grow unbounded over a long session.
+        if (_ccSeenCompletions.size > 200) {
+          _ccSeenCompletions.clear()
+        }
+      }
+    } catch (_) {
+      // malformed JSON; ignore
+    }
+  })
+
+  // The command-center stream shares the connection-state signal via the menu
+  // stream; we don't flip it here to avoid fighting the menu reconnect logic.
 }
 
 // ---------- Initial menu load + SSE kick-off ----------
@@ -92,10 +148,12 @@ export async function loadMenu() {
     // we're offline.
     sessionsLoadedSignal.value = true
     startSSE()
+    startCommandCenterSSE()
   } catch (_) {
     connectionSignal.value = 'disconnected'
     // Still start SSE so it can reconnect when server comes back
     startSSE()
+    startCommandCenterSSE()
   }
 }
 

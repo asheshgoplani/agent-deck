@@ -1023,3 +1023,90 @@ body[data-rail="hidden"] .rightrail { display: none; }
   margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border);
   font-family: var(--mono); font-size: 11px; color: var(--muted);
 }
+
+/* ── Command Center (the embedded live fleet god-view) ───────────────────── */
+.cc {
+  display: flex; flex-direction: column; min-height: 0; flex: 1;
+  padding: 18px 20px 92px; overflow-y: auto;
+}
+.cc-top { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+.cc-top h1 { font-size: 18px; margin: 0; color: var(--text-hi); }
+.cc-live { font-size: 11.5px; color: var(--tn-green); }
+.cc-live.stale { color: var(--tn-yellow); }
+.cc-totals { font-size: 11.5px; color: var(--muted); margin-left: auto; font-family: var(--mono); }
+.cc-empty { color: var(--muted); font-size: 13px; padding: 24px 0; }
+.cc h2 {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 1.2px;
+  color: var(--muted-2); margin: 4px 0 8px; font-weight: 700;
+}
+.cc-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 760px) { .cc-cols { grid-template-columns: 1fr; } }
+.cc-col { min-width: 0; }
+
+/* decisions */
+.cc-ask {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 9px; padding: 7px 10px; margin-bottom: 6px;
+}
+.cc-ask-id { color: var(--tn-yellow); font-weight: 700; flex: none; font-family: var(--mono); font-size: 11.5px; }
+.cc-ask-text { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text); }
+.cc-cmt {
+  flex: none; cursor: pointer; color: var(--muted); font-size: 13px;
+  border: 0; background: none; padding: 2px 4px;
+}
+.cc-cmt:hover { color: var(--accent); }
+
+/* conductor rows */
+.cc-cd {
+  border: 1px solid var(--border); border-radius: 9px;
+  margin-bottom: 6px; background: var(--panel); overflow: hidden;
+}
+.cc-cd.open { border-color: var(--border-hi, var(--border)); }
+.cc-cd-head {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; background: none; border: 0; cursor: pointer;
+  color: var(--text); font: inherit; text-align: left;
+}
+.cc-cd-head:hover { background: var(--card); }
+.cc-dot { flex: none; }
+.cc-nm { font-weight: 600; flex: none; width: 96px; color: var(--text-hi); }
+.cc-ac {
+  color: var(--muted); font-size: 11.5px; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cc-lc { flex: none; font-size: 10.5px; color: var(--muted-2); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.cc-cd-body { padding: 6px 12px 10px 30px; border-top: 1px solid var(--border); }
+.cc-srow { display: flex; gap: 7px; align-items: center; font-size: 11.5px; color: var(--text-dim); padding: 2px 0; }
+.cc-sd { flex: none; font-size: 9px; }
+.cc-stt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.cc-sub {
+  flex: none; font-size: 10px; color: var(--tn-red);
+  border: 1px solid var(--tn-red); border-radius: 5px; padding: 0 5px;
+  font-family: var(--mono);
+}
+.cc-sdone { font-size: 11px; color: var(--muted-2); padding: 3px 0; }
+
+/* two-way input bar */
+.cc-input {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  background: var(--panel); border-top: 1px solid var(--border);
+  padding: 9px 16px; display: flex; gap: 9px; align-items: center; z-index: 5;
+}
+.cc-input select {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); font: inherit; font-size: 12px; padding: 7px 8px; flex: none; max-width: 200px;
+}
+.cc-input textarea {
+  flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 9px;
+  color: var(--text); font: inherit; font-size: 13px; padding: 8px 11px; resize: none; height: 38px;
+}
+.cc-input textarea:focus { outline: none; border-color: var(--accent); height: 56px; }
+.cc-send {
+  font: inherit; font-weight: 600; color: var(--bg); background: var(--accent);
+  border: 0; padding: 8px 15px; border-radius: 9px; cursor: pointer; flex: none;
+}
+.cc-send:disabled { opacity: .5; cursor: default; }
+.cc-st { font-size: 11px; flex: none; color: var(--muted); min-width: 120px; }
+.cc-st.ok { color: var(--tn-green); }
+.cc-st.err { color: var(--tn-red); }

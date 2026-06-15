@@ -56,19 +56,25 @@ type MenuGroup struct {
 
 // MenuSession contains metadata for a session item.
 type MenuSession struct {
-	ID              string         `json:"id"`
-	Title           string         `json:"title"`
-	Tool            string         `json:"tool"`
-	ModelID         string         `json:"modelId,omitempty"`
-	Model           string         `json:"model,omitempty"`
-	ModelVersion    string         `json:"modelVersion,omitempty"`
-	CanFork         bool           `json:"canFork"`
-	Status          session.Status `json:"status"`
-	GroupPath       string         `json:"groupPath"`
-	ProjectPath     string         `json:"projectPath"`
-	ParentSessionID string         `json:"parentSessionId,omitempty"`
-	Order           int            `json:"order"`
-	TmuxSession     string         `json:"tmuxSession,omitempty"`
+	ID           string         `json:"id"`
+	Title        string         `json:"title"`
+	Tool         string         `json:"tool"`
+	ModelID      string         `json:"modelId,omitempty"`
+	Model        string         `json:"model,omitempty"`
+	ModelVersion string         `json:"modelVersion,omitempty"`
+	CanFork      bool           `json:"canFork"`
+	Status       session.Status `json:"status"`
+	// Substate is the additive Honest-Status-v2 refinement of Status
+	// (e.g. "model-unavailable", "auth-401", "idle-at-empty-prompt"). It
+	// explains WHY a session is in its coarse status so consumers like the
+	// Command Center can surface model-unavailable/401 distinctly instead of
+	// hiding them as plain "running". Empty when there is no refinement.
+	Substate        string `json:"substate,omitempty"`
+	GroupPath       string `json:"groupPath"`
+	ProjectPath     string `json:"projectPath"`
+	ParentSessionID string `json:"parentSessionId,omitempty"`
+	Order           int    `json:"order"`
+	TmuxSession     string `json:"tmuxSession,omitempty"`
 	// TmuxSocketName is the tmux -L selector captured at session creation
 	// (Instance.TmuxSocketName). Surfaced so the web PTY bridge can reach
 	// sessions running on an isolated socket (issue #687, v1.7.50).
@@ -234,6 +240,7 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		ModelVersion:       modelInfo.Version,
 		CanFork:            inst.CanFork(),
 		Status:             inst.GetStatusThreadSafe(),
+		Substate:           string(inst.CachedSubstate()),
 		GroupPath:          inst.GroupPath,
 		ProjectPath:        inst.ProjectPath,
 		ParentSessionID:    inst.ParentSessionID,

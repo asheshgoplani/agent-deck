@@ -18,6 +18,7 @@ import { TweaksPanel } from './TweaksPanel.js'
 import { TerminalPane } from './panes/TerminalPane.js'
 import { CostsPane } from './panes/CostsPane.js'
 import { FleetPane } from './panes/FleetPane.js'
+import { CommandCenterPane } from './panes/CommandCenterPane.js'
 import { ArchivedPane } from './panes/ArchivedPane.js'
 import { StubPane } from './panes/StubPane.js'
 import { SearchPane } from './panes/SearchPane.js'
@@ -102,6 +103,7 @@ function Panes({ tab }) {
     <div style=${{ display: tab === 'terminal' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
       <${TerminalPane}/>
     </div>
+    ${tab === 'command-center' && html`<${CommandCenterPane}/>`}
     ${tab === 'fleet'     && html`<${FleetPane}/>`}
     ${tab === 'costs'     && html`<${CostsPane}/>`}
     ${tab === 'search'    && html`<${SearchPane}/>`}

@@ -7,7 +7,7 @@
 import { html } from 'htm/preact'
 import { Logo, Icon, ICONS } from './icons.js'
 import { menuModelSignal } from './dataModel.js'
-import { connectionSignal, profilesSignal } from './state.js'
+import { connectionSignal, profilesSignal, commandCenterSignal } from './state.js'
 import {
   activeTabSignal, paletteOpenSignal, tweaksOpenSignal,
   railSignal, profileSignal,
@@ -15,6 +15,7 @@ import {
 import { ToastHistoryDrawerToggle } from './ToastHistoryDrawer.js'
 
 const TABS = [
+  { id: 'command-center', label: 'Command Center' },
   { id: 'fleet',     label: 'Fleet'     },
   { id: 'terminal',  label: 'Terminal'  },
   { id: 'mcp',       label: 'MCPs'      },
@@ -33,6 +34,8 @@ export function Topbar() {
   const { sessions } = menuModelSignal.value
   const sessionsBadge = sessions.filter(s => s.status === 'waiting' || s.status === 'error').length
   const pendingNeeds = sessions.reduce((n, s) => n + (s.pendingNeeds || 0), 0)
+  const cc = commandCenterSignal.value
+  const decisionsBadge = cc && Array.isArray(cc.decisionsWaiting) ? cc.decisionsWaiting.length : 0
 
   const connClass = conn === 'connected' ? '' : 'off'
   const connDotStyle = conn === 'connected'
@@ -59,6 +62,7 @@ export function Topbar() {
               ${t.label}
               ${t.id === 'conductor' && pendingNeeds > 0 && html`<span class="badge">${pendingNeeds}</span>`}
               ${t.id === 'fleet' && sessionsBadge > 0 && html`<span class="badge">${sessionsBadge}</span>`}
+              ${t.id === 'command-center' && decisionsBadge > 0 && html`<span class="badge">${decisionsBadge}</span>`}
             </button>
           `)}
         </div>

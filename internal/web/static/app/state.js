@@ -174,6 +174,13 @@ export const profilesSignal = signal(null)
 // the first poll lands; consumers handle the null case.
 export const systemStatsSignal = signal(null)
 
+// Command Center snapshot from the /events/command-center SSE feed (the
+// embedded live fleet god-view — see COMMAND-CENTER-DESIGN.md). Shape:
+// { profile, generatedAt, conductors[], totals, decisionsWaiting[],
+//   recentlyCompleted[], askTargets[] }. Defaults to null until the first
+// SSE snapshot lands; the pane handles the null case with a skeleton.
+export const commandCenterSignal = signal(null)
+
 export async function loadArchivedSessions() {
   try {
     const data = await apiFetch('GET', '/api/sessions/archived')
