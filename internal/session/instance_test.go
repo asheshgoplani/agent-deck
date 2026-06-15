@@ -1743,6 +1743,38 @@ func TestBuildCodexCommand_InlineCodexHomeDropsStaleID(t *testing.T) {
 	}
 }
 
+func TestCanRestartCursor(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	inst := NewInstanceWithTool("cursor-restart-test", "/tmp", "cursor")
+	inst.Command = "sleep 60"
+	err := inst.Start()
+	if err != nil {
+		t.Fatalf("Failed to start session: %v", err)
+	}
+	defer func() { _ = inst.Kill() }()
+
+	inst.Status = StatusRunning
+
+	if !inst.CanRestart() {
+		t.Fatal("CanRestart() should return true for a running Cursor session with live tmux pane")
+	}
+
+	// Simulate persisted command from a real Cursor session before restart.
+	inst.Command = "cursor agent"
+
+	if err := inst.Restart(); err != nil {
+		t.Fatalf("Restart failed: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if inst.tmuxSession == nil || !inst.tmuxSession.Exists() {
+		t.Fatal("tmux session should exist after Restart")
+	}
+	if inst.Status == StatusError {
+		t.Fatalf("after Restart, Status = %s; want != error", inst.Status)
+	}
+}
+
 func TestBuildCursorCommand(t *testing.T) {
 	inst := NewInstanceWithTool("c1", "/tmp/c1", "cursor")
 	inst.Command = ""

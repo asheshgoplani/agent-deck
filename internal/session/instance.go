@@ -6082,6 +6082,28 @@ func (i *Instance) Restart() error {
 		return nil
 	}
 
+	// If Cursor session AND tmux session exists, use respawn-pane.
+	if i.Tool == "cursor" && i.tmuxSession != nil && i.tmuxSession.Exists() {
+		resumeCmd, containerName, err := i.prepareCommand(i.buildCursorCommand(i.Command, true))
+		if err != nil {
+			return err
+		}
+		if containerName != "" {
+			i.SandboxContainer = containerName
+		}
+		sessionLog.Info("restart_cursor_respawn", slog.String("command", resumeCmd))
+
+		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
+			sessionLog.Info("restart_cursor_respawn_failed", slog.String("error", err.Error()))
+			return fmt.Errorf("failed to restart Cursor session: %w", err)
+		}
+
+		sessionLog.Info("restart_cursor_respawn_succeeded")
+		i.ensureProfileEnv()
+		i.Status = StatusWaiting
+		return nil
+	}
+
 	// If custom tool with session resume support AND tmux session exists, use respawn-pane.
 	if i.CanRestartGeneric() && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		toolDef := GetToolDef(i.Tool)
@@ -6556,6 +6578,11 @@ func (i *Instance) CanRestart() bool {
 	// Pi sessions are scoped to an Agent Deck instance-specific session dir and
 	// can always be relaunched with --continue.
 	if i.Tool == "pi" {
+		return true
+	}
+
+	// Cursor sessions resume via --continue on restart (workspace-scoped chat).
+	if i.Tool == "cursor" {
 		return true
 	}
 
