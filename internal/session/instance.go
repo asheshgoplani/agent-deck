@@ -6100,6 +6100,8 @@ func (i *Instance) Restart() error {
 
 		sessionLog.Info("restart_cursor_respawn_succeeded")
 		i.ensureProfileEnv()
+		i.sweepDuplicateToolSessions()
+		i.CaptureLoadedMCPs()
 		i.Status = StatusWaiting
 		return nil
 	}
