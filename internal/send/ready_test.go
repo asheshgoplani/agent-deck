@@ -92,6 +92,10 @@ func TestWaitForAgentReady_RespectsTimeout(t *testing.T) {
 	if elapsed > 3*requested {
 		t.Fatalf("timeout ignored: elapsed=%v requested=%v", elapsed, requested)
 	}
+	lower := requested / 2
+	if elapsed < lower {
+		t.Fatalf("returned too quickly: elapsed=%v requested=%v lower=%v", elapsed, requested, lower)
+	}
 	if mock.calls.Load() == 0 {
 		t.Error("expected GetStatus to be polled")
 	}

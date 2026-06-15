@@ -2191,8 +2191,8 @@ func handleSessionSend(profile string, args []string) {
 	// recipient silently fails at ~80s.
 	if !*noWait {
 		if err := send.WaitForAgentReady(tmuxSess, inst.Tool, *timeout, send.PromptGates{
-			ClaudeComposer: inst.Tool == "claude",
-			CodexPrompt:    inst.Tool == "codex",
+			ClaudeComposer: session.IsClaudeCompatible(inst.Tool),
+			CodexPrompt:    session.IsCodexCompatible(inst.Tool),
 		}); err != nil {
 			out.Error(fmt.Sprintf("timeout waiting for agent: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)

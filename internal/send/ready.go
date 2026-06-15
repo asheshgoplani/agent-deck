@@ -37,7 +37,7 @@ type PromptGates struct {
 func WaitForAgentReady(target AgentReadyChecker, tool string, timeout time.Duration, gates PromptGates) error {
 	const pollInterval = 200 * time.Millisecond
 	if timeout <= 0 {
-		timeout = 80 * time.Second
+		timeout = DefaultAgentReadyTimeout
 	}
 	maxAttempts := int(timeout / pollInterval)
 	if maxAttempts < 1 {
@@ -121,13 +121,11 @@ func paneShowsReadyPrompt(target AgentReadyChecker, tool string, gates PromptGat
 	if paneLooksBusy(content) {
 		return false
 	}
-	if gates.ClaudeComposer && HasCurrentComposerPrompt(content) {
-		return true
+	if gates.ClaudeComposer {
+		return HasCurrentComposerPrompt(content)
 	}
 	if gates.CodexPrompt {
-		if tmux.NewPromptDetector("codex").HasPrompt(content) {
-			return true
-		}
+		return tmux.NewPromptDetector("codex").HasPrompt(content)
 	}
 	return tmux.NewPromptDetector(tool).HasPrompt(content)
 }
