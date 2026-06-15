@@ -31,6 +31,14 @@ func TestMapEventToStatus(t *testing.T) {
 		{"on_session_start", "waiting"},
 		{"on_session_end", "dead"},
 		{"subagent_stop", ""},
+		// Cursor Agent CLI hook events (camelCase)
+		{"sessionStart", "waiting"},
+		{"beforeSubmitPrompt", "running"},
+		{"preToolUse", "running"},
+		{"postToolUse", "waiting"},
+		{"postToolUseFailure", "waiting"},
+		{"stop", "waiting"},
+		{"sessionEnd", "dead"},
 	}
 
 	for _, tt := range tests {
@@ -156,6 +164,12 @@ func TestHookPayload_Unmarshal(t *testing.T) {
 			input:   `{"hook_event_name":"UserPromptSubmit","session_id":"ghi-789","extra":"ignored"}`,
 			event:   "UserPromptSubmit",
 			session: "ghi-789",
+		},
+		{
+			name:    "Cursor stop with conversation_id",
+			input:   `{"hook_event_name":"stop","conversation_id":"conv-123"}`,
+			event:   "stop",
+			session: "",
 		},
 	}
 

@@ -199,7 +199,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	hookStatuses := make(map[string]*HookStatus, len(instances))
 	for _, inst := range instances {
 		byID[inst.ID] = inst
-		if IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" {
+		if IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "cursor" {
 			if hs := d.hookStatusForInstance(inst.ID); hs != nil {
 				// Issue #1349: only let a hook status rebind the session id when
 				// the instance is actually LIVE (running/waiting/idle with a real
@@ -645,6 +645,11 @@ func terminalHookTransitionCandidate(tool string, hs *HookStatus) (hookTransitio
 		}
 	case "codex":
 		if isCodexTerminalHookEvent(event) {
+			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt}, true
+		}
+	case "cursor":
+		// sessionStart is intentionally excluded (initial prompt isn't task completion).
+		if event == "stop" {
 			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt}, true
 		}
 	}

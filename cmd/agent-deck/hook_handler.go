@@ -31,6 +31,7 @@ var validInstanceID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 type hookPayload struct {
 	HookEventName string          `json:"hook_event_name"`
 	SessionID     string          `json:"session_id"`
+	ConversationID string         `json:"conversation_id"`
 	Source        string          `json:"source"`
 	Matcher       json.RawMessage `json:"matcher,omitempty"`
 	// Cwd is the session's working directory (PROJECT_DIR) as reported by
@@ -79,46 +80,52 @@ type hookStatusFile struct {
 	TranscriptPath string `json:"transcript_path,omitempty"`
 }
 
-// mapEventToStatus maps a Claude Code hook event to an agent-deck status string.
+// normalizeHookEventKey folds hook event names from Claude (PascalCase), Cursor
+// (camelCase), Hermes (snake_case), and Codex into a single lookup key.
+func normalizeHookEventKey(event string) string {
+	s := strings.ToLower(strings.TrimSpace(event))
+	return strings.NewReplacer("_", "", "-", "", " ", "").Replace(s)
+}
+
+func isStopHookEvent(event string) bool {
+	return normalizeHookEventKey(event) == "stop"
+}
+
+// mapEventToStatus maps a hook event to an agent-deck status string.
 // Status semantics in agent-deck:
-//   - "running" = Claude is actively processing (green)
-//   - "waiting" = Claude is at the prompt, waiting for user input (orange)
+//   - "running" = agent is actively processing (green)
+//   - "waiting" = agent is at the prompt, waiting for user input (orange)
 //   - "dead"    = Session ended
-//
-// Gemini mappings:
-//   - "BeforeAgent" = running
-//   - "AfterAgent"  = waiting
 func mapEventToStatus(event string) string {
-	switch event {
-	case "SessionStart":
-		return "waiting" // Claude at initial prompt, waiting for user input
-	case "BeforeAgent":
+	switch normalizeHookEventKey(event) {
+	case "sessionstart":
+		return "waiting" // at initial prompt, waiting for user input
+	case "beforeagent":
 		return "running" // Gemini received user input and is processing
-	case "AfterAgent":
+	case "afteragent":
 		return "waiting" // Gemini completed response, back to waiting
-	// Hermes shell hook events
-	case "pre_tool_call":
-		return "running" // Hermes is executing a tool call
-	case "post_tool_call":
-		return "waiting" // Hermes finished a tool call, back at prompt
-	case "on_session_start":
+	case "pretoolcall", "pretooluse":
+		return "running" // executing a tool call
+	case "posttoolcall", "posttooluse", "posttoolusefailure":
+		return "waiting" // finished a tool call, back at prompt
+	case "onsessionstart":
 		return "waiting" // Hermes session started, waiting for first prompt
-	case "on_session_end":
+	case "onsessionend":
 		return "dead" // Hermes session ended
-	case "UserPromptSubmit":
-		return "running" // User sent prompt, Claude is processing
-	case "Stop":
-		return "waiting" // Claude finished, back at prompt waiting for user
-	case "PermissionRequest":
-		return "waiting" // Claude needs permission approval
-	case "Notification":
+	case "userpromptsubmit", "beforesubmitprompt":
+		return "running" // user sent prompt, agent is processing
+	case "stop":
+		return "waiting" // agent finished, back at prompt waiting for user
+	case "permissionrequest":
+		return "waiting" // agent needs permission approval
+	case "notification":
 		// Notification events with permission_prompt|elicitation_dialog matcher
 		// are mapped to "waiting" by the caller after checking the matcher.
 		// Default notification is informational, treat as no status change.
 		return ""
-	case "SessionEnd":
+	case "sessionend":
 		return "dead"
-	case "PreCompact":
+	case "precompact":
 		return "" // Observability only; context-% monitoring handles /clear proactively
 	default:
 		return ""
@@ -168,7 +175,7 @@ func handleHookHandler() {
 
 	// Special handling for Notification events: only map to "waiting" if
 	// the matcher indicates a permission prompt or elicitation dialog
-	if payload.HookEventName == "Notification" && payload.Matcher != nil {
+	if normalizeHookEventKey(payload.HookEventName) == "notification" && payload.Matcher != nil {
 		var matcher string
 		if err := json.Unmarshal(payload.Matcher, &matcher); err == nil {
 			if matcher == "permission_prompt" || matcher == "elicitation_dialog" {
@@ -192,17 +199,22 @@ func handleHookHandler() {
 	// SYNCHRONOUSLY (#1225), so waiting out the flush here would add turn-end
 	// latency to every managed session. Absent on ordinary mid-task Stops, so
 	// the existing "waiting" behavior is unchanged.
-	if payload.HookEventName == "Stop" {
-		writeHookStatusWithScan(instanceID, status, payload.SessionID, payload.HookEventName, detectDoneSentinel(data))
+	sessionID := strings.TrimSpace(payload.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(payload.ConversationID)
+	}
+
+	if isStopHookEvent(payload.HookEventName) {
+		writeHookStatusWithScan(instanceID, status, sessionID, payload.HookEventName, detectDoneSentinel(data))
 	} else {
-		writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName)
+		writeHookStatus(instanceID, status, sessionID, payload.HookEventName)
 	}
 
 	// #572: Sync agent-deck title from Claude Code's --name / /rename value.
 	// Event-driven so user-facing rename lands within one hook tick; silent
 	// no-op when no name is set (sessions started without --name keep the
 	// existing agent-deck adjective-noun title).
-	applyClaudeTitleSync(instanceID, payload.SessionID)
+	applyClaudeTitleSync(instanceID, sessionID)
 
 	// Write cost event if this hook contains usage data
 	logCostDebug("hook event=%s instance=%s status=%s", payload.HookEventName, instanceID, status)
@@ -216,7 +228,7 @@ func handleHookHandler() {
 	// that exits with no decision falls through to Claude Code's default,
 	// which denies in UI-less contexts. Status-tracking behavior above is
 	// unchanged.
-	if payload.HookEventName == "PermissionRequest" && parentIsDSP() {
+	if normalizeHookEventKey(payload.HookEventName) == "permissionrequest" && parentIsDSP() {
 		fmt.Println(`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"allow"}}`)
 	}
 
@@ -231,7 +243,7 @@ func handleHookHandler() {
 	// SYNCHRONOUSLY. The install flips the conductor's Stop hook to sync — see
 	// the maintainer note in the PR. Emitting here is harmless under the legacy
 	// async install (Claude ignores stdout) and activates once sync lands.
-	if payload.HookEventName == "Stop" {
+	if isStopHookEvent(payload.HookEventName) {
 		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
 			if out, mErr := json.Marshal(dec); mErr == nil {
 				fmt.Println(string(out))
@@ -562,7 +574,7 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 		logCostDebug("payload parse error: %v", err)
 		return
 	}
-	if stop.HookEventName != "Stop" {
+	if !isStopHookEvent(stop.HookEventName) {
 		logCostDebug("not a Stop event, skipping")
 		return
 	}

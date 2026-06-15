@@ -347,6 +347,9 @@ func main() {
 		case "hermes-hooks":
 			handleHermesHooks(args[1:])
 			return
+		case "cursor-hooks":
+			handleCursorHooks(args[1:])
+			return
 		case "notify-daemon":
 			handleNotifyDaemon(args[1:])
 			return
@@ -3037,6 +3040,7 @@ func printHelp() {
 	fmt.Println("  codex-hooks      Manage Codex notify hook integration")
 	fmt.Println("  gemini-hooks     Manage Gemini hook integration")
 	fmt.Println("  hermes-hooks     Manage Hermes Agent hook integration")
+	fmt.Println("  cursor-hooks     Manage Cursor Agent CLI hook integration")
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
 	fmt.Println("  web              Start TUI with web UI server running alongside")
@@ -3082,6 +3086,9 @@ func printHelp() {
 	fmt.Println("  hermes-hooks install      Install Hermes Agent hooks")
 	fmt.Println("  hermes-hooks uninstall    Remove Hermes Agent hooks")
 	fmt.Println("  hermes-hooks status       Show Hermes hooks install status")
+	fmt.Println("  cursor-hooks install      Install Cursor hooks")
+	fmt.Println("  cursor-hooks uninstall    Remove Cursor hooks")
+	fmt.Println("  cursor-hooks status       Show Cursor hooks install status")
 	fmt.Println()
 	fmt.Println("Group Commands:")
 	fmt.Println("  group list                List all groups")

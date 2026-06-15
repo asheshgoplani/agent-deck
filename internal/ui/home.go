@@ -1387,6 +1387,29 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		}
 	}
 
+	// Cursor Agent CLI hooks: auto-inject silently when the cursor binary is available.
+	if cursorCmd := strings.TrimSpace(session.GetToolCommand("cursor")); cursorCmd != "" {
+		if cursorFields := strings.Fields(cursorCmd); len(cursorFields) > 0 {
+			cursorBin := cursorFields[0]
+			if _, err := exec.LookPath(cursorBin); err == nil {
+				cursorConfigDir := session.GetCursorConfigDir()
+				if !session.CheckCursorHooksInstalled(cursorConfigDir) {
+					if _, err := session.InjectCursorHooks(cursorConfigDir); err != nil {
+						uiLog.Warn("cursor_hooks_inject_failed", slog.String("error", err.Error()))
+					} else {
+						uiLog.Info("cursor_hooks_installed", slog.String("config_dir", cursorConfigDir))
+					}
+				}
+				if h.hookWatcher == nil {
+					if hookWatcher, err := session.NewStatusFileWatcher(nil); err == nil {
+						h.hookWatcher = hookWatcher
+						go hookWatcher.Start()
+					}
+				}
+			}
+		}
+	}
+
 	// Start system theme watcher if configured
 	if session.GetTheme() == "system" {
 		h.themeWatcher = NewThemeWatcher(ctx)
@@ -3670,7 +3693,7 @@ func (h *Home) backgroundStatusUpdate() {
 	// Feed hook statuses from watcher to instances (enables hook fast path in UpdateStatus)
 	if h.hookWatcher != nil {
 		for _, inst := range instances {
-			if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "hermes" {
+			if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "hermes" || inst.Tool == "cursor" {
 				if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
 					inst.UpdateHookStatus(hs)
 				}

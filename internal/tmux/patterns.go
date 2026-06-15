@@ -120,6 +120,9 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			PromptPatterns: []string{
 				"How can I help",
 				`re:(?m)^\s*›\s`,
+				"Ask questions",
+				"Plan mode",
+				"Switch modes",
 			},
 		}
 	case "shell":
