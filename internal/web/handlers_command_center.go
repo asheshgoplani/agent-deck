@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -37,6 +38,12 @@ import (
 var (
 	commandCenterPollInterval      = 2 * time.Second
 	commandCenterHeartbeatInterval = 15 * time.Second
+)
+
+const (
+	// maxStatusFileBytes caps the per-conductor status.json read on the hot
+	// path (read for every SSE client on every refresh).
+	maxStatusFileBytes = 64 * 1024
 )
 
 // CommandCenterSnapshot is the see-everything payload rendered by the panel.
@@ -462,7 +469,11 @@ func loadConductorStatusFeeds(artifactDir string) map[string]string {
 			continue
 		}
 		name := ent.Name()
-		raw, err := os.ReadFile(filepath.Join(artifactDir, name, "status.json"))
+		// Cap the read: status.json is a small structured spine, read on every
+		// snapshot refresh for every SSE client. A size limit keeps an oversized
+		// (or accidentally huge) artifact from causing recurring memory/I/O
+		// pressure on the hot path.
+		raw, err := readFileCapped(filepath.Join(artifactDir, name, "status.json"), maxStatusFileBytes)
 		if err != nil {
 			continue
 		}
@@ -616,10 +627,14 @@ func (s *Server) handleCommandCenterAsk(w http.ResponseWriter, r *http.Request) 
 	)
 
 	if runErr != nil {
+		// Do NOT journal the subprocess output: the delivery path can echo the
+		// instruction back, and the audit policy is hash-only — never log the
+		// raw text. The exec error plus the captured output BYTE LENGTH are
+		// enough to diagnose a delivery failure without leaking the message.
 		logging.ForComponent(logging.CompWeb).Warn("command_center_ask_send_failed",
 			slog.String("target", resolved),
 			slog.String("error", runErr.Error()),
-			slog.String("output", strings.TrimSpace(string(out))),
+			slog.Int("outputBytes", len(out)),
 		)
 		writeAPIError(w, http.StatusBadGateway, "SEND_FAILED", "failed to deliver to target")
 		return
@@ -676,4 +691,15 @@ func firstLine(s string) string {
 		s = s[:max] + "…"
 	}
 	return s
+}
+
+// readFileCapped reads at most limit bytes from path. It bounds memory on the
+// hot path against an oversized artifact and never reads the whole file.
+func readFileCapped(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(io.LimitReader(f, limit))
 }
