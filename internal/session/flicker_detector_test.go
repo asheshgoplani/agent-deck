@@ -10,6 +10,28 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
+// TestFlickerDetector_IsFlickering reports flapping for self-heal's quarantine
+// signal. Uses fresh Observe (wall-clock) since IsFlickering prunes against now.
+func TestFlickerDetector_IsFlickering(t *testing.T) {
+	d := NewFlickerDetector()
+	if d.IsFlickering("inst-A") {
+		t.Fatal("no transitions: must not be flickering")
+	}
+	// >flickerThreshold (3) transitions in the window → flapping.
+	for i := 0; i < 5; i++ {
+		d.Observe("inst-A", "running")
+	}
+	if !d.IsFlickering("inst-A") {
+		t.Fatal("5 fresh transitions must read as flickering")
+	}
+	if d.IsFlickering("other") {
+		t.Fatal("unrelated session must not be flickering")
+	}
+	if d.IsFlickering("") {
+		t.Fatal("empty id must not be flickering")
+	}
+}
+
 // TestFlickerDetector_BelowThreshold_NoWarn verifies that a small number of
 // transitions within the window does NOT emit a flicker_detected log.
 func TestFlickerDetector_BelowThreshold_NoWarn(t *testing.T) {

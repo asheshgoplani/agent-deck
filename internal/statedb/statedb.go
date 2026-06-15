@@ -96,7 +96,7 @@ func withBusyRetry(op func() error) error {
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 12
+const SchemaVersion = 13
 
 // StateDB wraps a SQLite database for session/group persistence.
 // Thread-safe for concurrent use from multiple goroutines within one process.
@@ -380,6 +380,7 @@ func (s *StateDB) Migrate() error {
 			auto_name              INTEGER NOT NULL DEFAULT 0,
 			auto_name_description  TEXT NOT NULL DEFAULT '',
 			pin             TEXT NOT NULL DEFAULT '',
+			last_sent_at    INTEGER NOT NULL DEFAULT 0,
 			tool_data       TEXT NOT NULL DEFAULT '{}',
 			acknowledged    INTEGER NOT NULL DEFAULT 0
 		)
@@ -543,6 +544,14 @@ func (s *StateDB) Migrate() error {
 		// their handle until they are recreated as quick sessions.
 		"ALTER TABLE instances ADD COLUMN auto_name INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE instances ADD COLUMN auto_name_description TEXT NOT NULL DEFAULT ''",
+		// v13 (self-heal Stage 1, #1457-followup): the "we talked to it" clock.
+		// Set by the keysender on every delivered injection. The self-heal stuck
+		// predicate measures the idle_at_empty_prompt dwell from this timestamp:
+		// a session is only stuck at an empty prompt if WE sent it something and
+		// nothing happened. Default 0 ("never sent") preserves legacy rows as
+		// deliberate-idle (never a self-heal candidate). Additive + targeted-write
+		// only (WriteLastSentAt); never part of a whole-row REPLACE/SaveInstances.
+		"ALTER TABLE instances ADD COLUMN last_sent_at INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, stmt := range alterMigrations {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -626,6 +635,16 @@ func (s *StateDB) Migrate() error {
 			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN auto_name_description TEXT NOT NULL DEFAULT ''`); err != nil {
 				if !strings.Contains(err.Error(), "duplicate column") {
 					return fmt.Errorf("statedb: migrate v12 auto_name_description: %w", err)
+				}
+			}
+		}
+		if oldVer < 13 {
+			// Self-heal Stage 1: the last_sent_at clock. Default 0 = "never sent",
+			// so every legacy row reads as deliberate-idle (never a self-heal
+			// candidate) until the keysender stamps it.
+			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN last_sent_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("statedb: migrate v13 last_sent_at: %w", err)
 				}
 			}
 		}
@@ -1095,6 +1114,36 @@ func (s *StateDB) WriteAutoNameDescription(id, description string) error {
 		)
 		return err
 	})
+}
+
+// WriteLastSentAt persists the "we talked to it" clock (Unix seconds) for a
+// session into the last_sent_at column with a targeted single-column UPDATE —
+// never a whole-row INSERT OR REPLACE and never SaveInstances. The keysender
+// stamps this on every delivered injection; the self-heal predicate reads it to
+// measure the idle_at_empty_prompt dwell (#1457-followup, self-heal Stage 1).
+//
+// Like WriteAutoNameDescription this touches ONLY its own column, so a concurrent
+// writer's edits to any other field of the same row are preserved (no data-loss
+// surface), and it is wrapped in withBusyRetry for the same SQLITE_BUSY reason.
+func (s *StateDB) WriteLastSentAt(id string, unixSeconds int64) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(
+			`UPDATE instances SET last_sent_at = ? WHERE id = ?`,
+			unixSeconds, id,
+		)
+		return err
+	})
+}
+
+// ReadLastSentAt returns the last_sent_at clock (Unix seconds, 0 if never sent)
+// for a session. Read-only; used by the self-heal detection pass.
+func (s *StateDB) ReadLastSentAt(id string) (int64, error) {
+	var ts int64
+	err := s.db.QueryRow(`SELECT last_sent_at FROM instances WHERE id = ?`, id).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return ts, err
 }
 
 // InstanceStatusUpdate is one targeted status mutation for

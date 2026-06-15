@@ -216,6 +216,88 @@ type UserConfig struct {
 
 	// UI defines TUI layout settings (split ratios, etc).
 	UI UISettings `toml:"ui,omitempty"`
+
+	// SelfHeal defines self-heal supervision settings (SELF-HEAL-DESIGN.md).
+	// Stage 1 (v1.9.67) is observe-only: it logs what it WOULD do, takes no
+	// action. See SelfHealSettings.
+	SelfHeal SelfHealSettings `toml:"selfheal,omitempty"`
+}
+
+// SelfHealSettings controls the self-heal supervision policy (SELF-HEAL-DESIGN.md
+// §3.7, §6). The shipped default is fully observe-only: it detects truly-stuck
+// sessions, exercises the safety state-machine, and LOGS what it would do —
+// taking ZERO recovery action. Modes single_action / full are DEFINED but GUARDED
+// (they refuse to act) until Stages 2-3 are re-approved by Ashesh + the three §9
+// gap-fixes land.
+type SelfHealSettings struct {
+	// Enabled is the global kill switch (§3.7). When false (the default),
+	// self-heal does nothing at all — not even observe-mode logging. Set true to
+	// run the observe-only Stage 1.
+	Enabled bool `toml:"enabled"`
+
+	// Mode is the authority level: "observe" (default, the only acting mode in
+	// v1.9.67 — logs would_have, takes no action), "single_action" / "full"
+	// (Stages 2-3, DEFINED but GUARDED, refuse to act). An unknown/empty value
+	// is normalized to "observe".
+	Mode string `toml:"mode,omitempty"`
+
+	// AuditPath overrides where the durable NDJSON audit log lands. Empty uses
+	// the per-profile default under the agent-deck data dir (see
+	// SelfHealAuditPath). The audit is the dataset reviewed over the ≥1-week
+	// observe window before any Stage-2 re-approval.
+	AuditPath string `toml:"audit_path,omitempty"`
+
+	// PerSessionPerWindow overrides the per-session recovery cap (default 2 / 6h;
+	// auth_401 is always 1). 0 uses the default. Starting dial; tuned from
+	// observe data.
+	PerSessionPerWindow int `toml:"per_session_per_window,omitempty"`
+
+	// GlobalPerHour overrides the fleet-wide hourly recovery cap (default 5 =
+	// TriageMaxPerHour). 0 uses the default.
+	GlobalPerHour int `toml:"global_per_hour,omitempty"`
+
+	// OptOutGroups lists group paths that opt OUT of self-heal entirely
+	// (deliberate long-waiting stream leads, sensitive scopes — §3.7). Checked
+	// in the stuck predicate as a quick disqualifier.
+	OptOutGroups []string `toml:"opt_out_groups,omitempty"`
+
+	// OptOutSessions lists session ids/titles that opt OUT of self-heal.
+	OptOutSessions []string `toml:"opt_out_sessions,omitempty"`
+}
+
+// SelfHealMode normalizes the configured mode to a known value. Empty / unknown
+// → "observe" (the safe default). Used by the daemon when constructing the
+// engine. The string return matches selfheal.Mode values.
+func (s SelfHealSettings) SelfHealMode() string {
+	switch s.Mode {
+	case "single_action", "full":
+		return s.Mode
+	default:
+		return "observe"
+	}
+}
+
+// IsGroupOptedOut reports whether a group path opts out of self-heal.
+func (s SelfHealSettings) IsGroupOptedOut(groupPath string) bool {
+	for _, g := range s.OptOutGroups {
+		if g != "" && g == groupPath {
+			return true
+		}
+	}
+	return false
+}
+
+// IsSessionOptedOut reports whether a session (by id or title) opts out.
+func (s SelfHealSettings) IsSessionOptedOut(id, title string) bool {
+	for _, sn := range s.OptOutSessions {
+		if sn == "" {
+			continue
+		}
+		if sn == id || sn == title {
+			return true
+		}
+	}
+	return false
 }
 
 // UISettings controls TUI layout proportions.
@@ -3196,6 +3278,44 @@ func GetNotificationsSettings() NotificationsConfig {
 	}
 
 	return settings
+}
+
+// GetSelfHealSettings returns self-heal settings from config. The zero value
+// (Enabled=false) is the safe default: self-heal does nothing unless explicitly
+// enabled. Mode is normalized to a known value by SelfHealMode().
+func GetSelfHealSettings() SelfHealSettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return SelfHealSettings{}
+	}
+	return config.SelfHeal
+}
+
+// SelfHealAuditPath returns the durable NDJSON audit path for a profile. It uses
+// the configured AuditPath override when set, else a per-profile default under
+// the agent-deck data dir (so the ≥1-week observe window's records survive
+// restarts and are easy to locate for review). profile may be "" (default).
+func SelfHealAuditPath(profile string) (string, error) {
+	s := GetSelfHealSettings()
+	if s.AuditPath != "" {
+		// Keep an explicit override profile-scoped too, so multiple profiles do
+		// not interleave their records into one file (they run in separate
+		// processes but could point at the same override). Insert the profile
+		// before the extension: /x/audit.ndjson -> /x/audit-<profile>.ndjson.
+		if profile == "" {
+			return s.AuditPath, nil
+		}
+		ext := filepath.Ext(s.AuditPath)
+		base := strings.TrimSuffix(s.AuditPath, ext)
+		return base + "-" + profile + ext, nil
+	}
+	name := "selfheal-audit.ndjson"
+	if profile != "" {
+		name = "selfheal-audit-" + profile + ".ndjson"
+	}
+	// Lands under <data-dir>/runtime/selfheal/ so the ≥1-week observe-window
+	// records survive restarts and are easy to locate for review.
+	return runtimeDataPath(filepath.Join("selfheal", name))
 }
 
 // GetMaintenanceSettings returns maintenance settings from config

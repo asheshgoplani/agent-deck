@@ -21,6 +21,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/profile"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
@@ -2252,6 +2253,15 @@ func handleSessionSend(profile string, args []string) {
 			out.ErrorWithData(fmt.Sprintf("failed to send message: %v", sendErr), ErrCodeInvalidOperation, extra)
 		}
 		os.Exit(1)
+	}
+
+	// Self-heal Stage 1: stamp the "we talked to it" clock. A delivered send is
+	// exactly the event the idle_at_empty_prompt dwell is measured from — a
+	// session is only stuck at an empty prompt if WE sent it something and
+	// nothing happened. Targeted single-column write (never SaveInstances);
+	// best-effort, never blocks or fails the send.
+	if db := statedb.GetGlobal(); db != nil {
+		_ = db.WriteLastSentAt(inst.ID, sentAt.Unix())
 	}
 
 	// Delivery succeeded, but if an operator draft was cleared and could not

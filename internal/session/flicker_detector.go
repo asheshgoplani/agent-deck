@@ -71,6 +71,27 @@ func (d *FlickerDetector) Observe(sessionID, status string) {
 	d.observeAt(sessionID, status, time.Now())
 }
 
+// IsFlickering reports whether a session currently has more than flickerThreshold
+// transitions within the sliding window — i.e. it is flapping. Read-only (it
+// prunes against the wall clock but records no new transition). Used by self-heal
+// to treat a flapping session as quarantine-equivalent: a flicker is by
+// definition not safely healable by restart (SELF-HEAL-DESIGN.md §3.4).
+func (d *FlickerDetector) IsFlickering(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	cutoff := time.Now().Add(-flickerWindow)
+	count := 0
+	for _, ts := range d.transitions[sessionID] {
+		if ts.After(cutoff) {
+			count++
+		}
+	}
+	return count > flickerThreshold
+}
+
 // observeAt is the testable form of Observe.
 func (d *FlickerDetector) observeAt(sessionID, status string, now time.Time) {
 	if sessionID == "" {

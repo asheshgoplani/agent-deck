@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.67] - 2026-06-15
+
+### Added
+
+- **Self-heal supervision Stage 1: observe-only detection, no recovery actions.** A deterministic policy module (`internal/selfheal`) that consumes the Honest Status v2 substate layer and, for every session each poll cycle, evaluates a conservative "truly stuck" predicate and **logs what it would do — taking zero action**. A session is a candidate only when ALL hold: its substate is a known-stuck class (`model-unavailable` / `auth-401` / `idle-at-empty-prompt`), it is not actively busy, not mid-turn, has dwelled past a cause-specific threshold, is not stopped, and is not opted out — confirmed across two independent reads. The safety state-machine (per-session and global rate caps, backoff, circuit breaker, and flicker-detector subscription) is fully exercised and logged, but in observe mode it never executes a recovery: the observe engine holds no action executor at all, so "no recovery primitive is ever called" is a structural guarantee. Modes `single_action` / `full` are defined but guarded (they refuse to act) until the next stages are re-approved. Every detection emits one structured NDJSON audit record (substate, dwell, the two confirming read signatures, decision, caps state, and the `would_have` action) to a durable per-profile sink under `runtime/selfheal/`, for review over the observe window. Configured via `[selfheal]` (`enabled` kill-switch, `mode`, per-session/group opt-out, cap dials); disabled by default. Runs inside the existing transition/state daemon — no new watchdog process.
+- **`instances.last_sent_at` column (schema v13).** The keysender send path now stamps a durable "we last sent it something" timestamp on every delivered send, via a targeted single-column write (never a whole-row rewrite). The self-heal predicate measures the `idle-at-empty-prompt` dwell from this clock, so a session is only ever considered stuck at an empty prompt if we actually sent it something and nothing happened — a long-deliberately-idle session (no send) is never a candidate. Additive migration; legacy rows default to "never sent".
+
 ## [1.9.66] - 2026-06-15
 
 ### Added
