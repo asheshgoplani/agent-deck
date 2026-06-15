@@ -140,6 +140,17 @@ func handleConductorSetup(profile string, args []string) {
 	fs.Var(&envFlags, "env", "Environment variable in KEY=VALUE format (can be repeated)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
+	// Configured mode (claude-only): collapse the loadout+identity conductor
+	// ritual into one command — write the [conductors.<name>.claude] stanza,
+	// materialize the declarative skill loadout, and skip re-creating the
+	// retired shared base CLAUDE.md.
+	configured := fs.Bool("configured", false, "Configured mode: write the conductor's [conductors.<name>.claude] stanza (role/model/effort/plugins) and materialize its loadout (claude-only)")
+	role := fs.String("role", "", "Configured mode: AGENT_ROLE for this conductor (required with --configured)")
+	pluginsCSV := fs.String("plugins", "", "Configured mode: comma-separated skill-loadout entries (e.g. berg-store/loom,berg-store/memsearch)")
+	configuredModel := fs.String("model", "", "Configured mode: ANTHROPIC_MODEL for this conductor (optional)")
+	configuredEffort := fs.String("effort", "", "Configured mode: CLAUDE_CODE_EFFORT_LEVEL for this conductor (optional)")
+	noSharedInstructions := fs.Bool("no-shared-instructions", false, "Skip installing the shared base CLAUDE.md/AGENTS.md (implied by --configured)")
+
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck [-p profile] conductor setup <name> [options]")
 		fmt.Println()
@@ -186,6 +197,25 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("        Environment variable for the conductor session (can be repeated)")
 		fmt.Println("  -env-file string")
 		fmt.Println("        Path to .env file to source before conductor starts")
+		fmt.Println()
+		fmt.Println("Configured mode (claude-only — one-shot loadout+identity conductor):")
+		fmt.Println("  -configured")
+		fmt.Println("        Write the [conductors.<name>.claude] stanza and materialize its loadout.")
+		fmt.Println("        Also skips re-creating the retired shared base CLAUDE.md.")
+		fmt.Println("  -role string")
+		fmt.Println("        AGENT_ROLE for this conductor (required with --configured)")
+		fmt.Println("  -plugins string")
+		fmt.Println("        Comma-separated skill-loadout entries (e.g. berg-store/loom,berg-store/memsearch)")
+		fmt.Println("  -model string")
+		fmt.Println("        ANTHROPIC_MODEL for this conductor (optional)")
+		fmt.Println("  -effort string")
+		fmt.Println("        CLAUDE_CODE_EFFORT_LEVEL for this conductor (optional)")
+		fmt.Println("  -no-shared-instructions")
+		fmt.Println("        Skip installing the shared base CLAUDE.md/AGENTS.md (implied by --configured)")
+		fmt.Println()
+		fmt.Println("  Example:")
+		fmt.Println("    agent-deck conductor setup ryan --configured --role ryan \\")
+		fmt.Println("      --plugins berg-store/loom,berg-store/memsearch --model claude-opus-4-6 --effort xhigh")
 		fmt.Println()
 		fmt.Println("Output:")
 		fmt.Println("  -json")
@@ -236,6 +266,37 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Fprintln(os.Stderr, "Error: -claude-md and -shared-claude-md are only valid with --agent=claude")
 		os.Exit(1)
 	}
+
+	// Configured-mode validation. --role/--plugins/--model/--effort only make
+	// sense under --configured (they write the [conductors.X.claude] stanza),
+	// and the stanza is claude-only.
+	configuredOnlyFlags := *role != "" || *pluginsCSV != "" || *configuredModel != "" || *configuredEffort != ""
+	if configuredOnlyFlags && !*configured {
+		fmt.Fprintln(os.Stderr, "Error: --role/--plugins/--model/--effort require --configured")
+		os.Exit(1)
+	}
+	if *configured {
+		if spec.Agent != session.ConductorAgentClaude {
+			fmt.Fprintln(os.Stderr, "Error: --configured is only valid with --agent=claude")
+			os.Exit(1)
+		}
+		if *role == "" {
+			fmt.Fprintln(os.Stderr, "Error: --configured requires --role")
+			os.Exit(1)
+		}
+	}
+	// Parse the comma-separated plugin loadout (trim blanks/whitespace).
+	var configuredPlugins []string
+	for _, p := range strings.Split(*pluginsCSV, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			configuredPlugins = append(configuredPlugins, p)
+		}
+	}
+	// Configured conductors manage their own per-conductor instructions; the
+	// stock shared base CLAUDE.md auto-loads into every conductor and was
+	// deliberately retired, so don't re-create it.
+	skipSharedInstructions := *noSharedInstructions || *configured
+
 	resolvedProfile := session.GetEffectiveProfile(profile)
 
 	// Auto-migrate legacy conductors
@@ -471,13 +532,21 @@ func handleConductorSetup(profile string, args []string) {
 		}
 	}
 
-	// Step 3: Install/update shared instructions file for the selected agent
-	if err := session.InstallSharedConductorInstructions(spec.Agent, resolvedSharedInstructionsMD); err != nil {
+	// Step 3: Install/update shared instructions file for the selected agent.
+	// Skipped for configured/override conductors so setup does not silently
+	// re-introduce the retired shared base CLAUDE.md (auto-loads into every
+	// conductor).
+	installed, err := session.MaybeInstallSharedConductorInstructions(spec.Agent, resolvedSharedInstructionsMD, skipSharedInstructions)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error installing shared %s: %v\n", spec.InstructionsFileName, err)
 		os.Exit(1)
 	}
 	if !*jsonOutput {
-		fmt.Printf("[ok] Shared %s installed/updated\n", spec.InstructionsFileName)
+		if installed {
+			fmt.Printf("[ok] Shared %s installed/updated\n", spec.InstructionsFileName)
+		} else {
+			fmt.Printf("[skip] Shared %s not installed (--no-shared-instructions / --configured)\n", spec.InstructionsFileName)
+		}
 	}
 
 	// Step 3b: Install/update shared POLICY.md
@@ -581,6 +650,43 @@ func handleConductorSetup(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// Step 5b: Configured mode — write the [conductors.<name>.claude] stanza
+	// and materialize the declarative loadout. The stanza write must precede
+	// the materialize: ApplyConfiguredLoadout re-reads config.toml (the prior
+	// SaveUserConfig clears the cache) to resolve this conductor's plugins.
+	if *configured {
+		if err := session.WriteConductorClaudeConfig(name, session.ConductorClaudeConfigInput{
+			Role:    *role,
+			Model:   *configuredModel,
+			Effort:  *configuredEffort,
+			Plugins: configuredPlugins,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing [conductors.%s.claude] config: %v\n", name, err)
+			os.Exit(1)
+		}
+		if !*jsonOutput {
+			fmt.Printf("  [ok] [conductors.%s.claude] stanza written (role=%s)\n", name, *role)
+		}
+
+		// Materialize the loadout via the existing attach machinery — exactly
+		// the path a session spawn takes — so .claude/skills symlinks + the
+		// workspace trust key are set up now rather than on first launch.
+		dir, _ := session.ConductorNameDir(name)
+		loadoutInst := session.NewInstanceWithGroupAndTool(sessionTitle, dir, "conductor", spec.Agent)
+		loadoutInst.IsConductor = true
+		warnings := session.ApplyConfiguredLoadout(loadoutInst)
+		if !*jsonOutput {
+			if len(warnings) == 0 {
+				fmt.Println("  [ok] Loadout materialized (skills + workspace trust)")
+			} else {
+				fmt.Println("  [warn] Loadout materialized with warnings:")
+				for _, w := range warnings {
+					fmt.Printf("         - %s\n", w)
+				}
+			}
+		}
+	}
+
 	// Step 6: Install heartbeat timer (if heartbeat enabled and interval > 0)
 	if heartbeatEnabled {
 		interval := settings.GetHeartbeatInterval()
@@ -647,11 +753,16 @@ func handleConductorSetup(profile string, args []string) {
 	if daemonPath, err := session.InstallTransitionNotifierDaemon(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to install transition notifier daemon: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Tip: %s\n", session.TransitionNotifierDaemonHint())
-	} else {
+	} else if daemonPath != "" {
 		notifierDaemonPath = daemonPath
 		if !*jsonOutput {
 			fmt.Println("[ok] Transition notifier daemon installed")
 		}
+	} else if !*jsonOutput {
+		// No error and no path: the install was skipped (e.g. the Background
+		// launchd-domain guard, which prints its own warning). Don't follow a
+		// real skip with a false "installed" success line.
+		fmt.Println("[skip] Transition notifier daemon not installed (see warning above)")
 	}
 
 	// Output summary
