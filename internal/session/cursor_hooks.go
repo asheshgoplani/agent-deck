@@ -46,7 +46,7 @@ func InjectCursorHooks(configDir string) (bool, error) {
 		}
 		cfg = cursorHooksConfig{
 			Version: 1,
-			Hooks:     make(map[string][]cursorHookDef),
+			Hooks:   make(map[string][]cursorHookDef),
 		}
 	} else {
 		if err := json.Unmarshal(data, &cfg); err != nil {

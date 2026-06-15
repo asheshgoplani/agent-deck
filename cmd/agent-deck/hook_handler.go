@@ -29,11 +29,11 @@ var validInstanceID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 // hookPayload represents the JSON payload Claude Code sends to hooks via stdin.
 // Only the fields we need are decoded; unknown fields are ignored.
 type hookPayload struct {
-	HookEventName string          `json:"hook_event_name"`
-	SessionID     string          `json:"session_id"`
-	ConversationID string         `json:"conversation_id"`
-	Source        string          `json:"source"`
-	Matcher       json.RawMessage `json:"matcher,omitempty"`
+	HookEventName  string          `json:"hook_event_name"`
+	SessionID      string          `json:"session_id"`
+	ConversationID string          `json:"conversation_id"`
+	Source         string          `json:"source"`
+	Matcher        json.RawMessage `json:"matcher,omitempty"`
 	// Cwd is the session's working directory (PROJECT_DIR) as reported by
 	// Claude Code on each hook event. Issue #1233: when a running session's
 	// registered worktree is renamed/removed, this points at a path that no
