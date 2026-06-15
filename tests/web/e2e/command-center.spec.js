@@ -18,8 +18,15 @@ import { test, expect } from '@playwright/test'
 
 async function openCommandCenter(page) {
   await page.goto('/')
-  // Click the first tab ("Command Center").
-  await page.locator('.top-tab', { hasText: 'Command Center' }).click()
+  // The top tab strip is hidden on phone-class viewports (≤720px), which use
+  // the bottom MobileTabs bar instead. Click whichever control is visible so
+  // the flagship view is reachable on every viewport.
+  const viewport = page.viewportSize()
+  if (viewport && viewport.width < 768) {
+    await page.locator('[data-testid="mobile-tab-command-center"]').click()
+  } else {
+    await page.locator('.top-tab', { hasText: 'Command Center' }).click()
+  }
   await expect(page.locator('[data-testid="command-center-pane"]')).toBeVisible({ timeout: 5000 })
 }
 

@@ -942,7 +942,7 @@ body[data-rail="hidden"] .rightrail { display: none; }
 
   /* mobile bottom tabs */
   .mob-tabs {
-    display: grid; grid-template-columns: repeat(4, 1fr);
+    display: grid; grid-template-columns: repeat(5, 1fr);
     grid-area: foot;
     background: var(--panel);
     border-top: 1px solid var(--border);
@@ -1110,3 +1110,11 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .cc-st { font-size: 11px; flex: none; color: var(--muted); min-width: 120px; }
 .cc-st.ok { color: var(--tn-green); }
 .cc-st.err { color: var(--tn-red); }
+
+/* Command Center on phone: lift the fixed input bar above the bottom mob-tabs
+   (56px) so they don't overlap, and give the scroll area room for both. */
+@media (max-width: 720px) {
+  .cc-input { bottom: 56px; }
+  .cc { padding-bottom: 150px; }
+  .cc-input select { max-width: 120px; }
+}

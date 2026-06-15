@@ -4,6 +4,7 @@ import { html } from 'htm/preact'
 import { activeTabSignal } from './uiState.js'
 
 const MOBILE_TABS = [
+  { id: 'command-center', label: 'Command', icon: '★' },
   { id: 'fleet',     label: 'Fleet',    icon: '▦' },
   { id: 'terminal',  label: 'Session',  icon: '›_' },
   { id: 'watchers',  label: 'Watchers', icon: '◇' },
