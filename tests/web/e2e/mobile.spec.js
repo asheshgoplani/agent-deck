@@ -44,11 +44,12 @@ test.describe('mobile phone layout', () => {
     await waitForPhoneMount(page)
   })
 
-  test('bottom tab bar is visible with the Fleet/Session/Watchers/Costs set', async ({ page }) => {
+  test('bottom tab bar is visible with the Command/Fleet/Session/Watchers/Costs set', async ({ page }) => {
     const bar = page.locator('[data-testid="mobile-tabs"]')
     await expect(bar).toBeVisible()
     // Exact tab set + labels from MOBILE_TABS in MobileTabs.js.
-    await expect(bar.locator('.mob-tab')).toHaveCount(4)
+    await expect(bar.locator('.mob-tab')).toHaveCount(5)
+    await expect(page.locator('[data-testid="mobile-tab-command-center"]')).toContainText('Command')
     await expect(page.locator('[data-testid="mobile-tab-fleet"]')).toContainText('Fleet')
     await expect(page.locator('[data-testid="mobile-tab-terminal"]')).toContainText('Session')
     await expect(page.locator('[data-testid="mobile-tab-watchers"]')).toContainText('Watchers')
