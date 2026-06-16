@@ -2528,3 +2528,44 @@ func TestLoadUserConfig_SetsGroupSortMode(t *testing.T) {
 		t.Fatalf("LoadUserConfig did not apply group_sort: mode = %q, want actionable", got)
 	}
 }
+
+// TestSaveUserConfig_OmitsUnsetGroupSort guards the minimal-config guarantee
+// (issue #1383 / #1360): an unset GroupSort must NOT be written, so a
+// load→mutate→save round-trip never injects group_sort = "" into a
+// previously-minimal config. A set value must still survive the round-trip.
+func TestSaveUserConfig_OmitsUnsetGroupSort(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
+
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
+
+	// Unset GroupSort must be omitted entirely.
+	if err := SaveUserConfig(&UserConfig{DefaultTool: "claude"}); err != nil {
+		t.Fatalf("SaveUserConfig (unset): %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	if strings.Contains(string(raw), "group_sort") {
+		t.Errorf("config.toml must not contain group_sort when unset; got:\n%s", raw)
+	}
+
+	// A set GroupSort must round-trip back out.
+	if err := SaveUserConfig(&UserConfig{DefaultTool: "claude", GroupSort: "actionable"}); err != nil {
+		t.Fatalf("SaveUserConfig (set): %v", err)
+	}
+	raw, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	if !strings.Contains(string(raw), `group_sort = "actionable"`) {
+		t.Errorf("config.toml must contain a set group_sort; got:\n%s", raw)
+	}
+}

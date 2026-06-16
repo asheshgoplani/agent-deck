@@ -85,7 +85,7 @@ type UserConfig struct {
 	//   "creation"   (default) — fixed creation order; honors K/J manual reorder.
 	//   "actionable"           — issue #857 status→recency→Order surfacing.
 	// Empty or unrecognized values normalize to "creation".
-	GroupSort string `toml:"group_sort"`
+	GroupSort string `toml:"group_sort,omitempty"`
 
 	// MCPs defines available MCP servers for the MCP Manager
 	// These can be attached/detached per-project via the MCP Manager (M key)
