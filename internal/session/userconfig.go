@@ -644,6 +644,10 @@ type ProfileCodexSettings struct {
 
 // GroupSettings defines per-group configuration overrides.
 type GroupSettings struct {
+	// Create ensures the group exists on startup.
+	Create bool `toml:"create,omitempty"`
+	// DefaultPath sets the default working directory for new sessions in this group.
+	DefaultPath string `toml:"default_path,omitempty"`
 	// Claude defines Claude Code overrides for a specific group.
 	Claude GroupClaudeSettings `toml:"claude,omitempty"`
 	// Hermes defines Hermes overrides for a specific group.
@@ -2690,7 +2694,7 @@ func countFunctionalGroups(groups map[string]GroupSettings) int {
 	var zero GroupSettings
 	count := 0
 	for _, g := range groups {
-		if g.Claude != zero.Claude || g.Hermes != zero.Hermes {
+		if g.Create || strings.TrimSpace(g.DefaultPath) != "" || g.Claude != zero.Claude || g.Hermes != zero.Hermes {
 			count++
 		}
 	}

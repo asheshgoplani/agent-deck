@@ -4627,6 +4627,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					h.groupTree = session.NewGroupTree(h.instances)
 				}
+				// Seed groups declared in config.toml into the DB, only after a
+				// successful load so a partial tree is never persisted.
+				if msg.err == nil {
+					if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil && cfg != nil {
+						if session.ReconcileDeclarativeGroups(h.groupTree, cfg) {
+							if err := h.storage.SaveGroupsOnly(h.groupTree); err != nil {
+								uiLog.Warn("declarative_groups_save_failed", slog.Any("error", err))
+							}
+						}
+					}
+				}
 			} else {
 				// Refresh - update existing tree with loaded sessions AND groups
 				// Preserve expanded state before recreating tree

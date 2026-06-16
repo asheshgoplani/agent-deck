@@ -1249,7 +1249,7 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("Add a new session to Agent Deck.")
 		fmt.Println()
 		fmt.Println("Arguments:")
-		fmt.Println("  [path]    Project directory (defaults to current directory)")
+		fmt.Println("  [path]    Project directory (defaults to the group or global default_path, else current directory)")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -1339,6 +1339,16 @@ func handleAdd(profile string, args []string) {
 	}
 
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+
+	// Seed groups declared in config.toml into the DB before resolving the
+	// new session's group and working directory.
+	if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil && cfg != nil {
+		if session.ReconcileDeclarativeGroups(groupTree, cfg) {
+			if err := storage.SaveGroupsOnly(groupTree); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to persist declarative groups: %v\n", err)
+			}
+		}
+	}
 
 	// Resolve parent session if specified
 	var parentInstance *session.Instance
