@@ -473,6 +473,22 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 		case <-time.After(backoff):
 		}
 
+		// Wantedness can flip during backoff (the session fell out of the live
+		// set, or was intentionally disconnected). Re-check before reconnecting:
+		// otherwise pm.Connect silently no-ops on an unwanted session, returns
+		// nil, and we'd log a phantom "reconnected" while leaving the dead pipe
+		// entry in the map. Prune it and stop instead.
+		pm.mu.RLock()
+		loopWantFn := pm.wantPipe
+		pm.mu.RUnlock()
+		if !wantsReconnect(loopWantFn, sessionName) {
+			pipeLog.Debug("pipe_not_wanted_skipping_reconnect", slog.String("session", sessionName))
+			pm.mu.Lock()
+			delete(pm.pipes, sessionName)
+			pm.mu.Unlock()
+			return
+		}
+
 		// Check if session still exists before trying to reconnect.
 		// Avoids infinite reconnect loops for deleted/non-existent sessions.
 		// Target the same socket the original pipe lived on — checking the
