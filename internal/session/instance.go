@@ -2877,6 +2877,34 @@ func (i *Instance) buildTmuxOptionOverrides() map[string]string {
 	return overrides
 }
 
+// adoptExplicitClaudeSessionID adopts an explicit `--session-id <uuid>` baked
+// into i.Command as the authoritative conversation id, correcting any stale or
+// disk-hijacked value, and returns true when an explicit id was present (the
+// caller must then skip mtime-based disk discovery). An explicit id is the
+// user's declaration of WHICH conversation this session owns; honoring it
+// before disk discovery is what stops sibling sessions in a shared cwd from
+// converging on the newest transcript. Shared by both session-id preludes —
+// ensureClaudeSessionIDFromDiskForRestart (#1147) and
+// ensureClaudeSessionIDFromDisk (#1465). The reason label distinguishes the
+// Start path from the Restart path in the resume log line.
+func (i *Instance) adoptExplicitClaudeSessionID(reason string) bool {
+	explicit, ok := extractExplicitClaudeSessionID(i.Command)
+	if !ok {
+		return false
+	}
+	if i.ClaudeSessionID != explicit {
+		i.ClaudeSessionID = explicit
+		sessionLog.Info("resume: id="+explicit+" reason="+reason,
+			slog.String("instance_id", i.ID),
+			slog.String("claude_session_id", explicit),
+			slog.String("reason", reason))
+	}
+	if i.ClaudeDetectedAt.IsZero() {
+		i.ClaudeDetectedAt = time.Now()
+	}
+	return true
+}
+
 // ensureClaudeSessionIDFromDisk is the Phase 5 / REQ-7 prelude invoked by
 // Start() and StartWithMessage() when an IsClaudeCompatible Instance has an
 // empty ClaudeSessionID. It attempts to discover the latest UUID-named
@@ -2905,6 +2933,15 @@ func (i *Instance) buildTmuxOptionOverrides() map[string]string {
 // two grep-stable lines for a Phase 5 discovery start, distinguishable
 // by the `reason=` attr.
 func (i *Instance) ensureClaudeSessionIDFromDisk() {
+	// Issue #1465: an explicit `--session-id <uuid>` baked into i.Command is
+	// the authoritative conversation id. Adopt it before the #608 gate and
+	// disk discovery so a Start-path session sharing a cwd with newer sibling
+	// transcripts (e.g. a removed-then-recreated review session) cannot hijack
+	// a sibling's conversation. The Restart prelude already does this for
+	// #1147; this closes the same gap on the Start path.
+	if i.adoptExplicitClaudeSessionID("session_id_flag_explicit") {
+		return
+	}
 	if i.ClaudeSessionID != "" {
 		return
 	}
@@ -2962,17 +2999,7 @@ func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
 	// sharing a CLAUDE_SESSION_ID. Adopting the explicit id BEFORE the
 	// non-empty short-circuit ensures it also corrects a previously-
 	// hijacked id from an earlier buggy run.
-	if explicit, ok := extractExplicitClaudeSessionID(i.Command); ok {
-		if i.ClaudeSessionID != explicit {
-			i.ClaudeSessionID = explicit
-			sessionLog.Info("resume: id="+explicit+" reason=session_id_flag_explicit_restart",
-				slog.String("instance_id", i.ID),
-				slog.String("claude_session_id", explicit),
-				slog.String("reason", "session_id_flag_explicit_restart"))
-		}
-		if i.ClaudeDetectedAt.IsZero() {
-			i.ClaudeDetectedAt = time.Now()
-		}
+	if i.adoptExplicitClaudeSessionID("session_id_flag_explicit_restart") {
 		return
 	}
 	if i.ClaudeSessionID != "" {
