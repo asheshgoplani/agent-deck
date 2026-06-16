@@ -20,14 +20,20 @@ const (
 
 // pipeLiveSet is the thread-safe set of tmux session names that should hold a
 // live control pipe for this agent-deck instance: a bounded most-recently-
-// focused LRU plus the currently-attached session (pinned). Read by the
-// PipeManager's wantPipe gate from multiple goroutines; written by the UI's
-// reconciler — hence the mutex.
+// focused LRU plus the currently-attached sessions (pinned). Attached is a set,
+// not a single name, because a session can be attached on any socket — the main
+// TUI's session on the default socket and an attached session on an isolated
+// socket must both stay pinned. Read by the PipeManager's wantPipe gate from
+// multiple goroutines; written by the UI's reconciler — hence the mutex.
+//
+// All methods are nil-receiver safe so a Home built by an alternate/test
+// constructor (which never initializes liveSet) can exercise Update without
+// panicking.
 type pipeLiveSet struct {
 	mu       sync.Mutex
 	capacity int
 	lru      []string // most-recent first
-	attached string   // pinned; "" when nothing attached
+	attached []string // pinned attached sessions (across all sockets); deduped, no ""
 }
 
 func newPipeLiveSet(capacity int) *pipeLiveSet {
@@ -40,7 +46,7 @@ func newPipeLiveSet(capacity int) *pipeLiveSet {
 // touch promotes name to the front of the LRU, deduping, and trims to capacity.
 // Empty name is a no-op (cursor on a group header, nothing attached, etc).
 func (s *pipeLiveSet) touch(name string) {
-	if name == "" {
+	if s == nil || name == "" {
 		return
 	}
 	s.mu.Lock()
@@ -60,22 +66,37 @@ func (s *pipeLiveSet) touch(name string) {
 	}
 }
 
-// setAttached pins the attached session ("" clears the pin).
-func (s *pipeLiveSet) setAttached(name string) {
+// setAttached replaces the pinned attached set. Empty and duplicate names are
+// dropped; calling with no names (or only "") clears the pin.
+func (s *pipeLiveSet) setAttached(names ...string) {
+	if s == nil {
+		return
+	}
+	pinned := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		pinned = append(pinned, n)
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.attached = name
+	s.attached = pinned
+	s.mu.Unlock()
 }
 
 // want reports whether name should hold a live pipe.
 func (s *pipeLiveSet) want(name string) bool {
-	if name == "" {
+	if s == nil || name == "" {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if name == s.attached {
-		return true
+	for _, n := range s.attached {
+		if n == name {
+			return true
+		}
 	}
 	for _, n := range s.lru {
 		if n == name {
@@ -85,15 +106,21 @@ func (s *pipeLiveSet) want(name string) bool {
 	return false
 }
 
-// members returns the deduped live set: attached (if any) followed by the LRU.
+// members returns the deduped live set: attached sessions first, then the LRU.
+// A nil receiver returns nil; a non-nil empty set returns a non-nil empty slice.
 func (s *pipeLiveSet) members() []string {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]string, 0, len(s.lru)+1)
-	seen := map[string]bool{}
-	if s.attached != "" {
-		out = append(out, s.attached)
-		seen[s.attached] = true
+	out := make([]string, 0, len(s.lru)+len(s.attached))
+	seen := make(map[string]bool, len(s.lru)+len(s.attached))
+	for _, n := range s.attached {
+		if !seen[n] {
+			out = append(out, n)
+			seen[n] = true
+		}
 	}
 	for _, n := range s.lru {
 		if !seen[n] {
@@ -102,6 +129,27 @@ func (s *pipeLiveSet) members() []string {
 		}
 	}
 	return out
+}
+
+// desiredLivePipes is the pure core of (*Home).reconcileLivePipes: it pins the
+// focused session and the attached set into ls, then returns the subset of the
+// live set that still has a live instance (per socketByName). Names without an
+// instance — deleted or restarted sessions — are dropped so they are never
+// retried; the caller resolves each survivor's socket via socketByName.
+//
+// Extracted from reconcileLivePipes so the focus/attach/eviction logic is
+// unit-testable without a real tmux server or attached client.
+func desiredLivePipes(ls *pipeLiveSet, focused string, attached []string, socketByName map[string]string) []string {
+	ls.touch(focused)
+	ls.setAttached(attached...)
+	members := ls.members()
+	desired := make([]string, 0, len(members))
+	for _, name := range members {
+		if _, ok := socketByName[name]; ok {
+			desired = append(desired, name)
+		}
+	}
+	return desired
 }
 
 // pipeConnector is the slice of PipeManager that reconcilePipes needs. Defined

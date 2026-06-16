@@ -2234,42 +2234,6 @@ func (h *Home) getAttachedSessionID() string {
 	return ""
 }
 
-// getAttachedSessionName returns the tmux session name of the currently
-// attached agentdeck session (the name, not the instance ID), or "".
-// NOTE: GetAttachedSessions only queries the default tmux socket, so a session
-// living on an isolated agent-deck socket won't be detected as attached here.
-// Such a session is still kept live once focused (via the LRU), so the only
-// effect is the attached-pin guarantee not applying to non-default sockets.
-func (h *Home) getAttachedSessionName() string {
-	attached, err := tmux.GetAttachedSessions()
-	if err != nil || len(attached) == 0 {
-		return ""
-	}
-	h.instancesMu.RLock()
-	defer h.instancesMu.RUnlock()
-	for _, sessName := range attached {
-		for _, inst := range h.instances {
-			if ts := inst.GetTmuxSession(); ts != nil && ts.Name == sessName {
-				return ts.Name
-			}
-		}
-	}
-	return ""
-}
-
-// socketForSession returns the tmux -L socket selector for a session name, or
-// "" (default server) if unknown.
-func (h *Home) socketForSession(name string) string {
-	h.instancesMu.RLock()
-	defer h.instancesMu.RUnlock()
-	for _, inst := range h.instances {
-		if ts := inst.GetTmuxSession(); ts != nil && ts.Name == name {
-			return inst.TmuxSocketName
-		}
-	}
-	return ""
-}
-
 // recordFocusedSession snapshots the cursor-selected session name for the
 // reconciler goroutine. Must run on the main (Update) goroutine — getSelected-
 // Session reads h.cursor/h.flatItems without a lock.
@@ -2285,21 +2249,46 @@ func (h *Home) recordFocusedSession() {
 	h.focusMu.Unlock()
 }
 
-// reconcileLivePipes refreshes the live set from the current focus + attach and
-// syncs the PipeManager's pipes to match.
+// reconcileLivePipes refreshes the live set from the current focus + the set of
+// attached sessions, then syncs the PipeManager's pipes to match.
+//
+// The desired set is resolved against the current instances (name -> socket),
+// which makes three things correct at once:
+//   - each session connects on its REAL socket, not a guessed default;
+//   - names with no live instance (deleted/restarted sessions) are dropped
+//     instead of being retried on every tick;
+//   - attached sessions are pinned across EVERY socket in use, so an attached
+//     session on an isolated socket keeps its live pipe rather than being
+//     evicted to the 2s status poll.
 func (h *Home) reconcileLivePipes() {
 	pm := tmux.GetPipeManager()
 	if pm == nil {
 		return
 	}
+
+	// Snapshot live instances: session name -> socket (the source of truth).
+	h.instancesMu.RLock()
+	socketByName := make(map[string]string, len(h.instances))
+	sockets := make([]string, 0, len(h.instances))
+	socketSeen := make(map[string]bool, len(h.instances))
+	for _, inst := range h.instances {
+		if ts := inst.GetTmuxSession(); ts != nil {
+			socketByName[ts.Name] = inst.TmuxSocketName
+			if !socketSeen[inst.TmuxSocketName] {
+				socketSeen[inst.TmuxSocketName] = true
+				sockets = append(sockets, inst.TmuxSocketName)
+			}
+		}
+	}
+	h.instancesMu.RUnlock()
+
 	h.focusMu.Lock()
 	focused := h.focusedSessionName
 	h.focusMu.Unlock()
 
-	h.liveSet.touch(focused)
-	h.liveSet.setAttached(h.getAttachedSessionName())
-
-	reconcilePipes(pm, h.liveSet.members(), h.socketForSession)
+	attached := tmux.GetAttachedSessionsOnSockets(sockets...)
+	desired := desiredLivePipes(h.liveSet, focused, attached, socketByName)
+	reconcilePipes(pm, desired, func(name string) string { return socketByName[name] })
 }
 
 // livePipeReconciler periodically reconciles live pipes. The tick interval
