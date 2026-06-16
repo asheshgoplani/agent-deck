@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.70] - 2026-06-16
+
+### Fixed
+
+- **SSE streams accept query token so headless `--token` deployments load over Tailscale (menu + command center).** EventSource cannot set an `Authorization` header, so the menu and Command Center live streams (`/events/menu`, `/events/command-center`) returned 401 in headless `--token` mode (v1.9.68/69) and never loaded over Tailscale. A new `authorizeStreamRequest` accepts the token via query param in addition to the header, mirroring the existing WebSocket exception; JSON API endpoints stay header-only, and a bad or missing token still 401s (loopback/no-token behavior unchanged).
+
 ## [1.9.69] - 2026-06-16
 
 ### Added
