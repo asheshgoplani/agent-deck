@@ -23,6 +23,17 @@ func (s *Server) authorizeWSRequest(r *http.Request) bool {
 	return s.authorize(r, true)
 }
 
+// authorizeStreamRequest authorizes an SSE stream request. Like the WebSocket
+// upgrade, an EventSource cannot set an Authorization header, so the token is
+// also accepted via the query string here. This mirrors authorizeWSRequest and
+// is the documented SSE exception to the header-only rule (report #5): the
+// affected pages set Referrer-Policy: no-referrer. JSON API endpoints stay on
+// header-only authorizeRequest. Loopback/no-token behavior is unchanged; a
+// bad or missing token still 401s.
+func (s *Server) authorizeStreamRequest(r *http.Request) bool {
+	return s.authorize(r, true)
+}
+
 func (s *Server) authorize(r *http.Request, allowQueryToken bool) bool {
 	if s.cfg.Token == "" {
 		return true

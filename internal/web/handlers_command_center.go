@@ -166,7 +166,7 @@ func (s *Server) handleCommandCenterEvents(w http.ResponseWriter, r *http.Reques
 		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
-	if !s.authorizeRequest(r) {
+	if !s.authorizeStreamRequest(r) {
 		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
 		return
 	}
