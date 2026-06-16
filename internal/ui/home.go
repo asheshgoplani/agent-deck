@@ -1956,8 +1956,10 @@ func (h *Home) rebuildFlatItems() {
 	if h.groupViewMode != session.GroupViewNormal {
 		// Activity is computed from the full tree (collapse-agnostic) so a
 		// collapsed-but-populated group's header is placed by its real contents,
-		// not by the (absent) session rows under a collapsed header.
-		activity := h.groupTree.GroupActivityMap()
+		// not by the (absent) session rows under a collapsed header. It honors the
+		// archive view so a group whose sessions are all archived counts as empty
+		// in the active view and sinks below the divider.
+		activity := h.groupTree.GroupActivityMap(viewArchived)
 		h.flatItems = session.PartitionByViewMode(h.flatItems, h.groupViewMode, activity)
 	}
 

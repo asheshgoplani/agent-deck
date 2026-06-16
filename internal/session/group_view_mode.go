@@ -59,9 +59,14 @@ type GroupActivity struct {
 	HasActive bool // group (or a descendant) has at least one active session
 }
 
-// GroupActivityMap returns per-group-path activity aggregated over all sessions
-// in the tree (collapse-agnostic), propagated to ancestor paths.
-func (t *GroupTree) GroupActivityMap() map[string]GroupActivity {
+// GroupActivityMap returns per-group-path activity aggregated over the sessions
+// in the tree (collapse-agnostic), propagated to ancestor paths. Only sessions
+// matching the current archive view are counted: with viewArchived=false
+// (the normal active view) archived sessions are ignored, so a group whose
+// sessions are ALL archived reports HasAny=false and is treated as empty for
+// view-mode placement — it sinks below the divider with the other empty groups
+// rather than masquerading as a collapsed-but-populated group on top.
+func (t *GroupTree) GroupActivityMap(viewArchived bool) map[string]GroupActivity {
 	m := make(map[string]GroupActivity)
 	mark := func(path string, active bool) {
 		if path == "" {
@@ -80,6 +85,9 @@ func (t *GroupTree) GroupActivityMap() map[string]GroupActivity {
 	}
 	for _, g := range t.Groups {
 		for _, s := range g.Sessions {
+			if s.IsArchived() != viewArchived {
+				continue
+			}
 			mark(g.Path, isActiveStatus(s.Status))
 		}
 	}
