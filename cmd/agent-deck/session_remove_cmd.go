@@ -54,7 +54,7 @@ func handleSessionRemove(profile string, args []string) {
 	}
 
 	if *allErrored {
-		removeAllErrored(out, storage, instances, groups, *pruneWorktree)
+		removeAllErrored(out, storage, instances, groups, *pruneWorktree, *force)
 		return
 	}
 
@@ -137,12 +137,21 @@ func removeAllErrored(
 	instances []*session.Instance,
 	groups []*session.GroupData,
 	pruneWorktree bool,
+	force bool,
 ) {
 	var removed []map[string]interface{}
 	remaining := instances[:0]
 	var removedIDs []string
+	skipped := 0
 	for _, inst := range instances {
 		if inst.Status == session.StatusError {
+			// pin-protects-from-stop: a pinned errored session is retained
+			// unless --force is given.
+			if inst.Pin != session.PinNone && !force {
+				skipped++
+				remaining = append(remaining, inst)
+				continue
+			}
 			// Synchronously kill the tmux scope + pane processes before
 			// deleting the registry row (issue #59, v1.7.68). Errored
 			// sessions commonly still own a live claude child that
@@ -181,10 +190,15 @@ func removeAllErrored(
 		_, _ = session.SweepInboxesForChildSession(id)
 		_, _ = session.RemoveNotifyStateRecord(id)
 	}
-	out.Success(fmt.Sprintf("Removed %d errored session(s)", len(removed)), map[string]interface{}{
+	msg := fmt.Sprintf("Removed %d errored session(s)", len(removed))
+	if skipped > 0 {
+		msg += fmt.Sprintf(" (skipped %d pinned — use --force to include)", skipped)
+	}
+	out.Success(msg, map[string]interface{}{
 		"success": true,
 		"count":   len(removed),
 		"removed": removed,
+		"skipped": skipped,
 	})
 }
 
