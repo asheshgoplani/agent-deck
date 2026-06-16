@@ -82,6 +82,28 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 	}
 
 	for _, entry := range plugins {
+		// Marketplace-plugin entries ("installed/<name>") resolve via
+		// ~/.claude/plugins/installed_plugins.json and enable the plugin in the
+		// agent's project settings.json (enabledPlugins) — which loads the
+		// plugin's full surface (skills + MCP + hooks) per-agent, unlike a
+		// skills symlink (which would miss the MCP). A different mechanism than
+		// the skill-source registry path below (see marketplace.go). Routed
+		// first; everything else falls through to the berg-store/skill-source
+		// resolver, untouched.
+		if ref, ok := marketplacePluginRef(entry); ok {
+			key, action, err := enableMarketplacePlugin(inst.ProjectPath, ref)
+			if err != nil {
+				warn("plugin %q: %v", entry, err)
+			} else {
+				sessionLog.Info("loadout_marketplace_plugin_enabled",
+					slog.String("session", inst.Title),
+					slog.String("plugin", entry),
+					slog.String("plugin_key", key),
+					slog.String("action", string(action)))
+			}
+			continue
+		}
+
 		attachment, err := AttachSkillToProject(inst.ProjectPath, inst.Tool, entry, "")
 		switch {
 		case err == nil:
