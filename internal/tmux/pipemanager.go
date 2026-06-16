@@ -178,32 +178,68 @@ func (pm *PipeManager) GetWindowActivity(sessionName string) (int64, error) {
 	return ts, nil
 }
 
-// RefreshAllActivities sends a single list-windows command through any available
-// pipe to get activity timestamps for ALL sessions. This replaces the subprocess
-// call in RefreshSessionCache.
+// selectPipesPerSocket returns one alive pipe for each distinct socket among
+// the given pipes. `list-windows -a` only reports sessions on the server its
+// pipe is attached to, so a single arbitrary pipe misses every session living
+// on another socket. When agent-deck sessions are split across more than one
+// tmux server (e.g. some on the default socket, some under [tmux] socket_name),
+// querying just one pipe makes the others' sessions look gone — they flip to
+// StatusError/tmux_missing and can then be killed by restart machinery. Probing
+// one pipe per socket and merging keeps the cache complete. Dead pipes are
+// skipped. See the multi-socket cache aliasing note.
+func selectPipesPerSocket(pipes map[string]*ControlPipe) []*ControlPipe {
+	seen := make(map[string]bool)
+	var selected []*ControlPipe
+	for _, p := range pipes {
+		if p == nil || !p.IsAlive() {
+			continue
+		}
+		if seen[p.socketName] {
+			continue
+		}
+		seen[p.socketName] = true
+		selected = append(selected, p)
+	}
+	return selected
+}
+
+// RefreshAllActivities sends a list-windows command through one pipe per distinct
+// socket to get activity timestamps for ALL sessions across every tmux server we
+// have a live pipe to. This replaces the subprocess call in RefreshSessionCache.
+// Session names carry random suffixes, so cross-socket name collisions are
+// effectively impossible and merging by name is safe.
 func (pm *PipeManager) RefreshAllActivities() (map[string]int64, map[string][]WindowInfo, error) {
 	pm.mu.RLock()
-	// Find any alive pipe to send the command through
-	var pipe *ControlPipe
-	for _, p := range pm.pipes {
-		if p.IsAlive() {
-			pipe = p
-			break
-		}
-	}
+	pipes := selectPipesPerSocket(pm.pipes)
 	pm.mu.RUnlock()
 
-	if pipe == nil {
+	if len(pipes) == 0 {
 		return nil, nil, fmt.Errorf("no alive pipes available")
 	}
 
-	// tmux control mode requires double-quoted format strings containing special chars
-	output, err := pipe.SendCommand(`list-windows -a -F "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}"`)
-	if err != nil {
-		return nil, nil, fmt.Errorf("list-windows via pipe: %w", err)
+	sessionCache := make(map[string]int64)
+	windowCache := make(map[string][]WindowInfo)
+	var firstErr error
+	gotAny := false
+	for _, pipe := range pipes {
+		// tmux control mode requires double-quoted format strings containing special chars
+		output, err := pipe.SendCommand(`list-windows -a -F "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}"`)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		gotAny = true
+		sc, wc := parseListWindowsOutput(output)
+		maps.Copy(sessionCache, sc)
+		maps.Copy(windowCache, wc)
 	}
 
-	sessionCache, windowCache := parseListWindowsOutput(output)
+	if !gotAny {
+		return nil, nil, fmt.Errorf("list-windows via pipe: %w", firstErr)
+	}
+
 	return sessionCache, windowCache, nil
 }
 
