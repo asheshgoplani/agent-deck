@@ -1333,6 +1333,19 @@ func (s *StateDB) SetAcknowledged(id string, ack bool) error {
 	return err
 }
 
+// SetArchived sets or clears the archive timestamp for a single instance via a
+// targeted UPDATE. Archive/unarchive mutate one field on one row, so they must
+// NOT go through the full-table saveInstances() path: under concurrent writers
+// that path's external-change guard aborts the save and reloads, silently
+// discarding the archive (see #archive-abort). A scoped UPDATE always lands.
+// A zero `at` clears the flag (unarchive).
+func (s *StateDB) SetArchived(id string, at time.Time) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("UPDATE instances SET archived_at = ? WHERE id = ?", archivedAtUnix(at), id)
+		return err
+	})
+}
+
 // --- Heartbeat ---
 
 // RegisterInstance records this process as an active TUI instance.
