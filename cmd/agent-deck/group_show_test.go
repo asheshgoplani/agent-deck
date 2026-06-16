@@ -54,7 +54,7 @@ env_file = "~/.agent-deck/groups/work.env"
 command = "claude-work"
 model = "claude-sonnet-4-6"
 env = { AGENT_ROLE = "work" }
-skills = ["store/loom"]
+plugins = ["store/loom"]
 mcps = ["memory"]
 `)
 
@@ -78,7 +78,7 @@ mcps = ["memory"]
 			CommandSource string            `json:"command_source"`
 			Model         string            `json:"model"`
 			Env           map[string]string `json:"env"`
-			Skills        []string          `json:"skills"`
+			Plugins       []string          `json:"plugins"`
 			MCPs          []string          `json:"mcps"`
 			ConfigError   string            `json:"config_error"`
 		} `json:"claude"`
@@ -100,8 +100,8 @@ mcps = ["memory"]
 	if c.Env["AGENT_ROLE"] != "work" {
 		t.Errorf("env=%v want AGENT_ROLE=work", c.Env)
 	}
-	if len(c.Skills) != 1 || c.Skills[0] != "store/loom" {
-		t.Errorf("skills=%v want [store/loom]", c.Skills)
+	if len(c.Plugins) != 1 || c.Plugins[0] != "store/loom" {
+		t.Errorf("plugins=%v want [store/loom]", c.Plugins)
 	}
 	if len(c.MCPs) != 1 || c.MCPs[0] != "memory" {
 		t.Errorf("mcps=%v want [memory]", c.MCPs)

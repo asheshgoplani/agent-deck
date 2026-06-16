@@ -165,7 +165,7 @@ env_file   = "~/.agent-deck/groups/work.env"
 command    = "claude-wrapper"        # Per-group claude command/wrapper
 model      = "claude-sonnet-4-6"     # Model default for sessions in this group
 env        = { AGENT_ROLE = "work", CLAUDE_CODE_EFFORT_LEVEL = "high" }
-skills     = ["my-store/loom"]       # Declarative loadout (skill source entries)
+plugins    = ["my-store/loom"]       # Per-agent Claude plugin loadout (project-scope)
 mcps       = ["memory"]              # Declarative loadout ([mcps.X] catalog names)
 
 [conductors.lilu.claude]
@@ -179,8 +179,8 @@ mcps       = ["memory"]              # Declarative loadout ([mcps.X] catalog nam
 | `command` | string | Claude command/wrapper for these sessions. Resolution: conductor > group (ancestor-walking) > `[claude].command` > `"claude"`. Like the global `command`, a non-`"claude"` value suppresses the `CLAUDE_CONFIG_DIR=` spawn prefix (the wrapper is assumed to handle it). |
 | `model` | string | Model default for these sessions. Resolution: explicit per-session model (`--model`, dialog) > conductor > group (ancestor-walking) > no flag (Claude's own default). Empty falls through — the global `default_model` remains a new-session-dialog prefill only. Resolved at every start/restart, so config edits apply without re-creating sessions. |
 | `env` | inline table | Env vars exported in the spawn command AFTER the `env_file` source — an inline key deterministically wins over the same key from the file. Merge order per key: ancestor groups (root-first) → exact group → conductor. Parent-only keys persist through the merge. |
-| `skills` | array | Declarative skill loadout (`"<source>/<name>"` entries against the `skill source` registry). Schema reserved; materialization ships separately. Group values union along the ancestor chain (floor semantics — a child adds, never subtracts). |
-| `mcps` | array | Declarative MCP loadout (`[mcps.X]` catalog names). Same semantics as `skills`. |
+| `plugins` | array | Declarative **Claude plugin** loadout (`"<source>/<name>"` entries against the `skill source` registry). These are Claude Code plugins — a dir with `.claude-plugin/plugin.json`, bundling skills/agents/commands/hooks/MCP — materialized as symlinks into the session cwd's `.claude/skills/` (Claude's project-scope plugin dir) and loaded namespaced (e.g. `loom:wrap-up`) on next start. **Distinct from the top-level `[plugins.X]` catalog**, which is the legacy `enabledPlugins`/`--channels` (inbound-messaging) path. Materialized at session create (`add`/`launch`) + re-asserted before every start/restart; one-key workspace trust is auto-seeded so the plugins load. Attach-only floor — config removal never detaches, foreign dirs never clobbered (skip + warn). Group values union along the ancestor chain; conductor entries union on top. See [Skills Registry](#skills-registry-outside-configtoml). |
+| `mcps` | array | Declarative MCP loadout (`[mcps.X]` catalog names appended to the session's local `.mcp.json`). Same floor semantics as `plugins`; unknown catalog names skip + warn. |
 
 Verify what a group actually resolves to — including whether the `env_file`
 exists and whether config.toml parsed at all:
@@ -525,6 +525,25 @@ agent-deck skill source list
 agent-deck skill source add team ~/src/team-skills
 agent-deck skill source remove team
 ```
+
+**Declarative per-group/per-conductor loadout:** `[groups.X.claude].plugins`
+/ `.mcps` (and the conductor mirror) list entries that agent-deck attaches
+automatically — at session create (`add` / `launch`) and re-asserted before
+every start/restart — through this same registry and attach machinery,
+exactly as if `skill attach` / `mcp attach` had been run by hand. The
+loadout is an attach-only floor:
+
+- already attached and healthy → no-op; a deleted symlink re-materializes
+- a real directory or foreign symlink at the target → skip + warning,
+  never clobbered (a human-placed dir beats config)
+- an entry missing from the registry / `[mcps.*]` catalog → skip + warning
+- removing an entry from config does NOT detach — subtraction is a
+  deliberate `skill detach`
+
+Store entries may be plain directory skills (`SKILL.md`) or full Claude
+Code plugins (`.claude-plugin/plugin.json`); both materialize as project
+skills. SSH sessions are skipped (no local project path). See
+[Per-group / per-conductor Claude overrides](#per-group--per-conductor-claude-overrides).
 
 ## [mcp_pool] Section
 

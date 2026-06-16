@@ -192,11 +192,11 @@ env = { "BAD-KEY" = "x", GOOD = "it's" }
 func TestGroupClaude_SkillsAndMCPsUnionAlongAncestors(t *testing.T) {
 	withIsolatedHomeAndConfig(t, `
 [groups."work".claude]
-skills = ["store/base", "store/shared"]
+plugins = ["store/base", "store/shared"]
 mcps = ["memory"]
 
 [groups."work/sub".claude]
-skills = ["store/extra", "store/shared"]
+plugins = ["store/extra", "store/shared"]
 mcps = ["exa"]
 `)
 	cfg, err := LoadUserConfig()
@@ -204,7 +204,7 @@ mcps = ["exa"]
 		t.Fatalf("LoadUserConfig: %v", err)
 	}
 
-	skills := cfg.GetGroupClaudeSkills("work/sub/leaf")
+	skills := cfg.GetGroupClaudePlugins("work/sub/leaf")
 	wantSkills := []string{"store/base", "store/shared", "store/extra"}
 	if strings.Join(skills, ",") != strings.Join(wantSkills, ",") {
 		t.Errorf("skills union=%v want %v (root-first, deduped — floor semantics)", skills, wantSkills)
@@ -216,7 +216,7 @@ mcps = ["exa"]
 		t.Errorf("mcps union=%v want %v", mcps, wantMCPs)
 	}
 
-	if got := cfg.GetGroupClaudeSkills("unrelated"); got != nil {
+	if got := cfg.GetGroupClaudePlugins("unrelated"); got != nil {
 		t.Errorf("unrelated group must have no skills, got %v", got)
 	}
 }
@@ -230,7 +230,7 @@ command = "claude-global"
 env_file = "~/.agent-deck/groups/work.env"
 model = "claude-sonnet-4-6"
 env = { AGENT_ROLE = "work" }
-skills = ["store/loom"]
+plugins = ["store/loom"]
 `)
 
 	res := ResolveGroupClaude("work/sub")
@@ -252,8 +252,8 @@ skills = ["store/loom"]
 	if res.Env["AGENT_ROLE"] != "work" {
 		t.Errorf("env=%v want AGENT_ROLE=work", res.Env)
 	}
-	if len(res.Skills) != 1 || res.Skills[0] != "store/loom" {
-		t.Errorf("skills=%v want [store/loom]", res.Skills)
+	if len(res.Plugins) != 1 || res.Plugins[0] != "store/loom" {
+		t.Errorf("plugins=%v want [store/loom]", res.Plugins)
 	}
 
 	envPath := filepath.Join(tmpHome, ".agent-deck", "groups", "work.env")

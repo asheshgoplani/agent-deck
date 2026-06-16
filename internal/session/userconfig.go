@@ -686,12 +686,13 @@ type GroupClaudeSettings struct {
 	Env map[string]string `toml:"env,omitempty"`
 
 	// Skills lists declarative skill-loadout entries ("<source>/<name>")
-	// to attach to sessions in this group. Reserved schema home for the
-	// loadout follow-up; surfaced by `group show --resolved`.
-	Skills []string `toml:"skills,omitempty"`
+	// attached to sessions in this group at create and re-asserted on
+	// every start (ApplyConfiguredLoadout — attach-only floor semantics).
+	// Surfaced by `group show --resolved`.
+	Plugins []string `toml:"plugins,omitempty"`
 
-	// MCPs lists [mcps.X] catalog names to attach to sessions in this
-	// group. Reserved schema home for the loadout follow-up.
+	// MCPs lists [mcps.X] catalog names appended to the local .mcp.json
+	// of sessions in this group. Same floor semantics as Skills.
 	MCPs []string `toml:"mcps,omitempty"`
 }
 
@@ -745,12 +746,13 @@ type ConductorClaudeSettings struct {
 	// AFTER the group env map (conductor wins per key on conflict).
 	Env map[string]string `toml:"env,omitempty"`
 
-	// Skills lists declarative skill-loadout entries ("<source>/<name>").
-	// Reserved schema home for the loadout follow-up.
-	Skills []string `toml:"skills,omitempty"`
+	// Skills lists declarative skill-loadout entries ("<source>/<name>")
+	// unioned on top of the group floor for this conductor's sessions
+	// (ApplyConfiguredLoadout — attach-only floor semantics).
+	Plugins []string `toml:"plugins,omitempty"`
 
-	// MCPs lists [mcps.X] catalog names. Reserved schema home for the
-	// loadout follow-up.
+	// MCPs lists [mcps.X] catalog names unioned on top of the group
+	// floor. Same semantics as Skills.
 	MCPs []string `toml:"mcps,omitempty"`
 }
 
@@ -1415,17 +1417,17 @@ func (c *UserConfig) GetGroupClaudeEnv(groupPath string) map[string]string {
 	return merged
 }
 
-// GetGroupClaudeSkills returns the union of skill-loadout entries along the
+// GetGroupClaudePlugins returns the union of skill-loadout entries along the
 // group ancestor chain, deduplicated, root-first. Union (not nearest-wins)
 // because the loadout is an attach-only floor: a child group declaring its
 // own skills adds to the parent's floor rather than replacing it.
-func (c *UserConfig) GetGroupClaudeSkills(groupPath string) []string {
-	return c.unionGroupClaudeList(groupPath, func(s GroupClaudeSettings) []string { return s.Skills })
+func (c *UserConfig) GetGroupClaudePlugins(groupPath string) []string {
+	return c.unionGroupClaudeList(groupPath, func(s GroupClaudeSettings) []string { return s.Plugins })
 }
 
 // GetGroupClaudeMCPs returns the union of [mcps.X] catalog names along the
 // group ancestor chain, deduplicated, root-first. Same floor semantics as
-// GetGroupClaudeSkills.
+// GetGroupClaudePlugins.
 func (c *UserConfig) GetGroupClaudeMCPs(groupPath string) []string {
 	return c.unionGroupClaudeList(groupPath, func(s GroupClaudeSettings) []string { return s.MCPs })
 }
@@ -1545,24 +1547,24 @@ func (c *UserConfig) GetConductorClaudeEnv(name string) map[string]string {
 	return cp
 }
 
-// GetConductorClaudeSkills returns the conductor-specific skill-loadout
+// GetConductorClaudePlugins returns the conductor-specific skill-loadout
 // entries, if configured. The effective loadout for a conductor session is
 // the union of its group chain's skills and this list (floor semantics).
-func (c *UserConfig) GetConductorClaudeSkills(name string) []string {
+func (c *UserConfig) GetConductorClaudePlugins(name string) []string {
 	if c == nil || name == "" || c.Conductors == nil {
 		return nil
 	}
-	src := c.Conductors[name].Claude.Skills
+	src := c.Conductors[name].Claude.Plugins
 	if len(src) == 0 {
 		return nil
 	}
 	// Defensive copy — see GetConductorClaudeEnv. Callers must not mutate the
-	// cached slice; GetGroupClaudeSkills likewise returns a fresh union slice.
+	// cached slice; the group plugin getter likewise returns a fresh union slice.
 	return append([]string(nil), src...)
 }
 
 // GetConductorClaudeMCPs returns the conductor-specific [mcps.X] catalog
-// names, if configured. Same floor semantics as GetConductorClaudeSkills.
+// names, if configured. Same floor semantics as GetConductorClaudePlugins.
 func (c *UserConfig) GetConductorClaudeMCPs(name string) []string {
 	if c == nil || name == "" || c.Conductors == nil {
 		return nil

@@ -425,6 +425,13 @@ func handleLaunch(profile string, args []string) {
 		_ = newInstance.SetClaudeOptions(opts)
 	}
 
+	// Materialize the declarative per-group/per-conductor skill+mcp loadout
+	// at create time (mirror of handleAdd) — a queued session gets its floor
+	// now, not at its eventual start. Start/Restart re-assert.
+	for _, w := range session.ApplyConfiguredLoadout(newInstance) {
+		fmt.Fprintf(os.Stderr, "Warning: loadout: %s\n", w)
+	}
+
 	// Add to instances list (in-memory only — used for downstream
 	// group cap math and the second SaveWithGroups after PostStartSync).
 	instances = append(instances, newInstance)

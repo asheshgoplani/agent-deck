@@ -492,7 +492,7 @@ func handleGroupShow(profile string, args []string) {
 		} else {
 			b.WriteString("  env:        (none)\n")
 		}
-		fmt.Fprintf(&b, "  skills:     %s\n", orNone(strings.Join(res.Skills, ", ")))
+		fmt.Fprintf(&b, "  plugins:    %s\n", orNone(strings.Join(res.Plugins, ", ")))
 		fmt.Fprintf(&b, "  mcps:       %s\n", orNone(strings.Join(res.MCPs, ", ")))
 	}
 
