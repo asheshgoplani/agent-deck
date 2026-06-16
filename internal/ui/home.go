@@ -5022,16 +5022,25 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.cachedStatusCounts.valid.Store(false)
 		h.invalidatePreviewCache(msg.sessionID)
 		h.rebuildFlatItems()
-		h.saveInstances()
 		if inst := h.getInstanceByID(msg.sessionID); inst != nil {
+			// Persist via a targeted UPDATE, not saveInstances(): under concurrent
+			// writers the full-table save aborts on external-change and reloads,
+			// silently discarding the archive (archived_at reverts to 0).
+			if err := h.persistArchived(inst); err != nil {
+				h.setError(fmt.Errorf("failed to persist archive: %w", err))
+				return h, nil
+			}
 			h.setError(fmt.Errorf("archived '%s' (^ to view)", inst.Title))
 		}
 		return h, nil
 
 	case sessionUnarchivedMsg:
 		h.rebuildFlatItems()
-		h.saveInstances()
 		if inst := h.getInstanceByID(msg.sessionID); inst != nil {
+			if err := h.persistArchived(inst); err != nil {
+				h.setError(fmt.Errorf("failed to persist unarchive: %w", err))
+				return h, nil
+			}
 			h.setError(fmt.Errorf("unarchived '%s'", inst.Title))
 		}
 		return h, nil
@@ -11373,6 +11382,22 @@ func (h *Home) closeSession(inst *session.Instance) tea.Cmd {
 		killErr := inst.Kill()
 		return sessionClosedMsg{sessionID: id, killErr: killErr}
 	}
+}
+
+// persistArchived writes the instance's archive timestamp to the database with a
+// targeted single-row UPDATE. This deliberately bypasses saveInstances(), whose
+// external-change guard aborts (and reloads) under concurrent writers, silently
+// reverting the archive. The in-memory inst.ArchivedAt is already set by
+// archiveSession/unarchiveSession; this only persists it.
+func (h *Home) persistArchived(inst *session.Instance) error {
+	if h.storage == nil {
+		return nil
+	}
+	db := h.storage.GetDB()
+	if db == nil {
+		return nil
+	}
+	return db.SetArchived(inst.ID, inst.ArchivedAt)
 }
 
 // archiveSession stops a session and marks it archived.
