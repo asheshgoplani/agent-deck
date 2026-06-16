@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/genui"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
@@ -27,6 +28,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 	pushEnabled := fs.Bool("push", false, "Enable web push notifications (auto-generates VAPID keys per profile)")
 	pushVAPIDSubject := fs.String("push-vapid-subject", "mailto:agentdeck@localhost", "VAPID subject used for web push notifications")
 	pushTestEvery := fs.Duration("push-test-every", 0, "Send periodic push test notifications at this interval (e.g. 10s, 1m); 0 disables")
+	genuiComposerSession := fs.String("genui-composer-session", "", "Route the generative command center's intent→spec composition to this managed session (the no-API-key dogfood path). When empty, a deterministic no-LLM stub composer is used.")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck web [options]")
@@ -98,6 +100,15 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		}
 	}
 
+	// genui-1: by default the generative command center composes with the
+	// deterministic no-LLM stub (NewServer's default). When --genui-composer-
+	// session is set, route composition to that managed claude session — the
+	// fleet IS the compute, so there is no billed API call and no API key.
+	var genuiComposer genui.SpecComposer
+	if s := strings.TrimSpace(*genuiComposerSession); s != "" {
+		genuiComposer = genui.NewSessionComposer(s)
+	}
+
 	server := web.NewServer(web.Config{
 		ListenAddr:          *listenAddr,
 		Profile:             effectiveProfile,
@@ -110,6 +121,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		PushVAPIDPrivateKey: resolvedPushPrivate,
 		PushVAPIDSubject:    resolvedPushSubject,
 		PushTestInterval:    *pushTestEvery,
+		GenuiComposer:       genuiComposer,
 	})
 
 	if mutator != nil {

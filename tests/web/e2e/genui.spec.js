@@ -112,3 +112,66 @@ test.describe('generative command center (genui-0)', () => {
     expect(result.escaped).toBe(true)
   })
 })
+
+// --- genui-1: the LLM emits the validated spec ----------------------------
+test.describe('generative command center (genui-1) — intent → compose → render', () => {
+  test.beforeEach(async ({ request }) => {
+    await request.post('/__fixture/reset')
+  })
+
+  test('the compose endpoint returns a server-validated spec', async ({ request }) => {
+    const res = await request.post('/api/command-center/genui/compose', {
+      data: { intent: "show me what's blocked" },
+    })
+    expect(res.ok()).toBeTruthy()
+    const body = await res.json()
+    // The composer emitted a spec and the trace says which composer did it.
+    expect(body.spec).toBeTruthy()
+    expect(body.spec.specId).toBe('composed-blocked')
+    expect(body.trace.composer).toBe('stub')
+  })
+
+  test('a rejected intent returns a CLEAN error and NO spec', async ({ request }) => {
+    // The stub emits an unknown-widget spec for this probe; the unchanged
+    // validator rejects it across the repair budget → clean 422, no spec.
+    const res = await request.post('/api/command-center/genui/compose', {
+      data: { intent: 'please use an unknown widget' },
+    })
+    expect(res.status()).toBe(422)
+    const body = await res.json()
+    expect(body.code).toBe('COMPOSE_FAILED')
+    expect(body.spec).toBeUndefined() // never return unvalidated output
+  })
+
+  test('typing an intent composes a spec and reshapes the whole UI', async ({ page }) => {
+    await openGenui(page)
+    await expect(page.locator('[data-testid="genui-root"]')).toHaveAttribute('data-spec-id', 'status-board', { timeout: 5000 })
+
+    // Type an intent and compose. The LLM (stub) emits a blocked-first spec.
+    await page.locator('[data-testid="genui-intent-input"]').fill("show me what's blocked")
+    await page.locator('[data-testid="genui-intent-go"]').click()
+
+    // The WHOLE UI is now the composed spec (decision-list present), with a trace.
+    await expect(page.locator('[data-testid="genui-root"]')).toHaveAttribute('data-spec-id', 'composed-blocked', { timeout: 5000 })
+    await expect(page.locator('[data-testid="genui-decision-list"]')).toBeVisible()
+    await expect(page.locator('[data-testid="genui-trace"]')).toContainText('composed by')
+
+    // A different intent composes a different whole UI (grouped grid).
+    await page.locator('[data-testid="genui-intent-input"]').fill('group everything by project')
+    await page.locator('[data-testid="genui-intent-go"]').click()
+    await expect(page.locator('[data-testid="genui-root"]')).toHaveAttribute('data-spec-id', 'composed-by-project', { timeout: 5000 })
+    await expect(page.locator('[data-testid="genui-conductor-card"]').first()).toBeVisible({ timeout: 5000 })
+  })
+
+  test('a rejected compose shows a clean error and renders nothing unvalidated', async ({ page }) => {
+    await openGenui(page)
+    await expect(page.locator('[data-testid="genui-root"]')).toBeVisible({ timeout: 5000 })
+
+    await page.locator('[data-testid="genui-intent-input"]').fill('please use an unknown widget')
+    await page.locator('[data-testid="genui-intent-go"]').click()
+
+    // Clean error surfaces; no genui-root (no unvalidated spec) is rendered.
+    await expect(page.locator('[data-testid="genui-load-error"]')).toBeVisible({ timeout: 5000 })
+    await expect(page.locator('[data-testid="genui-root"]')).toHaveCount(0)
+  })
+})

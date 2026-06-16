@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/genui"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"golang.org/x/time/rate"
@@ -33,6 +34,14 @@ type Config struct {
 	PushVAPIDPrivateKey string
 	PushVAPIDSubject    string
 	PushTestInterval    time.Duration
+
+	// GenuiComposer is the spec-emitting "LLM" for the generative command
+	// center (v-genui-1). When nil, the server defaults to the deterministic,
+	// no-LLM genui.StubComposer so CI and a read-only demo work with zero API
+	// key. An operator wires a genui.SessionComposer here (the dogfood path:
+	// route the intent to a managed claude session) — that composer mutates a
+	// session, so the compose endpoint gates it as a mutation.
+	GenuiComposer genui.SpecComposer
 }
 
 // DefaultUndoWindow is the default Chrome-style undo grace period for
@@ -159,6 +168,11 @@ type Server struct {
 	// whose hook file is present on disk. Defaults to defaultLoadHookStatuses
 	// (which reads ~/.agent-deck/hooks/) but is injectable for tests.
 	hookStatusLoader func() map[string]*session.HookStatus
+
+	// genuiComposer emits a whole-UI spec from a user intent (v-genui-1). It is
+	// UNTRUSTED: its output always passes the unchanged genui validator before
+	// it can reach the renderer. Defaults to genui.StubComposer (no LLM).
+	genuiComposer genui.SpecComposer
 }
 
 // NewServer creates a new web server with base routes and middleware.
@@ -178,12 +192,19 @@ func NewServer(cfg Config) *Server {
 		// process; production limits would flake skills/mcps/session specs.
 		mutationLimiter = rate.NewLimiter(rate.Inf, 0)
 	}
+	genuiComposer := cfg.GenuiComposer
+	if genuiComposer == nil {
+		// Default: deterministic, no-LLM composer. Keeps CI green and the
+		// read-only demo drivable without any API key or live session.
+		genuiComposer = genui.StubComposer{}
+	}
 	s := &Server{
 		cfg:              cfg,
 		menuData:         menuData,
 		menuSubscribers:  make(map[chan struct{}]struct{}),
 		mutationLimiter:  mutationLimiter,
 		hookStatusLoader: defaultLoadHookStatuses,
+		genuiComposer:    genuiComposer,
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	webLog := logging.ForComponent(logging.CompWeb)
@@ -257,6 +278,10 @@ func NewServer(cfg Config) *Server {
 	// reshapes the whole UI. No LLM in v0 — inert DATA proving the safe engine.
 	mux.HandleFunc("/api/command-center/genui/views", s.handleGenuiViews)
 	mux.HandleFunc("/api/command-center/genui/spec/", s.handleGenuiSpec)
+	// genui-1: the LLM emits the validated UI spec. POST an intent; a pluggable
+	// composer emits a spec; it passes the SAME validator before it is returned
+	// (bounded repair loop on rejection). Default composer is the no-LLM stub.
+	mux.HandleFunc("POST /api/command-center/genui/compose", s.handleGenuiCompose)
 
 	mux.HandleFunc("/api/costs/summary", s.handleCostsSummary)
 	mux.HandleFunc("/api/costs/daily", s.handleCostsDaily)

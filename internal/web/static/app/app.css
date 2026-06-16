@@ -1221,6 +1221,22 @@ body[data-rail="hidden"] .rightrail { display: none; }
 }
 .genui-switch-btn:hover { border-color: var(--accent, #6c8cff); }
 .genui-switch-btn.active { background: var(--accent, #6c8cff); color: #fff; border-color: var(--accent, #6c8cff); }
+/* genui-1: the intent → compose bar + composed-by trace. */
+.genui-intent { display: flex; gap: 10px; margin-bottom: 12px; }
+.genui-intent-input {
+  flex: 1; padding: 9px 13px; border-radius: 8px; border: 1px solid var(--border, #333);
+  background: var(--card, #1c1d29); color: var(--text, #ddd); font-size: 14px;
+}
+.genui-intent-input:focus { outline: none; border-color: var(--accent, #6c8cff); }
+.genui-intent-go {
+  padding: 9px 18px; border-radius: 8px; border: 1px solid var(--accent, #6c8cff);
+  background: var(--accent, #6c8cff); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.genui-intent-go:disabled { opacity: .5; cursor: not-allowed; }
+.genui-trace {
+  font-size: 12px; color: var(--text-dim, #9aa); background: rgba(108,140,255,.08);
+  border: 1px solid rgba(108,140,255,.25); border-radius: 8px; padding: 7px 12px; margin-bottom: 12px;
+}
 .genui-body { flex: 1; min-height: 0; }
 .genui-loading, .genui-empty { color: var(--text-dim, #888); font-size: 13px; padding: 8px 0; }
 .genui-error { color: #ff6b6b; background: rgba(255,107,107,.08); border: 1px solid rgba(255,107,107,.3);
