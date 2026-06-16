@@ -158,6 +158,53 @@ func TestPopulatedTopWiringSinksEmptyGroupWithArchivedSession(t *testing.T) {
 	}
 }
 
+// In populated-on-top view, a group whose sessions are ALL archived is empty
+// from the active view's perspective, so it must sink below the divider with the
+// other empty groups — not stay on top as if populated. The placement is driven
+// by GroupActivityMap, which must therefore ignore archived sessions in the
+// active view.
+func TestPopulatedTopWiringSinksFullyArchivedGroup(t *testing.T) {
+	home, _ := buildTwoGroupHome(t)
+
+	// Archive every session in beta (b1, b2). alpha (a1..a3) stays active.
+	home.instancesMu.Lock()
+	for _, inst := range home.instances {
+		if inst.Title == "b1" || inst.Title == "b2" {
+			inst.ArchivedAt = time.Now().UTC()
+		}
+	}
+	home.instancesMu.Unlock()
+
+	home.groupViewMode = session.GroupViewPopulatedTop
+	home.rebuildFlatItems()
+
+	div := dividerIndex(home)
+	if div < 0 {
+		t.Fatalf("expected a divider: alpha is populated, beta is fully archived (empty in active view)")
+	}
+	// alpha's active sessions stay above the divider.
+	for _, title := range []string{"a1", "a2", "a3"} {
+		if idx := sessionIndexByTitle(home, title); idx < 0 || idx >= div {
+			t.Fatalf("active session %q must be above the divider: idx=%d divider=%d", title, idx, div)
+		}
+	}
+	// The fully-archived beta group header must appear below the divider.
+	betaBelow := false
+	betaAbove := false
+	for i, it := range home.flatItems {
+		if it.Type == session.ItemTypeGroup && it.Path == "beta" {
+			if i > div {
+				betaBelow = true
+			} else {
+				betaAbove = true
+			}
+		}
+	}
+	if betaAbove || !betaBelow {
+		t.Fatalf("fully-archived group 'beta' must appear only below the divider: above=%v below=%v divider=%d", betaAbove, betaBelow, div)
+	}
+}
+
 func TestActiveTopWiringCollapsedRunningGroupStaysTop(t *testing.T) {
 	home, _ := buildTwoGroupHome(t)
 
