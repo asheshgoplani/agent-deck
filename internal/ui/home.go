@@ -76,7 +76,6 @@ var (
 	notifLog  = logging.ForComponent(logging.CompNotif)
 	mcpUILog  = logging.ForComponent(logging.CompMCP)
 	statusLog = logging.ForComponent(logging.CompStatus)
-	pipeUILog = logging.ForComponent("pipe")
 )
 
 const (
