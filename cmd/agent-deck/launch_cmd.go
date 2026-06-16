@@ -125,6 +125,7 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("  agent-deck launch . -c claude -m \"Fix bug\" --no-wait")
 		fmt.Println("  agent-deck launch . -c \"codex --dangerously-bypass-approvals-and-sandbox\"")
 		fmt.Println("  agent-deck launch . -g ard --no-parent -c claude -m \"Run review\"")
+		fmt.Println("  agent-deck launch . -c claude -w feature/new -b -m \"Start work\"")
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly

@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
@@ -40,6 +42,63 @@ func newGitRepo(t *testing.T, c *capSandbox) string {
 		}
 	}
 	return repo
+}
+
+// TestCapability_LaunchWTSetup proves the one-step launch path can create a
+// new worktree branch, run the repo's standard .agent-deck/worktree-setup.sh
+// inside that worktree, then start the agent and deliver the initial message.
+func TestCapability_LaunchWTSetup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell command fixture")
+	}
+
+	c := newCapSandbox(t)
+	setupEchobot(t, c)
+	repo := newGitRepo(t, c)
+	setupDir := filepath.Join(repo, ".agent-deck")
+	if err := os.MkdirAll(setupDir, 0o755); err != nil {
+		t.Fatalf("mkdir setup dir: %v", err)
+	}
+	setupScript := filepath.Join(setupDir, "worktree-setup.sh")
+	if err := os.WriteFile(setupScript, []byte("printf SETUP_OK > setup-marker.txt\n"), 0o644); err != nil {
+		t.Fatalf("write worktree setup script: %v", err)
+	}
+
+	token := "PINGLAUNCH-WORKTREE-SETUP"
+	c.run(t, "launch", repo,
+		"-c", "echobot",
+		"-t", "cap-launch-wt",
+		"-w", "caplaunch",
+		"-b",
+		"-m", token,
+	)
+	defer c.stopQuietly("cap-launch-wt")
+
+	row, ok := c.findByTitle(t, "cap-launch-wt")
+	if !ok {
+		t.Fatalf("launch did not create a worktree session row.\nrows: %+v", c.list(t))
+	}
+	wi := c.worktreeInfo(t, "cap-launch-wt")
+	if !wi.WorktreeExists {
+		t.Fatalf("worktree info reports the launch worktree missing: %+v", wi)
+	}
+	if row.Path != wi.WorktreePath {
+		t.Fatalf("session path = %q, want worktree path %q", row.Path, wi.WorktreePath)
+	}
+	marker := filepath.Join(wi.WorktreePath, "setup-marker.txt")
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("setup marker should be written inside worktree at %s: %v", marker, err)
+	}
+	if strings.TrimSpace(string(data)) != "SETUP_OK" {
+		t.Fatalf("setup marker = %q, want SETUP_OK", string(data))
+	}
+
+	want := "ECHO:" + token
+	pane, ok := c.waitForPaneContains(t, "cap-launch-wt", want, 20*time.Second)
+	if !ok {
+		t.Fatalf("launch worktree setup did not deliver %q.\nlast pane:\n%s", want, pane)
+	}
 }
 
 // worktreeInfo is the subset of `worktree info --json` we assert on. It reads
