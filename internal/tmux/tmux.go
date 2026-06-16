@@ -2113,13 +2113,23 @@ var hasSessionProbeTimeout = 2 * time.Second
 // Uses cached session list when available (refreshed by RefreshExistingSessions)
 // Falls back to direct tmux call if cache is stale
 func (s *Session) Exists() bool {
-	// The session cache is populated by RefreshSessionCache against
-	// DefaultSocketName() only — entries describe the default tmux server
-	// alone. Sessions on isolated sockets must skip the cache, otherwise
-	// UpdateStatus would stamp StatusError on every poll for them (#755).
+	// #755: the cache describes the DefaultSocketName() server, so a session on
+	// a different socket must not be answered from it (a same-named entry is not
+	// the same session). Keep that guard.
+	//
+	// Within the guard, trust only a POSITIVE hit. A NEGATIVE/stale result is
+	// NOT trusted: the cache can transiently miss a live session when
+	// agent-deck sessions span multiple sockets (RefreshAllActivities merges one
+	// pipe per socket, and the subprocess fallback covers only DefaultSocketName,
+	// so a refresh sourced from the "wrong" socket omits this one). Confirm a
+	// "not in cache" reading with the live pipe / a direct probe on the
+	// session's OWN socket before declaring it dead. Trusting a negative cache
+	// hit flipped live sessions on a second socket to StatusError/tmux_missing
+	// (multi-socket cache aliasing), after which restart machinery could kill
+	// the still-running pane.
 	if strings.TrimSpace(s.SocketName) == DefaultSocketName() {
-		if exists, cacheValid := sessionExistsFromCache(s.Name); cacheValid {
-			return exists
+		if exists, cacheValid := sessionExistsFromCache(s.Name); cacheValid && exists {
+			return true
 		}
 	}
 

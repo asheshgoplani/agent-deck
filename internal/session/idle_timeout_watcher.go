@@ -155,6 +155,16 @@ func (w *IdleTimeoutWatcher) Tick(instances []*Instance) {
 		if inst == nil {
 			continue
 		}
+		if inst.Pin != PinNone {
+			// pin-protects-from-stop: a pinned session is exempt from idle
+			// auto-stop. Drop tracking so unpinning re-arms cleanly next tick.
+			delete(w.lastSeen, inst.ID)
+			idleLog.Debug("idle_timeout_skip_pinned",
+				slog.String("instance_id", inst.ID),
+				slog.String("pin", string(inst.Pin)),
+			)
+			continue
+		}
 		if inst.IdleTimeoutSecs <= 0 {
 			delete(w.lastSeen, inst.ID)
 			continue
