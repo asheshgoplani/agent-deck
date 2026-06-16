@@ -7,6 +7,7 @@ package ui
 
 import (
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -115,6 +116,45 @@ func TestPopulatedTopWiringSinksEmptyGroup(t *testing.T) {
 	}
 	if !emptyBelow {
 		t.Fatal("empty group 'empties' must appear below the divider")
+	}
+}
+
+// Regression: once ANY session is archived, hasArchivedSessions() flips true and
+// the archive-partition pass in rebuildFlatItems engages. That pass previously
+// dropped every group not in archiveGroupsWithMatches — including empty groups and
+// groups holding only active sessions in a parent that also had matches — so the
+// empty "empties" group vanished entirely instead of sinking below the divider.
+func TestPopulatedTopWiringSinksEmptyGroupWithArchivedSession(t *testing.T) {
+	home, _ := buildTwoGroupHome(t)
+
+	// Archive one real session so hasArchivedSessions() returns true and the
+	// archive-partition pass runs (mirrors the user having archived something).
+	home.instancesMu.Lock()
+	for _, inst := range home.instances {
+		if inst.Title == "b2" {
+			inst.ArchivedAt = time.Now().UTC()
+		}
+	}
+	home.instancesMu.Unlock()
+
+	// Add an empty group with no sessions.
+	home.groupTree.CreateGroup("empties")
+	home.groupViewMode = session.GroupViewPopulatedTop
+	home.rebuildFlatItems()
+
+	div := dividerIndex(home)
+	if div < 0 {
+		t.Fatalf("expected a divider when an empty group exists alongside populated ones")
+	}
+	// The empty group header must still appear, below the divider.
+	emptyBelow := false
+	for i := div + 1; i < len(home.flatItems); i++ {
+		if home.flatItems[i].Type == session.ItemTypeGroup && home.flatItems[i].Path == "empties" {
+			emptyBelow = true
+		}
+	}
+	if !emptyBelow {
+		t.Fatalf("empty group 'empties' must appear below the divider even when a session is archived; flatItems=%d divider=%d", len(home.flatItems), div)
 	}
 }
 
