@@ -257,7 +257,11 @@ func (s *SessionSwitcher) View() string {
 	const minDialogWidth = 56
 	dialogWidth := max(minDialogWidth, natural+4)
 	if s.width > 0 {
-		dialogWidth = min(dialogWidth, max(30, s.width-4))
+		// Clamp to the terminal: s.width-4 keeps the bordered box one cell off
+		// each edge. The floor matches contentWidth's (10) rather than the
+		// comfortable default, so a very narrow terminal still wins the clamp
+		// instead of overflowing.
+		dialogWidth = min(dialogWidth, max(10, s.width-4))
 	}
 	// Content area inside the rounded border + Padding(1,2): horizontal padding
 	// eats 4 cells. Truncating rows to this keeps long titles/subtitles from

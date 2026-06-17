@@ -335,6 +335,15 @@ func TestSessionSwitcher_ViewAutoExpandsToFitLongTitles(t *testing.T) {
 	if w := maxLineCellWidth(v); w > narrow {
 		t.Errorf("rendered switcher width %d exceeds terminal width %d:\n%s", w, narrow, v)
 	}
+
+	// Very narrow terminal: the clamp floor must not exceed the terminal — a
+	// width below the comfortable default still wins, so the box stays on-screen.
+	const tiny = 24
+	sw.SetSize(tiny, 24)
+	sw.Show("x", list, nil)
+	if w := maxLineCellWidth(sw.View()); w > tiny {
+		t.Errorf("rendered switcher width %d exceeds tiny terminal width %d:\n%s", w, tiny, sw.View())
+	}
 }
 
 // TestSessionSwitcher_FooterEscReflectsContext pins the Esc hint: it says
