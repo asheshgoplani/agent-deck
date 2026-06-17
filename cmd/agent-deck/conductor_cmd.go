@@ -708,7 +708,7 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("  2. Interact via the TUI: switch to the conductor session in the session list")
 		fmt.Printf("  3. Or use the CLI:       agent-deck -p %s session send %s \"your message\"\n", resolvedProfile, sessionTitle)
 		fmt.Println()
-		fmt.Println("  To add remote channels later: re-run `agent-deck conductor setup <name>`")
+		fmt.Printf("  To add remote channels later: agent-deck -p %s conductor setup %s\n", resolvedProfile, name)
 	}
 }
 
