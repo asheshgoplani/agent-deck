@@ -281,7 +281,7 @@ func handleConductorSetup(profile string, args []string) {
 	}
 
 	// Step 2a: First-time intro (only shown when no conductors exist yet).
-	if !session.ConductorSystemActive() {
+	if !*jsonOutput && !session.ConductorSystemActive() {
 		fmt.Println("Conductor Setup")
 		fmt.Println("===============")
 		fmt.Println()
@@ -296,7 +296,8 @@ func handleConductorSetup(profile string, args []string) {
 
 	// Step 2b: Offer channel configuration for any unconfigured channels.
 	// Runs on first setup and on re-runs, so users can add channels later.
-	if !telegramConfigured || !slackConfigured || !discordConfigured {
+	// Skipped in --json mode: interactive prompts would hang on stdin.
+	if !*jsonOutput && (!telegramConfigured || !slackConfigured || !discordConfigured) {
 		reader := bufio.NewReader(os.Stdin)
 
 		fmt.Print("Add remote channels for mobile/remote access? (y/N): ")
