@@ -252,6 +252,8 @@ func handleConductorSetup(profile string, args []string) {
 	}
 
 	settings := config.Conductor
+	// Token presence is sufficient: the wizard saves atomically after collecting
+	// all fields, so a token implies a complete config for that channel.
 	telegramConfigured := settings.Telegram.Token != ""
 	slackConfigured := settings.Slack.BotToken != ""
 	discordConfigured := settings.Discord.BotToken != ""
