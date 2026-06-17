@@ -170,6 +170,17 @@ func buildAgentDeck() (string, error) {
 	return buildBin, buildErr
 }
 
+// RemoveBuildArtifacts deletes the shared binary build directory created by
+// buildAgentDeck (the agent-deck-eval-bin-* temp dir, ~15 MB). The binary is
+// built once per test binary via buildOnce and must outlive every individual
+// test, so it cannot be released with t.Cleanup — eval test packages call this
+// from TestMain after m.Run() instead. No-op when no build happened.
+func RemoveBuildArtifacts() {
+	if buildBin != "" {
+		_ = os.RemoveAll(filepath.Dir(buildBin))
+	}
+}
+
 // repoRoot walks up from the test's working directory until it finds go.mod.
 // Tests run from the package directory, so we climb until we hit the module
 // root.

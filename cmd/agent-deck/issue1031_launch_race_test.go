@@ -3,13 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // CLI-level regression tests for issue #1031.
@@ -57,13 +57,7 @@ func TestAgentDeckLaunch_ParallelSafe_AllSessionsPersist_RegressionFor1031(t *te
 	}
 
 	home := t.TempDir()
-	socket := uniqueTmuxSocketName1031(t)
-	t.Cleanup(func() {
-		// Kill the isolated tmux server so we don't leak panes onto the
-		// developer's main tmux socket. Best-effort: the server is
-		// process-local to this test and dies with the user anyway.
-		_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
-	})
+	socket := isolatedTmuxSocket1031(t)
 
 	const N = 5
 	titles := make([]string, N)
@@ -211,10 +205,7 @@ func TestAgentDeckLaunch_ReturnsSessionID_RegressionFor1031(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	socket := uniqueTmuxSocketName1031(t)
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
-	})
+	socket := isolatedTmuxSocket1031(t)
 
 	projDir := filepath.Join(home, "proj")
 	if err := os.MkdirAll(projDir, 0o755); err != nil {
@@ -285,15 +276,40 @@ func cliEnvForIssue1031(home string) []string {
 
 // uniqueTmuxSocketName1031 returns a per-test tmux -L socket name. The
 // launches under test live on this isolated socket so they don't touch
-// the developer's real tmux server, and the cleanup `tmux -L <name>
-// kill-server` reaps everything atomically.
+// the developer's real tmux server.
+//
+// The name is DETERMINISTIC per test (an FNV hash of t.Name()), not
+// timestamp-derived. A timestamped name meant every test run that crashed,
+// timed out, or was SIGKILL'd before t.Cleanup ran leaked a brand-new,
+// uniquely-named `ad1031-*` server that no later run could reach or reap —
+// they piled up and consumed ptys. With a stable name, the next run of the
+// same test inherits the same socket and reaps the leftover at setup (see
+// isolatedTmuxSocket1031).
 //
 // We keep the name short on purpose: it lands under /tmp/tmux-<uid>/<name>
-// which is a Unix-domain socket path with a hard ~108-char limit. Long
-// test names + nanosecond timestamps blow past that and tmux fails with
-// "File name too long" — masking the real assertion. Last-7-digits of
-// nanos is enough entropy for a per-process test run.
+// which is a Unix-domain socket path with a hard ~108-char limit. The
+// 8-hex-digit hash stays well within it.
 func uniqueTmuxSocketName1031(t *testing.T) string {
 	t.Helper()
-	return fmt.Sprintf("ad1031-%07d", time.Now().UnixNano()%10_000_000)
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(t.Name()))
+	return fmt.Sprintf("ad1031-%08x", h.Sum32())
+}
+
+// isolatedTmuxSocket1031 returns the deterministic isolated socket for this
+// test and guarantees the server on it is reaped both NOW (setup) and on
+// cleanup. The setup-time kill is the robust part: t.Cleanup cannot run when a
+// test times out, panics hard, or the test binary is SIGKILL'd — exactly the
+// paths that orphan the server. Reaping at setup means the next run of the same
+// test reclaims any leftover instead of leaking a new one.
+func isolatedTmuxSocket1031(t *testing.T) string {
+	t.Helper()
+	socket := uniqueTmuxSocketName1031(t)
+	// Reap a server leaked by a prior crashed run before we start. Best-effort:
+	// a no-op when nothing is listening on the socket.
+	_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
+	})
+	return socket
 }
