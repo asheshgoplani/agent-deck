@@ -351,19 +351,14 @@ func (h *HelpOverlay) View() string {
 		Bold(true)
 
 	// Responsive dialog width: prefer wider so descriptions don't wrap
-	// awkwardly. Default 70, scale up to ~80 when the terminal allows,
-	// shrink only on narrow terminals.
-	dialogWidth := 70
-	if h.width > 0 {
-		if h.width-10 < dialogWidth {
-			dialogWidth = h.width - 10
-			if dialogWidth < 35 {
-				dialogWidth = 35
-			}
-		} else if h.width >= 100 {
-			dialogWidth = 80
-		}
+	// awkwardly. Default 70, scale up to ~80 when the terminal is roomy; the
+	// shared helper handles shrinking (and the never-overflow clamp) on narrow
+	// terminals.
+	preferred := 70
+	if h.width >= 100 {
+		preferred = 80
 	}
+	dialogWidth := fitDialogWidth(preferred, 35, h.width)
 	keyWidth := 14
 	if dialogWidth < 45 {
 		keyWidth = 10 // Compact key column for small screens

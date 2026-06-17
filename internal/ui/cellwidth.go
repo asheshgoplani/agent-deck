@@ -130,3 +130,51 @@ func keycapCount(s string) int {
 	}
 	return n
 }
+
+// Chrome of the shared dialog box (DialogBoxStyle: RoundedBorder + Padding(1,2)).
+const (
+	// dialogBorderWidth is the rounded border's horizontal cost — 1 cell each
+	// side. lipgloss draws it OUTSIDE the value passed to .Width(), so the
+	// rendered box is .Width() + dialogBorderWidth wide.
+	dialogBorderWidth = 2
+	// dialogScreenMargin is how far a dialog's .Width() stays below the terminal
+	// width on a narrow screen, leaving a comfortable gutter around the box.
+	dialogScreenMargin = 10
+)
+
+// fitDialogWidth returns the value to pass to a dialog's lipgloss .Width(),
+// clamped so the rendered box (this width + the rounded border) always fits
+// within termWidth. preferred is the width the dialog wants on a roomy screen;
+// minWidth is the smallest it should use before the terminal forces it smaller.
+// On a narrow terminal the dialog shrinks toward termWidth-dialogScreenMargin
+// but not below minWidth, then a final hard cap (termWidth-dialogBorderWidth)
+// guarantees it never overflows even when minWidth alone would. termWidth <= 0
+// (unknown) disables clamping.
+//
+// This consolidates the width-clamp every DialogBoxStyle dialog used to
+// hand-roll. Routing them all through one function removes the class of bug
+// where a fixed minimum overflowed a very narrow terminal — e.g. a floor of 56
+// rendered a 58-cell box on a 57-cell split pane (only codeblock had guarded
+// against it). It reproduces the old `min(preferred, max(minWidth, width-10))`
+// for every non-overflowing terminal; only the overflow case changes.
+func fitDialogWidth(preferred, minWidth, termWidth int) int {
+	w := preferred
+	if w < minWidth {
+		w = minWidth
+	}
+	if termWidth > 0 {
+		if shrunk := termWidth - dialogScreenMargin; shrunk < w {
+			w = shrunk
+		}
+		if w < minWidth {
+			w = minWidth
+		}
+		if hardCap := termWidth - dialogBorderWidth; w > hardCap {
+			w = hardCap
+		}
+	}
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
