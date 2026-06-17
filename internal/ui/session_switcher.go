@@ -218,7 +218,13 @@ func (s *SessionSwitcher) View() string {
 		if inst.Tool != "" {
 			tool = fmt.Sprintf(" (%s)", inst.Tool)
 		}
-		title := inst.Title + tool
+		// Compute the title and dim subtitle through the same helper the overview
+		// uses (sessionDisplayLabels), so the two render paths stay consistent:
+		// an auto-named session shows Claude's live/persisted task description as
+		// the title (and no subtitle), not its random handle. The subtitles map
+		// value is the cleaned pane title for this session.
+		label, subtitle := sessionDisplayLabels(inst, s.subtitles[inst.ID])
+		title := label + tool
 
 		marker := "  "
 		labelStyle := normalStyle
@@ -230,10 +236,10 @@ func (s *SessionSwitcher) View() string {
 
 		// Append the dim conversation/pane title (same text the overview shows
 		// next to an entry), truncated to the space left on the row.
-		if sub := s.subtitles[inst.ID]; sub != "" {
+		if subtitle != "" {
 			used := 2 + 1 + 1 + cellWidth(title) // marker + indicator + space + title
 			if remaining := contentWidth - used - 1; remaining >= 6 {
-				line += " " + DimStyle.Render(cellTruncate(sub, remaining, "…"))
+				line += " " + DimStyle.Render(cellTruncate(subtitle, remaining, "…"))
 			}
 		}
 		lines = append(lines, line)

@@ -3367,6 +3367,25 @@ func displaySessionTitle(inst *session.Instance, paneTitle string) string {
 	return inst.Title
 }
 
+// sessionDisplayLabels returns the primary title and the optional dim secondary
+// subtitle to render for a session row, given its live pane title (already
+// cleaned by cleanPaneTitle). Both render paths — the overview
+// (renderSessionItem) and the session switcher (SessionSwitcher.View) — go
+// through this so the two cannot drift apart again: an auto-named session
+// promotes the live/persisted Claude task description to the primary title and
+// shows no subtitle (it would only duplicate the title); every other session
+// keeps its handle/name as the title and surfaces the pane title as the dim
+// subtitle. The subtitle is empty when there is nothing to show. Callers may
+// layer extra visibility policy on the subtitle — the overview, for instance,
+// only renders it for the selected row or when showPaneTitles is enabled.
+func sessionDisplayLabels(inst *session.Instance, paneTitle string) (title, subtitle string) {
+	title = displaySessionTitle(inst, paneTitle)
+	if !inst.GetAutoName() {
+		subtitle = paneTitle
+	}
+	return title, subtitle
+}
+
 // cleanPaneTitle strips spinner/done marker characters from a tmux pane title
 // and returns the task description. Returns "" for default/generic titles.
 func cleanPaneTitle(title string) string {
@@ -14774,8 +14793,10 @@ func (h *Home) renderSessionItem(
 	// Auto-named quick sessions display Claude's live task description (the
 	// tmux pane title) in place of the random handle. instState.paneTitle is
 	// already cleaned by cleanPaneTitle, so an idle/just-started session (empty
-	// paneTitle) falls back to the handle automatically.
-	displayTitle := displaySessionTitle(inst, instState.paneTitle)
+	// paneTitle) falls back to the handle automatically. paneSubtitle is the dim
+	// trailing pane title for non-auto-named rows ("" when auto-named, since the
+	// pane title is already promoted to displayTitle) — see sessionDisplayLabels.
+	displayTitle, paneSubtitle := sessionDisplayLabels(inst, instState.paneTitle)
 	// Pin marker (pin-sessions): a 📌 prefix flags any pinned row. Position in
 	// the list conveys top vs bottom; the emoji conveys "this is pinned".
 	// Prepended before the AutoName truncation budget so width accounting below
@@ -14834,14 +14855,17 @@ func (h *Home) renderSessionItem(
 	// so the prior measurement let the trailing pane-title text overflow
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
-	if (selected || h.showPaneTitles) && instState.paneTitle != "" && !inst.GetAutoName() {
+	if (selected || h.showPaneTitles) && paneSubtitle != "" {
+		// paneSubtitle is non-empty only for non-auto-named rows (auto-named rows
+		// promote the pane title to displayTitle), so the prior !inst.GetAutoName()
+		// guard is now folded into sessionDisplayLabels.
 		// Dual layout: sidebar is narrower than h.width (#937). Using full
 		// terminal width here overflows the SESSIONS pane, then lipgloss
 		// truncation disagrees from terminal cells — wrapped lines duplicate
 		// rows visually and mouseY→item indexing breaks until scroll settles.
 		remaining := listWidth - cellWidth(row) - 2 // -2 for trailing margin
 		if remaining > 10 {
-			pt := instState.paneTitle
+			pt := paneSubtitle
 			if cellWidth(pt) > remaining {
 				pt = cellTruncate(pt, remaining, "…")
 			}
