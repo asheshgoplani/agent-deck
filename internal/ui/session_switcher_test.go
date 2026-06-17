@@ -287,6 +287,56 @@ func TestSessionSwitcher_ViewUsesAutoNameDescription(t *testing.T) {
 	}
 }
 
+// maxLineCellWidth returns the widest rendered line of view in terminal cells.
+func maxLineCellWidth(view string) int {
+	widest := 0
+	for _, line := range strings.Split(view, "\n") {
+		if w := cellWidth(line); w > widest {
+			widest = w
+		}
+	}
+	return widest
+}
+
+// TestSessionSwitcher_ViewAutoExpandsToFitLongTitles pins the auto-expand
+// behavior: the dialog grows past its default width to show a long title in
+// full when the terminal is wide enough, and clamps to the terminal width
+// (truncating) when it is not — it must never render wider than the terminal.
+func TestSessionSwitcher_ViewAutoExpandsToFitLongTitles(t *testing.T) {
+	InitTheme("dark")
+
+	now := time.Now()
+	longTitle := "implement the new authentication flow with oauth and refresh token rotation"
+	long := &session.Instance{ID: "x", Title: longTitle, Tool: "claude", Status: session.StatusRunning, LastAccessedAt: now}
+	other := &session.Instance{ID: "y", Title: "short", Tool: "claude", Status: session.StatusRunning, LastAccessedAt: now.Add(-time.Minute)}
+	list := []*session.Instance{long, other}
+
+	// Wide terminal: the box should expand to show the whole long title. The
+	// title alone exceeds the default 56-wide box, so its full presence proves
+	// the dialog grew.
+	sw := NewSessionSwitcher()
+	sw.SetSize(200, 24)
+	sw.Show("x", list, nil)
+	if v := sw.View(); !strings.Contains(v, longTitle) {
+		t.Errorf("wide terminal should render the full long title, got:\n%s", v)
+	}
+
+	// Narrow terminal: the box must stay within the terminal width and truncate.
+	const narrow = 50
+	sw.SetSize(narrow, 24)
+	sw.Show("x", list, nil)
+	v := sw.View()
+	if strings.Contains(v, longTitle) {
+		t.Errorf("narrow terminal should truncate the long title, got:\n%s", v)
+	}
+	if !strings.Contains(v, "…") {
+		t.Errorf("narrow terminal should show a truncation ellipsis, got:\n%s", v)
+	}
+	if w := maxLineCellWidth(v); w > narrow {
+		t.Errorf("rendered switcher width %d exceeds terminal width %d:\n%s", w, narrow, v)
+	}
+}
+
 // TestSessionSwitcher_FooterEscReflectsContext pins the Esc hint: it says
 // "Esc back" only when the picker was opened while attached (Esc re-attaches),
 // and "Esc close" when opened from the overview (Esc just closes).

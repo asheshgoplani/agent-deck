@@ -194,35 +194,44 @@ func (s *SessionSwitcher) View() string {
 		Foreground(ColorComment).
 		Italic(true)
 
-	dialogWidth := 56
-	if s.width > 0 && s.width < dialogWidth+10 {
-		dialogWidth = s.width - 10
-		if dialogWidth < 30 {
-			dialogWidth = 30
-		}
+	header := "Switch session"
+	// The forward/back cycle keys are fixed (the attach loop and
+	// handleSessionSwitcherKey both match Ctrl+S / Ctrl+A regardless of the
+	// configurable open binding), so the labels stay literal. Esc, however,
+	// re-attaches to the origin only when the picker was opened while attached;
+	// from the overview it just closes, so the hint reflects that. Built up front
+	// so the footer width feeds the natural-width measurement below.
+	escHint := "Esc close"
+	if s.reattachOnCancel {
+		escHint = "Esc back"
 	}
-	// Content area inside the rounded border + Padding(1,2): horizontal padding
-	// eats 4 cells. Truncating rows to this keeps long subtitles from wrapping.
-	contentWidth := dialogWidth - 4
-	if contentWidth < 10 {
-		contentWidth = 10
+	footerCycle := "Ctrl+S next · Ctrl+A prev"
+	footerNav := "↑/↓ browse · Enter attach · " + escHint
+
+	// Precompute each row once so we can measure the widest row (to auto-expand
+	// the dialog) and render without recomputing. label/subtitle route through
+	// the same helper the overview uses (sessionDisplayLabels) so the two render
+	// paths stay consistent: an auto-named session shows Claude's live/persisted
+	// task description as the title (and no subtitle), not its random handle.
+	type switcherRow struct {
+		marker     string
+		labelStyle lipgloss.Style
+		indicator  string
+		title      string // label + tool (plain text)
+		subtitle   string
+		prefix     int // cells before the title: marker + indicator + space
 	}
+	rows := make([]switcherRow, len(s.sessions))
 
-	var lines []string
-	lines = append(lines, titleStyle.Render("Switch session"))
-	lines = append(lines, "")
-
+	// natural is the widest line's content width (excluding the box border +
+	// horizontal padding). The dialog grows to fit it, capped at the terminal.
+	natural := max(cellWidth(header), cellWidth(footerCycle), cellWidth(footerNav))
 	for i, inst := range s.sessions {
 		indicator := statusIndicator(inst.GetStatusThreadSafe())
 		tool := ""
 		if inst.Tool != "" {
 			tool = fmt.Sprintf(" (%s)", inst.Tool)
 		}
-		// Compute the title and dim subtitle through the same helper the overview
-		// uses (sessionDisplayLabels), so the two render paths stay consistent:
-		// an auto-named session shows Claude's live/persisted task description as
-		// the title (and no subtitle), not its random handle. The subtitles map
-		// value is the cleaned pane title for this session.
 		label, subtitle := sessionDisplayLabels(inst, s.subtitles[inst.ID])
 		title := label + tool
 
@@ -232,31 +241,56 @@ func (s *SessionSwitcher) View() string {
 			marker = "> "
 			labelStyle = selectedStyle
 		}
-		line := marker + indicator + " " + labelStyle.Render(title)
+		prefix := cellWidth(marker) + cellWidth(indicator) + 1 // marker + indicator + space
+		rows[i] = switcherRow{marker: marker, labelStyle: labelStyle, indicator: indicator, title: title, subtitle: subtitle, prefix: prefix}
+
+		rowWidth := prefix + cellWidth(title)
+		if subtitle != "" {
+			rowWidth += 1 + cellWidth(subtitle) // space + subtitle
+		}
+		natural = max(natural, rowWidth)
+	}
+
+	// Grow the dialog to fit the widest row, but never below the comfortable
+	// default and never past the terminal width (leaving a small margin so the
+	// bordered box doesn't touch the screen edges). +4 covers the Padding(1,2).
+	const minDialogWidth = 56
+	dialogWidth := max(minDialogWidth, natural+4)
+	if s.width > 0 {
+		dialogWidth = min(dialogWidth, max(30, s.width-4))
+	}
+	// Content area inside the rounded border + Padding(1,2): horizontal padding
+	// eats 4 cells. Truncating rows to this keeps long titles/subtitles from
+	// wrapping, which would break the centered box layout.
+	contentWidth := max(10, dialogWidth-4)
+
+	var lines []string
+	lines = append(lines, titleStyle.Render(header))
+	lines = append(lines, "")
+
+	for _, r := range rows {
+		title := r.title
+		// Truncate the title only if it alone would overflow the row — i.e. when
+		// the dialog hit the terminal-width cap. Below the cap the box grew to fit.
+		if budget := contentWidth - r.prefix; budget > 0 && cellWidth(title) > budget {
+			title = cellTruncate(title, budget, "…")
+		}
+		line := r.marker + r.indicator + " " + r.labelStyle.Render(title)
 
 		// Append the dim conversation/pane title (same text the overview shows
 		// next to an entry), truncated to the space left on the row.
-		if subtitle != "" {
-			used := 2 + 1 + 1 + cellWidth(title) // marker + indicator + space + title
+		if r.subtitle != "" {
+			used := r.prefix + cellWidth(title) // title may have been truncated above
 			if remaining := contentWidth - used - 1; remaining >= 6 {
-				line += " " + DimStyle.Render(cellTruncate(subtitle, remaining, "…"))
+				line += " " + DimStyle.Render(cellTruncate(r.subtitle, remaining, "…"))
 			}
 		}
 		lines = append(lines, line)
 	}
 
 	lines = append(lines, "")
-	// The forward/back cycle keys are fixed (the attach loop and
-	// handleSessionSwitcherKey both match Ctrl+S / Ctrl+A regardless of the
-	// configurable open binding), so the labels stay literal. Esc, however,
-	// re-attaches to the origin only when the picker was opened while attached;
-	// from the overview it just closes, so the hint reflects that.
-	escHint := "Esc close"
-	if s.reattachOnCancel {
-		escHint = "Esc back"
-	}
-	lines = append(lines, footerStyle.Render("Ctrl+S next · Ctrl+A prev"))
-	lines = append(lines, footerStyle.Render("↑/↓ browse · Enter attach · "+escHint))
+	lines = append(lines, footerStyle.Render(footerCycle))
+	lines = append(lines, footerStyle.Render(footerNav))
 
 	content := strings.Join(lines, "\n")
 
