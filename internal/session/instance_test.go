@@ -299,6 +299,43 @@ func TestInstance_CreateForkedInstance(t *testing.T) {
 	}
 }
 
+func TestInstance_CreateForkedInstance_PreservesCompatibleToolIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	cfg := &UserConfig{
+		Tools: map[string]ToolDef{
+			"my-claude": {
+				Command:        "claude-wrapper",
+				CompatibleWith: "claude",
+			},
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	parent := NewInstanceWithTool("cl parent", "/tmp/original", "my-claude")
+	parent.Wrapper = "wrap {command}"
+	parent.ClaudeSessionID = "abc-123"
+	parent.ClaudeDetectedAt = time.Now()
+
+	forked, _, err := parent.CreateForkedInstanceWithOptions("cl parent (fork)", "", nil)
+	if err != nil {
+		t.Fatalf("CreateForkedInstanceWithOptions: %v", err)
+	}
+	if forked.Tool != "my-claude" {
+		t.Fatalf("forked Tool = %q, want custom Claude-compatible tool identity", forked.Tool)
+	}
+	if forked.Wrapper != parent.Wrapper {
+		t.Fatalf("forked Wrapper = %q, want %q", forked.Wrapper, parent.Wrapper)
+	}
+}
+
 // TestInstance_CreateForkedInstance_ExplicitConfig tests CreateForkedInstance with explicit config
 func TestInstance_CreateForkedInstance_ExplicitConfig(t *testing.T) {
 	// Isolate from user's environment (don't pick up their config.toml)

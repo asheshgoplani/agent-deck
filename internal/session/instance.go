@@ -6736,6 +6736,10 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 		forked.GroupPath = i.GroupPath
 	}
 	forked.Tool = "claude"
+	if IsClaudeCompatible(i.Tool) {
+		forked.Tool = i.Tool
+	}
+	forked.Wrapper = i.Wrapper
 
 	// #1407: persist the parent's ExtraArgs onto the fork record. The baked
 	// one-shot fork command below inherits them implicitly via the builder
