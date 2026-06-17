@@ -186,6 +186,8 @@ func (h *HelpOverlay) View() string {
 	skillsKey := h.key(hotkeySkillsManager, "s")
 	previewKey := h.key(hotkeyTogglePreview, "v")
 	groupViewKey := h.key(hotkeyCycleGroupView, "t")
+	// Opt-in: empty when switch_session is unbound, so the filter drops the row.
+	switchKey := h.key(hotkeySwitchSession, "")
 	unreadKey := h.key(hotkeyMarkUnread, "u")
 	quickApproveKey := h.key(hotkeyQuickApprove, "a")
 	promptSessionKey := h.key(hotkeyPromptSession, "o")
@@ -316,7 +318,7 @@ func (h *HelpOverlay) View() string {
 				{reloadKey, "Reload from disk"},
 				{importKey, "Import tmux sessions"},
 				{"Ctrl+Q", "Detach from session"},
-				{"Ctrl+S", "Switch session (here or attached)"},
+				{switchKey, "Switch session (here or attached)"},
 				{quitKey, "Quit"},
 				{helpKey, "This help"},
 			},

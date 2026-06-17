@@ -3494,11 +3494,17 @@ func CreateExampleConfig() error {
 # restart = "R"
 # detach = "ctrl+d"   # PTY-attach detach key, default ctrl+q (issue #434).
                       # Alias [tmux].detach_key exists; [hotkeys].detach wins.
-# In-attach session switcher (cycle sessions without first detaching to the list):
-# switch_session = "ctrl+s"   # opens the switcher while attached. Tap again to cycle
-#                             # forward (Ctrl+A to go back); it auto-attaches
-#                             # ~1s after you stop, Enter attaches now, Esc cancels.
-#                             # Must be a "ctrl+<letter>" chord.
+# Session switcher (cycle sessions without first detaching to the list).
+# OPT-IN: unbound by default. Enabling it makes the attach loop intercept the
+# chord before the attached program sees it, so the key is taken from whatever
+# runs inside the session. The old default Ctrl+S is a poor choice — it is
+# Claude Code's "stash prompt" key and the terminal XOFF flow-control freeze.
+# No control byte is safe to steal from every tool, so pick one your attached
+# tools do not use. Must be a "ctrl+<letter>" chord.
+# switch_session = "ctrl+s"   # opens the switcher while attached. Tap again to
+#                             # cycle forward (Ctrl+A to go back); it auto-
+#                             # attaches ~1s after you stop, Enter attaches now,
+#                             # Esc cancels. Same key opens it from the list.
 
 # Instance behavior (optional)
 # [instances]
