@@ -457,6 +457,17 @@ func handleConductorSetup(profile string, args []string) {
 		}
 	}
 
+	// Ensure heartbeat interval is defaulted regardless of channel config path.
+	if heartbeatEnabled && settings.HeartbeatInterval == nil {
+		heartbeatDefault := 15
+		settings.HeartbeatInterval = &heartbeatDefault
+		config.Conductor = settings
+		if err := session.SaveUserConfig(config); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// Step 3: Install/update shared instructions file for the selected agent
 	if err := session.InstallSharedConductorInstructions(spec.Agent, resolvedSharedInstructionsMD); err != nil {
 		fmt.Fprintf(os.Stderr, "Error installing shared %s: %v\n", spec.InstructionsFileName, err)
