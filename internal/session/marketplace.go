@@ -65,6 +65,33 @@ func installedPluginsPath() string {
 	return filepath.Join(GetClaudeConfigDir(), "plugins", "installed_plugins.json")
 }
 
+// resolveProjectSettingsPath builds <projectPath>/.claude/settings.json and
+// fails closed unless the result stays strictly within projectPath. projectPath
+// is operator-controlled (CLI --path / config default_path), so CodeQL flags it
+// flowing into the os.ReadFile / os.MkdirAll / atomicWriteFile path sinks in
+// enableMarketplacePlugin (alerts 55, 56). The project directory is the trust
+// root by construction — it is where the agent runs — but it must be an absolute,
+// traversal-free path, and the joined settings file must not escape it. Anything
+// else is refused rather than allowed to read or create files outside the project
+// tree. Boundary-aware + fail-closed, mirroring ValidateTranscriptPath (#1435)
+// and the conductor_migrate_dir.go containment precedent.
+func resolveProjectSettingsPath(projectPath string) (string, error) {
+	base := filepath.Clean(projectPath)
+	if base == "" || base == "." || !filepath.IsAbs(base) {
+		return "", fmt.Errorf("project path %q is not an absolute directory", projectPath)
+	}
+	if base == ".." || strings.HasPrefix(base, ".."+string(os.PathSeparator)) ||
+		strings.Contains(base, string(os.PathSeparator)+".."+string(os.PathSeparator)) ||
+		strings.HasSuffix(base, string(os.PathSeparator)+"..") {
+		return "", fmt.Errorf("project path %q contains a traversal segment", projectPath)
+	}
+	settingsPath := filepath.Clean(filepath.Join(base, ".claude", "settings.json"))
+	if settingsPath != base && !strings.HasPrefix(settingsPath, base+string(os.PathSeparator)) {
+		return "", fmt.Errorf("settings path %q escapes project dir %q", settingsPath, base)
+	}
+	return settingsPath, nil
+}
+
 // marketplacePluginName is the plugin name with any "@<marketplace>"
 // disambiguator stripped — the marketplace is only a selector, not part of the
 // plugin's identity.
@@ -167,7 +194,18 @@ func enableMarketplacePlugin(projectPath, ref string) (key string, action market
 		return "", "", err
 	}
 
-	settingsPath := filepath.Join(projectPath, ".claude", "settings.json")
+	// CodeQL alerts 55/56 (uncontrolled data in path expression): projectPath is
+	// operator-controlled (CLI --path / config default_path) and flows into the
+	// os.ReadFile / os.MkdirAll / atomicWriteFile path sinks below. Resolve the
+	// settings path through a boundary-aware, fail-closed guard so the sinks only
+	// ever touch <project>/.claude/settings.json strictly inside the operator's
+	// own project tree — never a path that escapes it via traversal. A path that
+	// cannot be proven contained is refused, surfaced to the caller as a per-entry
+	// loadout warning (the spawn is never blocked).
+	settingsPath, err := resolveProjectSettingsPath(projectPath)
+	if err != nil {
+		return key, "", err
+	}
 
 	settings := map[string]interface{}{}
 	if data, readErr := os.ReadFile(settingsPath); readErr == nil {

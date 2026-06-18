@@ -323,3 +323,29 @@ func bumpLoadoutConfigMtime(t *testing.T, path string) {
 		t.Fatalf("chtimes: %v", err)
 	}
 }
+
+func TestSanitizeLoadoutWarning(t *testing.T) {
+	// CRLF and bare newlines that could forge a second log/console line are
+	// flattened to spaces; other C0 controls + DEL are dropped.
+	cases := map[string]string{
+		"plain warning":                    "plain warning",
+		"line1\nline2":                     "line1 line2",
+		"line1\r\nline2":                   "line1 line2",
+		"carriage\rreturn":                 "carriage return",
+		"tab\tseparated":                   "tab separated",
+		"bell\x07and\x1bescape":            "bellandescape",
+		"plugin \"x\": forged\nWARN: fake": "plugin \"x\": forged WARN: fake",
+	}
+	for in, want := range cases {
+		if got := sanitizeLoadoutWarning(in); got != want {
+			t.Errorf("sanitizeLoadoutWarning(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// No CR/LF survives sanitization, whatever the input.
+	for _, in := range []string{"a\nb\r\nc\rd", "x y", "z\x00w"} {
+		got := sanitizeLoadoutWarning(in)
+		if strings.ContainsAny(got, "\r\n") {
+			t.Errorf("sanitizeLoadoutWarning(%q) = %q still contains CR/LF", in, got)
+		}
+	}
+}

@@ -8,6 +8,28 @@ import (
 	"strings"
 )
 
+// sanitizeLoadoutWarning strips CR/LF and other C0/C1 control characters from a
+// loadout warning before it is returned to a CLI caller (which prints it to the
+// console) or written to slog. Loadout warnings interpolate operator config
+// values (plugin entry names, config parse errors), so an embedded newline could
+// forge or corrupt a second console/log line — CodeQL "Log entries created from
+// user input" (alert 57). Newline removal is the barrier; the control-char map
+// is defense-in-depth so a bare \b/\x1b can't corrupt the terminal either.
+func sanitizeLoadoutWarning(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return ' '
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1 // drop remaining C0 controls + DEL
+		}
+		return r
+	}, s)
+}
+
 // ApplyConfiguredLoadout materializes the declarative per-group /
 // per-conductor skill and MCP loadout ([groups.X.claude].plugins/.mcps,
 // [conductors.X.claude].plugins/.mcps) for a claude-compatible session, by
@@ -49,7 +71,7 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 
 	config, cfgErr := LoadUserConfig()
 	if cfgErr != nil {
-		w := fmt.Sprintf("config.toml error — declarative skill/mcp loadout inactive: %v", cfgErr)
+		w := sanitizeLoadoutWarning(fmt.Sprintf("config.toml error — declarative skill/mcp loadout inactive: %v", cfgErr))
 		sessionLog.Warn("loadout_config_unreadable",
 			slog.String("session", inst.Title),
 			slog.String("error", cfgErr.Error()))
@@ -73,7 +95,13 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 
 	var warnings []string
 	warn := func(format string, args ...interface{}) {
-		w := fmt.Sprintf(format, args...)
+		// Sanitize at this single source: loadout warnings interpolate operator
+		// config values (plugin entry names, config parse errors) and are printed
+		// verbatim to the console by CLI callers (conductor setup / launch / add)
+		// and written to slog. Stripping CR/LF + control chars here closes the
+		// log-injection vector (CodeQL alert 57, conductor_cmd.go:660) for every
+		// consumer at once, rather than at each individual print site.
+		w := sanitizeLoadoutWarning(fmt.Sprintf(format, args...))
 		warnings = append(warnings, w)
 		sessionLog.Warn("loadout_entry_skipped",
 			slog.String("session", inst.Title),

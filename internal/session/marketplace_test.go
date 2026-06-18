@@ -270,3 +270,42 @@ plugins = ["installed/widget"]
 		t.Fatalf("wrong-shaped enabledPlugins was clobbered: %#v", settings["enabledPlugins"])
 	}
 }
+
+func TestResolveProjectSettingsPath(t *testing.T) {
+	// A normal absolute project dir resolves to its own .claude/settings.json.
+	base := t.TempDir()
+	got, err := resolveProjectSettingsPath(base)
+	if err != nil {
+		t.Fatalf("resolveProjectSettingsPath(%q) errored: %v", base, err)
+	}
+	want := filepath.Join(filepath.Clean(base), ".claude", "settings.json")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	// The result must be strictly contained in the project dir.
+	if !strings.HasPrefix(got, filepath.Clean(base)+string(os.PathSeparator)) {
+		t.Errorf("settings path %q escapes project dir %q", got, base)
+	}
+
+	// Fail closed: empty, relative, ".", and leading-traversal project paths.
+	rejected := []string{
+		"",
+		".",
+		"relative/project",
+		"../escape",
+	}
+	for _, p := range rejected {
+		if got, err := resolveProjectSettingsPath(p); err == nil {
+			t.Errorf("expected %q to be rejected (fail-closed), got %q", p, got)
+		}
+	}
+
+	// An interior ".." that filepath.Clean collapses to a normal absolute path
+	// cannot escape its own root, so it is legitimately accepted and stays
+	// contained under the cleaned base.
+	if got, err := resolveProjectSettingsPath("/abs/with/../traversal"); err != nil {
+		t.Errorf("cleanable interior traversal should be accepted, got error: %v", err)
+	} else if want := filepath.Join("/abs/traversal", ".claude", "settings.json"); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
