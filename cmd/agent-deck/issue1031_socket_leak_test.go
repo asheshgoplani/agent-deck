@@ -42,6 +42,12 @@ func TestIsolatedTmuxSocket1031_ReapsPriorLeak(t *testing.T) {
 	}
 
 	socket := uniqueTmuxSocketName1031(t)
+	// The socket name is deterministic, so a prior crashed run of THIS test may
+	// have left a server (with the "leaked" session) on it — which would make
+	// the new-session seed below fail with "duplicate session". Reap any such
+	// leftover first so the seed starts from a clean server. Best-effort: a
+	// missing server just makes kill-server a no-op.
+	_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
 	// Simulate a server leaked by a previous timed-out/SIGKILL'd run.
 	if err := exec.Command("tmux", "-L", socket, "new-session", "-d", "-s", "leaked").Run(); err != nil {
 		t.Fatalf("seed leaked server: %v", err)

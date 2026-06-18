@@ -139,6 +139,7 @@ func (s *Sandbox) teardown() {
 var (
 	buildOnce sync.Once
 	buildBin  string
+	buildDir  string
 	buildErr  error
 )
 
@@ -151,6 +152,9 @@ func buildAgentDeck() (string, error) {
 			buildErr = fmt.Errorf("tempdir: %w", err)
 			return
 		}
+		// Record the temp dir before the build so RemoveBuildArtifacts can
+		// reap it even if the build below fails (buildBin stays empty then).
+		buildDir = dir
 		out := filepath.Join(dir, "agent-deck")
 
 		root, err := repoRoot()
@@ -175,9 +179,13 @@ func buildAgentDeck() (string, error) {
 // built once per test binary via buildOnce and must outlive every individual
 // test, so it cannot be released with t.Cleanup — eval test packages call this
 // from TestMain after m.Run() instead. No-op when no build happened.
+//
+// Keyed on buildDir (set the moment the temp dir is created), not buildBin, so
+// a build that fails after MkdirTemp but before producing the binary still gets
+// its temp dir reaped instead of leaking.
 func RemoveBuildArtifacts() {
-	if buildBin != "" {
-		_ = os.RemoveAll(filepath.Dir(buildBin))
+	if buildDir != "" {
+		_ = os.RemoveAll(buildDir)
 	}
 }
 

@@ -584,16 +584,27 @@ func killStaleControlClients(sessionName, socketName string) {
 // left by previous dead TUIs. Live sibling TUIs' clients
 // (instances.allow_multiple=true) are preserved via the same
 // isControlClientOrphan check used by killStaleControlClients (#927).
+//
+// Bounded by staleControlSweepTimeout: this runs on the boot path, so a hung or
+// unresponsive tmux server must not stall startup. A timed-out (or otherwise
+// failed) list-clients is treated as best-effort and skipped — the next launch
+// sweeps again.
 func SweepStaleControlClients(socketName string) {
-	out, err := tmuxExec(socketName,
+	ctx, cancel := context.WithTimeout(context.Background(), staleControlSweepTimeout)
+	defer cancel()
+	out, err := tmuxExecContext(ctx, socketName,
 		"list-clients",
 		"-F", "#{client_control_mode} #{client_pid}",
 	).Output()
 	if err != nil {
-		return // no server running or no clients attached
+		return // no server running, no clients attached, or the probe timed out
 	}
 	reapStaleControlClients(string(out), "(all-sessions)")
 }
+
+// staleControlSweepTimeout bounds the boot-path server-wide list-clients query
+// in SweepStaleControlClients so an unresponsive tmux server can't hang startup.
+var staleControlSweepTimeout = 2 * time.Second
 
 // reapStaleControlClients parses `list-clients -F "#{client_control_mode}
 // #{client_pid}"` output and soft-kills each orphaned control-mode client.
