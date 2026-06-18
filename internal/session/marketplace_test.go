@@ -309,3 +309,81 @@ func TestResolveProjectSettingsPath(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// TestResolveProjectSettingsPath_SymlinkEscape exercises the filesystem-
+// containment hardening. A project-local `.claude` SYMLINK pointing outside the
+// project must be rejected: os.MkdirAll + the atomicWriteFile temp+rename run
+// inside filepath.Dir(settingsPath), so when that dir is a symlink the
+// read/temp/write land in the symlink target OUTSIDE the project (the codex-
+// verified bypass — atomicWriteFile only protects a symlinked FINAL file, not a
+// symlinked PARENT dir). resolveProjectSettingsPath gates all three sinks
+// (os.ReadFile / os.MkdirAll / atomicWriteFile) in enableMarketplacePlugin, so a
+// rejection here protects READ and WRITE alike. Non-vacuous: the lexical-only
+// first-round guard returned the path with no error.
+func TestResolveProjectSettingsPath_SymlinkEscape(t *testing.T) {
+	project := t.TempDir()
+	victim := t.TempDir()
+	// A settings.json the attacker hopes to read/clobber, sitting in the victim.
+	if err := os.WriteFile(filepath.Join(victim, "settings.json"), []byte(`{"enabledPlugins":{"keep":true}}`), 0o600); err != nil {
+		t.Fatalf("seed victim settings: %v", err)
+	}
+
+	claude := filepath.Join(project, ".claude")
+
+	// 1. Symlinked .claude parent escaping the project → rejected, and nothing
+	//    new is created in the victim dir.
+	if err := os.Symlink(victim, claude); err != nil {
+		t.Fatalf("symlink .claude -> victim: %v", err)
+	}
+	if got, err := resolveProjectSettingsPath(project); err == nil {
+		t.Errorf("symlinked .claude escaping the project must be rejected; got %q", got)
+	}
+	before, _ := os.ReadDir(victim)
+	if len(before) != 1 { // only the seeded settings.json
+		t.Errorf("rejection must not create files in the victim dir; found %d entries", len(before))
+	}
+
+	// 2. A symlinked .claude is no-followed even when it points back INSIDE the
+	//    project — a .claude symlink is atypical and refused outright.
+	if err := os.Remove(claude); err != nil {
+		t.Fatalf("rm .claude symlink: %v", err)
+	}
+	insideReal := filepath.Join(project, "real-claude")
+	if err := os.MkdirAll(insideReal, 0o755); err != nil {
+		t.Fatalf("mkdir real-claude: %v", err)
+	}
+	if err := os.Symlink(insideReal, claude); err != nil {
+		t.Fatalf("symlink .claude -> inside: %v", err)
+	}
+	if got, err := resolveProjectSettingsPath(project); err == nil {
+		t.Errorf("a symlinked .claude (even inside the project) must be no-followed; got %q", got)
+	}
+
+	// 3. A symlinked settings.json under a REAL .claude dir, resolving outside
+	//    the project, must be rejected (the os.ReadFile sink would follow it).
+	if err := os.Remove(claude); err != nil {
+		t.Fatalf("rm .claude symlink: %v", err)
+	}
+	if err := os.MkdirAll(claude, 0o755); err != nil {
+		t.Fatalf("mkdir real .claude: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(victim, "settings.json"), filepath.Join(claude, "settings.json")); err != nil {
+		t.Fatalf("symlink settings.json -> victim: %v", err)
+	}
+	if got, err := resolveProjectSettingsPath(project); err == nil {
+		t.Errorf("a settings.json symlink escaping the project must be rejected; got %q", got)
+	}
+
+	// Control: a real .claude dir with a real (or absent) settings.json inside
+	// the project is still accepted — the hardening must not over-reject.
+	if err := os.Remove(filepath.Join(claude, "settings.json")); err != nil {
+		t.Fatalf("rm settings symlink: %v", err)
+	}
+	got, err := resolveProjectSettingsPath(project)
+	if err != nil {
+		t.Fatalf("a real in-project .claude must be accepted, got: %v", err)
+	}
+	if want := filepath.Join(filepath.Clean(project), ".claude", "settings.json"); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

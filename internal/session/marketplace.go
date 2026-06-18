@@ -66,15 +66,30 @@ func installedPluginsPath() string {
 }
 
 // resolveProjectSettingsPath builds <projectPath>/.claude/settings.json and
-// fails closed unless the result stays strictly within projectPath. projectPath
-// is operator-controlled (CLI --path / config default_path), so CodeQL flags it
-// flowing into the os.ReadFile / os.MkdirAll / atomicWriteFile path sinks in
-// enableMarketplacePlugin (alerts 55, 56). The project directory is the trust
-// root by construction — it is where the agent runs — but it must be an absolute,
-// traversal-free path, and the joined settings file must not escape it. Anything
-// else is refused rather than allowed to read or create files outside the project
-// tree. Boundary-aware + fail-closed, mirroring ValidateTranscriptPath (#1435)
-// and the conductor_migrate_dir.go containment precedent.
+// fails closed unless BOTH the lexical string AND the real filesystem parent
+// stay strictly within projectPath. projectPath is operator-controlled (CLI
+// --path / config default_path), so CodeQL flags it flowing into the
+// os.ReadFile / os.MkdirAll / atomicWriteFile path sinks in
+// enableMarketplacePlugin (alerts 55, 56).
+//
+// Lexical containment alone is escapable (the #1429 lexical-vs-filesystem
+// containment class): a project-local `.claude` SYMLINK makes the lexically
+// contained "<project>/.claude/settings.json" read/temp/rename land in the
+// symlink target OUTSIDE the project — atomicWriteFile only protects a symlinked
+// FINAL file, NOT a symlinked PARENT directory (os.CreateTemp + os.Rename run
+// inside filepath.Dir(settingsPath), which is the symlink). So this also:
+//
+//   - canonicalizes the project root (EvalSymlinks) as the trust root, and
+//   - NO-FOLLOWS a `.claude` component that is a symlink (rejects it outright),
+//     and verifies a real `.claude` dir resolves inside the canonical root, and
+//   - rejects a `settings.json` that is itself a symlink resolving outside the
+//     project (the os.ReadFile sink would otherwise follow it).
+//
+// The project directory is the trust root by construction — it is where the
+// agent runs — but it must be an absolute, traversal-free path and the actual
+// parent dir used for read/temp/write must resolve inside it. Boundary-aware +
+// fail-closed, mirroring ValidateTranscriptPath (#1435) and the
+// conductor_migrate_dir.go resolveCanonical/pathContains precedent.
 func resolveProjectSettingsPath(projectPath string) (string, error) {
 	base := filepath.Clean(projectPath)
 	if base == "" || base == "." || !filepath.IsAbs(base) {
@@ -85,11 +100,54 @@ func resolveProjectSettingsPath(projectPath string) (string, error) {
 		strings.HasSuffix(base, string(os.PathSeparator)+"..") {
 		return "", fmt.Errorf("project path %q contains a traversal segment", projectPath)
 	}
+
 	settingsPath := filepath.Clean(filepath.Join(base, ".claude", "settings.json"))
+	// Lexical containment under the cleaned base — preserves behavior for a
+	// project dir that does not yet exist on disk (a fresh project where the
+	// .claude dir will be created), where there is no symlink to follow.
 	if settingsPath != base && !strings.HasPrefix(settingsPath, base+string(os.PathSeparator)) {
 		return "", fmt.Errorf("settings path %q escapes project dir %q", settingsPath, base)
 	}
+
+	// Filesystem containment: defend the symlinked-parent escape that lexical
+	// containment cannot see. Resolve the real project root and check the real
+	// `.claude` parent (and a symlinked settings.json) against it.
+	canonicalBase := resolveCanonical(base)
+	claudeDir := filepath.Join(base, ".claude")
+	if info, lerr := os.Lstat(claudeDir); lerr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			// No-follow: a symlinked `.claude` is the exact parent-dir escape
+			// (atomicWriteFile temp+rename would land in the symlink target).
+			return "", fmt.Errorf("project %q has a symlinked .claude; refusing to follow it outside the project", base)
+		}
+		realClaude, rerr := filepath.EvalSymlinks(claudeDir)
+		if rerr != nil {
+			return "", fmt.Errorf("resolve project .claude dir for %q: %w", base, rerr)
+		}
+		if !dirContainsOrEqual(canonicalBase, realClaude) {
+			return "", fmt.Errorf("project .claude dir %q escapes project root %q", realClaude, canonicalBase)
+		}
+	}
+	if info, lerr := os.Lstat(settingsPath); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+		// A symlinked settings.json is followed by the os.ReadFile sink; allow
+		// it only if its real target stays inside the project.
+		realSettings, rerr := filepath.EvalSymlinks(settingsPath)
+		if rerr != nil {
+			return "", fmt.Errorf("resolve settings.json symlink for %q: %w", base, rerr)
+		}
+		if !dirContainsOrEqual(canonicalBase, realSettings) {
+			return "", fmt.Errorf("settings.json %q resolves outside project root %q", realSettings, canonicalBase)
+		}
+	}
+
 	return settingsPath, nil
+}
+
+// dirContainsOrEqual reports whether child equals parent or is nested under it.
+// Both must be cleaned absolute paths. Boundary-aware (parent+separator) so a
+// sibling whose string prefix matches parent is not treated as contained.
+func dirContainsOrEqual(parent, child string) bool {
+	return child == parent || strings.HasPrefix(child, parent+string(os.PathSeparator))
 }
 
 // marketplacePluginName is the plugin name with any "@<marketplace>"

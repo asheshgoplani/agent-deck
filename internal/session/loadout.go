@@ -8,25 +8,40 @@ import (
 	"strings"
 )
 
-// sanitizeLoadoutWarning strips CR/LF and other C0/C1 control characters from a
+// sanitizeLoadoutWarning strips line-boundary and control characters from a
 // loadout warning before it is returned to a CLI caller (which prints it to the
 // console) or written to slog. Loadout warnings interpolate operator config
-// values (plugin entry names, config parse errors), so an embedded newline could
-// forge or corrupt a second console/log line — CodeQL "Log entries created from
-// user input" (alert 57). Newline removal is the barrier; the control-char map
-// is defense-in-depth so a bare \b/\x1b can't corrupt the terminal either.
+// values (plugin entry names, config parse errors, project paths), so an
+// embedded line boundary could forge or corrupt a second console/log line —
+// CodeQL "Log entries created from user input" (alert 57).
+//
+// ASCII CR/LF removal alone is escapable: a terminal, pager, or log parser may
+// also treat C1 controls (U+0080–U+009F, notably U+0085 NEL) and the Unicode
+// line/paragraph separators (U+2028 LS, U+2029 PS) as line boundaries, so a
+// project path carrying one of those produces a forged second line the CR/LF
+// barrier never touched. This maps those line boundaries to a space and drops
+// the remaining C0 controls + DEL + C1 controls — covering the full
+// line-separator/control-character class, not just classic CRLF injection.
 func sanitizeLoadoutWarning(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	return strings.Map(func(r rune) rune {
-		if r == '\t' {
+		switch {
+		case r == '\t':
 			return ' '
-		}
-		if r < 0x20 || r == 0x7f {
+		case r == '\u0085', r == '\u2028', r == '\u2029':
+			// NEL / LINE SEPARATOR / PARAGRAPH SEPARATOR — line boundaries to
+			// many terminals and log parsers. Flatten to a space so the warning
+			// stays a single line.
+			return ' '
+		case r < 0x20 || r == 0x7f:
 			return -1 // drop remaining C0 controls + DEL
+		case r >= 0x80 && r <= 0x9f:
+			return -1 // drop C1 controls (NEL handled above as a space)
+		default:
+			return r
 		}
-		return r
 	}, s)
 }
 

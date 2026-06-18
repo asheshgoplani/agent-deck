@@ -348,4 +348,34 @@ func TestSanitizeLoadoutWarning(t *testing.T) {
 			t.Errorf("sanitizeLoadoutWarning(%q) = %q still contains CR/LF", in, got)
 		}
 	}
+
+	// C1 controls and Unicode line/paragraph separators — line boundaries to
+	// many terminals and log parsers that the ASCII CR/LF barrier never
+	// touched. These are the exact codex-found escapes (U+0085 NEL, U+2028 LS,
+	// U+2029 PS); without the extended control map each forged suffix survives
+	// as a second logical line. Non-vacuous: fails on the C0-only sanitizer.
+	extended := []struct{ in, want string }{
+		{"nel\u0085forged", "nel forged"}, // NEL flattened to a space
+		{"ls\u2028forged", "ls forged"},   // LINE SEPARATOR flattened
+		{"ps\u2029forged", "ps forged"},   // PARAGRAPH SEPARATOR flattened
+		{"c1drop", "c1drop"},             // other C1 control dropped entirely
+	}
+	for _, c := range extended {
+		if got := sanitizeLoadoutWarning(c.in); got != c.want {
+			t.Errorf("sanitizeLoadoutWarning(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	// No line-boundary character of ANY class (ASCII, C1, or Unicode LS/PS)
+	// survives — a parser must never see a forged second line.
+	const lineBoundaries = "\r\n\u0085\u2028\u2029"
+	for _, in := range []string{
+		"ab c d",
+		"path\u2028WARN forged",
+		"x\ny\rz",
+	} {
+		got := sanitizeLoadoutWarning(in)
+		if strings.ContainsAny(got, lineBoundaries) {
+			t.Errorf("sanitizeLoadoutWarning(%q) = %q still contains a line-boundary char", in, got)
+		}
+	}
 }
