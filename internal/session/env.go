@@ -82,18 +82,32 @@ func (i *Instance) buildEnvSourceCommand() string {
 	toolEnvFile := i.getToolEnvFile()
 	if toolEnvFile != "" {
 		resolved := resolvePath(toolEnvFile, i.ProjectPath)
-		if _, statErr := os.Stat(resolved); statErr != nil {
-			// An explicitly configured env_file that is absent at spawn is a
-			// misconfiguration, not a soft default — the silent `[ -f ] &&`
-			// skip below is exactly how a typo'd env_file stanza goes
-			// unnoticed. Warn in the pane and the debug log; the
-			// ignore_missing_env_files=false hard-fail path is unchanged.
-			sessionLog.Warn("configured env_file missing at spawn",
-				slog.String("session", i.Title),
-				slog.String("tool", i.Tool),
-				slog.String("env_file", resolved))
-			if ignoreMissing {
-				sources = append(sources, paneWarning("env_file not found: "+resolved))
+		// CodeQL alert 54 (uncontrolled data in path expression): env_file is
+		// operator config and flows unsanitized into the os.Stat path sink
+		// below. Gate the stat behind a boundary-aware, fail-closed check —
+		// probedPath is returned only when the resolved file sits under a root
+		// agent-deck legitimately probes (the operator's home or the session's
+		// project tree). The stat is purely a proactive "configured-but-missing"
+		// diagnostic; the file is sourced regardless via buildSourceCmd below
+		// (whose `[ -f ]` guard covers a genuinely missing file), so an env_file
+		// the operator deliberately placed outside those roots skips the probe
+		// but is still sourced — no feature is lost and tainted config never
+		// reaches the filesystem sink unvalidated. Mirrors ValidateTranscriptPath
+		// (#1435) and the conductor_migrate_dir.go containment precedent.
+		if probedPath, ok := validateEnvFileForProbe(resolved, i.ProjectPath); ok {
+			if _, statErr := os.Stat(probedPath); statErr != nil {
+				// An explicitly configured env_file that is absent at spawn is a
+				// misconfiguration, not a soft default — the silent `[ -f ] &&`
+				// skip below is exactly how a typo'd env_file stanza goes
+				// unnoticed. Warn in the pane and the debug log; the
+				// ignore_missing_env_files=false hard-fail path is unchanged.
+				sessionLog.Warn("configured env_file missing at spawn",
+					slog.String("session", i.Title),
+					slog.String("tool", i.Tool),
+					slog.String("env_file", probedPath))
+				if ignoreMissing {
+					sources = append(sources, paneWarning("env_file not found: "+probedPath))
+				}
 			}
 		}
 		sources = append(sources, buildSourceCmd(resolved, ignoreMissing))
@@ -231,6 +245,54 @@ func resolvePath(path, workDir string) string {
 		return filepath.Clean(expanded)
 	}
 	return filepath.Clean(filepath.Join(workDir, expanded))
+}
+
+// validateEnvFileForProbe is the boundary guard for the os.Stat sink in
+// buildEnvSourceCommand (CodeQL alert 54). It returns the cleaned path together
+// with ok=true ONLY when the resolved env_file is an absolute path containing no
+// traversal segment AND sitting under a root agent-deck legitimately probes: the
+// operator's home directory or the session's own project tree. Any other path
+// (relative, traversal-bearing, or outside every known root) returns ok=false so
+// the caller fails closed and never stats it.
+//
+// This intentionally guards only the proactive existence probe, NOT the sourcing
+// of the file — the spawned shell sources whatever path the operator configured
+// (buildSourceCmd), so containing the probe costs no functionality while keeping
+// uncontrolled config data from reaching the filesystem sink unvalidated. The
+// shape (Clean → reject ".." → HasPrefix(root) containment, fail-closed) mirrors
+// ValidateTranscriptPath and resolveCanonical/pathContains in
+// conductor_migrate_dir.go.
+func validateEnvFileForProbe(resolved, projectPath string) (string, bool) {
+	clean := filepath.Clean(resolved)
+	// Only fully-resolved absolute paths are eligible; a relative or
+	// traversal-bearing path cannot be proven contained, so fail closed.
+	if !filepath.IsAbs(clean) {
+		return "", false
+	}
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) ||
+		strings.Contains(clean, string(os.PathSeparator)+".."+string(os.PathSeparator)) ||
+		strings.HasSuffix(clean, string(os.PathSeparator)+"..") {
+		return "", false
+	}
+
+	var roots []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if h := filepath.Clean(home); filepath.IsAbs(h) {
+			roots = append(roots, h)
+		}
+	}
+	if projectPath != "" {
+		if p := filepath.Clean(projectPath); filepath.IsAbs(p) {
+			roots = append(roots, p)
+		}
+	}
+
+	for _, root := range roots {
+		if clean == root || strings.HasPrefix(clean, root+string(os.PathSeparator)) {
+			return clean, true
+		}
+	}
+	return "", false
 }
 
 // ExpandPath expands environment variables and ~ prefix in a path.

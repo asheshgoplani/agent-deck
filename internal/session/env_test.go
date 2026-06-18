@@ -498,6 +498,52 @@ func TestGetConductorEnv_NonConductorSession(t *testing.T) {
 	}
 }
 
+func TestValidateEnvFileForProbe(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("Cannot get home directory")
+	}
+	project := filepath.Join(home, "agent-deck-probe-test-project")
+
+	// Paths under the home or project root are eligible for the existence probe.
+	accepted := []string{
+		filepath.Join(home, ".env"),
+		filepath.Join(home, ".config", "agent-deck", "secrets.env"),
+		filepath.Join(project, ".env"),
+		filepath.Join(project, "nested", "tool.env"),
+		home,    // the root itself
+		project, // the root itself
+	}
+	for _, p := range accepted {
+		got, ok := validateEnvFileForProbe(p, project)
+		if !ok {
+			t.Errorf("expected %q to be probe-eligible under home/project roots", p)
+			continue
+		}
+		if got != filepath.Clean(p) {
+			t.Errorf("validateEnvFileForProbe(%q) returned %q, want cleaned %q", p, got, filepath.Clean(p))
+		}
+	}
+
+	// Fail closed: outside every known root, relative, or traversal-bearing.
+	rejected := []string{
+		"/etc/passwd",                          // outside home + project
+		"/var/run/secrets/.env",                // outside home + project
+		".env",                                 // relative — cannot prove containment
+		"relative/path/.env",                   // relative
+		"",                                     // empty
+		filepath.Join(home, "..", "other.env"), // traversal escaping home
+		// A sibling dir whose string prefix matches home but which is NOT
+		// contained (boundary-aware: home + separator, not a raw prefix).
+		home + "-sibling/.env",
+	}
+	for _, p := range rejected {
+		if got, ok := validateEnvFileForProbe(p, project); ok {
+			t.Errorf("expected %q to be rejected (fail-closed), got ok with %q", p, got)
+		}
+	}
+}
+
 func TestIsValidEnvKey(t *testing.T) {
 	valid := []string{"HOME", "MY_VAR", "_private", "A", "API_KEY_123"}
 	for _, k := range valid {
