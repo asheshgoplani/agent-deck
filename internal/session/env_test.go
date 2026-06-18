@@ -544,6 +544,66 @@ func TestValidateEnvFileForProbe(t *testing.T) {
 	}
 }
 
+// TestValidateEnvFileForProbe_SymlinkEscape exercises the filesystem-containment
+// stage: a path that is LEXICALLY inside the project root but whose real target
+// escapes via a symlink must be rejected before any os.Stat follows the link.
+// This is the exact bypass the codex adversarial pass found against the
+// lexical-only first-round fix (`~/link` → /etc/passwd). Without the
+// resolveProbeTarget / symlink-resolved containment stage every case below
+// returns ok=true, so the test is non-vacuous — it fails on the old code.
+func TestValidateEnvFileForProbe_SymlinkEscape(t *testing.T) {
+	project := t.TempDir()
+	outside := t.TempDir()
+
+	victim := filepath.Join(outside, "secret.env")
+	if err := os.WriteFile(victim, []byte("X=1"), 0o600); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+
+	// 1. Symlinked final file inside the project pointing OUT of it.
+	link := filepath.Join(project, "link.env")
+	if err := os.Symlink(victim, link); err != nil {
+		t.Fatalf("symlink final file: %v", err)
+	}
+	if got, ok := validateEnvFileForProbe(link, project); ok {
+		t.Errorf("symlinked env_file escaping the project must be rejected; got ok with %q", got)
+	}
+
+	// 2. Symlinked PARENT directory; existing leaf under it resolves outside.
+	evilDir := filepath.Join(project, "evil")
+	if err := os.Symlink(outside, evilDir); err != nil {
+		t.Fatalf("symlink parent dir: %v", err)
+	}
+	viaParent := filepath.Join(evilDir, "secret.env")
+	if got, ok := validateEnvFileForProbe(viaParent, project); ok {
+		t.Errorf("env_file under a symlinked parent escaping the project must be rejected; got ok with %q", got)
+	}
+
+	// 3. Symlinked parent with a MISSING leaf — resolveCanonical alone would
+	//    leave this lexically contained; resolveProbeTarget must still reject.
+	viaParentMissing := filepath.Join(evilDir, "nonexistent.env")
+	if got, ok := validateEnvFileForProbe(viaParentMissing, project); ok {
+		t.Errorf("missing leaf under a symlinked parent escaping the project must be rejected; got ok with %q", got)
+	}
+
+	// Control: a real file genuinely inside the project is still probe-eligible.
+	real := filepath.Join(project, "real.env")
+	if err := os.WriteFile(real, []byte("X=1"), 0o600); err != nil {
+		t.Fatalf("write real: %v", err)
+	}
+	if _, ok := validateEnvFileForProbe(real, project); !ok {
+		t.Errorf("a real in-project env_file must remain probe-eligible")
+	}
+
+	// Control: a missing-but-lexically-contained leaf with NO symlink in its
+	// path must remain eligible (the diagnostic "configured-but-missing" warn
+	// case the probe exists to serve).
+	missingReal := filepath.Join(project, "missing.env")
+	if _, ok := validateEnvFileForProbe(missingReal, project); !ok {
+		t.Errorf("a missing in-project env_file (no symlink) must remain probe-eligible")
+	}
+}
+
 func TestIsValidEnvKey(t *testing.T) {
 	valid := []string{"HOME", "MY_VAR", "_private", "A", "API_KEY_123"}
 	for _, k := range valid {

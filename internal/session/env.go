@@ -250,18 +250,29 @@ func resolvePath(path, workDir string) string {
 // validateEnvFileForProbe is the boundary guard for the os.Stat sink in
 // buildEnvSourceCommand (CodeQL alert 54). It returns the cleaned path together
 // with ok=true ONLY when the resolved env_file is an absolute path containing no
-// traversal segment AND sitting under a root agent-deck legitimately probes: the
-// operator's home directory or the session's own project tree. Any other path
-// (relative, traversal-bearing, or outside every known root) returns ok=false so
-// the caller fails closed and never stats it.
+// traversal segment AND both its lexical string AND its symlink-resolved real
+// location sit under a root agent-deck legitimately probes: the operator's home
+// directory or the session's own project tree. Any other path (relative,
+// traversal-bearing, outside every known root, OR a lexically-contained path
+// whose real target escapes via a symlink) returns ok=false so the caller fails
+// closed and never stats it.
+//
+// The two-stage check is deliberate: os.Stat FOLLOWS symlinks, so a lexical-only
+// guard is escapable — `env_file = "~/link"` where ~/link → /etc/passwd is
+// lexically under $HOME yet probes outside it (this is the exact lexical-vs-
+// filesystem containment class caught on the #1429 migrate-dir arc). The second
+// stage resolves symlinks as far as the path exists (resolveProbeTarget) and
+// re-checks the REAL location against symlink-resolved roots, so a symlinked
+// file — or a missing leaf under a symlinked parent dir — is rejected before any
+// stat touches it.
 //
 // This intentionally guards only the proactive existence probe, NOT the sourcing
 // of the file — the spawned shell sources whatever path the operator configured
 // (buildSourceCmd), so containing the probe costs no functionality while keeping
 // uncontrolled config data from reaching the filesystem sink unvalidated. The
-// shape (Clean → reject ".." → HasPrefix(root) containment, fail-closed) mirrors
-// ValidateTranscriptPath and resolveCanonical/pathContains in
-// conductor_migrate_dir.go.
+// shape (Clean → reject ".." → HasPrefix(root) containment, EvalSymlinks-resolve,
+// fail-closed) mirrors ValidateTranscriptPath and resolveCanonical/pathContains
+// in conductor_migrate_dir.go.
 func validateEnvFileForProbe(resolved, projectPath string) (string, bool) {
 	clean := filepath.Clean(resolved)
 	// Only fully-resolved absolute paths are eligible; a relative or
@@ -275,6 +286,38 @@ func validateEnvFileForProbe(resolved, projectPath string) (string, bool) {
 		return "", false
 	}
 
+	roots := probeRoots(projectPath)
+	if len(roots) == 0 {
+		return "", false
+	}
+
+	// Stage 1 — lexical containment: the configured path string must sit under
+	// a probe root. Cheap reject for the common out-of-root case.
+	if !containedUnderAny(clean, roots) {
+		return "", false
+	}
+
+	// Stage 2 — filesystem containment (the symlink-escape close): resolve
+	// symlinks as far as the path exists and verify the REAL target is still
+	// under a symlink-resolved root. A lexically-contained path whose real
+	// location escapes (symlinked file, or any path component a symlink) is
+	// rejected so os.Stat never follows the link outside the root.
+	realTarget := resolveProbeTarget(clean)
+	realRoots := make([]string, 0, len(roots))
+	for _, r := range roots {
+		realRoots = append(realRoots, resolveCanonical(r))
+	}
+	if !containedUnderAny(realTarget, realRoots) {
+		return "", false
+	}
+
+	return clean, true
+}
+
+// probeRoots returns the absolute, cleaned roots agent-deck legitimately probes
+// for a configured env_file: the operator's home directory and (when set) the
+// session's project tree.
+func probeRoots(projectPath string) []string {
 	var roots []string
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		if h := filepath.Clean(home); filepath.IsAbs(h) {
@@ -286,13 +329,47 @@ func validateEnvFileForProbe(resolved, projectPath string) (string, bool) {
 			roots = append(roots, p)
 		}
 	}
+	return roots
+}
 
+// containedUnderAny reports whether path equals or is nested under any of roots.
+// Boundary-aware: uses root+separator so a sibling whose string prefix matches a
+// root (e.g. "<home>-sibling") is NOT treated as contained.
+func containedUnderAny(path string, roots []string) bool {
 	for _, root := range roots {
-		if clean == root || strings.HasPrefix(clean, root+string(os.PathSeparator)) {
-			return clean, true
+		if path == root || strings.HasPrefix(path, root+string(os.PathSeparator)) {
+			return true
 		}
 	}
-	return "", false
+	return false
+}
+
+// resolveProbeTarget returns the symlink-resolved real location of an absolute
+// path, resolving symlinks on the DEEPEST EXISTING ancestor and re-appending the
+// not-yet-existing tail. This is stronger than resolveCanonical (which falls back
+// to the wholly-lexical path when the full path does not exist): it catches a
+// symlinked parent directory with a missing leaf (e.g. env_file
+// "$project/evil/missing.env" where $project/evil → /outside), which a missing
+// final component would otherwise leave unresolved and lexically-contained.
+func resolveProbeTarget(clean string) string {
+	remainder := ""
+	cur := clean
+	for {
+		if real, err := filepath.EvalSymlinks(cur); err == nil {
+			if remainder == "" {
+				return real
+			}
+			return filepath.Join(real, remainder)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the filesystem root with nothing resolvable; the
+			// lexical path is the best available real location.
+			return clean
+		}
+		remainder = filepath.Join(filepath.Base(cur), remainder)
+		cur = parent
+	}
 }
 
 // ExpandPath expands environment variables and ~ prefix in a path.

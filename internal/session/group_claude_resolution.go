@@ -2,7 +2,6 @@ package session
 
 import (
 	"os"
-	"path/filepath"
 )
 
 // GroupClaudeResolution is the resolved view of the effective Claude
@@ -80,8 +79,17 @@ func ResolveGroupClaude(groupPath string) GroupClaudeResolution {
 	}
 	if res.EnvFile != "" {
 		res.EnvFileResolved = ExpandPath(res.EnvFile)
-		if filepath.IsAbs(res.EnvFileResolved) {
-			_, statErr := os.Stat(res.EnvFileResolved)
+		// Route the existence probe through the same boundary-aware,
+		// symlink-resolving guard as the spawn-time env_file probe
+		// (validateEnvFileForProbe). os.Stat follows symlinks, so a lexically
+		// in-home env_file that is a symlink to an out-of-root file would
+		// otherwise probe outside the home root from this diagnostic path
+		// (CodeQL alert 54 — second sink). There is no session project in a
+		// group-level view, so the operator home is the only probe root; an
+		// absolute env_file outside it (or escaping via symlink) is not
+		// probed and EnvFileExists stays false.
+		if probedPath, ok := validateEnvFileForProbe(res.EnvFileResolved, ""); ok {
+			_, statErr := os.Stat(probedPath)
 			res.EnvFileExists = statErr == nil
 		}
 	}
