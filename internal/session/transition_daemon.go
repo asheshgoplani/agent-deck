@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -275,12 +276,16 @@ func (d *TransitionDaemon) logProbeStall(profile, instanceID, reason string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
+	budget := statusProbeBudget
+	if reason == "pass_budget" {
+		budget = syncPassBudget
+	}
 	entry := map[string]any{
 		"ts":       now.Format(time.RFC3339Nano),
 		"profile":  profile,
 		"instance": instanceID,
 		"reason":   reason,
-		"budget":   statusProbeBudget.String(),
+		"budget":   budget.String(),
 	}
 	line, err := json.Marshal(entry)
 	if err != nil {
@@ -290,8 +295,10 @@ func (d *TransitionDaemon) logProbeStall(profile, instanceID, reason string) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
 	_, _ = f.Write(append(line, '\n'))
+	if err := f.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "logProbeStall: close %s: %v\n", path, err)
+	}
 }
 
 func notifierProbeStallLogPath() string {
