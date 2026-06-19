@@ -7,13 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.72] - 2026-06-19
+
 ### Added
 
-- **`group_sort` config option to choose within-group session ordering.** Sessions inside a group now display in **creation order by default** (honoring the `K`/`J` manual reorder), instead of the status/recency "actionable" sort. Set `group_sort = "actionable"` in `config.toml` to restore the issue [#857](https://github.com/asheshgoplani/agent-deck/issues/857) most-recently-actionable-first behavior. Pin-top/pin-bottom and the Maestro supervisor still surface as before in both modes.
+- **`group_sort` config option to choose within-group session ordering.** Sessions inside a group now display in **creation order by default** (honoring the `K`/`J` manual reorder), instead of the status/recency "actionable" sort. Set `group_sort = "actionable"` in `config.toml` to restore the most-recently-actionable-first behavior. Pin-top/pin-bottom and the Maestro supervisor still surface as before in both modes. ([#1443](https://github.com/asheshgoplani/agent-deck/pull/1443))
+
+- **Session-switcher hotkey is now opt-in (disabled by default).** The `switch_session` hotkey is no longer bound by default to avoid conflicts. Add `switch_session = "<key>"` under `[hotkeys]` in `config.toml` to enable it. ([#1478](https://github.com/asheshgoplani/agent-deck/pull/1478))
+
+- **Session-switcher dialog shows title/subtitle and auto-expands width.** Named sessions display a distinct title and subtitle; the dialog automatically widens to fit the longest row so labels are never truncated. ([#1475](https://github.com/asheshgoplani/agent-deck/pull/1475))
+
+- **Worktree-destruction hook before linked worktree removal.** If `agent-deck-worktree-destroy.sh` (or `.agent-deck-worktree-destroy.sh`) exists in the repo root, it runs with a 60 s timeout before `git worktree remove`, enabling pre-cleanup steps (saving state, notifying services, etc.). ([#1487](https://github.com/asheshgoplani/agent-deck/pull/1487))
 
 ### Fixed
 
-- **Orphaned sub-sessions no longer shuffle position between renders.** Sub-sessions whose parent session lives in a different group were emitted in Go's randomized map-iteration order, so they jumped around on each redraw. They now render in a stable order (by persisted `Order`).
+- **Orphaned sub-sessions no longer shuffle position between renders.** Sub-sessions whose parent session lives in a different group were emitted in Go's randomized map-iteration order, so they jumped around on each redraw. They now render in a stable order (by persisted `Order`). ([#1443](https://github.com/asheshgoplani/agent-deck/pull/1443))
+
+- **Forked sessions inherit tool identity for Claude-compatible tools.** When forking a session that uses a Claude-compatible tool (gemini, codex, opencode, etc.), the fork now preserves the parent's tool instead of resetting it to `"claude"`. ([#1479](https://github.com/asheshgoplani/agent-deck/pull/1479))
+
+- **Headless web menu no longer serves stale content after session changes.** The in-memory `MemoryMenuData` snapshot cache is now invalidated on every `notifyMenuChanged` call, so menu state reflects the current session list immediately. ([#1477](https://github.com/asheshgoplani/agent-deck/pull/1477))
+
+- **Dialog boxes respect terminal width.** Help, search, group, MCP, session-picker, skill, and zoxide dialogs use a new `fitDialogWidth` helper that caps dialog width to `termWidth - 10`, preventing overflow and border clipping on narrow terminals. ([#1476](https://github.com/asheshgoplani/agent-deck/pull/1476))
+
+- **Docker sandbox pre-trusts `/workspace` at first launch.** The Claude home seed written into sandbox containers now includes `/workspace` in the projects trust map, so workspace-trust dialogs no longer block headless sessions on first run. ([#1490](https://github.com/asheshgoplani/agent-deck/pull/1490))
+
+- **Status & daemon reliability hardening** ([#1481](https://github.com/asheshgoplani/agent-deck/pull/1481)):
+  - A foreign `claude -p` child that inherits `AGENTDECK_INSTANCE_ID` and fires hooks under the parent's ID no longer flips the parent session's status (bind rejection now also restores the pre-event hook fields).
+  - A transient tmux-inferred flip away from `running` (long tool-call past hook freshness window, or `CapturePane` failure) is held for one confirming sample before firing a completion event to the conductor.
+  - `conductor setup` detects the macOS launchd Background domain and skips the unload/reload cycle, preventing cross-domain eviction of the live notify-daemon.
+  - Notify-daemon status probes are now bounded (6 s per instance, 30 s per pass) so a hung tmux call can't mute the entire delivery loop; a timed-out instance retries next pass and logs a rate-limited stall breadcrumb.
 
 ## [1.9.71] - 2026-06-17
 
