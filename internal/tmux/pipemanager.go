@@ -209,8 +209,11 @@ func (pm *PipeManager) RefreshAllActivities() (map[string]int64, map[string][]Wi
 		return nil, nil, fmt.Errorf("no alive pipes available")
 	}
 
-	// tmux control mode requires double-quoted format strings containing special chars
-	output, err := pipe.SendCommand(`list-windows -a -F "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}"`)
+	// Must use the same tmuxFieldSep as parseListWindowsOutput (shared with the
+	// subprocess path). A control client negotiates UTF-8, so TAB would usually
+	// survive here, but the delimiter MUST still match what the parser splits on.
+	// tmux control mode requires the format string double-quoted.
+	output, err := pipe.SendCommand(`list-windows -a -F "` + tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_name}") + `"`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list-windows via pipe: %w", err)
 	}
@@ -238,51 +241,15 @@ func (pm *PipeManager) RefreshAllPaneInfo() (map[string]PaneInfo, map[string]map
 		return nil, nil, fmt.Errorf("no alive pipes available")
 	}
 
-	output, err := pipe.SendCommand(`list-panes -a -F "#{session_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_dead}\t#{window_index}\t#{pane_index}"`)
+	// Share the producer format AND parser with the subprocess path
+	// (parseListPanesOutput): pane_title last, tmuxFieldSep-delimited. Keeps the
+	// pipe and subprocess paths from drifting in field order or delimiter.
+	output, err := pipe.SendCommand(`list-panes -a -F "` + tmuxFmt("#{session_name}", "#{pane_current_command}", "#{pane_dead}", "#{window_index}", "#{pane_index}", "#{pane_title}") + `"`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list-panes via pipe: %w", err)
 	}
 
-	result := make(map[string]PaneInfo)
-	windowTools := make(map[string]map[int]string)
-	seenWindowTool := make(map[string]bool) // "session\twinIdx" -> already processed
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\t", 6)
-		if len(parts) != 6 {
-			continue
-		}
-		name := parts[0]
-
-		// Collect tool info for the first pane of each window (handles any base-index).
-		windowKey := name + "\t" + parts[4]
-		if !seenWindowTool[windowKey] {
-			seenWindowTool[windowKey] = true
-			var winIdx int
-			_, _ = fmt.Sscanf(parts[4], "%d", &winIdx)
-			tool := detectToolFromCommand(parts[2])
-			if tool == "" {
-				tool = detectToolFromCommand(parts[1])
-			}
-			if tool != "" {
-				if windowTools[name] == nil {
-					windowTools[name] = make(map[int]string)
-				}
-				windowTools[name][winIdx] = tool
-			}
-		}
-
-		// Cache the first pane seen per session (primary window+pane).
-		if _, seen := result[name]; !seen {
-			result[name] = PaneInfo{
-				Title:          parts[1],
-				CurrentCommand: parts[2],
-				Dead:           parts[3] == "1",
-			}
-		}
-	}
+	result, windowTools := parseListPanesOutput(output)
 	return result, windowTools, nil
 }
 

@@ -61,6 +61,39 @@ func DefaultSocketName() string {
 	return defaultSocketName
 }
 
+// tmuxFieldSep delimits the fields of the `-F` format strings that agent-deck
+// both emits and parses (the session / pane / client probes that feed status
+// detection). It MUST be a printable ASCII byte, and historically was a TAB —
+// which turned out to be a latent bug:
+//
+// A tmux command invoked with NO attached client sanitizes non-printable bytes
+// in its format output, rewriting TAB (0x09) — and every other control byte,
+// including newline and the C0/UTF-8 separators — to "_". The launchd
+// notify-daemon and conductor-heartbeat inherit no $TMUX, so every status probe
+// they ran hit this path: the TAB field separators collapsed to "_", SplitN
+// found a single field, parseListWindowsOutput skipped every line, the session
+// cache came back empty, Session.Exists() reported false, and UpdateStatus
+// stamped StatusError on every live session. That error then failed the
+// idle/waiting gate on BOTH the wake-nudge and the heartbeat, so an idle
+// conductor stopped being woken when a child finished (diagnosed 2026-06-18).
+//
+// "|" survives the no-client path. It can never collide with the non-trailing
+// fields these formats carry: tmux session names are sanitized to [A-Za-z0-9-]
+// (see sanitizeNameRe) and the rest are integers or a 0/1 flag. The genuinely
+// free-text fields (window_name, pane_title, client_name) are always placed
+// LAST and parsed with SplitN, so a stray "|" inside them is preserved intact.
+//
+// The control-mode pipe path (internal/tmux/pipemanager.go) is unaffected — a
+// control client IS attached there, so it keeps its TAB formats.
+const tmuxFieldSep = "|"
+
+// tmuxFmt joins tmux format fields with tmuxFieldSep. Producer and consumer
+// (strings.SplitN(line, tmuxFieldSep, n)) reference the same constant so the
+// delimiter can never drift between the two halves.
+func tmuxFmt(fields ...string) string {
+	return strings.Join(fields, tmuxFieldSep)
+}
+
 // tmuxArgs builds the full `tmux …` argv for a command, inserting the
 // `-L <name>` socket selector at the front when socketName is non-empty
 // and non-whitespace. An empty socket name is the pre-v1.7.50 default and
