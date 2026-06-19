@@ -252,9 +252,11 @@ func TestGroupScopeValidation(t *testing.T) {
 		input string
 		want  string
 	}{
+		// normalizeGroupPath replaces spaces with hyphens but preserves case,
+		// because GroupTree.Groups is keyed by the raw stored path.
 		{"work", "work"},
-		{"Work", "work"},
-		{"My Projects", "my-projects"},
+		{"Work", "Work"},
+		{"My Projects", "My-Projects"},
 		{"work/frontend", "work/frontend"},
 	}
 

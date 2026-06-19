@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -642,14 +643,35 @@ func handleGroupDelete(profile string, args []string) {
 	groupPath := normalizeGroupPath(name)
 	group, exists := groupTree.Groups[groupPath]
 	if !exists {
-		// Try finding by name match
+		// Direct lookup missed: collect all case-insensitive name matches.
+		// Using a collect-all approach prevents silently deleting a random
+		// duplicate when the same leaf name exists under multiple parents.
+		type match struct {
+			path  string
+			group *session.Group
+		}
+		var matches []match
 		for path, g := range groupTree.Groups {
 			if strings.EqualFold(g.Name, name) {
-				groupPath = path
-				group = g
-				exists = true
-				break
+				matches = append(matches, match{path: path, group: g})
 			}
+		}
+		switch len(matches) {
+		case 0:
+			// not found — handled below
+		case 1:
+			groupPath = matches[0].path
+			group = matches[0].group
+			exists = true
+		default:
+			// Ambiguous: multiple groups share this leaf name.
+			paths := make([]string, len(matches))
+			for i, m := range matches {
+				paths[i] = m.path
+			}
+			sort.Strings(paths)
+			out.Error(fmt.Sprintf("group '%s' is ambiguous: %s - use the full path", name, strings.Join(paths, ", ")), ErrCodeInvalidOperation)
+			os.Exit(2)
 		}
 	}
 
@@ -1061,14 +1083,12 @@ func getParentGroupPath(path string) string {
 	return "" // root level
 }
 
-// normalizeGroupPath converts a group name/path to its normalized path form
+// normalizeGroupPath converts a group name/path to its normalized path form.
+// It replaces spaces with hyphens but preserves case, because GroupTree.Groups
+// is keyed by the raw stored path (case-preserving). Lowercasing here would make
+// any group whose path contains uppercase letters unreachable by direct lookup.
 func normalizeGroupPath(name string) string {
-	// Already looks like a path
-	if strings.Contains(name, "/") {
-		return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
-	}
-	// Simple name
-	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+	return strings.ReplaceAll(name, " ", "-")
 }
 
 // truncateGroupName shortens a group name for display
