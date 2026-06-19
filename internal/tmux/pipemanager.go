@@ -21,13 +21,18 @@ import (
 // Falls back to subprocess execution when pipes are unavailable.
 type PipeManager struct {
 	pipes map[string]*ControlPipe // sessionName -> pipe
-	mu    sync.RWMutex
+	mu    sync.RWMutex            // protects pipes and wantPipe
 
 	// Callback for output events (invoked when %output detected from a session)
 	onOutput func(sessionName string)
 
 	// Callback for window change events (invoked when %window-add or %window-close detected)
 	onWindowChange func()
+
+	// wantPipe, when non-nil, gates which sessions may hold a live pipe.
+	// Connect and watchPipe consult it so background sessions are never
+	// connected or auto-reconnected. nil = legacy behaviour (want everything).
+	wantPipe func(sessionName string) bool
 
 	// Reconnection tracking
 	reconnectMu  sync.Mutex
@@ -58,6 +63,13 @@ func NewPipeManager(ctx context.Context, onOutput func(sessionName string)) *Pip
 // by socketName (Session.SocketName). Pass "" to target the user's default
 // server. Safe to call repeatedly; a live pipe short-circuits and returns nil.
 func (pm *PipeManager) Connect(sessionName, socketName string) error {
+	// Background sessions are not wanted — connecting them is what scaled pipe
+	// count to instances×sessions. Silent no-op so existing callers (startup
+	// loop, new-session hook, reviver, sweep) need no per-call gating.
+	if !pm.wants(sessionName) {
+		return nil
+	}
+
 	pm.mu.Lock()
 
 	// Already connected and alive?
@@ -330,6 +342,36 @@ func (pm *PipeManager) SetWindowChangeCallback(cb func()) {
 	pm.onWindowChange = cb
 }
 
+// SetWantPipe installs the predicate that decides which sessions hold a live
+// pipe. Call once at startup before Connect. nil-safe: an unset predicate means
+// every session is wanted (legacy behaviour).
+func (pm *PipeManager) SetWantPipe(fn func(sessionName string) bool) {
+	pm.mu.Lock()
+	pm.wantPipe = fn
+	pm.mu.Unlock()
+}
+
+// wants reports whether sessionName is currently wanted. nil predicate => true.
+func (pm *PipeManager) wants(sessionName string) bool {
+	pm.mu.RLock()
+	fn := pm.wantPipe
+	pm.mu.RUnlock()
+	return fn == nil || fn(sessionName)
+}
+
+// ConnectedSessions returns the names of sessions with an alive pipe.
+func (pm *PipeManager) ConnectedSessions() []string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	out := make([]string, 0, len(pm.pipes))
+	for name, p := range pm.pipes {
+		if p.IsAlive() {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // forwardOutputEvents reads from a pipe's output and window events channels
 // and calls the appropriate callbacks. Runs until the pipe dies or context is cancelled.
 func (pm *PipeManager) forwardOutputEvents(sessionName string, pipe *ControlPipe) {
@@ -371,6 +413,14 @@ func shouldConcludeSessionGone(probeFoundSession bool, attempt, maxRetries int) 
 	return attempt >= maxRetries-1
 }
 
+// wantsReconnect reports whether a dead pipe for sessionName should be
+// reconnected. nil predicate => yes (legacy). A false result means the session
+// fell out of the live set (intentional Disconnect, or a background pipe died)
+// and must stay gone.
+func wantsReconnect(wantPipe func(string) bool, sessionName string) bool {
+	return wantPipe == nil || wantPipe(sessionName)
+}
+
 // watchPipe monitors a pipe and attempts reconnection when it dies.
 // Uses exponential backoff: 2s, 4s, 8s, 16s, 30s max.
 // Stops retrying if the tmux session no longer exists.
@@ -383,6 +433,19 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 	}
 
 	pipeLog.Debug("pipe_died_scheduling_reconnect", slog.String("session", sessionName))
+
+	// If the session is no longer wanted (intentional Disconnect, or a
+	// background pipe that died), do not resurrect it.
+	pm.mu.RLock()
+	wantFn := pm.wantPipe
+	pm.mu.RUnlock()
+	if !wantsReconnect(wantFn, sessionName) {
+		pipeLog.Debug("pipe_not_wanted_skipping_reconnect", slog.String("session", sessionName))
+		pm.mu.Lock()
+		delete(pm.pipes, sessionName)
+		pm.mu.Unlock()
+		return
+	}
 
 	// Check if already reconnecting
 	pm.reconnectMu.Lock()
@@ -408,6 +471,22 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 		case <-pm.ctx.Done():
 			return
 		case <-time.After(backoff):
+		}
+
+		// Wantedness can flip during backoff (the session fell out of the live
+		// set, or was intentionally disconnected). Re-check before reconnecting:
+		// otherwise pm.Connect silently no-ops on an unwanted session, returns
+		// nil, and we'd log a phantom "reconnected" while leaving the dead pipe
+		// entry in the map. Prune it and stop instead.
+		pm.mu.RLock()
+		loopWantFn := pm.wantPipe
+		pm.mu.RUnlock()
+		if !wantsReconnect(loopWantFn, sessionName) {
+			pipeLog.Debug("pipe_not_wanted_skipping_reconnect", slog.String("session", sessionName))
+			pm.mu.Lock()
+			delete(pm.pipes, sessionName)
+			pm.mu.Unlock()
+			return
 		}
 
 		// Check if session still exists before trying to reconnect.

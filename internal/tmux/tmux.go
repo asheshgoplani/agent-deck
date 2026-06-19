@@ -2153,8 +2153,15 @@ func (s *Session) IsPaneDead() bool {
 	if info, ok := GetCachedPaneInfo(s.Name); ok {
 		return info.Dead
 	}
-	// Cache miss: direct tmux check targeting the primary pane.
-	out, err := s.tmuxCmd("list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}").Output()
+	// Cache miss: direct tmux check targeting the primary pane. Bound it the
+	// same way Exists() bounds has-session — a wedged tmux server must not hang
+	// this probe, since it runs under the notify-daemon's single-threaded poll
+	// loop (via UpdateStatus → GetStatus) where a stall freezes all delivery.
+	// A timed-out (indeterminate) probe is treated as "not dead": reporting a
+	// live pane as dead would flip the session to an error state.
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+	out, err := s.tmuxCmdContext(ctx, "list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}").Output()
 	if err != nil {
 		return false
 	}
@@ -4992,11 +4999,52 @@ func RefreshStatusBarImmediate() error {
 	return nil
 }
 
-// GetAttachedSessions returns the names of tmux sessions that have real clients attached.
-// Used to detect which session the user is currently viewing.
-// Filters out control mode clients (from PipeManager) which are not real user sessions.
+// GetAttachedSessions returns the names of tmux sessions that have real clients
+// attached on the default socket. Used to detect which session the user is
+// currently viewing. Filters out control mode clients (from PipeManager) which
+// are not real user sessions.
 func GetAttachedSessions() ([]string, error) {
-	cmd := tmuxExec(DefaultSocketName(), "list-clients", "-F", "#{session_name}\t#{client_control_mode}")
+	return attachedSessionsOnSocket(DefaultSocketName())
+}
+
+// GetAttachedSessionsOnSockets returns the union of attached (non-control)
+// session names across the given sockets. The default socket is always
+// consulted, then each distinct extra socket; "" denotes the default socket.
+// Sockets with no running server (or any list-clients error) are skipped
+// silently. Order is unspecified and duplicates are removed.
+//
+// This is the socket-aware counterpart to GetAttachedSessions: a session
+// attached on an isolated agent-deck socket (TmuxSocketName != "") is invisible
+// to a default-socket-only query, so callers that must pin every attached
+// session regardless of socket use this instead.
+func GetAttachedSessionsOnSockets(sockets ...string) []string {
+	socketSeen := make(map[string]bool, len(sockets)+1)
+	nameSeen := map[string]bool{}
+	var out []string
+	for _, sock := range append([]string{DefaultSocketName()}, sockets...) {
+		sock = strings.TrimSpace(sock)
+		if socketSeen[sock] {
+			continue
+		}
+		socketSeen[sock] = true
+		names, err := attachedSessionsOnSocket(sock)
+		if err != nil {
+			continue
+		}
+		for _, n := range names {
+			if !nameSeen[n] {
+				nameSeen[n] = true
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
+// attachedSessionsOnSocket lists the non-control-mode sessions with a client
+// attached on a single tmux socket ("" = default server).
+func attachedSessionsOnSocket(socket string) ([]string, error) {
+	cmd := tmuxExec(socket, "list-clients", "-F", "#{session_name}\t#{client_control_mode}")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err

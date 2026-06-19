@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.72] - 2026-06-19
+
+### Added
+
+- **`group_sort` config option to choose within-group session ordering.** Sessions inside a group now display in **creation order by default** (honoring the `K`/`J` manual reorder), instead of the status/recency "actionable" sort. Set `group_sort = "actionable"` in `config.toml` to restore the most-recently-actionable-first behavior. Pin-top/pin-bottom and the Maestro supervisor still surface as before in both modes. ([#1443](https://github.com/asheshgoplani/agent-deck/pull/1443))
+
+- **Session-switcher hotkey is now opt-in (disabled by default).** The `switch_session` hotkey is no longer bound by default to avoid conflicts. Add `switch_session = "<key>"` under `[hotkeys]` in `config.toml` to enable it. ([#1478](https://github.com/asheshgoplani/agent-deck/pull/1478))
+
+- **Session-switcher dialog shows title/subtitle and auto-expands width.** Named sessions display a distinct title and subtitle; the dialog automatically widens to fit the longest row so labels are never truncated. ([#1475](https://github.com/asheshgoplani/agent-deck/pull/1475))
+
+- **Worktree-destruction hook before linked worktree removal.** If `agent-deck-worktree-destroy.sh` (or `.agent-deck-worktree-destroy.sh`) exists in the repo root, it runs with a 60 s timeout before `git worktree remove`, enabling pre-cleanup steps (saving state, notifying services, etc.). ([#1487](https://github.com/asheshgoplani/agent-deck/pull/1487))
+
+### Fixed
+
+- **Orphaned sub-sessions no longer shuffle position between renders.** Sub-sessions whose parent session lives in a different group were emitted in Go's randomized map-iteration order, so they jumped around on each redraw. They now render in a stable order (by persisted `Order`). ([#1443](https://github.com/asheshgoplani/agent-deck/pull/1443))
+
+- **Forked sessions inherit tool identity for Claude-compatible tools.** When forking a session that uses a Claude-compatible tool (gemini, codex, opencode, etc.), the fork now preserves the parent's tool instead of resetting it to `"claude"`. ([#1479](https://github.com/asheshgoplani/agent-deck/pull/1479))
+
+- **Headless web menu no longer serves stale content after session changes.** The in-memory `MemoryMenuData` snapshot cache is now invalidated on every `notifyMenuChanged` call, so menu state reflects the current session list immediately. ([#1477](https://github.com/asheshgoplani/agent-deck/pull/1477))
+
+- **Dialog boxes respect terminal width.** Help, search, group, MCP, session-picker, skill, and zoxide dialogs use a new `fitDialogWidth` helper that caps dialog width to `termWidth - 10`, preventing overflow and border clipping on narrow terminals. ([#1476](https://github.com/asheshgoplani/agent-deck/pull/1476))
+
+- **Docker sandbox pre-trusts `/workspace` at first launch.** The Claude home seed written into sandbox containers now includes `/workspace` in the projects trust map, so workspace-trust dialogs no longer block headless sessions on first run. ([#1490](https://github.com/asheshgoplani/agent-deck/pull/1490))
+
+- **Status & daemon reliability hardening** ([#1481](https://github.com/asheshgoplani/agent-deck/pull/1481)):
+  - A foreign `claude -p` child that inherits `AGENTDECK_INSTANCE_ID` and fires hooks under the parent's ID no longer flips the parent session's status (bind rejection now also restores the pre-event hook fields).
+  - A transient tmux-inferred flip away from `running` (long tool-call past hook freshness window, or `CapturePane` failure) is held for one confirming sample before firing a completion event to the conductor.
+  - `conductor setup` detects the macOS launchd Background domain and skips the unload/reload cycle, preventing cross-domain eviction of the live notify-daemon.
+  - Notify-daemon status probes are now bounded (6 s per instance, 30 s per pass) so a hung tmux call can't mute the entire delivery loop; a timed-out instance retries next pass and logs a rate-limited stall breadcrumb.
+
+## [1.9.71] - 2026-06-17
+
+### Fixed
+
+- **tmux: keep live control pipes only for active sessions.** Each agent-deck instance now maintains live `tmux -C` control pipes only for the cursor-focused, attached, and recently-viewed sessions (small LRU, capacity 3) instead of connecting every session at startup. This drops per-instance pipe count from ×(all sessions) to ≤4 and eliminates the attach-storm freezes and tmux-server backpressure that occurred when running multiple deck instances against a shared session set. A 500 ms reconciler goroutine replaces the old eager-connect startup burst; background sessions ride the existing 2 s status poll. Backward-compatible: a nil predicate retains the legacy "want everything" behavior.
+
 ## [1.9.70] - 2026-06-16
 
 ### Fixed
@@ -96,13 +132,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **An operator's per-session model choice now survives `session restart`** ([#1445](https://github.com/asheshgoplani/agent-deck/pull/1445), closes [#1436](https://github.com/asheshgoplani/agent-deck/issues/1436)). Follow-up to [#1431](https://github.com/asheshgoplani/agent-deck/issues/1431), which made `[claude].default_model` honored at spawn and restart. A new tool-agnostic `model` field — `agent-deck session set <id> model <m>` — persists the selected model into the per-session store each command builder already reads on start/restart (Claude/Gemini/OpenCode/Codex), so a model switched after launch is relaunched on the operator's selection instead of reverting to the baked/default model; an empty value clears the override. The field is restart-required. Note: agent-deck cannot observe an in-pane `/model` switch typed into a running Claude session (Claude exposes no clean model readback), so the documented path is `session set <id> model <m>`.
-
 ## [1.9.61] - 2026-06-14
 
 ### Fixed
 
 - **`SaveUserConfig` no longer bloats `config.toml` with zero-value fields, and default-true settings survive an explicit `false`** ([#1383](https://github.com/asheshgoplani/agent-deck/pull/1383)). Saving the config previously rewrote every struct field, including unset zero values, so a minimal hand-written `config.toml` ballooned with defaulted keys on the first save. The serializer now omits zero-value scalars (`omitzero`) and empty collections (`omitempty`), and `stripEmptyTOMLSections` removes the orphan section headers the encoder leaves behind, keeping the on-disk file minimal. Critically, the six default-`true` booleans (e.g. global-search enabled, update checks, MCP-pool stdio fallback) were converted to `*bool` so an explicit `false` is encoded and round-trips losslessly instead of being silently dropped and reverting to its `true` default; the heartbeat interval default (15) is likewise preserved across save/reload. The populated `[mcps]`/`[groups]` sections remain protected by the existing section-drop guard and the `config.toml.bak` backup taken before every save.
-
 ## [1.9.60] - 2026-06-14
 
 ### Added
@@ -150,7 +184,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A stale DB row no longer vetoes a fresh terminal hook status** ([#1425](https://github.com/asheshgoplani/agent-deck/pull/1425), fixes [#1424](https://github.com/asheshgoplani/agent-deck/issues/1424)). The notify daemon could let a session row frozen at `running` (from a missed update, or a session created after the daemon loaded its list) override a fresh terminal status from the child's own Stop/done hook — dropping the completion entirely (no transition event, no log line). A non-terminal row now never vetoes a fresh terminal hook; the row only wins when it is itself notify-terminal (where it may be more final, e.g. `error`).
 - **Done-sentinel detection works on current Claude Code transcript formats** ([#1423](https://github.com/asheshgoplani/agent-deck/pull/1423), fixes [#1422](https://github.com/asheshgoplani/agent-deck/issues/1422)). The Stop-edge tail scan that detects a worker-printed completion sentinel had drifted from Claude Code's current transcript shape, so real completions were missed. Detection now matches the current formats, with guards that avoid reporting a PREVIOUS turn's sentinel as the current one.
 - **Session switcher review-feedback fixes** ([#1426](https://github.com/asheshgoplani/agent-deck/pull/1426), follow-up to [#1411](https://github.com/asheshgoplani/agent-deck/pull/1411)). Restores `SIGINT` handling on the attach raw-mode setup failure paths — a failure there could otherwise leave the process permanently ignoring `Ctrl+C`. Opens the in-attach switcher on the session actually in view after a notification-bar switch (`Ctrl+b 1-6`) rather than the original attach target, fixing pre-highlight / `Esc`-reattach / follow-CWD. The attached status-bar hint now reflects the configured `[hotkeys]` detach/switch bindings instead of hardcoded `ctrl+q`/`ctrl+s` (and is omitted when the switch key is unbound or collides with detach). The switcher resizes with the window; `Show` clears stale picker state when fewer than two sessions remain; and the footer `Esc` hint is context-sensitive ("back" while attached vs "close" from the overview). Documents the switcher as local-only (remote/SSH sessions use a separate attach path).
-
 ## [1.9.57] - 2026-06-12
 
 ### Fixed

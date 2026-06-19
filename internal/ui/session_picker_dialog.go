@@ -163,13 +163,7 @@ func (d *SessionPickerDialog) View() string {
 	content := strings.Join(lines, "\n")
 
 	// Dialog box
-	dialogWidth := 44
-	if d.width > 0 && d.width < dialogWidth+10 {
-		dialogWidth = d.width - 10
-		if dialogWidth < 30 {
-			dialogWidth = 30
-		}
-	}
+	dialogWidth := fitDialogWidth(44, 30, d.width)
 
 	box := DialogBoxStyle.
 		Width(dialogWidth).

@@ -2099,3 +2099,124 @@ func TestDemoteSession_WithChildrenNoOp(t *testing.T) {
 		t.Errorf("p2's children should be unchanged; got %v, want %v", gotKids, wantKids)
 	}
 }
+
+func TestGroupSortMode_DefaultAndSet(t *testing.T) {
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+
+	SetGroupSortMode("creation") // normalize starting point
+	if got := currentGroupSortMode(); got != "creation" {
+		t.Fatalf("default/creation mode = %q, want creation", got)
+	}
+	SetGroupSortMode("actionable")
+	if got := currentGroupSortMode(); got != "actionable" {
+		t.Fatalf("after set actionable = %q, want actionable", got)
+	}
+	SetGroupSortMode("garbage")
+	if got := currentGroupSortMode(); got != "creation" {
+		t.Fatalf("garbage normalizes to %q, want creation", got)
+	}
+}
+
+func TestSortInstancesByActionable_CreationOrderDefault(t *testing.T) {
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+	SetGroupSortMode("creation")
+	now := time.Now()
+
+	// Statuses + recency are arranged so an actionable sort would reorder these,
+	// but creation mode must keep strict Order ascending.
+	instances := []*Instance{
+		{ID: "a", GroupPath: "g", Order: 0, Status: StatusStopped, LastAccessedAt: now.Add(-5 * time.Hour)},
+		{ID: "b", GroupPath: "g", Order: 1, Status: StatusError, LastAccessedAt: now},
+		{ID: "c", GroupPath: "g", Order: 2, Status: StatusWaiting, LastAccessedAt: now.Add(-1 * time.Minute)},
+	}
+	tree := NewGroupTree(instances)
+	got := []string{}
+	for _, s := range tree.Groups["g"].Sessions {
+		got = append(got, s.ID)
+	}
+	want := []string{"a", "b", "c"}
+	if !equalStrings(got, want) {
+		t.Fatalf("creation mode must order by Order asc; got %v want %v", got, want)
+	}
+}
+
+func TestFlatten_OrphanSubSessionsDeterministic(t *testing.T) {
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+	SetGroupSortMode("creation")
+
+	// Three sub-sessions whose parent lives in a DIFFERENT group than they do,
+	// so they render as orphaned top-level rows in group "g". Their Order
+	// values fix the expected display order.
+	mk := func(id string, order int, parent string) *Instance {
+		return &Instance{ID: id, Title: id, GroupPath: "g", Order: order, ParentSessionID: parent}
+	}
+	instances := []*Instance{
+		mk("s0", 0, "absent-p0"),
+		mk("s1", 1, "absent-p1"),
+		mk("s2", 2, "absent-p2"),
+	}
+
+	tree := NewGroupTree(instances)
+
+	var first []string
+	for _, it := range tree.Flatten() {
+		if it.Type == ItemTypeSession {
+			first = append(first, it.Session.ID)
+		}
+	}
+	if !equalStrings(first, []string{"s0", "s1", "s2"}) {
+		t.Fatalf("orphan order = %v, want [s0 s1 s2]", first)
+	}
+	// Repeat many times — map-iteration nondeterminism would surface a
+	// different order on some iteration.
+	for i := 0; i < 50; i++ {
+		var got []string
+		for _, it := range tree.Flatten() {
+			if it.Type == ItemTypeSession {
+				got = append(got, it.Session.ID)
+			}
+		}
+		if !equalStrings(got, first) {
+			t.Fatalf("Flatten order not stable across calls: iter %d got %v, want %v", i, got, first)
+		}
+	}
+}
+
+// When orphaned sub-sessions share the same Order, the sort must still be
+// deterministic: without an ID tie-break, SliceStable would preserve the
+// randomized map-iteration order of subSessionsByParent and the rows could
+// drift between renders. They must emit in ID order.
+func TestFlatten_OrphanSubSessionsDeterministic_TiedOrder(t *testing.T) {
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+	SetGroupSortMode("creation")
+
+	// All orphans share Order 0 and live in distinct parent buckets, so the only
+	// stable discriminator is ID.
+	mk := func(id, parent string) *Instance {
+		return &Instance{ID: id, Title: id, GroupPath: "g", Order: 0, ParentSessionID: parent}
+	}
+	instances := []*Instance{
+		mk("s2", "absent-p2"),
+		mk("s0", "absent-p0"),
+		mk("s1", "absent-p1"),
+	}
+
+	tree := NewGroupTree(instances)
+
+	collect := func() []string {
+		var got []string
+		for _, it := range tree.Flatten() {
+			if it.Type == ItemTypeSession {
+				got = append(got, it.Session.ID)
+			}
+		}
+		return got
+	}
+
+	want := []string{"s0", "s1", "s2"} // ID order, independent of input/map order
+	for i := 0; i < 50; i++ {
+		if got := collect(); !equalStrings(got, want) {
+			t.Fatalf("tied-Order orphans not deterministic: iter %d got %v, want %v", i, got, want)
+		}
+	}
+}

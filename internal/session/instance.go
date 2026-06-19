@@ -410,6 +410,15 @@ type Instance struct {
 	// Not serialized - only relevant for current TUI session
 	lastStartTime time.Time
 
+	// tmuxFlipFromRunningPending debounces a purely tmux-inferred flip AWAY from
+	// running (→ waiting/error). A long single tool-call (past the hook freshness
+	// window) or transient subprocess churn can momentarily present the pane as a
+	// shell prompt or a capture error, then recover; without a confirming second
+	// sample that single transient read fires a false completion/error to the
+	// conductor. Set when we hold the first such sample at running; cleared on any
+	// settled (running/idle) outcome or once the flip is confirmed. Not serialized.
+	tmuxFlipFromRunningPending bool
+
 	// addedThisProcess is true only for instances built by a NewInstance*
 	// constructor in the current process (i.e. just `add`ed), and false for
 	// instances reloaded from storage (built as struct literals). Combined with
@@ -3656,6 +3665,26 @@ func (i *Instance) neverStarted() bool {
 
 // UpdateStatus updates the session status by checking tmux.
 // Thread-safe: acquires write lock to protect Status, Tool, and internal cache fields.
+// debounceFlipFromRunning decides whether a tmux-derived status that flips AWAY
+// from running should be held for one confirming sample. It returns the status
+// to apply, the next value for the pending marker, and whether the flip was
+// HELD (the caller applies `apply` and returns early when held is true).
+//
+// Held only on the FIRST tmux-inferred running→{waiting,error} sample (pending
+// was false): a long single tool-call past the hook freshness window, or a
+// transient CapturePane failure during subprocess churn, can present that flip
+// for one tick and then recover. A genuinely dead pane (tmux raw "inactive")
+// and a "dead" hook are real terminal signals and are never debounced. Pure for
+// testability.
+func debounceFlipFromRunning(prev, derived Status, tmuxRaw, hookStatus string, pending bool) (apply Status, nextPending bool, held bool) {
+	flipAwayFromRunning := (derived == StatusWaiting || derived == StatusError) &&
+		tmuxRaw != "inactive" && hookStatus != "dead"
+	if prev == StatusRunning && flipAwayFromRunning && !pending {
+		return StatusRunning, true, true
+	}
+	return derived, false, false
+}
+
 func (i *Instance) UpdateStatus() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -3849,7 +3878,20 @@ func (i *Instance) UpdateStatus() error {
 		return nil
 	}
 
+	// Prior status, captured before this tmux-derived sample overwrites it, so the
+	// debounce below can tell a flip AWAY from running from a steady state.
+	prevStatus := i.Status
+
 	if err != nil {
+		// Debounce a transient capture failure: subprocess churn can make a single
+		// CapturePane fail, then recover. Hold at running for one sample rather than
+		// firing a false error. Modeled as a derived error with no tmux raw status.
+		if apply, nextPending, held := debounceFlipFromRunning(prevStatus, StatusError, "", i.hookStatus, i.tmuxFlipFromRunningPending); held {
+			i.tmuxFlipFromRunningPending = nextPending
+			i.Status = apply
+			return nil
+		}
+		i.tmuxFlipFromRunningPending = false
 		i.Status = StatusError
 		return err
 	}
@@ -3892,6 +3934,21 @@ func (i *Instance) UpdateStatus() error {
 	default:
 		i.Status = StatusError
 	}
+
+	// Debounce a purely tmux-inferred flip away from running (see
+	// tmuxFlipFromRunningPending). A long single tool-call past the hook freshness
+	// window can momentarily present the pane as a shell prompt ("waiting") or a
+	// transient error, then recover; one confirming sample prevents a false
+	// completion/error to the conductor. A genuinely dead pane (tmux "inactive")
+	// and a "dead" hook are NOT debounced — those are real terminal signals.
+	if apply, nextPending, held := debounceFlipFromRunning(prevStatus, i.Status, status, i.hookStatus, i.tmuxFlipFromRunningPending); held {
+		i.tmuxFlipFromRunningPending = nextPending
+		i.Status = apply
+		return nil
+	}
+	// Confirmed flip (second consecutive sample) or a non-debounceable outcome:
+	// clear the marker so a later genuine flip starts a fresh debounce.
+	i.tmuxFlipFromRunningPending = false
 
 	// Hermes: augment status with gateway health when a gateway URL is resolvable.
 	// Check is throttled to 30s to avoid 1.5s HTTP delays on every status tick.
@@ -4084,6 +4141,16 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
+	// Snapshot the prior hook-status fields so a candidate that fails the
+	// ownership check below can RESTORE them rather than leaving its status
+	// applied. This closes the `claude -p` env-pollution flip: a foreign
+	// ephemeral session (a `claude -p` child that inherited our
+	// AGENTDECK_INSTANCE_ID and fired hooks under our id) has no conversation
+	// data, so the bind is rejected — but previously the running/waiting status
+	// it carried had already been written here and stuck, flipping this
+	// instance's status. See the candidate_has_no_conversation_data branch.
+	prevHookStatus, prevHookEvent, prevHookLastUpdate := i.hookStatus, i.hookEvent, i.hookLastUpdate
+
 	// Detect whether this is genuinely new data (newer timestamp than last seen).
 	// Only reset acknowledgment on new events — not on re-application of the same
 	// stale hook file, which would undo the user's intentional acknowledge.
@@ -4144,6 +4211,13 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		}
 		// v1.7.7 guard: candidate must have any conversation data at all.
 		if !sessionHasConversationData(i, sessionID) {
+			// A different session id with NO conversation data on an established
+			// instance is a foreign ephemeral (a `claude -p` child that inherited
+			// our AGENTDECK_INSTANCE_ID) — it doesn't own this instance, so its
+			// status must not stick either. Restore the pre-event status so the
+			// foreign hook is a no-op, not a flip. (A real /clear or fork carries
+			// conversation data and never reaches this branch.)
+			i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
@@ -6736,6 +6810,10 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 		forked.GroupPath = i.GroupPath
 	}
 	forked.Tool = "claude"
+	if IsClaudeCompatible(i.Tool) {
+		forked.Tool = i.Tool
+	}
+	forked.Wrapper = i.Wrapper
 
 	// #1407: persist the parent's ExtraArgs onto the fork record. The baked
 	// one-shot fork command below inherits them implicitly via the builder

@@ -81,6 +81,12 @@ type UserConfig struct {
 	// Default: true (nil = true)
 	SyncTitle *bool `toml:"sync_title,omitempty"`
 
+	// GroupSort controls the order of sessions within a group.
+	//   "creation"   (default) — fixed creation order; honors K/J manual reorder.
+	//   "actionable"           — issue #857 status→recency→Order surfacing.
+	// Empty or unrecognized values normalize to "creation".
+	GroupSort string `toml:"group_sort,omitempty"`
+
 	// MCPs defines available MCP servers for the MCP Manager
 	// These can be attached/detached per-project via the MCP Manager (M key)
 	MCPs map[string]MCPDef `toml:"mcps,omitempty"`
@@ -1144,6 +1150,15 @@ func (c *UserConfig) GetSyncTitle() bool {
 		return true
 	}
 	return *c.SyncTitle
+}
+
+// GetGroupSort returns the normalized within-group sort mode: "actionable" only
+// when explicitly set, otherwise "creation" (the default).
+func (c *UserConfig) GetGroupSort() string {
+	if c.GroupSort == "actionable" {
+		return "actionable"
+	}
+	return "creation"
 }
 
 // ClaudeSettings defines Claude Code configuration
@@ -2468,6 +2483,7 @@ func LoadUserConfig() (*UserConfig, error) {
 		fresh := cloneDefaultUserConfig()
 		userConfigCache = &fresh
 		userConfigCacheMtime = time.Time{}
+		SetGroupSortMode(fresh.GetGroupSort())
 		return userConfigCache, nil
 	}
 
@@ -2475,6 +2491,7 @@ func LoadUserConfig() (*UserConfig, error) {
 		fresh := cloneDefaultUserConfig()
 		userConfigCache = &fresh
 		userConfigCacheMtime = time.Time{}
+		SetGroupSortMode(fresh.GetGroupSort())
 		return userConfigCache, nil
 	}
 
@@ -2485,6 +2502,7 @@ func LoadUserConfig() (*UserConfig, error) {
 		fresh := cloneDefaultUserConfig()
 		userConfigCache = &fresh
 		userConfigCacheMtime = currentMtime
+		SetGroupSortMode(fresh.GetGroupSort())
 		return userConfigCache, fmt.Errorf("config.toml parse error: %w", err)
 	}
 
@@ -2499,6 +2517,11 @@ func LoadUserConfig() (*UserConfig, error) {
 	}
 
 	normalizeUIHiddenTools(&config.UI, config.Tools)
+
+	// Keep the in-group sort mode in lockstep with the loaded config. This is
+	// the single funnel for TUI, web, and CLI; ReloadUserConfig routes through
+	// here too, so an external edit to group_sort takes effect on next load.
+	SetGroupSortMode(config.GetGroupSort())
 
 	userConfigCache = &config
 	userConfigCacheMtime = currentMtime
@@ -3494,11 +3517,17 @@ func CreateExampleConfig() error {
 # restart = "R"
 # detach = "ctrl+d"   # PTY-attach detach key, default ctrl+q (issue #434).
                       # Alias [tmux].detach_key exists; [hotkeys].detach wins.
-# In-attach session switcher (cycle sessions without first detaching to the list):
-# switch_session = "ctrl+s"   # opens the switcher while attached. Tap again to cycle
-#                             # forward (Ctrl+A to go back); it auto-attaches
-#                             # ~1s after you stop, Enter attaches now, Esc cancels.
-#                             # Must be a "ctrl+<letter>" chord.
+# Session switcher (cycle sessions without first detaching to the list).
+# OPT-IN: unbound by default. Enabling it makes the attach loop intercept the
+# chord before the attached program sees it, so the key is taken from whatever
+# runs inside the session. The old default Ctrl+S is a poor choice — it is
+# Claude Code's "stash prompt" key and the terminal XOFF flow-control freeze.
+# No control byte is safe to steal from every tool, so pick one your attached
+# tools do not use. Must be a "ctrl+<letter>" chord.
+# switch_session = "ctrl+s"   # opens the switcher while attached. Tap again to
+#                             # cycle forward (Ctrl+A to go back); it auto-
+#                             # attaches ~1s after you stop, Enter attaches now,
+#                             # Esc cancels. Same key opens it from the list.
 
 # Instance behavior (optional)
 # [instances]
