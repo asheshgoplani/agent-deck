@@ -95,9 +95,20 @@ func resolveProjectSettingsPath(projectPath string) (string, error) {
 	if base == "" || base == "." || !filepath.IsAbs(base) {
 		return "", fmt.Errorf("project path %q is not an absolute directory", projectPath)
 	}
-	if base == ".." || strings.HasPrefix(base, ".."+string(os.PathSeparator)) ||
-		strings.Contains(base, string(os.PathSeparator)+".."+string(os.PathSeparator)) ||
-		strings.HasSuffix(base, string(os.PathSeparator)+"..") {
+	// Path-traversal barrier. filepath.Clean above has already collapsed interior
+	// "a/../b" segments and the IsAbs check rejects a leading "../", so any ".."
+	// surviving in `base` is a traversal attempt (or a pathological component name
+	// literally containing "..") — refuse it. Stated as the bare-".." form of
+	// strings.Contains on purpose: this is the shape CodeQL's go/path-injection
+	// taint tracker recognizes as a sanitizer (DotDotCheck), so the false branch
+	// here clears `base` and every path it derives — settingsPath, claudeDir,
+	// canonicalBase — breaking the flow from the untrusted projectPath to ALL the
+	// os.Lstat / os.ReadFile / os.MkdirAll / EvalSymlinks path sinks below
+	// (the alerts on lines 117/131/269/297). The prior "/../"-wrapped check was
+	// equivalent in intent but NOT a form CodeQL recognized, so the sinks stayed
+	// flagged. The deeper symlink-escape defense (canonicalize + no-follow) is
+	// retained below as defense-in-depth.
+	if strings.Contains(base, "..") {
 		return "", fmt.Errorf("project path %q contains a traversal segment", projectPath)
 	}
 

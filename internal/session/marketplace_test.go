@@ -308,6 +308,16 @@ func TestResolveProjectSettingsPath(t *testing.T) {
 	} else if want := filepath.Join("/abs/traversal", ".claude", "settings.json"); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
+
+	// A residual ".." that filepath.Clean does NOT collapse (a path component that
+	// literally contains the substring "..", e.g. "we..ird") is refused. This is
+	// the bare-".." barrier that breaks CodeQL's path-injection taint flow; it is
+	// intentionally stricter than the prior "/../"-only check. (Note: "/abs/p/.."
+	// is NOT a case here — Clean collapses it to "/abs", which is legitimately
+	// accepted.)
+	if got, err := resolveProjectSettingsPath("/abs/we..ird/proj"); err == nil {
+		t.Errorf("expected residual-traversal path to be rejected, got %q", got)
+	}
 }
 
 // TestResolveProjectSettingsPath_SymlinkEscape exercises the filesystem-
