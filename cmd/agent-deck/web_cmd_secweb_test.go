@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -25,6 +27,42 @@ func TestBuildWebServer_AllowsNonLoopbackWithToken(t *testing.T) {
 	}
 	if srv == nil {
 		t.Fatal("expected a server")
+	}
+}
+
+func TestBuildWebServer_AllowsNonLoopbackWithTokenFile(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "web-token")
+	if err := os.WriteFile(tokenPath, []byte("secret-from-file\n"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+	srv, err := buildWebServer("test-profile", []string{"--listen", "0.0.0.0:0", "--token-file", tokenPath}, nil, noopMutator{})
+	if err != nil {
+		t.Fatalf("non-loopback bind with token file should be allowed, got %v", err)
+	}
+	if srv == nil {
+		t.Fatal("expected a server")
+	}
+}
+
+func TestBuildWebServer_TokenAndTokenFileMutuallyExclusive(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "web-token")
+	if err := os.WriteFile(tokenPath, []byte("secret-from-file\n"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+	_, err := buildWebServer("test-profile", []string{"--listen", "127.0.0.1:0", "--token", "secret", "--token-file", tokenPath}, nil, noopMutator{})
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected mutually exclusive token error, got %v", err)
+	}
+}
+
+func TestBuildWebServer_EmptyTokenFileRejected(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "web-token")
+	if err := os.WriteFile(tokenPath, []byte("\n"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+	_, err := buildWebServer("test-profile", []string{"--listen", "127.0.0.1:0", "--token-file", tokenPath}, nil, noopMutator{})
+	if err == nil || !strings.Contains(err.Error(), "is empty") {
+		t.Fatalf("expected empty token file error, got %v", err)
 	}
 }
 

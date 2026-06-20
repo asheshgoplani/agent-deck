@@ -18,9 +18,23 @@ import { addToast } from './Toast.js'
 ;(function extractAuthToken() {
   const params = new URLSearchParams(window.location.search)
   const token = params.get('token')
-  if (!token) return
+  if (!token) {
+    try {
+      const stored = sessionStorage.getItem('agentdeck.webToken') || localStorage.getItem('agentdeck.webToken')
+      if (stored) authTokenSignal.value = stored
+    } catch (_) {
+      // Storage can be unavailable in private browsing; tokenized URLs still work.
+    }
+    return
+  }
 
   authTokenSignal.value = token
+  try {
+    sessionStorage.setItem('agentdeck.webToken', token)
+    localStorage.setItem('agentdeck.webToken', token)
+  } catch (_) {
+    // Storage can be unavailable in private browsing; keep the in-memory token.
+  }
 
   // Strip token from URL so it isn't logged by the server or leaked via Referer header
   params.delete('token')
