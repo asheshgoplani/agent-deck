@@ -1010,7 +1010,16 @@ func (s *StateDB) InstanceExists(id string) (bool, error) {
 
 // --- Group CRUD ---
 
-// SaveGroups replaces all groups in a single transaction.
+// SaveGroups upserts the given groups in a single transaction. It is ADDITIVE:
+// groups absent from the slice are left untouched, never deleted.
+//
+// This deliberately abandons the old replace-all (DELETE FROM groups + insert)
+// because a save can run with an incomplete in-memory tree — a stale tree from
+// another concurrent instance (allow_multiple), or the instances-only
+// NewGroupTree fallback. Replace-all then wiped every group the saver didn't
+// know about; populated groups self-healed from their sessions on reload, but
+// empty (session-less) groups were lost forever. With upsert, a partial save can
+// only add/update; intentional removal must go through DeleteGroupSubtree.
 func (s *StateDB) SaveGroups(groups []*GroupRow) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1018,14 +1027,15 @@ func (s *StateDB) SaveGroups(groups []*GroupRow) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Clear existing groups and re-insert (simpler than diff)
-	if _, err := tx.Exec("DELETE FROM groups"); err != nil {
-		return err
-	}
-
 	stmt, err := tx.Prepare(`
 		INSERT INTO groups (path, name, expanded, sort_order, default_path, max_concurrent)
 		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(path) DO UPDATE SET
+			name = excluded.name,
+			expanded = excluded.expanded,
+			sort_order = excluded.sort_order,
+			default_path = excluded.default_path,
+			max_concurrent = excluded.max_concurrent
 	`)
 	if err != nil {
 		return err
@@ -1072,6 +1082,21 @@ func (s *StateDB) LoadGroups() ([]*GroupRow, error) {
 // DeleteGroup removes a group by path.
 func (s *StateDB) DeleteGroup(path string) error {
 	_, err := s.db.Exec("DELETE FROM groups WHERE path = ?", path)
+	return err
+}
+
+// DeleteGroupSubtree removes a group and all of its descendants by path.
+// Because SaveGroups is additive (upsert, never prune), intentional group
+// removal — delete, rename, move — MUST go through this explicit delete, or the
+// old path rows would linger and resurrect on the next reload.
+//
+// The LIKE pattern matches only true descendants (path + "/"), so a prefix
+// look-alike such as "parental" survives a delete of "parent".
+func (s *StateDB) DeleteGroupSubtree(path string) error {
+	_, err := s.db.Exec(
+		"DELETE FROM groups WHERE path = ? OR path LIKE ? || '/%'",
+		path, path,
+	)
 	return err
 }
 

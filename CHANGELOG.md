@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Empty (session-less) groups no longer silently disappear.** Group persistence used a replace-all write (`DELETE FROM groups` + re-insert), so any save with an incomplete in-memory tree — a stale tree from a second running instance (`allow_multiple`), or the instances-only reload fallback — wiped every group it didn't know about. Populated groups self-healed from their sessions on reload, but empty groups were lost for good. `SaveGroups` is now an additive upsert (it never prunes), and intentional removals (group delete, rename, move) issue an explicit `DeleteGroupSubtree`, so empty groups survive concurrent and partial saves.
+
 ## [1.9.72] - 2026-06-19
 
 ### Added
