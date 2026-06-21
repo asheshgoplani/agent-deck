@@ -935,13 +935,7 @@ func (m *MCPDialog) View() string {
 		"[S]=stdio  [H]=http  [E]=sse  ●=running  ○=external  ✗=stopped")
 
 	// Responsive dialog width
-	dialogWidth := 64
-	if m.width > 0 && m.width < dialogWidth+10 {
-		dialogWidth = m.width - 10
-		if dialogWidth < 50 {
-			dialogWidth = 50
-		}
-	}
+	dialogWidth := fitDialogWidth(64, 50, m.width)
 	titleWidth := dialogWidth - 4
 
 	// Assemble dialog

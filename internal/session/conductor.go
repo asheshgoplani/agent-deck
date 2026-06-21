@@ -2193,14 +2193,58 @@ func InstallTransitionNotifierDaemon() (string, error) {
 	}
 }
 
-func installTransitionNotifierLaunchd() (string, error) {
-	plistContent, err := GenerateTransitionNotifierLaunchdPlist()
+// Seams for the Background-domain eviction guard (testable without touching the
+// real launchd registration). Production points them at the real impls.
+var (
+	transitionNotifierManagerName = launchctlManagerName
+	transitionNotifierIsRunning   = IsTransitionNotifierDaemonRunning
+	runLaunchctl                  = func(args ...string) error { return exec.Command("launchctl", args...).Run() }
+)
+
+// launchctlManagerName returns the current launchd domain's manager name —
+// "Aqua" for a login GUI session, "Background" for a process running under a
+// launchd-managed daemon (e.g. a tmux pane spawned by the agent-deck web
+// daemon, which is where a conductor session runs). Empty if launchctl is
+// unavailable or errors.
+func launchctlManagerName() string {
+	out, err := exec.Command("launchctl", "managername").Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to generate notifier plist: %w", err)
+		return ""
 	}
+	return strings.TrimSpace(string(out))
+}
+
+// inBackgroundLaunchdDomain reports whether we are in the launchd "Background"
+// domain — i.e. inside a daemon-spawned process tree (a conductor pane), not a
+// login shell. A user/GUI-domain `launchctl unload` issued from here reaches the
+// live notify-daemon CROSS-DOMAIN and evicts it, and the paired `load` registers
+// into the wrong (Background) domain — killing completion delivery fleet-wide.
+func inBackgroundLaunchdDomain() bool {
+	return transitionNotifierManagerName() == "Background"
+}
+
+func installTransitionNotifierLaunchd() (string, error) {
 	plistPath, err := TransitionNotifierLaunchdPlistPath()
 	if err != nil {
 		return "", fmt.Errorf("failed to get notifier plist path: %w", err)
+	}
+
+	// Background-domain eviction guard. `conductor setup` run from inside a
+	// conductor pane executes in the launchd "Background" domain. The unload
+	// below would reach the live notify-daemon cross-domain and evict it, and the
+	// load would re-register it into the wrong domain — completion delivery dies
+	// fleet-wide. When the daemon already runs and we're in Background, leave its
+	// registration completely untouched (conductor setup proceeds otherwise).
+	if inBackgroundLaunchdDomain() && transitionNotifierIsRunning() {
+		fmt.Fprintln(os.Stderr, "notify-daemon install skipped — Background launchd domain, "+
+			"existing daemon left intact (an unload here would evict it cross-domain). "+
+			"Re-run `agent-deck conductor setup` from a login shell to (re)install.")
+		return plistPath, nil
+	}
+
+	plistContent, err := GenerateTransitionNotifierLaunchdPlist()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate notifier plist: %w", err)
 	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -2209,11 +2253,11 @@ func installTransitionNotifierLaunchd() (string, error) {
 	if err := os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o755); err != nil {
 		return "", fmt.Errorf("failed to create LaunchAgents dir: %w", err)
 	}
-	_ = exec.Command("launchctl", "unload", plistPath).Run()
+	_ = runLaunchctl("unload", plistPath)
 	if err := os.WriteFile(plistPath, []byte(plistContent), 0o644); err != nil {
 		return "", fmt.Errorf("failed to write notifier plist: %w", err)
 	}
-	if err := exec.Command("launchctl", "load", plistPath).Run(); err != nil {
+	if err := runLaunchctl("load", plistPath); err != nil {
 		return plistPath, fmt.Errorf("plist written but failed to load notifier daemon: %w", err)
 	}
 	return plistPath, nil

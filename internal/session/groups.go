@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"unicode"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
@@ -116,7 +117,8 @@ func actionablePriority(s Status) int {
 //	-1 maestro      the fleet supervisor — a fixed point of reference that
 //	                surfaces above everything, including pin-top
 //	0  pin-top      fixed at the top, exempt from status/recency
-//	1  normal       the existing actionable sort (status → recency → Order)
+//	1  normal       the within-group sort (creation Order, or actionable
+//	                status → recency → Order — see group_sort config)
 //	2  pin-bottom   fixed at the bottom, exempt from status/recency
 func pinZone(inst *Instance) int {
 	if inst.IsMaestro() {
@@ -136,9 +138,10 @@ func pinZone(inst *Instance) int {
 // pin-bottom bands (pinZone), preserving the relative order of sessions within
 // each band. Unlike SortInstancesByActionable it never reorders by
 // status/recency, so it is safe to run on every render (Flatten): it moves only
-// pinned rows, leaving the load-time actionable order — and any live K/J manual
-// order — of the normal band untouched. This is what makes a pin edit take
-// effect live instead of only after a restart.
+// pinned rows, leaving the load-time order (creation or actionable, per the
+// group_sort config) — and any live K/J manual order — of the normal band
+// untouched. This is what makes a pin edit take effect live instead of only
+// after a restart.
 func stablePinPartition(insts []*Instance) {
 	sort.SliceStable(insts, func(i, j int) bool {
 		zi, zj := pinZone(insts[i]), pinZone(insts[j])
@@ -152,21 +155,28 @@ func stablePinPartition(insts []*Instance) {
 		if zi != 1 {
 			return insts[i].Order < insts[j].Order
 		}
-		// Normal (1) band is already actionable-sorted at load; return false so
-		// SliceStable leaves its relative order untouched.
+		// Normal (1) band is already sorted at load (creation Order, or actionable
+		// per group_sort); return false so SliceStable leaves its relative order
+		// untouched.
 		return false
 	})
 }
 
-// SortInstancesByActionable sorts the given slice in place so the most
-// recently actionable sessions surface first within a group (issue #857),
-// while honoring per-session pins (pin-sessions feature). The outermost key is
-// the pin zone (see pinZone); within the normal zone the existing actionable
-// tiers apply, and within the pin-top/pin-bottom bands sessions are ordered by
-// Order alone (fully fixed — status and recency are ignored, so K/J reordering
-// still works inside a band).
+// SortInstancesByActionable sorts the given slice in place according to the
+// active within-group sort mode (see SetGroupSortMode), while honoring
+// per-session pins (pin-sessions feature). The outermost key is the pin zone
+// (see pinZone); within the normal zone the sort depends on mode:
 //
-// Normal zone key precedence:
+//   - "creation" (default): Order asc only — sessions keep their creation /
+//     K/J manual order unchanged.
+//   - "actionable" (issue #857): status→recency tiers apply before Order so
+//     the most recently actionable sessions surface first.
+//
+// Pin-top and pin-bottom bands are always ordered by Order alone (fully fixed
+// — status and recency are ignored, so K/J reordering still works inside a
+// band).
+//
+// Actionable-mode normal-zone key precedence:
 //
 //  1. actionablePriority(Status)   asc  — error/waiting/running first
 //  2. LastAccessedAt              desc  — recent attention first
@@ -175,6 +185,7 @@ func stablePinPartition(insts []*Instance) {
 //     (TestSessionOrderPersistence,
 //     TestSessionOrderMigration)
 func SortInstancesByActionable(insts []*Instance) {
+	mode := currentGroupSortMode()
 	sort.SliceStable(insts, func(i, j int) bool {
 		// The outermost key is the band: maestro (the fleet supervisor, a fixed
 		// point of reference that surfaces first regardless of status), then
@@ -188,17 +199,46 @@ func SortInstancesByActionable(insts []*Instance) {
 		if zi != 1 {
 			return insts[i].Order < insts[j].Order
 		}
-		// Normal (1) band keeps the actionable tiers.
-		pi, pj := actionablePriority(insts[i].Status), actionablePriority(insts[j].Status)
-		if pi != pj {
-			return pi < pj
-		}
-		ai, aj := insts[i].LastAccessedAt, insts[j].LastAccessedAt
-		if !ai.Equal(aj) {
-			return ai.After(aj)
+		// Normal band. In actionable mode (issue #857) the status→recency tiers
+		// apply before Order; in creation mode (default) Order alone decides, so
+		// sessions keep their creation order (or K/J manual order).
+		if mode == "actionable" {
+			pi, pj := actionablePriority(insts[i].Status), actionablePriority(insts[j].Status)
+			if pi != pj {
+				return pi < pj
+			}
+			ai, aj := insts[i].LastAccessedAt, insts[j].LastAccessedAt
+			if !ai.Equal(aj) {
+				return ai.After(aj)
+			}
 		}
 		return insts[i].Order < insts[j].Order
 	})
+}
+
+// groupSortMode caches the active within-group sort mode ("creation" or
+// "actionable"). It is refreshed from LoadUserConfig on every config (re)load,
+// so SortInstancesByActionable can read it without a disk hit and without
+// threading a parameter through the tree constructors. Defaults to "creation"
+// until SetGroupSortMode is first called.
+var groupSortMode atomic.Value // holds string
+
+// SetGroupSortMode updates the cached within-group sort mode. Any value other
+// than "actionable" normalizes to "creation".
+func SetGroupSortMode(mode string) {
+	if mode != "actionable" {
+		mode = "creation"
+	}
+	groupSortMode.Store(mode)
+}
+
+// currentGroupSortMode returns the cached mode, defaulting to "creation" when
+// it has never been set.
+func currentGroupSortMode() string {
+	if v, ok := groupSortMode.Load().(string); ok && v != "" {
+		return v
+	}
+	return "creation"
 }
 
 // NewGroupTree creates a new group tree from instances
@@ -614,19 +654,34 @@ func (t *GroupTree) Flatten() []Item {
 				topLevelIndex++
 			}
 
-			// Add any orphaned sub-sessions (parent not in this group)
+			// Add any orphaned sub-sessions (parent not in this group). Collect
+			// the remaining map entries into a slice and sort by Order so the
+			// emission order is deterministic — iterating subSessionsByParent
+			// directly would use Go's randomized map order and shuffle these
+			// rows between renders.
+			orphans := make([]*Instance, 0, len(subSessionsByParent))
 			for _, subs := range subSessionsByParent {
-				for _, sub := range subs {
-					topLevelIndex++
-					items = append(items, Item{
-						Type:          ItemTypeSession,
-						Session:       sub,
-						Level:         groupLevel + 1,
-						Path:          group.Path,
-						IsLastInGroup: topLevelIndex == topLevelCount,
-						IsSubSession:  true, // Still a sub-session, just orphaned in this group
-					})
+				orphans = append(orphans, subs...)
+			}
+			sort.SliceStable(orphans, func(i, j int) bool {
+				if orphans[i].Order != orphans[j].Order {
+					return orphans[i].Order < orphans[j].Order
 				}
+				// Tie-break on ID so equal-Order orphans (collected from the
+				// randomized subSessionsByParent map) still emit in a stable,
+				// run-independent order rather than leaking map-iteration order.
+				return orphans[i].ID < orphans[j].ID
+			})
+			for _, sub := range orphans {
+				topLevelIndex++
+				items = append(items, Item{
+					Type:          ItemTypeSession,
+					Session:       sub,
+					Level:         groupLevel + 1,
+					Path:          group.Path,
+					IsLastInGroup: topLevelIndex == topLevelCount,
+					IsSubSession:  true, // Still a sub-session, just orphaned in this group
+				})
 			}
 		}
 	}

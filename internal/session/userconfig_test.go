@@ -2271,6 +2271,7 @@ func TestSaveUserConfig_OmitsZeroValueFields(t *testing.T) {
 		"[instances]",
 		"[shell]",
 		"[fork]",
+		"[selfheal]",
 	} {
 		if strings.Contains(content, absent) {
 			t.Errorf("config.toml should not contain zero-value section %q", absent)
@@ -2296,6 +2297,41 @@ func TestSaveUserConfig_OmitsZeroValueFields(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(content), "\n")
 	if len(lines) > 50 {
 		t.Errorf("config.toml is %d lines; expected under 50 for a minimal config.\nContent:\n%s", len(lines), content)
+	}
+}
+
+// TestSaveUserConfig_ZeroValueConfigProducesNoSections saves a completely empty
+// UserConfig and asserts NO section headers appear. This catches new struct fields
+// that lack omitempty/omitzero without needing to maintain a deny-list.
+func TestSaveUserConfig_ZeroValueConfigProducesNoSections(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
+
+	if err := SaveUserConfig(&UserConfig{}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+
+	content := strings.TrimSpace(string(raw))
+
+	// A zero-value UserConfig should produce at most the file header comment — no
+	// section headers. Any [section] means a field leaks its zero value.
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) > 0 && trimmed[0] == '[' {
+			t.Errorf("zero-value UserConfig produced section header: %s\nFull content:\n%s", trimmed, content)
+		}
 	}
 }
 
@@ -2484,5 +2520,88 @@ func TestSaveUserConfig_PreservesDefaultTrueBoolsSetToFalse(t *testing.T) {
 	}
 	if loaded.GlobalSearch.GetEnabled() {
 		t.Error("GlobalSearch.Enabled: expected false after round-trip, got true")
+	}
+}
+
+func TestUserConfig_GetGroupSort(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", "creation"},
+		{"creation", "creation"},
+		{"actionable", "actionable"},
+		{"garbage", "creation"},
+		{"ACTIONABLE", "creation"}, // case-sensitive; only exact "actionable" opts in
+	}
+	for _, c := range cases {
+		cfg := &UserConfig{GroupSort: c.in}
+		if got := cfg.GetGroupSort(); got != c.want {
+			t.Errorf("GetGroupSort(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestLoadUserConfig_SetsGroupSortMode(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("group_sort = \"actionable\"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, err := LoadUserConfig(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := currentGroupSortMode(); got != "actionable" {
+		t.Fatalf("LoadUserConfig did not apply group_sort: mode = %q, want actionable", got)
+	}
+}
+
+// TestSaveUserConfig_OmitsUnsetGroupSort guards the minimal-config guarantee
+// (issue #1383 / #1360): an unset GroupSort must NOT be written, so a
+// load→mutate→save round-trip never injects group_sort = "" into a
+// previously-minimal config. A set value must still survive the round-trip.
+func TestSaveUserConfig_OmitsUnsetGroupSort(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
+
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
+
+	// Unset GroupSort must be omitted entirely.
+	if err := SaveUserConfig(&UserConfig{DefaultTool: "claude"}); err != nil {
+		t.Fatalf("SaveUserConfig (unset): %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	if strings.Contains(string(raw), "group_sort") {
+		t.Errorf("config.toml must not contain group_sort when unset; got:\n%s", raw)
+	}
+
+	// A set GroupSort must round-trip back out.
+	if err := SaveUserConfig(&UserConfig{DefaultTool: "claude", GroupSort: "actionable"}); err != nil {
+		t.Fatalf("SaveUserConfig (set): %v", err)
+	}
+	raw, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	if !strings.Contains(string(raw), `group_sort = "actionable"`) {
+		t.Errorf("config.toml must contain a set group_sort; got:\n%s", raw)
 	}
 }

@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -244,7 +245,7 @@ func TestRefreshAgentConfigs_ReturnsMounts(t *testing.T) {
 			require.Contains(t, m.hostPath, ".home-seeds")
 			data, err := os.ReadFile(m.hostPath)
 			require.NoError(t, err)
-			require.Equal(t, `{"hasCompletedOnboarding":true}`, string(data))
+			require.Equal(t, claudeHomeSeed, string(data))
 		}
 	}
 	require.True(t, found)
@@ -315,7 +316,28 @@ func TestRefreshAgentConfigs_HomeSeedFilesAlwaysRewritten(t *testing.T) {
 
 	data, err := os.ReadFile(seedPath)
 	require.NoError(t, err)
-	require.Equal(t, `{"hasCompletedOnboarding":true}`, string(data))
+	require.Equal(t, claudeHomeSeed, string(data))
+}
+
+// TestClaudeHomeSeed_PreTrustsWorkspace parses the seed and asserts it actually
+// pre-trusts the container workspace at startup, rather than relying on a
+// circular whole-string match against the const. Keyed on containerWorkDir so
+// the seed and the mount target cannot silently diverge.
+func TestClaudeHomeSeed_PreTrustsWorkspace(t *testing.T) {
+	t.Parallel()
+
+	var seed struct {
+		HasCompletedOnboarding bool `json:"hasCompletedOnboarding"`
+		Projects               map[string]struct {
+			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+		} `json:"projects"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(claudeHomeSeed), &seed))
+	require.True(t, seed.HasCompletedOnboarding, "seed must keep global onboarding")
+
+	ws, ok := seed.Projects[containerWorkDir]
+	require.True(t, ok, "seed must pre-trust the container workdir %q", containerWorkDir)
+	require.True(t, ws.HasTrustDialogAccepted, "%q must be trusted at startup for project-scope plugins to load", containerWorkDir)
 }
 
 func TestSyncAgentConfig_PreserveFiles(t *testing.T) {

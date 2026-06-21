@@ -300,6 +300,18 @@ The script receives two environment variables:
 
 The script runs via `sh -e` with a 60-second timeout. If it fails, the worktree is still created — you'll see a warning but the session proceeds normally.
 
+#### Worktree Destruction Script
+
+For imperative teardown tasks (stopping containers, removing volumes, releasing ports, etc.), create a script at `.agent-deck/worktree-destruction.sh`.
+Agent-deck runs it automatically *just before* removing a worktree, while the worktree still exists.
+
+```sh
+#!/bin/sh
+docker compose -p "$(basename "$AGENT_DECK_WORKTREE_PATH")" down
+```
+
+It receives the same environment variables as the setup script (`AGENT_DECK_REPO_ROOT`, `AGENT_DECK_WORKTREE_PATH`) and runs with the same `sh -e` dispatch and 60-second timeout. If it fails, removal proceeds anyway — you'll see a warning. It does not run for sessions that reuse the main working tree (nothing is removed there).
+
 #### Bare repositories and worktrees
 
 Agent-deck supports two flavors of the [bare-repo layout](https://git-scm.com/docs/git-worktree) where every worktree is a peer (no "main" checkout). The two are distinguished by convention — the basename of the bare git dir.

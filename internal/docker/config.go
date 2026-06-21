@@ -28,6 +28,22 @@ const (
 	defaultImage = "agent-deck-sandbox:latest"
 )
 
+// claudeHomeSeed is the ~/.claude.json seeded into sandbox containers.
+// Beyond global onboarding, it pre-trusts /workspace (the sandbox project
+// mount): Claude Code discovers project-scope plugins (.claude/skills
+// entries with .claude-plugin/plugin.json) only when the project dir is
+// trusted at session startup — trust accepted interactively mid-session
+// does not retroactively load plugins or register their hooks, and this
+// seed is rewritten on every session start, wiping any in-container
+// acceptance. Pre-trusting also lets sandbox sessions start unattended
+// (no trust prompt). hasTrustDialogAccepted is the load-bearing key — it
+// gates project-scope plugin discovery and the trust prompt, mirroring
+// PreAcceptClaudeTrust; the two onboarding flags additionally suppress the
+// first-run project-onboarding prompt for a fully unattended start.
+// Worktree sessions running in a /workspace subdirectory still key trust by
+// their own cwd and are not covered.
+const claudeHomeSeed = `{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true,"hasCompletedProjectOnboarding":true,"projectOnboardingSeenCount":1}}}`
+
 // agentConfigMounts defines all tool config directories and how they are handled.
 // Adding a new tool requires only a new entry here — no code changes needed.
 var agentConfigMounts = []AgentConfigMount{
@@ -36,7 +52,7 @@ var agentConfigMounts = []AgentConfigMount{
 		containerSuffix: ".claude",
 		skipEntries:     []string{"sandbox", "projects", ".home-seeds"},
 		copyDirs:        []string{"plugins", "skills"},
-		homeSeedFiles:   map[string]string{".claude.json": `{"hasCompletedOnboarding":true}`},
+		homeSeedFiles:   map[string]string{".claude.json": claudeHomeSeed},
 		preserveFiles:   []string{".credentials.json", "statsig_user_id"},
 		keychainCredential: &keychainEntry{
 			service:  "Claude Code-credentials",

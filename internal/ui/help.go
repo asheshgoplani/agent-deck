@@ -186,6 +186,8 @@ func (h *HelpOverlay) View() string {
 	skillsKey := h.key(hotkeySkillsManager, "s")
 	previewKey := h.key(hotkeyTogglePreview, "v")
 	groupViewKey := h.key(hotkeyCycleGroupView, "t")
+	// Opt-in: empty when switch_session is unbound, so the filter drops the row.
+	switchKey := h.key(hotkeySwitchSession, "")
 	unreadKey := h.key(hotkeyMarkUnread, "u")
 	quickApproveKey := h.key(hotkeyQuickApprove, "a")
 	promptSessionKey := h.key(hotkeyPromptSession, "o")
@@ -316,7 +318,7 @@ func (h *HelpOverlay) View() string {
 				{reloadKey, "Reload from disk"},
 				{importKey, "Import tmux sessions"},
 				{"Ctrl+Q", "Detach from session"},
-				{"Ctrl+S", "Switch session (here or attached)"},
+				{switchKey, "Switch session (here or attached)"},
 				{quitKey, "Quit"},
 				{helpKey, "This help"},
 			},
@@ -351,19 +353,14 @@ func (h *HelpOverlay) View() string {
 		Bold(true)
 
 	// Responsive dialog width: prefer wider so descriptions don't wrap
-	// awkwardly. Default 70, scale up to ~80 when the terminal allows,
-	// shrink only on narrow terminals.
-	dialogWidth := 70
-	if h.width > 0 {
-		if h.width-10 < dialogWidth {
-			dialogWidth = h.width - 10
-			if dialogWidth < 35 {
-				dialogWidth = 35
-			}
-		} else if h.width >= 100 {
-			dialogWidth = 80
-		}
+	// awkwardly. Default 70, scale up to ~80 when the terminal is roomy; the
+	// shared helper handles shrinking (and the never-overflow clamp) on narrow
+	// terminals.
+	preferred := 70
+	if h.width >= 100 {
+		preferred = 80
 	}
+	dialogWidth := fitDialogWidth(preferred, 35, h.width)
 	keyWidth := 14
 	if dialogWidth < 45 {
 		keyWidth = 10 // Compact key column for small screens

@@ -76,7 +76,6 @@ var (
 	notifLog  = logging.ForComponent(logging.CompNotif)
 	mcpUILog  = logging.ForComponent(logging.CompMCP)
 	statusLog = logging.ForComponent(logging.CompStatus)
-	pipeUILog = logging.ForComponent("pipe")
 )
 
 const (
@@ -209,12 +208,15 @@ type Home struct {
 	profile string // The profile this Home is displaying
 
 	// Data (protected by instancesMu for background worker access)
-	instances    []*session.Instance
-	instanceByID map[string]*session.Instance // O(1) instance lookup by ID
-	instancesMu  sync.RWMutex                 // Protects instances slice for thread-safe background access
-	storage      *session.Storage
-	groupTree    *session.GroupTree
-	flatItems    []session.Item // Flattened view for cursor navigation
+	instances          []*session.Instance
+	instanceByID       map[string]*session.Instance // O(1) instance lookup by ID
+	instancesMu        sync.RWMutex                 // Protects instances slice for thread-safe background access
+	storage            *session.Storage
+	groupTree          *session.GroupTree
+	flatItems          []session.Item // Flattened view for cursor navigation
+	liveSet            *pipeLiveSet   // sessions that should hold a live control pipe
+	focusedSessionName string         // tmux name of the cursor-selected session (focusMu)
+	focusMu            sync.Mutex     // protects focusedSessionName for the reconciler goroutine
 
 	// headless is true when running `web --no-tui`: no bubbletea loop ever
 	// boots, so the in-memory instances/groupTree are never populated by the
@@ -1216,6 +1218,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// This is unconditional — the status-right always shows the detach hint
 	_ = tmux.BindMouseStatusRightDetach()
 
+	h.liveSet = newPipeLiveSet(livePipeLRUCapacity)
+
 	// Initialize event-driven status detection
 	// Output callback: invoked when PipeManager detects %output from a session
 	outputCallback := func(sessionName string) {
@@ -1251,25 +1255,14 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 
 	tmux.SetPipeManager(pm)
 
-	// Connect pipes for all existing running sessions in background
-	safego.Go(pipeUILog, "startup_pipe_connect", func() {
-		time.Sleep(500 * time.Millisecond) // Let TUI render first
-		h.instancesMu.RLock()
-		instances := make([]*session.Instance, len(h.instances))
-		copy(instances, h.instances)
-		h.instancesMu.RUnlock()
+	// Only the focused / attached / recently-viewed sessions hold a live pipe.
+	pm.SetWantPipe(func(name string) bool { return h.liveSet.want(name) })
 
-		for _, inst := range instances {
-			if ts := inst.GetTmuxSession(); ts != nil && ts.Exists() {
-				if err := pm.Connect(ts.Name, inst.TmuxSocketName); err != nil {
-					pipeUILog.Debug("startup_pipe_connect_failed",
-						slog.String("session", ts.Name),
-						slog.String("error", err.Error()))
-				}
-			}
-		}
-		pipeUILog.Debug("startup_pipes_connected", slog.Int("count", pm.ConnectedCount()))
-	})
+	// Live pipes are managed lazily by the reconciler: it connects the focused/
+	// attached session (and a few recent ones) and lets everything else ride the
+	// 2s status poll. This replaces the old "connect every session at startup"
+	// burst that opened ~N pipes at once and triggered attach-storm freezes.
+	go h.livePipeReconciler()
 
 	// Start background status worker (Priority 1C)
 	go h.statusWorker()
@@ -2247,6 +2240,78 @@ func (h *Home) getAttachedSessionID() string {
 		}
 	}
 	return ""
+}
+
+// recordFocusedSession snapshots the cursor-selected session name for the
+// reconciler goroutine. Must run on the main (Update) goroutine — getSelected-
+// Session reads h.cursor/h.flatItems without a lock.
+func (h *Home) recordFocusedSession() {
+	name := ""
+	if s := h.getSelectedSession(); s != nil {
+		if ts := s.GetTmuxSession(); ts != nil {
+			name = ts.Name
+		}
+	}
+	h.focusMu.Lock()
+	h.focusedSessionName = name
+	h.focusMu.Unlock()
+}
+
+// reconcileLivePipes refreshes the live set from the current focus + the set of
+// attached sessions, then syncs the PipeManager's pipes to match.
+//
+// The desired set is resolved against the current instances (name -> socket),
+// which makes three things correct at once:
+//   - each session connects on its REAL socket, not a guessed default;
+//   - names with no live instance (deleted/restarted sessions) are dropped
+//     instead of being retried on every tick;
+//   - attached sessions are pinned across EVERY socket in use, so an attached
+//     session on an isolated socket keeps its live pipe rather than being
+//     evicted to the 2s status poll.
+func (h *Home) reconcileLivePipes() {
+	pm := tmux.GetPipeManager()
+	if pm == nil {
+		return
+	}
+
+	// Snapshot live instances: session name -> socket (the source of truth).
+	h.instancesMu.RLock()
+	socketByName := make(map[string]string, len(h.instances))
+	sockets := make([]string, 0, len(h.instances))
+	socketSeen := make(map[string]bool, len(h.instances))
+	for _, inst := range h.instances {
+		if ts := inst.GetTmuxSession(); ts != nil {
+			socketByName[ts.Name] = inst.TmuxSocketName
+			if !socketSeen[inst.TmuxSocketName] {
+				socketSeen[inst.TmuxSocketName] = true
+				sockets = append(sockets, inst.TmuxSocketName)
+			}
+		}
+	}
+	h.instancesMu.RUnlock()
+
+	h.focusMu.Lock()
+	focused := h.focusedSessionName
+	h.focusMu.Unlock()
+
+	attached := tmux.GetAttachedSessionsOnSockets(sockets...)
+	desired := desiredLivePipes(h.liveSet, focused, attached, socketByName)
+	reconcilePipes(pm, desired, func(name string) string { return socketByName[name] })
+}
+
+// livePipeReconciler periodically reconciles live pipes. The tick interval
+// doubles as the focus debounce. Runs until h.ctx is cancelled (TUI exit).
+func (h *Home) livePipeReconciler() {
+	ticker := time.NewTicker(livePipeReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case <-ticker.C:
+			h.reconcileLivePipes()
+		}
+	}
 }
 
 // NOTE: updateTmuxNotifications (foreground) was removed in v0.9.2 as a CPU optimization.
@@ -3375,6 +3440,25 @@ func displaySessionTitle(inst *session.Instance, paneTitle string) string {
 	return inst.Title
 }
 
+// sessionDisplayLabels returns the primary title and the optional dim secondary
+// subtitle to render for a session row, given its live pane title (already
+// cleaned by cleanPaneTitle). Both render paths — the overview
+// (renderSessionItem) and the session switcher (SessionSwitcher.View) — go
+// through this so the two cannot drift apart again: an auto-named session
+// promotes the live/persisted Claude task description to the primary title and
+// shows no subtitle (it would only duplicate the title); every other session
+// keeps its handle/name as the title and surfaces the pane title as the dim
+// subtitle. The subtitle is empty when there is nothing to show. Callers may
+// layer extra visibility policy on the subtitle — the overview, for instance,
+// only renders it for the selected row or when showPaneTitles is enabled.
+func sessionDisplayLabels(inst *session.Instance, paneTitle string) (title, subtitle string) {
+	title = displaySessionTitle(inst, paneTitle)
+	if !inst.GetAutoName() {
+		subtitle = paneTitle
+	}
+	return title, subtitle
+}
+
 // cleanPaneTitle strips spinner/done marker characters from a tmux pane title
 // and returns the task description. Returns "" for default/generic titles.
 func cleanPaneTitle(title string) string {
@@ -4274,6 +4358,7 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 // clears (issue #607). Under the default (full_repaint = false) this wrapper
 // is a pass-through — no regression for users who never opt in.
 func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	defer h.recordFocusedSession()
 	model, cmd := h.updateInner(msg)
 	if !h.fullRepaint {
 		return model, cmd
@@ -5862,12 +5947,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.lastCachePrune = time.Now()
 			h.pruneAnalyticsCache()
 
-			// Prune dead pipes and connect new sessions
+			// Fallback safety net for live-set pipes that died between reconciler
+			// ticks. The reconciler (livePipeReconciler) is the primary path that
+			// connects focused/attached sessions; this only reconnects wanted
+			// sessions whose pipe dropped.
 			if pm := tmux.GetPipeManager(); pm != nil {
 				h.instancesMu.RLock()
 				for _, inst := range h.instances {
 					if ts := inst.GetTmuxSession(); ts != nil && ts.Exists() {
-						if !pm.IsConnected(ts.Name) {
+						if h.liveSet.want(ts.Name) && !pm.IsConnected(ts.Name) {
 							go func(name, socket string) {
 								_ = pm.Connect(name, socket)
 							}(ts.Name, inst.TmuxSocketName)
@@ -14809,8 +14897,10 @@ func (h *Home) renderSessionItem(
 	// Auto-named quick sessions display Claude's live task description (the
 	// tmux pane title) in place of the random handle. instState.paneTitle is
 	// already cleaned by cleanPaneTitle, so an idle/just-started session (empty
-	// paneTitle) falls back to the handle automatically.
-	displayTitle := displaySessionTitle(inst, instState.paneTitle)
+	// paneTitle) falls back to the handle automatically. paneSubtitle is the dim
+	// trailing pane title for non-auto-named rows ("" when auto-named, since the
+	// pane title is already promoted to displayTitle) — see sessionDisplayLabels.
+	displayTitle, paneSubtitle := sessionDisplayLabels(inst, instState.paneTitle)
 	// Pin marker (pin-sessions): a 📌 prefix flags any pinned row. Position in
 	// the list conveys top vs bottom; the emoji conveys "this is pinned".
 	// Prepended before the AutoName truncation budget so width accounting below
@@ -14869,14 +14959,17 @@ func (h *Home) renderSessionItem(
 	// so the prior measurement let the trailing pane-title text overflow
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
-	if (selected || h.showPaneTitles) && instState.paneTitle != "" && !inst.GetAutoName() {
+	if (selected || h.showPaneTitles) && paneSubtitle != "" {
+		// paneSubtitle is non-empty only for non-auto-named rows (auto-named rows
+		// promote the pane title to displayTitle), so the prior !inst.GetAutoName()
+		// guard is now folded into sessionDisplayLabels.
 		// Dual layout: sidebar is narrower than h.width (#937). Using full
 		// terminal width here overflows the SESSIONS pane, then lipgloss
 		// truncation disagrees from terminal cells — wrapped lines duplicate
 		// rows visually and mouseY→item indexing breaks until scroll settles.
 		remaining := listWidth - cellWidth(row) - 2 // -2 for trailing margin
 		if remaining > 10 {
-			pt := instState.paneTitle
+			pt := paneSubtitle
 			if cellWidth(pt) > remaining {
 				pt = cellTruncate(pt, remaining, "…")
 			}

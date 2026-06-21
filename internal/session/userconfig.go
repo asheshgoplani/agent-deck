@@ -42,7 +42,12 @@ const UserConfigFileName = "config.toml"
 // allowSectionDrop=true so the destructive intent is explicit and greppable.
 var ErrRefusingConfigSectionDrop = fmt.Errorf("session: refusing to save config.toml that would drop a populated [mcps] or [groups] section to empty (use SaveUserConfigWithIntent to intentionally clear)")
 
-// UserConfig represents user-facing configuration in TOML format
+// UserConfig represents user-facing configuration in TOML format.
+//
+// TOML serialization: every field must use omitempty (string/bool/slice/map/pointer)
+// or omitzero (int/struct) so zero-value fields are not written to disk. Without
+// this, SaveUserConfig bloats the file with sections the user never configured.
+// TestSaveUserConfig_ZeroValueConfigProducesNoSections enforces this invariant.
 type UserConfig struct {
 	// DefaultTool is the pre-selected AI tool when creating new sessions
 	// Valid values: "claude", "gemini", "opencode", "codex", "pi", or any custom tool name
@@ -80,6 +85,12 @@ type UserConfig struct {
 	// The per-session TitleLocked flag remains available as a finer-grained override.
 	// Default: true (nil = true)
 	SyncTitle *bool `toml:"sync_title,omitempty"`
+
+	// GroupSort controls the order of sessions within a group.
+	//   "creation"   (default) — fixed creation order; honors K/J manual reorder.
+	//   "actionable"           — issue #857 status→recency→Order surfacing.
+	// Empty or unrecognized values normalize to "creation".
+	GroupSort string `toml:"group_sort,omitempty"`
 
 	// MCPs defines available MCP servers for the MCP Manager
 	// These can be attached/detached per-project via the MCP Manager (M key)
@@ -233,7 +244,7 @@ type SelfHealSettings struct {
 	// Enabled is the global kill switch (§3.7). When false (the default),
 	// self-heal does nothing at all — not even observe-mode logging. Set true to
 	// run the observe-only Stage 1.
-	Enabled bool `toml:"enabled"`
+	Enabled bool `toml:"enabled,omitempty"`
 
 	// Mode is the authority level: "observe" (default, the only acting mode in
 	// v1.9.67 — logs would_have, takes no action), "single_action" / "full"
@@ -250,11 +261,11 @@ type SelfHealSettings struct {
 	// PerSessionPerWindow overrides the per-session recovery cap (default 2 / 6h;
 	// auth_401 is always 1). 0 uses the default. Starting dial; tuned from
 	// observe data.
-	PerSessionPerWindow int `toml:"per_session_per_window,omitempty"`
+	PerSessionPerWindow int `toml:"per_session_per_window,omitzero"`
 
 	// GlobalPerHour overrides the fleet-wide hourly recovery cap (default 5 =
 	// TriageMaxPerHour). 0 uses the default.
-	GlobalPerHour int `toml:"global_per_hour,omitempty"`
+	GlobalPerHour int `toml:"global_per_hour,omitzero"`
 
 	// OptOutGroups lists group paths that opt OUT of self-heal entirely
 	// (deliberate long-waiting stream leads, sensitive scopes — §3.7). Checked
@@ -1144,6 +1155,15 @@ func (c *UserConfig) GetSyncTitle() bool {
 		return true
 	}
 	return *c.SyncTitle
+}
+
+// GetGroupSort returns the normalized within-group sort mode: "actionable" only
+// when explicitly set, otherwise "creation" (the default).
+func (c *UserConfig) GetGroupSort() string {
+	if c.GroupSort == "actionable" {
+		return "actionable"
+	}
+	return "creation"
 }
 
 // ClaudeSettings defines Claude Code configuration
@@ -2468,6 +2488,7 @@ func LoadUserConfig() (*UserConfig, error) {
 		fresh := cloneDefaultUserConfig()
 		userConfigCache = &fresh
 		userConfigCacheMtime = time.Time{}
+		SetGroupSortMode(fresh.GetGroupSort())
 		return userConfigCache, nil
 	}
 
@@ -2475,6 +2496,7 @@ func LoadUserConfig() (*UserConfig, error) {
 		fresh := cloneDefaultUserConfig()
 		userConfigCache = &fresh
 		userConfigCacheMtime = time.Time{}
+		SetGroupSortMode(fresh.GetGroupSort())
 		return userConfigCache, nil
 	}
 
@@ -2485,6 +2507,7 @@ func LoadUserConfig() (*UserConfig, error) {
 		fresh := cloneDefaultUserConfig()
 		userConfigCache = &fresh
 		userConfigCacheMtime = currentMtime
+		SetGroupSortMode(fresh.GetGroupSort())
 		return userConfigCache, fmt.Errorf("config.toml parse error: %w", err)
 	}
 
@@ -2499,6 +2522,11 @@ func LoadUserConfig() (*UserConfig, error) {
 	}
 
 	normalizeUIHiddenTools(&config.UI, config.Tools)
+
+	// Keep the in-group sort mode in lockstep with the loaded config. This is
+	// the single funnel for TUI, web, and CLI; ReloadUserConfig routes through
+	// here too, so an external edit to group_sort takes effect on next load.
+	SetGroupSortMode(config.GetGroupSort())
 
 	userConfigCache = &config
 	userConfigCacheMtime = currentMtime
@@ -3494,11 +3522,17 @@ func CreateExampleConfig() error {
 # restart = "R"
 # detach = "ctrl+d"   # PTY-attach detach key, default ctrl+q (issue #434).
                       # Alias [tmux].detach_key exists; [hotkeys].detach wins.
-# In-attach session switcher (cycle sessions without first detaching to the list):
-# switch_session = "ctrl+s"   # opens the switcher while attached. Tap again to cycle
-#                             # forward (Ctrl+A to go back); it auto-attaches
-#                             # ~1s after you stop, Enter attaches now, Esc cancels.
-#                             # Must be a "ctrl+<letter>" chord.
+# Session switcher (cycle sessions without first detaching to the list).
+# OPT-IN: unbound by default. Enabling it makes the attach loop intercept the
+# chord before the attached program sees it, so the key is taken from whatever
+# runs inside the session. The old default Ctrl+S is a poor choice — it is
+# Claude Code's "stash prompt" key and the terminal XOFF flow-control freeze.
+# No control byte is safe to steal from every tool, so pick one your attached
+# tools do not use. Must be a "ctrl+<letter>" chord.
+# switch_session = "ctrl+s"   # opens the switcher while attached. Tap again to
+#                             # cycle forward (Ctrl+A to go back); it auto-
+#                             # attaches ~1s after you stop, Enter attaches now,
+#                             # Esc cancels. Same key opens it from the list.
 
 # Instance behavior (optional)
 # [instances]
