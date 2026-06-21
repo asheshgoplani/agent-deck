@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.73] - 2026-06-21
+
+### Added
+
+- **Conductors work without remote channels (local-first).** The `conductor setup` wizard now defaults to local-only (no Telegram/Slack/Discord required). A gateway question ("Add remote channels? [y/N]") gates all channel prompts. Heartbeat is always-on by default for all conductors (local included). Re-running `conductor setup` on an existing conductor is now safe and credential-wipe-safe: tokens are only overwritten when a new non-empty value is entered. Conductor templates updated to local-first framing. ([#1474](https://github.com/asheshgoplani/agent-deck/pull/1474))
+
 ### Fixed
 
-- **Empty (session-less) groups no longer silently disappear.** Group persistence used a replace-all write (`DELETE FROM groups` + re-insert), so any save with an incomplete in-memory tree — a stale tree from a second running instance (`allow_multiple`), or the instances-only reload fallback — wiped every group it didn't know about. Populated groups self-healed from their sessions on reload, but empty groups were lost for good. `SaveGroups` is now an additive upsert (it never prunes), and intentional removals (group delete, rename, move) issue an explicit `DeleteGroupSubtree`, so empty groups survive concurrent and partial saves.
+- **`group create --parent` and `group delete` now work with uppercase group names.** `normalizeGroupPath` no longer lowercases its argument, so groups stored with uppercase letters are reachable by direct lookup. `group delete <name>` now collects all case-insensitive matches and errors on ambiguity (with sorted full-path suggestions) instead of silently deleting a random duplicate. ([#1501](https://github.com/asheshgoplani/agent-deck/pull/1501))
 
 ## [1.9.72] - 2026-06-19
 

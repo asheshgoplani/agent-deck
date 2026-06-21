@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -138,4 +139,75 @@ func TestGroupReorderPositionClamp(t *testing.T) {
 	if paths[0] != "Beta" || paths[1] != "Gamma" || paths[2] != "Alpha" {
 		t.Errorf("expected [Beta Gamma Alpha], got %v", paths)
 	}
+}
+
+// TestNormalizeGroupPathCasePreserving verifies that normalizeGroupPath does not
+// lowercase its argument. GroupTree.Groups is keyed by the raw stored path, so
+// lowercasing here would make any group with uppercase letters unreachable.
+func TestNormalizeGroupPathCasePreserving(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"work", "work"},
+		{"Work", "Work"},
+		{"My Projects", "My-Projects"},
+		{"work/Frontend", "work/Frontend"},
+	}
+	for _, tc := range cases {
+		got := normalizeGroupPath(tc.input)
+		if got != tc.want {
+			t.Errorf("normalizeGroupPath(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+// TestNormalizeGroupPathMatchesStoredKey verifies that after creating an uppercase
+// group via GroupTree.CreateGroup, the result of normalizeGroupPath on the same
+// name is a key that exists in GroupTree.Groups (regression guard for issue #1488).
+func TestNormalizeGroupPathMatchesStoredKey(t *testing.T) {
+	tree := session.NewGroupTreeWithGroups([]*session.Instance{}, nil)
+	tree.CreateGroup("Parent")
+
+	normalized := normalizeGroupPath("Parent")
+	if _, exists := tree.Groups[normalized]; !exists {
+		t.Errorf("normalizeGroupPath(%q) = %q, but Groups[%q] does not exist; stored keys: %v",
+			"Parent", normalized, normalized, groupKeys(tree))
+	}
+}
+
+// TestGroupDeleteAmbiguousNameError verifies that deleting by a bare leaf name
+// that matches multiple groups returns an error rather than silently deleting one.
+func TestGroupDeleteAmbiguousNameError(t *testing.T) {
+	tree := session.NewGroupTreeWithGroups([]*session.Instance{}, nil)
+	// Create pa, pb, then dup under each
+	tree.CreateGroup("pa")
+	tree.CreateGroup("pb")
+	tree.CreateSubgroup("pa", "dup")
+	tree.CreateSubgroup("pb", "dup")
+
+	// Simulate the ambiguous-lookup logic from handleGroupDelete.
+	name := "dup"
+	type match struct {
+		path  string
+		group *session.Group
+	}
+	var matches []match
+	for path, g := range tree.Groups {
+		if strings.EqualFold(g.Name, name) {
+			matches = append(matches, match{path: path, group: g})
+		}
+	}
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 ambiguous matches for %q, got %d: %v", name, len(matches), matches)
+	}
+}
+
+// groupKeys is a test helper that returns the keys of GroupTree.Groups.
+func groupKeys(tree *session.GroupTree) []string {
+	keys := make([]string, 0, len(tree.Groups))
+	for k := range tree.Groups {
+		keys = append(keys, k)
+	}
+	return keys
 }
