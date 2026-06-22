@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
@@ -36,6 +38,13 @@ func runTestMain(m *testing.M) int {
 	// See internal/testutil/tmuxenv.go for the full postmortem.
 	cleanupTmux := testutil.IsolateTmuxSocket()
 	defer cleanupTmux()
+
+	// Hard backstop against orphaned/interrupted ui.test binaries pinning a CPU
+	// core indefinitely (2026-06-21 incident: seven reparented ui.test processes
+	// spun at ~100% CPU for >2 days and overheated the machine). See
+	// armOrphanWatchdog for why -test.timeout alone does not save us.
+	stopWatchdog := armOrphanWatchdog()
+	defer stopWatchdog()
 
 	// Force _test profile for all tests in this package
 	os.Setenv("AGENTDECK_PROFILE", "_test")
@@ -75,4 +84,81 @@ func cleanupTestSessions() {
 			_ = exec.Command("tmux", "kill-session", "-t", sess).Run()
 		}
 	}
+}
+
+// armOrphanWatchdog installs an independent, os.Exit-based deadline that
+// guarantees this test binary terminates, and returns a func that disarms it.
+//
+// Why -test.timeout is not enough: this package starts background workers
+// eagerly in NewHomeWithProfileAndMode (statusWorker, the logWorker pool, and
+// StorageWatcher.pollLoop) and most tests never tear them down, so a full run
+// leaks hundreds of busy worker goroutines. When -test.timeout fires it panics
+// and dumps every goroutine stack under a stop-the-world; a heap of runnable
+// leaked workers can wedge that STW so the dump never completes and the process
+// lives on, pinning a CPU core. On 2026-06-21 seven such `ui.test` binaries —
+// reparented to PID 1 after their `go test` parent was interrupted — spun at
+// ~100% CPU for over two days and overheated the machine.
+//
+// os.Exit performs no stop-the-world and terminates immediately, so it is the
+// only reliable backstop. The watchdog is armed for -test.timeout + grace, so
+// it never fires on a healthy run (the soft timeout always gets first crack);
+// it only matters once the normal dump has already wedged.
+func armOrphanWatchdog() (disarm func()) {
+	deadline := orphanHardDeadline()
+	timer := time.AfterFunc(deadline, func() {
+		fmt.Fprintf(os.Stderr,
+			"\nFATAL: internal/ui orphan watchdog fired after %s (past -test.timeout).\n"+
+				"A leaked background worker likely wedged the timeout's goroutine dump.\n"+
+				"Forcing os.Exit(2) so this binary cannot spin on the CPU. "+
+				"See internal/ui/testmain_test.go:armOrphanWatchdog.\n",
+			deadline)
+		os.Exit(2)
+	})
+	return func() { timer.Stop() }
+}
+
+// orphanHardDeadline derives the watchdog deadline from the active
+// -test.timeout (read straight from os.Args, since it must work before the
+// testing flags are parsed) plus a grace window. An env override keeps the
+// regression test fast.
+func orphanHardDeadline() time.Duration {
+	const grace = 90 * time.Second
+	const fallback = 10 * time.Minute // Go's own default -test.timeout
+
+	if v := os.Getenv("AGENTDECK_TEST_HARD_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+
+	switch soft := parseTestTimeoutArg(os.Args); {
+	case soft > 0:
+		return soft + grace
+	default:
+		// -test.timeout=0 disables the soft timeout entirely; keep a hard
+		// ceiling anyway so a hung run still cannot spin forever.
+		return fallback + grace
+	}
+}
+
+// parseTestTimeoutArg extracts the -test.timeout duration from a compiled test
+// binary's argv. Handles "-test.timeout=10m", "-test.timeout 10m", and the
+// single-dash spellings `go test` may pass. Returns 0 when absent/unparseable.
+func parseTestTimeoutArg(argv []string) time.Duration {
+	for i, a := range argv {
+		key := strings.TrimLeft(a, "-")
+		if val, ok := strings.CutPrefix(key, "test.timeout="); ok {
+			if d, err := time.ParseDuration(val); err == nil {
+				return d
+			}
+			return 0
+		}
+		if key == "test.timeout" && i+1 < len(argv) {
+			if d, err := time.ParseDuration(argv[i+1]); err == nil {
+				return d
+			}
+			return 0
+		}
+	}
+	return 0
 }
