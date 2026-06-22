@@ -516,6 +516,18 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 			d.lastDone[profile] = map[string]DoneSignal{}
 		}
 		d.lastDone[profile][id] = sig
+
+		// Record the completion to the non-destructive ledger so a parent can
+		// query `session children` without consuming the delivery event.
+		// Best-effort: a ledger failure must never block notification.
+		_ = WriteLedgerEntry(CompletionLedgerEntry{
+			ChildID:    id,
+			Profile:    profile,
+			Title:      inst.Title,
+			Status:     sig.Status,
+			Summary:    sig.Summary,
+			FinishedAt: hs.UpdatedAt,
+		})
 	}
 }
 

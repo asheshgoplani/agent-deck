@@ -127,20 +127,58 @@ func splitFirstWord(raw string) (string, string) {
 // resolveGroupSelection picks the group for a new session using a fixed
 // priority order. Priority (issue #972):
 //  1. Explicit -g/--group always wins.
-//  2. Otherwise the cwd-derived project group wins.
-//  3. Parent-session group is the fallback only when no cwd-derived group is
+//  2. inheritGroup (launch --inherit-group): the parent-session group wins
+//     over the cwd-derived group. This keeps a fanned-out fleet co-located
+//     with its parent even when each child runs in its own worktree
+//     (e.g. .worktrees/<branch>, whose leaf folder would otherwise derive a
+//     junk per-branch group). Opt-in so it never regresses #972's conductor
+//     case, which relies on the cwd-derived group winning by default.
+//  3. Otherwise the cwd-derived project group wins.
+//  4. Parent-session group is the fallback only when no cwd-derived group is
 //     available (e.g. an empty project path mapping).
 //
-// Prior to #972 step 2 did not exist, so every conductor-spawned child
+// Prior to #972 step 3 did not exist, so every conductor-spawned child
 // silently inherited the conductor's `conductor` group.
-func resolveGroupSelection(currentGroup, cwdDerivedGroup, parentGroup string, explicitGroupProvided bool) string {
+func resolveGroupSelection(currentGroup, cwdDerivedGroup, parentGroup string, explicitGroupProvided, inheritGroup bool) string {
 	if explicitGroupProvided {
 		return currentGroup
+	}
+	if inheritGroup && parentGroup != "" {
+		return parentGroup
 	}
 	if cwdDerivedGroup != "" {
 		return cwdDerivedGroup
 	}
 	return parentGroup
+}
+
+// shouldInheritParentGroup decides whether a parented `launch` with no explicit
+// -g should adopt the parent's group (i.e. behave as if --inherit-group was
+// passed). It is the auto-default that makes a fanned-out fleet land with its
+// parent without anyone remembering the flag.
+//
+// Priority:
+//  1. An explicit -g always wins — never auto-inherit over a deliberate group.
+//  2. --inherit-group set → inherit.
+//  3. Otherwise inherit when the child path is a git LINKED worktree. A
+//     worktree's path-derived group is junk (the branch leaf, or `worktrees`),
+//     so a worktree child almost always belongs with its parent. This is the
+//     load-bearing fix: fleets fan out into worktrees, and they should stay
+//     co-located by default.
+//
+// pathIsLinkedWorktree is a thunk so the (process-spawning) git probe runs only
+// when steps 1–2 didn't already decide — and stays trivially unit-testable.
+// #972 is preserved: conductor children launch into separate REAL repos (main
+// working trees, not linked worktrees), so this returns false for them and the
+// cwd-derived project group still wins.
+func shouldInheritParentGroup(explicitGroupProvided, inheritGroupFlag bool, pathIsLinkedWorktree func() bool) bool {
+	if explicitGroupProvided {
+		return false
+	}
+	if inheritGroupFlag {
+		return true
+	}
+	return pathIsLinkedWorktree()
 }
 
 // resolveAddPath resolves the user-provided positional path arg for `agent-deck add`.
