@@ -614,6 +614,11 @@ type Home struct {
 	// nil, the dispatch calls terminal.OpenSessionInNewWindow directly.
 	// See issue #1093.
 	openInNewWindowSink func(req terminal.AttachRequest) error
+	// openInSplitPaneSink is an optional override used by tests to capture
+	// open_shell_here dispatches without spawning a real iTerm2 split pane.
+	// When nil, the dispatch calls terminal.OpenSessionInSplitPane directly.
+	// See issue #1470.
+	openInSplitPaneSink func(req terminal.AttachRequest) error
 	// quickApproveSink is an optional override used by tests to capture the
 	// quick-approve (`a`) dispatch — the (instance, windowIndex) it would send
 	// "1"+Enter to — without driving real tmux. windowIndex < 0 means the
@@ -779,6 +784,67 @@ func resolveITermOpenAs() string {
 		return session.DefaultITermOpenAs
 	}
 	return cfg.UI.GetITermOpenAs()
+}
+
+// openInSplitPane dispatches the open_shell_here iTerm2 split pane launch
+// through an optional test sink, or falls back to the real terminal launcher.
+// Issue #1470.
+func (h *Home) openInSplitPane(req terminal.AttachRequest) error {
+	if h.openInSplitPaneSink != nil {
+		return h.openInSplitPaneSink(req)
+	}
+	return terminal.OpenSessionInSplitPane(req)
+}
+
+// resolveShellSplitMode returns session.ShellSplitITerm when an iTerm2 split
+// should be used, session.ShellSplitTmux otherwise. Reads [ui].shell_split
+// first; falls back to auto-detection via TERM_PROGRAM / LC_TERMINAL. Issue #1470.
+func resolveShellSplitMode() string {
+	cfg, _ := session.LoadUserConfig()
+	if cfg != nil {
+		mode := cfg.UI.GetShellSplit()
+		if mode == session.ShellSplitITerm || mode == session.ShellSplitTmux {
+			return mode
+		}
+	}
+	if os.Getenv("LC_TERMINAL") == "iTerm2" || os.Getenv("TERM_PROGRAM") == "iTerm.app" {
+		return session.ShellSplitITerm
+	}
+	return session.ShellSplitTmux
+}
+
+// openShellHere adds a vertical shell pane to the focused session's tmux
+// session (split-window -h), then opens the session in an iTerm2 split pane
+// or attaches inline depending on resolveShellSplitMode. The shell lands
+// in the session's worktree (or project path), so the user sees [agent | shell]
+// side-by-side without detaching from agent-deck. Issue #1470.
+func (h *Home) openShellHere(inst *session.Instance) tea.Cmd {
+	tmuxSess := inst.GetTmuxSession()
+	if tmuxSess == nil {
+		return nil
+	}
+	workdir := inst.WorktreePath
+	if workdir == "" {
+		workdir = inst.ProjectPath
+	}
+	if err := tmuxSess.SplitShellPane(workdir); err != nil {
+		h.setError(fmt.Errorf("open shell here: %w", err))
+		return nil
+	}
+	req := terminal.AttachRequest{
+		Name:       tmuxSess.Name,
+		SocketName: tmuxSess.SocketName,
+	}
+	if resolveShellSplitMode() == session.ShellSplitITerm {
+		// Open the agent session in a new iTerm2 split pane so the user
+		// sees [agent | shell] in iTerm2 without leaving agent-deck.
+		if err := h.openInSplitPane(req); err != nil {
+			h.setError(fmt.Errorf("open shell here: iterm split: %w", err))
+		}
+		return nil
+	}
+	// Default (tmux): attach to the agent session so the split is visible.
+	return h.attachSession(inst)
 }
 
 // buildRemoteAttachRequest constructs a terminal.AttachRequest that
@@ -7311,6 +7377,18 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.openInGroupSearch()
 		return h, nil
 
+	case h.actionKey(hotkeyOpenShellHere):
+		// Open a shell sub-session in the focused session's worktree (or
+		// project path) as an iTerm2 split pane or new tmux window,
+		// depending on [ui].shell_split and auto-detection. Issue #1470.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				return h, h.openShellHere(item.Session)
+			}
+		}
+		return h, nil
+
 	case "shift+enter":
 		// Open the focused session in a new native terminal tab (or
 		// window, per [ui] iterm_open_as), leaving agent-deck running
@@ -13730,6 +13808,7 @@ func (h *Home) renderHelpBarFull() string {
 	copyKey := h.actionKey(hotkeyCopyOutput)
 	sendKey := h.actionKey(hotkeySendOutput)
 	execShellKey := h.actionKey(hotkeyExecShell)
+	openShellHereKey := h.actionKey(hotkeyOpenShellHere)
 	notesKey := h.actionKey(hotkeyEditNotes)
 	if cfg, _ := session.LoadUserConfig(); cfg != nil && !cfg.GetShowNotes() {
 		notesKey = ""
@@ -13808,6 +13887,9 @@ func (h *Home) renderHelpBarFull() string {
 				if execShellKey != "" {
 					primaryHints = append(primaryHints, h.helpKey(execShellKey, "Exec"))
 				}
+			}
+			if openShellHereKey != "" {
+				primaryHints = append(primaryHints, h.helpKey(openShellHereKey, "Shell"))
 			}
 			if item.Session != nil && item.Session.IsMultiRepo() {
 				if editPathsKey := h.actionKey(hotkeyEditPaths); editPathsKey != "" {

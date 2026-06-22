@@ -199,3 +199,38 @@ func TestNormalizeMainKeyWithConfiguredHotkeys(t *testing.T) {
 		t.Fatalf("ctrl+c should be blocked when quit is unbound, got %q", got)
 	}
 }
+
+// TestOpenShellHereHotkey verifies the new open_shell_here action is wired
+// correctly: default key "h", present in hotkeyActionOrder, overridable.
+// Issue #1470.
+func TestOpenShellHereHotkey(t *testing.T) {
+	// Default binding is "h".
+	bindings := resolveHotkeys(nil)
+	if got := bindings[hotkeyOpenShellHere]; got != "h" {
+		t.Errorf("default open_shell_here binding = %q, want \"h\"", got)
+	}
+
+	// User can override to a different key.
+	overridden := resolveHotkeys(map[string]string{"open_shell_here": "H"})
+	if got := overridden[hotkeyOpenShellHere]; got != "H" {
+		t.Errorf("overridden open_shell_here binding = %q, want \"H\"", got)
+	}
+
+	// User can unbind it.
+	unbound := resolveHotkeys(map[string]string{"open_shell_here": ""})
+	if _, ok := unbound[hotkeyOpenShellHere]; ok {
+		t.Errorf("open_shell_here should be unbound when set to empty string")
+	}
+
+	// Must be present in hotkeyActionOrder so it appears in the help panel.
+	found := false
+	for _, action := range hotkeyActionOrder {
+		if action == hotkeyOpenShellHere {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("hotkeyOpenShellHere is missing from hotkeyActionOrder")
+	}
+}
