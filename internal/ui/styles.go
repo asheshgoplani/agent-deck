@@ -598,6 +598,8 @@ func ToolIcon(tool string) string {
 		return IconClaude
 	case "gemini":
 		return IconGemini
+	case "antigravity":
+		return "🛸"
 	case "opencode":
 		return IconOpenCode
 	case "codex":
@@ -627,6 +629,8 @@ func ToolColor(tool string) lipgloss.Color {
 		return ColorOrange // Anthropic's orange
 	case "gemini":
 		return ColorPurple // Google AI purple
+	case "antigravity":
+		return ColorPurple
 	case "codex":
 		return ColorCyan // Light blue for OpenAI
 	case "copilot":

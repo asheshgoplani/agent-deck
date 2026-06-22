@@ -153,6 +153,13 @@ func TestCreateSessionTool_Crush(t *testing.T) {
 	}
 }
 
+func TestCreateSessionTool_Antigravity(t *testing.T) {
+	tool, command := createSessionTool("agy")
+	if tool != "antigravity" || command != "agy" {
+		t.Fatalf("createSessionTool(\"agy\") = (%q, %q), want (\"antigravity\", \"agy\")", tool, command)
+	}
+}
+
 // TUI session creation must produce Tool="hermes" rather than
 // Tool="shell" with Command="hermes", matching the tmux/userconfig
 // wiring for the Hermes Agent CLI integration.

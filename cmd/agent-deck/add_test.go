@@ -20,6 +20,16 @@ func TestApplyCLIYoloOverride(t *testing.T) {
 		}
 	})
 
+	t.Run("enabled for antigravity sets override", func(t *testing.T) {
+		inst := session.NewInstanceWithTool("antigravity-test", "/tmp/test", "antigravity")
+		if err := applyCLIYoloOverride(inst, true); err != nil {
+			t.Fatalf("applyCLIYoloOverride() error = %v", err)
+		}
+		if inst.AntigravityYoloMode == nil || !*inst.AntigravityYoloMode {
+			t.Fatalf("AntigravityYoloMode = %v, want true override", inst.AntigravityYoloMode)
+		}
+	})
+
 	t.Run("enabled for codex sets override", func(t *testing.T) {
 		inst := session.NewInstanceWithTool("codex-test", "/tmp/test", "codex")
 		if err := applyCLIYoloOverride(inst, true); err != nil {

@@ -23,6 +23,7 @@ const (
 	SettingGeminiYoloMode
 	SettingCodexYoloMode
 	SettingHermesYoloMode
+	SettingAntigravityYoloMode
 	SettingCheckForUpdates
 	SettingAutoUpdate
 	SettingLogMaxSize
@@ -53,7 +54,7 @@ const (
 )
 
 // Total number of navigable settings.
-const settingsCount = 34
+const settingsCount = 35
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -77,6 +78,7 @@ type SettingsPanel struct {
 	geminiYoloMode      bool
 	codexYoloMode       bool
 	hermesYoloMode      bool
+	antigravityYoloMode bool
 	checkForUpdates     bool
 	autoUpdate          bool
 	logMaxSizeMB        int
@@ -267,6 +269,9 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	// Hermes settings
 	s.hermesYoloMode = config.Hermes.YoloMode
 
+	// Antigravity settings
+	s.antigravityYoloMode = config.Antigravity.YoloMode
+
 	// Update settings
 	s.checkForUpdates = config.Updates.GetCheckEnabled()
 	s.autoUpdate = config.Updates.AutoUpdate
@@ -407,6 +412,9 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 
 	// Hermes settings
 	config.Hermes.YoloMode = s.hermesYoloMode
+
+	// Antigravity settings
+	config.Antigravity.YoloMode = s.antigravityYoloMode
 
 	// Update settings
 	checkForUpdates := s.checkForUpdates
@@ -674,6 +682,10 @@ func (s *SettingsPanel) toggleValue() bool {
 		s.hermesYoloMode = !s.hermesYoloMode
 		return true
 
+	case SettingAntigravityYoloMode:
+		s.antigravityYoloMode = !s.antigravityYoloMode
+		return true
+
 	case SettingCheckForUpdates:
 		s.checkForUpdates = !s.checkForUpdates
 		return true
@@ -928,6 +940,17 @@ func (s *SettingsPanel) View() string {
 	// YOLO mode checkbox
 	line = s.renderCheckbox("YOLO mode", s.hermesYoloMode) + " - Auto-approve all tool calls"
 	if s.cursor == int(SettingHermesYoloMode) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
+	// ANTIGRAVITY
+	content.WriteString(sectionStyle.Render("ANTIGRAVITY"))
+	content.WriteString("\n")
+
+	// YOLO mode checkbox
+	line = s.renderCheckbox("YOLO mode", s.antigravityYoloMode) + " - Auto-approve all actions"
+	if s.cursor == int(SettingAntigravityYoloMode) {
 		line = highlightStyle.Render(line)
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
@@ -1188,33 +1211,34 @@ func (s *SettingsPanel) View() string {
 			15, // SettingGeminiYoloMode
 			18, // SettingCodexYoloMode
 			21, // SettingHermesYoloMode
-			24, // SettingCheckForUpdates
-			25, // SettingAutoUpdate
-			28, // SettingLogMaxSize
-			28, // SettingLogMaxLines (shares line with LogMaxSize)
-			29, // SettingRemoveOrphans
-			32, // SettingGlobalSearchEnabled
-			33, // SettingSearchTier
-			34, // SettingRecentDays
-			37, // SettingShowOutput
-			38, // SettingShowAnalytics
-			39, // SettingShowNotes
-			40, // SettingNotesOutputSplit
-			43, // SettingMaintenanceEnabled
-			46, // SettingStatsEnabled
-			47, // SettingStatsRefresh
-			48, // SettingStatsFormat
-			50, // SettingStatsShowCPU (row with RAM, Disk)
-			50, // SettingStatsShowRAM
-			50, // SettingStatsShowDisk
-			51, // SettingStatsShowNetwork (row with GPU, Load)
-			51, // SettingStatsShowGPU
-			51, // SettingStatsShowLoad
-			54, // SettingSyncTitle (SESSIONS section, after stats)
-			57, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
-			58, // SettingShowPaneTitles (DISPLAY section, after timestamps)
-			61, // SettingShowOnlyInstalledTools (TOOL PICKER section)
-			62, // SettingVisibleTools
+			24, // SettingAntigravityYoloMode
+			27, // SettingCheckForUpdates
+			28, // SettingAutoUpdate
+			31, // SettingLogMaxSize
+			31, // SettingLogMaxLines (shares line with LogMaxSize)
+			32, // SettingRemoveOrphans
+			35, // SettingGlobalSearchEnabled
+			36, // SettingSearchTier
+			37, // SettingRecentDays
+			40, // SettingShowOutput
+			41, // SettingShowAnalytics
+			42, // SettingShowNotes
+			43, // SettingNotesOutputSplit
+			46, // SettingMaintenanceEnabled
+			49, // SettingStatsEnabled
+			50, // SettingStatsRefresh
+			51, // SettingStatsFormat
+			53, // SettingStatsShowCPU (row with RAM, Disk)
+			53, // SettingStatsShowRAM
+			53, // SettingStatsShowDisk
+			54, // SettingStatsShowNetwork (row with GPU, Load)
+			54, // SettingStatsShowGPU
+			54, // SettingStatsShowLoad
+			57, // SettingSyncTitle (SESSIONS section, after stats)
+			60, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
+			61, // SettingShowPaneTitles (DISPLAY section, after timestamps)
+			64, // SettingShowOnlyInstalledTools (TOOL PICKER section)
+			65, // SettingVisibleTools
 		}
 		cursorLine := cursorToLine[s.cursor]
 

@@ -131,6 +131,9 @@ type UserConfig struct {
 	// Gemini defines Gemini CLI integration settings
 	Gemini GeminiSettings `toml:"gemini,omitempty"`
 
+	// Antigravity CLI (agy) settings
+	Antigravity AntigravitySettings `toml:"antigravity,omitempty"`
+
 	// OpenCode defines OpenCode CLI integration settings
 	OpenCode OpenCodeSettings `toml:"opencode,omitempty"`
 
@@ -1403,6 +1406,21 @@ type GeminiSettings struct {
 
 	// Command overrides the default binary/invocation for Gemini sessions.
 	// Supports flags (e.g., "gemini --custom-flag"). Default: "gemini"
+	Command string `toml:"command,omitempty"`
+}
+
+// AntigravitySettings defines Antigravity CLI (agy) configuration
+type AntigravitySettings struct {
+	// YoloMode enables --dangerously-skip-permissions for Antigravity sessions
+	YoloMode bool `toml:"yolo_mode,omitempty"`
+
+	// DefaultModel is the model for new Antigravity sessions
+	DefaultModel string `toml:"default_model,omitempty"`
+
+	// EnvFile is a .env file specific to Antigravity sessions
+	EnvFile string `toml:"env_file,omitempty"`
+
+	// Command overrides the default binary/invocation. Default: "agy"
 	Command string `toml:"command,omitempty"`
 }
 
@@ -2942,6 +2960,11 @@ func GetToolCommand(toolName string) string {
 		if config.Gemini.Command != "" {
 			return config.Gemini.Command
 		}
+	case "antigravity":
+		if config.Antigravity.Command != "" {
+			return config.Antigravity.Command
+		}
+		return "agy"
 	case "opencode":
 		if config.OpenCode.Command != "" {
 			return config.OpenCode.Command
@@ -2979,6 +3002,8 @@ func GetToolIcon(toolName string) string {
 		return "🤖"
 	case "gemini":
 		return "✨"
+	case "antigravity":
+		return "🛸"
 	case "opencode":
 		return "🌐"
 	case "codex":
@@ -3575,6 +3600,13 @@ func CreateExampleConfig() error {
 # [gemini]
 # Enable --yolo (auto-approve all actions) by default (default: false)
 # yolo_mode = true
+
+# Antigravity CLI (agy) integration
+# [antigravity]
+# Enable --dangerously-skip-permissions by default (default: false)
+# yolo_mode = true
+# default_model = "gemini-2.5-flash"
+# command = "agy"
 
 # OpenCode CLI integration
 # [opencode]

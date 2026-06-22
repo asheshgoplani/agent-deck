@@ -8,6 +8,7 @@ All options for `~/.agent-deck/config.toml`.
 - [[shell] Section](#shell-section)
 - [[claude] Section](#claude-section)
 - [[gemini] Section](#gemini-section)
+- [[antigravity] Section](#antigravity-section)
 - [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
 - [[copilot] Section](#copilot-section)
@@ -160,6 +161,27 @@ command = "gemini"                   # Binary/invocation override
 | `default_model` | string | `""` | Model to use (e.g., `"gemini-2.5-flash"`). Empty uses Gemini's default. |
 | `env_file` | string | `""` | A .env file sourced for Gemini sessions only. See [Path Resolution](#path-resolution). |
 | `command` | string | `"gemini"` | Override the binary/invocation. Supports flags. |
+
+## [antigravity] Section
+
+Antigravity CLI (`agy`) integration settings. Shares the `~/.gemini/` config root with Gemini CLI.
+
+```toml
+[antigravity]
+yolo_mode = true                         # Enable --dangerously-skip-permissions
+default_model = "gemini-2.5-flash"       # Model override for new conversations
+env_file = "~/.antigravity.env"          # .env file for Antigravity sessions
+command = "agy"                          # Binary/invocation override
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `yolo_mode` | bool | `false` | Maps to `agy --dangerously-skip-permissions`. |
+| `default_model` | string | `""` | Model for new conversations. Empty uses Antigravity's default. |
+| `env_file` | string | `""` | A .env file sourced for Antigravity sessions only. See [Path Resolution](#path-resolution). |
+| `command` | string | `"agy"` | Override the binary/invocation. Supports flags. |
+
+Resume uses `agy --conversation <uuid>` (not `--continue`). Install hooks with `agent-deck antigravity-hooks install`.
 
 ## [opencode] Section
 

@@ -55,6 +55,8 @@ func (i *Instance) sweepDuplicateToolSessions() {
 		killDuplicateSessionsFn("CLAUDE_SESSION_ID", i.ClaudeSessionID, keepName)
 	case i.Tool == "gemini" && i.GeminiSessionID != "":
 		killDuplicateSessionsFn("GEMINI_SESSION_ID", i.GeminiSessionID, keepName)
+	case i.Tool == "antigravity" && i.AntigravityConversationID != "":
+		killDuplicateSessionsFn("ANTIGRAVITY_CONVERSATION_ID", i.AntigravityConversationID, keepName)
 	case i.Tool == "opencode" && i.OpenCodeSessionID != "":
 		killDuplicateSessionsFn("OPENCODE_SESSION_ID", i.OpenCodeSessionID, keepName)
 	case i.Tool == "codex" && i.CodexSessionID != "":

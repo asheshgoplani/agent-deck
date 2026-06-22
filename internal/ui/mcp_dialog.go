@@ -172,9 +172,14 @@ func (m *MCPDialog) Show(projectPath string, sessionID string, tool string) erro
 	m.userAttached = nil
 	m.userAvailable = nil
 
-	if tool == "gemini" {
-		// Gemini: Only global MCPs from settings.json
-		mcpInfo := session.GetGeminiMCPInfo(projectPath)
+	if tool == "gemini" || tool == "antigravity" {
+		// Gemini / Antigravity: Only global MCPs from settings.json or mcp_config.json
+		var mcpInfo *session.MCPInfo
+		if tool == "antigravity" {
+			mcpInfo = session.GetAntigravityMCPInfo(projectPath)
+		} else {
+			mcpInfo = session.GetGeminiMCPInfo(projectPath)
+		}
 		globalAttachedNames := make(map[string]bool)
 		for _, name := range mcpInfo.Global {
 			globalAttachedNames[name] = true
@@ -339,8 +344,8 @@ func (m *MCPDialog) Show(projectPath string, sessionID string, tool string) erro
 
 	m.visible = true
 	m.projectPath = projectPath
-	// Gemini only has global scope; Cursor uses LOCAL+GLOBAL (no USER); Claude uses all three
-	if tool == "gemini" {
+	// Gemini / Antigravity only have global scope; Cursor uses LOCAL+GLOBAL (no USER); Claude uses all three
+	if tool == "gemini" || tool == "antigravity" {
 		m.scope = MCPScopeGlobal
 	} else if tool == "cursor" {
 		switch session.GetMCPDefaultScope() {
@@ -586,15 +591,21 @@ func (m *MCPDialog) Apply() error {
 		slog.Bool("user_changed", m.userChanged),
 		slog.String("project_path", m.projectPath))
 
-	if m.tool == "gemini" {
-		// Gemini: Only global scope, write to settings.json
+	if m.tool == "gemini" || m.tool == "antigravity" {
+		// Gemini / Antigravity: Only global scope
 		if m.globalChanged {
 			enabledNames := make([]string, len(m.globalAttached))
 			for i, item := range m.globalAttached {
 				enabledNames[i] = item.Name
 			}
 
-			if err := session.WriteGeminiMCPSettings(enabledNames); err != nil {
+			var err error
+			if m.tool == "antigravity" {
+				err = session.WriteAntigravityMCPSettings(enabledNames)
+			} else {
+				err = session.WriteGeminiMCPSettings(enabledNames)
+			}
+			if err != nil {
 				m.err = err
 				return err
 			}
@@ -704,7 +715,7 @@ func (m *MCPDialog) Update(msg tea.KeyMsg) (*MCPDialog, tea.Cmd) {
 		// Switch scope: LOCAL -> GLOBAL -> USER -> LOCAL (Claude only)
 		// Gemini only has global scope, so Tab does nothing
 		// Cursor: LOCAL <-> GLOBAL only
-		if m.tool == "gemini" {
+		if m.tool == "gemini" || m.tool == "antigravity" {
 			// no-op
 		} else if m.tool == "cursor" {
 			switch m.scope {
@@ -771,6 +782,8 @@ func (m *MCPDialog) View() string {
 	switch m.tool {
 	case "gemini":
 		title = "MCP Manager (Gemini)"
+	case "antigravity":
+		title = "MCP Manager (Antigravity)"
 	case "cursor":
 		title = "MCP Manager (Cursor)"
 	}
@@ -778,7 +791,7 @@ func (m *MCPDialog) View() string {
 	// Scope tabs - Gemini only global; Cursor LOCAL+GLOBAL; Claude all three
 	var tabs string
 	switch m.tool {
-	case "gemini":
+	case "gemini", "antigravity":
 		globalTab := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render("[GLOBAL]")
 		tabs = "──────────────── " + globalTab + " ────────────────"
 	case "cursor":
@@ -860,6 +873,8 @@ func (m *MCPDialog) View() string {
 	switch m.tool {
 	case "gemini":
 		scopeDesc = DimStyle.Render("Writes to: ~/.gemini/settings.json")
+	case "antigravity":
+		scopeDesc = DimStyle.Render("Writes to: ~/.gemini/config/mcp_config.json")
 	case "cursor":
 		switch m.scope {
 		case MCPScopeLocal:
@@ -898,7 +913,7 @@ func (m *MCPDialog) View() string {
 	hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
 	var hint string
 	switch m.tool {
-	case "gemini":
+	case "gemini", "antigravity":
 		hint = hintStyle.Render("←→ column │ Type jump │ Space move │ Enter apply │ Esc cancel")
 	case "cursor":
 		hint = hintStyle.Render("Tab scope │ ←→ column │ Type jump │ Space move │ Enter apply │ Esc cancel")

@@ -84,6 +84,12 @@ type InstanceData struct {
 	GeminiYoloMode   *bool     `json:"gemini_yolo_mode,omitempty"`
 	GeminiModel      string    `json:"gemini_model,omitempty"`
 
+	// Antigravity CLI (agy) session (persisted for resume after app restart)
+	AntigravityConversationID string    `json:"antigravity_conversation_id,omitempty"`
+	AntigravityDetectedAt     time.Time `json:"antigravity_detected_at,omitempty"`
+	AntigravityYoloMode       *bool     `json:"antigravity_yolo_mode,omitempty"`
+	AntigravityModel          string    `json:"antigravity_model,omitempty"`
+
 	// OpenCode session (persisted for resume after app restart)
 	OpenCodeSessionID  string    `json:"opencode_session_id,omitempty"`
 	OpenCodeDetectedAt time.Time `json:"opencode_detected_at,omitempty"`
@@ -719,6 +725,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// the positional MarshalToolData signature so legacy binaries that don't
 	// know the key preserve it via MergeToolDataExtras.
 	toolData = WriteIdleTimeoutSecsToToolData(toolData, inst.IdleTimeoutSecs)
+	toolData = WriteAntigravityToToolData(toolData, inst)
 
 	return &statedb.InstanceRow{
 		ID:                  inst.ID,
@@ -833,6 +840,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			pluginChannelLinkDisabled2,
 			autoLinkedChannels2,
 			color2 := statedb.UnmarshalToolData(r.ToolData)
+		agySID, agyAt, agyYolo, agyModel := ReadAntigravityFromToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
 		instances[i] = &InstanceData{
@@ -867,6 +875,10 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			GeminiDetectedAt:          geminiAt,
 			GeminiYoloMode:            geminiYolo,
 			GeminiModel:               geminiModel,
+			AntigravityConversationID: agySID,
+			AntigravityDetectedAt:     agyAt,
+			AntigravityYoloMode:       agyYolo,
+			AntigravityModel:          agyModel,
 			OpenCodeSessionID:         opencodeSID,
 			OpenCodeDetectedAt:        opencodeAt,
 			CodexSessionID:            codexSID,
@@ -952,6 +964,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			pluginChannelLinkDisabled,
 			autoLinkedChannels,
 			color := statedb.UnmarshalToolData(r.ToolData)
+		agySID, agyAt, agyYolo, agyModel := ReadAntigravityFromToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
 		data.Instances[i] = &InstanceData{
@@ -986,6 +999,10 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			GeminiDetectedAt:          geminiAt,
 			GeminiYoloMode:            geminiYolo,
 			GeminiModel:               geminiModel,
+			AntigravityConversationID: agySID,
+			AntigravityDetectedAt:     agyAt,
+			AntigravityYoloMode:       agyYolo,
+			AntigravityModel:          agyModel,
 			OpenCodeSessionID:         opencodeSID,
 			OpenCodeDetectedAt:        opencodeAt,
 			CodexSessionID:            codexSID,
@@ -1038,15 +1055,16 @@ func (s *Storage) SaveRecentSession(inst *Instance) error {
 	}
 
 	row := &statedb.RecentSessionRow{
-		Title:          inst.Title,
-		ProjectPath:    inst.ProjectPath,
-		GroupPath:      inst.GroupPath,
-		Command:        inst.Command,
-		Wrapper:        inst.Wrapper,
-		Tool:           inst.Tool,
-		ToolOptions:    inst.ToolOptionsJSON,
-		SandboxEnabled: inst.Sandbox != nil,
-		GeminiYoloMode: inst.GeminiYoloMode,
+		Title:               inst.Title,
+		ProjectPath:         inst.ProjectPath,
+		GroupPath:           inst.GroupPath,
+		Command:             inst.Command,
+		Wrapper:             inst.Wrapper,
+		Tool:                inst.Tool,
+		ToolOptions:         inst.ToolOptionsJSON,
+		SandboxEnabled:      inst.Sandbox != nil,
+		GeminiYoloMode:      inst.GeminiYoloMode,
+		AntigravityYoloMode: inst.AntigravityYoloMode,
 	}
 
 	return s.db.SaveRecentSession(row)
@@ -1240,6 +1258,10 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			GeminiDetectedAt:          instData.GeminiDetectedAt,
 			GeminiYoloMode:            instData.GeminiYoloMode,
 			GeminiModel:               instData.GeminiModel,
+			AntigravityConversationID: instData.AntigravityConversationID,
+			AntigravityDetectedAt:     instData.AntigravityDetectedAt,
+			AntigravityYoloMode:       instData.AntigravityYoloMode,
+			AntigravityModel:          instData.AntigravityModel,
 			OpenCodeSessionID:         instData.OpenCodeSessionID,
 			OpenCodeDetectedAt:        instData.OpenCodeDetectedAt,
 			CodexSessionID:            instData.CodexSessionID,

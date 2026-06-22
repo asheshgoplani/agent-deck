@@ -7,7 +7,7 @@ import (
 
 // ToolSupportsMCPManager reports whether the TUI/CLI MCP surfaces apply to this tool.
 func ToolSupportsMCPManager(toolName string) bool {
-	return IsClaudeCompatible(toolName) || toolName == "gemini" || toolName == "cursor" || toolName == "opencode"
+	return IsClaudeCompatible(toolName) || toolName == "gemini" || toolName == "antigravity" || toolName == "cursor" || toolName == "opencode"
 }
 
 // MCPLocalConfigPathForTool returns the project-local MCP config path for display and writes.
@@ -35,6 +35,8 @@ func MCPGlobalConfigPathForTool(toolName string) string {
 		return filepath.Join(GetClaudeConfigDir(), ".claude.json")
 	case toolName == "gemini":
 		return filepath.Join(GetGeminiConfigDir(), "settings.json")
+	case toolName == "antigravity":
+		return filepath.Join(GetAntigravityConfigDir(), "mcp_config.json")
 	case toolName == "cursor":
 		return filepath.Join(GetCursorConfigDir(), "mcp.json")
 	case toolName == "opencode":
@@ -84,6 +86,8 @@ func WriteGlobalMCPConfigForTool(toolName string, names []string) error {
 		return WriteGlobalMCP(names)
 	case toolName == "gemini":
 		return WriteGeminiMCPSettings(names)
+	case toolName == "antigravity":
+		return WriteAntigravityMCPSettings(names)
 	case toolName == "cursor":
 		return WriteCursorGlobalMCP(names)
 	case toolName == "opencode":

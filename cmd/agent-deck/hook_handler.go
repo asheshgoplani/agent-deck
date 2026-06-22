@@ -100,8 +100,8 @@ func mapEventToStatus(event string) string {
 	switch normalizeHookEventKey(event) {
 	case "sessionstart":
 		return "waiting" // at initial prompt, waiting for user input
-	case "beforeagent":
-		return "running" // Gemini received user input and is processing
+	case "beforeagent", "preinvocation":
+		return "running" // Gemini / Antigravity agent turn started
 	case "afteragent":
 		return "waiting" // Gemini completed response, back to waiting
 	case "pretoolcall", "pretooluse":

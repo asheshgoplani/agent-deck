@@ -1972,3 +1972,58 @@ tests:
   run:
     command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestWaitingTooLong.test_live_mode_invokes_session_send -v
     expected: pass
+- id: agy-build-command
+  added: '2026-06-23'
+  task: antigravity-integration
+  file: internal/session/antigravity_test.go
+  test_name: TestBuildAntigravityCommand
+  purpose: 'Antigravity CLI launch contract — buildAntigravityCommand emits `agy --conversation <uuid>`, `--dangerously-skip-permissions` when YoloMode is on, and `--model` when AntigravityModel is set. Guards the resume path (must NOT use --continue) and the YOLO/model wiring exposed via TUI/CLI.'
+  source: docs/in-progress.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestBuildAntigravityCommand -count=1 -v
+    expected: pass
+- id: agy-hooks-roundtrip
+  added: '2026-06-23'
+  task: antigravity-integration
+  file: internal/session/antigravity_test.go
+  test_name: TestInjectAntigravityHooks
+  purpose: 'Antigravity hooks install/uninstall round-trip in ~/.gemini/config/hooks.json — Inject adds the agent-deck block, Check returns true, Remove restores the file, Check returns false. Pins the `agent-deck antigravity-hooks install` UX and prevents foreign-hook clobbering.'
+  source: docs/in-progress.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestInjectAntigravityHooks -count=1 -v
+    expected: pass
+- id: agy-tool-data-roundtrip
+  added: '2026-06-23'
+  task: antigravity-integration
+  file: internal/session/antigravity_test.go
+  test_name: TestAntigravityToolDataRoundTrip
+  purpose: 'Antigravity persistence — conversation ID, YOLO, model, detected-at survive JSON round-trip through the tool_data extras zone. Pins the cross-restart resume contract; regressions here mean a relaunched session would forget which conversation to resume.'
+  source: docs/in-progress.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestAntigravityToolDataRoundTrip -count=1 -v
+    expected: pass
+- id: agy-cli-yolo-override
+  added: '2026-06-23'
+  task: antigravity-integration
+  file: cmd/agent-deck/add_test.go
+  test_name: TestApplyCLIYoloOverride
+  purpose: 'CLI parity — `agent-deck add -c agy --yolo` sets AntigravityYoloMode and propagates --dangerously-skip-permissions to the command line, mirroring the Gemini/Codex/Hermes flag handling.'
+  source: docs/in-progress.md
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestApplyCLIYoloOverride -count=1 -v
+    expected: pass
+- id: agy-tui-create-session
+  added: '2026-06-23'
+  task: antigravity-integration
+  file: internal/ui/home_test.go
+  test_name: TestCreateSessionTool_Antigravity
+  purpose: 'TUI create-session path resolves the `agy` / `antigravity` command into a session whose Tool is `antigravity`, with default YOLO and MCP/hook paths wired. Guards the new-session dialog → home.createSessionTool flow.'
+  source: docs/in-progress.md
+  manual: false
+  run:
+    command: go test ./internal/ui/ -run TestCreateSessionTool_Antigravity -count=1 -v
+    expected: pass

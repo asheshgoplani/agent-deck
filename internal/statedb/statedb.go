@@ -267,9 +267,10 @@ type RecentSessionRow struct {
 	Wrapper        string
 	Tool           string
 	ToolOptions    json.RawMessage // serialized ToolOptionsWrapper
-	SandboxEnabled bool
-	GeminiYoloMode *bool
-	DeletedAt      time.Time
+	SandboxEnabled      bool
+	GeminiYoloMode      *bool
+	AntigravityYoloMode *bool
+	DeletedAt           time.Time
 }
 
 // global singleton for cross-package access (status writes from background worker)
@@ -438,6 +439,7 @@ func (s *StateDB) Migrate() error {
 			tool_options    TEXT NOT NULL DEFAULT '{}',
 			sandbox_enabled INTEGER NOT NULL DEFAULT 0,
 			gemini_yolo     INTEGER,
+			antigravity_yolo INTEGER,
 			deleted_at      INTEGER NOT NULL
 		)
 	`); err != nil {
@@ -552,6 +554,10 @@ func (s *StateDB) Migrate() error {
 		// deliberate-idle (never a self-heal candidate). Additive + targeted-write
 		// only (WriteLastSentAt); never part of a whole-row REPLACE/SaveInstances.
 		"ALTER TABLE instances ADD COLUMN last_sent_at INTEGER NOT NULL DEFAULT 0",
+		// Antigravity (agy) CLI integration: per-session YOLO mode for the
+		// recent-sessions picker, mirroring gemini_yolo. Nullable so legacy
+		// rows are indistinguishable from "unset".
+		"ALTER TABLE recent_sessions ADD COLUMN antigravity_yolo INTEGER",
 	}
 	for _, stmt := range alterMigrations {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -1301,6 +1307,21 @@ func (s *StateDB) WriteGeminiSessionBinding(id, sessionID string, detectedAt tim
 	})
 }
 
+func (s *StateDB) WriteAntigravitySessionBinding(id, conversationID string, detectedAt time.Time) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(
+			`UPDATE instances
+			   SET tool_data = json_set(
+			         COALESCE(tool_data, '{}'),
+			         '$.antigravity_conversation_id', ?,
+			         '$.antigravity_detected_at', ?)
+			 WHERE id = ?`,
+			conversationID, detectedAt.Unix(), id,
+		)
+		return err
+	})
+}
+
 // ReadAllStatuses returns status + acknowledged flag for every instance.
 func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
 	rows, err := s.db.Query("SELECT id, status, tool, acknowledged FROM instances")
@@ -1531,6 +1552,11 @@ func recentSessionDedupID(row *RecentSessionRow) string {
 		geminiYolo = strconv.FormatBool(*row.GeminiYoloMode)
 	}
 
+	antigravityYolo := "unset"
+	if row.AntigravityYoloMode != nil {
+		antigravityYolo = strconv.FormatBool(*row.AntigravityYoloMode)
+	}
+
 	payload := strings.Join([]string{
 		row.Title,
 		row.ProjectPath,
@@ -1541,6 +1567,7 @@ func recentSessionDedupID(row *RecentSessionRow) string {
 		toolOpts,
 		strconv.FormatBool(row.SandboxEnabled),
 		geminiYolo,
+		antigravityYolo,
 	}, "\x00")
 
 	h := sha256.Sum256([]byte(payload))
@@ -1576,6 +1603,15 @@ func (s *StateDB) SaveRecentSession(row *RecentSessionRow) error {
 		geminiYolo = &v
 	}
 
+	var antigravityYolo *int
+	if row.AntigravityYoloMode != nil {
+		v := 0
+		if *row.AntigravityYoloMode {
+			v = 1
+		}
+		antigravityYolo = &v
+	}
+
 	return withBusyRetry(func() error {
 		tx, err := s.db.Begin()
 		if err != nil {
@@ -1587,12 +1623,12 @@ func (s *StateDB) SaveRecentSession(row *RecentSessionRow) error {
 			INSERT OR REPLACE INTO recent_sessions (
 				id, title, project_path, group_path,
 				command, wrapper, tool, tool_options,
-				sandbox_enabled, gemini_yolo, deleted_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				sandbox_enabled, gemini_yolo, antigravity_yolo, deleted_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			id, row.Title, row.ProjectPath, row.GroupPath,
 			row.Command, row.Wrapper, row.Tool, string(toolOpts),
-			sandbox, geminiYolo, time.Now().Unix(),
+			sandbox, geminiYolo, antigravityYolo, time.Now().Unix(),
 		); err != nil {
 			return err
 		}
@@ -1614,7 +1650,7 @@ func (s *StateDB) LoadRecentSessions() ([]*RecentSessionRow, error) {
 	rows, err := s.db.Query(`
 		SELECT id, title, project_path, group_path,
 			command, wrapper, tool, tool_options,
-			sandbox_enabled, gemini_yolo, deleted_at
+			sandbox_enabled, gemini_yolo, antigravity_yolo, deleted_at
 		FROM recent_sessions ORDER BY deleted_at DESC
 	`)
 	if err != nil {
@@ -1628,11 +1664,12 @@ func (s *StateDB) LoadRecentSessions() ([]*RecentSessionRow, error) {
 		var toolOptsStr string
 		var sandbox int
 		var geminiYolo *int
+		var antigravityYolo *int
 		var deletedUnix int64
 		if err := rows.Scan(
 			&r.ID, &r.Title, &r.ProjectPath, &r.GroupPath,
 			&r.Command, &r.Wrapper, &r.Tool, &toolOptsStr,
-			&sandbox, &geminiYolo, &deletedUnix,
+			&sandbox, &geminiYolo, &antigravityYolo, &deletedUnix,
 		); err != nil {
 			return nil, err
 		}
@@ -1641,6 +1678,10 @@ func (s *StateDB) LoadRecentSessions() ([]*RecentSessionRow, error) {
 		if geminiYolo != nil {
 			v := *geminiYolo != 0
 			r.GeminiYoloMode = &v
+		}
+		if antigravityYolo != nil {
+			v := *antigravityYolo != 0
+			r.AntigravityYoloMode = &v
 		}
 		r.DeletedAt = time.Unix(deletedUnix, 0)
 		result = append(result, r)

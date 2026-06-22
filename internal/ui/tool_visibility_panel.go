@@ -13,7 +13,7 @@ import (
 
 // pickerToolNames lists built-in tools shown in the new-session picker (shell excluded).
 var pickerToolNames = []string{
-	"claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes",
+	"claude", "gemini", "antigravity", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes",
 }
 
 // ToolVisibilityPanel edits [ui].hidden_tools via a checklist overlay.

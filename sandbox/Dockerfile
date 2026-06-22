@@ -59,6 +59,9 @@ RUN npm install -g @openai/codex@0
 # Pin major version; update periodically.
 RUN npm install -g @google/gemini-cli@0
 
+# ── Antigravity CLI (Google) ──────────────────────────────────────
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
+
 # Pre-create credential directories for auth volume mounts.
 RUN mkdir -p /root/.claude \
     /root/.config/opencode \

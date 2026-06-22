@@ -94,6 +94,9 @@ type MenuSession struct {
 	GeminiSessionID   string `json:"geminiSessionId,omitempty"`
 	GeminiModel       string `json:"geminiModel,omitempty"`
 	GeminiYoloMode    *bool  `json:"geminiYoloMode,omitempty"`
+	AntigravityConversationID string `json:"antigravityConversationId,omitempty"`
+	AntigravityModel          string `json:"antigravityModel,omitempty"`
+	AntigravityYoloMode       *bool  `json:"antigravityYoloMode,omitempty"`
 	CodexSessionID    string `json:"codexSessionId,omitempty"`
 	OpenCodeSessionID string `json:"opencodeSessionId,omitempty"`
 
@@ -255,6 +258,9 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		GeminiSessionID:    inst.GeminiSessionID,
 		GeminiModel:        inst.GeminiModel,
 		GeminiYoloMode:     inst.GeminiYoloMode,
+		AntigravityConversationID: inst.AntigravityConversationID,
+		AntigravityModel:          inst.AntigravityModel,
+		AntigravityYoloMode:       inst.AntigravityYoloMode,
 		CodexSessionID:     inst.CodexSessionID,
 		OpenCodeSessionID:  inst.OpenCodeSessionID,
 		LatestPrompt:       inst.LatestPrompt,

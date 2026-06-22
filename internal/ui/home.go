@@ -2967,7 +2967,7 @@ func (h *Home) cleanupExpiredAnimations(
 		// Use appropriate timeout based on tool
 		// Claude and Gemini use longer timeout (MCP loading can be slow)
 		timeout := defaultTimeout
-		if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "gemini" {
+		if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "gemini" || inst.Tool == "antigravity" {
 			timeout = claudeTimeout
 		}
 		if time.Since(startTime) > timeout {
@@ -2981,7 +2981,7 @@ func (h *Home) cleanupExpiredAnimations(
 }
 
 func launchAnimationMinDuration(tool string) time.Duration {
-	if session.IsClaudeCompatible(tool) || tool == "gemini" {
+	if session.IsClaudeCompatible(tool) || tool == "gemini" || tool == "antigravity" {
 		return minLaunchAnimationDurationClaude
 	}
 	return minLaunchAnimationDurationDefault
@@ -3787,7 +3787,7 @@ func (h *Home) backgroundStatusUpdate() {
 	// Feed hook statuses from watcher to instances (enables hook fast path in UpdateStatus)
 	if h.hookWatcher != nil {
 		for _, inst := range instances {
-			if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "hermes" || inst.Tool == "cursor" {
+			if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "antigravity" || inst.Tool == "hermes" || inst.Tool == "cursor" {
 				if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
 					inst.UpdateHookStatus(hs)
 				}
@@ -5323,7 +5323,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		inst := h.instanceByID[msg.instanceID]
 		h.instancesMu.RUnlock()
 		if inst != nil {
-			if err := inst.SetGeminiModel(msg.model); err != nil {
+			var err error
+			switch inst.Tool {
+			case "gemini":
+				err = inst.SetGeminiModel(msg.model)
+			case "antigravity":
+				err = inst.SetAntigravityModel(msg.model)
+			default:
+				err = fmt.Errorf("model selection is not supported for tool %q", inst.Tool)
+			}
+			if err != nil {
 				h.err = fmt.Errorf("failed to set model: %w", err)
 				h.errTime = time.Now()
 			}
@@ -8392,10 +8401,16 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "ctrl+g":
-		// Open Gemini model selection dialog (only for Gemini sessions)
-		if inst := h.getSelectedSession(); inst != nil && inst.Tool == "gemini" {
-			cmd := h.geminiModelDialog.Show(inst.ID, inst.GeminiModel)
-			return h, cmd
+		// Open model selection dialog (Gemini / Antigravity sessions)
+		if inst := h.getSelectedSession(); inst != nil {
+			switch inst.Tool {
+			case "gemini":
+				cmd := h.geminiModelDialog.Show(inst.ID, inst.GeminiModel)
+				return h, cmd
+			case "antigravity":
+				cmd := h.geminiModelDialog.ShowAntigravity(inst.ID, inst.AntigravityModel)
+				return h, cmd
+			}
 		}
 		return h, nil
 
@@ -10225,6 +10240,8 @@ func createSessionTool(command string) (string, string) {
 		tool = "claude"
 	case "gemini":
 		tool = "gemini"
+	case "agy", "antigravity":
+		tool = "antigravity"
 	case "aider":
 		tool = "aider"
 	case "codex":
@@ -10257,6 +10274,9 @@ func applyCreateSessionToolOverrides(inst *session.Instance, tool string, gemini
 	}
 	if tool == "gemini" {
 		inst.SetGeminiYoloMode(geminiYoloMode)
+	}
+	if tool == "antigravity" {
+		inst.SetAntigravityYoloMode(geminiYoloMode)
 	}
 }
 
