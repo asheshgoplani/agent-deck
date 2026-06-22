@@ -3115,10 +3115,11 @@ func (i *Instance) Start() error {
 		i.CopilotStartedAt = time.Now().UnixMilli()
 	case i.Tool == "opencode":
 		if i.IsForkAwaitingStart {
-			// Wrap the deferred fork script through buildOpenCodeCommand so the
-			// first-start command is byte-identical to the pre-deferred behavior
-			// (the script carries its own env prefix); restart falls through to the
-			// resume/fresh branch below via the stable "opencode" base Command.
+			// Wrap the deferred fork command through buildOpenCodeCommand so the
+			// env prefix is applied exactly once (the `--fork` command carries
+			// none); a later restart falls through to the resume/fresh branch
+			// below via the stable "opencode" base Command and the async-detected
+			// child session id (re-running `--fork` would re-fork the parent).
 			command = i.buildOpenCodeCommand(i.consumeForkStartCommand())
 			i.OpenCodeStartedAt = time.Now().UnixMilli()
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
@@ -6940,20 +6941,37 @@ func (i *Instance) CreateForkedInstanceForTool(newTitle, newGroupPath string, op
 }
 
 // ForkOpenCode returns the command to create a forked OpenCode session.
-// Uses export/import to clone the session with a new ID, then launches
-// the forked session with opencode -s <new-id>.
+// Uses OpenCode's native `--fork` flag to branch the parent session into a new
+// session with its own id (discovered asynchronously after launch).
 // Deprecated: Use ForkOpenCodeWithOptions instead.
 func (i *Instance) ForkOpenCode(newTitle, newGroupPath string) (string, error) {
 	return i.ForkOpenCodeWithOptions(newTitle, newGroupPath, nil)
 }
 
-// ForkOpenCodeWithOptions returns the command to create a forked OpenCode session with custom options.
-// Uses export/import to clone the session with a new ID, then launches
-// the forked session with opencode -s <new-id> plus any model/agent flags.
+// ForkOpenCodeWithOptions returns the command to create a forked OpenCode session
+// with custom options. Uses OpenCode's native `opencode -s <parent-id> --fork`,
+// which branches the parent transcript into a fresh session while leaving the
+// parent intact, plus any model/agent flags.
 func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *OpenCodeOptions) (string, error) {
 	return i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, i.ProjectPath)
 }
 
+// forkOpenCodeWithOptionsInWorkDir builds the one-time `cd <workDir> &&
+// opencode -s <parent-id> --fork` launch command for a forked OpenCode
+// instance. `--fork` is a newer OpenCode CLI flag that branches the session
+// named by -s/--continue; if the installed binary predates it the launched
+// command fails into a recoverable error state, mirroring how `codex fork` is
+// handled (CanForkCodex below).
+//
+// The launch is explicitly anchored to workDir with a `cd`: the multi-repo fork
+// path later repoints the tmux session WorkDir to the MultiRepoTempDir
+// container (internal/ui/home.go), yet async OpenCode session detection matches
+// by ProjectPath (DetectOpenCodeSession), so OpenCode must run in the requested
+// repo/worktree dir — not tmux's WorkDir — for the child session to be
+// discoverable. OpenCode mints the child session id, which that async detection
+// picks up; the previous export/import clone relied on the same path (and the
+// same `cd`), so no id is pre-assigned here. The env prefix is applied once by
+// buildOpenCodeCommand at start time.
 func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath string, opts *OpenCodeOptions, workDir string) (string, error) {
 	if !i.CanForkOpenCode() {
 		return "", fmt.Errorf("cannot fork: no active OpenCode session")
@@ -6962,9 +6980,7 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 		workDir = i.ProjectPath
 	}
 
-	envPrefix := i.buildEnvSourceCommand()
-
-	// Build extra flags from options (for fork, exclude session mode flags)
+	// Build extra flags from options (for fork, exclude session mode flags).
 	var extraFlags string
 	if opts != nil {
 		for _, arg := range opts.ToArgsForFork() {
@@ -6977,66 +6993,10 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 		}
 	}
 
-	scriptPath, err := i.writeOpenCodeForkScript(workDir, envPrefix, extraFlags)
-	if err != nil {
-		return "", fmt.Errorf("failed to create fork script: %w", err)
-	}
-
-	return fmt.Sprintf("bash '%s'", scriptPath), nil
-}
-
-// writeOpenCodeForkScript writes a bash script that forks via export/import.
-// The script self-deletes after execution.
-func (i *Instance) writeOpenCodeForkScript(workDir, envPrefix, extraFlags string) (string, error) {
-	quotedWorkDir := shellescape.Quote(workDir)
-	quotedSessionID := shellescape.Quote(i.OpenCodeSessionID)
-	sedSessionID := strings.ReplaceAll(i.OpenCodeSessionID, ".", `\.`)
-	script := fmt.Sprintf(`#!/bin/bash
-cd %s || { printf 'cd failed to: %%s\n' %s; exit 1; }
-%s
-tmpfile=$(mktemp -t opencode-fork)
-trap "rm -f \"$tmpfile\" \"$0\"" EXIT
-
-opencode export %s 2>/dev/null > "$tmpfile"
-export_status=$?
-if [ $export_status -ne 0 ]; then
-  echo "Export failed (exit $export_status):"
-  cat "$tmpfile"
-  exit 1
-fi
-
-hash_cmd="md5sum"
-command -v md5sum >/dev/null 2>&1 || hash_cmd="md5"
-new_id="ses_$(date +%%s | $hash_cmd | head -c12)$(openssl rand -base64 20 | tr -dc a-zA-Z0-9 | head -c14)"
-if [[ "$OSTYPE" == "darwin"* ]]; then
-  sed -i "" "s/%s/$new_id/g" "$tmpfile" || { echo "Sed failed"; exit 1; }
-else
-  sed -i "s/%s/$new_id/g" "$tmpfile" || { echo "Sed failed"; exit 1; }
-fi
-opencode import "$tmpfile" 2>&1 || { echo "Import failed"; exit 1; }
-# OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
-echo "Forked to: $new_id"
-opencode -s "$new_id"%s
-`, quotedWorkDir, quotedWorkDir, envPrefix, quotedSessionID,
-		sedSessionID, sedSessionID, extraFlags)
-
-	f, err := os.CreateTemp("", "opencode-fork-*.sh")
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	if _, err := f.WriteString(script); err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-
-	if err := f.Chmod(0o755); err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-
-	return f.Name(), nil
+	// workDir and the session id are shell-quoted to keep the launch command
+	// injection-safe (the id is also charset-validated upstream by CanForkOpenCode).
+	return fmt.Sprintf("cd %s && opencode -s %s --fork%s",
+		shellescape.Quote(workDir), shellescape.Quote(i.OpenCodeSessionID), extraFlags), nil
 }
 
 // CreateForkedOpenCodeInstance creates a new Instance configured for forking an OpenCode session
