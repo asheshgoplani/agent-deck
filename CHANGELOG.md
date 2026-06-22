@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.74] - 2026-06-22
+
+### Fixed
+
+- **Visual regression baselines re-synced for Command Center nav tab.** The weekly regression run failed after #1462 added the Command Center tab as the first item in the desktop topbar and mobile bottom bar, shifting every subsequent tab's x-position and producing a nav-row pixel diff in 16 of 17 baselines. The baselines were re-generated on the CI runner (canonical environment) and the `mobile fleet with bottom tabs` test assertion was updated from 4 to 5 tabs. ([#1507](https://github.com/asheshgoplani/agent-deck/pull/1507))
+
 ## [1.9.73] - 2026-06-21
 
 ### Added

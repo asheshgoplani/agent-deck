@@ -268,6 +268,49 @@ func TestNewContainerConfig_SSH(t *testing.T) {
 	require.True(t, cfg.volumes[1].readOnly)
 }
 
+func TestNewContainerConfig_HooksDir(t *testing.T) {
+	t.Parallel()
+
+	// hostDir is the PER-INSTANCE scoped subdir, not the global hooks dir.
+	perInstance := "/home/user/.local/share/agent-deck/hooks/sandbox/inst-123"
+	cfg := NewContainerConfig("/project",
+		WithHooksDir(perInstance),
+	)
+
+	// Project mount + hooks mount.
+	require.Len(t, cfg.volumes, 2)
+	require.Equal(t, perInstance, cfg.volumes[1].hostPath)
+	require.Equal(t, containerHome+"/.local/share/agent-deck/hooks", cfg.volumes[1].containerPath)
+	// Must be read-write: the container writes its own status file. RW is safe
+	// because the mount is scoped to this instance's own subdir.
+	require.False(t, cfg.volumes[1].readOnly)
+
+	// SECURITY: the global fleet-wide hooks dir (…/hooks) and its sandbox parent
+	// (…/hooks/sandbox) must NEVER be mounted — only the per-instance subdir.
+	// Mounting the global dir would expose every sibling session's and the
+	// conductor's status file to a compromised container. perInstance is
+	// …/hooks/sandbox/<id>; its grandparent is the global hooks dir.
+	sandboxParent := filepath.Dir(perInstance)    // …/hooks/sandbox
+	globalHooksDir := filepath.Dir(sandboxParent) // …/hooks
+	for _, v := range cfg.volumes {
+		require.NotEqual(t, globalHooksDir, v.hostPath,
+			"global hooks dir must never be a container mount source")
+		require.NotEqual(t, sandboxParent, v.hostPath,
+			"the sandbox parent dir must never be a container mount source")
+	}
+}
+
+func TestNewContainerConfig_HooksDir_Empty(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewContainerConfig("/project",
+		WithHooksDir(""),
+	)
+
+	// Only the project mount when the per-instance dir is empty (no-op).
+	require.Len(t, cfg.volumes, 1)
+}
+
 func TestNewContainerConfig_VolumeIgnores(t *testing.T) {
 	t.Parallel()
 

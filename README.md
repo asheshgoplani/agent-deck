@@ -153,6 +153,21 @@ Attach/detach Claude skills per project with a managed pool workflow.
 - Apply writes project state to `.agent-deck/skills.toml` and materializes into `.claude/skills`
 - Type-to-jump is supported in the dialog (same pattern as MCP Manager)
 
+### Declarative groups
+
+Declare groups in `config.toml` so they exist on startup. Set `create = true` to ensure a group exists, and `default_path` to set the working directory for new sessions in it:
+
+```toml
+[groups."staging"]
+create = true                      # ensure the group exists
+
+[groups."projects/devops"]
+create = true
+default_path = "~/repos/devops"    # working directory for new sessions
+```
+
+On startup each group with `create = true` is created if missing (along with any parent groups). `default_path` is written to the state DB for any group that exists — including groups created from your sessions — so `create = true` is optional when the group is already there. Reconciliation is additive: removing a group from `config.toml` leaves the group and its sessions in place, and omitting `default_path` keeps any value already set. Clear a default with `agent-deck group update <name> --clear-default-path`.
+
 ### Per-group Claude config
 
 Agent Deck supports per-group `CLAUDE_CONFIG_DIR` and `env_file` overrides. Useful when a single profile hosts groups that should authenticate against different Claude accounts — for example, a personal profile hosting a `conductor` group pinned to `~/.claude-team` while other groups stay on `~/.claude`.

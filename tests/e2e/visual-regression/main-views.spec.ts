@@ -73,9 +73,10 @@ test.describe('Main views visual baselines', () => {
     await mockEndpoints(page);
     await page.goto('/?token=test');
     await prepareForScreenshot(page);
-    // MobileTabs.js: bottom bar replaces the old hamburger/sidebar drawer
+    // MobileTabs.js: bottom bar replaces the old hamburger/sidebar drawer.
+    // 5 tabs since #1462 added Command Center as the first mobile tab.
     await expect(page.locator('.mob-tabs')).toBeVisible();
-    await expect(page.locator('.mob-tab')).toHaveCount(4);
+    await expect(page.locator('.mob-tab')).toHaveCount(5);
     const masks = await getDynamicContentMasks(page);
     await expect(page).toHaveScreenshot('mobile-fleet-dark-375x812.png', { mask: masks });
   });

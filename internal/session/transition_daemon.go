@@ -707,11 +707,35 @@ func (d *TransitionDaemon) hookStatusForInstance(instanceID string) *HookStatus 
 	return best
 }
 
+// hookStatusFilePath resolves the on-disk status file for an instance.
+// Sandboxed sessions bridge a PER-INSTANCE scoped subdir from the container, so
+// their status lands at …/hooks/sandbox/<id>/<id>.json; non-sandbox sessions
+// write the flat …/hooks/<id>.json. Prefer the scoped path when it exists, else
+// fall back to flat. Robust to a missing sandbox subtree (Lstat just errors and
+// we fall through to flat).
+//
+// We Lstat (not Stat) the scoped path so a container-planted SYMLINK at
+// <id>.json is NOT preferred: Lstat reports the link itself, and the subsequent
+// no-follow read (readStatusFileNoFollow) refuses to follow it. A symlinked
+// scoped path therefore neither gets selected over the flat path nor gets read
+// through, closing the exfiltration/DoS vector at the read site too.
+func hookStatusFilePath(instanceID string) string {
+	hooksDir := GetHooksDir()
+	scoped := filepath.Join(hooksDir, "sandbox", instanceID, instanceID+".json")
+	if info, err := os.Lstat(scoped); err == nil && info.Mode()&os.ModeSymlink == 0 {
+		return scoped
+	}
+	return filepath.Join(hooksDir, instanceID+".json")
+}
+
 func readHookStatusFile(instanceID string) *HookStatus {
 	if strings.TrimSpace(instanceID) == "" {
 		return nil
 	}
-	data, err := os.ReadFile(filepath.Join(GetHooksDir(), instanceID+".json"))
+	// No-follow + size-bounded read for both the scoped (sandbox) and flat
+	// (non-sandbox) paths: a container could symlink or oversize its <id>.json
+	// to read a host file or OOM the shared notify-daemon that polls this.
+	data, err := readStatusFileNoFollow(hookStatusFilePath(instanceID))
 	if err != nil || len(data) == 0 {
 		return nil
 	}
