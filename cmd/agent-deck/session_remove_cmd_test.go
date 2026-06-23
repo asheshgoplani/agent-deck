@@ -172,6 +172,13 @@ func TestSessionRemove_AllErrored_RemovesOnlyErrored(t *testing.T) {
 }
 
 // Pinned errored sessions survive --all-errored unless --force is given.
+//
+// RemoteSession N/A (per repo guideline): `session remove --all-errored`
+// operates only on the local registry loaded by loadSessionData, and the
+// pin guard in removeAllErrored keys off inst.Pin/inst.Status alone with no
+// local/remote branch. Remote (SSH) sessions live on a remote agent-deck
+// instance and are never written to this registry, so there is no
+// RemoteSession path for this command to cover.
 func TestSessionRemove_AllErrored_SkipsPinned(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
