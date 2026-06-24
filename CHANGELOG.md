@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.76] - 2026-06-24
+
+### Added
+
+- **Pin protects sessions from auto/bulk stops.** Pinned sessions are now skipped by the idle-timeout watcher, the bulk "remove all errored" TUI action, and the `session rm --all-errored` CLI command. Unpinning re-arms the idle clock cleanly from the next tick. The `--force` flag overrides the pin guard on the CLI. ([#1521](https://github.com/asheshgoplani/agent-deck/pull/1521))
+
+## [1.9.75] - 2026-06-23
+
+### Fixed
+
+- **TUI: empty and archived-only groups now sink below the view-mode divider.** Groups with no active sessions were appearing above the divider in non-archive view, cluttering the list. The `GroupActivityMap` helper now respects the `viewArchived` flag so placement is consistent with the current view mode. ([#1522](https://github.com/asheshgoplani/agent-deck/pull/1522))
+- **tmux: idempotent kill + socket-complete existence cache.** `Kill()` and `KillAndWait()` now return nil when the session is already gone, preventing spurious errors on double-kill. The `Exists()` cache now only trusts positive hits, avoiding false "session dead" conclusions from stale negative cache entries. ([#1517](https://github.com/asheshgoplani/agent-deck/pull/1517))
+
+### Changed
+
+- **Go minor/patch dependency update.** `google.golang.org/api` v0.284→v0.286, `modernc.org/sqlite` v1.52→v1.53, plus transitive `golang.org/x/*` patch bumps. ([#1516](https://github.com/asheshgoplani/agent-deck/pull/1516))
+
 ## [1.9.74] - 2026-06-22
 
 ### Fixed

@@ -21,8 +21,8 @@ func handleSessionRemove(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
-	force := fs.Bool("force", false, "Remove even when the session is running/waiting/idle (destructive)")
-	allErrored := fs.Bool("all-errored", false, "Remove every session currently in the 'error' state (bulk)")
+	force := fs.Bool("force", false, "Remove even when the session is running/waiting/idle; with --all-errored, also include pinned sessions (destructive)")
+	allErrored := fs.Bool("all-errored", false, "Remove every unpinned session currently in the 'error' state (bulk); pinned sessions are skipped unless --force is given")
 	pruneWorktree := fs.Bool("prune-worktree", false, "Also kill the process and remove any git worktree (destructive)")
 
 	fs.Usage = func() {

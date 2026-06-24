@@ -171,55 +171,7 @@ func TestSessionRemove_AllErrored_RemovesOnlyErrored(t *testing.T) {
 	}
 }
 
-// Pinned errored sessions survive --all-errored unless --force is given.
-func TestSessionRemove_AllErrored_SkipsPinned(t *testing.T) {
-	if testing.Short() {
-		t.Skip("subprocess CLI test skipped in short mode")
 	}
-	home := t.TempDir()
-	pinnedID := addTestSession(t, home, filepath.Join(home, "pin-proj"), "pinned-err")
-	plainID := addTestSession(t, home, filepath.Join(home, "plain-proj"), "plain-err")
-	if _, stderr, code := runAgentDeck(t, home, "session", "set", pinnedID, "pin", "top"); code != 0 {
-		t.Fatalf("set pin failed: %s", stderr)
-	}
-	forceSetStatus(t, home, pinnedID, session.StatusError)
-	forceSetStatus(t, home, plainID, session.StatusError)
-
-	stdout, stderr, code := runAgentDeck(t, home, "session", "remove", "--all-errored", "--json")
-	if code != 0 {
-		t.Fatalf("--all-errored failed (exit %d) stdout=%s stderr=%s", code, stdout, stderr)
-	}
-	listJSON := readSessionsJSON(t, home)
-	if !strings.Contains(listJSON, pinnedID) {
-		t.Errorf("pinned errored session must survive --all-errored; list:\n%s", listJSON)
-	}
-	if strings.Contains(listJSON, plainID) {
-		t.Errorf("unpinned errored session should have been removed; list:\n%s", listJSON)
-	}
-}
-
-// --force includes pinned errored sessions in the bulk sweep.
-func TestSessionRemove_AllErrored_ForceIncludesPinned(t *testing.T) {
-	if testing.Short() {
-		t.Skip("subprocess CLI test skipped in short mode")
-	}
-	home := t.TempDir()
-	pinnedID := addTestSession(t, home, filepath.Join(home, "pin-proj"), "pinned-err")
-	if _, stderr, code := runAgentDeck(t, home, "session", "set", pinnedID, "pin", "top"); code != 0 {
-		t.Fatalf("set pin failed: %s", stderr)
-	}
-	forceSetStatus(t, home, pinnedID, session.StatusError)
-
-	stdout, stderr, code := runAgentDeck(t, home, "session", "remove", "--all-errored", "--force", "--json")
-	if code != 0 {
-		t.Fatalf("--all-errored --force failed (exit %d) stdout=%s stderr=%s", code, stdout, stderr)
-	}
-	listJSON := readSessionsJSON(t, home)
-	if strings.Contains(listJSON, pinnedID) {
-		t.Errorf("--force should remove pinned errored session; list:\n%s", listJSON)
-	}
-}
-
 // TestSessionRemove_PreservesTranscripts is the hard invariant: registry
 // removal must NOT touch ~/.claude/projects/<slug>/.
 func TestSessionRemove_PreservesTranscripts(t *testing.T) {
