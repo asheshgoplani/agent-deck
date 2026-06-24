@@ -799,6 +799,98 @@ func TestDefaultPathForGroupResolvesWorktreeToRepoRoot(t *testing.T) {
 	}
 }
 
+// TestSetDefaultPathForGroupMainTreeSubdirStoredVerbatim pins the verbatim
+// behavior for main-working-tree subdirectories: an explicit default path
+// inside a repo's main working tree must be stored as given, not collapsed to
+// the repo root. Only LINKED worktrees (`git worktree add`) snap to their base
+// repository root.
+func TestSetDefaultPathForGroupMainTreeSubdirStoredVerbatim(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repoDir := filepath.Join(t.TempDir(), "repo")
+	subDir := filepath.Join(repoDir, "agents", "worker")
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Env = testutil.CleanGitEnv(os.Environ())
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	run("init", repoDir)
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("failed to create subdir: %v", err)
+	}
+
+	tree := NewGroupTree([]*Instance{})
+	tree.CreateGroup("Projects")
+	if ok := tree.SetDefaultPathForGroup("Projects", subDir); !ok {
+		t.Fatal("SetDefaultPathForGroup should return true for existing group")
+	}
+
+	if got := tree.DefaultPathForGroup("Projects"); got != subDir {
+		t.Fatalf("main-tree subdirectory collapsed to %q, want stored verbatim %q", got, subDir)
+	}
+}
+
+// TestSetDefaultPathForGroupLinkedWorktreeStillSnapsToBaseRoot pins that the
+// verbatim fix does not regress the original intent: an explicit default path
+// pointing at a linked worktree still resolves to the base repository root.
+func TestSetDefaultPathForGroupLinkedWorktreeStillSnapsToBaseRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	tmpDir := t.TempDir()
+	repoDir := filepath.Join(tmpDir, "repo")
+	wtDir := filepath.Join(tmpDir, "repo-worktree")
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Env = testutil.CleanGitEnv(os.Environ())
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	run("init", repoDir)
+	run("-C", repoDir, "config", "user.email", "test@example.com")
+	run("-C", repoDir, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("failed to write repo file: %v", err)
+	}
+	run("-C", repoDir, "add", "README.md")
+	run("-C", repoDir, "commit", "-m", "init")
+	run("-C", repoDir, "worktree", "add", wtDir, "-b", "feature/default-path")
+
+	tree := NewGroupTree([]*Instance{})
+	tree.CreateGroup("Projects")
+	if ok := tree.SetDefaultPathForGroup("Projects", wtDir); !ok {
+		t.Fatal("SetDefaultPathForGroup should return true for existing group")
+	}
+
+	got := tree.DefaultPathForGroup("Projects")
+	realRepoDir, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		realRepoDir = repoDir
+	}
+	realGot, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		realGot = got
+	}
+
+	if realGot != realRepoDir {
+		t.Fatalf("Expected linked worktree default path to resolve to repo root %q, got %q", realRepoDir, realGot)
+	}
+}
+
 func TestMoveGroupUpDownSiblings(t *testing.T) {
 	tree := NewGroupTree([]*Instance{})
 

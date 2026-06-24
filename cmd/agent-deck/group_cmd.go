@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -21,6 +22,8 @@ func groupVerbCanonical(verb string) (canonical string, ok bool) {
 	switch verb {
 	case "list", "ls":
 		return "list", true
+	case "show", "info":
+		return "show", true
 	case "create", "new":
 		return "create", true
 	case "update", "set":
@@ -58,6 +61,8 @@ func handleGroup(profile string, args []string) {
 	switch canonical {
 	case "list":
 		handleGroupList(profile, args[1:])
+	case "show":
+		handleGroupShow(profile, args[1:])
 	case "create":
 		handleGroupCreate(profile, args[1:])
 	case "update":
@@ -81,6 +86,7 @@ func printGroupHelp() {
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  list              List all groups with session counts")
+	fmt.Println("  show <name>       Show one group; --resolved adds the effective claude config (alias: info)")
 	fmt.Println("  create <name>     Create a new group")
 	fmt.Println("  update <name>     Update group settings")
 	fmt.Println("  delete <name>     Delete a group (aliases: rm, remove)")
@@ -90,6 +96,7 @@ func printGroupHelp() {
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  agent-deck group list")
+	fmt.Println("  agent-deck group show work --resolved        # Verify the effective [groups.\"work\".claude] config")
 	fmt.Println("  agent-deck group create mobile")
 	fmt.Println("  agent-deck group create ios --parent mobile")
 	fmt.Println("  agent-deck group update mobile --default-path /path/to/repo")
@@ -340,6 +347,164 @@ func handleGroupList(profile string, args []string) {
 	sb.WriteString(fmt.Sprintf("\nTotal: %d groups, %d sessions\n", totalGroups, totalSessions))
 
 	out.Print(sb.String(), nil)
+}
+
+// handleGroupShow shows one group's DB-resident settings and, with
+// --resolved, the effective Claude configuration the spawn builders would
+// use for a session in this group (config_dir, env_file, command, model,
+// env, skills, mcps — each with its source level). The verification
+// counterpart to hand-editing a [groups.X.claude] stanza: a key typo, a
+// TOML parse error, or a missing env_file are all visible here instead of
+// silently degrading at launch.
+func handleGroupShow(profile string, args []string) {
+	fs := flag.NewFlagSet("group show", flag.ExitOnError)
+	resolved := fs.Bool("resolved", false, "Resolve the effective claude config for this group (sources included)")
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	quiet := fs.Bool("quiet", false, "Minimal output")
+	quietShort := fs.Bool("q", false, "Minimal output (short)")
+
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck group show <name> [--resolved] [--json]")
+		fmt.Println()
+		fmt.Println("Show a group's settings.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  agent-deck group show work")
+		fmt.Println("  agent-deck group show work --resolved")
+		fmt.Println("  agent-deck group show work --resolved --json")
+	}
+
+	args = reorderGroupArgs(args)
+
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+
+	out := NewCLIOutput(*jsonOutput, *quiet || *quietShort)
+
+	name := fs.Arg(0)
+	if name == "" {
+		out.Error("group name is required", ErrCodeNotFound)
+		fmt.Println("Usage: agent-deck group show <name> [--resolved] [--json]")
+		os.Exit(1)
+	}
+
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to initialize storage: %v", err), ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	instances, groups, err := storage.LoadWithGroups()
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+
+	// Resolve the group path: exact path first, then case-insensitive name
+	// match — same lookup the update verb uses.
+	groupPath := normalizeGroupPath(name)
+	_, exists := groupTree.Groups[groupPath]
+	if !exists {
+		for path, g := range groupTree.Groups {
+			if strings.EqualFold(g.Name, name) {
+				groupPath = path
+				exists = true
+				break
+			}
+		}
+	}
+	if !exists {
+		out.Error(fmt.Sprintf("group '%s' not found", name), ErrCodeNotFound)
+		os.Exit(2)
+	}
+
+	g := groupTree.Groups[groupPath]
+	sessionCount := 0
+	for _, inst := range instances {
+		if inst.GroupPath == groupPath {
+			sessionCount++
+		}
+	}
+
+	jsonData := map[string]interface{}{
+		"success":        true,
+		"name":           g.Name,
+		"path":           groupPath,
+		"default_path":   groupTree.DefaultPathForGroup(groupPath),
+		"max_concurrent": g.MaxConcurrent,
+		"sessions":       sessionCount,
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Group: %s\n", groupPath)
+	fmt.Fprintf(&b, "  Name:           %s\n", g.Name)
+	fmt.Fprintf(&b, "  Default path:   %s\n", orNone(groupTree.DefaultPathForGroup(groupPath)))
+	fmt.Fprintf(&b, "  Max concurrent: %d\n", g.MaxConcurrent)
+	fmt.Fprintf(&b, "  Sessions:       %d\n", sessionCount)
+
+	if *resolved {
+		// Force a fresh config.toml parse — `group show --resolved` is a
+		// diagnostic command and must always show current on-disk state,
+		// not a stale cache entry from an earlier call in this process
+		// (e.g. the log-config bootstrap in main()).
+		session.ClearUserConfigCache()
+		res := session.ResolveGroupClaude(groupPath)
+		jsonData["claude"] = res
+
+		b.WriteString("\nClaude config (resolved for a session in this group):\n")
+		if res.ConfigError != "" {
+			fmt.Fprintf(&b, "  !! config.toml ERROR — every value below is a DEFAULT; the file is being ignored:\n  !! %s\n", res.ConfigError)
+		}
+		fmt.Fprintf(&b, "  config_dir: %s  [%s]\n", orNone(res.ConfigDir), res.ConfigDirSource)
+		if res.EnvFile != "" {
+			existsNote := "MISSING"
+			if res.EnvFileExists {
+				existsNote = "exists"
+			} else if !filepath.IsAbs(res.EnvFileResolved) {
+				existsNote = "relative — resolved against each session's working dir"
+			}
+			fmt.Fprintf(&b, "  env_file:   %s  [%s]  (%s)\n", res.EnvFile, res.EnvFileSource, existsNote)
+		} else {
+			b.WriteString("  env_file:   (none)\n")
+		}
+		fmt.Fprintf(&b, "  command:    %s  [%s]\n", res.Command, res.CommandSource)
+		if res.Model != "" {
+			fmt.Fprintf(&b, "  model:      %s  [%s]\n", res.Model, res.ModelSource)
+		} else {
+			b.WriteString("  model:      (none — per-session model or Claude's own default)\n")
+		}
+		if len(res.Env) > 0 {
+			keys := make([]string, 0, len(res.Env))
+			for k := range res.Env {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			b.WriteString("  env:\n")
+			for _, k := range keys {
+				fmt.Fprintf(&b, "    %s=%s\n", k, res.Env[k])
+			}
+		} else {
+			b.WriteString("  env:        (none)\n")
+		}
+		fmt.Fprintf(&b, "  plugins:    %s\n", orNone(strings.Join(res.Plugins, ", ")))
+		fmt.Fprintf(&b, "  mcps:       %s\n", orNone(strings.Join(res.MCPs, ", ")))
+	}
+
+	out.Print(b.String(), jsonData)
+}
+
+// orNone renders an empty string as "(none)" for human-readable output.
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
 }
 
 // handleGroupCreate creates a new group

@@ -109,7 +109,7 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("Combines: add + session start + session send")
 		fmt.Println()
 		fmt.Println("Arguments:")
-		fmt.Println("  [path]    Project directory (defaults to current directory)")
+		fmt.Println("  [path]    Project directory (default: group default_path, then global default_path, then current directory)")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -139,21 +139,10 @@ func handleLaunch(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
 	// Resolve path
-	path := strings.Trim(fs.Arg(0), "'\"")
-	if path == "" || path == "." {
-		var err error
-		path, err = os.Getwd()
-		if err != nil {
-			out.Error(fmt.Sprintf("failed to get current directory: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-	} else {
-		var err error
-		path, err = filepath.Abs(path)
-		if err != nil {
-			out.Error(fmt.Sprintf("failed to resolve path: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
+	path, err := resolveLaunchPath(strings.Trim(fs.Arg(0), "'\""), mergeFlags(*group, *groupShort), profile)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to resolve path: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
 
 	// Verify path exists and is a directory
@@ -436,6 +425,13 @@ func handleLaunch(profile string, args []string) {
 		_ = newInstance.SetClaudeOptions(opts)
 	}
 
+	// Materialize the declarative per-group/per-conductor skill+mcp loadout
+	// at create time (mirror of handleAdd) — a queued session gets its floor
+	// now, not at its eventual start. Start/Restart re-assert.
+	for _, w := range session.ApplyConfiguredLoadout(newInstance) {
+		fmt.Fprintf(os.Stderr, "Warning: loadout: %s\n", w)
+	}
+
 	// Add to instances list (in-memory only — used for downstream
 	// group cap math and the second SaveWithGroups after PostStartSync).
 	instances = append(instances, newInstance)
@@ -629,4 +625,35 @@ func handleLaunch(profile string, args []string) {
 		}
 	}
 	out.Success(msg, jsonData)
+}
+
+// resolveLaunchPath resolves the project path for `agent-deck launch`.
+//
+// An explicit path argument always wins — including ".", which keeps its
+// "right here" meaning (resolved like add's positional arg). When no path is
+// given, the resolution chain matches `add` (#1303): the target group's
+// default_path first, then the global config default_path, then cwd.
+func resolveLaunchPath(rawPathArg, groupSelector, profile string) (string, error) {
+	if rawPathArg != "" {
+		return resolveAddPath(rawPathArg)
+	}
+
+	if grp := strings.TrimSpace(groupSelector); grp != "" {
+		if storage, instances, groups, err := loadSessionData(profile); err == nil {
+			groupTree := session.NewGroupTreeWithGroups(instances, groups)
+			path := groupTree.DefaultPathForGroup(resolveGroupPathForAdd(groupTree, grp))
+			_ = storage.Close()
+			if path != "" {
+				return path, nil
+			}
+		}
+	}
+
+	if userCfg, err := session.LoadUserConfig(); err == nil {
+		if path := resolveConfiguredDefaultPath(userCfg.DefaultPath); path != "" {
+			return path, nil
+		}
+	}
+
+	return os.Getwd()
 }

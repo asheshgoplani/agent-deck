@@ -840,9 +840,10 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		baseCommand = "claude"
 	}
 
-	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
+	// Get the configured Claude command (e.g., "claude", "cdw", "cdp"),
+	// resolved per instance: conductor > group (ancestor-walk) > global.
 	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
-	claudeCmd := GetClaudeCommand()
+	claudeCmd := GetClaudeCommandForInstance(i)
 	hasCustomCommand := claudeCmd != "claude"
 
 	// Resolve CLAUDE_CONFIG_DIR for this spawn. We inject the prefix only
@@ -1172,6 +1173,10 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 		if opts != nil {
 			launchModel = opts.Model
 		}
+		// Conductor/group model chain (#8): explicit opts.Model wins, then the
+		// per-conductor then per-group [*.claude].model overrides.
+		launchModel = i.resolveClaudeLaunchModel(launchModel)
+		// Finally fall back to the global [claude].default_model (#1437).
 		if launchModel == "" {
 			if cfg, _ := LoadUserConfig(); cfg != nil {
 				launchModel = cfg.Claude.DefaultModel
@@ -3191,6 +3196,11 @@ func (i *Instance) Start() error {
 	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
 	i.applyLaunchSettingsFromConfig()
 
+	// Re-assert the declarative per-group/per-conductor skill+mcp loadout
+	// BEFORE the tool process starts so project-scope discovery sees it.
+	// Idempotent: a healthy floor is a no-op; failures warn, never block.
+	ApplyConfiguredLoadout(i)
+
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
 		return fmt.Errorf("failed to start tmux session: %w", err)
@@ -3431,6 +3441,10 @@ func (i *Instance) StartWithMessage(message string) error {
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
 	i.applyLaunchSettingsFromConfig()
+
+	// Re-assert the declarative skill+mcp loadout before spawn — sister
+	// call to Start(); see ApplyConfiguredLoadout.
+	ApplyConfiguredLoadout(i)
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -6306,6 +6320,10 @@ func (i *Instance) Restart() error {
 	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
 	i.applyLaunchSettingsFromConfig()
 
+	// Re-assert the declarative skill+mcp loadout before respawn — sister
+	// call to Start(); config edits land on the next restart this way.
+	ApplyConfiguredLoadout(i)
+
 	mcpLog.Debug("restart_starting_new_session", slog.String("command", command))
 
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -6401,9 +6419,10 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// shell environment as freshly started ones (fixes #409).
 	envPrefix := i.buildEnvSourceCommand()
 
-	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
+	// Get the configured Claude command (e.g., "claude", "cdw", "cdp"),
+	// resolved per instance: conductor > group (ancestor-walk) > global.
 	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
-	claudeCmd := GetClaudeCommand()
+	claudeCmd := GetClaudeCommandForInstance(i)
 	hasCustomCommand := claudeCmd != "claude"
 
 	// Resolve CLAUDE_CONFIG_DIR for this restart. Mirrors the gating logic

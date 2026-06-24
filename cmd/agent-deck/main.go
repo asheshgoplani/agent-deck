@@ -1688,6 +1688,13 @@ func handleAdd(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// Materialize the declarative per-group/per-conductor skill+mcp loadout
+	// at create time (ProjectPath, group, and tool are final here), so the
+	// floor exists even before first start. Start/Restart re-assert.
+	for _, w := range session.ApplyConfiguredLoadout(newInstance) {
+		fmt.Fprintf(os.Stderr, "Warning: loadout: %s\n", w)
+	}
+
 	// Add to instances
 	instances = append(instances, newInstance)
 

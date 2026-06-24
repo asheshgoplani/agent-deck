@@ -1549,8 +1549,8 @@ func mostRecentPathForSessions(sessions []*Instance) string {
 	return ""
 }
 
-// resolveGroupDefaultPath normalizes a default path and maps git worktree paths
-// to their base repository root.
+// resolveGroupDefaultPath normalizes a default path and maps linked git
+// worktree paths to their base repository root.
 func resolveGroupDefaultPath(defaultPath string) string {
 	defaultPath = strings.TrimSpace(defaultPath)
 	if defaultPath == "" {
@@ -1580,6 +1580,15 @@ func resolveGroupDefaultPath(defaultPath string) string {
 	}
 
 	if !git.IsGitRepo(defaultPath) {
+		return defaultPath
+	}
+
+	// Only collapse LINKED worktrees (`git worktree add`) to their base
+	// repository root — a transient worktree path shouldn't become the stored
+	// default. A plain subdirectory inside the main working tree is a
+	// legitimate default path, so store it verbatim: GetWorktreeBaseRoot would
+	// otherwise map it to the repo root via GetRepoRoot.
+	if !git.IsLinkedWorktree(defaultPath) {
 		return defaultPath
 	}
 
