@@ -35,12 +35,18 @@ func TestPreAcceptCodexWorkspaceTrust_SeedsHostConfig(t *testing.T) {
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("unmarshal config: %v", err)
 	}
-	projects := cfg["projects"].(map[string]any)
+	projects, ok := cfg["projects"].(map[string]any)
+	if !ok {
+		t.Fatalf("projects key missing or wrong type: %T", cfg["projects"])
+	}
 	absProject, err := filepath.Abs(projectDir)
 	if err != nil {
 		t.Fatalf("abs project: %v", err)
 	}
-	entry := projects[absProject].(map[string]any)
+	entry, ok := projects[absProject].(map[string]any)
+	if !ok {
+		t.Fatalf("no trust entry for project dir %q in %s", absProject, configPath)
+	}
 	if entry["trust_level"] != codexTrustLevelTrusted {
 		t.Fatalf("trust_level = %v, want %s", entry["trust_level"], codexTrustLevelTrusted)
 	}
