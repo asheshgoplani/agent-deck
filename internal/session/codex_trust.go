@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 
 	"github.com/BurntSushi/toml"
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
@@ -14,6 +16,49 @@ import (
 )
 
 const codexTrustLevelTrusted = "trusted"
+
+// codexConfigMu serializes mutations to a given Codex config.toml within this
+// process. Cross-process serialization uses advisory flock on a sibling
+// `.lock` file (see acquireCodexConfigLock), matching hermes_hooks.go.
+var codexConfigMu sync.Map // map[string]*sync.Mutex
+
+type codexConfigLock struct {
+	inProc *sync.Mutex
+	file   *os.File
+}
+
+func (l *codexConfigLock) Release() {
+	if l.file != nil {
+		_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+		_ = l.file.Close()
+	}
+	if l.inProc != nil {
+		l.inProc.Unlock()
+	}
+}
+
+func acquireCodexConfigLock(configPath string) (*codexConfigLock, error) {
+	mIface, _ := codexConfigMu.LoadOrStore(configPath, &sync.Mutex{})
+	m := mIface.(*sync.Mutex)
+	m.Lock()
+
+	lockPath := configPath + ".lock"
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		m.Unlock()
+		return nil, fmt.Errorf("ensure codex config lock dir: %w", err)
+	}
+	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		m.Unlock()
+		return nil, fmt.Errorf("open codex config lock file: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		m.Unlock()
+		return nil, fmt.Errorf("flock codex config: %w", err)
+	}
+	return &codexConfigLock{inProc: m, file: f}, nil
+}
 
 // GetCodexConfigPath returns the path to Codex's user-level config.toml under codexHome.
 func GetCodexConfigPath(codexHome string) string {
@@ -47,6 +92,12 @@ func PreAcceptCodexTrust(codexConfigPath, projectDir string) error {
 		projectDir = abs
 	}
 
+	lock, err := acquireCodexConfigLock(codexConfigPath)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
 	cfg := map[string]any{}
 	if data, err := os.ReadFile(codexConfigPath); err == nil {
 		if len(data) > 0 {
@@ -61,6 +112,11 @@ func PreAcceptCodexTrust(codexConfigPath, projectDir string) error {
 	projects, _ := cfg["projects"].(map[string]any)
 	if projects == nil {
 		projects = map[string]any{}
+	}
+	if entry, ok := projects[projectDir].(map[string]any); ok {
+		if trust, _ := entry["trust_level"].(string); trust == codexTrustLevelTrusted {
+			return nil
+		}
 	}
 	entry, _ := projects[projectDir].(map[string]any)
 	if entry == nil {

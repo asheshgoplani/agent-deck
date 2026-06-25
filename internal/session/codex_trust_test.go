@@ -1,8 +1,10 @@
 package session_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -74,6 +76,80 @@ func TestPreAcceptCodexTrust_RejectsMalformedConfig(t *testing.T) {
 	}
 	if err := session.PreAcceptCodexTrust(configPath, dir); err == nil {
 		t.Fatal("expected error for malformed config")
+	}
+}
+
+func TestPreAcceptCodexTrust_SkipsRewriteWhenAlreadyTrusted(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	projectDir := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	absProject, err := filepath.Abs(projectDir)
+	if err != nil {
+		t.Fatalf("abs project: %v", err)
+	}
+	original := fmt.Sprintf(`# keep this comment
+model = "gpt-5"
+
+[projects.%q]
+trust_level = "trusted"
+`, absProject)
+	if err := os.WriteFile(configPath, []byte(original), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if err := session.PreAcceptCodexTrust(configPath, projectDir); err != nil {
+		t.Fatalf("PreAcceptCodexTrust: %v", err)
+	}
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(got) != original {
+		t.Fatalf("config rewritten when already trusted:\n--- got ---\n%s\n--- want ---\n%s", got, original)
+	}
+}
+
+func TestPreAcceptCodexTrust_ConcurrentTrustEntries(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			projectDir := filepath.Join(dir, fmt.Sprintf("proj-%d", i))
+			if err := os.MkdirAll(projectDir, 0o755); err != nil {
+				errs <- err
+				return
+			}
+			errs <- session.PreAcceptCodexTrust(configPath, projectDir)
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent PreAcceptCodexTrust: %v", err)
+		}
+	}
+
+	cfg := readCodexTrustConfig(t, configPath)
+	projects := cfg["projects"].(map[string]any)
+	if len(projects) != n {
+		t.Fatalf("projects count = %d, want %d", len(projects), n)
+	}
+	for i := 0; i < n; i++ {
+		projectDir := filepath.Join(dir, fmt.Sprintf("proj-%d", i))
+		absProject, _ := filepath.Abs(projectDir)
+		entry, ok := projects[absProject].(map[string]any)
+		if !ok || entry["trust_level"] != "trusted" {
+			t.Fatalf("project %q missing trusted entry: %v", absProject, projects[absProject])
+		}
 	}
 }
 
