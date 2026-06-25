@@ -55,8 +55,20 @@ func WriteLedgerEntry(e CompletionLedgerEntry) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// Per-write temp file: concurrent writes for the same child must not share a
+	// fixed ".tmp" name, or they clobber each other before rename and can lose or
+	// corrupt the last-known ledger state (this package runs with -race in CI).
+	f, err := os.CreateTemp(filepath.Dir(path), safeRecordName(e.ChildID)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

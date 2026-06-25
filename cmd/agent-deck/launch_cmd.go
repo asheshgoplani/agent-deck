@@ -47,7 +47,7 @@ func handleLaunch(profile string, args []string) {
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready before sending message")
 	assertDone := fs.Bool("assert-done", false, "Append a completion-sentinel instruction to the message (default on for -c claude)")
 	noAssertDone := fs.Bool("no-assert-done", false, "Disable the completion-sentinel instruction")
-	parent := fs.String("parent", "", "Parent session (creates sub-session, inherits group)")
+	parent := fs.String("parent", "", "Parent session (creates sub-session; group is cwd-derived by default — auto-inherits the parent's group for git worktree children or with --inherit-group)")
 	parentShort := fs.String("p", "", "Parent session (short)")
 	noParent := fs.Bool("no-parent", false, "Disable automatic parent linking")
 	// Keep a fanned-out child in the parent's group instead of the cwd-derived
