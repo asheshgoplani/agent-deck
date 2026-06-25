@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 // --- Systemd template generation tests ---
@@ -3051,5 +3053,39 @@ func TestSetupConductorWithAgent_NoClaudeTrustForCodex(t *testing.T) {
 	dir, _ := ConductorNameDir(name)
 	if entry := conductorTrustEntry(t, dir); entry != nil {
 		t.Fatalf("unexpected Claude trust entry for Codex conductor dir %q: %v", dir, entry)
+	}
+}
+
+// Issue #1359 parity: Codex conductors must pre-accept workspace trust for the
+// just-created conductor directory so first boot does not stall on the dialog.
+func TestSetupConductorWithAgent_PreAcceptsCodexTrust(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "trust-codex"
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentCodex, true, true, "", "", "", "", nil, ""); err != nil {
+		t.Fatalf("SetupConductorWithAgent: %v", err)
+	}
+
+	dir, _ := ConductorNameDir(name)
+	configPath := GetCodexConfigPath(filepath.Join(tmpHome, ".codex"))
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	var cfg map[string]any
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal codex config: %v", err)
+	}
+	projects, ok := cfg["projects"].(map[string]any)
+	if !ok {
+		t.Fatalf("projects key missing or wrong type: %T", cfg["projects"])
+	}
+	entry, ok := projects[dir].(map[string]any)
+	if !ok {
+		t.Fatalf("no trust entry for conductor dir %q in %s", dir, configPath)
+	}
+	if entry["trust_level"] != "trusted" {
+		t.Fatalf("trust_level = %v, want trusted", entry["trust_level"])
 	}
 }

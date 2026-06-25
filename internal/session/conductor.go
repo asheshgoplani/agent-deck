@@ -694,6 +694,17 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 				slog.String("error", err.Error()))
 		}
 	}
+	// Codex conductors get the same treatment (#1359 parity): seed
+	// projects[dir].trust_level = "trusted" in ~/.codex/config.toml so
+	// first boot and heartbeat do not stall on the workspace-trust dialog.
+	if spec.Agent == ConductorAgentCodex {
+		if err := PreAcceptCodexTrust(GetCodexConfigPath(getCodexHomeDir()), dir); err != nil {
+			sessionLog.Warn("conductor_preaccept_codex_trust_failed",
+				slog.String("conductor", name),
+				slog.String("dir", dir),
+				slog.String("error", err.Error()))
+		}
+	}
 
 	targetPath := filepath.Join(dir, spec.InstructionsFileName)
 

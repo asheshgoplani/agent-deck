@@ -28,6 +28,12 @@ const (
 	defaultImage = "agent-deck-sandbox:latest"
 )
 
+// ContainerWorkDir returns the workspace path inside sandbox containers.
+func ContainerWorkDir() string {
+	return containerWorkDir
+}
+
+
 // claudeHomeSeed is the ~/.claude.json seeded into sandbox containers.
 // Beyond global onboarding, it pre-trusts /workspace (the sandbox project
 // mount): Claude Code discovers project-scope plugins (.claude/skills

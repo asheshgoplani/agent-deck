@@ -10176,6 +10176,11 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			); ctxErr != nil {
 				uiLog.Warn("multi_repo_claude_context", slog.String("error", ctxErr.Error()))
 			}
+			if ctxErr := session.ApplyMultiRepoCodexContext(
+				inst.Tool, inst.MultiRepoEnabled, inst.MultiRepoTempDir,
+			); ctxErr != nil {
+				uiLog.Warn("multi_repo_codex_context", slog.String("error", ctxErr.Error()))
+			}
 		}
 
 		if parentSessionID != "" {
