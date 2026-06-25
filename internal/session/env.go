@@ -16,8 +16,10 @@ import (
 //  2. Global [shell].env_files (in order)
 //  3. [shell].init_script (for direnv, nvm, etc.)
 //  4. Tool-specific env_file ([claude].env_file, [gemini].env_file, [tools.X].env_file)
-//  5. Inline env vars from [tools.X].env
-//  6. Conductor-specific env from meta.json (highest priority, overrides tool env)
+//  5. Per-group / per-conductor inline env ([groups.X.claude].env, [conductors.X.claude].env)
+//  6. Inline env vars from [tools.X].env
+//  7. Conductor-specific env from meta.json (highest priority, overrides tool env)
+//  8. Strip TELEGRAM_STATE_DIR (v1.7.40, S8)
 //
 // Note: This does NOT handle [shell].launch_shell wrapping — that happens at the
 // prepareCommand layer (instance.go) after env sourcing, so the shell startup
@@ -37,7 +39,18 @@ func (i *Instance) buildEnvSourceCommand() string {
 		}
 	}
 
-	config, _ := LoadUserConfig()
+	config, cfgErr := LoadUserConfig()
+	if cfgErr != nil {
+		// A broken config.toml degrades EVERY per-group / per-conductor /
+		// global tool override to defaults, and the parse error is
+		// discarded at most call sites — historically "my env_file stopped
+		// injecting" with zero diagnostics. Surface it in the pane (the
+		// spawn still proceeds on defaults) and in the debug log.
+		sessionLog.Warn("user config load failed at spawn; config.toml overrides inactive",
+			slog.String("session", i.Title),
+			slog.String("error", cfgErr.Error()))
+		sources = append(sources, paneWarning("config.toml error — overrides inactive: "+cfgErr.Error()))
+	}
 	if config == nil {
 		if len(sources) == 0 {
 			return ""
@@ -69,20 +82,57 @@ func (i *Instance) buildEnvSourceCommand() string {
 	toolEnvFile := i.getToolEnvFile()
 	if toolEnvFile != "" {
 		resolved := resolvePath(toolEnvFile, i.ProjectPath)
+		// CodeQL go/path-injection (uncontrolled data in path expression):
+		// env_file is operator config and an env-var value can flow through
+		// os.ExpandEnv (resolvePath → ExpandPath) into the os.Stat path sink.
+		// statEnvFileProbe owns the stat behind a fail-closed, boundary-aware
+		// guard with a canonical traversal barrier colocated at the sink, so
+		// the taint flow is broken before any stat runs. The probe is purely a
+		// proactive "configured-but-missing" diagnostic; the file is sourced
+		// regardless via buildSourceCmd below (whose `[ -f ]` guard covers a
+		// genuinely missing file), so an env_file the operator deliberately
+		// placed outside the probe roots skips the probe but is still sourced —
+		// no feature is lost.
+		if probedPath, exists, probed := statEnvFileProbe(resolved, i.ProjectPath); probed && !exists {
+			// An explicitly configured env_file that is absent at spawn is a
+			// misconfiguration, not a soft default — the silent `[ -f ] &&`
+			// skip below is exactly how a typo'd env_file stanza goes
+			// unnoticed. Warn in the pane and the debug log; the
+			// ignore_missing_env_files=false hard-fail path is unchanged.
+			sessionLog.Warn("configured env_file missing at spawn",
+				slog.String("session", i.Title),
+				slog.String("tool", i.Tool),
+				slog.String("env_file", probedPath))
+			if ignoreMissing {
+				sources = append(sources, paneWarning("env_file not found: "+probedPath))
+			}
+		}
 		sources = append(sources, buildSourceCmd(resolved, ignoreMissing))
 	}
 
-	// 5. Inline env vars from [tools.X].env
+	// 5. Per-group / per-conductor inline env for claude sessions
+	//    ([groups.X.claude].env / [conductors.X.claude].env). Exported AFTER
+	//    the env_file source (step 4) so an inline key deterministically
+	//    wins over the same key from the file; the conductor map is applied
+	//    over the group map (CFG-08 precedence: conductor > group). Same
+	//    tool gate as the claude branch of getToolEnvFile.
+	if i.Tool == "claude" {
+		if claudeEnv := i.getClaudeInlineEnv(config); claudeEnv != "" {
+			sources = append(sources, claudeEnv)
+		}
+	}
+
+	// 6. Inline env vars from [tools.X].env
 	if inlineEnv := i.getToolInlineEnv(); inlineEnv != "" {
 		sources = append(sources, inlineEnv)
 	}
 
-	// 6. Conductor-specific env (highest priority, overrides tool env)
+	// 7. Conductor-specific env (highest priority, overrides tool env)
 	if conductorEnv := i.getConductorEnv(ignoreMissing); conductorEnv != "" {
 		sources = append(sources, conductorEnv)
 	}
 
-	// 7. S8 (v1.7.40) — strip TELEGRAM_STATE_DIR on every non-channel-owning
+	// 8. S8 (v1.7.40) — strip TELEGRAM_STATE_DIR on every non-channel-owning
 	// claude spawn. Fires AFTER all sources and inline env so it wins
 	// over any env_file / inline export that set the variable, and
 	// runs even when no env_file is in play (covers `agent-deck
@@ -161,6 +211,16 @@ func colorfgbgMatchesTheme(colorfgbg, theme string) (bool, bool) {
 	return (theme == "light") == isLight, true
 }
 
+// paneWarning returns a shell command that prints an agent-deck warning to
+// the pane's stderr. It always exits 0 so it can sit in the `&&` source
+// chain without blocking the spawn — loud, not fatal. Newlines are
+// flattened so a multi-line TOML parse error stays one pane line.
+func paneWarning(msg string) string {
+	msg = strings.ReplaceAll(msg, "\n", " ")
+	escaped := strings.ReplaceAll("agent-deck: warning: "+msg, "'", "'\\''")
+	return fmt.Sprintf("echo '%s' >&2", escaped)
+}
+
 // buildSourceCmd creates a shell command to source a file.
 // If ignoreMissing is true, wraps in a file existence check.
 func buildSourceCmd(path string, ignoreMissing bool) string {
@@ -182,6 +242,167 @@ func resolvePath(path, workDir string) string {
 		return filepath.Clean(expanded)
 	}
 	return filepath.Clean(filepath.Join(workDir, expanded))
+}
+
+// statEnvFileProbe is the single os.Stat sink for the "configured-but-missing"
+// env_file diagnostic, shared by buildEnvSourceCommand and the `group show
+// --resolved` view. It returns:
+//
+//	probed == false → the path failed validation and was NOT statted; callers
+//	                  must not treat the absent stat as "missing" (it was never
+//	                  probed). exists is false.
+//	probed == true  → the path was validated and statted; exists reports
+//	                  whether os.Stat succeeded.
+//
+// CodeQL go/path-injection (uncontrolled data in path expression): an env-var
+// value can flow through os.ExpandEnv (resolvePath → ExpandPath) into a path
+// that reaches os.Stat. validateEnvFileForProbe does the genuine, fail-closed
+// safety work (absolute-only, home/project containment, symlink-resolved
+// re-check), but its containment guard is interprocedural and runtime-rooted —
+// not a shape the taint tracker treats as a sanitizer, which is why the prior
+// guard-in-a-separate-function fix did not clear the alert. The fix is to
+// colocate the canonical traversal barrier (`strings.Contains(clean, "..")`,
+// the form CodeQL recognizes) with the os.Stat call in THIS function, so the
+// barrier dominates the exact value reaching the sink and breaks the flow.
+// filepath.Clean already neutralizes traversal on the absolute paths
+// validateEnvFileForProbe admits, so this barrier rejects nothing legitimate;
+// it re-states the invariant in a sink-local, tracker-legible form.
+func statEnvFileProbe(resolved, projectPath string) (probedPath string, exists, probed bool) {
+	clean, ok := validateEnvFileForProbe(resolved, projectPath)
+	if !ok {
+		return "", false, false
+	}
+	// Canonical traversal barrier, colocated with the os.Stat sink below.
+	if strings.Contains(clean, "..") {
+		return "", false, false
+	}
+	_, statErr := os.Stat(clean)
+	return clean, statErr == nil, true
+}
+
+// validateEnvFileForProbe is the boundary guard for the os.Stat sink in
+// statEnvFileProbe (CodeQL go/path-injection). It returns the cleaned path together
+// with ok=true ONLY when the resolved env_file is an absolute path containing no
+// traversal segment AND both its lexical string AND its symlink-resolved real
+// location sit under a root agent-deck legitimately probes: the operator's home
+// directory or the session's own project tree. Any other path (relative,
+// traversal-bearing, outside every known root, OR a lexically-contained path
+// whose real target escapes via a symlink) returns ok=false so the caller fails
+// closed and never stats it.
+//
+// The two-stage check is deliberate: os.Stat FOLLOWS symlinks, so a lexical-only
+// guard is escapable — `env_file = "~/link"` where ~/link → /etc/passwd is
+// lexically under $HOME yet probes outside it (this is the exact lexical-vs-
+// filesystem containment class caught on the #1429 migrate-dir arc). The second
+// stage resolves symlinks as far as the path exists (resolveProbeTarget) and
+// re-checks the REAL location against symlink-resolved roots, so a symlinked
+// file — or a missing leaf under a symlinked parent dir — is rejected before any
+// stat touches it.
+//
+// This intentionally guards only the proactive existence probe, NOT the sourcing
+// of the file — the spawned shell sources whatever path the operator configured
+// (buildSourceCmd), so containing the probe costs no functionality while keeping
+// uncontrolled config data from reaching the filesystem sink unvalidated. The
+// shape (Clean → reject ".." → HasPrefix(root) containment, EvalSymlinks-resolve,
+// fail-closed) mirrors ValidateTranscriptPath and resolveCanonical/pathContains
+// in conductor_migrate_dir.go.
+func validateEnvFileForProbe(resolved, projectPath string) (string, bool) {
+	clean := filepath.Clean(resolved)
+	// Only fully-resolved absolute paths are eligible; a relative or
+	// traversal-bearing path cannot be proven contained, so fail closed.
+	if !filepath.IsAbs(clean) {
+		return "", false
+	}
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) ||
+		strings.Contains(clean, string(os.PathSeparator)+".."+string(os.PathSeparator)) ||
+		strings.HasSuffix(clean, string(os.PathSeparator)+"..") {
+		return "", false
+	}
+
+	roots := probeRoots(projectPath)
+	if len(roots) == 0 {
+		return "", false
+	}
+
+	// Stage 1 — lexical containment: the configured path string must sit under
+	// a probe root. Cheap reject for the common out-of-root case.
+	if !containedUnderAny(clean, roots) {
+		return "", false
+	}
+
+	// Stage 2 — filesystem containment (the symlink-escape close): resolve
+	// symlinks as far as the path exists and verify the REAL target is still
+	// under a symlink-resolved root. A lexically-contained path whose real
+	// location escapes (symlinked file, or any path component a symlink) is
+	// rejected so os.Stat never follows the link outside the root.
+	realTarget := resolveProbeTarget(clean)
+	realRoots := make([]string, 0, len(roots))
+	for _, r := range roots {
+		realRoots = append(realRoots, resolveCanonical(r))
+	}
+	if !containedUnderAny(realTarget, realRoots) {
+		return "", false
+	}
+
+	return clean, true
+}
+
+// probeRoots returns the absolute, cleaned roots agent-deck legitimately probes
+// for a configured env_file: the operator's home directory and (when set) the
+// session's project tree.
+func probeRoots(projectPath string) []string {
+	var roots []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if h := filepath.Clean(home); filepath.IsAbs(h) {
+			roots = append(roots, h)
+		}
+	}
+	if projectPath != "" {
+		if p := filepath.Clean(projectPath); filepath.IsAbs(p) {
+			roots = append(roots, p)
+		}
+	}
+	return roots
+}
+
+// containedUnderAny reports whether path equals or is nested under any of roots.
+// Boundary-aware: uses root+separator so a sibling whose string prefix matches a
+// root (e.g. "<home>-sibling") is NOT treated as contained.
+func containedUnderAny(path string, roots []string) bool {
+	for _, root := range roots {
+		if path == root || strings.HasPrefix(path, root+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveProbeTarget returns the symlink-resolved real location of an absolute
+// path, resolving symlinks on the DEEPEST EXISTING ancestor and re-appending the
+// not-yet-existing tail. This is stronger than resolveCanonical (which falls back
+// to the wholly-lexical path when the full path does not exist): it catches a
+// symlinked parent directory with a missing leaf (e.g. env_file
+// "$project/evil/missing.env" where $project/evil → /outside), which a missing
+// final component would otherwise leave unresolved and lexically-contained.
+func resolveProbeTarget(clean string) string {
+	remainder := ""
+	cur := clean
+	for {
+		if real, err := filepath.EvalSymlinks(cur); err == nil {
+			if remainder == "" {
+				return real
+			}
+			return filepath.Join(real, remainder)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the filesystem root with nothing resolvable; the
+			// lexical path is the best available real location.
+			return clean
+		}
+		remainder = filepath.Join(filepath.Base(cur), remainder)
+		cur = parent
+	}
 }
 
 // ExpandPath expands environment variables and ~ prefix in a path.
@@ -246,6 +467,49 @@ func (i *Instance) getToolInlineEnv() string {
 		exports = append(exports, fmt.Sprintf("export %s='%s'", k, escaped))
 	}
 
+	return strings.Join(exports, " && ")
+}
+
+// getClaudeInlineEnv returns shell export statements for the merged
+// per-group / per-conductor inline env map ([groups.X.claude].env,
+// [conductors.X.claude].env). Merge order (later wins per key): ancestor
+// groups root-first → exact group → conductor block. Keys are sorted for
+// deterministic output; invalid env names are skipped and single quotes in
+// values are escaped — same rules as the conductor meta.json env
+// (getConductorEnv) and [tools.X].env (getToolInlineEnv).
+func (i *Instance) getClaudeInlineEnv(config *UserConfig) string {
+	if config == nil {
+		return ""
+	}
+	merged := config.GetGroupClaudeEnv(i.GroupPath) // freshly allocated; safe to overlay
+	if name := conductorNameFromInstance(i); name != "" {
+		if conductorEnv := config.GetConductorClaudeEnv(name); len(conductorEnv) > 0 {
+			if merged == nil {
+				merged = make(map[string]string, len(conductorEnv))
+			}
+			for k, v := range conductorEnv {
+				merged[k] = v
+			}
+		}
+	}
+	if len(merged) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(merged))
+	for k := range merged {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	exports := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if !isValidEnvKey(k) {
+			continue // skip invalid env var names
+		}
+		escaped := strings.ReplaceAll(merged[k], "'", "'\\''")
+		exports = append(exports, fmt.Sprintf("export %s='%s'", k, escaped))
+	}
 	return strings.Join(exports, " && ")
 }
 

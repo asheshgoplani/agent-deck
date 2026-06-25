@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -658,12 +659,43 @@ type GroupSettings struct {
 }
 
 // GroupClaudeSettings defines group-specific Claude overrides.
+//
+// The key surface deliberately mirrors ConductorClaudeSettings (CFG-08
+// established the two blocks as mirrors); keep them in sync when adding
+// keys. New keys use omitempty so SaveUserConfig does not emit zero-value
+// fields into every group stanza (see issue #1360).
 type GroupClaudeSettings struct {
 	// ConfigDir overrides [claude].config_dir for sessions in this group.
 	ConfigDir string `toml:"config_dir,omitempty"`
 
 	// EnvFile overrides [claude].env_file for sessions in this group.
 	EnvFile string `toml:"env_file,omitempty"`
+
+	// Command overrides [claude].command for sessions in this group
+	// (e.g. a wrapper like "claude-vertex"). Same parity Hermes already
+	// has via GroupHermesSettings.Command. Resolution:
+	// conductor > group (ancestor-walking) > global [claude].command > "claude".
+	Command string `toml:"command,omitempty"`
+
+	// Model is the model default for sessions in this group (e.g.
+	// "claude-sonnet-4-6" or an alias like "sonnet"). An explicit
+	// per-session model (CLI --model, new-session dialog) wins; empty
+	// falls through (#1172 semantics).
+	Model string `toml:"model,omitempty"`
+
+	// Env is an inline env map exported in the spawn command AFTER the
+	// env_file source, so an inline key deterministically wins over the
+	// same key from the file. Precedent: [tools.X].env.
+	Env map[string]string `toml:"env,omitempty"`
+
+	// Skills lists declarative skill-loadout entries ("<source>/<name>")
+	// to attach to sessions in this group. Reserved schema home for the
+	// loadout follow-up; surfaced by `group show --resolved`.
+	Skills []string `toml:"skills,omitempty"`
+
+	// MCPs lists [mcps.X] catalog names to attach to sessions in this
+	// group. Reserved schema home for the loadout follow-up.
+	MCPs []string `toml:"mcps,omitempty"`
 }
 
 // GroupHermesSettings defines group-specific Hermes overrides.
@@ -703,6 +735,26 @@ type ConductorClaudeSettings struct {
 	// EnvFile is sourced before claude exec for this conductor.
 	// Matches CFG-03 semantics — missing file logs a warning, does not block.
 	EnvFile string `toml:"env_file,omitempty"`
+
+	// Command overrides [claude].command for this conductor only.
+	// Mirrors GroupClaudeSettings.Command; conductor beats group.
+	Command string `toml:"command,omitempty"`
+
+	// Model is the model default for this conductor's sessions. An
+	// explicit per-session model wins; empty falls through (#1172).
+	Model string `toml:"model,omitempty"`
+
+	// Env is an inline env map exported AFTER the env_file source and
+	// AFTER the group env map (conductor wins per key on conflict).
+	Env map[string]string `toml:"env,omitempty"`
+
+	// Skills lists declarative skill-loadout entries ("<source>/<name>").
+	// Reserved schema home for the loadout follow-up.
+	Skills []string `toml:"skills,omitempty"`
+
+	// MCPs lists [mcps.X] catalog names. Reserved schema home for the
+	// loadout follow-up.
+	MCPs []string `toml:"mcps,omitempty"`
 }
 
 // ConductorHermesSettings defines conductor-specific Hermes overrides.
@@ -1301,6 +1353,115 @@ func (c *UserConfig) GetGroupClaudeEnvFile(groupPath string) string {
 	return ""
 }
 
+// findGroupClaudeSetting walks the group ancestor chain (exact path first,
+// then each parent) and returns the first non-empty value the extractor
+// yields, plus the group path it matched. Shared walk for the scalar
+// [groups.X.claude] keys so the inheritance semantics established by
+// GetGroupClaudeConfigDir/GetGroupClaudeEnvFile cannot drift per key.
+func (c *UserConfig) findGroupClaudeSetting(groupPath string, get func(GroupClaudeSettings) string) (value, matchedGroup string) {
+	if c == nil || groupPath == "" || c.Groups == nil {
+		return "", ""
+	}
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if groupCfg, ok := c.Groups[p]; ok {
+			if v := get(groupCfg.Claude); v != "" {
+				return v, p
+			}
+		}
+	}
+	return "", ""
+}
+
+// GetGroupClaudeCommand returns the group-specific Claude command, walking
+// ancestor groups when the exact path has no override. No path expansion —
+// the value is a command/alias, not a filesystem path.
+func (c *UserConfig) GetGroupClaudeCommand(groupPath string) string {
+	v, _ := c.findGroupClaudeSetting(groupPath, func(s GroupClaudeSettings) string { return s.Command })
+	return v
+}
+
+// GetGroupClaudeModel returns the group-specific Claude model default,
+// walking ancestor groups when the exact path has no override.
+func (c *UserConfig) GetGroupClaudeModel(groupPath string) string {
+	v, _ := c.findGroupClaudeSetting(groupPath, func(s GroupClaudeSettings) string { return s.Model })
+	return v
+}
+
+// GetGroupClaudeEnv returns the merged inline env map for a group. Unlike
+// the scalar keys (nearest ancestor wins wholesale), env maps merge along
+// the ancestor chain per key — applied root-first so the nearest group's
+// value wins on conflict while parent-only keys persist. A child group
+// adding one variable must not silently drop the parent's map.
+// Returns a freshly allocated map (callers may overlay onto it), nil when
+// no level defines env.
+func (c *UserConfig) GetGroupClaudeEnv(groupPath string) map[string]string {
+	if c == nil || groupPath == "" || c.Groups == nil {
+		return nil
+	}
+	// Collect leaf-first, then apply in reverse (root-first) so nearer
+	// groups overwrite per key.
+	var chain []map[string]string
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if groupCfg, ok := c.Groups[p]; ok && len(groupCfg.Claude.Env) > 0 {
+			chain = append(chain, groupCfg.Claude.Env)
+		}
+	}
+	if len(chain) == 0 {
+		return nil
+	}
+	merged := make(map[string]string)
+	for idx := len(chain) - 1; idx >= 0; idx-- {
+		for k, v := range chain[idx] {
+			merged[k] = v
+		}
+	}
+	return merged
+}
+
+// GetGroupClaudeSkills returns the union of skill-loadout entries along the
+// group ancestor chain, deduplicated, root-first. Union (not nearest-wins)
+// because the loadout is an attach-only floor: a child group declaring its
+// own skills adds to the parent's floor rather than replacing it.
+func (c *UserConfig) GetGroupClaudeSkills(groupPath string) []string {
+	return c.unionGroupClaudeList(groupPath, func(s GroupClaudeSettings) []string { return s.Skills })
+}
+
+// GetGroupClaudeMCPs returns the union of [mcps.X] catalog names along the
+// group ancestor chain, deduplicated, root-first. Same floor semantics as
+// GetGroupClaudeSkills.
+func (c *UserConfig) GetGroupClaudeMCPs(groupPath string) []string {
+	return c.unionGroupClaudeList(groupPath, func(s GroupClaudeSettings) []string { return s.MCPs })
+}
+
+func (c *UserConfig) unionGroupClaudeList(groupPath string, get func(GroupClaudeSettings) []string) []string {
+	if c == nil || groupPath == "" || c.Groups == nil {
+		return nil
+	}
+	var chain [][]string
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if groupCfg, ok := c.Groups[p]; ok {
+			if list := get(groupCfg.Claude); len(list) > 0 {
+				chain = append(chain, list)
+			}
+		}
+	}
+	if len(chain) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var union []string
+	for idx := len(chain) - 1; idx >= 0; idx-- {
+		for _, entry := range chain[idx] {
+			if entry == "" || seen[entry] {
+				continue
+			}
+			seen[entry] = true
+			union = append(union, entry)
+		}
+	}
+	return union
+}
+
 // GetGroupHermesEnvFile returns the group-specific Hermes env file, walking
 // ancestor groups when the exact path has no override. Mirrors
 // GetGroupClaudeEnvFile's inheritance semantics.
@@ -1345,6 +1506,76 @@ func (c *UserConfig) GetConductorClaudeEnvFile(name string) string {
 		return ""
 	}
 	return conductorCfg.Claude.EnvFile
+}
+
+// GetConductorClaudeCommand returns the conductor-specific Claude command,
+// if configured. Mirrors GetGroupClaudeCommand; conductor beats group in
+// the resolution chain (CFG-08 precedence).
+func (c *UserConfig) GetConductorClaudeCommand(name string) string {
+	if c == nil || name == "" || c.Conductors == nil {
+		return ""
+	}
+	return c.Conductors[name].Claude.Command
+}
+
+// GetConductorClaudeModel returns the conductor-specific Claude model
+// default, if configured. Mirrors GetGroupClaudeModel.
+func (c *UserConfig) GetConductorClaudeModel(name string) string {
+	if c == nil || name == "" || c.Conductors == nil {
+		return ""
+	}
+	return c.Conductors[name].Claude.Model
+}
+
+// GetConductorClaudeEnv returns the conductor-specific inline env map, if
+// configured. Applied over the group env map at spawn (conductor wins per
+// key). Nil when the conductor has no block or no env.
+func (c *UserConfig) GetConductorClaudeEnv(name string) map[string]string {
+	if c == nil || name == "" || c.Conductors == nil {
+		return nil
+	}
+	src := c.Conductors[name].Claude.Env
+	if len(src) == 0 {
+		return nil
+	}
+	// Defensive copy: never hand callers the live cached map. A caller
+	// mutating it would silently corrupt the cached config and race
+	// concurrent readers. Mirrors the fresh map GetGroupClaudeEnv returns.
+	cp := make(map[string]string, len(src))
+	for k, v := range src {
+		cp[k] = v
+	}
+	return cp
+}
+
+// GetConductorClaudeSkills returns the conductor-specific skill-loadout
+// entries, if configured. The effective loadout for a conductor session is
+// the union of its group chain's skills and this list (floor semantics).
+func (c *UserConfig) GetConductorClaudeSkills(name string) []string {
+	if c == nil || name == "" || c.Conductors == nil {
+		return nil
+	}
+	src := c.Conductors[name].Claude.Skills
+	if len(src) == 0 {
+		return nil
+	}
+	// Defensive copy — see GetConductorClaudeEnv. Callers must not mutate the
+	// cached slice; GetGroupClaudeSkills likewise returns a fresh union slice.
+	return append([]string(nil), src...)
+}
+
+// GetConductorClaudeMCPs returns the conductor-specific [mcps.X] catalog
+// names, if configured. Same floor semantics as GetConductorClaudeSkills.
+func (c *UserConfig) GetConductorClaudeMCPs(name string) []string {
+	if c == nil || name == "" || c.Conductors == nil {
+		return nil
+	}
+	src := c.Conductors[name].Claude.MCPs
+	if len(src) == 0 {
+		return nil
+	}
+	// Defensive copy — see GetConductorClaudeEnv.
+	return append([]string(nil), src...)
 }
 
 // GetConductorHermesEnvFile returns the conductor-specific Hermes env_file,
@@ -2461,9 +2692,16 @@ func cloneDefaultUserConfig() UserConfig {
 // the snapshot taken at cache time, so long-running processes (TUI, web,
 // notify-daemon) pick up external edits without requiring a full restart.
 // Regression: TestLoadUserConfig_PicksUpExternalEdits.
+//
+// userConfigCacheErr remembers a parse error alongside the cached default
+// config so cache hits keep returning it. Without it only the FIRST load
+// after an mtime change saw the error; every later call got (defaults, nil)
+// and a broken config.toml silently disabled all overrides with zero
+// diagnostics until the file's mtime changed again.
 var (
 	userConfigCache      *UserConfig
 	userConfigCacheMtime time.Time
+	userConfigCacheErr   error
 	userConfigCacheMu    sync.RWMutex
 )
 
@@ -2493,7 +2731,7 @@ func LoadUserConfig() (*UserConfig, error) {
 	userConfigCacheMu.RLock()
 	if userConfigCache != nil && currentMtime.Equal(userConfigCacheMtime) {
 		defer userConfigCacheMu.RUnlock()
-		return userConfigCache, nil
+		return userConfigCache, userConfigCacheErr
 	}
 	userConfigCacheMu.RUnlock()
 
@@ -2503,7 +2741,7 @@ func LoadUserConfig() (*UserConfig, error) {
 	// Re-check under write lock: another goroutine may have refreshed the
 	// cache to match currentMtime between our RLock drop and Lock acquire.
 	if userConfigCache != nil && currentMtime.Equal(userConfigCacheMtime) {
-		return userConfigCache, nil
+		return userConfigCache, userConfigCacheErr
 	}
 
 	if pathErr != nil {
@@ -2511,6 +2749,7 @@ func LoadUserConfig() (*UserConfig, error) {
 		userConfigCache = &fresh
 		userConfigCacheMtime = time.Time{}
 		SetGroupSortMode(fresh.GetGroupSort())
+		userConfigCacheErr = nil
 		return userConfigCache, nil
 	}
 
@@ -2519,18 +2758,21 @@ func LoadUserConfig() (*UserConfig, error) {
 		userConfigCache = &fresh
 		userConfigCacheMtime = time.Time{}
 		SetGroupSortMode(fresh.GetGroupSort())
+		userConfigCacheErr = nil
 		return userConfigCache, nil
 	}
 
 	var config UserConfig
 	if _, err := toml.DecodeFile(configPath, &config); err != nil {
-		// Cache default to prevent hot-looping on a broken file, but still
-		// return the error so the caller can surface it.
+		// Cache default to prevent hot-looping on a broken file, and cache
+		// the error too so every call (not just the first after the mtime
+		// change) can surface that the on-disk config is being ignored.
 		fresh := cloneDefaultUserConfig()
 		userConfigCache = &fresh
 		userConfigCacheMtime = currentMtime
 		SetGroupSortMode(fresh.GetGroupSort())
-		return userConfigCache, fmt.Errorf("config.toml parse error: %w", err)
+		userConfigCacheErr = fmt.Errorf("config.toml parse error: %w", err)
+		return userConfigCache, userConfigCacheErr
 	}
 
 	if config.Tools == nil {
@@ -2552,6 +2794,7 @@ func LoadUserConfig() (*UserConfig, error) {
 
 	userConfigCache = &config
 	userConfigCacheMtime = currentMtime
+	userConfigCacheErr = nil
 	return userConfigCache, nil
 }
 
@@ -2712,7 +2955,7 @@ func countFunctionalGroups(groups map[string]GroupSettings) int {
 	var zero GroupSettings
 	count := 0
 	for _, g := range groups {
-		if g.Create || strings.TrimSpace(g.DefaultPath) != "" || g.Claude != zero.Claude || g.Hermes != zero.Hermes {
+		if g.Create || strings.TrimSpace(g.DefaultPath) != "" || !reflect.DeepEqual(g.Claude, zero.Claude) || !reflect.DeepEqual(g.Hermes, zero.Hermes) {
 			count++
 		}
 	}
@@ -2781,6 +3024,7 @@ func ClearUserConfigCache() {
 	userConfigCacheMu.Lock()
 	userConfigCache = nil
 	userConfigCacheMtime = time.Time{}
+	userConfigCacheErr = nil
 	userConfigCacheMu.Unlock()
 }
 
