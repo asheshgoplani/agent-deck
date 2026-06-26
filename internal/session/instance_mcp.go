@@ -7,7 +7,7 @@ import (
 
 // ToolSupportsMCPManager reports whether the TUI/CLI MCP surfaces apply to this tool.
 func ToolSupportsMCPManager(toolName string) bool {
-	return IsClaudeCompatible(toolName) || toolName == "gemini" || toolName == "cursor" || toolName == "opencode"
+	return IsClaudeCompatible(toolName) || IsCodexCompatible(toolName) || toolName == "gemini" || toolName == "cursor" || toolName == "opencode"
 }
 
 // MCPLocalConfigPathForTool returns the project-local MCP config path for display and writes.
@@ -17,6 +17,8 @@ func MCPLocalConfigPathForTool(toolName, projectPath string) string {
 		return ""
 	}
 	switch {
+	case IsCodexCompatible(toolName):
+		return ""
 	case IsClaudeCompatible(toolName):
 		return filepath.Join(projectPath, ".mcp.json")
 	case toolName == "cursor":
@@ -31,6 +33,8 @@ func MCPLocalConfigPathForTool(toolName, projectPath string) string {
 // MCPGlobalConfigPathForTool returns the global MCP config path for display and writes.
 func MCPGlobalConfigPathForTool(toolName string) string {
 	switch {
+	case IsCodexCompatible(toolName):
+		return filepath.Join(GetCodexConfigDir(), "config.toml")
 	case IsClaudeCompatible(toolName):
 		return filepath.Join(GetClaudeConfigDir(), ".claude.json")
 	case toolName == "gemini":
@@ -52,6 +56,8 @@ func MCPInfoForLocalAttach(toolName, projectPath string) *MCPInfo {
 		return GetMCPInfo(projectPath)
 	}
 	switch {
+	case IsCodexCompatible(toolName):
+		return GetCodexMCPInfo("")
 	case toolName == "cursor":
 		return GetCursorMCPInfo(projectPath)
 	case toolName == "opencode":
@@ -66,6 +72,8 @@ func MCPInfoForLocalAttach(toolName, projectPath string) *MCPInfo {
 // WriteLocalMCPConfigForTool writes enabled catalog MCPs to the tool's project-local MCP file.
 func WriteLocalMCPConfigForTool(toolName, projectPath string, names []string) error {
 	switch {
+	case IsCodexCompatible(toolName):
+		return WriteCodexMCPConfig("", names)
 	case toolName == "cursor":
 		return WriteCursorProjectMCP(projectPath, names)
 	case toolName == "opencode":
@@ -80,6 +88,8 @@ func WriteLocalMCPConfigForTool(toolName, projectPath string, names []string) er
 // WriteGlobalMCPConfigForTool writes enabled catalog MCPs to the tool's global MCP store.
 func WriteGlobalMCPConfigForTool(toolName string, names []string) error {
 	switch {
+	case IsCodexCompatible(toolName):
+		return WriteCodexMCPConfig("", names)
 	case IsClaudeCompatible(toolName):
 		return WriteGlobalMCP(names)
 	case toolName == "gemini":
@@ -98,6 +108,7 @@ func InvalidateProjectMCPIntegrationsCache(projectPath string) {
 	ClearMCPCache(projectPath)
 	ClearCursorMCPCache(projectPath)
 	ClearOpenCodeMCPCache(projectPath)
+	ClearAllCodexMCPInfoCache()
 }
 
 // MCPLocalConfigPath returns the project-local MCP file path for this instance's tool.
@@ -107,27 +118,42 @@ func (i *Instance) MCPLocalConfigPath() string {
 
 // MCPGlobalConfigPath returns the global MCP file path for this instance's tool.
 func (i *Instance) MCPGlobalConfigPath() string {
+	if IsCodexCompatible(i.Tool) {
+		return filepath.Join(i.getCodexHomeDir(), "config.toml")
+	}
 	return MCPGlobalConfigPathForTool(i.Tool)
 }
 
 // MCPInfoForLocalAttach returns MCP info for local attach/detach for this instance.
 func (i *Instance) MCPInfoForLocalAttach() *MCPInfo {
+	if IsCodexCompatible(i.Tool) {
+		return GetCodexMCPInfo(i.getCodexHomeDir())
+	}
 	return MCPInfoForLocalAttach(i.Tool, i.ProjectPath)
 }
 
 // WriteLocalMCPConfig writes catalog MCPs to this instance's project-local MCP file.
 func (i *Instance) WriteLocalMCPConfig(names []string) error {
+	if IsCodexCompatible(i.Tool) {
+		return WriteCodexMCPConfig(i.getCodexHomeDir(), names)
+	}
 	return WriteLocalMCPConfigForTool(i.Tool, i.ProjectPath, names)
 }
 
 // WriteGlobalMCPConfig writes catalog MCPs to this instance's global MCP store.
 func (i *Instance) WriteGlobalMCPConfig(names []string) error {
+	if IsCodexCompatible(i.Tool) {
+		return WriteCodexMCPConfig(i.getCodexHomeDir(), names)
+	}
 	return WriteGlobalMCPConfigForTool(i.Tool, names)
 }
 
 // InvalidateProjectMCPIntegrationsCache clears MCP read caches for this instance's project.
 func (i *Instance) InvalidateProjectMCPIntegrationsCache() {
 	InvalidateProjectMCPIntegrationsCache(i.ProjectPath)
+	if IsCodexCompatible(i.Tool) {
+		ClearCodexMCPCache(i.getCodexHomeDir())
+	}
 }
 
 // SupportsMCPAgentRestart is true when attach/detach --restart may reload the running agent.

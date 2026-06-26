@@ -1718,8 +1718,8 @@ func handleAdd(profile string, args []string) {
 			}
 		}
 
-		// Write MCPs to .mcp.json
-		if err := session.WriteMCPJsonFromConfig(path, mcpFlags); err != nil {
+		// Write MCPs to the selected tool's MCP store.
+		if err := newInstance.WriteLocalMCPConfig(mcpFlags); err != nil {
 			fmt.Printf("Error: failed to write MCPs: %v\n", err)
 			os.Exit(1)
 		}

@@ -421,9 +421,13 @@ func handleMCPAttach(profile string, args []string) {
 	if *global {
 		scope = "global"
 	}
+	useGlobalConfig := *global || session.IsCodexCompatible(inst.Tool)
+	if session.IsCodexCompatible(inst.Tool) {
+		scope = "global"
+	}
 
 	// Attach the MCP
-	if *global {
+	if useGlobalConfig {
 		mcpInfo := inst.GetMCPInfo()
 		if mcpInfo == nil {
 			mcpInfo = &session.MCPInfo{}
@@ -470,10 +474,10 @@ func handleMCPAttach(profile string, args []string) {
 			}
 		} else {
 			restarted = true
-			// Auto-continue: wait for Claude/Gemini to initialize, then send continue message
+			// Auto-continue: wait for the agent to initialize, then send continue message.
 			time.Sleep(2 * time.Second)
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && inst.Tool != "cursor" {
-				// Claude/Gemini only — Cursor restart already resumes the agent session.
+				// Cursor restart already resumes the agent session.
 				_ = tmuxSess.SendKeysAndEnter("continue")
 			}
 		}
@@ -564,9 +568,13 @@ func handleMCPDetach(profile string, args []string) {
 	if *global {
 		scope = "global"
 	}
+	useGlobalConfig := *global || session.IsCodexCompatible(inst.Tool)
+	if session.IsCodexCompatible(inst.Tool) {
+		scope = "global"
+	}
 
 	// Detach the MCP
-	if *global {
+	if useGlobalConfig {
 		mcpInfo := inst.GetMCPInfo()
 		if mcpInfo == nil {
 			mcpInfo = &session.MCPInfo{}
@@ -626,10 +634,10 @@ func handleMCPDetach(profile string, args []string) {
 			}
 		} else {
 			restarted = true
-			// Auto-continue: wait for Claude/Gemini to initialize, then send continue message
+			// Auto-continue: wait for the agent to initialize, then send continue message.
 			time.Sleep(2 * time.Second)
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && inst.Tool != "cursor" {
-				// Claude/Gemini only — Cursor restart already resumes the agent session.
+				// Cursor restart already resumes the agent session.
 				_ = tmuxSess.SendKeysAndEnter("continue")
 			}
 		}
