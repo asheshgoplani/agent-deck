@@ -25,7 +25,8 @@ const (
 	FieldColor              = "color"
 	FieldNotes              = "notes"
 	FieldClaudeSessionID    = "claude-session-id"
-	FieldGeminiSessionID    = "gemini-session-id"
+	FieldGeminiSessionID           = "gemini-session-id"
+	FieldAntigravityConversationID = "antigravity-conversation-id"
 	FieldOpenCodeSessionID  = "opencode-session-id"
 	FieldCodexSessionID     = "codex-session-id"
 	FieldTitleLocked        = "title-locked"
@@ -58,6 +59,7 @@ var ValidMutableFields = []string{
 	FieldNotes,
 	FieldClaudeSessionID,
 	FieldGeminiSessionID,
+	FieldAntigravityConversationID,
 	FieldOpenCodeSessionID,
 	FieldCodexSessionID,
 	FieldTitleLocked,
@@ -297,6 +299,12 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		inst.GeminiSessionID = value
 		inst.GeminiDetectedAt = time.Now()
 		postCommit = makeSessionEnvPostCommit(inst, "GEMINI_SESSION_ID", value)
+
+	case FieldAntigravityConversationID:
+		oldValue = inst.AntigravityConversationID
+		inst.AntigravityConversationID = value
+		inst.AntigravityDetectedAt = time.Now()
+		postCommit = makeSessionEnvPostCommit(inst, "ANTIGRAVITY_CONVERSATION_ID", value)
 
 	case FieldOpenCodeSessionID:
 		oldValue = inst.OpenCodeSessionID

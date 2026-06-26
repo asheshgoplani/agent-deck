@@ -192,6 +192,12 @@ type Instance struct {
 	GeminiModel      string                  `json:"gemini_model,omitempty"`     // Active model for this session
 	GeminiAnalytics  *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"` // Per-session analytics
 
+	// Antigravity CLI (agy) integration
+	AntigravityConversationID string    `json:"antigravity_conversation_id,omitempty"`
+	AntigravityDetectedAt     time.Time `json:"antigravity_detected_at,omitempty"`
+	AntigravityYoloMode       *bool     `json:"antigravity_yolo_mode,omitempty"`
+	AntigravityModel          string    `json:"antigravity_model,omitempty"`
+
 	// OpenCode CLI integration
 	OpenCodeSessionID  string    `json:"opencode_session_id,omitempty"`
 	OpenCodeDetectedAt time.Time `json:"opencode_detected_at,omitempty"`
@@ -2788,6 +2794,8 @@ func (i *Instance) DisplaySessionID() string {
 		return i.ClaudeSessionID
 	case i.Tool == "gemini":
 		return i.GeminiSessionID
+	case i.Tool == "antigravity":
+		return i.AntigravityConversationID
 	case i.Tool == "opencode":
 		return i.OpenCodeSessionID
 	case i.Tool == "codex":
@@ -3114,6 +3122,8 @@ func (i *Instance) Start() error {
 		}
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
+	case i.Tool == "antigravity":
+		command = i.buildAntigravityCommand(i.Command)
 	case i.Tool == "copilot":
 		command = buildCopilotCommand(i)
 		// Record start time for session ID detection (Unix millis)
@@ -3240,6 +3250,16 @@ func (i *Instance) Start() error {
 		}
 		_ = i.tmuxSession.SetEnvironment("GEMINI_YOLO_MODE", yoloVal)
 	}
+	if i.AntigravityConversationID != "" {
+		_ = i.tmuxSession.SetEnvironment("ANTIGRAVITY_CONVERSATION_ID", i.AntigravityConversationID)
+	}
+	if i.Tool == "antigravity" {
+		yoloVal := "false"
+		if i.AntigravityYoloMode != nil && *i.AntigravityYoloMode {
+			yoloVal = "true"
+		}
+		_ = i.tmuxSession.SetEnvironment("ANTIGRAVITY_YOLO_MODE", yoloVal)
+	}
 	// OpenCode and Codex IDs are detected asynchronously; SyncSessionIDsToTmux() handles
 	// propagation once they are available.
 	// Copilot session ID propagation (if already known from prior session)
@@ -3363,6 +3383,8 @@ func (i *Instance) StartWithMessage(message string) error {
 		}
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
+	case i.Tool == "antigravity":
+		command = i.buildAntigravityCommand(i.Command)
 	case i.Tool == "opencode":
 		if i.IsForkAwaitingStart {
 			command = i.buildOpenCodeCommand(i.consumeForkStartCommand())
@@ -3475,6 +3497,16 @@ func (i *Instance) StartWithMessage(message string) error {
 			yoloVal = "true"
 		}
 		_ = i.tmuxSession.SetEnvironment("GEMINI_YOLO_MODE", yoloVal)
+	}
+	if i.AntigravityConversationID != "" {
+		_ = i.tmuxSession.SetEnvironment("ANTIGRAVITY_CONVERSATION_ID", i.AntigravityConversationID)
+	}
+	if i.Tool == "antigravity" {
+		yoloVal := "false"
+		if i.AntigravityYoloMode != nil && *i.AntigravityYoloMode {
+			yoloVal = "true"
+		}
+		_ = i.tmuxSession.SetEnvironment("ANTIGRAVITY_YOLO_MODE", yoloVal)
 	}
 
 	// Propagate COLORFGBG into the tmux session environment so that any new
@@ -3794,7 +3826,7 @@ func (i *Instance) UpdateStatus() error {
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
+	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini" || i.Tool == "antigravity" || i.Tool == "hermes" || i.Tool == "cursor") {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
@@ -3813,7 +3845,7 @@ func (i *Instance) UpdateStatus() error {
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
 	// polling and tool-specific session sync (tmux env/process-files/disk).
-	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") &&
+	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "antigravity" || i.Tool == "hermes" || i.Tool == "cursor") &&
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		switch i.hookStatus {
@@ -3864,6 +3896,11 @@ func (i *Instance) UpdateStatus() error {
 				if i.hookSessionID != i.GeminiSessionID {
 					i.GeminiSessionID = i.hookSessionID
 					i.GeminiDetectedAt = time.Now()
+				}
+			case i.Tool == "antigravity":
+				if i.hookSessionID != i.AntigravityConversationID {
+					i.AntigravityConversationID = i.hookSessionID
+					i.AntigravityDetectedAt = time.Now()
 				}
 			}
 		}
@@ -4044,6 +4081,10 @@ func (i *Instance) UpdateStatus() error {
 			if i.GeminiSessionID == "" {
 				interval = 500 * time.Millisecond
 			}
+		case i.Tool == "antigravity":
+			if i.AntigravityConversationID == "" {
+				interval = 500 * time.Millisecond
+			}
 		case IsCodexCompatible(i.Tool):
 			if i.CodexSessionID == "" {
 				interval = 500 * time.Millisecond
@@ -4058,6 +4099,9 @@ func (i *Instance) UpdateStatus() error {
 			// Update Gemini session tracking (non-blocking, best-effort)
 			if i.Tool == "gemini" {
 				i.UpdateGeminiSession(nil)
+			}
+			if i.Tool == "antigravity" {
+				i.UpdateAntigravitySession()
 			}
 
 			// Update Codex session tracking (non-blocking, best-effort)
@@ -4306,6 +4350,13 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// OR when current session is empty (first detection/bootstrap).
 		if i.GeminiSessionID == "" || geminiSessionHasConversationData(sessionID, i.ProjectPath) {
 			i.bindGeminiSessionFromHook(sessionID, status.Event)
+		}
+	case i.Tool == "antigravity":
+		if sessionID == i.AntigravityConversationID {
+			return
+		}
+		if i.AntigravityConversationID == "" || antigravityConversationHasData(sessionID) {
+			i.bindAntigravitySessionFromHook(sessionID, status.Event)
 		}
 	}
 }
@@ -4726,6 +4777,8 @@ func (i *Instance) PostStartSync(maxWait time.Duration) {
 		i.autoConfirmClaudeResumePicker()
 	case i.Tool == "gemini":
 		i.UpdateGeminiSession(nil)
+	case i.Tool == "antigravity":
+		i.UpdateAntigravitySession()
 	case i.Tool == "copilot":
 		// Copilot uses async detection via detectCopilotSessionAsync().
 		// If the session was not yet detected, attempt a quick sync check.
@@ -4838,6 +4891,11 @@ func (i *Instance) SyncSessionIDsToTmux() {
 		_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", i.GeminiSessionID)
 	}
 
+	// Sync Antigravity conversation ID
+	if i.AntigravityConversationID != "" {
+		_ = i.tmuxSession.SetEnvironment("ANTIGRAVITY_CONVERSATION_ID", i.AntigravityConversationID)
+	}
+
 	// Sync OpenCodeSessionID
 	if i.OpenCodeSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("OPENCODE_SESSION_ID", i.OpenCodeSessionID)
@@ -4863,6 +4921,11 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 	if i.Tool == "gemini" {
 		i.GeminiSessionID = ""
 		i.GeminiDetectedAt = time.Time{}
+	}
+
+	if i.Tool == "antigravity" {
+		i.AntigravityConversationID = ""
+		i.AntigravityDetectedAt = time.Time{}
 	}
 
 	if i.Tool == "opencode" {
@@ -5646,6 +5709,8 @@ func (i *Instance) getTerminalLastResponse() (*ResponseOutput, error) {
 	switch {
 	case i.Tool == "gemini":
 		return parseGeminiOutput(content)
+	case i.Tool == "antigravity":
+		return parseGeminiOutput(content)
 	case IsCodexCompatible(i.Tool):
 		return parseCodexOutput(content)
 	default:
@@ -6003,6 +6068,36 @@ func (i *Instance) Restart() error {
 	if i.Tool == "gemini" {
 		i.UpdateGeminiSession(nil)
 	}
+	if i.Tool == "antigravity" {
+		i.UpdateAntigravitySession()
+	}
+
+	// If Antigravity session with known ID AND tmux session exists, use respawn-pane.
+	if i.Tool == "antigravity" && i.AntigravityConversationID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
+		resumeCmd, containerName, err := i.prepareCommand(i.buildAntigravityCommand("agy"))
+		if err != nil {
+			return err
+		}
+		if containerName != "" {
+			i.SandboxContainer = containerName
+		}
+		sessionLog.Info("restart_antigravity_respawn", slog.String("command", resumeCmd))
+
+		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
+			sessionLog.Info("restart_antigravity_respawn_failed", slog.String("error", err.Error()))
+			return fmt.Errorf("failed to restart Antigravity session: %w", err)
+		}
+
+		sessionLog.Info("restart_antigravity_respawn_succeeded")
+		i.ensureProfileEnv()
+		WriteHookSessionAnchor(i.ID, i.AntigravityConversationID)
+		i.sweepDuplicateToolSessions()
+		// Mirror the Claude respawn path: MCPs may have changed since the
+		// session started, so re-capture them now or LoadedMCPNames goes stale.
+		i.CaptureLoadedMCPs()
+		i.Status = StatusWaiting
+		return nil
+	}
 
 	// If Gemini session with known ID AND tmux session exists, use respawn-pane.
 	if i.Tool == "gemini" && i.GeminiSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
@@ -6256,6 +6351,8 @@ func (i *Instance) Restart() error {
 		command = i.buildClaudeResumeCommand()
 	} else if i.Tool == "gemini" && i.GeminiSessionID != "" {
 		command = i.buildGeminiCommand("gemini")
+	} else if i.Tool == "antigravity" && i.AntigravityConversationID != "" {
+		command = i.buildAntigravityCommand("agy")
 	} else if i.Tool == "opencode" && i.OpenCodeSessionID != "" {
 		command = i.buildOpenCodeCommand("opencode")
 	} else if IsCodexCompatible(i.Tool) && i.CodexSessionID != "" {
@@ -6267,6 +6364,8 @@ func (i *Instance) Restart() error {
 			command = i.buildClaudeCommand(i.Command)
 		case i.Tool == "gemini":
 			command = i.buildGeminiCommand(i.Command)
+		case i.Tool == "antigravity":
+			command = i.buildAntigravityCommand(i.Command)
 		case i.Tool == "opencode":
 			command = i.buildOpenCodeCommand(i.Command)
 			// Record start time for async session ID detection
@@ -6527,7 +6626,7 @@ func (i *Instance) SetGeminiModel(model string) error {
 // SupportsLaunchModel reports whether a newly-created session can receive an
 // explicit model override through Agent Deck's generic session creation path.
 func SupportsLaunchModel(tool string) bool {
-	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || IsCodexCompatible(tool)
+	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "antigravity" || tool == "opencode" || IsCodexCompatible(tool)
 }
 
 // ApplyLaunchModel stores a per-session model override in the tool-specific
@@ -6549,6 +6648,9 @@ func (i *Instance) ApplyLaunchModel(model string) error {
 		return i.SetClaudeOptions(opts)
 	case i.Tool == "gemini":
 		i.GeminiModel = model
+		return nil
+	case i.Tool == "antigravity":
+		i.AntigravityModel = model
 		return nil
 	case i.Tool == "opencode":
 		opts := i.GetOpenCodeOptions()
@@ -6590,6 +6692,9 @@ func (i *Instance) ClearLaunchModel() error {
 	case i.Tool == "gemini":
 		i.GeminiModel = ""
 		return nil
+	case i.Tool == "antigravity":
+		i.AntigravityModel = ""
+		return nil
 	case i.Tool == "opencode":
 		opts := i.GetOpenCodeOptions()
 		if opts == nil {
@@ -6619,6 +6724,14 @@ func (i *Instance) ClearLaunchModel() error {
 func (i *Instance) CanRestart() bool {
 	// Gemini sessions with known session ID can always be restarted
 	if i.Tool == "gemini" && i.GeminiSessionID != "" {
+		return true
+	}
+
+	// Antigravity sessions with known conversation ID can always be restarted
+	if i.Tool == "antigravity" && i.AntigravityConversationID != "" {
+		return true
+	}
+	if i.Tool == "antigravity" {
 		return true
 	}
 
@@ -6690,6 +6803,9 @@ func (i *Instance) CanRestartFresh() bool {
 	if i.Tool == "gemini" {
 		return i.GeminiSessionID != ""
 	}
+	if i.Tool == "antigravity" {
+		return i.AntigravityConversationID != ""
+	}
 	if i.Tool == "opencode" {
 		return i.OpenCodeSessionID != ""
 	}
@@ -6703,6 +6819,9 @@ func (i *Instance) CanRestartFresh() bool {
 func (i *Instance) CanFork() bool {
 	// Gemini CLI doesn't support forking
 	if i.Tool == "gemini" {
+		return false
+	}
+	if i.Tool == "antigravity" {
 		return false
 	}
 
@@ -7442,6 +7561,9 @@ func (i *Instance) RefreshLiveSessionIDs() {
 	if i.Tool == "gemini" {
 		i.syncGeminiSessionFromTmux()
 	}
+	if i.Tool == "antigravity" {
+		i.syncAntigravitySessionFromTmux()
+	}
 }
 
 // GetMCPInfo returns MCP server information for this session.
@@ -7455,6 +7577,8 @@ func (i *Instance) GetMCPInfo() *MCPInfo {
 		return GetMCPInfo(i.ProjectPath)
 	case i.Tool == "gemini":
 		return GetGeminiMCPInfo(i.ProjectPath)
+	case i.Tool == "antigravity":
+		return GetAntigravityMCPInfo(i.ProjectPath)
 	case i.Tool == "cursor":
 		return GetCursorMCPInfo(i.ProjectPath)
 	default:

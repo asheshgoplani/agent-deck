@@ -540,6 +540,8 @@ func (i *Instance) getToolEnvFile() string {
 		return config.Claude.EnvFile
 	case "gemini":
 		return config.Gemini.EnvFile
+	case "antigravity":
+		return config.Antigravity.EnvFile
 	case "opencode":
 		return config.OpenCode.EnvFile
 	case "codex":

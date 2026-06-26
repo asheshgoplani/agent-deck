@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Antigravity (`agy`) CLI support.** New built-in tool wired through TUI, CLI, web API, sandbox, MCP, and hooks. Sessions launch via `agy`, resume by conversation UUID across restarts, support per-session and global YOLO (`--dangerously-skip-permissions`), and surface a model picker (Ctrl+G) backed by `agy models`. Hooks (`PreInvocation`, `Stop`) install into `~/.gemini/config/hooks.json` via `agent-deck antigravity-hooks install`. Configure under `[antigravity]` in `config.toml` (`YoloMode`, `DefaultModel`, `EnvFile`, `Command`).
+
 ## [1.9.77] - 2026-06-25
 
 ### Added

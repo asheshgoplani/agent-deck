@@ -344,6 +344,12 @@ func main() {
 		case "gemini-hooks":
 			handleGeminiHooks(args[1:])
 			return
+		case "antigravity-hooks":
+			handleAntigravityHooks(args[1:])
+			return
+		case "antigravity-hook":
+			handleAntigravityHook(args[1:])
+			return
 		case "hermes-hooks":
 			handleHermesHooks(args[1:])
 			return
@@ -3061,6 +3067,7 @@ func printHelp() {
 	fmt.Println("  skill            Manage project skills")
 	fmt.Println("  codex-hooks      Manage Codex notify hook integration")
 	fmt.Println("  gemini-hooks     Manage Gemini hook integration")
+	fmt.Println("  antigravity-hooks Manage Antigravity (agy) hook integration")
 	fmt.Println("  hermes-hooks     Manage Hermes Agent hook integration")
 	fmt.Println("  cursor-hooks     Manage Cursor Agent CLI hook integration")
 	fmt.Println("  group            Manage groups")
@@ -3105,6 +3112,9 @@ func printHelp() {
 	fmt.Println("  gemini-hooks install      Install Gemini hooks")
 	fmt.Println("  gemini-hooks uninstall    Remove Gemini hooks")
 	fmt.Println("  gemini-hooks status       Show Gemini hooks install status")
+	fmt.Println("  antigravity-hooks install Install Antigravity hooks")
+	fmt.Println("  antigravity-hooks uninstall Remove Antigravity hooks")
+	fmt.Println("  antigravity-hooks status  Show Antigravity hooks install status")
 	fmt.Println("  hermes-hooks install      Install Hermes Agent hooks")
 	fmt.Println("  hermes-hooks uninstall    Remove Hermes Agent hooks")
 	fmt.Println("  hermes-hooks status       Show Hermes hooks install status")

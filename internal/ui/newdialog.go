@@ -261,7 +261,7 @@ func displayCommandPreset(cmd string) string {
 // flag off FilterVisibleToolNames is a no-op, so the list is byte-identical to
 // before.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes"}
+	presets := []string{"", "claude", "gemini", "antigravity", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
@@ -909,6 +909,14 @@ func knownModelIDsForTool(tool string) []string {
 			"gemini-2.5-flash",
 			"gemini-2.5-flash-lite",
 		}
+	case tool == "antigravity":
+		return []string{
+			"gemini-2.5-pro",
+			"gemini-2.5-flash",
+			"gemini-2.5-flash-lite",
+			"gemini-3-flash-preview",
+			"gemini-3.1-pro-preview",
+		}
 	case tool == "opencode":
 		return []string{
 			"openai/gpt-5.5",
@@ -969,6 +977,8 @@ func preselectDefaultModel(config *session.UserConfig, tool string) string {
 	switch {
 	case session.IsClaudeCompatible(tool):
 		configured = config.Claude.DefaultModel
+	case tool == "antigravity":
+		configured = config.Antigravity.DefaultModel
 	default:
 		return ""
 	}
@@ -1206,6 +1216,8 @@ func (d *NewDialog) updateModelPlaceholder() {
 		d.modelInput.Placeholder = "claude-sonnet-4-6"
 	case cmd == "gemini":
 		d.modelInput.Placeholder = "gemini-3.1-pro-preview"
+	case cmd == "antigravity":
+		d.modelInput.Placeholder = "gemini-2.5-flash"
 	case cmd == "opencode":
 		d.modelInput.Placeholder = "openai/gpt-5.5"
 	case session.IsCodexCompatible(cmd):
@@ -1221,6 +1233,8 @@ func (d *NewDialog) modelInputHint() string {
 		return "Examples: claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5"
 	case cmd == "gemini":
 		return "Examples: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro"
+	case cmd == "antigravity":
+		return "Examples: gemini-2.5-flash, gemini-2.5-pro, gemini-3-flash-preview"
 	case cmd == "opencode":
 		return "Examples: openai/gpt-5.5, openai/gpt-5.4, anthropic/claude-sonnet-4-6"
 	case session.IsCodexCompatible(cmd):
@@ -1413,7 +1427,7 @@ func (d *NewDialog) updateToolOptions() {
 	switch {
 	case session.IsClaudeCompatible(cmd):
 		d.toolOptions = d.claudeOptions
-	case cmd == "gemini":
+	case cmd == "gemini", cmd == "antigravity":
 		d.toolOptions = d.geminiOptions
 	case cmd == "codex":
 		d.toolOptions = d.codexOptions
@@ -2122,7 +2136,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		case "y":
 			if !d.isTextInputFocused() {
 				selectedCmd := d.GetSelectedCommand()
-				if cur == focusCommand && (selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes") && d.toolOptions != nil {
+				if cur == focusCommand && (selectedCmd == "gemini" || selectedCmd == "antigravity" || selectedCmd == "codex" || selectedCmd == "hermes") && d.toolOptions != nil {
 					d.toolOptions.Update(msg)
 					return d, nil
 				}
@@ -2739,7 +2753,7 @@ func (d *NewDialog) View() string {
 		}
 	} else if cur == focusCommand {
 		selectedCmd := d.GetSelectedCommand()
-		if selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes" {
+		if selectedCmd == "gemini" || selectedCmd == "antigravity" || selectedCmd == "codex" || selectedCmd == "hermes" {
 			helpText = "←→ command │ w worktree │ s sandbox │ y yolo │ Tab next │ ^S create │ Esc cancel"
 		} else {
 			helpText = "←→ command │ w worktree │ s sandbox │ Tab next │ ^S create │ Esc cancel"

@@ -132,6 +132,9 @@ type UserConfig struct {
 	// Gemini defines Gemini CLI integration settings
 	Gemini GeminiSettings `toml:"gemini,omitempty"`
 
+	// Antigravity CLI (agy) settings
+	Antigravity AntigravitySettings `toml:"antigravity,omitempty"`
+
 	// OpenCode defines OpenCode CLI integration settings
 	OpenCode OpenCodeSettings `toml:"opencode,omitempty"`
 
@@ -1634,6 +1637,21 @@ type GeminiSettings struct {
 
 	// Command overrides the default binary/invocation for Gemini sessions.
 	// Supports flags (e.g., "gemini --custom-flag"). Default: "gemini"
+	Command string `toml:"command,omitempty"`
+}
+
+// AntigravitySettings defines Antigravity CLI (agy) configuration
+type AntigravitySettings struct {
+	// YoloMode enables --dangerously-skip-permissions for Antigravity sessions
+	YoloMode bool `toml:"yolo_mode,omitempty"`
+
+	// DefaultModel is the model for new Antigravity sessions
+	DefaultModel string `toml:"default_model,omitempty"`
+
+	// EnvFile is a .env file specific to Antigravity sessions
+	EnvFile string `toml:"env_file,omitempty"`
+
+	// Command overrides the default binary/invocation. Default: "agy"
 	Command string `toml:"command,omitempty"`
 }
 
@@ -3175,6 +3193,12 @@ func GetCustomToolNames() []string {
 func GetToolCommand(toolName string) string {
 	config, _ := LoadUserConfig()
 	if config == nil {
+		// Antigravity's binary name ("agy") differs from its tool name, so the
+		// "just return toolName" shortcut would resolve to a non-existent binary
+		// when config load fails. All other built-ins share name and binary.
+		if toolName == "antigravity" {
+			return "agy"
+		}
 		return toolName
 	}
 	switch toolName {
@@ -3186,6 +3210,11 @@ func GetToolCommand(toolName string) string {
 		if config.Gemini.Command != "" {
 			return config.Gemini.Command
 		}
+	case "antigravity":
+		if config.Antigravity.Command != "" {
+			return config.Antigravity.Command
+		}
+		return "agy"
 	case "opencode":
 		if config.OpenCode.Command != "" {
 			return config.OpenCode.Command
@@ -3223,6 +3252,8 @@ func GetToolIcon(toolName string) string {
 		return "🤖"
 	case "gemini":
 		return "✨"
+	case "antigravity":
+		return "🛸"
 	case "opencode":
 		return "🌐"
 	case "codex":
@@ -3757,7 +3788,7 @@ func CreateExampleConfig() error {
 
 # Default AI tool for new sessions
 # When creating a new session (pressing 'n'), this tool will be pre-selected
-# Valid values: "claude", "gemini", "opencode", "codex", "pi", or any custom tool name
+# Valid values: "claude", "gemini", "antigravity", "opencode", "codex", "pi", or any custom tool name
 # Leave commented out or empty to default to shell (no pre-selection)
 # default_tool = "claude"
 
@@ -3819,6 +3850,13 @@ func CreateExampleConfig() error {
 # [gemini]
 # Enable --yolo (auto-approve all actions) by default (default: false)
 # yolo_mode = true
+
+# Antigravity CLI (agy) integration
+# [antigravity]
+# Enable --dangerously-skip-permissions by default (default: false)
+# yolo_mode = true
+# default_model = "gemini-2.5-flash"
+# command = "agy"
 
 # OpenCode CLI integration
 # [opencode]

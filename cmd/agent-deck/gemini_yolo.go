@@ -13,6 +13,8 @@ func applyCLIYoloOverride(inst *session.Instance, enabled bool) error {
 	switch inst.Tool {
 	case "gemini":
 		inst.SetGeminiYoloMode(true)
+	case "antigravity":
+		inst.SetAntigravityYoloMode(true)
 	case "codex":
 		yolo := true
 		opts := inst.GetCodexOptions()
@@ -24,7 +26,7 @@ func applyCLIYoloOverride(inst *session.Instance, enabled bool) error {
 			return err
 		}
 	default:
-		return fmt.Errorf("--yolo only works with Gemini or Codex sessions")
+		return fmt.Errorf("--yolo only works with Gemini, Antigravity, or Codex sessions")
 	}
 	return nil
 }

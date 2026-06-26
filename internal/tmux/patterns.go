@@ -48,6 +48,19 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			SpinnerChars:   defaultSpinnerChars(),
 			WhimsicalWords: defaultWhimsicalWords(),
 		}
+	case "antigravity":
+		return &RawPatterns{
+			BusyPatterns: []string{
+				"esc to cancel",
+				"ctrl+c to interrupt",
+				"ctrl+o to expand",
+			},
+			PromptPatterns: []string{
+				"Type your message",
+				"press enter to send",
+				"> ",
+			},
+		}
 	case "gemini":
 		return &RawPatterns{
 			BusyPatterns:   []string{"esc to cancel"},

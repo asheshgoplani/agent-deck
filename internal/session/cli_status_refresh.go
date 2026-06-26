@@ -31,7 +31,7 @@ func RefreshInstancesForCLIStatus(instances []*Instance) {
 		if inst == nil {
 			continue
 		}
-		if !IsClaudeCompatible(inst.Tool) && inst.Tool != "codex" && inst.Tool != "gemini" {
+		if !IsClaudeCompatible(inst.Tool) && inst.Tool != "codex" && inst.Tool != "gemini" && inst.Tool != "antigravity" {
 			continue
 		}
 		if hs := readHookStatusFile(inst.ID); hs != nil {

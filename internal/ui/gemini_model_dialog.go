@@ -20,7 +20,7 @@ type modelSelectedMsg struct {
 	instanceID string
 }
 
-// GeminiModelDialog allows selecting a Gemini model for the current session
+// GeminiModelDialog allows selecting a Gemini or Antigravity model for the current session
 type GeminiModelDialog struct {
 	visible    bool
 	width      int
@@ -31,6 +31,8 @@ type GeminiModelDialog struct {
 	err        error
 	instanceID string // ID of the session to change model for
 	current    string // Currently active model
+	title      string // Dialog title (defaults to Gemini)
+	fetcher    func() ([]string, error)
 }
 
 // NewGeminiModelDialog creates a new model selection dialog
@@ -38,8 +40,17 @@ func NewGeminiModelDialog() *GeminiModelDialog {
 	return &GeminiModelDialog{}
 }
 
-// Show opens the dialog and triggers async model fetching
+// Show opens the dialog and triggers async model fetching for Gemini sessions.
 func (d *GeminiModelDialog) Show(instanceID, currentModel string) tea.Cmd {
+	return d.showWith(instanceID, currentModel, "Select Gemini Model", session.GetAvailableGeminiModels)
+}
+
+// ShowAntigravity opens the dialog for Antigravity (agy) sessions.
+func (d *GeminiModelDialog) ShowAntigravity(instanceID, currentModel string) tea.Cmd {
+	return d.showWith(instanceID, currentModel, "Select Antigravity Model", session.GetAvailableAntigravityModels)
+}
+
+func (d *GeminiModelDialog) showWith(instanceID, currentModel, title string, fetcher func() ([]string, error)) tea.Cmd {
 	d.visible = true
 	d.cursor = 0
 	d.models = nil
@@ -47,9 +58,11 @@ func (d *GeminiModelDialog) Show(instanceID, currentModel string) tea.Cmd {
 	d.err = nil
 	d.instanceID = instanceID
 	d.current = currentModel
+	d.title = title
+	d.fetcher = fetcher
 
 	return func() tea.Msg {
-		models, err := session.GetAvailableGeminiModels()
+		models, err := fetcher()
 		return modelsFetchedMsg{models: models, err: err}
 	}
 }
@@ -153,7 +166,11 @@ func (d *GeminiModelDialog) View() string {
 	var content strings.Builder
 
 	// Title
-	content.WriteString(titleStyle.Render("Select Gemini Model"))
+	title := d.title
+	if title == "" {
+		title = "Select Gemini Model"
+	}
+	content.WriteString(titleStyle.Render(title))
 	content.WriteString(dimStyle.Render("            [Esc] Cancel"))
 	content.WriteString("\n")
 	content.WriteString(strings.Repeat("-", dialogWidth-4))
