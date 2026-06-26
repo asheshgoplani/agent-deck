@@ -861,13 +861,48 @@ func main() {
 	}
 }
 
-// extractProfileFlag extracts -p or --profile from args, returning the profile and remaining args
+// globalFlagSubcommands lists every token that main()'s dispatch switch treats
+// as a subcommand. extractProfileFlag stops honoring the global -p/--profile
+// flag once it reaches one of these, so a subcommand that defines its own -p
+// (launch/add --parent, group move --position) is not shadowed by the global
+// profile flag. KEEP IN SYNC with the switch in main().
+var globalFlagSubcommands = map[string]bool{
+	"add": true, "list": true, "ls": true, "remove": true, "rm": true,
+	"rename": true, "mv": true, "status": true, "profile": true, "update": true,
+	"session": true, "mcp": true, "plugin": true, "skill": true, "mcp-proxy": true,
+	"group": true, "try": true, "launch": true, "conductor": true,
+	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
+	"remote": true, "worktree": true, "wt": true, "costs": true, "web": true,
+	"uninstall": true, "migrate-paths": true, "hook-handler": true,
+	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
+	"hermes-hooks": true, "cursor-hooks": true, "notify-daemon": true,
+	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true,
+	"debug-dump": true, "version": true, "help": true,
+}
+
+// extractProfileFlag extracts the global -p or --profile flag from args,
+// returning the profile and remaining args.
+//
+// The global flag is only honored BEFORE the subcommand token. Without this
+// boundary, `agent-deck launch . -p <parent>` had its -p swallowed here as a
+// profile: handleLaunch then opened profiles/<parent>/state.db (a phantom
+// per-id profile DB, invisible to the default-profile TUI) and the launch
+// subcommand's own --parent went unset, so the child was never linked. The
+// same collision affected `add -p <parent>` and `group move -p <position>`.
+// The long-form --parent was unaffected because it is not matched here.
 func extractProfileFlag(args []string) (string, []string) {
 	var profile string
 	var remaining []string
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+
+		// Reached the subcommand: global flag parsing is over. Everything from
+		// here belongs to the subcommand, which may define its own -p.
+		if globalFlagSubcommands[arg] {
+			remaining = append(remaining, args[i:]...)
+			return profile, remaining
+		}
 
 		// Check for -p=value or --profile=value
 		if strings.HasPrefix(arg, "-p=") {
