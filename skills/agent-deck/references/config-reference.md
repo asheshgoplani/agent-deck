@@ -7,6 +7,7 @@ All options for `~/.agent-deck/config.toml`.
 - [Top-Level](#top-level)
 - [[shell] Section](#shell-section)
 - [[claude] Section](#claude-section)
+- [Per-group / per-conductor Claude overrides](#per-group--per-conductor-claude-overrides)
 - [[gemini] Section](#gemini-section)
 - [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
@@ -31,6 +32,7 @@ All options for `~/.agent-deck/config.toml`.
 
 ```toml
 default_tool = "claude"   # Pre-selected tool when creating sessions
+default_path = ""         # Fallback project directory for add/launch without a path
 sync_title   = true       # Let agents rename sessions from their session-name
 group_sort   = "creation" # within-group order: "creation" (default) or "actionable"
 ```
@@ -38,6 +40,7 @@ group_sort   = "creation" # within-group order: "creation" (default) or "actiona
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default_tool` | string | `"claude"` | Pre-selected tool when creating sessions. |
+| `default_path` | string | `""` | Fallback project directory for `add` and `launch` when no path argument is given (#1303). Resolution chain: explicit path arg (including `.`, which always means the current directory) → target group's `default_path` (DB-resident, set via `group update` or the TUI) → this key → cwd. Supports `~` and `$VAR` expansion; silently skipped if the directory doesn't exist. |
 | `sync_title` | bool | `true` | When `true`, agent-deck overwrites a session's title with the agent's own session-name (e.g. Claude's `--name` / `/rename`, issues #572/#697). Set `false` to keep the title you gave the session — globally, for every tool. The per-session title-lock (`agent-deck session set-title-lock <id> on`) remains as a finer-grained override. Also toggleable in the TUI Settings panel (`S`) under **SESSIONS**. |
 | `group_sort` | string | `"creation"` | Order of sessions within a group. `"creation"` (default) keeps the order sessions were created in, and respects the `K`/`J` manual reorder. `"actionable"` restores the issue #857 sort that surfaces the most recently actionable sessions (error → waiting → running → idle → stopped, then recency) to the top of each group. Pin and Maestro rows are unaffected by this setting. |
 
@@ -68,8 +71,15 @@ Environment sources are applied in this order (later overrides earlier):
 
 1. Global `[shell].env_files` (in order)
 2. `[shell].init_script`
-3. Tool-specific `env_file` (`[claude].env_file`, `[gemini].env_file`, `[tools.X].env_file`)
-4. Inline env vars from `[tools.X].env` (highest priority)
+3. Tool-specific `env_file` (`[claude].env_file`, `[gemini].env_file`, `[tools.X].env_file` — for Claude, the group/conductor `env_file` overrides the global one; see [Per-group / per-conductor Claude overrides](#per-group--per-conductor-claude-overrides))
+4. Per-group / per-conductor inline env (`[groups.X.claude].env`, `[conductors.X.claude].env`) — exported after the env_file source, so an inline key wins over the same key from the file
+5. Inline env vars from `[tools.X].env` (highest priority)
+
+A configured `env_file` that does not exist at spawn prints an
+`agent-deck: warning: env_file not found: <path>` line in the session pane
+(and a debug-log warning) instead of being silently skipped. A config.toml
+that fails to parse is also surfaced in the pane at spawn — in that state
+every override is inactive and sessions launch on defaults.
 
 ## [claude] Section
 
@@ -140,6 +150,44 @@ Verify the effective Claude config path:
 agent-deck hooks status
 agent-deck hooks status -p work
 agent-deck hooks status -p clientx
+```
+
+## Per-group / per-conductor Claude overrides
+
+`[groups."<path>".claude]` and `[conductors.<name>.claude]` carry the same
+key surface (the two blocks are deliberate mirrors) and scope Claude
+settings to one group subtree or one conductor:
+
+```toml
+[groups."work".claude]
+config_dir = "~/.claude-work"        # Account isolation for this group subtree
+env_file   = "~/.agent-deck/groups/work.env"
+command    = "claude-wrapper"        # Per-group claude command/wrapper
+model      = "claude-sonnet-4-6"     # Model default for sessions in this group
+env        = { AGENT_ROLE = "work", CLAUDE_CODE_EFFORT_LEVEL = "high" }
+skills     = ["my-store/loom"]       # Declarative loadout (skill source entries)
+mcps       = ["memory"]              # Declarative loadout ([mcps.X] catalog names)
+
+[conductors.lilu.claude]
+# identical key surface; conductor beats group on every key
+```
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `config_dir` | string | Overrides `[claude].config_dir` for sessions in this group / this conductor. Ancestor-walking for groups: a child group inherits the nearest ancestor's value. |
+| `env_file` | string | Sourced for these sessions instead of the global `[claude].env_file`. Ancestor-walking. Missing file → pane warning at spawn. |
+| `command` | string | Claude command/wrapper for these sessions. Resolution: conductor > group (ancestor-walking) > `[claude].command` > `"claude"`. Like the global `command`, a non-`"claude"` value suppresses the `CLAUDE_CONFIG_DIR=` spawn prefix (the wrapper is assumed to handle it). |
+| `model` | string | Model default for these sessions. Resolution: explicit per-session model (`--model`, dialog) > conductor > group (ancestor-walking) > no flag (Claude's own default). Empty falls through — the global `default_model` remains a new-session-dialog prefill only. Resolved at every start/restart, so config edits apply without re-creating sessions. |
+| `env` | inline table | Env vars exported in the spawn command AFTER the `env_file` source — an inline key deterministically wins over the same key from the file. Merge order per key: ancestor groups (root-first) → exact group → conductor. Parent-only keys persist through the merge. |
+| `skills` | array | Declarative skill loadout (`"<source>/<name>"` entries against the `skill source` registry). Schema reserved; materialization ships separately. Group values union along the ancestor chain (floor semantics — a child adds, never subtracts). |
+| `mcps` | array | Declarative MCP loadout (`[mcps.X]` catalog names). Same semantics as `skills`. |
+
+Verify what a group actually resolves to — including whether the `env_file`
+exists and whether config.toml parsed at all:
+
+```bash
+agent-deck group show work --resolved
+agent-deck group show work --resolved --json
 ```
 
 ## [gemini] Section

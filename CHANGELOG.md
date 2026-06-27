@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.5] - 2026-06-27
+
+### Fixed
+
+- **Conductor: default HeartbeatInterval to 15 for fresh conductors.** Fresh conductors with heartbeat enabled were created with `HeartbeatInterval` at its zero value, causing them to never send heartbeats until explicitly configured. New conductors now initialize `HeartbeatInterval` to `15` (seconds) when heartbeat is enabled. ([#1511](https://github.com/asheshgoplani/agent-deck/pull/1511))
+
+## [1.10.4] - 2026-06-26
+
+### Added
+
+- **Fleet fan-out CLI: launch parented children and track completions.** `agent-deck launch` gains `--inherit-group` (child inherits parent's group instead of cwd-derived), `--assert-done` / `--no-assert-done` (appends a done-signal instruction to the initial `-m` message for claude children, opt-out), and a new `agent-deck session children` subcommand listing direct children of a session with their status and completion time. A new file-based completion ledger (`completion-ledger/`) records when children finish so `session children` can report outcomes without touching the SQLite schema. The `fleet` skill is now included in the marketplace plugin. ([#1518](https://github.com/asheshgoplani/agent-deck/pull/1518))
+
+## [1.9.77] - 2026-06-25
+
+### Added
+
+- **Per-group and per-conductor Claude configuration.** `[groups."X".claude]` and `[conductors."X".claude]` blocks in `config.toml` now accept `command`, `model`, `env` (inline map), and `config_dir`/`env_file` keys. Resolution order: conductor > group (ancestor-walking) > global `[claude]` > built-in default. `[launch]` now honors `default_path` the same way `add` does. Config parse errors are now cached (not swallowed on repeat loads). New `group show [--resolved]` CLI command shows the effective config at any group path. ([#1483](https://github.com/asheshgoplani/agent-deck/pull/1483))
+
 ## [1.9.76] - 2026-06-24
 
 ### Added
