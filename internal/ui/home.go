@@ -359,6 +359,9 @@ type Home struct {
 	// Context-% based /clear for conductor sessions with clear_on_compact
 	clearOnCompactSent map[string]time.Time // instanceID -> last /clear send time (debounce)
 
+	// Context-budget warning debounce: fires once per upward crossing into high/over.
+	budgetLastLevel map[string]session.BudgetLevel // instanceID -> last seen budget level
+
 	// File watcher for external changes (auto-reload)
 	storageWatcher *StorageWatcher
 
@@ -1122,6 +1125,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		geminiAnalyticsCache:      make(map[string]*session.GeminiSessionAnalytics),
 		analyticsCacheTime:        make(map[string]time.Time),
 		clearOnCompactSent:        make(map[string]time.Time),
+		budgetLastLevel:           make(map[string]session.BudgetLevel),
 		launchingSessions:         make(map[string]time.Time),
 		resumingSessions:          make(map[string]time.Time),
 		mcpLoadingSessions:        make(map[string]time.Time),
@@ -3834,6 +3838,9 @@ func (h *Home) backgroundStatusUpdate() {
 			}
 		}
 	}
+
+	// Context-budget warnings (all sessions): debounced one-shot on high/over crossing.
+	h.evaluateContextBudgetWarnings(instances)
 
 	// Update status for all instances in parallel (I/O bound: tmux subprocess calls)
 	// With PipeManager, skip sessions idle for >5s (no %output events = no status change)
