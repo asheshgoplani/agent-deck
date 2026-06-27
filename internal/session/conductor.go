@@ -773,6 +773,8 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 			meta.EnvFile = existing.EnvFile
 		}
 		meta.HeartbeatInterval = existing.HeartbeatInterval
+	} else if heartbeatEnabled {
+		meta.HeartbeatInterval = 15
 	}
 	if !clearOnCompact {
 		meta.ClearOnCompact = &clearOnCompact
