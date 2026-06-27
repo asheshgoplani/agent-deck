@@ -395,6 +395,7 @@ type Home struct {
 	resumingSessions     map[string]time.Time        // sessionID -> resume time (for restart/resume)
 	mcpLoadingSessions   map[string]time.Time        // sessionID -> MCP reload time
 	forkingSessions      map[string]time.Time        // sessionID -> fork start time (fork in progress)
+	forkingSessionsMu    sync.Mutex                  // guards forkingSessions (off-loop fork triggers, e.g. autonomous handoff)
 	setupRunningSessions map[string]time.Time        // sessionID -> setup script start time
 	creatingSessions     map[string]*CreatingSession // tempID -> placeholder for worktree creation in progress
 	animationFrame       int                         // Current frame for spinner animation
@@ -3008,7 +3009,10 @@ func (h *Home) hasActiveAnimation(sessionID string) bool {
 	}
 
 	// Check forking first (always shows while tracked)
-	if _, ok := h.forkingSessions[sessionID]; ok {
+	h.forkingSessionsMu.Lock()
+	_, forking := h.forkingSessions[sessionID]
+	h.forkingSessionsMu.Unlock()
+	if forking {
 		return true
 	}
 
@@ -4862,7 +4866,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionForkedMsg:
 		// Clean up forking state for source session
 		if msg.sourceID != "" {
+			h.forkingSessionsMu.Lock()
 			delete(h.forkingSessions, msg.sourceID)
+			h.forkingSessionsMu.Unlock()
 		}
 
 		// Handle reload scenario: forked session was already started in tmux, we MUST save it
@@ -6022,7 +6028,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.cleanupExpiredAnimations(h.launchingSessions, claudeTimeout, defaultTimeout)
 		h.cleanupExpiredAnimations(h.resumingSessions, claudeTimeout, defaultTimeout)
 		h.cleanupExpiredAnimations(h.mcpLoadingSessions, claudeTimeout, defaultTimeout)
+		// forkingSessions can be written off the main loop (autonomous handoff fork);
+		// guard the range+delete cleanup against a concurrent background write.
+		h.forkingSessionsMu.Lock()
 		h.cleanupExpiredAnimations(h.forkingSessions, claudeTimeout, defaultTimeout)
+		h.forkingSessionsMu.Unlock()
 		// setupRunningSessions is deliberately NOT timer-pruned: it doubles as
 		// the b-hotkey re-entrancy lock, and the setup script may legitimately
 		// run past any UI timeout (setup_timeout_seconds is user-configurable,
@@ -11000,8 +11010,11 @@ func (h *Home) forkSessionCmdWithOptions(
 		forkState.WithState = true
 	}
 
-	// Track source session as "forking" for immediate UI feedback
+	// Track source session as "forking" for immediate UI feedback.
+	// Guarded: autonomous-handoff forks call this off the main loop while View reads the map.
+	h.forkingSessionsMu.Lock()
 	h.forkingSessions[source.ID] = time.Now()
+	h.forkingSessionsMu.Unlock()
 
 	sourceID := source.ID // Capture for closure
 
@@ -16512,7 +16525,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	// Check if session is launching/resuming (for animation priority)
 	_, isSessionLaunching := h.launchingSessions[selected.ID]
 	_, isSessionResuming := h.resumingSessions[selected.ID]
+	h.forkingSessionsMu.Lock()
 	_, isSessionForking := h.forkingSessions[selected.ID]
+	h.forkingSessionsMu.Unlock()
 	isStartingUp := isSessionLaunching || isSessionResuming || isSessionForking
 
 	// Analytics panel (for Claude/Gemini sessions with analytics enabled)
@@ -16586,7 +16601,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	launchTime, isLaunching := h.launchingSessions[selected.ID]
 	resumeTime, isResuming := h.resumingSessions[selected.ID]
 	mcpLoadTime, isMcpLoading := h.mcpLoadingSessions[selected.ID]
+	h.forkingSessionsMu.Lock()
 	forkTime, isForking := h.forkingSessions[selected.ID]
+	h.forkingSessionsMu.Unlock()
 
 	// Determine if we should show animation (launch, resume, MCP loading, or forking)
 	// For Claude: show for minimum 6 seconds, then check for ready indicators
