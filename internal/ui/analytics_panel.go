@@ -337,28 +337,49 @@ func (p *AnalyticsPanel) renderHeader() string {
 	return b.String()
 }
 
+// budgetBarColor maps an absolute-token BudgetLevel to a bar color. Warn is
+// yellow; high and over are both red (over is distinguished by the louder
+// label/banner, not the bar color).
+func budgetBarColor(level session.BudgetLevel) lipgloss.Color {
+	switch level {
+	case session.BudgetWarn:
+		return ColorYellow
+	case session.BudgetHigh, session.BudgetOver:
+		return ColorRed
+	default:
+		return ColorGreen
+	}
+}
+
+// renderContextBarColored renders the bar with an explicit fill color (used by
+// the absolute-token budget path). renderContextBar delegates here using the
+// percent-based color for non-budget callers.
+func renderContextBarColored(percent float64, width int, barColor lipgloss.Color) string {
+	if width < 10 {
+		width = 10
+	}
+	filledWidth := int(float64(width) * percent / 100)
+	if filledWidth > width {
+		filledWidth = width
+	}
+	if filledWidth < 0 {
+		filledWidth = 0
+	}
+	emptyWidth := width - filledWidth
+	barStyle := lipgloss.NewStyle().Foreground(barColor)
+	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+	return barStyle.Render(strings.Repeat("█", filledWidth)) +
+		dimStyle.Render(strings.Repeat("░", emptyWidth))
+}
+
 // renderContextBar renders a visual bar showing context window usage
 func (p *AnalyticsPanel) renderContextBar() string {
 	labelStyle := lipgloss.NewStyle().Foreground(ColorText).Bold(true)
-	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
 
 	percent := p.analytics.ContextPercent(0) // Use default 200k limit
 	if percent > 100 {
 		percent = 100
 	}
-
-	// Choose color based on usage
-	var barColor lipgloss.Color
-	switch {
-	case percent < 60:
-		barColor = ColorGreen
-	case percent < 80:
-		barColor = ColorYellow
-	default:
-		barColor = ColorRed
-	}
-
-	barStyle := lipgloss.NewStyle().Foreground(barColor)
 
 	// Calculate bar width (max 30 chars for the bar itself)
 	maxBarWidth := 30
@@ -369,14 +390,12 @@ func (p *AnalyticsPanel) renderContextBar() string {
 		}
 	}
 
-	filledWidth := int(percent / 100 * float64(maxBarWidth))
-	if filledWidth > maxBarWidth {
-		filledWidth = maxBarWidth
-	}
-	emptyWidth := maxBarWidth - filledWidth
+	// Color by absolute budget level rather than percent breakpoints.
+	cfg := session.GetContextBudgetSettings()
+	level := p.analytics.BudgetLevel(cfg)
+	barColor := budgetBarColor(level)
 
-	bar := barStyle.Render(strings.Repeat("█", filledWidth)) +
-		dimStyle.Render(strings.Repeat("░", emptyWidth))
+	bar := renderContextBarColored(percent, maxBarWidth, barColor)
 
 	percentStr := fmt.Sprintf("%.1f%%", percent)
 	percentStyle := lipgloss.NewStyle().Foreground(barColor).Bold(true)

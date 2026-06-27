@@ -50,3 +50,13 @@ func BudgetLevelForTokens(tokens int, cfg ContextBudgetSettings) BudgetLevel {
 func (a *SessionAnalytics) BudgetLevel(cfg ContextBudgetSettings) BudgetLevel {
 	return BudgetLevelForTokens(a.CurrentContextTokens, cfg)
 }
+
+// GetContextBudgetSettings loads the user config (cached) and returns the
+// context-budget settings with defaults applied. Convenience for UI callers.
+func GetContextBudgetSettings() ContextBudgetSettings {
+	cfg, err := LoadUserConfig()
+	if err != nil || cfg == nil {
+		return (&UserConfig{}).GetContextBudget()
+	}
+	return cfg.GetContextBudget()
+}
