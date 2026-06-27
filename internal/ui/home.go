@@ -362,6 +362,11 @@ type Home struct {
 	// Context-budget warning debounce: fires once per upward crossing into high/over.
 	budgetLastLevel map[string]session.BudgetLevel // instanceID -> last seen budget level
 
+	// Autonomous context-budget handoff: per-session state machine (mirrors the
+	// statedb-persisted state in memory; resumes lazily across restart).
+	handoffState       map[string]session.HandoffState // instanceID -> persisted handoff state
+	handoffTriggeredAt map[string]time.Time            // instanceID -> wrap trigger time
+
 	// File watcher for external changes (auto-reload)
 	storageWatcher *StorageWatcher
 
@@ -1126,6 +1131,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		analyticsCacheTime:        make(map[string]time.Time),
 		clearOnCompactSent:        make(map[string]time.Time),
 		budgetLastLevel:           make(map[string]session.BudgetLevel),
+		handoffState:              make(map[string]session.HandoffState),
+		handoffTriggeredAt:        make(map[string]time.Time),
 		launchingSessions:         make(map[string]time.Time),
 		resumingSessions:          make(map[string]time.Time),
 		mcpLoadingSessions:        make(map[string]time.Time),
@@ -3841,6 +3848,9 @@ func (h *Home) backgroundStatusUpdate() {
 
 	// Context-budget warnings (all sessions): debounced one-shot on high/over crossing.
 	h.evaluateContextBudgetWarnings(instances)
+
+	// Autonomous context-budget handoff (conductor + parented children only).
+	h.evaluateContextBudgetHandoff(instances)
 
 	// Update status for all instances in parallel (I/O bound: tmux subprocess calls)
 	// With PipeManager, skip sessions idle for >5s (no %output events = no status change)
