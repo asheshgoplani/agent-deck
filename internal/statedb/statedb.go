@@ -1326,6 +1326,56 @@ func (s *StateDB) WriteGeminiSessionBinding(id, sessionID string, detectedAt tim
 	})
 }
 
+// WriteHandoffState atomically updates the autonomous-handoff state and trigger
+// time inside the tool_data JSON column for one instance, via a targeted
+// json_set UPDATE. Like WriteClaudeSessionBinding it avoids a whole-row INSERT
+// OR REPLACE so it cannot clobber concurrent writes to other tool_data fields,
+// and it sidesteps the full-table save's external-change guard. A zero
+// triggeredAt clears the trigger timestamp ($.handoff_triggered_at => 0).
+func (s *StateDB) WriteHandoffState(id, state string, triggeredAt time.Time) error {
+	var at int64
+	if !triggeredAt.IsZero() {
+		at = triggeredAt.Unix()
+	}
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(
+			`UPDATE instances
+			   SET tool_data = json_set(
+			         COALESCE(tool_data, '{}'),
+			         '$.handoff_state', ?,
+			         '$.handoff_triggered_at', ?)
+			 WHERE id = ?`,
+			state, at, id,
+		)
+		return err
+	})
+}
+
+// ReadHandoffState returns the persisted handoff state and trigger time for an
+// instance. An unset key yields ("", zero time, nil) so a fresh session reads
+// as HandoffNormal. Missing row also returns ("", zero time, nil).
+func (s *StateDB) ReadHandoffState(id string) (string, time.Time, error) {
+	var state sql.NullString
+	var at sql.NullInt64
+	err := s.db.QueryRow(
+		`SELECT json_extract(tool_data, '$.handoff_state'),
+		        json_extract(tool_data, '$.handoff_triggered_at')
+		   FROM instances WHERE id = ?`,
+		id,
+	).Scan(&state, &at)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", time.Time{}, nil
+		}
+		return "", time.Time{}, err
+	}
+	var t time.Time
+	if at.Valid && at.Int64 > 0 {
+		t = time.Unix(at.Int64, 0)
+	}
+	return state.String, t, nil
+}
+
 // ReadAllStatuses returns status + acknowledged flag for every instance.
 func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
 	rows, err := s.db.Query("SELECT id, status, tool, acknowledged FROM instances")
