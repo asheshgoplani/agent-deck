@@ -171,6 +171,9 @@ type UserConfig struct {
 	// Notifications defines waiting session notification bar settings
 	Notifications NotificationsConfig `toml:"notifications,omitempty"`
 
+	// ContextBudget defines context-token usage budget and autonomous fork handling
+	ContextBudget ContextBudgetSettings `toml:"context_budget,omitempty"`
+
 	// Instances defines multiple instance behavior settings
 	Instances InstanceSettings `toml:"instances,omitempty"`
 
@@ -1004,6 +1007,62 @@ func (n NotificationsConfig) GetTransitionEventsEnabled() bool {
 		return true
 	}
 	return *n.TransitionEvents
+}
+
+// ContextBudgetSettings configures absolute-token context warnings and the
+// autonomous fork-on-budget handoff. Thresholds measure CurrentContextTokens
+// (last-turn input + cache-read), i.e. real context-window occupancy.
+type ContextBudgetSettings struct {
+	// Enabled turns the whole feature on (default: true). Pointer so an unset
+	// section still defaults to enabled.
+	Enabled *bool `toml:"enabled,omitempty"`
+	// WarnTokens is the soft-warning threshold (default: 150000).
+	WarnTokens int `toml:"warn_tokens,omitzero"`
+	// HighTokens is the loud-warning + autonomous wrap-up trigger (default: 200000).
+	HighTokens int `toml:"high_tokens,omitzero"`
+	// CeilingTokens is the hard ceiling that must not be crossed (default: 250000).
+	CeilingTokens int `toml:"ceiling_tokens,omitzero"`
+	// AutonomousHandoff enables the fork-new-session handoff on autonomous
+	// sessions (default: true). Pointer for the same unset-defaults-true reason.
+	AutonomousHandoff *bool `toml:"autonomous_handoff,omitempty"`
+	// HandoffTimeoutSeconds is the failsafe window for the wrap-up to produce
+	// its PROMPT.md (default: 300).
+	HandoffTimeoutSeconds int `toml:"handoff_timeout_seconds,omitzero"`
+}
+
+// GetEnabled returns Enabled, defaulting to true when unset.
+func (c ContextBudgetSettings) GetEnabled() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
+// GetAutonomousHandoff returns AutonomousHandoff, defaulting to true when unset.
+func (c ContextBudgetSettings) GetAutonomousHandoff() bool {
+	if c.AutonomousHandoff == nil {
+		return true
+	}
+	return *c.AutonomousHandoff
+}
+
+// GetContextBudget returns the context-budget settings with zero/nil fields
+// filled in with documented defaults. Mirrors the GetConductor accessor.
+func (c *UserConfig) GetContextBudget() ContextBudgetSettings {
+	cfg := c.ContextBudget
+	if cfg.WarnTokens == 0 {
+		cfg.WarnTokens = 150000
+	}
+	if cfg.HighTokens == 0 {
+		cfg.HighTokens = 200000
+	}
+	if cfg.CeilingTokens == 0 {
+		cfg.CeilingTokens = 250000
+	}
+	if cfg.HandoffTimeoutSeconds == 0 {
+		cfg.HandoffTimeoutSeconds = 300
+	}
+	return cfg
 }
 
 // InstanceSettings configures multiple agent-deck instance behavior
