@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 // ToolSupportsMCPManager reports whether the TUI/CLI MCP surfaces apply to this tool.
@@ -111,6 +112,14 @@ func InvalidateProjectMCPIntegrationsCache(projectPath string) {
 	ClearAllCodexMCPInfoCache()
 }
 
+func (i *Instance) isRemoteSession() bool {
+	return strings.TrimSpace(i.SSHHost) != ""
+}
+
+func (i *Instance) unsupportedRemoteCodexMCPError() error {
+	return fmt.Errorf("Codex MCP management is not supported for SSH remote sessions")
+}
+
 // MCPLocalConfigPath returns the project-local MCP file path for this instance's tool.
 func (i *Instance) MCPLocalConfigPath() string {
 	return MCPLocalConfigPathForTool(i.Tool, i.ProjectPath)
@@ -119,6 +128,9 @@ func (i *Instance) MCPLocalConfigPath() string {
 // MCPGlobalConfigPath returns the global MCP file path for this instance's tool.
 func (i *Instance) MCPGlobalConfigPath() string {
 	if IsCodexCompatible(i.Tool) {
+		if i.isRemoteSession() {
+			return ""
+		}
 		return filepath.Join(i.getCodexHomeDir(), "config.toml")
 	}
 	return MCPGlobalConfigPathForTool(i.Tool)
@@ -127,6 +139,9 @@ func (i *Instance) MCPGlobalConfigPath() string {
 // MCPInfoForLocalAttach returns MCP info for local attach/detach for this instance.
 func (i *Instance) MCPInfoForLocalAttach() *MCPInfo {
 	if IsCodexCompatible(i.Tool) {
+		if i.isRemoteSession() {
+			return &MCPInfo{}
+		}
 		return GetCodexMCPInfo(i.getCodexHomeDir())
 	}
 	return MCPInfoForLocalAttach(i.Tool, i.ProjectPath)
@@ -135,6 +150,9 @@ func (i *Instance) MCPInfoForLocalAttach() *MCPInfo {
 // WriteLocalMCPConfig writes catalog MCPs to this instance's project-local MCP file.
 func (i *Instance) WriteLocalMCPConfig(names []string) error {
 	if IsCodexCompatible(i.Tool) {
+		if i.isRemoteSession() {
+			return i.unsupportedRemoteCodexMCPError()
+		}
 		return WriteCodexMCPConfig(i.getCodexHomeDir(), names)
 	}
 	return WriteLocalMCPConfigForTool(i.Tool, i.ProjectPath, names)
@@ -143,6 +161,9 @@ func (i *Instance) WriteLocalMCPConfig(names []string) error {
 // WriteGlobalMCPConfig writes catalog MCPs to this instance's global MCP store.
 func (i *Instance) WriteGlobalMCPConfig(names []string) error {
 	if IsCodexCompatible(i.Tool) {
+		if i.isRemoteSession() {
+			return i.unsupportedRemoteCodexMCPError()
+		}
 		return WriteCodexMCPConfig(i.getCodexHomeDir(), names)
 	}
 	return WriteGlobalMCPConfigForTool(i.Tool, names)
@@ -151,7 +172,7 @@ func (i *Instance) WriteGlobalMCPConfig(names []string) error {
 // InvalidateProjectMCPIntegrationsCache clears MCP read caches for this instance's project.
 func (i *Instance) InvalidateProjectMCPIntegrationsCache() {
 	InvalidateProjectMCPIntegrationsCache(i.ProjectPath)
-	if IsCodexCompatible(i.Tool) {
+	if IsCodexCompatible(i.Tool) && !i.isRemoteSession() {
 		ClearCodexMCPCache(i.getCodexHomeDir())
 	}
 }

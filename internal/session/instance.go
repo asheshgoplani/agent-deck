@@ -7452,6 +7452,9 @@ func (i *Instance) RefreshLiveSessionIDs() {
 func (i *Instance) GetMCPInfo() *MCPInfo {
 	switch {
 	case IsCodexCompatible(i.Tool):
+		if i.isRemoteSession() {
+			return &MCPInfo{}
+		}
 		return GetCodexMCPInfo(i.getCodexHomeDir())
 	case IsClaudeCompatible(i.Tool):
 		return GetMCPInfo(i.ProjectPath)

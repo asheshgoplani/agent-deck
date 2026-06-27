@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,13 +56,17 @@ func TestWriteCodexMCPConfig_PreservesOtherKeys(t *testing.T) {
 	t.Cleanup(restoreCfg)
 
 	configFile := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(configFile, []byte(`model = "gpt-5"
+	if err := os.WriteFile(configFile, []byte(`# keep leading comment
+model = "gpt-5"
 
 [profiles.fast]
 model = "gpt-5-mini"
 
 [mcp_servers.orphan]
 command = "true"
+
+[mcp_servers.cat]
+command = "old-cat"
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -80,13 +85,21 @@ command = "true"
 	if raw["profiles"] == nil {
 		t.Fatal("profiles table not preserved")
 	}
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configText := string(data)
+	if !strings.Contains(configText, "# keep leading comment") {
+		t.Fatalf("non-MCP TOML comments should be preserved:\n%s", configText)
+	}
 
 	var cfgOut codexMCPConfig
 	if _, err := toml.DecodeFile(configFile, &cfgOut); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := cfgOut.MCPServers["orphan"]; ok {
-		t.Fatal("orphan MCP should be replaced by managed set")
+	if orphan, ok := cfgOut.MCPServers["orphan"]; !ok || orphan.Command != "true" {
+		t.Fatalf("manual orphan MCP should be preserved: %#v", cfgOut.MCPServers["orphan"])
 	}
 	cat := cfgOut.MCPServers["cat"]
 	if cat.Command != "echo" || strings.Join(cat.Args, ",") != "purr" || cat.Env["CAT"] != "meow" {
@@ -133,5 +146,35 @@ func TestCodexMCPDispatch(t *testing.T) {
 	info := inst.GetMCPInfo()
 	if got, want := strings.Join(info.Global, ","), "cat"; got != want {
 		t.Fatalf("instance MCP info = %q, want %q", got, want)
+	}
+}
+
+func TestCodexMCPDispatchRejectsRemoteSessions(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("CODEX_HOME", tmp)
+
+	inst := NewInstanceWithTool("remote-cx", "/tmp/project", "codex")
+	inst.SSHHost = "user@example.com"
+
+	if path := inst.MCPGlobalConfigPath(); path != "" {
+		t.Fatalf("remote Codex global path = %q, want empty", path)
+	}
+	if info := inst.GetMCPInfo(); info == nil || info.HasAny() {
+		t.Fatalf("remote Codex MCP info = %#v, want empty info", info)
+	}
+	err := inst.WriteGlobalMCPConfig([]string{"cat"})
+	if err == nil {
+		t.Fatal("expected remote Codex MCP write to fail")
+	}
+	if !strings.Contains(err.Error(), "SSH remote sessions") {
+		t.Fatalf("remote write error = %v", err)
+	}
+	if err := inst.regenerateMCPConfig(); err != nil {
+		t.Fatalf("remote Codex regenerate should no-op, got %v", err)
+	}
+
+	_, statErr := os.Stat(filepath.Join(tmp, "config.toml"))
+	if !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("remote Codex should not create local config, stat err = %v", statErr)
 	}
 }

@@ -771,12 +771,12 @@ func (m *MCPDialog) View() string {
 
 	// Title varies by tool
 	title := "MCP Manager"
-	switch m.tool {
-	case "gemini":
+	switch {
+	case m.tool == "gemini":
 		title = "MCP Manager (Gemini)"
-	case "codex":
+	case session.IsCodexCompatible(m.tool):
 		title = "MCP Manager (Codex)"
-	case "cursor":
+	case m.tool == "cursor":
 		title = "MCP Manager (Cursor)"
 	}
 

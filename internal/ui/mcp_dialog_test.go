@@ -90,3 +90,7 @@ func TestMCPDialog_CodexUsesGlobalScopeOnly(t *testing.T) {
 		t.Fatalf("tab should keep Codex on global scope, got %v", dialog.scope)
 	}
 }
+
+func TestMCPDialog_RemoteSessionNotApplicable(t *testing.T) {
+	t.Skip("remote sessions cannot open MCPDialog directly; Home only opens it for local session items")
+}
