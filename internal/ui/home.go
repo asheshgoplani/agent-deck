@@ -14648,6 +14648,23 @@ func (h *Home) renderCreatingSessionItem(
 	b.WriteString("\n")
 }
 
+// budgetBadge renders the per-session context-budget chip for the session list.
+// Empty for BudgetNormal so unaffected rows are unchanged.
+func budgetBadge(level session.BudgetLevel, selected bool) string {
+	if level == session.BudgetNormal {
+		return ""
+	}
+	color := ColorYellow
+	if level == session.BudgetHigh || level == session.BudgetOver {
+		color = ColorRed
+	}
+	style := lipgloss.NewStyle().Foreground(color).Bold(true)
+	if selected {
+		style = SessionStatusSelStyle
+	}
+	return style.Render(" [ctx:" + level.String() + "]")
+}
+
 // renderSessionItem renders a single session row into b, including the tree
 // connector, status badge, tool label, and the dim tmux pane-title suffix.
 // The pane-title suffix appears on the selected row, or on every row when
@@ -14912,6 +14929,15 @@ func (h *Home) renderSessionItem(
 		timestampBadge = tsStyle.Render(" " + formatRelativeTime(ts))
 	}
 
+	// Context-budget badge for Claude-compatible sessions with cached analytics.
+	// Only shown when analytics are available (no-signal gate: nil = no badge).
+	ctxBadge := ""
+	if session.IsClaudeCompatible(inst.Tool) {
+		if a := h.getAnalyticsForSession(inst); a != nil {
+			ctxBadge = budgetBadge(a.BudgetLevel(session.GetContextBudgetSettings()), selected)
+		}
+	}
+
 	// Window expand/collapse chevron for sessions with 2+ windows
 	windowChevron := " " // space placeholder to keep status icons aligned
 	if h.sessionHasWindows(item) {
@@ -14953,7 +14979,7 @@ func (h *Home) renderSessionItem(
 			cellWidth(status) + 1 /* space before title */ + cellWidth(tool) +
 			cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
 			cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
-			cellWidth(timestampBadge)
+			cellWidth(timestampBadge) + cellWidth(ctxBadge)
 		budget := listWidth - reserved - 1 // -1 trailing margin
 		if budget > 0 && cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
@@ -14965,7 +14991,7 @@ func (h *Home) renderSessionItem(
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -14981,6 +15007,7 @@ func (h *Home) renderSessionItem(
 		multiRepoBadge,
 		sshBadge,
 		timestampBadge,
+		ctxBadge,
 	)
 
 	// Append pane title filling remaining row space (only for the selected item).
