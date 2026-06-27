@@ -29,6 +29,12 @@ the launching session, which is what makes them show up nested in the TUI and
 routes their completion back to you. (If you are not in a session, the children
 still launch but won't be grouped under a parent.)
 
+**Need a *specific* parent?** Auto-parenting picks the launching session. To
+parent a child to a different session — e.g. fanning out under a named conductor,
+or launching from outside that session — pass `--parent <session-id-or-title>`.
+Spell out the long form: **never use the short `-p` to set a parent** (see the
+`-p` pitfall in Notes).
+
 ## The loop
 
 ### 1. Fan out (one `launch` per child; loop it)
@@ -57,6 +63,9 @@ Useful flags:
 - `--inherit-group` — force the parent's group for a non-worktree child (worktree
   children already inherit automatically).
 - `-t "<title>"` — give each child a readable title (otherwise auto-named).
+- `--parent <id|title>` — explicitly parent the child to a specific session
+  instead of the auto-detected one. One step, no follow-up needed. **Long form
+  only** — see the `-p` pitfall in Notes.
 - `--no-assert-done` — skip the completion-sentinel instruction.
 - `--no-parent` — launch flat instead of nested (you lose completion routing).
 
@@ -167,5 +176,17 @@ choose when to look (poll `session children`, or `inbox drain`).
   group. If a fleet did scatter (a stray group, or per-branch groups), move them
   back without restarting: `agent-deck group move <child-id> <parent-group>`,
   then `agent-deck group delete <stray-group>` once it's empty.
+- **The `-p` pitfall — use `--parent`, never `-p`, for a parent.** `-p` is the
+  *global* `--profile` shorthand, parsed before the subcommand. On older builds it
+  swallows your intended parent id as a profile name and routes the child into a
+  phantom `~/.agent-deck/profiles/<id>/state.db` — the child runs in tmux but is
+  invisible to the TUI / `ls` / `session children` (which read the default
+  profile), and a retry then fails with "session already exists". The long-form
+  `--parent <id>` is never affected and is the one-step way to set an explicit
+  parent. If you already launched a child and need to (re)parent it after the
+  fact, `agent-deck session set-parent <id|title> <parent-id>` also works.
+  To clean up phantom DBs from a past `-p` slip: the orphaned rows live under
+  `profiles/<parent-id>/state.db`; back up and remove that dir (the child's
+  worktree/branch stay on disk).
 - **Stopping / cleanup:** `agent-deck session stop <id>` and
   `agent-deck session remove <id>` (add `--force` if needed) tear a child down.
