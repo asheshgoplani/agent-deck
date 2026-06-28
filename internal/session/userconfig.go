@@ -383,6 +383,15 @@ type UISettings struct {
 	// (`new_session_enter_advances = false` → restores the legacy Enter-submits
 	// behavior). Set `= true` (or leave unset) to keep the new default.
 	NewSessionEnterAdvances *bool `toml:"new_session_enter_advances"`
+
+	// AttachOnCreate controls whether creating a session in the TUI (the `n`
+	// new-session dialog) immediately attaches to the new session's pane
+	// instead of only moving the cursor to it. Default false: creating a
+	// session selects it (today's behavior) and the user presses Enter to
+	// attach. Set `= true` to "instantly open" each new session. CLI
+	// `add`/`session start` are unaffected by this flag — they attach only
+	// with an explicit `--attach`.
+	AttachOnCreate bool `toml:"attach_on_create,omitempty"`
 }
 
 // normalizeUIHiddenTools lowercases, dedupes, and drops unknown entries from
@@ -540,6 +549,12 @@ func (u UISettings) GetNewSessionEnterAdvances() bool {
 		return true // Default: ON (Enter advances; Ctrl+S submits).
 	}
 	return *u.NewSessionEnterAdvances
+}
+
+// GetAttachOnCreate reports whether the TUI should attach to a newly created
+// session immediately instead of only selecting it. Default false.
+func (u UISettings) GetAttachOnCreate() bool {
+	return u.AttachOnCreate
 }
 
 // GetRemoteLatencyRefreshSecs returns the remote latency refresh interval

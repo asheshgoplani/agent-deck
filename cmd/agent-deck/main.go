@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -1203,6 +1204,7 @@ func handleAdd(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	attach := fs.Bool("attach", false, "Start and attach to the session immediately after creating it (requires an interactive terminal; not supported with --ssh)")
 
 	// Worktree flags
 	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch")
@@ -1764,6 +1766,40 @@ func handleAdd(profile string, args []string) {
 
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
+
+	// --attach: create → start → attach, so `add --attach` "instantly opens"
+	// the new session in one step. Refused loudly (never silently) under
+	// --json or without an interactive terminal; the session is left created
+	// and started in those cases. Remote (ssh) sessions use a different attach
+	// path and are out of scope here.
+	if *attach {
+		if *jsonOutput {
+			out.Error("--attach cannot be combined with --json; session was created", ErrCodeInvalidOperation)
+			os.Exit(3)
+		}
+		if *sshHost != "" {
+			out.Error("--attach is not supported with --ssh (remote sessions); session was created", ErrCodeInvalidOperation)
+			os.Exit(3)
+		}
+		if err := newInstance.Start(); err != nil {
+			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		newInstance.PostStartSync(3 * time.Second)
+		if err := storage.SaveWithGroups(instances, groupTree); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to save session state: %v\n", err)
+			os.Exit(1)
+		}
+		if err := attachInstanceInteractive(newInstance); err != nil {
+			if errors.Is(err, errAttachNoTTY) {
+				fmt.Fprintf(os.Stderr, "Error: %v; session was created and started\n", err)
+				os.Exit(3)
+			}
+			fmt.Fprintf(os.Stderr, "Error: failed to attach: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Build human-readable output
 	var humanLines []string

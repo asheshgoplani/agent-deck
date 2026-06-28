@@ -41,6 +41,7 @@ agent-deck add [path] [options]
 | `--parent` | Parent session (creates child) |
 | `--no-parent` | Disable automatic parent linking |
 | `--mcp` | Attach MCP (repeatable) |
+| `--attach` | Start and attach to the session immediately after creating it (requires an interactive terminal; not supported with `--ssh`/`--json`) |
 
 ```bash
 agent-deck add -t "My Project" -c claude .
@@ -48,10 +49,12 @@ agent-deck add -t "Child" --parent "Parent" -c claude /tmp/x
 agent-deck add -g ard --parent "conductor-ard" -c claude .
 agent-deck add -c "codex --dangerously-bypass-approvals-and-sandbox" .
 agent-deck add -t "Research" -c claude --mcp exa --mcp firecrawl /tmp/r
+agent-deck add -t "Quick" -c claude --attach .   # create → start → drop into the pane
 ```
 
 Notes:
 - Parent auto-link is enabled by default when `AGENT_DECK_SESSION_ID` is present and neither `--parent` nor `--no-parent` is passed.
+- `--attach` does create → start → attach in one step. Without an interactive terminal (or with `--json`) it exits non-zero with a clear error, leaving the session created and started so you can attach later.
 - `--parent` and `--no-parent` are mutually exclusive.
 - Explicit `-g/--group` overrides inherited parent group.
 - If `--cmd` contains extra args and no explicit `--wrapper` is provided, agent-deck auto-generates a wrapper to preserve those args.
@@ -139,10 +142,11 @@ http://127.0.0.1:8420/?token=my-secret
 ### session start
 
 ```bash
-agent-deck session start <id|title> [-m "message"] [--json] [-q]
+agent-deck session start <id|title> [-m "message"] [--attach] [--json] [-q]
 ```
 
 `-m` sends initial message after agent is ready.
+`--attach` drops you into the session's pane after it starts (requires an interactive terminal; refused under `--json`). On a clean detach you return to the shell; without a TTY it exits non-zero, leaving the session started.
 Flags can be placed before or after the session identifier.
 
 ### session stop
