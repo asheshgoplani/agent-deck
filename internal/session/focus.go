@@ -20,11 +20,21 @@ const FocusRequestTTL = 10 * time.Second
 type FocusRequest struct {
 	ID string `json:"id"`
 	TS int64  `json:"ts"` // unix nanoseconds when the request was written
+	// Attach asks the TUI to open/attach the session (as if the user pressed
+	// Enter), not merely move the cursor to it. omitempty keeps a plain
+	// select-only request byte-identical to the pre-attach format.
+	Attach bool `json:"attach,omitempty"`
 }
 
-// EncodeFocusRequest serializes a focus request payload.
+// EncodeFocusRequest serializes a select-only focus request payload.
 func EncodeFocusRequest(id string, nowNano int64) (string, error) {
-	b, err := json.Marshal(FocusRequest{ID: id, TS: nowNano})
+	return EncodeFocusRequestAttach(id, nowNano, false)
+}
+
+// EncodeFocusRequestAttach serializes a focus request, optionally asking the TUI
+// to attach the session rather than just selecting it.
+func EncodeFocusRequestAttach(id string, nowNano int64, attach bool) (string, error) {
+	b, err := json.Marshal(FocusRequest{ID: id, TS: nowNano, Attach: attach})
 	if err != nil {
 		return "", err
 	}
@@ -36,25 +46,39 @@ func EncodeFocusRequest(id string, nowNano int64) (string, error) {
 // A stale-but-parseable payload returns its id with fresh=false so the caller
 // can still log/clear it.
 func DecodeFocusRequest(val string, nowNano int64, ttl time.Duration) (id string, fresh bool) {
+	id, _, fresh = DecodeFocusRequestAttach(val, nowNano, ttl)
+	return id, fresh
+}
+
+// DecodeFocusRequestAttach parses a stored payload and additionally reports
+// whether the request asked to attach the session. attach is only meaningful
+// when fresh is true.
+func DecodeFocusRequestAttach(val string, nowNano int64, ttl time.Duration) (id string, attach bool, fresh bool) {
 	if val == "" {
-		return "", false
+		return "", false, false
 	}
 	var fr FocusRequest
 	if err := json.Unmarshal([]byte(val), &fr); err != nil {
-		return "", false
+		return "", false, false
 	}
 	if fr.ID == "" {
-		return "", false
+		return "", false, false
 	}
 	if nowNano-fr.TS > int64(ttl) {
-		return fr.ID, false
+		return fr.ID, fr.Attach, false
 	}
-	return fr.ID, true
+	return fr.ID, fr.Attach, true
 }
 
-// WriteFocusRequest stores a focus request for the running TUI to consume.
+// WriteFocusRequest stores a select-only focus request for the running TUI to consume.
 func WriteFocusRequest(db *statedb.StateDB, id string, nowNano int64) error {
-	val, err := EncodeFocusRequest(id, nowNano)
+	return WriteFocusRequestAttach(db, id, nowNano, false)
+}
+
+// WriteFocusRequestAttach stores a focus request, optionally flagged to attach
+// the session on consume.
+func WriteFocusRequestAttach(db *statedb.StateDB, id string, nowNano int64, attach bool) error {
+	val, err := EncodeFocusRequestAttach(id, nowNano, attach)
 	if err != nil {
 		return err
 	}

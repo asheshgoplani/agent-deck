@@ -80,3 +80,35 @@ func TestFocusRequestDBRoundTrip(t *testing.T) {
 		t.Fatalf("ReadFocusRequest after clear = (%q, %v), want (\"\", nil)", got, err)
 	}
 }
+
+func TestFocusRequestAttachRoundTrip(t *testing.T) {
+	now := int64(2_000_000_000_000)
+	ttl := 10 * time.Second
+
+	// attach=true survives encode→decode.
+	withAttach, err := EncodeFocusRequestAttach("sess-1", now, true)
+	if err != nil {
+		t.Fatalf("encode attach: %v", err)
+	}
+	if id, attach, fresh := DecodeFocusRequestAttach(withAttach, now, ttl); id != "sess-1" || !attach || !fresh {
+		t.Fatalf("decode attach = (%q, %v, %v), want (sess-1, true, true)", id, attach, fresh)
+	}
+
+	// Select-only request decodes attach=false and stays byte-identical to the
+	// pre-attach format (omitempty drops the field).
+	selectOnly, err := EncodeFocusRequest("sess-1", now)
+	if err != nil {
+		t.Fatalf("encode select-only: %v", err)
+	}
+	if want := `{"id":"sess-1","ts":2000000000000}`; selectOnly != want {
+		t.Fatalf("select-only payload = %q, want %q", selectOnly, want)
+	}
+	if id, attach, fresh := DecodeFocusRequestAttach(selectOnly, now, ttl); id != "sess-1" || attach || !fresh {
+		t.Fatalf("decode select-only = (%q, %v, %v), want (sess-1, false, true)", id, attach, fresh)
+	}
+
+	// A stale attach request still surfaces attach for logging, but fresh=false.
+	if id, attach, fresh := DecodeFocusRequestAttach(withAttach, now+int64(11*time.Second), ttl); id != "sess-1" || !attach || fresh {
+		t.Fatalf("decode stale attach = (%q, %v, %v), want (sess-1, true, false)", id, attach, fresh)
+	}
+}

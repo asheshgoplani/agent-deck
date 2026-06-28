@@ -476,6 +476,12 @@ type Home struct {
 	// it only changes WHAT the footer advertises, never a keybinding.
 	footerMode string
 
+	// attachOnCreate, when true, makes creating a session via the new-session
+	// dialog attach to the new session's pane immediately instead of only
+	// moving the cursor to it (config.toml [ui] attach_on_create). Default
+	// false: today's select-only behavior. See sessionCreatedMsg handling.
+	attachOnCreate bool
+
 	// Performance observability (debug mode only, zero cost when off)
 	debugMode          bool         // true when AGENTDECK_DEBUG=1, enables perf overlay
 	lastRenderDuration atomic.Int64 // microseconds, for debug status bar
@@ -1169,6 +1175,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.remoteLatencyRefreshSec = cfg.UI.GetRemoteLatencyRefreshSecs(cfg.SystemStats.GetRefreshSeconds())
 		h.remoteSessionRefreshSec = cfg.UI.GetRemoteSessionRefreshSecs()
 		h.footerMode = cfg.UI.GetFooter()
+		h.attachOnCreate = cfg.UI.GetAttachOnCreate()
 	} else {
 		h.fullRepaint = (session.DisplaySettings{}).GetFullRepaint()
 		h.activeFilterExcludes = (session.DisplaySettings{}).GetActiveFilterExcludes()
@@ -1582,23 +1589,38 @@ func (h *Home) SelectSessionByID(id string) bool {
 // consumeFocusRequest honors a pending `agent-deck session focus <id>` request.
 // It is called once per tick. The row is cleared unconditionally (consume-once)
 // so an unknown, stale, or foreign id never re-fires on a later tick or lingers
-// past its purpose.
-func (h *Home) consumeFocusRequest(db *statedb.StateDB) {
+// past its purpose. It returns a non-nil tea.Cmd only when the request asked to
+// --attach the session and that session is live: the caller runs the cmd to
+// open it (the same path as pressing Enter). A select-only request returns nil.
+func (h *Home) consumeFocusRequest(db *statedb.StateDB) tea.Cmd {
 	if db == nil {
-		return
+		return nil
 	}
 	raw, err := session.ReadFocusRequest(db)
 	if err != nil || raw == "" {
-		return
+		return nil
 	}
 	// Clear first: even a stale/unknown id must be consumed exactly once.
 	_ = session.ClearFocusRequest(db)
 
-	id, fresh := session.DecodeFocusRequest(raw, time.Now().UnixNano(), session.FocusRequestTTL)
+	id, attach, fresh := session.DecodeFocusRequestAttach(raw, time.Now().UnixNano(), session.FocusRequestTTL)
 	if !fresh {
-		return
+		return nil
 	}
-	h.SelectSessionByID(id)
+	if !h.SelectSessionByID(id) {
+		return nil
+	}
+	if !attach {
+		return nil
+	}
+	// Attach intent: open the session as if the user pressed Enter on it. Skip
+	// when the session has no live tmux pane (attachSession would no-op anyway).
+	inst := h.getInstanceByID(id)
+	if inst == nil || !inst.Exists() {
+		return nil
+	}
+	h.isAttaching.Store(true) // suppress View() output during the transition (matches the Enter path)
+	return h.attachSession(inst)
 }
 
 // isInGroupScope returns true if the given path is within the active group scope.
@@ -4933,6 +4955,19 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Use forceSave to bypass mtime check - new session creation MUST persist
 			h.forceSaveInstances()
 
+			// Auto-attach to the new session when [ui].attach_on_create is set,
+			// so creating a session "instantly opens" it instead of only moving
+			// the cursor to it. The session was just Start()ed (see
+			// createSessionInGroupWithWorktreeAndOptions), so its pane is live.
+			// attachSession returns nil when there is no local tmux pane to
+			// attach (e.g. a session whose tmux session could not be resolved);
+			// in that case we fall through to today's select-only behavior.
+			if h.attachOnCreate {
+				if attachTo := h.attachSession(msg.instance); attachTo != nil {
+					return h, tea.Batch(h.fetchPreview(msg.instance, msg.instance.ID, -1), attachTo)
+				}
+			}
+
 			// Start fetching preview for the new session
 			return h, h.fetchPreview(msg.instance, msg.instance.ID, -1)
 		}
@@ -5951,7 +5986,14 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		// Honor a pending `agent-deck session focus <id>` request from the CLI.
-		h.consumeFocusRequest(statedb.GetGlobal())
+		// A non-nil cmd means the request asked to --attach the session: open it
+		// now (same as Enter) and skip the rest of this tick's background work,
+		// which is moot once we hand the terminal to the session. Re-arm the tick
+		// (h.tick()) here too — unlike the Enter key path, returning early from the
+		// tickMsg case would otherwise break the self-rescheduling tick chain.
+		if focusCmd := h.consumeFocusRequest(statedb.GetGlobal()); focusCmd != nil {
+			return h, tea.Batch(focusCmd, h.tick())
+		}
 
 		var remoteFetchCmd tea.Cmd
 		var remoteLatencyCmd tea.Cmd

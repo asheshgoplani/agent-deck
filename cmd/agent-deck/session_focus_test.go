@@ -28,7 +28,7 @@ func TestResolveAndWriteFocus_ValidID(t *testing.T) {
 	inst := session.NewInstanceWithTool("a1", "/tmp/a1", "claude")
 	now := time.Now().UnixNano()
 
-	if err := resolveAndWriteFocus(db, []*session.Instance{inst}, inst.ID, now); err != nil {
+	if err := resolveAndWriteFocus(db, []*session.Instance{inst}, inst.ID, now, false); err != nil {
 		t.Fatalf("resolveAndWriteFocus valid id: %v", err)
 	}
 
@@ -36,9 +36,28 @@ func TestResolveAndWriteFocus_ValidID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	id, fresh := session.DecodeFocusRequest(raw, now, session.FocusRequestTTL)
-	if id != inst.ID || !fresh {
-		t.Fatalf("stored request = (%q, %v), want (%q, true)", id, fresh, inst.ID)
+	id, attach, fresh := session.DecodeFocusRequestAttach(raw, now, session.FocusRequestTTL)
+	if id != inst.ID || !fresh || attach {
+		t.Fatalf("stored request = (%q, attach=%v, fresh=%v), want (%q, false, true)", id, attach, fresh, inst.ID)
+	}
+}
+
+func TestResolveAndWriteFocus_Attach(t *testing.T) {
+	db := newTempStateDB(t)
+	inst := session.NewInstanceWithTool("a1", "/tmp/a1", "claude")
+	now := time.Now().UnixNano()
+
+	if err := resolveAndWriteFocus(db, []*session.Instance{inst}, inst.ID, now, true); err != nil {
+		t.Fatalf("resolveAndWriteFocus attach: %v", err)
+	}
+
+	raw, err := session.ReadFocusRequest(db)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	id, attach, fresh := session.DecodeFocusRequestAttach(raw, now, session.FocusRequestTTL)
+	if id != inst.ID || !fresh || !attach {
+		t.Fatalf("stored request = (%q, attach=%v, fresh=%v), want (%q, true, true)", id, attach, fresh, inst.ID)
 	}
 }
 
@@ -46,7 +65,7 @@ func TestResolveAndWriteFocus_UnknownID(t *testing.T) {
 	db := newTempStateDB(t)
 	inst := session.NewInstanceWithTool("a1", "/tmp/a1", "claude")
 
-	err := resolveAndWriteFocus(db, []*session.Instance{inst}, "does-not-exist", time.Now().UnixNano())
+	err := resolveAndWriteFocus(db, []*session.Instance{inst}, "does-not-exist", time.Now().UnixNano(), false)
 	if !errors.Is(err, errFocusNotFound) {
 		t.Fatalf("unknown id err = %v, want errFocusNotFound", err)
 	}
@@ -58,7 +77,7 @@ func TestResolveAndWriteFocus_UnknownID(t *testing.T) {
 
 func TestResolveAndWriteFocus_EmptyID(t *testing.T) {
 	db := newTempStateDB(t)
-	if err := resolveAndWriteFocus(db, nil, "", time.Now().UnixNano()); err == nil {
+	if err := resolveAndWriteFocus(db, nil, "", time.Now().UnixNano(), false); err == nil {
 		t.Fatal("empty id: want error, got nil")
 	}
 }

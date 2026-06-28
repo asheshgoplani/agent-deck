@@ -107,7 +107,7 @@ func printSessionHelp() {
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
 	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, or Codex session with context")
 	fmt.Println("  attach <id>             Attach to session interactively")
-	fmt.Println("  focus <id>              Signal the running TUI to select a session")
+	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
@@ -172,6 +172,7 @@ func handleSessionStart(profile string, args []string) {
 	message := fs.String("message", "", "Initial message to send once agent is ready")
 	messageShort := fs.String("m", "", "Initial message to send once agent is ready (short)")
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode when starting Gemini or Codex sessions")
+	attach := fs.Bool("attach", false, "Attach to the session after starting (requires an interactive terminal)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session start <id|title> [options]")
@@ -274,6 +275,27 @@ func handleSessionStart(profile string, args []string) {
 	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+
+	// --attach: drop the user into the freshly started session's pane. This
+	// suspends the CLI into tmux and blocks until the user detaches, so the
+	// normal success output below is skipped. Refused loudly (never silently)
+	// without an interactive terminal or under --json; the session stays
+	// started in both cases.
+	if *attach {
+		if *jsonOutput {
+			out.Error("--attach cannot be combined with --json; session was started", ErrCodeInvalidOperation)
+			os.Exit(3)
+		}
+		if err := attachInstanceInteractive(inst); err != nil {
+			if errors.Is(err, errAttachNoTTY) {
+				fmt.Fprintf(os.Stderr, "Error: %v; session was started\n", err)
+				os.Exit(3)
+			}
+			fmt.Fprintf(os.Stderr, "Error: failed to attach: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// Output success
@@ -1109,7 +1131,7 @@ var errFocusNotFound = errors.New("session not found")
 // resolveAndWriteFocus validates id against the loaded instances and, on a
 // match, writes the focus_request row. Split out of handleSessionFocus so it is
 // unit-testable without os.Exit.
-func resolveAndWriteFocus(db *statedb.StateDB, instances []*session.Instance, id string, nowNano int64) error {
+func resolveAndWriteFocus(db *statedb.StateDB, instances []*session.Instance, id string, nowNano int64, attach bool) error {
 	if id == "" {
 		return fmt.Errorf("session focus requires an <id>")
 	}
@@ -1123,18 +1145,22 @@ func resolveAndWriteFocus(db *statedb.StateDB, instances []*session.Instance, id
 	if !found {
 		return fmt.Errorf("%w: %q", errFocusNotFound, id)
 	}
-	return session.WriteFocusRequest(db, id, nowNano)
+	return session.WriteFocusRequestAttach(db, id, nowNano, attach)
 }
 
 // handleSessionFocus signals the running TUI (same profile) to select <id> on
 // its next poll. Fire-and-forget: no stdout on success. Unknown id exits 2.
+// With --attach, the TUI opens/attaches the session instead of only selecting it.
 func handleSessionFocus(profile string, args []string) {
 	fs := flag.NewFlagSet("session focus", flag.ExitOnError)
+	attach := fs.Bool("attach", false, "Open/attach the session, not just select it")
 	fs.Usage = func() {
-		fmt.Println("Usage: agent-deck session focus <id>")
+		fmt.Println("Usage: agent-deck session focus <id> [--attach]")
 		fmt.Println()
 		fmt.Println("Signal the running agent-deck TUI (same profile) to reveal and")
 		fmt.Println("select the session with the given instance id on its next refresh.")
+		fmt.Println("With --attach, the TUI opens/attaches the session (as if you")
+		fmt.Println("pressed Enter on it) instead of only moving the cursor.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
@@ -1154,7 +1180,7 @@ func handleSessionFocus(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	if err := resolveAndWriteFocus(db, instances, id, time.Now().UnixNano()); err != nil {
+	if err := resolveAndWriteFocus(db, instances, id, time.Now().UnixNano(), *attach); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		if errors.Is(err, errFocusNotFound) {
 			os.Exit(2)
