@@ -1550,12 +1550,14 @@ func (h *Home) SelectSessionByID(id string) bool {
 	// Confirm the target exists in this profile, is not archived, and learn its
 	// group path for expansion.
 	var target *session.Instance
+	h.instancesMu.RLock()
 	for _, inst := range h.instances {
 		if inst.ID == id {
 			target = inst
 			break
 		}
 	}
+	h.instancesMu.RUnlock()
 	if target == nil || target.IsArchived() {
 		return false
 	}
