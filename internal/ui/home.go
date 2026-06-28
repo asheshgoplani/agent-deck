@@ -1579,6 +1579,28 @@ func (h *Home) SelectSessionByID(id string) bool {
 	return false
 }
 
+// consumeFocusRequest honors a pending `agent-deck session focus <id>` request.
+// It is called once per tick. The row is cleared unconditionally (consume-once)
+// so an unknown, stale, or foreign id never re-fires on a later tick or lingers
+// past its purpose.
+func (h *Home) consumeFocusRequest(db *statedb.StateDB) {
+	if db == nil {
+		return
+	}
+	raw, err := session.ReadFocusRequest(db)
+	if err != nil || raw == "" {
+		return
+	}
+	// Clear first: even a stale/unknown id must be consumed exactly once.
+	_ = session.ClearFocusRequest(db)
+
+	id, fresh := session.DecodeFocusRequest(raw, time.Now().UnixNano(), session.FocusRequestTTL)
+	if !fresh {
+		return
+	}
+	h.SelectSessionByID(id)
+}
+
 // isInGroupScope returns true if the given path is within the active group scope.
 // Returns true for all paths when no scope is set.
 func (h *Home) isInGroupScope(path string) bool {
@@ -5928,6 +5950,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case tickMsg:
+		// Honor a pending `agent-deck session focus <id>` request from the CLI.
+		h.consumeFocusRequest(statedb.GetGlobal())
+
 		var remoteFetchCmd tea.Cmd
 		var remoteLatencyCmd tea.Cmd
 
