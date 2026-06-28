@@ -844,6 +844,13 @@ type Session struct {
 	toolDetectedAt   time.Time
 	toolDetectExpiry time.Duration // How long before re-detecting (default 30s)
 
+	// Cached background-work probe (BackgroundWorkPending). The hook fast path in
+	// UpdateStatus has no captured pane content, so it must capture separately to
+	// check for in-flight background shells/agents; this bounds that to one
+	// capture per bgWorkCacheTTL while a session sits at the prompt.
+	bgWorkPending   bool
+	bgWorkCheckedAt time.Time
+
 	// Simple state tracking (hash-based)
 	stateTracker *StateTracker
 
@@ -3140,6 +3147,26 @@ func (s *Session) GetStatus() (string, error) {
 				return "active", nil
 			}
 
+			// Foreground turn ended but background work is still in flight: a
+			// run_in_background shell, or a background agent the turn is awaiting.
+			// Claude shows this at the prompt ("N shells still running" /
+			// "Waiting for N background agent to finish") with no spinner, so the
+			// busy check above misses it and the session would flip to waiting
+			// (yellow) and fire a premature "finished" notification. Keep it green
+			// until the work actually completes (then the next poll settles to
+			// waiting and notifies — "done" now means foreground AND background).
+			if s.isClaudeTool() && claudeBackgroundWorkPending(content) {
+				s.stateTracker.lastChangeTime = time.Now()
+				s.stateTracker.realActivityConfirmed = true
+				s.stateTracker.acknowledged = false
+				s.resetPromptNoBusyHoldLocked()
+				s.stateTracker.lastActivityTimestamp = currentTS
+				s.lastStableStatus = "active"
+				s.startupAt = time.Time{}
+				statusLog.Debug("background_work_active", slog.String("session", shortName))
+				return "active", nil
+			}
+
 			// Update content hash for spike detection (deferred until after early return above).
 			// The 500ms CapturePane cache means the spike path gets the same content,
 			// so we store the normalized result once and reuse it via cachedNormContent.
@@ -3747,6 +3774,48 @@ func (s *Session) GetWaitingSince() time.Time {
 func (s *Session) hasBusyIndicator(content string) bool {
 	// Always use spinner movement detection regardless of resolvedPatterns
 	return s.hasBusyIndicatorResolved(content)
+}
+
+// isClaudeTool reports whether this session is running Claude Code, used to gate
+// Claude-shaped pane heuristics (e.g. the background-work footer). Reads cached
+// tool fields without locking; GetStatus callers already hold s.mu.
+func (s *Session) isClaudeTool() bool {
+	return strings.EqualFold(inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command), "claude")
+}
+
+// bgWorkCacheTTL bounds how often BackgroundWorkPending captures the pane while a
+// session sits at the prompt. CapturePane has its own 500ms cache; this adds a
+// coarser ceiling so the per-tick hook-fast-path probe stays cheap at scale.
+const bgWorkCacheTTL = 3 * time.Second
+
+// BackgroundWorkPending reports whether a Claude session at the prompt still has
+// background work in flight (run_in_background shells or a background agent the
+// turn is awaiting). It captures the pane itself — for the UpdateStatus hook fast
+// path, which short-circuits before GetStatus and so has no captured content —
+// and caches the result briefly (bgWorkCacheTTL). Returns false for non-Claude
+// sessions. Safe to call WITHOUT holding s.mu (acquires it internally; releases
+// it for the slow capture).
+func (s *Session) BackgroundWorkPending() bool {
+	s.mu.Lock()
+	if !s.isClaudeTool() {
+		s.mu.Unlock()
+		return false
+	}
+	if !s.bgWorkCheckedAt.IsZero() && time.Since(s.bgWorkCheckedAt) < bgWorkCacheTTL {
+		pending := s.bgWorkPending
+		s.mu.Unlock()
+		return pending
+	}
+	s.mu.Unlock()
+
+	rawContent, err := s.CapturePane()
+	pending := err == nil && claudeBackgroundWorkPending(StripANSI(rawContent))
+
+	s.mu.Lock()
+	s.bgWorkPending = pending
+	s.bgWorkCheckedAt = time.Now()
+	s.mu.Unlock()
+	return pending
 }
 
 var defaultResolvedPatternsCache sync.Map // map[string]*ResolvedPatterns

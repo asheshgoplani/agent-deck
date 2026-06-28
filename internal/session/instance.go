@@ -3835,13 +3835,34 @@ func (i *Instance) UpdateStatus() error {
 				}
 				i.Status = StatusWaiting
 			} else {
-				// Check acknowledgment: orange (waiting) vs gray (idle)
-				// Acknowledge() is called when user attaches to a session.
-				// ResetAcknowledged() is called by UpdateHookStatus on any new
-				// waiting event, and by the u key / new activity.
-				if i.tmuxSession != nil && i.tmuxSession.IsAcknowledged() {
+				// Claude fires its Stop hook (→ "waiting") when the FOREGROUND turn
+				// ends, even while run_in_background shells or a background agent the
+				// turn is awaiting keep running. Treat the session as still running
+				// so it stays green and the daemon emits no premature "finished"
+				// notification; it settles to waiting (and notifies) once the
+				// background work completes — so "done" means foreground AND
+				// background. BackgroundWorkPending captures the pane (the fast path
+				// has no captured content), so release i.mu around it like the
+				// GetStatus call below, then re-check for a concurrent Kill().
+				bgWorkPending := false
+				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) {
+					i.mu.Unlock()
+					bgWorkPending = i.tmuxSession.BackgroundWorkPending()
+					i.mu.Lock()
+					if i.Status == StatusStopped {
+						return nil
+					}
+				}
+				switch {
+				case bgWorkPending:
+					i.Status = StatusRunning
+				case i.tmuxSession != nil && i.tmuxSession.IsAcknowledged():
+					// Check acknowledgment: orange (waiting) vs gray (idle).
+					// Acknowledge() is called when user attaches to a session.
+					// ResetAcknowledged() is called by UpdateHookStatus on any new
+					// waiting event, and by the u key / new activity.
 					i.Status = StatusIdle
-				} else {
+				default:
 					i.Status = StatusWaiting
 				}
 			}
