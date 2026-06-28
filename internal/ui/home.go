@@ -1484,23 +1484,95 @@ func (h *Home) SetInitialSelection(idOrTitle string) {
 // h.initialSelect, if any. Returns true if a match was found and the cursor
 // was moved, false otherwise. Idempotent — after one successful apply, further
 // calls are no-ops so normal cursor navigation is not overridden.
+//
+// Unlike SelectSessionByID this method does NOT clear group scope or status
+// filters — the caller may have set a scope intentionally via -g/--group, and
+// --select must respect that constraint. Only sessions visible in the current
+// flat view are eligible.
 func (h *Home) applyInitialSelection() bool {
 	if h.initialSelectDone || h.initialSelect == "" {
 		return false
 	}
+	// Try id-path first: searches only the visible flat view, so group scope
+	// and status filters are naturally honoured (no reveal behaviour here).
+	if idx := h.flatItemIndexByID(h.initialSelect); idx >= 0 {
+		h.cursor = idx
+		h.initialSelectDone = true
+		h.syncViewport()
+		return true
+	}
+	// Fall back to a title match — initialSelect may be a title, not an id.
 	wanted := strings.ToLower(strings.TrimSpace(h.initialSelect))
 	for i, fi := range h.flatItems {
 		if fi.Type != session.ItemTypeSession || fi.Session == nil {
 			continue
 		}
-		if fi.Session.ID == h.initialSelect ||
-			strings.EqualFold(fi.Session.Title, h.initialSelect) ||
+		if strings.EqualFold(fi.Session.Title, h.initialSelect) ||
 			strings.ToLower(fi.Session.Title) == wanted {
 			h.cursor = i
 			h.initialSelectDone = true
 			h.syncViewport()
 			return true
 		}
+	}
+	return false
+}
+
+// flatItemIndexByID returns the flatItems index of the session row with the
+// given id, or -1 if it is not present in the current flat view.
+func (h *Home) flatItemIndexByID(id string) int {
+	for i, fi := range h.flatItems {
+		if fi.Type == session.ItemTypeSession && fi.Session != nil && fi.Session.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// SelectSessionByID reveals and selects the session with the given id within
+// the active (non-archived) view: if the target is hidden by a status filter or
+// group scope it clears them, and if its group is collapsed it expands the
+// group (and parents), then moves the cursor. Returns true if the session was
+// found and selected. Archived sessions and unknown/foreign ids return false
+// and leave the cursor unchanged.
+func (h *Home) SelectSessionByID(id string) bool {
+	if id == "" {
+		return false
+	}
+
+	// Fast path: already visible in the current flat view.
+	if idx := h.flatItemIndexByID(id); idx >= 0 {
+		h.cursor = idx
+		h.syncViewport()
+		return true
+	}
+
+	// Confirm the target exists in this profile, is not archived, and learn its
+	// group path for expansion.
+	var target *session.Instance
+	for _, inst := range h.instances {
+		if inst.ID == id {
+			target = inst
+			break
+		}
+	}
+	if target == nil || target.IsArchived() {
+		return false
+	}
+
+	// Reveal within the active view: drop filters that could hide the target and
+	// expand its containing group, then rebuild and locate it.
+	h.statusFilter = ""
+	h.groupScope = ""
+	if target.GroupPath != "" {
+		h.groupTree.ExpandGroupWithParents(target.GroupPath)
+	}
+	h.rebuildFlatItems()
+
+	if idx := h.flatItemIndexByID(id); idx >= 0 {
+		h.cursor = idx
+		h.syncViewport()
+		return true
 	}
 	return false
 }
