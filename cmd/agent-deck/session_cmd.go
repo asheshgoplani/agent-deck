@@ -49,6 +49,8 @@ func handleSession(profile string, args []string) {
 		handleSessionFork(profile, args[1:])
 	case "attach":
 		handleSessionAttach(profile, args[1:])
+	case "focus":
+		handleSessionFocus(profile, args[1:])
 	case "show":
 		handleSessionShow(profile, args[1:])
 	case "current":
@@ -105,6 +107,7 @@ func printSessionHelp() {
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
 	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, or Codex session with context")
 	fmt.Println("  attach <id>             Attach to session interactively")
+	fmt.Println("  focus <id>              Signal the running TUI to select a session")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
@@ -1095,6 +1098,67 @@ func handleSessionAttach(profile string, args []string) {
 
 	if err := tmuxSession.Attach(ctx, detachByte); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to attach: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// errFocusNotFound signals that `session focus` was given an id absent from the
+// current profile. Callers map it to a distinct (exit 2) "not found" code.
+var errFocusNotFound = errors.New("session not found")
+
+// resolveAndWriteFocus validates id against the loaded instances and, on a
+// match, writes the focus_request row. Split out of handleSessionFocus so it is
+// unit-testable without os.Exit.
+func resolveAndWriteFocus(db *statedb.StateDB, instances []*session.Instance, id string, nowNano int64) error {
+	if id == "" {
+		return fmt.Errorf("session focus requires an <id>")
+	}
+	found := false
+	for _, inst := range instances {
+		if inst.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("%w: %q", errFocusNotFound, id)
+	}
+	return session.WriteFocusRequest(db, id, nowNano)
+}
+
+// handleSessionFocus signals the running TUI (same profile) to select <id> on
+// its next poll. Fire-and-forget: no stdout on success. Unknown id exits 2.
+func handleSessionFocus(profile string, args []string) {
+	fs := flag.NewFlagSet("session focus", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck session focus <id>")
+		fmt.Println()
+		fmt.Println("Signal the running agent-deck TUI (same profile) to reveal and")
+		fmt.Println("select the session with the given instance id on its next refresh.")
+	}
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+
+	id := fs.Arg(0)
+
+	storage, instances, _, err := loadSessionData(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	db := storage.GetDB()
+	if db == nil {
+		fmt.Fprintln(os.Stderr, "Error: no state database available")
+		os.Exit(1)
+	}
+
+	if err := resolveAndWriteFocus(db, instances, id, time.Now().UnixNano()); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if errors.Is(err, errFocusNotFound) {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 }
