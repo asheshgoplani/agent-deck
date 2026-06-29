@@ -5262,6 +5262,34 @@ func SwitchAttachedClients(socket, targetSession, sessionID string) (bool, error
 	return switched, firstErr
 }
 
+// DetachClientsOnSockets detaches every non-control client attached on any of
+// the given sockets ("" = default server). Returns detached=true iff at least
+// one client was detached.
+//
+// This is the cross-server companion to SwitchAttachedClients: switch-client
+// cannot move a client between tmux servers, so when a notification target lives
+// on a different socket than the attached session, detaching that client makes
+// agent-deck's paused attach (tea.Exec) return. The TUI then resumes and
+// consumes the focus_request to attach the target on its OWN socket — a
+// detach-and-reattach, which is the only way to "switch while attached" across
+// servers. Control-mode clients (PipeManager pipes) are left alone.
+func DetachClientsOnSockets(sockets ...string) (bool, error) {
+	detached := false
+	var firstErr error
+	for _, socket := range sockets {
+		for _, c := range attachedClientNames(socket) {
+			if err := tmuxExec(socket, "detach-client", "-c", c).Run(); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			detached = true
+		}
+	}
+	return detached, firstErr
+}
+
 // UnbindKey removes a key binding and restores default behavior.
 // After unbinding, attempts to restore the default behavior where number keys
 // select windows. The restore is best-effort since it may fail in environments
