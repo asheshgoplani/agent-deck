@@ -243,3 +243,17 @@ jobs:
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
         with:
           subject-path: 'dist-attest/*'
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          REF_NAME: ${{ env.REF_NAME }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -s \
+            -H "Title: Release ${REF_NAME} failed" \
+            -H "Priority: high" \
+            -H "Tags: github,release,failure" \
+            -d "Release workflow failed for ${REF_NAME}. Check logs: ${RUN_URL}" \
+            "https://ntfy.sh/${NTFY_TOPIC}"
