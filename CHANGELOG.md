@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable default `max_concurrent` for new groups via `[group_defaults]`.** New `[group_defaults]` section with a `max_concurrent` key sets the `max_concurrent` value stamped onto newly-created groups, replacing the hardcoded serial default (`1`) introduced in v1.9.1. Precedence: explicit `group create --max-concurrent N` > `[group_defaults].max_concurrent` > built-in `1`. When the key is unset, behavior is byte-for-byte unchanged (new groups stay serial); `0` means unlimited; existing groups loaded from `state.db` are never touched. Covered by `TestGroup_NewGroupDefault_*` (internal/session/group_concurrency_test.go), `TestUserConfig_GroupDefaults_*` (internal/session/userconfig_test.go), and `TestGroupCreate_*` (cmd/agent-deck/group_cmd_test.go). ([#1541](https://github.com/asheshgoplani/agent-deck/pull/1541))
+
 ## [1.10.6] - 2026-06-28
 
 ### Fixed
