@@ -246,12 +246,15 @@ jobs:
 
       - name: Notify on failure
         if: failure()
+        timeout-minutes: 2
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           REF_NAME: ${{ env.REF_NAME }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          curl -s \
+          curl --fail --show-error --silent \
+            --connect-timeout 5 \
+            --max-time 15 \
             -H "Title: Release ${REF_NAME} failed" \
             -H "Priority: high" \
             -H "Tags: github,release,failure" \
