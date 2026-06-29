@@ -119,6 +119,10 @@ type UserConfig struct {
 	// config_dir = "~/.claude-my-group"
 	Groups map[string]GroupSettings `toml:"groups,omitempty"`
 
+	// GroupDefaults holds defaults applied to NEWLY-created groups only.
+	// Existing groups (loaded from state.db) are never affected.
+	GroupDefaults GroupDefaultsSettings `toml:"group_defaults,omitempty"`
+
 	// Conductors defines optional per-conductor overrides.
 	// Keyed by conductor name (matches Instance.Title minus "conductor-" prefix).
 	// Mirrors Groups — see ConductorOverrides for the sub-table shape.
@@ -653,6 +657,19 @@ type GroupSettings struct {
 	Claude GroupClaudeSettings `toml:"claude,omitempty"`
 	// Hermes defines Hermes overrides for a specific group.
 	Hermes GroupHermesSettings `toml:"hermes,omitempty"`
+}
+
+// GroupDefaultsSettings carries [group_defaults] — defaults stamped onto new
+// groups at creation time. Distinct from per-group [groups."<path>"] overrides.
+type GroupDefaultsSettings struct {
+	// MaxConcurrent is the max_concurrent value assigned to new groups created
+	// via `group create`, the TUI dialog, the web API, and the launch/session
+	// auto-create paths. Pointer to distinguish:
+	//   nil       → unset → built-in serial default (1)  [byte-for-byte v1.9.1]
+	//   *0        → new groups are unlimited
+	//   *N (N>0)  → new groups capped at N
+	// An explicit `group create --max-concurrent` flag overrides this.
+	MaxConcurrent *int `toml:"max_concurrent,omitempty"`
 }
 
 // GroupClaudeSettings defines group-specific Claude overrides.

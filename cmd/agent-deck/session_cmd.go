@@ -1015,6 +1015,8 @@ func handleSessionFork(profile string, args []string) {
 
 	// Rebuild group tree and ensure group exists
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
+	forkCfg, _ := session.LoadUserConfig()
+	groupTree.DefaultMaxConcurrent = forkCfg.GroupDefaults.MaxConcurrent
 	if forkedInst.GroupPath != "" {
 		groupTree.CreateGroupPath(forkedInst.GroupPath)
 	}

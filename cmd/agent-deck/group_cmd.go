@@ -514,7 +514,7 @@ func handleGroupCreate(profile string, args []string) {
 	defaultPath := fs.String("default-path", "", "Default working directory for new sessions in this group")
 	// v1.9.1: -1 sentinel means "flag not set; use the GroupTree default of 1 (serial)".
 	// 0 = unlimited, 1 = serial, N>=2 = bounded.
-	maxConcurrent := fs.Int("max-concurrent", -1, "Cap on simultaneous running sessions in this group (0=unlimited, 1=serial, N=cap; default 1)")
+	maxConcurrent := fs.Int("max-concurrent", -1, "Cap on simultaneous running sessions in this group (0=unlimited, 1=serial, N=cap; default: [group_defaults].max_concurrent, else 1)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -567,6 +567,11 @@ func handleGroupCreate(profile string, args []string) {
 
 	// Build group tree
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+
+	// Seed the new-group default from [group_defaults].max_concurrent. An
+	// explicit --max-concurrent flag still wins (applied post-create below).
+	cfg, _ := session.LoadUserConfig()
+	groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
 
 	var newGroup *session.Group
 	var fullPath string
@@ -1005,6 +1010,10 @@ func handleGroupMove(profile string, args []string) {
 
 	// Build group tree
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+
+	// Seed the new-group default in case the move target must be auto-created.
+	cfg, _ := session.LoadUserConfig()
+	groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
 
 	// Try to match an existing group by exact name first, then case-insensitive
 	targetGroupPath := targetGroup

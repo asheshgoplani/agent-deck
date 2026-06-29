@@ -8,6 +8,7 @@ All options for `~/.agent-deck/config.toml`.
 - [[shell] Section](#shell-section)
 - [[claude] Section](#claude-section)
 - [Per-group / per-conductor Claude overrides](#per-group--per-conductor-claude-overrides)
+- [[group_defaults] Section](#group_defaults-section)
 - [[gemini] Section](#gemini-section)
 - [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
@@ -189,6 +190,19 @@ exists and whether config.toml parsed at all:
 agent-deck group show work --resolved
 agent-deck group show work --resolved --json
 ```
+
+## [group_defaults] Section
+
+Defaults stamped onto **newly-created** groups. Existing groups are unaffected.
+
+```toml
+[group_defaults]
+max_concurrent = 3   # new groups cap at 3 concurrent sessions
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `max_concurrent` | int | `1` (serial) | `max_concurrent` for new groups created via `group create`, the TUI/web create dialogs, and the launch/session auto-create paths. `0` = unlimited, `1` = serial, `N` = cap. Unset keeps the built-in serial default. An explicit `group create --max-concurrent N` flag overrides this per group; existing groups keep their stored value. |
 
 ## [gemini] Section
 

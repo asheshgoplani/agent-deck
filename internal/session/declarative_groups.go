@@ -27,6 +27,9 @@ func ReconcileDeclarativeGroups(tree *GroupTree, cfg *UserConfig) bool {
 		return false
 	}
 
+	// Groups declared with create = true inherit the new-group default.
+	tree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
+
 	changed := false
 	for key, settings := range cfg.Groups {
 		if !settings.Create && settings.DefaultPath == "" {

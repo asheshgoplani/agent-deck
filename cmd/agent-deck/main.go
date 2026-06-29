@@ -1728,6 +1728,8 @@ func handleAdd(profile string, args []string) {
 
 	// Rebuild group tree and save
 	groupTree = session.NewGroupTreeWithGroups(instances, groups)
+	mainCfg, _ := session.LoadUserConfig()
+	groupTree.DefaultMaxConcurrent = mainCfg.GroupDefaults.MaxConcurrent
 	// Ensure the session's group exists
 	if newInstance.GroupPath != "" {
 		groupTree.CreateGroupPath(newInstance.GroupPath)

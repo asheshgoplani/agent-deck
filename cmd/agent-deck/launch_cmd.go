@@ -481,6 +481,8 @@ func handleLaunch(profile string, args []string) {
 	instances = append(instances, newInstance)
 
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	launchCfg, _ := session.LoadUserConfig()
+	groupTree.DefaultMaxConcurrent = launchCfg.GroupDefaults.MaxConcurrent
 	if newInstance.GroupPath != "" {
 		groupTree.CreateGroupPath(newInstance.GroupPath)
 	}
@@ -583,6 +585,8 @@ func handleLaunch(profile string, args []string) {
 	// launch's row be silently DELETE'd by this rewrite's
 	// `DELETE FROM instances WHERE id NOT IN (...)` step.
 	postStartTree := session.NewGroupTreeWithGroups(instances, groups)
+	postStartCfg, _ := session.LoadUserConfig()
+	postStartTree.DefaultMaxConcurrent = postStartCfg.GroupDefaults.MaxConcurrent
 	if newInstance.GroupPath != "" {
 		postStartTree.CreateGroupPath(newInstance.GroupPath)
 	}
