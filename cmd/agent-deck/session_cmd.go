@@ -1128,24 +1128,77 @@ func handleSessionAttach(profile string, args []string) {
 // current profile. Callers map it to a distinct (exit 2) "not found" code.
 var errFocusNotFound = errors.New("session not found")
 
-// resolveAndWriteFocus validates id against the loaded instances and, on a
-// match, writes the focus_request row. Split out of handleSessionFocus so it is
-// unit-testable without os.Exit.
-func resolveAndWriteFocus(db *statedb.StateDB, instances []*session.Instance, id string, nowNano int64, attach bool) error {
+// liveSwitcher attempts to move the attached terminal straight into a session's
+// tmux pane (the Ctrl+b N quick-switch path), so a notification click lands you
+// in the session even while the TUI is paused inside another attach. Injected
+// into routeFocus so the attached-vs-list routing is unit-testable without a
+// real tmux server.
+type liveSwitcher interface {
+	// switchInto moves the client attached to inst's tmux server into inst's
+	// pane. Returns switched=true iff a client was attached and moved; false
+	// (no error) when inst has no live pane or no client is attached on its
+	// socket, signalling the caller to fall back to a focus_request row.
+	switchInto(inst *session.Instance) (bool, error)
+}
+
+// tmuxLiveSwitcher is the production liveSwitcher. It mirrors the Ctrl+b N
+// quick-switch: tmux switch-client + an ack-signal write, both of which work
+// while the Bubble Tea TUI is suspended during tea.Exec.
+type tmuxLiveSwitcher struct{}
+
+func (tmuxLiveSwitcher) switchInto(inst *session.Instance) (bool, error) {
+	if inst == nil || !inst.Exists() {
+		return false, nil
+	}
+	ts := inst.GetTmuxSession()
+	if ts == nil || ts.Name == "" {
+		return false, nil
+	}
+	// Query/switch on the target's own socket: switch-client only works when the
+	// attached client and the target session share a tmux server, so a client on
+	// a different socket simply yields switched=false and the focus_request
+	// fallback takes over (matches the Ctrl+b N same-server limitation).
+	return tmux.SwitchAttachedClients(inst.TmuxSocketName, ts.Name, inst.ID)
+}
+
+// findFocusInstance returns the instance with the given id, or nil.
+func findFocusInstance(instances []*session.Instance, id string) *session.Instance {
+	for _, inst := range instances {
+		if inst.ID == id {
+			return inst
+		}
+	}
+	return nil
+}
+
+// routeFocus drives `session focus <id>`. With --attach it first tries a live
+// switch-while-attached (so the click lands you straight in the session even
+// when the TUI is paused inside another attach); if no client is attached to the
+// target's tmux server it falls back to the foreground focus_request row, which
+// the TUI consumes on its next tick. Without --attach it always writes the
+// (select-only) focus_request. Split out of handleSessionFocus so it is
+// unit-testable without os.Exit; switcher is injected for the same reason.
+func routeFocus(db *statedb.StateDB, instances []*session.Instance, id string, nowNano int64, attach bool, switcher liveSwitcher) error {
 	if id == "" {
 		return fmt.Errorf("session focus requires an <id>")
 	}
-	found := false
-	for _, inst := range instances {
-		if inst.ID == id {
-			found = true
-			break
-		}
-	}
-	if !found {
+	inst := findFocusInstance(instances, id)
+	if inst == nil {
 		return fmt.Errorf("%w: %q", errFocusNotFound, id)
 	}
+	if attach && switcher != nil {
+		if switched, _ := switcher.switchInto(inst); switched {
+			return nil
+		}
+	}
 	return session.WriteFocusRequestAttach(db, id, nowNano, attach)
+}
+
+// resolveAndWriteFocus validates id against the loaded instances and, on a
+// match, writes the focus_request row. Retained as the switcher-less path
+// (select-only / no live switch); delegates to routeFocus.
+func resolveAndWriteFocus(db *statedb.StateDB, instances []*session.Instance, id string, nowNano int64, attach bool) error {
+	return routeFocus(db, instances, id, nowNano, attach, nil)
 }
 
 // handleSessionFocus signals the running TUI (same profile) to select <id> on
@@ -1180,7 +1233,11 @@ func handleSessionFocus(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	if err := resolveAndWriteFocus(db, instances, id, time.Now().UnixNano(), *attach); err != nil {
+	var switcher liveSwitcher
+	if *attach {
+		switcher = tmuxLiveSwitcher{}
+	}
+	if err := routeFocus(db, instances, id, time.Now().UnixNano(), *attach, switcher); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		if errors.Is(err, errFocusNotFound) {
 			os.Exit(2)
