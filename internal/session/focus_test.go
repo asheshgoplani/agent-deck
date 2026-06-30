@@ -18,10 +18,10 @@ func TestDecodeFocusRequest(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		val      string
-		now      int64
-		wantID   string
+		name      string
+		val       string
+		now       int64
+		wantID    string
 		wantFresh bool
 	}{
 		{"fresh", fresh, now, "abc123", true},
