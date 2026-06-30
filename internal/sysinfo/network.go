@@ -1,6 +1,7 @@
 package sysinfo
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -80,8 +81,15 @@ func ParseNetDev(content string) (rxTotal, txTotal uint64) {
 }
 
 // collectNetworkDarwin uses netstat -ib to get network counters on macOS.
+// netstat -ib was observed to intermittently wedge for tens of seconds (cause
+// unconfirmed; likely degraded interface state), so it is bounded by a context
+// timeout: on timeout the process is killed and the cycle reports stats
+// unavailable rather than hanging the collector.
 func collectNetworkDarwin() NetworkStat {
-	out, err := exec.Command("netstat", "-ib").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "netstat", "-ib").Output()
 	if err != nil {
 		return NetworkStat{}
 	}

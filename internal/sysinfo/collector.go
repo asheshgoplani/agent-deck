@@ -29,14 +29,22 @@ func NewCollector(intervalSeconds int, onUpdate func()) *Collector {
 }
 
 // Start begins the background collection goroutine.
+//
+// Everything — the one-time GPU probe and the initial collection — runs inside
+// the goroutine. Start() must never block its caller: it runs on the UI's
+// critical path (Home.Init, before the first paint), and a slow stat source
+// (e.g. a wedged `netstat -ib` on macOS) would otherwise freeze the TUI on a
+// blank screen until it returned.
 func (c *Collector) Start() {
-	// Probe GPU availability once at startup
-	probeGPU()
-
-	// Initial collection
-	c.collect()
-
 	go func() {
+		// Probe GPU availability once, then take an initial snapshot so the
+		// first refresh has data without waiting a full interval.
+		probeGPU()
+		c.collect()
+		if c.onUpdate != nil {
+			c.onUpdate()
+		}
+
 		ticker := time.NewTicker(c.interval)
 		defer ticker.Stop()
 
