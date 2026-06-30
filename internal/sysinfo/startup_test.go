@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
@@ -28,7 +29,12 @@ func TestCollectorStart_NonBlocking(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	c := NewCollector(5, nil)
+	// onUpdate fires once the first collection cycle finishes. Wait on it so the
+	// background collect against the wedged netstat is observed deterministically
+	// before t.TempDir()/t.Setenv() cleanup removes the fake binary and reverts PATH.
+	firstCycle := make(chan struct{})
+	var once sync.Once
+	c := NewCollector(5, func() { once.Do(func() { close(firstCycle) }) })
 	defer c.Stop()
 
 	done := make(chan struct{})
@@ -42,6 +48,14 @@ func TestCollectorStart_NonBlocking(t *testing.T) {
 		// Start() returned promptly despite the wedged netstat — correct.
 	case <-time.After(3 * time.Second):
 		t.Fatal("Collector.Start() blocked on a slow netstat; it must be non-blocking so the TUI can paint")
+	}
+
+	// The initial collect runs the wedged netstat; it must complete (bounded by
+	// the 2s context timeout in collectNetworkDarwin), not hang the goroutine.
+	select {
+	case <-firstCycle:
+	case <-time.After(3 * time.Second):
+		t.Fatal("initial collection cycle never completed; collector goroutine is wedged")
 	}
 }
 
