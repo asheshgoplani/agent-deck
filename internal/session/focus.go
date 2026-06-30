@@ -64,7 +64,12 @@ func DecodeFocusRequestAttach(val string, nowNano int64, ttl time.Duration) (id 
 	if fr.ID == "" {
 		return "", false, false
 	}
-	if nowNano-fr.TS > int64(ttl) {
+	// Stale when older than the TTL, and also when the timestamp is more than a
+	// TTL in the future: a backward clock jump or corrupted payload must not be
+	// honored as a fresh focus request (which would trigger a spurious switch)
+	// indefinitely until wall-clock catches up. A modest skew within ±ttl still
+	// counts as fresh.
+	if age := nowNano - fr.TS; age > int64(ttl) || age < -int64(ttl) {
 		return fr.ID, fr.Attach, false
 	}
 	return fr.ID, fr.Attach, true
@@ -94,4 +99,12 @@ func ReadFocusRequest(db *statedb.StateDB) (string, error) {
 // DeleteMeta, so an empty value is the documented "no request" sentinel.
 func ClearFocusRequest(db *statedb.StateDB) error {
 	return db.SetMeta(FocusRequestKey, "")
+}
+
+// TakeFocusRequest atomically reads and clears the pending request in one
+// statement (consume-once). Prefer it over ReadFocusRequest+ClearFocusRequest:
+// the separate read+clear has a window where a concurrent CLI `session focus`
+// write lands between them and is wiped by the clear. Returns "" when none.
+func TakeFocusRequest(db *statedb.StateDB) (string, error) {
+	return db.TakeMeta(FocusRequestKey)
 }

@@ -48,7 +48,10 @@ func ensureTmuxOnPath() {
 	_, err := exec.LookPath("tmux")
 	newPath := resolveTmuxPATH(os.Getenv("PATH"), err == nil, tmuxInstallDirs, func(dir string) bool {
 		info, statErr := os.Stat(filepath.Join(dir, "tmux"))
-		return statErr == nil && !info.IsDir()
+		// Require a regular, executable file: a non-executable file named "tmux"
+		// can't satisfy a bare `tmux` invocation, so adding its dir to PATH is
+		// pointless (exec.LookPath would reject it anyway).
+		return statErr == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0
 	})
 	if newPath != os.Getenv("PATH") {
 		_ = os.Setenv("PATH", newPath)

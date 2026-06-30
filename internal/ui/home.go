@@ -1596,12 +1596,13 @@ func (h *Home) consumeFocusRequest(db *statedb.StateDB) tea.Cmd {
 	if db == nil {
 		return nil
 	}
-	raw, err := session.ReadFocusRequest(db)
+	// Atomic read-and-clear: a separate read-then-clear has a window where a
+	// concurrent CLI `session focus` write lands between them and gets wiped.
+	// Consume-once still holds — a stale/unknown id is cleared by the take below.
+	raw, err := session.TakeFocusRequest(db)
 	if err != nil || raw == "" {
 		return nil
 	}
-	// Clear first: even a stale/unknown id must be consumed exactly once.
-	_ = session.ClearFocusRequest(db)
 
 	id, attach, fresh := session.DecodeFocusRequestAttach(raw, time.Now().UnixNano(), session.FocusRequestTTL)
 	if !fresh {
@@ -1619,7 +1620,11 @@ func (h *Home) consumeFocusRequest(db *statedb.StateDB) tea.Cmd {
 	if inst == nil || !inst.Exists() {
 		return nil
 	}
-	h.isAttaching.Store(true) // suppress View() output during the transition (matches the Enter path)
+	// attachSession returns nil when there's no local tmux pane to attach (e.g.
+	// GetTmuxSession()==nil on a cross-socket session) and sets h.isAttaching
+	// itself on the real attach path. Don't pre-set it here: a premature set
+	// followed by a nil return would leave isAttaching stuck true and suppress
+	// View() forever. Mirror the attach_on_create path and guard on the cmd.
 	return h.attachSession(inst)
 }
 

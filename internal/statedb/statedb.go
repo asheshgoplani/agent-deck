@@ -1497,6 +1497,27 @@ func (s *StateDB) GetMeta(key string) (string, error) {
 	return value, err
 }
 
+// TakeMeta reads a metadata value and clears it (sets to "") for consume-once
+// signals (e.g. focus_request). Use it instead of GetMeta-then-SetMeta(""): the
+// clear is a compare-and-clear that only wipes the row when it still holds the
+// value just read, so a newer value written by a concurrent writer between the
+// read and the clear is preserved rather than lost. Returns "" when the key is
+// absent or already empty. (RETURNING isn't usable here — the modernc sqlite
+// driver routes UPDATE through exec and discards RETURNING rows.)
+func (s *StateDB) TakeMeta(key string) (string, error) {
+	value, err := s.GetMeta(key)
+	if err != nil || value == "" {
+		return "", err
+	}
+	if _, err := s.db.Exec(
+		"UPDATE metadata SET value = '' WHERE key = ? AND value = ?",
+		key, value,
+	); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
 // --- Change Detection (replaces fsnotify) ---
 
 // Touch updates a metadata timestamp that other instances can poll to detect changes.

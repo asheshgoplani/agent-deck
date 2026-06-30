@@ -5201,7 +5201,18 @@ func WriteAckSignal(sessionID string) error {
 	if err := os.MkdirAll(filepath.Dir(signalFile), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(signalFile, []byte(sessionID+"\n"), 0o600)
+	// Write atomically: the reader does ReadFile-then-Remove, so a plain
+	// truncating WriteFile could be observed mid-write as an empty/partial file
+	// and the ack would be lost. Stage to a temp file and rename into place.
+	tmp := signalFile + ".tmp"
+	if err := os.WriteFile(tmp, []byte(sessionID+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, signalFile); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // attachedClientNames lists the names of non-control clients attached on socket

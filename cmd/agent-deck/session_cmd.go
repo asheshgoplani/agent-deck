@@ -1225,7 +1225,15 @@ func routeFocus(db *statedb.StateDB, instances []*session.Instance, id string, n
 		return fmt.Errorf("%w: %q", errFocusNotFound, id)
 	}
 	if attach && switcher != nil {
-		if switched, _ := switcher.switchInto(inst); switched {
+		// The contract reserves (false, nil) for the benign fallback (no live
+		// pane / no client attached on the socket); a non-nil error is a real
+		// tmux failure that must surface, not be silently swallowed into the
+		// fallback path.
+		switched, err := switcher.switchInto(inst)
+		if err != nil {
+			return err
+		}
+		if switched {
 			return nil
 		}
 		// Live switch couldn't move the client: it's attached to a different tmux
@@ -1240,7 +1248,12 @@ func routeFocus(db *statedb.StateDB, instances []*session.Instance, id string, n
 			if err := session.WriteFocusRequestAttach(db, id, nowNano, attach); err != nil {
 				return err
 			}
-			_, _ = detacher.detachClientsOn(focusOtherSockets(instances, inst.TmuxSocketName))
+			// The focus_request is already persisted, so a detach failure still
+			// leaves the row to be consumed on the next tick — but surface it so
+			// the immediate-switch path's failure isn't hidden.
+			if _, err := detacher.detachClientsOn(focusOtherSockets(instances, inst.TmuxSocketName)); err != nil {
+				return err
+			}
 			return nil
 		}
 	}
