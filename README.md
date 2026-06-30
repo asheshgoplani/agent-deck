@@ -120,9 +120,8 @@ phone, and never lets a `waiting` worker rot.
 
 Two short guides to read next:
 
-- [**`docs/CONDUCTOR-SETUP.md`**](docs/CONDUCTOR-SETUP.md) — five-minute walkthrough,
-  Telegram/Slack/Discord wiring, the gotchas (why the plugin auto-disables globally, channel
-  topology, multi-conductor patterns).
+- [**`docs/conductor/`**](docs/conductor/) — two-minute local quickstart, architecture,
+  state files, lifecycle, remote channel setup (Telegram/Slack/Discord), gotchas.
 - [**`docs/WATCHER-SETUP.md`**](docs/WATCHER-SETUP.md) — add "doorbells" so the outside world
   (GitHub events, gmail, ntfy pushes, meetings) can wake the conductor up.
 
@@ -153,6 +152,21 @@ Attach/detach Claude skills per project with a managed pool workflow.
 - Available list is pool-only (`$XDG_CONFIG_HOME/agent-deck/skills/pool`, default `~/.config/agent-deck/skills/pool`) to keep attach/detach deterministic
 - Apply writes project state to `.agent-deck/skills.toml` and materializes into `.claude/skills`
 - Type-to-jump is supported in the dialog (same pattern as MCP Manager)
+
+### Declarative groups
+
+Declare groups in `config.toml` so they exist on startup. Set `create = true` to ensure a group exists, and `default_path` to set the working directory for new sessions in it:
+
+```toml
+[groups."staging"]
+create = true                      # ensure the group exists
+
+[groups."projects/devops"]
+create = true
+default_path = "~/repos/devops"    # working directory for new sessions
+```
+
+On startup each group with `create = true` is created if missing (along with any parent groups). `default_path` is written to the state DB for any group that exists — including groups created from your sessions — so `create = true` is optional when the group is already there. Reconciliation is additive: removing a group from `config.toml` leaves the group and its sessions in place, and omitting `default_path` keeps any value already set. Clear a default with `agent-deck group update <name> --clear-default-path`.
 
 ### Per-group Claude config
 
@@ -299,6 +313,18 @@ The script receives two environment variables:
 - `AGENT_DECK_WORKTREE_PATH` — path to the new worktree
 
 The script runs via `sh -e` with a 60-second timeout. If it fails, the worktree is still created — you'll see a warning but the session proceeds normally.
+
+#### Worktree Destruction Script
+
+For imperative teardown tasks (stopping containers, removing volumes, releasing ports, etc.), create a script at `.agent-deck/worktree-destruction.sh`.
+Agent-deck runs it automatically *just before* removing a worktree, while the worktree still exists.
+
+```sh
+#!/bin/sh
+docker compose -p "$(basename "$AGENT_DECK_WORKTREE_PATH")" down
+```
+
+It receives the same environment variables as the setup script (`AGENT_DECK_REPO_ROOT`, `AGENT_DECK_WORKTREE_PATH`) and runs with the same `sh -e` dispatch and 60-second timeout. If it fails, removal proceeds anyway — you'll see a warning. It does not run for sessions that reuse the main working tree (nothing is removed there).
 
 #### Bare repositories and worktrees
 
@@ -573,11 +599,11 @@ Key constraints:
 - **Plugin must be installed under the conductor's Claude profile but never globally enabled.** Per-session activation happens via the `channels = ["plugin:telegram@claude-plugins-official"]` field on the conductor's session record. A globally-enabled plugin leaks pollers into every Claude session under that profile.
 - **Bot tokens** live in the per-conductor channel state directory at `<state-dir>/.env` (chmod 600). Never committed to git.
 
-Slack pairing follows the same one-bot-per-conductor pattern. See [documentation/CONDUCTOR.md](documentation/CONDUCTOR.md) for the full ten-minute quickstart, including @BotFather steps, profile config, and verification commands.
+Slack pairing follows the same one-bot-per-conductor pattern. See [docs/conductor/](docs/conductor/) for the full quickstart, including @BotFather steps, profile config, and verification commands.
 
 #### See also
 
-- [documentation/CONDUCTOR.md](documentation/CONDUCTOR.md) — full conductor guide with channel pairing walkthrough
+- [docs/conductor/](docs/conductor/) — full conductor guide with channel pairing walkthrough
 - [documentation/WATCHDOG.md](documentation/WATCHDOG.md) — optional auto-restart daemon that complements conductors
 
 ### Watchers
@@ -838,14 +864,14 @@ agent-deck web --token my-secret
 
 | Guide | What's Inside |
 |-------|---------------|
-| [Conductor Setup](docs/CONDUCTOR-SETUP.md) | Zero to a Telegram-controlled conductor in five minutes, with diagrams and gotchas |
+| [Conductor](docs/conductor/) | Local quickstart, architecture, state files, lifecycle, remote channels, gotchas |
 | [Watcher Setup](docs/WATCHER-SETUP.md) | Give your fleet ears: GitHub / Gmail / ntfy / Slack / calendar event forwarding |
 
 **User guides** — reference material for going deeper:
 
 | Guide | What's Inside |
 |-------|---------------|
-| [Conductor](documentation/CONDUCTOR.md) | What a conductor is, channel pairing, state files, multi-conductor setups |
+| [Conductor](docs/conductor/) | What a conductor is, channel pairing, state files, multi-conductor setups |
 | [Skills](documentation/SKILLS.md) | User-level vs pool skills, authoring, attach/detach, when to use which tier |
 | [Watchdog](documentation/WATCHDOG.md) | Optional Python daemon that auto-restarts critical sessions and nudges stuck children |
 | [Watchers](documentation/WATCHERS.md) | Event-forwarding framework: doorbell model, built-in adapters, custom watchers, gotchas |

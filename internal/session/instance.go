@@ -410,6 +410,15 @@ type Instance struct {
 	// Not serialized - only relevant for current TUI session
 	lastStartTime time.Time
 
+	// tmuxFlipFromRunningPending debounces a purely tmux-inferred flip AWAY from
+	// running (→ waiting/error). A long single tool-call (past the hook freshness
+	// window) or transient subprocess churn can momentarily present the pane as a
+	// shell prompt or a capture error, then recover; without a confirming second
+	// sample that single transient read fires a false completion/error to the
+	// conductor. Set when we hold the first such sample at running; cleared on any
+	// settled (running/idle) outcome or once the flip is confirmed. Not serialized.
+	tmuxFlipFromRunningPending bool
+
 	// addedThisProcess is true only for instances built by a NewInstance*
 	// constructor in the current process (i.e. just `add`ed), and false for
 	// instances reloaded from storage (built as struct literals). Combined with
@@ -831,9 +840,10 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		baseCommand = "claude"
 	}
 
-	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
+	// Get the configured Claude command (e.g., "claude", "cdw", "cdp"),
+	// resolved per instance: conductor > group (ancestor-walk) > global.
 	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
-	claudeCmd := GetClaudeCommand()
+	claudeCmd := GetClaudeCommandForInstance(i)
 	hasCustomCommand := claudeCmd != "claude"
 
 	// Resolve CLAUDE_CONFIG_DIR for this spawn. We inject the prefix only
@@ -1163,6 +1173,10 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 		if opts != nil {
 			launchModel = opts.Model
 		}
+		// Conductor/group model chain (#8): explicit opts.Model wins, then the
+		// per-conductor then per-group [*.claude].model overrides.
+		launchModel = i.resolveClaudeLaunchModel(launchModel)
+		// Finally fall back to the global [claude].default_model (#1437).
 		if launchModel == "" {
 			if cfg, _ := LoadUserConfig(); cfg != nil {
 				launchModel = cfg.Claude.DefaultModel
@@ -2877,6 +2891,34 @@ func (i *Instance) buildTmuxOptionOverrides() map[string]string {
 	return overrides
 }
 
+// adoptExplicitClaudeSessionID adopts an explicit `--session-id <uuid>` baked
+// into i.Command as the authoritative conversation id, correcting any stale or
+// disk-hijacked value, and returns true when an explicit id was present (the
+// caller must then skip mtime-based disk discovery). An explicit id is the
+// user's declaration of WHICH conversation this session owns; honoring it
+// before disk discovery is what stops sibling sessions in a shared cwd from
+// converging on the newest transcript. Shared by both session-id preludes —
+// ensureClaudeSessionIDFromDiskForRestart (#1147) and
+// ensureClaudeSessionIDFromDisk (#1465). The reason label distinguishes the
+// Start path from the Restart path in the resume log line.
+func (i *Instance) adoptExplicitClaudeSessionID(reason string) bool {
+	explicit, ok := extractExplicitClaudeSessionID(i.Command)
+	if !ok {
+		return false
+	}
+	if i.ClaudeSessionID != explicit {
+		i.ClaudeSessionID = explicit
+		sessionLog.Info("resume: id="+explicit+" reason="+reason,
+			slog.String("instance_id", i.ID),
+			slog.String("claude_session_id", explicit),
+			slog.String("reason", reason))
+	}
+	if i.ClaudeDetectedAt.IsZero() {
+		i.ClaudeDetectedAt = time.Now()
+	}
+	return true
+}
+
 // ensureClaudeSessionIDFromDisk is the Phase 5 / REQ-7 prelude invoked by
 // Start() and StartWithMessage() when an IsClaudeCompatible Instance has an
 // empty ClaudeSessionID. It attempts to discover the latest UUID-named
@@ -2905,6 +2947,15 @@ func (i *Instance) buildTmuxOptionOverrides() map[string]string {
 // two grep-stable lines for a Phase 5 discovery start, distinguishable
 // by the `reason=` attr.
 func (i *Instance) ensureClaudeSessionIDFromDisk() {
+	// Issue #1465: an explicit `--session-id <uuid>` baked into i.Command is
+	// the authoritative conversation id. Adopt it before the #608 gate and
+	// disk discovery so a Start-path session sharing a cwd with newer sibling
+	// transcripts (e.g. a removed-then-recreated review session) cannot hijack
+	// a sibling's conversation. The Restart prelude already does this for
+	// #1147; this closes the same gap on the Start path.
+	if i.adoptExplicitClaudeSessionID("session_id_flag_explicit") {
+		return
+	}
 	if i.ClaudeSessionID != "" {
 		return
 	}
@@ -2962,17 +3013,7 @@ func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
 	// sharing a CLAUDE_SESSION_ID. Adopting the explicit id BEFORE the
 	// non-empty short-circuit ensures it also corrects a previously-
 	// hijacked id from an earlier buggy run.
-	if explicit, ok := extractExplicitClaudeSessionID(i.Command); ok {
-		if i.ClaudeSessionID != explicit {
-			i.ClaudeSessionID = explicit
-			sessionLog.Info("resume: id="+explicit+" reason=session_id_flag_explicit_restart",
-				slog.String("instance_id", i.ID),
-				slog.String("claude_session_id", explicit),
-				slog.String("reason", "session_id_flag_explicit_restart"))
-		}
-		if i.ClaudeDetectedAt.IsZero() {
-			i.ClaudeDetectedAt = time.Now()
-		}
+	if i.adoptExplicitClaudeSessionID("session_id_flag_explicit_restart") {
 		return
 	}
 	if i.ClaudeSessionID != "" {
@@ -3656,6 +3697,26 @@ func (i *Instance) neverStarted() bool {
 
 // UpdateStatus updates the session status by checking tmux.
 // Thread-safe: acquires write lock to protect Status, Tool, and internal cache fields.
+// debounceFlipFromRunning decides whether a tmux-derived status that flips AWAY
+// from running should be held for one confirming sample. It returns the status
+// to apply, the next value for the pending marker, and whether the flip was
+// HELD (the caller applies `apply` and returns early when held is true).
+//
+// Held only on the FIRST tmux-inferred running→{waiting,error} sample (pending
+// was false): a long single tool-call past the hook freshness window, or a
+// transient CapturePane failure during subprocess churn, can present that flip
+// for one tick and then recover. A genuinely dead pane (tmux raw "inactive")
+// and a "dead" hook are real terminal signals and are never debounced. Pure for
+// testability.
+func debounceFlipFromRunning(prev, derived Status, tmuxRaw, hookStatus string, pending bool) (apply Status, nextPending bool, held bool) {
+	flipAwayFromRunning := (derived == StatusWaiting || derived == StatusError) &&
+		tmuxRaw != "inactive" && hookStatus != "dead"
+	if prev == StatusRunning && flipAwayFromRunning && !pending {
+		return StatusRunning, true, true
+	}
+	return derived, false, false
+}
+
 func (i *Instance) UpdateStatus() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -3849,7 +3910,20 @@ func (i *Instance) UpdateStatus() error {
 		return nil
 	}
 
+	// Prior status, captured before this tmux-derived sample overwrites it, so the
+	// debounce below can tell a flip AWAY from running from a steady state.
+	prevStatus := i.Status
+
 	if err != nil {
+		// Debounce a transient capture failure: subprocess churn can make a single
+		// CapturePane fail, then recover. Hold at running for one sample rather than
+		// firing a false error. Modeled as a derived error with no tmux raw status.
+		if apply, nextPending, held := debounceFlipFromRunning(prevStatus, StatusError, "", i.hookStatus, i.tmuxFlipFromRunningPending); held {
+			i.tmuxFlipFromRunningPending = nextPending
+			i.Status = apply
+			return nil
+		}
+		i.tmuxFlipFromRunningPending = false
 		i.Status = StatusError
 		return err
 	}
@@ -3892,6 +3966,21 @@ func (i *Instance) UpdateStatus() error {
 	default:
 		i.Status = StatusError
 	}
+
+	// Debounce a purely tmux-inferred flip away from running (see
+	// tmuxFlipFromRunningPending). A long single tool-call past the hook freshness
+	// window can momentarily present the pane as a shell prompt ("waiting") or a
+	// transient error, then recover; one confirming sample prevents a false
+	// completion/error to the conductor. A genuinely dead pane (tmux "inactive")
+	// and a "dead" hook are NOT debounced — those are real terminal signals.
+	if apply, nextPending, held := debounceFlipFromRunning(prevStatus, i.Status, status, i.hookStatus, i.tmuxFlipFromRunningPending); held {
+		i.tmuxFlipFromRunningPending = nextPending
+		i.Status = apply
+		return nil
+	}
+	// Confirmed flip (second consecutive sample) or a non-debounceable outcome:
+	// clear the marker so a later genuine flip starts a fresh debounce.
+	i.tmuxFlipFromRunningPending = false
 
 	// Hermes: augment status with gateway health when a gateway URL is resolvable.
 	// Check is throttled to 30s to avoid 1.5s HTTP delays on every status tick.
@@ -4084,6 +4173,16 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
+	// Snapshot the prior hook-status fields so a candidate that fails the
+	// ownership check below can RESTORE them rather than leaving its status
+	// applied. This closes the `claude -p` env-pollution flip: a foreign
+	// ephemeral session (a `claude -p` child that inherited our
+	// AGENTDECK_INSTANCE_ID and fired hooks under our id) has no conversation
+	// data, so the bind is rejected — but previously the running/waiting status
+	// it carried had already been written here and stuck, flipping this
+	// instance's status. See the candidate_has_no_conversation_data branch.
+	prevHookStatus, prevHookEvent, prevHookLastUpdate := i.hookStatus, i.hookEvent, i.hookLastUpdate
+
 	// Detect whether this is genuinely new data (newer timestamp than last seen).
 	// Only reset acknowledgment on new events — not on re-application of the same
 	// stale hook file, which would undo the user's intentional acknowledge.
@@ -4144,6 +4243,13 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		}
 		// v1.7.7 guard: candidate must have any conversation data at all.
 		if !sessionHasConversationData(i, sessionID) {
+			// A different session id with NO conversation data on an established
+			// instance is a foreign ephemeral (a `claude -p` child that inherited
+			// our AGENTDECK_INSTANCE_ID) — it doesn't own this instance, so its
+			// status must not stick either. Restore the pre-event status so the
+			// foreign hook is a no-op, not a flip. (A real /clear or fork carries
+			// conversation data and never reaches this branch.)
+			i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
@@ -4340,9 +4446,23 @@ func (i *Instance) ClearHookStatus() {
 	i.hookLastUpdate = time.Time{}
 	i.mu.Unlock()
 
-	if err := os.Remove(filepath.Join(GetHooksDir(), i.ID+".json")); err != nil && !os.IsNotExist(err) {
+	// Remove the persisted status file. Sandbox sessions bridge a PER-INSTANCE
+	// scoped subdir (…/hooks/sandbox/<id>/<id>.json) from the container, and the
+	// watcher attributes that file to this instance by its OWNING SUBDIR, so the
+	// scoped file is the one to clear. Non-sandbox sessions write the flat
+	// …/hooks/<id>.json. We remove only the FILE here (not the subdir): this can
+	// fire mid-session (attach-return / unacknowledge) while the container still
+	// has the subdir bind-mounted, and unlinking the mount source would orphan
+	// the live bridge. The subdir + its fsnotify watch are torn down at session
+	// end (see killInternal).
+	hookPath := filepath.Join(GetHooksDir(), i.ID+".json")
+	if i.IsSandboxed() {
+		hookPath = filepath.Join(GetHooksDir(), "sandbox", i.ID, i.ID+".json")
+	}
+	if err := os.Remove(hookPath); err != nil && !os.IsNotExist(err) {
 		sessionLog.Debug("clear_hook_status_file_failed",
 			slog.String("instance", i.ID),
+			slog.String("path", hookPath),
 			slog.String("error", err.Error()),
 		)
 	}
@@ -5742,6 +5862,26 @@ func (i *Instance) killInternal(sync bool) error {
 		if homeDir, err := os.UserHomeDir(); err == nil {
 			docker.CleanupKeychainCredentials(homeDir)
 		}
+
+		// Tear down the per-instance scoped hook bridge dir (…/hooks/sandbox/<id>).
+		// Each ended sandbox session otherwise leaks a directory AND (on Linux) an
+		// fsnotify inotify watch held by the notify-daemon's StatusFileWatcher →
+		// watch exhaustion on long-lived hosts. Removing the dir on disk also makes
+		// the kernel auto-drop that watch (IN_IGNORED). Skip when the container is
+		// intentionally kept (auto-cleanup off): it still has the dir bind-mounted.
+		// Follow-up: an explicit watcher.Remove() from here would require threading
+		// the daemon's StatusFileWatcher into the session-end lifecycle (it is not
+		// reachable from this layer), so we rely on the on-delete auto-drop.
+		if i.ID != "" && GetDockerSettings().GetAutoCleanup() {
+			scopedDir := filepath.Join(GetHooksDir(), "sandbox", i.ID)
+			if err := os.RemoveAll(scopedDir); err != nil {
+				sessionLog.Debug("sandbox_hook_dir_cleanup_failed",
+					slog.String("instance", i.ID),
+					slog.String("dir", scopedDir),
+					slog.String("error", err.Error()),
+				)
+			}
+		}
 	}
 
 	// Remove the scratch CLAUDE_CONFIG_DIR prepared at spawn time for
@@ -6266,9 +6406,10 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// shell environment as freshly started ones (fixes #409).
 	envPrefix := i.buildEnvSourceCommand()
 
-	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
+	// Get the configured Claude command (e.g., "claude", "cdw", "cdp"),
+	// resolved per instance: conductor > group (ancestor-walk) > global.
 	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
-	claudeCmd := GetClaudeCommand()
+	claudeCmd := GetClaudeCommandForInstance(i)
 	hasCustomCommand := claudeCmd != "claude"
 
 	// Resolve CLAUDE_CONFIG_DIR for this restart. Mirrors the gating logic
@@ -6736,6 +6877,10 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 		forked.GroupPath = i.GroupPath
 	}
 	forked.Tool = "claude"
+	if IsClaudeCompatible(i.Tool) {
+		forked.Tool = i.Tool
+	}
+	forked.Wrapper = i.Wrapper
 
 	// #1407: persist the parent's ExtraArgs onto the fork record. The baked
 	// one-shot fork command below inherits them implicitly via the builder
@@ -8247,6 +8392,38 @@ func buildSandboxConfig(
 		docker.WithCPULimit(cpuLimit),
 		docker.WithMemoryLimit(memLimit),
 		docker.WithAgentConfigs(bindMounts, homeMounts),
+	}
+
+	// Bridge in-container hook-handler status writes to a PER-INSTANCE host dir.
+	// The container's own hooks path sits on the read-only rootfs, so without
+	// this mount Stop/transition events from sandboxed sessions are lost. The
+	// dir is scoped to this instance (…/hooks/sandbox/<id>) rather than the
+	// global fleet-wide hooks dir. Three properties keep this safe: (1) only this
+	// instance's subdir is mounted, so a compromised container can read/write
+	// files ONLY inside its own subdir — it can never see siblings' or the
+	// conductor's status; (2) the host StatusFileWatcher keys a scoped file
+	// by its OWNING SUBDIR and ingests only <id>.json, so a container cannot
+	// forge a sibling's transition (or inject a done_summary into the conductor)
+	// by naming a file after a victim inside its own subdir; and (3) every host
+	// read of a status file is no-follow (O_NOFOLLOW, plus Lstat on the scoped
+	// path) and size-bounded, so the container cannot symlink its own <id>.json
+	// at a sibling/host file or /dev/zero, nor write a huge <id>.json, to read
+	// host files or DoS the shared notify-daemon. The host read path
+	// (readHookStatusFile / hookStatusFilePath) also builds the path from the
+	// requested <id>, so it cannot be cross-attributed either.
+	if hooksDir := GetHooksDir(); hooksDir != "" {
+		perInstanceDir := filepath.Join(hooksDir, "sandbox", inst.ID)
+		if mkErr := os.MkdirAll(perInstanceDir, 0o700); mkErr == nil {
+			configOpts = append(configOpts, docker.WithHooksDir(perInstanceDir))
+		} else {
+			// Don't fail the spawn, but surface it: without the scoped hooks dir
+			// the bridge mount is silently skipped, leaving the host watcher blind
+			// to this sandboxed session — the exact problem this bridge solves.
+			sessionLog.Warn("scoped_hooks_dir_create_failed",
+				slog.String("instance_id", inst.ID),
+				slog.String("dir", perInstanceDir),
+				slog.String("error", mkErr.Error()))
+		}
 	}
 
 	// Note: Docker.Environment names (e.g. TERM) are NOT forwarded at create time.

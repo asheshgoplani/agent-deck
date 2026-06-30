@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -104,6 +105,67 @@ func TestNestedSessionAllowsCLICommands(t *testing.T) {
 		_, args := extractProfileFlag([]string{"-p", "work"})
 		if len(args) != 0 {
 			t.Errorf("expected empty args for TUI mode with profile flag, got %v", args)
+		}
+	})
+}
+
+// TestExtractProfileFlag_SubcommandBoundary locks in that the global -p/--profile
+// flag is only honored BEFORE the subcommand token. A subcommand's own -p (launch
+// /add --parent, group move --position) must reach the subcommand untouched.
+// Regression for the collision where `launch . -p <parent>` had its -p swallowed
+// as a profile, routing the child into a phantom profiles/<parent>/state.db and
+// dropping the parent link.
+func TestExtractProfileFlag_SubcommandBoundary(t *testing.T) {
+	t.Run("launch_short_p_is_not_eaten_as_profile", func(t *testing.T) {
+		profile, args := extractProfileFlag([]string{"launch", ".", "-p", "PARENT123", "-c", "claude"})
+		if profile != "" {
+			t.Errorf("global -p must not capture the launch parent; got profile=%q", profile)
+		}
+		// The subcommand's -p PARENT123 must survive for launch's own flag parser.
+		want := []string{"launch", ".", "-p", "PARENT123", "-c", "claude"}
+		if !slices.Equal(args, want) {
+			t.Errorf("args mangled: got %v want %v", args, want)
+		}
+	})
+
+	t.Run("add_short_p_is_not_eaten_as_profile", func(t *testing.T) {
+		profile, args := extractProfileFlag([]string{"add", "/tmp/x", "-p", "PARENT123"})
+		if profile != "" {
+			t.Errorf("global -p must not capture the add parent; got profile=%q", profile)
+		}
+		if !slices.Equal(args, []string{"add", "/tmp/x", "-p", "PARENT123"}) {
+			t.Errorf("args mangled: got %v", args)
+		}
+	})
+
+	t.Run("global_p_before_subcommand_still_works", func(t *testing.T) {
+		profile, args := extractProfileFlag([]string{"-p", "work", "launch", ".", "-p", "PARENT123"})
+		if profile != "work" {
+			t.Errorf("global -p before subcommand must be honored; got profile=%q", profile)
+		}
+		// Only the leading global -p work is consumed; the launch -p PARENT123 stays.
+		if !slices.Equal(args, []string{"launch", ".", "-p", "PARENT123"}) {
+			t.Errorf("expected launch -p PARENT123 to survive, got %v", args)
+		}
+	})
+
+	t.Run("equals_form_global_before_subcommand", func(t *testing.T) {
+		profile, args := extractProfileFlag([]string{"--profile=work", "launch", ".", "-p", "PARENT123"})
+		if profile != "work" {
+			t.Errorf("got profile=%q", profile)
+		}
+		if !slices.Equal(args, []string{"launch", ".", "-p", "PARENT123"}) {
+			t.Errorf("got %v", args)
+		}
+	})
+
+	t.Run("long_parent_form_unaffected", func(t *testing.T) {
+		profile, args := extractProfileFlag([]string{"launch", ".", "--parent", "PARENT123"})
+		if profile != "" {
+			t.Errorf("got profile=%q", profile)
+		}
+		if !slices.Equal(args, []string{"launch", ".", "--parent", "PARENT123"}) {
+			t.Errorf("got %v", args)
 		}
 	})
 }
@@ -252,9 +314,11 @@ func TestGroupScopeValidation(t *testing.T) {
 		input string
 		want  string
 	}{
+		// normalizeGroupPath replaces spaces with hyphens but preserves case,
+		// because GroupTree.Groups is keyed by the raw stored path.
 		{"work", "work"},
-		{"Work", "work"},
-		{"My Projects", "my-projects"},
+		{"Work", "Work"},
+		{"My Projects", "My-Projects"},
 		{"work/frontend", "work/frontend"},
 	}
 

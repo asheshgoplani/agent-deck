@@ -1868,7 +1868,13 @@ func (h *Home) rebuildFlatItems() {
 		partitioned := make([]session.Item, 0, len(allItems))
 		for _, item := range allItems {
 			if item.Type == session.ItemTypeGroup {
-				if groupsWithMatches[item.Path] {
+				// Archived view: only show groups that actually contain archived
+				// sessions. Active view: keep every group header — groups are never
+				// themselves archived, so empty groups and groups whose sessions are
+				// all archived remain part of the active list (they render as empty
+				// groups, same as before anything was archived) and can sink under
+				// the view-mode divider instead of vanishing.
+				if !viewArchived || groupsWithMatches[item.Path] {
 					partitioned = append(partitioned, item)
 				}
 			} else if item.Type == session.ItemTypeSession && item.Session != nil {
@@ -1943,8 +1949,10 @@ func (h *Home) rebuildFlatItems() {
 	if h.groupViewMode != session.GroupViewNormal {
 		// Activity is computed from the full tree (collapse-agnostic) so a
 		// collapsed-but-populated group's header is placed by its real contents,
-		// not by the (absent) session rows under a collapsed header.
-		activity := h.groupTree.GroupActivityMap()
+		// not by the (absent) session rows under a collapsed header. It honors the
+		// archive view so a group whose sessions are all archived counts as empty
+		// in the active view and sinks below the divider.
+		activity := h.groupTree.GroupActivityMap(viewArchived)
 		h.flatItems = session.PartitionByViewMode(h.flatItems, h.groupViewMode, activity)
 	}
 
@@ -3432,6 +3440,25 @@ func displaySessionTitle(inst *session.Instance, paneTitle string) string {
 	return inst.Title
 }
 
+// sessionDisplayLabels returns the primary title and the optional dim secondary
+// subtitle to render for a session row, given its live pane title (already
+// cleaned by cleanPaneTitle). Both render paths — the overview
+// (renderSessionItem) and the session switcher (SessionSwitcher.View) — go
+// through this so the two cannot drift apart again: an auto-named session
+// promotes the live/persisted Claude task description to the primary title and
+// shows no subtitle (it would only duplicate the title); every other session
+// keeps its handle/name as the title and surfaces the pane title as the dim
+// subtitle. The subtitle is empty when there is nothing to show. Callers may
+// layer extra visibility policy on the subtitle — the overview, for instance,
+// only renders it for the selected row or when showPaneTitles is enabled.
+func sessionDisplayLabels(inst *session.Instance, paneTitle string) (title, subtitle string) {
+	title = displaySessionTitle(inst, paneTitle)
+	if !inst.GetAutoName() {
+		subtitle = paneTitle
+	}
+	return title, subtitle
+}
+
 // cleanPaneTitle strips spinner/done marker characters from a tmux pane title
 // and returns the task description. Returns "" for default/generic titles.
 func cleanPaneTitle(title string) string {
@@ -4607,6 +4634,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 					h.groupTree = session.NewGroupTreeWithGroups(h.instances, msg.groups)
 				} else {
 					h.groupTree = session.NewGroupTree(h.instances)
+				}
+				// Seed groups declared in config.toml into the DB, only after a
+				// successful load so a partial tree is never persisted.
+				if msg.err == nil {
+					if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil && cfg != nil {
+						if session.ReconcileDeclarativeGroups(h.groupTree, cfg) {
+							if err := h.storage.SaveGroupsOnly(h.groupTree); err != nil {
+								uiLog.Warn("declarative_groups_save_failed", slog.Any("error", err))
+							}
+						}
+					}
 				}
 			} else {
 				// Refresh - update existing tree with loaded sessions AND groups
@@ -9532,6 +9570,10 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case GroupDialogCreate:
 			name := h.groupDialog.GetValue()
 			if name != "" {
+				// Seed the new-group default from [group_defaults].max_concurrent.
+				if cfg, _ := session.LoadUserConfig(); cfg != nil {
+					h.groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
+				}
 				var created *session.Group
 				if h.groupDialog.HasParent() {
 					// Create subgroup under parent
@@ -11379,7 +11421,9 @@ func (h *Home) bulkRemoveErrored() tea.Cmd {
 	h.instancesMu.RLock()
 	ids := make([]string, 0, len(h.instances))
 	for _, inst := range h.instances {
-		if inst.Status == session.StatusError {
+		// pin-protects-from-stop: pinned errored sessions are left alone in
+		// bulk removal; an explicit Shift+D on the session still works.
+		if inst.Status == session.StatusError && inst.Pin == session.PinNone {
 			ids = append(ids, inst.ID)
 		}
 	}
@@ -14843,8 +14887,10 @@ func (h *Home) renderSessionItem(
 	// Auto-named quick sessions display Claude's live task description (the
 	// tmux pane title) in place of the random handle. instState.paneTitle is
 	// already cleaned by cleanPaneTitle, so an idle/just-started session (empty
-	// paneTitle) falls back to the handle automatically.
-	displayTitle := displaySessionTitle(inst, instState.paneTitle)
+	// paneTitle) falls back to the handle automatically. paneSubtitle is the dim
+	// trailing pane title for non-auto-named rows ("" when auto-named, since the
+	// pane title is already promoted to displayTitle) — see sessionDisplayLabels.
+	displayTitle, paneSubtitle := sessionDisplayLabels(inst, instState.paneTitle)
 	// Pin marker (pin-sessions): a 📌 prefix flags any pinned row. Position in
 	// the list conveys top vs bottom; the emoji conveys "this is pinned".
 	// Prepended before the AutoName truncation budget so width accounting below
@@ -14903,14 +14949,17 @@ func (h *Home) renderSessionItem(
 	// so the prior measurement let the trailing pane-title text overflow
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
-	if (selected || h.showPaneTitles) && instState.paneTitle != "" && !inst.GetAutoName() {
+	if (selected || h.showPaneTitles) && paneSubtitle != "" {
+		// paneSubtitle is non-empty only for non-auto-named rows (auto-named rows
+		// promote the pane title to displayTitle), so the prior !inst.GetAutoName()
+		// guard is now folded into sessionDisplayLabels.
 		// Dual layout: sidebar is narrower than h.width (#937). Using full
 		// terminal width here overflows the SESSIONS pane, then lipgloss
 		// truncation disagrees from terminal cells — wrapped lines duplicate
 		// rows visually and mouseY→item indexing breaks until scroll settles.
 		remaining := listWidth - cellWidth(row) - 2 // -2 for trailing margin
 		if remaining > 10 {
-			pt := instState.paneTitle
+			pt := paneSubtitle
 			if cellWidth(pt) > remaining {
 				pt = cellTruncate(pt, remaining, "…")
 			}

@@ -28,6 +28,22 @@ const (
 	defaultImage = "agent-deck-sandbox:latest"
 )
 
+// claudeHomeSeed is the ~/.claude.json seeded into sandbox containers.
+// Beyond global onboarding, it pre-trusts /workspace (the sandbox project
+// mount): Claude Code discovers project-scope plugins (.claude/skills
+// entries with .claude-plugin/plugin.json) only when the project dir is
+// trusted at session startup — trust accepted interactively mid-session
+// does not retroactively load plugins or register their hooks, and this
+// seed is rewritten on every session start, wiping any in-container
+// acceptance. Pre-trusting also lets sandbox sessions start unattended
+// (no trust prompt). hasTrustDialogAccepted is the load-bearing key — it
+// gates project-scope plugin discovery and the trust prompt, mirroring
+// PreAcceptClaudeTrust; the two onboarding flags additionally suppress the
+// first-run project-onboarding prompt for a fully unattended start.
+// Worktree sessions running in a /workspace subdirectory still key trust by
+// their own cwd and are not covered.
+const claudeHomeSeed = `{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true,"hasCompletedProjectOnboarding":true,"projectOnboardingSeenCount":1}}}`
+
 // agentConfigMounts defines all tool config directories and how they are handled.
 // Adding a new tool requires only a new entry here — no code changes needed.
 var agentConfigMounts = []AgentConfigMount{
@@ -36,7 +52,7 @@ var agentConfigMounts = []AgentConfigMount{
 		containerSuffix: ".claude",
 		skipEntries:     []string{"sandbox", "projects", ".home-seeds"},
 		copyDirs:        []string{"plugins", "skills"},
-		homeSeedFiles:   map[string]string{".claude.json": `{"hasCompletedOnboarding":true}`},
+		homeSeedFiles:   map[string]string{".claude.json": claudeHomeSeed},
 		preserveFiles:   []string{".credentials.json", "statsig_user_id"},
 		keychainCredential: &keychainEntry{
 			service:  "Claude Code-credentials",
@@ -224,6 +240,51 @@ func WithGitConfig(path string) ContainerConfigOption {
 			hostPath:      path,
 			containerPath: cfg.containerHome + "/.gitconfig",
 			readOnly:      true,
+		})
+	}
+}
+
+// WithHooksDir mounts a PER-INSTANCE host hooks directory at the container's
+// default agent-deck hooks path (read-write). hostDir must be the scoped
+// per-instance subdir (…/hooks/sandbox/<instanceID>), NOT the global fleet-wide
+// hooks dir.
+//
+// The in-container `agent-deck hook-handler` resolves its hooks dir under $HOME,
+// which sits on the read-only sandbox rootfs — without this bridge its status
+// writes fail silently and the host watcher/notifier stays blind to sandboxed
+// sessions.
+//
+// Security rests on THREE independent properties, not just the mount scope:
+//   - Scope-bound WRITE (here): only this instance's own subdir is mounted, so a
+//     compromised container can read/write files ONLY inside …/hooks/sandbox/
+//     <instanceID>/. The global fleet-wide hooks dir — holding every sibling
+//     session's and the conductor's <id>.json — is NEVER mounted, so siblings'
+//     status, IDs, summaries and transcript paths are unreadable.
+//   - Scope-bound ATTRIBUTION (host StatusFileWatcher): a container can still
+//     NAME a file inside its own subdir after a victim (…/sandbox/<self>/
+//     <victim>.json). The host watcher therefore keys a scoped file by its
+//     OWNING SUBDIR and ingests only <subdir>.json, ignoring any foreign-named
+//     file — so a container cannot forge a sibling's terminal transition or
+//     inject a done_summary into the conductor by mis-naming a file it writes.
+//   - No-follow + size-bounded READ (host StatusFileWatcher / transition daemon):
+//     because the subdir is container-writable, a container could make its own
+//     <id>.json a SYMLINK (its legit name, so attribution passes) pointing at a
+//     sibling/host file or /dev/zero, or write a huge real <id>.json. All host
+//     reads use O_NOFOLLOW + a size cap (and Lstat the scoped path), so a
+//     symlinked status file is neither followed (no host-file disclosure) nor a
+//     DoS vector, and a giant file cannot OOM the shared notify-daemon.
+//
+// Read-write is safe under this scoping: the only status file the container can
+// both write AND have attributed back to it is its own <instanceID>.json, and
+// even that is read no-follow and size-bounded.
+func WithHooksDir(hostDir string) ContainerConfigOption {
+	return func(cfg *ContainerConfig) {
+		if hostDir == "" {
+			return
+		}
+		cfg.volumes = append(cfg.volumes, VolumeMount{
+			hostPath:      hostDir,
+			containerPath: cfg.containerHome + "/.local/share/agent-deck/hooks",
 		})
 	}
 }

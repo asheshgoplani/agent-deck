@@ -7,6 +7,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.7] - 2026-06-30
+
+### Added
+
+- **Configurable default `max_concurrent` for new groups via `[group_defaults]`.** New `[group_defaults]` section with a `max_concurrent` key sets the `max_concurrent` value stamped onto newly-created groups, replacing the hardcoded serial default (`1`) introduced in v1.9.1. Precedence: explicit `group create --max-concurrent N` > `[group_defaults].max_concurrent` > built-in `1`. When the key is unset, behavior is byte-for-byte unchanged (new groups stay serial); `0` means unlimited; existing groups loaded from `state.db` are never touched. Covered by `TestGroup_NewGroupDefault_*` (internal/session/group_concurrency_test.go), `TestUserConfig_GroupDefaults_*` (internal/session/userconfig_test.go), and `TestGroupCreate_*` (cmd/agent-deck/group_cmd_test.go). ([#1541](https://github.com/asheshgoplani/agent-deck/pull/1541))
+
+## [1.10.6] - 2026-06-28
+
+### Fixed
+
+- **CLI: global `-p`/`--profile` no longer shadows a subcommand's own `-p`.** `extractProfileFlag` previously scanned the entire arg list before subcommand dispatch, so `agent-deck launch . -p <parent>` had its `-p` swallowed as a phantom profile name and the child was never linked to its parent. The extractor now stops honoring the global flag once a subcommand token is reached, matching the convention that global flags precede the subcommand. Subcommands that define their own `-p` (`launch`/`add` `--parent`, `group move` `--position`) now receive it unmodified. ([#1529](https://github.com/asheshgoplani/agent-deck/pull/1529))
+
+### Docs
+
+- **Fleet skill: document `--parent` (long form) for explicit child parenting and warn against `-p`.** Added a "Need a specific parent?" note, `--parent` in the Useful flags list, and a `-p` pitfall note explaining how the short flag was mis-parsed as `--profile` on older builds, with recovery steps. ([#1531](https://github.com/asheshgoplani/agent-deck/pull/1531))
+
+## [1.10.5] - 2026-06-27
+
+### Fixed
+
+- **Conductor: default HeartbeatInterval to 15 for fresh conductors.** Fresh conductors with heartbeat enabled were created with `HeartbeatInterval` at its zero value, causing them to never send heartbeats until explicitly configured. New conductors now initialize `HeartbeatInterval` to `15` (seconds) when heartbeat is enabled. ([#1511](https://github.com/asheshgoplani/agent-deck/pull/1511))
+
+## [1.10.4] - 2026-06-26
+
+### Added
+
+- **Fleet fan-out CLI: launch parented children and track completions.** `agent-deck launch` gains `--inherit-group` (child inherits parent's group instead of cwd-derived), `--assert-done` / `--no-assert-done` (appends a done-signal instruction to the initial `-m` message for claude children, opt-out), and a new `agent-deck session children` subcommand listing direct children of a session with their status and completion time. A new file-based completion ledger (`completion-ledger/`) records when children finish so `session children` can report outcomes without touching the SQLite schema. The `fleet` skill is now included in the marketplace plugin. ([#1518](https://github.com/asheshgoplani/agent-deck/pull/1518))
+
+## [1.9.77] - 2026-06-25
+
+### Added
+
+- **Per-group and per-conductor Claude configuration.** `[groups."X".claude]` and `[conductors."X".claude]` blocks in `config.toml` now accept `command`, `model`, `env` (inline map), and `config_dir`/`env_file` keys. Resolution order: conductor > group (ancestor-walking) > global `[claude]` > built-in default. `[launch]` now honors `default_path` the same way `add` does. Config parse errors are now cached (not swallowed on repeat loads). New `group show [--resolved]` CLI command shows the effective config at any group path. ([#1483](https://github.com/asheshgoplani/agent-deck/pull/1483))
+
+## [1.9.76] - 2026-06-24
+
+### Added
+
+- **Pin protects sessions from auto/bulk stops.** Pinned sessions are now skipped by the idle-timeout watcher, the bulk "remove all errored" TUI action, and the `session rm --all-errored` CLI command. Unpinning re-arms the idle clock cleanly from the next tick. The `--force` flag overrides the pin guard on the CLI. ([#1521](https://github.com/asheshgoplani/agent-deck/pull/1521))
+
+## [1.9.75] - 2026-06-23
+
+### Fixed
+
+- **TUI: empty and archived-only groups now sink below the view-mode divider.** Groups with no active sessions were appearing above the divider in non-archive view, cluttering the list. The `GroupActivityMap` helper now respects the `viewArchived` flag so placement is consistent with the current view mode. ([#1522](https://github.com/asheshgoplani/agent-deck/pull/1522))
+- **tmux: idempotent kill + socket-complete existence cache.** `Kill()` and `KillAndWait()` now return nil when the session is already gone, preventing spurious errors on double-kill. The `Exists()` cache now only trusts positive hits, avoiding false "session dead" conclusions from stale negative cache entries. ([#1517](https://github.com/asheshgoplani/agent-deck/pull/1517))
+
+### Changed
+
+- **Go minor/patch dependency update.** `google.golang.org/api` v0.284→v0.286, `modernc.org/sqlite` v1.52→v1.53, plus transitive `golang.org/x/*` patch bumps. ([#1516](https://github.com/asheshgoplani/agent-deck/pull/1516))
+
+## [1.9.74] - 2026-06-22
+
+### Fixed
+
+- **Visual regression baselines re-synced for Command Center nav tab.** The weekly regression run failed after #1462 added the Command Center tab as the first item in the desktop topbar and mobile bottom bar, shifting every subsequent tab's x-position and producing a nav-row pixel diff in 16 of 17 baselines. The baselines were re-generated on the CI runner (canonical environment) and the `mobile fleet with bottom tabs` test assertion was updated from 4 to 5 tabs. ([#1507](https://github.com/asheshgoplani/agent-deck/pull/1507))
+
+## [1.9.73] - 2026-06-21
+
+### Added
+
+- **Conductors work without remote channels (local-first).** The `conductor setup` wizard now defaults to local-only (no Telegram/Slack/Discord required). A gateway question ("Add remote channels? [y/N]") gates all channel prompts. Heartbeat is always-on by default for all conductors (local included). Re-running `conductor setup` on an existing conductor is now safe and credential-wipe-safe: tokens are only overwritten when a new non-empty value is entered. Conductor templates updated to local-first framing. ([#1474](https://github.com/asheshgoplani/agent-deck/pull/1474))
+
+### Fixed
+
+- **`group create --parent` and `group delete` now work with uppercase group names.** `normalizeGroupPath` no longer lowercases its argument, so groups stored with uppercase letters are reachable by direct lookup. `group delete <name>` now collects all case-insensitive matches and errors on ambiguity (with sorted full-path suggestions) instead of silently deleting a random duplicate. ([#1501](https://github.com/asheshgoplani/agent-deck/pull/1501))
+
+## [1.9.72] - 2026-06-19
+
+### Added
+
+- **`group_sort` config option to choose within-group session ordering.** Sessions inside a group now display in **creation order by default** (honoring the `K`/`J` manual reorder), instead of the status/recency "actionable" sort. Set `group_sort = "actionable"` in `config.toml` to restore the most-recently-actionable-first behavior. Pin-top/pin-bottom and the Maestro supervisor still surface as before in both modes. ([#1443](https://github.com/asheshgoplani/agent-deck/pull/1443))
+
+- **Session-switcher hotkey is now opt-in (disabled by default).** The `switch_session` hotkey is no longer bound by default to avoid conflicts. Add `switch_session = "<key>"` under `[hotkeys]` in `config.toml` to enable it. ([#1478](https://github.com/asheshgoplani/agent-deck/pull/1478))
+
+- **Session-switcher dialog shows title/subtitle and auto-expands width.** Named sessions display a distinct title and subtitle; the dialog automatically widens to fit the longest row so labels are never truncated. ([#1475](https://github.com/asheshgoplani/agent-deck/pull/1475))
+
+- **Worktree-destruction hook before linked worktree removal.** If `agent-deck-worktree-destroy.sh` (or `.agent-deck-worktree-destroy.sh`) exists in the repo root, it runs with a 60 s timeout before `git worktree remove`, enabling pre-cleanup steps (saving state, notifying services, etc.). ([#1487](https://github.com/asheshgoplani/agent-deck/pull/1487))
+
+### Fixed
+
+- **Orphaned sub-sessions no longer shuffle position between renders.** Sub-sessions whose parent session lives in a different group were emitted in Go's randomized map-iteration order, so they jumped around on each redraw. They now render in a stable order (by persisted `Order`). ([#1443](https://github.com/asheshgoplani/agent-deck/pull/1443))
+
+- **Forked sessions inherit tool identity for Claude-compatible tools.** When forking a session that uses a Claude-compatible tool (gemini, codex, opencode, etc.), the fork now preserves the parent's tool instead of resetting it to `"claude"`. ([#1479](https://github.com/asheshgoplani/agent-deck/pull/1479))
+
+- **Headless web menu no longer serves stale content after session changes.** The in-memory `MemoryMenuData` snapshot cache is now invalidated on every `notifyMenuChanged` call, so menu state reflects the current session list immediately. ([#1477](https://github.com/asheshgoplani/agent-deck/pull/1477))
+
+- **Dialog boxes respect terminal width.** Help, search, group, MCP, session-picker, skill, and zoxide dialogs use a new `fitDialogWidth` helper that caps dialog width to `termWidth - 10`, preventing overflow and border clipping on narrow terminals. ([#1476](https://github.com/asheshgoplani/agent-deck/pull/1476))
+
+- **Docker sandbox pre-trusts `/workspace` at first launch.** The Claude home seed written into sandbox containers now includes `/workspace` in the projects trust map, so workspace-trust dialogs no longer block headless sessions on first run. ([#1490](https://github.com/asheshgoplani/agent-deck/pull/1490))
+
+- **Status & daemon reliability hardening** ([#1481](https://github.com/asheshgoplani/agent-deck/pull/1481)):
+  - A foreign `claude -p` child that inherits `AGENTDECK_INSTANCE_ID` and fires hooks under the parent's ID no longer flips the parent session's status (bind rejection now also restores the pre-event hook fields).
+  - A transient tmux-inferred flip away from `running` (long tool-call past hook freshness window, or `CapturePane` failure) is held for one confirming sample before firing a completion event to the conductor.
+  - `conductor setup` detects the macOS launchd Background domain and skips the unload/reload cycle, preventing cross-domain eviction of the live notify-daemon.
+  - Notify-daemon status probes are now bounded (6 s per instance, 30 s per pass) so a hung tmux call can't mute the entire delivery loop; a timed-out instance retries next pass and logs a rate-limited stall breadcrumb.
+
 ## [1.9.71] - 2026-06-17
 
 ### Fixed
@@ -102,13 +199,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **An operator's per-session model choice now survives `session restart`** ([#1445](https://github.com/asheshgoplani/agent-deck/pull/1445), closes [#1436](https://github.com/asheshgoplani/agent-deck/issues/1436)). Follow-up to [#1431](https://github.com/asheshgoplani/agent-deck/issues/1431), which made `[claude].default_model` honored at spawn and restart. A new tool-agnostic `model` field — `agent-deck session set <id> model <m>` — persists the selected model into the per-session store each command builder already reads on start/restart (Claude/Gemini/OpenCode/Codex), so a model switched after launch is relaunched on the operator's selection instead of reverting to the baked/default model; an empty value clears the override. The field is restart-required. Note: agent-deck cannot observe an in-pane `/model` switch typed into a running Claude session (Claude exposes no clean model readback), so the documented path is `session set <id> model <m>`.
-
 ## [1.9.61] - 2026-06-14
 
 ### Fixed
 
 - **`SaveUserConfig` no longer bloats `config.toml` with zero-value fields, and default-true settings survive an explicit `false`** ([#1383](https://github.com/asheshgoplani/agent-deck/pull/1383)). Saving the config previously rewrote every struct field, including unset zero values, so a minimal hand-written `config.toml` ballooned with defaulted keys on the first save. The serializer now omits zero-value scalars (`omitzero`) and empty collections (`omitempty`), and `stripEmptyTOMLSections` removes the orphan section headers the encoder leaves behind, keeping the on-disk file minimal. Critically, the six default-`true` booleans (e.g. global-search enabled, update checks, MCP-pool stdio fallback) were converted to `*bool` so an explicit `false` is encoded and round-trips losslessly instead of being silently dropped and reverting to its `true` default; the heartbeat interval default (15) is likewise preserved across save/reload. The populated `[mcps]`/`[groups]` sections remain protected by the existing section-drop guard and the `config.toml.bak` backup taken before every save.
-
 ## [1.9.60] - 2026-06-14
 
 ### Added
@@ -156,7 +251,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A stale DB row no longer vetoes a fresh terminal hook status** ([#1425](https://github.com/asheshgoplani/agent-deck/pull/1425), fixes [#1424](https://github.com/asheshgoplani/agent-deck/issues/1424)). The notify daemon could let a session row frozen at `running` (from a missed update, or a session created after the daemon loaded its list) override a fresh terminal status from the child's own Stop/done hook — dropping the completion entirely (no transition event, no log line). A non-terminal row now never vetoes a fresh terminal hook; the row only wins when it is itself notify-terminal (where it may be more final, e.g. `error`).
 - **Done-sentinel detection works on current Claude Code transcript formats** ([#1423](https://github.com/asheshgoplani/agent-deck/pull/1423), fixes [#1422](https://github.com/asheshgoplani/agent-deck/issues/1422)). The Stop-edge tail scan that detects a worker-printed completion sentinel had drifted from Claude Code's current transcript shape, so real completions were missed. Detection now matches the current formats, with guards that avoid reporting a PREVIOUS turn's sentinel as the current one.
 - **Session switcher review-feedback fixes** ([#1426](https://github.com/asheshgoplani/agent-deck/pull/1426), follow-up to [#1411](https://github.com/asheshgoplani/agent-deck/pull/1411)). Restores `SIGINT` handling on the attach raw-mode setup failure paths — a failure there could otherwise leave the process permanently ignoring `Ctrl+C`. Opens the in-attach switcher on the session actually in view after a notification-bar switch (`Ctrl+b 1-6`) rather than the original attach target, fixing pre-highlight / `Esc`-reattach / follow-CWD. The attached status-bar hint now reflects the configured `[hotkeys]` detach/switch bindings instead of hardcoded `ctrl+q`/`ctrl+s` (and is omitted when the switch key is unbound or collides with detach). The switcher resizes with the window; `Show` clears stale picker state when fewer than two sessions remain; and the footer `Esc` hint is context-sensitive ("back" while attached vs "close" from the overview). Documents the switcher as local-only (remote/SSH sessions use a separate attach path).
-
 ## [1.9.57] - 2026-06-12
 
 ### Fixed

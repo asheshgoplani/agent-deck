@@ -272,7 +272,7 @@ func RefreshSessionCache() {
 	// Subprocess fallback: list-windows -a (3s timeout to prevent freeze when server is dead)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := tmuxExecContext(ctx, DefaultSocketName(), "list-windows", "-a", "-F", "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}")
+	cmd := tmuxExecContext(ctx, DefaultSocketName(), "list-windows", "-a", "-F", tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_name}"))
 	output, err := cmd.Output()
 	if err != nil {
 		sessionCacheMu.Lock()
@@ -295,8 +295,10 @@ func RefreshSessionCache() {
 	windowCacheMu.Unlock()
 }
 
-// parseListWindowsOutput parses the output of `tmux list-windows -a` with the extended format
-// "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}"
+// parseListWindowsOutput parses the output of `tmux list-windows -a` with the
+// extended format tmuxFmt("#{session_name}", "#{window_activity}",
+// "#{window_index}", "#{window_name}"). window_name is last so a tmuxFieldSep
+// inside it survives SplitN.
 // Returns session-level max activity and per-session window info.
 func parseListWindowsOutput(output string) (map[string]int64, map[string][]WindowInfo) {
 	sessionCache := make(map[string]int64)
@@ -306,7 +308,7 @@ func parseListWindowsOutput(output string) (map[string]int64, map[string][]Windo
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 4)
+		parts := strings.SplitN(line, tmuxFieldSep, 4)
 		if len(parts) < 2 {
 			continue
 		}
@@ -2113,13 +2115,23 @@ var hasSessionProbeTimeout = 2 * time.Second
 // Uses cached session list when available (refreshed by RefreshExistingSessions)
 // Falls back to direct tmux call if cache is stale
 func (s *Session) Exists() bool {
-	// The session cache is populated by RefreshSessionCache against
-	// DefaultSocketName() only — entries describe the default tmux server
-	// alone. Sessions on isolated sockets must skip the cache, otherwise
-	// UpdateStatus would stamp StatusError on every poll for them (#755).
+	// #755: the cache describes the DefaultSocketName() server, so a session on
+	// a different socket must not be answered from it (a same-named entry is not
+	// the same session). Keep that guard.
+	//
+	// Within the guard, trust only a POSITIVE hit. A NEGATIVE/stale result is
+	// NOT trusted: the cache can transiently miss a live session when
+	// agent-deck sessions span multiple sockets (RefreshAllActivities merges one
+	// pipe per socket, and the subprocess fallback covers only DefaultSocketName,
+	// so a refresh sourced from the "wrong" socket omits this one). Confirm a
+	// "not in cache" reading with the live pipe / a direct probe on the
+	// session's OWN socket before declaring it dead. Trusting a negative cache
+	// hit flipped live sessions on a second socket to StatusError/tmux_missing
+	// (multi-socket cache aliasing), after which restart machinery could kill
+	// the still-running pane.
 	if strings.TrimSpace(s.SocketName) == DefaultSocketName() {
-		if exists, cacheValid := sessionExistsFromCache(s.Name); cacheValid {
-			return exists
+		if exists, cacheValid := sessionExistsFromCache(s.Name); cacheValid && exists {
+			return true
 		}
 	}
 
@@ -2153,8 +2165,15 @@ func (s *Session) IsPaneDead() bool {
 	if info, ok := GetCachedPaneInfo(s.Name); ok {
 		return info.Dead
 	}
-	// Cache miss: direct tmux check targeting the primary pane.
-	out, err := s.tmuxCmd("list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}").Output()
+	// Cache miss: direct tmux check targeting the primary pane. Bound it the
+	// same way Exists() bounds has-session — a wedged tmux server must not hang
+	// this probe, since it runs under the notify-daemon's single-threaded poll
+	// loop (via UpdateStatus → GetStatus) where a stall freezes all delivery.
+	// A timed-out (indeterminate) probe is treated as "not dead": reporting a
+	// live pane as dead would flip the session to an error state.
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+	out, err := s.tmuxCmdContext(ctx, "list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}").Output()
 	if err != nil {
 		return false
 	}
@@ -2358,6 +2377,17 @@ func (s *Session) Kill() error {
 	// Verify old processes are dead; escalate to SIGKILL if needed
 	if len(oldPIDs) > 0 {
 		go s.ensureProcessesDead(oldPIDs, 0)
+	}
+
+	// Killing a session that no longer exists is success, not failure: tmux
+	// `kill-session` exits non-zero ("can't find session") for an already-dead
+	// session. Treating that as fatal made archiveSession abort and silently
+	// fail to persist the archive when re-archiving a session whose tmux was
+	// already gone (the post-Unarchive path — Unarchive clears the flag without
+	// restarting tmux). Only surface the error if the session is genuinely
+	// still alive after the kill attempt.
+	if err != nil && !s.Exists() {
+		return nil
 	}
 
 	return err
@@ -4972,22 +5002,24 @@ func InitializeStatusBarOptions() error {
 func RefreshStatusBarImmediate() error {
 	socket := DefaultSocketName()
 	// Get all connected clients, filtering out control mode clients
-	cmd := tmuxExec(socket, "list-clients", "-F", "#{client_name}\t#{client_control_mode}")
+	// client_name is free-text (a pts path) so it goes LAST, after the 0/1
+	// control-mode flag, to stay collision-safe under tmuxFieldSep.
+	cmd := tmuxExec(socket, "list-clients", "-F", tmuxFmt("#{client_control_mode}", "#{client_name}"))
 	output, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
 
 	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 || parts[0] == "" {
+		parts := strings.SplitN(line, tmuxFieldSep, 2)
+		if len(parts) != 2 || parts[1] == "" {
 			continue
 		}
 		// Skip control mode clients (PipeManager pipes)
-		if parts[1] == "1" {
+		if parts[0] == "1" {
 			continue
 		}
-		_ = tmuxExec(socket, "refresh-client", "-S", "-t", parts[0]).Run()
+		_ = tmuxExec(socket, "refresh-client", "-S", "-t", parts[1]).Run()
 	}
 	return nil
 }
@@ -5037,7 +5069,9 @@ func GetAttachedSessionsOnSockets(sockets ...string) []string {
 // attachedSessionsOnSocket lists the non-control-mode sessions with a client
 // attached on a single tmux socket ("" = default server).
 func attachedSessionsOnSocket(socket string) ([]string, error) {
-	cmd := tmuxExec(socket, "list-clients", "-F", "#{session_name}\t#{client_control_mode}")
+	// session_name is sanitized to [A-Za-z0-9-], so it never contains
+	// tmuxFieldSep; no reordering needed here.
+	cmd := tmuxExec(socket, "list-clients", "-F", tmuxFmt("#{session_name}", "#{client_control_mode}"))
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -5045,7 +5079,7 @@ func attachedSessionsOnSocket(socket string) ([]string, error) {
 
 	var sessions []string
 	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		parts := strings.SplitN(line, "\t", 2)
+		parts := strings.SplitN(line, tmuxFieldSep, 2)
 		if len(parts) != 2 || parts[0] == "" {
 			continue
 		}

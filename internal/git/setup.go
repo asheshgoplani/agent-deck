@@ -42,6 +42,14 @@ func FindWorktreeSetupScript(repoDir string) (string, os.FileMode) {
 // The session layer resolves the legacy 60s default before calling here;
 // callers that want bounded runs must pass a positive duration explicitly.
 func RunWorktreeSetupScript(scriptPath string, scriptMode os.FileMode, repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
+	return runWorktreeScript("setup", scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
+}
+
+// runWorktreeScript runs a worktree lifecycle hook (kind is "setup" or
+// "destruction") with the same env, working directory, shebang dispatch and
+// timeout semantics. Shared so the destruction hook (#worktree-destruction)
+// stays identical to setup without duplicating the runner.
+func runWorktreeScript(kind, scriptPath string, scriptMode os.FileMode, repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if timeout > 0 {
@@ -64,10 +72,10 @@ func RunWorktreeSetupScript(scriptPath string, scriptMode os.FileMode, repoDir, 
 	err := cmd.Run()
 
 	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("worktree setup script timed out after %s", timeout)
+		return fmt.Errorf("worktree %s script timed out after %s", kind, timeout)
 	}
 	if err != nil {
-		return fmt.Errorf("worktree setup script failed: %w", err)
+		return fmt.Errorf("worktree %s script failed: %w", kind, err)
 	}
 	return nil
 }
@@ -169,4 +177,49 @@ func RunWorktreeSetupAfterCreate(repoDir, worktreePath string, stdout, stderr io
 		fmt.Fprintf(stderr, "Worktree setup script completed in %s\n", elapsed)
 	}
 	return setupErr
+}
+
+// DefaultWorktreeDestructionTimeout bounds how long
+// .agent-deck/worktree-destruction.sh may run. The setup hook resolves its
+// timeout at the session layer, but RemoveWorktree (package git) cannot import
+// session without an import cycle, so the destruction hook uses a fixed default.
+// ponytail: fixed 60s, add a [worktree].destruction_timeout_seconds config if a
+// user ever needs to tune it.
+const DefaultWorktreeDestructionTimeout = 60 * time.Second
+
+// FindWorktreeDestructionScript mirrors FindWorktreeSetupScript for the
+// pre-removal hook at <repoDir>/.agent-deck/worktree-destruction.sh.
+func FindWorktreeDestructionScript(repoDir string) (string, os.FileMode) {
+	p := filepath.Join(repoDir, ".agent-deck", "worktree-destruction.sh")
+	if info, err := os.Stat(p); err == nil {
+		return p, info.Mode()
+	}
+	return "", 0
+}
+
+// RunWorktreeDestructionScript executes the destruction script with the same
+// environment, working directory (worktreePath, which still exists at call
+// time), shebang dispatch and timeout semantics as the setup script.
+func RunWorktreeDestructionScript(scriptPath string, scriptMode os.FileMode, repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
+	return runWorktreeScript("destruction", scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
+}
+
+// RunWorktreeDestructionBeforeRemove runs the destruction script (if present)
+// just before a worktree is removed. Failure is non-fatal: removal proceeds
+// regardless, mirroring setup's "hook failure doesn't block the operation".
+func RunWorktreeDestructionBeforeRemove(repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
+	scriptPath, scriptMode := FindWorktreeDestructionScript(repoDir)
+	if scriptPath == "" {
+		return nil
+	}
+	fmt.Fprintln(stderr, "Running worktree destruction script...")
+	start := time.Now()
+	err := RunWorktreeDestructionScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
+	elapsed := time.Since(start).Round(100 * time.Millisecond)
+	if err != nil {
+		fmt.Fprintf(stderr, "Worktree destruction script failed after %s: %v\n", elapsed, err)
+	} else {
+		fmt.Fprintf(stderr, "Worktree destruction script completed in %s\n", elapsed)
+	}
+	return err
 }

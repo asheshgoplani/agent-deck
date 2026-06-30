@@ -334,6 +334,7 @@ func TestResolveGroupSelection(t *testing.T) {
 		cwdDerivedGroup       string
 		parentGroup           string
 		explicitGroupProvided bool
+		inheritGroup          bool
 		want                  string
 	}{
 		{
@@ -359,10 +360,65 @@ func TestResolveGroupSelection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveGroupSelection(tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided)
+			got := resolveGroupSelection(tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided, tt.inheritGroup)
 			if got != tt.want {
-				t.Fatalf("resolveGroupSelection(%q, %q, %q, %v) = %q, want %q",
-					tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided, got, tt.want)
+				t.Fatalf("resolveGroupSelection(%q, %q, %q, %v, %v) = %q, want %q",
+					tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided, tt.inheritGroup, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldInheritParentGroup(t *testing.T) {
+	tests := []struct {
+		name                  string
+		explicitGroupProvided bool
+		inheritGroupFlag      bool
+		isLinkedWorktree      bool
+		want                  bool
+		wantProbe             bool // whether the git worktree thunk should be consulted
+	}{
+		{
+			name:                  "explicit -g never auto-inherits, and skips the git probe",
+			explicitGroupProvided: true,
+			isLinkedWorktree:      true,
+			want:                  false,
+			wantProbe:             false,
+		},
+		{
+			name:             "--inherit-group inherits without probing git",
+			inheritGroupFlag: true,
+			isLinkedWorktree: false,
+			want:             true,
+			wantProbe:        false,
+		},
+		{
+			name:             "worktree child auto-inherits (the fleet default)",
+			isLinkedWorktree: true,
+			want:             true,
+			wantProbe:        true,
+		},
+		{
+			name:             "non-worktree child keeps cwd-derived group (e.g. conductor)",
+			isLinkedWorktree: false,
+			want:             false,
+			wantProbe:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			probed := false
+			got := shouldInheritParentGroup(tt.explicitGroupProvided, tt.inheritGroupFlag, func() bool {
+				probed = true
+				return tt.isLinkedWorktree
+			})
+			if got != tt.want {
+				t.Fatalf("shouldInheritParentGroup(explicit=%v, flag=%v, worktree=%v) = %v, want %v",
+					tt.explicitGroupProvided, tt.inheritGroupFlag, tt.isLinkedWorktree, got, tt.want)
+			}
+			if probed != tt.wantProbe {
+				t.Fatalf("git worktree probe called = %v, want %v (lazy thunk must not run when steps 1-2 decide)", probed, tt.wantProbe)
 			}
 		})
 	}

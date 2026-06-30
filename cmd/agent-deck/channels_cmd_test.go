@@ -75,12 +75,28 @@ func runAgentDeck(
 		if strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
 			continue
 		}
+		// Strip inherited XDG_*_HOME and re-point them under the temp HOME
+		// below. EffectiveConfigPath prefers $XDG_CONFIG_HOME/agent-deck/
+		// config.toml over the legacy $HOME/.agent-deck/config.toml; on a dev
+		// box with XDG_CONFIG_HOME set, the config-driven cases would read the
+		// dev's real config (and write state.db outside the temp HOME).
+		if strings.HasPrefix(kv, "XDG_CONFIG_HOME=") {
+			continue
+		}
+		if strings.HasPrefix(kv, "XDG_DATA_HOME=") {
+			continue
+		}
+		if strings.HasPrefix(kv, "XDG_CACHE_HOME=") {
+			continue
+		}
 		env = append(env, kv)
 	}
 	env = append(env,
 		"HOME="+home,
 		"AGENTDECK_PROFILE=ch_support_test",
 		"TERM=dumb",
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
 	)
 	cmd.Env = env
 

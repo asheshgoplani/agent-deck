@@ -51,7 +51,12 @@ const (
 	// Session switcher. While attached it is intercepted in the tmux attach
 	// loop (see internal/tmux/pty.go AttachOptions); on the home screen it is
 	// dispatched like any other hotkey. Must resolve to a "ctrl+<letter>" chord.
-	hotkeySwitchSession = "switch_session" // Ctrl+S
+	//
+	// Disabled by default (see defaultDisabledHotkeys): intercepting it while
+	// attached steals the control byte from the attached program, and the
+	// suggested Ctrl+S collides with Claude Code (stash prompt) and XOFF
+	// flow-control. Users opt in by binding [hotkeys].switch_session.
+	hotkeySwitchSession = "switch_session" // canonical "ctrl+s" (opt-in)
 )
 
 var hotkeyActionOrder = []string{
@@ -155,6 +160,18 @@ var renamedHotkeys = map[string]string{
 	"toggle_gemini_yolo": hotkeyToggleYolo,
 }
 
+// defaultDisabledHotkeys are actions that keep a canonical key in
+// defaultHotkeyBindings (so the home-screen dispatch case and help/status
+// labels resolve) but ship UNBOUND: resolveHotkeys drops them unless the user
+// binds them explicitly. switch_session is opt-in because enabling it
+// intercepts a control byte in the attach loop before the attached program
+// sees it — the suggested Ctrl+S collides with Claude Code's stash-prompt and
+// terminal XOFF flow-control, and no control byte is safe to steal from every
+// attached tool.
+var defaultDisabledHotkeys = map[string]bool{
+	hotkeySwitchSession: true,
+}
+
 func resolveHotkeys(overrides map[string]string) map[string]string {
 	bindings := make(map[string]string, len(defaultHotkeyBindings))
 	for action, key := range defaultHotkeyBindings {
@@ -196,6 +213,15 @@ func resolveHotkeys(overrides map[string]string) map[string]string {
 			continue
 		}
 		bindings[action] = key
+	}
+
+	// Opt-in actions ship unbound: drop them unless the user set them
+	// explicitly. The canonical default stays in defaultHotkeyBindings so the
+	// dispatch case and labels resolve once a user binds it.
+	for action := range defaultDisabledHotkeys {
+		if _, overridden := canonicalOverrides[action]; !overridden {
+			delete(bindings, action)
+		}
 	}
 
 	return bindings
