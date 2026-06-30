@@ -26,8 +26,14 @@ func TestMapEventToStatus(t *testing.T) {
 		{"PreCompact", ""},
 		{"UnknownEvent", ""},
 		// Hermes shell hook events
+		{"pre_llm_call", "running"},
+		{"post_llm_call", "waiting"},
 		{"pre_tool_call", "running"},
-		{"post_tool_call", "waiting"},
+		// Hermes-only key: mid-turn, a finished tool call means the LLM keeps
+		// working; the turn-end waiting edge belongs to post_llm_call.
+		{"post_tool_call", "running"},
+		// Claude/Cursor post-tool events keep mapping to waiting.
+		{"PostToolUse", "waiting"},
 		{"on_session_start", "waiting"},
 		{"on_session_end", "dead"},
 		{"subagent_stop", ""},
