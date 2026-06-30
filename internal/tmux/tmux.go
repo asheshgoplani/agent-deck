@@ -3155,15 +3155,7 @@ func (s *Session) GetStatus() (string, error) {
 			// (yellow) and fire a premature "finished" notification. Keep it green
 			// until the work actually completes (then the next poll settles to
 			// waiting and notifies — "done" now means foreground AND background).
-			if s.isClaudeTool() && claudeBackgroundWorkPending(content) {
-				s.stateTracker.lastChangeTime = time.Now()
-				s.stateTracker.realActivityConfirmed = true
-				s.stateTracker.acknowledged = false
-				s.resetPromptNoBusyHoldLocked()
-				s.stateTracker.lastActivityTimestamp = currentTS
-				s.lastStableStatus = "active"
-				s.startupAt = time.Time{}
-				statusLog.Debug("background_work_active", slog.String("session", shortName))
+			if s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
 				return "active", nil
 			}
 
@@ -3336,6 +3328,16 @@ func (s *Session) GetStatus() (string, error) {
 						s.startupAt = time.Time{}
 						statusLog.Debug("sustained_error_banner", slog.String("session", shortName))
 						return "error", nil
+					}
+
+					// Background work in flight keeps the session green here too:
+					// a bg shell's output drives the spike, so without this the
+					// prompt check below would flip it to waiting and fire a
+					// premature completion (mirrors the busy-check path above).
+					if s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
+						s.stateTracker.activityCheckStart = time.Time{}
+						s.stateTracker.activityChangeCount = 0
+						return "active", nil
 					}
 
 					if s.hasPromptIndicator(content) {
@@ -3809,13 +3811,43 @@ func (s *Session) BackgroundWorkPending() bool {
 	s.mu.Unlock()
 
 	rawContent, err := s.CapturePane()
-	pending := err == nil && claudeBackgroundWorkPending(StripANSI(rawContent))
+	if err != nil {
+		// Don't cache a capture failure as "no background work": refreshing the
+		// TTL would suppress retries for the full window and could let the
+		// waiting hook fire a premature completion. Keep the previous value and
+		// leave bgWorkCheckedAt unchanged so the next call re-captures.
+		s.mu.Lock()
+		pending := s.bgWorkPending
+		s.mu.Unlock()
+		return pending
+	}
+	pending := claudeBackgroundWorkPending(StripANSI(rawContent))
 
 	s.mu.Lock()
 	s.bgWorkPending = pending
 	s.bgWorkCheckedAt = time.Now()
 	s.mu.Unlock()
 	return pending
+}
+
+// markBackgroundWorkActiveLocked applies the "keep green while background work is
+// in flight" state update when a Claude session is at the prompt but still has
+// run_in_background shells / an awaited background agent. Returns true when it
+// fired (caller should return "active"). Accepts raw or stripped content
+// (StripANSI is idempotent). Must be called with s.mu held.
+func (s *Session) markBackgroundWorkActiveLocked(content string, currentTS int64, shortName string) bool {
+	if !s.isClaudeTool() || !claudeBackgroundWorkPending(StripANSI(content)) {
+		return false
+	}
+	s.stateTracker.lastChangeTime = time.Now()
+	s.stateTracker.realActivityConfirmed = true
+	s.stateTracker.acknowledged = false
+	s.resetPromptNoBusyHoldLocked()
+	s.stateTracker.lastActivityTimestamp = currentTS
+	s.lastStableStatus = "active"
+	s.startupAt = time.Time{}
+	statusLog.Debug("background_work_active", slog.String("session", shortName))
+	return true
 }
 
 var defaultResolvedPatternsCache sync.Map // map[string]*ResolvedPatterns

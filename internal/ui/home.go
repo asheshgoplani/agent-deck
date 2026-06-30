@@ -15883,7 +15883,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 		// Status line
 		if selected.ClaudeSessionID != "" {
-			statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selected.Status)
+			statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selectedStatus)
 			b.WriteString(labelStyle.Render("Status:  "))
 			b.WriteString(statusStyle.Render(statusText))
 			b.WriteString("\n")
@@ -16079,7 +16079,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		valueStyle := lipgloss.NewStyle().Foreground(ColorText)
 
 		if selected.GeminiSessionID != "" {
-			statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selected.Status)
+			statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selectedStatus)
 			b.WriteString(labelStyle.Render("Status:  "))
 			b.WriteString(statusStyle.Render(statusText))
 			b.WriteString("\n")
@@ -16135,7 +16135,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		)
 
 		if selected.OpenCodeSessionID != "" {
-			statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selected.Status)
+			statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selectedStatus)
 			b.WriteString(labelStyle.Render("Status:  "))
 			b.WriteString(statusStyle.Render(statusText))
 			b.WriteString("\n")
@@ -16207,7 +16207,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 			genericID := selected.GetGenericSessionID()
 			if genericID != "" {
-				statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selected.Status)
+				statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selectedStatus)
 				valueStyle := lipgloss.NewStyle().Foreground(ColorText)
 				b.WriteString(labelStyle.Render("Status:  "))
 				b.WriteString(statusStyle.Render(statusText))
