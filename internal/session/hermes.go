@@ -164,6 +164,20 @@ func (i *Instance) buildHermesCommand(baseCommand string) string {
 
 	envPrefix := i.buildEnvSourceCommand()
 
+	// AGENTDECK_* env injection is required for the shell hooks Hermes spawns
+	// (pre_llm_call / pre_tool_call / … → `agent-deck hook-handler`) to identify
+	// this session. hook-handler reads AGENTDECK_INSTANCE_ID and silently no-ops
+	// without it, so without this prefix Hermes hooks never write a status file
+	// and the state indicator never updates. Injected BEFORE the custom-command
+	// passthrough so those sessions get it too (mirrors buildCodexCommand).
+	// Title is user-editable and could contain shell metacharacters ($(...),
+	// backticks, $VAR — all of which stay live inside %q's double quotes), so
+	// it needs shellescape's single quotes. ID is regex-constrained and Tool
+	// is guaranteed "hermes" by the guard above.
+	agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%s AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
+		i.ID, shellescape.Quote(i.Title), i.Tool, shellescape.Quote(sessionProfileEnvValue()))
+	envPrefix += agentdeckEnvPrefix
+
 	// Passthrough: custom command from CLI (not the bare name)
 	if baseCommand != "hermes" && baseCommand != "" {
 		return envPrefix + baseCommand
