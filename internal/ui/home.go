@@ -3710,6 +3710,14 @@ func (h *Home) logWorker() {
 	}
 }
 
+// shouldPollStatusInLoop reports whether the per-tick background status sweep
+// should run UpdateStatus() on inst. Archived sessions are skipped: their tmux
+// pane is torn down and their row status is display-frozen, so a poll can only
+// spend a serialized tmux subprocess without changing anything the UI renders.
+func shouldPollStatusInLoop(inst *session.Instance) bool {
+	return inst != nil && !inst.IsArchived()
+}
+
 // backgroundStatusUpdate runs independently of the TUI
 // Updates session statuses and syncs notification bar directly to tmux
 // This is called by the internal ticker even when TUI is paused (tea.Exec)
@@ -3842,7 +3850,7 @@ func (h *Home) backgroundStatusUpdate() {
 	var slowMu sync.Mutex
 	var slowSessions []string
 	pm := tmux.GetPipeManager()
-	var skipped int
+	var skipped int // sessions not polled this tick (archived + idle fast-path)
 
 	tracker := h.getTransitionTracker()
 
@@ -3851,6 +3859,18 @@ func (h *Home) backgroundStatusUpdate() {
 
 	for _, inst := range instances {
 		inst := inst // capture loop variable
+
+		// Skip archived sessions: their tmux pane is torn down and their row
+		// status is display-frozen (rowStatusGlyph forces the stopped glyph
+		// regardless of Status), so UpdateStatus can only burn a serialized tmux
+		// subprocess without changing anything the UI shows. With a large archive
+		// backlog this dominated the loop (observed: 723 archived of 742 total
+		// pushed the sweep to multi-second spikes). Unarchiving runs its own
+		// refresh, so the periodic loop never needs to poll archived sessions.
+		if !shouldPollStatusInLoop(inst) {
+			skipped++
+			continue
+		}
 
 		// Skip idle sessions when PipeManager knows they haven't produced output.
 		// Only skip if pipe is alive (otherwise we need UpdateStatus for Error detection).
