@@ -188,6 +188,65 @@ func TestClaudeSessionNameIn_MtimeFallbackWhenNoUpdatedAt(t *testing.T) {
 	}
 }
 
+// TestClaudeSessionNameIn_DerivedNameIgnored: Claude Code 2.1.19x auto-derives a
+// session name from the cwd folder and stamps nameSource="derived". That is not a
+// user rename, so the title sync (#572) must ignore it — otherwise every quick
+// session's auto_name handle gets clobbered by the folder name.
+func TestClaudeSessionNameIn_DerivedNameIgnored(t *testing.T) {
+	home := t.TempDir()
+	seedClaudeSessionFile(t, home, "1234.json", map[string]any{
+		"sessionId": "sid-d", "name": "doozyx-apps-5d", "nameSource": "derived", "updatedAt": int64(1000),
+	})
+
+	if got := ClaudeSessionNameIn(filepath.Join(home, ".claude"), "sid-d"); got != "" {
+		t.Errorf("ClaudeSessionNameIn = %q, want empty (derived names are not user renames)", got)
+	}
+}
+
+// TestClaudeSessionNameIn_DerivedFreshestSuppressesStaleUserName: a freshest
+// derived entry must suppress an older user-chosen name (mirrors the
+// freshest-unnamed-suppresses rule) so the sync neither resurrects the stale
+// name nor adopts the derived one.
+func TestClaudeSessionNameIn_DerivedFreshestSuppressesStaleUserName(t *testing.T) {
+	home := t.TempDir()
+	seedClaudeSessionFile(t, home, "1111.json", map[string]any{
+		"sessionId": "sid-e", "name": "my chosen name", "updatedAt": int64(1000),
+	})
+	seedClaudeSessionFile(t, home, "2222.json", map[string]any{
+		"sessionId": "sid-e", "name": "ui-c1", "nameSource": "derived", "updatedAt": int64(2000),
+	})
+
+	if got := ClaudeSessionNameIn(filepath.Join(home, ".claude"), "sid-e"); got != "" {
+		t.Errorf("ClaudeSessionNameIn = %q, want empty (derived freshest suppresses stale user name)", got)
+	}
+}
+
+// TestClaudeSessionNameIn_UserNameSourceHonored: an explicit nameSource="user"
+// (claude --name / /rename) is still synced.
+func TestClaudeSessionNameIn_UserNameSourceHonored(t *testing.T) {
+	home := t.TempDir()
+	seedClaudeSessionFile(t, home, "1234.json", map[string]any{
+		"sessionId": "sid-u", "name": "Sprint Planning", "nameSource": "user", "updatedAt": int64(1000),
+	})
+
+	if got := ClaudeSessionNameIn(filepath.Join(home, ".claude"), "sid-u"); got != "Sprint Planning" {
+		t.Errorf("ClaudeSessionNameIn = %q, want %q", got, "Sprint Planning")
+	}
+}
+
+// TestClaudeSessionNameIn_NoNameSourceBackCompat: older Claude versions wrote a
+// name with no nameSource field; those were always user-set, so honor them.
+func TestClaudeSessionNameIn_NoNameSourceBackCompat(t *testing.T) {
+	home := t.TempDir()
+	seedClaudeSessionFile(t, home, "1234.json", map[string]any{
+		"sessionId": "sid-b", "name": "legacy name", "updatedAt": int64(1000),
+	})
+
+	if got := ClaudeSessionNameIn(filepath.Join(home, ".claude"), "sid-b"); got != "legacy name" {
+		t.Errorf("ClaudeSessionNameIn = %q, want %q (no nameSource = legacy user name)", got, "legacy name")
+	}
+}
+
 // TestReconcileTitleFromClaude_NoopWhenNoName: no Claude session file → no-op.
 func TestReconcileTitleFromClaude_NoopWhenNoName(t *testing.T) {
 	home := t.TempDir()
