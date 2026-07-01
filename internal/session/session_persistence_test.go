@@ -1638,9 +1638,10 @@ auto_install = false
 		original.PluginChannelLinkDisabled,
 		original.AutoLinkedChannels,
 		original.Color,
+		original.Env,
 	)
 	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-		_, _, _, _, _, _, restoredPlugins, restoredLinkDisabled, _, _ := statedb.UnmarshalToolData(marshalled)
+		_, _, _, _, _, _, restoredPlugins, restoredLinkDisabled, _, _, _ := statedb.UnmarshalToolData(marshalled)
 	if !reflect.DeepEqual(restoredPlugins, []string{"octopus"}) {
 		t.Fatalf("state.db round-trip: Plugins = %v, want [octopus]", restoredPlugins)
 	}

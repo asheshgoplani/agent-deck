@@ -67,7 +67,8 @@ What agent-deck does, at the noun level (independent of which surface — CLI / 
 | **Channel routing** | Telegram / Slack inbound delivery to the right conductor, with `--channels` per-session binding | CLI ✅ |
 | **Attach MCPs** | Per-session or global MCP plugin attach / detach / status, with optional pooling | CLI ✅ · TUI ✅ · Web UI ⚪ |
 | **Attach skills** | Pool-based on-demand skill loading per Claude session | CLI ✅ · TUI ✅ |
-| **Session-metadata mutation** | `session set` for `claude-session-id`, `path`, `wrapper`, `channels`, `parent`; `session unset-parent` | CLI ✅ |
+| **Session-metadata mutation** | `session set` for `claude-session-id`, `path`, `wrapper`, `channels`, `parent`, `env`; `session unset-parent` | CLI ✅ |
+| **Per-session env vars** | Per-session environment variables for every tool, set at create (`add`/`launch --env`) or later (`session set <id> env KEY=VALUE`, the edit dialogs) | CLI ✅ · TUI ✅ · Web UI ✅ |
 | **State persistence** | `state.json` + `task-log.md` + `LEARNINGS.md` + `HANDOFF.md` survive Claude Code compaction/restart | CLI ✅ |
 | **GitHub pipeline oversight** | Conductor-driven release flow: PR merge → tag → goreleaser → release | CLI ✅ |
 | **Remote sessions** | SSH-based remote register / list / attach across hosts | CLI ✅ |

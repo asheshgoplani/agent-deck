@@ -2,9 +2,41 @@ package session
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestSetField_EnvUpsertUnsetAndValidation(t *testing.T) {
+	inst := NewInstanceWithTool("s", t.TempDir(), "claude")
+	if _, _, err := SetField(inst, FieldEnv, "FOO=bar", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := SetField(inst, FieldEnv, "FOO=baz", nil); err != nil {
+		t.Fatal(err)
+	} // replace
+	if !reflect.DeepEqual(inst.Env, []string{"FOO=baz"}) {
+		t.Fatalf("env: %v", inst.Env)
+	}
+	if _, _, err := SetField(inst, FieldEnv, "FOO=", nil); err != nil {
+		t.Fatal(err)
+	} // unset
+	if len(inst.Env) != 0 {
+		t.Fatalf("expected unset: %v", inst.Env)
+	}
+	if _, _, err := SetField(inst, FieldEnv, "1BAD=x", nil); err == nil {
+		t.Fatal("expected invalid-key error")
+	}
+	if _, _, err := SetField(inst, FieldEnv, "1BAD=", nil); err == nil {
+		t.Fatal("expected invalid-key error on unset too")
+	}
+}
+
+func TestSetField_Env_RestartRequired(t *testing.T) {
+	if RestartPolicyFor(FieldEnv) != FieldRestartRequired {
+		t.Fatal("env should require restart")
+	}
+}
 
 func TestSetField_Title_UpdatesAndReturnsOldValue(t *testing.T) {
 	inst := &Instance{Title: "old-title"}

@@ -72,7 +72,11 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 			writeAPIError(w, http.StatusServiceUnavailable, ErrCodeNotImplemented, "mutations not available")
 			return
 		}
-		sessionID, err := s.mutator.CreateSession(req.Title, req.Tool, req.ProjectPath, req.GroupPath, req.ModelID)
+		if err := validateSessionEnv(req.Env); err != nil {
+			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+			return
+		}
+		sessionID, err := s.mutator.CreateSession(req.Title, req.Tool, req.ProjectPath, req.GroupPath, req.ModelID, req.Env)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
 			return
@@ -310,6 +314,13 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, sess
 		return
 	}
 
+	if req.Env != nil {
+		if err := validateSessionEnv(*req.Env); err != nil {
+			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+			return
+		}
+	}
+
 	updates := updatesFromRequest(req)
 	if len(updates) == 0 {
 		writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "at least one field is required")
@@ -321,7 +332,6 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, sess
 		writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "title cannot be empty")
 		return
 	}
-
 	changed, restartRequired, err := s.mutator.UpdateSession(sessionID, updates)
 	if err != nil {
 		// session.MutationError signals client-side bad input; "not found"
@@ -380,7 +390,35 @@ func updatesFromRequest(req UpdateSessionRequest) map[string]string {
 	if req.AutoMode != nil {
 		out[session.FieldAutoMode] = strconv.FormatBool(*req.AutoMode)
 	}
+	if req.Env != nil {
+		// The web edit form submits the FULL desired env list, but
+		// session.SetField's FieldEnv path is single KEY=VALUE upsert/unset.
+		// Encode the whole list newline-joined under FieldEnv; the mutator
+		// (WebMutator.UpdateSession) decodes it and replaces the session's env
+		// wholesale. A non-nil empty slice → "" → clears all env.
+		out[session.FieldEnv] = strings.Join(*req.Env, "\n")
+	}
 	return out
+}
+
+// validateSessionEnv checks every "KEY=VALUE" entry's key with the shared
+// session validator so a bad key is rejected at the API boundary as a 400
+// rather than surfacing later as a spawn-time surprise. nil/empty is valid.
+func validateSessionEnv(env []string) error {
+	for _, kv := range env {
+		// Trim before validating so surrounding whitespace is accepted here
+		// exactly as the update path normalizes it (parseWebEnvList /
+		// sanitizeSessionEnv). Otherwise "  FOO=bar  " would 400 on create but
+		// round-trip fine on PATCH — an inconsistent boundary.
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
+		if _, _, err := session.ParseSessionEnvPair(kv); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type archivedSessionsResponse struct {

@@ -2,11 +2,39 @@ package session
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
+
+// TestInstanceEnvRoundTrip verifies per-session Env persists through SQLite via
+// the tool_data JSON blob, just like ExtraArgs.
+func TestInstanceEnvRoundTrip(t *testing.T) {
+	s := newTestStorage(t)
+	inst := NewInstanceWithTool("env-rt", t.TempDir(), "claude")
+	inst.Env = []string{"FOO=bar", "HTTPS_PROXY=http://127.0.0.1:8080"}
+	if err := s.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, _, err := s.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	var got *Instance
+	for _, in := range loaded {
+		if in.ID == inst.ID {
+			got = in
+		}
+	}
+	if got == nil {
+		t.Fatal("instance not reloaded")
+	}
+	if !reflect.DeepEqual(got.Env, inst.Env) {
+		t.Fatalf("Env mismatch: got %v want %v", got.Env, inst.Env)
+	}
+}
 
 // newTestStorage creates a Storage backed by an in-memory-like temp dir SQLite database.
 func newTestStorage(t *testing.T) *Storage {

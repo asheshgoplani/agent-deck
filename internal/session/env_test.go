@@ -3,9 +3,86 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestValidateSessionEnvKey(t *testing.T) {
+	if err := ValidateSessionEnvKey("FOO_1"); err != nil {
+		t.Fatalf("valid key rejected: %v", err)
+	}
+	if err := ValidateSessionEnvKey("1BAD"); err == nil {
+		t.Fatal("expected error for 1BAD")
+	}
+	if err := ValidateSessionEnvKey(""); err == nil {
+		t.Fatal("expected error for empty")
+	}
+}
+
+func TestParseSessionEnvPair(t *testing.T) {
+	k, v, err := ParseSessionEnvPair("HTTPS_PROXY=http://h:8080")
+	if err != nil || k != "HTTPS_PROXY" || v != "http://h:8080" {
+		t.Fatalf("got %q %q %v", k, v, err)
+	}
+	if _, _, err := ParseSessionEnvPair("NOEQ"); err == nil {
+		t.Fatal("expected error (no =)")
+	}
+	if _, _, err := ParseSessionEnvPair("=x"); err == nil {
+		t.Fatal("expected error (empty key)")
+	}
+}
+
+func TestUpsertUnsetSessionEnv(t *testing.T) {
+	e, _ := UpsertSessionEnv([]string{"A=1"}, "B=2") // append
+	e, _ = UpsertSessionEnv(e, "A=9")                // replace in place
+	if !reflect.DeepEqual(e, []string{"A=9", "B=2"}) {
+		t.Fatalf("upsert order wrong: %v", e)
+	}
+	e = UnsetSessionEnv(e, "A")
+	if !reflect.DeepEqual(e, []string{"B=2"}) {
+		t.Fatalf("unset wrong: %v", e)
+	}
+}
+
+// TestUpsertSessionEnv_CollapsesTrailingDuplicates guards the review fix: a list
+// that already carries duplicate keys (e.g. from a pre-fix session or a web POST
+// array) must not leave a stale later duplicate after upserting — buildSession
+// EnvExports exports in order, so the last entry would otherwise win.
+func TestUpsertSessionEnv_CollapsesTrailingDuplicates(t *testing.T) {
+	e, err := UpsertSessionEnv([]string{"FOO=1", "BAR=x", "FOO=2"}, "FOO=3")
+	if err != nil {
+		t.Fatalf("upsert error: %v", err)
+	}
+	if !reflect.DeepEqual(e, []string{"FOO=3", "BAR=x"}) {
+		t.Fatalf("upsert must replace first and drop later duplicate: got %v", e)
+	}
+}
+
+// TestDedupeSessionEnv guards the whole-list normalizer used by web create/PATCH
+// and the TUI new-session dialog: duplicate keys collapse to their last value at
+// their first-seen position, blank/invalid entries drop, and entries are trimmed.
+func TestDedupeSessionEnv(t *testing.T) {
+	got := DedupeSessionEnv([]string{"  FOO=1  ", "BAR=x", "", "1BAD=y", "FOO=2"})
+	if !reflect.DeepEqual(got, []string{"FOO=2", "BAR=x"}) {
+		t.Fatalf("DedupeSessionEnv = %v, want [FOO=2 BAR=x]", got)
+	}
+	if got := DedupeSessionEnv(nil); len(got) != 0 {
+		t.Fatalf("DedupeSessionEnv(nil) = %v, want empty", got)
+	}
+}
+
+func TestBuildSessionEnvExports(t *testing.T) {
+	if got := buildSessionEnvExports([]string{"FOO=bar", "BAZ=a b"}); got != `export FOO='bar'; export BAZ='a b'; ` {
+		t.Fatalf("unexpected: %q", got)
+	}
+	if got := buildSessionEnvExports([]string{"1BAD=x", "Q=a'b"}); strings.Contains(got, "1BAD") || got != `export Q='a'\''b'; ` {
+		t.Fatalf("escape/skip wrong: %q", got)
+	}
+	if buildSessionEnvExports(nil) != "" {
+		t.Fatal("expected empty")
+	}
+}
 
 func TestExpandPath(t *testing.T) {
 	home, err := os.UserHomeDir()

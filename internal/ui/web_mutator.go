@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -92,7 +93,7 @@ func (m *WebMutator) beginHeadlessTx() (unlock func(), err error) {
 }
 
 // CreateSession creates and starts a new session, persisting it to storage.
-func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
+func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID string, env []string) (string, error) {
 	unlock, err := m.beginHeadlessTx()
 	if err != nil {
 		return "", err
@@ -112,6 +113,13 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID 
 		if err := inst.ApplyLaunchModel(modelID); err != nil {
 			return "", err
 		}
+	}
+
+	// Per-session env ("KEY=VALUE", all tools). Keys are validated at the API
+	// boundary (handlers_sessions.go validateSessionEnv); store the validated
+	// list verbatim. Values persist in plaintext at rest.
+	if validEnv := sanitizeSessionEnv(env); len(validEnv) > 0 {
+		inst.Env = validEnv
 	}
 
 	if err := inst.Start(); err != nil {
@@ -134,6 +142,37 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID 
 		return "", fmt.Errorf("save session: %w", err)
 	}
 	return inst.ID, nil
+}
+
+// sanitizeSessionEnv drops blank entries and keeps only entries that parse as a
+// valid "KEY=VALUE" pair (key validated via session.ParseSessionEnvPair). The
+// web API boundary already validates keys (400 on bad key), so this is a
+// defensive normalization for the create path.
+func sanitizeSessionEnv(env []string) []string {
+	// Trim, drop blank/invalid, AND collapse duplicate keys (last wins) so the
+	// create path persists env identically to the PATCH path (parseWebEnvList)
+	// and never stores duplicate keys from a POST array like ["FOO=1","FOO=2"].
+	return session.DedupeSessionEnv(env)
+}
+
+// parseWebEnvList decodes the newline-joined desired env list submitted by the
+// web edit form (see handlers_sessions.go updatesFromRequest) into a validated
+// "KEY=VALUE" slice. An invalid key returns a *session.MutationError so the
+// PATCH handler maps it to 400. Duplicate keys are collapsed to their last value
+// (via UpsertSessionEnv). An empty payload clears all env (returns nil).
+func parseWebEnvList(joined string) ([]string, error) {
+	var out []string
+	for _, line := range strings.Split(joined, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, _, err := session.ParseSessionEnvPair(line); err != nil {
+			return nil, &session.MutationError{Field: session.FieldEnv, Msg: err.Error()}
+		}
+		out, _ = session.UpsertSessionEnv(out, line) // last value wins on dup key
+	}
+	return out, nil
 }
 
 // StartSession starts a stopped/idle session by ID.
@@ -442,9 +481,67 @@ func (m *WebMutator) UpdateSession(id string, updates map[string]string) ([]stri
 	var postCommits []func()
 
 	m.h.instancesMu.Lock()
-	for field, value := range updates {
+	// Atomicity: SetField mutates the live Instance field-by-field AND has
+	// cross-field SIDE EFFECTS (e.g. FieldTool clears ToolOptionsJSON), so a
+	// per-field rollback is insufficient — a later field failing would leave
+	// earlier writes/side-effects in memory (e.g. PATCH {tool, plugins} clears
+	// ToolOptionsJSON, then plugins rejects). Take a FULL before-snapshot of
+	// every field a web PATCH (updatesFromRequest) can touch directly or
+	// indirectly, and restore them all on any error so a failed multi-field
+	// PATCH leaves the live instance exactly unchanged.
+	// NOTE: keep this snapshot in sync with updatesFromRequest's fields and
+	// SetField's side effects.
+	snap := struct {
+		title, notes, color, tool         string
+		extraArgs, plugins, channels, env []string
+		toolOptions                       []byte
+	}{
+		title: inst.Title, notes: inst.Notes, color: inst.Color, tool: inst.Tool,
+		extraArgs: inst.ExtraArgs, plugins: inst.Plugins, channels: inst.Channels, env: inst.Env,
+		toolOptions: inst.ToolOptionsJSON,
+	}
+	rollbackAll := func() {
+		inst.Title, inst.Notes, inst.Color, inst.Tool = snap.title, snap.notes, snap.color, snap.tool
+		inst.ExtraArgs, inst.Plugins, inst.Channels, inst.Env = snap.extraArgs, snap.plugins, snap.channels, snap.env
+		inst.ToolOptionsJSON = snap.toolOptions
+	}
+	for _, field := range orderedUpdateFields(updates) {
+		value := updates[field]
+		// FieldEnv from the web is a whole-list replacement (the edit form
+		// submits the full desired env, newline-joined by updatesFromRequest),
+		// not the single KEY=VALUE upsert/unset that session.SetField(FieldEnv)
+		// expects. Handle it separately so the web replaces the env atomically.
+		if field == session.FieldEnv {
+			newEnv, perr := parseWebEnvList(value)
+			if perr != nil {
+				rollbackAll()
+				m.h.instancesMu.Unlock()
+				return nil, false, perr
+			}
+			// This path bypasses session.SetField, so re-apply its SSH remote-path
+			// guard here: per-session env is silently dropped at spawn for
+			// SSHRemotePath sessions (wrapForSSH re-escaping mangles the inline
+			// export quoting), so reject a non-empty replacement instead of
+			// persisting env that would never take effect. An empty list (clear)
+			// stays allowed.
+			if len(newEnv) > 0 && inst.SSHRemotePath != "" {
+				rollbackAll()
+				m.h.instancesMu.Unlock()
+				return nil, false, &session.MutationError{Field: session.FieldEnv, Msg: "per-session env is not supported for SSH remote-path sessions"}
+			}
+			if strings.Join(inst.Env, "\n") == strings.Join(newEnv, "\n") {
+				continue
+			}
+			inst.Env = newEnv
+			changed = append(changed, field)
+			if session.RestartPolicyFor(field) == session.FieldRestartRequired {
+				restartRequired = true
+			}
+			continue
+		}
 		oldValue, postCommit, err := session.SetField(inst, field, value, nil)
 		if err != nil {
+			rollbackAll()
 			m.h.instancesMu.Unlock()
 			return nil, false, err
 		}
@@ -484,6 +581,18 @@ func (m *WebMutator) UpdateSession(id string, updates map[string]string) ([]stri
 		return nil, false, fmt.Errorf("save session: %w", err)
 	}
 	return changed, restartRequired, nil
+}
+
+// orderedUpdateFields returns the PATCH update fields in a deterministic order
+// so a multi-field update applies consistently regardless of Go's random map
+// iteration order.
+func orderedUpdateFields(updates map[string]string) []string {
+	fields := make([]string, 0, len(updates))
+	for f := range updates {
+		fields = append(fields, f)
+	}
+	sort.Strings(fields)
+	return fields
 }
 
 // CreateGroup creates a new group (or subgroup if parentPath is non-empty) and

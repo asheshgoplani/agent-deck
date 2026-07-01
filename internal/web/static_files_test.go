@@ -190,6 +190,42 @@ func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
 	}
 }
 
+// TestSessionDialogsHavePerSessionEnvEditor pins the per-session env editor in
+// both the create and edit dialogs (Feature B — per-session environment
+// variables), including the "stored in plaintext" warning.
+func TestSessionDialogsHavePerSessionEnvEditor(t *testing.T) {
+	for _, f := range []string{
+		"static/app/CreateSessionDialog.js",
+		"static/app/EditSessionDialog.js",
+	} {
+		data, err := embeddedStaticFiles.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		body := string(data)
+		for _, want := range []string{
+			"ENV VARS",
+			"envRows",
+			"+ Add variable",
+			"stored in plaintext",
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("%s missing %q", f, want)
+			}
+		}
+	}
+
+	// The create dialog sends env on the wire; the edit dialog diffs/submits it.
+	create, _ := embeddedStaticFiles.ReadFile("static/app/CreateSessionDialog.js")
+	if !strings.Contains(string(create), "payload.env = env") {
+		t.Fatal("CreateSessionDialog.js must send env in the POST payload")
+	}
+	edit, _ := embeddedStaticFiles.ReadFile("static/app/EditSessionDialog.js")
+	if !strings.Contains(string(edit), "out.env = nextEnv") {
+		t.Fatal("EditSessionDialog.js must diff/submit env in the PATCH body")
+	}
+}
+
 // TestNoTailwindPlayCDN is the regression gate for Phase 1 / Plan 03 (PERF-01).
 // The Tailwind Play CDN runtime (vendor/tailwind.js, 397 KB) was deleted in
 // favor of a build-time compiled /static/styles.css file (~8 KB gzipped).

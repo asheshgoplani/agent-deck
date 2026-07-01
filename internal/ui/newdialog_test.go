@@ -2530,3 +2530,31 @@ func TestNewDialog_CtrlSSubmitsInBothModes(t *testing.T) {
 		}
 	}
 }
+
+// GetSessionEnv parses one "KEY=VALUE" per non-blank line and skips lines whose
+// key is invalid (best-effort; the mutator re-validates authoritatively).
+func TestNewDialog_GetSessionEnv(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+	d.envInput.SetValue("FOO=bar\nBAZ=qux")
+
+	got := d.GetSessionEnv()
+	want := []string{"FOO=bar", "BAZ=qux"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("GetSessionEnv() = %v, want %v", got, want)
+	}
+}
+
+func TestNewDialog_GetSessionEnv_SkipsInvalidAndBlankLines(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+	// "1BAD" is an invalid env key (leading digit); blank lines are dropped;
+	// values may contain '=' (only the first splits).
+	d.envInput.SetValue("FOO=bar\n\n1BAD=x\nURL=https://a.b?x=1")
+
+	got := d.GetSessionEnv()
+	want := []string{"FOO=bar", "URL=https://a.b?x=1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("GetSessionEnv() = %v, want %v", got, want)
+	}
+}

@@ -116,6 +116,20 @@ func handleLaunch(profile string, args []string) {
 		return nil
 	})
 
+	// Per-session env vars — repeatable, all tools. Validated via
+	// ParseSessionEnvPair; injected at spawn by prepareCommand. Persisted
+	// plaintext in state.db (warning emitted below).
+	var envFlags []string
+	fs.Func("env", "Per-session environment variable KEY=VALUE (can specify multiple times); applies to all tools; persisted plaintext", func(s string) error {
+		// UpsertSessionEnv validates via ParseSessionEnvPair and replaces a
+		// repeated key in place, so `--env FOO=1 --env FOO=2` keeps only FOO=2
+		// (matching the mutation path's upsert contract) instead of persisting
+		// duplicate keys where only the last export would win at spawn.
+		var err error
+		envFlags, err = session.UpsertSessionEnv(envFlags, s)
+		return err
+	})
+
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
 	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
@@ -432,6 +446,12 @@ func handleLaunch(profile string, args []string) {
 			os.Exit(1)
 		}
 		newInstance.ExtraArgs = extraArgFlags
+	}
+
+	// Apply --env flags (all tools). Persisted plaintext — warn the operator.
+	if len(envFlags) > 0 {
+		newInstance.Env = envFlags
+		fmt.Fprintln(os.Stderr, "warning: per-session env is stored in plaintext in state.db — avoid secrets you can't rotate")
 	}
 
 	if sessionWrapperResolved != "" {

@@ -4589,3 +4589,71 @@ func TestInstance_RefreshLiveSessionIDs_NoOpForNonAgenticTool(t *testing.T) {
 		t.Errorf("GeminiSessionID mutated for non-agentic tool: got %q", inst.GeminiSessionID)
 	}
 }
+
+// --- Feature B: per-session env injection (Task 7) ---
+
+func TestPrepareCommand_InjectsEnvForAllTools(t *testing.T) {
+	for _, tool := range []string{"claude", "gemini", "codex"} {
+		inst := NewInstanceWithTool("e-"+tool, t.TempDir(), tool)
+		inst.Env = []string{"FOO=bar"}
+		out, _, err := inst.prepareCommand("exec " + tool)
+		if err != nil {
+			t.Fatalf("[%s] prepareCommand: %v", tool, err)
+		}
+		if !strings.Contains(out, "export FOO='bar';") {
+			t.Fatalf("[%s] missing env: %s", tool, out)
+		}
+	}
+}
+
+func TestPrepareCommand_NoEnvWhenEmpty(t *testing.T) {
+	inst := NewInstanceWithTool("none", t.TempDir(), "claude")
+	out, _, err := inst.prepareCommand("exec claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "export FOO") {
+		t.Fatalf("unexpected env: %s", out)
+	}
+}
+
+func TestPrepareCommand_EnvInsideLaunchShellPayload(t *testing.T) {
+	inst := NewInstanceWithTool("ord", t.TempDir(), "claude")
+	inst.Env = []string{"FOO=bar"}
+	on := true
+	inst.LaunchShell = &on // force wrapLaunchShell active
+	out, _, err := inst.prepareCommand("exec claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cIdx := strings.Index(out, " -c ")
+	envIdx := strings.Index(out, "export FOO")
+	if cIdx == -1 || envIdx == -1 || envIdx < cIdx {
+		t.Fatalf("env must be inside launch-shell -c payload: %s", out)
+	}
+}
+
+// --- Feature B: log suppression when per-session env present (Task 8) ---
+
+func TestLoggableCommand_SuppressesWhenEnvPresent(t *testing.T) {
+	inst := NewInstanceWithTool("s", t.TempDir(), "claude")
+	inst.Env = []string{"TOKEN=supersecret", "Q=a'b"}
+	// Simulate a fully-wrapped command containing the re-escaped secret.
+	wrapped := `bash -c 'export TOKEN='"'"'supersecret'"'"'; export Q='"'"'a'\''b'"'"'; exec claude'`
+	got := inst.loggableCommand(wrapped)
+	for _, secret := range []string{"supersecret", "a'b"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("secret %q leaked: %s", secret, got)
+		}
+	}
+	if !strings.Contains(got, "TOKEN") || !strings.Contains(got, "Q") {
+		t.Fatalf("expected env keys in marker: %s", got)
+	}
+}
+
+func TestLoggableCommand_PassThroughWhenNoEnv(t *testing.T) {
+	inst := NewInstanceWithTool("s", t.TempDir(), "claude")
+	if got := inst.loggableCommand("exec claude --session-id x"); got != "exec claude --session-id x" {
+		t.Fatalf("should pass through: %s", got)
+	}
+}

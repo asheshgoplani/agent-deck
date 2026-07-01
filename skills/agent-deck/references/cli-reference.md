@@ -41,6 +41,9 @@ agent-deck add [path] [options]
 | `--parent` | Parent session (creates child) |
 | `--no-parent` | Disable automatic parent linking |
 | `--mcp` | Attach MCP (repeatable) |
+| `--env` | Per-session env var `KEY=VALUE` (repeatable); all tools; persisted plaintext; wins over `env_file`/`~/.zshrc` |
+
+(`--env` is also accepted by `launch`.)
 
 ```bash
 agent-deck add -t "My Project" -c claude .
@@ -228,9 +231,15 @@ agent-deck session current --json
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account
+**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account, env
 
 Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
+
+`env` takes a single `KEY=VALUE` (or `KEY=` to unset that key) and applies to **every** tool (including `shell`/`aider`). It is restart-required:
+
+```bash
+agent-deck session set my-sess env HTTPS_PROXY=http://localhost:8080
+```
 
 ### session send
 

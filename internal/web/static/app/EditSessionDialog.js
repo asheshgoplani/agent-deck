@@ -15,6 +15,7 @@ import { menuModelSignal } from './dataModel.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
 import { displayLabelForTool, resolveEditSessionPickerTools } from './pickerTools.js'
+import { envRowsToList, listToEnvRows } from './CreateSessionDialog.js'
 
 // Build PATCH body from form state. Only includes fields that differ from
 // the original — mirrors the TUI EditSessionDialog.GetChanges diff logic so
@@ -25,6 +26,11 @@ function diffUpdates(form, original) {
   if (form.notes !== (original.notes || '')) out.notes = form.notes
   if (form.color !== (original.color || '')) out.color = form.color
   if (form.tool !== (original.tool || '')) out.tool = form.tool
+  // Per-session env applies to every tool. Diff the full desired list against
+  // the seeded list; send the whole replacement only when it changed.
+  const nextEnv = envRowsToList(form.envRows)
+  const prevEnv = original.env || []
+  if (JSON.stringify(nextEnv) !== JSON.stringify(prevEnv)) out.env = nextEnv
   if (form.tool === 'claude') {
     if (form.extraArgs !== (original.extraArgs || '')) out.extraArgs = form.extraArgs
     if (form.plugins !== (original.plugins || '')) out.plugins = form.plugins
@@ -55,6 +61,7 @@ export function EditSessionDialog() {
   const [channels, setChannels] = useState(seed.channels || '')
   const [skipPermissions, setSkipPermissions] = useState(!!seed.skipPermissions)
   const [autoMode, setAutoMode] = useState(!!seed.autoMode)
+  const [envRows, setEnvRows] = useState(listToEnvRows(seed.env))
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [seededFor, setSeededFor] = useState(open ? open.sessionId : null)
@@ -72,6 +79,7 @@ export function EditSessionDialog() {
     setChannels(session.channels || '')
     setSkipPermissions(!!session.skipPermissions)
     setAutoMode(!!session.autoMode)
+    setEnvRows(listToEnvRows(session.env))
     setError(null)
     setSeededFor(open.sessionId)
   }
@@ -85,7 +93,7 @@ export function EditSessionDialog() {
     e.preventDefault()
     setError(null)
     const updates = diffUpdates(
-      { title, notes, color, tool, extraArgs, plugins, channels, skipPermissions, autoMode },
+      { title, notes, color, tool, extraArgs, plugins, channels, skipPermissions, autoMode, envRows },
       session,
     )
     if (Object.keys(updates).length === 0) {
@@ -106,6 +114,12 @@ export function EditSessionDialog() {
   function close() {
     editSessionDialogSignal.value = null
     setSeededFor(null)
+  }
+
+  function addEnvRow() { setEnvRows([...envRows, { key: '', value: '' }]) }
+  function removeEnvRow(i) { setEnvRows(envRows.filter((_, idx) => idx !== i)) }
+  function updateEnvRow(i, field, val) {
+    setEnvRows(envRows.map((r, idx) => (idx === i ? { ...r, [field]: val } : r)))
   }
   const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const submitDisabled = submitting || !title.trim()
@@ -154,6 +168,22 @@ export function EditSessionDialog() {
                         class=${`seg-btn ${tool === t ? 'on' : ''}`}
                         onClick=${() => setTool(t)}>${displayLabelForTool(t)}</button>
               `)}
+            </div>
+          </div>
+          <div class="field" data-testid="edit-session-env">
+            <label>ENV VARS (restart required)</label>
+            ${envRows.map((row, i) => html`
+              <div class="seg-row" key=${i} style="gap: 6px; margin-bottom: 6px;">
+                <input placeholder="KEY" value=${row.key}
+                       onInput=${e => updateEnvRow(i, 'key', e.target.value)} style="flex: 1;"/>
+                <input placeholder="value" value=${row.value}
+                       onInput=${e => updateEnvRow(i, 'value', e.target.value)} style="flex: 2;"/>
+                <button type="button" class="btn ghost" onClick=${() => removeEnvRow(i)} aria-label="Remove variable">✕</button>
+              </div>
+            `)}
+            <button type="button" class="btn ghost" onClick=${addEnvRow}>+ Add variable</button>
+            <div style="font-family: var(--mono); font-size: 11px; color: var(--tn-comment, #888); margin-top: 6px;">
+              Per-session env vars are stored in plaintext at rest — avoid secrets you can't rotate.
             </div>
           </div>
           ${tool === 'claude' && html`

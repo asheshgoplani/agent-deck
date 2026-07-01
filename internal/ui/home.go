@@ -6526,6 +6526,14 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// check, local create) must be skipped — it would act on the LOCAL
 		// filesystem (#743).
 		if h.pendingRemoteName != "" {
+			// Remote-mode create shells `agent-deck add` on the remote host and
+			// does not forward per-session env, so reject it here rather than
+			// silently dropping the user's input. (Direct-SSH and local/Docker
+			// sessions created normally still receive per-session env.)
+			if len(h.newDialog.GetSessionEnv()) > 0 {
+				h.newDialog.SetError("Per-session env is not supported for remote (SSH) sessions — set it on the remote host instead")
+				return h, nil
+			}
 			remoteName := h.pendingRemoteName
 			name, path, command := h.newDialog.GetRemoteValues()
 			groupPath := h.newDialog.GetSelectedGroup()
@@ -6548,6 +6556,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		groupPath := h.newDialog.GetSelectedGroup()
 		claudeOpts := h.newDialog.GetClaudeOptions() // Get Claude options if applicable.
 		launchModelID := h.newDialog.GetLaunchModelID()
+		env := h.newDialog.GetSessionEnv() // per-session env vars (all tools).
 
 		// Resolve worktree/workspace target if enabled; actual creation runs in async command.
 		var worktreePath, worktreeRepoRoot string
@@ -6598,7 +6607,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !worktreeEnabled {
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				h.newDialog.Hide()
-				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, claudeExtraArgs, claudeStartQuery, launchModelID, parentSessionID, parentProjectPath)
+				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, claudeExtraArgs, claudeStartQuery, launchModelID, env, parentSessionID, parentProjectPath)
 				return h, nil
 			}
 		}
@@ -6652,6 +6661,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			claudeExtraArgs,
 			claudeStartQuery,
 			launchModelID,
+			env,
 			multiRepoEnabled,
 			additionalPaths,
 			parentSessionID,
@@ -8711,7 +8721,7 @@ func (h *Home) confirmAction() tea.Cmd {
 
 // confirmCreateDirectory handles the "yes" action for ConfirmCreateDirectory.
 func (h *Home) confirmCreateDirectory() tea.Cmd {
-	name, path, command, groupPath, pendingToolOpts, pendingExtraArgs, pendingStartQuery, pendingLaunchModelID, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
+	name, path, command, groupPath, pendingToolOpts, pendingExtraArgs, pendingStartQuery, pendingLaunchModelID, pendingEnv, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
 	h.confirmDialog.Hide()
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		h.setError(fmt.Errorf("failed to create directory: %w", err))
@@ -8731,6 +8741,7 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 		pendingExtraArgs,
 		pendingStartQuery,
 		pendingLaunchModelID,
+		pendingEnv,
 		false,
 		nil,
 		parentSessionID,
@@ -9340,109 +9351,20 @@ func (h *Home) handleEditPathsDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "ctrl+s":
+		// ^S commits from anywhere, including while the multi-line env textarea
+		// has focus (where Enter inserts a newline instead of saving).
+		return h.commitEditSessionDialog()
+
 	case "enter":
-		if errMsg := h.editSessionDialog.Validate(); errMsg != "" {
-			h.editSessionDialog.SetError(errMsg)
-			return h, nil
+		// The env textarea consumes Enter as a newline (one KEY=VALUE per line);
+		// deliver it to the dialog rather than committing. ^S saves in that case.
+		if h.editSessionDialog.envFieldFocused() {
+			var cmd tea.Cmd
+			h.editSessionDialog, cmd = h.editSessionDialog.Update(msg)
+			return h, cmd
 		}
-
-		sessionID := h.editSessionDialog.SessionID()
-		inst := h.getInstanceByID(sessionID)
-		if inst == nil {
-			h.editSessionDialog.Hide()
-			return h, nil
-		}
-
-		changes := h.editSessionDialog.GetChanges(inst)
-		fields := make([]string, len(changes))
-		for i, c := range changes {
-			fields[i] = c.Field
-		}
-		uiLog.Debug("edit_session_commit",
-			slog.String("session_id", sessionID),
-			slog.Any("fields", fields))
-		if len(changes) == 0 {
-			h.editSessionDialog.Hide()
-			return h, nil
-		}
-
-		// Apply Tool last so claude-only validation (Skip/Auto/ExtraArgs)
-		// sees the pre-edit Tool — otherwise Tool=claude→shell with a
-		// Skip toggle in the same submit fails IsClaudeCompatible on
-		// the toggle.
-		orderedChanges := make([]Change, 0, len(changes))
-		for _, c := range changes {
-			if c.Field != session.FieldTool {
-				orderedChanges = append(orderedChanges, c)
-			}
-		}
-		for _, c := range changes {
-			if c.Field == session.FieldTool {
-				orderedChanges = append(orderedChanges, c)
-			}
-		}
-
-		titleChanged := false
-		hadRestartRequired := false
-		var postCommits []func()
-		h.instancesMu.Lock()
-		for _, c := range orderedChanges {
-			_, postCommit, err := session.SetField(inst, c.Field, c.Value, nil)
-			if err != nil {
-				h.instancesMu.Unlock()
-				h.editSessionDialog.SetError(err.Error())
-				return h, nil
-			}
-			if postCommit != nil {
-				postCommits = append(postCommits, postCommit)
-			}
-			if c.Field == session.FieldTitle {
-				titleChanged = true
-			}
-			if !c.IsLive {
-				hadRestartRequired = true
-			}
-		}
-		h.instancesMu.Unlock()
-		// postCommits run AFTER unlocking so slow tmux subprocesses don't
-		// stall the status worker / preview cache / reconciler.
-		for _, fn := range postCommits {
-			fn()
-		}
-
-		// Mirror the rename-path #697 race fix: queue title so a watcher
-		// reload can re-apply it after the load swap.
-		if titleChanged {
-			h.pendingTitleChanges[sessionID] = inst.Title
-			h.invalidatePreviewCache(sessionID)
-		}
-		h.rebuildFlatItems()
-		// forceSaveInstances bypasses the isReloading no-op in
-		// saveInstances. Title-only loss is caught by pendingTitleChanges
-		// re-application; non-Title fields have no such net.
-		h.forceSaveInstances()
-
-		h.editSessionDialog.Hide()
-		// Auto-restart on restart-required edits — Tool/Skip/Auto/ExtraArgs
-		// only take effect on next launch, so deferring would just leave
-		// the user staring at old behavior. Mirrors the manual `R` path,
-		// skipping when an animation is in flight or CanRestart says no.
-		if hadRestartRequired {
-			if h.hasActiveAnimation(sessionID) {
-				uiLog.Debug("edit_session_skip_restart_active_anim", slog.String("session_id", sessionID))
-				h.setError(fmt.Errorf("saved — restart skipped, session is starting; press R when ready"))
-				return h, nil
-			}
-			if !inst.CanRestart() {
-				uiLog.Debug("edit_session_skip_restart_cannot", slog.String("session_id", sessionID))
-				h.setError(fmt.Errorf("saved — start the session to apply tool/extra-args/permission changes"))
-				return h, nil
-			}
-			uiLog.Debug("edit_session_auto_restart", slog.String("session_id", sessionID))
-			h.resumingSessions[sessionID] = time.Now()
-			return h, h.restartSession(inst)
-		}
-		return h, nil
+		return h.commitEditSessionDialog()
 
 	case "esc":
 		h.editSessionDialog.Hide()
@@ -9453,6 +9375,136 @@ func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.editSessionDialog, cmd = h.editSessionDialog.Update(msg)
 		return h, cmd
 	}
+}
+
+// commitEditSessionDialog validates and applies the edit-session dialog's
+// pending changes, then hides it (auto-restarting on restart-required edits).
+// Shared by the Enter and ^S key paths.
+func (h *Home) commitEditSessionDialog() (tea.Model, tea.Cmd) {
+	if errMsg := h.editSessionDialog.Validate(); errMsg != "" {
+		h.editSessionDialog.SetError(errMsg)
+		return h, nil
+	}
+
+	sessionID := h.editSessionDialog.SessionID()
+	inst := h.getInstanceByID(sessionID)
+	if inst == nil {
+		h.editSessionDialog.Hide()
+		return h, nil
+	}
+
+	changes := h.editSessionDialog.GetChanges(inst)
+	fields := make([]string, len(changes))
+	for i, c := range changes {
+		fields[i] = c.Field
+	}
+	uiLog.Debug("edit_session_commit",
+		slog.String("session_id", sessionID),
+		slog.Any("fields", fields))
+	if len(changes) == 0 {
+		h.editSessionDialog.Hide()
+		return h, nil
+	}
+
+	// Apply Tool last so claude-only validation (Skip/Auto/ExtraArgs)
+	// sees the pre-edit Tool — otherwise Tool=claude→shell with a
+	// Skip toggle in the same submit fails IsClaudeCompatible on
+	// the toggle.
+	orderedChanges := make([]Change, 0, len(changes))
+	for _, c := range changes {
+		if c.Field != session.FieldTool {
+			orderedChanges = append(orderedChanges, c)
+		}
+	}
+	for _, c := range changes {
+		if c.Field == session.FieldTool {
+			orderedChanges = append(orderedChanges, c)
+		}
+	}
+
+	titleChanged := false
+	hadRestartRequired := false
+	var postCommits []func()
+	h.instancesMu.Lock()
+	for _, c := range orderedChanges {
+		// Env is applied as an atomic WHOLE-LIST replacement (the dialog emits one
+		// newline-joined FieldEnv change), mirroring WebMutator.UpdateSession.
+		// Routing rows through SetField's single-pair path would treat a desired
+		// empty-valued entry ("FOO=") as an unset and silently drop it.
+		if c.Field == session.FieldEnv {
+			newEnv, perr := parseWebEnvList(c.Value)
+			if perr != nil {
+				h.instancesMu.Unlock()
+				h.editSessionDialog.SetError(perr.Error())
+				return h, nil
+			}
+			if len(newEnv) > 0 && inst.SSHRemotePath != "" {
+				h.instancesMu.Unlock()
+				h.editSessionDialog.SetError("per-session env is not supported for SSH remote-path sessions")
+				return h, nil
+			}
+			inst.Env = newEnv
+			if !c.IsLive {
+				hadRestartRequired = true
+			}
+			continue
+		}
+		_, postCommit, err := session.SetField(inst, c.Field, c.Value, nil)
+		if err != nil {
+			h.instancesMu.Unlock()
+			h.editSessionDialog.SetError(err.Error())
+			return h, nil
+		}
+		if postCommit != nil {
+			postCommits = append(postCommits, postCommit)
+		}
+		if c.Field == session.FieldTitle {
+			titleChanged = true
+		}
+		if !c.IsLive {
+			hadRestartRequired = true
+		}
+	}
+	h.instancesMu.Unlock()
+	// postCommits run AFTER unlocking so slow tmux subprocesses don't
+	// stall the status worker / preview cache / reconciler.
+	for _, fn := range postCommits {
+		fn()
+	}
+
+	// Mirror the rename-path #697 race fix: queue title so a watcher
+	// reload can re-apply it after the load swap.
+	if titleChanged {
+		h.pendingTitleChanges[sessionID] = inst.Title
+		h.invalidatePreviewCache(sessionID)
+	}
+	h.rebuildFlatItems()
+	// forceSaveInstances bypasses the isReloading no-op in
+	// saveInstances. Title-only loss is caught by pendingTitleChanges
+	// re-application; non-Title fields have no such net.
+	h.forceSaveInstances()
+
+	h.editSessionDialog.Hide()
+	// Auto-restart on restart-required edits — Tool/Skip/Auto/ExtraArgs
+	// only take effect on next launch, so deferring would just leave
+	// the user staring at old behavior. Mirrors the manual `R` path,
+	// skipping when an animation is in flight or CanRestart says no.
+	if hadRestartRequired {
+		if h.hasActiveAnimation(sessionID) {
+			uiLog.Debug("edit_session_skip_restart_active_anim", slog.String("session_id", sessionID))
+			h.setError(fmt.Errorf("saved — restart skipped, session is starting; press R when ready"))
+			return h, nil
+		}
+		if !inst.CanRestart() {
+			uiLog.Debug("edit_session_skip_restart_cannot", slog.String("session_id", sessionID))
+			h.setError(fmt.Errorf("saved — start the session to apply tool/extra-args/permission changes"))
+			return h, nil
+		}
+		uiLog.Debug("edit_session_auto_restart", slog.String("session_id", sessionID))
+		h.resumingSessions[sessionID] = time.Now()
+		return h, h.restartSession(inst)
+	}
+	return h, nil
 }
 
 // applyMultiRepoPathChanges updates the symlink directory and restarts the session.
@@ -10001,6 +10053,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	claudeExtraArgs []string,
 	claudeStartQuery string,
 	launchModelID string,
+	env []string,
 	multiRepoEnabled bool,
 	additionalPaths []string,
 	parentSessionID, parentProjectPath string,
@@ -10077,6 +10130,11 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			if err := inst.ApplyLaunchModel(launchModelID); err != nil {
 				return sessionCreatedMsg{err: fmt.Errorf("failed to apply model override: %w", err), tempID: tempID}
 			}
+		}
+
+		// Apply per-session environment variables (all tools, restart-required).
+		if len(env) > 0 {
+			inst.Env = env
 		}
 
 		// Apply claude extra CLI tokens (claude-only, ignored for other tools).
@@ -10515,6 +10573,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		nil,        // no extra claude args (recent-session path)
 		"",         // no claude startup query (recent-session path)
 		"",         // no explicit model override
+		nil,        // no per-session env (recent-session path)
 		false, nil, // no multi-repo
 		"", "", // no parent
 		"",   // no placeholder
@@ -10598,6 +10657,7 @@ func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
 		nil, // no extra claude args
 		"",  // no claude startup query
 		"",  // no explicit model override
+		nil, // no per-session env
 		false, nil,
 		"", "",
 		"",

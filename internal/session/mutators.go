@@ -43,6 +43,10 @@ const (
 	// baked/default model. Restart-required (the running process keeps the
 	// model it launched with).
 	FieldModel = "model"
+	// FieldEnv sets/clears a single per-session environment variable via a
+	// "KEY=VALUE" payload ("KEY=" clears it). Tool-agnostic; injected at spawn by
+	// prepareCommand. Restart-required (the running process keeps its launch env).
+	FieldEnv = "env"
 )
 
 var ValidMutableFields = []string{
@@ -68,6 +72,7 @@ var ValidMutableFields = []string{
 	FieldIdleTimeout,
 	FieldPin,
 	FieldModel,
+	FieldEnv,
 }
 
 type FieldRestartPolicy int
@@ -80,7 +85,7 @@ const (
 func RestartPolicyFor(field string) FieldRestartPolicy {
 	switch field {
 	case FieldCommand, FieldWrapper, FieldTool, FieldChannels, FieldPlugins, FieldExtraArgs, FieldPath,
-		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel:
+		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel, FieldEnv:
 		return FieldRestartRequired
 	default:
 		return FieldLive
@@ -274,6 +279,35 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 			inst.ExtraArgs = nil
 		} else {
 			inst.ExtraArgs = cleaned
+		}
+
+	case FieldEnv:
+		// Parse FIRST so an invalid key is rejected for BOTH set and unset
+		// ("1BAD=" must error, not silently no-op). A "KEY=" payload (empty
+		// value) clears the variable; otherwise upsert it.
+		oldValue = strings.Join(inst.Env, " ")
+		key, val, perr := ParseSessionEnvPair(value)
+		if perr != nil {
+			return oldValue, nil, &MutationError{Field: field, Msg: perr.Error()}
+		}
+		// Per-session env is not applied to SSH remote-path sessions: wrapForSSH
+		// re-escapes the whole command for the `cd '<path>' && <cmd>` remote
+		// shape, which would mangle the inline `export KEY='value'` quoting. The
+		// proactive create surfaces (CLI add, TUI/web remote-create) already
+		// reject it; reject SETTING here too so `session set env` / web PATCH
+		// can't create a session whose env is silently dropped at spawn. Clearing
+		// (KEY=, val=="") stays allowed so stale env can always be removed.
+		if val != "" && inst.SSHRemotePath != "" {
+			return oldValue, nil, &MutationError{Field: field, Msg: "per-session env is not supported for SSH remote-path sessions"}
+		}
+		if val == "" {
+			inst.Env = UnsetSessionEnv(inst.Env, key)
+		} else {
+			updated, uerr := UpsertSessionEnv(inst.Env, value)
+			if uerr != nil {
+				return oldValue, nil, &MutationError{Field: field, Msg: uerr.Error()}
+			}
+			inst.Env = updated
 		}
 
 	case FieldClaudeSessionID:
