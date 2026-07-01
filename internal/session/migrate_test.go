@@ -53,6 +53,29 @@ func writeConversation(t *testing.T, cfgDir, projectPath, sid, content string) s
 	return path
 }
 
+// writeConversationBackup creates <cfgDir>/projects/<encoded>/<sid>.jsonl.bak-<suffix>.
+func writeConversationBackup(t *testing.T, cfgDir, projectPath, sid, suffix, content string) string {
+	t.Helper()
+	dir := filepath.Join(cfgDir, "projects", ConvertToClaudeDirName(projectPath))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, sid+".jsonl.bak-"+suffix)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func resolvedClaudeProjectPath(t *testing.T, projectPath string) string {
+	t.Helper()
+	resolvedPath := projectPath
+	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
+		resolvedPath = resolved
+	}
+	return resolvedPath
+}
+
 func TestMigrateConversationFrom_HappyPath(t *testing.T) {
 	src, dst, project := t.TempDir(), t.TempDir(), t.TempDir()
 	inst := migTestInstance(t, project)
@@ -91,6 +114,36 @@ func TestMigrateConversationFrom_SameDirNoOp(t *testing.T) {
 	}
 	if migrated != "" {
 		t.Errorf("no-op should return empty path, got %q", migrated)
+	}
+}
+
+func TestMigrateConversationFrom_SameRealDirViaSymlinkNoOp(t *testing.T) {
+	realCfg, linkParent, project := t.TempDir(), t.TempDir(), t.TempDir()
+	linkCfg := filepath.Join(linkParent, "linked-claude")
+	if err := os.Symlink(realCfg, linkCfg); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	inst := migTestInstance(t, project)
+	live := writeConversation(t, realCfg, project, migTestSID, migTestLines)
+
+	migrated, err := MigrateConversationFrom(inst, linkCfg, realCfg)
+	if err != nil {
+		t.Fatalf("same-real-dir migration should be a silent no-op, got %v", err)
+	}
+	if migrated != "" {
+		t.Errorf("no-op should return empty path, got %q", migrated)
+	}
+	got, err := os.ReadFile(live)
+	if err != nil {
+		t.Fatalf("live conversation missing after no-op: %v", err)
+	}
+	if string(got) != migTestLines {
+		t.Errorf("live conversation content changed")
+	}
+	projDir := filepath.Join(realCfg, "projects", ConvertToClaudeDirName(project))
+	baks, _ := filepath.Glob(filepath.Join(projDir, migTestSID+".jsonl.bak-*"))
+	if len(baks) != 0 {
+		t.Fatalf("same-real-dir no-op created backups: %v", baks)
 	}
 }
 
@@ -173,6 +226,143 @@ func TestMigrateConversationFrom_BacksUpConflictingDestination(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(baks[0]); string(b) != "older divergent copy\n" {
 		t.Errorf("backup does not preserve the previous destination content")
+	}
+}
+
+func TestMigrateConversationFrom_RestoresDestinationBackupOnCopyFailure(t *testing.T) {
+	src, dst, project := t.TempDir(), t.TempDir(), t.TempDir()
+	inst := migTestInstance(t, project)
+	srcFile := writeConversation(t, src, project, migTestSID, migTestLines)
+	dstFile := writeConversation(t, dst, project, migTestSID, "original destination\n")
+
+	if err := os.Chmod(srcFile, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Chmod(srcFile, 0o600)
+	}()
+	if f, err := os.Open(srcFile); err == nil {
+		_ = f.Close()
+		t.Skip("chmod did not make the source unreadable on this platform")
+	}
+
+	if _, err := MigrateConversationFrom(inst, src, dst); err == nil {
+		t.Fatal("expected copy failure")
+	}
+	got, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("destination was not restored after failed copy: %v", err)
+	}
+	if string(got) != "original destination\n" {
+		t.Fatalf("destination content = %q, want original", string(got))
+	}
+	baks, _ := filepath.Glob(filepath.Join(filepath.Dir(dstFile), migTestSID+".jsonl.bak-*"))
+	if len(baks) != 0 {
+		t.Fatalf("failed migration left orphan backups: %v", baks)
+	}
+}
+
+func TestRestoreOrphanedConversationBackup_RestoresOrphan(t *testing.T) {
+	cfgDir, project := t.TempDir(), t.TempDir()
+	inst := migTestInstance(t, project)
+	claudeProject := resolvedClaudeProjectPath(t, project)
+	bak := writeConversationBackup(t, cfgDir, claudeProject, migTestSID, "100", "orphaned backup\n")
+	live := filepath.Join(filepath.Dir(bak), migTestSID+".jsonl")
+
+	restored, err := RestoreOrphanedConversationBackup(inst, cfgDir)
+	if err != nil {
+		t.Fatalf("RestoreOrphanedConversationBackup: %v", err)
+	}
+	if restored != live {
+		t.Fatalf("restored path = %q, want %q", restored, live)
+	}
+	got, err := os.ReadFile(live)
+	if err != nil {
+		t.Fatalf("restored live conversation not readable: %v", err)
+	}
+	if string(got) != "orphaned backup\n" {
+		t.Fatalf("restored content = %q, want backup content", string(got))
+	}
+}
+
+func TestRestoreOrphanedConversationBackup_UsesEffectiveWorkingDirForMultiRepo(t *testing.T) {
+	cfgDir, project, multiRepoDir := t.TempDir(), t.TempDir(), t.TempDir()
+	inst := migTestInstance(t, project)
+	inst.MultiRepoEnabled = true
+	inst.MultiRepoTempDir = multiRepoDir
+
+	resolvedMultiRepoDir := resolvedClaudeProjectPath(t, multiRepoDir)
+	bak := writeConversationBackup(t, cfgDir, resolvedMultiRepoDir, migTestSID, "100", "multi-repo backup\n")
+	live := filepath.Join(filepath.Dir(bak), migTestSID+".jsonl")
+
+	restored, err := RestoreOrphanedConversationBackup(inst, cfgDir)
+	if err != nil {
+		t.Fatalf("RestoreOrphanedConversationBackup: %v", err)
+	}
+	if restored != live {
+		t.Fatalf("restored path = %q, want %q", restored, live)
+	}
+	if got, err := os.ReadFile(live); err != nil || string(got) != "multi-repo backup\n" {
+		t.Fatalf("restored live conversation content mismatch (err=%v, content=%q)", err, string(got))
+	}
+
+	projectLive := filepath.Join(cfgDir, "projects", ConvertToClaudeDirName(project), migTestSID+".jsonl")
+	if fileIsRegular(projectLive) {
+		t.Fatalf("restore used ProjectPath instead of EffectiveWorkingDir: %s", projectLive)
+	}
+}
+
+func TestRestoreOrphanedConversationBackup_NewestBackupWinsByMtime(t *testing.T) {
+	cfgDir, project := t.TempDir(), t.TempDir()
+	inst := migTestInstance(t, project)
+	claudeProject := resolvedClaudeProjectPath(t, project)
+	older := writeConversationBackup(t, cfgDir, claudeProject, migTestSID, "999", "older backup\n")
+	newer := writeConversationBackup(t, cfgDir, claudeProject, migTestSID, "111", "newer backup\n")
+	oldTime := time.Now().Add(-time.Hour)
+	newTime := time.Now()
+	if err := os.Chtimes(older, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newer, newTime, newTime); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := RestoreOrphanedConversationBackup(inst, cfgDir)
+	if err != nil {
+		t.Fatalf("RestoreOrphanedConversationBackup: %v", err)
+	}
+	if !strings.HasSuffix(restored, migTestSID+".jsonl") {
+		t.Fatalf("restored path = %q, want live jsonl", restored)
+	}
+	got, err := os.ReadFile(restored)
+	if err != nil {
+		t.Fatalf("restored live conversation not readable: %v", err)
+	}
+	if string(got) != "newer backup\n" {
+		t.Fatalf("restored content = %q, want newest backup content", string(got))
+	}
+}
+
+func TestRestoreOrphanedConversationBackup_NoOpWhenLivePresent(t *testing.T) {
+	cfgDir, project := t.TempDir(), t.TempDir()
+	inst := migTestInstance(t, project)
+	claudeProject := resolvedClaudeProjectPath(t, project)
+	live := writeConversation(t, cfgDir, claudeProject, migTestSID, "live conversation\n")
+	writeConversationBackup(t, cfgDir, claudeProject, migTestSID, "100", "stale backup\n")
+
+	restored, err := RestoreOrphanedConversationBackup(inst, cfgDir)
+	if err != nil {
+		t.Fatalf("RestoreOrphanedConversationBackup: %v", err)
+	}
+	if restored != "" {
+		t.Fatalf("expected no-op with live conversation present, got %q", restored)
+	}
+	got, err := os.ReadFile(live)
+	if err != nil {
+		t.Fatalf("live conversation not readable: %v", err)
+	}
+	if string(got) != "live conversation\n" {
+		t.Fatalf("live conversation was overwritten: %q", string(got))
 	}
 }
 
