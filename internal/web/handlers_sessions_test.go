@@ -15,7 +15,7 @@ import (
 // fakeMutator is a test double for SessionMutator that delegates to function fields.
 // If a function field is nil, the method returns an error indicating it is unconfigured.
 type fakeMutator struct {
-	createSessionFn    func(title, tool, projectPath, groupPath, modelID string) (string, error)
+	createSessionFn    func(title, tool, projectPath, groupPath, modelID string, env []string) (string, error)
 	startSessionFn     func(id string) error
 	stopSessionFn      func(id string) error
 	restartSessionFn   func(id string) error
@@ -32,11 +32,11 @@ type fakeMutator struct {
 	finishWorktreeFn   func(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
 }
 
-func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
+func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath, modelID string, env []string) (string, error) {
 	if f.createSessionFn == nil {
 		return "", fmt.Errorf("createSession not configured")
 	}
-	return f.createSessionFn(title, tool, projectPath, groupPath, modelID)
+	return f.createSessionFn(title, tool, projectPath, groupPath, modelID, env)
 }
 
 func (f *fakeMutator) StartSession(id string) error {
@@ -191,7 +191,7 @@ func TestSessionsCollectionPOSTCreatesSession(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.mutator = &fakeMutator{
-		createSessionFn: func(title, tool, projectPath, groupPath, modelID string) (string, error) {
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID string, env []string) (string, error) {
 			return "new-id", nil
 		},
 	}
@@ -219,7 +219,7 @@ func TestSessionsCollectionPOSTForwardsModelID(t *testing.T) {
 
 	var gotModel string
 	srv.mutator = &fakeMutator{
-		createSessionFn: func(title, tool, projectPath, groupPath, modelID string) (string, error) {
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID string, env []string) (string, error) {
 			gotModel = modelID
 			return "new-id", nil
 		},
@@ -893,6 +893,139 @@ func TestSessionPatchEmptyBodyRejected(t *testing.T) {
 	}
 
 	body := strings.NewReader(`{}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-1", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+// TestSessionsCollectionPOSTForwardsEnv verifies the per-session env list flows
+// from the create request body through to the mutator.
+func TestSessionsCollectionPOSTForwardsEnv(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotEnv []string
+	srv.mutator = &fakeMutator{
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID string, env []string) (string, error) {
+			gotEnv = env
+			return "new-id", nil
+		},
+	}
+
+	body := strings.NewReader(`{"title":"T","tool":"claude","projectPath":"/tmp","env":["FOO=bar","HTTPS_PROXY=http://h:8080"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	if len(gotEnv) != 2 || gotEnv[0] != "FOO=bar" || gotEnv[1] != "HTTPS_PROXY=http://h:8080" {
+		t.Fatalf("env not forwarded: %v", gotEnv)
+	}
+}
+
+// TestSessionsCollectionPOSTRejectsBadEnvKey verifies a malformed env key is a
+// 400 at the API boundary, before the mutator is invoked.
+func TestSessionsCollectionPOSTRejectsBadEnvKey(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID string, env []string) (string, error) {
+			t.Fatal("mutator must not be called for an invalid env key")
+			return "", nil
+		},
+	}
+
+	body := strings.NewReader(`{"title":"T","tool":"claude","projectPath":"/tmp","env":["1BAD=x"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), ErrCodeBadRequest) {
+		t.Errorf("expected INVALID_REQUEST error, got: %s", rr.Body.String())
+	}
+}
+
+// TestSessionPatchForwardsEnv verifies the full desired env list is newline-encoded
+// under FieldEnv for the mutator (whole-list replace).
+func TestSessionPatchForwardsEnv(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotUpdates map[string]string
+	srv.mutator = &fakeMutator{
+		updateSessionFn: func(id string, updates map[string]string) ([]string, bool, error) {
+			gotUpdates = updates
+			return []string{session.FieldEnv}, true, nil
+		},
+	}
+
+	body := strings.NewReader(`{"env":["FOO=bar","BAZ=qux"]}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-1", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	if got := gotUpdates[session.FieldEnv]; got != "FOO=bar\nBAZ=qux" {
+		t.Fatalf("env encoding = %q, want %q", got, "FOO=bar\nBAZ=qux")
+	}
+}
+
+// TestSessionPatchEmptyEnvClears verifies a non-nil empty env slice is forwarded
+// (clearing all env), distinct from an omitted env field.
+func TestSessionPatchEmptyEnvClears(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var sawEnv bool
+	var envVal string
+	srv.mutator = &fakeMutator{
+		updateSessionFn: func(id string, updates map[string]string) ([]string, bool, error) {
+			envVal, sawEnv = updates[session.FieldEnv]
+			return []string{session.FieldEnv}, true, nil
+		},
+	}
+
+	body := strings.NewReader(`{"env":[]}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-1", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	if !sawEnv || envVal != "" {
+		t.Fatalf("expected empty FieldEnv update to be present, sawEnv=%v val=%q", sawEnv, envVal)
+	}
+}
+
+// TestSessionPatchRejectsBadEnvKey verifies a malformed env key on PATCH is 400.
+func TestSessionPatchRejectsBadEnvKey(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		updateSessionFn: func(id string, updates map[string]string) ([]string, bool, error) {
+			t.Fatal("mutator must not be called for an invalid env key")
+			return nil, false, nil
+		},
+	}
+
+	body := strings.NewReader(`{"env":["1BAD=x"]}`)
 	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-1", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()

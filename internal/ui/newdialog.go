@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -133,6 +134,7 @@ const (
 	focusMultiRepo             // multi-repo toggle (transforms path into list when enabled).
 	focusInherited             // inherited Docker settings toggle (conditional).
 	focusBranch                // branch input (conditional — only when worktree enabled).
+	focusEnv                   // per-session environment variables (multi-line KEY=VALUE; all tools).
 	focusOptions               // tool-specific options panel (conditional).
 )
 
@@ -159,6 +161,7 @@ type NewDialog struct {
 	pathInput             textinput.Model
 	commandInput          textinput.Model
 	modelInput            textinput.Model
+	envInput              textarea.Model      // per-session env vars (one "KEY=VALUE" per line; all tools).
 	claudeOptions         *ClaudeOptionsPanel // Claude-specific options (concrete for value extraction).
 	geminiOptions         *YoloOptionsPanel   // Gemini YOLO panel (concrete for value extraction).
 	codexOptions          *YoloOptionsPanel   // Codex YOLO panel (concrete for value extraction).
@@ -229,6 +232,7 @@ type dialogSnapshot struct {
 	commandCursor    int
 	commandInput     string
 	modelInput       string
+	env              string
 	sandboxEnabled   bool
 	worktreeEnabled  bool
 	worktreeToggled  bool
@@ -356,6 +360,15 @@ func NewNewDialog() *NewDialog {
 	modelInput.Placeholder = "tool default"
 	modelInput.CharLimit = 128
 
+	// Optional per-session environment variables (one "KEY=VALUE" per line),
+	// applied to all tools. Multi-line so each var stays on its own row.
+	envInput := textarea.New()
+	envInput.Placeholder = "KEY=VALUE (one per line)"
+	envInput.ShowLineNumbers = false
+	envInput.CharLimit = 4096
+	envInput.SetHeight(3)
+	envInput.Blur()
+
 	// Create branch input for worktree
 	branchInput := textinput.New()
 	branchInput.Placeholder = "feature/branch-name"
@@ -366,6 +379,7 @@ func NewNewDialog() *NewDialog {
 		pathInput:       pathInput,
 		commandInput:    commandInput,
 		modelInput:      modelInput,
+		envInput:        envInput,
 		branchInput:     branchInput,
 		branchPicker:    NewBranchPickerDialog(),
 		claudeOptions:   NewClaudeOptionsPanel(),
@@ -424,6 +438,8 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.pathInput.Blur()
 	d.modelInput.SetValue("")
 	d.modelInput.Blur()
+	d.envInput.SetValue("")
+	d.envInput.Blur()
 	d.claudeOptions.Blur()
 	d.claudeOptions.ResetStartQuery() // #741: per-session query must not leak across openings
 	d.geminiOptions.Blur()
@@ -536,6 +552,7 @@ func (d *NewDialog) syncInputWidths() {
 	d.pathInput.Width = iw
 	d.commandInput.Width = iw
 	d.modelInput.Width = iw
+	d.envInput.SetWidth(iw)
 	d.branchInput.Width = iw
 }
 
@@ -628,6 +645,9 @@ func (d *NewDialog) shouldHandleEnterLocally() bool {
 	switch d.currentTarget() {
 	// Path/Model open their own dropdown on Enter.
 	case focusPath, focusModel:
+		return true
+	// Env is a multi-line textarea: Enter inserts a newline (never submits).
+	case focusEnv:
 		return true
 	// Name/Branch are free-text fields. When the opt-in
 	// [ui].new_session_enter_advances toggle is on, Enter advances to the next
@@ -736,6 +756,7 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		commandCursor:    d.commandCursor,
 		commandInput:     d.commandInput.Value(),
 		modelInput:       d.modelInput.Value(),
+		env:              d.envInput.Value(),
 		sandboxEnabled:   d.sandboxEnabled,
 		worktreeEnabled:  d.worktreeEnabled,
 		worktreeToggled:  d.worktreeToggled,
@@ -758,6 +779,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	d.commandCursor = s.commandCursor
 	d.commandInput.SetValue(s.commandInput)
 	d.modelInput.SetValue(s.modelInput)
+	d.envInput.SetValue(s.env)
 	d.sandboxEnabled = s.sandboxEnabled
 	d.worktreeEnabled = s.worktreeEnabled
 	d.worktreeToggled = s.worktreeToggled
@@ -787,6 +809,8 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 	d.commandCursor = 0
 	d.commandInput.SetValue("")
 	d.modelInput.SetValue("")
+	// Recent sessions never carry per-session env — keep the field cleared.
+	d.envInput.SetValue("")
 
 	// Set command/tool.
 	if rs.Tool == "" || rs.Tool == "shell" {
@@ -1238,6 +1262,16 @@ func (d *NewDialog) GetLaunchModelID() string {
 	return strings.TrimSpace(d.modelInput.Value())
 }
 
+// GetSessionEnv returns the validated per-session env entries entered in the
+// dialog, one "KEY=VALUE" per non-blank line. Lines whose key fails
+// session.ValidateSessionEnvKey are skipped (the field is best-effort; the
+// mutator path re-validates). Values may contain '='; only the first '=' splits.
+func (d *NewDialog) GetSessionEnv() []string {
+	// DedupeSessionEnv trims, drops blank/invalid lines, and collapses duplicate
+	// keys (last wins) so two "FOO=" lines don't persist as duplicate entries.
+	return session.DedupeSessionEnv(strings.Split(d.envInput.Value(), "\n"))
+}
+
 // GetClaudeOptions returns the Claude-specific options (only relevant if command is "claude")
 func (d *NewDialog) GetClaudeOptions() *session.ClaudeOptions {
 	if !d.isClaudeSelected() {
@@ -1329,6 +1363,18 @@ func (d *NewDialog) Validate() string {
 		}
 	}
 
+	// Validate per-session env lines so an invalid entry surfaces a clear error
+	// instead of being silently dropped at create time (GetSessionEnv skips
+	// unparseable lines). One KEY=VALUE per line; values may contain spaces.
+	for _, line := range strings.Split(d.envInput.Value(), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if _, _, err := session.ParseSessionEnvPair(strings.TrimSpace(line)); err != nil {
+			return fmt.Sprintf("Invalid env entry %q (use KEY=VALUE)", strings.TrimSpace(line))
+		}
+	}
+
 	return "" // Valid
 }
 
@@ -1386,6 +1432,8 @@ func (d *NewDialog) rebuildFocusTargets() {
 	if d.worktreeEnabled {
 		targets = append(targets, focusBranch)
 	}
+	// Per-session env (all tools) lives below the fold, just above multi-repo.
+	targets = append(targets, focusEnv)
 	// Multi-repo toggle below the fold (its path list renders here when enabled).
 	targets = append(targets, focusMultiRepo)
 	if d.toolOptions != nil {
@@ -1430,6 +1478,7 @@ func (d *NewDialog) updateFocus() {
 	d.pathInput.Blur()
 	d.commandInput.Blur()
 	d.modelInput.Blur()
+	d.envInput.Blur()
 	d.branchInput.Blur()
 	d.claudeOptions.Blur()
 	d.geminiOptions.Blur()
@@ -1459,6 +1508,8 @@ func (d *NewDialog) updateFocus() {
 		}
 	case focusModel:
 		d.modelInput.Focus()
+	case focusEnv:
+		d.envInput.Focus()
 	case focusWorktree, focusSandbox, focusConductor, focusInherited:
 		// Checkbox/toggle rows and conductor dropdown — no text input to focus.
 	case focusBranch:
@@ -1502,7 +1553,7 @@ func isNewDialogShiftTabKey(msg tea.KeyMsg) bool {
 // keystrokes. Single-letter shortcuts must be suppressed in this state.
 func (d *NewDialog) isTextInputFocused() bool {
 	switch d.currentTarget() {
-	case focusName, focusPath, focusModel, focusBranch:
+	case focusName, focusPath, focusModel, focusBranch, focusEnv:
 		return true
 	case focusCommand:
 		return d.commandCursor == 0 // custom command input
@@ -1984,6 +2035,13 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.moveFocus(1)
 				return d, nil
 			}
+			// Env is a multi-line textarea: Enter inserts a newline rather than
+			// submitting (shouldHandleEnterLocally routes Enter here). Ctrl+S
+			// still submits globally via WantsSubmit.
+			if cur == focusEnv {
+				d.envInput, cmd = d.envInput.Update(msg)
+				return d, cmd
+			}
 			if cur == focusPath {
 				d.suggestionsActive = true
 				d.suggestionsHidden = false
@@ -2200,6 +2258,8 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			d.modelNavigated = false
 			d.filterModelSuggestions()
 		}
+	case focusEnv:
+		d.envInput, cmd = d.envInput.Update(msg)
 	case focusMultiRepo:
 		// When editing a multi-repo path, forward keystrokes to pathInput.
 		if d.multiRepoEditing {
@@ -2685,6 +2745,21 @@ func (d *NewDialog) View() string {
 		}
 	}
 
+	// Per-session environment variables (all tools, below the fold). One
+	// "KEY=VALUE" per line; applied to the launched tool. Plaintext at rest.
+	content.WriteString("\n")
+	if cur == focusEnv {
+		content.WriteString(activeLabelStyle.Render("▶ Env vars:"))
+	} else {
+		content.WriteString(labelStyle.Render("  Env vars:"))
+	}
+	content.WriteString("\n  ")
+	content.WriteString(strings.ReplaceAll(d.envInput.View(), "\n", "\n  "))
+	content.WriteString("\n  ")
+	envHintStyle := lipgloss.NewStyle().Foreground(ColorComment)
+	content.WriteString(envHintStyle.Render("Stored in plaintext at rest — avoid secrets you can't rotate."))
+	content.WriteString("\n")
+
 	// Multi-repo toggle (below the fold, UX top-3 #3). Its path list renders
 	// here when enabled; in the common single-repo case it's just a checkbox.
 	content.WriteString("\n")
@@ -2750,6 +2825,10 @@ func (d *NewDialog) View() string {
 		} else {
 			helpText = "Type custom model ID │ Enter browse known IDs │ Tab next"
 		}
+	} else if cur == focusEnv {
+		// The env textarea consumes Enter as a newline (one KEY=VALUE per line),
+		// so advertise ^S for create rather than the generic "Enter create".
+		helpText = "KEY=VALUE per line │ Enter newline │ Tab next │ ^S create │ Esc cancel"
 	} else if cur == focusConductor {
 		helpText = "↑↓ select parent │ Tab next │ Enter/^S create │ Esc cancel"
 	} else if cur == focusWorktree || cur == focusSandbox {

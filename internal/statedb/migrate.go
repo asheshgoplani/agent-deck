@@ -57,6 +57,7 @@ type jsonInstanceData struct {
 	PluginChannelLinkDisabled bool            `json:"plugin_channel_link_disabled,omitempty"`
 	AutoLinkedChannels        []string        `json:"auto_linked_channels,omitempty"`
 	ExtraArgs                 []string        `json:"extra_args,omitempty"`
+	Env                       []string        `json:"env,omitempty"`
 	Sandbox                   json.RawMessage `json:"sandbox,omitempty"`
 	SandboxContainer          string          `json:"sandbox_container,omitempty"`
 }
@@ -91,6 +92,7 @@ type toolDataBlob struct {
 	PluginChannelLinkDisabled bool            `json:"plugin_channel_link_disabled,omitempty"`
 	AutoLinkedChannels        []string        `json:"auto_linked_channels,omitempty"`
 	ExtraArgs                 []string        `json:"extra_args,omitempty"`
+	Env                       []string        `json:"env,omitempty"`
 	ToolOptions               json.RawMessage `json:"tool_options,omitempty"`
 	Sandbox                   json.RawMessage `json:"sandbox,omitempty"`
 	SandboxContainer          string          `json:"sandbox_container,omitempty"`
@@ -141,6 +143,7 @@ func MigrateFromJSON(jsonPath string, db *StateDB) (int, int, error) {
 			LoadedMCPNames:            inst.LoadedMCPNames,
 			Channels:                  inst.Channels,  // pre-existing omission, fixed alongside Plugins
 			ExtraArgs:                 inst.ExtraArgs, // pre-existing omission, fixed alongside Plugins
+			Env:                       inst.Env,
 			Plugins:                   inst.Plugins,
 			PluginChannelLinkDisabled: inst.PluginChannelLinkDisabled,
 			AutoLinkedChannels:        inst.AutoLinkedChannels,
@@ -241,6 +244,7 @@ func MarshalToolData(
 	pluginChannelLinkDisabled bool, // RFC docs/rfc/PLUGIN_ATTACH.md §4.7
 	autoLinkedChannels []string, // RFC §4.7 — fixes G4/C2 stale autolink retention
 	color string, // issue #391
+	env []string, // per-session environment variables
 ) json.RawMessage {
 	td := toolDataBlob{
 		ClaudeSessionID:           claudeSessionID,
@@ -257,6 +261,7 @@ func MarshalToolData(
 		PluginChannelLinkDisabled: pluginChannelLinkDisabled,
 		AutoLinkedChannels:        autoLinkedChannels,
 		ExtraArgs:                 extraArgs,
+		Env:                       env,
 		ToolOptions:               toolOptionsJSON,
 		Sandbox:                   sandboxJSON,
 		SandboxContainer:          sandboxContainer,
@@ -306,6 +311,7 @@ func UnmarshalToolData(data json.RawMessage) (
 	pluginChannelLinkDisabled bool, // RFC docs/rfc/PLUGIN_ATTACH.md §4.7
 	autoLinkedChannels []string, // RFC §4.7 — fixes G4/C2 stale autolink retention
 	color string, // issue #391
+	env []string, // per-session environment variables
 ) {
 	if len(data) == 0 {
 		return
@@ -341,6 +347,7 @@ func UnmarshalToolData(data json.RawMessage) (
 	pluginChannelLinkDisabled = td.PluginChannelLinkDisabled
 	autoLinkedChannels = td.AutoLinkedChannels
 	extraArgs = td.ExtraArgs
+	env = td.Env
 	toolOptionsJSON = td.ToolOptions
 	sandboxJSON = td.Sandbox
 	sandboxContainer = td.SandboxContainer

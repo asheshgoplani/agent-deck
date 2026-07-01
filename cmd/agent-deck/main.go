@@ -1021,6 +1021,7 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"channel":        true,
 		"plugin":         true,
 		"extra-arg":      true,
+		"env":            true,
 		"wrapper":        true,
 		"model":          true,
 		"w":              true,
@@ -1250,6 +1251,20 @@ func handleAdd(profile string, args []string) {
 		}
 		extraArgFlags = append(extraArgFlags, s)
 		return nil
+	})
+
+	// Per-session env vars — repeatable, all tools. Validated via
+	// ParseSessionEnvPair; injected at spawn by prepareCommand. Persisted
+	// plaintext in state.db (warning emitted below).
+	var envFlags []string
+	fs.Func("env", "Per-session environment variable KEY=VALUE (can specify multiple times); applies to all tools; persisted plaintext", func(s string) error {
+		// UpsertSessionEnv validates via ParseSessionEnvPair and replaces a
+		// repeated key in place, so `add --env FOO=1 --env FOO=2` persists only
+		// FOO=2 (matching the mutation path's upsert contract) instead of storing
+		// duplicate keys where only the last export would win at spawn.
+		var err error
+		envFlags, err = session.UpsertSessionEnv(envFlags, s)
+		return err
 	})
 
 	// Sandbox flags
@@ -1656,6 +1671,12 @@ func handleAdd(profile string, args []string) {
 		newInstance.ExtraArgs = extraArgFlags
 	}
 
+	// Apply --env flags (all tools). Persisted plaintext — warn the operator.
+	if len(envFlags) > 0 {
+		newInstance.Env = envFlags
+		fmt.Fprintln(os.Stderr, "warning: per-session env is stored in plaintext in state.db — avoid secrets you can't rotate")
+	}
+
 	// Set wrapper if provided
 	if sessionWrapperResolved != "" {
 		newInstance.Wrapper = sessionWrapperResolved
@@ -1699,6 +1720,13 @@ func handleAdd(profile string, args []string) {
 		}
 		newInstance.SSHHost = *sshHost
 		newInstance.SSHRemotePath = *sshRemotePath
+		// Per-session env is not applied to remote-path SSH sessions (the remote
+		// re-quoting mangles inline exports), so reject it rather than silently
+		// dropping it — mirrors the TUI remote-create guard.
+		if newInstance.SSHRemotePath != "" && len(newInstance.Env) > 0 {
+			fmt.Println("Error: per-session env (--env) is not supported for SSH sessions with a remote path; set it on the remote host instead")
+			os.Exit(1)
+		}
 	}
 
 	// Handle --resume-session: set Claude session ID and resume mode
@@ -1950,6 +1978,7 @@ func handleList(profile string, args []string) {
 			SSHRemotePath string    `json:"ssh_remote_path,omitempty"`
 			Channels      []string  `json:"channels,omitempty"`
 			ExtraArgs     []string  `json:"extra_args,omitempty"`
+			Env           []string  `json:"env,omitempty"`   // per-session env vars
 			Color         string    `json:"color,omitempty"` // issue #391
 		}
 		// Warm tmux pane-title cache + load hook statuses so the CLI
@@ -1973,6 +2002,7 @@ func handleList(profile string, args []string) {
 				SSHRemotePath: inst.SSHRemotePath,
 				Channels:      inst.Channels,
 				ExtraArgs:     inst.ExtraArgs,
+				Env:           inst.Env,
 				Color:         inst.Color,
 			}
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {

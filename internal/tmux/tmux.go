@@ -2574,14 +2574,19 @@ func (s *Session) RespawnPane(command string) error {
 		args = append(args, wrapped)
 	}
 
-	mcpLog.Debug("respawn_pane_executing", slog.Any("args", args))
+	// Do NOT log the wrapped command payload: it may contain per-session env
+	// `export KEY='secret'` exports, and wrapRespawnCommand shell-quotes the
+	// whole command (escaping the inner quotes), so no regex can reliably redact
+	// it. The session layer already logs a safe summary via loggableCommand, so
+	// the command is omitted here and we log only the non-secret invocation shape.
+	mcpLog.Debug("respawn_pane_executing", slog.String("target", target), slog.Bool("has_command", command != ""))
 	cmd := s.tmuxCmd(args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		mcpLog.Debug("respawn_pane_error", slog.String("error", err.Error()), slog.String("output", string(output)))
-		return fmt.Errorf("failed to respawn pane: %w (output: %s)", err, string(output))
+		mcpLog.Debug("respawn_pane_error", slog.String("error", err.Error()), slog.String("output", redactInlineExports(string(output))))
+		return fmt.Errorf("failed to respawn pane: %w (output: %s)", err, redactInlineExports(string(output)))
 	}
-	mcpLog.Debug("respawn_pane_output", slog.String("output", string(output)))
+	mcpLog.Debug("respawn_pane_output", slog.String("output", redactInlineExports(string(output))))
 
 	// Get the NEW pane PID so we don't accidentally kill the fresh process
 	newPanePID, _ := s.getPaneProcessTree()
@@ -2614,6 +2619,23 @@ func (s *Session) RespawnPane(command string) error {
 	s.mu.Unlock()
 
 	return nil
+}
+
+// inlineExportRe matches a shell `export NAME='value'` assignment, including
+// values that contain shell-escaped single quotes (`'\”`, how buildSession
+// EnvExports escapes a literal quote). Per-session env and other secrets are
+// injected this way; the value token is redacted whole in debug logs without
+// touching the executed command. The value body is a run of non-quote chars or
+// the 4-char `'\”` escape sequence, bounded by the opening/closing quotes.
+var inlineExportRe = regexp.MustCompile(`(export [A-Za-z_][A-Za-z0-9_]*=)'(?:[^']|'\\'')*'`)
+
+// redactInlineExports replaces the values of unwrapped `export NAME='...'`
+// assignments with *** for safe logging of tmux output messages. It operates on
+// the LOGGED copy only; the command actually executed is never altered. Note it
+// only handles the unwrapped form — the prepared command itself is never logged
+// (see respawn_pane_executing), so wrapped/escaped exports never reach a log.
+func redactInlineExports(s string) string {
+	return inlineExportRe.ReplaceAllString(s, "${1}'***'")
 }
 
 func wrapRespawnCommand(command string) (string, error) {

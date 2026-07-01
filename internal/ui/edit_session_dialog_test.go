@@ -562,3 +562,149 @@ func TestEditSessionDialog_ReShowResetsError(t *testing.T) {
 		t.Error("Show() should clear any inline error from a prior Show()")
 	}
 }
+
+// setEnvField locates the editFieldEnv field by key and sets its raw value.
+// setEnvField sets the env textarea's raw value. raw uses newline-separated
+// "KEY=VALUE" entries (one per line), matching the dialog's multi-line editor.
+func setEnvField(t *testing.T, d *EditSessionDialog, raw string) {
+	t.Helper()
+	for i := range d.fields {
+		if d.fields[i].key == session.FieldEnv {
+			d.fields[i].area.SetValue(raw)
+			return
+		}
+	}
+	t.Fatal("env field not found in dialog")
+}
+
+// envChangeValues returns the Values of all FieldEnv changes, in order. With the
+// whole-list model there is at most one FieldEnv change (a newline-joined list).
+func envChangeValues(changes []Change) []string {
+	var out []string
+	for _, c := range changes {
+		if c.Field == session.FieldEnv {
+			out = append(out, c.Value)
+		}
+	}
+	return out
+}
+
+// envChangeList returns the entries of the single whole-list FieldEnv change
+// (newline-joined), preserving order; nil if there is no FieldEnv change.
+func envChangeList(changes []Change) []string {
+	for _, c := range changes {
+		if c.Field == session.FieldEnv {
+			if c.Value == "" {
+				return []string{}
+			}
+			return strings.Split(c.Value, "\n")
+		}
+	}
+	return nil
+}
+
+// No-op guard: an instance with a pre-existing env, opened and saved without
+// edits, must produce zero changes. The value carries a space so the test also
+// guards the whitespace-sensitive path the multi-line textarea now supports.
+func TestEditSessionDialog_GetChanges_EnvUntouchedNoOp(t *testing.T) {
+	inst := session.NewInstanceWithTool("t", t.TempDir(), "claude")
+	inst.Env = []string{"FOO=bar baz"}
+	d := NewEditSessionDialog()
+	d.Show(inst)
+
+	changes := d.GetChanges(inst)
+	if len(envChangeValues(changes)) != 0 {
+		t.Errorf("untouched env produced changes: %v", changes)
+	}
+}
+
+// A value containing a space round-trips through the multi-line textarea: after
+// editing another line, the space-bearing entry is preserved verbatim (the old
+// single-line, space-split editor corrupted it).
+func TestEditSessionDialog_GetChanges_EnvSpaceValueRoundTrips(t *testing.T) {
+	inst := session.NewInstanceWithTool("t", t.TempDir(), "claude")
+	inst.Env = []string{"MSG=hello world"}
+	d := NewEditSessionDialog()
+	d.Show(inst)
+	// Append a second entry; the first (with its space) must survive intact.
+	setEnvField(t, d, "MSG=hello world\nNEW=1")
+
+	if got := strings.Join(envChangeList(d.GetChanges(inst)), "\n"); got != "MSG=hello world\nNEW=1" {
+		t.Fatalf("env whole-list change = %q, want %q", got, "MSG=hello world\nNEW=1")
+	}
+}
+
+// Editing the env field emits ONE whole-list FieldEnv change with the desired
+// entries in order.
+func TestEditSessionDialog_GetChanges_EnvUpserts(t *testing.T) {
+	inst := session.NewInstanceWithTool("t", t.TempDir(), "claude")
+	inst.Env = []string{"FOO=bar"}
+	d := NewEditSessionDialog()
+	d.Show(inst)
+	setEnvField(t, d, "FOO=baz\nNEW=1")
+
+	if got := envChangeValues(d.GetChanges(inst)); len(got) != 1 {
+		t.Fatalf("expected exactly one whole-list env change, got %v", got)
+	}
+	if got := strings.Join(envChangeList(d.GetChanges(inst)), "\n"); got != "FOO=baz\nNEW=1" {
+		t.Fatalf("env whole-list change = %q, want %q", got, "FOO=baz\nNEW=1")
+	}
+}
+
+// Removing a key drops it from the whole-list change (no separate "KEY=" unset).
+func TestEditSessionDialog_GetChanges_EnvUnset(t *testing.T) {
+	inst := session.NewInstanceWithTool("t", t.TempDir(), "claude")
+	inst.Env = []string{"FOO=bar", "BAZ=qux"}
+	d := NewEditSessionDialog()
+	d.Show(inst)
+	setEnvField(t, d, "FOO=bar")
+
+	if got := strings.Join(envChangeList(d.GetChanges(inst)), "\n"); got != "FOO=bar" {
+		t.Fatalf("env whole-list change = %q, want %q (BAZ removed)", got, "FOO=bar")
+	}
+}
+
+// A desired empty-valued entry ("FOO=") must be PRESERVED, not dropped — the
+// whole-list commit path replaces inst.Env instead of treating "FOO=" as an
+// unset the way single-pair SetField would.
+func TestEditSessionDialog_GetChanges_EnvEmptyValuePreserved(t *testing.T) {
+	inst := session.NewInstanceWithTool("t", t.TempDir(), "claude")
+	inst.Env = []string{"FOO=bar"}
+	d := NewEditSessionDialog()
+	d.Show(inst)
+	setEnvField(t, d, "FOO=") // change FOO to an empty value (not an unset)
+
+	if got := strings.Join(envChangeList(d.GetChanges(inst)), "\n"); got != "FOO=" {
+		t.Fatalf("env whole-list change = %q, want %q (empty value preserved)", got, "FOO=")
+	}
+}
+
+// An untouched env whose value carries a trailing space must survive a no-op
+// save verbatim: the raw untouched-guard runs before canonicalization, so the
+// value is not trimmed to "FOO=bar".
+func TestEditSessionDialog_GetChanges_EnvTrailingSpaceUntouchedNoOp(t *testing.T) {
+	inst := session.NewInstanceWithTool("t", t.TempDir(), "claude")
+	inst.Env = []string{"FOO=bar "} // trailing space in the value
+	d := NewEditSessionDialog()
+	d.Show(inst)
+
+	if got := envChangeValues(d.GetChanges(inst)); len(got) != 0 {
+		t.Errorf("untouched trailing-space env produced changes: %v", got)
+	}
+}
+
+// A cosmetic env edit (trailing newline / blank line) that leaves the effective
+// env unchanged must not emit a spurious restart-required change — the no-op
+// guard canonicalizes the textarea before diffing.
+func TestEditSessionDialog_GetChanges_EnvCosmeticEditNoOp(t *testing.T) {
+	inst := session.NewInstanceWithTool("t", t.TempDir(), "claude")
+	inst.Env = []string{"FOO=bar", "BAZ=qux"}
+	d := NewEditSessionDialog()
+	d.Show(inst)
+	// Same entries, but with a blank line and a trailing newline.
+	setEnvField(t, d, "FOO=bar\n\nBAZ=qux\n")
+
+	if got := envChangeValues(d.GetChanges(inst)); len(got) != 0 {
+		t.Errorf("cosmetic-only env edit produced changes: %v", got)
+	}
+}

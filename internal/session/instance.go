@@ -352,6 +352,11 @@ type Instance struct {
 	// survive the bash -c wrapper.
 	ExtraArgs []string `json:"extra_args,omitempty"`
 
+	// Env holds per-session environment variables ("KEY=VALUE") exported into the
+	// spawned process for every tool. Persisted via tool_data like ExtraArgs.
+	// Values may be secrets (plaintext at rest; redacted in logs).
+	Env []string `json:"env,omitempty"`
+
 	// ExitToShell is the per-session override for the [shell] exit_to_shell
 	// toggle (issue #1161). nil → inherit the global config default (off);
 	// non-nil → force on/off for this session regardless of config. When on
@@ -5966,7 +5971,7 @@ func (i *Instance) Restart() error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
-		mcpLog.Debug("respawn_pane_claude", slog.String("command", resumeCmd))
+		mcpLog.Debug("respawn_pane_claude", slog.String("command", i.loggableCommand(resumeCmd)))
 
 		// Use respawn-pane for atomic restart
 		// This is more reliable than Ctrl+C + wait for shell + send command
@@ -6013,7 +6018,7 @@ func (i *Instance) Restart() error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
-		sessionLog.Info("restart_gemini_respawn", slog.String("command", resumeCmd))
+		sessionLog.Info("restart_gemini_respawn", slog.String("command", i.loggableCommand(resumeCmd)))
 
 		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
 			sessionLog.Info("restart_gemini_respawn_failed", slog.String("error", err.Error()))
@@ -6067,7 +6072,7 @@ func (i *Instance) Restart() error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
-		sessionLog.Info("restart_opencode_respawn", slog.String("command", resumeCmd))
+		sessionLog.Info("restart_opencode_respawn", slog.String("command", i.loggableCommand(resumeCmd)))
 
 		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
 			sessionLog.Info("restart_opencode_respawn_failed", slog.String("error", err.Error()))
@@ -6136,7 +6141,7 @@ func (i *Instance) Restart() error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
-		sessionLog.Info("restart_codex_respawn", slog.String("command", resumeCmd))
+		sessionLog.Info("restart_codex_respawn", slog.String("command", i.loggableCommand(resumeCmd)))
 
 		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
 			sessionLog.Info("restart_codex_respawn_failed", slog.String("error", err.Error()))
@@ -6174,7 +6179,7 @@ func (i *Instance) Restart() error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
-		sessionLog.Info("restart_cursor_respawn", slog.String("command", resumeCmd))
+		sessionLog.Info("restart_cursor_respawn", slog.String("command", i.loggableCommand(resumeCmd)))
 
 		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
 			sessionLog.Info("restart_cursor_respawn_failed", slog.String("error", err.Error()))
@@ -6211,7 +6216,7 @@ func (i *Instance) Restart() error {
 			i.SandboxContainer = containerName
 		}
 
-		sessionLog.Info("restart_generic_respawn", slog.String("tool", i.Tool), slog.String("command", resumeCmd))
+		sessionLog.Info("restart_generic_respawn", slog.String("tool", i.Tool), slog.String("command", i.loggableCommand(resumeCmd)))
 
 		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
 			sessionLog.Info(
@@ -6311,7 +6316,7 @@ func (i *Instance) Restart() error {
 	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
 	i.applyLaunchSettingsFromConfig()
 
-	mcpLog.Debug("restart_starting_new_session", slog.String("command", command))
+	mcpLog.Debug("restart_starting_new_session", slog.String("command", i.loggableCommand(command)))
 
 	if err := i.tmuxSession.Start(command); err != nil {
 		mcpLog.Debug("restart_start_failed", slog.String("error", err.Error()))
@@ -6892,6 +6897,11 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 	if len(i.ExtraArgs) > 0 {
 		forked.ExtraArgs = append([]string(nil), i.ExtraArgs...)
 	}
+	// Per-session env inherits onto the fork (copied, not aliased) so the
+	// forked session launches with the same environment as its parent.
+	if len(i.Env) > 0 {
+		forked.Env = append([]string(nil), i.Env...)
+	}
 
 	cmd, err := i.buildClaudeForkCommandForTarget(forked, opts)
 	if err != nil {
@@ -7088,6 +7098,9 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	forked.ForkStartCommand = cmd
 	forked.IsForkAwaitingStart = true
 	forked.Tool = "opencode"
+	if len(i.Env) > 0 {
+		forked.Env = append([]string(nil), i.Env...)
+	}
 	if worktreeRepoRoot != "" {
 		forked.WorktreePath = workDir
 		forked.WorktreeRepoRoot = worktreeRepoRoot
@@ -7130,6 +7143,9 @@ func (i *Instance) CreateForkedPiInstanceWithOptions(
 	}
 	forked.Tool = "pi"
 	forked.Wrapper = i.Wrapper
+	if len(i.Env) > 0 {
+		forked.Env = append([]string(nil), i.Env...)
+	}
 
 	baseCommand := strings.TrimSpace(i.Command)
 	if baseCommand == "" {
@@ -7217,6 +7233,9 @@ func (i *Instance) CreateForkedCodexInstanceWithOptions(
 	}
 	forked.Tool = i.Tool
 	forked.Wrapper = i.Wrapper
+	if len(i.Env) > 0 {
+		forked.Env = append([]string(nil), i.Env...)
+	}
 
 	baseCommand := strings.TrimSpace(i.Command)
 	if baseCommand == "" {
@@ -8170,12 +8189,47 @@ func (i *Instance) wrapLaunchShell(command string) string {
 // Returns the wrapped command, the sandbox container name (empty if not sandboxed), and an error.
 // All code paths that launch or respawn a tmux pane should use this instead of calling
 // applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
+// loggableCommand returns a log-safe representation of a prepared command. When
+// the session carries per-session env (possible secrets), the full command is
+// suppressed because downstream wrappers re-escape the inline exports
+// unpredictably (launch shell, bash -c, SSH, docker). Only the non-secret env
+// KEYS are logged. See spec §Security.
+func (i *Instance) loggableCommand(cmd string) string {
+	if len(i.Env) == 0 {
+		return cmd
+	}
+	keys := make([]string, 0, len(i.Env))
+	for _, kv := range i.Env {
+		if eq := strings.IndexByte(kv, '='); eq > 0 {
+			keys = append(keys, kv[:eq])
+		}
+	}
+	return fmt.Sprintf("<command suppressed: session has per-session env keys [%s]>", strings.Join(keys, ","))
+}
+
 func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	// Exit-to-shell wrap FIRST, on the bare agent command, so the agent's own
 	// `exec ` launcher is still visible to neutralise and the trailing shell
 	// exec stays the outermost statement before any user-wrapper / bash -c /
 	// SSH layering. No-op unless opt-in for a built-in agent (issue #1161).
 	cmd = i.wrapExitToShell(cmd)
+
+	// Per-session env: prepend exports so they run AFTER interactive shell startup
+	// (wrapLaunchShell sources ~/.zshrc next, then runs this cmd) — user env wins —
+	// and BEFORE the SSH/sandbox wrappers below, so they ride into the
+	// local/container command. Values are shell-escaped; invalid keys dropped.
+	// See spec §Feature B.
+	//
+	// SSHRemotePath sessions are skipped: wrapForSSH re-escapes the whole command
+	// for the `cd '<path>' && <cmd>` remote shape, which mangles the inline
+	// `export KEY='value'` quoting. Per-session env is therefore not applied to
+	// remote-path SSH sessions (documented limitation); local and container
+	// sessions are unaffected.
+	if i.SSHRemotePath == "" {
+		if prefix := buildSessionEnvExports(i.Env); prefix != "" {
+			cmd = prefix + cmd
+		}
+	}
 
 	// Launch-shell wrap SECOND, before user wrapper, so the interactive shell
 	// loads its startup files and then executes the complete command (with

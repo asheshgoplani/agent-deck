@@ -23,6 +23,10 @@ type CreateSessionRequest struct {
 	ProjectPath string `json:"projectPath"`
 	GroupPath   string `json:"groupPath,omitempty"`
 	ModelID     string `json:"modelId,omitempty"`
+	// Env holds per-session environment variables ("KEY=VALUE") exported into
+	// the spawned process for every tool. Keys are validated server-side (400 on
+	// a bad key). Values may be secrets — they persist in plaintext at rest.
+	Env []string `json:"env,omitempty"`
 }
 
 // CreateGroupRequest is the body for POST /api/groups.
@@ -54,6 +58,11 @@ type UpdateSessionRequest struct {
 	Channels        *string `json:"channels,omitempty"`
 	SkipPermissions *bool   `json:"skipPermissions,omitempty"`
 	AutoMode        *bool   `json:"autoMode,omitempty"`
+	// Env, when non-nil, replaces the session's full per-session environment
+	// ("KEY=VALUE" entries) for every tool. Keys are validated server-side (400
+	// on a bad key). Values persist in plaintext at rest. A non-nil empty slice
+	// clears all per-session env. Restart required to take effect.
+	Env *[]string `json:"env,omitempty"`
 }
 
 // UpdateSessionResponse confirms a PATCH succeeded. RestartRequired is true

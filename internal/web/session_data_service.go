@@ -108,6 +108,16 @@ type MenuSession struct {
 	ExtraArgs       []string        `json:"extraArgs,omitempty"`
 	ToolOptionsJSON json.RawMessage `json:"toolOptions,omitempty"`
 
+	// Env holds per-session environment variables ("KEY=VALUE") for every tool.
+	// Surfaced so the web EditSessionDialog can seed its env editor (there is no
+	// separate per-session detail endpoint to fetch it lazily). This ships env in
+	// the general list payload, so values (which the UI/CLI already document as
+	// plaintext-at-rest) travel to the same-user, token-authenticated web client
+	// on every refresh — an accepted tradeoff for a localhost tool, not a
+	// cross-user disclosure. A dedicated redacted-list + detail-fetch split is a
+	// possible future hardening if agent-deck ever serves multiple users.
+	Env []string `json:"env,omitempty"`
+
 	Sandbox          *session.SandboxConfig `json:"sandbox,omitempty"`
 	SandboxContainer string                 `json:"sandboxContainer,omitempty"`
 	SSHHost          string                 `json:"sshHost,omitempty"`
@@ -264,6 +274,7 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		Wrapper:            inst.Wrapper,
 		Channels:           inst.Channels,
 		ExtraArgs:          inst.ExtraArgs,
+		Env:                inst.Env,
 		ToolOptionsJSON:    inst.ToolOptionsJSON,
 		Sandbox:            inst.Sandbox,
 		SandboxContainer:   inst.SandboxContainer,

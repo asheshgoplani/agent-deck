@@ -68,19 +68,80 @@ launch_shell = false                        # Wrap commands with interactive she
 
 ### Sourcing order
 
-Environment sources are applied in this order (later overrides earlier):
+The **config-sourced** layers below are applied in this order (later overrides
+earlier), all sourced *inside* the spawned command:
 
 1. Global `[shell].env_files` (in order)
 2. `[shell].init_script`
 3. Tool-specific `env_file` (`[claude].env_file`, `[gemini].env_file`, `[tools.X].env_file` — for Claude, the group/conductor `env_file` overrides the global one; see [Per-group / per-conductor Claude overrides](#per-group--per-conductor-claude-overrides))
 4. Per-group / per-conductor inline env (`[groups.X.claude].env`, `[conductors.X.claude].env`) — exported after the env_file source, so an inline key wins over the same key from the file
-5. Inline env vars from `[tools.X].env` (highest priority)
+5. Inline env vars from `[tools.X].env`
+
+**Per-session env** (`agent-deck session set <id> env KEY=VALUE`, `add`/`launch
+--env`, or the TUI/Web new/edit dialogs) is the **most specific** scope and
+**wins** on a key collision. It is exported *after* the config-sourced layers
+(1–5) — so a per-session value overrides the same key from an `env_file`, inline
+`[tools.X].env`, or per-group/conductor env — and after the interactive shell
+startup files (`~/.zshrc`/`~/.bashrc` via `launch_shell`), so it overrides those
+too. (`TELEGRAM_*` neutralisation for non-channel-owning claude sessions still
+applies last, for safety.) See
+[Per-session environment variables](#per-session-environment-variables)
 
 A configured `env_file` that does not exist at spawn prints an
 `agent-deck: warning: env_file not found: <path>` line in the session pane
 (and a debug-log warning) instead of being silently skipped. A config.toml
 that fails to parse is also surfaced in the pane at spawn — in that state
 every override is inactive and sessions launch on defaults.
+
+### Per-session environment variables
+
+Unlike the config.toml layers above (which apply to every session matching a
+tool/group/conductor), per-session env is attached to **one** session and works
+for **every** tool. Entries are `KEY=VALUE`; keys must match
+`[A-Za-z_][A-Za-z0-9_]*`. They are exported after the config-sourced env layers
+and after the interactive shell startup (`~/.zshrc`/`~/.bashrc`), so a
+per-session value **wins** over a colliding `env_file`/inline-env/`~/.zshrc`
+value, and before any Docker wrapping so they ride into the container command.
+They persist across restart and fork.
+
+Precedence note: per-session env is the most specific scope and **wins** on a
+key collision. It is exported after the config env layers (`env_file`/inline/
+group/conductor env) and after the interactive shell startup files, so a
+per-session value overrides all of them. (The `TELEGRAM_*` strip for
+non-channel-owning claude sessions still runs last, for safety.)
+
+Limitation: per-session env applies to local, Docker/sandboxed, and direct SSH
+sessions (`--ssh` without a remote path), but **not** to two remote cases:
+(1) sessions with a remote working path (`SSHRemotePath`) skip env injection
+(the `cd '<path>' && …` remote wrapping would re-escape the inline exports), and
+(2) creating a session **on** a remote host (remote-mode create) rejects
+per-session env with an error rather than silently dropping it — set such
+variables on the remote host instead.
+
+Manage them via the CLI:
+
+```bash
+# Create with env (repeatable; both add and launch accept --env)
+agent-deck add . -c claude --env HTTPS_PROXY=http://127.0.0.1:8080 --env AGENT_ROLE=reviewer
+agent-deck launch -c codex --env OPENAI_BASE_URL=https://proxy.internal -m "audit"
+
+# Set / change a single key on an existing session
+agent-deck session set <id> env HTTPS_PROXY=http://127.0.0.1:8080
+
+# Unset a key (empty value clears it)
+agent-deck session set <id> env HTTPS_PROXY=
+```
+
+The TUI new-session dialog (multi-line `KEY=VALUE`) and edit dialog (`P` →
+`Env`), plus the Web create/edit dialogs, expose the same field. Edits are
+restart-required.
+
+> **Plaintext at rest.** Per-session env is stored unencrypted in the session
+> state DB (`tool_data` blob), so use it for non-secret configuration. When a
+> session carries per-session env, agent-deck suppresses the full prepared
+> command from its logs (it logs only the env key **names**) so values don't
+> leak there. Conductor session-registration is intentionally **out of scope**
+> and does not carry per-session env.
 
 ## [claude] Section
 
@@ -695,6 +756,23 @@ env = { API_KEY = "token", BASE_URL = "https://api.example.com" }
 | `env` | map | No | Inline environment variables exported for this tool. These take highest priority, overriding both `[shell].env_files` and `env_file`. Values are single-quoted to prevent shell expansion. |
 
 **Built-in icons:** claude=🤖, gemini=✨, opencode=🌐, codex=💻, copilot=🐙, hermes=☤, cursor=📝, shell=🐚
+
+## Running a wrapper binary (e.g. Claude Code on Codex)
+
+To launch a tool through a drop-in wrapper — for example [`claudodex`](https://github.com/bassner/claudodex) to run Claude Code on an OpenAI Codex subscription, side by side with normal Claude — set the tool's `command` to the wrapper. No per-session flag is needed; this uses the per-tool `command` configuration documented above, and agent-deck already suppresses the `CLAUDE_CONFIG_DIR=` prefix for a non-`claude` command (the wrapper is assumed to handle it).
+
+- **All Claude sessions:** `command = "claudodex"` under `[claude]`.
+- **A subset, side by side with normal Claude:**
+  - scope it per-group or per-conductor — `[groups."codex-work".claude].command = "claudodex"` (resolution order: `conductor > group > [claude].command > "claude"`); **or**
+  - define a claude-compatible custom tool and pick it per session:
+
+    ```toml
+    [tools.claudodex]
+    command = "claudodex"
+    compatible_with = "claude"
+    ```
+
+    Then `agent-deck add -c claudodex …` runs Claude Code on Codex while `-c claude` sessions keep the real `claude` binary — any group, no global change.
 
 ## Path Resolution
 

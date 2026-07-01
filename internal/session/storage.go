@@ -126,6 +126,10 @@ type InstanceData struct {
 	// command. Persisted so restarts preserve custom flags like --agent/--model.
 	ExtraArgs []string `json:"extra_args,omitempty"`
 
+	// Env holds per-session environment variables ("KEY=VALUE"). Persisted via
+	// tool_data like ExtraArgs.
+	Env []string `json:"env,omitempty"`
+
 	// Color is an optional per-session TUI row tint (issue #391). Empty = no tint.
 	Color string `json:"color,omitempty"`
 
@@ -714,6 +718,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 		inst.PluginChannelLinkDisabled, // RFC §4.7
 		inst.AutoLinkedChannels,        // RFC §4.7 (G4/C2 fix)
 		inst.Color,                     // issue #391
+		inst.Env,                       // per-session env vars
 	)
 	// #1143: idle_timeout_secs lives in the tool_data extras zone — outside
 	// the positional MarshalToolData signature so legacy binaries that don't
@@ -832,7 +837,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			plugins2,
 			pluginChannelLinkDisabled2,
 			autoLinkedChannels2,
-			color2 := statedb.UnmarshalToolData(r.ToolData)
+			color2,
+			env2 := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
 		instances[i] = &InstanceData{
@@ -885,6 +891,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			MultiRepoWorktrees:        mrWorktrees2,
 			Channels:                  channels2,
 			ExtraArgs:                 extraArgs2,
+			Env:                       env2,
 			Plugins:                   plugins2,
 			PluginChannelLinkDisabled: pluginChannelLinkDisabled2,
 			AutoLinkedChannels:        autoLinkedChannels2,
@@ -951,7 +958,8 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			plugins,
 			pluginChannelLinkDisabled,
 			autoLinkedChannels,
-			color := statedb.UnmarshalToolData(r.ToolData)
+			color,
+			env := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
 		data.Instances[i] = &InstanceData{
@@ -1004,6 +1012,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			MultiRepoWorktrees:        mrWorktrees,
 			Channels:                  channels,
 			ExtraArgs:                 extraArgs,
+			Env:                       env,
 			Plugins:                   plugins,
 			PluginChannelLinkDisabled: pluginChannelLinkDisabled,
 			AutoLinkedChannels:        autoLinkedChannels,
@@ -1250,6 +1259,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			LoadedMCPNames:            instData.LoadedMCPNames,
 			Channels:                  instData.Channels,
 			ExtraArgs:                 instData.ExtraArgs,
+			Env:                       instData.Env,
 			Plugins:                   instData.Plugins,
 			PluginChannelLinkDisabled: instData.PluginChannelLinkDisabled,
 			AutoLinkedChannels:        instData.AutoLinkedChannels,

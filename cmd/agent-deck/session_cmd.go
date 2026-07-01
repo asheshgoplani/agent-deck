@@ -1363,6 +1363,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  channels           Comma-separated plugin channel ids (claude only)")
 		fmt.Printf("  plugins            Comma-separated plugin catalog names (claude only) — see [plugins.<name>] in %s\n", effectiveUserConfigPathForHelp())
 		fmt.Println("  extra-args         Extra claude CLI tokens (claude only; use `-- --flag value` for tokens starting with -; persisted plaintext — no secrets)")
+		fmt.Println("  env                KEY=VALUE to set, KEY= to unset; per-session env var for any tool; restart required (injected at spawn); persisted plaintext — no secrets")
 		fmt.Println("  model              Per-session model override (e.g. opus/sonnet/haiku or a gemini model); persists across restart (#1436). Empty clears it.")
 		fmt.Println("  color              Optional TUI row tint: '#RRGGBB' or ANSI '0'..'255' or '' (issue #391)")
 		fmt.Println("  claude-session-id  Claude conversation ID")

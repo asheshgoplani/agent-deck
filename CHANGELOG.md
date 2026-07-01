@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-session environment variables for every tool.** Set `KEY=VALUE` pairs on a single session — at create (`add`/`launch --env`, the TUI/web new-session dialogs) or later (`session set <id> env KEY=VALUE`, the edit dialogs) — exported into the spawned process for any tool (claude, gemini, codex, opencode, copilot, hermes, crush, pi, cursor, custom). As the most specific scope they **win** over `env_file`/inline/group/conductor env and `~/.zshrc` on a key collision. Persisted plaintext in the session DB (keys validated; values shell-escaped; the prepared command is suppressed from logs); inherited by forks; not applied to remote-path SSH sessions. ([#1547](https://github.com/asheshgoplani/agent-deck/pull/1547))
+
 ## [1.10.8] - 2026-07-01
 
 ### Fixed

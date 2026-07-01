@@ -86,7 +86,10 @@ Complete reference for agent-deck Terminal UI features.
 - Command (claude/gemini/opencode/codex/custom) — the dialog remembers the last-used tool (persisted per profile, never written to config.toml; an explicit `default_tool` in config wins)
 - Project path (required, supports `~/`)
 - Parent group (auto-selected)
+- Env vars (all tools): per-session `KEY=VALUE` environment variables, one per line; persisted plaintext, restart-required
 - Claude options (when Claude is selected): permission mode, Chrome, teammate mode, extra args, and start query
+
+The Env vars field is also editable on an existing session via the edit-session dialog.
 
 **Controls:** `Tab` move fields | `Enter` advance to next field (on free-text Name/Branch fields) | `Ctrl+S` create from any field | `Esc` cancel
 

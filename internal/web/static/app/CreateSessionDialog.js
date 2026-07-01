@@ -73,12 +73,31 @@ function modelIDsForTool(tool) {
   return MODEL_ID_CATALOG[tool] || []
 }
 
+// envRowsToList collapses the {key,value} editor rows into the wire format the
+// API expects (["KEY=VALUE", …]), dropping rows with a blank key.
+export function envRowsToList(rows) {
+  return rows
+    .map(r => ({ key: (r.key || '').trim(), value: r.value || '' }))
+    .filter(r => r.key !== '')
+    .map(r => `${r.key}=${r.value}`)
+}
+
+// listToEnvRows parses a ["KEY=VALUE", …] list (as seeded from MenuSession.env)
+// back into editor rows, splitting on the first '='.
+export function listToEnvRows(list) {
+  return (list || []).map(kv => {
+    const i = kv.indexOf('=')
+    return i < 0 ? { key: kv, value: '' } : { key: kv.slice(0, i), value: kv.slice(i + 1) }
+  })
+}
+
 export function CreateSessionDialog() {
   const [title, setTitle] = useState('')
   const [tool, setTool] = useState('claude')
   const [modelId, setModelId] = useState('')
   const [customModel, setCustomModel] = useState('')
   const [path, setPath] = useState('')
+  const [envRows, setEnvRows] = useState([])
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -95,6 +114,8 @@ export function CreateSessionDialog() {
       const payload = { title, tool, projectPath: path }
       const modelId = selectedModelId()
       if (modelId) payload.modelId = modelId
+      const env = envRowsToList(envRows)
+      if (env.length) payload.env = env
       await apiFetch('POST', '/api/sessions', payload)
       createSessionDialogSignal.value = false
     } catch (err) {
@@ -113,6 +134,12 @@ export function CreateSessionDialog() {
   function selectedModelId() {
     if (modelId === CUSTOM_MODEL) return customModel.trim()
     return modelId || ''
+  }
+
+  function addEnvRow() { setEnvRows([...envRows, { key: '', value: '' }]) }
+  function removeEnvRow(i) { setEnvRows(envRows.filter((_, idx) => idx !== i)) }
+  function updateEnvRow(i, field, val) {
+    setEnvRows(envRows.map((r, idx) => (idx === i ? { ...r, [field]: val } : r)))
   }
 
   const close = () => (createSessionDialogSignal.value = false)
@@ -175,6 +202,22 @@ export function CreateSessionDialog() {
               </div>
             `}
           `}
+          <div class="field" data-testid="create-session-env">
+            <label>ENV VARS</label>
+            ${envRows.map((row, i) => html`
+              <div class="seg-row" key=${i} style="gap: 6px; margin-bottom: 6px;">
+                <input placeholder="KEY" value=${row.key}
+                       onInput=${e => updateEnvRow(i, 'key', e.target.value)} style="flex: 1;"/>
+                <input placeholder="value" value=${row.value}
+                       onInput=${e => updateEnvRow(i, 'value', e.target.value)} style="flex: 2;"/>
+                <button type="button" class="btn ghost" onClick=${() => removeEnvRow(i)} aria-label="Remove variable">✕</button>
+              </div>
+            `)}
+            <button type="button" class="btn ghost" onClick=${addEnvRow}>+ Add variable</button>
+            <div style="font-family: var(--mono); font-size: 11px; color: var(--tn-comment, #888); margin-top: 6px;">
+              Per-session env vars are stored in plaintext at rest — avoid secrets you can't rotate.
+            </div>
+          </div>
           ${error && html`
             <div style="font-family: var(--mono); font-size: 11.5px; color: var(--tn-red); padding: 8px 10px;
                         border: 1px solid rgba(247,118,142,0.3); border-radius: 4px; background: rgba(247,118,142,0.06);">

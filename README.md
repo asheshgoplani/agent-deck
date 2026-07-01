@@ -215,6 +215,27 @@ Closes [issue #602](https://github.com/asheshgoplani/agent-deck/issues/602).
 
 `agent-deck session switch-account <session> <account>` moves an existing session to another Claude account — **conversation included**. The session stops, its conversation file is migrated into the target account's config dir (copy-only, with a destination backup and size verification), the account is set, and the session restarts with `--resume`. `session set <session> account <name>` auto-migrates too.
 
+### Per-session environment variables
+
+Attach environment variables to a single session — for **any** tool (claude, gemini, codex, opencode, copilot, crush, cursor, pi, hermes, custom). As the most specific scope they **win** on a key collision: they are exported after the config env layers (`env_file`, inline `[tools.X].env`, group/conductor env) and after `~/.zshrc`/`~/.bashrc`, so a per-session value overrides all of those. They survive restarts, forks, and Docker wrapping. (Applied to local, Docker, and direct-SSH sessions; not to remote-working-path or remote-mode-created sessions — see config reference.)
+
+Set them at create time or edit them later:
+
+```bash
+# At creation (repeatable, applies to all tools)
+agent-deck add . -c claude --env HTTPS_PROXY=http://127.0.0.1:8080 --env AGENT_ROLE=reviewer
+agent-deck launch -c codex --env OPENAI_BASE_URL=https://proxy.internal -m "audit the diff"
+
+# On an existing session: upsert a key …
+agent-deck session set my-project env HTTPS_PROXY=http://127.0.0.1:8080
+# … or unset it (empty value clears the key)
+agent-deck session set my-project env HTTPS_PROXY=
+```
+
+In the TUI, the **New Session** dialog has a multi-line `KEY=VALUE` field (one per line) and the **Edit Session** dialog (`P`) exposes an `Env` field; in **Web Mode** both the create and edit dialogs have a key/value editor. Env changes are **restart-required**: the TUI edit dialog auto-restarts the session when possible, while the Web edit dialog saves the change and you click **Restart** to apply it.
+
+> ⚠️ **Stored in plaintext.** Per-session env values are persisted unencrypted in the session state DB and are intended for non-secret configuration (proxies, feature flags, role hints). Avoid secrets you can't rotate. When a session carries per-session env, agent-deck suppresses the full prepared command from its logs (logging only the env **key names**) so values don't leak there. Env keys must match `[A-Za-z_][A-Za-z0-9_]*`; an invalid key is rejected. Conductor session-registration is out of scope and is not wired for per-session env.
+
 ### MCP Socket Pool
 
 Running many sessions? Socket pooling shares MCP processes across all sessions via Unix sockets, reducing MCP memory usage by 85-90%. Connections auto-recover from MCP crashes in ~3 seconds via a reconnecting proxy. Enable with `pool_all = true` in [config.toml](skills/agent-deck/references/config-reference.md).
@@ -668,6 +689,21 @@ Agent Deck works with any terminal-based AI tool:
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
 Hide tools you don't use from the new-session picker with `[ui].hidden_tools` (applies to TUI and web; `shell` is always available).
+
+### Running a wrapper binary (e.g. Claude Code on Codex)
+
+To launch a tool through a drop-in wrapper — for example [`claudodex`](https://github.com/bassner/claudodex) to run Claude Code on an OpenAI Codex subscription, side by side with normal Claude — point the tool's command at the wrapper. This uses agent-deck's existing per-tool command configuration; agent-deck already suppresses the `CLAUDE_CONFIG_DIR=` prefix for a non-`claude` command (the wrapper is assumed to handle it).
+
+- **All Claude sessions:** set `command = "claudodex"` under `[claude]` in `config.toml`.
+- **A subset:** scope it per-group or per-conductor (`[groups."codex-work".claude].command = "claudodex"`), or define a claude-compatible custom tool and pick it per session:
+
+  ```toml
+  [tools.claudodex]
+  command = "claudodex"
+  compatible_with = "claude"
+  ```
+
+  Then create sessions with `-c claudodex` right next to normal `-c claude` sessions — side by side, in any group. See the [config reference](skills/agent-deck/references/config-reference.md) for the full resolution order (`conductor > group > [claude].command > "claude"`).
 
 ### Cost Tracking Dashboard
 

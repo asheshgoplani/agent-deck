@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -17,13 +19,33 @@ const (
 	editFieldText editFieldKind = iota
 	editFieldPills
 	editFieldCheckbox
+	// editFieldEnv is a multi-line textarea holding one "KEY=VALUE" per line
+	// (mirrors the New Session dialog's env textarea). Newline-separation lets a
+	// value contain spaces (e.g. "MSG=hello world") — a single-line, space-split
+	// view could not round-trip that. GetChanges emits one FieldEnv upsert Change
+	// per line plus a "KEY=" Change per removed key.
+	editFieldEnv
 )
 
+// isTextLike reports whether a field kind is edited via a single-line text input
+// (focus, typing, and rendering). editFieldEnv is handled separately because it
+// is backed by a multi-line textarea, not a textinput.
+func isTextLike(kind editFieldKind) bool {
+	return kind == editFieldText
+}
+
 type editField struct {
-	key         string
-	label       string
-	kind        editFieldKind
-	input       textinput.Model
+	key   string
+	label string
+	kind  editFieldKind
+	input textinput.Model
+	// area backs editFieldEnv (multi-line KEY=VALUE, one per line). Unused for
+	// every other kind.
+	area textarea.Model
+	// orig is the field's initial value at dialog-build time. Used by Validate
+	// and the GetChanges no-op guard to skip a field the user has not touched
+	// (for editFieldEnv, orig is the newline-joined env list).
+	orig        string
 	pillOptions []string
 	// pillLabels, when set, supplies human display text for each pillOption
 	// (e.g. "Off"/"Top"/"Bottom" for the pin field). The committed value is
@@ -77,6 +99,13 @@ func (d *EditSessionDialog) Show(inst *session.Instance) {
 			pillOptions: []string{string(session.PinNone), string(session.PinTop), string(session.PinBottom)},
 			pillLabels:  []string{"Off", "Top", "Bottom"},
 			pillCursor:  pinCursorFor(inst.Pin)},
+		// Per-session env (all tools). Multi-line textarea, one KEY=VALUE per
+		// line (matches the New Session dialog) so values may contain spaces.
+		{key: session.FieldEnv,
+			label: "Env (restart) — one KEY=VALUE per line; stored in plaintext",
+			kind:  editFieldEnv,
+			orig:  strings.Join(inst.Env, "\n"),
+			area:  mkEnvArea(strings.Join(inst.Env, "\n"), d.width)},
 	}
 	if session.IsClaudeCompatible(inst.Tool) {
 		skip, auto := readClaudeFlags(inst)
@@ -176,11 +205,43 @@ func mkInput(placeholder string, charLimit int, initial string) textinput.Model 
 	return ti
 }
 
+// mkEnvArea builds the multi-line env textarea (one KEY=VALUE per line). Mirrors
+// the New Session dialog's env textarea so both surfaces round-trip values that
+// contain spaces. dialogWidth is the outer dialog width (0 before first layout);
+// the textarea width is derived from it, matching the View's rendering box.
+func mkEnvArea(initial string, dialogWidth int) textarea.Model {
+	ta := textarea.New()
+	ta.Placeholder = "KEY=VALUE (one per line)"
+	ta.ShowLineNumbers = false
+	ta.CharLimit = 4096
+	ta.SetHeight(3)
+	ta.SetWidth(envAreaWidth(dialogWidth))
+	ta.SetValue(initial)
+	ta.Blur()
+	return ta
+}
+
+// envAreaWidth derives the env textarea's inner width from the outer dialog
+// width, clamped to a sane range so it is usable before the first SetSize.
+func envAreaWidth(dialogWidth int) int {
+	w := dialogWidth - 16
+	if w < 40 {
+		w = 40
+	}
+	if w > 64 {
+		w = 64
+	}
+	return w
+}
+
 func (d *EditSessionDialog) Hide() {
 	d.visible = false
 	for i := range d.fields {
-		if d.fields[i].kind == editFieldText {
+		switch {
+		case isTextLike(d.fields[i].kind):
 			d.fields[i].input.Blur()
+		case d.fields[i].kind == editFieldEnv:
+			d.fields[i].area.Blur()
 		}
 	}
 }
@@ -194,8 +255,16 @@ func (d *EditSessionDialog) IsVisible() bool {
 	return d.visible
 }
 
-func (d *EditSessionDialog) SessionID() string   { return d.sessionID }
-func (d *EditSessionDialog) SetSize(w, h int)    { d.width, d.height = w, h }
+func (d *EditSessionDialog) SessionID() string { return d.sessionID }
+func (d *EditSessionDialog) SetSize(w, h int) {
+	d.width, d.height = w, h
+	// Keep the env textarea width in sync with the (possibly resized) dialog.
+	for i := range d.fields {
+		if d.fields[i].kind == editFieldEnv {
+			d.fields[i].area.SetWidth(envAreaWidth(w))
+		}
+	}
+}
 func (d *EditSessionDialog) SetError(msg string) { d.validationErr = msg }
 func (d *EditSessionDialog) ClearError()         { d.validationErr = "" }
 
@@ -231,6 +300,41 @@ func (d *EditSessionDialog) GetChanges(inst *session.Instance) []Change {
 			if newVal != fieldInitialValue(inst, f.key) {
 				changes = append(changes, Change{Field: f.key, Value: newVal, IsLive: isLive})
 			}
+		case editFieldEnv:
+			// Untouched guard FIRST (before canonicalization): if the textarea
+			// still holds exactly what Show() seeded, emit nothing. This preserves
+			// a value that canonicalization would otherwise mutate — e.g. a stored
+			// "FOO=bar " (trailing space in the value) must survive an untouched
+			// save rather than being trimmed to "FOO=bar".
+			if f.area.Value() == f.orig {
+				continue
+			}
+			// This textarea holds the WHOLE env list (one KEY=VALUE per line).
+			// Canonicalize — trim each line, drop blank/unparseable lines — so a
+			// cosmetic edit (trailing newline, blank line, padded line) that leaves
+			// the effective env unchanged does not emit a spurious change.
+			desired := make([]string, 0)
+			for _, line := range strings.Split(f.area.Value(), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				if _, _, err := session.ParseSessionEnvPair(line); err != nil {
+					continue
+				}
+				desired = append(desired, line)
+			}
+			// No-op guard: the canonical desired list equals the current env
+			// (inst.Env is already canonical — validated on the way in).
+			joined := strings.Join(desired, "\n")
+			if joined == strings.Join(inst.Env, "\n") {
+				continue
+			}
+			// Emit ONE whole-list Change (newline-joined). The commit path replaces
+			// inst.Env wholesale (like the web PATCH) rather than routing rows
+			// through SetField's single-pair upsert/unset — which would treat a
+			// desired empty-valued entry ("FOO=") as an unset and drop it.
+			changes = append(changes, Change{Field: session.FieldEnv, Value: joined, IsLive: isLive})
 		}
 	}
 	return changes
@@ -249,12 +353,24 @@ func (d *EditSessionDialog) HasRestartRequiredChanges(inst *session.Instance) bo
 // authoritatively at commit time.
 func (d *EditSessionDialog) Validate() string {
 	for _, f := range d.fields {
-		if f.kind != editFieldText {
-			continue
-		}
-		if f.key == session.FieldTitle {
+		if f.kind == editFieldText && f.key == session.FieldTitle {
 			if strings.TrimSpace(f.input.Value()) == "" {
 				return "Title cannot be empty"
+			}
+		}
+		// Env field: validate each KEY=VALUE line so an invalid entry surfaces a
+		// clear error instead of silently dropping pairs / unsetting existing keys
+		// (the commit path only applies GetChanges when Validate passes). Skip when
+		// unchanged so the GetChanges no-op guard leaves it untouched.
+		if f.kind == editFieldEnv && f.area.Value() != f.orig {
+			for _, line := range strings.Split(f.area.Value(), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				if _, _, err := session.ParseSessionEnvPair(line); err != nil {
+					return fmt.Sprintf("Invalid env entry %q (use KEY=VALUE, one per line)", line)
+				}
 			}
 		}
 	}
@@ -271,6 +387,8 @@ func fieldInitialValue(inst *session.Instance, field string) string {
 		return inst.Tool
 	case session.FieldExtraArgs:
 		return strings.Join(inst.ExtraArgs, " ")
+	case session.FieldEnv:
+		return strings.Join(inst.Env, "\n")
 	case session.FieldPlugins:
 		return strings.Join(inst.Plugins, ",")
 	case session.FieldSkipPermissions:
@@ -287,14 +405,44 @@ func fieldInitialValue(inst *session.Instance, field string) string {
 
 func (d *EditSessionDialog) updateFocus() {
 	for i := range d.fields {
-		if d.fields[i].kind == editFieldText {
-			if i == d.focusIndex {
+		focused := i == d.focusIndex
+		switch {
+		case isTextLike(d.fields[i].kind):
+			if focused {
 				d.fields[i].input.Focus()
 			} else {
 				d.fields[i].input.Blur()
 			}
+		case d.fields[i].kind == editFieldEnv:
+			if focused {
+				d.fields[i].area.Focus()
+			} else {
+				d.fields[i].area.Blur()
+			}
 		}
 	}
+}
+
+// envFieldFocused reports whether the currently focused field is the multi-line
+// env textarea. The outer key router (home.go) uses this so Enter inserts a
+// newline in the textarea instead of committing the dialog.
+func (d *EditSessionDialog) envFieldFocused() bool {
+	return d.focusIndex >= 0 && d.focusIndex < len(d.fields) &&
+		d.fields[d.focusIndex].kind == editFieldEnv
+}
+
+func (d *EditSessionDialog) focusNext() {
+	if len(d.fields) > 0 {
+		d.focusIndex = (d.focusIndex + 1) % len(d.fields)
+	}
+	d.updateFocus()
+}
+
+func (d *EditSessionDialog) focusPrev() {
+	if len(d.fields) > 0 {
+		d.focusIndex = (d.focusIndex - 1 + len(d.fields)) % len(d.fields)
+	}
+	d.updateFocus()
 }
 
 // Update returns nil cmd on esc/enter so the outer key router can decide
@@ -309,19 +457,28 @@ func (d *EditSessionDialog) Update(msg tea.Msg) (*EditSessionDialog, tea.Cmd) {
 	}
 
 	switch keyMsg.String() {
-	case "tab", "down":
-		if len(d.fields) > 0 {
-			d.focusIndex = (d.focusIndex + 1) % len(d.fields)
-		}
-		d.updateFocus()
+	case "tab":
+		d.focusNext()
 		return d, nil
 
-	case "shift+tab", "up":
-		if len(d.fields) > 0 {
-			d.focusIndex = (d.focusIndex - 1 + len(d.fields)) % len(d.fields)
-		}
-		d.updateFocus()
+	case "shift+tab":
+		d.focusPrev()
 		return d, nil
+
+	case "down":
+		// Inside the multi-line env textarea, ↓ moves the cursor between lines;
+		// fall through to the textarea update. Elsewhere it navigates fields
+		// (Tab/Shift+Tab always navigate, so the env field is still escapable).
+		if !d.envFieldFocused() {
+			d.focusNext()
+			return d, nil
+		}
+
+	case "up":
+		if !d.envFieldFocused() {
+			d.focusPrev()
+			return d, nil
+		}
 
 	case "left":
 		if d.isPillsFocused() {
@@ -348,14 +505,31 @@ func (d *EditSessionDialog) Update(msg tea.Msg) (*EditSessionDialog, tea.Cmd) {
 			return d, nil
 		}
 
-	case "esc", "enter":
+	case "esc":
 		return d, nil
+
+	case "enter":
+		// When the env textarea is focused, Enter inserts a newline (one
+		// KEY=VALUE per line) — fall through to the textarea update below. The
+		// router (home.go) only delegates Enter here in that case; otherwise it
+		// handles Enter as save and this dialog never sees it. ^S saves from the
+		// textarea.
+		if !d.envFieldFocused() {
+			return d, nil
+		}
 	}
 
-	if d.focusIndex >= 0 && d.focusIndex < len(d.fields) && d.fields[d.focusIndex].kind == editFieldText {
-		var cmd tea.Cmd
-		d.fields[d.focusIndex].input, cmd = d.fields[d.focusIndex].input.Update(msg)
-		return d, cmd
+	if d.focusIndex >= 0 && d.focusIndex < len(d.fields) {
+		switch {
+		case isTextLike(d.fields[d.focusIndex].kind):
+			var cmd tea.Cmd
+			d.fields[d.focusIndex].input, cmd = d.fields[d.focusIndex].input.Update(msg)
+			return d, cmd
+		case d.fields[d.focusIndex].kind == editFieldEnv:
+			var cmd tea.Cmd
+			d.fields[d.focusIndex].area, cmd = d.fields[d.focusIndex].area.Update(msg)
+			return d, cmd
+		}
 	}
 
 	return d, nil
@@ -422,6 +596,10 @@ func (d *EditSessionDialog) View() string {
 		switch f.kind {
 		case editFieldText:
 			content.WriteString(f.input.View())
+		case editFieldEnv:
+			// Indent every textarea line to match the field column (the "\n  "
+			// prefix above indents only the first line).
+			content.WriteString(strings.ReplaceAll(f.area.View(), "\n", "\n  "))
 		case editFieldPills:
 			if f.pillLabels != nil {
 				content.WriteString(renderLabelPills(f.pillLabels, f.pillCursor))
@@ -440,7 +618,13 @@ func (d *EditSessionDialog) View() string {
 	}
 
 	content.WriteString("\n")
-	content.WriteString(helpStyle.Render("Enter save │ Esc cancel │ Tab next │ ←/→ options │ Space toggle"))
+	// The env textarea consumes Enter as a newline, so advertise ^S for save
+	// while it is focused (mirrors the New Session dialog).
+	helpText := "Enter save │ ^S save │ Esc cancel │ Tab next │ ←/→ options │ Space toggle"
+	if d.envFieldFocused() {
+		helpText = "^S save │ Enter newline │ Esc cancel │ Tab next"
+	}
+	content.WriteString(helpStyle.Render(helpText))
 
 	dialog := dialogStyle.Render(content.String())
 	return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, dialog)

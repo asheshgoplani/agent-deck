@@ -29,10 +29,11 @@ func TestMarshalUnmarshalToolData_MultiRepo(t *testing.T) {
 		false, // plugin_channel_link_disabled
 		nil,   // auto_linked_channels (RFC §4.7 G4/C2 fix)
 		"",    // color (issue #391)
+		nil,   // env (per-session env vars)
 	)
 
 	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-		mrEnabled, addPaths, mrTempDir, mrWorktrees, _, _, _, _, _, _ := UnmarshalToolData(data)
+		mrEnabled, addPaths, mrTempDir, mrWorktrees, _, _, _, _, _, _, _ := UnmarshalToolData(data)
 
 	assert.True(t, mrEnabled)
 	assert.Equal(t, []string{"/path/additional1", "/path/additional2"}, addPaths)
@@ -60,10 +61,11 @@ func TestMarshalUnmarshalToolData_NoMultiRepo(t *testing.T) {
 		false, // plugin_channel_link_disabled
 		nil,   // auto_linked_channels (RFC §4.7 G4/C2 fix)
 		"",    // color (issue #391)
+		nil,   // env (per-session env vars)
 	)
 
 	claudeSID, _, _, _, _, _, _, _, _, _, prompt, notes, mcps, _, _, _, _, _,
-		mrEnabled, addPaths, mrTempDir, mrWorktrees, _, _, _, _, _, _ := UnmarshalToolData(data)
+		mrEnabled, addPaths, mrTempDir, mrWorktrees, _, _, _, _, _, _, _ := UnmarshalToolData(data)
 
 	assert.Equal(t, "claude-123", claudeSID)
 	assert.Equal(t, "prompt", prompt)
@@ -96,10 +98,11 @@ func TestMarshalUnmarshalToolData_Plugins(t *testing.T) {
 		false,                          // plugin_channel_link_disabled
 		nil,                            // auto_linked_channels
 		"",                             // color
+		nil,                            // env (per-session env vars)
 	)
 
 	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-		_, _, _, _, _, _, plugins, _, _, _ := UnmarshalToolData(data)
+		_, _, _, _, _, _, plugins, _, _, _, _ := UnmarshalToolData(data)
 
 	assert.Equal(t, []string{"octopus", "discord"}, plugins,
 		"Plugins must round-trip through MarshalToolData/UnmarshalToolData unchanged — Restart relies on this for enabledPlugins re-application")

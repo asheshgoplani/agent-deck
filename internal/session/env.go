@@ -132,6 +132,30 @@ func (i *Instance) buildEnvSourceCommand() string {
 		sources = append(sources, conductorEnv)
 	}
 
+	// 7b. Per-session env (Instance.Env) — exported AFTER all config-level env
+	// (env_file / inline / conductor) so an explicit per-session value WINS over
+	// a colliding config key. This is the most-specific scope, so least surprise
+	// is that it beats config. (prepareCommand also prepends these exports for
+	// universal coverage — including raw/custom sessions that never reach this
+	// builder — but that earlier copy loses to the config sourcing above; this
+	// later copy is the one that wins.) Stays BEFORE the telegram strip (step 8)
+	// so TELEGRAM_* neutralisation still wins over a per-session value. Skipped
+	// for SSHRemotePath sessions, whose remote re-quoting mangles inline exports
+	// (mirrors prepareCommand's skip).
+	if i.SSHRemotePath == "" {
+		if sessionExports := strings.TrimSpace(buildSessionEnvExports(i.Env)); sessionExports != "" {
+			// buildSessionEnvExports returns "export A='1'; export B='2'; " — a
+			// semicolon-separated list. The `sources` slice is joined with " && ",
+			// so appending it raw would yield `prev && export A; export B && main`,
+			// where the bare `;` breaks the fail-fast chain (main runs even if prev
+			// failed, and only B is applied). Wrap the whole list in a brace group
+			// so it acts as ONE &&-chainable unit; braces run in the CURRENT shell
+			// (unlike a subshell) so the exports persist to the launched command.
+			grouped := "{ " + strings.TrimRight(sessionExports, " ") + " }"
+			sources = append(sources, grouped)
+		}
+	}
+
 	// 8. S8 (v1.7.40) — strip TELEGRAM_STATE_DIR on every non-channel-owning
 	// claude spawn. Fires AFTER all sources and inline env so it wins
 	// over any env_file / inline export that set the variable, and
@@ -624,6 +648,120 @@ func isValidEnvKey(key string) bool {
 		return false
 	}
 	return true
+}
+
+// ValidateSessionEnvKey reports whether key is a valid environment variable
+// name, returning a descriptive error otherwise. It is the exported wrapper over
+// isValidEnvKey so surface packages (CLI/web/TUI) share one source of truth.
+func ValidateSessionEnvKey(key string) error {
+	if !isValidEnvKey(key) {
+		return fmt.Errorf("invalid environment variable name %q (must match [A-Za-z_][A-Za-z0-9_]*)", key)
+	}
+	return nil
+}
+
+// ParseSessionEnvPair splits "KEY=VALUE" on the first '=' and validates the key.
+// A trailing-empty value ("KEY=") is permitted (used to signal unset upstream).
+func ParseSessionEnvPair(kv string) (string, string, error) {
+	eq := strings.IndexByte(kv, '=')
+	if eq <= 0 {
+		return "", "", fmt.Errorf("expected KEY=VALUE, got %q", kv)
+	}
+	key, val := kv[:eq], kv[eq+1:]
+	if err := ValidateSessionEnvKey(key); err != nil {
+		return "", "", err
+	}
+	// Reject CR/LF in the value at the single shared choke point. The web
+	// transport joins the env list with "\n" and splits it back on the same
+	// delimiter, so a value containing a raw newline could not round-trip a
+	// POST→PATCH cycle; the TUI textareas likewise treat "\n" as the entry
+	// separator. Banning it here keeps newline-as-separator lossless on every
+	// surface. Multi-line secrets (rare) belong in an env_file, not inline.
+	if strings.ContainsAny(val, "\r\n") {
+		return "", "", fmt.Errorf("environment value for %q must not contain a newline", key)
+	}
+	return key, val, nil
+}
+
+// UpsertSessionEnv replaces the "KEY=..." entry matching kv's key with kv and
+// removes any later duplicates of the same key, or appends kv when the key is
+// absent. Insertion order is otherwise preserved. Collapsing trailing dupes
+// matters because buildSessionEnvExports exports in order (last wins): a list
+// that already carried "FOO=1","FOO=2" (e.g. from a pre-fix session or a web
+// POST array) would otherwise still export the stale "FOO=2" after upserting
+// "FOO=3".
+func UpsertSessionEnv(env []string, kv string) ([]string, error) {
+	key, _, err := ParseSessionEnvPair(kv)
+	if err != nil {
+		return env, err
+	}
+	out := env[:0:0]
+	replaced := false
+	for _, e := range env {
+		if eq := strings.IndexByte(e, '='); eq > 0 && e[:eq] == key {
+			if replaced {
+				continue // drop later duplicate of the same key
+			}
+			out = append(out, kv)
+			replaced = true
+			continue
+		}
+		out = append(out, e)
+	}
+	if !replaced {
+		out = append(out, kv)
+	}
+	return out, nil
+}
+
+// DedupeSessionEnv collapses duplicate keys in a whole submitted list to their
+// LAST value (matching buildSessionEnvExports' in-order "last wins" export),
+// keeping each key's first-seen position; blank/unparseable entries are dropped
+// and each kept entry is trimmed. The single-entry mutation path uses
+// UpsertSessionEnv; the whole-list surfaces (web create/PATCH, TUI new-session)
+// use this so a submitted ["FOO=1","FOO=2"] is stored as one canonical
+// ["FOO=2"] instead of persisting duplicate keys.
+func DedupeSessionEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
+		if _, _, err := ParseSessionEnvPair(kv); err != nil {
+			continue
+		}
+		out, _ = UpsertSessionEnv(out, kv)
+	}
+	return out
+}
+
+// UnsetSessionEnv removes any "KEY=..." entry matching key, preserving order.
+func UnsetSessionEnv(env []string, key string) []string {
+	out := env[:0:0]
+	for _, e := range env {
+		if eq := strings.IndexByte(e, '='); eq > 0 && e[:eq] == key {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// buildSessionEnvExports renders per-session env as shell-escaped
+// `export KEY='VALUE'; ` clauses in input order. Invalid pairs are skipped, and
+// "" is returned when there is nothing to export.
+func buildSessionEnvExports(env []string) string {
+	var b strings.Builder
+	for _, kv := range env {
+		key, val, err := ParseSessionEnvPair(kv)
+		if err != nil {
+			continue
+		}
+		escaped := strings.ReplaceAll(val, "'", "'\\''")
+		fmt.Fprintf(&b, "export %s='%s'; ", key, escaped)
+	}
+	return b.String()
 }
 
 // telegramEnvVarsToStrip lists every TELEGRAM_* env var that the
