@@ -2,6 +2,8 @@ package session
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1779,9 +1781,15 @@ type WorktreeSettings struct {
 	// AutoCleanup: remove worktree when session is deleted (default: true, nil = true)
 	AutoCleanup *bool `toml:"auto_cleanup,omitempty"`
 
-	// DefaultEnabled controls whether worktree creation is pre-selected in
-	// new-session and fork dialogs by default.
-	// Default: false
+	// DefaultEnabled controls two things when true:
+	//  1. Pre-selects the "Create in worktree" checkbox in new-session and fork dialogs.
+	//  2. Automatically creates a new git worktree for every session created via the
+	//     CLI (add / launch) when no explicit -w / --worktree branch was supplied.
+	//     The branch name is auto-generated as "wt/<slug>-<8hex>".  When the path is
+	//     not a git repository the auto-worktree step is skipped with a warning and
+	//     the session is created normally.
+	// Default: false (opt-in; existing behaviour is preserved for all users who have
+	// not set this).
 	DefaultEnabled bool `toml:"default_enabled,omitempty"`
 
 	// DefaultLocation: "sibling" (next to repo), "subdirectory" (inside .worktrees/),
@@ -1870,6 +1878,33 @@ func (w *WorktreeSettings) ApplyBranchPrefix(branch string) string {
 		return branch
 	}
 	return prefix + branch
+}
+
+// worktreeBranchSanitizeRe matches characters that are not safe in git branch names.
+var worktreeBranchSanitizeRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+// GenerateWorktreeBranchName produces an auto-generated branch name of the
+// form "wt/<slug>-<8hex>" from a session title.  The slug is the title
+// lowercased with non-alphanumeric runs replaced by hyphens, truncated to 30
+// characters.  The 8-character random hex suffix makes collisions unlikely
+// without requiring a round-trip to git.
+//
+// The "wt/" prefix is intentionally distinct from the configurable
+// BranchPrefix (default "feature/") so auto-generated branches can be
+// identified at a glance.
+func GenerateWorktreeBranchName(title string) string {
+	slug := worktreeBranchSanitizeRe.ReplaceAllString(strings.ToLower(title), "-")
+	slug = strings.Trim(slug, "-")
+	if len(slug) > 30 {
+		slug = slug[:30]
+		slug = strings.TrimRight(slug, "-")
+	}
+	if slug == "" {
+		slug = "session"
+	}
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return "wt/" + slug + "-" + hex.EncodeToString(b)
 }
 
 // GlobalSearchSettings defines global conversation search configuration
@@ -3895,7 +3930,13 @@ default_tool = "claude"
 [worktree]
 # Where to create worktrees: "sibling" (next to repo) or "subdirectory" (inside repo)
 default_location = "sibling"
-# Pre-check "Create in worktree" in new-session and fork dialogs (default: false)
+# Automatically create a git worktree for every new session (default: false).
+# When true:
+#   - CLI (add / launch): creates a new worktree with an auto-generated branch
+#     name ("wt/<slug>-<8hex>") unless -w / --worktree is already supplied.
+#     If the path is not a git repo the step is skipped with a warning.
+#   - TUI new-session dialog: pre-selects the "Create in worktree" checkbox.
+# Set to true to opt in; existing behaviour is preserved when false.
 # default_enabled = true
 # Automatically remove worktree when session is deleted
 auto_cleanup = true
