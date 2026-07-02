@@ -102,10 +102,7 @@ const (
 	// timestamp on every received line, so 30s of silence means the stream
 	// (and likely the process) is gone — fall back to tmux polling.
 	opencodeSSEFreshnessWindow = 30 * time.Second
-	// codexProbeScanInterval rate-limits process-file probing to avoid
-	// repeated /proc and lsof scans on every status tick.
-	codexProbeScanInterval    = 2 * time.Second
-	codexProbeMissingSentinel = "__AGENT_DECK_MISSING_TOOL__"
+	codexProbeMissingSentinel  = "__AGENT_DECK_MISSING_TOOL__"
 	// codexLsofProbeTimeout hard-caps a single lsof invocation so a slow or
 	// hung child can never stall the shared status pass. lsof is also run with
 	// -n -P (no host/port name resolution) to avoid reverse-DNS PTR lookups on
@@ -2525,7 +2522,16 @@ func (i *Instance) shouldRunCodexProcessProbe(force bool) bool {
 		return true
 	}
 
-	if !i.lastCodexProbeAt.IsZero() && time.Since(i.lastCodexProbeAt) < codexProbeScanInterval {
+	// Fast cadence only while bootstrapping (no session ID yet) — that phase is
+	// bounded by discovery succeeding within seconds. Once an ID is known the
+	// probe is just a rotation safety net behind the notify hook and tmux env,
+	// so it backs off to the rotation cadence (issue #1552).
+	interval := codexBootstrapScanInterval
+	if i.CodexSessionID != "" {
+		interval = codexRotationScanInterval
+	}
+
+	if !i.lastCodexProbeAt.IsZero() && time.Since(i.lastCodexProbeAt) < interval {
 		return false
 	}
 
