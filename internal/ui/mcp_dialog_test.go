@@ -75,3 +75,22 @@ func TestMCPDialog_TypeJumpResetOnScopeSwitch(t *testing.T) {
 		t.Fatalf("expected jump in global list to zeta (index 0), got %d", dialog.globalAvailableIdx)
 	}
 }
+
+func TestMCPDialog_CodexUsesGlobalScopeOnly(t *testing.T) {
+	dialog := NewMCPDialog()
+	if err := dialog.Show(t.TempDir(), "session-id", "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if dialog.scope != MCPScopeGlobal {
+		t.Fatalf("scope = %v, want global", dialog.scope)
+	}
+
+	_, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if dialog.scope != MCPScopeGlobal {
+		t.Fatalf("tab should keep Codex on global scope, got %v", dialog.scope)
+	}
+}
+
+func TestMCPDialog_RemoteSessionNotApplicable(t *testing.T) {
+	t.Skip("remote sessions cannot open MCPDialog directly; Home only opens it for local session items")
+}
