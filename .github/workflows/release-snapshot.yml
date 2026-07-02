@@ -21,6 +21,10 @@ on:
     paths:
       - '.goreleaser.yml'
       - 'cmd/agent-deck/**'
+      # darwin-only asm/linkname code (//go:build darwin): the goreleaser
+      # cross-compile here is the only linux-side PR gate that links it.
+      # Native darwin tests run in procfd-darwin.yml.
+      - 'internal/procfd/**'
       - '.github/workflows/release.yml'
       - '.github/workflows/release-snapshot.yml'
 

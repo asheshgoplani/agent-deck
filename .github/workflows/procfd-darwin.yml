@@ -1,0 +1,52 @@
+# Native darwin tests for internal/procfd (#1552).
+#
+# procfd's darwin implementation — hand-written libSystem trampolines,
+# //go:linkname syscall.syscall6, and ABI-sized buffers matching
+# <sys/proc_info.h> — is compiled out of every Linux gate by //go:build darwin,
+# and release-snapshot.yml only cross-compiles it (link check, no execution).
+# This job runs the native tests on a real macOS runner, including
+# TestStructLayoutMatchesProcInfoHeader, the ABI-drift guard that pins
+# PROC_PIDFDVNODEPATHINFO_SIZE = 1200 so the kernel never misfills the
+# buffer, and the codex native-probe glue test in internal/session. Without
+# it, a trampoline or struct-layout regression would first surface at
+# tag-push time — the release-only breakage class go-test.yml exists to
+# prevent — or worse, ship silently.
+#
+# Path-gated: macOS runners bill at 10x Linux minutes and this code changes
+# rarely.
+
+name: procfd darwin tests
+
+on:
+  pull_request:
+    paths:
+      - 'internal/procfd/**'
+      - '.github/workflows/procfd-darwin.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: go test internal/procfd (macOS)
+    timeout-minutes: 10
+    runs-on: macos-latest
+    env:
+      CGO_ENABLED: 0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: go vet
+        run: go vet ./internal/procfd/...
+
+      - name: go test internal/procfd
+        run: go test ./internal/procfd/... -count=1 -v
+
+      - name: Codex native-probe glue test
+        run: go test ./internal/session/ -run 'TestQueryCodexSessionFromHostNative' -count=1 -v
