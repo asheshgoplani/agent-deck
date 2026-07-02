@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/asheshgoplani/agent-deck/internal/docker"
+	"github.com/asheshgoplani/agent-deck/internal/procfd"
 	"github.com/stretchr/testify/require"
 )
 
@@ -4664,6 +4666,125 @@ func TestInstance_RefreshLiveSessionIDs_NoOpForNonAgenticTool(t *testing.T) {
 	if inst.GeminiSessionID != "leftover-gemini" {
 		t.Errorf("GeminiSessionID mutated for non-agentic tool: got %q", inst.GeminiSessionID)
 	}
+}
+
+// TestQueryCodexSessionFromHostNative exercises the issue #1552 replacement
+// for per-PID lsof against the real libproc scan: a child process holding a
+// rollout-shaped file open, probed in-process via internal/procfd. The probe
+// semantics themselves are pinned cross-platform by
+// TestQueryCodexSessionFromHostNativeSemantics below.
+func TestQueryCodexSessionFromHostNative(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("real native probe requires darwin; semantics covered by TestQueryCodexSessionFromHostNativeSemantics")
+	}
+
+	const wantID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	dir := filepath.Join(t.TempDir(), "sessions", "2026", "07", "01")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout, err := os.Create(filepath.Join(dir, "rollout-2026-07-01T00-00-00-"+wantID+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rollout.Close()
+
+	cmd := exec.Command("/bin/sleep", "30")
+	cmd.Stdout = rollout
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+
+	inst := &Instance{}
+	gotID, ok := inst.queryCodexSessionFromHostNative([]int{cmd.Process.Pid})
+	if !ok {
+		t.Fatal("native probe failed to answer on darwin")
+	}
+	if gotID != wantID {
+		t.Errorf("native probe session ID = %q, want %q", gotID, wantID)
+	}
+}
+
+// TestQueryCodexSessionFromHostNativeSemantics pins the native probe's
+// answered/fallback contract and its ID extraction on every platform via the
+// procfdOpenVnodePaths seam, so the ubuntu CI gate exercises the logic that
+// decides whether the lsof fallback runs (#1552).
+func TestQueryCodexSessionFromHostNativeSemantics(t *testing.T) {
+	const wantID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	restore := procfdOpenVnodePaths
+	defer func() { procfdOpenVnodePaths = restore }()
+
+	inst := &Instance{}
+
+	t.Run("extracts session ID from an open rollout path", func(t *testing.T) {
+		procfdOpenVnodePaths = func(int) ([]string, error) {
+			return []string{
+				"/dev/null",
+				"/Users/u/.codex/sessions/2026/07/01/rollout-2026-07-01T00-00-00-" + wantID + ".jsonl",
+			}, nil
+		}
+		gotID, ok := inst.queryCodexSessionFromHostNative([]int{123})
+		if !ok || gotID != wantID {
+			t.Fatalf("got (%q, %v), want (%q, true)", gotID, ok, wantID)
+		}
+	})
+
+	t.Run("all PIDs erroring means unanswered so lsof fallback stays reachable", func(t *testing.T) {
+		procfdOpenVnodePaths = func(int) ([]string, error) {
+			return nil, fmt.Errorf("proc_pidinfo: %w", os.ErrPermission)
+		}
+		if _, ok := inst.queryCodexSessionFromHostNative([]int{123, 456}); ok {
+			t.Fatal("errored probes must report unanswered (ok=false) to trigger the lsof fallback")
+		}
+	})
+
+	t.Run("unsupported platform is unanswered", func(t *testing.T) {
+		procfdOpenVnodePaths = func(int) ([]string, error) { return nil, procfd.ErrUnsupported }
+		if _, ok := inst.queryCodexSessionFromHostNative([]int{123}); ok {
+			t.Fatal("ErrUnsupported must report unanswered (ok=false)")
+		}
+	})
+
+	t.Run("partial scan failure falls back to lsof", func(t *testing.T) {
+		calls := 0
+		procfdOpenVnodePaths = func(int) ([]string, error) {
+			calls++
+			if calls == 1 {
+				return nil, fmt.Errorf("proc_pidinfo: %w", os.ErrPermission)
+			}
+			return []string{"/dev/null"}, nil
+		}
+		gotID, ok := inst.queryCodexSessionFromHostNative([]int{123, 456})
+		if ok || gotID != "" {
+			t.Fatalf("got (%q, %v), want (\"\", false): a partial scan cannot answer conclusively", gotID, ok)
+		}
+	})
+
+	t.Run("all successful scans with no match answer negatively", func(t *testing.T) {
+		procfdOpenVnodePaths = func(int) ([]string, error) {
+			return []string{"/dev/null"}, nil
+		}
+		gotID, ok := inst.queryCodexSessionFromHostNative([]int{123, 456})
+		if !ok || gotID != "" {
+			t.Fatalf("got (%q, %v), want (\"\", true)", gotID, ok)
+		}
+	})
+
+	t.Run("empty candidate list counts as answered", func(t *testing.T) {
+		procfdOpenVnodePaths = func(int) ([]string, error) {
+			t.Fatal("probe must not be called with no candidates")
+			return nil, nil
+		}
+		// lsof would scan nothing either, so the fallback (and its
+		// missing-lsof warning) must not be triggered.
+		if _, ok := inst.queryCodexSessionFromHostNative(nil); !ok {
+			t.Error("empty candidate list must count as answered")
+		}
+	})
 }
 
 // TestShouldRunCodexProcessProbeSteadyStateBackoff covers issue #1552: once a

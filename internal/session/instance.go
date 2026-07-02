@@ -29,6 +29,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/procfd"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -3171,16 +3172,42 @@ done`,
 	return "", ""
 }
 
-func (i *Instance) queryCodexSessionFromHostLsof() (string, string) {
+// procfdOpenVnodePaths is a test seam over procfd.OpenVnodePaths so the
+// native-probe semantics (ID extraction, answered/lsof-fallback logic) stay
+// testable on platforms where the real scan is unsupported.
+var procfdOpenVnodePaths = procfd.OpenVnodePaths
+
+// queryCodexSessionFromHostNative probes candidate PIDs with the in-process
+// libproc FD scan (issue #1552: spawning lsof per PID on macOS walks every FD
+// and resolves every vnode path, and polling it stalled whole machines).
+// ok=false means at least one candidate could not be scanned, so the caller
+// should fall back to lsof rather than treating a partial result as complete.
+func (i *Instance) queryCodexSessionFromHostNative(pids []int) (sessionID string, ok bool) {
+	complete := true
+	for _, pid := range pids {
+		paths, err := procfdOpenVnodePaths(pid)
+		if err != nil {
+			complete = false
+			if !errors.Is(err, procfd.ErrUnsupported) {
+				sessionLog.Debug("codex_procfd_probe_failed", slog.Int("pid", pid), slog.Any("error", err))
+			}
+			continue
+		}
+		for _, path := range paths {
+			if sessionID := extractCodexSessionIDFromPath(path); sessionID != "" {
+				return sessionID, true
+			}
+		}
+	}
+	return "", complete
+}
+
+func (i *Instance) queryCodexSessionFromHostLsof(pids []int) (string, string) {
 	if _, err := exec.LookPath("lsof"); err != nil {
 		return "", "lsof"
 	}
 
-	for _, pid := range i.collectTmuxPaneProcessTreePIDs() {
-		if !isLikelyCodexProcessPID(pid) {
-			continue
-		}
-
+	for _, pid := range pids {
 		// -n -P disables reverse-DNS host and port-name resolution so a resolver
 		// that drops PTR queries cannot stall the probe (issue #1581); the
 		// context timeout bounds the call even if lsof hangs for any other reason.
@@ -3222,8 +3249,18 @@ func (i *Instance) queryCodexSessionFromProcessFiles() (string, string) {
 		return "", ""
 	}
 
-	// Non-Linux (e.g. macOS): fallback to lsof compatibility path.
-	return i.queryCodexSessionFromHostLsof()
+	// Non-Linux (e.g. macOS): in-process libproc FD scan first, with lsof kept
+	// only as a compatibility fallback when the native probe cannot answer.
+	candidates := make([]int, 0, 4)
+	for _, pid := range i.collectTmuxPaneProcessTreePIDs() {
+		if isLikelyCodexProcessPID(pid) {
+			candidates = append(candidates, pid)
+		}
+	}
+	if sessionID, ok := i.queryCodexSessionFromHostNative(candidates); ok {
+		return sessionID, ""
+	}
+	return i.queryCodexSessionFromHostLsof(candidates)
 }
 
 // ConsumeCodexRestartWarning returns and clears any pending Codex restart warning.
