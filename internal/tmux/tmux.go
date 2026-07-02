@@ -5188,6 +5188,119 @@ func ReadAndClearAckSignal() string {
 	return strings.TrimSpace(string(data))
 }
 
+// WriteAckSignal writes sessionID to the ack-signal file so the TUI's background
+// sync (which runs even while the TUI is paused inside tea.Exec) acknowledges the
+// session, updates the notification bar, and records the switch for detach
+// cursor-sync. This is the programmatic equivalent of the `echo <id> > signal`
+// step in buildAckSwitchScript; pairs with SwitchAttachedClients.
+func WriteAckSignal(sessionID string) error {
+	signalFile, err := GetAckSignalPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(signalFile), 0o700); err != nil {
+		return err
+	}
+	// Write atomically: the reader does ReadFile-then-Remove, so a plain
+	// truncating WriteFile could be observed mid-write as an empty/partial file
+	// and the ack would be lost. Stage to a temp file and rename into place.
+	tmp := signalFile + ".tmp"
+	if err := os.WriteFile(tmp, []byte(sessionID+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, signalFile); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// attachedClientNames lists the names of non-control clients attached on socket
+// ("" = default server). Control-mode clients (PipeManager pipes) are excluded.
+// Returns nil when no server is running or no client is attached.
+func attachedClientNames(socket string) []string {
+	// client_name is free-text (a pts path) so it goes LAST, after the 0/1
+	// control-mode flag, to stay collision-safe under tmuxFieldSep.
+	cmd := tmuxExec(socket, "list-clients", "-F", tmuxFmt("#{client_control_mode}", "#{client_name}"))
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		parts := strings.SplitN(line, tmuxFieldSep, 2)
+		if len(parts) != 2 || parts[1] == "" {
+			continue
+		}
+		if parts[0] == "1" { // control mode
+			continue
+		}
+		names = append(names, parts[1])
+	}
+	return names
+}
+
+// SwitchAttachedClients moves every non-control client attached on socket into
+// targetSession and writes the ack-signal for sessionID. Returns switched=true
+// iff at least one client was attached and switched.
+//
+// This is the programmatic equivalent of the Ctrl+b N quick-switch: like that
+// path it works while the TUI is suspended inside tea.Exec (tmux drives the
+// switch, not Bubble Tea). And like that path it only works when the attached
+// client and target session share a tmux server — querying clients on the
+// target's own socket means a client attached elsewhere yields switched=false,
+// so the caller falls back to a focus_request rather than mis-switching.
+func SwitchAttachedClients(socket, targetSession, sessionID string) (bool, error) {
+	clients := attachedClientNames(socket)
+	if len(clients) == 0 {
+		return false, nil
+	}
+	// Best-effort: the bar/cursor sync degrades without it, but the switch below
+	// is what the user actually asked for, so a failed ack must not abort it.
+	_ = WriteAckSignal(sessionID)
+
+	switched := false
+	var firstErr error
+	for _, c := range clients {
+		if err := tmuxExec(socket, "switch-client", "-c", c, "-t", targetSession).Run(); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		switched = true
+	}
+	return switched, firstErr
+}
+
+// DetachClientsOnSockets detaches every non-control client attached on any of
+// the given sockets ("" = default server). Returns detached=true iff at least
+// one client was detached.
+//
+// This is the cross-server companion to SwitchAttachedClients: switch-client
+// cannot move a client between tmux servers, so when a notification target lives
+// on a different socket than the attached session, detaching that client makes
+// agent-deck's paused attach (tea.Exec) return. The TUI then resumes and
+// consumes the focus_request to attach the target on its OWN socket — a
+// detach-and-reattach, which is the only way to "switch while attached" across
+// servers. Control-mode clients (PipeManager pipes) are left alone.
+func DetachClientsOnSockets(sockets ...string) (bool, error) {
+	detached := false
+	var firstErr error
+	for _, socket := range sockets {
+		for _, c := range attachedClientNames(socket) {
+			if err := tmuxExec(socket, "detach-client", "-c", c).Run(); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			detached = true
+		}
+	}
+	return detached, firstErr
+}
+
 // UnbindKey removes a key binding and restores default behavior.
 // After unbinding, attempts to restore the default behavior where number keys
 // select windows. The restore is best-effort since it may fail in environments

@@ -1966,3 +1966,28 @@ func createV9SchemaDB(t *testing.T) *StateDB {
 	t.Cleanup(func() { db.Close() })
 	return db
 }
+
+func TestTakeMeta(t *testing.T) {
+	db := newTestDB(t)
+
+	// Absent key → "" and no error.
+	if got, err := db.TakeMeta("focus_request"); err != nil || got != "" {
+		t.Fatalf("absent TakeMeta = (%q, %v), want (\"\", nil)", got, err)
+	}
+
+	// Set then take → returns the value and clears it atomically.
+	if err := db.SetMeta("focus_request", "payload"); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+	got, err := db.TakeMeta("focus_request")
+	if err != nil || got != "payload" {
+		t.Fatalf("TakeMeta = (%q, %v), want (\"payload\", nil)", got, err)
+	}
+	// Cleared: a second take yields "" (consume-once).
+	if got, err := db.TakeMeta("focus_request"); err != nil || got != "" {
+		t.Fatalf("second TakeMeta = (%q, %v), want (\"\", nil)", got, err)
+	}
+	if got, err := db.GetMeta("focus_request"); err != nil || got != "" {
+		t.Fatalf("GetMeta after take = (%q, %v), want (\"\", nil)", got, err)
+	}
+}

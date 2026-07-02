@@ -49,6 +49,8 @@ func handleSession(profile string, args []string) {
 		handleSessionFork(profile, args[1:])
 	case "attach":
 		handleSessionAttach(profile, args[1:])
+	case "focus":
+		handleSessionFocus(profile, args[1:])
 	case "show":
 		handleSessionShow(profile, args[1:])
 	case "current":
@@ -105,6 +107,7 @@ func printSessionHelp() {
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
 	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, or Codex session with context")
 	fmt.Println("  attach <id>             Attach to session interactively")
+	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
@@ -169,6 +172,7 @@ func handleSessionStart(profile string, args []string) {
 	message := fs.String("message", "", "Initial message to send once agent is ready")
 	messageShort := fs.String("m", "", "Initial message to send once agent is ready (short)")
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode when starting Gemini or Codex sessions")
+	attach := fs.Bool("attach", false, "Attach to the session after starting (requires an interactive terminal)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session start <id|title> [options]")
@@ -271,6 +275,27 @@ func handleSessionStart(profile string, args []string) {
 	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+
+	// --attach: drop the user into the freshly started session's pane. This
+	// suspends the CLI into tmux and blocks until the user detaches, so the
+	// normal success output below is skipped. Refused loudly (never silently)
+	// without an interactive terminal or under --json; the session stays
+	// started in both cases.
+	if *attach {
+		if *jsonOutput {
+			out.Error("--attach cannot be combined with --json; session was started", ErrCodeInvalidOperation)
+			os.Exit(3)
+		}
+		if err := attachInstanceInteractive(inst); err != nil {
+			if errors.Is(err, errAttachNoTTY) {
+				fmt.Fprintf(os.Stderr, "Error: %v; session was started\n", err)
+				os.Exit(3)
+			}
+			fmt.Fprintf(os.Stderr, "Error: failed to attach: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// Output success
@@ -1099,6 +1124,196 @@ func handleSessionAttach(profile string, args []string) {
 	}
 }
 
+// errFocusNotFound signals that `session focus` was given an id absent from the
+// current profile. Callers map it to a distinct (exit 2) "not found" code.
+var errFocusNotFound = errors.New("session not found")
+
+// liveSwitcher attempts to move the attached terminal straight into a session's
+// tmux pane (the Ctrl+b N quick-switch path), so a notification click lands you
+// in the session even while the TUI is paused inside another attach. Injected
+// into routeFocus so the attached-vs-list routing is unit-testable without a
+// real tmux server.
+type liveSwitcher interface {
+	// switchInto moves the client attached to inst's tmux server into inst's
+	// pane. Returns switched=true iff a client was attached and moved; false
+	// (no error) when inst has no live pane or no client is attached on its
+	// socket, signalling the caller to fall back to a focus_request row.
+	switchInto(inst *session.Instance) (bool, error)
+}
+
+// tmuxLiveSwitcher is the production liveSwitcher. It mirrors the Ctrl+b N
+// quick-switch: tmux switch-client + an ack-signal write, both of which work
+// while the Bubble Tea TUI is suspended during tea.Exec.
+type tmuxLiveSwitcher struct{}
+
+func (tmuxLiveSwitcher) switchInto(inst *session.Instance) (bool, error) {
+	if inst == nil || !inst.Exists() {
+		return false, nil
+	}
+	ts := inst.GetTmuxSession()
+	if ts == nil || ts.Name == "" {
+		return false, nil
+	}
+	// Query/switch on the target's own socket: switch-client only works when the
+	// attached client and the target session share a tmux server, so a client on
+	// a different socket simply yields switched=false and the focus_request
+	// fallback takes over (matches the Ctrl+b N same-server limitation).
+	return tmux.SwitchAttachedClients(inst.TmuxSocketName, ts.Name, inst.ID)
+}
+
+// clientDetacher detaches the user's currently-attached tmux client when the
+// live switch could not move it. switch-client cannot cross tmux servers, so a
+// notification target on a different socket than the attached session yields
+// switched=false; detaching that client makes the paused TUI resume and consume
+// the focus_request (attaching the target on its own socket) instead of the
+// switch silently waiting for a manual Ctrl+Q. Injected into routeFocus so the
+// cross-socket routing is unit-testable without a real tmux server.
+type clientDetacher interface {
+	// detachClientsOn detaches every real (non-control) client attached on any
+	// of sockets. Returns detached=true iff at least one client was detached.
+	detachClientsOn(sockets []string) (bool, error)
+}
+
+// tmuxClientDetacher is the production clientDetacher.
+type tmuxClientDetacher struct{}
+
+func (tmuxClientDetacher) detachClientsOn(sockets []string) (bool, error) {
+	return tmux.DetachClientsOnSockets(sockets...)
+}
+
+// findFocusInstance returns the instance with the given id, or nil.
+func findFocusInstance(instances []*session.Instance, id string) *session.Instance {
+	for _, inst := range instances {
+		if inst.ID == id {
+			return inst
+		}
+	}
+	return nil
+}
+
+// focusOtherSockets returns the distinct tmux socket names used by instances,
+// excluding exclude (the target's own socket, where the live switch already
+// looked). Order-preserving and deduped. These are the sockets that may host
+// the user's currently-attached client when the target lives elsewhere.
+func focusOtherSockets(instances []*session.Instance, exclude string) []string {
+	seen := map[string]bool{exclude: true}
+	var out []string
+	for _, inst := range instances {
+		s := inst.TmuxSocketName
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+// routeFocus drives `session focus <id>`. With --attach it first tries a live
+// switch-while-attached (so the click lands you straight in the session even
+// when the TUI is paused inside another attach); if no client is attached to the
+// target's tmux server it falls back to the foreground focus_request row, which
+// the TUI consumes on its next tick. Without --attach it always writes the
+// (select-only) focus_request. Split out of handleSessionFocus so it is
+// unit-testable without os.Exit; switcher is injected for the same reason.
+func routeFocus(db *statedb.StateDB, instances []*session.Instance, id string, nowNano int64, attach bool, switcher liveSwitcher, detacher clientDetacher) error {
+	if id == "" {
+		return fmt.Errorf("session focus requires an <id>")
+	}
+	inst := findFocusInstance(instances, id)
+	if inst == nil {
+		return fmt.Errorf("%w: %q", errFocusNotFound, id)
+	}
+	if attach && switcher != nil {
+		// The contract reserves (false, nil) for the benign fallback (no live
+		// pane / no client attached on the socket); a non-nil error is a real
+		// tmux failure that must surface, not be silently swallowed into the
+		// fallback path.
+		switched, err := switcher.switchInto(inst)
+		if err != nil {
+			return err
+		}
+		if switched {
+			return nil
+		}
+		// Live switch couldn't move the client: it's attached to a different tmux
+		// server than the target (switch-client can't cross servers). Write the
+		// focus_request FIRST, then detach that client so agent-deck's paused
+		// attach returns and the resumed TUI consumes the row on its next tick —
+		// attaching the target on its own socket, instead of waiting for a manual
+		// Ctrl+Q. When no client is attached elsewhere (e.g. the TUI is already in
+		// the list view), the detach is a harmless no-op and the row is consumed
+		// normally.
+		if detacher != nil {
+			if err := session.WriteFocusRequestAttach(db, id, nowNano, attach); err != nil {
+				return err
+			}
+			// The focus_request is already persisted, so a detach failure still
+			// leaves the row to be consumed on the next tick — but surface it so
+			// the immediate-switch path's failure isn't hidden.
+			if _, err := detacher.detachClientsOn(focusOtherSockets(instances, inst.TmuxSocketName)); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+	return session.WriteFocusRequestAttach(db, id, nowNano, attach)
+}
+
+// resolveAndWriteFocus validates id against the loaded instances and, on a
+// match, writes the focus_request row. Retained as the switcher-less path
+// (select-only / no live switch); delegates to routeFocus.
+func resolveAndWriteFocus(db *statedb.StateDB, instances []*session.Instance, id string, nowNano int64, attach bool) error {
+	return routeFocus(db, instances, id, nowNano, attach, nil, nil)
+}
+
+// handleSessionFocus signals the running TUI (same profile) to select <id> on
+// its next poll. Fire-and-forget: no stdout on success. Unknown id exits 2.
+// With --attach, the TUI opens/attaches the session instead of only selecting it.
+func handleSessionFocus(profile string, args []string) {
+	fs := flag.NewFlagSet("session focus", flag.ExitOnError)
+	attach := fs.Bool("attach", false, "Open/attach the session, not just select it")
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck session focus <id> [--attach]")
+		fmt.Println()
+		fmt.Println("Signal the running agent-deck TUI (same profile) to reveal and")
+		fmt.Println("select the session with the given instance id on its next refresh.")
+		fmt.Println("With --attach, the TUI opens/attaches the session (as if you")
+		fmt.Println("pressed Enter on it) instead of only moving the cursor.")
+	}
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+
+	id := fs.Arg(0)
+
+	storage, instances, _, err := loadSessionData(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	db := storage.GetDB()
+	if db == nil {
+		fmt.Fprintln(os.Stderr, "Error: no state database available")
+		os.Exit(1)
+	}
+
+	var switcher liveSwitcher
+	var detacher clientDetacher
+	if *attach {
+		switcher = tmuxLiveSwitcher{}
+		detacher = tmuxClientDetacher{}
+	}
+	if err := routeFocus(db, instances, id, time.Now().UnixNano(), *attach, switcher, detacher); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if errors.Is(err, errFocusNotFound) {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+}
+
 // handleSessionShow shows session details
 func handleSessionShow(profile string, args []string) {
 	fs := flag.NewFlagSet("session show", flag.ExitOnError)
@@ -1195,6 +1410,7 @@ func handleSessionShow(profile string, args []string) {
 	}
 	modelInfo := inst.LaunchModelInfo()
 	addModelInfoJSON(jsonData, modelInfo)
+	addAutoNameJSON(jsonData, inst)
 
 	if inst.Command != "" {
 		jsonData["command"] = inst.Command
