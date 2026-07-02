@@ -8578,6 +8578,80 @@ func UpdateClaudeSessionsWithDedup(instances []*Instance) {
 	// Sessions will get their IDs from UpdateClaudeSession() during normal status updates
 }
 
+// RepairDuplicateClaudeSessions resolves Claude session-ID collisions
+// non-destructively. When two live instances share a ClaudeSessionID
+// (e.g. two sessions in the same project dir that both resumed the same
+// conversation), the older one (by CreatedAt) keeps the ID.
+//
+// The legacy UpdateClaudeSessionsWithDedup blanks the newer one's ID and
+// zeroes ClaudeDetectedAt. That permanently breaks forking — CanFork()
+// requires a non-empty, recently-detected ID — and because the session's
+// tmux env still asserts the shared ID, UpdateClaudeSession re-adopts it
+// on the next poll, so it flip-flops forever. This is why `f` does
+// nothing on the newer of two same-cwd sessions.
+//
+// Instead, this re-keys the newer collider to its OWN fresh session ID,
+// forked from the shared conversation (claude --session-id <fresh>
+// --resume <shared> --fork-session) — the same machinery a manual fork
+// uses. The instance stays forkable, and once restarted the two sessions
+// have genuinely distinct CLAUDE_SESSION_IDs, so restart_sweep no longer
+// cross-kills them (issue #1246 family). The returned slice holds the
+// re-keyed instances; the caller must Restart() them for the fork command
+// to materialize the new conversation on disk and write the fresh ID into
+// the tmux env.
+//
+// Falls back to the legacy blank-and-zero when the owner cannot be forked
+// (no fresh detection / nothing to inherit) — there is no conversation to
+// fork from, so the newer session must re-acquire an ID on its own.
+func RepairDuplicateClaudeSessions(instances []*Instance) []*Instance {
+	// Work on a copy so callers don't observe order mutation as a side effect.
+	ordered := make([]*Instance, len(instances))
+	copy(ordered, instances)
+
+	// Sort by CreatedAt (older first keeps its ID; newer ones get re-keyed).
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].CreatedAt.Before(ordered[j].CreatedAt)
+	})
+
+	var rekeyed []*Instance
+	idOwner := make(map[string]*Instance)
+	for _, inst := range ordered {
+		if !IsClaudeCompatible(inst.Tool) || inst.ClaudeSessionID == "" {
+			continue
+		}
+		owner, exists := idOwner[inst.ClaudeSessionID]
+		if !exists {
+			idOwner[inst.ClaudeSessionID] = inst
+			continue
+		}
+
+		// Collision: `inst` is newer than `owner` (slice is CreatedAt-sorted).
+		if owner.CanFork() {
+			// buildClaudeForkCommandForTarget assigns inst.ClaudeSessionID a
+			// fresh UUID and builds the fork command resuming the shared ID.
+			cmd, err := owner.buildClaudeForkCommandForTarget(inst, inst.GetClaudeOptions())
+			if err == nil {
+				inst.Command = cmd
+				inst.IsForkAwaitingStart = true
+				inst.ClaudeDetectedAt = time.Now()
+				idOwner[inst.ClaudeSessionID] = inst // claim the fresh, distinct ID
+				rekeyed = append(rekeyed, inst)
+				continue
+			}
+			sessionLog.Warn("dedup_rekey_failed_fallback_blank",
+				slog.String("instance_id", inst.ID),
+				slog.String("shared_id", owner.ClaudeSessionID),
+				slog.String("error", err.Error()))
+		}
+
+		// Legacy fallback: nothing forkable to inherit — blank it so the
+		// session re-acquires its own ID from tmux env on the next poll.
+		inst.ClaudeSessionID = ""
+		inst.ClaudeDetectedAt = time.Time{}
+	}
+	return rekeyed
+}
+
 // wrapIgnoreSuspend wraps cmd in a bash -c invocation that disables CTRL+Z
 // suspension before running the command. This is the sole bash -c layer
 // in the command chain — ensureSandboxContainer returns a plain docker exec
