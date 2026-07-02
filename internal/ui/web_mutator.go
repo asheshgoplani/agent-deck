@@ -540,6 +540,14 @@ func (m *WebMutator) RenameGroup(groupPath, newName string) error {
 	}
 	defer storage.Close()
 
+	// SaveGroups is additive (never prunes), so the old path's rows must be
+	// deleted explicitly before the save re-adds the renamed paths — otherwise
+	// the group reappears under its old name on the next reload. Done before the
+	// save so a no-op rename (same name) is correctly re-added.
+	if err := storage.DeleteGroupSubtree(groupPath); err != nil {
+		return fmt.Errorf("delete old group rows: %w", err)
+	}
+
 	m.h.instancesMu.RLock()
 	instances := make([]*session.Instance, len(m.h.instances))
 	copy(instances, m.h.instances)
@@ -693,6 +701,12 @@ func (m *WebMutator) DeleteGroup(groupPath string) error {
 		return fmt.Errorf("open storage: %w", err)
 	}
 	defer storage.Close()
+
+	// SaveGroups is additive (never prunes), so the deleted group's rows must be
+	// removed explicitly or the group resurrects on the next reload.
+	if err := storage.DeleteGroupSubtree(groupPath); err != nil {
+		return fmt.Errorf("delete group rows: %w", err)
+	}
 
 	m.h.instancesMu.RLock()
 	instances := make([]*session.Instance, len(m.h.instances))

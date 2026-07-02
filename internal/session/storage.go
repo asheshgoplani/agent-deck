@@ -370,6 +370,26 @@ func (s *Storage) DeleteInstance(id string) error {
 	return nil
 }
 
+// DeleteGroupSubtree removes a group and all of its descendants from the groups
+// table. SaveGroups is additive (upsert, never prune), so intentional group
+// removal — delete, rename, move — must call this explicitly; otherwise the old
+// path rows linger and the group resurrects on the next reload.
+func (s *Storage) DeleteGroupSubtree(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return fmt.Errorf("storage database not initialized")
+	}
+
+	if err := s.db.DeleteGroupSubtree(path); err != nil {
+		return fmt.Errorf("failed to delete group subtree %s: %w", path, err)
+	}
+
+	_ = s.db.Touch()
+	return nil
+}
+
 // WriteAutoNameDescription persists a single auto-named session's last captured
 // Claude task description via a targeted column update — no whole-row rewrite,
 // no full-table reconcile (see statedb.WriteAutoNameDescription). This lets the
