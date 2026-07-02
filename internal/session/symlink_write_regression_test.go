@@ -114,6 +114,26 @@ func TestPreAcceptClaudeTrust_PreservesSymlink(t *testing.T) {
 	}
 }
 
+func TestPreAcceptCodexTrust_PreservesSymlink(t *testing.T) {
+	linkDir := t.TempDir()
+	link := filepath.Join(linkDir, "config.toml")
+	realPath := symlinkedFile(t, link, "")
+
+	projectDir := filepath.Join(linkDir, "project")
+	if err := session.PreAcceptCodexTrust(link, projectDir); err != nil {
+		t.Fatalf("PreAcceptCodexTrust: %v", err)
+	}
+
+	assertStillSymlink(t, link)
+	data, err := os.ReadFile(realPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "trust_level") {
+		t.Fatalf("trust entry not written through symlink; got: %s", data)
+	}
+}
+
 func TestWriteGlobalMCP_PreservesSymlink(t *testing.T) {
 	configFile := filepath.Join(session.GetClaudeConfigDir(), ".claude.json")
 	realPath := symlinkedFile(t, configFile, "{}")
