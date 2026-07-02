@@ -1636,6 +1636,48 @@ func (i *Instance) consumeForkStartCommand() string {
 	return command
 }
 
+// cursorTrustWorkspacePath returns the workspace path Cursor should trust for
+// this instance: container /workspace for sandboxes, SSHRemotePath for remote
+// sessions, otherwise the effective local working directory.
+func (i *Instance) cursorTrustWorkspacePath() string {
+	if i.IsSandboxed() {
+		return cursorSandboxWorkDir
+	}
+	if i.IsSSH() && i.SSHRemotePath != "" {
+		return i.SSHRemotePath
+	}
+	return i.EffectiveWorkingDir()
+}
+
+// preAcceptCursorWorkspaceTrust seeds Cursor workspace trust for the session's
+// workspace so interactive launches skip the trust prompt. Local, SSH, and
+// sandbox sessions each write trust where Cursor will read it. Failures are
+// logged and non-fatal.
+func (i *Instance) preAcceptCursorWorkspaceTrust() {
+	if i.Tool != "cursor" {
+		return
+	}
+	dir := i.cursorTrustWorkspacePath()
+	if dir == "" {
+		return
+	}
+	var err error
+	switch {
+	case i.IsSandboxed() && i.SandboxContainer != "":
+		err = PreAcceptCursorTrustInContainer(i.SandboxContainer, dir)
+	case i.IsSSH():
+		err = PreAcceptCursorTrustSSH(i.SSHHost, dir)
+	default:
+		err = PreAcceptCursorTrust(GetCursorConfigDir(), dir)
+	}
+	if err != nil {
+		sessionLog.Warn("cursor_preaccept_trust_failed",
+			slog.String("instance_id", i.ID),
+			slog.String("dir", dir),
+			slog.String("error", err.Error()))
+	}
+}
+
 // buildCursorCommand builds the command for the Cursor CLI (`cursor agent`).
 // continuePrev adds --continue so Restart resumes the previous chat in the workspace.
 // Env files from [shell].env_files are applied via buildEnvSourceCommand.
@@ -3196,6 +3238,8 @@ func (i *Instance) Start() error {
 	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
 	i.applyLaunchSettingsFromConfig()
 
+	i.preAcceptCursorWorkspaceTrust()
+
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
 		return fmt.Errorf("failed to start tmux session: %w", err)
@@ -3436,6 +3480,8 @@ func (i *Instance) StartWithMessage(message string) error {
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
 	i.applyLaunchSettingsFromConfig()
+
+	i.preAcceptCursorWorkspaceTrust()
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
