@@ -43,18 +43,86 @@ func TestMergeToolDataExtras_NewExplicitWinsOverOldUnknown(t *testing.T) {
 }
 
 func TestMergeToolDataExtras_TypedKeyAbsenceRespected(t *testing.T) {
-	// When the new tool_data omits a typed key (e.g., omitempty zero-value),
-	// the merge must NOT carry the old value forward. The typed schema is
-	// authoritative for typed fields. This protects intentional clears.
-	old := json.RawMessage(`{"claude_session_id":"abc"}`)
+	// When the new tool_data omits a NON-STICKY typed key (e.g., omitempty
+	// zero-value), the merge must NOT carry the old value forward. The typed
+	// schema is authoritative for those fields. (Sticky session-id keys are the
+	// deliberate exception, covered by the sticky tests below.)
+	old := json.RawMessage(`{"latest_prompt":"hello"}`)
 	new_ := json.RawMessage(`{}`)
 
 	merged := MergeToolDataExtras(old, new_)
 
 	var got map[string]json.RawMessage
 	_ = json.Unmarshal(merged, &got)
-	if _, present := got["claude_session_id"]; present {
-		t.Errorf("claude_session_id should be absent in merged when new omits it; got %s", got["claude_session_id"])
+	if _, present := got["latest_prompt"]; present {
+		t.Errorf("latest_prompt should be absent in merged when new omits it; got %s", got["latest_prompt"])
+	}
+}
+
+func TestMergeToolDataExtras_StickySessionIDPreservedWhenNewOmits(t *testing.T) {
+	// t-0133: a session-id key present in the old row but OMITTED by the new
+	// blob (omitempty zero-value, e.g. a concurrent full-table save whose
+	// in-memory snapshot has not yet detected the id) must be carried forward,
+	// not wiped. Covers all four tools + a *_detected_at companion.
+	old := json.RawMessage(`{` +
+		`"claude_session_id":"c-uuid","claude_detected_at":111,` +
+		`"gemini_session_id":"g-uuid",` +
+		`"opencode_session_id":"o-uuid",` +
+		`"codex_session_id":"x-uuid"}`)
+	new_ := json.RawMessage(`{"latest_prompt":"hi"}`)
+
+	merged := MergeToolDataExtras(old, new_)
+
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(merged, &got); err != nil {
+		t.Fatalf("merged JSON does not parse: %v", err)
+	}
+	for k, want := range map[string]string{
+		"claude_session_id":   `"c-uuid"`,
+		"claude_detected_at":  `111`,
+		"gemini_session_id":   `"g-uuid"`,
+		"opencode_session_id": `"o-uuid"`,
+		"codex_session_id":    `"x-uuid"`,
+	} {
+		if string(got[k]) != want {
+			t.Errorf("%s = %s, want %s (sticky: preserved from old when new omits)", k, got[k], want)
+		}
+	}
+	// The new blob's own key still lands.
+	if string(got["latest_prompt"]) != `"hi"` {
+		t.Errorf("latest_prompt = %s, want \"hi\"", got["latest_prompt"])
+	}
+}
+
+func TestMergeToolDataExtras_StickyNonEmptyNewWins(t *testing.T) {
+	// A real resume/fork writes a NEW non-empty session id; that must win over
+	// the old value (sticky only protects the omission case, never overrides an
+	// explicit update).
+	old := json.RawMessage(`{"claude_session_id":"old-uuid"}`)
+	new_ := json.RawMessage(`{"claude_session_id":"new-uuid"}`)
+
+	merged := MergeToolDataExtras(old, new_)
+
+	var got map[string]json.RawMessage
+	_ = json.Unmarshal(merged, &got)
+	if string(got["claude_session_id"]) != `"new-uuid"` {
+		t.Errorf("claude_session_id = %s, want \"new-uuid\" (non-empty new wins)", got["claude_session_id"])
+	}
+}
+
+func TestMergeToolDataExtras_StickyExplicitEmptyIsIntentionalClear(t *testing.T) {
+	// An EXPLICIT empty value present in the new blob (not omitted) is honored
+	// as an intentional clear — the escape hatch for a deliberate reset/dedup
+	// that wants the id gone. Only outright omission preserves.
+	old := json.RawMessage(`{"claude_session_id":"old-uuid"}`)
+	new_ := json.RawMessage(`{"claude_session_id":""}`)
+
+	merged := MergeToolDataExtras(old, new_)
+
+	var got map[string]json.RawMessage
+	_ = json.Unmarshal(merged, &got)
+	if string(got["claude_session_id"]) != `""` {
+		t.Errorf("claude_session_id = %s, want \"\" (explicit empty = intentional clear)", got["claude_session_id"])
 	}
 }
 
