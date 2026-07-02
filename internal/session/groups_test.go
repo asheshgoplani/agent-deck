@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -521,6 +522,70 @@ func TestRenameSubgroup(t *testing.T) {
 	}
 	if parentGroup.Name != "Project A" {
 		t.Errorf("Parent name should be 'Project A', got '%s'", parentGroup.Name)
+	}
+}
+
+func TestRenameGroup_ReportsNotFound(t *testing.T) {
+	tree := NewGroupTree([]*Instance{})
+	tree.CreateGroup("real")
+
+	err := tree.RenameGroup("stale-name", "whatever")
+	if !errors.Is(err, ErrGroupNotFound) {
+		t.Fatalf("expected ErrGroupNotFound, got %v", err)
+	}
+	if tree.Groups["real"] == nil {
+		t.Error("existing group should be untouched")
+	}
+}
+
+func TestRenameGroup_RejectsCollision(t *testing.T) {
+	tree := NewGroupTree([]*Instance{})
+	tree.CreateGroup("source")
+	tree.CreateGroup("target")
+	tree.Groups["source"].Sessions = []*Instance{{ID: "s1", GroupPath: "source"}}
+	tree.Groups["target"].Sessions = []*Instance{{ID: "t1", GroupPath: "target"}}
+
+	err := tree.RenameGroup("source", "target")
+	if !errors.Is(err, ErrGroupAlreadyExists) {
+		t.Fatalf("expected ErrGroupAlreadyExists, got %v", err)
+	}
+
+	src := tree.Groups["source"]
+	if src == nil {
+		t.Fatal("source group should still exist")
+	}
+	if len(src.Sessions) != 1 || src.Sessions[0].ID != "s1" {
+		t.Errorf("source sessions should be intact, got %+v", src.Sessions)
+	}
+
+	tgt := tree.Groups["target"]
+	if tgt == nil {
+		t.Fatal("target group should still exist")
+	}
+	if len(tgt.Sessions) != 1 || tgt.Sessions[0].ID != "t1" {
+		t.Errorf("target sessions should be intact, got %+v", tgt.Sessions)
+	}
+}
+
+func TestRenameGroup_RejectsSubtreeCollision(t *testing.T) {
+	tree := NewGroupTree([]*Instance{})
+	tree.CreateGroup("Alpha")
+	tree.CreateSubgroup("Alpha", "Child")
+	tree.CreateGroup("Beta")
+	tree.CreateSubgroup("Beta", "Child")
+	tree.Groups["Beta/Child"].Sessions = []*Instance{{ID: "victim", GroupPath: "Beta/Child"}}
+
+	err := tree.RenameGroup("Alpha", "Beta")
+	if !errors.Is(err, ErrGroupAlreadyExists) {
+		t.Fatalf("expected ErrGroupAlreadyExists, got %v", err)
+	}
+
+	if tree.Groups["Alpha"] == nil || tree.Groups["Alpha/Child"] == nil {
+		t.Error("Alpha subtree should be intact after rejected rename")
+	}
+	victim := tree.Groups["Beta/Child"]
+	if victim == nil || len(victim.Sessions) != 1 || victim.Sessions[0].ID != "victim" {
+		t.Errorf("Beta/Child and its session should survive, got %+v", victim)
 	}
 }
 
