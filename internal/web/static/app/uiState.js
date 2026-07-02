@@ -22,8 +22,9 @@ function persist(sig, key) {
 }
 
 // Active tab in main work surface.
-// Bundle ships 8 tabs: fleet, terminal, mcp, skills, conductor, watchers, costs, search.
-// Only `fleet | terminal | costs | search` have data (search filters local sessions only).
+// Bundle ships: command-center, fleet, artifact, terminal, mcp, skills, conductor, watchers, costs, search.
+// `fleet | terminal | costs | search | artifact` have data (search filters local sessions only;
+// artifact lists/serves conductor HTML artifacts via /api/artifacts).
 // MCP/Skills/Conductor/Watchers render informative stubs because the API doesn't expose them.
 export const activeTabSignal = signal(loadJSON('agentdeck.tab', 'fleet'))
 persist(activeTabSignal, 'agentdeck.tab')

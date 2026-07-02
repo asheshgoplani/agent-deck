@@ -269,6 +269,9 @@ func main() {
 		case "session":
 			handleSession(profile, args[1:])
 			return
+		case "artifact":
+			handleArtifact(profile, args[1:])
+			return
 		case "mcp":
 			handleMCP(profile, args[1:])
 			return

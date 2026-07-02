@@ -159,6 +159,15 @@ type Server struct {
 	// whose hook file is present on disk. Defaults to defaultLoadHookStatuses
 	// (which reads ~/.agent-deck/hooks/) but is injectable for tests.
 	hookStatusLoader func() map[string]*session.HookStatus
+
+	// artifactRoot is the conductor directory the Fleet Console lists/serves
+	// HTML artifacts from. Defaults to conductorArtifactDir(); injectable for tests.
+	artifactRoot string
+
+	// artifactDeliver routes a resolved Fleet Console annotation to its owning
+	// session (durable inbox when busy, reliable send otherwise). Defaults to
+	// session.DeliverArtifactComment; injectable for tests.
+	artifactDeliver func(targetSessionID string, busy bool, c session.ArtifactComment) error
 }
 
 // NewServer creates a new web server with base routes and middleware.
@@ -184,6 +193,8 @@ func NewServer(cfg Config) *Server {
 		menuSubscribers:  make(map[chan struct{}]struct{}),
 		mutationLimiter:  mutationLimiter,
 		hookStatusLoader: defaultLoadHookStatuses,
+		artifactRoot:     conductorArtifactDir(),
+		artifactDeliver:  session.DeliverArtifactComment,
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	webLog := logging.ForComponent(logging.CompWeb)
@@ -248,6 +259,12 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/command-center/status", s.handleCommandCenterStatus)
 	mux.HandleFunc("/events/command-center", s.handleCommandCenterEvents)
 	mux.HandleFunc("POST /api/command-center/ask", s.handleCommandCenterAsk)
+
+	// Fleet Console: artifact provenance listing, read-only confined serving
+	// (with the selection relay injected), and highlight-to-route commenting.
+	mux.HandleFunc("/api/artifacts", s.handleArtifactsList)
+	mux.HandleFunc("/api/artifacts/serve", s.handleArtifactServe)
+	mux.HandleFunc("POST /api/artifacts/comment", s.handleArtifactComment)
 
 	mux.HandleFunc("/api/costs/summary", s.handleCostsSummary)
 	mux.HandleFunc("/api/costs/daily", s.handleCostsDaily)
