@@ -64,6 +64,29 @@ This prevents other server members from issuing commands to your conductor.
 Discord credentials are stored alongside other conductor settings in the conductor's `.env` file.
 The bridge daemon handles Discord alongside Telegram and Slack — all three can run simultaneously.
 
+## Listen modes
+
+For a Discord bot (`[conductor.discord]`), `listen_mode` controls which messages
+the conductor reacts to. `channel_id` stays the bot's home channel — alerts and
+slash commands are scoped to it regardless of mode.
+
+| `listen_mode`             | The bot reacts to                   |
+|---------------------------|-------------------------------------|
+| `"all"` (default)         | every message in `channel_id`       |
+| `"mentions"`              | @mentions in `channel_id`           |
+| `"mentions_all_channels"` | @mentions in **any** channel/thread |
+
+`"mentions_all_channels"` reacts only to @mentions (there is no
+all-messages-everywhere mode), and the bot needs read access to the channels it
+is mentioned in. Authorization is unchanged: only the configured `user_id` is
+answered.
+
+```toml
+[conductor.discord]
+  channel_id  = 456            # home channel: alerts + slash commands
+  listen_mode = "mentions_all_channels"
+```
+
 ## Debugging tips
 
 ### Bot is online but does not respond

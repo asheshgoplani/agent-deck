@@ -2268,9 +2268,9 @@ func TestBridgeTemplate_DiscordListenModeSupport(t *testing.T) {
 	template := conductorBridgePy
 	patterns := []string{
 		`listen_mode = str(config["discord"].get("listen_mode", "all") or "all").strip().lower()`,
-		`if listen_mode not in {"all", "mentions"}:`,
-		`if listen_mode == "mentions":`,
-		`if not message_mentions_bot(message):`,
+		`if listen_mode not in {"all", "mentions", "mentions_all_channels"}:`,
+		`if listen_mode != "mentions_all_channels" and message.channel.id != bot.target_channel_id:`,
+		`if listen_mode in ("mentions", "mentions_all_channels") and not message_mentions_bot(message):`,
 		`text = strip_bot_mentions(text)`,
 		`return re.sub(rf"<@!?{bot.user.id}>", "", text).strip()`,
 	}
