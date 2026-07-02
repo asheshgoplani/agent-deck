@@ -765,6 +765,9 @@ func (s *StateDB) UpsertInstances(insts []*InstanceRow) error {
 	})
 }
 
+// saveInstancesOnce persists insts. When sweep is true, rows present in the
+// database but absent from insts are deleted (see SaveInstances); when false,
+// they are left untouched (see UpsertInstances).
 func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 	// Upsert path with nothing to upsert: no-op without taking the write lock.
 	if !sweep && len(insts) == 0 {

@@ -867,10 +867,16 @@ func handleConductorTeardown(_ string, args []string) {
 					}
 					if len(removedIDs) > 0 {
 						groupTree := session.NewGroupTreeWithGroups(filtered, groups)
+						removeFailed := false
 						for _, id := range removedIDs {
-							_ = storage.RemoveSessionAndVerify(id, filtered, groupTree)
+							if rmErr := storage.RemoveSessionAndVerify(id, filtered, groupTree); rmErr != nil {
+								removeFailed = true
+								if !*jsonOutput {
+									fmt.Fprintf(os.Stderr, "  Warning: failed to remove session '%s' (%s) from %s: %v\n", sessionTitle, id, meta.Profile, rmErr)
+								}
+							}
 						}
-						if !*jsonOutput {
+						if !removeFailed && !*jsonOutput {
 							fmt.Printf("  [ok] Removed session '%s' from %s\n", sessionTitle, meta.Profile)
 						}
 					}
