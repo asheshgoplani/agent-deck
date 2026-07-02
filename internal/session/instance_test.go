@@ -2438,34 +2438,18 @@ func TestInstance_ForkOpenCode(t *testing.T) {
 		t.Errorf("ForkOpenCode() failed: %v", err)
 	}
 
-	// cmd is "bash '<script_path>'" - extract and read the script file
-	if !strings.HasPrefix(cmd, "bash '") {
-		t.Fatalf("ForkOpenCode() should return bash command, got: %s", cmd)
+	// Native fork: `opencode -s <parent-id> --fork`, no export/import clone script.
+	if !strings.Contains(cmd, "opencode -s ses_abc123def456ffe1234567890abcd --fork") {
+		t.Errorf("ForkOpenCode() should use native `opencode -s <parent> --fork`, got: %s", cmd)
 	}
-	scriptPath := strings.TrimPrefix(cmd, "bash '")
-	scriptPath = strings.TrimSuffix(scriptPath, "'")
-	scriptContent, err := os.ReadFile(scriptPath)
-	if err != nil {
-		t.Fatalf("Failed to read fork script at %s: %v", scriptPath, err)
-	}
-	script := string(scriptContent)
-
-	if !strings.Contains(script, "opencode export") {
-		t.Errorf("Fork script should use opencode export, got: %s", script)
-	}
-	if !strings.Contains(script, "opencode import") {
-		t.Errorf("Fork script should use opencode import, got: %s", script)
-	}
-	if !strings.Contains(script, "ses_abc123def456ffe1234567890abcd") {
-		t.Errorf("Fork script should include original session ID, got: %s", script)
-	}
-	// tmux set-environment removed: host-side SetEnvironment handles propagation
-	if strings.Contains(script, "tmux set-environment") {
-		t.Errorf("Fork script should NOT contain tmux set-environment (host-side handles it), got: %s", script)
+	for _, gone := range []string{"bash ", "opencode export", "opencode import", "tmux set-environment"} {
+		if strings.Contains(cmd, gone) {
+			t.Errorf("ForkOpenCode() should not reference the old clone path (%q), got: %s", gone, cmd)
+		}
 	}
 }
 
-func TestInstance_ForkOpenCode_QuotesScriptInputs(t *testing.T) {
+func TestInstance_ForkOpenCode_QuotesInputs(t *testing.T) {
 	workDir := filepath.Join(t.TempDir(), `project with "quote"`)
 	inst := NewInstanceWithTool("test", workDir, "opencode")
 	inst.OpenCodeSessionID = "ses_abc123"
@@ -2475,22 +2459,20 @@ func TestInstance_ForkOpenCode_QuotesScriptInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForkOpenCode() failed: %v", err)
 	}
-	scriptPath := strings.TrimPrefix(cmd, "bash '")
-	scriptPath = strings.TrimSuffix(scriptPath, "'")
-	scriptContent, err := os.ReadFile(scriptPath)
-	if err != nil {
-		t.Fatalf("Failed to read fork script at %s: %v", scriptPath, err)
-	}
-	script := string(scriptContent)
 
-	if strings.Contains(script, fmt.Sprintf(`cd "%s"`, workDir)) {
-		t.Fatalf("workDir must not be interpolated inside double quotes: %s", script)
+	// The native fork command targets the parent session id via -s; the id is
+	// validated safe upstream (normalizeToolSessionID) so shellescape.Quote leaves
+	// it bare.
+	if want := "opencode -s " + shellescape.Quote(inst.OpenCodeSessionID) + " --fork"; !strings.Contains(cmd, want) {
+		t.Fatalf("fork command should target the quoted session id; want %q in %q", want, cmd)
 	}
-	if want := "cd " + shellescape.Quote(workDir); !strings.Contains(script, want) {
-		t.Fatalf("fork script should quote workDir with shellescape; want %q in %s", want, script)
+	// workDir is anchored into the command via `cd` (the multi-repo fork path needs
+	// it), but must be shell-quoted so a path with metacharacters can't break out.
+	if strings.Contains(cmd, fmt.Sprintf(`cd "%s"`, workDir)) {
+		t.Fatalf("workDir must not be interpolated raw (double-quoted): %q", cmd)
 	}
-	if want := "opencode export " + shellescape.Quote(inst.OpenCodeSessionID); !strings.Contains(script, want) {
-		t.Fatalf("fork script should quote OpenCode session ID; want %q in %s", want, script)
+	if want := "cd " + shellescape.Quote(workDir); !strings.Contains(cmd, want) {
+		t.Fatalf("workDir should be shell-quoted in the cd anchor; want %q in %q", want, cmd)
 	}
 }
 

@@ -59,7 +59,7 @@ func TestForkInstanceDeps_OpenCodeUsesResolvedWorktreeDir(t *testing.T) {
 	// Exercise the deps.createInstance wiring directly — this is the exact seam
 	// Step 4 changes. Calling createInstance (not completeFork) keeps the test
 	// lean: no DetectOpenCodeSession goroutine and no start/multi-repo machinery.
-	// writeOpenCodeForkScript writes via os.CreateTemp, which works under any HOME.
+	// The OpenCode fork command is built in-process (no temp script), so this works under any HOME.
 	deps := defaultForkInstanceDeps()
 	inst, err := deps.createInstance(source, "oc parent (fork)", "", opts)
 	if err != nil {
