@@ -35,6 +35,7 @@ const (
 	hotkeyCopyOutput       = "copy_output"
 	hotkeySendOutput       = "send_output"
 	hotkeyExecShell        = "exec_shell"
+	hotkeyOpenShellHere    = "open_shell_here"
 	hotkeyEditNotes        = "edit_notes"
 	hotkeyEditPaths        = "edit_paths"
 	hotkeyEditSession      = "edit_session"
@@ -87,6 +88,7 @@ var hotkeyActionOrder = []string{
 	hotkeyCopyOutput,
 	hotkeySendOutput,
 	hotkeyExecShell,
+	hotkeyOpenShellHere,
 	hotkeyEditNotes,
 	hotkeyEditPaths,
 	hotkeyEditSession,
@@ -131,6 +133,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyCopyOutput:       "c",
 	hotkeySendOutput:       "x",
 	hotkeyExecShell:        "E",
+	hotkeyOpenShellHere:    "h",
 	hotkeyEditNotes:        "e",
 	hotkeyEditPaths:        "p",
 	hotkeyEditSession:      "P",
