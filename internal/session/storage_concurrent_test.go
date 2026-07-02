@@ -80,14 +80,19 @@ func TestConcurrentStorageWrites(t *testing.T) {
 	require.NoError(t, err1, "s1 SaveWithGroups should succeed")
 	require.NoError(t, err2, "s2 SaveWithGroups should succeed")
 
-	// 4. Load from a third independent storage and verify dedup semantics.
-	//    After SaveWithGroups runs UpdateClaudeSessionsWithDedup on each slice,
-	//    the combined DB state should contain at most one session with the shared ID.
+	// 4. Load from a third independent storage. Both rows must survive: #1550
+	//    made SaveWithGroups upsert-only, so neither concurrent writer can
+	//    sweep the other's row. (Before that fix this test observed only one
+	//    surviving row — the "dedup" was really the destructive DELETE-NOT-IN.)
 	s3 := openStorage()
 	loaded, err := s3.Load()
 	require.NoError(t, err)
+	require.Len(t, loaded, 2, "both concurrently-written sessions must survive (#1550)")
 
-	// Count how many sessions retained the shared ClaudeSessionID after dedup.
+	// 5. Dedup is a read-side invariant: each writer only dedups its own slice,
+	//    so cross-process duplicates are resolved when a full set is loaded
+	//    (the TUI runs UpdateClaudeSessionsWithDedup after every reload).
+	UpdateClaudeSessionsWithDedup(loaded)
 	holdersCount := 0
 	for _, inst := range loaded {
 		if inst.ClaudeSessionID == sharedClaudeID {
@@ -95,5 +100,5 @@ func TestConcurrentStorageWrites(t *testing.T) {
 		}
 	}
 	assert.LessOrEqual(t, holdersCount, 1,
-		"at most one session should retain the shared ClaudeSessionID after concurrent writes and dedup")
+		"at most one session should retain the shared ClaudeSessionID after load-time dedup")
 }

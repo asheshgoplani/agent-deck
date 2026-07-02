@@ -1,12 +1,10 @@
 package session
 
 import (
-	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,20 +44,21 @@ func TestIssue1396_FinishLastWorktreeDoesNotTripEmptySweepGuard(t *testing.T) {
 	require.NoError(t, seed.SaveWithGroups([]*Instance{only}, NewGroupTree([]*Instance{only})))
 	require.True(t, only.IsWorktree(), "seed instance must be a worktree session")
 
-	// Sanity: the OLD persistence path (the pre-fix bug) trips the guard when
-	// removing the last session. This locks in WHY the targeted path is needed.
-	t.Run("old SaveWithGroups path trips the empty-sweep guard", func(t *testing.T) {
+	// Sanity: the OLD persistence path cannot remove the last session. At #1396
+	// time SaveWithGroups([]) tripped the S1 empty-sweep guard
+	// (ErrRefusingEmptySweep); since #1550 SaveWithGroups is upsert-only, so an
+	// empty save is a benign no-op that deletes nothing. Either way the row
+	// survives — locking in WHY removal needs the targeted path.
+	t.Run("SaveWithGroups path cannot remove the last session", func(t *testing.T) {
 		s := rmTestStorage(t, dbPath)
 		var remaining []*Instance // empty: the finished session was the only one
 		err := s.SaveWithGroups(remaining, NewGroupTreeWithGroups(remaining, nil))
-		require.Error(t, err, "SaveWithGroups([]) on a populated table must be refused")
-		require.True(t, errors.Is(err, statedb.ErrRefusingEmptySweep),
-			"expected ErrRefusingEmptySweep, got: %v", err)
+		require.NoError(t, err, "upsert-only SaveWithGroups([]) must be a benign no-op (#1550)")
 
-		// And the row is still present — proving the orphan in the bug report.
+		// The row is still present — an empty save must never wipe the table.
 		exists, exErr := s.InstanceExists(only.ID)
 		require.NoError(t, exErr)
-		require.True(t, exists, "row must still exist after the guard rejection (the orphan)")
+		require.True(t, exists, "row must survive an empty save (the #1396 orphan / #1550 no-sweep)")
 	})
 
 	// The FIX: RemoveSessionAndVerify cleanly removes the last session's row

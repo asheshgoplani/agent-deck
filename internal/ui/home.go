@@ -4854,7 +4854,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Save both instances AND groups (critical fix: was losing groups!)
-			// Use forceSave to bypass mtime check - new session creation MUST persist
+			// Use forceSave to bypass the external-change abort - new session creation MUST persist
 			h.forceSaveInstances()
 
 			// Start fetching preview for the new session
@@ -4921,7 +4921,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Save both instances AND groups
-			// Use forceSave to bypass mtime check - forked session MUST persist
+			// Use forceSave to bypass the external-change abort - forked session MUST persist
 			h.forceSaveInstances()
 
 			// forceSaveInstances can setError on a failed persist; fold the
@@ -4998,7 +4998,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
 		}
 		// Save both instances AND groups (critical fix: was losing groups!)
-		// Use forceSave to bypass mtime check - delete MUST persist
+		// Use forceSave to bypass the external-change abort - delete MUST persist
 		h.forceSaveInstances()
 
 		// Show undo hint (using setError as a transient message)
@@ -5108,7 +5108,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Use forceSave to bypass mtime check - restore MUST persist
+		// Use forceSave to bypass the external-change abort - restore MUST persist
 		h.forceSaveInstances()
 		if msg.warning != "" {
 			h.setError(fmt.Errorf("restored '%s' (%s)", msg.instance.Title, msg.warning))
@@ -9824,26 +9824,32 @@ func (h *Home) saveInstancesWithForce(force bool) {
 	// EXTERNAL CHANGE DETECTION: Check if file was modified since we last loaded.
 	// This catches external changes (e.g., from CLI) even when fsnotify fails
 	// (common on 9p/NFS filesystems in WSL2).
-	// NOTE: Skip this check when force=true because critical saves MUST happen
-	// (e.g., new session creation, fork, delete - these would lose data if skipped)
-	if !force {
-		h.reloadMu.Lock()
-		ourLoadMtime := h.lastLoadMtime
-		h.reloadMu.Unlock()
+	// #1550: force saves no longer skip this check. They still persist (they
+	// carry critical mutations like create/fork/delete, and the save is now
+	// upsert-only so it cannot delete another process's rows), but a detected
+	// external change schedules a reload after the save so this TUI stops
+	// holding a stale snapshot.
+	externalChange := false
+	h.reloadMu.Lock()
+	ourLoadMtime := h.lastLoadMtime
+	h.reloadMu.Unlock()
 
-		if h.storage != nil && !ourLoadMtime.IsZero() {
-			currentMtime, err := h.storage.GetFileMtime()
-			if err == nil && !currentMtime.IsZero() && currentMtime.After(ourLoadMtime) {
-				uiLog.Warn("save_abort_external_change",
-					slog.Time("our_load", ourLoadMtime),
-					slog.Time("current_mtime", currentMtime))
-				// File was modified externally - trigger reload instead of overwriting
-				if h.storageWatcher != nil {
-					h.storageWatcher.TriggerReload()
-				}
-				return
-			}
+	if h.storage != nil && !ourLoadMtime.IsZero() {
+		currentMtime, err := h.storage.GetFileMtime()
+		if err == nil && !currentMtime.IsZero() && currentMtime.After(ourLoadMtime) {
+			externalChange = true
+			uiLog.Warn("save_external_change_detected",
+				slog.Bool("force", force),
+				slog.Time("our_load", ourLoadMtime),
+				slog.Time("current_mtime", currentMtime))
 		}
+	}
+	if externalChange && !force {
+		// Routine save: abort and reload instead of overwriting with stale rows.
+		if h.storageWatcher != nil {
+			h.storageWatcher.TriggerReload()
+		}
+		return
 	}
 
 	if h.storage != nil {
@@ -9928,6 +9934,12 @@ func (h *Home) saveInstancesWithForce(force bool) {
 			// Clear pending title changes on successful save (rename was persisted)
 			if len(h.pendingTitleChanges) > 0 {
 				h.pendingTitleChanges = make(map[string]string)
+			}
+			// #1550: a force save raced an external change. Our rows are now
+			// persisted (upsert-only, nothing deleted); reload to pick up what
+			// the other process wrote while we were stale.
+			if externalChange && h.storageWatcher != nil {
+				h.storageWatcher.TriggerReload()
 			}
 		}
 	}

@@ -736,8 +736,12 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 }
 
 // SaveInstances inserts or replaces multiple instances in a single transaction.
-// It also removes any rows from the database that are not in the provided list,
-// ensuring deleted sessions don't reappear on reload.
+// It also removes any rows from the database that are not in the provided list.
+//
+// DANGER (#1550): the DELETE-NOT-IN sweep deletes any row a concurrent
+// process inserted after the caller loaded its snapshot. Routine saves must
+// use UpsertInstances instead; SaveInstances is reserved for whole-table
+// replaces where the payload is authoritative (JSON->SQLite migration).
 //
 // Wrapped in withBusyRetry because parallel writers (CLI + TUI + heartbeat
 // daemons) contend on the WAL writer slot. The whole save is idempotent at
@@ -745,11 +749,31 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 // outer transaction on SQLITE_BUSY is safe. Part of the v1.9.1 #909 fix.
 func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 	return withBusyRetry(func() error {
-		return s.saveInstancesOnce(insts)
+		return s.saveInstancesOnce(insts, true)
 	})
 }
 
-func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
+// UpsertInstances inserts or replaces the given instances WITHOUT the
+// DELETE-NOT-IN sweep: rows absent from the payload are left untouched, so a
+// writer holding a stale snapshot can never delete sessions another process
+// created after that snapshot was loaded (#1550). Deletions must be explicit
+// and targeted: DeleteInstance / RemoveSessionAndVerify (#909), or
+// ClearAllInstances for an intentional full wipe. An empty payload is a no-op.
+func (s *StateDB) UpsertInstances(insts []*InstanceRow) error {
+	return withBusyRetry(func() error {
+		return s.saveInstancesOnce(insts, false)
+	})
+}
+
+// saveInstancesOnce persists insts. When sweep is true, rows present in the
+// database but absent from insts are deleted (see SaveInstances); when false,
+// they are left untouched (see UpsertInstances).
+func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
+	// Upsert path with nothing to upsert: no-op without taking the write lock.
+	if !sweep && len(insts) == 0 {
+		return nil
+	}
+
 	// Pre-fetch existing mutable columns per instance ID so we can preserve state
 	// written by targeted UPDATE paths. Without this merge, every INSERT OR
 	// REPLACE can silently drop fresher data from another process.
@@ -806,7 +830,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 	// covers the large-but-not-empty replaces S1 cannot catch. The backup is
 	// best-effort: a failed copy is logged, never fatal — the caller asked to
 	// save, and the insurance copy must not become a new failure mode.
-	if len(insts) > 0 && s.path != "" {
+	if sweep && len(insts) > 0 && s.path != "" {
 		placeholders := make([]string, len(insts))
 		args := make([]any, len(insts))
 		for i, inst := range insts {
@@ -831,24 +855,27 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Delete rows not in the new list to prevent deleted sessions from reappearing.
-	if len(insts) == 0 {
-		// S1 guard: an empty payload would `DELETE FROM instances`, wiping the
-		// whole table. If rows already exist this is almost certainly a bug in
-		// the caller (a stray empty save), not an intentional clear — refuse it
-		// rather than silently destroying the index. Intentional clears go
-		// through ClearAllInstances. An empty payload on an already-empty table
-		// is a benign no-op.
-		var existing int
-		if err := tx.QueryRow("SELECT COUNT(*) FROM instances").Scan(&existing); err != nil {
-			return err
+	// Delete rows not in the new list (sweep callers only, see SaveInstances).
+	// The upsert path (#1550) never deletes: rows it doesn't know about are
+	// left alone, and an empty payload simply inserts nothing.
+	if sweep {
+		if len(insts) == 0 {
+			// S1 guard: an empty payload would `DELETE FROM instances`, wiping the
+			// whole table. If rows already exist this is almost certainly a bug in
+			// the caller (a stray empty save), not an intentional clear — refuse it
+			// rather than silently destroying the index. Intentional clears go
+			// through ClearAllInstances. An empty payload on an already-empty table
+			// is a benign no-op.
+			var existing int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM instances").Scan(&existing); err != nil {
+				return err
+			}
+			if existing > 0 {
+				return ErrRefusingEmptySweep
+			}
+			// Already empty: nothing to delete, nothing to insert.
+			return tx.Commit()
 		}
-		if existing > 0 {
-			return ErrRefusingEmptySweep
-		}
-		// Already empty: nothing to delete, nothing to insert.
-		return tx.Commit()
-	} else {
 		placeholders := make([]string, len(insts))
 		args := make([]any, len(insts))
 		for i, inst := range insts {
