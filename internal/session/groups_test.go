@@ -525,6 +525,19 @@ func TestRenameSubgroup(t *testing.T) {
 	}
 }
 
+func TestRenameGroup_ReportsNotFound(t *testing.T) {
+	tree := NewGroupTree([]*Instance{})
+	tree.CreateGroup("real")
+
+	err := tree.RenameGroup("stale-name", "whatever")
+	if !errors.Is(err, ErrGroupNotFound) {
+		t.Fatalf("expected ErrGroupNotFound, got %v", err)
+	}
+	if tree.Groups["real"] == nil {
+		t.Error("existing group should be untouched")
+	}
+}
+
 func TestRenameGroup_RejectsCollision(t *testing.T) {
 	tree := NewGroupTree([]*Instance{})
 	tree.CreateGroup("source")

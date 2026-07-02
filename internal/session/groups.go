@@ -16,6 +16,9 @@ import (
 // ErrGroupAlreadyExists is returned by RenameGroup when the target path collides with an existing group.
 var ErrGroupAlreadyExists = errors.New("group already exists at target path")
 
+// ErrGroupNotFound is returned by RenameGroup when oldPath does not resolve to an existing group.
+var ErrGroupNotFound = errors.New("group not found")
+
 // DefaultGroupName is the display name for the default group where ungrouped sessions go
 const DefaultGroupName = "My Sessions"
 
@@ -1140,11 +1143,11 @@ func (t *GroupTree) CreateGroupPath(path string) *Group {
 }
 
 // RenameGroup renames a group and updates all subgroups.
-// Returns ErrGroupAlreadyExists if the target path collides with an existing group.
+// Returns ErrGroupNotFound if oldPath doesn't exist, or ErrGroupAlreadyExists if the target path collides.
 func (t *GroupTree) RenameGroup(oldPath, newName string) error {
 	group, exists := t.Groups[oldPath]
 	if !exists {
-		return nil
+		return fmt.Errorf("%w: %s", ErrGroupNotFound, oldPath)
 	}
 
 	// Sanitize name to prevent path traversal and security issues
