@@ -36,7 +36,7 @@ func loadCwdSyncInstance(t *testing.T, storage *session.Storage, id string) *ses
 	return nil
 }
 
-func TestApplyClaudeCwdSync_UpdatesProjectPath(t *testing.T) {
+func TestApplyClaudeCwdSync_UpdatesProjectPathAndPreservesWorktreeFields(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("AGENTDECK_PROFILE", "cwd_sync_update")
@@ -50,11 +50,14 @@ func TestApplyClaudeCwdSync_UpdatesProjectPath(t *testing.T) {
 	}
 
 	storage := seedCwdSyncInstance(t, "cwd_sync_update", &session.Instance{
-		ID:          "inst-1",
-		Title:       "s1",
-		Tool:        "claude",
-		ProjectPath: oldPath,
-		Command:     "claude",
+		ID:               "inst-1",
+		Title:            "s1",
+		Tool:             "claude",
+		ProjectPath:      oldPath,
+		Command:          "claude",
+		WorktreePath:     "/repo/worktrees/feature-x",
+		WorktreeRepoRoot: "/repo",
+		WorktreeBranch:   "feature-x",
 	})
 
 	applyClaudeCwdSync("inst-1", newPath)
@@ -63,6 +66,23 @@ func TestApplyClaudeCwdSync_UpdatesProjectPath(t *testing.T) {
 	if got.ProjectPath != newPath {
 		t.Errorf("ProjectPath = %q, want %q", got.ProjectPath, newPath)
 	}
+	if got.WorktreePath != "/repo/worktrees/feature-x" {
+		t.Errorf("WorktreePath changed: got %q", got.WorktreePath)
+	}
+	if got.WorktreeRepoRoot != "/repo" {
+		t.Errorf("WorktreeRepoRoot changed: got %q", got.WorktreeRepoRoot)
+	}
+	if got.WorktreeBranch != "feature-x" {
+		t.Errorf("WorktreeBranch changed: got %q", got.WorktreeBranch)
+	}
+}
+
+// applyClaudeCwdSync fires from the LOCAL hook handler when Claude Code emits
+// a hook. Remote sessions run Claude on the remote host, so their hooks fire
+// on the remote agent-deck binary (not this local one) and never reach this
+// code path — nothing to cover here.
+func TestApplyClaudeCwdSync_SkipsRemoteSessions(t *testing.T) {
+	t.Skip("RemoteSession out of scope: hooks fire on the remote host, not the local hook handler")
 }
 
 func TestApplyClaudeCwdSync_NoopWhenSame(t *testing.T) {
