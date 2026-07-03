@@ -1,8 +1,10 @@
 {
   "mcpServers": {
     "mcpdoc": {
+      "type": "stdio",
       "command": "uvx",
-      "args": ["--urls", "agent-deck:./llms.txt"]
+      "args": ["--from", "mcpdoc", "mcpdoc", "--urls", "agent-deck:./llms.txt", "--transport", "stdio"],
+      "env": { "PYTHONUTF8": "1" }
     }
   }
 }
