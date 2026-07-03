@@ -1951,6 +1951,8 @@ func handleList(profile string, args []string) {
 			Channels      []string  `json:"channels,omitempty"`
 			ExtraArgs     []string  `json:"extra_args,omitempty"`
 			Color         string    `json:"color,omitempty"` // issue #391
+			Archived      bool      `json:"archived"`
+			ArchivedAt    time.Time `json:"archived_at,omitempty"`
 		}
 		// Warm tmux pane-title cache + load hook statuses so the CLI
 		// reports the same Status the TUI and /api/menu do (issue #610).
@@ -1974,6 +1976,8 @@ func handleList(profile string, args []string) {
 				Channels:      inst.Channels,
 				ExtraArgs:     inst.ExtraArgs,
 				Color:         inst.Color,
+				Archived:      inst.IsArchived(),
+				ArchivedAt:    inst.ArchivedAt,
 			}
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				sj.TmuxSession = tmuxSess.Name
