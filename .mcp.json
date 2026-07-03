@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mcpdoc": {
+      "command": "uvx",
+      "args": ["--urls", "agent-deck:./llms.txt"]
+    }
+  }
+}
