@@ -43,6 +43,15 @@ func MergePanelConfigOntoDisk(panel *UserConfig) (*UserConfig, error) {
 	merged.Theme = panel.Theme
 	merged.DefaultTool = panel.DefaultTool
 
+	// ── SyncTitle (panel manages the "Sync Session Title" toggle) ──────
+	// Overlay only when the panel set it, so setup-wizard paths that leave
+	// it nil keep the on-disk value. Without this, toggling the option off
+	// is silently reverted to the disk value on save (GetSyncTitle default
+	// is true), i.e. the toggle appears to do nothing across restarts.
+	if panel.SyncTitle != nil {
+		merged.SyncTitle = panel.SyncTitle
+	}
+
 	// ── Gemini / Codex (panel manages YoloMode only) ───────────────────
 	merged.Gemini.YoloMode = panel.Gemini.YoloMode
 	merged.Codex.YoloMode = panel.Codex.YoloMode
