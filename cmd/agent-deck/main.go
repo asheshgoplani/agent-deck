@@ -841,6 +841,25 @@ func main() {
 	ui.EnableModifyOtherKeys(os.Stdout)
 	defer ui.DisableModifyOtherKeys(os.Stdout)
 
+	// Check for atuin pty-proxy incompatibility (#1558).
+	// Atuin pty-proxy intercepts PTY I/O and breaks Bubble Tea's TUI rendering.
+	// The alternate screen, mouse tracking, and raw-mode interactions all fail
+	// because os.Stdin/os.Stdout are proxied pipes, not direct terminal FDs.
+	if tmux.IsAtuinPTYProxy() {
+		fmt.Fprintf(os.Stderr, `WARNING: Agent Deck's TUI is incompatible with atuin pty-proxy.
+The TUI may appear blank or fail to render.
+
+To fix this, replace:
+  eval "$(atuin pty-proxy init zsh)"
+with:
+  eval "$(atuin init zsh)"
+
+in your shell configuration file (.zshrc / .bashrc / config.fish).
+Atuin pty-proxy is only needed for the atuin TUI overlay feature,
+and is not required for normal atuin shell history functionality.
+`+"\n")
+	}
+
 	p := tea.NewProgram(
 		homeModel,
 		tea.WithAltScreen(),

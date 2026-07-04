@@ -429,6 +429,21 @@ type TerminalInfo struct {
 	SupportsTrueColor bool   // Supports 24-bit color
 }
 
+// IsAtuinPTYProxy checks if the current shell session is running under atuin's
+// pty-proxy. Atuin pty-proxy acts as a PTY MITM between the terminal and the
+// shell, intercepting all I/O. It sets ATUIN_PTY_PROXY_ACTIVE when active.
+//
+// agent-deck's Bubble Tea TUI is incompatible with atuin pty-proxy because:
+//   - os.Stdin/os.Stdout are pipes to atuin's proxy, not direct terminal FDs
+//   - Alternate screen sequences (tea.WithAltScreen) may be swallowed
+//   - Mouse tracking sequences (tea.WithMouseCellMotion) may not be forwarded
+//
+// Users should use `atuin init zsh` (or bash/fish) instead of
+// `atuin pty-proxy init zsh` when running agent-deck.
+func IsAtuinPTYProxy() bool {
+	return os.Getenv("ATUIN_PTY_PROXY_ACTIVE") != ""
+}
+
 // DetectTerminal identifies the current terminal emulator from environment variables
 // Returns terminal name: "warp", "iterm2", "kitty", "alacritty", "vscode", "windows-terminal", or "unknown"
 func DetectTerminal() string {

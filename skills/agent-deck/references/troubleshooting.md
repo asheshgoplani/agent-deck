@@ -70,6 +70,34 @@ If you use multiple profiles, set the same under the profile override:
 allow_dangerous_mode = true
 ```
 
+### Atuin Pty-Proxy Incompatibility
+
+**Problem:** TUI shows a blank screen or fails to render when `eval "$(atuin pty-proxy init zsh)"` is in `.zshrc`.
+
+**Cause:** Atuin pty-proxy acts as a PTY MITM between the terminal and the shell. Agent Deck's Bubble Tea TUI requires direct terminal access for alternate screen mode, mouse tracking, and raw-mode I/O. These all break when stdin/stdout are proxied pipes.
+
+**Fix:** Replace the pty-proxy init line with standard atuin init:
+
+```bash
+# REMOVE this line:
+eval "$(atuin pty-proxy init zsh)"
+
+# REPLACE with this:
+eval "$(atuin init zsh)"
+```
+
+For bash:
+```bash
+eval "$(atuin init bash)"
+```
+
+For fish:
+```fish
+atuin init fish | source
+```
+
+Atuin pty-proxy is only needed for the atuin TUI overlay feature and is not required for normal shell history functionality. Agent Deck works fine with standard `atuin init`.
+
 ### High CPU Usage
 
 **With many sessions:** Normal if batched updates. Check:
