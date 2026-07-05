@@ -9619,7 +9619,14 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 				h.rebuildFlatItems()
-				h.saveInstances() // Persist the new group
+				// forceSave, not saveInstances: a save is SKIPPED while
+				// isReloading (and aborts on the mtime external-change check),
+				// so a group created during a storage-watcher reload window is
+				// dropped when the reload rebuilds groupTree from disk — the
+				// "new group only works every second try" bug. Group mutations
+				// are user-initiated and MUST persist, like session creation
+				// (see the "was losing groups!" forceSave in sessionCreatedMsg).
+				h.forceSaveInstances() // Persist the new group
 			}
 		case GroupDialogRename:
 			name := h.groupDialog.GetValue()
@@ -9629,7 +9636,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.instances = h.groupTree.GetAllInstances()
 				h.instancesMu.Unlock()
 				h.rebuildFlatItems()
-				h.saveInstances()
+				h.forceSaveInstances() // MUST persist even during reload (see GroupDialogCreate)
 			}
 		case GroupDialogMove:
 			targetGroupPath := h.groupDialog.GetSelectedGroup()
@@ -9641,7 +9648,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.instances = h.groupTree.GetAllInstances()
 					h.instancesMu.Unlock()
 					h.rebuildFlatItems()
-					h.saveInstances()
+					h.forceSaveInstances() // MUST persist even during reload (see GroupDialogCreate)
 				}
 			}
 		case GroupDialogRenameSession:
