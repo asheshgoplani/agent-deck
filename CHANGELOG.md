@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A manual session rename no longer reverts to the folder default after a reload race.** When a rename's save was skipped (`isReloading=true`), the title was queued in `pendingTitleChanges` and re-applied after the storage-watcher reload — but only the title *string* was queued, not its `TitleLocked` intent. The reapplied title therefore came back **unlocked**, so the very next `#572` Claude-name sync overwrote it with Claude Code 2.1.19x's auto-derived cwd-folder name (e.g. `myproject` → `myproject-3a`). The queue now carries the lock state alongside the title: a user rename is restored **locked** (survives the sync), while a sync-sourced title stays unlocked (keeps tracking Claude). Pinned by `TestHomeRenamePendingChangeRestoresTitleLock`. (related to [#697](https://github.com/asheshgoplani/agent-deck/issues/697))
+
 ## [1.10.9] - 2026-07-02
 
 ### Fixed
