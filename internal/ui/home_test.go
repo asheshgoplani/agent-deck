@@ -732,6 +732,11 @@ func TestHomeRenamePendingChangesNoop(t *testing.T) {
 // rename keeps disappearing on restart" bug). A sync-sourced pending title must
 // stay UNLOCKED so it keeps tracking Claude's session name.
 func TestHomeRenamePendingChangeRestoresTitleLock(t *testing.T) {
+	// No RemoteSession case: pendingTitleChanges is keyed by session ID and
+	// resolved through getInstanceByID, which only returns local
+	// *session.Instance objects. A RemoteSession has no local instance and is
+	// renamed via its own SSH-runner branch in handleGroupDialogKey, so it can
+	// never reach this reload-reapply path.
 	t.Run("user rename is relocked", func(t *testing.T) {
 		home := NewHome()
 		home.width = 100

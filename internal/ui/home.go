@@ -9708,12 +9708,25 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					// SetField so the rename also sets TitleLocked — a direct
 					// Title assignment would be reverted by the #572
 					// Claude-name sync on the next hook event.
+					// Mutate under instancesMu to match the edit-dialog rename
+					// path (SetField writes inst.Title/TitleLocked, which the
+					// status worker and reconciler read concurrently). Run the
+					// tmux-heavy postCommit after unlocking so a slow subprocess
+					// can't stall those readers.
 					locked := true // SetField(FieldTitle) locks; default for the nil-inst path
+					var postCommit func()
+					var setErr error
+					h.instancesMu.Lock()
 					if inst := h.getInstanceByID(sessionID); inst != nil {
-						if _, _, err := session.SetField(inst, session.FieldTitle, newName, nil); err != nil {
-							h.setError(err)
-						}
+						_, postCommit, setErr = session.SetField(inst, session.FieldTitle, newName, nil)
 						locked = inst.TitleLocked
+					}
+					h.instancesMu.Unlock()
+					if setErr != nil {
+						h.setError(setErr)
+					}
+					if postCommit != nil {
+						postCommit()
 					}
 					// Store pending title change so it survives reload races.
 					// If saveInstances() is skipped (isReloading=true), the reload
