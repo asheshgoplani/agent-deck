@@ -48,7 +48,7 @@ Spell out the long form: **never use the short `-p` to set a parent** (see the
   frozen lockfile, never regenerate it* (e.g. `pnpm install --frozen-lockfile`).
   Otherwise the child's first test/build/e2e fails confusingly.
 - **Long prompts: pass via a file.** For a big multi-line task, write it to a file
-  and command-substitute: `-m "$(cat task.md)"`. Avoids the shell mangling
+  and command-substitute: `-m "$(cat task.md)"`. Avoids the shell mangling of
   backticks, `$`, and quotes inside an inline `-m`.
 
 ## The loop
