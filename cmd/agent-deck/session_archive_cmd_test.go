@@ -101,8 +101,8 @@ func TestSessionUnarchive_NotArchived_Rejected(t *testing.T) {
 	id := addTestSession(t, home, filepath.Join(home, "proj"), "unarchive-noop")
 
 	_, _, code := runAgentDeck(t, home, "session", "unarchive", id, "--json")
-	if code == 0 {
-		t.Fatalf("expected non-zero exit unarchiving a non-archived session")
+	if code != 1 {
+		t.Fatalf("expected exit 1 (INVALID_OPERATION) unarchiving a non-archived session, got %d", code)
 	}
 }
 
@@ -119,7 +119,35 @@ func TestSessionArchive_AlreadyArchived_Rejected(t *testing.T) {
 		t.Fatalf("first archive failed (exit %d): %s", code, stderr)
 	}
 	_, _, code := runAgentDeck(t, home, "session", "archive", id, "--json")
-	if code == 0 {
-		t.Fatalf("expected non-zero exit archiving an already-archived session")
+	if code != 1 {
+		t.Fatalf("expected exit 1 (INVALID_OPERATION) archiving an already-archived session, got %d", code)
+	}
+}
+
+// A missing <id|title> is a usage error (exit 1), distinct from the NOT_FOUND
+// exit 2 reserved for a genuinely unknown session.
+func TestSessionArchive_MissingArg_Exit1(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	addTestSession(t, home, filepath.Join(home, "proj"), "archive-missing-arg")
+
+	_, _, code := runAgentDeck(t, home, "session", "archive", "--json")
+	if code != 1 {
+		t.Fatalf("expected exit 1 for archive with no id, got %d", code)
+	}
+}
+
+func TestSessionUnarchive_MissingArg_Exit1(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	addTestSession(t, home, filepath.Join(home, "proj"), "unarchive-missing-arg")
+
+	_, _, code := runAgentDeck(t, home, "session", "unarchive", "--json")
+	if code != 1 {
+		t.Fatalf("expected exit 1 for unarchive with no id, got %d", code)
 	}
 }

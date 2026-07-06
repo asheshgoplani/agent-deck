@@ -105,8 +105,8 @@ func printSessionHelp() {
 	fmt.Println("  start <id>              Start a session's tmux process")
 	fmt.Println("  stop <id>               Stop/kill session process")
 	fmt.Println("  remove <id>             Remove session from registry (stopped/error only; --force to bypass)")
-	fmt.Println("  archive <id>            Stop session and hide it from active lists (retained in storage)")
-	fmt.Println("  unarchive <id>          Restore an archived session (does not restart it)")
+	fmt.Println("  archive <id|title>      Stop session and hide it from active lists (retained in storage)")
+	fmt.Println("  unarchive <id|title>    Restore an archived session (does not restart it)")
 	fmt.Println("  restart [id] [--all]    Restart session (Claude: reload MCPs)")
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
 	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, or Codex session with context")
@@ -413,6 +413,17 @@ func handleSessionArchive(profile string, args []string) {
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
+	// An empty identifier is a usage error, not a missing session: exit 1 (not
+	// the ResolveSession NOT_FOUND exit 2, which is reserved for a genuinely
+	// unknown id/title).
+	if identifier == "" {
+		out.Error("session <id|title> required", ErrCodeInvalidOperation)
+		if !*jsonOutput {
+			fs.Usage()
+		}
+		os.Exit(1)
+	}
+
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
@@ -436,17 +447,26 @@ func handleSessionArchive(profile string, args []string) {
 
 	// Only kill a live tmux session. Killing an already-dead session returns a
 	// fatal error that would abort the archive (see idempotent-Kill history),
-	// so gate on Exists() the way handleSessionStop does.
+	// so gate on Exists() the way handleSessionStop does. Kill() sets
+	// Status=stopped in memory only; persistArchivedCLI persists it below.
+	//
+	// Unlike handleSessionStop we deliberately do NOT SyncSessionIDsFromTmux()
+	// here: archive persists via a targeted UPDATE (to survive concurrent TUI
+	// writers), which cannot carry the whole-row tool-id fields the sync
+	// populates. Late-discovered ids are dropped rather than saved via a
+	// non-targeted write that would reintroduce the archive-clobber race. The
+	// session's normal lifecycle already persists its tool ids.
+	killed := false
 	if inst.Exists() {
-		inst.SyncSessionIDsFromTmux()
 		if err := inst.Kill(); err != nil {
 			out.Error(fmt.Sprintf("failed to stop session: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		killed = true
 	}
 
 	inst.ArchivedAt = time.Now().UTC()
-	if err := persistArchivedCLI(storage, inst); err != nil {
+	if err := persistArchivedCLI(storage, inst, killed); err != nil {
 		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -484,6 +504,15 @@ func handleSessionUnarchive(profile string, args []string) {
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
+	// Empty identifier is a usage error (exit 1), mirroring archive.
+	if identifier == "" {
+		out.Error("session <id|title> required", ErrCodeInvalidOperation)
+		if !*jsonOutput {
+			fs.Usage()
+		}
+		os.Exit(1)
+	}
+
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
@@ -505,8 +534,9 @@ func handleSessionUnarchive(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// unarchive never kills tmux, so there is no post-kill status to persist.
 	inst.ArchivedAt = time.Time{}
-	if err := persistArchivedCLI(storage, inst); err != nil {
+	if err := persistArchivedCLI(storage, inst, false); err != nil {
 		out.Error(fmt.Sprintf("failed to persist unarchive: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -519,15 +549,28 @@ func handleSessionUnarchive(profile string, args []string) {
 	})
 }
 
-// persistArchivedCLI writes only the archive timestamp via a targeted UPDATE.
-// It deliberately avoids saveSessionData: the full-save path has an
-// external-change guard that aborts and reloads under concurrent writers (a
-// running TUI), which would silently revert the archive. This mirrors
-// home.go's persistArchived.
-func persistArchivedCLI(storage *session.Storage, inst *session.Instance) error {
+// persistArchivedCLI writes the archive timestamp (and, when persistStatus is
+// set, the post-kill Status) via targeted UPDATEs. It deliberately avoids
+// saveSessionData: the full-save path has an external-change guard that aborts
+// and reloads under concurrent writers (a running TUI), which would silently
+// revert the archive. This mirrors home.go's persistArchived.
+//
+// persistStatus is true only when archive killed a live session: Kill() sets
+// Status=stopped in memory but writes nothing to the DB, so without this the
+// row keeps its pre-kill running/idle status and a later load misclassifies the
+// stopped session. PersistInstanceStatusesTx is the same targeted, abort-safe
+// primitive revive uses (single status column, no whole-row clobber).
+func persistArchivedCLI(storage *session.Storage, inst *session.Instance, persistStatus bool) error {
 	db := storage.GetDB()
 	if db == nil {
 		return fmt.Errorf("state database unavailable")
+	}
+	if persistStatus {
+		if err := db.PersistInstanceStatusesTx([]statedb.InstanceStatusUpdate{
+			{ID: inst.ID, Status: string(inst.Status)},
+		}); err != nil {
+			return err
+		}
 	}
 	return db.SetArchived(inst.ID, inst.ArchivedAt)
 }
