@@ -260,3 +260,25 @@ func TestReconcileTitleFromClaude_NoopWhenNoName(t *testing.T) {
 		t.Errorf("Title = %q, want unchanged keep-me", inst.Title)
 	}
 }
+
+// TestReconcileTitleFromClaude_NoopWhenDerived: end-to-end guard for the
+// nameSource="derived" rule — a folder-derived Claude name must not overwrite
+// the user's agent-deck title. The derived→"" mapping and the ""→no-op
+// reconcile are each unit-tested above; this pins their composition so a
+// future refactor that resolves the name without going through
+// ClaudeSessionName cannot silently reintroduce the folder-name clobbering.
+func TestReconcileTitleFromClaude_NoopWhenDerived(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedClaudeSessionFile(t, home, "1234.json", map[string]any{
+		"sessionId": "sid-rd", "name": "workspace-75", "nameSource": "derived",
+	})
+
+	inst := &Instance{ID: "i-rd", Title: "dev", Tool: "claude"}
+	if name, changed := inst.ReconcileTitleFromClaude("sid-rd"); changed || name != "" {
+		t.Errorf("got (%q,%v), want no-op for derived name", name, changed)
+	}
+	if inst.Title != "dev" {
+		t.Errorf("Title = %q, want unchanged dev", inst.Title)
+	}
+}
