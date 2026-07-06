@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Creating, renaming, or moving a group no longer needs two attempts.** The `GroupDialog` create/rename/move handlers persisted via `saveInstances()`, which is skipped while a storage-watcher reload is in flight, so a group mutation landing in that window was silently dropped when the reload rebuilt the group tree from disk — the "create group has to be done twice" bug. These user-initiated group-structure mutations now use `forceSaveInstances()`, matching session creation. ([#1573](https://github.com/asheshgoplani/agent-deck/pull/1573)) (fixes [#1539](https://github.com/asheshgoplani/agent-deck/issues/1539))
+
 ## [1.10.9] - 2026-07-02
 
 ### Fixed
