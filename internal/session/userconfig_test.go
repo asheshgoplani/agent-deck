@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2200,6 +2201,68 @@ footer = "full"
 
 // TestSaveUserConfig_OmitsZeroValueFields verifies that SaveUserConfig does not
 // bloat config.toml with zero-value fields the user never set (issue #1360).
+// TestUserConfig_GroupDefaults_Decode verifies that [group_defaults].max_concurrent
+// decodes into a *int that distinguishes unset (nil) from explicit 0 and N.
+func TestUserConfig_GroupDefaults_Decode(t *testing.T) {
+	zero := 0
+	four := 4
+	cases := []struct {
+		name string
+		toml string
+		want *int
+	}{
+		{name: "unset", toml: "", want: nil},
+		{name: "explicit zero", toml: "[group_defaults]\nmax_concurrent = 0\n", want: &zero},
+		{name: "explicit N", toml: "[group_defaults]\nmax_concurrent = 4\n", want: &four},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg UserConfig
+			if _, err := toml.Decode(tc.toml, &cfg); err != nil {
+				t.Fatalf("toml.Decode: %v", err)
+			}
+			got := cfg.GroupDefaults.MaxConcurrent
+			switch {
+			case tc.want == nil && got != nil:
+				t.Errorf("expected nil MaxConcurrent, got *%d", *got)
+			case tc.want != nil && got == nil:
+				t.Errorf("expected *%d MaxConcurrent, got nil", *tc.want)
+			case tc.want != nil && got != nil && *got != *tc.want:
+				t.Errorf("expected MaxConcurrent=%d, got %d", *tc.want, *got)
+			}
+		})
+	}
+}
+
+// TestUserConfig_GroupDefaults_RoundTripZeroSurvives verifies that an explicit
+// 0 (unlimited) survives encode+decode. The [group_defaults] section has content
+// (max_concurrent = 0), so stripEmptyTOMLSections does NOT remove it, and the
+// *int field (with omitempty, NOT omitzero) keeps *0 through the round-trip.
+func TestUserConfig_GroupDefaults_RoundTripZeroSurvives(t *testing.T) {
+	zero := 0
+	cfg := &UserConfig{}
+	cfg.GroupDefaults.MaxConcurrent = &zero
+
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if !strings.Contains(buf.String(), "max_concurrent = 0") {
+		t.Fatalf("encoded TOML missing max_concurrent = 0:\n%s", buf.String())
+	}
+
+	var decoded UserConfig
+	if _, err := toml.Decode(buf.String(), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.GroupDefaults.MaxConcurrent == nil {
+		t.Fatal("round-trip lost max_concurrent (got nil, expected *0)")
+	}
+	if *decoded.GroupDefaults.MaxConcurrent != 0 {
+		t.Errorf("round-trip changed max_concurrent: expected 0, got %d", *decoded.GroupDefaults.MaxConcurrent)
+	}
+}
+
 func TestSaveUserConfig_OmitsZeroValueFields(t *testing.T) {
 	tempDir := t.TempDir()
 	originalHome := os.Getenv("HOME")
@@ -2257,6 +2320,7 @@ func TestSaveUserConfig_OmitsZeroValueFields(t *testing.T) {
 		"[logs]",
 		"[mcp_pool]",
 		"[conductor]",
+		"[group_defaults]",
 		"[docker]",
 		"[openclaw]",
 		"[costs]",

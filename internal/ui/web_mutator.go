@@ -494,6 +494,10 @@ func (m *WebMutator) CreateGroup(name, parentPath string) (string, error) {
 		return "", err
 	}
 	defer unlock()
+	// Seed the new-group default from [group_defaults].max_concurrent.
+	if cfg, _ := session.LoadUserConfig(); cfg != nil {
+		m.h.groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
+	}
 	var grp *session.Group
 	if parentPath != "" {
 		grp = m.h.groupTree.CreateSubgroup(parentPath, name)

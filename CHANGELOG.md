@@ -7,9 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<<<<<<< HEAD
 ### Added
 
 - **Antigravity (`agy`) CLI support.** New built-in tool wired through TUI, CLI, web API, sandbox, MCP, and hooks. Sessions launch via `agy`, resume by conversation UUID across restarts, support per-session and global YOLO (`--dangerously-skip-permissions`), and surface a model picker (Ctrl+G) backed by `agy models`. Hooks (`PreInvocation`, `Stop`) install into `~/.gemini/config/hooks.json` via `agent-deck antigravity-hooks install`. Configure under `[antigravity]` in `config.toml` (`YoloMode`, `DefaultModel`, `EnvFile`, `Command`).
+=======
+## [1.10.9] - 2026-07-02
+
+### Fixed
+
+- **TUI session status now accurately reflects background work and connection state.** Adds background-work detection via pane-content regex, a dedicated connection-status line, and properly skips archived sessions from the status polling loop. ([#1544](https://github.com/asheshgoplani/agent-deck/pull/1544))
+- **Grouped child sessions now correctly use their group's configured `config_dir` instead of the ambient `CLAUDE_CONFIG_DIR`.** The group resolver chain now ranks `[groups.X.claude].config_dir` above ambient env (mirrors the instance chain), preventing a grouped child from silently running on the wrong Claude account when launched from a session whose `CLAUDE_CONFIG_DIR` points elsewhere. ([#1532](https://github.com/asheshgoplani/agent-deck/pull/1532))
+
+## [1.10.8] - 2026-07-01
+
+### Fixed
+
+- **TUI startup no longer blocks on a wedged `netstat` (macOS).** `Collector.Start()` previously ran the initial GPU probe and stat collection synchronously inside `Home.Init()`, before Bubble Tea's first paint. A `netstat -ib` call that wedged in the kernel (observed with VPN/utun interface churn) froze the TUI on a blank, input-dead screen for up to ~30 s. `Start()` now spawns all work into the background goroutine immediately and adds a 2-second context timeout to the `netstat -ib` call so a hanging invocation is bounded rather than infinite. ([#1548](https://github.com/asheshgoplani/agent-deck/pull/1548))
+- **Title sync no longer clobbers session names with Claude's auto-derived folder names.** Claude Code 2.1.19x began auto-deriving a session name from the cwd folder and stamping it with `nameSource="derived"`. The `#572` title-sync reconciler read `name` without checking `nameSource`, so the derived folder name overwrote agent-deck's `auto_name` handle. `ClaudeSessionNameIn` now treats `nameSource="derived"` as "no user rename", preserving the existing agent-deck name. Names without a `nameSource` (older Claude) are honored unchanged. ([#1545](https://github.com/asheshgoplani/agent-deck/pull/1545))
+
+## [1.10.7] - 2026-06-30
+
+### Added
+
+- **Configurable default `max_concurrent` for new groups via `[group_defaults]`.** New `[group_defaults]` section with a `max_concurrent` key sets the `max_concurrent` value stamped onto newly-created groups, replacing the hardcoded serial default (`1`) introduced in v1.9.1. Precedence: explicit `group create --max-concurrent N` > `[group_defaults].max_concurrent` > built-in `1`. When the key is unset, behavior is byte-for-byte unchanged (new groups stay serial); `0` means unlimited; existing groups loaded from `state.db` are never touched. Covered by `TestGroup_NewGroupDefault_*` (internal/session/group_concurrency_test.go), `TestUserConfig_GroupDefaults_*` (internal/session/userconfig_test.go), and `TestGroupCreate_*` (cmd/agent-deck/group_cmd_test.go). ([#1541](https://github.com/asheshgoplani/agent-deck/pull/1541))
+
+## [1.10.6] - 2026-06-28
+
+### Fixed
+
+- **CLI: global `-p`/`--profile` no longer shadows a subcommand's own `-p`.** `extractProfileFlag` previously scanned the entire arg list before subcommand dispatch, so `agent-deck launch . -p <parent>` had its `-p` swallowed as a phantom profile name and the child was never linked to its parent. The extractor now stops honoring the global flag once a subcommand token is reached, matching the convention that global flags precede the subcommand. Subcommands that define their own `-p` (`launch`/`add` `--parent`, `group move` `--position`) now receive it unmodified. ([#1529](https://github.com/asheshgoplani/agent-deck/pull/1529))
+
+### Docs
+
+- **Fleet skill: document `--parent` (long form) for explicit child parenting and warn against `-p`.** Added a "Need a specific parent?" note, `--parent` in the Useful flags list, and a `-p` pitfall note explaining how the short flag was mis-parsed as `--profile` on older builds, with recovery steps. ([#1531](https://github.com/asheshgoplani/agent-deck/pull/1531))
+
+## [1.10.5] - 2026-06-27
+
+### Fixed
+
+- **Conductor: default HeartbeatInterval to 15 for fresh conductors.** Fresh conductors with heartbeat enabled were created with `HeartbeatInterval` at its zero value, causing them to never send heartbeats until explicitly configured. New conductors now initialize `HeartbeatInterval` to `15` (seconds) when heartbeat is enabled. ([#1511](https://github.com/asheshgoplani/agent-deck/pull/1511))
+
+## [1.10.4] - 2026-06-26
+
+### Added
+
+- **Fleet fan-out CLI: launch parented children and track completions.** `agent-deck launch` gains `--inherit-group` (child inherits parent's group instead of cwd-derived), `--assert-done` / `--no-assert-done` (appends a done-signal instruction to the initial `-m` message for claude children, opt-out), and a new `agent-deck session children` subcommand listing direct children of a session with their status and completion time. A new file-based completion ledger (`completion-ledger/`) records when children finish so `session children` can report outcomes without touching the SQLite schema. The `fleet` skill is now included in the marketplace plugin. ([#1518](https://github.com/asheshgoplani/agent-deck/pull/1518))
+>>>>>>> upstream/main
 
 ## [1.9.77] - 2026-06-25
 

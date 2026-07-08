@@ -27,6 +27,7 @@ func TestLaunch_DerivesGroupFromCwdNotParent_RegressionFor972(t *testing.T) {
 		cwdDerivedGroup       string
 		parentGroup           string
 		explicitGroupProvided bool
+		inheritGroup          bool
 		want                  string
 	}{
 		{
@@ -35,6 +36,31 @@ func TestLaunch_DerivesGroupFromCwdNotParent_RegressionFor972(t *testing.T) {
 			cwdDerivedGroup: "agent-deck",
 			parentGroup:     "conductor",
 			want:            "agent-deck",
+		},
+		{
+			name:            "inherit-group: parent group wins over worktree cwd-derived group",
+			currentGroup:    "",
+			cwdDerivedGroup: "feat-profile",
+			parentGroup:     "doozyx/voice-chat",
+			inheritGroup:    true,
+			want:            "doozyx/voice-chat",
+		},
+		{
+			name:                  "inherit-group never overrides explicit -g",
+			currentGroup:          "ard",
+			cwdDerivedGroup:       "feat-profile",
+			parentGroup:           "doozyx/voice-chat",
+			explicitGroupProvided: true,
+			inheritGroup:          true,
+			want:                  "ard",
+		},
+		{
+			name:            "inherit-group with empty parent falls back to cwd-derived",
+			currentGroup:    "",
+			cwdDerivedGroup: "feat-profile",
+			parentGroup:     "",
+			inheritGroup:    true,
+			want:            "feat-profile",
 		},
 		{
 			name:                  "explicit -g still wins over both cwd-derived and parent",
@@ -62,10 +88,10 @@ func TestLaunch_DerivesGroupFromCwdNotParent_RegressionFor972(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveGroupSelection(tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided)
+			got := resolveGroupSelection(tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided, tt.inheritGroup)
 			if got != tt.want {
-				t.Fatalf("resolveGroupSelection(curr=%q, cwd=%q, parent=%q, explicit=%v) = %q, want %q",
-					tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided, got, tt.want)
+				t.Fatalf("resolveGroupSelection(curr=%q, cwd=%q, parent=%q, explicit=%v, inherit=%v) = %q, want %q",
+					tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided, tt.inheritGroup, got, tt.want)
 			}
 		})
 	}

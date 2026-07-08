@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -210,4 +213,90 @@ func groupKeys(tree *session.GroupTree) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// writeGroupDefaultsConfig writes config.toml to the legacy path under the
+// isolated HOME. runAgentDeck re-points XDG_CONFIG_HOME at an unpopulated dir,
+// so EffectiveConfigPath falls through to this legacy file deterministically.
+func writeGroupDefaultsConfig(t *testing.T, home, content string) {
+	t.Helper()
+	dir := filepath.Join(home, ".agent-deck")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+}
+
+// runGroupCreate runs `group create <args...> --json` under the isolated HOME
+// and returns the parsed max_concurrent from the JSON payload.
+func runGroupCreate(t *testing.T, home string, args ...string) int {
+	t.Helper()
+	full := append([]string{"group", "create"}, args...)
+	full = append(full, "--json")
+	stdout, stderr, code := runAgentDeck(t, home, full...)
+	if code != 0 {
+		t.Fatalf("group create %v failed (exit %d)\nstdout: %s\nstderr: %s", args, code, stdout, stderr)
+	}
+	var parsed struct {
+		MaxConcurrent int `json:"max_concurrent"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+		t.Fatalf("parse group create JSON: %v\nstdout: %s", err, stdout)
+	}
+	return parsed.MaxConcurrent
+}
+
+// TestGroupCreate_DefaultMaxConcurrent_ConfigUnset: no config → new group is
+// serial (1), byte-for-byte v1.9.1 behavior.
+func TestGroupCreate_DefaultMaxConcurrent_ConfigUnset(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI subprocess test in -short mode")
+	}
+	home := t.TempDir()
+	if got := runGroupCreate(t, home, "g"); got != 1 {
+		t.Errorf("config unset: expected max_concurrent=1, got %d", got)
+	}
+}
+
+// TestGroupCreate_DefaultMaxConcurrent_ConfigN: [group_defaults].max_concurrent = 3
+// → new group capped at 3.
+func TestGroupCreate_DefaultMaxConcurrent_ConfigN(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI subprocess test in -short mode")
+	}
+	home := t.TempDir()
+	writeGroupDefaultsConfig(t, home, "[group_defaults]\nmax_concurrent = 3\n")
+	if got := runGroupCreate(t, home, "g"); got != 3 {
+		t.Errorf("config N=3: expected max_concurrent=3, got %d", got)
+	}
+}
+
+// TestGroupCreate_FlagOverridesConfigDefault: --max-concurrent beats the config
+// default (precedence: flag > config > built-in 1). Uses the --flag=value form;
+// the space-separated form is mishandled by reorderGroupArgs (a pre-existing
+// arg-parsing issue unrelated to [group_defaults]).
+func TestGroupCreate_FlagOverridesConfigDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI subprocess test in -short mode")
+	}
+	home := t.TempDir()
+	writeGroupDefaultsConfig(t, home, "[group_defaults]\nmax_concurrent = 5\n")
+	if got := runGroupCreate(t, home, "g", "--max-concurrent=2"); got != 2 {
+		t.Errorf("flag override: expected max_concurrent=2, got %d", got)
+	}
+}
+
+// TestGroupCreate_ConfigZeroUnlimited: [group_defaults].max_concurrent = 0 →
+// new group is unlimited (0). Proves *0 is not collapsed to the built-in 1.
+func TestGroupCreate_ConfigZeroUnlimited(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI subprocess test in -short mode")
+	}
+	home := t.TempDir()
+	writeGroupDefaultsConfig(t, home, "[group_defaults]\nmax_concurrent = 0\n")
+	if got := runGroupCreate(t, home, "g"); got != 0 {
+		t.Errorf("config 0: expected max_concurrent=0 (unlimited), got %d", got)
+	}
 }

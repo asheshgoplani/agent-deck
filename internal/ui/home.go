@@ -3710,6 +3710,14 @@ func (h *Home) logWorker() {
 	}
 }
 
+// shouldPollStatusInLoop reports whether the per-tick background status sweep
+// should run UpdateStatus() on inst. Archived sessions are skipped: their tmux
+// pane is torn down and their row status is display-frozen, so a poll can only
+// spend a serialized tmux subprocess without changing anything the UI renders.
+func shouldPollStatusInLoop(inst *session.Instance) bool {
+	return inst != nil && !inst.IsArchived()
+}
+
 // backgroundStatusUpdate runs independently of the TUI
 // Updates session statuses and syncs notification bar directly to tmux
 // This is called by the internal ticker even when TUI is paused (tea.Exec)
@@ -3842,7 +3850,7 @@ func (h *Home) backgroundStatusUpdate() {
 	var slowMu sync.Mutex
 	var slowSessions []string
 	pm := tmux.GetPipeManager()
-	var skipped int
+	var skipped int // sessions not polled this tick (archived + idle fast-path)
 
 	tracker := h.getTransitionTracker()
 
@@ -3851,6 +3859,18 @@ func (h *Home) backgroundStatusUpdate() {
 
 	for _, inst := range instances {
 		inst := inst // capture loop variable
+
+		// Skip archived sessions: their tmux pane is torn down and their row
+		// status is display-frozen (rowStatusGlyph forces the stopped glyph
+		// regardless of Status), so UpdateStatus can only burn a serialized tmux
+		// subprocess without changing anything the UI shows. With a large archive
+		// backlog this dominated the loop (observed: 723 archived of 742 total
+		// pushed the sweep to multi-second spikes). Unarchiving runs its own
+		// refresh, so the periodic loop never needs to poll archived sessions.
+		if !shouldPollStatusInLoop(inst) {
+			skipped++
+			continue
+		}
 
 		// Skip idle sessions when PipeManager knows they haven't produced output.
 		// Only skip if pipe is alive (otherwise we need UpdateStatus for Error detection).
@@ -5022,16 +5042,25 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.cachedStatusCounts.valid.Store(false)
 		h.invalidatePreviewCache(msg.sessionID)
 		h.rebuildFlatItems()
-		h.saveInstances()
 		if inst := h.getInstanceByID(msg.sessionID); inst != nil {
+			// Persist via a targeted UPDATE, not saveInstances(): under concurrent
+			// writers the full-table save aborts on external-change and reloads,
+			// silently discarding the archive (archived_at reverts to 0).
+			if err := h.persistArchived(inst); err != nil {
+				h.setError(fmt.Errorf("failed to persist archive: %w", err))
+				return h, nil
+			}
 			h.setError(fmt.Errorf("archived '%s' (^ to view)", inst.Title))
 		}
 		return h, nil
 
 	case sessionUnarchivedMsg:
 		h.rebuildFlatItems()
-		h.saveInstances()
 		if inst := h.getInstanceByID(msg.sessionID); inst != nil {
+			if err := h.persistArchived(inst); err != nil {
+				h.setError(fmt.Errorf("failed to persist unarchive: %w", err))
+				return h, nil
+			}
 			h.setError(fmt.Errorf("unarchived '%s'", inst.Title))
 		}
 		return h, nil
@@ -9585,6 +9614,10 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case GroupDialogCreate:
 			name := h.groupDialog.GetValue()
 			if name != "" {
+				// Seed the new-group default from [group_defaults].max_concurrent.
+				if cfg, _ := session.LoadUserConfig(); cfg != nil {
+					h.groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
+				}
 				var created *session.Group
 				if h.groupDialog.HasParent() {
 					// Create subgroup under parent
@@ -11393,6 +11426,22 @@ func (h *Home) closeSession(inst *session.Instance) tea.Cmd {
 		killErr := inst.Kill()
 		return sessionClosedMsg{sessionID: id, killErr: killErr}
 	}
+}
+
+// persistArchived writes the instance's archive timestamp to the database with a
+// targeted single-row UPDATE. This deliberately bypasses saveInstances(), whose
+// external-change guard aborts (and reloads) under concurrent writers, silently
+// reverting the archive. The in-memory inst.ArchivedAt is already set by
+// archiveSession/unarchiveSession; this only persists it.
+func (h *Home) persistArchived(inst *session.Instance) error {
+	if h.storage == nil {
+		return nil
+	}
+	db := h.storage.GetDB()
+	if db == nil {
+		return nil
+	}
+	return db.SetArchived(inst.ID, inst.ArchivedAt)
 }
 
 // archiveSession stops a session and marks it archived.
@@ -13215,14 +13264,16 @@ func renderSectionDivider(label string, width int) string {
 // sessionID is the detected session ID (empty = not connected).
 // detectedAt is when detection ran (zero = still detecting, used only when threeState is true).
 // threeState enables the "Detecting..." intermediate state (for tools like OpenCode/Codex).
-func renderToolStatusLine(b *strings.Builder, sessionID string, detectedAt time.Time, threeState bool) {
+// archived/status drive the honest connected-vs-archived-vs-stopped label when a
+// session id is on record (the id outlives the live pane).
+func renderToolStatusLine(b *strings.Builder, sessionID string, detectedAt time.Time, threeState, archived bool, status session.Status) {
 	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
 	valueStyle := lipgloss.NewStyle().Foreground(ColorText)
 
 	if sessionID != "" {
-		statusStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
+		statusText, statusStyle := connectionStatusLine(archived, status)
 		b.WriteString(labelStyle.Render("Status:  "))
-		b.WriteString(statusStyle.Render("● Connected"))
+		b.WriteString(statusStyle.Render(statusText))
 		b.WriteString("\n")
 
 		b.WriteString(labelStyle.Render("Session: "))
@@ -14682,44 +14733,11 @@ func (h *Home) renderSessionItem(
 		treeConnector = treeLast
 	}
 
-	// Status indicator with consistent sizing
-	var statusIcon string
-	var statusStyle lipgloss.Style
-	switch instStatus {
-	case session.StatusRunning:
-		statusIcon = "●"
-		statusStyle = SessionStatusRunning
-	case session.StatusWaiting:
-		statusIcon = "◐"
-		statusStyle = SessionStatusWaiting
-	case session.StatusIdle:
-		statusIcon = "○"
-		statusStyle = SessionStatusIdle
-	case session.StatusError:
-		statusIcon = "✕"
-		statusStyle = SessionStatusError
-	case session.StatusStopped:
-		statusIcon = "■"
-		statusStyle = SessionStatusStopped
-	default:
-		statusIcon = "○"
-		statusStyle = SessionStatusIdle
-	}
-
-	// Honest Status v2: a distinct glyph for the two error substates a
-	// supervisor must act on differently — a dead-model no-op loop and an
-	// auth/login failure both render as "error", but a generic "✕" hides which.
-	// "⚡" = model unavailable (the Fable-down no-op), "🔒" = auth/login needed.
-	// Gated on StatusError so a stale cached substate cannot leak the glyph onto
-	// a session that is no longer in error (e.g. a stopped session).
-	if instStatus == session.StatusError {
-		switch instSubstate {
-		case session.SubstateModelUnavailable:
-			statusIcon = "⚡"
-		case session.SubstateAuth401:
-			statusIcon = "🔒"
-		}
-	}
+	// Status indicator with consistent sizing. rowStatusGlyph maps the coarse
+	// status (plus the Honest-Status-v2 error substates) to a glyph, and forces
+	// the stopped glyph for archived sessions whose snapshot still carries a
+	// stale live status.
+	statusIcon, statusStyle := rowStatusGlyph(instStatus, instSubstate, inst.IsArchived())
 
 	status := statusStyle.Render(statusIcon)
 
@@ -15910,12 +15928,13 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 		// Status line
 		if selected.ClaudeSessionID != "" {
-			statusStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
+			statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selectedStatus)
 			b.WriteString(labelStyle.Render("Status:  "))
-			b.WriteString(statusStyle.Render("● Connected"))
+			b.WriteString(statusStyle.Render(statusText))
 			b.WriteString("\n")
 
-			// Full session ID on its own line
+			// Full session ID on its own line (kept even when archived/stopped so
+			// the conversation can be resumed)
 			b.WriteString(labelStyle.Render("Session: "))
 			b.WriteString(valueStyle.Render(selected.ClaudeSessionID))
 			b.WriteString("\n")
@@ -16105,9 +16124,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		valueStyle := lipgloss.NewStyle().Foreground(ColorText)
 
 		if selected.GeminiSessionID != "" {
-			statusStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
+			statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selectedStatus)
 			b.WriteString(labelStyle.Render("Status:  "))
-			b.WriteString(statusStyle.Render("● Connected"))
+			b.WriteString(statusStyle.Render(statusText))
 			b.WriteString("\n")
 
 			b.WriteString(labelStyle.Render("Session: "))
@@ -16161,9 +16180,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		)
 
 		if selected.OpenCodeSessionID != "" {
-			statusStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
+			statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selectedStatus)
 			b.WriteString(labelStyle.Render("Status:  "))
-			b.WriteString(statusStyle.Render("● Connected"))
+			b.WriteString(statusStyle.Render(statusText))
 			b.WriteString("\n")
 
 			b.WriteString(labelStyle.Render("Session: "))
@@ -16210,7 +16229,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		b.WriteString(codexHeader)
 		b.WriteString("\n")
 
-		renderToolStatusLine(&b, selected.CodexSessionID, selected.CodexDetectedAt, true)
+		renderToolStatusLine(&b, selected.CodexSessionID, selected.CodexDetectedAt, true, selected.IsArchived(), selected.Status)
 		renderLaunchModelInfoLines(&b, selected)
 		if selected.CodexSessionID != "" {
 			renderDetectedAtLine(&b, selected.CodexDetectedAt)
@@ -16233,10 +16252,10 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 			genericID := selected.GetGenericSessionID()
 			if genericID != "" {
-				statusStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
+				statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selectedStatus)
 				valueStyle := lipgloss.NewStyle().Foreground(ColorText)
 				b.WriteString(labelStyle.Render("Status:  "))
-				b.WriteString(statusStyle.Render("● Connected"))
+				b.WriteString(statusStyle.Render(statusText))
 				b.WriteString("\n")
 
 				b.WriteString(labelStyle.Render("Session: "))

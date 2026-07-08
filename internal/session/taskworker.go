@@ -247,6 +247,19 @@ func RunTaskWorker(childID, profile, title string, cmd *exec.Cmd) (CompletionRec
 	if err := WriteCompletionRecord(rec); err != nil {
 		return rec, err
 	}
+	// Mirror the finished completion into the non-destructive ledger so the
+	// task-worker fleet shows up in `session children` alongside interactive
+	// children. Best-effort; never fail the run on a ledger write.
+	if strings.TrimSpace(rec.Status) != "" {
+		_ = WriteLedgerEntry(CompletionLedgerEntry{
+			ChildID:    rec.ChildID,
+			Profile:    rec.Profile,
+			Title:      rec.Title,
+			Status:     rec.Status,
+			Summary:    rec.Summary,
+			FinishedAt: rec.FinishedAt,
+		})
+	}
 	return rec, nil
 }
 

@@ -573,6 +573,7 @@ func handleConductorSetup(profile string, args []string) {
 
 	// Always ensure conductor group is pinned to top
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	groupTree.DefaultMaxConcurrent = config.GroupDefaults.MaxConcurrent
 	conductorGroup := groupTree.CreateGroup("conductor")
 	conductorGroup.Order = -1
 
