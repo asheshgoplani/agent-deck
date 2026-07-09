@@ -253,6 +253,10 @@ func main() {
 	// the installation-wide fallback for callers without a session handle.
 	tmux.SetDefaultSocketName(session.GetTmuxSettings().GetSocketName())
 
+	if len(args) > 0 && subcommandNeedsTmuxPreflight(args[0]) {
+		ensureTmuxInPathOrExit()
+	}
+
 	// Nudge macOS users whose tmux predates the upstream fix for the
 	// control-mode NULL-deref (tmux #4980, issue #737). Once per process,
 	// no-op on non-macOS, suppressible via AGENTDECK_SUPPRESS_TMUX_WARNING.
@@ -482,23 +486,7 @@ func main() {
 	}
 
 	// Check if tmux is available (with fallback path search)
-	if err := ensureTmuxInPath(); err != nil {
-		fmt.Fprintln(os.Stderr, "Error: tmux not found")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Agent Deck requires tmux. Install with:")
-		switch runtime.GOOS {
-		case "darwin":
-			fmt.Fprintln(os.Stderr, "  brew install tmux")
-		case "linux":
-			fmt.Fprintln(os.Stderr, "  sudo apt install tmux    # Debian/Ubuntu")
-			fmt.Fprintln(os.Stderr, "  sudo dnf install tmux    # Fedora/RHEL")
-			fmt.Fprintln(os.Stderr, "  sudo pacman -S tmux      # Arch")
-		default:
-			fmt.Fprintln(os.Stderr, "  See: https://github.com/tmux/tmux/wiki/Installing")
-		}
-		fmt.Fprintf(os.Stderr, "\nSearched PATH: %s\n", os.Getenv("PATH"))
-		os.Exit(1)
-	}
+	ensureTmuxInPathOrExit()
 
 	// Create storage early to register instance via SQLite
 	earlyStorage, err := session.NewStorageWithProfile(profile)
@@ -4097,6 +4085,35 @@ func isOuterTmuxWithoutOptIn() bool {
 		return false
 	}
 	return true
+}
+
+func subcommandNeedsTmuxPreflight(cmd string) bool {
+	switch cmd {
+	case "launch", "session", "list", "ls", "status", "web", "try", "run-task":
+		return true
+	default:
+		return false
+	}
+}
+
+func ensureTmuxInPathOrExit() {
+	if err := ensureTmuxInPath(); err != nil {
+		fmt.Fprintln(os.Stderr, "Error: tmux not found")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Agent Deck requires tmux. Install with:")
+		switch runtime.GOOS {
+		case "darwin":
+			fmt.Fprintln(os.Stderr, "  brew install tmux")
+		case "linux":
+			fmt.Fprintln(os.Stderr, "  sudo apt install tmux    # Debian/Ubuntu")
+			fmt.Fprintln(os.Stderr, "  sudo dnf install tmux    # Fedora/RHEL")
+			fmt.Fprintln(os.Stderr, "  sudo pacman -S tmux      # Arch")
+		default:
+			fmt.Fprintln(os.Stderr, "  See: https://github.com/tmux/tmux/wiki/Installing")
+		}
+		fmt.Fprintf(os.Stderr, "\nSearched PATH: %s\n", os.Getenv("PATH"))
+		os.Exit(1)
+	}
 }
 
 // ensureTmuxInPath checks that tmux is reachable. If exec.LookPath fails
