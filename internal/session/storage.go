@@ -1201,17 +1201,17 @@ func (s *Storage) GetUpdatedAt() (time.Time, error) {
 	return time.Unix(0, ts), nil
 }
 
-// GetFileMtime returns the filesystem modification time of the database file.
-// This is useful for detecting external changes when polling.
+// GetFileMtime returns the database's last-write timestamp, for detecting that
+// another process changed the profile DB.
+//
+// It deliberately does NOT os.Stat(state.db). SQLite runs in WAL mode here, so a
+// committed write lands in state.db-wal and leaves state.db's mtime unchanged
+// until a checkpoint — statting the main file reports "no change" for every
+// out-of-process write, so the TUI's external-change guard never fired and its
+// next full-table save clobbered CLI writes. metadata.last_modified is the
+// authoritative signal, and the one StorageWatcher already polls.
 func (s *Storage) GetFileMtime() (time.Time, error) {
-	info, err := os.Stat(s.dbPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return time.Time{}, nil
-		}
-		return time.Time{}, err
-	}
-	return info.ModTime(), nil
+	return s.GetUpdatedAt()
 }
 
 // convertToInstances converts StorageData to Instance slice
