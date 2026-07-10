@@ -3920,8 +3920,9 @@ func (i *Instance) UpdateStatus() error {
 				}
 			case i.Tool == "antigravity":
 				if i.hookSessionID != i.AntigravityConversationID {
-					i.AntigravityConversationID = i.hookSessionID
-					i.AntigravityDetectedAt = time.Now()
+					if i.AntigravityConversationID == "" || antigravityConversationHasData(i.hookSessionID) {
+						i.bindAntigravitySessionFromHook(i.hookSessionID, i.hookEvent)
+					}
 				}
 			}
 		}

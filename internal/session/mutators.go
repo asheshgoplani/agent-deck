@@ -299,12 +299,18 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		inst.GeminiSessionID = value
 		inst.GeminiDetectedAt = time.Now()
 		postCommit = makeSessionEnvPostCommit(inst, "GEMINI_SESSION_ID", value)
+		if value == "" {
+			ClearHookSessionAnchor(inst.ID)
+		}
 
 	case FieldAntigravityConversationID:
 		oldValue = inst.AntigravityConversationID
 		inst.AntigravityConversationID = value
 		inst.AntigravityDetectedAt = time.Now()
 		postCommit = makeSessionEnvPostCommit(inst, "ANTIGRAVITY_CONVERSATION_ID", value)
+		if value == "" {
+			ClearHookSessionAnchor(inst.ID)
+		}
 
 	case FieldOpenCodeSessionID:
 		oldValue = inst.OpenCodeSessionID

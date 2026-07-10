@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"al.essio.dev/pkg/shellescape"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
@@ -37,11 +38,11 @@ func (i *Instance) buildAntigravityCommand(baseCommand string) string {
 
 	modelFlag := ""
 	if i.AntigravityModel != "" {
-		modelFlag = " --model " + i.AntigravityModel
+		modelFlag = " --model " + shellescape.Quote(i.AntigravityModel)
 	} else if i.AntigravityConversationID == "" {
 		userConfig, _ := LoadUserConfig()
 		if userConfig != nil && userConfig.Antigravity.DefaultModel != "" {
-			modelFlag = " --model " + userConfig.Antigravity.DefaultModel
+			modelFlag = " --model " + shellescape.Quote(userConfig.Antigravity.DefaultModel)
 		}
 	}
 
@@ -51,7 +52,7 @@ func (i *Instance) buildAntigravityCommand(baseCommand string) string {
 			return envPrefix + fmt.Sprintf(
 				"%s --conversation %s%s%s",
 				cmd,
-				i.AntigravityConversationID,
+				shellescape.Quote(i.AntigravityConversationID),
 				yoloFlag,
 				modelFlag,
 			)
@@ -102,13 +103,14 @@ func (i *Instance) bindAntigravitySessionFromHook(conversationID, hookEvent stri
 	}
 }
 
+// UpdateAntigravitySession syncs conversation ID, YOLO mode, and latest prompt from tmux and disk.
 func (i *Instance) UpdateAntigravitySession() {
 	if i.Tool != "antigravity" {
 		return
 	}
 	i.syncAntigravitySessionFromTmux()
-	i.syncAntigravitySessionFromDisk()
 	i.syncAntigravityConversationFromPane()
+	i.syncAntigravitySessionFromDisk()
 	i.updateAntigravityLatestPrompt()
 }
 
@@ -132,7 +134,11 @@ func (i *Instance) syncAntigravitySessionFromDisk() {
 	if i.AntigravityConversationID != "" && antigravityConversationHasData(i.AntigravityConversationID) {
 		return
 	}
-	id := findMostRecentAntigravityConversation()
+	threshold := i.LastStartedAt
+	if threshold.IsZero() {
+		threshold = i.CreatedAt
+	}
+	id := findMostRecentAntigravityConversationAfter(threshold)
 	if id == "" {
 		return
 	}
@@ -179,6 +185,7 @@ func (i *Instance) SetAntigravityModel(model string) error {
 	return nil
 }
 
+// SetAntigravityYoloMode configures YOLO mode for this Antigravity session and updates tmux env.
 func (i *Instance) SetAntigravityYoloMode(enabled bool) {
 	if i.Tool != "antigravity" {
 		return

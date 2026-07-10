@@ -71,6 +71,25 @@ func TestBuildAntigravityCommand(t *testing.T) {
 	}
 }
 
+func TestBuildAntigravityCommand_Quoting(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	inst := NewInstanceWithTool("agy-quote-test", "/tmp/project", "antigravity")
+	inst.Command = "agy"
+	inst.AntigravityConversationID = "conv id with space"
+	inst.AntigravityModel = "model with space"
+
+	cmd := inst.buildAntigravityCommand("agy")
+	if !strings.Contains(cmd, "--conversation 'conv id with space'") {
+		t.Fatalf("expected quoted conversation id in %q", cmd)
+	}
+	if !strings.Contains(cmd, "--model 'model with space'") {
+		t.Fatalf("expected quoted model in %q", cmd)
+	}
+}
+
 func TestAntigravityToolDataRoundTrip(t *testing.T) {
 	enabled := true
 	inst := NewInstanceWithTool("agy-persist", "/tmp/project", "antigravity")

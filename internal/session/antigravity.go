@@ -102,8 +102,16 @@ func ListAntigravityConversations() ([]AntigravityConversationInfo, error) {
 
 // findMostRecentAntigravityConversation returns the most recently modified conversation ID
 func findMostRecentAntigravityConversation() string {
+	return findMostRecentAntigravityConversationAfter(time.Time{})
+}
+
+// findMostRecentAntigravityConversationAfter returns the most recently modified conversation ID updated after the threshold
+func findMostRecentAntigravityConversationAfter(after time.Time) string {
 	conversations, err := ListAntigravityConversations()
 	if err != nil || len(conversations) == 0 {
+		return ""
+	}
+	if !after.IsZero() && conversations[0].LastUpdated.Before(after) {
 		return ""
 	}
 	return conversations[0].ConversationID

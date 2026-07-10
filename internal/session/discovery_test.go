@@ -93,6 +93,8 @@ func TestDetectToolFromName(t *testing.T) {
 		{"Gemini mixed case", "Gemini-AI", "gemini"},
 		{"Antigravity", "antigravity-session", "antigravity"},
 		{"Agy", "my-agy-project", "antigravity"},
+		{"Agy standalone", "agy", "antigravity"},
+		{"Strategy should not match agy", "strategy-plan", "shell"},
 		{"OpenCode", "opencode-session", "opencode"},
 		{"Codex", "codex-test", "codex"},
 		{"Unknown", "random-session", "shell"},

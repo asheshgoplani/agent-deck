@@ -434,6 +434,38 @@ func TestCreateExampleConfigDocumentsCompatibleWith(t *testing.T) {
 	}
 }
 
+func TestCreateExampleConfigIncludesAntigravity(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
+
+	if err := CreateExampleConfig(); err != nil {
+		t.Fatalf("CreateExampleConfig: %v", err)
+	}
+
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", configPath, err)
+	}
+	config := string(data)
+
+	for _, want := range []string{
+		`# [antigravity]`,
+		`# default_model = "gemini-2.5-flash"`,
+		`# command = "agy"`,
+	} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("example config missing %q", want)
+		}
+	}
+}
+
 func TestGlobalSearchConfig(t *testing.T) {
 	// Create temp config with global search settings
 	tmpDir := t.TempDir()

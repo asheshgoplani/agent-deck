@@ -58,7 +58,7 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			PromptPatterns: []string{
 				"Type your message",
 				"press enter to send",
-				"> ",
+				`re:(?m)^\s*>\s*$`,
 			},
 		}
 	case "gemini":
