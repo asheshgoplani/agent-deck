@@ -28,6 +28,8 @@ func (i *Instance) LaunchModelID() string {
 		}
 	case i.Tool == "gemini":
 		return strings.TrimSpace(i.GeminiModel)
+	case i.Tool == "antigravity":
+		return strings.TrimSpace(i.AntigravityModel)
 	case i.Tool == "opencode":
 		if opts := i.GetOpenCodeOptions(); opts != nil {
 			return strings.TrimSpace(opts.Model)

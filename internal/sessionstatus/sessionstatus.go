@@ -94,7 +94,7 @@ func IsHookEmittingTool(tool string) bool {
 	if session.IsClaudeCompatible(tool) {
 		return true
 	}
-	return tool == "codex" || tool == "gemini" || tool == "hermes" || tool == "cursor"
+	return tool == "codex" || tool == "gemini" || tool == "hermes" || tool == "cursor" || tool == "antigravity"
 }
 
 // freshnessFor returns the freshness window for a (tool, hookStatus) pair.

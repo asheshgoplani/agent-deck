@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "current_objective": "Complete Antigravity (agy) lifecycle and integration parity across agent-deck (session discovery, readiness detection, skills catalog, and status reporting).",
+  "global_context": "Go project agent-deck. Multi-tool TUI dashboard for AI CLI agents.",
+  "task_queue": [
+    {
+      "id": "T1",
+      "agent": "developer",
+      "desc": "Add Antigravity detection to detectToolFromName in internal/session/discovery.go and project skills support in internal/session/skills_catalog.go (ShouldRestartProjectSkills and GetProjectSkillsDir). Acceptance: unit tests in discovery_test.go and skills_catalog_test.go pass for 'antigravity'.",
+      "status": "done",
+      "depends_on": []
+    },
+    {
+      "id": "T2",
+      "agent": "developer",
+      "desc": "Add 'antigravity' to IsHookEmittingTool in internal/sessionstatus/sessionstatus.go. Acceptance: IsHookEmittingTool('antigravity') returns true and unit tests pass.",
+      "status": "done",
+      "depends_on": []
+    },
+    {
+      "id": "T3",
+      "agent": "developer",
+      "desc": "Update internal/ui/home.go launch animation stopping logic (animTool == 'antigravity' checking for agy> or antigravity> prompts around line 3060) and exclude selected.Tool != 'antigravity' from custom tool header fallthrough around line 16301. Acceptance: go test ./internal/ui passes.",
+      "status": "done",
+      "depends_on": []
+    },
+    {
+      "id": "T4",
+      "agent": "tester",
+      "desc": "Run full test suite across agent-deck to verify no regressions in session discovery, UI rendering, or skills catalog resolution. Acceptance: go test ./... passes cleanly.",
+      "status": "done",
+      "depends_on": ["T1", "T2", "T3"]
+    },
+    {
+      "id": "T5",
+      "agent": "critical-reviewer",
+      "desc": "Perform final code review over all Antigravity integration changes against acceptance criteria. Acceptance: APPROVED verdict.",
+      "status": "done",
+      "depends_on": ["T4"]
+    }
+  ],
+  "history": [
+    "T1 dispatched",
+    "T2 dispatched",
+    "T3 dispatched",
+    "T1 done",
+    "T2 done",
+    "T3 done",
+    "T4 dispatched",
+    "T4 done",
+    "T5 dispatched",
+    "T5 done (APPROVED)"
+  ]
+}

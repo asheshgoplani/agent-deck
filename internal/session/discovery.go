@@ -154,6 +154,9 @@ func detectToolFromName(name string) string {
 	if strings.Contains(nameLower, "gemini") {
 		return "gemini"
 	}
+	if strings.Contains(nameLower, "antigravity") || strings.Contains(nameLower, "agy") {
+		return "antigravity"
+	}
 	if strings.Contains(nameLower, "opencode") || strings.Contains(nameLower, "open-code") {
 		return "opencode"
 	}

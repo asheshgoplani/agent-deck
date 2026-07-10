@@ -91,6 +91,8 @@ func TestDetectToolFromName(t *testing.T) {
 		{"Claude uppercase", "CLAUDE-session", "claude"},
 		{"claude lowercase", "my-claude-session", "claude"},
 		{"Gemini mixed case", "Gemini-AI", "gemini"},
+		{"Antigravity", "antigravity-session", "antigravity"},
+		{"Agy", "my-agy-project", "antigravity"},
 		{"OpenCode", "opencode-session", "opencode"},
 		{"Codex", "codex-test", "codex"},
 		{"Unknown", "random-session", "shell"},
@@ -123,6 +125,26 @@ func TestExtractProjectName(t *testing.T) {
 			result := extractProjectName(tt.path)
 			if result != tt.expected {
 				t.Errorf("extractProjectName(%q) = %q, want %q", tt.path, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestDiscovery_DetectToolFromName(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"antigravity", "my-antigravity-session", "antigravity"},
+		{"agy", "agy-test-session", "antigravity"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := detectToolFromName(tt.input)
+			if result != tt.expected {
+				t.Errorf("detectToolFromName(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
 	}

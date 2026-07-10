@@ -688,3 +688,17 @@ func TestApplyProjectSkills_SyncsAttachments(t *testing.T) {
 		t.Fatalf("expected manifest to contain only 'two', got %+v", manifest.Skills)
 	}
 }
+
+func TestSkill_AntigravityProjectSkillsSupport(t *testing.T) {
+	if !ShouldRestartProjectSkills("antigravity") {
+		t.Errorf("ShouldRestartProjectSkills(\"antigravity\") = false, want true")
+	}
+
+	dir, ok := GetProjectSkillsDir("antigravity")
+	if !ok {
+		t.Fatalf("GetProjectSkillsDir(\"antigravity\") ok = false, want true")
+	}
+	if dir != projectAgentsSkillsDir {
+		t.Errorf("GetProjectSkillsDir(\"antigravity\") = %q, want %q", dir, projectAgentsSkillsDir)
+	}
+}

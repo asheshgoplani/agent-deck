@@ -449,3 +449,10 @@ func TestDerive_ToolGate_CodexAndGemini(t *testing.T) {
 		})
 	}
 }
+
+func TestIsHookEmittingTool_Antigravity(t *testing.T) {
+	t.Parallel()
+	if !sessionstatus.IsHookEmittingTool("antigravity") {
+		t.Fatalf("IsHookEmittingTool(%q) = false, want true", "antigravity")
+	}
+}

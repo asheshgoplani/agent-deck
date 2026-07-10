@@ -50,7 +50,7 @@ func TestNewHome_DisablesTmuxNotificationsWhenStatusInjectionDisabled(t *testing
 
 func TestApplyCreateSessionToolOverrides_GeminiExplicitFalsePersists(t *testing.T) {
 	inst := session.NewInstanceWithTool("gemini-test", "/tmp/test", "gemini")
-	applyCreateSessionToolOverrides(inst, "gemini", false)
+	applyCreateSessionToolOverrides(inst, "gemini", false, false)
 	if inst.GeminiYoloMode == nil {
 		t.Fatal("GeminiYoloMode should be set when Gemini YOLO is explicitly disabled")
 	}
@@ -59,11 +59,25 @@ func TestApplyCreateSessionToolOverrides_GeminiExplicitFalsePersists(t *testing.
 	}
 }
 
+func TestApplyCreateSessionToolOverrides_AntigravityExplicitFalsePersists(t *testing.T) {
+	inst := session.NewInstanceWithTool("agy-test", "/tmp/test", "antigravity")
+	applyCreateSessionToolOverrides(inst, "antigravity", false, false)
+	if inst.AntigravityYoloMode == nil {
+		t.Fatal("AntigravityYoloMode should be set when Antigravity YOLO is explicitly disabled")
+	}
+	if *inst.AntigravityYoloMode {
+		t.Fatal("AntigravityYoloMode should be false when Antigravity YOLO is explicitly disabled")
+	}
+}
+
 func TestApplyCreateSessionToolOverrides_NonGeminiNoop(t *testing.T) {
 	inst := session.NewInstanceWithTool("claude-test", "/tmp/test", "claude")
-	applyCreateSessionToolOverrides(inst, "claude", true)
+	applyCreateSessionToolOverrides(inst, "claude", true, true)
 	if inst.GeminiYoloMode != nil {
 		t.Fatalf("GeminiYoloMode = %v, want nil for non-gemini tools", inst.GeminiYoloMode)
+	}
+	if inst.AntigravityYoloMode != nil {
+		t.Fatalf("AntigravityYoloMode = %v, want nil for non-antigravity tools", inst.AntigravityYoloMode)
 	}
 }
 

@@ -161,6 +161,7 @@ type NewDialog struct {
 	modelInput            textinput.Model
 	claudeOptions         *ClaudeOptionsPanel // Claude-specific options (concrete for value extraction).
 	geminiOptions         *YoloOptionsPanel   // Gemini YOLO panel (concrete for value extraction).
+	antigravityOptions    *YoloOptionsPanel   // Antigravity YOLO panel (concrete for value extraction).
 	codexOptions          *YoloOptionsPanel   // Codex YOLO panel (concrete for value extraction).
 	hermesOptions         *YoloOptionsPanel   // Hermes YOLO panel (concrete for value extraction).
 	toolOptions           OptionsPanel        // Currently active tool options panel (nil if none).
@@ -236,6 +237,7 @@ type dialogSnapshot struct {
 	branchAutoSet    bool
 	claudeOptions    *session.ClaudeOptions
 	geminiYolo       bool
+	antigravityYolo  bool
 	codexYolo        bool
 	hermesYolo       bool
 	multiRepoEnabled bool
@@ -370,6 +372,7 @@ func NewNewDialog() *NewDialog {
 		branchPicker:    NewBranchPickerDialog(),
 		claudeOptions:   NewClaudeOptionsPanel(),
 		geminiOptions:   NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all"),
+		antigravityOptions: NewYoloOptionsPanel("Antigravity", "YOLO mode - auto-approve all"),
 		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox"),
 		hermesOptions:   NewYoloOptionsPanel("Hermes", "YOLO mode - auto-approve all tool calls"),
 		focusIndex:      0,
@@ -427,6 +430,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.claudeOptions.Blur()
 	d.claudeOptions.ResetStartQuery() // #741: per-session query must not leak across openings
 	d.geminiOptions.Blur()
+	d.antigravityOptions.Blur()
 	d.codexOptions.Blur()
 	if d.branchPicker != nil {
 		d.branchPicker.Hide()
@@ -460,10 +464,12 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.pathSoftSelected = true // activate soft-select for pre-filled path.
 	// Initialize tool options from global config.
 	d.geminiOptions.SetDefaults(false)
+	d.antigravityOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
 	d.hermesOptions.SetDefaults(false)
 	if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
 		d.geminiOptions.SetDefaults(userConfig.Gemini.YoloMode)
+		d.antigravityOptions.SetDefaults(userConfig.Antigravity.YoloMode)
 		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode)
 		d.hermesOptions.SetDefaults(userConfig.Hermes.YoloMode)
 		d.claudeOptions.SetDefaults(userConfig)
@@ -743,6 +749,7 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		branchAutoSet:    d.branchAutoSet,
 		claudeOptions:    claudeOpts,
 		geminiYolo:       d.geminiOptions.GetYoloMode(),
+		antigravityYolo:  d.antigravityOptions.GetYoloMode(),
 		codexYolo:        d.codexOptions.GetYoloMode(),
 		hermesYolo:       d.hermesOptions.GetYoloMode(),
 		multiRepoEnabled: d.multiRepoEnabled,
@@ -767,6 +774,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 		d.claudeOptions.SetFromOptions(s.claudeOptions)
 	}
 	d.geminiOptions.SetDefaults(s.geminiYolo)
+	d.antigravityOptions.SetDefaults(s.antigravityYolo)
 	d.codexOptions.SetDefaults(s.codexYolo)
 	d.hermesOptions.SetDefaults(s.hermesYolo)
 	d.multiRepoEnabled = s.multiRepoEnabled
@@ -825,6 +833,10 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 		case rs.Tool == "gemini":
 			if rs.GeminiYoloMode != nil {
 				d.geminiOptions.SetDefaults(*rs.GeminiYoloMode)
+			}
+		case rs.Tool == "antigravity":
+			if rs.AntigravityYoloMode != nil {
+				d.antigravityOptions.SetDefaults(*rs.AntigravityYoloMode)
 			}
 		case rs.Tool == "codex":
 			var wrapper session.ToolOptionsWrapper
@@ -1122,6 +1134,11 @@ func (d *NewDialog) GetValuesWithWorktree() (name, path, command, branch string,
 // IsGeminiYoloMode returns whether YOLO mode is enabled for Gemini
 func (d *NewDialog) IsGeminiYoloMode() bool {
 	return d.geminiOptions.GetYoloMode()
+}
+
+// IsAntigravityYoloMode returns whether YOLO mode is enabled for Antigravity
+func (d *NewDialog) IsAntigravityYoloMode() bool {
+	return d.antigravityOptions.GetYoloMode()
 }
 
 // GetCodexYoloMode returns the Codex YOLO mode state
@@ -1427,8 +1444,10 @@ func (d *NewDialog) updateToolOptions() {
 	switch {
 	case session.IsClaudeCompatible(cmd):
 		d.toolOptions = d.claudeOptions
-	case cmd == "gemini", cmd == "antigravity":
+	case cmd == "gemini":
 		d.toolOptions = d.geminiOptions
+	case cmd == "antigravity":
+		d.toolOptions = d.antigravityOptions
 	case cmd == "codex":
 		d.toolOptions = d.codexOptions
 	case cmd == "hermes":

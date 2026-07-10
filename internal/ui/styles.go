@@ -518,8 +518,9 @@ func initStyles() {
 
 	// ToolStyleCache - reinitialize with current theme colors
 	ToolStyleCache = map[string]lipgloss.Style{
-		"claude":   lipgloss.NewStyle().Foreground(ColorOrange),
-		"gemini":   lipgloss.NewStyle().Foreground(ColorPurple),
+		"claude":      lipgloss.NewStyle().Foreground(ColorOrange),
+		"gemini":      lipgloss.NewStyle().Foreground(ColorPurple),
+		"antigravity": lipgloss.NewStyle().Foreground(ColorCyan),
 		"codex":    lipgloss.NewStyle().Foreground(ColorCyan),
 		"copilot":  lipgloss.NewStyle().Foreground(ColorAccent),
 		"hermes":   lipgloss.NewStyle().Foreground(ColorYellow),

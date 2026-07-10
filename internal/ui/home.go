@@ -3057,7 +3057,7 @@ func (h *Home) hasActiveAnimation(sessionID string) bool {
 	// Strip ANSI for reliable pattern matching (preview cache now contains ANSI-rich content)
 	plainPreview := ansi.Strip(previewContent)
 
-	if animTool == "claude" || animTool == "gemini" {
+	if animTool == "claude" || animTool == "gemini" || animTool == "antigravity" {
 		// Claude ready indicators
 		agentReady := strings.Contains(plainPreview, "ctrl+c to interrupt") ||
 			strings.Contains(plainPreview, "No, and tell Claude what to do differently") ||
@@ -3073,6 +3073,13 @@ func (h *Home) hasActiveAnimation(sessionID string) bool {
 			agentReady = agentReady ||
 				strings.Contains(plainPreview, "▸") ||
 				strings.Contains(plainPreview, "gemini>")
+		}
+
+		if animTool == "antigravity" {
+			agentReady = agentReady ||
+				strings.Contains(plainPreview, "▸") ||
+				strings.Contains(plainPreview, "agy>") ||
+				strings.Contains(plainPreview, "antigravity>")
 		}
 
 		if agentReady {
@@ -3473,7 +3480,7 @@ func cleanPaneTitle(title string) string {
 	})
 	cleaned = strings.TrimSpace(cleaned)
 	switch cleaned {
-	case "", "Claude Code", "Gemini CLI", "Codex CLI":
+	case "", "Claude Code", "Gemini CLI", "Codex CLI", "Antigravity CLI":
 		return ""
 	}
 	return cleaned
@@ -6645,6 +6652,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.clearError()
 
 		geminiYoloMode := h.newDialog.IsGeminiYoloMode()
+		antigravityYoloMode := h.newDialog.IsAntigravityYoloMode()
 		sandboxMode := h.newDialog.IsSandboxEnabled()
 		multiRepoPaths, multiRepoEnabled := h.newDialog.GetMultiRepoPaths()
 		var additionalPaths []string
@@ -6685,6 +6693,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			worktreeRepoRoot,
 			branchName,
 			geminiYoloMode,
+			antigravityYoloMode,
 			sandboxMode,
 			toolOptionsJSON,
 			claudeExtraArgs,
@@ -8274,6 +8283,20 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					inst.GeminiYoloMode = &newYolo
 					toggled = true
 
+				case "antigravity":
+					currentYolo := false
+					if inst.AntigravityYoloMode != nil {
+						currentYolo = *inst.AntigravityYoloMode
+					} else {
+						userConfig, _ := session.LoadUserConfig()
+						if userConfig != nil {
+							currentYolo = userConfig.Antigravity.YoloMode
+						}
+					}
+					newYolo := !currentYolo
+					inst.AntigravityYoloMode = &newYolo
+					toggled = true
+
 				case "codex":
 					currentYolo := false
 					opts := inst.GetCodexOptions()
@@ -8769,6 +8792,7 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 		"",
 		"",
 		"",
+		false,
 		false,
 		false,
 		pendingToolOpts,
@@ -10040,6 +10064,7 @@ func (h *Home) loadUIState() {
 func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string,
 	geminiYoloMode bool,
+	antigravityYoloMode bool,
 	sandboxEnabled bool,
 	toolOptionsJSON json.RawMessage,
 	claudeExtraArgs []string,
@@ -10110,7 +10135,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			}
 		}
 
-		applyCreateSessionToolOverrides(inst, tool, geminiYoloMode)
+		applyCreateSessionToolOverrides(inst, tool, geminiYoloMode, antigravityYoloMode)
 
 		// Apply generic tool options (claude, codex, etc.)
 		if len(toolOptionsJSON) > 0 {
@@ -10301,7 +10326,7 @@ func createSessionTool(command string) (string, string) {
 	return tool, command
 }
 
-func applyCreateSessionToolOverrides(inst *session.Instance, tool string, geminiYoloMode bool) {
+func applyCreateSessionToolOverrides(inst *session.Instance, tool string, geminiYoloMode, antigravityYoloMode bool) {
 	if inst == nil {
 		return
 	}
@@ -10309,7 +10334,7 @@ func applyCreateSessionToolOverrides(inst *session.Instance, tool string, gemini
 		inst.SetGeminiYoloMode(geminiYoloMode)
 	}
 	if tool == "antigravity" {
-		inst.SetAntigravityYoloMode(geminiYoloMode)
+		inst.SetAntigravityYoloMode(antigravityYoloMode)
 	}
 }
 
@@ -10560,7 +10585,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 	return h.createSessionInGroupWithWorktreeAndOptions(
 		name, projectPath, command, groupPath,
 		"", "", "", // no worktree
-		geminiYoloMode, false, toolOptionsJSON,
+		geminiYoloMode, false, false, toolOptionsJSON,
 		nil,        // no extra claude args (recent-session path)
 		"",         // no claude startup query (recent-session path)
 		"",         // no explicit model override
@@ -10643,7 +10668,7 @@ func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
 		name, projectPath, command,
 		"",         // empty group → creator derives from path via extractGroupPath
 		"", "", "", // no worktree
-		false, false, nil,
+		false, false, false, nil,
 		nil, // no extra claude args
 		"",  // no claude startup query
 		"",  // no explicit model override
@@ -14814,6 +14839,8 @@ func (h *Home) renderSessionItem(
 	showYolo := false
 	if instTool == "gemini" && inst.GeminiYoloMode != nil && *inst.GeminiYoloMode {
 		showYolo = true
+	} else if instTool == "antigravity" && inst.AntigravityYoloMode != nil && *inst.AntigravityYoloMode {
+		showYolo = true
 	} else if instTool == "codex" {
 		if opts := inst.GetCodexOptions(); opts != nil && opts.YoloMode != nil && *opts.YoloMode {
 			showYolo = true
@@ -15339,6 +15366,13 @@ func (h *Home) renderLaunchingState(inst *session.Instance, width int, startTime
 		} else {
 			toolDesc = "Connecting to Gemini..."
 		}
+	case "antigravity":
+		toolName = "Antigravity CLI"
+		if isResuming {
+			toolDesc = "Resuming Antigravity session..."
+		} else {
+			toolDesc = "Connecting to Antigravity..."
+		}
 	case "aider":
 		toolName = "Aider"
 		if isResuming {
@@ -15630,6 +15664,9 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 	sessionID := inst.ClaudeSessionID
 	if sessionID == "" {
 		sessionID = inst.GeminiSessionID
+	}
+	if sessionID == "" {
+		sessionID = inst.AntigravityConversationID
 	}
 	if sessionID == "" {
 		sessionID = inst.OpenCodeSessionID
@@ -16146,6 +16183,37 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		}
 	}
 
+	// Antigravity-specific info (conversation ID)
+	if selected.Tool == "antigravity" {
+		agyHeader := renderSectionDivider("Antigravity", width-4)
+		b.WriteString(agyHeader)
+		b.WriteString("\n")
+
+		labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+		valueStyle := lipgloss.NewStyle().Foreground(ColorText)
+
+		if selected.AntigravityConversationID != "" {
+			statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selectedStatus)
+			b.WriteString(labelStyle.Render("Status:  "))
+			b.WriteString(statusStyle.Render(statusText))
+			b.WriteString("\n")
+
+			b.WriteString(labelStyle.Render("Conversation: "))
+			b.WriteString(valueStyle.Render(selected.AntigravityConversationID))
+			b.WriteString("\n")
+			renderLaunchModelInfoLines(&b, selected)
+
+			mcpInfo := selected.GetMCPInfo()
+			renderSimpleMCPLine(&b, mcpInfo, width)
+		} else {
+			statusStyle := lipgloss.NewStyle().Foreground(ColorText)
+			b.WriteString(labelStyle.Render("Status:  "))
+			b.WriteString(statusStyle.Render("○ Not connected"))
+			b.WriteString("\n")
+			renderLaunchModelInfoLines(&b, selected)
+		}
+	}
+
 	// Cursor Agent CLI — MCP configuration for `cursor agent`
 	if selected.Tool == "cursor" {
 		cursorHeader := renderSectionDivider("Cursor", width-4)
@@ -16238,7 +16306,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 	// Custom tool info (tools defined in config.toml that aren't built-in)
 	if !session.IsClaudeCompatible(selected.Tool) && selected.Tool != "gemini" && selected.Tool != "opencode" &&
-		selected.Tool != "codex" {
+		selected.Tool != "codex" && selected.Tool != "antigravity" {
 		if toolDef := session.GetToolDef(selected.Tool); toolDef != nil {
 			toolName := selected.Tool
 			if toolDef.Icon != "" {

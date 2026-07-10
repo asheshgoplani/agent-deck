@@ -8,7 +8,7 @@ import (
 // canonicalBuiltins is the canonical 11, in the precedence order that
 // Registry.Match() (and the legacy detectTool() switch) walk.
 var canonicalBuiltins = []string{
-	"claude", "opencode", "gemini", "codex", "pi",
+	"claude", "opencode", "gemini", "antigravity", "codex", "pi",
 	"copilot", "crush", "cursor", "hermes", "aider", "shell",
 }
 
