@@ -469,6 +469,7 @@ type Home struct {
 	// live via < and > keybindings, persisted back to config on adjustment.
 	previewPct          int       // 10-90, default 65
 	previewPctOverlayAt time.Time // when to hide the split overlay (zero = hidden)
+	draggingDivider     bool      // true while the mouse is dragging the Sessions/Preview divider
 
 	// footerMode selects the bottom hint-bar style (config.toml [ui] footer).
 	// One of session.FooterCurated (default), FooterFull, FooterCompact, or
@@ -6992,9 +6993,50 @@ func (h *Home) clickedItemID(index int) string {
 	return ""
 }
 
+// handleDividerDrag processes mouse events for the Sessions/Preview divider
+// resize drag and reports whether it consumed the event. The lifecycle is:
+// left-press on the separator grabs it, motion resizes the split live, and
+// release persists the new ratio. It keys off draggingDivider + msg.Action
+// rather than msg.Button because X10 terminals report a drag release as
+// MouseButtonNone, not MouseButtonLeft.
+func (h *Home) handleDividerDrag(msg tea.MouseMsg) bool {
+	if h.draggingDivider {
+		switch msg.Action {
+		case tea.MouseActionMotion:
+			h.lastUserInputTime = time.Now()
+			h.setPreviewPctFromMouseX(msg.X)
+		case tea.MouseActionRelease:
+			h.draggingDivider = false
+			persistPreviewPct(h.getPreviewPct())
+		}
+		return true
+	}
+
+	// Grab the divider only on a left-press over the separator, dual layout only.
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress &&
+		h.getLayoutMode() == LayoutModeDual && h.isOnDivider(msg.X) {
+		h.draggingDivider = true
+		h.lastUserInputTime = time.Now()
+		return true
+	}
+	return false
+}
+
 // handleMouse handles mouse events (click to select, double-click to activate)
 func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if h.hasModalVisible() {
+		// A modal opening mid-drag shouldn't leave the divider stuck grabbed.
+		// Treat it as a release so the dragged-to ratio is preserved.
+		if h.draggingDivider {
+			h.draggingDivider = false
+			persistPreviewPct(h.getPreviewPct())
+		}
+		return h, nil
+	}
+
+	// Divider resize drag takes precedence over list selection (the separator
+	// columns sit at x >= sessionsPaneWidth, where list clicks are ignored).
+	if h.handleDividerDrag(msg) {
 		return h, nil
 	}
 
@@ -13124,8 +13166,13 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	rightContent = ensureExactHeight(rightContent, panelContentHeight)
 	rightPanel := rightTitle + "\n" + rightContent
 
-	// Build separator - must be exactly contentHeight lines
-	separatorStyle := lipgloss.NewStyle().Foreground(ColorBorder)
+	// Build separator - must be exactly contentHeight lines. Brighten it while
+	// the user is dragging it so the resize handle reads as active.
+	separatorColor := ColorBorder
+	if h.draggingDivider {
+		separatorColor = ColorAccent
+	}
+	separatorStyle := lipgloss.NewStyle().Foreground(separatorColor)
 	separatorLines := make([]string, contentHeight)
 	for i := range separatorLines {
 		separatorLines[i] = separatorStyle.Render(" │ ")

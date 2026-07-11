@@ -103,6 +103,45 @@ func (h *Home) splitPaneWidths() (int, int) {
 	return left, right
 }
 
+// isOnDivider reports whether column x falls on the " │ " separator drawn
+// between the sessions and preview panes in the dual layout. The separator
+// occupies the paneSeparatorWidth columns immediately to the right of the
+// sessions pane. Used as the grab target for mouse-drag resizing.
+func (h *Home) isOnDivider(x int) bool {
+	left := h.sessionsPaneWidth()
+	return x >= left && x < left+paneSeparatorWidth
+}
+
+// setPreviewPctFromMouseX resizes the split so the divider follows the mouse
+// to column x: the sessions pane spans columns [0, x), the preview pane takes
+// the rest. The result is clamped to [MinPreviewPct, MaxPreviewPct] and the
+// ratio overlay is armed for visual feedback. This updates the in-memory value
+// only — persistence happens once on drag release, not on every motion event.
+func (h *Home) setPreviewPctFromMouseX(x int) {
+	if h.width <= 0 {
+		return
+	}
+	if x < 0 {
+		x = 0
+	}
+	if x > h.width {
+		x = h.width
+	}
+	// Floor x/width to a percent, matching splitPaneWidths' percent->column
+	// truncation. Using the same rounding rule in both directions keeps the
+	// rendered divider tracking the cursor without a systematic 1-column drift.
+	sessionsPct := x * 100 / h.width
+	previewPct := 100 - sessionsPct
+	if previewPct < session.MinPreviewPct {
+		previewPct = session.MinPreviewPct
+	}
+	if previewPct > session.MaxPreviewPct {
+		previewPct = session.MaxPreviewPct
+	}
+	h.previewPct = previewPct
+	h.previewPctOverlayAt = time.Now().Add(previewPctOverlayDuration)
+}
+
 // adjustPreviewPct shifts the preview percentage by delta (in percent
 // points), clamps to [MinPreviewPct, MaxPreviewPct], persists the new
 // value to config.toml, and arms the on-screen overlay.

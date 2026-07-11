@@ -259,7 +259,7 @@ func (h *HelpOverlay) View() string {
 				{skillsKey, "Skills Manager"},
 				{"$", "Cost Dashboard"},
 				{previewKey, "Toggle preview mode (output/stats/both)"},
-				{"< / >", "Shrink / grow preview pane by 5% (issue #1092)"},
+				{"< / >", "Shrink / grow preview pane by 5% (or drag the divider with the mouse)"},
 				{unreadKey, "Mark unread"},
 				{quickApproveKey, "Quick approve (send '1' to Claude)"},
 				{promptSessionKey, "Prompt session (send a one-line prompt without attaching)"},
