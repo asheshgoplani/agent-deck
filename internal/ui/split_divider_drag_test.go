@@ -4,6 +4,11 @@
 // PREVIEW pane. Grabbing that separator with the left mouse button and dragging
 // resizes the split live; releasing persists the new ratio to config.toml.
 // This complements the existing < / > keybindings (issue #1092).
+//
+// RemoteSession note: divider dragging is a layout-level interaction that does
+// not branch on item types — the grab test and the mouse-column → preview_pct
+// math are purely geometric — so RemoteSession coverage is not applicable here
+// (no t.Skip needed; the code path is item-type-agnostic).
 
 package ui
 
