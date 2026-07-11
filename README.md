@@ -887,6 +887,7 @@ agent-deck web --token my-secret
 | [Troubleshooting](skills/agent-deck/references/troubleshooting.md) | Common issues, debugging, recovery, uninstalling |
 | [Capability Checklist](docs/verification/README.md) | User-level verification matrix: every capability exercised against the real binary, per surface |
 | [Architecture Diagrams](docs/conductor/) | D2 sources + rendered SVGs for the conductor, channels, fleet, and session-lifecycle diagrams |
+| [Provider API References](docs/providers/README.md) | External service-provider APIs (Cartrack Fleet API, …): auth, base URLs, rate limits, full endpoint reference generated from each provider's published spec |
 
 Additional resources:
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute

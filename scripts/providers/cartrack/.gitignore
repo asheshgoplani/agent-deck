@@ -1,0 +1,4 @@
+openapi.yaml
+sitemap_urls.txt
+.venv/
+__pycache__/

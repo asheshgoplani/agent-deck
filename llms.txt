@@ -29,3 +29,7 @@ Or via Homebrew: `brew install asheshgoplani/tap/agent-deck`
 - Website: https://asheshgoplani.github.io/agent-deck/
 - Discord: https://discord.gg/e4xSs6NBN8
 - Latest release: https://github.com/asheshgoplani/agent-deck/releases/latest
+
+## Provider API references
+
+External service-provider API references (Cartrack Fleet API, …) live under `docs/providers/<name>/` and are summarized in the `# PROVIDER API REFERENCES` section of llms-full.txt. See `docs/providers/README.md` for the index.
