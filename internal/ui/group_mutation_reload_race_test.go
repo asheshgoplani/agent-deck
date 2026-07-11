@@ -7,6 +7,12 @@
 // group silently vanishes and they have to redo it (observed 2026-07-11 in the
 // debug log: `save_abort_external_change`). loadSessionsMsg re-applies pending
 // group ops after the reload, mirroring pendingTitleChanges for session renames.
+//
+// RemoteSession note: group create/rename/move act purely on local
+// session.Instance.GroupPath and GroupTree. RemoteSessions (tracked in
+// h.remoteSessions with no local Instance/GroupPath) cannot participate in
+// these operations, so RemoteSession coverage is not applicable here (no
+// t.Skip needed).
 
 package ui
 
