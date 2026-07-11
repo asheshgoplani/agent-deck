@@ -161,6 +161,49 @@ func (s *Session) tmuxCmdContext(ctx context.Context, args ...string) *exec.Cmd 
 	return tmuxExecContext(ctx, s.SocketName, args...)
 }
 
+// tmuxPollTimeout bounds the short, read-only tmux queries and option-set
+// commands agent-deck fires on a cadence: status-bar refreshes, pane-path and
+// dead-state probes, and client enumeration. These commands target a server
+// that may be wedged, and a tmux client whose target session was destroyed
+// mid-exchange can spin on its poll loop at 100% CPU instead of exiting
+// (observed on tmux 3.0a). Bare tmuxExec(...).Run()/.Output() has no deadline,
+// so the client hangs forever; if the owning TUI later dies the kernel
+// reparents the spinning client to init/systemd and nothing reaps it — the
+// exact orphan-busy-loop class that leaks whole CPU cores. Wrapping each poll
+// in a context lets exec.CommandContext SIGKILL a stuck client. 3s is ~60x the
+// typical <50ms runtime and mirrors hasSessionProbeTimeout.
+var tmuxPollTimeout = 3 * time.Second
+
+// runBoundedOutput runs a short, read-only tmux query under tmuxPollTimeout and
+// returns its stdout. It is the timeout-guarded replacement for the bare
+// tmuxExec(socket, args...).Output() pattern at status/poll call sites.
+func runBoundedOutput(socketName string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxPollTimeout)
+	defer cancel()
+	return tmuxExecContext(ctx, socketName, args...).Output()
+}
+
+// runBoundedRun runs a short tmux command (typically a status set-option batch)
+// under tmuxPollTimeout, discarding stdout. Timeout-guarded replacement for the
+// bare tmuxExec(socket, args...).Run() / s.tmuxCmd(args...).Run() status sites.
+func runBoundedRun(socketName string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxPollTimeout)
+	defer cancel()
+	return tmuxExecContext(ctx, socketName, args...).Run()
+}
+
+// runBoundedOutput is the per-Session convenience wrapper, targeting the
+// session's own socket (see tmuxCmd for why the socket must not drift).
+func (s *Session) runBoundedOutput(args ...string) ([]byte, error) {
+	return runBoundedOutput(s.SocketName, args...)
+}
+
+// runBoundedRun is the per-Session convenience wrapper for status/option
+// commands that produce no output.
+func (s *Session) runBoundedRun(args ...string) error {
+	return runBoundedRun(s.SocketName, args...)
+}
+
 // Exec is the public package counterpart to tmuxExec. Call sites outside
 // internal/tmux (the session package, CLI helpers, web terminal bridge) use
 // this when they have a socket name — typically Instance.TmuxSocketName —

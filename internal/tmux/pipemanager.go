@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -563,6 +564,11 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 // See isControlClientOrphan for how orphans are distinguished from live
 // siblings.
 func killStaleControlClients(sessionName, socketName string) {
+	// Once per run, also sweep orphaned one-shot *command* clients (poll/query/
+	// status set-option) that this function's control-mode-only filter can never
+	// reach. See reapOrphanedPollClients.
+	orphanReapOnce.Do(reapOrphanedPollClients)
+
 	myPID := os.Getpid()
 
 	out, err := tmuxExec(socketName,
@@ -628,6 +634,79 @@ func killStaleControlClients(sessionName, socketName string) {
 			slog.String("session", sessionName),
 			slog.Int("kill_count", killCount),
 			slog.Duration("duration", time.Since(burstStart)))
+	}
+}
+
+// orphanReapOnce ensures the process-wide orphaned-poll-client sweep runs at
+// most once per agent-deck run (on the first session Connect after startup),
+// instead of re-scanning all of /proc on every Connect.
+var orphanReapOnce sync.Once
+
+// reapOrphanedPollClients kills leaked one-shot tmux *command* clients — the
+// `list-clients` / `display-message` / `list-panes` / status `set-option`
+// invocations agent-deck fires on a cadence — that a previous run spawned and
+// never reaped. killStaleControlClients only sweeps control-mode clients
+// (client_control_mode == 1); these short-lived query/option clients are
+// invisible to it. When one hangs on a wedged server (tmux 3.0a spins at 100%
+// CPU rather than exiting) and its owning TUI then dies, the kernel reparents
+// it to init / systemd --user and it burns a whole core indefinitely.
+//
+// tmuxPollTimeout (Part A) stops NEW leaks by bounding every such command; this
+// sweep mops up orphans that predate the current run, or that escaped the
+// timeout because the TUI was SIGKILL'd / OOM-killed mid-command.
+//
+// Safety — a process is killed only when ALL hold:
+//   - it is the `tmux` client binary (comm == "tmux"; the server is
+//     "tmux: server" and never matches),
+//   - its argv targets an agent-deck session (contains SessionPrefix), so a
+//     user's unrelated tmux is never touched, and
+//   - it is a reparented orphan no longer owned by any live agent-deck TUI
+//     (isControlClientOrphan — its parentage check is client-type-agnostic
+//     despite the name). A live TUI's own in-flight poll has PPID == our PID,
+//     so isControlClientOrphan returns false and it is preserved.
+//
+// Linux-only: relies on procfs. On darwin/BSD it is a no-op (a `ps`-based
+// enumeration would be the port); the tmuxPollTimeout guard still applies
+// there, so new leaks are prevented regardless.
+func reapOrphanedPollClients() {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+	myPID := os.Getpid()
+	killed := 0
+	start := time.Now()
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == myPID {
+			continue
+		}
+		comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+		if err != nil || strings.TrimSpace(string(comm)) != "tmux" {
+			continue
+		}
+		// cmdline fields are NUL-separated; substring search still matches the
+		// "agentdeck_" target token regardless of separators.
+		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err != nil || !strings.Contains(string(raw), SessionPrefix) {
+			continue
+		}
+		if !isControlClientOrphan(pid) {
+			continue // owned by a live agent-deck TUI (incl. a sibling) — keep
+		}
+		usedSIGKILL := softKillProcess(pid, controlClientKillGrace)
+		killed++
+		pipeLog.Debug("reaped_orphaned_poll_client",
+			slog.Int("pid", pid),
+			slog.Bool("used_sigkill", usedSIGKILL))
+	}
+	if killed > 0 {
+		pipeLog.Info("orphaned_poll_clients_reaped",
+			slog.Int("kill_count", killed),
+			slog.Duration("duration", time.Since(start)))
 	}
 }
 
