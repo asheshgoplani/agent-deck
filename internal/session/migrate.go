@@ -52,7 +52,7 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 	if src == "" || dst == "" {
 		return "", fmt.Errorf("source and target config dirs must be non-empty")
 	}
-	if filepath.Clean(src) == filepath.Clean(dst) {
+	if filepath.Clean(src) == filepath.Clean(dst) || resolveRealPath(src) == resolveRealPath(dst) {
 		return "", nil
 	}
 
@@ -82,17 +82,67 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 		return "", fmt.Errorf("create target project dir: %w", err)
 	}
 	dstFile := filepath.Join(dstProjDir, sid+".jsonl")
+	bak := ""
 	if fileIsRegular(dstFile) {
 		// Backup before any destructive write (2026-06-04 incident, S2).
-		bak := fmt.Sprintf("%s.bak-%d", dstFile, time.Now().Unix())
+		bak = fmt.Sprintf("%s.bak-%d", dstFile, time.Now().Unix())
 		if err := os.Rename(dstFile, bak); err != nil {
 			return "", fmt.Errorf("backup existing conversation: %w", err)
 		}
 	}
 	if err := copyFileVerified(srcFile, dstFile); err != nil {
+		if bak != "" {
+			_ = os.Remove(dstFile)
+			if restoreErr := os.Rename(bak, dstFile); restoreErr != nil {
+				return "", fmt.Errorf("%w (restore backup failed: %v)", err, restoreErr)
+			}
+		}
 		return "", err
 	}
 	return dstFile, nil
+}
+
+// RestoreOrphanedConversationBackup restores a conversation whose live
+// <id>.jsonl went missing but whose most recent <id>.jsonl.bak-<epoch>
+// orphan still exists in the project dir (the #1533 data-loss residue).
+// It is a no-op when a live <id>.jsonl is already present, when inst has
+// no ClaudeSessionID, or when no matching .bak- orphan exists. Returns the
+// restored path (or "" for no-op) and any error.
+func RestoreOrphanedConversationBackup(inst *Instance, configDir string) (string, error) {
+	if inst == nil || inst.Tool != "claude" || inst.ClaudeSessionID == "" || strings.TrimSpace(configDir) == "" {
+		return "", nil
+	}
+
+	cfgDir := ExpandPath(strings.TrimSpace(configDir))
+	projectPath := inst.EffectiveWorkingDir()
+	resolvedPath := projectPath
+	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
+		resolvedPath = resolved
+	}
+	encodedPath := ConvertToClaudeDirName(resolvedPath)
+	if encodedPath == "" {
+		encodedPath = "-"
+	}
+	projDir := filepath.Join(cfgDir, "projects", encodedPath)
+	live := filepath.Join(projDir, inst.ClaudeSessionID+".jsonl")
+	if fileIsRegular(live) {
+		return "", nil
+	}
+
+	bak, err := newestConversationBackup(projDir, inst.ClaudeSessionID)
+	if err != nil {
+		return "", err
+	}
+	if bak == "" {
+		return "", nil
+	}
+	if err := os.Rename(bak, live); err == nil {
+		return live, nil
+	}
+	if err := copyFileVerified(bak, live); err != nil {
+		return "", err
+	}
+	return live, nil
 }
 
 // newestConversationFile returns the most recently modified UUID-named
@@ -121,6 +171,26 @@ func newestConversationFile(projDir string) (path, sessionID string) {
 		}
 	}
 	return path, sessionID
+}
+
+func newestConversationBackup(projDir, sessionID string) (string, error) {
+	files, err := filepath.Glob(filepath.Join(projDir, sessionID+".jsonl.bak-*"))
+	if err != nil {
+		return "", fmt.Errorf("glob orphaned conversation backups: %w", err)
+	}
+	var newest string
+	var newestMod time.Time
+	for _, file := range files {
+		info, err := os.Stat(file)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if newest == "" || info.ModTime().After(newestMod) {
+			newest = file
+			newestMod = info.ModTime()
+		}
+	}
+	return newest, nil
 }
 
 // copyFileVerified copies src to dst (0600, matching Claude's conversation

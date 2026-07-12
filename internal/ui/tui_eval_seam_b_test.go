@@ -183,7 +183,7 @@ func seamBNewHome() *Home {
 		hotkeyLookup:         make(map[string]string),
 		blockedHotkeys:       make(map[string]bool),
 		boundKeys:            make(map[string]string),
-		pendingTitleChanges:  make(map[string]string),
+		pendingTitleChanges:  make(map[string]pendingTitle),
 		clearOnCompactSent:   make(map[string]time.Time),
 		lastPersistedStatus:  make(map[string]string),
 		width:                140,

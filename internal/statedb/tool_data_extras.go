@@ -24,6 +24,19 @@ import (
 // setting a key wins over the old value (no silent override of intended
 // updates). Only keys that are completely unknown to the typed schema AND
 // absent from the new blob are carried forward.
+//
+// EXCEPTION — sticky detected session-id keys (stickyToolDataKeys): the
+// per-tool conversation ids (claude_session_id / gemini_session_id /
+// opencode_session_id / codex_session_id and their *_detected_at) are
+// write-once-per-conversation identity, populated asynchronously after a
+// session starts. They are treated like extras for the ABSENCE case: when the
+// new blob OMITS them (omitempty zero-value) but the old row HAS them, the old
+// value is carried forward, so an unrelated full-table save whose in-memory
+// snapshot simply has not detected the id yet can no longer silently wipe a
+// live session's mapping (t-0133). A NON-EMPTY new value still wins (a real
+// resume/fork that changes the id), and an EXPLICIT empty value present in the
+// new blob (`"claude_session_id":""`) is honored as an intentional clear — only
+// outright OMISSION is treated as "unaware writer, preserve".
 func MergeToolDataExtras(oldToolData, newToolData json.RawMessage) json.RawMessage {
 	if len(oldToolData) == 0 {
 		return newToolData
@@ -49,13 +62,14 @@ func MergeToolDataExtras(oldToolData, newToolData json.RawMessage) json.RawMessa
 	}
 
 	known := toolDataKnownKeys()
+	sticky := stickyToolDataKeys()
 	merged := false
 	for k, v := range oldMap {
-		if known[k] {
-			continue // typed schema is authoritative
+		if known[k] && !sticky[k] {
+			continue // typed schema is authoritative (except sticky identity keys)
 		}
 		if _, exists := newMap[k]; exists {
-			continue // new explicitly set this key
+			continue // new explicitly set this key (incl. explicit empty = intentional clear)
 		}
 		newMap[k] = v
 		merged = true
@@ -69,6 +83,28 @@ func MergeToolDataExtras(oldToolData, newToolData json.RawMessage) json.RawMessa
 		return newToolData
 	}
 	return out
+}
+
+// stickyToolDataKeys returns the typed tool_data keys that MergeToolDataExtras
+// preserves from the old row when the new blob OMITS them (rather than letting
+// omitempty-absence clear them). These are the per-tool conversation ids and
+// their detection timestamps: identity that is detected asynchronously and is
+// write-once for the life of a conversation. Keeping them sticky prevents a
+// concurrent full-table save (e.g. the rename hook's LoadWithGroups +
+// SaveWithGroups) whose snapshot has not yet observed the id from wiping a live
+// session's session-id mapping (t-0133). A non-empty new value, or an explicit
+// empty present in the new blob, still wins — only outright omission preserves.
+func stickyToolDataKeys() map[string]bool {
+	return map[string]bool{
+		"claude_session_id":    true,
+		"claude_detected_at":   true,
+		"gemini_session_id":    true,
+		"gemini_detected_at":   true,
+		"opencode_session_id":  true,
+		"opencode_detected_at": true,
+		"codex_session_id":     true,
+		"codex_detected_at":    true,
+	}
 }
 
 // toolDataKnownKeys returns the set of JSON keys that toolDataBlob explicitly
