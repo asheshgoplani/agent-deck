@@ -368,6 +368,14 @@ type Home struct {
 	// Context-% based /clear for conductor sessions with clear_on_compact
 	clearOnCompactSent map[string]time.Time // instanceID -> last /clear send time (debounce)
 
+	// Context-budget warning debounce: fires once per upward crossing into high/over.
+	budgetLastLevel map[string]session.BudgetLevel // instanceID -> last seen budget level
+
+	// Autonomous context-budget handoff: per-session state machine (mirrors the
+	// statedb-persisted state in memory; resumes lazily across restart).
+	handoffState       map[string]session.HandoffState // instanceID -> persisted handoff state
+	handoffTriggeredAt map[string]time.Time            // instanceID -> wrap trigger time
+
 	// File watcher for external changes (auto-reload)
 	storageWatcher *StorageWatcher
 
@@ -396,6 +404,7 @@ type Home struct {
 	resumingSessions     map[string]time.Time        // sessionID -> resume time (for restart/resume)
 	mcpLoadingSessions   map[string]time.Time        // sessionID -> MCP reload time
 	forkingSessions      map[string]time.Time        // sessionID -> fork start time (fork in progress)
+	forkingSessionsMu    sync.Mutex                  // guards forkingSessions (off-loop fork triggers, e.g. autonomous handoff)
 	setupRunningSessions map[string]time.Time        // sessionID -> setup script start time
 	creatingSessions     map[string]*CreatingSession // tempID -> placeholder for worktree creation in progress
 	animationFrame       int                         // Current frame for spinner animation
@@ -1159,6 +1168,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		geminiAnalyticsCache:      make(map[string]*session.GeminiSessionAnalytics),
 		analyticsCacheTime:        make(map[string]time.Time),
 		clearOnCompactSent:        make(map[string]time.Time),
+		budgetLastLevel:           make(map[string]session.BudgetLevel),
+		handoffState:              make(map[string]session.HandoffState),
+		handoffTriggeredAt:        make(map[string]time.Time),
 		launchingSessions:         make(map[string]time.Time),
 		resumingSessions:          make(map[string]time.Time),
 		mcpLoadingSessions:        make(map[string]time.Time),
@@ -3146,7 +3158,10 @@ func (h *Home) hasActiveAnimation(sessionID string) bool {
 	}
 
 	// Check forking first (always shows while tracked)
-	if _, ok := h.forkingSessions[sessionID]; ok {
+	h.forkingSessionsMu.Lock()
+	_, forking := h.forkingSessions[sessionID]
+	h.forkingSessionsMu.Unlock()
+	if forking {
 		return true
 	}
 
@@ -3913,12 +3928,12 @@ func (h *Home) backgroundStatusUpdate() {
 	copy(instances, h.instances)
 	h.instancesMu.RUnlock()
 
-	// Active (non-archived) subset, computed once and reused by the loops that
-	// only concern live sessions. Archived sessions have torn-down panes, so
-	// walking them here only burns tmux subprocesses (Exists() / Capture())
-	// without changing anything the UI shows — with a large archive backlog that
-	// was the dominant cost in this sweep. Loops that need the full set (status
-	// skip-counting, idle lastSeen cleanup) keep using `instances`.
+	// Active (non-archived) subset, computed once and reused by the pre_status
+	// loops that only concern live sessions. Archived sessions have torn-down
+	// panes, so walking them here only burns tmux subprocesses (Exists() /
+	// Capture()) without changing anything the UI shows — with a large archive
+	// backlog that was the dominant cost in this sweep. Loops that need the full
+	// set (status skip-counting, idle lastSeen cleanup) keep using `instances`.
 	activeInstances := session.FilterInstancesByArchive(instances, false)
 
 	// Issue #1143: rate-limit the idle-timeout watcher to one tick per minute.
@@ -4005,6 +4020,12 @@ func (h *Home) backgroundStatusUpdate() {
 			}
 		}
 	}
+
+	// Context-budget warnings (all sessions): debounced one-shot on high/over crossing.
+	h.evaluateContextBudgetWarnings(activeInstances)
+
+	// Autonomous context-budget handoff (conductor + parented children only).
+	h.evaluateContextBudgetHandoff(activeInstances)
 
 	// Update status for all instances in parallel (I/O bound: tmux subprocess calls)
 	// With PipeManager, skip sessions idle for >5s (no %output events = no status change)
@@ -5057,7 +5078,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionForkedMsg:
 		// Clean up forking state for source session
 		if msg.sourceID != "" {
+			h.forkingSessionsMu.Lock()
 			delete(h.forkingSessions, msg.sourceID)
+			h.forkingSessionsMu.Unlock()
 		}
 
 		// Handle reload scenario: forked session was already started in tmux, we MUST save it
@@ -6255,7 +6278,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.cleanupExpiredAnimations(h.launchingSessions, claudeTimeout, defaultTimeout)
 		h.cleanupExpiredAnimations(h.resumingSessions, claudeTimeout, defaultTimeout)
 		h.cleanupExpiredAnimations(h.mcpLoadingSessions, claudeTimeout, defaultTimeout)
+		// forkingSessions can be written off the main loop (autonomous handoff fork);
+		// guard the range+delete cleanup against a concurrent background write.
+		h.forkingSessionsMu.Lock()
 		h.cleanupExpiredAnimations(h.forkingSessions, claudeTimeout, defaultTimeout)
+		h.forkingSessionsMu.Unlock()
 		// setupRunningSessions is deliberately NOT timer-pruned: it doubles as
 		// the b-hotkey re-entrancy lock, and the setup script may legitimately
 		// run past any UI timeout (setup_timeout_seconds is user-configurable,
@@ -11465,8 +11492,11 @@ func (h *Home) forkSessionCmdWithOptions(
 		forkState.WithState = true
 	}
 
-	// Track source session as "forking" for immediate UI feedback
+	// Track source session as "forking" for immediate UI feedback.
+	// Guarded: autonomous-handoff forks call this off the main loop while View reads the map.
+	h.forkingSessionsMu.Lock()
 	h.forkingSessions[source.ID] = time.Now()
+	h.forkingSessionsMu.Unlock()
 
 	sourceID := source.ID // Capture for closure
 
@@ -15140,6 +15170,23 @@ func (h *Home) renderCreatingSessionItem(
 	b.WriteString("\n")
 }
 
+// budgetBadge renders the per-session context-budget chip for the session list.
+// Empty for BudgetNormal so unaffected rows are unchanged.
+func budgetBadge(level session.BudgetLevel, selected bool) string {
+	if level == session.BudgetNormal {
+		return ""
+	}
+	color := ColorYellow
+	if level == session.BudgetHigh || level == session.BudgetOver {
+		color = ColorRed
+	}
+	style := lipgloss.NewStyle().Foreground(color).Bold(true)
+	if selected {
+		style = SessionStatusSelStyle
+	}
+	return style.Render(" [ctx:" + level.String() + "]")
+}
+
 // renderSessionItem renders a single session row into b, including the tree
 // connector, status badge, tool label, and the dim tmux pane-title suffix.
 // The pane-title suffix appears on the selected row, or on every row when
@@ -15371,6 +15418,15 @@ func (h *Home) renderSessionItem(
 		timestampBadge = tsStyle.Render(" " + formatRelativeTime(ts))
 	}
 
+	// Context-budget badge for Claude-compatible sessions with cached analytics.
+	// Only shown when analytics are available (no-signal gate: nil = no badge).
+	ctxBadge := ""
+	if session.IsClaudeCompatible(inst.Tool) {
+		if a := h.getAnalyticsForSession(inst); a != nil {
+			ctxBadge = budgetBadge(a.BudgetLevel(session.GetContextBudgetSettings()), selected)
+		}
+	}
+
 	// Window expand/collapse chevron for sessions with 2+ windows
 	windowChevron := " " // space placeholder to keep status icons aligned
 	if h.sessionHasWindows(item) {
@@ -15412,7 +15468,7 @@ func (h *Home) renderSessionItem(
 			cellWidth(status) + 1 /* space before title */ + cellWidth(tool) +
 			cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
 			cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
-			cellWidth(timestampBadge)
+			cellWidth(timestampBadge) + cellWidth(ctxBadge)
 		budget := listWidth - reserved - 1 // -1 trailing margin
 		if budget > 0 && cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
@@ -15424,7 +15480,7 @@ func (h *Home) renderSessionItem(
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -15440,6 +15496,7 @@ func (h *Home) renderSessionItem(
 		multiRepoBadge,
 		sshBadge,
 		timestampBadge,
+		ctxBadge,
 	)
 
 	// Append pane title filling remaining row space (only for the selected item).
@@ -16931,7 +16988,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	// Check if session is launching/resuming (for animation priority)
 	_, isSessionLaunching := h.launchingSessions[selected.ID]
 	_, isSessionResuming := h.resumingSessions[selected.ID]
+	h.forkingSessionsMu.Lock()
 	_, isSessionForking := h.forkingSessions[selected.ID]
+	h.forkingSessionsMu.Unlock()
 	isStartingUp := isSessionLaunching || isSessionResuming || isSessionForking
 
 	// Analytics panel (for Claude/Gemini sessions with analytics enabled)
@@ -17005,7 +17064,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	launchTime, isLaunching := h.launchingSessions[selected.ID]
 	resumeTime, isResuming := h.resumingSessions[selected.ID]
 	mcpLoadTime, isMcpLoading := h.mcpLoadingSessions[selected.ID]
+	h.forkingSessionsMu.Lock()
 	forkTime, isForking := h.forkingSessions[selected.ID]
+	h.forkingSessionsMu.Unlock()
 
 	// Determine if we should show animation (launch, resume, MCP loading, or forking)
 	// For Claude: show for minimum 6 seconds, then check for ready indicators
