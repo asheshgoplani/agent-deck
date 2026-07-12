@@ -35,6 +35,22 @@ or launching from outside that session — pass `--parent <session-id-or-title>`
 Spell out the long form: **never use the short `-p` to set a parent** (see the
 `-p` pitfall in Notes).
 
+## Before you fan out
+
+- **Check for shared singletons.** N sessions on the same project can't truly run
+  in parallel if they serialize on one resource — a single dev DB, a bound port,
+  one dev-server lock file. If they'd share one, either give each child isolated
+  resources (own DB name + port) or run **one** coherent session instead of a
+  fleet.
+- **Worktree children need deps installed first.** A freshly created git worktree
+  has no `node_modules` / vendored deps. Make the **first instruction** in the
+  child's `-m` prompt install them — and for a locked monorepo, install *from the
+  frozen lockfile, never regenerate it* (e.g. `pnpm install --frozen-lockfile`).
+  Otherwise the child's first test/build/e2e fails confusingly.
+- **Long prompts: pass via a file.** For a big multi-line task, write it to a file
+  and command-substitute: `-m "$(cat task.md)"`. Avoids the shell mangling of
+  backticks, `$`, and quotes inside an inline `-m`.
+
 ## The loop
 
 ### 1. Fan out (one `launch` per child; loop it)
@@ -67,7 +83,9 @@ Useful flags:
   instead of the auto-detected one. One step, no follow-up needed. **Long form
   only** — see the `-p` pitfall in Notes.
 - `--no-assert-done` — skip the completion-sentinel instruction.
-- `--no-parent` — launch flat instead of nested (you lose completion routing).
+- `--no-parent` — launch a standalone top-level session you supervise directly,
+  not nested under you (you lose completion routing). **Set `-g` explicitly** for
+  these — see "Independent (un-parented) sessions" below.
 
 ### 2. Keep working
 
@@ -139,6 +157,39 @@ agent-deck session send lint-a "Yes, drop the deprecated shim — don't keep a f
 agent-deck session output lint-a --json
 ```
 
+## Independent (un-parented) sessions
+
+Sometimes the user wants standalone sessions they supervise **directly** — not
+children of the conductor. Launch those with `--no-parent`. They run flat: no
+nesting in the TUI, and no completion routing back to your inbox.
+
+**The group trap.** A *parented* worktree child auto-inherits the parent's group
+— that's why the parented-fleet rule is "never pass `-g`." With `--no-parent`
+there is no parent to inherit from, so a worktree session falls back to its
+**cwd-derived group: the worktree's branch leaf** (e.g. a stray `issue-896`
+group sitting *next to* your real group instead of with its siblings).
+
+So the rule **inverts** for independent sessions: *pass the group explicitly.*
+`$AGENTDECK_RESOLVED_GROUP` holds the launching session's group.
+
+```bash
+agent-deck launch <path> -w <branch> --no-parent -g "$AGENTDECK_RESOLVED_GROUP" -c claude -m "..."
+```
+
+Or repair an already-launched stray, no restart needed:
+
+```bash
+agent-deck group move <child-id> "$AGENTDECK_RESOLVED_GROUP"
+agent-deck group delete <stray-group>        # once it's empty
+```
+
+**Verify the group** after any `--no-parent` worktree launch (`ls --json` is
+large; filter to the one session):
+
+```bash
+agent-deck ls --json | jq -r '.[] | select(.title|test("<name>")) | "\(.title)\t\(.group)"'
+```
+
 ## Supervision tools the parent can use
 
 All read-only / on-demand — none of them block your session:
@@ -175,7 +226,9 @@ choose when to look (poll `session children`, or `inbox drain`).
   fleet child — it overrides inheritance and detaches the child into its own
   group. If a fleet did scatter (a stray group, or per-branch groups), move them
   back without restarting: `agent-deck group move <child-id> <parent-group>`,
-  then `agent-deck group delete <stray-group>` once it's empty.
+  then `agent-deck group delete <stray-group>` once it's empty. (This "never pass
+  `-g`" rule is for *parented* children; for `--no-parent` standalone sessions it
+  inverts — you *must* set `-g`. See "Independent (un-parented) sessions".)
 - **The `-p` pitfall — use `--parent`, never `-p`, for a parent.** `-p` is the
   *global* `--profile` shorthand, parsed before the subcommand. On older builds it
   swallows your intended parent id as a profile name and routes the child into a

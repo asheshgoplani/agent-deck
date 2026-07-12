@@ -515,6 +515,14 @@ type Home struct {
 	// stored here and re-applied after the reload completes.
 	pendingTitleChanges map[string]string
 
+	// Pending group operations: survive the save-abort → reload race.
+	// Group create/rename/move persist via the non-force saveInstances(),
+	// whose external-change guard aborts and triggers a reload when the on-disk
+	// mtime is newer than our last load. The reload rebuilds groupTree from
+	// disk, discarding the just-applied mutation. These are re-applied after
+	// the reload (mirrors pendingTitleChanges for session renames).
+	pendingGroupOps []pendingGroupOp
+
 	// UI state persistence across restarts
 	pendingCursorRestore *uiState // Consumed on first loadSessionsMsg to restore cursor
 	uiStateSaveTicks     int      // Counter for periodic UI state saves in tick handler
@@ -4713,6 +4721,14 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+			// Re-apply pending group create/rename/move ops lost to the same
+			// reload race (they persist via non-force saveInstances, which the
+			// external-change guard can abort). See pendingGroupOps.
+			if h.reapplyPendingGroupOps() {
+				h.rebuildFlatItems()
+				h.forceSaveInstances()
+			}
+
 			// Restore state if provided (from auto-reload)
 			if msg.restoreState != nil {
 				h.restoreState(*msg.restoreState)
@@ -4854,7 +4870,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Save both instances AND groups (critical fix: was losing groups!)
-			// Use forceSave to bypass mtime check - new session creation MUST persist
+			// Use forceSave to bypass the external-change abort - new session creation MUST persist
 			h.forceSaveInstances()
 
 			// Start fetching preview for the new session
@@ -4921,7 +4937,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Save both instances AND groups
-			// Use forceSave to bypass mtime check - forked session MUST persist
+			// Use forceSave to bypass the external-change abort - forked session MUST persist
 			h.forceSaveInstances()
 
 			// forceSaveInstances can setError on a failed persist; fold the
@@ -4998,7 +5014,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
 		}
 		// Save both instances AND groups (critical fix: was losing groups!)
-		// Use forceSave to bypass mtime check - delete MUST persist
+		// Use forceSave to bypass the external-change abort - delete MUST persist
 		h.forceSaveInstances()
 
 		// Show undo hint (using setError as a transient message)
@@ -5108,7 +5124,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Use forceSave to bypass mtime check - restore MUST persist
+		// Use forceSave to bypass the external-change abort - restore MUST persist
 		h.forceSaveInstances()
 		if msg.warning != "" {
 			h.setError(fmt.Errorf("restored '%s' (%s)", msg.instance.Title, msg.warning))
@@ -8707,6 +8723,9 @@ func (h *Home) confirmAction() tea.Cmd {
 	case ConfirmDeleteGroup:
 		groupPath := h.confirmDialog.GetTargetID()
 		h.groupTree.DeleteGroup(groupPath)
+		// SaveGroups is additive (never prunes), so the removed group's rows must
+		// be deleted explicitly or it would resurrect on the next reload.
+		h.deleteGroupRows(groupPath)
 		h.instancesMu.Lock()
 		h.instances = h.groupTree.GetAllInstances()
 		h.instancesMu.Unlock()
@@ -9584,6 +9603,110 @@ func (h *Home) handleSkillDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// groupOpKind identifies a group mutation recorded for reload-race recovery.
+type groupOpKind int
+
+const (
+	groupOpCreate groupOpKind = iota
+	groupOpCreateSub
+	groupOpRename
+	groupOpMove
+)
+
+// pendingGroupOp records a group create/rename/move so it can be re-applied if
+// the save-abort → reload race discards it (see Home.pendingGroupOps).
+type pendingGroupOp struct {
+	kind        groupOpKind
+	name        string // new/target group name (create, createSub, rename)
+	parentPath  string // parent group path (createSub)
+	oldPath     string // group path being renamed (rename)
+	defaultPath string // optional default path captured in the dialog (create, createSub)
+	sessionID   string // session being moved (move)
+	targetPath  string // destination group path (move)
+	// maxConcurrent is the [group_defaults].max_concurrent default seeded at
+	// record time (create/createSub), re-seeded on reapply because the
+	// reloaded tree loses DefaultMaxConcurrent. Pointer (nil = unset) to match
+	// GroupTree.DefaultMaxConcurrent.
+	maxConcurrent *int
+}
+
+// reapplyPendingGroupOps re-applies group mutations that a reload race may have
+// discarded, on top of the freshly-reloaded (external) tree. It returns true if
+// any op actually changed the tree, so the caller force-saves. Each op is
+// idempotent: create/createSub return the existing group, rename no-ops when
+// its old path is gone, and move no-ops when the session already sits in the
+// target — so a lingering op (save succeeded, cleared only on the next reload)
+// causes no duplicate or spurious save. Mirrors the pendingTitleChanges reapply.
+func (h *Home) reapplyPendingGroupOps() bool {
+	if len(h.pendingGroupOps) == 0 {
+		return false
+	}
+	// reapply temporarily overrides DefaultMaxConcurrent to honour each op's
+	// captured value; restore it afterwards so we don't leave transient state
+	// on the shared tree for later callers.
+	savedDefaultMaxConcurrent := h.groupTree.DefaultMaxConcurrent
+	defer func() { h.groupTree.DefaultMaxConcurrent = savedDefaultMaxConcurrent }()
+
+	applied := false
+	for _, op := range h.pendingGroupOps {
+		switch op.kind {
+		case groupOpCreate:
+			h.groupTree.DefaultMaxConcurrent = op.maxConcurrent
+			before := h.groupTree.GroupCount()
+			g := h.groupTree.CreateGroup(op.name)
+			if g != nil && h.groupTree.GroupCount() > before {
+				if op.defaultPath != "" {
+					h.groupTree.SetDefaultPathForGroup(g.Path, op.defaultPath)
+				}
+				applied = true
+				uiLog.Info("pending_group_reapplied", slog.String("kind", "create"), slog.String("name", op.name))
+			}
+		case groupOpCreateSub:
+			h.groupTree.DefaultMaxConcurrent = op.maxConcurrent
+			before := h.groupTree.GroupCount()
+			g := h.groupTree.CreateSubgroup(op.parentPath, op.name)
+			if g != nil && h.groupTree.GroupCount() > before {
+				if op.defaultPath != "" {
+					h.groupTree.SetDefaultPathForGroup(g.Path, op.defaultPath)
+				}
+				applied = true
+				uiLog.Info("pending_group_reapplied", slog.String("kind", "createSub"), slog.String("name", op.name))
+			}
+		case groupOpRename:
+			if _, exists := h.groupTree.Groups[op.oldPath]; exists {
+				// Collision guard: if the reloaded (external) tree already has a
+				// DIFFERENT group at the rename's target path, skip. Renaming
+				// would overwrite that group's map entry and silently orphan its
+				// sessions (they'd vanish from GetAllInstances and then be
+				// force-saved away). Better to drop our rename than lose data.
+				target := h.groupTree.RenameTargetPath(op.oldPath, op.name)
+				if _, collision := h.groupTree.Groups[target]; collision && target != op.oldPath {
+					uiLog.Warn("pending_group_rename_skipped_collision",
+						slog.String("old_path", op.oldPath), slog.String("target", target))
+					continue
+				}
+				h.groupTree.RenameGroup(op.oldPath, op.name)
+				h.instancesMu.Lock()
+				h.instances = h.groupTree.GetAllInstances()
+				h.instancesMu.Unlock()
+				applied = true
+				uiLog.Info("pending_group_reapplied", slog.String("kind", "rename"), slog.String("old_path", op.oldPath), slog.String("name", op.name))
+			}
+		case groupOpMove:
+			if inst := h.getInstanceByID(op.sessionID); inst != nil && inst.GroupPath != op.targetPath {
+				h.groupTree.MoveSessionToGroup(inst, op.targetPath)
+				h.instancesMu.Lock()
+				h.instances = h.groupTree.GetAllInstances()
+				h.instancesMu.Unlock()
+				applied = true
+				uiLog.Info("pending_group_reapplied", slog.String("kind", "move"), slog.String("session_id", op.sessionID), slog.String("target", op.targetPath))
+			}
+		}
+	}
+	h.pendingGroupOps = nil
+	return applied
+}
+
 // handleGroupDialogKey handles keys when group dialog is visible
 func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -9603,28 +9726,45 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if cfg, _ := session.LoadUserConfig(); cfg != nil {
 					h.groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
 				}
+				// Capture it into the pending op so a reload-race reapply, which
+				// runs against a freshly-reloaded tree that was never re-seeded,
+				// still honours the configured default instead of falling back to 1.
+				maxConcurrent := h.groupTree.DefaultMaxConcurrent
+				defaultPath := h.groupDialog.GetDefaultPath()
 				var created *session.Group
 				if h.groupDialog.HasParent() {
 					// Create subgroup under parent
 					parentPath := h.groupDialog.GetParentPath()
 					created = h.groupTree.CreateSubgroup(parentPath, name)
+					h.pendingGroupOps = append(h.pendingGroupOps, pendingGroupOp{
+						kind: groupOpCreateSub, name: name, parentPath: parentPath, defaultPath: defaultPath, maxConcurrent: maxConcurrent,
+					})
 				} else {
 					// Create root-level group
 					created = h.groupTree.CreateGroup(name)
+					h.pendingGroupOps = append(h.pendingGroupOps, pendingGroupOp{
+						kind: groupOpCreate, name: name, defaultPath: defaultPath, maxConcurrent: maxConcurrent,
+					})
 				}
 				// Issue #918: persist the optional default path captured in the dialog.
-				if created != nil {
-					if defaultPath := h.groupDialog.GetDefaultPath(); defaultPath != "" {
-						h.groupTree.SetDefaultPathForGroup(created.Path, defaultPath)
-					}
+				if created != nil && defaultPath != "" {
+					h.groupTree.SetDefaultPathForGroup(created.Path, defaultPath)
 				}
 				h.rebuildFlatItems()
-				h.saveInstances() // Persist the new group
+				h.saveInstances() // Persist the new group (reload-race safe via pendingGroupOps)
 			}
 		case GroupDialogRename:
 			name := h.groupDialog.GetValue()
 			if name != "" {
-				h.groupTree.RenameGroup(h.groupDialog.GetGroupPath(), name)
+				oldPath := h.groupDialog.GetGroupPath()
+				h.groupTree.RenameGroup(oldPath, name)
+				h.pendingGroupOps = append(h.pendingGroupOps, pendingGroupOp{
+					kind: groupOpRename, oldPath: oldPath, name: name,
+				})
+				// A rename re-paths the group and its subgroups; the old path rows
+				// must be deleted explicitly (additive SaveGroups won't prune them)
+				// or the group reappears under its old name on the next reload.
+				h.deleteGroupRows(oldPath)
 				h.instancesMu.Lock()
 				h.instances = h.groupTree.GetAllInstances()
 				h.instancesMu.Unlock()
@@ -9637,6 +9777,9 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				item := h.flatItems[h.cursor]
 				if item.Type == session.ItemTypeSession {
 					h.groupTree.MoveSessionToGroup(item.Session, targetGroupPath)
+					h.pendingGroupOps = append(h.pendingGroupOps, pendingGroupOp{
+						kind: groupOpMove, sessionID: item.Session.ID, targetPath: targetGroupPath,
+					})
 					h.instancesMu.Lock()
 					h.instances = h.groupTree.GetAllInstances()
 					h.instancesMu.Unlock()
@@ -9824,26 +9967,32 @@ func (h *Home) saveInstancesWithForce(force bool) {
 	// EXTERNAL CHANGE DETECTION: Check if file was modified since we last loaded.
 	// This catches external changes (e.g., from CLI) even when fsnotify fails
 	// (common on 9p/NFS filesystems in WSL2).
-	// NOTE: Skip this check when force=true because critical saves MUST happen
-	// (e.g., new session creation, fork, delete - these would lose data if skipped)
-	if !force {
-		h.reloadMu.Lock()
-		ourLoadMtime := h.lastLoadMtime
-		h.reloadMu.Unlock()
+	// #1550: force saves no longer skip this check. They still persist (they
+	// carry critical mutations like create/fork/delete, and the save is now
+	// upsert-only so it cannot delete another process's rows), but a detected
+	// external change schedules a reload after the save so this TUI stops
+	// holding a stale snapshot.
+	externalChange := false
+	h.reloadMu.Lock()
+	ourLoadMtime := h.lastLoadMtime
+	h.reloadMu.Unlock()
 
-		if h.storage != nil && !ourLoadMtime.IsZero() {
-			currentMtime, err := h.storage.GetFileMtime()
-			if err == nil && !currentMtime.IsZero() && currentMtime.After(ourLoadMtime) {
-				uiLog.Warn("save_abort_external_change",
-					slog.Time("our_load", ourLoadMtime),
-					slog.Time("current_mtime", currentMtime))
-				// File was modified externally - trigger reload instead of overwriting
-				if h.storageWatcher != nil {
-					h.storageWatcher.TriggerReload()
-				}
-				return
-			}
+	if h.storage != nil && !ourLoadMtime.IsZero() {
+		currentMtime, err := h.storage.GetFileMtime()
+		if err == nil && !currentMtime.IsZero() && currentMtime.After(ourLoadMtime) {
+			externalChange = true
+			uiLog.Warn("save_external_change_detected",
+				slog.Bool("force", force),
+				slog.Time("our_load", ourLoadMtime),
+				slog.Time("current_mtime", currentMtime))
 		}
+	}
+	if externalChange && !force {
+		// Routine save: abort and reload instead of overwriting with stale rows.
+		if h.storageWatcher != nil {
+			h.storageWatcher.TriggerReload()
+		}
+		return
 	}
 
 	if h.storage != nil {
@@ -9929,7 +10078,34 @@ func (h *Home) saveInstancesWithForce(force bool) {
 			if len(h.pendingTitleChanges) > 0 {
 				h.pendingTitleChanges = make(map[string]string)
 			}
+			// Clear pending group ops on successful save: the whole in-memory
+			// tree (including every recorded op's mutation) was just persisted,
+			// so there is nothing to re-apply. Leaving them would let a later,
+			// unrelated reload blindly re-apply a stale op against a diverged
+			// tree (resurrecting a deleted group, or a rename collision that
+			// drops sessions). Scopes op lifetime to record → save-or-abort,
+			// mirroring pendingTitleChanges.
+			h.pendingGroupOps = nil
+			// #1550: a force save raced an external change. Our rows are now
+			// persisted (upsert-only, nothing deleted); reload to pick up what
+			// the other process wrote while we were stale.
+			if externalChange && h.storageWatcher != nil {
+				h.storageWatcher.TriggerReload()
+			}
 		}
+	}
+}
+
+// deleteGroupRows removes a group and its descendants from the groups table.
+// SaveGroups is additive (upsert, never prune), so an intentional removal —
+// delete or the old path of a rename/move — must be persisted explicitly here,
+// otherwise the stale rows resurrect the group on the next reload.
+func (h *Home) deleteGroupRows(path string) {
+	if h.storage == nil || path == "" {
+		return
+	}
+	if err := h.storage.DeleteGroupSubtree(path); err != nil {
+		uiLog.Warn("delete_group_rows_failed", slog.String("path", path), slog.String("error", err.Error()))
 	}
 }
 
