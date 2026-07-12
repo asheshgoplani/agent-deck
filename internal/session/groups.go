@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 	"unicode"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
@@ -1644,6 +1646,79 @@ func resolveGroupDefaultPath(defaultPath string) string {
 	return baseRoot
 }
 
+// resolveGroupDefaultPath does an os.Stat plus up to three git subprocess calls
+// (IsGitRepo, IsLinkedWorktree, GetWorktreeBaseRoot). updateGroupDefaultPath
+// calls it once per group on EVERY tree build, and a tree build runs on the
+// bubbletea main goroutine inside the loadSessionsMsg handler (fired on each
+// storage change). On a large deck this measured ~21ms × N groups ≈ 800ms of
+// main-goroutine freeze per reload — the same subprocess-storm class as the
+// nav-freeze fix, just in the group-tree path.
+//
+// The result is a pure function of the path's on-disk git/worktree state, which
+// is effectively static across reloads (a repo does not flip linked-worktree
+// status every 30s). So cache it stale-while-revalidate: serve the last known
+// result to the main goroutine instantly and, when the entry is past TTL,
+// refresh it once in the background. Only the first-ever resolution of a path
+// blocks (cold cache, one-time splash cost); every subsequent reload is O(map
+// lookup). The background refresher touches ONLY this mutex-guarded map — never
+// a GroupTree/Group/Instance — so it cannot corrupt group state.
+//
+// Set-time callers (SetDefaultPathForGroup, ReconcileDeclarativeGroups,
+// DefaultPathForGroup) deliberately keep using resolveGroupDefaultPath directly
+// so an explicit "use this path" always resolves fresh; only the defensive
+// per-load re-normalization in updateGroupDefaultPath goes through the cache.
+
+const defaultPathCacheTTL = 60 * time.Second
+
+type resolvedDefaultPathEntry struct {
+	result     string
+	computedAt time.Time
+	refreshing bool
+}
+
+var (
+	defaultPathCacheMu sync.Mutex
+	defaultPathCache   = map[string]*resolvedDefaultPathEntry{}
+)
+
+// resolveGroupDefaultPathCached is the reload-path variant of
+// resolveGroupDefaultPath: non-blocking after the first resolution of a given
+// path (stale-while-revalidate). See resolveGroupDefaultPath's header.
+func resolveGroupDefaultPathCached(defaultPath string) string {
+	if strings.TrimSpace(defaultPath) == "" {
+		return ""
+	}
+
+	defaultPathCacheMu.Lock()
+	if entry, ok := defaultPathCache[defaultPath]; ok {
+		if time.Since(entry.computedAt) > defaultPathCacheTTL && !entry.refreshing {
+			entry.refreshing = true
+			go refreshGroupDefaultPathCache(defaultPath)
+		}
+		result := entry.result
+		defaultPathCacheMu.Unlock()
+		return result
+	}
+	defaultPathCacheMu.Unlock()
+
+	// Cold cache: resolve synchronously (first-ever lookup of this path).
+	result := resolveGroupDefaultPath(defaultPath)
+	defaultPathCacheMu.Lock()
+	defaultPathCache[defaultPath] = &resolvedDefaultPathEntry{result: result, computedAt: time.Now()}
+	defaultPathCacheMu.Unlock()
+	return result
+}
+
+// refreshGroupDefaultPathCache re-resolves a path off the main goroutine and
+// replaces its cache entry. Runs only via resolveGroupDefaultPathCached, one at
+// a time per path (guarded by the entry.refreshing flag).
+func refreshGroupDefaultPathCache(defaultPath string) {
+	result := resolveGroupDefaultPath(defaultPath)
+	defaultPathCacheMu.Lock()
+	defaultPathCache[defaultPath] = &resolvedDefaultPathEntry{result: result, computedAt: time.Now()}
+	defaultPathCacheMu.Unlock()
+}
+
 // DefaultPathForGroup returns the effective default path for creating new sessions
 // in the group: explicit configured default_path first, then most recent session path.
 func (t *GroupTree) DefaultPathForGroup(groupPath string) string {
@@ -1679,6 +1754,10 @@ func (t *GroupTree) updateGroupDefaultPath(groupPath string) {
 	}
 
 	if group.DefaultPath != "" {
-		group.DefaultPath = resolveGroupDefaultPath(group.DefaultPath)
+		// Cached (stale-while-revalidate): this runs once per group on every
+		// tree build, which happens on the bubbletea main goroutine during the
+		// loadSessionsMsg handler. The uncached resolveGroupDefaultPath here was
+		// ~800ms of main-thread freeze per reload on a large deck.
+		group.DefaultPath = resolveGroupDefaultPathCached(group.DefaultPath)
 	}
 }
