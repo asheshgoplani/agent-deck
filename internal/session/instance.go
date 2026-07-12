@@ -840,9 +840,10 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		baseCommand = "claude"
 	}
 
-	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
+	// Get the configured Claude command (e.g., "claude", "cdw", "cdp"),
+	// resolved per instance: conductor > group (ancestor-walk) > global.
 	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
-	claudeCmd := GetClaudeCommand()
+	claudeCmd := GetClaudeCommandForInstance(i)
 	hasCustomCommand := claudeCmd != "claude"
 
 	// Resolve CLAUDE_CONFIG_DIR for this spawn. We inject the prefix only
@@ -1172,6 +1173,10 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 		if opts != nil {
 			launchModel = opts.Model
 		}
+		// Conductor/group model chain (#8): explicit opts.Model wins, then the
+		// per-conductor then per-group [*.claude].model overrides.
+		launchModel = i.resolveClaudeLaunchModel(launchModel)
+		// Finally fall back to the global [claude].default_model (#1437).
 		if launchModel == "" {
 			if cfg, _ := LoadUserConfig(); cfg != nil {
 				launchModel = cfg.Claude.DefaultModel
@@ -2948,7 +2953,17 @@ func (i *Instance) ensureClaudeSessionIDFromDisk() {
 	// transcripts (e.g. a removed-then-recreated review session) cannot hijack
 	// a sibling's conversation. The Restart prelude already does this for
 	// #1147; this closes the same gap on the Start path.
-	if i.adoptExplicitClaudeSessionID("session_id_flag_explicit") {
+	explicitSessionID := i.adoptExplicitClaudeSessionID("session_id_flag_explicit")
+	if i.Tool == "claude" && i.ClaudeSessionID != "" {
+		if restored, err := RestoreOrphanedConversationBackup(i, GetClaudeConfigDirForInstance(i)); err == nil && restored != "" {
+			sessionLog.Info("resume: restored orphaned conversation backup id="+i.ClaudeSessionID+" reason=orphan_bak_restore",
+				slog.String("instance_id", i.ID),
+				slog.String("claude_session_id", i.ClaudeSessionID),
+				slog.String("path", restored),
+				slog.String("reason", "orphan_bak_restore"))
+		}
+	}
+	if explicitSessionID {
 		return
 	}
 	if i.ClaudeSessionID != "" {
@@ -3830,13 +3845,34 @@ func (i *Instance) UpdateStatus() error {
 				}
 				i.Status = StatusWaiting
 			} else {
-				// Check acknowledgment: orange (waiting) vs gray (idle)
-				// Acknowledge() is called when user attaches to a session.
-				// ResetAcknowledged() is called by UpdateHookStatus on any new
-				// waiting event, and by the u key / new activity.
-				if i.tmuxSession != nil && i.tmuxSession.IsAcknowledged() {
+				// Claude fires its Stop hook (→ "waiting") when the FOREGROUND turn
+				// ends, even while run_in_background shells or a background agent the
+				// turn is awaiting keep running. Treat the session as still running
+				// so it stays green and the daemon emits no premature "finished"
+				// notification; it settles to waiting (and notifies) once the
+				// background work completes — so "done" means foreground AND
+				// background. BackgroundWorkPending captures the pane (the fast path
+				// has no captured content), so release i.mu around it like the
+				// GetStatus call below, then re-check for a concurrent Kill().
+				bgWorkPending := false
+				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) {
+					i.mu.Unlock()
+					bgWorkPending = i.tmuxSession.BackgroundWorkPending()
+					i.mu.Lock()
+					if i.Status == StatusStopped {
+						return nil
+					}
+				}
+				switch {
+				case bgWorkPending:
+					i.Status = StatusRunning
+				case i.tmuxSession != nil && i.tmuxSession.IsAcknowledged():
+					// Check acknowledgment: orange (waiting) vs gray (idle).
+					// Acknowledge() is called when user attaches to a session.
+					// ResetAcknowledged() is called by UpdateHookStatus on any new
+					// waiting event, and by the u key / new activity.
 					i.Status = StatusIdle
-				} else {
+				default:
 					i.Status = StatusWaiting
 				}
 			}
@@ -5954,6 +5990,20 @@ func (i *Instance) Restart() error {
 
 	// If Claude session with known ID AND tmux session exists, use respawn-pane.
 	if IsClaudeCompatible(i.Tool) && i.ClaudeSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
+		// A known-ID restart resumes straight to `claude --resume <uuid>`
+		// without passing through the Start-path prelude. If the live
+		// <id>.jsonl was lost to the #1533 account-switch bug but an
+		// orphaned <id>.jsonl.bak-<epoch> remains, restore it here so the
+		// resume finds its history instead of starting empty.
+		if i.Tool == "claude" {
+			if restored, rErr := RestoreOrphanedConversationBackup(i, GetClaudeConfigDirForInstance(i)); rErr == nil && restored != "" {
+				sessionLog.Info("resume: restored orphaned conversation backup id="+i.ClaudeSessionID+" reason=orphan_bak_restore_restart",
+					slog.String("instance_id", i.ID),
+					slog.String("claude_session_id", i.ClaudeSessionID),
+					slog.String("path", restored),
+					slog.String("reason", "orphan_bak_restore_restart"))
+			}
+		}
 		resumeCmd, containerName, err := i.prepareCommand(i.buildClaudeResumeCommand())
 		if err != nil {
 			return err
@@ -6401,9 +6451,10 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// shell environment as freshly started ones (fixes #409).
 	envPrefix := i.buildEnvSourceCommand()
 
-	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
+	// Get the configured Claude command (e.g., "claude", "cdw", "cdp"),
+	// resolved per instance: conductor > group (ancestor-walk) > global.
 	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
-	claudeCmd := GetClaudeCommand()
+	claudeCmd := GetClaudeCommandForInstance(i)
 	hasCustomCommand := claudeCmd != "claude"
 
 	// Resolve CLAUDE_CONFIG_DIR for this restart. Mirrors the gating logic

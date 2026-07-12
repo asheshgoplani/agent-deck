@@ -618,7 +618,7 @@ func TestHomeRenamePendingChangesSurviveReload(t *testing.T) {
 	home.rebuildFlatItems()
 
 	// Simulate a rename that stores a pending title change
-	home.pendingTitleChanges[inst.ID] = "renamed-title"
+	home.pendingTitleChanges[inst.ID] = pendingTitle{title: "renamed-title", locked: true}
 
 	// Simulate a reload (loadSessionsMsg) with the OLD title from disk
 	reloadInst := session.NewInstance("original-name", "/tmp/project")
@@ -660,7 +660,7 @@ func TestHomeRenamePendingChangeClearsAutoName(t *testing.T) {
 
 	// User renamed the session; the rename was stored as a pending change
 	// (save was skipped because isReloading=true at the time)
-	home.pendingTitleChanges[inst.ID] = "my-chosen-name"
+	home.pendingTitleChanges[inst.ID] = pendingTitle{title: "my-chosen-name", locked: true}
 
 	// A reload replaces the instance with the stale disk version (AutoName=true, old title)
 	reloadInst := session.NewInstance("quick-adjective-noun", "/tmp/project")
@@ -701,7 +701,7 @@ func TestHomeRenamePendingChangesNoop(t *testing.T) {
 	home.rebuildFlatItems()
 
 	// Store a pending change that matches the current title (normal save succeeded)
-	home.pendingTitleChanges[inst.ID] = "desired-name"
+	home.pendingTitleChanges[inst.ID] = pendingTitle{title: "desired-name", locked: true}
 
 	// Reload with data that already has the correct title
 	reloadInst := session.NewInstance("desired-name", "/tmp/project")
@@ -724,6 +724,88 @@ func TestHomeRenamePendingChangesNoop(t *testing.T) {
 	if len(h.pendingTitleChanges) != 0 {
 		t.Errorf("pendingTitleChanges should be empty, got %d", len(h.pendingTitleChanges))
 	}
+}
+
+// TestHomeRenamePendingChangeRestoresTitleLock pins the #697 regression: a user
+// rename re-applied after a reload race must come back LOCKED, otherwise the
+// next #572 Claude-name sync reverts it to the cwd-folder default (the "my
+// rename keeps disappearing on restart" bug). A sync-sourced pending title must
+// stay UNLOCKED so it keeps tracking Claude's session name.
+func TestHomeRenamePendingChangeRestoresTitleLock(t *testing.T) {
+	// No RemoteSession case: pendingTitleChanges is keyed by session ID and
+	// resolved through getInstanceByID, which only returns local
+	// *session.Instance objects. A RemoteSession has no local instance and is
+	// renamed via its own SSH-runner branch in handleGroupDialogKey, so it can
+	// never reach this reload-reapply path.
+	t.Run("user rename is relocked", func(t *testing.T) {
+		home := NewHome()
+		home.width = 100
+		home.height = 30
+
+		inst := session.NewInstance("original-name", "/tmp/project")
+		inst.TitleLocked = true
+		home.instancesMu.Lock()
+		home.instances = []*session.Instance{inst}
+		home.instanceByID[inst.ID] = inst
+		home.instancesMu.Unlock()
+		home.groupTree = session.NewGroupTree(home.instances)
+		home.rebuildFlatItems()
+
+		// User rename queued as locked (SetField sets TitleLocked=true).
+		home.pendingTitleChanges[inst.ID] = pendingTitle{title: "renamed-title", locked: true}
+
+		// Reload replaces the instance with a stale disk row: old title AND
+		// UNLOCKED, because the lock was never persisted (save was skipped).
+		reloadInst := session.NewInstance("original-name", "/tmp/project")
+		reloadInst.ID = inst.ID
+		reloadInst.TitleLocked = false
+
+		model, _ := home.Update(loadSessionsMsg{
+			instances:    []*session.Instance{reloadInst},
+			restoreState: &reloadState{cursorSessionID: inst.ID},
+		})
+		h := model.(*Home)
+
+		if h.instances[0].Title != "renamed-title" {
+			t.Fatalf("Title = %q, want renamed-title", h.instances[0].Title)
+		}
+		if !h.instances[0].TitleLocked {
+			t.Error("TitleLocked = false after reapply, want true (#697: else the next Claude-name sync reverts the rename)")
+		}
+	})
+
+	t.Run("sync-sourced title stays unlocked", func(t *testing.T) {
+		home := NewHome()
+		home.width = 100
+		home.height = 30
+
+		inst := session.NewInstance("proj-ab", "/tmp/project")
+		home.instancesMu.Lock()
+		home.instances = []*session.Instance{inst}
+		home.instanceByID[inst.ID] = inst
+		home.instancesMu.Unlock()
+		home.groupTree = session.NewGroupTree(home.instances)
+		home.rebuildFlatItems()
+
+		// An attach-time Claude-name sync queues an UNLOCKED title.
+		home.pendingTitleChanges[inst.ID] = pendingTitle{title: "claude-name", locked: false}
+
+		reloadInst := session.NewInstance("proj-ab", "/tmp/project")
+		reloadInst.ID = inst.ID
+
+		model, _ := home.Update(loadSessionsMsg{
+			instances:    []*session.Instance{reloadInst},
+			restoreState: &reloadState{cursorSessionID: inst.ID},
+		})
+		h := model.(*Home)
+
+		if h.instances[0].Title != "claude-name" {
+			t.Fatalf("Title = %q, want claude-name", h.instances[0].Title)
+		}
+		if h.instances[0].TitleLocked {
+			t.Error("TitleLocked = true after sync reapply, want false (sync titles must keep tracking Claude)")
+		}
+	})
 }
 
 func TestHomeGlobalSearchInitialized(t *testing.T) {

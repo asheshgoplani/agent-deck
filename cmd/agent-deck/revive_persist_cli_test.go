@@ -59,6 +59,9 @@ func stubReviverHealingErrored(t *testing.T) *session.Reviver {
 // Invariant: the concurrently-added session survives, and the errored session
 // is now running.
 func TestReviveCLI_PersistViaTargetedPath_DoesNotClobberConcurrentAdd(t *testing.T) {
+	// Own profile: saves are upsert-only (#1551), so rows written by other
+	// tests in the shared _test profile would leak into this test's snapshot.
+	t.Setenv("AGENTDECK_PROFILE", "_test_revive_clobber")
 	reviveStorage := newReviveCLIStorage(t)
 
 	existing := &session.Instance{
@@ -121,6 +124,9 @@ func TestReviveCLI_PersistViaTargetedPath_DoesNotClobberConcurrentAdd(t *testing
 // REPLACE from revive's stale snapshot would clobber that edit; the targeted
 // status UPDATE must leave it intact.
 func TestReviveCLI_TargetedUpdate_PreservesConcurrentEditToRevivedRow(t *testing.T) {
+	// Own profile: saves are upsert-only (#1551), so rows written by other
+	// tests in the shared _test profile would leak into this test's snapshot.
+	t.Setenv("AGENTDECK_PROFILE", "_test_revive_edit")
 	reviveStorage := newReviveCLIStorage(t)
 
 	existing := &session.Instance{

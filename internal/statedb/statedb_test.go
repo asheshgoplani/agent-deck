@@ -107,6 +107,60 @@ func TestSaveLoadInstances(t *testing.T) {
 	}
 }
 
+func TestSetArchivedPersistsTimestampIndependently(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+	if err := db.SaveInstance(&InstanceRow{
+		ID:          "arch-1",
+		Title:       "indigo-jay",
+		ProjectPath: "/tmp/project",
+		GroupPath:   "grp",
+		Tool:        "claude",
+		Status:      "error",
+		CreatedAt:   now,
+		ToolData:    json.RawMessage("{}"),
+	}); err != nil {
+		t.Fatalf("seed SaveInstance: %v", err)
+	}
+
+	rowByID := func() *InstanceRow {
+		t.Helper()
+		rows, err := db.LoadInstances()
+		if err != nil {
+			t.Fatalf("LoadInstances: %v", err)
+		}
+		for _, r := range rows {
+			if r.ID == "arch-1" {
+				return r
+			}
+		}
+		t.Fatalf("instance arch-1 not found")
+		return nil
+	}
+
+	// Precondition: not archived.
+	if got := rowByID(); !got.ArchivedAt.IsZero() {
+		t.Fatalf("expected unarchived, got archived_at=%v", got.ArchivedAt)
+	}
+
+	// Archive via the targeted update.
+	archivedAt := time.Unix(1781626272, 0).UTC()
+	if err := db.SetArchived("arch-1", archivedAt); err != nil {
+		t.Fatalf("SetArchived(archive): %v", err)
+	}
+	if got := rowByID(); got.ArchivedAt.Unix() != archivedAt.Unix() {
+		t.Errorf("archive not persisted: got archived_at=%v, want %v", got.ArchivedAt, archivedAt)
+	}
+
+	// Unarchive by setting the zero time.
+	if err := db.SetArchived("arch-1", time.Time{}); err != nil {
+		t.Fatalf("SetArchived(unarchive): %v", err)
+	}
+	if got := rowByID(); !got.ArchivedAt.IsZero() {
+		t.Errorf("unarchive not persisted: got archived_at=%v, want zero", got.ArchivedAt)
+	}
+}
+
 func TestSaveInstancesPreservesFreshAutoNameFieldsFromStaleSnapshot(t *testing.T) {
 	db := newTestDB(t)
 	now := time.Now()

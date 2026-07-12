@@ -128,6 +128,8 @@ func handleSessionMove(profile string, args []string) {
 	inst.ProjectPath = newPath
 
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	moveCfg, _ := session.LoadUserConfig()
+	groupTree.DefaultMaxConcurrent = moveCfg.GroupDefaults.MaxConcurrent
 	if *group != "" {
 		targetGroupPath := *group
 		if targetGroupPath == "root" {

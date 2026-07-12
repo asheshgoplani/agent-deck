@@ -175,5 +175,12 @@ func (s *Session) KillAndWait() error {
 		EnsurePIDsDead(oldPIDs, 3*time.Second)
 	}
 
+	// Killing an already-dead session is success (see Session.Kill): tmux
+	// `kill-session` exits non-zero for a session that no longer exists. CLI
+	// callers (`agent-deck remove` of a stopped session) must not fail on that.
+	if killErr != nil && !s.Exists() {
+		return nil
+	}
+
 	return killErr
 }
