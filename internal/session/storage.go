@@ -301,7 +301,15 @@ func (s *Storage) Save(instances []*Instance) error {
 }
 
 // SaveWithGroups persists instances and groups to SQLite.
-// Converts Instance objects to database rows, then batch-inserts in a transaction.
+// Converts Instance objects to database rows, then batch-upserts in a transaction.
+//
+// UPSERT-ONLY (#1550): this path never deletes rows. It used to route through
+// statedb.SaveInstances, whose `DELETE FROM instances WHERE id NOT IN (...)`
+// sweep let any process holding a stale snapshot silently delete sessions a
+// concurrent process created after that snapshot was loaded (the TUI-side twin
+// of #909/#1031). Deletions must be explicit and targeted instead:
+// DeleteInstance / RemoveSessionAndVerify at the moment the user deletes a
+// session, or statedb.ClearAllInstances for an intentional full wipe.
 func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -324,7 +332,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 		rows[i] = row
 	}
 
-	if err := s.db.SaveInstances(rows); err != nil {
+	if err := s.db.UpsertInstances(rows); err != nil {
 		return fmt.Errorf("failed to save instances: %w", err)
 	}
 
@@ -364,6 +372,26 @@ func (s *Storage) DeleteInstance(id string) error {
 
 	if err := s.db.DeleteInstance(id); err != nil {
 		return fmt.Errorf("failed to delete instance %s: %w", id, err)
+	}
+
+	_ = s.db.Touch()
+	return nil
+}
+
+// DeleteGroupSubtree removes a group and all of its descendants from the groups
+// table. SaveGroups is additive (upsert, never prune), so intentional group
+// removal — delete, rename, move — must call this explicitly; otherwise the old
+// path rows linger and the group resurrects on the next reload.
+func (s *Storage) DeleteGroupSubtree(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return fmt.Errorf("storage database not initialized")
+	}
+
+	if err := s.db.DeleteGroupSubtree(path); err != nil {
+		return fmt.Errorf("failed to delete group subtree %s: %w", path, err)
 	}
 
 	_ = s.db.Touch()

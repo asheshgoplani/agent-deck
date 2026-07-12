@@ -1135,7 +1135,19 @@ func (t *GroupTree) CreateGroupPath(path string) *Group {
 	return leaf
 }
 
-// RenameGroup renames a group and updates all subgroups
+// RenameTargetPath returns the group path that RenameGroup(oldPath, newName)
+// would move the group to, applying the same sanitization and parent-path
+// preservation. Exposed so callers can detect a collision with an existing,
+// different group at the target before renaming (see the reload-race reapply).
+func (t *GroupTree) RenameTargetPath(oldPath, newName string) string {
+	newBasePath := strings.ReplaceAll(sanitizeGroupName(newName), " ", "-")
+	if parentPath := getParentPath(oldPath); parentPath != "" {
+		return parentPath + "/" + newBasePath
+	}
+	return newBasePath
+}
+
+// RenameGroup renames a group and updates all subgroups.
 func (t *GroupTree) RenameGroup(oldPath, newName string) {
 	group, exists := t.Groups[oldPath]
 	if !exists {
@@ -1144,16 +1156,7 @@ func (t *GroupTree) RenameGroup(oldPath, newName string) {
 
 	// Sanitize name to prevent path traversal and security issues
 	sanitizedName := sanitizeGroupName(newName)
-	newBasePath := strings.ReplaceAll(sanitizedName, " ", "-")
-
-	// Preserve parent path for subgroups
-	parentPath := getParentPath(oldPath)
-	var newPath string
-	if parentPath != "" {
-		newPath = parentPath + "/" + newBasePath
-	} else {
-		newPath = newBasePath
-	}
+	newPath := t.RenameTargetPath(oldPath, newName)
 
 	if newPath == oldPath {
 		group.Name = sanitizedName
