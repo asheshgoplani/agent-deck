@@ -840,9 +840,10 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		baseCommand = "claude"
 	}
 
-	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
+	// Get the configured Claude command (e.g., "claude", "cdw", "cdp"),
+	// resolved per instance: conductor > group (ancestor-walk) > global.
 	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
-	claudeCmd := GetClaudeCommand()
+	claudeCmd := GetClaudeCommandForInstance(i)
 	hasCustomCommand := claudeCmd != "claude"
 
 	// Resolve CLAUDE_CONFIG_DIR for this spawn. We inject the prefix only
@@ -1172,6 +1173,10 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 		if opts != nil {
 			launchModel = opts.Model
 		}
+		// Conductor/group model chain (#8): explicit opts.Model wins, then the
+		// per-conductor then per-group [*.claude].model overrides.
+		launchModel = i.resolveClaudeLaunchModel(launchModel)
+		// Finally fall back to the global [claude].default_model (#1437).
 		if launchModel == "" {
 			if cfg, _ := LoadUserConfig(); cfg != nil {
 				launchModel = cfg.Claude.DefaultModel
@@ -3830,13 +3835,34 @@ func (i *Instance) UpdateStatus() error {
 				}
 				i.Status = StatusWaiting
 			} else {
-				// Check acknowledgment: orange (waiting) vs gray (idle)
-				// Acknowledge() is called when user attaches to a session.
-				// ResetAcknowledged() is called by UpdateHookStatus on any new
-				// waiting event, and by the u key / new activity.
-				if i.tmuxSession != nil && i.tmuxSession.IsAcknowledged() {
+				// Claude fires its Stop hook (→ "waiting") when the FOREGROUND turn
+				// ends, even while run_in_background shells or a background agent the
+				// turn is awaiting keep running. Treat the session as still running
+				// so it stays green and the daemon emits no premature "finished"
+				// notification; it settles to waiting (and notifies) once the
+				// background work completes — so "done" means foreground AND
+				// background. BackgroundWorkPending captures the pane (the fast path
+				// has no captured content), so release i.mu around it like the
+				// GetStatus call below, then re-check for a concurrent Kill().
+				bgWorkPending := false
+				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) {
+					i.mu.Unlock()
+					bgWorkPending = i.tmuxSession.BackgroundWorkPending()
+					i.mu.Lock()
+					if i.Status == StatusStopped {
+						return nil
+					}
+				}
+				switch {
+				case bgWorkPending:
+					i.Status = StatusRunning
+				case i.tmuxSession != nil && i.tmuxSession.IsAcknowledged():
+					// Check acknowledgment: orange (waiting) vs gray (idle).
+					// Acknowledge() is called when user attaches to a session.
+					// ResetAcknowledged() is called by UpdateHookStatus on any new
+					// waiting event, and by the u key / new activity.
 					i.Status = StatusIdle
-				} else {
+				default:
 					i.Status = StatusWaiting
 				}
 			}
@@ -4441,9 +4467,23 @@ func (i *Instance) ClearHookStatus() {
 	i.hookLastUpdate = time.Time{}
 	i.mu.Unlock()
 
-	if err := os.Remove(filepath.Join(GetHooksDir(), i.ID+".json")); err != nil && !os.IsNotExist(err) {
+	// Remove the persisted status file. Sandbox sessions bridge a PER-INSTANCE
+	// scoped subdir (…/hooks/sandbox/<id>/<id>.json) from the container, and the
+	// watcher attributes that file to this instance by its OWNING SUBDIR, so the
+	// scoped file is the one to clear. Non-sandbox sessions write the flat
+	// …/hooks/<id>.json. We remove only the FILE here (not the subdir): this can
+	// fire mid-session (attach-return / unacknowledge) while the container still
+	// has the subdir bind-mounted, and unlinking the mount source would orphan
+	// the live bridge. The subdir + its fsnotify watch are torn down at session
+	// end (see killInternal).
+	hookPath := filepath.Join(GetHooksDir(), i.ID+".json")
+	if i.IsSandboxed() {
+		hookPath = filepath.Join(GetHooksDir(), "sandbox", i.ID, i.ID+".json")
+	}
+	if err := os.Remove(hookPath); err != nil && !os.IsNotExist(err) {
 		sessionLog.Debug("clear_hook_status_file_failed",
 			slog.String("instance", i.ID),
+			slog.String("path", hookPath),
 			slog.String("error", err.Error()),
 		)
 	}
@@ -5843,6 +5883,26 @@ func (i *Instance) killInternal(sync bool) error {
 		if homeDir, err := os.UserHomeDir(); err == nil {
 			docker.CleanupKeychainCredentials(homeDir)
 		}
+
+		// Tear down the per-instance scoped hook bridge dir (…/hooks/sandbox/<id>).
+		// Each ended sandbox session otherwise leaks a directory AND (on Linux) an
+		// fsnotify inotify watch held by the notify-daemon's StatusFileWatcher →
+		// watch exhaustion on long-lived hosts. Removing the dir on disk also makes
+		// the kernel auto-drop that watch (IN_IGNORED). Skip when the container is
+		// intentionally kept (auto-cleanup off): it still has the dir bind-mounted.
+		// Follow-up: an explicit watcher.Remove() from here would require threading
+		// the daemon's StatusFileWatcher into the session-end lifecycle (it is not
+		// reachable from this layer), so we rely on the on-delete auto-drop.
+		if i.ID != "" && GetDockerSettings().GetAutoCleanup() {
+			scopedDir := filepath.Join(GetHooksDir(), "sandbox", i.ID)
+			if err := os.RemoveAll(scopedDir); err != nil {
+				sessionLog.Debug("sandbox_hook_dir_cleanup_failed",
+					slog.String("instance", i.ID),
+					slog.String("dir", scopedDir),
+					slog.String("error", err.Error()),
+				)
+			}
+		}
 	}
 
 	// Remove the scratch CLAUDE_CONFIG_DIR prepared at spawn time for
@@ -6367,9 +6427,10 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// shell environment as freshly started ones (fixes #409).
 	envPrefix := i.buildEnvSourceCommand()
 
-	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
+	// Get the configured Claude command (e.g., "claude", "cdw", "cdp"),
+	// resolved per instance: conductor > group (ancestor-walk) > global.
 	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
-	claudeCmd := GetClaudeCommand()
+	claudeCmd := GetClaudeCommandForInstance(i)
 	hasCustomCommand := claudeCmd != "claude"
 
 	// Resolve CLAUDE_CONFIG_DIR for this restart. Mirrors the gating logic
@@ -8352,6 +8413,38 @@ func buildSandboxConfig(
 		docker.WithCPULimit(cpuLimit),
 		docker.WithMemoryLimit(memLimit),
 		docker.WithAgentConfigs(bindMounts, homeMounts),
+	}
+
+	// Bridge in-container hook-handler status writes to a PER-INSTANCE host dir.
+	// The container's own hooks path sits on the read-only rootfs, so without
+	// this mount Stop/transition events from sandboxed sessions are lost. The
+	// dir is scoped to this instance (…/hooks/sandbox/<id>) rather than the
+	// global fleet-wide hooks dir. Three properties keep this safe: (1) only this
+	// instance's subdir is mounted, so a compromised container can read/write
+	// files ONLY inside its own subdir — it can never see siblings' or the
+	// conductor's status; (2) the host StatusFileWatcher keys a scoped file
+	// by its OWNING SUBDIR and ingests only <id>.json, so a container cannot
+	// forge a sibling's transition (or inject a done_summary into the conductor)
+	// by naming a file after a victim inside its own subdir; and (3) every host
+	// read of a status file is no-follow (O_NOFOLLOW, plus Lstat on the scoped
+	// path) and size-bounded, so the container cannot symlink its own <id>.json
+	// at a sibling/host file or /dev/zero, nor write a huge <id>.json, to read
+	// host files or DoS the shared notify-daemon. The host read path
+	// (readHookStatusFile / hookStatusFilePath) also builds the path from the
+	// requested <id>, so it cannot be cross-attributed either.
+	if hooksDir := GetHooksDir(); hooksDir != "" {
+		perInstanceDir := filepath.Join(hooksDir, "sandbox", inst.ID)
+		if mkErr := os.MkdirAll(perInstanceDir, 0o700); mkErr == nil {
+			configOpts = append(configOpts, docker.WithHooksDir(perInstanceDir))
+		} else {
+			// Don't fail the spawn, but surface it: without the scoped hooks dir
+			// the bridge mount is silently skipped, leaving the host watcher blind
+			// to this sandboxed session — the exact problem this bridge solves.
+			sessionLog.Warn("scoped_hooks_dir_create_failed",
+				slog.String("instance_id", inst.ID),
+				slog.String("dir", perInstanceDir),
+				slog.String("error", mkErr.Error()))
+		}
 	}
 
 	// Note: Docker.Environment names (e.g. TERM) are NOT forwarded at create time.

@@ -10,7 +10,7 @@ HMAC verification, custom adapters), see
 [`documentation/WATCHERS.md`](../documentation/WATCHERS.md).
 
 If you don't have a conductor yet, read
-[`CONDUCTOR-SETUP.md`](CONDUCTOR-SETUP.md) first. A watcher with no
+[`docs/conductor/`](conductor/) first. A watcher with no
 conductor to ring is just a process spinning silently.
 
 ![Watcher doorbell flow: external source → watcher → conductor → user phone](images/watcher-doorbell.png)
@@ -354,5 +354,4 @@ For adapter internals, HMAC details, custom adapters, the build test
 matrix, see [`documentation/WATCHERS.md`](../documentation/WATCHERS.md).
 
 For what happens *after* the bell rings, see
-[`CONDUCTOR-SETUP.md`](CONDUCTOR-SETUP.md) and
-[`documentation/CONDUCTOR.md`](../documentation/CONDUCTOR.md).
+[`docs/conductor/`](conductor/).

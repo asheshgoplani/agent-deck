@@ -76,6 +76,13 @@ type GroupTree struct {
 	Groups    map[string]*Group // path -> group
 	GroupList []*Group          // Ordered list of groups
 	Expanded  map[string]bool   // Collapsed state persistence
+
+	// DefaultMaxConcurrent is the max_concurrent value copied into groups
+	// created via CreateGroup/CreateSubgroup. nil → built-in serial default (1),
+	// preserving v1.9.1 behavior when [group_defaults] is unset. Seeded by the
+	// command/UI layer from [group_defaults].max_concurrent before a create; an
+	// explicit `group create --max-concurrent` flag still wins per-group.
+	DefaultMaxConcurrent *int
 }
 
 // actionablePriority maps a session.Status to an "attention-needed" rank
@@ -1020,6 +1027,16 @@ func sanitizeGroupName(name string) string {
 	return cleaned
 }
 
+// newGroupMaxConcurrent resolves the MaxConcurrent assigned to a group made
+// via CreateGroup/CreateSubgroup. nil tree-default → 1 (serial, the v1.9.1
+// built-in). A configured value is used as-is (0 = unlimited, N = cap).
+func (t *GroupTree) newGroupMaxConcurrent() int {
+	if t.DefaultMaxConcurrent != nil {
+		return *t.DefaultMaxConcurrent
+	}
+	return 1
+}
+
 // CreateGroup creates a new empty group
 func (t *GroupTree) CreateGroup(name string) *Group {
 	// Sanitize name to prevent path traversal and security issues
@@ -1047,7 +1064,9 @@ func (t *GroupTree) CreateGroup(name string) *Group {
 		// to prevent the parallel-worker cascade observed on 2026-05-08.
 		// Pre-existing groups loaded via NewGroupTreeWithGroups keep their
 		// stored MaxConcurrent (0 → unlimited for backward compat).
-		MaxConcurrent: 1,
+		// [group_defaults].max_concurrent can override this default via the
+		// DefaultMaxConcurrent the caller seeds; nil keeps the serial 1.
+		MaxConcurrent: t.newGroupMaxConcurrent(),
 	}
 	t.Groups[path] = group
 	t.Expanded[path] = true
@@ -1081,7 +1100,8 @@ func (t *GroupTree) CreateSubgroup(parentPath, name string) *Group {
 		Sessions: []*Instance{},
 		Order:    siblingCount, // Order among siblings
 		// v1.9.1: subgroups also default to serial. See CreateGroup.
-		MaxConcurrent: 1,
+		// [group_defaults].max_concurrent overrides via DefaultMaxConcurrent.
+		MaxConcurrent: t.newGroupMaxConcurrent(),
 	}
 	t.Groups[fullPath] = group
 	t.Expanded[fullPath] = true
@@ -1115,7 +1135,19 @@ func (t *GroupTree) CreateGroupPath(path string) *Group {
 	return leaf
 }
 
-// RenameGroup renames a group and updates all subgroups
+// RenameTargetPath returns the group path that RenameGroup(oldPath, newName)
+// would move the group to, applying the same sanitization and parent-path
+// preservation. Exposed so callers can detect a collision with an existing,
+// different group at the target before renaming (see the reload-race reapply).
+func (t *GroupTree) RenameTargetPath(oldPath, newName string) string {
+	newBasePath := strings.ReplaceAll(sanitizeGroupName(newName), " ", "-")
+	if parentPath := getParentPath(oldPath); parentPath != "" {
+		return parentPath + "/" + newBasePath
+	}
+	return newBasePath
+}
+
+// RenameGroup renames a group and updates all subgroups.
 func (t *GroupTree) RenameGroup(oldPath, newName string) {
 	group, exists := t.Groups[oldPath]
 	if !exists {
@@ -1124,16 +1156,7 @@ func (t *GroupTree) RenameGroup(oldPath, newName string) {
 
 	// Sanitize name to prevent path traversal and security issues
 	sanitizedName := sanitizeGroupName(newName)
-	newBasePath := strings.ReplaceAll(sanitizedName, " ", "-")
-
-	// Preserve parent path for subgroups
-	parentPath := getParentPath(oldPath)
-	var newPath string
-	if parentPath != "" {
-		newPath = parentPath + "/" + newBasePath
-	} else {
-		newPath = newBasePath
-	}
+	newPath := t.RenameTargetPath(oldPath, newName)
 
 	if newPath == oldPath {
 		group.Name = sanitizedName
@@ -1549,8 +1572,8 @@ func mostRecentPathForSessions(sessions []*Instance) string {
 	return ""
 }
 
-// resolveGroupDefaultPath normalizes a default path and maps git worktree paths
-// to their base repository root.
+// resolveGroupDefaultPath normalizes a default path and maps linked git
+// worktree paths to their base repository root.
 func resolveGroupDefaultPath(defaultPath string) string {
 	defaultPath = strings.TrimSpace(defaultPath)
 	if defaultPath == "" {
@@ -1580,6 +1603,15 @@ func resolveGroupDefaultPath(defaultPath string) string {
 	}
 
 	if !git.IsGitRepo(defaultPath) {
+		return defaultPath
+	}
+
+	// Only collapse LINKED worktrees (`git worktree add`) to their base
+	// repository root — a transient worktree path shouldn't become the stored
+	// default. A plain subdirectory inside the main working tree is a
+	// legitimate default path, so store it verbatim: GetWorktreeBaseRoot would
+	// otherwise map it to the repo root via GetRepoRoot.
+	if !git.IsLinkedWorktree(defaultPath) {
 		return defaultPath
 	}
 

@@ -68,7 +68,11 @@ Examples:
 agent-deck launch . -c claude -m "Review this module"
 agent-deck launch . -g ard -c claude -m "Review dataset"
 agent-deck launch . -c "codex --dangerously-bypass-approvals-and-sandbox"
+agent-deck launch -g book-keeper -c claude   # no path: lands on the group's default_path
 ```
+
+Notes:
+- `[path]` omitted: resolves the target group's `default_path`, then the global `default_path` config key, then cwd — the same chain as `add` (#1303). An explicit `.` always means the current directory.
 
 ### list - List sessions
 

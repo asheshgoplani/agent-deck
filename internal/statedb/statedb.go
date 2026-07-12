@@ -736,8 +736,12 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 }
 
 // SaveInstances inserts or replaces multiple instances in a single transaction.
-// It also removes any rows from the database that are not in the provided list,
-// ensuring deleted sessions don't reappear on reload.
+// It also removes any rows from the database that are not in the provided list.
+//
+// DANGER (#1550): the DELETE-NOT-IN sweep deletes any row a concurrent
+// process inserted after the caller loaded its snapshot. Routine saves must
+// use UpsertInstances instead; SaveInstances is reserved for whole-table
+// replaces where the payload is authoritative (JSON->SQLite migration).
 //
 // Wrapped in withBusyRetry because parallel writers (CLI + TUI + heartbeat
 // daemons) contend on the WAL writer slot. The whole save is idempotent at
@@ -745,11 +749,31 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 // outer transaction on SQLITE_BUSY is safe. Part of the v1.9.1 #909 fix.
 func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 	return withBusyRetry(func() error {
-		return s.saveInstancesOnce(insts)
+		return s.saveInstancesOnce(insts, true)
 	})
 }
 
-func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
+// UpsertInstances inserts or replaces the given instances WITHOUT the
+// DELETE-NOT-IN sweep: rows absent from the payload are left untouched, so a
+// writer holding a stale snapshot can never delete sessions another process
+// created after that snapshot was loaded (#1550). Deletions must be explicit
+// and targeted: DeleteInstance / RemoveSessionAndVerify (#909), or
+// ClearAllInstances for an intentional full wipe. An empty payload is a no-op.
+func (s *StateDB) UpsertInstances(insts []*InstanceRow) error {
+	return withBusyRetry(func() error {
+		return s.saveInstancesOnce(insts, false)
+	})
+}
+
+// saveInstancesOnce persists insts. When sweep is true, rows present in the
+// database but absent from insts are deleted (see SaveInstances); when false,
+// they are left untouched (see UpsertInstances).
+func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
+	// Upsert path with nothing to upsert: no-op without taking the write lock.
+	if !sweep && len(insts) == 0 {
+		return nil
+	}
+
 	// Pre-fetch existing mutable columns per instance ID so we can preserve state
 	// written by targeted UPDATE paths. Without this merge, every INSERT OR
 	// REPLACE can silently drop fresher data from another process.
@@ -806,7 +830,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 	// covers the large-but-not-empty replaces S1 cannot catch. The backup is
 	// best-effort: a failed copy is logged, never fatal — the caller asked to
 	// save, and the insurance copy must not become a new failure mode.
-	if len(insts) > 0 && s.path != "" {
+	if sweep && len(insts) > 0 && s.path != "" {
 		placeholders := make([]string, len(insts))
 		args := make([]any, len(insts))
 		for i, inst := range insts {
@@ -831,24 +855,27 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Delete rows not in the new list to prevent deleted sessions from reappearing.
-	if len(insts) == 0 {
-		// S1 guard: an empty payload would `DELETE FROM instances`, wiping the
-		// whole table. If rows already exist this is almost certainly a bug in
-		// the caller (a stray empty save), not an intentional clear — refuse it
-		// rather than silently destroying the index. Intentional clears go
-		// through ClearAllInstances. An empty payload on an already-empty table
-		// is a benign no-op.
-		var existing int
-		if err := tx.QueryRow("SELECT COUNT(*) FROM instances").Scan(&existing); err != nil {
-			return err
+	// Delete rows not in the new list (sweep callers only, see SaveInstances).
+	// The upsert path (#1550) never deletes: rows it doesn't know about are
+	// left alone, and an empty payload simply inserts nothing.
+	if sweep {
+		if len(insts) == 0 {
+			// S1 guard: an empty payload would `DELETE FROM instances`, wiping the
+			// whole table. If rows already exist this is almost certainly a bug in
+			// the caller (a stray empty save), not an intentional clear — refuse it
+			// rather than silently destroying the index. Intentional clears go
+			// through ClearAllInstances. An empty payload on an already-empty table
+			// is a benign no-op.
+			var existing int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM instances").Scan(&existing); err != nil {
+				return err
+			}
+			if existing > 0 {
+				return ErrRefusingEmptySweep
+			}
+			// Already empty: nothing to delete, nothing to insert.
+			return tx.Commit()
 		}
-		if existing > 0 {
-			return ErrRefusingEmptySweep
-		}
-		// Already empty: nothing to delete, nothing to insert.
-		return tx.Commit()
-	} else {
 		placeholders := make([]string, len(insts))
 		args := make([]any, len(insts))
 		for i, inst := range insts {
@@ -1010,7 +1037,16 @@ func (s *StateDB) InstanceExists(id string) (bool, error) {
 
 // --- Group CRUD ---
 
-// SaveGroups replaces all groups in a single transaction.
+// SaveGroups upserts the given groups in a single transaction. It is ADDITIVE:
+// groups absent from the slice are left untouched, never deleted.
+//
+// This deliberately abandons the old replace-all (DELETE FROM groups + insert)
+// because a save can run with an incomplete in-memory tree — a stale tree from
+// another concurrent instance (allow_multiple), or the instances-only
+// NewGroupTree fallback. Replace-all then wiped every group the saver didn't
+// know about; populated groups self-healed from their sessions on reload, but
+// empty (session-less) groups were lost forever. With upsert, a partial save can
+// only add/update; intentional removal must go through DeleteGroupSubtree.
 func (s *StateDB) SaveGroups(groups []*GroupRow) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1018,14 +1054,15 @@ func (s *StateDB) SaveGroups(groups []*GroupRow) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Clear existing groups and re-insert (simpler than diff)
-	if _, err := tx.Exec("DELETE FROM groups"); err != nil {
-		return err
-	}
-
 	stmt, err := tx.Prepare(`
 		INSERT INTO groups (path, name, expanded, sort_order, default_path, max_concurrent)
 		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(path) DO UPDATE SET
+			name = excluded.name,
+			expanded = excluded.expanded,
+			sort_order = excluded.sort_order,
+			default_path = excluded.default_path,
+			max_concurrent = excluded.max_concurrent
 	`)
 	if err != nil {
 		return err
@@ -1072,6 +1109,21 @@ func (s *StateDB) LoadGroups() ([]*GroupRow, error) {
 // DeleteGroup removes a group by path.
 func (s *StateDB) DeleteGroup(path string) error {
 	_, err := s.db.Exec("DELETE FROM groups WHERE path = ?", path)
+	return err
+}
+
+// DeleteGroupSubtree removes a group and all of its descendants by path.
+// Because SaveGroups is additive (upsert, never prune), intentional group
+// removal — delete, rename, move — MUST go through this explicit delete, or the
+// old path rows would linger and resurrect on the next reload.
+//
+// The LIKE pattern matches only true descendants (path + "/"), so a prefix
+// look-alike such as "parental" survives a delete of "parent".
+func (s *StateDB) DeleteGroupSubtree(path string) error {
+	_, err := s.db.Exec(
+		"DELETE FROM groups WHERE path = ? OR path LIKE ? || '/%'",
+		path, path,
+	)
 	return err
 }
 
@@ -1331,6 +1383,19 @@ func (s *StateDB) SetAcknowledged(id string, ack bool) error {
 	}
 	_, err := s.db.Exec("UPDATE instances SET acknowledged = ? WHERE id = ?", v, id)
 	return err
+}
+
+// SetArchived sets or clears the archive timestamp for a single instance via a
+// targeted UPDATE. Archive/unarchive mutate one field on one row, so they must
+// NOT go through the full-table saveInstances() path: under concurrent writers
+// that path's external-change guard aborts the save and reloads, silently
+// discarding the archive (see #archive-abort). A scoped UPDATE always lands.
+// A zero `at` clears the flag (unarchive).
+func (s *StateDB) SetArchived(id string, at time.Time) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("UPDATE instances SET archived_at = ? WHERE id = ?", archivedAtUnix(at), id)
+		return err
+	})
 }
 
 // --- Heartbeat ---

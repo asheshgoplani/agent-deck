@@ -90,7 +90,7 @@ AUTO: frontend - told it to use the existing auth middleware
 NEED: api-fix - asking whether to run integration tests against staging or prod
 ` + "```" + `
 
-The bridge parses your response: if it contains ` + "`" + `NEED:` + "`" + ` lines, those get sent to the user via Telegram and/or Slack.
+Your response is parsed: if it contains ` + "`" + `NEED:` + "`" + ` lines, those get forwarded to the user (via remote channels if configured, or visible in the TUI/task-log).
 
 ## State Management
 
@@ -161,7 +161,7 @@ Read both ` + "`" + `./LEARNINGS.md` + "`" + ` and ` + "`" + `../LEARNINGS.md` +
 
 ## Quick Commands
 
-The bridge may forward these special commands from Telegram or Slack:
+You may receive these special commands (from remote channels or the CLI):
 
 | Command | What to Do |
 |---------|------------|
@@ -203,7 +203,7 @@ If the bridge cannot resolve a name (temporary API failure), the raw Slack ID ap
 - Transition notifications are parent-linked. If ` + "`" + `parent_session_id` + "`" + ` is empty or points elsewhere, this conductor will not receive child completion events.
 - ` + "`" + `session send` + "`" + ` waits up to ~80 seconds for the agent to be ready. If the session is running (busy), the send will wait.
 - For periodic nudges/heartbeats where blocking is harmful, prefer ` + "`" + `session send --no-wait -q` + "`" + `.
-- The bridge sends with ` + "`" + `session send --wait -q` + "`" + ` and waits in a single CLI call. Reply promptly.
+- Remote channels send with ` + "`" + `session send --wait -q` + "`" + ` and wait in a single CLI call. Reply promptly.
 - Your own session can be restarted by the bridge if it detects you're in an error state.
 - Keep state.json small (no large output dumps). Store summaries, not full text.
 `
@@ -290,7 +290,7 @@ You are **{NAME}**, a conductor for the **{PROFILE}** profile running on **{AGEN
 - You manage the **{PROFILE}** profile exclusively. Always pass ` + "`" + `-p {PROFILE}` + "`" + ` to all CLI commands.
 - You live in ` + "`" + `~/.agent-deck/conductor/{NAME}/` + "`" + `
 - Maintain state in ` + "`" + `./state.json` + "`" + ` and log actions in ` + "`" + `./task-log.md` + "`" + `
-- The bridge (Telegram/Slack) sends you messages from the user and forwards your responses back
+- The user interacts with you directly in the TUI, via the CLI, or through remote channels (Telegram/Slack/Discord) if configured
 - You receive periodic ` + "`" + `[HEARTBEAT]` + "`" + ` messages with system status
 - Other conductors may exist for different purposes. You only manage sessions in your profile.
 
@@ -325,7 +325,7 @@ You are **{NAME}**, a conductor for the **{PROFILE}** profile.
 - You manage the **{PROFILE}** profile exclusively. Always pass ` + "`" + `-p {PROFILE}` + "`" + ` to all CLI commands.
 - You live in ` + "`" + `~/.agent-deck/conductor/{NAME}/` + "`" + `
 - Maintain state in ` + "`" + `./state.json` + "`" + ` and log actions in ` + "`" + `./task-log.md` + "`" + `
-- The bridge (Telegram/Slack) sends you messages from the user and forwards your responses back
+- The user interacts with you directly in the TUI, via the CLI, or through remote channels (Telegram/Slack/Discord) if configured
 - You receive periodic ` + "`" + `[HEARTBEAT]` + "`" + ` messages with system status
 - Other conductors may exist for different purposes. You only manage sessions in your profile.
 
@@ -359,7 +359,7 @@ You are **{NAME}**, a conductor for the **{PROFILE}** profile.
 - You manage the **{PROFILE}** profile exclusively. Always pass ` + "`" + `-p {PROFILE}` + "`" + ` to all CLI commands.
 - You live in ` + "`" + `~/.agent-deck/conductor/{NAME}/` + "`" + `
 - Maintain state in ` + "`" + `./state.json` + "`" + ` and log actions in ` + "`" + `./task-log.md` + "`" + `
-- The bridge (Telegram/Slack) sends you messages from the user and forwards your responses back
+- The user interacts with you directly in the TUI, via the CLI, or through remote channels (Telegram/Slack/Discord) if configured
 - You receive periodic ` + "`" + `[HEARTBEAT]` + "`" + ` messages with system status
 - Other conductors may exist for different purposes. You only manage sessions in your profile.
 
@@ -388,7 +388,7 @@ You are **{NAME}**, a conductor for the **{PROFILE}** profile running on **{AGEN
 - You manage the **{PROFILE}** profile exclusively. Always pass ` + "`" + `-p {PROFILE}` + "`" + ` to all CLI commands.
 - You live in ` + "`" + `~/.agent-deck/conductor/{NAME}/` + "`" + `
 - Maintain state in ` + "`" + `./state.json` + "`" + ` and log actions in ` + "`" + `./task-log.md` + "`" + `
-- The bridge (Telegram/Slack) sends you messages from the user and forwards your responses back
+- The user interacts with you directly in the TUI, via the CLI, or through remote channels (Telegram/Slack/Discord) if configured
 - You receive periodic ` + "`" + `[HEARTBEAT]` + "`" + ` messages with system status
 - Other conductors may exist for different purposes. You only manage sessions in your profile.
 

@@ -991,6 +991,42 @@ func TestSetupConductorWithAgent_Codex(t *testing.T) {
 	}
 }
 
+func TestSetupConductorWithAgent_DefaultsHeartbeatInterval(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "hb-default"
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentClaude, true, true, "", "", "", "", nil, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		t.Fatalf("failed to load meta: %v", err)
+	}
+	if meta.HeartbeatInterval != 15 {
+		t.Fatalf("HeartbeatInterval = %d, want 15 (fresh conductor with heartbeat enabled)", meta.HeartbeatInterval)
+	}
+}
+
+func TestSetupConductorWithAgent_HeartbeatDisabledKeepsZeroInterval(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "hb-off"
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentClaude, false, true, "", "", "", "", nil, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		t.Fatalf("failed to load meta: %v", err)
+	}
+	if meta.HeartbeatInterval != 0 {
+		t.Fatalf("HeartbeatInterval = %d, want 0 (heartbeat disabled)", meta.HeartbeatInterval)
+	}
+}
+
 func TestSetupConductorWithAgent_RemovesStaleInstructionsFile(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

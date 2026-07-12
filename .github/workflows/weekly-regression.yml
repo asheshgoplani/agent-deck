@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
@@ -78,12 +78,12 @@ jobs:
         with:
           go-version-file: go.mod
         env:
-          GOTOOLCHAIN: go1.25.11
+          GOTOOLCHAIN: go1.25.12
 
       - name: Build binary
         run: make build
         env:
-          GOTOOLCHAIN: go1.25.11
+          GOTOOLCHAIN: go1.25.12
 
       - name: Build headless test server
         # The main `agent-deck web` subcommand falls through to a Bubble Tea
@@ -94,7 +94,7 @@ jobs:
         # See cmd/agent-deck-test-server/main.go and issue #943.
         run: go build -o ./build/agent-deck-test-server ./cmd/agent-deck-test-server
         env:
-          GOTOOLCHAIN: go1.25.11
+          GOTOOLCHAIN: go1.25.12
 
       - name: Set up Node.js
         uses: actions/setup-node@v6

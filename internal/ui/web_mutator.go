@@ -494,6 +494,10 @@ func (m *WebMutator) CreateGroup(name, parentPath string) (string, error) {
 		return "", err
 	}
 	defer unlock()
+	// Seed the new-group default from [group_defaults].max_concurrent.
+	if cfg, _ := session.LoadUserConfig(); cfg != nil {
+		m.h.groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
+	}
 	var grp *session.Group
 	if parentPath != "" {
 		grp = m.h.groupTree.CreateSubgroup(parentPath, name)
@@ -535,6 +539,14 @@ func (m *WebMutator) RenameGroup(groupPath, newName string) error {
 		return fmt.Errorf("open storage: %w", err)
 	}
 	defer storage.Close()
+
+	// SaveGroups is additive (never prunes), so the old path's rows must be
+	// deleted explicitly before the save re-adds the renamed paths — otherwise
+	// the group reappears under its old name on the next reload. Done before the
+	// save so a no-op rename (same name) is correctly re-added.
+	if err := storage.DeleteGroupSubtree(groupPath); err != nil {
+		return fmt.Errorf("delete old group rows: %w", err)
+	}
 
 	m.h.instancesMu.RLock()
 	instances := make([]*session.Instance, len(m.h.instances))
@@ -648,11 +660,10 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 	}
 	m.h.instancesMu.RUnlock()
 	// #1396: use the targeted RemoveSessionAndVerify path, NOT
-	// SaveWithGroups(existing, ...). When the finished worktree is the LAST
-	// session, `existing` is empty and SaveWithGroups → SaveInstances([]) trips
-	// the S1 empty-sweep data-loss guard AFTER the irreversible git steps,
-	// orphaning the row. The targeted DELETE + SaveGroupsOnly path persists the
-	// last-session removal without ever calling SaveInstances([]).
+	// SaveWithGroups(existing, ...). Historically an empty `existing` tripped
+	// the S1 empty-sweep guard AFTER the irreversible git steps, orphaning the
+	// row; since #1550 SaveWithGroups is upsert-only and would not delete the
+	// row at all. Either way, removal requires the targeted DELETE.
 	if sErr := storage.RemoveSessionAndVerify(id, existing, m.h.groupTree); sErr != nil {
 		return web.WorktreeFinishResult{}, fmt.Errorf("save session data: %w", sErr)
 	}
@@ -689,6 +700,12 @@ func (m *WebMutator) DeleteGroup(groupPath string) error {
 		return fmt.Errorf("open storage: %w", err)
 	}
 	defer storage.Close()
+
+	// SaveGroups is additive (never prunes), so the deleted group's rows must be
+	// removed explicitly or the group resurrects on the next reload.
+	if err := storage.DeleteGroupSubtree(groupPath); err != nil {
+		return fmt.Errorf("delete group rows: %w", err)
+	}
 
 	m.h.instancesMu.RLock()
 	instances := make([]*session.Instance, len(m.h.instances))

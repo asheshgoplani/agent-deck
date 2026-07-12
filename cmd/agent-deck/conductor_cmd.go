@@ -117,6 +117,8 @@ func parseConductorSetupArgs(fs *flag.FlagSet, args []string) (string, []string,
 	return remaining[0], remaining[1:], nil
 }
 
+func yesAnswer(s string) bool { return s == "y" || s == "yes" }
+
 // handleConductorSetup sets up a named conductor with directories, sessions, and optionally the Telegram bridge
 func handleConductorSetup(profile string, args []string) {
 	fs := flag.NewFlagSet("conductor setup", flag.ExitOnError)
@@ -239,13 +241,8 @@ func handleConductorSetup(profile string, args []string) {
 	// Auto-migrate legacy conductors
 	runAutoMigration(*jsonOutput)
 
-	// Determine heartbeat setting
-	heartbeatEnabled := true
-	if *noHeartbeat {
-		heartbeatEnabled = false
-	} else if *heartbeat {
-		heartbeatEnabled = true
-	}
+	// Determine heartbeat setting (on by default; --no-heartbeat disables, --heartbeat re-confirms)
+	heartbeatEnabled := !*noHeartbeat || *heartbeat
 
 	// Step 1: Load config and check if conductor system is enabled
 	config, err := session.LoadUserConfig()
@@ -255,6 +252,8 @@ func handleConductorSetup(profile string, args []string) {
 	}
 
 	settings := config.Conductor
+	// Token presence is sufficient: the wizard saves atomically after collecting
+	// all fields, so a token implies a complete config for that channel.
 	telegramConfigured := settings.Telegram.Token != ""
 	slackConfigured := settings.Slack.BotToken != ""
 	discordConfigured := settings.Discord.BotToken != ""
@@ -281,170 +280,195 @@ func handleConductorSetup(profile string, args []string) {
 		}
 	}
 
-	// Step 2: If no conductors exist yet, run first-time channel setup.
-	// "Enabled" is no longer a config flag (#1361); the conductor system is
-	// active whenever a conductor exists on disk. First-time setup is therefore
-	// gated on "no conductors yet" rather than a stored flag.
-	if !session.ConductorSystemActive() {
+	// Step 2a: First-time intro (only shown when no conductors exist yet).
+	if !*jsonOutput && !session.ConductorSystemActive() {
 		fmt.Println("Conductor Setup")
 		fmt.Println("===============")
 		fmt.Println()
 		fmt.Printf("The conductor system lets you create named persistent %s conductor sessions that\n", spec.DisplayName)
 		fmt.Println("monitor and orchestrate all your agent-deck sessions.")
 		fmt.Println()
+		fmt.Println("Conductors work locally by default — interact via the TUI or CLI.")
+		fmt.Println("You can optionally connect remote channels (Telegram, Slack, Discord)")
+		fmt.Println("for mobile and remote access.")
+		fmt.Println()
+	}
 
+	// Step 2b: Offer channel configuration for any unconfigured channels.
+	// Runs on first setup and on re-runs, so users can add channels later.
+	// Skipped in --json mode: interactive prompts would hang on stdin.
+	if !*jsonOutput && (!telegramConfigured || !slackConfigured || !discordConfigured) {
 		reader := bufio.NewReader(os.Stdin)
 
-		// Ask about Telegram
-		fmt.Print("Connect Telegram bot for mobile control? (y/N): ")
-		tgAnswer, _ := reader.ReadString('\n')
-		tgAnswer = strings.TrimSpace(strings.ToLower(tgAnswer))
+		fmt.Print("Add remote channels for mobile/remote access? (y/N): ")
+		channelAnswer, _ := reader.ReadString('\n')
+		channelAnswer = strings.TrimSpace(strings.ToLower(channelAnswer))
 
-		var telegram session.TelegramSettings
-		if tgAnswer == "y" || tgAnswer == "yes" {
-			fmt.Println()
-			fmt.Println("  1. Message @BotFather on Telegram -> /newbot -> copy the token")
-			fmt.Println("  2. Message @userinfobot on Telegram -> copy your user ID")
-			fmt.Println()
+		if yesAnswer(channelAnswer) {
+			configChanged := false
 
-			fmt.Print("Telegram bot token: ")
-			token, _ := reader.ReadString('\n')
-			token = strings.TrimSpace(token)
-			if token == "" {
-				fmt.Fprintln(os.Stderr, "Error: token is required")
-				os.Exit(1)
+			if !telegramConfigured {
+				fmt.Print("Connect Telegram bot for mobile control? (y/N): ")
+				tgAnswer, _ := reader.ReadString('\n')
+				tgAnswer = strings.TrimSpace(strings.ToLower(tgAnswer))
+
+				if yesAnswer(tgAnswer) {
+					fmt.Println()
+					fmt.Println("  1. Message @BotFather on Telegram -> /newbot -> copy the token")
+					fmt.Println("  2. Message @userinfobot on Telegram -> copy your user ID")
+					fmt.Println()
+
+					fmt.Print("Telegram bot token: ")
+					token, _ := reader.ReadString('\n')
+					token = strings.TrimSpace(token)
+					if token == "" {
+						fmt.Fprintln(os.Stderr, "Error: token is required")
+						os.Exit(1)
+					}
+
+					fmt.Print("Your Telegram user ID: ")
+					userIDStr, _ := reader.ReadString('\n')
+					userIDStr = strings.TrimSpace(userIDStr)
+					userID, err := strconv.ParseInt(userIDStr, 10, 64)
+					if err != nil || userID == 0 {
+						fmt.Fprintln(os.Stderr, "Error: valid user ID is required")
+						os.Exit(1)
+					}
+
+					settings.Telegram = session.TelegramSettings{Token: token, UserID: userID}
+					configChanged = true
+				}
 			}
 
-			fmt.Print("Your Telegram user ID: ")
-			userIDStr, _ := reader.ReadString('\n')
-			userIDStr = strings.TrimSpace(userIDStr)
-			userID, err := strconv.ParseInt(userIDStr, 10, 64)
-			if err != nil || userID == 0 {
-				fmt.Fprintln(os.Stderr, "Error: valid user ID is required")
-				os.Exit(1)
+			if !slackConfigured {
+				fmt.Print("Connect Slack bot for channel-based control? (y/N): ")
+				slackAnswer, _ := reader.ReadString('\n')
+				slackAnswer = strings.TrimSpace(strings.ToLower(slackAnswer))
+
+				if yesAnswer(slackAnswer) {
+					fmt.Println()
+					fmt.Println("  1. Create a Slack app at https://api.slack.com/apps")
+					fmt.Println("  2. Enable Socket Mode -> generate an app-level token (xapp-...)")
+					fmt.Println("  3. Add bot scopes: chat:write, channels:history, channels:read, app_mentions:read")
+					fmt.Println("  4. Enable Event Subscriptions -> subscribe to bot events: message.channels, app_mention")
+					fmt.Println("  5. Install the app to your workspace")
+					fmt.Println("  6. Invite the bot to your channel (/invite @botname)")
+					fmt.Println()
+
+					fmt.Print("Slack bot token (xoxb-...): ")
+					botToken, _ := reader.ReadString('\n')
+					botToken = strings.TrimSpace(botToken)
+					if botToken == "" {
+						fmt.Fprintln(os.Stderr, "Error: bot token is required")
+						os.Exit(1)
+					}
+
+					fmt.Print("Slack app token (xapp-...): ")
+					appToken, _ := reader.ReadString('\n')
+					appToken = strings.TrimSpace(appToken)
+					if appToken == "" {
+						fmt.Fprintln(os.Stderr, "Error: app token is required")
+						os.Exit(1)
+					}
+
+					fmt.Print("Slack channel ID (C01234...): ")
+					channelID, _ := reader.ReadString('\n')
+					channelID = strings.TrimSpace(channelID)
+					if channelID == "" {
+						fmt.Fprintln(os.Stderr, "Error: channel ID is required")
+						os.Exit(1)
+					}
+
+					settings.Slack = session.SlackSettings{BotToken: botToken, AppToken: appToken, ChannelID: channelID}
+					configChanged = true
+				}
 			}
 
-			telegram = session.TelegramSettings{Token: token, UserID: userID}
-			telegramConfigured = true
+			if !discordConfigured {
+				fmt.Print("Connect Discord bot for channel-based control? (y/N): ")
+				dcAnswer, _ := reader.ReadString('\n')
+				dcAnswer = strings.TrimSpace(strings.ToLower(dcAnswer))
+
+				if yesAnswer(dcAnswer) {
+					fmt.Println()
+					fmt.Println("  1. Create an application at https://discord.com/developers/applications")
+					fmt.Println("  2. Bot tab -> create bot, copy the token")
+					fmt.Println("  3. Enable MESSAGE CONTENT intent in the Bot tab")
+					fmt.Println("  4. OAuth2 -> URL Generator: scopes=[bot, applications.commands],")
+					fmt.Println("     permissions=[Send Messages, Read Message History]")
+					fmt.Println("  5. Invite bot to your server using the generated URL")
+					fmt.Println()
+
+					fmt.Print("Discord bot token: ")
+					dcBotToken, _ := reader.ReadString('\n')
+					dcBotToken = strings.TrimSpace(dcBotToken)
+					if dcBotToken == "" {
+						fmt.Fprintln(os.Stderr, "Error: bot token is required")
+						os.Exit(1)
+					}
+
+					fmt.Print("Discord guild (server) ID: ")
+					dcGuildIDStr, _ := reader.ReadString('\n')
+					dcGuildIDStr = strings.TrimSpace(dcGuildIDStr)
+					dcGuildID, err := strconv.ParseInt(dcGuildIDStr, 10, 64)
+					if err != nil || dcGuildID == 0 {
+						fmt.Fprintln(os.Stderr, "Error: valid guild ID is required")
+						os.Exit(1)
+					}
+
+					fmt.Print("Discord channel ID: ")
+					dcChannelIDStr, _ := reader.ReadString('\n')
+					dcChannelIDStr = strings.TrimSpace(dcChannelIDStr)
+					dcChannelID, err := strconv.ParseInt(dcChannelIDStr, 10, 64)
+					if err != nil || dcChannelID == 0 {
+						fmt.Fprintln(os.Stderr, "Error: valid channel ID is required")
+						os.Exit(1)
+					}
+
+					fmt.Print("Your Discord user ID: ")
+					dcUserIDStr, _ := reader.ReadString('\n')
+					dcUserIDStr = strings.TrimSpace(dcUserIDStr)
+					dcUserID, err := strconv.ParseInt(dcUserIDStr, 10, 64)
+					if err != nil || dcUserID == 0 {
+						fmt.Fprintln(os.Stderr, "Error: valid user ID is required")
+						os.Exit(1)
+					}
+
+					settings.Discord = session.DiscordSettings{BotToken: dcBotToken, GuildID: dcGuildID, ChannelID: dcChannelID, UserID: dcUserID}
+					configChanged = true
+				}
+			}
+
+			if configChanged {
+				if settings.HeartbeatInterval == nil {
+					heartbeatDefault := 15
+					settings.HeartbeatInterval = &heartbeatDefault
+				}
+				config.Conductor = settings
+
+				telegramConfigured = settings.Telegram.Token != ""
+				slackConfigured = settings.Slack.BotToken != ""
+				discordConfigured = settings.Discord.BotToken != ""
+
+				if err := session.SaveUserConfig(config); err != nil {
+					fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println()
+				fmt.Println("[ok] Conductor config saved to config.toml")
+			}
 		}
+	}
 
-		// Ask about Slack
-		fmt.Print("Connect Slack bot for channel-based control? (y/N): ")
-		slackAnswer, _ := reader.ReadString('\n')
-		slackAnswer = strings.TrimSpace(strings.ToLower(slackAnswer))
-
-		var slack session.SlackSettings
-		if slackAnswer == "y" || slackAnswer == "yes" {
-			fmt.Println()
-			fmt.Println("  1. Create a Slack app at https://api.slack.com/apps")
-			fmt.Println("  2. Enable Socket Mode -> generate an app-level token (xapp-...)")
-			fmt.Println("  3. Add bot scopes: chat:write, channels:history, channels:read, app_mentions:read")
-			fmt.Println("  4. Enable Event Subscriptions -> subscribe to bot events: message.channels, app_mention")
-			fmt.Println("  5. Install the app to your workspace")
-			fmt.Println("  6. Invite the bot to your channel (/invite @botname)")
-			fmt.Println()
-
-			fmt.Print("Slack bot token (xoxb-...): ")
-			botToken, _ := reader.ReadString('\n')
-			botToken = strings.TrimSpace(botToken)
-			if botToken == "" {
-				fmt.Fprintln(os.Stderr, "Error: bot token is required")
-				os.Exit(1)
-			}
-
-			fmt.Print("Slack app token (xapp-...): ")
-			appToken, _ := reader.ReadString('\n')
-			appToken = strings.TrimSpace(appToken)
-			if appToken == "" {
-				fmt.Fprintln(os.Stderr, "Error: app token is required")
-				os.Exit(1)
-			}
-
-			fmt.Print("Slack channel ID (C01234...): ")
-			channelID, _ := reader.ReadString('\n')
-			channelID = strings.TrimSpace(channelID)
-			if channelID == "" {
-				fmt.Fprintln(os.Stderr, "Error: channel ID is required")
-				os.Exit(1)
-			}
-
-			slack = session.SlackSettings{BotToken: botToken, AppToken: appToken, ChannelID: channelID}
-			slackConfigured = true
-		}
-
-		// Ask about Discord
-		fmt.Print("Connect Discord bot for channel-based control? (y/N): ")
-		dcAnswer, _ := reader.ReadString('\n')
-		dcAnswer = strings.TrimSpace(strings.ToLower(dcAnswer))
-
-		var discord session.DiscordSettings
-		if dcAnswer == "y" || dcAnswer == "yes" {
-			fmt.Println()
-			fmt.Println("  1. Create an application at https://discord.com/developers/applications")
-			fmt.Println("  2. Bot tab -> create bot, copy the token")
-			fmt.Println("  3. Enable MESSAGE CONTENT intent in the Bot tab")
-			fmt.Println("  4. OAuth2 -> URL Generator: scopes=[bot, applications.commands],")
-			fmt.Println("     permissions=[Send Messages, Read Message History]")
-			fmt.Println("  5. Invite bot to your server using the generated URL")
-			fmt.Println()
-
-			fmt.Print("Discord bot token: ")
-			dcBotToken, _ := reader.ReadString('\n')
-			dcBotToken = strings.TrimSpace(dcBotToken)
-			if dcBotToken == "" {
-				fmt.Fprintln(os.Stderr, "Error: bot token is required")
-				os.Exit(1)
-			}
-
-			fmt.Print("Discord guild (server) ID: ")
-			dcGuildIDStr, _ := reader.ReadString('\n')
-			dcGuildIDStr = strings.TrimSpace(dcGuildIDStr)
-			dcGuildID, err := strconv.ParseInt(dcGuildIDStr, 10, 64)
-			if err != nil || dcGuildID == 0 {
-				fmt.Fprintln(os.Stderr, "Error: valid guild ID is required")
-				os.Exit(1)
-			}
-
-			fmt.Print("Discord channel ID: ")
-			dcChannelIDStr, _ := reader.ReadString('\n')
-			dcChannelIDStr = strings.TrimSpace(dcChannelIDStr)
-			dcChannelID, err := strconv.ParseInt(dcChannelIDStr, 10, 64)
-			if err != nil || dcChannelID == 0 {
-				fmt.Fprintln(os.Stderr, "Error: valid channel ID is required")
-				os.Exit(1)
-			}
-
-			fmt.Print("Your Discord user ID: ")
-			dcUserIDStr, _ := reader.ReadString('\n')
-			dcUserIDStr = strings.TrimSpace(dcUserIDStr)
-			dcUserID, err := strconv.ParseInt(dcUserIDStr, 10, 64)
-			if err != nil || dcUserID == 0 {
-				fmt.Fprintln(os.Stderr, "Error: valid user ID is required")
-				os.Exit(1)
-			}
-
-			discord = session.DiscordSettings{BotToken: dcBotToken, GuildID: dcGuildID, ChannelID: dcChannelID, UserID: dcUserID}
-			discordConfigured = true
-		}
-
-		// Update config (no longer stores profiles list or an enabled flag;
-		// conductors are discovered on disk and enabled-state is derived from
-		// their presence — #1361). Channel tokens are still legitimate config.
+	// Ensure heartbeat interval is defaulted regardless of channel config path.
+	if heartbeatEnabled && settings.HeartbeatInterval == nil {
 		heartbeatDefault := 15
-		settings = session.ConductorSettings{
-			HeartbeatInterval: &heartbeatDefault,
-			Telegram:          telegram,
-			Slack:             slack,
-			Discord:           discord,
-		}
+		settings.HeartbeatInterval = &heartbeatDefault
 		config.Conductor = settings
-
 		if err := session.SaveUserConfig(config); err != nil {
 			fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println()
-		fmt.Println("[ok] Conductor config saved to config.toml")
 	}
 
 	// Step 3: Install/update shared instructions file for the selected agent
@@ -549,6 +573,7 @@ func handleConductorSetup(profile string, args []string) {
 
 	// Always ensure conductor group is pinned to top
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	groupTree.DefaultMaxConcurrent = config.GroupDefaults.MaxConcurrent
 	conductorGroup := groupTree.CreateGroup("conductor")
 	conductorGroup.Order = -1
 
@@ -668,9 +693,9 @@ func handleConductorSetup(profile string, args []string) {
 	}
 	fmt.Println()
 	fmt.Println("Next steps:")
-	fmt.Printf("  agent-deck -p %s session start %s\n", resolvedProfile, sessionTitle)
-	condDir, _ := session.ConductorDir()
 	if telegramConfigured || slackConfigured || discordConfigured {
+		condDir, _ := session.ConductorDir()
+		fmt.Printf("  agent-deck -p %s session start %s\n", resolvedProfile, sessionTitle)
 		fmt.Println()
 		if telegramConfigured {
 			fmt.Println("  Test from Telegram: send /status to your bot")
@@ -683,10 +708,11 @@ func handleConductorSetup(profile string, args []string) {
 		}
 		fmt.Printf("  View bridge logs:   tail -f %s/bridge.log\n", condDir)
 	} else {
+		fmt.Printf("  1. Start the conductor:  agent-deck -p %s session start %s\n", resolvedProfile, sessionTitle)
+		fmt.Println("  2. Interact via the TUI: switch to the conductor session in the session list")
+		fmt.Printf("  3. Or use the CLI:       agent-deck -p %s session send %s \"your message\"\n", resolvedProfile, sessionTitle)
 		fmt.Println()
-		fmt.Println("  To add Telegram later: re-run setup after adding [conductor.telegram] to config.toml")
-		fmt.Println("  To add Slack later: re-run setup after adding [conductor.slack] to config.toml")
-		fmt.Println("  To add Discord later: re-run setup after adding [conductor.discord] to config.toml")
+		fmt.Printf("  To add remote channels later: agent-deck -p %s conductor setup %s\n", resolvedProfile, name)
 	}
 }
 
@@ -824,23 +850,33 @@ func handleConductorTeardown(_ string, args []string) {
 				fmt.Printf("  [ok] Removed directory for %s\n", meta.Name)
 			}
 
-			// Remove session from storage
+			// Remove session from storage. #1550: SaveWithGroups is upsert-only
+			// (saving a filtered list no longer drops the missing rows), so
+			// removal goes through the targeted verify path (#909).
 			if storage != nil {
 				instances, groups, err := storage.LoadWithGroups()
 				if err == nil {
 					var filtered []*session.Instance
-					sessionRemoved := false
+					var removedIDs []string
 					for _, inst := range instances {
 						if inst.Title == sessionTitle {
-							sessionRemoved = true
+							removedIDs = append(removedIDs, inst.ID)
 							continue
 						}
 						filtered = append(filtered, inst)
 					}
-					if sessionRemoved {
+					if len(removedIDs) > 0 {
 						groupTree := session.NewGroupTreeWithGroups(filtered, groups)
-						_ = storage.SaveWithGroups(filtered, groupTree)
-						if !*jsonOutput {
+						removeFailed := false
+						for _, id := range removedIDs {
+							if rmErr := storage.RemoveSessionAndVerify(id, filtered, groupTree); rmErr != nil {
+								removeFailed = true
+								if !*jsonOutput {
+									fmt.Fprintf(os.Stderr, "  Warning: failed to remove session '%s' (%s) from %s: %v\n", sessionTitle, id, meta.Profile, rmErr)
+								}
+							}
+						}
+						if !removeFailed && !*jsonOutput {
 							fmt.Printf("  [ok] Removed session '%s' from %s\n", sessionTitle, meta.Profile)
 						}
 					}
@@ -1384,7 +1420,7 @@ func printConductorHelp() {
 	fmt.Println("Multiple conductors can exist per profile.")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  setup <name>     Set up a named conductor (directory, session, bridge)")
+	fmt.Println("  setup <name>     Set up a named conductor")
 	fmt.Println("  teardown <name>  Stop and optionally remove a conductor (or --all)")
 	fmt.Println("  status [name]    Show conductor health (all or specific)")
 	fmt.Println("  list             List all configured conductors")

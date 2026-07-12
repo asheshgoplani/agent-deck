@@ -1,0 +1,58 @@
+direction: down
+
+title: {
+  label: "agent-deck: orchestrating a fleet of AI agents"
+  near: top-center
+  style.font-size: 20
+  style.bold: true
+}
+
+user: User {
+  shape: person
+  label: "User\nTUI / CLI / Telegram / Slack / Discord"
+}
+
+conductor: "CONDUCTOR (persistent Claude Code session)\nstate.json · task-log.md · POLICY.md · LEARNINGS.md" {
+  style.border-radius: 8
+  style.bold: true
+}
+
+watchers: WATCHERS (doorbells) {
+  style.border-radius: 8
+  github: github-watcher
+  gmail: gmail-watcher
+  notify: notify-watcher
+  meeting: meeting-watcher
+}
+
+children: {
+  child1: "Child Session:\nfrontend" {
+    style.border-radius: 8
+    style.fill: "#2d5a27"
+  }
+  child2: "Child Session:\napi-fix" {
+    style.border-radius: 8
+    style.fill: "#5a4a00"
+  }
+  child3: "Child Session:\ndocs" {
+    style.border-radius: 8
+    style.fill: "#2d5a27"
+  }
+  child4: "Child Session:\ntests" {
+    style.border-radius: 8
+    style.fill: "#5a4a00"
+  }
+}
+
+user -> conductor
+watchers -> conductor: "[github.pr_opened #111]\n[gmail.new_thread]\n[notify:alert]\n[calendar.meeting_due]" {
+  style.font-size: 11
+}
+conductor -> children
+
+footer: {
+  label: "Conductor = brain. Watchers = senses. Children = hands."
+  near: bottom-center
+  style.font-size: 14
+  style.italic: true
+}
