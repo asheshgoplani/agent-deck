@@ -846,18 +846,16 @@ func main() {
 	// The alternate screen, mouse tracking, and raw-mode interactions all fail
 	// because os.Stdin/os.Stdout are proxied pipes, not direct terminal FDs.
 	if tmux.IsAtuinPTYProxy() {
-		fmt.Fprintf(os.Stderr, `WARNING: Agent Deck's TUI is incompatible with atuin pty-proxy.
-The TUI may appear blank or fail to render.
-
-To fix this, replace:
-  eval "$(atuin pty-proxy init zsh)"
-with:
-  eval "$(atuin init zsh)"
-
-in your shell configuration file (.zshrc / .bashrc / config.fish).
-Atuin pty-proxy is only needed for the atuin TUI overlay feature,
-and is not required for normal atuin shell history functionality.
-`+"\n")
+		fmt.Fprint(os.Stderr, "WARNING: Agent Deck's TUI is incompatible with atuin pty-proxy.\n"+
+			"The TUI may appear blank or fail to render.\n"+
+			"\n"+
+			"To fix this, replace the pty-proxy init with the normal init in your shell config:\n"+
+			"  - zsh:   replace 'eval \"$(atuin pty-proxy init zsh)\"' with 'eval \"$(atuin init zsh)\"' in .zshrc\n"+
+			"  - bash:  replace 'eval \"$(atuin pty-proxy init bash)\"' with 'eval \"$(atuin init bash)\"' in .bashrc\n"+
+			"  - fish:  replace 'atuin pty-proxy init fish | source' with 'atuin init fish | source' in config.fish\n"+
+			"\n"+
+			"Atuin pty-proxy is only needed for the atuin TUI overlay feature,\n"+
+			"and is not required for normal atuin shell history functionality.\n")
 	}
 
 	p := tea.NewProgram(
