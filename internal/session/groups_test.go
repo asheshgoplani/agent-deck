@@ -2312,3 +2312,48 @@ func TestFlatten_OrphanSubSessionsDeterministic_TiedOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestRenameTargetPath pins the path computation shared by RenameGroup and the
+// reload-race collision guard (reapplyPendingGroupOps in the ui package):
+// sanitize the new name, replace spaces with hyphens, and preserve the parent
+// path for nested groups. It is load-bearing for preventing session data loss
+// on a rename collision, so it gets direct coverage.
+func TestRenameTargetPath(t *testing.T) {
+	tree := NewGroupTree(nil)
+	cases := []struct {
+		name    string
+		oldPath string
+		newName string
+		want    string
+	}{
+		{"root rename", "old-name", "New Name", "New-Name"},
+		{"root single word", "work", "life", "life"},
+		{"nested preserves parent", "parent/child", "Renamed", "parent/Renamed"},
+		{"nested with spaces", "parent/child", "New Child", "parent/New-Child"},
+		{"deeply nested preserves parents", "top/mid/leaf", "x", "top/mid/x"},
+		{"sanitizes path separators", "g", "a/b", "a-b"},
+		{"sanitizes dots", "g", "foo.bar", "foo-bar"},
+		{"drops disallowed chars", "g", "my@grp!", "mygrp"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tree.RenameTargetPath(tc.oldPath, tc.newName); got != tc.want {
+				t.Errorf("RenameTargetPath(%q, %q) = %q, want %q", tc.oldPath, tc.newName, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenameTargetPath_MatchesRenameGroup guards against drift between the
+// extracted helper and the path RenameGroup actually moves a group to.
+func TestRenameTargetPath_MatchesRenameGroup(t *testing.T) {
+	for _, newName := range []string{"New Name", "a/b", "life"} {
+		tree := NewGroupTree([]*Instance{{ID: "1", Title: "s", GroupPath: "parent/child"}})
+		target := tree.RenameTargetPath("parent/child", newName)
+		tree.RenameGroup("parent/child", newName)
+		if _, ok := tree.Groups[target]; !ok {
+			t.Errorf("RenameGroup(parent/child, %q) did not land at RenameTargetPath result %q",
+				newName, target)
+		}
+	}
+}

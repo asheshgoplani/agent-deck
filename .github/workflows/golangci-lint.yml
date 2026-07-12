@@ -9,9 +9,9 @@ jobs:
   golangci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
-        with: { go-version: '1.25.11' }
+        with: { go-version: '1.25.12' }
       # Bumped v6 → v9 in #1054 alongside the Go 1.25.10 toolchain bump: the
       # v6-era cached golangci-lint binary (v1.64.8) was built with Go 1.24,
       # which refuses to lint a go.mod targeting 1.25. v9 pulls v2.x binaries

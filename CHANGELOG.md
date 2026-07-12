@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.9] - 2026-07-02
+
+### Fixed
+
+- **TUI session status now accurately reflects background work and connection state.** Adds background-work detection via pane-content regex, a dedicated connection-status line, and properly skips archived sessions from the status polling loop. ([#1544](https://github.com/asheshgoplani/agent-deck/pull/1544))
+- **Grouped child sessions now correctly use their group's configured `config_dir` instead of the ambient `CLAUDE_CONFIG_DIR`.** The group resolver chain now ranks `[groups.X.claude].config_dir` above ambient env (mirrors the instance chain), preventing a grouped child from silently running on the wrong Claude account when launched from a session whose `CLAUDE_CONFIG_DIR` points elsewhere. ([#1532](https://github.com/asheshgoplani/agent-deck/pull/1532))
+
 ## [1.10.8] - 2026-07-01
 
 ### Fixed
