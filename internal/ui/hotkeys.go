@@ -33,8 +33,10 @@ const (
 	hotkeyQuickFork        = "quick_fork"
 	hotkeyForkWithOptions  = "fork_with_options"
 	hotkeyCopyOutput       = "copy_output"
+	hotkeyCopyPane         = "copy_pane"
 	hotkeySendOutput       = "send_output"
 	hotkeyExecShell        = "exec_shell"
+	hotkeyOpenShellHere    = "open_shell_here"
 	hotkeyEditNotes        = "edit_notes"
 	hotkeyEditPaths        = "edit_paths"
 	hotkeyEditSession      = "edit_session"
@@ -85,8 +87,10 @@ var hotkeyActionOrder = []string{
 	hotkeyQuickFork,
 	hotkeyForkWithOptions,
 	hotkeyCopyOutput,
+	hotkeyCopyPane,
 	hotkeySendOutput,
 	hotkeyExecShell,
+	hotkeyOpenShellHere,
 	hotkeyEditNotes,
 	hotkeyEditPaths,
 	hotkeyEditSession,
@@ -129,8 +133,10 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyQuickFork:        "f",
 	hotkeyForkWithOptions:  "F",
 	hotkeyCopyOutput:       "c",
+	hotkeyCopyPane:         "V",
 	hotkeySendOutput:       "x",
 	hotkeyExecShell:        "E",
+	hotkeyOpenShellHere:    "H",
 	hotkeyEditNotes:        "e",
 	hotkeyEditPaths:        "p",
 	hotkeyEditSession:      "P",

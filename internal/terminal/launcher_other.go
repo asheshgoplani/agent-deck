@@ -10,3 +10,8 @@ package terminal
 func OpenSessionInNewWindow(_ AttachRequest) error {
 	return ErrUnsupported
 }
+
+// OpenSessionInSplitPane is a no-op on non-macOS platforms.
+func OpenSessionInSplitPane(_ AttachRequest) error {
+	return ErrUnsupported
+}

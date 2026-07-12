@@ -365,6 +365,11 @@ type Home struct {
 	hookWatcher        *session.StatusFileWatcher
 	pendingHooksPrompt bool // True if user should be prompted to install hooks
 
+	// Test seams for the visible-pane clipboard action. Production leaves both
+	// nil and uses fresh tmux capture plus the shared clipboard fallback chain.
+	paneCapture   paneCaptureFunc
+	paneClipboard paneClipboardFunc
+
 	// Context-% based /clear for conductor sessions with clear_on_compact
 	clearOnCompactSent map[string]time.Time // instanceID -> last /clear send time (debounce)
 
@@ -642,6 +647,11 @@ type Home struct {
 	// nil, the dispatch calls terminal.OpenSessionInNewWindow directly.
 	// See issue #1093.
 	openInNewWindowSink func(req terminal.AttachRequest) error
+	// openInSplitPaneSink is an optional override used by tests to capture
+	// open_shell_here dispatches without spawning a real iTerm2 split pane.
+	// When nil, the dispatch calls terminal.OpenSessionInSplitPane directly.
+	// See issue #1470.
+	openInSplitPaneSink func(req terminal.AttachRequest) error
 	// quickApproveSink is an optional override used by tests to capture the
 	// quick-approve (`a`) dispatch — the (instance, windowIndex) it would send
 	// "1"+Enter to — without driving real tmux. windowIndex < 0 means the
@@ -807,6 +817,115 @@ func resolveITermOpenAs() string {
 		return session.DefaultITermOpenAs
 	}
 	return cfg.UI.GetITermOpenAs()
+}
+
+// openInSplitPane dispatches the open_shell_here iTerm2 split pane launch
+// through an optional test sink, or falls back to the real terminal launcher.
+// Issue #1470.
+func (h *Home) openInSplitPane(req terminal.AttachRequest) error {
+	if h.openInSplitPaneSink != nil {
+		return h.openInSplitPaneSink(req)
+	}
+	return terminal.OpenSessionInSplitPane(req)
+}
+
+// resolveShellSplitMode returns session.ShellSplitITerm when an iTerm2 split
+// should be used, session.ShellSplitTmux otherwise. Reads [ui].shell_split
+// first; falls back to auto-detection via TERM_PROGRAM / LC_TERMINAL. Issue #1470.
+func resolveShellSplitMode() string {
+	cfg, _ := session.LoadUserConfig()
+	if cfg != nil {
+		mode := cfg.UI.GetShellSplit()
+		if mode == session.ShellSplitITerm || mode == session.ShellSplitTmux {
+			return mode
+		}
+	}
+	if os.Getenv("LC_TERMINAL") == "iTerm2" || os.Getenv("TERM_PROGRAM") == "iTerm.app" {
+		return session.ShellSplitITerm
+	}
+	return session.ShellSplitTmux
+}
+
+// openShellHere adds a vertical shell pane to the focused session's tmux
+// session (split-window -h), then opens the session in an iTerm2 split pane
+// or attaches inline depending on resolveShellSplitMode. The shell lands
+// in the session's worktree (or project path), so the user sees [agent | shell]
+// side-by-side without detaching from agent-deck. Issue #1470.
+func (h *Home) openShellHere(inst *session.Instance) tea.Cmd {
+	tmuxSess := inst.GetTmuxSession()
+	if tmuxSess == nil {
+		return nil
+	}
+	workdir := inst.WorktreePath
+	if workdir == "" {
+		workdir = inst.ProjectPath
+	}
+	req := terminal.AttachRequest{
+		Name:       tmuxSess.Name,
+		SocketName: tmuxSess.SocketName,
+	}
+	if resolveShellSplitMode() == session.ShellSplitITerm {
+		// Launch iTerm2 split before mutating tmux so a failed osascript
+		// call does not leave an orphaned pane. Issue #1470.
+		if err := h.openInSplitPane(req); err != nil {
+			h.setError(fmt.Errorf("open shell here: iterm split: %w", err))
+			return nil
+		}
+		if err := tmuxSess.SplitShellPane(workdir); err != nil {
+			h.setError(fmt.Errorf("open shell here: %w", err))
+		}
+		return nil
+	}
+	// Default (tmux): split first, then attach so the split is visible.
+	if err := tmuxSess.SplitShellPane(workdir); err != nil {
+		h.setError(fmt.Errorf("open shell here: %w", err))
+		return nil
+	}
+	return h.attachSession(inst)
+}
+
+// collapseOrNavUp implements the "h"/"left" collapse-or-parent navigation:
+// collapses an open group/session-windows, or moves the cursor to the parent
+// group of the focused item. Issue #1470.
+func (h *Home) collapseOrNavUp() {
+	if h.cursor >= len(h.flatItems) {
+		return
+	}
+	item := h.flatItems[h.cursor]
+	collapsed := false
+	if item.Type == session.ItemTypeGroup {
+		groupPath := item.Path
+		h.groupTree.CollapseGroup(groupPath)
+		h.rebuildFlatItems()
+		for i, fi := range h.flatItems {
+			if fi.Type == session.ItemTypeGroup && fi.Path == groupPath {
+				h.cursor = i
+				break
+			}
+		}
+		collapsed = true
+	} else if item.Type == session.ItemTypeWindow {
+		sid := item.WindowSessionID
+		h.windowsCollapsed[sid] = true
+		h.rebuildFlatItems()
+		h.moveCursorToSession(sid)
+	} else if item.Type == session.ItemTypeSession && h.sessionHasWindows(item) && !h.windowsCollapsed[item.Session.ID] {
+		h.windowsCollapsed[item.Session.ID] = true
+		h.rebuildFlatItems()
+	} else if item.Type == session.ItemTypeSession {
+		h.groupTree.CollapseGroup(item.Path)
+		h.rebuildFlatItems()
+		for i, fi := range h.flatItems {
+			if fi.Type == session.ItemTypeGroup && fi.Path == item.Path {
+				h.cursor = i
+				break
+			}
+		}
+		collapsed = true
+	}
+	if collapsed {
+		h.saveGroupState()
+	}
 }
 
 // buildRemoteAttachRequest constructs a terminal.AttachRequest that
@@ -6024,6 +6143,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case copyPaneResultMsg:
+		switch {
+		case msg.err != nil:
+			h.setError(fmt.Errorf("Could not copy visible terminal text: %w", msg.err))
+		case msg.empty:
+			h.setError(fmt.Errorf("Nothing visible to copy (%s)", msg.sessionTitle))
+		default:
+			h.setError(fmt.Errorf("Copied visible terminal text to clipboard (%d lines, %s)", msg.lineCount, msg.sessionTitle))
+		}
+		return h, nil
+
 	case sendOutputResultMsg:
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to send to %s: %v", msg.targetTitle, msg.err))
@@ -6221,7 +6351,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if !t.ts.Exists() {
 							return
 						}
-						_ = pm.Connect(t.ts.Name, t.socket)
+						if err := pm.Connect(t.ts.Name, t.socket); err != nil {
+							uiLog.Debug("pipe_reconnect_failed",
+								slog.String("session", t.ts.Name),
+								slog.String("socket", t.socket),
+								slog.String("error", err.Error()))
+						}
 					})
 				}
 			}
@@ -7619,6 +7754,21 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.openInGroupSearch()
 		return h, nil
 
+	case h.actionKey(hotkeyOpenShellHere):
+		// Open a shell sub-session in the focused session's worktree (or
+		// project path) as an iTerm2 split pane or new tmux window,
+		// depending on [ui].shell_split and auto-detection. Issue #1470.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				return h, h.openShellHere(item.Session)
+			}
+		}
+		// Non-session item: delegate to collapse/parent navigation so the
+		// default "h" binding does not swallow left-nav on group/window rows.
+		h.collapseOrNavUp()
+		return h, nil
+
 	case "shift+enter":
 		// Open the focused session in a new native terminal tab (or
 		// window, per [ui] iterm_open_as), leaving agent-deck running
@@ -7755,48 +7905,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "h", "left":
 		// Collapse group, session windows, or navigate up
-		if h.cursor < len(h.flatItems) {
-			item := h.flatItems[h.cursor]
-			collapsed := false
-			if item.Type == session.ItemTypeGroup {
-				groupPath := item.Path
-				h.groupTree.CollapseGroup(groupPath)
-				h.rebuildFlatItems()
-				for i, fi := range h.flatItems {
-					if fi.Type == session.ItemTypeGroup && fi.Path == groupPath {
-						h.cursor = i
-						break
-					}
-				}
-				collapsed = true
-			} else if item.Type == session.ItemTypeWindow {
-				// Collapse parent session's windows and jump to it
-				sid := item.WindowSessionID
-				h.windowsCollapsed[sid] = true
-				h.rebuildFlatItems()
-				h.moveCursorToSession(sid)
-				collapsed = false // no group state to save
-			} else if item.Type == session.ItemTypeSession && h.sessionHasWindows(item) && !h.windowsCollapsed[item.Session.ID] {
-				// Collapse this session's windows
-				h.windowsCollapsed[item.Session.ID] = true
-				h.rebuildFlatItems()
-				collapsed = false
-			} else if item.Type == session.ItemTypeSession {
-				// Move cursor to parent group
-				h.groupTree.CollapseGroup(item.Path)
-				h.rebuildFlatItems()
-				for i, fi := range h.flatItems {
-					if fi.Type == session.ItemTypeGroup && fi.Path == item.Path {
-						h.cursor = i
-						break
-					}
-				}
-				collapsed = true
-			}
-			if collapsed {
-				h.saveGroupState()
-			}
-		}
+		h.collapseOrNavUp()
 		return h, nil
 
 	case "shift+up", "ctrl+up", "+", "K":
@@ -8663,6 +8772,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				return h, h.copySessionInfo(item.Session)
+			}
+		}
+		return h, nil
+
+	case defaultHotkeyBindings[hotkeyCopyPane]:
+		// Copy the selected local session's current visible tmux pane. The key
+		// reaches this canonical case through the configurable hotkey lookup.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				return h, h.copyVisiblePane(item.Session)
 			}
 		}
 		return h, nil
@@ -14176,6 +14296,9 @@ func (h *Home) renderHelpBarCompact() string {
 			if key := h.actionKey(hotkeyCopyOutput); key != "" {
 				contextHints = append(contextHints, h.helpKeyShort(key, "Copy"))
 			}
+			if key := h.actionKey(hotkeyCopyPane); key != "" {
+				contextHints = append(contextHints, h.helpKeyShort(key, "Copy pane"))
+			}
 			if key := h.actionKey(hotkeySendOutput); key != "" {
 				contextHints = append(contextHints, h.helpKeyShort(key, "Send"))
 			}
@@ -14276,8 +14399,10 @@ func (h *Home) renderHelpBarFull() string {
 	previewKey := h.actionKey(hotkeyTogglePreview)
 	forkKeys := joinHotkeyLabels(h.actionKey(hotkeyQuickFork), h.actionKey(hotkeyForkWithOptions))
 	copyKey := h.actionKey(hotkeyCopyOutput)
+	copyPaneKey := h.actionKey(hotkeyCopyPane)
 	sendKey := h.actionKey(hotkeySendOutput)
 	execShellKey := h.actionKey(hotkeyExecShell)
+	openShellHereKey := h.actionKey(hotkeyOpenShellHere)
 	notesKey := h.actionKey(hotkeyEditNotes)
 	if cfg, _ := session.LoadUserConfig(); cfg != nil && !cfg.GetShowNotes() {
 		notesKey = ""
@@ -14357,6 +14482,9 @@ func (h *Home) renderHelpBarFull() string {
 					primaryHints = append(primaryHints, h.helpKey(execShellKey, "Exec"))
 				}
 			}
+			if openShellHereKey != "" && item.Session != nil && item.Type == session.ItemTypeSession {
+				primaryHints = append(primaryHints, h.helpKey(openShellHereKey, "Shell"))
+			}
 			if item.Session != nil && item.Session.IsMultiRepo() {
 				if editPathsKey := h.actionKey(hotkeyEditPaths); editPathsKey != "" {
 					primaryHints = append(primaryHints, h.helpKey(editPathsKey, "Paths"))
@@ -14364,6 +14492,9 @@ func (h *Home) renderHelpBarFull() string {
 			}
 			if copyKey != "" {
 				primaryHints = append(primaryHints, h.helpKey(copyKey, "Copy"))
+			}
+			if copyPaneKey != "" {
+				primaryHints = append(primaryHints, h.helpKey(copyPaneKey, "Copy pane"))
 			}
 			if sendKey != "" {
 				primaryHints = append(primaryHints, h.helpKey(sendKey, "Send"))

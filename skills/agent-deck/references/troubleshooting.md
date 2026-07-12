@@ -15,6 +15,27 @@ Common issues and solutions for agent-deck.
 
 ## Common Issues
 
+### Cannot Select or Copy Terminal Text
+
+On the agent-deck home screen, select a local session and press `V` to copy its
+current visible terminal text, including links, as plain text.
+
+When attached to a session, tmux mouse mode owns normal drag gestures. Hold
+Option while dragging in iTerm2. Hold Shift while dragging in most Linux
+terminals and Windows Terminal, including WSL2. This bypasses application mouse
+reporting and lets the terminal perform native selection.
+
+If your terminal has no selection bypass, disable mouse mode for new and
+reconnected sessions:
+
+```toml
+[tmux]
+mouse = false
+```
+
+This restores native drag selection, but disables tmux mouse scrolling, pane
+resizing, and mouse copy mode.
+
 ### Flags Ignored
 
 **Problem:** Flags after positional arguments are silently ignored.

@@ -25,6 +25,36 @@ func OpenSessionInNewWindow(req AttachRequest) error {
 	return exec.Command("osascript", "-e", script).Run()
 }
 
+// OpenSessionInSplitPane opens a new iTerm2 vertical split pane next to the
+// current session and runs the attach command inside it. Issue #1470.
+func OpenSessionInSplitPane(req AttachRequest) error {
+	cmd := BuildAttachCommand(req)
+	if cmd == "" {
+		return fmt.Errorf("terminal: empty attach command (missing session name or remote host)")
+	}
+	script := buildITerm2SplitPaneAppleScript(cmd)
+	return exec.Command("osascript", "-e", script).Run()
+}
+
+// buildITerm2SplitPaneAppleScript returns the AppleScript that splits the
+// current iTerm2 pane vertically and runs attachCmd in the new session.
+// Kept pure and unexported-but-tested so the script can be exercised without
+// invoking osascript.
+func buildITerm2SplitPaneAppleScript(attachCmd string) string {
+	escaped := strings.ReplaceAll(attachCmd, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	return fmt.Sprintf(`tell application "iTerm2"
+	tell current window
+		tell current session
+			set newSession to (split vertically with default profile)
+			tell newSession
+				write text "%s"
+			end tell
+		end tell
+	end tell
+end tell`, escaped)
+}
+
 // buildITerm2AppleScript returns the AppleScript that spawns a new
 // iTerm2 tab or window (per openAs) with the user's default profile and
 // runs attachCmd inside it.

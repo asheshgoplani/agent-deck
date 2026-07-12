@@ -330,6 +330,14 @@ type UISettings struct {
 	// values: "tab", "window". Empty defaults to "tab" (iTerm's natural
 	// UX). Issue #1100, follow-up to #1098 — credit @ddorman-dn.
 	ITermOpenAs string `toml:"iterm_open_as,omitempty"`
+	// ShellSplit controls the terminal used by the open_shell_here hotkey.
+	// Valid values:
+	//   "iterm"  — always open an iTerm2 vertical split pane (macOS only)
+	//   "tmux"   — always open a new tmux window
+	//   ""       — auto: use iTerm2 split when LC_TERMINAL=iTerm2 or
+	//              TERM_PROGRAM=iTerm.app, otherwise tmux
+	// Default: "" (auto). Issue #1470.
+	ShellSplit string `toml:"shell_split,omitempty"`
 	// RemoteLatencyRefreshSecs sets how often the TUI re-measures the
 	// round-trip latency to each configured remote (issue #1103). Valid
 	// range: 2-300. Default: matches [system_stats].refresh_seconds (5s)
@@ -452,6 +460,12 @@ const (
 	DefaultITermOpenAs = ITermOpenAsTab
 )
 
+// ShellSplit modes for the open_shell_here hotkey (issue #1470).
+const (
+	ShellSplitITerm = "iterm"
+	ShellSplitTmux  = "tmux"
+)
+
 // Footer hint-bar styles. See UISettings.Footer.
 const (
 	FooterCurated = "curated"
@@ -509,6 +523,18 @@ func (u UISettings) GetITermOpenAs() string {
 		return ITermOpenAsTab
 	}
 	return DefaultITermOpenAs
+}
+
+// GetShellSplit returns the configured shell-split mode. Unknown or empty
+// values return "" (auto-detect). Matching is case-insensitive.
+func (u UISettings) GetShellSplit() string {
+	switch strings.ToLower(strings.TrimSpace(u.ShellSplit)) {
+	case ShellSplitITerm:
+		return ShellSplitITerm
+	case ShellSplitTmux:
+		return ShellSplitTmux
+	}
+	return ""
 }
 
 // Remote session-list poll cadence bounds (issue #1170). The default is

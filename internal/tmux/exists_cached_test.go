@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"os/exec"
 	"testing"
 	"time"
 )
@@ -102,6 +103,33 @@ func primeSessionCache(names ...string) {
 	sessionCacheData = m
 	sessionCacheTime = time.Now()
 	sessionCacheMu.Unlock()
+}
+
+func TestIsEmptyTmuxServerResult_ClassifiesOnlyExpectedTmuxErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		stderr string
+		want   bool
+	}{
+		{name: "no server", stderr: "no server running on /tmp/tmux.sock", want: true},
+		{name: "no sessions", stderr: "no sessions", want: true},
+		{name: "unexpected failure", stderr: "permission denied", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command("sh", "-c", "printf '%s' \"$1\" >&2; exit 1", "sh", tt.stderr)
+			_, err := cmd.Output()
+			if err == nil {
+				t.Fatal("fixture command unexpectedly succeeded")
+			}
+			if got := isEmptyTmuxServerResult(err); got != tt.want {
+				t.Fatalf("isEmptyTmuxServerResult() = %v, want %v for stderr %q", got, tt.want, tt.stderr)
+			}
+		})
+	}
 }
 
 // A fresh positive cache hit on the default socket means the session is live.

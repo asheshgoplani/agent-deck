@@ -155,6 +155,23 @@ func (w *IdleTimeoutWatcher) Tick(instances []*Instance) {
 		if inst == nil {
 			continue
 		}
+		// IdleTimeoutSecs is checked FIRST because it is the gate that actually
+		// bounds cost: Capture (a tmux subprocess) is the only expensive step in
+		// this loop, and it is unreachable for a session with no idle timeout
+		// armed. Idle timeout is strictly opt-in per session, so an archive
+		// backlog of hundreds of unarmed sessions costs one int64 read each.
+		//
+		// Deliberately NOT short-circuiting on IsArchived(): an archived session
+		// whose tmux Kill silently failed keeps a live pane and a frozen
+		// live-ish Status, and this watcher is the only mechanism that will ever
+		// stop that orphan. Skipping archived instances wholesale bought no
+		// measurable time (they are unarmed, hence already free above) while
+		// removing the safety net for exactly the orphan class that motivated
+		// it.
+		if inst.IdleTimeoutSecs <= 0 {
+			delete(w.lastSeen, inst.ID)
+			continue
+		}
 		if inst.Pin != PinNone {
 			// pin-protects-from-stop: a pinned session is exempt from idle
 			// auto-stop. Drop tracking so unpinning re-arms cleanly next tick.
@@ -163,10 +180,6 @@ func (w *IdleTimeoutWatcher) Tick(instances []*Instance) {
 				slog.String("instance_id", inst.ID),
 				slog.String("pin", string(inst.Pin)),
 			)
-			continue
-		}
-		if inst.IdleTimeoutSecs <= 0 {
-			delete(w.lastSeen, inst.ID)
 			continue
 		}
 		if !idleTimeoutWatchable(inst) {
