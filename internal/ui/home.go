@@ -4704,6 +4704,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 								slog.String("title", title))
 						}
 						inst.SetAutoName(false) // pending title is a genuine rename; keep the user-chosen name
+						// Mirror SetField(FieldTitle) at mutators.go:147: an explicit
+						// rename is user intent, so re-lock the title. Without this,
+						// ReconcileTitleFromClaude on the next attach sees an unlocked
+						// title and overwrites the rename with the Claude session name.
+						inst.TitleLocked = true
 					}
 				}
 				// Clear pending changes and persist if any were re-applied

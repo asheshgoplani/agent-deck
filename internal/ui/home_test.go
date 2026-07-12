@@ -686,6 +686,55 @@ func TestHomeRenamePendingChangeClearsAutoName(t *testing.T) {
 	}
 }
 
+// TestHomeRenamePendingChangeLocksTitle pins the fix for the "rename lost
+// after attach+detach" regression. The reload-race re-apply at home.go's
+// loadSessionsMsg handler restores Title and clears AutoName but MUST also
+// re-assert TitleLocked=true; otherwise the next attach runs
+// Instance.ReconcileTitleFromClaude against an unlocked title and silently
+// overwrites the user's rename with the Claude session name (issue: rename
+// resets after entering a session and going back).
+func TestHomeRenamePendingChangeLocksTitle(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	inst := session.NewInstance("original-name", "/tmp/project")
+	home.instancesMu.Lock()
+	home.instances = []*session.Instance{inst}
+	home.instanceByID[inst.ID] = inst
+	home.instancesMu.Unlock()
+	home.groupTree = session.NewGroupTree(home.instances)
+	home.rebuildFlatItems()
+
+	// User renamed; save was skipped (isReloading) so the rename only lives
+	// in pendingTitleChanges.
+	home.pendingTitleChanges[inst.ID] = "my-chosen-name"
+
+	// Reload replays stale disk state: old title AND TitleLocked=false (the
+	// rename's SetField, which sets TitleLocked, never reached disk).
+	reloadInst := session.NewInstance("original-name", "/tmp/project")
+	reloadInst.ID = inst.ID
+	reloadInst.TitleLocked = false
+
+	reloadMsg := loadSessionsMsg{
+		instances:    []*session.Instance{reloadInst},
+		groups:       nil,
+		restoreState: &reloadState{cursorSessionID: inst.ID},
+	}
+
+	model, _ := home.Update(reloadMsg)
+	h := model.(*Home)
+
+	if h.instances[0].Title != "my-chosen-name" {
+		t.Errorf("Session title = %q, want %q", h.instances[0].Title, "my-chosen-name")
+	}
+	// TitleLocked MUST be re-asserted so ReconcileTitleFromClaude (claude_title_reconcile.go)
+	// treats the rename as user intent and does NOT clobber it on the next attach.
+	if !h.instances[0].TitleLocked {
+		t.Error("TitleLocked = false after pending-rename re-apply, want true (rename must survive attach+detach)")
+	}
+}
+
 func TestHomeRenamePendingChangesNoop(t *testing.T) {
 	home := NewHome()
 	home.width = 100
