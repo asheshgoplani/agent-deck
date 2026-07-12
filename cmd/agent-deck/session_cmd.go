@@ -41,6 +41,8 @@ func handleSession(profile string, args []string) {
 		handleSessionStop(profile, args[1:])
 	case "remove":
 		handleSessionRemove(profile, args[1:])
+	case "cleanup", "prune":
+		handleSessionCleanup(profile, args[1:])
 	case "archive":
 		handleSessionArchive(profile, args[1:])
 	case "unarchive":
@@ -109,6 +111,7 @@ func printSessionHelp() {
 	fmt.Println("  start <id>              Start a session's tmux process")
 	fmt.Println("  stop <id>               Stop/kill session process")
 	fmt.Println("  remove <id>             Remove session from registry (stopped/error only; --force to bypass)")
+	fmt.Println("  cleanup [--days N]      Purge dead sessions idle N+ days (dry-run unless --yes)")
 	fmt.Println("  archive <id|title>      Stop session and hide it from active lists (retained in storage)")
 	fmt.Println("  unarchive <id|title>    Restore an archived session (does not restart it)")
 	fmt.Println("  restart [id] [--all]    Restart session (Claude: reload MCPs)")

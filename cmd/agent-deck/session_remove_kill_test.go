@@ -85,23 +85,95 @@ func TestSessionRemove_HandlerCallsKillUnconditionally(t *testing.T) {
 	}
 }
 
-// The bulk-errored path removes many sessions in a loop and must ALSO
-// kill each one — same rationale as the single-session handler.
-func TestSessionRemove_AllErroredCallsKillUnconditionally(t *testing.T) {
+// The bulk-delete path removes many sessions in a loop and must ALSO kill each
+// one — same rationale as the single-session handler. Both bulk callers
+// (`--all-errored` and `session cleanup`) route through bulkRemoveSessions, so
+// the invariant is asserted where it now lives.
+func TestSessionRemove_BulkRemoveCallsKillUnconditionally(t *testing.T) {
 	src, err := os.ReadFile("session_remove_cmd.go")
 	if err != nil {
 		t.Fatalf("read session_remove_cmd.go: %v", err)
 	}
-	body := extractFuncBody(string(src), "removeAllErrored")
+	body := extractFuncBody(string(src), "bulkRemoveSessions")
 	if body == "" {
-		t.Fatalf("could not extract removeAllErrored body — file layout changed?")
+		t.Fatalf("could not extract bulkRemoveSessions body — file layout changed?")
 	}
 	killRe := regexp.MustCompile(`\b(Kill|KillAndWait)\s*\(`)
 	if !killRe.MatchString(body) {
 		t.Errorf(
-			"removeAllErrored must kill each session before deleting it "+
+			"bulkRemoveSessions must kill each session before deleting it "+
 				"(issue #59 regression guard); function body:\n%s",
 			body,
 		)
+	}
+}
+
+// ...and the bulk callers must actually route through it, or the guard above
+// protects an unused function. This is what let the two hand-copied bulk paths
+// drift apart (only one killed, only one skipped pinned) before they were
+// merged into bulkRemoveSessions.
+func TestSessionRemove_BulkCallersDelegateToBulkRemoveSessions(t *testing.T) {
+	for file, fn := range map[string]string{
+		"session_remove_cmd.go":  "removeAllErrored",
+		"session_cleanup_cmd.go": "handleSessionCleanup",
+	} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		body := extractFuncBody(string(src), fn)
+		if body == "" {
+			t.Fatalf("could not extract %s body from %s — file layout changed?", fn, file)
+		}
+		if !regexp.MustCompile(`\bbulkRemoveSessions\s*\(`).MatchString(body) {
+			t.Errorf(
+				"%s must delegate its bulk delete to bulkRemoveSessions "+
+					"(single-sourced #59/#909/#910 choreography); function body:\n%s",
+				fn, body,
+			)
+		}
+	}
+}
+
+// `session cleanup` must never force-remove a git worktree implicitly: that
+// destroys uncommitted work, and the command advertises itself as registry-only.
+// pruneSessionWorktree may only be reached via the opt-in --prune-worktree flag,
+// which cleanup passes straight through to bulkRemoveSessions.
+func TestSessionCleanup_DoesNotPruneWorktreesImplicitly(t *testing.T) {
+	src, err := os.ReadFile("session_cleanup_cmd.go")
+	if err != nil {
+		t.Fatalf("read session_cleanup_cmd.go: %v", err)
+	}
+	if regexp.MustCompile(`\bpruneSessionWorktree\s*\(`).MatchString(string(src)) {
+		t.Errorf("session_cleanup_cmd.go must not call pruneSessionWorktree directly — " +
+			"worktree deletion is opt-in via --prune-worktree, threaded through bulkRemoveSessions")
+	}
+	body := extractFuncBody(string(src), "handleSessionCleanup")
+	if !regexp.MustCompile(`prune-worktree`).MatchString(body) {
+		t.Errorf("handleSessionCleanup must expose an explicit --prune-worktree opt-in flag")
+	}
+}
+
+// The interactive confirm prompt is a TOCTOU window: a candidate can be
+// restarted while [y/N] sits open. handleSessionCleanup must re-probe liveness
+// after the prompt and before any destructive call.
+func TestSessionCleanup_ReprobesLivenessAfterConfirm(t *testing.T) {
+	src, err := os.ReadFile("session_cleanup_cmd.go")
+	if err != nil {
+		t.Fatalf("read session_cleanup_cmd.go: %v", err)
+	}
+	body := extractFuncBody(string(src), "handleSessionCleanup")
+	if body == "" {
+		t.Fatalf("could not extract handleSessionCleanup body — file layout changed?")
+	}
+	confirm := regexp.MustCompile(`isYesConfirmation\s*\(`).FindStringIndex(body)
+	reprobe := regexp.MustCompile(`dropRevivedCandidates\s*\(`).FindStringIndex(body)
+	destroy := regexp.MustCompile(`bulkRemoveSessions\s*\(`).FindStringIndex(body)
+	if confirm == nil || reprobe == nil || destroy == nil {
+		t.Fatalf("expected confirm, re-probe and bulk-delete calls in handleSessionCleanup")
+	}
+	if !(confirm[0] < reprobe[0] && reprobe[0] < destroy[0]) {
+		t.Errorf("handleSessionCleanup must re-probe liveness (dropRevivedCandidates) AFTER the " +
+			"[y/N] confirm and BEFORE bulkRemoveSessions, or a session revived during the prompt is killed")
 	}
 }
