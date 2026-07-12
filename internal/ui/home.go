@@ -9685,7 +9685,11 @@ func (h *Home) reapplyPendingGroupOps() bool {
 						slog.String("old_path", op.oldPath), slog.String("target", target))
 					continue
 				}
-				h.groupTree.RenameGroup(op.oldPath, op.name)
+				if err := h.groupTree.RenameGroup(op.oldPath, op.name); err != nil {
+					uiLog.Warn("pending_group_rename_failed",
+						slog.String("old_path", op.oldPath), slog.String("name", op.name), slog.String("err", err.Error()))
+					continue
+				}
 				h.instancesMu.Lock()
 				h.instances = h.groupTree.GetAllInstances()
 				h.instancesMu.Unlock()
