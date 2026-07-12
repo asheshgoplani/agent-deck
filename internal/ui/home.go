@@ -7621,6 +7621,26 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case ",":
+		// Cycle pin: off → top → bottom → off (pin-sessions #1335).
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				inst := item.Session
+				switch inst.Pin {
+				case session.PinNone:
+					inst.Pin = session.PinTop
+				case session.PinTop:
+					inst.Pin = session.PinBottom
+				case session.PinBottom:
+					inst.Pin = session.PinNone
+				}
+				h.rebuildFlatItems()
+				h.saveInstances()
+			}
+		}
+		return h, nil
+
 	case "p":
 		// Edit multi-repo paths
 		if h.cursor < len(h.flatItems) {

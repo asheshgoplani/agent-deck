@@ -489,6 +489,53 @@ func TestHomeRenameSessionComplete(t *testing.T) {
 	}
 }
 
+// TestHomePinCycleHotkey verifies that pressing ',' cycles the session
+// pin state PinNone → PinTop → PinBottom → PinNone.  Pin-sessions was
+// shipped in #1335; the hotkey is the TUI surface for quick cycling.
+func TestHomePinCycleHotkey(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	inst := session.NewInstance("test-session", "/tmp/project")
+	home.instancesMu.Lock()
+	home.instances = []*session.Instance{inst}
+	home.instanceByID[inst.ID] = inst
+	home.instancesMu.Unlock()
+	home.groupTree = session.NewGroupTree(home.instances)
+	home.rebuildFlatItems()
+
+	sessionIdx := -1
+	for i, item := range home.flatItems {
+		if item.Type == session.ItemTypeSession {
+			sessionIdx = i
+			break
+		}
+	}
+	home.cursor = sessionIdx
+
+	// Press ',' once: PinNone → PinTop
+	model1, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{','}})
+	h1 := model1.(*Home)
+	if h1.instances[0].Pin != session.PinTop {
+		t.Errorf("after 1st press: pin = %q, want %q", h1.instances[0].Pin, session.PinTop)
+	}
+
+	// Press ',' again: PinTop → PinBottom
+	model2, _ := h1.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{','}})
+	h2 := model2.(*Home)
+	if h2.instances[0].Pin != session.PinBottom {
+		t.Errorf("after 2nd press: pin = %q, want %q", h2.instances[0].Pin, session.PinBottom)
+	}
+
+	// Press ',' a third time: PinBottom → PinNone
+	model3, _ := h2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{','}})
+	h3 := model3.(*Home)
+	if h3.instances[0].Pin != session.PinNone {
+		t.Errorf("after 3rd press: pin = %q, want %q", h3.instances[0].Pin, session.PinNone)
+	}
+}
+
 func TestHomeMoveSessionWithDuplicateGroupNamesUsesSelectedPath(t *testing.T) {
 	home := NewHome()
 	home.width = 100

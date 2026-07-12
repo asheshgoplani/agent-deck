@@ -169,6 +169,7 @@ func (h *HelpOverlay) View() string {
 	reorderUpKeys := "+ / K / Shift+↑"
 	reorderDownKeys := "- / J / Shift+↓"
 	indentKeys := "Shift+→/←"
+	pinKeys := ","
 	searchKey := h.key(hotkeySearch, "/")
 	settingsKey := h.key(hotkeySettings, "S")
 	helpKey := h.key(hotkeyHelp, "?")
@@ -266,6 +267,7 @@ func (h *HelpOverlay) View() string {
 				{reorderUpKeys, "Reorder up (auto-promote at edge)"},
 				{reorderDownKeys, "Reorder down (auto-promote at edge)"},
 				{indentKeys, "Indent / outdent (in group)"},
+				{pinKeys, "Pin (cycle off→top→bottom→off)"},
 				{forkKeys, "Fork session (Claude/Pi)"},
 				{copyKey, "Copy output to clipboard"},
 				{"C", "Copy preview info (Repo / Path / Branch)"},
