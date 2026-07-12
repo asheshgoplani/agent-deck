@@ -198,6 +198,15 @@ const (
 	// Below 12: minimal mode
 )
 
+// pendingTitle is a title change queued to survive a storage-watcher reload
+// swap (see Home.pendingTitleChanges). It carries the intended lock state
+// alongside the title so the reapply can restore both: a user rename is locked,
+// a Claude-name sync stays unlocked.
+type pendingTitle struct {
+	title  string
+	locked bool
+}
+
 // Home is the main application model
 type Home struct {
 	// Dimensions
@@ -512,8 +521,12 @@ type Home struct {
 
 	// Pending title changes: survives reload races.
 	// When a rename save is skipped (isReloading=true), the title change is
-	// stored here and re-applied after the reload completes.
-	pendingTitleChanges map[string]string
+	// stored here and re-applied after the reload completes. The lock state is
+	// carried alongside the title: a user rename is locked (so the #572
+	// Claude-name sync can't revert it to the cwd-folder default), while a
+	// sync-sourced title stays unlocked so it keeps syncing. Storing only the
+	// string lost that intent and left reapplied user renames unlocked (#697).
+	pendingTitleChanges map[string]pendingTitle
 
 	// Pending group operations: survive the save-abort → reload race.
 	// Group create/rename/move persist via the non-force saveInstances(),
@@ -1152,7 +1165,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		notesEditor:               newNotesEditor(),
 		boundKeys:                 make(map[string]string),
 		undoStack:                 make([]deletedSessionEntry, 0, 10),
-		pendingTitleChanges:       make(map[string]string),
+		pendingTitleChanges:       make(map[string]pendingTitle),
 		debugMode:                 logging.IsDebugEnabled(),
 		lastClickIndex:            -1,
 	}
@@ -4701,21 +4714,29 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// and the reload replaced instances with stale disk data.
 			if len(h.pendingTitleChanges) > 0 {
 				applied := false
-				for id, title := range h.pendingTitleChanges {
+				for id, pt := range h.pendingTitleChanges {
 					if inst := h.getInstanceByID(id); inst != nil {
-						if inst.Title != title {
-							inst.Title = title
+						if inst.Title != pt.title {
+							inst.Title = pt.title
 							inst.SyncTmuxDisplayName()
 							applied = true
 							uiLog.Info("pending_rename_reapplied",
 								slog.String("session_id", id),
-								slog.String("title", title))
+								slog.String("title", pt.title))
+						}
+						// Restore the lock state lost in the reload swap. Without
+						// this a reapplied user rename stays unlocked, so the next
+						// #572 Claude-name sync reverts it to the cwd-folder
+						// default — the "my rename keeps disappearing" bug (#697).
+						if inst.TitleLocked != pt.locked {
+							inst.TitleLocked = pt.locked
+							applied = true
 						}
 						inst.SetAutoName(false) // pending title is a genuine rename; keep the user-chosen name
 					}
 				}
 				// Clear pending changes and persist if any were re-applied
-				h.pendingTitleChanges = make(map[string]string)
+				h.pendingTitleChanges = make(map[string]pendingTitle)
 				if applied {
 					h.forceSaveInstances()
 				}
@@ -9461,7 +9482,7 @@ func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Mirror the rename-path #697 race fix: queue title so a watcher
 		// reload can re-apply it after the load swap.
 		if titleChanged {
-			h.pendingTitleChanges[sessionID] = inst.Title
+			h.pendingTitleChanges[sessionID] = pendingTitle{title: inst.Title, locked: inst.TitleLocked}
 			h.invalidatePreviewCache(sessionID)
 		}
 		h.rebuildFlatItems()
@@ -9685,7 +9706,11 @@ func (h *Home) reapplyPendingGroupOps() bool {
 						slog.String("old_path", op.oldPath), slog.String("target", target))
 					continue
 				}
-				h.groupTree.RenameGroup(op.oldPath, op.name)
+				if err := h.groupTree.RenameGroup(op.oldPath, op.name); err != nil {
+					uiLog.Warn("pending_group_rename_failed",
+						slog.String("old_path", op.oldPath), slog.String("name", op.name), slog.String("err", err.Error()))
+					continue
+				}
 				h.instancesMu.Lock()
 				h.instances = h.groupTree.GetAllInstances()
 				h.instancesMu.Unlock()
@@ -9757,7 +9782,10 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			name := h.groupDialog.GetValue()
 			if name != "" {
 				oldPath := h.groupDialog.GetGroupPath()
-				h.groupTree.RenameGroup(oldPath, name)
+				if err := h.groupTree.RenameGroup(oldPath, name); err != nil {
+					h.setError(err)
+					break
+				}
 				h.pendingGroupOps = append(h.pendingGroupOps, pendingGroupOp{
 					kind: groupOpRename, oldPath: oldPath, name: name,
 				})
@@ -9830,16 +9858,31 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					// SetField so the rename also sets TitleLocked — a direct
 					// Title assignment would be reverted by the #572
 					// Claude-name sync on the next hook event.
+					// Mutate under instancesMu to match the edit-dialog rename
+					// path (SetField writes inst.Title/TitleLocked, which the
+					// status worker and reconciler read concurrently). Run the
+					// tmux-heavy postCommit after unlocking so a slow subprocess
+					// can't stall those readers.
+					locked := true // SetField(FieldTitle) locks; default for the nil-inst path
+					var postCommit func()
+					var setErr error
+					h.instancesMu.Lock()
 					if inst := h.getInstanceByID(sessionID); inst != nil {
-						if _, _, err := session.SetField(inst, session.FieldTitle, newName, nil); err != nil {
-							h.setError(err)
-						}
+						_, postCommit, setErr = session.SetField(inst, session.FieldTitle, newName, nil)
+						locked = inst.TitleLocked
+					}
+					h.instancesMu.Unlock()
+					if setErr != nil {
+						h.setError(setErr)
+					}
+					if postCommit != nil {
+						postCommit()
 					}
 					// Store pending title change so it survives reload races.
 					// If saveInstances() is skipped (isReloading=true), the reload
-					// replaces h.instances from disk, losing the in-memory rename.
-					// loadSessionsMsg re-applies pending changes after reload.
-					h.pendingTitleChanges[sessionID] = newName
+					// replaces h.instances from disk, losing the in-memory rename
+					// AND its lock. loadSessionsMsg re-applies both after reload.
+					h.pendingTitleChanges[sessionID] = pendingTitle{title: newName, locked: locked}
 					// Invalidate preview cache since title changed
 					h.invalidatePreviewCache(sessionID)
 					h.rebuildFlatItems()
@@ -10076,7 +10119,7 @@ func (h *Home) saveInstancesWithForce(force bool) {
 			}
 			// Clear pending title changes on successful save (rename was persisted)
 			if len(h.pendingTitleChanges) > 0 {
-				h.pendingTitleChanges = make(map[string]string)
+				h.pendingTitleChanges = make(map[string]pendingTitle)
 			}
 			// Clear pending group ops on successful save: the whole in-memory
 			// tree (including every recorded op's mutation) was just persisted,
@@ -11881,7 +11924,10 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 			sessionID = inst.ClaudeSessionID
 		}
 		if newName, changed := inst.ReconcileTitleFromClaude(sessionID); changed {
-			h.pendingTitleChanges[inst.ID] = newName
+			// A sync-sourced title stays unlocked (TitleLocked is false here,
+			// since ReconcileTitleFromClaude only runs on unlocked sessions) so
+			// it keeps tracking Claude's session name across reloads.
+			h.pendingTitleChanges[inst.ID] = pendingTitle{title: newName, locked: inst.TitleLocked}
 			h.invalidatePreviewCache(inst.ID)
 			h.rebuildFlatItems()
 			h.saveInstances()

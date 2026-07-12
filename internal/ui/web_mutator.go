@@ -532,7 +532,9 @@ func (m *WebMutator) RenameGroup(groupPath, newName string) error {
 		return err
 	}
 	defer unlock()
-	m.h.groupTree.RenameGroup(groupPath, newName)
+	if err := m.h.groupTree.RenameGroup(groupPath, newName); err != nil {
+		return err
+	}
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {

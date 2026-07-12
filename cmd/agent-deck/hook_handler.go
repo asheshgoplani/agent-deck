@@ -216,6 +216,10 @@ func handleHookHandler() {
 	// existing agent-deck adjective-noun title).
 	applyClaudeTitleSync(instanceID, sessionID)
 
+	// Propagate Claude Code's /cd working-directory change (v2.1.169+) so the
+	// TUI/web display and transcript lookups track the current cwd.
+	applyClaudeCwdSync(instanceID, payload.Cwd)
+
 	// Write cost event if this hook contains usage data
 	logCostDebug("hook event=%s instance=%s status=%s", payload.HookEventName, instanceID, status)
 	writeCostEvent(instanceID, data)

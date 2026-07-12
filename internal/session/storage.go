@@ -615,6 +615,82 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 	return fmt.Errorf("%w: %s", ErrInsertNotPersistent, newInstance.ID)
 }
 
+// SyncInstanceCwd updates the persisted project_path for id to newCwd when they differ.
+// If newCwd matches an entry in the instance's additional_paths, positions are swapped
+// so the multi-repo primary reflects Claude's current working directory. Reports whether
+// the instance was found in this profile.
+func (s *Storage) SyncInstanceCwd(id, newCwd string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return false, fmt.Errorf("storage database not initialized")
+	}
+	row, err := s.db.LoadInstanceByID(id)
+	if err != nil {
+		return false, err
+	}
+	if row == nil {
+		return false, nil
+	}
+	if row.ProjectPath == newCwd {
+		return true, nil
+	}
+	newToolData, err := swapAdditionalPath(row.ToolData, row.ProjectPath, newCwd)
+	if err != nil {
+		return true, err
+	}
+	row.ToolData = newToolData
+	row.ProjectPath = newCwd
+	row.LastAccessed = time.Now()
+	if err := s.db.SaveInstance(row); err != nil {
+		return true, fmt.Errorf("failed to persist cwd for %s: %w", id, err)
+	}
+	_ = s.db.Touch()
+	return true, nil
+}
+
+// swapAdditionalPath rewrites the additional_paths list in a tool_data blob so
+// that if newCwd is present, its slot is replaced by oldCwd (multi-repo swap).
+// All other tool_data keys are preserved verbatim.
+func swapAdditionalPath(toolData json.RawMessage, oldCwd, newCwd string) (json.RawMessage, error) {
+	if len(toolData) == 0 {
+		return toolData, nil
+	}
+	var blob map[string]json.RawMessage
+	if err := json.Unmarshal(toolData, &blob); err != nil {
+		return toolData, nil
+	}
+	raw, ok := blob["additional_paths"]
+	if !ok || len(raw) == 0 {
+		return toolData, nil
+	}
+	var paths []string
+	if err := json.Unmarshal(raw, &paths); err != nil {
+		return toolData, nil
+	}
+	swapped := false
+	for i, p := range paths {
+		if p == newCwd {
+			paths[i] = oldCwd
+			swapped = true
+			break
+		}
+	}
+	if !swapped {
+		return toolData, nil
+	}
+	updated, err := json.Marshal(paths)
+	if err != nil {
+		return toolData, err
+	}
+	blob["additional_paths"] = updated
+	out, err := json.Marshal(blob)
+	if err != nil {
+		return toolData, err
+	}
+	return out, nil
+}
+
 // saveSingleInstance writes one row via the targeted SaveInstance path
 // (single-row INSERT OR REPLACE — no DELETE-NOT-IN sweep). Wraps the
 // statedb call in the storage mutex and the nil-db guard so callers
