@@ -493,6 +493,9 @@ func TestHomeRenameSessionComplete(t *testing.T) {
 // pin state PinNone → PinTop → PinBottom → PinNone.  Pin-sessions was
 // shipped in #1335; the hotkey is the TUI surface for quick cycling.
 func TestHomePinCycleHotkey(t *testing.T) {
+	// RemoteSession items are ItemTypeRemoteSession and structurally
+	// cannot reach the pin-cycle path (handler gates on ItemTypeSession
+	// && item.Session != nil). No separate test is required.
 	home := NewHome()
 	home.width = 100
 	home.height = 30
