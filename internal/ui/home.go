@@ -7014,7 +7014,7 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return h, nil
 			}
 			itemIndex := h.mouseYToItemIndex(msg.Y)
-			if itemIndex >= 0 && itemIndex < len(h.flatItems) && h.flatItems[itemIndex].Type != session.ItemTypeDivider {
+			if itemIndex >= 0 && itemIndex < len(h.flatItems) && h.flatItems[itemIndex].Type == session.ItemTypeSession && h.flatItems[itemIndex].Session != nil {
 				if itemIndex != h.dragStartIndex {
 					h.dragMovedAway = true
 				}
@@ -7132,18 +7132,33 @@ func (h *Home) performDragMove(startIdx, hoverIdx int, _ string) {
 		return
 	}
 	hoverItem := h.flatItems[hoverIdx]
+	if hoverItem.Type != session.ItemTypeSession || hoverItem.Session == nil {
+		return
+	}
 	if startItem.Session.GroupPath != hoverItem.Session.GroupPath {
 		return
 	}
 
 	sess := startItem.Session
-	diff := hoverIdx - startIdx
-	if diff > 0 {
-		for i := 0; i < diff; i++ {
+	moves := 0
+	if hoverIdx > startIdx {
+		for i := startIdx + 1; i <= hoverIdx; i++ {
+			if h.flatItems[i].Type == session.ItemTypeSession && h.flatItems[i].Session != nil &&
+				h.flatItems[i].Session.ParentSessionID == sess.ParentSessionID {
+				moves++
+			}
+		}
+		for i := 0; i < moves; i++ {
 			h.groupTree.MoveSessionDown(sess)
 		}
 	} else {
-		for i := diff; i < 0; i++ {
+		for i := hoverIdx; i < startIdx; i++ {
+			if h.flatItems[i].Type == session.ItemTypeSession && h.flatItems[i].Session != nil &&
+				h.flatItems[i].Session.ParentSessionID == sess.ParentSessionID {
+				moves++
+			}
+		}
+		for i := 0; i < moves; i++ {
 			h.groupTree.MoveSessionUp(sess)
 		}
 	}
