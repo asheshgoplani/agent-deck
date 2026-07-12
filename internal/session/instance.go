@@ -5173,36 +5173,56 @@ func (i *Instance) GetJSONLPathChecked(peers []*Instance) (string, error) {
 	return i.GetJSONLPath(), nil
 }
 
-// GetJSONLPath returns the path to the Claude session JSONL file for analytics
-// Returns empty string if this is not a Claude session or no session ID is available
+// resolveClaudeTranscriptPath returns the path to the Claude JSONL transcript for
+// the given session, or "" if it cannot be found. It first tries the projects/
+// subdirectory whose name Claude derives from the project path; if that misses, it
+// falls back to locating the transcript by its uniquely-named <sessionID>.jsonl
+// anywhere under projects/.
+//
+// The fallback matters on WSL: agent-deck stores a Linux project path (e.g.
+// /home/user or /mnt/d/proj), but Claude Code runs as a Windows-native process and
+// names its project directory from the Windows/UNC form of the cwd (e.g.
+// \\wsl.localhost\Ubuntu\home\user -> --wsl-localhost-Ubuntu-home-user, or
+// D:\proj -> D--proj). The two encodings never match, so the computed path misses
+// and analytics / last-response silently break. The session ID is a UUID, so
+// matching on the filename is unambiguous.
+func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+
+	// Resolve symlinks in project path (macOS: /tmp -> /private/tmp).
+	resolvedPath := projectPath
+	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
+		resolvedPath = resolved
+	}
+
+	projectsDir := filepath.Join(configDir, "projects")
+
+	// Primary: the directory name Claude derives from the project path. Claude
+	// replaces every non-alphanumeric char with a hyphen.
+	primary := filepath.Join(projectsDir, ConvertToClaudeDirName(resolvedPath), sessionID+".jsonl")
+	if _, err := os.Stat(primary); err == nil {
+		return primary
+	}
+
+	// Fallback: the transcript may live under a differently-encoded directory name
+	// (notably WSL Linux path vs. Windows/UNC cwd). Locate it by its unique
+	// session-id filename. A UUID contains no glob metacharacters.
+	if matches, err := filepath.Glob(filepath.Join(projectsDir, "*", sessionID+".jsonl")); err == nil && len(matches) > 0 {
+		return matches[0]
+	}
+
+	return ""
+}
+
+// GetJSONLPath returns the path to the Claude session JSONL file for analytics.
+// Returns empty string if this is not a Claude session or the transcript is absent.
 func (i *Instance) GetJSONLPath() string {
 	if !IsClaudeCompatible(i.Tool) || i.ClaudeSessionID == "" {
 		return ""
 	}
-
-	configDir := GetClaudeConfigDir()
-
-	// Resolve symlinks in project path (macOS: /tmp -> /private/tmp)
-	resolvedPath := i.ProjectPath
-	if resolved, err := filepath.EvalSymlinks(i.ProjectPath); err == nil {
-		resolvedPath = resolved
-	}
-
-	// Convert project path to Claude's directory format
-	// Claude replaces ALL non-alphanumeric chars (spaces, !, etc.) with hyphens
-	// /Users/master/Code cloud/!Project -> -Users-master-Code-cloud--Project
-	projectDirName := ConvertToClaudeDirName(resolvedPath)
-	projectDir := filepath.Join(configDir, "projects", projectDirName)
-
-	// Build the JSONL file path
-	sessionFile := filepath.Join(projectDir, i.ClaudeSessionID+".jsonl")
-
-	// Verify file exists before returning
-	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
-		return ""
-	}
-
-	return sessionFile
+	return resolveClaudeTranscriptPath(GetClaudeConfigDir(), i.ProjectPath, i.ClaudeSessionID)
 }
 
 // getClaudeLastResponse extracts the last assistant message from Claude's JSONL file
@@ -5212,26 +5232,9 @@ func (i *Instance) getClaudeLastResponse() (*ResponseOutput, error) {
 		return nil, fmt.Errorf("no Claude session ID available for this instance")
 	}
 
-	configDir := GetClaudeConfigDir()
-
-	// Resolve symlinks in project path (macOS: /tmp -> /private/tmp)
-	resolvedPath := i.ProjectPath
-	if resolved, err := filepath.EvalSymlinks(i.ProjectPath); err == nil {
-		resolvedPath = resolved
-	}
-
-	// Convert project path to Claude's directory format
-	// Claude replaces ALL non-alphanumeric chars (spaces, !, etc.) with hyphens
-	// /Users/master/Code cloud/!Project -> -Users-master-Code-cloud--Project
-	projectDirName := ConvertToClaudeDirName(resolvedPath)
-	projectDir := filepath.Join(configDir, "projects", projectDirName)
-
-	// Use stored session ID directly
-	sessionFile := filepath.Join(projectDir, i.ClaudeSessionID+".jsonl")
-
-	// Check file exists
-	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
-		return nil, fmt.Errorf("session file not found: %s", sessionFile)
+	sessionFile := resolveClaudeTranscriptPath(GetClaudeConfigDir(), i.ProjectPath, i.ClaudeSessionID)
+	if sessionFile == "" {
+		return nil, fmt.Errorf("session file not found for claude_session_id %s", i.ClaudeSessionID)
 	}
 
 	// Read and parse the JSONL file
