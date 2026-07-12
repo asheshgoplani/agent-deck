@@ -12,7 +12,7 @@ before:
     # avoid requiring tailwindcss in the CI environment.
 
 env:
-  - GOTOOLCHAIN=go1.25.11
+  - GOTOOLCHAIN=go1.25.12
 
 builds:
   - id: agent-deck
