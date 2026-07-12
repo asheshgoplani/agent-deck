@@ -2810,6 +2810,49 @@ func TestMouseDoubleClickVerifiesItemIdentity(t *testing.T) {
 	}
 }
 
+// TestMouseDragReorder verifies that performDragMove reorders a session
+// within its group when called after a press→motion→release drag cycle.
+func TestMouseDragReorder(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	inst1 := session.NewInstance("session-1", "/tmp/a")
+	inst2 := session.NewInstance("session-2", "/tmp/b")
+	inst3 := session.NewInstance("session-3", "/tmp/c")
+
+	home.instancesMu.Lock()
+	home.instances = []*session.Instance{inst1, inst2, inst3}
+	home.instanceByID[inst1.ID] = inst1
+	home.instanceByID[inst2.ID] = inst2
+	home.instanceByID[inst3.ID] = inst3
+	home.instancesMu.Unlock()
+	home.groupTree = session.NewGroupTree(home.instances)
+	home.rebuildFlatItems()
+
+	if len(home.flatItems) != 4 {
+		t.Fatalf("expected 4 flat items (group + 3 sessions), got %d", len(home.flatItems))
+	}
+	if home.flatItems[1].Session.ID != inst1.ID || home.flatItems[2].Session.ID != inst2.ID || home.flatItems[3].Session.ID != inst3.ID {
+		t.Fatal("initial session order not as expected")
+	}
+
+	home.performDragMove(1, 3, "")
+
+	if home.flatItems[3].Session.ID != inst1.ID {
+		var ids []string
+		for _, fi := range home.flatItems {
+			if fi.Session != nil {
+				ids = append(ids, fi.Session.ID)
+			}
+		}
+		t.Errorf("after drag, inst1 should be at index 3, got order: %v", ids)
+	}
+	if home.flatItems[1].Session.ID != inst2.ID || home.flatItems[2].Session.ID != inst3.ID {
+		t.Error("other sessions should have shifted up after drag")
+	}
+}
+
 func TestHomeViewAllLayoutModes(t *testing.T) {
 	testCases := []struct {
 		name       string

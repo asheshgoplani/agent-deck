@@ -417,6 +417,12 @@ type Home struct {
 	lastClickIndex  int       // flatItems index of last click (-1 = none)
 	lastClickItemID string    // Session ID or group path at last click (guards against stale index)
 
+	// Mouse drag-drop reorder tracking
+	dragStartIndex  int    // flatItems index where drag began (-1 = idle)
+	dragStartSessID string // stable session ID at drag start
+	dragHoverIndex  int    // flatItems index under cursor during drag (-1 = no hover yet)
+	dragMovedAway   bool   // true once cursor left the start row (distinguishes drag from stationary click)
+
 	// Navigation tracking (PERFORMANCE: suspend background updates during rapid navigation)
 	lastNavigationTime time.Time // When user last navigated (up/down/j/k)
 	isNavigating       bool      // True if user is rapidly navigating
@@ -1147,6 +1153,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		pendingTitleChanges:       make(map[string]string),
 		debugMode:                 logging.IsDebugEnabled(),
 		lastClickIndex:            -1,
+		dragStartIndex:            -1,
+		dragHoverIndex:            -1,
 	}
 	h.sessionRenderSnapshot.Store(make(map[string]sessionRenderState))
 
@@ -6992,9 +7000,45 @@ func (h *Home) clickedItemID(index int) string {
 	return ""
 }
 
-// handleMouse handles mouse events (click to select, double-click to activate)
+// handleMouse handles mouse events (click to select, double-click to activate,
+// and drag-and-drop to reorder sessions within a group).
 func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if h.hasModalVisible() {
+		return h, nil
+	}
+
+	// Motion while left button is held: track drag hover position.
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionMotion {
+		if h.dragStartIndex >= 0 {
+			if h.getLayoutMode() == LayoutModeDual && msg.X >= h.sessionsPaneWidth() {
+				return h, nil
+			}
+			itemIndex := h.mouseYToItemIndex(msg.Y)
+			if itemIndex >= 0 && itemIndex < len(h.flatItems) && h.flatItems[itemIndex].Type != session.ItemTypeDivider {
+				if itemIndex != h.dragStartIndex {
+					h.dragMovedAway = true
+				}
+				h.dragHoverIndex = itemIndex
+			}
+		}
+		return h, nil
+	}
+
+	// On release, commit a drag if one occurred. Non-drag releases are
+	// no-ops (the click was already handled on press).
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionRelease {
+		startIdx := h.dragStartIndex
+		hoverIdx := h.dragHoverIndex
+		movedAway := h.dragMovedAway
+
+		h.dragStartIndex = -1
+		h.dragStartSessID = ""
+		h.dragHoverIndex = -1
+		h.dragMovedAway = false
+
+		if movedAway && hoverIdx >= 0 && hoverIdx != startIdx {
+			h.performDragMove(startIdx, hoverIdx, "")
+		}
 		return h, nil
 	}
 
@@ -7023,6 +7067,11 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 		h.lastUserInputTime = time.Now()
 
+		// Record drag start so Motion/Release can detect a drag.
+		h.dragStartIndex = itemIndex
+		h.dragStartSessID = h.clickedItemID(itemIndex)
+		h.dragMovedAway = false
+
 		// Double-click detection: same item within threshold, verified by stable ID
 		now := time.Now()
 		clickedID := h.clickedItemID(itemIndex)
@@ -7035,6 +7084,7 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 		if isDoubleClick {
 			h.lastClickIndex = -1 // Reset to prevent triple-click
+			h.dragStartIndex = -1 // Double-click attach takes priority over drag
 			item := h.flatItems[itemIndex]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				if h.hasActiveAnimation(item.Session.ID) {
@@ -7042,7 +7092,7 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					return h, nil
 				}
 				if item.Session.Exists() {
-					h.isAttaching.Store(true) // Prevent View() output during transition (atomic)
+					h.isAttaching.Store(true)
 					return h, h.attachSession(item.Session)
 				}
 			} else if item.Type == session.ItemTypeGroup {
@@ -7068,6 +7118,38 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return h, nil
+}
+
+// performDragMove moves the session at startIdx in flatItems to hoverIdx by
+// calling MoveSessionUp/Down repeatedly within the same group. Cross-group
+// drags are silently ignored (use M for cross-group moves).
+func (h *Home) performDragMove(startIdx, hoverIdx int, _ string) {
+	if startIdx < 0 || startIdx >= len(h.flatItems) || hoverIdx < 0 || hoverIdx >= len(h.flatItems) {
+		return
+	}
+	startItem := h.flatItems[startIdx]
+	if startItem.Type != session.ItemTypeSession || startItem.Session == nil {
+		return
+	}
+	hoverItem := h.flatItems[hoverIdx]
+	if startItem.Session.GroupPath != hoverItem.Session.GroupPath {
+		return
+	}
+
+	sess := startItem.Session
+	diff := hoverIdx - startIdx
+	if diff > 0 {
+		for i := 0; i < diff; i++ {
+			h.groupTree.MoveSessionDown(sess)
+		}
+	} else {
+		for i := diff; i < 0; i++ {
+			h.groupTree.MoveSessionUp(sess)
+		}
+	}
+	h.rebuildFlatItems()
+	h.moveCursorToSession(sess.ID)
+	h.saveInstances()
 }
 
 // getListContentStartY returns the Y coordinate where list items begin rendering
