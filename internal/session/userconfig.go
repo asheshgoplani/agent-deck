@@ -237,6 +237,9 @@ type UserConfig struct {
 	// Stage 1 (v1.9.67) is observe-only: it logs what it WOULD do, takes no
 	// action. See SelfHealSettings.
 	SelfHeal SelfHealSettings `toml:"selfheal,omitempty"`
+
+	// Performance holds opt-in resource tuning for multi-instance setups.
+	Performance PerformanceSettings `toml:"performance,omitempty"`
 }
 
 // SelfHealSettings controls the self-heal supervision policy (SELF-HEAL-DESIGN.md
@@ -314,6 +317,27 @@ func (s SelfHealSettings) IsSessionOptedOut(id, title string) bool {
 		}
 	}
 	return false
+}
+
+// PerformanceSettings tunes background-work sharing between concurrent
+// agent-deck instances.
+type PerformanceSettings struct {
+	// ClaimPolling enables per-session ownership claims in state.db: each
+	// session is actively polled by exactly one instance; others render its
+	// status from the DB. Default false (every instance polls everything,
+	// today's behavior).
+	//
+	//	[performance]
+	//	claim_polling = true
+	ClaimPolling *bool `toml:"claim_polling,omitempty"`
+}
+
+// ClaimPollingEnabled reports whether claim-based polling is enabled.
+func (c *UserConfig) ClaimPollingEnabled() bool {
+	if c == nil || c.Performance.ClaimPolling == nil {
+		return false
+	}
+	return *c.Performance.ClaimPolling
 }
 
 // UISettings controls TUI layout proportions.
