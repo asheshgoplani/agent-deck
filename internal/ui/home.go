@@ -2551,11 +2551,13 @@ func (h *Home) reconcileLivePipes() {
 	// Snapshot live instances: session name -> socket (the source of truth).
 	h.instancesMu.RLock()
 	socketByName := make(map[string]string, len(h.instances))
+	nameToID := make(map[string]string, len(h.instances))
 	sockets := make([]string, 0, len(h.instances))
 	socketSeen := make(map[string]bool, len(h.instances))
 	for _, inst := range h.instances {
 		if ts := inst.GetTmuxSession(); ts != nil {
 			socketByName[ts.Name] = inst.TmuxSocketName
+			nameToID[ts.Name] = inst.ID
 			if !socketSeen[inst.TmuxSocketName] {
 				socketSeen[inst.TmuxSocketName] = true
 				sockets = append(sockets, inst.TmuxSocketName)
@@ -2567,6 +2569,21 @@ func (h *Home) reconcileLivePipes() {
 	h.focusMu.Lock()
 	focused := h.focusedSessionName
 	h.focusMu.Unlock()
+
+	h.ownedMu.RLock()
+	ownedSnapshot := h.ownedSessions
+	h.ownedMu.RUnlock()
+	socketByName = filterPipeCandidates(socketByName, nameToID, ownedSnapshot, focused, h.claimPolling)
+	// Rebuild the socket list from the filtered candidates so the attached
+	// scan does not touch other instances' sockets.
+	sockets = sockets[:0]
+	socketSeen = map[string]bool{}
+	for _, s := range socketByName {
+		if !socketSeen[s] {
+			socketSeen[s] = true
+			sockets = append(sockets, s)
+		}
+	}
 
 	attached := tmux.GetAttachedSessionsOnSockets(sockets...)
 	desired := desiredLivePipes(h.liveSet, focused, attached, socketByName)
