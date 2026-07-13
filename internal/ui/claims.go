@@ -88,6 +88,9 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 	for _, inst := range in {
 		inIDs = append(inIDs, inst.ID)
 	}
+	// A claim for a session not yet flushed to `instances` by SaveInstances
+	// can be pruned by a neighbor's PruneStaleSessionClaims; this self-heals
+	// on the next 2s re-claim, so it's a benign, transient race.
 	owned, err := db.ClaimSessions(inIDs, scope, claimStaleAfter)
 	if err != nil {
 		uiLog.Warn("claim_reconcile_failed", slog.String("error", err.Error()))
@@ -97,15 +100,27 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 		uiLog.Debug("claim_heartbeat_refresh_failed", slog.String("error", err.Error()))
 	}
 
+	// Snapshot the previously owned set before it's overwritten below, so the
+	// release below can be intersected with it.
+	h.ownedMu.RLock()
+	prevOwned := h.ownedSessions
+	h.ownedMu.RUnlock()
+
 	// Release claims we hold for sessions that moved out of scope, plus
 	// archived sessions: they're display-frozen and never polled, so holding
 	// their claim only blocks other instances from noticing they're dead.
+	// Intersected with the previous owned snapshot so a large archived
+	// backlog doesn't generate no-op DELETE churn every sweep.
 	outIDs := make([]string, 0, len(out)+len(archived))
 	for _, inst := range out {
-		outIDs = append(outIDs, inst.ID)
+		if prevOwned[inst.ID] {
+			outIDs = append(outIDs, inst.ID)
+		}
 	}
 	for _, inst := range archived {
-		outIDs = append(outIDs, inst.ID)
+		if prevOwned[inst.ID] {
+			outIDs = append(outIDs, inst.ID)
+		}
 	}
 	if err := db.ReleaseClaims(outIDs); err != nil {
 		uiLog.Debug("claim_release_failed", slog.String("error", err.Error()))
