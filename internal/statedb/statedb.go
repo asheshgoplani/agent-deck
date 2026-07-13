@@ -1696,17 +1696,18 @@ func (s *StateDB) ReleaseClaims(ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	placeholders := make([]string, len(ids))
 	args := make([]any, 0, len(ids)+1)
 	args = append(args, s.token)
-	for _, id := range ids {
+	for i, id := range ids {
+		placeholders[i] = "?"
 		args = append(args, id)
 	}
+	// #nosec G202 -- placeholders is a fixed sequence of "?" tokens generated
+	// from len(ids); all values flow through args[], never the SQL string.
+	query := "DELETE FROM session_claims WHERE owner_token = ? AND session_id IN (" + strings.Join(placeholders, ",") + ")"
 	return withBusyRetry(func() error {
-		_, err := s.db.Exec(
-			"DELETE FROM session_claims WHERE owner_token = ? AND session_id IN ("+placeholders+")",
-			args...,
-		)
+		_, err := s.db.Exec(query, args...)
 		return err
 	})
 }
