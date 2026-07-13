@@ -89,7 +89,19 @@ func TestShouldSweepInstance(t *testing.T) {
 	}
 	other := &session.Instance{ID: "b"}
 	if hOn.shouldSweepInstance(other) {
-		t.Error("non-owned instance must not be swept")
+		t.Error("non-owned, non-orphan-due instance must not be swept")
+	}
+}
+
+func TestShouldSweepInstanceOrphanDue(t *testing.T) {
+	inst := &session.Instance{ID: "orphan-1"}
+	h := &Home{
+		claimPolling:  true,
+		ownedSessions: map[string]bool{"a": true},
+		orphanPolled:  map[string]bool{"orphan-1": true},
+	}
+	if !h.shouldSweepInstance(inst) {
+		t.Error("orphan-due instance must be swept so its status gets polled and persisted")
 	}
 }
 

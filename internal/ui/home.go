@@ -2547,9 +2547,12 @@ func (h *Home) recordFocusedSession() {
 //   - each session connects on its REAL socket, not a guessed default;
 //   - names with no live instance (deleted/restarted sessions) are dropped
 //     instead of being retried on every tick;
-//   - attached sessions are pinned across EVERY socket in use, so an attached
-//     session on an isolated socket keeps its live pipe rather than being
-//     evicted to the 2s status poll.
+//   - attached sessions are pinned across every socket passed in, so an
+//     attached session on an isolated socket keeps its live pipe rather than
+//     being evicted to the 2s status poll. GetAttachedSessionsOnSockets
+//     (tmux.go) always scans the default socket in addition to whatever is
+//     passed here; the claim-polling filter above only limits which EXTRA
+//     (non-default) sockets get scanned, not the default one.
 func (h *Home) reconcileLivePipes() {
 	pm := tmux.GetPipeManager()
 	if pm == nil {
@@ -4098,7 +4101,12 @@ func (h *Home) backgroundStatusUpdate() {
 		lastNano := h.idleTimeoutLastTick.Load()
 		if lastNano == 0 || time.Duration(nowNano-lastNano) >= idleTickEvery {
 			if h.idleTimeoutLastTick.CompareAndSwap(lastNano, nowNano) {
-				h.idleTimeoutWatcher.Tick(h.ownedOnly(instances))
+				// Full set, not ownedOnly: Tick's lastSeen cleanup has a
+				// documented invariant that it must see every instance to
+				// prune dead entries correctly. Sessions with
+				// IdleTimeoutSecs>0 are rare, so the cross-instance dedupe
+				// win here was negligible against that correctness leak.
+				h.idleTimeoutWatcher.Tick(instances)
 			}
 		}
 	}
@@ -4279,15 +4287,16 @@ func (h *Home) backgroundStatusUpdate() {
 				if !ok {
 					continue
 				}
-				// Non-owned sessions render the owner's status.
+				// Non-owned sessions render the owner's status. Tool is NOT
+				// imported from the shared row: it's hydrated once from the
+				// instances table and effectively immutable mid-session, and
+				// render paths read inst.Tool lock-free, so writing it here
+				// from a background goroutine would be a data race.
 				if h.claimPolling && !h.isOwned(inst.ID) && s.Status != "" {
 					if session.Status(s.Status) != inst.GetStatusThreadSafe() {
 						statusChanged.Store(true)
 					}
 					inst.SetStatusThreadSafe(session.Status(s.Status))
-					if s.Tool != "" {
-						inst.SetToolThreadSafe(s.Tool)
-					}
 				}
 			}
 		}
@@ -4315,12 +4324,14 @@ func (h *Home) backgroundStatusUpdate() {
 		}
 
 		// Write statuses only when changed to reduce SQLite write pressure.
-		// Non-owned sessions are not written: the owning instance is the
-		// source of truth for that session's status row.
+		// Sessions neither owned nor orphan-polled this sweep are not written:
+		// the owning instance (or, for orphans, this primary's orphan sweep)
+		// is the source of truth for that session's status row. Orphans MUST
+		// be written here — that's the entire point of polling them above.
 		currentIDs := make(map[string]struct{}, len(instances))
 		for _, inst := range instances {
 			currentIDs[inst.ID] = struct{}{}
-			if !h.isOwned(inst.ID) {
+			if !h.isPolledByMe(inst.ID) {
 				continue
 			}
 			status := string(inst.GetStatusThreadSafe())
@@ -4691,14 +4702,22 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 
 	// Step 1: Always update visible sessions (Priority 1B - visible first)
 	for _, inst := range instancesCopy {
-		if visibleIDs[inst.ID] {
-			oldStatus := inst.GetStatusThreadSafe()
-			_ = inst.UpdateStatus() // Ignore errors in background worker
-			if inst.GetStatusThreadSafe() != oldStatus {
-				statusChanged = true
-			}
-			updated[inst.ID] = true
+		if !visibleIDs[inst.ID] {
+			continue
 		}
+		// Skip sessions this instance neither owns nor is orphan-polling this
+		// sweep: mirrors the background sweep's gate so the incremental poll
+		// path can't defeat the dedup claim polling promises (flag off or nil
+		// owned map keeps isPolledByMe fail-open, so no behavior change there).
+		if !h.isPolledByMe(inst.ID) {
+			continue
+		}
+		oldStatus := inst.GetStatusThreadSafe()
+		_ = inst.UpdateStatus() // Ignore errors in background worker
+		if inst.GetStatusThreadSafe() != oldStatus {
+			statusChanged = true
+		}
+		updated[inst.ID] = true
 	}
 
 	// Step 2: Round-robin through non-visible sessions (Priority 1A - batching)
@@ -4714,6 +4733,13 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 
 		// Skip if already updated (visible)
 		if updated[inst.ID] {
+			continue
+		}
+
+		// Skip sessions this instance neither owns nor is orphan-polling this
+		// sweep (mirrors the background sweep's gate); just advance the cursor
+		// past it like any other skip below, don't stall the round-robin.
+		if !h.isPolledByMe(inst.ID) {
 			continue
 		}
 

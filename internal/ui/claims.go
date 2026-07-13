@@ -240,9 +240,12 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 	h.lastOrphanSweep = time.Now()
 }
 
-// shouldSweepInstance combines the archived skip with the ownership gate.
+// shouldSweepInstance combines the archived skip with the polling gate: the
+// background sweep polls a session it owns OR that is due for this sweep's
+// orphan pass (isPolledByMe), so orphan statuses actually get polled and
+// persisted instead of being silently dropped.
 func (h *Home) shouldSweepInstance(inst *session.Instance) bool {
-	return shouldPollStatusInLoop(inst) && h.isOwned(inst.ID)
+	return shouldPollStatusInLoop(inst) && h.isPolledByMe(inst.ID)
 }
 
 // ownedOnly filters instances to those this instance actively polls.
