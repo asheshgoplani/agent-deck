@@ -574,6 +574,12 @@ type Home struct {
 	// just events written to the local cost_events table.
 	remoteCosts   map[string]*costs.RemoteCostSummary // remoteName -> summary
 	remoteCostsMu sync.RWMutex
+
+	// Claim polling ([performance] claim_polling): ownership gating for
+	// background work in multi-instance setups.
+	claimPolling  bool
+	ownedMu       sync.RWMutex
+	ownedSessions map[string]bool
 	// Cost tracking
 	costStore            *costs.Store
 	costPricer           *costs.Pricer
@@ -1335,6 +1341,10 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.remoteSessionRefreshSec = (session.UISettings{}).GetRemoteSessionRefreshSecs()
 		h.footerMode = (session.UISettings{}).GetFooter()
 	}
+	// [performance] claim_polling: snapshot once at startup. Nil-safe;
+	// defaults to false (today's behavior) when unset or unreadable.
+	claimCfg, _ := session.LoadUserConfig()
+	h.claimPolling = claimCfg.ClaimPollingEnabled()
 	h.remoteLatency = make(map[string]session.RemoteLatency)
 
 	// Initialize system stats collector if enabled
@@ -1770,10 +1780,7 @@ func (h *Home) consumeFocusRequest(db *statedb.StateDB) tea.Cmd {
 // isInGroupScope returns true if the given path is within the active group scope.
 // Returns true for all paths when no scope is set.
 func (h *Home) isInGroupScope(path string) bool {
-	if h.groupScope == "" {
-		return true
-	}
-	return path == h.groupScope || strings.HasPrefix(path, h.groupScope+"/")
+	return pathInScope(path, h.groupScope)
 }
 
 // scopedGroupPaths returns group paths filtered to the active scope.
@@ -9306,6 +9313,7 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		// Release primary claim and unregister from the heartbeat table
 		if db := statedb.GetGlobal(); db != nil {
 			_ = db.ResignPrimary()
+			_ = db.ReleaseAllClaims()
 			_ = db.UnregisterInstance()
 		}
 		// Clean up notification bar (clear tmux status bars and unbind keys)
