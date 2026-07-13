@@ -96,10 +96,6 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 		uiLog.Warn("claim_reconcile_failed", slog.String("error", err.Error()))
 		return // keep previous owned set; next sweep retries
 	}
-	if err := db.RefreshClaimHeartbeats(); err != nil {
-		uiLog.Debug("claim_heartbeat_refresh_failed", slog.String("error", err.Error()))
-	}
-
 	// Snapshot the previously owned set before it's overwritten below, so the
 	// release below can be intersected with it.
 	h.ownedMu.RLock()
