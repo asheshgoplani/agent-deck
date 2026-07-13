@@ -425,6 +425,21 @@ func (s *StateDB) Migrate() error {
 		return fmt.Errorf("statedb: create heartbeats: %w", err)
 	}
 
+	// session claims: per-session polling ownership for multi-instance
+	// deduplication ([performance] claim_polling). One row per session that
+	// some instance actively polls; heartbeat-stale rows are taken over.
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS session_claims (
+			session_id TEXT PRIMARY KEY,
+			owner_pid  INTEGER NOT NULL,
+			claimed_at INTEGER NOT NULL,
+			heartbeat  INTEGER NOT NULL,
+			scope      TEXT NOT NULL DEFAULT ''
+		)
+	`); err != nil {
+		return fmt.Errorf("statedb: create session_claims: %w", err)
+	}
+
 	// recent_sessions table (schema v2)
 	if _, err := tx.Exec(`
 		CREATE TABLE IF NOT EXISTS recent_sessions (
@@ -1539,6 +1554,144 @@ func (s *StateDB) ResignPrimary() error {
 		s.pid,
 	)
 	return err
+}
+
+// --- Session Claims ---
+
+// ClaimRow is one row of the session_claims ownership table.
+type ClaimRow struct {
+	SessionID string
+	OwnerPID  int
+	Scope     string
+	Heartbeat int64
+}
+
+// ClaimSessions atomically claims each id for this process. A claim succeeds
+// when the row is absent, already ours, heartbeat-stale, or held with a
+// strictly shorter (less specific) scope — longer group path wins, equal
+// specificity is first-come (no stealing, no flapping). Returns the ids owned
+// by this process after the transaction.
+func (s *StateDB) ClaimSessions(ids []string, scope string, staleAfter time.Duration) (map[string]bool, error) {
+	owned := make(map[string]bool, len(ids))
+	if len(ids) == 0 {
+		return owned, nil
+	}
+	err := withBusyRetry(func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("statedb: begin claims: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		now := time.Now().Unix()
+		cutoff := time.Now().Add(-staleAfter).Unix()
+		for _, id := range ids {
+			if _, err := tx.Exec(`
+				INSERT INTO session_claims (session_id, owner_pid, claimed_at, heartbeat, scope)
+				VALUES (?, ?, ?, ?, ?)
+				ON CONFLICT(session_id) DO UPDATE SET
+					owner_pid  = excluded.owner_pid,
+					claimed_at = excluded.claimed_at,
+					heartbeat  = excluded.heartbeat,
+					scope      = excluded.scope
+				WHERE session_claims.owner_pid = excluded.owner_pid
+				   OR session_claims.heartbeat < ?
+				   OR length(excluded.scope) > length(session_claims.scope)
+			`, id, s.pid, now, now, scope, cutoff); err != nil {
+				return fmt.Errorf("statedb: claim %s: %w", id, err)
+			}
+		}
+
+		rows, err := tx.Query("SELECT session_id FROM session_claims WHERE owner_pid = ?", s.pid)
+		if err != nil {
+			return fmt.Errorf("statedb: read claims: %w", err)
+		}
+		defer rows.Close()
+		mine := make(map[string]bool)
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return fmt.Errorf("statedb: scan claim: %w", err)
+			}
+			mine[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if mine[id] {
+				owned[id] = true
+			}
+		}
+		return tx.Commit()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return owned, nil
+}
+
+// RefreshClaimHeartbeats bumps the heartbeat on every claim owned by this
+// process. Called once per status sweep alongside Heartbeat().
+func (s *StateDB) RefreshClaimHeartbeats() error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(
+			"UPDATE session_claims SET heartbeat = ? WHERE owner_pid = ?",
+			time.Now().Unix(), s.pid,
+		)
+		return err
+	})
+}
+
+// ReleaseClaims deletes the given claims when owned by this process (sessions
+// that left this instance's scope).
+func (s *StateDB) ReleaseClaims(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return withBusyRetry(func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		for _, id := range ids {
+			if _, err := tx.Exec(
+				"DELETE FROM session_claims WHERE session_id = ? AND owner_pid = ?",
+				id, s.pid,
+			); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	})
+}
+
+// ReleaseAllClaims deletes every claim owned by this process. Shutdown path,
+// same place as ResignPrimary.
+func (s *StateDB) ReleaseAllClaims() error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("DELETE FROM session_claims WHERE owner_pid = ?", s.pid)
+		return err
+	})
+}
+
+// LoadClaims returns all claim rows keyed by session id.
+func (s *StateDB) LoadClaims() (map[string]ClaimRow, error) {
+	rows, err := s.db.Query("SELECT session_id, owner_pid, scope, heartbeat FROM session_claims")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]ClaimRow)
+	for rows.Next() {
+		var r ClaimRow
+		if err := rows.Scan(&r.SessionID, &r.OwnerPID, &r.Scope, &r.Heartbeat); err != nil {
+			return nil, err
+		}
+		out[r.SessionID] = r
+	}
+	return out, rows.Err()
 }
 
 // --- Metadata ---
