@@ -4229,11 +4229,46 @@ func (h *Home) backgroundStatusUpdate() {
 		slowMu.Unlock()
 	}
 
-	// SQLite sync: heartbeat, status writes, shared-status reads (enables
-	// multi-instance coordination). Runs before refreshSessionRenderSnapshot
-	// so that shared statuses applied below (non-owned sessions render the
-	// owner's status) land in the same render snapshot instead of trailing by
-	// one sweep.
+	// SQLite reads: shared statuses from other instances. Runs before the
+	// render snapshot so that acks and (under claim polling) the owner's
+	// status for non-owned sessions land in the same snapshot instead of
+	// trailing by one sweep. Writes stay after the snapshot (below) so the
+	// auto-name persist keeps reading the freshly refreshed snapshot,
+	// exactly as before claim polling existed.
+	if db := statedb.GetGlobal(); db != nil {
+		// Read shared statuses from SQLite (picks up acks and, for non-owned
+		// sessions under claim polling, the owning instance's status/tool).
+		if sharedStatuses, err := db.ReadAllStatuses(); err == nil {
+			for _, inst := range instances {
+				s, ok := sharedStatuses[inst.ID]
+				if !ok {
+					continue
+				}
+				if s.Acknowledged {
+					inst.SetAcknowledgedFromShared(true)
+				}
+				// Non-owned sessions render the owner's status.
+				if h.claimPolling && !h.isOwned(inst.ID) && s.Status != "" {
+					if session.Status(s.Status) != inst.GetStatusThreadSafe() {
+						statusChanged.Store(true)
+					}
+					inst.SetStatusThreadSafe(session.Status(s.Status))
+					if s.Tool != "" {
+						inst.SetToolThreadSafe(s.Tool)
+					}
+				}
+			}
+		}
+	}
+
+	// Invalidate cache if status changed
+	if statusChanged.Load() {
+		h.cachedStatusCounts.valid.Store(false)
+		h.publishWebSessionStates(instances)
+	}
+	h.refreshSessionRenderSnapshot(instances)
+
+	// SQLite writes: heartbeat, status writes (enables multi-instance coordination)
 	if db := statedb.GetGlobal(); db != nil {
 		// Heartbeat: mark this process as alive
 		_ = db.Heartbeat()
@@ -4268,10 +4303,8 @@ func (h *Home) backgroundStatusUpdate() {
 
 		// Persist the live Claude task description for auto-named sessions so the
 		// meaningful name survives an app reopen (it would otherwise live only in
-		// the in-memory render snapshot). This now runs before
-		// refreshSessionRenderSnapshot (see comment above), so getSessionRenderState
-		// still reflects the previous tick's pane title here; the description
-		// simply catches up one sweep later, same as before this reorder. Only
+		// the in-memory render snapshot). The snapshot was refreshed just above,
+		// so getSessionRenderState returns the freshly-cleaned pane title. Only
 		// write on change (mirrors the status loop) and only when non-empty — an
 		// empty/idle pane must not clobber a previously captured description.
 		for _, inst := range instances {
@@ -4297,39 +4330,7 @@ func (h *Home) backgroundStatusUpdate() {
 				delete(h.lastPersistedAutoNameDesc, id)
 			}
 		}
-
-		// Read shared statuses from SQLite (picks up acks and, for non-owned
-		// sessions under claim polling, the owning instance's status/tool).
-		if sharedStatuses, err := db.ReadAllStatuses(); err == nil {
-			for _, inst := range instances {
-				s, ok := sharedStatuses[inst.ID]
-				if !ok {
-					continue
-				}
-				if s.Acknowledged {
-					inst.SetAcknowledgedFromShared(true)
-				}
-				// Non-owned sessions render the owner's status.
-				if h.claimPolling && !h.isOwned(inst.ID) && s.Status != "" {
-					if session.Status(s.Status) != inst.GetStatusThreadSafe() {
-						statusChanged.Store(true)
-					}
-					inst.SetStatusThreadSafe(session.Status(s.Status))
-					if s.Tool != "" {
-						inst.SetToolThreadSafe(s.Tool)
-					}
-				}
-			}
-		}
-
 	}
-
-	// Invalidate cache if status changed
-	if statusChanged.Load() {
-		h.cachedStatusCounts.valid.Store(false)
-		h.publishWebSessionStates(instances)
-	}
-	h.refreshSessionRenderSnapshot(instances)
 
 	// Always sync notification bar - must check for signal file (Ctrl+b N acknowledgments)
 	// even when no status changes occurred
