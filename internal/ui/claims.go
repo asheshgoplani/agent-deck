@@ -81,6 +81,7 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 	h.groupScopeMu.RUnlock()
 
 	active := session.FilterInstancesByArchive(instances, false)
+	archived := session.FilterInstancesByArchive(instances, true)
 	in, out := splitInstancesByScope(active, scope)
 
 	inIDs := make([]string, 0, len(in))
@@ -92,14 +93,23 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 		uiLog.Warn("claim_reconcile_failed", slog.String("error", err.Error()))
 		return // keep previous owned set; next sweep retries
 	}
-	_ = db.RefreshClaimHeartbeats()
+	if err := db.RefreshClaimHeartbeats(); err != nil {
+		uiLog.Debug("claim_heartbeat_refresh_failed", slog.String("error", err.Error()))
+	}
 
-	// Release claims we hold for sessions that moved out of scope.
-	outIDs := make([]string, 0, len(out))
+	// Release claims we hold for sessions that moved out of scope, plus
+	// archived sessions: they're display-frozen and never polled, so holding
+	// their claim only blocks other instances from noticing they're dead.
+	outIDs := make([]string, 0, len(out)+len(archived))
 	for _, inst := range out {
 		outIDs = append(outIDs, inst.ID)
 	}
-	_ = db.ReleaseClaims(outIDs)
+	for _, inst := range archived {
+		outIDs = append(outIDs, inst.ID)
+	}
+	if err := db.ReleaseClaims(outIDs); err != nil {
+		uiLog.Debug("claim_release_failed", slog.String("error", err.Error()))
+	}
 
 	h.ownedMu.Lock()
 	h.ownedSessions = owned
