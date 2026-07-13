@@ -577,9 +577,16 @@ type Home struct {
 
 	// Claim polling ([performance] claim_polling): ownership gating for
 	// background work in multi-instance setups.
-	claimPolling    bool
-	ownedMu         sync.RWMutex
-	ownedSessions   map[string]bool
+	claimPolling  bool
+	ownedMu       sync.RWMutex
+	ownedSessions map[string]bool
+	// orphanPolled holds sessions the primary is slow-polling this sweep
+	// because no scoped instance claims them (nil when no orphan sweep is
+	// due). Deliberately separate from ownedSessions: orphans must never be
+	// claimed, pinned to pipes, idle-watched, or revived, and must never
+	// poison the next sweep's prevOwned snapshot. Replaced wholesale
+	// (copy-on-write) under ownedMu, same discipline as ownedSessions.
+	orphanPolled    map[string]bool
 	groupScopeMu    sync.RWMutex // Guards groupScope for cross-goroutine read in reconcileClaims
 	lastOrphanSweep time.Time    // last time the primary polled for orphaned sessions
 	// Cost tracking
@@ -4035,6 +4042,19 @@ func (h *Home) backgroundStatusUpdate() {
 		return
 	}
 
+	// Get instances snapshot
+	h.instancesMu.RLock()
+	instances := make([]*session.Instance, len(h.instances))
+	copy(instances, h.instances)
+	h.instancesMu.RUnlock()
+
+	// Claim reconciliation: decide which sessions THIS instance polls. This
+	// runs BEFORE the tmux-alive and empty-instances early returns below:
+	// claims lifecycle (heartbeats, orphan sweep, primary election) is
+	// DB-only and must not freeze just because tmux is down or the instance
+	// list is briefly empty.
+	h.reconcileClaims(instances)
+
 	// Fast-fail: skip entire status loop when tmux server is dead.
 	// Without this, every subprocess call takes ~3s to fail, causing 30-50s UI freezes.
 	if !tmux.IsServerAlive() {
@@ -4056,18 +4076,9 @@ func (h *Home) backgroundStatusUpdate() {
 		perfLog.Warn("slow_refresh", slog.Duration("duration", refreshDur))
 	}
 
-	// Get instances snapshot
-	h.instancesMu.RLock()
-	if len(h.instances) == 0 {
-		h.instancesMu.RUnlock()
+	if len(instances) == 0 {
 		return
 	}
-	instances := make([]*session.Instance, len(h.instances))
-	copy(instances, h.instances)
-	h.instancesMu.RUnlock()
-
-	// Claim reconciliation: decide which sessions THIS instance polls.
-	h.reconcileClaims(instances)
 
 	// Active (non-archived) subset, computed once and reused by the loops that
 	// only concern live sessions. Archived sessions have torn-down panes, so

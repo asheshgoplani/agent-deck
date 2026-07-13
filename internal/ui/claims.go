@@ -11,9 +11,12 @@ import (
 
 const (
 	// claimStaleAfter is how old a claim heartbeat may be before another
-	// instance takes the session over. Heartbeats refresh every status sweep
-	// (2–10s), so 15s tolerates one slow sweep without flapping.
-	claimStaleAfter = 15 * time.Second
+	// instance takes the session over. nextStatusInterval can pause up to
+	// maxStatusInterval (10s) AFTER a sweep that itself may run several
+	// seconds long, so the gap between two heartbeats from a live owner can
+	// exceed the naive "one sweep interval" estimate. 30s clears that worst
+	// case with margin while still reclaiming a genuinely dead owner promptly.
+	claimStaleAfter = 30 * time.Second
 
 	// orphanSweepEvery is how often the primary instance polls for orphaned
 	// sessions (no live claim from any scoped instance).
@@ -55,24 +58,63 @@ func splitInstancesByScope(instances []*session.Instance, scope string) (in, out
 }
 
 // isOwned reports whether this instance actively polls the session. With
-// claim polling off every session is owned — exactly today's behavior.
+// claim polling off, or before the first successful reconcile (or whenever
+// the claim DB is unavailable), ownedSessions is nil and every session is
+// owned — degradation is fail-open, never fail-closed: a broken claim table
+// must never cause an instance to silently stop polling everything it holds.
 func (h *Home) isOwned(sessionID string) bool {
 	if !h.claimPolling {
 		return true
 	}
 	h.ownedMu.RLock()
+	owned := h.ownedSessions
+	h.ownedMu.RUnlock()
+	if owned == nil {
+		return true
+	}
+	return owned[sessionID]
+}
+
+// isPolledByMe reports whether this instance polls the session this sweep,
+// either because it owns it or because it's the primary's orphan sweep
+// target. Orphans are polled (status + WriteStatus) but never claimed, never
+// pinned to pipes, never idle-watched, never revived — callers that gate
+// those must keep using isOwned, not isPolledByMe.
+func (h *Home) isPolledByMe(sessionID string) bool {
+	if h.isOwned(sessionID) {
+		return true
+	}
+	h.ownedMu.RLock()
 	defer h.ownedMu.RUnlock()
-	return h.ownedSessions[sessionID]
+	return h.orphanPolled[sessionID]
+}
+
+// invalidateNewlyOwnedMemo drops memo[id] for every id that is owned now but
+// wasn't in prevOwned (nil prevOwned means "never reconciled before", so
+// every currently owned id counts as newly owned). A stale per-instance
+// status memo inherited from before this instance owned the session must not
+// suppress the first write-through as the new owner.
+func invalidateNewlyOwnedMemo(memo map[string]string, owned, prevOwned map[string]bool) {
+	for id := range owned {
+		if !prevOwned[id] {
+			delete(memo, id)
+		}
+	}
 }
 
 // reconcileClaims claims in-scope sessions, releases out-of-scope ones, and
-// refreshes claim heartbeats. Runs once per background status sweep.
+// (on the primary, on the sweep the orphan interval is due) refreshes the
+// separate orphan-polled set. Runs once per background status sweep.
 func (h *Home) reconcileClaims(instances []*session.Instance) {
 	if !h.claimPolling {
 		return
 	}
 	db := statedb.GetGlobal()
 	if db == nil {
+		// Claim machinery unavailable: fail open. Leave ownedSessions as-is
+		// (nil on first reconcile, or the last good set) rather than clearing
+		// it — isOwned/isPolledByMe treat nil as "own everything", matching
+		// flag-off behavior instead of polling nothing.
 		return
 	}
 
@@ -93,8 +135,8 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 	// on the next 2s re-claim, so it's a benign, transient race.
 	owned, err := db.ClaimSessions(inIDs, scope, claimStaleAfter)
 	if err != nil {
-		uiLog.Warn("claim_reconcile_failed", slog.String("error", err.Error()))
-		return // keep previous owned set; next sweep retries
+		uiLog.Warn("claim_reconcile_failed_degraded_fail_open", slog.String("error", err.Error()))
+		return // keep previous owned set (nil stays nil, fail-open); next sweep retries
 	}
 	// Snapshot the previously owned set before it's overwritten below, so the
 	// release below can be intersected with it.
@@ -122,40 +164,80 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 		uiLog.Debug("claim_release_failed", slog.String("error", err.Error()))
 	}
 
+	// Sessions newly owned this sweep may carry a status memo written while a
+	// different instance (or nobody, in fail-open mode) owned them; drop it
+	// so the first sweep as new owner always writes through.
+	invalidateNewlyOwnedMemo(h.lastPersistedStatus, owned, prevOwned)
+
 	h.ownedMu.Lock()
 	h.ownedSessions = owned
 	h.ownedMu.Unlock()
 
 	// Orphan sweep: the primary instance slow-polls sessions no scoped
 	// instance claims, so their statuses and notifications stay alive.
-	// Merged into the owned set for THIS sweep only; never claimed.
-	if time.Since(h.lastOrphanSweep) >= orphanSweepEvery {
-		h.lastOrphanSweep = time.Now()
-		if isPrimary, err := db.ElectPrimary(30 * time.Second); err == nil && isPrimary {
-			claims, err := db.LoadClaims()
-			if err == nil {
-				allIDs := make([]string, 0, len(active))
-				for _, inst := range active {
-					allIDs = append(allIDs, inst.ID)
-				}
-				// ownedSessions is read by concurrent goroutines that snapshot the
-				// map reference under RLock and use it after RUnlock (see
-				// reconcileLivePipes). That's safe only while writers replace the
-				// map wholesale, so merge via copy-on-write — never mutate a
-				// published map in place.
-				h.ownedMu.Lock()
-				merged := make(map[string]bool, len(h.ownedSessions)+8)
-				for id := range h.ownedSessions {
-					merged[id] = true
-				}
-				for _, id := range orphanIDs(allIDs, claims, claimStaleAfter) {
-					merged[id] = true
-				}
-				h.ownedSessions = merged
-				h.ownedMu.Unlock()
-			}
-		}
+	// Tracked in a SEPARATE set (never merged into ownedSessions) so orphans
+	// can never poison the next sweep's prevOwned snapshot (no-op DELETE
+	// churn) or leak into the strictly-owned pipe/idle/reviver filters.
+	if time.Since(h.lastOrphanSweep) < orphanSweepEvery {
+		h.ownedMu.Lock()
+		h.orphanPolled = nil
+		h.ownedMu.Unlock()
+		return
 	}
+
+	// Headless web daemons never hold primary: the startup gate in
+	// cmd/agent-deck/main.go excludes webHeadless precisely so a headless
+	// instance can't block a subsequent TUI start under allow_multiple=false.
+	// reconcileClaims runs in headless mode too (via the status worker), so
+	// mirror that exception here rather than letting it capture primary.
+	if h.headless {
+		h.ownedMu.Lock()
+		h.orphanPolled = nil
+		h.ownedMu.Unlock()
+		return
+	}
+
+	isPrimary, err := db.ElectPrimary(30 * time.Second)
+	if err != nil {
+		// Transient error: don't advance lastOrphanSweep, retry next sweep
+		// instead of silently doubling the orphan interval.
+		h.ownedMu.Lock()
+		h.orphanPolled = nil
+		h.ownedMu.Unlock()
+		return
+	}
+	if !isPrimary {
+		// Valid, non-transient outcome: some other instance holds primary.
+		// Advance lastOrphanSweep so we don't re-run ElectPrimary every sweep.
+		h.lastOrphanSweep = time.Now()
+		h.ownedMu.Lock()
+		h.orphanPolled = nil
+		h.ownedMu.Unlock()
+		return
+	}
+
+	claims, err := db.LoadClaims()
+	if err != nil {
+		// Transient error: don't advance lastOrphanSweep, retry next sweep.
+		h.ownedMu.Lock()
+		h.orphanPolled = nil
+		h.ownedMu.Unlock()
+		return
+	}
+
+	allIDs := make([]string, 0, len(active))
+	for _, inst := range active {
+		allIDs = append(allIDs, inst.ID)
+	}
+	polled := make(map[string]bool, 8)
+	for _, id := range orphanIDs(allIDs, claims, claimStaleAfter) {
+		polled[id] = true
+	}
+
+	h.ownedMu.Lock()
+	h.orphanPolled = polled
+	h.ownedMu.Unlock()
+	h.lastOrphanSweep = time.Now()
 }
 
 // shouldSweepInstance combines the archived skip with the ownership gate.
