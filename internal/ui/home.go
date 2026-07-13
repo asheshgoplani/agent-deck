@@ -577,10 +577,11 @@ type Home struct {
 
 	// Claim polling ([performance] claim_polling): ownership gating for
 	// background work in multi-instance setups.
-	claimPolling  bool
-	ownedMu       sync.RWMutex
-	ownedSessions map[string]bool
-	groupScopeMu  sync.RWMutex // Guards groupScope for cross-goroutine read in reconcileClaims
+	claimPolling    bool
+	ownedMu         sync.RWMutex
+	ownedSessions   map[string]bool
+	groupScopeMu    sync.RWMutex // Guards groupScope for cross-goroutine read in reconcileClaims
+	lastOrphanSweep time.Time    // last time the primary polled for orphaned sessions
 	// Cost tracking
 	costStore            *costs.Store
 	costPricer           *costs.Pricer

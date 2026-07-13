@@ -2,8 +2,10 @@ package ui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 func TestPathInScope(t *testing.T) {
@@ -64,5 +66,24 @@ func TestShouldSweepInstance(t *testing.T) {
 	other := &session.Instance{ID: "b"}
 	if hOn.shouldSweepInstance(other) {
 		t.Error("non-owned instance must not be swept")
+	}
+}
+
+func TestOrphanIDs(t *testing.T) {
+	now := time.Now().Unix()
+	claims := map[string]statedb.ClaimRow{
+		"live":  {SessionID: "live", OwnerPID: 1, Heartbeat: now},
+		"stale": {SessionID: "stale", OwnerPID: 2, Heartbeat: now - 120},
+	}
+	all := []string{"live", "stale", "unclaimed"}
+	got := orphanIDs(all, claims, 15*time.Second)
+	want := map[string]bool{"stale": true, "unclaimed": true}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for _, id := range got {
+		if !want[id] {
+			t.Errorf("unexpected orphan %q", id)
+		}
 	}
 }

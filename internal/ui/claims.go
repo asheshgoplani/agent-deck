@@ -14,7 +14,24 @@ const (
 	// instance takes the session over. Heartbeats refresh every status sweep
 	// (2–10s), so 15s tolerates one slow sweep without flapping.
 	claimStaleAfter = 15 * time.Second
+
+	// orphanSweepEvery is how often the primary instance polls for orphaned
+	// sessions (no live claim from any scoped instance).
+	orphanSweepEvery = 30 * time.Second
 )
+
+// orphanIDs returns ids with no live claim: absent row or stale heartbeat.
+func orphanIDs(all []string, claims map[string]statedb.ClaimRow, staleAfter time.Duration) []string {
+	cutoff := time.Now().Add(-staleAfter).Unix()
+	var out []string
+	for _, id := range all {
+		row, ok := claims[id]
+		if !ok || row.Heartbeat < cutoff {
+			out = append(out, id)
+		}
+	}
+	return out
+}
 
 // pathInScope reports whether a group path falls inside a -g scope. Empty
 // scope matches everything. Same semantics as Home.isInGroupScope.
@@ -87,6 +104,37 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 	h.ownedMu.Lock()
 	h.ownedSessions = owned
 	h.ownedMu.Unlock()
+
+	// Orphan sweep: the primary instance slow-polls sessions no scoped
+	// instance claims, so their statuses and notifications stay alive.
+	// Merged into the owned set for THIS sweep only; never claimed.
+	if time.Since(h.lastOrphanSweep) >= orphanSweepEvery {
+		h.lastOrphanSweep = time.Now()
+		if isPrimary, err := db.ElectPrimary(30 * time.Second); err == nil && isPrimary {
+			claims, err := db.LoadClaims()
+			if err == nil {
+				allIDs := make([]string, 0, len(active))
+				for _, inst := range active {
+					allIDs = append(allIDs, inst.ID)
+				}
+				// ownedSessions is read by concurrent goroutines that snapshot the
+				// map reference under RLock and use it after RUnlock (see
+				// reconcileLivePipes). That's safe only while writers replace the
+				// map wholesale, so merge via copy-on-write — never mutate a
+				// published map in place.
+				h.ownedMu.Lock()
+				merged := make(map[string]bool, len(h.ownedSessions)+8)
+				for id := range h.ownedSessions {
+					merged[id] = true
+				}
+				for _, id := range orphanIDs(allIDs, claims, claimStaleAfter) {
+					merged[id] = true
+				}
+				h.ownedSessions = merged
+				h.ownedMu.Unlock()
+			}
+		}
+	}
 }
 
 // shouldSweepInstance combines the archived skip with the ownership gate.
