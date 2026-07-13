@@ -4044,6 +4044,9 @@ func (h *Home) backgroundStatusUpdate() {
 	copy(instances, h.instances)
 	h.instancesMu.RUnlock()
 
+	// Claim reconciliation: decide which sessions THIS instance polls.
+	h.reconcileClaims(instances)
+
 	// Active (non-archived) subset, computed once and reused by the loops that
 	// only concern live sessions. Archived sessions have torn-down panes, so
 	// walking them here only burns tmux subprocesses (Exists() / Capture())
@@ -4062,7 +4065,7 @@ func (h *Home) backgroundStatusUpdate() {
 		lastNano := h.idleTimeoutLastTick.Load()
 		if lastNano == 0 || time.Duration(nowNano-lastNano) >= idleTickEvery {
 			if h.idleTimeoutLastTick.CompareAndSwap(lastNano, nowNano) {
-				h.idleTimeoutWatcher.Tick(instances)
+				h.idleTimeoutWatcher.Tick(h.ownedOnly(instances))
 			}
 		}
 	}
@@ -4161,7 +4164,7 @@ func (h *Home) backgroundStatusUpdate() {
 		// backlog this dominated the loop (observed: 723 archived of 742 total
 		// pushed the sweep to multi-second spikes). Unarchiving runs its own
 		// refresh, so the periodic loop never needs to poll archived sessions.
-		if !shouldPollStatusInLoop(inst) {
+		if !h.shouldSweepInstance(inst) {
 			skipped++
 			continue
 		}
@@ -4226,14 +4229,11 @@ func (h *Home) backgroundStatusUpdate() {
 		slowMu.Unlock()
 	}
 
-	// Invalidate cache if status changed
-	if statusChanged.Load() {
-		h.cachedStatusCounts.valid.Store(false)
-		h.publishWebSessionStates(instances)
-	}
-	h.refreshSessionRenderSnapshot(instances)
-
-	// SQLite sync: heartbeat, status writes, ack reads (enables multi-instance coordination)
+	// SQLite sync: heartbeat, status writes, shared-status reads (enables
+	// multi-instance coordination). Runs before refreshSessionRenderSnapshot
+	// so that shared statuses applied below (non-owned sessions render the
+	// owner's status) land in the same render snapshot instead of trailing by
+	// one sweep.
 	if db := statedb.GetGlobal(); db != nil {
 		// Heartbeat: mark this process as alive
 		_ = db.Heartbeat()
@@ -4245,9 +4245,14 @@ func (h *Home) backgroundStatusUpdate() {
 		}
 
 		// Write statuses only when changed to reduce SQLite write pressure.
+		// Non-owned sessions are not written: the owning instance is the
+		// source of truth for that session's status row.
 		currentIDs := make(map[string]struct{}, len(instances))
 		for _, inst := range instances {
 			currentIDs[inst.ID] = struct{}{}
+			if !h.isOwned(inst.ID) {
+				continue
+			}
 			status := string(inst.GetStatusThreadSafe())
 			if prev, ok := h.lastPersistedStatus[inst.ID]; ok && prev == status {
 				continue
@@ -4263,8 +4268,10 @@ func (h *Home) backgroundStatusUpdate() {
 
 		// Persist the live Claude task description for auto-named sessions so the
 		// meaningful name survives an app reopen (it would otherwise live only in
-		// the in-memory render snapshot). The snapshot was refreshed just above,
-		// so getSessionRenderState returns the freshly-cleaned pane title. Only
+		// the in-memory render snapshot). This now runs before
+		// refreshSessionRenderSnapshot (see comment above), so getSessionRenderState
+		// still reflects the previous tick's pane title here; the description
+		// simply catches up one sweep later, same as before this reorder. Only
 		// write on change (mirrors the status loop) and only when non-empty — an
 		// empty/idle pane must not clobber a previously captured description.
 		for _, inst := range instances {
@@ -4291,16 +4298,38 @@ func (h *Home) backgroundStatusUpdate() {
 			}
 		}
 
-		// Read acknowledgments from SQLite (picks up acks from other instances)
-		if ackStatuses, err := db.ReadAllStatuses(); err == nil {
+		// Read shared statuses from SQLite (picks up acks and, for non-owned
+		// sessions under claim polling, the owning instance's status/tool).
+		if sharedStatuses, err := db.ReadAllStatuses(); err == nil {
 			for _, inst := range instances {
-				if s, ok := ackStatuses[inst.ID]; ok && s.Acknowledged {
+				s, ok := sharedStatuses[inst.ID]
+				if !ok {
+					continue
+				}
+				if s.Acknowledged {
 					inst.SetAcknowledgedFromShared(true)
+				}
+				// Non-owned sessions render the owner's status.
+				if h.claimPolling && !h.isOwned(inst.ID) && s.Status != "" {
+					if session.Status(s.Status) != inst.GetStatusThreadSafe() {
+						statusChanged.Store(true)
+					}
+					inst.SetStatusThreadSafe(session.Status(s.Status))
+					if s.Tool != "" {
+						inst.SetToolThreadSafe(s.Tool)
+					}
 				}
 			}
 		}
 
 	}
+
+	// Invalidate cache if status changed
+	if statusChanged.Load() {
+		h.cachedStatusCounts.valid.Store(false)
+		h.publishWebSessionStates(instances)
+	}
+	h.refreshSessionRenderSnapshot(instances)
 
 	// Always sync notification bar - must check for signal file (Ctrl+b N acknowledgments)
 	// even when no status changes occurred

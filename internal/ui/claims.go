@@ -88,3 +88,23 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 	h.ownedSessions = owned
 	h.ownedMu.Unlock()
 }
+
+// shouldSweepInstance combines the archived skip with the ownership gate.
+func (h *Home) shouldSweepInstance(inst *session.Instance) bool {
+	return shouldPollStatusInLoop(inst) && h.isOwned(inst.ID)
+}
+
+// ownedOnly filters instances to those this instance actively polls.
+// With claim polling off it returns instances unchanged.
+func (h *Home) ownedOnly(instances []*session.Instance) []*session.Instance {
+	if !h.claimPolling {
+		return instances
+	}
+	out := make([]*session.Instance, 0, len(instances))
+	for _, inst := range instances {
+		if h.isOwned(inst.ID) {
+			out = append(out, inst)
+		}
+	}
+	return out
+}

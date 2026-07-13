@@ -50,3 +50,19 @@ func TestIsOwnedFlagOn(t *testing.T) {
 		t.Error("owned-set gating broken")
 	}
 }
+
+func TestShouldSweepInstance(t *testing.T) {
+	inst := &session.Instance{ID: "a"}
+	hOff := &Home{claimPolling: false}
+	if !hOff.shouldSweepInstance(inst) {
+		t.Error("flag off must sweep everything non-archived")
+	}
+	hOn := &Home{claimPolling: true, ownedSessions: map[string]bool{"a": true}}
+	if !hOn.shouldSweepInstance(inst) {
+		t.Error("owned instance must be swept")
+	}
+	other := &session.Instance{ID: "b"}
+	if hOn.shouldSweepInstance(other) {
+		t.Error("non-owned instance must not be swept")
+	}
+}
