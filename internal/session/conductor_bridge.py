@@ -2884,7 +2884,9 @@ async def heartbeat_loop(
 # ---------------------------------------------------------------------------
 
 
-async def _run_platform_task(name: str, coro_factory, max_backoff: int = 300) -> None:
+async def _run_platform_task(
+    name: str, coro_factory: Callable[[], Coroutine[Any, Any, None]], max_backoff: int = 300
+) -> None:
     """Run a platform task, restarting it with backoff instead of raising.
 
     main() awaits every platform task via a single asyncio.gather(), so a
