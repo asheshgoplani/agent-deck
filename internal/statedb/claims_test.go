@@ -102,3 +102,41 @@ func TestRefreshAndReleaseClaims(t *testing.T) {
 		t.Errorf("expected empty claims, got %v", claims)
 	}
 }
+
+func TestPruneStaleSessionClaims(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().Unix()
+
+	// "live" has a matching instances row; "orphan" does not (session was
+	// deleted/archived-then-purged after the claim was written).
+	if _, err := db.DB().Exec(
+		`INSERT INTO instances (id, title, project_path, created_at) VALUES (?, ?, ?, ?)`,
+		"live", "Live Session", "/tmp/project", now); err != nil {
+		t.Fatalf("seed instances: %v", err)
+	}
+	if _, err := db.DB().Exec(
+		`INSERT INTO session_claims (session_id, owner_pid, claimed_at, heartbeat, scope)
+		 VALUES (?, ?, ?, ?, ?)`, "live", 12345, now, now, ""); err != nil {
+		t.Fatalf("seed live claim: %v", err)
+	}
+	if _, err := db.DB().Exec(
+		`INSERT INTO session_claims (session_id, owner_pid, claimed_at, heartbeat, scope)
+		 VALUES (?, ?, ?, ?, ?)`, "orphan", 12345, now, now, ""); err != nil {
+		t.Fatalf("seed orphan claim: %v", err)
+	}
+
+	if err := db.PruneStaleSessionClaims(); err != nil {
+		t.Fatalf("PruneStaleSessionClaims: %v", err)
+	}
+
+	claims, err := db.LoadClaims()
+	if err != nil {
+		t.Fatalf("LoadClaims: %v", err)
+	}
+	if _, ok := claims["orphan"]; ok {
+		t.Error("orphan claim (no matching instances row) survived prune")
+	}
+	if _, ok := claims["live"]; !ok {
+		t.Error("live claim was incorrectly pruned")
+	}
+}

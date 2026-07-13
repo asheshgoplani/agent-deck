@@ -1676,6 +1676,17 @@ func (s *StateDB) ReleaseAllClaims() error {
 	})
 }
 
+// PruneStaleSessionClaims deletes claims whose session no longer exists in
+// the instances table. Cheap single statement; called periodically so claims
+// for deleted/archived-then-purged sessions cannot accumulate over a
+// long-lived owner process.
+func (s *StateDB) PruneStaleSessionClaims() error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("DELETE FROM session_claims WHERE session_id NOT IN (SELECT id FROM instances)")
+		return err
+	})
+}
+
 // LoadClaims returns all claim rows keyed by session id.
 func (s *StateDB) LoadClaims() (map[string]ClaimRow, error) {
 	rows, err := s.db.Query("SELECT session_id, owner_pid, scope, heartbeat FROM session_claims")
