@@ -59,14 +59,18 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 		return
 	}
 
+	h.groupScopeMu.RLock()
+	scope := h.groupScope
+	h.groupScopeMu.RUnlock()
+
 	active := session.FilterInstancesByArchive(instances, false)
-	in, out := splitInstancesByScope(active, h.groupScope)
+	in, out := splitInstancesByScope(active, scope)
 
 	inIDs := make([]string, 0, len(in))
 	for _, inst := range in {
 		inIDs = append(inIDs, inst.ID)
 	}
-	owned, err := db.ClaimSessions(inIDs, h.groupScope, claimStaleAfter)
+	owned, err := db.ClaimSessions(inIDs, scope, claimStaleAfter)
 	if err != nil {
 		uiLog.Warn("claim_reconcile_failed", slog.String("error", err.Error()))
 		return // keep previous owned set; next sweep retries

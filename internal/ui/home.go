@@ -580,6 +580,7 @@ type Home struct {
 	claimPolling  bool
 	ownedMu       sync.RWMutex
 	ownedSessions map[string]bool
+	groupScopeMu  sync.RWMutex // Guards groupScope for cross-goroutine read in reconcileClaims
 	// Cost tracking
 	costStore            *costs.Store
 	costPricer           *costs.Pricer
@@ -1622,7 +1623,9 @@ func (h *Home) SetCostBudget(budget *costs.BudgetChecker) {
 // SetGroupScope limits the TUI to sessions within the given group path.
 // The path is normalized: lowercased and spaces replaced with hyphens.
 func (h *Home) SetGroupScope(path string) {
+	h.groupScopeMu.Lock()
 	h.groupScope = strings.ToLower(strings.ReplaceAll(path, " ", "-"))
+	h.groupScopeMu.Unlock()
 }
 
 // SetInitialSelection queues a session to preselect on first render (#709).
@@ -1721,7 +1724,9 @@ func (h *Home) SelectSessionByID(id string) bool {
 	// Reveal within the active view: drop filters that could hide the target and
 	// expand its containing group, then rebuild and locate it.
 	h.statusFilter = ""
+	h.groupScopeMu.Lock()
 	h.groupScope = ""
+	h.groupScopeMu.Unlock()
 	if target.GroupPath != "" {
 		h.groupTree.ExpandGroupWithParents(target.GroupPath)
 	}
