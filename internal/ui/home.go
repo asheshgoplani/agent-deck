@@ -4229,23 +4229,22 @@ func (h *Home) backgroundStatusUpdate() {
 		slowMu.Unlock()
 	}
 
-	// SQLite reads: shared statuses from other instances. Runs before the
-	// render snapshot so that acks and (under claim polling) the owner's
-	// status for non-owned sessions land in the same snapshot instead of
-	// trailing by one sweep. Writes stay after the snapshot (below) so the
-	// auto-name persist keeps reading the freshly refreshed snapshot,
-	// exactly as before claim polling existed.
+	// SQLite reads: shared statuses from other instances, read once and
+	// reused by the acknowledgment loop at its original end-of-sweep
+	// position below (no second DB read). Applying the owner's status for
+	// non-owned sessions happens here, before the render snapshot, so it
+	// lands in the same sweep. With claim polling off this block applies
+	// nothing, and writes stay after the snapshot so the auto-name persist
+	// keeps reading the freshly refreshed snapshot — flag-off ordering is
+	// identical to before claim polling existed.
+	var sharedStatuses map[string]statedb.StatusRow
 	if db := statedb.GetGlobal(); db != nil {
-		// Read shared statuses from SQLite (picks up acks and, for non-owned
-		// sessions under claim polling, the owning instance's status/tool).
-		if sharedStatuses, err := db.ReadAllStatuses(); err == nil {
+		if statuses, err := db.ReadAllStatuses(); err == nil {
+			sharedStatuses = statuses
 			for _, inst := range instances {
 				s, ok := sharedStatuses[inst.ID]
 				if !ok {
 					continue
-				}
-				if s.Acknowledged {
-					inst.SetAcknowledgedFromShared(true)
 				}
 				// Non-owned sessions render the owner's status.
 				if h.claimPolling && !h.isOwned(inst.ID) && s.Status != "" {
@@ -4328,6 +4327,16 @@ func (h *Home) backgroundStatusUpdate() {
 		for id := range h.lastPersistedAutoNameDesc {
 			if _, ok := currentIDs[id]; !ok {
 				delete(h.lastPersistedAutoNameDesc, id)
+			}
+		}
+
+		// Read acknowledgments from SQLite (picks up acks from other instances).
+		// Reuses the sharedStatuses map read before the render snapshot.
+		if sharedStatuses != nil {
+			for _, inst := range instances {
+				if s, ok := sharedStatuses[inst.ID]; ok && s.Acknowledged {
+					inst.SetAcknowledgedFromShared(true)
+				}
 			}
 		}
 	}
