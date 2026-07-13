@@ -2575,14 +2575,18 @@ func (h *Home) reconcileLivePipes() {
 	ownedSnapshot := h.ownedSessions
 	h.ownedMu.RUnlock()
 	socketByName = filterPipeCandidates(socketByName, nameToID, ownedSnapshot, focused, h.claimPolling)
-	// Rebuild the socket list from the filtered candidates so the attached
-	// scan does not touch other instances' sockets.
-	sockets = sockets[:0]
-	socketSeen = map[string]bool{}
-	for _, s := range socketByName {
-		if !socketSeen[s] {
-			socketSeen[s] = true
-			sockets = append(sockets, s)
+	if h.claimPolling {
+		// Rebuild the socket list from the filtered candidates so the attached
+		// scan does not touch other instances' sockets. With claim polling off,
+		// filterPipeCandidates is a no-op and sockets already matches
+		// socketByName, so skip the redundant O(n) rebuild every tick.
+		sockets = sockets[:0]
+		socketSeen = map[string]bool{}
+		for _, s := range socketByName {
+			if !socketSeen[s] {
+				socketSeen[s] = true
+				sockets = append(sockets, s)
+			}
 		}
 	}
 
@@ -4293,6 +4297,9 @@ func (h *Home) backgroundStatusUpdate() {
 		// Clean dead instances every ~20s (not every tick)
 		if time.Since(h.lastDeadInstanceCleanup) > 20*time.Second {
 			_ = db.CleanDeadInstances(30 * time.Second)
+			if h.claimPolling {
+				_ = db.PruneStaleSessionClaims()
+			}
 			h.lastDeadInstanceCleanup = time.Now()
 		}
 
