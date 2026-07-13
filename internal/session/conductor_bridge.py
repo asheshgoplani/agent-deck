@@ -934,6 +934,11 @@ async def ensure_conductor_running(name: str, profile: str) -> bool:
                     )
             else:
                 # Session is absent from this profile, so create it.
+                # --title-lock is required: without it, agent-deck's title-sync
+                # overwrites session_title with the agent's own session name on
+                # its first hook event, so the exact-title lookups above (and
+                # _find_session_by_title's dedupe) stop matching this session on
+                # every later call, and we'd keep creating new ones forever.
                 log.info("Creating conductor session for %s...", name)
                 session_path = str(CONDUCTOR_DIR / name)
                 result = await loop.run_in_executor(
@@ -943,6 +948,7 @@ async def ensure_conductor_running(name: str, profile: str) -> bool:
                         "-t", session_title,
                         "-c", "claude",
                         "-g", "conductor",
+                        "--title-lock",
                         profile=profile,
                         timeout=60,
                     )
@@ -2878,6 +2884,28 @@ async def heartbeat_loop(
 # ---------------------------------------------------------------------------
 
 
+async def _run_platform_task(name: str, coro_factory, max_backoff: int = 300) -> None:
+    """Run a platform task, restarting it with backoff instead of raising.
+
+    main() awaits every platform task via a single asyncio.gather(), so a
+    transient failure (e.g. a proxy timeout on Telegram's getMe call) must
+    not escape here: an uncaught exception kills gather(), which kills the
+    whole bridge process. The OS service manager then respawns the process
+    in a tight loop, and every respawn re-runs the conductor pre-start step.
+    """
+    backoff = 5
+    while True:
+        try:
+            await coro_factory()
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.error("%s task failed: %s; retrying in %ds", name, e, backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
+
+
 async def main():
     log.info("Loading config from %s", CONFIG_PATH)
     config = load_config()
@@ -2961,13 +2989,21 @@ async def main():
     # Run all concurrently
     tasks = [heartbeat_task]
     if telegram_dp and telegram_bot:
-        tasks.append(asyncio.create_task(telegram_dp.start_polling(telegram_bot)))
+        tasks.append(asyncio.create_task(_run_platform_task(
+            "Telegram polling",
+            lambda: telegram_dp.start_polling(telegram_bot),
+        )))
         log.info("Telegram bot polling started")
     if slack_handler:
-        tasks.append(asyncio.create_task(slack_handler.start_async()))
+        tasks.append(asyncio.create_task(_run_platform_task(
+            "Slack Socket Mode", slack_handler.start_async,
+        )))
         log.info("Slack Socket Mode handler started")
     if discord_bot:
-        tasks.append(asyncio.create_task(discord_bot.start(config["discord"]["bot_token"])))
+        tasks.append(asyncio.create_task(_run_platform_task(
+            "Discord bot",
+            lambda: discord_bot.start(config["discord"]["bot_token"]),
+        )))
         log.info("Discord bot started")
 
     try:
