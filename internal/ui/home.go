@@ -4287,12 +4287,19 @@ func (h *Home) backgroundStatusUpdate() {
 				if !ok {
 					continue
 				}
-				// Non-owned sessions render the owner's status. Tool is NOT
-				// imported from the shared row: it's hydrated once from the
-				// instances table and effectively immutable mid-session, and
-				// render paths read inst.Tool lock-free, so writing it here
-				// from a background goroutine would be a data race.
-				if h.claimPolling && !h.isOwned(inst.ID) && s.Status != "" {
+				// Sessions NOT freshly polled by this instance this sweep
+				// (neither owned nor orphan-due) render the owner's status
+				// from the shared row. Gated on isPolledByMe, not isOwned:
+				// an orphan we just polled above must keep its fresh
+				// UpdateStatus result — applying the older DB row here would
+				// clobber it, the WriteStatus loop below would persist the
+				// stale value, and the lastPersistedStatus dedup would then
+				// freeze it. Tool is NOT imported from the shared row: it's
+				// hydrated once from the instances table and effectively
+				// immutable mid-session, and render paths read inst.Tool
+				// lock-free, so writing it here from a background goroutine
+				// would be a data race.
+				if h.claimPolling && !h.isPolledByMe(inst.ID) && s.Status != "" {
 					if session.Status(s.Status) != inst.GetStatusThreadSafe() {
 						statusChanged.Store(true)
 					}
