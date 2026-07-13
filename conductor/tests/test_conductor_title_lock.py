@@ -114,6 +114,37 @@ def test_ambiguous_canonical_path_fails_closed_without_add():
     assert not _calls_for(mock_cli, "session", "set")
 
 
+def test_drifted_path_and_different_exact_title_fail_closed():
+    sessions = [
+        {
+            "id": "drifted-id",
+            "title": "drifted-agent-title",
+            "path": str(CONDUCTOR_DIR / "monitor"),
+            "profile": "default",
+        },
+        {
+            "id": "exact-id",
+            "title": "conductor-monitor",
+            "path": "/tmp/unrelated-project",
+            "profile": "default",
+        },
+    ]
+    with mock.patch(
+        "bridge.get_session_status",
+        return_value="unknown",
+    ), mock.patch(
+        "bridge.get_sessions_list",
+        return_value=sessions,
+    ), mock.patch(
+        "bridge.run_cli",
+        return_value=_completed(1, "not found"),
+    ) as mock_cli:
+        assert _run(ensure_conductor_running("monitor", "default")) is False
+
+    assert not _calls_for(mock_cli, "add")
+    assert not _calls_for(mock_cli, "session", "set")
+
+
 def test_exact_title_path_retries_by_current_title_without_add():
     sessions = [{
         "id": "canonical-id",

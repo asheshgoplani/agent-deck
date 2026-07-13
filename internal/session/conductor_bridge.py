@@ -979,6 +979,22 @@ async def ensure_conductor_running(name: str, profile: str) -> bool:
         return False
 
     exact_match = _find_session_by_title(sessions, session_title, profile)
+    if path_match is not None and exact_match is not None:
+        path_id = path_match.get("id")
+        exact_id = exact_match.get("id")
+        same_session = path_match is exact_match or (
+            path_id is not None and path_id == exact_id
+        )
+        if not same_session:
+            log.error(
+                "Conductor path %s and exact title %s identify different "
+                "sessions in profile %s; refusing migration",
+                session_path,
+                session_title,
+                profile,
+            )
+            return False
+
     existing = path_match or exact_match
     session_ref = session_title
     if existing is not None:
