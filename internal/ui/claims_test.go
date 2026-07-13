@@ -222,10 +222,13 @@ func TestInvalidateNewlyOwnedMemoNilPrevOwned(t *testing.T) {
 }
 
 func TestClaimStaleAfterExceedsWorstHeartbeatGap(t *testing.T) {
-	// Global constraint: claimStaleAfter must exceed maxStatusInterval (10s)
-	// plus worst sweep duration, with margin. 30s is the agreed value.
-	if claimStaleAfter != 30*time.Second {
-		t.Errorf("claimStaleAfter = %v, want 30s", claimStaleAfter)
+	// Invariant, not a literal: a live owner's heartbeat gap can reach
+	// maxStatusInterval (the post-sweep pause) plus the duration of the slow
+	// sweep that caused it. claimStaleAfter below 2×maxStatusInterval means a
+	// healthy-but-slow owner loses its claims exactly in the degraded scenario
+	// the feature was built for.
+	if claimStaleAfter < 2*maxStatusInterval {
+		t.Errorf("claimStaleAfter = %v, must be >= 2*maxStatusInterval (%v)", claimStaleAfter, 2*maxStatusInterval)
 	}
 }
 

@@ -155,9 +155,11 @@ func desiredLivePipes(ls *pipeLiveSet, focused string, attached []string, socket
 // filterPipeCandidates drops sessions this instance does not own from the
 // pipe-candidate map, keeping the focused session unconditionally (the live
 // preview of a browsed session must work regardless of ownership). With
-// claimPolling off it returns the map unchanged.
+// claimPolling off — or with a nil owned set, which means "no successful
+// reconcile yet / claim DB unavailable" and must fail open like isOwned does —
+// it returns the map unchanged.
 func filterPipeCandidates(socketByName map[string]string, nameToID map[string]string, owned map[string]bool, focused string, claimPolling bool) map[string]string {
-	if !claimPolling {
+	if !claimPolling || owned == nil {
 		return socketByName
 	}
 	out := make(map[string]string, len(socketByName))

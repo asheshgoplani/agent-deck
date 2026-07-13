@@ -1,7 +1,6 @@
 package statedb
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/safeio"
+	"github.com/google/uuid"
 
 	_ "modernc.org/sqlite"
 )
@@ -121,17 +121,11 @@ type StateDB struct {
 }
 
 // newOwnerToken builds a claim-ownership token unique to this process
-// instance: `<pid>-<started-unix>-<random hex>`. crypto/rand failure is
-// effectively unheard of on real systems; degrading to a nanosecond-derived
-// suffix keeps Open() fail-open (claim ownership becomes slightly less
-// collision-resistant, but StateDB still opens) rather than failing the
-// entire database open over a claim-polling concern.
+// instance: `<pid>-<started-unix>-<uuid>`. The pid/started prefix keeps the
+// token self-describing when inspecting session_claims by hand; the UUID makes
+// it collision-proof under PID reuse.
 func newOwnerToken(pid int) string {
-	suffix := make([]byte, 8)
-	if _, err := rand.Read(suffix); err != nil {
-		return fmt.Sprintf("%d-%d-%016x", pid, time.Now().Unix(), time.Now().UnixNano())
-	}
-	return fmt.Sprintf("%d-%d-%s", pid, time.Now().Unix(), hex.EncodeToString(suffix))
+	return fmt.Sprintf("%d-%d-%s", pid, time.Now().Unix(), uuid.NewString())
 }
 
 // backupRowDropThreshold is the minimum number of rows a single
@@ -452,26 +446,19 @@ func (s *StateDB) Migrate() error {
 	// session claims: per-session polling ownership for multi-instance
 	// deduplication ([performance] claim_polling). One row per session that
 	// some instance actively polls; heartbeat-stale rows are taken over.
+	// owner_token, not owner_pid, is the ownership identity: it survives PID
+	// reuse (see StateDB.token doc); owner_pid is kept for display/debugging.
 	if _, err := tx.Exec(`
 		CREATE TABLE IF NOT EXISTS session_claims (
-			session_id TEXT PRIMARY KEY,
-			owner_pid  INTEGER NOT NULL,
-			claimed_at INTEGER NOT NULL,
-			heartbeat  INTEGER NOT NULL,
-			scope      TEXT NOT NULL DEFAULT ''
+			session_id  TEXT PRIMARY KEY,
+			owner_pid   INTEGER NOT NULL,
+			owner_token TEXT NOT NULL DEFAULT '',
+			claimed_at  INTEGER NOT NULL,
+			heartbeat   INTEGER NOT NULL,
+			scope       TEXT NOT NULL DEFAULT ''
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create session_claims: %w", err)
-	}
-
-	// owner_token (added post-v13): claim ownership identity that survives PID
-	// reuse (see StateDB.token doc). ALTER for pre-existing databases
-	// (idempotent: ignore "duplicate column"), same pattern as
-	// groups.max_concurrent above.
-	if _, err := tx.Exec(`ALTER TABLE session_claims ADD COLUMN owner_token TEXT NOT NULL DEFAULT ''`); err != nil {
-		if !strings.Contains(err.Error(), "duplicate column") {
-			return fmt.Errorf("statedb: add session_claims.owner_token: %w", err)
-		}
 	}
 	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_session_claims_owner ON session_claims(owner_token)`); err != nil {
 		return fmt.Errorf("statedb: create idx_session_claims_owner: %w", err)
@@ -1625,12 +1612,10 @@ type ClaimRow struct {
 //
 // This upsert is also this process's sole heartbeat refresh path for claims:
 // the DO UPDATE branch fires for our own already-owned rows (owner_token
-// match) every sweep, bumping their heartbeat. There is deliberately no
-// separate RefreshClaimHeartbeats — a prior version of that refreshed rows by
-// owner_pid regardless of the current owned set, which kept ghost claims
-// (left behind by a failed release, or inherited display artifacts under PID
-// reuse) alive forever instead of letting them go stale and get taken over or
-// pruned.
+// match) every sweep, bumping their heartbeat. Invariant: heartbeats are only
+// ever refreshed for rows re-claimed here — never blanket-refreshed by owner —
+// so a claim that stops being re-claimed (failed release, ghost row) goes
+// stale and gets taken over or pruned instead of living forever.
 func (s *StateDB) ClaimSessions(ids []string, scope string, staleAfter time.Duration) (map[string]bool, error) {
 	if len(ids) == 0 {
 		return make(map[string]bool), nil
@@ -1651,20 +1636,27 @@ func (s *StateDB) ClaimSessions(ids []string, scope string, staleAfter time.Dura
 
 		now := time.Now().Unix()
 		cutoff := time.Now().Add(-staleAfter).Unix()
+		// One prepared statement for the whole loop: this runs every 2s sweep,
+		// and modernc/sqlite recompiles a raw-string Exec on each call.
+		stmt, err := tx.Prepare(`
+			INSERT INTO session_claims (session_id, owner_pid, owner_token, claimed_at, heartbeat, scope)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(session_id) DO UPDATE SET
+				owner_pid   = excluded.owner_pid,
+				owner_token = excluded.owner_token,
+				claimed_at  = excluded.claimed_at,
+				heartbeat   = excluded.heartbeat,
+				scope       = excluded.scope
+			WHERE session_claims.owner_token = excluded.owner_token
+			   OR session_claims.heartbeat < ?
+			   OR length(excluded.scope) > length(session_claims.scope)
+		`)
+		if err != nil {
+			return fmt.Errorf("statedb: prepare claim: %w", err)
+		}
+		defer stmt.Close()
 		for _, id := range ids {
-			if _, err := tx.Exec(`
-				INSERT INTO session_claims (session_id, owner_pid, owner_token, claimed_at, heartbeat, scope)
-				VALUES (?, ?, ?, ?, ?, ?)
-				ON CONFLICT(session_id) DO UPDATE SET
-					owner_pid   = excluded.owner_pid,
-					owner_token = excluded.owner_token,
-					claimed_at  = excluded.claimed_at,
-					heartbeat   = excluded.heartbeat,
-					scope       = excluded.scope
-				WHERE session_claims.owner_token = excluded.owner_token
-				   OR session_claims.heartbeat < ?
-				   OR length(excluded.scope) > length(session_claims.scope)
-			`, id, s.pid, s.token, now, now, scope, cutoff); err != nil {
+			if _, err := stmt.Exec(id, s.pid, s.token, now, now, scope, cutoff); err != nil {
 				return fmt.Errorf("statedb: claim %s: %w", id, err)
 			}
 		}
@@ -1674,21 +1666,21 @@ func (s *StateDB) ClaimSessions(ids []string, scope string, staleAfter time.Dura
 			return fmt.Errorf("statedb: read claims: %w", err)
 		}
 		defer rows.Close()
-		mine := make(map[string]bool)
+		requested := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			requested[id] = true
+		}
 		for rows.Next() {
 			var id string
 			if err := rows.Scan(&id); err != nil {
 				return fmt.Errorf("statedb: scan claim: %w", err)
 			}
-			mine[id] = true
+			if requested[id] {
+				owned[id] = true
+			}
 		}
 		if err := rows.Err(); err != nil {
 			return err
-		}
-		for _, id := range ids {
-			if mine[id] {
-				owned[id] = true
-			}
 		}
 		return tx.Commit()
 	})
@@ -1704,21 +1696,18 @@ func (s *StateDB) ReleaseClaims(ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, s.token)
+	for _, id := range ids {
+		args = append(args, id)
+	}
 	return withBusyRetry(func() error {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		for _, id := range ids {
-			if _, err := tx.Exec(
-				"DELETE FROM session_claims WHERE session_id = ? AND owner_token = ?",
-				id, s.token,
-			); err != nil {
-				return err
-			}
-		}
-		return tx.Commit()
+		_, err := s.db.Exec(
+			"DELETE FROM session_claims WHERE owner_token = ? AND session_id IN ("+placeholders+")",
+			args...,
+		)
+		return err
 	})
 }
 

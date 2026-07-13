@@ -122,14 +122,37 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 	scope := h.groupScope
 	h.groupScopeMu.RUnlock()
 
-	active := session.FilterInstancesByArchive(instances, false)
-	archived := session.FilterInstancesByArchive(instances, true)
-	in, out := splitInstancesByScope(active, scope)
+	// Snapshot the previously owned set (only this goroutine writes it) so the
+	// release below can be intersected with it.
+	h.ownedMu.RLock()
+	prevOwned := h.ownedSessions
+	h.ownedMu.RUnlock()
 
-	inIDs := make([]string, 0, len(in))
-	for _, inst := range in {
-		inIDs = append(inIDs, inst.ID)
+	// Single pass over the sweep snapshot: claim targets (in-scope live),
+	// the orphan-sweep universe (all live), and release candidates. Archived
+	// sessions are display-frozen and never polled, so holding their claim
+	// only blocks other instances from noticing they're dead; release them
+	// like out-of-scope ones. Both release sets are intersected with the
+	// previous owned snapshot so a large archived backlog doesn't generate
+	// no-op DELETE churn every sweep.
+	inIDs := make([]string, 0, len(instances))
+	activeIDs := make([]string, 0, len(instances))
+	var releaseIDs []string
+	for _, inst := range instances {
+		if inst.IsArchived() {
+			if prevOwned[inst.ID] {
+				releaseIDs = append(releaseIDs, inst.ID)
+			}
+			continue
+		}
+		activeIDs = append(activeIDs, inst.ID)
+		if pathInScope(inst.GroupPath, scope) {
+			inIDs = append(inIDs, inst.ID)
+		} else if prevOwned[inst.ID] {
+			releaseIDs = append(releaseIDs, inst.ID)
+		}
 	}
+
 	// A claim for a session not yet flushed to `instances` by SaveInstances
 	// can be pruned by a neighbor's PruneStaleSessionClaims; this self-heals
 	// on the next 2s re-claim, so it's a benign, transient race.
@@ -138,29 +161,8 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 		uiLog.Warn("claim_reconcile_failed_degraded_fail_open", slog.String("error", err.Error()))
 		return // keep previous owned set (nil stays nil, fail-open); next sweep retries
 	}
-	// Snapshot the previously owned set before it's overwritten below, so the
-	// release below can be intersected with it.
-	h.ownedMu.RLock()
-	prevOwned := h.ownedSessions
-	h.ownedMu.RUnlock()
 
-	// Release claims we hold for sessions that moved out of scope, plus
-	// archived sessions: they're display-frozen and never polled, so holding
-	// their claim only blocks other instances from noticing they're dead.
-	// Intersected with the previous owned snapshot so a large archived
-	// backlog doesn't generate no-op DELETE churn every sweep.
-	outIDs := make([]string, 0, len(out)+len(archived))
-	for _, inst := range out {
-		if prevOwned[inst.ID] {
-			outIDs = append(outIDs, inst.ID)
-		}
-	}
-	for _, inst := range archived {
-		if prevOwned[inst.ID] {
-			outIDs = append(outIDs, inst.ID)
-		}
-	}
-	if err := db.ReleaseClaims(outIDs); err != nil {
+	if err := db.ReleaseClaims(releaseIDs); err != nil {
 		uiLog.Debug("claim_release_failed", slog.String("error", err.Error()))
 	}
 
@@ -179,9 +181,7 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 	// can never poison the next sweep's prevOwned snapshot (no-op DELETE
 	// churn) or leak into the strictly-owned pipe/idle/reviver filters.
 	if time.Since(h.lastOrphanSweep) < orphanSweepEvery {
-		h.ownedMu.Lock()
-		h.orphanPolled = nil
-		h.ownedMu.Unlock()
+		h.resetOrphanPolled()
 		return
 	}
 
@@ -191,9 +191,7 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 	// reconcileClaims runs in headless mode too (via the status worker), so
 	// mirror that exception here rather than letting it capture primary.
 	if h.headless {
-		h.ownedMu.Lock()
-		h.orphanPolled = nil
-		h.ownedMu.Unlock()
+		h.resetOrphanPolled()
 		return
 	}
 
@@ -201,36 +199,26 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 	if err != nil {
 		// Transient error: don't advance lastOrphanSweep, retry next sweep
 		// instead of silently doubling the orphan interval.
-		h.ownedMu.Lock()
-		h.orphanPolled = nil
-		h.ownedMu.Unlock()
+		h.resetOrphanPolled()
 		return
 	}
 	if !isPrimary {
 		// Valid, non-transient outcome: some other instance holds primary.
 		// Advance lastOrphanSweep so we don't re-run ElectPrimary every sweep.
 		h.lastOrphanSweep = time.Now()
-		h.ownedMu.Lock()
-		h.orphanPolled = nil
-		h.ownedMu.Unlock()
+		h.resetOrphanPolled()
 		return
 	}
 
 	claims, err := db.LoadClaims()
 	if err != nil {
 		// Transient error: don't advance lastOrphanSweep, retry next sweep.
-		h.ownedMu.Lock()
-		h.orphanPolled = nil
-		h.ownedMu.Unlock()
+		h.resetOrphanPolled()
 		return
 	}
 
-	allIDs := make([]string, 0, len(active))
-	for _, inst := range active {
-		allIDs = append(allIDs, inst.ID)
-	}
 	polled := make(map[string]bool, 8)
-	for _, id := range orphanIDs(allIDs, claims, claimStaleAfter) {
+	for _, id := range orphanIDs(activeIDs, claims, claimStaleAfter) {
 		polled[id] = true
 	}
 
@@ -238,6 +226,14 @@ func (h *Home) reconcileClaims(instances []*session.Instance) {
 	h.orphanPolled = polled
 	h.ownedMu.Unlock()
 	h.lastOrphanSweep = time.Now()
+}
+
+// resetOrphanPolled clears the orphan-polled set on sweeps where the orphan
+// pass is not due (or not ours to run) so it never outlives its due sweep.
+func (h *Home) resetOrphanPolled() {
+	h.ownedMu.Lock()
+	h.orphanPolled = nil
+	h.ownedMu.Unlock()
 }
 
 // shouldSweepInstance combines the archived skip with the polling gate: the

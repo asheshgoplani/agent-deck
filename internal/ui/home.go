@@ -1327,6 +1327,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// status-bar cost-line template once. The template + hide flag are
 	// reused on every render; see (*Home).renderStats.
 	if cfg, _ := session.LoadUserConfig(); cfg != nil {
+		// [performance] claim_polling: snapshot once at startup. Defaults to
+		// false (today's behavior); stays false when config is unreadable.
+		h.claimPolling = cfg.ClaimPollingEnabled()
 		h.fullRepaint = cfg.Display.GetFullRepaint()
 		h.defaultFilter = cfg.Display.GetDefaultFilter()
 		h.activeFilterLabel = cfg.Display.ActiveFilterLabel
@@ -1350,10 +1353,6 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.remoteSessionRefreshSec = (session.UISettings{}).GetRemoteSessionRefreshSecs()
 		h.footerMode = (session.UISettings{}).GetFooter()
 	}
-	// [performance] claim_polling: snapshot once at startup. Nil-safe;
-	// defaults to false (today's behavior) when unset or unreadable.
-	claimCfg, _ := session.LoadUserConfig()
-	h.claimPolling = claimCfg.ClaimPollingEnabled()
 	h.remoteLatency = make(map[string]session.RemoteLatency)
 
 	// Initialize system stats collector if enabled
@@ -2560,15 +2559,22 @@ func (h *Home) reconcileLivePipes() {
 	}
 
 	// Snapshot live instances: session name -> socket (the source of truth).
+	// nameToID feeds only the claim-polling ownership filter below; don't
+	// build it on every 500ms tick when the flag is off.
 	h.instancesMu.RLock()
 	socketByName := make(map[string]string, len(h.instances))
-	nameToID := make(map[string]string, len(h.instances))
+	var nameToID map[string]string
+	if h.claimPolling {
+		nameToID = make(map[string]string, len(h.instances))
+	}
 	sockets := make([]string, 0, len(h.instances))
 	socketSeen := make(map[string]bool, len(h.instances))
 	for _, inst := range h.instances {
 		if ts := inst.GetTmuxSession(); ts != nil {
 			socketByName[ts.Name] = inst.TmuxSocketName
-			nameToID[ts.Name] = inst.ID
+			if nameToID != nil {
+				nameToID[ts.Name] = inst.ID
+			}
 			if !socketSeen[inst.TmuxSocketName] {
 				socketSeen[inst.TmuxSocketName] = true
 				sockets = append(sockets, inst.TmuxSocketName)
