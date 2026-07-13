@@ -98,3 +98,49 @@ def test_backoff_doubles_and_caps_at_max():
 
     _run(scenario())
     assert delays == [5, 10, 20, 20]
+
+
+def test_retry_never_overlaps_platform_task_instances():
+    active = 0
+    peak_active = 0
+    attempts = 0
+
+    async def flaky():
+        nonlocal active, peak_active, attempts
+        attempts += 1
+        active += 1
+        peak_active = max(peak_active, active)
+        try:
+            if attempts < 3:
+                raise RuntimeError("temporary failure")
+        finally:
+            active -= 1
+
+    async def scenario():
+        with mock.patch("bridge.asyncio.sleep", new=mock.AsyncMock()):
+            await _run_platform_task("test-task", flaky)
+
+    _run(scenario())
+    assert attempts == 3
+    assert peak_active == 1
+
+
+def test_retry_logs_each_failure_with_capped_delay():
+    attempts = 0
+
+    async def flaky():
+        nonlocal attempts
+        attempts += 1
+        if attempts < 4:
+            raise RuntimeError("network unavailable")
+
+    async def scenario():
+        with mock.patch("bridge.asyncio.sleep", new=mock.AsyncMock()), mock.patch(
+            "bridge.log.error"
+        ) as log_error:
+            await _run_platform_task("Telegram polling", flaky, max_backoff=5)
+        return log_error
+
+    log_error = _run(scenario())
+    assert log_error.call_count == 3
+    assert all(call.args[-1] == 5 for call in log_error.call_args_list)
