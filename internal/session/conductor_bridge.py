@@ -857,8 +857,13 @@ def get_sessions_list(
         data = json.loads(result.stdout)
         # list --json returns {"sessions": [...]}
         if isinstance(data, dict):
-            return data.get("sessions", [])
-        return data if isinstance(data, list) else []
+            sessions = data.get("sessions")
+            if isinstance(sessions, list):
+                return sessions
+            return None if fail_closed else []
+        if isinstance(data, list):
+            return data
+        return None if fail_closed else []
     except json.JSONDecodeError:
         if result.stdout.strip().startswith("No sessions found in profile "):
             return []

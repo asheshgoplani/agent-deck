@@ -162,3 +162,10 @@ def test_malformed_list_json_fails_closed():
     malformed.stdout = "unexpected output"
     with mock.patch("bridge.run_cli", return_value=malformed):
         assert get_sessions_list("default", fail_closed=True) is None
+
+
+def test_malformed_list_json_schema_fails_closed():
+    malformed = _completed(0)
+    malformed.stdout = '{"sessions": "not-a-list"}'
+    with mock.patch("bridge.run_cli", return_value=malformed):
+        assert get_sessions_list("default", fail_closed=True) is None
