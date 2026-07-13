@@ -10679,6 +10679,15 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		inst.Command = command
 		inst.SetAutoName(autoName) // quick-create paths pass true; see render substitution
 
+		// A title the user typed into the full create dialog (autoName=false) is
+		// explicit intent, so lock it against the Claude session-name sync (#572).
+		// Otherwise the next hook event or attach reconcile would overwrite it with
+		// Claude's cwd-derived name — for a worktree that is the "<repo>-<branch>"
+		// folder basename (e.g. "linqalpha-e7"), silently renaming the session.
+		if !autoName && strings.TrimSpace(name) != "" {
+			inst.TitleLocked = true
+		}
+
 		// Set worktree fields if provided
 		if worktreePath != "" {
 			inst.WorktreePath = worktreePath
