@@ -1583,6 +1583,48 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	return envPrefix + command + yoloFlag + modelFlag
 }
 
+// buildCodexCommandWithPrompt builds the Codex launch command with an initial
+// prompt delivered as Codex's own positional [PROMPT] argument, mirroring the
+// claude-code startup query (#725). It reports whether the prompt was embedded;
+// when it was not, the caller must fall back to the post-start typing path.
+//
+// Typing a large initial prompt into a live Codex TUI is unreliable: the message
+// is sent as one literal `tmux send-keys -l` burst followed immediately by Enter,
+// and Codex reads a large fast burst as a paste, swallowing the trailing Enter
+// into it. The prompt then sits unsubmitted in the composer and the agent never
+// starts. `codex [OPTIONS] [PROMPT]` starts the session with the prompt already
+// in hand, so nothing is typed and there is no Enter to lose.
+//
+// The prompt is only embedded on the plain fresh-start path. It is NOT embedded
+// when:
+//   - the prompt is empty (nothing to deliver);
+//   - the user supplied a custom command (buildCodexCommand passes it through
+//     verbatim, and an arbitrary wrapper need not accept a positional prompt);
+//   - the session resumes (`codex ... resume <sid>`), where a trailing operand
+//     would not be the subcommand's prompt.
+//
+// In each of those cases the caller keeps the existing behaviour unchanged.
+func (i *Instance) buildCodexCommandWithPrompt(baseCommand, prompt string) (string, bool) {
+	command := i.buildCodexCommand(baseCommand)
+	if strings.TrimSpace(prompt) == "" {
+		return command, false
+	}
+	if !IsCodexCompatible(i.Tool) {
+		return command, false
+	}
+	// Custom-command passthrough: buildCodexCommand returned the user's command
+	// as-is, so we cannot assume it takes a positional prompt.
+	trimmed := strings.TrimSpace(baseCommand)
+	if i.Tool == "codex" && trimmed != "codex" && trimmed != "" {
+		return command, false
+	}
+	// Resume path appends `resume <sid>`; leave it to the typing path.
+	if i.CodexSessionID != "" {
+		return command, false
+	}
+	return command + " " + shellescape.Quote(prompt), true
+}
+
 // piAgentDeckSessionDirExpr returns a target-shell expression for the Pi session
 // directory Agent Deck owns for an instance. It intentionally uses target-side
 // $HOME rather than resolving the Agent Deck process' home directory, keeping
@@ -3404,6 +3446,9 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Start session normally (no embedded message logic)
 	// Priority: built-in tools (claude, gemini, opencode, codex) → custom tools from config.toml → raw command
 	var command string
+	// Codex takes its initial prompt as a positional argument instead of having it
+	// typed into the TUI; when that happens there is nothing left to send.
+	codexPromptEmbedded := false
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		// #745 fork guard: mirrors the Start() branch above. A fork target
@@ -3472,7 +3517,7 @@ func (i *Instance) StartWithMessage(message string) error {
 				slog.String("reason", "fork_awaiting_start"))
 			break
 		}
-		command = i.buildCodexCommand(i.Command)
+		command, codexPromptEmbedded = i.buildCodexCommandWithPrompt(i.Command, message)
 		i.CodexStartedAt = time.Now().UnixMilli()
 	case i.Tool == "pi":
 		if i.IsForkAwaitingStart {
@@ -3587,8 +3632,9 @@ func (i *Instance) StartWithMessage(message string) error {
 		go i.detectCodexSessionAsync()
 	}
 
-	// Send message synchronously (CLI will wait)
-	if message != "" {
+	// Send message synchronously (CLI will wait). Codex may already carry the
+	// prompt as a launch argument, in which case there is nothing to type.
+	if message != "" && !codexPromptEmbedded {
 		return i.sendMessageWhenReady(message)
 	}
 
