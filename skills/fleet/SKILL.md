@@ -47,9 +47,13 @@ Spell out the long form: **never use the short `-p` to set a parent** (see the
   child's `-m` prompt install them — and for a locked monorepo, install *from the
   frozen lockfile, never regenerate it* (e.g. `pnpm install --frozen-lockfile`).
   Otherwise the child's first test/build/e2e fails confusingly.
-- **Long prompts: pass via a file.** For a big multi-line task, write it to a file
-  and command-substitute: `-m "$(cat task.md)"`. Avoids the shell mangling of
-  backticks, `$`, and quotes inside an inline `-m`.
+- **Long prompts: pass via a file.** For a big multi-line task, write it to a
+  file and pass `--message-file task.md` (or `--message-file -` to read stdin)
+  instead of `-m`. The file is read directly by agent-deck, so backticks, `$`,
+  and quotes never round-trip through the shell. Also works on
+  `session start` and `session send` (there it replaces the positional
+  message). On older builds without the flag, fall back to
+  `-m "$(cat task.md)"`.
 
 ## The loop
 
