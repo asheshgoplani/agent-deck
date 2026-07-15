@@ -257,6 +257,15 @@ There is no always-on background watcher started for you — "monitored by
 default" means transition/completion events **queue** in your inbox; you still
 choose when to look (poll `session children`, or `inbox drain`).
 
+**Automatic turn-start snapshot (Claude conductors, newer builds).** A Claude
+parent session gets a compact fleet snapshot injected as context on every
+prompt submit and session start — child counts plus actionable bullets for
+`waiting` (with the exact `session output`/`session send` commands) and
+completed children. This is *state*, complementing the Stop-edge inbox drain
+(*events*): it survives conductor restarts and works even if events were
+drained elsewhere. Leaf sessions see nothing. Opt a session out by launching
+it with `AGENTDECK_NO_CHILDREN_CONTEXT=1` in its environment.
+
 ## Notes
 
 - **Completion signal:** trustworthy "done" comes from the child printing
