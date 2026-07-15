@@ -124,7 +124,8 @@ Then treat the plan like code: launch a fresh read-only reviewer in the same
 worktree to check the plan **against the spec** — coverage (every spec
 requirement maps to a task), placeholders, contradictions, task ordering —
 using the same findings format and verdict line as a code review. Findings →
-back to the planner; clean or nits-only → proceed.
+back to the planner; clean or nits-only → proceed, then **archive the planner
+and plan-reviewer sessions** (see "Archiving finished sessions").
 
 The plan's task list now replaces your own decomposition: subtasks = plan
 tasks (see `references/single-issue-split.md`), each implementer receives its
@@ -232,7 +233,9 @@ VERDICT: findings blockers=<n> should-fix=<n> nits=<n>
   nits), rerun the full suite and the e2e check, update screenshots if the UI
   changed again, and commit.
 - When the implementer is done, launch a **new** fresh reviewer
-  (`review-<task-slug>-r2`, then `-r3`).
+  (`review-<task-slug>-r2`, then `-r3`); once you have read the previous
+  round's findings, **archive the superseded reviewer** (see "Archiving
+  finished sessions").
 - **Maximum 3 review rounds.** After round 3: if blockers remain, the task is
   **needs-attention** — no PR; if only should-fixes/nits remain, proceed to
   the PR and list them in the final report.
@@ -300,6 +303,27 @@ remaining, or cannot reach green CI after a few fix attempts is reported as
 **needs-attention**: leave its session and worktree fully intact for
 inspection, and never force-push, reset, or delete anything.
 
+## Archiving finished sessions
+
+The moment a child is no longer needed, **archive** it — don't leave it
+cluttering the active list, and don't hard-delete it either:
+
+```bash
+agent-deck session archive <id>
+```
+
+`session archive` stops the session *and* hides it from active lists while
+retaining it in storage, so its history stays inspectable later. It replaces
+the old `stop && remove` pair — no separate stop is needed. Archive:
+
+- a **reviewer** once you've read its verdict and are moving on (launching the
+  next round, or proceeding to the PR);
+- a **planner** (and its plan-reviewer) once the plan review comes back clean;
+- the **implementer** at task-done cleanup (below).
+
+**Never archive a needs-attention task's sessions** — those stay visible and
+fully intact for inspection (see "Failure handling").
+
 ## Cleanup (successful tasks only)
 
 When a task reaches **done** (review clean, PR created, checks green), clean
@@ -307,7 +331,7 @@ up yourself — the pushed remote branch backs the PR, so nothing local is
 still needed:
 
 ```bash
-agent-deck session stop <id> && agent-deck session remove <id>
+agent-deck session archive <id>
 git -C <repo-root> worktree remove <worktree-path>
 git -C <repo-root> branch -d <branch>
 ```
@@ -336,6 +360,6 @@ referenced. Per task:
 - Needs attention: <anything left, or omit>
 ```
 
-Close by listing what was cleaned up (sessions, worktrees, branches of
-successful tasks) and what was deliberately left in place for
+Close by listing what was cleaned up (archived sessions, removed worktrees
+and branches of successful tasks) and what was deliberately left in place for
 needs-attention tasks.
