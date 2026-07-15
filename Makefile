@@ -2,7 +2,17 @@
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
-VERSION=$(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo "dev")
+# Base the injected version on the authoritative `var Version` in main.go
+# (kept in lockstep with release tags by the check-version target), NOT on
+# `git describe --tags` — the latter matches ANY reachable tag (incl. backup
+# tags like backup/…-2026-07-13), yielding a non-semver string the updater
+# parses as 0.0.0 and flags "update available" forever. Append the short
+# commit (+g<hash>[-dirty]) as semver build-metadata so dev builds stay
+# identifiable while still parsing as a real version.
+CODE_VERSION=$(shell sed -n 's/^var Version = "\([^"]*\)".*/\1/p' cmd/agent-deck/main.go)
+GIT_REV=$(shell git rev-parse --short HEAD 2>/dev/null)
+GIT_DIRTY=$(shell git diff --quiet 2>/dev/null || echo '-dirty')
+VERSION=$(CODE_VERSION)$(if $(GIT_REV),+g$(GIT_REV)$(GIT_DIRTY),)
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
 
 # Tailwind v4 standalone CLI (PERF-01)
@@ -180,7 +190,7 @@ release-local:
 	@test -n "$$GITHUB_TOKEN" || (echo "ERROR: GITHUB_TOKEN not set" && exit 1)
 	@test -n "$$HOMEBREW_TAP_GITHUB_TOKEN" || (echo "ERROR: HOMEBREW_TAP_GITHUB_TOKEN not set" && exit 1)
 	@TAG=$$(git describe --tags --exact-match 2>/dev/null) || (echo "ERROR: HEAD is not tagged. Run: git tag vX.Y.Z" && exit 1); \
-	CODE_VERSION=$$(grep 'var Version' cmd/agent-deck/main.go | sed 's/.*"\(.*\)".*/\1/'); \
+	CODE_VERSION=$$(sed -n 's/^var Version = "\([^"]*\)".*/\1/p' cmd/agent-deck/main.go); \
 	TAG_VERSION=$${TAG#v}; \
 	if [ "$$TAG_VERSION" != "$$CODE_VERSION" ]; then \
 		echo "ERROR: Tag $$TAG ($$TAG_VERSION) != code Version $$CODE_VERSION"; \
