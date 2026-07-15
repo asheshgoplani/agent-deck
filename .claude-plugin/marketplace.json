@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Skills for managing AI coding agent sessions with agent-deck CLI",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "plugins": [
     {
@@ -17,7 +17,8 @@
       "skills": [
         "./skills/agent-deck",
         "./skills/session-share",
-        "./skills/fleet"
+        "./skills/fleet",
+        "./skills/orchestrate"
       ]
     }
   ]
