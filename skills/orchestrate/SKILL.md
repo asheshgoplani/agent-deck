@@ -68,14 +68,30 @@ session can resume the run from the manifest plus `session children`.
   **planning stage** below before any implementation; the resulting plan
   drives decomposition.
 - Anything else → treat as a freeform task description.
-- **Two or more tasks** → run the per-task pipeline below for each,
-  in parallel, capped at **3 concurrent pipelines**; start the rest as slots
-  free up.
-- **One task** → judge whether to split it into subtasks for context hygiene
-  (would one session have to hold too much? does it decompose into clearly
-  separable pieces?). If you split, **read
-  `references/single-issue-split.md` now** and follow it. If not, run the
-  pipeline below once. Either way the outcome is one branch, one PR.
+There is **one flow with four entrances** — planning and splitting are
+stages some entrances pass through, never a prerequisite. Pick by what you
+were given:
+
+```text
+list of tasks/issues (2+) ─→ parallel per-task pipelines, one PR each
+                             (capped at 3 concurrent; rest queue up;
+                              a big item in the list may still get its
+                              own planner, per-task judgment)
+single small task ─────────→ one pipeline, one PR
+single big task, no spec ──→ split it: obvious decomposition → decompose
+                             yourself (references/single-issue-split.md);
+                             approach unclear → planner child first,
+                             then plan-driven split. One branch, one PR.
+design/spec document ──────→ planning stage → plan-driven split.
+                             One branch, one PR.
+```
+
+Splitting a single task is judged by **context hygiene**: would one session
+have to hold too much? Does it decompose into clearly separable pieces? If
+you split, **read `references/single-issue-split.md` now** and follow it.
+Brainstorming/design with the user is upstream of this skill entirely — it
+happens only when the user chooses it, and its output arrives here as just
+another input (the spec document).
 
 ## Planning stage (spec-fed tasks, or any task you judge big)
 
