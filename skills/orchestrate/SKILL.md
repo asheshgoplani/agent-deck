@@ -53,6 +53,11 @@ mkdir -p "$RUN_DIR"
 Everything any child captures goes under `$RUN_DIR/<task-slug>/`. Nothing
 under `$RUN_DIR` is ever committed, pushed, uploaded, or mentioned in a PR.
 
+Maintain a run manifest at `$RUN_DIR/manifest.md` and update it after every
+stage transition — per task: slug, branch, worktree path, session ids,
+current stage, review round, PR url. If the conductor session dies, a fresh
+session can resume the run from the manifest plus `session children`.
+
 ## Input parsing & mode
 
 - An argument that looks like an issue ref (`#123`, an issue URL, "issue
@@ -88,15 +93,20 @@ Task: <title>
 
 Work strictly in this worktree on the current branch. Do, in order:
 1. Install dependencies from the frozen lockfile (never regenerate it).
-2. Implement the task test-first where practical.
-3. Run the FULL test suite; everything must pass.
-4. Verify the change end-to-end by actually driving the app — not only tests.
-5. Only if the change affects UI: capture before/after screenshots into
+2. Run the FULL test suite once BEFORE changing anything and record the
+   baseline. If something already fails, note it and leave it alone — you
+   are accountable only for introducing no NEW failures.
+3. Implement the task test-first where practical.
+4. Run the FULL test suite; no new failures versus the baseline.
+5. Verify the change end-to-end by actually driving the app — not only tests.
+   For browser work use an isolated browser instance (Playwright-style), not
+   a shared Chrome — other tasks may be driving browsers in parallel.
+6. Only if the change affects UI: capture before/after screenshots into
    <run-dir>/<task-slug>/ using descriptive names (before-<what>.png,
    after-<what>.png). Never commit them, never mention them or that
    directory in any commit message, and take a screenshot of the final
    working state.
-6. Commit your work in clear logical commits. Do NOT push yet.
+7. Commit your work in clear logical commits. Do NOT push yet.
 ```
 
 ### 2. Fresh review
@@ -114,25 +124,33 @@ Reviewer prompt template:
 You are a code reviewer with fresh eyes. You are READ-ONLY: edit nothing,
 commit nothing, run only read-only commands plus the test suite.
 
+The task this branch is supposed to implement:
+<task spec: the same spec the implementer received>
+
 Review the full branch diff: git diff $(git merge-base <base-branch> HEAD)...HEAD
-Also run the test suite and judge whether the tests actually cover the change.
+Check BOTH: (a) spec compliance — does the diff actually implement the task
+above? Anything missing, extra, or misunderstood is a finding; and (b) code
+quality. Also run the test suite and judge whether the tests actually cover
+the change.
 
 Report findings as a numbered list: file:line — severity (blocker |
 should-fix | nit) — one line on what is wrong and why it matters.
-End with exactly one line: VERDICT: clean  or  VERDICT: findings
+End with exactly one line, using real counts:
+VERDICT: clean
+VERDICT: findings blockers=<n> should-fix=<n> nits=<n>
 ```
 
 ### 3. Fix loop
 
-- `VERDICT: findings` → `session send` the full findings list to
+- A findings verdict with `blockers=0 should-fix=0` (nits only) counts as
+  clean: skip further rounds, proceed to the PR, and list the nits in the
+  final report.
+- Otherwise → `session send` the full findings list to
   `impl-<task-slug>` with: fix every blocker and should-fix (use judgment on
   nits), rerun the full suite and the e2e check, update screenshots if the UI
   changed again, and commit.
 - When the implementer is done, launch a **new** fresh reviewer
   (`review-<task-slug>-r2`, then `-r3`).
-- A findings verdict with **no blockers and no should-fixes (nits only)**
-  counts as clean: skip further rounds, proceed to the PR, and list the nits
-  in the final report.
 - **Maximum 3 review rounds.** After round 3: if blockers remain, the task is
   **needs-attention** — no PR; if only should-fixes/nits remain, proceed to
   the PR and list them in the final report.
@@ -158,6 +176,20 @@ and `session send` them to the still-alive implementer to fix and push.
 A task counts as **done** only when the review is clean (or nits-only), the
 PR exists, and all checks are green.
 
+## Supervision notes
+
+- `agent-deck session children --json` returns an object
+  `{"children": [...], "parent": "..."}` — iterate `.children[]`, not the
+  root array.
+- `done_status` / `done_summary` **persist from the previous round**. To
+  detect a fix round finishing, watch for `done_at` to *change* (and status
+  to leave `running`) — do not wait for `done_status=ok` to appear; it
+  already says `ok` from the last round.
+- **Stall rule:** a child with no status change for ~20 minutes is stuck.
+  Read its `session output`, nudge it once with `session send`; if it is
+  still stuck on the next check, mark the task **needs-attention** instead of
+  polling forever.
+
 ## Failure handling
 
 A task that cannot pass its tests, exhausts its 3 review rounds with blockers
@@ -173,9 +205,14 @@ still needed:
 
 ```bash
 agent-deck session stop <id> && agent-deck session remove <id>
-git -C <repo-root> worktree remove .worktrees/<branch>
+git -C <repo-root> worktree remove <worktree-path>
 git -C <repo-root> branch -d <branch>
 ```
+
+Take `<worktree-path>` and the exact `<branch>` name from
+`git -C <repo-root> worktree list` — agent-deck may prefix the branch you
+passed to `-w` (e.g. `add-x` becomes `feature/add-x`), so never guess the
+path from the name you typed.
 
 If review feedback arrives on the PR later, recreate a worktree from the
 remote branch. **Needs-attention tasks are the exception**: leave their
