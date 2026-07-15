@@ -49,7 +49,11 @@ hygiene** — each session holds one small coherent job — not raw speed.
 4. On merge conflict, do not resolve it yourself — launch a session in the
    integration worktree: "Resolve the in-progress merge conflicts preserving
    the intent of both sides, run the full test suite, and commit the merge."
-5. Continue until every subtask is merged.
+5. As soon as a subtask is merged, clean up its now-redundant worktree and
+   branch (the integration branch holds the commits):
+   `git -C <repo-root> worktree remove .worktrees/<issue-slug>-<n> && git -C <repo-root> branch -d <issue-branch>-<n>`
+6. Continue until every subtask is merged and only the integration worktree
+   remains.
 
 ## Final integration check
 
@@ -64,4 +68,6 @@ a fix session and re-check (this counts toward a shared 3-round cap).
 Run stages 4–5 once, from the issue worktree, on `<issue-branch>`: one PR for
 the whole issue, CI babysat to green. Screenshot policy is unchanged — all
 subtask screenshots live under `$RUN_DIR/<issue-slug>/` and appear only in
-the final report.
+the final report. Once the PR is green, the issue worktree and local branch
+are cleaned up per the SKILL.md cleanup rules (subtask worktrees are already
+gone by then).

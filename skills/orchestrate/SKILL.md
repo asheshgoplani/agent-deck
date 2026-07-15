@@ -164,14 +164,19 @@ inspection, and never force-push, reset, or delete anything.
 
 ## Cleanup (successful tasks only)
 
-Stop finished children (`agent-deck session stop <id>`), but keep worktrees
-until their PRs merge. The final report ends with copy-paste cleanup
-commands:
+When a task reaches **done** (review clean, PR created, checks green), clean
+up yourself — the pushed remote branch backs the PR, so nothing local is
+still needed:
 
 ```bash
-agent-deck session remove <id>
+agent-deck session stop <id> && agent-deck session remove <id>
 git -C <repo-root> worktree remove .worktrees/<branch>
+git -C <repo-root> branch -d <branch>
 ```
+
+If review feedback arrives on the PR later, recreate a worktree from the
+remote branch. **Needs-attention tasks are the exception**: leave their
+session, worktree, and branch fully intact for inspection.
 
 ## Final report
 
@@ -188,4 +193,6 @@ referenced. Per task:
 - Needs attention: <anything left, or omit>
 ```
 
-Close with the cleanup command block for every successful task.
+Close by listing what was cleaned up (sessions, worktrees, branches of
+successful tasks) and what was deliberately left in place for
+needs-attention tasks.
