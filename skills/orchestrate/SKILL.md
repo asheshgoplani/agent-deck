@@ -130,6 +130,9 @@ End with exactly one line: VERDICT: clean  or  VERDICT: findings
   changed again, and commit.
 - When the implementer is done, launch a **new** fresh reviewer
   (`review-<task-slug>-r2`, then `-r3`).
+- A findings verdict with **no blockers and no should-fixes (nits only)**
+  counts as clean: skip further rounds, proceed to the PR, and list the nits
+  in the final report.
 - **Maximum 3 review rounds.** After round 3: if blockers remain, the task is
   **needs-attention** — no PR; if only should-fixes/nits remain, proceed to
   the PR and list them in the final report.
