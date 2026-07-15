@@ -24,6 +24,10 @@ This differs from the single sub-agent pattern in the `agent-deck` skill (one
 child + fire-&-forget / on-demand / blocking retrieval). Fleet is **many
 children + a non-blocking peek** across all of them.
 
+Want each task taken all the way to a merge-ready PR — implement → verify →
+review loop → PR → CI green — rather than just fan-out and supervision? Use
+the `orchestrate` skill instead; it builds on this one.
+
 **Run from inside an agent-deck session.** Launching auto-parents each child to
 the launching session, which is what makes them show up nested in the TUI and
 routes their completion back to you. (If you are not in a session, the children
