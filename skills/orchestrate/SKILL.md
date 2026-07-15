@@ -258,6 +258,27 @@ and `session send` them to the still-alive implementer to fix and push.
 A task counts as **done** only when the review is clean (or nits-only), the
 PR exists, and all checks are green.
 
+## Answering waiting children
+
+A child in `waiting` has stopped to ask something — its question is pushed to
+you, and unanswered it stalls that task forever. On every heartbeat, for each
+`waiting` child: read the question (`session output`), then decide **who**
+should answer:
+
+- **You answer** when the answer is derivable from what you already hold:
+  the task spec / plan task, this skill's rules (screenshot policy, no push
+  before review, frozen lockfile, branch naming), or an earlier decision in
+  this run. Answer decisively via `session send` — a vague answer buys a
+  second question. Tool-permission menus: `session approve`.
+- **The user answers** when the question is genuinely theirs: scope changes
+  ("should I also refactor X?" — default no, stay on spec), destructive or
+  irreversible actions (dropping data, force-push, deleting files beyond the
+  task), secrets/credentials, or product decisions the spec doesn't settle.
+  Relay the question to the user, leave that child waiting, and keep every
+  other pipeline running — one blocked task never blocks the run. Note the
+  pending question in the manifest and in the final report if it is still
+  open at the end.
+
 ## Supervision notes
 
 - `agent-deck session children --json` returns an object
