@@ -7,10 +7,16 @@ The end state is always **one branch, one PR**.
 
 ## Decompose
 
-Split the issue into 2–5 subtasks, each independently implementable and
-testable, ordered by dependency. For each subtask write a mini-spec: goal,
-likely files/areas, done criteria. The reason to split is **context
-hygiene** — each session holds one small coherent job — not raw speed.
+**If the planning stage ran** (spec-fed task), decomposition is already done:
+subtasks = the plan's tasks, in plan order, with the plan's parallel-safe
+markings deciding the topology below. Each implementer gets its plan task
+verbatim; do not re-decompose or reorder.
+
+**Otherwise** split the issue yourself into 2–5 subtasks, each independently
+implementable and testable, ordered by dependency. For each subtask write a
+mini-spec: goal, likely files/areas, done criteria. The reason to split is
+**context hygiene** — each session holds one small coherent job — not raw
+speed.
 
 ## Choose the topology
 

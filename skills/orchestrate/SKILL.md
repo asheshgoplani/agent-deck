@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: End-to-end delivery pipeline for tasks/issues. Per task - dedicated worktree child implements + tests + verifies e2e (screenshots for UI), a fresh-reviewer fix loop runs until clean, then a PR is created and CI babysat to green, ending in one private report. Use when the user wants tasks or issues "orchestrated", taken "all the way to PRs", "implemented, reviewed and PR'd", or wants one big issue split across sessions into a single branch and PR. For plain fan-out-and-supervise without the delivery pipeline, use the fleet skill instead.
+description: End-to-end delivery pipeline for tasks/issues. Per task - dedicated worktree child implements + tests + verifies e2e (screenshots for UI), a fresh-reviewer fix loop runs until clean, then a PR is created and CI babysat to green, ending in one private report. Use when the user wants tasks or issues "orchestrated", taken "all the way to PRs", "implemented, reviewed and PR'd", wants one big issue split across sessions into a single branch and PR, or has an approved design/spec document to be planned and executed in dedicated child sessions. For plain fan-out-and-supervise without the delivery pipeline, use the fleet skill instead.
 metadata:
   compatibility: "claude, opencode"
 ---
@@ -63,6 +63,10 @@ session can resume the run from the manifest plus `session children`.
 - An argument that looks like an issue ref (`#123`, an issue URL, "issue
   123") → fetch the spec: `gh issue view <n> --json title,body,url`. Its PR
   body must include `Fixes #<n>`.
+- An argument that is a path to a **design/spec document** (e.g.
+  `docs/plans/<date>-<topic>-design.md`) → a spec-fed task: run the
+  **planning stage** below before any implementation; the resulting plan
+  drives decomposition.
 - Anything else → treat as a freeform task description.
 - **Two or more tasks** → run the per-task pipeline below for each,
   in parallel, capped at **3 concurrent pipelines**; start the rest as slots
@@ -72,6 +76,68 @@ session can resume the run from the manifest plus `session children`.
   separable pieces?). If you split, **read
   `references/single-issue-split.md` now** and follow it. If not, run the
   pipeline below once. Either way the outcome is one branch, one PR.
+
+## Planning stage (spec-fed tasks, or any task you judge big)
+
+Design and plan are separate artifacts produced by separate roles: the
+**design/spec** (what and why) is user-approved and arrives as input — if it
+doesn't exist yet, brainstorm it with the user *before* orchestrating; that
+part is interactive and never delegated. The **plan** (how, task by task) is
+written by a dedicated **planner child** in the task's worktree — it needs
+deep codebase reading, which is neither your job (supervision only) nor the
+user's session's:
+
+```bash
+agent-deck launch <repo-root> -w <branch> -c claude -t "plan-<task-slug>" -m "$(cat /tmp/plan-<task-slug>.md)"
+```
+
+Planner prompt template:
+
+```text
+Read the approved design at <spec-path> and explore the codebase as needed.
+Write an implementation plan to docs/plans/<date>-<task-slug>-plan.md:
+ordered, bite-sized tasks; per task: exact file paths, the actual code or
+edit, verification commands with expected output, and the interfaces later
+tasks rely on. Mark any tasks that are safe to run in parallel (disjoint
+files). Assume each task's executor has ZERO context beyond that one task.
+No placeholders (no TBD / "add error handling" / "similar to task N").
+Commit the plan to the current branch. Do NOT implement anything.
+```
+
+Then treat the plan like code: launch a fresh read-only reviewer in the same
+worktree to check the plan **against the spec** — coverage (every spec
+requirement maps to a task), placeholders, contradictions, task ordering —
+using the same findings format and verdict line as a code review. Findings →
+back to the planner; clean or nits-only → proceed.
+
+The plan's task list now replaces your own decomposition: subtasks = plan
+tasks (see `references/single-issue-split.md`), each implementer receives its
+plan task verbatim as its spec, and each reviewer receives that same plan
+task as the spec to check compliance against.
+
+Skip this stage for small tasks — a single focused change with an obvious
+approach (most issues) goes straight into the per-task pipeline.
+
+## Model tiering
+
+You (the conductor) run on the strong model; children don't have to. Pass a
+model per child with `--extra-arg --model --extra-arg <model>` (requires
+`-c claude`); omit it to use the user's default. **Decide per session, by how
+much judgment the job leaves open:**
+
+- **Planner, merge-conflict, and integration-check sessions:** strong model
+  (e.g. opus) — they make design decisions.
+- **Implementers:** scale to spec explicitness. Executing a reviewed plan
+  task (complete code, exact paths — pure transcription + verification) →
+  cheap model (e.g. haiku). A clear spec but no plan → mid tier (e.g.
+  sonnet). Freeform/issue work that must design its own approach → strong.
+- **Reviewers:** at least as strong as the implementer they review — the
+  verdict is the quality gate. Never below mid tier.
+- **Escalate on failure:** if round 2 still reports blockers from a
+  downgraded implementer, don't send it a third round — launch the fix as a
+  NEW strong-model session in the same worktree (tell it to read
+  `git log` and the diff first). Caps the worst case at roughly
+  strong-model cost.
 
 ## Per-task pipeline
 
