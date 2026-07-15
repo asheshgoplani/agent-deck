@@ -3950,6 +3950,10 @@ func handleSessionChildren(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	follow := fs.Bool("follow", false, "Stream child state changes as JSONL (one event per line) until interrupted")
+	interval := fs.Duration("interval", 2*time.Second, "Poll interval for --follow")
+	heartbeat := fs.Duration("heartbeat", 60*time.Second, "Heartbeat event interval for --follow (0 disables)")
+	untilDone := fs.Bool("until-done", false, "With --follow: exit 0 once every child is terminal (done sentinel, error, or stopped)")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session children [id|title] [options]")
 		fmt.Println()
@@ -3958,6 +3962,15 @@ func handleSessionChildren(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println("--follow emits JSONL events: snapshot (initial state per child), added,")
+		fmt.Println("status (from/to transition), done (completion sentinel), removed, error,")
+		fmt.Println("plus periodic heartbeat and a final complete line with --until-done.")
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  agent-deck session children --json")
+		fmt.Println("  agent-deck session children --follow                    # live fleet event stream")
+		fmt.Println("  agent-deck session children --follow --until-done      # exits when all children finish")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
@@ -3988,36 +4001,27 @@ func handleSessionChildren(profile string, args []string) {
 		os.Exit(2)
 	}
 
+	if *untilDone && !*follow {
+		out.Error("--until-done requires --follow", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if *follow {
+		// The stream is JSONL by contract; --json/-q are irrelevant here.
+		os.Exit(runChildrenFollow(profile, parent.ID, *interval, *heartbeat, *untilDone, os.Stdout))
+	}
+
 	kids := childrenOf(parent.ID, instances)
 	session.RefreshInstancesForCLIStatus(kids)
 
-	type childRow struct {
-		ID          string `json:"id"`
-		Title       string `json:"title"`
-		Status      string `json:"status"`
-		DoneStatus  string `json:"done_status,omitempty"`
-		DoneSummary string `json:"done_summary,omitempty"`
-		DoneAt      string `json:"done_at,omitempty"`
-	}
-	rows := make([]childRow, 0, len(kids))
+	rows := buildChildRows(kids)
 	var human strings.Builder
 	fmt.Fprintf(&human, "Children of %s (%s):\n", parent.Title, parent.ID)
-	for _, k := range kids {
-		_ = k.UpdateStatus()
-		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status)}
-		if e, ok := session.ReadLedgerEntry(k.ID); ok {
-			row.DoneStatus = e.Status
-			row.DoneSummary = e.Summary
-			if !e.FinishedAt.IsZero() {
-				row.DoneAt = e.FinishedAt.Format(time.RFC3339)
-			}
-		}
-		rows = append(rows, row)
+	for _, row := range rows {
 		done := row.DoneStatus
 		if done == "" {
 			done = "-"
 		}
-		fmt.Fprintf(&human, "  %s  %-20s  %-8s  done=%s  %s\n", k.ID, k.Title, row.Status, done, row.DoneSummary)
+		fmt.Fprintf(&human, "  %s  %-20s  %-8s  done=%s  %s\n", row.ID, row.Title, row.Status, done, row.DoneSummary)
 	}
 	if len(kids) == 0 {
 		human.WriteString("  (no sub-sessions)\n")

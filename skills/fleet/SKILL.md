@@ -106,6 +106,39 @@ disturbing the conductor or other readers.
 
 A child with a `done_status` has finished and asserted its result.
 
+**Prefer push over polling when your harness supports it.** Instead of
+re-running the check yourself, let the fleet notify you:
+
+```bash
+# One-shot "wake me when the whole fleet is finished" — run this in the
+# BACKGROUND (e.g. Claude Code's run_in_background Bash): it streams JSONL
+# events and exits 0 once every child is terminal (done sentinel, error,
+# or stopped). The harness notifies you when it exits.
+agent-deck session children --follow --until-done
+
+# Live event stream for a long-running fleet — attach a stream watcher
+# (e.g. Claude Code's Monitor tool) to this; each line is one event:
+agent-deck session children --follow
+```
+
+`--follow` emits one JSON object per line: `snapshot` (initial state per
+child), `added`, `status` (from/to transition — including `running → waiting`,
+so you see a child stall on a question), `done` (completion sentinel, ok or
+fail), `removed`, `error`, plus a periodic `heartbeat` (default 60s,
+`--heartbeat 0` disables) so silence always means "nothing changed", never
+"the watcher died". `--interval` tunes the poll cadence (default 2s). Failure
+states are on the stream too — filter for `done` alone and you'll miss
+crashed children; key off `.event` instead.
+
+On older builds without `--follow`, fall back to a background until-loop:
+
+```bash
+until agent-deck session children --json | jq -e 'all(.children[]; .done_status != null)' >/dev/null; do sleep 15; done
+```
+
+(Cloud-side schedulers — e.g. Claude Code routines — run on remote infra and
+cannot reach your local tmux/state.db; fleet supervision stays local.)
+
 ### 4. Unblock a child that's waiting on you
 
 A child in `waiting` status has stopped and is asking for input (a question, a
@@ -200,6 +233,11 @@ All read-only / on-demand — none of them block your session:
 - `agent-deck session children [id] --json` — **the default monitor.** Live
   status + last completion per child. Non-destructive (never clears the inbox),
   so poll it as often as you like. Start here every heartbeat.
+- `agent-deck session children --follow [--until-done]` — **the push monitor.**
+  Streams JSONL child events (snapshot/added/status/done/removed/error +
+  heartbeat) until interrupted; with `--until-done` it exits 0 once every child
+  is terminal. Run it in the background for a completion wake-up, or attach a
+  stream watcher for live events. Read-only like the plain form.
 - `agent-deck session output <id> --json` — a child's latest full response.
 - `agent-deck session send <id> "<msg>" [--wait|--stream|--no-wait|--draft]` —
   send a follow-up / answer a `waiting` child.
