@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestDiffChildEvents(t *testing.T) {
@@ -110,6 +113,91 @@ func TestAllChildrenTerminal(t *testing.T) {
 	}
 	if !allChildrenTerminal(nil) {
 		t.Error("empty set is vacuously terminal")
+	}
+}
+
+// summarizeChildren drives both the heartbeat and complete lines, so every
+// counter it reports is part of the JSONL contract.
+func TestSummarizeChildren(t *testing.T) {
+	rows := []childRow{
+		{Status: "running"},
+		{Status: "waiting"},
+		{Status: "waiting"},
+		{Status: "idle", DoneStatus: "ok"},
+		{Status: "error", DoneStatus: "fail"},
+		{Status: "idle"}, // Neither running/waiting nor done: counted only in Children.
+	}
+	got := summarizeChildren("heartbeat", rows)
+	want := followSummary{Event: "heartbeat", Children: 6, Running: 1, Waiting: 2, DoneOK: 1, DoneFail: 1}
+	if got != want {
+		t.Errorf("summarizeChildren() = %+v, want %+v", got, want)
+	}
+
+	empty := summarizeChildren("complete", nil)
+	if empty != (followSummary{Event: "complete"}) {
+		t.Errorf("empty summary = %+v, want zeroed counts with event=complete", empty)
+	}
+}
+
+// errWriter fails every write, standing in for a consumer that went away
+// mid-stream (`agent-deck session children --follow | head -1`).
+type errWriter struct{ writes int }
+
+func (e *errWriter) Write(p []byte) (int, error) {
+	e.writes++
+	return 0, io.ErrClosedPipe
+}
+
+// A dead stream must end the poll loop. Before emit reported write failures,
+// the loop kept polling forever with nowhere to write the results.
+func TestRunChildrenFollowStopsOnDeadStream(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		poll func(profile, parentID string) ([]childRow, error)
+	}{
+		{
+			name: "snapshot write fails",
+			poll: func(string, string) ([]childRow, error) {
+				return []childRow{{ID: "a", Status: "running"}}, nil
+			},
+		},
+		{
+			name: "error-event write fails",
+			poll: func(string, string) ([]childRow, error) {
+				return nil, errors.New("poll failed")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			polls := 0
+			restore := pollChildRows
+			pollChildRows = func(profile, parentID string) ([]childRow, error) {
+				polls++
+				return tc.poll(profile, parentID)
+			}
+			t.Cleanup(func() { pollChildRows = restore })
+
+			w := &errWriter{}
+			done := make(chan int, 1)
+			go func() {
+				done <- runChildrenFollow("p", "parent", time.Millisecond, 0, false, w)
+			}()
+
+			select {
+			case code := <-done:
+				if code != 0 {
+					t.Errorf("exit code = %d, want 0 (stream closed, not a poll failure)", code)
+				}
+				if w.writes != 1 {
+					t.Errorf("writes = %d, want 1 — loop kept emitting after the stream died", w.writes)
+				}
+				if polls != 1 {
+					t.Errorf("polls = %d, want 1 — loop kept polling after the stream died", polls)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("runChildrenFollow kept polling after the stream closed")
+			}
+		})
 	}
 }
 

@@ -149,6 +149,10 @@ func summarizeChildren(event string, rows []childRow) followSummary {
 	return s
 }
 
+// pollChildRows is the poll runChildrenFollow performs each tick. It is a var
+// so tests can drive the loop without standing up storage.
+var pollChildRows = loadChildRows
+
 // loadChildRows does one full poll: fresh DB read, parent existence check,
 // status refresh, row build. Storage is closed before returning so the poll
 // loop never accumulates DB handles.
@@ -179,13 +183,24 @@ func loadChildRows(profile, parentID string) ([]childRow, error) {
 // --until-done is satisfied, or polling fails repeatedly. Every terminal state
 // is visible on the stream (done ok/fail, error, stopped, removed) so silence
 // only ever means "nothing changed" — the heartbeat line proves liveness.
+//
+// interval must be positive; the caller validates it, since a non-positive
+// sleep would turn the poll into a busy-loop that reopens storage every pass.
+//
+// With untilDone, a parent that currently has no children is already "all
+// terminal" and completes immediately. Callers that mean to watch for children
+// yet to be spawned must attach after at least one child exists.
 func runChildrenFollow(profile, parentID string, interval, heartbeat time.Duration, untilDone bool, w io.Writer) int {
-	emit := func(v interface{}) {
+	// emit reports whether the stream is still writable. A consumer that goes
+	// away mid-stream (`... | head -1`) makes every later write fail; without
+	// this the loop would keep polling the DB forever with nowhere to write.
+	emit := func(v interface{}) bool {
 		b, err := json.Marshal(v)
 		if err != nil {
-			return
+			return true // Malformed event, not a dead stream: keep polling.
 		}
-		fmt.Fprintln(w, string(b))
+		_, err = fmt.Fprintln(w, string(b))
+		return err == nil
 	}
 
 	const maxConsecutiveFailures = 5
@@ -195,10 +210,12 @@ func runChildrenFollow(profile, parentID string, interval, heartbeat time.Durati
 	lastHeartbeat := time.Now()
 
 	for {
-		rows, err := loadChildRows(profile, parentID)
+		rows, err := pollChildRows(profile, parentID)
 		if err != nil {
 			failures++
-			emit(followEvent{Event: "error", Error: err.Error()})
+			if !emit(followEvent{Event: "error", Error: err.Error()}) {
+				return 0
+			}
 			if failures >= maxConsecutiveFailures {
 				return 1
 			}
@@ -206,23 +223,29 @@ func runChildrenFollow(profile, parentID string, interval, heartbeat time.Durati
 			failures = 0
 			if first {
 				for _, r := range rows {
-					emit(snapshotEvent("snapshot", r))
+					if !emit(snapshotEvent("snapshot", r)) {
+						return 0
+					}
 				}
 				first = false
 			} else {
 				for _, e := range diffChildEvents(prev, rows) {
-					emit(e)
+					if !emit(e) {
+						return 0
+					}
 				}
 			}
 			prev = rows
 			if untilDone && allChildrenTerminal(rows) {
-				emit(summarizeChildren("complete", rows))
+				_ = emit(summarizeChildren("complete", rows))
 				return 0
 			}
 		}
 
 		if heartbeat > 0 && time.Since(lastHeartbeat) >= heartbeat {
-			emit(summarizeChildren("heartbeat", prev))
+			if !emit(summarizeChildren("heartbeat", prev)) {
+				return 0
+			}
 			lastHeartbeat = time.Now()
 		}
 		time.Sleep(interval)

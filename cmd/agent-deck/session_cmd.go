@@ -4005,6 +4005,13 @@ func handleSessionChildren(profile string, args []string) {
 		out.Error("--until-done requires --follow", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	// A non-positive interval makes time.Sleep a no-op, turning the poll into a
+	// busy-loop that reopens storage every pass. Reject rather than clamp: a
+	// silently different interval than asked for is its own surprise.
+	if *follow && *interval <= 0 {
+		out.Error("--interval must be positive", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 	if *follow {
 		// The stream is JSONL by contract; --json/-q are irrelevant here.
 		os.Exit(runChildrenFollow(profile, parent.ID, *interval, *heartbeat, *untilDone, os.Stdout))
