@@ -10249,6 +10249,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.instancesMu.Unlock()
 					if setErr != nil {
 						h.setError(setErr)
+						break
 					}
 					if postCommit != nil {
 						postCommit()
