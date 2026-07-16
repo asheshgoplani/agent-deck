@@ -25,6 +25,9 @@ func (e *envVarFlags) Set(val string) error {
 	if len(parts) != 2 || parts[0] == "" {
 		return fmt.Errorf("invalid env format %q, expected KEY=VALUE", val)
 	}
+	if !session.IsValidEnvKey(parts[0]) {
+		return fmt.Errorf("invalid environment variable name %q", parts[0])
+	}
 	(*e)[parts[0]] = parts[1]
 	return nil
 }

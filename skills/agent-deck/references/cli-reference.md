@@ -158,10 +158,24 @@ agent-deck session stop <id|title>
 ### session restart
 
 ```bash
-agent-deck session restart <id|title>
+agent-deck session restart <id|title> [--env KEY=VALUE ...]
 ```
 
 Reloads MCPs without losing conversation (Claude/Gemini).
+
+`--env` injects an environment variable into the replacement process for this
+restart only. It can be repeated, and a command-line value overrides configured
+environment sources with the same name. The value is not saved to the session:
+
+```bash
+agent-deck session restart my-project --env API_URL=https://api.example.com
+agent-deck session restart my-project --env FOO=one --env BAR="two words"
+```
+
+Supplying `--env` forces the requested restart past the recent-session guard.
+Use `--all --env KEY=VALUE` to inject the variable into every active session.
+Claude's existing protection that removes `TELEGRAM_*` variables from sessions
+that do not own a Telegram channel remains in effect.
 
 ### session fork (Claude, OpenCode, Pi, Codex)
 

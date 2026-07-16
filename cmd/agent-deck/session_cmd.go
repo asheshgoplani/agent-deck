@@ -111,7 +111,7 @@ func printSessionHelp() {
 	fmt.Println("  remove <id>             Remove session from registry (stopped/error only; --force to bypass)")
 	fmt.Println("  archive <id|title>      Stop session and hide it from active lists (retained in storage)")
 	fmt.Println("  unarchive <id|title>    Restore an archived session (does not restart it)")
-	fmt.Println("  restart [id] [--all]    Restart session (Claude: reload MCPs)")
+	fmt.Println("  restart [id] [--all] [--env KEY=VALUE]  Restart session (Claude: reload MCPs)")
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
 	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, or Codex session with context")
 	fmt.Println("  attach <id>             Attach to session interactively")
@@ -633,6 +633,8 @@ func handleSessionRestart(profile string, args []string) {
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	force := fs.Bool("force", false, "Restart even if the session is already healthy and fresh (bypasses issue #30 guard)")
 	all := fs.Bool("all", false, "Restart all active sessions")
+	envFlags := make(envVarFlags)
+	fs.Var(&envFlags, "env", "Environment variable in KEY=VALUE format for the restarted process (can be repeated)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session restart [id|title] [options]")
@@ -649,6 +651,8 @@ func handleSessionRestart(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck session restart my-project")
+		fmt.Println("  agent-deck session restart my-project --env API_URL=https://api.example.com")
+		fmt.Println("  agent-deck session restart my-project --env FOO=one --env BAR=two")
 		fmt.Println("  agent-deck session restart --all")
 	}
 
@@ -667,7 +671,7 @@ func handleSessionRestart(profile string, args []string) {
 	}
 
 	if *all {
-		restartAllSessions(out, storage, instances, groups)
+		restartAllSessions(out, storage, instances, groups, envFlags)
 		return
 	}
 
@@ -693,7 +697,7 @@ func handleSessionRestart(profile string, args []string) {
 	// scope intact) when the session is healthy and was started very
 	// recently. A watchdog racing `start` → `restart` on the same session
 	// must not tear down the fresh scope.
-	if skip, reason := session.ShouldSkipRestart(inst, time.Now(), *force); skip {
+	if skip, reason := session.ShouldSkipRestart(inst, time.Now(), *force || len(envFlags) > 0); skip {
 		data := map[string]interface{}{
 			"success": true,
 			"skipped": true,
@@ -706,7 +710,7 @@ func handleSessionRestart(profile string, args []string) {
 	}
 
 	// Restart the session
-	if err := inst.Restart(); err != nil {
+	if err := inst.RestartWithEnv(envFlags); err != nil {
 		out.Error(fmt.Sprintf("failed to restart session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -742,7 +746,7 @@ func handleSessionRestart(profile string, args []string) {
 }
 
 // restartAllSessions restarts every active session one by one.
-func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*session.Instance, groups []*session.GroupData) {
+func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*session.Instance, groups []*session.GroupData, env map[string]string) {
 	var active []*session.Instance
 	for _, inst := range instances {
 		if inst.Exists() {
@@ -768,7 +772,7 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 			fmt.Printf("Restarting %s...\n", inst.Title)
 		}
 
-		if err := inst.Restart(); err != nil {
+		if err := inst.RestartWithEnv(env); err != nil {
 			errMsg := fmt.Sprintf("failed to restart session '%s': %v", inst.Title, err)
 			if !out.jsonMode {
 				fmt.Fprintf(os.Stderr, "  Error: %s\n", errMsg)

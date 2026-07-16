@@ -207,6 +207,9 @@ type Instance struct {
 	// pendingCodexRestartWarning is consumed by UI/CLI after Restart() succeeds.
 	// It is intentionally transient and never persisted.
 	pendingCodexRestartWarning string `json:"-"`
+	// restartEnv contains one-shot environment overrides while RestartWithEnv is
+	// building the replacement process. It is cleared before the call returns.
+	restartEnv map[string]string
 
 	// GitHub Copilot CLI integration
 	CopilotSessionID  string    `json:"copilot_session_id,omitempty"`
@@ -6033,16 +6036,43 @@ func (i *Instance) killInternal(sync bool) error {
 // same instance. A legitimate manual restart still proceeds because the
 // stamp from any prior spawn pre-dates the new caller's beforeLock.
 func (i *Instance) Restart() error {
+	return i.restart(nil)
+}
+
+// RestartWithEnv restarts the session with one-shot environment overrides.
+// The values apply to the replacement process only and are not persisted in
+// the Instance or tmux session environment for future restarts.
+func (i *Instance) RestartWithEnv(env map[string]string) error {
+	for key := range env {
+		if !IsValidEnvKey(key) {
+			return fmt.Errorf("invalid environment variable name %q", key)
+		}
+	}
+	return i.restart(env)
+}
+
+func (i *Instance) restart(env map[string]string) error {
 	beforeLock := nowFn()
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
 		return lockErr
 	}
 	defer release()
-	if spawnedSince(i.ID, beforeLock) {
+	// A one-shot environment request is explicit operator intent. If another
+	// spawn won while this call waited for the lock, restart that fresh process
+	// so the requested environment is not silently discarded.
+	if spawnedSince(i.ID, beforeLock) && len(env) == 0 {
 		return nil
 	}
 	defer recordInstanceSpawn(i.ID)
+
+	if len(env) > 0 {
+		i.restartEnv = make(map[string]string, len(env))
+		for key, value := range env {
+			i.restartEnv[key] = value
+		}
+		defer func() { i.restartEnv = nil }()
+	}
 
 	mcpLog.Debug(
 		"restart_called",
@@ -6197,6 +6227,7 @@ func (i *Instance) Restart() error {
 			rawCmd = "opencode"
 			i.OpenCodeStartedAt = time.Now().UnixMilli()
 		}
+		rawCmd = i.buildRestartEnvPrefix() + rawCmd
 		resumeCmd, containerName, err := i.prepareCommand(rawCmd)
 		if err != nil {
 			return err
@@ -6340,6 +6371,7 @@ func (i *Instance) Restart() error {
 			rawCmd = fmt.Sprintf("%s %s %s",
 				i.Command, toolDef.ResumeFlag, sessionID)
 		}
+		rawCmd = i.buildRestartEnvPrefix() + rawCmd
 		resumeCmd, containerName, err := i.prepareCommand(rawCmd)
 		if err != nil {
 			return err
@@ -6427,7 +6459,17 @@ func (i *Instance) Restart() error {
 			if toolDef := GetToolDef(i.Tool); toolDef != nil {
 				command = i.buildGenericCommand(i.Command)
 			} else {
-				command = i.Command
+				command = i.buildRestartEnvPrefix() + i.Command
+				if i.Command == "" && command != "" {
+					shell := ""
+					if !i.IsSandboxed() && i.SSHHost == "" {
+						shell = os.Getenv("SHELL")
+					}
+					if shell == "" {
+						shell = "/bin/sh"
+					}
+					command += "exec " + shellescape.Quote(shell)
+				}
 			}
 		}
 	}
