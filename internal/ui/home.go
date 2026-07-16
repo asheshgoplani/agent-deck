@@ -10254,14 +10254,22 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						postCommit()
 					}
 					// Store pending title change so it survives reload races.
-					// If saveInstances() is skipped (isReloading=true), the reload
-					// replaces h.instances from disk, losing the in-memory rename
-					// AND its lock. loadSessionsMsg re-applies both after reload.
+					// pendingTitleChanges is the reload-recovery net (see the
+					// reapply block in loadSessionsMsg), but it only helps AFTER
+					// a reload happens. Use forceSaveInstances (not saveInstances)
+					// so the lock reaches disk immediately: otherwise the row
+					// sits unlocked on disk for however long it takes a reload to
+					// trigger and reapply, and a Claude hook firing in that
+					// window sees a genuinely-unlocked row (not a stale read) and
+					// legitimately syncs Claude's own name over it before the
+					// rename ever lands — the "first rename doesn't take"
+					// variant of #572/#697. Mirrors the edit-dialog rename path,
+					// which already force-saves for the same reason.
 					h.pendingTitleChanges[sessionID] = pendingTitle{title: newName, locked: locked}
 					// Invalidate preview cache since title changed
 					h.invalidatePreviewCache(sessionID)
 					h.rebuildFlatItems()
-					h.saveInstances()
+					h.forceSaveInstances()
 				}
 			}
 		}

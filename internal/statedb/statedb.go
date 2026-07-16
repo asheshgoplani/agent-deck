@@ -194,6 +194,18 @@ func mergeAutoNameFields(inst *InstanceRow, existing existingAutoNameFields) (bo
 	return autoName, description
 }
 
+// NOTE: title/title_locked are deliberately NOT merge-protected the way
+// auto_name is. auto_name's merge is safe because it only blocks one
+// direction (stale payload resurrecting true after a fresher writer cleared
+// it) — a row-level heuristic can't safely do that for title_locked, because
+// an incoming "unlocked" payload is ambiguous: it's either a stale snapshot
+// from a racing writer (must be rejected) or a deliberate `session
+// set-title-lock off` (must be honored), and both look identical as plain
+// row data. That ambiguity can only be resolved at the write site that
+// actually knows its own freshness — see UpdateTitleIfUnlocked, used by the
+// hook-triggered Claude title sync (cmd/agent-deck/hook_name_sync.go) instead
+// of a full stale-snapshot round-trip through UpsertInstances.
+
 // WatcherRow represents a watcher row in the database.
 type WatcherRow struct {
 	ID         string
@@ -1017,6 +1029,44 @@ func (s *StateDB) DeleteInstance(id string) error {
 		_, err := s.db.Exec("DELETE FROM instances WHERE id = ?", id)
 		return err
 	})
+}
+
+// UpdateTitleIfUnlocked sets an instance's title (and clears auto_name, since
+// a synced title replaces the auto-generated handle) with a single
+// conditional UPDATE, atomic at the SQL level: the WHERE clause is evaluated
+// by SQLite as part of the same statement, so there is no read-then-write gap
+// a concurrent lock can land in. Returns applied=false (no error) when the
+// row is already locked or doesn't exist — the caller made no change.
+//
+// This exists for writers that only intend to touch the title based on a
+// possibly-stale decision — namely the hook-triggered Claude title sync
+// (cmd/agent-deck/hook_name_sync.go), which loads a full instance snapshot in
+// a separate process and used to save it back wholesale via UpsertInstances.
+// If a user rename (which sets title_locked) landed between that process's
+// load and its save, the stale wholesale save would silently revert the
+// rename — the "session name keeps getting overwritten" bug. A general
+// storage-layer guard against this is unsafe: an incoming "unlocked" payload
+// is ambiguous between "stale snapshot" (reject) and "deliberate `session
+// set-title-lock off`" (honor), and both look identical as row data. Only the
+// write site itself can resolve that, by asking SQLite to apply the change
+// solely if the row is STILL unlocked at the moment of the write.
+func (s *StateDB) UpdateTitleIfUnlocked(id, title string) (applied bool, err error) {
+	err = withBusyRetry(func() error {
+		res, execErr := s.db.Exec(
+			"UPDATE instances SET title = ?, auto_name = 0 WHERE id = ? AND title_locked = 0",
+			title, id,
+		)
+		if execErr != nil {
+			return execErr
+		}
+		n, raErr := res.RowsAffected()
+		if raErr != nil {
+			return raErr
+		}
+		applied = n > 0
+		return nil
+	})
+	return applied, err
 }
 
 // InstanceExists returns true iff a row with the given id is present.

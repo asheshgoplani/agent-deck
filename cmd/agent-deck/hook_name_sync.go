@@ -69,7 +69,7 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 		if err != nil {
 			continue
 		}
-		instances, groups, err := storage.LoadWithGroups()
+		instances, _, err := storage.LoadWithGroups()
 		if err != nil {
 			_ = storage.Close()
 			continue
@@ -88,15 +88,22 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 
 		// Instance IDs are globally unique: once found, this profile owns the
 		// session — act and stop, never fall through to another profile.
+		//
+		// newName/changed reflect ReconcileTitleFromClaude's decision against
+		// THIS process's (possibly stale) in-memory snapshot — that's only a
+		// fast local check. The actual persistence below is a single targeted
+		// UPDATE ... WHERE title_locked = 0, so even if a user rename landed
+		// and locked the title after this snapshot was loaded, the write is a
+		// silent no-op instead of clobbering it (unlike the old whole-instance
+		// SaveWithGroups round-trip, which had no such guard).
 		newName, changed := target.ReconcileTitleFromClaude(sessionID)
+		applied := false
 		if changed {
-			target.SetAutoName(false) // Claude/user-chosen name replaces the auto handle
-			groupTree := session.NewGroupTreeWithGroups(instances, groups)
-			_ = storage.SaveWithGroups(instances, groupTree)
+			applied, _ = storage.UpdateTitleIfUnlocked(instanceID, newName)
 		}
 		_ = storage.Close()
 
-		if changed {
+		if applied {
 			// #1114: ReconcileTitleFromClaude already wrote the badge-update
 			// file the attached process watches (the path that works without a
 			// controlling tty). Also attempt the direct via-tty emit for the
