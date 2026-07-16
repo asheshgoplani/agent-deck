@@ -198,6 +198,8 @@ func handleSessionStart(profile string, args []string) {
 		fmt.Println("  agent-deck session start my-project")
 		fmt.Println("  agent-deck session start my-project --message \"Research MCP patterns\"")
 		fmt.Println("  agent-deck session start my-project -m \"Explain this codebase\"")
+		fmt.Println("  agent-deck session start my-project --message-file task.md   # long prompt from file, no shell quoting")
+		fmt.Println("  git diff | agent-deck session start my-project --message-file -   # initial message from stdin")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
