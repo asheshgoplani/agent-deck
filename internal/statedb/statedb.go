@@ -1375,16 +1375,29 @@ func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
 	return result, rows.Err()
 }
 
+// touchWithRetry stamps metadata.last_modified, retrying on SQLITE_BUSY.
+//
+// Touch() is a plain Exec, so under a concurrent writer it fails where the
+// retry-wrapped row UPDATE beside it would have succeeded — leaving the row
+// changed but the change unannounced. Every targeted writer that stamps its
+// own signal must retry the stamp as hard as it retried the write.
+func (s *StateDB) touchWithRetry() error {
+	return withBusyRetry(func() error { return s.Touch() })
+}
+
 // SetAcknowledged sets or clears the acknowledged flag for an instance.
 func (s *StateDB) SetAcknowledged(id string, ack bool) error {
 	v := 0
 	if ack {
 		v = 1
 	}
-	if _, err := s.db.Exec("UPDATE instances SET acknowledged = ? WHERE id = ?", v, id); err != nil {
+	if err := withBusyRetry(func() error {
+		_, err := s.db.Exec("UPDATE instances SET acknowledged = ? WHERE id = ?", v, id)
+		return err
+	}); err != nil {
 		return err
 	}
-	return s.Touch()
+	return s.touchWithRetry()
 }
 
 // SetArchived sets or clears the archive timestamp for a single instance via a
@@ -1406,7 +1419,7 @@ func (s *StateDB) SetArchived(id string, at time.Time) error {
 	}); err != nil {
 		return err
 	}
-	return s.Touch()
+	return s.touchWithRetry()
 }
 
 // --- Heartbeat ---
