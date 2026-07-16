@@ -89,14 +89,24 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 		// Instance IDs are globally unique: once found, this profile owns the
 		// session — act and stop, never fall through to another profile.
 		//
-		// newName/changed reflect ReconcileTitleFromClaude's decision against
+		// newName/changed reflect ResolveTitleFromClaude's decision against
 		// THIS process's (possibly stale) in-memory snapshot — that's only a
 		// fast local check. The actual persistence below is a single targeted
 		// UPDATE ... WHERE title_locked = 0, so even if a user rename landed
 		// and locked the title after this snapshot was loaded, the write is a
 		// silent no-op instead of clobbering it (unlike the old whole-instance
 		// SaveWithGroups round-trip, which had no such guard).
-		newName, changed := target.ReconcileTitleFromClaude(sessionID)
+		//
+		// Deliberately uses ResolveTitleFromClaude (pure decision), NOT
+		// ReconcileTitleFromClaude (which also renames the live tmux window
+		// and writes the badge-update file immediately). If we ran those side
+		// effects on every "decided to rename" and then discovered the DB
+		// write was rejected as locked, the tmux window title and iTerm badge
+		// would already show Claude's name while the stored title correctly
+		// stayed put — visible chrome out of sync with the persisted value.
+		// So: decide, persist, and only apply the tmux/badge side effects once
+		// persistence is confirmed.
+		newName, changed := target.ResolveTitleFromClaude(sessionID)
 		applied := false
 		if changed {
 			applied, _ = storage.UpdateTitleIfUnlocked(instanceID, newName)
@@ -104,10 +114,15 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 		_ = storage.Close()
 
 		if applied {
-			// #1114: ReconcileTitleFromClaude already wrote the badge-update
-			// file the attached process watches (the path that works without a
-			// controlling tty). Also attempt the direct via-tty emit for the
-			// rare hook that DOES own a tty — silent no-op otherwise.
+			target.Title = newName
+			target.SyncTmuxDisplayName()
+			if tmuxSess := target.GetTmuxSession(); tmuxSess != nil && tmuxSess.Name != "" {
+				_ = tmux.WriteBadgeUpdate(tmuxSess.Name, newName)
+			}
+			// #1114: WriteBadgeUpdate above wrote the file the attached
+			// process watches (the path that works without a controlling
+			// tty). Also attempt the direct via-tty emit for the rare hook
+			// that DOES own a tty — silent no-op otherwise.
 			tmux.EmitITermBadgeViaTty(newName, session.GetTerminalSettings().GetITermBadge())
 		}
 		return
