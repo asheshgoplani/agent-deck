@@ -485,6 +485,12 @@ type Home struct {
 	previewPctOverlayAt time.Time // when to hide the split overlay (zero = hidden)
 	draggingDivider     bool      // true while the mouse is dragging the Sessions/Preview divider
 
+	// previewOrientation places the PREVIEW pane "right" (side-by-side) or
+	// "below" (stacked) on wide terminals. Loaded from config.toml [ui]
+	// preview_orientation, toggled live via the `O` keybinding, persisted
+	// back to config on toggle.
+	previewOrientation string
+
 	// footerMode selects the bottom hint-bar style (config.toml [ui] footer).
 	// One of session.FooterCurated (default), FooterFull, FooterCompact, or
 	// FooterMinimal. Cached so every render of a frame agrees. Additive/opt-in:
@@ -985,11 +991,18 @@ type deletedSessionEntry struct {
 }
 
 // getLayoutMode returns the current layout mode based on terminal width
+// and the user's preview-orientation preference. On wide terminals the
+// user can opt into the stacked (PREVIEW-below) layout via
+// preview_orientation = "below"; narrow terminals always stack.
 func (h *Home) getLayoutMode() string {
 	switch {
 	case h.width < layoutBreakpointSingle:
 		return LayoutModeSingle
 	case h.width < layoutBreakpointStacked:
+		return LayoutModeStacked
+	case h.previewOrientation == PreviewOrientationBelow:
+		// Wide terminal, but the user prefers PREVIEW stacked below the
+		// sessions list (portrait-monitor friendly).
 		return LayoutModeStacked
 	default:
 		return LayoutModeDual
@@ -1322,6 +1335,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.sysStatsConfig = cfg.SystemStats
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(cfg, actualProfile)
 		h.previewPct = cfg.UI.GetPreviewPct()
+		h.previewOrientation = cfg.UI.GetPreviewOrientation()
 		h.remoteLatencyRefreshSec = cfg.UI.GetRemoteLatencyRefreshSecs(cfg.SystemStats.GetRefreshSeconds())
 		h.remoteSessionRefreshSec = cfg.UI.GetRemoteSessionRefreshSecs()
 		h.footerMode = cfg.UI.GetFooter()
@@ -1331,6 +1345,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.activeFilterExcludes = (session.DisplaySettings{}).GetActiveFilterExcludes()
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(nil, actualProfile)
 		h.previewPct = session.DefaultPreviewPct
+		h.previewOrientation = session.DefaultPreviewOrientation
 		h.remoteLatencyRefreshSec = (session.UISettings{}).GetRemoteLatencyRefreshSecs(0)
 		h.remoteSessionRefreshSec = (session.UISettings{}).GetRemoteSessionRefreshSecs()
 		h.footerMode = (session.UISettings{}).GetFooter()
@@ -2410,12 +2425,9 @@ func (h *Home) syncViewport() {
 	layoutMode := h.getLayoutMode()
 	switch layoutMode {
 	case LayoutModeStacked:
-		// Stacked layout: list gets 60% of height, minus title (2 lines)
-		// Must match: listHeight := (totalHeight * 60) / 100; listContent height = listHeight - 2
-		listHeight := (contentHeight * 60) / 100
-		if listHeight < 5 {
-			listHeight = 5
-		}
+		// Stacked layout: list gets (100-previewPct)% of height, minus title.
+		// Must match renderStackedLayout via the shared stackedListHeight helper.
+		listHeight := h.stackedListHeight(contentHeight)
 		panelContentHeight = listHeight - panelTitleLines
 	case LayoutModeSingle:
 		// Single column: list gets full height minus title
@@ -2625,10 +2637,7 @@ func (h *Home) getVisibleHeight() int {
 	layoutMode := h.getLayoutMode()
 	switch layoutMode {
 	case LayoutModeStacked:
-		listHeight := (contentHeight * 60) / 100
-		if listHeight < 5 {
-			listHeight = 5
-		}
+		listHeight := h.stackedListHeight(contentHeight)
 		panelContentHeight = listHeight - panelTitleLines
 	case LayoutModeSingle:
 		panelContentHeight = contentHeight - panelTitleLines
@@ -8268,18 +8277,28 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "<":
 		// Sessions/Preview split: shrink preview by previewPctStep (#1092).
-		// Bound to dual layout — single/stacked layouts have no horizontal
-		// split to adjust.
-		if h.getLayoutMode() == LayoutModeDual {
+		// Works in dual (horizontal) and stacked (vertical) layouts — the
+		// same previewPct drives both splits. Single layout has nothing to
+		// adjust.
+		if mode := h.getLayoutMode(); mode == LayoutModeDual || mode == LayoutModeStacked {
 			h.adjustPreviewPct(-previewPctStep)
 		}
 		return h, nil
 
 	case ">":
 		// Sessions/Preview split: grow preview by previewPctStep (#1092).
-		if h.getLayoutMode() == LayoutModeDual {
+		if mode := h.getLayoutMode(); mode == LayoutModeDual || mode == LayoutModeStacked {
 			h.adjustPreviewPct(previewPctStep)
 		}
+		return h, nil
+
+	case "O":
+		// Toggle preview-pane orientation on wide terminals: side-by-side
+		// (right) <-> stacked (below). Persists to config.toml. No-op visual
+		// effect on narrow terminals (always stacked) but the preference is
+		// still recorded for when the terminal widens. (`v` cycles preview
+		// content mode and `V` copies the visible pane — both distinct.)
+		h.togglePreviewOrientation()
 		return h, nil
 
 	case "S":
@@ -13767,13 +13786,11 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 func (h *Home) renderStackedLayout(totalHeight int) string {
 	var b strings.Builder
 
-	// Split height: 60% list, 40% preview
-	listHeight := (totalHeight * 60) / 100
+	// Split height by previewPct so < / > adjust the vertical split the
+	// same way they adjust the horizontal split in the dual layout.
+	// stackedListHeight applies the >=5 list / >=3 preview floors.
+	listHeight := h.stackedListHeight(totalHeight)
 	previewHeight := totalHeight - listHeight - 1 // -1 for separator
-
-	if listHeight < 5 {
-		listHeight = 5
-	}
 	if previewHeight < 3 {
 		previewHeight = 3
 	}

@@ -22,6 +22,42 @@ import (
 // previewPctStep is the percentage delta per < / > keystroke.
 const previewPctStep = 5
 
+// Preview-orientation values, re-exported from the session package so the
+// ui layer can compare h.previewOrientation without importing the constant
+// at every call site.
+const (
+	PreviewOrientationRight = session.PreviewOrientationRight
+	PreviewOrientationBelow = session.PreviewOrientationBelow
+)
+
+// stackedListHeight resolves the SESSIONS-list height (in rows) for the
+// stacked layout, given the total content height. The preview pane gets
+// previewPct of the height and the list gets the remainder — mirroring the
+// dual layout's width convention so the < / > keybindings adjust the split
+// in either orientation. A single source of truth for the three call sites
+// (renderStackedLayout and the two maxVisible calcs) that must stay in
+// lockstep. Guarantees list >= 5 and preview >= 3 rows when height allows.
+func (h *Home) stackedListHeight(totalHeight int) int {
+	if totalHeight <= 0 {
+		return 0
+	}
+	previewPct := h.getPreviewPct()
+	sessionsPct := 100 - previewPct
+	listHeight := (totalHeight * sessionsPct) / 100
+
+	// Reserve a floor for each pane (preview loses 1 row to the separator).
+	if listHeight < 5 {
+		listHeight = 5
+	}
+	if totalHeight-listHeight-1 < 3 {
+		listHeight = totalHeight - 4 // leave 3 for preview + 1 for separator
+	}
+	if listHeight < 0 {
+		listHeight = 0
+	}
+	return listHeight
+}
+
 // previewPctOverlayDuration is how long the "Sessions / Preview ratio"
 // overlay stays visible after an adjustment.
 const previewPctOverlayDuration = 1500 * time.Millisecond
@@ -181,5 +217,45 @@ func persistPreviewPct(pct int) {
 		return
 	}
 	cfg.UI.PreviewPct = pct
+	_ = session.SaveUserConfig(cfg)
+}
+
+// getPreviewOrientation returns the current orientation with the package
+// default applied when the field is empty (Home instances built before this
+// feature landed, or tests that bypass NewHome).
+func (h *Home) getPreviewOrientation() string {
+	switch h.previewOrientation {
+	case PreviewOrientationBelow:
+		return PreviewOrientationBelow
+	case PreviewOrientationRight:
+		return PreviewOrientationRight
+	}
+	return session.DefaultPreviewOrientation
+}
+
+// togglePreviewOrientation flips the preview-pane orientation between
+// "right" (side-by-side) and "below" (stacked), persists it to config.toml,
+// and arms the on-screen overlay for visual feedback.
+func (h *Home) togglePreviewOrientation() {
+	if h.getPreviewOrientation() == PreviewOrientationBelow {
+		h.previewOrientation = PreviewOrientationRight
+	} else {
+		h.previewOrientation = PreviewOrientationBelow
+	}
+	h.previewPctOverlayAt = time.Now().Add(previewPctOverlayDuration)
+	persistPreviewOrientation(h.previewOrientation)
+}
+
+// persistPreviewOrientation writes the new orientation to config.toml.
+// Errors are swallowed for the same reason as persistPreviewPct.
+func persistPreviewOrientation(orientation string) {
+	cfg, err := session.LoadUserConfig()
+	if err != nil || cfg == nil {
+		return
+	}
+	if cfg.UI.PreviewOrientation == orientation {
+		return
+	}
+	cfg.UI.PreviewOrientation = orientation
 	_ = session.SaveUserConfig(cfg)
 }
