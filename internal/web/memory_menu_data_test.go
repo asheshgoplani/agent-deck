@@ -61,6 +61,67 @@ func TestMemoryMenuData_LoadMenuSnapshotFallbackAndCache(t *testing.T) {
 	}
 }
 
+func TestMemoryMenuData_InvalidateCacheForcesReload(t *testing.T) {
+	loader := &staticMenuLoader{
+		snapshot: &MenuSnapshot{
+			Profile:       "default",
+			GeneratedAt:   time.Now().UTC(),
+			TotalGroups:   1,
+			TotalSessions: 1,
+			Items: []MenuItem{
+				{
+					Type: MenuItemTypeSession,
+					Session: &MenuSession{
+						ID: "sess-1", Title: "Original",
+					},
+				},
+			},
+		},
+	}
+	store := NewMemoryMenuData(loader)
+
+	// First load populates the cache from the fallback loader.
+	first, err := store.LoadMenuSnapshot()
+	if err != nil {
+		t.Fatalf("first LoadMenuSnapshot() error = %v", err)
+	}
+	if loader.calls != 1 {
+		t.Fatalf("fallback calls after first load = %d, want 1", loader.calls)
+	}
+
+	// Second load returns the cached snapshot without calling the fallback.
+	_, err = store.LoadMenuSnapshot()
+	if err != nil {
+		t.Fatalf("second LoadMenuSnapshot() error = %v", err)
+	}
+	if loader.calls != 1 {
+		t.Fatalf("cached load triggered fallback: calls = %d, want 1", loader.calls)
+	}
+
+	// Verify the first snapshot content is correct
+	if got := first.Items[0].Session.Title; got != "Original" {
+		t.Fatalf("first load title = %q, want %q", got, "Original")
+	}
+
+	// Mutate the fallback data to simulate a storage-side change.
+	loader.snapshot.Items[0].Session.Title = "Updated"
+
+	// Invalidate the cache — next LoadMenuSnapshot must go back to fallback.
+	store.InvalidateCache()
+
+	// Third load must call the fallback and get the updated title.
+	third, err := store.LoadMenuSnapshot()
+	if err != nil {
+		t.Fatalf("third LoadMenuSnapshot() error = %v", err)
+	}
+	if loader.calls != 2 {
+		t.Fatalf("fallback calls after invalidate = %d, want 2", loader.calls)
+	}
+	if got := third.Items[0].Session.Title; got != "Updated" {
+		t.Fatalf("after invalidation title = %q, want %q", got, "Updated")
+	}
+}
+
 func TestMemoryMenuData_UpdateSessionStates(t *testing.T) {
 	store := NewMemoryMenuData(nil)
 	store.SetSnapshot(&MenuSnapshot{

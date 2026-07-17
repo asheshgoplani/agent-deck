@@ -64,6 +64,19 @@ func (m *MemoryMenuData) LoadArchivedMenuSnapshot() (*MenuSnapshot, error) {
 	return nil, fmt.Errorf("archived session list is not available")
 }
 
+// InvalidateCache clears the cached snapshot so the next call to
+// LoadMenuSnapshot reloads from the fallback storage-backed loader.
+// Used after mutations in headless (--no-tui) mode to ensure the menu
+// reflects the current persisted state on the next fetch.
+func (m *MemoryMenuData) InvalidateCache() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.snapshot = nil
+	m.mu.Unlock()
+}
+
 // SetSnapshot replaces the stored menu snapshot.
 func (m *MemoryMenuData) SetSnapshot(snapshot *MenuSnapshot) {
 	if m == nil {

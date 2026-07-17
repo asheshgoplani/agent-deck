@@ -438,13 +438,7 @@ func (g *GroupDialog) View() string {
 	}
 
 	// Responsive dialog width
-	dialogWidth := 44
-	if g.width > 0 && g.width < dialogWidth+10 {
-		dialogWidth = g.width - 10
-		if dialogWidth < 30 {
-			dialogWidth = 30
-		}
-	}
+	dialogWidth := fitDialogWidth(44, 30, g.width)
 	titleWidth := dialogWidth - 4
 
 	titleStyle := DialogTitleStyle.Width(titleWidth)

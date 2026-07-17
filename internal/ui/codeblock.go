@@ -225,24 +225,12 @@ func (d *CodeBlockDialog) View() string {
 	dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
 	footerStyle := lipgloss.NewStyle().Foreground(ColorComment).Italic(true)
 
-	dialogWidth := 60
-	if d.width > 0 && d.width < dialogWidth+10 {
-		dialogWidth = d.width - 10
-		if dialogWidth < 36 {
-			dialogWidth = 36
-		}
-	}
-	// On a genuinely tiny terminal, never let the box (content + RoundedBorder's
-	// 2 cols) exceed the screen — that would wrap the whole dialog and break the
-	// height accounting. Clamp to the available width as a last resort, all the
-	// way down to a minimal box, so the box+border invariant holds even on a
-	// pathologically narrow terminal (#1412, Codex review).
-	if d.width > 0 && dialogWidth > d.width-2 {
-		dialogWidth = d.width - 2
-	}
-	if dialogWidth < 1 {
-		dialogWidth = 1
-	}
+	// fitDialogWidth clamps to the terminal so the box (content + RoundedBorder's
+	// 2 cols) can never exceed the screen — that would wrap the whole dialog and
+	// break the one-row-per-block height accounting (#1412, Codex review). The
+	// shared helper folds in the last-resort narrow-terminal cap this dialog used
+	// to apply by hand.
+	dialogWidth := fitDialogWidth(60, 36, d.width)
 
 	// innerWidth is the content width INSIDE DialogBoxStyle's Padding(1,2):
 	// dialogWidth minus 2 columns of padding on each side. EVERY rendered row is

@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 // --- Systemd template generation tests ---
@@ -988,6 +990,42 @@ func TestSetupConductorWithAgent_Codex(t *testing.T) {
 	}
 	if meta.GetClearOnCompact() {
 		t.Fatal("codex conductor should not enable clear_on_compact")
+	}
+}
+
+func TestSetupConductorWithAgent_DefaultsHeartbeatInterval(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "hb-default"
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentClaude, true, true, "", "", "", "", nil, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		t.Fatalf("failed to load meta: %v", err)
+	}
+	if meta.HeartbeatInterval != 15 {
+		t.Fatalf("HeartbeatInterval = %d, want 15 (fresh conductor with heartbeat enabled)", meta.HeartbeatInterval)
+	}
+}
+
+func TestSetupConductorWithAgent_HeartbeatDisabledKeepsZeroInterval(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "hb-off"
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentClaude, false, true, "", "", "", "", nil, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		t.Fatalf("failed to load meta: %v", err)
+	}
+	if meta.HeartbeatInterval != 0 {
+		t.Fatalf("HeartbeatInterval = %d, want 0 (heartbeat disabled)", meta.HeartbeatInterval)
 	}
 }
 
@@ -2232,9 +2270,9 @@ func TestBridgeTemplate_DiscordListenModeSupport(t *testing.T) {
 	template := conductorBridgePy
 	patterns := []string{
 		`listen_mode = str(config["discord"].get("listen_mode", "all") or "all").strip().lower()`,
-		`if listen_mode not in {"all", "mentions"}:`,
-		`if listen_mode == "mentions":`,
-		`if not message_mentions_bot(message):`,
+		`if listen_mode not in {"all", "mentions", "mentions_all_channels"}:`,
+		`if listen_mode != "mentions_all_channels" and message.channel.id != bot.target_channel_id:`,
+		`if listen_mode in ("mentions", "mentions_all_channels") and not message_mentions_bot(message):`,
 		`text = strip_bot_mentions(text)`,
 		`return re.sub(rf"<@!?{bot.user.id}>", "", text).strip()`,
 	}
@@ -3051,5 +3089,39 @@ func TestSetupConductorWithAgent_NoClaudeTrustForCodex(t *testing.T) {
 	dir, _ := ConductorNameDir(name)
 	if entry := conductorTrustEntry(t, dir); entry != nil {
 		t.Fatalf("unexpected Claude trust entry for Codex conductor dir %q: %v", dir, entry)
+	}
+}
+
+// Issue #1359 parity: Codex conductors must pre-accept workspace trust for the
+// just-created conductor directory so first boot does not stall on the dialog.
+func TestSetupConductorWithAgent_PreAcceptsCodexTrust(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "trust-codex"
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentCodex, true, true, "", "", "", "", nil, ""); err != nil {
+		t.Fatalf("SetupConductorWithAgent: %v", err)
+	}
+
+	dir, _ := ConductorNameDir(name)
+	configPath := GetCodexConfigPath(filepath.Join(tmpHome, ".codex"))
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	var cfg map[string]any
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal codex config: %v", err)
+	}
+	projects, ok := cfg["projects"].(map[string]any)
+	if !ok {
+		t.Fatalf("projects key missing or wrong type: %T", cfg["projects"])
+	}
+	entry, ok := projects[dir].(map[string]any)
+	if !ok {
+		t.Fatalf("no trust entry for conductor dir %q in %s", dir, configPath)
+	}
+	if entry["trust_level"] != "trusted" {
+		t.Fatalf("trust_level = %v, want trusted", entry["trust_level"])
 	}
 }

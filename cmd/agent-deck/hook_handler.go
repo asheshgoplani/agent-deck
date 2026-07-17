@@ -216,6 +216,10 @@ func handleHookHandler() {
 	// existing agent-deck adjective-noun title).
 	applyClaudeTitleSync(instanceID, sessionID)
 
+	// Propagate Claude Code's /cd working-directory change (v2.1.169+) so the
+	// TUI/web display and transcript lookups track the current cwd.
+	applyClaudeCwdSync(instanceID, payload.Cwd)
+
 	// Write cost event if this hook contains usage data
 	logCostDebug("hook event=%s instance=%s status=%s", payload.HookEventName, instanceID, status)
 	writeCostEvent(instanceID, data)
@@ -230,6 +234,20 @@ func handleHookHandler() {
 	// unchanged.
 	if normalizeHookEventKey(payload.HookEventName) == "permissionrequest" && parentIsDSP() {
 		fmt.Println(`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"allow"}}`)
+	}
+
+	// Conductor fleet snapshot: on the Claude turn-start edges (UserPromptSubmit,
+	// SessionStart), a parent session gets a compact children-status snapshot
+	// injected as additionalContext. State, not events — complements the #1225
+	// Stop-edge drain below, which delivers queued deltas. No-op for sessions
+	// without children; AGENTDECK_NO_CHILDREN_CONTEXT=1 opts a session out.
+	if ctxEvent := claudeContextEventName(payload.HookEventName); ctxEvent != "" &&
+		os.Getenv("AGENTDECK_NO_CHILDREN_CONTEXT") != "1" {
+		if summary := buildChildrenContextSummary(instanceID); summary != "" {
+			if out := childrenContextJSON(ctxEvent, summary); out != "" {
+				fmt.Println(out)
+			}
+		}
 	}
 
 	// Issue #1225: on the Stop edge (the turn boundary), a parent drains its

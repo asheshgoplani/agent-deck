@@ -366,3 +366,124 @@ func itoa(i int) string {
 
 // keep filepath import alive for any future expansion.
 var _ = filepath.Join
+
+// Pinned sessions are immune to idle auto-stop (pin-protects-from-stop).
+func TestIdleTimeoutWatcher_PinnedSessionNeverStopped(t *testing.T) {
+	clock := newFakeClock(time.Unix(1_700_000_000, 0))
+	capture := newFakeCapture()
+	stopper := &recordingStopper{}
+	t.Setenv("HOME", t.TempDir())
+
+	inst := newRunningInstance("inst-pinned", "worker-pinned", 10)
+	inst.Pin = PinTop
+	capture.Set(inst.ID, "static pane content")
+
+	w := NewIdleTimeoutWatcher(IdleTimeoutWatcherConfig{
+		Now: clock.Now, Capture: capture.Capture, Stop: stopper.Stop,
+	})
+
+	w.Tick([]*Instance{inst})
+	clock.Advance(120 * time.Second)
+	w.Tick([]*Instance{inst})
+
+	if got := stopper.StoppedIDs(); len(got) != 0 {
+		t.Fatalf("pinned session must not be auto-stopped, got Stop for %v", got)
+	}
+	// No lifecycle event should have been logged for a skipped session.
+	logPath := GetSessionLifecycleLogPath()
+	if data, err := readFileQuiet(logPath); err == nil && strings.Contains(string(data), inst.ID) {
+		t.Fatalf("pinned skip must not emit a lifecycle event, log had: %s", string(data))
+	}
+}
+
+// Unpinning re-arms idle tracking: a session pinned then unpinned auto-stops.
+func TestIdleTimeoutWatcher_UnpinReArmsAutoStop(t *testing.T) {
+	clock := newFakeClock(time.Unix(1_700_000_000, 0))
+	capture := newFakeCapture()
+	stopper := &recordingStopper{}
+	t.Setenv("HOME", t.TempDir())
+
+	inst := newRunningInstance("inst-rearm", "worker-rearm", 10)
+	inst.Pin = PinTop
+	capture.Set(inst.ID, "static")
+
+	w := NewIdleTimeoutWatcher(IdleTimeoutWatcherConfig{
+		Now: clock.Now, Capture: capture.Capture, Stop: stopper.Stop,
+	})
+
+	w.Tick([]*Instance{inst}) // pinned: skipped
+	clock.Advance(11 * time.Second)
+	w.Tick([]*Instance{inst}) // still pinned: skipped
+	if got := stopper.StoppedIDs(); len(got) != 0 {
+		t.Fatalf("expected no stop while pinned, got %v", got)
+	}
+
+	inst.Pin = PinNone
+	w.Tick([]*Instance{inst}) // re-arms: records last-seen
+	clock.Advance(11 * time.Second)
+	w.Tick([]*Instance{inst}) // idle elapsed: stop
+	if got := stopper.StoppedIDs(); len(got) != 1 || got[0] != inst.ID {
+		t.Fatalf("expected stop after unpin+idle, got %v", got)
+	}
+}
+
+// An UNARMED session (IdleTimeoutSecs == 0) is skipped before any tmux Capture,
+// archived or not. This is what actually bounds the watcher's cost across a
+// large archive backlog: idle timeout is opt-in, so the archived thousands are
+// unarmed and cost one field read each — no tmux subprocess.
+func TestIdleTimeoutWatcher_SkipsUnarmedArchivedBeforeCapture(t *testing.T) {
+	clock := newFakeClock(time.Unix(1_700_000_000, 0))
+	stopper := &recordingStopper{}
+
+	t.Setenv("HOME", t.TempDir())
+
+	inst := newRunningInstance("inst-archived-unarmed", "worker-archived", 0) // unarmed
+	inst.ArchivedAt = clock.Now()
+
+	failingCapture := func(*Instance) (string, error) {
+		t.Fatalf("Capture called for unarmed session %q — should have been skipped", inst.ID)
+		return "", nil
+	}
+
+	w := NewIdleTimeoutWatcher(IdleTimeoutWatcherConfig{
+		Now: clock.Now, Capture: failingCapture, Stop: stopper.Stop,
+	})
+
+	w.Tick([]*Instance{inst})
+	clock.Advance(11 * time.Second)
+	w.Tick([]*Instance{inst})
+
+	if got := stopper.StoppedIDs(); len(got) != 0 {
+		t.Fatalf("unarmed session must never be idle-stopped, got %v", got)
+	}
+}
+
+// Safety net: an ARMED archived session whose tmux Kill silently failed keeps a
+// live pane and a frozen live-ish Status. The watcher is the only mechanism
+// that will ever stop that orphan, so being archived must NOT exempt it.
+// Regression test for the archived-skip that removed this net.
+func TestIdleTimeoutWatcher_ArmedArchivedOrphanIsStopped(t *testing.T) {
+	clock := newFakeClock(time.Unix(1_700_000_000, 0))
+	capture := newFakeCapture()
+	stopper := &recordingStopper{}
+
+	t.Setenv("HOME", t.TempDir())
+
+	// Archived, but Kill failed: status frozen at running, idle timeout armed.
+	inst := newRunningInstance("inst-archived-orphan", "worker-orphan", 10)
+	inst.ArchivedAt = clock.Now()
+	capture.Set(inst.ID, "orphaned agent, no output change")
+
+	w := NewIdleTimeoutWatcher(IdleTimeoutWatcherConfig{
+		Now: clock.Now, Capture: capture.Capture, Stop: stopper.Stop,
+	})
+
+	w.Tick([]*Instance{inst}) // baseline
+	clock.Advance(11 * time.Second)
+	w.Tick([]*Instance{inst}) // idle threshold exceeded → stop the orphan
+
+	stopped := stopper.StoppedIDs()
+	if len(stopped) != 1 || stopped[0] != inst.ID {
+		t.Fatalf("armed archived orphan must be idle-stopped, got %v", stopped)
+	}
+}

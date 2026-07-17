@@ -69,6 +69,50 @@ func TestBuildITerm2AppleScript_TabModeExplicit(t *testing.T) {
 	}
 }
 
+// TestBuildITerm2SplitPaneAppleScript_Normal verifies the split-pane script
+// contains the expected iTerm2 API call and the attach command. Issue #1470.
+func TestBuildITerm2SplitPaneAppleScript_Normal(t *testing.T) {
+	cmd := BuildAttachCommand(AttachRequest{Name: "myproj", SocketName: "agentdeck"})
+	script := buildITerm2SplitPaneAppleScript(cmd)
+
+	for _, want := range []string{
+		`tell application "iTerm2"`,
+		`split vertically with default profile`,
+		`tmux -L 'agentdeck' attach -t 'myproj'`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("split-pane AppleScript missing %q\nfull script:\n%s", want, script)
+		}
+	}
+	// Must NOT create a new tab or window — that's openInNewWindow's job.
+	if strings.Contains(script, "create tab with default profile") {
+		t.Errorf("split-pane script must not create a tab:\n%s", script)
+	}
+	if strings.Contains(script, "create window with default profile") {
+		t.Errorf("split-pane script must not create a window:\n%s", script)
+	}
+}
+
+// TestBuildITerm2SplitPaneAppleScript_Escaping ensures quotes and backslashes
+// in the command are escaped so they cannot break the AppleScript literal.
+// Issue #1470.
+func TestBuildITerm2SplitPaneAppleScript_Escaping(t *testing.T) {
+	script := buildITerm2SplitPaneAppleScript(`echo "hello" \ world`)
+
+	if strings.Contains(script, `"hello"`) {
+		t.Errorf("unescaped double-quote leaked into split-pane AppleScript literal:\n%s", script)
+	}
+	if !strings.Contains(script, `\"hello\"`) {
+		t.Errorf("expected escaped quotes \\\"hello\\\" in script:\n%s", script)
+	}
+	if strings.Contains(script, ` \ `) {
+		t.Errorf("unescaped backslash leaked into split-pane AppleScript literal:\n%s", script)
+	}
+	if !strings.Contains(script, `\\ world`) {
+		t.Errorf("expected escaped backslash in split-pane AppleScript literal:\n%s", script)
+	}
+}
+
 func TestBuildITerm2AppleScript_EscapesDoubleQuotes(t *testing.T) {
 	// Defensive: if a tmux name ever contained " or \, the AppleScript
 	// must escape it so the surrounding double-quoted literal stays valid.

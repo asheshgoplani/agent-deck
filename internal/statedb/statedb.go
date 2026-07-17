@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/safeio"
+	"github.com/google/uuid"
 
 	_ "modernc.org/sqlite"
 )
@@ -104,11 +105,27 @@ const SchemaVersion = 13
 type StateDB struct {
 	db  *sql.DB
 	pid int
+	// token identifies this StateDB's owning process instance for session
+	// claim ownership (see ClaimSessions). Raw PID alone is not a safe
+	// ownership key: after this process exits, the OS can recycle its PID for
+	// an unrelated process, which would then silently inherit this process's
+	// ghost claims. Combining pid + process start time + random bytes makes
+	// the token practically unique for the life of the machine. Generated
+	// once per Open(), stable for the process's lifetime.
+	token string
 	// path is the on-disk path of the SQLite database file. Retained so
 	// destructive write paths can snapshot the file to "<path>.bak" before a
 	// large DELETE+re-insert sweep (S2 data-loss safeguard, 2026-06-04
 	// incident). Empty for in-memory databases (no file to back up).
 	path string
+}
+
+// newOwnerToken builds a claim-ownership token unique to this process
+// instance: `<pid>-<started-unix>-<uuid>`. The pid/started prefix keeps the
+// token self-describing when inspecting session_claims by hand; the UUID makes
+// it collision-proof under PID reuse.
+func newOwnerToken(pid int) string {
+	return fmt.Sprintf("%d-%d-%s", pid, time.Now().Unix(), uuid.NewString())
 }
 
 // backupRowDropThreshold is the minimum number of rows a single
@@ -193,6 +210,18 @@ func mergeAutoNameFields(inst *InstanceRow, existing existingAutoNameFields) (bo
 	}
 	return autoName, description
 }
+
+// NOTE: title/title_locked are deliberately NOT merge-protected the way
+// auto_name is. auto_name's merge is safe because it only blocks one
+// direction (stale payload resurrecting true after a fresher writer cleared
+// it) — a row-level heuristic can't safely do that for title_locked, because
+// an incoming "unlocked" payload is ambiguous: it's either a stale snapshot
+// from a racing writer (must be rejected) or a deliberate `session
+// set-title-lock off` (must be honored), and both look identical as plain
+// row data. That ambiguity can only be resolved at the write site that
+// actually knows its own freshness — see UpdateTitleIfUnlocked, used by the
+// hook-triggered Claude title sync (cmd/agent-deck/hook_name_sync.go) instead
+// of a full stale-snapshot round-trip through UpsertInstances.
 
 // WatcherRow represents a watcher row in the database.
 type WatcherRow struct {
@@ -319,7 +348,8 @@ func Open(dbPath string) (*StateDB, error) {
 		return nil, fmt.Errorf("statedb: wal mode: %w", err)
 	}
 
-	return &StateDB{db: db, pid: os.Getpid(), path: dbPath}, nil
+	pid := os.Getpid()
+	return &StateDB{db: db, pid: pid, path: dbPath, token: newOwnerToken(pid)}, nil
 }
 
 // Close checkpoints WAL and closes the database.
@@ -423,6 +453,27 @@ func (s *StateDB) Migrate() error {
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create heartbeats: %w", err)
+	}
+
+	// session claims: per-session polling ownership for multi-instance
+	// deduplication ([performance] claim_polling). One row per session that
+	// some instance actively polls; heartbeat-stale rows are taken over.
+	// owner_token, not owner_pid, is the ownership identity: it survives PID
+	// reuse (see StateDB.token doc); owner_pid is kept for display/debugging.
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS session_claims (
+			session_id  TEXT PRIMARY KEY,
+			owner_pid   INTEGER NOT NULL,
+			owner_token TEXT NOT NULL DEFAULT '',
+			claimed_at  INTEGER NOT NULL,
+			heartbeat   INTEGER NOT NULL,
+			scope       TEXT NOT NULL DEFAULT ''
+		)
+	`); err != nil {
+		return fmt.Errorf("statedb: create session_claims: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_session_claims_owner ON session_claims(owner_token)`); err != nil {
+		return fmt.Errorf("statedb: create idx_session_claims_owner: %w", err)
 	}
 
 	// recent_sessions table (schema v2)
@@ -736,8 +787,12 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 }
 
 // SaveInstances inserts or replaces multiple instances in a single transaction.
-// It also removes any rows from the database that are not in the provided list,
-// ensuring deleted sessions don't reappear on reload.
+// It also removes any rows from the database that are not in the provided list.
+//
+// DANGER (#1550): the DELETE-NOT-IN sweep deletes any row a concurrent
+// process inserted after the caller loaded its snapshot. Routine saves must
+// use UpsertInstances instead; SaveInstances is reserved for whole-table
+// replaces where the payload is authoritative (JSON->SQLite migration).
 //
 // Wrapped in withBusyRetry because parallel writers (CLI + TUI + heartbeat
 // daemons) contend on the WAL writer slot. The whole save is idempotent at
@@ -745,11 +800,31 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 // outer transaction on SQLITE_BUSY is safe. Part of the v1.9.1 #909 fix.
 func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 	return withBusyRetry(func() error {
-		return s.saveInstancesOnce(insts)
+		return s.saveInstancesOnce(insts, true)
 	})
 }
 
-func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
+// UpsertInstances inserts or replaces the given instances WITHOUT the
+// DELETE-NOT-IN sweep: rows absent from the payload are left untouched, so a
+// writer holding a stale snapshot can never delete sessions another process
+// created after that snapshot was loaded (#1550). Deletions must be explicit
+// and targeted: DeleteInstance / RemoveSessionAndVerify (#909), or
+// ClearAllInstances for an intentional full wipe. An empty payload is a no-op.
+func (s *StateDB) UpsertInstances(insts []*InstanceRow) error {
+	return withBusyRetry(func() error {
+		return s.saveInstancesOnce(insts, false)
+	})
+}
+
+// saveInstancesOnce persists insts. When sweep is true, rows present in the
+// database but absent from insts are deleted (see SaveInstances); when false,
+// they are left untouched (see UpsertInstances).
+func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
+	// Upsert path with nothing to upsert: no-op without taking the write lock.
+	if !sweep && len(insts) == 0 {
+		return nil
+	}
+
 	// Pre-fetch existing mutable columns per instance ID so we can preserve state
 	// written by targeted UPDATE paths. Without this merge, every INSERT OR
 	// REPLACE can silently drop fresher data from another process.
@@ -806,7 +881,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 	// covers the large-but-not-empty replaces S1 cannot catch. The backup is
 	// best-effort: a failed copy is logged, never fatal — the caller asked to
 	// save, and the insurance copy must not become a new failure mode.
-	if len(insts) > 0 && s.path != "" {
+	if sweep && len(insts) > 0 && s.path != "" {
 		placeholders := make([]string, len(insts))
 		args := make([]any, len(insts))
 		for i, inst := range insts {
@@ -831,24 +906,27 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Delete rows not in the new list to prevent deleted sessions from reappearing.
-	if len(insts) == 0 {
-		// S1 guard: an empty payload would `DELETE FROM instances`, wiping the
-		// whole table. If rows already exist this is almost certainly a bug in
-		// the caller (a stray empty save), not an intentional clear — refuse it
-		// rather than silently destroying the index. Intentional clears go
-		// through ClearAllInstances. An empty payload on an already-empty table
-		// is a benign no-op.
-		var existing int
-		if err := tx.QueryRow("SELECT COUNT(*) FROM instances").Scan(&existing); err != nil {
-			return err
+	// Delete rows not in the new list (sweep callers only, see SaveInstances).
+	// The upsert path (#1550) never deletes: rows it doesn't know about are
+	// left alone, and an empty payload simply inserts nothing.
+	if sweep {
+		if len(insts) == 0 {
+			// S1 guard: an empty payload would `DELETE FROM instances`, wiping the
+			// whole table. If rows already exist this is almost certainly a bug in
+			// the caller (a stray empty save), not an intentional clear — refuse it
+			// rather than silently destroying the index. Intentional clears go
+			// through ClearAllInstances. An empty payload on an already-empty table
+			// is a benign no-op.
+			var existing int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM instances").Scan(&existing); err != nil {
+				return err
+			}
+			if existing > 0 {
+				return ErrRefusingEmptySweep
+			}
+			// Already empty: nothing to delete, nothing to insert.
+			return tx.Commit()
 		}
-		if existing > 0 {
-			return ErrRefusingEmptySweep
-		}
-		// Already empty: nothing to delete, nothing to insert.
-		return tx.Commit()
-	} else {
 		placeholders := make([]string, len(insts))
 		args := make([]any, len(insts))
 		for i, inst := range insts {
@@ -992,6 +1070,44 @@ func (s *StateDB) DeleteInstance(id string) error {
 	})
 }
 
+// UpdateTitleIfUnlocked sets an instance's title (and clears auto_name, since
+// a synced title replaces the auto-generated handle) with a single
+// conditional UPDATE, atomic at the SQL level: the WHERE clause is evaluated
+// by SQLite as part of the same statement, so there is no read-then-write gap
+// a concurrent lock can land in. Returns applied=false (no error) when the
+// row is already locked or doesn't exist — the caller made no change.
+//
+// This exists for writers that only intend to touch the title based on a
+// possibly-stale decision — namely the hook-triggered Claude title sync
+// (cmd/agent-deck/hook_name_sync.go), which loads a full instance snapshot in
+// a separate process and used to save it back wholesale via UpsertInstances.
+// If a user rename (which sets title_locked) landed between that process's
+// load and its save, the stale wholesale save would silently revert the
+// rename — the "session name keeps getting overwritten" bug. A general
+// storage-layer guard against this is unsafe: an incoming "unlocked" payload
+// is ambiguous between "stale snapshot" (reject) and "deliberate `session
+// set-title-lock off`" (honor), and both look identical as row data. Only the
+// write site itself can resolve that, by asking SQLite to apply the change
+// solely if the row is STILL unlocked at the moment of the write.
+func (s *StateDB) UpdateTitleIfUnlocked(id, title string) (applied bool, err error) {
+	err = withBusyRetry(func() error {
+		res, execErr := s.db.Exec(
+			"UPDATE instances SET title = ?, auto_name = 0 WHERE id = ? AND title_locked = 0",
+			title, id,
+		)
+		if execErr != nil {
+			return execErr
+		}
+		n, raErr := res.RowsAffected()
+		if raErr != nil {
+			return raErr
+		}
+		applied = n > 0
+		return nil
+	})
+	return applied, err
+}
+
 // InstanceExists returns true iff a row with the given id is present.
 // Used by the rm path's post-commit verify (issue #909) to detect
 // resurrection by a concurrent SaveInstances rewrite.
@@ -1010,7 +1126,16 @@ func (s *StateDB) InstanceExists(id string) (bool, error) {
 
 // --- Group CRUD ---
 
-// SaveGroups replaces all groups in a single transaction.
+// SaveGroups upserts the given groups in a single transaction. It is ADDITIVE:
+// groups absent from the slice are left untouched, never deleted.
+//
+// This deliberately abandons the old replace-all (DELETE FROM groups + insert)
+// because a save can run with an incomplete in-memory tree — a stale tree from
+// another concurrent instance (allow_multiple), or the instances-only
+// NewGroupTree fallback. Replace-all then wiped every group the saver didn't
+// know about; populated groups self-healed from their sessions on reload, but
+// empty (session-less) groups were lost forever. With upsert, a partial save can
+// only add/update; intentional removal must go through DeleteGroupSubtree.
 func (s *StateDB) SaveGroups(groups []*GroupRow) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1018,14 +1143,15 @@ func (s *StateDB) SaveGroups(groups []*GroupRow) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Clear existing groups and re-insert (simpler than diff)
-	if _, err := tx.Exec("DELETE FROM groups"); err != nil {
-		return err
-	}
-
 	stmt, err := tx.Prepare(`
 		INSERT INTO groups (path, name, expanded, sort_order, default_path, max_concurrent)
 		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(path) DO UPDATE SET
+			name = excluded.name,
+			expanded = excluded.expanded,
+			sort_order = excluded.sort_order,
+			default_path = excluded.default_path,
+			max_concurrent = excluded.max_concurrent
 	`)
 	if err != nil {
 		return err
@@ -1072,6 +1198,21 @@ func (s *StateDB) LoadGroups() ([]*GroupRow, error) {
 // DeleteGroup removes a group by path.
 func (s *StateDB) DeleteGroup(path string) error {
 	_, err := s.db.Exec("DELETE FROM groups WHERE path = ?", path)
+	return err
+}
+
+// DeleteGroupSubtree removes a group and all of its descendants by path.
+// Because SaveGroups is additive (upsert, never prune), intentional group
+// removal — delete, rename, move — MUST go through this explicit delete, or the
+// old path rows would linger and resurrect on the next reload.
+//
+// The LIKE pattern matches only true descendants (path + "/"), so a prefix
+// look-alike such as "parental" survives a delete of "parent".
+func (s *StateDB) DeleteGroupSubtree(path string) error {
+	_, err := s.db.Exec(
+		"DELETE FROM groups WHERE path = ? OR path LIKE ? || '/%'",
+		path, path,
+	)
 	return err
 }
 
@@ -1323,14 +1464,51 @@ func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
 	return result, rows.Err()
 }
 
+// touchWithRetry stamps metadata.last_modified, retrying on SQLITE_BUSY.
+//
+// Touch() is a plain Exec, so under a concurrent writer it fails where the
+// retry-wrapped row UPDATE beside it would have succeeded — leaving the row
+// changed but the change unannounced. Every targeted writer that stamps its
+// own signal must retry the stamp as hard as it retried the write.
+func (s *StateDB) touchWithRetry() error {
+	return withBusyRetry(func() error { return s.Touch() })
+}
+
 // SetAcknowledged sets or clears the acknowledged flag for an instance.
 func (s *StateDB) SetAcknowledged(id string, ack bool) error {
 	v := 0
 	if ack {
 		v = 1
 	}
-	_, err := s.db.Exec("UPDATE instances SET acknowledged = ? WHERE id = ?", v, id)
-	return err
+	if err := withBusyRetry(func() error {
+		_, err := s.db.Exec("UPDATE instances SET acknowledged = ? WHERE id = ?", v, id)
+		return err
+	}); err != nil {
+		return err
+	}
+	return s.touchWithRetry()
+}
+
+// SetArchived sets or clears the archive timestamp for a single instance via a
+// targeted UPDATE. Archive/unarchive mutate one field on one row, so they must
+// NOT go through the full-table saveInstances() path: under concurrent writers
+// that path's external-change guard aborts the save and reloads, silently
+// discarding the archive (see #archive-abort). A scoped UPDATE always lands.
+// A zero `at` clears the flag (unarchive).
+//
+// The scoped UPDATE bypasses saveInstances(), which is also the only code path
+// that calls Touch(). Touch() explicitly here: it stamps metadata.last_modified,
+// the timestamp StorageWatcher polls to notice out-of-process writes. Without it
+// a running TUI never reloads, and its next forced full-table save replays a
+// stale snapshot over this row, reverting the archive.
+func (s *StateDB) SetArchived(id string, at time.Time) error {
+	if err := withBusyRetry(func() error {
+		_, err := s.db.Exec("UPDATE instances SET archived_at = ? WHERE id = ?", archivedAtUnix(at), id)
+		return err
+	}); err != nil {
+		return err
+	}
+	return s.touchWithRetry()
 }
 
 // --- Heartbeat ---
@@ -1387,67 +1565,74 @@ func (s *StateDB) AliveInstanceCount() (int, error) {
 // Returns true if this instance is now (or already was) the primary.
 // Uses a transaction to atomically clear stale primaries and claim if available.
 func (s *StateDB) ElectPrimary(timeout time.Duration) (bool, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, fmt.Errorf("statedb: begin elect: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	cutoff := time.Now().Add(-timeout).Unix()
-
-	// Clear is_primary for any heartbeat older than timeout (stale primary)
-	if _, err := tx.Exec(
-		"UPDATE instance_heartbeats SET is_primary = 0 WHERE heartbeat < ? AND is_primary = 1",
-		cutoff,
-	); err != nil {
-		return false, fmt.Errorf("statedb: clear stale primary: %w", err)
-	}
-
-	// Find a candidate primary that is still fresh by heartbeat.
-	var existingPID int
-	err = tx.QueryRow(
-		"SELECT pid FROM instance_heartbeats WHERE is_primary = 1 AND heartbeat >= ? LIMIT 1",
-		cutoff,
-	).Scan(&existingPID)
-
-	if err == nil {
-		// A fresh-by-heartbeat primary row exists. Trust it as a live owner only
-		// if it is our own process OR the recorded PID is actually alive. A row
-		// left behind by an unclean exit (SIGKILL, OOM, terminal force-close,
-		// crash/panic) never ran ResignPrimary, so its heartbeat can stay within
-		// `timeout` for up to the full window after the process is gone. Without
-		// the liveness check, the next start sees that ghost as a live primary
-		// and exits "already running" — which is why users had to pkill (or wait
-		// out the window) before a restart would take. Verifying liveness here
-		// reclaims a dead primary immediately. The time-based clear above remains
-		// as a safety net against PID reuse.
-		if existingPID == s.pid || pidAlive(existingPID) {
-			if err := tx.Commit(); err != nil {
-				return false, fmt.Errorf("statedb: commit elect: %w", err)
-			}
-			return existingPID == s.pid, nil
+	var isPrimary bool
+	err := withBusyRetry(func() error {
+		isPrimary = false
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("statedb: begin elect: %w", err)
 		}
-		// Dead primary: clear its flag and fall through to claim.
+		defer func() { _ = tx.Rollback() }()
+
+		cutoff := time.Now().Add(-timeout).Unix()
+
+		// Clear is_primary for any heartbeat older than timeout (stale primary)
 		if _, err := tx.Exec(
-			"UPDATE instance_heartbeats SET is_primary = 0 WHERE pid = ?",
-			existingPID,
+			"UPDATE instance_heartbeats SET is_primary = 0 WHERE heartbeat < ? AND is_primary = 1",
+			cutoff,
 		); err != nil {
-			return false, fmt.Errorf("statedb: clear dead primary: %w", err)
+			return fmt.Errorf("statedb: clear stale primary: %w", err)
 		}
-	}
 
-	// No live primary exists: claim it
-	if _, err := tx.Exec(
-		"UPDATE instance_heartbeats SET is_primary = 1 WHERE pid = ?",
-		s.pid,
-	); err != nil {
-		return false, fmt.Errorf("statedb: claim primary: %w", err)
-	}
+		// Find a candidate primary that is still fresh by heartbeat.
+		var existingPID int
+		err = tx.QueryRow(
+			"SELECT pid FROM instance_heartbeats WHERE is_primary = 1 AND heartbeat >= ? LIMIT 1",
+			cutoff,
+		).Scan(&existingPID)
 
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("statedb: commit elect: %w", err)
-	}
-	return true, nil
+		if err == nil {
+			// A fresh-by-heartbeat primary row exists. Trust it as a live owner only
+			// if it is our own process OR the recorded PID is actually alive. A row
+			// left behind by an unclean exit (SIGKILL, OOM, terminal force-close,
+			// crash/panic) never ran ResignPrimary, so its heartbeat can stay within
+			// `timeout` for up to the full window after the process is gone. Without
+			// the liveness check, the next start sees that ghost as a live primary
+			// and exits "already running" — which is why users had to pkill (or wait
+			// out the window) before a restart would take. Verifying liveness here
+			// reclaims a dead primary immediately. The time-based clear above remains
+			// as a safety net against PID reuse.
+			if existingPID == s.pid || pidAlive(existingPID) {
+				if err := tx.Commit(); err != nil {
+					return fmt.Errorf("statedb: commit elect: %w", err)
+				}
+				isPrimary = existingPID == s.pid
+				return nil
+			}
+			// Dead primary: clear its flag and fall through to claim.
+			if _, err := tx.Exec(
+				"UPDATE instance_heartbeats SET is_primary = 0 WHERE pid = ?",
+				existingPID,
+			); err != nil {
+				return fmt.Errorf("statedb: clear dead primary: %w", err)
+			}
+		}
+
+		// No live primary exists: claim it
+		if _, err := tx.Exec(
+			"UPDATE instance_heartbeats SET is_primary = 1 WHERE pid = ?",
+			s.pid,
+		); err != nil {
+			return fmt.Errorf("statedb: claim primary: %w", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("statedb: commit elect: %w", err)
+		}
+		isPrimary = true
+		return nil
+	})
+	return isPrimary, err
 }
 
 // pidAlive reports whether pid refers to a live process on this host. It uses
@@ -1476,6 +1661,169 @@ func (s *StateDB) ResignPrimary() error {
 	return err
 }
 
+// --- Session Claims ---
+
+// ClaimRow is one row of the session_claims ownership table.
+type ClaimRow struct {
+	SessionID string
+	// OwnerPID is the owning process's OS pid, kept for display/debug only —
+	// it is not the ownership key (see OwnerToken) because PIDs are recycled
+	// by the OS.
+	OwnerPID int
+	// OwnerToken is the ownership identity: `<pid>-<started-unix>-<random
+	// hex>`, unique per StateDB.Open() and stable for that process's
+	// lifetime. Matching/ownership decisions use this field, not OwnerPID.
+	OwnerToken string
+	Scope      string
+	Heartbeat  int64
+}
+
+// ClaimSessions atomically claims each id for this process. A claim succeeds
+// when the row is absent, already ours (by owner_token), heartbeat-stale, or
+// held with a strictly shorter (less specific) scope — longer group path
+// wins, equal specificity is first-come (no stealing, no flapping). Returns
+// the ids owned by this process after the transaction.
+//
+// This upsert is also this process's sole heartbeat refresh path for claims:
+// the DO UPDATE branch fires for our own already-owned rows (owner_token
+// match) every sweep, bumping their heartbeat. Invariant: heartbeats are only
+// ever refreshed for rows re-claimed here — never blanket-refreshed by owner —
+// so a claim that stops being re-claimed (failed release, ghost row) goes
+// stale and gets taken over or pruned instead of living forever.
+func (s *StateDB) ClaimSessions(ids []string, scope string, staleAfter time.Duration) (map[string]bool, error) {
+	if len(ids) == 0 {
+		return make(map[string]bool), nil
+	}
+	var owned map[string]bool
+	err := withBusyRetry(func() error {
+		// Reset on every attempt: withBusyRetry may call this closure more than
+		// once, and a prior failed attempt (e.g. Commit() returning
+		// SQLITE_BUSY after owned was already populated) must not leak stale
+		// entries into the next attempt's result.
+		owned = make(map[string]bool, len(ids))
+
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("statedb: begin claims: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		now := time.Now().Unix()
+		cutoff := time.Now().Add(-staleAfter).Unix()
+		// One prepared statement for the whole loop: this runs every 2s sweep,
+		// and modernc/sqlite recompiles a raw-string Exec on each call.
+		stmt, err := tx.Prepare(`
+			INSERT INTO session_claims (session_id, owner_pid, owner_token, claimed_at, heartbeat, scope)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(session_id) DO UPDATE SET
+				owner_pid   = excluded.owner_pid,
+				owner_token = excluded.owner_token,
+				claimed_at  = excluded.claimed_at,
+				heartbeat   = excluded.heartbeat,
+				scope       = excluded.scope
+			WHERE session_claims.owner_token = excluded.owner_token
+			   OR session_claims.heartbeat < ?
+			   OR length(excluded.scope) > length(session_claims.scope)
+		`)
+		if err != nil {
+			return fmt.Errorf("statedb: prepare claim: %w", err)
+		}
+		defer stmt.Close()
+		for _, id := range ids {
+			if _, err := stmt.Exec(id, s.pid, s.token, now, now, scope, cutoff); err != nil {
+				return fmt.Errorf("statedb: claim %s: %w", id, err)
+			}
+		}
+
+		rows, err := tx.Query("SELECT session_id FROM session_claims WHERE owner_token = ?", s.token)
+		if err != nil {
+			return fmt.Errorf("statedb: read claims: %w", err)
+		}
+		defer rows.Close()
+		requested := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			requested[id] = true
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return fmt.Errorf("statedb: scan claim: %w", err)
+			}
+			if requested[id] {
+				owned[id] = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return owned, nil
+}
+
+// ReleaseClaims deletes the given claims when owned by this process (sessions
+// that left this instance's scope).
+func (s *StateDB) ReleaseClaims(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, s.token)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	// #nosec G202 -- placeholders is a fixed sequence of "?" tokens generated
+	// from len(ids); all values flow through args[], never the SQL string.
+	query := "DELETE FROM session_claims WHERE owner_token = ? AND session_id IN (" + strings.Join(placeholders, ",") + ")"
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(query, args...)
+		return err
+	})
+}
+
+// ReleaseAllClaims deletes every claim owned by this process. Shutdown path,
+// same place as ResignPrimary.
+func (s *StateDB) ReleaseAllClaims() error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("DELETE FROM session_claims WHERE owner_token = ?", s.token)
+		return err
+	})
+}
+
+// PruneStaleSessionClaims deletes claims whose session no longer exists in
+// the instances table. Cheap single statement; called periodically so claims
+// for deleted/archived-then-purged sessions cannot accumulate over a
+// long-lived owner process.
+func (s *StateDB) PruneStaleSessionClaims() error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("DELETE FROM session_claims WHERE session_id NOT IN (SELECT id FROM instances)")
+		return err
+	})
+}
+
+// LoadClaims returns all claim rows keyed by session id.
+func (s *StateDB) LoadClaims() (map[string]ClaimRow, error) {
+	rows, err := s.db.Query("SELECT session_id, owner_pid, owner_token, scope, heartbeat FROM session_claims")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]ClaimRow)
+	for rows.Next() {
+		var r ClaimRow
+		if err := rows.Scan(&r.SessionID, &r.OwnerPID, &r.OwnerToken, &r.Scope, &r.Heartbeat); err != nil {
+			return nil, err
+		}
+		out[r.SessionID] = r
+	}
+	return out, rows.Err()
+}
+
 // --- Metadata ---
 
 // SetMeta sets a key-value pair in the metadata table.
@@ -1495,6 +1843,27 @@ func (s *StateDB) GetMeta(key string) (string, error) {
 		return "", nil
 	}
 	return value, err
+}
+
+// TakeMeta reads a metadata value and clears it (sets to "") for consume-once
+// signals (e.g. focus_request). Use it instead of GetMeta-then-SetMeta(""): the
+// clear is a compare-and-clear that only wipes the row when it still holds the
+// value just read, so a newer value written by a concurrent writer between the
+// read and the clear is preserved rather than lost. Returns "" when the key is
+// absent or already empty. (RETURNING isn't usable here — the modernc sqlite
+// driver routes UPDATE through exec and discards RETURNING rows.)
+func (s *StateDB) TakeMeta(key string) (string, error) {
+	value, err := s.GetMeta(key)
+	if err != nil || value == "" {
+		return "", err
+	}
+	if _, err := s.db.Exec(
+		"UPDATE metadata SET value = '' WHERE key = ? AND value = ?",
+		key, value,
+	); err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 // --- Change Detection (replaces fsnotify) ---

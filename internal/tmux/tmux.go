@@ -272,7 +272,7 @@ func RefreshSessionCache() {
 	// Subprocess fallback: list-windows -a (3s timeout to prevent freeze when server is dead)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := tmuxExecContext(ctx, DefaultSocketName(), "list-windows", "-a", "-F", "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}")
+	cmd := tmuxExecContext(ctx, DefaultSocketName(), "list-windows", "-a", "-F", tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_name}"))
 	output, err := cmd.Output()
 	if err != nil {
 		sessionCacheMu.Lock()
@@ -295,8 +295,10 @@ func RefreshSessionCache() {
 	windowCacheMu.Unlock()
 }
 
-// parseListWindowsOutput parses the output of `tmux list-windows -a` with the extended format
-// "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}"
+// parseListWindowsOutput parses the output of `tmux list-windows -a` with the
+// extended format tmuxFmt("#{session_name}", "#{window_activity}",
+// "#{window_index}", "#{window_name}"). window_name is last so a tmuxFieldSep
+// inside it survives SplitN.
 // Returns session-level max activity and per-session window info.
 func parseListWindowsOutput(output string) (map[string]int64, map[string][]WindowInfo) {
 	sessionCache := make(map[string]int64)
@@ -306,7 +308,7 @@ func parseListWindowsOutput(output string) (map[string]int64, map[string][]Windo
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 4)
+		parts := strings.SplitN(line, tmuxFieldSep, 4)
 		if len(parts) < 2 {
 			continue
 		}
@@ -359,6 +361,155 @@ func HasSession(name string) bool {
 // user's default server.
 func HasSessionOnSocket(socketName, name string) bool {
 	return tmuxSessionExistsOnSocket(socketName, name)
+}
+
+// Per-socket session cache — backs ExistsCached() for sessions that live on an
+// ISOLATED socket (SocketName != DefaultSocketName()).
+//
+// The shared sessionCache above describes DefaultSocketName() only, and #755
+// forbids answering an isolated-socket session from it (a same-named entry is a
+// different session). PipeManager only holds control connections for wanted
+// (focused/attached) sessions. So without this cache, ExistsCached() had no
+// source of truth at all for an isolated-socket session and returned false on
+// every tick forever — silently starving those sessions of EnsureConfigured /
+// SyncSessionIDsToTmux and of COLORFGBG theme propagation.
+//
+// Refresh is stale-while-revalidate and keyed by SOCKET: one `list-sessions`
+// subprocess per distinct socket per TTL, spawned on a background goroutine.
+// Readers never block and never spawn — preserving the invariant that made
+// ExistsCached() safe for loops that walk every session each tick. Socket count
+// is O(1)-ish (a handful), never O(sessions), so this cannot recreate the
+// subprocess storm.
+const socketSessionCacheTTL = 5 * time.Second
+
+type socketSessionsEntry struct {
+	names       map[string]struct{}
+	refreshedAt time.Time
+	refreshing  bool
+	warm        bool // a probe has completed at least once (success or failure)
+}
+
+var (
+	socketSessionCacheMu sync.Mutex
+	socketSessionCache   = map[string]*socketSessionsEntry{}
+
+	// listSessionsOnSocket is a package var so tests can exercise the cache
+	// without a live tmux server.
+	listSessionsOnSocket = defaultListSessionsOnSocket
+)
+
+// ListSessionNamesOnSocket returns the set of live session names on one tmux
+// socket using a SINGLE bounded `list-sessions`. It is the socket-complete
+// alternative to probing each session with `has-session`: callers that need
+// liveness for N sessions should group them by socket and call this once per
+// distinct socket (O(sockets) subprocesses instead of O(sessions)).
+//
+// An error means the probe was indeterminate (timed out). Callers MUST treat
+// that as "assume alive" — never as "no sessions" — or a briefly-wedged server
+// will look like a pile of dead sessions. A successful probe returning an empty
+// set is authoritative (server present, no sessions / no server running).
+func ListSessionNamesOnSocket(socketName string) (map[string]struct{}, error) {
+	return listSessionsOnSocket(socketName)
+}
+
+// defaultListSessionsOnSocket returns the set of session names on the given
+// tmux socket via a single bounded `list-sessions`. A server with no sessions
+// (or no server at all) is an empty set, not an error.
+func defaultListSessionsOnSocket(socketName string) (map[string]struct{}, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+
+	out, err := tmuxExecContext(ctx, socketName, "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		// "no server running" / "no sessions" are legitimate empty results; any
+		// other failure (timeout, exec error) is reported so the caller keeps
+		// the previous entry instead of flapping every session to "gone".
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, ctx.Err()
+		}
+		if isEmptyTmuxServerResult(err) {
+			return map[string]struct{}{}, nil
+		}
+		return nil, err
+	}
+
+	names := map[string]struct{}{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			names[line] = struct{}{}
+		}
+	}
+	return names, nil
+}
+
+// isEmptyTmuxServerResult distinguishes tmux's expected empty-server exits
+// from launch, permission, and other probe failures. exec.Cmd.Output stores
+// the command's stderr on ExitError; err.Error() alone does not include it.
+func isEmptyTmuxServerResult(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	stderr := strings.ToLower(string(exitErr.Stderr))
+	return strings.Contains(stderr, "no server running") || strings.Contains(stderr, "no sessions")
+}
+
+// sessionExistsOnSocketCached answers "is <name> live on <socketName>?" from
+// the per-socket cache, never blocking. On a cold or stale entry it kicks a
+// single background refresh for that socket (at most one in flight per socket)
+// and answers from whatever it currently knows: false when cold.
+func sessionExistsOnSocketCached(socketName, name string) bool {
+	socket := strings.TrimSpace(socketName)
+
+	socketSessionCacheMu.Lock()
+	defer socketSessionCacheMu.Unlock()
+
+	entry, ok := socketSessionCache[socket]
+	if !ok {
+		entry = &socketSessionsEntry{names: map[string]struct{}{}}
+		socketSessionCache[socket] = entry
+	}
+
+	stale := !entry.warm || time.Since(entry.refreshedAt) > socketSessionCacheTTL
+	if stale && !entry.refreshing {
+		entry.refreshing = true
+		// Snapshot the lister under the lock: the background goroutine must not
+		// read the package var concurrently with a test swapping it.
+		go refreshSocketSessionCache(socket, listSessionsOnSocket)
+	}
+
+	_, exists := entry.names[name]
+	return exists
+}
+
+// refreshSocketSessionCache re-lists one socket off the caller's goroutine and
+// replaces its entry. A probe error (timeout) leaves the previous name set in
+// place so a briefly-wedged server does not flap every session to "not found";
+// a successful probe is authoritative, including an empty result.
+func refreshSocketSessionCache(socket string, list func(string) (map[string]struct{}, error)) {
+	names, err := list(socket)
+
+	socketSessionCacheMu.Lock()
+	defer socketSessionCacheMu.Unlock()
+
+	entry, ok := socketSessionCache[socket]
+	if !ok {
+		entry = &socketSessionsEntry{names: map[string]struct{}{}}
+		socketSessionCache[socket] = entry
+	}
+	entry.refreshing = false
+	entry.refreshedAt = time.Now()
+	entry.warm = true
+	if err == nil {
+		entry.names = names
+	}
+}
+
+// ResetSocketSessionCacheForTest clears the per-socket cache between tests.
+func ResetSocketSessionCacheForTest() {
+	socketSessionCacheMu.Lock()
+	defer socketSessionCacheMu.Unlock()
+	socketSessionCache = map[string]*socketSessionsEntry{}
 }
 
 // sessionExistsFromCache checks if a session exists using the cached data
@@ -425,6 +576,21 @@ type TerminalInfo struct {
 	SupportsOSC8      bool   // Supports OSC 8 hyperlinks
 	SupportsOSC52     bool   // Supports OSC 52 clipboard
 	SupportsTrueColor bool   // Supports 24-bit color
+}
+
+// IsAtuinPTYProxy checks if the current shell session is running under atuin's
+// pty-proxy. Atuin pty-proxy acts as a PTY MITM between the terminal and the
+// shell, intercepting all I/O. It sets ATUIN_PTY_PROXY_ACTIVE when active.
+//
+// agent-deck's Bubble Tea TUI is incompatible with atuin pty-proxy because:
+//   - os.Stdin/os.Stdout are pipes to atuin's proxy, not direct terminal FDs
+//   - Alternate screen sequences (tea.WithAltScreen) may be swallowed
+//   - Mouse tracking sequences (tea.WithMouseCellMotion) may not be forwarded
+//
+// Users should use `atuin init zsh` (or bash/fish) instead of
+// `atuin pty-proxy init zsh` when running agent-deck.
+func IsAtuinPTYProxy() bool {
+	return os.Getenv("ATUIN_PTY_PROXY_ACTIVE") != ""
 }
 
 // DetectTerminal identifies the current terminal emulator from environment variables
@@ -841,6 +1007,13 @@ type Session struct {
 	detectedTool     string
 	toolDetectedAt   time.Time
 	toolDetectExpiry time.Duration // How long before re-detecting (default 30s)
+
+	// Cached background-work probe (BackgroundWorkPending). The hook fast path in
+	// UpdateStatus has no captured pane content, so it must capture separately to
+	// check for in-flight background shells/agents; this bounds that to one
+	// capture per bgWorkCacheTTL while a session sits at the prompt.
+	bgWorkPending   bool
+	bgWorkCheckedAt time.Time
 
 	// Simple state tracking (hash-based)
 	stateTracker *StateTracker
@@ -1669,7 +1842,8 @@ func (s *Session) ApplyThemeOptions() error {
 			";", "set-option", "-t", s.Name, "status-right", s.themedStatusRight(themeStyle),
 		)
 	}
-	return s.tmuxCmd(args...).Run()
+	// Bounded — see tmuxPollTimeout.
+	return s.runBoundedRun(args...)
 }
 
 // GetEnvironment gets an environment variable from this tmux session.
@@ -2113,13 +2287,23 @@ var hasSessionProbeTimeout = 2 * time.Second
 // Uses cached session list when available (refreshed by RefreshExistingSessions)
 // Falls back to direct tmux call if cache is stale
 func (s *Session) Exists() bool {
-	// The session cache is populated by RefreshSessionCache against
-	// DefaultSocketName() only — entries describe the default tmux server
-	// alone. Sessions on isolated sockets must skip the cache, otherwise
-	// UpdateStatus would stamp StatusError on every poll for them (#755).
+	// #755: the cache describes the DefaultSocketName() server, so a session on
+	// a different socket must not be answered from it (a same-named entry is not
+	// the same session). Keep that guard.
+	//
+	// Within the guard, trust only a POSITIVE hit. A NEGATIVE/stale result is
+	// NOT trusted: the cache can transiently miss a live session when
+	// agent-deck sessions span multiple sockets (RefreshAllActivities merges one
+	// pipe per socket, and the subprocess fallback covers only DefaultSocketName,
+	// so a refresh sourced from the "wrong" socket omits this one). Confirm a
+	// "not in cache" reading with the live pipe / a direct probe on the
+	// session's OWN socket before declaring it dead. Trusting a negative cache
+	// hit flipped live sessions on a second socket to StatusError/tmux_missing
+	// (multi-socket cache aliasing), after which restart machinery could kill
+	// the still-running pane.
 	if strings.TrimSpace(s.SocketName) == DefaultSocketName() {
-		if exists, cacheValid := sessionExistsFromCache(s.Name); cacheValid {
-			return exists
+		if exists, cacheValid := sessionExistsFromCache(s.Name); cacheValid && exists {
+			return true
 		}
 	}
 
@@ -2145,6 +2329,48 @@ func (s *Session) Exists() bool {
 	return err == nil
 }
 
+// ExistsCached is a cheap, non-blocking liveness check for hot periodic loops
+// that iterate over ALL sessions every tick (e.g. the background configure loop
+// and theme propagation). It NEVER spawns a subprocess on the calling
+// goroutine: a single wedged/absent server multiplied by ~1000 sessions is the
+// exact subprocess-storm that froze the UI main goroutine 4–7s per tick (see
+// the nav-freeze fix). It answers only from in-process state:
+//
+//   - a POSITIVE session-cache hit on the session's OWN socket, or
+//   - a live PipeManager control connection, or
+//   - a POSITIVE hit in the per-socket cache (isolated sockets).
+//
+// The socket guard mirrors Exists(): the shared sessionCache describes
+// DefaultSocketName() only, so a same-named entry on a different socket is not
+// this session (#755 / multi-socket cache aliasing). Sessions on an isolated
+// socket are therefore answered from a SEPARATE per-socket cache, refreshed in
+// the background by one `list-sessions` per socket per TTL. Without it those
+// sessions would read false FOREVER (never in the default cache; PipeManager
+// only connects wanted/attached sessions), permanently starving them of
+// EnsureConfigured and theme propagation — a bug the "retries next tick"
+// framing hid. Bounding the refresh by SOCKET count, not session count, keeps
+// the no-storm invariant that motivated this method.
+//
+// A false is still a deliberate under-report (cold cache, dead server, probe
+// failure): the only cost is that a cosmetic loop skips this session until the
+// cache warms. Callers MUST NOT feed ExistsCached() into destructive/restart
+// machinery — use Exists() (which confirms a negative with a real probe).
+func (s *Session) ExistsCached() bool {
+	if strings.TrimSpace(s.SocketName) == DefaultSocketName() {
+		if exists, cacheValid := sessionExistsFromCache(s.Name); cacheValid && exists {
+			return true
+		}
+	} else if sessionExistsOnSocketCached(s.SocketName, s.Name) {
+		return true
+	}
+	if pm := GetPipeManager(); pm != nil {
+		if pm.IsConnected(s.Name) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsPaneDead returns true if the session's pane process has exited.
 // Uses the cached pane info (refreshed once per tick) for zero-cost lookups.
 // Falls back to a direct tmux query targeting pane 0.0 (the primary pane)
@@ -2153,8 +2379,15 @@ func (s *Session) IsPaneDead() bool {
 	if info, ok := GetCachedPaneInfo(s.Name); ok {
 		return info.Dead
 	}
-	// Cache miss: direct tmux check targeting the primary pane.
-	out, err := s.tmuxCmd("list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}").Output()
+	// Cache miss: direct tmux check targeting the primary pane. Bound it the
+	// same way Exists() bounds has-session — a wedged tmux server must not hang
+	// this probe, since it runs under the notify-daemon's single-threaded poll
+	// loop (via UpdateStatus → GetStatus) where a stall freezes all delivery.
+	// A timed-out (indeterminate) probe is treated as "not dead": reporting a
+	// live pane as dead would flip the session to an error state.
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+	out, err := s.tmuxCmdContext(ctx, "list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}").Output()
 	if err != nil {
 		return false
 	}
@@ -2267,7 +2500,9 @@ func (s *Session) ConfigureStatusBar() {
 	if args == nil {
 		return
 	}
-	_ = s.tmuxCmd(args...).Run()
+	// Bounded — see tmuxPollTimeout. This status set-option batch was one of the
+	// observed orphaned 100%-CPU tmux clients when the server was wedged.
+	_ = s.runBoundedRun(args...)
 }
 
 // EnableMouseMode enables mouse scrolling, clipboard integration, and optimal settings
@@ -2358,6 +2593,17 @@ func (s *Session) Kill() error {
 	// Verify old processes are dead; escalate to SIGKILL if needed
 	if len(oldPIDs) > 0 {
 		go s.ensureProcessesDead(oldPIDs, 0)
+	}
+
+	// Killing a session that no longer exists is success, not failure: tmux
+	// `kill-session` exits non-zero ("can't find session") for an already-dead
+	// session. Treating that as fatal made archiveSession abort and silently
+	// fail to persist the archive when re-archiving a session whose tmux was
+	// already gone (the post-Unarchive path — Unarchive clears the flag without
+	// restarting tmux). Only surface the error if the session is genuinely
+	// still alive after the kill attempt.
+	if err != nil && !s.Exists() {
+		return nil
 	}
 
 	return err
@@ -3110,6 +3356,18 @@ func (s *Session) GetStatus() (string, error) {
 				return "active", nil
 			}
 
+			// Foreground turn ended but background work is still in flight: a
+			// run_in_background shell, or a background agent the turn is awaiting.
+			// Claude shows this at the prompt ("N shells still running" /
+			// "Waiting for N background agent to finish") with no spinner, so the
+			// busy check above misses it and the session would flip to waiting
+			// (yellow) and fire a premature "finished" notification. Keep it green
+			// until the work actually completes (then the next poll settles to
+			// waiting and notifies — "done" now means foreground AND background).
+			if s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
+				return "active", nil
+			}
+
 			// Update content hash for spike detection (deferred until after early return above).
 			// The 500ms CapturePane cache means the spike path gets the same content,
 			// so we store the normalized result once and reuse it via cachedNormContent.
@@ -3279,6 +3537,16 @@ func (s *Session) GetStatus() (string, error) {
 						s.startupAt = time.Time{}
 						statusLog.Debug("sustained_error_banner", slog.String("session", shortName))
 						return "error", nil
+					}
+
+					// Background work in flight keeps the session green here too:
+					// a bg shell's output drives the spike, so without this the
+					// prompt check below would flip it to waiting and fire a
+					// premature completion (mirrors the busy-check path above).
+					if s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
+						s.stateTracker.activityCheckStart = time.Time{}
+						s.stateTracker.activityChangeCount = 0
+						return "active", nil
 					}
 
 					if s.hasPromptIndicator(content) {
@@ -3717,6 +3985,78 @@ func (s *Session) GetWaitingSince() time.Time {
 func (s *Session) hasBusyIndicator(content string) bool {
 	// Always use spinner movement detection regardless of resolvedPatterns
 	return s.hasBusyIndicatorResolved(content)
+}
+
+// isClaudeTool reports whether this session is running Claude Code, used to gate
+// Claude-shaped pane heuristics (e.g. the background-work footer). Reads cached
+// tool fields without locking; GetStatus callers already hold s.mu.
+func (s *Session) isClaudeTool() bool {
+	return strings.EqualFold(inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command), "claude")
+}
+
+// bgWorkCacheTTL bounds how often BackgroundWorkPending captures the pane while a
+// session sits at the prompt. CapturePane has its own 500ms cache; this adds a
+// coarser ceiling so the per-tick hook-fast-path probe stays cheap at scale.
+const bgWorkCacheTTL = 3 * time.Second
+
+// BackgroundWorkPending reports whether a Claude session at the prompt still has
+// background work in flight (run_in_background shells or a background agent the
+// turn is awaiting). It captures the pane itself — for the UpdateStatus hook fast
+// path, which short-circuits before GetStatus and so has no captured content —
+// and caches the result briefly (bgWorkCacheTTL). Returns false for non-Claude
+// sessions. Safe to call WITHOUT holding s.mu (acquires it internally; releases
+// it for the slow capture).
+func (s *Session) BackgroundWorkPending() bool {
+	s.mu.Lock()
+	if !s.isClaudeTool() {
+		s.mu.Unlock()
+		return false
+	}
+	if !s.bgWorkCheckedAt.IsZero() && time.Since(s.bgWorkCheckedAt) < bgWorkCacheTTL {
+		pending := s.bgWorkPending
+		s.mu.Unlock()
+		return pending
+	}
+	s.mu.Unlock()
+
+	rawContent, err := s.CapturePane()
+	if err != nil {
+		// Don't cache a capture failure as "no background work": refreshing the
+		// TTL would suppress retries for the full window and could let the
+		// waiting hook fire a premature completion. Keep the previous value and
+		// leave bgWorkCheckedAt unchanged so the next call re-captures.
+		s.mu.Lock()
+		pending := s.bgWorkPending
+		s.mu.Unlock()
+		return pending
+	}
+	pending := claudeBackgroundWorkPending(StripANSI(rawContent))
+
+	s.mu.Lock()
+	s.bgWorkPending = pending
+	s.bgWorkCheckedAt = time.Now()
+	s.mu.Unlock()
+	return pending
+}
+
+// markBackgroundWorkActiveLocked applies the "keep green while background work is
+// in flight" state update when a Claude session is at the prompt but still has
+// run_in_background shells / an awaited background agent. Returns true when it
+// fired (caller should return "active"). Accepts raw or stripped content
+// (StripANSI is idempotent). Must be called with s.mu held.
+func (s *Session) markBackgroundWorkActiveLocked(content string, currentTS int64, shortName string) bool {
+	if !s.isClaudeTool() || !claudeBackgroundWorkPending(StripANSI(content)) {
+		return false
+	}
+	s.stateTracker.lastChangeTime = time.Now()
+	s.stateTracker.realActivityConfirmed = true
+	s.stateTracker.acknowledged = false
+	s.resetPromptNoBusyHoldLocked()
+	s.stateTracker.lastActivityTimestamp = currentTS
+	s.lastStableStatus = "active"
+	s.startupAt = time.Time{}
+	statusLog.Debug("background_work_active", slog.String("session", shortName))
+	return true
 }
 
 var defaultResolvedPatternsCache sync.Map // map[string]*ResolvedPatterns
@@ -4268,7 +4608,7 @@ func (s *Session) sendKeysToTarget(target, keys string) error {
 	// This prevents issues like "Enter" being interpreted as the Enter key
 	// and provides a layer of safety against tmux special sequences
 	cmd := keySenderExec(s.SocketName, "send-keys", "-l", "-t", target, "--", keys)
-	return cmd.Run()
+	return runSendKeysBounded(cmd)
 }
 
 // ensureInsertMode prepends an Escape + `i` sequence so a vim-mode composer
@@ -4286,9 +4626,9 @@ func (s *Session) ensureInsertModeOnTarget(target string) {
 		return
 	}
 	// Escape: guarantee normal mode regardless of current state.
-	_ = keySenderExec(s.SocketName, "send-keys", "-t", target, "Escape").Run()
+	_ = runSendKeysBounded(keySenderExec(s.SocketName, "send-keys", "-t", target, "Escape"))
 	// i: enter insert mode so the following paste/Enter are taken literally.
-	_ = keySenderExec(s.SocketName, "send-keys", "-t", target, "i").Run()
+	_ = runSendKeysBounded(keySenderExec(s.SocketName, "send-keys", "-t", target, "i"))
 }
 
 // sendEnterRaw emits a single Enter keystroke without the vim-mode insert
@@ -4303,7 +4643,7 @@ func (s *Session) sendEnterRaw() error {
 func (s *Session) sendEnterRawToTarget(target string) error {
 	s.invalidateCache()
 	cmd := keySenderExec(s.SocketName, "send-keys", "-t", target, "Enter")
-	return cmd.Run()
+	return runSendKeysBounded(cmd)
 }
 
 // SendEnter sends an Enter key to the tmux session. When VimMode is set it
@@ -4334,7 +4674,7 @@ func (s *Session) OpenKeySender() (KeySender, error) {
 func (s *Session) SendNamedKey(key string) error {
 	s.invalidateCache()
 	cmd := keySenderExec(s.SocketName, "send-keys", "-t", s.Name, key)
-	return cmd.Run()
+	return runSendKeysBounded(cmd)
 }
 
 // SendKeysAndEnter sends literal text followed by Enter as two separate tmux
@@ -4444,14 +4784,14 @@ func splitIntoChunks(content string, maxSize int) []string {
 func (s *Session) SendCtrlC() error {
 	s.invalidateCache()
 	cmd := s.tmuxCmd("send-keys", "-t", s.Name, "C-c")
-	return cmd.Run()
+	return runSendKeysBounded(cmd)
 }
 
 // SendCtrlU sends Ctrl+U (clear line) to the tmux session
 func (s *Session) SendCtrlU() error {
 	s.invalidateCache()
 	cmd := s.tmuxCmd("send-keys", "-t", s.Name, "C-u")
-	return cmd.Run()
+	return runSendKeysBounded(cmd)
 }
 
 // WaitForShellPrompt polls the terminal until a shell prompt is detected
@@ -4637,12 +4977,29 @@ func (s *Session) GetWorkDir() string {
 		return ""
 	}
 
-	cmd := s.tmuxCmd("display-message", "-t", s.Name, "-p", "#{pane_current_path}")
-	output, err := cmd.Output()
+	// Bounded: a wedged server / destroyed target must not hang this poll (see
+	// tmuxPollTimeout). Bare .Output() here was one of the orphan-spin sources.
+	output, err := s.runBoundedOutput("display-message", "-t", s.Name, "-p", "#{pane_current_path}")
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// SplitShellPane adds a vertical split pane to this session running shell
+// in workdir. If workdir is empty the pane inherits the session's current
+// working directory. Issue #1470.
+func (s *Session) SplitShellPane(workdir string) error {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	args := []string{"split-window", "-h", "-t", s.Name}
+	if workdir != "" {
+		args = append(args, "-c", workdir)
+	}
+	args = append(args, shell)
+	return tmuxExec(s.SocketName, args...).Run()
 }
 
 // ListAllSessions returns all Agent Deck tmux sessions
@@ -4674,9 +5031,8 @@ func ListAllSessions() ([]*Session, error) {
 				DisplayName: displayName,
 				SocketName:  socket,
 			}
-			// Try to get working directory
-			workDirCmd := tmuxExec(socket, "display-message", "-t", line, "-p", "#{pane_current_path}")
-			if workDirOutput, err := workDirCmd.Output(); err == nil {
+			// Try to get working directory (bounded — see tmuxPollTimeout)
+			if workDirOutput, err := runBoundedOutput(socket, "display-message", "-t", line, "-p", "#{pane_current_path}"); err == nil {
 				sess.WorkDir = strings.TrimSpace(string(workDirOutput))
 			}
 			sessions = append(sessions, sess)
@@ -4972,22 +5328,25 @@ func InitializeStatusBarOptions() error {
 func RefreshStatusBarImmediate() error {
 	socket := DefaultSocketName()
 	// Get all connected clients, filtering out control mode clients
-	cmd := tmuxExec(socket, "list-clients", "-F", "#{client_name}\t#{client_control_mode}")
-	output, err := cmd.Output()
+	// client_name is free-text (a pts path) so it goes LAST, after the 0/1
+	// control-mode flag, to stay collision-safe under tmuxFieldSep.
+	// Bounded — see tmuxPollTimeout. list-clients against a wedged server was a
+	// primary orphan-spin source when the client outlived its owning TUI.
+	output, err := runBoundedOutput(socket, "list-clients", "-F", tmuxFmt("#{client_control_mode}", "#{client_name}"))
 	if err != nil {
 		return nil
 	}
 
 	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 || parts[0] == "" {
+		parts := strings.SplitN(line, tmuxFieldSep, 2)
+		if len(parts) != 2 || parts[1] == "" {
 			continue
 		}
 		// Skip control mode clients (PipeManager pipes)
-		if parts[1] == "1" {
+		if parts[0] == "1" {
 			continue
 		}
-		_ = tmuxExec(socket, "refresh-client", "-S", "-t", parts[0]).Run()
+		_ = tmuxExec(socket, "refresh-client", "-S", "-t", parts[1]).Run()
 	}
 	return nil
 }
@@ -5037,15 +5396,17 @@ func GetAttachedSessionsOnSockets(sockets ...string) []string {
 // attachedSessionsOnSocket lists the non-control-mode sessions with a client
 // attached on a single tmux socket ("" = default server).
 func attachedSessionsOnSocket(socket string) ([]string, error) {
-	cmd := tmuxExec(socket, "list-clients", "-F", "#{session_name}\t#{client_control_mode}")
-	output, err := cmd.Output()
+	// session_name is sanitized to [A-Za-z0-9-], so it never contains
+	// tmuxFieldSep; no reordering needed here.
+	// Bounded — see tmuxPollTimeout.
+	output, err := runBoundedOutput(socket, "list-clients", "-F", tmuxFmt("#{session_name}", "#{client_control_mode}"))
 	if err != nil {
 		return nil, err
 	}
 
 	var sessions []string
 	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		parts := strings.SplitN(line, "\t", 2)
+		parts := strings.SplitN(line, tmuxFieldSep, 2)
 		if len(parts) != 2 || parts[0] == "" {
 			continue
 		}
@@ -5154,6 +5515,119 @@ func ReadAndClearAckSignal() string {
 	return strings.TrimSpace(string(data))
 }
 
+// WriteAckSignal writes sessionID to the ack-signal file so the TUI's background
+// sync (which runs even while the TUI is paused inside tea.Exec) acknowledges the
+// session, updates the notification bar, and records the switch for detach
+// cursor-sync. This is the programmatic equivalent of the `echo <id> > signal`
+// step in buildAckSwitchScript; pairs with SwitchAttachedClients.
+func WriteAckSignal(sessionID string) error {
+	signalFile, err := GetAckSignalPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(signalFile), 0o700); err != nil {
+		return err
+	}
+	// Write atomically: the reader does ReadFile-then-Remove, so a plain
+	// truncating WriteFile could be observed mid-write as an empty/partial file
+	// and the ack would be lost. Stage to a temp file and rename into place.
+	tmp := signalFile + ".tmp"
+	if err := os.WriteFile(tmp, []byte(sessionID+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, signalFile); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// attachedClientNames lists the names of non-control clients attached on socket
+// ("" = default server). Control-mode clients (PipeManager pipes) are excluded.
+// Returns nil when no server is running or no client is attached.
+func attachedClientNames(socket string) []string {
+	// client_name is free-text (a pts path) so it goes LAST, after the 0/1
+	// control-mode flag, to stay collision-safe under tmuxFieldSep.
+	cmd := tmuxExec(socket, "list-clients", "-F", tmuxFmt("#{client_control_mode}", "#{client_name}"))
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		parts := strings.SplitN(line, tmuxFieldSep, 2)
+		if len(parts) != 2 || parts[1] == "" {
+			continue
+		}
+		if parts[0] == "1" { // control mode
+			continue
+		}
+		names = append(names, parts[1])
+	}
+	return names
+}
+
+// SwitchAttachedClients moves every non-control client attached on socket into
+// targetSession and writes the ack-signal for sessionID. Returns switched=true
+// iff at least one client was attached and switched.
+//
+// This is the programmatic equivalent of the Ctrl+b N quick-switch: like that
+// path it works while the TUI is suspended inside tea.Exec (tmux drives the
+// switch, not Bubble Tea). And like that path it only works when the attached
+// client and target session share a tmux server — querying clients on the
+// target's own socket means a client attached elsewhere yields switched=false,
+// so the caller falls back to a focus_request rather than mis-switching.
+func SwitchAttachedClients(socket, targetSession, sessionID string) (bool, error) {
+	clients := attachedClientNames(socket)
+	if len(clients) == 0 {
+		return false, nil
+	}
+	// Best-effort: the bar/cursor sync degrades without it, but the switch below
+	// is what the user actually asked for, so a failed ack must not abort it.
+	_ = WriteAckSignal(sessionID)
+
+	switched := false
+	var firstErr error
+	for _, c := range clients {
+		if err := tmuxExec(socket, "switch-client", "-c", c, "-t", targetSession).Run(); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		switched = true
+	}
+	return switched, firstErr
+}
+
+// DetachClientsOnSockets detaches every non-control client attached on any of
+// the given sockets ("" = default server). Returns detached=true iff at least
+// one client was detached.
+//
+// This is the cross-server companion to SwitchAttachedClients: switch-client
+// cannot move a client between tmux servers, so when a notification target lives
+// on a different socket than the attached session, detaching that client makes
+// agent-deck's paused attach (tea.Exec) return. The TUI then resumes and
+// consumes the focus_request to attach the target on its OWN socket — a
+// detach-and-reattach, which is the only way to "switch while attached" across
+// servers. Control-mode clients (PipeManager pipes) are left alone.
+func DetachClientsOnSockets(sockets ...string) (bool, error) {
+	detached := false
+	var firstErr error
+	for _, socket := range sockets {
+		for _, c := range attachedClientNames(socket) {
+			if err := tmuxExec(socket, "detach-client", "-c", c).Run(); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			detached = true
+		}
+	}
+	return detached, firstErr
+}
+
 // UnbindKey removes a key binding and restores default behavior.
 // After unbinding, attempts to restore the default behavior where number keys
 // select windows. The restore is best-effort since it may fail in environments
@@ -5188,8 +5662,8 @@ func UnbindMouseStatusClicks() {
 // GetActiveSession returns the session name the user is currently attached to.
 // Returns empty string and error if not attached to any session.
 func GetActiveSession() (string, error) {
-	cmd := tmuxExec(DefaultSocketName(), "display-message", "-p", "#{client_session}")
-	out, err := cmd.Output()
+	// Bounded — see tmuxPollTimeout.
+	out, err := runBoundedOutput(DefaultSocketName(), "display-message", "-p", "#{client_session}")
 	if err != nil {
 		return "", err
 	}

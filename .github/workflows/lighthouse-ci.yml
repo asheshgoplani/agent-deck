@@ -54,16 +54,16 @@ jobs:
     env:
       MAX_BYTE_WEIGHT_DELTA_PCT: 5
       MAX_SCRIPT_SIZE_DELTA_PCT: 5
-      GOTOOLCHAIN: go1.25.11
+      GOTOOLCHAIN: go1.25.12
     steps:
       - name: Checkout PR head
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: pr
           fetch-depth: 0
 
       - name: Checkout base ref
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.base_ref }}
           path: base
@@ -107,7 +107,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25.11'
+          go-version: '1.25.12'
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -119,11 +119,11 @@ jobs:
 
       - name: Build PR head
         working-directory: pr
-        run: make build
+        run: make GOTOOLCHAIN="$GOTOOLCHAIN" build
 
       - name: Build base
         working-directory: base
-        run: make build
+        run: make GOTOOLCHAIN="$GOTOOLCHAIN" build
 
       - name: Collect Lighthouse on PR head
         working-directory: pr

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -301,5 +302,74 @@ func TestSaveUserConfig_AllZeroGroupEntry_DoesNotBlockSaves(t *testing.T) {
 	loaded.Theme = "light"
 	if err := SaveUserConfig(loaded); err != nil {
 		t.Fatalf("expected save to succeed when sole group entry is all-zero, got: %v", err)
+	}
+}
+
+// A config carrying [mcps], [profiles], a tool-only [groups] block, and a
+// declarative [groups] block survives a normal save with every section intact;
+// omitempty keeps create/default_path out of the tool-only block.
+func TestSaveUserConfig_PreservesSectionsWithDeclarativeGroups(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	isolateConfigHomeXDG(t)
+
+	cfg := cloneDefaultUserConfig()
+	cfg.MCPs = map[string]MCPDef{
+		"context7": {Command: "npx", Args: []string{"-y", "context7"}},
+	}
+	cfg.Profiles = map[string]ProfileSettings{
+		"work": {Codex: ProfileCodexSettings{ConfigDir: "~/.codex-work"}},
+	}
+	cfg.Groups = map[string]GroupSettings{
+		"tools":   {Claude: GroupClaudeSettings{ConfigDir: "~/.claude-work"}},
+		"staging": {Create: true, DefaultPath: "~/repos/staging"},
+	}
+	if err := SaveUserConfigWithIntent(&cfg, true); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ReloadUserConfig()
+
+	loaded, err := LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig: %v", err)
+	}
+	loaded.Theme = "light"
+	if err := SaveUserConfig(loaded); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	got, err := LoadUserConfig()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if _, ok := got.MCPs["context7"]; !ok {
+		t.Error("[mcps] context7 not preserved")
+	}
+	if _, ok := got.Profiles["work"]; !ok {
+		t.Error("[profiles.work] not preserved")
+	}
+	if _, ok := got.Groups["tools"]; !ok {
+		t.Error("tool-only [groups.tools] not preserved")
+	}
+	g, ok := got.Groups["staging"]
+	if !ok {
+		t.Fatal("declarative [groups.staging] not preserved")
+	}
+	if !g.Create || g.DefaultPath == "" {
+		t.Errorf("declarative group fields lost: %+v", g)
+	}
+
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(raw), "create = false") {
+		t.Error("omitempty failed: 'create = false' written into a group block")
+	}
+	if strings.Contains(string(raw), `default_path = ""`) {
+		t.Error(`omitempty failed: 'default_path = "" written into a group block`)
 	}
 }

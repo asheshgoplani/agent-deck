@@ -489,6 +489,73 @@ func TestHomeRenameSessionComplete(t *testing.T) {
 	}
 }
 
+// TestHomePinCycleHotkey verifies that pressing ',' cycles the session
+// pin state PinNone → PinTop → PinBottom → PinNone.  Pin-sessions was
+// shipped in #1335; the hotkey is the TUI surface for quick cycling.
+func TestHomePinCycleHotkey(t *testing.T) {
+	// RemoteSession items are ItemTypeRemoteSession and structurally
+	// cannot reach the pin-cycle path (handler gates on ItemTypeSession
+	// && item.Session != nil). No separate test is required.
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	other := session.NewInstance("alpha-session", "/tmp/project")
+	inst := session.NewInstance("target-session", "/tmp/project")
+	home.instancesMu.Lock()
+	home.instances = []*session.Instance{other, inst}
+	home.instanceByID[other.ID] = other
+	home.instanceByID[inst.ID] = inst
+	home.instancesMu.Unlock()
+	home.groupTree = session.NewGroupTree(home.instances)
+	home.rebuildFlatItems()
+
+	sessionIdx := -1
+	for i, item := range home.flatItems {
+		if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == inst.ID {
+			sessionIdx = i
+			break
+		}
+	}
+	if sessionIdx == -1 {
+		t.Fatal("target session missing from flat items")
+	}
+	home.cursor = sessionIdx
+	assertTargetSelected := func(h *Home, step string) {
+		t.Helper()
+		if h.cursor >= len(h.flatItems) || h.flatItems[h.cursor].Session == nil {
+			t.Fatalf("%s: cursor %d does not select a session", step, h.cursor)
+		}
+		if got := h.flatItems[h.cursor].Session.ID; got != inst.ID {
+			t.Fatalf("%s: cursor selects %q, want target %q", step, got, inst.ID)
+		}
+	}
+
+	// Press ',' once: PinNone → PinTop
+	model1, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{','}})
+	h1 := model1.(*Home)
+	if inst.Pin != session.PinTop {
+		t.Errorf("after 1st press: pin = %q, want %q", inst.Pin, session.PinTop)
+	}
+	assertTargetSelected(h1, "after 1st press")
+
+	// Press ',' again: PinTop → PinBottom
+	model2, _ := h1.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{','}})
+	h2 := model2.(*Home)
+	if inst.Pin != session.PinBottom {
+		t.Errorf("after 2nd press: pin = %q, want %q", inst.Pin, session.PinBottom)
+	}
+	assertTargetSelected(h2, "after 2nd press")
+
+	// Press ',' a third time: PinBottom → PinNone
+	model3, _ := h2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{','}})
+	h3 := model3.(*Home)
+	if inst.Pin != session.PinNone {
+		t.Errorf("after 3rd press: pin = %q, want %q", inst.Pin, session.PinNone)
+	}
+	assertTargetSelected(h3, "after 3rd press")
+}
+
 func TestHomeMoveSessionWithDuplicateGroupNamesUsesSelectedPath(t *testing.T) {
 	home := NewHome()
 	home.width = 100
@@ -618,7 +685,7 @@ func TestHomeRenamePendingChangesSurviveReload(t *testing.T) {
 	home.rebuildFlatItems()
 
 	// Simulate a rename that stores a pending title change
-	home.pendingTitleChanges[inst.ID] = "renamed-title"
+	home.pendingTitleChanges[inst.ID] = pendingTitle{title: "renamed-title", locked: true}
 
 	// Simulate a reload (loadSessionsMsg) with the OLD title from disk
 	reloadInst := session.NewInstance("original-name", "/tmp/project")
@@ -660,7 +727,7 @@ func TestHomeRenamePendingChangeClearsAutoName(t *testing.T) {
 
 	// User renamed the session; the rename was stored as a pending change
 	// (save was skipped because isReloading=true at the time)
-	home.pendingTitleChanges[inst.ID] = "my-chosen-name"
+	home.pendingTitleChanges[inst.ID] = pendingTitle{title: "my-chosen-name", locked: true}
 
 	// A reload replaces the instance with the stale disk version (AutoName=true, old title)
 	reloadInst := session.NewInstance("quick-adjective-noun", "/tmp/project")
@@ -701,7 +768,7 @@ func TestHomeRenamePendingChangesNoop(t *testing.T) {
 	home.rebuildFlatItems()
 
 	// Store a pending change that matches the current title (normal save succeeded)
-	home.pendingTitleChanges[inst.ID] = "desired-name"
+	home.pendingTitleChanges[inst.ID] = pendingTitle{title: "desired-name", locked: true}
 
 	// Reload with data that already has the correct title
 	reloadInst := session.NewInstance("desired-name", "/tmp/project")
@@ -724,6 +791,88 @@ func TestHomeRenamePendingChangesNoop(t *testing.T) {
 	if len(h.pendingTitleChanges) != 0 {
 		t.Errorf("pendingTitleChanges should be empty, got %d", len(h.pendingTitleChanges))
 	}
+}
+
+// TestHomeRenamePendingChangeRestoresTitleLock pins the #697 regression: a user
+// rename re-applied after a reload race must come back LOCKED, otherwise the
+// next #572 Claude-name sync reverts it to the cwd-folder default (the "my
+// rename keeps disappearing on restart" bug). A sync-sourced pending title must
+// stay UNLOCKED so it keeps tracking Claude's session name.
+func TestHomeRenamePendingChangeRestoresTitleLock(t *testing.T) {
+	// No RemoteSession case: pendingTitleChanges is keyed by session ID and
+	// resolved through getInstanceByID, which only returns local
+	// *session.Instance objects. A RemoteSession has no local instance and is
+	// renamed via its own SSH-runner branch in handleGroupDialogKey, so it can
+	// never reach this reload-reapply path.
+	t.Run("user rename is relocked", func(t *testing.T) {
+		home := NewHome()
+		home.width = 100
+		home.height = 30
+
+		inst := session.NewInstance("original-name", "/tmp/project")
+		inst.TitleLocked = true
+		home.instancesMu.Lock()
+		home.instances = []*session.Instance{inst}
+		home.instanceByID[inst.ID] = inst
+		home.instancesMu.Unlock()
+		home.groupTree = session.NewGroupTree(home.instances)
+		home.rebuildFlatItems()
+
+		// User rename queued as locked (SetField sets TitleLocked=true).
+		home.pendingTitleChanges[inst.ID] = pendingTitle{title: "renamed-title", locked: true}
+
+		// Reload replaces the instance with a stale disk row: old title AND
+		// UNLOCKED, because the lock was never persisted (save was skipped).
+		reloadInst := session.NewInstance("original-name", "/tmp/project")
+		reloadInst.ID = inst.ID
+		reloadInst.TitleLocked = false
+
+		model, _ := home.Update(loadSessionsMsg{
+			instances:    []*session.Instance{reloadInst},
+			restoreState: &reloadState{cursorSessionID: inst.ID},
+		})
+		h := model.(*Home)
+
+		if h.instances[0].Title != "renamed-title" {
+			t.Fatalf("Title = %q, want renamed-title", h.instances[0].Title)
+		}
+		if !h.instances[0].TitleLocked {
+			t.Error("TitleLocked = false after reapply, want true (#697: else the next Claude-name sync reverts the rename)")
+		}
+	})
+
+	t.Run("sync-sourced title stays unlocked", func(t *testing.T) {
+		home := NewHome()
+		home.width = 100
+		home.height = 30
+
+		inst := session.NewInstance("proj-ab", "/tmp/project")
+		home.instancesMu.Lock()
+		home.instances = []*session.Instance{inst}
+		home.instanceByID[inst.ID] = inst
+		home.instancesMu.Unlock()
+		home.groupTree = session.NewGroupTree(home.instances)
+		home.rebuildFlatItems()
+
+		// An attach-time Claude-name sync queues an UNLOCKED title.
+		home.pendingTitleChanges[inst.ID] = pendingTitle{title: "claude-name", locked: false}
+
+		reloadInst := session.NewInstance("proj-ab", "/tmp/project")
+		reloadInst.ID = inst.ID
+
+		model, _ := home.Update(loadSessionsMsg{
+			instances:    []*session.Instance{reloadInst},
+			restoreState: &reloadState{cursorSessionID: inst.ID},
+		})
+		h := model.(*Home)
+
+		if h.instances[0].Title != "claude-name" {
+			t.Fatalf("Title = %q, want claude-name", h.instances[0].Title)
+		}
+		if h.instances[0].TitleLocked {
+			t.Error("TitleLocked = true after sync reapply, want false (sync titles must keep tracking Claude)")
+		}
+	})
 }
 
 func TestHomeGlobalSearchInitialized(t *testing.T) {

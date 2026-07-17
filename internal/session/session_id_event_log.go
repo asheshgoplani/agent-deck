@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // SessionIDLifecycleEvent captures every session-ID bind/rebind/reject decision.
@@ -24,7 +26,15 @@ type SessionIDLifecycleEvent struct {
 	Timestamp  int64  `json:"ts"`
 }
 
-var sessionIDLifecycleLogMu sync.Mutex
+var (
+	sessionIDLifecycleLogMu sync.Mutex
+	// sessionIDLifecycleWriter is a lazily-initialised rotating writer. Before
+	// this, WriteSessionIDLifecycleEvent was a raw O_APPEND with no cap and had
+	// grown to ~22MB / 92K lines on the live mac-studio. lumberjack bounds it the
+	// same way debug.log is bounded (size + backups + age). Guarded by
+	// sessionIDLifecycleLogMu.
+	sessionIDLifecycleWriter *lumberjack.Logger
+)
 
 // GetSessionIDLifecycleLogPath returns ~/.agent-deck/logs/session-id-lifecycle.jsonl.
 func GetSessionIDLifecycleLogPath() string {
@@ -55,13 +65,23 @@ func WriteSessionIDLifecycleEvent(event SessionIDLifecycleEvent) error {
 	sessionIDLifecycleLogMu.Lock()
 	defer sessionIDLifecycleLogMu.Unlock()
 
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("open lifecycle log: %w", err)
+	// Lazily bind the rotating writer to the resolved path. lumberjack creates
+	// the file and rotates it in place (5MB × 3 backups, 30-day retention) so
+	// this postmortem log can never grow unbounded again.
+	if sessionIDLifecycleWriter == nil || sessionIDLifecycleWriter.Filename != logPath {
+		if sessionIDLifecycleWriter != nil {
+			_ = sessionIDLifecycleWriter.Close()
+		}
+		sessionIDLifecycleWriter = &lumberjack.Logger{
+			Filename:   logPath,
+			MaxSize:    5, // MB
+			MaxBackups: 3,
+			MaxAge:     30, // days
+			Compress:   true,
+		}
 	}
-	defer f.Close()
 
-	if _, err := f.Write(line); err != nil {
+	if _, err := sessionIDLifecycleWriter.Write(line); err != nil {
 		return fmt.Errorf("write lifecycle event: %w", err)
 	}
 	return nil

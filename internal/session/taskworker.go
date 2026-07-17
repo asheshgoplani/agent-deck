@@ -247,6 +247,19 @@ func RunTaskWorker(childID, profile, title string, cmd *exec.Cmd) (CompletionRec
 	if err := WriteCompletionRecord(rec); err != nil {
 		return rec, err
 	}
+	// Mirror the finished completion into the non-destructive ledger so the
+	// task-worker fleet shows up in `session children` alongside interactive
+	// children. Best-effort; never fail the run on a ledger write.
+	if strings.TrimSpace(rec.Status) != "" {
+		_ = WriteLedgerEntry(CompletionLedgerEntry{
+			ChildID:    rec.ChildID,
+			Profile:    rec.Profile,
+			Title:      rec.Title,
+			Status:     rec.Status,
+			Summary:    rec.Summary,
+			FinishedAt: rec.FinishedAt,
+		})
+	}
 	return rec, nil
 }
 
@@ -281,9 +294,11 @@ func (n *TransitionNotifier) DeliverCompletion(rec CompletionRecord) bool {
 	if event.ChildSessionID == "" || event.Profile == "" {
 		return false
 	}
-	if isConductorSessionTitle(event.ChildTitle) {
-		return false
-	}
+	// Conductor self-suppression is applied DOWNSTREAM in resolveParentIDForInbox
+	// (keyed on the child's real ParentSessionID): a top-level/self conductor
+	// resolves to no target and is not committed; a conductor-TITLED worker with a
+	// real parent is a legitimate completion and MUST be delivered. The removed
+	// title-only pre-filter here silently dropped that legitimate parented case.
 	// The replay path (ReplayUnackedCompletions) handles the not-committed case
 	// via the bounded dead-letter sink, so the terminal reason is discarded here.
 	committed, _, _ := n.commitEventToInbox(event)

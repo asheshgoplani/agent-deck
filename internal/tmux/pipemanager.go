@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -190,32 +191,71 @@ func (pm *PipeManager) GetWindowActivity(sessionName string) (int64, error) {
 	return ts, nil
 }
 
-// RefreshAllActivities sends a single list-windows command through any available
-// pipe to get activity timestamps for ALL sessions. This replaces the subprocess
-// call in RefreshSessionCache.
+// selectPipesPerSocket returns one alive pipe for each distinct socket among
+// the given pipes. `list-windows -a` only reports sessions on the server its
+// pipe is attached to, so a single arbitrary pipe misses every session living
+// on another socket. When agent-deck sessions are split across more than one
+// tmux server (e.g. some on the default socket, some under [tmux] socket_name),
+// querying just one pipe makes the others' sessions look gone — they flip to
+// StatusError/tmux_missing and can then be killed by restart machinery. Probing
+// one pipe per socket and merging keeps the cache complete. Dead pipes are
+// skipped. See the multi-socket cache aliasing note.
+func selectPipesPerSocket(pipes map[string]*ControlPipe) []*ControlPipe {
+	seen := make(map[string]bool)
+	var selected []*ControlPipe
+	for _, p := range pipes {
+		if p == nil || !p.IsAlive() {
+			continue
+		}
+		if seen[p.socketName] {
+			continue
+		}
+		seen[p.socketName] = true
+		selected = append(selected, p)
+	}
+	return selected
+}
+
+// RefreshAllActivities sends a list-windows command through one pipe per distinct
+// socket to get activity timestamps for ALL sessions across every tmux server we
+// have a live pipe to. This replaces the subprocess call in RefreshSessionCache.
+// Session names carry random suffixes, so cross-socket name collisions are
+// effectively impossible and merging by name is safe.
 func (pm *PipeManager) RefreshAllActivities() (map[string]int64, map[string][]WindowInfo, error) {
 	pm.mu.RLock()
-	// Find any alive pipe to send the command through
-	var pipe *ControlPipe
-	for _, p := range pm.pipes {
-		if p.IsAlive() {
-			pipe = p
-			break
-		}
-	}
+	pipes := selectPipesPerSocket(pm.pipes)
 	pm.mu.RUnlock()
 
-	if pipe == nil {
+	if len(pipes) == 0 {
 		return nil, nil, fmt.Errorf("no alive pipes available")
 	}
 
-	// tmux control mode requires double-quoted format strings containing special chars
-	output, err := pipe.SendCommand(`list-windows -a -F "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}"`)
-	if err != nil {
-		return nil, nil, fmt.Errorf("list-windows via pipe: %w", err)
+	sessionCache := make(map[string]int64)
+	windowCache := make(map[string][]WindowInfo)
+	var firstErr error
+	gotAny := false
+	for _, pipe := range pipes {
+		// Must use the same tmuxFieldSep as parseListWindowsOutput (shared with the
+		// subprocess path). A control client negotiates UTF-8, so TAB would usually
+		// survive here, but the delimiter MUST still match what the parser splits on.
+		// tmux control mode requires the format string double-quoted.
+		output, err := pipe.SendCommand(`list-windows -a -F "` + tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_name}") + `"`)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		gotAny = true
+		sc, wc := parseListWindowsOutput(output)
+		maps.Copy(sessionCache, sc)
+		maps.Copy(windowCache, wc)
 	}
 
-	sessionCache, windowCache := parseListWindowsOutput(output)
+	if !gotAny {
+		return nil, nil, fmt.Errorf("list-windows via pipe: %w", firstErr)
+	}
+
 	return sessionCache, windowCache, nil
 }
 
@@ -238,51 +278,15 @@ func (pm *PipeManager) RefreshAllPaneInfo() (map[string]PaneInfo, map[string]map
 		return nil, nil, fmt.Errorf("no alive pipes available")
 	}
 
-	output, err := pipe.SendCommand(`list-panes -a -F "#{session_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_dead}\t#{window_index}\t#{pane_index}"`)
+	// Share the producer format AND parser with the subprocess path
+	// (parseListPanesOutput): pane_title last, tmuxFieldSep-delimited. Keeps the
+	// pipe and subprocess paths from drifting in field order or delimiter.
+	output, err := pipe.SendCommand(`list-panes -a -F "` + tmuxFmt("#{session_name}", "#{pane_current_command}", "#{pane_dead}", "#{window_index}", "#{pane_index}", "#{pane_title}") + `"`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list-panes via pipe: %w", err)
 	}
 
-	result := make(map[string]PaneInfo)
-	windowTools := make(map[string]map[int]string)
-	seenWindowTool := make(map[string]bool) // "session\twinIdx" -> already processed
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\t", 6)
-		if len(parts) != 6 {
-			continue
-		}
-		name := parts[0]
-
-		// Collect tool info for the first pane of each window (handles any base-index).
-		windowKey := name + "\t" + parts[4]
-		if !seenWindowTool[windowKey] {
-			seenWindowTool[windowKey] = true
-			var winIdx int
-			_, _ = fmt.Sscanf(parts[4], "%d", &winIdx)
-			tool := detectToolFromCommand(parts[2])
-			if tool == "" {
-				tool = detectToolFromCommand(parts[1])
-			}
-			if tool != "" {
-				if windowTools[name] == nil {
-					windowTools[name] = make(map[int]string)
-				}
-				windowTools[name][winIdx] = tool
-			}
-		}
-
-		// Cache the first pane seen per session (primary window+pane).
-		if _, seen := result[name]; !seen {
-			result[name] = PaneInfo{
-				Title:          parts[1],
-				CurrentCommand: parts[2],
-				Dead:           parts[3] == "1",
-			}
-		}
-	}
+	result, windowTools := parseListPanesOutput(output)
 	return result, windowTools, nil
 }
 
@@ -560,6 +564,11 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 // See isControlClientOrphan for how orphans are distinguished from live
 // siblings.
 func killStaleControlClients(sessionName, socketName string) {
+	// Once per run, also sweep orphaned one-shot *command* clients (poll/query/
+	// status set-option) that this function's control-mode-only filter can never
+	// reach. See reapOrphanedPollClients.
+	orphanReapOnce.Do(reapOrphanedPollClients)
+
 	out, err := tmuxExec(socketName,
 		"list-clients", "-t", sessionName,
 		"-F", "#{client_control_mode} #{client_pid}",
@@ -670,6 +679,79 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 			slog.Duration("duration", time.Since(burstStart)))
 	}
 	return killCount
+}
+
+// orphanReapOnce ensures the process-wide orphaned-poll-client sweep runs at
+// most once per agent-deck run (on the first session Connect after startup),
+// instead of re-scanning all of /proc on every Connect.
+var orphanReapOnce sync.Once
+
+// reapOrphanedPollClients kills leaked one-shot tmux *command* clients — the
+// `list-clients` / `display-message` / `list-panes` / status `set-option`
+// invocations agent-deck fires on a cadence — that a previous run spawned and
+// never reaped. killStaleControlClients only sweeps control-mode clients
+// (client_control_mode == 1); these short-lived query/option clients are
+// invisible to it. When one hangs on a wedged server (tmux 3.0a spins at 100%
+// CPU rather than exiting) and its owning TUI then dies, the kernel reparents
+// it to init / systemd --user and it burns a whole core indefinitely.
+//
+// tmuxPollTimeout (Part A) stops NEW leaks by bounding every such command; this
+// sweep mops up orphans that predate the current run, or that escaped the
+// timeout because the TUI was SIGKILL'd / OOM-killed mid-command.
+//
+// Safety — a process is killed only when ALL hold:
+//   - it is the `tmux` client binary (comm == "tmux"; the server is
+//     "tmux: server" and never matches),
+//   - its argv targets an agent-deck session (contains SessionPrefix), so a
+//     user's unrelated tmux is never touched, and
+//   - it is a reparented orphan no longer owned by any live agent-deck TUI
+//     (isControlClientOrphan — its parentage check is client-type-agnostic
+//     despite the name). A live TUI's own in-flight poll has PPID == our PID,
+//     so isControlClientOrphan returns false and it is preserved.
+//
+// Linux-only: relies on procfs. On darwin/BSD it is a no-op (a `ps`-based
+// enumeration would be the port); the tmuxPollTimeout guard still applies
+// there, so new leaks are prevented regardless.
+func reapOrphanedPollClients() {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+	myPID := os.Getpid()
+	killed := 0
+	start := time.Now()
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == myPID {
+			continue
+		}
+		comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+		if err != nil || strings.TrimSpace(string(comm)) != "tmux" {
+			continue
+		}
+		// cmdline fields are NUL-separated; substring search still matches the
+		// "agentdeck_" target token regardless of separators.
+		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err != nil || !strings.Contains(string(raw), SessionPrefix) {
+			continue
+		}
+		if !isControlClientOrphan(pid) {
+			continue // owned by a live agent-deck TUI (incl. a sibling) — keep
+		}
+		usedSIGKILL := softKillProcess(pid, controlClientKillGrace)
+		killed++
+		pipeLog.Debug("reaped_orphaned_poll_client",
+			slog.Int("pid", pid),
+			slog.Bool("used_sigkill", usedSIGKILL))
+	}
+	if killed > 0 {
+		pipeLog.Info("orphaned_poll_clients_reaped",
+			slog.Int("kill_count", killed),
+			slog.Duration("duration", time.Since(start)))
+	}
 }
 
 // isControlClientOrphan reports whether the control-mode client pid is a

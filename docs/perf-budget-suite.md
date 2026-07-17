@@ -12,7 +12,7 @@ Agent-deck has a recurring complaint that lifecycle operations (cold start, grou
 Any PR modifying performance-sensitive lifecycle paths MUST run:
 
 ```bash
-GOTOOLCHAIN=go1.25.11 PERF_BUDGET_MULTIPLIER=2.0 \
+GOTOOLCHAIN=go1.25.12 PERF_BUDGET_MULTIPLIER=2.0 \
   go test -run '^TestPerf_' -race -count=1 -timeout 120s \
   ./...
 ```

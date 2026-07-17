@@ -126,7 +126,7 @@ is unavailable).
 1. PR touches `internal/web/**`, `.lighthouserc.json`, `tests/lighthouse/**`,
    or `.github/workflows/lighthouse-ci.yml`.
 2. The workflow checks out the PR head and the base ref into separate
-   directories and builds both binaries (`GOTOOLCHAIN=go1.25.11 make build`).
+   directories and builds both binaries (`GOTOOLCHAIN=go1.25.12 make build`).
 3. `lhci collect` runs against the PR-head server (with `--no-tui`).
 4. `lhci collect` runs against the base server (best-effort; failures are
    non-fatal so the PR still benefits from the absolute threshold check).

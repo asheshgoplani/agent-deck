@@ -138,6 +138,41 @@ func TestDefaultRawPatterns_Pi(t *testing.T) {
 	}
 }
 
+func TestDefaultRawPatterns_PiSubagentSignals(t *testing.T) {
+	patterns, err := CompilePatterns(DefaultRawPatterns("pi"))
+	if err != nil {
+		t.Fatalf("compile pi patterns: %v", err)
+	}
+	matchesBusy := func(content string) bool {
+		lower := strings.ToLower(content)
+		for _, pattern := range patterns.BusyStrings {
+			if strings.Contains(lower, strings.ToLower(pattern)) {
+				return true
+			}
+		}
+		for _, pattern := range patterns.BusyRegexps {
+			if pattern.MatchString(content) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if matchesBusy("Packages:\n  - pi-subagents\n\npi> ") {
+		t.Fatal("package-update banner must not mark an idle Pi session busy")
+	}
+	for _, content := range []string{
+		"delegate_task agent=researcher",
+		"[subagent] researching",
+		"[running] subagent-1",
+		"  → delegated task",
+	} {
+		if !matchesBusy(content) {
+			t.Errorf("active Pi subagent marker was not detected: %q", content)
+		}
+	}
+}
+
 func TestDefaultRawPatterns_Unknown(t *testing.T) {
 	raw := DefaultRawPatterns("unknowntool")
 	if raw != nil {

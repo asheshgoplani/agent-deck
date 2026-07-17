@@ -112,6 +112,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck add -t "Name" -c claude /path` | Create session |
 | `agent-deck session start/stop/restart <name>` | Control session |
 | `agent-deck session send <name> "message"` | Send message |
+| `agent-deck session send <name> --message-file <file>` | Send message from file (`-` = stdin); no shell quoting. Also on `launch`/`session start` |
 | `agent-deck session output <name>` | Get last response |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
 | `agent-deck session fork <name>` | Fork Claude/Pi conversation |
@@ -355,7 +356,7 @@ Key constraints:
 - Exactly one bot, one conductor, one chat — the routing is deterministic.
 - Watch for the "many competing telegram pollers" gotcha (see Known Gotchas section below) — child sessions inherit `TELEGRAM_STATE_DIR` and can leak duplicate pollers on the same bot token, causing 409 conflicts.
 
-**See:** [documentation/CONDUCTOR.md](https://github.com/asheshgoplani/agent-deck/blob/main/documentation/CONDUCTOR.md) for the full ten-minute quickstart, telegram bot creation flow, multi-conductor setups, and lifecycle commands.
+**See:** [docs/conductor/](https://github.com/asheshgoplani/agent-deck/blob/main/docs/conductor/) for the full quickstart, channel setup, multi-conductor setups, and lifecycle commands.
 
 ## TUI Keyboard Shortcuts
 
@@ -935,7 +936,7 @@ See the [Self-Improvement](#self-improvement) section for how these were discove
 
 **User guides (full how-to, in the repo):**
 
-- [documentation/CONDUCTOR.md](https://github.com/asheshgoplani/agent-deck/blob/main/documentation/CONDUCTOR.md) - Conductor quickstart, channel pairing, state files, multi-conductor setups
+- [docs/conductor/](https://github.com/asheshgoplani/agent-deck/blob/main/docs/conductor/) - Conductor quickstart, channel pairing, state files, multi-conductor setups
 - [documentation/WATCHERS.md](https://github.com/asheshgoplani/agent-deck/blob/main/documentation/WATCHERS.md) - Event-forwarding framework: doorbell model, built-in adapters, custom watchers
 - [documentation/SKILLS.md](https://github.com/asheshgoplani/agent-deck/blob/main/documentation/SKILLS.md) - User-level vs pool skills, attach/detach, when to use which tier
 - [documentation/WATCHDOG.md](https://github.com/asheshgoplani/agent-deck/blob/main/documentation/WATCHDOG.md) - Optional Python daemon that auto-restarts critical sessions

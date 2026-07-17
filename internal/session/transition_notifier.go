@@ -298,10 +298,15 @@ func (n *TransitionNotifier) NotifyTransition(event TransitionNotificationEvent)
 		event.DeliveryResult = transitionDeliveryDropped
 		return event
 	}
-	if isConductorSessionTitle(event.ChildTitle) {
-		event.DeliveryResult = transitionDeliveryDropped
-		return event
-	}
+	// Conductor self-suppression is applied DOWNSTREAM in resolveParentIDForInbox
+	// (inbox_outbox.go), which keys on the child's actual ParentSessionID: only a
+	// TOP-LEVEL/self-pointing conductor (empty/self parent) is dropped silently
+	// (deadLetterReasonSelfConductor). A conductor-TITLED child that has a real
+	// parent (e.g. a conductor-named worker) is a legitimate delivery and MUST NOT
+	// be dropped on its title alone. The previous isConductorSessionTitle
+	// pre-filter here did exactly that — it could only see the title, not the
+	// parent linkage, so it silently dropped completions for parented children
+	// whose title merely started with "conductor-".
 	if n.isDuplicate(event) {
 		event.DeliveryResult = transitionDeliveryDropped
 		return event
@@ -351,11 +356,13 @@ func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) T
 		event.DeliveryResult = transitionDeliveryDropped
 		return event
 	}
-	if isConductorSessionTitle(event.ChildTitle) {
-		event.DeliveryResult = transitionDeliveryDropped
-		return event
-	}
 
+	// Conductor self-suppression is applied DOWNSTREAM in resolveParentIDForInbox
+	// (keyed on the child's real ParentSessionID): a TOP-LEVEL/self conductor is
+	// dropped silently; a conductor-TITLED child with a real parent is delivered.
+	// The title alone (the only data available here) cannot distinguish the two —
+	// the removed pre-filter dropped both, silently killing legitimate parented
+	// completions.
 	// Issue #1225: commit the finished event to the parent's durable outbox.
 	committed, transient, reason := n.commitEventToInbox(event)
 	if committed {

@@ -37,7 +37,7 @@ jobs:
       run:
         working-directory: tests/web
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -60,7 +60,7 @@ jobs:
       run:
         working-directory: tests/web
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -78,7 +78,7 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Cache Playwright browsers
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-ubuntu-${{ hashFiles('tests/web/package-lock.json') }}
@@ -90,7 +90,7 @@ jobs:
       - name: Build fixture binary
         working-directory: .
         env:
-          GOTOOLCHAIN: go1.25.11
+          GOTOOLCHAIN: go1.25.12
         run: go build -o tests/web/.tmp/web-fixture ./tests/web/fixtures/cmd/web-fixture/
 
       - name: Run Playwright e2e
@@ -119,11 +119,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Run TestParity_*
         env:
-          GOTOOLCHAIN: go1.25.11
+          GOTOOLCHAIN: go1.25.12
         run: go test ./internal/web/ -run TestParity -race -count=1

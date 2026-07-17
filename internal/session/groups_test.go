@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -524,6 +525,70 @@ func TestRenameSubgroup(t *testing.T) {
 	}
 }
 
+func TestRenameGroup_ReportsNotFound(t *testing.T) {
+	tree := NewGroupTree([]*Instance{})
+	tree.CreateGroup("real")
+
+	err := tree.RenameGroup("stale-name", "whatever")
+	if !errors.Is(err, ErrGroupNotFound) {
+		t.Fatalf("expected ErrGroupNotFound, got %v", err)
+	}
+	if tree.Groups["real"] == nil {
+		t.Error("existing group should be untouched")
+	}
+}
+
+func TestRenameGroup_RejectsCollision(t *testing.T) {
+	tree := NewGroupTree([]*Instance{})
+	tree.CreateGroup("source")
+	tree.CreateGroup("target")
+	tree.Groups["source"].Sessions = []*Instance{{ID: "s1", GroupPath: "source"}}
+	tree.Groups["target"].Sessions = []*Instance{{ID: "t1", GroupPath: "target"}}
+
+	err := tree.RenameGroup("source", "target")
+	if !errors.Is(err, ErrGroupAlreadyExists) {
+		t.Fatalf("expected ErrGroupAlreadyExists, got %v", err)
+	}
+
+	src := tree.Groups["source"]
+	if src == nil {
+		t.Fatal("source group should still exist")
+	}
+	if len(src.Sessions) != 1 || src.Sessions[0].ID != "s1" {
+		t.Errorf("source sessions should be intact, got %+v", src.Sessions)
+	}
+
+	tgt := tree.Groups["target"]
+	if tgt == nil {
+		t.Fatal("target group should still exist")
+	}
+	if len(tgt.Sessions) != 1 || tgt.Sessions[0].ID != "t1" {
+		t.Errorf("target sessions should be intact, got %+v", tgt.Sessions)
+	}
+}
+
+func TestRenameGroup_RejectsSubtreeCollision(t *testing.T) {
+	tree := NewGroupTree([]*Instance{})
+	tree.CreateGroup("Alpha")
+	tree.CreateSubgroup("Alpha", "Child")
+	tree.CreateGroup("Beta")
+	tree.CreateSubgroup("Beta", "Child")
+	tree.Groups["Beta/Child"].Sessions = []*Instance{{ID: "victim", GroupPath: "Beta/Child"}}
+
+	err := tree.RenameGroup("Alpha", "Beta")
+	if !errors.Is(err, ErrGroupAlreadyExists) {
+		t.Fatalf("expected ErrGroupAlreadyExists, got %v", err)
+	}
+
+	if tree.Groups["Alpha"] == nil || tree.Groups["Alpha/Child"] == nil {
+		t.Error("Alpha subtree should be intact after rejected rename")
+	}
+	victim := tree.Groups["Beta/Child"]
+	if victim == nil || len(victim.Sessions) != 1 || victim.Sessions[0].ID != "victim" {
+		t.Errorf("Beta/Child and its session should survive, got %+v", victim)
+	}
+}
+
 func TestDeleteGroup(t *testing.T) {
 	instances := []*Instance{
 		{ID: "1", Title: "session-1", GroupPath: "to-delete"},
@@ -796,6 +861,98 @@ func TestDefaultPathForGroupResolvesWorktreeToRepoRoot(t *testing.T) {
 
 	if realGot != realRepoDir {
 		t.Fatalf("Expected default path to resolve to repo root %q, got %q", realRepoDir, realGot)
+	}
+}
+
+// TestSetDefaultPathForGroupMainTreeSubdirStoredVerbatim pins the verbatim
+// behavior for main-working-tree subdirectories: an explicit default path
+// inside a repo's main working tree must be stored as given, not collapsed to
+// the repo root. Only LINKED worktrees (`git worktree add`) snap to their base
+// repository root.
+func TestSetDefaultPathForGroupMainTreeSubdirStoredVerbatim(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repoDir := filepath.Join(t.TempDir(), "repo")
+	subDir := filepath.Join(repoDir, "agents", "worker")
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Env = testutil.CleanGitEnv(os.Environ())
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	run("init", repoDir)
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("failed to create subdir: %v", err)
+	}
+
+	tree := NewGroupTree([]*Instance{})
+	tree.CreateGroup("Projects")
+	if ok := tree.SetDefaultPathForGroup("Projects", subDir); !ok {
+		t.Fatal("SetDefaultPathForGroup should return true for existing group")
+	}
+
+	if got := tree.DefaultPathForGroup("Projects"); got != subDir {
+		t.Fatalf("main-tree subdirectory collapsed to %q, want stored verbatim %q", got, subDir)
+	}
+}
+
+// TestSetDefaultPathForGroupLinkedWorktreeStillSnapsToBaseRoot pins that the
+// verbatim fix does not regress the original intent: an explicit default path
+// pointing at a linked worktree still resolves to the base repository root.
+func TestSetDefaultPathForGroupLinkedWorktreeStillSnapsToBaseRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	tmpDir := t.TempDir()
+	repoDir := filepath.Join(tmpDir, "repo")
+	wtDir := filepath.Join(tmpDir, "repo-worktree")
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Env = testutil.CleanGitEnv(os.Environ())
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	run("init", repoDir)
+	run("-C", repoDir, "config", "user.email", "test@example.com")
+	run("-C", repoDir, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("failed to write repo file: %v", err)
+	}
+	run("-C", repoDir, "add", "README.md")
+	run("-C", repoDir, "commit", "-m", "init")
+	run("-C", repoDir, "worktree", "add", wtDir, "-b", "feature/default-path")
+
+	tree := NewGroupTree([]*Instance{})
+	tree.CreateGroup("Projects")
+	if ok := tree.SetDefaultPathForGroup("Projects", wtDir); !ok {
+		t.Fatal("SetDefaultPathForGroup should return true for existing group")
+	}
+
+	got := tree.DefaultPathForGroup("Projects")
+	realRepoDir, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		realRepoDir = repoDir
+	}
+	realGot, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		realGot = got
+	}
+
+	if realGot != realRepoDir {
+		t.Fatalf("Expected linked worktree default path to resolve to repo root %q, got %q", realRepoDir, realGot)
 	}
 }
 
@@ -2097,5 +2254,171 @@ func TestDemoteSession_WithChildrenNoOp(t *testing.T) {
 	wantKids := []string{"s2"}
 	if len(gotKids) != len(wantKids) || gotKids[0] != wantKids[0] {
 		t.Errorf("p2's children should be unchanged; got %v, want %v", gotKids, wantKids)
+	}
+}
+
+func TestGroupSortMode_DefaultAndSet(t *testing.T) {
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+
+	SetGroupSortMode("creation") // normalize starting point
+	if got := currentGroupSortMode(); got != "creation" {
+		t.Fatalf("default/creation mode = %q, want creation", got)
+	}
+	SetGroupSortMode("actionable")
+	if got := currentGroupSortMode(); got != "actionable" {
+		t.Fatalf("after set actionable = %q, want actionable", got)
+	}
+	SetGroupSortMode("garbage")
+	if got := currentGroupSortMode(); got != "creation" {
+		t.Fatalf("garbage normalizes to %q, want creation", got)
+	}
+}
+
+func TestSortInstancesByActionable_CreationOrderDefault(t *testing.T) {
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+	SetGroupSortMode("creation")
+	now := time.Now()
+
+	// Statuses + recency are arranged so an actionable sort would reorder these,
+	// but creation mode must keep strict Order ascending.
+	instances := []*Instance{
+		{ID: "a", GroupPath: "g", Order: 0, Status: StatusStopped, LastAccessedAt: now.Add(-5 * time.Hour)},
+		{ID: "b", GroupPath: "g", Order: 1, Status: StatusError, LastAccessedAt: now},
+		{ID: "c", GroupPath: "g", Order: 2, Status: StatusWaiting, LastAccessedAt: now.Add(-1 * time.Minute)},
+	}
+	tree := NewGroupTree(instances)
+	got := []string{}
+	for _, s := range tree.Groups["g"].Sessions {
+		got = append(got, s.ID)
+	}
+	want := []string{"a", "b", "c"}
+	if !equalStrings(got, want) {
+		t.Fatalf("creation mode must order by Order asc; got %v want %v", got, want)
+	}
+}
+
+func TestFlatten_OrphanSubSessionsDeterministic(t *testing.T) {
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+	SetGroupSortMode("creation")
+
+	// Three sub-sessions whose parent lives in a DIFFERENT group than they do,
+	// so they render as orphaned top-level rows in group "g". Their Order
+	// values fix the expected display order.
+	mk := func(id string, order int, parent string) *Instance {
+		return &Instance{ID: id, Title: id, GroupPath: "g", Order: order, ParentSessionID: parent}
+	}
+	instances := []*Instance{
+		mk("s0", 0, "absent-p0"),
+		mk("s1", 1, "absent-p1"),
+		mk("s2", 2, "absent-p2"),
+	}
+
+	tree := NewGroupTree(instances)
+
+	var first []string
+	for _, it := range tree.Flatten() {
+		if it.Type == ItemTypeSession {
+			first = append(first, it.Session.ID)
+		}
+	}
+	if !equalStrings(first, []string{"s0", "s1", "s2"}) {
+		t.Fatalf("orphan order = %v, want [s0 s1 s2]", first)
+	}
+	// Repeat many times — map-iteration nondeterminism would surface a
+	// different order on some iteration.
+	for i := 0; i < 50; i++ {
+		var got []string
+		for _, it := range tree.Flatten() {
+			if it.Type == ItemTypeSession {
+				got = append(got, it.Session.ID)
+			}
+		}
+		if !equalStrings(got, first) {
+			t.Fatalf("Flatten order not stable across calls: iter %d got %v, want %v", i, got, first)
+		}
+	}
+}
+
+// When orphaned sub-sessions share the same Order, the sort must still be
+// deterministic: without an ID tie-break, SliceStable would preserve the
+// randomized map-iteration order of subSessionsByParent and the rows could
+// drift between renders. They must emit in ID order.
+func TestFlatten_OrphanSubSessionsDeterministic_TiedOrder(t *testing.T) {
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+	SetGroupSortMode("creation")
+
+	// All orphans share Order 0 and live in distinct parent buckets, so the only
+	// stable discriminator is ID.
+	mk := func(id, parent string) *Instance {
+		return &Instance{ID: id, Title: id, GroupPath: "g", Order: 0, ParentSessionID: parent}
+	}
+	instances := []*Instance{
+		mk("s2", "absent-p2"),
+		mk("s0", "absent-p0"),
+		mk("s1", "absent-p1"),
+	}
+
+	tree := NewGroupTree(instances)
+
+	collect := func() []string {
+		var got []string
+		for _, it := range tree.Flatten() {
+			if it.Type == ItemTypeSession {
+				got = append(got, it.Session.ID)
+			}
+		}
+		return got
+	}
+
+	want := []string{"s0", "s1", "s2"} // ID order, independent of input/map order
+	for i := 0; i < 50; i++ {
+		if got := collect(); !equalStrings(got, want) {
+			t.Fatalf("tied-Order orphans not deterministic: iter %d got %v, want %v", i, got, want)
+		}
+	}
+}
+
+// TestRenameTargetPath pins the path computation shared by RenameGroup and the
+// reload-race collision guard (reapplyPendingGroupOps in the ui package):
+// sanitize the new name, replace spaces with hyphens, and preserve the parent
+// path for nested groups. It is load-bearing for preventing session data loss
+// on a rename collision, so it gets direct coverage.
+func TestRenameTargetPath(t *testing.T) {
+	tree := NewGroupTree(nil)
+	cases := []struct {
+		name    string
+		oldPath string
+		newName string
+		want    string
+	}{
+		{"root rename", "old-name", "New Name", "New-Name"},
+		{"root single word", "work", "life", "life"},
+		{"nested preserves parent", "parent/child", "Renamed", "parent/Renamed"},
+		{"nested with spaces", "parent/child", "New Child", "parent/New-Child"},
+		{"deeply nested preserves parents", "top/mid/leaf", "x", "top/mid/x"},
+		{"sanitizes path separators", "g", "a/b", "a-b"},
+		{"sanitizes dots", "g", "foo.bar", "foo-bar"},
+		{"drops disallowed chars", "g", "my@grp!", "mygrp"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tree.RenameTargetPath(tc.oldPath, tc.newName); got != tc.want {
+				t.Errorf("RenameTargetPath(%q, %q) = %q, want %q", tc.oldPath, tc.newName, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenameTargetPath_MatchesRenameGroup guards against drift between the
+// extracted helper and the path RenameGroup actually moves a group to.
+func TestRenameTargetPath_MatchesRenameGroup(t *testing.T) {
+	for _, newName := range []string{"New Name", "a/b", "life"} {
+		tree := NewGroupTree([]*Instance{{ID: "1", Title: "s", GroupPath: "parent/child"}})
+		target := tree.RenameTargetPath("parent/child", newName)
+		tree.RenameGroup("parent/child", newName)
+		if _, ok := tree.Groups[target]; !ok {
+			t.Errorf("RenameGroup(parent/child, %q) did not land at RenameTargetPath result %q",
+				newName, target)
+		}
 	}
 }

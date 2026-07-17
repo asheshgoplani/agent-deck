@@ -602,26 +602,13 @@ func (gs *GlobalSearch) formatPreviewContent(content string, maxWidth int) []str
 	return lines
 }
 
-// formatRelativeTime formats time as relative (e.g., "2h ago", "3d ago")
+// formatRelativeTime formats time as relative using the shared compact
+// two-component formatter (see humanizeSince). Empty for a zero time.
 func (gs *GlobalSearch) formatRelativeTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	diff := time.Since(t)
-	switch {
-	case diff < time.Minute:
-		return "just now"
-	case diff < time.Hour:
-		return fmt.Sprintf("%dm ago", int(diff.Minutes()))
-	case diff < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(diff.Hours()))
-	case diff < 7*24*time.Hour:
-		return fmt.Sprintf("%dd ago", int(diff.Hours()/24))
-	case diff < 30*24*time.Hour:
-		return fmt.Sprintf("%dw ago", int(diff.Hours()/(24*7)))
-	default:
-		return t.Format("Jan 2")
-	}
+	return humanizeSince(time.Since(t))
 }
 
 // wrapText wraps text at word boundaries to fit within maxWidth

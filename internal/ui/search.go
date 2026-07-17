@@ -279,8 +279,10 @@ func centerInScreen(content string, screenWidth, screenHeight int) string {
 	contentHeight := len(lines)
 	contentWidth := 0
 	for _, line := range lines {
-		if len(line) > contentWidth {
-			contentWidth = len(line)
+		// cellWidth (not len): the box lines carry ANSI styling, so byte length
+		// over-counts and the dialog ends up shifted left of true center.
+		if w := cellWidth(line); w > contentWidth {
+			contentWidth = w
 		}
 	}
 

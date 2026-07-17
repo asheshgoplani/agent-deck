@@ -2639,11 +2639,12 @@ func TestSplitIntoChunks_SplitsAtNewlineBoundary(t *testing.T) {
 }
 
 func TestParseWindowCacheFromListWindows(t *testing.T) {
-	// Simulate list-windows output with extended format
+	// Simulate list-windows output with extended format (tmuxFieldSep-delimited,
+	// session_name | window_activity | window_index | window_name).
 	lines := []string{
-		"agentdeck_proj_abc12345\t1704067200\t0\tmain",
-		"agentdeck_proj_abc12345\t1704067300\t1\ttests",
-		"agentdeck_other_def67890\t1704067100\t0\tbash",
+		tmuxFmt("agentdeck_proj_abc12345", "1704067200", "0", "main"),
+		tmuxFmt("agentdeck_proj_abc12345", "1704067300", "1", "tests"),
+		tmuxFmt("agentdeck_other_def67890", "1704067100", "0", "bash"),
 	}
 
 	sessionCache, windowCache := parseListWindowsOutput(strings.Join(lines, "\n"))

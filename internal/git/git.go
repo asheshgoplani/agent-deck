@@ -587,6 +587,14 @@ func RemoveWorktree(repoDir, worktreePath string, force bool) error {
 		return errors.New("not a git repository")
 	}
 
+	// Pre-removal hook: run .agent-deck/worktree-destruction.sh while the
+	// worktree still exists. Gated on IsLinkedWorktree so it never fires for
+	// the main working tree (worktree_reuse sessions, #1200) or non-worktree
+	// paths. Non-fatal — removal proceeds even if the script fails.
+	if IsLinkedWorktree(worktreePath) {
+		_ = RunWorktreeDestructionBeforeRemove(repoDir, worktreePath, os.Stderr, os.Stderr, DefaultWorktreeDestructionTimeout)
+	}
+
 	args := []string{"-C", repoDir, "worktree", "remove"}
 	if force {
 		args = append(args, "--force")

@@ -231,13 +231,5 @@ func (z *ZoxidePicker) renderResults() string {
 }
 
 func (z *ZoxidePicker) dialogWidth() int {
-	const preferred = 70
-	if z.width > 0 && z.width < preferred+10 {
-		w := z.width - 10
-		if w < 40 {
-			w = 40
-		}
-		return w
-	}
-	return preferred
+	return fitDialogWidth(70, 40, z.width)
 }

@@ -506,6 +506,65 @@ func GetClaudeCommand() string {
 	return GetToolCommand("claude")
 }
 
+// GetClaudeCommandForInstance returns the Claude command for this Instance,
+// extending GetClaudeCommand with the per-conductor / per-group levels.
+// Priority (most-specific → least-specific, same order as the config_dir
+// chain, CFG-08 mirror semantics):
+//
+//  1. [conductors.<name>.claude].command — conductor sessions only
+//  2. [groups."<group>".claude].command — ancestor-walking
+//  3. [claude].command (global)
+//  4. "claude"
+//
+// An instance-level custom command (a non-"claude" command string stored on
+// the session, e.g. from `add -c <wrapper>`) never reaches this resolver —
+// the spawn builders only consult it when the stored command is the default
+// "claude", so the explicit per-session command stays the strongest level.
+func GetClaudeCommandForInstance(inst *Instance) string {
+	if userConfig, _ := LoadUserConfig(); userConfig != nil && inst != nil {
+		if name := conductorNameFromInstance(inst); name != "" {
+			if cmd := userConfig.GetConductorClaudeCommand(name); cmd != "" {
+				return cmd
+			}
+		}
+		if cmd := userConfig.GetGroupClaudeCommand(inst.GroupPath); cmd != "" {
+			return cmd
+		}
+	}
+	return GetClaudeCommand()
+}
+
+// resolveClaudeLaunchModel returns the --model value for a claude spawn.
+// Priority:
+//
+//  1. explicit per-session model (CLI --model / new-session dialog,
+//     persisted on ClaudeOptions — passed in as optsModel)
+//  2. [conductors.<name>.claude].model — conductor sessions only
+//  3. [groups."<group>".claude].model — ancestor-walking
+//  4. "" — no flag; Claude Code's own default
+//
+// Resolved at command-build time (not baked in at create) so a config edit
+// takes effect on the next start/restart without re-creating the session —
+// matching how config_dir and env_file resolve. The global
+// [claude].default_model deliberately stays a new-session-dialog prefill
+// (#1172) and is NOT applied here, so behavior without group/conductor
+// blocks is unchanged.
+func (i *Instance) resolveClaudeLaunchModel(optsModel string) string {
+	if optsModel != "" {
+		return optsModel
+	}
+	userConfig, _ := LoadUserConfig()
+	if userConfig == nil {
+		return ""
+	}
+	if name := conductorNameFromInstance(i); name != "" {
+		if m := userConfig.GetConductorClaudeModel(name); m != "" {
+			return m
+		}
+	}
+	return userConfig.GetGroupClaudeModel(i.GroupPath)
+}
+
 // GetClaudeSessionID returns the ACTIVE session ID for a project path
 // It first tries to find the currently running session by checking recently
 // modified .jsonl files, then falls back to lastSessionId from config

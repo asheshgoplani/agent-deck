@@ -89,7 +89,7 @@
       }
     },
     "vars": {
-      "GOTOOLCHAIN": "go1.25.11"
+      "GOTOOLCHAIN": "go1.25.12"
     },
     "hook": {
       "on-activate": "  # Append (not prepend) so flox-provided tools win over host installs; these\n  # are fallbacks for tools flox does NOT provide: `make tools` tailwind lands\n  # in ~/.local/bin, and `go install` bins land in $GOPATH/bin.\n  export GOPATH=\"${GOPATH:-$HOME/go}\"\n  export PATH=\"$PATH:$GOPATH/bin:$HOME/.local/bin\"\n"

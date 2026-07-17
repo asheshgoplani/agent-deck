@@ -31,6 +31,8 @@ import (
 // `Order` values intentionally invert the desired output so a regression to
 // the old Order-based sort flips at least four positions.
 func TestSessionList_SortByActionable_RegressionFor857(t *testing.T) {
+	session.SetGroupSortMode("actionable")
+	t.Cleanup(func() { session.SetGroupSortMode("creation") })
 	now := time.Now()
 
 	// Order values are reversed vs. the desired actionable order; the
@@ -73,6 +75,8 @@ func TestSessionList_SortByActionable_RegressionFor857(t *testing.T) {
 // the actionable session you just left should stay above one you parked
 // hours ago.
 func TestSessionList_SortByActionable_TimestampTieBreak(t *testing.T) {
+	session.SetGroupSortMode("actionable")
+	t.Cleanup(func() { session.SetGroupSortMode("creation") })
 	now := time.Now()
 
 	instances := []*session.Instance{

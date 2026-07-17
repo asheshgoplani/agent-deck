@@ -39,20 +39,20 @@ dialog directly because Go's internal-package rule blocks
 
 ```bash
 # Smoke tier — what CI runs per-PR. Budget: ~30-60s.
-GOTOOLCHAIN=go1.25.11 go test -tags eval_smoke \
+GOTOOLCHAIN=go1.25.12 go test -tags eval_smoke \
   ./tests/eval/... ./internal/ui/...
 
 # Full tier — runs at the release gate. Currently identical to smoke; will
 # grow as eval_full cases are added.
-GOTOOLCHAIN=go1.25.11 go test -tags 'eval_smoke eval_full' \
+GOTOOLCHAIN=go1.25.12 go test -tags 'eval_smoke eval_full' \
   ./tests/eval/... ./internal/ui/...
 
 # Single case, verbose.
-GOTOOLCHAIN=go1.25.11 go test -tags eval_smoke -v \
+GOTOOLCHAIN=go1.25.12 go test -tags eval_smoke -v \
   -run TestEval_FeedbackCLI_DisclosureBeforeConsent ./tests/eval/feedback/...
 ```
 
-`GOTOOLCHAIN=go1.25.11` matches the toolchain pinned in `go.mod` and
+`GOTOOLCHAIN=go1.25.12` matches the toolchain pinned in `go.mod` and
 across all CI workflows (bumped from 1.24.0 in #1054 to close stdlib CVEs
 and unblock dependabot bumps that require Go 1.25+).
 

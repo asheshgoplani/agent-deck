@@ -48,6 +48,8 @@ function projectSession(item) {
     // back to the TUI.
     worktree: !!(s.worktreeBranch && s.worktreeRepoRoot),
     worktreeBranch: s.worktreeBranch || '',
+    lastAccessedAt: s.lastAccessedAt || '',
+    createdAt: s.createdAt || '',
     sandbox: false,     // not exposed by API
     parent: null,
     pendingNeeds: 0,

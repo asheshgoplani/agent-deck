@@ -38,6 +38,8 @@ func TestIsMaestro_ExactTitleOnly(t *testing.T) {
 // a stopped supervisor still outranks a running worker, because the row is
 // a fixed point of reference (the fleet supervisor), not an activity item.
 func TestSortInstancesByActionable_MaestroFirst(t *testing.T) {
+	SetGroupSortMode("actionable")
+	t.Cleanup(func() { SetGroupSortMode("creation") })
 	now := time.Now()
 	maestro := &Instance{Title: "conductor-maestro", Status: StatusStopped, LastAccessedAt: now.Add(-24 * time.Hour), Order: 5}
 	worker := &Instance{Title: "busy-worker", Status: StatusRunning, LastAccessedAt: now, Order: 0}
@@ -54,6 +56,33 @@ func TestSortInstancesByActionable_MaestroFirst(t *testing.T) {
 	// (error/waiting before running? no — waiting outranks running).
 	if insts[1].Title != "conductor-agent-deck" || insts[2].Title != "busy-worker" {
 		t.Fatalf("non-maestro rows must keep actionable sort; got: %s, %s",
+			insts[1].Title, insts[2].Title)
+	}
+}
+
+// In the default "creation" mode the maestro still surfaces first within its
+// group (it is band -1, exempt from the normal-band sort), and the non-maestro
+// rows follow in creation Order — not status/recency. Guards the pin/Maestro
+// invariant for the group_sort default.
+func TestSortInstancesByActionable_MaestroFirst_CreationMode(t *testing.T) {
+	SetGroupSortMode("creation")
+	t.Cleanup(func() { SetGroupSortMode("creation") })
+	now := time.Now()
+	maestro := &Instance{Title: "conductor-maestro", Status: StatusStopped, LastAccessedAt: now.Add(-24 * time.Hour), Order: 5}
+	worker := &Instance{Title: "busy-worker", Status: StatusRunning, LastAccessedAt: now, Order: 0}
+	conductor := &Instance{Title: "conductor-agent-deck", Status: StatusWaiting, LastAccessedAt: now, Order: 1}
+
+	insts := []*Instance{worker, conductor, maestro}
+	SortInstancesByActionable(insts)
+
+	if insts[0].Title != "conductor-maestro" {
+		t.Fatalf("maestro must sort first even in creation mode; got: %s, %s, %s",
+			insts[0].Title, insts[1].Title, insts[2].Title)
+	}
+	// Non-maestro rows follow by creation Order (worker=0 before conductor=1),
+	// NOT by actionable status (which would put the waiting conductor first).
+	if insts[1].Title != "busy-worker" || insts[2].Title != "conductor-agent-deck" {
+		t.Fatalf("non-maestro rows must order by creation Order; got: %s, %s",
 			insts[1].Title, insts[2].Title)
 	}
 }

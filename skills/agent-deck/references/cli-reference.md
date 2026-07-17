@@ -41,6 +41,7 @@ agent-deck add [path] [options]
 | `--parent` | Parent session (creates child) |
 | `--no-parent` | Disable automatic parent linking |
 | `--mcp` | Attach MCP (repeatable) |
+| `--attach` | Start and attach to the session immediately after creating it (requires an interactive terminal; not supported with `--ssh`/`--json`) |
 
 ```bash
 agent-deck add -t "My Project" -c claude .
@@ -48,10 +49,12 @@ agent-deck add -t "Child" --parent "Parent" -c claude /tmp/x
 agent-deck add -g ard --parent "conductor-ard" -c claude .
 agent-deck add -c "codex --dangerously-bypass-approvals-and-sandbox" .
 agent-deck add -t "Research" -c claude --mcp exa --mcp firecrawl /tmp/r
+agent-deck add -t "Quick" -c claude --attach .   # create → start → drop into the pane
 ```
 
 Notes:
 - Parent auto-link is enabled by default when `AGENT_DECK_SESSION_ID` is present and neither `--parent` nor `--no-parent` is passed.
+- `--attach` does create → start → attach in one step. Without an interactive terminal (or with `--json`) it exits non-zero with a clear error, leaving the session created and started so you can attach later.
 - `--parent` and `--no-parent` are mutually exclusive.
 - Explicit `-g/--group` overrides inherited parent group.
 - If `--cmd` contains extra args and no explicit `--wrapper` is provided, agent-deck auto-generates a wrapper to preserve those args.
@@ -68,7 +71,11 @@ Examples:
 agent-deck launch . -c claude -m "Review this module"
 agent-deck launch . -g ard -c claude -m "Review dataset"
 agent-deck launch . -c "codex --dangerously-bypass-approvals-and-sandbox"
+agent-deck launch -g book-keeper -c claude   # no path: lands on the group's default_path
 ```
+
+Notes:
+- `[path]` omitted: resolves the target group's `default_path`, then the global `default_path` config key, then cwd — the same chain as `add` (#1303). An explicit `.` always means the current directory.
 
 ### list - List sessions
 
@@ -135,10 +142,11 @@ http://127.0.0.1:8420/?token=my-secret
 ### session start
 
 ```bash
-agent-deck session start <id|title> [-m "message"] [--json] [-q]
+agent-deck session start <id|title> [-m "message"] [--attach] [--json] [-q]
 ```
 
 `-m` sends initial message after agent is ready.
+`--attach` drops you into the session's pane after it starts (requires an interactive terminal; refused under `--json`). On a clean detach you return to the shell; without a TTY it exits non-zero, leaving the session started.
 Flags can be placed before or after the session identifier.
 
 ### session stop
@@ -150,10 +158,24 @@ agent-deck session stop <id|title>
 ### session restart
 
 ```bash
-agent-deck session restart <id|title>
+agent-deck session restart <id|title> [--env KEY=VALUE ...]
 ```
 
 Reloads MCPs without losing conversation (Claude/Gemini).
+
+`--env` injects an environment variable into the replacement process for this
+restart only. It can be repeated, and a command-line value overrides configured
+environment sources with the same name. The value is not saved to the session:
+
+```bash
+agent-deck session restart my-project --env API_URL=https://api.example.com
+agent-deck session restart my-project --env FOO=one --env BAR="two words"
+```
+
+Supplying `--env` forces the requested restart past the recent-session guard.
+Use `--all --env KEY=VALUE` to inject the variable into every active session.
+Claude's existing protection that removes `TELEGRAM_*` variables from sessions
+that do not own a Telegram channel remains in effect.
 
 ### session fork (Claude, OpenCode, Pi, Codex)
 
@@ -239,6 +261,18 @@ Default behavior:
 - Verifies processing starts after send.
 - If Claude leaves a pasted prompt unsent (`[Pasted text ...]`), retries `Enter` automatically.
 - Avoids unnecessary retry `Enter` presses when session is already `waiting`/`idle`.
+
+### session approve
+
+```bash
+agent-deck session approve <id|title> [once|always|session|N] [--timeout 5s] [-q] [--json]
+```
+
+Resolves one currently visible Codex numbered approval menu. It validates that
+the same menu is still visible immediately before sending one digit keypress,
+then verifies that the original prompt clears. It never sends Enter or retries
+the decision automatically. Do not use `session send <id> "1"` for a Codex
+approval: that path sends composer text followed by Enter.
 
 ### session output
 

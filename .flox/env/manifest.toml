@@ -5,13 +5,13 @@ schema-version = "1.12.0"
 # Reproducible dev/test toolchain, derived from an audit of go.mod, package.json,
 # .github/workflows/*.yml, Makefile + lefthook.yml, and tests/eval/harness/.
 #
-# Go: nixpkgs has no 1.25.11, so we provide a 1.26.x base and redirect via
-# GOTOOLCHAIN=go1.25.11 (set in [vars] so BOTH `make` and lefthook's bare-`go`
-# pre-push hook agree on the toolchain). go.mod floor is >=1.25.11.
+# Go: nixpkgs has no 1.25.12, so we provide a 1.26.x base and redirect via
+# GOTOOLCHAIN=go1.25.12 (set in [vars] so BOTH `make` and lefthook's bare-`go`
+# pre-push hook agree on the toolchain). go.mod floor is >=1.25.12.
 
 [install]
 # --- Tier 1: build · lint · format (lefthook pre-commit/pre-push, make ci) ---
-go.pkg-path            = "go"                       # 1.26.x base; GOTOOLCHAIN -> 1.25.11
+go.pkg-path            = "go"                       # 1.26.x base; GOTOOLCHAIN -> 1.25.12
 clang.pkg-path         = "clang"                    # C toolchain for `go test -race` (CGO link)
 golangci-lint.pkg-path = "golangci-lint"            # v2 lint stage
 lefthook.pkg-path      = "lefthook"                 # git hook runner (make ci)
@@ -60,7 +60,7 @@ opencode.pkg-group     = "agents"
 
 [vars]
 # Feeds BOTH make AND lefthook's bare-`go` pre-push hook the same toolchain.
-GOTOOLCHAIN = "go1.25.11"
+GOTOOLCHAIN = "go1.25.12"
 
 
 [hook]

@@ -98,6 +98,65 @@ func TestGroup_UnlimitedLegacy(t *testing.T) {
 	}
 }
 
+// TestGroup_NewGroupDefault_ConfigUnsetSerial verifies that with no
+// DefaultMaxConcurrent seeded on the tree (nil), CreateGroup keeps the
+// built-in serial default (1) — byte-for-byte v1.9.1 behavior.
+func TestGroup_NewGroupDefault_ConfigUnsetSerial(t *testing.T) {
+	tree := NewGroupTree(nil)
+	if tree.DefaultMaxConcurrent != nil {
+		t.Fatalf("expected nil DefaultMaxConcurrent on a fresh tree, got %v", *tree.DefaultMaxConcurrent)
+	}
+	g := tree.CreateGroup("g")
+	if g.MaxConcurrent != 1 {
+		t.Errorf("config unset: expected new group MaxConcurrent=1 (serial), got %d", g.MaxConcurrent)
+	}
+}
+
+// TestGroup_NewGroupDefault_ConfigZeroUnlimited verifies that a seeded
+// DefaultMaxConcurrent of *0 makes new groups unlimited (0), for both
+// CreateGroup and CreateSubgroup, and that 0 means "never queue".
+func TestGroup_NewGroupDefault_ConfigZeroUnlimited(t *testing.T) {
+	zero := 0
+	tree := NewGroupTree(nil)
+	tree.DefaultMaxConcurrent = &zero
+
+	g := tree.CreateGroup("g")
+	if g.MaxConcurrent != 0 {
+		t.Errorf("config 0: expected new group MaxConcurrent=0 (unlimited), got %d", g.MaxConcurrent)
+	}
+	sub := tree.CreateSubgroup(g.Path, "child")
+	if sub.MaxConcurrent != 0 {
+		t.Errorf("config 0: expected new subgroup MaxConcurrent=0 (unlimited), got %d", sub.MaxConcurrent)
+	}
+
+	// max=0 (unlimited) with two running → must NOT queue.
+	instances := []*Instance{
+		{ID: "a", GroupPath: g.Path, Status: StatusRunning},
+		{ID: "b", GroupPath: g.Path, Status: StatusRunning},
+	}
+	if ShouldQueue(instances, g.Path, g.MaxConcurrent) {
+		t.Error("config 0 (unlimited) with 2 running: expected ShouldQueue=false")
+	}
+}
+
+// TestGroup_NewGroupDefault_ConfigN verifies that a seeded DefaultMaxConcurrent
+// of *N is copied verbatim into new groups created via CreateGroup and
+// CreateSubgroup.
+func TestGroup_NewGroupDefault_ConfigN(t *testing.T) {
+	n := 4
+	tree := NewGroupTree(nil)
+	tree.DefaultMaxConcurrent = &n
+
+	g := tree.CreateGroup("g")
+	if g.MaxConcurrent != 4 {
+		t.Errorf("config 4: expected new group MaxConcurrent=4, got %d", g.MaxConcurrent)
+	}
+	sub := tree.CreateSubgroup(g.Path, "child")
+	if sub.MaxConcurrent != 4 {
+		t.Errorf("config 4: expected new subgroup MaxConcurrent=4, got %d", sub.MaxConcurrent)
+	}
+}
+
 // TestGroup_CountRunningInGroup verifies the count helper only includes
 // running sessions in the target group (not queued, not other groups).
 func TestGroup_CountRunningInGroup(t *testing.T) {

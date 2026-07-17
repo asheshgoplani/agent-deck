@@ -16,6 +16,7 @@ import {
 import { statusFiltersSignal, showColsSignal, activeTabSignal } from './uiState.js'
 import { apiFetch } from './api.js'
 import { addToast } from './Toast.js'
+import { formatRelativeTime } from './timeFmt.js'
 
 const STATUS_CHIPS = [
   { id: 'running', sym: '●' },
@@ -109,6 +110,7 @@ function SessionItem({ s, sel, onSelect, showCols }) {
           ${showCols.attach && skillCount > 0 && html`<span class="att-count skill">${skillCount} skill${skillCount > 1 ? 's' : ''}</span>`}
           ${showCols.sandbox && s.sandbox && html`<span class="att-count warn">docker</span>`}
           ${showCols.sandbox && s.worktree && html`<span class="att-count">worktree</span>`}
+          ${showCols.lastSeen && html`<span class="att-count" title="Last active">⏱ ${s.status === 'running' ? 'active now' : formatRelativeTime(s.lastAccessedAt)}</span>`}
         </div>
       `}
       ${exp && html`
