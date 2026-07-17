@@ -17,8 +17,8 @@ import (
 //
 // Both tests build the binary once via the eval harness's buildOnce machinery
 // and exec it with `--help` / `--version`. The timed window covers everything
-// from process spawn through the package init() block (initColorProfile,
-// initUpdateSettings), the pre-dispatch tmux probes
+// from process spawn through the package init() block (initColorProfile), the
+// pre-dispatch setup in main() (initUpdateSettings), the pre-dispatch tmux probes
 // (tmux.SetDefaultSocketName, tmux.WarnIfVulnerableTmux), and the
 // subcommand-routing path that prints help/version and exits.
 //
@@ -41,7 +41,8 @@ const (
 )
 
 // TestPerf_ColdStart_Help measures `agent-deck --help` end-to-end walltime.
-// Catches regressions in package init (initColorProfile, initUpdateSettings)
+// Catches regressions in package init (initColorProfile), main()'s
+// pre-dispatch setup (initUpdateSettings),
 // and the pre-dispatch tmux probes (SetDefaultSocketName, WarnIfVulnerableTmux).
 func TestPerf_ColdStart_Help(t *testing.T) {
 	testutil.SkipIfShort(t)

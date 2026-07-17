@@ -48,10 +48,18 @@ const (
 	tableColIDDisplay = 12
 )
 
-// init sets up color profile for consistent terminal colors across environments
+// init sets up color profile for consistent terminal colors across environments.
+//
+// Nothing here may resolve a HOME-derived path. Go runs package init before
+// TestMain, so an init() that resolves one lands on the developer's real
+// ~/.config/agent-deck no matter what testutil.IsolateHome() does afterwards —
+// the escape the agentpaths S4 guard exists to catch (2026-06-04 data-loss
+// incident). Path-dependent setup belongs in main(), which test binaries never
+// call. initColorProfile reads only env vars, so it is safe here;
+// initUpdateSettings loads config.toml and is called from main() instead.
+// Pinned by TestInitDoesNotResolveRealHomePaths.
 func init() {
 	initColorProfile()
-	initUpdateSettings()
 }
 
 // initUpdateSettings configures update checking from user config
@@ -222,6 +230,12 @@ func main() {
 		// resolve consistently across all command paths in this process.
 		_ = os.Setenv("AGENTDECK_PROFILE", profile)
 	}
+
+	// Reads config.toml, so it cannot live in init(): that would resolve a
+	// HOME-derived path before a test binary's TestMain can isolate HOME. Here
+	// it also runs after the profile is known, alongside the other
+	// config-dependent setup below. See the init() comment above.
+	initUpdateSettings()
 
 	// Seed the tmux socket-isolation default from `[tmux].socket_name` once
 	// per process (v1.7.50+, issue #687). Package-level tmux probes
