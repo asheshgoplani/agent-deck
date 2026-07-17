@@ -3897,6 +3897,25 @@ func shouldDebounceTmuxFlipForTool(tool string) bool {
 		tool == "gemini" || tool == "hermes" || tool == "cursor"
 }
 
+// terminatedPaneStatus classifies a session whose tmux pane/session has
+// vanished (or gone dead under remain-on-exit) AFTER having been started.
+//
+// For hook-emitting tools a dead pane genuinely means a crash, so it maps to
+// StatusError. OpenCode, however, emits no lifecycle hooks (issue #1617): it is
+// not in IsHookEmittingTool, so status detection falls back to tmux content
+// sniffing. An in-session `/exit` closes the OpenCode pane exactly like a crash
+// would, and without remain-on-exit there is no exit code left to inspect — so
+// a clean exit is misread as an error banner (✕) instead of a clean shutdown.
+// A vanished OpenCode pane is overwhelmingly a user-initiated exit, so classify
+// it as StatusStopped (done, ■) rather than StatusError. Error stays reserved
+// for a LIVE pane that renders an actual error banner.
+func (i *Instance) terminatedPaneStatus() Status {
+	if i.Tool == "opencode" {
+		return StatusStopped
+	}
+	return StatusError
+}
+
 func (i *Instance) UpdateStatus() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -3926,7 +3945,7 @@ func (i *Instance) UpdateStatus() error {
 			// not an error, just not-yet-running. Keep it idle (✕ → ○).
 			i.Status = StatusIdle
 		} else if i.Status != StatusStopped {
-			i.Status = StatusError
+			i.Status = i.terminatedPaneStatus()
 		}
 		return nil
 	}
@@ -3946,7 +3965,7 @@ func (i *Instance) UpdateStatus() error {
 			// absent tmux is expected — classify as idle, not error (✕ → ○).
 			i.Status = StatusIdle
 		} else if i.Status != StatusStopped {
-			i.Status = StatusError
+			i.Status = i.terminatedPaneStatus()
 		}
 		i.lastErrorCheck = time.Now() // Record when we confirmed error/stopped
 		return nil
@@ -4163,7 +4182,10 @@ func (i *Instance) UpdateStatus() error {
 		// progress without user action — report error, not waiting.
 		i.Status = StatusError
 	case "inactive":
-		i.Status = StatusError
+		// Pane is gone/dead. A crash for hook tools, but a clean `/exit` for
+		// OpenCode (no hooks, no exit code to read) — classify per tool so a
+		// clean OpenCode shutdown reads as stopped (■), not error (✕). #1617.
+		i.Status = i.terminatedPaneStatus()
 	default:
 		i.Status = StatusError
 	}
