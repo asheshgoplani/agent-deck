@@ -220,6 +220,11 @@ type UserConfig struct {
 	// Watcher defines event watcher settings
 	Watcher WatcherSettings `toml:"watcher,omitempty"`
 
+	// IntervalHooks defines shell commands run on a wall-clock interval while
+	// the TUI is running, independent of session activity. Keyed by a
+	// user-chosen name (used in logs). See IntervalHookSettings.
+	IntervalHooks map[string]IntervalHookSettings `toml:"interval_hooks,omitempty"`
+
 	// Feedback defines in-product feedback prompt settings (v1.7.38+).
 	// Mirrors the opt-out in ~/.agent-deck/feedback-state.json so it is visible
 	// to the user and editable without running `agent-deck feedback`.
@@ -4638,6 +4643,86 @@ func (s SystemStatsSettings) GetShow() []string {
 		return s.Show
 	}
 	return []string{"cpu", "ram", "disk", "network"}
+}
+
+// IntervalHookSettings configures a single interval hook: a shell command run
+// on a wall-clock cadence while the TUI is running, independent of any session
+// activity. This is a general-purpose "cron inside the TUI" primitive — e.g. a
+// periodic sync, a health probe, or a poll that dispatches work to sessions via
+// the `agent-deck session` CLI. The command runs through `bash -lc`.
+type IntervalHookSettings struct {
+	// Command is the shell command to run each tick (via `bash -lc <command>`).
+	Command string `toml:"command,omitempty"`
+
+	// IntervalSeconds is the cadence between runs. Clamped to [5, 86400].
+	// Default: 60.
+	IntervalSeconds int `toml:"interval_seconds,omitzero"`
+
+	// Enabled gates the hook. Defaults to true when a Command is set, so a
+	// bare [interval_hooks.name] with a command is live without extra config;
+	// set false to keep the config but pause it.
+	Enabled *bool `toml:"enabled,omitempty"`
+
+	// TimeoutSeconds bounds a single run; a hook exceeding it is killed so a
+	// wedged command can't pile up. Clamped to [1, IntervalSeconds]. Default:
+	// min(30, interval).
+	TimeoutSeconds int `toml:"timeout_seconds,omitzero"`
+
+	// RunAtStartup runs the command once immediately when the TUI starts,
+	// before the first interval elapses. Default: false.
+	RunAtStartup bool `toml:"run_at_startup,omitempty"`
+}
+
+// Interval-hook bounds. IntervalSeconds has a 5s floor so a misconfigured hook
+// can't busy-loop, and a 1-day ceiling.
+const (
+	DefaultIntervalHookSeconds = 60
+	MinIntervalHookSeconds     = 5
+	MaxIntervalHookSeconds     = 86400
+	DefaultIntervalHookTimeout = 30
+)
+
+// GetEnabled reports whether the hook should run. A hook with a non-empty
+// Command defaults to enabled; an explicit `enabled = false` pauses it.
+func (h IntervalHookSettings) GetEnabled() bool {
+	if h.Enabled != nil {
+		return *h.Enabled
+	}
+	return strings.TrimSpace(h.Command) != ""
+}
+
+// GetIntervalSeconds returns the cadence, clamped to
+// [MinIntervalHookSeconds, MaxIntervalHookSeconds]. Unset falls back to
+// DefaultIntervalHookSeconds.
+func (h IntervalHookSettings) GetIntervalSeconds() int {
+	if h.IntervalSeconds <= 0 {
+		return DefaultIntervalHookSeconds
+	}
+	if h.IntervalSeconds < MinIntervalHookSeconds {
+		return MinIntervalHookSeconds
+	}
+	if h.IntervalSeconds > MaxIntervalHookSeconds {
+		return MaxIntervalHookSeconds
+	}
+	return h.IntervalSeconds
+}
+
+// GetTimeoutSeconds returns the per-run timeout, clamped to
+// [1, GetIntervalSeconds()]. Unset falls back to min(DefaultIntervalHookTimeout,
+// interval) so a run never outlives its own cadence.
+func (h IntervalHookSettings) GetTimeoutSeconds() int {
+	interval := h.GetIntervalSeconds()
+	t := h.TimeoutSeconds
+	if t <= 0 {
+		t = DefaultIntervalHookTimeout
+	}
+	if t > interval {
+		t = interval
+	}
+	if t < 1 {
+		t = 1
+	}
+	return t
 }
 
 // WatcherSettings configures the event watcher system.

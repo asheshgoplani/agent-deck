@@ -21,6 +21,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[conductor] Section](#conductor-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
+- [[interval_hooks.*] Section](#interval_hooks-section)
 - [[display] Section](#display-section)
 - [[ui] Section](#ui-section)
 - [[global_search] Section](#global_search-section)
@@ -472,6 +473,40 @@ notify_in_cli = true          # Show in CLI commands
 | `check_enabled` | bool | `true` | Enable startup update checks. |
 | `check_interval_hours` | int | `24` | Hours between checks. |
 | `notify_in_cli` | bool | `true` | Show updates in CLI (not just TUI). |
+
+## [interval_hooks.*] Section
+
+Run shell commands on a wall-clock interval while the TUI is running,
+independent of session activity — a general-purpose "cron inside the TUI."
+Each hook is a named table under `[interval_hooks]`. The command runs via
+`bash -lc`. Typical uses: a periodic sync, a health probe, or a poll that
+dispatches work to sessions with `agent-deck session send` / `session start`.
+
+```toml
+[interval_hooks.heartbeat]
+command = "echo tick >> ~/agentdeck-heartbeat.log"
+interval_seconds = 60         # cadence between runs (clamped 5..86400)
+
+[interval_hooks.dispatch]
+command = "~/bin/route-ready-tasks.sh"
+interval_seconds = 30
+timeout_seconds = 20          # kill a run exceeding this (clamped 1..interval)
+run_at_startup = true         # also run once immediately on TUI start
+enabled = true                # set false to keep the config but pause it
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | `""` | Shell command run each tick via `bash -lc`. A hook with no command never runs. |
+| `interval_seconds` | int | `60` | Seconds between runs. Clamped to `[5, 86400]`. Re-read each tick, so edits apply live. |
+| `timeout_seconds` | int | `min(30, interval)` | Per-run timeout; a run exceeding it is killed so a wedged command can't pile up. Clamped to `[1, interval_seconds]`. |
+| `run_at_startup` | bool | `false` | Run the command once immediately on TUI start, before the first interval. |
+| `enabled` | bool | `true` when `command` set | Gate the hook. Set `false` to keep the config but pause it. |
+
+Notes:
+- Overlapping runs of the *same* hook are skipped: if a run is still going when the next tick fires, that tick is dropped (logged, not stacked).
+- Hooks are re-read from `config.toml` each tick — add, remove, pause, or re-time a hook without restarting the TUI.
+- Failures (non-zero exit) are logged at WARN with truncated output; successes at DEBUG. A hook is never allowed to crash the TUI.
 
 ## [display] Section
 

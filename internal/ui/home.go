@@ -34,6 +34,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/intervalhook"
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
@@ -623,6 +624,10 @@ type Home struct {
 	// System stats collector (CPU, RAM, disk, etc.)
 	sysStatsCollector *sysinfo.Collector
 	sysStatsConfig    session.SystemStatsSettings
+
+	// Interval-hook runner: user-configured shell commands run on a wall-clock
+	// cadence ([interval_hooks] in config.toml). nil when none are configured.
+	intervalHookRunner *intervalhook.Runner
 
 	// Insert mode (#1069, feature 1): vim-style modal type-through. When
 	// active, printable runes, Space, and Enter are routed directly to the
@@ -1462,6 +1467,11 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	if h.sysStatsConfig.GetEnabled() {
 		h.sysStatsCollector = sysinfo.NewCollector(h.sysStatsConfig.GetRefreshSeconds(), nil)
 	}
+
+	// Interval-hook runner. Constructed unconditionally (cheap); Start() is a
+	// no-op when no [interval_hooks] are configured, and hooks are re-read from
+	// config each tick so they can be added/removed without a restart.
+	h.intervalHookRunner = intervalhook.New(uiLog)
 
 	// Keep settings panel profile-aware so profile overrides (e.g., Claude config dir)
 	// are displayed and edited in the correct scope.
@@ -2869,6 +2879,11 @@ func (h *Home) Init() tea.Cmd {
 	// Start system stats collection
 	if h.sysStatsCollector != nil {
 		h.sysStatsCollector.Start()
+	}
+
+	// Start interval hooks (no-op if none configured).
+	if h.intervalHookRunner != nil {
+		h.intervalHookRunner.Start()
 	}
 
 	cmds := []tea.Cmd{
@@ -9782,6 +9797,10 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		// Stop system stats collector
 		if h.sysStatsCollector != nil {
 			h.sysStatsCollector.Stop()
+		}
+		// Stop interval hooks
+		if h.intervalHookRunner != nil {
+			h.intervalHookRunner.Stop()
 		}
 		// Signal background worker to stop
 		h.cancel()
