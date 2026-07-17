@@ -8091,7 +8091,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-			h.saveInstances()
+			// Explicit user reorder MUST persist. saveInstances() (force=false)
+			// silently skips during a reload and aborts when the DB was touched
+			// externally (CLI hooks, status heartbeats, conductors); the ensuing
+			// reload then rebuilds the tree from stale disk and the reorder snaps
+			// back on screen. forceSaveInstances() bypasses those guards so the
+			// manual shift+up order is honored. Fixes #1582.
+			h.forceSaveInstances()
 		}
 		return h, nil
 
@@ -8118,7 +8124,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-			h.saveInstances()
+			// Explicit user reorder MUST persist — see shift+up above. Fixes #1582.
+			h.forceSaveInstances()
 		}
 		return h, nil
 
