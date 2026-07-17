@@ -39,6 +39,10 @@ You (the session running this skill) are the **conductor**. Hard rules:
   worktree (`launch -w <branch>`), including single-task relay mode.
 - **You never block.** Supervise via the `session children --json` heartbeat;
   answer `waiting` children; poll `gh pr checks` on the same heartbeat.
+- **You never pass `-g` to a child launch.** Worktree children auto-inherit your
+  group; an explicit `-g` overrides that inheritance, and a group name guessed
+  from the repo folder (`-g baba` when the group is really `doozyx/baba`) strands
+  the child away from its siblings. Omit it — see the group trap in `fleet`.
 
 ## Run setup
 

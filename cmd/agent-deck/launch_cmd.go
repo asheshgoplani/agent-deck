@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +13,92 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
+
+// resolveGroupSelectorToPath maps a user-provided -g/--group selector onto an
+// existing group path so a bare leaf name lands in the group the user meant.
+//
+// `launch -g api` used to be taken as a literal path, creating a stray
+// top-level `api` group beside the existing `work/api` and detaching the child
+// from its siblings. `add -g api` already resolved the leaf name, so the two
+// commands disagreed on what the same flag meant.
+//
+// Order:
+//  1. Exact path match — always wins, so a real top-level `api` stays reachable
+//     even when a nested `work/api` also exists.
+//  2. Normalized path match (lowercased, spaces hyphenated), mirroring the
+//     sanitizing that group creation applies.
+//  3. Unique case-insensitive leaf-name match.
+//
+// A selector matching nothing is returned unchanged: that is how -g deliberately
+// creates a new group. An ambiguous leaf (two groups sharing it) errors rather
+// than guessing, since guessing silently files the session in the wrong group.
+func resolveGroupSelectorToPath(existingPaths []string, selector string) (string, error) {
+	if selector == "" {
+		return selector, nil
+	}
+
+	for _, path := range existingPaths {
+		if path == selector {
+			return path, nil
+		}
+	}
+
+	normalized := strings.ToLower(strings.ReplaceAll(selector, " ", "-"))
+	for _, path := range existingPaths {
+		if path == normalized {
+			return path, nil
+		}
+	}
+
+	var matches []string
+	for _, path := range existingPaths {
+		leaf := path
+		if idx := strings.LastIndex(path, "/"); idx >= 0 {
+			leaf = path[idx+1:]
+		}
+		if strings.EqualFold(leaf, selector) {
+			matches = append(matches, path)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return selector, nil
+	case 1:
+		return matches[0], nil
+	default:
+		sort.Strings(matches)
+		return "", fmt.Errorf("group %q is ambiguous: matches %s — pass the full path",
+			selector, strings.Join(matches, ", "))
+	}
+}
+
+// groupPathsFrom collects every group path already known to the profile, from
+// both stored group rows and the paths sessions reference. Instance paths matter
+// because a group can exist only implicitly: NewGroupTreeWithGroups invents a
+// Group for any GroupPath missing from the stored rows.
+func groupPathsFrom(instances []*session.Instance, groups []*session.GroupData) []string {
+	seen := make(map[string]bool)
+	var paths []string
+	add := func(path string) {
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	for _, g := range groups {
+		if g != nil {
+			add(g.Path)
+		}
+	}
+	for _, inst := range instances {
+		if inst != nil {
+			add(inst.GroupPath)
+		}
+	}
+	return paths
+}
 
 // assertDoneInstruction is appended to a child's initial message so it ends its
 // final turn with the #1186 completion sentinel. The completion ledger and the
@@ -304,6 +391,19 @@ func handleLaunch(profile string, args []string) {
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
+	}
+
+	// Map an explicit -g onto an existing group before anything consumes it, so
+	// a bare leaf name (`-g baba`) lands in the group the user meant
+	// (`doozyx/baba`) instead of creating a stray top-level namesake. `add`
+	// already did this; launch took the selector literally.
+	if explicitGroupProvided {
+		resolved, resolveErr := resolveGroupSelectorToPath(groupPathsFrom(instances, groups), sessionGroup)
+		if resolveErr != nil {
+			out.Error(resolveErr.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		sessionGroup = resolved
 	}
 
 	// Resolve parent session if specified.
