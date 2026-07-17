@@ -98,6 +98,12 @@ const (
 	// repeated /proc and lsof scans on every status tick.
 	codexProbeScanInterval    = 2 * time.Second
 	codexProbeMissingSentinel = "__AGENT_DECK_MISSING_TOOL__"
+	// codexLsofProbeTimeout hard-caps a single lsof invocation so a slow or
+	// hung child can never stall the shared status pass. lsof is also run with
+	// -n -P (no host/port name resolution) to avoid reverse-DNS PTR lookups on
+	// the codex process's open sockets, which block ~30s each on resolvers that
+	// silently drop PTR queries (issue #1581).
+	codexLsofProbeTimeout = 2 * time.Second
 )
 
 // Instance represents a single agent/shell session
@@ -2660,8 +2666,13 @@ func (i *Instance) queryCodexSessionFromHostLsof() (string, string) {
 			continue
 		}
 
-		// #nosec G204 -- "lsof" is a fixed binary; only arg is strconv.Itoa(int).
-		out, err := exec.Command("lsof", "-p", strconv.Itoa(pid)).Output()
+		// -n -P disables reverse-DNS host and port-name resolution so a resolver
+		// that drops PTR queries cannot stall the probe (issue #1581); the
+		// context timeout bounds the call even if lsof hangs for any other reason.
+		ctx, cancel := context.WithTimeout(context.Background(), codexLsofProbeTimeout)
+		// #nosec G204 -- "lsof" is a fixed binary; only dynamic arg is strconv.Itoa(int).
+		out, err := exec.CommandContext(ctx, "lsof", "-n", "-P", "-p", strconv.Itoa(pid)).Output()
+		cancel()
 		if err != nil {
 			var execErr *exec.Error
 			if errors.As(err, &execErr) && execErr.Err == exec.ErrNotFound {
