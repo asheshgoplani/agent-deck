@@ -74,10 +74,18 @@ agent-deck launch <path> -c claude --inherit-group -m "<task for this child>"
   co-located with you with no extra flags. For a non-worktree path that doesn't
   inherit, add `--inherit-group` to force it.
 - **Do NOT pass a custom `-g/--group` for fleet children.** An explicit group
-  overrides inheritance and drops the child into its own detached group
-  (e.g. a stray `fleet-issues` sitting next to — not under — your group). Leave
-  the group off and let it inherit; only set `-g` when you deliberately want a
-  child somewhere other than with the parent.
+  overrides inheritance — including the worktree auto-inherit above — and a name
+  matching no existing group creates one (e.g. a stray `fleet-issues` sitting
+  next to — not under — your group). Leave the group off and let it inherit;
+  only set `-g` when you deliberately want a child somewhere other than with the
+  parent.
+- **Never guess a group name from the repo or folder name.** Groups are nested
+  paths and the repo name is often only the leaf: guessing `-g baba` for a group
+  actually stored as `doozyx/baba` is what detaches a child from its siblings.
+  A bare leaf name resolves to an existing group when exactly one matches, but
+  when two do (`work/api`, `personal/api`) the launch errors out. If you must
+  name a group, use the full path from `$AGENTDECK_RESOLVED_GROUP` or
+  `agent-deck group list` — never a guess.
 - **`--assert-done` is on by default for `-c claude`**: the child's message gets
   a final-step instruction to print the completion sentinel
   (`===AGENTDECK_DONE=== status=ok summary=…`) so "done" is trustworthy.
@@ -214,7 +222,9 @@ there is no parent to inherit from, so a worktree session falls back to its
 group sitting *next to* your real group instead of with its siblings).
 
 So the rule **inverts** for independent sessions: *pass the group explicitly.*
-`$AGENTDECK_RESOLVED_GROUP` holds the launching session's group.
+`$AGENTDECK_RESOLVED_GROUP` holds the launching session's group — use it verbatim
+rather than typing a group name, so a nested group (`doozyx/baba`) can't be
+flattened into a stray namesake (`baba`).
 
 ```bash
 agent-deck launch <path> -w <branch> --no-parent -g "$AGENTDECK_RESOLVED_GROUP" -c claude -m "..."
