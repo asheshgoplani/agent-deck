@@ -3893,6 +3893,19 @@ func CreateExampleConfig() error {
 #                             # cycle forward (Ctrl+A to go back); it auto-
 #                             # attaches ~1s after you stop, Enter attaches now,
 #                             # Esc cancels. Same key opens it from the list.
+# Scrollback pager (issue #1491). The deck's Enter-attach renders the session in
+# tmux control mode, where the deck owns the viewport and tmux's own copy-mode /
+# mouse-wheel scrollback is unreachable. This trigger opens an in-view scrollable
+# pager over the pane's history so you can reach the start of a long session
+# without leaving agent-deck. Inside: Up/Down/j/k, PgUp/PgDn, g=start, G=live end,
+# wheel scrolls, Esc re-attaches, Ctrl+Q returns to the list.
+#   "pageup"  (default) a bare PageUp opens the pager; modified PageUp passes
+#             through to the attached program.
+#   "ctrl+<letter>"  a control chord opens it (use if a pager/editor inside the
+#             session needs PageUp). A chord that collides with detach/switch is
+#             dropped.
+#   ""        disables the feature.
+# scrollback = "pageup"
 
 # Instance behavior (optional)
 # [instances]

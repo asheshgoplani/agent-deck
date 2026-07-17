@@ -3009,6 +3009,32 @@ func (s *Session) CaptureFullHistory() (string, error) {
 	return string(output), nil
 }
 
+// CaptureHistoryLines captures the last n lines of the pane's scrollback,
+// preserving ANSI colors (-e). Unlike CaptureFullHistory (capped at 2000 for
+// the preview pane) this is used by the in-attach scrollback pager (#1491),
+// which needs a deep enough window to reach the start of a long session, so it
+// runs with a generous timeout and an explicit -S -<n> lower bound.
+//
+// n is clamped to at least 1. A one-off subprocess with a 10s timeout keeps a
+// pathological capture from wedging the UI; on timeout it returns
+// ErrCaptureTimeout so the caller can surface a non-fatal message.
+func (s *Session) CaptureHistoryLines(n int) (string, error) {
+	if n < 1 {
+		n = 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := s.tmuxCmdContext(ctx, "capture-pane", "-t", s.Name, "-p", "-e", "-S", fmt.Sprintf("-%d", n))
+	output, err := cmd.Output()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", ErrCaptureTimeout
+		}
+		return "", fmt.Errorf("failed to capture history: %w", err)
+	}
+	return string(output), nil
+}
+
 // CaptureWindowFullHistory captures the scrollback history of a specific window (last 2000 lines).
 func (s *Session) CaptureWindowFullHistory(windowIndex int) (string, error) {
 	target := fmt.Sprintf("%s:%d", s.Name, windowIndex)

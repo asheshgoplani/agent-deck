@@ -189,6 +189,9 @@ func (h *HelpOverlay) View() string {
 	groupViewKey := h.key(hotkeyCycleGroupView, "t")
 	// Opt-in: empty when switch_session is unbound, so the filter drops the row.
 	switchKey := h.key(hotkeySwitchSession, "")
+	// In-attach scrollback pager (#1491). Its trigger is resolved directly (it is
+	// not a home-screen key); empty label when disabled drops the row.
+	scrollbackKey := ResolvedScrollbackTrigger(session.GetHotkeyOverrides()).Label()
 	unreadKey := h.key(hotkeyMarkUnread, "u")
 	quickApproveKey := h.key(hotkeyQuickApprove, "a")
 	promptSessionKey := h.key(hotkeyPromptSession, "o")
@@ -326,6 +329,7 @@ func (h *HelpOverlay) View() string {
 				{importKey, "Import tmux sessions"},
 				{"Ctrl+Q", "Detach from session"},
 				{switchKey, "Switch session (here or attached)"},
+				{scrollbackKey, "Scrollback pager (while attached)"},
 				{quitKey, "Quit"},
 				{helpKey, "This help"},
 			},

@@ -257,6 +257,7 @@ type Home struct {
 	sessionPickerDialog  *SessionPickerDialog  // For sending output to another session
 	codeBlockDialog      *CodeBlockDialog      // For copying a fenced code block from session output (#1412)
 	sessionSwitcher      *SessionSwitcher      // In-attach session switcher (Ctrl+Tab / Ctrl+S)
+	scrollbackPager      *ScrollbackPager      // In-attach scrollback pager for the deck's control-mode view (#1491)
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
 	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
 	zoxidePicker         *ZoxidePicker         // Quick-open picker backed by the zoxide DB
@@ -742,7 +743,20 @@ func (h *Home) attachOptions() tmux.AttachOptions {
 	if switchByte == detach {
 		switchByte = 0
 	}
-	return tmux.AttachOptions{DetachByte: detach, SwitchKeyByte: switchByte}
+	// Resolve the in-attach scrollback trigger (#1491). A control-byte trigger
+	// that collides with the detach or switch key is dropped so it can never
+	// shadow them; the PageUp trigger is independent and always safe.
+	scroll := ResolvedScrollbackTrigger(overrides)
+	scrollByte := scroll.KeyByte
+	if scrollByte == detach || (switchByte != 0 && scrollByte == switchByte) {
+		scrollByte = 0
+	}
+	return tmux.AttachOptions{
+		DetachByte:         detach,
+		SwitchKeyByte:      switchByte,
+		ScrollbackKeyByte:  scrollByte,
+		ScrollbackOnPageUp: scroll.OnPageUp,
+	}
 }
 
 func (h *Home) setHotkeys(bindings map[string]string) {
@@ -1066,6 +1080,24 @@ type openSwitcherMsg struct {
 	attachedWorkDir string // pane_current_path captured after attach returns
 }
 
+// openScrollbackMsg is emitted when the user pressed the scrollback trigger
+// while attached (#1491). It carries the same post-attach reconciliation data
+// as statusUpdateMsg; the pager opens bound to the session we came from and the
+// history capture runs asynchronously.
+type openScrollbackMsg struct {
+	fromSessionID   string // session we just detached from
+	attachedWorkDir string // pane_current_path captured after attach returns
+}
+
+// scrollbackContentMsg carries the captured pane history back to the pager. It
+// is stale-guarded by sessionID so a capture that completes after the user has
+// closed or re-opened the pager on a different session is ignored.
+type scrollbackContentMsg struct {
+	sessionID string
+	content   string
+	err       error
+}
+
 // switcherCommitMsg fires after the switcher has been idle for switcherIdleCommit.
 // gen guards against stale timers: only a message whose gen matches the
 // switcher's current generation commits (see handleSwitcherCommit).
@@ -1286,6 +1318,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		sessionPickerDialog:       NewSessionPickerDialog(),
 		codeBlockDialog:           NewCodeBlockDialog(),
 		sessionSwitcher:           NewSessionSwitcher(),
+		scrollbackPager:           NewScrollbackPager(),
 		worktreeFinishDialog:      NewWorktreeFinishDialog(),
 		feedbackDialog:            NewFeedbackDialog(),
 		zoxidePicker:              NewZoxidePicker(),
@@ -4847,6 +4880,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		h.geminiModelDialog.SetSize(msg.Width, msg.Height)
 		h.promptInputDialog.SetSize(msg.Width, msg.Height)
+		h.scrollbackPager.SetSize(msg.Width, msg.Height)
 		// Issue #1366: a resize can reveal the preview pane (single -> stacked/dual).
 		// fetchSelectedPreview self-guards to nil in single-column, so this only
 		// fetches when a preview pane is actually visible.
@@ -4873,6 +4907,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return h, nil
 			}
 			if h.helpOverlay.IsVisible() {
+				return h, nil
+			}
+			if h.scrollbackPager.IsVisible() {
+				// #1491: the wheel the deck-attach couldn't deliver now scrolls
+				// the pager. 3 lines per notch matches typical terminal wheel UX.
+				if msg.Button == tea.MouseButtonWheelUp {
+					h.scrollbackPager.ScrollUp(3)
+				} else {
+					h.scrollbackPager.ScrollDown(3)
+				}
 				return h, nil
 			}
 			if h.globalSearch.IsVisible() {
@@ -6017,6 +6061,40 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.Tick(attachReturnRefreshDelay, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} }),
 		)
 
+	case openScrollbackMsg:
+		// The user pressed the scrollback trigger while attached (#1491). Run the
+		// same post-attach reconciliation as the switcher, then open the pager
+		// bound to the session we came from and kick off the async history
+		// capture. Esc re-attaches; Ctrl+Q returns to the list.
+		h.isAttaching.Store(false)
+		h.beginAttachReturnGrace(time.Now())
+		h.refreshAttachedSessionStatus(msg.fromSessionID)
+		selectedBefore := h.captureSelectedItemIdentity()
+		h.rebuildFlatItemsPreservingSelection(selectedBefore)
+		h.followAttachReturnCwd(statusUpdateMsg{
+			attachedSessionID: msg.fromSessionID,
+			attachedWorkDir:   msg.attachedWorkDir,
+		})
+		captureCmd := h.openScrollbackPager(msg.fromSessionID)
+		return h, tea.Batch(
+			tea.EnableMouseCellMotion,
+			RestoreLegacyKeyboardCmd(os.Stdout),
+			tea.WindowSize(),
+			captureCmd,
+		)
+
+	case scrollbackContentMsg:
+		// Ignore a capture that finished after the pager closed or moved to a
+		// different session (stale guard).
+		if h.scrollbackPager.IsVisible() && h.scrollbackPager.SessionID() == msg.sessionID {
+			if msg.err != nil {
+				h.scrollbackPager.SetError(msg.err.Error())
+			} else {
+				h.scrollbackPager.SetContent(msg.content)
+			}
+		}
+		return h, nil
+
 	case switcherCommitMsg:
 		return h, h.handleSwitcherCommit(msg)
 
@@ -6776,6 +6854,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.sessionSwitcher.IsVisible() {
 			return h.handleSessionSwitcherKey(msg)
 		}
+		if h.scrollbackPager.IsVisible() {
+			return h.handleScrollbackPagerKey(msg)
+		}
 		if h.sessionPickerDialog.IsVisible() {
 			return h.handleSessionPickerDialogKey(msg)
 		}
@@ -7489,7 +7570,7 @@ func (h *Home) hasModalVisible() bool {
 		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
 		h.geminiModelDialog.IsVisible() || h.promptInputDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
 		h.codeBlockDialog.IsVisible() ||
-		h.sessionSwitcher.IsVisible() ||
+		h.sessionSwitcher.IsVisible() || h.scrollbackPager.IsVisible() ||
 		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible() ||
 		h.editSessionDialog.IsVisible() ||
 		h.zoxidePicker.IsVisible()
@@ -12618,6 +12699,12 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 					}
 				}
 			}
+			if res.intent == tmux.ScrollbackRequested {
+				return openScrollbackMsg{
+					fromSessionID:   fromID,
+					attachedWorkDir: fromWorkDir,
+				}
+			}
 			return openSwitcherMsg{
 				fromSessionID:   fromID,
 				attachedWorkDir: fromWorkDir,
@@ -13210,6 +13297,9 @@ func (h *Home) View() string {
 	}
 	if h.sessionSwitcher.IsVisible() {
 		return h.sessionSwitcher.View()
+	}
+	if h.scrollbackPager.IsVisible() {
+		return h.scrollbackPager.View()
 	}
 	if h.sessionPickerDialog.IsVisible() {
 		return h.sessionPickerDialog.View()
@@ -18315,6 +18405,72 @@ func (h *Home) commitSessionSwitch() tea.Cmd {
 	}
 	h.sessionSwitcher.Hide()
 	return h.attachToSwitchTarget(target)
+}
+
+// scrollbackCaptureLines is how many trailing history lines the pager captures.
+// Deep enough to reach the banner of a long session (tmux's history-limit is
+// typically 50k-500k) while bounded so a pathological pane can't balloon memory
+// or wedge the capture. The preview pane's 2000-line cap is deliberately left
+// untouched — this is a one-off, on-demand capture.
+const scrollbackCaptureLines = 50000
+
+// openScrollbackPager opens the in-view scrollback pager (#1491) bound to the
+// session with the given ID and returns the async command that captures its
+// tmux history. The pager opens in a loading state; scrollbackContentMsg
+// installs the content (stale-guarded by session ID). Returns nil when the
+// session no longer exists.
+func (h *Home) openScrollbackPager(sessionID string) tea.Cmd {
+	if sessionID == "" || h.scrollbackPager == nil {
+		return nil
+	}
+	h.instancesMu.RLock()
+	inst := h.instanceByID[sessionID]
+	h.instancesMu.RUnlock()
+	if inst == nil {
+		return nil
+	}
+	tmuxSess := inst.GetTmuxSession()
+	if tmuxSess == nil {
+		return nil
+	}
+	title := strings.TrimSpace(inst.Title)
+	h.scrollbackPager.Show(title, sessionID, h.width, h.height)
+	return func() tea.Msg {
+		content, err := tmuxSess.CaptureHistoryLines(scrollbackCaptureLines)
+		return scrollbackContentMsg{sessionID: sessionID, content: content, err: err}
+	}
+}
+
+// handleScrollbackPagerKey handles key events while the scrollback pager is
+// visible (#1491). Navigation scrolls the captured history; Esc re-attaches to
+// the session (back to where the user was), and the detach key (Ctrl+Q) closes
+// the pager to the session list without re-attaching.
+func (h *Home) handleScrollbackPagerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	p := h.scrollbackPager
+	switch msg.String() {
+	case "up", "k":
+		p.ScrollUp(1)
+	case "down", "j":
+		p.ScrollDown(1)
+	case "pgup", "b":
+		p.PageUp()
+	case "pgdown", " ", "f":
+		p.PageDown()
+	case "home", "g":
+		p.Top()
+	case "end", "G":
+		p.Bottom()
+	case "esc", "q":
+		// Return to the session the user was reading.
+		target := p.SessionID()
+		p.Hide()
+		return h, h.attachToSwitchTarget(target)
+	case "ctrl+q":
+		// Close to the session list without re-attaching.
+		p.Hide()
+		return h, nil
+	}
+	return h, nil
 }
 
 // attachToSwitchTarget re-attaches to the session with the given ID and lands
