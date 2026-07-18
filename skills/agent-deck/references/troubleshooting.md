@@ -67,7 +67,7 @@ If null, restart session and interact with Claude.
 ### Conductor Keeps Asking for Permissions
 
 If a conductor repeatedly pauses on permission prompts, set Claude permission mode
-explicitly in `~/.agent-deck/config.toml` and restart the conductor session:
+explicitly in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`) and restart the conductor session:
 
 ```toml
 [claude]
@@ -130,7 +130,7 @@ agent-deck status  # Should show ~0.5% CPU when idle
 
 ### Log Files Too Large
 
-Add to `~/.agent-deck/config.toml`:
+Add to `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`):
 ```toml
 [logs]
 max_size_mb = 1
@@ -201,7 +201,7 @@ agent-deck status --json
 agent-deck session show <session-name> --json
 
 # Config (sanitized - removes secrets)
-cat ~/.agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET\|PASSWORD"
+cat ~/.config/agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET\|PASSWORD"  # (legacy: ~/.agent-deck/config.toml)
 
 # Recent logs (if error occurred)
 tail -100 ~/.agent-deck/logs/agentdeck_<session>_*.log 2>/dev/null

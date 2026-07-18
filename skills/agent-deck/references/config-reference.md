@@ -1,6 +1,6 @@
 # Configuration Reference
 
-All options for `~/.agent-deck/config.toml`.
+All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`; legacy `~/.agent-deck/config.toml` still honored).
 
 ## Table of Contents
 
@@ -538,7 +538,7 @@ claim_polling = true   # Opt-in: dedupe status polling across concurrent instanc
 
 ## Skills Registry (Outside config.toml)
 
-Skill source discovery and project attachment state are not stored in `~/.agent-deck/config.toml`.
+Skill source discovery and project attachment state are not stored in the agent-deck config file.
 
 **Global source registry:**
 - `~/.agent-deck/skills/sources.toml`

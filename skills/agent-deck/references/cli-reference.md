@@ -485,7 +485,7 @@ agent-deck conductor list [--profile <name>]
 
 Manage agent-deck instances running on remote SSH servers. Remote sessions appear alongside local sessions in the TUI and CLI.
 
-Remote configuration is stored in `~/.agent-deck/config.toml` under the `[remotes]` map.
+Remote configuration is stored in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`) under the `[remotes]` map.
 
 ### remote add
 

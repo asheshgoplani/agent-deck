@@ -675,7 +675,7 @@ The verifier requirement attaches to claims about external mutable state: PRs, r
 
 ## Configuration
 
-**File:** `~/.agent-deck/config.toml` (new installs: `~/.config/agent-deck/config.toml`; legacy `~/.agent-deck/config.toml` still honored)
+**File:** `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`; legacy `~/.agent-deck/config.toml` still honored)
 
 ```toml
 [claude]
@@ -719,7 +719,7 @@ If something isn't working, create a GitHub issue with context:
 # Gather debug info
 agent-deck version
 agent-deck status --json
-cat ~/.agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET"  # Sanitized config
+cat ~/.config/agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET"  # Sanitized config (legacy: ~/.agent-deck/config.toml)
 
 # Create issue at:
 # https://github.com/asheshgoplani/agent-deck/issues/new
@@ -773,7 +773,7 @@ Move a session — conversation included — to a different Claude account (work
 
 **Use when:** User says "switch account", "move this conversation to my other account", "continue this session on account X", "this session should use the <name> account".
 
-**One-time setup** — name each account in `~/.agent-deck/config.toml` (the target profile must already be logged in: `CLAUDE_CONFIG_DIR=<dir> claude` → `/login`):
+**One-time setup** — name each account in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`; the target profile must already be logged in: `CLAUDE_CONFIG_DIR=<dir> claude` → `/login`):
 
 ```toml
 [profiles.personal.claude]
@@ -899,7 +899,7 @@ Telegram's Bot API `getUpdates` is single-consumer per bot token. If N Claude se
 **Supported topology — enforce this on every conductor host:**
 
 - Telegram is activated **per-session** via `--channels plugin:telegram@claude-plugins-official`. This is the only supported activation path for a conductor bot.
-- `TELEGRAM_STATE_DIR` is injected **exclusively** via `[conductors.<name>.claude].env_file` in `~/.agent-deck/config.toml`. The env file sources deterministically on both fresh-start and `--resume` spawns.
+- `TELEGRAM_STATE_DIR` is injected **exclusively** via `[conductors.<name>.claude].env_file` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`). The env file sources deterministically on both fresh-start and `--resume` spawns.
 - One bot token = one channel-owning session. Never share tokens between sessions.
 - `enabledPlugins."telegram@claude-plugins-official"` in the profile `settings.json` must be **absent or false**. Global enablement makes every claude subprocess (including child agents) load the plugin.
 

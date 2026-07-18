@@ -92,7 +92,7 @@ Try different approaches without losing context. Fork Claude conversations and P
 Attach MCP servers without touching config files. Need web search? Browser automation? Toggle them on per project or globally. Agent Deck handles the restart automatically.
 
 - Press `m` to open, `Space` to toggle, `Tab` to cycle scope (LOCAL/GLOBAL)
-- Define your MCPs once in `~/.agent-deck/config.toml`, then toggle per session — see [Configuration Reference](skills/agent-deck/references/config-reference.md)
+- Define your MCPs once in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`), then toggle per session — see [Configuration Reference](skills/agent-deck/references/config-reference.md)
 
 ### MCP Socket Pool
 
@@ -129,7 +129,7 @@ Multiple agents can work on the same repo without conflicts. Each worktree is an
 - `agent-deck add . --worktree feature/b -b --location subdirectory` places the worktree under `.worktrees/` inside the repo
 - `agent-deck worktree cleanup` finds and removes orphaned worktrees
 
-Configure the default worktree location in `~/.agent-deck/config.toml`:
+Configure the default worktree location in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`):
 
 ```toml
 [worktree]
@@ -566,7 +566,7 @@ agent-deck worktree cleanup --force
 
 ## Configuration
 
-**File:** `~/.agent-deck/config.toml`
+**File:** `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`)
 
 ```toml
 [claude]
@@ -605,7 +605,7 @@ If something isn't working, create a GitHub issue with context:
 # Gather debug info
 agent-deck version
 agent-deck status --json
-cat ~/.agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET"  # Sanitized config
+cat ~/.config/agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET"  # Sanitized config (legacy: ~/.agent-deck/config.toml)
 
 # Create issue at:
 # https://github.com/asheshgoplani/agent-deck/issues/new
@@ -940,7 +940,7 @@ Commands accept:
 
 # Configuration Reference
 
-All options for `~/.agent-deck/config.toml`.
+All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`).
 
 ## Table of Contents
 
@@ -1337,7 +1337,7 @@ agent-deck status  # Should show ~0.5% CPU when idle
 
 ### Log Files Too Large
 
-Add to `~/.agent-deck/config.toml`:
+Add to `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`):
 ```toml
 [logs]
 max_size_mb = 1
@@ -1385,7 +1385,7 @@ agent-deck status --json
 agent-deck session show <session-name> --json
 
 # Config (sanitized - removes secrets)
-cat ~/.agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET\|PASSWORD"
+cat ~/.config/agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET\|PASSWORD"  # (legacy: ~/.agent-deck/config.toml)
 
 # Recent logs (if error occurred)
 tail -100 ~/.agent-deck/logs/agentdeck_<session>_*.log 2>/dev/null

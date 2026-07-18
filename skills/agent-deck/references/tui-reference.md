@@ -94,7 +94,7 @@ Enter-advances is the default (`[ui].new_session_enter_advances = true`), so typ
 
 Pressing `n` on a remote group/session opens a remote-aware dialog (remote paths and group pre-filled); the session is created over SSH on the remote, never on localhost.
 
-Claude New Session defaults are remembered in `~/.agent-deck/config.toml` under `[claude]`, except start query and resume IDs, which are per-launch values.
+Claude New Session defaults are remembered in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`) under `[claude]`, except start query and resume IDs, which are per-launch values.
 
 ### MCP Manager (`m`)
 
