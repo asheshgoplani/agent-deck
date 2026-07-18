@@ -65,6 +65,15 @@ type Item struct {
 	DividerLabel        string             // Label shown on an ItemTypeDivider row (e.g. "idle / done")
 }
 
+// IsCreatingPlaceholder reports whether this row is a still-creating session
+// placeholder: a session-typed row whose *Instance has not been created yet
+// (Session == nil). Mutations (move/rename/fork) must be refused on such rows —
+// dereferencing the nil Instance panics (#1540). This is the single model-layer
+// predicate that generalizes the per-call-site nil guards.
+func (it Item) IsCreatingPlaceholder() bool {
+	return it.Type == ItemTypeSession && it.Session == nil
+}
+
 // Group represents a group of sessions
 type Group struct {
 	Name        string

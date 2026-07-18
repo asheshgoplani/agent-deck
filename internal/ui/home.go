@@ -58,6 +58,10 @@ func SetVersion(v string) {
 	Version = v
 }
 
+// errSessionStillCreating is the shared user-facing message when a mutation
+// (move/rename/fork) is attempted on a still-creating placeholder row (#1540).
+var errSessionStillCreating = errors.New("session is still being created, try again in a moment")
+
 // CreatingSession is a lightweight placeholder shown in the UI while
 // a worktree + session is being created asynchronously.
 // It is NOT a real session.Instance — it is excluded from save, polling, and search.
@@ -8385,6 +8389,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Only available when the selected tool supports Agent Deck forking
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
+			if item.IsCreatingPlaceholder() {
+				h.setError(errSessionStillCreating)
+				return h, nil
+			}
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				// Block fork during animations to prevent concurrent operations
 				if h.hasActiveAnimation(item.Session.ID) {
@@ -8403,6 +8411,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Only available when the selected tool supports Agent Deck forking
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
+			if item.IsCreatingPlaceholder() {
+				h.setError(errSessionStillCreating)
+				return h, nil
+			}
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				// Block fork during animations to prevent concurrent operations
 				if h.hasActiveAnimation(item.Session.ID) {
@@ -8433,15 +8445,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Move session to different group
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			// Guard against creating-session placeholder rows (Type ==
-			// ItemTypeSession but Session == nil) — moving one would panic
-			// (#1540). Tell the user the session is still being created.
-			if item.Type == session.ItemTypeSession {
-				if item.Session == nil {
-					h.setError(fmt.Errorf("session is still being created, try again in a moment"))
-				} else {
-					h.groupDialog.ShowMove(h.scopedGroupPaths())
-				}
+			// Refuse mutations on a still-creating placeholder — moving one
+			// would deref a nil *Instance and panic (#1540).
+			if item.IsCreatingPlaceholder() {
+				h.setError(errSessionStillCreating)
+			} else if item.Type == session.ItemTypeSession {
+				h.groupDialog.ShowMove(h.scopedGroupPaths())
 			}
 		}
 		return h, nil
@@ -8552,6 +8561,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Rename group or session
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
+			if item.IsCreatingPlaceholder() {
+				h.setError(errSessionStillCreating)
+				return h, nil
+			}
 			if item.Type == session.ItemTypeGroup {
 				h.groupDialog.ShowRename(item.Path, item.Group.Name)
 			} else if item.Type == session.ItemTypeSession && item.Session != nil {
@@ -8760,6 +8773,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "z":
 		h.zoxidePicker.SetSize(h.width, h.height)
+		h.zoxidePicker.SetSuggestProvider(h.pathSuggestProvider())
 		h.zoxidePicker.Show()
 		return h, nil
 
@@ -11569,6 +11583,47 @@ func (h *Home) handleZoxidePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		h.zoxidePicker, _ = h.zoxidePicker.Update(msg)
 		return h, nil
+	}
+}
+
+// pathSuggestProvider returns a closure that produces the unified,
+// frecency-ranked candidate list for the create picker: recent session paths,
+// group default paths and (for a non-empty query) zoxide hits, merged and
+// ranked by session.PathSuggest — the single source of truth shared with the
+// CLI and ADE (per NEW-SESSION-UX-PLAN.md §3.1).
+func (h *Home) pathSuggestProvider() func(string) []session.PathCandidate {
+	// Snapshot group default paths once per picker-open; they don't change
+	// while the picker is up and re-deriving them per keystroke is wasteful.
+	var groupDefaults []string
+	if h.groupTree != nil {
+		for groupPath := range h.groupTree.Groups {
+			if dp := h.getDefaultPathForGroup(groupPath); dp != "" {
+				groupDefaults = append(groupDefaults, dp)
+			}
+		}
+	}
+
+	return func(query string) []session.PathCandidate {
+		var zox []string
+		if strings.TrimSpace(query) != "" && session.ZoxideAvailable() {
+			ctx, cancel := context.WithTimeout(context.Background(), zoxideQueryTimeout)
+			if results, err := session.ZoxideQuery(ctx, query); err == nil {
+				zox = results
+			}
+			cancel()
+		}
+
+		h.instancesMu.RLock()
+		insts := make([]*session.Instance, len(h.instances))
+		copy(insts, h.instances)
+		h.instancesMu.RUnlock()
+
+		return session.PathSuggest(session.PathSuggestInput{
+			Instances:     insts,
+			GroupDefaults: groupDefaults,
+			Zoxide:        zox,
+			Query:         query,
+		})
 	}
 }
 

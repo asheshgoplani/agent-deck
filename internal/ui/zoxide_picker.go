@@ -36,7 +36,17 @@ type ZoxidePicker struct {
 	unavail    bool // zoxide not installed; results disabled
 	queryFn    zoxideQueryFunc
 	checkAvail bool
+
+	// suggestFn, when set, supplies the unified frecency-ranked candidate list
+	// (recents + group defaults + zoxide, via session.PathSuggest). It makes
+	// the picker "the interaction": Show() pre-populates it with no query, and
+	// it takes precedence over the raw zoxide query (and its availability gate).
+	suggestFn  suggestQueryFunc
+	candidates []session.PathCandidate
 }
+
+// suggestQueryFunc returns the ranked candidate list for the given query.
+type suggestQueryFunc func(query string) []session.PathCandidate
 
 // NewZoxidePicker constructs a picker wired to the real zoxide binary.
 func NewZoxidePicker() *ZoxidePicker {
@@ -62,6 +72,13 @@ func defaultZoxideQuery(query string) ([]string, error) {
 	return session.ZoxideQuery(ctx, query)
 }
 
+// SetSuggestProvider wires the unified PathSuggest candidate source. Once set,
+// the picker ranks candidates from it (recents + group defaults + zoxide) and
+// ignores the standalone zoxide availability gate.
+func (z *ZoxidePicker) SetSuggestProvider(fn suggestQueryFunc) {
+	z.suggestFn = fn
+}
+
 // Show opens the picker. If zoxide is missing the picker still renders but
 // displays an install hint and disables selection.
 func (z *ZoxidePicker) Show() {
@@ -72,7 +89,9 @@ func (z *ZoxidePicker) Show() {
 	z.queryInput.CursorEnd()
 	z.queryInput.Focus()
 
-	if z.checkAvail && !session.ZoxideAvailable() {
+	// A wired suggest provider is the source of truth and never "unavailable":
+	// even without zoxide there are recents and group defaults to show.
+	if z.suggestFn == nil && z.checkAvail && !session.ZoxideAvailable() {
 		z.unavail = true
 		z.results = nil
 		return
@@ -129,6 +148,19 @@ func (z *ZoxidePicker) Update(msg tea.KeyMsg) (*ZoxidePicker, tea.Cmd) {
 }
 
 func (z *ZoxidePicker) refreshResults() {
+	if z.suggestFn != nil {
+		z.candidates = z.suggestFn(z.queryInput.Value())
+		z.errMsg = ""
+		z.results = z.results[:0]
+		for _, c := range z.candidates {
+			z.results = append(z.results, c.Path)
+		}
+		if z.cursor >= len(z.results) {
+			z.cursor = 0
+		}
+		return
+	}
+
 	results, err := z.queryFn(z.queryInput.Value())
 	if err != nil {
 		z.errMsg = err.Error()
@@ -209,12 +241,18 @@ func (z *ZoxidePicker) renderResults() string {
 		Bold(true).
 		Padding(0, 1)
 
+	hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
 	home, _ := os.UserHomeDir()
 	rows := make([]string, 0, len(shown)+1)
 	for i, p := range shown {
 		display := p
 		if home != "" && strings.HasPrefix(p, home) {
 			display = "~" + strings.TrimPrefix(p, home)
+		}
+		// Annotate with the candidate source (recent/group/zoxide) when the
+		// unified provider is driving the list, so the origin is legible.
+		if i < len(z.candidates) && z.candidates[i].Source != "" {
+			display += "  " + hintStyle.Render(string(z.candidates[i].Source))
 		}
 		if i == z.cursor {
 			rows = append(rows, selStyle.Render(display))

@@ -1210,6 +1210,13 @@ func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) 
 	return groupSelector
 }
 
+// shouldLockTitle is the #1615-class chokepoint deciding whether a new CLI
+// session's title is locked against Claude's folder-name sync. An explicit
+// user title locks, as do the explicit lock flags.
+func shouldLockTitle(userProvidedTitle, titleLockFlag, noTitleSyncFlag bool) bool {
+	return userProvidedTitle || titleLockFlag || noTitleSyncFlag
+}
+
 // handleAdd adds a new session from CLI
 func handleAdd(profile string, args []string) {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
@@ -1644,8 +1651,11 @@ func handleAdd(profile string, args []string) {
 		newInstance.NoTransitionNotify = true
 	}
 
-	// #697: title-lock blocks Claude's session-name sync. Either flag triggers it.
-	if *titleLock || *noTitleSync {
+	// #697/#1615: title-lock blocks Claude's session-name sync. An explicit
+	// user title (-t/--title) locks too — otherwise Claude's folder-name sync
+	// silently clobbers it (the #1615 class), matching the TUI dialog and
+	// `launch` paths.
+	if shouldLockTitle(userProvidedTitle, *titleLock, *noTitleSync) {
 		newInstance.TitleLocked = true
 	}
 
