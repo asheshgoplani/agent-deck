@@ -2322,6 +2322,38 @@ func (h *Home) rebuildFlatItems() {
 		h.flatItems = session.PartitionByViewMode(h.flatItems, h.groupViewMode, activity)
 	}
 
+	// Recompute IsLastInGroup on the final visible list. GroupTree.Flatten sets
+	// it over a group's full session list (archived sessions included), but the
+	// archived/status filtering and view-mode partitioning above can drop or
+	// reorder the trailing rows — leaving the flag on a session that is no longer
+	// visually last, so the last VISIBLE row renders ├─ instead of └─ (seen when
+	// a group's trailing sessions are archived). A group's session rows share the
+	// group's Path; walking backwards, the first row seen for a Path is the true
+	// last row of that group's current segment. Only top-level sessions drive the
+	// └─ connector (sub-sessions use IsLastSubSession), so only they are rewritten
+	// here. Runs before window injection so injected windows inherit the flag.
+	seenLaterRowInGroup := make(map[string]bool)
+	for i := len(h.flatItems) - 1; i >= 0; i-- {
+		it := &h.flatItems[i]
+		if it.Type == session.ItemTypeGroup {
+			// A group header starts a fresh segment for its Path. View-mode
+			// partitioning can duplicate a header and split one group's rows into
+			// separate top/bottom sections that each end with their own └─, so a
+			// later section's "seen" must not leak backward across the header into
+			// an earlier section of the same Path.
+			delete(seenLaterRowInGroup, it.Path)
+			continue
+		}
+		if it.Type != session.ItemTypeSession || it.Session == nil {
+			continue
+		}
+		isLastRow := !seenLaterRowInGroup[it.Path]
+		seenLaterRowInGroup[it.Path] = true
+		if !it.IsSubSession {
+			it.IsLastInGroup = isLastRow
+		}
+	}
+
 	// Inject window items after sessions that have 2+ windows
 	if len(h.flatItems) > 0 {
 		expanded := make([]session.Item, 0, len(h.flatItems)+8)
