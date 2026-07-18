@@ -221,6 +221,13 @@ func sanitizeLoadoutWarning(value string) string {
 // resolves to the recorded source. A foreign replacement must never be
 // accepted as a healthy declarative floor.
 func healthyManagedSkillAttachment(projectPath, skillID string) bool {
+	// The project path can reach here from operator input (the web
+	// create-session request body carries it). Instance project paths are
+	// always absolute and clean, so refuse relative or dot-dot forms
+	// outright before any filesystem access (CodeQL go/path-injection).
+	if !filepath.IsAbs(projectPath) || strings.Contains(projectPath, "..") {
+		return false
+	}
 	manifest, err := LoadProjectSkillsManifest(projectPath)
 	if err != nil {
 		return false
