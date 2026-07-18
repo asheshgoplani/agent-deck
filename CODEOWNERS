@@ -1,4 +1,9 @@
-# Hot paths — Ashesh must review
+# Default owner — every PR needs a maintainer review once branch protection
+# turns on require_code_owner_reviews. Later, more specific rules win, but they
+# all resolve to the same maintainer, so coverage is total either way.
+*                   @asheshgoplani
+
+# Hot paths — Ashesh must review (kept explicit as documentation of intent)
 go.mod              @asheshgoplani
 go.sum              @asheshgoplani
 .github/            @asheshgoplani
