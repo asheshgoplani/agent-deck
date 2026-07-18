@@ -489,7 +489,10 @@ func TestPerGroupConfig_ClaudeConfigDirSourceLabel(t *testing.T) {
 	}
 	_ = os.Setenv("HOME", tmpHome)
 
-	t.Run("env_var_wins", func(t *testing.T) {
+	t.Run("group_wins_over_env", func(t *testing.T) {
+		// #1508: a config.toml group override is strictly more specific than
+		// a shell-wide CLAUDE_CONFIG_DIR, so the group must win when it has a
+		// config_dir to assert.
 		_ = os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/env-dir")
 		_ = os.Setenv("AGENTDECK_PROFILE", "p")
 		writeConfig(t, `
@@ -502,6 +505,29 @@ config_dir = "~/.claude-global"
 `)
 		ClearUserConfigCache()
 		path, source := GetClaudeConfigDirSourceForGroup("g")
+		if source != "group" {
+			t.Errorf("source=%q want %q", source, "group")
+		}
+		if want := filepath.Join(tmpHome, ".claude-g"); path != want {
+			t.Errorf("path=%q want %q", path, want)
+		}
+		_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
+	})
+
+	t.Run("env_var_wins_without_group_match", func(t *testing.T) {
+		// #1508: env still wins when the group has no config_dir to assert.
+		_ = os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/env-dir")
+		_ = os.Setenv("AGENTDECK_PROFILE", "p")
+		writeConfig(t, `
+[groups."g".claude]
+config_dir = "~/.claude-g"
+[profiles.p.claude]
+config_dir = "~/.claude-p"
+[claude]
+config_dir = "~/.claude-global"
+`)
+		ClearUserConfigCache()
+		path, source := GetClaudeConfigDirSourceForGroup("unknown-group")
 		if source != "env" {
 			t.Errorf("source=%q want %q", source, "env")
 		}

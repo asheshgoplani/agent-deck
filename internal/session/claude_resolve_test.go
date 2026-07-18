@@ -69,7 +69,8 @@ config_dir = "~/.claude-coordinator"
 		groupPath   string
 		wantSource  string
 	}{
-		{"env wins", filepath.Join(tmpHome, ".claude-env"), "team-a", "env"},
+		{"group beats env (#1508)", filepath.Join(tmpHome, ".claude-env"), "team-a", "group"},
+		{"env wins when no group match (#1508)", filepath.Join(tmpHome, ".claude-env"), "unknown", "env"},
 		{"group beats profile (no env)", "", "team-a", "group"},
 		{"profile wins when no group match", "", "unknown", "profile"},
 		{"default when no profile", "", "", "profile"}, // profile=work matches
