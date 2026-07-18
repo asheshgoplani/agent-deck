@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -101,11 +102,43 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	// Capture the source dir BEFORE mutating the account field — afterwards
 	// the resolver would already return the target.
 	srcDir := session.GetClaudeConfigDirForInstance(inst)
+	// #1571: a pre-account-tracking session (empty account field) resolves to
+	// env/profile/global defaults, which can equal the target dir — the old
+	// code then declared "nothing to migrate" and the restarted resume died
+	// with "No conversation found". The disk is authoritative: scan every
+	// configured config dir for the conversation file and treat the dir that
+	// actually contains it as the source.
+	locatedDir, locatedSID, srcSize := session.LocateConversationConfigDir(userConfig, inst, srcDir)
+	if locatedDir != "" {
+		srcDir = locatedDir
+		if inst.ClaudeSessionID == "" && locatedSID != "" {
+			inst.ClaudeSessionID = locatedSID
+		}
+	}
 	migrated, migErr := session.MigrateConversationFrom(inst, srcDir, targetDir)
 	if migErr != nil && !errors.Is(migErr, session.ErrNoConversation) {
 		// Conversation intact in the source account; account field unchanged.
 		out.Error(fmt.Sprintf("conversation migration failed, account not switched: %v", migErr), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+
+	// Post-switch verification (#1571): when a source conversation demonstrably
+	// exists on disk, the target dir must contain it (size within ~1%) before
+	// the account field flips. Fresh sessions (no conversation anywhere) keep
+	// the lenient path.
+	if locatedDir != "" {
+		if verifyErr := session.VerifyConversationInDir(inst, targetDir, srcSize); verifyErr != nil {
+			out.Error(fmt.Sprintf("conversation not verified in target config dir, account not switched: %v", verifyErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+
+	// Pre-seed the folder-trust entry for (target config dir, project path)
+	// (#1571 root cause 4): the first launch of a fresh (config_dir, cwd)
+	// pair blocks interactively on "Do you trust this folder?", stalling the
+	// restarted session. Best-effort — a warning must not abort the switch.
+	if trustErr := session.PreAcceptClaudeTrust(filepath.Join(targetDir, ".claude.json"), inst.EffectiveWorkingDir()); trustErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not pre-accept folder trust in target config dir: %v\n", trustErr)
 	}
 
 	oldAccount, postCommit, setErr := session.SetField(inst, session.FieldAccount, account, nil)
@@ -142,7 +175,11 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	if migrated != "" {
 		conversation = fmt.Sprintf("conversation migrated to %s", migrated)
 	} else if migErr == nil {
-		conversation = "source and target accounts share a config dir (nothing to migrate)"
+		if locatedDir != "" {
+			conversation = "conversation already present in the target config dir (nothing to migrate)"
+		} else {
+			conversation = "no conversation found on disk (nothing to migrate)"
+		}
 	}
 	out.Success(fmt.Sprintf("Switched %s: account %q -> %q; %s", inst.Title, oldAccount, account, conversation), map[string]interface{}{
 		"success":           true,
