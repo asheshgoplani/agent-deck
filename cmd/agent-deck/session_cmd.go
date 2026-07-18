@@ -2510,6 +2510,44 @@ func handleSessionSetTitleLock(profile string, args []string) {
 	})
 }
 
+// fetchHookDrivenStatus reloads the target from storage and reports the same
+// hook-driven status string that `agent-deck list --json` shows. `session send
+// --defer-if-busy` polls this so its hold gate keys off the turn-finished
+// Stop-hook signal (a true edge) rather than WaitForAgentReady's pane-diff
+// readiness heuristic, which false-positives to idle during tool calls and
+// thinking pauses (#1578).
+//
+// It mirrors handleList's status pipeline exactly: reload -> warm caches +
+// cold-load hook files via RefreshInstancesForCLIStatus -> UpdateStatus. The
+// reload each poll is deliberate: a fresh OS process has no StatusFileWatcher,
+// so the only way to observe the target's newest hook edge is to re-read it
+// from disk.
+func fetchHookDrivenStatus(profile, sessionRef string) (string, error) {
+	_, instances, _, err := loadSessionData(profile)
+	if err != nil {
+		return "", err
+	}
+	inst, errMsg, _ := ResolveSession(sessionRef, instances)
+	if inst == nil {
+		return "", fmt.Errorf("%s", errMsg)
+	}
+	// Cold-load the on-disk hook file into the instance — a fresh CLI process
+	// has no StatusFileWatcher, so the target's newest hook edge only reaches us
+	// by re-reading it from disk each poll.
+	session.RefreshInstancesForCLIStatus([]*session.Instance{inst})
+	// Prefer the FRESH hook-driven signal. It is the true turn-finished edge
+	// (Claude's UserPromptSubmit hook -> "running", Stop hook -> "waiting") and,
+	// unlike UpdateStatus, is not gated on a live tmux handle — exactly the
+	// property #1578 needs so the hold gate keys off "turn finished" rather than
+	// a pane-diff heuristic. Fall back to the full list --json pipeline when no
+	// fresh hook signal exists (non-hook tools, or a stale/absent hook file).
+	if hs, fresh := inst.GetHookStatus(); fresh && hs != "" {
+		return hs, nil
+	}
+	_ = inst.UpdateStatus()
+	return StatusString(inst.Status), nil
+}
+
 // handleSessionSend sends a message to a running session
 // Waits for the agent to be ready before sending (Claude, Gemini, etc.)
 func handleSessionSend(profile string, args []string) {
@@ -2522,6 +2560,8 @@ func handleSessionSend(profile string, args []string) {
 	stream := fs.Bool("stream", false, "Stream JSONL events (Claude only) to stdout instead of returning a snapshot")
 	draft := fs.Bool("draft", false, "Pre-fill the prompt without submitting (incompatible with --wait/--stream/--no-wait)")
 	messageFile := fs.String("message-file", "", "Read the message from a file ('-' for stdin) instead of a positional argument; avoids shell quoting of long prompts")
+	deferIfBusy := fs.Bool("defer-if-busy", false, "Hold delivery until the target is idle (turn-finished, hook-driven) instead of interrupting a mid-generation turn (incompatible with --no-wait)")
+	deferTimeout := fs.Duration("defer-timeout", 30*time.Minute, "Max time --defer-if-busy holds a busy target before dropping the message with a non-zero exit")
 	timeout := fs.Duration("timeout", 10*time.Minute, "Max time to wait for the agent to become ready and (with --wait) to finish processing")
 	streamIdle := fs.Duration("stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
 	streamCharBudget := fs.Int("stream-char-budget", 4000, "Char budget for text flush in --stream mode")
@@ -2543,6 +2583,7 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send my-project \"cwd: /path/to/dir\" --draft")
 		fmt.Println("  agent-deck session send my-project --message-file answer.md   # long reply from file")
 		fmt.Println("  git diff | agent-deck session send my-project --message-file -   # message from stdin")
+		fmt.Println("  agent-deck session send parent \"child done\" --defer-if-busy --defer-timeout 30m")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -2566,6 +2607,13 @@ func handleSessionSend(profile string, args []string) {
 
 	if *draft && (*wait || *stream || *noWait) {
 		out.Error("--draft is incompatible with --wait, --stream, and --no-wait", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	// #1578: --defer-if-busy holds delivery until the target is turn-finished;
+	// --no-wait fires immediately. They are opposites.
+	if *deferIfBusy && *noWait {
+		out.Error("--defer-if-busy is incompatible with --no-wait", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -2625,6 +2673,20 @@ func handleSessionSend(profile string, args []string) {
 	if tmuxSess == nil {
 		out.Error("could not determine tmux session", ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+
+	// #1578: --defer-if-busy holds delivery until the target is turn-finished.
+	// Runs BEFORE WaitForAgentReady + the composer-draft Ctrl+C guard, so a
+	// mid-generation target is never interrupted. Keys off the hook-driven
+	// status (the same turn-finished signal `list --json` reports), not the
+	// pane-diff readiness heuristic that false-positives idle mid-turn.
+	if *deferIfBusy {
+		if err := send.WaitUntilNotBusy(func() (string, error) {
+			return fetchHookDrivenStatus(profile, sessionRef)
+		}, *deferTimeout, send.DeferPollInterval, time.Sleep); err != nil {
+			out.Error(err.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 	}
 
 	// Wait for agent to be ready (unless --no-wait is specified).
