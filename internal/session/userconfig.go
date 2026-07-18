@@ -3382,6 +3382,15 @@ func MergeToolPatterns(toolName string) *tmux.RawPatterns {
 		return nil
 	}
 
+	// #1577: a custom tool with no built-in defaults of its own inherits the
+	// preset it declares via `compatible_with`. This only fires when the tool
+	// name has no built-in patterns (defaults == nil), so every built-in tool
+	// is byte-identical in behavior. Explicit replace/extra fields on the
+	// ToolDef still override below.
+	if defaults == nil && toolDef != nil && strings.TrimSpace(toolDef.CompatibleWith) != "" {
+		defaults = tmux.DefaultRawPatterns(toolDef.CompatibleWith)
+	}
+
 	// Build overrides from ToolDef's replace fields (BusyPatterns, PromptPatterns, SpinnerChars)
 	var overrides *tmux.RawPatterns
 	if toolDef != nil && (toolDef.BusyPatterns != nil || toolDef.PromptPatterns != nil || toolDef.SpinnerChars != nil) {

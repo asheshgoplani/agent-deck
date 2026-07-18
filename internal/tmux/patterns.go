@@ -80,6 +80,22 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			},
 			PromptPatterns: []string{"How can I help", "codex>", "Continue?", `re:(?m)^\s*›\s`},
 		}
+	case "codewhale":
+		// codewhale CLI (deepseek-v4-pro TUI, #1577). The codex preset's
+		// patterns never match the deepseek TUI, so a codewhale worker driven
+		// by a conductor was always misread as idle and `session send --wait`
+		// timed out. Busy is authoritative in the detector (checked before
+		// prompt), so the always-visible composer placeholder "Write a task
+		// or use /." cannot mask a working session.
+		//
+		// Captured live:
+		//   busy footer:  "... (waiting for deepseek deepseek-v4-pro, 2s/300s idle timeout)"
+		//                 "... · working (2s)"
+		//   idle footer:  no busy marker; composer placeholder visible
+		return &RawPatterns{
+			BusyPatterns:   []string{"waiting for deepseek", "working (", "idle timeout"},
+			PromptPatterns: []string{"Write a task or use"},
+		}
 	case "pi":
 		return &RawPatterns{
 			BusyPatterns: []string{
