@@ -22,6 +22,7 @@ linters:
         # internal-only path operations (worktree includes, Claude project
         # dirs, mcppool log dirs). Real path validation lives at boundary
         # entry points.
+        - G602 # false-positive on safe &slice[i] addressing in internal iteration (history overlay/tree build)
     staticcheck:
       # Only run bug-finding (SA*) checks. The quickfix (QF*), stylistic (ST*),
       # and simplification (S1*) checks are noisy and not security-relevant; we

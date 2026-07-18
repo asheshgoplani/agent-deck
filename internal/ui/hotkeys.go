@@ -50,6 +50,9 @@ const (
 	hotkeyReload           = "reload"
 	hotkeyDetach           = "detach"
 	hotkeyWatcherPanel     = "watcher_panel"
+	// agent-hopdeck: browse existing ~/.claude history
+	hotkeyBrowse = "browse"
+	// end agent-hopdeck
 	// Session switcher. While attached it is intercepted in the tmux attach
 	// loop (see internal/tmux/pty.go AttachOptions); on the home screen it is
 	// dispatched like any other hotkey. Must resolve to a "ctrl+<letter>" chord.
@@ -116,6 +119,9 @@ var hotkeyActionOrder = []string{
 	hotkeyReload,
 	hotkeyDetach,
 	hotkeyWatcherPanel,
+	// agent-hopdeck
+	hotkeyBrowse,
+	// end agent-hopdeck
 	hotkeySwitchSession,
 }
 
@@ -163,6 +169,9 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyDetach:           "ctrl+q",
 	hotkeyWatcherPanel:     "w",
 	hotkeySwitchSession:    "ctrl+s",
+	// agent-hopdeck
+	hotkeyBrowse: "B",
+	// end agent-hopdeck
 }
 
 var hotkeyActionDefaultTriggers = map[string][]string{

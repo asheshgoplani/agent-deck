@@ -1,0 +1,4 @@
+{"type":"user","sessionId":"aaa","cwd":"/tmp/proj","gitBranch":"main","timestamp":"2026-07-15T06:34:44Z","message":{"role":"user","content":"first question"}}
+{"type":"ai-title","aiTitle":"Great Title"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}
+{"type":"last-prompt","lastPrompt":"latest prompt"}

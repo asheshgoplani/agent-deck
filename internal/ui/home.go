@@ -34,6 +34,9 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	// agent-hopdeck: needed for resumeBrowsedSession's *model.Session param
+	"github.com/asheshgoplani/agent-deck/internal/history/model"
+	// end agent-hopdeck
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
@@ -266,6 +269,10 @@ type Home struct {
 	watcherPanel         *WatcherPanel         // For showing watcher status and events
 	toolVisibilityPanel  *ToolVisibilityPanel  // Edits [ui].hidden_tools
 	watcherEngine        *watcher.Engine       // nil until Init (D-07: lifecycle tied to TUI startup)
+
+	// agent-hopdeck: history browser panel
+	browsePanel *BrowsePanel
+	// end agent-hopdeck
 
 	// Configurable hotkeys
 	hotkeys        map[string]string // action -> configured key
@@ -519,6 +526,10 @@ type Home struct {
 	boundKeysMu             sync.Mutex        // Protects boundKeys for background worker access
 	lastBarText             string            // Cache to avoid updating all sessions every tick
 	lastBarTextMu           sync.Mutex        // Protects lastBarText for background worker access
+
+	// agent-hopdeck: HITL bell+desktop notify on waiting transition
+	hitlNotifyEnabled bool
+	// end agent-hopdeck
 
 	// Maintenance banner (shown after background maintenance completes)
 	maintenanceMsg     string
@@ -1366,6 +1377,12 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		pendingTitleChanges:       make(map[string]pendingTitle),
 		debugMode:                 logging.IsDebugEnabled(),
 		lastClickIndex:            -1,
+		// agent-hopdeck: default HITL notify on
+		hitlNotifyEnabled: true,
+		// end agent-hopdeck
+		// agent-hopdeck
+		browsePanel: NewBrowsePanel(),
+		// end agent-hopdeck
 	}
 	h.sessionRenderSnapshot.Store(make(map[string]sessionRenderState))
 
@@ -4517,7 +4534,10 @@ func (h *Home) syncNotificationsBackground() {
 	)
 
 	// Sync notification manager with current states
-	h.notificationManager.SyncFromInstances(instances, currentSessionID)
+	added, _ := h.notificationManager.SyncFromInstances(instances, currentSessionID)
+	// agent-hopdeck: bell + desktop on sessions newly entering waiting
+	h.notifyNewlyWaiting(added, instances)
+	// end agent-hopdeck
 
 	// Update tmux status bar directly
 	barText := h.notificationManager.FormatBar()
@@ -6725,6 +6745,24 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, cmd
 		}
 
+		// agent-hopdeck: route keys to the browse panel while it is open
+		if h.browsePanel != nil && h.browsePanel.IsVisible() {
+			if msg.String() == "r" && !h.browsePanel.IsFiltering() {
+				// Refresh always re-applies the live-instance status overlay,
+				// which the panel alone cannot compute.
+				h.browsePanel.Refresh(h.instances)
+				return h, nil
+			}
+			panel, cmd, sel := h.browsePanel.Update(msg)
+			h.browsePanel = panel
+			if sel != nil {
+				h.browsePanel.Hide()
+				return h, h.resumeBrowsedSession(sel) // defined in Task 11
+			}
+			return h, cmd
+		}
+		// end agent-hopdeck
+
 		if h.toolVisibilityPanel != nil && h.toolVisibilityPanel.IsVisible() {
 			var cmd tea.Cmd
 			var shouldSave bool
@@ -6996,12 +7034,21 @@ func (h *Home) jumpToSession(inst *session.Instance) {
 
 // createSessionFromGlobalSearch creates a new Agent Deck session from global search result
 func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd {
+	// agent-hopdeck: delegates to the shared adopt-into-fleet helper below,
+	// reused by the history browser's resumeBrowsedSession.
+	return h.createSessionFromClaudeSession(result.SessionID, result.CWD)
+}
+
+// createSessionFromClaudeSession creates and starts a managed agent-deck
+// session that resumes an existing ~/.claude conversation (claude --resume).
+// agent-hopdeck: shared by global-search and the history browser.
+func (h *Home) createSessionFromClaudeSession(sessionID, cwd string) tea.Cmd {
 	return func() tea.Msg {
 		// Derive title from CWD or session ID
 		title := "Claude Session"
-		projectPath := result.CWD
-		if result.CWD != "" {
-			parts := strings.Split(result.CWD, "/")
+		projectPath := cwd
+		if cwd != "" {
+			parts := strings.Split(cwd, "/")
 			if len(parts) > 0 {
 				title = parts[len(parts)-1]
 			}
@@ -7015,7 +7062,7 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		// the empty string never reaches NewInstanceWithGroupAndTool, which
 		// would otherwise override the extractGroupPath default with "".
 		inst := session.NewInstanceWithGroupAndTool(title, projectPath, h.resolveNewSessionGroup(), "claude")
-		inst.ClaudeSessionID = result.SessionID
+		inst.ClaudeSessionID = sessionID
 
 		// Build resume command with config dir and permission flags
 		userConfig, _ := session.LoadUserConfig()
@@ -7031,7 +7078,7 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 			cmdBuilder.WriteString(fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir))
 		}
 		cmdBuilder.WriteString("claude --resume ")
-		cmdBuilder.WriteString(result.SessionID)
+		cmdBuilder.WriteString(sessionID)
 		if opts.SkipPermissions {
 			cmdBuilder.WriteString(" --dangerously-skip-permissions")
 		} else if opts.AllowSkipPermissions {
@@ -7050,6 +7097,8 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		return sessionCreatedMsg{instance: inst}
 	}
 }
+
+// end agent-hopdeck
 
 // getCurrentGroupPath returns the group path of the currently selected item
 func (h *Home) getCurrentGroupPath() string {
@@ -7560,6 +7609,9 @@ func (h *Home) hasModalVisible() bool {
 		h.setupWizard.IsVisible() || h.settingsPanel.IsVisible() ||
 		(h.toolVisibilityPanel != nil && h.toolVisibilityPanel.IsVisible()) ||
 		h.watcherPanel.IsVisible() || // hotkeyWatcherPanel overlay
+		// agent-hopdeck
+		(h.browsePanel != nil && h.browsePanel.IsVisible()) ||
+		// end agent-hopdeck
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
@@ -7570,6 +7622,34 @@ func (h *Home) hasModalVisible() bool {
 		h.editSessionDialog.IsVisible() ||
 		h.zoxidePicker.IsVisible()
 }
+
+// agent-hopdeck: find a live managed instance already resuming this Claude id.
+func (h *Home) findInstanceByClaudeSessionID(id string) *session.Instance {
+	if id == "" {
+		return nil
+	}
+	for _, inst := range h.instances {
+		if inst != nil && inst.ClaudeSessionID == id {
+			return inst
+		}
+	}
+	return nil
+}
+
+// resumeBrowsedSession adopts a browsed ~/.claude session into the fleet, or
+// focuses the existing managed instance if one is already resuming it.
+func (h *Home) resumeBrowsedSession(s *model.Session) tea.Cmd {
+	if s == nil {
+		return nil
+	}
+	if existing := h.findInstanceByClaudeSessionID(s.ID); existing != nil {
+		h.jumpToSession(existing) // focus + scroll the already-running managed session into view
+		return nil
+	}
+	return h.createSessionFromClaudeSession(s.ID, s.CWD)
+}
+
+// end agent-hopdeck
 
 // markNavigationAndFetchPreview sets navigation tracking state and returns a debounced preview command
 func (h *Home) markNavigationAndFetchPreview() tea.Cmd {
@@ -8554,6 +8634,16 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.watcherPanel.Show()
 		h.watcherPanel.SetSize(h.width, h.height)
 		return h, nil
+
+	// agent-hopdeck: open history browser
+	case "B":
+		if h.browsePanel != nil {
+			h.browsePanel.SetSize(h.width, h.height)
+			h.browsePanel.Refresh(h.instances)
+			h.browsePanel.Show()
+		}
+		return h, nil
+	// end agent-hopdeck
 
 	case "E":
 		// Exec an interactive shell inside the sandbox container.
@@ -13257,6 +13347,12 @@ func (h *Home) View() string {
 	if h.watcherPanel.IsVisible() {
 		return h.watcherPanel.View()
 	}
+
+	// agent-hopdeck: full-screen history browser
+	if h.browsePanel != nil && h.browsePanel.IsVisible() {
+		return h.browsePanel.View()
+	}
+	// end agent-hopdeck
 
 	if h.toolVisibilityPanel != nil && h.toolVisibilityPanel.IsVisible() {
 		return h.toolVisibilityPanel.View()
