@@ -53,6 +53,8 @@ func handleSession(profile string, args []string) {
 		handleSessionRevive(profile, args[1:])
 	case "fork":
 		handleSessionFork(profile, args[1:])
+	case "handoff":
+		handleSessionHandoff(profile, args[1:])
 	case "attach":
 		handleSessionAttach(profile, args[1:])
 	case "focus":
@@ -117,6 +119,7 @@ func printSessionHelp() {
 	fmt.Println("  restart [id] [--all] [--env KEY=VALUE]  Restart session (Claude: reload MCPs)")
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
 	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, or Codex session with context")
+	fmt.Println("  handoff <id>            Build a cross-tool handoff prompt from the session's conversation (read-only)")
 	fmt.Println("  attach <id>             Attach to session interactively")
 	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
