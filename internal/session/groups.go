@@ -967,6 +967,12 @@ func (t *GroupTree) DemoteSession(inst *Instance) {
 
 // MoveSessionToGroup moves a session to a different group
 func (t *GroupTree) MoveSessionToGroup(inst *Instance, newGroupPath string) {
+	// Defense in depth: a creating-session placeholder row (Item.Type ==
+	// ItemTypeSession but Item.Session == nil) can reach a caller that forgets
+	// to nil-check. Refuse to dereference a nil instance instead of panicking.
+	if inst == nil {
+		return
+	}
 	oldGroupPath := inst.GroupPath
 
 	// Remove from old group

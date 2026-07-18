@@ -8361,8 +8361,15 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Move session to different group
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
+			// Guard against creating-session placeholder rows (Type ==
+			// ItemTypeSession but Session == nil) — moving one would panic
+			// (#1540). Tell the user the session is still being created.
 			if item.Type == session.ItemTypeSession {
-				h.groupDialog.ShowMove(h.scopedGroupPaths())
+				if item.Session == nil {
+					h.setError(fmt.Errorf("session is still being created, try again in a moment"))
+				} else {
+					h.groupDialog.ShowMove(h.scopedGroupPaths())
+				}
 			}
 		}
 		return h, nil
@@ -10421,7 +10428,10 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			targetGroupPath := h.groupDialog.GetSelectedGroup()
 			if targetGroupPath != "" && h.cursor < len(h.flatItems) {
 				item := h.flatItems[h.cursor]
-				if item.Type == session.ItemTypeSession {
+				// A creating-session placeholder (Type == ItemTypeSession,
+				// Session == nil) must not reach MoveSessionToGroup or the
+				// item.Session.ID deref below — both panic (#1540).
+				if item.Type == session.ItemTypeSession && item.Session != nil {
 					h.groupTree.MoveSessionToGroup(item.Session, targetGroupPath)
 					h.pendingGroupOps = append(h.pendingGroupOps, pendingGroupOp{
 						kind: groupOpMove, sessionID: item.Session.ID, targetPath: targetGroupPath,

@@ -725,6 +725,22 @@ func TestMoveSessionToGroup(t *testing.T) {
 	}
 }
 
+// TestMoveSessionToGroupNilInstance verifies the #1540 defense-in-depth guard:
+// a creating-session placeholder row surfaces a nil *Instance to the move path;
+// MoveSessionToGroup must no-op instead of panicking on inst.GroupPath.
+func TestMoveSessionToGroupNilInstance(t *testing.T) {
+	tree := NewGroupTree(nil)
+	tree.CreateGroup("target")
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("MoveSessionToGroup panicked on nil instance: %v", r)
+		}
+	}()
+
+	tree.MoveSessionToGroup(nil, "target") // must not panic
+}
+
 func TestGroupDefaultPath(t *testing.T) {
 	now := time.Now()
 
