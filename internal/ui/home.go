@@ -12515,6 +12515,14 @@ func (h *Home) restartSession(inst *session.Instance) tea.Cmd {
 
 // restartSessionFresh restarts a session without resuming the previous tool session.
 func (h *Home) restartSessionFresh(inst *session.Instance) tea.Cmd {
+	return h.restartSessionFreshWith(inst, h.persistArchived, (*session.Instance).RestartFresh)
+}
+
+func (h *Home) restartSessionFreshWith(
+	inst *session.Instance,
+	persist func(*session.Instance) error,
+	restartFresh func(*session.Instance) error,
+) tea.Cmd {
 	id := inst.ID
 	mcpUILog.Debug(
 		"restart_session_fresh_called",
@@ -12534,13 +12542,16 @@ func (h *Home) restartSessionFresh(inst *session.Instance) tea.Cmd {
 			return sessionRestartedMsg{sessionID: id, err: err, fresh: true}
 		}
 
-		err := current.RestartFresh()
+		unarchived, err := restartWithArchiveTransition(current, persist, func() error {
+			return restartFresh(current)
+		})
 		mcpUILog.Debug("restart_session_fresh_result", slog.String("id", id), slog.Any("error", err))
 		return sessionRestartedMsg{
-			sessionID: id,
-			err:       err,
-			warning:   current.ConsumeCodexRestartWarning(),
-			fresh:     true,
+			sessionID:  id,
+			err:        err,
+			warning:    current.ConsumeCodexRestartWarning(),
+			fresh:      true,
+			unarchived: unarchived,
 		}
 	}
 }

@@ -100,6 +100,95 @@ func TestRestartWithArchiveTransitionDoesNotRestartWhenUnarchivePersistenceFails
 	}
 }
 
+func TestRestartFreshWithArchiveTransitionUnarchivesBeforeRestart(t *testing.T) {
+	archivedAt := time.Date(2026, time.July, 18, 8, 0, 0, 0, time.UTC)
+	inst := &session.Instance{ID: "archived-fresh", ArchivedAt: archivedAt}
+	home := NewHome()
+	home.instanceByID[inst.ID] = inst
+	var events []string
+
+	cmd := home.restartSessionFreshWith(inst, func(current *session.Instance) error {
+		if current.IsArchived() {
+			events = append(events, "persist-archived")
+		} else {
+			events = append(events, "persist-unarchived")
+		}
+		return nil
+	}, func(*session.Instance) error {
+		events = append(events, "restart-fresh")
+		return nil
+	})
+	msg, ok := cmd().(sessionRestartedMsg)
+	if !ok {
+		t.Fatalf("expected sessionRestartedMsg")
+	}
+	if msg.err != nil {
+		t.Fatalf("fresh restart archive transition: %v", msg.err)
+	}
+	if !msg.fresh || !msg.unarchived || inst.IsArchived() {
+		t.Fatalf("successful fresh restart: fresh=%v unarchived=%v archivedAt=%v", msg.fresh, msg.unarchived, inst.ArchivedAt)
+	}
+	want := []string{"persist-unarchived", "restart-fresh"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestRestartFreshWithArchiveTransitionRestoresArchiveOnFailure(t *testing.T) {
+	archivedAt := time.Date(2026, time.July, 18, 8, 0, 0, 0, time.UTC)
+	inst := &session.Instance{ID: "archived-fresh", ArchivedAt: archivedAt}
+	home := NewHome()
+	home.instanceByID[inst.ID] = inst
+	var persisted []time.Time
+	restartErr := errors.New("fresh spawn failed")
+
+	cmd := home.restartSessionFreshWith(inst, func(current *session.Instance) error {
+		persisted = append(persisted, current.ArchivedAt)
+		return nil
+	}, func(*session.Instance) error {
+		return restartErr
+	})
+	msg, ok := cmd().(sessionRestartedMsg)
+	if !ok {
+		t.Fatalf("expected sessionRestartedMsg")
+	}
+	if !errors.Is(msg.err, restartErr) {
+		t.Fatalf("error = %v, want %v", msg.err, restartErr)
+	}
+	if !msg.fresh || msg.unarchived || !inst.ArchivedAt.Equal(archivedAt) {
+		t.Fatalf("failed fresh restart: fresh=%v unarchived=%v archivedAt=%v", msg.fresh, msg.unarchived, inst.ArchivedAt)
+	}
+	if len(persisted) != 2 || !persisted[0].IsZero() || !persisted[1].Equal(archivedAt) {
+		t.Fatalf("persisted timestamps = %v, want [zero, %v]", persisted, archivedAt)
+	}
+}
+
+func TestRestartFreshWithArchiveTransitionActiveSessionSkipsPersistence(t *testing.T) {
+	inst := &session.Instance{ID: "active-fresh"}
+	home := NewHome()
+	home.instanceByID[inst.ID] = inst
+	persisted := false
+	restarted := false
+
+	cmd := home.restartSessionFreshWith(inst, func(*session.Instance) error {
+		persisted = true
+		return nil
+	}, func(*session.Instance) error {
+		restarted = true
+		return nil
+	})
+	msg, ok := cmd().(sessionRestartedMsg)
+	if !ok {
+		t.Fatalf("expected sessionRestartedMsg")
+	}
+	if msg.err != nil {
+		t.Fatalf("fresh restart archive transition: %v", msg.err)
+	}
+	if !msg.fresh || msg.unarchived || persisted || !restarted {
+		t.Fatalf("active fresh restart: fresh=%v unarchived=%v persisted=%v restarted=%v", msg.fresh, msg.unarchived, persisted, restarted)
+	}
+}
+
 func TestSessionRestartedMsgMovesUnarchivedSessionOutOfArchivedView(t *testing.T) {
 	home := NewHome()
 	home.storage = nil
