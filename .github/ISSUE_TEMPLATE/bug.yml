@@ -1,0 +1,71 @@
+name: Bug report
+description: Something in agent-deck misbehaves
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The fields below are exactly what triage needs; complete reports get validated within about a day.
+  - type: input
+    id: version
+    attributes:
+      label: agent-deck version
+      description: Output of `agent-deck version`
+      placeholder: v1.9.73
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and terminal
+      placeholder: macOS 15.5, iTerm2, tmux 3.5
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands or keystrokes. If you cannot reproduce it reliably, say so and describe when it happens.
+      placeholder: |
+        1. agent-deck add ~/proj -t "Test" -c claude
+        2. agent-deck session start Test
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected vs actual
+      placeholder: |
+        Expected: session shows as running
+        Actual: status flaps between running and error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (redacted)
+      description: Relevant lines from `~/.agent-deck/debug.log` or command output. Remove tokens, emails, and private paths before pasting.
+      render: text
+    validations:
+      required: false
+  - type: dropdown
+    id: ai_disclosure
+    attributes:
+      label: Was this written with AI help?
+      description: We welcome AI-assisted reports and PRs equally. This is a signal, not a filter.
+      options:
+        - "Human-written"
+        - "AI-assisted (I directed and reviewed it)"
+        - "AI-authored (a model wrote most of it)"
+    validations:
+      required: true
+  - type: input
+    id: ai_model
+    attributes:
+      label: If AI helped, which model?
+      description: e.g. claude-opus-4-x, gpt-5-codex, gemini-3-pro. "unsure" is a fine answer.
+      placeholder: claude-opus-4-x
+    validations:
+      required: false
