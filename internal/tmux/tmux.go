@@ -1163,11 +1163,6 @@ func bashCWrap(command string) string {
 	return bashCPrefix + escaped + "'"
 }
 
-func isBashCWrapped(command string) bool {
-	trimmed := strings.TrimSpace(command)
-	return strings.HasPrefix(trimmed, bashCPrefix)
-}
-
 const (
 	bashBinary  = "bash"
 	bashCPrefix = "bash -c '"
@@ -1249,15 +1244,28 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	// (buildInnerTmuxArgs returns the args unchanged).
 	tmuxArgs := buildInnerTmuxArgs(s.SocketName, "new-session", "-d", "-s", s.Name, "-c", workDir)
 	if startWithInitialProcess {
-		// Keep commands under bash for fish/zsh compatibility, but avoid
-		// double-wrapping payloads that are already `bash -c '…'`.
-		// wrapIgnoreSuspend() already returns that shape; re-wrapping it can
-		// corrupt quoting for nested payloads like docker exec bash -c ... .
-		if isBashCWrapped(command) {
-			tmuxArgs = append(tmuxArgs, command)
-		} else {
-			tmuxArgs = append(tmuxArgs, bashCWrap(command))
-		}
+		// Deliver the pane command as SEPARATE argv tokens (bash, -c, command)
+		// rather than a single shell-quoted string. This is the crux of the
+		// #1567 / #1580 fix.
+		//
+		// tmux treats a single trailing string command as a shell-command and
+		// delivers it through the server's default-shell: `$SHELL -c "…"`.
+		// That implicit wrap kills fast-TTY-acquiring tools within
+		// milliseconds — Hermes Agent dies <100ms (#1567), `npx codex` dies
+		// instantly (#1580) — because the tool is no longer the pane leader
+		// tmux execvp()'d, and $SHELL's controlling-terminal handoff differs.
+		//
+		// Passing separate argv tokens makes tmux execvp() `bash` directly as
+		// the pane's initial process (the default-shell is never involved),
+		// and bash then runs the command with a well-defined TTY, exactly like
+		// the surviving `tmux new-session -d bash -c hermes` repro. bash is
+		// kept as the interpreter for fish/zsh compatibility (#526).
+		//
+		// Payloads already shaped `bash -c '…'` (e.g. from wrapIgnoreSuspend)
+		// pass through as the command argument verbatim — bash -c "bash -c '…'"
+		// tail-exec's the inner bash, so no extra lingering process and no
+		// re-escaping of the nested single quotes.
+		tmuxArgs = append(tmuxArgs, bashBinary, "-c", command)
 	}
 
 	unitBase := "agentdeck-tmux-" + sanitizeSystemdUnitComponent(s.Name)
@@ -2787,7 +2795,11 @@ func (s *Session) RespawnPane(command string) error {
 		if wrapErr != nil {
 			return wrapErr
 		}
-		args = append(args, wrapped)
+		// Deliver as separate argv tokens (bash, -lc, command) so tmux
+		// execvp()s bash directly as the new pane leader instead of routing
+		// the restart command through the server default-shell. Same #1567 /
+		// #1580 rationale as the initial-process spawn in startCommandSpec.
+		args = append(args, wrapped...)
 	}
 
 	mcpLog.Debug("respawn_pane_executing", slog.Any("args", args))
@@ -2832,20 +2844,20 @@ func (s *Session) RespawnPane(command string) error {
 	return nil
 }
 
-func wrapRespawnCommand(command string) (string, error) {
+// wrapRespawnCommand returns the argv tokens ({bash, -lc, command}) that
+// respawn-pane appends so tmux execvp()s bash directly as the new pane leader
+// rather than routing the command through the server default-shell. See the
+// #1567 / #1580 fix rationale in startCommandSpec.
+func wrapRespawnCommand(command string) ([]string, error) {
 	return wrapRespawnCommandWithResolver(command, exec.LookPath)
 }
 
-func wrapRespawnCommandWithResolver(command string, lookPath func(string) (string, error)) (string, error) {
+func wrapRespawnCommandWithResolver(command string, lookPath func(string) (string, error)) ([]string, error) {
 	bashPath, err := lookPath(bashBinary)
 	if err != nil {
-		return "", fmt.Errorf("bash not found in PATH: %w", err)
+		return nil, fmt.Errorf("bash not found in PATH: %w", err)
 	}
-	return buildBashLCCommand(bashPath, command), nil
-}
-
-func buildBashLCCommand(bashPath, command string) string {
-	return fmt.Sprintf("%s -lc %s", bashPath, shellescape.Quote(command))
+	return []string{bashPath, "-lc", command}, nil
 }
 
 // GetWindowActivity returns Unix timestamp of last tmux window activity
