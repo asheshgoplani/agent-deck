@@ -681,6 +681,22 @@ func handleWorktreeFinish(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// Issue #1576: sweep transition-notifier state for the removed session,
+	// mirroring the #910 cleanup on `agent-deck rm` / `session remove`.
+	// Without this, `worktree finish` leaves orphan records in
+	// runtime/transition-notify-state.json and stale inbox JSONL lines that
+	// keep re-firing [EVENT] deliveries to the parent conductor. Best-effort:
+	// failures warn but never block the finish (the SQLite removal above is
+	// the user-visible contract).
+	if swept, err := session.SweepInboxesForChildSession(inst.ID); err != nil && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "warn: inbox sweep for %s failed: %v\n", inst.ID, err)
+	} else if swept > 0 && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "swept %d stale inbox event(s) for removed session\n", swept)
+	}
+	if _, err := session.RemoveNotifyStateRecord(inst.ID); err != nil && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "warn: notify-state sweep for %s failed: %v\n", inst.ID, err)
+	}
+
 	if *jsonOutput {
 		out.Print("", map[string]interface{}{
 			"success":        true,

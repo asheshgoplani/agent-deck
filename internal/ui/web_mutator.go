@@ -670,6 +670,13 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		return web.WorktreeFinishResult{}, fmt.Errorf("save session data: %w", sErr)
 	}
 
+	// Issue #1576: sweep transition-notifier state (inbox JSONL lines +
+	// runtime/transition-notify-state.json dedup record) for the removed
+	// session, mirroring the #910 cleanup on `agent-deck rm`. Best-effort —
+	// never fails the finish.
+	_, _ = session.SweepInboxesForChildSession(id)
+	_, _ = session.RemoveNotifyStateRecord(id)
+
 	mergedInto := targetBranch
 	if opts.NoMerge {
 		mergedInto = ""

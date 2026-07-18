@@ -6349,6 +6349,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		h.forceSaveInstances()
 
+		// Issue #1576: sweep transition-notifier state (inbox JSONL lines +
+		// runtime/transition-notify-state.json dedup record) for the removed
+		// session, mirroring the #910 cleanup on `agent-deck rm`. Best-effort —
+		// never blocks the finish.
+		if _, err := session.SweepInboxesForChildSession(msg.sessionID); err != nil {
+			uiLog.Warn("worktree_finish_inbox_sweep_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
+		}
+		if _, err := session.RemoveNotifyStateRecord(msg.sessionID); err != nil {
+			uiLog.Warn("worktree_finish_notify_state_sweep_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
+		}
+
 		// Show success message
 		successMsg := fmt.Sprintf("Finished worktree '%s'", msg.sessionTitle)
 		if msg.merged {
