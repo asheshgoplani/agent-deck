@@ -16258,16 +16258,28 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	return b.String()
 }
 
+// remoteRowGutter returns the fixed-width left gutter for a remote row: the
+// selection arrow "▶ " when selected, else leftGutterWidth blanks. Both are the
+// same display width, so selecting a row never shifts it, and the Level-0 remote
+// host header lands flush with local root groups (which likewise start their
+// content right after the gutter). This replaces the separate selection-arrow
+// column (selPrefix) that over-indented the whole remote subtree by one level
+// (#1553 regression): the arrow now lives inside the gutter instead of after it.
+func remoteRowGutter(selected bool) string {
+	if selected {
+		return "▶ "
+	}
+	return strings.Repeat(" ", leftGutterWidth)
+}
+
 // renderRemoteGroupItem renders a remote group header (e.g., "remotes/dev")
 func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, selected bool) {
 	nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true) // yellow
 	countStyle := DimStyle
 	expandIcon := "▾"
-	selPrefix := "  "
 	if selected {
 		nameStyle = GroupNameSelStyle
 		countStyle = GroupCountSelStyle
-		selPrefix = "▶ "
 	}
 
 	// #1553: Level > 0 is a nested sub-group header ("remotes/<name>/<group>").
@@ -16285,9 +16297,8 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 			segName = groupPath[idx+1:]
 		}
 
-		b.WriteString(fmt.Sprintf("%s%s%s%s %s%s\n",
-			strings.Repeat(" ", leftGutterWidth), // align with group hotkey gutter
-			selPrefix,
+		b.WriteString(fmt.Sprintf("%s%s%s %s%s\n",
+			remoteRowGutter(selected),        // align with group hotkey gutter
 			strings.Repeat("  ", item.Level), // nest under the remote header
 			expandIcon,
 			nameStyle.Render(segName),
@@ -16304,9 +16315,8 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	}
 	h.remoteSessionsMu.RUnlock()
 
-	b.WriteString(fmt.Sprintf("%s%s%s %s%s%s\n",
-		strings.Repeat(" ", leftGutterWidth), // align with group hotkey gutter
-		selPrefix,
+	b.WriteString(fmt.Sprintf("%s%s %s%s%s\n",
+		remoteRowGutter(selected), // align with group hotkey gutter (flush with local root groups)
 		expandIcon,
 		nameStyle.Render("remotes/"+item.RemoteName),
 		countStyle.Render(fmt.Sprintf(" (%d)", count)),
@@ -16409,24 +16419,16 @@ func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, se
 		treeConnector = "└─"
 	}
 
-	selPrefix := "  "
-	if selected {
-		selPrefix = "▶ "
-	}
-
 	// #1553: indent by the item's level so sessions sit one step below their
 	// owning group header. A session directly under a Level-1 group renders at
-	// Level 2 -> `strings.Repeat("  ", 2)` == 4 spaces; the old flat layout put
-	// sessions at Level 1 with a hardcoded 2-space indent, so Level-1 rows stay
-	// byte-identical to before.
+	// Level 2 -> `strings.Repeat("  ", 2)` == 4 spaces.
 	indent := strings.Repeat("  ", item.Level)
 	if item.Level == 0 {
 		indent = "  " // defensive: never dedent past the old flat baseline
 	}
 
-	b.WriteString(fmt.Sprintf("%s%s%s%s %s %s%s\n",
-		strings.Repeat(" ", leftGutterWidth), // align with group/session hotkey gutter
-		selPrefix,
+	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s\n",
+		remoteRowGutter(selected), // align with group/session hotkey gutter
 		indent,
 		DimStyle.Render(treeConnector),
 		sStyle.Render(statusIcon),
