@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/safeio"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // SpawnFailureRecord captures why a session's initial process died at or shortly
@@ -25,9 +26,9 @@ type SpawnFailureRecord struct {
 	InstanceID  string `json:"instance_id"`
 	Tool        string `json:"tool"`
 	Command     string `json:"command,omitempty"`
-	Reason      string `json:"reason"`             // tmux_start_failed | spawn_died_fast
+	Reason      string `json:"reason"`                 // tmux_start_failed | spawn_died_fast
 	DyingOutput string `json:"dying_output,omitempty"` // last pane snapshot captured while alive
-	ElapsedMs   int64  `json:"elapsed_ms"`         // ms from spawn to observed death (0 for tmux_start_failed)
+	ElapsedMs   int64  `json:"elapsed_ms"`             // ms from spawn to observed death (0 for tmux_start_failed)
 	Timestamp   int64  `json:"ts"`
 }
 
@@ -150,11 +151,16 @@ const (
 //
 // Best-effort and self-contained: all errors are swallowed so the watcher can
 // never affect the spawn path. Runs in its own goroutine.
-func (i *Instance) watchForFastDeath(command string) {
-	if i.tmuxSession == nil {
+// The watcher runs in its own goroutine, so it must never read i's
+// mutex-guarded mutable fields directly. Everything it needs is passed by
+// value: the pane session pointer captured at launch (sess), the instance id
+// and tool, and gen — a snapshot of i.spawnGen taken at launch. A deliberate
+// stop or a restart/respawn bumps i.spawnGen, so a mismatch means this watcher
+// has been superseded and must exit quietly (#1580 data-race fix).
+func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Session, id, tool string, logger *slog.Logger) {
+	if sess == nil {
 		return
 	}
-	sessionName := i.tmuxSession.Name
 	start := time.Now()
 	deadline := start.Add(spawnFastDeathWindow)
 	var lastSnapshot string
@@ -165,29 +171,17 @@ func (i *Instance) watchForFastDeath(command string) {
 	for {
 		<-ticker.C
 
-		// Deliberate stop/kill flips Status to StatusStopped under i.mu — never
-		// treat that as a spawn failure.
-		i.mu.Lock()
-		status := i.Status
-		curName := ""
-		if i.tmuxSession != nil {
-			curName = i.tmuxSession.Name
-		}
-		i.mu.Unlock()
-		if status == StatusStopped {
-			return
-		}
-		// A restart/respawn replaced the tmux session under us — this watcher is
-		// bound to the old name, so stop quietly.
-		if curName != sessionName {
+		// A newer spawn or a deliberate stop bumped the generation — this
+		// watcher is stale, so stop quietly and never record a failure.
+		if i.spawnGen.Load() != gen {
 			return
 		}
 
-		if i.tmuxSession.Exists() {
+		if sess.Exists() {
 			// Alive: snapshot the current pane so we hold the dying output the
 			// instant it disappears (tmux discards the pane on process exit for
 			// non-remain-on-exit sessions).
-			if content, err := i.tmuxSession.CapturePane(); err == nil {
+			if content, err := sess.CapturePane(); err == nil {
 				if trimmed := strings.TrimSpace(content); trimmed != "" {
 					lastSnapshot = trimmed
 				}
@@ -195,8 +189,8 @@ func (i *Instance) watchForFastDeath(command string) {
 			if time.Now().After(deadline) {
 				// Survived the window: healthy start.
 				_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
-					InstanceID: i.ID,
-					Tool:       i.Tool,
+					InstanceID: id,
+					Tool:       tool,
 					Action:     "spawn_survived",
 					Source:     "spawn_watcher",
 				})
@@ -208,27 +202,27 @@ func (i *Instance) watchForFastDeath(command string) {
 		// Session is gone and it was not a deliberate stop → fast death.
 		elapsed := time.Since(start).Milliseconds()
 		rec := SpawnFailureRecord{
-			InstanceID:  i.ID,
-			Tool:        i.Tool,
+			InstanceID:  id,
+			Tool:        tool,
 			Command:     command,
 			Reason:      "spawn_died_fast",
 			DyingOutput: lastSnapshot,
 			ElapsedMs:   elapsed,
 		}
 		if err := writeSpawnFailureRecord(rec); err != nil {
-			sessionLog.Warn("spawn_failure_record_write_failed",
-				slog.String("instance_id", i.ID),
+			logger.Warn("spawn_failure_record_write_failed",
+				slog.String("instance_id", id),
 				slog.String("error", err.Error()))
 		}
-		sessionLog.Error("spawn_died_fast",
-			slog.String("instance_id", i.ID),
-			slog.String("tool", i.Tool),
+		logger.Error("spawn_died_fast",
+			slog.String("instance_id", id),
+			slog.String("tool", tool),
 			slog.String("command", command),
 			slog.Int64("elapsed_ms", elapsed),
 			slog.String("dying_output", lastSnapshot))
 		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
-			InstanceID: i.ID,
-			Tool:       i.Tool,
+			InstanceID: id,
+			Tool:       tool,
 			Action:     "spawn_died_fast",
 			Source:     "spawn_watcher",
 			Reason:     fmt.Sprintf("exited after %dms", elapsed),
