@@ -5551,7 +5551,14 @@ func (i *Instance) findLatestClaudeTranscriptOnDisk() (string, *ResponseOutput) 
 	return "", nil
 }
 
-// parseClaudeLastAssistantMessage parses a Claude JSONL file to extract the last assistant message
+// parseClaudeLastAssistantMessage parses a Claude JSONL file to extract the last assistant message.
+//
+// It anchors at EOF and walks lines BACKWARD over the raw bytes with no
+// line-length ceiling (issue #1568): a forward bufio.Scanner capped at 1MB
+// stopped silently (bufio.ErrTooLong) at the multi-megabyte single-line
+// records that Claude Code /compact inserts mid-file (file-history-snapshot,
+// compact summaries), so every post-compact reply was invisible and the last
+// PRE-compact assistant text was returned forever.
 func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOutput, error) {
 	// JSONL record structure (same as global_search.go)
 	type claudeMessage struct {
@@ -5570,13 +5577,15 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 	var lastTimestamp string
 	var foundSessionID string
 
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	// Handle large lines
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	// Walk lines from EOF backward; the first non-sidechain assistant record
+	// with text content is the newest reply.
+	for end := len(data); end > 0; {
+		nl := bytes.LastIndexByte(data[:end], '\n')
+		line := bytes.TrimSpace(data[nl+1 : end])
+		end = nl
+		if nl < 0 {
+			end = 0
+		}
 		if len(line) == 0 {
 			continue
 		}
@@ -5592,9 +5601,19 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 			continue
 		}
 
-		// Capture session ID
+		// Capture session ID (backfilled from earlier records when the
+		// assistant record itself lacks one).
 		if foundSessionID == "" && record.SessionID != "" {
 			foundSessionID = record.SessionID
+		}
+
+		// Once the newest assistant text is found, keep walking only until a
+		// session ID is known.
+		if lastAssistantContent != "" {
+			if foundSessionID != "" {
+				break
+			}
+			continue
 		}
 
 		// Only care about messages
@@ -5635,10 +5654,14 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 				extractedText = strings.TrimSpace(sb.String())
 			}
 		}
-		// Only update if we found actual text content
+		// Only accept records with actual text content (tool_use-only
+		// assistant records are skipped).
 		if extractedText != "" {
 			lastAssistantContent = extractedText
 			lastTimestamp = record.Timestamp
+			if foundSessionID != "" {
+				break
+			}
 		}
 	}
 
