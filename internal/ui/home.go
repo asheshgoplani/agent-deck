@@ -366,6 +366,9 @@ type Home struct {
 	hookWatcher        *session.StatusFileWatcher
 	pendingHooksPrompt bool // True if user should be prompted to install hooks
 
+	// SSE-based status detection for OpenCode sessions (issue #1614)
+	sseWatcher *session.OpenCodeSSEWatcher
+
 	// Test seams for the visible-pane clipboard action. Production leaves both
 	// nil and uses fresh tmux capture plus the shared clipboard fallback chain.
 	paneCapture   paneCaptureFunc
@@ -1537,6 +1540,13 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 			h.storageWatcher = watcher
 			watcher.Start()
 		}
+	}
+
+	// SSE-based status detection for OpenCode sessions (issue #1614).
+	// Connections are opened lazily by backgroundStatusUpdate's Sync() call,
+	// so creating the watcher here is free when no OpenCode sessions exist.
+	if homeBackgroundWorkersEnabled {
+		h.sseWatcher = session.NewOpenCodeSSEWatcher(nil)
 	}
 
 	// Hook-based status detection (Claude Code lifecycle hooks)
@@ -4194,6 +4204,28 @@ func (h *Home) backgroundStatusUpdate() {
 				}
 			}
 		}
+	}
+
+	// Reconcile OpenCode SSE connections and feed derived statuses to
+	// instances (enables the SSE fast path in UpdateStatus, issue #1614).
+	if h.sseWatcher != nil {
+		var targets []session.SSETarget
+		for _, inst := range instances {
+			if inst.Tool != "opencode" {
+				continue
+			}
+			st := inst.GetStatusThreadSafe()
+			if st == session.StatusStopped {
+				continue
+			}
+			if port := inst.GetOpenCodePort(); port > 0 {
+				targets = append(targets, session.SSETarget{InstanceID: inst.ID, Port: port})
+				if ss := h.sseWatcher.GetStatus(inst.ID); ss != nil {
+					inst.UpdateOpenCodeSSEStatus(ss.Status, ss.UpdatedAt)
+				}
+			}
+		}
+		h.sseWatcher.Sync(targets)
 	}
 
 	// Proactive context-% monitoring: send /clear before auto-compact triggers
@@ -9572,6 +9604,10 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		// Close hook watcher (Claude Code lifecycle hooks)
 		if h.hookWatcher != nil {
 			h.hookWatcher.Stop()
+		}
+		// Close OpenCode SSE watcher (issue #1614)
+		if h.sseWatcher != nil {
+			h.sseWatcher.Stop()
 		}
 		// Close storage watcher
 		if h.storageWatcher != nil {

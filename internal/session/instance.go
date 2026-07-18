@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,6 +96,12 @@ const (
 	opencodeRotationScanInterval   = 15 * time.Second
 	opencodeRotationActivityWindow = 30 * time.Second
 	opencodeStartupTimeSkew        = 5 * time.Second
+	// opencodeSSEFreshnessWindow bounds how long an SSE-derived status stays
+	// authoritative without stream traffic (issue #1614). OpenCode heartbeats
+	// its /event stream roughly every 10s, and the watcher refreshes the
+	// timestamp on every received line, so 30s of silence means the stream
+	// (and likely the process) is gone — fall back to tmux polling.
+	opencodeSSEFreshnessWindow = 30 * time.Second
 	// codexProbeScanInterval rate-limits process-file probing to avoid
 	// repeated /proc and lsof scans on every status tick.
 	codexProbeScanInterval    = 2 * time.Second
@@ -202,7 +209,8 @@ type Instance struct {
 	// OpenCode CLI integration
 	OpenCodeSessionID  string    `json:"opencode_session_id,omitempty"`
 	OpenCodeDetectedAt time.Time `json:"opencode_detected_at,omitempty"`
-	OpenCodeStartedAt  int64     `json:"-"` // Unix millis when we started OpenCode (for session matching, not persisted)
+	OpenCodeStartedAt  int64     `json:"-"`                       // Unix millis when we started OpenCode (for session matching, not persisted)
+	OpenCodePort       int       `json:"opencode_port,omitempty"` // Localhost port of OpenCode's event server (issue #1614); 0 = none
 	lastOpenCodeScanAt time.Time // Rate-limits expensive `opencode session list` scans
 
 	// Codex CLI integration
@@ -400,6 +408,11 @@ type Instance struct {
 	hookEvent      string    // Hook event name that caused the last status (e.g. "PermissionRequest")
 	hookSessionID  string    // Session ID from hook payload
 	hookLastUpdate time.Time // When hook status was last received
+
+	// SSE-based status detection for OpenCode (set by OpenCodeSSEWatcher,
+	// issue #1614). Not persisted; rebuilt from the live event stream.
+	sseStatus     string    // "running" or "waiting" (empty = no SSE data)
+	sseLastUpdate time.Time // When SSE status was last confirmed
 
 	// mu protects fields written by backgroundStatusUpdate and read by the TUI goroutine.
 	// Use GetStatus()/SetStatus() and GetTool()/SetTool() for thread-safe access.
@@ -1360,7 +1373,7 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 	// If baseCommand is just "opencode", handle specially
 	if baseCommand == "opencode" {
 		cmd := GetToolCommand("opencode")
-		extraFlags := i.buildOpenCodeExtraFlags()
+		extraFlags := i.buildOpenCodeExtraFlags() + i.buildOpenCodeSSEPortFlag()
 
 		// If we already have a session ID, use resume with -s flag.
 		// OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
@@ -1373,7 +1386,11 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 		return envPrefix + cmd + extraFlags
 	}
 
-	// For custom commands (e.g., fork commands), return as-is
+	// For custom commands (e.g., fork commands), return as-is. No --port is
+	// injected, so clear any stale port from a prior launch — otherwise the
+	// SSE watcher could connect to a freed port later reused by an unrelated
+	// process (issue #1614). Status falls back to tmux content sniffing.
+	i.OpenCodePort = 0
 	return envPrefix + baseCommand
 }
 
@@ -1399,6 +1416,66 @@ func (i *Instance) buildOpenCodeExtraFlags() string {
 		flags += " --agent " + opts.Agent
 	}
 	return flags
+}
+
+// buildOpenCodeSSEPortFlag allocates a localhost port for OpenCode's event
+// server and returns " --port N" (issue #1614). With an explicit --port, the
+// OpenCode TUI binds a real HTTP server whose /event SSE stream publishes
+// session.status transitions; OpenCodeSSEWatcher consumes it for real-time
+// status instead of tmux content sniffing. Returns "" (and clears the stored
+// port) when disabled via [opencode].disable_sse_status or when no port could
+// be allocated — status detection then falls back to tmux polling.
+func (i *Instance) buildOpenCodeSSEPortFlag() string {
+	if config, err := LoadUserConfig(); err == nil && config != nil && config.OpenCode.DisableSSEStatus {
+		i.OpenCodePort = 0
+		return ""
+	}
+	port, err := allocateLocalPort()
+	if err != nil {
+		sessionLog.Warn("opencode_sse_port_alloc_failed", slog.String("error", err.Error()))
+		i.OpenCodePort = 0
+		return ""
+	}
+	i.OpenCodePort = port
+	return fmt.Sprintf(" --port %d", port)
+}
+
+// allocateLocalPort reserves a free 127.0.0.1 port by binding :0 and
+// immediately releasing it. The tiny window before OpenCode re-binds it is
+// the standard trade-off; a collision surfaces as a failed launch and the
+// next restart picks a fresh port.
+func allocateLocalPort() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+	return port, nil
+}
+
+// GetOpenCodePort returns the event-server port with lock protection.
+func (i *Instance) GetOpenCodePort() int {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.OpenCodePort
+}
+
+// UpdateOpenCodeSSEStatus feeds an SSE-derived status ("running"/"waiting")
+// into the instance for the SSE fast path in UpdateStatus (issue #1614).
+func (i *Instance) UpdateOpenCodeSSEStatus(status string, updatedAt time.Time) {
+	if status == "" {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	// A transition means new activity/output the user hasn't seen yet: reset
+	// acknowledgment so waiting renders orange, mirroring UpdateHookStatus.
+	if status != i.sseStatus && i.tmuxSession != nil {
+		i.tmuxSession.ResetAcknowledged()
+	}
+	i.sseStatus = status
+	i.sseLastUpdate = updatedAt
 }
 
 // DetectOpenCodeSession is the public wrapper for async OpenCode session detection
@@ -4172,6 +4249,31 @@ func (i *Instance) UpdateStatus() error {
 			}
 		}
 		return nil
+	}
+
+	// SSE FAST PATH (issue #1614): OpenCode publishes session.status over its
+	// /event stream when launched with --port; OpenCodeSSEWatcher feeds the
+	// derived status here via UpdateOpenCodeSSEStatus. When the stream drops,
+	// the status ages past opencodeSSEFreshnessWindow and control falls
+	// through to tmux content sniffing — the same degradation model as hooks.
+	if i.Tool == "opencode" && i.sseStatus != "" &&
+		time.Since(i.sseLastUpdate) < opencodeSSEFreshnessWindow {
+		switch i.sseStatus {
+		case "running":
+			i.Status = StatusRunning
+			// New activity means output not yet seen (mirrors hook fast path).
+			if i.tmuxSession != nil {
+				i.tmuxSession.ResetAcknowledged()
+			}
+			return nil
+		case "waiting":
+			if i.tmuxSession != nil && i.tmuxSession.IsAcknowledged() {
+				i.Status = StatusIdle
+			} else {
+				i.Status = StatusWaiting
+			}
+			return nil
+		}
 	}
 
 	// Release lock for potentially slow tmux calls (GetStatus calls CapturePane)

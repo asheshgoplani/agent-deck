@@ -1790,6 +1790,14 @@ type OpenCodeSettings struct {
 	// Command overrides the default binary/invocation for OpenCode sessions.
 	// Supports flags (e.g., "opencode --custom-flag"). Default: "opencode"
 	Command string `toml:"command,omitempty"`
+
+	// DisableSSEStatus turns off SSE-based status tracking (issue #1614).
+	// By default agent-deck launches OpenCode with an explicit --port so its
+	// /event SSE stream can drive real-time status (green while busy, yellow
+	// when waiting) instead of tmux content sniffing. Set true if your
+	// OpenCode version predates the top-level --port flag or you don't want
+	// a localhost event server bound per session.
+	DisableSSEStatus bool `toml:"disable_sse_status,omitempty"`
 }
 
 // CodexSettings defines Codex CLI configuration
@@ -3985,6 +3993,9 @@ func CreateExampleConfig() error {
 # default_model = "anthropic/claude-sonnet-4-5-20250929"
 # Default agent for new sessions
 # default_agent = ""
+# Disable SSE-based status tracking (issue #1614). When disabled, OpenCode is
+# launched without --port and status falls back to tmux content sniffing.
+# disable_sse_status = true
 
 # Codex CLI integration
 # [codex]
