@@ -254,7 +254,7 @@ func TestReviveBreaker_WedgeWarnOnceRateLimited(t *testing.T) {
 	// After the interval, a fresh open-circuit event may warn again.
 	clk.Advance(WedgeWarnInterval + time.Minute)
 	// Force a re-futile probe on both to re-enter recordFutile with open circuits.
-	clk.Advance(MaxCooldown) // ensure cooldown expired so probes fire
+	clk.Advance(MaxCooldown)    // ensure cooldown expired so probes fire
 	sweep(r, []*Instance{a, c}) // probes
 	sweep(r, []*Instance{a, c}) // futile → recordFutile → warn again
 	if got := h.count("reviver_tmux_wedge_suspected"); got < 2 {
