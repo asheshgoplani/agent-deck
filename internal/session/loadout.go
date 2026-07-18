@@ -53,8 +53,8 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 	if cfgErr != nil {
 		w := fmt.Sprintf("config.toml error — declarative skill/mcp loadout inactive: %v", cfgErr)
 		sessionLog.Warn("loadout_config_unreadable",
-			slog.String("session", inst.Title),
-			slog.String("error", cfgErr.Error()))
+			slog.String("session", sanitizeLoadoutWarning(inst.Title)),
+			slog.String("error", sanitizeLoadoutWarning(cfgErr.Error())))
 		return []string{w}
 	}
 	if config == nil {
@@ -82,8 +82,8 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 		w := sanitizeLoadoutWarning(fmt.Sprintf(format, args...))
 		warnings = append(warnings, w)
 		sessionLog.Warn("loadout_entry_skipped",
-			slog.String("session", inst.Title),
-			slog.String("group", inst.GroupPath),
+			slog.String("session", sanitizeLoadoutWarning(inst.Title)),
+			slog.String("group", sanitizeLoadoutWarning(inst.GroupPath)),
 			slog.String("detail", w))
 	}
 
@@ -94,9 +94,9 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 		case err == nil:
 			attachedSkill = true
 			sessionLog.Info("loadout_skill_attached",
-				slog.String("session", inst.Title),
-				slog.String("skill", entry),
-				slog.String("target", attachment.TargetPath))
+				slog.String("session", sanitizeLoadoutWarning(inst.Title)),
+				slog.String("skill", sanitizeLoadoutWarning(entry)),
+				slog.String("target", sanitizeLoadoutWarning(attachment.TargetPath)))
 		case errors.Is(err, ErrSkillAlreadyAttached) && healthyManagedSkillAttachment(inst.ProjectPath, entry):
 			// Healthy manifest-managed floor — nothing to do.
 		case errors.Is(err, ErrSkillAlreadyAttached):
@@ -153,8 +153,8 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 			warn("workspace trust seed for %q failed (plugins may not load): %v", trustDir, err)
 		} else {
 			sessionLog.Info("loadout_trust_seeded",
-				slog.String("session", inst.Title),
-				slog.String("dir", trustDir))
+				slog.String("session", sanitizeLoadoutWarning(inst.Title)),
+				slog.String("dir", sanitizeLoadoutWarning(trustDir)))
 		}
 	}
 
@@ -183,8 +183,8 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 			attached[name] = true
 			added = true
 			sessionLog.Info("loadout_mcp_attached",
-				slog.String("session", inst.Title),
-				slog.String("mcp", name))
+				slog.String("session", sanitizeLoadoutWarning(inst.Title)),
+				slog.String("mcp", sanitizeLoadoutWarning(name)))
 		}
 		if added {
 			if err := inst.WriteLocalMCPConfig(newLocal); err != nil {
@@ -199,9 +199,14 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 }
 
 func sanitizeLoadoutWarning(value string) string {
+	// strings.ReplaceAll for \r and \n first: it is the newline-strip form
+	// CodeQL models as a go/log-injection sanitizer, and these values also
+	// feed the structured loadout log records below.
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
 	return strings.Map(func(r rune) rune {
 		switch {
-		case r == '\n' || r == '\r' || r == '\u0085' || r == '\u2028' || r == '\u2029':
+		case r == '\u0085' || r == '\u2028' || r == '\u2029':
 			return ' '
 		case r < 0x20 || (r >= 0x7f && r <= 0x9f):
 			return -1
@@ -224,8 +229,16 @@ func healthyManagedSkillAttachment(projectPath, skillID string) bool {
 		if normalizeSkillToken(skillIDForAttachment(attachment)) != normalizeSkillToken(skillID) {
 			continue
 		}
-		target, ok := containedManagedTargetPath(projectPath, attachment.TargetPath)
-		if !ok {
+		// Same audit-M3 containment guard as safeRemoveManagedTarget: a
+		// tampered manifest TargetPath that is absolute, non-managed, or
+		// "../"-escaping is refused before any filesystem access.
+		target := resolveTargetPath(projectPath, attachment.TargetPath)
+		skillDir, dirOK := managedProjectSkillsDirForTarget(attachment.TargetPath)
+		if !dirOK {
+			return false
+		}
+		base := filepath.Join(projectPath, filepath.FromSlash(skillDir))
+		if !isContainedIn(base, target) {
 			return false
 		}
 		if _, err := os.Lstat(target); err != nil {
