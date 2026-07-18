@@ -13,6 +13,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
 - [[copilot] Section](#copilot-section)
+- [[cursor] Section](#cursor-section)
 - [[hermes] Section](#hermes-section)
 - [[docker] Section](#docker-section)
 - [[worktree] Section](#worktree-section)
@@ -115,6 +116,7 @@ config_dir = "~/.claude-team"      # Optional override for profile "work"
 | `vim_mode` | bool | `false` | Set when the inner Claude Code prompt uses vim keybindings (`"editorMode": "vim"`). Each `session send` then prepends an Escape + `i` insert-mode guarantee so a message sent while the prompt is in vim NORMAL mode actually submits instead of being typed-but-unsent (issue #1264). Only affects Claude-compatible tools. |
 | `extra_args` | array of strings | `[]` | Extra Claude CLI flags remembered from the New Session dialog and appended to new/restarted Claude sessions. Do not store secrets here. |
 | `env_file` | string | `""` | A .env file sourced for Claude sessions only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
+| `hooks_enabled` | bool | `true` | Enables Claude Code lifecycle hooks for real-time status detection. Set `false` to opt out of hook-based detection and the TUI install prompt. |
 | `command` | string | `"claude"` | Override the binary/invocation (e.g., `"cdw"` for a wrapper that sets `CLAUDE_CONFIG_DIR`). |
 
 Config resolution order for Claude config dir:
@@ -278,6 +280,19 @@ command = "copilot"
 |-----|------|---------|-------------|
 | `env_file` | string | `""` | A .env file sourced for Copilot sessions only. See [Path Resolution](#path-resolution). |
 | `command` | string | `"copilot"` | Override the binary/invocation. |
+
+## [cursor] Section
+
+Cursor Agent CLI integration settings.
+
+```toml
+[cursor]
+hooks_enabled = false  # Disable automatic Cursor hook injection on TUI startup
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `hooks_enabled` | bool | `true` | When `true`, TUI startup silently injects agent-deck lifecycle hooks into `~/.cursor/hooks.json` whenever the `cursor` binary is on `PATH` (real-time status detection). Set `false` to durably opt out; `agent-deck cursor-hooks uninstall` writes this automatically so the uninstall survives TUI restarts (issue #1672). Re-enable with `agent-deck cursor-hooks install` or by removing the key. Mirrors `[claude] hooks_enabled`. |
 
 ## [hermes] Section
 

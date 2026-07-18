@@ -142,6 +142,9 @@ type UserConfig struct {
 	// Codex defines Codex CLI integration settings
 	Codex CodexSettings `toml:"codex,omitempty"`
 
+	// Cursor defines Cursor Agent CLI integration settings (Issue #1672)
+	Cursor CursorSettings `toml:"cursor,omitempty"`
+
 	// Copilot defines GitHub Copilot CLI integration settings (Issue #556)
 	Copilot CopilotSettings `toml:"copilot,omitempty"`
 
@@ -1830,6 +1833,26 @@ func (c *UserConfig) GetProfileCodexConfigDir(profile string) string {
 		return ""
 	}
 	return ExpandPath(profileCfg.Codex.ConfigDir)
+}
+
+// CursorSettings defines Cursor Agent CLI integration configuration (Issue #1672).
+type CursorSettings struct {
+	// HooksEnabled enables Cursor Agent CLI hooks for real-time status detection.
+	// When enabled, agent-deck silently injects lifecycle hooks into
+	// ~/.cursor/hooks.json on TUI startup whenever the cursor binary is on PATH.
+	// Set false to durably opt out of that auto-install; `agent-deck
+	// cursor-hooks uninstall` persists this automatically so the uninstall
+	// survives TUI restarts. Mirrors [claude] hooks_enabled.
+	// Default: true (nil = use default true, set false to disable)
+	HooksEnabled *bool `toml:"hooks_enabled,omitempty"`
+}
+
+// GetHooksEnabled returns whether Cursor Agent hooks are enabled, defaulting to true
+func (c *CursorSettings) GetHooksEnabled() bool {
+	if c.HooksEnabled == nil {
+		return true
+	}
+	return *c.HooksEnabled
 }
 
 // CopilotSettings defines GitHub Copilot CLI configuration (Issue #556).
