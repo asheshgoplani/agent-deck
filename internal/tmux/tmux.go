@@ -1815,7 +1815,11 @@ func (s *Session) SetEnvironment(key, value string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := s.tmuxCmdContext(ctx, "set-environment", "-t", s.Name, key, value)
-	err := cmd.Run()
+	// CombinedOutput (not Run) so tmux stderr is folded into the error. A bare
+	// "exit status 1" is useless for diagnosing a wedged server (#1579): the
+	// real cause ("no server running on ...", "can't find session") lives on
+	// stderr, which Run() discards.
+	out, err := cmd.CombinedOutput()
 	if err == nil {
 		// Invalidate cache entry so next GetEnvironment sees the new value
 		s.envCacheMu.Lock()
@@ -1823,6 +1827,10 @@ func (s *Session) SetEnvironment(key, value string) error {
 			delete(s.envCache, key)
 		}
 		s.envCacheMu.Unlock()
+		return nil
+	}
+	if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+		return fmt.Errorf("%w: %s", err, trimmed)
 	}
 	return err
 }

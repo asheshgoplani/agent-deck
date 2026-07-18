@@ -45,6 +45,10 @@ type ReviveOutcome struct {
 	Class      RevivalClass
 	Revived    bool
 	Err        error
+	// CircuitOpen is true when the futility circuit breaker skipped this
+	// instance's revive this sweep because prior revives never stabilized
+	// (a wedged tmux server that only a manual restart recovers, #1579).
+	CircuitOpen bool
 }
 
 // Reviver walks storage and re-establishes dead control pipes for instances
@@ -64,6 +68,10 @@ type Reviver struct {
 	ReviveAction func(*Instance) error
 	Stagger      time.Duration
 	Log          *slog.Logger
+	// Breaker bounds futile reconnect storms on a wedged tmux server (#1579).
+	// nil disables the breaker entirely — exact legacy behavior, relied on by
+	// unit tests that construct Reviver{} directly.
+	Breaker *ReviveBreaker
 }
 
 // NewReviver returns a Reviver wired to real tmux + PipeManager primitives.
@@ -76,6 +84,12 @@ func NewReviver() *Reviver {
 		ReviveAction: defaultReviveAction,
 		Stagger:      500 * time.Millisecond,
 		Log:          sessionLog,
+		// Process-global breaker: the TUI builds a fresh Reviver every 60s
+		// sweep (internal/ui/home.go), so per-sweep state would never
+		// accumulate. The breaker must outlive the Reviver to detect a
+		// storm across sweeps. CLI one-shots run in a short-lived process,
+		// so their global breaker starts empty and always probes.
+		Breaker: globalReviveBreaker,
 	}
 }
 
@@ -121,6 +135,9 @@ func (r *Reviver) Classify(inst *Instance) RevivalClass {
 // runReviveAll / PersistRevivedInstances — MUST be revisited so those mutations
 // are not silently dropped.
 func (r *Reviver) ReviveAll(instances []*Instance) []ReviveOutcome {
+	if r.Breaker != nil {
+		r.Breaker.Prune()
+	}
 	outcomes := make([]ReviveOutcome, 0, len(instances))
 	firstRevive := true
 	for _, inst := range instances {
@@ -148,7 +165,25 @@ func (r *Reviver) reviveOneInternal(inst *Instance, firstRevive *bool) ReviveOut
 		Title:      inst.Title,
 		Class:      class,
 	}
+
+	// Feed the classification to the breaker every sweep (not just for
+	// errored instances) so ClassAlive can reset a session's futility state
+	// and so futility from a prior sweep's revive is judged before we decide
+	// whether to attempt another one.
+	attempt := true
+	if r.Breaker != nil {
+		attempt = r.Breaker.OnClassify(inst.ID, inst.Title, class)
+	}
+
 	if class != ClassErrored {
+		return out
+	}
+
+	// Circuit open and cooling down: skip the doomed reconnect. This is the
+	// storm brake — on a wedged tmux server the breaker keeps us from
+	// respawning the same dead pipes every sweep (#1579).
+	if !attempt {
+		out.CircuitOpen = true
 		return out
 	}
 
@@ -159,12 +194,21 @@ func (r *Reviver) reviveOneInternal(inst *Instance, firstRevive *bool) ReviveOut
 
 	if err := r.ReviveAction(inst); err != nil {
 		out.Err = err
+		if r.Breaker != nil {
+			// A failed action is immediately futile — count it toward the trip.
+			r.Breaker.AfterRevive(inst.ID, inst.Title, err)
+		}
 		if r.Log != nil {
 			r.Log.Warn("reviver_action_failed",
 				slog.String("title", inst.Title),
 				slog.String("error", err.Error()))
 		}
 		return out
+	}
+	if r.Breaker != nil {
+		// Action "succeeded"; mark pending so the next sweep can tell whether
+		// the session actually stabilized or is still errored (futile).
+		r.Breaker.AfterRevive(inst.ID, inst.Title, nil)
 	}
 	out.Revived = true
 	if r.Log != nil {
