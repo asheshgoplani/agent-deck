@@ -28,7 +28,7 @@ agent-deck has one human maintainer and a fleet of AI agents that do the heavy l
 
 Good places to start:
 
-- **Issues labeled [`good-first-issue`](https://github.com/asheshgoplani/agent-deck/issues?q=is%3Aissue+is%3Aopen+label%3Agood-first-issue).** Curated to be small and self-contained.
+- **Issues labeled [`good first issue`](https://github.com/asheshgoplani/agent-deck/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).** Curated to be small and self-contained.
 - **Tool integrations.** Readiness and preset patterns for your favorite agent CLI (see `internal/session/` presets for examples).
 - **Docs fixes.** Always welcome, always fast to land.
 
