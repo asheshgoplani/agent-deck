@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -70,6 +71,10 @@ func handleSessionHandoff(profile string, args []string) {
 	}
 
 	if *outPath != "" {
+		if samePath(*outPath, info.TranscriptPath) {
+			out.Error("--out refuses to overwrite the source transcript", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 		if err := os.WriteFile(*outPath, []byte(prompt), 0o600); err != nil {
 			out.Error(fmt.Sprintf("write %s: %v", *outPath, err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -79,4 +84,20 @@ func handleSessionHandoff(profile string, args []string) {
 	}
 	fmt.Fprintf(os.Stderr, "handoff: %d/%d messages included (truncated=%v, max %d chars) from %s\n",
 		info.IncludedCount, info.MessageCount, info.Truncated, info.MaxChars, info.TranscriptPath)
+}
+
+// samePath reports whether two paths refer to the same file, following
+// symlinks when the targets exist.
+func samePath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA == nil && errB == nil {
+		return ra == rb
+	}
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	return errA == nil && errB == nil && filepath.Clean(absA) == filepath.Clean(absB)
 }

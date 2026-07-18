@@ -143,3 +143,83 @@ func TestBuildClaudeToCodexHandoffPrompt_ComplexClaudeContent(t *testing.T) {
 		t.Fatalf("info = %+v, want 4 readable conversation turns untruncated", info)
 	}
 }
+
+func TestBuildClaudeToCodexHandoffPrompt_SkipsSidechainRecords(t *testing.T) {
+	claudeDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+
+	project := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(project); err == nil {
+		project = resolved
+	}
+	sessionID := "cccccccc-dddd-eeee-ffff-000000000000"
+	transcriptDir := filepath.Join(claudeDir, "projects", ConvertToClaudeDirName(project))
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcript := strings.Join([]string{
+		`{"type":"user","message":{"role":"user","content":"main conversation GOLD ANCHOR"}}`,
+		`{"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":"sidechain subagent noise"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":"main reply"}}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(transcriptDir, sessionID+".jsonl"), []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := &Instance{Title: "sidechain-test", ProjectPath: project, Tool: "claude", ClaudeSessionID: sessionID}
+	prompt, info, err := BuildClaudeToCodexHandoffPrompt(inst, 32000)
+	if err != nil {
+		t.Fatalf("BuildClaudeToCodexHandoffPrompt: %v", err)
+	}
+	if strings.Contains(prompt, "sidechain subagent noise") {
+		t.Fatalf("prompt leaked sidechain record:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "GOLD ANCHOR") || !strings.Contains(prompt, "main reply") {
+		t.Fatalf("prompt missing main conversation:\n%s", prompt)
+	}
+	if info.MessageCount != 2 {
+		t.Fatalf("info = %+v, want 2 main-conversation messages", info)
+	}
+}
+
+func TestBuildClaudeToCodexHandoffPrompt_MaxCharsIsARealCeiling(t *testing.T) {
+	claudeDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+
+	project := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(project); err == nil {
+		project = resolved
+	}
+	sessionID := "dddddddd-eeee-ffff-0000-111111111111"
+	transcriptDir := filepath.Join(claudeDir, "projects", ConvertToClaudeDirName(project))
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	huge := strings.Repeat("filler ", 2000) + "NEWEST TAIL MARKER"
+	transcript := `{"type":"user","message":{"role":"user","content":"` + huge + `"}}`
+	if err := os.WriteFile(filepath.Join(transcriptDir, sessionID+".jsonl"), []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := &Instance{Title: "ceiling-test", ProjectPath: project, Tool: "claude", ClaudeSessionID: sessionID}
+	maxChars := 500
+	prompt, info, err := BuildClaudeToCodexHandoffPrompt(inst, maxChars)
+	if err != nil {
+		t.Fatalf("BuildClaudeToCodexHandoffPrompt: %v", err)
+	}
+	if !info.Truncated || info.IncludedCount != 1 {
+		t.Fatalf("info = %+v, want truncated single message", info)
+	}
+	if !strings.Contains(prompt, "NEWEST TAIL MARKER") {
+		t.Fatalf("prompt lost the newest tail:\n%s", prompt)
+	}
+	// The transcript body must respect the ceiling (plus small truncation banner).
+	begin := strings.Index(prompt, "--- BEGIN TRANSFERRED TRANSCRIPT ---")
+	end := strings.Index(prompt, "--- END TRANSFERRED TRANSCRIPT ---")
+	if begin < 0 || end < 0 {
+		t.Fatal("prompt missing transcript markers")
+	}
+	if body := end - begin; body > maxChars+200 {
+		t.Fatalf("transcript body %d chars exceeds max %d", body, maxChars)
+	}
+}
