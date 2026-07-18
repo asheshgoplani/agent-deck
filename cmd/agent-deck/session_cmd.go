@@ -1668,6 +1668,20 @@ func handleSessionShow(profile string, args []string) {
 		jsonData["tmux_session"] = tmuxSession.Name
 	}
 
+	// #1580: surface a spawn-failure diagnostic when the session errored at
+	// startup (bare "error" with no pane). Include the structured record in
+	// --json so tooling can read it too.
+	spawnFailure := inst.SpawnFailure()
+	if spawnFailure != nil {
+		jsonData["spawn_failure"] = map[string]interface{}{
+			"reason":       spawnFailure.Reason,
+			"command":      spawnFailure.Command,
+			"dying_output": spawnFailure.DyingOutput,
+			"elapsed_ms":   spawnFailure.ElapsedMs,
+			"ts":           spawnFailure.Timestamp,
+		}
+	}
+
 	// Build human-readable output
 	var sb strings.Builder
 
@@ -1755,6 +1769,14 @@ func handleSessionShow(profile string, args []string) {
 		if tmuxSession != nil {
 			sb.WriteString(fmt.Sprintf("Tmux:    %s\n", tmuxSession.Name))
 		}
+	}
+
+	// #1580: print the spawn-failure block so `session show` on an errored
+	// session explains why it died instead of leaving the user with a bare
+	// "error".
+	if spawnFailure != nil {
+		sb.WriteString("\n")
+		sb.WriteString(spawnFailure.FormatForDisplay())
 	}
 
 	out.Print(sb.String(), jsonData)

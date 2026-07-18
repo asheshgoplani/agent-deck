@@ -3232,6 +3232,11 @@ func (i *Instance) Start() error {
 		return fmt.Errorf("tmux session not initialized")
 	}
 
+	// #1580 diagnosability: clear any stale spawn-failure sidecar and drop a
+	// spawn_attempt trace so a spawn that dies before anything else runs still
+	// leaves a durable record.
+	i.recordSpawnAttempt()
+
 	// Prepare scratch CLAUDE_CONFIG_DIR for non-conductor claude workers
 	// (issue #59, v1.7.68). Runs before command-building so the
 	// CLAUDE_CONFIG_DIR= prefix picks up the scratch path. No-op for
@@ -3378,7 +3383,18 @@ func (i *Instance) Start() error {
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
+		// #1580: persist the tmux-level failure so the preview / session show /
+		// lifecycle log can surface it instead of a bare "error".
+		i.recordTmuxStartFailure(command, err)
 		return fmt.Errorf("failed to start tmux session: %w", err)
+	}
+
+	// #1580: watch for a fast death of the initial process (broken command,
+	// bad PATH, immediate non-zero exit). tmux tears the pane down on exit for
+	// non-remain-on-exit sessions, so this captures the dying output while the
+	// pane is still alive and records it if the session vanishes early.
+	if command != "" {
+		go i.watchForFastDeath(command)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -3492,6 +3508,10 @@ func (i *Instance) StartWithMessage(message string) error {
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
+
+	// #1580 diagnosability: clear any stale spawn-failure sidecar and drop a
+	// spawn_attempt trace (same as Start()).
+	i.recordSpawnAttempt()
 
 	// Prepare scratch CLAUDE_CONFIG_DIR for non-conductor claude workers
 	// (issue #59, v1.7.68). Same call as in Start() — both spawn paths
@@ -3624,7 +3644,14 @@ func (i *Instance) StartWithMessage(message string) error {
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
+		// #1580: persist the tmux-level failure (sister path to Start()).
+		i.recordTmuxStartFailure(command, err)
 		return fmt.Errorf("failed to start tmux session: %w", err)
+	}
+
+	// #1580: fast-death watcher (sister path to Start()).
+	if command != "" {
+		go i.watchForFastDeath(command)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -5037,6 +5064,12 @@ func (i *Instance) Preview() (string, error) {
 
 	content, err := i.tmuxSession.CapturePane()
 	if err != nil {
+		// #1580: the pane is gone (fast spawn death). Surface the recorded
+		// spawn-failure diagnostic instead of a bare error so the preview pane
+		// explains what happened.
+		if fallback := i.spawnFailurePreview(); fallback != "" {
+			return fallback, nil
+		}
 		return "", err
 	}
 
@@ -5054,7 +5087,26 @@ func (i *Instance) PreviewFull() (string, error) {
 		return "", fmt.Errorf("tmux session not initialized")
 	}
 
-	return i.tmuxSession.CaptureFullHistory()
+	content, err := i.tmuxSession.CaptureFullHistory()
+	if err != nil {
+		// #1580: pane gone — fall back to the recorded spawn failure.
+		if fallback := i.spawnFailurePreview(); fallback != "" {
+			return fallback, nil
+		}
+		return "", err
+	}
+	return content, nil
+}
+
+// spawnFailurePreview returns the formatted spawn-failure record for this
+// instance, or "" when there is none. Used as a preview fallback when the tmux
+// pane no longer exists (#1580).
+func (i *Instance) spawnFailurePreview() string {
+	rec, err := readSpawnFailureRecord(i.ID)
+	if err != nil || rec == nil {
+		return ""
+	}
+	return rec.FormatForDisplay()
 }
 
 // PreviewWindowFull returns the full scrollback of a specific tmux window.
