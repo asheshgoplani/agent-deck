@@ -110,6 +110,11 @@ func SetCursorHooksEnabled(enabled bool) error {
 	if err != nil {
 		return err
 	}
+	// No-op when the effective state already matches: skips a full
+	// config.toml rewrite (which drops comments/formatting).
+	if cfg.Cursor.GetHooksEnabled() == enabled {
+		return nil
+	}
 	updated := *cfg
 	if enabled {
 		updated.Cursor.HooksEnabled = nil

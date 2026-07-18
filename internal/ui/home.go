@@ -1632,7 +1632,10 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// Cursor Agent CLI hooks: auto-inject silently when the cursor binary is
 	// available, unless the user opted out via [cursor] hooks_enabled = false
 	// (set durably by `agent-deck cursor-hooks uninstall`, issue #1672).
-	if cursorCmd := strings.TrimSpace(session.GetToolCommand("cursor")); homeBackgroundWorkersEnabled && cursorCmd != "" {
+	// The opt-out gates the watcher too, matching the [claude] hooks_enabled
+	// gate above.
+	cursorHooksEnabled := userConfig == nil || userConfig.Cursor.GetHooksEnabled()
+	if cursorCmd := strings.TrimSpace(session.GetToolCommand("cursor")); homeBackgroundWorkersEnabled && cursorHooksEnabled && cursorCmd != "" {
 		if cursorFields := strings.Fields(cursorCmd); len(cursorFields) > 0 {
 			cursorBin := cursorFields[0]
 			if _, err := exec.LookPath(cursorBin); err == nil {
@@ -1642,9 +1645,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 				} else if installed {
 					uiLog.Info("cursor_hooks_installed", slog.String("config_dir", cursorConfigDir))
 				}
-				// Watch only when hooks are actually present (opt-out leaves
-				// none behind, so no watcher is needed on the cursor path).
-				if h.hookWatcher == nil && session.CheckCursorHooksInstalled(cursorConfigDir) {
+				if h.hookWatcher == nil {
 					if hookWatcher, err := session.NewStatusFileWatcher(nil); err == nil {
 						h.hookWatcher = hookWatcher
 						go hookWatcher.Start()
