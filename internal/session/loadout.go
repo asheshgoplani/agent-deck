@@ -224,7 +224,10 @@ func healthyManagedSkillAttachment(projectPath, skillID string) bool {
 		if normalizeSkillToken(skillIDForAttachment(attachment)) != normalizeSkillToken(skillID) {
 			continue
 		}
-		target := resolveTargetPath(projectPath, attachment.TargetPath)
+		target, ok := containedManagedTargetPath(projectPath, attachment.TargetPath)
+		if !ok {
+			return false
+		}
 		if _, err := os.Lstat(target); err != nil {
 			return false
 		}

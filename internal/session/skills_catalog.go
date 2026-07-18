@@ -957,16 +957,29 @@ func removeAttachmentTarget(projectPath string, attachment ProjectSkillAttachmen
 // route through here so a tampered manifest can't trigger deletion outside the
 // project skills dir. Audit M3.
 func safeRemoveManagedTarget(projectPath, targetRel string) error {
+	targetPath, ok := containedManagedTargetPath(projectPath, targetRel)
+	if !ok {
+		return fmt.Errorf("refusing to remove path outside managed project skills dirs: %s", resolveTargetPath(projectPath, targetRel))
+	}
+	return os.RemoveAll(targetPath)
+}
+
+// containedManagedTargetPath resolves targetRel against projectPath and
+// returns it only when it stays inside a managed project-skills dir. A
+// non-managed, absolute, or "../"-escaping target from a tampered manifest
+// is refused (ok=false) so callers never touch paths outside the project
+// skills dirs. Audit M3.
+func containedManagedTargetPath(projectPath, targetRel string) (string, bool) {
 	targetPath := resolveTargetPath(projectPath, targetRel)
 	skillDir, ok := managedProjectSkillsDirForTarget(targetRel)
 	if !ok {
-		return fmt.Errorf("refusing to remove path outside managed project skills dirs: %s", targetPath)
+		return "", false
 	}
 	base := filepath.Join(projectPath, filepath.FromSlash(skillDir))
 	if !isContainedIn(base, targetPath) {
-		return fmt.Errorf("refusing to remove path outside project skills dir: %s", targetPath)
+		return "", false
 	}
-	return os.RemoveAll(targetPath)
+	return targetPath, true
 }
 
 func buildAttachment(tool string, candidate SkillCandidate, mode string) ProjectSkillAttachment {
