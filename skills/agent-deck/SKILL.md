@@ -733,6 +733,23 @@ cat ~/.agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET"  # Sanitized config
 
 See [troubleshooting.md](references/troubleshooting.md) for detailed diagnostics.
 
+## Contributing to agent-deck
+
+Going beyond a bug report to a fix? agent-deck ships a dedicated contributor skill that mirrors the repo's PR intake gate and the maintainer's review machine, so an agent that follows it passes intake on the first try and scores well on all four review lenses (correctness, security, fit, intent).
+
+Load it from the repo checkout:
+
+```bash
+# In an agent-deck clone
+cat .github/skills/agent-deck-contributor/SKILL.md
+```
+
+It walks the full loop and enforces the bar: understand and reproduce the issue first, capture the human's actual ask verbatim (it goes in the PR body), one scoped problem per PR, a test that FAILS without your change, self-check locally before opening (`.github/skills/agent-deck-contributor/scripts/self-check.sh`), disclose the AI model that wrote the change, and respond directly to review verdicts. Run tests sandboxed — never against a real home directory:
+
+```bash
+HOME=$(mktemp -d) XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_CACHE_HOME= go test ./...
+```
+
 ## Session Sharing
 
 Share Claude sessions between developers for collaboration or handoff.
