@@ -7,7 +7,7 @@
 
 agent-deck has three orthogonal mechanisms for extending a Claude session today, but none of them covers Claude Code **plugins** as a first-class concept:
 
-1. **`--mcp <name>`** (catalog-driven) — writes per-project `.mcp.json`, attaches MCP servers. Implemented end-to-end: catalog `[mcps.<name>]` in `~/.agent-deck/config.toml`, `MCPDef` schema (`internal/session/userconfig.go:1014-1045`), writer `WriteMCPJsonFromConfig` (`internal/session/mcp_catalog.go:143-251`), tracking field `Instance.LoadedMCPNames` (`internal/session/instance.go:186-188`), dedicated dialog (`internal/ui/mcp_dialog.go`) and CLI subcommand (`cmd/agent-deck/mcp_cmd.go`).
+1. **`--mcp <name>`** (catalog-driven) — writes per-project `.mcp.json`, attaches MCP servers. Implemented end-to-end: catalog `[mcps.<name>]` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`), `MCPDef` schema (`internal/session/userconfig.go:1014-1045`), writer `WriteMCPJsonFromConfig` (`internal/session/mcp_catalog.go:143-251`), tracking field `Instance.LoadedMCPNames` (`internal/session/instance.go:186-188`), dedicated dialog (`internal/ui/mcp_dialog.go`) and CLI subcommand (`cmd/agent-deck/mcp_cmd.go`).
 2. **`--channel <id>`** (free-form) — populates `Instance.Channels []string` (`internal/session/instance.go:190-196`), emitted as `claude --channels <csv>` to enable inbound delivery. Mutator path exists (`internal/session/mutators.go:135-149`), Telegram-topology validator guards anti-patterns (`internal/session/telegram_validator.go`).
 3. **Global `enabledPlugins` in `~/.claude/settings.json`** — manual user step, affects every Claude session under that profile, no per-session isolation. The v1.7.68 `WorkerScratchConfigDir` mechanism (`internal/session/worker_scratch.go`) already mutates a per-session settings.json — but only to *force-disable* the Telegram plugin on non-conductor workers (issue #59).
 
@@ -23,7 +23,7 @@ This RFC generalizes the v1.7.68 scratch-dir mechanism into a per-session **plug
 
 ## 2. Goals (v1)
 
-- Catalog of curated plugins under `[plugins.<name>]` in `~/.agent-deck/config.toml`.
+- Catalog of curated plugins under `[plugins.<name>]` in $XDG_CONFIG_HOME/agent-deck/config.toml.
 - New CLI flag `--plugin <name>` on `agent-deck add` and `agent-deck launch` (multi-flag, catalog-only).
 - New mutator `agent-deck session set <id> plugins <csv>` for runtime edits.
 - New persisted field `Instance.Plugins []string` (JSON-tagged, sticky across restarts).

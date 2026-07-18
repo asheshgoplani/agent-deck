@@ -31,7 +31,7 @@ export function SettingsPanel() {
       <div class="kv" data-testid="settings-hidden-tools"><span class="k">hidden tools</span><span class="v">${(settings.hiddenTools || []).join(', ') || 'none'}</span></div>
       <div class="kv" data-testid="settings-picker-tools"><span class="k">picker tools</span><span class="v">${(settings.pickerTools || []).join(', ') || 'loading…'}</span></div>
       <div style="font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 8px;">
-        Edit <code>~/.agent-deck/config.toml</code> (<code>[ui] hidden_tools</code>) or use TUI Settings → Visible tools…
+        Edit <code>~/.config/agent-deck/config.toml</code> (<code>[ui] hidden_tools</code>) or use TUI Settings → Visible tools…
       </div>
     </div>
   `

@@ -21,6 +21,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **eval harness: TUI-launching invocations no longer leak the agent-deck process past the test.** `runBinStderrShort` drove bare-flag invocations (`-g/--select` with no subcommand) through `cmd.CombinedOutput()`, but those fall through to TUI startup which never exits on its own in a non-PTY harness. The call blocked until the Go test timeout, after which the reparented `agent-deck` process (and any tmux sessions it spawned) outlived the test — observed as orphaned `agent-deck -g work --select beta` processes lingering from `agent-deck-eval-bin-*` temp dirs. A new `harness.RunBounded(cmd, timeout)` runs the binary in its own process group and SIGKILLs the whole group at the deadline. The shared build binary's temp dir is now also removed via a `TestMain` hook (`harness.RemoveBuildArtifacts`) instead of leaking ~15 MB per `go test` run.
 - **eval/launch-race tests: leaked `tmux -L ad1031-*` servers no longer pile up across crashed runs.** The isolated tmux server used by the #1031 launch-race tests was reaped only via `t.Cleanup`, which never runs on test timeout, hard panic, or test-binary SIGKILL — and because the socket name was timestamp-derived, every such run leaked a brand-new, uniquely-named server no later run could reach or reap. The socket name is now deterministic per test (FNV hash of `t.Name()`), and the new `isolatedTmuxSocket1031` helper kills any server on it at *setup* as well as cleanup, so the next run of the same test reclaims a leftover instead of stacking a new one.
 
+## [1.10.10] - 2026-07-18
+
+### Added
+
+- **New-session path picker.** Creating a session now offers path autocompletion (`PathSuggest`) plus a create picker, with placeholder and title guards, so you no longer have to type full working-directory paths by hand. ([#1658](https://github.com/asheshgoplani/agent-deck/pull/1658))
+- **opencode: SSE-based status tracking via `--port`.** opencode sessions now report live status by consuming the opencode event stream over the configured `--port`, instead of relying solely on pane heuristics. ([#1614](https://github.com/asheshgoplani/agent-deck/issues/1614), [#1655](https://github.com/asheshgoplani/agent-deck/pull/1655))
+
+### Fixed
+
+- **Settings tail is reachable and the resolved config path is surfaced.** The settings view no longer cuts off its final rows, and it now shows the actually-resolved `config.toml` path so you can tell which file is in effect. ([#1661](https://github.com/asheshgoplani/agent-deck/pull/1661), closes [#1659](https://github.com/asheshgoplani/agent-deck/issues/1659))
+- **Fresh restart now unarchives the session first.** Restarting an archived session from the TUI unarchives it before the fresh restart, so the restart takes effect instead of silently no-op'ing on an archived row. ([#1654](https://github.com/asheshgoplani/agent-deck/pull/1654))
+
+### Docs
+
+- **"Maintainers & contributors wanted" invitation** added to the project docs, alongside a contributor-side skill mirroring the PR intake gate and a contributor signpost embedded in the main agent-deck skill. ([#1664](https://github.com/asheshgoplani/agent-deck/pull/1664), [#1656](https://github.com/asheshgoplani/agent-deck/pull/1656), [#1657](https://github.com/asheshgoplani/agent-deck/pull/1657))
+- **Config-file location docs aligned with `XDG_CONFIG_HOME`.** ([#1663](https://github.com/asheshgoplani/agent-deck/pull/1663))
+
+### CI
+
+- **Observe-only PR intake gate + catch-all CODEOWNERS** added so incoming community PRs are triaged consistently without blocking. ([#1653](https://github.com/asheshgoplani/agent-deck/pull/1653))
+
 ## [1.10.9] - 2026-07-02
 
 ### Fixed

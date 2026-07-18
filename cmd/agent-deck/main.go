@@ -38,7 +38,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.10.9" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.10.10" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -3295,6 +3295,15 @@ func printHelp() {
 	fmt.Println("Environment Variables:")
 	fmt.Println("  AGENTDECK_PROFILE    Default profile to use")
 	fmt.Println("  AGENTDECK_COLOR      Color mode: truecolor, 256, 16, none")
+	fmt.Println()
+	fmt.Println("Configuration:")
+	if configPath, err := session.GetUserConfigPath(); err == nil {
+		fmt.Printf("  Config file: %s\n", configPath)
+	} else {
+		fmt.Println("  Config file: $XDG_CONFIG_HOME/agent-deck/config.toml (default ~/.config/agent-deck/config.toml)")
+	}
+	fmt.Println("  Since v1.9.49 config lives under the XDG base dirs, not ~/.agent-deck.")
+	fmt.Println("  Run 'agent-deck migrate-paths' to copy legacy ~/.agent-deck files across.")
 	fmt.Println()
 	fmt.Println("Keyboard shortcuts (in TUI):")
 	fmt.Println("  n          New session")

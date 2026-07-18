@@ -17,7 +17,7 @@ Docker sandboxing runs your AI coding agents (Claude Code, OpenCode, Codex CLI, 
 | Enable sandbox | `--sandbox` flag | Checkbox toggle |
 | Custom image | `--sandbox-image <image>` | Not supported |
 | Container cleanup | Automatic on remove | Automatic on remove |
-| Settings | `~/.agent-deck/config.toml` | `S` (Settings panel) |
+| Settings | `$XDG_CONFIG_HOME/agent-deck/config.toml` | `S` (Settings panel) |
 
 ## One-Liner Commands
 
@@ -180,7 +180,7 @@ docker build -t my-sandbox:latest .
 ```
 
 ```toml
-# Set as default in ~/.agent-deck/config.toml
+# Set as default in $XDG_CONFIG_HOME/agent-deck/config.toml (default ~/.config/agent-deck/config.toml)
 [docker]
 default_image = "my-sandbox:latest"
 ```

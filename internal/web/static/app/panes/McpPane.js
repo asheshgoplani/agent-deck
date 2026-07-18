@@ -221,7 +221,7 @@ function CatalogSection({ catalog, attached, mutationsEnabled, onAttach, loading
       ${loading && html`<div style="font-family: var(--mono); font-size: 11px; color: var(--text-dim); padding: 8px;">Loading…</div>`}
       ${!loading && catalog.length === 0 && html`
         <div style="font-family: var(--mono); font-size: 12px; color: var(--text-dim); padding: 12px;">
-          No MCPs in the catalog. Add some to <code>~/.agent-deck/config.toml</code>.
+          No MCPs in the catalog. Add some to <code>~/.config/agent-deck/config.toml</code>.
         </div>
       `}
       ${catalog.map(entry => {
