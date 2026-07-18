@@ -89,9 +89,17 @@ if [ -n "$GO_CHANGED" ] && [ "$HAVE_GO" = 1 ]; then
   if OUT=$(sandboxed go test $PKGS 2>&1); then PASS sandboxed-tests "$PKGS"
   else FAIL sandboxed-tests "$(echo "$OUT" | grep -E '^(--- FAIL|FAIL|# )' | head -5 | tr '\n' ' | ')"; fi
 
-  # 5. a test exists for production changes
+  # 5. a test exists for production changes, in a package you actually touched
   if [ -n "$GO_PROD_CHANGED" ] && [ -z "$GO_TESTS_CHANGED" ]; then
     WARN test-added "production .go changed but no *_test.go changed — new behavior needs a test that fails without it"
+  elif [ -n "$GO_PROD_CHANGED" ] && [ -n "$GO_TESTS_CHANGED" ]; then
+    PROD_DIRS=$(printf '%s\n' "$GO_PROD_CHANGED" | xargs -n1 dirname | sort -u)
+    TEST_DIRS=$(printf '%s\n' "$GO_TESTS_CHANGED" | xargs -n1 dirname | sort -u)
+    if [ -n "$(comm -12 <(printf '%s\n' "$PROD_DIRS") <(printf '%s\n' "$TEST_DIRS"))" ]; then
+      PASS test-added
+    else
+      WARN test-added "changed tests live only in packages your production change didn't touch — cover the changed packages"
+    fi
   elif [ -n "$GO_TESTS_CHANGED" ]; then
     PASS test-added
   fi
@@ -223,7 +231,11 @@ else
     case "$LINE" in
       *authored*) AI_KIND=authored ;; *assisted*) AI_KIND=assisted ;; *human*) AI_KIND=human ;;
     esac
-    PASS ai-disclosure "$AI_KIND"
+    if [ -n "$AI_KIND" ]; then
+      PASS ai-disclosure "$AI_KIND"
+    else
+      FAIL ai-disclosure "checked box not recognized — use the template's Human-written / AI-assisted / AI-authored lines"
+    fi
   elif [ "$BOXES" = 0 ]; then
     FAIL ai-disclosure "no box checked — check exactly one (Human-written / AI-assisted / AI-authored)"
   else
@@ -249,8 +261,11 @@ else
     FAIL gate-marker "marker still has template placeholders — fill in real values"
   else
     M_AI=$(printf '%s' "$MARKER" | sed -E 's/.*gate:ai=([^ ]+).*/\1/')
+    LAST_LINE=$(printf '%s\n' "$BODY" | grep -v '^[[:space:]]*$' | tail -1)
     if [ -n "$AI_KIND" ] && [ "$M_AI" != "$AI_KIND" ]; then
       FAIL gate-marker "marker says ai=$M_AI but the checked box says $AI_KIND — make them agree (visible sections are authoritative)"
+    elif [ "$LAST_LINE" != "$MARKER" ]; then
+      WARN gate-marker "marker present but not the last line of the body — move it to the very end"
     else
       PASS gate-marker "$MARKER"
     fi
