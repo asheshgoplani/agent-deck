@@ -3228,3 +3228,65 @@ func TestKillSessionsWithEnvValue_NoMatch(t *testing.T) {
 
 	assert.NoError(t, exec.Command("tmux", "has-session", "-t", sess).Run(), "session should not be killed")
 }
+
+// TestGatedTmuxKeyOptionArgs verifies #1625: the key-handling tmux defaults
+// (escape-time, extended-keys, extended-keys-format, terminal-features) are
+// gated through OptionOverrides so an explicit user setting wins instead of
+// being force-set on every spawn.
+func TestGatedTmuxKeyOptionArgs(t *testing.T) {
+	joined := func(args []string) string { return strings.Join(args, " ") }
+
+	// Default (no overrides): all four defaults are emitted, each chained with
+	// a leading ";" separator, and extended-keys is a server option (set -s).
+	def := gatedTmuxKeyOptionArgs("sess", nil)
+	got := joined(def)
+	for _, want := range []string{
+		"; set-option -t sess escape-time 10",
+		"; set -sq extended-keys on",
+		"; set -sq extended-keys-format csi-u",
+		"; set -asq terminal-features ,*:hyperlinks:extkeys",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("default args missing %q; got: %s", want, got)
+		}
+	}
+	// Every chunk must start with a ";" so it chains onto the preceding
+	// set-option in the same tmux command.
+	if len(def) > 0 && def[0] != ";" {
+		t.Errorf("first arg must be a chain separator, got %q", def[0])
+	}
+
+	// User opts extended-keys out (e.g. config.toml [tmux].extended-keys="off",
+	// mirroring `set -s extended-keys off` in ~/.tmux.conf). agent-deck must NOT
+	// emit its forced `set -sq extended-keys on`, so the user value survives.
+	off := gatedTmuxKeyOptionArgs("sess", map[string]string{"extended-keys": "off"})
+	if strings.Contains(joined(off), "extended-keys on") {
+		t.Errorf("extended-keys override ignored — agent-deck still forces it on: %s", joined(off))
+	}
+	// The other defaults are unaffected by that single override.
+	if !strings.Contains(joined(off), "extended-keys-format csi-u") ||
+		!strings.Contains(joined(off), "escape-time 10") {
+		t.Errorf("unrelated defaults dropped by extended-keys override: %s", joined(off))
+	}
+
+	// terminal-features override: the unbounded-append `set -asq` is suppressed.
+	tf := gatedTmuxKeyOptionArgs("sess", map[string]string{"terminal-features": "xterm*"})
+	if strings.Contains(joined(tf), "-asq terminal-features") {
+		t.Errorf("terminal-features override ignored — still appends: %s", joined(tf))
+	}
+
+	// escape-time override: user's explicit value (e.g. 0) is not clobbered.
+	et := gatedTmuxKeyOptionArgs("sess", map[string]string{"escape-time": "0"})
+	if strings.Contains(joined(et), "escape-time 10") {
+		t.Errorf("escape-time override ignored — still forces 10: %s", joined(et))
+	}
+
+	// All four opted out: nothing is emitted, so ~/.tmux.conf fully decides.
+	all := gatedTmuxKeyOptionArgs("sess", map[string]string{
+		"escape-time": "0", "extended-keys": "off",
+		"extended-keys-format": "xterm", "terminal-features": "xterm*",
+	})
+	if len(all) != 0 {
+		t.Errorf("expected no forced args when all keys overridden, got: %s", joined(all))
+	}
+}

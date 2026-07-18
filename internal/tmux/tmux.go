@@ -1998,6 +1998,42 @@ func isSocketAcceptingConnections(socketPath string) bool {
 	return true
 }
 
+// gatedTmuxKeyOptionArgs returns the tmux argument chunks for agent-deck's
+// key-handling defaults — escape-time, extended-keys, extended-keys-format and
+// terminal-features — each gated through OptionOverrides so an explicit user
+// setting wins (#1625). Every chunk begins with a ";" chain separator, so
+// callers append the result after an existing set-option in the same tmux
+// command (the same shape the window-size default already uses).
+//
+// extended-keys / extended-keys-format are *server* options (set -s). Emitting
+// them unconditionally on every spawn overrode a deliberate
+// `set -s extended-keys off` in the user's ~/.tmux.conf server-wide, which on
+// some terminals (e.g. Windows Terminal + WSL2) stops Enter from submitting in
+// the pane. terminal-features uses -a (append), so re-emitting it every spawn
+// also grew that server-wide option unbounded. Gating each key through
+// OptionOverrides lets config.toml [tmux] options — and by extension the user's
+// own tmux config — take effect instead of being silently clobbered.
+func gatedTmuxKeyOptionArgs(name string, overrides map[string]string) []string {
+	args := make([]string, 0, 20)
+	if _, ok := overrides["escape-time"]; !ok {
+		args = append(args, ";", "set-option", "-t", name, "escape-time", "10")
+	}
+	if _, ok := overrides["extended-keys"]; !ok {
+		args = append(args, ";", "set", "-sq", "extended-keys", "on")
+	}
+	if _, ok := overrides["extended-keys-format"]; !ok {
+		// csi-u so modified keys reach the pane as ESC[13;2u (the kitty
+		// keyboard-protocol form Claude Code reads) rather than the default
+		// xterm modifyOtherKeys ESC[27;2;13~, which Claude Code ignores —
+		// otherwise Shift+Enter collapses to a bare Enter and submits.
+		args = append(args, ";", "set", "-sq", "extended-keys-format", "csi-u")
+	}
+	if _, ok := overrides["terminal-features"]; !ok {
+		args = append(args, ";", "set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+	}
+	return args
+}
+
 // Start creates and starts a tmux session.
 // By default, command is sent after session creation (legacy behavior).
 // When RunCommandAsInitialProcess is true, command is passed directly to tmux
@@ -2174,15 +2210,10 @@ func (s *Session) Start(command string) error {
 	}
 	startArgs = append(startArgs,
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
-		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
-		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-sq", "extended-keys", "on", ";",
-		// csi-u so modified keys reach the pane as ESC[13;2u (the kitty
-		// keyboard-protocol form Claude Code reads) rather than the default
-		// xterm modifyOtherKeys ESC[27;2;13~, which Claude Code ignores —
-		// otherwise Shift+Enter collapses to a bare Enter and submits.
-		"set", "-sq", "extended-keys-format", "csi-u", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+		"set-option", "-t", s.Name, "set-clipboard", "on")
+	// #1625: the key-handling defaults are gated through OptionOverrides so an
+	// explicit user tmux setting wins (see gatedTmuxKeyOptionArgs).
+	startArgs = append(startArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides)...)
 	// Multi-client size negotiation. Web's xterm.js connects via a tmux -C
 	// control client (controlpipe.go) at the same time as native `tmux attach`
 	// clients (Ghostty, iTerm). Default `window-size latest` makes the window
@@ -2548,17 +2579,14 @@ func (s *Session) EnableMouseMode() error {
 	// - escape-time 10: Fast Vim/editor responsiveness (default 500ms is too slow)
 	//
 	// Uses -q flag where supported to silently ignore on older tmux versions
-	enhanceCmd := s.tmuxCmd(
+	enhanceArgs := []string{
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
-		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
-		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-sq", "extended-keys", "on", ";",
-		// csi-u so modified keys reach the pane as ESC[13;2u (the kitty
-		// keyboard-protocol form Claude Code reads) rather than the default
-		// xterm modifyOtherKeys ESC[27;2;13~, which Claude Code ignores —
-		// otherwise Shift+Enter collapses to a bare Enter and submits.
-		"set", "-sq", "extended-keys-format", "csi-u", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on",
+	}
+	// #1625: gate the key-handling defaults through OptionOverrides so an explicit
+	// user tmux setting wins (mirrors Start; see gatedTmuxKeyOptionArgs).
+	enhanceArgs = append(enhanceArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides)...)
+	enhanceCmd := s.tmuxCmd(enhanceArgs...)
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options
 	_ = enhanceCmd.Run()
