@@ -114,6 +114,16 @@ type AttachOptions struct {
 	// This is the default trigger because it is exactly the key a user presses
 	// expecting to scroll back through the session.
 	ScrollbackOnPageUp bool
+	// ScrollbackGate, when non-nil, is consulted the moment a bare PageUp is
+	// seen (with ScrollbackOnPageUp set). Returning true opens the pager — the
+	// behaviour when the gate is nil; returning false leaves the PageUp for the
+	// attached program. It exists so the pager never hijacks PageUp from a
+	// full-screen app (e.g. Claude fullscreen) that scrolls itself and keeps no
+	// tmux scrollback for the pager to show. It is invoked ONLY when a PageUp is
+	// actually present, so the per-press tmux query it typically performs is
+	// cheap and never runs on ordinary keystrokes. It is NOT consulted for the
+	// ScrollbackKeyByte chord, which is an explicit user opt-in.
+	ScrollbackGate func() bool
 }
 
 // indexSwitchKey returns the index of the switch key in data and
@@ -150,9 +160,22 @@ func indexScrollbackTrigger(data []byte, opts AttachOptions) int {
 		consider(IndexDetachKey(data, opts.ScrollbackKeyByte))
 	}
 	if opts.ScrollbackOnPageUp {
-		consider(bytes.Index(data, []byte(pageUpSeq)))
+		// Consult the gate only once a PageUp is actually present, so the tmux
+		// alternate-screen query it performs never runs on ordinary keystrokes.
+		// A closed gate suppresses the trigger, leaving PageUp for the app.
+		if idx := bytes.Index(data, []byte(pageUpSeq)); idx >= 0 && scrollbackPageUpAllowed(opts) {
+			consider(idx)
+		}
 	}
 	return best
+}
+
+// scrollbackPageUpAllowed reports whether a bare PageUp should open the pager
+// right now. With no gate configured it always does (legacy behaviour); a gate
+// lets the caller pass PageUp through to the attached program — e.g. when the
+// pane is in the alternate screen. See AttachOptions.ScrollbackGate.
+func scrollbackPageUpAllowed(opts AttachOptions) bool {
+	return opts.ScrollbackGate == nil || opts.ScrollbackGate()
 }
 
 // resolveAttachInterrupt finds the earliest interrupt key in a stdin chunk and

@@ -83,6 +83,83 @@ func TestIndexScrollbackTrigger_CtrlByte(t *testing.T) {
 	}
 }
 
+// TestIndexScrollbackTrigger_PageUpGate verifies that ScrollbackGate suppresses
+// ONLY the bare-PageUp trigger (leaving the key for the attached program), never
+// the explicit control-byte chord, and that a nil gate preserves the legacy
+// always-open behaviour. This is the alternate-screen passthrough fix: when the
+// pane is a full-screen app (Claude fullscreen), PageUp must reach the app.
+func TestIndexScrollbackTrigger_PageUpGate(t *testing.T) {
+	const ctrlG = byte(7) // Ctrl+G
+	gateTrue := func() bool { return true }
+	gateFalse := func() bool { return false }
+
+	tests := []struct {
+		name string
+		data string
+		opts AttachOptions
+		want int
+	}{
+		{
+			name: "gate open => pageup detected",
+			data: "\x1b[5~",
+			opts: AttachOptions{ScrollbackOnPageUp: true, ScrollbackGate: gateTrue},
+			want: 0,
+		},
+		{
+			name: "gate closed => pageup suppressed (passthrough)",
+			data: "\x1b[5~",
+			opts: AttachOptions{ScrollbackOnPageUp: true, ScrollbackGate: gateFalse},
+			want: -1,
+		},
+		{
+			name: "nil gate => pageup detected (legacy)",
+			data: "\x1b[5~",
+			opts: AttachOptions{ScrollbackOnPageUp: true},
+			want: 0,
+		},
+		{
+			name: "gate closed never suppresses the ctrl-byte chord",
+			data: "\x07",
+			opts: AttachOptions{ScrollbackKeyByte: ctrlG, ScrollbackGate: gateFalse},
+			want: 0,
+		},
+		{
+			name: "gate closed suppresses pageup but chord still wins",
+			data: "\x1b[5~\x07",
+			opts: AttachOptions{ScrollbackKeyByte: ctrlG, ScrollbackOnPageUp: true, ScrollbackGate: gateFalse},
+			want: 4,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := indexScrollbackTrigger([]byte(tt.data), tt.opts); got != tt.want {
+				t.Fatalf("indexScrollbackTrigger(%q) = %d, want %d", tt.data, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIndexScrollbackTrigger_GateOnlyOnPageUp verifies the gate is consulted only
+// when a bare PageUp is actually present — never on ordinary keystrokes — so the
+// per-press tmux query it performs cannot run on every input chunk.
+func TestIndexScrollbackTrigger_GateOnlyOnPageUp(t *testing.T) {
+	calls := 0
+	opts := AttachOptions{ScrollbackOnPageUp: true, ScrollbackGate: func() bool {
+		calls++
+		return true
+	}}
+	// Ordinary input with no PageUp: the gate must not be consulted.
+	indexScrollbackTrigger([]byte("hello world"), opts)
+	if calls != 0 {
+		t.Fatalf("gate consulted %d times on non-PageUp input, want 0", calls)
+	}
+	// A PageUp present: gate consulted exactly once.
+	indexScrollbackTrigger([]byte("\x1b[5~"), opts)
+	if calls != 1 {
+		t.Fatalf("gate consulted %d times on PageUp input, want 1", calls)
+	}
+}
+
 // TestResolveAttachInterrupt_Precedence verifies detach > switch > scrollback
 // precedence and earliest-index-wins semantics.
 func TestResolveAttachInterrupt_Precedence(t *testing.T) {

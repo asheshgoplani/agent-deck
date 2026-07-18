@@ -5060,6 +5060,33 @@ func (s *Session) GetWorkDir() string {
 	return strings.TrimSpace(string(output))
 }
 
+// IsAltScreen reports whether the pane is currently showing the alternate
+// screen — i.e. a full-screen TUI such as Claude in fullscreen mode. Such panes
+// keep NO tmux scrollback (history_size stays 0 regardless of history-limit), so
+// the in-attach scrollback pager (#1491) has nothing to capture and, worse,
+// would swallow the PageUp the app itself uses to scroll. The attach loop
+// consults this (via AttachOptions.ScrollbackGate) to leave bare PageUp for the
+// app when it is fullscreen.
+//
+// Bounded so a wedged server can never hang the keystroke that triggered the
+// query. On error it returns (false, err); the caller preserves the pager on
+// error rather than silently disabling a configured feature.
+func (s *Session) IsAltScreen() (bool, error) {
+	output, err := s.runBoundedOutput("display-message", "-t", s.Name, "-p", "#{alternate_on}")
+	if err != nil {
+		return false, err
+	}
+	return parseAlternateOn(string(output)), nil
+}
+
+// parseAlternateOn parses tmux's #{alternate_on} flag: an exact "1" means the
+// alternate screen is active, anything else means the normal screen. tmux
+// appends a trailing newline, so surrounding whitespace is trimmed. Extracted so
+// the parsing is unit-testable without a live tmux server.
+func parseAlternateOn(output string) bool {
+	return strings.TrimSpace(output) == "1"
+}
+
 // SplitShellPane adds a vertical split pane to this session running shell
 // in workdir. If workdir is empty the pane inherits the session's current
 // working directory. Issue #1470.

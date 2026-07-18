@@ -733,10 +733,21 @@ func (h *Home) detachByte() byte {
 	return ResolvedDetachByte(session.GetHotkeyOverrides())
 }
 
+// openScrollbackOnPageUp is the alternate-screen gate decision for a bare
+// PageUp: open the pager on a normal-screen pane (real tmux scrollback exists),
+// pass PageUp through on an alternate-screen pane (a full-screen app such as
+// Claude fullscreen scrolls itself and keeps no tmux history), and preserve the
+// pager on a query error rather than silently disabling a configured feature.
+func openScrollbackOnPageUp(alt bool, err error) bool {
+	return err != nil || !alt
+}
+
 // attachOptions resolves the detach key plus the in-attach session-switcher
 // key for the current hotkey configuration. The detach key always wins: a
 // switch byte that collides with it is dropped so it can never shadow detach.
-func (h *Home) attachOptions() tmux.AttachOptions {
+// sess is the tmux session being attached; it is used to gate the bare-PageUp
+// scrollback trigger so a full-screen app keeps its own PageUp (#1491 fix).
+func (h *Home) attachOptions(sess *tmux.Session) tmux.AttachOptions {
 	overrides := session.GetHotkeyOverrides()
 	detach := ResolvedDetachByte(overrides)
 	switchByte := ResolvedSwitchByte(overrides)
@@ -751,12 +762,22 @@ func (h *Home) attachOptions() tmux.AttachOptions {
 	if scrollByte == detach || (switchByte != 0 && scrollByte == switchByte) {
 		scrollByte = 0
 	}
-	return tmux.AttachOptions{
+	opts := tmux.AttachOptions{
 		DetachByte:         detach,
 		SwitchKeyByte:      switchByte,
 		ScrollbackKeyByte:  scrollByte,
 		ScrollbackOnPageUp: scroll.OnPageUp,
 	}
+	// Gate the bare-PageUp trigger on the pane's screen state: when the attached
+	// app is in the alternate screen (Claude fullscreen), leave PageUp for the
+	// app instead of opening an empty pager over its (non-existent) tmux history.
+	// Only wired for the PageUp trigger — an explicit control-byte chord is a
+	// deliberate opt-in and is never gated. The gate is consulted at most once
+	// per PageUp press (see AttachOptions.ScrollbackGate).
+	if scroll.OnPageUp && sess != nil {
+		opts.ScrollbackGate = func() bool { return openScrollbackOnPageUp(sess.IsAltScreen()) }
+	}
+	return opts
 }
 
 func (h *Home) setHotkeys(bindings map[string]string) {
@@ -12660,7 +12681,7 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// which would lose the tmux session state)
 	h.isAttaching.Store(true) // Prevent View() output only during actual attach transition
 	res := &attachResult{}
-	return tea.Exec(attachCmd{session: tmuxSess, opts: h.attachOptions(), result: res}, func(err error) tea.Msg {
+	return tea.Exec(attachCmd{session: tmuxSess, opts: h.attachOptions(tmuxSess), result: res}, func(err error) tea.Msg {
 		// CRITICAL: Set isAttaching to false BEFORE returning the message
 		// This prevents a race condition where View() could be called with
 		// isAttaching=true before Update() processes statusUpdateMsg,

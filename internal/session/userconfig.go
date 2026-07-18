@@ -3900,7 +3900,10 @@ func CreateExampleConfig() error {
 # without leaving agent-deck. Inside: Up/Down/j/k, PgUp/PgDn, g=start, G=live end,
 # wheel scrolls, Esc re-attaches, Ctrl+Q returns to the list.
 #   "pageup"  (default) a bare PageUp opens the pager; modified PageUp passes
-#             through to the attached program.
+#             through to the attached program. When the attached app is in the
+#             alternate screen (a full-screen TUI such as Claude fullscreen),
+#             bare PageUp also passes through so the app's own scrollback works —
+#             the pager would be empty there (alt-screen keeps no tmux history).
 #   "ctrl+<letter>"  a control chord opens it (use if a pager/editor inside the
 #             session needs PageUp). A chord that collides with detach/switch is
 #             dropped.
