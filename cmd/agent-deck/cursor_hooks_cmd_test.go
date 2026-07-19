@@ -54,16 +54,26 @@ func captureStdout(t *testing.T, fn func()) string {
 	os.Stdout = w
 	defer func() { os.Stdout = orig }()
 
+	// Read on a separate goroutine while fn runs, rather than after it
+	// returns: the OS pipe buffer is bounded (~64KB), so a sequential
+	// "run fn, then read" would deadlock if fn ever printed more than that
+	// in one call (fn blocks on the full pipe with nobody draining it yet).
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+	// Close w even if fn panics, so the reader goroutine always sees EOF
+	// and this helper never leaks it (avoids the fd leak on a panicking fn).
+	defer func() { _ = w.Close() }()
+
 	fn()
 
 	if err := w.Close(); err != nil {
 		t.Fatalf("close stdout writer: %v", err)
 	}
-	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(r); err != nil {
-		t.Fatalf("read stdout: %v", err)
-	}
-	return buf.String()
+	return <-done
 }
 
 func TestHandleCursorHooksInstall_InjectsHooksAndClearsOptOut(t *testing.T) {
