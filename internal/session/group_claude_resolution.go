@@ -26,9 +26,10 @@ type GroupClaudeResolution struct {
 	Model       string `json:"model,omitempty"`
 	ModelSource string `json:"model_source,omitempty"`
 
-	Env    map[string]string `json:"env,omitempty"`
-	Skills []string          `json:"skills,omitempty"`
-	MCPs   []string          `json:"mcps,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Skills  []string          `json:"skills,omitempty"`
+	Plugins []string          `json:"plugins,omitempty"`
+	MCPs    []string          `json:"mcps,omitempty"`
 
 	// ConfigError carries the config.toml load error verbatim when the
 	// file failed to parse — in that state every value above is a default
@@ -108,6 +109,7 @@ func ResolveGroupClaude(groupPath string) GroupClaudeResolution {
 
 	res.Env = config.GetGroupClaudeEnv(groupPath)
 	res.Skills = config.GetGroupClaudeSkills(groupPath)
+	res.Plugins = config.GetGroupClaudePlugins(groupPath)
 	res.MCPs = config.GetGroupClaudeMCPs(groupPath)
 
 	return res

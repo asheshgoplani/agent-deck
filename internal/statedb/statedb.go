@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/safeio"
+	"github.com/google/uuid"
 
 	_ "modernc.org/sqlite"
 )
@@ -104,11 +105,27 @@ const SchemaVersion = 13
 type StateDB struct {
 	db  *sql.DB
 	pid int
+	// token identifies this StateDB's owning process instance for session
+	// claim ownership (see ClaimSessions). Raw PID alone is not a safe
+	// ownership key: after this process exits, the OS can recycle its PID for
+	// an unrelated process, which would then silently inherit this process's
+	// ghost claims. Combining pid + process start time + random bytes makes
+	// the token practically unique for the life of the machine. Generated
+	// once per Open(), stable for the process's lifetime.
+	token string
 	// path is the on-disk path of the SQLite database file. Retained so
 	// destructive write paths can snapshot the file to "<path>.bak" before a
 	// large DELETE+re-insert sweep (S2 data-loss safeguard, 2026-06-04
 	// incident). Empty for in-memory databases (no file to back up).
 	path string
+}
+
+// newOwnerToken builds a claim-ownership token unique to this process
+// instance: `<pid>-<started-unix>-<uuid>`. The pid/started prefix keeps the
+// token self-describing when inspecting session_claims by hand; the UUID makes
+// it collision-proof under PID reuse.
+func newOwnerToken(pid int) string {
+	return fmt.Sprintf("%d-%d-%s", pid, time.Now().Unix(), uuid.NewString())
 }
 
 // backupRowDropThreshold is the minimum number of rows a single
@@ -193,6 +210,18 @@ func mergeAutoNameFields(inst *InstanceRow, existing existingAutoNameFields) (bo
 	}
 	return autoName, description
 }
+
+// NOTE: title/title_locked are deliberately NOT merge-protected the way
+// auto_name is. auto_name's merge is safe because it only blocks one
+// direction (stale payload resurrecting true after a fresher writer cleared
+// it) — a row-level heuristic can't safely do that for title_locked, because
+// an incoming "unlocked" payload is ambiguous: it's either a stale snapshot
+// from a racing writer (must be rejected) or a deliberate `session
+// set-title-lock off` (must be honored), and both look identical as plain
+// row data. That ambiguity can only be resolved at the write site that
+// actually knows its own freshness — see UpdateTitleIfUnlocked, used by the
+// hook-triggered Claude title sync (cmd/agent-deck/hook_name_sync.go) instead
+// of a full stale-snapshot round-trip through UpsertInstances.
 
 // WatcherRow represents a watcher row in the database.
 type WatcherRow struct {
@@ -319,7 +348,8 @@ func Open(dbPath string) (*StateDB, error) {
 		return nil, fmt.Errorf("statedb: wal mode: %w", err)
 	}
 
-	return &StateDB{db: db, pid: os.Getpid(), path: dbPath}, nil
+	pid := os.Getpid()
+	return &StateDB{db: db, pid: pid, path: dbPath, token: newOwnerToken(pid)}, nil
 }
 
 // Close checkpoints WAL and closes the database.
@@ -423,6 +453,27 @@ func (s *StateDB) Migrate() error {
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create heartbeats: %w", err)
+	}
+
+	// session claims: per-session polling ownership for multi-instance
+	// deduplication ([performance] claim_polling). One row per session that
+	// some instance actively polls; heartbeat-stale rows are taken over.
+	// owner_token, not owner_pid, is the ownership identity: it survives PID
+	// reuse (see StateDB.token doc); owner_pid is kept for display/debugging.
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS session_claims (
+			session_id  TEXT PRIMARY KEY,
+			owner_pid   INTEGER NOT NULL,
+			owner_token TEXT NOT NULL DEFAULT '',
+			claimed_at  INTEGER NOT NULL,
+			heartbeat   INTEGER NOT NULL,
+			scope       TEXT NOT NULL DEFAULT ''
+		)
+	`); err != nil {
+		return fmt.Errorf("statedb: create session_claims: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_session_claims_owner ON session_claims(owner_token)`); err != nil {
+		return fmt.Errorf("statedb: create idx_session_claims_owner: %w", err)
 	}
 
 	// recent_sessions table (schema v2)
@@ -1019,6 +1070,44 @@ func (s *StateDB) DeleteInstance(id string) error {
 	})
 }
 
+// UpdateTitleIfUnlocked sets an instance's title (and clears auto_name, since
+// a synced title replaces the auto-generated handle) with a single
+// conditional UPDATE, atomic at the SQL level: the WHERE clause is evaluated
+// by SQLite as part of the same statement, so there is no read-then-write gap
+// a concurrent lock can land in. Returns applied=false (no error) when the
+// row is already locked or doesn't exist — the caller made no change.
+//
+// This exists for writers that only intend to touch the title based on a
+// possibly-stale decision — namely the hook-triggered Claude title sync
+// (cmd/agent-deck/hook_name_sync.go), which loads a full instance snapshot in
+// a separate process and used to save it back wholesale via UpsertInstances.
+// If a user rename (which sets title_locked) landed between that process's
+// load and its save, the stale wholesale save would silently revert the
+// rename — the "session name keeps getting overwritten" bug. A general
+// storage-layer guard against this is unsafe: an incoming "unlocked" payload
+// is ambiguous between "stale snapshot" (reject) and "deliberate `session
+// set-title-lock off`" (honor), and both look identical as row data. Only the
+// write site itself can resolve that, by asking SQLite to apply the change
+// solely if the row is STILL unlocked at the moment of the write.
+func (s *StateDB) UpdateTitleIfUnlocked(id, title string) (applied bool, err error) {
+	err = withBusyRetry(func() error {
+		res, execErr := s.db.Exec(
+			"UPDATE instances SET title = ?, auto_name = 0 WHERE id = ? AND title_locked = 0",
+			title, id,
+		)
+		if execErr != nil {
+			return execErr
+		}
+		n, raErr := res.RowsAffected()
+		if raErr != nil {
+			return raErr
+		}
+		applied = n > 0
+		return nil
+	})
+	return applied, err
+}
+
 // InstanceExists returns true iff a row with the given id is present.
 // Used by the rm path's post-commit verify (issue #909) to detect
 // resurrection by a concurrent SaveInstances rewrite.
@@ -1425,16 +1514,29 @@ func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
 	return result, rows.Err()
 }
 
+// touchWithRetry stamps metadata.last_modified, retrying on SQLITE_BUSY.
+//
+// Touch() is a plain Exec, so under a concurrent writer it fails where the
+// retry-wrapped row UPDATE beside it would have succeeded — leaving the row
+// changed but the change unannounced. Every targeted writer that stamps its
+// own signal must retry the stamp as hard as it retried the write.
+func (s *StateDB) touchWithRetry() error {
+	return withBusyRetry(func() error { return s.Touch() })
+}
+
 // SetAcknowledged sets or clears the acknowledged flag for an instance.
 func (s *StateDB) SetAcknowledged(id string, ack bool) error {
 	v := 0
 	if ack {
 		v = 1
 	}
-	if _, err := s.db.Exec("UPDATE instances SET acknowledged = ? WHERE id = ?", v, id); err != nil {
+	if err := withBusyRetry(func() error {
+		_, err := s.db.Exec("UPDATE instances SET acknowledged = ? WHERE id = ?", v, id)
+		return err
+	}); err != nil {
 		return err
 	}
-	return s.Touch()
+	return s.touchWithRetry()
 }
 
 // SetArchived sets or clears the archive timestamp for a single instance via a
@@ -1456,7 +1558,7 @@ func (s *StateDB) SetArchived(id string, at time.Time) error {
 	}); err != nil {
 		return err
 	}
-	return s.Touch()
+	return s.touchWithRetry()
 }
 
 // --- Heartbeat ---
@@ -1513,67 +1615,74 @@ func (s *StateDB) AliveInstanceCount() (int, error) {
 // Returns true if this instance is now (or already was) the primary.
 // Uses a transaction to atomically clear stale primaries and claim if available.
 func (s *StateDB) ElectPrimary(timeout time.Duration) (bool, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, fmt.Errorf("statedb: begin elect: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	cutoff := time.Now().Add(-timeout).Unix()
-
-	// Clear is_primary for any heartbeat older than timeout (stale primary)
-	if _, err := tx.Exec(
-		"UPDATE instance_heartbeats SET is_primary = 0 WHERE heartbeat < ? AND is_primary = 1",
-		cutoff,
-	); err != nil {
-		return false, fmt.Errorf("statedb: clear stale primary: %w", err)
-	}
-
-	// Find a candidate primary that is still fresh by heartbeat.
-	var existingPID int
-	err = tx.QueryRow(
-		"SELECT pid FROM instance_heartbeats WHERE is_primary = 1 AND heartbeat >= ? LIMIT 1",
-		cutoff,
-	).Scan(&existingPID)
-
-	if err == nil {
-		// A fresh-by-heartbeat primary row exists. Trust it as a live owner only
-		// if it is our own process OR the recorded PID is actually alive. A row
-		// left behind by an unclean exit (SIGKILL, OOM, terminal force-close,
-		// crash/panic) never ran ResignPrimary, so its heartbeat can stay within
-		// `timeout` for up to the full window after the process is gone. Without
-		// the liveness check, the next start sees that ghost as a live primary
-		// and exits "already running" — which is why users had to pkill (or wait
-		// out the window) before a restart would take. Verifying liveness here
-		// reclaims a dead primary immediately. The time-based clear above remains
-		// as a safety net against PID reuse.
-		if existingPID == s.pid || pidAlive(existingPID) {
-			if err := tx.Commit(); err != nil {
-				return false, fmt.Errorf("statedb: commit elect: %w", err)
-			}
-			return existingPID == s.pid, nil
+	var isPrimary bool
+	err := withBusyRetry(func() error {
+		isPrimary = false
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("statedb: begin elect: %w", err)
 		}
-		// Dead primary: clear its flag and fall through to claim.
+		defer func() { _ = tx.Rollback() }()
+
+		cutoff := time.Now().Add(-timeout).Unix()
+
+		// Clear is_primary for any heartbeat older than timeout (stale primary)
 		if _, err := tx.Exec(
-			"UPDATE instance_heartbeats SET is_primary = 0 WHERE pid = ?",
-			existingPID,
+			"UPDATE instance_heartbeats SET is_primary = 0 WHERE heartbeat < ? AND is_primary = 1",
+			cutoff,
 		); err != nil {
-			return false, fmt.Errorf("statedb: clear dead primary: %w", err)
+			return fmt.Errorf("statedb: clear stale primary: %w", err)
 		}
-	}
 
-	// No live primary exists: claim it
-	if _, err := tx.Exec(
-		"UPDATE instance_heartbeats SET is_primary = 1 WHERE pid = ?",
-		s.pid,
-	); err != nil {
-		return false, fmt.Errorf("statedb: claim primary: %w", err)
-	}
+		// Find a candidate primary that is still fresh by heartbeat.
+		var existingPID int
+		err = tx.QueryRow(
+			"SELECT pid FROM instance_heartbeats WHERE is_primary = 1 AND heartbeat >= ? LIMIT 1",
+			cutoff,
+		).Scan(&existingPID)
 
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("statedb: commit elect: %w", err)
-	}
-	return true, nil
+		if err == nil {
+			// A fresh-by-heartbeat primary row exists. Trust it as a live owner only
+			// if it is our own process OR the recorded PID is actually alive. A row
+			// left behind by an unclean exit (SIGKILL, OOM, terminal force-close,
+			// crash/panic) never ran ResignPrimary, so its heartbeat can stay within
+			// `timeout` for up to the full window after the process is gone. Without
+			// the liveness check, the next start sees that ghost as a live primary
+			// and exits "already running" — which is why users had to pkill (or wait
+			// out the window) before a restart would take. Verifying liveness here
+			// reclaims a dead primary immediately. The time-based clear above remains
+			// as a safety net against PID reuse.
+			if existingPID == s.pid || pidAlive(existingPID) {
+				if err := tx.Commit(); err != nil {
+					return fmt.Errorf("statedb: commit elect: %w", err)
+				}
+				isPrimary = existingPID == s.pid
+				return nil
+			}
+			// Dead primary: clear its flag and fall through to claim.
+			if _, err := tx.Exec(
+				"UPDATE instance_heartbeats SET is_primary = 0 WHERE pid = ?",
+				existingPID,
+			); err != nil {
+				return fmt.Errorf("statedb: clear dead primary: %w", err)
+			}
+		}
+
+		// No live primary exists: claim it
+		if _, err := tx.Exec(
+			"UPDATE instance_heartbeats SET is_primary = 1 WHERE pid = ?",
+			s.pid,
+		); err != nil {
+			return fmt.Errorf("statedb: claim primary: %w", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("statedb: commit elect: %w", err)
+		}
+		isPrimary = true
+		return nil
+	})
+	return isPrimary, err
 }
 
 // pidAlive reports whether pid refers to a live process on this host. It uses
@@ -1600,6 +1709,169 @@ func (s *StateDB) ResignPrimary() error {
 		s.pid,
 	)
 	return err
+}
+
+// --- Session Claims ---
+
+// ClaimRow is one row of the session_claims ownership table.
+type ClaimRow struct {
+	SessionID string
+	// OwnerPID is the owning process's OS pid, kept for display/debug only —
+	// it is not the ownership key (see OwnerToken) because PIDs are recycled
+	// by the OS.
+	OwnerPID int
+	// OwnerToken is the ownership identity: `<pid>-<started-unix>-<random
+	// hex>`, unique per StateDB.Open() and stable for that process's
+	// lifetime. Matching/ownership decisions use this field, not OwnerPID.
+	OwnerToken string
+	Scope      string
+	Heartbeat  int64
+}
+
+// ClaimSessions atomically claims each id for this process. A claim succeeds
+// when the row is absent, already ours (by owner_token), heartbeat-stale, or
+// held with a strictly shorter (less specific) scope — longer group path
+// wins, equal specificity is first-come (no stealing, no flapping). Returns
+// the ids owned by this process after the transaction.
+//
+// This upsert is also this process's sole heartbeat refresh path for claims:
+// the DO UPDATE branch fires for our own already-owned rows (owner_token
+// match) every sweep, bumping their heartbeat. Invariant: heartbeats are only
+// ever refreshed for rows re-claimed here — never blanket-refreshed by owner —
+// so a claim that stops being re-claimed (failed release, ghost row) goes
+// stale and gets taken over or pruned instead of living forever.
+func (s *StateDB) ClaimSessions(ids []string, scope string, staleAfter time.Duration) (map[string]bool, error) {
+	if len(ids) == 0 {
+		return make(map[string]bool), nil
+	}
+	var owned map[string]bool
+	err := withBusyRetry(func() error {
+		// Reset on every attempt: withBusyRetry may call this closure more than
+		// once, and a prior failed attempt (e.g. Commit() returning
+		// SQLITE_BUSY after owned was already populated) must not leak stale
+		// entries into the next attempt's result.
+		owned = make(map[string]bool, len(ids))
+
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("statedb: begin claims: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		now := time.Now().Unix()
+		cutoff := time.Now().Add(-staleAfter).Unix()
+		// One prepared statement for the whole loop: this runs every 2s sweep,
+		// and modernc/sqlite recompiles a raw-string Exec on each call.
+		stmt, err := tx.Prepare(`
+			INSERT INTO session_claims (session_id, owner_pid, owner_token, claimed_at, heartbeat, scope)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(session_id) DO UPDATE SET
+				owner_pid   = excluded.owner_pid,
+				owner_token = excluded.owner_token,
+				claimed_at  = excluded.claimed_at,
+				heartbeat   = excluded.heartbeat,
+				scope       = excluded.scope
+			WHERE session_claims.owner_token = excluded.owner_token
+			   OR session_claims.heartbeat < ?
+			   OR length(excluded.scope) > length(session_claims.scope)
+		`)
+		if err != nil {
+			return fmt.Errorf("statedb: prepare claim: %w", err)
+		}
+		defer stmt.Close()
+		for _, id := range ids {
+			if _, err := stmt.Exec(id, s.pid, s.token, now, now, scope, cutoff); err != nil {
+				return fmt.Errorf("statedb: claim %s: %w", id, err)
+			}
+		}
+
+		rows, err := tx.Query("SELECT session_id FROM session_claims WHERE owner_token = ?", s.token)
+		if err != nil {
+			return fmt.Errorf("statedb: read claims: %w", err)
+		}
+		defer rows.Close()
+		requested := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			requested[id] = true
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return fmt.Errorf("statedb: scan claim: %w", err)
+			}
+			if requested[id] {
+				owned[id] = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return owned, nil
+}
+
+// ReleaseClaims deletes the given claims when owned by this process (sessions
+// that left this instance's scope).
+func (s *StateDB) ReleaseClaims(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, s.token)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	// #nosec G202 -- placeholders is a fixed sequence of "?" tokens generated
+	// from len(ids); all values flow through args[], never the SQL string.
+	query := "DELETE FROM session_claims WHERE owner_token = ? AND session_id IN (" + strings.Join(placeholders, ",") + ")"
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(query, args...)
+		return err
+	})
+}
+
+// ReleaseAllClaims deletes every claim owned by this process. Shutdown path,
+// same place as ResignPrimary.
+func (s *StateDB) ReleaseAllClaims() error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("DELETE FROM session_claims WHERE owner_token = ?", s.token)
+		return err
+	})
+}
+
+// PruneStaleSessionClaims deletes claims whose session no longer exists in
+// the instances table. Cheap single statement; called periodically so claims
+// for deleted/archived-then-purged sessions cannot accumulate over a
+// long-lived owner process.
+func (s *StateDB) PruneStaleSessionClaims() error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("DELETE FROM session_claims WHERE session_id NOT IN (SELECT id FROM instances)")
+		return err
+	})
+}
+
+// LoadClaims returns all claim rows keyed by session id.
+func (s *StateDB) LoadClaims() (map[string]ClaimRow, error) {
+	rows, err := s.db.Query("SELECT session_id, owner_pid, owner_token, scope, heartbeat FROM session_claims")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]ClaimRow)
+	for rows.Next() {
+		var r ClaimRow
+		if err := rows.Scan(&r.SessionID, &r.OwnerPID, &r.OwnerToken, &r.Scope, &r.Heartbeat); err != nil {
+			return nil, err
+		}
+		out[r.SessionID] = r
+	}
+	return out, rows.Err()
 }
 
 // --- Metadata ---

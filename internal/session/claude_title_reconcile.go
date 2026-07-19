@@ -97,6 +97,35 @@ func ClaudeSessionName(sessionID string) string {
 	return ClaudeSessionNameIn(filepath.Join(home, ".claude"), sessionID)
 }
 
+// ResolveTitleFromClaude is the pure decision half of ReconcileTitleFromClaude:
+// it answers "does Claude's session name warrant a rename" without mutating i
+// or touching tmux. Honors the same sync_title switch and TitleLocked flag.
+//
+// Split out for the hook-triggered sync (cmd/agent-deck/hook_name_sync.go),
+// which persists via a conditional UPDATE ... WHERE title_locked = 0 that can
+// legitimately no-op if a user rename landed and locked the title first. The
+// combined ReconcileTitleFromClaude fires tmux/badge side effects unconditionally
+// on a decision to rename, before the caller's persistence attempt is even
+// known to have succeeded — a hook whose write gets rejected would still have
+// already overwritten the live tmux window title and iTerm badge with Claude's
+// name, leaving the terminal chrome out of sync with the correctly-preserved
+// stored title. Callers in that situation should call this instead and only
+// run the equivalent of ReconcileTitleFromClaude's side effects once their own
+// write is confirmed applied.
+func (i *Instance) ResolveTitleFromClaude(sessionID string) (string, bool) {
+	if i == nil || i.TitleLocked {
+		return "", false
+	}
+	if cfg, err := LoadUserConfig(); err == nil && cfg != nil && !cfg.GetSyncTitle() {
+		return "", false
+	}
+	name := ClaudeSessionName(sessionID)
+	if name == "" || name == i.Title {
+		return "", false
+	}
+	return name, true
+}
+
 // ReconcileTitleFromClaude refreshes i.Title from the agent's current Claude
 // session name. It is the shared core behind both the hook-event sync (#572)
 // and the on-attach reconcile (#1114 follow-up): Claude's /rename fires no
@@ -111,16 +140,14 @@ func ClaudeSessionName(sessionID string) string {
 // catch-up re-emits the fresh name instead of clobbering it with the old one.
 //
 // Returns the new name and true iff the title changed; the CALLER is
-// responsible for persisting the instance to storage.
+// responsible for persisting the instance to storage. The on-attach caller
+// (internal/ui/home.go) saves under the same in-process lock it just read
+// TitleLocked from, so applying side effects immediately here is safe for
+// that caller; the hook-triggered sync is NOT that caller — see
+// ResolveTitleFromClaude.
 func (i *Instance) ReconcileTitleFromClaude(sessionID string) (string, bool) {
-	if i == nil || i.TitleLocked {
-		return "", false
-	}
-	if cfg, err := LoadUserConfig(); err == nil && cfg != nil && !cfg.GetSyncTitle() {
-		return "", false
-	}
-	name := ClaudeSessionName(sessionID)
-	if name == "" || name == i.Title {
+	name, ok := i.ResolveTitleFromClaude(sessionID)
+	if !ok {
 		return "", false
 	}
 	i.Title = name

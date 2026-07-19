@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/tests/eval/harness"
 )
@@ -72,9 +73,11 @@ func runBinStderrShort(t *testing.T, sb *harness.Sandbox, args ...string) string
 	cmd := exec.Command(sb.BinPath, args...)
 	cmd.Env = sb.Env()
 	cmd.Dir = sb.Home
-	// CombinedOutput is enough: the warning goes to stderr and the TUI
-	// errors (no tty, etc.) come after it, so the Warning line appears
-	// early in the combined stream and our substring check is robust.
-	out, _ := cmd.CombinedOutput()
-	return string(out)
+	// These bare-flag invocations (-g/--select with no subcommand) fall through
+	// to TUI startup, which never exits on its own in this non-PTY harness. A
+	// plain CombinedOutput would block until the Go test timeout and leak the
+	// reparented agent-deck process. RunBounded captures the pre-TUI warning
+	// (emitted early on stderr) and then kills the whole process group, so
+	// nothing outlives the test.
+	return string(harness.RunBounded(cmd, 5*time.Second))
 }

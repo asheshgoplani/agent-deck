@@ -181,11 +181,11 @@ func TestStartCommandSpec_LaunchAs_ServiceWithInitialProcess(t *testing.T) {
 
 	require.Equal(t, "systemd-run", launcher)
 	tmuxArgs := stripSystemdRunPrefix(args)
-	// Last element must be the bash-wrapped command
-	require.NotEmpty(t, tmuxArgs)
-	last := tmuxArgs[len(tmuxArgs)-1]
-	assert.True(t, strings.HasPrefix(last, "bash -c '"), "initial process must be bash-wrapped")
-	assert.Contains(t, last, "claude --resume xyz")
+	// #1567/#1580: initial process delivered as argv tokens bash -c COMMAND.
+	require.GreaterOrEqual(t, len(tmuxArgs), 3)
+	assert.Equal(t, "bash", tmuxArgs[len(tmuxArgs)-3], "initial process must be exec'd under bash")
+	assert.Equal(t, "-c", tmuxArgs[len(tmuxArgs)-2])
+	assert.Equal(t, "claude --resume xyz", tmuxArgs[len(tmuxArgs)-1])
 }
 
 // TestStripSystemdRunPrefix_RecoversTmuxArgsFromServiceForm is the

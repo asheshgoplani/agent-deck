@@ -291,7 +291,6 @@ func handleSessionCleanup(profile string, args []string) {
 			fmt.Println("Aborted. Nothing deleted.")
 			return
 		}
-		execute = true
 	}
 
 	// TOCTOU guard, on BOTH paths. The candidate list was computed before this

@@ -1,0 +1,165 @@
+name: PR Intake Gate (observe-only)
+
+# Reads the PR body against the intake contract in .github/INTAKE.md, applies
+# advisory labels, and posts ONE kind comment. This is OBSERVE-ONLY: it never
+# closes, blocks, or requests changes — it only labels and explains. The visible
+# template sections are authoritative; the trailing gate marker is a parse-stable
+# confirmation. See PR-GATE-PLAN.md for the rollout design.
+#
+# Security posture: pull_request_target runs in the base-repo context (needed to
+# label/comment on fork PRs), so this job is metadata-only. It never checks out,
+# builds, or runs any PR code — it reads only the PR body via the API. Do not add
+# a checkout of the head ref here.
+
+on:
+  pull_request_target:
+    types: [opened, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: pr-intake-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  intake:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Evaluate intake contract
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const MARKER = '<!-- pr-intake-gate -->';
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
+            const number = pr.number;
+            const body = pr.body || '';
+
+            // ---- Contract, from .github/INTAKE.md ----
+            const requiredHeadings = [
+              'What problem does this solve?',
+              'Why this change',
+              'User impact',
+              'AI disclosure',
+              'What actually bothered you',
+              'Checklist',
+            ];
+
+            // Extract the text of a "## <heading>" section up to the next "## " heading
+            // or end of body. No 'm' flag: $ means true end-of-string here, so the
+            // lookahead terminates only at the next heading or the very end.
+            function section(heading) {
+              const esc = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const re = new RegExp('(?:^|\\n)##\\s+' + esc + '\\s*(?:\\n|$)([\\s\\S]*?)(?=\\n##\\s+|$)', 'i');
+              const m = body.match(re);
+              return m ? m[1] : null;
+            }
+            // Strip HTML comments + whitespace-only lines to test for real content.
+            function meaningful(text) {
+              if (!text) return false;
+              const stripped = text
+                .replace(/<!--[\s\S]*?-->/g, '')
+                .replace(/^[-*]\s*\[[ xX]\]/gm, '') // checklist boxes are not "content" for intent
+                .trim();
+              return stripped.length > 0;
+            }
+
+            const findings = [];
+
+            // 1) Required headings present.
+            const missingHeadings = requiredHeadings.filter(h => section(h) === null);
+            if (missingHeadings.length) {
+              findings.push('Missing required section' + (missingHeadings.length > 1 ? 's' : '') +
+                ': ' + missingHeadings.map(h => '`## ' + h + '`').join(', ') + '.');
+            }
+
+            // 2) Exactly one AI-disclosure box checked.
+            const aiSection = section('AI disclosure') || '';
+            const checkedBoxes = (aiSection.match(/^[-*]\s*\[[xX]\]/gm) || []).length;
+            let aiKind = null; // authored | assisted | human
+            if (checkedBoxes === 1) {
+              const line = (aiSection.match(/^[-*]\s*\[[xX]\].*$/m) || [''])[0].toLowerCase();
+              if (line.includes('authored')) aiKind = 'authored';
+              else if (line.includes('assisted')) aiKind = 'assisted';
+              else if (line.includes('human')) aiKind = 'human';
+            }
+            if (checkedBoxes === 0) {
+              findings.push('No AI-disclosure box is checked — pick exactly one (Human-written / AI-assisted / AI-authored). AI is welcome here with equal standing; this is a signal, not a filter.');
+            } else if (checkedBoxes > 1) {
+              findings.push('More than one AI-disclosure box is checked — pick exactly one.');
+            }
+
+            // 3) Human intent non-empty.
+            if (!meaningful(section('What actually bothered you'))) {
+              findings.push('`## What actually bothered you` is empty — one real sentence of human intent is the one field intake cannot accept blank. If an agent opened this PR, quote what the human asked for.');
+            }
+
+            // Parse the optional trailing marker (informational only).
+            const marker = body.match(/<!--\s*gate:ai=([^\s]+)\s+model=([^\s]+)\s+intent=([^\s]+)\s*-->/i);
+            const markerInfo = marker ? { ai: marker[1], model: marker[2], intent: marker[3] } : null;
+
+            const clean = findings.length === 0;
+
+            // ---- Labels (add/remove so re-edits converge) ----
+            const current = new Set((pr.labels || []).map(l => l.name));
+            const want = new Set();
+            const drop = new Set();
+
+            if (clean) { want.add('intake:clean'); drop.add('needs-info'); }
+            else { want.add('needs-info'); drop.add('intake:clean'); }
+
+            if (aiKind === 'authored') { want.add('ai-authored'); drop.add('ai-assisted'); }
+            else if (aiKind === 'assisted') { want.add('ai-assisted'); drop.add('ai-authored'); }
+
+            for (const name of want) {
+              if (!current.has(name)) {
+                try { await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [name] }); }
+                catch (e) { core.warning('addLabel ' + name + ': ' + e.message); }
+              }
+            }
+            for (const name of drop) {
+              if (current.has(name)) {
+                try { await github.rest.issues.removeLabel({ owner, repo, issue_number: number, name }); }
+                catch (e) { core.warning('removeLabel ' + name + ': ' + e.message); }
+              }
+            }
+
+            // ---- One kind comment (create, then update in place on re-edits) ----
+            let comment;
+            if (clean) {
+              comment = [
+                '👋 Thanks for the contribution — intake looks complete.',
+                '',
+                'Your PR body carries everything the maintainer\'s validation pipeline reads first: the problem, the reasoning, the human intent behind it, and an AI-disclosure. It will be applied, built, and tested against `main`, and you\'ll get a structured result within about a day. Merges are always human.',
+              ].join('\n');
+            } else {
+              comment = [
+                '👋 Thanks for opening this — a couple of intake fields would help the maintainer\'s validation pipeline (and any reviewer) understand it faster. Nothing here blocks you and nothing is closing: this is a heads-up, and editing the description re-runs this check automatically.',
+                '',
+                ...findings.map(f => '- ' + f),
+                '',
+                'The full field-level contract is in [.github/INTAKE.md](https://github.com/' + owner + '/' + repo + '/blob/main/.github/INTAKE.md). AI-authored PRs are welcome here with equal standing.',
+              ].join('\n');
+            }
+            if (markerInfo) {
+              comment += '\n\n<sub>gate marker read: ai=`' + markerInfo.ai + '` model=`' + markerInfo.model + '` intent=`' + markerInfo.intent + '`</sub>';
+            }
+            comment += '\n\n' + MARKER;
+
+            const existing = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: number, per_page: 100,
+            });
+            const mine = existing.find(c => (c.body || '').includes(MARKER) &&
+              (c.user.type === 'Bot' || c.user.login === 'github-actions[bot]'));
+
+            if (mine) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body: comment });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: number, body: comment });
+            }
+
+            core.info('Intake ' + (clean ? 'clean' : 'needs-info: ' + findings.length + ' finding(s)'));

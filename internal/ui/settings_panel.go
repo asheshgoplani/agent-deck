@@ -1228,8 +1228,24 @@ func (s *SettingsPanel) View() string {
 		if s.scrollOffset < 0 {
 			s.scrollOffset = 0
 		}
-		if maxOff := totalLines - availHeight; s.scrollOffset > maxOff {
+		maxOff := totalLines - availHeight
+		if s.scrollOffset > maxOff {
 			s.scrollOffset = maxOff
+		}
+		// When the cursor sits on the last navigable setting, scroll all the
+		// way to the bottom so the trailing info lines (MCP config-path hint +
+		// help bar) come into view and the "▼ more below" indicator clears.
+		// Scrolling is cursor-anchored, so without this the tail is
+		// unreachable (issue #1659). Never scroll past the cursor's context
+		// window, in case the tail ever grows taller than the viewport.
+		if s.cursor == settingsCount-1 && s.scrollOffset < maxOff {
+			bottomOff := maxOff
+			if lim := cursorLine - 2; bottomOff > lim {
+				bottomOff = lim
+			}
+			if s.scrollOffset < bottomOff {
+				s.scrollOffset = bottomOff
+			}
 		}
 
 		// Determine visible window, replacing edge content lines with scroll indicators

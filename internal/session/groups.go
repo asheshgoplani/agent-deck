@@ -65,6 +65,15 @@ type Item struct {
 	DividerLabel        string             // Label shown on an ItemTypeDivider row (e.g. "idle / done")
 }
 
+// IsCreatingPlaceholder reports whether this row is a still-creating session
+// placeholder: a session-typed row whose *Instance has not been created yet
+// (Session == nil). Mutations (move/rename/fork) must be refused on such rows —
+// dereferencing the nil Instance panics (#1540). This is the single model-layer
+// predicate that generalizes the per-call-site nil guards.
+func (it Item) IsCreatingPlaceholder() bool {
+	return it.Type == ItemTypeSession && it.Session == nil
+}
+
 // Group represents a group of sessions
 type Group struct {
 	Name        string
@@ -967,6 +976,12 @@ func (t *GroupTree) DemoteSession(inst *Instance) {
 
 // MoveSessionToGroup moves a session to a different group
 func (t *GroupTree) MoveSessionToGroup(inst *Instance, newGroupPath string) {
+	// Defense in depth: a creating-session placeholder row (Item.Type ==
+	// ItemTypeSession but Item.Session == nil) can reach a caller that forgets
+	// to nil-check. Refuse to dereference a nil instance instead of panicking.
+	if inst == nil {
+		return
+	}
 	oldGroupPath := inst.GroupPath
 
 	// Remove from old group

@@ -1,0 +1,59 @@
+name: Feature request
+description: Propose an improvement or new capability
+title: "[feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For larger features, consider opening a Discussion first; agreeing on the shape before code exists saves everyone time. Small, obvious improvements are fine straight in here.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation where you miss this feature, not just the feature itself.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What would you type or press, and what should happen?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use today, or other shapes this could take.
+    validations:
+      required: false
+  - type: dropdown
+    id: willing
+    attributes:
+      label: Would you be up for implementing it?
+      options:
+        - "Yes, with a pointer in the right direction"
+        - "Yes, independently"
+        - "No, just proposing"
+    validations:
+      required: true
+  - type: dropdown
+    id: ai_disclosure
+    attributes:
+      label: Was this written with AI help?
+      description: We welcome AI-assisted reports and PRs equally. This is a signal, not a filter.
+      options:
+        - "Human-written"
+        - "AI-assisted (I directed and reviewed it)"
+        - "AI-authored (a model wrote most of it)"
+    validations:
+      required: true
+  - type: input
+    id: ai_model
+    attributes:
+      label: If AI helped, which model?
+      description: e.g. claude-opus-4-x, gpt-5-codex, gemini-3-pro. "unsure" is a fine answer.
+      placeholder: claude-opus-4-x
+    validations:
+      required: false

@@ -636,14 +636,47 @@ func TestStatEnvFileProbe(t *testing.T) {
 func TestIsValidEnvKey(t *testing.T) {
 	valid := []string{"HOME", "MY_VAR", "_private", "A", "API_KEY_123"}
 	for _, k := range valid {
-		if !isValidEnvKey(k) {
+		if !IsValidEnvKey(k) {
 			t.Errorf("expected %q to be valid", k)
 		}
 	}
 	invalid := []string{"", "123BAD", "HAS SPACE", "key=val", "semi;colon", "a'b"}
 	for _, k := range invalid {
-		if isValidEnvKey(k) {
+		if IsValidEnvKey(k) {
 			t.Errorf("expected %q to be invalid", k)
 		}
+	}
+}
+
+func TestBuildEnvExports_SortsQuotesAndSkipsInvalidKeys(t *testing.T) {
+	got := buildEnvExports(map[string]string{
+		"Z_LAST":  "two words",
+		"A_FIRST": "it's",
+		"BAD-KEY": "ignored",
+	})
+	want := `export A_FIRST='it'\''s' && export Z_LAST='two words'`
+	if got != want {
+		t.Fatalf("buildEnvExports() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildRestartEnvPrefix(t *testing.T) {
+	inst := &Instance{restartEnv: map[string]string{"RESTART_ONLY": "value"}}
+	if got, want := inst.buildRestartEnvPrefix(), "export RESTART_ONLY='value' && "; got != want {
+		t.Fatalf("buildRestartEnvPrefix() = %q, want %q", got, want)
+	}
+	inst.restartEnv = nil
+	if got := inst.buildRestartEnvPrefix(); got != "" {
+		t.Fatalf("cleared restart env produced prefix %q", got)
+	}
+}
+
+func TestRestartWithEnvRejectsInvalidKeyBeforeRestart(t *testing.T) {
+	inst := &Instance{ID: "invalid-env-test"}
+	if err := inst.RestartWithEnv(map[string]string{"BAD-KEY": "value"}); err == nil {
+		t.Fatal("RestartWithEnv accepted an invalid environment variable name")
+	}
+	if inst.restartEnv != nil {
+		t.Fatalf("invalid restart populated transient environment: %#v", inst.restartEnv)
 	}
 }

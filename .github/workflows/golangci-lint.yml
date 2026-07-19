@@ -20,5 +20,5 @@ jobs:
       # the same PR — SQL parameterization annotated, pprof timeouts added,
       # G115/G117/G118/G122/G306/G703/G704 false positives carry // #nosec
       # explanations, testutil/eval paths excluded via .golangci.yml.
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with: { version: latest, args: --timeout=5m }

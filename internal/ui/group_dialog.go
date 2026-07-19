@@ -330,16 +330,16 @@ func (g *GroupDialog) Update(msg tea.KeyMsg) (*GroupDialog, tea.Cmd) {
 	}
 
 	// Issue #918: in Create mode, Tab cycles name ↔ path. Shift+Tab cycles back.
-	// When the Root/Subgroup toggle from #111 is available, Tab still toggles
-	// while focus is on the name field — preserving the existing #111 binding
-	// — and on the path field Tab returns focus to name.
+	// Issue #1536: Tab now ALWAYS advances focus so the Default Path field is
+	// reachable by normal Tab traversal. Previously, when the #111 Root/Subgroup
+	// toggle was available, Tab toggled on the name field and never fell through
+	// to focus the path — trapping the user. The toggle is rebound to Up/Down
+	// (see below): Space is a legal group-name character, Left/Right move the
+	// text cursor, so Up/Down is the only free binding for the Root/Subgroup
+	// toggle across both single-line inputs.
 	if g.mode == GroupDialogCreate {
 		switch msg.String() {
 		case "tab":
-			if g.CanToggle() && g.focusIndex == 0 {
-				g.ToggleRootSubgroup()
-				return g, nil
-			}
 			if g.focusIndex == 0 {
 				g.focusPath()
 			} else {
@@ -353,6 +353,14 @@ func (g *GroupDialog) Update(msg tea.KeyMsg) (*GroupDialog, tea.Cmd) {
 				g.focusName()
 			}
 			return g, nil
+		case "up", "down":
+			// Issue #1536: Root/Subgroup toggle, rebound off Tab. No-op (falls
+			// through to the text input, which ignores Up/Down) when there is no
+			// group context to toggle into.
+			if g.CanToggle() {
+				g.ToggleRootSubgroup()
+				return g, nil
+			}
 		}
 	}
 
@@ -446,7 +454,7 @@ func (g *GroupDialog) View() string {
 	var hint string
 	switch {
 	case g.mode == GroupDialogCreate && g.CanToggle():
-		hint = hintStyle.Render("Tab toggle/next │ Shift+Tab prev │ Enter confirm │ Esc cancel")
+		hint = hintStyle.Render("↑↓ Root/Subgroup │ Tab next │ Shift+Tab prev │ Enter confirm │ Esc cancel")
 	case g.mode == GroupDialogCreate:
 		hint = hintStyle.Render("Tab next │ Shift+Tab prev │ Enter confirm │ Esc cancel")
 	default:

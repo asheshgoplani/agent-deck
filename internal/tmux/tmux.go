@@ -1163,11 +1163,6 @@ func bashCWrap(command string) string {
 	return bashCPrefix + escaped + "'"
 }
 
-func isBashCWrapped(command string) bool {
-	trimmed := strings.TrimSpace(command)
-	return strings.HasPrefix(trimmed, bashCPrefix)
-}
-
 const (
 	bashBinary  = "bash"
 	bashCPrefix = "bash -c '"
@@ -1249,15 +1244,28 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	// (buildInnerTmuxArgs returns the args unchanged).
 	tmuxArgs := buildInnerTmuxArgs(s.SocketName, "new-session", "-d", "-s", s.Name, "-c", workDir)
 	if startWithInitialProcess {
-		// Keep commands under bash for fish/zsh compatibility, but avoid
-		// double-wrapping payloads that are already `bash -c '…'`.
-		// wrapIgnoreSuspend() already returns that shape; re-wrapping it can
-		// corrupt quoting for nested payloads like docker exec bash -c ... .
-		if isBashCWrapped(command) {
-			tmuxArgs = append(tmuxArgs, command)
-		} else {
-			tmuxArgs = append(tmuxArgs, bashCWrap(command))
-		}
+		// Deliver the pane command as SEPARATE argv tokens (bash, -c, command)
+		// rather than a single shell-quoted string. This is the crux of the
+		// #1567 / #1580 fix.
+		//
+		// tmux treats a single trailing string command as a shell-command and
+		// delivers it through the server's default-shell: `$SHELL -c "…"`.
+		// That implicit wrap kills fast-TTY-acquiring tools within
+		// milliseconds — Hermes Agent dies <100ms (#1567), `npx codex` dies
+		// instantly (#1580) — because the tool is no longer the pane leader
+		// tmux execvp()'d, and $SHELL's controlling-terminal handoff differs.
+		//
+		// Passing separate argv tokens makes tmux execvp() `bash` directly as
+		// the pane's initial process (the default-shell is never involved),
+		// and bash then runs the command with a well-defined TTY, exactly like
+		// the surviving `tmux new-session -d bash -c hermes` repro. bash is
+		// kept as the interpreter for fish/zsh compatibility (#526).
+		//
+		// Payloads already shaped `bash -c '…'` (e.g. from wrapIgnoreSuspend)
+		// pass through as the command argument verbatim — bash -c "bash -c '…'"
+		// tail-exec's the inner bash, so no extra lingering process and no
+		// re-escaping of the nested single quotes.
+		tmuxArgs = append(tmuxArgs, bashBinary, "-c", command)
 	}
 
 	unitBase := "agentdeck-tmux-" + sanitizeSystemdUnitComponent(s.Name)
@@ -1815,7 +1823,11 @@ func (s *Session) SetEnvironment(key, value string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := s.tmuxCmdContext(ctx, "set-environment", "-t", s.Name, key, value)
-	err := cmd.Run()
+	// CombinedOutput (not Run) so tmux stderr is folded into the error. A bare
+	// "exit status 1" is useless for diagnosing a wedged server (#1579): the
+	// real cause ("no server running on ...", "can't find session") lives on
+	// stderr, which Run() discards.
+	out, err := cmd.CombinedOutput()
 	if err == nil {
 		// Invalidate cache entry so next GetEnvironment sees the new value
 		s.envCacheMu.Lock()
@@ -1823,6 +1835,10 @@ func (s *Session) SetEnvironment(key, value string) error {
 			delete(s.envCache, key)
 		}
 		s.envCacheMu.Unlock()
+		return nil
+	}
+	if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+		return fmt.Errorf("%w: %s", err, trimmed)
 	}
 	return err
 }
@@ -1996,6 +2012,42 @@ func isSocketAcceptingConnections(socketPath string) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// gatedTmuxKeyOptionArgs returns the tmux argument chunks for agent-deck's
+// key-handling defaults — escape-time, extended-keys, extended-keys-format and
+// terminal-features — each gated through OptionOverrides so an explicit user
+// setting wins (#1625). Every chunk begins with a ";" chain separator, so
+// callers append the result after an existing set-option in the same tmux
+// command (the same shape the window-size default already uses).
+//
+// extended-keys / extended-keys-format are *server* options (set -s). Emitting
+// them unconditionally on every spawn overrode a deliberate
+// `set -s extended-keys off` in the user's ~/.tmux.conf server-wide, which on
+// some terminals (e.g. Windows Terminal + WSL2) stops Enter from submitting in
+// the pane. terminal-features uses -a (append), so re-emitting it every spawn
+// also grew that server-wide option unbounded. Gating each key through
+// OptionOverrides lets config.toml [tmux] options — and by extension the user's
+// own tmux config — take effect instead of being silently clobbered.
+func gatedTmuxKeyOptionArgs(name string, overrides map[string]string) []string {
+	args := make([]string, 0, 20)
+	if _, ok := overrides["escape-time"]; !ok {
+		args = append(args, ";", "set-option", "-t", name, "escape-time", "10")
+	}
+	if _, ok := overrides["extended-keys"]; !ok {
+		args = append(args, ";", "set", "-sq", "extended-keys", "on")
+	}
+	if _, ok := overrides["extended-keys-format"]; !ok {
+		// csi-u so modified keys reach the pane as ESC[13;2u (the kitty
+		// keyboard-protocol form Claude Code reads) rather than the default
+		// xterm modifyOtherKeys ESC[27;2;13~, which Claude Code ignores —
+		// otherwise Shift+Enter collapses to a bare Enter and submits.
+		args = append(args, ";", "set", "-sq", "extended-keys-format", "csi-u")
+	}
+	if _, ok := overrides["terminal-features"]; !ok {
+		args = append(args, ";", "set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+	}
+	return args
 }
 
 // Start creates and starts a tmux session.
@@ -2174,15 +2226,10 @@ func (s *Session) Start(command string) error {
 	}
 	startArgs = append(startArgs,
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
-		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
-		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-sq", "extended-keys", "on", ";",
-		// csi-u so modified keys reach the pane as ESC[13;2u (the kitty
-		// keyboard-protocol form Claude Code reads) rather than the default
-		// xterm modifyOtherKeys ESC[27;2;13~, which Claude Code ignores —
-		// otherwise Shift+Enter collapses to a bare Enter and submits.
-		"set", "-sq", "extended-keys-format", "csi-u", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+		"set-option", "-t", s.Name, "set-clipboard", "on")
+	// #1625: the key-handling defaults are gated through OptionOverrides so an
+	// explicit user tmux setting wins (see gatedTmuxKeyOptionArgs).
+	startArgs = append(startArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides)...)
 	// Multi-client size negotiation. Web's xterm.js connects via a tmux -C
 	// control client (controlpipe.go) at the same time as native `tmux attach`
 	// clients (Ghostty, iTerm). Default `window-size latest` makes the window
@@ -2548,17 +2595,14 @@ func (s *Session) EnableMouseMode() error {
 	// - escape-time 10: Fast Vim/editor responsiveness (default 500ms is too slow)
 	//
 	// Uses -q flag where supported to silently ignore on older tmux versions
-	enhanceCmd := s.tmuxCmd(
+	enhanceArgs := []string{
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
-		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
-		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-sq", "extended-keys", "on", ";",
-		// csi-u so modified keys reach the pane as ESC[13;2u (the kitty
-		// keyboard-protocol form Claude Code reads) rather than the default
-		// xterm modifyOtherKeys ESC[27;2;13~, which Claude Code ignores —
-		// otherwise Shift+Enter collapses to a bare Enter and submits.
-		"set", "-sq", "extended-keys-format", "csi-u", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on",
+	}
+	// #1625: gate the key-handling defaults through OptionOverrides so an explicit
+	// user tmux setting wins (mirrors Start; see gatedTmuxKeyOptionArgs).
+	enhanceArgs = append(enhanceArgs, gatedTmuxKeyOptionArgs(s.Name, s.OptionOverrides)...)
+	enhanceCmd := s.tmuxCmd(enhanceArgs...)
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options
 	_ = enhanceCmd.Run()
@@ -2787,7 +2831,11 @@ func (s *Session) RespawnPane(command string) error {
 		if wrapErr != nil {
 			return wrapErr
 		}
-		args = append(args, wrapped)
+		// Deliver as separate argv tokens (bash, -lc, command) so tmux
+		// execvp()s bash directly as the new pane leader instead of routing
+		// the restart command through the server default-shell. Same #1567 /
+		// #1580 rationale as the initial-process spawn in startCommandSpec.
+		args = append(args, wrapped...)
 	}
 
 	mcpLog.Debug("respawn_pane_executing", slog.Any("args", args))
@@ -2832,20 +2880,20 @@ func (s *Session) RespawnPane(command string) error {
 	return nil
 }
 
-func wrapRespawnCommand(command string) (string, error) {
+// wrapRespawnCommand returns the argv tokens ({bash, -lc, command}) that
+// respawn-pane appends so tmux execvp()s bash directly as the new pane leader
+// rather than routing the command through the server default-shell. See the
+// #1567 / #1580 fix rationale in startCommandSpec.
+func wrapRespawnCommand(command string) ([]string, error) {
 	return wrapRespawnCommandWithResolver(command, exec.LookPath)
 }
 
-func wrapRespawnCommandWithResolver(command string, lookPath func(string) (string, error)) (string, error) {
+func wrapRespawnCommandWithResolver(command string, lookPath func(string) (string, error)) ([]string, error) {
 	bashPath, err := lookPath(bashBinary)
 	if err != nil {
-		return "", fmt.Errorf("bash not found in PATH: %w", err)
+		return nil, fmt.Errorf("bash not found in PATH: %w", err)
 	}
-	return buildBashLCCommand(bashPath, command), nil
-}
-
-func buildBashLCCommand(bashPath, command string) string {
-	return fmt.Sprintf("%s -lc %s", bashPath, shellescape.Quote(command))
+	return []string{bashPath, "-lc", command}, nil
 }
 
 // GetWindowActivity returns Unix timestamp of last tmux window activity
@@ -3004,6 +3052,32 @@ func (s *Session) CaptureFullHistory() (string, error) {
 	cmd := s.tmuxCmd("capture-pane", "-t", s.Name, "-p", "-e", "-S", "-2000")
 	output, err := cmd.Output()
 	if err != nil {
+		return "", fmt.Errorf("failed to capture history: %w", err)
+	}
+	return string(output), nil
+}
+
+// CaptureHistoryLines captures the last n lines of the pane's scrollback,
+// preserving ANSI colors (-e). Unlike CaptureFullHistory (capped at 2000 for
+// the preview pane) this is used by the in-attach scrollback pager (#1491),
+// which needs a deep enough window to reach the start of a long session, so it
+// runs with a generous timeout and an explicit -S -<n> lower bound.
+//
+// n is clamped to at least 1. A one-off subprocess with a 10s timeout keeps a
+// pathological capture from wedging the UI; on timeout it returns
+// ErrCaptureTimeout so the caller can surface a non-fatal message.
+func (s *Session) CaptureHistoryLines(n int) (string, error) {
+	if n < 1 {
+		n = 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := s.tmuxCmdContext(ctx, "capture-pane", "-t", s.Name, "-p", "-e", "-S", fmt.Sprintf("-%d", n))
+	output, err := cmd.Output()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", ErrCaptureTimeout
+		}
 		return "", fmt.Errorf("failed to capture history: %w", err)
 	}
 	return string(output), nil
@@ -4984,6 +5058,33 @@ func (s *Session) GetWorkDir() string {
 		return ""
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// IsAltScreen reports whether the pane is currently showing the alternate
+// screen — i.e. a full-screen TUI such as Claude in fullscreen mode. Such panes
+// keep NO tmux scrollback (history_size stays 0 regardless of history-limit), so
+// the in-attach scrollback pager (#1491) has nothing to capture and, worse,
+// would swallow the PageUp the app itself uses to scroll. The attach loop
+// consults this (via AttachOptions.ScrollbackGate) to leave bare PageUp for the
+// app when it is fullscreen.
+//
+// Bounded so a wedged server can never hang the keystroke that triggered the
+// query. On error it returns (false, err); the caller preserves the pager on
+// error rather than silently disabling a configured feature.
+func (s *Session) IsAltScreen() (bool, error) {
+	output, err := s.runBoundedOutput("display-message", "-t", s.Name, "-p", "#{alternate_on}")
+	if err != nil {
+		return false, err
+	}
+	return parseAlternateOn(string(output)), nil
+}
+
+// parseAlternateOn parses tmux's #{alternate_on} flag: an exact "1" means the
+// alternate screen is active, anything else means the normal screen. tmux
+// appends a trailing newline, so surrounding whitespace is trimmed. Extracted so
+// the parsing is unit-testable without a live tmux server.
+func parseAlternateOn(output string) bool {
+	return strings.TrimSpace(output) == "1"
 }
 
 // SplitShellPane adds a vertical split pane to this session running shell

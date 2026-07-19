@@ -182,6 +182,31 @@ func TestDesiredLivePipes_DropsNamesWithNoInstance(t *testing.T) {
 	}
 }
 
+func TestOwnedSocketFilter(t *testing.T) {
+	socketByName := map[string]string{"s-a": "", "s-b": "", "s-c": "iso"}
+	owned := map[string]bool{"i-a": true}
+	nameToID := map[string]string{"s-a": "i-a", "s-b": "i-b", "s-c": "i-c"}
+	got := filterPipeCandidates(socketByName, nameToID, owned, "s-b", true)
+	// owned s-a stays; focused s-b stays despite not owned; s-c dropped.
+	if _, ok := got["s-a"]; !ok {
+		t.Error("owned session dropped")
+	}
+	if _, ok := got["s-b"]; !ok {
+		t.Error("focused session must keep its pipe")
+	}
+	if _, ok := got["s-c"]; ok {
+		t.Error("non-owned non-focused session must be dropped")
+	}
+}
+
+func TestOwnedSocketFilterFlagOff(t *testing.T) {
+	socketByName := map[string]string{"s-a": "", "s-b": ""}
+	got := filterPipeCandidates(socketByName, map[string]string{}, nil, "", false)
+	if len(got) != 2 {
+		t.Error("flag off must keep all candidates")
+	}
+}
+
 // fakeConnector records connect/disconnect calls for reconcilePipes tests.
 type fakeConnector struct {
 	connected map[string]bool

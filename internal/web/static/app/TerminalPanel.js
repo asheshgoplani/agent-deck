@@ -8,6 +8,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { EmptyStateDashboard } from './EmptyStateDashboard.js'
+import { terminalKeymap } from './terminalKeys.js'
 
 // Mobile detection: pointer:coarse for touch devices
 function isMobileDevice() {
@@ -127,6 +128,9 @@ export function TerminalPanel() {
     const container = containerRef.current
     const token = authTokenSignal.value
     const mobile = isMobileDevice()
+    // macOS gates the Cmd/Option line-editing remaps (terminalKeymap); other
+    // platforms keep their native Home/End/Ctrl-arrow behavior untouched.
+    const isMac = /mac/i.test(navigator.platform || '') || /mac/i.test(navigator.userAgent || '')
 
     // Create Terminal
     const terminal = new Terminal({
@@ -251,9 +255,26 @@ export function TerminalPanel() {
     installTouchScroll(container, terminal.element, controller)
 
     // Keyboard input forwarding (desktop + mobile; server gates on ReadOnly).
-    const inputDisposable = terminal.onData((data) => {
+    // sendInput is the single guarded path to the pane -- every producer
+    // (onData, the key remapper, paste) funnels through it.
+    const sendInput = (data) => {
       if (!ctx.ws || ctx.ws.readyState !== WebSocket.OPEN || !ctx.terminalAttached || readOnlySignal.value) return
       ctx.ws.send(JSON.stringify({ type: 'input', data }))
+    }
+    const inputDisposable = terminal.onData(sendInput)
+
+    // Remap keystrokes the browser/xterm mishandles to the bytes a native
+    // terminal would send (Shift+Enter -> newline; Cmd/Option line editing --
+    // see terminalKeymap). On a match, send the mapped bytes, preventDefault
+    // (stops browser back/forward on Cmd+Arrow, and xterm's own default --
+    // xterm skips its preventDefault when the handler returns false), and
+    // return false so xterm emits nothing for the key.
+    terminal.attachCustomKeyEventHandler((e) => {
+      const bytes = terminalKeymap(e, isMac)
+      if (bytes === null) return true
+      sendInput(bytes)
+      e.preventDefault()
+      return false
     })
 
     // WSL2+Chrome paste fix: xterm.js 6.0's default paste path can fail and
@@ -272,7 +293,7 @@ export function TerminalPanel() {
         text = text.replace(/\r\n?/g, '\n')
         event.preventDefault()
         event.stopPropagation()
-        ctx.ws.send(JSON.stringify({ type: 'input', data: text }))
+        sendInput(text)
       }, { capture: true, signal: controller.signal })
     }
 

@@ -19,7 +19,8 @@ import (
 //  5. Per-group / per-conductor inline env ([groups.X.claude].env, [conductors.X.claude].env)
 //  6. Inline env vars from [tools.X].env
 //  7. Conductor-specific env from meta.json (highest priority, overrides tool env)
-//  8. Strip TELEGRAM_STATE_DIR (v1.7.40, S8)
+//  8. One-shot restart overrides (`session restart --env`)
+//  9. Strip TELEGRAM_STATE_DIR (v1.7.40, S8)
 //
 // Note: This does NOT handle [shell].launch_shell wrapping — that happens at the
 // prepareCommand layer (instance.go) after env sourcing, so the shell startup
@@ -52,6 +53,12 @@ func (i *Instance) buildEnvSourceCommand() string {
 		sources = append(sources, paneWarning("config.toml error — overrides inactive: "+cfgErr.Error()))
 	}
 	if config == nil {
+		if restartEnv := buildEnvExports(i.restartEnv); restartEnv != "" {
+			sources = append(sources, restartEnv)
+		}
+		if stripExpr := telegramStateDirStripExpr(i); stripExpr != "" {
+			sources = append(sources, stripExpr)
+		}
 		if len(sources) == 0 {
 			return ""
 		}
@@ -132,7 +139,13 @@ func (i *Instance) buildEnvSourceCommand() string {
 		sources = append(sources, conductorEnv)
 	}
 
-	// 8. S8 (v1.7.40) — strip TELEGRAM_STATE_DIR on every non-channel-owning
+	// 8. Explicit restart overrides are applied after every configured source,
+	//    so the command-line value wins for this replacement process.
+	if restartEnv := buildEnvExports(i.restartEnv); restartEnv != "" {
+		sources = append(sources, restartEnv)
+	}
+
+	// 9. S8 (v1.7.40) — strip TELEGRAM_STATE_DIR on every non-channel-owning
 	// claude spawn. Fires AFTER all sources and inline env so it wins
 	// over any env_file / inline export that set the variable, and
 	// runs even when no env_file is in play (covers `agent-deck
@@ -470,6 +483,38 @@ func (i *Instance) getToolInlineEnv() string {
 	return strings.Join(exports, " && ")
 }
 
+// buildEnvExports returns deterministic, shell-quoted export statements.
+// Invalid keys are omitted defensively; public callers validate and report
+// them before a restart begins.
+func buildEnvExports(env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	exports := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if !IsValidEnvKey(key) {
+			continue
+		}
+		escaped := strings.ReplaceAll(env[key], "'", "'\\''")
+		exports = append(exports, fmt.Sprintf("export %s='%s'", key, escaped))
+	}
+	return strings.Join(exports, " && ")
+}
+
+func (i *Instance) buildRestartEnvPrefix() string {
+	exports := buildEnvExports(i.restartEnv)
+	if exports == "" {
+		return ""
+	}
+	return exports + " && "
+}
+
 // getClaudeInlineEnv returns shell export statements for the merged
 // per-group / per-conductor inline env map ([groups.X.claude].env,
 // [conductors.X.claude].env). Merge order (later wins per key): ancestor
@@ -504,7 +549,7 @@ func (i *Instance) getClaudeInlineEnv(config *UserConfig) string {
 
 	exports := make([]string, 0, len(keys))
 	for _, k := range keys {
-		if !isValidEnvKey(k) {
+		if !IsValidEnvKey(k) {
 			continue // skip invalid env var names
 		}
 		escaped := strings.ReplaceAll(merged[k], "'", "'\\''")
@@ -599,7 +644,7 @@ func (i *Instance) getConductorEnv(ignoreMissing bool) string {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			if !isValidEnvKey(k) {
+			if !IsValidEnvKey(k) {
 				continue // skip invalid env var names
 			}
 			parts = append(parts, fmt.Sprintf("export %s='%s'", k, strings.ReplaceAll(meta.Env[k], "'", "'\\''")))
@@ -609,8 +654,9 @@ func (i *Instance) getConductorEnv(ignoreMissing bool) string {
 	return strings.Join(parts, " && ")
 }
 
-// isValidEnvKey checks that a string is a valid environment variable name.
-func isValidEnvKey(key string) bool {
+// IsValidEnvKey reports whether key is a valid POSIX-style environment
+// variable name.
+func IsValidEnvKey(key string) bool {
 	if key == "" {
 		return false
 	}

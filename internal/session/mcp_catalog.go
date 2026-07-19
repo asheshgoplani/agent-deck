@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -141,6 +142,23 @@ func readExistingLocalMCPServers(mcpFile string) map[string]json.RawMessage {
 	return config.MCPServers
 }
 
+// writeJSONFileAtomic writes JSON data to path atomically (symlink-preserving,
+// via atomicfile.WriteFile), guaranteeing exactly one trailing newline and
+// skipping the write entirely when the on-disk bytes already match.
+// json.MarshalIndent emits no trailing newline, so without this a restart
+// rewrote a byte-identical-except-for-the-missing-\n file, leaving a persistent
+// one-byte git diff (issue #1627). Skipping the atomic replace when nothing
+// changed also avoids needless filesystem churn.
+func writeJSONFileAtomic(path string, data []byte, perm os.FileMode) error {
+	if len(data) == 0 || data[len(data)-1] != '\n' {
+		data = append(data, '\n')
+	}
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+		return nil
+	}
+	return atomicfile.WriteFile(path, data, perm)
+}
+
 // WriteMergedMcpJSONFile writes enabled MCPs from config.toml to mcpFile using the
 // Claude/Cursor JSON shape {"mcpServers":{...}}. It preserves entries not defined in
 // config.toml. When pluginPinClaudeProfile is non-empty (Claude project .mcp.json),
@@ -230,13 +248,7 @@ func WriteMergedMcpJSONFile(mcpFile string, enabledNames []string, pluginPinClau
 		return fmt.Errorf("failed to marshal mcp json: %w", err)
 	}
 
-	tmpPath := mcpFile + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write mcp json temp: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, mcpFile); err != nil {
-		os.Remove(tmpPath)
+	if err := writeJSONFileAtomic(mcpFile, data, 0644); err != nil {
 		return fmt.Errorf("failed to save mcp json: %w", err)
 	}
 
@@ -345,7 +357,7 @@ func WriteGlobalMCP(enabledNames []string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := atomicfile.WriteFile(configFile, data, 0600); err != nil {
+	if err := writeJSONFileAtomic(configFile, data, 0600); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
@@ -446,7 +458,7 @@ func ClearProjectMCPs(projectPath string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := atomicfile.WriteFile(configFile, newData, 0600); err != nil {
+	if err := writeJSONFileAtomic(configFile, newData, 0600); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
@@ -557,7 +569,7 @@ func WriteUserMCP(enabledNames []string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := atomicfile.WriteFile(configFile, data, 0600); err != nil {
+	if err := writeJSONFileAtomic(configFile, data, 0600); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 

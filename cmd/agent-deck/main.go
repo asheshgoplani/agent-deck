@@ -38,7 +38,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.10.9" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.10.10" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -519,6 +519,7 @@ func main() {
 		}
 		if db := statedb.GetGlobal(); db != nil {
 			_ = db.ResignPrimary()
+			_ = db.ReleaseAllClaims()
 			_ = db.UnregisterInstance()
 		}
 		os.Exit(0)
@@ -879,6 +880,16 @@ func main() {
 			"and is not required for normal atuin shell history functionality.\n")
 	}
 
+	// Reap orphaned control-mode clients left behind by prior crashed /
+	// SIGKILL'd / OOM-killed TUIs before this process starts connecting its
+	// own pipes. killStaleControlClients only sweeps per-session on Connect(),
+	// so orphans for sessions this TUI never reopens would otherwise pile up
+	// until they exhaust the pty table (observed: 176 orphaned `tmux -C`
+	// clients vs the macOS kern.tty.ptmx_max=511 cap, blocking all new
+	// terminals). This server-wide sweep clears the whole backlog once at
+	// startup; live sibling TUIs (allow_multiple=true) are preserved.
+	tmux.SweepStaleControlClients(tmux.DefaultSocketName())
+
 	p := tea.NewProgram(
 		homeModel,
 		tea.WithAltScreen(),
@@ -1211,6 +1222,13 @@ func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) 
 	}
 
 	return groupSelector
+}
+
+// shouldLockTitle is the #1615-class chokepoint deciding whether a new CLI
+// session's title is locked against Claude's folder-name sync. An explicit
+// user title locks, as do the explicit lock flags.
+func shouldLockTitle(userProvidedTitle, titleLockFlag, noTitleSyncFlag bool) bool {
+	return userProvidedTitle || titleLockFlag || noTitleSyncFlag
 }
 
 // handleAdd adds a new session from CLI
@@ -1647,8 +1665,11 @@ func handleAdd(profile string, args []string) {
 		newInstance.NoTransitionNotify = true
 	}
 
-	// #697: title-lock blocks Claude's session-name sync. Either flag triggers it.
-	if *titleLock || *noTitleSync {
+	// #697/#1615: title-lock blocks Claude's session-name sync. An explicit
+	// user title (-t/--title) locks too — otherwise Claude's folder-name sync
+	// silently clobbers it (the #1615 class), matching the TUI dialog and
+	// `launch` paths.
+	if shouldLockTitle(userProvidedTitle, *titleLock, *noTitleSync) {
 		newInstance.TitleLocked = true
 	}
 
@@ -1761,6 +1782,13 @@ func handleAdd(profile string, args []string) {
 	if err := applyCLIYoloOverride(newInstance, *yoloMode || *geminiYoloMode); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Materialize the declarative per-group/per-conductor skill+mcp loadout
+	// at create time (ProjectPath, group, and tool are final here), so the
+	// floor exists even before first start. Start/Restart re-assert.
+	for _, w := range session.ApplyConfiguredLoadout(newInstance) {
+		fmt.Fprintf(os.Stderr, "Warning: loadout: %s\n", w)
 	}
 
 	// Add to instances
@@ -3281,6 +3309,15 @@ func printHelp() {
 	fmt.Println("Environment Variables:")
 	fmt.Println("  AGENTDECK_PROFILE    Default profile to use")
 	fmt.Println("  AGENTDECK_COLOR      Color mode: truecolor, 256, 16, none")
+	fmt.Println()
+	fmt.Println("Configuration:")
+	if configPath, err := session.GetUserConfigPath(); err == nil {
+		fmt.Printf("  Config file: %s\n", configPath)
+	} else {
+		fmt.Println("  Config file: $XDG_CONFIG_HOME/agent-deck/config.toml (default ~/.config/agent-deck/config.toml)")
+	}
+	fmt.Println("  Since v1.9.49 config lives under the XDG base dirs, not ~/.agent-deck.")
+	fmt.Println("  Run 'agent-deck migrate-paths' to copy legacy ~/.agent-deck files across.")
 	fmt.Println()
 	fmt.Println("Keyboard shortcuts (in TUI):")
 	fmt.Println("  n          New session")

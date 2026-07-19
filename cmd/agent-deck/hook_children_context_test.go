@@ -35,7 +35,7 @@ func TestFormatChildrenContext(t *testing.T) {
 		if !strings.Contains(got, "waiting on input: lint-a") {
 			t.Errorf("missing waiting bullet in %q", got)
 		}
-		if !strings.Contains(got, "session output lint-a") || !strings.Contains(got, "session send lint-a") {
+		if !strings.Contains(got, "session output a1") || !strings.Contains(got, "session send a1") {
 			t.Errorf("missing next-step commands in %q", got)
 		}
 	})
@@ -47,6 +47,41 @@ func TestFormatChildrenContext(t *testing.T) {
 		got := formatChildrenContext(rows)
 		if !strings.Contains(got, "completed: lint-a") || !strings.Contains(got, "fail") || !strings.Contains(got, "tests broke") {
 			t.Errorf("missing done details in %q", got)
+		}
+		if !strings.Contains(got, "session output a1 --json") {
+			t.Errorf("collect command should target the ID in %q", got)
+		}
+	})
+
+	// The bullets are injected into an agent's context as runnable commands, so
+	// they must target the ID: a title is a display string that may contain
+	// spaces (and may repeat across sessions under allow_multiple), which would
+	// make the command parse as the wrong session or fail outright.
+	t.Run("commands target the id, not a title with spaces", func(t *testing.T) {
+		rows := []childRow{
+			{ID: "a1", Title: "fix the flaky test", Status: "waiting"},
+			{ID: "b2", Title: "ship it", Status: "idle", DoneStatus: "ok"},
+		}
+		got := formatChildrenContext(rows)
+		for _, want := range []string{
+			"session output a1 --json", "session send a1", "session output b2 --json",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in %q", want, got)
+			}
+		}
+		for _, unwanted := range []string{
+			"session output fix the flaky test", "session send fix the flaky test",
+			"session output ship it",
+		} {
+			if strings.Contains(got, unwanted) {
+				t.Errorf("command built from a title with spaces: %q in %q", unwanted, got)
+			}
+		}
+		// The titles still name the children for the reader.
+		if !strings.Contains(got, "waiting on input: fix the flaky test") ||
+			!strings.Contains(got, "completed: ship it") {
+			t.Errorf("titles should remain as display names in %q", got)
 		}
 	})
 

@@ -152,6 +152,25 @@ func desiredLivePipes(ls *pipeLiveSet, focused string, attached []string, socket
 	return desired
 }
 
+// filterPipeCandidates drops sessions this instance does not own from the
+// pipe-candidate map, keeping the focused session unconditionally (the live
+// preview of a browsed session must work regardless of ownership). With
+// claimPolling off — or with a nil owned set, which means "no successful
+// reconcile yet / claim DB unavailable" and must fail open like isOwned does —
+// it returns the map unchanged.
+func filterPipeCandidates(socketByName map[string]string, nameToID map[string]string, owned map[string]bool, focused string, claimPolling bool) map[string]string {
+	if !claimPolling || owned == nil {
+		return socketByName
+	}
+	out := make(map[string]string, len(socketByName))
+	for name, socket := range socketByName {
+		if name == focused || owned[nameToID[name]] {
+			out[name] = socket
+		}
+	}
+	return out
+}
+
 // pipeConnector is the slice of PipeManager that reconcilePipes needs. Defined
 // here so the diff logic is unit-testable with a fake. *tmux.PipeManager
 // satisfies it.

@@ -569,8 +569,6 @@ func killStaleControlClients(sessionName, socketName string) {
 	// reach. See reapOrphanedPollClients.
 	orphanReapOnce.Do(reapOrphanedPollClients)
 
-	myPID := os.Getpid()
-
 	out, err := tmuxExec(socketName,
 		"list-clients", "-t", sessionName,
 		"-F", "#{client_control_mode} #{client_pid}",
@@ -578,19 +576,64 @@ func killStaleControlClients(sessionName, socketName string) {
 	if err != nil {
 		return // session may not exist or no clients attached
 	}
+	reapStaleControlClients(string(out), sessionName)
+}
 
-	// Track burst stats so production logs surface how often this function
-	// fires N>0 SIGTERMs across parallel Connect() calls. The cascade
-	// pattern (multiple SIGTERMs within tens of milliseconds, across
-	// concurrent Connect() goroutines) is the trigger shape for
-	// tmux/tmux#4980's server-side use-after-free in
-	// control_notify_client_detached. The Debug-level
-	// killed_stale_control_client log emits per-PID; this Info line
+// SweepStaleControlClients reaps orphaned control-mode clients across EVERY
+// session on the tmux server selected by socketName (pass "" for the default
+// server), not just one named session. killStaleControlClients only sweeps the
+// single session passed to PipeManager.Connect(), so orphans belonging to
+// sessions the TUI never reconnects to accumulate indefinitely: each prior
+// crashed / SIGKILL'd / OOM-killed TUI leaves one orphaned `tmux -C` client
+// per session, and only the sessions actively reopened ever get cleaned.
+// Observed in the wild as 176 orphaned control clients exhausting the macOS
+// pty cap (kern.tty.ptmx_max=511), blocking all new tmux/terminal sessions.
+//
+// Run once at TUI startup, this server-wide sweep clears the entire backlog
+// left by previous dead TUIs. Live sibling TUIs' clients
+// (instances.allow_multiple=true) are preserved via the same
+// isControlClientOrphan check used by killStaleControlClients (#927).
+//
+// Bounded by staleControlSweepTimeout: this runs on the boot path, so a hung or
+// unresponsive tmux server must not stall startup. A timed-out (or otherwise
+// failed) list-clients is treated as best-effort and skipped — the next launch
+// sweeps again.
+func SweepStaleControlClients(socketName string) {
+	ctx, cancel := context.WithTimeout(context.Background(), staleControlSweepTimeout)
+	defer cancel()
+	out, err := tmuxExecContext(ctx, socketName,
+		"list-clients",
+		"-F", "#{client_control_mode} #{client_pid}",
+	).Output()
+	if err != nil {
+		return // no server running, no clients attached, or the probe timed out
+	}
+	reapStaleControlClients(string(out), "(all-sessions)")
+}
+
+// staleControlSweepTimeout bounds the boot-path server-wide list-clients query
+// in SweepStaleControlClients so an unresponsive tmux server can't hang startup.
+var staleControlSweepTimeout = 2 * time.Second
+
+// reapStaleControlClients parses `list-clients -F "#{client_control_mode}
+// #{client_pid}"` output and soft-kills each orphaned control-mode client.
+// sessionLabel identifies the sweep scope in the observability logs ("(all-
+// sessions)" for the server-wide startup sweep, otherwise the session name).
+// Returns the number of clients killed.
+func reapStaleControlClients(listOutput, sessionLabel string) int {
+	myPID := os.Getpid()
+
+	// Track burst stats so production logs surface how often this fires N>0
+	// SIGTERMs across parallel Connect() calls. The cascade pattern (multiple
+	// SIGTERMs within tens of milliseconds, across concurrent Connect()
+	// goroutines) is the trigger shape for tmux/tmux#4980's server-side
+	// use-after-free in control_notify_client_detached. The Debug-level
+	// killed_stale_control_client log emits per-PID; the Info line below
 	// surfaces the cascade as a single observable event.
 	burstStart := time.Now()
 	killCount := 0
 
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(listOutput), "\n") {
 		if line == "" {
 			continue
 		}
@@ -610,7 +653,7 @@ func killStaleControlClients(sessionName, socketName string) {
 			// two concurrent agent-deck TUIs (allow_multiple=true) would
 			// SIGTERM each other's control clients on every reconnect (#927).
 			pipeLog.Debug("preserved_live_sibling_control_client",
-				slog.String("session", sessionName),
+				slog.String("session", sessionLabel),
 				slog.Int("pid", pid))
 			continue
 		}
@@ -624,17 +667,18 @@ func killStaleControlClients(sessionName, socketName string) {
 		usedSIGKILL := softKillProcess(pid, controlClientKillGrace)
 		killCount++
 		pipeLog.Debug("killed_stale_control_client",
-			slog.String("session", sessionName),
+			slog.String("session", sessionLabel),
 			slog.Int("pid", pid),
 			slog.Bool("used_sigkill", usedSIGKILL))
 	}
 
 	if killCount > 0 {
 		pipeLog.Info("stale_control_clients_swept",
-			slog.String("session", sessionName),
+			slog.String("session", sessionLabel),
 			slog.Int("kill_count", killCount),
 			slog.Duration("duration", time.Since(burstStart)))
 	}
+	return killCount
 }
 
 // orphanReapOnce ensures the process-wide orphaned-poll-client sweep runs at

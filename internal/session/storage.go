@@ -360,6 +360,28 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 	return nil
 }
 
+// UpdateTitleIfUnlocked sets an instance's title with a single conditional
+// UPDATE that only applies while the row is still unlocked at write time —
+// see StateDB.UpdateTitleIfUnlocked for why this must be a targeted write
+// rather than a full instance-list round-trip.
+func (s *Storage) UpdateTitleIfUnlocked(id, title string) (applied bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return false, fmt.Errorf("storage database not initialized")
+	}
+
+	applied, err = s.db.UpdateTitleIfUnlocked(id, title)
+	if err != nil {
+		return false, fmt.Errorf("failed to update title for instance %s: %w", id, err)
+	}
+	if applied {
+		_ = s.db.Touch()
+	}
+	return applied, nil
+}
+
 // DeleteInstance removes a single instance from the database by ID.
 // This ensures the row is immediately removed, preventing resurrection on reload.
 func (s *Storage) DeleteInstance(id string) error {

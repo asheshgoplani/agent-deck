@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and setup help
+    url: https://github.com/asheshgoplani/agent-deck/discussions
+    about: Ask here instead of opening an issue; it keeps the tracker actionable.
+  - name: Feature discussions
+    url: https://github.com/asheshgoplani/agent-deck/discussions/categories/ideas
+    about: Larger features start as a Discussion before an issue or PR.
+  - name: Community chat
+    url: https://discord.gg/e4xSs6NBN8
+    about: The Agent Deck Discord, for questions and workflow discussions.

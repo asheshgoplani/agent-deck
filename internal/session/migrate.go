@@ -99,7 +99,43 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 		}
 		return "", err
 	}
+
+	// Migrate the companion subagent directory (#1571): subagent transcripts
+	// live in projects/<encoded-path>/<sid>/ next to the jsonl. Resume works
+	// without it, but leaving it behind silently loses those transcripts.
+	// Copy-only, per-file size-verified; failure aborts before the caller
+	// flips the account field (the already-copied jsonl is harmless and a
+	// rerun is idempotent).
+	srcSubagentDir := filepath.Join(srcProjDir, sid)
+	if info, err := os.Stat(srcSubagentDir); err == nil && info.IsDir() {
+		if err := copyDirVerified(srcSubagentDir, filepath.Join(dstProjDir, sid)); err != nil {
+			return "", fmt.Errorf("copy subagent dir: %w", err)
+		}
+	}
 	return dstFile, nil
+}
+
+// copyDirVerified recursively copies the regular files under src into dst
+// (created 0700), size-verifying each copy. Symlinks and other special files
+// are skipped.
+func copyDirVerified(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		return copyFileVerified(path, target)
+	})
 }
 
 // RestoreOrphanedConversationBackup restores a conversation whose live

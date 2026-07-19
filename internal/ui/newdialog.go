@@ -1985,6 +1985,28 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				return d, nil
 			}
 			if cur == focusPath {
+				// Issue #1536: Enter on an actively-typed path (not the
+				// soft-selected pre-fill) that already resolves to an existing
+				// directory advances to the next field instead of re-opening the
+				// browse dropdown. Previously Enter here unconditionally
+				// re-activated suggestions, so after typing a custom path Enter
+				// looped straight back into browse and only Ctrl+S proceeded.
+				// This mirrors the #896 Tab guard. Enter still opens browse for
+				// the soft-selected pre-fill and for empty or not-yet-existing
+				// paths (where the dropdown is genuinely useful).
+				if !d.pathSoftSelected {
+					v := strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
+					if v != "" {
+						expanded := session.ExpandPath(v)
+						if info, err := os.Stat(expanded); err == nil && info.IsDir() {
+							d.moveFocus(1)
+							if d.currentTarget() != focusPath {
+								d.suggestionNavigated = false
+							}
+							return d, nil
+						}
+					}
+				}
 				d.suggestionsActive = true
 				d.suggestionsHidden = false
 				d.pathSoftSelected = false
@@ -2727,7 +2749,10 @@ func (d *NewDialog) View() string {
 		} else if d.pathSoftSelected {
 			helpText = "Type to replace │ Enter browse list │ ← edit │ Tab next │ Esc cancel"
 		} else {
-			helpText = "Tab autocomplete │ Enter browse list │ Esc cancel"
+			// Issue #1536: on a path that resolves to an existing directory,
+			// Enter advances to the next field; otherwise it opens the browse
+			// list. Advertise both so the typed-custom-path flow is discoverable.
+			helpText = "Tab autocomplete │ Enter next/browse │ Esc cancel"
 		}
 	} else if cur == focusBranch {
 		if d.branchPicker != nil && d.branchPicker.IsVisible() {

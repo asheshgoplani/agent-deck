@@ -90,8 +90,11 @@ func formatChildrenContext(rows []childRow) string {
 			fmt.Fprintf(&b, "\n- …and %d more waiting", len(waiting)-maxContextBullets)
 			break
 		}
+		// Title names the child for the reader; the commands target its ID. A
+		// title is a display string — it can contain spaces, or repeat across
+		// sessions — so pasting one as an argument is what breaks the command.
 		fmt.Fprintf(&b, "\n- waiting on input: %s — see `agent-deck session output %s --json`, answer with `agent-deck session send %s \"...\"`",
-			r.Title, r.Title, r.Title)
+			r.Title, r.ID, r.ID)
 	}
 	for i, r := range done {
 		if i == maxContextBullets {
@@ -102,7 +105,7 @@ func formatChildrenContext(rows []childRow) string {
 		if r.DoneSummary != "" {
 			line += " — " + r.DoneSummary
 		}
-		line += fmt.Sprintf(" (collect: `agent-deck session output %s --json`)", r.Title)
+		line += fmt.Sprintf(" (collect: `agent-deck session output %s --json`)", r.ID)
 		b.WriteString(line)
 	}
 

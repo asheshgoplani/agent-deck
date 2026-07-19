@@ -92,7 +92,7 @@ func TestForkWithStateWorktree_RefusesExistingPathBeforeCreate(t *testing.T) {
 		return true, nil
 	}
 
-	err := forkWithStateWorktree("parent", "repo", "existing-path", "fork/state", git.WorktreeStateOptions{WithState: true}, deps)
+	_, err := forkWithStateWorktree("parent", "repo", "existing-path", "fork/state", git.WorktreeStateOptions{WithState: true}, deps)
 	if err == nil || !strings.Contains(err.Error(), "worktree path already exists") {
 		t.Fatalf("error = %v, want existing-path refusal", err)
 	}
@@ -113,7 +113,7 @@ func TestForkWithStateWorktree_RefusesMidOperationBeforeCreate(t *testing.T) {
 		return true, nil
 	}
 
-	err := forkWithStateWorktree("parent", "repo", "fork-path", "fork/state", git.WorktreeStateOptions{WithState: true}, deps)
+	_, err := forkWithStateWorktree("parent", "repo", "fork-path", "fork/state", git.WorktreeStateOptions{WithState: true}, deps)
 	if err == nil || !strings.Contains(err.Error(), "git rebase --abort") {
 		t.Fatalf("error = %v, want actionable rebase abort hint", err)
 	}
@@ -137,7 +137,7 @@ func TestForkWithStateWorktree_CleansUpMaterializeFailure(t *testing.T) {
 	deps.removeWorktree = func(string, string, bool) error { removed = true; return nil }
 	deps.deleteBranch = func(string, string, bool) error { deleted = true; return nil }
 
-	err := forkWithStateWorktree("parent", "repo", "fork-path", "fork/state", git.WorktreeStateOptions{WithState: true}, deps)
+	_, err := forkWithStateWorktree("parent", "repo", "fork-path", "fork/state", git.WorktreeStateOptions{WithState: true}, deps)
 	if err == nil || !strings.Contains(err.Error(), "new worktree cleaned up") {
 		t.Fatalf("error = %v, want cleaned-up materialize failure", err)
 	}
@@ -159,7 +159,7 @@ func TestForkWithStateWorktree_ReportsManualCleanupWhenCleanupFails(t *testing.T
 	deps.removeWorktree = func(string, string, bool) error { return errors.New("remove failed") }
 	deps.deleteBranch = func(string, string, bool) error { return errors.New("delete failed") }
 
-	err := forkWithStateWorktree("parent", "repo", "fork-path", "fork/state", git.WorktreeStateOptions{WithState: true}, deps)
+	_, err := forkWithStateWorktree("parent", "repo", "fork-path", "fork/state", git.WorktreeStateOptions{WithState: true}, deps)
 	if err == nil || !strings.Contains(err.Error(), "manual cleanup required") {
 		t.Fatalf("error = %v, want manual cleanup hint", err)
 	}
@@ -210,7 +210,7 @@ func TestForkWithStateWorktree_UsesParentHead(t *testing.T) {
 	}
 
 	forkPath := filepath.Join(root, "fork")
-	err := forkWithStateWorktree(parent, base, forkPath, "fork/from-parent", git.WorktreeStateOptions{WithState: true}, defaultForkWithStateWorktreeDeps())
+	_, err := forkWithStateWorktree(parent, base, forkPath, "fork/from-parent", git.WorktreeStateOptions{WithState: true}, defaultForkWithStateWorktreeDeps())
 	if err != nil {
 		t.Fatalf("forkWithStateWorktree: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestForkWithStateWorktree_FailsClosedWhenDetectErrors(t *testing.T) {
 		return true, nil
 	}
 
-	err := forkWithStateWorktree("parent", "repo", "fork-path", "fork/state", git.WorktreeStateOptions{WithState: true}, deps)
+	_, err := forkWithStateWorktree("parent", "repo", "fork-path", "fork/state", git.WorktreeStateOptions{WithState: true}, deps)
 	if err == nil || !strings.Contains(err.Error(), "failed to inspect parent session state") {
 		t.Fatalf("error = %v, want fail-closed inspect error", err)
 	}

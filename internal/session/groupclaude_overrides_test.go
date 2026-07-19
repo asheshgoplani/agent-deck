@@ -174,6 +174,25 @@ env = { AGENT_ROLE = "inline-wins" }
 	}
 }
 
+func TestRestartEnvOverridesConfiguredInlineEnv(t *testing.T) {
+	withIsolatedHomeAndConfig(t, `
+[groups."personal".claude]
+env = { AGENT_ROLE = "configured" }
+`)
+	inst := NewInstanceWithGroupAndTool("s1", "/tmp/p", "personal", "claude")
+	inst.restartEnv = map[string]string{"AGENT_ROLE": "restart"}
+	cmd := inst.buildEnvSourceCommand()
+
+	configuredIdx := strings.Index(cmd, "export AGENT_ROLE='configured'")
+	restartIdx := strings.Index(cmd, "export AGENT_ROLE='restart'")
+	if configuredIdx == -1 || restartIdx == -1 {
+		t.Fatalf("missing configured (%d) or restart (%d) export in:\n%s", configuredIdx, restartIdx, cmd)
+	}
+	if restartIdx < configuredIdx {
+		t.Errorf("restart env must be exported after configured env so it wins:\n%s", cmd)
+	}
+}
+
 func TestGroupClaude_InlineEnvSkipsInvalidKeysAndEscapesQuotes(t *testing.T) {
 	withIsolatedHomeAndConfig(t, `
 [groups."work".claude]

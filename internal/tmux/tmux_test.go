@@ -3010,37 +3010,32 @@ func TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent(t *testing
 
 			launcher, args := s.startCommandSpec("/tmp/project", tc.cmd)
 			require.Equal(t, "tmux", launcher)
-			require.Equal(t, 7, len(args), "expected 7 args (new-session -d -s NAME -c DIR COMMAND)")
+			// #1567/#1580: the command is delivered as SEPARATE argv tokens
+			// (bash, -c, COMMAND) so tmux execvp()s bash directly instead of
+			// wrapping the string through the server default-shell. That is 9
+			// args total: new-session -d -s NAME -c DIR bash -c COMMAND.
+			require.Equal(t, 9, len(args),
+				"expected 9 args (new-session -d -s NAME -c DIR bash -c COMMAND)")
 
-			wrapped := args[len(args)-1]
-			require.True(t, strings.HasPrefix(wrapped, "bash -c '"),
-				"command should always be wrapped in bash -c to guarantee fish/zsh/bash compatibility; got: %s", wrapped)
-			require.True(t, strings.HasSuffix(wrapped, "'"),
-				"wrapped command should end with closing single-quote; got: %s", wrapped)
-
-			// The unquoted payload (between the leading `bash -c '` and trailing `'`)
-			// must be a valid shell string — i.e. running it through `bash -c` must
-			// not produce a syntax error. We verify by running `bash -n` (no-exec)
-			// against the same string that would be passed to bash at runtime.
-			payload := wrapped[len("bash -c '") : len(wrapped)-1]
-			// Undo the '\'' escaping to recover the original command bash will see.
-			unescaped := strings.ReplaceAll(payload, `'\''`, `'`)
-			require.Equal(t, tc.cmd, unescaped,
-				"unescaping should recover the original command; got: %s", unescaped)
+			require.Equal(t, "bash", args[len(args)-3],
+				"command must be exec'd under bash for fish/zsh/bash compatibility")
+			require.Equal(t, "-c", args[len(args)-2])
+			// The command token is passed VERBATIM — no shell-quote escaping,
+			// because it is a distinct argv element, not embedded in a string.
+			require.Equal(t, tc.cmd, args[len(args)-1],
+				"command token must be the original command verbatim; got: %s", args[len(args)-1])
 		})
 	}
 }
 
 // TestStartCommandSpec_InitialProcess_ShellSyntaxValid verifies that the
-// wrapped command (the full `bash -c '…'` string) is itself syntactically
-// valid when invoked via `sh -c`, which is how tmux delivers it. This is
-// the end-to-end guarantee that #526 is fixed.
+// command token tmux hands to `bash -c` is itself syntactically valid. Since
+// the token is now delivered verbatim as a distinct argv element (#1567/#1580),
+// we run `bash -n` directly against that token — the exact string bash sees at
+// runtime. This is the end-to-end guarantee that #526 stays fixed.
 func TestStartCommandSpec_InitialProcess_ShellSyntaxValid(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
-	}
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("sh not available")
 	}
 
 	cmds := []string{
@@ -3058,13 +3053,15 @@ func TestStartCommandSpec_InitialProcess_ShellSyntaxValid(t *testing.T) {
 				RunCommandAsInitialProcess: true,
 			}
 			_, args := s.startCommandSpec("/tmp", cmd)
-			wrapped := args[len(args)-1]
+			require.Equal(t, "bash", args[len(args)-3])
+			require.Equal(t, "-c", args[len(args)-2])
+			payload := args[len(args)-1]
 
-			// `sh -n <string>` parses but does not execute. If the wrapped
-			// command is malformed (stray quotes), sh will exit non-zero.
-			shSyntax := exec.Command("sh", "-n", "-c", wrapped)
+			// `bash -n <string>` parses but does not execute. If the command
+			// token is malformed (stray quotes), bash will exit non-zero.
+			shSyntax := exec.Command("bash", "-n", "-c", payload)
 			if out, err := shSyntax.CombinedOutput(); err != nil {
-				t.Fatalf("sh -n rejected wrapped command: %v\nwrapped: %s\noutput: %s", err, wrapped, string(out))
+				t.Fatalf("bash -n rejected command token: %v\npayload: %s\noutput: %s", err, payload, string(out))
 			}
 		})
 	}
@@ -3075,8 +3072,12 @@ func TestWrapRespawnCommand_UsesBashRegardlessOfShellEnv(t *testing.T) {
 
 	wrapped, err := wrapRespawnCommand("claude --session-id abc")
 	require.NoError(t, err)
-	require.Contains(t, wrapped, " -lc ")
-	require.Contains(t, wrapped, "claude --session-id abc")
+	// #1567/#1580: returns argv tokens {bash, -lc, command}, not a string.
+	require.Len(t, wrapped, 3)
+	require.True(t, strings.HasSuffix(wrapped[0], "bash"),
+		"first token must be the resolved bash path; got: %s", wrapped[0])
+	require.Equal(t, "-lc", wrapped[1])
+	require.Equal(t, "claude --session-id abc", wrapped[2])
 }
 
 func TestWrapRespawnCommand_PreservesQuotedPayloads(t *testing.T) {
@@ -3104,11 +3105,16 @@ func TestWrapRespawnCommand_PreservesQuotedPayloads(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			wrapped, err := wrapRespawnCommand(tc.cmd)
 			require.NoError(t, err)
-			require.Contains(t, wrapped, " -lc ")
+			require.Len(t, wrapped, 3)
+			require.Equal(t, "-lc", wrapped[1])
+			require.Equal(t, tc.cmd, wrapped[2],
+				"command token must be passed verbatim as a distinct argv element")
 
-			run := exec.Command("sh", "-c", wrapped)
+			// Execute the exact argv tmux would exec — bash directly, no
+			// intervening shell — and confirm the payload runs cleanly.
+			run := exec.Command(wrapped[0], wrapped[1], wrapped[2])
 			out, err := run.CombinedOutput()
-			require.NoError(t, err, "wrapped command failed: %s", string(out))
+			require.NoError(t, err, "argv command failed: %s", string(out))
 		})
 	}
 }
@@ -3141,9 +3147,13 @@ func TestStartCommandSpec_WrapsNonBashCommands(t *testing.T) {
 		RunCommandAsInitialProcess: true,
 	}
 
-	_, args := s.startCommandSpec("/tmp", `export COLORFGBG='15;0' && opencode -s ses_abc`)
+	cmd := `export COLORFGBG='15;0' && opencode -s ses_abc`
+	_, args := s.startCommandSpec("/tmp", cmd)
 	require.NotEmpty(t, args)
-	require.True(t, strings.HasPrefix(args[len(args)-1], "bash -c '"))
+	// #1567/#1580: bash -c COMMAND as three trailing argv tokens.
+	require.Equal(t, "bash", args[len(args)-3])
+	require.Equal(t, "-c", args[len(args)-2])
+	require.Equal(t, cmd, args[len(args)-1])
 }
 
 func TestResolvedAgentDeckTheme_COLORFGBG(t *testing.T) {
@@ -3227,4 +3237,66 @@ func TestKillSessionsWithEnvValue_NoMatch(t *testing.T) {
 	KillSessionsWithEnvValue("CLAUDE_SESSION_ID", "nonexistent-id", "")
 
 	assert.NoError(t, exec.Command("tmux", "has-session", "-t", sess).Run(), "session should not be killed")
+}
+
+// TestGatedTmuxKeyOptionArgs verifies #1625: the key-handling tmux defaults
+// (escape-time, extended-keys, extended-keys-format, terminal-features) are
+// gated through OptionOverrides so an explicit user setting wins instead of
+// being force-set on every spawn.
+func TestGatedTmuxKeyOptionArgs(t *testing.T) {
+	joined := func(args []string) string { return strings.Join(args, " ") }
+
+	// Default (no overrides): all four defaults are emitted, each chained with
+	// a leading ";" separator, and extended-keys is a server option (set -s).
+	def := gatedTmuxKeyOptionArgs("sess", nil)
+	got := joined(def)
+	for _, want := range []string{
+		"; set-option -t sess escape-time 10",
+		"; set -sq extended-keys on",
+		"; set -sq extended-keys-format csi-u",
+		"; set -asq terminal-features ,*:hyperlinks:extkeys",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("default args missing %q; got: %s", want, got)
+		}
+	}
+	// Every chunk must start with a ";" so it chains onto the preceding
+	// set-option in the same tmux command.
+	if len(def) > 0 && def[0] != ";" {
+		t.Errorf("first arg must be a chain separator, got %q", def[0])
+	}
+
+	// User opts extended-keys out (e.g. config.toml [tmux].extended-keys="off",
+	// mirroring `set -s extended-keys off` in ~/.tmux.conf). agent-deck must NOT
+	// emit its forced `set -sq extended-keys on`, so the user value survives.
+	off := gatedTmuxKeyOptionArgs("sess", map[string]string{"extended-keys": "off"})
+	if strings.Contains(joined(off), "extended-keys on") {
+		t.Errorf("extended-keys override ignored — agent-deck still forces it on: %s", joined(off))
+	}
+	// The other defaults are unaffected by that single override.
+	if !strings.Contains(joined(off), "extended-keys-format csi-u") ||
+		!strings.Contains(joined(off), "escape-time 10") {
+		t.Errorf("unrelated defaults dropped by extended-keys override: %s", joined(off))
+	}
+
+	// terminal-features override: the unbounded-append `set -asq` is suppressed.
+	tf := gatedTmuxKeyOptionArgs("sess", map[string]string{"terminal-features": "xterm*"})
+	if strings.Contains(joined(tf), "-asq terminal-features") {
+		t.Errorf("terminal-features override ignored — still appends: %s", joined(tf))
+	}
+
+	// escape-time override: user's explicit value (e.g. 0) is not clobbered.
+	et := gatedTmuxKeyOptionArgs("sess", map[string]string{"escape-time": "0"})
+	if strings.Contains(joined(et), "escape-time 10") {
+		t.Errorf("escape-time override ignored — still forces 10: %s", joined(et))
+	}
+
+	// All four opted out: nothing is emitted, so ~/.tmux.conf fully decides.
+	all := gatedTmuxKeyOptionArgs("sess", map[string]string{
+		"escape-time": "0", "extended-keys": "off",
+		"extended-keys-format": "xterm", "terminal-features": "xterm*",
+	})
+	if len(all) != 0 {
+		t.Errorf("expected no forced args when all keys overridden, got: %s", joined(all))
+	}
 }

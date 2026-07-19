@@ -66,8 +66,9 @@ func IndexCtrlQ(data []byte) int {
 	return IndexDetachKey(data, 17)
 }
 
-// SwitchIntent reports whether the attach loop handed control back to the
-// caller to open the in-attach session switcher.
+// SwitchIntent reports why the attach loop handed control back to the caller:
+// a plain detach/exit, an in-attach session switch, or an in-attach scrollback
+// request (#1491).
 type SwitchIntent int
 
 const (
@@ -75,7 +76,20 @@ const (
 	SwitchNone SwitchIntent = iota
 	// SwitchRequested means the user pressed the switch key while attached.
 	SwitchRequested
+	// ScrollbackRequested means the user pressed the scrollback key while
+	// attached and the caller should open the in-view scrollback pager. The
+	// deck's Enter-attach owns the viewport, so tmux's own copy-mode is
+	// unreachable there (#1491); this intent is the escape hatch.
+	ScrollbackRequested
 )
+
+// pageUpSeq is the exact CSI sequence a bare PageUp emits. Modified variants
+// (Shift/Ctrl/Alt) carry a parameter — ESC[5;2~, ESC[5;5~, … — and do NOT match
+// this literal, so they pass through to the attached program untouched. That is
+// deliberate: the scrollback pager steals only the unmodified PageUp the issue
+// reporter pressed expecting to scroll, leaving modified PageUp for pagers and
+// editors running inside the session.
+const pageUpSeq = "\x1b[5~"
 
 // AttachOptions configures AttachWithOptions. The zero value attaches with the
 // default Ctrl+Q detach key and no session-switch key.
@@ -90,6 +104,26 @@ type AttachOptions struct {
 	// that is not reliably available during attach, so a control byte is the
 	// only portable trigger (the cycling/commit UX then lives in the TUI).
 	SwitchKeyByte byte
+	// ScrollbackKeyByte is a control byte (e.g. Ctrl+G, 0x07) that hands control
+	// back to the caller to open the in-view scrollback pager (#1491). 0
+	// disables the control-byte trigger; the PageUp trigger below is
+	// independent.
+	ScrollbackKeyByte byte
+	// ScrollbackOnPageUp, when true, makes a bare PageUp (ESC[5~) open the
+	// scrollback pager. Modified PageUp (Shift/Ctrl/Alt) always passes through.
+	// This is the default trigger because it is exactly the key a user presses
+	// expecting to scroll back through the session.
+	ScrollbackOnPageUp bool
+	// ScrollbackGate, when non-nil, is consulted the moment a bare PageUp is
+	// seen (with ScrollbackOnPageUp set). Returning true opens the pager — the
+	// behaviour when the gate is nil; returning false leaves the PageUp for the
+	// attached program. It exists so the pager never hijacks PageUp from a
+	// full-screen app (e.g. Claude fullscreen) that scrolls itself and keeps no
+	// tmux scrollback for the pager to show. It is invoked ONLY when a PageUp is
+	// actually present, so the per-press tmux query it typically performs is
+	// cheap and never runs on ordinary keystrokes. It is NOT consulted for the
+	// ScrollbackKeyByte chord, which is an explicit user opt-in.
+	ScrollbackGate func() bool
 }
 
 // indexSwitchKey returns the index of the switch key in data and
@@ -104,6 +138,79 @@ func indexSwitchKey(data []byte, opts AttachOptions) (int, SwitchIntent) {
 		return idx, SwitchRequested
 	}
 	return -1, SwitchNone
+}
+
+// indexScrollbackTrigger returns the index in data at which a scrollback
+// request begins, or -1 if none is present or scrollback is disabled. It
+// considers both configured triggers and returns the earliest match:
+//   - the ScrollbackKeyByte control chord (raw byte + modifyOtherKeys + CSI-u
+//     encodings, via IndexDetachKey), and
+//   - a bare PageUp (ESC[5~) when ScrollbackOnPageUp is set.
+//
+// The caller resolves precedence against the detach and switch keys, both of
+// which win a collision.
+func indexScrollbackTrigger(data []byte, opts AttachOptions) int {
+	best := -1
+	consider := func(idx int) {
+		if idx >= 0 && (best == -1 || idx < best) {
+			best = idx
+		}
+	}
+	if opts.ScrollbackKeyByte != 0 {
+		consider(IndexDetachKey(data, opts.ScrollbackKeyByte))
+	}
+	if opts.ScrollbackOnPageUp {
+		// Consult the gate only once a PageUp is actually present, so the tmux
+		// alternate-screen query it performs never runs on ordinary keystrokes.
+		// A closed gate suppresses the trigger, leaving PageUp for the app.
+		if idx := bytes.Index(data, []byte(pageUpSeq)); idx >= 0 && scrollbackPageUpAllowed(opts) {
+			consider(idx)
+		}
+	}
+	return best
+}
+
+// scrollbackPageUpAllowed reports whether a bare PageUp should open the pager
+// right now. With no gate configured it always does (legacy behaviour); a gate
+// lets the caller pass PageUp through to the attached program — e.g. when the
+// pane is in the alternate screen. See AttachOptions.ScrollbackGate.
+func scrollbackPageUpAllowed(opts AttachOptions) bool {
+	return opts.ScrollbackGate == nil || opts.ScrollbackGate()
+}
+
+// resolveAttachInterrupt finds the earliest interrupt key in a stdin chunk and
+// reports its byte index plus the intent it maps to. Precedence on a tie is
+// detach > switch > scrollback (distinct keys can't share an index, but the
+// ordering guards against a misconfigured trigger shadowing a higher-priority
+// one). It returns (-1, SwitchNone) when no interrupt key is present.
+//
+// The intent it returns is what the caller assigns to switchOutcome:
+//   - SwitchNone         => detach (or nothing found),
+//   - SwitchRequested    => open the session switcher,
+//   - ScrollbackRequested => open the scrollback pager.
+//
+// Extracted from the stdin goroutine so the precedence is unit-testable without
+// spawning a PTY.
+func resolveAttachInterrupt(chunk []byte, detach byte, opts AttachOptions) (int, SwitchIntent) {
+	detachIdx := IndexDetachKey(chunk, detach)
+	switchIdx, switchIn := indexSwitchKey(chunk, opts)
+	scrollIdx := indexScrollbackTrigger(chunk, opts)
+
+	interruptIdx := -1
+	outcome := SwitchNone
+	if detachIdx >= 0 {
+		interruptIdx = detachIdx
+		outcome = SwitchNone
+	}
+	if switchIdx >= 0 && (interruptIdx == -1 || switchIdx < interruptIdx) {
+		interruptIdx = switchIdx
+		outcome = switchIn
+	}
+	if scrollIdx >= 0 && (interruptIdx == -1 || scrollIdx < interruptIdx) {
+		interruptIdx = scrollIdx
+		outcome = ScrollbackRequested
+	}
+	return interruptIdx, outcome
 }
 
 func waitForAttachOutputDrain(outputDone <-chan struct{}, timeout time.Duration) (bool, time.Duration) {
@@ -386,22 +493,10 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 			// the input chunk. Some terminals coalesce reads, so these must not
 			// require a single-byte read. Handles raw byte, xterm
 			// modifyOtherKeys, and kitty CSI u encodings.
-			detachIdx := IndexDetachKey(chunk, detach)
-			switchIdx, switchIn := indexSwitchKey(chunk, opts)
-
-			// Whichever interrupt key appears first in the buffer wins; detach
-			// takes precedence on a tie (distinct keys can't share an index,
-			// but guard anyway so a misconfigured switch byte can't shadow
-			// detach).
-			interruptIdx := -1
-			isSwitch := false
-			if detachIdx >= 0 {
-				interruptIdx = detachIdx
-			}
-			if switchIdx >= 0 && (interruptIdx == -1 || switchIdx < interruptIdx) {
-				interruptIdx = switchIdx
-				isSwitch = true
-			}
+			// Whichever interrupt key appears first in the buffer wins, with
+			// detach > switch > scrollback precedence on a tie. Resolved by a
+			// pure helper so the precedence is unit-testable.
+			interruptIdx, outcome := resolveAttachInterrupt(chunk, detach, opts)
 
 			if interruptIdx >= 0 {
 				// Forward any bytes before the interrupt key, then stop.
@@ -414,9 +509,7 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 						return
 					}
 				}
-				if isSwitch {
-					switchOutcome = switchIn
-				}
+				switchOutcome = outcome
 				close(detachCh)
 				cancel()
 				return

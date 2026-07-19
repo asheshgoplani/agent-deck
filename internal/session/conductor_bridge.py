@@ -846,19 +846,28 @@ def get_status_summary_all(profiles: list[str]) -> dict:
     return {"totals": totals, "per_profile": per_profile}
 
 
-def get_sessions_list(profile: str | None = None) -> list:
+def get_sessions_list(
+    profile: str | None = None, *, fail_closed: bool = False
+) -> list | None:
     """Get list of all sessions for a single profile."""
     result = run_cli("list", "--json", profile=profile, timeout=30)
     if result.returncode != 0:
-        return []
+        return None if fail_closed else []
     try:
         data = json.loads(result.stdout)
         # list --json returns {"sessions": [...]}
         if isinstance(data, dict):
-            return data.get("sessions", [])
-        return data if isinstance(data, list) else []
+            sessions = data.get("sessions")
+            if isinstance(sessions, list):
+                return sessions
+            return None if fail_closed else []
+        if isinstance(data, list):
+            return data
+        return None if fail_closed else []
     except json.JSONDecodeError:
-        return []
+        if result.stdout.strip().startswith("No sessions found in profile "):
+            return []
+        return None if fail_closed else []
 
 
 def get_sessions_list_all(profiles: list[str]) -> list[tuple[str, dict]]:
@@ -866,7 +875,7 @@ def get_sessions_list_all(profiles: list[str]) -> list[tuple[str, dict]]:
     all_sessions = []
     for profile in profiles:
         sessions = get_sessions_list(profile)
-        for s in sessions:
+        for s in sessions or []:
             all_sessions.append((profile, s))
     return all_sessions
 
@@ -884,96 +893,206 @@ def _find_session_by_title(sessions: list, title: str, profile: str) -> dict | N
     return None
 
 
+def _normalized_session_path(path: object) -> str | None:
+    """Normalize a list-JSON path without requiring it to exist."""
+    if not isinstance(path, str) or not path:
+        return None
+    return os.path.normcase(os.path.abspath(os.path.expanduser(path)))
+
+
+def _find_conductor_session_by_path(
+    sessions: list, session_path: str, profile: str
+) -> tuple[dict | None, bool]:
+    """Return the unique profile-scoped session at path and ambiguity state."""
+    canonical_path = _normalized_session_path(session_path)
+    matches = []
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        session_profile = session.get("profile")
+        if session_profile not in (None, "", profile):
+            continue
+        if _normalized_session_path(session.get("path")) == canonical_path:
+            matches.append(session)
+    if len(matches) > 1:
+        return None, True
+    return (matches[0] if matches else None), False
+
+
 async def ensure_conductor_running(name: str, profile: str) -> bool:
     """Ensure the conductor session exists and is running."""
     session_title = conductor_session_title(name)
+    session_path = str(CONDUCTOR_DIR / name)
     loop = asyncio.get_running_loop()
     status = await loop.run_in_executor(
         None, functools.partial(get_session_status, session_title, profile=profile)
     )
+    if status in ("waiting", "running", "idle", "active", "starting"):
+        return True
 
-    if status not in ("waiting", "running", "idle", "active", "starting"):
-        log.info("Conductor %s not running (status=%s), attempting to start...", name, status)
-        # Try starting first (session might exist but be stopped)
-        result = await loop.run_in_executor(
-            None, functools.partial(
-                run_cli, "session", "start", session_title, profile=profile, timeout=60
-            )
-        )
-        if result.returncode != 0:
-            log.warning(
-                "Failed to start conductor %s before dedupe: %s",
-                name,
-                result.stderr.strip(),
-            )
-            sessions = await loop.run_in_executor(
-                None, functools.partial(get_sessions_list, profile=profile)
-            )
-            existing = _find_session_by_title(sessions, session_title, profile)
-            if existing is not None:
-                log.info(
-                    "Reusing existing conductor session %s in profile %s",
-                    session_title,
-                    profile,
-                )
-                retry = await loop.run_in_executor(
-                    None, functools.partial(
-                        run_cli,
-                        "session",
-                        "start",
-                        session_title,
-                        profile=profile,
-                        timeout=60,
-                    )
-                )
-                if retry.returncode != 0:
-                    log.warning(
-                        "Failed to start existing conductor %s: %s",
-                        name,
-                        retry.stderr.strip(),
-                    )
-            else:
-                # Session is absent from this profile, so create it.
-                log.info("Creating conductor session for %s...", name)
-                session_path = str(CONDUCTOR_DIR / name)
-                result = await loop.run_in_executor(
-                    None, functools.partial(
-                        run_cli,
-                        "add", session_path,
-                        "-t", session_title,
-                        "-c", "claude",
-                        "-g", "conductor",
-                        profile=profile,
-                        timeout=60,
-                    )
-                )
-                if result.returncode != 0:
-                    log.error(
-                        "Failed to create conductor %s: %s",
-                        name,
-                        result.stderr.strip(),
-                    )
-                    return False
-                # Start the newly created session
-                await loop.run_in_executor(
-                    None, functools.partial(
-                        run_cli,
-                        "session",
-                        "start",
-                        session_title,
-                        profile=profile,
-                        timeout=60,
-                    )
-                )
-
-        # Wait a moment for the session to initialize (non-blocking)
+    initial_start = await loop.run_in_executor(
+        None,
+        functools.partial(
+            run_cli,
+            "session",
+            "start",
+            session_title,
+            profile=profile,
+            timeout=60,
+        ),
+    )
+    if initial_start.returncode == 0:
         await asyncio.sleep(5)
         final_status = await loop.run_in_executor(
-            None, functools.partial(get_session_status, session_title, profile=profile)
+            None,
+            functools.partial(get_session_status, session_title, profile=profile),
         )
         return final_status not in ("error", "unknown")
 
-    return True
+    log.warning(
+        "Failed to start conductor %s before dedupe: %s",
+        name,
+        initial_start.stderr.strip(),
+    )
+    sessions = await loop.run_in_executor(
+        None,
+        functools.partial(get_sessions_list, profile=profile, fail_closed=True),
+    )
+    if sessions is None:
+        log.error(
+            "Cannot verify conductor %s identity because list --json failed; "
+            "refusing to create a possibly duplicate session",
+            name,
+        )
+        return False
+
+    path_match, ambiguous = _find_conductor_session_by_path(
+        sessions, session_path, profile
+    )
+    if ambiguous:
+        log.error(
+            "Multiple sessions in profile %s use conductor path %s; "
+            "refusing to select one or create another",
+            profile,
+            session_path,
+        )
+        return False
+
+    exact_match = _find_session_by_title(sessions, session_title, profile)
+    if path_match is not None and exact_match is not None:
+        path_id = path_match.get("id")
+        exact_id = exact_match.get("id")
+        same_session = path_match is exact_match or (
+            path_id is not None and path_id == exact_id
+        )
+        if not same_session:
+            log.error(
+                "Conductor path %s and exact title %s identify different "
+                "sessions in profile %s; refusing migration",
+                session_path,
+                session_title,
+                profile,
+            )
+            return False
+
+    existing = path_match or exact_match
+    session_ref = session_title
+    if existing is not None:
+        session_ref = existing.get("id") or existing.get("title")
+        if not session_ref:
+            log.error(
+                "Conductor session at %s has neither id nor title; refusing migration",
+                session_path,
+            )
+            return False
+
+        if existing.get("title") != session_title:
+            log.info(
+                "Restoring drifted conductor title %r to %r using session %s",
+                existing.get("title"),
+                session_title,
+                session_ref,
+            )
+            rename_result = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    run_cli,
+                    "session",
+                    "set",
+                    session_ref,
+                    "title",
+                    session_title,
+                    profile=profile,
+                    timeout=60,
+                ),
+            )
+            if rename_result.returncode != 0:
+                log.error(
+                    "Failed to restore conductor %s identity: %s",
+                    name,
+                    rename_result.stderr.strip(),
+                )
+                return False
+        else:
+            session_ref = session_title
+
+        log.info(
+            "Reusing existing conductor session %s in profile %s",
+            session_ref,
+            profile,
+        )
+    else:
+        log.info("Creating conductor session for %s...", name)
+        result = await loop.run_in_executor(
+            None,
+            functools.partial(
+                run_cli,
+                "add",
+                session_path,
+                "-t",
+                session_title,
+                "-c",
+                "claude",
+                "-g",
+                "conductor",
+                "--title-lock",
+                profile=profile,
+                timeout=60,
+            ),
+        )
+        if result.returncode != 0:
+            log.error(
+                "Failed to create conductor %s: %s",
+                name,
+                result.stderr.strip(),
+            )
+            return False
+
+    result = await loop.run_in_executor(
+        None,
+        functools.partial(
+            run_cli,
+            "session",
+            "start",
+            session_ref,
+            profile=profile,
+            timeout=60,
+        ),
+    )
+    if result.returncode != 0:
+        log.warning(
+            "Failed to start conductor %s using %s: %s",
+            name,
+            session_ref,
+            result.stderr.strip(),
+        )
+        return False
+
+    await asyncio.sleep(5)
+    final_status = await loop.run_in_executor(
+        None, functools.partial(get_session_status, session_ref, profile=profile)
+    )
+    return final_status not in ("error", "unknown")
 
 
 # ---------------------------------------------------------------------------
@@ -2878,6 +2997,30 @@ async def heartbeat_loop(
 # ---------------------------------------------------------------------------
 
 
+async def _run_platform_task(
+    name: str, coro_factory: Callable[[], Coroutine[Any, Any, None]], max_backoff: int = 300
+) -> None:
+    """Run a platform task, restarting it with backoff instead of raising.
+
+    main() awaits every platform task via a single asyncio.gather(), so a
+    transient failure (e.g. a proxy timeout on Telegram's getMe call) must
+    not escape here: an uncaught exception kills gather(), which kills the
+    whole bridge process. The OS service manager then respawns the process
+    in a tight loop, and every respawn re-runs the conductor pre-start step.
+    """
+    backoff = 5
+    while True:
+        try:
+            await coro_factory()
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.error("%s task failed: %s; retrying in %ds", name, e, backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
+
+
 async def main():
     log.info("Loading config from %s", CONFIG_PATH)
     config = load_config()
@@ -2961,13 +3104,21 @@ async def main():
     # Run all concurrently
     tasks = [heartbeat_task]
     if telegram_dp and telegram_bot:
-        tasks.append(asyncio.create_task(telegram_dp.start_polling(telegram_bot)))
+        tasks.append(asyncio.create_task(_run_platform_task(
+            "Telegram polling",
+            lambda: telegram_dp.start_polling(telegram_bot),
+        )))
         log.info("Telegram bot polling started")
     if slack_handler:
-        tasks.append(asyncio.create_task(slack_handler.start_async()))
+        tasks.append(asyncio.create_task(_run_platform_task(
+            "Slack Socket Mode", slack_handler.start_async,
+        )))
         log.info("Slack Socket Mode handler started")
     if discord_bot:
-        tasks.append(asyncio.create_task(discord_bot.start(config["discord"]["bot_token"])))
+        tasks.append(asyncio.create_task(_run_platform_task(
+            "Discord bot",
+            lambda: discord_bot.start(config["discord"]["bot_token"]),
+        )))
         log.info("Discord bot started")
 
     try:

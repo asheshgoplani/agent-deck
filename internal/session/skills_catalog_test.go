@@ -688,3 +688,97 @@ func TestApplyProjectSkills_SyncsAttachments(t *testing.T) {
 		t.Fatalf("expected manifest to contain only 'two', got %+v", manifest.Skills)
 	}
 }
+
+// TestDiscoverSkills_PluginManifestDirIsDiscovered locks the discovery fix:
+// a source entry with .claude-plugin/plugin.json (no root SKILL.md) is a
+// valid candidate. Fails on the previous SKILL.md-only filter.
+func TestDiscoverSkills_PluginManifestDirIsDiscovered(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	sourcePath, err := os.MkdirTemp("", "agentdeck-plugin-source-*")
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	defer os.RemoveAll(sourcePath)
+
+	// A dir with SKILL.md — always expected to be found.
+	writeSkillDir(t, sourcePath, "regular", "regular", "regular skill")
+
+	// A dir with .claude-plugin/plugin.json only — the fix under test.
+	pluginDir := filepath.Join(sourcePath, "pluginy", ".claude-plugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatalf("mkdir plugin: %v", err)
+	}
+	manifest := `{"name": "pluginy", "description": "test plugin", "version": "0.1.0"}`
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write plugin.json: %v", err)
+	}
+
+	if err := SaveSkillSources(map[string]SkillSourceDef{
+		"local": {Path: sourcePath, Enabled: boolPtr(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources: %v", err)
+	}
+
+	skills, err := ListAvailableSkills()
+	if err != nil {
+		t.Fatalf("ListAvailableSkills: %v", err)
+	}
+
+	found := map[string]bool{}
+	for _, s := range skills {
+		found[s.Name] = true
+	}
+	if !found["regular"] {
+		t.Errorf("regular dir skill must be discovered")
+	}
+	if !found["pluginy"] {
+		t.Errorf("plugin-manifest dir (no SKILL.md) must be discovered — fails on pre-fix SKILL.md-only filter")
+	}
+}
+
+// TestAttachSkill_PluginManifestDirIsAttachable locks the validation fix:
+// a dir skill carrying .claude-plugin/plugin.json (no root SKILL.md) must
+// be attachable to a project. Fails on the previous SKILL.md-only filter.
+func TestAttachSkill_PluginManifestDirIsAttachable(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	sourcePath, err := os.MkdirTemp("", "agentdeck-plugin-attach-source-*")
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	defer os.RemoveAll(sourcePath)
+
+	pluginDir := filepath.Join(sourcePath, "pluginy", ".claude-plugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.json"), []byte(`{"name":"pluginy"}`), 0o644); err != nil {
+		t.Fatalf("write plugin.json: %v", err)
+	}
+
+	if err := SaveSkillSources(map[string]SkillSourceDef{
+		"local": {Path: sourcePath, Enabled: boolPtr(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources: %v", err)
+	}
+
+	projectPath, err := os.MkdirTemp("", "agentdeck-plugin-project-*")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	defer os.RemoveAll(projectPath)
+
+	att, err := AttachSkillToProject(projectPath, "claude", "pluginy", "local")
+	if err != nil {
+		t.Fatalf("plugin-manifest dir must be attachable — fails on pre-fix SKILL.md-only validation: %v", err)
+	}
+	if att == nil {
+		t.Fatal("expected non-nil attachment")
+	}
+	if _, err := os.Lstat(filepath.Join(projectPath, ".claude", "skills", "pluginy")); err != nil {
+		t.Fatalf("expected symlink materialized: %v", err)
+	}
+}

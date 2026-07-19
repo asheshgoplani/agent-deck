@@ -523,11 +523,19 @@ func discoverSkillsFromSource(sourceName string, source SkillSourceDef) ([]Skill
 
 		var candidate *SkillCandidate
 		if info.IsDir() {
+			// A directory is a candidate when it is a directory skill
+			// (SKILL.md at the root) OR a Claude Code plugin
+			// (.claude-plugin/plugin.json). Plugin dirs are valid project
+			// skills: materialized into <project>/.claude/skills/ they are
+			// discovered by Claude Code's project-scope plugin loading
+			// (commands/hooks/MCP included) exactly like a hand-placed dir.
 			skillMDPath := filepath.Join(entryPath, "SKILL.md")
-			if _, err := os.Stat(skillMDPath); err != nil {
+			name, desc := "", ""
+			if _, err := os.Stat(skillMDPath); err == nil {
+				name, desc = parseSkillMetadata(skillMDPath, entry.Name())
+			} else if !hasPluginManifest(entryPath) {
 				continue
 			}
-			name, desc := parseSkillMetadata(skillMDPath, entry.Name())
 			if name == "" {
 				name = entry.Name()
 			}
@@ -977,7 +985,9 @@ func buildAttachment(tool string, candidate SkillCandidate, mode string) Project
 }
 
 func validateAttachableSkillCandidate(candidate SkillCandidate) error {
-	// Project-managed skills must be directory skills with SKILL.md.
+	// Project-managed skills must be directory skills carrying SKILL.md or
+	// a Claude Code plugin manifest (.claude-plugin/plugin.json) — the same
+	// markers candidate discovery accepts.
 	if candidate.Kind != "dir" {
 		return fmt.Errorf("%w: %s", ErrSkillUnsupportedKind, candidate.Name)
 	}
@@ -993,12 +1003,22 @@ func validateAttachableSkillCandidate(candidate SkillCandidate) error {
 	skillMD := filepath.Join(candidate.SourcePath, "SKILL.md")
 	if _, err := os.Stat(skillMD); err != nil {
 		if os.IsNotExist(err) {
+			if hasPluginManifest(candidate.SourcePath) {
+				return nil
+			}
 			return fmt.Errorf("%w: %s", ErrSkillUnsupportedKind, candidate.Name)
 		}
 		return err
 	}
 
 	return nil
+}
+
+// hasPluginManifest reports whether dir is a Claude Code plugin root
+// (.claude-plugin/plugin.json).
+func hasPluginManifest(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, ".claude-plugin", "plugin.json"))
+	return err == nil && !info.IsDir()
 }
 
 func resolveMaterializationSource(sourcePath, fallbackPath string) (string, error) {

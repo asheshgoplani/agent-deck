@@ -294,7 +294,7 @@ func getMCPInfoUncached(projectPath string) *MCPInfo {
 
 // resolveOpts selects which priority chain resolveClaudeConfigDir walks.
 //   - inst != nil  → instance chain: conductor > group > env > profile > global > default
-//   - inst == nil  → group chain:    env > group > profile > global > default
+//   - inst == nil  → group chain:    group > env > profile > global > default (#1508)
 //
 // groupPath is consulted in both chains; for the instance chain it falls
 // back to inst.GroupPath when not set explicitly.
@@ -320,7 +320,9 @@ type resolveOpts struct {
 //
 // On the instance chain Account is the most-specific level (beats
 // conductor/group/env). Conductor and group beat env (the #881 fix); see
-// GetClaudeConfigDirForInstance doc for the rationale.
+// GetClaudeConfigDirForInstance doc for the rationale. On the group chain a
+// group config_dir also beats env (#1508) so both chains agree that a
+// config.toml-scoped group override wins over a shell-wide CLAUDE_CONFIG_DIR.
 func resolveClaudeConfigDir(opts resolveOpts) (path, source string) {
 	userConfig, _ := LoadUserConfig()
 
@@ -355,14 +357,21 @@ func resolveClaudeConfigDir(opts resolveOpts) (path, source string) {
 			return envDir, "env"
 		}
 	} else {
-		// Group chain: env wins.
-		if envDir := envClaudeConfigDirIgnoringScratchLeak(); envDir != "" {
-			return envDir, "env"
-		}
+		// Group chain: group beats env (#1508). A
+		// [groups."<groupPath>".claude].config_dir is a config.toml-scoped
+		// override and is strictly more specific than a shell-wide
+		// CLAUDE_CONFIG_DIR (which dev shells commonly export via aliases).
+		// This mirrors the instance chain so a grouped child launched from a
+		// shell exporting a stale ambient account still resolves to its
+		// group's configured account. Env still wins when the group has no
+		// config_dir to assert.
 		if userConfig != nil {
 			if groupDir := userConfig.GetGroupClaudeConfigDir(groupPath); groupDir != "" {
 				return groupDir, "group"
 			}
+		}
+		if envDir := envClaudeConfigDirIgnoringScratchLeak(); envDir != "" {
+			return envDir, "env"
 		}
 	}
 

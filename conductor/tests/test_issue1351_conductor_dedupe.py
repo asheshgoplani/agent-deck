@@ -19,7 +19,7 @@ try:
 except ModuleNotFoundError:
     sys.modules["toml"] = types.SimpleNamespace(load=lambda *_args, **_kwargs: {})
 
-from bridge import ensure_conductor_running  # noqa: E402
+from bridge import CONDUCTOR_DIR, ensure_conductor_running  # noqa: E402
 
 
 async def _no_sleep(_seconds: float) -> None:
@@ -56,7 +56,7 @@ def test_existing_conductor_title_retries_start_without_add():
     ) as mock_cli:
         assert _run(ensure_conductor_running("ops", "work")) is True
 
-    mock_sessions.assert_called_once_with(profile="work")
+    mock_sessions.assert_called_once_with(profile="work", fail_closed=True)
     assert _calls_for(mock_cli, "add") == []
     assert len(_calls_for(mock_cli, "session", "start", "conductor-ops")) == 2
 
@@ -77,7 +77,7 @@ def test_fresh_setup_creates_session_then_starts_it():
     commands = [call.args[:3] for call in mock_cli.call_args_list]
     assert commands == [
         ("session", "start", "conductor-ops"),
-        ("add", str(Path.home() / ".agent-deck" / "conductor" / "ops"), "-t"),
+        ("add", str(CONDUCTOR_DIR / "ops"), "-t"),
         ("session", "start", "conductor-ops"),
     ]
     assert len(_calls_for(mock_cli, "add")) == 1

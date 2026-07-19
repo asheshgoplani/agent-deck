@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -3580,6 +3581,51 @@ func TestExtractCodexSessionIDFromLsofOutput(t *testing.T) {
 	want := "019c9ffa-c9d6-7be1-9e1c-527080e68951"
 	if got != want {
 		t.Fatalf("extractCodexSessionIDFromLsofOutput() = %q, want %q", got, want)
+	}
+}
+
+// TestCodexLsofProbe_TimeoutBoundsHungLsof reproduces issue #1581: without a
+// timeout, a single lsof call that blocks (there, on reverse-DNS PTR lookups of
+// the codex process's open sockets) stalls the shared status pass indefinitely.
+// It replicates the exact production invocation and asserts (a) the -n -P flags
+// are passed so lsof never resolves hosts/ports, and (b) codexLsofProbeTimeout
+// bounds a hung lsof so the status pass returns promptly instead of hanging.
+func TestCodexLsofProbe_TimeoutBoundsHungLsof(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	// Fake lsof: record the args it was invoked with, then block for far longer
+	// than the probe timeout (stand-in for a PTR-blackhole resolver stall).
+	fakeLsof := filepath.Join(dir, "lsof")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argsFile + "\nsleep 30\n"
+	if err := os.WriteFile(fakeLsof, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake lsof: %v", err)
+	}
+
+	pid := 12345
+	start := time.Now()
+	// Mirror queryCodexSessionFromHostLsof exactly: -n -P plus a hard timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), codexLsofProbeTimeout)
+	defer cancel()
+	// #nosec G204 -- test-only fixed path and flags.
+	err := exec.CommandContext(ctx, fakeLsof, "-n", "-P", "-p", fmt.Sprintf("%d", pid)).Run()
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected the hung lsof to be killed by the timeout, got nil error")
+	}
+	// Must return on the order of the timeout, never near the 30s hang.
+	if elapsed > codexLsofProbeTimeout+3*time.Second {
+		t.Fatalf("probe was not bounded by timeout: took %v (timeout %v)", elapsed, codexLsofProbeTimeout)
+	}
+
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("fake lsof did not run (no args file): %v", err)
+	}
+	for _, want := range []string{"-n", "-P"} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("lsof invoked without %q flag; args were:\n%s", want, got)
+		}
 	}
 }
 

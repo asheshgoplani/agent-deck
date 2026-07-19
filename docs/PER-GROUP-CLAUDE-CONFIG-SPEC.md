@@ -58,7 +58,7 @@ PR #578 is a clean base. This milestone (v1.5.4) **accepts** PR #578 and closes 
 **Resolution approach:** `buildBashExportPrefix` already exports `CLAUDE_CONFIG_DIR` unconditionally (even for custom commands). Verify by test that this path is actually taken for custom-command sessions, OR move the export into the tmux pane env injection if not.
 
 **Acceptance:**
-- A session created with `agent-deck -p personal add ./some-wrapper.sh -t "test-conductor" -g "conductor"` where `~/.agent-deck/config.toml` has `[groups."conductor".claude] config_dir = "~/.claude-work"` launches with `CLAUDE_CONFIG_DIR=~/.claude-work` visible inside the tmux pane's environment (verified by `agent-deck session send <id> "echo CLAUDE_CONFIG_DIR=\$CLAUDE_CONFIG_DIR"`).
+- A session created with `agent-deck -p personal add ./some-wrapper.sh -t "test-conductor" -g "conductor"` where the config file has `[groups."conductor".claude] config_dir = "~/.claude-work"` launches with `CLAUDE_CONFIG_DIR=~/.claude-work` visible inside the tmux pane's environment (verified by `agent-deck session send <id> "echo CLAUDE_CONFIG_DIR=\$CLAUDE_CONFIG_DIR"`).
 - After restart, the env var persists — the wrapper script sees it.
 - Conductor restart (via `start-conductor.sh`) preserves the env var — the `exec claude ...` inside the wrapper uses `~/.claude-work` for its Claude auth.
 - A session in a group with NO override falls through to the profile's config dir.
@@ -228,14 +228,14 @@ Gaps this milestone closes:
 1. PR #578 unit tests remain GREEN.
 2. `go test ./internal/session/... -run TestPerGroupConfig_ -race -count=1` — all 6 GREEN.
 3. `bash scripts/verify-per-group-claude-config.sh` exits 0 on conductor host with visual table.
-4. Manual proof on conductor host: add `[groups."conductor".claude] config_dir = "~/.claude-work"` to `~/.agent-deck/config.toml`, restart conductor, `ps -p <pane_pid>` env shows `CLAUDE_CONFIG_DIR=/home/user/.claude-work`, conductor now uses the work Claude account.
+4. Manual proof on conductor host: add `[groups."conductor".claude] config_dir = "~/.claude-work"` to config.toml, restart conductor, `ps -p <pane_pid>` env shows `CLAUDE_CONFIG_DIR=/home/user/.claude-work`, conductor now uses the work Claude account.
 5. `git log main..HEAD --oneline` ends with README+CHANGELOG+CLAUDE.md commits and one attribution commit referencing @alec-pinson.
 6. No push / tag / PR / merge performed.
 
 ### Phase 4 success criteria (additive, gated at milestone end)
 
 7. `go test ./internal/session/... -run TestConductorConfig_ -race -count=1` — all 8 GREEN.
-8. Manual proof on conductor host: add `[conductors.gsd-v154] config_dir = "~/.claude-work"` to `~/.agent-deck/config.toml` with NO matching `[groups.*]` entry, restart the `gsd-v154` conductor, `agent-deck session send <id> "echo CLAUDE_CONFIG_DIR=\$CLAUDE_CONFIG_DIR"` reports `~/.claude-work`. Closes issue #602.
+8. Manual proof on conductor host: add `[conductors.gsd-v154] config_dir = "~/.claude-work"` to config.toml with NO matching `[groups.*]` entry, restart the `gsd-v154` conductor, `agent-deck session send <id> "echo CLAUDE_CONFIG_DIR=\$CLAUDE_CONFIG_DIR"` reports `~/.claude-work`. Closes issue #602.
 9. README.md "Per-group Claude config" subsection includes the `[conductors.<name>]` example and a one-line precedence note.
 10. agent-deck skill `SKILL.md` (canonical plugin-cache path + pool copy if present) documents the `[conductors.<name>]` block.
 11. Repo-root `CLAUDE.md` carries the `--no-verify` mandate clarification (metadata-only commits exemption with the negative example).
