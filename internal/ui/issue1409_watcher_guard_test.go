@@ -183,10 +183,10 @@ func TestDeliverToConductorPaneGuarded_IgnoresSuggestionPlaceholder(t *testing.T
 
 // sanity: the strings used by these tests parse the way the guard expects.
 func TestComposerFixturesParse(t *testing.T) {
-	if !send.ComposerHasDraft(composerWith("instruct deploy ag")) {
+	if !send.ComposerHasDraft(composerWith("instruct deploy ag"), nil) {
 		t.Fatal("fixture composerWith must register as a draft")
 	}
-	if send.ComposerHasDraft(emptyComposer()) {
+	if send.ComposerHasDraft(emptyComposer(), nil) {
 		t.Fatal("fixture emptyComposer must not register as a draft")
 	}
 	if !strings.Contains(emptyComposer(), "❯") {

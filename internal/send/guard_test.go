@@ -15,7 +15,7 @@ func renderComposer(text string) string {
 }
 
 func TestComposerDraft_EmptyComposer(t *testing.T) {
-	draft, visible := ComposerDraft(renderComposer(""))
+	draft, visible := ComposerDraft(renderComposer(""), nil)
 	if !visible {
 		t.Fatal("expected composer to be visible")
 	}
@@ -25,7 +25,7 @@ func TestComposerDraft_EmptyComposer(t *testing.T) {
 }
 
 func TestComposerDraft_WithOperatorDraft(t *testing.T) {
-	draft, visible := ComposerDraft(renderComposer("instruct deploy ag"))
+	draft, visible := ComposerDraft(renderComposer("instruct deploy ag"), nil)
 	if !visible {
 		t.Fatal("expected composer to be visible")
 	}
@@ -38,7 +38,7 @@ func TestComposerDraft_SuggestionPlaceholderIsNotADraft(t *testing.T) {
 	// Claude's idle composer shows a hint suggestion like:
 	//   ❯ Try "write a test for <filepath>"
 	// which must not be treated as operator input (issue #1409).
-	draft, visible := ComposerDraft(renderComposer(`Try "write a test for <filepath>"`))
+	draft, visible := ComposerDraft(renderComposer(`Try "write a test for <filepath>"`), nil)
 	if !visible {
 		t.Fatal("expected composer to be visible")
 	}
@@ -48,23 +48,23 @@ func TestComposerDraft_SuggestionPlaceholderIsNotADraft(t *testing.T) {
 }
 
 func TestComposerDraft_NoComposerVisible(t *testing.T) {
-	_, visible := ComposerDraft("plain shell output\nno prompt here\n")
+	_, visible := ComposerDraft("plain shell output\nno prompt here\n", nil)
 	if visible {
 		t.Fatal("did not expect a composer in plain output")
 	}
 }
 
 func TestComposerHasDraft(t *testing.T) {
-	if ComposerHasDraft(renderComposer("")) {
+	if ComposerHasDraft(renderComposer(""), nil) {
 		t.Fatal("empty composer must not report a draft")
 	}
-	if !ComposerHasDraft(renderComposer("half-typed message")) {
+	if !ComposerHasDraft(renderComposer("half-typed message"), nil) {
 		t.Fatal("expected composer draft to be reported")
 	}
-	if ComposerHasDraft(renderComposer(`Try "fix lint errors"`)) {
+	if ComposerHasDraft(renderComposer(`Try "fix lint errors"`), nil) {
 		t.Fatal("placeholder must not report a draft")
 	}
-	if ComposerHasDraft("plain output, no composer") {
+	if ComposerHasDraft("plain output, no composer", nil) {
 		t.Fatal("no composer must not report a draft")
 	}
 }

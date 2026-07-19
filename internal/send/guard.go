@@ -18,12 +18,29 @@ func IsComposerPlaceholder(text string) bool {
 	return strings.HasPrefix(t, `Try "`) && strings.HasSuffix(t, `"`)
 }
 
-// ComposerDraft returns the normalized text currently sitting in the visible
-// composer and whether a composer is visible at all. Claude's idle-suggestion
-// placeholder is reported as an empty draft. Callers must pass ANSI-stripped
-// pane content (same contract as CurrentComposerPrompt).
-func ComposerDraft(content string) (draft string, composerVisible bool) {
-	body, ok := CurrentComposerPrompt(content)
+// ComposerDraft returns the normalized operator draft sitting in the visible
+// composer, and whether a composer is visible at all.
+//
+// raw must be the pane capture with ANSI attributes INTACT (tmux capture-pane
+// -e, which CapturePaneFresh already requests). The SGR dim attribute is the
+// only thing distinguishing Claude's prompt autosuggestion from real operator
+// input, so stripping before this call loses the discriminator. strip removes
+// ANSI for text extraction only (pass tmux.StripANSI; nil means identity).
+//
+// Both of Claude's non-input composer states report an empty draft:
+//
+//	❯ Try "write a test for <filepath>"     idle hint (plain text)
+//	❯ <ESC>[2mrun the tests again<ESC>[0m   autosuggestion (dim)
+func ComposerDraft(raw string, strip func(string) string) (draft string, composerVisible bool) {
+	if strip == nil {
+		strip = func(s string) string { return s }
+	}
+	// Checked against the raw bytes: a suggestion is not content, so it is
+	// never saved, cleared or restored.
+	if ComposerBodyIsSuggestion(raw) {
+		return "", true
+	}
+	body, ok := CurrentComposerPrompt(strip(raw))
 	if !ok {
 		return "", false
 	}
@@ -36,9 +53,10 @@ func ComposerDraft(content string) (draft string, composerVisible bool) {
 
 // ComposerHasDraft reports whether the visible composer holds operator input.
 // This is the shared "is the composer busy?" check automated senders must run
-// before injecting keystrokes into the pane (issue #1409).
-func ComposerHasDraft(content string) bool {
-	draft, visible := ComposerDraft(content)
+// before injecting keystrokes into the pane (issue #1409). Same raw/strip
+// contract as ComposerDraft.
+func ComposerHasDraft(raw string, strip func(string) string) bool {
+	draft, visible := ComposerDraft(raw, strip)
 	return visible && draft != ""
 }
 
@@ -125,7 +143,7 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 			// Pane not introspectable: never block delivery on it.
 			return ComposerGuardResult{Held: time.Since(start)}
 		}
-		draft, visible := ComposerDraft(strip(raw))
+		draft, visible := ComposerDraft(raw, strip)
 		if !visible || draft == "" {
 			return ComposerGuardResult{Held: time.Since(start)}
 		}
@@ -156,7 +174,7 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 		clearDeadline := time.Now().Add(opts.ClearWait)
 		for {
 			raw, err := t.CapturePaneFresh()
-			if err == nil && !ComposerHasDraft(strip(raw)) {
+			if err == nil && !ComposerHasDraft(raw, strip) {
 				res.DraftCleared = true
 				res.Held = time.Since(start)
 				return res
