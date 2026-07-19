@@ -3168,6 +3168,16 @@ func (i *Instance) Start() error {
 		command = i.buildCursorCommand(i.Command, false)
 	case i.Tool == "hermes":
 		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "goose": // ponytail: new tool
+		settings := DefaultGooseSettings()
+		if cfg, _ := LoadUserConfig(); cfg != nil {
+			settings = &cfg.Goose
+			if settings.Command == "" {
+				settings = DefaultGooseSettings()
+			}
+		}
+		args := BuildGooseCommand(settings, i.ProjectPath, "")
+		command = strings.Join(args, " ")
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -3409,6 +3419,16 @@ func (i *Instance) StartWithMessage(message string) error {
 		command = i.buildCursorCommand(i.Command, false)
 	case i.Tool == "hermes":
 		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "goose": // ponytail: new tool
+		settings := DefaultGooseSettings()
+		if cfg, _ := LoadUserConfig(); cfg != nil {
+			settings = &cfg.Goose
+			if settings.Command == "" {
+				settings = DefaultGooseSettings()
+			}
+		}
+		args := BuildGooseCommand(settings, i.ProjectPath, "")
+		command = strings.Join(args, " ")
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -4039,11 +4059,11 @@ func (i *Instance) UpdateStatus() error {
 			// Preserve configured custom tool names.
 		} else {
 			switch detectedTool {
-			case "claude", "gemini", "opencode", "codex":
+			case "claude", "gemini", "opencode", "codex", "goose":
 				i.Tool = detectedTool
 			case "shell":
 				switch i.Tool {
-				case "", "shell", "claude", "gemini", "opencode", "codex":
+				case "", "shell", "claude", "gemini", "opencode", "codex", "goose":
 					i.Tool = detectedTool
 				}
 			}
@@ -6306,6 +6326,16 @@ func (i *Instance) Restart() error {
 			command = i.buildCursorCommand(i.Command, true)
 		case i.Tool == "hermes":
 			command = i.buildHermesCommand(i.Command)
+		case i.Tool == "goose": // ponytail: new tool
+			settings := DefaultGooseSettings()
+			if cfg, _ := LoadUserConfig(); cfg != nil {
+				settings = &cfg.Goose
+				if settings.Command == "" {
+					settings = DefaultGooseSettings()
+				}
+			}
+			args := BuildGooseCommand(settings, i.ProjectPath, "")
+			command = strings.Join(args, " ")
 		default:
 			// Check if this is a custom tool with session resume config
 			if toolDef := GetToolDef(i.Tool); toolDef != nil {

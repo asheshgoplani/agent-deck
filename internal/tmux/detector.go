@@ -84,6 +84,9 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 	case "cursor":
 		return d.hasCursorPrompt(content)
 
+	case "goose": // ponytail: new tool
+		return d.hasGoosePrompt(content)
+
 	default:
 		// Generic shell - check for common prompts
 		return d.hasShellPrompt(content)
@@ -723,4 +726,26 @@ func StripANSI(content string) string {
 	}
 
 	return b.String()
+}
+
+// hasGoosePrompt detects if Goose is waiting for input.
+// Goose uses ">_" or ">" at the bottom of its interactive interface.
+func (d *PromptDetector) hasGoosePrompt(content string) bool {
+	// Use the exported helper from the session package.
+	// Delegate to content-based detection for consistency.
+	lines := strings.Split(content, "\n")
+	for i := len(lines) - 1; i >= 0 && i >= len(lines)-5; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if line == ">_" || line == ">" {
+			return true
+		}
+		if strings.HasSuffix(line, ">_") || strings.HasSuffix(line, "> ") {
+			return true
+		}
+		break
+	}
+	return false
 }

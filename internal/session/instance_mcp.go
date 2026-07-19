@@ -7,7 +7,7 @@ import (
 
 // ToolSupportsMCPManager reports whether the TUI/CLI MCP surfaces apply to this tool.
 func ToolSupportsMCPManager(toolName string) bool {
-	return IsClaudeCompatible(toolName) || toolName == "gemini" || toolName == "cursor" || toolName == "opencode"
+	return IsClaudeCompatible(toolName) || toolName == "gemini" || toolName == "cursor" || toolName == "opencode" || toolName == "goose"
 }
 
 // MCPLocalConfigPathForTool returns the project-local MCP config path for display and writes.
@@ -23,6 +23,8 @@ func MCPLocalConfigPathForTool(toolName, projectPath string) string {
 		return filepath.Join(projectPath, ".cursor", "mcp.json")
 	case toolName == "opencode":
 		return filepath.Join(projectPath, "opencode.json")
+	case toolName == "goose": // ponytail: new tool — no project-local MCP
+		return ""
 	default:
 		return ""
 	}
@@ -39,6 +41,8 @@ func MCPGlobalConfigPathForTool(toolName string) string {
 		return filepath.Join(GetCursorConfigDir(), "mcp.json")
 	case toolName == "opencode":
 		return filepath.Join(GetOpenCodeConfigDir(), "opencode.json")
+	case toolName == "goose": // ponytail: new tool
+		return filepath.Join(GetGooseConfigDir(), "config.yaml")
 	default:
 		return ""
 	}

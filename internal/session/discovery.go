@@ -160,6 +160,9 @@ func detectToolFromName(name string) string {
 	if strings.Contains(nameLower, "codex") {
 		return "codex"
 	}
+	if strings.Contains(nameLower, "goose") { // ponytail: new tool
+		return "goose"
+	}
 
 	return "shell"
 }

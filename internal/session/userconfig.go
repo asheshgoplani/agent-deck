@@ -151,6 +151,9 @@ type UserConfig struct {
 	// Hermes defines Hermes Agent CLI integration settings
 	Hermes HermesSettings `toml:"hermes,omitempty"`
 
+	// Goose defines Goose Agent CLI integration settings
+	Goose GooseSettings `toml:"goose,omitempty"`
+
 	// Worktree defines git worktree preferences
 	Worktree WorktreeSettings `toml:"worktree,omitempty"`
 
@@ -1774,6 +1777,28 @@ type CrushSettings struct {
 	YoloMode bool `toml:"yolo_mode,omitempty"`
 }
 
+// GooseSettings defines Goose Agent CLI configuration.
+// Binary: `goose` from github.com/block/goose-ai (Apache-2.0).
+// Goose is a CLI AI agent by Block. Interactive TUI with MCP extension
+// support via config.yaml in ~/.config/goose/.
+type GooseSettings struct {
+	// Command is the Goose CLI command or invocation to use.
+	// Supports flags (e.g., "goose --model gpt-4o"). Default: "goose"
+	Command string `toml:"command,omitempty"`
+
+	// EnvFile is a .env file specific to Goose sessions (sourced before
+	// the `goose` command runs). Optional.
+	EnvFile string `toml:"env_file,omitempty"`
+
+	// YoloMode enables --auto flag for Goose sessions (auto-approve all
+	// tool calls / skip permission prompts). Default: false
+	YoloMode bool `toml:"yolo_mode,omitempty"`
+
+	// ConfigDir overrides the default Goose config directory (~/.config/goose).
+	// When set, Goose reads config.yaml and profiles.yaml from this path.
+	ConfigDir string `toml:"config_dir,omitempty"`
+}
+
 // WorktreeSettings contains git worktree preferences.
 type WorktreeSettings struct {
 	// AutoCleanup: remove worktree when session is deleted (default: true, nil = true)
@@ -3219,6 +3244,10 @@ func GetToolCommand(toolName string) string {
 		if config.Hermes.Command != "" {
 			return config.Hermes.Command
 		}
+	case "goose": // ponytail: new tool
+		if config.Goose.Command != "" {
+			return config.Goose.Command
+		}
 	}
 	return toolName
 }
@@ -3252,6 +3281,8 @@ func GetToolIcon(toolName string) string {
 		return "📝"
 	case "hermes":
 		return "☤"
+	case "goose": // ponytail: new tool
+		return "🪿"
 	case "pi":
 		return "π"
 	case "shell":

@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-// canonicalBuiltins is the canonical 11, in the precedence order that
-// Registry.Match() (and the legacy detectTool() switch) walk.
+// canonicalBuiltins is the canonical 12, in the precedence order that
+// Registry.Match() (and the legacy detectTool()) switch) walk.
 var canonicalBuiltins = []string{
 	"claude", "opencode", "gemini", "codex", "pi",
-	"copilot", "crush", "cursor", "hermes", "aider", "shell",
+	"copilot", "crush", "cursor", "hermes", "goose", "aider", "shell",
 }
 
 func TestRegistry_AllReturnsCanonical11(t *testing.T) {

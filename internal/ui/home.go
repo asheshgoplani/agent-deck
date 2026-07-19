@@ -10275,6 +10275,8 @@ func createSessionTool(command string) (string, string) {
 		command = "cursor agent"
 	case "hermes":
 		tool = "hermes"
+	case "goose": // ponytail: new tool
+		tool = "goose"
 	default:
 		if toolDef := session.GetToolDef(command); toolDef != nil {
 			tool = command

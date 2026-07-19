@@ -610,6 +610,8 @@ func ToolIcon(tool string) string {
 		return "📝"
 	case "hermes":
 		return "☤"
+	case "goose": // ponytail: new tool
+		return "🪿"
 	case "pi":
 		return IconPi
 	case "shell":
@@ -637,6 +639,8 @@ func ToolColor(tool string) lipgloss.Color {
 		return ColorAccent // Blue for Cursor
 	case "hermes":
 		return ColorYellow // Gold for Hermes Agent
+	case "goose": // ponytail: new tool
+		return ColorGreen // Green/teal for Goose Agent (Block)
 	case "pi":
 		return ColorAccent
 	case "aider":

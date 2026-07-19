@@ -32,7 +32,7 @@ func TestGetToolCommand_NoConfig(t *testing.T) {
 	ClearUserConfigCache()
 	defer ClearUserConfigCache()
 
-	tools := []string{"claude", "gemini", "opencode", "codex", "copilot", "hermes"}
+	tools := []string{"claude", "gemini", "opencode", "codex", "copilot", "hermes", "goose"}
 	for _, tool := range tools {
 		got := GetToolCommand(tool)
 		if got != tool {
@@ -49,6 +49,7 @@ func TestGetToolCommand_WithOverride(t *testing.T) {
 		Codex:    CodexSettings{Command: "codex --experimental"},
 		Copilot:  CopilotSettings{Command: "gh copilot"},
 		Hermes:   HermesSettings{Command: "hermes --model gpt-5.5-pro --provider openai"},
+		Goose:    GooseSettings{Command: "goose --model gpt-4o"},
 	}
 	restore := resetUserConfigCache(t, cfg)
 	defer restore()
@@ -63,6 +64,7 @@ func TestGetToolCommand_WithOverride(t *testing.T) {
 		{"codex", "codex --experimental"},
 		{"copilot", "gh copilot"},
 		{"hermes", "hermes --model gpt-5.5-pro --provider openai"},
+		{"goose", "goose --model gpt-4o"},
 	}
 
 	for _, tt := range tests {
@@ -82,11 +84,12 @@ func TestGetToolCommand_EmptyOverrideFallsBack(t *testing.T) {
 		Codex:    CodexSettings{Command: ""},
 		Copilot:  CopilotSettings{Command: ""},
 		Hermes:   HermesSettings{Command: ""},
+		Goose:    GooseSettings{Command: ""},
 	}
 	restore := resetUserConfigCache(t, cfg)
 	defer restore()
 
-	tools := []string{"claude", "gemini", "opencode", "codex", "copilot", "hermes"}
+	tools := []string{"claude", "gemini", "opencode", "codex", "copilot", "hermes", "goose"}
 	for _, tool := range tools {
 		got := GetToolCommand(tool)
 		if got != tool {
@@ -307,6 +310,7 @@ func TestGetToolEnvFile_AllBuiltins(t *testing.T) {
 		Codex:    CodexSettings{EnvFile: "/tmp/codex.env"},
 		Copilot:  CopilotSettings{EnvFile: "/tmp/copilot.env"},
 		Hermes:   HermesSettings{EnvFile: "/tmp/hermes.env"},
+		Goose:    GooseSettings{EnvFile: "/tmp/goose.env"},
 	}
 	restore := resetUserConfigCache(t, cfg)
 	defer restore()
@@ -321,6 +325,7 @@ func TestGetToolEnvFile_AllBuiltins(t *testing.T) {
 		{"codex", "/tmp/codex.env"},
 		{"copilot", "/tmp/copilot.env"},
 		{"hermes", "/tmp/hermes.env"},
+		{"goose", "/tmp/goose.env"},
 	}
 
 	for _, tt := range tests {

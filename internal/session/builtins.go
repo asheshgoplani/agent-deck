@@ -64,6 +64,7 @@ func builtinTools() []builtinTool {
 		{Name: "crush", Icon: "💘", detectSubstrings: []string{"crush"}},
 		{Name: "cursor", Icon: "📝", detectSubstrings: []string{"cursor"}},
 		{Name: "hermes", Icon: "☤", detectSubstrings: []string{"hermes"}},
+		{Name: "goose", Icon: "🪿", detectSubstrings: []string{"goose"}}, // ponytail: new tool
 		{Name: "aider", Icon: "🐚"},
 		{Name: "shell", Icon: "🐚"},
 	}

@@ -773,6 +773,8 @@ func (m *MCPDialog) View() string {
 		title = "MCP Manager (Gemini)"
 	case "cursor":
 		title = "MCP Manager (Cursor)"
+	case "goose": // ponytail: new tool
+		title = "MCP Manager (Goose)"
 	}
 
 	// Scope tabs - Gemini only global; Cursor LOCAL+GLOBAL; Claude all three
@@ -860,6 +862,8 @@ func (m *MCPDialog) View() string {
 	switch m.tool {
 	case "gemini":
 		scopeDesc = DimStyle.Render("Writes to: ~/.gemini/settings.json")
+	case "goose": // ponytail: new tool
+		scopeDesc = DimStyle.Render("Writes to: ~/.config/goose/config.yaml (global only)")
 	case "cursor":
 		switch m.scope {
 		case MCPScopeLocal:

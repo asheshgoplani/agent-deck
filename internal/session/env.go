@@ -558,6 +558,8 @@ func (i *Instance) getToolEnvFile() string {
 			return groupEnv
 		}
 		return config.Hermes.EnvFile
+	case "goose": // ponytail: new tool
+		return config.Goose.EnvFile
 	default:
 		// Check custom tools
 		if def := GetToolDef(i.Tool); def != nil {

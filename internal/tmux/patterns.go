@@ -134,6 +134,17 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			BusyPatterns:   []string{"[PROCESSING]", "[CONNECTING]", "[RECONNECTING]"},
 			PromptPatterns: []string{"openclaw> "},
 		}
+	case "goose": // ponytail: new tool
+		return &RawPatterns{
+			BusyPatterns: []string{
+				"ctrl+c to interrupt",
+				"esc to interrupt",
+				"thinking...",
+				"executing...",
+				"generating...",
+			},
+			PromptPatterns: []string{">_", `re:(?m)^\s*>\s*$`},
+		}
 	default:
 		return nil
 	}
