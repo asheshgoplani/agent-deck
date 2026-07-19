@@ -1288,6 +1288,22 @@ func NewHomeWithProfile(profile string) *Home {
 // so status, log, pipe, and storage updates continue while the TUI is running.
 var homeBackgroundWorkersEnabled = true
 
+// shouldAutoInstallCursorHooks reports whether TUI startup should run the
+// Cursor hook auto-install/watcher-start block in NewHomeWithProfileAndMode:
+// background workers must be enabled, the user must not have durably opted
+// out via [cursor] hooks_enabled = false (persisted by `agent-deck
+// cursor-hooks uninstall`, issue #1672), and a cursor command must be
+// configured. cursorCmd is expected to already be trimmed by the caller.
+//
+// Extracted as a pure predicate (issue #1675) so the gate itself is
+// unit-testable without exercising NewHomeWithProfileAndMode's side effects
+// (storage, tmux, goroutines) — mirrors why AutoInstallCursorHooks was pulled
+// out of this same function in #1673.
+func shouldAutoInstallCursorHooks(userConfig *session.UserConfig, cursorCmd string) bool {
+	cursorHooksEnabled := userConfig == nil || userConfig.Cursor.GetHooksEnabled()
+	return homeBackgroundWorkersEnabled && cursorHooksEnabled && cursorCmd != ""
+}
+
 // NewHomeWithProfileAndMode creates a new Home with the specified profile.
 // All instances manage the notification bar equally via shared SQLite state.
 func NewHomeWithProfileAndMode(profile string) *Home {
@@ -1634,8 +1650,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// (set durably by `agent-deck cursor-hooks uninstall`, issue #1672).
 	// The opt-out gates the watcher too, matching the [claude] hooks_enabled
 	// gate above.
-	cursorHooksEnabled := userConfig == nil || userConfig.Cursor.GetHooksEnabled()
-	if cursorCmd := strings.TrimSpace(session.GetToolCommand("cursor")); homeBackgroundWorkersEnabled && cursorHooksEnabled && cursorCmd != "" {
+	cursorCmd := strings.TrimSpace(session.GetToolCommand("cursor"))
+	if shouldAutoInstallCursorHooks(userConfig, cursorCmd) {
 		if cursorFields := strings.Fields(cursorCmd); len(cursorFields) > 0 {
 			cursorBin := cursorFields[0]
 			if _, err := exec.LookPath(cursorBin); err == nil {
