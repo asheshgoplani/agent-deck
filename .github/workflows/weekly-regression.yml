@@ -203,41 +203,45 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
+            const { renderVisualDetails } = require(
+              `${process.env.GITHUB_WORKSPACE}/.github/scripts/render-visual-details.js`
+            );
+
+            // --- Read visual results (recursive suite walk, see #1674) ---
+            let rawVisual = null;
+            try {
+              rawVisual = fs.readFileSync('/tmp/visual-results.json', 'utf8');
+            } catch (e) {
+              rawVisual = null;
+            }
+            const visual = renderVisualDetails(rawVisual);
+            const visualDetails = visual.details;
 
             // --- Compute failure count and statuses ---
+            // A visual step failure only counts as a regression when the
+            // Playwright report actually contains test results. A missing or
+            // empty report is "NO DATA (skipped)": it is surfaced in the issue
+            // body if Lighthouse failed, but it never files an issue by itself.
             const visualOutcome = '${{ steps.visual.outcome }}';
             const lighthouseOutcome = '${{ steps.lighthouse.outcome }}';
-            const visualStatus = visualOutcome === 'success' ? 'PASS' : 'FAIL';
+            let visualStatus;
+            if (visualOutcome === 'success') {
+              visualStatus = 'PASS';
+            } else if (visual.noData) {
+              visualStatus = 'NO DATA (skipped)';
+            } else {
+              visualStatus = 'FAIL';
+            }
             const lighthouseStatus = lighthouseOutcome === 'success' ? 'PASS' : 'FAIL';
             let failureCount = 0;
-            if (visualOutcome !== 'success') failureCount++;
+            if (visualStatus === 'FAIL') failureCount++;
             if (lighthouseOutcome !== 'success') failureCount++;
 
-            // --- Read result files for details ---
-            let visualDetails = 'No detailed results available.';
-            try {
-              const raw = fs.readFileSync('/tmp/visual-results.json', 'utf8');
-              const data = JSON.parse(raw);
-              const suites = data.suites || [];
-              const lines = [];
-              for (const suite of suites) {
-                for (const spec of (suite.specs || [])) {
-                  const status = spec.ok ? ':white_check_mark:' : ':x:';
-                  lines.push(`- ${status} ${spec.title}`);
-                  if (!spec.ok && spec.tests) {
-                    for (const test of spec.tests) {
-                      for (const result of (test.results || [])) {
-                        if (result.error) {
-                          lines.push(`  - Error: ${result.error.message.split('\n')[0]}`);
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-              if (lines.length > 0) visualDetails = lines.join('\n');
-            } catch (e) {
-              visualDetails = `Could not parse visual results: ${e.message}`;
+            if (failureCount === 0) {
+              core.info(
+                `No countable failures (visual: ${visualStatus}, lighthouse: ${lighthouseStatus}); not filing an issue.`
+              );
+              return;
             }
 
             let lighthouseDetails = 'No detailed results available.';
