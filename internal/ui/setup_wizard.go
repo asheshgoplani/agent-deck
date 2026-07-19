@@ -391,9 +391,12 @@ func (w *SetupWizard) View() string {
 			"opencode": "OpenCode - Open source AI coding tool",
 			"codex":    "Codex CLI - OpenAI's coding assistant",
 			"pi":       "Pi CLI - lightweight coding assistant",
+			"copilot":  "Copilot - GitHub's AI pair programmer",
 			"crush":    "Crush - Charm's terminal-first AI coding assistant",
-			"shell":    "Shell - No AI tool (plain terminal)",
 			"cursor":   "Cursor Agent - Cursor CLI (cursor agent)",
+			"hermes":   "Hermes - OpenAI's agentic coding CLI",
+			"goose":    "Goose - Block's AI agent with MCP extension support",
+			"shell":    "Shell - No AI tool (plain terminal)",
 		}
 
 		for i, tool := range w.toolOptions {

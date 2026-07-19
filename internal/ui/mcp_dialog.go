@@ -247,6 +247,14 @@ func (m *MCPDialog) Show(projectPath string, sessionID string, tool string) erro
 				})
 			}
 		}
+	} else if tool == "goose" {
+		// Goose: global-only MCPs from config.yaml (~/.config/goose/)
+		// Goose manages its own extensions; we show the pool but can't
+		// parse config.yaml, so nothing is pre-attached.
+		for _, name := range allNames {
+			item := itemsMap[name]
+			m.globalAvailable = append(m.globalAvailable, item)
+		}
 	} else {
 		// Claude: Load LOCAL attached from .mcp.json
 		localAttachedNames := make(map[string]bool)
@@ -339,8 +347,8 @@ func (m *MCPDialog) Show(projectPath string, sessionID string, tool string) erro
 
 	m.visible = true
 	m.projectPath = projectPath
-	// Gemini only has global scope; Cursor uses LOCAL+GLOBAL (no USER); Claude uses all three
-	if tool == "gemini" {
+	// Gemini only has global scope; Cursor uses LOCAL+GLOBAL (no USER); Goose global-only; Claude uses all three
+	if tool == "gemini" || tool == "goose" {
 		m.scope = MCPScopeGlobal
 	} else if tool == "cursor" {
 		switch session.GetMCPDefaultScope() {

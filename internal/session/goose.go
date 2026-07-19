@@ -42,6 +42,9 @@ func BuildGooseCommand(settings *GooseSettings, projectPath string, profile stri
 
 	// ponytail: split command string so flags in Command are preserved
 	args := strings.Fields(cmd)
+	if len(args) == 0 {
+		args = []string{"goose"}
+	}
 	cmd = args[0]
 
 	// Add --auto if YoloMode is enabled (goose's equivalent of auto-approve).
@@ -135,6 +138,23 @@ func HasGooseBusyIndicator(output string) bool {
 // sessions. Falls back to ~/.config/goose/.env.
 func GetGooseDefaultEnvFile() string {
 	return filepath.Join(gooseDefaultConfigDir(), ".env")
+}
+
+// GooseSettingsFromConfig returns GooseSettings with user config values
+// merged over defaults. Only Command defaults to "goose" when empty;
+// other fields (YoloMode, EnvFile, ConfigDir) are preserved as-is from
+// user config even when empty (zero value = not configured).
+func GooseSettingsFromConfig() *GooseSettings {
+	def := DefaultGooseSettings()
+	cfg, _ := LoadUserConfig()
+	if cfg == nil {
+		return def
+	}
+	merged := cfg.Goose
+	if merged.Command == "" {
+		merged.Command = def.Command
+	}
+	return &merged
 }
 
 // GetGooseConfigDir returns the Goose config directory. Checks the user

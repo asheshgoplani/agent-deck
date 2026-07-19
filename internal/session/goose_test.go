@@ -11,10 +11,6 @@ import (
 // prompt/busy detection, options marshalling, and identity gates.
 
 func TestBuildGooseCommand_BareName(t *testing.T) {
-	oldCache := userConfigCache
-	defer func() { userConfigCache = oldCache }()
-	userConfigCache = &UserConfig{}
-
 	settings := DefaultGooseSettings()
 	args := BuildGooseCommand(settings, "/tmp/project", "")
 	if len(args) == 0 {
@@ -55,6 +51,28 @@ func TestBuildGooseCommand_Profile(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("BuildGooseCommand with profile=work should include --profile work, got %v", args)
+	}
+}
+
+func TestBuildGooseCommand_WhitespaceCommand(t *testing.T) {
+	settings := &GooseSettings{Command: "   "}
+	args := BuildGooseCommand(settings, "/tmp/project", "")
+	if len(args) == 0 {
+		t.Fatal("BuildGooseCommand with whitespace command returned empty")
+	}
+	if args[0] != "goose" {
+		t.Errorf("BuildGooseCommand with whitespace command args[0] = %q, want %q", args[0], "goose")
+	}
+}
+
+func TestBuildGooseCommand_EmptyCommand(t *testing.T) {
+	settings := &GooseSettings{Command: ""}
+	args := BuildGooseCommand(settings, "/tmp/project", "")
+	if len(args) == 0 {
+		t.Fatal("BuildGooseCommand with empty command returned empty")
+	}
+	if args[0] != "goose" {
+		t.Errorf("BuildGooseCommand with empty command args[0] = %q, want %q", args[0], "goose")
 	}
 }
 

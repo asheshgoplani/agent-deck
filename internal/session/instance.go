@@ -3169,13 +3169,7 @@ func (i *Instance) Start() error {
 	case i.Tool == "hermes":
 		command = i.buildHermesCommand(i.Command)
 	case i.Tool == "goose": // ponytail: new tool
-		settings := DefaultGooseSettings()
-		if cfg, _ := LoadUserConfig(); cfg != nil {
-			settings = &cfg.Goose
-			if settings.Command == "" {
-				settings = DefaultGooseSettings()
-			}
-		}
+		settings := GooseSettingsFromConfig()
 		args := BuildGooseCommand(settings, i.ProjectPath, "")
 		command = strings.Join(args, " ")
 	default:
@@ -3420,13 +3414,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	case i.Tool == "hermes":
 		command = i.buildHermesCommand(i.Command)
 	case i.Tool == "goose": // ponytail: new tool
-		settings := DefaultGooseSettings()
-		if cfg, _ := LoadUserConfig(); cfg != nil {
-			settings = &cfg.Goose
-			if settings.Command == "" {
-				settings = DefaultGooseSettings()
-			}
-		}
+		settings := GooseSettingsFromConfig()
 		args := BuildGooseCommand(settings, i.ProjectPath, "")
 		command = strings.Join(args, " ")
 	default:
