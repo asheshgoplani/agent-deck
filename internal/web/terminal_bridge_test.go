@@ -20,7 +20,7 @@ func TestTmuxAttachCommand_NoIgnoreSize(t *testing.T) {
 
 	cmd := tmuxAttachCommand("sess-1", "")
 
-	wantArgs := []string{"tmux", "attach-session", "-t", "sess-1"}
+	wantArgs := []string{"tmux", "-u", "attach-session", "-t", "sess-1"}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("unexpected args: got %v want %v", cmd.Args, wantArgs)
 	}
@@ -31,7 +31,7 @@ func TestTmuxAttachCommandUsesSocketFromTMUXEnv(t *testing.T) {
 
 	cmd := tmuxAttachCommand("sess-2", "")
 
-	wantArgs := []string{"tmux", "-S", "/tmp/tmux-test.sock", "attach-session", "-t", "sess-2"}
+	wantArgs := []string{"tmux", "-S", "/tmp/tmux-test.sock", "-u", "attach-session", "-t", "sess-2"}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("unexpected args with TMUX env: got %v want %v", cmd.Args, wantArgs)
 	}
@@ -56,7 +56,7 @@ func TestTmuxAttachCommand_SocketNameOverridesEnv(t *testing.T) {
 
 	cmd := tmuxAttachCommand("agentdeck-foo", "agent-deck")
 
-	wantArgs := []string{"tmux", "-L", "agent-deck", "attach-session", "-t", "agentdeck-foo"}
+	wantArgs := []string{"tmux", "-L", "agent-deck", "-u", "attach-session", "-t", "agentdeck-foo"}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("socket name must take precedence over $TMUX env\n got:  %v\n want: %v", cmd.Args, wantArgs)
 	}
@@ -235,7 +235,7 @@ func TestTmuxAttachCommand_WhitespaceSocketNameFallsBackToEnv(t *testing.T) {
 
 	cmd := tmuxAttachCommand("sess-3", "   \t")
 
-	wantArgs := []string{"tmux", "-S", "/tmp/tmux-test.sock", "attach-session", "-t", "sess-3"}
+	wantArgs := []string{"tmux", "-S", "/tmp/tmux-test.sock", "-u", "attach-session", "-t", "sess-3"}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("whitespace-only socket name must fall through to legacy TMUX env\n got:  %v\n want: %v", cmd.Args, wantArgs)
 	}

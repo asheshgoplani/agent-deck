@@ -303,7 +303,13 @@ func tmuxAttachCommand(sessionName, socketName string) *exec.Cmd {
 	// for ALL attached clients (Ghostty, iTerm) — the dots-in-window symptom.
 	// With largest in effect, every client sees content sized to the biggest
 	// viewer; smaller clients see a clipped portion rather than dot-filled void.
-	cmd := tmuxCommand(socketName, "attach-session", "-t", sessionName)
+	// `-u` forces UTF-8 output regardless of the daemon's locale. Same class of
+	// bug as the TERM handling below: when the web daemon runs under launchd/
+	// systemd its environment carries no LANG/LC_*, so tmux treats this client as
+	// non-UTF-8 and downgrades every non-ASCII glyph (⏵, box-drawing, spinners)
+	// to '_' on the wire — the browser/mobile terminal then shows '_' where the
+	// agent drew Unicode, while tmux's own buffer (capture-pane) stays correct.
+	cmd := tmuxCommand(socketName, "-u", "attach-session", "-t", sessionName)
 	// Guarantee a usable TERM for the attach client. When the web daemon runs
 	// under launchd/systemd its environment carries no TERM, and a tmux attach
 	// client with an empty/unset TERM aborts with "open terminal failed:
