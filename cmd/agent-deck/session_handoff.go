@@ -52,21 +52,9 @@ func handleSessionHandoff(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	if err := session.ValidateHandoffTargetTool(*targetTool); err != nil {
-		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-
-	// Shares ResolveContinuationPrompt with the autonomous budget handoff, so a
-	// curated PROMPT.md left by a wrap-up is honored here too instead of being
-	// silently ignored in favour of the raw transcript.
-	promptPath := session.HandoffPromptPath(inst.ID)
-	if *ignoreAgentPrompt {
-		promptPath = ""
-	}
-	resolved, err := session.ResolveContinuationPrompt(inst, *targetTool, promptPath, *maxChars)
+	resolved, err := resolveSessionHandoff(inst, *targetTool, *ignoreAgentPrompt, *maxChars)
 	if err != nil {
-		out.Error(fmt.Sprintf("build handoff prompt: %v", err), ErrCodeInvalidOperation)
+		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 	prompt, info := resolved.Text, resolved.Info
@@ -99,11 +87,35 @@ func handleSessionHandoff(profile string, args []string) {
 		fmt.Println(prompt)
 	}
 	if resolved.Source == session.ContinuationSourceAgent {
-		fmt.Fprintf(os.Stderr, "handoff: using the agent's curated prompt from %s (pass --ignore-agent-prompt to rebuild from the transcript)\n", promptPath)
+		fmt.Fprintf(os.Stderr, "handoff: using the agent's curated prompt from %s (pass --ignore-agent-prompt to rebuild from the transcript)\n", session.HandoffPromptPath(inst.ID))
 	} else {
 		fmt.Fprintf(os.Stderr, "handoff: %d/%d messages included (truncated=%v, max %d chars) from %s\n",
 			info.IncludedCount, info.MessageCount, info.Truncated, info.MaxChars, info.TranscriptPath)
 	}
+}
+
+// resolveSessionHandoff validates the requested target tool and resolves the
+// continuation prompt for a session, honoring --ignore-agent-prompt by
+// suppressing the curated PROMPT.md lookup. It shares
+// session.ResolveContinuationPrompt with the autonomous budget handoff so a
+// curated PROMPT.md left by a wrap-up is honored here too instead of being
+// silently ignored in favour of the raw transcript. Split out of
+// handleSessionHandoff so the flag routing (target-tool validation, the
+// --ignore-agent-prompt path suppression, and computing the curated path from
+// inst.ID) is unit-testable without os.Exit or a loaded profile.
+func resolveSessionHandoff(inst *session.Instance, targetTool string, ignoreAgentPrompt bool, maxChars int) (session.ContinuationPrompt, error) {
+	if err := session.ValidateHandoffTargetTool(targetTool); err != nil {
+		return session.ContinuationPrompt{}, err
+	}
+	var promptPath string
+	if inst != nil && !ignoreAgentPrompt {
+		promptPath = session.HandoffPromptPath(inst.ID)
+	}
+	resolved, err := session.ResolveContinuationPrompt(inst, targetTool, promptPath, maxChars)
+	if err != nil {
+		return session.ContinuationPrompt{}, fmt.Errorf("build handoff prompt: %v", err)
+	}
+	return resolved, nil
 }
 
 // samePath reports whether two paths refer to the same file, following
