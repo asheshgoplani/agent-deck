@@ -1774,6 +1774,41 @@ func (i *Instance) buildPiCommand(baseCommand string) string {
 	)
 }
 
+// ompAgentDeckSessionDirExpr mirrors piAgentDeckSessionDirExpr for omp
+// (oh-my-pi), which stores sessions under ~/.omp. Same target-side $HOME
+// rationale as the Pi variant.
+func ompAgentDeckSessionDirExpr(instanceID string) string {
+	return "${HOME}/.omp/agent-deck/" + shellescape.Quote(instanceID)
+}
+
+// buildOmpCommand builds the launch command for omp (oh-my-pi), a Pi fork.
+// Same strategy as buildPiCommand: scope the session directory to this Agent
+// Deck instance and launch with --continue so restarts resume in place.
+// Fork support is intentionally not wired for omp (Pi-only for now).
+func (i *Instance) buildOmpCommand(baseCommand string) string {
+	if i.Tool != "omp" {
+		return baseCommand
+	}
+
+	envPrefix := i.buildEnvSourceCommand()
+	cmd := strings.TrimSpace(baseCommand)
+	if cmd == "" {
+		cmd = "omp"
+	}
+
+	sessionDir := ompAgentDeckSessionDirExpr(i.ID)
+	quotedInstanceID := shellescape.Quote(i.ID)
+	quotedProfile := shellescape.Quote(sessionProfileEnvValue())
+
+	return envPrefix + fmt.Sprintf(
+		"session_dir=%s; mkdir -p \"$session_dir\" && AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --continue --session-dir \"$session_dir\"",
+		sessionDir,
+		quotedInstanceID,
+		quotedProfile,
+		cmd,
+	)
+}
+
 func (i *Instance) buildPiForkCommandForTarget(target *Instance, baseCommand string) (string, error) {
 	if target == nil {
 		return "", fmt.Errorf("cannot build Pi fork command: target instance is nil")
@@ -3429,6 +3464,8 @@ func (i *Instance) Start() error {
 			break
 		}
 		command = i.buildPiCommand(i.Command)
+	case i.Tool == "omp":
+		command = i.buildOmpCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
 	case i.Tool == "cursor":
@@ -3696,6 +3733,8 @@ func (i *Instance) StartWithMessage(message string) error {
 			break
 		}
 		command = i.buildPiCommand(i.Command)
+	case i.Tool == "omp":
+		command = i.buildOmpCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
 	case i.Tool == "crush":
@@ -6785,6 +6824,8 @@ func (i *Instance) restart(env map[string]string) error {
 			i.CodexStartedAt = time.Now().UnixMilli()
 		case i.Tool == "pi":
 			command = i.buildPiCommand(i.Command)
+		case i.Tool == "omp":
+			command = i.buildOmpCommand(i.Command)
 		case i.Tool == "copilot":
 			command = i.buildCopilotCommand(i.Command)
 		case i.Tool == "crush":
