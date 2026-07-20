@@ -113,6 +113,29 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			PromptPatterns: []string{`re:(?m)^\s*pi>\s*`},
 			SpinnerChars:   []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
 		}
+	case "omp":
+		// omp (oh-my-pi, a Pi fork with a Rust TUI). Patterns derived from
+		// captured pane fixtures in testdata/omp/ (omp v17.0.1, see
+		// patterns_omp_test.go for the capture conditions).
+		//
+		// Busy is a spinner line "<braille> <verb> ⟦esc⟧" above the input box.
+		// The verb is model-generated per task ("Working…", "Running echo
+		// probe", …) so the ONLY stable busy token is the "⟦esc⟧" interrupt
+		// hint. It must stay exact: finished tool calls leave "⟦Wall: 0.05s |
+		// Timeout: 300s⟧" timing lines in scrollback, so a bare "⟦" would
+		// false-positive on idle panes.
+		//
+		// The input box ("╭── π  > …") is visible in every state, including
+		// busy — same structural overlap as codewhale above; busy precedence
+		// in the detector is what keeps status reads correct.
+		return &RawPatterns{
+			BusyPatterns: []string{
+				"⟦esc⟧", // interrupt hint: present while thinking AND while tools execute
+				`re:(?m)^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s`, // spinner-led status line (backup)
+			},
+			PromptPatterns: []string{"╭── π "},
+			SpinnerChars:   []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+		}
 	case "copilot":
 		// GitHub Copilot CLI (the standalone `copilot` binary, Issue #556).
 		// Patterns are based on real-world Copilot CLI TUI transcripts.

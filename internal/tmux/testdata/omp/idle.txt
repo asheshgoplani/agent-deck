@@ -1,0 +1,44 @@
+
+╭─── omp v17.0.1 ──────────────────────────────────────────────────────────────────────────────────╮
+│                          │ Tips                                                                  │
+│      Welcome back!       │ # for prompt actions                                                  │
+│                          │ / for commands                                                        │
+│       ▀██████████▀       │ ! to run bash                                                         │
+│        ╘██    ██         │ $ to run python                                                       │
+│         ██    ██         │ ───────────────────────────────────────────────────────────────────── │
+│         ██    ██         │ LSP Servers                                                           │
+│        ▄██▄  ▄██▄        │ No LSP servers                                                        │
+│                          │                                                                       │
+│     Claude Opus 4.8      │                                                                       │
+│        anthropic         │                                                                       │
+│                          │ ───────────────────────────────────────────────────────────────────── │
+│                          │ Recent sessions                                                       │
+│                          │ No recent sessions                                                    │
+│                          │                                                                       │
+│                          │                                                                       │
+│                          │                                                                       │
+│                          │                                                                       │
+╰──────────────────────────┴───────────────────────────────────────────────────────────────────────╯
+ Tip: Press alt+p (or /switch) to switch provider, and ctrl+p to cycle role models smol -> slow ->
+      etc
+
+ Connected: svc-a:svc-a, svc-b:svc-b. Failed: svc-c:svc-c: HTTP 401: {"jsonrpc":"2.0","id":null,"error":{"code":-32001,"message":"missing_…; svc-d:svc-d: HTTP 401:
+ {"error":"invalid_token","error_description":"Missing or invalid acce…; svc-e:svc-e: HTTP 401: Unauthorized [WWW-Authenticate: Bearer
+ resource_metadata="https://svc…; svc-f:svc-f: HTTP 401: No token provided, please provide a valid API token. View the documen…; svc-g:svc-g: HTTP 401:
+ {"error":"invalid_token","error_description":"Missing or invalid acce…. Still connecting: svc-h:svc-h, svc-i:svc-i, svc-j:svc-j, svc-j:svc-k, svc-l:svc-l…
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Update Available
+ New version 17.0.5 is available. Run: omp update
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ MCP finished with failures. Connected: svc-a:svc-a, svc-b:svc-b, svc-i:svc-i, svc-j:svc-j, svc-j:svc-k. Failed: svc-h:svc-h: HTTP 400: bad request:
+ Authorization header is badly formatted  [WWW-Authentica…; svc-c:svc-c: HTTP 401: {"jsonrpc":"2.0","id":null,"error":{"code":-32001,"message":"missing_…; svc-d:svc-d: HTTP
+ 401: {"error":"invalid_token","error_description":"Missing or invalid acce…; svc-e:svc-e: HTTP 401: Unauthorized [WWW-Authenticate: Bearer
+ resource_metadata="https://svc…; svc-f:svc-f: HTTP 401: No token provided, please provide a valid API token. View the documen…; svc-g:svc-g: HTTP 401:
+ {"error":"invalid_token","error_description":"Missing or invalid acce…; svc-l:svc-l: HTTP 401: {"error":"Authentication required"} [WWW-Authenticate: Bearer resourc…
+
+╭── π  > ⬢ Opus 4.8 · ◒ high > 🗑 omp-probe-KJPDw9 > ◫ 5.7%/1M ⟲ > (sub) ▶────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+╰─                                                                                                                                                                              ─╯
+
+
