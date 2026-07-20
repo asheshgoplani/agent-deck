@@ -1467,6 +1467,50 @@ func (s *StateDB) WriteHandoffState(id, state string, triggeredAt time.Time) err
 	})
 }
 
+// WriteHandoffGeneration records how many autonomous handoffs produced this
+// session (0 = human-started). It shares the tool_data blob with the handoff
+// state, so it uses the same targeted json_set UPDATE and cannot clobber
+// neighbouring keys.
+//
+// This is persisted rather than in-memory on purpose: it is the only bound on
+// the autonomous fork chain, and an in-memory counter would reset on every TUI
+// restart, letting a runaway chain resume from zero.
+func (s *StateDB) WriteHandoffGeneration(id string, generation int) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(
+			`UPDATE instances
+			   SET tool_data = json_set(
+			         COALESCE(tool_data, '{}'),
+			         '$.handoff_generation', ?)
+			 WHERE id = ?`,
+			generation, id,
+		)
+		return err
+	})
+}
+
+// ReadHandoffGeneration returns the persisted handoff generation for an
+// instance. An unset key or missing row yields (0, nil): a session nobody
+// handed off is generation 0.
+func (s *StateDB) ReadHandoffGeneration(id string) (int, error) {
+	var gen sql.NullInt64
+	err := s.db.QueryRow(
+		`SELECT json_extract(tool_data, '$.handoff_generation')
+		   FROM instances WHERE id = ?`,
+		id,
+	).Scan(&gen)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if !gen.Valid {
+		return 0, nil
+	}
+	return int(gen.Int64), nil
+}
+
 // ReadHandoffState returns the persisted handoff state and trigger time for an
 // instance. An unset key yields ("", zero time, nil) so a fresh session reads
 // as HandoffNormal. Missing row also returns ("", zero time, nil).

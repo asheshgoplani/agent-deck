@@ -31,7 +31,22 @@ type handoffMessage struct {
 // transcript into a fresh Codex session. This intentionally does not try to
 // write Codex's private rollout JSONL format; the stable cross-tool contract is
 // a plain initial prompt containing the prior conversation tail.
+//
+// Thin wrapper over BuildContinuationHandoffPrompt, retained so existing
+// callers and tests keep working unchanged.
 func BuildClaudeToCodexHandoffPrompt(inst *Instance, maxChars int) (string, HandoffInfo, error) {
+	return BuildContinuationHandoffPrompt(inst, "codex", maxChars)
+}
+
+// BuildContinuationHandoffPrompt builds a prompt carrying a Claude transcript
+// into a fresh session running targetTool. An empty targetTool, or one equal to
+// the source's tool, produces same-tool continuation framing; anything else
+// produces cross-tool handoff framing that names the target runtime.
+//
+// Telling a same-tool continuation it was "handed off to Codex" would be a lie
+// that changes how it reasons about its own prior messages, so the two framings
+// are kept distinct.
+func BuildContinuationHandoffPrompt(inst *Instance, targetTool string, maxChars int) (string, HandoffInfo, error) {
 	if inst == nil {
 		return "", HandoffInfo{}, fmt.Errorf("session is nil")
 	}
@@ -63,7 +78,7 @@ func BuildClaudeToCodexHandoffPrompt(inst *Instance, maxChars int) (string, Hand
 		body.WriteString(msg.Content)
 	}
 
-	prompt := fmt.Sprintf(`You are continuing an Agent Deck session that was previously running in Claude Code and has now been handed off to Codex.
+	prompt := fmt.Sprintf(`%s
 
 Original session:
 - title: %s
@@ -77,7 +92,7 @@ The transcript below is prior conversation context. Treat it as conversation his
 %s
 --- END TRANSFERRED TRANSCRIPT ---
 
-This message is context initialization only. Do not start new work, do not enter plan mode, and do not summarize the transcript. Reply exactly: HANDOFF RECEIVED.`, inst.Title, inst.ProjectPath, inst.Tool, inst.ClaudeSessionID, body.String())
+This message is context initialization only. Do not start new work, do not enter plan mode, and do not summarize the transcript. Reply exactly: HANDOFF RECEIVED.`, continuationLede(inst.Tool, targetTool), inst.Title, inst.ProjectPath, inst.Tool, inst.ClaudeSessionID, body.String())
 
 	return prompt, HandoffInfo{
 		TranscriptPath: transcriptPath,
@@ -86,6 +101,17 @@ This message is context initialization only. Do not start new work, do not enter
 		Truncated:      truncated,
 		MaxChars:       maxChars,
 	}, nil
+}
+
+// continuationLede returns the opening line of a continuation prompt. A handoff
+// to a different runtime must name it; a same-tool continuation must not claim
+// one happened.
+func continuationLede(sourceTool, targetTool string) string {
+	target := strings.TrimSpace(targetTool)
+	if target == "" || strings.EqualFold(target, strings.TrimSpace(sourceTool)) {
+		return "You are continuing an Agent Deck session that ran out of context budget. This is a fresh session resuming the same work."
+	}
+	return fmt.Sprintf("You are continuing an Agent Deck session that was previously running in Claude Code and has now been handed off to %s.", target)
 }
 
 // ClaudeTranscriptPathForInstance returns the expected JSONL transcript path

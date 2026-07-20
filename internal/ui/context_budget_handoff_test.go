@@ -24,6 +24,34 @@ func TestIsAutonomousSession(t *testing.T) {
 	}
 }
 
+// The effective target decides which spawn path runs: same tool forks (which
+// inherits everything), a different tool must go through the create path. An
+// unset or invalid target must fall back to the source's own tool rather than
+// silently spawning a shell.
+func TestEffectiveHandoffTargetTool(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		instTool string
+		target   string
+		want     string
+	}{
+		{name: "unset keeps source tool", instTool: "claude", target: "", want: "claude"},
+		{name: "same tool keeps source tool", instTool: "claude", target: "claude", want: "claude"},
+		{name: "different tool switches", instTool: "claude", target: "codex", want: "codex"},
+		{name: "case-insensitive same tool", instTool: "claude", target: "Claude", want: "claude"},
+		{name: "invalid target falls back to source", instTool: "claude", target: "codex --yolo", want: "claude"},
+		{name: "unknown target falls back to source", instTool: "claude", target: "nope-not-a-tool", want: "claude"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := session.ContextBudgetSettings{HandoffTargetTool: tc.target}
+			got := effectiveHandoffTargetTool(&session.Instance{Tool: tc.instTool}, cfg)
+			if got != tc.want {
+				t.Errorf("effectiveHandoffTargetTool = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHandoffAgentIdle(t *testing.T) {
 	if !handoffAgentIdle(&session.Instance{Status: session.StatusWaiting}) {
 		t.Errorf("waiting session should be idle")

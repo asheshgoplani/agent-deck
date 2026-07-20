@@ -1147,6 +1147,35 @@ type ContextBudgetSettings struct {
 	// HandoffTimeoutSeconds is the failsafe window for the wrap-up to produce
 	// its PROMPT.md (default: 300).
 	HandoffTimeoutSeconds int `toml:"handoff_timeout_seconds,omitzero"`
+	// HandoffTargetTool is the tool the continuation session runs. Empty (the
+	// default) continues with the source's own tool. Must be a bare tool name
+	// ("codex"), never a command line: an unrecognized name silently maps to
+	// "shell" at spawn, so it is validated by ValidateHandoffTargetTool.
+	HandoffTargetTool string `toml:"handoff_target_tool,omitempty"`
+	// MaxHandoffChain bounds how many successors one human-started session may
+	// produce (default: 3). Beyond it the failsafe hard-stops instead of
+	// forking, so a session looping into its own ceiling cannot spawn an
+	// endless chain.
+	MaxHandoffChain int `toml:"max_handoff_chain,omitzero"`
+}
+
+// ValidateHandoffTargetTool reports whether a configured handoff target tool
+// will actually spawn that tool. An empty name is valid and means "same tool as
+// the source".
+//
+// This exists because the spawn path matches tool names EXACTLY and silently
+// falls back to "shell" for anything it does not recognize — so a typo or a
+// name carrying flags would turn a handoff into a dead shell pane with the
+// continuation prompt typed into it. Fail at config load instead.
+func ValidateHandoffTargetTool(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return nil
+	}
+	if currentRegistry().IsBuiltin(trimmed) || GetToolDef(trimmed) != nil {
+		return nil
+	}
+	return fmt.Errorf("context_budget.handoff_target_tool %q is not a known tool: use a bare tool name (e.g. \"codex\"), not a command line", name)
 }
 
 // GetEnabled returns Enabled, defaulting to true when unset.
@@ -1180,6 +1209,9 @@ func (c *UserConfig) GetContextBudget() ContextBudgetSettings {
 	}
 	if cfg.HandoffTimeoutSeconds == 0 {
 		cfg.HandoffTimeoutSeconds = 300
+	}
+	if cfg.MaxHandoffChain == 0 {
+		cfg.MaxHandoffChain = 3
 	}
 	return cfg
 }

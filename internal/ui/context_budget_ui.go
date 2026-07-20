@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
@@ -90,6 +91,9 @@ func handoffAgentIdle(inst *session.Instance) bool {
 // handoffDir returns the per-session handoff directory <data-dir>/handoff/<id>.
 // The "handoff" marker keeps a pre-XDG ~/.agent-deck/handoff in use when it
 // exists, so sessions mid-handoff across the layout migration still resolve.
+//
+// The PROMPT.md path inside it is derived by session.HandoffPromptPath, which
+// the CLI also uses; keep this in agreement with it.
 func handoffDir(id string) string {
 	dir, err := agentpaths.EffectiveDataPath(filepath.Join("handoff", id), "handoff")
 	if err != nil {
@@ -102,6 +106,29 @@ func handoffDir(id string) string {
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
+}
+
+// effectiveHandoffTargetTool returns the tool the continuation session should
+// run. An unset target, one naming the source's own tool, or one that would not
+// resolve to a real tool all fall back to the source's tool.
+//
+// The fallback matters: the spawn path maps an unrecognized name to "shell", so
+// an invalid target would silently replace an agent handoff with a dead shell
+// pane. Config load rejects bad values loudly; this is the belt-and-braces stop
+// for anything that reaches here anyway.
+func effectiveHandoffTargetTool(inst *session.Instance, cfg session.ContextBudgetSettings) string {
+	target := strings.TrimSpace(cfg.HandoffTargetTool)
+	if target == "" || strings.EqualFold(target, inst.Tool) {
+		return inst.Tool
+	}
+	if err := session.ValidateHandoffTargetTool(target); err != nil {
+		uiLog.Warn("handoff_target_tool_invalid",
+			slog.String("target", target),
+			slog.String("fallback", inst.Tool),
+			slog.Any("err", err))
+		return inst.Tool
+	}
+	return target
 }
 
 // evaluateContextBudgetHandoff drives the per-session handoff state machine for
@@ -163,10 +190,15 @@ func (h *Home) evaluateContextBudgetHandoff(instances []*session.Instance) {
 			h.requestWrap(inst)
 			_ = db.WriteHandoffState(inst.ID, string(dec.Next), now)
 		case session.ActionFork:
-			h.forkContinuation(inst)
+			h.forkContinuation(inst, "fork")
 			_ = db.WriteHandoffState(inst.ID, string(dec.Next), h.handoffTriggeredAt[inst.ID])
 		case session.ActionFailsafe:
-			h.failsafePause(inst)
+			// The ceiling/timeout path still attempts a continuation: the
+			// transcript fallback needs nothing from the (by definition
+			// unresponsive) agent, and forkContinuation falls through to
+			// failsafePause when neither prompt source is usable or the chain
+			// cap is reached.
+			h.forkContinuation(inst, "failsafe")
 			_ = db.WriteHandoffState(inst.ID, string(dec.Next), h.handoffTriggeredAt[inst.ID])
 		default:
 			_ = db.WriteHandoffState(inst.ID, string(dec.Next), h.handoffTriggeredAt[inst.ID])
@@ -193,12 +225,43 @@ func (h *Home) requestWrap(inst *session.Instance) {
 	})
 }
 
-// forkContinuation reads PROMPT.md, forks a continuation session inheriting the
-// old session's tool/profile/path/group/parent/worktree, seeds it with a short
-// preamble + the handoff prompt, registers it, and archives the old session.
-// On any failure it falls back to failsafePause (no silent data loss).
-func (h *Home) forkContinuation(inst *session.Instance) {
+// forkContinuation creates the continuation session and archives the old one.
+//
+// The continuation prompt comes from ResolveContinuationPrompt: the agent's
+// curated PROMPT.md when it wrote one, otherwise a prompt rebuilt from the
+// on-disk transcript. That fallback is why a wedged agent no longer dead-ends —
+// only a session with neither artifact falls through to failsafePause.
+//
+// Same-tool continuations fork (inheriting tool/profile/path/group/parent/
+// worktree); a configured cross-tool target goes through the create path
+// instead, since fork is tool-preserving by construction.
+//
+// reason distinguishes the normal idle fork from the ceiling/timeout failsafe;
+// it only affects logging and alert loudness.
+func (h *Home) forkContinuation(inst *session.Instance, reason string) {
 	promptPath := filepath.Join(handoffDir(inst.ID), "PROMPT.md")
+	cfg := session.GetContextBudgetSettings()
+	targetTool := effectiveHandoffTargetTool(inst, cfg)
+
+	// The chain cap is the only brake on a session that loops into its own
+	// ceiling and forks a successor that does the same. Read the persisted
+	// generation so a TUI restart cannot reset the count.
+	generation := 0
+	if db := statedb.GetGlobal(); db != nil {
+		if g, err := db.ReadHandoffGeneration(inst.ID); err == nil {
+			generation = g
+		}
+	}
+	if !session.HandoffChainAllows(generation, cfg) {
+		uiLog.Error("context_budget_chain_cap",
+			slog.String("session", inst.Title),
+			slog.String("id", inst.ID),
+			slog.Int("generation", generation),
+			slog.Int("max_chain", cfg.MaxHandoffChain),
+			slog.String("action", "paused; chain cap reached, manual handoff required"))
+		h.failsafePause(inst)
+		return
+	}
 
 	// Inherit worktree fields when the source ran in a worktree.
 	var opts *session.ClaudeOptions
@@ -211,14 +274,34 @@ func (h *Home) forkContinuation(inst *session.Instance) {
 	}
 
 	safego.Go(uiLog, "context_budget_fork", func() {
-		data, err := os.ReadFile(promptPath)
+		resolved, err := session.ResolveContinuationPrompt(inst, targetTool, promptPath, session.DefaultHandoffMaxChars)
 		if err != nil {
-			uiLog.Warn("handoff_prompt_read_failed", slog.String("id", inst.ID), slog.Any("err", err))
+			uiLog.Warn("handoff_prompt_unresolvable",
+				slog.String("id", inst.ID),
+				slog.String("reason", reason),
+				slog.Any("err", err))
 			h.failsafePause(inst)
 			return
 		}
+		// A transcript-sourced prompt means the agent never produced a curated
+		// wrap-up: continuity happens, but the human must know it was degraded.
+		if resolved.Source == session.ContinuationSourceTranscript {
+			uiLog.Warn("handoff_prompt_from_transcript",
+				slog.String("session", inst.Title),
+				slog.String("id", inst.ID),
+				slog.String("reason", reason),
+				slog.Int("generation", generation+1),
+				slog.Int("max_chain", cfg.MaxHandoffChain),
+				slog.Bool("truncated", resolved.Info.Truncated))
+			h.notifyBudgetCrossing(inst, session.BudgetOver)
+		}
 		seed := "You are a continuation of a previous session that reached its context budget. " +
-			"Resume from this handoff prompt:\n\n" + string(data)
+			"Resume from this handoff prompt:\n\n" + resolved.Text
+
+		if !strings.EqualFold(targetTool, inst.Tool) {
+			h.spawnCrossToolContinuation(inst, targetTool, seed, generation+1)
+			return
+		}
 
 		cmd := h.forkSessionCmdWithOptions(
 			inst,
@@ -242,31 +325,103 @@ func (h *Home) forkContinuation(inst *session.Instance) {
 			return
 		}
 
-		// Register the new (already-started-in-tmux) session via the same
-		// persist+reload path the reload branch uses to inject a forked session
-		// from a non-UI goroutine. The reload rebuilds the tree on the UI thread.
-		h.instancesMu.Lock()
-		h.instances = append(h.instances, fm.instance)
-		h.instanceByID[fm.instance.ID] = fm.instance
-		h.instancesMu.Unlock()
-		h.forceSaveInstances()
-		if h.storageWatcher != nil {
-			h.storageWatcher.TriggerReload()
-		}
-
-		// Seed the continuation prompt once the new pane is live.
-		time.Sleep(2 * time.Second)
-		if ts := fm.instance.GetTmuxSession(); ts != nil {
-			_ = ts.SendKeysAndEnter(seed)
-		}
-
-		// Archive (pause) the old session for history — targeted, idempotent.
-		_ = inst.Kill()
-		inst.ArchivedAt = time.Now().UTC()
-		if db := statedb.GetGlobal(); db != nil {
-			_ = db.SetArchived(inst.ID, inst.ArchivedAt)
-		}
+		h.registerContinuation(inst, fm.instance, seed, generation+1)
 	})
+}
+
+// registerContinuation publishes a freshly-spawned continuation session, seeds
+// it with the handoff prompt, records its generation, and archives the source.
+//
+// Spawning off the UI loop means the normal sessionCreated/sessionForked
+// handlers never run, so registration is done by hand here — the same
+// persist+reload path the reload branch uses to inject a session from a non-UI
+// goroutine. The reload rebuilds the tree on the UI thread.
+func (h *Home) registerContinuation(source, next *session.Instance, seed string, generation int) {
+	h.instancesMu.Lock()
+	h.instances = append(h.instances, next)
+	h.instanceByID[next.ID] = next
+	h.instancesMu.Unlock()
+	h.forceSaveInstances()
+	if h.storageWatcher != nil {
+		h.storageWatcher.TriggerReload()
+	}
+
+	// Persist the successor's generation before it can ever fork itself, so a
+	// crash between here and its own handoff cannot reset the chain bound.
+	if db := statedb.GetGlobal(); db != nil {
+		_ = db.WriteHandoffGeneration(next.ID, generation)
+	}
+
+	// Seed the continuation prompt once the new pane is live.
+	time.Sleep(2 * time.Second)
+	if ts := next.GetTmuxSession(); ts != nil {
+		_ = ts.SendKeysAndEnter(seed)
+	}
+
+	// Archive (pause) the old session for history — targeted, idempotent.
+	_ = source.Kill()
+	source.ArchivedAt = time.Now().UTC()
+	if db := statedb.GetGlobal(); db != nil {
+		_ = db.SetArchived(source.ID, source.ArchivedAt)
+	}
+}
+
+// spawnCrossToolContinuation creates the continuation with a DIFFERENT tool.
+//
+// Fork is tool-preserving by construction, so a tool switch has to go through
+// the create path. targetTool is passed as the bare tool name because
+// createSessionTool matches commands exactly — it maps "cursor" to the
+// "cursor agent" command itself, and anything it does not recognize silently
+// becomes a shell, which is why the name is validated before reaching here.
+//
+// tempID is empty on purpose: there is no placeholder row to reconcile when the
+// create runs off the UI loop.
+func (h *Home) spawnCrossToolContinuation(inst *session.Instance, targetTool, seed string, generation int) {
+	worktreePath, worktreeRepo, worktreeBranch := inst.WorktreePath, inst.WorktreeRepoRoot, inst.WorktreeBranch
+
+	cmd := h.createSessionInGroupWithWorktreeAndOptions(
+		inst.Title+" (cont. "+targetTool+")",
+		inst.ProjectPath,
+		targetTool,
+		inst.GroupPath,
+		worktreePath, worktreeRepo, worktreeBranch,
+		false, // geminiYoloMode
+		false, // sandboxEnabled
+		nil,   // toolOptionsJSON
+		nil,   // claudeExtraArgs
+		"",    // claudeStartQuery — the handoff prompt is sent after the pane is live
+		"",    // launchModelID
+		false, // multiRepoEnabled
+		nil,   // additionalPaths
+		inst.ParentSessionID,
+		inst.ParentProjectPath,
+		"", // tempID
+		false,
+	)
+	if cmd == nil {
+		h.failsafePause(inst)
+		return
+	}
+	msg := cmd()
+	cm, ok := msg.(sessionCreatedMsg)
+	if !ok || cm.err != nil || cm.instance == nil {
+		uiLog.Warn("handoff_cross_tool_create_failed",
+			slog.String("id", inst.ID),
+			slog.String("target_tool", targetTool))
+		h.failsafePause(inst)
+		return
+	}
+	if cm.instance.Tool != targetTool {
+		// The create path degrades an unrecognized tool to "shell"; a shell pane
+		// is not a continuation, so refuse rather than hand off into a dead end.
+		uiLog.Error("handoff_cross_tool_degraded",
+			slog.String("id", inst.ID),
+			slog.String("target_tool", targetTool),
+			slog.String("actual_tool", cm.instance.Tool))
+		h.failsafePause(inst)
+		return
+	}
+	h.registerContinuation(inst, cm.instance, seed, generation)
 }
 
 // failsafePause stops the old session (no data loss) and raises the loudest
