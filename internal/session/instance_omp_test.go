@@ -55,3 +55,34 @@ func TestBuildOmpCommand_DefaultsBinary(t *testing.T) {
 		t.Errorf("empty command must default to omp binary, got %q", got)
 	}
 }
+
+func TestResolveDynamicToolPreservesOmp(t *testing.T) {
+	// omp drives other agent CLIs (codex, claude) as subprocesses; child
+	// detection must never rewrite its identity.
+	for _, detected := range []string{"codex", "claude", "gemini", "opencode", "shell"} {
+		if got := resolveDynamicTool("omp", detected, false); got != "omp" {
+			t.Errorf("resolveDynamicTool(omp, %q) = %q, want omp", detected, got)
+		}
+	}
+}
+
+func TestResolveDynamicToolUpstreamBehaviorUnchanged(t *testing.T) {
+	cases := []struct {
+		current, detected string
+		preserveCustom    bool
+		want              string
+	}{
+		{"shell", "codex", false, "codex"},
+		{"claude", "codex", false, "codex"},
+		{"codex", "shell", false, "shell"},
+		{"pi", "shell", false, "pi"},
+		{"my-codex", "codex", true, "my-codex"},
+		{"", "claude", false, "claude"},
+	}
+	for _, c := range cases {
+		if got := resolveDynamicTool(c.current, c.detected, c.preserveCustom); got != c.want {
+			t.Errorf("resolveDynamicTool(%q, %q, %v) = %q, want %q",
+				c.current, c.detected, c.preserveCustom, got, c.want)
+		}
+	}
+}

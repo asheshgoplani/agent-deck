@@ -1809,6 +1809,30 @@ func (i *Instance) buildOmpCommand(baseCommand string) string {
 	)
 }
 
+// resolveDynamicTool returns the tool identity an instance should carry after
+// dynamic detection reported detected, given its current identity. preserveCustom
+// is true when the instance carries a configured custom (non-builtin) tool name.
+// omp is pinned: it drives other agent CLIs (codex, claude) as subprocesses, so
+// child-process detection must never rewrite its identity.
+func resolveDynamicTool(current, detected string, preserveCustom bool) string {
+	if preserveCustom {
+		return current
+	}
+	if current == "omp" {
+		return current
+	}
+	switch detected {
+	case "claude", "gemini", "opencode", "codex":
+		return detected
+	case "shell":
+		switch current {
+		case "", "shell", "claude", "gemini", "opencode", "codex":
+			return detected
+		}
+	}
+	return current
+}
+
 func (i *Instance) buildPiForkCommandForTarget(target *Instance, baseCommand string) (string, error) {
 	if target == nil {
 		return "", fmt.Errorf("cannot build Pi fork command: target instance is nil")
@@ -4445,19 +4469,11 @@ func (i *Instance) UpdateStatus() error {
 	// "my-codex" should keep their configured identity even when tmux correctly
 	// detects the wrapped CLI as Codex.
 	if detectedTool := i.tmuxSession.DetectTool(); detectedTool != "" {
-		if !isBuiltinToolName(i.Tool) && GetToolDef(i.Tool) != nil {
-			// Preserve configured custom tool names.
-		} else {
-			switch detectedTool {
-			case "claude", "gemini", "opencode", "codex":
-				i.Tool = detectedTool
-			case "shell":
-				switch i.Tool {
-				case "", "shell", "claude", "gemini", "opencode", "codex":
-					i.Tool = detectedTool
-				}
-			}
-		}
+		i.Tool = resolveDynamicTool(
+			i.Tool,
+			detectedTool,
+			!isBuiltinToolName(i.Tool) && GetToolDef(i.Tool) != nil,
+		)
 	}
 
 	// Update session metadata tracking only for active/waiting sessions.
