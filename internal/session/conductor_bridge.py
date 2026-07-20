@@ -304,9 +304,12 @@ def discover_conductors() -> list[dict]:
             if meta_path.exists():
                 try:
                     with open(meta_path) as f:
-                        conductors.append(json.load(f))
+                        meta = json.load(f)
                 except (json.JSONDecodeError, IOError) as e:
                     log.warning("Failed to read %s: %s", meta_path, e)
+                    continue
+                meta["agent"] = meta.get("agent") or "claude"
+                conductors.append(meta)
     conductors.sort(key=lambda c: c.get("name", ""))
     return conductors
 
@@ -919,8 +922,14 @@ def _find_conductor_session_by_path(
     return (matches[0] if matches else None), False
 
 
-async def ensure_conductor_running(name: str, profile: str) -> bool:
-    """Ensure the conductor session exists and is running."""
+async def ensure_conductor_running(
+    name: str, profile: str, agent: str = "claude"
+) -> bool:
+    """Ensure the conductor session exists and is running.
+
+    ``agent`` is the agent-deck tool used when the session must be created
+    (from the conductor's meta.json ``"agent"`` field; defaults to claude).
+    """
     session_title = conductor_session_title(name)
     session_path = str(CONDUCTOR_DIR / name)
     loop = asyncio.get_running_loop()
@@ -1052,7 +1061,7 @@ async def ensure_conductor_running(name: str, profile: str) -> bool:
                 "-t",
                 session_title,
                 "-c",
-                "claude",
+                agent,
                 "-g",
                 "conductor",
                 "--title-lock",
@@ -1669,7 +1678,11 @@ def create_telegram_bot(config: dict):
                 cleaned_msg = stdout
 
         # Ensure conductor is running for this profile
-        if not await ensure_conductor_running(target_conductor["name"], target_profile):
+        if not await ensure_conductor_running(
+            target_conductor["name"],
+            target_profile,
+            target_conductor.get("agent") or "claude",
+        ):
             await message.answer(
                 f"[Could not start conductor for {target_profile}. Check agent-deck.]"
             )
@@ -2014,7 +2027,9 @@ def create_slack_app(config: dict):
         session_title = conductor_session_title(target["name"])
         profile = target["profile"]
 
-        if not await ensure_conductor_running(target["name"], profile):
+        if not await ensure_conductor_running(
+            target["name"], profile, target.get("agent") or "claude"
+        ):
             await _safe_say(
                 say,
                 text=f"[Could not start conductor {target['name']}. Check agent-deck.]",
@@ -2650,7 +2665,9 @@ def create_discord_bot(config: dict):
         session_title = conductor_session_title(target["name"])
         profile = target["profile"]
 
-        if not await ensure_conductor_running(target["name"], profile):
+        if not await ensure_conductor_running(
+            target["name"], profile, target.get("agent") or "claude"
+        ):
             await message.channel.send(
                 f"[Could not start conductor {target['name']}. Check agent-deck.]",
             )
@@ -2870,7 +2887,9 @@ async def heartbeat_loop(
                         heartbeat_msg = stdout
 
                 # Ensure conductor is running for this profile
-                if not await ensure_conductor_running(name, profile):
+                if not await ensure_conductor_running(
+                    name, profile, conductor.get("agent") or "claude"
+                ):
                     log.error(
                         "Heartbeat [%s]: conductor not running, skipping",
                         name,
@@ -3084,7 +3103,9 @@ async def main():
 
     # Pre-start all conductors so they're warm when messages arrive
     for c in conductors:
-        if await ensure_conductor_running(c["name"], c["profile"]):
+        if await ensure_conductor_running(
+            c["name"], c["profile"], c.get("agent") or "claude"
+        ):
             log.info("Conductor %s is running", c["name"])
         else:
             log.warning("Failed to pre-start conductor %s", c["name"])
