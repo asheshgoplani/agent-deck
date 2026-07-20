@@ -1822,7 +1822,7 @@ func resolveDynamicTool(current, detected string, preserveCustom bool) string {
 		return current
 	}
 	switch detected {
-	case "claude", "gemini", "opencode", "codex":
+	case "claude", "gemini", "opencode", "codex", "omp":
 		return detected
 	case "shell":
 		switch current {

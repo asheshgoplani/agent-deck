@@ -741,9 +741,15 @@ func SupportsHyperlinks() bool {
 }
 
 // Tool detection patterns (used by DetectTool for initial tool identification)
-var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "pi"}
+var toolDetectionOrder = []string{"claude", "gemini", "opencode", "omp", "codex", "copilot", "crush", "cursor", "hermes", "pi"}
 
 var toolDetectionPatterns = map[string][]*regexp.Regexp{
+	"omp": {
+		// omp (oh-my-pi) version banner, e.g. "╭─── omp v17.0.1". Must rank
+		// before codex: omp panes routinely show provider text like "openai"
+		// or "codex" that codex's loose patterns would otherwise claim.
+		regexp.MustCompile(`(?i)\bomp v\d+\.\d+\.\d+`),
+	},
 	"claude": {
 		// Avoid matching bare words like "claude-deck" in shell prompts/paths.
 		regexp.MustCompile(`(?i)\bclaude\s+code\b`),
@@ -820,10 +826,17 @@ func detectToolFromCommand(command string) string {
 			return "hermes"
 		case "pi":
 			return "pi"
+		case "omp":
+			return "omp"
 		}
 	}
 
 	switch {
+	// omp launch commands may name other tools in flags (e.g. --models
+	// claude-sonnet) or paths (~/.omp/agent-deck), so the token-boundary omp
+	// check must run before the loose substring matches below.
+	case strings.Contains(cmdLower, " omp ") || strings.HasPrefix(cmdLower, "omp "):
+		return "omp"
 	case strings.Contains(cmdLower, "claude"):
 		return "claude"
 	case strings.Contains(cmdLower, "gemini"):

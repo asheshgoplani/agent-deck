@@ -86,3 +86,11 @@ func TestResolveDynamicToolUpstreamBehaviorUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveDynamicToolUpgradesShellToOmp(t *testing.T) {
+	// A shell session that starts omp inside it should be re-typed as omp
+	// (same wrapped-tool upgrade the other builtin CLIs get).
+	if got := resolveDynamicTool("shell", "omp", false); got != "omp" {
+		t.Errorf("resolveDynamicTool(shell, omp) = %q, want omp", got)
+	}
+}
