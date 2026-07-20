@@ -60,6 +60,7 @@ func builtinTools() []builtinTool {
 		{Name: "gemini", Icon: "✨", detectSubstrings: []string{"gemini"}},
 		{Name: "codex", Icon: "💻", detectSubstrings: []string{"codex"}},
 		{Name: "pi", Icon: "π", detectTokens: []string{"pi"}},
+		{Name: "omp", Icon: "⌥", detectTokens: []string{"omp"}},
 		{Name: "copilot", Icon: "🐙", detectSubstrings: []string{"copilot"}},
 		{Name: "crush", Icon: "💘", detectSubstrings: []string{"crush"}},
 		{Name: "cursor", Icon: "📝", detectSubstrings: []string{"cursor"}},

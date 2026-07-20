@@ -5,14 +5,16 @@ import (
 	"testing"
 )
 
-// canonicalBuiltins is the canonical 11, in the precedence order that
-// Registry.Match() (and the legacy detectTool() switch) walk.
+// canonicalBuiltins is the canonical built-in list, in the precedence order
+// that Registry.Match() (and the legacy detectTool() switch) walk. omp sits
+// directly after pi: both are short names detected by token match, and nothing
+// earlier in the slice token-matches "omp".
 var canonicalBuiltins = []string{
-	"claude", "opencode", "gemini", "codex", "pi",
+	"claude", "opencode", "gemini", "codex", "pi", "omp",
 	"copilot", "crush", "cursor", "hermes", "aider", "shell",
 }
 
-func TestRegistry_AllReturnsCanonical11(t *testing.T) {
+func TestRegistry_AllReturnsCanonicalBuiltins(t *testing.T) {
 	all := Init(nil).All()
 	if len(all) != len(canonicalBuiltins) {
 		t.Fatalf("All() returned %d entries, want %d", len(all), len(canonicalBuiltins))
