@@ -314,6 +314,23 @@ def discover_conductors() -> list[dict]:
     return conductors
 
 
+def session_in_conductor_scope(conductor: dict, session: dict) -> bool:
+    """True if a session belongs in this conductor's heartbeat scope.
+
+    Conductors normally monitor only sessions whose group matches their
+    name (or "<name>/..." subgroups). meta.json ``"scope": "all"`` widens
+    the scope to every session except other conductors.
+    """
+    title = session.get("title", "untitled") or ""
+    if title.startswith("conductor-"):
+        return False
+    if str(conductor.get("scope") or "").lower() == "all":
+        return True
+    name = conductor.get("name", "") or ""
+    group = session.get("group", "") or ""
+    return group == name or group.startswith(f"{name}/")
+
+
 def conductor_session_title(name: str) -> str:
     """Return the conductor session title for a given conductor name."""
     return f"conductor-{name}"
@@ -2797,17 +2814,12 @@ async def heartbeat_loop(
                 session_title = conductor_session_title(name)
 
                 # Scope heartbeat monitoring to this conductor's own group
-                # (mirrors the deployed bridge: per-conductor, not profile-wide).
+                # (or everything, for conductors with "scope": "all").
                 sessions = get_sessions_list(profile)
-                scoped_sessions = []
-                for s in sessions:
-                    s_title = s.get("title", "untitled")
-                    s_group = s.get("group", "") or ""
-                    if s_title.startswith("conductor-"):
-                        continue
-                    if s_group != name and not s_group.startswith(f"{name}/"):
-                        continue
-                    scoped_sessions.append(s)
+                scoped_sessions = [
+                    s for s in sessions
+                    if session_in_conductor_scope(conductor, s)
+                ]
 
                 waiting = sum(1 for s in scoped_sessions if s.get("status", "") == "waiting")
                 running = sum(1 for s in scoped_sessions if s.get("status", "") == "running")

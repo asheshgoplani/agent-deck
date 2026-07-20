@@ -23,7 +23,11 @@ except ModuleNotFoundError:
     sys.modules["toml"] = types.SimpleNamespace(load=lambda *_args, **_kwargs: {})
 
 import bridge  # noqa: E402
-from bridge import discover_conductors, ensure_conductor_running  # noqa: E402
+from bridge import (  # noqa: E402
+    discover_conductors,
+    ensure_conductor_running,
+    session_in_conductor_scope,
+)
 
 
 async def _no_sleep(_seconds: float) -> None:
@@ -97,3 +101,32 @@ def test_discover_conductors_normalizes_agent(tmp_path, monkeypatch):
     metas = {m["name"]: m for m in discover_conductors()}
     assert metas["legacy"]["agent"] == "claude"
     assert metas["omperator"]["agent"] == "omp"
+
+
+GROUPED = {"name": "ops", "profile": "default"}
+ALL_SCOPE = {"name": "ops", "profile": "default", "scope": "all"}
+
+
+def test_scope_default_matches_own_group_only():
+    assert session_in_conductor_scope(GROUPED, {"title": "a", "group": "ops"})
+    assert session_in_conductor_scope(GROUPED, {"title": "b", "group": "ops/sub"})
+    assert not session_in_conductor_scope(GROUPED, {"title": "c", "group": "prod"})
+    assert not session_in_conductor_scope(GROUPED, {"title": "d", "group": ""})
+    # "opsx" must not match via prefix confusion
+    assert not session_in_conductor_scope(GROUPED, {"title": "e", "group": "opsx"})
+
+
+def test_scope_all_matches_every_group():
+    assert session_in_conductor_scope(ALL_SCOPE, {"title": "a", "group": "prod"})
+    assert session_in_conductor_scope(ALL_SCOPE, {"title": "b", "group": ""})
+    assert session_in_conductor_scope(ALL_SCOPE, {"title": "c", "group": "experimental"})
+
+
+def test_scope_always_excludes_conductor_sessions():
+    for meta in (GROUPED, ALL_SCOPE):
+        assert not session_in_conductor_scope(
+            meta, {"title": "conductor-omp-canary", "group": "conductor"}
+        )
+        assert not session_in_conductor_scope(
+            meta, {"title": "conductor-ops", "group": "ops"}
+        )
