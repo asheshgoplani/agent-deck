@@ -130,6 +130,56 @@ mcps = ["memory"]
 	}
 }
 
+func TestGroupShow_ResolvedCodexJSON(t *testing.T) {
+	home := t.TempDir()
+	writeTestConfig(t, home, `
+[groups."work".codex]
+config_dir = "~/.codex-work"
+command = "codex-work"
+skills = ["store/loom"]
+mcps = ["memory"]
+plugins = ["agent-deck@team"]
+`)
+
+	if _, _, code := runAgentDeck(t, home, "group", "create", "work"); code != 0 {
+		t.Fatal("group create failed")
+	}
+
+	stdout, stderr, code := runAgentDeck(t, home, "group", "show", "work", "--resolved", "--json")
+	if code != 0 {
+		t.Fatalf("group show --resolved --json failed (exit %d): %s / %s", code, stdout, stderr)
+	}
+	var payload struct {
+		Codex struct {
+			ConfigDir       string   `json:"config_dir"`
+			ConfigDirSource string   `json:"config_dir_source"`
+			Command         string   `json:"command"`
+			CommandSource   string   `json:"command_source"`
+			Skills          []string `json:"skills"`
+			MCPs            []string `json:"mcps"`
+			Plugins         []string `json:"plugins"`
+		} `json:"codex"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, stdout)
+	}
+	if payload.Codex.ConfigDirSource != "group:work" || !strings.HasSuffix(payload.Codex.ConfigDir, ".codex-work") {
+		t.Errorf("codex config_dir=%q [%s]", payload.Codex.ConfigDir, payload.Codex.ConfigDirSource)
+	}
+	if payload.Codex.Command != "codex-work" || payload.Codex.CommandSource != "group:work" {
+		t.Errorf("codex command=%q [%s]", payload.Codex.Command, payload.Codex.CommandSource)
+	}
+	if len(payload.Codex.Skills) != 1 || payload.Codex.Skills[0] != "store/loom" {
+		t.Errorf("codex skills=%v", payload.Codex.Skills)
+	}
+	if len(payload.Codex.MCPs) != 1 || payload.Codex.MCPs[0] != "memory" {
+		t.Errorf("codex mcps=%v", payload.Codex.MCPs)
+	}
+	if len(payload.Codex.Plugins) != 1 || payload.Codex.Plugins[0] != "agent-deck@team" {
+		t.Errorf("codex plugins=%v", payload.Codex.Plugins)
+	}
+}
+
 func TestGroupShow_ResolvedSurfacesBrokenConfig(t *testing.T) {
 	home := t.TempDir()
 
