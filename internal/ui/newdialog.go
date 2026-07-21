@@ -926,6 +926,9 @@ func knownModelIDsForTool(tool string) []string {
 		}
 	case session.IsCodexCompatible(tool):
 		return []string{
+			"gpt-5.6-sol",
+			"gpt-5.6-terra",
+			"gpt-5.6-luna",
 			"gpt-5.5",
 			"gpt-5.5-pro",
 			"gpt-5.4",
@@ -1209,7 +1212,7 @@ func (d *NewDialog) updateModelPlaceholder() {
 	case cmd == "opencode":
 		d.modelInput.Placeholder = "openai/gpt-5.5"
 	case session.IsCodexCompatible(cmd):
-		d.modelInput.Placeholder = "gpt-5.5"
+		d.modelInput.Placeholder = "gpt-5.6-sol"
 	default:
 		d.modelInput.Placeholder = "tool default"
 	}
@@ -1224,7 +1227,7 @@ func (d *NewDialog) modelInputHint() string {
 	case cmd == "opencode":
 		return "Examples: openai/gpt-5.5, openai/gpt-5.4, anthropic/claude-sonnet-4-6"
 	case session.IsCodexCompatible(cmd):
-		return "Examples: gpt-5.5, gpt-5.4, gpt-5.3-codex, gpt-5.4-mini"
+		return "Examples: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5"
 	default:
 		return ""
 	}

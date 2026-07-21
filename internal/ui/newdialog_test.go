@@ -83,13 +83,21 @@ func TestNewDialog_ModelInputForCodex(t *testing.T) {
 	if !strings.Contains(view, "Model ID") {
 		t.Fatal("codex new-session dialog should render a model input")
 	}
-	if !strings.Contains(view, "gpt-5.5") || !strings.Contains(view, "gpt-5.4") {
+	if !strings.Contains(view, "gpt-5.6-sol") || !strings.Contains(view, "gpt-5.5") {
 		t.Fatalf("codex model hints should include current ChatGPT versions: %q", view)
 	}
 
-	d.modelInput.SetValue("gpt-5.5")
-	if got := d.GetLaunchModelID(); got != "gpt-5.5" {
-		t.Fatalf("GetLaunchModelID() = %q, want gpt-5.5", got)
+	d.modelInput.SetValue("gpt-5.6-sol")
+	if got := d.GetLaunchModelID(); got != "gpt-5.6-sol" {
+		t.Fatalf("GetLaunchModelID() = %q, want gpt-5.6-sol", got)
+	}
+}
+
+func TestKnownModelIDsForTool_CodexStartsWithGPT56Tiers(t *testing.T) {
+	want := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+	got := knownModelIDsForTool("codex")
+	if len(got) < len(want) || !reflect.DeepEqual(got[:len(want)], want) {
+		t.Fatalf("Codex model catalog prefix = %v, want %v", got, want)
 	}
 }
 
@@ -101,17 +109,17 @@ func TestNewDialog_ModelSuggestions_FilterAndSelectCodex(t *testing.T) {
 	d.focusIndex = d.indexOf(focusModel)
 	d.updateFocus()
 
-	d.modelInput.SetValue("5.5")
+	d.modelInput.SetValue("5.6")
 	d.filterModelSuggestions()
 
-	if len(d.modelSuggestions) == 0 || d.modelSuggestions[0] != "gpt-5.5" {
-		t.Fatalf("filtered model suggestions = %v, want gpt-5.5 first", d.modelSuggestions)
+	if len(d.modelSuggestions) != 3 || d.modelSuggestions[0] != "gpt-5.6-sol" {
+		t.Fatalf("filtered model suggestions = %v, want three GPT-5.6 tiers with Sol first", d.modelSuggestions)
 	}
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if !d.IsModelSuggestionsActive() {
 		t.Fatal("enter on model input should activate the model suggestions dropdown")
 	}
-	if view := d.View(); !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "gpt-5.5") {
+	if view := d.View(); !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "gpt-5.6-terra") || !strings.Contains(view, "gpt-5.6-luna") {
 		t.Fatalf("model dropdown should show custom entry and known model IDs after enter: %q", view)
 	}
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -123,8 +131,8 @@ func TestNewDialog_ModelSuggestions_FilterAndSelectCodex(t *testing.T) {
 	}
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
-	if got := d.GetLaunchModelID(); got != "gpt-5.5" {
-		t.Fatalf("GetLaunchModelID() = %q, want gpt-5.5", got)
+	if got := d.GetLaunchModelID(); got != "gpt-5.6-sol" {
+		t.Fatalf("GetLaunchModelID() = %q, want gpt-5.6-sol", got)
 	}
 	// UX top-3 #3: order is Tool -> Model -> Path, so accepting a model advances
 	// focus to the Path field (previously Worktree).
@@ -145,7 +153,7 @@ func TestNewDialog_ModelDropdownVisibleOnFocus(t *testing.T) {
 		t.Fatal("model dropdown should be visible on focus without taking active dropdown control")
 	}
 	view := d.View()
-	if !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "gpt-5.5") {
+	if !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "gpt-5.6-sol") {
 		t.Fatalf("model dropdown should show custom entry and known model IDs on focus: %q", view)
 	}
 

@@ -22,6 +22,9 @@ const MODEL_ID_CATALOG = {
     { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 pinned' },
   ],
   codex: [
+    { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+    { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
+    { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
     { value: 'gpt-5.5', label: 'GPT-5.5' },
     { value: 'gpt-5.5-pro', label: 'GPT-5.5 Pro' },
     { value: 'gpt-5.4', label: 'GPT-5.4' },
