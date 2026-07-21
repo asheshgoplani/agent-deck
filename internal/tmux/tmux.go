@@ -2272,9 +2272,11 @@ func (s *Session) Start(command string) error {
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
 	// reader (e.g. iTerm2 on macOS). Only binds on agentdeck-managed sessions.
-	_ = s.tmuxCmd("bind-key", "-n", "-T", "root", "C-q",
+	// Bounded — see tmuxMutationTimeout. Best-effort already, and it runs on
+	// the session-create path where a wedged client would stall the create.
+	_ = s.runBoundedMutation("bind-key", "-n", "-T", "root", "C-q",
 		"if-shell", fmt.Sprintf("[ \"#{session_name}\" = \"%s\" ]", s.Name),
-		"detach-client", "").Run()
+		"detach-client", "")
 
 	// Apply user-specified tmux option overrides from config (after defaults).
 	// These are batched into a single call when multiple overrides are present.
@@ -2597,8 +2599,9 @@ func (s *Session) EnableMouseMode() error {
 	if s.mouse {
 		// CRITICAL: Mouse mode must succeed - keep as separate call for error handling
 		// This is the only essential feature; all others are enhancements
-		mouseCmd := s.tmuxCmd("set-option", "-t", s.Name, "mouse", "on")
-		if err := mouseCmd.Run(); err != nil {
+		// Bounded — see tmuxMutationTimeout. The one option whose failure is
+		// fatal, so it must not be the one that hangs forever.
+		if err := s.runBoundedMutation("set-option", "-t", s.Name, "mouse", "on"); err != nil {
 			return err
 		}
 	}
@@ -5503,16 +5506,16 @@ func ListAgentDeckSessions() ([]string, error) {
 func SetStatusLeft(sessionName, text string) error {
 	// Escape single quotes for tmux by replacing ' with '\''
 	escaped := strings.ReplaceAll(text, "'", "'\\''")
-	cmd := tmuxExec(DefaultSocketName(), "set-option", "-t", sessionName, "status-left", escaped)
-	return cmd.Run()
+	// Bounded — see tmuxMutationTimeout. Driven by the notification sweep.
+	return runBoundedMutation(DefaultSocketName(), "set-option", "-t", sessionName, "status-left", escaped)
 }
 
 // ClearStatusLeft resets status-left to default for a session.
 // Called when notifications are cleared or acknowledged.
 func ClearStatusLeft(sessionName string) error {
 	// -u flag unsets the option, reverting to tmux default
-	cmd := tmuxExec(DefaultSocketName(), "set-option", "-t", sessionName, "-u", "status-left")
-	return cmd.Run()
+	// Bounded — see tmuxMutationTimeout.
+	return runBoundedMutation(DefaultSocketName(), "set-option", "-t", sessionName, "-u", "status-left")
 }
 
 // savedStatusLeft holds the original global status-left value before agent-deck overwrites it.
@@ -5527,7 +5530,9 @@ var savedStatusLeft struct {
 // captureOriginalStatusLeft reads and stores the current global status-left value.
 // Called once on first SetStatusLeftGlobal to preserve the user's existing value.
 func captureOriginalStatusLeft() {
-	out, err := tmuxExec(DefaultSocketName(), "show-option", "-gv", "status-left").Output()
+	// Bounded — see tmuxPollTimeout. A read, and the only chance to capture the
+	// user's theme value: if it hangs, SetStatusLeftGlobal never runs either.
+	out, err := runBoundedOutput(DefaultSocketName(), "show-option", "-gv", "status-left")
 	if err == nil {
 		savedStatusLeft.value = strings.TrimRight(string(out), "\n")
 		savedStatusLeft.captured = true
@@ -5541,8 +5546,8 @@ func captureOriginalStatusLeft() {
 func SetStatusLeftGlobal(text string) error {
 	savedStatusLeft.Do(captureOriginalStatusLeft)
 	escaped := strings.ReplaceAll(text, "'", "'\\''")
-	cmd := tmuxExec(DefaultSocketName(), "set-option", "-g", "status-left", escaped)
-	return cmd.Run()
+	// Bounded — see tmuxMutationTimeout. Driven by the notification sweep.
+	return runBoundedMutation(DefaultSocketName(), "set-option", "-g", "status-left", escaped)
 }
 
 // ClearStatusLeftGlobal restores the original global status-left value.
@@ -5553,10 +5558,11 @@ func ClearStatusLeftGlobal() error {
 	socket := DefaultSocketName()
 	if savedStatusLeft.captured {
 		escaped := strings.ReplaceAll(savedStatusLeft.value, "'", "'\\''")
-		return tmuxExec(socket, "set-option", "-g", "status-left", escaped).Run()
+		// Bounded — see tmuxMutationTimeout.
+		return runBoundedMutation(socket, "set-option", "-g", "status-left", escaped)
 	}
 	// No saved value — fall back to unset (original behavior)
-	return tmuxExec(socket, "set-option", "-gu", "status-left").Run()
+	return runBoundedMutation(socket, "set-option", "-gu", "status-left")
 }
 
 // InitializeStatusBarOptions sets optimal status bar options for agent-deck.
@@ -5565,7 +5571,8 @@ func ClearStatusLeftGlobal() error {
 func InitializeStatusBarOptions() error {
 	// Set adequate status-left-length globally (default is only 10 chars!)
 	// This ensures the notification bar content is not truncated
-	return tmuxExec(DefaultSocketName(), "set-option", "-g", "status-left-length", "120").Run()
+	// Bounded — see tmuxMutationTimeout.
+	return runBoundedMutation(DefaultSocketName(), "set-option", "-g", "status-left-length", "120")
 }
 
 // RefreshStatusBarImmediate forces an immediate status bar redraw for ALL connected clients.
@@ -5593,7 +5600,9 @@ func RefreshStatusBarImmediate() error {
 		if parts[0] == "1" {
 			continue
 		}
-		_ = tmuxExec(socket, "refresh-client", "-S", "-t", parts[1]).Run()
+		// Bounded — see tmuxMutationTimeout. One client per iteration on the
+		// bar-refresh path: the highest-frequency spawn site in the codebase.
+		_ = runBoundedMutation(socket, "refresh-client", "-S", "-t", parts[1])
 	}
 	return nil
 }
@@ -5671,8 +5680,8 @@ func attachedSessionsOnSocket(socket string) ([]string, error) {
 // The key should be a single character like "1", "2", etc.
 // Deprecated: Use BindSwitchKeyWithAck for notification bar integration.
 func BindSwitchKey(key, targetSession string) error {
-	cmd := tmuxExec(DefaultSocketName(), "bind-key", key, "switch-client", "-t", targetSession)
-	return cmd.Run()
+	// Bounded — see tmuxMutationTimeout. agent-deck rebinds these keys every 2s.
+	return runBoundedMutation(DefaultSocketName(), "bind-key", key, "switch-client", "-t", targetSession)
 }
 
 // BindSwitchKeyWithAck binds a number key to switch to target session AND
@@ -5692,8 +5701,8 @@ func BindSwitchKeyWithAck(key, targetSession, sessionID string) error {
 	_ = os.MkdirAll(filepath.Dir(signalFile), 0o700)
 
 	script := buildAckSwitchScript(signalFile, sessionID, targetSession)
-	cmd := tmuxExec(DefaultSocketName(), "bind-key", key, "run-shell", script)
-	return cmd.Run()
+	// Bounded — see tmuxMutationTimeout. agent-deck rebinds these keys every 2s.
+	return runBoundedMutation(DefaultSocketName(), "bind-key", key, "run-shell", script)
 }
 
 // buildAckSwitchScript builds the run-shell command bound to a quick-switch key.
@@ -5901,11 +5910,12 @@ func DetachClientsOnSockets(sockets ...string) (bool, error) {
 func UnbindKey(key string) error {
 	socket := DefaultSocketName()
 	// First unbind our custom binding
-	_ = tmuxExec(socket, "unbind-key", key).Run()
+	// Bounded — see tmuxMutationTimeout. Both are best-effort already.
+	_ = runBoundedMutation(socket, "unbind-key", key)
 
 	// Best-effort restore default: number keys select windows
 	// bind-key 1 select-window -t :1
-	_ = tmuxExec(socket, "bind-key", key, "select-window", "-t", ":"+key).Run()
+	_ = runBoundedMutation(socket, "bind-key", key, "select-window", "-t", ":"+key)
 	return nil
 }
 

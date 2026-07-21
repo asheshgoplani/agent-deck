@@ -34,6 +34,7 @@ var pollSubcommands = map[string]struct{}{
 	"list-panes":       {},
 	"list-sessions":    {},
 	"show-environment": {},
+	"show-option":      {},
 }
 
 // mutationSubcommands are the state-CHANGING tmux commands agent-deck runs.
@@ -57,10 +58,21 @@ var pollSubcommands = map[string]struct{}{
 //
 // All three are re-issued on the next user action, so a timeout degrades to a
 // no-op rather than a corrupted half-state.
+// The status-bar and key-binding commands join them for the same reason, one
+// round later: the notification sweep (syncNotificationsBackground) drives
+// SetStatusLeft / ClearStatusLeftGlobal / RefreshStatusBarImmediate and the
+// Ctrl+b N rebinds on a timer, and refresh-client spawns one client per
+// attached client per bar change. They are change-gated, but flapping
+// running/waiting statuses fire them repeatedly — a cadence by any other name.
+// Leaving them out let the lint imply coverage the campaign did not have.
 var mutationSubcommands = map[string]struct{}{
-	"detach-client": {},
-	"kill-session":  {},
-	"switch-client": {},
+	"bind-key":       {},
+	"detach-client":  {},
+	"kill-session":   {},
+	"refresh-client": {},
+	"set-option":     {},
+	"switch-client":  {},
+	"unbind-key":     {},
 }
 
 // requiresDeadline reports whether a tmux subcommand must be spawned through a
