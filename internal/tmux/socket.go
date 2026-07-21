@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -314,6 +315,62 @@ func (s *Session) runBoundedOutput(args ...string) ([]byte, error) {
 // commands that produce no output.
 func (s *Session) runBoundedRun(args ...string) error {
 	return runBoundedRun(s.SocketName, args...)
+}
+
+// tmuxMutationTimeout bounds the state-CHANGING tmux commands: kill-session,
+// switch-client, detach-client. The fd leak that motivates every deadline in
+// this file is a property of the tmux CLIENT, not of the subcommand it carries,
+// so a mutation client wedges exactly like a poll client — and these run on the
+// same cadences (the notification-bar sweep issues one switch/detach per
+// attached client; kill-session runs on every teardown).
+//
+// It is deliberately longer than tmuxPollTimeout. The asymmetry is in what a
+// FALSE timeout costs: a read that gives up too early is re-issued by the next
+// poll a second later, while a kill-session abandoned early can leave a session
+// the user asked to be gone lingering until the next sweep. Both directions are
+// tolerated at the call sites — Kill/KillAndWait re-probe Exists() and treat
+// "gone" as success, SwitchAttachedClients falls back to a focus_request,
+// DetachClientsOnSockets leaves the TUI attached where it was — so the failure
+// mode is a no-op, never a corrupted half-state.
+var tmuxMutationTimeout = 5 * time.Second
+
+// errTmuxTimeout marks a command we abandoned at its deadline, as opposed to
+// one tmux answered with a failure. Callers need the distinction: "we gave up"
+// is a benign, retryable non-event that should fall through to a slower path,
+// while "tmux said no" is a real error that must surface. Without it every
+// timeout arrives as an opaque `signal: killed` ExitError and gets treated as
+// the latter.
+var errTmuxTimeout = errors.New("tmux command exceeded its deadline")
+
+// annotateDeadline wraps a failed run with errTmuxTimeout when the command's
+// context deadline had fired, preserving the original error for logs. The
+// deadline only matters for a run that FAILED: a command can complete
+// successfully just as its deadline expires, and that is a success.
+func annotateDeadline(ctxErr, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(ctxErr, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", errTmuxTimeout, err)
+	}
+	return err
+}
+
+// runBoundedMutation runs a state-changing tmux command under
+// tmuxMutationTimeout. Timeout-guarded replacement for the bare
+// tmuxExec(socket, args...).Run() / s.tmuxCmd(args...).Run() mutation sites.
+// A deadline failure comes back wrapped in errTmuxTimeout.
+func runBoundedMutation(socketName string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxMutationTimeout)
+	defer cancel()
+	err := tmuxExecContext(ctx, socketName, args...).Run()
+	return annotateDeadline(ctx.Err(), err)
+}
+
+// runBoundedMutation is the per-Session convenience wrapper, targeting the
+// session's own socket (see tmuxCmd for why the socket must not drift).
+func (s *Session) runBoundedMutation(args ...string) error {
+	return runBoundedMutation(s.SocketName, args...)
 }
 
 // OutputBounded is the public counterpart to runBoundedOutput, for cadence

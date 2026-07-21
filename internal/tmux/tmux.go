@@ -44,6 +44,11 @@ var (
 // tmux_fallback_test.go for the contract.
 var execCommand = exec.Command
 
+// execCommandContext is the deadline-carrying counterpart to execCommand, kept
+// as its own seam so a bounded call site stays overridable by the same tests.
+// Use it for any tmux invocation that must terminate — see tmuxMutationTimeout.
+var execCommandContext = exec.CommandContext
+
 type tmuxThemeStyle struct {
 	windowStyle       string
 	windowActiveStyle string
@@ -1814,7 +1819,9 @@ func KillSessionsWithEnvValue(envKey, envValue, excludeName string) {
 					slog.String("env_key", envKey),
 					slog.String("env_value", envValue),
 					slog.String("kept", excludeName))
-				_ = tmuxExec(socket, "kill-session", "-t", name).Run()
+				// Bounded — see tmuxMutationTimeout. Best-effort already (error
+				// discarded), so a timeout changes nothing but the wait.
+				_ = runBoundedMutation(socket, "kill-session", "-t", name)
 			}
 		}
 	}
@@ -2645,13 +2652,16 @@ func (s *Session) Kill() error {
 		respawnLog.Info("pre_kill_process_tree", slog.String("session", s.Name), slog.Any("pids", oldPIDs))
 	}
 
-	// Kill the tmux session
-	cmd := s.tmuxCmd("kill-session", "-t", s.Name)
-	err := cmd.Run()
+	// Kill the tmux session. Bounded — see tmuxMutationTimeout. A client
+	// SIGKILLed at the deadline yields a non-nil err, which the Exists() re-probe
+	// below resolves: if the server did process the kill, the session is gone and
+	// this returns success anyway.
+	err := s.runBoundedMutation("kill-session", "-t", s.Name)
 
-	// Verify old processes are dead; escalate to SIGKILL if needed
+	// Verify old processes are dead; escalate to SIGKILL if needed. No new
+	// process exists on this path — the session is gone — so nothing is spared.
 	if len(oldPIDs) > 0 {
-		go s.ensureProcessesDead(oldPIDs, 0)
+		go s.ensureProcessesDead(oldPIDs, nil)
 	}
 
 	// Killing a session that no longer exists is success, not failure: tmux
@@ -2669,12 +2679,11 @@ func (s *Session) Kill() error {
 }
 
 // getPaneProcessTree returns the pane's direct PID and all descendant PIDs.
-// Used before respawn to track processes that must die.
+// Used before respawn to track processes that must die. A probe that fails is
+// reported as an empty tree; callers that can act on the difference between
+// "no processes" and "could not tell" must use paneProcessTree instead.
 func (s *Session) getPaneProcessTree() (panePID int, allPIDs []int) {
-	target := s.Name + ":"
-	// Bounded — see tmuxPollTimeout. Runs on the respawn path: a hang here
-	// stalls the restart that is supposed to clear the bad state.
-	out, err := s.runBoundedOutput("list-panes", "-t", target, "-F", "#{pane_pid}")
+	panePID, allPIDs, err := s.paneProcessTree()
 	if err != nil {
 		// A failed probe is indistinguishable from "no panes" to our callers,
 		// and they respond by SKIPPING the SIGTERM->SIGKILL escalation that
@@ -2687,14 +2696,25 @@ func (s *Session) getPaneProcessTree() (panePID int, allPIDs []int) {
 			slog.String("error", err.Error()))
 		return 0, nil
 	}
-	// Take only the first line (handles multi-pane sessions safely)
-	pidStr := strings.TrimSpace(string(out))
-	if idx := strings.IndexByte(pidStr, '\n'); idx >= 0 {
-		pidStr = pidStr[:idx]
-	}
-	panePID, err = strconv.Atoi(pidStr)
+	return panePID, allPIDs
+}
+
+// paneProcessTree is getPaneProcessTree with the probe outcome preserved.
+//
+// The distinction matters on exactly one path: the post-respawn probe in
+// RespawnPane. Its result feeds the `pid == newPanePID` guard in
+// ensureProcessesDead, and a degraded panePID of 0 matches no real process — so
+// an indeterminate probe silently disengages the guard and the escalation can
+// SIGTERM->SIGKILL the process the user just restarted. See
+// escalateAfterRespawn.
+func (s *Session) paneProcessTree() (panePID int, allPIDs []int, err error) {
+	target := s.Name + ":"
+	// Bounded — see tmuxPollTimeout. Runs on the respawn path: a hang here
+	// stalls the restart that is supposed to clear the bad state.
+	out, err := s.runBoundedOutput("list-panes", "-t", target, "-F", "#{pane_pid}")
+	panePID, err = parsePanePID(out, err)
 	if err != nil {
-		return 0, nil
+		return 0, nil, err
 	}
 
 	// Collect the pane PID plus all descendants via pgrep -P (recursive)
@@ -2714,7 +2734,40 @@ func (s *Session) getPaneProcessTree() (panePID int, allPIDs []int) {
 			}
 		}
 	}
-	return panePID, allPIDs
+	return panePID, allPIDs, nil
+}
+
+// parsePanePID turns a `list-panes -F #{pane_pid}` result into the pane's PID.
+//
+// It honors the WaitDelay contract documented at tmuxSubprocessWaitDelay: when
+// cmd.Wait abandons the I/O goroutine mid-read (exec.ErrWaitDelay), the bytes
+// the subprocess already wrote are still in the buffer, so a body that parses
+// cleanly is authoritative and the error is not. That case is the norm, not an
+// edge, under the bridged-stdio setups WaitDelay exists for — Claude Code
+// /remote-control, ssh ControlMaster — where treating it as failure would make
+// every probe indeterminate and permanently skip the reap.
+//
+// Everything else is indeterminate: a client killed at its deadline, a missing
+// session, an empty or garbled body. None of them may be reported as "the pane
+// has no process", because callers answer an empty tree by skipping the
+// SIGTERM->SIGKILL escalation.
+func parsePanePID(out []byte, err error) (int, error) {
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
+		return 0, err
+	}
+	// Take only the first line (handles multi-pane sessions safely)
+	pidStr := strings.TrimSpace(string(out))
+	if idx := strings.IndexByte(pidStr, '\n'); idx >= 0 {
+		pidStr = strings.TrimSpace(pidStr[:idx])
+	}
+	pid, convErr := strconv.Atoi(pidStr)
+	if convErr != nil || pid <= 0 {
+		if err != nil {
+			return 0, fmt.Errorf("no usable pane_pid in %q: %w", pidStr, err)
+		}
+		return 0, fmt.Errorf("unparseable pane_pid %q", pidStr)
+	}
+	return pid, nil
 }
 
 // isOurProcess checks if a PID still belongs to a process we spawned
@@ -2737,7 +2790,14 @@ func isOurProcess(pid int) bool {
 // ensureProcessesDead checks if any of the given PIDs are still alive and
 // escalates from SIGTERM to SIGKILL. This prevents zombie/orphan process
 // accumulation when CLI tools (e.g. Claude Code) ignore SIGHUP from tmux.
-func (s *Session) ensureProcessesDead(oldPIDs []int, newPanePID int) {
+//
+// newPIDs is the process tree the respawn just created, and is excluded from
+// the escalation: tmux reuses the pane PID slot sometimes, and `bash -lc
+// <agent>` forks children (node, claude) that pass isOurProcess just as
+// readily as the ones being reaped — so sparing only the pane process would
+// still leave a fresh descendant killable on a PID collision. Pass nil when no
+// new process exists (Kill), which spares nothing.
+func (s *Session) ensureProcessesDead(oldPIDs []int, newPIDs []int) {
 	if len(oldPIDs) == 0 {
 		return
 	}
@@ -2745,10 +2805,15 @@ func (s *Session) ensureProcessesDead(oldPIDs []int, newPanePID int) {
 	// Wait briefly for respawn-pane's SIGHUP to take effect
 	time.Sleep(500 * time.Millisecond)
 
+	spared := make(map[int]struct{}, len(newPIDs))
+	for _, pid := range newPIDs {
+		spared[pid] = struct{}{}
+	}
+
 	var survivors []int
 	for _, pid := range oldPIDs {
-		// Skip the new pane process (respawn reuses the pane PID slot sometimes)
-		if pid == newPanePID {
+		// Never escalate against anything the respawn just created
+		if _, isNew := spared[pid]; isNew {
 			continue
 		}
 		// Check if process is still alive (signal 0 = existence check)
@@ -2807,6 +2872,57 @@ func (s *Session) ensureProcessesDead(oldPIDs []int, newPanePID int) {
 		}
 	}
 	respawnLog.Info("sigkill_cleanup_complete", slog.Int("count", len(stubborn)))
+}
+
+// respawnPanePIDRetryDelay is how long escalateAfterRespawn waits before
+// re-probing a pane PID the first probe could not resolve. One deadline's worth
+// of grace: the client that ate the first probe is SIGKILLed at
+// tmuxPollTimeout, and its replacement talks to a server that is not itself
+// wedged (the 2026-07-21 leak is per-client), so the retry usually lands.
+const respawnPanePIDRetryDelay = 500 * time.Millisecond
+
+// escalateAfterRespawn runs the post-respawn SIGTERM->SIGKILL escalation that
+// reaps agents ignoring tmux's SIGHUP (Claude Code 2.1.27+).
+//
+// It exists to keep one specific mistake from being possible: treating an
+// INDETERMINATE pane-PID probe as a resolved one. ensureProcessesDead's only
+// protection for the freshly respawned tree is that its PIDs are excluded, and
+// the bounded probe degrades to an empty tree on timeout. Pass that through and
+// the guard is off; if tmux handed the new pane a PID from the pre-respawn tree
+// (the reuse case the guard was written for), the escalation kills the process
+// the user just restarted.
+//
+// So a probe failure is retried once, off RespawnPane's critical path, and if
+// it still cannot be resolved the escalation is skipped entirely.
+//
+// That trade is deliberate and asymmetric, but be clear about its cost: the
+// skipped escalation LEAKS a SIGHUP-immune survivor permanently. Nothing else
+// reaps it — reapOrphanedPollClients only kills processes whose comm is "tmux",
+// and after `respawn-pane -k` the survivor is reparented out of the pane, so no
+// later getPaneProcessTree walk will ever include it. It needs a manual kill,
+// which is why the skip logs at Warn. We accept a leak that is logged and
+// visible in `ps` over destroying live work on a guess, with no warning and no
+// recovery.
+func (s *Session) escalateAfterRespawn(oldPIDs []int, newPIDs []int, probeErr error) {
+	if len(oldPIDs) == 0 {
+		return
+	}
+
+	if probeErr != nil {
+		time.Sleep(respawnPanePIDRetryDelay)
+		_, retryPIDs, retryErr := s.paneProcessTree()
+		if retryErr != nil {
+			respawnLog.Warn("respawn_escalation_skipped_unknown_pane_pid",
+				slog.String("session", s.Name),
+				slog.Any("old_pids", oldPIDs),
+				slog.String("probe_error", probeErr.Error()),
+				slog.String("retry_error", retryErr.Error()))
+			return
+		}
+		newPIDs = retryPIDs
+	}
+
+	s.ensureProcessesDead(oldPIDs, newPIDs)
 }
 
 // RespawnPane kills the current process in the pane and starts a new command.
@@ -2873,14 +2989,15 @@ func (s *Session) RespawnPane(command string) error {
 	}
 	mcpLog.Debug("respawn_pane_output", slog.String("output", string(output)))
 
-	// Get the NEW pane PID so we don't accidentally kill the fresh process
-	newPanePID, _ := s.getPaneProcessTree()
+	// Capture the NEW process tree so we don't accidentally kill anything the
+	// respawn just created. Keep the probe error: "could not tell" must not be
+	// spent as an empty tree, which would silently disable that very guard
+	// (see escalateAfterRespawn).
+	_, newPIDs, newTreeErr := s.paneProcessTree()
 
 	// Verify old processes are dead; escalate to SIGKILL if needed
 	// Run in background so RespawnPane returns quickly
-	if len(oldPIDs) > 0 {
-		go s.ensureProcessesDead(oldPIDs, newPanePID)
-	}
+	go s.escalateAfterRespawn(oldPIDs, newPIDs, newTreeErr)
 
 	// Reconnect control mode pipe (respawn changes the pane process)
 	if pm := GetPipeManager(); pm != nil {
@@ -5720,7 +5837,23 @@ func SwitchAttachedClients(socket, targetSession, sessionID string) (bool, error
 	switched := false
 	var firstErr error
 	for _, c := range clients {
-		if err := tmuxExec(socket, "switch-client", "-c", c, "-t", targetSession).Run(); err != nil {
+		// Bounded — see tmuxMutationTimeout. One client per iteration, so an
+		// unbounded wedge here stalls the whole sweep.
+		if err := runBoundedMutation(socket, "switch-client", "-c", c, "-t", targetSession); err != nil {
+			// A timeout is NOT a tmux failure, and the difference decides the
+			// caller's behaviour: routeFocus returns on any non-nil error and
+			// only reaches the focus_request fallback for (false, nil). Report a
+			// client we gave up on as simply not switched, so the slower path —
+			// write the row, let the TUI consume it on the next tick — still
+			// runs. Reporting it as an error instead would turn a wedged client
+			// into a hard `session focus --attach` failure with nothing written.
+			if errors.Is(err, errTmuxTimeout) {
+				statusLog.Warn("switch_client_timed_out",
+					slog.String("client", c),
+					slog.String("target", targetSession),
+					slog.String("error", err.Error()))
+				continue
+			}
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -5747,7 +5880,9 @@ func DetachClientsOnSockets(sockets ...string) (bool, error) {
 	var firstErr error
 	for _, socket := range sockets {
 		for _, c := range attachedClientNames(socket) {
-			if err := tmuxExec(socket, "detach-client", "-c", c).Run(); err != nil {
+			// Bounded — see tmuxMutationTimeout. Same shape as the switch sweep
+			// above: per-client, and a timeout degrades to detached=false.
+			if err := runBoundedMutation(socket, "detach-client", "-c", c); err != nil {
 				if firstErr == nil {
 					firstErr = err
 				}

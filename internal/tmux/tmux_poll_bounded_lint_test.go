@@ -36,6 +36,44 @@ var pollSubcommands = map[string]struct{}{
 	"show-environment": {},
 }
 
+// mutationSubcommands are the state-CHANGING tmux commands agent-deck runs.
+// The first round of fixes bounded only reads, on the reasoning that a
+// half-applied mutation has murkier semantics than a re-runnable query. That
+// reasoning was wrong about the risk: the fd leak is a property of the tmux
+// CLIENT, not of the subcommand it carries, so a `kill-session` client wedges
+// exactly like a `capture-pane` one — and these run on the same cadences (the
+// notification-bar switch/detach sweep fires once per attached client,
+// kill-session on every session teardown).
+//
+// What the murkier semantics actually demand is that each call site tolerate a
+// timeout, not that it stay unbounded:
+//   - kill-session — Session.Kill and KillAndWait already re-probe Exists() and
+//     treat "gone" as success, so a client SIGKILLed mid-exchange resolves to
+//     the same answer on the next probe.
+//   - switch-client — SwitchAttachedClients returns switched=false and the
+//     caller falls back to a focus_request.
+//   - detach-client — DetachClientsOnSockets returns detached=false; the TUI
+//     stays attached where it already was.
+//
+// All three are re-issued on the next user action, so a timeout degrades to a
+// no-op rather than a corrupted half-state.
+var mutationSubcommands = map[string]struct{}{
+	"detach-client": {},
+	"kill-session":  {},
+	"switch-client": {},
+}
+
+// requiresDeadline reports whether a tmux subcommand must be spawned through a
+// deadline-carrying factory. Both sets qualify; they are kept separate only
+// because their justifications differ (see each var's doc).
+func requiresDeadline(sub string) bool {
+	if _, ok := pollSubcommands[sub]; ok {
+		return true
+	}
+	_, ok := mutationSubcommands[sub]
+	return ok
+}
+
 // TestPollCommandsAreBounded fails the build if any cadence tmux query is
 // spawned through an unbounded factory (tmuxExec / s.tmuxCmd / tmux.Exec)
 // instead of a deadline-carrying one (runBoundedOutput / runBoundedRun /
@@ -131,10 +169,10 @@ func scanForUnboundedPolls(t *testing.T, root string) []unboundedPollSite {
 			if !ok || len(call.Args) <= subIdx {
 				return true
 			}
-			// exec.Command is generic: only flag it when argv[0] is literally
-			// "tmux", or every exec.Command whose second arg happens to collide
-			// with a tmux subcommand name would be reported.
-			if callee == "exec.Command" {
+			// exec.Command and its execCommand seam are generic: only flag them
+			// when argv[0] is literally "tmux", or every call whose second arg
+			// happens to collide with a tmux subcommand name would be reported.
+			if callee == "exec.Command" || callee == "execCommand" {
 				if bin, isLit := stringLiteral(call.Args[0]); !isLit || bin != "tmux" {
 					return true
 				}
@@ -143,7 +181,7 @@ func scanForUnboundedPolls(t *testing.T, root string) []unboundedPollSite {
 			if !ok {
 				return true
 			}
-			if _, isPoll := pollSubcommands[sub]; !isPoll {
+			if !requiresDeadline(sub) {
 				return true
 			}
 
@@ -186,6 +224,12 @@ func unboundedTmuxCallee(fun ast.Expr) (name string, subIdx int, ok bool) {
 			// raw-exec lint allowlists wholesale:
 			//   tmuxCommand(socketName, "has-session", …)
 			return "tmuxCommand", 1, true
+		case "execCommand":
+			// The package-level swappable seam (tmux.go: `var execCommand =
+			// exec.Command`) that the launcher-fallback tests override. It is
+			// exec.Command by another name, so it inherits exec.Command's
+			// deadline-free semantics — and the argv[0]=="tmux" filter below.
+			return "execCommand", 1, true
 		}
 	case *ast.SelectorExpr:
 		switch fn.Sel.Name {
