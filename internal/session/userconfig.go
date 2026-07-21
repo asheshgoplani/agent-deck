@@ -756,6 +756,8 @@ type GroupSettings struct {
 	DefaultPath string `toml:"default_path,omitempty"`
 	// Claude defines Claude Code overrides for a specific group.
 	Claude GroupClaudeSettings `toml:"claude,omitempty"`
+	// Codex defines Codex CLI overrides for a specific group.
+	Codex GroupCodexSettings `toml:"codex,omitempty"`
 	// Hermes defines Hermes overrides for a specific group.
 	Hermes GroupHermesSettings `toml:"hermes,omitempty"`
 }
@@ -815,6 +817,32 @@ type GroupClaudeSettings struct {
 	// MCPs lists [mcps.X] catalog names appended to the local .mcp.json
 	// of sessions in this group. Same floor semantics as Skills.
 	MCPs []string `toml:"mcps,omitempty"`
+}
+
+// GroupCodexSettings defines group-specific Codex overrides. Its native
+// plugins are pre-provisioned in ConfigDir; Agent Deck never installs or
+// updates them at session startup.
+type GroupCodexSettings struct {
+	// ConfigDir overrides [codex].config_dir for sessions in this group.
+	ConfigDir string `toml:"config_dir,omitempty"`
+
+	// EnvFile overrides [codex].env_file for sessions in this group.
+	EnvFile string `toml:"env_file,omitempty"`
+
+	// Command overrides [codex].command for sessions in this group.
+	Command string `toml:"command,omitempty"`
+
+	// Skills lists declarative skill-loadout entries attached to Codex
+	// sessions in this group at create and before every start.
+	Skills []string `toml:"skills,omitempty"`
+
+	// MCPs lists [mcps.X] catalog names added to the resolved group
+	// CODEX_HOME/config.toml. Entries are an attach-only floor.
+	MCPs []string `toml:"mcps,omitempty"`
+
+	// Plugins lists Codex plugin selectors (plugin@marketplace) to install
+	// when an explicit group sync command is run.
+	Plugins []string `toml:"plugins,omitempty"`
 }
 
 // GroupHermesSettings defines group-specific Hermes overrides.
@@ -3351,6 +3379,18 @@ func GetCodexCommand() string {
 		return strings.TrimSpace(userConfig.Codex.Command)
 	}
 	return "codex"
+}
+
+// GetCodexCommandForInstance resolves the group command before the global
+// Codex command. An explicit per-session command remains stronger because the
+// caller only uses this function for blank or bare "codex" commands.
+func GetCodexCommandForInstance(inst *Instance) string {
+	if userConfig, _ := LoadUserConfig(); userConfig != nil && inst != nil {
+		if command := userConfig.GetGroupCodexCommand(inst.GroupPath); strings.TrimSpace(command) != "" {
+			return strings.TrimSpace(command)
+		}
+	}
+	return GetCodexCommand()
 }
 
 func isClaudeCommand(command string) bool {

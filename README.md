@@ -198,6 +198,27 @@ Lookup priority: `env > group > profile > global > default`. The `env_file` is `
 
 Human-watchable verification: `bash scripts/verify-per-group-claude-config.sh`. The harness creates two throwaway groups, launches one normal and one custom-command session, and prints a pass/fail table.
 
+#### Per-group Codex config and plugins
+
+Codex groups can use separate `CODEX_HOME` directories and loadouts:
+
+```toml
+[groups."work".codex]
+config_dir = "~/.agent-deck/codex/work"
+skills = ["team/review"]
+mcps = ["context7"]
+plugins = ["agent-deck@team"]
+```
+
+The selected home is used for the session's Codex config and MCP entries.
+Native plugins are synced explicitly, after the group's marketplace is
+available, so startup never mutates a user's Codex installation:
+
+```bash
+agent-deck group codex sync work
+agent-deck group show work --resolved --json
+```
+
 #### Per-conductor Claude config (v1.5.4)
 
 Conductors are first-class agent-deck entities (see `agent-deck conductor setup`). Each conductor can carry its own Claude `config_dir` and `env_file` via a top-level `[conductors.<name>.claude]` block:

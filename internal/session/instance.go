@@ -1514,7 +1514,7 @@ func (i *Instance) resolveCodexModelFlag() string {
 func (i *Instance) resolveCodexCommand(baseCommand string) string {
 	command := strings.TrimSpace(baseCommand)
 	if i.Tool == "codex" && (command == "" || command == "codex") {
-		return GetCodexCommand()
+		return GetCodexCommandForInstance(i)
 	}
 	if command == "" {
 		return "codex"
@@ -1602,7 +1602,16 @@ func (i *Instance) getCodexHomeDir() string {
 	if i == nil {
 		return getCodexHomeDir()
 	}
-	return getCodexHomeDirForCommand(i.resolveCodexCommand(i.Command))
+	command := i.resolveCodexCommand(i.Command)
+	if codexHome := codexHomeFromCommand(command); codexHome != "" {
+		return codexHome
+	}
+	if config, err := LoadUserConfig(); err == nil && config != nil {
+		if groupDir := config.GetGroupCodexConfigDir(i.GroupPath); groupDir != "" {
+			return groupDir
+		}
+	}
+	return getCodexHomeDir()
 }
 
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
@@ -1632,8 +1641,8 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	if i.Tool == "codex" && trimmed != "codex" && trimmed != "" {
 		return envPrefix + trimmed
 	}
-	if isCodexHomeExplicit() {
-		codexHome := strings.TrimSpace(getCodexHomeDir())
+	if i.isCodexHomeExplicit() {
+		codexHome := strings.TrimSpace(i.getCodexHomeDir())
 		if codexHome != "" {
 			if err := os.MkdirAll(codexHome, 0o755); err != nil {
 				sessionLog.Warn("codex_home_mkdir_failed",
@@ -2242,6 +2251,18 @@ func isCodexHomeExplicit() bool {
 		return true
 	}
 	return strings.TrimSpace(cfg.Codex.ConfigDir) != ""
+}
+
+func (i *Instance) isCodexHomeExplicit() bool {
+	if i != nil {
+		if codexHomeFromCommand(i.resolveCodexCommand(i.Command)) != "" {
+			return true
+		}
+		if cfg, err := LoadUserConfig(); err == nil && cfg != nil && cfg.GetGroupCodexConfigDir(i.GroupPath) != "" {
+			return true
+		}
+	}
+	return isCodexHomeExplicit()
 }
 
 // runWithTimeout runs op in a goroutine and waits up to timeout for it to
@@ -7664,8 +7685,8 @@ func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand 
 	yoloFlag := target.resolveCodexYoloFlag()
 	modelFlag := target.resolveCodexModelFlag()
 	command := target.resolveCodexCommand(baseCommand)
-	if isCodexHomeExplicit() {
-		codexHome := strings.TrimSpace(getCodexHomeDir())
+	if target.isCodexHomeExplicit() {
+		codexHome := strings.TrimSpace(target.getCodexHomeDir())
 		if codexHome != "" {
 			if err := os.MkdirAll(codexHome, 0o755); err != nil {
 				sessionLog.Warn("codex_home_mkdir_failed",
