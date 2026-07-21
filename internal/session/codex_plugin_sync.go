@@ -27,6 +27,9 @@ func SyncGroupCodexPlugins(groupPath string) error {
 	if codexHome == "" {
 		return fmt.Errorf("group %q has Codex plugins but no config_dir", groupPath)
 	}
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		return fmt.Errorf("create group Codex home %q: %w", codexHome, err)
+	}
 
 	command := config.GetGroupCodexCommand(groupPath)
 	if command == "" {
@@ -39,7 +42,7 @@ func SyncGroupCodexPlugins(groupPath string) error {
 	env := filteredCodexHomeEnv(os.Environ())
 	env = append(env, "CODEX_HOME="+codexHome)
 	for _, marketplace := range marketplaces {
-		if err := runCodexSyncCommand(argv, env, "marketplace", "add", marketplace, "--json"); err != nil {
+		if err := runCodexSyncCommand(argv, env, "plugin", "marketplace", "add", marketplace, "--json"); err != nil {
 			return fmt.Errorf("register Codex marketplace %q: %w", marketplace, err)
 		}
 	}

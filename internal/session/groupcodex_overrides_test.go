@@ -121,4 +121,7 @@ func TestSyncGroupCodexPluginsUsesGroupHome(t *testing.T) {
 	}; !reflect.DeepEqual(strings.FieldsFunc(strings.TrimSpace(got), func(r rune) bool { return r == '\n' }), want) {
 		t.Errorf("sync invocations=%q want %q", got, want)
 	}
+	if info, err := os.Stat(codexHome); err != nil || !info.IsDir() {
+		t.Errorf("Codex home was not created: info=%v err=%v", info, err)
+	}
 }
