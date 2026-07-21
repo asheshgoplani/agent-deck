@@ -86,7 +86,7 @@ func TestSyncGroupCodexPluginsUsesGroupHome(t *testing.T) {
 	codexHome := filepath.Join(home, "codex-work")
 	record := filepath.Join(home, "plugin-invocation.txt")
 	fakeCodex := filepath.Join(home, "codex")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$CODEX_HOME $*\" > " + record + "\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$CODEX_HOME $*\" >> " + record + "\n"
 	if err := os.WriteFile(fakeCodex, []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake codex: %v", err)
 	}
@@ -100,20 +100,25 @@ func TestSyncGroupCodexPluginsUsesGroupHome(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".agent-deck"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	config := "[groups.\"work\".codex]\nconfig_dir = \"" + codexHome + "\"\ncommand = \"" + fakeCodex + "\"\nplugins = [\"agent-deck@team\"]\n"
+	config := "[groups.\"work\".codex]\nconfig_dir = \"" + codexHome + "\"\ncommand = \"" + fakeCodex + "\"\nmarketplaces = [\"parent-marketplace\"]\nplugins = [\"agent-deck@team\"]\n\n[groups.\"work/sub\".codex]\nmarketplaces = [\"child-marketplace\"]\nplugins = [\"frontend-design@official\"]\n"
 	if err := os.WriteFile(filepath.Join(home, ".agent-deck", "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	ClearUserConfigCache()
 
-	if err := SyncGroupCodexPlugins("work"); err != nil {
+	if err := SyncGroupCodexPlugins("work/sub"); err != nil {
 		t.Fatalf("sync plugins: %v", err)
 	}
 	data, err := os.ReadFile(record)
 	if err != nil {
 		t.Fatalf("read invocation: %v", err)
 	}
-	if got := string(data); !strings.Contains(got, codexHome+" plugin add agent-deck@team --json") {
-		t.Errorf("unexpected plugin invocation: %q", got)
+	if got, want := string(data), []string{
+		codexHome + " plugin marketplace add parent-marketplace --json",
+		codexHome + " plugin marketplace add child-marketplace --json",
+		codexHome + " plugin add agent-deck@team --json",
+		codexHome + " plugin add frontend-design@official --json",
+	}; !reflect.DeepEqual(strings.FieldsFunc(strings.TrimSpace(got), func(r rune) bool { return r == '\n' }), want) {
+		t.Errorf("sync invocations=%q want %q", got, want)
 	}
 }

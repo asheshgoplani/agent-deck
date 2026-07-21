@@ -91,7 +91,7 @@ func printGroupHelp() {
 	fmt.Println("Commands:")
 	fmt.Println("  list              List all groups with session counts")
 	fmt.Println("  show <name>       Show one group; --resolved adds effective Claude and Codex config (alias: info)")
-	fmt.Println("  codex sync <name> Sync configured native Codex plugins into the group home")
+	fmt.Println("  codex sync <name> Sync inherited Codex marketplaces and plugins into the group home")
 	fmt.Println("  create <name>     Create a new group")
 	fmt.Println("  update <name>     Update group settings")
 	fmt.Println("  delete <name>     Delete a group (aliases: rm, remove)")
@@ -508,6 +508,7 @@ func handleGroupShow(profile string, args []string) {
 		fmt.Fprintf(&b, "  env_file:   %s  [%s]\n", orNone(codex.EnvFile), codex.EnvFileSource)
 		fmt.Fprintf(&b, "  command:    %s  [%s]\n", codex.Command, codex.CommandSource)
 		fmt.Fprintf(&b, "  skills:     %s\n", orNone(strings.Join(codex.Skills, ", ")))
+		fmt.Fprintf(&b, "  marketplaces: %s\n", orNone(strings.Join(codex.Marketplaces, ", ")))
 		fmt.Fprintf(&b, "  plugins:    %s\n", orNone(strings.Join(codex.Plugins, ", ")))
 		fmt.Fprintf(&b, "  mcps:       %s\n", orNone(strings.Join(codex.MCPs, ", ")))
 	}

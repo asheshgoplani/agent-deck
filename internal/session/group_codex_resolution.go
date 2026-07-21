@@ -11,6 +11,7 @@ type GroupCodexResolution struct {
 	CommandSource   string   `json:"command_source"`
 	Skills          []string `json:"skills,omitempty"`
 	MCPs            []string `json:"mcps,omitempty"`
+	Marketplaces    []string `json:"marketplaces,omitempty"`
 	Plugins         []string `json:"plugins,omitempty"`
 	ConfigError     string   `json:"config_error,omitempty"`
 }
@@ -54,6 +55,10 @@ func (c *UserConfig) GetGroupCodexMCPs(groupPath string) []string {
 	return c.unionGroupCodexList(groupPath, func(s GroupCodexSettings) []string { return s.MCPs })
 }
 
+func (c *UserConfig) GetGroupCodexMarketplaces(groupPath string) []string {
+	return c.unionGroupCodexList(groupPath, func(s GroupCodexSettings) []string { return s.Marketplaces })
+}
+
 func (c *UserConfig) GetGroupCodexPlugins(groupPath string) []string {
 	return c.unionGroupCodexList(groupPath, func(s GroupCodexSettings) []string { return s.Plugins })
 }
@@ -65,11 +70,7 @@ func (c *UserConfig) unionGroupCodexList(groupPath string, get func(GroupCodexSe
 	var chain [][]string
 	for p := groupPath; p != ""; p = getParentPath(p) {
 		if groupCfg, ok := c.Groups[p]; ok {
-			entries := append(
-				c.loadoutEntries(groupCfg.Codex.Loadouts, func(loadout LoadoutSettings) []string { return getLoadoutCodexEntries(loadout, get) }),
-				get(groupCfg.Codex)...,
-			)
-			if len(entries) > 0 {
+			if entries := get(groupCfg.Codex); len(entries) > 0 {
 				chain = append(chain, entries)
 			}
 		}
@@ -86,14 +87,6 @@ func (c *UserConfig) unionGroupCodexList(groupPath string, get func(GroupCodexSe
 		}
 	}
 	return union
-}
-
-func getLoadoutCodexEntries(loadout LoadoutSettings, get func(GroupCodexSettings) []string) []string {
-	return get(GroupCodexSettings{
-		Skills:  loadout.Codex.Skills,
-		Plugins: loadout.Codex.Plugins,
-		MCPs:    loadout.Codex.MCPs,
-	})
 }
 
 // ResolveGroupCodex resolves explicit group configuration. Global/profile/env
@@ -123,6 +116,7 @@ func ResolveGroupCodex(groupPath string) GroupCodexResolution {
 	}
 	res.Skills = config.GetGroupCodexSkills(groupPath)
 	res.MCPs = config.GetGroupCodexMCPs(groupPath)
+	res.Marketplaces = config.GetGroupCodexMarketplaces(groupPath)
 	res.Plugins = config.GetGroupCodexPlugins(groupPath)
 	return res
 }

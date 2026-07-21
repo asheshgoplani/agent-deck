@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// SyncGroupCodexPlugins installs configured native plugins into the group's
-// preselected CODEX_HOME. It is explicit: session startup never installs
-// plugins or updates marketplaces.
+// SyncGroupCodexPlugins registers configured marketplaces and installs native
+// plugins into the group's preselected CODEX_HOME. It is explicit: session
+// startup never mutates plugins or marketplaces.
 func SyncGroupCodexPlugins(groupPath string) error {
 	config, err := LoadUserConfig()
 	if err != nil {
@@ -18,8 +18,9 @@ func SyncGroupCodexPlugins(groupPath string) error {
 	if config == nil {
 		return fmt.Errorf("config.toml is not configured")
 	}
+	marketplaces := config.GetGroupCodexMarketplaces(groupPath)
 	plugins := config.GetGroupCodexPlugins(groupPath)
-	if len(plugins) == 0 {
+	if len(marketplaces) == 0 && len(plugins) == 0 {
 		return nil
 	}
 	codexHome := config.GetGroupCodexConfigDir(groupPath)
@@ -37,20 +38,31 @@ func SyncGroupCodexPlugins(groupPath string) error {
 	}
 	env := filteredCodexHomeEnv(os.Environ())
 	env = append(env, "CODEX_HOME="+codexHome)
+	for _, marketplace := range marketplaces {
+		if err := runCodexSyncCommand(argv, env, "marketplace", "add", marketplace, "--json"); err != nil {
+			return fmt.Errorf("register Codex marketplace %q: %w", marketplace, err)
+		}
+	}
 	for _, plugin := range plugins {
-		args := append(append([]string{}, argv[1:]...), "plugin", "add", plugin, "--json")
-		cmd := exec.Command(argv[0], args...)
-		cmd.Env = env
-		output, runErr := cmd.CombinedOutput()
-		if runErr != nil {
-			detail := strings.TrimSpace(string(output))
-			if detail != "" {
-				return fmt.Errorf("install Codex plugin %q: %w: %s", plugin, runErr, detail)
-			}
-			return fmt.Errorf("install Codex plugin %q: %w", plugin, runErr)
+		if err := runCodexSyncCommand(argv, env, "plugin", "add", plugin, "--json"); err != nil {
+			return fmt.Errorf("install Codex plugin %q: %w", plugin, err)
 		}
 	}
 	return nil
+}
+
+func runCodexSyncCommand(argv, env []string, subcommand ...string) error {
+	args := append(append([]string{}, argv[1:]...), subcommand...)
+	cmd := exec.Command(argv[0], args...)
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if detail := strings.TrimSpace(string(output)); detail != "" {
+		return fmt.Errorf("%w: %s", err, detail)
+	}
+	return err
 }
 
 func splitCodexPluginCommand(command string) ([]string, error) {

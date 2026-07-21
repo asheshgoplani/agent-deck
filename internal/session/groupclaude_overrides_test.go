@@ -240,66 +240,6 @@ mcps = ["exa"]
 	}
 }
 
-func TestGroupLoadouts_ComposePerAgentWithDirectEntries(t *testing.T) {
-	withIsolatedHomeAndConfig(t, `
-[loadouts.shared.claude]
-skills = ["store/base"]
-plugins = ["agent-deck"]
-mcps = ["memory"]
-
-[loadouts.web.claude]
-plugins = ["frontend-design"]
-mcps = ["playwright"]
-
-[loadouts.shared.codex]
-skills = ["store/base"]
-plugins = ["agent-deck@agent-deck"]
-mcps = ["memory"]
-
-[loadouts.web.codex]
-plugins = ["frontend-design@claude-plugins-official"]
-
-[groups."work".claude]
-loadouts = ["shared"]
-plugins = ["direct-parent"]
-
-[groups."work".codex]
-loadouts = ["shared"]
-plugins = ["direct-parent@local"]
-
-[groups."work/sub".claude]
-loadouts = ["web"]
-skills = ["store/child"]
-
-[groups."work/sub".codex]
-loadouts = ["web"]
-skills = ["store/child"]
-`)
-	cfg, err := LoadUserConfig()
-	if err != nil {
-		t.Fatalf("LoadUserConfig: %v", err)
-	}
-
-	if got, want := strings.Join(cfg.GetGroupClaudeSkills("work/sub"), ","), "store/base,store/child"; got != want {
-		t.Errorf("Claude skills=%q want %q", got, want)
-	}
-	if got, want := strings.Join(cfg.GetGroupClaudePlugins("work/sub"), ","), "agent-deck,direct-parent,frontend-design"; got != want {
-		t.Errorf("Claude plugins=%q want %q", got, want)
-	}
-	if got, want := strings.Join(cfg.GetGroupClaudeMCPs("work/sub"), ","), "memory,playwright"; got != want {
-		t.Errorf("Claude MCPs=%q want %q", got, want)
-	}
-	if got, want := strings.Join(cfg.GetGroupCodexSkills("work/sub"), ","), "store/base,store/child"; got != want {
-		t.Errorf("Codex skills=%q want %q", got, want)
-	}
-	if got, want := strings.Join(cfg.GetGroupCodexPlugins("work/sub"), ","), "agent-deck@agent-deck,direct-parent@local,frontend-design@claude-plugins-official"; got != want {
-		t.Errorf("Codex plugins=%q want %q", got, want)
-	}
-	if got, want := strings.Join(cfg.GetGroupCodexMCPs("work/sub"), ","), "memory"; got != want {
-		t.Errorf("Codex MCPs=%q want %q", got, want)
-	}
-}
-
 func TestResolveGroupClaude_SourcesAndEnvFileExistence(t *testing.T) {
 	tmpHome := withIsolatedHomeAndConfig(t, `
 [claude]

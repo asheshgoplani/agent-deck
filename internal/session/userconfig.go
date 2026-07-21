@@ -104,10 +104,6 @@ type UserConfig struct {
 	// (`<name>@<source>`) plus per-plugin policy (auto-install, channel link).
 	Plugins map[string]PluginDef `toml:"plugins,omitempty"`
 
-	// Loadouts defines reusable Claude and Codex skills, plugins, and MCP
-	// lists. Groups select named loadouts and can add direct entries locally.
-	Loadouts map[string]LoadoutSettings `toml:"loadouts,omitempty"`
-
 	// Claude defines Claude Code integration settings
 	Claude ClaudeSettings `toml:"claude,omitempty"`
 
@@ -814,9 +810,6 @@ type GroupClaudeSettings struct {
 	// every start (ApplyConfiguredLoadout — attach-only floor semantics).
 	Skills []string `toml:"skills,omitempty"`
 
-	// Loadouts lists reusable named loadouts applied before direct entries.
-	Loadouts []string `toml:"loadouts,omitempty"`
-
 	// Plugins lists [plugins.X] catalog keys unioned into Instance.Plugins.
 	// Catalog resolution remains the single plugin enablement path.
 	Plugins []string `toml:"plugins,omitempty"`
@@ -843,30 +836,18 @@ type GroupCodexSettings struct {
 	// sessions in this group at create and before every start.
 	Skills []string `toml:"skills,omitempty"`
 
-	// Loadouts lists reusable named loadouts applied before direct entries.
-	Loadouts []string `toml:"loadouts,omitempty"`
-
 	// MCPs lists [mcps.X] catalog names added to the resolved group
 	// CODEX_HOME/config.toml. Entries are an attach-only floor.
 	MCPs []string `toml:"mcps,omitempty"`
 
+	// Marketplaces lists Codex marketplace sources to register when an explicit
+	// group sync command is run. Sources are inherited from parent groups before
+	// plugins are installed into this group's resolved CODEX_HOME.
+	Marketplaces []string `toml:"marketplaces,omitempty"`
+
 	// Plugins lists Codex plugin selectors (plugin@marketplace) to install
 	// when an explicit group sync command is run.
 	Plugins []string `toml:"plugins,omitempty"`
-}
-
-// LoadoutSettings defines reusable, agent-specific list entries. It excludes
-// scalar launch settings so groups retain ownership of config_dir and command.
-type LoadoutSettings struct {
-	Claude LoadoutAgentSettings `toml:"claude,omitempty"`
-	Codex  LoadoutAgentSettings `toml:"codex,omitempty"`
-}
-
-// LoadoutAgentSettings is the reusable list surface for one agent type.
-type LoadoutAgentSettings struct {
-	Skills  []string `toml:"skills,omitempty"`
-	Plugins []string `toml:"plugins,omitempty"`
-	MCPs    []string `toml:"mcps,omitempty"`
 }
 
 // GroupHermesSettings defines group-specific Hermes overrides.
@@ -1708,11 +1689,7 @@ func (c *UserConfig) unionGroupClaudeList(groupPath string, get func(GroupClaude
 	var chain [][]string
 	for p := groupPath; p != ""; p = getParentPath(p) {
 		if groupCfg, ok := c.Groups[p]; ok {
-			list := append(
-				c.loadoutEntries(groupCfg.Claude.Loadouts, func(loadout LoadoutSettings) []string { return getLoadoutClaudeEntries(loadout, get) }),
-				get(groupCfg.Claude)...,
-			)
-			if len(list) > 0 {
+			if list := get(groupCfg.Claude); len(list) > 0 {
 				chain = append(chain, list)
 			}
 		}
@@ -1732,32 +1709,6 @@ func (c *UserConfig) unionGroupClaudeList(groupPath string, get func(GroupClaude
 		}
 	}
 	return union
-}
-
-func (c *UserConfig) loadoutEntries(names []string, get func(LoadoutSettings) []string) []string {
-	if c == nil || c.Loadouts == nil {
-		return nil
-	}
-	var entries []string
-	for _, name := range names {
-		if name == "" {
-			continue
-		}
-		if loadout, ok := c.Loadouts[name]; ok {
-			entries = append(entries, get(loadout)...)
-		}
-	}
-	return entries
-}
-
-func getLoadoutClaudeEntries(loadout LoadoutSettings, get func(GroupClaudeSettings) []string) []string {
-	// The field selector is shared with GroupClaudeSettings so this compact
-	// adapter keeps the group-list resolver responsible for ordering/deduping.
-	return get(GroupClaudeSettings{
-		Skills:  loadout.Claude.Skills,
-		Plugins: loadout.Claude.Plugins,
-		MCPs:    loadout.Claude.MCPs,
-	})
 }
 
 // GetGroupHermesEnvFile returns the group-specific Hermes env file, walking
