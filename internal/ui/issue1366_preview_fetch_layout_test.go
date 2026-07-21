@@ -46,6 +46,51 @@ func TestIssue1366_NoPreviewFetchInSingleColumnLayout(t *testing.T) {
 	}
 }
 
+func TestIssue1366_HiddenPreviewFetchClearsInFlightMarker(t *testing.T) {
+	t.Run("local", func(t *testing.T) {
+		h := armHomeOneSessionForPreview(t)
+		h.width = 65
+		inst, key, _ := h.selectedPreviewTarget()
+		if inst == nil || key == "" {
+			t.Fatal("setup: expected a selected local preview target")
+		}
+
+		h.previewCacheMu.Lock()
+		h.previewFetchingID = key
+		h.previewCacheMu.Unlock()
+
+		if cmd := h.fetchPreview(inst, key, -1); cmd != nil {
+			t.Fatal("hidden Preview must not return a fetch command")
+		}
+
+		h.previewCacheMu.RLock()
+		defer h.previewCacheMu.RUnlock()
+		if h.previewFetchingID != "" {
+			t.Fatalf("hidden Preview left previewFetchingID = %q, want empty", h.previewFetchingID)
+		}
+	})
+
+	t.Run("remote", func(t *testing.T) {
+		h := NewHome()
+		h.width = 65
+		key := "remote:example:session"
+
+		h.previewCacheMu.Lock()
+		h.previewFetchingID = key
+		h.previewCacheMu.Unlock()
+
+		if cmd := h.fetchRemotePreview("example", "session", key); cmd != nil {
+			t.Fatal("hidden remote Preview must not return a fetch command")
+		}
+
+		h.previewCacheMu.RLock()
+		defer h.previewCacheMu.RUnlock()
+		if h.previewFetchingID != "" {
+			t.Fatalf("hidden remote Preview left previewFetchingID = %q, want empty", h.previewFetchingID)
+		}
+	})
+}
+
 // Regression guard: when the preview pane IS visible (dual layout), navigation
 // must still schedule the fetch.
 func TestIssue1366_PreviewFetchInDualLayout(t *testing.T) {

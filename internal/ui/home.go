@@ -3582,7 +3582,15 @@ func truncateRemotePreviewContent(content string) string {
 // fetchPreview returns a command that asynchronously fetches preview content.
 // windowIndex < 0 captures the session's primary pane; >= 0 captures a specific window.
 func (h *Home) fetchPreview(inst *session.Instance, key string, windowIndex int) tea.Cmd {
-	if inst == nil || !h.hasPreviewPane() {
+	if inst == nil {
+		return nil
+	}
+	if !h.hasPreviewPane() {
+		h.previewCacheMu.Lock()
+		if h.previewFetchingID == key {
+			h.previewFetchingID = ""
+		}
+		h.previewCacheMu.Unlock()
 		return nil
 	}
 	return func() tea.Msg {
@@ -3633,6 +3641,11 @@ func (h *Home) fetchRemotePreviewDebounced(remoteName, sessionID string) tea.Cmd
 
 func (h *Home) fetchRemotePreview(remoteName, sessionID, key string) tea.Cmd {
 	if !h.hasPreviewPane() {
+		h.previewCacheMu.Lock()
+		if h.previewFetchingID == key {
+			h.previewFetchingID = ""
+		}
+		h.previewCacheMu.Unlock()
 		return nil
 	}
 	return func() tea.Msg {
