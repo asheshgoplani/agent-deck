@@ -84,6 +84,47 @@ func InjectCursorHooks(configDir string) (bool, error) {
 	return true, nil
 }
 
+// AutoInstallCursorHooks is the TUI-startup entry point for silent Cursor hook
+// injection. Unlike InjectCursorHooks (the explicit `cursor-hooks install`
+// path), it honors the user's durable opt-out: [cursor] hooks_enabled = false,
+// which `cursor-hooks uninstall` persists. Without this gate, TUI startup
+// silently re-created the hooks on every launch after an uninstall (issue #1672).
+// Returns true if hooks were newly installed.
+func AutoInstallCursorHooks(cfg *UserConfig, configDir string) (bool, error) {
+	if cfg != nil && !cfg.Cursor.GetHooksEnabled() {
+		return false, nil
+	}
+	if CheckCursorHooksInstalled(configDir) {
+		return false, nil
+	}
+	return InjectCursorHooks(configDir)
+}
+
+// SetCursorHooksEnabled persists the Cursor hooks opt-in/opt-out to config.toml.
+// enabled=false writes [cursor] hooks_enabled = false (durable opt-out honored
+// by AutoInstallCursorHooks); enabled=true removes the key, restoring the
+// default. Works on a shallow copy so the LoadUserConfig cache is not mutated
+// before the save lands.
+func SetCursorHooksEnabled(enabled bool) error {
+	cfg, err := LoadUserConfig()
+	if err != nil {
+		return err
+	}
+	// No-op when the effective state already matches: skips a full
+	// config.toml rewrite (which drops comments/formatting).
+	if cfg.Cursor.GetHooksEnabled() == enabled {
+		return nil
+	}
+	updated := *cfg
+	if enabled {
+		updated.Cursor.HooksEnabled = nil
+	} else {
+		disabled := false
+		updated.Cursor.HooksEnabled = &disabled
+	}
+	return SaveUserConfig(&updated)
+}
+
 // RemoveCursorHooks removes agent-deck hook entries from ~/.cursor/hooks.json.
 // Returns true if hooks were removed, false if none found.
 func RemoveCursorHooks(configDir string) (bool, error) {

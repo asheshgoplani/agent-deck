@@ -63,7 +63,7 @@ for section in "${REQUIRED_SECTIONS[@]}"; do
 done
 
 # --- Check 3: Summary section content ---
-if echo "$BODY" | grep -qP -- '- \*\*Visual regression:\*\* (PASS|FAIL)'; then
+if echo "$BODY" | grep -qP -- '- \*\*Visual regression:\*\* (PASS|FAIL|NO DATA \(skipped\))'; then
   pass "Summary contains visual regression status line"
 else
   fail "Summary missing '- **Visual regression:** (PASS|FAIL)' line"

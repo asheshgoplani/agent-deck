@@ -1648,18 +1648,21 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		}
 	}
 
-	// Cursor Agent CLI hooks: auto-inject silently when the cursor binary is available.
-	if cursorCmd := strings.TrimSpace(session.GetToolCommand("cursor")); homeBackgroundWorkersEnabled && cursorCmd != "" {
+	// Cursor Agent CLI hooks: auto-inject silently when the cursor binary is
+	// available, unless the user opted out via [cursor] hooks_enabled = false
+	// (set durably by `agent-deck cursor-hooks uninstall`, issue #1672).
+	// The opt-out gates the watcher too, matching the [claude] hooks_enabled
+	// gate above.
+	cursorHooksEnabled := userConfig == nil || userConfig.Cursor.GetHooksEnabled()
+	if cursorCmd := strings.TrimSpace(session.GetToolCommand("cursor")); homeBackgroundWorkersEnabled && cursorHooksEnabled && cursorCmd != "" {
 		if cursorFields := strings.Fields(cursorCmd); len(cursorFields) > 0 {
 			cursorBin := cursorFields[0]
 			if _, err := exec.LookPath(cursorBin); err == nil {
 				cursorConfigDir := session.GetCursorConfigDir()
-				if !session.CheckCursorHooksInstalled(cursorConfigDir) {
-					if _, err := session.InjectCursorHooks(cursorConfigDir); err != nil {
-						uiLog.Warn("cursor_hooks_inject_failed", slog.String("error", err.Error()))
-					} else {
-						uiLog.Info("cursor_hooks_installed", slog.String("config_dir", cursorConfigDir))
-					}
+				if installed, err := session.AutoInstallCursorHooks(userConfig, cursorConfigDir); err != nil {
+					uiLog.Warn("cursor_hooks_inject_failed", slog.String("error", err.Error()))
+				} else if installed {
+					uiLog.Info("cursor_hooks_installed", slog.String("config_dir", cursorConfigDir))
 				}
 				if h.hookWatcher == nil {
 					if hookWatcher, err := session.NewStatusFileWatcher(nil); err == nil {

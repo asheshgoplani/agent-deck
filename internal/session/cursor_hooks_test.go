@@ -113,3 +113,104 @@ func TestCheckCursorHooksInstalled(t *testing.T) {
 		t.Fatal("expected installed after inject")
 	}
 }
+
+// Regression test for issue #1672: TUI startup silently reinstalled Cursor
+// hooks after `cursor-hooks uninstall`. AutoInstallCursorHooks must honor the
+// durable opt-out ([cursor] hooks_enabled = false) instead of unconditionally
+// injecting whenever the cursor binary is on PATH.
+func TestAutoInstallCursorHooks_RespectsDurableOptOut(t *testing.T) {
+	tmpDir := t.TempDir()
+	disabled := false
+	cfg := &UserConfig{Cursor: CursorSettings{HooksEnabled: &disabled}}
+
+	installed, err := AutoInstallCursorHooks(cfg, tmpDir)
+	if err != nil {
+		t.Fatalf("AutoInstallCursorHooks failed: %v", err)
+	}
+	if installed {
+		t.Fatal("hooks were installed despite [cursor] hooks_enabled = false")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "hooks.json")); !os.IsNotExist(err) {
+		t.Fatal("hooks.json was created despite [cursor] hooks_enabled = false")
+	}
+}
+
+func TestAutoInstallCursorHooks_InstallsByDefault(t *testing.T) {
+	for _, cfg := range []*UserConfig{nil, {}} {
+		tmpDir := t.TempDir()
+		installed, err := AutoInstallCursorHooks(cfg, tmpDir)
+		if err != nil {
+			t.Fatalf("AutoInstallCursorHooks failed: %v", err)
+		}
+		if !installed {
+			t.Fatalf("expected hooks to be installed for cfg=%v", cfg)
+		}
+		if !CheckCursorHooksInstalled(tmpDir) {
+			t.Fatal("hooks not present after AutoInstallCursorHooks")
+		}
+	}
+}
+
+func TestAutoInstallCursorHooks_NoopWhenAlreadyInstalled(t *testing.T) {
+	tmpDir := t.TempDir()
+	if _, err := InjectCursorHooks(tmpDir); err != nil {
+		t.Fatalf("seed install failed: %v", err)
+	}
+	installed, err := AutoInstallCursorHooks(&UserConfig{}, tmpDir)
+	if err != nil {
+		t.Fatalf("AutoInstallCursorHooks failed: %v", err)
+	}
+	if installed {
+		t.Fatal("expected no reinstall when hooks already present")
+	}
+}
+
+func TestCursorSettings_GetHooksEnabled(t *testing.T) {
+	var c CursorSettings
+	if !c.GetHooksEnabled() {
+		t.Fatal("default GetHooksEnabled() = false, want true")
+	}
+	v := false
+	c.HooksEnabled = &v
+	if c.GetHooksEnabled() {
+		t.Fatal("GetHooksEnabled() = true with hooks_enabled = false")
+	}
+	v2 := true
+	c.HooksEnabled = &v2
+	if !c.GetHooksEnabled() {
+		t.Fatal("GetHooksEnabled() = false with hooks_enabled = true")
+	}
+}
+
+// The `cursor-hooks uninstall` opt-out must survive a config round-trip: it is
+// written to config.toml and read back by LoadUserConfig on the next TUI start.
+func TestSetCursorHooksEnabled_RoundTrip(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	isolateConfigHomeXDG(t)
+
+	if err := SetCursorHooksEnabled(false); err != nil {
+		t.Fatalf("SetCursorHooksEnabled(false) failed: %v", err)
+	}
+	ClearUserConfigCache()
+	cfg, err := LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig failed: %v", err)
+	}
+	if cfg.Cursor.GetHooksEnabled() {
+		t.Fatal("opt-out did not persist: GetHooksEnabled() = true after SetCursorHooksEnabled(false)")
+	}
+
+	// Explicit install clears the opt-out back to the default.
+	if err := SetCursorHooksEnabled(true); err != nil {
+		t.Fatalf("SetCursorHooksEnabled(true) failed: %v", err)
+	}
+	ClearUserConfigCache()
+	cfg, err = LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig failed: %v", err)
+	}
+	if !cfg.Cursor.GetHooksEnabled() {
+		t.Fatal("SetCursorHooksEnabled(true) did not restore the default")
+	}
+}
