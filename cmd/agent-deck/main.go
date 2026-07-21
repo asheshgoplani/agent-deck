@@ -351,7 +351,7 @@ func main() {
 			handleMigratePaths(args[1:])
 			return
 		case "hook-handler":
-			handleHookHandler()
+			handleHookHandlerArgs(args[1:])
 			return
 		case "codex-notify":
 			handleCodexNotify()

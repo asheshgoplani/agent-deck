@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,6 +141,111 @@ func TestHookHandler_MissingInstanceID(t *testing.T) {
 
 	// This should not panic or produce any output
 	handleHookHandler()
+}
+
+func TestResolveHookProtocol(t *testing.T) {
+	tests := []struct {
+		name                         string
+		explicitSource, tool, source string
+		want                         hookProtocol
+	}{
+		{name: "explicit Codex wins", explicitSource: "codex", tool: "claude", source: "claude", want: hookProtocolCodex},
+		{name: "managed Codex tool", tool: "codex", source: "claude", want: hookProtocolCodex},
+		{name: "Codex payload", source: "codex", want: hookProtocolCodex},
+		{name: "Claude tool", tool: "claude", want: hookProtocolClaude},
+		{name: "other agent is generic", tool: "gemini", want: hookProtocolGeneric},
+		{name: "legacy default is Claude", want: hookProtocolClaude},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveHookProtocol(tt.explicitSource, tt.tool, tt.source); got != tt.want {
+				t.Fatalf("resolveHookProtocol(%q, %q, %q) = %v, want %v", tt.explicitSource, tt.tool, tt.source, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHookSourceArg(t *testing.T) {
+	if got := hookSourceArg([]string{"--source", "codex"}); got != "codex" {
+		t.Fatalf("separate source argument = %q, want codex", got)
+	}
+	if got := hookSourceArg([]string{"--source=codex"}); got != "codex" {
+		t.Fatalf("inline source argument = %q, want codex", got)
+	}
+}
+
+func TestHookHandler_CodexStopPreservesInboxAndEmitsNoClaudeDecision(t *testing.T) {
+	cliInboxTestHome(t)
+
+	const instanceID = "codex-parent-123"
+	t.Setenv("AGENTDECK_INSTANCE_ID", instanceID)
+	t.Setenv("AGENTDECK_TOOL", "codex")
+
+	if err := session.CommitToInbox(instanceID, session.TransitionNotificationEvent{
+		ChildSessionID: "codex-child-1",
+		ChildTitle:     "worker",
+		FromStatus:     "running",
+		ToStatus:       "waiting",
+		Timestamp:      time.Now(),
+	}); err != nil {
+		t.Fatalf("commit inbox event: %v", err)
+	}
+
+	payload, err := json.Marshal(hookPayload{
+		HookEventName: "Stop",
+		SessionID:     "codex-thread-1",
+		Cwd:           t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	oldStdin, oldStdout := os.Stdin, os.Stdout
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Stdin, os.Stdout = oldStdin, oldStdout
+		_ = inR.Close()
+		_ = outR.Close()
+	})
+	if _, err := inW.Write(payload); err != nil {
+		t.Fatalf("write stdin payload: %v", err)
+	}
+	_ = inW.Close()
+	os.Stdin, os.Stdout = inR, outW
+
+	handleHookHandlerArgs([]string{"--source", "codex"})
+	_ = outW.Close()
+
+	var stdout bytes.Buffer
+	if _, err := io.Copy(&stdout, outR); err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "" {
+		t.Fatalf("Codex hook emitted Claude-specific output: %q", got)
+	}
+	if !session.InboxHasPending(instanceID) {
+		t.Fatal("Codex Stop consumed the parent inbox; it must remain for Codex-native delivery")
+	}
+
+	statusData, err := os.ReadFile(filepath.Join(getHooksDir(), instanceID+".json"))
+	if err != nil {
+		t.Fatalf("read hook status: %v", err)
+	}
+	var status hookStatusFile
+	if err := json.Unmarshal(statusData, &status); err != nil {
+		t.Fatalf("unmarshal hook status: %v", err)
+	}
+	if status.Status != "waiting" || status.Event != "Stop" || status.SessionID != "codex-thread-1" {
+		t.Fatalf("unexpected shared status update: %+v", status)
+	}
 }
 
 func TestHookPayload_Unmarshal(t *testing.T) {

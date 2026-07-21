@@ -26,8 +26,16 @@ const maxHookPayloadSize = 1 << 20 // 1 MB
 // validInstanceID matches UUID-style instance IDs to prevent path traversal.
 var validInstanceID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
-// hookPayload represents the JSON payload Claude Code sends to hooks via stdin.
-// Only the fields we need are decoded; unknown fields are ignored.
+type hookProtocol uint8
+
+const (
+	hookProtocolGeneric hookProtocol = iota
+	hookProtocolClaude
+	hookProtocolCodex
+)
+
+// hookPayload represents the common lifecycle payload agents send via stdin.
+// Only the fields Agent Deck uses are decoded; unknown fields are ignored.
 type hookPayload struct {
 	HookEventName  string          `json:"hook_event_name"`
 	SessionID      string          `json:"session_id"`
@@ -132,13 +140,21 @@ func mapEventToStatus(event string) string {
 	}
 }
 
-// handleHookHandler processes a Claude Code hook event.
-// Reads JSON from stdin, maps the event to a status, and writes a status file.
-// Always exits 0 to avoid blocking Claude Code.
+// handleHookHandler preserves the original no-argument entry point used by
+// tests and third-party integrations. With no source signal, Claude remains
+// the backwards-compatible default.
 func handleHookHandler() {
+	handleHookHandlerArgs(nil)
+}
+
+// handleHookHandlerArgs processes a lifecycle hook from any supported agent.
+// Status and cwd synchronization are shared; protocol-specific responses are
+// emitted only for agents that understand them. It always exits 0 so a broken
+// notification integration cannot block the underlying agent.
+func handleHookHandlerArgs(args []string) {
 	instanceID := os.Getenv("AGENTDECK_INSTANCE_ID")
 	if instanceID == "" {
-		// No instance ID means this Claude session isn't managed by agent-deck.
+		// No instance ID means this session isn't managed by agent-deck.
 		// Exit silently without error.
 		return
 	}
@@ -158,6 +174,7 @@ func handleHookHandler() {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return
 	}
+	protocol := resolveHookProtocol(hookSourceArg(args), os.Getenv("AGENTDECK_TOOL"), payload.Source)
 
 	// Issue #1233: gracefully degrade when the session's working directory
 	// (PROJECT_DIR / cwd) has been renamed or removed out from under a running
@@ -204,10 +221,22 @@ func handleHookHandler() {
 		sessionID = strings.TrimSpace(payload.ConversationID)
 	}
 
-	if isStopHookEvent(payload.HookEventName) {
+	if protocol == hookProtocolClaude && isStopHookEvent(payload.HookEventName) {
 		writeHookStatusWithScan(instanceID, status, sessionID, payload.HookEventName, detectDoneSentinel(data))
 	} else {
 		writeHookStatus(instanceID, status, sessionID, payload.HookEventName)
+	}
+
+	// Working-directory synchronization is agent-neutral. Every lifecycle
+	// adapter reports cwd through the same payload field.
+	applyHookCwdSync(instanceID, payload.Cwd)
+
+	// Everything below speaks Claude's hook response protocol or consumes
+	// Claude-specific transcript data. In particular, Codex must not drain the
+	// durable inbox and emit {decision:"block"}: Codex does not understand that
+	// response, so doing so would silently lose child completion events.
+	if protocol != hookProtocolClaude {
+		return
 	}
 
 	// #572: Sync agent-deck title from Claude Code's --name / /rename value.
@@ -215,10 +244,6 @@ func handleHookHandler() {
 	// no-op when no name is set (sessions started without --name keep the
 	// existing agent-deck adjective-noun title).
 	applyClaudeTitleSync(instanceID, sessionID)
-
-	// Propagate Claude Code's /cd working-directory change (v2.1.169+) so the
-	// TUI/web display and transcript lookups track the current cwd.
-	applyClaudeCwdSync(instanceID, payload.Cwd)
 
 	// Write cost event if this hook contains usage data
 	logCostDebug("hook event=%s instance=%s status=%s", payload.HookEventName, instanceID, status)
@@ -268,6 +293,39 @@ func handleHookHandler() {
 			}
 		}
 	}
+}
+
+func hookSourceArg(args []string) string {
+	for i, arg := range args {
+		if arg == "--source" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if value, ok := strings.CutPrefix(arg, "--source="); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+// resolveHookProtocol uses the explicit CLI source first, then the managed
+// session's configured tool, then the payload hint. The tool compatibility
+// checks also recognize user-defined wrappers around Claude and Codex.
+func resolveHookProtocol(explicitSource, tool, payloadSource string) hookProtocol {
+	for _, source := range []string{explicitSource, tool, payloadSource} {
+		source = strings.TrimSpace(source)
+		if source == "" {
+			continue
+		}
+		if session.IsCodexCompatible(source) {
+			return hookProtocolCodex
+		}
+		if session.IsClaudeCompatible(source) {
+			return hookProtocolClaude
+		}
+		return hookProtocolGeneric
+	}
+
+	return hookProtocolClaude
 }
 
 // parentIsDSP reports whether the parent process (typically the claude binary)

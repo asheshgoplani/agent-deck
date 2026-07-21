@@ -6,10 +6,10 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// applyClaudeCwdSync propagates Claude Code's `/cd` working-directory change
-// (v2.1.169+) into the persisted project_path for instanceID. Silent no-op on
-// any failure — the hook must not fail the Claude turn.
-func applyClaudeCwdSync(instanceID, newCwd string) {
+// applyHookCwdSync propagates an agent's working-directory change into the
+// persisted project_path for instanceID. Silent no-op on any failure because
+// lifecycle integration must not fail the underlying agent turn.
+func applyHookCwdSync(instanceID, newCwd string) {
 	if instanceID == "" || newCwd == "" {
 		return
 	}
