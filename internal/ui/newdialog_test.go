@@ -126,10 +126,10 @@ func TestNewDialog_ModelSuggestions_FilterAndSelectCodex(t *testing.T) {
 	if got := d.GetLaunchModelID(); got != "gpt-5.5" {
 		t.Fatalf("GetLaunchModelID() = %q, want gpt-5.5", got)
 	}
-	// UX top-3 #3: order is Tool -> Model -> Path, so accepting a model advances
-	// focus to the Path field (previously Worktree).
-	if d.currentTarget() != focusPath {
-		t.Fatalf("currentTarget after accepting model = %v, want focusPath", d.currentTarget())
+	// Reasoning effort is grouped directly after the model, so accepting a
+	// model advances to the effort picker before Path.
+	if d.currentTarget() != focusReasoningEffort {
+		t.Fatalf("currentTarget after accepting model = %v, want focusReasoningEffort", d.currentTarget())
 	}
 }
 
@@ -155,6 +155,46 @@ func TestNewDialog_ModelDropdownVisibleOnFocus(t *testing.T) {
 	}
 	if d.modelSuggestionCursor != 1 {
 		t.Fatalf("modelSuggestionCursor = %d, want 1", d.modelSuggestionCursor)
+	}
+}
+
+func TestNewDialog_ReasoningEffortPickerUsesToolSpecificChoices(t *testing.T) {
+	tests := []struct {
+		tool string
+		want string
+	}{
+		{tool: "claude", want: "low"},
+		{tool: "codex", want: "minimal"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tool, func(t *testing.T) {
+			d := NewNewDialog()
+			d.SetDefaultTool(tt.tool)
+			d.Show()
+			idx := d.indexOf(focusReasoningEffort)
+			if idx < 0 {
+				t.Fatalf("%s dialog missing reasoning-effort focus target", tt.tool)
+			}
+			d.focusIndex = idx
+			d.updateFocus()
+			d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRight})
+			if got := d.GetLaunchReasoningEffort(); got != tt.want {
+				t.Fatalf("GetLaunchReasoningEffort() = %q, want %q", got, tt.want)
+			}
+			view := d.View()
+			if !strings.Contains(view, "Reasoning effort") || !strings.Contains(strings.ToLower(view), tt.want) {
+				t.Fatalf("reasoning picker not rendered for %s: %q", tt.tool, view)
+			}
+		})
+	}
+}
+
+func TestNewDialog_ReasoningEffortHiddenForUnsupportedTool(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("gemini")
+	d.Show()
+	if idx := d.indexOf(focusReasoningEffort); idx >= 0 {
+		t.Fatalf("Gemini dialog unexpectedly has reasoning-effort focus target at %d", idx)
 	}
 }
 
@@ -200,10 +240,9 @@ func TestNewDialog_ModelDropdown_TabAndShiftTabMoveFocus(t *testing.T) {
 	if d.IsModelSuggestionsActive() {
 		t.Fatal("tab should close the model dropdown")
 	}
-	// UX top-3 #3: the order is Tool -> Model -> Path, so Tab from Model lands
-	// on the Path field (previously it advanced to Worktree).
-	if d.currentTarget() != focusPath {
-		t.Fatalf("currentTarget after tab from model dropdown = %v, want focusPath", d.currentTarget())
+	// The effort picker follows Model, so Tab lands there before Path.
+	if d.currentTarget() != focusReasoningEffort {
+		t.Fatalf("currentTarget after tab from model dropdown = %v, want focusReasoningEffort", d.currentTarget())
 	}
 }
 
@@ -984,21 +1023,24 @@ func TestNewDialog_FocusOrder_HotPathNameToolPath(t *testing.T) {
 	}
 }
 
-// With a model-capable tool the Model field sits between Tool and Path, keeping
-// it grouped with the tool selector while preserving Name -> Tool -> ... -> Path.
-func TestNewDialog_FocusOrder_ModelBetweenToolAndPath(t *testing.T) {
+// With a reasoning-capable tool, Model and Reasoning sit between Tool and Path.
+func TestNewDialog_FocusOrder_ModelAndReasoningBetweenToolAndPath(t *testing.T) {
 	d := NewNewDialog()
 	d.SetDefaultTool("claude")
 	d.Show()
 
 	cmdIdx := d.indexOf(focusCommand)
 	modelIdx := d.indexOf(focusModel)
+	reasoningIdx := d.indexOf(focusReasoningEffort)
 	pathIdx := d.indexOf(focusPath)
 	if modelIdx < 0 {
 		t.Fatal("focusModel should be present for a model-capable tool (claude)")
 	}
-	if !(cmdIdx < modelIdx && modelIdx < pathIdx) {
-		t.Fatalf("want Tool(%d) < Model(%d) < Path(%d)", cmdIdx, modelIdx, pathIdx)
+	if reasoningIdx < 0 {
+		t.Fatal("focusReasoningEffort should be present for Claude")
+	}
+	if !(cmdIdx < modelIdx && modelIdx < reasoningIdx && reasoningIdx < pathIdx) {
+		t.Fatalf("want Tool(%d) < Model(%d) < Reasoning(%d) < Path(%d)", cmdIdx, modelIdx, reasoningIdx, pathIdx)
 	}
 }
 

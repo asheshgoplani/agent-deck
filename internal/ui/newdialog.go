@@ -123,17 +123,18 @@ func sliceVisibleFrom(s string, n int) string {
 type focusTarget int
 
 const (
-	focusName      focusTarget = iota
-	focusPath                  // project path input (hidden when multi-repo enabled).
-	focusCommand               // tool/command picker.
-	focusModel                 // optional per-session model/version override.
-	focusWorktree              // worktree checkbox.
-	focusSandbox               // sandbox checkbox.
-	focusConductor             // conducting parent dropdown (conditional — only when conductors exist).
-	focusMultiRepo             // multi-repo toggle (transforms path into list when enabled).
-	focusInherited             // inherited Docker settings toggle (conditional).
-	focusBranch                // branch input (conditional — only when worktree enabled).
-	focusOptions               // tool-specific options panel (conditional).
+	focusName            focusTarget = iota
+	focusPath                        // project path input (hidden when multi-repo enabled).
+	focusCommand                     // tool/command picker.
+	focusModel                       // optional per-session model/version override.
+	focusReasoningEffort             // optional per-session reasoning/effort override.
+	focusWorktree                    // worktree checkbox.
+	focusSandbox                     // sandbox checkbox.
+	focusConductor                   // conducting parent dropdown (conditional — only when conductors exist).
+	focusMultiRepo                   // multi-repo toggle (transforms path into list when enabled).
+	focusInherited                   // inherited Docker settings toggle (conditional).
+	focusBranch                      // branch input (conditional — only when worktree enabled).
+	focusOptions                     // tool-specific options panel (conditional).
 )
 
 // New session dialog: outer box and textinput widths stay in sync so long
@@ -159,6 +160,7 @@ type NewDialog struct {
 	pathInput             textinput.Model
 	commandInput          textinput.Model
 	modelInput            textinput.Model
+	reasoningEffort       string
 	claudeOptions         *ClaudeOptionsPanel // Claude-specific options (concrete for value extraction).
 	geminiOptions         *YoloOptionsPanel   // Gemini YOLO panel (concrete for value extraction).
 	codexOptions          *YoloOptionsPanel   // Codex YOLO panel (concrete for value extraction).
@@ -229,6 +231,7 @@ type dialogSnapshot struct {
 	commandCursor    int
 	commandInput     string
 	modelInput       string
+	reasoningEffort  string
 	sandboxEnabled   bool
 	worktreeEnabled  bool
 	worktreeToggled  bool
@@ -423,6 +426,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	}
 	d.pathInput.Blur()
 	d.modelInput.SetValue("")
+	d.reasoningEffort = ""
 	d.modelInput.Blur()
 	d.claudeOptions.Blur()
 	d.claudeOptions.ResetStartQuery() // #741: per-session query must not leak across openings
@@ -736,6 +740,7 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		commandCursor:    d.commandCursor,
 		commandInput:     d.commandInput.Value(),
 		modelInput:       d.modelInput.Value(),
+		reasoningEffort:  d.reasoningEffort,
 		sandboxEnabled:   d.sandboxEnabled,
 		worktreeEnabled:  d.worktreeEnabled,
 		worktreeToggled:  d.worktreeToggled,
@@ -758,6 +763,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	d.commandCursor = s.commandCursor
 	d.commandInput.SetValue(s.commandInput)
 	d.modelInput.SetValue(s.modelInput)
+	d.reasoningEffort = s.reasoningEffort
 	d.sandboxEnabled = s.sandboxEnabled
 	d.worktreeEnabled = s.worktreeEnabled
 	d.worktreeToggled = s.worktreeToggled
@@ -820,6 +826,7 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 					if opts.Model != "" {
 						d.modelInput.SetValue(opts.Model)
 					}
+					d.reasoningEffort = opts.Effort
 				}
 			}
 		case rs.Tool == "gemini":
@@ -837,6 +844,7 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 					if opts.Model != "" {
 						d.modelInput.SetValue(opts.Model)
 					}
+					d.reasoningEffort = opts.ReasoningEffort
 				}
 			}
 		case rs.Tool == "opencode":
@@ -1200,6 +1208,31 @@ func (d *NewDialog) selectedToolSupportsModel() bool {
 	return session.SupportsLaunchModel(d.GetSelectedCommand())
 }
 
+func (d *NewDialog) selectedToolSupportsReasoningEffort() bool {
+	return session.SupportsLaunchReasoningEffort(d.GetSelectedCommand())
+}
+
+func (d *NewDialog) reasoningEffortChoices() []string {
+	return append([]string{""}, session.LaunchReasoningEffortsForTool(d.GetSelectedCommand())...)
+}
+
+func (d *NewDialog) cycleReasoningEffort(delta int) {
+	choices := d.reasoningEffortChoices()
+	if len(choices) <= 1 {
+		d.reasoningEffort = ""
+		return
+	}
+	idx := 0
+	for i, choice := range choices {
+		if choice == d.reasoningEffort {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + delta + len(choices)) % len(choices)
+	d.reasoningEffort = choices[idx]
+}
+
 func (d *NewDialog) updateModelPlaceholder() {
 	switch cmd := d.GetSelectedCommand(); {
 	case session.IsClaudeCompatible(cmd):
@@ -1238,12 +1271,23 @@ func (d *NewDialog) GetLaunchModelID() string {
 	return strings.TrimSpace(d.modelInput.Value())
 }
 
+// GetLaunchReasoningEffort returns the optional native effort override for
+// Claude- and Codex-compatible tools. Empty means tool default.
+func (d *NewDialog) GetLaunchReasoningEffort() string {
+	if !d.selectedToolSupportsReasoningEffort() {
+		return ""
+	}
+	return d.reasoningEffort
+}
+
 // GetClaudeOptions returns the Claude-specific options (only relevant if command is "claude")
 func (d *NewDialog) GetClaudeOptions() *session.ClaudeOptions {
 	if !d.isClaudeSelected() {
 		return nil
 	}
-	return d.claudeOptions.GetOptions()
+	opts := d.claudeOptions.GetOptions()
+	opts.Effort = d.GetLaunchReasoningEffort()
+	return opts
 }
 
 // GetClaudeExtraArgs returns the user-supplied claude CLI tokens from the
@@ -1373,6 +1417,9 @@ func (d *NewDialog) rebuildFocusTargets() {
 	if d.selectedToolSupportsModel() {
 		targets = append(targets, focusModel)
 	}
+	if d.selectedToolSupportsReasoningEffort() {
+		targets = append(targets, focusReasoningEffort)
+	}
 	if !d.multiRepoEnabled {
 		targets = append(targets, focusPath)
 	}
@@ -1410,6 +1457,16 @@ func (d *NewDialog) updateToolOptions() {
 	d.modelSuggestionHidden = false
 	d.modelNavigated = false
 	d.filterModelSuggestions()
+	validEffort := d.reasoningEffort == ""
+	for _, effort := range session.LaunchReasoningEffortsForTool(cmd) {
+		if effort == d.reasoningEffort {
+			validEffort = true
+			break
+		}
+	}
+	if !validEffort {
+		d.reasoningEffort = ""
+	}
 	switch {
 	case session.IsClaudeCompatible(cmd):
 		d.toolOptions = d.claudeOptions
@@ -1459,7 +1516,7 @@ func (d *NewDialog) updateFocus() {
 		}
 	case focusModel:
 		d.modelInput.Focus()
-	case focusWorktree, focusSandbox, focusConductor, focusInherited:
+	case focusReasoningEffort, focusWorktree, focusSandbox, focusConductor, focusInherited:
 		// Checkbox/toggle rows and conductor dropdown — no text input to focus.
 	case focusBranch:
 		d.branchInput.Focus()
@@ -2053,6 +2110,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.updateFocus()
 				return d, nil
 			}
+			if cur == focusReasoningEffort {
+				d.cycleReasoningEffort(-1)
+				return d, nil
+			}
 			if cur == focusOptions && d.toolOptions != nil {
 				return d, d.toolOptions.Update(msg)
 			}
@@ -2063,6 +2124,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.modelInput.SetValue("")
 				d.updateToolOptions()
 				d.updateFocus()
+				return d, nil
+			}
+			if cur == focusReasoningEffort {
+				d.cycleReasoningEffort(1)
 				return d, nil
 			}
 			if cur == focusOptions && d.toolOptions != nil {
@@ -2155,6 +2220,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case " ":
+			if cur == focusReasoningEffort {
+				d.cycleReasoningEffort(1)
+				return d, nil
+			}
 			if cur == focusWorktree {
 				d.ToggleWorktree()
 				d.rebuildFocusTargets()
@@ -2363,6 +2432,38 @@ func (d *NewDialog) renderModelSection(content *strings.Builder, cur focusTarget
 		dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
 		content.WriteString("\n  ")
 		content.WriteString(dimStyle.Render(hint))
+	}
+	content.WriteString("\n\n")
+}
+
+func reasoningEffortLabel(effort string) string {
+	switch effort {
+	case "":
+		return "Tool default"
+	case "xhigh":
+		return "Extra high (xhigh)"
+	case "max":
+		return "Max"
+	default:
+		return strings.ToUpper(effort[:1]) + effort[1:]
+	}
+}
+
+func (d *NewDialog) renderReasoningEffortSection(content *strings.Builder, cur focusTarget) {
+	if !d.selectedToolSupportsReasoningEffort() {
+		return
+	}
+	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+	activeLabelStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+	valueStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+	if cur == focusReasoningEffort {
+		content.WriteString(activeLabelStyle.Render("▶ Reasoning effort:"))
+		content.WriteString(" ")
+		content.WriteString(activeLabelStyle.Render("← " + reasoningEffortLabel(d.reasoningEffort) + " →"))
+	} else {
+		content.WriteString(labelStyle.Render("  Reasoning effort:"))
+		content.WriteString(" ")
+		content.WriteString(valueStyle.Render(reasoningEffortLabel(d.reasoningEffort)))
 	}
 	content.WriteString("\n\n")
 }
@@ -2590,6 +2691,7 @@ func (d *NewDialog) View() string {
 	// mode the single Path field is hidden — its list renders below the fold.
 	d.renderCommandSection(&content, cur)
 	d.renderModelSection(&content, cur, dialogWidth)
+	d.renderReasoningEffortSection(&content, cur)
 	if !d.multiRepoEnabled {
 		d.renderSinglePathSection(&content, cur, dialogWidth)
 	}
@@ -2775,6 +2877,8 @@ func (d *NewDialog) View() string {
 		} else {
 			helpText = "Type custom model ID │ Enter browse known IDs │ Tab next"
 		}
+	} else if cur == focusReasoningEffort {
+		helpText = "←→/Space choose effort │ Tab next │ Enter/^S create │ Esc cancel"
 	} else if cur == focusConductor {
 		helpText = "↑↓ select parent │ Tab next │ Enter/^S create │ Esc cancel"
 	} else if cur == focusWorktree || cur == focusSandbox {

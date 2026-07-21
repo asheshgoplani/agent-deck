@@ -7313,7 +7313,10 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			claudeStartQuery = h.newDialog.GetClaudeStartQuery()
 		} else if command == "codex" {
 			yolo := h.newDialog.GetCodexYoloMode()
-			codexOpts := &session.CodexOptions{YoloMode: &yolo}
+			codexOpts := &session.CodexOptions{
+				YoloMode:        &yolo,
+				ReasoningEffort: h.newDialog.GetLaunchReasoningEffort(),
+			}
 			toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
 		} else if command == "hermes" {
 			yolo := h.newDialog.GetHermesYoloMode()

@@ -190,6 +190,25 @@ func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
 	}
 }
 
+func TestCreateSessionDialogUsesToolSpecificReasoningEffortCatalog(t *testing.T) {
+	data, err := embeddedStaticFiles.ReadFile("static/app/CreateSessionDialog.js")
+	if err != nil {
+		t.Fatalf("read CreateSessionDialog.js: %v", err)
+	}
+	source := string(data)
+	for _, want := range []string{
+		"REASONING EFFORT",
+		"reasoningEffort",
+		"minimal",
+		"xhigh",
+		"max",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("CreateSessionDialog.js missing expected content %q", want)
+		}
+	}
+}
+
 // TestNoTailwindPlayCDN is the regression gate for Phase 1 / Plan 03 (PERF-01).
 // The Tailwind Play CDN runtime (vendor/tailwind.js, 397 KB) was deleted in
 // favor of a build-time compiled /static/styles.css file (~8 KB gzipped).

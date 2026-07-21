@@ -15,7 +15,7 @@ import (
 // fakeMutator is a test double for SessionMutator that delegates to function fields.
 // If a function field is nil, the method returns an error indicating it is unconfigured.
 type fakeMutator struct {
-	createSessionFn    func(title, tool, projectPath, groupPath, modelID string) (string, error)
+	createSessionFn    func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error)
 	startSessionFn     func(id string) error
 	stopSessionFn      func(id string) error
 	restartSessionFn   func(id string) error
@@ -32,11 +32,11 @@ type fakeMutator struct {
 	finishWorktreeFn   func(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
 }
 
-func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
+func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
 	if f.createSessionFn == nil {
 		return "", fmt.Errorf("createSession not configured")
 	}
-	return f.createSessionFn(title, tool, projectPath, groupPath, modelID)
+	return f.createSessionFn(title, tool, projectPath, groupPath, modelID, reasoningEffort)
 }
 
 func (f *fakeMutator) StartSession(id string) error {
@@ -191,7 +191,7 @@ func TestSessionsCollectionPOSTCreatesSession(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.mutator = &fakeMutator{
-		createSessionFn: func(title, tool, projectPath, groupPath, modelID string) (string, error) {
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
 			return "new-id", nil
 		},
 	}
@@ -219,7 +219,7 @@ func TestSessionsCollectionPOSTForwardsModelID(t *testing.T) {
 
 	var gotModel string
 	srv.mutator = &fakeMutator{
-		createSessionFn: func(title, tool, projectPath, groupPath, modelID string) (string, error) {
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
 			gotModel = modelID
 			return "new-id", nil
 		},
@@ -236,6 +236,59 @@ func TestSessionsCollectionPOSTForwardsModelID(t *testing.T) {
 	}
 	if gotModel != "claude-sonnet-4-6" {
 		t.Fatalf("modelID = %q, want %q", gotModel, "claude-sonnet-4-6")
+	}
+}
+
+func TestSessionsCollectionPOSTForwardsReasoningEffort(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotEffort string
+	srv.mutator = &fakeMutator{
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+			gotEffort = reasoningEffort
+			return "new-id", nil
+		},
+	}
+
+	body := strings.NewReader(`{"title":"Test","tool":"codex","projectPath":"/tmp","reasoningEffort":"high"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	if gotEffort != "high" {
+		t.Fatalf("reasoningEffort = %q, want high", gotEffort)
+	}
+}
+
+func TestSessionsCollectionPOSTRejectsInvalidReasoningEffort(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+			t.Fatal("mutator called for invalid reasoning effort")
+			return "", nil
+		},
+	}
+
+	body := strings.NewReader(`{"title":"Test","tool":"claude","projectPath":"/tmp","reasoningEffort":"minimal"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
 	}
 }
 

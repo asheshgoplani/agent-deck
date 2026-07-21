@@ -92,7 +92,7 @@ func (m *WebMutator) beginHeadlessTx() (unlock func(), err error) {
 }
 
 // CreateSession creates and starts a new session, persisting it to storage.
-func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
+func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
 	unlock, err := m.beginHeadlessTx()
 	if err != nil {
 		return "", err
@@ -110,6 +110,11 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID 
 
 	if modelID = strings.TrimSpace(modelID); modelID != "" {
 		if err := inst.ApplyLaunchModel(modelID); err != nil {
+			return "", err
+		}
+	}
+	if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" {
+		if err := inst.ApplyLaunchReasoningEffort(reasoningEffort); err != nil {
 			return "", err
 		}
 	}

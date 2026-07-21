@@ -1239,6 +1239,10 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 		}
 	}
 
+	if opts != nil && strings.TrimSpace(opts.Effort) != "" {
+		flags = append(flags, "--effort "+shellescape.Quote(strings.TrimSpace(opts.Effort)))
+	}
+
 	// Options-level flags
 	if opts != nil {
 		if opts.SkipPermissions {
@@ -1511,6 +1515,15 @@ func (i *Instance) resolveCodexModelFlag() string {
 	return ""
 }
 
+func (i *Instance) resolveCodexReasoningEffortFlag() string {
+	opts := i.GetCodexOptions()
+	if opts != nil && strings.TrimSpace(opts.ReasoningEffort) != "" {
+		value := "model_reasoning_effort=" + strings.TrimSpace(opts.ReasoningEffort)
+		return " --config " + shellescape.Quote(value)
+	}
+	return ""
+}
+
 func (i *Instance) resolveCodexCommand(baseCommand string) string {
 	command := strings.TrimSpace(baseCommand)
 	if i.Tool == "codex" && (command == "" || command == "codex") {
@@ -1646,6 +1659,7 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 
 	yoloFlag := i.resolveCodexYoloFlag()
 	modelFlag := i.resolveCodexModelFlag()
+	reasoningFlag := i.resolveCodexReasoningEffortFlag()
 	command := i.resolveCodexCommand(baseCommand)
 	codexHome := getCodexHomeDirForCommand(command)
 
@@ -1683,16 +1697,16 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 			slog.String("instance_id", i.ID),
 			slog.String("title", i.Title),
 			slog.String("sid", i.CodexSessionID))
-		return envPrefix + fmt.Sprintf("%s%s%s fork %s",
-			command, yoloFlag, modelFlag, i.CodexSessionID)
+		return envPrefix + fmt.Sprintf("%s%s%s%s fork %s",
+			command, yoloFlag, modelFlag, reasoningFlag, i.CodexSessionID)
 	}
 
 	if i.CodexSessionID != "" {
-		return envPrefix + fmt.Sprintf("%s%s%s resume %s",
-			command, yoloFlag, modelFlag, i.CodexSessionID)
+		return envPrefix + fmt.Sprintf("%s%s%s%s resume %s",
+			command, yoloFlag, modelFlag, reasoningFlag, i.CodexSessionID)
 	}
 
-	return envPrefix + command + yoloFlag + modelFlag
+	return envPrefix + command + yoloFlag + modelFlag + reasoningFlag
 }
 
 // buildCodexCommandWithPrompt builds the Codex launch command with an initial
@@ -7663,6 +7677,7 @@ func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand 
 		shellescape.Quote(target.ID), shellescape.Quote(target.Title), shellescape.Quote(target.Tool), shellescape.Quote(sessionProfileEnvValue()))
 	yoloFlag := target.resolveCodexYoloFlag()
 	modelFlag := target.resolveCodexModelFlag()
+	reasoningFlag := target.resolveCodexReasoningEffortFlag()
 	command := target.resolveCodexCommand(baseCommand)
 	if isCodexHomeExplicit() {
 		codexHome := strings.TrimSpace(getCodexHomeDir())
@@ -7675,7 +7690,7 @@ func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand 
 			envPrefix += "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
 		}
 	}
-	return envPrefix + fmt.Sprintf("%s%s%s fork %s", command, yoloFlag, modelFlag, shellescape.Quote(i.CodexSessionID)), nil
+	return envPrefix + fmt.Sprintf("%s%s%s%s fork %s", command, yoloFlag, modelFlag, reasoningFlag, shellescape.Quote(i.CodexSessionID)), nil
 }
 
 // CreateForkedCodexInstanceWithOptions creates a forked Codex instance. Mirrors
@@ -7704,6 +7719,12 @@ func (i *Instance) CreateForkedCodexInstanceWithOptions(
 		baseCommand = "codex"
 	}
 	forked.Command = baseCommand
+	if parentOpts := i.GetCodexOptions(); parentOpts != nil && parentOpts.ReasoningEffort != "" {
+		forkOpts := &CodexOptions{ReasoningEffort: parentOpts.ReasoningEffort}
+		if err := forked.SetCodexOptions(forkOpts); err != nil {
+			return nil, "", fmt.Errorf("persist fork reasoning effort: %w", err)
+		}
+	}
 
 	cmd, err := i.buildCodexForkCommandForTarget(forked, baseCommand)
 	if err != nil {

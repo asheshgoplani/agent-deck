@@ -68,6 +68,11 @@ func TestClaudeOptions_ToArgs(t *testing.T) {
 			expected: []string{"--model", "claude-sonnet-4-6"},
 		},
 		{
+			name:     "effort only",
+			opts:     ClaudeOptions{Effort: "high"},
+			expected: []string{"--effort", "high"},
+		},
+		{
 			name: "chrome only",
 			opts: ClaudeOptions{
 				UseChrome: true,
@@ -86,11 +91,12 @@ func TestClaudeOptions_ToArgs(t *testing.T) {
 			opts: ClaudeOptions{
 				SessionMode:     "continue",
 				Model:           "claude-sonnet-4-6",
+				Effort:          "xhigh",
 				SkipPermissions: true,
 				UseChrome:       true,
 				UseTeammateMode: true,
 			},
-			expected: []string{"-c", "--model", "claude-sonnet-4-6", "--dangerously-skip-permissions", "--chrome", "--teammate-mode", "tmux"},
+			expected: []string{"-c", "--model", "claude-sonnet-4-6", "--effort", "xhigh", "--dangerously-skip-permissions", "--chrome", "--teammate-mode", "tmux"},
 		},
 		{
 			name: "allow skip permissions only",
@@ -175,6 +181,11 @@ func TestClaudeOptions_ToArgsForFork(t *testing.T) {
 			expected: []string{"--model", "claude-sonnet-4-6"},
 		},
 		{
+			name:     "effort",
+			opts:     ClaudeOptions{Effort: "max"},
+			expected: []string{"--effort", "max"},
+		},
+		{
 			name: "chrome",
 			opts: ClaudeOptions{
 				UseChrome: true,
@@ -193,10 +204,11 @@ func TestClaudeOptions_ToArgsForFork(t *testing.T) {
 			opts: ClaudeOptions{
 				SkipPermissions: true,
 				Model:           "claude-sonnet-4-6",
+				Effort:          "high",
 				UseChrome:       true,
 				UseTeammateMode: true,
 			},
-			expected: []string{"--model", "claude-sonnet-4-6", "--dangerously-skip-permissions", "--chrome", "--teammate-mode", "tmux"},
+			expected: []string{"--model", "claude-sonnet-4-6", "--effort", "high", "--dangerously-skip-permissions", "--chrome", "--teammate-mode", "tmux"},
 		},
 		{
 			name: "allow skip permissions for fork",
@@ -494,6 +506,11 @@ func TestCodexOptions_ToArgs(t *testing.T) {
 			opts:     CodexOptions{Model: "gpt-5"},
 			expected: []string{"--model", "gpt-5"},
 		},
+		{
+			name:     "reasoning effort",
+			opts:     CodexOptions{ReasoningEffort: "high"},
+			expected: []string{"--config", "model_reasoning_effort=high"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -534,7 +551,7 @@ func TestNewCodexOptions_NilConfig(t *testing.T) {
 }
 
 func TestCodexOptions_MarshalUnmarshal(t *testing.T) {
-	original := &CodexOptions{Model: "gpt-5", YoloMode: boolPtr(true)}
+	original := &CodexOptions{Model: "gpt-5", ReasoningEffort: "xhigh", YoloMode: boolPtr(true)}
 
 	data, err := MarshalToolOptions(original)
 	if err != nil {
@@ -551,6 +568,9 @@ func TestCodexOptions_MarshalUnmarshal(t *testing.T) {
 	}
 	if restored.Model != "gpt-5" {
 		t.Errorf("expected Model=gpt-5 after roundtrip, got %q", restored.Model)
+	}
+	if restored.ReasoningEffort != "xhigh" {
+		t.Errorf("expected ReasoningEffort=xhigh after roundtrip, got %q", restored.ReasoningEffort)
 	}
 }
 

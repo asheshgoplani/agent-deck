@@ -13,6 +13,23 @@ import { displayLabelForTool, resolveCreateSessionPickerTools } from './pickerTo
 
 const CUSTOM_MODEL = '__custom__'
 
+const REASONING_EFFORT_CATALOG = {
+  claude: [
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra high' },
+    { value: 'max', label: 'Max' },
+  ],
+  codex: [
+    { value: 'minimal', label: 'Minimal' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra high' },
+  ],
+}
+
 const MODEL_ID_CATALOG = {
   claude: [
     { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
@@ -73,11 +90,16 @@ function modelIDsForTool(tool) {
   return MODEL_ID_CATALOG[tool] || []
 }
 
+function reasoningEffortsForTool(tool) {
+  return REASONING_EFFORT_CATALOG[tool] || []
+}
+
 export function CreateSessionDialog() {
   const [title, setTitle] = useState('')
   const [tool, setTool] = useState('claude')
   const [modelId, setModelId] = useState('')
   const [customModel, setCustomModel] = useState('')
+  const [reasoningEffort, setReasoningEffort] = useState('')
   const [path, setPath] = useState('')
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
@@ -95,6 +117,7 @@ export function CreateSessionDialog() {
       const payload = { title, tool, projectPath: path }
       const modelId = selectedModelId()
       if (modelId) payload.modelId = modelId
+      if (reasoningEffort) payload.reasoningEffort = reasoningEffort
       await apiFetch('POST', '/api/sessions', payload)
       createSessionDialogSignal.value = false
     } catch (err) {
@@ -108,6 +131,7 @@ export function CreateSessionDialog() {
     setTool(nextTool)
     setModelId('')
     setCustomModel('')
+    setReasoningEffort('')
   }
 
   function selectedModelId() {
@@ -118,6 +142,7 @@ export function CreateSessionDialog() {
   const close = () => (createSessionDialogSignal.value = false)
   const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const modelIDs = modelIDsForTool(tool)
+  const reasoningEfforts = reasoningEffortsForTool(tool)
   const shownTools = resolveCreateSessionPickerTools(pickerToolsSignal.value)
   const needsCustomModel = modelId === CUSTOM_MODEL
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
@@ -174,6 +199,17 @@ export function CreateSessionDialog() {
                 <input required value=${customModel} onInput=${e => setCustomModel(e.target.value)} placeholder="provider/model-or-version"/>
               </div>
             `}
+          `}
+          ${reasoningEfforts.length > 0 && html`
+            <div class="field">
+              <label>REASONING EFFORT</label>
+              <select value=${reasoningEffort} onInput=${e => setReasoningEffort(e.target.value)}>
+                <option value="">Tool default</option>
+                ${reasoningEfforts.map(effort => html`
+                  <option key=${effort.value} value=${effort.value}>${effort.label} — ${effort.value}</option>
+                `)}
+              </select>
+            </div>
           `}
           ${error && html`
             <div style="font-family: var(--mono); font-size: 11.5px; color: var(--tn-red); padding: 8px 10px;
