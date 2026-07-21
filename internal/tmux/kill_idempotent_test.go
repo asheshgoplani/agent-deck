@@ -1,6 +1,9 @@
 package tmux
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestKill_NonexistentSessionReturnsNil pins that killing a tmux session that
 // no longer exists is treated as success, not failure.
@@ -16,6 +19,37 @@ func TestKill_NonexistentSessionReturnsNil(t *testing.T) {
 	s := NewSession("agent-deck-kill-idempotent-absent", t.TempDir())
 	if err := s.Kill(); err != nil {
 		t.Fatalf("Kill() on a nonexistent session should return nil, got: %v", err)
+	}
+}
+
+// TestKill_NonexistentSessionIgnoresStalePositiveCache reproduces the archive
+// race where the first archive stops tmux but does not persist ArchivedAt. A
+// fresh positive entry can outlive the tmux session briefly; post-kill error
+// verification must use live socket state instead of that cache entry.
+func TestKill_NonexistentSessionIgnoresStalePositiveCache(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	previousSocket := DefaultSocketName()
+	SetDefaultSocketName("")
+	sessionCacheMu.Lock()
+	previousCache := sessionCacheData
+	previousCacheTime := sessionCacheTime
+	sessionCacheMu.Unlock()
+	t.Cleanup(func() {
+		SetDefaultSocketName(previousSocket)
+		sessionCacheMu.Lock()
+		sessionCacheData = previousCache
+		sessionCacheTime = previousCacheTime
+		sessionCacheMu.Unlock()
+	})
+
+	s := NewSession("agent-deck-kill-stale-positive-absent", t.TempDir())
+	sessionCacheMu.Lock()
+	sessionCacheData = map[string]int64{s.Name: time.Now().Unix()}
+	sessionCacheTime = time.Now()
+	sessionCacheMu.Unlock()
+
+	if err := s.Kill(); err != nil {
+		t.Fatalf("Kill() trusted a stale positive cache entry: %v", err)
 	}
 }
 

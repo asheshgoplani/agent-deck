@@ -2645,8 +2645,10 @@ func (s *Session) Kill() error {
 	// fail to persist the archive when re-archiving a session whose tmux was
 	// already gone (the post-Unarchive path — Unarchive clears the flag without
 	// restarting tmux). Only surface the error if the session is genuinely
-	// still alive after the kill attempt.
-	if err != nil && !s.Exists() {
+	// still alive after the kill attempt. This verification must bypass
+	// Session.Exists(): its positive cache can briefly outlive the killed
+	// session and turn a successful first archive into an error.
+	if err != nil && !tmuxSessionExistsOnSocket(s.SocketName, s.Name) {
 		return nil
 	}
 
