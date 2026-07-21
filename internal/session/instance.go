@@ -2543,7 +2543,10 @@ func (i *Instance) collectTmuxPaneProcessTreePIDs() []int {
 	// Target the same tmux server the session was created on (issue #687).
 	// A session on an isolated agent-deck socket would return no panes from
 	// the default server and we would mistakenly treat it as empty.
-	out, err := tmux.Exec(i.TmuxSocketName, "list-panes", "-t", target, "-F", "#{pane_pid}").Output()
+	// Bounded — see tmux.OutputBounded. Exec(...).Output() has no deadline, and
+	// a tmux client that has exhausted its fd table never exits, so this probe
+	// would hang the caller forever.
+	out, err := tmux.OutputBounded(i.TmuxSocketName, "list-panes", "-t", target, "-F", "#{pane_pid}")
 	if err != nil {
 		return nil
 	}

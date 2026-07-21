@@ -1994,9 +1994,8 @@ func findSessionByTmuxAcrossProfiles() (*session.Instance, string) {
 
 // findSessionByTmux tries to find a session by matching tmux session name or working directory
 func findSessionByTmux(instances []*session.Instance) *session.Instance {
-	// Get current tmux session name
-	cmd := exec.Command("tmux", "display-message", "-p", "#{session_name}\t#{pane_current_path}")
-	output, err := cmd.Output()
+	// Get current tmux session name (bounded — see tmuxProbeTimeout)
+	output, err := tmuxProbeBounded("display-message", "-p", "#{session_name}\t#{pane_current_path}")
 	if err != nil {
 		return nil
 	}
@@ -2050,10 +2049,9 @@ func findSessionByTmux(instances []*session.Instance) *session.Instance {
 
 // showTmuxSessionInfo shows information about the current tmux session (unregistered)
 func showTmuxSessionInfo(out *CLIOutput, jsonOutput bool) {
-	// Get tmux session info
-	cmd := exec.Command("tmux", "display-message", "-p",
+	// Get tmux session info (bounded — see tmuxProbeTimeout)
+	output, err := tmuxProbeBounded("display-message", "-p",
 		"#{session_name}\t#{pane_current_path}\t#{session_created}\t#{window_name}")
-	output, err := cmd.Output()
 	if err != nil {
 		out.Error("failed to get tmux session info", ErrCodeNotFound)
 		os.Exit(1)
@@ -3969,8 +3967,8 @@ func handleSessionCurrent(profileArg string, args []string) {
 
 // getCurrentTmuxSessionName gets the current tmux session name (single subprocess call)
 func getCurrentTmuxSessionName() (string, error) {
-	cmd := exec.Command("tmux", "display-message", "-p", "#{session_name}")
-	output, err := cmd.Output()
+	// Bounded — see tmuxProbeTimeout.
+	output, err := tmuxProbeBounded("display-message", "-p", "#{session_name}")
 	if err != nil {
 		return "", err
 	}

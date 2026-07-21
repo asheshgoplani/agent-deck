@@ -1744,7 +1744,18 @@ func AnyAgentDeckSessionWithEnvValue(envKey, envValue string) (string, bool) {
 	}
 
 	socket := DefaultSocketName()
-	out, err := tmuxExec(socket, "list-sessions", "-F", "#{session_name}").Output()
+	// Bounded — see tmuxPollTimeout.
+	//
+	// CAUTION before wiring this to SpawnAttempt.AlreadyAlive (it has no
+	// production caller today): the bool return conflates "probed, found
+	// nothing" with "probe failed or timed out". A timeout therefore reads as
+	// "no live session", which is the permissive answer — the opposite of what
+	// a spawn guard wants, and the opposite of what Exists() does, where an
+	// indeterminate probe is deliberately treated as "still alive" so a live
+	// session is never flipped to error. Give this a three-state result
+	// (found / not-found / indeterminate) before making a spawn decision
+	// depend on it.
+	out, err := runBoundedOutput(socket, "list-sessions", "-F", "#{session_name}")
 	if err != nil {
 		return "", false
 	}
@@ -1753,7 +1764,7 @@ func AnyAgentDeckSessionWithEnvValue(envKey, envValue string) (string, bool) {
 		if name == "" || !strings.HasPrefix(name, SessionPrefix) {
 			continue
 		}
-		val, err := tmuxExec(socket, "show-environment", "-t", name, envKey).Output()
+		val, err := runBoundedOutput(socket, "show-environment", "-t", name, envKey)
 		if err != nil {
 			continue
 		}
@@ -1777,7 +1788,8 @@ func KillSessionsWithEnvValue(envKey, envValue, excludeName string) {
 	}
 
 	socket := DefaultSocketName()
-	out, err := tmuxExec(socket, "list-sessions", "-F", "#{session_name}").Output()
+	// Bounded — see tmuxPollTimeout.
+	out, err := runBoundedOutput(socket, "list-sessions", "-F", "#{session_name}")
 	if err != nil {
 		return
 	}
@@ -1789,7 +1801,7 @@ func KillSessionsWithEnvValue(envKey, envValue, excludeName string) {
 		if !strings.HasPrefix(name, SessionPrefix) {
 			continue
 		}
-		val, err := tmuxExec(socket, "show-environment", "-t", name, envKey).Output()
+		val, err := runBoundedOutput(socket, "show-environment", "-t", name, envKey)
 		if err != nil {
 			continue
 		}
@@ -1929,7 +1941,10 @@ func recoverFromStaleDefaultSocketIfNeeded(startErrOutput string) (bool, error) 
 	}
 
 	// If tmux can already answer list-sessions, don't touch any socket file.
-	if err := tmuxExec(DefaultSocketName(), "list-sessions").Run(); err == nil {
+	// Bounded — see tmuxPollTimeout. This is the recovery path for a server
+	// that already misbehaved, so it is exactly where a client is most likely
+	// to hang; an unbounded probe here would block recovery indefinitely.
+	if err := runBoundedRun(DefaultSocketName(), "list-sessions"); err == nil {
 		return false, nil
 	}
 
@@ -2657,8 +2672,19 @@ func (s *Session) Kill() error {
 // Used before respawn to track processes that must die.
 func (s *Session) getPaneProcessTree() (panePID int, allPIDs []int) {
 	target := s.Name + ":"
-	out, err := s.tmuxCmd("list-panes", "-t", target, "-F", "#{pane_pid}").Output()
+	// Bounded — see tmuxPollTimeout. Runs on the respawn path: a hang here
+	// stalls the restart that is supposed to clear the bad state.
+	out, err := s.runBoundedOutput("list-panes", "-t", target, "-F", "#{pane_pid}")
 	if err != nil {
+		// A failed probe is indistinguishable from "no panes" to our callers,
+		// and they respond by SKIPPING the SIGTERM->SIGKILL escalation that
+		// exists because Claude Code 2.1.27+ ignores tmux's SIGHUP. Degrading
+		// to "no PIDs" is the right trade against the old infinite hang, but it
+		// must not be silent: on a loaded box this is how a SIGHUP-immune agent
+		// survives a Kill() as an orphan.
+		statusLog.Warn("pane_process_tree_probe_failed",
+			slog.String("session", s.Name),
+			slog.String("error", err.Error()))
 		return 0, nil
 	}
 	// Take only the first line (handles multi-pane sessions safely)
@@ -3049,8 +3075,10 @@ func (s *Session) CapturePaneFresh() (string, error) {
 func (s *Session) CaptureFullHistory() (string, error) {
 	// Limit to last 2000 lines to balance content availability with memory usage
 	// AI agent conversations can be long - 2000 lines captures ~40-80 screens of content
-	cmd := s.tmuxCmd("capture-pane", "-t", s.Name, "-p", "-e", "-S", "-2000")
-	output, err := cmd.Output()
+	// Bounded — see tmuxPollTimeout. The TUI calls this on a cadence, and it
+	// was the single largest CPU sink in the 2026-07-21 incident: three
+	// concurrent `capture-pane -S -2000` clients, each spinning >20 minutes.
+	output, err := s.runBoundedOutput("capture-pane", "-t", s.Name, "-p", "-e", "-S", "-2000")
 	if err != nil {
 		return "", fmt.Errorf("failed to capture history: %w", err)
 	}
@@ -3086,8 +3114,8 @@ func (s *Session) CaptureHistoryLines(n int) (string, error) {
 // CaptureWindowFullHistory captures the scrollback history of a specific window (last 2000 lines).
 func (s *Session) CaptureWindowFullHistory(windowIndex int) (string, error) {
 	target := fmt.Sprintf("%s:%d", s.Name, windowIndex)
-	cmd := s.tmuxCmd("capture-pane", "-t", target, "-p", "-e", "-S", "-2000")
-	output, err := cmd.Output()
+	// Bounded — see tmuxPollTimeout.
+	output, err := s.runBoundedOutput("capture-pane", "-t", target, "-p", "-e", "-S", "-2000")
 	if err != nil {
 		return "", fmt.Errorf("failed to capture window %d history: %w", windowIndex, err)
 	}
@@ -5106,8 +5134,8 @@ func (s *Session) SplitShellPane(workdir string) error {
 // ListAllSessions returns all Agent Deck tmux sessions
 func ListAllSessions() ([]*Session, error) {
 	socket := DefaultSocketName()
-	cmd := tmuxExec(socket, "list-sessions", "-F", "#{session_name}")
-	output, err := cmd.Output()
+	// Bounded — see tmuxPollTimeout.
+	output, err := runBoundedOutput(socket, "list-sessions", "-F", "#{session_name}")
 	if err != nil {
 		// No sessions exist
 		if strings.Contains(err.Error(), "no server running") ||
@@ -5329,8 +5357,9 @@ func RunLogMaintenance(maxSizeMB int, maxLines int, removeOrphans bool) {
 // those in the current profile. This ensures consistent notification bars
 // when users switch between sessions.
 func ListAgentDeckSessions() ([]string, error) {
-	cmd := tmuxExec(DefaultSocketName(), "list-sessions", "-F", "#{session_name}")
-	output, err := cmd.Output()
+	// Bounded — see tmuxPollTimeout. Drives the cross-profile notification-bar
+	// refresh, i.e. it runs on a timer for every session.
+	output, err := runBoundedOutput(DefaultSocketName(), "list-sessions", "-F", "#{session_name}")
 	if err != nil {
 		// No sessions exist
 		if strings.Contains(err.Error(), "no server running") ||
@@ -5649,8 +5678,9 @@ func WriteAckSignal(sessionID string) error {
 func attachedClientNames(socket string) []string {
 	// client_name is free-text (a pts path) so it goes LAST, after the 0/1
 	// control-mode flag, to stay collision-safe under tmuxFieldSep.
-	cmd := tmuxExec(socket, "list-clients", "-F", tmuxFmt("#{client_control_mode}", "#{client_name}"))
-	output, err := cmd.Output()
+	// Bounded — see tmuxPollTimeout. list-clients against a wedged server was
+	// one of the observed spin sources.
+	output, err := runBoundedOutput(socket, "list-clients", "-F", tmuxFmt("#{client_control_mode}", "#{client_name}"))
 	if err != nil {
 		return nil
 	}
@@ -5775,8 +5805,8 @@ func GetActiveSession() (string, error) {
 
 // DiscoverAllTmuxSessions returns all tmux sessions (including non-Agent Deck ones)
 func DiscoverAllTmuxSessions() ([]*Session, error) {
-	cmd := tmuxExec(DefaultSocketName(), "list-sessions", "-F", "#{session_name}:#{pane_current_path}")
-	output, err := cmd.Output()
+	// Bounded — see tmuxPollTimeout.
+	output, err := runBoundedOutput(DefaultSocketName(), "list-sessions", "-F", "#{session_name}:#{pane_current_path}")
 	if err != nil {
 		// No sessions exist
 		if strings.Contains(err.Error(), "no server running") ||

@@ -316,6 +316,16 @@ func (s *Session) runBoundedRun(args ...string) error {
 	return runBoundedRun(s.SocketName, args...)
 }
 
+// OutputBounded is the public counterpart to runBoundedOutput, for cadence
+// queries fired from outside internal/tmux (internal/session pane-PID probes,
+// CLI helpers). Prefer it over Exec(...).Output() for anything on a timer:
+// Exec has no deadline, and a tmux client that has leaked its fd table spins
+// at 100% CPU forever rather than exiting, so an unbounded .Output() never
+// returns. See tmuxPollTimeout.
+func OutputBounded(socketName string, args ...string) ([]byte, error) {
+	return runBoundedOutput(socketName, args...)
+}
+
 // Exec is the public package counterpart to tmuxExec. Call sites outside
 // internal/tmux (the session package, CLI helpers, web terminal bridge) use
 // this when they have a socket name — typically Instance.TmuxSocketName —
