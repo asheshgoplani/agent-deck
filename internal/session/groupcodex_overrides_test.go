@@ -1,0 +1,119 @@
+package session
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestResolveGroupCodex_InheritsAndPrefersNearestScalar(t *testing.T) {
+	tmpHome := withIsolatedHomeAndConfig(t, `
+[codex]
+config_dir = "~/.codex-global"
+command = "codex-global"
+
+[groups."work".codex]
+config_dir = "~/.codex-work"
+command = "codex-work"
+skills = ["store/base", "store/shared"]
+mcps = ["memory"]
+
+[groups."work/sub".codex]
+config_dir = "~/.codex-work-sub"
+skills = ["store/extra", "store/shared"]
+mcps = ["exa", "memory"]
+`)
+
+	res := ResolveGroupCodex("work/sub/leaf")
+
+	if got, want := res.ConfigDir, filepath.Join(tmpHome, ".codex-work-sub"); got != want {
+		t.Errorf("config_dir=%q want %q", got, want)
+	}
+	if got, want := res.ConfigDirSource, "group:work/sub"; got != want {
+		t.Errorf("config_dir source=%q want %q", got, want)
+	}
+	if got, want := res.Command, "codex-work"; got != want {
+		t.Errorf("command=%q want %q", got, want)
+	}
+	if got, want := res.CommandSource, "group:work"; got != want {
+		t.Errorf("command source=%q want %q", got, want)
+	}
+	if got, want := res.Skills, []string{"store/base", "store/shared", "store/extra"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("skills=%v want %v", got, want)
+	}
+	if got, want := res.MCPs, []string{"memory", "exa"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("mcps=%v want %v", got, want)
+	}
+}
+
+func TestBuildCodexCommand_UsesGroupCodexConfigDirAsCodexHome(t *testing.T) {
+	tmpHome := withIsolatedHomeAndConfig(t, `
+[codex]
+config_dir = "~/.codex-global"
+
+[groups."work".codex]
+config_dir = "~/.codex-work"
+`)
+	t.Setenv("CODEX_HOME", "")
+
+	inst := NewInstanceWithGroupAndTool("work-codex", "/tmp/work-codex", "work/sub", "codex")
+	command := inst.buildCodexCommand(inst.Command)
+	want := "CODEX_HOME=" + filepath.Join(tmpHome, ".codex-work")
+	if !strings.Contains(command, want) {
+		t.Fatalf("expected command to include %q, got %q", want, command)
+	}
+}
+
+func TestGroupCodexEnvFileOverridesGlobal(t *testing.T) {
+	withIsolatedHomeAndConfig(t, `
+[codex]
+env_file = "~/.agent-deck/global.env"
+
+[groups."work".codex]
+env_file = "~/.agent-deck/work.env"
+`)
+
+	inst := NewInstanceWithGroupAndTool("work-codex", "/tmp/work-codex", "work/sub", "codex")
+	if got, want := inst.getToolEnvFile(), "~/.agent-deck/work.env"; got != want {
+		t.Errorf("Codex env_file=%q want %q", got, want)
+	}
+}
+
+func TestSyncGroupCodexPluginsUsesGroupHome(t *testing.T) {
+	home := t.TempDir()
+	codexHome := filepath.Join(home, "codex-work")
+	record := filepath.Join(home, "plugin-invocation.txt")
+	fakeCodex := filepath.Join(home, "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$CODEX_HOME $*\" > " + record + "\n"
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("AGENTDECK_PROFILE", "")
+	t.Setenv("CODEX_HOME", "")
+	t.Cleanup(ClearUserConfigCache)
+
+	if err := os.MkdirAll(filepath.Join(home, ".agent-deck"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := "[groups.\"work\".codex]\nconfig_dir = \"" + codexHome + "\"\ncommand = \"" + fakeCodex + "\"\nplugins = [\"agent-deck@team\"]\n"
+	if err := os.WriteFile(filepath.Join(home, ".agent-deck", "config.toml"), []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	if err := SyncGroupCodexPlugins("work"); err != nil {
+		t.Fatalf("sync plugins: %v", err)
+	}
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("read invocation: %v", err)
+	}
+	if got := string(data); !strings.Contains(got, codexHome+" plugin add agent-deck@team --json") {
+		t.Errorf("unexpected plugin invocation: %q", got)
+	}
+}

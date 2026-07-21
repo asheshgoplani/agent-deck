@@ -196,6 +196,31 @@ agent-deck group show work --resolved
 agent-deck group show work --resolved --json
 ```
 
+## Per-group Codex loadouts
+
+Codex groups can select an isolated `CODEX_HOME` and declaratively materialize
+project skills or append catalog MCPs to that home's `config.toml`:
+
+```toml
+[groups."work".codex]
+config_dir = "~/.agent-deck/codex/work"
+env_file = "~/.agent-deck/groups/work-codex.env"
+command = "codex"
+skills = ["team/review"]
+mcps = ["context7"]
+plugins = ["agent-deck@team"]
+```
+
+Native Codex plugins are deliberately not installed during session startup.
+After configuring the group's Codex marketplace, sync them explicitly:
+
+```bash
+agent-deck group codex sync work
+```
+
+The command runs `codex plugin add` with the group's `CODEX_HOME`; repeated
+syncs are safe to run and any marketplace/authentication errors are reported.
+
 ## [group_defaults] Section
 
 Defaults stamped onto **newly-created** groups. Existing groups are unaffected.

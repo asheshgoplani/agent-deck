@@ -10,9 +10,8 @@ import (
 )
 
 // ApplyConfiguredLoadout materializes the declarative per-group /
-// per-conductor skill, plugin, and MCP loadout
-// ([groups.X.claude].skills/.plugins/.mcps and the conductor mirror) for a
-// claude-compatible session, by
+// per-conductor skill, plugin, and MCP loadout for Claude sessions, and the
+// per-group skill and MCP loadout for Codex sessions, by
 // driving the existing project-skills attach machinery and local .mcp.json
 // writer — exactly as if the user had run `skill attach` / `mcp attach` by
 // hand. Called at session create (add/launch) and re-asserted before every
@@ -31,16 +30,19 @@ import (
 //     session's skills)
 //
 // MCP entries are [mcps.X] catalog names appended to the session's local
-// .mcp.json (never removed); unknown names skip + warn.
+// configuration (or the selected CODEX_HOME/config.toml for Codex), never
+// removed; unknown names skip + warn.
 //
-// The effective lists are the union of the group ancestor chain and, for
-// conductor sessions, the conductor block (group floor + conductor extras).
+// The effective Claude lists are the union of the group ancestor chain and,
+// for conductor sessions, the conductor block (group floor + conductor
+// extras). Codex uses its group ancestor chain only; native plugins remain
+// pre-provisioned in the selected CODEX_HOME.
 //
 // Returns the warnings (also slog-warned) so CLI call sites can print them;
 // a nil return means nothing to do or everything healthy. Failures never
 // block the spawn — the loadout is provisioning, not a launch gate.
 func ApplyConfiguredLoadout(inst *Instance) []string {
-	if inst == nil || !IsClaudeCompatible(inst.Tool) {
+	if inst == nil || (!IsClaudeCompatible(inst.Tool) && !IsCodexCompatible(inst.Tool)) {
 		return nil
 	}
 	if inst.ProjectPath == "" || inst.SSHHost != "" {
@@ -61,18 +63,24 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 		return nil
 	}
 
-	skills := unionLoadoutEntries(
-		config.GetGroupClaudeSkills(inst.GroupPath),
-		config.GetConductorClaudeSkills(conductorNameFromInstance(inst)),
-	)
-	plugins := unionLoadoutEntries(
-		config.GetGroupClaudePlugins(inst.GroupPath),
-		config.GetConductorClaudePlugins(conductorNameFromInstance(inst)),
-	)
-	mcps := unionLoadoutEntries(
-		config.GetGroupClaudeMCPs(inst.GroupPath),
-		config.GetConductorClaudeMCPs(conductorNameFromInstance(inst)),
-	)
+	var skills, plugins, mcps []string
+	if IsClaudeCompatible(inst.Tool) {
+		skills = unionLoadoutEntries(
+			config.GetGroupClaudeSkills(inst.GroupPath),
+			config.GetConductorClaudeSkills(conductorNameFromInstance(inst)),
+		)
+		plugins = unionLoadoutEntries(
+			config.GetGroupClaudePlugins(inst.GroupPath),
+			config.GetConductorClaudePlugins(conductorNameFromInstance(inst)),
+		)
+		mcps = unionLoadoutEntries(
+			config.GetGroupClaudeMCPs(inst.GroupPath),
+			config.GetConductorClaudeMCPs(conductorNameFromInstance(inst)),
+		)
+	} else {
+		skills = config.GetGroupCodexSkills(inst.GroupPath)
+		mcps = config.GetGroupCodexMCPs(inst.GroupPath)
+	}
 	if len(skills) == 0 && len(plugins) == 0 && len(mcps) == 0 {
 		return nil
 	}
@@ -165,6 +173,9 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 			info = &MCPInfo{}
 		}
 		current := info.Local()
+		if IsCodexCompatible(inst.Tool) {
+			current = info.Global
+		}
 		attached := make(map[string]bool, len(current))
 		for _, name := range current {
 			attached[name] = true
@@ -188,7 +199,7 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 		}
 		if added {
 			if err := inst.WriteLocalMCPConfig(newLocal); err != nil {
-				warn("mcp loadout: failed to write local .mcp.json: %v", err)
+				warn("mcp loadout: failed to write MCP configuration: %v", err)
 			} else {
 				inst.InvalidateProjectMCPIntegrationsCache()
 			}

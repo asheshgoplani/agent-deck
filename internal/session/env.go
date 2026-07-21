@@ -588,6 +588,9 @@ func (i *Instance) getToolEnvFile() string {
 	case "opencode":
 		return config.OpenCode.EnvFile
 	case "codex":
+		if groupEnv := config.GetGroupCodexEnvFile(i.GroupPath); groupEnv != "" {
+			return groupEnv
+		}
 		return config.Codex.EnvFile
 	case "copilot":
 		return config.Copilot.EnvFile

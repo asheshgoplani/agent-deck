@@ -51,6 +51,10 @@ func handleGroup(profile string, args []string) {
 	}
 
 	canonical, ok := groupVerbCanonical(args[0])
+	if args[0] == "codex" {
+		handleGroupCodex(profile, args[1:])
+		return
+	}
 	if !ok {
 		fmt.Printf("Unknown group command: %s\n", args[0])
 		fmt.Println()
@@ -86,7 +90,8 @@ func printGroupHelp() {
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  list              List all groups with session counts")
-	fmt.Println("  show <name>       Show one group; --resolved adds the effective claude config (alias: info)")
+	fmt.Println("  show <name>       Show one group; --resolved adds effective Claude and Codex config (alias: info)")
+	fmt.Println("  codex sync <name> Sync configured native Codex plugins into the group home")
 	fmt.Println("  create <name>     Create a new group")
 	fmt.Println("  update <name>     Update group settings")
 	fmt.Println("  delete <name>     Delete a group (aliases: rm, remove)")
@@ -97,6 +102,7 @@ func printGroupHelp() {
 	fmt.Println("Examples:")
 	fmt.Println("  agent-deck group list")
 	fmt.Println("  agent-deck group show work --resolved        # Verify the effective [groups.\"work\".claude] config")
+	fmt.Println("  agent-deck group codex sync work")
 	fmt.Println("  agent-deck group create mobile")
 	fmt.Println("  agent-deck group create ios --parent mobile")
 	fmt.Println("  agent-deck group update mobile --default-path /path/to/repo")
@@ -494,9 +500,57 @@ func handleGroupShow(profile string, args []string) {
 		}
 		fmt.Fprintf(&b, "  plugins:    %s\n", orNone(strings.Join(res.Plugins, ", ")))
 		fmt.Fprintf(&b, "  mcps:       %s\n", orNone(strings.Join(res.MCPs, ", ")))
+
+		codex := session.ResolveGroupCodex(groupPath)
+		jsonData["codex"] = codex
+		b.WriteString("\nCodex config (resolved for a session in this group):\n")
+		fmt.Fprintf(&b, "  config_dir: %s  [%s]\n", orNone(codex.ConfigDir), codex.ConfigDirSource)
+		fmt.Fprintf(&b, "  env_file:   %s  [%s]\n", orNone(codex.EnvFile), codex.EnvFileSource)
+		fmt.Fprintf(&b, "  command:    %s  [%s]\n", codex.Command, codex.CommandSource)
+		fmt.Fprintf(&b, "  skills:     %s\n", orNone(strings.Join(codex.Skills, ", ")))
+		fmt.Fprintf(&b, "  plugins:    %s\n", orNone(strings.Join(codex.Plugins, ", ")))
+		fmt.Fprintf(&b, "  mcps:       %s\n", orNone(strings.Join(codex.MCPs, ", ")))
 	}
 
 	out.Print(b.String(), jsonData)
+}
+
+// handleGroupCodex manages explicit, potentially side-effecting Codex actions.
+func handleGroupCodex(profile string, args []string) {
+	if len(args) == 0 || args[0] != "sync" || len(args) != 2 {
+		fmt.Println("Usage: agent-deck group codex sync <name>")
+		os.Exit(1)
+	}
+	name := args[1]
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		fmt.Printf("failed to initialize storage: %v\n", err)
+		os.Exit(1)
+	}
+	instances, groups, err := storage.LoadWithGroups()
+	if err != nil {
+		fmt.Printf("failed to load sessions: %v\n", err)
+		os.Exit(1)
+	}
+	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	groupPath := normalizeGroupPath(name)
+	if _, exists := groupTree.Groups[groupPath]; !exists {
+		for path, g := range groupTree.Groups {
+			if strings.EqualFold(g.Name, name) {
+				groupPath = path
+				break
+			}
+		}
+	}
+	if _, exists := groupTree.Groups[groupPath]; !exists {
+		fmt.Printf("group '%s' not found\n", name)
+		os.Exit(2)
+	}
+	if err := session.SyncGroupCodexPlugins(groupPath); err != nil {
+		fmt.Printf("failed to sync Codex plugins for %s: %v\n", groupPath, err)
+		os.Exit(1)
+	}
+	fmt.Printf("Synced configured Codex plugins for %s\n", groupPath)
 }
 
 // orNone renders an empty string as "(none)" for human-readable output.
