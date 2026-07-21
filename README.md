@@ -198,6 +198,36 @@ Lookup priority: `env > group > profile > global > default`. The `env_file` is `
 
 Human-watchable verification: `bash scripts/verify-per-group-claude-config.sh`. The harness creates two throwaway groups, launches one normal and one custom-command session, and prints a pass/fail table.
 
+#### Reusable agent loadouts
+
+When root groups share a toolset, define it once under `[loadouts.<name>]`
+and select it from the group. Claude loadouts use Agent Deck catalog keys;
+Codex loadouts use native `plugin@marketplace` selectors. Loadout entries are
+applied before the group's direct `skills`, `plugins`, and `mcps`, so a group
+can add a narrow local entry without duplicating the shared set.
+
+```toml
+[loadouts.shared.claude]
+plugins = ["agent-deck", "superpowers"]
+
+[loadouts.shared.codex]
+plugins = ["agent-deck@team", "superpowers@team"]
+
+[loadouts.browser.claude]
+plugins = ["playwright"]
+
+[groups."product".claude]
+loadouts = ["shared", "browser"]
+
+[groups."product".codex]
+config_dir = "~/.agent-deck/codex/product"
+loadouts = ["shared"]
+```
+
+Loadouts compose along normal group ancestry, root-first, and are deduplicated.
+They are additive floors: use separate named loadouts for exceptions rather
+than expecting a child group to remove a parent's plugin.
+
 #### Per-group Codex config and plugins
 
 Codex groups can use separate `CODEX_HOME` directories and loadouts:

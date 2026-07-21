@@ -65,7 +65,11 @@ func (c *UserConfig) unionGroupCodexList(groupPath string, get func(GroupCodexSe
 	var chain [][]string
 	for p := groupPath; p != ""; p = getParentPath(p) {
 		if groupCfg, ok := c.Groups[p]; ok {
-			if entries := get(groupCfg.Codex); len(entries) > 0 {
+			entries := append(
+				c.loadoutEntries(groupCfg.Codex.Loadouts, func(loadout LoadoutSettings) []string { return getLoadoutCodexEntries(loadout, get) }),
+				get(groupCfg.Codex)...,
+			)
+			if len(entries) > 0 {
 				chain = append(chain, entries)
 			}
 		}
@@ -82,6 +86,14 @@ func (c *UserConfig) unionGroupCodexList(groupPath string, get func(GroupCodexSe
 		}
 	}
 	return union
+}
+
+func getLoadoutCodexEntries(loadout LoadoutSettings, get func(GroupCodexSettings) []string) []string {
+	return get(GroupCodexSettings{
+		Skills:  loadout.Codex.Skills,
+		Plugins: loadout.Codex.Plugins,
+		MCPs:    loadout.Codex.MCPs,
+	})
 }
 
 // ResolveGroupCodex resolves explicit group configuration. Global/profile/env
