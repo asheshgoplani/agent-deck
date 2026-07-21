@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -122,5 +123,40 @@ func TestIsolateTmuxSocket_DefaultSocketUntouched_RealTmux(t *testing.T) {
 				defaultSocketPath, beforeMtime.Format(time.RFC3339Nano), afterMtime.Format(time.RFC3339Nano))
 		}
 		t.Logf("after test: %s mtime=%s (UNCHANGED — isolation holds)", defaultSocketPath, afterMtime.Format(time.RFC3339Nano))
+	}
+}
+
+func TestIsolateTmuxSocket_CleanupTerminatesIsolatedServer(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux binary not available — cannot run real-tmux cleanup test")
+	}
+
+	cleanup := IsolateTmuxSocket()
+	dir := os.Getenv("TMUX_TMPDIR")
+	uid := os.Getuid()
+	socket := filepath.Join(dir, fmt.Sprintf("tmux-%d/default", uid))
+	sessionName := fmt.Sprintf("cleanup_probe_%d", os.Getpid())
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "sleep", "30").CombinedOutput(); err != nil {
+		cleanup()
+		t.Fatalf("tmux new-session failed: %v (output: %s)", err, out)
+	}
+
+	pidOut, err := exec.Command("tmux", "display-message", "-p", "#{pid}").Output()
+	if err != nil {
+		_ = exec.Command("tmux", "kill-server").Run()
+		cleanup()
+		t.Fatalf("read isolated tmux server pid: %v", err)
+	}
+	var pid int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(pidOut)), "%d", &pid); err != nil || pid <= 0 {
+		_ = exec.Command("tmux", "kill-server").Run()
+		cleanup()
+		t.Fatalf("parse isolated tmux server pid %q: %v", pidOut, err)
+	}
+
+	cleanup()
+	if err := exec.Command("kill", "-0", strconv.Itoa(pid)).Run(); err == nil {
+		_ = exec.Command("kill", "-TERM", strconv.Itoa(pid)).Run()
+		t.Fatalf("IsolateTmuxSocket cleanup left tmux server pid %d running (socket was %s)", pid, socket)
 	}
 }

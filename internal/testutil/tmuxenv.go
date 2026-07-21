@@ -3,7 +3,9 @@ package testutil
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Name of the marker env var set during test isolation. Runtime guards in
@@ -74,14 +76,32 @@ func IsolateTmuxSocket() func() {
 	_ = os.Setenv(TestIsolationMarkerEnv, "1")
 
 	return func() {
+		// Kill the tmux server while its private socket still exists. Removing
+		// the directory first merely unlinks the socket and leaves the server
+		// (and its PTYs) orphaned until reboot.
+		killIsolatedTmuxServer(dir)
 		restoreEnv("TMUX", origTmux, hadTmux)
 		restoreEnv("TMUX_PANE", origTmuxPane, hadTmuxPane)
 		restoreEnv("TMUX_TMPDIR", origTmuxTmpdir, hadTmuxTmpdir)
 		restoreEnv(TestIsolationMarkerEnv, origMarker, hadMarker)
-		// Best-effort dir cleanup. Stale tmux sockets are harmless —
-		// the kernel removes them when the bound tmux server exits.
+		// Best-effort cleanup after its server has been terminated.
 		_ = os.RemoveAll(dir)
 	}
+}
+
+func killIsolatedTmuxServer(dir string) {
+	cmd := exec.Command("tmux", "kill-server")
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "TMUX=") ||
+			strings.HasPrefix(entry, "TMUX_PANE=") ||
+			strings.HasPrefix(entry, "TMUX_TMPDIR=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	cmd.Env = append(env, "TMUX_TMPDIR="+dir)
+	_ = cmd.Run()
 }
 
 // ShortTmuxSocket returns a tmux -S socket path under a short base dir (/tmp
