@@ -992,16 +992,17 @@ func TestHomeGlobalSearchEscape(t *testing.T) {
 
 func TestGetLayoutMode(t *testing.T) {
 	tests := []struct {
-		name     string
-		width    int
-		expected string
+		name           string
+		width          int
+		expected       string
+		previewVisible bool
 	}{
-		{"narrow phone", 45, "single"},
-		{"phone landscape", 65, "stacked"},
-		{"tablet", 85, "dual"},
-		{"desktop", 120, "dual"},
-		{"exact boundary 50", 50, "stacked"},
-		{"exact boundary 80", 80, "dual"},
+		{"narrow phone", 45, "single", false},
+		{"phone landscape", 65, "stacked", false},
+		{"tablet", 85, "dual", true},
+		{"desktop", 120, "dual", true},
+		{"exact boundary 50", 50, "stacked", false},
+		{"exact boundary 80", 80, "dual", true},
 	}
 
 	for _, tt := range tests {
@@ -1011,6 +1012,9 @@ func TestGetLayoutMode(t *testing.T) {
 			got := home.getLayoutMode()
 			if got != tt.expected {
 				t.Errorf("getLayoutMode() at width %d = %q, want %q", tt.width, got, tt.expected)
+			}
+			if got := home.hasPreviewPane(); got != tt.previewVisible {
+				t.Errorf("hasPreviewPane() at width %d = %v, want %v", tt.width, got, tt.previewVisible)
 			}
 		})
 	}
@@ -2019,16 +2023,34 @@ func TestHomeViewStackedLayout(t *testing.T) {
 	if strings.Contains(view, "Terminal too small") {
 		t.Error("65-col terminal should not show 'too small' error")
 	}
+	if strings.Contains(view, "PREVIEW") {
+		t.Fatalf("65-col mobile stacked layout rendered Preview:\n%s", view)
+	}
+
+	wideBelow := NewHome()
+	wideBelow.width = 100
+	wideBelow.height = 40
+	wideBelow.initialLoading = false
+	wideBelow.previewOrientation = PreviewOrientationBelow
+	wideBelow.instancesMu.Lock()
+	wideBelow.instances = []*session.Instance{inst}
+	wideBelow.instancesMu.Unlock()
+	wideBelow.groupTree = session.NewGroupTree(wideBelow.instances)
+	wideBelow.rebuildFlatItems()
+	if view := wideBelow.View(); !strings.Contains(view, "PREVIEW") {
+		t.Fatalf("wide below-orientation layout lost Preview:\n%s", view)
+	}
 }
 
 func TestHomeViewUsesCachedPreviewDuringNavigationBursts(t *testing.T) {
 	tests := []struct {
-		name   string
-		width  int
-		height int
+		name               string
+		width              int
+		height             int
+		previewOrientation string
 	}{
 		{name: "dual layout", width: 100, height: 30},
-		{name: "stacked layout", width: 65, height: 50},
+		{name: "wide stacked layout", width: 100, height: 50, previewOrientation: PreviewOrientationBelow},
 	}
 
 	for _, tt := range tests {
@@ -2036,6 +2058,7 @@ func TestHomeViewUsesCachedPreviewDuringNavigationBursts(t *testing.T) {
 			home := NewHome()
 			home.width = tt.width
 			home.height = tt.height
+			home.previewOrientation = tt.previewOrientation
 			home.initialLoading = false
 
 			inst := session.NewInstanceWithTool("Preview Session", "/tmp/project", "other")
@@ -2901,7 +2924,7 @@ func TestMouseIgnoredWhenDialogVisible(t *testing.T) {
 	}
 }
 
-func TestMouseClickInStackedPreviewAreaIgnored(t *testing.T) {
+func TestMouseClickInMobileStackedSessionAreaSelectsItem(t *testing.T) {
 	// Generate enough items to fill the list area
 	items := make([]session.Item, 30)
 	for i := range items {
@@ -2912,11 +2935,8 @@ func TestMouseClickInStackedPreviewAreaIgnored(t *testing.T) {
 		}
 	}
 
-	// Stacked layout: width 65, height 40
-	// contentHeight = 40 - 1(header) - 2(help) - 1(filter) = 36
-	// listHeight = (36 * 60) / 100 = 21, list content = 21 - 2(title) = 19 lines
-	// List content starts at y=4, ends around y=22
-	// y=25 should be in the preview section
+	// Mobile stacked layout: width 65, height 40. It has no Preview pane, so
+	// the session list uses the full content height and y=25 targets item 21.
 	home := newTestHomeWithItems(65, 40, items)
 	home.cursor = 0
 
@@ -2924,8 +2944,8 @@ func TestMouseClickInStackedPreviewAreaIgnored(t *testing.T) {
 	model, _ := home.Update(msg)
 	h := model.(*Home)
 
-	if h.cursor != 0 {
-		t.Errorf("cursor = %d after click in stacked preview area, want 0 (unchanged)", h.cursor)
+	if h.cursor != 21 {
+		t.Errorf("cursor = %d after click in mobile stacked session area, want 21", h.cursor)
 	}
 }
 

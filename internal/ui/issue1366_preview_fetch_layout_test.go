@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -30,17 +31,18 @@ func armHomeOneSessionForPreview(t *testing.T) *Home {
 	return h
 }
 
-// Issue #1366: navigating in a layout with no preview pane (single-column,
-// width < 50) must NOT schedule a `tmux capture-pane` for a preview nobody
-// renders. Today fetchSelectedPreview fires unconditionally — wasted subprocess.
+// Issue #1366: navigating in a layout with no preview pane must NOT schedule a
+// `tmux capture-pane` for a preview nobody renders. Mobile stacked layouts
+// (50-79 columns) are sessions-only just like single-column layouts.
 func TestIssue1366_NoPreviewFetchInSingleColumnLayout(t *testing.T) {
-	h := armHomeOneSessionForPreview(t)
-	h.width = 45 // < 50 => LayoutModeSingle (list only, no preview pane)
-	if got := h.getLayoutMode(); got != LayoutModeSingle {
-		t.Fatalf("setup: layout = %q, want %q", got, LayoutModeSingle)
-	}
-	if cmd := h.fetchSelectedPreview(); cmd != nil {
-		t.Fatal("fetchSelectedPreview must return nil in single-column layout (no preview pane) — issue #1366")
+	for _, width := range []int{45, 65} {
+		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
+			h := armHomeOneSessionForPreview(t)
+			h.width = width
+			if cmd := h.fetchSelectedPreview(); cmd != nil {
+				t.Fatalf("width=%d: hidden Preview scheduled a fetch", width)
+			}
+		})
 	}
 }
 

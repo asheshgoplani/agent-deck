@@ -1075,6 +1075,13 @@ func (h *Home) getLayoutMode() string {
 	}
 }
 
+// hasPreviewPane reports whether the current layout renders a Preview pane.
+// Mobile stacked layouts (50-79 columns) are sessions-only; a stacked Preview
+// is available only when a wide terminal explicitly uses the below orientation.
+func (h *Home) hasPreviewPane() bool {
+	return h.width >= layoutBreakpointStacked
+}
+
 // Messages
 type loadSessionsMsg struct {
 	instances    []*session.Instance
@@ -2542,10 +2549,14 @@ func (h *Home) syncViewport() {
 	layoutMode := h.getLayoutMode()
 	switch layoutMode {
 	case LayoutModeStacked:
-		// Stacked layout: list gets (100-previewPct)% of height, minus title.
-		// Must match renderStackedLayout via the shared stackedListHeight helper.
-		listHeight := h.stackedListHeight(contentHeight)
-		panelContentHeight = listHeight - panelTitleLines
+		if h.hasPreviewPane() {
+			// Wide stacked layout: list gets (100-previewPct)% of height, minus title.
+			// Must match renderStackedLayout via the shared stackedListHeight helper.
+			listHeight := h.stackedListHeight(contentHeight)
+			panelContentHeight = listHeight - panelTitleLines
+		} else {
+			panelContentHeight = contentHeight - panelTitleLines
+		}
 	case LayoutModeSingle:
 		// Single column: list gets full height minus title
 		// Must match: listHeight := totalHeight - 2
@@ -2785,8 +2796,12 @@ func (h *Home) getVisibleHeight() int {
 	layoutMode := h.getLayoutMode()
 	switch layoutMode {
 	case LayoutModeStacked:
-		listHeight := h.stackedListHeight(contentHeight)
-		panelContentHeight = listHeight - panelTitleLines
+		if h.hasPreviewPane() {
+			listHeight := h.stackedListHeight(contentHeight)
+			panelContentHeight = listHeight - panelTitleLines
+		} else {
+			panelContentHeight = contentHeight - panelTitleLines
+		}
 	case LayoutModeSingle:
 		panelContentHeight = contentHeight - panelTitleLines
 	default: // LayoutModeDual
@@ -3564,7 +3579,7 @@ func truncateRemotePreviewContent(content string) string {
 // fetchPreview returns a command that asynchronously fetches preview content.
 // windowIndex < 0 captures the session's primary pane; >= 0 captures a specific window.
 func (h *Home) fetchPreview(inst *session.Instance, key string, windowIndex int) tea.Cmd {
-	if inst == nil {
+	if inst == nil || !h.hasPreviewPane() {
 		return nil
 	}
 	return func() tea.Msg {
@@ -3614,6 +3629,9 @@ func (h *Home) fetchRemotePreviewDebounced(remoteName, sessionID string) tea.Cmd
 }
 
 func (h *Home) fetchRemotePreview(remoteName, sessionID, key string) tea.Cmd {
+	if !h.hasPreviewPane() {
+		return nil
+	}
 	return func() tea.Msg {
 		config, err := session.LoadUserConfig()
 		if err != nil || config == nil || config.Remotes == nil {
@@ -3691,7 +3709,7 @@ func (h *Home) fetchSelectedPreview() tea.Cmd {
 	// Issue #1366: in single-column layout there is no preview pane, so there is
 	// nothing to fill — skip the `tmux capture-pane` entirely. The preview is
 	// re-fetched on resize back into a preview layout (see WindowSizeMsg).
-	if h.getLayoutMode() == LayoutModeSingle {
+	if !h.hasPreviewPane() {
 		return nil
 	}
 	inst, _, winIdx := h.selectedPreviewTarget()
@@ -6764,28 +6782,30 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Remote previews use a longer TTL to avoid frequent SSH calls.
 		const remotePreviewCacheTTL = 10 * time.Second
 		var previewCmd tea.Cmd
-		selectedInst, selectedKey, selectedWinIdx := h.selectedPreviewTarget()
-		if selectedInst != nil && !h.shouldSuppressPreviewRefresh(time.Now()) {
-			h.previewCacheMu.Lock()
-			cachedTime, hasCached := h.previewCacheTime[selectedKey]
-			cacheExpired := !hasCached || time.Since(cachedTime) > previewCacheTTL
-			// Only fetch if cache is stale/missing AND not currently fetching this item
-			if cacheExpired && h.previewFetchingID != selectedKey {
-				h.previewFetchingID = selectedKey
-				previewCmd = h.fetchPreview(selectedInst, selectedKey, selectedWinIdx)
-			}
-			h.previewCacheMu.Unlock()
-		} else {
-			remoteName, remoteSessionID, remoteKey, ok := h.selectedRemotePreviewTarget()
-			if ok {
+		if h.hasPreviewPane() {
+			selectedInst, selectedKey, selectedWinIdx := h.selectedPreviewTarget()
+			if selectedInst != nil && !h.shouldSuppressPreviewRefresh(time.Now()) {
 				h.previewCacheMu.Lock()
-				cachedTime, hasCached := h.previewCacheTime[remoteKey]
-				cacheExpired := !hasCached || time.Since(cachedTime) > remotePreviewCacheTTL
-				if cacheExpired && h.previewFetchingID != remoteKey {
-					h.previewFetchingID = remoteKey
-					previewCmd = h.fetchRemotePreview(remoteName, remoteSessionID, remoteKey)
+				cachedTime, hasCached := h.previewCacheTime[selectedKey]
+				cacheExpired := !hasCached || time.Since(cachedTime) > previewCacheTTL
+				// Only fetch if cache is stale/missing AND not currently fetching this item
+				if cacheExpired && h.previewFetchingID != selectedKey {
+					h.previewFetchingID = selectedKey
+					previewCmd = h.fetchPreview(selectedInst, selectedKey, selectedWinIdx)
 				}
 				h.previewCacheMu.Unlock()
+			} else {
+				remoteName, remoteSessionID, remoteKey, ok := h.selectedRemotePreviewTarget()
+				if ok {
+					h.previewCacheMu.Lock()
+					cachedTime, hasCached := h.previewCacheTime[remoteKey]
+					cacheExpired := !hasCached || time.Since(cachedTime) > remotePreviewCacheTTL
+					if cacheExpired && h.previewFetchingID != remoteKey {
+						h.previewFetchingID = remoteKey
+						previewCmd = h.fetchRemotePreview(remoteName, remoteSessionID, remoteKey)
+					}
+					h.previewCacheMu.Unlock()
+				}
 			}
 		}
 		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd}
@@ -14323,6 +14343,10 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 
 // renderStackedLayout renders list above preview for medium terminals (50-79 cols)
 func (h *Home) renderStackedLayout(totalHeight int) string {
+	if !h.hasPreviewPane() {
+		return h.renderSingleColumnLayout(totalHeight)
+	}
+
 	var b strings.Builder
 
 	// Split height by previewPct so < / > adjust the vertical split the
