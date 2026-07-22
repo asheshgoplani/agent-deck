@@ -102,6 +102,98 @@ skills = ["store/beta"]
 	}
 }
 
+func TestResolveGroupCodexHomeSkillsRejectsAliasedSharedHome(t *testing.T) {
+	home := t.TempDir()
+	realParent := filepath.Join(home, "real")
+	if err := os.MkdirAll(realParent, 0o755); err != nil {
+		t.Fatalf("create real parent: %v", err)
+	}
+	aliasParent := filepath.Join(home, "alias")
+	if err := os.Symlink(realParent, aliasParent); err != nil {
+		t.Fatalf("create home alias: %v", err)
+	}
+	withIsolatedHomeAndConfig(t, `
+[groups."alpha".codex]
+config_dir = "`+filepath.Join(realParent, "shared")+`"
+skills = ["store/alpha"]
+
+[groups."beta".codex]
+config_dir = "`+filepath.Join(aliasParent, "shared")+`"
+skills = ["store/beta"]
+`)
+
+	_, _, err := ResolveGroupCodexHomeSkills("alpha")
+	if err == nil || !strings.Contains(err.Error(), "beta") {
+		t.Fatalf("expected aliased shared-home error naming beta, got %v", err)
+	}
+}
+
+func TestResolveGroupCodexHomeSkillsRejectsCaseAliasedSharedHome(t *testing.T) {
+	home := t.TempDir()
+	mixedCaseHome := filepath.Join(home, "MixedCaseHome")
+	if err := os.MkdirAll(mixedCaseHome, 0o755); err != nil {
+		t.Fatalf("create mixed-case home: %v", err)
+	}
+	lowerCaseHome := filepath.Join(home, "mixedcasehome")
+	lowerInfo, err := os.Stat(lowerCaseHome)
+	if err != nil {
+		t.Skip("filesystem is case-sensitive")
+	}
+	mixedInfo, err := os.Stat(mixedCaseHome)
+	if err != nil || !os.SameFile(mixedInfo, lowerInfo) {
+		t.Skip("path spellings do not identify the same directory")
+	}
+
+	withIsolatedHomeAndConfig(t, `
+[groups."alpha".codex]
+config_dir = "`+mixedCaseHome+`"
+skills = ["store/alpha"]
+
+[groups."beta".codex]
+config_dir = "`+lowerCaseHome+`"
+skills = ["store/beta"]
+`)
+
+	_, _, err = ResolveGroupCodexHomeSkills("alpha")
+	if err == nil || !strings.Contains(err.Error(), "beta") {
+		t.Fatalf("expected case-aliased shared-home error naming beta, got %v", err)
+	}
+}
+
+func TestResolveGroupCodexHomeSkillsRejectsMissingCaseAliasedSharedHome(t *testing.T) {
+	home := t.TempDir()
+	mixedCaseHome := filepath.Join(home, "MissingHome")
+	lowerCaseHome := filepath.Join(home, "missinghome")
+	withIsolatedHomeAndConfig(t, `
+[groups."alpha".codex]
+config_dir = "`+mixedCaseHome+`"
+skills = ["store/alpha"]
+
+[groups."beta".codex]
+config_dir = "`+lowerCaseHome+`"
+skills = ["store/beta"]
+`)
+
+	_, _, err := ResolveGroupCodexHomeSkills("alpha")
+	if err == nil || !strings.Contains(err.Error(), "beta") {
+		t.Fatalf("expected missing case-aliased shared-home error naming beta, got %v", err)
+	}
+}
+
+func TestResolveGroupCodexHomeSkillsRejectsParentTraversal(t *testing.T) {
+	home := t.TempDir()
+	withIsolatedHomeAndConfig(t, `
+[groups."alpha".codex]
+config_dir = "`+filepath.Join(home, "link")+`/../shared"
+skills = ["store/alpha"]
+`)
+
+	_, _, err := ResolveGroupCodexHomeSkills("alpha")
+	if err == nil || !strings.Contains(err.Error(), "parent traversal") {
+		t.Fatalf("expected parent-traversal rejection, got %v", err)
+	}
+}
+
 func TestResolveGroupCodexReportsUnsafeSharedHomeSkills(t *testing.T) {
 	withIsolatedHomeAndConfig(t, `
 [groups."work".codex]

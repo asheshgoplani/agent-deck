@@ -229,8 +229,10 @@ start/restart. Their ownership manifest lives at
 If a child group needs additional skills, give it a distinct `config_dir`.
 Agent-deck rejects divergent skill sets that resolve to one shared home rather
 than leaking child-only tools into sibling sessions, and rejects a command-level
-`CODEX_HOME` that differs from the configured home. Existing repo-local links
-from older versions are left intact because their original manual versus
+`CODEX_HOME` that differs from the configured home. Symlink and case-insensitive
+filesystem aliases count as the same physical home for these checks. Homes
+containing a `..` path component are rejected. Existing repo-local links from
+older versions are left intact because their original manual versus
 declarative intent is unknown; detach those explicitly after verifying the
 home-scoped copy.
 

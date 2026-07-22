@@ -24,10 +24,17 @@ repository. Keep explicit `agent-deck skill attach` project-scoped.
 A child group may inherit the skills declared by the group that supplies its
 `config_dir`. If a descendant declares additional Codex skills while inheriting
 that same home, agent-deck blocks launch and reports that the child needs its own
-`config_dir`. Explicit group homes that resolve to the same filesystem path must
-also resolve to the same skill set; divergent sets are rejected. A command-level
+`config_dir`. Explicit group homes that resolve to the same filesystem path,
+including paths reached through symlink or case-insensitive filesystem aliases,
+must also resolve to the same skill set; divergent sets are rejected. A command-level
 `CODEX_HOME` that differs from `config_dir` is rejected for the same reason. This
 prevents one child loadout from leaking into siblings.
+
+When both candidate homes are still missing, case-only variants below the same
+existing directory are conservatively treated as one prospective home. Once
+both paths exist, filesystem identity decides whether they are actually shared.
+Homes containing a `..` component are rejected so cleaning cannot change the
+meaning of a path across a symlink boundary.
 
 ## Migration
 

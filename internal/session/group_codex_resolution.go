@@ -2,8 +2,10 @@ package session
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // GroupCodexResolution is the resolved Codex configuration for a group.
@@ -69,6 +71,9 @@ func ResolveGroupCodexHomeSkills(groupPath string) (string, []string, error) {
 		return "", nil, nil
 	}
 	homeValue, owner := config.findGroupCodexSetting(groupPath, func(s GroupCodexSettings) string { return s.ConfigDir })
+	if hasParentPathComponent(homeValue) {
+		return "", nil, fmt.Errorf("group %q Codex config_dir %q contains parent traversal", owner, homeValue)
+	}
 	home := ExpandPath(homeValue)
 	effectiveSkills := config.GetGroupCodexSkills(groupPath)
 	if len(effectiveSkills) == 0 {
@@ -95,7 +100,7 @@ func ResolveGroupCodexHomeSkills(groupPath string) (string, []string, error) {
 			continue
 		}
 		group := config.Groups[path]
-		if group.Codex.ConfigDir == "" || filepath.Clean(ExpandPath(group.Codex.ConfigDir)) != filepath.Clean(home) {
+		if group.Codex.ConfigDir == "" || hasParentPathComponent(group.Codex.ConfigDir) || !sameCodexHomePath(group.Codex.ConfigDir, home) {
 			continue
 		}
 		otherSkills := config.GetGroupCodexSkills(path)
@@ -117,10 +122,83 @@ func ResolveInstanceCodexHomeSkills(inst *Instance) (string, []string, error) {
 		return configuredHome, skills, err
 	}
 	actualHome := inst.getCodexHomeDir()
-	if filepath.Clean(actualHome) != filepath.Clean(configuredHome) {
+	if hasParentPathComponent(actualHome) {
+		return "", nil, fmt.Errorf("Codex command resolves CODEX_HOME %q with parent traversal", actualHome)
+	}
+	if !sameCodexHomePath(actualHome, configuredHome) {
 		return "", nil, fmt.Errorf("Codex command resolves CODEX_HOME %q but group %q config_dir resolves %q", actualHome, inst.GroupPath, configuredHome)
 	}
 	return actualHome, skills, nil
+}
+
+func hasParentPathComponent(path string) bool {
+	for _, component := range strings.FieldsFunc(os.ExpandEnv(path), func(r rune) bool {
+		return r == '/' || r == '\\'
+	}) {
+		if component == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func sameCodexHomePath(left, right string) bool {
+	leftCanonical := canonicalCodexHomePath(left)
+	rightCanonical := canonicalCodexHomePath(right)
+	if leftCanonical == rightCanonical {
+		return true
+	}
+
+	leftCurrent, rightCurrent := leftCanonical, rightCanonical
+	var leftSuffix, rightSuffix []string
+	for {
+		leftInfo, leftErr := os.Stat(leftCurrent)
+		rightInfo, rightErr := os.Stat(rightCurrent)
+		if leftErr == nil && rightErr == nil {
+			if !os.SameFile(leftInfo, rightInfo) {
+				return false
+			}
+			return strings.EqualFold(filepath.Join(leftSuffix...), filepath.Join(rightSuffix...))
+		}
+
+		leftParent := filepath.Dir(leftCurrent)
+		rightParent := filepath.Dir(rightCurrent)
+		if leftParent == leftCurrent || rightParent == rightCurrent {
+			return false
+		}
+		leftSuffix = append([]string{filepath.Base(leftCurrent)}, leftSuffix...)
+		rightSuffix = append([]string{filepath.Base(rightCurrent)}, rightSuffix...)
+		leftCurrent, rightCurrent = leftParent, rightParent
+	}
+}
+
+// canonicalCodexHomePath resolves symlinks in the longest existing prefix so
+// aliases remain comparable even when the final CODEX_HOME does not exist yet.
+func canonicalCodexHomePath(path string) string {
+	clean := filepath.Clean(ExpandPath(path))
+	if absolute, err := filepath.Abs(clean); err == nil {
+		clean = absolute
+	}
+
+	current := clean
+	var suffix []string
+	for {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved)
+		} else if !os.IsNotExist(err) {
+			return clean
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return clean
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
 }
 
 func sameStringSet(left, right []string) bool {

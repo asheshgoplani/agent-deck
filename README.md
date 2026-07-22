@@ -218,7 +218,9 @@ remains project-scoped under `.agents/skills`. A child group that declares
 additional skills must select its own `config_dir`; otherwise those skills
 would leak to siblings sharing the inherited home and agent-deck blocks the
 unsafe launch. A command-level `CODEX_HOME` must match the configured home when
-group skills are present.
+group skills are present. Filesystem aliases such as symlinked paths or
+case variants on a case-insensitive volume count as the same home for both checks.
+Codex homes containing a `..` path component are rejected.
 Native marketplaces and plugins are synced explicitly, so startup never
 mutates a user's Codex installation:
 
