@@ -3,6 +3,7 @@ package git
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/cchook"
 )
 
 var consecutiveDashesRe = regexp.MustCompile(`-+`)
@@ -576,6 +579,17 @@ func IsLinkedWorktree(path string) bool {
 	return filepath.Base(filepath.Dir(gitdir)) == "worktrees"
 }
 
+// worktreeBranchName returns the branch name for a worktree path.
+// Falls back to the directory basename if the git command fails.
+func worktreeBranchName(worktreePath string) string {
+	cmd := exec.Command("git", "-C", worktreePath, "rev-parse", "--abbrev-ref", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return filepath.Base(worktreePath)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // RemoveWorktree removes a worktree from the repository.
 // If force is true, it will remove even if there are uncommitted changes.
 // When force is true and git fails (e.g. "Directory not empty" due to
@@ -592,6 +606,15 @@ func RemoveWorktree(repoDir, worktreePath string, force bool) error {
 	// the main working tree (worktree_reuse sessions, #1200) or non-worktree
 	// paths. Non-fatal — removal proceeds even if the script fails.
 	if IsLinkedWorktree(worktreePath) {
+		// Fire Claude Code WorktreeRemove hooks (non-blocking).
+		if resolved := cchook.ResolveWorktreeHooks("WorktreeRemove", repoDir, cchook.DefaultUserClaudeDir(), cchook.DefaultManagedDir()); resolved != nil {
+			payload := cchook.Payload{
+				Cwd:           repoDir,
+				HookEventName: "WorktreeRemove",
+				Name:          worktreeBranchName(worktreePath),
+			}
+			cchook.ExecuteRemove(context.Background(), resolved, payload, DefaultWorktreeDestructionTimeout, os.Stderr)
+		}
 		_ = RunWorktreeDestructionBeforeRemove(repoDir, worktreePath, os.Stderr, os.Stderr, DefaultWorktreeDestructionTimeout)
 	}
 
