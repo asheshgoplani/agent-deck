@@ -212,3 +212,30 @@ func TestAgentboxRunnerResolveAttach_TranslatesInvalidAttachState(t *testing.T) 
 		t.Fatalf("ResolveAttach error = %v, want invalid-attach guidance", err)
 	}
 }
+
+func TestAgentboxRunnerAttachCreatedResult_UsesReturnedCommandsWithoutLookup(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("AttachCreatedResult must not call follow-up attach lookup: %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	runner := NewAgentboxRunner("lab", RemoteConfig{Kind: RemoteKindAgentbox, URL: srv.URL})
+	var gotCommand string
+	runner.execCommand = func(command string) error {
+		gotCommand = command
+		return nil
+	}
+
+	err := runner.AttachCreatedResult(RemoteCreateResult{
+		SessionID:          "ws-new",
+		Attachable:         true,
+		AttachCommand:      "ssh remote-host tmux attach -t ws-new",
+		LocalAttachCommand: "tmux attach -t ws-new",
+	})
+	if err != nil {
+		t.Fatalf("AttachCreatedResult unexpected error: %v", err)
+	}
+	if gotCommand != "tmux attach -t ws-new" {
+		t.Fatalf("exec command = %q, want local attach command from create response", gotCommand)
+	}
+}

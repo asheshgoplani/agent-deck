@@ -841,7 +841,7 @@ Remote configuration is stored under `[remotes]` in `$XDG_CONFIG_HOME/agent-deck
 
 Pressing `n` on a remote group or session opens the full new-session dialog in **remote mode**. SSH remotes keep the existing tool-based session flow. Agentbox remotes switch the dialog into explicit workspace mode and require `orchestrator`, `agent`, `model`, and `runtime` before create — those values are never silently defaulted. Sessions/workspaces are never accidentally created on localhost.
 
-For running Agentbox workspaces, `Shift+Enter` / “open in new terminal” uses the exact attach command returned by Agentbox. If the workspace is stopped, Agent Deck keeps the stopped-before-attach error instead of launching a dead terminal.
+For running Agentbox workspaces, `Shift+Enter` / “open in new terminal” resolves the attach command through Agentbox's authoritative attach endpoint at launch time. If the workspace is stopped, Agent Deck keeps the stopped-before-attach error instead of launching a dead terminal.
 
 #### Security
 

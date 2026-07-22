@@ -26,12 +26,14 @@ No `agent-deck` binary is installed or required inside an Agentbox Workspace.
   - The CLI, web create route, and remote TUI dialog all enforce those required fields.
 - Agent Deck preserves the full `POST /v1/workspaces` create response.
   - `agent-deck remote create <agentbox-remote> ...` prints attachability plus the exact returned remote/local attach commands without doing a follow-up list request.
+  - The TUI immediate create-and-attach path also uses those returned commands directly instead of doing a redundant follow-up `/v1/workspaces/:id/attach` lookup.
 - Attach preserves stopped-before-attach semantics.
   - Agent Deck does not auto-start a stopped Workspace during attach.
   - When Agentbox returns `workspace_not_running` or `workspace_not_attachable`, the error is translated into a clearer user-facing message.
 - When the configured Agentbox URL resolves to localhost/the local machine, Agent Deck prefers `localAttachCommand`.
   - Otherwise it uses the regular remote attach command.
-- Shift+Enter / “open in new terminal” for a running Agentbox remote uses the exact attach command already returned by Agentbox.
+- Shift+Enter / “open in new terminal” for a running Agentbox remote resolves attach through the authoritative `/v1/workspaces/:id/attach` endpoint at launch time.
+  - This avoids launching from stale cached list data when the Workspace stopped, was destroyed, or became otherwise unattached elsewhere.
   - SSH remotes keep the existing `agent-deck session attach ...` SSH launcher path unchanged.
 - Web remote-create errors preserve upstream meaning instead of collapsing to generic 500s.
   - `invalid_request` → 400

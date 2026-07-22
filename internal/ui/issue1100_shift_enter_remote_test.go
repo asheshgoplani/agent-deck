@@ -1,6 +1,10 @@
 package ui
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -105,10 +109,23 @@ func TestIssue1100_HomeDispatch_ShiftEnterRemoteCallsLauncher(t *testing.T) {
 }
 
 func TestIssue1100_HomeDispatch_ShiftEnterAgentboxUsesWorkspaceAttachCommand(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/workspaces/ws-1/attach" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":                 "ws-1",
+			"status":             "running",
+			"attachCommand":      "ssh agentbox tmux attach -t ws-1-fresh",
+			"localAttachCommand": "tmux attach -t ws-1-fresh",
+		})
+	}))
+	defer srv.Close()
+
 	withTempAgentDeckHome(t, `
 [remotes.lab]
 kind = "agentbox"
-url = "https://agentbox.example/agentbox"
+url = "`+srv.URL+`"
 `)
 
 	home := NewHome()
@@ -123,8 +140,8 @@ url = "https://agentbox.example/agentbox"
 			Title:              "research-one",
 			Status:             "running",
 			Attachable:         true,
-			AttachCommand:      "ssh agentbox tmux attach -t ws-1",
-			LocalAttachCommand: "tmux attach -t ws-1",
+			AttachCommand:      "ssh agentbox tmux attach -t ws-1-stale",
+			LocalAttachCommand: "tmux attach -t ws-1-stale",
 		},
 	}}
 
@@ -141,16 +158,28 @@ url = "https://agentbox.example/agentbox"
 	if !called {
 		t.Fatal("Shift+Enter on a running agentbox workspace must call the launcher")
 	}
-	if got, want := terminal.BuildAttachCommand(captured), "ssh agentbox tmux attach -t ws-1"; got != want {
+	if got, want := terminal.BuildAttachCommand(captured), "tmux attach -t ws-1-fresh"; got != want {
 		t.Fatalf("BuildAttachCommand() = %q, want %q", got, want)
 	}
 }
 
 func TestIssue1100_HomeDispatch_ShiftEnterAgentboxStoppedDoesNotLaunch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/workspaces/ws-1/attach" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":  "workspace_not_running",
+			"status": "stopped",
+		})
+	}))
+	defer srv.Close()
+
 	withTempAgentDeckHome(t, `
 [remotes.lab]
 kind = "agentbox"
-url = "https://agentbox.example/agentbox"
+url = "`+srv.URL+`"
 `)
 
 	home := NewHome()
@@ -161,10 +190,12 @@ url = "https://agentbox.example/agentbox"
 		Type:       session.ItemTypeRemoteSession,
 		RemoteName: "lab",
 		RemoteSession: &session.RemoteSessionInfo{
-			ID:         "ws-1",
-			Title:      "research-one",
-			Status:     "stopped",
-			Attachable: false,
+			ID:                 "ws-1",
+			Title:              "research-one",
+			Status:             "running",
+			Attachable:         true,
+			AttachCommand:      "ssh agentbox tmux attach -t ws-1-stale",
+			LocalAttachCommand: "tmux attach -t ws-1-stale",
 		},
 	}}
 
@@ -174,6 +205,12 @@ url = "https://agentbox.example/agentbox"
 	}
 
 	_, _ = home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}})
+	if home.err == nil {
+		t.Fatal("expected authoritative attach failure to surface an error")
+	}
+	if !strings.Contains(home.err.Error(), "start it before attaching") {
+		t.Fatalf("error = %v, want stopped-before-attach guidance", home.err)
+	}
 }
 
 // TestIssue1100_HomeDispatch_ShiftEnterDefaultsToTab pins fix (b): the

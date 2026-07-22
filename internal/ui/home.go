@@ -1032,7 +1032,7 @@ func buildRemoteAttachRequestForItem(item session.Item, openAs string) (terminal
 	}
 	if rc.GetKind() == session.RemoteKindAgentbox {
 		runner := session.NewAgentboxRunner(item.RemoteName, rc)
-		intent, err := runner.ResolveListedAttach(*item.RemoteSession)
+		intent, err := runner.ResolveAttach(context.Background(), item.RemoteSession.ID)
 		if err != nil {
 			return terminal.AttachRequest{}, err
 		}
@@ -13058,6 +13058,10 @@ type remoteCreateAndAttachCmd struct {
 	createCtx  context.Context
 }
 
+type createResultAttacher interface {
+	AttachCreatedResult(session.RemoteCreateResult) error
+}
+
 type remoteAttachFailedError struct {
 	err error
 }
@@ -13080,6 +13084,13 @@ func (r remoteCreateAndAttachCmd) Run() error {
 	result, err := r.runner.CreateSession(ctx, r.createOpts)
 	if err != nil {
 		return err
+	}
+	if attacher, ok := r.runner.(createResultAttacher); ok &&
+		(strings.TrimSpace(result.AttachCommand) != "" || strings.TrimSpace(result.LocalAttachCommand) != "") {
+		if err := attacher.AttachCreatedResult(result); err != nil {
+			return remoteAttachFailedError{err: err}
+		}
+		return nil
 	}
 	if err := r.runner.Attach(result.SessionID); err != nil {
 		return remoteAttachFailedError{err: err}

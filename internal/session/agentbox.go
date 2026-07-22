@@ -247,6 +247,18 @@ func (r *AgentboxRunner) Attach(sessionID string) error {
 	return r.execCommand(intent.Command)
 }
 
+func (r *AgentboxRunner) AttachCreatedResult(result RemoteCreateResult) error {
+	useLocal := r.shouldUseLocalAttachCommand()
+	command := strings.TrimSpace(result.AttachCommand)
+	if useLocal && strings.TrimSpace(result.LocalAttachCommand) != "" {
+		command = strings.TrimSpace(result.LocalAttachCommand)
+	}
+	if command == "" {
+		return fmt.Errorf("agentbox create for workspace %s returned no attach command", result.SessionID)
+	}
+	return r.execCommand(command)
+}
+
 func (r *AgentboxRunner) workspaceToRemoteSession(workspace agentboxWorkspace) RemoteSessionInfo {
 	attachable := workspace.Status == "running" &&
 		(strings.TrimSpace(workspace.AttachCommand) != "" || strings.TrimSpace(workspace.LocalAttachCommand) != "")
