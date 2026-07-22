@@ -78,7 +78,12 @@ func executeAll(ctx context.Context, hooks *ResolvedHooks, payload Payload, time
 }
 
 func runHook(ctx context.Context, entry HookEntry, payloadJSON []byte, timeout time.Duration) hookResult {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", entry.Command)

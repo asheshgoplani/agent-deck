@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/cchook"
 )
 
 // FindWorktreeSetupScript returns the path to the worktree setup script
@@ -127,6 +129,32 @@ type WorktreeStateOptions struct {
 // Materialization happens BEFORE worktreeinclude processing and the setup
 // script so both observe the realized state, per @smorin's spec.
 func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, state WorktreeStateOptions, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
+	// Check for Claude Code WorktreeCreate hooks.
+	if resolved := cchook.ResolveWorktreeHooks("WorktreeCreate", repoDir, cchook.DefaultUserClaudeDir(), cchook.DefaultManagedDir()); resolved != nil {
+		payload := cchook.Payload{
+			Cwd:           repoDir,
+			HookEventName: "WorktreeCreate",
+			Name:          branchName,
+		}
+		hookPath, hookErr := cchook.ExecuteCreate(context.Background(), resolved, payload, setupTimeout)
+		if hookErr != nil {
+			return nil, fmt.Errorf("Claude Code WorktreeCreate hook: %w", hookErr)
+		}
+		info, statErr := os.Stat(hookPath)
+		if statErr != nil || !info.IsDir() {
+			return nil, fmt.Errorf("Claude Code WorktreeCreate hook returned invalid path %q", hookPath)
+		}
+		if state.WithState {
+			if !IsLinkedWorktree(hookPath) {
+				return nil, fmt.Errorf("with-state requires a git worktree, but Claude Code WorktreeCreate hook created a non-git directory %q", hookPath)
+			}
+			if matErr := MaterializeWipFromParent(repoDir, hookPath, state.WithIgnored); matErr != nil {
+				return nil, fmt.Errorf("materialize parent state into hook-created worktree: %w", matErr)
+			}
+		}
+		return RunWorktreeSetupAfterCreate(repoDir, hookPath, stdout, stderr, setupTimeout), nil
+	}
+
 	createdBranch := !BranchExists(repoDir, branchName)
 	if err = CreateWorktree(repoDir, worktreePath, branchName); err != nil {
 		return nil, err
