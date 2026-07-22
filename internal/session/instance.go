@@ -4128,7 +4128,7 @@ func (i *Instance) UpdateStatus() error {
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
+	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
@@ -6390,6 +6390,28 @@ func (i *Instance) RestartWithEnv(env map[string]string) error {
 	return i.restart(env)
 }
 
+// refreshCodexSessionFromHookBeforeRestart closes the narrow race between a
+// Codex /new (whose notify hook has already written the new thread id) and a
+// restart issued before the TUI/daemon status loop has consumed that hook.
+// UpdateHookStatus applies the existing subagent/terminal-event quality gates
+// and persists an accepted rebind to SQLite.
+func (i *Instance) refreshCodexSessionFromHookBeforeRestart() {
+	if !IsCodexCompatible(i.Tool) {
+		return
+	}
+	status := readHookStatusFile(i.ID)
+	if status == nil {
+		return
+	}
+
+	i.mu.Lock()
+	isNewer := status.UpdatedAt.After(i.hookLastUpdate)
+	i.mu.Unlock()
+	if isNewer {
+		i.UpdateHookStatus(status)
+	}
+}
+
 func (i *Instance) restart(env map[string]string) error {
 	beforeLock := nowFn()
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
@@ -6404,6 +6426,11 @@ func (i *Instance) restart(env map[string]string) error {
 		return nil
 	}
 	defer recordInstanceSpawn(i.ID)
+
+	// A completion hook can arrive immediately before this restart, before any
+	// background status consumer has persisted a /new thread id. Refresh here
+	// so the resume command cannot clobber the fresh sidecar with a stale DB id.
+	i.refreshCodexSessionFromHookBeforeRestart()
 
 	if len(env) > 0 {
 		i.restartEnv = make(map[string]string, len(env))

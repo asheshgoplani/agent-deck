@@ -503,3 +503,65 @@ func overrideHookEvent(t *testing.T, instanceID, status, event string, tsSeconds
 		t.Fatalf("write hook: %v", err)
 	}
 }
+
+func TestRefreshInstancesForCLIStatus_CustomCodexCompatibleConsumesHook(t *testing.T) {
+	home := os.Getenv("HOME")
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	const toolName = "codex-deep-test"
+	userConfigCacheMu.Lock()
+	userConfigCache = &UserConfig{Tools: map[string]ToolDef{
+		toolName: {Command: "codex", CompatibleWith: "codex"},
+	}}
+	userConfigCacheMtime = time.Time{}
+	userConfigCacheErr = nil
+	userConfigCacheMu.Unlock()
+
+	inst := NewInstanceWithTool("custom-codex-hook-refresh", home, toolName)
+	inst.CodexSessionID = "11111111-1111-4111-8111-111111111111"
+	writeHookFile(t, inst.ID, "waiting", 0)
+	overrideHookEvent(t, inst.ID, "waiting", "agent-turn-complete", 0)
+
+	RefreshInstancesForCLIStatus([]*Instance{inst})
+
+	if got, want := inst.CodexSessionID, "sess-876-parity"; got != want {
+		t.Fatalf("CodexSessionID = %q, want hook session %q", got, want)
+	}
+}
+
+func TestRefreshCodexSessionFromHookBeforeRestart_CustomCompatible(t *testing.T) {
+	home := os.Getenv("HOME")
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	const toolName = "codex-restart-test"
+	userConfigCacheMu.Lock()
+	userConfigCache = &UserConfig{Tools: map[string]ToolDef{
+		toolName: {Command: "codex", CompatibleWith: "codex"},
+	}}
+	userConfigCacheMtime = time.Time{}
+	userConfigCacheErr = nil
+	userConfigCacheMu.Unlock()
+
+	inst := NewInstanceWithTool("custom-codex-restart-refresh", home, toolName)
+	inst.CodexSessionID = "22222222-2222-4222-8222-222222222222"
+	hooksDir := GetHooksDir()
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	const newID = "33333333-3333-4333-8333-333333333333"
+	body := fmt.Sprintf(
+		`{"status":"waiting","session_id":%q,"event":"agent-turn-complete","ts":%d}`,
+		newID, time.Now().Unix(),
+	)
+	if err := os.WriteFile(filepath.Join(hooksDir, inst.ID+".json"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+
+	inst.refreshCodexSessionFromHookBeforeRestart()
+
+	if got := inst.CodexSessionID; got != newID {
+		t.Fatalf("CodexSessionID = %q, want hook session %q", got, newID)
+	}
+}
