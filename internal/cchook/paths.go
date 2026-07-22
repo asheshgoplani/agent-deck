@@ -16,7 +16,7 @@ func DefaultUserClaudeDir() string {
 
 func DefaultManagedDir() string {
 	if runtime.GOOS == "darwin" {
-		return "/Library/Application Support/claude-code"
+		return "/Library/Application Support/ClaudeCode"
 	}
 	return "/etc/claude-code"
 }
