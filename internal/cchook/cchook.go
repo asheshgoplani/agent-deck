@@ -1,0 +1,110 @@
+package cchook
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+)
+
+type Level int
+
+const (
+	LevelUser Level = iota
+	LevelProject
+	LevelLocal
+	LevelManaged
+)
+
+func (l Level) String() string {
+	switch l {
+	case LevelUser:
+		return "user"
+	case LevelProject:
+		return "project"
+	case LevelLocal:
+		return "local"
+	case LevelManaged:
+		return "managed"
+	default:
+		return "unknown"
+	}
+}
+
+type HookEntry struct {
+	Command string
+	Level   Level
+}
+
+type ResolvedHooks struct {
+	Entries []HookEntry
+}
+
+type settingsFile struct {
+	Hooks map[string][]hookGroup `json:"hooks"`
+}
+
+type hookGroup struct {
+	Hooks []hookDef `json:"hooks"`
+}
+
+type hookDef struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+}
+
+// ResolveWorktreeHooks reads CC settings from all 4 levels and extracts hook
+// entries for the given event. Returns nil if no hooks are configured.
+// The Entries slice is ordered by priority: user > project > local > managed.
+func ResolveWorktreeHooks(event string, repoDir string, userClaudeDir string, managedDir string) *ResolvedHooks {
+	type source struct {
+		path  string
+		level Level
+	}
+
+	sources := []source{
+		{filepath.Join(userClaudeDir, "settings.json"), LevelUser},
+		{filepath.Join(repoDir, ".claude", "settings.json"), LevelProject},
+		{filepath.Join(repoDir, ".claude", "settings.local.json"), LevelLocal},
+		{filepath.Join(managedDir, "managed-settings.json"), LevelManaged},
+	}
+
+	var entries []HookEntry
+	for _, src := range sources {
+		cmds := readHookCommands(src.path, event)
+		for _, cmd := range cmds {
+			entries = append(entries, HookEntry{Command: cmd, Level: src.level})
+		}
+	}
+
+	if len(entries) == 0 {
+		return nil
+	}
+	return &ResolvedHooks{Entries: entries}
+}
+
+func readHookCommands(path string, event string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+
+	var sf settingsFile
+	if err := json.Unmarshal(data, &sf); err != nil {
+		return nil
+	}
+
+	groups, ok := sf.Hooks[event]
+	if !ok {
+		return nil
+	}
+
+	var commands []string
+	for _, group := range groups {
+		for _, hook := range group.Hooks {
+			if hook.Type == "command" && hook.Command != "" {
+				commands = append(commands, hook.Command)
+			}
+		}
+	}
+	return commands
+}
