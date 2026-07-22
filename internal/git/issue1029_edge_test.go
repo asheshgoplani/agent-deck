@@ -25,7 +25,7 @@ func TestCreateWorktreeWithStateAndSetup_WiresMaterialization_RegressionFor1029(
 	_, err := CreateWorktreeWithStateAndSetup(
 		parent, child, "fork-1029-wired",
 		WorktreeStateOptions{WithState: true},
-		&stdout, &stderr, 0,
+		&stdout, &stderr, 0, nil,
 	)
 	if err != nil {
 		t.Fatalf("CreateWorktreeWithStateAndSetup: %v", err)
@@ -54,7 +54,7 @@ func TestCreateWorktreeWithStateAndSetup_CleansUpOnMaterializeFailure(t *testing
 	_, err := CreateWorktreeWithStateAndSetup(
 		parent, child, branch,
 		WorktreeStateOptions{WithState: true},
-		&stdout, &stderr, 0,
+		&stdout, &stderr, 0, nil,
 	)
 	if err == nil {
 		t.Fatal("expected materialization failure from mid-rebase parent, got nil")

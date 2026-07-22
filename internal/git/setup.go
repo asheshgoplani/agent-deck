@@ -97,6 +97,15 @@ func buildSetupCmd(ctx context.Context, scriptPath string, mode os.FileMode) *ex
 	return exec.CommandContext(ctx, "sh", "-e", scriptPath)
 }
 
+// CCHookContext carries optional agent-deck instance metadata into
+// CreateWorktreeWithStateAndSetup so the CC hook payload receives a
+// meaningful session_id. Pass nil when no instance ID is available.
+type CCHookContext struct {
+	// InstanceID is the agent-deck session/instance ID to expose as
+	// session_id in the CC hook payload.
+	InstanceID string
+}
+
 // CreateWorktreeWithSetup creates a worktree and runs the setup script if present.
 // Setup script failure is non-fatal: the worktree is still valid.
 // Output is streamed to the provided writers. A non-positive setupTimeout
@@ -109,7 +118,7 @@ func buildSetupCmd(ctx context.Context, scriptPath string, mode os.FileMode) *ex
 // users couldn't tell whether the script had run, finished, or finished
 // cleanly before claude started.
 func CreateWorktreeWithSetup(repoDir, worktreePath, branchName string, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
-	return CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName, WorktreeStateOptions{}, stdout, stderr, setupTimeout)
+	return CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName, WorktreeStateOptions{}, stdout, stderr, setupTimeout, nil)
 }
 
 // WorktreeStateOptions controls the issue #1029 with-state behavior of
@@ -128,10 +137,19 @@ type WorktreeStateOptions struct {
 // materialization of the parent session's working-tree state (#1029).
 // Materialization happens BEFORE worktreeinclude processing and the setup
 // script so both observe the realized state, per @smorin's spec.
-func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, state WorktreeStateOptions, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
+//
+// hookCtx is optional: pass a non-nil *CCHookContext to thread the agent-deck
+// instance ID into the CC hook payload's session_id field. Pass nil when no
+// instance ID is available.
+func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, state WorktreeStateOptions, stdout, stderr io.Writer, setupTimeout time.Duration, hookCtx *CCHookContext) (setupErr error, err error) {
 	// Check for Claude Code WorktreeCreate hooks.
 	if resolved := cchook.ResolveWorktreeHooks("WorktreeCreate", repoDir, cchook.DefaultUserClaudeDir(), cchook.DefaultManagedDir()); resolved != nil {
+		var sessionID string
+		if hookCtx != nil {
+			sessionID = hookCtx.InstanceID
+		}
 		payload := cchook.Payload{
+			SessionID:     sessionID,
 			Cwd:           repoDir,
 			HookEventName: "WorktreeCreate",
 			Name:          branchName,

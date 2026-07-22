@@ -1189,7 +1189,8 @@ func handleSessionFork(profile string, args []string) {
 				setupErr, cwErr = git.CreateWorktreeWithStateAndSetup(
 					repoRoot, worktreePath, wtBranch,
 					git.WorktreeStateOptions{},
-					os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+					os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout(),
+					&git.CCHookContext{InstanceID: inst.ID})
 				if cwErr != nil {
 					out.Error(fmt.Sprintf("worktree creation failed: %v", cwErr), ErrCodeInvalidOperation)
 					os.Exit(1)

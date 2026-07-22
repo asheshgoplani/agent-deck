@@ -60,7 +60,7 @@ func TestCCHook_CreateWorktree_HookTakesOver(t *testing.T) {
 	worktreePath := filepath.Join(t.TempDir(), "should-not-be-created")
 
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithStateAndSetup(repoDir, worktreePath, "test-hook-branch", WorktreeStateOptions{}, &stdout, &stderr, 0)
+	setupErr, err := CreateWorktreeWithStateAndSetup(repoDir, worktreePath, "test-hook-branch", WorktreeStateOptions{}, &stdout, &stderr, 0, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v (stderr: %s)", err, stderr.String())
 	}
@@ -95,7 +95,7 @@ func TestCCHook_CreateWorktree_WithState_ErrorsOnNonGit(t *testing.T) {
 	worktreePath := filepath.Join(t.TempDir(), "ignored")
 
 	var stdout, stderr bytes.Buffer
-	_, err := CreateWorktreeWithStateAndSetup(repoDir, worktreePath, "state-hook-branch", WorktreeStateOptions{WithState: true}, &stdout, &stderr, 0)
+	_, err := CreateWorktreeWithStateAndSetup(repoDir, worktreePath, "state-hook-branch", WorktreeStateOptions{WithState: true}, &stdout, &stderr, 0, nil)
 	if err == nil {
 		t.Fatal("expected error when with-state is used with a non-git hook directory")
 	}
@@ -130,7 +130,7 @@ func TestCCHook_CreateWorktree_SetupShStillRuns(t *testing.T) {
 	worktreePath := filepath.Join(t.TempDir(), "ignored")
 
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithStateAndSetup(repoDir, worktreePath, "ignored-branch", WorktreeStateOptions{}, &stdout, &stderr, 30_000_000_000)
+	setupErr, err := CreateWorktreeWithStateAndSetup(repoDir, worktreePath, "ignored-branch", WorktreeStateOptions{}, &stdout, &stderr, 30_000_000_000, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v (stderr: %s)", err, stderr.String())
 	}
@@ -154,7 +154,7 @@ func TestCCHook_CreateWorktree_NoCCHook_Unchanged(t *testing.T) {
 	worktreePath := filepath.Join(t.TempDir(), "normal-worktree")
 
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithStateAndSetup(repoDir, worktreePath, "normal-branch", WorktreeStateOptions{}, &stdout, &stderr, 0)
+	setupErr, err := CreateWorktreeWithStateAndSetup(repoDir, worktreePath, "normal-branch", WorktreeStateOptions{}, &stdout, &stderr, 0, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
