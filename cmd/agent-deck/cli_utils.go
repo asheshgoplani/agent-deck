@@ -218,6 +218,33 @@ func resolveAddPath(rawPathArg string) (string, error) {
 	return filepath.Abs(session.ExpandPath(rawPathArg))
 }
 
+// resolveSSHAddPaths applies `agent-deck add`'s --ssh path-routing rule: the
+// project lives on the remote host, so the resolved positional path is never
+// a local path to validate or launch tmux in.
+//
+// An explicitly given positional path (explicitPathProvided) names the
+// REMOTE working directory, unless an explicit --remote-path was already
+// given, which always wins (matching the documented
+// `add --ssh <host> --remote-path <path>` pattern). Without this routing, a
+// positional path given alongside --ssh (e.g. `add <remote-worktree-path>
+// --ssh <host>`) was silently misused as the session's local ProjectPath
+// placeholder while remotePath stayed empty, so the actual SSH-wrapped
+// launch command never `cd`'d into the intended remote directory: the
+// session launched in the SSH login shell's default directory instead of the
+// registered worktree. Fixes asheshgoplani/agent-deck#1711 / #1710.
+//
+// Returns the local placeholder path (always CWD for --ssh sessions, used
+// only for local bookkeeping such as tmux pane naming, never launched into)
+// and the resolved remote path to store as Instance.SSHRemotePath.
+func resolveSSHAddPaths(explicitPathProvided bool, positionalPath, explicitRemotePath string) (localPlaceholder, remotePath string, err error) {
+	remotePath = explicitRemotePath
+	if explicitPathProvided && remotePath == "" {
+		remotePath = positionalPath
+	}
+	localPlaceholder, err = os.Getwd()
+	return localPlaceholder, remotePath, err
+}
+
 // CLIOutput handles consistent output formatting across all CLI commands
 type CLIOutput struct {
 	jsonMode  bool

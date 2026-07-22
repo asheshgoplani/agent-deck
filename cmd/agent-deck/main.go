@@ -1552,14 +1552,27 @@ func handleAdd(profile string, args []string) {
 
 	// Verify path exists and is a directory (skip for SSH remote sessions)
 	if *sshHost != "" {
-		// For SSH sessions, use CWD as local placeholder path (project lives on remote)
-		if path == "" {
-			path, err = os.Getwd()
-			if err != nil {
-				fmt.Printf("Error: failed to get current directory: %v\n", err)
-				os.Exit(1)
-			}
+		// An explicitly given path (positional arg, e.g. `add <remote-path>
+		// --ssh <host>`) names the REMOTE working directory when --ssh is in
+		// play: the project lives on the remote host, so this is never a
+		// local path to validate or launch tmux in. Prior to this fix an
+		// explicit positional path was silently dropped on the floor here:
+		// it became the session's local ProjectPath placeholder (nonsensical,
+		// since it names a path that typically doesn't exist locally) while
+		// SSHRemotePath stayed empty, so wrapForSSH never `cd`'d into it and
+		// the session launched in the SSH login shell's default directory
+		// instead of the intended remote worktree. Route it into
+		// --remote-path (an explicit --remote-path flag still wins, matching
+		// the documented `--ssh --remote-path` pattern) and fall back to CWD
+		// as the local placeholder, exactly as the no-positional-path case
+		// already does. Fixes asheshgoplani/agent-deck#1711 / #1710.
+		var localPlaceholder string
+		localPlaceholder, *sshRemotePath, err = resolveSSHAddPaths(explicitPathProvided, path, *sshRemotePath)
+		if err != nil {
+			fmt.Printf("Error: failed to get current directory: %v\n", err)
+			os.Exit(1)
 		}
+		path = localPlaceholder
 	} else {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -1575,6 +1588,26 @@ func handleAdd(profile string, args []string) {
 	// Handle worktree creation
 	var worktreePath, worktreeRepoRoot, worktreeType string
 	if wtBranch != "" {
+		// -w/-b worktree creation is a 100% local filesystem operation
+		// (detectAndCreateBackend + git/jj worktree add below all run against
+		// `path` on THIS machine). Combined with --ssh, `path` at this point
+		// is the local CWD placeholder (see the --ssh branch above), never
+		// the remote repo the director intended. Before this fix that meant
+		// silently creating a worktree in the local Mac's checkout instead of
+		// on the remote host, ignoring --remote-path entirely. Remote
+		// worktree creation over SSH is not yet implemented, so refuse loudly
+		// rather than repeat that silent local-Mac side effect. Workaround:
+		// create the worktree on the remote host directly
+		// (ssh <host> "cd <repo> && git worktree add <path> ..."), then
+		// register it with `agent-deck add --ssh <host> --remote-path <path>`.
+		// Tracking: asheshgoplani/agent-deck#1711 / #1710.
+		if *sshHost != "" {
+			fmt.Println("Error: -w/--worktree (and -b) cannot be combined with --ssh; agent-deck cannot create a git worktree on a remote host yet")
+			fmt.Println("Workaround: create the worktree on the remote host directly, then register it:")
+			fmt.Println("  ssh " + *sshHost + " \"cd <remote-repo> && git worktree add <remote-worktree-path> " + wtBranch + "\"")
+			fmt.Println("  agent-deck add --ssh " + *sshHost + " --remote-path <remote-worktree-path> ...")
+			os.Exit(1)
+		}
 		backend, err := detectAndCreateBackend(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
