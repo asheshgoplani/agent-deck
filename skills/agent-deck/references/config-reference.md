@@ -198,8 +198,9 @@ agent-deck group show work --resolved --json
 
 ## Per-group Codex loadouts
 
-Codex groups can select an isolated `CODEX_HOME` and declaratively materialize
-project skills or append catalog MCPs to that home's `config.toml`:
+Codex groups can select an isolated `CODEX_HOME`, declaratively materialize
+group skills into that home's `skills` directory, or append catalog MCPs to
+that home's `config.toml`:
 
 ```toml
 [groups."work".codex]
@@ -220,6 +221,17 @@ agent-deck group codex sync work
 
 The command runs `codex plugin add` with the group's `CODEX_HOME`; repeated
 syncs are safe to run and any marketplace/authentication errors are reported.
+
+Codex group skills are reconciled automatically at session create and before
+start/restart. Their ownership manifest lives at
+`<CODEX_HOME>/.agent-deck/skills.toml`; repositories are not modified. Explicit
+`agent-deck skill attach` remains project-scoped at `<project>/.agents/skills`.
+If a child group needs additional skills, give it a distinct `config_dir`.
+Agent-deck rejects divergent skill sets that resolve to one shared home rather
+than leaking child-only tools into sibling sessions. Existing repo-local links
+from older versions are left intact because their original manual versus
+declarative intent is unknown; detach those explicitly after verifying the
+home-scoped copy.
 
 ## [group_defaults] Section
 
@@ -599,11 +611,11 @@ agent-deck skill source remove team
 ```
 
 **Declarative per-group/per-conductor loadout:** `[groups.X.claude].skills`,
-`.plugins`, and `.mcps` (and the conductor mirror) list entries that agent-deck attaches
-automatically — at session create (`add` / `launch`) and re-asserted before
-every start/restart — through this same registry and attach machinery,
-exactly as if `skill attach` / `mcp attach` had been run by hand. The
-loadout is an attach-only floor:
+`.plugins`, and `.mcps` (and the conductor mirror) list entries that agent-deck
+attaches automatically at session create (`add` / `launch`) and re-asserts
+before every start/restart. Claude skills use the project attachment machinery;
+Codex group skills use the selected `CODEX_HOME`; explicit Codex attachments
+remain project-scoped. The loadout is an attach-only floor:
 
 - already attached and healthy → no-op; a deleted symlink re-materializes
 - a real directory or foreign symlink at the target → skip + warning,

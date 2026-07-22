@@ -11,10 +11,10 @@ import (
 
 // ApplyConfiguredLoadout materializes the declarative per-group /
 // per-conductor skill, plugin, and MCP loadout for Claude sessions, and the
-// per-group skill and MCP loadout for Codex sessions, by
-// driving the existing project-skills attach machinery and local .mcp.json
-// writer — exactly as if the user had run `skill attach` / `mcp attach` by
-// hand. Called at session create (add/launch) and re-asserted before every
+// per-group skill and MCP loadout for Codex sessions. Claude skills use the
+// project attachment machinery; Codex group skills use the resolved
+// CODEX_HOME/skills directory. Called at session create (add/launch) and
+// re-asserted before every
 // Start/StartWithMessage/Restart spawn, so a config edit takes effect on
 // the next start and a healthy state is a cheap no-op.
 //
@@ -25,9 +25,7 @@ import (
 //   - target exists as a real dir or foreign symlink (not manifest-managed)
 //     → skip + warning, never clobber; a human-placed dir beats config
 //   - entry not resolvable in the skill-source registry → skip + warning
-//   - removing an entry from the config list does NOT detach — subtraction
-//     is a deliberate `skill detach` (a config typo must not strip a live
-//     session's skills)
+//   - removing an entry from the config list does NOT detach
 //
 // MCP entries are [mcps.X] catalog names appended to the session's local
 // configuration (or the selected CODEX_HOME/config.toml for Codex), never
@@ -64,6 +62,8 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 	}
 
 	var skills, plugins, mcps []string
+	var codexSkillsHome string
+	var skillResolutionErr error
 	if IsClaudeCompatible(inst.Tool) {
 		skills = unionLoadoutEntries(
 			config.GetGroupClaudeSkills(inst.GroupPath),
@@ -78,11 +78,8 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 			config.GetConductorClaudeMCPs(conductorNameFromInstance(inst)),
 		)
 	} else {
-		skills = config.GetGroupCodexSkills(inst.GroupPath)
+		codexSkillsHome, skills, skillResolutionErr = ResolveGroupCodexHomeSkills(inst.GroupPath)
 		mcps = config.GetGroupCodexMCPs(inst.GroupPath)
-	}
-	if len(skills) == 0 && len(plugins) == 0 && len(mcps) == 0 {
-		return nil
 	}
 
 	var warnings []string
@@ -94,10 +91,29 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 			slog.String("group", sanitizeLoadoutWarning(inst.GroupPath)),
 			slog.String("detail", w))
 	}
+	if skillResolutionErr != nil {
+		warn("Codex home skills: %v", skillResolutionErr)
+		skills = nil
+	}
+	if len(skills) == 0 && len(plugins) == 0 && len(mcps) == 0 {
+		return warnings
+	}
 
 	attachedSkill := false
 	for _, entry := range skills {
-		attachment, err := AttachSkillToProject(inst.ProjectPath, inst.Tool, entry, "")
+		var attachment *ProjectSkillAttachment
+		var err error
+		if IsCodexCompatible(inst.Tool) {
+			attachment, err = AttachSkillToCodexHome(codexSkillsHome, entry, "")
+		} else {
+			attachment, err = AttachSkillToProject(inst.ProjectPath, inst.Tool, entry, "")
+		}
+		healthy := func() bool {
+			if IsCodexCompatible(inst.Tool) {
+				return healthyManagedCodexHomeSkillAttachment(codexSkillsHome, entry)
+			}
+			return healthyManagedSkillAttachment(inst.ProjectPath, entry)
+		}
 		switch {
 		case err == nil:
 			attachedSkill = true
@@ -105,7 +121,7 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 				slog.String("session", sanitizeLoadoutWarning(inst.Title)),
 				slog.String("skill", sanitizeLoadoutWarning(entry)),
 				slog.String("target", sanitizeLoadoutWarning(attachment.TargetPath)))
-		case errors.Is(err, ErrSkillAlreadyAttached) && healthyManagedSkillAttachment(inst.ProjectPath, entry):
+		case errors.Is(err, ErrSkillAlreadyAttached) && healthy():
 			// Healthy manifest-managed floor — nothing to do.
 		case errors.Is(err, ErrSkillAlreadyAttached):
 			warn("skill %q: existing target is not a healthy manifest-managed attachment", entry)

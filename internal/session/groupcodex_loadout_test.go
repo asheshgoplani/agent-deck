@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestApplyConfiguredLoadout_CodexGroupUsesAgentsSkillsAndGroupHomeMCP(t *testing.T) {
+func TestApplyConfiguredLoadout_CodexGroupUsesHomeSkillsAndGroupHomeMCP(t *testing.T) {
 	home := withIsolatedHomeAndConfig(t, `
 [mcps.memory]
 command = "echo"
@@ -33,11 +33,17 @@ mcps = ["memory"]
 		t.Fatalf("unexpected loadout warnings: %v", warnings)
 	}
 
-	if _, err := os.Stat(filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md")); err != nil {
-		t.Fatalf("expected Codex skill in .agents/skills: %v", err)
+	codexHome := filepath.Join(home, ".codex-work")
+	if _, err := os.Stat(filepath.Join(codexHome, "skills", "alpha", "SKILL.md")); err != nil {
+		t.Fatalf("expected Codex skill in CODEX_HOME/skills: %v", err)
+	}
+	for _, generated := range []string{".agents", ".agent-deck"} {
+		if _, err := os.Stat(filepath.Join(project, generated)); !os.IsNotExist(err) {
+			t.Fatalf("Codex group loadout created project state %s: %v", generated, err)
+		}
 	}
 
-	configPath := filepath.Join(home, ".codex-work", "config.toml")
+	configPath := filepath.Join(codexHome, "config.toml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read group Codex config: %v", err)

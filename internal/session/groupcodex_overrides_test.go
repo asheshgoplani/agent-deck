@@ -48,6 +48,79 @@ mcps = ["exa", "memory"]
 	}
 }
 
+func TestResolveGroupCodexHomeSkillsInheritsHomeOwnerSkills(t *testing.T) {
+	home := withIsolatedHomeAndConfig(t, `
+[groups."work".codex]
+config_dir = "~/.codex-work"
+skills = ["store/base"]
+
+[groups."work/api".codex]
+`)
+
+	codexHome, skills, err := ResolveGroupCodexHomeSkills("work/api")
+	if err != nil {
+		t.Fatalf("resolve home skills: %v", err)
+	}
+	if got, want := codexHome, filepath.Join(home, ".codex-work"); got != want {
+		t.Fatalf("codex_home=%q want %q", got, want)
+	}
+	if got, want := skills, []string{"store/base"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("skills=%v want %v", got, want)
+	}
+}
+
+func TestResolveGroupCodexHomeSkillsRejectsChildOnlySkillsInInheritedHome(t *testing.T) {
+	withIsolatedHomeAndConfig(t, `
+[groups."work".codex]
+config_dir = "~/.codex-work"
+skills = ["store/base"]
+
+[groups."work/api".codex]
+skills = ["store/api"]
+`)
+
+	_, _, err := ResolveGroupCodexHomeSkills("work/api")
+	if err == nil || !strings.Contains(err.Error(), "config_dir") {
+		t.Fatalf("expected child config_dir error, got %v", err)
+	}
+}
+
+func TestResolveGroupCodexHomeSkillsRejectsDivergentExplicitSharedHome(t *testing.T) {
+	withIsolatedHomeAndConfig(t, `
+[groups."alpha".codex]
+config_dir = "~/.codex-shared"
+skills = ["store/alpha"]
+
+[groups."beta".codex]
+config_dir = "~/.codex-shared"
+skills = ["store/beta"]
+`)
+
+	_, _, err := ResolveGroupCodexHomeSkills("alpha")
+	if err == nil || !strings.Contains(err.Error(), "beta") {
+		t.Fatalf("expected divergent shared-home error naming beta, got %v", err)
+	}
+}
+
+func TestResolveGroupCodexReportsUnsafeSharedHomeSkills(t *testing.T) {
+	withIsolatedHomeAndConfig(t, `
+[groups."work".codex]
+config_dir = "~/.codex-work"
+skills = ["store/base"]
+
+[groups."work/api".codex]
+skills = ["store/api"]
+`)
+
+	res := ResolveGroupCodex("work/api")
+	if !strings.Contains(res.ConfigError, "config_dir") {
+		t.Fatalf("config_error=%q, expected shared-home skill guidance", res.ConfigError)
+	}
+	if len(res.Skills) != 0 {
+		t.Fatalf("unsafe skills exposed as resolved: %v", res.Skills)
+	}
+}
+
 func TestBuildCodexCommand_UsesGroupCodexConfigDirAsCodexHome(t *testing.T) {
 	tmpHome := withIsolatedHomeAndConfig(t, `
 [codex]

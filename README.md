@@ -212,7 +212,12 @@ marketplaces = ["/path/to/team-marketplace"]
 plugins = ["agent-deck@team"]
 ```
 
-The selected home is used for the session's Codex config and MCP entries.
+The selected home is used for the session's Codex config, inherited group
+skills (`$CODEX_HOME/skills`), and MCP entries. Explicit `skill attach`
+remains project-scoped under `.agents/skills`. A child group that declares
+additional skills must select its own `config_dir`; otherwise those skills
+would leak to siblings sharing the inherited home and agent-deck refuses the
+unsafe loadout.
 Native marketplaces and plugins are synced explicitly, so startup never
 mutates a user's Codex installation:
 

@@ -1,5 +1,11 @@
 package session
 
+import (
+	"fmt"
+	"path/filepath"
+	"sort"
+)
+
 // GroupCodexResolution is the resolved Codex configuration for a group.
 // Source labels are "group:<path>", "global", "profile", "env", or "default".
 type GroupCodexResolution struct {
@@ -49,6 +55,71 @@ func (c *UserConfig) GetGroupCodexCommand(groupPath string) string {
 
 func (c *UserConfig) GetGroupCodexSkills(groupPath string) []string {
 	return c.unionGroupCodexList(groupPath, func(s GroupCodexSettings) []string { return s.Skills })
+}
+
+// ResolveGroupCodexHomeSkills returns the declarative skills that can safely
+// live in the group's resolved CODEX_HOME. Descendant-only skills require a
+// distinct config_dir so they cannot leak into siblings sharing the home.
+func ResolveGroupCodexHomeSkills(groupPath string) (string, []string, error) {
+	config, err := LoadUserConfig()
+	if err != nil {
+		return "", nil, fmt.Errorf("load config.toml: %w", err)
+	}
+	if config == nil {
+		return "", nil, nil
+	}
+	homeValue, owner := config.findGroupCodexSetting(groupPath, func(s GroupCodexSettings) string { return s.ConfigDir })
+	home := ExpandPath(homeValue)
+	effectiveSkills := config.GetGroupCodexSkills(groupPath)
+	if len(effectiveSkills) == 0 {
+		return home, nil, nil
+	}
+	if home == "" {
+		return "", nil, fmt.Errorf("group %q has Codex skills but no config_dir", groupPath)
+	}
+
+	for path := groupPath; path != "" && path != owner; path = getParentPath(path) {
+		if group, ok := config.Groups[path]; ok && len(group.Codex.Skills) > 0 {
+			return "", nil, fmt.Errorf("group %q declares Codex skills but inherits config_dir from %q; set [groups.%q.codex].config_dir to isolate them", path, owner, path)
+		}
+	}
+	homeSkills := config.GetGroupCodexSkills(owner)
+
+	paths := make([]string, 0, len(config.Groups))
+	for path := range config.Groups {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		if path == owner {
+			continue
+		}
+		group := config.Groups[path]
+		if group.Codex.ConfigDir == "" || filepath.Clean(ExpandPath(group.Codex.ConfigDir)) != filepath.Clean(home) {
+			continue
+		}
+		otherSkills := config.GetGroupCodexSkills(path)
+		if !sameStringSet(homeSkills, otherSkills) {
+			return "", nil, fmt.Errorf("groups %q and %q resolve different Codex skills into shared config_dir %q", owner, path, home)
+		}
+	}
+	return home, homeSkills, nil
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	values := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		values[value] = struct{}{}
+	}
+	for _, value := range right {
+		if _, ok := values[value]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *UserConfig) GetGroupCodexMCPs(groupPath string) []string {
@@ -114,7 +185,12 @@ func ResolveGroupCodex(groupPath string) GroupCodexResolution {
 		res.Command = command
 		res.CommandSource = "group:" + matched
 	}
-	res.Skills = config.GetGroupCodexSkills(groupPath)
+	_, skills, skillsErr := ResolveGroupCodexHomeSkills(groupPath)
+	if skillsErr != nil {
+		res.ConfigError = skillsErr.Error()
+	} else {
+		res.Skills = skills
+	}
 	res.MCPs = config.GetGroupCodexMCPs(groupPath)
 	res.Marketplaces = config.GetGroupCodexMarketplaces(groupPath)
 	res.Plugins = config.GetGroupCodexPlugins(groupPath)
