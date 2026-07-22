@@ -87,7 +87,7 @@ func runHook(ctx context.Context, entry HookEntry, payloadJSON []byte, timeout t
 	}
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", entry.Command)
+	cmd := exec.CommandContext(ctx, "bash", "-c", entry.Command) //nolint:gosec // hook commands are read from CC settings files, executing them is the purpose
 	cmd.Stdin = bytes.NewReader(payloadJSON)
 	cmd.WaitDelay = 5 * time.Second
 
