@@ -84,6 +84,9 @@ func openRemoteInsertKeySender(remoteName, sessionID string) (insertKeySender, e
 	if !ok {
 		return nil, errInsertNoRemoteConfig
 	}
+	if rc.GetKind() != session.RemoteKindSSH {
+		return nil, errInsertNoRemoteConfig
+	}
 	runner := session.NewSSHRunner(remoteName, rc)
 	if streamer, err := session.OpenStreamingRemoteKeySender(runner, sessionID, context.Background()); err == nil {
 		return streamer, nil

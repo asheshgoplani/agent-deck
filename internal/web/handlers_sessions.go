@@ -1,12 +1,14 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -64,6 +66,51 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "title is required")
 			return
 		}
+		if req.RemoteName != "" {
+			config, err := session.LoadUserConfig()
+			if err != nil {
+				writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to load remote config")
+				return
+			}
+			if config == nil || config.Remotes == nil {
+				writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("remote '%s' not found", req.RemoteName))
+				return
+			}
+			rc, ok := config.Remotes[req.RemoteName]
+			if !ok {
+				writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("remote '%s' not found", req.RemoteName))
+				return
+			}
+			if rc.GetKind() == session.RemoteKindAgentbox {
+				if req.Orchestrator == "" || req.Agent == "" || req.ModelID == "" || req.Runtime == "" {
+					writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "agentbox create requires title, orchestrator, agent, modelId, and runtime")
+					return
+				}
+			} else if req.ProjectPath == "" {
+				writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "projectPath is required")
+				return
+			}
+
+			runner := session.NewRemoteRunner(req.RemoteName, rc)
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer cancel()
+			sessionID, err := runner.CreateSession(ctx, session.RemoteCreateOptions{
+				Tool:         req.Tool,
+				Title:        req.Title,
+				Path:         req.ProjectPath,
+				Group:        req.GroupPath,
+				ModelID:      req.ModelID,
+				Orchestrator: req.Orchestrator,
+				Agent:        req.Agent,
+				Runtime:      req.Runtime,
+			})
+			if err != nil {
+				writeAPIError(w, remoteCreateStatusCode(err), ErrCodeInternalError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusCreated, SessionActionResponse{SessionID: sessionID})
+			return
+		}
 		if req.ProjectPath == "" {
 			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "projectPath is required")
 			return
@@ -82,6 +129,28 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 
 	default:
 		writeAPIError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "method not allowed")
+	}
+}
+
+func remoteCreateStatusCode(err error) int {
+	if err == nil {
+		return http.StatusCreated
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "not found"):
+		return http.StatusNotFound
+	case strings.Contains(message, "requires --"),
+		strings.Contains(message, "missing a url"),
+		strings.Contains(message, "invalid agentbox url"),
+		strings.Contains(message, "agentbox rejected the request"):
+		return http.StatusBadRequest
+	case strings.Contains(message, "workspace is "),
+		strings.Contains(message, "workspace runtime is unavailable"),
+		strings.Contains(message, "workspaces are unavailable"):
+		return http.StatusBadGateway
+	default:
+		return http.StatusInternalServerError
 	}
 }
 

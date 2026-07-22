@@ -695,14 +695,34 @@ type OpenClawSettings struct {
 
 // RemoteConfig defines a remote agent-deck instance accessible via SSH.
 type RemoteConfig struct {
+	// Kind selects the remote provider ("ssh" or "agentbox"). Empty defaults to SSH.
+	Kind string `toml:"kind,omitempty"`
+
 	// Host is the SSH destination (e.g., "user@host" or "user@host:port")
 	Host string `toml:"host,omitempty"`
+
+	// URL is the Agentbox API base URL (for example https://host/agentbox).
+	URL string `toml:"url,omitempty"`
+
+	// Token is an optional bearer token sent to the Agentbox API.
+	Token string `toml:"token,omitempty"`
 
 	// AgentDeckPath is the path to agent-deck binary on the remote (default: "agent-deck")
 	AgentDeckPath string `toml:"agent_deck_path,omitempty"`
 
 	// Profile is the remote profile to use (default: "default")
 	Profile string `toml:"profile,omitempty"`
+}
+
+// GetKind returns the remote kind, defaulting to "ssh".
+func (rc RemoteConfig) GetKind() string {
+	if strings.TrimSpace(rc.Kind) != "" {
+		return strings.TrimSpace(rc.Kind)
+	}
+	if strings.TrimSpace(rc.URL) != "" && strings.TrimSpace(rc.Host) == "" {
+		return RemoteKindAgentbox
+	}
+	return RemoteKindSSH
 }
 
 // GetAgentDeckPath returns the agent-deck binary path, defaulting to "agent-deck".
@@ -719,6 +739,11 @@ func (rc RemoteConfig) GetProfile() string {
 		return rc.Profile
 	}
 	return "default"
+}
+
+// GetURL returns the Agentbox API URL.
+func (rc RemoteConfig) GetURL() string {
+	return strings.TrimSpace(rc.URL)
 }
 
 // ProfileSettings defines per-profile configuration overrides.

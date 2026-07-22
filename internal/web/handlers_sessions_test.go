@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -236,6 +237,105 @@ func TestSessionsCollectionPOSTForwardsModelID(t *testing.T) {
 	}
 	if gotModel != "claude-sonnet-4-6" {
 		t.Fatalf("modelID = %q, want %q", gotModel, "claude-sonnet-4-6")
+	}
+}
+
+func TestSessionsCollectionPOSTRemoteAgentboxCreatesWorkspace(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tempDir, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tempDir, ".cache"))
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	var payload map[string]string
+	agentbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/workspaces" {
+			t.Fatalf("unexpected remote request: %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "ws-remote"})
+	}))
+	defer agentbox.Close()
+
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Remotes: map[string]session.RemoteConfig{
+			"lab": {Kind: session.RemoteKindAgentbox, URL: agentbox.URL},
+		},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	body := strings.NewReader(`{"remoteName":"lab","title":"Research One","projectPath":"/srv/research","orchestrator":"wisp","agent":"pi-fireworks","modelId":"accounts/fireworks/models/glm-5p2","runtime":"docker"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "ws-remote") {
+		t.Fatalf("response = %s, want workspace id", rr.Body.String())
+	}
+	want := map[string]string{
+		"name":         "Research One",
+		"cwd":          "/srv/research",
+		"orchestrator": "wisp",
+		"agent":        "pi-fireworks",
+		"model":        "accounts/fireworks/models/glm-5p2",
+		"runtime":      "docker",
+	}
+	for key, wantValue := range want {
+		if payload[key] != wantValue {
+			t.Fatalf("payload[%q] = %q, want %q (payload=%#v)", key, payload[key], wantValue, payload)
+		}
+	}
+}
+
+func TestSessionsCollectionPOSTRemoteAgentboxRequiresExplicitFields(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tempDir, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tempDir, ".cache"))
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Remotes: map[string]session.RemoteConfig{
+			"lab": {Kind: session.RemoteKindAgentbox, URL: "http://127.0.0.1:1"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	body := strings.NewReader(`{"remoteName":"lab","title":"Research One","orchestrator":"wisp","agent":"pi-fireworks"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "agentbox create requires") {
+		t.Fatalf("response = %s, want explicit-fields guidance", rr.Body.String())
 	}
 }
 

@@ -18,11 +18,15 @@ const (
 
 // CreateSessionRequest is the body for POST /api/sessions.
 type CreateSessionRequest struct {
-	Title       string `json:"title"`
-	Tool        string `json:"tool"`
-	ProjectPath string `json:"projectPath"`
-	GroupPath   string `json:"groupPath,omitempty"`
-	ModelID     string `json:"modelId,omitempty"`
+	Title        string `json:"title"`
+	Tool         string `json:"tool"`
+	ProjectPath  string `json:"projectPath"`
+	GroupPath    string `json:"groupPath,omitempty"`
+	ModelID      string `json:"modelId,omitempty"`
+	RemoteName   string `json:"remoteName,omitempty"`
+	Orchestrator string `json:"orchestrator,omitempty"`
+	Agent        string `json:"agent,omitempty"`
+	Runtime      string `json:"runtime,omitempty"`
 }
 
 // CreateGroupRequest is the body for POST /api/groups.

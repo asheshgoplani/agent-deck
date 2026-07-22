@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/update"
@@ -30,6 +31,8 @@ func handleRemote(profile string, args []string) {
 		handleRemoteList(args[1:])
 	case "sessions":
 		handleRemoteSessions(args[1:])
+	case "create":
+		handleRemoteCreate(args[1:])
 	case "attach":
 		handleRemoteAttach(args[1:])
 	case "rename":
@@ -50,18 +53,21 @@ func printRemoteUsage() {
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  add <name> <user@host>    Add a remote agent-deck instance")
+	fmt.Println("  create <name>             Create a remote session/workspace")
 	fmt.Println("  remove <name>             Remove a remote")
 	fmt.Println("  list                      List configured remotes")
 	fmt.Println("  sessions [name]           Fetch sessions from remote(s)")
-	fmt.Println("  attach <name> <session>   Attach to a remote session")
+	fmt.Println("  attach <name> <session>   Attach to a remote session/workspace")
 	fmt.Println("  rename <name> <session> <new-title>  Rename a remote session")
 	fmt.Println("  update [name]             Install/update agent-deck on remote(s)")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  agent-deck remote add dev user@dev-box")
+	fmt.Println("  agent-deck remote add agentbox --kind agentbox --url https://agentbox.example/agentbox")
 	fmt.Println("  agent-deck remote add prod user@prod-server --agent-deck-path /usr/local/bin/agent-deck")
 	fmt.Println("  agent-deck remote list")
 	fmt.Println("  agent-deck remote sessions dev")
+	fmt.Println("  agent-deck remote create agentbox --name research-one --orchestrator wisp --agent pi-fireworks --model accounts/fireworks/models/glm-5p2 --runtime docker")
 	fmt.Println("  agent-deck remote attach dev my-session")
 	fmt.Println("  agent-deck remote rename dev my-session new-name")
 	fmt.Println("  agent-deck remote update          # Update all remotes")
@@ -74,11 +80,16 @@ func isValidRemoteName(name string) bool {
 
 func handleRemoteAdd(args []string) {
 	fs := flag.NewFlagSet("remote add", flag.ExitOnError)
+	kind := fs.String("kind", session.RemoteKindSSH, "Remote kind: ssh or agentbox")
+	url := fs.String("url", "", "Agentbox API base URL (required for --kind agentbox)")
+	token := fs.String("token", "", "Optional bearer token for Agentbox remotes")
 	agentDeckPath := fs.String("agent-deck-path", "", "Path to agent-deck on the remote (default: agent-deck)")
 	remoteProfile := fs.String("profile", "", "Remote profile to use (default: default)")
 
 	fs.Usage = func() {
-		fmt.Println("Usage: agent-deck remote add <name> <user@host> [options]")
+		fmt.Println("Usage:")
+		fmt.Println("  agent-deck remote add <name> <user@host> [options]")
+		fmt.Println("  agent-deck remote add <name> --kind agentbox --url https://agentbox.example/agentbox [options]")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -91,14 +102,41 @@ func handleRemoteAdd(args []string) {
 	}
 
 	remaining := fs.Args()
-	if len(remaining) < 2 {
-		fmt.Println("Error: requires <name> and <user@host> arguments")
+	remoteKind := strings.TrimSpace(strings.ToLower(*kind))
+	if remoteKind == "" {
+		remoteKind = session.RemoteKindSSH
+	}
+	if remoteKind != session.RemoteKindSSH && remoteKind != session.RemoteKindAgentbox {
+		fmt.Printf("Error: unsupported remote kind %q\n", *kind)
+		os.Exit(1)
+	}
+	if len(remaining) < 1 {
+		fmt.Println("Error: requires a remote name")
 		fs.Usage()
 		os.Exit(1)
 	}
 
 	name := remaining[0]
-	host := remaining[1]
+	host := ""
+	if remoteKind == session.RemoteKindSSH {
+		if len(remaining) < 2 {
+			fmt.Println("Error: ssh remotes require <user@host>")
+			fs.Usage()
+			os.Exit(1)
+		}
+		host = remaining[1]
+	} else {
+		if strings.TrimSpace(*url) == "" {
+			fmt.Println("Error: agentbox remotes require --url")
+			fs.Usage()
+			os.Exit(1)
+		}
+		if len(remaining) > 1 {
+			fmt.Println("Error: agentbox remotes do not accept <user@host>")
+			fs.Usage()
+			os.Exit(1)
+		}
+	}
 
 	// Validate name (no spaces, slashes, dots, or colons).
 	// Colon is reserved by the UI's internal remote session identifier format.
@@ -123,7 +161,10 @@ func handleRemoteAdd(args []string) {
 	}
 
 	rc := session.RemoteConfig{
-		Host: host,
+		Kind:  remoteKind,
+		Host:  host,
+		URL:   strings.TrimSpace(*url),
+		Token: strings.TrimSpace(*token),
 	}
 	if *agentDeckPath != "" {
 		rc.AgentDeckPath = *agentDeckPath
@@ -137,6 +178,11 @@ func handleRemoteAdd(args []string) {
 	if err := session.SaveUserConfig(config); err != nil {
 		fmt.Printf("Error: failed to save config: %v\n", err)
 		os.Exit(1)
+	}
+
+	if remoteKind == session.RemoteKindAgentbox {
+		fmt.Printf("Added remote '%s' (agentbox %s)\n", name, rc.GetURL())
+		return
 	}
 
 	fmt.Printf("Added remote '%s' (%s)\n", name, host)
@@ -221,7 +267,9 @@ func handleRemoteList(args []string) {
 	if *jsonOutput {
 		type remoteJSON struct {
 			Name          string `json:"name"`
+			Kind          string `json:"kind"`
 			Host          string `json:"host"`
+			URL           string `json:"url,omitempty"`
 			AgentDeckPath string `json:"agent_deck_path"`
 			Profile       string `json:"profile"`
 		}
@@ -230,7 +278,9 @@ func handleRemoteList(args []string) {
 		for name, rc := range config.Remotes {
 			remotes = append(remotes, remoteJSON{
 				Name:          name,
+				Kind:          rc.GetKind(),
 				Host:          rc.Host,
+				URL:           rc.GetURL(),
 				AgentDeckPath: rc.GetAgentDeckPath(),
 				Profile:       rc.GetProfile(),
 			})
@@ -245,10 +295,16 @@ func handleRemoteList(args []string) {
 		return
 	}
 
-	fmt.Printf("%-15s %-30s %-20s %s\n", "NAME", "HOST", "PATH", "PROFILE")
-	fmt.Println(strings.Repeat("-", 70))
+	fmt.Printf("%-15s %-10s %-36s %-20s %s\n", "NAME", "KIND", "TARGET", "PATH", "PROFILE")
+	fmt.Println(strings.Repeat("-", 96))
 	for name, rc := range config.Remotes {
-		fmt.Printf("%-15s %-30s %-20s %s\n", name, rc.Host, rc.GetAgentDeckPath(), rc.GetProfile())
+		target := rc.Host
+		path := rc.GetAgentDeckPath()
+		if rc.GetKind() == session.RemoteKindAgentbox {
+			target = rc.GetURL()
+			path = "-"
+		}
+		fmt.Printf("%-15s %-10s %-36s %-20s %s\n", name, rc.GetKind(), target, path, rc.GetProfile())
 	}
 	fmt.Printf("\nTotal: %d remotes\n", len(config.Remotes))
 }
@@ -288,7 +344,7 @@ func handleRemoteSessions(args []string) {
 			continue
 		}
 
-		runner := session.NewSSHRunner(name, rc)
+		runner := session.NewRemoteRunner(name, rc)
 		sessions, err := runner.FetchSessions(ctx)
 		if err != nil {
 			if !*jsonOutput {
@@ -303,22 +359,43 @@ func handleRemoteSessions(args []string) {
 		allSessions = append(allSessions, sessions...)
 
 		if !*jsonOutput {
-			fmt.Printf("\n═══ Remote: %s (%s) ═══\n\n", name, rc.Host)
+			target := rc.Host
+			if rc.GetKind() == session.RemoteKindAgentbox {
+				target = rc.GetURL()
+			}
+			fmt.Printf("\n═══ Remote: %s (%s) [%s] ═══\n\n", name, target, rc.GetKind())
 			if len(sessions) == 0 {
 				fmt.Println("  No sessions found.")
 			} else {
+				if rc.GetKind() == session.RemoteKindAgentbox {
+					fmt.Printf("  %-18s %-8s %-12s %-24s %-8s %-14s %-5s %-7s %s\n", "NAME", "ORCH", "AGENT", "MODEL", "RUNTIME", "STATUS", "TASKS", "ATTACH", "ID")
+					fmt.Printf("  %s\n", strings.Repeat("-", 120))
+					for _, s := range sessions {
+						nameCol := truncateRemoteColumn(s.Title, 18)
+						orchCol := truncateRemoteColumn(s.Orchestrator, 8)
+						agentCol := truncateRemoteColumn(s.Agent, 12)
+						modelCol := truncateRemoteColumn(s.Model, 24)
+						runtimeCol := truncateRemoteColumn(s.Runtime, 8)
+						statusCol := truncateRemoteColumn(remoteLifecycleStatus(s), 14)
+						attachCol := "no"
+						if s.Attachable {
+							attachCol = "yes"
+						}
+						fmt.Printf("  %-18s %-8s %-12s %-24s %-8s %-14s %-5d %-7s %s\n",
+							nameCol, orchCol, agentCol, modelCol, runtimeCol, statusCol, s.ClaimedTaskCount, attachCol, shortRemoteID(s.ID))
+					}
+					continue
+				}
+
 				fmt.Printf("  %-20s %-15s %-10s %s\n", "TITLE", "TOOL", "STATUS", "ID")
 				fmt.Printf("  %s\n", strings.Repeat("-", 60))
 				for _, s := range sessions {
-					title := s.Title
-					if len(title) > 20 {
-						title = title[:17] + "..."
-					}
-					id := s.ID
-					if len(id) > 8 {
-						id = id[:8]
-					}
-					fmt.Printf("  %-20s %-15s %-10s %s\n", title, s.Tool, s.Status, id)
+					fmt.Printf("  %-20s %-15s %-10s %s\n",
+						truncateRemoteColumn(s.Title, 20),
+						truncateRemoteColumn(s.Tool, 15),
+						truncateRemoteColumn(s.Status, 10),
+						shortRemoteID(s.ID),
+					)
 				}
 			}
 		}
@@ -338,6 +415,102 @@ func handleRemoteSessions(args []string) {
 			os.Exit(1)
 		}
 		fmt.Println(string(output))
+	}
+}
+
+func handleRemoteCreate(args []string) {
+	fs := flag.NewFlagSet("remote create", flag.ExitOnError)
+	name := fs.String("name", "", "Session/workspace name")
+	cwd := fs.String("cwd", "", "Remote working directory / workspace cwd")
+	group := fs.String("group", "", "Remote group (SSH remotes)")
+	tool := fs.String("tool", "", "Remote tool (SSH remotes)")
+	agent := fs.String("agent", "", "Agentbox agent (required for agentbox remotes)")
+	model := fs.String("model", "", "Model identifier")
+	orchestrator := fs.String("orchestrator", "", "Agentbox orchestrator (required for agentbox remotes)")
+	runtimeFlag := fs.String("runtime", "", "Agentbox runtime (required for agentbox remotes)")
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck remote create <remote-name> [options]")
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  agent-deck remote create agentbox --name research-one --orchestrator wisp --agent pi-fireworks --model accounts/fireworks/models/glm-5p2 --runtime docker")
+		fmt.Println("  agent-deck remote create dev --name remote-task --tool codex --model gpt-5.5 --cwd /srv/project")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+	}
+	reordered := reorderRemoteArgs(fs, args)
+	if err := fs.Parse(reordered); err != nil {
+		os.Exit(1)
+	}
+	remaining := fs.Args()
+	if len(remaining) < 1 {
+		fmt.Println("Error: requires <remote-name>")
+		fs.Usage()
+		os.Exit(1)
+	}
+	remoteName := remaining[0]
+
+	config, err := session.LoadUserConfig()
+	if err != nil {
+		fmt.Printf("Error: failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+	if config.Remotes == nil {
+		fmt.Printf("Error: remote '%s' not found\n", remoteName)
+		os.Exit(1)
+	}
+	rc, exists := config.Remotes[remoteName]
+	if !exists {
+		fmt.Printf("Error: remote '%s' not found\n", remoteName)
+		os.Exit(1)
+	}
+
+	createOpts := session.RemoteCreateOptions{
+		Tool:         strings.TrimSpace(*tool),
+		Title:        strings.TrimSpace(*name),
+		Path:         strings.TrimSpace(*cwd),
+		Group:        strings.TrimSpace(*group),
+		ModelID:      strings.TrimSpace(*model),
+		Orchestrator: strings.TrimSpace(*orchestrator),
+		Agent:        strings.TrimSpace(*agent),
+		Runtime:      strings.TrimSpace(*runtimeFlag),
+	}
+
+	if rc.GetKind() == session.RemoteKindAgentbox {
+		if createOpts.Title == "" || createOpts.Orchestrator == "" || createOpts.Agent == "" || createOpts.ModelID == "" || createOpts.Runtime == "" {
+			fmt.Println("Error: agentbox create requires --name, --orchestrator, --agent, --model, and --runtime")
+			fs.Usage()
+			os.Exit(1)
+		}
+	}
+
+	runner := session.NewRemoteRunner(remoteName, rc)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sessionID, err := runner.CreateSession(ctx, createOpts)
+	if err != nil {
+		fmt.Printf("Error: failed to create remote session: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Created remote %s '%s' (%s)\n", rc.GetKind(), remoteName, sessionID)
+
+	if rc.GetKind() == session.RemoteKindAgentbox {
+		sessions, fetchErr := runner.FetchSessions(ctx)
+		if fetchErr == nil {
+			for _, s := range sessions {
+				if s.ID == sessionID {
+					fmt.Printf("  Attachable: %t\n", s.Attachable)
+					if strings.TrimSpace(s.AttachCommand) != "" {
+						fmt.Printf("  Remote attach: %s\n", s.AttachCommand)
+					}
+					if strings.TrimSpace(s.LocalAttachCommand) != "" {
+						fmt.Printf("  Local attach: %s\n", s.LocalAttachCommand)
+					}
+					break
+				}
+			}
+		}
 	}
 }
 
@@ -368,7 +541,7 @@ func handleRemoteAttach(args []string) {
 	}
 
 	// Try to resolve session reference (could be title or ID)
-	runner := session.NewSSHRunner(remoteName, rc)
+	runner := session.NewRemoteRunner(remoteName, rc)
 
 	ctx := context.Background()
 	sessions, err := runner.FetchSessions(ctx)
@@ -389,6 +562,19 @@ func handleRemoteAttach(args []string) {
 	if matchID == "" {
 		fmt.Printf("Error: session '%s' not found on remote '%s'\n", sessionRef, remoteName)
 		os.Exit(1)
+	}
+
+	if agentboxRunner, ok := runner.(*session.AgentboxRunner); ok {
+		intent, err := agentboxRunner.ResolveAttach(ctx, matchID)
+		if err != nil {
+			fmt.Printf("Error: failed to resolve attach command: %v\n", err)
+			os.Exit(1)
+		}
+		if intent.Local {
+			fmt.Printf("Local attach command: %s\n", intent.Command)
+		} else {
+			fmt.Printf("Remote attach command: %s\n", intent.Command)
+		}
 	}
 
 	if err := runner.Attach(matchID); err != nil {
@@ -424,7 +610,7 @@ func handleRemoteRename(args []string) {
 		os.Exit(1)
 	}
 
-	runner := session.NewSSHRunner(remoteName, rc)
+	runner := session.NewRemoteRunner(remoteName, rc)
 	ctx := context.Background()
 
 	// Resolve session reference
@@ -448,8 +634,7 @@ func handleRemoteRename(args []string) {
 		os.Exit(1)
 	}
 
-	_, err = runner.RunCommand(ctx, "rename", matchID, newTitle)
-	if err != nil {
+	if err := runner.RenameSession(ctx, matchID, newTitle); err != nil {
 		fmt.Printf("Error: failed to rename session: %v\n", err)
 		os.Exit(1)
 	}
@@ -483,6 +668,11 @@ func handleRemoteUpdate(args []string) {
 		}
 
 		fmt.Printf("\n═══ Remote: %s (%s) ═══\n", name, rc.Host)
+
+		if rc.GetKind() == session.RemoteKindAgentbox {
+			fmt.Printf("  Agentbox API remotes do not run an agent-deck binary. No update needed.\n")
+			continue
+		}
 
 		runner := session.NewSSHRunner(name, rc)
 
@@ -531,6 +721,10 @@ func updateRemotesAfterLocalUpdate(newVersion string) {
 	ctx := context.Background()
 	for name, rc := range config.Remotes {
 		fmt.Printf("\n═══ Remote: %s (%s) ═══\n", name, rc.Host)
+		if rc.GetKind() == session.RemoteKindAgentbox {
+			fmt.Printf("  Agentbox API remotes do not run an agent-deck binary. No update needed.\n")
+			continue
+		}
 		runner := session.NewSSHRunner(name, rc)
 
 		remoteVersion, found := runner.CheckBinary(ctx)
@@ -551,6 +745,33 @@ func updateRemotesAfterLocalUpdate(newVersion string) {
 			fmt.Printf("  ✓ Installed v%s\n", newVersion)
 		}
 	}
+}
+
+func truncateRemoteColumn(value string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(value) <= max {
+		return value
+	}
+	if max <= 3 {
+		return value[:max]
+	}
+	return value[:max-3] + "..."
+}
+
+func shortRemoteID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
+func remoteLifecycleStatus(s session.RemoteSessionInfo) string {
+	if strings.TrimSpace(s.LifecycleStatus) != "" {
+		return s.LifecycleStatus
+	}
+	return s.Status
 }
 
 func shouldProceedWithRemoteUpdate(response string, readErr error) bool {

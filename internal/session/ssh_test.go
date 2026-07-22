@@ -115,7 +115,7 @@ func TestSSHRunnerCreateSession_CleansOrphanOnStartFailure(t *testing.T) {
 		},
 	}
 
-	_, err := runner.CreateSession(context.Background())
+	_, err := runner.CreateQuickSession(context.Background())
 	if err == nil {
 		t.Fatal("expected CreateSession to surface the start failure, got nil")
 	}
@@ -149,7 +149,7 @@ func TestSSHRunnerCreateSession_NoCleanupOnSuccess(t *testing.T) {
 		},
 	}
 
-	id, err := runner.CreateSession(context.Background())
+	id, err := runner.CreateQuickSession(context.Background())
 	if err != nil {
 		t.Fatalf("CreateSession unexpected error: %v", err)
 	}
@@ -171,9 +171,9 @@ func TestSSHRunnerCreateSession_NoCleanupOnSuccess(t *testing.T) {
 // argument is sent.
 func TestRemoteAddArgs(t *testing.T) {
 	cases := []struct {
-		name                     string
-		tool, title, path, group string
-		want                     []string
+		name                            string
+		tool, title, path, group, model string
+		want                            []string
 	}{
 		{
 			name: "defaults (quick shell, remote CWD)",
@@ -200,6 +200,13 @@ func TestRemoteAddArgs(t *testing.T) {
 			want: []string{"add", "--json", "--quick", "-c", "pi"},
 		},
 		{
+			name:  "model flag is forwarded",
+			tool:  "codex",
+			title: "my task",
+			model: "gpt-5.5",
+			want:  []string{"add", "--json", "-t", "my task", "-c", "codex", "--model", "gpt-5.5"},
+		},
+		{
 			name: "whitespace-only values fall back to defaults",
 			tool: "  ", title: " ", group: " ", path: " . ",
 			want: []string{"add", "--json", "--quick"},
@@ -207,13 +214,13 @@ func TestRemoteAddArgs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := remoteAddArgs(tc.tool, tc.title, tc.path, tc.group)
+			got := remoteAddArgs(tc.tool, tc.title, tc.path, tc.group, tc.model)
 			if len(got) != len(tc.want) {
-				t.Fatalf("remoteAddArgs(%q,%q,%q,%q) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, got, tc.want)
+				t.Fatalf("remoteAddArgs(%q,%q,%q,%q,%q) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, tc.model, got, tc.want)
 			}
 			for i := range got {
 				if got[i] != tc.want[i] {
-					t.Fatalf("remoteAddArgs(%q,%q,%q,%q) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, got, tc.want)
+					t.Fatalf("remoteAddArgs(%q,%q,%q,%q,%q) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, tc.model, got, tc.want)
 				}
 			}
 		})

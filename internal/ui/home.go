@@ -3108,7 +3108,7 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 			ctx, cancel := context.WithTimeout(h.ctx, 15*time.Second)
 			defer cancel()
 
-			runner := session.NewSSHRunner(name, rc)
+			runner := session.NewRemoteRunner(name, rc)
 			sessions, err := runner.FetchSessions(ctx)
 			if err != nil {
 				mu.Lock()
@@ -3199,7 +3199,7 @@ func (h *Home) measureRemoteLatencies() tea.Msg {
 		wg.Add(1)
 		go func(name string, rc session.RemoteConfig) {
 			defer wg.Done()
-			runner := session.NewSSHRunner(name, rc)
+			runner := session.NewRemoteRunner(name, rc)
 			d, err := runner.MeasureLatency(ctx)
 			lat := session.RemoteLatency{MeasuredAt: time.Now()}
 			if err != nil {
@@ -3613,7 +3613,7 @@ func (h *Home) fetchRemotePreview(remoteName, sessionID, key string) tea.Cmd {
 			return previewFetchedMsg{previewKey: key, err: fmt.Errorf("remote '%s' not found", remoteName)}
 		}
 
-		runner := session.NewSSHRunner(remoteName, rc)
+		runner := session.NewRemoteRunner(remoteName, rc)
 		ctx, cancel := context.WithTimeout(h.ctx, 15*time.Second)
 		defer cancel()
 
@@ -10587,10 +10587,10 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 							if !ok {
 								return
 							}
-							runner := session.NewSSHRunner(remoteName, rc)
+							runner := session.NewRemoteRunner(remoteName, rc)
 							ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 							defer cancel()
-							_, _ = runner.RunCommand(ctx, "rename", remoteID, newName)
+							_ = runner.RenameSession(ctx, remoteID, newName)
 						}()
 						// Update local cache immediately for responsiveness
 						h.remoteSessionsMu.Lock()
@@ -12728,7 +12728,7 @@ func (h *Home) deleteRemoteSession(remoteName, sessionID, title string) tea.Cmd 
 				err:        fmt.Errorf("remote '%s' not found", remoteName),
 			}
 		}
-		runner := session.NewSSHRunner(remoteName, rc)
+		runner := session.NewRemoteRunner(remoteName, rc)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		err = runner.DeleteSession(ctx, sessionID)
@@ -12757,7 +12757,7 @@ func (h *Home) closeRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 				err:        fmt.Errorf("remote '%s' not found", remoteName),
 			}
 		}
-		runner := session.NewSSHRunner(remoteName, rc)
+		runner := session.NewRemoteRunner(remoteName, rc)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		err = runner.StopSession(ctx, sessionID)
@@ -12786,7 +12786,7 @@ func (h *Home) restartRemoteSession(remoteName, sessionID, title string) tea.Cmd
 				err:        fmt.Errorf("remote '%s' not found", remoteName),
 			}
 		}
-		runner := session.NewSSHRunner(remoteName, rc)
+		runner := session.NewRemoteRunner(remoteName, rc)
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		err = runner.RestartSession(ctx, sessionID)
@@ -13016,7 +13016,7 @@ func (h *Home) createRemoteSession(remoteName string) tea.Cmd {
 
 // remoteCreateAndAttachCmd creates a session on the remote, then attaches to it.
 type remoteCreateAndAttachCmd struct {
-	runner    *session.SSHRunner
+	runner    session.RemoteRunner
 	tool      string
 	title     string
 	path      string
@@ -13043,7 +13043,12 @@ func (r remoteCreateAndAttachCmd) Run() error {
 	}
 	ctx, cancel := context.WithTimeout(baseCtx, 20*time.Second)
 	defer cancel()
-	sessionID, err := r.runner.CreateSessionWithOptions(ctx, r.tool, r.title, r.path, r.group)
+	sessionID, err := r.runner.CreateSession(ctx, session.RemoteCreateOptions{
+		Tool:  r.tool,
+		Title: r.title,
+		Path:  r.path,
+		Group: r.group,
+	})
 	if err != nil {
 		return err
 	}
@@ -13074,7 +13079,7 @@ func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path, gro
 			return sessionCreatedMsg{err: fmt.Errorf("remote '%s' not found", remoteName)}
 		}
 	}
-	runner := session.NewSSHRunner(remoteName, rc)
+	runner := session.NewRemoteRunner(remoteName, rc)
 	h.isAttaching.Store(true)
 	return tea.Exec(remoteCreateAndAttachCmd{runner: runner, tool: tool, title: title, path: path, group: group, createCtx: h.ctx}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
@@ -13105,7 +13110,7 @@ func (a attachWindowCmd) SetStdin(r io.Reader)  {}
 func (a attachWindowCmd) SetStdout(w io.Writer) {}
 func (a attachWindowCmd) SetStderr(w io.Writer) {}
 
-// attachRemoteSession attaches to a remote session via SSH, suspending the TUI.
+// attachRemoteSession attaches to a remote session, suspending the TUI.
 func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 	config, err := session.LoadUserConfig()
 	if err != nil || config == nil || config.Remotes == nil {
@@ -13115,7 +13120,7 @@ func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 	if !ok {
 		return nil
 	}
-	runner := session.NewSSHRunner(remoteName, rc)
+	runner := session.NewRemoteRunner(remoteName, rc)
 	h.isAttaching.Store(true)
 	return tea.Exec(remoteAttachCmd{runner: runner, sessionID: sessionID}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
@@ -13123,9 +13128,9 @@ func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 	})
 }
 
-// remoteAttachCmd implements tea.ExecCommand for remote SSH attach
+// remoteAttachCmd implements tea.ExecCommand for remote attach.
 type remoteAttachCmd struct {
-	runner    *session.SSHRunner
+	runner    session.RemoteRunner
 	sessionID string
 }
 

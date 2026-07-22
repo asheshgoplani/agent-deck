@@ -808,8 +808,8 @@ func (r *SSHRunner) buildAttachArgs(sessionID string) []string {
 	return append(args, r.Host, remoteCmd)
 }
 
-// CreateSession creates and starts a quick new session on the remote, returning its ID.
-func (r *SSHRunner) CreateSession(ctx context.Context) (string, error) {
+// CreateQuickSession creates and starts a quick new session on the remote, returning its ID.
+func (r *SSHRunner) CreateQuickSession(ctx context.Context) (string, error) {
 	return r.CreateSessionWithOptions(ctx, "", "", "", "")
 }
 
@@ -817,7 +817,7 @@ func (r *SSHRunner) CreateSession(ctx context.Context) (string, error) {
 // session on a remote with explicit dialog values (#1353). Empty values fall
 // back to remote defaults: no -c means shell, no -t means --quick
 // (auto-generated name), and an empty or "." path means remote CWD.
-func remoteAddArgs(tool, title, path, group string) []string {
+func remoteAddArgs(tool, title, path, group, modelID string) []string {
 	args := []string{"add", "--json"}
 	if t := strings.TrimSpace(title); t != "" {
 		args = append(args, "-t", t)
@@ -830,6 +830,9 @@ func remoteAddArgs(tool, title, path, group string) []string {
 	if c := strings.TrimSpace(tool); c != "" {
 		args = append(args, "-c", c)
 	}
+	if model := strings.TrimSpace(modelID); model != "" {
+		args = append(args, "--model", model)
+	}
 	if p := strings.TrimSpace(path); p != "" && p != "." {
 		args = append(args, p)
 	}
@@ -840,8 +843,18 @@ func remoteAddArgs(tool, title, path, group string) []string {
 // an explicit tool/title/path/group from the new-session dialog (#1353),
 // returning its ID. Empty values fall back to remote defaults (see remoteAddArgs).
 func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, tool, title, path, group string) (string, error) {
+	return r.CreateSession(ctx, RemoteCreateOptions{
+		Tool:  tool,
+		Title: title,
+		Path:  path,
+		Group: group,
+	})
+}
+
+// CreateSession creates and starts a new remote agent-deck session.
+func (r *SSHRunner) CreateSession(ctx context.Context, opts RemoteCreateOptions) (string, error) {
 	// Step 1: Create the session
-	output, err := r.Run(ctx, remoteAddArgs(tool, title, path, group)...)
+	output, err := r.Run(ctx, remoteAddArgs(opts.Tool, opts.Title, opts.Path, opts.Group, opts.ModelID)...)
 	if err != nil {
 		return "", fmt.Errorf("failed to create remote session: %w", err)
 	}
@@ -899,15 +912,30 @@ func (r *SSHRunner) RestartSession(ctx context.Context, sessionID string) error 
 	return err
 }
 
+// RenameSession renames a remote SSH-backed agent-deck session.
+func (r *SSHRunner) RenameSession(ctx context.Context, sessionID string, newTitle string) error {
+	_, err := r.RunCommand(ctx, "rename", sessionID, newTitle)
+	return err
+}
+
 // RemoteSessionInfo represents a session from a remote agent-deck instance.
 type RemoteSessionInfo struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Path      string `json:"path"`
-	Group     string `json:"group"`
-	Tool      string `json:"tool"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
+	ID                 string `json:"id"`
+	Title              string `json:"title"`
+	Path               string `json:"path"`
+	Group              string `json:"group"`
+	Tool               string `json:"tool"`
+	Agent              string `json:"agent,omitempty"`
+	Model              string `json:"model,omitempty"`
+	Runtime            string `json:"runtime,omitempty"`
+	Orchestrator       string `json:"orchestrator,omitempty"`
+	Status             string `json:"status"`
+	LifecycleStatus    string `json:"lifecycle_status,omitempty"`
+	ClaimedTaskCount   int    `json:"claimed_task_count,omitempty"`
+	Attachable         bool   `json:"attachable,omitempty"`
+	AttachCommand      string `json:"attach_command,omitempty"`
+	LocalAttachCommand string `json:"local_attach_command,omitempty"`
+	CreatedAt          string `json:"created_at"`
 
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`
