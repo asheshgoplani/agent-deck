@@ -172,4 +172,3 @@ func TestCCHook_CreateWorktree_NoCCHook_Unchanged(t *testing.T) {
 		t.Error("expected a proper linked git worktree")
 	}
 }
-
