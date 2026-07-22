@@ -27,25 +27,22 @@ type hookResult struct {
 }
 
 // ExecuteCreate fires all hooks in parallel and returns the path from the
-// highest-priority hook that exited 0 with non-empty output.
+// highest-priority hook (user > project > local > managed). All hooks run
+// to completion, but only the winner's result matters — if it fails or
+// produces no output, creation fails (no fallback to lower-priority hooks).
 func ExecuteCreate(ctx context.Context, hooks *ResolvedHooks, payload Payload, timeout time.Duration) (string, error) {
 	results := executeAll(ctx, hooks, payload, timeout)
 
-	// Walk entries in priority order (they're already sorted user > project > local > managed).
-	// Return the path from the first (highest-priority) entry.
-	for i, entry := range hooks.Entries {
-		r := results[i]
-		if r.Err != nil {
-			return "", fmt.Errorf("WorktreeCreate hook (%s) failed: %w", entry.Level, r.Err)
-		}
-		path := strings.TrimSpace(r.Output)
-		if path == "" {
-			return "", fmt.Errorf("WorktreeCreate hook (%s) produced no output", entry.Level)
-		}
-		return path, nil
+	winner := hooks.Entries[0]
+	r := results[0]
+	if r.Err != nil {
+		return "", fmt.Errorf("WorktreeCreate hook (%s) failed: %w", winner.Level, r.Err)
 	}
-
-	return "", fmt.Errorf("no WorktreeCreate hook produced a result")
+	path := strings.TrimSpace(r.Output)
+	if path == "" {
+		return "", fmt.Errorf("WorktreeCreate hook (%s) produced no output", winner.Level)
+	}
+	return path, nil
 }
 
 // ExecuteRemove fires all hooks in parallel. Failures are logged to stderr
@@ -90,10 +87,14 @@ func runHook(ctx context.Context, entry HookEntry, payloadJSON []byte, timeout t
 	cmd.Stdin = bytes.NewReader(payloadJSON)
 	cmd.WaitDelay = 5 * time.Second
 
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	err := cmd.Run()
+	if err != nil && stderr.Len() > 0 {
+		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
 	return hookResult{
 		Level:  entry.Level,
 		Output: stdout.String(),
