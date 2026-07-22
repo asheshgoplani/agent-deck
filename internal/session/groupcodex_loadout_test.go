@@ -32,6 +32,9 @@ mcps = ["memory"]
 	if warnings := ApplyConfiguredLoadout(inst); len(warnings) != 0 {
 		t.Fatalf("unexpected loadout warnings: %v", warnings)
 	}
+	if warnings := ApplyConfiguredLoadout(inst); len(warnings) != 0 {
+		t.Fatalf("healthy home loadout was not a no-op: %v", warnings)
+	}
 
 	codexHome := filepath.Join(home, ".codex-work")
 	if _, err := os.Stat(filepath.Join(codexHome, "skills", "alpha", "SKILL.md")); err != nil {

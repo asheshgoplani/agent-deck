@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
 
 const codexHomeSkillsDir = "skills"
@@ -77,15 +80,46 @@ func saveCodexHomeSkillsManifest(codexHome string, manifest *ProjectSkillsManife
 	if err := toml.NewEncoder(&buf).Encode(manifest); err != nil {
 		return fmt.Errorf("encode Codex home skills manifest: %w", err)
 	}
-	tmpPath := manifestPath + ".tmp"
-	if err := os.WriteFile(tmpPath, buf.Bytes(), 0o600); err != nil {
-		return fmt.Errorf("write Codex home skills manifest: %w", err)
-	}
-	if err := os.Rename(tmpPath, manifestPath); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := atomicfile.WriteFile(manifestPath, buf.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("save Codex home skills manifest: %w", err)
 	}
 	return nil
+}
+
+func materializeCodexHomeSkill(sourcePath, targetPath string) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return "", err
+	}
+	resolvedSource := sourcePath
+	if resolved, err := filepath.EvalSymlinks(sourcePath); err == nil {
+		resolvedSource = resolved
+	}
+	base := filepath.Dir(targetPath)
+	if resolved, err := filepath.EvalSymlinks(base); err == nil {
+		base = resolved
+	}
+	if relTarget, err := filepath.Rel(base, resolvedSource); err == nil {
+		if err := os.Symlink(relTarget, targetPath); err == nil {
+			if _, err := os.Stat(targetPath); err == nil {
+				return "symlink", nil
+			}
+			_ = os.Remove(targetPath)
+		} else if errors.Is(err, os.ErrExist) {
+			return "", fmt.Errorf("target already exists and is not managed: %s", targetPath)
+		}
+	}
+
+	if err := os.Mkdir(targetPath, 0o755); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return "", fmt.Errorf("target already exists and is not managed: %s", targetPath)
+		}
+		return "", err
+	}
+	if err := copyDir(sourcePath, targetPath); err != nil {
+		_ = os.RemoveAll(targetPath)
+		return "", err
+	}
+	return "copy", nil
 }
 
 // AttachSkillToCodexHome resolves and materializes one declarative group skill
@@ -102,6 +136,11 @@ func AttachSkillToCodexHome(codexHome, skillRef, sourceName string) (*ProjectSki
 	if err := validateAttachableSkillCandidate(*candidate); err != nil {
 		return nil, err
 	}
+	lock, err := acquireCodexConfigLock(codexHomeSkillsManifestPath(home))
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Release()
 	manifest, err := loadCodexHomeSkillsManifest(home)
 	if err != nil {
 		return nil, err
@@ -129,7 +168,7 @@ func AttachSkillToCodexHome(codexHome, skillRef, sourceName string) (*ProjectSki
 		} else if !os.IsNotExist(err) {
 			return nil, err
 		}
-		mode, err := materializeSkill(candidate.SourcePath, target)
+		mode, err := materializeCodexHomeSkill(candidate.SourcePath, target)
 		if err != nil {
 			return nil, err
 		}
@@ -150,7 +189,7 @@ func AttachSkillToCodexHome(codexHome, skillRef, sourceName string) (*ProjectSki
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	mode, err := materializeSkill(candidate.SourcePath, target)
+	mode, err := materializeCodexHomeSkill(candidate.SourcePath, target)
 	if err != nil {
 		return nil, err
 	}

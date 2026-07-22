@@ -8692,6 +8692,11 @@ func (i *Instance) wrapLaunchShell(command string) string {
 // All code paths that launch or respawn a tmux pane should use this instead of calling
 // applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
 func (i *Instance) prepareCommand(cmd string) (string, string, error) {
+	if IsCodexCompatible(i.Tool) {
+		if _, _, err := ResolveInstanceCodexHomeSkills(i); err != nil {
+			return "", "", fmt.Errorf("unsafe Codex group skill loadout: %w", err)
+		}
+	}
 	// Exit-to-shell wrap FIRST, on the bare agent command, so the agent's own
 	// `exec ` launcher is still visible to neutralise and the trailing shell
 	// exec stays the outermost statement before any user-wrapper / bash -c /

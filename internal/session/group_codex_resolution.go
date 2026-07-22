@@ -106,6 +106,23 @@ func ResolveGroupCodexHomeSkills(groupPath string) (string, []string, error) {
 	return home, homeSkills, nil
 }
 
+// ResolveInstanceCodexHomeSkills verifies that the home selected by the final
+// Codex command matches the declarative group home before provisioning skills.
+func ResolveInstanceCodexHomeSkills(inst *Instance) (string, []string, error) {
+	if inst == nil || !IsCodexCompatible(inst.Tool) {
+		return "", nil, nil
+	}
+	configuredHome, skills, err := ResolveGroupCodexHomeSkills(inst.GroupPath)
+	if err != nil || len(skills) == 0 {
+		return configuredHome, skills, err
+	}
+	actualHome := inst.getCodexHomeDir()
+	if filepath.Clean(actualHome) != filepath.Clean(configuredHome) {
+		return "", nil, fmt.Errorf("Codex command resolves CODEX_HOME %q but group %q config_dir resolves %q", actualHome, inst.GroupPath, configuredHome)
+	}
+	return actualHome, skills, nil
+}
+
 func sameStringSet(left, right []string) bool {
 	if len(left) != len(right) {
 		return false

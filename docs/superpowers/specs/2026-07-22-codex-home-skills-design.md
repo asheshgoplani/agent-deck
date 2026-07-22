@@ -23,10 +23,11 @@ repository. Keep explicit `agent-deck skill attach` project-scoped.
 
 A child group may inherit the skills declared by the group that supplies its
 `config_dir`. If a descendant declares additional Codex skills while inheriting
-that same home, agent-deck refuses the child-only additions and warns that the
-child needs its own `config_dir`. Explicit group homes that resolve to the same
-filesystem path must also resolve to the same skill set; divergent sets are
-rejected. This prevents one child loadout from leaking into siblings.
+that same home, agent-deck blocks launch and reports that the child needs its own
+`config_dir`. Explicit group homes that resolve to the same filesystem path must
+also resolve to the same skill set; divergent sets are rejected. A command-level
+`CODEX_HOME` that differs from `config_dir` is rejected for the same reason. This
+prevents one child loadout from leaking into siblings.
 
 ## Migration
 
@@ -37,8 +38,10 @@ managed links can be detached explicitly after the home copy is verified.
 
 ## Error handling and security
 
-- A Codex group with skills but no resolved `config_dir` emits a warning and
+- A Codex group with skills but no resolved `config_dir` does not launch and
   does not touch the repository.
+- Home reconciliation is serialized in-process and across processes before its
+  manifest read/modify/write cycle.
 - Home targets are constrained to the managed `skills` directory before any
   removal or replacement.
 - Source resolution, symlink validation, copy fallback, and foreign-target

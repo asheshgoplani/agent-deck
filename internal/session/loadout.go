@@ -78,7 +78,7 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 			config.GetConductorClaudeMCPs(conductorNameFromInstance(inst)),
 		)
 	} else {
-		codexSkillsHome, skills, skillResolutionErr = ResolveGroupCodexHomeSkills(inst.GroupPath)
+		codexSkillsHome, skills, skillResolutionErr = ResolveInstanceCodexHomeSkills(inst)
 		mcps = config.GetGroupCodexMCPs(inst.GroupPath)
 	}
 

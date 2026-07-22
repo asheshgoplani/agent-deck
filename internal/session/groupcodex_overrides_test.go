@@ -121,6 +121,38 @@ skills = ["store/api"]
 	}
 }
 
+func TestResolveInstanceCodexHomeSkillsRejectsCommandHomeOverride(t *testing.T) {
+	home := withIsolatedHomeAndConfig(t, `
+[groups."work".codex]
+config_dir = "~/.codex-work"
+command = "CODEX_HOME=~/.codex-other codex"
+skills = ["store/base"]
+`)
+	inst := NewInstanceWithGroupAndTool("work", filepath.Join(home, "project"), "work", "codex")
+
+	_, _, err := ResolveInstanceCodexHomeSkills(inst)
+	if err == nil || !strings.Contains(err.Error(), "CODEX_HOME") {
+		t.Fatalf("expected command home mismatch, got %v", err)
+	}
+}
+
+func TestPrepareCommandRejectsDivergentSharedCodexHomeSkills(t *testing.T) {
+	home := withIsolatedHomeAndConfig(t, `
+[groups."alpha".codex]
+config_dir = "~/.codex-shared"
+skills = ["store/alpha"]
+
+[groups."beta".codex]
+config_dir = "~/.codex-shared"
+skills = ["store/beta"]
+`)
+	inst := NewInstanceWithGroupAndTool("beta", filepath.Join(home, "project"), "beta", "codex")
+
+	if _, _, err := inst.prepareCommand("codex"); err == nil || !strings.Contains(err.Error(), "shared config_dir") {
+		t.Fatalf("expected unsafe shared-home launch rejection, got %v", err)
+	}
+}
+
 func TestBuildCodexCommand_UsesGroupCodexConfigDirAsCodexHome(t *testing.T) {
 	tmpHome := withIsolatedHomeAndConfig(t, `
 [codex]
