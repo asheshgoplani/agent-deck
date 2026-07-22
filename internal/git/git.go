@@ -606,7 +606,6 @@ func RemoveWorktree(repoDir, worktreePath string, force bool) error {
 	// the main working tree (worktree_reuse sessions, #1200) or non-worktree
 	// paths. Non-fatal — removal proceeds even if the script fails.
 	if IsLinkedWorktree(worktreePath) {
-		// Fire Claude Code WorktreeRemove hooks (non-blocking).
 		if resolved := cchook.ResolveWorktreeHooks("WorktreeRemove", repoDir, cchook.DefaultUserClaudeDir(), cchook.DefaultManagedDir()); resolved != nil {
 			payload := cchook.Payload{
 				Cwd:           repoDir,

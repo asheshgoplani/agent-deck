@@ -57,20 +57,24 @@ type hookDef struct {
 // The Entries slice is ordered by priority: user > project > local > managed.
 func ResolveWorktreeHooks(event string, repoDir string, userClaudeDir string, managedDir string) *ResolvedHooks {
 	type source struct {
-		path  string
+		dir   string
+		file  string
 		level Level
 	}
 
 	sources := []source{
-		{filepath.Join(userClaudeDir, "settings.json"), LevelUser},
-		{filepath.Join(repoDir, ".claude", "settings.json"), LevelProject},
-		{filepath.Join(repoDir, ".claude", "settings.local.json"), LevelLocal},
-		{filepath.Join(managedDir, "managed-settings.json"), LevelManaged},
+		{userClaudeDir, "settings.json", LevelUser},
+		{repoDir, filepath.Join(".claude", "settings.json"), LevelProject},
+		{repoDir, filepath.Join(".claude", "settings.local.json"), LevelLocal},
+		{managedDir, "managed-settings.json", LevelManaged},
 	}
 
 	var entries []HookEntry
 	for _, src := range sources {
-		cmds := readHookCommands(src.path, event)
+		if src.dir == "" {
+			continue
+		}
+		cmds := readHookCommands(filepath.Join(src.dir, src.file), event)
 		for _, cmd := range cmds {
 			entries = append(entries, HookEntry{Command: cmd, Level: src.level})
 		}
@@ -88,12 +92,12 @@ func readHookCommands(path string, event string) []string {
 		return nil
 	}
 
-	var sf settingsFile
-	if err := json.Unmarshal(data, &sf); err != nil {
+	var settings settingsFile
+	if err := json.Unmarshal(data, &settings); err != nil {
 		return nil
 	}
 
-	groups, ok := sf.Hooks[event]
+	groups, ok := settings.Hooks[event]
 	if !ok {
 		return nil
 	}

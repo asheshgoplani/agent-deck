@@ -142,7 +142,6 @@ type WorktreeStateOptions struct {
 // instance ID into the CC hook payload's session_id field. Pass nil when no
 // instance ID is available.
 func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, state WorktreeStateOptions, stdout, stderr io.Writer, setupTimeout time.Duration, hookCtx *CCHookContext) (setupErr error, err error) {
-	// Check for Claude Code WorktreeCreate hooks.
 	if resolved := cchook.ResolveWorktreeHooks("WorktreeCreate", repoDir, cchook.DefaultUserClaudeDir(), cchook.DefaultManagedDir()); resolved != nil {
 		var sessionID string
 		if hookCtx != nil {
@@ -167,9 +166,15 @@ func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, s
 				return nil, fmt.Errorf("with-state requires a git worktree, but Claude Code WorktreeCreate hook created a non-git directory %q", hookPath)
 			}
 			if matErr := MaterializeWipFromParent(repoDir, hookPath, state.WithIgnored); matErr != nil {
+				_ = RemoveWorktree(repoDir, hookPath, true)
 				return nil, fmt.Errorf("materialize parent state into hook-created worktree: %w", matErr)
 			}
 		}
+
+		if inclErr := ProcessWorktreeInclude(repoDir, hookPath, stderr); inclErr != nil {
+			fmt.Fprintf(stderr, "worktreeinclude: %v\n", inclErr)
+		}
+
 		return RunWorktreeSetupAfterCreate(repoDir, hookPath, stdout, stderr, setupTimeout), nil
 	}
 

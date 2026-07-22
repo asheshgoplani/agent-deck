@@ -13,7 +13,9 @@ import (
 )
 
 type Payload struct {
-	SessionID      string `json:"session_id"`
+	SessionID string `json:"session_id"`
+	// TranscriptPath exists for schema parity with Claude Code's hook payload;
+	// agent-deck does not have access to CC's transcript path, so this is always empty.
 	TranscriptPath string `json:"transcript_path"`
 	Cwd            string `json:"cwd"`
 	HookEventName  string `json:"hook_event_name"`
@@ -33,14 +35,13 @@ type hookResult struct {
 func ExecuteCreate(ctx context.Context, hooks *ResolvedHooks, payload Payload, timeout time.Duration) (string, error) {
 	results := executeAll(ctx, hooks, payload, timeout)
 
-	winner := hooks.Entries[0]
-	r := results[0]
-	if r.Err != nil {
-		return "", fmt.Errorf("WorktreeCreate hook (%s) failed: %w", winner.Level, r.Err)
+	winnerResult := results[0]
+	if winnerResult.Err != nil {
+		return "", fmt.Errorf("WorktreeCreate hook (%s) failed: %w", winnerResult.Level, winnerResult.Err)
 	}
-	path := strings.TrimSpace(r.Output)
+	path := strings.TrimSpace(winnerResult.Output)
 	if path == "" {
-		return "", fmt.Errorf("WorktreeCreate hook (%s) produced no output", winner.Level)
+		return "", fmt.Errorf("WorktreeCreate hook (%s) produced no output", winnerResult.Level)
 	}
 	return path, nil
 }
@@ -57,7 +58,10 @@ func ExecuteRemove(ctx context.Context, hooks *ResolvedHooks, payload Payload, t
 }
 
 func executeAll(ctx context.Context, hooks *ResolvedHooks, payload Payload, timeout time.Duration) []hookResult {
-	payloadJSON, _ := json.Marshal(payload)
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		panic(fmt.Sprintf("cchook: marshal payload: %v", err))
+	}
 
 	var wg sync.WaitGroup
 	results := make([]hookResult, len(hooks.Entries))
