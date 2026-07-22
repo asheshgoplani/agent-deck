@@ -94,7 +94,7 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 			runner := session.NewRemoteRunner(req.RemoteName, rc)
 			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 			defer cancel()
-			sessionID, err := runner.CreateSession(ctx, session.RemoteCreateOptions{
+			result, err := runner.CreateSession(ctx, session.RemoteCreateOptions{
 				Tool:         req.Tool,
 				Title:        req.Title,
 				Path:         req.ProjectPath,
@@ -105,10 +105,11 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 				Runtime:      req.Runtime,
 			})
 			if err != nil {
-				writeAPIError(w, remoteCreateStatusCode(err), ErrCodeInternalError, err.Error())
+				status, code := remoteCreateErrorResponse(err)
+				writeAPIError(w, status, code, err.Error())
 				return
 			}
-			writeJSON(w, http.StatusCreated, SessionActionResponse{SessionID: sessionID})
+			writeJSON(w, http.StatusCreated, SessionActionResponse{SessionID: result.SessionID})
 			return
 		}
 		if req.ProjectPath == "" {
@@ -132,25 +133,51 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func remoteCreateStatusCode(err error) int {
+func remoteCreateErrorResponse(err error) (int, string) {
 	if err == nil {
-		return http.StatusCreated
+		return http.StatusCreated, ErrCodeInternalError
+	}
+	var agentboxErr *session.AgentboxHTTPError
+	if errors.As(err, &agentboxErr) {
+		switch agentboxErr.StatusCode {
+		case http.StatusBadRequest:
+			return http.StatusBadRequest, ErrCodeBadRequest
+		case http.StatusNotFound:
+			return http.StatusNotFound, ErrCodeNotFound
+		case http.StatusConflict:
+			return http.StatusConflict, ErrCodeConflict
+		case http.StatusServiceUnavailable:
+			return http.StatusServiceUnavailable, ErrCodeServiceUnavailable
+		case http.StatusInsufficientStorage:
+			return http.StatusInsufficientStorage, ErrCodeInsufficientStorage
+		default:
+			if agentboxErr.StatusCode > 0 {
+				return agentboxErr.StatusCode, ErrCodeInternalError
+			}
+		}
 	}
 	message := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(message, "not found"):
-		return http.StatusNotFound
+		return http.StatusNotFound, ErrCodeNotFound
 	case strings.Contains(message, "requires --"),
 		strings.Contains(message, "missing a url"),
 		strings.Contains(message, "invalid agentbox url"),
 		strings.Contains(message, "agentbox rejected the request"):
-		return http.StatusBadRequest
+		return http.StatusBadRequest, ErrCodeBadRequest
+	case strings.Contains(message, "disk budget is exhausted"):
+		return http.StatusInsufficientStorage, ErrCodeInsufficientStorage
+	case strings.Contains(message, "workspace root conflicts"),
+		strings.Contains(message, "rejected the workspace state transition"):
+		return http.StatusConflict, ErrCodeConflict
 	case strings.Contains(message, "workspace is "),
 		strings.Contains(message, "workspace runtime is unavailable"),
+		strings.Contains(message, "workspace root is unconfigured"),
+		strings.Contains(message, "workspace is unavailable"),
 		strings.Contains(message, "workspaces are unavailable"):
-		return http.StatusBadGateway
+		return http.StatusServiceUnavailable, ErrCodeServiceUnavailable
 	default:
-		return http.StatusInternalServerError
+		return http.StatusInternalServerError, ErrCodeInternalError
 	}
 }
 

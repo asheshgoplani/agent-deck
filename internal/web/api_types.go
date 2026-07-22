@@ -4,16 +4,19 @@ import "github.com/asheshgoplani/agent-deck/internal/session"
 
 // Error code constants for API error responses.
 const (
-	ErrCodeUnauthorized     = "UNAUTHORIZED"
-	ErrCodeForbidden        = "MUTATIONS_DISABLED"
-	ErrCodeCSRF             = "CROSS_ORIGIN_BLOCKED"
-	ErrCodeNotFound         = "NOT_FOUND"
-	ErrCodeBadRequest       = "INVALID_REQUEST"
-	ErrCodeMethodNotAllowed = "METHOD_NOT_ALLOWED"
-	ErrCodeRateLimited      = "RATE_LIMITED"
-	ErrCodeInternalError    = "INTERNAL_ERROR"
-	ErrCodeNotImplemented   = "NOT_IMPLEMENTED"
-	ErrCodeReadOnly         = "READ_ONLY"
+	ErrCodeUnauthorized        = "UNAUTHORIZED"
+	ErrCodeForbidden           = "MUTATIONS_DISABLED"
+	ErrCodeCSRF                = "CROSS_ORIGIN_BLOCKED"
+	ErrCodeNotFound            = "NOT_FOUND"
+	ErrCodeBadRequest          = "INVALID_REQUEST"
+	ErrCodeConflict            = "CONFLICT"
+	ErrCodeMethodNotAllowed    = "METHOD_NOT_ALLOWED"
+	ErrCodeRateLimited         = "RATE_LIMITED"
+	ErrCodeInternalError       = "INTERNAL_ERROR"
+	ErrCodeInsufficientStorage = "INSUFFICIENT_STORAGE"
+	ErrCodeNotImplemented      = "NOT_IMPLEMENTED"
+	ErrCodeReadOnly            = "READ_ONLY"
+	ErrCodeServiceUnavailable  = "SERVICE_UNAVAILABLE"
 )
 
 // CreateSessionRequest is the body for POST /api/sessions.

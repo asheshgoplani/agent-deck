@@ -1018,6 +1018,33 @@ func buildRemoteAttachRequest(remoteName, sessionID, openAs string) (terminal.At
 	}, true
 }
 
+func buildRemoteAttachRequestForItem(item session.Item, openAs string) (terminal.AttachRequest, error) {
+	if item.RemoteSession == nil || item.RemoteName == "" {
+		return terminal.AttachRequest{}, fmt.Errorf("remote session is unavailable")
+	}
+	cfg, err := session.LoadUserConfig()
+	if err != nil || cfg == nil || cfg.Remotes == nil {
+		return terminal.AttachRequest{}, fmt.Errorf("failed to load remote config")
+	}
+	rc, ok := cfg.Remotes[item.RemoteName]
+	if !ok {
+		return terminal.AttachRequest{}, fmt.Errorf("remote %q is unavailable", item.RemoteName)
+	}
+	if rc.GetKind() == session.RemoteKindAgentbox {
+		runner := session.NewAgentboxRunner(item.RemoteName, rc)
+		intent, err := runner.ResolveListedAttach(*item.RemoteSession)
+		if err != nil {
+			return terminal.AttachRequest{}, err
+		}
+		return terminal.AttachRequest{Command: intent.Command, OpenAs: openAs}, nil
+	}
+	req, ok := buildRemoteAttachRequest(item.RemoteName, item.RemoteSession.ID, openAs)
+	if !ok {
+		return terminal.AttachRequest{}, fmt.Errorf("remote %q is unavailable", item.RemoteName)
+	}
+	return req, nil
+}
+
 func (h *Home) normalizeMainKey(pressed string) string {
 	// Shift+Enter relay: csiuReader emits the Private-Use rune
 	// shiftEnterMarker (U+E5E5) when it sees a Shift+Enter CSI u or
@@ -7257,14 +7284,15 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// filesystem (#743).
 		if h.pendingRemoteName != "" {
 			remoteName := h.pendingRemoteName
-			name, path, command := h.newDialog.GetRemoteValues()
-			groupPath := h.newDialog.GetSelectedGroup()
+			createOpts := h.newDialog.GetRemoteCreateOptions()
 			// Remember the submitted tool for the next dialog open (UX top-3 #2).
-			rememberTool(h.stateDB(), command)
+			if strings.TrimSpace(createOpts.Tool) != "" {
+				rememberTool(h.stateDB(), createOpts.Tool)
+			}
 			h.newDialog.Hide()
 			h.pendingRemoteName = ""
 			h.clearError()
-			return h, h.createRemoteSessionWithOptions(remoteName, command, name, path, groupPath)
+			return h, h.createRemoteSessionWithOptions(remoteName, createOpts)
 		}
 
 		// Get values including worktree settings.
@@ -7423,6 +7451,12 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) {
 	// Preselect the last-used tool (UX top-3 #2); explicit [default_tool] wins.
 	h.newDialog.SetDefaultTool(resolveInitialTool(session.GetDefaultTool(), rememberedTool(h.stateDB())))
 	h.pendingRemoteName = remoteName
+	h.newDialog.SetRemoteMode(session.RemoteKindSSH)
+	if config, err := session.LoadUserConfig(); err == nil && config != nil && config.Remotes != nil {
+		if rc, ok := config.Remotes[remoteName]; ok {
+			h.newDialog.SetRemoteMode(rc.GetKind())
+		}
+	}
 
 	groupPath := session.DefaultGroupPath
 	groupName := session.DefaultGroupName
@@ -8132,10 +8166,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil:
-				if req, ok := buildRemoteAttachRequest(item.RemoteName, item.RemoteSession.ID, openAs); ok {
+				if req, err := buildRemoteAttachRequestForItem(item, openAs); err == nil {
 					if err := h.openInNewWindow(req, true); err != nil {
 						h.setError(fmt.Errorf("open remote in new window: %w", err))
 					}
+				} else {
+					h.setError(err)
 				}
 			}
 		}
@@ -8792,6 +8828,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		defaultPath := h.getDefaultPathForGroup(groupPath)
 		conductors := h.activeConductorSessions()
 		suggestedParentID := h.suggestConductorParent()
+		h.newDialog.SetRemoteMode("")
 		h.newDialog.ShowInGroup(groupPath, groupName, defaultPath, conductors, suggestedParentID)
 		return h, nil
 
@@ -13011,17 +13048,14 @@ func (a attachCmd) SetStderr(w io.Writer) {}
 // createRemoteSession creates a new session on a remote and auto-attaches to it.
 // Used by quick-create (N): auto-generated name, remote defaults (shell).
 func (h *Home) createRemoteSession(remoteName string) tea.Cmd {
-	return h.createRemoteSessionWithOptions(remoteName, "", "", "", "")
+	return h.createRemoteSessionWithOptions(remoteName, session.RemoteCreateOptions{})
 }
 
 // remoteCreateAndAttachCmd creates a session on the remote, then attaches to it.
 type remoteCreateAndAttachCmd struct {
-	runner    session.RemoteRunner
-	tool      string
-	title     string
-	path      string
-	group     string
-	createCtx context.Context
+	runner     session.RemoteRunner
+	createOpts session.RemoteCreateOptions
+	createCtx  context.Context
 }
 
 type remoteAttachFailedError struct {
@@ -13043,16 +13077,11 @@ func (r remoteCreateAndAttachCmd) Run() error {
 	}
 	ctx, cancel := context.WithTimeout(baseCtx, 20*time.Second)
 	defer cancel()
-	sessionID, err := r.runner.CreateSession(ctx, session.RemoteCreateOptions{
-		Tool:  r.tool,
-		Title: r.title,
-		Path:  r.path,
-		Group: r.group,
-	})
+	result, err := r.runner.CreateSession(ctx, r.createOpts)
 	if err != nil {
 		return err
 	}
-	if err := r.runner.Attach(sessionID); err != nil {
+	if err := r.runner.Attach(result.SessionID); err != nil {
 		return remoteAttachFailedError{err: err}
 	}
 	return nil
@@ -13066,7 +13095,7 @@ func (r remoteCreateAndAttachCmd) SetStderr(writer io.Writer) {}
 // explicit tool/title/path/group from the new-session dialog (#1353), then
 // auto-attaches to it. Empty values fall back to remote defaults (shell,
 // auto-generated name, remote CWD).
-func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path, group string) tea.Cmd {
+func (h *Home) createRemoteSessionWithOptions(remoteName string, opts session.RemoteCreateOptions) tea.Cmd {
 	config, err := session.LoadUserConfig()
 	if err != nil || config == nil || config.Remotes == nil {
 		return func() tea.Msg {
@@ -13081,7 +13110,11 @@ func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path, gro
 	}
 	runner := session.NewRemoteRunner(remoteName, rc)
 	h.isAttaching.Store(true)
-	return tea.Exec(remoteCreateAndAttachCmd{runner: runner, tool: tool, title: title, path: path, group: group, createCtx: h.ctx}, func(err error) tea.Msg {
+	return tea.Exec(remoteCreateAndAttachCmd{
+		runner:     runner,
+		createOpts: opts,
+		createCtx:  h.ctx,
+	}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
 		if err != nil {
 			var attachErr remoteAttachFailedError

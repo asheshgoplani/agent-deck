@@ -23,19 +23,25 @@ No `agent-deck` binary is installed or required inside an Agentbox Workspace.
 
 - Agentbox create requires explicit `name`, `orchestrator`, `agent`, `model`, and `runtime`.
   - We do not invent defaults in Agent Deck because those values are part of the user’s intentional workspace contract.
+  - The CLI, web create route, and remote TUI dialog all enforce those required fields.
+- Agent Deck preserves the full `POST /v1/workspaces` create response.
+  - `agent-deck remote create <agentbox-remote> ...` prints attachability plus the exact returned remote/local attach commands without doing a follow-up list request.
 - Attach preserves stopped-before-attach semantics.
   - Agent Deck does not auto-start a stopped Workspace during attach.
   - When Agentbox returns `workspace_not_running` or `workspace_not_attachable`, the error is translated into a clearer user-facing message.
 - When the configured Agentbox URL resolves to localhost/the local machine, Agent Deck prefers `localAttachCommand`.
   - Otherwise it uses the regular remote attach command.
+- Shift+Enter / “open in new terminal” for a running Agentbox remote uses the exact attach command already returned by Agentbox.
+  - SSH remotes keep the existing `agent-deck session attach ...` SSH launcher path unchanged.
+- Web remote-create errors preserve upstream meaning instead of collapsing to generic 500s.
+  - `invalid_request` → 400
+  - `workspace_root_conflict` / `workspace_disk_exhausted` / `invalid_state` → 409/507 as appropriate
+  - `workspace_root_unconfigured` / `workspace_unavailable` / `workspace_runtime_unavailable` → 503
 
 ## Current non-goals
 
 - Agentbox remote preview/output scraping is not implemented.
   - Existing SSH remotes still support remote preview and insert-mode key streaming.
-- The legacy TUI remote-create dialog is not yet Agentbox-aware.
-  - It does not collect `orchestrator`, `agent`, `model`, or `runtime`.
-  - The supported minimal Agentbox create flow is the CLI/Warp path (`agent-deck remote create ...`).
 
 ## Files to read first
 
@@ -43,3 +49,4 @@ No `agent-deck` binary is installed or required inside an Agentbox Workspace.
 - `cmd/agent-deck/remote_cmd.go`
 - `internal/web/handlers_sessions.go`
 - `internal/ui/home.go`
+- `internal/ui/newdialog.go`

@@ -487,29 +487,22 @@ func handleRemoteCreate(args []string) {
 	runner := session.NewRemoteRunner(remoteName, rc)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	sessionID, err := runner.CreateSession(ctx, createOpts)
+	result, err := runner.CreateSession(ctx, createOpts)
 	if err != nil {
 		fmt.Printf("Error: failed to create remote session: %v\n", err)
 		os.Exit(1)
 	}
 
+	sessionID := result.SessionID
 	fmt.Printf("Created remote %s '%s' (%s)\n", rc.GetKind(), remoteName, sessionID)
 
 	if rc.GetKind() == session.RemoteKindAgentbox {
-		sessions, fetchErr := runner.FetchSessions(ctx)
-		if fetchErr == nil {
-			for _, s := range sessions {
-				if s.ID == sessionID {
-					fmt.Printf("  Attachable: %t\n", s.Attachable)
-					if strings.TrimSpace(s.AttachCommand) != "" {
-						fmt.Printf("  Remote attach: %s\n", s.AttachCommand)
-					}
-					if strings.TrimSpace(s.LocalAttachCommand) != "" {
-						fmt.Printf("  Local attach: %s\n", s.LocalAttachCommand)
-					}
-					break
-				}
-			}
+		fmt.Printf("  Attachable: %t\n", result.Attachable)
+		if strings.TrimSpace(result.AttachCommand) != "" {
+			fmt.Printf("  Remote attach: %s\n", result.AttachCommand)
+		}
+		if strings.TrimSpace(result.LocalAttachCommand) != "" {
+			fmt.Printf("  Local attach: %s\n", result.LocalAttachCommand)
 		}
 	}
 }

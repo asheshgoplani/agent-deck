@@ -123,17 +123,20 @@ func sliceVisibleFrom(s string, n int) string {
 type focusTarget int
 
 const (
-	focusName      focusTarget = iota
-	focusPath                  // project path input (hidden when multi-repo enabled).
-	focusCommand               // tool/command picker.
-	focusModel                 // optional per-session model/version override.
-	focusWorktree              // worktree checkbox.
-	focusSandbox               // sandbox checkbox.
-	focusConductor             // conducting parent dropdown (conditional — only when conductors exist).
-	focusMultiRepo             // multi-repo toggle (transforms path into list when enabled).
-	focusInherited             // inherited Docker settings toggle (conditional).
-	focusBranch                // branch input (conditional — only when worktree enabled).
-	focusOptions               // tool-specific options panel (conditional).
+	focusName         focusTarget = iota
+	focusPath                     // project path input (hidden when multi-repo enabled).
+	focusCommand                  // tool/command picker.
+	focusOrchestrator             // agentbox orchestrator input.
+	focusAgent                    // agentbox agent input.
+	focusModel                    // optional per-session model/version override.
+	focusRuntime                  // agentbox runtime input.
+	focusWorktree                 // worktree checkbox.
+	focusSandbox                  // sandbox checkbox.
+	focusConductor                // conducting parent dropdown (conditional — only when conductors exist).
+	focusMultiRepo                // multi-repo toggle (transforms path into list when enabled).
+	focusInherited                // inherited Docker settings toggle (conditional).
+	focusBranch                   // branch input (conditional — only when worktree enabled).
+	focusOptions                  // tool-specific options panel (conditional).
 )
 
 // New session dialog: outer box and textinput widths stay in sync so long
@@ -153,12 +156,23 @@ type settingDisplay struct {
 	value string
 }
 
+type remoteCreateMode int
+
+const (
+	remoteCreateModeLocal remoteCreateMode = iota
+	remoteCreateModeSSH
+	remoteCreateModeAgentbox
+)
+
 // NewDialog represents the new session creation dialog.
 type NewDialog struct {
 	nameInput             textinput.Model
 	pathInput             textinput.Model
 	commandInput          textinput.Model
+	orchestratorInput     textinput.Model
+	agentInput            textinput.Model
 	modelInput            textinput.Model
+	runtimeInput          textinput.Model
 	claudeOptions         *ClaudeOptionsPanel // Claude-specific options (concrete for value extraction).
 	geminiOptions         *YoloOptionsPanel   // Gemini YOLO panel (concrete for value extraction).
 	codexOptions          *YoloOptionsPanel   // Codex YOLO panel (concrete for value extraction).
@@ -173,6 +187,7 @@ type NewDialog struct {
 	commandCursor         int
 	parentGroupPath       string
 	parentGroupName       string
+	remoteMode            remoteCreateMode
 	pathSuggestions       []string // filtered subset of path suggestions shown in dropdown.
 	allPathSuggestions    []string // full unfiltered set of path suggestions.
 	pathSuggestionCursor  int      // tracks selected entry in dropdown (0 = "Type custom", 1.. = suggestions).
@@ -351,10 +366,22 @@ func NewNewDialog() *NewDialog {
 	commandInput.Placeholder = "custom command"
 	commandInput.CharLimit = 100
 
+	orchestratorInput := textinput.New()
+	orchestratorInput.Placeholder = "wisp"
+	orchestratorInput.CharLimit = 64
+
+	agentInput := textinput.New()
+	agentInput.Placeholder = "claude | codex | pi"
+	agentInput.CharLimit = 64
+
 	// Optional per-session model/version override for supported tools.
 	modelInput := textinput.New()
 	modelInput.Placeholder = "tool default"
 	modelInput.CharLimit = 128
+
+	runtimeInput := textinput.New()
+	runtimeInput.Placeholder = "docker | tmux"
+	runtimeInput.CharLimit = 64
 
 	// Create branch input for worktree
 	branchInput := textinput.New()
@@ -362,25 +389,28 @@ func NewNewDialog() *NewDialog {
 	branchInput.CharLimit = 100
 
 	dlg := &NewDialog{
-		nameInput:       nameInput,
-		pathInput:       pathInput,
-		commandInput:    commandInput,
-		modelInput:      modelInput,
-		branchInput:     branchInput,
-		branchPicker:    NewBranchPickerDialog(),
-		claudeOptions:   NewClaudeOptionsPanel(),
-		geminiOptions:   NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all"),
-		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox"),
-		hermesOptions:   NewYoloOptionsPanel("Hermes", "YOLO mode - auto-approve all tool calls"),
-		focusIndex:      0,
-		visible:         false,
-		presetCommands:  buildPresetCommands(),
-		commandCursor:   0,
-		parentGroupPath: "default",
-		parentGroupName: "default",
-		worktreeEnabled: false,
-		branchPrefix:    "feature/",
-		enterAdvances:   newSessionEnterAdvancesFromConfig(),
+		nameInput:         nameInput,
+		pathInput:         pathInput,
+		commandInput:      commandInput,
+		orchestratorInput: orchestratorInput,
+		agentInput:        agentInput,
+		modelInput:        modelInput,
+		runtimeInput:      runtimeInput,
+		branchInput:       branchInput,
+		branchPicker:      NewBranchPickerDialog(),
+		claudeOptions:     NewClaudeOptionsPanel(),
+		geminiOptions:     NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all"),
+		codexOptions:      NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox"),
+		hermesOptions:     NewYoloOptionsPanel("Hermes", "YOLO mode - auto-approve all tool calls"),
+		focusIndex:        0,
+		visible:           false,
+		presetCommands:    buildPresetCommands(),
+		commandCursor:     0,
+		parentGroupPath:   "default",
+		parentGroupName:   "default",
+		worktreeEnabled:   false,
+		branchPrefix:      "feature/",
+		enterAdvances:     newSessionEnterAdvancesFromConfig(),
 	}
 	dlg.syncInputWidths()
 	dlg.updateToolOptions() // Also calls rebuildFocusTargets.
@@ -422,8 +452,14 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 		}
 	}
 	d.pathInput.Blur()
+	d.orchestratorInput.SetValue("")
+	d.orchestratorInput.Blur()
+	d.agentInput.SetValue("")
+	d.agentInput.Blur()
 	d.modelInput.SetValue("")
 	d.modelInput.Blur()
+	d.runtimeInput.SetValue("")
+	d.runtimeInput.Blur()
 	d.claudeOptions.Blur()
 	d.claudeOptions.ResetStartQuery() // #741: per-session query must not leak across openings
 	d.geminiOptions.Blur()
@@ -508,6 +544,24 @@ func (d *NewDialog) SetDefaultTool(tool string) {
 	d.updateToolOptions()
 }
 
+func (d *NewDialog) SetRemoteMode(kind string) {
+	switch strings.TrimSpace(kind) {
+	case session.RemoteKindAgentbox:
+		d.remoteMode = remoteCreateModeAgentbox
+	default:
+		if kind != "" {
+			d.remoteMode = remoteCreateModeSSH
+		} else {
+			d.remoteMode = remoteCreateModeLocal
+		}
+	}
+	d.updateToolOptions()
+}
+
+func (d *NewDialog) isAgentboxRemoteMode() bool {
+	return d.remoteMode == remoteCreateModeAgentbox
+}
+
 // GetSelectedGroup returns the parent group path
 func (d *NewDialog) GetSelectedGroup() string {
 	return d.parentGroupPath
@@ -535,7 +589,10 @@ func (d *NewDialog) syncInputWidths() {
 	d.nameInput.Width = iw
 	d.pathInput.Width = iw
 	d.commandInput.Width = iw
+	d.orchestratorInput.Width = iw
+	d.agentInput.Width = iw
 	d.modelInput.Width = iw
+	d.runtimeInput.Width = iw
 	d.branchInput.Width = iw
 }
 
@@ -1064,6 +1121,28 @@ func (d *NewDialog) GetRemoteValues() (name, path, command string) {
 	return name, path, command
 }
 
+func (d *NewDialog) GetRemoteCreateOptions() session.RemoteCreateOptions {
+	name := strings.TrimSpace(d.nameInput.Value())
+	path := d.sanitizePath(d.pathInput.Value())
+	if d.isAgentboxRemoteMode() {
+		return session.RemoteCreateOptions{
+			Title:        name,
+			Path:         path,
+			ModelID:      strings.TrimSpace(d.modelInput.Value()),
+			Orchestrator: strings.TrimSpace(d.orchestratorInput.Value()),
+			Agent:        strings.TrimSpace(d.agentInput.Value()),
+			Runtime:      strings.TrimSpace(d.runtimeInput.Value()),
+		}
+	}
+	return session.RemoteCreateOptions{
+		Tool:    d.resolveCommand(),
+		Title:   name,
+		Path:    path,
+		Group:   d.GetSelectedGroup(),
+		ModelID: d.GetLaunchModelID(),
+	}
+}
+
 // ToggleWorktree toggles the worktree checkbox.
 // When enabling, auto-populates the branch name from the session name.
 func (d *NewDialog) ToggleWorktree() {
@@ -1197,10 +1276,17 @@ func (d *NewDialog) GetSelectedCommand() string {
 }
 
 func (d *NewDialog) selectedToolSupportsModel() bool {
+	if d.isAgentboxRemoteMode() {
+		return true
+	}
 	return session.SupportsLaunchModel(d.GetSelectedCommand())
 }
 
 func (d *NewDialog) updateModelPlaceholder() {
+	if d.isAgentboxRemoteMode() {
+		d.modelInput.Placeholder = "provider/model-or-version"
+		return
+	}
 	switch cmd := d.GetSelectedCommand(); {
 	case session.IsClaudeCompatible(cmd):
 		d.modelInput.Placeholder = "claude-sonnet-4-6"
@@ -1216,6 +1302,9 @@ func (d *NewDialog) updateModelPlaceholder() {
 }
 
 func (d *NewDialog) modelInputHint() string {
+	if d.isAgentboxRemoteMode() {
+		return ""
+	}
 	switch cmd := d.GetSelectedCommand(); {
 	case session.IsClaudeCompatible(cmd):
 		return "Examples: claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5"
@@ -1292,6 +1381,23 @@ func (d *NewDialog) Validate() string {
 		return fmt.Sprintf("Session name too long (max %d characters)", MaxNameLength)
 	}
 
+	if d.isAgentboxRemoteMode() {
+		if strings.TrimSpace(d.orchestratorInput.Value()) == "" {
+			return "Orchestrator is required for Agentbox workspaces"
+		}
+		if strings.TrimSpace(d.agentInput.Value()) == "" {
+			return "Agent is required for Agentbox workspaces"
+		}
+		if strings.TrimSpace(d.modelInput.Value()) == "" {
+			return "Model ID is required for Agentbox workspaces"
+		}
+		if strings.TrimSpace(d.runtimeInput.Value()) == "" {
+			return "Runtime is required for Agentbox workspaces"
+		}
+		_ = path
+		return ""
+	}
+
 	// Check for empty path
 	if path == "" && !d.multiRepoEnabled {
 		return "Project path cannot be empty"
@@ -1363,6 +1469,16 @@ func (d *NewDialog) indexOf(target focusTarget) int {
 // rebuildFocusTargets builds the ordered list of active focusable elements
 // based on current dialog state (sandbox, worktree, tool options visibility).
 func (d *NewDialog) rebuildFocusTargets() {
+	if d.isAgentboxRemoteMode() {
+		d.focusTargets = []focusTarget{focusName, focusOrchestrator, focusAgent, focusModel, focusRuntime, focusPath}
+		if d.focusIndex >= len(d.focusTargets) {
+			d.focusIndex = len(d.focusTargets) - 1
+		}
+		if d.focusIndex < 0 {
+			d.focusIndex = 0
+		}
+		return
+	}
 	// UX top-3 #3: the hot path is Name -> Tool -> (Model) -> Path. The Model
 	// override stays grouped with the tool selector; Path follows. The Multi-repo
 	// toggle moves below the common fields ("below the fold") so the 90% flow
@@ -1429,7 +1545,10 @@ func (d *NewDialog) updateFocus() {
 	d.nameInput.Blur()
 	d.pathInput.Blur()
 	d.commandInput.Blur()
+	d.orchestratorInput.Blur()
+	d.agentInput.Blur()
 	d.modelInput.Blur()
+	d.runtimeInput.Blur()
 	d.branchInput.Blur()
 	d.claudeOptions.Blur()
 	d.geminiOptions.Blur()
@@ -1457,8 +1576,14 @@ func (d *NewDialog) updateFocus() {
 		if d.commandCursor == 0 { // shell.
 			d.commandInput.Focus()
 		}
+	case focusOrchestrator:
+		d.orchestratorInput.Focus()
+	case focusAgent:
+		d.agentInput.Focus()
 	case focusModel:
 		d.modelInput.Focus()
+	case focusRuntime:
+		d.runtimeInput.Focus()
 	case focusWorktree, focusSandbox, focusConductor, focusInherited:
 		// Checkbox/toggle rows and conductor dropdown — no text input to focus.
 	case focusBranch:
@@ -1502,7 +1627,7 @@ func isNewDialogShiftTabKey(msg tea.KeyMsg) bool {
 // keystrokes. Single-letter shortcuts must be suppressed in this state.
 func (d *NewDialog) isTextInputFocused() bool {
 	switch d.currentTarget() {
-	case focusName, focusPath, focusModel, focusBranch:
+	case focusName, focusPath, focusOrchestrator, focusAgent, focusModel, focusRuntime, focusBranch:
 		return true
 	case focusCommand:
 		return d.commandCursor == 0 // custom command input
@@ -2212,6 +2337,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		if d.commandCursor == 0 {
 			d.commandInput, cmd = d.commandInput.Update(msg)
 		}
+	case focusOrchestrator:
+		d.orchestratorInput, cmd = d.orchestratorInput.Update(msg)
+	case focusAgent:
+		d.agentInput, cmd = d.agentInput.Update(msg)
 	case focusModel:
 		oldValue := d.modelInput.Value()
 		d.modelInput, cmd = d.modelInput.Update(msg)
@@ -2222,6 +2351,8 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			d.modelNavigated = false
 			d.filterModelSuggestions()
 		}
+	case focusRuntime:
+		d.runtimeInput, cmd = d.runtimeInput.Update(msg)
 	case focusMultiRepo:
 		// When editing a multi-repo path, forward keystrokes to pathInput.
 		if d.multiRepoEditing {
@@ -2367,6 +2498,19 @@ func (d *NewDialog) renderModelSection(content *strings.Builder, cur focusTarget
 	content.WriteString("\n\n")
 }
 
+func renderTextInputSection(content *strings.Builder, cur focusTarget, target focusTarget, label string, input textinput.Model) {
+	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+	activeLabelStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+	if cur == target {
+		content.WriteString(activeLabelStyle.Render("▶ " + label))
+	} else {
+		content.WriteString(labelStyle.Render("  " + label))
+	}
+	content.WriteString("\n  ")
+	content.WriteString(input.View())
+	content.WriteString("\n\n")
+}
+
 // renderSinglePathSection renders the single project-path input (the common
 // case). In multi-repo mode this is skipped — the path list renders under the
 // Multi-repo toggle below the fold instead.
@@ -2505,8 +2649,11 @@ func (d *NewDialog) View() string {
 	// Build content
 	var content strings.Builder
 
-	// Title with parent group info
-	content.WriteString(titleStyle.Render("New Session"))
+	titleText := "New Session"
+	if d.isAgentboxRemoteMode() {
+		titleText = "New Workspace"
+	}
+	content.WriteString(titleStyle.Render(titleText))
 	content.WriteString("\n")
 	groupInfoStyle := lipgloss.NewStyle().Foreground(ColorPurple) // Purple for group context
 	content.WriteString(groupInfoStyle.Render("  in group: " + d.parentGroupName))
@@ -2584,138 +2731,147 @@ func (d *NewDialog) View() string {
 	content.WriteString(d.nameInput.View())
 	content.WriteString("\n\n")
 
-	// Hot path (UX top-3 #3): Tool -> (Model) -> Path render right after Name.
-	// The Multi-repo toggle and its path list move below the common fields
-	// (see renderMultiRepoSection, called after the Branch input). In multi-repo
-	// mode the single Path field is hidden — its list renders below the fold.
-	d.renderCommandSection(&content, cur)
-	d.renderModelSection(&content, cur, dialogWidth)
-	if !d.multiRepoEnabled {
+	if d.isAgentboxRemoteMode() {
+		renderTextInputSection(&content, cur, focusOrchestrator, "Orchestrator:", d.orchestratorInput)
+		renderTextInputSection(&content, cur, focusAgent, "Agent:", d.agentInput)
+		d.renderModelSection(&content, cur, dialogWidth)
+		renderTextInputSection(&content, cur, focusRuntime, "Runtime:", d.runtimeInput)
 		d.renderSinglePathSection(&content, cur, dialogWidth)
-	}
-
-	// (Tool, Model, and the single Path field render above, right after Name —
-	// see renderCommandSection / renderModelSection / renderSinglePathSection.)
-
-	// Worktree checkbox — individually focusable.
-	worktreeLabel := "Create in worktree"
-	if cur == focusCommand {
-		worktreeLabel = "Create in worktree (w)"
-	}
-	content.WriteString(renderCheckboxLine(worktreeLabel, d.worktreeEnabled, cur == focusWorktree))
-
-	// Docker sandbox checkbox — individually focusable.
-	sandboxLabel := "Run in Docker sandbox"
-	if cur == focusCommand {
-		sandboxLabel = "Run in Docker sandbox (s)"
-	}
-	content.WriteString(renderCheckboxLine(sandboxLabel, d.sandboxEnabled, cur == focusSandbox))
-
-	// Inherited Docker settings (only visible when sandbox is enabled).
-	if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
-		focused := cur == focusInherited
-		dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
-		settingStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
-
-		// Render toggle line.
-		arrow := "▸"
-		if d.inheritedExpanded {
-			arrow = "▾"
+	} else {
+		// Hot path (UX top-3 #3): Tool -> (Model) -> Path render right after Name.
+		// The Multi-repo toggle and its path list move below the common fields
+		// (see renderMultiRepoSection, called after the Branch input). In multi-repo
+		// mode the single Path field is hidden — its list renders below the fold.
+		d.renderCommandSection(&content, cur)
+		d.renderModelSection(&content, cur, dialogWidth)
+		if !d.multiRepoEnabled {
+			d.renderSinglePathSection(&content, cur, dialogWidth)
 		}
-		summary := fmt.Sprintf("%d active", len(d.inheritedSettings))
-		toggleLine := fmt.Sprintf("%s Docker Settings (%s)", arrow, summary)
-		if focused {
-			content.WriteString(activeLabelStyle.Render("▶ " + toggleLine))
-		} else {
-			content.WriteString("  " + dimStyle.Render(toggleLine))
-		}
-		content.WriteString("\n")
 
-		// Render expanded settings.
-		if d.inheritedExpanded {
-			for _, s := range d.inheritedSettings {
-				content.WriteString(settingStyle.Render(fmt.Sprintf("    %s: %s", s.label, s.value)))
+		// (Tool, Model, and the single Path field render above, right after Name —
+		// see renderCommandSection / renderModelSection / renderSinglePathSection.)
+
+		// Worktree checkbox — individually focusable.
+		worktreeLabel := "Create in worktree"
+		if cur == focusCommand {
+			worktreeLabel = "Create in worktree (w)"
+		}
+		content.WriteString(renderCheckboxLine(worktreeLabel, d.worktreeEnabled, cur == focusWorktree))
+
+		// Docker sandbox checkbox — individually focusable.
+		sandboxLabel := "Run in Docker sandbox"
+		if cur == focusCommand {
+			sandboxLabel = "Run in Docker sandbox (s)"
+		}
+		content.WriteString(renderCheckboxLine(sandboxLabel, d.sandboxEnabled, cur == focusSandbox))
+
+		// Inherited Docker settings (only visible when sandbox is enabled).
+		if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
+			focused := cur == focusInherited
+			dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
+			settingStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+
+			// Render toggle line.
+			arrow := "▸"
+			if d.inheritedExpanded {
+				arrow = "▾"
+			}
+			summary := fmt.Sprintf("%d active", len(d.inheritedSettings))
+			toggleLine := fmt.Sprintf("%s Docker Settings (%s)", arrow, summary)
+			if focused {
+				content.WriteString(activeLabelStyle.Render("▶ " + toggleLine))
+			} else {
+				content.WriteString("  " + dimStyle.Render(toggleLine))
+			}
+			content.WriteString("\n")
+
+			// Render expanded settings.
+			if d.inheritedExpanded {
+				for _, s := range d.inheritedSettings {
+					content.WriteString(settingStyle.Render(fmt.Sprintf("    %s: %s", s.label, s.value)))
+					content.WriteString("\n")
+				}
+			}
+		} else if d.sandboxEnabled {
+			// Sandbox enabled but all defaults — show informational line.
+			dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
+			content.WriteString("  " + dimStyle.Render("Docker Settings (all defaults)"))
+			content.WriteString("\n")
+		}
+
+		// Conducting parent selector (only visible when conductor sessions exist).
+		if len(d.conductorSessions) > 0 {
+			focused := cur == focusConductor
+			if focused {
+				content.WriteString(activeLabelStyle.Render("▶ Conducting parent:"))
+			} else {
+				content.WriteString(labelStyle.Render("  Conducting parent:"))
+			}
+			content.WriteString("\n")
+
+			selectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+			itemStyle := lipgloss.NewStyle().Foreground(ColorComment)
+
+			// Build item list: "None" + one entry per conductor session.
+			type conductorItem struct {
+				label string
+				idx   int // 0 = None, 1..N = session index
+			}
+			items := make([]conductorItem, 0, len(d.conductorSessions)+1)
+			items = append(items, conductorItem{label: "None", idx: 0})
+			for i, inst := range d.conductorSessions {
+				name := strings.TrimPrefix(inst.Title, "conductor-")
+				shortPath := inst.ProjectPath
+				if home, err := os.UserHomeDir(); err == nil {
+					shortPath = strings.Replace(shortPath, home, "~", 1)
+				}
+				label := name
+				if shortPath != "" {
+					label = fmt.Sprintf("%s  (%s)", name, shortPath)
+				}
+				items = append(items, conductorItem{label: label, idx: i + 1})
+			}
+
+			for _, item := range items {
+				if item.idx == d.conductorCursor {
+					content.WriteString(selectedStyle.Render("  ▶ " + item.label))
+				} else {
+					content.WriteString(itemStyle.Render("    " + item.label))
+				}
 				content.WriteString("\n")
 			}
 		}
-	} else if d.sandboxEnabled {
-		// Sandbox enabled but all defaults — show informational line.
-		dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
-		content.WriteString("  " + dimStyle.Render("Docker Settings (all defaults)"))
+
 		content.WriteString("\n")
-	}
-
-	// Conducting parent selector (only visible when conductor sessions exist).
-	if len(d.conductorSessions) > 0 {
-		focused := cur == focusConductor
-		if focused {
-			content.WriteString(activeLabelStyle.Render("▶ Conducting parent:"))
-		} else {
-			content.WriteString(labelStyle.Render("  Conducting parent:"))
-		}
-		content.WriteString("\n")
-
-		selectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
-		itemStyle := lipgloss.NewStyle().Foreground(ColorComment)
-
-		// Build item list: "None" + one entry per conductor session.
-		type conductorItem struct {
-			label string
-			idx   int // 0 = None, 1..N = session index
-		}
-		items := make([]conductorItem, 0, len(d.conductorSessions)+1)
-		items = append(items, conductorItem{label: "None", idx: 0})
-		for i, inst := range d.conductorSessions {
-			name := strings.TrimPrefix(inst.Title, "conductor-")
-			shortPath := inst.ProjectPath
-			if home, err := os.UserHomeDir(); err == nil {
-				shortPath = strings.Replace(shortPath, home, "~", 1)
-			}
-			label := name
-			if shortPath != "" {
-				label = fmt.Sprintf("%s  (%s)", name, shortPath)
-			}
-			items = append(items, conductorItem{label: label, idx: i + 1})
-		}
-
-		for _, item := range items {
-			if item.idx == d.conductorCursor {
-				content.WriteString(selectedStyle.Render("  ▶ " + item.label))
+		// Branch input (only visible when worktree is enabled).
+		if d.worktreeEnabled {
+			content.WriteString("\n")
+			if cur == focusBranch {
+				content.WriteString(activeLabelStyle.Render("▶ Branch:"))
 			} else {
-				content.WriteString(itemStyle.Render("    " + item.label))
+				content.WriteString(labelStyle.Render("  Branch:"))
 			}
 			content.WriteString("\n")
-		}
-	}
-
-	// Branch input (only visible when worktree is enabled).
-	if d.worktreeEnabled {
-		content.WriteString("\n")
-		if cur == focusBranch {
-			content.WriteString(activeLabelStyle.Render("▶ Branch:"))
-		} else {
-			content.WriteString(labelStyle.Render("  Branch:"))
-		}
-		content.WriteString("\n")
-		content.WriteString("  ")
-		content.WriteString(d.branchInput.View())
-		content.WriteString("\n")
-		if d.branchPicker != nil && d.branchPicker.IsVisible() {
 			content.WriteString("  ")
-			content.WriteString(strings.ReplaceAll(d.branchPicker.View(), "\n", "\n  "))
+			content.WriteString(d.branchInput.View())
 			content.WriteString("\n")
+			if d.branchPicker != nil && d.branchPicker.IsVisible() {
+				content.WriteString("  ")
+				content.WriteString(strings.ReplaceAll(d.branchPicker.View(), "\n", "\n  "))
+				content.WriteString("\n")
+			}
 		}
-	}
 
-	// Multi-repo toggle (below the fold, UX top-3 #3). Its path list renders
-	// here when enabled; in the common single-repo case it's just a checkbox.
-	content.WriteString("\n")
-	d.renderMultiRepoSection(&content, cur)
-
-	// Tool options panel
-	if d.toolOptions != nil {
+		// Multi-repo toggle (below the fold, UX top-3 #3). Its path list renders
+		// here when enabled; in the common single-repo case it's just a checkbox.
 		content.WriteString("\n")
-		content.WriteString(d.toolOptions.View())
+		d.renderMultiRepoSection(&content, cur)
+
+		// Tool options panel
+		if d.toolOptions != nil {
+			content.WriteString("\n")
+			content.WriteString(d.toolOptions.View())
+		}
 	}
 
 	// Inline validation error
@@ -2769,6 +2925,8 @@ func (d *NewDialog) View() string {
 		} else {
 			helpText = "←→ command │ w worktree │ s sandbox │ Tab next │ ^S create │ Esc cancel"
 		}
+	} else if cur == focusOrchestrator || cur == focusAgent || cur == focusRuntime {
+		helpText = "Tab next │ ^S create │ Esc cancel"
 	} else if cur == focusModel {
 		if d.modelSuggestionActive {
 			helpText = "↑/↓ navigate │ Space/Enter select │ Esc back │ Tab next"

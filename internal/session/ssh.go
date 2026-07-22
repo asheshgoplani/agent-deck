@@ -843,20 +843,24 @@ func remoteAddArgs(tool, title, path, group, modelID string) []string {
 // an explicit tool/title/path/group from the new-session dialog (#1353),
 // returning its ID. Empty values fall back to remote defaults (see remoteAddArgs).
 func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, tool, title, path, group string) (string, error) {
-	return r.CreateSession(ctx, RemoteCreateOptions{
+	result, err := r.CreateSession(ctx, RemoteCreateOptions{
 		Tool:  tool,
 		Title: title,
 		Path:  path,
 		Group: group,
 	})
+	if err != nil {
+		return "", err
+	}
+	return result.SessionID, nil
 }
 
 // CreateSession creates and starts a new remote agent-deck session.
-func (r *SSHRunner) CreateSession(ctx context.Context, opts RemoteCreateOptions) (string, error) {
+func (r *SSHRunner) CreateSession(ctx context.Context, opts RemoteCreateOptions) (RemoteCreateResult, error) {
 	// Step 1: Create the session
 	output, err := r.Run(ctx, remoteAddArgs(opts.Tool, opts.Title, opts.Path, opts.Group, opts.ModelID)...)
 	if err != nil {
-		return "", fmt.Errorf("failed to create remote session: %w", err)
+		return RemoteCreateResult{}, fmt.Errorf("failed to create remote session: %w", err)
 	}
 
 	var result struct {
@@ -864,10 +868,10 @@ func (r *SSHRunner) CreateSession(ctx context.Context, opts RemoteCreateOptions)
 		Title string `json:"title"`
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
-		return "", fmt.Errorf("failed to parse remote add output: %w", err)
+		return RemoteCreateResult{}, fmt.Errorf("failed to parse remote add output: %w", err)
 	}
 	if result.ID == "" {
-		return "", fmt.Errorf("remote add returned empty session ID")
+		return RemoteCreateResult{}, fmt.Errorf("remote add returned empty session ID")
 	}
 
 	// Step 2: Start the session so it has a tmux process to attach to.
@@ -882,16 +886,16 @@ func (r *SSHRunner) CreateSession(ctx context.Context, opts RemoteCreateOptions)
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
 		_ = r.DeleteSession(cleanupCtx, result.ID)
-		return "", fmt.Errorf("failed to start remote session: %w", err)
+		return RemoteCreateResult{}, fmt.Errorf("failed to start remote session: %w", err)
 	}
 	var startResult struct {
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(startOutput), &startResult); err == nil && startResult.Status == string(StatusQueued) {
-		return "", fmt.Errorf("remote session %q was queued and is not ready to attach", result.Title)
+		return RemoteCreateResult{}, fmt.Errorf("remote session %q was queued and is not ready to attach", result.Title)
 	}
 
-	return result.ID, nil
+	return RemoteCreateResult{SessionID: result.ID}, nil
 }
 
 // DeleteSession removes a session on the remote host.

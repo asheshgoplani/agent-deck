@@ -31,6 +31,11 @@ var ErrUnsupported = errors.New("terminal: opening a new window is not yet suppo
 // SocketName may be empty (meaning the default tmux server), matching the
 // semantics of tmux.Session.SocketName.
 type AttachRequest struct {
+	// Command, when non-empty, is executed verbatim in the spawned terminal.
+	// This is used for agentbox workspaces, which already return an exact
+	// attach command via the Agentbox API.
+	Command string
+
 	// Name is the tmux session name (the `-t` argument of `tmux attach`)
 	// for local sessions, or the remote agent-deck session ID when
 	// Remote != nil.
@@ -96,6 +101,9 @@ const SSHControlDir = "/tmp/agent-deck-ssh"
 // share the exact same string-building logic without depending on
 // os/exec.
 func BuildAttachCommand(req AttachRequest) string {
+	if command := strings.TrimSpace(req.Command); command != "" {
+		return command
+	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return ""

@@ -130,33 +130,29 @@ func TestHandleRemoteSessions_AgentboxPrintsWorkspaceColumns(t *testing.T) {
 	}
 }
 
-func TestHandleRemoteCreate_AgentboxPostsExplicitFields(t *testing.T) {
+func TestHandleRemoteCreate_AgentboxPrintsAttachCommandsFromCreateResponse(t *testing.T) {
 	withTempHomeAndConfig(t, "")
 
 	var createPayload map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/workspaces":
-			if err := json.NewDecoder(r.Body).Decode(&createPayload); err != nil {
-				t.Fatalf("decode create payload: %v", err)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "ws-new"})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/workspaces":
-			_ = json.NewEncoder(w).Encode([]map[string]any{{
-				"id":                 "ws-new",
-				"name":               "research-one",
-				"orchestrator":       "wisp",
-				"agent":              "pi-fireworks",
-				"model":              "accounts/fireworks/models/glm-5p2",
-				"runtime":            "docker",
-				"status":             "running",
-				"attachCommand":      "ssh remote tmux attach -t ws-new",
-				"localAttachCommand": "ssh localhost tmux attach -t ws-new",
-				"claimedTaskCount":   1,
-			}})
-		default:
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/workspaces" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
+		if err := json.NewDecoder(r.Body).Decode(&createPayload); err != nil {
+			t.Fatalf("decode create payload: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":                 "ws-new",
+			"name":               "research-one",
+			"orchestrator":       "wisp",
+			"agent":              "pi-fireworks",
+			"model":              "accounts/fireworks/models/glm-5p2",
+			"runtime":            "docker",
+			"status":             "running",
+			"attachCommand":      "ssh remote tmux attach -t ws-new",
+			"localAttachCommand": "ssh localhost tmux attach -t ws-new",
+			"claimedTaskCount":   1,
+		})
 	}))
 	defer srv.Close()
 

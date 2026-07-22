@@ -33,13 +33,20 @@ type RemoteCreateOptions struct {
 	Runtime      string
 }
 
+type RemoteCreateResult struct {
+	SessionID          string
+	Attachable         bool
+	AttachCommand      string
+	LocalAttachCommand string
+}
+
 type RemoteRunner interface {
 	FetchSessions(ctx context.Context) ([]RemoteSessionInfo, error)
 	FetchSessionOutput(ctx context.Context, sessionID string) (string, error)
 	FetchSessionPane(ctx context.Context, sessionID string) (string, error)
 	FetchCostSummary(ctx context.Context) (*costs.RemoteCostSummary, error)
 	MeasureLatency(ctx context.Context) (time.Duration, error)
-	CreateSession(ctx context.Context, opts RemoteCreateOptions) (string, error)
+	CreateSession(ctx context.Context, opts RemoteCreateOptions) (RemoteCreateResult, error)
 	DeleteSession(ctx context.Context, sessionID string) error
 	StopSession(ctx context.Context, sessionID string) error
 	RestartSession(ctx context.Context, sessionID string) error
@@ -100,13 +107,27 @@ type agentboxAttachResponse struct {
 }
 
 type agentboxErrorResponse struct {
-	Error  string `json:"error"`
-	Status string `json:"status"`
+	Error   string `json:"error"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
 }
 
 type ResolvedAttachCommand struct {
 	Command string
 	Local   bool
+}
+
+type AgentboxHTTPError struct {
+	Method         string
+	RequestPath    string
+	StatusCode     int
+	RemoteError    string
+	WorkspaceState string
+	Message        string
+}
+
+func (e *AgentboxHTTPError) Error() string {
+	return fmt.Sprintf("agentbox %s %s: %s", e.Method, e.RequestPath, e.Message)
 }
 
 func (r *AgentboxRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, error) {
@@ -142,21 +163,21 @@ func (r *AgentboxRunner) MeasureLatency(ctx context.Context) (time.Duration, err
 	return time.Since(start), nil
 }
 
-func (r *AgentboxRunner) CreateSession(ctx context.Context, opts RemoteCreateOptions) (string, error) {
+func (r *AgentboxRunner) CreateSession(ctx context.Context, opts RemoteCreateOptions) (RemoteCreateResult, error) {
 	if strings.TrimSpace(opts.Title) == "" {
-		return "", fmt.Errorf("agentbox create requires --name")
+		return RemoteCreateResult{}, fmt.Errorf("agentbox create requires --name")
 	}
 	if strings.TrimSpace(opts.Orchestrator) == "" {
-		return "", fmt.Errorf("agentbox create requires --orchestrator")
+		return RemoteCreateResult{}, fmt.Errorf("agentbox create requires --orchestrator")
 	}
 	if strings.TrimSpace(opts.Agent) == "" {
-		return "", fmt.Errorf("agentbox create requires --agent")
+		return RemoteCreateResult{}, fmt.Errorf("agentbox create requires --agent")
 	}
 	if strings.TrimSpace(opts.ModelID) == "" {
-		return "", fmt.Errorf("agentbox create requires --model")
+		return RemoteCreateResult{}, fmt.Errorf("agentbox create requires --model")
 	}
 	if strings.TrimSpace(opts.Runtime) == "" {
-		return "", fmt.Errorf("agentbox create requires --runtime")
+		return RemoteCreateResult{}, fmt.Errorf("agentbox create requires --runtime")
 	}
 
 	payload := map[string]string{
@@ -172,12 +193,18 @@ func (r *AgentboxRunner) CreateSession(ctx context.Context, opts RemoteCreateOpt
 
 	var workspace agentboxWorkspace
 	if err := r.doJSON(ctx, http.MethodPost, "/v1/workspaces", payload, &workspace); err != nil {
-		return "", err
+		return RemoteCreateResult{}, err
 	}
 	if workspace.ID == "" {
-		return "", fmt.Errorf("agentbox create returned an empty workspace ID")
+		return RemoteCreateResult{}, fmt.Errorf("agentbox create returned an empty workspace ID")
 	}
-	return workspace.ID, nil
+	sessionInfo := r.workspaceToRemoteSession(workspace)
+	return RemoteCreateResult{
+		SessionID:          workspace.ID,
+		Attachable:         sessionInfo.Attachable,
+		AttachCommand:      sessionInfo.AttachCommand,
+		LocalAttachCommand: sessionInfo.LocalAttachCommand,
+	}, nil
 }
 
 func (r *AgentboxRunner) DeleteSession(ctx context.Context, sessionID string) error {
@@ -346,7 +373,10 @@ func translateAgentboxHTTPError(method string, requestPath string, statusCode in
 	var payload agentboxErrorResponse
 	_ = json.Unmarshal(body, &payload)
 
-	message := strings.TrimSpace(payload.Error)
+	message := strings.TrimSpace(payload.Message)
+	if message == "" {
+		message = strings.TrimSpace(payload.Error)
+	}
 	switch payload.Error {
 	case "workspace_not_running":
 		if payload.Status != "" {
@@ -368,8 +398,20 @@ func translateAgentboxHTTPError(method string, requestPath string, statusCode in
 		message = "workspace is destroyed"
 	case "workspaces_unavailable":
 		message = "agentbox workspaces are unavailable"
+	case "workspace_root_unconfigured":
+		message = "agentbox workspace root is unconfigured"
+	case "workspace_root_conflict":
+		message = "agentbox workspace root conflicts with an existing checkout"
+	case "workspace_disk_exhausted":
+		message = "agentbox workspace disk budget is exhausted"
+	case "workspace_unavailable":
+		message = "agentbox workspace is unavailable"
 	case "invalid_request":
 		message = "agentbox rejected the request"
+	case "invalid_state":
+		if message == "" || message == payload.Error {
+			message = "agentbox rejected the workspace state transition"
+		}
 	case "not_found":
 		message = "workspace not found"
 	}
@@ -379,7 +421,14 @@ func translateAgentboxHTTPError(method string, requestPath string, statusCode in
 	if message == "" {
 		message = http.StatusText(statusCode)
 	}
-	return fmt.Errorf("agentbox %s %s: %s", method, requestPath, message)
+	return &AgentboxHTTPError{
+		Method:         method,
+		RequestPath:    requestPath,
+		StatusCode:     statusCode,
+		RemoteError:    strings.TrimSpace(payload.Error),
+		WorkspaceState: strings.TrimSpace(payload.Status),
+		Message:        message,
+	}
 }
 
 func (r *AgentboxRunner) shouldUseLocalAttachCommand() bool {
@@ -401,6 +450,21 @@ func (r *AgentboxRunner) shouldUseLocalAttachCommand() bool {
 		return false
 	}
 	return strings.EqualFold(host, localHost) || strings.HasPrefix(strings.ToLower(host), strings.ToLower(localHost)+".")
+}
+
+func (r *AgentboxRunner) ResolveListedAttach(sessionInfo RemoteSessionInfo) (ResolvedAttachCommand, error) {
+	command := strings.TrimSpace(sessionInfo.AttachCommand)
+	useLocal := r.shouldUseLocalAttachCommand()
+	if useLocal && strings.TrimSpace(sessionInfo.LocalAttachCommand) != "" {
+		command = strings.TrimSpace(sessionInfo.LocalAttachCommand)
+	}
+	if command == "" {
+		if strings.TrimSpace(sessionInfo.LifecycleStatus) != "" {
+			return ResolvedAttachCommand{}, fmt.Errorf("workspace is %s; start it before attaching", sessionInfo.LifecycleStatus)
+		}
+		return ResolvedAttachCommand{}, fmt.Errorf("agentbox attach for workspace %s returned no attach command", sessionInfo.ID)
+	}
+	return ResolvedAttachCommand{Command: command, Local: useLocal}, nil
 }
 
 func runLocalAttachCommand(command string) error {

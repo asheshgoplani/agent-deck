@@ -178,6 +178,81 @@ func TestIssue1353_SubmitRoutesToRemote(t *testing.T) {
 	}
 }
 
+func TestIssue1353_AgentboxRemoteDialogShowsExplicitWorkspaceFields(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[remotes.lab]
+kind = "agentbox"
+url = "http://127.0.0.1:1"
+`)
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+	home.flatItems = []session.Item{remoteGroupItem("lab")}
+	home.cursor = 0
+
+	h := pressN(t, home)
+	view := h.newDialog.View()
+	for _, want := range []string{"Orchestrator:", "Agent:", "Model ID:", "Runtime:", "Path:"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("agentbox remote dialog missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Command:") {
+		t.Fatalf("agentbox remote dialog should not render the SSH/local command picker:\n%s", view)
+	}
+}
+
+func TestIssue1353_AgentboxRemoteDialogRequiresExplicitFields(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[remotes.lab]
+kind = "agentbox"
+url = "http://127.0.0.1:1"
+`)
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+	home.flatItems = []session.Item{remoteGroupItem("lab")}
+	home.cursor = 0
+
+	h := pressN(t, home)
+	h.newDialog.nameInput.SetValue("research-one")
+	if got := h.newDialog.Validate(); !strings.Contains(strings.ToLower(got), "orchestrator") {
+		t.Fatalf("Validate() = %q, want explicit orchestrator guidance", got)
+	}
+}
+
+func TestIssue1353_AgentboxRemoteDialogBuildsExplicitCreateOptions(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[remotes.lab]
+kind = "agentbox"
+url = "http://127.0.0.1:1"
+`)
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+	home.flatItems = []session.Item{remoteGroupItem("lab")}
+	home.cursor = 0
+
+	h := pressN(t, home)
+	h.newDialog.nameInput.SetValue("research-one")
+	h.newDialog.orchestratorInput.SetValue("wisp")
+	h.newDialog.agentInput.SetValue("pi-fireworks")
+	h.newDialog.modelInput.SetValue("accounts/fireworks/models/glm-5p2")
+	h.newDialog.runtimeInput.SetValue("docker")
+	h.newDialog.pathInput.SetValue("/srv/research")
+
+	opts := h.newDialog.GetRemoteCreateOptions()
+	if opts.Title != "research-one" || opts.Orchestrator != "wisp" || opts.Agent != "pi-fireworks" {
+		t.Fatalf("remote create identity fields = %+v", opts)
+	}
+	if opts.ModelID != "accounts/fireworks/models/glm-5p2" || opts.Runtime != "docker" || opts.Path != "/srv/research" {
+		t.Fatalf("remote create model/runtime/path fields = %+v", opts)
+	}
+	if opts.Tool != "" || opts.Group != "" {
+		t.Fatalf("agentbox remote create should not leak SSH/local defaults: %+v", opts)
+	}
+}
+
 // TestIssue1353_LocalNUnaffected: `n` on a local group keeps the existing
 // behavior and must not leave any stale remote target around.
 func TestIssue1353_LocalNUnaffected(t *testing.T) {

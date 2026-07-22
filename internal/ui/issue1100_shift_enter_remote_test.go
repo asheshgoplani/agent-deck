@@ -104,6 +104,78 @@ func TestIssue1100_HomeDispatch_ShiftEnterRemoteCallsLauncher(t *testing.T) {
 	}
 }
 
+func TestIssue1100_HomeDispatch_ShiftEnterAgentboxUsesWorkspaceAttachCommand(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[remotes.lab]
+kind = "agentbox"
+url = "https://agentbox.example/agentbox"
+`)
+
+	home := NewHome()
+	home.width = 120
+	home.height = 40
+	home.initialLoading = false
+	home.flatItems = []session.Item{{
+		Type:       session.ItemTypeRemoteSession,
+		RemoteName: "lab",
+		RemoteSession: &session.RemoteSessionInfo{
+			ID:                 "ws-1",
+			Title:              "research-one",
+			Status:             "running",
+			Attachable:         true,
+			AttachCommand:      "ssh agentbox tmux attach -t ws-1",
+			LocalAttachCommand: "tmux attach -t ws-1",
+		},
+	}}
+
+	var captured terminal.AttachRequest
+	var called bool
+	home.openInNewWindowSink = func(req terminal.AttachRequest) error {
+		called = true
+		captured = req
+		return nil
+	}
+
+	_, _ = home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}})
+
+	if !called {
+		t.Fatal("Shift+Enter on a running agentbox workspace must call the launcher")
+	}
+	if got, want := terminal.BuildAttachCommand(captured), "ssh agentbox tmux attach -t ws-1"; got != want {
+		t.Fatalf("BuildAttachCommand() = %q, want %q", got, want)
+	}
+}
+
+func TestIssue1100_HomeDispatch_ShiftEnterAgentboxStoppedDoesNotLaunch(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[remotes.lab]
+kind = "agentbox"
+url = "https://agentbox.example/agentbox"
+`)
+
+	home := NewHome()
+	home.width = 120
+	home.height = 40
+	home.initialLoading = false
+	home.flatItems = []session.Item{{
+		Type:       session.ItemTypeRemoteSession,
+		RemoteName: "lab",
+		RemoteSession: &session.RemoteSessionInfo{
+			ID:         "ws-1",
+			Title:      "research-one",
+			Status:     "stopped",
+			Attachable: false,
+		},
+	}}
+
+	home.openInNewWindowSink = func(req terminal.AttachRequest) error {
+		t.Fatalf("launcher should not run for a stopped agentbox workspace: %+v", req)
+		return nil
+	}
+
+	_, _ = home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}})
+}
+
 // TestIssue1100_HomeDispatch_ShiftEnterDefaultsToTab pins fix (b): the
 // dispatch path must read [ui] iterm_open_as from user config and pass
 // it through to the launcher, with "tab" as the default when unset.

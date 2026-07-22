@@ -802,14 +802,17 @@ Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.co
 
 ### Remote Instances
 
-Manage agent-deck instances running on remote SSH servers from your local terminal. Remote sessions appear alongside local sessions in the TUI and all CLI commands.
+Manage agent-deck instances running on remote SSH servers or Agentbox workspace APIs from your local terminal. Remote sessions appear alongside local sessions in the TUI and all CLI commands.
 
 ```bash
-# Register a remote
+# Register an SSH remote
 agent-deck remote add dev user@dev-box
 
 # agent-deck is installed automatically if missing on the remote
 agent-deck remote add prod user@prod-server --agent-deck-path /usr/local/bin/agent-deck
+
+# Register an Agentbox remote
+agent-deck remote add lab --kind agentbox --url https://agentbox.example/agentbox
 
 # List configured remotes
 agent-deck remote list
@@ -821,6 +824,14 @@ agent-deck remote sessions dev
 # Attach to a remote session
 agent-deck remote attach dev my-session
 
+# Create an Agentbox workspace with explicit fields
+agent-deck remote create lab \
+  --name research-one \
+  --orchestrator wisp \
+  --agent codex \
+  --model openai/codex \
+  --runtime docker
+
 # Keep remote binaries up to date
 agent-deck remote update          # all remotes
 agent-deck remote update dev      # specific remote
@@ -828,7 +839,9 @@ agent-deck remote update dev      # specific remote
 
 Remote configuration is stored under `[remotes]` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`). All `remote` subcommands support `--json` output for scripting. Run `agent-deck remote --help` for the full flag reference.
 
-Pressing `n` on a remote group or session opens the full new-session dialog in **remote mode**: path suggestions come from the remote host, the remote session's group is pre-filled, and the create routes over SSH with your chosen tool — sessions are never accidentally created on localhost.
+Pressing `n` on a remote group or session opens the full new-session dialog in **remote mode**. SSH remotes keep the existing tool-based session flow. Agentbox remotes switch the dialog into explicit workspace mode and require `orchestrator`, `agent`, `model`, and `runtime` before create — those values are never silently defaulted. Sessions/workspaces are never accidentally created on localhost.
+
+For running Agentbox workspaces, `Shift+Enter` / “open in new terminal” uses the exact attach command returned by Agentbox. If the workspace is stopped, Agent Deck keeps the stopped-before-attach error instead of launching a dead terminal.
 
 #### Security
 

@@ -104,12 +104,17 @@ func TestAgentboxRunnerCreateSession_PostsExpectedPayload(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "ws-new"})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":                 "ws-new",
+			"status":             "running",
+			"attachCommand":      "ssh remote-host tmux attach -t ws-new",
+			"localAttachCommand": "ssh localhost tmux attach -t ws-new",
+		})
 	}))
 	defer srv.Close()
 
 	runner := NewAgentboxRunner("lab", RemoteConfig{Kind: RemoteKindAgentbox, URL: srv.URL})
-	id, err := runner.CreateSession(context.Background(), RemoteCreateOptions{
+	result, err := runner.CreateSession(context.Background(), RemoteCreateOptions{
 		Title:        "research-one",
 		Path:         "/srv/research",
 		ModelID:      "accounts/fireworks/models/glm-5p2",
@@ -120,8 +125,17 @@ func TestAgentboxRunnerCreateSession_PostsExpectedPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession unexpected error: %v", err)
 	}
-	if id != "ws-new" {
-		t.Fatalf("CreateSession id = %q, want ws-new", id)
+	if result.SessionID != "ws-new" {
+		t.Fatalf("CreateSession session id = %q, want ws-new", result.SessionID)
+	}
+	if !result.Attachable {
+		t.Fatalf("CreateSession result should preserve attachability: %+v", result)
+	}
+	if result.AttachCommand != "ssh remote-host tmux attach -t ws-new" {
+		t.Fatalf("AttachCommand = %q, want create response attach command", result.AttachCommand)
+	}
+	if result.LocalAttachCommand != "ssh localhost tmux attach -t ws-new" {
+		t.Fatalf("LocalAttachCommand = %q, want create response local attach command", result.LocalAttachCommand)
 	}
 	want := map[string]string{
 		"name":         "research-one",
