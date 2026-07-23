@@ -7451,10 +7451,12 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) {
 	// Preselect the last-used tool (UX top-3 #2); explicit [default_tool] wins.
 	h.newDialog.SetDefaultTool(resolveInitialTool(session.GetDefaultTool(), rememberedTool(h.stateDB())))
 	h.pendingRemoteName = remoteName
+	isAgentboxRemote := false
 	h.newDialog.SetRemoteMode(session.RemoteKindSSH)
 	if config, err := session.LoadUserConfig(); err == nil && config != nil && config.Remotes != nil {
 		if rc, ok := config.Remotes[remoteName]; ok {
 			h.newDialog.SetRemoteMode(rc.GetKind())
+			isAgentboxRemote = rc.GetKind() == session.RemoteKindAgentbox
 		}
 	}
 
@@ -7466,20 +7468,24 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) {
 			groupPath = item.RemoteSession.Group
 			groupName = item.RemoteSession.Group
 		}
-		defaultPath = item.RemoteSession.Path
+		if !isAgentboxRemote {
+			defaultPath = item.RemoteSession.Path
+		}
 	} else if item.Type == session.ItemTypeRemoteGroup {
 		// "remotes/<host>" is a synthetic local UI bucket, not a user-defined
 		// remote group. Keep the default group so handleNewDialogKey doesn't
 		// forward it to CreateSessionWithOptions and create a bogus remote group.
 		groupPath = session.DefaultGroupPath
 		groupName = session.DefaultGroupName
-		defaultPath = "."
-	} else if len(paths) > 0 {
+		if !isAgentboxRemote {
+			defaultPath = "."
+		}
+	} else if len(paths) > 0 && !isAgentboxRemote {
 		defaultPath = paths[0]
 	}
 
 	h.newDialog.ShowInGroup(groupPath, groupName, defaultPath, nil, "")
-	if defaultPath == "" {
+	if defaultPath == "" && !isAgentboxRemote {
 		h.newDialog.pathInput.SetValue(".")
 		h.newDialog.pathSoftSelected = true
 	}

@@ -253,6 +253,60 @@ url = "http://127.0.0.1:1"
 	}
 }
 
+func TestIssue1353_AgentboxRemoteDialogFromWorkspaceRow_DoesNotReuseWorkspacePath(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[remotes.lab]
+kind = "agentbox"
+url = "http://127.0.0.1:1"
+`)
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+	home.flatItems = []session.Item{{
+		Type:       session.ItemTypeRemoteSession,
+		RemoteName: "lab",
+		RemoteSession: &session.RemoteSessionInfo{
+			ID:         "ws-123",
+			Title:      "existing-workspace",
+			RemoteName: "lab",
+			Path:       "/srv/agentbox/workspaces/existing-workspace",
+		},
+	}}
+	home.cursor = 0
+
+	h := pressN(t, home)
+	_, path, _ := h.newDialog.GetValues()
+	if path != "" {
+		t.Fatalf("agentbox remote dialog path = %q, want empty so create cannot silently reuse the existing workspace root", path)
+	}
+}
+
+func TestIssue1353_AgentboxRemoteDialog_DoesNotPreselectConfiguredModel(t *testing.T) {
+	withTempAgentDeckHome(t, `
+default_tool = "claude"
+
+[claude]
+default_model = "claude-opus-4-7"
+
+[remotes.lab]
+kind = "agentbox"
+url = "http://127.0.0.1:1"
+`)
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+	home.flatItems = []session.Item{remoteGroupItem("lab")}
+	home.cursor = 0
+
+	h := pressN(t, home)
+	if got := h.newDialog.modelInput.Value(); got != "" {
+		t.Fatalf("agentbox remote dialog modelInput = %q, want empty so model selection stays explicit", got)
+	}
+	if got := h.newDialog.GetRemoteCreateOptions().ModelID; got != "" {
+		t.Fatalf("agentbox remote create model = %q, want empty until the user explicitly selects one", got)
+	}
+}
+
 // TestIssue1353_LocalNUnaffected: `n` on a local group keeps the existing
 // behavior and must not leave any stale remote target around.
 func TestIssue1353_LocalNUnaffected(t *testing.T) {

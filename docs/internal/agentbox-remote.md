@@ -24,6 +24,8 @@ No `agent-deck` binary is installed or required inside an Agentbox Workspace.
 - Agentbox create requires explicit `name`, `orchestrator`, `agent`, `model`, and `runtime`.
   - We do not invent defaults in Agent Deck because those values are part of the user’s intentional workspace contract.
   - The CLI, web create route, and remote TUI dialog all enforce those required fields.
+  - The remote TUI dialog also leaves the optional cwd/path empty by default and never reuses the selected Workspace row’s existing root.
+  - Local remembered/configured model defaults are ignored in Agentbox create mode so the Workspace model remains explicitly chosen per create.
 - Agent Deck preserves the full `POST /v1/workspaces` create response.
   - `agent-deck remote create <agentbox-remote> ...` prints attachability plus the exact returned remote/local attach commands without doing a follow-up list request.
   - The TUI immediate create-and-attach path also uses those returned commands directly instead of doing a redundant follow-up `/v1/workspaces/:id/attach` lookup.

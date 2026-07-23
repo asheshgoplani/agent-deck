@@ -484,8 +484,12 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.sandboxEnabled = false
 	d.inheritedExpanded = false
 	d.inheritedSettings = nil
-	// Set path input to group's default path if provided, otherwise use current working directory.
-	if defaultPath != "" {
+	// Agentbox workspace roots are optional and must stay intentional: do not
+	// synthesize a cwd/path in create mode. SSH/local keep the existing path
+	// defaults.
+	if d.isAgentboxRemoteMode() {
+		d.pathInput.SetValue(strings.TrimSpace(defaultPath))
+	} else if defaultPath != "" {
 		d.pathInput.SetValue(defaultPath)
 	} else {
 		cwd, err := os.Getwd()
@@ -493,7 +497,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 			d.pathInput.SetValue(cwd)
 		}
 	}
-	d.pathSoftSelected = true // activate soft-select for pre-filled path.
+	d.pathSoftSelected = strings.TrimSpace(d.pathInput.Value()) != ""
 	// Initialize tool options from global config.
 	d.geminiOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
@@ -510,12 +514,16 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 		}
 		d.inheritedSettings = buildInheritedSettings(userConfig.Docker)
 		d.branchPrefix = userConfig.Worktree.Prefix()
-		// #1172: preselect the configured default model so users who set
-		// [claude].default_model aren't forced to switch off Sonnet on every
-		// new session. Overrides the empty value set above; left empty when
-		// no (valid, in-catalog) default is configured.
-		if dm := preselectDefaultModel(userConfig, d.GetSelectedCommand()); dm != "" {
-			d.modelInput.SetValue(dm)
+		// Local/SSH sessions may inherit a configured default model. Agentbox
+		// workspaces must keep model selection explicit.
+		if !d.isAgentboxRemoteMode() {
+			// #1172: preselect the configured default model so users who set
+			// [claude].default_model aren't forced to switch off Sonnet on every
+			// new session. Overrides the empty value set above; left empty when
+			// no (valid, in-catalog) default is configured.
+			if dm := preselectDefaultModel(userConfig, d.GetSelectedCommand()); dm != "" {
+				d.modelInput.SetValue(dm)
+			}
 		}
 	}
 	d.branchInput.Placeholder = d.branchPrefix + "branch-name"
