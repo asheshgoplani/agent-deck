@@ -1018,7 +1018,7 @@ func buildRemoteAttachRequest(remoteName, sessionID, openAs string) (terminal.At
 	}, true
 }
 
-func buildRemoteAttachRequestForItem(item session.Item, openAs string) (terminal.AttachRequest, error) {
+func buildRemoteAttachRequestForItem(ctx context.Context, item session.Item, openAs string) (terminal.AttachRequest, error) {
 	if item.RemoteSession == nil || item.RemoteName == "" {
 		return terminal.AttachRequest{}, fmt.Errorf("remote session is unavailable")
 	}
@@ -1032,7 +1032,7 @@ func buildRemoteAttachRequestForItem(item session.Item, openAs string) (terminal
 	}
 	if rc.GetKind() == session.RemoteKindAgentbox {
 		runner := session.NewAgentboxRunner(item.RemoteName, rc)
-		intent, err := runner.ResolveAttach(context.Background(), item.RemoteSession.ID)
+		intent, err := runner.ResolveAttach(ctx, item.RemoteSession.ID)
 		if err != nil {
 			return terminal.AttachRequest{}, err
 		}
@@ -5887,6 +5887,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.setError(fmt.Errorf("restarted '%s' on %s", msg.title, msg.remoteName))
 		return h, h.fetchRemoteSessions
 
+	case remoteWindowOpenedMsg:
+		if msg.err != nil {
+			h.setError(msg.err)
+		}
+		return h, nil
+
 	case remoteSessionCreatedMsg:
 		if msg.err != nil {
 			h.setError(msg.err)
@@ -8172,13 +8178,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil:
-				if req, err := buildRemoteAttachRequestForItem(item, openAs); err == nil {
-					if err := h.openInNewWindow(req, true); err != nil {
-						h.setError(fmt.Errorf("open remote in new window: %w", err))
-					}
-				} else {
-					h.setError(err)
-				}
+				return h, h.openRemoteSessionInNewWindow(item, openAs)
 			}
 		}
 		return h, nil
@@ -12750,6 +12750,10 @@ type remoteSessionCreatedMsg struct {
 	err error
 }
 
+type remoteWindowOpenedMsg struct {
+	err error
+}
+
 // deleteRemoteSession deletes a remote session and refreshes the remote list.
 func (h *Home) deleteRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 	return func() tea.Msg {
@@ -13175,6 +13179,39 @@ func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 	return tea.Exec(remoteAttachCmd{runner: runner, sessionID: sessionID}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
 		return statusUpdateMsg{}
+	})
+}
+
+// remoteOpenInNewWindowCmd resolves remote attach metadata outside Bubble
+// Tea's Update path, then launches the native terminal tab/window.
+type remoteOpenInNewWindowCmd struct {
+	home   *Home
+	item   session.Item
+	openAs string
+}
+
+func (r remoteOpenInNewWindowCmd) Run() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := buildRemoteAttachRequestForItem(ctx, r.item, r.openAs)
+	if err != nil {
+		return err
+	}
+	return r.home.openInNewWindow(req, true)
+}
+
+func (r remoteOpenInNewWindowCmd) SetStdin(reader io.Reader)  {}
+func (r remoteOpenInNewWindowCmd) SetStdout(writer io.Writer) {}
+func (r remoteOpenInNewWindowCmd) SetStderr(writer io.Writer) {}
+
+func (h *Home) openRemoteSessionInNewWindow(item session.Item, openAs string) tea.Cmd {
+	h.isAttaching.Store(true)
+	return tea.Exec(remoteOpenInNewWindowCmd{home: h, item: item, openAs: openAs}, func(err error) tea.Msg {
+		h.isAttaching.Store(false)
+		if err != nil {
+			return remoteWindowOpenedMsg{err: fmt.Errorf("open remote in new window: %w", err)}
+		}
+		return remoteWindowOpenedMsg{}
 	})
 }
 

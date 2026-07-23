@@ -164,12 +164,6 @@ const (
 	remoteCreateModeAgentbox
 )
 
-var canonicalAgentboxAgents = map[string]struct{}{
-	"claude-code":  {},
-	"codex":        {},
-	"pi-fireworks": {},
-}
-
 // NewDialog represents the new session creation dialog.
 type NewDialog struct {
 	nameInput             textinput.Model
@@ -1403,7 +1397,7 @@ func (d *NewDialog) Validate() string {
 		if agent == "" {
 			return "Agent is required for Agentbox workspaces"
 		}
-		if _, ok := canonicalAgentboxAgents[agent]; !ok {
+		if !session.IsCanonicalAgentboxAgent(agent) {
 			return "Agent must be exactly one of: claude-code, codex, or pi-fireworks"
 		}
 		if strings.TrimSpace(d.modelInput.Value()) == "" {

@@ -17,7 +17,7 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | Action | TUI Trigger | Web Endpoint | Mutator Method | Test | Notes |
 |--------|-------------|--------------|-----------------|------|-------|
 | **SESSION LIFECYCLE** |
-| Create session | `internal/ui/home.go:6179` (`n` key) | POST `/api/sessions` | `CreateSession` | `handlers_sessions_test.go` | NewDialog spawns, initiates session creation |
+| Create session | `internal/ui/home.go:6179` (`n` key) | POST `/api/sessions` | `CreateSession` | `handlers_sessions_test.go` | NewDialog spawns, initiates session creation. Remote Agentbox creation requires `remoteName`, `title`, `orchestrator`, `agent`, `modelId`, and `runtime`; SSH creation requires `remoteName` and `projectPath`. |
 | Quick create session | `internal/ui/home.go:6286` (`N` key) | POST `/api/sessions` | `CreateSession` | `handlers_sessions_test.go` | Auto-generated name, smart group context |
 | Start session | `internal/ui/home.go:6284` (via dialog/menu) | POST `/api/sessions/{id}/start` | `StartSession` | `handlers_sessions_test.go` | Resumes stopped/idle session |
 | Stop session | `internal/ui/home.go:6284` (via dialog/menu) | POST `/api/sessions/{id}/stop` | `StopSession` | `handlers_sessions_test.go` | Kills running tmux session |

@@ -22,6 +22,17 @@ const (
 	RemoteKindAgentbox = "agentbox"
 )
 
+// IsCanonicalAgentboxAgent reports whether agent names one of the runtimes
+// exposed by the Agentbox workspace image.
+func IsCanonicalAgentboxAgent(agent string) bool {
+	switch strings.TrimSpace(agent) {
+	case "claude-code", "codex", "pi-fireworks":
+		return true
+	default:
+		return false
+	}
+}
+
 type RemoteCreateOptions struct {
 	Tool         string
 	Title        string
@@ -172,6 +183,9 @@ func (r *AgentboxRunner) CreateSession(ctx context.Context, opts RemoteCreateOpt
 	}
 	if strings.TrimSpace(opts.Agent) == "" {
 		return RemoteCreateResult{}, fmt.Errorf("agentbox create requires --agent")
+	}
+	if !IsCanonicalAgentboxAgent(opts.Agent) {
+		return RemoteCreateResult{}, fmt.Errorf("agentbox agent must be exactly one of: claude-code, codex, or pi-fireworks")
 	}
 	if strings.TrimSpace(opts.ModelID) == "" {
 		return RemoteCreateResult{}, fmt.Errorf("agentbox create requires --model")

@@ -86,7 +86,13 @@ func TestIssue1100_HomeDispatch_ShiftEnterRemoteCallsLauncher(t *testing.T) {
 	}
 
 	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}}
-	_, _ = home.handleMainKey(keyMsg)
+	_, cmd := home.handleMainKey(keyMsg)
+	if cmd == nil {
+		t.Fatal("Shift+Enter on remote session did not schedule an async launcher command")
+	}
+	if err := (remoteOpenInNewWindowCmd{home: home, item: home.flatItems[0], openAs: "tab"}).Run(); err != nil {
+		t.Fatalf("remote open command failed: %v", err)
+	}
 
 	if !called {
 		t.Fatal("Shift+Enter on remote session did NOT call the new-window launcher (the #1100a regression)")
@@ -153,7 +159,13 @@ url = "`+srv.URL+`"
 		return nil
 	}
 
-	_, _ = home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}})
+	_, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}})
+	if cmd == nil {
+		t.Fatal("Shift+Enter on Agentbox did not schedule an async launcher command")
+	}
+	if err := (remoteOpenInNewWindowCmd{home: home, item: home.flatItems[0], openAs: "tab"}).Run(); err != nil {
+		t.Fatalf("Agentbox open command failed: %v", err)
+	}
 
 	if !called {
 		t.Fatal("Shift+Enter on a running agentbox workspace must call the launcher")
@@ -204,12 +216,16 @@ url = "`+srv.URL+`"
 		return nil
 	}
 
-	_, _ = home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}})
-	if home.err == nil {
-		t.Fatal("expected authoritative attach failure to surface an error")
+	_, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}})
+	if cmd == nil {
+		t.Fatal("Shift+Enter on stopped Agentbox did not schedule an async launcher command")
 	}
-	if !strings.Contains(home.err.Error(), "start it before attaching") {
-		t.Fatalf("error = %v, want stopped-before-attach guidance", home.err)
+	err := (remoteOpenInNewWindowCmd{home: home, item: home.flatItems[0], openAs: "tab"}).Run()
+	if err == nil {
+		t.Fatal("expected authoritative attach failure")
+	}
+	if !strings.Contains(err.Error(), "start it before attaching") {
+		t.Fatalf("error = %v, want stopped-before-attach guidance", err)
 	}
 }
 

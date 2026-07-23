@@ -81,6 +81,7 @@ func TestAgentboxRunnerCreateSession_RequiresExplicitFields(t *testing.T) {
 		{name: "missing name", opts: RemoteCreateOptions{Orchestrator: "wisp", Agent: "pi-fireworks", ModelID: "m", Runtime: "docker"}, want: "--name"},
 		{name: "missing orchestrator", opts: RemoteCreateOptions{Title: "x", Agent: "pi-fireworks", ModelID: "m", Runtime: "docker"}, want: "--orchestrator"},
 		{name: "missing agent", opts: RemoteCreateOptions{Title: "x", Orchestrator: "wisp", ModelID: "m", Runtime: "docker"}, want: "--agent"},
+		{name: "unsupported agent", opts: RemoteCreateOptions{Title: "x", Orchestrator: "wisp", Agent: "pi", ModelID: "m", Runtime: "docker"}, want: "claude-code, codex, or pi-fireworks"},
 		{name: "missing model", opts: RemoteCreateOptions{Title: "x", Orchestrator: "wisp", Agent: "pi-fireworks", Runtime: "docker"}, want: "--model"},
 		{name: "missing runtime", opts: RemoteCreateOptions{Title: "x", Orchestrator: "wisp", Agent: "pi-fireworks", ModelID: "m"}, want: "--runtime"},
 	}

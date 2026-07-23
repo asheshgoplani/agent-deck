@@ -716,8 +716,15 @@ type RemoteConfig struct {
 
 // GetKind returns the remote kind, defaulting to "ssh".
 func (rc RemoteConfig) GetKind() string {
-	if strings.TrimSpace(rc.Kind) != "" {
-		return strings.TrimSpace(rc.Kind)
+	if kind := strings.ToLower(strings.TrimSpace(rc.Kind)); kind != "" {
+		switch kind {
+		case RemoteKindAgentbox:
+			return RemoteKindAgentbox
+		case RemoteKindSSH:
+			return RemoteKindSSH
+		default:
+			return kind
+		}
 	}
 	if strings.TrimSpace(rc.URL) != "" && strings.TrimSpace(rc.Host) == "" {
 		return RemoteKindAgentbox
