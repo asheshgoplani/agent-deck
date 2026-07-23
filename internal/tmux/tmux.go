@@ -3159,6 +3159,19 @@ func (s *Session) DetectTool() string {
 		return tool
 	}
 
+	// A session created as "shell" can later launch a supported tool. Prefer the
+	// pane's current command over terminal content so conversation text that
+	// mentions another tool cannot rewrite the running tool's identity.
+	if paneInfo, ok := GetCachedPaneInfo(s.Name); ok {
+		if tool := detectToolFromCommand(paneInfo.CurrentCommand); tool != "" {
+			s.mu.Lock()
+			s.detectedTool = tool
+			s.toolDetectedAt = time.Now()
+			s.mu.Unlock()
+			return tool
+		}
+	}
+
 	// Fallback to content detection
 	content, err := s.CapturePane()
 	if err != nil {

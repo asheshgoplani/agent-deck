@@ -559,6 +559,32 @@ func TestDetectTool(t *testing.T) {
 	}
 }
 
+func TestDetectToolPrefersPaneCommandOverConversationContent(t *testing.T) {
+	sess := NewSession("tool-detection-precedence", "/tmp")
+	sess.Command = "shell"
+	sess.cacheContent = "A Gemini API key can be used for image generation."
+	sess.cacheTime = time.Now()
+
+	paneCacheMu.Lock()
+	previousData := paneCacheData
+	previousTime := paneCacheTime
+	paneCacheData = map[string]PaneInfo{
+		sess.Name: {CurrentCommand: "claude"},
+	}
+	paneCacheTime = time.Now()
+	paneCacheMu.Unlock()
+	t.Cleanup(func() {
+		paneCacheMu.Lock()
+		paneCacheData = previousData
+		paneCacheTime = previousTime
+		paneCacheMu.Unlock()
+	})
+
+	if got := sess.DetectTool(); got != "claude" {
+		t.Fatalf("DetectTool() = %q, want %q when pane command identifies the running tool", got, "claude")
+	}
+}
+
 func TestDetectToolFromCommand(t *testing.T) {
 	tests := []struct {
 		name    string
