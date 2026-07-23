@@ -10,7 +10,8 @@ import (
 // TestAdd_MaterializesDeclarativeLoadout locks the create-time wiring: a
 // session added into a group whose [groups.X.claude] stanza declares
 // skills/mcps gets the loadout materialized at `add` (before any start),
-// via the same machinery as manual `skill attach` / `mcp attach`.
+// via the same lifecycle boundary as manual attachment. Declarative skills
+// are home-scoped; MCPs and explicit skill attachment remain project-scoped.
 func TestAdd_MaterializesDeclarativeLoadout(t *testing.T) {
 	home := t.TempDir()
 
@@ -47,8 +48,8 @@ mcps = ["memory", "ghostmcp"]
 		t.Fatalf("add failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
 
-	// Skill symlink materialized at create time.
-	target := filepath.Join(project, ".claude", "skills", "alpha")
+	// Skill symlink materialized in the effective Claude home at create time.
+	target := filepath.Join(home, ".claude", "skills", "alpha")
 	info, err := os.Lstat(target)
 	if err != nil {
 		t.Fatalf("expected skill symlink at %s: %v\nstderr: %s", target, err, stderr)
@@ -57,9 +58,12 @@ mcps = ["memory", "ghostmcp"]
 		t.Fatalf("expected symlink, mode=%v", info.Mode())
 	}
 
-	// Manifest records it.
-	if data, err := os.ReadFile(filepath.Join(project, ".agent-deck", "skills.toml")); err != nil || !strings.Contains(string(data), "alpha") {
+	// The home manifest records it and the project has no declarative skill state.
+	if data, err := os.ReadFile(filepath.Join(home, ".claude", ".agent-deck", "skills.toml")); err != nil || !strings.Contains(string(data), "alpha") {
 		t.Errorf("manifest missing alpha: %v\n%s", err, data)
+	}
+	if _, err := os.Stat(filepath.Join(project, ".agent-deck", "skills.toml")); !os.IsNotExist(err) {
+		t.Errorf("declarative skill created project manifest: %v", err)
 	}
 
 	// MCP landed in local .mcp.json.
