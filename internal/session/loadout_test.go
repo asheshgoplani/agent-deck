@@ -77,7 +77,7 @@ mcps = ["memory"]
 		t.Fatalf("expected clean materialization, got warnings: %v", warnings)
 	}
 
-	target := filepath.Join(project, ".claude", "skills", "alpha")
+	target := filepath.Join(tmpHome, ".claude", "skills", "alpha")
 	mustLstatSymlink(t, target)
 	resolved, err := filepath.EvalSymlinks(target)
 	if err != nil {
@@ -88,7 +88,7 @@ mcps = ["memory"]
 		t.Errorf("symlink resolves to %s, want %s", resolved, wantSource)
 	}
 
-	manifestPath := filepath.Join(project, ".agent-deck", "skills.toml")
+	manifestPath := filepath.Join(tmpHome, ".claude", ".agent-deck", "skills.toml")
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatalf("manifest missing: %v", err)
@@ -128,7 +128,7 @@ mcps = ["memory"]
 	if w := ApplyConfiguredLoadout(inst); len(w) != 0 {
 		t.Fatalf("re-assert must be a silent no-op, got: %v", w)
 	}
-	mustLstatSymlink(t, filepath.Join(project, ".claude", "skills", "alpha"))
+	mustLstatSymlink(t, filepath.Join(tmpHome, ".claude", "skills", "alpha"))
 }
 
 func TestLoadout_HealsDeletedTarget(t *testing.T) {
@@ -143,7 +143,7 @@ skills = ["store/alpha"]
 	if w := ApplyConfiguredLoadout(inst); len(w) != 0 {
 		t.Fatalf("first apply: %v", w)
 	}
-	target := filepath.Join(project, ".claude", "skills", "alpha")
+	target := filepath.Join(tmpHome, ".claude", "skills", "alpha")
 	if err := os.Remove(target); err != nil {
 		t.Fatalf("remove target: %v", err)
 	}
@@ -163,7 +163,7 @@ skills = ["store/alpha"]
 	project := t.TempDir()
 
 	// A human-placed real directory at the loadout target.
-	foreign := filepath.Join(project, ".claude", "skills", "alpha")
+	foreign := filepath.Join(tmpHome, ".claude", "skills", "alpha")
 	if err := os.MkdirAll(foreign, 0o755); err != nil {
 		t.Fatalf("mkdir foreign: %v", err)
 	}
@@ -240,7 +240,7 @@ mcps = ["memory"]
 	if w := ApplyConfiguredLoadout(inst); len(w) != 0 {
 		t.Fatalf("apply after removal: %v", w)
 	}
-	mustLstatSymlink(t, filepath.Join(project, ".claude", "skills", "alpha"))
+	mustLstatSymlink(t, filepath.Join(tmpHome, ".claude", "skills", "alpha"))
 	if data, err := os.ReadFile(filepath.Join(project, ".mcp.json")); err != nil || !strings.Contains(string(data), "memory") {
 		t.Errorf(".mcp.json must keep memory after config removal: %v\n%s", err, data)
 	}
@@ -252,6 +252,7 @@ func TestLoadout_ConductorUnionsWithGroupFloor(t *testing.T) {
 skills = ["store/alpha"]
 
 [conductors.lilu.claude]
+config_dir = "~/.claude-lilu"
 skills = ["store/beta"]
 `)
 	setupLoadoutStore(t, tmpHome)
@@ -261,8 +262,8 @@ skills = ["store/beta"]
 	if w := ApplyConfiguredLoadout(inst); len(w) != 0 {
 		t.Fatalf("apply: %v", w)
 	}
-	mustLstatSymlink(t, filepath.Join(project, ".claude", "skills", "alpha"))
-	mustLstatSymlink(t, filepath.Join(project, ".claude", "skills", "beta"))
+	mustLstatSymlink(t, filepath.Join(tmpHome, ".claude-lilu", "skills", "alpha"))
+	mustLstatSymlink(t, filepath.Join(tmpHome, ".claude-lilu", "skills", "beta"))
 }
 
 func TestLoadout_CatalogPluginsUnionAndPreserveManual(t *testing.T) {
@@ -326,7 +327,7 @@ skills = ["store/alpha"]
 	if warnings := ApplyConfiguredLoadout(inst); len(warnings) != 0 {
 		t.Fatalf("first apply: %v", warnings)
 	}
-	target := filepath.Join(project, ".claude", "skills", "alpha")
+	target := filepath.Join(tmpHome, ".claude", "skills", "alpha")
 	foreign := t.TempDir()
 	if err := os.Remove(target); err != nil {
 		t.Fatalf("remove managed target: %v", err)

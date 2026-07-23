@@ -11,9 +11,10 @@ import (
 
 // ApplyConfiguredLoadout materializes the declarative per-group /
 // per-conductor skill, plugin, and MCP loadout for Claude sessions, and the
-// per-group skill and MCP loadout for Codex sessions. Claude skills use the
-// project attachment machinery; Codex group skills use the resolved
-// CODEX_HOME/skills directory. Called at session create (add/launch) and
+// per-group skill and MCP loadout for Codex sessions. Declarative skills use
+// the resolved CLAUDE_CONFIG_DIR/skills or CODEX_HOME/skills directory;
+// explicit skill attach remains project-scoped. Called at session create
+// (add/launch) and
 // re-asserted before every
 // Start/StartWithMessage/Restart spawn, so a config edit takes effect on
 // the next start and a healthy state is a cheap no-op.
@@ -43,9 +44,9 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 	if inst == nil || (!IsClaudeCompatible(inst.Tool) && !IsCodexCompatible(inst.Tool)) {
 		return nil
 	}
-	if inst.ProjectPath == "" || inst.SSHHost != "" {
-		// No local project path to materialize into (SSH sessions run on a
-		// remote working dir agent-deck cannot symlink into).
+	if inst.SSHHost != "" {
+		// SSH sessions run against a remote home and project directory that
+		// this local process cannot safely materialize into.
 		return nil
 	}
 
@@ -62,13 +63,10 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 	}
 
 	var skills, plugins, mcps []string
-	var codexSkillsHome string
+	var skillHome string
 	var skillResolutionErr error
 	if IsClaudeCompatible(inst.Tool) {
-		skills = unionLoadoutEntries(
-			config.GetGroupClaudeSkills(inst.GroupPath),
-			config.GetConductorClaudeSkills(conductorNameFromInstance(inst)),
-		)
+		skillHome, skills, skillResolutionErr = ResolveInstanceClaudeHomeSkills(inst)
 		plugins = unionLoadoutEntries(
 			config.GetGroupClaudePlugins(inst.GroupPath),
 			config.GetConductorClaudePlugins(conductorNameFromInstance(inst)),
@@ -78,7 +76,7 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 			config.GetConductorClaudeMCPs(conductorNameFromInstance(inst)),
 		)
 	} else {
-		codexSkillsHome, skills, skillResolutionErr = ResolveInstanceCodexHomeSkills(inst)
+		skillHome, skills, skillResolutionErr = ResolveInstanceCodexHomeSkills(inst)
 		mcps = config.GetGroupCodexMCPs(inst.GroupPath)
 	}
 
@@ -92,31 +90,34 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 			slog.String("detail", w))
 	}
 	if skillResolutionErr != nil {
-		warn("Codex home skills: %v", skillResolutionErr)
+		label := "Codex"
+		if IsClaudeCompatible(inst.Tool) {
+			label = "Claude"
+		}
+		warn("%s home skills: %v", label, skillResolutionErr)
 		skills = nil
 	}
 	if len(skills) == 0 && len(plugins) == 0 && len(mcps) == 0 {
 		return warnings
 	}
 
-	attachedSkill := false
 	for _, entry := range skills {
 		var attachment *ProjectSkillAttachment
 		var err error
-		if IsCodexCompatible(inst.Tool) {
-			attachment, err = AttachSkillToCodexHome(codexSkillsHome, entry, "")
-		} else {
-			attachment, err = AttachSkillToProject(inst.ProjectPath, inst.Tool, entry, "")
+		switch {
+		case IsClaudeCompatible(inst.Tool):
+			attachment, err = AttachSkillToClaudeHome(skillHome, entry, "")
+		case IsCodexCompatible(inst.Tool):
+			attachment, err = AttachSkillToCodexHome(skillHome, entry, "")
 		}
 		healthy := func() bool {
-			if IsCodexCompatible(inst.Tool) {
-				return healthyManagedCodexHomeSkillAttachment(codexSkillsHome, entry)
+			if IsClaudeCompatible(inst.Tool) {
+				return healthyManagedClaudeHomeSkillAttachment(skillHome, entry)
 			}
-			return healthyManagedSkillAttachment(inst.ProjectPath, entry)
+			return healthyManagedCodexHomeSkillAttachment(skillHome, entry)
 		}
 		switch {
 		case err == nil:
-			attachedSkill = true
 			sessionLog.Info("loadout_skill_attached",
 				slog.String("session", sanitizeLoadoutWarning(inst.Title)),
 				slog.String("skill", sanitizeLoadoutWarning(entry)),
@@ -136,6 +137,12 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 			// is not managed", "target already managed by …") and IO errors.
 			warn("skill %q: %v", entry, err)
 		}
+	}
+
+	if inst.ProjectPath == "" {
+		// Home skills do not need a project, but Claude plugins/MCPs and Codex
+		// MCPs retain their existing project/session attachment boundaries.
+		return warnings
 	}
 
 	// Catalog plugins are persisted on the instance and resolved by the
@@ -160,15 +167,14 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 
 	// Project-scope plugins only load when the cwd's realpath is trusted in
 	// ~/.claude.json (projects[<realpath>].hasTrustDialogAccepted). Seed it
-	// here — the same one-key trust the conductor setup pre-accepts
-	// (PreAcceptClaudeTrust) — so a materialized skill loadout, which is what
-	// carries plugins/hooks, actually loads instead of being silently skipped
-	// at spawn. Only when plugins were materialized (mcps load via .mcp.json
-	// regardless of trust). Keyed by realpath: Claude resolves the cwd through
-	// symlinks, and agent homes are commonly reached via synced/symlinked paths.
+	// here — the same one-key trust the conductor setup pre-accepts — so
+	// configured plugins/hooks load instead of being silently skipped. MCPs
+	// load via .mcp.json regardless of trust. Keyed by realpath: Claude resolves
+	// the cwd through symlinks, and agent homes are commonly reached via synced
+	// or symlinked paths.
 	// Empirically one key is sufficient; hasCompletedProjectOnboarding is not
 	// required for plugin loading.
-	if attachedSkill && inst.Tool == "claude" {
+	if len(plugins) > 0 && inst.Tool == "claude" {
 		trustDir := inst.ProjectPath
 		if real, err := filepath.EvalSymlinks(trustDir); err == nil {
 			trustDir = real
