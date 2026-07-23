@@ -43,15 +43,19 @@ You (the session running this skill) are the **conductor**. Hard rules:
   group; an explicit `-g` overrides that inheritance, and a group name guessed
   from the repo folder (`-g baba` when the group is really `doozyx/baba`) strands
   the child away from its siblings. Omit it — see the group trap in `fleet`.
-- **You issue every `launch` from this session, and confirm it parented.**
-  Auto-inheritance of your group only fires when the child actually attaches to
-  you as parent, which depends on `$AGENTDECK_INSTANCE_ID` being present in the
-  launching shell. Never delegate a `launch` to a subagent shell — it won't
-  carry that env, the child launches parentless, and a worktree child then
-  strays into its branch-leaf group. If you can't guarantee the env, pass
-  `--parent "$AGENTDECK_INSTANCE_ID"` explicitly. After each launch, verify the
-  child parented and landed in your group (the `fleet` "verify the group" check);
-  repair a stray with `agent-deck group move <id> "$AGENTDECK_RESOLVED_GROUP"`.
+- **Children auto-parent to you — verify it, don't hand-wire it.** A `launch`
+  issued from this session attaches the child to you automatically: agent-deck
+  reads your instance id from the tmux session environment, so it resolves even
+  from a shell that lost `$AGENTDECK_INSTANCE_ID` (a subagent shell, a scrubbed
+  env). Pass no parent flag in the normal case. **Still confirm** each child
+  parented and landed in your group (the `fleet` "verify the group" check) —
+  a `launch` from *outside* your tmux session, or against an agent-deck older
+  than the tmux-env auto-parent fix, can still orphan the child, and a worktree
+  child then strays into its branch-leaf group. Repair a stray with
+  `agent-deck session set-parent <id> "$AGENTDECK_INSTANCE_ID"` and
+  `agent-deck group move <id> "$AGENTDECK_RESOLVED_GROUP"`. Use `--parent <id>`
+  only to deliberately re-home a child to a *different* conductor (long form —
+  never `-p`, which the global `--profile` extractor eats).
 
 ## Run setup
 
