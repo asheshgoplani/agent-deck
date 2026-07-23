@@ -43,19 +43,19 @@ You (the session running this skill) are the **conductor**. Hard rules:
   group; an explicit `-g` overrides that inheritance, and a group name guessed
   from the repo folder (`-g baba` when the group is really `doozyx/baba`) strands
   the child away from its siblings. Omit it — see the group trap in `fleet`.
-- **Always pass `--parent "$AGENTDECK_INSTANCE_ID"` on every `launch`, and
-  confirm it parented.** Auto-parenting (omitting `--parent`) is not reliable:
-  it depends on `$AGENTDECK_INSTANCE_ID` — or the tmux `#S` fallback — resolving
-  in the exact shell that runs `launch`, and it silently misses in worktree,
-  subagent-shell, and cross-profile contexts, leaving the child parentless and a
-  worktree child stranded in its branch-leaf group. Passing `--parent` explicitly
-  removes that fragility entirely: an empty value harmlessly falls back to
-  auto-parenting, and the long-form `--parent` (never `-p`, which the global
-  `--profile` extractor eats) makes parenting deterministic. Every `launch`
-  example below already includes it — keep it. Still never delegate a `launch` to
-  a subagent shell. After each launch, verify the child parented and landed in
-  your group (the `fleet` "verify the group" check); repair a stray with
-  `agent-deck group move <id> "$AGENTDECK_RESOLVED_GROUP"`.
+- **Children auto-parent to you — verify it, don't hand-wire it.** A `launch`
+  issued from this session attaches the child to you automatically: agent-deck
+  reads your instance id from the tmux session environment, so it resolves even
+  from a shell that lost `$AGENTDECK_INSTANCE_ID` (a subagent shell, a scrubbed
+  env). Pass no parent flag in the normal case. **Still confirm** each child
+  parented and landed in your group (the `fleet` "verify the group" check) —
+  a `launch` from *outside* your tmux session, or against an agent-deck older
+  than the tmux-env auto-parent fix, can still orphan the child, and a worktree
+  child then strays into its branch-leaf group. Repair a stray with
+  `agent-deck session set-parent <id> "$AGENTDECK_INSTANCE_ID"` and
+  `agent-deck group move <id> "$AGENTDECK_RESOLVED_GROUP"`. Use `--parent <id>`
+  only to deliberately re-home a child to a *different* conductor (long form —
+  never `-p`, which the global `--profile` extractor eats).
 
 ## Run setup
 
@@ -128,7 +128,7 @@ deep codebase reading, which is neither your job (supervision only) nor the
 user's session's:
 
 ```bash
-agent-deck launch <repo-root> -w <branch> -c claude -t "plan-<task-slug>" --parent "$AGENTDECK_INSTANCE_ID" --message-file "$RUN_DIR/<task-slug>/plan-prompt.md"
+agent-deck launch <repo-root> -w <branch> -c claude -t "plan-<task-slug>" --message-file "$RUN_DIR/<task-slug>/plan-prompt.md"
 ```
 
 Planner prompt template:
@@ -199,7 +199,7 @@ never inline via `-m "$(cat ...)"`: the shell mangles backticks and `$`, and
 issue bodies are full of both. Then launch:
 
 ```bash
-agent-deck launch <repo-root> -w <branch> -c claude -t "impl-<task-slug>" --parent "$AGENTDECK_INSTANCE_ID" --message-file "$RUN_DIR/<task-slug>/impl-prompt.md"
+agent-deck launch <repo-root> -w <branch> -c claude -t "impl-<task-slug>" --message-file "$RUN_DIR/<task-slug>/impl-prompt.md"
 ```
 
 Implementer prompt template — fill every `<...>`:
@@ -242,7 +242,6 @@ carries the rest):
 
 ```bash
 agent-deck launch <worktree-path> -c claude -t "review-<task-slug>-r1" \
-  --parent "$AGENTDECK_INSTANCE_ID" \
   --extra-arg --disallowedTools --extra-arg "Edit,Write,NotebookEdit" \
   --message-file "$RUN_DIR/<task-slug>/review-r1-prompt.md"
 ```
