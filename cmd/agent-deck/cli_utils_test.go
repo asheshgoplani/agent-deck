@@ -423,3 +423,31 @@ func TestShouldInheritParentGroup(t *testing.T) {
 		})
 	}
 }
+
+// TestParseInstanceIDFromTmuxEnv covers the `tmux show-environment` parse used
+// by GetCurrentSessionID to recover the authoritative instance id. The tmux
+// session NAME's trailing token is a random short id (generateShortID), so this
+// env-based path is the only fallback that can resolve the current session.
+func TestParseInstanceIDFromTmuxEnv(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{"set", "AGENTDECK_INSTANCE_ID=8ba55599-1784819563\n", "8ba55599-1784819563"},
+		{"set no trailing newline", "AGENTDECK_INSTANCE_ID=abc123-1", "abc123-1"},
+		{"unset removed form", "-AGENTDECK_INSTANCE_ID\n", ""},
+		{"empty value", "AGENTDECK_INSTANCE_ID=\n", ""},
+		{"empty output", "", ""},
+		{"unrelated var only", "SOME_OTHER=x\n", ""},
+		{"surrounded by other lines", "FOO=1\nAGENTDECK_INSTANCE_ID=deadbeef-9\nBAR=2\n", "deadbeef-9"},
+		{"whitespace padding", "  AGENTDECK_INSTANCE_ID=zz-7  \n", "zz-7"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseInstanceIDFromTmuxEnv(tt.output); got != tt.want {
+				t.Errorf("parseInstanceIDFromTmuxEnv(%q) = %q, want %q", tt.output, got, tt.want)
+			}
+		})
+	}
+}

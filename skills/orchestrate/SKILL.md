@@ -43,15 +43,19 @@ You (the session running this skill) are the **conductor**. Hard rules:
   group; an explicit `-g` overrides that inheritance, and a group name guessed
   from the repo folder (`-g baba` when the group is really `doozyx/baba`) strands
   the child away from its siblings. Omit it — see the group trap in `fleet`.
-- **You issue every `launch` from this session, and confirm it parented.**
-  Auto-inheritance of your group only fires when the child actually attaches to
-  you as parent, which depends on `$AGENTDECK_INSTANCE_ID` being present in the
-  launching shell. Never delegate a `launch` to a subagent shell — it won't
-  carry that env, the child launches parentless, and a worktree child then
-  strays into its branch-leaf group. If you can't guarantee the env, pass
-  `--parent "$AGENTDECK_INSTANCE_ID"` explicitly. After each launch, verify the
-  child parented and landed in your group (the `fleet` "verify the group" check);
-  repair a stray with `agent-deck group move <id> "$AGENTDECK_RESOLVED_GROUP"`.
+- **Always pass `--parent "$AGENTDECK_INSTANCE_ID"` on every `launch`, and
+  confirm it parented.** Auto-parenting (omitting `--parent`) is not reliable:
+  it depends on `$AGENTDECK_INSTANCE_ID` — or the tmux `#S` fallback — resolving
+  in the exact shell that runs `launch`, and it silently misses in worktree,
+  subagent-shell, and cross-profile contexts, leaving the child parentless and a
+  worktree child stranded in its branch-leaf group. Passing `--parent` explicitly
+  removes that fragility entirely: an empty value harmlessly falls back to
+  auto-parenting, and the long-form `--parent` (never `-p`, which the global
+  `--profile` extractor eats) makes parenting deterministic. Every `launch`
+  example below already includes it — keep it. Still never delegate a `launch` to
+  a subagent shell. After each launch, verify the child parented and landed in
+  your group (the `fleet` "verify the group" check); repair a stray with
+  `agent-deck group move <id> "$AGENTDECK_RESOLVED_GROUP"`.
 
 ## Run setup
 
@@ -124,7 +128,7 @@ deep codebase reading, which is neither your job (supervision only) nor the
 user's session's:
 
 ```bash
-agent-deck launch <repo-root> -w <branch> -c claude -t "plan-<task-slug>" --message-file "$RUN_DIR/<task-slug>/plan-prompt.md"
+agent-deck launch <repo-root> -w <branch> -c claude -t "plan-<task-slug>" --parent "$AGENTDECK_INSTANCE_ID" --message-file "$RUN_DIR/<task-slug>/plan-prompt.md"
 ```
 
 Planner prompt template:
@@ -195,7 +199,7 @@ never inline via `-m "$(cat ...)"`: the shell mangles backticks and `$`, and
 issue bodies are full of both. Then launch:
 
 ```bash
-agent-deck launch <repo-root> -w <branch> -c claude -t "impl-<task-slug>" --message-file "$RUN_DIR/<task-slug>/impl-prompt.md"
+agent-deck launch <repo-root> -w <branch> -c claude -t "impl-<task-slug>" --parent "$AGENTDECK_INSTANCE_ID" --message-file "$RUN_DIR/<task-slug>/impl-prompt.md"
 ```
 
 Implementer prompt template — fill every `<...>`:
@@ -238,6 +242,7 @@ carries the rest):
 
 ```bash
 agent-deck launch <worktree-path> -c claude -t "review-<task-slug>-r1" \
+  --parent "$AGENTDECK_INSTANCE_ID" \
   --extra-arg --disallowedTools --extra-arg "Edit,Write,NotebookEdit" \
   --message-file "$RUN_DIR/<task-slug>/review-r1-prompt.md"
 ```

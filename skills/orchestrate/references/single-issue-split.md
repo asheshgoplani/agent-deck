@@ -29,7 +29,7 @@ speed.
 ## Sequential relay (default)
 
 1. Launch subtask 1's implementer with a fresh worktree for the whole issue:
-   `agent-deck launch <repo-root> -w <issue-branch> -c claude -t "impl-<issue-slug>-1" --message-file ...`
+   `agent-deck launch <repo-root> -w <issue-branch> -c claude -t "impl-<issue-slug>-1" --parent "$AGENTDECK_INSTANCE_ID" --message-file ...`
    using the stage-1 prompt template with the subtask's mini-spec.
 2. Run stages 1–3 (implement, fresh review, fix loop) for subtask 1 in that
    worktree.

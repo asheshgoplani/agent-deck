@@ -357,36 +357,54 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 	return nil, fmt.Sprintf("session '%s' not found", identifier), ErrCodeNotFound
 }
 
-// GetCurrentSessionID detects the current agent-deck session from tmux environment
-// Returns session ID or empty string if not in an agent-deck session
+// GetCurrentSessionID detects the current agent-deck session from tmux and
+// returns its instance ID, or "" if not inside an agent-deck session.
+//
+// The trailing token of the tmux session NAME (agentdeck_<title>_<shortid>) is
+// a random uniqueness suffix from generateShortID() — NOT the instance ID — so
+// it can never resolve against the instance list (and could prefix-match a
+// different session). The authoritative id lives in the tmux SESSION
+// environment, written by Instance.SetEnvironment("AGENTDECK_INSTANCE_ID", id)
+// at every spawn. We read it back with `tmux show-environment`, which recovers
+// the real id even when the calling process env dropped it (subagent shell,
+// scrubbed env) — the case that silently orphaned auto-parented children.
 func GetCurrentSessionID() string {
 	// Check if we're in tmux
 	if os.Getenv("TMUX") == "" {
 		return ""
 	}
 
-	// Get current tmux session name
-	cmd := exec.Command("tmux", "display-message", "-p", "#S")
-	output, err := cmd.Output()
+	// Confirm we're in an agent-deck-managed session before claiming an id.
+	nameOut, err := exec.Command("tmux", "display-message", "-p", "#S").Output()
 	if err != nil {
 		return ""
 	}
-
-	sessionName := strings.TrimSpace(string(output))
-
-	// Parse agent-deck session name: agentdeck_<title>_<id>
-	if !strings.HasPrefix(sessionName, "agentdeck_") {
+	if !strings.HasPrefix(strings.TrimSpace(string(nameOut)), "agentdeck_") {
 		return ""
 	}
 
-	// Extract ID (last part after final underscore)
-	parts := strings.Split(sessionName, "_")
-	if len(parts) < 3 {
+	// Recover the authoritative instance id from the tmux session environment.
+	// `tmux show-environment AGENTDECK_INSTANCE_ID` prints "KEY=value" when set,
+	// or "-KEY" / an error when unset.
+	envOut, err := exec.Command("tmux", "show-environment", "AGENTDECK_INSTANCE_ID").Output()
+	if err != nil {
 		return ""
 	}
+	return parseInstanceIDFromTmuxEnv(string(envOut))
+}
 
-	// ID is the last part
-	return parts[len(parts)-1]
+// parseInstanceIDFromTmuxEnv extracts the AGENTDECK_INSTANCE_ID value from the
+// output of `tmux show-environment AGENTDECK_INSTANCE_ID`. tmux prints
+// "AGENTDECK_INSTANCE_ID=<id>" when the var is set in the session env, and
+// "-AGENTDECK_INSTANCE_ID" (leading dash = removed/unset) or nothing when it is
+// not. Only the "KEY=value" form yields an id; everything else returns "".
+func parseInstanceIDFromTmuxEnv(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if id, ok := strings.CutPrefix(strings.TrimSpace(line), "AGENTDECK_INSTANCE_ID="); ok {
+			return strings.TrimSpace(id)
+		}
+	}
+	return ""
 }
 
 // ResolveSessionOrCurrent resolves a session by identifier, or uses current session if empty
