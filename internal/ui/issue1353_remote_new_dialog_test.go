@@ -221,6 +221,101 @@ url = "http://127.0.0.1:1"
 	}
 }
 
+func TestIssue1353_AgentboxRemoteDialogUsesCanonicalAgentPlaceholderAndHelp(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[remotes.lab]
+kind = "agentbox"
+url = "http://127.0.0.1:1"
+`)
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+	home.flatItems = []session.Item{remoteGroupItem("lab")}
+	home.cursor = 0
+
+	h := pressN(t, home)
+	if got := h.newDialog.agentInput.Placeholder; got != "claude-code | codex | pi-fireworks" {
+		t.Fatalf("agent placeholder = %q, want canonical values", got)
+	}
+
+	h.newDialog.focusIndex = 2 // Name, Orchestrator, Agent
+	view := h.newDialog.View()
+	for _, want := range []string{"claude-code", "codex", "pi-fireworks"} {
+		if strings.Contains(view, want) {
+			continue
+		}
+		t.Fatalf("agent help text should show canonical value %q:\n%s", want, view)
+	}
+}
+
+func TestIssue1353_AgentboxRemoteDialogRejectsShorthandAgents(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[remotes.lab]
+kind = "agentbox"
+url = "http://127.0.0.1:1"
+`)
+	tests := []struct {
+		name  string
+		agent string
+	}{
+		{name: "claude shorthand", agent: "claude"},
+		{name: "pi shorthand", agent: "pi"},
+		{name: "other value", agent: "gemini"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := NewHome()
+			home.width = 100
+			home.height = 30
+			home.flatItems = []session.Item{remoteGroupItem("lab")}
+			home.cursor = 0
+
+			h := pressN(t, home)
+			h.newDialog.nameInput.SetValue("research-one")
+			h.newDialog.orchestratorInput.SetValue("wisp")
+			h.newDialog.agentInput.SetValue(tt.agent)
+			h.newDialog.modelInput.SetValue("accounts/fireworks/models/glm-5p2")
+			h.newDialog.runtimeInput.SetValue("docker")
+
+			got := h.newDialog.Validate()
+			if !strings.Contains(got, "claude-code, codex, or pi-fireworks") {
+				t.Fatalf("Validate() = %q, want canonical-agent guidance", got)
+			}
+		})
+	}
+}
+
+func TestIssue1353_AgentboxRemoteDialogAcceptsCanonicalAgents(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[remotes.lab]
+kind = "agentbox"
+url = "http://127.0.0.1:1"
+`)
+	tests := []string{"claude-code", "codex", "pi-fireworks"}
+
+	for _, agent := range tests {
+		t.Run(agent, func(t *testing.T) {
+			home := NewHome()
+			home.width = 100
+			home.height = 30
+			home.flatItems = []session.Item{remoteGroupItem("lab")}
+			home.cursor = 0
+
+			h := pressN(t, home)
+			h.newDialog.nameInput.SetValue("research-one")
+			h.newDialog.orchestratorInput.SetValue("wisp")
+			h.newDialog.agentInput.SetValue(agent)
+			h.newDialog.modelInput.SetValue("accounts/fireworks/models/glm-5p2")
+			h.newDialog.runtimeInput.SetValue("docker")
+
+			if got := h.newDialog.Validate(); got != "" {
+				t.Fatalf("Validate() = %q, want empty for canonical agent %q", got, agent)
+			}
+		})
+	}
+}
+
 func TestIssue1353_AgentboxRemoteDialogBuildsExplicitCreateOptions(t *testing.T) {
 	withTempAgentDeckHome(t, `
 [remotes.lab]

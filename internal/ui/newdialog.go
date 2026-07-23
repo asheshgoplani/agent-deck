@@ -164,6 +164,12 @@ const (
 	remoteCreateModeAgentbox
 )
 
+var canonicalAgentboxAgents = map[string]struct{}{
+	"claude-code":  {},
+	"codex":        {},
+	"pi-fireworks": {},
+}
+
 // NewDialog represents the new session creation dialog.
 type NewDialog struct {
 	nameInput             textinput.Model
@@ -371,7 +377,7 @@ func NewNewDialog() *NewDialog {
 	orchestratorInput.CharLimit = 64
 
 	agentInput := textinput.New()
-	agentInput.Placeholder = "claude | codex | pi"
+	agentInput.Placeholder = "claude-code | codex | pi-fireworks"
 	agentInput.CharLimit = 64
 
 	// Optional per-session model/version override for supported tools.
@@ -1393,8 +1399,12 @@ func (d *NewDialog) Validate() string {
 		if strings.TrimSpace(d.orchestratorInput.Value()) == "" {
 			return "Orchestrator is required for Agentbox workspaces"
 		}
-		if strings.TrimSpace(d.agentInput.Value()) == "" {
+		agent := strings.TrimSpace(d.agentInput.Value())
+		if agent == "" {
 			return "Agent is required for Agentbox workspaces"
+		}
+		if _, ok := canonicalAgentboxAgents[agent]; !ok {
+			return "Agent must be exactly one of: claude-code, codex, or pi-fireworks"
 		}
 		if strings.TrimSpace(d.modelInput.Value()) == "" {
 			return "Model ID is required for Agentbox workspaces"
@@ -2933,6 +2943,8 @@ func (d *NewDialog) View() string {
 		} else {
 			helpText = "←→ command │ w worktree │ s sandbox │ Tab next │ ^S create │ Esc cancel"
 		}
+	} else if cur == focusAgent && d.isAgentboxRemoteMode() {
+		helpText = "Use claude-code, codex, or pi-fireworks │ Tab next │ ^S create │ Esc cancel"
 	} else if cur == focusOrchestrator || cur == focusAgent || cur == focusRuntime {
 		helpText = "Tab next │ ^S create │ Esc cancel"
 	} else if cur == focusModel {
