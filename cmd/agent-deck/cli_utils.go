@@ -181,6 +181,17 @@ func shouldInheritParentGroup(explicitGroupProvided, inheritGroupFlag bool, path
 	return pathIsLinkedWorktree()
 }
 
+// shouldWarnOrphanWorktreeGroup decides whether a `launch` should warn that a
+// linked-worktree child is about to land in its branch-leaf cwd-derived group,
+// detached from any conductor group. This happens when no parent attached (an
+// auto-parent miss, or an intentional --no-parent that forgot -g) and no
+// explicit -g was given: the empty group falls through to the path-derived
+// branch leaf. A real (non-worktree) conductor child keeps its cwd-derived
+// project group (#972) and must NOT warn, so the linked-worktree check gates it.
+func shouldWarnOrphanWorktreeGroup(parentAttached, explicitGroupProvided, pathIsLinkedWorktree bool) bool {
+	return !parentAttached && !explicitGroupProvided && pathIsLinkedWorktree
+}
+
 // resolveAddPath resolves the user-provided positional path arg for `agent-deck add`.
 // Handles ".", "~", "~/foo", "$VAR/foo", and relative/absolute paths uniformly.
 // session.ExpandPath runs first so a literal tilde from a non-expanding shell

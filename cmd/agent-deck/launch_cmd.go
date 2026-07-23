@@ -419,10 +419,17 @@ func handleLaunch(profile string, args []string) {
 	// the final worktree path here (the -w branch above reassigns it before
 	// this point). git.IsLinkedWorktree returns false for main working trees,
 	// so #972's conductor children (separate real repos) keep cwd-derived group.
-	// The thunk defers the git probe until shouldInheritParentGroup needs it.
-	inheritParentGroup := shouldInheritParentGroup(explicitGroupProvided, *inheritGroup, func() bool {
-		return git.IsLinkedWorktree(path)
-	})
+	// pathIsLinkedWorktree memoizes the (process-spawning) git probe so the
+	// group-inherit decision and the orphan-worktree guard below share one call.
+	var worktreeProbed, worktreeResult bool
+	pathIsLinkedWorktree := func() bool {
+		if !worktreeProbed {
+			worktreeResult = git.IsLinkedWorktree(path)
+			worktreeProbed = true
+		}
+		return worktreeResult
+	}
+	inheritParentGroup := shouldInheritParentGroup(explicitGroupProvided, *inheritGroup, pathIsLinkedWorktree)
 	var parentInstance *session.Instance
 	if sessionParent != "" {
 		var errMsg string
@@ -443,6 +450,29 @@ func handleLaunch(profile string, args []string) {
 		} else {
 			parentInstance = nil
 		}
+	}
+
+	// Orphan-worktree guard: a linked-worktree child with no explicit -g and no
+	// parent attached silently lands in its branch-leaf cwd-derived group (the
+	// empty sessionGroup falls through to NewInstance's path-derived group),
+	// detached from any conductor group. This is almost always an auto-parent
+	// miss — the launch ran in a shell without the conductor's
+	// AGENTDECK_INSTANCE_ID (e.g. issued from a subagent, not the conductor's
+	// own pane) — or a --no-parent launch that forgot the required -g. Warn
+	// loudly so the stray group is caught at launch, not discovered later. A
+	// real (non-worktree) conductor child keeps its cwd-derived project group
+	// (#972) and never trips this, since pathIsLinkedWorktree is false for it.
+	if shouldWarnOrphanWorktreeGroup(parentInstance != nil, explicitGroupProvided, pathIsLinkedWorktree()) {
+		strayGroup := sessionGroup
+		if strayGroup == "" {
+			strayGroup = cwdDerivedGroup
+		}
+		fmt.Fprintf(os.Stderr,
+			"Warning: worktree child has no parent session; landing in cwd-derived group %q (the branch leaf), detached from any conductor group.\n"+
+				"  Auto-parenting found no conductor (is AGENTDECK_INSTANCE_ID set in this shell?).\n"+
+				"  Attach it with --parent <conductor-id>, or place it explicitly with -g <group>.\n"+
+				"  Repair an already-launched stray with: agent-deck group move <id> <group>\n",
+			strayGroup)
 	}
 
 	// Default title to folder name

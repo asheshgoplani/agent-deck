@@ -43,6 +43,15 @@ You (the session running this skill) are the **conductor**. Hard rules:
   group; an explicit `-g` overrides that inheritance, and a group name guessed
   from the repo folder (`-g baba` when the group is really `doozyx/baba`) strands
   the child away from its siblings. Omit it — see the group trap in `fleet`.
+- **You issue every `launch` from this session, and confirm it parented.**
+  Auto-inheritance of your group only fires when the child actually attaches to
+  you as parent, which depends on `$AGENTDECK_INSTANCE_ID` being present in the
+  launching shell. Never delegate a `launch` to a subagent shell — it won't
+  carry that env, the child launches parentless, and a worktree child then
+  strays into its branch-leaf group. If you can't guarantee the env, pass
+  `--parent "$AGENTDECK_INSTANCE_ID"` explicitly. After each launch, verify the
+  child parented and landed in your group (the `fleet` "verify the group" check);
+  repair a stray with `agent-deck group move <id> "$AGENTDECK_RESOLVED_GROUP"`.
 
 ## Run setup
 

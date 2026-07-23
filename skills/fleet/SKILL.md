@@ -73,6 +73,19 @@ agent-deck launch <path> -c claude --inherit-group -m "<task for this child>"
   worktree auto-inherits the parent's group, so a worktree fleet stays
   co-located with you with no extra flags. For a non-worktree path that doesn't
   inherit, add `--inherit-group` to force it.
+- **Auto-parenting must actually fire, or the group silently strays.** Both the
+  worktree auto-inherit and `--inherit-group` only work when a parent is
+  attached; with **no parent**, a worktree child falls back to its **branch-leaf
+  cwd-derived group** (a stray `feature-x` group next to — not under — yours).
+  Auto-parenting finds the conductor via `$AGENTDECK_INSTANCE_ID` in the
+  launching shell, so it silently no-ops when `launch` runs somewhere that env
+  isn't set — most often a **launch delegated to a subagent shell** instead of
+  issued from the conductor's own session. Two defenses: **(a)** run every
+  `launch` from the conductor's own session (never hand it to a subagent), and
+  when robustness matters pass the parent explicitly with
+  `--parent "$AGENTDECK_INSTANCE_ID"` rather than trusting auto-detect; **(b)**
+  verify the group right after launch (below) — the CLI also now prints a
+  `Warning: worktree child has no parent session…` line when this happens.
 - **Do NOT pass a custom `-g/--group` for fleet children.** An explicit group
   overrides inheritance — including the worktree auto-inherit above — and a name
   matching no existing group creates one (e.g. a stray `fleet-issues` sitting
@@ -237,12 +250,19 @@ agent-deck group move <child-id> "$AGENTDECK_RESOLVED_GROUP"
 agent-deck group delete <stray-group>        # once it's empty
 ```
 
-**Verify the group** after any `--no-parent` worktree launch (`ls --json` is
-large; filter to the one session):
+**Verify the group after every worktree launch** — not just `--no-parent` ones.
+Auto-parenting can silently miss (see the launch section), so confirm each
+worktree child actually landed in the group you expected instead of a
+branch-leaf stray (`ls --json` is large; filter to the one session):
 
 ```bash
-agent-deck ls --json | jq -r '.[] | select(.title|test("<name>")) | "\(.title)\t\(.group)"'
+agent-deck ls --json | jq -r '.[] | select(.title|test("<name>")) | "\(.title)\t\(.parent_id)\t\(.group)"'
 ```
+
+A `null` `parent_id` on a child you meant to parent, or a `group` matching the
+worktree's branch leaf, means auto-parenting missed — repair it with the
+`group move` + `group delete` pair above (and, if you still need parentage,
+`agent-deck session set-parent <id> <parent-id>`).
 
 ## Supervision tools the parent can use
 
