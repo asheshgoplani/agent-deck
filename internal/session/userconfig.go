@@ -1954,9 +1954,10 @@ type CodexSettings struct {
 // CodexTUISettings is the subset of Codex [tui] configuration that Agent Deck
 // can keep consistent across isolated group homes.
 type CodexTUISettings struct {
-	// StatusLine is the ordered Codex footer item list. A non-nil empty slice
-	// intentionally hides the footer; nil leaves the existing value untouched.
-	StatusLine []string `toml:"status_line,omitempty"`
+	// StatusLine is the ordered Codex footer item list. A pointer to an empty
+	// slice intentionally hides the footer; nil leaves the existing value
+	// untouched and keeps config save round-trips from inventing the setting.
+	StatusLine *[]string `toml:"status_line,omitempty"`
 
 	// StatusLineUseColors controls footer colors. Pointer semantics preserve an
 	// explicit false while nil leaves the existing value untouched.

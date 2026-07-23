@@ -259,13 +259,20 @@ func WriteCodexMCPConfig(codexHome string, enabledNames []string) error {
 	if codexHome == "" {
 		codexHome = getCodexHomeDir()
 	}
-	configFile := codexConfigPath(codexHome)
-	if configFile == "" {
-		return fmt.Errorf("cannot resolve Codex config dir")
+	store, err := newHomeSkillStore(codexHome, "Codex")
+	if err != nil {
+		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(configFile), 0o755); err != nil {
+	codexHome = store.home
+	configFile := codexConfigPath(codexHome)
+	if err := os.MkdirAll(filepath.Dir(configFile), 0o700); err != nil {
 		return fmt.Errorf("create Codex config dir: %w", err)
 	}
+	lock, err := acquireCodexConfigLock(configFile)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 
 	var existingData []byte
 	var existingConfig codexMCPConfig

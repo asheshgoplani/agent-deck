@@ -310,11 +310,12 @@ func TestSyncGroupCodexPluginsUsesGroupHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read invocation: %v", err)
 	}
+	resolvedCodexHome := canonicalAgentHomePath(codexHome)
 	if got, want := string(data), []string{
-		codexHome + " plugin marketplace add parent-marketplace --json",
-		codexHome + " plugin marketplace add child-marketplace --json",
-		codexHome + " plugin add agent-deck@team --json",
-		codexHome + " plugin add frontend-design@official --json",
+		resolvedCodexHome + " plugin marketplace add parent-marketplace --json",
+		resolvedCodexHome + " plugin marketplace add child-marketplace --json",
+		resolvedCodexHome + " plugin add agent-deck@team --json",
+		resolvedCodexHome + " plugin add frontend-design@official --json",
 	}; !reflect.DeepEqual(strings.FieldsFunc(strings.TrimSpace(got), func(r rune) bool { return r == '\n' }), want) {
 		t.Errorf("sync invocations=%q want %q", got, want)
 	}

@@ -29,6 +29,7 @@ func newHomeSkillStore(home, label string) (*homeSkillStore, error) {
 	if clean == "." || !filepath.IsAbs(clean) {
 		return nil, fmt.Errorf("%s home must be an absolute path: %q", label, home)
 	}
+	clean = canonicalAgentHomePath(clean)
 	if clean == filepath.Clean(string(os.PathSeparator)) {
 		return nil, fmt.Errorf("refusing to use filesystem root as %s home", label)
 	}

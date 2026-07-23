@@ -97,8 +97,11 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 		warn("%s home skills: %v", label, skillResolutionErr)
 		skills = nil
 	}
-	if IsCodexCompatible(inst.Tool) && skillResolutionErr == nil {
-		if err := ApplyCodexTUISettings(skillHome, config.Codex.TUI); err != nil {
+	if IsCodexCompatible(inst.Tool) {
+		codexHome, err := ResolveInstanceCodexHome(inst)
+		if err != nil {
+			warn("Codex TUI defaults: %v", err)
+		} else if err := ApplyCodexTUISettings(codexHome, config.Codex.TUI); err != nil {
 			warn("Codex TUI defaults: %v", err)
 		}
 	}

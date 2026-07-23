@@ -38,6 +38,7 @@ func (l *codexConfigLock) Release() {
 }
 
 func acquireCodexConfigLock(configPath string) (*codexConfigLock, error) {
+	configPath = canonicalAgentHomePath(configPath)
 	mIface, _ := codexConfigMu.LoadOrStore(configPath, &sync.Mutex{})
 	m := mIface.(*sync.Mutex)
 	m.Lock()

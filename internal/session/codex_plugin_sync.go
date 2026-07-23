@@ -20,13 +20,18 @@ func SyncGroupCodexPlugins(groupPath string) error {
 	}
 	marketplaces := config.GetGroupCodexMarketplaces(groupPath)
 	plugins := config.GetGroupCodexPlugins(groupPath)
-	if len(marketplaces) == 0 && len(plugins) == 0 && config.Codex.TUI == nil {
+	if len(marketplaces) == 0 && len(plugins) == 0 && !hasManagedCodexTUISettings(config.Codex.TUI) {
 		return nil
 	}
 	codexHome := config.GetGroupCodexConfigDir(groupPath)
 	if codexHome == "" {
 		return fmt.Errorf("group %q has Codex provisioning but no config_dir", groupPath)
 	}
+	store, err := newHomeSkillStore(codexHome, "Codex")
+	if err != nil {
+		return fmt.Errorf("group %q Codex config_dir: %w", groupPath, err)
+	}
+	codexHome = store.home
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		return fmt.Errorf("create group Codex home %q: %w", codexHome, err)
 	}

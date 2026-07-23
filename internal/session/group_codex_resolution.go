@@ -111,22 +111,50 @@ func ResolveGroupCodexHomeSkills(groupPath string) (string, []string, error) {
 	return home, homeSkills, nil
 }
 
-// ResolveInstanceCodexHomeSkills verifies that the home selected by the final
-// Codex command matches the declarative group home before provisioning skills.
-func ResolveInstanceCodexHomeSkills(inst *Instance) (string, []string, error) {
+// ResolveInstanceCodexHome returns the active home selected by the final Codex
+// command and verifies it against an explicit group home independently of
+// whether that group declares skills.
+func ResolveInstanceCodexHome(inst *Instance) (string, error) {
 	if inst == nil || !IsCodexCompatible(inst.Tool) {
-		return "", nil, nil
-	}
-	configuredHome, skills, err := ResolveGroupCodexHomeSkills(inst.GroupPath)
-	if err != nil || len(skills) == 0 {
-		return configuredHome, skills, err
+		return "", nil
 	}
 	actualHome := inst.getCodexHomeDir()
 	if hasParentPathComponent(actualHome) {
-		return "", nil, fmt.Errorf("Codex command resolves CODEX_HOME %q with parent traversal", actualHome)
+		return "", fmt.Errorf("Codex command resolves CODEX_HOME %q with parent traversal", actualHome)
 	}
-	if !sameAgentHomePath(actualHome, configuredHome) {
-		return "", nil, fmt.Errorf("Codex command resolves CODEX_HOME %q but group %q config_dir resolves %q", actualHome, inst.GroupPath, configuredHome)
+	store, err := newHomeSkillStore(actualHome, "Codex")
+	if err != nil {
+		return "", err
+	}
+
+	config, err := LoadUserConfig()
+	if err != nil {
+		return "", fmt.Errorf("load config.toml: %w", err)
+	}
+	if config == nil {
+		return store.home, nil
+	}
+	configuredValue, owner := config.findGroupCodexSetting(inst.GroupPath, func(s GroupCodexSettings) string { return s.ConfigDir })
+	if hasParentPathComponent(configuredValue) {
+		return "", fmt.Errorf("group %q Codex config_dir %q contains parent traversal", owner, configuredValue)
+	}
+	configuredHome := ExpandPath(configuredValue)
+	if configuredHome != "" && !sameAgentHomePath(store.home, configuredHome) {
+		return "", fmt.Errorf("Codex command resolves CODEX_HOME %q but group %q config_dir resolves %q", actualHome, inst.GroupPath, configuredHome)
+	}
+	return store.home, nil
+}
+
+// ResolveInstanceCodexHomeSkills verifies that the home selected by the final
+// Codex command matches the declarative group home before provisioning skills.
+func ResolveInstanceCodexHomeSkills(inst *Instance) (string, []string, error) {
+	actualHome, err := ResolveInstanceCodexHome(inst)
+	if err != nil {
+		return "", nil, err
+	}
+	_, skills, err := ResolveGroupCodexHomeSkills(inst.GroupPath)
+	if err != nil {
+		return "", nil, err
 	}
 	return actualHome, skills, nil
 }
