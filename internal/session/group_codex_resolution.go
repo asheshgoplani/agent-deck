@@ -100,7 +100,7 @@ func ResolveGroupCodexHomeSkills(groupPath string) (string, []string, error) {
 			continue
 		}
 		group := config.Groups[path]
-		if group.Codex.ConfigDir == "" || hasParentPathComponent(group.Codex.ConfigDir) || !sameCodexHomePath(group.Codex.ConfigDir, home) {
+		if group.Codex.ConfigDir == "" || hasParentPathComponent(group.Codex.ConfigDir) || !sameAgentHomePath(group.Codex.ConfigDir, home) {
 			continue
 		}
 		otherSkills := config.GetGroupCodexSkills(path)
@@ -125,7 +125,7 @@ func ResolveInstanceCodexHomeSkills(inst *Instance) (string, []string, error) {
 	if hasParentPathComponent(actualHome) {
 		return "", nil, fmt.Errorf("Codex command resolves CODEX_HOME %q with parent traversal", actualHome)
 	}
-	if !sameCodexHomePath(actualHome, configuredHome) {
+	if !sameAgentHomePath(actualHome, configuredHome) {
 		return "", nil, fmt.Errorf("Codex command resolves CODEX_HOME %q but group %q config_dir resolves %q", actualHome, inst.GroupPath, configuredHome)
 	}
 	return actualHome, skills, nil
@@ -142,9 +142,9 @@ func hasParentPathComponent(path string) bool {
 	return false
 }
 
-func sameCodexHomePath(left, right string) bool {
-	leftCanonical := canonicalCodexHomePath(left)
-	rightCanonical := canonicalCodexHomePath(right)
+func sameAgentHomePath(left, right string) bool {
+	leftCanonical := canonicalAgentHomePath(left)
+	rightCanonical := canonicalAgentHomePath(right)
 	if leftCanonical == rightCanonical {
 		return true
 	}
@@ -172,9 +172,9 @@ func sameCodexHomePath(left, right string) bool {
 	}
 }
 
-// canonicalCodexHomePath resolves symlinks in the longest existing prefix so
-// aliases remain comparable even when the final CODEX_HOME does not exist yet.
-func canonicalCodexHomePath(path string) string {
+// canonicalAgentHomePath resolves symlinks in the longest existing prefix so
+// aliases remain comparable even when the final agent home does not exist yet.
+func canonicalAgentHomePath(path string) string {
 	clean := filepath.Clean(ExpandPath(path))
 	if absolute, err := filepath.Abs(clean); err == nil {
 		clean = absolute

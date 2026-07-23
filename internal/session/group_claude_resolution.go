@@ -108,7 +108,12 @@ func ResolveGroupClaude(groupPath string) GroupClaudeResolution {
 	}
 
 	res.Env = config.GetGroupClaudeEnv(groupPath)
-	res.Skills = config.GetGroupClaudeSkills(groupPath)
+	_, skills, skillsErr := ResolveGroupClaudeHomeSkills(groupPath)
+	if skillsErr != nil {
+		res.ConfigError = skillsErr.Error()
+	} else {
+		res.Skills = skills
+	}
 	res.Plugins = config.GetGroupClaudePlugins(groupPath)
 	res.MCPs = config.GetGroupClaudeMCPs(groupPath)
 

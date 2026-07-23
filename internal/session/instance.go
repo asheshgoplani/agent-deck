@@ -8692,6 +8692,11 @@ func (i *Instance) wrapLaunchShell(command string) string {
 // All code paths that launch or respawn a tmux pane should use this instead of calling
 // applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
 func (i *Instance) prepareCommand(cmd string) (string, string, error) {
+	if IsClaudeCompatible(i.Tool) {
+		if _, _, err := ResolveInstanceClaudeHomeSkills(i); err != nil {
+			return "", "", fmt.Errorf("unsafe Claude group skill loadout: %w", err)
+		}
+	}
 	if IsCodexCompatible(i.Tool) {
 		if _, _, err := ResolveInstanceCodexHomeSkills(i); err != nil {
 			return "", "", fmt.Errorf("unsafe Codex group skill loadout: %w", err)
