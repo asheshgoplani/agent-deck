@@ -130,6 +130,39 @@ func TestHandleRemoteSessions_AgentboxPrintsWorkspaceColumns(t *testing.T) {
 	}
 }
 
+func TestHandleRemoteSessions_JSONFlagWorksAfterRemoteName(t *testing.T) {
+	withTempHomeAndConfig(t, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{{
+			"id":     "ws-json",
+			"name":   "research-one",
+			"status": "running",
+		}})
+	}))
+	defer srv.Close()
+
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Remotes: map[string]session.RemoteConfig{
+			"lab": {Kind: session.RemoteKindAgentbox, URL: srv.URL},
+		},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		handleRemoteSessions([]string{"lab", "--json"})
+	})
+
+	var sessions []map[string]any
+	if err := json.Unmarshal([]byte(output), &sessions); err != nil {
+		t.Fatalf("output = %q, want JSON: %v", output, err)
+	}
+	if len(sessions) != 1 || sessions[0]["id"] != "ws-json" {
+		t.Fatalf("sessions = %#v, want ws-json", sessions)
+	}
+}
+
 func TestHandleRemoteCreate_AgentboxPrintsAttachCommandsFromCreateResponse(t *testing.T) {
 	withTempHomeAndConfig(t, "")
 

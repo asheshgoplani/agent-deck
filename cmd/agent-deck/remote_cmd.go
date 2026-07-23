@@ -312,7 +312,7 @@ func handleRemoteList(args []string) {
 func handleRemoteSessions(args []string) {
 	fs := flag.NewFlagSet("remote sessions", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	_ = fs.Parse(args)
+	_ = fs.Parse(reorderRemoteArgs(fs, args))
 
 	config, err := session.LoadUserConfig()
 	if err != nil {
