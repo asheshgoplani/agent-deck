@@ -169,7 +169,7 @@ env_file   = "~/.agent-deck/groups/work.env"
 command    = "claude-wrapper"        # Per-group claude command/wrapper
 model      = "claude-sonnet-4-6"     # Model default for sessions in this group
 env        = { AGENT_ROLE = "work", CLAUDE_CODE_EFFORT_LEVEL = "high" }
-skills     = ["my-store/loom"]       # Managed project-skill symlinks
+skills     = ["my-store/loom"]       # Managed CLAUDE_CONFIG_DIR/skills entries
 plugins    = ["octopus"]             # Top-level [plugins.X] catalog keys
 mcps       = ["memory"]              # Declarative loadout ([mcps.X] catalog names)
 
@@ -184,7 +184,7 @@ mcps       = ["memory"]              # Declarative loadout ([mcps.X] catalog nam
 | `command` | string | Claude command/wrapper for these sessions. Resolution: conductor > group (ancestor-walking) > `[claude].command` > `"claude"`. Like the global `command`, a non-`"claude"` value suppresses the `CLAUDE_CONFIG_DIR=` spawn prefix (the wrapper is assumed to handle it). |
 | `model` | string | Model default for these sessions. Resolution: explicit per-session model (`--model`, dialog) > conductor > group (ancestor-walking) > no flag (Claude's own default). Empty falls through — the global `default_model` remains a new-session-dialog prefill only. Resolved at every start/restart, so config edits apply without re-creating sessions. |
 | `env` | inline table | Env vars exported in the spawn command AFTER the `env_file` source — an inline key deterministically wins over the same key from the file. Merge order per key: ancestor groups (root-first) → exact group → conductor. Parent-only keys persist through the merge. |
-| `skills` | array | Declarative project skills (`"<source>/<name>"` entries against the skill-source registry). Materialized at session create and re-asserted before every start/restart. Attach-only floor: config removal never detaches and foreign targets are never clobbered. Workspace trust is seeded only after an attachment succeeds. |
+| `skills` | array | Declarative Claude-home skills (`"<source>/<name>"` entries against the skill-source registry). Materialized under the effective `CLAUDE_CONFIG_DIR/skills` at session create and re-asserted before every start/restart. Attach-only floor: config removal never detaches and foreign targets are never clobbered. |
 | `plugins` | array | Top-level `[plugins.X]` catalog keys appended to `Instance.Plugins`. Existing manual plugin selections are preserved. Catalog refusal and validation rules remain authoritative. |
 | `mcps` | array | Declarative MCP loadout (`[mcps.X]` catalog names appended to the session's local `.mcp.json`). Same attach-only floor semantics; unknown catalog names skip with a warning. |
 
@@ -195,6 +195,16 @@ exists and whether config.toml parsed at all:
 agent-deck group show work --resolved
 agent-deck group show work --resolved --json
 ```
+
+Claude group and conductor skill ownership is recorded at
+`<CLAUDE_CONFIG_DIR>/.agent-deck/skills.toml`; declarative skills do not modify
+repositories. Explicit `agent-deck skill attach` remains project-scoped at
+`<project>/.claude/skills` with its project ownership manifest. Any groups or
+conductors sharing one physical Claude home must resolve the same declarative
+skill set; otherwise agent-deck blocks launch and requires standardized skills
+or a distinct `config_dir`. Symlink and case-insensitive filesystem aliases
+count as one home, missing case-only paths are treated conservatively as one
+prospective home, and a path containing `..` is rejected.
 
 ## Per-group Codex loadouts
 
@@ -616,9 +626,10 @@ agent-deck skill source remove team
 **Declarative per-group/per-conductor loadout:** `[groups.X.claude].skills`,
 `.plugins`, and `.mcps` (and the conductor mirror) list entries that agent-deck
 attaches automatically at session create (`add` / `launch`) and re-asserts
-before every start/restart. Claude skills use the project attachment machinery;
-Codex group skills use the selected `CODEX_HOME`; explicit Codex attachments
-remain project-scoped. The loadout is an attach-only floor:
+before every start/restart. Claude skills use the selected
+`CLAUDE_CONFIG_DIR`, Codex group skills use the selected `CODEX_HOME`, and
+explicit attachments remain project-scoped. The loadout is an attach-only
+floor:
 
 - already attached and healthy → no-op; a deleted symlink re-materializes
 - a real directory or foreign symlink at the target → skip + warning,
@@ -628,8 +639,10 @@ remain project-scoped. The loadout is an attach-only floor:
   deliberate `skill detach`
 
 Skill-store entries may be plain directory skills (`SKILL.md`) or full Claude
-Code plugins (`.claude-plugin/plugin.json`); both materialize as project
-skills. SSH sessions are skipped (no local project path). See
+Code plugins (`.claude-plugin/plugin.json`). Declarative skills materialize in
+the selected agent home; explicit attachments materialize in the project. SSH
+sessions are skipped because the local process cannot safely modify a remote
+home or project. See
 [Per-group / per-conductor Claude overrides](#per-group--per-conductor-claude-overrides).
 
 ## [mcp_pool] Section

@@ -192,9 +192,22 @@ Override any group by adding a `[groups."<name>".claude]` table to `$XDG_CONFIG_
 [groups."conductor".claude]
 config_dir = "~/.claude-team"
 env_file = "~/git/work/.envrc"
+skills = ["team/review"]
 ```
 
-Lookup priority: `env > group > profile > global > default`. The `env_file` is `source`d into the tmux pane before `claude` (or the custom command) execs, so any exports it contains become part of the session environment.
+Declarative group and conductor skills are reconciled into
+`$CLAUDE_CONFIG_DIR/skills`, with ownership recorded at
+`$CLAUDE_CONFIG_DIR/.agent-deck/skills.toml`; repositories are not modified.
+Explicit `agent-deck skill attach` remains project-scoped. Groups and
+conductors sharing one physical Claude home must resolve the same declarative
+skill set or select distinct `config_dir` values. Symlink and case-insensitive
+filesystem aliases count as the same home, and paths containing `..` are
+rejected.
+
+Instance lookup priority is `account > conductor > group > env > profile >
+global > default`. The `env_file` is `source`d into the tmux pane before
+`claude` (or the custom command) execs, so any exports it contains become part
+of the session environment.
 
 Human-watchable verification: `bash scripts/verify-per-group-claude-config.sh`. The harness creates two throwaway groups, launches one normal and one custom-command session, and prints a pass/fail table.
 
