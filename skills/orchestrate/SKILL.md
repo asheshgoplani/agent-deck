@@ -59,7 +59,7 @@ under `$RUN_DIR` is ever committed, pushed, uploaded, or mentioned in a PR.
 
 Maintain a run manifest at `$RUN_DIR/manifest.md` and update it after every
 stage transition — per task: slug, branch, worktree path, session ids,
-current stage, review round, PR url. If the conductor session dies, a fresh
+current stage, review round, the HEAD sha each review round saw, PR url. If the conductor session dies, a fresh
 session can resume the run from the manifest plus `session children`.
 
 ## Input parsing & mode
@@ -125,7 +125,9 @@ Commit the plan to the current branch. Do NOT implement anything.
 ```
 
 Then treat the plan like code: launch a fresh read-only reviewer in the same
-worktree to check the plan **against the spec** — coverage (every spec
+worktree (same `--disallowedTools` flags as stage 2 — findings go back to
+the planner to apply, the reviewer edits nothing) to check the plan
+**against the spec** — coverage (every spec
 requirement maps to a task), placeholders, contradictions, task ordering —
 using the same findings format and verdict line as a code review. Findings →
 back to the planner; clean or nits-only → proceed, then **archive the planner
@@ -152,8 +154,14 @@ much judgment the job leaves open:**
   task (complete code, exact paths — pure transcription + verification) →
   cheap model (e.g. haiku). A clear spec but no plan → mid tier (e.g.
   sonnet). Freeform/issue work that must design its own approach → strong.
-- **Reviewers:** at least as strong as the implementer they review — the
-  verdict is the quality gate. Never below mid tier.
+- **Reviewers:** mid tier (e.g. sonnet) by default, regardless of the
+  implementer's tier — review is verification work (diff vs. spec, run the
+  suite), and the Checked/VERDICT format keeps it honest. **Escalate the
+  reviewer to the strong model** when (a) the task was freeform or
+  design-heavy — spec compliance is then a judgment call, not a checklist —
+  or (b) rounds oscillate: a round reports new findings in code an earlier
+  round already passed, meaning the reviewer is missing things. Once
+  escalated, stay strong for the rest of that task's rounds.
 - **Escalate on failure:** if round 2 still reports blockers from a
   downgraded implementer, don't send it a third round — launch the fix as a
   NEW strong-model session in the same worktree (tell it to read
@@ -184,7 +192,9 @@ Work strictly in this worktree on the current branch. Do, in order:
    baseline. If something already fails, note it and leave it alone — you
    are accountable only for introducing no NEW failures.
 3. Implement the task test-first where practical.
-4. Run the FULL test suite; no new failures versus the baseline.
+4. Run the FULL test suite; no new failures versus the baseline. Also run
+   the repo's lint/format/build checks — whatever CI runs — and fix what
+   they flag on your changes.
 5. Verify the change end-to-end by actually driving the app — not only tests.
    For browser work use an isolated browser instance (Playwright-style), not
    a shared Chrome — other tasks may be driving browsers in parallel.
@@ -199,11 +209,17 @@ Work strictly in this worktree on the current branch. Do, in order:
 ### 2. Fresh review
 
 When `session children` shows the implementer done (`done_status=ok`), launch
-a **fresh** reviewer in the **same worktree path** (plain path, no `-w`):
+a **fresh** reviewer in the **same worktree path** (plain path, no `-w`).
+Don't just *tell* it it's read-only — enforce it with tool flags:
 
 ```bash
-agent-deck launch <worktree-path> -c claude -t "review-<task-slug>-r1" -m "$(cat /tmp/review-<task-slug>.md)"
+agent-deck launch <worktree-path> -c claude -t "review-<task-slug>-r1" \
+  --extra-arg --disallowedTools --extra-arg "Edit,Write,NotebookEdit" \
+  -m "$(cat /tmp/review-<task-slug>.md)"
 ```
+
+Record the worktree's current HEAD sha in the manifest when you launch each
+reviewer — incremental rounds and the full-branch gate need it.
 
 Reviewer prompt template:
 
@@ -222,6 +238,9 @@ the change.
 
 Report findings as a numbered list: file:line — severity (blocker |
 should-fix | nit) — one line on what is wrong and why it matters.
+Then print 2-3 lines starting with "Checked:" summarizing what you actually
+verified (which spec points, test suite result, coverage judgment) — a
+verdict with no evidence is not acceptable.
 End with exactly one line, using real counts:
 VERDICT: clean
 VERDICT: findings blockers=<n> should-fix=<n> nits=<n>
@@ -230,24 +249,76 @@ VERDICT: findings blockers=<n> should-fix=<n> nits=<n>
 ### 3. Fix loop
 
 - A findings verdict with `blockers=0 should-fix=0` (nits only) counts as
-  clean: skip further rounds, proceed to the PR, and list the nits in the
+  clean; list the nits in the final report.
+- On findings → `session send` the fix-round prompt to `impl-<task-slug>`:
+
+```text
+Review round <n> found issues on your branch — fix them:
+
+<findings list, verbatim>
+
+Fix every blocker and should-fix (use judgment on nits). Rerun the full
+test suite (no new failures vs your baseline), the lint/format checks, and
+the e2e check; update screenshots if the UI changed again; commit.
+Do NOT push.
+```
+
+- When the implementer is done, launch the next fresh reviewer
+  (`review-<task-slug>-r2`, then `-r3`) with the same `--disallowedTools`
+  flags. **Rounds 2+ are incremental** — the round-1 full review already
+  happened, so re-reviewing the whole branch each round is wasted cost.
+  Incremental reviewer prompt template:
+
+```text
+You are a code reviewer with fresh eyes. You are READ-ONLY: edit nothing,
+commit nothing, run only read-only commands plus the test suite.
+
+The task this branch is supposed to implement:
+<task spec: the same spec the implementer received>
+
+A previous review at commit <reviewed-sha> reported:
+<previous round's findings, verbatim>
+
+Do, in order:
+1. Verify each finding above is actually fixed — an unfixed or half-fixed
+   finding is a new finding.
+2. Closely review the commits made since then: git diff <reviewed-sha>...HEAD
+3. Quick-scan the rest of the branch diff for anything the fixes broke.
+4. Run the test suite.
+
+Report findings as a numbered list: file:line — severity (blocker |
+should-fix | nit) — one line each. Then 2-3 "Checked:" evidence lines.
+End with exactly one line, using real counts:
+VERDICT: clean
+VERDICT: findings blockers=<n> should-fix=<n> nits=<n>
+```
+
+  Once you have read the previous round's findings, **archive the
+  superseded reviewer** (see "Archiving finished sessions").
+- **Full-branch end gate: the loop only ends on a clean full-branch
+  verdict.** A round-1 clean qualifies directly. A clean from an
+  *incremental* round does not — launch one more fresh reviewer with the
+  full-branch (round-1) prompt to confirm the branch as a whole. Gate
+  clean or nits-only → proceed to the PR. Gate findings → that is
+  oscillation by definition: escalate the reviewer tier (see "Model
+  tiering"), send the findings through the fix-round prompt, and continue
+  the loop.
+- **Caps: maximum 3 fix rounds** (rounds whose findings go back to the
+  implementer) **and 2 full-branch gate reviews.** Budget exhausted with
+  blockers remaining → the task is **needs-attention**, no PR; only
+  should-fixes/nits remaining → proceed to the PR and list them in the
   final report.
-- Otherwise → `session send` the full findings list to
-  `impl-<task-slug>` with: fix every blocker and should-fix (use judgment on
-  nits), rerun the full suite and the e2e check, update screenshots if the UI
-  changed again, and commit.
-- When the implementer is done, launch a **new** fresh reviewer
-  (`review-<task-slug>-r2`, then `-r3`); once you have read the previous
-  round's findings, **archive the superseded reviewer** (see "Archiving
-  finished sessions").
-- **Maximum 3 review rounds.** After round 3: if blockers remain, the task is
-  **needs-attention** — no PR; if only should-fixes/nits remain, proceed to
-  the PR and list them in the final report.
 
 ### 4. PR
 
-Tell the implementer to push its branch (it knows the remotes; on forks that
-means the fork remote). Then create the PR from the worktree:
+The branch was cut when the task started and the base may have moved since.
+`session send` the implementer a pre-PR sync step: fetch and merge the
+current <base-branch>, resolve any conflicts preserving both sides' intent,
+then rerun the full test suite **and the build/vet checks** — auto-merges
+can compile-and-be-wrong (duplicated route handlers, duplicate test
+function names) — commit the merge, and push the branch (it knows the
+remotes; on forks that means the fork remote). Then create the PR from the
+worktree:
 
 ```bash
 cd <worktree-path> && gh pr create --title "<title>" --body "<body>"

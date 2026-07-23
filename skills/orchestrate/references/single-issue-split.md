@@ -67,7 +67,7 @@ Both topologies: launch one last session in the issue worktree to run the
 build and the FULL test suite on the combined result, do a quick e2e sanity
 pass of the issue's overall behavior, fix only trivial integration breakage,
 and commit. If it finds non-trivial breakage, treat it as findings: route to
-a fix session and re-check (this counts toward a shared 3-round cap).
+a fix session and re-check (this counts toward the shared 3-fix-round cap).
 
 ## PR
 
