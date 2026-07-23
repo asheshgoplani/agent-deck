@@ -29,16 +29,28 @@ speed.
 ## Sequential relay (default)
 
 1. Launch subtask 1's implementer with a fresh worktree for the whole issue:
-   `agent-deck launch <repo-root> -w <issue-branch> -c claude -t "impl-<issue-slug>-1" -m ...`
+   `agent-deck launch <repo-root> -w <issue-branch> -c claude -t "impl-<issue-slug>-1" --message-file ...`
    using the stage-1 prompt template with the subtask's mini-spec.
 2. Run stages 1–3 (implement, fresh review, fix loop) for subtask 1 in that
    worktree.
-3. When clean, launch subtask 2's implementer in the **same worktree path**
-   (plain path, no `-w`). Its prompt starts with: "You continue work on an
-   existing branch. Read `git log --oneline -20` and the diff so far before
-   starting." Then the normal stage-1 template with subtask 2's mini-spec.
+3. When clean, record the worktree's HEAD sha in the manifest as subtask 2's
+   **start sha**, then launch subtask 2's implementer in the **same worktree
+   path** (plain path, no `-w`). Its prompt starts with: "You continue work
+   on an existing branch. Read `git log --oneline -20` and the diff so far
+   before starting." Then the normal stage-1 template with subtask 2's
+   mini-spec.
 4. Repeat for each remaining subtask: stages 1–3, one session at a time,
-   each building on the previous commits.
+   each building on the previous commits (recording each subtask's start sha
+   first).
+
+**Review scope in relay mode.** From subtask 2 on, the branch already carries
+earlier subtasks' reviewed work — a reviewer told to judge the full branch
+diff against one mini-spec would flag that work as "extra" or "missing".
+Scope every review round for subtask N — including its stage-3 end gate — to
+`git diff <subtask-start-sha>...HEAD`, and add to the reviewer prompt:
+"Commits before <subtask-start-sha> are earlier, already-reviewed subtasks
+of the same issue — context, not review scope." The one true full-branch
+review runs once, after the final integration check (below).
 
 ## Parallel worktrees + integration branch
 
@@ -68,6 +80,13 @@ build and the FULL test suite on the combined result, do a quick e2e sanity
 pass of the issue's overall behavior, fix only trivial integration breakage,
 and commit. If it finds non-trivial breakage, treat it as findings: route to
 a fix session and re-check (this counts toward the shared 3-fix-round cap).
+
+Then, in relay mode, run the deferred full-branch gate: one fresh reviewer
+with the stage-2 round-1 prompt, the **whole issue** (all mini-specs / plan
+tasks) as its spec, and the full branch diff. Clean or nits-only → PR;
+findings → the normal fix loop, still under the shared caps. (Parallel mode
+already reviewed each subtask branch in full against its own spec, so skip
+this extra gate unless the merges were conflict-heavy.)
 
 ## PR
 

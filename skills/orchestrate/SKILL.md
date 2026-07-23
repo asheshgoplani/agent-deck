@@ -54,13 +54,20 @@ RUN_DIR="$HOME/.agent-deck/orchestrate/<run-id>"
 mkdir -p "$RUN_DIR"
 ```
 
-Everything any child captures goes under `$RUN_DIR/<task-slug>/`. Nothing
-under `$RUN_DIR` is ever committed, pushed, uploaded, or mentioned in a PR.
+Everything any child captures goes under `$RUN_DIR/<task-slug>/`, and the
+prompt files you write for children live there too (`impl-prompt.md`,
+`review-r1-prompt.md`, …) — not `/tmp`, where they collide across runs,
+vanish on reboot, and break resume. Nothing under `$RUN_DIR` is ever
+committed, pushed, uploaded, or mentioned in a PR.
 
 Maintain a run manifest at `$RUN_DIR/manifest.md` and update it after every
 stage transition — per task: slug, branch, worktree path, session ids,
-current stage, review round, the HEAD sha each review round saw, PR url. If the conductor session dies, a fresh
-session can resume the run from the manifest plus `session children`.
+current stage, review round, the HEAD sha each review round saw, PR url. If
+the conductor session dies, a fresh session can resume the run from the
+manifest plus `session children <old-conductor-id>` — but the surviving
+children are still parented to the dead session, so first re-parent them
+(`agent-deck session set-parent <child> <new-conductor-id>`) so waiting/done
+notifications and the turn-start snapshot route to the new conductor.
 
 ## Input parsing & mode
 
@@ -108,7 +115,7 @@ deep codebase reading, which is neither your job (supervision only) nor the
 user's session's:
 
 ```bash
-agent-deck launch <repo-root> -w <branch> -c claude -t "plan-<task-slug>" -m "$(cat /tmp/plan-<task-slug>.md)"
+agent-deck launch <repo-root> -w <branch> -c claude -t "plan-<task-slug>" --message-file "$RUN_DIR/<task-slug>/plan-prompt.md"
 ```
 
 Planner prompt template:
@@ -145,8 +152,9 @@ approach (most issues) goes straight into the per-task pipeline.
 
 You (the conductor) run on the strong model; children don't have to. Pass a
 model per child with `--extra-arg --model --extra-arg <model>` (requires
-`-c claude`); omit it to use the user's default. **Decide per session, by how
-much judgment the job leaves open:**
+`-c claude` — other connectors have no per-child model flag, so skip tiering
+there and use the default); omit it to use the user's default. **Decide per
+session, by how much judgment the job leaves open:**
 
 - **Planner, merge-conflict, and integration-check sessions:** strong model
   (e.g. opus) — they make design decisions.
@@ -173,10 +181,12 @@ much judgment the job leaves open:**
 ### 1. Implement
 
 Derive a short `<task-slug>` and branch name. Write the implementer prompt to
-a file (never inline a long `-m`), then launch:
+`$RUN_DIR/<task-slug>/impl-prompt.md` and pass it with `--message-file` —
+never inline via `-m "$(cat ...)"`: the shell mangles backticks and `$`, and
+issue bodies are full of both. Then launch:
 
 ```bash
-agent-deck launch <repo-root> -w <branch> -c claude -t "impl-<task-slug>" -m "$(cat /tmp/impl-<task-slug>.md)"
+agent-deck launch <repo-root> -w <branch> -c claude -t "impl-<task-slug>" --message-file "$RUN_DIR/<task-slug>/impl-prompt.md"
 ```
 
 Implementer prompt template — fill every `<...>`:
@@ -190,7 +200,10 @@ Work strictly in this worktree on the current branch. Do, in order:
 1. Install dependencies from the frozen lockfile (never regenerate it).
 2. Run the FULL test suite once BEFORE changing anything and record the
    baseline. If something already fails, note it and leave it alone — you
-   are accountable only for introducing no NEW failures.
+   are accountable only for introducing no NEW failures. List the baseline
+   failures in your final summary ("baseline: none" if all green) — the
+   reviewer will be given that list. If the repo has no test suite, say so
+   and lean on the lint/build checks plus the e2e verification instead.
 3. Implement the task test-first where practical.
 4. Run the FULL test suite; no new failures versus the baseline. Also run
    the repo's lint/format/build checks — whatever CI runs — and fix what
@@ -210,12 +223,14 @@ Work strictly in this worktree on the current branch. Do, in order:
 
 When `session children` shows the implementer done (`done_status=ok`), launch
 a **fresh** reviewer in the **same worktree path** (plain path, no `-w`).
-Don't just *tell* it it's read-only — enforce it with tool flags:
+Back the prompt's read-only rule with tool flags — they block the editing
+tools (Bash stays available for running tests, so the prompt rule still
+carries the rest):
 
 ```bash
 agent-deck launch <worktree-path> -c claude -t "review-<task-slug>-r1" \
   --extra-arg --disallowedTools --extra-arg "Edit,Write,NotebookEdit" \
-  -m "$(cat /tmp/review-<task-slug>.md)"
+  --message-file "$RUN_DIR/<task-slug>/review-r1-prompt.md"
 ```
 
 Record the worktree's current HEAD sha in the manifest when you launch each
@@ -236,6 +251,10 @@ above? Anything missing, extra, or misunderstood is a finding; and (b) code
 quality. Also run the test suite and judge whether the tests actually cover
 the change.
 
+Known pre-existing test failures (the implementer's recorded baseline):
+<baseline list, or "none">. These are NOT findings — only failures new
+against this baseline are.
+
 Report findings as a numbered list: file:line — severity (blocker |
 should-fix | nit) — one line on what is wrong and why it matters.
 Then print 2-3 lines starting with "Checked:" summarizing what you actually
@@ -250,7 +269,9 @@ VERDICT: findings blockers=<n> should-fix=<n> nits=<n>
 
 - A findings verdict with `blockers=0 should-fix=0` (nits only) counts as
   clean; list the nits in the final report.
-- On findings → `session send` the fix-round prompt to `impl-<task-slug>`:
+- On findings → `session send` the fix-round prompt to `impl-<task-slug>`
+  (write it to `$RUN_DIR/<task-slug>/fix-r<n>.md` and pass
+  `--message-file` — findings lists are full of backticks too):
 
 ```text
 Review round <n> found issues on your branch — fix them:
@@ -284,7 +305,8 @@ Do, in order:
    finding is a new finding.
 2. Closely review the commits made since then: git diff <reviewed-sha>...HEAD
 3. Quick-scan the rest of the branch diff for anything the fixes broke.
-4. Run the test suite.
+4. Run the test suite. Known pre-existing failures (baseline): <list, or
+   "none"> — only NEW failures are findings.
 
 Report findings as a numbered list: file:line — severity (blocker |
 should-fix | nit) — one line each. Then 2-3 "Checked:" evidence lines.
@@ -304,7 +326,8 @@ VERDICT: findings blockers=<n> should-fix=<n> nits=<n>
   tiering"), send the findings through the fix-round prompt, and continue
   the loop.
 - **Caps: maximum 3 fix rounds** (rounds whose findings go back to the
-  implementer) **and 2 full-branch gate reviews.** Budget exhausted with
+  implementer — a gate-findings round consumes one like any other) **and 2
+  full-branch gate reviews.** Budget exhausted with
   blockers remaining → the task is **needs-attention**, no PR; only
   should-fixes/nits remaining → proceed to the PR and list them in the
   final report.
@@ -321,8 +344,12 @@ remotes; on forks that means the fork remote). Then create the PR from the
 worktree:
 
 ```bash
-cd <worktree-path> && gh pr create --title "<title>" --body "<body>"
+cd <worktree-path> && gh pr create --base <base-branch> --title "<title>" --body "<body>"
 ```
+
+On a fork setup, be fully explicit or `gh` stops to ask questions
+interactively — which hangs a non-interactive conductor: add
+`--repo <upstream-owner>/<repo>` and `--head <fork-owner>:<branch>`.
 
 The body covers what changed, why, and how it was verified, plus
 `Fixes #<n>` for issue-sourced tasks. It must contain **no screenshot paths,
@@ -333,8 +360,11 @@ no run directory, no orchestrate/session details**.
 On every heartbeat, for each open PR: `gh pr checks <pr-url>`. On a failure,
 pull the failing details (`gh pr checks`, `gh run view <run-id> --log-failed`)
 and `session send` them to the still-alive implementer to fix and push.
-A task counts as **done** only when the review is clean (or nits-only), the
-PR exists, and all checks are green.
+A mechanical fix (lint, format, flaky rerun) pushes directly; a fix that
+touches logic gets one incremental review round on the new commits
+(`<reviewed-sha>` = the sha the last clean review saw) before the task can
+count as done. A task counts as **done** only when the review is clean (or
+nits-only), the PR exists, and all checks are green.
 
 ## Answering waiting children
 
@@ -347,7 +377,12 @@ should answer:
   the task spec / plan task, this skill's rules (screenshot policy, no push
   before review, frozen lockfile, branch naming), or an earlier decision in
   this run. Answer decisively via `session send` — a vague answer buys a
-  second question. Tool-permission menus: `session approve`.
+  second question. Tool-permission menus are per-connector: **Codex** →
+  `session approve <id> once` (never `session send "1"` — Codex takes the
+  digit as the decision and the trailing Enter lands in the resumed turn);
+  **Claude** → `session send <id> "1"` (the digit picks the option and the
+  trailing Enter is harmless — the TUI's quick-approve sends exactly this;
+  `session approve` only detects Codex menus and fails closed on Claude's).
 - **The user answers** when the question is genuinely theirs: scope changes
   ("should I also refactor X?" — default no, stay on spec), destructive or
   irreversible actions (dropping data, force-push, deleting files beyond the
