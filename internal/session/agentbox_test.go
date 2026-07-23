@@ -156,6 +156,29 @@ func TestAgentboxRunnerCreateSession_PostsExpectedPayload(t *testing.T) {
 	}
 }
 
+func TestAgentboxRunnerDeleteSessionForcesRunningWorkspaceDestroy(t *testing.T) {
+	var payload map[string]bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/workspaces/ws-running/destroy" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	runner := NewAgentboxRunner("lab", RemoteConfig{Kind: RemoteKindAgentbox, URL: srv.URL})
+	if err := runner.DeleteSession(context.Background(), "ws-running"); err != nil {
+		t.Fatalf("DeleteSession unexpected error: %v", err)
+	}
+	if !payload["force"] {
+		t.Fatalf("destroy payload = %#v, want force=true", payload)
+	}
+}
+
 func TestAgentboxRunnerResolveAttach_PrefersLocalCommandForLocalhost(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{

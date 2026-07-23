@@ -222,7 +222,7 @@ func (r *AgentboxRunner) CreateSession(ctx context.Context, opts RemoteCreateOpt
 }
 
 func (r *AgentboxRunner) DeleteSession(ctx context.Context, sessionID string) error {
-	return r.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/workspaces/%s/destroy", url.PathEscape(sessionID)), map[string]bool{"force": false}, nil)
+	return r.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/workspaces/%s/destroy", url.PathEscape(sessionID)), map[string]bool{"force": true}, nil)
 }
 
 func (r *AgentboxRunner) StopSession(ctx context.Context, sessionID string) error {
