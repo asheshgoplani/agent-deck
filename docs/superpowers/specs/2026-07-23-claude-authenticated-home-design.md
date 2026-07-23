@@ -11,15 +11,22 @@ status-bar definition.
 
 The configured `~/.agent-deck/claude` directory is a distinct Claude profile.
 Although Claude can discover the account through macOS credential storage,
-that directory lacks the completed-onboarding state, normal settings, and
-credential file present in `~/.claude`. Interactive launches therefore enter
-first-run onboarding and may request authentication.
+that directory lacks the completed-onboarding state used by an ordinary
+launch. Interactive launches therefore enter first-run onboarding and may
+request authentication.
+
+Explicitly setting `CLAUDE_CONFIG_DIR=~/.claude` is not equivalent to leaving
+Claude on its default profile: Claude then looks for its top-level state at
+`~/.claude/.claude.json` instead of the normal `~/.claude.json`.
 
 ## Design
 
-Set `[claude].config_dir` to `~/.claude`. Keep every group sharing that
-physical home on the same declarative skill set, and materialize the managed
-`port-registry` and `web-perf` links under `~/.claude/skills`.
+Remove `[claude].config_dir` so Agent Deck does not export
+`CLAUDE_CONFIG_DIR`. Agent Deck's default Claude home resolver still targets
+`~/.claude` for managed skills, while Claude itself retains its normal state
+resolution. Keep every group sharing that physical skill home on the same
+declarative skill set, and materialize the managed `port-registry` and
+`web-perf` links under `~/.claude/skills`.
 
 Remove only Agent Deck-managed links and the Agent Deck manifest from the
 obsolete `~/.agent-deck/claude` home. Preserve all other files there.
@@ -46,9 +53,11 @@ empty `status_line` remains meaningful and hides the footer.
 
 ## Verification
 
-- `claude auth status` with `CLAUDE_CONFIG_DIR=~/.claude` reports logged in.
+- Plain `claude auth status` reports logged in.
 - Every configured top-level group resolves Claude `config_dir` to
-  `/Users/doozyx/.claude` without a configuration error.
+  `/Users/doozyx/.claude` from the default source without a configuration
+  error.
+- Agent Deck does not export `CLAUDE_CONFIG_DIR` for those sessions.
 - A disposable Claude session created through Agent Deck reaches the normal
   interactive prompt without first-run onboarding or login.
 - The disposable session is removed after verification.

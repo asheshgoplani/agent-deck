@@ -4,7 +4,7 @@
 
 **Goal:** Make Agent Deck Claude launches reuse the already authenticated default Claude profile and give every isolated Codex home the same status bar.
 
-**Architecture:** Point the global Agent Deck Claude configuration at `~/.claude`, then use the existing hardened Claude-home skill materializer to install the shared skill loadout there. Add optional `[codex.tui]` defaults and merge only those managed keys into each resolved Codex home during loadout reconciliation and explicit group sync.
+**Architecture:** Leave Claude's config directory implicit so Agent Deck does not export `CLAUDE_CONFIG_DIR`; the default Agent Deck skill home still resolves to `~/.claude`, where the existing hardened materializer installs the shared skill loadout. Add optional `[codex.tui]` defaults and merge only those managed keys into each resolved Codex home during loadout reconciliation and explicit group sync.
 
 **Tech Stack:** Agent Deck TOML configuration, Claude Code CLI, Agent Deck CLI
 
@@ -27,12 +27,14 @@
 - Create: `/Users/doozyx/.claude/skills/web-perf`
 
 **Interfaces:**
-- Consumes: `[claude].config_dir` and group Claude skill declarations
+- Consumes: default Claude home resolution and group Claude skill declarations
 - Produces: one resolved authenticated Claude home with two managed skills
 
-- [ ] **Step 1: Change the configured home**
+- [ ] **Step 1: Restore Claude's implicit default home**
 
-Change `[claude].config_dir` from `~/.agent-deck/claude` to `~/.claude`.
+Remove `[claude].config_dir`. This keeps Agent Deck's resolved skill home at
+`~/.claude` without exporting an environment variable that changes where
+Claude looks for `~/.claude.json`.
 
 - [ ] **Step 2: Verify resolved configuration**
 
@@ -42,8 +44,8 @@ Run:
 agent-deck group show doozyx --resolved --json
 ```
 
-Expected: `.claude.config_dir` is `/Users/doozyx/.claude` and no
-`config_error` is present.
+Expected: `.claude.config_dir` is `/Users/doozyx/.claude`,
+`.claude.config_dir_source` is `default`, and no `config_error` is present.
 
 - [ ] **Step 3: Provision both managed skills**
 
@@ -55,7 +57,7 @@ Invoke `ResolveGroupClaudeHomeSkills("doozyx")` and
 Run:
 
 ```bash
-CLAUDE_CONFIG_DIR=/Users/doozyx/.claude claude auth status
+claude auth status
 ```
 
 Expected: JSON contains `"loggedIn": true`.
