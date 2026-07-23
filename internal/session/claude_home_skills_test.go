@@ -83,7 +83,11 @@ func TestAttachSkillToClaudeHomePreservesForeignTarget(t *testing.T) {
 
 func TestAttachSkillToClaudeHomeRejectsUnsafeHome(t *testing.T) {
 	setupClaudeHomeSkillSource(t)
-	for _, home := range []string{"relative", string(os.PathSeparator)} {
+	for _, home := range []string{
+		"relative",
+		string(os.PathSeparator),
+		filepath.Join(t.TempDir(), "link") + "/../shared",
+	} {
 		if _, err := AttachSkillToClaudeHome(home, "store/alpha", ""); err == nil {
 			t.Fatalf("expected unsafe home %q to be rejected", home)
 		}

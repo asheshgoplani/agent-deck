@@ -22,6 +22,9 @@ type homeSkillStore struct {
 }
 
 func newHomeSkillStore(home, label string) (*homeSkillStore, error) {
+	if hasParentPathComponent(home) {
+		return nil, fmt.Errorf("%s home %q contains parent traversal", label, home)
+	}
 	clean := filepath.Clean(strings.TrimSpace(home))
 	if clean == "." || !filepath.IsAbs(clean) {
 		return nil, fmt.Errorf("%s home must be an absolute path: %q", label, home)
