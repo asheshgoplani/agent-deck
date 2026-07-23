@@ -6495,6 +6495,11 @@ func (i *Instance) restart(env map[string]string) error {
 		}
 		mcpLog.Debug("respawn_pane_claude", slog.String("command", resumeCmd))
 
+		// This fast path returns before the fallback restart path below.
+		// Reconcile here as well so config changes and deleted managed links
+		// are applied before the resumed process reads its Claude home.
+		ApplyConfiguredLoadout(i)
+
 		// Use respawn-pane for atomic restart
 		// This is more reliable than Ctrl+C + wait for shell + send command
 		// respawn-pane -k kills the current process and starts the new command atomically

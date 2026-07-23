@@ -24,10 +24,7 @@ func ResolveGroupClaudeHomeSkills(groupPath string) (string, []string, error) {
 	}
 
 	skills := config.GetGroupClaudeSkills(groupPath)
-	if len(skills) == 0 {
-		return home, nil, nil
-	}
-	if home == "" {
+	if len(skills) > 0 && home == "" {
 		return "", nil, fmt.Errorf("group %q has Claude skills but no config_dir", groupPath)
 	}
 
@@ -41,9 +38,6 @@ func ResolveGroupClaudeHomeSkills(groupPath string) (string, []string, error) {
 			continue
 		}
 		otherSkills := config.GetGroupClaudeSkills(path)
-		if len(otherSkills) == 0 {
-			continue
-		}
 		otherHome, otherSource := GetClaudeConfigDirSourceForGroup(path)
 		if raw := rawClaudeHomeForGroup(config, path, otherSource); hasParentPathComponent(raw) {
 			continue
@@ -93,6 +87,9 @@ func ResolveInstanceClaudeHomeSkills(inst *Instance) (string, []string, error) {
 			if !sameAgentHomePath(actualHome, conductorCfg.ConfigDir) {
 				return "", nil, fmt.Errorf("conductor %q skills require config_dir %q but the instance resolves %q from %s", conductorName, ExpandPath(conductorCfg.ConfigDir), actualHome, source)
 			}
+			if sameAgentHomePath(actualHome, groupHome) {
+				return "", nil, fmt.Errorf("conductor %q adds Claude skills but its config_dir %q shares group %q home; assign a physically distinct config_dir", conductorName, actualHome, inst.GroupPath)
+			}
 		}
 	}
 
@@ -113,9 +110,6 @@ func allGroupClaudeSkillSetsSame(config *UserConfig) bool {
 	haveBaseline := false
 	for path := range config.Groups {
 		skills := config.GetGroupClaudeSkills(path)
-		if len(skills) == 0 {
-			continue
-		}
 		if !haveBaseline {
 			baseline = skills
 			haveBaseline = true

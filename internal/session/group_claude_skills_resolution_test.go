@@ -45,6 +45,22 @@ skills = ["store/beta"]
 	}
 }
 
+func TestResolveGroupClaudeHomeSkillsRejectsEmptyGroupSharingPopulatedHome(t *testing.T) {
+	withIsolatedHomeAndConfig(t, `
+[claude]
+config_dir = "~/.claude-shared"
+[groups.alpha.claude]
+skills = ["store/alpha"]
+[groups.beta.claude]
+skills = []
+`)
+
+	_, _, err := ResolveGroupClaudeHomeSkills("beta")
+	if err == nil || !strings.Contains(err.Error(), "alpha") {
+		t.Fatalf("expected populated-home conflict, got %v", err)
+	}
+}
+
 func TestResolveGroupClaudeHomeSkillsRejectsChildAdditionInSharedHome(t *testing.T) {
 	withIsolatedHomeAndConfig(t, `
 [claude]
@@ -179,6 +195,49 @@ skills = ["store/beta"]
 	}
 	if len(skills) != 2 || skills[0] != "store/alpha" || skills[1] != "store/beta" {
 		t.Fatalf("skills=%v", skills)
+	}
+}
+
+func TestResolveInstanceClaudeHomeSkillsRejectsConductorAdditionInExplicitGroupHome(t *testing.T) {
+	withIsolatedHomeAndConfig(t, `
+[groups.work.claude]
+config_dir = "~/.claude-work"
+skills = ["store/alpha"]
+[conductors.main.claude]
+config_dir = "~/.claude-work"
+skills = ["store/beta"]
+`)
+	inst := NewInstanceWithGroupAndTool("conductor-main", t.TempDir(), "work", "claude")
+
+	_, _, err := ResolveInstanceClaudeHomeSkills(inst)
+	if err == nil || !strings.Contains(err.Error(), "shares group") {
+		t.Fatalf("expected explicit shared-home rejection, got %v", err)
+	}
+}
+
+func TestResolveInstanceClaudeHomeSkillsRejectsConductorAdditionInAliasedGroupHome(t *testing.T) {
+	home := t.TempDir()
+	realParent := filepath.Join(home, "real")
+	if err := os.MkdirAll(realParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aliasParent := filepath.Join(home, "alias")
+	if err := os.Symlink(realParent, aliasParent); err != nil {
+		t.Fatal(err)
+	}
+	withIsolatedHomeAndConfig(t, `
+[groups.work.claude]
+config_dir = "`+filepath.Join(realParent, "shared")+`"
+skills = ["store/alpha"]
+[conductors.main.claude]
+config_dir = "`+filepath.Join(aliasParent, "shared")+`"
+skills = ["store/beta"]
+`)
+	inst := NewInstanceWithGroupAndTool("conductor-main", t.TempDir(), "work", "claude")
+
+	_, _, err := ResolveInstanceClaudeHomeSkills(inst)
+	if err == nil || !strings.Contains(err.Error(), "shares group") {
+		t.Fatalf("expected aliased shared-home rejection, got %v", err)
 	}
 }
 
