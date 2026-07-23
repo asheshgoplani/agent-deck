@@ -1945,6 +1945,22 @@ type CodexSettings struct {
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
 	EnvFile string `toml:"env_file,omitempty"`
+
+	// TUI defines Agent Deck-managed defaults merged into every resolved
+	// CODEX_HOME/config.toml. Nil leaves the home's TUI settings unmanaged.
+	TUI *CodexTUISettings `toml:"tui,omitempty"`
+}
+
+// CodexTUISettings is the subset of Codex [tui] configuration that Agent Deck
+// can keep consistent across isolated group homes.
+type CodexTUISettings struct {
+	// StatusLine is the ordered Codex footer item list. A non-nil empty slice
+	// intentionally hides the footer; nil leaves the existing value untouched.
+	StatusLine []string `toml:"status_line,omitempty"`
+
+	// StatusLineUseColors controls footer colors. Pointer semantics preserve an
+	// explicit false while nil leaves the existing value untouched.
+	StatusLineUseColors *bool `toml:"status_line_use_colors,omitempty"`
 }
 
 // GetProfileCodexConfigDir returns the profile-specific Codex config directory, if configured.

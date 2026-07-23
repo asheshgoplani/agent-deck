@@ -306,7 +306,10 @@ Codex CLI integration settings.
 command = "codex"  # Codex CLI command or alias
 yolo_mode = true   # Enable --yolo (bypass approvals and sandbox)
 env_file = "~/.codex.env"
-command = "codex"
+
+[codex.tui]
+status_line = ["model-with-reasoning", "context-used", "git-branch"]
+status_line_use_colors = true
 ```
 
 | Key | Type | Default | Description |
@@ -314,7 +317,8 @@ command = "codex"
 | `command` | string | `codex` | Codex CLI command or alias to launch built-in Codex sessions. Examples: `codex-v2`, `CODEX_HOME=~/.codex-work codex`. |
 | `yolo_mode` | bool | `false` | Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`). Can be overridden per-session. |
 | `env_file` | string | `""` | A .env file sourced for Codex sessions only. See [Path Resolution](#path-resolution). |
-| `command` | string | `"codex"` | Override the binary/invocation. |
+| `tui.status_line` | array | unset | Ordered footer items merged into every resolved group `CODEX_HOME/config.toml`. Set `[]` to hide the footer. |
+| `tui.status_line_use_colors` | bool | unset | Enables or disables status-line colors in every resolved group home. |
 
 ## [copilot] Section
 

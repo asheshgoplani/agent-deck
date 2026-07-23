@@ -20,15 +20,21 @@ func SyncGroupCodexPlugins(groupPath string) error {
 	}
 	marketplaces := config.GetGroupCodexMarketplaces(groupPath)
 	plugins := config.GetGroupCodexPlugins(groupPath)
-	if len(marketplaces) == 0 && len(plugins) == 0 {
+	if len(marketplaces) == 0 && len(plugins) == 0 && config.Codex.TUI == nil {
 		return nil
 	}
 	codexHome := config.GetGroupCodexConfigDir(groupPath)
 	if codexHome == "" {
-		return fmt.Errorf("group %q has Codex plugins but no config_dir", groupPath)
+		return fmt.Errorf("group %q has Codex provisioning but no config_dir", groupPath)
 	}
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		return fmt.Errorf("create group Codex home %q: %w", codexHome, err)
+	}
+	if err := ApplyCodexTUISettings(codexHome, config.Codex.TUI); err != nil {
+		return fmt.Errorf("apply Codex TUI defaults: %w", err)
+	}
+	if len(marketplaces) == 0 && len(plugins) == 0 {
+		return nil
 	}
 
 	command := config.GetGroupCodexCommand(groupPath)
