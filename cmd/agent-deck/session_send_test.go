@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -351,6 +352,30 @@ type mockSendRetryTarget struct {
 	sendEnterCalls   int32
 	sendCtrlCCalls   int32
 	sendChunkedCalls int32
+	namedKeys        []string
+	namedKeyMu       sync.Mutex
+}
+
+// SendNamedKey records the named keys the send path forwards. The
+// gated-composer recovery (Escape+Enter) asserts against this.
+func (m *mockSendRetryTarget) SendNamedKey(key string) error {
+	m.namedKeyMu.Lock()
+	defer m.namedKeyMu.Unlock()
+	m.namedKeys = append(m.namedKeys, key)
+	return nil
+}
+
+// namedKeyCount returns how many times key was forwarded.
+func (m *mockSendRetryTarget) namedKeyCount(key string) int {
+	m.namedKeyMu.Lock()
+	defer m.namedKeyMu.Unlock()
+	n := 0
+	for _, k := range m.namedKeys {
+		if k == key {
+			n++
+		}
+	}
+	return n
 }
 
 func (m *mockSendRetryTarget) SendKeysChunked(_ string) error {

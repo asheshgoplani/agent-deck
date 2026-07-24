@@ -477,6 +477,8 @@ func SubstateLabel(sub session.Substate) string {
 		return "idle at prompt"
 	case session.SubstateRunning:
 		return "working"
+	case session.SubstateStalled:
+		return "stalled (composer not accepting Enter)"
 	default:
 		return ""
 	}

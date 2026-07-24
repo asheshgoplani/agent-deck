@@ -84,6 +84,8 @@ func handleSession(profile string, args []string) {
 		handleSessionMove(profile, args[1:])
 	case "send":
 		handleSessionSend(profile, args[1:])
+	case "nudge":
+		handleSessionNudge(profile, args[1:])
 	case "approve":
 		handleSessionApprove(profile, args[1:])
 	case "send-keys":
@@ -128,6 +130,7 @@ func printSessionHelp() {
 	fmt.Println("  switch-account <id> <account>  Switch Claude account and migrate the conversation")
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session")
+	fmt.Println("  nudge <id> <message>    Send only if the session can receive it; verify submission (for watchdogs)")
 	fmt.Println("  approve <id> [choice]   Resolve a visible Codex approval prompt")
 	fmt.Println("  output <id>             Get the last response from a session")
 	fmt.Println("  children [id]           List sub-sessions with status + last completion")
@@ -3248,6 +3251,9 @@ type sendRetryTarget interface {
 	SendCtrlC() error
 	SendKeysChunked(string) error
 	CapturePaneFresh() (string, error)
+	// SendNamedKey forwards a tmux named key (e.g. "Escape"). Used by the
+	// gated-composer recovery below; *tmux.Session already implements it.
+	SendNamedKey(string) error
 }
 
 type sendRetryOptions struct {
@@ -3302,6 +3308,26 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// with no activity and no unsent prompt, assume the message was lost
 	// during TUI init and re-send the full message.
 	const fullResendThreshold = 8
+	// escapeRecoveryThreshold: consecutive unsent-composer checks (each of
+	// which already re-pressed Enter) before escalating to Escape+Enter.
+	//
+	// Five rather than two or three because Escape is not free: in a healthy
+	// mid-turn TUI it interrupts. The branch only runs when a FRESH capture
+	// still shows our message in the composer, so a submitted turn should
+	// never reach here — but a laggy render could in principle show a stale
+	// composer for a frame or two, and five checks (~1.5s at the default
+	// 300ms cadence, ~1s on the --no-wait path) puts the escalation well past
+	// any plausible render lag. Bracketed-paste timing races, the ordinary
+	// cause of a transient unsent marker, clear within one or two retries.
+	// The wedge this recovers from lasts until someone intervenes, so waiting
+	// longer costs essentially nothing.
+	const escapeRecoveryThreshold = 5
+	// maxEscapeRecoveries bounds the escalation: if two Escape+Enter rounds do
+	// not move the composer, the pane is wedged in a way this cannot fix and
+	// the caller should get an honest typed_not_submitted.
+	const maxEscapeRecoveries = 2
+	unsentChecks := 0
+	escapeRecoveries := 0
 	maxFullResends := 3 // default
 	if opts.maxFullResends > 0 {
 		maxFullResends = opts.maxFullResends
@@ -3344,9 +3370,34 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			waitingNoMarkerChecks = 0
 			waitingNoActivityChecks = 0
 			activeChecks = 0
+			unsentChecks++
+			// Gated-composer recovery. Plain Enter has now been refused
+			// escapeRecoveryThreshold times in a row, which is the signature of
+			// a Claude turn state machine that never returned to idle after a
+			// transport failure ("API Error: Unable to connect to API
+			// (ConnectionRefused)"): the input handler still accepts and
+			// renders keystrokes, but the submit handler stays gated, so more
+			// Enters can never help. Escape releases the gate; the Enter that
+			// follows submits. Observed live 2026-07-24 on a session wedged for
+			// an hour — Escape preserved the composer text and the next Enter
+			// went through.
+			//
+			// Bounded and last-resort by construction: it only fires after
+			// plain Enter has demonstrably failed, and only on a message THIS
+			// call typed, so it can never Escape away an operator's own draft
+			// (the #1409 guard has already saved and cleared any draft before
+			// we typed). If a version of the tool clears the composer on Escape
+			// instead of preserving it, the next iteration sees no unsent
+			// marker and falls through to the existing full-resend path.
+			if unsentChecks >= escapeRecoveryThreshold && escapeRecoveries < maxEscapeRecoveries {
+				escapeRecoveries++
+				unsentChecks = 0
+				_ = target.SendNamedKey("Escape")
+			}
 			_ = target.SendEnter()
 			continue
 		}
+		unsentChecks = 0
 
 		if err == nil && status == "active" {
 			sawActiveAfterSend = true
@@ -3421,8 +3472,10 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			if send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message) {
 				return deliveryTypedNotSubmitted, fmt.Errorf(
 					"message typed but not submitted after %d verification checks (issue #1413): "+
-						"the composer still holds the message despite bounded Enter retries. "+
-						"The recipient agent's input handler is not accepting Enter", opts.maxRetries)
+						"the composer still holds the message despite bounded Enter retries "+
+						"and %d Escape+Enter recovery attempts. The recipient agent's input "+
+						"handler is not accepting Enter — its pane likely needs a manual "+
+						"Escape then Enter, or a restart", opts.maxRetries, escapeRecoveries)
 			}
 		}
 

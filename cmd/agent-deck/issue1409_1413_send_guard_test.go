@@ -134,6 +134,10 @@ type guardedSendMock struct {
 	// chunkedErr, when set, makes SendKeysChunked fail — simulating a draft
 	// restore that cannot type the saved draft back onto the composer.
 	chunkedErr error
+
+	// namedKeyCalls counts SendNamedKey forwards (the Escape of the
+	// gated-composer recovery).
+	namedKeyCalls int32
 }
 
 func (m *guardedSendMock) SendKeysAndEnter(string) error {
@@ -159,6 +163,11 @@ func (m *guardedSendMock) SendEnter() error {
 
 func (m *guardedSendMock) SendCtrlC() error {
 	atomic.AddInt32(&m.ctrlCCalls, 1)
+	return nil
+}
+
+func (m *guardedSendMock) SendNamedKey(string) error {
+	atomic.AddInt32(&m.namedKeyCalls, 1)
 	return nil
 }
 
