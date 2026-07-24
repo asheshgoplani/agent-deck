@@ -72,6 +72,7 @@ const (
 	SubstateIdleAtEmptyPrompt = tmux.SubstateIdleAtEmptyPrompt
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
+	SubstateStalled           = tmux.SubstateStalled
 )
 
 const wrapperPlaceholder = "{command}"
@@ -429,6 +430,13 @@ type Instance struct {
 	// Used to skip expensive Exists() checks for ghost sessions (sessions in JSON but not in tmux)
 	// Not serialized - resets on load, but that's fine since we'll recheck on first poll
 	lastErrorCheck time.Time
+
+	// stall holds composer-dwell state for SubstateStalled detection (see
+	// stall.go). Derived and process-local: not serialized, and correctly
+	// starts empty after a reload since the dwell clock restarts on the next
+	// observation.
+	stall     *stallTracker
+	stallOnce sync.Once
 
 	// Tiered polling: skip expensive checks for idle sessions with no activity
 	lastIdleCheck     time.Time // When we last did a full check for an idle session
@@ -7770,7 +7778,20 @@ func (i *Instance) Substate() Substate {
 	if tmuxSess == nil {
 		return SubstateNone
 	}
-	return tmuxSess.GetSubstate()
+	// promoteStalled refines an idle-at-empty-prompt verdict into
+	// SubstateStalled when the composer is in fact holding an unchanging
+	// draft. It needs a second (cache-backed) pane read, so it only runs on
+	// the one verdict that can be wrong this way.
+	return promoteStalled(tmuxSess.GetSubstate(), tmuxSess, i.stallTracker())
+}
+
+// stallTracker returns this instance's lazily-created dwell state for stall
+// detection. Process-local and derived; never persisted.
+func (i *Instance) stallTracker() *stallTracker {
+	i.stallOnce.Do(func() {
+		i.stall = &stallTracker{}
+	})
+	return i.stall
 }
 
 // CachedSubstate returns the last substate computed by a prior status check
@@ -7781,7 +7802,16 @@ func (i *Instance) CachedSubstate() Substate {
 	if tmuxSess == nil {
 		return SubstateNone
 	}
-	return tmuxSess.CachedSubstate()
+	cached := tmuxSess.CachedSubstate()
+	// Apply the stall refinement from dwell state a previous Substate() call
+	// already established. This is an in-memory time comparison only — it adds
+	// no pane capture, so the render hot path stays as cheap as it was. If no
+	// caller has ever observed this session's composer, the tracker is empty
+	// and the cached verdict passes through unchanged.
+	if cached == SubstateIdleAtEmptyPrompt && i.stallTracker().stalled(stallClock()) {
+		return SubstateStalled
+	}
+	return cached
 }
 
 // SetAcknowledgedFromShared applies an acknowledgment from another TUI instance

@@ -60,6 +60,17 @@ func rowStatusGlyph(status session.Status, substate session.Substate, archived b
 		}
 	}
 
+	// A stalled session pairs with idle/waiting, NOT error: it looks perfectly
+	// healthy — quiet pane, visible prompt — while holding text it cannot
+	// submit. That is precisely why it needs its own glyph: rendered as a
+	// plain "○"/"◐" it is indistinguishable from a session that is simply
+	// done, and an operator scanning the list has no reason to look closer.
+	if status == session.StatusIdle || status == session.StatusWaiting {
+		if substate == session.SubstateStalled {
+			icon = "🧊"
+		}
+	}
+
 	if archived {
 		icon, style = "■", SessionStatusStopped
 	}

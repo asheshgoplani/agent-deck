@@ -37,6 +37,21 @@ const (
 	// /login", "API Error: 401", "socket connection closed"). Pairs with
 	// status "error". Built on the #1400 error-banner detection.
 	SubstateAuth401 Substate = "auth-401"
+
+	// SubstateStalled marks the wedge SubstateIdleAtEmptyPrompt was always
+	// meant to be distinguished from: a session that LOOKS idle but is not.
+	// Its composer holds unsent text that has not changed for the stall dwell
+	// while nothing is running — the signature of a turn state machine that
+	// never returned to idle after a transport failure ("API Error: Unable to
+	// connect to API (ConnectionRefused)"). The pane still renders and still
+	// accepts keystrokes, so every content-only heuristic reads it as a
+	// healthy prompt; only the ABSENCE of progress over time distinguishes it.
+	//
+	// Pairs with status "idle"/"waiting". Reporting only — a supervisor should
+	// escalate rather than nudge, because a gated composer swallows nudges.
+	// The automatic Escape+Enter recovery deliberately lives in the send path
+	// instead, where the text in the composer is known to be ours.
+	SubstateStalled Substate = "stalled"
 )
 
 // modelUnavailableSubstrings are fragments of the Fable/model-down no-op the
