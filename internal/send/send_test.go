@@ -95,6 +95,43 @@ func TestHasUnsentComposerPrompt_ColdLaunchMultilineShortFirstLine(t *testing.T)
 	}
 }
 
+// TestHasUnsentComposerPrompt_SameFirstLineDifferentBody guards against the
+// first-line recovery match submitting an unrelated draft. Two multi-line
+// messages can open with an identical short first line while their bodies
+// differ. When the composer holds a draft for one of them, a recovery check for
+// the *other* must reject it — otherwise the send-verify loop would fire Enter
+// and submit the wrong draft. Detection therefore requires corroborating
+// message-specific content (a fragment of the tail past the first line) to be
+// visible in the pane. Synthetic pane + messages; no tmux, no timing.
+func TestHasUnsentComposerPrompt_SameFirstLineDifferentBody(t *testing.T) {
+	present := "Run\n\nDeploy the billing service and report the run id.\n\n" +
+		"## Final step\nprint DONE"
+	unrelated := "Run\n\nRoll back the auth migration and confirm it.\n\n" +
+		"## Final step\nprint DONE"
+
+	// Composer holds the draft for `present`.
+	composer := strings.Join([]string{
+		"────────────────",
+		"❯ Run",
+		"",
+		"Deploy the billing service and report the run id.",
+		"",
+		"## Final step",
+		"print DONE",
+		"────────────────",
+		"[Opus 4.6] Context: 0%",
+	}, "\n")
+
+	if !HasUnsentComposerPrompt(composer, present) {
+		t.Fatal("expected the message whose body is in the composer to be detected as unsent")
+	}
+	// The unrelated message shares the first line ("Run") but its body is not in
+	// the pane — recovery must NOT treat this draft as the unrelated message.
+	if HasUnsentComposerPrompt(composer, unrelated) {
+		t.Fatal("did not expect a draft sharing only the first line to match an unrelated multi-line message")
+	}
+}
+
 func TestHasUnsentComposerPrompt_SubmittedHistory(t *testing.T) {
 	// Submitted messages can appear in history; only current composer should count.
 	submitted := "❯ Write one line: LAUNCH_OK\n✳ Tempering…\n────────────────\n❯\n────────────────\n[Opus 4.6] Context: 0%"
