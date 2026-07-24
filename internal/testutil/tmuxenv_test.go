@@ -196,3 +196,30 @@ func TestIsolateTmuxSocket_UniquePerCall(t *testing.T) {
 		t.Errorf("expected unique dirs per call, both got %q", dir1)
 	}
 }
+
+// TestIsolatedTmuxDirUsable pins the guard added after a live incident
+// (2026-07-24): `tmux kill-server` under an EMPTY TMUX_TMPDIR does not fail —
+// it silently resolves to the real default tmpdir and kills the user's own
+// tmux server, taking every session on it down at once with no recovery path.
+//
+// Asserted on the pure predicate rather than by observing that no server died,
+// because the only way to observe the failure is to cause it.
+func TestIsolatedTmuxDirUsable(t *testing.T) {
+	// Every empty form must refuse. A bare "" is the shape the incident took
+	// (a shell variable that came back empty); the whitespace forms are the
+	// same class and cost nothing to cover.
+	for _, dir := range []string{"", " ", "\t", "\n  ", "   \t\n"} {
+		if isolatedTmuxDirUsable(dir) {
+			t.Errorf("dir %q must be refused — an empty TMUX_TMPDIR retargets "+
+				"kill-server at the user's real tmux server", dir)
+		}
+	}
+
+	// A real private dir must still be honored, or cleanup silently leaks the
+	// per-test server and its PTYs until reboot.
+	for _, dir := range []string{"/tmp/ad-tmux-123", "/var/folders/x/y/T/ad-tmux-abc"} {
+		if !isolatedTmuxDirUsable(dir) {
+			t.Errorf("dir %q must be accepted", dir)
+		}
+	}
+}

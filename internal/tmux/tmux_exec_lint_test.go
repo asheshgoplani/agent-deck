@@ -58,6 +58,17 @@ func TestNoRawTmuxExec_OutsideAllowlist(t *testing.T) {
 		// emits -L <name>, not -S <path>. Same justification class as
 		// tests/eval/harness/sandbox.go above.
 		"internal/testutil/multiclienttmux/multiclienttmux.go": "test harness — explicit -S <socket-path> for per-test multi-client tmux server",
+
+		// tmuxenv isolates via the THIRD mechanism this lint does not model:
+		// TMUX_TMPDIR. killIsolatedTmuxServer scrubs TMUX/TMUX_PANE/TMUX_TMPDIR
+		// from the child env and sets TMUX_TMPDIR=<private dir>, so bare
+		// `tmux kill-server` resolves to <dir>/tmux-<uid>/default and can only
+		// reach the per-test server. Verified non-destructively (2026-07-24) by
+		// running `list-sessions` under that exact scrubbed env: it answered
+		// with the private server's session only, while the default and
+		// agent-deck sockets were untouched. -L/-S would not work here — the
+		// server being killed was itself started through TMUX_TMPDIR.
+		"internal/testutil/tmuxenv.go": "test harness — TMUX_TMPDIR-scoped private server (see killIsolatedTmuxServer)",
 	}
 
 	// Specific (file, call-argv) combos that are legitimate bypasses in
@@ -81,8 +92,25 @@ func TestNoRawTmuxExec_OutsideAllowlist(t *testing.T) {
 		// is passed; adding -L based on DefaultSocketName would over-
 		// restrict and break users who run `agent-deck session current`
 		// from a non-agent-deck tmux pane. Documented at each call site.
+		// Both calls live in GetCurrentSessionID, which returns early unless
+		// $TMUX is set — i.e. it only ever runs INSIDE a pane, where bare tmux
+		// auto-routes to that pane's own server via $TMUX. Verified against a
+		// deliberately isolated server (2026-07-24): from a pane on
+		// `tmux -L isotest`, $TMUX pointed at the isolated socket and bare
+		// `display-message -p "#S"` and `show-environment AGENTDECK_INSTANCE_ID`
+		// both answered from that isolated server, not the default one.
+		//
+		// Passing -L DefaultSocketName() here would be actively WRONG: it would
+		// aim at the configured socket rather than the caller's actual one, and
+		// would break `agent-deck session current` run from a non-agent-deck
+		// tmux pane.
 		"cmd/agent-deck/cli_utils.go": {
 			{"tmux", "display-message", "-p", "#S"},
+			// Auto-parent recovery: reads back the id written by
+			// Instance.SetEnvironment at spawn. Same $TMUX routing as the
+			// sibling call above — same justification class, and it was only
+			// ever missing from this list because it landed later.
+			{"tmux", "show-environment", "AGENTDECK_INSTANCE_ID"},
 		},
 		"cmd/agent-deck/session_cmd.go": {
 			{"tmux", "display-message", "-p", "#{session_name}\t#{pane_current_path}"},
