@@ -21,6 +21,10 @@ func TestIsTmuxProtocolMismatch(t *testing.T) {
 		{"embedded", "tmux: protocol version mismatch (client 8, server 7)\n", true},
 		{"no server", "no server running on /tmp/tmux-1000/default", false},
 		{"cant find session", "can't find session: agentdeck_a", false},
+		// Adversarial: an authoritative absence reply echoes the session name, so
+		// a session NAMED like the marker must NOT be classified as a mismatch —
+		// absence wins over the substring.
+		{"cant find session named like marker", "can't find session: protocol version mismatch", false},
 		{"empty", "", false},
 	}
 	for _, c := range cases {
@@ -99,5 +103,34 @@ func TestSession_Exists_AuthoritativeAbsentStillReportsFalse(t *testing.T) {
 	if s.Exists() {
 		t.Fatalf("Exists() returned true for an authoritative absent probe; " +
 			"only a protocol mismatch (server alive) may be treated as indeterminate")
+	}
+}
+
+// TestSession_Exists_AbsentSessionNamedLikeMarkerReportsFalse is the adversarial
+// regression: tmux echoes the target in "can't find session: <name>", so a
+// session NAMED "protocol version mismatch" produces an absence reply that
+// literally contains the mismatch marker. Absence is authoritative and must win
+// — the classifier's bare substring match would otherwise keep this dead
+// session alive.
+func TestSession_Exists_AbsentSessionNamedLikeMarkerReportsFalse(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "tmux")
+	script := "#!/bin/sh\n" +
+		"echo \"can't find session: protocol version mismatch\" >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	restore := hasSessionProbeTimeout
+	hasSessionProbeTimeout = 2 * time.Second
+	t.Cleanup(func() { hasSessionProbeTimeout = restore })
+
+	s := &Session{Name: "protocol version mismatch", SocketName: "agent-deck-named-marker-test"}
+
+	if s.Exists() {
+		t.Fatalf("Exists() returned true for an absent session named like the mismatch marker; " +
+			"an authoritative \"can't find session\" reply must win over the substring match")
 	}
 }

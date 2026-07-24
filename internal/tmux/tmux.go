@@ -2340,8 +2340,20 @@ var hasSessionProbeTimeout = 2 * time.Second
 // failure is purely in the client binary, not in the session. Callers must
 // therefore treat a mismatch as indeterminate (assume alive), never as an
 // authoritative "session gone".
+//
+// An authoritative absence reply always wins over the mismatch marker. tmux
+// echoes the requested target in "can't find session: <name>", so a session
+// NAMED like the marker (e.g. "protocol version mismatch") would otherwise make
+// the bare substring test below fire on a genuine "gone" reply and wrongly keep
+// a dead session alive. A real mismatch means the client never reached the
+// server, so it can't also carry an authoritative absence — the two are
+// mutually exclusive, and giving absence precedence is safe.
 func isTmuxProtocolMismatch(output string) bool {
-	return strings.Contains(strings.ToLower(output), "protocol version mismatch")
+	lower := strings.ToLower(output)
+	if strings.Contains(lower, "can't find session") {
+		return false
+	}
+	return strings.Contains(lower, "protocol version mismatch")
 }
 
 // Exists checks if the tmux session exists
