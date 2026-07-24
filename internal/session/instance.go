@@ -4049,12 +4049,48 @@ func shouldDebounceTmuxFlipForTool(tool string) bool {
 // closes its pane exactly like a crash would; a vanished OpenCode pane is
 // overwhelmingly a user-initiated exit → StatusStopped. Error stays reserved
 // for a LIVE pane that renders an actual error banner.
+//
+// NOTE: PaneDeadExitStatus shells out to tmux and can block up to its probe
+// timeout. Callers on the UpdateStatus path (which run under i.mu) must NOT use
+// this directly when a live tmux session may be queried — use
+// applyTerminatedPaneStatus, which drops i.mu around the query. This method is
+// safe to call under i.mu only when i.tmuxSession is nil (no subprocess runs).
 func (i *Instance) terminatedPaneStatus() Status {
 	exitCode, haveExitCode := 0, false
 	if i.tmuxSession != nil {
 		exitCode, haveExitCode = i.tmuxSession.PaneDeadExitStatus()
 	}
 	return classifyTerminatedPane(exitCode, haveExitCode, i.Tool)
+}
+
+// applyTerminatedPaneStatus writes the terminated-pane classification to
+// i.Status without holding i.mu across the (potentially slow) tmux query.
+//
+// PaneDeadExitStatus can block for the full tmux probe timeout, and every
+// UpdateStatus caller runs under i.mu — so querying tmux under the lock lets a
+// wedged tmux server stall concurrent lifecycle operations. Instead: snapshot
+// the tmux session and tool under the lock, release i.mu for the query, then
+// reacquire and apply the result. The caller MUST hold i.mu on entry; i.mu is
+// held again on return.
+//
+// Because the lock is dropped, i.Status may change under us (e.g. a concurrent
+// Stop()), so the stopped-state guard is re-evaluated after reacquiring: a
+// session the user stopped mid-query must not be clobbered with error/stopped.
+func (i *Instance) applyTerminatedPaneStatus() {
+	tmuxSession := i.tmuxSession
+	tool := i.Tool
+
+	i.mu.Unlock()
+	exitCode, haveExitCode := 0, false
+	if tmuxSession != nil {
+		exitCode, haveExitCode = tmuxSession.PaneDeadExitStatus()
+	}
+	status := classifyTerminatedPane(exitCode, haveExitCode, tool)
+	i.mu.Lock()
+
+	if i.Status != StatusStopped {
+		i.Status = status
+	}
 }
 
 // classifyTerminatedPane is the pure decision behind terminatedPaneStatus,
@@ -4121,8 +4157,11 @@ func (i *Instance) UpdateStatus() error {
 			// Added but never started: no tmux session was ever created, so an
 			// absent tmux is expected — classify as idle, not error (✕ → ○).
 			i.Status = StatusIdle
-		} else if i.Status != StatusStopped {
-			i.Status = i.terminatedPaneStatus()
+		} else {
+			// tmux session is non-nil here, so the exit-status probe can block;
+			// applyTerminatedPaneStatus drops i.mu for the query and keeps the
+			// stopped-state guard on write.
+			i.applyTerminatedPaneStatus()
 		}
 		i.lastErrorCheck = time.Now() // Record when we confirmed error/stopped
 		return nil
@@ -4368,8 +4407,9 @@ func (i *Instance) UpdateStatus() error {
 		// when remain-on-exit still holds the dead pane — a clean exit 0 reads
 		// as stopped (■), a non-zero exit or an unknowable exit falls back to a
 		// per-tool heuristic (crash → ✕ for hook tools, clean `/exit` → ■ for
-		// OpenCode). #1617, and clean one-shot completions.
-		i.Status = i.terminatedPaneStatus()
+		// OpenCode). #1617, and clean one-shot completions. The probe can block,
+		// so applyTerminatedPaneStatus runs it without holding i.mu.
+		i.applyTerminatedPaneStatus()
 	default:
 		i.Status = StatusError
 	}
