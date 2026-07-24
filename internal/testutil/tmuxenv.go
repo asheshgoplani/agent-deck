@@ -89,7 +89,32 @@ func IsolateTmuxSocket() func() {
 	}
 }
 
+// isolatedTmuxDirUsable reports whether dir names a private TMUX_TMPDIR that a
+// `kill-server` may safely be aimed at. Split out from killIsolatedTmuxServer
+// so the decision is unit-testable: the alternative — asserting the no-op by
+// observing that no server died — cannot be written safely, because getting it
+// wrong is precisely the destructive outcome under test.
+func isolatedTmuxDirUsable(dir string) bool {
+	return strings.TrimSpace(dir) != ""
+}
+
 func killIsolatedTmuxServer(dir string) {
+	// Refuse to run with no private dir. `tmux kill-server` under an EMPTY
+	// TMUX_TMPDIR does not fail — it silently falls back to the real default
+	// tmpdir and kills the user's own server, taking every session on it down
+	// at once with no recovery path.
+	//
+	// This is not hypothetical: it happened during the 2026-07-24
+	// investigation of this very call site, when a shell variable holding the
+	// private dir came back empty and `TMUX_TMPDIR="" tmux kill-server`
+	// destroyed three live panes on the default socket. IsolateTmuxSocket
+	// always passes a non-empty dir today (MkdirTemp, or a PID-keyed
+	// fallback), so this guard is unreachable by construction — which is
+	// exactly why it is cheap, and why the one path that could ever reach it
+	// must be a no-op rather than a server-wide kill.
+	if !isolatedTmuxDirUsable(dir) {
+		return
+	}
 	cmd := exec.Command("tmux", "kill-server")
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, entry := range os.Environ() {
