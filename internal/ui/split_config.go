@@ -19,8 +19,10 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// previewPctStep is the percentage delta per < / > keystroke.
-const previewPctStep = 5
+const (
+	previewPctStep    = 5
+	compactSidebarPct = 18
+)
 
 // Preview-orientation values, re-exported from the session package so the
 // ui layer can compare h.previewOrientation without importing the constant
@@ -112,8 +114,10 @@ func (h *Home) splitPaneWidths() (int, int) {
 	if h.width <= 0 {
 		return 0, 0
 	}
-	previewPct := h.getPreviewPct()
-	sessionsPct := 100 - previewPct
+	sessionsPct := compactSidebarPct
+	if !h.compactEmbeddedSidebar() {
+		sessionsPct = 100 - h.getPreviewPct()
+	}
 	left := int(float64(h.width) * float64(sessionsPct) / 100.0)
 	right := h.width - left - paneSeparatorWidth
 
@@ -175,6 +179,7 @@ func (h *Home) setPreviewPctFromMouseX(x int) {
 		previewPct = session.MaxPreviewPct
 	}
 	h.previewPct = previewPct
+	h.compactSidebar = false
 	h.previewPctOverlayAt = time.Now().Add(previewPctOverlayDuration)
 }
 
@@ -186,6 +191,9 @@ func (h *Home) setPreviewPctFromMouseX(x int) {
 // whether to trigger a repaint.
 func (h *Home) adjustPreviewPct(delta int) bool {
 	current := h.getPreviewPct()
+	if h.compactEmbeddedSidebar() {
+		current = 100 - compactSidebarPct
+	}
 	next := current + delta
 	if next < session.MinPreviewPct {
 		next = session.MinPreviewPct
@@ -200,8 +208,10 @@ func (h *Home) adjustPreviewPct(delta int) bool {
 		return false
 	}
 	h.previewPct = next
+	h.compactSidebar = false
 	h.previewPctOverlayAt = time.Now().Add(previewPctOverlayDuration)
 	persistPreviewPct(next)
+	h.saveUIState()
 	return true
 }
 

@@ -2,8 +2,10 @@ package ui
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // insertKeySender is the local interface the insert-mode dispatch path uses
@@ -29,8 +31,10 @@ type insertTargetRef struct {
 	local *session.Instance
 	// Remote target name (the SSH remote alias, e.g. "windows"). Empty for
 	// local sessions. When non-empty, remoteID must also be set.
-	remoteName string
-	remoteID   string
+	remoteName  string
+	remoteID    string
+	hasWindow   bool
+	windowIndex int
 }
 
 // isRemote reports whether the target is a remote session.
@@ -54,7 +58,11 @@ func defaultInsertOpenKeySender(target insertTargetRef) (insertKeySender, error)
 	if tmuxSess == nil {
 		return nil, errInsertNoTmuxSession
 	}
-	ks, err := tmuxSess.OpenKeySender()
+	tmuxTarget := tmuxSess.Name
+	if target.hasWindow {
+		tmuxTarget = fmt.Sprintf("%s:%d", tmuxSess.Name, target.windowIndex)
+	}
+	ks, err := tmux.OpenKeySender(tmuxSess.SocketName, tmuxTarget)
 	if err != nil {
 		return nil, err
 	}
