@@ -142,12 +142,16 @@ func TestSessionSwitcher_ShowRecordsOrigin(t *testing.T) {
 func TestSessionSwitcher_HideResetsState(t *testing.T) {
 	sw := NewSessionSwitcher()
 	sw.Show("a", mruThree(), nil)
+	sw.embeddedOnAttach = true
 	sw.Hide()
 	if sw.IsVisible() {
 		t.Error("switcher should be hidden after Hide")
 	}
 	if sw.sessions != nil || sw.cursor != 0 || sw.fromID != "" {
 		t.Error("Hide should reset sessions, cursor, and fromID")
+	}
+	if sw.embeddedOnAttach {
+		t.Error("Hide should reset the embedded attach mode")
 	}
 	if sw.GetSelected() != nil {
 		t.Error("GetSelected should be nil after Hide")

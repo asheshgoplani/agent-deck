@@ -107,8 +107,11 @@ func MergePanelConfigOntoDisk(panel *UserConfig) (*UserConfig, error) {
 	merged.Display.ShowSessionTimestamps = panel.Display.ShowSessionTimestamps
 	merged.Display.ShowPaneTitles = panel.Display.ShowPaneTitles
 
-	// ── UI subset (panel manages show_only_installed_tools; hidden_tools
-	//    is edited via ToolVisibilityPanel) ─────────────────────────────
+	// ── UI subset (panel manages embedded terminal and show_only_installed_tools;
+	//    hidden_tools is edited via ToolVisibilityPanel) ──────────────────────────
+	if panel.UI.EmbeddedTerminal != nil {
+		merged.UI.EmbeddedTerminal = panel.UI.EmbeddedTerminal
+	}
 	merged.UI.ShowOnlyInstalledTools = panel.UI.ShowOnlyInstalledTools
 
 	// ── SystemStats subset ─────────────────────────────────────────────
