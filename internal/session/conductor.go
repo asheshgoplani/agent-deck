@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,13 +107,60 @@ type ConductorSettings struct {
 	Dir string `toml:"dir,omitempty"`
 }
 
+// ConductorID is a numeric bot identifier used by the conductor bridge — a
+// Telegram/Discord user, guild, or channel ID. It decodes tolerantly so that a
+// single malformed value cannot poison the entire config.toml parse.
+//
+// These IDs are consumed only by the optional conductor bridge, yet as a plain
+// int64 a single non-numeric value (e.g. user_id = "not-a-number") made
+// toml.DecodeFile return an error, which made LoadUserConfig fail, which in
+// turn took down completely unrelated commands (e.g. `remote list`) and
+// surfaced a spurious "loadout inactive" warning on every session launch.
+//
+// A well-formed integer — or a quoted numeric string, which users routinely
+// write for these large IDs — decodes to its value. Anything else degrades to
+// 0 (the bridge treats 0 as "unset") and is logged, rather than failing the
+// whole config load.
+type ConductorID int64
+
+// UnmarshalTOML implements toml.Unmarshaler. See ConductorID for why an
+// unparseable value degrades to 0 instead of returning a (config-poisoning)
+// error.
+func (c *ConductorID) UnmarshalTOML(v interface{}) error {
+	switch val := v.(type) {
+	case int64:
+		*c = ConductorID(val)
+	case string:
+		s := strings.TrimSpace(val)
+		if s == "" {
+			*c = 0
+			return nil
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			*c = 0
+			sessionLog.Warn("conductor_id_unparseable",
+				slog.String("value", sanitizeLoadoutWarning(val)),
+				slog.String("fallback", "0 (treated as unset)"))
+			return nil
+		}
+		*c = ConductorID(n)
+	default:
+		*c = 0
+		sessionLog.Warn("conductor_id_unexpected_type",
+			slog.String("type", fmt.Sprintf("%T", v)),
+			slog.String("fallback", "0 (treated as unset)"))
+	}
+	return nil
+}
+
 // TelegramSettings defines Telegram bot configuration for the conductor bridge
 type TelegramSettings struct {
 	// Token is the Telegram bot token from @BotFather
 	Token string `toml:"token,omitempty"`
 
 	// UserID is the authorized Telegram user ID from @userinfobot
-	UserID int64 `toml:"user_id,omitzero"`
+	UserID ConductorID `toml:"user_id,omitzero"`
 }
 
 // SlackSettings defines Slack bot configuration for the conductor bridge
@@ -142,13 +190,13 @@ type DiscordSettings struct {
 	BotToken string `toml:"bot_token,omitempty"`
 
 	// GuildID is the Discord server (guild) where the bot operates
-	GuildID int64 `toml:"guild_id,omitzero"`
+	GuildID ConductorID `toml:"guild_id,omitzero"`
 
 	// ChannelID is the Discord channel where the bot listens and posts
-	ChannelID int64 `toml:"channel_id,omitzero"`
+	ChannelID ConductorID `toml:"channel_id,omitzero"`
 
 	// UserID is the authorized Discord user ID
-	UserID int64 `toml:"user_id,omitzero"`
+	UserID ConductorID `toml:"user_id,omitzero"`
 
 	// ListenMode controls when the bot responds: "mentions" (only @mentions) or "all" (all channel messages)
 	// Default: "all"
