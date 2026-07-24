@@ -346,6 +346,11 @@ func (c *UserConfig) ClaimPollingEnabled() bool {
 // UISettings controls TUI layout proportions.
 // See issue #1092.
 type UISettings struct {
+	// EmbeddedTerminal enables a compact persistent session sidebar whose Enter
+	// key focuses a full-fidelity embedded tmux client. It is opt-in so an
+	// omitted setting preserves the classic layout and Enter-to-attach behavior.
+	EmbeddedTerminal *bool `toml:"embedded_terminal,omitempty"`
+
 	// PreviewPct is the percentage of horizontal width allocated to the
 	// preview pane (sessions list gets the remainder). Valid range: 10-90.
 	// Default: 65 (current behavior — sessions 35 / preview 65).
@@ -434,6 +439,12 @@ type UISettings struct {
 	// `add`/`session start` are unaffected by this flag — they attach only
 	// with an explicit `--attach`.
 	AttachOnCreate bool `toml:"attach_on_create,omitempty"`
+}
+
+// GetEmbeddedTerminal reports whether the embedded terminal layout is enabled.
+// An omitted value preserves the classic layout.
+func (u UISettings) GetEmbeddedTerminal() bool {
+	return u.EmbeddedTerminal != nil && *u.EmbeddedTerminal
 }
 
 // normalizeUIHiddenTools lowercases, dedupes, and drops unknown entries from

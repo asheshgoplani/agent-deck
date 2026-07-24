@@ -302,6 +302,9 @@ type Home struct {
 	initialSelectDone   bool                  // Guard so preselection only fires once
 	previewMode         PreviewMode           // What to show in preview pane (both, output-only, analytics-only)
 	groupViewMode       session.GroupViewMode // List partition: normal, active-on-top, populated-on-top (cycled by hotkey 't')
+	sidebarMode         sidebarPresentation   // Session navigation: grouped (default) or flat
+	compactSidebar      bool                  // Narrow session rail; manual split resizing opts out
+	embeddedLayout      bool                  // Embedded terminal layout; false preserves classic interaction
 	err                 error
 	errTime             time.Time  // When error occurred (for auto-dismiss)
 	isReloading         bool       // Visual feedback during auto-reload
@@ -629,7 +632,19 @@ type Home struct {
 	// focused session's tmux pane instead of being interpreted as TUI
 	// commands. Toggled with `I` (enter) and `Esc` (exit).
 	insertMode          bool
+	embeddedMode        bool
 	insertModeSessionID string
+	// Full-fidelity embedded session state. Production wires sessionInput and
+	// sessionOutput from main; package tests that omit them keep exercising the
+	// legacy capture/send-keys path until their focused seam is migrated.
+	sessionInput       *SessionInputRouter
+	sessionOutput      *SessionOutput
+	embeddedTerminal   *embeddedTerminal
+	embeddedRequest    terminal.AttachRequest
+	embeddedGeneration uint64
+	// embeddedSidebarHidden maximizes the PTY inside the dashboard while
+	// preserving the previous sidebar width for the next restore.
+	embeddedSidebarHidden bool
 	// insertKeySink is an optional override used by tests to capture keys
 	// without running real tmux. When nil, keys are sent via the session's
 	// tmux pane (SendKeys / SendEnter).
@@ -657,6 +672,7 @@ type Home struct {
 	// insertModeSessionID instead.
 	insertModeRemoteName string
 	insertModeRemoteID   string
+	sessionExists        func(*session.Instance) bool
 
 	// Insert-mode keystroke batching (#1094). Per-keystroke tmux send-keys
 	// invocations are too slow when typing fast. Runes are accumulated in
@@ -671,6 +687,7 @@ type Home struct {
 	// after an insert keystroke (#1131). Only one tick is in flight at a time;
 	// see scheduleInsertPreviewRefresh.
 	insertPreviewRefreshPending bool
+	embeddedRefreshPending      bool
 	// openInNewWindowSink is an optional override used by tests to capture
 	// Shift+Enter dispatches without spawning a real iTerm2 window. When
 	// nil, the dispatch calls terminal.OpenSessionInNewWindow directly.
@@ -700,11 +717,13 @@ type reloadState struct {
 
 // uiState persists cursor, preview mode, and status filter across restarts
 type uiState struct {
-	CursorSessionID string `json:"cursor_session_id,omitempty"`
-	CursorGroupPath string `json:"cursor_group_path,omitempty"`
-	PreviewMode     int    `json:"preview_mode"`
-	StatusFilter    string `json:"status_filter,omitempty"`
-	GroupViewMode   int    `json:"group_view_mode,omitempty"`
+	CursorSessionID        string `json:"cursor_session_id,omitempty"`
+	CursorGroupPath        string `json:"cursor_group_path,omitempty"`
+	PreviewMode            int    `json:"preview_mode"`
+	StatusFilter           string `json:"status_filter,omitempty"`
+	GroupViewMode          int    `json:"group_view_mode,omitempty"`
+	SidebarMode            string `json:"sidebar_mode,omitempty"`
+	SidebarWidthCustomized bool   `json:"sidebar_width_customized,omitempty"`
 }
 
 type selectedItemIdentity struct {
@@ -1054,6 +1073,12 @@ type deletedSessionEntry struct {
 // user can opt into the stacked (PREVIEW-below) layout via
 // preview_orientation = "below"; narrow terminals always stack.
 func (h *Home) getLayoutMode() string {
+	if h.embeddedMode {
+		if h.width < layoutBreakpointStacked {
+			return LayoutModeStacked
+		}
+		return LayoutModeDual
+	}
 	switch {
 	case h.width < layoutBreakpointSingle:
 		return LayoutModeSingle
@@ -1381,6 +1406,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		insertBatchDuration:       defaultInsertBatchDuration,
 		insertOpenKeySender:       defaultInsertOpenKeySender,
 		cursor:                    0,
+		sidebarMode:               sidebarGrouped,
+		compactSidebar:            false,
+		embeddedLayout:            false,
 		initialLoading:            true, // Show splash until sessions load
 		ctx:                       ctx,
 		cancel:                    cancel,
@@ -1442,6 +1470,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(cfg, actualProfile)
 		h.previewPct = cfg.UI.GetPreviewPct()
 		h.previewOrientation = cfg.UI.GetPreviewOrientation()
+		h.embeddedLayout = cfg.UI.GetEmbeddedTerminal()
+		h.compactSidebar = h.embeddedLayout
 		h.remoteLatencyRefreshSec = cfg.UI.GetRemoteLatencyRefreshSecs(cfg.SystemStats.GetRefreshSeconds())
 		h.remoteSessionRefreshSec = cfg.UI.GetRemoteSessionRefreshSecs()
 		h.footerMode = cfg.UI.GetFooter()
@@ -1452,6 +1482,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(nil, actualProfile)
 		h.previewPct = session.DefaultPreviewPct
 		h.previewOrientation = session.DefaultPreviewOrientation
+		h.embeddedLayout = (session.UISettings{}).GetEmbeddedTerminal()
+		h.compactSidebar = h.embeddedLayout
 		h.remoteLatencyRefreshSec = (session.UISettings{}).GetRemoteLatencyRefreshSecs(0)
 		h.remoteSessionRefreshSec = (session.UISettings{}).GetRemoteSessionRefreshSecs()
 		h.footerMode = (session.UISettings{}).GetFooter()
@@ -2271,6 +2303,9 @@ func (h *Home) rebuildFlatItems() {
 	h.jumpBuffer = ""
 
 	allItems := h.groupTree.Flatten()
+	if h.embeddedLayout && h.sidebarMode == sidebarFlat {
+		allItems = flatSidebarItemsFromTree(h.groupTree)
+	}
 
 	// Partition archived vs active before status filters. Group membership is
 	// resolved from the full group tree — not the flattened view — so
@@ -2456,6 +2491,10 @@ func (h *Home) rebuildFlatItems() {
 		}
 	}
 
+	if h.embeddedLayout && h.sidebarMode == sidebarFlat {
+		h.flatItems = flattenSidebarItems(h.flatItems)
+	}
+
 	// Pre-compute root group numbers for O(1) hotkey lookup (replaces O(n) loop in renderGroupItem).
 	// View-mode partitioning can duplicate root headers; every copy of the same
 	// logical root reuses the same digit.
@@ -2590,55 +2629,45 @@ func (h *Home) syncViewport() {
 		panelContentHeight = contentHeight - panelTitleLines
 	}
 
-	// maxVisible = how many items can be shown (reserving 1 for "more below" indicator)
-	maxVisible := panelContentHeight - 1
-	if maxVisible < 1 {
-		maxVisible = 1
+	lineBudget := max(1, panelContentHeight-1)
+	sidebarWidth := h.width
+	if layoutMode == LayoutModeDual {
+		sidebarWidth = h.sessionsPaneWidth()
 	}
 
-	// Account for "more above" indicator (takes 1 line when scrolled down)
-	// This is the key fix: when we're scrolled down, we have 1 less visible line
-	effectiveMaxVisible := maxVisible
-	if h.viewOffset > 0 {
-		effectiveMaxVisible-- // "more above" indicator takes 1 line
-	}
-	if effectiveMaxVisible < 1 {
-		effectiveMaxVisible = 1
-	}
-
-	// If cursor is above viewport, scroll up
 	if h.cursor < h.viewOffset {
 		h.viewOffset = h.cursor
 	}
-
-	// If cursor is below viewport, scroll down
-	if h.cursor >= h.viewOffset+effectiveMaxVisible {
-		// When scrolling down, we need to account for the "more above" indicator
-		// that will appear once viewOffset > 0
-		if h.viewOffset == 0 {
-			// First scroll down: "more above" will appear, reducing visible by 1
-			h.viewOffset = h.cursor - (maxVisible - 1) + 1
-		} else {
-			// Already scrolled: "more above" already showing
-			h.viewOffset = h.cursor - effectiveMaxVisible + 1
-		}
-	}
-
-	// Clamp viewOffset to valid range
-	// When scrolled down, "more above" takes 1 line, so we can show fewer items
-	finalMaxVisible := maxVisible
-	if h.viewOffset > 0 {
-		finalMaxVisible--
-	}
-	maxOffset := len(h.flatItems) - finalMaxVisible
-	if maxOffset < 0 {
-		maxOffset = 0
-	}
-	if h.viewOffset > maxOffset {
-		h.viewOffset = maxOffset
+	if h.viewOffset >= len(h.flatItems) {
+		h.viewOffset = len(h.flatItems) - 1
 	}
 	if h.viewOffset < 0 {
 		h.viewOffset = 0
+	}
+
+	for h.viewOffset < h.cursor {
+		effectiveBudget := lineBudget
+		if h.viewOffset > 0 {
+			effectiveBudget--
+		}
+		effectiveBudget = max(1, effectiveBudget)
+		if h.sidebarItemsHeight(h.flatItems, h.viewOffset, h.cursor+1, sidebarWidth) <= effectiveBudget {
+			break
+		}
+		h.viewOffset++
+	}
+
+	for h.viewOffset > 0 {
+		candidate := h.viewOffset - 1
+		effectiveBudget := lineBudget
+		if candidate > 0 {
+			effectiveBudget--
+		}
+		effectiveBudget = max(1, effectiveBudget)
+		if h.sidebarItemsHeight(h.flatItems, candidate, h.cursor+1, sidebarWidth) > effectiveBudget {
+			break
+		}
+		h.viewOffset = candidate
 	}
 }
 
@@ -5043,6 +5072,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.geminiModelDialog.SetSize(msg.Width, msg.Height)
 		h.promptInputDialog.SetSize(msg.Width, msg.Height)
 		h.scrollbackPager.SetSize(msg.Width, msg.Height)
+		if h.embeddedMode && h.embeddedTerminal != nil {
+			h.syncEmbeddedTerminalGeometry()
+			return h, nil
+		}
 		// Issue #1366: a resize can reveal the preview pane (single -> stacked/dual).
 		// fetchSelectedPreview self-guards to nil in single-column, so this only
 		// fetches when a preview pane is actually visible.
@@ -5178,6 +5211,48 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 		return h, h.fetchPreview(inst, key, winIdx)
+
+	case embeddedStartMsg:
+		return h, h.installEmbeddedTerminal(msg)
+
+	case embeddedFrameMsg:
+		return h, h.updateEmbeddedFrame(msg)
+
+	case embeddedRefreshMsg:
+		h.embeddedRefreshPending = false
+		if !h.embeddedMode {
+			return h, nil
+		}
+		inst, key, winIdx := h.selectedPreviewTarget()
+		if inst == nil || key == "" {
+			remoteName, remoteSessionID, remoteKey, ok := h.selectedRemotePreviewTarget()
+			if !ok {
+				return h, h.scheduleEmbeddedRefresh()
+			}
+			h.previewCacheMu.Lock()
+			alreadyFetching := h.previewFetchingID == remoteKey
+			if !alreadyFetching {
+				h.previewFetchingID = remoteKey
+			}
+			h.previewCacheMu.Unlock()
+			if alreadyFetching {
+				return h, h.scheduleEmbeddedRefresh()
+			}
+			return h, tea.Batch(
+				h.fetchRemotePreview(remoteName, remoteSessionID, remoteKey),
+				h.scheduleEmbeddedRefresh(),
+			)
+		}
+		h.previewCacheMu.Lock()
+		alreadyFetching := h.previewFetchingID == key
+		if !alreadyFetching {
+			h.previewFetchingID = key
+		}
+		h.previewCacheMu.Unlock()
+		if alreadyFetching {
+			return h, h.scheduleEmbeddedRefresh()
+		}
+		return h, tea.Batch(h.fetchPreview(inst, key, winIdx), h.scheduleEmbeddedRefresh())
 
 	case loadSessionsMsg:
 		// Clear loading indicators and store file mtime for external change detection
@@ -6987,6 +7062,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.reloadHotkeysFromConfig()
 				h.showSessionTimestamps = config.Display.ShowSessionTimestamps
 				h.showPaneTitles = config.Display.ShowPaneTitles
+				wasEmbeddedLayout := h.embeddedLayout
+				h.embeddedLayout = config.UI.GetEmbeddedTerminal()
+				if h.embeddedLayout != wasEmbeddedLayout {
+					h.compactSidebar = h.embeddedLayout
+				}
+				h.rebuildFlatItemsPreservingSelection(h.captureSelectedItemIdentity())
 
 				// Apply theme changes live
 				h.stopThemeWatcher()
@@ -7859,6 +7940,7 @@ func (h *Home) handleDividerDrag(msg tea.MouseMsg) bool {
 		case tea.MouseActionRelease:
 			h.draggingDivider = false
 			persistPreviewPct(h.getPreviewPct())
+			h.saveUIState()
 		}
 		return true
 	}
@@ -7881,6 +7963,7 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if h.draggingDivider {
 			h.draggingDivider = false
 			persistPreviewPct(h.getPreviewPct())
+			h.saveUIState()
 		}
 		return h, nil
 	}
@@ -7929,14 +8012,20 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if isDoubleClick {
 			h.lastClickIndex = -1 // Reset to prevent triple-click
 			item := h.flatItems[itemIndex]
+			if !h.embeddedLayout && (item.Type == session.ItemTypeSession || item.Type == session.ItemTypeWindow || item.Type == session.ItemTypeRemoteSession) {
+				h.cursor = itemIndex
+				return h, h.attachSelectedLegacy()
+			}
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				if h.hasActiveAnimation(item.Session.ID) {
 					h.setError(fmt.Errorf("session is starting, please wait..."))
 					return h, nil
 				}
-				if item.Session.Exists() {
-					h.isAttaching.Store(true) // Prevent View() output during transition (atomic)
-					return h, h.attachSession(item.Session)
+				if h.sessionExistsForUI(item.Session) {
+					if h.enterEmbeddedMode() {
+						return h, h.startEmbeddedModeCmd()
+					}
+					return h, nil
 				}
 			} else if item.Type == session.ItemTypeGroup {
 				groupPath := item.Path
@@ -8007,11 +8096,18 @@ func (h *Home) mouseYToItemIndex(y int) int {
 		return -1
 	}
 
-	itemIndex := h.viewOffset + lineInList
-	if itemIndex >= len(h.flatItems) {
-		return -1
+	sidebarWidth := h.width
+	if h.getLayoutMode() == LayoutModeDual {
+		sidebarWidth = h.sessionsPaneWidth()
 	}
-	return itemIndex
+	for itemIndex := h.viewOffset; itemIndex < len(h.flatItems); itemIndex++ {
+		rowHeight := h.sidebarItemRenderHeightAtWidth(h.flatItems[itemIndex], sidebarWidth)
+		if lineInList < rowHeight {
+			return itemIndex
+		}
+		lineInList -= rowHeight
+	}
+	return -1
 }
 
 // handleMainKey handles keys in main view
@@ -8292,11 +8388,20 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case "alt+enter":
+		if !h.embeddedLayout {
+			return h, nil
+		}
+		return h, h.attachSelectedLegacy()
+
 	case "enter":
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
+			if !h.embeddedLayout && (item.Type == session.ItemTypeSession || item.Type == session.ItemTypeWindow || item.Type == session.ItemTypeRemoteSession) {
+				return h, h.attachSelectedLegacy()
+			}
 			if item.Type == session.ItemTypeSession && item.Session != nil {
-				if item.Session.Exists() {
+				if h.sessionExistsForUI(item.Session) {
 					// Pane dead (process exited) — restart instead of attaching to dead pane.
 					tmuxSess := item.Session.GetTmuxSession()
 					if tmuxSess != nil && tmuxSess.IsPaneDead() {
@@ -8306,7 +8411,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						}
 						return h, nil
 					}
-					return h, h.attachSession(item.Session)
+					if h.enterEmbeddedMode() {
+						return h, h.startEmbeddedModeCmd()
+					}
+					return h, nil
 				}
 				// Session exited (tmux session gone) — auto-restart it.
 				if !h.hasActiveAnimation(item.Session.ID) {
@@ -8326,47 +8434,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				h.saveGroupState()
 			} else if item.Type == session.ItemTypeWindow {
-				// Find parent session by WindowSessionID
-				var parentInst *session.Instance
-				h.instancesMu.RLock()
-				for _, inst := range h.instances {
-					if inst.ID == item.WindowSessionID {
-						parentInst = inst
-						break
-					}
-				}
-				h.instancesMu.RUnlock()
-
-				if parentInst != nil && parentInst.Exists() {
-					tmuxSess := parentInst.GetTmuxSession()
-					if tmuxSess != nil {
-						tmuxSess.EnsureConfigured()
-						parentInst.SyncSessionIDsToTmux()
-						parentInst.MarkAccessed()
-
-						if parentInst.GetStatusThreadSafe() == session.StatusWaiting {
-							tmuxSess.Acknowledge()
-							if db := statedb.GetGlobal(); db != nil {
-								_ = db.SetAcknowledged(parentInst.ID, true)
-							}
-						}
-
-						h.isAttaching.Store(true)
-						return h, tea.Exec(attachWindowCmd{
-							session:     tmuxSess,
-							windowIndex: item.WindowIndex,
-							detachByte:  h.detachByte(),
-							onExit:      func() { h.isAttaching.Store(false) },
-						}, func(err error) tea.Msg {
-							h.isAttaching.Store(false)
-							parentInst.MarkAccessed()
-							return statusUpdateMsg{}
-						})
-					}
+				parentInst := h.getInstanceByID(item.WindowSessionID)
+				if parentInst != nil && h.sessionExistsForUI(parentInst) && h.enterEmbeddedMode() {
+					return h, h.startEmbeddedModeCmd()
 				}
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
-				// Attach to remote session via SSH
-				return h, h.attachRemoteSession(item.RemoteName, item.RemoteSession.ID)
+				if h.enterEmbeddedMode() {
+					return h, h.startEmbeddedModeCmd()
+				}
 			}
 		}
 		return h, nil
@@ -9162,6 +9237,21 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.previewMode = (h.previewMode + 1) % 3
 		return h, nil
 
+	case "alt+v":
+		if !h.embeddedLayout {
+			return h, nil
+		}
+		selectedBefore := h.captureSelectedItemIdentity()
+		if h.sidebarMode == sidebarGrouped {
+			h.sidebarMode = sidebarFlat
+		} else {
+			h.sidebarMode = sidebarGrouped
+		}
+		h.rebuildFlatItemsPreservingSelection(selectedBefore)
+		h.skipDivider(1)
+		h.saveUIState()
+		return h, h.fetchSelectedPreview()
+
 	case "t":
 		// Cycle list partition: normal → active-on-top → populated-on-top → normal.
 		// Preserve the cursor's row identity across the rebuild.
@@ -9529,6 +9619,63 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return h, nil
+}
+
+func (h *Home) attachSelectedLegacy() tea.Cmd {
+	if h.cursor < 0 || h.cursor >= len(h.flatItems) {
+		return nil
+	}
+	item := h.flatItems[h.cursor]
+	switch item.Type {
+	case session.ItemTypeSession:
+		if item.Session == nil {
+			return nil
+		}
+		if !h.sessionExistsForUI(item.Session) {
+			if !h.hasActiveAnimation(item.Session.ID) {
+				h.resumingSessions[item.Session.ID] = time.Now()
+				return h.restartSession(item.Session)
+			}
+			return nil
+		}
+		if tmuxSess := item.Session.GetTmuxSession(); tmuxSess != nil && tmuxSess.IsPaneDead() {
+			if !h.hasActiveAnimation(item.Session.ID) {
+				h.resumingSessions[item.Session.ID] = time.Now()
+				return h.restartSession(item.Session)
+			}
+			return nil
+		}
+		return h.attachSession(item.Session)
+	case session.ItemTypeWindow:
+		parentInst := h.getInstanceByID(item.WindowSessionID)
+		if parentInst == nil || !h.sessionExistsForUI(parentInst) {
+			return nil
+		}
+		tmuxSess := parentInst.GetTmuxSession()
+		if tmuxSess == nil {
+			return nil
+		}
+		tmuxSess.EnsureConfigured()
+		parentInst.SyncSessionIDsToTmux()
+		parentInst.MarkAccessed()
+		if parentInst.GetStatusThreadSafe() == session.StatusWaiting {
+			tmuxSess.Acknowledge()
+			if db := statedb.GetGlobal(); db != nil {
+				_ = db.SetAcknowledged(parentInst.ID, true)
+			}
+		}
+		h.isAttaching.Store(true)
+		return tea.Exec(attachWindowCmd{session: tmuxSess, windowIndex: item.WindowIndex, detachByte: h.detachByte()}, func(error) tea.Msg {
+			h.isAttaching.Store(false)
+			parentInst.MarkAccessed()
+			return statusUpdateMsg{}
+		})
+	case session.ItemTypeRemoteSession:
+		if item.RemoteSession != nil {
+			return h.attachRemoteSession(item.RemoteName, item.RemoteSession.ID)
+		}
+	}
+	return nil
 }
 
 // handleConfirmDialogKey handles keys when confirmation dialog is visible
@@ -11097,9 +11244,11 @@ func (h *Home) saveUIState() {
 	}
 
 	state := uiState{
-		PreviewMode:   int(h.previewMode),
-		StatusFilter:  string(h.statusFilter),
-		GroupViewMode: int(h.groupViewMode),
+		PreviewMode:            int(h.previewMode),
+		StatusFilter:           string(h.statusFilter),
+		GroupViewMode:          int(h.groupViewMode),
+		SidebarMode:            string(h.sidebarMode),
+		SidebarWidthCustomized: h.embeddedLayout && !h.compactSidebar,
 	}
 
 	// Capture cursor position
@@ -11150,16 +11299,26 @@ func (h *Home) loadUIState() {
 		return
 	}
 
-	// Apply preview mode, status filter, and group view mode immediately
+	h.applyUIState(state)
+
+	// Defer cursor restoration until flatItems are populated
+	h.pendingCursorRestore = &state
+}
+
+func (h *Home) applyUIState(state uiState) {
 	h.previewMode = PreviewMode(state.PreviewMode)
 	h.statusFilter = session.Status(state.StatusFilter)
 	h.groupViewMode = session.GroupViewMode(state.GroupViewMode)
 	if h.groupViewMode < session.GroupViewNormal || h.groupViewMode >= session.GroupViewModeCount {
 		h.groupViewMode = session.GroupViewNormal
 	}
-
-	// Defer cursor restoration until flatItems are populated
-	h.pendingCursorRestore = &state
+	h.sidebarMode = sidebarPresentation(state.SidebarMode)
+	if h.sidebarMode != sidebarFlat {
+		h.sidebarMode = sidebarGrouped
+	}
+	if h.embeddedLayout {
+		h.compactSidebar = !state.SidebarWidthCustomized
+	}
 }
 
 // createSessionInGroupWithWorktreeAndOptions creates a new session with full options including YOLO mode, sandbox, and tool options.
@@ -13605,9 +13764,8 @@ func (h *Home) updateSizes() {
 	h.confirmDialog.SetSize(h.width, h.height)
 	h.geminiModelDialog.SetSize(h.width, h.height)
 	if h.sessionSwitcher != nil {
-		// The switcher is a centered full-screen overlay; keep it sized so a
-		// resize while it is open (notably from the overview, where it can stay
-		// up) re-centers it instead of leaving it on stale dimensions.
+		// Keep the switcher's viewport current so its standalone centered view
+		// and the dashboard composite both respond to terminal resizes.
 		h.sessionSwitcher.SetSize(h.width, h.height)
 	}
 	h.worktreeFinishDialog.SetSize(h.width, h.height)
@@ -13716,9 +13874,6 @@ func (h *Home) View() string {
 	}
 	if h.geminiModelDialog.IsVisible() {
 		return h.geminiModelDialog.View()
-	}
-	if h.sessionSwitcher.IsVisible() {
-		return h.sessionSwitcher.View()
 	}
 	if h.scrollbackPager.IsVisible() {
 		return h.scrollbackPager.View()
@@ -13929,17 +14084,19 @@ func (h *Home) View() string {
 	// Height breakdown: -1 header, -filterBarHeight filter, -updateBannerHeight banner, -maintenanceBannerHeight maintenance, -helpBarHeight help, -debugBarHeight debug
 	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
 
-	// Route to appropriate layout based on terminal width
-	layoutMode := h.getLayoutMode()
-
 	var mainContent string
-	switch layoutMode {
-	case LayoutModeSingle:
-		mainContent = h.renderSingleColumnLayout(contentHeight)
-	case LayoutModeStacked:
-		mainContent = h.renderStackedLayout(contentHeight)
-	default: // LayoutModeDual
-		mainContent = h.renderDualColumnLayout(contentHeight)
+	if h.embeddedMode && h.embeddedSidebarHidden {
+		mainContent = h.renderEmbeddedOnlyLayout(contentHeight)
+	} else {
+		// Route to appropriate layout based on terminal width.
+		switch h.getLayoutMode() {
+		case LayoutModeSingle:
+			mainContent = h.renderSingleColumnLayout(contentHeight)
+		case LayoutModeStacked:
+			mainContent = h.renderStackedLayout(contentHeight)
+		default: // LayoutModeDual
+			mainContent = h.renderDualColumnLayout(contentHeight)
+		}
 	}
 
 	// Ensure mainContent has exact height
@@ -14014,7 +14171,105 @@ func (h *Home) View() string {
 	if h.promptInputDialog.IsVisible() {
 		rendered = h.promptInputDialog.View(rendered)
 	}
+	// Keep the session list and preview visible while Ctrl+S is open. The card
+	// is anchored to the left edge of the active-session area, immediately
+	// beside the sidebar in a dual layout, so the current sidebar selection
+	// remains visible and spatially close to the choices.
+	if h.sessionSwitcher.IsVisible() {
+		rendered = h.renderSessionSwitcherOverlay(rendered)
+	}
 	return rendered
+}
+
+// sessionSwitcherOverlayRegion returns the active-session portion of the
+// dashboard. In the ordinary dual embedded layout this is the preview pane to the
+// right of the sidebar; in a stacked layout it is the preview below the list.
+// A single-column terminal has no preview pane, so the main content area is the
+// least surprising fallback.
+func (h *Home) sessionSwitcherOverlayRegion() terminalCellRect {
+	helpBarHeight := 2
+	filterBarHeight := 1
+	updateBannerHeight := 0
+	if h.shouldRenderUpdateNudge() {
+		updateBannerHeight = 1
+	}
+	maintenanceBannerHeight := 0
+	if h.maintenanceMsg != "" {
+		maintenanceBannerHeight = 1
+	}
+	debugBarHeight := 0
+	if h.debugMode {
+		debugBarHeight = 1
+	}
+	contentHeight := h.height - 1 - helpBarHeight - filterBarHeight -
+		updateBannerHeight - maintenanceBannerHeight - debugBarHeight
+	contentY := 1 + filterBarHeight + updateBannerHeight + maintenanceBannerHeight
+
+	switch h.getLayoutMode() {
+	case LayoutModeDual:
+		leftWidth, rightWidth := h.splitPaneWidths()
+		return terminalCellRect{
+			X:      leftWidth + paneSeparatorWidth,
+			Y:      contentY,
+			Width:  rightWidth,
+			Height: contentHeight,
+		}
+	case LayoutModeStacked:
+		listHeight := h.stackedListHeight(contentHeight)
+		return terminalCellRect{
+			X:      0,
+			Y:      contentY + listHeight + 1,
+			Width:  h.width,
+			Height: max(contentHeight-listHeight-1, 1),
+		}
+	default:
+		return terminalCellRect{X: 0, Y: contentY, Width: h.width, Height: contentHeight}
+	}
+}
+
+// renderSessionSwitcherOverlay composites the Ctrl+S card over the existing
+// dashboard rather than replacing the frame. Its left edge is fixed to the
+// active-session region while its vertical position is centered within that
+// region, leaving the sidebar fully unobscured in the dual layout.
+func (h *Home) renderSessionSwitcherOverlay(background string) string {
+	region := h.sessionSwitcherOverlayRegion()
+	card := h.sessionSwitcher.dialogView(region.Width)
+	if card == "" {
+		return background
+	}
+	cardHeight := lipgloss.Height(card)
+	y := region.Y + max((region.Height-cardHeight)/2, 0)
+	composite := overlayAtCells(background, card, y, region.X)
+	return clampViewToViewport(composite, h.width, h.height)
+}
+
+// overlayAtCells paints overlay over base at terminal-cell coordinates. The
+// shared dialog dropdown helper predates wide-grapheme sidebar labels and
+// counts visible runes, which can shift a card right when a session name
+// contains emoji/CJK. Ctrl+S is explicitly anchored to the pane boundary, so
+// use ANSI-aware cell cuts here to keep that edge exact on every row.
+func overlayAtCells(base, overlay string, row, col int) string {
+	baseLines := strings.Split(base, "\n")
+	overLines := strings.Split(overlay, "\n")
+	for i, overLine := range overLines {
+		targetRow := row + i
+		if targetRow < 0 || targetRow >= len(baseLines) {
+			continue
+		}
+		baseLine := baseLines[targetRow]
+		baseWidth := cellWidth(baseLine)
+		prefix := ansi.Cut(baseLine, 0, max(col, 0))
+		if prefixWidth := cellWidth(prefix); prefixWidth < col {
+			prefix += strings.Repeat(" ", col-prefixWidth)
+		}
+		afterCol := col + cellWidth(overLine)
+		suffix := ""
+		if afterCol < baseWidth {
+			suffix = ansi.Cut(baseLine, afterCol, baseWidth)
+		}
+		baseLines[targetRow] = prefix + overLine + suffix
+	}
+	return strings.Join(baseLines, "\n")
 }
 
 // renderPanelTitle creates a styled section title with underline
@@ -14467,7 +14722,7 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	// Build left panel (session list) with styled title.
 	// Issue #1092: when the user just adjusted the split, briefly append
 	// the new ratio to both titles so the change is visible.
-	sessionsTitle := "SESSIONS"
+	sessionsTitle := h.sidebarTitle()
 	previewTitle := "PREVIEW"
 	if !h.previewPctOverlayAt.IsZero() && time.Now().Before(h.previewPctOverlayAt) {
 		pct := h.getPreviewPct()
@@ -14480,17 +14735,30 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	leftContent = ensureExactHeight(leftContent, panelContentHeight)
 	leftPanel := leftTitle + "\n" + leftContent
 
-	// Build right panel (preview) with styled title
-	rightTitle := h.renderPanelTitle(previewTitle, rightWidth)
-	rightContent := h.renderPreviewPane(rightWidth, panelContentHeight)
-	// CRITICAL: Ensure right content has exactly panelContentHeight lines
-	rightContent = ensureExactHeight(rightContent, panelContentHeight)
-	rightPanel := rightTitle + "\n" + rightContent
+	var rightPanel string
+	if h.embeddedMode {
+		innerWidth := max(1, rightWidth-2)
+		innerHeight := max(1, contentHeight-2)
+		rightContent := h.renderPreviewPane(innerWidth, innerHeight)
+		rightContent = ensureExactHeight(rightContent, innerHeight)
+		rightContent = ensureExactWidth(rightContent, innerWidth)
+		rightPanel = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorAccent).
+			Width(innerWidth).
+			Height(innerHeight).
+			Render(rightContent)
+	} else {
+		rightTitle := h.renderPanelTitle(previewTitle, rightWidth)
+		rightContent := h.renderPreviewPane(rightWidth, panelContentHeight)
+		rightContent = ensureExactHeight(rightContent, panelContentHeight)
+		rightPanel = rightTitle + "\n" + rightContent
+	}
 
 	// Build separator - must be exactly contentHeight lines. Brighten it while
 	// the user is dragging it so the resize handle reads as active.
 	separatorColor := ColorBorder
-	if h.draggingDivider {
+	if h.draggingDivider || h.embeddedMode {
 		separatorColor = ColorAccent
 	}
 	// Every row is the same constant string, so style it once and reuse it
@@ -14560,7 +14828,7 @@ func (h *Home) renderStackedLayout(totalHeight int) string {
 	}
 
 	// Session list (full width)
-	listTitle := h.renderPanelTitle("SESSIONS", h.width)
+	listTitle := h.renderPanelTitle(h.sidebarTitle(), h.width)
 	listContent := h.renderSessionList(h.width, listHeight-2) // -2 for title
 	listContent = ensureExactHeight(listContent, listHeight-2)
 	b.WriteString(listTitle)
@@ -14591,7 +14859,7 @@ func (h *Home) renderSingleColumnLayout(totalHeight int) string {
 	// Full height for list
 	listHeight := totalHeight - 2 // -2 for title
 
-	listTitle := h.renderPanelTitle("SESSIONS", h.width)
+	listTitle := h.renderPanelTitle(h.sidebarTitle(), h.width)
 	listContent := h.renderSessionList(h.width, listHeight)
 	listContent = ensureExactHeight(listContent, listHeight)
 
@@ -14600,6 +14868,22 @@ func (h *Home) renderSingleColumnLayout(totalHeight int) string {
 	b.WriteString(listContent)
 
 	return b.String()
+}
+
+// renderEmbeddedOnlyLayout gives the attached PTY the entire dashboard
+// content area while keeping the header and session control bar available.
+func (h *Home) renderEmbeddedOnlyLayout(contentHeight int) string {
+	innerWidth := max(1, h.width-2)
+	innerHeight := max(1, contentHeight-2)
+	content := h.renderPreviewPane(innerWidth, innerHeight)
+	content = ensureExactWidth(ensureExactHeight(content, innerHeight), innerWidth)
+	panel := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorAccent).
+		Width(innerWidth).
+		Height(innerHeight).
+		Render(content)
+	return ensureExactWidth(ensureExactHeight(panel, contentHeight), h.width)
 }
 
 // renderSectionDivider creates a modern section divider with optional centered label
@@ -15703,18 +15987,20 @@ func (h *Home) renderSessionList(width, height int) string {
 			Render(emptyContent)
 	}
 
-	// Render items starting from viewOffset
-	visibleCount := 0
-	maxVisible := height - 1 // Leave room for scrolling indicator
-	if maxVisible < 1 {
-		maxVisible = 1
+	// Render items starting from viewOffset. Local sessions use a three-line
+	// Embedded card when the pane is wide enough; remote sessions use two lines and
+	// group/divider/window rows stay one line.
+	usedLines := 0
+	lineBudget := height - 1 // Leave room for scrolling indicator
+	if lineBudget < 1 {
+		lineBudget = 1
 	}
 
 	// Show "more above" indicator if scrolled down
 	if h.viewOffset > 0 {
 		b.WriteString(DimStyle.Render(fmt.Sprintf("  ⋮ +%d above", h.viewOffset)))
 		b.WriteString("\n")
-		maxVisible-- // Account for the indicator line
+		lineBudget-- // Account for the indicator line
 	}
 
 	snapshot := h.getSessionRenderSnapshot()
@@ -15729,13 +16015,19 @@ func (h *Home) renderSessionList(width, height int) string {
 		}
 	}
 
-	for i := h.viewOffset; i < len(h.flatItems) && visibleCount < maxVisible; i++ {
+	nextItem := h.viewOffset
+	for i := h.viewOffset; i < len(h.flatItems); i++ {
 		item := h.flatItems[i]
+		rowHeight := h.sidebarItemRenderHeightAtWidth(item, width)
+		if usedLines > 0 && usedLines+rowHeight > lineBudget {
+			break
+		}
 		if h.jumpMode && item.Type != session.ItemTypeDivider {
 			hint, ok := jumpHintByItemIndex[i]
 			if !ok {
 				h.renderItem(&b, item, i == h.cursor, i, groupStats, snapshot, width)
-				visibleCount++
+				usedLines += rowHeight
+				nextItem = i + 1
 				continue
 			}
 			// Render item to temp buffer, then overlay hint badge at name position
@@ -15761,11 +16053,12 @@ func (h *Home) renderSessionList(width, height int) string {
 		} else {
 			h.renderItem(&b, item, i == h.cursor, i, groupStats, snapshot, width)
 		}
-		visibleCount++
+		usedLines += rowHeight
+		nextItem = i + 1
 	}
 
 	// Show "more below" indicator if there are more items
-	remaining := len(h.flatItems) - (h.viewOffset + visibleCount)
+	remaining := len(h.flatItems) - nextItem
 	if remaining > 0 {
 		b.WriteString(DimStyle.Render(fmt.Sprintf("  ⋮ +%d below", remaining)))
 	}
@@ -15841,7 +16134,7 @@ func (h *Home) renderItem(
 ) {
 	switch item.Type {
 	case session.ItemTypeGroup:
-		h.renderGroupItem(b, item, selected, itemIndex, groupStats)
+		h.renderGroupItem(b, item, selected, itemIndex, groupStats, listWidth)
 	case session.ItemTypeSession:
 		if item.CreatingID != "" {
 			h.renderCreatingSessionItem(b, item, selected)
@@ -15853,7 +16146,7 @@ func (h *Home) renderItem(
 	case session.ItemTypeRemoteGroup:
 		h.renderRemoteGroupItem(b, item, selected)
 	case session.ItemTypeRemoteSession:
-		h.renderRemoteSessionItem(b, item, selected)
+		h.renderRemoteSessionItemAtWidth(b, item, selected, listWidth)
 	case session.ItemTypeDivider:
 		h.renderDivider(b, item)
 	}
@@ -15889,6 +16182,7 @@ func (h *Home) renderGroupItem(
 	selected bool,
 	itemIndex int,
 	groupStats map[string]groupRenderStats,
+	listWidth int,
 ) {
 	group := item.Group
 
@@ -15933,6 +16227,16 @@ func (h *Home) renderGroupItem(
 	// Use precomputed recursive stats (group + descendants) for this render pass.
 	stats := groupStats[group.Path]
 	countStr := countStyle.Render(fmt.Sprintf(" (%d)", stats.sessionCount))
+	if h.compactEmbeddedSidebar() {
+		row := indent + expandIcon + " " + nameStyle.Render(group.Name) + countStr
+		row = fitCellWidth(row, max(1, listWidth))
+		if selected {
+			row = lipgloss.NewStyle().Foreground(ColorText).Background(ColorSurface).Render(row)
+		}
+		b.WriteString(row)
+		b.WriteString("\n")
+		return
+	}
 
 	statusStr := ""
 	if stats.running > 0 {
@@ -16068,6 +16372,14 @@ func (h *Home) renderSessionItem(
 	listWidth int,
 ) {
 	inst := item.Session
+	if h.embeddedLayout && listWidth >= embeddedCardMinWidth {
+		instState, ok := snapshot[inst.ID]
+		if !ok {
+			instState = h.getSessionRenderState(inst)
+		}
+		h.renderEmbeddedSessionItem(b, item, selected, instState, listWidth)
+		return
+	}
 
 	// Read status/tool from snapshot so render path stays lock-light during key-repeat.
 	instState, ok := snapshot[inst.ID]
@@ -16658,8 +16970,62 @@ func (h *Home) renderRemoteLatencyMarker(remoteName string, selected bool) strin
 
 // renderRemoteSessionItem renders a single remote session row
 func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, selected bool) {
+	h.renderRemoteSessionItemAtWidth(b, item, selected, embeddedCardMinWidth-1)
+}
+
+func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.Item, selected bool, listWidth int) {
 	rs := item.RemoteSession
 	if rs == nil {
+		return
+	}
+	if h.embeddedLayout && listWidth >= embeddedCardMinWidth {
+		statusIcon := "○"
+		statusStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+		switch rs.Status {
+		case "running":
+			statusIcon = "●"
+			statusStyle = lipgloss.NewStyle().Foreground(ColorGreen)
+		case "waiting":
+			statusIcon = "◐"
+			statusStyle = lipgloss.NewStyle().Foreground(ColorYellow)
+		case "error":
+			statusIcon = "✕"
+			statusStyle = lipgloss.NewStyle().Foreground(ColorRed)
+		}
+		indent := strings.Repeat("  ", max(0, item.Level-1))
+		marker := "  "
+		if selected {
+			marker = "▶ "
+		}
+		embedded := h.embeddedRemoteSessionIs(item.RemoteName, rs.ID)
+		if embedded {
+			marker = "┃ "
+		}
+		firstPlain := indent + marker + statusIcon + " " + rs.Title
+		first := fitCellWidth(indent+marker+statusStyle.Render(statusIcon)+" "+rs.Title, max(1, listWidth))
+		secondText := strings.TrimSpace(rs.Status)
+		if secondText == "" {
+			secondText = "idle"
+		}
+		if rs.Tool != "" {
+			secondText += " · " + strings.ToLower(rs.Tool)
+		}
+		if !h.compactSidebar {
+			secondText += " · " + item.RemoteName
+		}
+		second := fitCellWidth(indent+"    "+secondText, max(1, listWidth))
+		if selected || embedded {
+			style := lipgloss.NewStyle().Foreground(ColorText).Background(ColorSurface)
+			first = style.Render(fitCellWidth(firstPlain, max(1, listWidth)))
+			second = style.Foreground(ColorTextDim).Render(second)
+		} else {
+			first = lipgloss.NewStyle().Foreground(ColorText).Render(first)
+			second = lipgloss.NewStyle().Foreground(ColorTextDim).Render(second)
+		}
+		b.WriteString(first)
+		b.WriteString("\n")
+		b.WriteString(second)
+		b.WriteString("\n")
 		return
 	}
 
@@ -17077,6 +17443,9 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 // renderPreviewPane renders the right panel with live preview
 func (h *Home) renderPreviewPane(width, height int) string {
 	var b strings.Builder
+	if h.embeddedMode && h.sessionInput != nil {
+		return h.renderEmbeddedTerminalContent(width, height)
+	}
 
 	if len(h.flatItems) == 0 || h.cursor >= len(h.flatItems) {
 		// Show different message when there are no sessions vs just no selection
@@ -17132,6 +17501,31 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 	// Remote items: show simple preview
 	if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
+		if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil &&
+			h.embeddedRemoteSessionIs(item.RemoteName, item.RemoteSession.ID) {
+			key := remotePreviewCacheKey(item.RemoteName, item.RemoteSession.ID)
+			h.previewCacheMu.RLock()
+			preview := h.previewCache[key]
+			h.previewCacheMu.RUnlock()
+			return renderEmbeddedTerminal(
+				item.RemoteSession.Title,
+				item.RemoteSession.Status,
+				item.RemoteSession.Tool+" · "+item.RemoteName,
+				preview,
+				width,
+				height,
+				h.previewScrollOffset,
+			)
+		}
+		if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil && h.embeddedLayout &&
+			item.RemoteSession.Status != string(session.StatusStopped) &&
+			item.RemoteSession.Status != string(session.StatusError) {
+			key := remotePreviewCacheKey(item.RemoteName, item.RemoteSession.ID)
+			h.previewCacheMu.RLock()
+			preview := h.previewCache[key]
+			h.previewCacheMu.RUnlock()
+			return h.renderDetachedTerminalContent(preview, width, height)
+		}
 		return h.renderRemotePreview(item, width, height)
 	}
 
@@ -17182,10 +17576,30 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	if item.Type == session.ItemTypeWindow {
 		pvKey = previewCacheKey(selected.ID, item.WindowIndex)
 	}
+	if h.embeddedSessionIs(selected.ID) {
+		h.previewCacheMu.RLock()
+		preview := h.previewCache[pvKey]
+		h.previewCacheMu.RUnlock()
+		return renderEmbeddedTerminal(
+			selected.Title,
+			string(selected.GetStatusThreadSafe()),
+			selected.Tool,
+			preview,
+			width,
+			height,
+			h.previewScrollOffset,
+		)
+	}
+	selectedStatus := selected.GetStatusThreadSafe()
+	if h.embeddedLayout && selectedStatus != session.StatusStopped && selectedStatus != session.StatusError {
+		h.previewCacheMu.RLock()
+		preview := h.previewCache[pvKey]
+		h.previewCacheMu.RUnlock()
+		return h.renderDetachedTerminalContent(preview, width, height)
+	}
 
 	// Session info header box
 	// Cache status once to avoid races with background status updates
-	selectedStatus := selected.GetStatusThreadSafe()
 	statusIcon := "○"
 	statusColor := ColorTextDim
 	switch selectedStatus {
@@ -18882,6 +19296,10 @@ func (h *Home) openSessionSwitcher(fromID string, reattachOnCancel bool) {
 		return
 	}
 	h.sessionSwitcher.reattachOnCancel = reattachOnCancel
+	// Keep the underlying sidebar on the same session as the picker from
+	// the first frame. This matters when Ctrl+S was opened from a full-screen
+	// attach whose session was not the dashboard's last cursor position.
+	h.syncSessionSwitcherSidebarSelection()
 	// Treat the opening Ctrl+S as the first advance so key-repeat that arrives
 	// right after the attach->TUI handoff is throttled instead of spinning.
 	h.sessionSwitcher.lastCycleAt = time.Now()
@@ -18889,6 +19307,21 @@ func (h *Home) openSessionSwitcher(fromID string, reattachOnCancel bool) {
 	// session, and schedule none: auto-commit arms only once the user cycles
 	// (Ctrl+S/Ctrl+A) inside this picker.
 	h.sessionSwitcher.bumpCommitGen()
+}
+
+// openEmbeddedSessionSwitcher records that commit and Esc should return through
+// the same embedded-pane path the user came from. Full-screen and overview
+// switchers retain their existing attach behavior.
+func (h *Home) openEmbeddedSessionSwitcher(fromID string) {
+	h.openSessionSwitcher(fromID, true)
+	if h.sessionSwitcher.IsVisible() {
+		h.sessionSwitcher.embeddedOnAttach = true
+		// Ctrl+S deliberately reveals the dashboard sidebar so its selection can
+		// mirror the picker highlight. Keep that visible layout when the idle
+		// commit re-enters the selected session; restoring the old collapsed
+		// state here made the sidebar disappear as soon as the user released W.
+		h.embeddedSidebarHidden = false
+	}
 }
 
 // armSwitcherCommit (re)starts the idle-commit countdown and returns the timer
@@ -18899,6 +19332,31 @@ func (h *Home) armSwitcherCommit() tea.Cmd {
 	return tea.Tick(switcherIdleCommit, func(time.Time) tea.Msg {
 		return switcherCommitMsg{gen: gen}
 	})
+}
+
+// syncSessionSwitcherSidebarSelection maps the floating picker's highlight to
+// the ordinary sidebar cursor. The dashboard remains visible beneath Ctrl+S,
+// so keeping both cursors on the same session makes the spatial relationship
+// explicit instead of leaving the sidebar parked on the origin row.
+func (h *Home) syncSessionSwitcherSidebarSelection() {
+	sel := h.sessionSwitcher.GetSelected()
+	if sel == nil {
+		return
+	}
+	h.selectSidebarSessionForSwitcher(sel.ID)
+}
+
+func (h *Home) selectSidebarSessionForSwitcher(id string) {
+	if idx := h.flatItemIndexByID(id); idx >= 0 {
+		h.cursor = idx
+		h.syncViewport()
+		return
+	}
+	// Production Home always owns a GroupTree; the nil guard keeps lightweight
+	// renderer/interaction fixtures from needing the entire dashboard graph.
+	if h.groupTree != nil {
+		h.SelectSessionByID(id)
+	}
 }
 
 // handleSwitcherCommit commits the highlighted session when the idle timer that
@@ -18917,8 +19375,9 @@ func (h *Home) commitSessionSwitch() tea.Cmd {
 	if sel := h.sessionSwitcher.GetSelected(); sel != nil {
 		target = sel.ID
 	}
+	embedded := h.sessionSwitcher.embeddedOnAttach
 	h.sessionSwitcher.Hide()
-	return h.attachToSwitchTarget(target)
+	return h.attachToSwitchTargetInMode(target, embedded)
 }
 
 // scrollbackCaptureLines is how many trailing history lines the pager captures.
@@ -18990,6 +19449,10 @@ func (h *Home) handleScrollbackPagerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // attachToSwitchTarget re-attaches to the session with the given ID and lands
 // the list cursor there on the next detach. Returns nil if the session is gone.
 func (h *Home) attachToSwitchTarget(id string) tea.Cmd {
+	return h.attachToSwitchTargetInMode(id, false)
+}
+
+func (h *Home) attachToSwitchTargetInMode(id string, embedded bool) tea.Cmd {
 	if id == "" {
 		return nil
 	}
@@ -18997,6 +19460,15 @@ func (h *Home) attachToSwitchTarget(id string) tea.Cmd {
 	inst := h.instanceByID[id]
 	h.instancesMu.RUnlock()
 	if inst == nil {
+		return nil
+	}
+	if embedded {
+		if !h.SelectSessionByID(id) {
+			return nil
+		}
+		if h.enterEmbeddedMode() {
+			return h.startEmbeddedModeCmd()
+		}
 		return nil
 	}
 	h.lastNotifSwitchMu.Lock()
@@ -19024,10 +19496,14 @@ func (h *Home) handleSessionSwitcherKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.commitSessionSwitch()
 	case "esc":
 		reattach := h.sessionSwitcher.reattachOnCancel
+		embedded := h.sessionSwitcher.embeddedOnAttach
 		fromID := h.sessionSwitcher.fromID
 		h.sessionSwitcher.Hide()
+		// Cancel means the origin is selected again in both the sidebar and
+		// attach target. Overview-opened switchers also restore their origin.
+		h.selectSidebarSessionForSwitcher(fromID)
 		if reattach {
-			return h, h.attachToSwitchTarget(fromID)
+			return h, h.attachToSwitchTargetInMode(fromID, embedded)
 		}
 		return h, nil
 	case "ctrl+q":
@@ -19035,17 +19511,23 @@ func (h *Home) handleSessionSwitcherKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.sessionSwitcher.Hide()
 		return h, nil
 	case "ctrl+s":
-		h.sessionSwitcher.cycle(true, time.Now())
+		if h.sessionSwitcher.cycle(true, time.Now()) {
+			h.syncSessionSwitcherSidebarSelection()
+		}
 		return h, h.armSwitcherCommit()
 	case "ctrl+a":
-		h.sessionSwitcher.cycle(false, time.Now())
+		if h.sessionSwitcher.cycle(false, time.Now()) {
+			h.syncSessionSwitcherSidebarSelection()
+		}
 		return h, h.armSwitcherCommit()
 	case "up":
 		h.sessionSwitcher.prev()
+		h.syncSessionSwitcherSidebarSelection()
 		h.sessionSwitcher.bumpCommitGen() // cancel pending auto-commit: manual mode
 		return h, nil
 	case "down":
 		h.sessionSwitcher.next()
+		h.syncSessionSwitcherSidebarSelection()
 		h.sessionSwitcher.bumpCommitGen()
 		return h, nil
 	default:

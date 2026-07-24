@@ -50,10 +50,11 @@ const (
 	SettingShowPaneTitles
 	SettingShowOnlyInstalledTools
 	SettingVisibleTools
+	SettingEmbeddedTerminal
 )
 
 // Total number of navigable settings.
-const settingsCount = 34
+const settingsCount = 35
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -104,6 +105,7 @@ type SettingsPanel struct {
 	showSessionTimestamps  bool
 	showPaneTitles         bool
 	showOnlyInstalledTools bool
+	embeddedLayout         bool
 	pendingToolVisibility  bool
 
 	// Text input state
@@ -163,6 +165,7 @@ func NewSettingsPanel() *SettingsPanel {
 		statsShowRAM:        true,
 		statsShowDisk:       true,
 		statsShowNetwork:    true,
+		embeddedLayout:      false,
 	}
 }
 
@@ -339,7 +342,8 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.showSessionTimestamps = config.Display.ShowSessionTimestamps
 	s.showPaneTitles = config.Display.ShowPaneTitles
 
-	// UI tool picker settings
+	// UI settings
+	s.embeddedLayout = config.UI.GetEmbeddedTerminal()
 	s.showOnlyInstalledTools = config.UI.ShowOnlyInstalledTools
 }
 
@@ -475,7 +479,9 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	config.Display.ShowSessionTimestamps = s.showSessionTimestamps
 	config.Display.ShowPaneTitles = s.showPaneTitles
 
-	// UI tool picker settings
+	// UI settings
+	embeddedLayout := s.embeddedLayout
+	config.UI.EmbeddedTerminal = &embeddedLayout
 	config.UI.ShowOnlyInstalledTools = s.showOnlyInstalledTools
 
 	// Preserve original MCPs, Tools, and Docker settings.
@@ -749,6 +755,10 @@ func (s *SettingsPanel) toggleValue() bool {
 
 	case SettingShowOnlyInstalledTools:
 		s.showOnlyInstalledTools = !s.showOnlyInstalledTools
+		return true
+
+	case SettingEmbeddedTerminal:
+		s.embeddedLayout = !s.embeddedLayout
 		return true
 	}
 
@@ -1148,6 +1158,16 @@ func (s *SettingsPanel) View() string {
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
 
+	// INTERFACE
+	content.WriteString(sectionStyle.Render("INTERFACE"))
+	content.WriteString("\n")
+
+	line = s.renderCheckbox("Embedded terminal", s.embeddedLayout) + " - Persistent sidebar with an interactive tmux pane"
+	if s.cursor == int(SettingEmbeddedTerminal) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))
 	content.WriteString("\n")
@@ -1215,6 +1235,7 @@ func (s *SettingsPanel) View() string {
 			58, // SettingShowPaneTitles (DISPLAY section, after timestamps)
 			61, // SettingShowOnlyInstalledTools (TOOL PICKER section)
 			62, // SettingVisibleTools
+			65, // SettingEmbeddedTerminal (INTERFACE section)
 		}
 		cursorLine := cursorToLine[s.cursor]
 

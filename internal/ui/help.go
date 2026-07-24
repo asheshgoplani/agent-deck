@@ -214,6 +214,36 @@ func (h *HelpOverlay) View() string {
 	archiveKey := h.key(hotkeyArchiveSession, "A")
 	unarchiveKey := h.key(hotkeyUnarchiveSession, "Shift+U")
 	viewArchivedKey := h.key(hotkeyViewArchived, "^")
+	navigationItems := [][2]string{
+		{"j / Down", "Move down"},
+		{"k / Up", "Move up"},
+		{"Ctrl+u/d", "Half page up/down"},
+		{"PgUp / PgDn", "Half page up/down"},
+		{"Ctrl+f/b", "Full page up/down"},
+		{"Home / End", "Jump to first / last item"},
+		{"gg / G", "Jump to top / global search"},
+		{"h / Left", "Collapse / parent"},
+		{"l / Right", "Expand / toggle"},
+		{"1-9", "Jump to root group"},
+		{"Space", "Jump mode"},
+	}
+	embeddedLayout := false
+	if cfg, _ := session.LoadUserConfig(); cfg != nil {
+		embeddedLayout = cfg.UI.GetEmbeddedTerminal()
+	}
+	if embeddedLayout {
+		navigationItems = append(navigationItems,
+			[2]string{"Enter", "Focus embedded terminal / toggle group"},
+			[2]string{"Alt+Enter", "Full-screen attach"},
+			[2]string{"Shift+Enter", "Open session in new iTerm window (macOS)"},
+			[2]string{"Alt+V", "Toggle grouped / flat agent sidebar"},
+		)
+	} else {
+		navigationItems = append(navigationItems,
+			[2]string{"Enter", "Attach to session / toggle group"},
+			[2]string{"Shift+Enter", "Open session in new iTerm window (macOS)"},
+		)
+	}
 
 	sections := []struct {
 		title string
@@ -221,21 +251,7 @@ func (h *HelpOverlay) View() string {
 	}{
 		{
 			title: "NAVIGATION",
-			items: [][2]string{
-				{"j / Down", "Move down"},
-				{"k / Up", "Move up"},
-				{"Ctrl+u/d", "Half page up/down"},
-				{"PgUp / PgDn", "Half page up/down"},
-				{"Ctrl+f/b", "Full page up/down"},
-				{"Home / End", "Jump to first / last item"},
-				{"gg / G", "Jump to top / global search"},
-				{"h / Left", "Collapse / parent"},
-				{"l / Right", "Expand / toggle"},
-				{"1-9", "Jump to root group"},
-				{"Space", "Jump mode"},
-				{"Enter", "Attach / toggle"},
-				{"Shift+Enter", "Open session in new iTerm window (macOS)"},
-			},
+			items: navigationItems,
 		},
 		{
 			title: "GROUP NAVIGATION (v1.7.60)",

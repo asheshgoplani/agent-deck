@@ -712,6 +712,29 @@ func TestSettingsPanel_ThemeToggle(t *testing.T) {
 	}
 }
 
+func TestSettingsPanelEmbeddedTerminalDefaultsOffAndCanBeEnabled(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.LoadConfig(&session.UserConfig{})
+	if panel.embeddedLayout {
+		t.Fatal("settings panel should preserve the classic layout by default")
+	}
+
+	panel.visible = true
+	panel.cursor = int(SettingEmbeddedTerminal)
+	_, _, changed := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed || !panel.embeddedLayout {
+		t.Fatal("embedded terminal checkbox did not toggle on")
+	}
+
+	cfg := panel.GetConfig()
+	if cfg.UI.EmbeddedTerminal == nil || !*cfg.UI.EmbeddedTerminal {
+		t.Fatal("settings panel did not persist explicit embedded_terminal=true")
+	}
+	if view := panel.View(); !containsString(view, "Embedded terminal") {
+		t.Fatal("settings panel does not render the embedded terminal checkbox")
+	}
+}
+
 func TestSettingsPanel_LoadConfig_Theme(t *testing.T) {
 	tests := []struct {
 		name     string
