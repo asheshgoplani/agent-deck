@@ -5717,12 +5717,81 @@ func (i *Instance) findLatestClaudeTranscriptOnDisk() (string, *ResponseOutput) 
 		if err != nil {
 			continue
 		}
+		// ConvertToClaudeDirName is lossy: it maps every non-alphanumeric byte to
+		// a hyphen, so two project paths that share a prefix but differ only at a
+		// separator (e.g. /a/b and /a-b) encode to the SAME projects/ subdir. A
+		// sibling session's transcript then sits alongside this instance's, and a
+		// pure newest-mtime pick would cross-route the sibling's reply into this
+		// session's output. Claude stamps the absolute cwd on its records, so when
+		// a transcript declares a cwd that is NOT this instance's project path we
+		// skip it — the mtime scan must never return a proven-foreign transcript.
+		if cwd, ok := claudeTranscriptCWD(data); ok && !sameClaudeCWD(cwd, resolvedPath) {
+			continue
+		}
 		resp, err := parseClaudeLastAssistantMessage(data, c.id+".jsonl")
 		if err == nil && resp != nil && strings.TrimSpace(resp.Content) != "" {
 			return c.id, resp
 		}
 	}
 	return "", nil
+}
+
+// claudeTranscriptCWD returns the working directory Claude Code recorded in a
+// transcript, scanning only the leading records (the cwd is stamped on every
+// record, so the first one that carries it is authoritative). It returns
+// ("", false) when no record within the scan window declares a cwd — e.g. an
+// older or truncated transcript — so callers can treat "unknown" as "cannot
+// prove foreign" rather than excluding it.
+func claudeTranscriptCWD(data []byte) (string, bool) {
+	const maxLines = 64
+	start := 0
+	for lines := 0; start < len(data) && lines < maxLines; lines++ {
+		var line []byte
+		if nl := bytes.IndexByte(data[start:], '\n'); nl < 0 {
+			line = data[start:]
+			start = len(data)
+		} else {
+			line = data[start : start+nl]
+			start += nl + 1
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var rec struct {
+			CWD string `json:"cwd"`
+		}
+		if err := json.Unmarshal(line, &rec); err != nil {
+			continue
+		}
+		if rec.CWD != "" {
+			return rec.CWD, true
+		}
+	}
+	return "", false
+}
+
+// sameClaudeCWD reports whether a transcript-recorded cwd names the same
+// directory as the instance's (already symlink-resolved) project path. It
+// compares cleaned paths first, then falls back to symlink resolution so a
+// transcript that recorded a pre-resolution cwd still matches.
+func sameClaudeCWD(transcriptCWD, resolvedProjectPath string) bool {
+	if transcriptCWD == resolvedProjectPath {
+		return true
+	}
+	a, b := filepath.Clean(transcriptCWD), filepath.Clean(resolvedProjectPath)
+	if a == b {
+		return true
+	}
+	if ra, err := filepath.EvalSymlinks(a); err == nil {
+		if ra == b {
+			return true
+		}
+		if rb, err := filepath.EvalSymlinks(b); err == nil && ra == rb {
+			return true
+		}
+	}
+	return false
 }
 
 // parseClaudeLastAssistantMessage parses a Claude JSONL file to extract the last assistant message.
