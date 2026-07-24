@@ -966,8 +966,8 @@ func main() {
 	// key reporting. Terminals that don't support the protocol ignore this
 	// sequence safely.
 	//
-	// As a belt-and-suspenders fallback, we also wrap os.Stdin with
-	// NewCSIuReader, which translates any remaining CSI u sequences (including
+	// As a belt-and-suspenders fallback, the input router translates any
+	// remaining CSI u sequences (including
 	// Shift+hyphen → '_', codepoint 95) to their legacy byte equivalents
 	// before Bubble Tea sees them. This handles terminals that send CSI u
 	// sequences even after the disable request (e.g. tmux with extended-keys).
@@ -1010,11 +1010,23 @@ func main() {
 	// startup; live sibling TUIs (allow_multiple=true) are preserved.
 	tmux.SweepStaleControlClients(tmux.DefaultSocketName())
 
+	// The input/output wrappers let the dashboard temporarily hand terminal
+	// traffic to an embedded tmux client without giving up the outer TUI.
+	sessionOutput := ui.NewSessionOutput(os.Stdout)
+	sessionInput := ui.NewSessionInputRouter(os.Stdin)
+	defer sessionInput.Deactivate()
+	defer sessionOutput.ReleaseEmbeddedCursor()
+	homeModel.SetSessionIO(sessionInput, sessionOutput)
 	p := tea.NewProgram(
 		homeModel,
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-		tea.WithInput(ui.NewCSIuReader(os.Stdin)),
+		// The embedded terminal may request all-motion mouse reporting even
+		// while Bubble Tea owns the outer TTY. The input router translates
+		// coordinates before forwarding those events to the child tmux client.
+		tea.WithMouseAllMotion(),
+		tea.WithReportFocus(),
+		tea.WithInput(sessionInput),
+		tea.WithOutput(sessionOutput),
 	)
 
 	// Start maintenance worker (background goroutine, respects config toggle)

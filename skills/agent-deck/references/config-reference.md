@@ -543,6 +543,7 @@ TUI behavior settings, including new-session tool picker visibility (TUI + web).
 ```toml
 [ui]
 footer = "full"                               # Footer hint bar: "full", "curated", "compact", "minimal"
+embedded_terminal = true                      # Opt in to the persistent sidebar + interactive tmux pane
 hidden_tools = ["gemini", "opencode", "pi"]   # Denylist: hide these from the picker
 show_only_installed_tools = true              # Also hide tools not found on PATH
 new_session_enter_advances = false            # Opt OUT: restore Enter-submits behavior
@@ -552,6 +553,7 @@ attach_on_create = true                       # Opt IN: instantly attach to a ne
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `footer` | string | `"full"` | Style of the bottom hint bar: `"full"` (default, the historic verbose bar), `"curated"`, `"compact"`, or `"minimal"`. (v1.9.49) |
+| `embedded_terminal` | bool | `false` | Opt in to a persistent compact session sidebar with an interactive tmux terminal in the dashboard. **Enter** focuses the embedded terminal, **Alt+Enter** keeps the full-screen attach path, **Ctrl+Alt+B** toggles the sidebar while focused, and **Ctrl+Q** returns to the dashboard without stopping the session. Also toggleable in TUI Settings under **INTERFACE**. |
 | `hidden_tools` | []string | `[]` | Tool names to hide from the new-session picker. `shell` is always shown and cannot be hidden. Unknown names log a warning and are ignored. Edit via TUI **Settings (`S`) → Visible tools…** or by hand in `config.toml`. |
 | `show_only_installed_tools` | bool | `false` | When `true`, hides built-in and custom tools whose command does not resolve on the host `PATH`. `shell` stays visible. If nothing else resolves, the picker falls back to showing all tools with a one-line hint. Toggle in TUI Settings under **TOOL PICKER**. |
 | `new_session_enter_advances` | bool | `true` | Controls what **Enter** does on the free-text **Name** / **Branch** fields of the new-session dialog. Default `true`: Enter **advances** to the next field, so typing a name and pressing Enter no longer silently creates a session with all defaults. **Ctrl+S** is the explicit "create now" shortcut and submits from any field in both modes. Set `false` to restore the legacy behavior where Enter on Name/Branch submits the form. |

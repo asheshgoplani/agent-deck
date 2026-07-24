@@ -43,6 +43,7 @@ type SessionSwitcher struct {
 	// callers/tests) falls back to the Instance getters.
 	labels           map[string]sessionRenderState
 	reattachOnCancel bool // Esc re-attaches to fromID (opened while attached) vs. just closing (opened from the overview)
+	embeddedOnAttach bool // commit/Esc reopens the target in the embedded pane instead of full-screen attach
 	// commitGen is bumped on every open/cycle/cancel so a stale idle-commit
 	// timer (scheduled before a later keypress) is ignored when it fires. It is
 	// intentionally monotonic — never reset — so a timer from a previous
@@ -151,6 +152,7 @@ func (s *SessionSwitcher) Hide() {
 	s.subtitles = nil
 	s.labels = nil
 	s.reattachOnCancel = false
+	s.embeddedOnAttach = false
 	s.lastCycleAt = time.Time{}
 }
 
@@ -183,8 +185,8 @@ func (s *SessionSwitcher) prev() {
 	}
 }
 
-// View renders the centered switcher box.
-func (s *SessionSwitcher) View() string {
+// dialogView renders the switcher card within the available width.
+func (s *SessionSwitcher) dialogView(availableWidth int) string {
 	if !s.visible {
 		return ""
 	}
@@ -271,12 +273,12 @@ func (s *SessionSwitcher) View() string {
 	// bordered box doesn't touch the screen edges). +4 covers the Padding(1,2).
 	const minDialogWidth = 56
 	dialogWidth := max(minDialogWidth, natural+4)
-	if s.width > 0 {
-		// Clamp to the terminal: s.width-4 keeps the bordered box one cell off
+	if availableWidth > 0 {
+		// Clamp to the available region, keeping the bordered box one cell off
 		// each edge. The floor matches contentWidth's (10) rather than the
-		// comfortable default, so a very narrow terminal still wins the clamp
+		// comfortable default, so a narrow pane still wins the clamp
 		// instead of overflowing.
-		dialogWidth = min(dialogWidth, max(10, s.width-4))
+		dialogWidth = min(dialogWidth, max(10, availableWidth-4))
 	}
 	// Content area inside the rounded border + Padding(1,2): horizontal padding
 	// eats 4 cells. Truncating rows to this keeps long titles/subtitles from
@@ -317,5 +319,14 @@ func (s *SessionSwitcher) View() string {
 		Width(dialogWidth).
 		Render(content)
 
+	return box
+}
+
+// View renders the centered switcher box.
+func (s *SessionSwitcher) View() string {
+	box := s.dialogView(s.width)
+	if box == "" {
+		return ""
+	}
 	return centerInScreen(box, s.width, s.height)
 }

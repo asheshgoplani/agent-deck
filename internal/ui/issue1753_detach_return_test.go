@@ -393,8 +393,10 @@ func TestIssue1753_AttachReturnHandlersHaveNoInlineTmuxCalls(t *testing.T) {
 			cmd:  "attachCmd{",
 		},
 		{
+			// The classic Enter path routes local attaches through
+			// attachSelectedLegacy, so the window attach lives there.
 			name: "window",
-			body: braceBlock(t, handlerBlock(t, mainKeyBody, `case "enter":`), "attachWindowCmd{"),
+			body: braceBlock(t, funcBody(t, text, "func (h *Home) attachSelectedLegacy("), "attachWindowCmd{"),
 			cmd:  "attachWindowCmd{",
 		},
 		{
