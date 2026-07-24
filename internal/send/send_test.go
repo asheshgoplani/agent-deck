@@ -42,6 +42,59 @@ func TestHasUnsentComposerPrompt(t *testing.T) {
 	}
 }
 
+// TestHasUnsentComposerPrompt_ColdLaunchMultilineShortFirstLine covers the
+// cold-first-launch send/enter race: on a fresh start the trailing Enter can be
+// swallowed while the child's TUI is still mounting, so the initial message is
+// typed into the composer but never submitted and the session sits in "waiting".
+// The send-verify loop only recovers if it can detect the message is still in
+// the composer. A multi-line message renders with only its first physical line
+// visible (the composer parser truncates at the first blank line), which is the
+// shape of every `-m` prompt once the appended completion sentinel — beginning
+// "\n\n## Final step …" — is present. When that first line is short, detection
+// must still fire. Synthetic pane + message; no tmux, no timing.
+func TestHasUnsentComposerPrompt_ColdLaunchMultilineShortFirstLine(t *testing.T) {
+	message := "Summarize\n\n## Final step — assert completion\n" +
+		"When the task is fully done, print exactly this as the last line: DONE"
+	composer := strings.Join([]string{
+		"────────────────",
+		"❯ Summarize",
+		"",
+		"## Final step — assert completion",
+		"When the task is fully done, print exactly this as the last line: DONE",
+		"────────────────",
+		"[Opus 4.6] Context: 0%",
+	}, "\n")
+	if !HasUnsentComposerPrompt(composer, message) {
+		t.Fatal("expected a still-in-composer multi-line message with a short first line to be detected as unsent")
+	}
+
+	// A composer holding an unrelated short first line must NOT match this
+	// multi-line message — the first-line branch stays type-specific.
+	other := strings.Join([]string{
+		"────────────────",
+		"❯ ls -la",
+		"────────────────",
+		"[Opus 4.6] Context: 0%",
+	}, "\n")
+	if HasUnsentComposerPrompt(other, message) {
+		t.Fatal("did not expect an unrelated composer line to match a different multi-line message")
+	}
+
+	// Once submitted, the composer is empty again — must read as consumed even
+	// though the multi-line first-line branch is now active.
+	consumed := strings.Join([]string{
+		"❯ Summarize",
+		"✳ Tempering…",
+		"────────────────",
+		"❯",
+		"────────────────",
+		"[Opus 4.6] Context: 0%",
+	}, "\n")
+	if HasUnsentComposerPrompt(consumed, message) {
+		t.Fatal("did not expect a submitted (empty-composer) pane to be treated as unsent")
+	}
+}
+
 func TestHasUnsentComposerPrompt_SubmittedHistory(t *testing.T) {
 	// Submitted messages can appear in history; only current composer should count.
 	submitted := "❯ Write one line: LAUNCH_OK\n✳ Tempering…\n────────────────\n❯\n────────────────\n[Opus 4.6] Context: 0%"

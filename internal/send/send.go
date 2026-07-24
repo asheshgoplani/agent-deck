@@ -13,6 +13,19 @@ func HasUnsentPastedPrompt(content string) bool {
 	return strings.Contains(strings.ToLower(content), "[pasted text")
 }
 
+// firstNonEmptyLine returns the first physical line of s that is non-empty
+// after trimming. Used to reconstruct what the composer actually renders for a
+// multi-line message: Claude's input box shows the message's first physical
+// line and truncates the rest behind a blank line (see HasUnsentComposerPrompt).
+func firstNonEmptyLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return line
+		}
+	}
+	return ""
+}
+
 // NormalizePromptText normalizes whitespace in prompt text by replacing NBSP
 // with regular spaces, trimming, and collapsing multiple whitespace runs.
 func NormalizePromptText(s string) string {
@@ -176,6 +189,27 @@ func HasUnsentComposerPrompt(content, message string) bool {
 	const minWrappedPrefixLen = 16
 	if len(promptBody) >= minWrappedPrefixLen && strings.HasPrefix(msg, promptBody) {
 		return true
+	}
+
+	// Multi-line messages: CurrentComposerPrompt stops collecting at the first
+	// blank line, so the composer body it recovers is only the message's first
+	// physical line. This is the shape of every `launch -m` / `session send`
+	// prompt once the completion-sentinel instruction is appended — it begins
+	// with a blank line ("\n\n## Final step …"). On a cold first start the
+	// initial Enter can be swallowed while the child's TUI is still mounting,
+	// leaving that first line sitting unsent in the composer; when it is
+	// shorter than minWrappedPrefixLen the whole-message comparisons above all
+	// miss it and the send-verify loop never fires a recovery Enter. Match the
+	// message's first physical line so that stuck state is detected regardless
+	// of first-line length. Only engages for genuinely multi-line messages
+	// (firstLine != msg), so single-line behavior is unchanged.
+	if firstLine := NormalizePromptText(firstNonEmptyLine(message)); firstLine != "" && firstLine != msg {
+		if promptBody == firstLine {
+			return true
+		}
+		if len(promptBody) >= minWrappedPrefixLen && strings.HasPrefix(firstLine, promptBody) {
+			return true
+		}
 	}
 
 	// Fallback: compare a short message prefix to handle truncation/formatting
