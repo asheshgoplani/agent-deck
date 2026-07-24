@@ -293,6 +293,10 @@ const (
 	// ErrCodeDeliveryFailed: `session send` typed the message but could not
 	// confirm submission (delivery=typed_not_submitted, issue #1413).
 	ErrCodeDeliveryFailed = "DELIVERY_FAILED"
+	// ErrCodeStaleOutput: `session output --require-fresh` found a response
+	// older than the last message delivered to the session — the agent has not
+	// answered the newest request, so the content belongs to a previous turn.
+	ErrCodeStaleOutput = "STALE_OUTPUT"
 )
 
 // ResolveSession finds a session by flexible matching (title, ID prefix, or path)

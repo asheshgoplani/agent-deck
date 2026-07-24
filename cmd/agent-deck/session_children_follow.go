@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // childRow is one child in `session children` output — shared by the one-shot
@@ -18,6 +19,16 @@ type childRow struct {
 	DoneStatus  string `json:"done_status,omitempty"`
 	DoneSummary string `json:"done_summary,omitempty"`
 	DoneAt      string `json:"done_at,omitempty"`
+	// DoneStale marks a completion that predates the last message we delivered
+	// to this child: the child asserted "done" for EARLIER work, then was given
+	// something new. Without it a parent polling the ledger reads the previous
+	// turn's completion as an answer to the current one — a session appearing
+	// to replay an old completion message instead of doing the new work.
+	DoneStale bool `json:"done_stale,omitempty"`
+	// LastSentAt is when a message was last delivered to this child (RFC3339,
+	// from the last_sent_at clock `session send` stamps). Present so a parent
+	// can audit the staleness verdict rather than trust it blind.
+	LastSentAt string `json:"last_sent_at,omitempty"`
 }
 
 // followEvent is one JSONL line on the --follow stream. Consumers key off
@@ -32,6 +43,8 @@ type followEvent struct {
 	DoneStatus  string `json:"done_status,omitempty"`
 	DoneSummary string `json:"done_summary,omitempty"`
 	DoneAt      string `json:"done_at,omitempty"`
+	DoneStale   bool   `json:"done_stale,omitempty"`
+	LastSentAt  string `json:"last_sent_at,omitempty"`
 	Error       string `json:"error,omitempty"`
 }
 
@@ -44,22 +57,105 @@ type followSummary struct {
 	Waiting  int    `json:"waiting"`
 	DoneOK   int    `json:"done_ok"`
 	DoneFail int    `json:"done_fail"`
+	// DoneStale counts children whose only completion predates the work they
+	// were last given. They are NOT counted in done_ok/done_fail: that
+	// completion answers an earlier turn.
+	DoneStale int `json:"done_stale"`
+}
+
+// completionStaleGrace absorbs the second-granularity of the last_sent_at clock
+// (stored as Unix seconds, so it can read up to a second earlier than the real
+// send) and any sub-second skew between the two writers. A completion asserted
+// within this window of a delivery is still treated as belonging to the work
+// that came BEFORE it — no agent finishes real work in under a second, and
+// under-reporting staleness is what lets an old report pass as a new one.
+const completionStaleGrace = time.Second
+
+// completionIsStale reports whether a completion asserted at finishedAt answers
+// work that was superseded by a delivery at lastSentAt. Unknown clocks (zero on
+// either side) are never stale — we only downgrade a report we can prove old.
+func completionIsStale(finishedAt, lastSentAt time.Time) bool {
+	if finishedAt.IsZero() || lastSentAt.IsZero() {
+		return false
+	}
+	return finishedAt.Before(lastSentAt.Add(completionStaleGrace))
+}
+
+// responseIsStale reports whether a transcript response carrying the given
+// RFC3339 timestamp predates the last message delivered to that session.
+// An unparseable or absent timestamp is never stale — same rule as
+// completionIsStale: only a provably old report is downgraded.
+func responseIsStale(timestamp string, lastSentAt time.Time) bool {
+	ts, ok := parseResponseTimestamp(timestamp)
+	if !ok {
+		return false
+	}
+	return completionIsStale(ts, lastSentAt)
+}
+
+// parseResponseTimestamp accepts the RFC3339 shapes Claude writes into its
+// JSONL (nanosecond and second precision).
+func parseResponseTimestamp(timestamp string) (time.Time, bool) {
+	if timestamp == "" {
+		return time.Time{}, false
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, timestamp); err == nil {
+		return ts, true
+	}
+	if ts, err := time.Parse(time.RFC3339, timestamp); err == nil {
+		return ts, true
+	}
+	return time.Time{}, false
+}
+
+// sendStateDB resolves the state DB a CLI command should write session clocks
+// to: the handle it already opened, falling back to the process global (set
+// only on the TUI/daemon startup path) when storage is unavailable.
+func sendStateDB(storage *session.Storage) *statedb.StateDB {
+	if storage != nil {
+		if db := storage.GetDB(); db != nil {
+			return db
+		}
+	}
+	return statedb.GetGlobal()
+}
+
+// lastSentClock reads a session's last_sent_at clock. Zero time when the
+// session was never sent to, or when no state DB is available.
+func lastSentClock(db *statedb.StateDB, id string) time.Time {
+	if db == nil {
+		return time.Time{}
+	}
+	ts, err := db.ReadLastSentAt(id)
+	if err != nil || ts <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(ts, 0)
 }
 
 // buildChildRows converts refreshed child instances into rows. Callers must
 // have run session.RefreshInstancesForCLIStatus on kids first so UpdateStatus
 // sees warm tmux caches and hook statuses (issue #610).
-func buildChildRows(kids []*session.Instance) []childRow {
+//
+// db supplies the last_sent_at clock used to age out completion reports; pass
+// nil to skip staleness classification (every completion then reads as fresh,
+// the pre-existing behavior).
+func buildChildRows(kids []*session.Instance, db *statedb.StateDB) []childRow {
 	rows := make([]childRow, 0, len(kids))
 	for _, k := range kids {
 		_ = k.UpdateStatus()
 		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status)}
+		lastSent := lastSentClock(db, k.ID)
+		if !lastSent.IsZero() {
+			row.LastSentAt = lastSent.Format(time.RFC3339)
+		}
 		if e, ok := session.ReadLedgerEntry(k.ID); ok {
 			row.DoneStatus = e.Status
 			row.DoneSummary = e.Summary
 			if !e.FinishedAt.IsZero() {
 				row.DoneAt = e.FinishedAt.Format(time.RFC3339)
 			}
+			row.DoneStale = completionIsStale(e.FinishedAt, lastSent)
 		}
 		rows = append(rows, row)
 	}
@@ -70,6 +166,7 @@ func snapshotEvent(event string, r childRow) followEvent {
 	return followEvent{
 		Event: event, ID: r.ID, Title: r.Title, Status: r.Status,
 		DoneStatus: r.DoneStatus, DoneSummary: r.DoneSummary, DoneAt: r.DoneAt,
+		DoneStale: r.DoneStale, LastSentAt: r.LastSentAt,
 	}
 }
 
@@ -94,11 +191,17 @@ func diffChildEvents(prev, curr []childRow) []followEvent {
 				Event: "status", ID: r.ID, Title: r.Title, From: old.Status, To: r.Status,
 			})
 		}
-		if r.DoneStatus != "" &&
-			(old.DoneStatus != r.DoneStatus || old.DoneSummary != r.DoneSummary || old.DoneAt != r.DoneAt) {
+		// A done event announces a NEW completion. A ledger entry that is stale
+		// (predates the work this child was last given) is not one: emitting it
+		// would hand the consumer the previous turn's report as if it answered
+		// the current turn. It still rides along on snapshot/added rows with
+		// done_stale set, so nothing is hidden.
+		if r.DoneStatus != "" && !r.DoneStale &&
+			(old.DoneStatus != r.DoneStatus || old.DoneSummary != r.DoneSummary || old.DoneAt != r.DoneAt || old.DoneStale) {
 			events = append(events, followEvent{
 				Event: "done", ID: r.ID, Title: r.Title,
 				DoneStatus: r.DoneStatus, DoneSummary: r.DoneSummary, DoneAt: r.DoneAt,
+				LastSentAt: r.LastSentAt,
 			})
 		}
 	}
@@ -114,8 +217,13 @@ func diffChildEvents(prev, curr []childRow) []followEvent {
 // asserted the completion sentinel (ok or fail), or its process is gone.
 // idle WITHOUT a sentinel is not terminal — an agent parked at the prompt may
 // just be between turns, and treating it as done would end --until-done early.
+//
+// A STALE sentinel is not terminal either: the child asserted done for earlier
+// work and has since been given something new. Treating it as terminal is what
+// let `--until-done` return immediately after a follow-up send, handing the
+// parent the previous turn's completion as the answer to the new work.
 func childTerminal(r childRow) bool {
-	if r.DoneStatus != "" {
+	if r.DoneStatus != "" && !r.DoneStale {
 		return true
 	}
 	return r.Status == "error" || r.Status == "stopped"
@@ -138,6 +246,10 @@ func summarizeChildren(event string, rows []childRow) followSummary {
 			s.Running++
 		case "waiting":
 			s.Waiting++
+		}
+		if r.DoneStatus != "" && r.DoneStale {
+			s.DoneStale++
+			continue
 		}
 		switch r.DoneStatus {
 		case "ok":
@@ -176,7 +288,7 @@ func loadChildRows(profile, parentID string) ([]childRow, error) {
 
 	kids := childrenOf(parentID, instances)
 	session.RefreshInstancesForCLIStatus(kids)
-	return buildChildRows(kids), nil
+	return buildChildRows(kids, storage.GetDB()), nil
 }
 
 // runChildrenFollow streams child state changes as JSONL until interrupted,

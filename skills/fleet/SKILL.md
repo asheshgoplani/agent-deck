@@ -135,6 +135,16 @@ disturbing the conductor or other readers.
 
 A child with a `done_status` has finished and asserted its result.
 
+**A completion answers the work the child had at the time.** If you send a child
+follow-up work after it reported done, its old ledger entry would otherwise read
+as the answer to the new request — the child appearing to replay an old
+completion instead of doing the work. Rows carry `done_stale: true` (plus
+`last_sent_at`) when the completion predates the last message delivered to that
+child. Stale completions are not terminal: `--until-done` keeps waiting, no
+`done` event is emitted for them, and they are counted under `done_stale`
+instead of `done_ok`/`done_fail`. So after nudging a child, wait for its NEXT
+completion — the tooling no longer lets the previous one pass for it.
+
 **Prefer push over polling when your harness supports it.** Instead of
 re-running the check yourself, let the fleet notify you:
 
@@ -201,6 +211,15 @@ agent-deck session output <child-id> --json
 
 Returns that child's latest full response. Use it once `session children` shows
 the child is done (or any time you want its current output).
+
+Reading it right after a `session send` can return the PREVIOUS turn's answer —
+the child has not replied yet. The payload says so: `"stale": true` with
+`"last_sent_at"`, and `--require-fresh` exits 3 instead of handing you the old
+response. Use it whenever you read output you expect to be a reply:
+
+```bash
+agent-deck session output <child-id> --json --require-fresh   # exit 3 = not answered yet
+```
 
 ## Worked example
 

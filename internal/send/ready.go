@@ -117,7 +117,13 @@ func paneShowsReadyPrompt(target AgentReadyChecker, tool string, gates PromptGat
 	if err != nil {
 		return false
 	}
-	content := tmux.StripANSI(raw)
+	return contentShowsReadyPrompt(tmux.StripANSI(raw), tool, gates)
+}
+
+// contentShowsReadyPrompt is paneShowsReadyPrompt on already-captured,
+// ANSI-stripped content, so callers that need the same content for another
+// check don't capture the pane twice.
+func contentShowsReadyPrompt(content string, tool string, gates PromptGates) bool {
 	if paneLooksBusy(content) {
 		return false
 	}

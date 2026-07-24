@@ -1465,6 +1465,21 @@ func (s *Session) inStartupWindowLocked() bool {
 	return !s.startupAt.IsZero() && time.Since(s.startupAt) < startupStateWindow
 }
 
+// MarkStartupAt seeds the startup window from a spawn that happened in ANOTHER
+// process. Start() and RespawnPane() set startupAt for the process that did the
+// spawning, but ReconnectSession/ReconnectSessionLazy — every CLI invocation
+// that attaches to an already-running session — explicitly zero it. Without a
+// seed, a booting agent that shows neither spinner nor prompt is classified
+// "waiting" instead of "starting", and callers waiting for readiness accept a
+// half-mounted TUI as ready.
+//
+// A zero t clears the window (same shape as the internal resets).
+func (s *Session) MarkStartupAt(t time.Time) {
+	s.mu.Lock()
+	s.startupAt = t
+	s.mu.Unlock()
+}
+
 // SetCustomPatterns sets custom patterns for generic tool support
 // These patterns enable custom tools defined in config.toml to have proper status detection
 func (s *Session) SetCustomPatterns(toolName string, busyPatterns, promptPatterns, detectPatterns []string) {

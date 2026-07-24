@@ -2650,7 +2650,7 @@ func handleSessionSend(profile string, args []string) {
 	}
 
 	// Load sessions
-	_, instances, _, err := loadSessionData(profile)
+	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -2700,6 +2700,17 @@ func handleSessionSend(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// A `session send` that follows `session restart` (or `start`) runs in a
+	// fresh process, so the tmux.Session it just reconnected has NO startup
+	// window: ReconnectSession* zeroes startupAt, and the process that
+	// respawned the pane has already exited. Seed the window from the durable
+	// per-instance spawn stamp so GetStatus reports "starting" — not "waiting"
+	// — while the replacement agent is still painting its first frame.
+	spawnedAt, spawnKnown := session.LastSpawnAt(inst.ID)
+	if spawnKnown {
+		tmuxSess.MarkStartupAt(spawnedAt)
+	}
+
 	// #1578: --defer-if-busy holds delivery until the target is turn-finished.
 	// Runs BEFORE WaitForAgentReady + the composer-draft Ctrl+C guard, so a
 	// mid-generation target is never interrupted. Keys off the hook-driven
@@ -2738,6 +2749,33 @@ func handleSessionSend(profile string, args []string) {
 				out.Error(fmt.Sprintf("timeout waiting for slash-command registration: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
+		}
+	}
+
+	// Post-spawn settle gate: a send issued moments after `session restart`
+	// types into an agent whose TUI has painted but whose input handler has
+	// not mounted, and the keystrokes are discarded with no error anywhere —
+	// the drop operators worked around with a blind ~8s sleep between
+	// `restart` and `send`. The gate only engages inside the post-spawn
+	// window, so steady-state sends pay nothing.
+	//
+	// A gate timeout is advisory, not fatal: we warn and send anyway, leaving
+	// post-send delivery verification (#876/#1413) as the authority on whether
+	// the message landed. Failing here would turn a timing risk into a hard
+	// error for sessions that were about to work.
+	if spawnKnown && send.SpawnSettleDue(spawnedAt, send.DefaultSpawnSettleWindow) {
+		settleTimeout := send.DefaultSpawnSettleTimeout
+		if *noWait {
+			settleTimeout = 8 * time.Second
+		} else if *timeout > 0 && *timeout < settleTimeout {
+			settleTimeout = *timeout
+		}
+		if err := send.WaitForSpawnSettle(tmuxSess, inst.Tool, send.PromptGates{
+			ClaudeComposer: session.IsClaudeCompatible(inst.Tool),
+			CodexPrompt:    session.IsCodexCompatible(inst.Tool),
+		}, spawnedAt, send.SpawnSettleOptions{Timeout: settleTimeout}, time.Sleep); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: sending into a session that restarted %s ago and has not settled: %v\n",
+				time.Since(spawnedAt).Round(time.Second), err)
 		}
 	}
 
@@ -2790,9 +2828,17 @@ func handleSessionSend(profile string, args []string) {
 	// Self-heal Stage 1: stamp the "we talked to it" clock. A delivered send is
 	// exactly the event the idle_at_empty_prompt dwell is measured from — a
 	// session is only stuck at an empty prompt if WE sent it something and
-	// nothing happened. Targeted single-column write (never SaveInstances);
-	// best-effort, never blocks or fails the send.
-	if db := statedb.GetGlobal(); db != nil {
+	// nothing happened. It is also what makes a completion report checkable:
+	// `session output` / `session children` compare it against the timestamp of
+	// the last response and the completion ledger to tell a fresh answer from a
+	// replay of the previous turn's. Targeted single-column write (never
+	// SaveInstances); best-effort, never blocks or fails the send.
+	//
+	// Uses the storage handle this command already opened. statedb's global is
+	// set by the TUI/daemon startup path only — CLI subcommands dispatch long
+	// before it, so the previous GetGlobal() write silently no-opped for every
+	// `agent-deck session send`, which is exactly how fleets are driven.
+	if db := sendStateDB(storage); db != nil {
 		_ = db.WriteLastSentAt(inst.ID, sentAt.Unix())
 	}
 
@@ -3719,11 +3765,17 @@ func handleSessionOutput(profile string, args []string) {
 	// response". The local TUI preview uses capture-pane; remote sessions
 	// fetched via SSH need this same content to render claude-formatted output.
 	paneFlag := fs.Bool("pane", false, "Return tmux capture-pane content (full UI with ANSI)")
+	requireFresh := fs.Bool("require-fresh", false, "Exit 3 when the last response predates the last message sent to the session (stale)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session output [id|title] [options]")
 		fmt.Println()
 		fmt.Println("Get the last response from a session. If no ID is provided, auto-detects current session.")
+		fmt.Println()
+		fmt.Println("A response older than the last message delivered to the session is STALE:")
+		fmt.Println("the agent has not answered the newest request yet, so the content is the")
+		fmt.Println("previous turn's. --json reports it as \"stale\": true alongside \"last_sent_at\";")
+		fmt.Println("--require-fresh turns it into exit code 3 for scripts and supervisors.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -3738,7 +3790,7 @@ func handleSessionOutput(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
 	// Load sessions
-	_, instances, _, err := loadSessionData(profile)
+	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
 		os.Exit(1)
@@ -3803,6 +3855,34 @@ func handleSessionOutput(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// Freshness verdict: "last response" is only an answer to the last thing we
+	// asked if it is NEWER than the last thing we asked. When it isn't, callers
+	// polling for a result read the previous turn's completion as the current
+	// one — a session that looks like it replayed an old completion message
+	// instead of doing the new work. Report the verdict instead of making every
+	// caller re-derive it from two timestamps (one of which is not in this
+	// payload at all).
+	lastSentAt := lastSentClock(sendStateDB(storage), inst.ID)
+	stale := responseIsStale(response.Timestamp, lastSentAt)
+	if stale {
+		staleMsg := fmt.Sprintf(
+			"stale response: last message was delivered at %s but the newest response is from %s — the agent has not answered it yet",
+			lastSentAt.Format(time.RFC3339), response.Timestamp)
+		if *requireFresh {
+			out.ErrorWithData(staleMsg, ErrCodeStaleOutput, map[string]interface{}{
+				"session_id":    inst.ID,
+				"session_title": inst.Title,
+				"stale":         true,
+				"last_sent_at":  lastSentAt.Format(time.RFC3339),
+				"timestamp":     response.Timestamp,
+			})
+			os.Exit(3)
+		}
+		// Not fatal without --require-fresh, but never silent: stderr keeps
+		// stdout byte-identical for -q consumers that pipe the content.
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", staleMsg)
+	}
+
 	// Copy to clipboard mode
 	if *copyFlag {
 		termInfo := tmux.GetTerminalInfo()
@@ -3841,6 +3921,10 @@ func handleSessionOutput(profile string, args []string) {
 		"role":          response.Role,
 		"content":       response.Content,
 		"timestamp":     response.Timestamp,
+		"stale":         stale,
+	}
+	if !lastSentAt.IsZero() {
+		jsonData["last_sent_at"] = lastSentAt.Format(time.RFC3339)
 	}
 	// Add tool-specific conversation session ID
 	if response.SessionID != "" {
@@ -3859,6 +3943,10 @@ func handleSessionOutput(profile string, args []string) {
 	sb.WriteString(fmt.Sprintf("Session: %s (%s)\n", inst.Title, response.Tool))
 	if response.Timestamp != "" {
 		sb.WriteString(fmt.Sprintf("Time: %s\n", response.Timestamp))
+	}
+	if stale {
+		sb.WriteString(fmt.Sprintf("Stale: predates the message delivered at %s (previous turn's response)\n",
+			lastSentAt.Format(time.RFC3339)))
 	}
 	sb.WriteString("---\n")
 	sb.WriteString(response.Content)
@@ -4088,7 +4176,7 @@ func handleSessionChildren(profile string, args []string) {
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
-	_, instances, _, err := loadSessionData(profile)
+	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -4129,13 +4217,18 @@ func handleSessionChildren(profile string, args []string) {
 	kids := childrenOf(parent.ID, instances)
 	session.RefreshInstancesForCLIStatus(kids)
 
-	rows := buildChildRows(kids)
+	rows := buildChildRows(kids, storage.GetDB())
 	var human strings.Builder
 	fmt.Fprintf(&human, "Children of %s (%s):\n", parent.Title, parent.ID)
 	for _, row := range rows {
 		done := row.DoneStatus
 		if done == "" {
 			done = "-"
+		}
+		// A completion that predates the child's last delivery answers earlier
+		// work — say so inline rather than letting it read as a fresh report.
+		if row.DoneStale {
+			done += "(stale)"
 		}
 		fmt.Fprintf(&human, "  %s  %-20s  %-8s  done=%s  %s\n", row.ID, row.Title, row.Status, done, row.DoneSummary)
 	}
