@@ -4035,17 +4035,39 @@ func shouldDebounceTmuxFlipForTool(tool string) bool {
 // terminatedPaneStatus classifies a session whose tmux pane/session has
 // vanished (or gone dead under remain-on-exit) AFTER having been started.
 //
-// For hook-emitting tools a dead pane genuinely means a crash, so it maps to
-// StatusError. OpenCode, however, emits no lifecycle hooks (issue #1617): it is
-// not in IsHookEmittingTool, so status detection falls back to tmux content
-// sniffing. An in-session `/exit` closes the OpenCode pane exactly like a crash
-// would, and without remain-on-exit there is no exit code left to inspect — so
-// a clean exit is misread as an error banner (✕) instead of a clean shutdown.
-// A vanished OpenCode pane is overwhelmingly a user-initiated exit, so classify
-// it as StatusStopped (done, ■) rather than StatusError. Error stays reserved
+// Exit code first: when tmux still holds the dead pane (remain-on-exit — set
+// for sandbox sessions, and opt-in via [tmux] options for any session) the
+// real process exit code is available. A one-shot worker that finishes and
+// exits 0 is a clean shutdown (done, ■ StatusStopped), NOT a crash — reporting
+// it as StatusError (✕) makes a successful completion indistinguishable from a
+// real failure. A non-zero exit is a genuine crash → StatusError.
+//
+// No exit code available (pane torn down without remain-on-exit, so tmux
+// discarded the exit status) falls back to a per-tool heuristic. For
+// hook-emitting tools a vanished pane genuinely means a crash → StatusError.
+// OpenCode emits no lifecycle hooks (issue #1617), so an in-session `/exit`
+// closes its pane exactly like a crash would; a vanished OpenCode pane is
+// overwhelmingly a user-initiated exit → StatusStopped. Error stays reserved
 // for a LIVE pane that renders an actual error banner.
 func (i *Instance) terminatedPaneStatus() Status {
-	if i.Tool == "opencode" {
+	exitCode, haveExitCode := 0, false
+	if i.tmuxSession != nil {
+		exitCode, haveExitCode = i.tmuxSession.PaneDeadExitStatus()
+	}
+	return classifyTerminatedPane(exitCode, haveExitCode, i.Tool)
+}
+
+// classifyTerminatedPane is the pure decision behind terminatedPaneStatus,
+// split out so the clean-exit-vs-crash rule can be exercised without a live
+// tmux server. See terminatedPaneStatus for the full rationale.
+func classifyTerminatedPane(exitCode int, haveExitCode bool, tool string) Status {
+	if haveExitCode {
+		if exitCode == 0 {
+			return StatusStopped
+		}
+		return StatusError
+	}
+	if tool == "opencode" {
 		return StatusStopped
 	}
 	return StatusError
@@ -4342,9 +4364,11 @@ func (i *Instance) UpdateStatus() error {
 		// progress without user action — report error, not waiting.
 		i.Status = StatusError
 	case "inactive":
-		// Pane is gone/dead. A crash for hook tools, but a clean `/exit` for
-		// OpenCode (no hooks, no exit code to read) — classify per tool so a
-		// clean OpenCode shutdown reads as stopped (■), not error (✕). #1617.
+		// Pane is dead/gone. terminatedPaneStatus prefers the real exit code
+		// when remain-on-exit still holds the dead pane — a clean exit 0 reads
+		// as stopped (■), a non-zero exit or an unknowable exit falls back to a
+		// per-tool heuristic (crash → ✕ for hook tools, clean `/exit` → ■ for
+		// OpenCode). #1617, and clean one-shot completions.
 		i.Status = i.terminatedPaneStatus()
 	default:
 		i.Status = StatusError

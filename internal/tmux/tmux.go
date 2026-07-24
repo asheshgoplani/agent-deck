@@ -2441,6 +2441,46 @@ func (s *Session) IsPaneDead() bool {
 	return strings.TrimSpace(string(out)) == "1"
 }
 
+// PaneDeadExitStatus returns the exit code of the process that ran in the
+// session's primary pane, and true, but ONLY when the pane died while
+// remain-on-exit was enabled so tmux still holds the dead pane and its exit
+// status (#{pane_dead_status}).
+//
+// The second return is false whenever no exit code is available: the pane is
+// still alive, the session is gone, or the pane was torn down without
+// remain-on-exit (in which case tmux discards the exit status along with the
+// pane, and #{pane_dead_status} comes back empty). Callers use the (code, ok)
+// pair to distinguish a clean exit (0) from a crash (non-zero) instead of
+// treating every terminated pane as an error.
+func (s *Session) PaneDeadExitStatus() (int, bool) {
+	// Bounded like IsPaneDead: this runs on the notify-daemon poll loop, so a
+	// wedged tmux server must not stall it.
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+	out, err := s.tmuxCmdContext(ctx, "list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}|#{pane_dead_status}").Output()
+	if err != nil {
+		return 0, false
+	}
+	return parsePaneDeadStatus(string(out))
+}
+
+// parsePaneDeadStatus interprets the "#{pane_dead}|#{pane_dead_status}" line
+// tmux emits for a pane. It returns (code, true) only for a dead pane whose
+// exit status is a parseable integer — i.e. one preserved by remain-on-exit.
+// A live pane ("0|..."), or a dead pane with an empty status field (no
+// remain-on-exit), yields (0, false). Pure so the parsing is unit-testable.
+func parsePaneDeadStatus(raw string) (int, bool) {
+	dead, status, ok := strings.Cut(strings.TrimSpace(raw), "|")
+	if !ok || dead != "1" {
+		return 0, false // pane not dead → no meaningful exit status
+	}
+	code, err := strconv.Atoi(strings.TrimSpace(status))
+	if err != nil {
+		return 0, false // remain-on-exit off → pane_dead_status is empty
+	}
+	return code, true
+}
+
 // buildStatusBarArgs returns the tmux command args for configuring the status bar.
 // Returns nil if status bar injection is disabled.
 // Skips any option key that exists in s.OptionOverrides — user-defined options take precedence.
