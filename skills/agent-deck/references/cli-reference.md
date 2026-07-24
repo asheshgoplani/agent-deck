@@ -277,10 +277,25 @@ approval: that path sends composer text followed by Enter.
 ### session output
 
 ```bash
-agent-deck session output [id|title] [--json] [-q]
+agent-deck session output [id|title] [--json] [-q] [--require-fresh]
 ```
 
 Get last response from Claude/Gemini session.
+
+**Staleness.** "Last response" is only an answer to your last message if it is
+newer than it. When the newest response predates the last message delivered to
+the session (the `last_sent_at` clock `session send` stamps), the content
+belongs to a previous turn — the session has not answered you yet. That case is
+reported rather than left for you to infer:
+
+- `--json` → `"stale": true` plus `"last_sent_at"`
+- human/`-q` → a warning on stderr (stdout stays byte-identical for pipes)
+- `--require-fresh` → exit code 3 instead of returning the old turn
+
+```bash
+agent-deck session send worker "next task" && \
+  agent-deck session output worker -q --require-fresh   # exits 3 until it answers
+```
 
 ### session set-parent / unset-parent
 

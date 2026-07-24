@@ -121,6 +121,27 @@ func spawnedSince(instanceID string, ref time.Time) bool {
 	return info.ModTime().After(ref)
 }
 
+// LastSpawnAt returns when this instance was last started or restarted, read
+// from the per-instance spawn stamp's mtime. Zero time + false when no spawn
+// has been recorded (or the stamp is unreadable).
+//
+// The stamp is the only cross-PROCESS record of a spawn: tmux.Session's
+// startup window lives in the process that did the spawning, and
+// `agent-deck session restart` exits immediately after respawning the pane.
+// A later `agent-deck session send` — a different process — needs this to know
+// it is talking to an agent that is still booting.
+func LastSpawnAt(instanceID string) (time.Time, bool) {
+	stamp, err := instanceSpawnStampPath(instanceID)
+	if err != nil {
+		return time.Time{}, false
+	}
+	info, err := os.Stat(stamp)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
 // recordInstanceSpawn updates the stamp's mtime to now. Best-effort:
 // stamp errors are silent; they just turn the gate into a no-op for
 // the next storm sibling (no worse than current behavior).

@@ -67,7 +67,11 @@ func formatChildrenContext(rows []childRow) string {
 	running := 0
 	for _, r := range rows {
 		switch {
-		case r.DoneStatus != "":
+		// A completion that predates the child's newest work is not a result to
+		// collect — announcing it here would inject the previous round's report
+		// into the parent's context as if it answered the current one. Such a
+		// child is bucketed by its live status instead.
+		case r.DoneStatus != "" && !r.DoneStale:
 			done = append(done, r)
 		case r.Status == "waiting":
 			waiting = append(waiting, r)
@@ -129,5 +133,5 @@ func buildChildrenContextSummary(instanceID string) string {
 		return ""
 	}
 	session.RefreshInstancesForCLIStatus(kids)
-	return formatChildrenContext(buildChildRows(kids))
+	return formatChildrenContext(buildChildRows(kids, storage.GetDB()))
 }

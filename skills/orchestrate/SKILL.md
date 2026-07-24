@@ -410,10 +410,17 @@ should answer:
 - `agent-deck session children --json` returns an object
   `{"children": [...], "parent": "..."}` — iterate `.children[]`, not the
   root array.
-- `done_status` / `done_summary` **persist from the previous round**. To
-  detect a fix round finishing, watch for `done_at` to *change* (and status
-  to leave `running`) — do not wait for `done_status=ok` to appear; it
-  already says `ok` from the last round.
+- `done_status` / `done_summary` **persist from the previous round**, so a
+  round-1 `ok` is still on the row when round 2 starts. It no longer passes for
+  a new completion: once you send the child fix-round work, the old entry is
+  flagged `done_stale: true` (alongside `last_sent_at`), is excluded from
+  `done_ok`/`done_fail`, emits no `done` event, and does **not** count as
+  terminal for `--until-done`. Wait for `done_stale` to clear — equivalently,
+  for `done_at` to move past `last_sent_at`.
+- Reading a child's result right after nudging it has the same trap: use
+  `agent-deck session output <id> --json --require-fresh`, which exits 3 while
+  the newest response still predates your message, instead of handing you the
+  previous turn's answer.
 - **Stall rule:** a child with no status change for ~20 minutes is stuck.
   Read its `session output`, nudge it once with `session send`; if it is
   still stuck on the next check, mark the task **needs-attention** instead of
