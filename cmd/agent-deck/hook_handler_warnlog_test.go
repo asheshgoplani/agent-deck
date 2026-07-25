@@ -51,7 +51,7 @@ func TestWriteHookStatus_WarnsOnMkdirError(t *testing.T) {
 		t.Fatalf("create blocking file: %v", err)
 	}
 
-	writeHookStatus("inst-mkdirfail", "running", "", "UserPromptSubmit")
+	writeHookStatus("inst-mkdirfail", "running", "", "UserPromptSubmit", "")
 
 	logging.Shutdown()
 	body := readLog(t, logDir)
@@ -84,7 +84,7 @@ func TestWriteHookStatus_WarnsOnWriteFileError(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(hooksDir, 0o755) }()
 
-	writeHookStatus("inst-writefail", "running", "", "UserPromptSubmit")
+	writeHookStatus("inst-writefail", "running", "", "UserPromptSubmit", "")
 
 	logging.Shutdown()
 	body := readLog(t, logDir)
