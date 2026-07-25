@@ -15,6 +15,9 @@ const CUSTOM_MODEL = '__custom__'
 
 const MODEL_ID_CATALOG = {
   claude: [
+    { value: 'claude-opus-5', label: 'Claude Opus 5' },
+    { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+    { value: 'claude-fable-5', label: 'Claude Fable 5' },
     { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
     { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
     { value: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
@@ -62,6 +65,9 @@ const MODEL_ID_CATALOG = {
     { value: 'openai/gpt-5.3-codex', label: 'OpenAI GPT-5.3 Codex' },
     { value: 'openai/gpt-5', label: 'OpenAI GPT-5' },
     { value: 'openai/o3', label: 'OpenAI o3' },
+    { value: 'anthropic/claude-opus-5', label: 'Anthropic Claude Opus 5' },
+    { value: 'anthropic/claude-sonnet-5', label: 'Anthropic Claude Sonnet 5' },
+    { value: 'anthropic/claude-fable-5', label: 'Anthropic Claude Fable 5' },
     { value: 'anthropic/claude-sonnet-4-6', label: 'Anthropic Claude Sonnet 4.6' },
     { value: 'anthropic/claude-opus-4-8', label: 'Anthropic Claude Opus 4.8' },
     { value: 'anthropic/claude-opus-4-7', label: 'Anthropic Claude Opus 4.7' },

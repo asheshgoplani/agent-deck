@@ -93,6 +93,104 @@ func TestNewDialog_ModelInputForCodex(t *testing.T) {
 	}
 }
 
+func TestNewDialog_ModelInputForClaude(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("claude")
+	d.SetSize(100, 50)
+	d.Show()
+
+	if !d.selectedToolSupportsModel() {
+		t.Fatal("claude should support model selection")
+	}
+	if idx := d.indexOf(focusModel); idx < 0 {
+		t.Fatal("model input should be focusable for claude")
+	}
+	view := d.View()
+	if !strings.Contains(view, "Model ID") {
+		t.Fatal("claude new-session dialog should render a model input")
+	}
+	if !strings.Contains(view, "claude-opus-5") || !strings.Contains(view, "claude-sonnet-5") {
+		t.Fatalf("claude model hints should include current Claude versions: %q", view)
+	}
+
+	d.modelInput.SetValue("claude-opus-5")
+	if got := d.GetLaunchModelID(); got != "claude-opus-5" {
+		t.Fatalf("GetLaunchModelID() = %q, want claude-opus-5", got)
+	}
+}
+
+func TestNewDialog_ModelSuggestions_FilterAndSelectClaude(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("claude")
+	d.SetSize(100, 50)
+	d.Show()
+	d.focusIndex = d.indexOf(focusModel)
+	d.updateFocus()
+
+	d.modelInput.SetValue("opus")
+	d.filterModelSuggestions()
+
+	if len(d.modelSuggestions) == 0 || d.modelSuggestions[0] != "claude-opus-5" {
+		t.Fatalf("filtered model suggestions = %v, want claude-opus-5 first", d.modelSuggestions)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !d.IsModelSuggestionsActive() {
+		t.Fatal("enter on model input should activate the model suggestions dropdown")
+	}
+	if view := d.View(); !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "claude-opus-5") {
+		t.Fatalf("model dropdown should show custom entry and known model IDs after enter: %q", view)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if d.modelSuggestionCursor != 1 {
+		t.Fatalf("modelSuggestionCursor = %d, want 1", d.modelSuggestionCursor)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if got := d.GetLaunchModelID(); got != "claude-opus-5" {
+		t.Fatalf("GetLaunchModelID() = %q, want claude-opus-5", got)
+	}
+	if d.currentTarget() != focusPath {
+		t.Fatalf("currentTarget after accepting model = %v, want focusPath", d.currentTarget())
+	}
+}
+
+// TestPreselectDefaultModel covers the catalog-membership gate in
+// preselectDefaultModel: a [claude] default_model is honored only when the ID
+// is in knownModelIDsForTool. An ID missing from the catalog is discarded
+// silently — no error, no log — so the session launches with no --model flag
+// at all. That is how a valid `default_model = "claude-opus-5"` became inert
+// while the catalog still stopped at 4.8.
+func TestPreselectDefaultModel(t *testing.T) {
+	withModel := func(id string) *session.UserConfig {
+		cfg := &session.UserConfig{}
+		cfg.Claude.DefaultModel = id
+		return cfg
+	}
+
+	cases := []struct {
+		name   string
+		config *session.UserConfig
+		tool   string
+		want   string
+	}{
+		{"in catalog is honored", withModel("claude-opus-5"), "claude", "claude-opus-5"},
+		{"older in-catalog ID still honored", withModel("claude-opus-4-8"), "claude", "claude-opus-4-8"},
+		{"unknown ID degrades to unset", withModel("claude-opus-9"), "claude", ""},
+		{"bare alias is not a catalog ID", withModel("opus"), "claude", ""},
+		{"surrounding whitespace tolerated", withModel("  claude-sonnet-5  "), "claude", "claude-sonnet-5"},
+		{"empty default is unset", withModel(""), "claude", ""},
+		{"nil config is safe", nil, "claude", ""},
+		{"non-claude tool ignores claude default", withModel("claude-opus-5"), "codex", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := preselectDefaultModel(tc.config, tc.tool); got != tc.want {
+				t.Fatalf("preselectDefaultModel(%q) = %q, want %q", tc.tool, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNewDialog_ModelSuggestions_FilterAndSelectCodex(t *testing.T) {
 	d := NewNewDialog()
 	d.SetDefaultTool("codex")

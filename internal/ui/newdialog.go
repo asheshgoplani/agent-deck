@@ -892,6 +892,9 @@ func knownModelIDsForTool(tool string) []string {
 	switch {
 	case session.IsClaudeCompatible(tool):
 		return []string{
+			"claude-opus-5",
+			"claude-sonnet-5",
+			"claude-fable-5",
 			"claude-sonnet-4-6",
 			"claude-opus-4-8",
 			"claude-opus-4-7",
@@ -919,6 +922,9 @@ func knownModelIDsForTool(tool string) []string {
 			"openai/gpt-5.3-codex",
 			"openai/gpt-5",
 			"openai/o3",
+			"anthropic/claude-opus-5",
+			"anthropic/claude-sonnet-5",
+			"anthropic/claude-fable-5",
 			"anthropic/claude-sonnet-4-6",
 			"anthropic/claude-opus-4-8",
 			"anthropic/claude-opus-4-7",
@@ -1218,11 +1224,11 @@ func (d *NewDialog) updateModelPlaceholder() {
 func (d *NewDialog) modelInputHint() string {
 	switch cmd := d.GetSelectedCommand(); {
 	case session.IsClaudeCompatible(cmd):
-		return "Examples: claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5"
+		return "Examples: claude-opus-5, claude-sonnet-5, claude-haiku-4-5"
 	case cmd == "gemini":
 		return "Examples: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro"
 	case cmd == "opencode":
-		return "Examples: openai/gpt-5.5, openai/gpt-5.4, anthropic/claude-sonnet-4-6"
+		return "Examples: openai/gpt-5.5, openai/gpt-5.4, anthropic/claude-opus-5"
 	case session.IsCodexCompatible(cmd):
 		return "Examples: gpt-5.5, gpt-5.4, gpt-5.3-codex, gpt-5.4-mini"
 	default:
