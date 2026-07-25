@@ -637,10 +637,20 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 	return fmt.Errorf("%w: %s", ErrInsertNotPersistent, newInstance.ID)
 }
 
-// SyncInstanceCwd updates the persisted project_path for id to newCwd when they differ.
-// If newCwd matches an entry in the instance's additional_paths, positions are swapped
-// so the multi-repo primary reflects Claude's current working directory. Reports whether
-// the instance was found in this profile.
+// SyncInstanceCwd swaps the persisted project_path for id to newCwd, but ONLY
+// when newCwd is one of the instance's explicitly declared additional_paths
+// (the multi-repo primary swap). Reports whether the instance was found in
+// this profile.
+//
+// Issue #1729: project_path is identity, set at creation. It must never be
+// silently rewritten from an observed hook-payload cwd — a legitimate `cd`
+// into a subdir would relocate the recorded path away from the Claude project
+// slug that holds the transcript, breaking the next resume; and foreign
+// headless `claude -p` workers (which inherit AGENTDECK_INSTANCE_ID and fire
+// hooks with cwd=$TMPDIR) would flap it to their temp dir and back. Membership
+// in additional_paths is user-declared, so swapping among those paths is an
+// explicit operation; anything else is refused. The only other sanctioned
+// mutation is the documented `agent-deck session set <title> path <p>`.
 func (s *Storage) SyncInstanceCwd(id, newCwd string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -657,6 +667,15 @@ func (s *Storage) SyncInstanceCwd(id, newCwd string) (bool, error) {
 	if row.ProjectPath == newCwd {
 		return true, nil
 	}
+	if !toolDataDeclaresAdditionalPath(row.ToolData, newCwd) {
+		storageLog.Debug("cwd_sync_refused_undeclared_path",
+			slog.String("instance", id),
+			slog.String("project_path", row.ProjectPath),
+			slog.String("reported_cwd", newCwd),
+			slog.String("reason", "project_path_immutable_outside_declared_paths"),
+		)
+		return true, nil
+	}
 	newToolData, err := swapAdditionalPath(row.ToolData, row.ProjectPath, newCwd)
 	if err != nil {
 		return true, err
@@ -669,6 +688,27 @@ func (s *Storage) SyncInstanceCwd(id, newCwd string) (bool, error) {
 	}
 	_ = s.db.Touch()
 	return true, nil
+}
+
+// toolDataDeclaresAdditionalPath reports whether cwd is an explicitly declared
+// additional_paths entry in the tool_data blob. Only these user-declared paths
+// are legal targets for the SyncInstanceCwd primary swap (issue #1729).
+func toolDataDeclaresAdditionalPath(toolData json.RawMessage, cwd string) bool {
+	if len(toolData) == 0 {
+		return false
+	}
+	var blob struct {
+		AdditionalPaths []string `json:"additional_paths"`
+	}
+	if err := json.Unmarshal(toolData, &blob); err != nil {
+		return false
+	}
+	for _, p := range blob.AdditionalPaths {
+		if p == cwd {
+			return true
+		}
+	}
+	return false
 }
 
 // swapAdditionalPath rewrites the additional_paths list in a tool_data blob so

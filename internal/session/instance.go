@@ -545,6 +545,42 @@ func (inst *Instance) EffectiveWorkingDir() string {
 	return inst.ProjectPath
 }
 
+// hookCwdIsForeign reports whether a hook-reported cwd is provably OUTSIDE
+// every path this instance is declared to own: EffectiveWorkingDir,
+// ProjectPath, and each user-declared additional path — including their
+// subdirectories, since a session may legitimately `cd` deeper inside its
+// project tree between hook events (issue #1729).
+//
+// This is same-session evidence for the bind/rebind decision only; it never
+// gates status updates for the already-bound session id. Empty cwd returns
+// false (no evidence — legacy hook files and agents that send no cwd must not
+// be penalized). Symlinks are resolved on both sides so macOS /tmp vs
+// /private/tmp (and worktree symlinks) compare equal.
+func (i *Instance) hookCwdIsForeign(cwd string) bool {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return false
+	}
+	resolve := func(p string) string {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Clean(resolved)
+		}
+		return filepath.Clean(p)
+	}
+	candidate := resolve(cwd)
+	owned := append([]string{i.EffectiveWorkingDir()}, i.AllProjectPaths()...)
+	for _, p := range owned {
+		if p == "" {
+			continue
+		}
+		root := resolve(p)
+		if candidate == root || strings.HasPrefix(candidate, root+string(os.PathSeparator)) {
+			return false
+		}
+	}
+	return true
+}
+
 // CleanupMultiRepoTempDir removes the multi-repo temporary directory.
 func (inst *Instance) CleanupMultiRepoTempDir() error {
 	if inst.MultiRepoTempDir == "" {
@@ -4625,6 +4661,25 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		if sessionID == i.ClaudeSessionID {
+			return
+		}
+		// Issue #1729 guard: a candidate whose hook-reported cwd is provably
+		// outside every path this instance owns is a foreign ephemeral — the
+		// classic case is a headless `claude -p --no-session-persistence`
+		// worker (spawned by a plugin with cwd=$TMPDIR) that inherited our
+		// AGENTDECK_INSTANCE_ID from the tmux pane environment. Such
+		// candidates must never influence instance state: no bind (including
+		// cold start, which previously accepted ANY first candidate), no
+		// rebind, and no status flip (restore the pre-event fields). An empty
+		// cwd (legacy hook files, agents that send none) is not evidence and
+		// never blocks.
+		if i.hookCwdIsForeign(status.Cwd) {
+			i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
+				HookEvent: status.Event, Reason: "candidate_cwd_outside_instance_paths",
+			})
 			return
 		}
 		// Cold start — no session bound yet. Accept the first candidate

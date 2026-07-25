@@ -36,7 +36,11 @@ func loadCwdSyncInstance(t *testing.T, storage *session.Storage, id string) *ses
 	return nil
 }
 
-func TestApplyClaudeCwdSync_UpdatesProjectPathAndPreservesWorktreeFields(t *testing.T) {
+// Issue #1729: an undeclared hook cwd must NOT rewrite project_path.
+// project_path is identity — the transcript lives under the ORIGINAL path's
+// Claude project slug, so following an observed cwd breaks the next resume.
+// (Pre-#1729 this test asserted the opposite: that the path followed the cwd.)
+func TestApplyClaudeCwdSync_RefusesUndeclaredPathAndPreservesWorktreeFields(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("AGENTDECK_PROFILE", "cwd_sync_update")
@@ -63,8 +67,8 @@ func TestApplyClaudeCwdSync_UpdatesProjectPathAndPreservesWorktreeFields(t *test
 	applyClaudeCwdSync("inst-1", newPath)
 
 	got := loadCwdSyncInstance(t, storage, "inst-1")
-	if got.ProjectPath != newPath {
-		t.Errorf("ProjectPath = %q, want %q", got.ProjectPath, newPath)
+	if got.ProjectPath != oldPath {
+		t.Errorf("ProjectPath = %q, want unchanged %q (undeclared cwd must be refused, issue #1729)", got.ProjectPath, oldPath)
 	}
 	if got.WorktreePath != "/repo/worktrees/feature-x" {
 		t.Errorf("WorktreePath changed: got %q", got.WorktreePath)
