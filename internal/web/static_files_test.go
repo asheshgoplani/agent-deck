@@ -181,6 +181,8 @@ func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
 		"gemini-2.5-flash-lite",
 		"openai/gpt-5.5",
 		"anthropic/claude-opus-5",
+		"anthropic/claude-sonnet-5",
+		"anthropic/claude-fable-5",
 		"anthropic/claude-sonnet-4-6",
 		"anthropic/claude-opus-4-8",
 		"Custom model ID",
