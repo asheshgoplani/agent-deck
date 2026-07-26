@@ -1,6 +1,9 @@
 package session
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -412,5 +415,222 @@ func TestSpawnFailurePreview_PrefersAuthHold(t *testing.T) {
 	}
 	if strings.Contains(preview, "generic dying output") {
 		t.Fatalf("the generic spawn-failure block must not be shown instead, got:\n%s", preview)
+	}
+}
+
+// TestWriteAuthHoldRecord_PrivatePerms asserts the sidecar is 0o600 and its
+// directory carries no group/other bits. Evidence is a verbatim pane tail taken
+// at the moment of a credential failure (agent output, prompt text, error
+// bodies), and authHoldDir() falls back to a shared /tmp when the data dir cannot
+// be resolved — so the record must never be world-readable.
+func TestWriteAuthHoldRecord_PrivatePerms(t *testing.T) {
+	inst := newAuthHoldTestInstance(t, "auth-hold-perms")
+	inst.noteAuthHoldLocked(AuthHoldReasonDeath, "API Error: 401 · Please run /login")
+
+	path := authHoldRecordPath(inst.ID)
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat sidecar: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Fatalf("sidecar perm = %#o, want 0600", got)
+	}
+
+	dir := filepath.Dir(path)
+	if dir == tempAgentDeckPath("runtime", "auth-hold") {
+		// The shared-/tmp fallback dir may pre-exist with foreign perms and
+		// MkdirAll does not chmod an existing dir; only the file mode is ours.
+		t.Skip("data dir resolution fell back to temp; directory mode is not this call's to assert")
+	}
+	di, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat auth-hold dir: %v", err)
+	}
+	if got := di.Mode().Perm(); got&0o077 != 0 {
+		t.Fatalf("auth-hold dir perm = %#o, want no group/other bits", got)
+	}
+}
+
+// TestWriteAuthHoldRecord_TightensLegacyPerms asserts a record left behind by an
+// older build (0o644) is narrowed the next time it is touched, so upgrading is
+// enough to close the exposure on an already-held session.
+func TestWriteAuthHoldRecord_TightensLegacyPerms(t *testing.T) {
+	inst := newAuthHoldTestInstance(t, "auth-hold-legacy-perms")
+	path := authHoldRecordPath(inst.ID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	legacy, err := json.Marshal(AuthHoldRecord{
+		InstanceID: inst.ID,
+		Reason:     AuthHoldReasonLive,
+		Evidence:   "API Error: 401",
+		Timestamp:  time.Now().Add(-2 * authHoldObservationRefresh).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, legacy, 0o644); err != nil {
+		t.Fatalf("write legacy record: %v", err)
+	}
+
+	// Re-observing the same condition re-stamps the record, which rewrites it.
+	inst.noteAuthHoldLocked(AuthHoldReasonLive, "API Error: 401")
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat sidecar: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Fatalf("rewritten sidecar perm = %#o, want 0600", got)
+	}
+}
+
+// TestNoteAuthHold_RestampsStillObservedRecord asserts a session wedged on the
+// banner for a long time keeps its Timestamp current. The death path reads
+// Timestamp as "last seen", so without the re-stamp an hour-long wedge would die
+// outside authHoldDeathWindow and read as an unrelated crash. The re-stamp must
+// touch nothing else: the first sample is the cleanest evidence and the boot
+// counter is cumulative.
+func TestNoteAuthHold_RestampsStillObservedRecord(t *testing.T) {
+	inst := newAuthHoldTestInstance(t, "auth-hold-restamp")
+	stale := time.Now().Add(-2 * authHoldObservationRefresh)
+	if err := writeAuthHoldRecord(AuthHoldRecord{
+		InstanceID:   inst.ID,
+		Reason:       AuthHoldReasonLive,
+		Evidence:     "first evidence",
+		Timestamp:    stale.Unix(),
+		BootAttempts: 3,
+	}); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	inst.noteAuthHoldLocked(AuthHoldReasonLive, "later evidence")
+
+	rec := inst.AuthHold()
+	if rec == nil {
+		t.Fatal("expected the record to survive")
+	}
+	if rec.Timestamp <= stale.Unix() {
+		t.Fatalf("timestamp must be re-stamped, got %d (seeded %d)", rec.Timestamp, stale.Unix())
+	}
+	if rec.Evidence != "first evidence" {
+		t.Fatalf("the re-stamp must keep the original evidence, got %q", rec.Evidence)
+	}
+	if rec.BootAttempts != 3 {
+		t.Fatalf("the re-stamp must preserve the boot counter, got %d", rec.BootAttempts)
+	}
+	if rec.Reason != AuthHoldReasonLive {
+		t.Fatalf("the re-stamp must keep the reason, got %q", rec.Reason)
+	}
+}
+
+// TestRefreshAuthHoldOnDeath_DiscardsStaleLiveRecord is the staleness half of the
+// hardening. A live-banner sidecar written hours ago by a process that then died
+// — before it could observe the recovery that cleared the 401 — must NOT make a
+// later, unrelated crash look like an auth death. The stale record is unlinked,
+// not merely ignored: IsAuthHeld is the cross-process CLI gate and reads the
+// sidecar directly, so leaving it would strand a session a plain restart fixes.
+func TestRefreshAuthHoldOnDeath_DiscardsStaleLiveRecord(t *testing.T) {
+	inst := newAuthHoldTestInstance(t, "auth-hold-stale-live")
+	if err := writeAuthHoldRecord(AuthHoldRecord{
+		InstanceID: inst.ID,
+		Reason:     AuthHoldReasonLive,
+		Evidence:   "API Error: 401",
+		Timestamp:  time.Now().Add(-2 * authHoldDeathWindow).Unix(),
+	}); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	reader := &Instance{ID: inst.ID, Title: inst.Title, Status: StatusError}
+	reader.refreshAuthHoldOnDeathLocked()
+
+	if reader.authHeld {
+		t.Fatal("a stale live-banner record must not attribute this death to auth")
+	}
+	if rec := reader.AuthHold(); rec != nil {
+		t.Fatalf("the stale record must be unlinked, still on disk: %+v", rec)
+	}
+	if held, _ := reader.IsAuthHeld(); held {
+		t.Fatal("the CLI gate must no longer hold the session")
+	}
+}
+
+// TestRefreshAuthHoldOnDeath_AdoptsRecentLiveRecord pins the other side of the
+// window: a banner seen moments before the pane vanished is exactly the evidence
+// the hold exists for, and must still be adopted and promoted.
+func TestRefreshAuthHoldOnDeath_AdoptsRecentLiveRecord(t *testing.T) {
+	inst := newAuthHoldTestInstance(t, "auth-hold-recent-live")
+	if err := writeAuthHoldRecord(AuthHoldRecord{
+		InstanceID: inst.ID,
+		Reason:     AuthHoldReasonLive,
+		Evidence:   "API Error: 401",
+		Timestamp:  time.Now().Add(-authHoldDeathWindow / 2).Unix(),
+	}); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	reader := &Instance{ID: inst.ID, Title: inst.Title, Status: StatusError}
+	reader.refreshAuthHoldOnDeathLocked()
+
+	if !reader.authHeld {
+		t.Fatal("a recent live-banner record must still be adopted on death")
+	}
+	rec := reader.AuthHold()
+	if rec == nil || rec.Reason != AuthHoldReasonDeath {
+		t.Fatalf("the hold must be promoted to %q, got %+v", AuthHoldReasonDeath, rec)
+	}
+}
+
+// TestRefreshAuthHoldOnDeath_KeepsOldDeathRecord asserts the staleness check does
+// NOT turn the hold into a timer. A death record is the post-mortem: the process
+// already exited on the banner, and only observing the session healthy (or the
+// user stopping it) may release that verdict — never the passage of time.
+func TestRefreshAuthHoldOnDeath_KeepsOldDeathRecord(t *testing.T) {
+	inst := newAuthHoldTestInstance(t, "auth-hold-old-death")
+	if err := writeAuthHoldRecord(AuthHoldRecord{
+		InstanceID: inst.ID,
+		Reason:     AuthHoldReasonDeath,
+		Evidence:   "API Error: 401",
+		Timestamp:  time.Now().Add(-72 * time.Hour).Unix(),
+	}); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	reader := &Instance{ID: inst.ID, Title: inst.Title, Status: StatusError}
+	reader.refreshAuthHoldOnDeathLocked()
+
+	if !reader.authHeld {
+		t.Fatal("an aged death record must still hold: nothing has proven the credential works")
+	}
+	if reader.AuthHold() == nil {
+		t.Fatal("an aged death record must not be discarded by age")
+	}
+}
+
+// TestAuthHoldRecord_CanExplainDeathAt tabulates the freshness rule the death
+// path depends on, including the corrupt-record case: a record that cannot prove
+// when it was observed cannot justify a hold, because over-holding has no escape
+// hatch on the automatic paths.
+func TestAuthHoldRecord_CanExplainDeathAt(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name string
+		rec  *AuthHoldRecord
+		want bool
+	}{
+		{"nil", nil, false},
+		{"death always explains", &AuthHoldRecord{Reason: AuthHoldReasonDeath, Timestamp: now.Add(-72 * time.Hour).Unix()}, true},
+		{"death without timestamp", &AuthHoldRecord{Reason: AuthHoldReasonDeath}, true},
+		{"fresh live", &AuthHoldRecord{Reason: AuthHoldReasonLive, Timestamp: now.Unix()}, true},
+		{"live inside window", &AuthHoldRecord{Reason: AuthHoldReasonLive, Timestamp: now.Add(-authHoldDeathWindow / 2).Unix()}, true},
+		{"live outside window", &AuthHoldRecord{Reason: AuthHoldReasonLive, Timestamp: now.Add(-2 * authHoldDeathWindow).Unix()}, false},
+		{"live without timestamp", &AuthHoldRecord{Reason: AuthHoldReasonLive}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.rec.canExplainDeathAt(now); got != tc.want {
+				t.Fatalf("canExplainDeathAt = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

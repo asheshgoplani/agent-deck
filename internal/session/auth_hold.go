@@ -60,7 +60,10 @@ type AuthHoldRecord struct {
 	// Evidence is the retained pane tail showing the banner. For auth_death it is
 	// the last snapshot taken while the pane still existed.
 	Evidence string `json:"evidence,omitempty"`
-	// Timestamp is when the condition was (re-)observed, unix seconds.
+	// Timestamp is when the condition was (re-)observed, unix seconds. It is
+	// load-bearing, not decorative: the death path uses it to decide whether a
+	// live-banner record is recent enough to explain a death happening NOW, so a
+	// still-observed hold is re-stamped (see authHoldObservationRefresh).
 	Timestamp int64 `json:"ts"`
 	// BootAttempts counts automatic boots that have landed back in auth-death
 	// since the hold was armed. Purely diagnostic — the hold itself blocks after
@@ -87,6 +90,14 @@ const (
 // falls outside it.
 const authHoldDeathWindow = 10 * time.Minute
 
+// authHoldObservationRefresh bounds how stale a still-observed record's
+// Timestamp may get. The death path reads Timestamp as "when the credential
+// failure was last seen", so a session wedged on the banner for an hour must
+// keep re-stamping it — otherwise its eventual death would fall outside
+// authHoldDeathWindow and read as an unrelated crash. One write per minute per
+// wedged session; every status sample in between stays free.
+const authHoldObservationRefresh = time.Minute
+
 // authHoldDir returns <data>/runtime/auth-hold, mirroring spawnFailureDir's
 // fallback so a data-dir resolution failure degrades to temp rather than
 // panicking a status sweep.
@@ -109,15 +120,24 @@ func writeAuthHoldRecord(rec AuthHoldRecord) error {
 		rec.Timestamp = time.Now().Unix()
 	}
 	path := authHoldRecordPath(rec.InstanceID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// 0o700: the directory listing alone leaks which sessions are failing to
+	// authenticate, and authHoldDir() falls back to a shared /tmp when the data
+	// dir cannot be resolved.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create auth-hold dir: %w", err)
 	}
 	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal auth-hold record: %w", err)
 	}
-	// SkipBackup: the record is transient and self-clearing, a .bak is noise.
-	return safeio.SafeOverwrite(path, data, safeio.Options{Perm: 0o644, SkipBackup: true})
+	// Perm 0o600: Evidence is a verbatim pane tail captured at the moment of a
+	// credential failure — agent output, prompt text, error bodies. It is
+	// per-user runtime state that no other account has any business reading,
+	// and the temp-dir fallback can put it in a shared /tmp.
+	//
+	// SkipBackup: the record is transient and self-clearing, a .bak is noise
+	// (and a .bak would be a second copy of the same evidence).
+	return safeio.SafeOverwrite(path, data, safeio.Options{Perm: 0o600, SkipBackup: true})
 }
 
 // readAuthHoldRecord loads the sidecar for an instance, or (nil, nil) when none
@@ -190,6 +210,44 @@ func (r *AuthHoldRecord) Remedy() string {
 	)
 }
 
+// ObservedAt returns the record's observation time, or the zero time when the
+// record carries no usable timestamp (a hand-edited or truncated sidecar).
+func (r *AuthHoldRecord) ObservedAt() time.Time {
+	if r == nil || r.Timestamp <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(r.Timestamp, 0)
+}
+
+// canExplainDeathAt reports whether this record is recent enough to attribute a
+// death observed at now to authentication.
+//
+// A DEATH record always can: the process already exited on the banner, and that
+// verdict is never revoked by a clock — only by observing the session healthy or
+// by the user stopping it.
+//
+// A LIVE-banner record must be inside authHoldDeathWindow, the same freshness
+// window authDeathObservedLocked applies to its in-memory twin
+// (i.authFailureSeenAt). Without this, a sidecar written hours ago by a process
+// that then died — before it could observe the recovery that cleared the 401 —
+// would make a LATER, unrelated crash look like an auth death and hold a session
+// a plain restart would have fixed. A record with no usable timestamp cannot
+// prove freshness, so it is treated as stale: over-holding is the failure mode
+// with no escape hatch on the automatic paths.
+func (r *AuthHoldRecord) canExplainDeathAt(now time.Time) bool {
+	if r == nil {
+		return false
+	}
+	if r.Reason == AuthHoldReasonDeath {
+		return true
+	}
+	observed := r.ObservedAt()
+	if observed.IsZero() {
+		return false
+	}
+	return now.Sub(observed) < authHoldDeathWindow
+}
+
 // FormatForDisplay renders the record as a preview-pane / `session show` block.
 func (r *AuthHoldRecord) FormatForDisplay() string {
 	if r == nil {
@@ -227,12 +285,28 @@ func (r *AuthHoldRecord) FormatForDisplay() string {
 //
 // Idempotent and cheap on the steady state: when a hold with the same reason is
 // already on disk, nothing is rewritten, so a status sweep that sees the same
-// wedged session every second does not thrash the filesystem.
+// wedged session every second does not thrash the filesystem. Once per
+// authHoldObservationRefresh it re-stamps Timestamp (and only Timestamp — the
+// first sample is the cleanest evidence, and BootAttempts must survive), because
+// the death path reads Timestamp as "last seen" to decide whether this record can
+// explain a death happening now.
 func (i *Instance) noteAuthHoldLocked(reason, evidence string) {
 	now := time.Now()
 	i.authFailureSeenAt = now
 
 	if existing, err := readAuthHoldRecord(i.ID); err == nil && existing != nil && existing.Reason == reason {
+		if observed := existing.ObservedAt(); !observed.IsZero() && now.Sub(observed) < authHoldObservationRefresh {
+			return
+		}
+		existing.Timestamp = now.Unix()
+		// The path is derived from InstanceID: pin it to this instance so a
+		// record with a missing/foreign id can never be re-stamped elsewhere.
+		existing.InstanceID = i.ID
+		if err := writeAuthHoldRecord(*existing); err != nil {
+			sessionLog.Warn("auth_hold_restamp_failed",
+				slog.String("instance_id", i.ID),
+				slog.String("error", err.Error()))
+		}
 		return
 	}
 
@@ -292,9 +366,13 @@ const authHoldRecheckInterval = 5 * time.Second
 //
 //  1. Already known held in-memory → nothing to do (no I/O).
 //  2. A sidecar exists (possibly written by ANOTHER process — the TUI observed
-//     the banner, this CLI invocation did not) → adopt it, and promote a
-//     live-banner hold to a death hold now that the pane is confirmed gone.
-//  3. No sidecar → ask the evidence: did the pane show a credential banner
+//     the banner, this CLI invocation did not) and is recent enough to explain
+//     this death (canExplainDeathAt) → adopt it, and promote a live-banner hold
+//     to a death hold now that the pane is confirmed gone. A STALE live-banner
+//     record is discarded instead: it describes a 401 that was current hours ago,
+//     not this death, and leaving it on disk would gate every automatic boot of a
+//     session a plain restart can fix.
+//  3. No usable sidecar → ask the evidence: did the pane show a credential banner
 //     before it vanished (authDeathObservedLocked)?
 //
 // Caller holds i.mu.
@@ -302,17 +380,32 @@ func (i *Instance) refreshAuthHoldOnDeathLocked() {
 	if i.authHeld {
 		return
 	}
-	if !i.authHoldCheckedAt.IsZero() && time.Since(i.authHoldCheckedAt) < authHoldRecheckInterval {
+	now := time.Now()
+	if !i.authHoldCheckedAt.IsZero() && now.Sub(i.authHoldCheckedAt) < authHoldRecheckInterval {
 		return
 	}
-	i.authHoldCheckedAt = time.Now()
+	i.authHoldCheckedAt = now
 
 	if rec := i.AuthHold(); rec != nil {
-		if rec.Reason != AuthHoldReasonDeath {
-			i.noteAuthHoldLocked(AuthHoldReasonDeath, rec.Evidence)
+		if rec.canExplainDeathAt(now) {
+			if rec.Reason != AuthHoldReasonDeath {
+				i.noteAuthHoldLocked(AuthHoldReasonDeath, rec.Evidence)
+			}
+			i.authHeld = true
+			return
 		}
-		i.authHeld = true
-		return
+		// Unlink, don't just ignore: IsAuthHeld (the cross-process CLI gate) reads
+		// the sidecar directly, so a record left in place would keep holding the
+		// session even though this path just concluded it explains nothing.
+		sessionLog.Info("auth_hold_stale_record_discarded",
+			slog.String("instance_id", i.ID),
+			slog.String("title", i.Title),
+			slog.String("reason", rec.Reason),
+			slog.Time("observed_at", rec.ObservedAt()))
+		clearAuthHoldRecord(i.ID)
+		// Fall through rather than returning: i.authFailureSeenAt and the pane's
+		// retained sample are independent, in-process evidence about THIS death,
+		// and authDeathObservedLocked applies the same window to them.
 	}
 	if i.authDeathObservedLocked() {
 		i.authHeld = true
