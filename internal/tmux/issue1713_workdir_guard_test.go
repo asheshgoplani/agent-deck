@@ -103,25 +103,22 @@ func TestResolveStartWorkDir_RejectsEmpty(t *testing.T) {
 // resolves a relative -c against the SPAWNING client's cwd, which is now
 // SpawnBaseDir ("/") — so leaving it relative would silently retarget the pane
 // to /<relative-path>.
+// Resolved against this process's cwd, not tmux's — deliberately without
+// chdir()ing the test process, which would leak into anything else running.
 func TestResolveStartWorkDir_AbsolutisesRelativePaths(t *testing.T) {
-	parent := t.TempDir()
-	child := filepath.Join(parent, "nested")
-	require.NoError(t, os.Mkdir(child, 0o755))
-
-	prev, err := os.Getwd()
+	cwd, err := os.Getwd()
 	require.NoError(t, err)
-	require.NoError(t, os.Chdir(parent))
-	t.Cleanup(func() { _ = os.Chdir(prev) })
 
-	got, err := resolveStartWorkDir("nested")
+	got, err := resolveStartWorkDir(".")
 	require.NoError(t, err)
 	assert.True(t, filepath.IsAbs(got), "resolved path must be absolute, got %q", got)
 
 	gotInfo, err := os.Stat(got)
 	require.NoError(t, err)
-	wantInfo, err := os.Stat(child)
+	wantInfo, err := os.Stat(cwd)
 	require.NoError(t, err)
-	assert.True(t, os.SameFile(gotInfo, wantInfo), "resolved %q should be %q", got, child)
+	assert.True(t, os.SameFile(gotInfo, wantInfo),
+		"%q must resolve against agent-deck's cwd (%q), not tmux's", got, cwd)
 }
 
 // --- classifyPaneCwd --------------------------------------------------------
