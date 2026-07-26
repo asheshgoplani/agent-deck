@@ -417,5 +417,9 @@ func ExecContext(ctx context.Context, socketName string, args ...string) *exec.C
 // Empty / whitespace-only socket name returns the input args unchanged, so
 // pre-v1.7.50 call sites see byte-identical argv.
 func buildInnerTmuxArgs(socketName string, args ...string) []string {
+	// This argv is always spawned (directly, or spliced into a systemd-run
+	// argv), so it needs the same refusal as the exec factories — the layer of
+	// indirection is the only difference. See default_socket_guard.go.
+	assertTmuxSpawnIsolated(socketName, args)
 	return tmuxArgs(socketName, args...)
 }

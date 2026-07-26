@@ -47,13 +47,15 @@ const TestIsolationMarkerEnv = "AGENT_DECK_TEST_ISOLATED"
 //	    os.Exit(m.Run())
 //	}
 //
-// Returns a cleanup function that removes the temp dir and restores
-// the original TMUX / TMUX_PANE / AGENT_DECK_TEST_ISOLATED values so
-// the parent process's env is not permanently altered.
+// Returns a cleanup function that kills every server it spawned, removes the
+// temp dir, and leaves the process ISOLATED for the rest of its life — TMUX /
+// TMUX_PANE stay unset and TMUX_TMPDIR is parked somewhere unusable, so
+// goroutines that outlive the suite cannot reach the developer's real tmux
+// server. See the note inside the cleanup func.
 func IsolateTmuxSocket() func() {
-	// Snapshot originals for cleanup-time restore.
-	origTmux, hadTmux := os.LookupEnv("TMUX")
-	origTmuxPane, hadTmuxPane := os.LookupEnv("TMUX_PANE")
+	// TMUX / TMUX_PANE are never restored; TMUX_TMPDIR is restored only when it
+	// already pointed somewhere isolated. See the sticky-isolation note in the
+	// returned cleanup func.
 	origTmuxTmpdir, hadTmuxTmpdir := os.LookupEnv("TMUX_TMPDIR")
 	origMarker, hadMarker := os.LookupEnv(TestIsolationMarkerEnv)
 
@@ -87,13 +89,52 @@ func IsolateTmuxSocket() func() {
 		// attach to anything. See the incident log in CLAUDE.md.
 		KillTmuxServersUnder(dir)
 
-		restoreEnv("TMUX", origTmux, hadTmux)
-		restoreEnv("TMUX_PANE", origTmuxPane, hadTmuxPane)
-		restoreEnv("TMUX_TMPDIR", origTmuxTmpdir, hadTmuxTmpdir)
+		// ISOLATION IS STICKY. Cleanup does NOT hand TMUX / TMUX_PANE /
+		// TMUX_TMPDIR back, and that is deliberate.
+		//
+		// Cleanup runs while the test binary is still alive, and agent-deck
+		// spawns background goroutines that outlive the test that started them
+		// (status pollers, Instance.watchForFastDeath). Restoring the caller's
+		// values re-points those late tmux calls at the developer's REAL default
+		// server — the precise hazard this helper exists to prevent. It is
+		// observable: a leaked watchForFastDeath goroutine was caught running
+		// `tmux has-session` against /tmp/tmux-<uid>/default after its package's
+		// suite had already printed PASS.
+		//
+		// Restoring protected nothing in exchange. A child process cannot alter
+		// its parent shell's environment, so `go test` could never leak these
+		// vars back to the developer's terminal; the only reader of the restored
+		// values is the dying test binary itself.
+		//
+		// TMUX_TMPDIR is parked on a path that can never BE a directory, so a
+		// late tmux call fails instantly ("no server running") instead of
+		// reaching the live fleet — and cannot create a fresh server that no
+		// teardown would ever reap, which parking it on the removed dir would
+		// allow. Tests needing the original values back capture and restore them
+		// themselves; this package's own tests do exactly that.
+		//
+		// The one value worth handing back is an OUTER isolated dir: a nested
+		// call (a test isolating on top of its package's TestMain) must leave
+		// the package's own isolation intact, and that dir is by definition
+		// already safe. An outer value that is unset or points at tmux's default
+		// base is exactly what must not come back.
+		_ = os.Unsetenv("TMUX")
+		_ = os.Unsetenv("TMUX_PANE")
+		if hadTmuxTmpdir && !isDefaultTmuxBase(origTmuxTmpdir) {
+			_ = os.Setenv("TMUX_TMPDIR", origTmuxTmpdir)
+		} else {
+			_ = os.Setenv("TMUX_TMPDIR", tornDownTmuxTmpdir)
+		}
 		restoreEnv(TestIsolationMarkerEnv, origMarker, hadMarker)
 		_ = os.RemoveAll(dir)
 	}
 }
+
+// tornDownTmuxTmpdir is where TMUX_TMPDIR points after cleanup. /dev/null is a
+// character device on every supported platform, so no component beneath it can
+// be created or opened: any tmux invocation resolving here fails immediately and
+// spawns nothing.
+const tornDownTmuxTmpdir = "/dev/null/agent-deck-tmux-isolation-torn-down"
 
 // assertIsolatedTmuxTmpdir refuses to hand back an isolation that does not
 // isolate.
@@ -109,24 +150,29 @@ func IsolateTmuxSocket() func() {
 // ignore an error to stay one line long, and "isolation silently didn't happen"
 // is precisely the failure mode of the 2026-04-17 cascade.
 func assertIsolatedTmuxTmpdir(dir string) {
+	if isDefaultTmuxBase(dir) {
+		panic(fmt.Sprintf(
+			"testutil.IsolateTmuxSocket: refusing to set TMUX_TMPDIR=%q — that is tmux's "+
+				"DEFAULT socket base, so tests would spawn on the user's live server and "+
+				"cleanup would kill-server it. The isolated dir must be a private "+
+				"subdirectory (ad-tmux-*).", dir))
+	}
+}
+
+// isDefaultTmuxBase reports whether dir is where tmux keeps the user's real
+// sockets, rather than a private directory above them.
+//
+// tmux nests <TMUX_TMPDIR>/tmux-<uid>/<socket>, so a tmp root IS the default
+// base, and a tmux-<uid> directory is the default base one level in. Both
+// spellings of /tmp count on darwin, where /tmp is a symlink to /private/tmp.
+func isDefaultTmuxBase(dir string) bool {
 	clean := filepath.Clean(dir)
-	// tmux nests <TMUX_TMPDIR>/tmux-<uid>/<socket>, so the tmp roots themselves
-	// are the default base, and a tmux-<uid> dir is the default base one level
-	// in. Both spellings of /tmp matter on darwin, where /tmp is a symlink.
 	for _, base := range []string{"/tmp", "/private/tmp", filepath.Clean(os.TempDir())} {
 		if clean == base {
-			panic(fmt.Sprintf(
-				"testutil.IsolateTmuxSocket: refusing to set TMUX_TMPDIR=%q — that is tmux's "+
-					"DEFAULT socket base, so tests would spawn on the user's live server and "+
-					"cleanup would kill-server it. The isolated dir must be a private "+
-					"subdirectory (ad-tmux-*).", dir))
+			return true
 		}
 	}
-	if strings.HasPrefix(filepath.Base(clean), "tmux-") {
-		panic(fmt.Sprintf(
-			"testutil.IsolateTmuxSocket: refusing to set TMUX_TMPDIR=%q — a tmux-<uid> "+
-				"directory IS the default socket base, not a private dir above it.", dir))
-	}
+	return strings.HasPrefix(filepath.Base(clean), "tmux-")
 }
 
 // KillTmuxServersUnder kills every tmux server whose socket lives anywhere
