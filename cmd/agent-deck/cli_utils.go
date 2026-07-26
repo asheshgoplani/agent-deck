@@ -206,6 +206,8 @@ func shouldInheritParentGroup(explicitGroupProvided, inheritGroupFlag bool, path
 }
 
 // resolveAddPath resolves the user-provided positional path arg for `agent-deck add`.
+// Also used by `agent-deck session move` (#1706): both take a user-supplied
+// positional project path and must resolve it the same way.
 // Handles ".", "~", "~/foo", "$VAR/foo", and relative/absolute paths uniformly.
 // session.ExpandPath runs first so a literal tilde from a non-expanding shell
 // (e.g. SSH-driven invocation) reaches a real home directory before Abs.

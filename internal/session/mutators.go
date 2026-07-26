@@ -149,7 +149,11 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 
 	case FieldPath:
 		oldValue = inst.ProjectPath
-		inst.ProjectPath = value
+		resolved, resErr := ResolveProjectPath(value)
+		if resErr != nil {
+			return oldValue, nil, &MutationError{Field: field, Msg: resErr.Error()}
+		}
+		inst.ProjectPath = resolved
 
 	case FieldCommand:
 		oldValue = inst.Command

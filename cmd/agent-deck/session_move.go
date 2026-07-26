@@ -94,7 +94,15 @@ func handleSessionMove(profile string, args []string) {
 	}
 
 	identifier := fs.Arg(0)
-	newPath := fs.Arg(1)
+	// #1706: resolve the positional path exactly as `add` does. The stored
+	// project_path is identity — the Claude-history migration below derives its
+	// slug from it, and tmux would resolve a relative value against the tmux
+	// server's cwd rather than the caller's.
+	newPath, resErr := resolveAddPath(fs.Arg(1))
+	if resErr != nil {
+		out.Error(fmt.Sprintf("resolve new path: %v", resErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {

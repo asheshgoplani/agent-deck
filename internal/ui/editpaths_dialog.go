@@ -122,7 +122,20 @@ func (d *EditPathsDialog) cleanedPaths() []string {
 		if p == "" {
 			continue
 		}
-		expanded := session.ExpandPath(p)
+		// #1706: these paths are persisted as project_path / additional_paths,
+		// so they must be absolute — a relative entry is validated against the
+		// TUI's cwd here but read back by tmux, the Claude slug and the #1731
+		// hook-cwd check, which each resolve it differently. Resolving before
+		// the dedupe also stops "repo" and "./repo" from becoming two entries
+		// for one directory.
+		expanded, resErr := session.ResolveProjectPath(p)
+		if resErr != nil {
+			// Only reachable when this process has no usable cwd, so there is
+			// nothing to anchor a relative entry to. Dropping it here surfaces
+			// as Validate's "requires at least 2 paths" rather than persisting a
+			// path that resolves differently for every reader.
+			continue
+		}
 		if seen[expanded] {
 			continue
 		}
