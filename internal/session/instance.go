@@ -6429,19 +6429,33 @@ func parseGenericOutput(content, tool string) (*ResponseOutput, error) {
 	}, nil
 }
 
-// StopServiceUnit best-effort stops + resets-failed the transient
-// systemd-user service unit associated with this instance's tmux
-// server (if LaunchAs=service was used). Intended for the remove/delete
-// code path ONLY — NOT for restart, which needs the unit to persist so
-// it can re-spawn tmux.
+// ServiceUnitOwnership snapshots the evidence needed to decide whether
+// this instance may retire its transient systemd-user service unit
+// (issue #1721). MUST be called BEFORE teardown: it reads the pid of the
+// tmux server generation this session belongs to, which is unobservable
+// once the session is killed.
 //
-// No-ops on non-systemd hosts. Returns nil when the unit doesn't exist
-// or was never started (best-effort semantics per v1.7.21 spec).
-func (i *Instance) StopServiceUnit() error {
+// Returns a zero value (which always skips the stop) when the instance has
+// no tmux session.
+func (i *Instance) ServiceUnitOwnership() tmux.ServiceUnitOwnership {
 	if i.tmuxSession == nil {
-		return nil
+		return tmux.ServiceUnitOwnership{}
 	}
-	return tmux.StopServiceUnit(i.tmuxSession.Name)
+	return i.tmuxSession.ServiceUnitOwnership()
+}
+
+// RetireServiceUnit stops + resets-failed the transient systemd-user
+// service unit associated with this instance's tmux server (if
+// LaunchAs=service was used) — but ONLY when `own` proves this session was
+// its exclusive owner. Intended for the remove/delete code path ONLY —
+// NOT for restart, which needs the unit to persist so it can re-spawn tmux.
+//
+// `own` must come from ServiceUnitOwnership() called BEFORE teardown. The
+// returned decision reports whether the unit was stopped and why (see the
+// tmux.UnitStop* reasons); a skip is never an error — leaving a transient
+// unit behind is recoverable, killing a sibling session is not.
+func (i *Instance) RetireServiceUnit(own tmux.ServiceUnitOwnership) tmux.ServiceUnitDecision {
+	return tmux.StopServiceUnitOwned(own)
 }
 
 // Kill terminates the tmux session and cleans up sandbox container if present.

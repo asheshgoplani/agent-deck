@@ -2263,6 +2263,12 @@ func handleRemove(profile string, args []string) {
 	removedID := inst.ID
 	removedTitle := inst.Title
 
+	// Snapshot service-unit ownership BEFORE teardown (issue #1721): the
+	// pid of the tmux server generation this session belongs to is only
+	// observable while the session is still live, and it is what proves
+	// the unit we may stop later is the one we actually retired.
+	serviceUnitOwnership := inst.ServiceUnitOwnership()
+
 	// Always attempt to kill the tmux session, even if Exists() returns false.
 	// The saved status may be stale (e.g., "error" in DB but tmux session still alive).
 	// KillAndWait is safe to call on non-existent sessions (returns error which we handle).
@@ -2283,7 +2289,12 @@ func handleRemove(profile string, args []string) {
 	// stop + reset-failed the unit here so `agent-deck remove` is truly
 	// terminal. No-op on non-service-mode sessions and on non-systemd
 	// hosts.
-	_ = inst.StopServiceUnit()
+	//
+	// Gated on proven exclusive ownership (issue #1721): the unit
+	// supervises a tmux SERVER, which on the default socket is shared by
+	// every sibling session, so an unconditional stop could kill sessions
+	// this removal was never allowed to touch.
+	_ = inst.RetireServiceUnit(serviceUnitOwnership)
 
 	// Clean up worktree directory if this is a worktree session
 	if inst.IsWorktree() {

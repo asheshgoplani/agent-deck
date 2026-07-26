@@ -1295,7 +1295,7 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 		tmuxArgs = append(tmuxArgs, bashBinary, "-c", command)
 	}
 
-	unitBase := "agentdeck-tmux-" + sanitizeSystemdUnitComponent(s.Name)
+	unitBase := serviceUnitBase(s.Name)
 
 	switch s.resolveLaunchMode() {
 	case launchModeService:
@@ -1341,7 +1341,7 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 // when service-mode spawn fails and we retry with scope mode before
 // falling all the way back to direct tmux.
 func buildScopeArgsFromTmuxArgs(sessionName string, tmuxArgs []string) []string {
-	unitBase := "agentdeck-tmux-" + sanitizeSystemdUnitComponent(sessionName)
+	unitBase := serviceUnitBase(sessionName)
 	scopeArgs := []string{"--user", "--scope", "--quiet", "--collect", "--unit", unitBase, "tmux"}
 	return append(scopeArgs, tmuxArgs...)
 }
@@ -1370,29 +1370,12 @@ func wasScopeModeArgs(args []string) bool {
 	return false
 }
 
-// StopServiceUnit best-effort stops + resets-failed the transient
-// user-level service for the given session name. Called by
-// agent-deck remove on service-mode sessions to guarantee the unit
-// does not Restart=on-failure its way back into existence after
-// removal. Errors are returned but callers typically log-and-continue.
-//
-// Returns nil on non-systemd hosts (no-op), on already-stopped units,
-// and on hosts where systemctl is missing — removal must not block on
-// systemd availability.
-//
-// The unit name derivation mirrors startCommandSpec's service branch:
-// "agentdeck-tmux-" + sanitized(sessionName) + ".service".
-func StopServiceUnit(sessionName string) error {
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return nil // no systemctl → nothing to stop
-	}
-	unit := "agentdeck-tmux-" + sanitizeSystemdUnitComponent(sessionName) + ".service"
-	// `stop` returns non-zero if the unit was never started; that's a
-	// no-op for our purposes — swallow and continue to reset-failed.
-	_ = execCommand("systemctl", "--user", "stop", unit).Run()
-	_ = execCommand("systemctl", "--user", "reset-failed", unit).Run()
-	return nil
-}
+// Service-unit teardown lives in service_unit_ownership.go: it must go
+// through StopServiceUnitOwned, which proves exclusive ownership of the
+// unit before stopping it. The unconditional StopServiceUnit(sessionName)
+// this file used to export was removed in issue #1721 — on the shared
+// default socket it could stop the tmux server (and every sibling session
+// in its cgroup) that one deleted session merely happened to name.
 
 // stripSystemdRunPrefix removes the leading systemd-run flags from args
 // produced by startCommandSpec (either scope-mode or service-mode form)
