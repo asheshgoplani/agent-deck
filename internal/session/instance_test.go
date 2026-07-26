@@ -770,7 +770,10 @@ func TestInstance_UpdateClaudeSession_RejectZombie(t *testing.T) {
 		}
 	}()
 
-	projectPath := "/tmp/claude-zombie-reject"
+	// A real directory: this test calls Start(), and a session whose project
+	// directory does not exist is now refused rather than silently started in
+	// $HOME (#1713). The path only needs to be stable within the test.
+	projectPath := t.TempDir()
 	projectDir := filepath.Join(configDir, "projects", ConvertToClaudeDirName(projectPath))
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("mkdir project dir: %v", err)

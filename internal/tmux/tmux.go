@@ -973,6 +973,14 @@ type Session struct {
 	InstanceID  string // Agent-deck instance ID for hook callbacks
 	startupAt   time.Time
 
+	// WorkDirIsPlaceholder marks a session whose local WorkDir is not where the
+	// work happens — today that means an SSH session, whose pane only runs an
+	// `ssh` client while the project lives on the remote host. Such a session
+	// keeps working even if the local directory disappears, so it opts out of
+	// the #1713 working-directory guards (see workdir_guard.go) rather than
+	// being refused a start over a path nothing reads.
+	WorkDirIsPlaceholder bool
+
 	// SocketName is the tmux `-L <name>` socket selector for this session.
 	// When empty (pre-v1.7.50 default), every tmux call targets the user's
 	// default server at $TMUX_TMPDIR/tmux-<uid>/default, preserving the
@@ -2112,6 +2120,40 @@ func (s *Session) Start(command string) error {
 	// See assertTestTmuxIsolation for the full rationale.
 	assertTestTmuxIsolation()
 
+	// #1713: resolve and validate the working directory BEFORE mutating session
+	// state or spawning anything. tmux does NOT fail when -c points at a missing
+	// directory — it silently starts the pane in $HOME — so without this check a
+	// session whose project directory (or worktree) was deleted starts "fine"
+	// and runs the agent against the user's home directory instead. Failing here
+	// keeps the session untouched and surfaces the real reason at the CLI.
+	workDir := s.WorkDir
+	if workDir == "" {
+		workDir = os.Getenv("HOME")
+	}
+	resolvedWorkDir, workDirErr := resolveStartWorkDir(workDir)
+	if workDirErr != nil {
+		if !s.WorkDirIsPlaceholder {
+			statusLog.Warn("tmux_start_refused_bad_workdir",
+				slog.String("session", s.Name),
+				slog.String("requested_workdir", s.WorkDir),
+				slog.String("error", workDirErr.Error()))
+			return workDirErr
+		}
+		// An SSH session's local path is a placeholder: the pane only runs an
+		// ssh client, so a missing local directory must not block the start.
+		// Keep tmux's historical $HOME landing, but say so instead of hiding it.
+		statusLog.Warn("tmux_start_placeholder_workdir_fallback",
+			slog.String("session", s.Name),
+			slog.String("requested_workdir", workDir),
+			slog.String("error", workDirErr.Error()))
+		home, homeErr := resolveStartWorkDir(os.Getenv("HOME"))
+		if homeErr != nil {
+			return workDirErr
+		}
+		resolvedWorkDir = home
+	}
+	workDir = resolvedWorkDir
+
 	s.Command = command
 	s.invalidateCache()
 	s.Created = time.Now()
@@ -2130,17 +2172,16 @@ func (s *Session) Start(command string) error {
 		s.Name = SessionPrefix + sanitized + "_" + generateShortID()
 	}
 
-	// Ensure working directory exists
-	workDir := s.WorkDir
-	if workDir == "" {
-		workDir = os.Getenv("HOME")
-	}
-
 	// Create new tmux session in detached mode with the command as the initial
 	// process. This avoids the slow shell-wait-sendkeys path (~2s pane ready poll).
 	// Commands containing bash-specific syntax are wrapped for fish compatibility.
+	//
+	// workDir was resolved and validated at the top of Start (#1713).
 	launcher, args := s.startCommandSpec(workDir, command)
-	cmd := execCommand(launcher, args...)
+	// newSpawnCommand (not bare execCommand) so the spawn — and any tmux server
+	// it starts — runs from SpawnBaseDir and can never inherit a directory that
+	// is later deleted. See workdir_guard.go.
+	cmd := newSpawnCommand(launcher, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if launcher == "tmux" {
@@ -2153,7 +2194,7 @@ func (s *Session) Start(command string) error {
 				statusLog.Warn("tmux_start_retry_after_socket_recovery",
 					slog.String("session", s.Name),
 				)
-				output, err = execCommand(launcher, args...).CombinedOutput()
+				output, err = newSpawnCommand(launcher, args...).CombinedOutput()
 			}
 		}
 	}
@@ -2197,7 +2238,7 @@ func (s *Session) Start(command string) error {
 		triedScope := false
 		if wasServiceModeArgs(args) {
 			scopeRetryArgs := buildScopeArgsFromTmuxArgs(s.Name, tmuxArgs)
-			scopeOutput, scopeErr = execCommand("systemd-run", scopeRetryArgs...).CombinedOutput()
+			scopeOutput, scopeErr = newSpawnCommand("systemd-run", scopeRetryArgs...).CombinedOutput()
 			triedScope = true
 			if scopeErr == nil {
 				output = scopeOutput
@@ -2215,7 +2256,7 @@ func (s *Session) Start(command string) error {
 		// initial attempt was scope-mode, in which case it's the next
 		// tier down).
 		if err != nil {
-			retryOutput, retryErr := execCommand("tmux", tmuxArgs...).CombinedOutput()
+			retryOutput, retryErr := newSpawnCommand("tmux", tmuxArgs...).CombinedOutput()
 			if retryErr == nil {
 				output = retryOutput
 				err = nil
@@ -2242,6 +2283,22 @@ func (s *Session) Start(command string) error {
 	// Register session in cache immediately to prevent race condition
 	// where Exists() returns false because cache was refreshed before session creation
 	registerSessionInCache(s.Name)
+
+	// #1713: a tmux server whose OWN cwd was unlinked stops honouring -c and
+	// births every pane in that dead directory, where the pane's shell cannot
+	// getcwd() and the agent never execs. SpawnBaseDir prevents that for servers
+	// agent-deck starts, but a server started earlier (or by another tool) can
+	// already be poisoned, so confirm where the pane actually landed. Reporting
+	// such a session as started is the exact "looked created, never ran the
+	// agent" failure from the report — tear it down and say why instead.
+	if cwdErr := s.verifyPaneWorkDirUnlessPlaceholder(workDir); cwdErr != nil {
+		if killErr := s.Kill(); killErr != nil {
+			statusLog.Warn("deleted_cwd_session_cleanup_failed",
+				slog.String("session", s.Name),
+				slog.String("error", killErr.Error()))
+		}
+		return cwdErr
+	}
 
 	// PERFORMANCE: Batch all session options into a single subprocess call.
 	// Before: 7 separate exec.Command calls = 7 subprocess spawns (~50-70ms)

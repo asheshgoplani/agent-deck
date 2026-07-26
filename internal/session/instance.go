@@ -826,6 +826,11 @@ func (i *Instance) applyLaunchSettingsFromConfig() {
 	settings := GetTmuxSettings()
 	i.tmuxSession.LaunchInUserScope = settings.GetLaunchInUserScope()
 	i.tmuxSession.LaunchAs = settings.GetLaunchAs()
+	// #1713: an SSH session's ProjectPath is only a local placeholder — the
+	// project lives on the remote host and the pane just runs an ssh client —
+	// so the tmux working-directory guards must not refuse its start over a
+	// local directory nothing reads. Every local session keeps the guards.
+	i.tmuxSession.WorkDirIsPlaceholder = i.IsSSH()
 	i.applyVimModeFromConfig()
 }
 
@@ -8799,11 +8804,19 @@ func (i *Instance) OpenContainerShell() (string, error) {
 	cols, rows := tmux.InitialWindowSize()
 	newCtx, newCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer newCancel()
-	out, err := tmux.ExecContext(newCtx, i.TmuxSocketName,
+	newCmd := tmux.ExecContext(newCtx, i.TmuxSocketName,
 		"new-session", "-d", "-s", tmuxName,
 		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows),
 		"docker", "exec", "-it", i.SandboxContainer, "/bin/sh",
-	).CombinedOutput()
+	)
+	// #1713: if this new-session is what starts the tmux server, the server
+	// inherits this process's cwd — and agent-deck is frequently run from a
+	// worktree that later gets deleted, after which tmux ignores every -c and
+	// births all panes in that dead directory. Spawn from a directory that
+	// cannot be unlinked. The pane's own cwd is irrelevant here: it runs
+	// `docker exec`, whose working directory was fixed at container create.
+	newCmd.Dir = tmux.SpawnBaseDir
+	out, err := newCmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("creating terminal session: %s: %w", strings.TrimSpace(string(out)), err)
 	}
