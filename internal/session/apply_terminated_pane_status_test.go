@@ -3,6 +3,9 @@ package session
 import (
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // TestApplyTerminatedPaneStatus_HoldsLockOnReturn verifies the lock handoff
@@ -77,5 +80,64 @@ func TestApplyTerminatedPaneStatus_ConcurrentRaceSafe(t *testing.T) {
 	// opencode's hookless vanished pane classifies as stopped.
 	if got != StatusStopped {
 		t.Errorf("Status = %q, want %q", got, StatusStopped)
+	}
+}
+
+// TestUpdateStatus_DropsLockDuringSlowPaneStatusProbe pins the UpdateStatus
+// lock handoff with a probe that cannot finish until the test releases it.
+// A mutation that keeps i.mu held across the probe makes the concurrent lock
+// acquisition time out, while the correct unlock/relock handoff lets it finish.
+func TestUpdateStatus_DropsLockDuringSlowPaneStatusProbe(t *testing.T) {
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseProbe) }) }
+	t.Cleanup(release)
+
+	i := &Instance{
+		Tool:        "claude",
+		Status:      StatusRunning,
+		CreatedAt:   time.Now().Add(-time.Minute),
+		tmuxSession: &tmux.Session{Name: "issue-1732-missing-session"},
+		paneDeadExitStatusForTest: func() (int, bool) {
+			close(probeStarted)
+			<-releaseProbe
+			return 0, true
+		},
+	}
+
+	updateDone := make(chan error, 1)
+	go func() { updateDone <- i.UpdateStatus() }()
+
+	select {
+	case <-probeStarted:
+	case err := <-updateDone:
+		t.Fatalf("UpdateStatus returned before the pane-status probe started: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the pane-status probe to start")
+	}
+
+	lockAcquired := make(chan struct{})
+	lockStarted := time.Now()
+	go func() {
+		i.SetStatusThreadSafe(StatusWaiting)
+		close(lockAcquired)
+	}()
+
+	select {
+	case <-lockAcquired:
+		t.Logf("i.mu remained available during blocked pane-status probe (acquired in %v)", time.Since(lockStarted))
+	case <-time.After(2 * time.Second):
+		release()
+		<-updateDone
+		t.Fatal("i.mu stayed locked while the pane-status probe was blocked")
+	}
+
+	release()
+	if err := <-updateDone; err != nil {
+		t.Fatalf("UpdateStatus() error = %v", err)
+	}
+	if got := i.GetStatusThreadSafe(); got != StatusStopped {
+		t.Fatalf("Status = %q, want %q", got, StatusStopped)
 	}
 }

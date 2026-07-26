@@ -408,6 +408,8 @@ type Instance struct {
 
 	tmuxSession *tmux.Session // Internal tmux session
 
+	paneDeadExitStatusForTest func() (int, bool) // nil uses tmuxSession.PaneDeadExitStatus
+
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
 	hookStatus     string    // running, idle, waiting, dead (empty = no hook data)
 	hookEvent      string    // Hook event name that caused the last status (e.g. "PermissionRequest")
@@ -4146,11 +4148,15 @@ func (i *Instance) terminatedPaneStatus() Status {
 func (i *Instance) applyTerminatedPaneStatus() {
 	tmuxSession := i.tmuxSession
 	tool := i.Tool
+	paneDeadExitStatus := i.paneDeadExitStatusForTest
 
 	i.mu.Unlock()
 	exitCode, haveExitCode := 0, false
 	if tmuxSession != nil {
-		exitCode, haveExitCode = tmuxSession.PaneDeadExitStatus()
+		if paneDeadExitStatus == nil {
+			paneDeadExitStatus = tmuxSession.PaneDeadExitStatus
+		}
+		exitCode, haveExitCode = paneDeadExitStatus()
 	}
 	status := classifyTerminatedPane(exitCode, haveExitCode, tool)
 	i.mu.Lock()
