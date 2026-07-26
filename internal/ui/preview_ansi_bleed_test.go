@@ -114,3 +114,29 @@ func TestPreviewPane_TruncatedLineDoesNotLeakSGRState_Issue699(t *testing.T) {
 		}
 	}
 }
+
+// Regression for the incremental-rendering variant of #699. The original fix
+// closed SGR state at the end of each preview line, which makes a complete
+// frame safe. Bubble Tea can skip unchanged rows, however, and later repaint a
+// different row while the terminal still carries an SGR background from a
+// captured preview line. Every final physical row must therefore start from
+// default SGR state as well as leave it in default state.
+func TestClampViewToViewport_ResetsEveryPhysicalRowAtBothBoundaries_Issue699(t *testing.T) {
+	rendered := clampViewToViewport(
+		"plain row\n\x1b[48;5;22mgreen diff row without captured reset",
+		80,
+		2,
+	)
+
+	for i, row := range strings.Split(rendered, "\n") {
+		if !strings.HasPrefix(row, "\x1b[0m") {
+			t.Fatalf("row %d has no leading SGR reset — incremental repaint can inherit preview background\nrow=%q", i, row)
+		}
+		if !strings.HasSuffix(row, "\x1b[0m") {
+			t.Fatalf("row %d has no trailing SGR reset — next incremental repaint can inherit preview background\nrow=%q", i, row)
+		}
+		if sgrActiveAt(row) {
+			t.Fatalf("row %d leaves SGR active at its boundary\nrow=%q", i, row)
+		}
+	}
+}

@@ -14153,6 +14153,10 @@ func clampViewToViewport(content string, width, height int) string {
 		}
 	}
 
+	const sgrReset = "\x1b[0m"
+	var rendered strings.Builder
+	rendered.Grow(len(content) + len(lines)*2*len(sgrReset))
+
 	for i, line := range lines {
 		// #937 v2: cellWidth/cellTruncate (not ansi.*) so this final
 		// viewport-clamp safety net sees keycap clusters at their true
@@ -14166,10 +14170,24 @@ func clampViewToViewport(content string, width, height int) string {
 		// glyphs — the iTerm2 "ghost line" artifact on session-list scroll
 		// (#607 row-offset drift). fitCellWidth does both, on cellWidth so
 		// this post-join clamp stays a true terminal-cell net.
-		lines[i] = fitCellWidth(line, width)
+		//
+		// #699 follow-up: isolate SGR state at BOTH row boundaries. Bubble
+		// Tea's incremental renderer skips unchanged rows and repaints only
+		// changed ones. A captured preview background can therefore still be
+		// active when a later row starts rendering, even though the original
+		// fix appended a reset to every preview line. Prefixing and suffixing
+		// the final physical rows makes repaint order irrelevant. SGR resets
+		// occupy zero terminal cells, so the exact viewport dimensions are
+		// unchanged.
+		if i > 0 {
+			rendered.WriteByte('\n')
+		}
+		rendered.WriteString(sgrReset)
+		rendered.WriteString(fitCellWidth(line, width))
+		rendered.WriteString(sgrReset)
 	}
 
-	return strings.Join(lines, "\n")
+	return rendered.String()
 }
 
 // ensureExactWidth ensures each line in content has exactly the specified visual width.
