@@ -497,7 +497,7 @@ every heartbeat and act on two thresholds:
   getting large: commit what's done, then write a handoff summary of what
   remains (decisions made, files touched, next steps) to
   `$RUN_DIR/<task-slug>/handoff.md`."
-- **Hard (~200k):** stop feeding it work. Archive the child and launch a
+- **Hard (~250k):** stop feeding it work. Archive the child and launch a
   **fresh session in the same worktree** — same move as the round-2
   escalation in "Model & connector tiering" — told to read `git log`, the
   branch diff, and the handoff summary before continuing. Record the rotation
