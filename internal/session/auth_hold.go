@@ -158,8 +158,12 @@ func (i *Instance) AuthHold() *AuthHoldRecord {
 // Held only while the session is NOT healthy: once it is observed running/
 // waiting/idle the hold is stale by definition (and UpdateStatus clears it), so
 // a lingering sidecar can never strand a working session.
+//
+// Status is read under the lock: this is called from unlocked reporting paths
+// (Substate, the CLI restart gate, the boot sweep) that run concurrently with
+// the TUI's background status poller writing Status under i.mu.
 func (i *Instance) IsAuthHeld() (bool, string) {
-	if isHealthyForFreshnessGuard(i.Status) {
+	if isHealthyForFreshnessGuard(i.GetStatusThreadSafe()) {
 		return false, ""
 	}
 	rec := i.AuthHold()

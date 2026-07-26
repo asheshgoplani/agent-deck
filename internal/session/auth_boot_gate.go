@@ -36,18 +36,25 @@ import (
 // Everything slow or stateful is injectable so the whole policy is testable
 // without spawning a single process.
 type BootSweep struct {
+	// EVERY brake below follows the same convention, deliberately: ZERO means
+	// "use the safe default", and a NEGATIVE value means "explicitly disabled".
+	// Leaving zero to mean "off" is what made this struct dangerous in review: a
+	// partially-configured BootSweep{} would have had no stagger, no jitter, a
+	// verify deadline of `now` (so no boot could ever be observed failing) and no
+	// breaker — reconstructing precisely the unbraked sweep that caused the
+	// outage. Under-configuration must fail SAFE, and turning a brake off must be
+	// visible at the call site.
+
 	// MaxInFlight caps how many booted-but-not-yet-verified sessions may exist
 	// at once. This is the token-contention cap: it bounds how many fresh agents
 	// are simultaneously racing the shared refresh token, which is the quantity
-	// that actually caused harm. Minimum 1.
+	// that actually caused harm. Minimum 1 — this brake cannot be disabled.
 	MaxInFlight int
 	// BaseStagger is the floor delay between consecutive boots.
 	BaseStagger time.Duration
-	// Jitter is the width of the random extra delay added to BaseStagger. Zero
-	// disables jitter (tests that assert exact timing).
+	// Jitter is the width of the random extra delay added to BaseStagger.
 	Jitter time.Duration
 	// AuthTripThreshold is how many CONSECUTIVE auth-deaths trip the circuit.
-	// Zero or negative disables the breaker.
 	AuthTripThreshold int
 	// VerifyDelay is how long after a boot its outcome is judged. It must be
 	// long enough for the agent to reach (and fail) authentication; a 401 is
@@ -270,8 +277,14 @@ func (s *BootSweep) Run(instances []*Instance, boot func(*Instance) error) BootS
 			continue
 		}
 
+		// Pace: the first boot is immediate, every later one waits
+		// BaseStagger + jitter. A negative BaseStagger is the explicit
+		// "pacing disabled" signal, so skip rather than call Sleep with a
+		// nonsensical duration.
 		if !firstBoot {
-			s.Sleep(s.BaseStagger + s.JitterFor(s.Jitter))
+			if gap := s.BaseStagger + s.JitterFor(s.Jitter); gap > 0 {
+				s.Sleep(gap)
+			}
 		}
 		firstBoot = false
 
@@ -330,11 +343,30 @@ func (s *BootSweep) logf(event string, attrs ...any) {
 	s.Log.Warn(event, attrs...)
 }
 
-// applyDefaults fills any zero seam so a caller can construct BootSweep{} with
-// only the fields it cares about (and tests can override just the clock).
+// applyDefaults makes a partially-configured BootSweep safe: every unset brake
+// (zero) takes its default, and only an explicitly NEGATIVE value disables one.
+// A caller may therefore construct BootSweep{} with just the fields it cares
+// about — or just the clock, in tests — without silently losing the brakes.
 func (s *BootSweep) applyDefaults() {
 	if s.MaxInFlight < 1 {
+		// Not disableable: zero or negative would mean "unbounded boots racing
+		// the shared token", which is the failure itself. Clamp to fully serial.
 		s.MaxInFlight = 1
+	}
+	if s.BaseStagger == 0 {
+		s.BaseStagger = DefaultBootBaseStagger
+	}
+	if s.Jitter == 0 {
+		s.Jitter = DefaultBootJitter
+	}
+	if s.AuthTripThreshold == 0 {
+		s.AuthTripThreshold = DefaultAuthTripThreshold
+	}
+	if s.VerifyDelay == 0 {
+		// A zero delay would judge every boot before the agent could reach (and
+		// fail) authentication, so no auth-death would ever be observed and the
+		// breaker could never trip.
+		s.VerifyDelay = DefaultBootVerifyDelay
 	}
 	if s.Sleep == nil {
 		s.Sleep = time.Sleep

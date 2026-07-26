@@ -115,6 +115,11 @@ func handleSessionRevive(profile string, args []string) {
 		fmt.Println("Re-establish control pipes for sessions whose tmux server survived")
 		fmt.Println("but whose pipe was killed (e.g., SSH logout on Linux+systemd hosts).")
 		fmt.Println()
+		fmt.Println("Sessions whose agent could not authenticate are SKIPPED and reported as")
+		fmt.Println("auth_held: no revive can fix a credential, and healing their status would")
+		fmt.Println("hide the failure. Re-authenticate (run /login), then restart them")
+		fmt.Println("explicitly — press R in the TUI, or `session restart <id> --force`.")
+		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
 	}

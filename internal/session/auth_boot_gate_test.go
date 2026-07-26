@@ -250,10 +250,13 @@ func TestBootSweep_BootErrorIsNotAnAuthDeath(t *testing.T) {
 	}
 }
 
-// TestBootSweep_NilSeamsGetDefaults asserts BootSweep{} is usable: a caller that
-// sets only the fields it cares about must not panic on a nil seam.
-func TestBootSweep_NilSeamsGetDefaults(t *testing.T) {
-	sweep := &BootSweep{AuthTripThreshold: 0}
+// TestBootSweep_ZeroValueGetsEveryBrake is the anti-footgun test. An
+// under-configured BootSweep{} must NOT degrade into the unbraked sweep that
+// caused the outage: a zero VerifyDelay in particular would judge every boot
+// before the agent could fail authentication, so no auth-death could ever be
+// observed and the breaker could never trip.
+func TestBootSweep_ZeroValueGetsEveryBrake(t *testing.T) {
+	sweep := &BootSweep{}
 	result := sweep.Run(nil, func(*Instance) error { return nil })
 	if result.Tripped || result.Booted != 0 {
 		t.Fatalf("empty sweep must be a clean no-op, got %+v", result)
@@ -261,24 +264,79 @@ func TestBootSweep_NilSeamsGetDefaults(t *testing.T) {
 	if sweep.MaxInFlight < 1 {
 		t.Fatal("MaxInFlight must be normalised to at least 1")
 	}
+	if sweep.BaseStagger != DefaultBootBaseStagger {
+		t.Fatalf("BaseStagger = %s, want the default %s", sweep.BaseStagger, DefaultBootBaseStagger)
+	}
+	if sweep.Jitter != DefaultBootJitter {
+		t.Fatalf("Jitter = %s, want the default %s", sweep.Jitter, DefaultBootJitter)
+	}
+	if sweep.AuthTripThreshold != DefaultAuthTripThreshold {
+		t.Fatalf("AuthTripThreshold = %d, want the default %d", sweep.AuthTripThreshold, DefaultAuthTripThreshold)
+	}
+	if sweep.VerifyDelay != DefaultBootVerifyDelay {
+		t.Fatalf("VerifyDelay = %s, want the default %s", sweep.VerifyDelay, DefaultBootVerifyDelay)
+	}
 }
 
-// TestBootSweep_ThresholdZeroDisablesBreaker preserves an escape hatch for a
-// caller that explicitly wants the old unbraked behavior.
-func TestBootSweep_ThresholdZeroDisablesBreaker(t *testing.T) {
+// TestBootSweep_ZeroValueStillTrips is the behavioral half of the above: a
+// BootSweep{} carrying only test seams must still stop on a fleet-wide failure.
+func TestBootSweep_ZeroValueStillTrips(t *testing.T) {
+	clock := newBootTestClock()
+	instances := fakeInstances("a", "b", "c", "d", "e", "f")
+	sweep := &BootSweep{
+		Sleep:              clock.Sleep,
+		Now:                clock.Now,
+		JitterFor:          func(time.Duration) time.Duration { return 0 },
+		AuthHeld:           func(*Instance) (bool, string) { return false, "" },
+		AuthDeathAfterBoot: func(*Instance) bool { return true },
+	}
+
+	result := sweep.Run(instances, func(*Instance) error { return nil })
+
+	if !result.Tripped {
+		t.Fatal("a zero-value sweep must still trip on a fleet-wide auth failure")
+	}
+	if result.Booted >= len(instances) {
+		t.Fatalf("the whole fleet was burned: booted %d of %d", result.Booted, len(instances))
+	}
+}
+
+// TestBootSweep_NegativeThresholdDisablesBreaker preserves an escape hatch for a
+// caller that explicitly wants no breaker. Disabling must be NEGATIVE, never
+// zero, so an unset field can never silently mean "off".
+func TestBootSweep_NegativeThresholdDisablesBreaker(t *testing.T) {
 	clock := newBootTestClock()
 	instances := fakeInstances("a", "b", "c", "d", "e")
 	authDeath := map[string]bool{"a": true, "b": true, "c": true, "d": true, "e": true}
 	sweep := testSweep(clock, nil, authDeath)
-	sweep.AuthTripThreshold = 0
+	sweep.AuthTripThreshold = -1
 
 	result := sweep.Run(instances, func(*Instance) error { return nil })
 
 	if result.Tripped {
-		t.Fatal("threshold 0 must disable the circuit breaker")
+		t.Fatal("a negative threshold must disable the circuit breaker")
 	}
 	if result.Booted != len(instances) {
 		t.Fatalf("expected all %d booted, got %d", len(instances), result.Booted)
+	}
+}
+
+// TestBootSweep_NegativeStaggerSkipsPacing asserts the negative-means-disabled
+// convention holds for pacing too, without ever calling Sleep with a nonsense
+// duration.
+func TestBootSweep_NegativeStaggerSkipsPacing(t *testing.T) {
+	clock := newBootTestClock()
+	instances := fakeInstances("a", "b", "c")
+	sweep := testSweep(clock, nil, nil)
+	sweep.BaseStagger = -1
+	sweep.JitterFor = func(time.Duration) time.Duration { return 0 }
+
+	sweep.Run(instances, func(*Instance) error { return nil })
+
+	for _, d := range clock.slept {
+		if d <= 0 {
+			t.Fatalf("Sleep must never be called with a non-positive duration, got %v", clock.slept)
+		}
 	}
 }
 
