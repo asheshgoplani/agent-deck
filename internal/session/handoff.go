@@ -115,31 +115,59 @@ func claudeTranscriptPathIn(configDir string, inst *Instance, sessionID string) 
 // authoritative: account-switched or pre-account sessions may keep their
 // conversation in a different config dir than the resolver's answer, so scan
 // all configured dirs (issue #1571 machinery) and fall back to the resolver
-// path when nothing is found.
+// path when nothing is found. Every probe goes through
+// resolveHandoffTranscriptIn so the handoff shares one resolver with the rest of
+// the codebase, UUID-glob fallback included (issue #1671).
 func locateHandoffTranscript(inst *Instance) string {
 	fallback := ClaudeTranscriptPathForInstance(inst)
+	preferred := GetClaudeConfigDirForInstance(inst)
 	cfg, err := LoadUserConfig()
 	if err != nil {
+		// No config to enumerate: still probe the instance's own config dir with
+		// the shared resolver so a differently-encoded project dir resolves.
+		if found := resolveHandoffTranscriptIn(preferred, inst, inst.ClaudeSessionID); found != "" {
+			return found
+		}
 		return fallback
 	}
-	dir, sid, _ := LocateConversationConfigDir(cfg, inst, GetClaudeConfigDirForInstance(inst))
-	if dir == "" {
-		return fallback
-	}
+
+	dir, sid, _ := LocateConversationConfigDir(cfg, inst, preferred)
 	if sid == "" {
 		sid = inst.ClaudeSessionID
 	}
-	// LocateConversationConfigDir matches on the raw ProjectPath encoding;
-	// prefer the canonical encoding when it exists in the located dir.
-	canonical := claudeTranscriptPathIn(dir, inst, sid)
-	if _, statErr := os.Stat(canonical); statErr == nil {
-		return canonical
+	if dir != "" {
+		if found := resolveHandoffTranscriptIn(dir, inst, sid); found != "" {
+			return found
+		}
 	}
-	raw := filepath.Join(dir, "projects", ConvertToClaudeDirName(inst.ProjectPath), sid+".jsonl")
-	if _, statErr := os.Stat(raw); statErr == nil {
-		return raw
+
+	// LocateConversationConfigDir only matches the raw ProjectPath encoding, so a
+	// differently-encoded project dir makes it miss entirely (issue #1671). Sweep
+	// every candidate config dir with the shared resolver, whose UUID-glob
+	// fallback matches the transcript by its unique <session-id>.jsonl name.
+	for _, candidate := range conversationConfigDirCandidates(cfg, preferred) {
+		if found := resolveHandoffTranscriptIn(candidate, inst, sid); found != "" {
+			return found
+		}
 	}
 	return fallback
+}
+
+// resolveHandoffTranscriptIn returns an existing transcript for sessionID under
+// configDir, or "" when none is there. It prefers the canonical
+// EffectiveWorkingDir encoding (issue #663: multi-repo sessions log under the
+// effective cwd) and otherwise delegates to resolveClaudeTranscriptPath, the
+// single shared resolver — which covers the raw ProjectPath encoding plus the
+// UUID-glob fallback for differently-encoded project dirs (e.g. WSL, where
+// Claude names the dir from the Windows/UNC cwd).
+func resolveHandoffTranscriptIn(configDir string, inst *Instance, sessionID string) string {
+	if configDir == "" || inst == nil || sessionID == "" {
+		return ""
+	}
+	if canonical := claudeTranscriptPathIn(configDir, inst, sessionID); fileExists(canonical) {
+		return canonical
+	}
+	return resolveClaudeTranscriptPath(configDir, inst.ProjectPath, sessionID)
 }
 
 func readClaudeTranscriptMessages(path string) ([]handoffMessage, error) {
