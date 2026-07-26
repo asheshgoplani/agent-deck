@@ -1137,6 +1137,13 @@ type switcherCommitMsg struct {
 
 type attachReturnRefreshMsg struct{}
 
+// attachReturnSyncedMsg lands when the attach-return reconciliation that used to
+// run inline on the Bubble Tea event loop (tmux cache refresh + a forced status
+// check for the session we just left) has finished on its own goroutine. The
+// handler only re-derives the list rows from the already-updated snapshot, which
+// is pure in-memory work. See attachReturnSyncCmd for why the split exists.
+type attachReturnSyncedMsg struct{}
+
 // storageChangedMsg signals that state.db was modified externally
 type storageChangedMsg struct{}
 
@@ -4773,6 +4780,48 @@ func (h *Home) triggerStatusUpdate() {
 	}
 }
 
+// attachReturnSyncCmd reconciles the session the user just detached from, OFF the
+// Bubble Tea event loop.
+//
+// Issue #1753: refreshAttachedSessionStatus was called inline from the attach-return
+// message handler, so the first repaint of the list waited on two tmux control-mode
+// round-trips (list-windows -a, list-panes -a — both O(fleet)), a forced capture-pane
+// for the session we left, a hook-status file removal, a possible SQLite status write,
+// and a full render-snapshot rebuild. Until that chain finished the event loop could
+// not run Update/View, and View() returns "" while isAttaching is set, so the user
+// looked at a blank screen for the whole duration. At ~70 sessions that is exactly the
+// "Ctrl+Q takes noticeably long to come back" report.
+//
+// The split: the event loop repaints the list immediately from the last snapshot, this
+// Cmd does the tmux/disk work on its own goroutine, and attachReturnSyncedMsg triggers
+// one more cheap repaint with the reconciled row. Worst case a row shows its pre-attach
+// status for a few frames instead of the list being frozen. Every call in the body
+// already runs on the background status worker (backgroundStatusUpdate /
+// processStatusUpdate), so no new concurrency contract is introduced — see
+// refreshAttachedSessionStatus.
+func (h *Home) attachReturnSyncCmd(sessionID string) tea.Cmd {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		h.refreshAttachedSessionStatus(sessionID)
+		return attachReturnSyncedMsg{}
+	}
+}
+
+// attachReturnRefreshCmd is the fleet-wide half of the same split: the delayed
+// post-attach catch-up (attachReturnRefreshMsg) refreshed both tmux caches inline,
+// which is a second event-loop stall ~350ms after the list came back. Same contract
+// as attachReturnSyncCmd: tmux work here, row rebuild on the event loop.
+func (h *Home) attachReturnRefreshCmd() tea.Cmd {
+	return func() tea.Msg {
+		tmux.RefreshSessionCache()
+		tmux.RefreshPaneInfoCache()
+		h.refreshSessionRenderSnapshot(nil)
+		return attachReturnSyncedMsg{}
+	}
+}
+
 func (h *Home) refreshAttachedSessionStatus(sessionID string) {
 	if strings.TrimSpace(sessionID) == "" {
 		return
@@ -6091,9 +6140,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.isAttaching.Store(false) // Atomic store for thread safety
 		now := time.Now()
 		h.beginAttachReturnGrace(now)
-		// Reconcile the attached session synchronously before the normal delayed
-		// refresh so an exited pane does not render as still running for a tick.
-		h.refreshAttachedSessionStatus(msg.attachedSessionID)
+		// Reconcile the session we just left on its own goroutine (#1753). It used
+		// to run inline here, which held the event loop — and therefore the first
+		// repaint of the list — behind O(fleet) tmux round-trips. attachReturnSyncCmd
+		// carries the rationale; attachReturnSyncedMsg repaints when it lands.
+		syncCmd := h.attachReturnSyncCmd(msg.attachedSessionID)
 
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
@@ -6139,7 +6190,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		reloading := h.isReloading
 		h.reloadMu.Unlock()
 		if reloading {
-			return h, tea.EnableMouseCellMotion
+			// syncCmd still has to run: the inline refresh it replaced happened
+			// before this early return, so dropping it here would leave the row we
+			// just detached from unreconciled.
+			return h, tea.Batch(tea.EnableMouseCellMotion, syncCmd)
 		}
 
 		h.followAttachReturnCwd(msg)
@@ -6163,6 +6217,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.EnableMouseCellMotion,
 			RestoreLegacyKeyboardCmd(os.Stdout),
 			tea.WindowSize(),
+			syncCmd,
 			tea.Tick(attachReturnRefreshDelay, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} }),
 		)
 
@@ -6173,7 +6228,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// by handleSessionSwitcherKey.
 		h.isAttaching.Store(false)
 		h.beginAttachReturnGrace(time.Now())
-		h.refreshAttachedSessionStatus(msg.fromSessionID)
+		syncCmd := h.attachReturnSyncCmd(msg.fromSessionID)
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
 		h.followAttachReturnCwd(statusUpdateMsg{
@@ -6185,6 +6240,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.EnableMouseCellMotion,
 			RestoreLegacyKeyboardCmd(os.Stdout),
 			tea.WindowSize(),
+			syncCmd,
 			tea.Tick(attachReturnRefreshDelay, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} }),
 		)
 
@@ -6195,7 +6251,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// capture. Esc re-attaches; Ctrl+Q returns to the list.
 		h.isAttaching.Store(false)
 		h.beginAttachReturnGrace(time.Now())
-		h.refreshAttachedSessionStatus(msg.fromSessionID)
+		syncCmd := h.attachReturnSyncCmd(msg.fromSessionID)
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
 		h.followAttachReturnCwd(statusUpdateMsg{
@@ -6207,6 +6263,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.EnableMouseCellMotion,
 			RestoreLegacyKeyboardCmd(os.Stdout),
 			tea.WindowSize(),
+			syncCmd,
 			captureCmd,
 		)
 
@@ -6226,11 +6283,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.handleSwitcherCommit(msg)
 
 	case attachReturnRefreshMsg:
+		// The tmux cache refresh moved to its own goroutine (#1753) — running it
+		// here stalled the event loop a second time, ~350ms after the list came
+		// back. The row rebuild happens in attachReturnSyncedMsg, on the loop,
+		// where h.flatItems/h.cursor are safe to touch.
+		return h, h.attachReturnRefreshCmd()
+
+	case attachReturnSyncedMsg:
+		// Async attach-return reconciliation finished: re-derive the rows from the
+		// snapshot it just published. Pure in-memory work, no tmux, no disk.
 		selectedBefore := h.captureSelectedItemIdentity()
-		tmux.RefreshSessionCache()
-		tmux.RefreshPaneInfoCache()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
-		h.refreshSessionRenderSnapshot(nil)
 		return h, nil
 
 	case previewDebounceMsg:
@@ -8247,7 +8310,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						}
 
 						h.isAttaching.Store(true)
-						return h, tea.Exec(attachWindowCmd{session: tmuxSess, windowIndex: item.WindowIndex, detachByte: h.detachByte()}, func(err error) tea.Msg {
+						return h, tea.Exec(attachWindowCmd{
+							session:     tmuxSess,
+							windowIndex: item.WindowIndex,
+							detachByte:  h.detachByte(),
+							onExit:      func() { h.isAttaching.Store(false) },
+						}, func(err error) tea.Msg {
 							h.isAttaching.Store(false)
 							parentInst.MarkAccessed()
 							return statusUpdateMsg{}
@@ -8721,7 +8789,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			termSession := &tmux.Session{Name: tmuxName}
 			h.isAttaching.Store(true)
-			return h, tea.Exec(attachCmd{session: termSession, opts: tmux.AttachOptions{DetachByte: h.detachByte()}}, func(err error) tea.Msg {
+			return h, tea.Exec(attachCmd{
+				session: termSession,
+				opts:    tmux.AttachOptions{DetachByte: h.detachByte()},
+				onExit:  func() { h.isAttaching.Store(false) },
+			}, func(err error) tea.Msg {
 				h.isAttaching.Store(false)
 				return statusUpdateMsg{}
 			})
@@ -12904,11 +12976,22 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// which would lose the tmux session state)
 	h.isAttaching.Store(true) // Prevent View() output only during actual attach transition
 	res := &attachResult{}
-	return tea.Exec(attachCmd{session: tmuxSess, opts: h.attachOptions(tmuxSess), result: res}, func(err error) tea.Msg {
-		// CRITICAL: Set isAttaching to false BEFORE returning the message
-		// This prevents a race condition where View() could be called with
-		// isAttaching=true before Update() processes statusUpdateMsg,
-		// causing a blank screen on return from attached session
+	return tea.Exec(attachCmd{
+		session: tmuxSess,
+		opts:    h.attachOptions(tmuxSess),
+		result:  res,
+		// #1753: clear the flag inside Run(), i.e. BEFORE Bubble Tea restores the
+		// terminal and resumes the loop. The ExecCallback below runs on its own
+		// goroutine, so clearing it only there raced the first View() after resume:
+		// View() returns "" while isAttaching is set, so losing that race meant the
+		// list stayed blank until the NEXT message arrived. Clearing it here makes
+		// the first post-detach repaint deterministic. Nothing can call View() in
+		// between — the event loop is parked inside Program.exec for the whole
+		// attach.
+		onExit: func() { h.isAttaching.Store(false) },
+	}, func(err error) tea.Msg {
+		// Belt for the path where Bubble Tea fails to release the terminal and
+		// invokes this callback without ever running attachCmd.Run().
 		h.isAttaching.Store(false) // Atomic store for thread safety
 
 		// NOTE: No manual screen clear here. Bubble Tea's RestoreTerminal()
@@ -12923,7 +13006,22 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		// This lets running sessions stay green through attach/detach cycles.
 
 		// Capture current pane CWD after attach returns for optional path follow.
-		currentWorkDir := strings.TrimSpace(tmuxSess.GetWorkDir())
+		//
+		// #1753: only when the feature is actually on. GetWorkDir costs two tmux
+		// subprocess spawns (Exists + display-message), and on macOS every fork
+		// briefly quiesces the whole process — measured at 5-13ms of dead time here,
+		// the single largest item between the detach key and the first repaint, paid
+		// on every detach for a feature that defaults to off. followAttachReturnCwd
+		// consults the same setting, so an empty value changes nothing when it is off.
+		instanceSettings := session.GetInstanceSettings()
+		followCwd := instanceSettings.GetFollowCwdOnAttach()
+		workDirIfFollowing := func(ts *tmux.Session) string {
+			if !followCwd || ts == nil {
+				return ""
+			}
+			return strings.TrimSpace(ts.GetWorkDir())
+		}
+		currentWorkDir := workDirIfFollowing(tmuxSess)
 
 		// The user pressed the session-switch key while attached: surface the
 		// in-attach switcher instead of just returning to the list.
@@ -12948,10 +13046,8 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 				h.instancesMu.RUnlock()
 				if switched != nil {
 					fromID = switched.ID
-					if ts := switched.GetTmuxSession(); ts != nil {
-						if wd := strings.TrimSpace(ts.GetWorkDir()); wd != "" {
-							fromWorkDir = wd
-						}
+					if wd := workDirIfFollowing(switched.GetTmuxSession()); wd != "" {
+						fromWorkDir = wd
 					}
 				}
 			}
@@ -13036,11 +13132,19 @@ type attachCmd struct {
 	session *tmux.Session
 	opts    tmux.AttachOptions
 	result  *attachResult
+	// onExit runs as Run returns, i.e. while Bubble Tea's event loop is still
+	// parked inside Program.exec and before it restores the terminal. It exists so
+	// the attach flag can be cleared without racing the first repaint (#1753); see
+	// the call site in attachSession.
+	onExit func()
 }
 
 func (a attachCmd) Run() error {
 	// NOTE: Screen clearing is ONLY done in the tea.Exec callback (after Attach returns)
 	// Removing clear screen here prevents double-clearing which corrupts terminal state
+	if a.onExit != nil {
+		defer a.onExit()
+	}
 
 	ctx := context.Background()
 	intent, err := a.session.AttachWithOptions(ctx, a.opts)
@@ -13140,9 +13244,14 @@ type attachWindowCmd struct {
 	session     *tmux.Session
 	windowIndex int
 	detachByte  byte
+	// onExit: same contract as attachCmd.onExit (#1753).
+	onExit func()
 }
 
 func (a attachWindowCmd) Run() error {
+	if a.onExit != nil {
+		defer a.onExit()
+	}
 	ctx := context.Background()
 	return a.session.AttachWindow(ctx, a.windowIndex, a.detachByte)
 }
