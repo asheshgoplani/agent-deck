@@ -9,15 +9,31 @@ import (
 // AuthGate is the circuit-breaker seam a recovery sweep consults before every
 // boot and reports every boot to.
 //
-// INTEGRATION POINT. The auth-cascade half of the 2026-07-26 fleet deaths is
-// being fixed separately: N sessions share one rotating OAuth refresh token, so
-// a burst of restarts can fork the token and 401 the whole fleet (see
-// bug_oauth_multisession_rotation_race_rootcause). When that breaker lands it
-// should be adapted to this interface and passed as Recoverer.AuthGate — no
-// change to the sequencing logic is needed. Until then Recoverer defaults to
-// SubstateAuthGate below, which reads the same signal from the pane the TUI
-// already classifies (Honest-Status v2 substate "auth-401") and halts the sweep
-// rather than grinding through 60 doomed boots.
+// INTEGRATION POINT (deliberate, and mechanical to complete). The auth-cascade
+// half of the 2026-07-26 fleet deaths is fixed on a separate branch: N sessions
+// share one rotating OAuth refresh token, so a burst of restarts forks the token
+// and 401s the whole fleet (bug_oauth_multisession_rotation_race_rootcause).
+// That work adds a per-session auth HOLD plus a paced bulk-boot breaker in
+// internal/session (Instance.IsAuthHeld / RecordAuthBootFailure and
+// session.BootSweep). It is not on main yet, so this package cannot reference it
+// without breaking the build; when it lands, the adapter is:
+//
+//	type heldAuthGate struct{ sweep *session.BootSweep; consecutive, limit int }
+//	// Allow():   consecutive < limit
+//	// Observe(): if inst.IsAuthHeld() (or rep.AuthFailed()) → consecutive++,
+//	//            inst.RecordAuthBootFailure(); else consecutive = 0
+//
+// plus one line in Detector.Classify to report an auth-held session as
+// HealthSkipped ("auth hold: <remedy>") so a sweep never restarts a session the
+// hold has already parked. Nothing in the sequencing logic changes: that is what
+// the AuthGate seam is for.
+//
+// Until then Recoverer defaults to SubstateAuthGate below, which reads the same
+// signal from the pane the TUI already classifies (Honest-Status v2 substate
+// "auth-401") and halts the sweep rather than grinding through 60 doomed boots.
+// The complementary case — a session that does not sit in a 401 banner but
+// EXITS on the failed refresh, leaving no pane and no substate — is covered by
+// the recoverer's dead-boot brake (Recoverer.MaxDeadBoots), not here.
 type AuthGate interface {
 	// Allow is consulted BEFORE each boot. Returning false halts the sweep;
 	// the string is the operator-facing reason. It must be cheap and must not

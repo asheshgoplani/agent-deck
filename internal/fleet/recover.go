@@ -117,6 +117,15 @@ type Recoverer struct {
 	// MaxFailures halts the sweep after this many CONSECUTIVE failed restarts
 	// (<=0 uses DefaultMaxFailures).
 	MaxFailures int
+	// MaxDeadBoots halts the sweep after this many CONSECUTIVE boots whose pane
+	// was gone again by the time verification looked — the signature of sessions
+	// exiting immediately on boot (see DefaultMaxDeadBoots).
+	//
+	// Zero means "use the safe default"; a NEGATIVE value is the explicit
+	// opt-out. Zero must not mean "off": a partially-configured Recoverer that
+	// silently lost this brake would restart a whole fleet against a dead
+	// credential, which is the outage itself.
+	MaxDeadBoots int
 	// AuthGate halts the sweep when further boots would deepen an auth
 	// cascade. nil means no auth gating.
 	AuthGate AuthGate
@@ -134,14 +143,15 @@ func NewRecoverer() *Recoverer {
 		StillDown: func(inst *session.Instance) bool {
 			return !tmux.HasSessionOnSocket(inst.TmuxSocketName, TmuxName(inst))
 		},
-		Verify:      v.Verify,
-		Sleep:       time.Sleep,
-		Rand:        defaultJitterSource,
-		Log:         slog.Default(),
-		Spacing:     DefaultSpacing,
-		Jitter:      DefaultJitter,
-		MaxFailures: DefaultMaxFailures,
-		AuthGate:    &SubstateAuthGate{HaltAfter: DefaultAuthHaltAfter},
+		Verify:       v.Verify,
+		Sleep:        time.Sleep,
+		Rand:         defaultJitterSource,
+		Log:          slog.Default(),
+		Spacing:      DefaultSpacing,
+		Jitter:       DefaultJitter,
+		MaxFailures:  DefaultMaxFailures,
+		MaxDeadBoots: DefaultMaxDeadBoots,
+		AuthGate:     &SubstateAuthGate{HaltAfter: DefaultAuthHaltAfter},
 	}
 }
 
@@ -157,8 +167,11 @@ func NewRecoverer() *Recoverer {
 //  3. Spacing (+ jitter) is slept BEFORE every boot except the first.
 //  4. Every candidate is re-probed immediately before its restart, so a session
 //     that recovered on its own during the sweep is never killed by it.
-//  5. Each boot is verified before the next one starts. Verification failure
-//     does not abort the sweep; a run of failed RESTARTS does (MaxFailures).
+//  5. Each boot is verified before the next one starts. A single verification
+//     failure does not abort the sweep; a run of failed RESTARTS does
+//     (MaxFailures), and so does a run of boots that came up with the pane
+//     already gone (MaxDeadBoots) — sessions exiting on boot is how a
+//     credential outage actually presents.
 //  6. Each mutated session is persisted immediately, individually.
 func (r *Recoverer) Recover(as Assessment) Summary {
 	sum := Summary{Assessment: as, DryRun: r.DryRun}
@@ -170,6 +183,7 @@ func (r *Recoverer) Recover(as Assessment) Summary {
 	}
 
 	consecutiveFailures := 0
+	consecutiveDeadBoots := 0
 	attempts := 0
 
 	for i, c := range as.Candidates {
@@ -283,7 +297,10 @@ func (r *Recoverer) Recover(as Assessment) Summary {
 		if rep.Booted() {
 			res.Outcome = OutcomeRecovered
 			sum.Recovered++
+			// A session that booted and reached a live-agent state proves the
+			// host and the credential still work, so both runs are broken.
 			consecutiveFailures = 0
+			consecutiveDeadBoots = 0
 			r.logf("fleet_recover_booted", c, slog.Duration("waited", rep.Elapsed))
 		} else {
 			res.Outcome = OutcomeUnverified
@@ -296,6 +313,25 @@ func (r *Recoverer) Recover(as Assessment) Summary {
 				slog.Bool("pane_alive", rep.PaneAlive),
 				slog.String("status", rep.Status),
 				slog.String("substate", rep.Substate))
+
+			// Pane gone after a successful restart = the session started and
+			// exited. One is a crash; a run of them is systemic (dead
+			// credential, wedged tmux, missing binary) and every further boot
+			// makes it worse — this is the brake the 2026-07-26 auth cascade
+			// needed, since an exiting session leaves no substate for the auth
+			// breaker to read.
+			if !rep.PaneAlive {
+				consecutiveDeadBoots++
+				if limit := r.maxDeadBoots(); limit > 0 && consecutiveDeadBoots >= limit {
+					sum.Halted = true
+					sum.HaltReason = fmt.Sprintf(
+						"%d consecutive sessions restarted and then died immediately (pane gone before verification) — "+
+							"that is a host- or credential-level fault, and each further boot deepens it; "+
+							"attach one of them by hand, re-authenticate if it shows a 401, then re-run",
+						consecutiveDeadBoots)
+					r.logHalt(sum.HaltReason)
+				}
+			}
 		}
 
 		// Verification may have refined the status (starting → running/waiting);
@@ -394,6 +430,16 @@ func (r *Recoverer) maxFailures() int {
 		return DefaultMaxFailures
 	}
 	return r.MaxFailures
+}
+
+// maxDeadBoots resolves the dead-boot brake: unset (0) takes the default, a
+// negative value is the explicit opt-out, and 0 is never "off" (see the field
+// doc). A non-positive return disables the brake.
+func (r *Recoverer) maxDeadBoots() int {
+	if r.MaxDeadBoots == 0 {
+		return DefaultMaxDeadBoots
+	}
+	return r.MaxDeadBoots
 }
 
 // defaultJitterSource returns a fraction in [0,1) derived from the wall clock's

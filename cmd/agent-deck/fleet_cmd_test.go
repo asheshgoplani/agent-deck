@@ -85,6 +85,50 @@ func TestFormatFleetRecover_DryRunIsLabelledAndActionable(t *testing.T) {
 	}
 }
 
+// A plan must not number sessions it is not going to touch. With --limit the
+// rest of the down set is still listed (the operator needs to know it is down)
+// but visibly outside this run — printing all 65 as numbered plan lines would
+// misreport what --yes is about to do.
+func TestFormatFleetRecover_PlanSeparatesSessionsOutsideTheLimit(t *testing.T) {
+	sum := fleet.Summary{
+		Assessment:  fleet.Assessment{Total: 3, Down: 3},
+		DryRun:      true,
+		Attempted:   1,
+		Skipped:     2,
+		TotalWaited: 0,
+		Results: []fleet.Result{
+			{Title: "in-plan", Outcome: fleet.OutcomePlanned},
+			{Title: "out-one", Outcome: fleet.OutcomeSkipped, Reason: "beyond --limit 1"},
+			{Title: "out-two", Outcome: fleet.OutcomeSkipped, Reason: "beyond --limit 1"},
+		},
+	}
+
+	got := formatFleetRecover(sum, true)
+
+	if !strings.Contains(got, " 1. in-plan") {
+		t.Errorf("planned session is not numbered:\n%s", got)
+	}
+	for _, title := range []string{"out-one", "out-two"} {
+		line := fleetLineContaining(got, title)
+		if !strings.Contains(line, "not in this run: beyond --limit 1") {
+			t.Errorf("session outside the limit reported as %q", line)
+		}
+		if strings.Contains(line, "wait=") {
+			t.Errorf("session outside the limit shown with a planned wait: %q", line)
+		}
+	}
+}
+
+// fleetLineContaining returns the first line of out containing needle.
+func fleetLineContaining(out, needle string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, needle) {
+			return line
+		}
+	}
+	return ""
+}
+
 func TestFormatFleetRecover_DistinguishesEveryOutcome(t *testing.T) {
 	sum := fleet.Summary{
 		Assessment: fleet.Assessment{Total: 4, Down: 4},
@@ -292,6 +336,18 @@ func TestFleetRecoverConfigWiring(t *testing.T) {
 		rec := fleetRecoverConfig{limit: 7, maxFailures: 2, jitter: 0.35}.recoverer()
 		if rec.Limit != 7 || rec.MaxFailures != 2 || rec.Jitter != 0.35 {
 			t.Fatalf("recoverer = limit %d, maxFailures %d, jitter %v", rec.Limit, rec.MaxFailures, rec.Jitter)
+		}
+	})
+
+	// The recoverer reads MaxDeadBoots 0 as "unset → default", so the flag value
+	// 0 (meaning "off") has to be translated to the negative opt-out. Passing it
+	// through would silently re-enable the brake the operator asked to disable.
+	t.Run("dead-boot brake: 0 disables, positive is forwarded", func(t *testing.T) {
+		if rec := (fleetRecoverConfig{maxDeadBoots: 0}).recoverer(); rec.MaxDeadBoots >= 0 {
+			t.Errorf("MaxDeadBoots = %d for --max-dead-boots 0, want a negative opt-out", rec.MaxDeadBoots)
+		}
+		if rec := (fleetRecoverConfig{maxDeadBoots: 5}).recoverer(); rec.MaxDeadBoots != 5 {
+			t.Errorf("MaxDeadBoots = %d, want 5", rec.MaxDeadBoots)
 		}
 	})
 

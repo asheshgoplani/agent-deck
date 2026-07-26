@@ -357,9 +357,13 @@ The sweep halts early when the trouble looks systemic:
 | Brake | Flag | Default | Why |
 |-------|------|---------|-----|
 | Consecutive failed restarts | `--max-failures` | 3 | Three failures in a row means a common cause; grinding through the rest multiplies the damage |
+| Sessions that restart and then die immediately | `--max-dead-boots` | 3 | A pane that is gone again by verification time means the session exited on boot — the way a dead credential actually presents (the agent quits on the 401, so there is no banner to read). Three in a row is a host- or credential-level fault (`0` disables) |
 | Sessions booting into an auth failure | `--auth-halt-after` | 2 | Restarting the fleet against a broken credential deepens the cascade (`0` disables) |
 
-A halted sweep exits non-zero and reports the reason.
+A slow boot is not a dead one: a pane that is up but still `starting` when the
+verify timeout expires is reported `unverified` and does not trip any brake.
+
+A halted sweep exits non-zero (with `--json` too) and reports the reason.
 
 Options:
 
@@ -372,6 +376,7 @@ Options:
 --verify-timeout <dur>   How long one session may take to prove it booted (default 30s)
 --verify-poll <dur>      Verification poll interval (default 500ms)
 --max-failures <n>       Halt after N consecutive failed restarts (default 3)
+--max-dead-boots <n>     Halt after N consecutive boots whose pane died immediately (default 3, 0 disables)
 --auth-halt-after <n>    Halt after N auth-failed boots (default 2, 0 disables)
 --group <path>           Only consider sessions in this group and its descendants
 --include-idle           Also treat status=idle sessions as down

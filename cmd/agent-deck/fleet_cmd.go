@@ -115,7 +115,8 @@ func handleFleetStatus(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	out := NewCLIOutput(*jsonOutput, *quiet || *quietShort)
+	// See handleFleetRecover: -q must not silence a --json payload.
+	out := NewCLIOutput(*jsonOutput, (*quiet || *quietShort) && !*jsonOutput)
 
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
@@ -145,6 +146,8 @@ func handleFleetRecover(profile string, args []string) {
 	verifyTimeout := fs.Duration("verify-timeout", fleet.DefaultVerifyTimeout, "How long to wait for one session to prove it booted")
 	verifyPoll := fs.Duration("verify-poll", fleet.DefaultVerifyPoll, "Verification poll interval")
 	maxFailures := fs.Int("max-failures", fleet.DefaultMaxFailures, "Halt after this many consecutive failed restarts")
+	maxDeadBoots := fs.Int("max-dead-boots", fleet.DefaultMaxDeadBoots,
+		"Halt after this many consecutive sessions restart and then die immediately (pane gone; 0 disables)")
 	authHaltAfter := fs.Int("auth-halt-after", fleet.DefaultAuthHaltAfter, "Halt after this many sessions boot into an auth failure (0 disables the auth breaker)")
 	det := registerFleetDetectorFlags(fs)
 
@@ -160,7 +163,8 @@ func handleFleetRecover(profile string, args []string) {
 		fmt.Println("without restarting anything.")
 		fmt.Println()
 		fmt.Println("The sweep halts early when the failures look systemic: N consecutive")
-		fmt.Println("failed restarts (--max-failures), or sessions booting into an auth")
+		fmt.Println("failed restarts (--max-failures), N consecutive sessions that restart and")
+		fmt.Println("then die immediately (--max-dead-boots), or sessions booting into an auth")
 		fmt.Println("failure (--auth-halt-after) — restarting the rest of the fleet against a")
 		fmt.Println("broken credential only deepens the cascade.")
 		fmt.Println()
@@ -176,7 +180,10 @@ func handleFleetRecover(profile string, args []string) {
 	}
 
 	quietMode := *quiet || *quietShort
-	out := NewCLIOutput(*jsonOutput, quietMode)
+	// --json is machine output and must not be silenced by -q: a quiet
+	// CLIOutput drops Success entirely, so `--json -q` would print nothing at
+	// all and a wrapper would read the empty payload as a clean no-op.
+	out := NewCLIOutput(*jsonOutput, quietMode && !*jsonOutput)
 
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
@@ -192,6 +199,7 @@ func handleFleetRecover(profile string, args []string) {
 		jitter:        *jitter,
 		limit:         *limit,
 		maxFailures:   *maxFailures,
+		maxDeadBoots:  *maxDeadBoots,
 		authHaltAfter: *authHaltAfter,
 		verifyTimeout: *verifyTimeout,
 		verifyPoll:    *verifyPoll,
@@ -207,17 +215,19 @@ func handleFleetRecover(profile string, args []string) {
 
 	summary := rec.Recover(as)
 
-	if *jsonOutput {
+	switch {
+	case *jsonOutput:
 		out.Success("", fleetRecoverJSON(summary, plan))
-		return
-	}
-	if quietMode {
+	case quietMode:
 		fmt.Println(summary.Format())
-	} else {
+	default:
 		fmt.Print(formatFleetRecover(summary, plan))
 	}
 	// A halted sweep is not a success: exit non-zero so a wrapper script or
-	// conductor notices without parsing the text.
+	// conductor notices without parsing anything. This deliberately covers the
+	// --json path too — a machine caller is the one most likely to check only
+	// the exit status, so that path must not be the one that reports a halted
+	// fleet as success.
 	if summary.Halted {
 		os.Exit(1)
 	}
@@ -233,6 +243,7 @@ type fleetRecoverConfig struct {
 	jitter        float64
 	limit         int
 	maxFailures   int
+	maxDeadBoots  int
 	authHaltAfter int
 	verifyTimeout time.Duration
 	verifyPoll    time.Duration
@@ -249,6 +260,15 @@ func (c fleetRecoverConfig) recoverer() *fleet.Recoverer {
 	rec.Jitter = c.jitter
 	rec.Limit = c.limit
 	rec.MaxFailures = c.maxFailures
+	// The recoverer reads 0 as "unset, use the default" and a negative value as
+	// the explicit opt-out, so `--max-dead-boots 0` has to be translated rather
+	// than passed through — otherwise asking for the brake to be off would
+	// silently re-enable it at the default.
+	if c.maxDeadBoots <= 0 {
+		rec.MaxDeadBoots = -1
+	} else {
+		rec.MaxDeadBoots = c.maxDeadBoots
+	}
 	if c.authHaltAfter <= 0 {
 		rec.AuthGate = nil
 	} else {
@@ -304,8 +324,12 @@ func formatFleetRecover(s fleet.Summary, plan bool) string {
 	}
 	for i, r := range s.Results {
 		switch {
-		case plan:
+		case plan && r.Outcome == fleet.OutcomePlanned:
 			fmt.Fprintf(&b, "  %2d. %-40s wait=%s\n", i+1, truncateFleetTitle(r.Title, 40), r.WaitedBefore)
+		case plan:
+			// Down, but the plan will not touch it (--limit). Numbering these
+			// alongside the planned boots would misreport the sweep's scope.
+			fmt.Fprintf(&b, "      %-40s not in this run: %s\n", truncateFleetTitle(r.Title, 40), r.Reason)
 		case r.Outcome == fleet.OutcomeRecovered:
 			fmt.Fprintf(&b, "  ok         %-40s status=%s in %s\n", truncateFleetTitle(r.Title, 40), r.Report.Status, r.Report.Elapsed.Round(time.Second))
 		case r.Outcome == fleet.OutcomeUnverified:

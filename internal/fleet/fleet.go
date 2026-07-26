@@ -152,4 +152,21 @@ const (
 	// halt the sweep. Two rather than one so a single stale-credential session
 	// cannot stop a recovery that is otherwise working.
 	DefaultAuthHaltAfter = 2
+
+	// DefaultMaxDeadBoots is how many CONSECUTIVE boots may come up with their
+	// pane already gone before the sweep halts.
+	//
+	// This is the brake for the failure actually observed on 2026-07-26: a
+	// session whose credential is dead does not sit in the pane showing a
+	// banner, it EXITS — the agent quits on the 401 and tmux tears the pane
+	// down with it. Such a boot produces no auth substate for the auth breaker
+	// to see and no restart error for the failure brake to count, so without
+	// this brake a credential outage would let the sweep restart all 65
+	// sessions, each burning a full verify timeout — the exact amplification
+	// this command exists to prevent.
+	//
+	// Only pane-is-gone boots count. A pane that is up but still `starting`
+	// when the timeout expires is a slow boot, not a dead one, and must not
+	// stop a recovery that is merely taking its time.
+	DefaultMaxDeadBoots = 3
 )

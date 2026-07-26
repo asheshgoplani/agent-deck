@@ -342,6 +342,110 @@ func TestRecoverAuthGateCanBeDisabled(t *testing.T) {
 	}
 }
 
+// The 2026-07-26 shape the substate gate CANNOT see: a session whose credential
+// is dead does not sit in the pane showing a 401 banner, it exits — so the
+// restart "succeeds", the pane is gone by verification time, there is no
+// substate, and neither the auth gate nor the failed-restart brake fires. The
+// dead-boot brake is what stops the sweep from burning the whole fleet.
+func TestRecoverHaltsAfterConsecutiveDeadBoots(t *testing.T) {
+	r := &recorder{}
+	rec := newTestRecoverer(r, func(*session.Instance) VerifyReport {
+		// Restart returned nil, but the pane is gone again: the session started
+		// and immediately exited.
+		return VerifyReport{PaneAlive: false, Status: string(session.StatusError)}
+	})
+	rec.MaxDeadBoots = 3
+
+	sum := rec.Recover(downAssessment("a", "b", "c", "d", "e", "f"))
+
+	if len(r.restarts) != 3 {
+		t.Fatalf("restarts = %v, want the sweep to stop after 3 dead boots", r.restarts)
+	}
+	if !sum.Halted {
+		t.Fatal("Halted = false, want true")
+	}
+	if !strings.Contains(sum.HaltReason, "died immediately") {
+		t.Errorf("HaltReason = %q, want it to name the failure shape", sum.HaltReason)
+	}
+	if sum.Unverified != 3 || sum.Skipped != 3 || sum.Failed != 0 {
+		t.Errorf("summary = %+v, want 3 unverified / 3 skipped / 0 failed", sum)
+	}
+}
+
+// Zero is "use the default", not "off" — an under-configured Recoverer must
+// keep the brake that stops a fleet-wide amplification.
+func TestRecoverDeadBootBrakeDefaultsWhenUnset(t *testing.T) {
+	r := &recorder{}
+	rec := newTestRecoverer(r, func(*session.Instance) VerifyReport { return VerifyReport{} })
+	rec.MaxDeadBoots = 0
+
+	sum := rec.Recover(downAssessment("a", "b", "c", "d", "e"))
+
+	if len(r.restarts) != DefaultMaxDeadBoots {
+		t.Fatalf("restarts = %v, want %d (the default brake)", r.restarts, DefaultMaxDeadBoots)
+	}
+	if !sum.Halted {
+		t.Fatal("Halted = false, want the default brake to trip")
+	}
+}
+
+// Turning the brake off has to be explicit and visible.
+func TestRecoverDeadBootBrakeCanBeDisabled(t *testing.T) {
+	r := &recorder{}
+	rec := newTestRecoverer(r, func(*session.Instance) VerifyReport { return VerifyReport{} })
+	rec.MaxDeadBoots = -1
+	rec.AuthGate = nil
+
+	sum := rec.Recover(downAssessment("a", "b", "c", "d"))
+
+	if sum.Halted || len(r.restarts) != 4 {
+		t.Fatalf("with the brake disabled all sessions must be attempted: restarts=%v halted=%t", r.restarts, sum.Halted)
+	}
+}
+
+// A slow boot is not a dead one. A pane that is up but still `starting` when the
+// verify timeout expires must never stop a recovery that is merely taking its
+// time — otherwise a loaded host looks like a credential outage.
+func TestRecoverSlowBootsDoNotTripTheDeadBootBrake(t *testing.T) {
+	r := &recorder{}
+	rec := newTestRecoverer(r, func(*session.Instance) VerifyReport {
+		return VerifyReport{PaneAlive: true, Status: string(session.StatusStarting), Elapsed: DefaultVerifyTimeout}
+	})
+	rec.MaxDeadBoots = 2
+
+	sum := rec.Recover(downAssessment("a", "b", "c", "d"))
+
+	if sum.Halted {
+		t.Fatalf("Halted = true (%s), want slow boots to be tolerated", sum.HaltReason)
+	}
+	if sum.Unverified != 4 || len(r.restarts) != 4 {
+		t.Errorf("summary = %+v restarts = %v, want all four attempted and unverified", sum, r.restarts)
+	}
+}
+
+// One session dying on boot is a crash, not a cascade: a verified boot in
+// between proves the host and the credential still work.
+func TestRecoverVerifiedBootResetsTheDeadBootRun(t *testing.T) {
+	r := &recorder{}
+	dead := map[string]bool{"a": true, "b": true, "d": true, "e": true}
+	rec := newTestRecoverer(r, func(inst *session.Instance) VerifyReport {
+		if dead[inst.Title] {
+			return VerifyReport{}
+		}
+		return bootedReport()
+	})
+	rec.MaxDeadBoots = 3
+
+	sum := rec.Recover(downAssessment("a", "b", "c", "d", "e"))
+
+	if sum.Halted {
+		t.Fatalf("Halted = true (%s), want the run broken by the boot that worked", sum.HaltReason)
+	}
+	if len(r.restarts) != 5 || sum.Recovered != 1 || sum.Unverified != 4 {
+		t.Errorf("summary = %+v restarts = %v, want all 5 attempted", sum, r.restarts)
+	}
+}
+
 // A model outage is not a credential problem: it clears on its own and must not
 // stop a recovery that is otherwise working.
 func TestSubstateAuthGateIgnoresModelUnavailable(t *testing.T) {
