@@ -90,9 +90,10 @@ So, as the last step inside `_do_restart` (after the serialization wait, not bef
 | `recovered_before_restart` | the status is no longer `error` — the stale case |
 | `pane_active` | the pane is still producing output; an agent emitting output is not dead |
 | `status_unreadable` | we cannot see the session, so we cannot claim it is dead |
+| `shutting_down` | the daemon is exiting mid-sample; there is no second reading, and exit time is the worst time to be wrong |
 | `auth_hold` | a restart cannot fix a credential, and each doomed boot races the shared rotating refresh token |
 
-A skip returns the rate-limit slot the caller reserved (a restart that never happened is not an attempt), so a live session the watchdog declined to touch cannot escalate as "keeps crashing". `LIVENESS_SKIP_ESCALATE_AFTER` consecutive `pane_active` skips escalate as `liveness-mismatch` — that is a status-classification problem to investigate, not a dead session.
+A skip returns the rate-limit slot the caller reserved (a restart that never happened is not an attempt), so a live session the watchdog declined to touch cannot escalate as "keeps crashing". `LIVENESS_SKIP_ESCALATE_AFTER` consecutive `pane_active` skips escalate as `liveness-mismatch` — that is a status-classification problem to investigate, not a dead session. That alert and the auth-hold one fire once per error episode rather than once per poll (both conditions are observed on every poll until a human clears them); the skip counter resets when the session is next seen healthy.
 
 Every decision, skip or restart, is appended to `~/.agent-deck/watchdog/liveness.log`: both status reads with timestamps and substates, both pane digests, whether the pane moved, the auth-hold reason, and the verdict. Digests, never pane text — the log is meant to be readable and pasteable into a bug report.
 

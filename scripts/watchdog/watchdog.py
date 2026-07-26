@@ -631,7 +631,12 @@ class Watchdog:
         # carries the skip count a reader needs to judge a recurring mismatch.
         self._audit(LIVENESS_LOG, record)
 
-        if reason == "auth_hold":
+        # Both escalations fire ONCE per episode, not once per skip: a held or
+        # misreported session is observed every poll for as long as it lasts, and
+        # nagging every few minutes about a condition only a human can clear is how
+        # an alert channel stops being read. The counter resets when the session is
+        # next seen healthy (see maybe_restart), so a recurrence does speak up again.
+        if reason == "auth_hold" and skips == 1:
             # The merged auth-hold policy (2026-07-26 fleet death) exists because a
             # restart cannot fix a credential and each doomed boot races the shared
             # rotating refresh token. Tell a human; do not retry.
@@ -642,7 +647,7 @@ class Watchdog:
                 telegram=escalate_critical,
                 sid=sid,
             )
-        elif skips >= LIVENESS_SKIP_ESCALATE_AFTER and reason == "pane_active":
+        elif reason == "pane_active" and skips == LIVENESS_SKIP_ESCALATE_AFTER:
             self.escalate(
                 "liveness-mismatch",
                 f"{sid} has reported status=error {skips}x while its pane kept producing "
@@ -962,6 +967,9 @@ class Watchdog:
             log.debug("session %s status=%s (not error), skip", sid, status)
             with self.lock:
                 self.first_error_seen_at.pop(sid, None)
+                # Seen healthy: this error episode is over, so a later one starts
+                # counting liveness skips (and escalating) from scratch.
+                self.liveness_skips.pop(sid, None)
             return
 
         # Escalation-critical is a stricter classification than restart-critical.

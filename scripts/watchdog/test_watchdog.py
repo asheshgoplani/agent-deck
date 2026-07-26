@@ -885,6 +885,33 @@ class TestLivenessConfirmation(unittest.TestCase):
         tg.assert_called_once()
         self.assertIn("liveness-mismatch", Path(wd_mod.ESCALATIONS_LOG).read_text())
 
+    def test_auth_hold_is_reported_once_per_episode_not_once_per_poll(self):
+        """A hold only a human can clear is observed on every poll for as long as it
+        lasts. Repeating the alert every few minutes is how a channel stops being
+        read — so it fires once, and again only after the session is seen healthy."""
+        held = dict(self.sess)
+        held["auth_hold"] = {"reason": "auth_death", "remedy": "run /login"}
+        healthy = make_sess(sid="cond-live", title="conductor-bruce", status="running")
+
+        with mock.patch.object(wd_mod, "telegram_send", return_value=True) as tg:
+            with mock.patch.object(wd_mod, "show_session", return_value=held):
+                for _ in range(4):
+                    self.wd._confirm_restart_needed(
+                        "cond-live", "conductor-bruce", "personal", escalate_critical=True)
+            self.assertEqual(tg.call_count, 1, "one alert per episode")
+
+            # Seen healthy → episode over, counter cleared.
+            with mock.patch.object(wd_mod, "show_session", return_value=healthy):
+                self.wd.maybe_restart(healthy)
+            self.assertNotIn("cond-live", self.wd.liveness_skips)
+
+            # It comes back: that is a new episode and does speak up again.
+            self.wd.last_escalation_at.clear()  # past the 5-min escalation dedup
+            with mock.patch.object(wd_mod, "show_session", return_value=held):
+                self.wd._confirm_restart_needed(
+                    "cond-live", "conductor-bruce", "personal", escalate_critical=True)
+            self.assertEqual(tg.call_count, 2)
+
     def test_confirmation_runs_after_the_serialization_wait(self):
         """Ordering is the whole point: confirming before the wait would confirm a
         session that has been sitting in a restart queue ever since."""

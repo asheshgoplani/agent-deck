@@ -38,7 +38,9 @@ See `DESIGN.md` for architecture.
    session the watchdog correctly declined to touch cannot escalate as "keeps
    crashing". Three consecutive skips on a moving pane escalate as
    `liveness-mismatch` instead — that is a status-classification problem, not a
-   dead session.
+   dead session. Both that alert and the auth-hold one fire once per error
+   episode, not once per poll; the counter resets when the session is next seen
+   healthy.
 
 ## Install
 
