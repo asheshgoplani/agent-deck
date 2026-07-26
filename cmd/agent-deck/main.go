@@ -276,6 +276,9 @@ func main() {
 		case "session":
 			handleSession(profile, args[1:])
 			return
+		case "fleet":
+			handleFleet(profile, args[1:])
+			return
 		case "mcp":
 			handleMCP(profile, args[1:])
 			return
@@ -3186,6 +3189,7 @@ func printHelp() {
 	fmt.Println("  rename, mv       Rename a session")
 	fmt.Println("  status           Show session status summary")
 	fmt.Println("  session          Manage session lifecycle")
+	fmt.Println("  fleet            Detect and recover from a fleet-wide session death")
 	fmt.Println("  mcp              Manage MCP servers")
 	fmt.Println("  skill            Manage project skills")
 	fmt.Println("  codex-hooks      Manage Codex notify hook integration")
@@ -3213,6 +3217,10 @@ func printHelp() {
 	fmt.Println("  session fork <id>         Fork Claude or Pi session with context")
 	fmt.Println("  session attach <id>       Attach to session interactively")
 	fmt.Println("  session show [id]         Show session details")
+	fmt.Println()
+	fmt.Println("Fleet Recovery Commands:")
+	fmt.Println("  fleet status              Report sessions whose panes are gone (read-only)")
+	fmt.Println("  fleet recover             Plan a sequential recovery sweep (add --yes to run it)")
 	fmt.Println()
 	fmt.Println("MCP Commands:")
 	fmt.Println("  mcp list                  List available MCPs from config.toml")

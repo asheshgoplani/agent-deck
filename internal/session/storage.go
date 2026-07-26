@@ -820,6 +820,44 @@ func (s *Storage) PersistRevivedInstances(instances []*Instance) error {
 	return s.db.PersistInstanceStatusesTx(updates)
 }
 
+// PersistRecoveredInstances persists the rows a fleet-recovery sweep restarted,
+// and ONLY those rows.
+//
+// Why it is not PersistRevivedInstances: a revive mutates exactly one field
+// (Status), so that method can use a status-only UPDATE. A restart replaces the
+// process — status, tmux session name, socket, and the tool conversation id in
+// tool_data can all change — so the recovered rows need a full-row write.
+//
+// Why it is not SaveWithGroups: that path converts and rewrites EVERY instance
+// in the caller's snapshot. During a 65-session recovery the sweep runs for
+// minutes, so its snapshot is stale by construction, and a full rewrite would
+// push stale columns over any edit another process made to a session the sweep
+// never touched. Writing one targeted row per restarted session (via
+// statedb.SaveInstance, which merges tool_data extras and auto-name fields
+// rather than blindly replacing them) keeps the blast radius to the sessions
+// the sweep actually owns. No path here deletes anything: there is no
+// DELETE-NOT-IN sweep, so a session added concurrently can never be lost
+// (the 2026-06-04 data-loss class).
+//
+// Errors are per-row and returned joined, so one bad row does not hide the rest.
+func (s *Storage) PersistRecoveredInstances(instances []*Instance) error {
+	var errs []error
+	for _, inst := range instances {
+		if inst == nil {
+			continue
+		}
+		row, err := instanceToRow(inst)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("convert %s: %w", inst.ID, err))
+			continue
+		}
+		if err := s.saveSingleInstance(row); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // instanceToRow converts a session.Instance into the statedb row shape.
 // Shared by SaveWithGroups (bulk path) and InsertSessionAndVerify
 // (targeted single-row path) so the marshal/normalize logic stays in
