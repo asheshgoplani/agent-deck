@@ -2881,6 +2881,15 @@ func handleUpdate(args []string) {
 		os.Exit(1)
 	}
 
+	// #1759: a release is visible on GitHub before its binaries finish
+	// uploading. CheckForUpdate degrades to the newest installable release and
+	// reports the in-flight one here, so say that plainly instead of either
+	// erroring out or implying the user is already current.
+	if info.PublishingVersion != "" {
+		fmt.Printf("\nℹ v%s was just released but its binaries are not attached yet.\n", info.PublishingVersion)
+		fmt.Println("  Re-run `agent-deck update` in a few minutes to get it.")
+	}
+
 	if !info.Available {
 		fmt.Println("✓ You're running the latest version!")
 		return

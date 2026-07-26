@@ -50,6 +50,87 @@ jobs:
           ref: ${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
 
+      # #1759: the empty-release window. If a release already exists for this
+      # tag and is already published (an out-of-band `gh release create`, or a
+      # previous run of this workflow), GoReleaser will NOT re-draft it —
+      # createOrUpdateRelease copies the existing release's draft flag — so it
+      # would stay public and asset-less for the ~11 minutes of tests + build
+      # that follow. `agent-deck update` then errors with "no release binary
+      # available" and homebrew-verify red-fails on the mismatch.
+      #
+      # Force the invariant this pipeline depends on: when GoReleaser starts,
+      # the release for this tag either does not exist or is an unpublished
+      # draft. Publishing happens in exactly one place — the "Publish release"
+      # step below, after assets are verified. This runs before Go setup so the
+      # exposure window is seconds, not minutes.
+      #
+      # Re-drafting is non-destructive: the tag and any already-uploaded assets
+      # survive, and /releases/latest falls back to the previous good release,
+      # which is precisely the behaviour we want while a release is in flight.
+      - name: Force incomplete pre-existing release back to draft
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          VERSION="${REF_NAME#v}"
+
+          # `gh release view` resolves drafts too — it falls back to a draft
+          # lookup when the by-tag endpoint 404s — so "no release", "draft" and
+          # "published" are all distinguishable here.
+          if ! payload=$(gh release view "${REF_NAME}" --repo "${REPO}" --json isDraft,assets 2>/dev/null); then
+            echo "No release exists yet for ${REF_NAME} — GoReleaser will create it as a draft."
+            exit 0
+          fi
+          if [[ "$(jq -r '.isDraft' <<<"${payload}")" == "true" ]]; then
+            echo "Release ${REF_NAME} already exists as a draft — GoReleaser will adopt it."
+            exit 0
+          fi
+
+          # Keep this list in lockstep with "Validate release assets" below and
+          # with .goreleaser.yml's archive matrix.
+          EXPECTED=(
+            "agent-deck_${VERSION}_darwin_amd64.tar.gz"
+            "agent-deck_${VERSION}_darwin_arm64.tar.gz"
+            "agent-deck_${VERSION}_linux_amd64.tar.gz"
+            "agent-deck_${VERSION}_linux_arm64.tar.gz"
+            "checksums.txt"
+          )
+          ASSETS=$(jq -r '.assets[].name' <<<"${payload}")
+          MISSING=()
+          for asset in "${EXPECTED[@]}"; do
+            if ! grep -qx -- "${asset}" <<<"${ASSETS}"; then
+              MISSING+=("${asset}")
+            fi
+          done
+
+          if [[ ${#MISSING[@]} -eq 0 ]]; then
+            # A published release that already carries every asset is a finished
+            # release. Rebuilding it would delete and re-upload live assets,
+            # re-opening the very window this workflow exists to close, so stop
+            # instead. This is the mis-dispatch guard: re-running against an old
+            # complete tag must never disturb it.
+            echo "ERROR: release ${REF_NAME} is already published with all ${#EXPECTED[@]} assets."
+            echo "Nothing to do — refusing to rebuild and re-upload assets of a live release."
+            echo "To genuinely redo this release, delete the GitHub release first (the tag can stay),"
+            echo "then re-run this workflow."
+            exit 1
+          fi
+
+          echo "WARNING: release ${REF_NAME} is PUBLISHED but incomplete — missing:"
+          for m in "${MISSING[@]}"; do echo "  - ${m}"; done
+          echo "Reverting it to a draft so nobody observes an asset-less release (#1759)."
+          echo "Release cuts must push the tag only; never create the release published."
+          # The title is normalised to the tag on purpose: GoReleaser's
+          # use_existing_draft lookup matches a draft by release NAME (its
+          # findDraftRelease compares GetName(), while the caller passes the tag),
+          # so a release someone created with a custom title would be invisible to
+          # it and the run would collide on the tag instead of adopting the draft.
+          # .goreleaser.yml's name_template is "v{{.Version}}", i.e. exactly the tag.
+          gh release edit "${REF_NAME}" --repo "${REPO}" --draft=true --title "${REF_NAME}"
+          echo "Release ${REF_NAME} is now an unpublished draft titled ${REF_NAME}."
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
         with:
@@ -123,11 +204,16 @@ jobs:
         timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           VERSION="${REF_NAME#v}"
           echo "Validating assets for release ${REF_NAME} (version ${VERSION})..."
 
-          ASSETS=$(gh api "repos/${{ github.repository }}/releases/tags/${REF_NAME}" --jq '.assets[].name')
+          # The release is still a draft at this point (#1759), and
+          # /releases/tags/{tag} only resolves PUBLISHED releases — it would
+          # 404 here. `gh release view` falls back to a draft lookup, so it
+          # works for both.
+          ASSETS=$(gh release view "${REF_NAME}" --repo "${REPO}" --json assets --jq '.assets[].name')
 
           EXPECTED=(
             "agent-deck_${VERSION}_darwin_amd64.tar.gz"
@@ -238,6 +324,44 @@ jobs:
           fi
           echo "Verified ${#ARTIFACTS[@]} tarballs against checksums.txt; ready to attest."
 
+      # The single place a release becomes visible (#1759). Everything above has
+      # to have passed: GoReleaser succeeded, the four tarballs and
+      # checksums.txt are attached, and every tarball's SHA-256 matches the
+      # published checksum. Only then does the release leave draft.
+      #
+      # If any earlier step fails the draft is simply never published:
+      # /releases/latest keeps pointing at the last good release, so
+      # `agent-deck update` and Homebrew never observe an asset-less release.
+      # The leftover draft is picked up and reused by the next run of this
+      # workflow for the same tag (release.use_existing_draft).
+      - name: Publish release
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "Publishing verified release ${REF_NAME}..."
+
+          # prerelease: auto in .goreleaser.yml keys off a pre-release suffix in
+          # the tag; mirror that here so an rc/beta tag is not promoted to
+          # "latest" on the releases page or the /releases/latest endpoint.
+          if [[ "${REF_NAME}" == *-* ]]; then
+            echo "Tag ${REF_NAME} carries a pre-release suffix — publishing as a pre-release, not latest."
+            gh release edit "${REF_NAME}" --repo "${REPO}" --draft=false --prerelease
+          else
+            gh release edit "${REF_NAME}" --repo "${REPO}" --draft=false --latest
+          fi
+
+          # Confirm the state we intended actually landed, so a silent no-op
+          # cannot masquerade as a successful publish.
+          IS_DRAFT=$(gh release view "${REF_NAME}" --repo "${REPO}" --json isDraft --jq '.isDraft')
+          if [[ "${IS_DRAFT}" != "false" ]]; then
+            echo "ERROR: release ${REF_NAME} is still a draft after publish — failing closed"
+            exit 1
+          fi
+          echo "Release ${REF_NAME} is published with all assets attached."
+
       - name: Attest build provenance
         timeout-minutes: 10
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
@@ -258,5 +382,5 @@ jobs:
             -H "Title: Release ${REF_NAME} failed" \
             -H "Priority: high" \
             -H "Tags: github,release,failure" \
-            -d "Release workflow failed for ${REF_NAME}. Check logs: ${RUN_URL}" \
+            -d "Release workflow failed for ${REF_NAME}. The release stays an unpublished draft, so updaters and Homebrew still see the previous good release; re-run this workflow to retry. Check logs: ${RUN_URL}" \
             "https://ntfy.sh/${NTFY_TOPIC}"

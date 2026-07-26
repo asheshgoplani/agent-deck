@@ -63,9 +63,26 @@ release:
   github:
     owner: asheshgoplani
     name: agent-deck
-  draft: false
+  # Assets are attached to a DRAFT and the release workflow publishes it only
+  # after every expected tarball + checksums.txt is present and checksum-verified
+  # (see .github/workflows/release.yml, "Publish release"). Never set this back
+  # to false: with draft: false the release becomes visible the moment it is
+  # created, and GoReleaser's own undraft-after-upload protection is defeated
+  # entirely when a release already exists for the tag — createOrUpdateRelease
+  # copies the existing release's draft flag, so a pre-published (e.g.
+  # `gh release create`) release stays public and empty for the whole build.
+  # That was the ~11-minute "no release binary available" window in v1.10.10 and
+  # v1.10.11 (#1759).
+  draft: true
+  # findRelease() only resolves published releases by tag unless this is set, so
+  # draft mode without it makes any workflow re-run collide on the existing tag
+  # instead of adopting the draft it created.
+  use_existing_draft: true
   prerelease: auto
   mode: append
+  # Must stay equal to the tag: use_existing_draft looks a draft up by release
+  # NAME, so a name_template that diverges from the tag would make an existing
+  # draft undiscoverable and the run would collide on the tag instead.
   name_template: "v{{.Version}}"
   header: |
     ## Agent Deck v{{.Version}}

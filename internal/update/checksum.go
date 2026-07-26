@@ -114,7 +114,12 @@ func DownloadVerifiedBinary(release *Release, goos, goarch string) ([]byte, erro
 	}
 	assetURL := GetAssetURLForPlatform(release, goos, goarch)
 	if assetURL == "" {
-		return nil, fmt.Errorf("no release binary available for %s/%s", goos, goarch)
+		// A release with no asset for a supported platform is almost always a
+		// release that is still uploading, not a missing build (#1759). Say so:
+		// the bare form of this error read as a broken install and sent people
+		// looking for a fault that did not exist.
+		return nil, fmt.Errorf("release %s has no binary for %s/%s yet — %s",
+			release.TagName, goos, goarch, StillPublishingHint)
 	}
 	checksumsURL := GetChecksumsURL(release)
 	if checksumsURL == "" {

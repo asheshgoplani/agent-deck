@@ -22,7 +22,26 @@ file an issue and fix it, don't merge through it.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `release.yml` | push tag `v*` | Validates the tag matches `cmd/agent-deck/main.go`'s `Version`, runs `go test -race ./...`, runs `goreleaser --clean` to build Darwin/Linux × amd64/arm64 tarballs, publishes the GitHub Release, and asserts the expected five assets + `checksums.txt` landed. Replaces the pre-#332 manual `make release-local` step. |
+| `release.yml` | push tag `v*` | Validates the tag matches `cmd/agent-deck/main.go`'s `Version`, runs `go test -race ./...`, runs `goreleaser --clean` to build Darwin/Linux × amd64/arm64 tarballs into a **draft** release, asserts the four tarballs + `checksums.txt` landed, verifies every tarball against its published SHA-256 — and only then publishes the release. Replaces the pre-#332 manual `make release-local` step. |
+| `homebrew-verify.yml` | `workflow_run` after `release.yml` completes successfully (plus weekly cron, `workflow_dispatch`, and PRs touching install docs) | Probes the live tap: formula exists, its version matches `/releases/latest`, and every URL in it resolves. Moved off the tag-push trigger in #1759 because it used to race the release it was verifying. |
+
+### The release is published last, and only once (#1759)
+
+Assets are attached to a **draft** (`release.draft: true` in `.goreleaser.yml`) and
+`release.yml`'s `Publish release` step is the only thing that ever makes a
+release visible — after asset presence and checksum verification pass. If any
+step fails, the draft is never published, so `agent-deck update`, `brew`, and
+`agent-deck remote update` keep resolving the previous good release instead of
+an empty one. A leftover draft is adopted by the next run of the workflow for
+that tag (`release.use_existing_draft: true`).
+
+**Cutting a release therefore means pushing the tag — nothing else.** Never
+create the GitHub release yourself, and never with `gh release create` without
+`--draft`: GoReleaser copies the draft flag of a release that already exists, so
+a pre-published release stays public and asset-less for the whole ~11-minute
+build (exactly what broke v1.10.10 and v1.10.11). `release.yml` now forces such
+a release back to draft before building, but that safety net exists to catch
+mistakes, not to be relied on.
 | `pages.yml` | push to `main` touching `site/**`, or `workflow_dispatch` | Deploys the static landing site under `site/` to GitHub Pages. |
 
 ## Notification-only (no gate, no build)

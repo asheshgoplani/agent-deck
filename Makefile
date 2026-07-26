@@ -191,8 +191,11 @@ release-local:
 	go test -race ./...
 	@echo "=== Running GoReleaser ==="
 	goreleaser release --clean
-	@echo "=== Release complete ==="
-	@echo "Verify: gh release view $$(git describe --tags --exact-match) --repo asheshgoplani/agent-deck"
+	@echo "=== Draft release built ==="
+	@echo "Assets are attached to a DRAFT (.goreleaser.yml release.draft, #1759)."
+	@echo "Verify the assets, then publish it yourself — CI's publish step does not run for a local release:"
+	@echo "  gh release view $$(git describe --tags --exact-match) --repo asheshgoplani/agent-deck"
+	@echo "  gh release edit $$(git describe --tags --exact-match) --repo asheshgoplani/agent-deck --draft=false --latest"
 
 # Web UI test targets
 # Vitest (unit) + Playwright (e2e + screenshot regression). Both run against
