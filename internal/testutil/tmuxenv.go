@@ -72,6 +72,7 @@ func IsolateTmuxSocket() func() {
 		dir = fmt.Sprintf("/tmp/agent-deck-test-tmux-fallback-%d", os.Getpid())
 		_ = os.MkdirAll(dir, 0o700)
 	}
+	assertIsolatedTmuxTmpdir(dir)
 	_ = os.Setenv("TMUX_TMPDIR", dir)
 	_ = os.Setenv(TestIsolationMarkerEnv, "1")
 
@@ -91,6 +92,40 @@ func IsolateTmuxSocket() func() {
 		restoreEnv("TMUX_TMPDIR", origTmuxTmpdir, hadTmuxTmpdir)
 		restoreEnv(TestIsolationMarkerEnv, origMarker, hadMarker)
 		_ = os.RemoveAll(dir)
+	}
+}
+
+// assertIsolatedTmuxTmpdir refuses to hand back an isolation that does not
+// isolate.
+//
+// Every layer downstream trusts TMUX_TMPDIR to be a private directory: tests
+// spawn servers under it, and cleanup runs kill-server against everything it
+// finds there. Point it at tmux's own default base and both halves turn
+// hostile — tests join the user's live server, and cleanup kills it. So the
+// post-condition is checked here, once, at the only place that sets the value,
+// and a violation stops the test binary before it can spawn anything.
+//
+// Panic rather than an error return: callers are TestMains that would have to
+// ignore an error to stay one line long, and "isolation silently didn't happen"
+// is precisely the failure mode of the 2026-04-17 cascade.
+func assertIsolatedTmuxTmpdir(dir string) {
+	clean := filepath.Clean(dir)
+	// tmux nests <TMUX_TMPDIR>/tmux-<uid>/<socket>, so the tmp roots themselves
+	// are the default base, and a tmux-<uid> dir is the default base one level
+	// in. Both spellings of /tmp matter on darwin, where /tmp is a symlink.
+	for _, base := range []string{"/tmp", "/private/tmp", filepath.Clean(os.TempDir())} {
+		if clean == base {
+			panic(fmt.Sprintf(
+				"testutil.IsolateTmuxSocket: refusing to set TMUX_TMPDIR=%q — that is tmux's "+
+					"DEFAULT socket base, so tests would spawn on the user's live server and "+
+					"cleanup would kill-server it. The isolated dir must be a private "+
+					"subdirectory (ad-tmux-*).", dir))
+		}
+	}
+	if strings.HasPrefix(filepath.Base(clean), "tmux-") {
+		panic(fmt.Sprintf(
+			"testutil.IsolateTmuxSocket: refusing to set TMUX_TMPDIR=%q — a tmux-<uid> "+
+				"directory IS the default socket base, not a private dir above it.", dir))
 	}
 }
 

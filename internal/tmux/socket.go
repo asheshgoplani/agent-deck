@@ -169,6 +169,9 @@ func tmuxArgs(socketName string, args ...string) []string {
 // `exec.Command("tmux", args...)`, preserving the contract of every
 // pre-v1.7.50 call site that was rewritten in #697.
 func tmuxExec(socketName string, args ...string) *exec.Cmd {
+	// Refuse, before the subprocess exists, to point a test binary at the
+	// user's live default server. See default_socket_guard.go.
+	assertTmuxSpawnIsolated(socketName, args)
 	// #nosec G204,G702 -- "tmux" is a fixed binary and every dynamic value is
 	// passed as a distinct argv element, never through a shell. Call sites may
 	// supply user-selected paths, but those cannot alter the executable or argv
@@ -183,6 +186,7 @@ func tmuxExec(socketName string, args ...string) *exec.Cmd {
 // timeout (e.g. SetEnvironment at internal/tmux/tmux.go:1412); this keeps
 // the -L plumbing centralised for them too.
 func tmuxExecContext(ctx context.Context, socketName string, args ...string) *exec.Cmd {
+	assertTmuxSpawnIsolated(socketName, args)
 	cmd := exec.CommandContext(ctx, "tmux", tmuxArgs(socketName, args...)...)
 	cmd.WaitDelay = tmuxSubprocessWaitDelay
 	return cmd
