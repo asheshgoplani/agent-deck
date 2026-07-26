@@ -14327,10 +14327,12 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	if h.draggingDivider {
 		separatorColor = ColorAccent
 	}
-	separatorStyle := lipgloss.NewStyle().Foreground(separatorColor)
+	// Every row is the same constant string, so style it once and reuse it
+	// instead of paying a lipgloss render per screen row per frame.
+	separatorCell := lipgloss.NewStyle().Foreground(separatorColor).Render(" │ ")
 	separatorLines := make([]string, contentHeight)
 	for i := range separatorLines {
-		separatorLines[i] = separatorStyle.Render(" │ ")
+		separatorLines[i] = separatorCell
 	}
 	separator := strings.Join(separatorLines, "\n")
 
@@ -14351,7 +14353,27 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	// h.width due to separator ANSI codes or rounding. Any line that wraps in the
 	// terminal adds a visual line, which shifts Bubble Tea's cursor tracking and
 	// causes duplicated/stacked content on scroll.
-	mainContent = lipgloss.NewStyle().MaxWidth(h.width).Render(mainContent)
+	//
+	// Issue #1753: that pass re-truncates and rebuilds every line of the whole
+	// composed frame, and it ran on every View() — every keystroke and every tick.
+	// Profiling a switching workload put it at 38% of this function and ~14% of
+	// total process CPU, while on a normal terminal it changes nothing. Measuring
+	// is far cheaper than rebuilding, so measure first and only pay when there is
+	// something to do. lipgloss.Width returns the widest line of a multi-line
+	// string using the same ansi.StringWidth basis MaxWidth truncates by, so the
+	// two agree by construction on whether the frame overflows.
+	//
+	// This has to be a MEASUREMENT, not arithmetic: leftWidth +
+	// paneSeparatorWidth + rightWidth == h.width does NOT imply the joined frame
+	// fits. ensureExactWidth pads a too-short line but never re-truncates a
+	// too-wide one, and MaxWidth truncation of an emoji/keycap grapheme cluster
+	// can land one cell OVER the requested width. JoinHorizontal then pads every
+	// row out to that inflated block width and the frame overflows by a column —
+	// see TestIssue1753_NarrowPaneKeycapStillRunsSafetyNet, which is exactly the
+	// case an arithmetic guard got wrong.
+	if lipgloss.Width(mainContent) > h.width {
+		mainContent = lipgloss.NewStyle().MaxWidth(h.width).Render(mainContent)
+	}
 
 	b.WriteString(mainContent)
 
