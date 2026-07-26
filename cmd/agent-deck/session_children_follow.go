@@ -29,6 +29,12 @@ type childRow struct {
 	// from the last_sent_at clock `session send` stamps). Present so a parent
 	// can audit the staleness verdict rather than trust it blind.
 	LastSentAt string `json:"last_sent_at,omitempty"`
+	// ContextTokens is the child's current context size — the prompt tokens of
+	// the newest assistant turn in its Claude transcript. A supervising parent
+	// uses it to catch a child approaching the context limit and rotate it to
+	// a fresh session instead of letting it degrade into auto-compaction.
+	// Absent for non-Claude tools or before the first assistant turn.
+	ContextTokens int `json:"context_tokens,omitempty"`
 }
 
 // followEvent is one JSONL line on the --follow stream. Consumers key off
@@ -43,9 +49,10 @@ type followEvent struct {
 	DoneStatus  string `json:"done_status,omitempty"`
 	DoneSummary string `json:"done_summary,omitempty"`
 	DoneAt      string `json:"done_at,omitempty"`
-	DoneStale   bool   `json:"done_stale,omitempty"`
-	LastSentAt  string `json:"last_sent_at,omitempty"`
-	Error       string `json:"error,omitempty"`
+	DoneStale     bool   `json:"done_stale,omitempty"`
+	LastSentAt    string `json:"last_sent_at,omitempty"`
+	ContextTokens int    `json:"context_tokens,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 // followSummary is the heartbeat/complete line. Counts have no omitempty so a
@@ -157,6 +164,9 @@ func buildChildRows(kids []*session.Instance, db *statedb.StateDB) []childRow {
 			}
 			row.DoneStale = completionIsStale(e.FinishedAt, lastSent)
 		}
+		if tokens, ok := session.CurrentContextTokensForInstance(k); ok {
+			row.ContextTokens = tokens
+		}
 		rows = append(rows, row)
 	}
 	return rows
@@ -166,7 +176,7 @@ func snapshotEvent(event string, r childRow) followEvent {
 	return followEvent{
 		Event: event, ID: r.ID, Title: r.Title, Status: r.Status,
 		DoneStatus: r.DoneStatus, DoneSummary: r.DoneSummary, DoneAt: r.DoneAt,
-		DoneStale: r.DoneStale, LastSentAt: r.LastSentAt,
+		DoneStale: r.DoneStale, LastSentAt: r.LastSentAt, ContextTokens: r.ContextTokens,
 	}
 }
 

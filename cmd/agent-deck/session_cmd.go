@@ -4283,7 +4283,11 @@ func handleSessionChildren(profile string, args []string) {
 		if row.DoneStale {
 			done += "(stale)"
 		}
-		fmt.Fprintf(&human, "  %s  %-20s  %-8s  done=%s  %s\n", row.ID, row.Title, row.Status, done, row.DoneSummary)
+		ctx := ""
+		if row.ContextTokens > 0 {
+			ctx = fmt.Sprintf("  ctx=%dk", row.ContextTokens/1000)
+		}
+		fmt.Fprintf(&human, "  %s  %-20s  %-8s  done=%s%s  %s\n", row.ID, row.Title, row.Status, done, ctx, row.DoneSummary)
 	}
 	if len(kids) == 0 {
 		human.WriteString("  (no sub-sessions)\n")
