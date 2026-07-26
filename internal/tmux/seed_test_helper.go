@@ -43,7 +43,10 @@ func SeedPaneInfoCacheForTest(t testing.TB, info map[string]PaneInfo) {
 func ExpireStartupWindowForTest(t testing.TB, s *Session) {
 	t.Helper()
 	if s == nil {
+		// Explicit return: t.Fatal is not a terminating call to static analysis,
+		// so without it the writes below read as a possible nil dereference.
 		t.Fatal("ExpireStartupWindowForTest: nil session")
+		return
 	}
 	s.mu.Lock()
 	s.startupAt = time.Time{}
