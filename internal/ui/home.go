@@ -11294,7 +11294,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch, sourceDir string) (setupErr error, err error) {
 	var buf bytes.Buffer
 	wtSettings := session.GetWorktreeSettings()
-	setupErr, err = vcsbackend.CreateWorktreeWithSetupOptions(backend, wtPath, branch,
+	setupErr, err = vcsbackend.CreateWorktreeWithSetup(backend, wtPath, branch,
 		git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), sourceDir),
 		&buf, &buf, wtSettings.SetupTimeout())
 	if err != nil {

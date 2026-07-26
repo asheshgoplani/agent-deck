@@ -1575,7 +1575,7 @@ func handleAdd(profile string, args []string) {
 			// This avoids a TOCTOU race from separate check-then-create steps.
 			// Sparse state is inherited from `path` (the directory the user
 			// pointed at), never from backend.RepoDir() — see #1708.
-			setupErr, err := createWorktreeWithSetupOptions(backend, worktreePath, wtBranch,
+			setupErr, err := createWorktreeWithSetup(backend, worktreePath, wtBranch,
 				git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), path),
 				os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 			if err != nil {
