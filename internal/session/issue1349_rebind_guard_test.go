@@ -128,8 +128,8 @@ func bootstrapDaemonProfile(t *testing.T, profile string) (*TransitionDaemon, *S
 // instead made every lookup miss its primary path on macOS, where t.TempDir()
 // lives under /var/folders → /private/var/folders, and fall back to the
 // session-id glob — which cross-mapped two different projects onto one
-// transcript (issue #1720). writeTranscript1349Raw covers the fallback on
-// purpose.
+// transcript (issue #1720). writeTranscript1349Raw writes the other encoding on
+// purpose, to exercise the second exact candidate.
 func writeTranscript1349(t *testing.T, inst *Instance, sessionID string, n int) {
 	t.Helper()
 	dir := inst.EffectiveWorkingDir()
@@ -142,7 +142,8 @@ func writeTranscript1349(t *testing.T, inst *Instance, sessionID string, n int) 
 // writeTranscript1349Raw materializes the transcript under the UNRESOLVED
 // project-path encoding, modelling a transcript directory whose name does not
 // match the physical path (the WSL Linux-vs-Windows cwd case, and any host where
-// the project path traverses a symlink). Used to pin the fallback lookup.
+// the project path traverses a symlink). Used to pin the second exact candidate
+// in resolveClaudeTranscriptPath — the one checked before the glob fallback.
 func writeTranscript1349Raw(t *testing.T, inst *Instance, sessionID string, n int) {
 	t.Helper()
 	writeTranscript1349At(t, GetClaudeConfigDirForInstance(inst), inst.EffectiveWorkingDir(), sessionID, n)
