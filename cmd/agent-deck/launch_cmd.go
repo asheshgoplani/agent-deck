@@ -285,7 +285,11 @@ func handleLaunch(profile string, args []string) {
 				os.Exit(1)
 			}
 
-			setupErr, err := createWorktreeWithSetup(backend, worktreePath, wtBranch, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+			// Sparse state is inherited from `path` (the directory the user
+			// launched from), never from backend.RepoDir() — see #1708.
+			setupErr, err := createWorktreeWithSetupOptions(backend, worktreePath, wtBranch,
+				git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), path),
+				os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 			if err != nil {
 				out.Error(fmt.Sprintf("failed to create worktree: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)

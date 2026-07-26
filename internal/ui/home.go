@@ -11096,7 +11096,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create parent directory: %w", err), tempID: tempID}
 				}
-				setupErr, err := createWorktreeWithSetupAndLog(backend, worktreePath, worktreeBranch)
+				setupErr, err := createWorktreeWithSetupAndLog(backend, worktreePath, worktreeBranch, path)
 				if err != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create worktree: %w", err), tempID: tempID}
 				}
@@ -11192,7 +11192,8 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				}
 				inst.MultiRepoTempDir = parentDir
 
-				wtResult := session.CreateMultiRepoWorktrees(allPaths, parentDir, worktreeBranch, session.GetWorktreeSettings().SetupTimeout())
+				wtSettings := session.GetWorktreeSettings()
+				wtResult := session.CreateMultiRepoWorktreesWithOptions(allPaths, parentDir, worktreeBranch, wtSettings.SetupTimeout(), wtSettings.InheritSparseCheckout())
 				for _, w := range wtResult.Warnings {
 					uiLog.Warn("multi_repo_worktree", slog.String("detail", w))
 				}
@@ -11285,9 +11286,17 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 // is created regardless, but the caller surfaces setupErr to the user. err is
 // the fatal worktree-creation error. The full setup output is logged here; only
 // the concise setupErr is returned for display (see formatSetupWarning).
-func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch string) (setupErr error, err error) {
+// sourceDir is the directory the session was created/forked from; when
+// `[worktree] sparse_checkout = "inherit"` is set, the new worktree inherits
+// ITS sparse-checkout state (#1708). backend.RepoDir() must not be used for
+// that: it is the normalized base root, which carries the main worktree's
+// sparsity instead of the invoking one's.
+func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch, sourceDir string) (setupErr error, err error) {
 	var buf bytes.Buffer
-	setupErr, err = vcsbackend.CreateWorktreeWithSetup(backend, wtPath, branch, &buf, &buf, session.GetWorktreeSettings().SetupTimeout())
+	wtSettings := session.GetWorktreeSettings()
+	setupErr, err = vcsbackend.CreateWorktreeWithSetupOptions(backend, wtPath, branch,
+		git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), sourceDir),
+		&buf, &buf, wtSettings.SetupTimeout())
 	if err != nil {
 		return nil, err
 	}
@@ -11834,7 +11843,11 @@ type forkWithStateWorktreeDeps struct {
 	deleteBranch              func(string, string, bool) error
 }
 
-func defaultForkWithStateWorktreeDeps() forkWithStateWorktreeDeps {
+// sparseSourceDir is the parent session's worktree: with
+// `[worktree] sparse_checkout = "inherit"` the fork's worktree inherits ITS
+// sparse-checkout state (#1708). Pass "" to keep git's default checkout.
+func defaultForkWithStateWorktreeDeps(sparseSourceDir string) forkWithStateWorktreeDeps {
+	createOpts := git.SparseInheritOptions(session.GetWorktreeSettings().InheritSparseCheckout(), sparseSourceDir)
 	return forkWithStateWorktreeDeps{
 		statPath:                  os.Stat,
 		mkdirAll:                  os.MkdirAll,
@@ -11842,12 +11855,14 @@ func defaultForkWithStateWorktreeDeps() forkWithStateWorktreeDeps {
 		detectInProgressOperation: git.DetectInProgressOperation,
 		hasSubmodules:             git.HasSubmodules,
 		headCommit:                git.HeadCommit,
-		createAtStartPoint:        git.CreateWorktreeAtStartPoint,
-		materialize:               git.MaterializeWipFromParent,
-		processInclude:            git.ProcessWorktreeInclude,
-		runSetup:                  git.RunWorktreeSetupAfterCreate,
-		removeWorktree:            git.RemoveWorktree,
-		deleteBranch:              git.DeleteBranch,
+		createAtStartPoint: func(repoDir, worktreePath, branch, startPoint string) (bool, error) {
+			return git.CreateWorktreeAtStartPointWithOptions(repoDir, worktreePath, branch, startPoint, createOpts)
+		},
+		materialize:    git.MaterializeWipFromParent,
+		processInclude: git.ProcessWorktreeInclude,
+		runSetup:       git.RunWorktreeSetupAfterCreate,
+		removeWorktree: git.RemoveWorktree,
+		deleteBranch:   git.DeleteBranch,
 	}
 }
 
@@ -12143,7 +12158,7 @@ func (h *Home) forkSessionCmdWithOptions(
 						opts.WorktreePath,
 						opts.WorktreeBranch,
 						forkState,
-						defaultForkWithStateWorktreeDeps(),
+						defaultForkWithStateWorktreeDeps(source.ProjectPath),
 					)
 					if err != nil {
 						return sessionForkedMsg{err: err, sourceID: sourceID}
@@ -12179,7 +12194,7 @@ func (h *Home) forkSessionCmdWithOptions(
 				if err := os.MkdirAll(filepath.Dir(opts.WorktreePath), 0o755); err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("failed to create directory: %w", err), sourceID: sourceID}
 				}
-				setupErr, err := createWorktreeWithSetupAndLog(backend, opts.WorktreePath, opts.WorktreeBranch)
+				setupErr, err := createWorktreeWithSetupAndLog(backend, opts.WorktreePath, opts.WorktreeBranch, source.ProjectPath)
 				if err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("worktree creation failed: %w", err), sourceID: sourceID}
 				}

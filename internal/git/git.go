@@ -374,13 +374,48 @@ func GenerateWorktreePath(repoDir, branchName, location string) string {
 	}
 }
 
+// WorktreeCreateOptions carries creation-time behavior that is orthogonal to
+// branch resolution. The zero value reproduces agent-deck's long-standing
+// worktree creation exactly.
+type WorktreeCreateOptions struct {
+	// SparseSourceDir, when non-empty, is the worktree whose sparse-checkout
+	// state the new worktree inherits (issue #1708, opt-in through
+	// `[worktree] sparse_checkout = "inherit"`). It must be the directory the
+	// operation was invoked from — the session's own worktree — NOT the
+	// normalized repository base root; see CaptureSparseCheckout for why.
+	// A non-sparse source leaves creation unchanged.
+	SparseSourceDir string
+}
+
+// SparseInheritOptions builds the options for inheriting sourceDir's
+// sparse-checkout state, or zero options when the caller's
+// `[worktree] sparse_checkout` setting has inheritance switched off. Config
+// resolution stays in the session layer; package git only sees the decision.
+func SparseInheritOptions(inherit bool, sourceDir string) WorktreeCreateOptions {
+	if !inherit {
+		return WorktreeCreateOptions{}
+	}
+	return WorktreeCreateOptions{SparseSourceDir: sourceDir}
+}
+
 // CreateWorktree creates a new git worktree at worktreePath for the given branch
 // If the branch doesn't exist, it will be created
 func CreateWorktree(repoDir, worktreePath, branchName string) error {
+	return CreateWorktreeWithOptions(repoDir, worktreePath, branchName, WorktreeCreateOptions{})
+}
+
+// CreateWorktreeWithOptions is CreateWorktree plus creation-time options
+// (#1708). Branch resolution — existing local branch, remote-tracking branch,
+// or a fresh branch rooted at origin's default branch — is identical either way.
+func CreateWorktreeWithOptions(repoDir, worktreePath, branchName string, opts WorktreeCreateOptions) error {
 	// Validate branch name first
 	if err := ValidateBranchName(branchName); err != nil {
 		return fmt.Errorf("invalid branch name: %w", err)
 	}
+
+	// Capture sparse state from the INVOKING worktree before repoDir is
+	// normalized below — that normalization is precisely what loses it.
+	sparse := CaptureSparseCheckout(opts.SparseSourceDir)
 
 	// Transparently resolve a bare-repo project root (no .git, but contains
 	// a nested bare repo like .bare/) to the underlying git dir.
@@ -396,15 +431,22 @@ func CreateWorktree(repoDir, worktreePath, branchName string) error {
 		return err
 	}
 
-	var cmd *exec.Cmd
+	spec := worktreeAddSpec{
+		repoDir:      repoDir,
+		worktreePath: worktreePath,
+		branchName:   branchName,
+		sparse:       sparse,
+		failMsg:      "failed to create worktree",
+	}
 	switch resolution.Mode {
 	case worktreeBranchLocal:
 		// Reuse an existing local branch.
-		cmd = exec.Command("git", "-C", repoDir, "worktree", "add", worktreePath, branchName)
+		spec.args = []string{worktreePath, branchName}
 	case worktreeBranchRemote:
 		// Create a local tracking branch from the default remote.
 		remoteRef := resolution.Remote + "/" + branchName
-		cmd = exec.Command("git", "-C", repoDir, "worktree", "add", "--track", "-b", branchName, worktreePath, remoteRef)
+		spec.args = []string{"--track", "-b", branchName, worktreePath, remoteRef}
+		spec.createdBranch = true
 	default:
 		// Create a new local branch. Regression #973: if an origin remote
 		// exists, fetch its default branch and root the new branch there
@@ -412,18 +454,76 @@ func CreateWorktree(repoDir, worktreePath, branchName string) error {
 		// (the 414-file near-miss). Fetch is best-effort: offline / no remote
 		// falls through to a HEAD-based branch.
 		if base, ok := freshOriginDefaultBranchRef(repoDir); ok {
-			cmd = exec.Command("git", "-C", repoDir, "worktree", "add", "-b", branchName, worktreePath, base)
+			spec.args = []string{"-b", branchName, worktreePath, base}
 		} else {
-			cmd = exec.Command("git", "-C", repoDir, "worktree", "add", "-b", branchName, worktreePath)
+			spec.args = []string{"-b", branchName, worktreePath}
+		}
+		spec.createdBranch = true
+	}
+
+	return runWorktreeAdd(spec)
+}
+
+// worktreeAddSpec describes one `git worktree add` invocation for
+// runWorktreeAdd. args are the arguments AFTER "worktree add".
+type worktreeAddSpec struct {
+	repoDir      string
+	worktreePath string
+	branchName   string
+	// args are the mode-specific `git worktree add` arguments.
+	args []string
+	// sparse, when Enabled, switches creation to --no-checkout + pattern
+	// replay so the full tree is never materialized (#1708).
+	sparse SparseCheckoutState
+	// createdBranch records whether this invocation creates the branch, so a
+	// failed sparse replay can roll the branch back too.
+	createdBranch bool
+	// failMsg prefixes the creation error, keeping each caller's wording.
+	failMsg string
+}
+
+// runWorktreeAdd runs `git worktree add` and, when sparse inheritance is
+// active, installs the source worktree's patterns instead of letting git check
+// out the whole tree first.
+//
+// A failed sparse replay leaves a worktree that exists but has no files, so it
+// is rolled back with the same worktree-remove + newly-created-branch-delete
+// semantics the with-state path uses (see CreateWorktreeWithStateAndSetup); the
+// caller therefore never observes a half-initialized worktree.
+func runWorktreeAdd(spec worktreeAddSpec) error {
+	args := []string{"-C", spec.repoDir, "worktree", "add"}
+	if spec.sparse.Enabled {
+		// The whole point of #1708: patterns must be installed before the
+		// first materialization, not after a full checkout.
+		args = append(args, "--no-checkout")
+	}
+	args = append(args, spec.args...)
+
+	if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("%s: %s: %w", spec.failMsg, strings.TrimSpace(string(output)), err)
+	}
+
+	if !spec.sparse.Enabled {
+		return nil
+	}
+	applyErr := ApplySparseCheckout(spec.worktreePath, spec.sparse)
+	if applyErr == nil {
+		return nil
+	}
+
+	var cleanupErrs []string
+	if rmErr := RemoveWorktree(spec.repoDir, spec.worktreePath, true); rmErr != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Sprintf("worktree remove failed: %v", rmErr))
+	}
+	if spec.createdBranch {
+		if brErr := DeleteBranch(spec.repoDir, spec.branchName, true); brErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Sprintf("branch delete failed: %v", brErr))
 		}
 	}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to create worktree: %s: %w", strings.TrimSpace(string(output)), err)
+	if len(cleanupErrs) > 0 {
+		return fmt.Errorf("inherit sparse checkout: %w; cleanup failed: %s", applyErr, strings.Join(cleanupErrs, "; "))
 	}
-
-	return nil
+	return fmt.Errorf("inherit sparse checkout: %w", applyErr)
 }
 
 // HeadCommit returns the commit currently checked out at repoDir. Works for
@@ -445,12 +545,24 @@ func HeadCommit(repoDir string) (string, error) {
 // the branch for this call. Used by fork-with-state to anchor the new worktree
 // at the parent session's HEAD instead of the invocation repo's HEAD.
 func CreateWorktreeAtStartPoint(repoDir, worktreePath, branchName, startPoint string) (createdBranch bool, err error) {
+	return CreateWorktreeAtStartPointWithOptions(repoDir, worktreePath, branchName, startPoint, WorktreeCreateOptions{})
+}
+
+// CreateWorktreeAtStartPointWithOptions is CreateWorktreeAtStartPoint plus
+// creation-time options (#1708). On a failed sparse replay the worktree and the
+// branch this call created are rolled back, so createdBranch=false is returned
+// together with the error — matching the existing contract that a failed call
+// leaves nothing behind for the caller to clean up (any cleanup that itself
+// failed is named in the error text).
+func CreateWorktreeAtStartPointWithOptions(repoDir, worktreePath, branchName, startPoint string, opts WorktreeCreateOptions) (createdBranch bool, err error) {
 	if err := ValidateBranchName(branchName); err != nil {
 		return false, fmt.Errorf("invalid branch name: %w", err)
 	}
 	if strings.TrimSpace(startPoint) == "" {
 		return false, errors.New("start point cannot be empty")
 	}
+	// Capture before normalization (see CreateWorktreeWithOptions).
+	sparse := CaptureSparseCheckout(opts.SparseSourceDir)
 	repoDir = resolveGitInvocationDir(repoDir)
 	if !IsGitRepo(repoDir) {
 		return false, errors.New("not a git repository")
@@ -458,10 +570,16 @@ func CreateWorktreeAtStartPoint(repoDir, worktreePath, branchName, startPoint st
 	if BranchExists(repoDir, branchName) {
 		return false, fmt.Errorf("branch %q already exists", branchName)
 	}
-	cmd := exec.Command("git", "-C", repoDir, "worktree", "add", "-b", branchName, worktreePath, startPoint)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("failed to create worktree at start point: %s: %w", strings.TrimSpace(string(output)), err)
+	if err := runWorktreeAdd(worktreeAddSpec{
+		repoDir:       repoDir,
+		worktreePath:  worktreePath,
+		branchName:    branchName,
+		args:          []string{"-b", branchName, worktreePath, startPoint},
+		sparse:        sparse,
+		createdBranch: true,
+		failMsg:       "failed to create worktree at start point",
+	}); err != nil {
+		return false, err
 	}
 	return true, nil
 }

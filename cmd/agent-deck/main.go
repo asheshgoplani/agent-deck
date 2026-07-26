@@ -1573,7 +1573,11 @@ func handleAdd(profile string, args []string) {
 
 			// Create worktree atomically (git handles existence checks).
 			// This avoids a TOCTOU race from separate check-then-create steps.
-			setupErr, err := createWorktreeWithSetup(backend, worktreePath, wtBranch, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+			// Sparse state is inherited from `path` (the directory the user
+			// pointed at), never from backend.RepoDir() — see #1708.
+			setupErr, err := createWorktreeWithSetupOptions(backend, worktreePath, wtBranch,
+				git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), path),
+				os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 			if err != nil {
 				if isWorktreeAlreadyExistsError(err) {
 					fmt.Fprintf(os.Stderr, "Error: worktree already exists at %s\n", worktreePath)

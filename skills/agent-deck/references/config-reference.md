@@ -354,6 +354,7 @@ path_template = "~/.agent-deck/worktrees/{repo-name}/{branch}"  # Custom path (o
 branch_prefix = "feature/"                           # Prefix for branch names ("" to disable)
 auto_cleanup = true                                  # Remove worktree when session is deleted
 setup_timeout_seconds = 60                           # Timeout for .agent-deck/worktree-setup.sh
+sparse_checkout = "off"                              # "inherit" to copy the source worktree's sparse checkout
 ```
 
 | Key | Type | Default | Description |
@@ -364,6 +365,7 @@ setup_timeout_seconds = 60                           # Timeout for .agent-deck/w
 | `branch_prefix` | string | `"feature/"` | Prefix prepended to branch names. Supports environment variable expansion (e.g., `"$USER/"`). Set to `""` to disable. Won't double-prepend if the branch already starts with the prefix. |
 | `auto_cleanup` | bool | `false` | Remove worktree directory when the session is deleted. |
 | `setup_timeout_seconds` | int | `60` | Max seconds for `.agent-deck/worktree-setup.sh` to run. Set to `0` for unlimited. |
+| `sparse_checkout` | string | `"off"` | Sparse-checkout inheritance (#1708). `"inherit"` captures the mode (cone / non-cone, sparse index) and patterns of the worktree you create the session from, creates the new worktree with `git worktree add --no-checkout`, and materializes it with those patterns, so a sparse monorepo never checks out the full tree first. `"off"` / unset / any other value keeps git's normal checkout. A non-sparse source is also left unchanged. `.worktreeinclude` and the setup script still run afterwards. Requires git 2.32+ (`sparse-checkout set --[no-]sparse-index`). |
 
 ### Path template examples
 
