@@ -85,8 +85,6 @@ type Candidate struct {
 	// so summaries and JSON payloads do not have to re-read the (mutating)
 	// instance after a restart.
 	Status string
-	// Reason explains a HealthSkipped classification (empty otherwise).
-	Reason string
 }
 
 // ID returns the candidate's instance id ("" when the instance is nil).

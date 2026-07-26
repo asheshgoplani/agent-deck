@@ -99,16 +99,14 @@ func (d *Detector) Assess(instances []*session.Instance) Assessment {
 		as.Total++
 		status := string(inst.Status)
 
-		if d.skipReason(inst) != "" {
+		switch health, _ := d.Classify(inst); health {
+		case HealthSkipped:
 			as.Skipped++
-			continue
-		}
-
-		if d.exists(inst) {
+		case HealthAlive:
 			as.Alive++
-			continue
+		default:
+			maybeDown = append(maybeDown, pending{inst: inst, status: status})
 		}
-		maybeDown = append(maybeDown, pending{inst: inst, status: status})
 	}
 
 	// Second pass: re-probe the misses. A session that reappears on any
@@ -182,29 +180,47 @@ func (d *Detector) confirmProbes() int {
 	return d.ConfirmProbes
 }
 
+// exists probes one session's liveness.
+//
+// A missing probe reports ALIVE, not dead. Every default in this package leans
+// toward doing nothing: a Detector built without a probe (a future caller
+// constructing Detector{} directly) would otherwise classify the entire fleet as
+// down, and a `--yes` sweep on that assessment would restart every live session
+// on the host. Failing this way makes such a bug a no-op instead.
 func (d *Detector) exists(inst *session.Instance) bool {
 	if d.TmuxExists == nil {
-		return false
+		return true
 	}
 	return d.TmuxExists(TmuxName(inst), inst.TmuxSocketName)
 }
 
-// skipReason returns a non-empty explanation when a session must not be
-// recovered, or "" when it is eligible for a liveness probe.
-func (d *Detector) skipReason(inst *session.Instance) string {
+// Classify reports one session's recovery-oriented health, plus a human-readable
+// reason when the verdict is HealthSkipped.
+//
+// It performs at most ONE liveness probe, so a HealthDown verdict from Classify
+// alone is not yet proof of death — Assess is the entry point that applies the
+// confirming re-probe (see DefaultConfirmProbes) before a session becomes a
+// recovery candidate.
+func (d *Detector) Classify(inst *session.Instance) (Health, string) {
+	if inst == nil {
+		return HealthSkipped, "no instance"
+	}
 	if !inst.ArchivedAt.IsZero() {
-		return "archived"
+		return HealthSkipped, "archived"
 	}
 	if d.Group != "" && !inGroup(inst.GroupPath, d.Group) {
-		return "outside --group"
+		return HealthSkipped, "outside --group"
 	}
 	if !d.shouldBeAlive(inst.Status) {
-		return "status " + string(inst.Status)
+		return HealthSkipped, "status " + string(inst.Status)
 	}
 	if !inst.CanRestart() {
-		return "not restartable"
+		return HealthSkipped, "not restartable"
 	}
-	return ""
+	if d.exists(inst) {
+		return HealthAlive, ""
+	}
+	return HealthDown, ""
 }
 
 // shouldBeAlive reports whether a status is a claim that the session's process

@@ -204,6 +204,23 @@ func TestMassDeathThresholds(t *testing.T) {
 	}
 }
 
+// FAIL-SAFE DEFAULT. A Detector with no liveness probe must report every
+// session ALIVE, so a misconstructed detector produces a no-op assessment
+// instead of a plan to restart the entire live fleet.
+func TestAssessWithoutProbeTreatsEverythingAsAlive(t *testing.T) {
+	d := &Detector{ConfirmProbes: 1}
+	as := d.Assess([]*session.Instance{
+		testInstance("one", session.StatusRunning),
+		testInstance("two", session.StatusError),
+	})
+	if as.Down != 0 || as.MassDeath {
+		t.Fatalf("assessment = %+v, want nothing down", as)
+	}
+	if as.Alive != 2 {
+		t.Errorf("Alive = %d, want 2", as.Alive)
+	}
+}
+
 func TestAssessNoSessionsIsNotMassDeath(t *testing.T) {
 	d := newTestDetector(aliveOnly())
 	as := d.Assess(nil)
@@ -270,6 +287,43 @@ func TestAssessTolerantOfNilEntries(t *testing.T) {
 	as := d.Assess([]*session.Instance{nil, testInstance("dead", session.StatusError), nil})
 	if as.Total != 1 || as.Down != 1 {
 		t.Fatalf("assessment = %+v, want total=1 down=1", as)
+	}
+}
+
+func TestClassifyReportsWhySessionsAreOutOfScope(t *testing.T) {
+	archived := testInstance("archived", session.StatusError)
+	archived.ArchivedAt = time.Unix(2000, 0)
+	outside := testInstance("outside", session.StatusError)
+	outside.GroupPath = "elsewhere"
+
+	tests := []struct {
+		name       string
+		inst       *session.Instance
+		group      string
+		wantHealth Health
+		wantReason string
+	}{
+		{name: "nil", inst: nil, wantHealth: HealthSkipped, wantReason: "no instance"},
+		{name: "archived", inst: archived, wantHealth: HealthSkipped, wantReason: "archived"},
+		{name: "outside group", inst: outside, group: "agent-deck", wantHealth: HealthSkipped, wantReason: "outside --group"},
+		{name: "stopped", inst: testInstance("stopped", session.StatusStopped), wantHealth: HealthSkipped, wantReason: "status stopped"},
+		{name: "queued", inst: testInstance("queued", session.StatusQueued), wantHealth: HealthSkipped, wantReason: "status queued"},
+		{name: "down", inst: testInstance("down", session.StatusError), wantHealth: HealthDown},
+		{name: "alive", inst: testInstance("live", session.StatusRunning), wantHealth: HealthAlive},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDetector(aliveOnly("live"))
+			d.Group = tc.group
+			health, reason := d.Classify(tc.inst)
+			if health != tc.wantHealth {
+				t.Fatalf("health = %s, want %s", health, tc.wantHealth)
+			}
+			if reason != tc.wantReason {
+				t.Errorf("reason = %q, want %q", reason, tc.wantReason)
+			}
+		})
 	}
 }
 

@@ -407,12 +407,17 @@ func groupOrRoot(inst *session.Instance) string {
 	return inst.GroupPath
 }
 
+// truncateFleetTitle shortens a title to max DISPLAY characters. It counts and
+// cuts by rune, not byte: session titles are user-supplied and routinely contain
+// non-ASCII, and a byte-slice would split a multi-byte rune into mojibake in the
+// middle of a recovery report.
 func truncateFleetTitle(title string, max int) string {
-	if len(title) <= max {
+	runes := []rune(title)
+	if len(runes) <= max {
 		return title
 	}
 	if max <= 3 {
-		return title[:max]
+		return string(runes[:max])
 	}
-	return title[:max-3] + "..."
+	return string(runes[:max-3]) + "..."
 }

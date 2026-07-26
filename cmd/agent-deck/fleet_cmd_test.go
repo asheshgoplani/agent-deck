@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/fleet"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -209,6 +210,27 @@ func TestTruncateFleetTitle(t *testing.T) {
 	}
 	if got := truncateFleetTitle("abcdef", 2); got != "ab" {
 		t.Errorf("tiny max = %q", got)
+	}
+}
+
+// Titles are user-supplied and often non-ASCII; truncation must cut on rune
+// boundaries so a report never prints a mangled half-character.
+func TestTruncateFleetTitle_IsRuneSafe(t *testing.T) {
+	title := "工作会话-日本語-ほげほげ"
+	got := truncateFleetTitle(title, 6)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated title is not valid UTF-8: %q", got)
+	}
+	if want := "工作会..."; got != want {
+		t.Errorf("truncateFleetTitle = %q, want %q", got, want)
+	}
+	// A title that fits by rune count must survive untouched even though its
+	// byte length exceeds the limit.
+	if got := truncateFleetTitle("日本語", 3); got != "日本語" {
+		t.Errorf("truncateFleetTitle = %q, want the title unchanged", got)
+	}
+	if got := truncateFleetTitle("日本語です", 2); got != "日本" {
+		t.Errorf("tiny max on multibyte = %q, want %q", got, "日本")
 	}
 }
 
