@@ -5821,9 +5821,26 @@ func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string) strin
 
 	// Primary: the directory name Claude derives from the project path. Claude
 	// replaces every non-alphanumeric char with a hyphen.
-	primary := filepath.Join(projectsDir, ConvertToClaudeDirName(resolvedPath), sessionID+".jsonl")
-	if _, err := os.Stat(primary); err == nil {
-		return primary
+	//
+	// Both encodings of the project path are tried as EXACT candidates, resolved
+	// first: Claude names the directory from getcwd() (the physical path), but a
+	// transcript recorded through a symlinked path — or copied from another host
+	// — can carry the unresolved form. Checking the second candidate here keeps
+	// the resolution deterministic and, more importantly, keeps it OUT of the
+	// glob fallback below, which cannot tell two projects apart when they share
+	// a session id (issue #1720).
+	candidateDirs := []string{resolvedPath}
+	if projectPath != resolvedPath {
+		candidateDirs = append(candidateDirs, projectPath)
+	}
+	for _, candidateDir := range candidateDirs {
+		if candidateDir == "" {
+			continue
+		}
+		candidate := filepath.Join(projectsDir, ConvertToClaudeDirName(candidateDir), sessionID+".jsonl")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
 	}
 
 	// Fallback: the transcript may live under a differently-encoded directory name
