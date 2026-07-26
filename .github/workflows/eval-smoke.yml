@@ -21,6 +21,8 @@ on:
       - 'internal/session/instance.go'
       - 'internal/feedback/**'
       - 'internal/session/userconfig.go'
+      - 'scripts/reap-stale-tmux.sh'
+      - 'tests/ci/reap-stale-tmux.test.sh'
       - '.github/workflows/eval-smoke.yml'
       - 'go.mod'
       - 'go.sum'
@@ -67,3 +69,28 @@ jobs:
         run: |
           go test -tags eval_smoke -race -count=1 -timeout 3m \
             ./tests/eval/... ./internal/ui/...
+
+  # The hygiene half of the same problem: scripts/reap-stale-tmux.sh cleans up
+  # what leaks past this harness (test tmux servers, agent-deck-eval-bin
+  # processes). It is also the script that killed the whole session fleet twice
+  # on 2026-07-26 by matching processes on argv, so issue #1744 makes a green
+  # DRY_RUN smoke test the precondition for ever re-enabling the launchd job.
+  #
+  # No Go, no toolchain: the test is pure bash and seeds its own sandbox.
+  reaper-smoke:
+    name: reap-stale-tmux.sh DRY_RUN smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # tmux ships on ubuntu-latest; assert it rather than let the test degrade
+      # to skipping every socket-family assertion.
+      - name: Verify tmux available
+        run: |
+          which tmux
+          tmux -V
+
+      - name: Run reaper DRY_RUN smoke test
+        run: bash tests/ci/reap-stale-tmux.test.sh
