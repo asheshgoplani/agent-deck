@@ -127,8 +127,13 @@ agent-deck session children --json
 ```
 
 Lists your sub-sessions with, per child: `id`, `title`, live `status`
-(running / waiting / idle / error), and the last asserted completion
-(`done_status` = ok|fail, `done_summary`, `done_at`). Defaults to the current
+(running / waiting / idle / error), the last asserted completion
+(`done_status` = ok|fail, `done_summary`, `done_at`), and `context_tokens` —
+the child's current context size from its Claude transcript (absent for
+non-Claude tools). Watch `context_tokens` on long-running children: past
+~150k tell the child to wrap up and write a handoff; past ~200k rotate it —
+archive and relaunch fresh in the same working dir with the handoff — rather
+than letting it degrade into auto-compaction. Defaults to the current
 session; pass an id/title to inspect another parent. **Read-only** — it never
 clears the inbox, so you can poll it as often as you like from any chat without
 disturbing the conductor or other readers.

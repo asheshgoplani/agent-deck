@@ -159,6 +159,10 @@ files). Tag every task with `tier: cheap | mid | strong` — cheap when the
 task is pure transcription of code this plan already contains, mid when it
 needs local judgment within a clear spec, strong when it makes design
 decisions. Assume each task's executor has ZERO context beyond that one task.
+Size every task to fit comfortably in a single fresh session's context
+window: if completing it would require reading more than roughly 100k tokens
+of code, docs, and test output, split it further — a task that blows up its
+executor's context costs a handoff mid-implementation.
 No placeholders (no TBD / "add error handling" / "similar to task N").
 Commit the plan to the current branch. Do NOT implement anything.
 ```
@@ -279,6 +283,11 @@ Work strictly in this worktree on the current branch. Do, in order:
    directory in any commit message, and take a screenshot of the final
    working state.
 7. Commit your work in clear logical commits. Do NOT push yet.
+
+Keep your context lean: delegate broad exploration (find-the-code sweeps,
+"where is X handled" questions) to subagents so file dumps land outside your
+context; read test-output tails rather than full runs; never cat large files
+or full logs when a targeted read answers the question.
 ```
 
 ### 2. Fresh review
@@ -477,6 +486,37 @@ should answer:
   Read its `session output`, nudge it once with `session send`; if it is
   still stuck on the next check, mark the task **needs-attention** instead of
   polling forever.
+
+## Context budget
+
+Every Claude child row in `session children --json` carries `context_tokens`
+— the child's current context size, read from its transcript. Check it on
+every heartbeat and act on two thresholds:
+
+- **Soft (~150k):** `session send` a wrap-up instruction — "your context is
+  getting large: commit what's done, then write a handoff summary of what
+  remains (decisions made, files touched, next steps) to
+  `$RUN_DIR/<task-slug>/handoff.md`."
+- **Hard (~200k):** stop feeding it work. Archive the child and launch a
+  **fresh session in the same worktree** — same move as the round-2
+  escalation in "Model & connector tiering" — told to read `git log`, the
+  branch diff, and the handoff summary before continuing. Record the rotation
+  in the manifest (it counts as the same role, not a new review round).
+
+Never let a child run to auto-compaction mid-task: a lossy summary of its own
+half-finished work is strictly worse than a deliberate handoff. Reviewers
+rarely trip this (each round starts fresh); implementers on big tasks do —
+and a task whose implementer needs rotating twice was mis-sized, which is
+worth a line in the retro.
+
+**Your own context is budgeted too.** The manifest is the state; your context
+is a cache of it. Anything long-lived — findings lists, baselines, pending
+questions, PR urls — goes into `$RUN_DIR` files the moment you learn it, so
+the run survives you losing context at any point. Never ingest full session
+outputs (use `--tail`); relay findings by file, not by pasting. Between task
+completions — when no child is mid-conversation with you — compact
+deliberately (`/compact`) rather than drifting into an automatic one at a
+worse moment; everything you need afterwards is in the manifest.
 
 ## Failure handling
 
