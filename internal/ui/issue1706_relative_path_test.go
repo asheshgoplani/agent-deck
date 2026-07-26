@@ -116,3 +116,18 @@ func TestIssue1706_AbsLocalProjectPath(t *testing.T) {
 		})
 	}
 }
+
+// The submit resolves every declared multi-repo path to an absolute one, so
+// Validate's duplicate check has to compare resolved paths — otherwise "repo"
+// and "./repo" pass validation and then collapse into the same project path
+// plus a duplicate additional_paths entry.
+func TestIssue1706_ValidateRejectsRelativeDuplicateSpellings(t *testing.T) {
+	d := NewNewDialog()
+	d.nameInput.SetValue("issue1706")
+	d.multiRepoEnabled = true
+	d.multiRepoPaths = []string{"repo-alpha", "./repo-alpha"}
+
+	if got := d.Validate(); got != "Duplicate paths in multi-repo mode" {
+		t.Fatalf("Validate() = %q, want the duplicate-path rejection (both spellings resolve to the same directory)", got)
+	}
+}

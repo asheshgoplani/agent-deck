@@ -1367,6 +1367,13 @@ func (d *NewDialog) Validate() string {
 				continue
 			}
 			expanded := session.ExpandPath(strings.Trim(p, "'\""))
+			// #1706: submit resolves every declared path to an absolute one, so
+			// the duplicate key must be resolved too — otherwise "repo" and
+			// "./repo" pass this check and then collapse into the same path.
+			// Dedupe key only; the entered values are left untouched.
+			if abs, err := filepath.Abs(expanded); err == nil {
+				expanded = abs
+			}
 			if seen[expanded] {
 				return "Duplicate paths in multi-repo mode"
 			}
