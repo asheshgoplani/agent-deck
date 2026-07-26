@@ -324,10 +324,29 @@ jobs:
           fi
           echo "Verified ${#ARTIFACTS[@]} tarballs against checksums.txt; ready to attest."
 
+      # Signed BEFORE the release is published, so provenance is a precondition
+      # of visibility rather than an afterthought (#1760). SECURITY.md tells
+      # users to run `gh attestation verify` on release artifacts; if signing
+      # fails, the release stays an unpublished draft and nobody is handed an
+      # unverifiable artifact. This attests the local dist-attest/ files and
+      # does not touch the release itself, so nothing here needs the release to
+      # be public.
+      #
+      # If Sigstore/Fulcio is genuinely down and a release must go out anyway,
+      # publish the verified draft by hand — the assets are already attached and
+      # checksum-verified at this point:
+      #   gh release edit <tag> --repo asheshgoplani/agent-deck --draft=false --latest
+      - name: Attest build provenance
+        timeout-minutes: 10
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        with:
+          subject-path: 'dist-attest/*'
+
       # The single place a release becomes visible (#1759). Everything above has
       # to have passed: GoReleaser succeeded, the four tarballs and
-      # checksums.txt are attached, and every tarball's SHA-256 matches the
-      # published checksum. Only then does the release leave draft.
+      # checksums.txt are attached, every tarball's SHA-256 matches the
+      # published checksum, and build provenance is signed. Only then does the
+      # release leave draft.
       #
       # If any earlier step fails the draft is simply never published:
       # /releases/latest keeps pointing at the last good release, so
@@ -362,11 +381,171 @@ jobs:
           fi
           echo "Release ${REF_NAME} is published with all assets attached."
 
-      - name: Attest build provenance
-        timeout-minutes: 10
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
-        with:
-          subject-path: 'dist-attest/*'
+      # The Homebrew tap, deliberately last and deliberately unable to fail the
+      # job (#1763, #1760).
+      #
+      # GoReleaser used to push the formula itself, from inside
+      # `goreleaser release`. A tap failure therefore failed the GoReleaser step
+      # and skipped every step after it — which is how a 401 on the tap token
+      # cost v1.10.9/10/11 their build provenance. `brews.skip_upload: true` in
+      # .goreleaser.yml now stops at generating dist/homebrew/Formula/agent-deck.rb
+      # and this step owns the push.
+      #
+      # `continue-on-error: true` is the entire point: a dead tap token, a rate
+      # limit or a tap-side conflict must never turn a verified, published,
+      # attested release red. Brew users simply keep the previous formula until
+      # the next release or a manual push. The failure is still loud — a
+      # ::warning:: annotation plus recovery commands in the job summary — so
+      # "best effort" cannot decay into "silently broken forever".
+      #
+      # Running after "Publish release" is also required for correctness: the
+      # formula's download URLs only resolve once the release is public, and
+      # homebrew-verify.yml compares the tap against /releases/latest.
+      - name: Update Homebrew tap formula (best effort)
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          # The tap lives in a different repo, so this needs its own token with
+          # Contents: read/write on asheshgoplani/homebrew-tap. It is the only
+          # consumer of the secret now.
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          TAP_REPO: asheshgoplani/homebrew-tap
+          TAP_FORMULA_PATH: Formula/agent-deck.rb
+        run: |
+          set -euo pipefail
+          VERSION="${REF_NAME#v}"
+
+          # Every exit path other than success goes through here: a warning
+          # annotation, an actionable job summary, and a non-zero exit so the
+          # step is visibly red-but-ignored instead of quietly green.
+          soft_fail() {
+            echo "::warning title=Homebrew tap not updated::$1"
+            {
+              echo "### Homebrew tap NOT updated for ${REF_NAME}"
+              echo
+              echo "$1"
+              echo
+              echo "The release itself is published, verified and attested — only the tap"
+              echo "lagged, so \`brew install ${TAP_REPO%/*}/tap/agent-deck\` keeps serving the"
+              echo "previous version until this is fixed."
+              echo
+              echo "Recovery:"
+              echo
+              echo "1. If the token is the problem, rotate \`HOMEBREW_TAP_GITHUB_TOKEN\`"
+              echo "   (fine-grained PAT, Contents: read/write on \`${TAP_REPO}\`) and re-run"
+              echo "   this workflow, or push the formula by hand."
+              echo "2. To push by hand, copy the generated formula from this run's GoReleaser"
+              echo "   output into \`${TAP_FORMULA_PATH}\` in \`${TAP_REPO}\` — the checksums must"
+              echo "   match \`checksums.txt\` on the ${REF_NAME} release."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          }
+
+          if [[ -z "${GH_TOKEN}" ]]; then
+            soft_fail "HOMEBREW_TAP_GITHUB_TOKEN is not set on this repository, so the tap push was skipped."
+          fi
+
+          # GoReleaser writes dist/homebrew/<directory>/<name>.rb; the find is a
+          # fallback so a future layout change degrades to a warning instead of
+          # pushing nothing silently.
+          FORMULA_FILE="dist/homebrew/Formula/agent-deck.rb"
+          if [[ ! -f "${FORMULA_FILE}" ]]; then
+            FORMULA_FILE=$(find dist -type f -name 'agent-deck.rb' -print -quit 2>/dev/null || true)
+          fi
+          if [[ -z "${FORMULA_FILE}" || ! -s "${FORMULA_FILE}" ]]; then
+            soft_fail "GoReleaser did not produce a Homebrew formula under dist/ — nothing to push."
+          fi
+          echo "Using generated formula: ${FORMULA_FILE}"
+
+          # Same parse as scripts/verify-homebrew-install.sh, so the gate that
+          # checks the tap later reads the version the same way we wrote it.
+          # `|| true` because `sed | head -1` can SIGPIPE under pipefail; the
+          # value is validated on the next line either way.
+          FORMULA_VERSION=$(sed -nE 's/^[[:space:]]*version "([^"]+)".*/\1/p' "${FORMULA_FILE}" | head -1 || true)
+          if [[ "${FORMULA_VERSION}" != "${VERSION}" ]]; then
+            soft_fail "Generated formula is for version ${FORMULA_VERSION:-<unparseable>}, not ${VERSION} — refusing to push a mismatched formula."
+          fi
+
+          # Cross-check the formula against the checksums of the artifacts that
+          # were just verified and attested. A formula whose sha256 does not
+          # match the published tarball breaks `brew install` for every user
+          # with a checksum error, so it must never reach the tap. dist-attest/
+          # was populated and checksum-verified by the attestation step above.
+          echo "Cross-checking formula checksums against the published checksums.txt..."
+          if [[ ! -s dist-attest/checksums.txt ]]; then
+            soft_fail "dist-attest/checksums.txt is missing — cannot verify the formula's checksums, refusing to push."
+          fi
+          # Pair each url with the sha256 that follows it, and emit
+          # "<sha256>  <basename>" — byte-identical to a checksums.txt line.
+          # Written outside the checkout so the release job leaves no stray file
+          # in the working tree.
+          PAIRS_FILE="${RUNNER_TEMP:-.}/formula-checksums.txt"
+          awk_pair() {
+            awk '
+              /^[[:space:]]*url "/ {
+                match($0, /"[^"]+"/); u = substr($0, RSTART + 1, RLENGTH - 2); next
+              }
+              /^[[:space:]]*sha256 "/ {
+                match($0, /"[^"]+"/); s = substr($0, RSTART + 1, RLENGTH - 2)
+                if (u == "") { print "UNPAIRED"; exit 1 }
+                n = split(u, p, "/"); print s "  " p[n]; u = ""
+              }
+            ' "$1"
+          }
+          awk_pair "${FORMULA_FILE}" > "${PAIRS_FILE}" || \
+            soft_fail "Could not pair urls with sha256 entries in the generated formula."
+
+          PAIRS=$(grep -c . "${PAIRS_FILE}" || true)
+          if [[ "${PAIRS}" -ne 4 ]]; then
+            soft_fail "Expected 4 url/sha256 pairs in the formula (darwin+linux × amd64+arm64), found ${PAIRS}."
+          fi
+          while IFS= read -r line; do
+            if ! grep -qxF -- "${line}" dist-attest/checksums.txt; then
+              soft_fail "Formula entry '${line}' does not match the published checksums.txt — refusing to push a formula that would fail \`brew install\`."
+            fi
+          done < "${PAIRS_FILE}"
+          echo "All 4 formula checksums match the published release artifacts."
+
+          if ! BRANCH=$(gh api "repos/${TAP_REPO}" --jq '.default_branch'); then
+            soft_fail "Cannot read ${TAP_REPO} — HOMEBREW_TAP_GITHUB_TOKEN is missing, expired or lacks access (this is the #1760 401)."
+          fi
+
+          # Blob sha of the file being replaced. Absent on the first push, and
+          # the API requires it for an update, so tolerate the 404.
+          CURRENT_SHA=$(gh api "repos/${TAP_REPO}/contents/${TAP_FORMULA_PATH}?ref=${BRANCH}" --jq '.sha' 2>/dev/null || true)
+
+          # Encoded separately and checked: an empty `content` would replace the
+          # tap's formula with an empty file, which is worse than not pushing.
+          # `base64 -w0` is GNU coreutils, which ubuntu-latest has; this step
+          # never runs outside CI (`make release-local` does not push the tap).
+          CONTENT_B64=$(base64 -w0 "${FORMULA_FILE}" || true)
+          if [[ -z "${CONTENT_B64}" ]]; then
+            soft_fail "Could not base64-encode ${FORMULA_FILE} — refusing to push an empty formula."
+          fi
+
+          PUT_ARGS=(
+            -X PUT "repos/${TAP_REPO}/contents/${TAP_FORMULA_PATH}"
+            -f "message=agent-deck ${REF_NAME}"
+            -f "content=${CONTENT_B64}"
+            -f "branch=${BRANCH}"
+          )
+          if [[ -n "${CURRENT_SHA}" ]]; then
+            PUT_ARGS+=(-f "sha=${CURRENT_SHA}")
+          fi
+          if ! gh api "${PUT_ARGS[@]}" --jq '.commit.html_url // "(no new commit — formula already current)"'; then
+            soft_fail "Pushing ${TAP_FORMULA_PATH} to ${TAP_REPO}@${BRANCH} failed."
+          fi
+
+          # Read the tap back through the API (not raw.githubusercontent.com,
+          # which is CDN-cached for minutes) so a silent no-op cannot pass as a
+          # successful push — the same paranoia as "Publish release" above.
+          PUSHED_VERSION=$(gh api "repos/${TAP_REPO}/contents/${TAP_FORMULA_PATH}?ref=${BRANCH}" --jq '.content' \
+            | base64 -d \
+            | sed -nE 's/^[[:space:]]*version "([^"]+)".*/\1/p' | head -1 || true)
+          if [[ "${PUSHED_VERSION}" != "${VERSION}" ]]; then
+            soft_fail "After the push, ${TAP_REPO}/${TAP_FORMULA_PATH} still reports version ${PUSHED_VERSION:-<unparseable>}, not ${VERSION}."
+          fi
+          echo "Homebrew tap updated: ${TAP_REPO}/${TAP_FORMULA_PATH} is now ${VERSION}."
 
       - name: Notify on failure
         if: failure()

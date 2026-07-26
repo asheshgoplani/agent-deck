@@ -173,12 +173,15 @@ ci:
 
 # Local release using GoReleaser
 # Prerequisites: brew install goreleaser
-# Required env: GITHUB_TOKEN, HOMEBREW_TAP_GITHUB_TOKEN
+# Required env: GITHUB_TOKEN
+# HOMEBREW_TAP_GITHUB_TOKEN is NOT needed: with brews.skip_upload GoReleaser only
+# generates dist/homebrew/Formula/agent-deck.rb and never touches the tap. CI's
+# post-publish step owns the push (#1763), so a local release does not update the
+# tap at all.
 release-local:
 	@echo "=== Pre-flight checks ==="
 	@which goreleaser > /dev/null || (echo "ERROR: goreleaser not found. Run: brew install goreleaser" && exit 1)
 	@test -n "$$GITHUB_TOKEN" || (echo "ERROR: GITHUB_TOKEN not set" && exit 1)
-	@test -n "$$HOMEBREW_TAP_GITHUB_TOKEN" || (echo "ERROR: HOMEBREW_TAP_GITHUB_TOKEN not set" && exit 1)
 	@TAG=$$(git describe --tags --exact-match 2>/dev/null) || (echo "ERROR: HEAD is not tagged. Run: git tag vX.Y.Z" && exit 1); \
 	CODE_VERSION=$$(grep 'var Version' cmd/agent-deck/main.go | sed 's/.*"\(.*\)".*/\1/'); \
 	TAG_VERSION=$${TAG#v}; \
@@ -196,6 +199,8 @@ release-local:
 	@echo "Verify the assets, then publish it yourself — CI's publish step does not run for a local release:"
 	@echo "  gh release view $$(git describe --tags --exact-match) --repo asheshgoplani/agent-deck"
 	@echo "  gh release edit $$(git describe --tags --exact-match) --repo asheshgoplani/agent-deck --draft=false --latest"
+	@echo "Note: no SLSA provenance and no Homebrew tap update happen for a local release —"
+	@echo "both live in .github/workflows/release.yml. Prefer pushing the tag and letting CI do it."
 
 # Web UI test targets
 # Vitest (unit) + Playwright (e2e + screenshot regression). Both run against

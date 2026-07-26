@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Releases carry SLSA build provenance again, and the Homebrew tap can no longer fail a release.** GoReleaser pushed the brew formula from inside `goreleaser release`, so when the tap token started returning `401 Bad credentials` the whole GoReleaser step failed and every step after it was skipped — including artifact attestation. v1.10.9, v1.10.10 and v1.10.11 therefore shipped with no provenance while `SECURITY.md` told users to run `gh attestation verify`. GoReleaser now only generates the formula (`brews.skip_upload`), provenance is signed *before* the release is published (so an unsigned release is never made visible), and the tap push is a separate best-effort step that runs afterwards and cannot fail the job. The tap push refuses to publish a formula whose version or SHA-256s do not match the verified release assets, and reports failures as a warning annotation plus a job summary instead of silently skipping. ([#1760](https://github.com/asheshgoplani/agent-deck/issues/1760), [#1763](https://github.com/asheshgoplani/agent-deck/issues/1763))
+
 ## [1.10.11] - 2026-07-26
 
 Reliability release. Session identity is now immutable after creation, the tmux

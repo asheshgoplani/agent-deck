@@ -110,12 +110,58 @@ release:
 
     **Full Changelog**: https://github.com/asheshgoplani/agent-deck/compare/{{ .PreviousTag }}...{{ .Tag }}
 
+# Homebrew tap. GoReleaser only GENERATES the formula here — it never pushes it.
+# The push lives in .github/workflows/release.yml ("Update Homebrew tap formula"),
+# after the release is published and provenance is signed, and it cannot fail the
+# release job. See the skip_upload comment below for why (#1760, #1763).
+#
+# Why this is still `brews` and not `homebrew_casks` (#1761):
+# GoReleaser soft-deprecated `brews` in v2.10 and hard-deprecated it in v2.16, in
+# favour of `homebrew_casks`. We are deliberately not migrating yet:
+#   1. Casks are macOS-only. agent-deck ships linux/amd64 + linux/arm64, and
+#      README.md, install.sh and homebrew-verify.yml all advertise
+#      `brew install asheshgoplani/tap/agent-deck` to Mac AND Linux/WSL users
+#      (#873). A cask silently drops every Linuxbrew user.
+#   2. It is a user-visible, cross-repository migration: a `tap_migrations.json`
+#      plus deleting Formula/agent-deck.rb in asheshgoplani/homebrew-tap, so
+#      existing installs transition instead of breaking. None of that can be
+#      reviewed or reverted from this repo.
+#   3. It cannot be exercised right now: HOMEBREW_TAP_GITHUB_TOKEN is returning
+#      401 Bad credentials, so no tap write of any shape can be validated until
+#      it is rotated.
+#   4. Landing it here would make the first release after this change exercise
+#      two unproven things at once — the new push path and a new tap layout.
+#      The point of #1763 is to get the tap out of the release critical path;
+#      prove that first, migrate second.
+# The deadline risk is bounded: GoReleaser removes deprecated options "only on
+# major versions" (goreleaser.com/deprecations), and .github/workflows/release.yml
+# constrains the action to `~> v2`, so `brews` cannot turn into a hard error
+# without an explicit major bump here. Until then the deprecated block does
+# nothing but render a file locally, which is the least exposed way to use it.
 brews:
   - name: agent-deck
+    # Generate the formula into dist/homebrew/Formula/agent-deck.rb and stop.
+    #
+    # GoReleaser pushes the tap from inside `goreleaser release`, and a tap
+    # failure fails the whole invocation. With the dead tap token that aborted
+    # the GoReleaser step, so every step after it was SKIPPED — including
+    # "Attest build provenance". v1.10.9, v1.10.10 and v1.10.11 shipped with no
+    # SLSA provenance while SECURITY.md tells users to run
+    # `gh attestation verify` (#1760). A best-effort package manager must not be
+    # able to cancel build provenance, or delete a verified release's assets on
+    # a retry.
+    #
+    # Never set this back to false: that puts the tap back in the release's
+    # critical path and re-opens #1760.
+    skip_upload: true
     repository:
       owner: asheshgoplani
       name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      # No `token` on purpose. With skip_upload: true GoReleaser never talks to
+      # the tap, so it needs no tap credentials — which also means
+      # `make release-local` no longer requires HOMEBREW_TAP_GITHUB_TOKEN, and a
+      # template referencing an unset .Env key can no longer fail the config.
+      # The secret is used only by release.yml's post-publish push step.
     directory: Formula
     homepage: "https://github.com/asheshgoplani/agent-deck"
     description: "Terminal session manager for AI coding agents"
