@@ -493,7 +493,7 @@ Every Claude child row in `session children --json` carries `context_tokens`
 — the child's current context size, read from its transcript. Check it on
 every heartbeat and act on two thresholds:
 
-- **Soft (~150k):** `session send` a wrap-up instruction — "your context is
+- **Soft (~200k):** `session send` a wrap-up instruction — "your context is
   getting large: commit what's done, then write a handoff summary of what
   remains (decisions made, files touched, next steps) to
   `$RUN_DIR/<task-slug>/handoff.md`."
