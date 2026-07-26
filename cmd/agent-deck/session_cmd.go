@@ -836,26 +836,11 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 		return nil
 	})
 
-	// Fold skip/auth-death verdicts into the per-session records so --json
-	// consumers see WHY a session was left alone rather than a silent omission.
-	ordered := make([]map[string]interface{}, 0, len(sweepResult.Attempts))
+	ordered := restartAllSessionRecords(results, sweepResult.Attempts)
 	for _, attempt := range sweepResult.Attempts {
-		result := results[attempt.InstanceID]
-		if result == nil {
-			result = map[string]interface{}{"id": attempt.InstanceID, "title": attempt.Title}
+		if attempt.Skipped && !out.jsonMode && !out.quietMode {
+			fmt.Printf("Skipped %s: %s\n", attempt.Title, attempt.SkipReason)
 		}
-		if attempt.Skipped {
-			result["success"] = true
-			result["skipped"] = true
-			result["reason"] = attempt.SkipReason
-			if !out.jsonMode && !out.quietMode {
-				fmt.Printf("Skipped %s: %s\n", attempt.Title, attempt.SkipReason)
-			}
-		}
-		if attempt.AuthDeath {
-			result["auth_death"] = true
-		}
-		ordered = append(ordered, result)
 	}
 
 	// Save updated state after all restarts
@@ -869,18 +854,7 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 	}
 
 	if out.jsonMode {
-		out.Success("", map[string]interface{}{
-			"success":      sweepResult.Failed == 0 && !sweepResult.Tripped,
-			"total":        len(active),
-			"restarted":    sweepResult.Booted,
-			"failed":       sweepResult.Failed,
-			"skipped_auth": sweepResult.SkippedHeld,
-			"auth_deaths":  sweepResult.AuthDeaths,
-			"abandoned":    sweepResult.Abandoned,
-			"auth_tripped": sweepResult.Tripped,
-			"trip_message": sweepResult.TripMessage,
-			"sessions":     ordered,
-		})
+		out.Success("", restartAllSessionsJSONPayload(len(active), sweepResult, ordered))
 	} else if !out.quietMode {
 		fmt.Printf("Restarted %d/%d sessions", sweepResult.Booted, len(active))
 		if sweepResult.Failed > 0 {
@@ -895,7 +869,7 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 		fmt.Println()
 	}
 
-	if sweepResult.Failed > 0 || sweepResult.Tripped {
+	if restartAllSessionsExitCode(sweepResult) != 0 {
 		os.Exit(1)
 	}
 }
