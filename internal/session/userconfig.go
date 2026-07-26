@@ -390,6 +390,18 @@ type UISettings struct {
 	// tightening the visibility latency reported on v1.9.30.
 	RemoteSessionRefreshSecs int `toml:"remote_session_refresh_secs,omitzero"`
 
+	// AdaptiveRefreshMaxSkips bounds the adaptive refresh policy (issue #1753):
+	// how many consecutive background status sweeps an OFF-SCREEN session whose
+	// tmux/hook fingerprint is provably unchanged may be skipped before it is
+	// polled regardless. Visible rows are never skipped.
+	//   0 (unset) — default of 2, i.e. poll every quiescent off-screen session
+	//               at least every 3rd sweep (~6s).
+	//   >0        — custom ceiling; higher trades transition latency on
+	//               off-screen rows for less tmux load on very large decks.
+	//   <0        — DISABLE the policy: every sweep polls every session, exactly
+	//               as agent-deck behaved before the policy landed (kill switch).
+	AdaptiveRefreshMaxSkips int `toml:"adaptive_refresh_max_skips,omitzero"`
+
 	// ShowOnlyInstalledTools, when true, hides tools from the new-session
 	// dialogs (TUI + web) whose command does not resolve on the host PATH
 	// (issue #1259). Default false: no PATH probing happens and the dialogs are

@@ -26,6 +26,28 @@ func SeedPaneInfoCacheForTest(t testing.TB, info map[string]PaneInfo) {
 	})
 }
 
+// SeedSessionActivityCacheForTest replaces the package's session cache (the
+// list-sessions snapshot that backs Session.GetCachedWindowActivity) with the
+// supplied session_name -> window_activity map and marks it fresh. Cleanup
+// restores the pristine zero state.
+//
+// Production callers must use RefreshExistingSessions / RefreshSessionCache;
+// this exists so internal/ui can drive the adaptive-refresh fingerprint tests
+// (refresh_policy.go) without standing up a real tmux server.
+func SeedSessionActivityCacheForTest(t testing.TB, activity map[string]int64) {
+	t.Helper()
+	sessionCacheMu.Lock()
+	sessionCacheData = activity
+	sessionCacheTime = time.Now()
+	sessionCacheMu.Unlock()
+	t.Cleanup(func() {
+		sessionCacheMu.Lock()
+		sessionCacheData = nil
+		sessionCacheTime = time.Time{}
+		sessionCacheMu.Unlock()
+	})
+}
+
 // ExpireStartupWindowForTest ends the session's startup window (see
 // inStartupWindowLocked) so GetStatus classifies the pane from live evidence
 // instead of reporting "starting".

@@ -460,6 +460,15 @@ type Home struct {
 	// Snapshot of status/tool used by render path to avoid per-row lock contention.
 	sessionRenderSnapshot atomic.Value // map[string]sessionRenderState
 
+	// Adaptive refresh policy (refresh-tick v2, issue #1753). visibleSessions
+	// holds a visibleSessionSnapshot published by the TUI tick; refreshLedger
+	// remembers each session's last-polled fingerprint so the background sweep
+	// can skip provably-unchanged off-screen sessions. See refresh_policy.go.
+	visibleSessions        atomic.Value // visibleSessionSnapshot
+	refreshLedger          *refreshLedger
+	adaptiveMaxSkips       int       // resolved staleness ceiling; 0 disables the policy
+	lastRefreshLedgerPrune time.Time // sweep-goroutine only
+
 	// Jump mode (vimium-style hint navigation)
 	jumpMode   bool   // True when jump mode is active
 	jumpBuffer string // Characters typed so far in jump mode
@@ -1438,6 +1447,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		lastClickIndex:            -1,
 	}
 	h.sessionRenderSnapshot.Store(make(map[string]sessionRenderState))
+	h.refreshLedger = newRefreshLedger()
+	h.adaptiveMaxSkips = defaultAdaptiveRefreshMaxSkips
 
 	h.reloadHotkeysFromConfig()
 
@@ -1461,6 +1472,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.previewOrientation = cfg.UI.GetPreviewOrientation()
 		h.remoteLatencyRefreshSec = cfg.UI.GetRemoteLatencyRefreshSecs(cfg.SystemStats.GetRefreshSeconds())
 		h.remoteSessionRefreshSec = cfg.UI.GetRemoteSessionRefreshSecs()
+		h.adaptiveMaxSkips = adaptiveRefreshMaxSkips(cfg.UI.AdaptiveRefreshMaxSkips)
 		h.footerMode = cfg.UI.GetFooter()
 		h.attachOnCreate = cfg.UI.GetAttachOnCreate()
 	} else {
@@ -4023,49 +4035,81 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		h.instancesMu.RUnlock()
 	}
 
+	prev := h.getSessionRenderSnapshot()
+
+	// Generation skip (issue #1753): this runs from several call sites at the
+	// sweep/tick cadence and used to allocate and publish a fresh N-entry map
+	// every time. Pass 1 computes each state and compares it against the current
+	// snapshot; when nothing differs (the common steady state on a large deck)
+	// there is nothing to publish, so we return without allocating a map or
+	// storing it. Pass 2 (below) only runs when something actually changed.
+	if prev != nil {
+		live := 0
+		identical := true
+		for _, inst := range instances {
+			if inst == nil {
+				continue
+			}
+			live++
+			if got, ok := prev[inst.ID]; !ok || got != h.computeSessionRenderState(inst) {
+				identical = false
+				break
+			}
+		}
+		if identical && live == len(prev) {
+			return
+		}
+	}
+
 	snap := make(map[string]sessionRenderState, len(instances))
 	for _, inst := range instances {
 		if inst == nil {
 			continue
 		}
-		state := sessionRenderState{
-			status:   inst.GetStatusThreadSafe(),
-			substate: inst.CachedSubstate(),
-			tool:     inst.GetToolThreadSafe(),
-			// Label fields: read here, on the refresher's goroutine, so the
-			// render path never takes Instance.mu per row (#1753). Title goes
-			// through GetTitleThreadSafe because SetField/ReconcileTitleFromClaude/
-			// pending-title reapply can mutate it concurrently from the Bubble
-			// Tea event-loop goroutine.
-			title:        inst.GetTitleThreadSafe(),
-			autoName:     inst.GetAutoName(),
-			autoNameDesc: inst.GetAutoNameDescription(),
-		}
-		// Look up pane title from the already-refreshed tmux cache.
-		// Only RefreshPaneInfoCache (called from backgroundStatusUpdate) keeps
-		// the cache fresh; processStatusUpdate and other rebuild paths run on
-		// their own cadence. When that cache crosses the 4-second freshness
-		// threshold (GetCachedPaneInfo returns ok=false), keep the previous
-		// snapshot's paneTitle so the inline suffix in renderSessionItem does
-		// not blink to empty between successful refreshes — the user would
-		// otherwise read the disappearance as "title only updated once."
-		// Reading the latest snapshot inside the per-instance branch (rather
-		// than once before the loop) narrows the read-store race window: if a
-		// concurrent rebuild lands a fresher value while we're walking the
-		// instances slice, the fallback uses that value instead of stamping
-		// an even-older one back into the snapshot.
-		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
-			if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
-				state.paneTitle = cleanPaneTitle(paneInfo.Title)
-			} else if prev := h.getSessionRenderSnapshot(); prev != nil {
-				if prevState, hadPrev := prev[inst.ID]; hadPrev {
-					state.paneTitle = prevState.paneTitle
-				}
-			}
-		}
-		snap[inst.ID] = state
+		snap[inst.ID] = h.computeSessionRenderState(inst)
 	}
 	h.sessionRenderSnapshot.Store(snap)
+}
+
+// computeSessionRenderState derives one session's render state from the
+// already-refreshed tmux caches. Extracted from refreshSessionRenderSnapshot so
+// the compare pass and the build pass cannot drift apart.
+func (h *Home) computeSessionRenderState(inst *session.Instance) sessionRenderState {
+	state := sessionRenderState{
+		status:   inst.GetStatusThreadSafe(),
+		substate: inst.CachedSubstate(),
+		tool:     inst.GetToolThreadSafe(),
+		// Label fields: read here, on the refresher's goroutine, so the
+		// render path never takes Instance.mu per row (#1753). Title goes
+		// through GetTitleThreadSafe because SetField/ReconcileTitleFromClaude/
+		// pending-title reapply can mutate it concurrently from the Bubble
+		// Tea event-loop goroutine.
+		title:        inst.GetTitleThreadSafe(),
+		autoName:     inst.GetAutoName(),
+		autoNameDesc: inst.GetAutoNameDescription(),
+	}
+	// Look up pane title from the already-refreshed tmux cache.
+	// Only RefreshPaneInfoCache (called from backgroundStatusUpdate) keeps
+	// the cache fresh; processStatusUpdate and other rebuild paths run on
+	// their own cadence. When that cache crosses the 4-second freshness
+	// threshold (GetCachedPaneInfo returns ok=false), keep the previous
+	// snapshot's paneTitle so the inline suffix in renderSessionItem does
+	// not blink to empty between successful refreshes — the user would
+	// otherwise read the disappearance as "title only updated once."
+	// Reading the latest snapshot here (rather than once before the caller's
+	// loop) narrows the read-store race window: if a concurrent rebuild lands
+	// a fresher value while we're walking the instances slice, the fallback
+	// uses that value instead of stamping an even-older one back in.
+	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+		if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
+			state.paneTitle = cleanPaneTitle(paneInfo.Title)
+		} else if prev := h.getSessionRenderSnapshot(); prev != nil {
+			if prevState, hadPrev := prev[inst.ID]; hadPrev {
+				state.paneTitle = prevState.paneTitle
+			}
+		}
+	}
+	return state
 }
 
 func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState {
@@ -4442,6 +4486,16 @@ func (h *Home) backgroundStatusUpdate() {
 
 	tracker := h.getTransitionTracker()
 
+	// Adaptive refresh policy (issue #1753). visibleOK=false means no fresh
+	// viewport snapshot exists, in which case the gate below is bypassed
+	// entirely and every session is polled — the pre-policy behaviour.
+	visibleIDs, visibleOK := h.visibleSessionsForSweep()
+	maxSkips := h.adaptiveMaxSkips
+	if !visibleOK {
+		maxSkips = 0
+	}
+	var genSkipped int // sessions held by the adaptive gate this sweep
+
 	g := new(errgroup.Group)
 	g.SetLimit(10) // Pool of 10 workers (tmux server serializes, more doesn't help)
 
@@ -4469,6 +4523,24 @@ func (h *Home) backgroundStatusUpdate() {
 					skipped++
 					continue
 				}
+			}
+		}
+
+		// Adaptive gate: only livePipeLRUCapacity (3) + attached sessions hold a
+		// control pipe, so the PipeManager skip above covers a handful of rows
+		// and every other quiescent session still pays a full UpdateStatus —
+		// including, for a Claude session parked in hook "waiting", a
+		// capture-pane SUBPROCESS via BackgroundWorkPending. Hold that poll when
+		// the session is off-screen AND its tmux/hook fingerprint proves nothing
+		// observable changed, bounded by adaptiveMaxSkips consecutive sweeps.
+		// See refresh_policy.go for the full argument.
+		if maxSkips > 0 {
+			_, isVisible := visibleIDs[inst.ID]
+			fp := h.fingerprintSession(inst)
+			if skip, _ := h.refreshLedger.decide(inst.ID, fp, inst.GetStatusThreadSafe(), isVisible, maxSkips); skip {
+				skipped++
+				genSkipped++
+				continue
 			}
 		}
 
@@ -4508,6 +4580,7 @@ func (h *Home) backgroundStatusUpdate() {
 		perfLog.Debug(
 			"idle_sessions_skipped",
 			slog.Int("skipped", skipped),
+			slog.Int("adaptive_skipped", genSkipped),
 			slog.Int("checked", len(instances)-skipped),
 		)
 	}
@@ -4518,6 +4591,18 @@ func (h *Home) backgroundStatusUpdate() {
 			perfLog.Info("slow_sessions", slog.String("details", strings.Join(slowSessions, ", ")))
 		}
 		slowMu.Unlock()
+	}
+
+	// Drop adaptive-refresh baselines for sessions that no longer exist. Every
+	// ~20s (not every sweep) so the live-set map is not rebuilt at the sweep
+	// cadence; entries are tiny and a 20s lag costs nothing.
+	if time.Since(h.lastRefreshLedgerPrune) >= 20*time.Second {
+		live := make(map[string]struct{}, len(instances))
+		for _, inst := range instances {
+			live[inst.ID] = struct{}{}
+		}
+		h.refreshLedger.prune(live)
+		h.lastRefreshLedgerPrune = time.Now()
 	}
 
 	// SQLite reads: shared statuses from other instances, read once and
@@ -4857,14 +4942,9 @@ func (h *Home) triggerStatusUpdate() {
 		}
 	}
 
-	visibleHeight := h.height - 8
-	if visibleHeight < 5 {
-		visibleHeight = 5
-	}
-
 	req := statusUpdateRequest{
 		viewOffset:    h.viewOffset,
-		visibleHeight: visibleHeight,
+		visibleHeight: h.visibleRowBudget(),
 		flatItemIDs:   flatItemIDs,
 	}
 
@@ -4940,6 +5020,10 @@ func (h *Home) refreshAttachedSessionStatus(sessionID string) {
 		h.hookWatcher.ClearHookStatus(inst.ID)
 	}
 	inst.ForceNextStatusCheck()
+	// Drop the adaptive-refresh baseline too: we just invalidated this session's
+	// hook status, so the next background sweep must re-derive it rather than
+	// trust a fingerprint recorded before the invalidation (issue #1753).
+	h.refreshLedger.forget(inst.ID)
 
 	if inst.GetTmuxSession() != nil {
 		tmux.RefreshSessionCache()
@@ -6816,6 +6900,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			selectedBefore := h.captureSelectedItemIdentity()
 			h.rebuildFlatItemsPreservingSelection(selectedBefore)
 		}
+
+		// Publish which rows are on screen so the background sweep can hold the
+		// poll for provably-unchanged off-screen sessions (issue #1753). O(visible
+		// rows); runs on every tick regardless of navigation/idle gating below so
+		// the snapshot never goes stale while the event loop is alive — a stale
+		// snapshot makes the sweep fail open and poll everything.
+		h.publishVisibleSessions()
 
 		// Auto-dismiss errors after 5 seconds
 		if h.err != nil && !h.errTime.IsZero() && time.Since(h.errTime) > 5*time.Second {
