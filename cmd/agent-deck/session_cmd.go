@@ -1943,6 +1943,11 @@ func handleSessionSet(profile string, args []string) {
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
+	// #1706: SetField canonicalizes a project path (expand + absolutize), so
+	// report what was actually stored rather than the raw argument.
+	if field == session.FieldPath {
+		value = inst.ProjectPath
+	}
 	// CLI holds no lock — run tmux side effects inline. TUI defers them
 	// until after instancesMu.Unlock.
 	if postCommit != nil {

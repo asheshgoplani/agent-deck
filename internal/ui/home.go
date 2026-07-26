@@ -7152,6 +7152,13 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		if projectPath == "" {
 			projectPath = "."
 		}
+		// #1706: "." (and any relative CWD a search result carries) must not be
+		// persisted as project_path — tmux resolves it against the tmux server's
+		// cwd, and the Claude project slug derived from it would point elsewhere
+		// again.
+		if resolved, resErr := session.ResolveProjectPath(projectPath); resErr == nil {
+			projectPath = resolved
+		}
 
 		// Create instance. Issue #666: resolveNewSessionGroup rescues empty
 		// cursor-group (Window / RemoteGroup / placeholder flatItems) so

@@ -3,7 +3,6 @@ package session
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 )
 
 // ResolveProjectPath turns a user-supplied project path into the canonical form
@@ -31,12 +30,14 @@ import (
 // Callers are the machine-local writers (the CLI acting on its own profile, the
 // TUI, the web mutator). Paths that belong to a remote host must not pass
 // through here: they are resolved on that host by the CLI running there.
+// Whitespace is NOT trimmed: a directory name may legally begin or end with a
+// space, and `add` does not trim either. Callers that read a text field trim it
+// themselves before calling.
 func ResolveProjectPath(path string) (string, error) {
-	trimmed := strings.TrimSpace(path)
-	if trimmed == "" {
+	if path == "" {
 		return path, nil
 	}
-	abs, err := filepath.Abs(ExpandPath(trimmed))
+	abs, err := filepath.Abs(ExpandPath(path))
 	if err != nil {
 		// filepath.Abs only fails when the process has no usable cwd, so there
 		// is no anchor for a relative path. Refuse rather than store a value

@@ -34,7 +34,6 @@ func TestResolveProjectPath(t *testing.T) {
 		{name: "dot-slash prefix is cleaned", input: "./app", want: filepath.Join(cwd, "app")},
 		{name: "parent traversal is cleaned", input: "/repos/app/../other", want: "/repos/other"},
 		{name: "trailing slash is cleaned", input: "/repos/app/", want: "/repos/app"},
-		{name: "surrounding whitespace is trimmed", input: "  /repos/app  ", want: "/repos/app"},
 		{name: "tilde is expanded", input: "~/repos/app", want: filepath.Join(home, "repos", "app")},
 		{name: "empty stays empty", input: "", want: ""},
 	}
@@ -100,5 +99,30 @@ func TestSetField_PathAbsoluteValueIsPreserved(t *testing.T) {
 	}
 	if inst.ProjectPath != "/repos/moved" {
 		t.Fatalf("ProjectPath = %q, want %q (an absolute value must pass through untouched)", inst.ProjectPath, "/repos/moved")
+	}
+}
+
+// A directory name may legally begin or end with a space, and `add` does not
+// trim its argument either, so neither may this. Text fields are trimmed by the
+// caller that reads them.
+func TestResolveProjectPath_PreservesSignificantWhitespace(t *testing.T) {
+	got, err := ResolveProjectPath("/repos/app ")
+	if err != nil {
+		t.Fatalf("ResolveProjectPath returned error: %v", err)
+	}
+	if got != "/repos/app " {
+		t.Fatalf("ResolveProjectPath(%q) = %q, want the trailing space preserved", "/repos/app ", got)
+	}
+}
+
+// An SSH session's path names a directory on the remote host, so this machine's
+// cwd is not a valid anchor for it.
+func TestSetField_PathOnSSHInstanceIsNotResolvedLocally(t *testing.T) {
+	inst := &Instance{ProjectPath: "srv/app", SSHHost: "build-box"}
+	if _, _, err := SetField(inst, FieldPath, "srv/app-v2", nil); err != nil {
+		t.Fatalf("SetField(path) returned error: %v", err)
+	}
+	if inst.ProjectPath != "srv/app-v2" {
+		t.Fatalf("ProjectPath = %q, want %q (a remote path must not be anchored to the local cwd)", inst.ProjectPath, "srv/app-v2")
 	}
 }
