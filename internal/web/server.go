@@ -27,12 +27,26 @@ type Config struct {
 	// InsecureBind explicitly acknowledges binding a non-loopback address
 	// with no auth token (an unauthenticated RCE surface). Without it the
 	// server refuses to start in that configuration. See bind.go / report #1.
-	InsecureBind        bool
+	InsecureBind bool
+	// TrustedDomains lists hosts (already normalized by
+	// session.NormalizeTrustedDomains) whose links open from the web
+	// terminal without a confirm. Issue #1682.
+	TrustedDomains []string
+	// ConfirmLinkOpen gates the web terminal's link-open confirm for hosts
+	// that are NOT trusted. nil means "confirm" — the safe default, so a
+	// Config built without this field never silently disables the prompt.
+	ConfirmLinkOpen     *bool
 	MenuData            MenuDataLoader
 	PushVAPIDPublicKey  string
 	PushVAPIDPrivateKey string
 	PushVAPIDSubject    string
 	PushTestInterval    time.Duration
+}
+
+// confirmLinkOpen resolves Config.ConfirmLinkOpen, defaulting to true so an
+// omitted field keeps the confirm prompt rather than removing it.
+func (c Config) confirmLinkOpen() bool {
+	return c.ConfirmLinkOpen == nil || *c.ConfirmLinkOpen
 }
 
 // DefaultUndoWindow is the default Chrome-style undo grace period for

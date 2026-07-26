@@ -517,6 +517,29 @@ attach_on_create = true                       # Opt IN: instantly attach to a ne
 
 Filters compose: `hidden_tools` is applied first, then `show_only_installed_tools` (when enabled).
 
+## [web] Section
+
+`agent-deck web` HTTP server settings.
+
+```toml
+[web]
+mutations_enabled = true                      # Accept POST/PATCH/DELETE from the web UI
+trusted_domains = [                           # Links to these hosts open without a confirm
+  "gitlab.mycorp.example",
+  "gerrit.mycorp.example",
+  "*.ci.mycorp.example",                      # subdomains of ci.mycorp.example
+]
+confirm_link_open = true                      # Confirm before opening any OTHER host
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mutations_enabled` | bool | `true` | When `false`, mutating endpoints (POST/PATCH/DELETE) return HTTP 403 and the web UI hides its write affordances. `--read-only` forces this off regardless of the config value. |
+| `trusted_domains` | []string | `[]` | Hosts whose links open straight from the web terminal, skipping the "this link could potentially be dangerous" confirm. Everything not listed still confirms. Matching is on **host** only: case-insensitive, port- and path-independent. An entry may be a bare host (`gitlab.corp.example`), a pasted URL (reduced to its host), or `*.base.example` to match **subdomains** of `base.example` (not the bare base itself). Only `http`/`https` links are ever auto-opened. Unusable entries (`*`, `*.example`, blanks) are dropped. |
+| `confirm_link_open` | bool | `true` | Confirm before opening a web-terminal link whose host is **not** in `trusted_domains`. Set `false` to accept the risk and open every link directly — prefer `trusted_domains`, which keeps the safety net for arbitrary links. |
+
+Both link keys are read at server start and served to the browser by `GET /api/settings`; the web Settings drawer shows the active values.
+
 ## [global_search] Section
 
 Search across all Claude conversations.

@@ -98,6 +98,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		}
 	}
 
+	confirmLinkOpen := session.GetWebConfirmLinkOpen()
 	server := web.NewServer(web.Config{
 		ListenAddr:          *listenAddr,
 		Profile:             effectiveProfile,
@@ -105,6 +106,8 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		WebMutations:        resolveMutationsEnabled(*readOnly),
 		Token:               *token,
 		InsecureBind:        *insecureBind,
+		TrustedDomains:      session.GetWebTrustedDomains(),
+		ConfirmLinkOpen:     &confirmLinkOpen,
 		MenuData:            menuData,
 		PushVAPIDPublicKey:  resolvedPushPublic,
 		PushVAPIDPrivateKey: resolvedPushPrivate,
