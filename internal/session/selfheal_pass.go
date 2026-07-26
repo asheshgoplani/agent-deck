@@ -135,8 +135,16 @@ func (d *TransitionDaemon) runSelfHealObservePass(profile string, instances []*I
 				lastSent = time.Unix(ts, 0)
 			}
 		}
+		// A session whose auth hold has ALREADY survived an automatic boot is
+		// opted out. Self-heal's planned action for auth-401 is a single
+		// creds-reasserting restart, which genuinely fixes the scratch-clobber
+		// class — but once a boot has demonstrably died on auth, further restarts
+		// are the fleet-death amplifier (auth_hold.go), and only a human can
+		// clear the condition. Stage 2 must inherit this guard, so it lives here
+		// rather than in the (currently executor-less) engine.
 		optedOut := settings.IsSessionOptedOut(inst.ID, inst.Title) ||
-			settings.IsGroupOptedOut(inst.GroupPath)
+			settings.IsGroupOptedOut(inst.GroupPath) ||
+			inst.AuthHoldSurvivedBoot()
 
 		engine.Policy().SetFlickering(inst.ID, flicker.IsFlickering(inst.ID))
 

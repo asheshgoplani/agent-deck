@@ -758,7 +758,16 @@ func handleSessionRestart(profile string, args []string) {
 	out.Success(fmt.Sprintf("Restarted session: %s", inst.Title), data)
 }
 
-// restartAllSessions restarts every active session one by one.
+// restartAllSessions restarts every active session, paced and gated by
+// session.BootSweep.
+//
+// This is the path that turned an expired token into a fleet outage on
+// 2026-07-26: it used to boot every session back-to-back with no brake, so
+// during a credential failure it both wasted every restart AND had every fresh
+// agent race the single rotating refresh token. The sweep now skips sessions
+// already held for auth, staggers boots with jitter, caps how many unverified
+// boots contend for the token at once, and stops entirely after a few
+// consecutive auth-deaths with one loud message instead of burning the fleet.
 func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*session.Instance, groups []*session.GroupData, env map[string]string) {
 	var active []*session.Instance
 	for _, inst := range instances {
@@ -772,14 +781,15 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 		os.Exit(1)
 	}
 
-	var results []map[string]interface{}
-	var failed int
+	results := make(map[string]map[string]interface{}, len(active))
 
-	for _, inst := range active {
+	sweep := session.NewBootSweep()
+	sweepResult := sweep.Run(active, func(inst *session.Instance) error {
 		result := map[string]interface{}{
 			"id":    inst.ID,
 			"title": inst.Title,
 		}
+		results[inst.ID] = result
 
 		if !out.jsonMode {
 			fmt.Printf("Restarting %s...\n", inst.Title)
@@ -792,9 +802,7 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 			}
 			result["success"] = false
 			result["error"] = errMsg
-			failed++
-			results = append(results, result)
-			continue
+			return err
 		}
 		inst.LastStartedAt = time.Now()
 
@@ -812,11 +820,33 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 		if warning != "" {
 			result["warning"] = warning
 		}
-		results = append(results, result)
 
 		if !out.jsonMode {
 			fmt.Printf("  Done: %s\n", inst.Title)
 		}
+		return nil
+	})
+
+	// Fold skip/auth-death verdicts into the per-session records so --json
+	// consumers see WHY a session was left alone rather than a silent omission.
+	ordered := make([]map[string]interface{}, 0, len(sweepResult.Attempts))
+	for _, attempt := range sweepResult.Attempts {
+		result := results[attempt.InstanceID]
+		if result == nil {
+			result = map[string]interface{}{"id": attempt.InstanceID, "title": attempt.Title}
+		}
+		if attempt.Skipped {
+			result["success"] = true
+			result["skipped"] = true
+			result["reason"] = attempt.SkipReason
+			if !out.jsonMode && !out.quietMode {
+				fmt.Printf("Skipped %s: %s\n", attempt.Title, attempt.SkipReason)
+			}
+		}
+		if attempt.AuthDeath {
+			result["auth_death"] = true
+		}
+		ordered = append(ordered, result)
 	}
 
 	// Save updated state after all restarts
@@ -825,23 +855,38 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 		os.Exit(1)
 	}
 
+	if sweepResult.TripMessage != "" && !out.jsonMode {
+		fmt.Fprintf(os.Stderr, "\n🔒 %s\n", sweepResult.TripMessage)
+	}
+
 	if out.jsonMode {
 		out.Success("", map[string]interface{}{
-			"success":   failed == 0,
-			"total":     len(active),
-			"restarted": len(active) - failed,
-			"failed":    failed,
-			"sessions":  results,
+			"success":      sweepResult.Failed == 0 && !sweepResult.Tripped,
+			"total":        len(active),
+			"restarted":    sweepResult.Booted,
+			"failed":       sweepResult.Failed,
+			"skipped_auth": sweepResult.SkippedHeld,
+			"auth_deaths":  sweepResult.AuthDeaths,
+			"abandoned":    sweepResult.Abandoned,
+			"auth_tripped": sweepResult.Tripped,
+			"trip_message": sweepResult.TripMessage,
+			"sessions":     ordered,
 		})
 	} else if !out.quietMode {
-		fmt.Printf("Restarted %d/%d sessions", len(active)-failed, len(active))
-		if failed > 0 {
-			fmt.Printf(" (%d failed)", failed)
+		fmt.Printf("Restarted %d/%d sessions", sweepResult.Booted, len(active))
+		if sweepResult.Failed > 0 {
+			fmt.Printf(" (%d failed)", sweepResult.Failed)
+		}
+		if sweepResult.SkippedHeld > 0 {
+			fmt.Printf(" (%d held for auth)", sweepResult.SkippedHeld)
+		}
+		if sweepResult.Abandoned > 0 {
+			fmt.Printf(" (%d abandoned after auth circuit tripped)", sweepResult.Abandoned)
 		}
 		fmt.Println()
 	}
 
-	if failed > 0 {
+	if sweepResult.Failed > 0 || sweepResult.Tripped {
 		os.Exit(1)
 	}
 }
@@ -1685,6 +1730,19 @@ func handleSessionShow(profile string, args []string) {
 		}
 	}
 
+	// An auth hold explains a bare "error" that no restart can clear, and tells
+	// automation (conductors, watchdogs reading --json) to stop retrying.
+	authHold := inst.AuthHold()
+	if authHold != nil {
+		jsonData["auth_hold"] = map[string]interface{}{
+			"reason":        authHold.Reason,
+			"remedy":        authHold.Remedy(),
+			"evidence":      authHold.Evidence,
+			"boot_attempts": authHold.BootAttempts,
+			"ts":            authHold.Timestamp,
+		}
+	}
+
 	// Build human-readable output
 	var sb strings.Builder
 
@@ -1780,6 +1838,13 @@ func handleSessionShow(profile string, args []string) {
 	if spawnFailure != nil {
 		sb.WriteString("\n")
 		sb.WriteString(spawnFailure.FormatForDisplay())
+	}
+
+	// The auth block goes LAST so it is the final thing on screen: it is the only
+	// one of these diagnostics that names an action the user must take.
+	if authHold != nil {
+		sb.WriteString("\n")
+		sb.WriteString(authHold.FormatForDisplay())
 	}
 
 	out.Print(sb.String(), jsonData)

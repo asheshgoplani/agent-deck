@@ -15,13 +15,22 @@ type ReviveSummary struct {
 	Errored int
 	Alive   int
 	Dead    int
+	// AuthHeld counts errored sessions the sweep deliberately left alone because
+	// their agent cannot authenticate — a condition no revive can fix.
+	AuthHeld int
 }
 
 // Format returns the single-line summary. Stable keys — tests assert on
 // substring presence, so "revived=N errored=N alive=N dead=N" is a contract.
+// auth_held is appended (never inserted) so those assertions keep passing, and
+// only when non-zero so the common case reads exactly as before.
 func (s ReviveSummary) Format() string {
-	return fmt.Sprintf("revived=%d errored=%d alive=%d dead=%d",
+	line := fmt.Sprintf("revived=%d errored=%d alive=%d dead=%d",
 		s.Revived, s.Errored, s.Alive, s.Dead)
+	if s.AuthHeld > 0 {
+		line += fmt.Sprintf(" auth_held=%d", s.AuthHeld)
+	}
+	return line
 }
 
 // runReviveAll is the testable core: classify all instances, trigger revives,
@@ -50,6 +59,9 @@ func runReviveAll(instances []*session.Instance, rev *session.Reviver) (ReviveSu
 			summary.Dead++
 		case session.ClassErrored:
 			summary.Errored++
+			if o.AuthHeld {
+				summary.AuthHeld++
+			}
 			if o.Revived {
 				summary.Revived++
 				if inst := byID[o.InstanceID]; inst != nil {
@@ -150,11 +162,12 @@ func handleSessionRevive(profile string, args []string) {
 	}
 
 	jsonData := map[string]interface{}{
-		"success": true,
-		"revived": summary.Revived,
-		"errored": summary.Errored,
-		"alive":   summary.Alive,
-		"dead":    summary.Dead,
+		"success":   true,
+		"revived":   summary.Revived,
+		"errored":   summary.Errored,
+		"alive":     summary.Alive,
+		"dead":      summary.Dead,
+		"auth_held": summary.AuthHeld,
 	}
 	out.Success(summary.Format(), jsonData)
 }

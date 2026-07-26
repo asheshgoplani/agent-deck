@@ -17023,6 +17023,16 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	b.WriteString(statusBadge)
 	b.WriteString("\n")
 
+	// Auth hold banner. A session whose agent exited on a 401 shows a bare
+	// "error" status that no amount of restarting will clear, and during a
+	// fleet-wide credential failure that reads as unexplained mass death (the
+	// 2026-07-26 incident). Say what happened and what to do, right under the
+	// status, before anything else in the preview. Reads the in-memory mirror so
+	// the render path never touches the filesystem.
+	if selected.AuthHeldCached() {
+		b.WriteString(authHoldBannerLines(width))
+	}
+
 	// Info lines: path and activity time
 	infoStyle := lipgloss.NewStyle().Foreground(ColorText)
 	pathStr := truncatePath(selected.ProjectPath, width-4)

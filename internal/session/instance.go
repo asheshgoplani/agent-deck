@@ -455,6 +455,20 @@ type Instance struct {
 	// settled (running/idle) outcome or once the flip is confirmed. Not serialized.
 	tmuxFlipFromRunningPending bool
 
+	// Auth-hold state (see auth_hold.go). authFailureSeenAt is when a live
+	// credential-failure banner was last observed, used to attribute a LATER
+	// pane death to authentication within authHoldDeathWindow. authHeld mirrors
+	// the durable sidecar so the TUI render hot path (CachedSubstate, once per
+	// row per frame) never touches the filesystem. authHoldCheckedAt throttles
+	// the sidecar read on the death path. None are serialized — the sidecar is
+	// the cross-process source of truth and these re-derive from it.
+	// authHoldClearedOnce records that this process has already swept any stale
+	// sidecar for this session (see clearAuthHoldLocked).
+	authFailureSeenAt   time.Time
+	authHeld            bool
+	authHoldCheckedAt   time.Time
+	authHoldClearedOnce bool
+
 	// addedThisProcess is true only for instances built by a NewInstance*
 	// constructor in the current process (i.e. just `add`ed), and false for
 	// instances reloaded from storage (built as struct literals). Combined with
@@ -4212,6 +4226,10 @@ func (i *Instance) UpdateStatus() error {
 			i.Status = StatusIdle
 		} else if i.Status != StatusStopped {
 			i.Status = i.terminatedPaneStatus()
+			// Was this death a credential failure? If so the status stays error
+			// but the substate now says auth-401, and the automatic boot paths
+			// hold off (see auth_hold.go).
+			i.refreshAuthHoldOnDeathLocked()
 		}
 		return nil
 	}
@@ -4235,6 +4253,12 @@ func (i *Instance) UpdateStatus() error {
 			// applyTerminatedPaneStatus drops i.mu for the query and keeps the
 			// stopped-state guard on write.
 			i.applyTerminatedPaneStatus()
+			// Attribute the death to authentication when the pane's last live
+			// sample showed a credential banner: the fleet-death case, which no
+			// restart can fix (see auth_hold.go). Runs regardless of the
+			// exit-code verdict above — a 401 exit can be a clean exit(0), and it
+			// still must not be auto-restarted.
+			i.refreshAuthHoldOnDeathLocked()
 		}
 		i.lastErrorCheck = time.Now() // Record when we confirmed error/stopped
 		return nil
@@ -4382,6 +4406,11 @@ func (i *Instance) UpdateStatus() error {
 				}
 			}
 		}
+		// A healthy hook sample proves the credential works again, so release any
+		// auth hold. Needed here as well as on the tmux path: a recovered session
+		// reports through the hook fast path and returns before the tmux-derived
+		// reconciliation below would ever run.
+		i.releaseAuthHoldIfHealthyLocked()
 		return nil
 	}
 
@@ -4399,6 +4428,7 @@ func (i *Instance) UpdateStatus() error {
 			if i.tmuxSession != nil {
 				i.tmuxSession.ResetAcknowledged()
 			}
+			i.releaseAuthHoldIfHealthyLocked()
 			return nil
 		case "waiting":
 			if i.tmuxSession != nil && i.tmuxSession.IsAcknowledged() {
@@ -4406,6 +4436,7 @@ func (i *Instance) UpdateStatus() error {
 			} else {
 				i.Status = StatusWaiting
 			}
+			i.releaseAuthHoldIfHealthyLocked()
 			return nil
 		}
 	}
@@ -4486,6 +4517,11 @@ func (i *Instance) UpdateStatus() error {
 	default:
 		i.Status = StatusError
 	}
+
+	// Reconcile the auth hold with this sample. Runs after the status mapping so
+	// it sees the settled verdict, and before the debounce so a held session's
+	// substate is already correct when the debounce returns early.
+	i.reconcileAuthHoldLocked(status)
 
 	// Debounce a purely tmux-inferred flip away from running (see
 	// tmuxFlipFromRunningPending). A long single tool-call past the hook freshness
@@ -5376,10 +5412,17 @@ func (i *Instance) PreviewFull() (string, error) {
 	return content, nil
 }
 
-// spawnFailurePreview returns the formatted spawn-failure record for this
-// instance, or "" when there is none. Used as a preview fallback when the tmux
+// spawnFailurePreview returns the formatted diagnostic for a session whose pane
+// is gone, or "" when there is none. Used as a preview fallback when the tmux
 // pane no longer exists (#1580).
+//
+// The auth hold is checked FIRST: when a session died because it could not
+// authenticate, "run /login, then press R" is the only thing the user needs to
+// read, and it must not be buried under a generic spawn-failure block.
 func (i *Instance) spawnFailurePreview() string {
+	if hold := i.AuthHold(); hold != nil {
+		return hold.FormatForDisplay()
+	}
 	rec, err := readSpawnFailureRecord(i.ID)
 	if err != nil || rec == nil {
 		return ""
@@ -6462,6 +6505,12 @@ func (i *Instance) killInternal(sync bool) error {
 		}
 	}
 	i.Status = StatusStopped
+	// A deliberate stop releases any auth hold: the session's whole runtime state
+	// is being discarded, and the next start is by definition a user act — the
+	// same intent the hold is waiting for. Without this, a session that showed a
+	// 401 and was then stopped by hand would stay held, and the user's own
+	// `session restart` would be refused with only --force as a way through.
+	i.clearAuthHoldLocked()
 	i.mu.Unlock()
 	// #1580: supersede any in-flight fast-death watcher so a deliberate stop is
 	// never mistaken for a spawn failure.
@@ -7927,7 +7976,17 @@ func (i *Instance) GetTmuxSession() *tmux.Session {
 // when there is no tmux session, the pane is dead, or the tool has no substate
 // heuristics. This is an enrichment of Status, not a replacement — it never
 // changes the canonical status reported by GetStatus/UpdateStatus.
+// An auth hold overrides both accessors: a session whose agent EXITED on a
+// credential failure has no pane left to classify, so the tmux layer honestly
+// reports SubstateNone — which is exactly the blindness that made a fleet-wide
+// 401 look like anonymous mass death. The hold is the durable memory of the last
+// live verdict, so surfacing it here gives every reporting layer (TUI glyph, CLI
+// status --json, web, transition events) the auth-401 substate for a dead
+// session without any of them changing.
 func (i *Instance) Substate() Substate {
+	if held, _ := i.IsAuthHeld(); held {
+		return SubstateAuth401
+	}
 	tmuxSess := i.GetTmuxSession()
 	if tmuxSess == nil {
 		return SubstateNone
@@ -7938,7 +7997,12 @@ func (i *Instance) Substate() Substate {
 // CachedSubstate returns the last substate computed by a prior status check
 // WITHOUT capturing the pane. Use it on the TUI render hot path; the background
 // status loop keeps the value fresh.
+// Like Substate, an auth hold wins — read from the in-memory mirror so the
+// render path stays filesystem-free.
 func (i *Instance) CachedSubstate() Substate {
+	if i.AuthHeldCached() {
+		return SubstateAuth401
+	}
 	tmuxSess := i.GetTmuxSession()
 	if tmuxSess == nil {
 		return SubstateNone

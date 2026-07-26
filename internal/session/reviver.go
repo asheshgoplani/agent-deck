@@ -49,6 +49,10 @@ type ReviveOutcome struct {
 	// instance's revive this sweep because prior revives never stabilized
 	// (a wedged tmux server that only a manual restart recovers, #1579).
 	CircuitOpen bool
+	// AuthHeld is true when the revive was skipped because the session's agent
+	// cannot authenticate (see auth_hold.go). Distinct from CircuitOpen: this is
+	// not futility to back off from, it is a condition only a human can clear.
+	AuthHeld bool
 }
 
 // Reviver walks storage and re-establishes dead control pipes for instances
@@ -72,6 +76,10 @@ type Reviver struct {
 	// nil disables the breaker entirely — exact legacy behavior, relied on by
 	// unit tests that construct Reviver{} directly.
 	Breaker *ReviveBreaker
+	// AuthHeld reports whether an instance is held out of automatic recovery
+	// because its agent cannot authenticate (see auth_hold.go). nil disables the
+	// check — legacy behavior for unit tests that construct Reviver{} directly.
+	AuthHeld func(*Instance) (bool, string)
 }
 
 // NewReviver returns a Reviver wired to real tmux + PipeManager primitives.
@@ -89,7 +97,8 @@ func NewReviver() *Reviver {
 		// accumulate. The breaker must outlive the Reviver to detect a
 		// storm across sweeps. CLI one-shots run in a short-lived process,
 		// so their global breaker starts empty and always probes.
-		Breaker: globalReviveBreaker,
+		Breaker:  globalReviveBreaker,
+		AuthHeld: defaultBootAuthHeld,
 	}
 }
 
@@ -177,6 +186,24 @@ func (r *Reviver) reviveOneInternal(inst *Instance, firstRevive *bool) ReviveOut
 
 	if class != ClassErrored {
 		return out
+	}
+
+	// An auth-held session is not revivable by machine. Healing its status back
+	// to running (which is all defaultReviveAction can do for a session whose
+	// agent has exited) would ERASE the one honest signal the user needs — the
+	// auth-401 substate — and hand the fleet back a green light it has not
+	// earned. Skip, and leave the hold for a human to clear.
+	if r.AuthHeld != nil {
+		if held, remedy := r.AuthHeld(inst); held {
+			out.AuthHeld = true
+			if r.Log != nil {
+				r.Log.Warn("reviver_auth_held_skip",
+					slog.String("title", inst.Title),
+					slog.String("instance_id", inst.ID),
+					slog.String("remedy", remedy))
+			}
+			return out
+		}
 	}
 
 	// Circuit open and cooling down: skip the doomed reconnect. This is the

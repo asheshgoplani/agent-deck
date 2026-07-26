@@ -1033,6 +1033,15 @@ type Session struct {
 	// without changing the byte-stable canonical status string.
 	lastSubstate Substate
 
+	// lastSampleAuthFailure is the credential-failure verdict of the most recent
+	// sample that could READ the pane, and lastAuthFailureContent the snapshot
+	// backing it (see authfailure.go). Unlike lastSubstate neither is cleared
+	// when the pane dies: they are the only surviving evidence of WHY the process
+	// exited, and the death path — which runs when there is no pane left to read
+	// — is their only consumer.
+	lastSampleAuthFailure  bool
+	lastAuthFailureContent string
+
 	// hashFallbackOnce gates the one-time hash_fallback_used WARN landmark.
 	// See logging_additions.go and logging-review G8.
 	hashFallbackOnce sync.Once
@@ -3582,6 +3591,19 @@ func (s *Session) GetStatus() (string, error) {
 			// keeps lastSubstate fresh for the reporting layers.
 			s.lastSubstate = s.classifySubstate(content)
 
+			// Record whether THIS sample is specifically a credential failure.
+			// auth-401 as a substate also covers a dropped socket, which IS
+			// restart-recoverable; only a genuine credential failure justifies
+			// holding the session out of the automatic boot paths. Evaluated on
+			// every readable sample so the verdict always describes the latest
+			// state of the pane — a recovery clears it, and only the death
+			// itself (which classifies nothing) leaves it standing as the
+			// post-mortem evidence. See session/auth_hold.go.
+			s.noteSampleAuthFailureLocked(
+				s.lastSubstate == SubstateAuth401 && s.isAuthFailureIndicator(content),
+				content,
+			)
+
 			// Honest Status v2: a model-unavailable no-op loop ("X is currently
 			// unavailable" / "Crunched for 0s") is the Fable-down case that this
 			// feature exists to surface. It must short-circuit to "error" BEFORE
@@ -4586,6 +4608,18 @@ func (s *Session) hasErrorBannerIndicator(content string) bool {
 		s.cachedPromptDetectorTool = tool
 	}
 	return s.cachedPromptDetector.HasErrorBanner(content)
+}
+
+// isAuthFailureIndicator reports whether the pane content shows a CREDENTIAL
+// failure banner specifically (not merely any error banner). Tool is inferred
+// from the session's fields exactly as hasErrorBannerIndicator does, so the two
+// verdicts always agree on which tool's renderings are being read.
+func (s *Session) isAuthFailureIndicator(content string) bool {
+	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
+	if tool == "" {
+		return false
+	}
+	return IsAuthFailureContent(tool, content)
 }
 
 // classifySubstate computes the additive Honest-Status-v2 substate for the
