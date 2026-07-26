@@ -123,8 +123,16 @@ func writeAuthHoldRecord(rec AuthHoldRecord) error {
 	// 0o700: the directory listing alone leaks which sessions are failing to
 	// authenticate, and authHoldDir() falls back to a shared /tmp when the data
 	// dir cannot be resolved.
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create auth-hold dir: %w", err)
+	}
+	// MkdirAll does not narrow a dir that already exists, so an install upgraded
+	// from the 0o755 era would keep the world-listable directory. Narrow it on the
+	// next write. Lstat-gated so a symlink planted at the fallback path is never
+	// chmod'd through, and best-effort: a dir we do not own must not fail the write.
+	if fi, err := os.Lstat(dir); err == nil && fi.IsDir() && fi.Mode().Perm()&0o077 != 0 {
+		_ = os.Chmod(dir, 0o700)
 	}
 	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
@@ -294,7 +302,11 @@ func (i *Instance) noteAuthHoldLocked(reason, evidence string) {
 	now := time.Now()
 	i.authFailureSeenAt = now
 
-	if existing, err := readAuthHoldRecord(i.ID); err == nil && existing != nil && existing.Reason == reason {
+	existing, err := readAuthHoldRecord(i.ID)
+	if err != nil {
+		existing = nil
+	}
+	if existing != nil && existing.Reason == reason {
 		if observed := existing.ObservedAt(); !observed.IsZero() && now.Sub(observed) < authHoldObservationRefresh {
 			return
 		}
@@ -316,6 +328,13 @@ func (i *Instance) noteAuthHoldLocked(reason, evidence string) {
 		Reason:     reason,
 		Evidence:   evidence,
 		Timestamp:  now.Unix(),
+	}
+	if existing != nil {
+		// Carry the cumulative counter across a reason change (the live → death
+		// promotion). It is not merely diagnostic: AuthHoldSurvivedBoot gates
+		// self-heal, so zeroing it would re-advertise as machine-recoverable a
+		// session whose automatic boot already died on the same credential.
+		rec.BootAttempts = existing.BootAttempts
 	}
 	if err := writeAuthHoldRecord(rec); err != nil {
 		sessionLog.Warn("auth_hold_write_failed",

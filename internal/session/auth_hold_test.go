@@ -634,3 +634,58 @@ func TestAuthHoldRecord_CanExplainDeathAt(t *testing.T) {
 		})
 	}
 }
+
+// TestNoteAuthHold_PromotionPreservesBootAttempts asserts the live → death
+// promotion carries the cumulative boot counter. AuthHoldSurvivedBoot gates
+// self-heal on it, so resetting the counter would re-advertise as machine-
+// recoverable a session whose automatic boot already died on this credential.
+func TestNoteAuthHold_PromotionPreservesBootAttempts(t *testing.T) {
+	inst := newAuthHoldTestInstance(t, "auth-hold-promotion-counter")
+	inst.noteAuthHoldLocked(AuthHoldReasonLive, "API Error: 401")
+	inst.RecordAuthBootFailure()
+	inst.RecordAuthBootFailure()
+
+	inst.noteAuthHoldLocked(AuthHoldReasonDeath, "dying output")
+
+	rec := inst.AuthHold()
+	if rec == nil || rec.Reason != AuthHoldReasonDeath {
+		t.Fatalf("promotion must be recorded, got %+v", rec)
+	}
+	if rec.BootAttempts != 2 {
+		t.Fatalf("boot attempts must survive the promotion, got %d", rec.BootAttempts)
+	}
+	if rec.Evidence != "dying output" {
+		t.Fatalf("promotion must carry the new evidence, got %q", rec.Evidence)
+	}
+	if !inst.AuthHoldSurvivedBoot() {
+		t.Fatal("a promoted hold that already ate a boot must still report as survived")
+	}
+}
+
+// TestWriteAuthHoldRecord_NarrowsLegacyDirPerms asserts an install upgraded from
+// the 0o755 era gets its auth-hold directory narrowed on the next write —
+// MkdirAll alone never touches an existing directory.
+func TestWriteAuthHoldRecord_NarrowsLegacyDirPerms(t *testing.T) {
+	inst := newAuthHoldTestInstance(t, "auth-hold-legacy-dir")
+	dir := authHoldDir()
+	if dir == tempAgentDeckPath("runtime", "auth-hold") {
+		t.Skip("data dir resolution fell back to temp; the directory is not this call's to chmod")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("seed legacy dir mode: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	inst.noteAuthHoldLocked(AuthHoldReasonDeath, "API Error: 401")
+
+	di, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat auth-hold dir: %v", err)
+	}
+	if got := di.Mode().Perm(); got&0o077 != 0 {
+		t.Fatalf("legacy dir perm = %#o, want narrowed to no group/other bits", got)
+	}
+}
