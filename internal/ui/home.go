@@ -7312,6 +7312,13 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		// Get values including worktree settings.
 		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
+		// #1706: a relative entry must be anchored to this process's cwd here,
+		// before it reaches the directory-exists check, os.MkdirAll, the
+		// worktree/VCS probe or the instance itself — tmux would otherwise
+		// resolve it against the tmux server's cwd and put the session
+		// somewhere other than the folder we created. Runs after the remote
+		// branch above returns, so remote paths are never touched.
+		path = absLocalProjectPath(path)
 
 		// Remember the submitted tool so the next new-session dialog preselects
 		// it (UX top-3 #2). Best-effort: persisted in the profile StateDB, never
@@ -7387,9 +7394,15 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		multiRepoPaths, multiRepoEnabled := h.newDialog.GetMultiRepoPaths()
 		var additionalPaths []string
 		if multiRepoEnabled && len(multiRepoPaths) > 1 {
-			// First path stays as ProjectPath, rest are additional
-			path = multiRepoPaths[0]
-			additionalPaths = multiRepoPaths[1:]
+			// First path stays as ProjectPath, rest are additional.
+			// #1706: same anchoring as the single-path field above — a relative
+			// entry here would be stored as a declared path and could never
+			// match a hook-reported cwd (#1731).
+			path = absLocalProjectPath(multiRepoPaths[0])
+			additionalPaths = make([]string, 0, len(multiRepoPaths)-1)
+			for _, p := range multiRepoPaths[1:] {
+				additionalPaths = append(additionalPaths, absLocalProjectPath(p))
+			}
 		}
 
 		// Show immediate placeholder in UI while worktree + session is created async
