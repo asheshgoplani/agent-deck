@@ -1116,12 +1116,25 @@ type Session struct {
 
 type envCacheEntry struct {
 	value string
+	// found distinguishes a cached value from a cached miss. Issue #1728: the
+	// cache stored only successes, so every Claude-compatible session WITHOUT
+	// the variable in its tmux env forked `tmux show-environment` on every
+	// metadata sync — down to a 500ms cadence while the session ID is unbound,
+	// which is exactly the always-miss case. With ~60 sessions that was the
+	// larger half of a sustained 150-350% CPU subprocess storm.
+	found bool
 	time  time.Time
 }
 
 const (
-	envCacheTTL        = 30 * time.Second
-	startupStateWindow = 2 * time.Minute
+	envCacheTTL = 30 * time.Second
+	// envNegativeCacheTTL bounds how long a miss ("variable not set", dead
+	// session, probe timeout) is trusted. Shorter than envCacheTTL so a
+	// session that gains CLAUDE_SESSION_ID out-of-process is still noticed
+	// within seconds; in-process SetEnvironment invalidates the entry
+	// immediately, so the common bind path never waits this out.
+	envNegativeCacheTTL = 5 * time.Second
+	startupStateWindow  = 2 * time.Minute
 )
 
 func sanitizeSystemdUnitComponent(raw string) string {
@@ -1863,15 +1876,27 @@ func (s *Session) ApplyThemeOptions() error {
 }
 
 // GetEnvironment gets an environment variable from this tmux session.
-// Uses a 30-second cache to avoid spawning tmux show-environment subprocesses
-// on every poll cycle. Call InvalidateEnvCache() after SetEnvironment to clear.
+// Uses a cache (30s for hits, 5s for misses — issue #1728) to avoid spawning
+// tmux show-environment subprocesses on every poll cycle. Call
+// InvalidateEnvCache() after SetEnvironment to clear.
 func (s *Session) GetEnvironment(key string) (string, error) {
-	// Check cache first
+	// Check cache first. Misses are cached too: an absent variable is the
+	// steady state for every session whose ID never binds via tmux env, and
+	// un-cached misses re-fork show-environment on every status pass (#1728).
 	s.envCacheMu.RLock()
 	if s.envCache != nil {
-		if entry, ok := s.envCache[key]; ok && time.Since(entry.time) < envCacheTTL {
-			s.envCacheMu.RUnlock()
-			return entry.value, nil
+		if entry, ok := s.envCache[key]; ok {
+			ttl := envCacheTTL
+			if !entry.found {
+				ttl = envNegativeCacheTTL
+			}
+			if time.Since(entry.time) < ttl {
+				s.envCacheMu.RUnlock()
+				if !entry.found {
+					return "", fmt.Errorf("variable not found: %s", key)
+				}
+				return entry.value, nil
+			}
 		}
 	}
 	s.envCacheMu.RUnlock()
@@ -1881,6 +1906,7 @@ func (s *Session) GetEnvironment(key string) (string, error) {
 	cmd := s.tmuxCmdContext(ctx, "show-environment", "-t", s.Name, key)
 	output, err := cmd.Output()
 	if err != nil {
+		s.storeEnvCacheEntry(key, envCacheEntry{time: time.Now()})
 		return "", fmt.Errorf("variable not found or session doesn't exist: %s", key)
 	}
 	// Output format: "KEY=value\n"
@@ -1888,16 +1914,20 @@ func (s *Session) GetEnvironment(key string) (string, error) {
 	prefix := key + "="
 	if strings.HasPrefix(line, prefix) {
 		value := strings.TrimPrefix(line, prefix)
-		// Store in cache
-		s.envCacheMu.Lock()
-		if s.envCache == nil {
-			s.envCache = make(map[string]envCacheEntry)
-		}
-		s.envCache[key] = envCacheEntry{value: value, time: time.Now()}
-		s.envCacheMu.Unlock()
+		s.storeEnvCacheEntry(key, envCacheEntry{value: value, found: true, time: time.Now()})
 		return value, nil
 	}
+	s.storeEnvCacheEntry(key, envCacheEntry{time: time.Now()})
 	return "", fmt.Errorf("variable not found: %s", key)
+}
+
+func (s *Session) storeEnvCacheEntry(key string, entry envCacheEntry) {
+	s.envCacheMu.Lock()
+	if s.envCache == nil {
+		s.envCache = make(map[string]envCacheEntry)
+	}
+	s.envCache[key] = entry
+	s.envCacheMu.Unlock()
 }
 
 // InvalidateEnvCache clears the environment variable cache for this session.
