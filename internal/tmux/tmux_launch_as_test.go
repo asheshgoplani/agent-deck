@@ -32,6 +32,7 @@ func TestStartCommandSpec_LaunchAs_Service_UsesServiceForm(t *testing.T) {
 		WorkDir:  "/tmp/project",
 		LaunchAs: "service",
 	}
+	pinInitialWindowSize(t, 173, 41, true) // #1694 birth size
 
 	launcher, args := s.startCommandSpec("/tmp/project", "")
 	require.Equal(t, "systemd-run", launcher, "service mode must spawn via systemd-run")
@@ -56,7 +57,8 @@ func TestStartCommandSpec_LaunchAs_Service_UsesServiceForm(t *testing.T) {
 	// The tmux args shape after the systemd-run prefix must match the scope
 	// form's tmux args shape exactly. We use stripSystemdRunPrefix to verify.
 	tmuxArgs := stripSystemdRunPrefix(args)
-	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-service_1234abcd", "-c", "/tmp/project"}, tmuxArgs)
+	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-service_1234abcd", "-c", "/tmp/project",
+		"-x", "173", "-y", "41"}, tmuxArgs)
 }
 
 // TestStartCommandSpec_LaunchAs_Scope_UsesScopeForm explicitly pins the
@@ -95,10 +97,12 @@ func TestStartCommandSpec_LaunchAs_Direct_UsesDirectTmux(t *testing.T) {
 		LaunchAs:          "direct",
 		LaunchInUserScope: true, // explicit override must WIN
 	}
+	pinInitialWindowSize(t, 173, 41, true) // #1694 birth size
 
 	launcher, args := s.startCommandSpec("/tmp/project", "")
 	assert.Equal(t, "tmux", launcher, "LaunchAs=direct must override LaunchInUserScope=true")
-	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-direct_1234abcd", "-c", "/tmp/project"}, args)
+	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-direct_1234abcd", "-c", "/tmp/project",
+		"-x", "173", "-y", "41"}, args)
 }
 
 // TestStartCommandSpec_LaunchAs_Empty_RespectsLegacyLaunchInUserScope

@@ -1269,7 +1269,16 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	// which DO carry -L — would probe the isolated server and find
 	// nothing. Empty SocketName preserves pre-v1.7.50 behavior exactly
 	// (buildInnerTmuxArgs returns the args unchanged).
-	tmuxArgs := buildInnerTmuxArgs(s.SocketName, "new-session", "-d", "-s", s.Name, "-c", workDir)
+	//
+	// #1694: -x/-y birth the window at the terminal agent-deck runs on
+	// (generous fallback when there is no TTY) so the tool's FIRST paint is
+	// already full-width. Without them tmux uses its 80x24 default and a TUI
+	// that fixes its layout on frame one stays clipped forever — see
+	// InitialWindowSize. Appended AFTER -c so the argv prefix that callers and
+	// fallback helpers key on is unchanged.
+	cols, rows := InitialWindowSize()
+	tmuxArgs := buildInnerTmuxArgs(s.SocketName, "new-session", "-d", "-s", s.Name, "-c", workDir,
+		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
 	if startWithInitialProcess {
 		// Deliver the pane command as SEPARATE argv tokens (bash, -c, command)
 		// rather than a single shell-quoted string. This is the crux of the

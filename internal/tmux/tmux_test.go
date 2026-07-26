@@ -3008,9 +3008,13 @@ func TestStartCommandSpec_Default(t *testing.T) {
 		WorkDir: "/tmp/project",
 	}
 
+	// #1694: -x/-y are part of the argv contract now.
+	pinInitialWindowSize(t, 173, 41, true)
+
 	launcher, args := s.startCommandSpec("/tmp/project", "")
 	assert.Equal(t, "tmux", launcher)
-	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project"}, args)
+	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project",
+		"-x", "173", "-y", "41"}, args)
 }
 
 func TestStartCommandSpec_UserScope(t *testing.T) {
@@ -3020,12 +3024,15 @@ func TestStartCommandSpec_UserScope(t *testing.T) {
 		LaunchInUserScope: true,
 	}
 
+	pinInitialWindowSize(t, 173, 41, true)
+
 	launcher, args := s.startCommandSpec("/tmp/project", "")
 	require.Equal(t, "systemd-run", launcher)
 	require.GreaterOrEqual(t, len(args), 8)
 	assert.Equal(t, []string{"--user", "--scope", "--quiet", "--collect", "--unit"}, args[:5])
 	assert.Equal(t, "agentdeck-tmux-agentdeck-test-session-1234abcd", args[5])
-	assert.Equal(t, []string{"tmux", "new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project"}, args[6:])
+	assert.Equal(t, []string{"tmux", "new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project",
+		"-x", "173", "-y", "41"}, args[6:])
 }
 
 // TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent is the
@@ -3080,10 +3087,11 @@ func TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent(t *testing
 			require.Equal(t, "tmux", launcher)
 			// #1567/#1580: the command is delivered as SEPARATE argv tokens
 			// (bash, -c, COMMAND) so tmux execvp()s bash directly instead of
-			// wrapping the string through the server default-shell. That is 9
-			// args total: new-session -d -s NAME -c DIR bash -c COMMAND.
-			require.Equal(t, 9, len(args),
-				"expected 9 args (new-session -d -s NAME -c DIR bash -c COMMAND)")
+			// wrapping the string through the server default-shell. With the
+			// #1694 birth size that is 13 args total:
+			// new-session -d -s NAME -c DIR -x COLS -y ROWS bash -c COMMAND.
+			require.Equal(t, 13, len(args),
+				"expected 13 args (new-session -d -s NAME -c DIR -x COLS -y ROWS bash -c COMMAND)")
 
 			require.Equal(t, "bash", args[len(args)-3],
 				"command must be exec'd under bash for fish/zsh/bash compatibility")

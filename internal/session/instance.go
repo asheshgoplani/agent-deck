@@ -8740,10 +8740,17 @@ func (i *Instance) OpenContainerShell() (string, error) {
 	// Omit -w flag: the container's workdir was set during create (respects worktree path).
 	// Pass the docker exec command as discrete tmux args to avoid shell interpolation of
 	// the container name (defence-in-depth against state file tampering).
+	//
+	// #1694: -x/-y are mandatory on every detached new-session — without them
+	// the pane is born at tmux's 80x24 default and the shell (plus anything the
+	// user runs in it) paints its first frames clipped. See
+	// tmux.InitialWindowSize.
+	cols, rows := tmux.InitialWindowSize()
 	newCtx, newCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer newCancel()
 	out, err := tmux.ExecContext(newCtx, i.TmuxSocketName,
 		"new-session", "-d", "-s", tmuxName,
+		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows),
 		"docker", "exec", "-it", i.SandboxContainer, "/bin/sh",
 	).CombinedOutput()
 	if err != nil {
