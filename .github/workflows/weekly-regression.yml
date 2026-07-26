@@ -138,11 +138,11 @@ jobs:
         continue-on-error: true
         working-directory: tests/e2e
         run: |
-          npx playwright test --config=pw-visual-regression.config.ts --reporter=json 2>&1 | tee /tmp/visual-results.json || true
-          # Re-run to capture exit code properly (tee swallows it)
-          npx playwright test --config=pw-visual-regression.config.ts --reporter=list > /dev/null 2>&1
+          npx playwright test --config=pw-visual-regression.config.ts --reporter=json
         env:
           PLAYWRIGHT_BASE_URL: http://127.0.0.1:18420/?token=test
+          PLAYWRIGHT_JSON_OUTPUT_DIR: /tmp
+          PLAYWRIGHT_JSON_OUTPUT_NAME: visual-results.json
 
       - name: Regenerate visual baselines
         # Baseline-regeneration mode (workflow_dispatch + update_baselines).
