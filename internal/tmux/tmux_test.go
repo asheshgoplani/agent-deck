@@ -559,29 +559,71 @@ func TestDetectTool(t *testing.T) {
 	}
 }
 
-func TestDetectToolPrefersPaneCommandOverConversationContent(t *testing.T) {
-	sess := NewSession("tool-detection-precedence", "/tmp")
-	sess.Command = "shell"
-	sess.cacheContent = "A Gemini API key can be used for image generation."
-	sess.cacheTime = time.Now()
+// seedPaneCommand installs a fresh pane-info cache entry reporting cmd as the
+// session's tmux foreground command, restoring the previous cache on cleanup.
+func seedPaneCommand(t *testing.T, sessionName, cmd string) {
+	t.Helper()
 
 	paneCacheMu.Lock()
 	previousData := paneCacheData
 	previousTime := paneCacheTime
 	paneCacheData = map[string]PaneInfo{
-		sess.Name: {CurrentCommand: "claude"},
+		sessionName: {CurrentCommand: cmd},
 	}
 	paneCacheTime = time.Now()
 	paneCacheMu.Unlock()
+
 	t.Cleanup(func() {
 		paneCacheMu.Lock()
 		paneCacheData = previousData
 		paneCacheTime = previousTime
 		paneCacheMu.Unlock()
 	})
+}
+
+func TestDetectToolPrefersPaneCommandOverConversationContent(t *testing.T) {
+	sess := NewSession("tool-detection-precedence", "/tmp")
+	sess.Command = "shell"
+	sess.cacheContent = "A Gemini API key can be used for image generation."
+	sess.cacheTime = time.Now()
+
+	seedPaneCommand(t, sess.Name, "claude")
 
 	if got := sess.DetectTool(); got != "claude" {
 		t.Fatalf("DetectTool() = %q, want %q when pane command identifies the running tool", got, "claude")
+	}
+}
+
+// A recognized runtime must survive detection-cache expiry: tmux reports the
+// child process Claude spawned for a tool call as the foreground command, so a
+// single `codex` sample must not relabel the session.
+func TestDetectToolKeepsRecognizedRuntimeWhenPaneCommandIsChildTool(t *testing.T) {
+	sess := NewSession("tool-detection-child-command", "/tmp")
+	sess.Command = "shell"
+	sess.detectedTool = "claude"
+	sess.toolDetectedAt = time.Now().Add(-time.Hour) // detection cache expired
+
+	seedPaneCommand(t, sess.Name, "codex")
+
+	if got := sess.DetectTool(); got != "claude" {
+		t.Fatalf("DetectTool() = %q, want %q when a recognized runtime runs another tool as a child", got, "claude")
+	}
+}
+
+// Same guard for the content fallback: an unrecognized foreground command must
+// not open the door for conversation text to relabel a recognized runtime.
+func TestDetectToolKeepsRecognizedRuntimeWhenContentMentionsOtherTool(t *testing.T) {
+	sess := NewSession("tool-detection-child-shell", "/tmp")
+	sess.Command = "shell"
+	sess.detectedTool = "claude"
+	sess.toolDetectedAt = time.Now().Add(-time.Hour) // detection cache expired
+	sess.cacheContent = "A Gemini API key can be used for image generation."
+	sess.cacheTime = time.Now()
+
+	seedPaneCommand(t, sess.Name, "bash")
+
+	if got := sess.DetectTool(); got != "claude" {
+		t.Fatalf("DetectTool() = %q, want %q when pane content merely mentions another tool", got, "claude")
 	}
 }
 

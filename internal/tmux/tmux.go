@@ -3159,6 +3159,24 @@ func (s *Session) DetectTool() string {
 		return tool
 	}
 
+	// Everything below is a promotion-only signal. tmux reports the pane's
+	// foreground process, which is frequently a child the agent spawned for a
+	// tool call (see AnalyzePaneTitle), and pane content routinely names other
+	// tools in ordinary conversation. Neither signal can tell "a different
+	// runtime is in charge now" apart from "the same runtime is running a
+	// subprocess", so they may only give a runtime identity to a session that
+	// has none yet ("" or "shell"). They never replace one that was already
+	// recognized. Cross-runtime switching needs a durable process-root identity
+	// rather than a single foreground sample (#1718). ForceDetectTool clears the
+	// previous detection, so an explicit re-detect still runs the full sequence.
+	s.mu.Lock()
+	if previous := s.detectedTool; previous != "" && previous != "shell" {
+		s.toolDetectedAt = time.Now()
+		s.mu.Unlock()
+		return previous
+	}
+	s.mu.Unlock()
+
 	// A session created as "shell" can later launch a supported tool. Prefer the
 	// pane's current command over terminal content so conversation text that
 	// mentions another tool cannot rewrite the running tool's identity.
