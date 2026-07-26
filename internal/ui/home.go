@@ -6235,6 +6235,14 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			attachedSessionID: msg.fromSessionID,
 			attachedWorkDir:   msg.attachedWorkDir,
 		})
+		// Deliberate consequence of the #1753 split: openSessionSwitcher reads the
+		// dim pane-title subtitles out of the render snapshot, which syncCmd now
+		// republishes a few ms AFTER this point instead of just before it. The
+		// picker therefore opens with subtitles from the last background sweep (at
+		// most one sweep interval old) rather than freshly captured ones. That is
+		// the trade the issue asks for: the picker appears at once instead of after
+		// an O(fleet) tmux stall, and the stale value is a secondary hint, never a
+		// status.
 		h.openSessionSwitcher(msg.fromSessionID, true)
 		return h, tea.Batch(
 			tea.EnableMouseCellMotion,
