@@ -461,6 +461,13 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 			d.pathInput.SetValue(cwd)
 		}
 	}
+	// #1702: the dialog is a reused singleton, so pathInput still carries the
+	// previous open's cursor. bubbles' SetValue only snaps the cursor to the end
+	// when the old value was empty or the old cursor sat past the new value's
+	// end, so a reopen on a longer path left the cursor stale mid-string and
+	// scrolled the path tail out of view. Park it at the end explicitly, as
+	// every other pathInput prefill in this file does.
+	d.pathInput.CursorEnd()
 	d.pathSoftSelected = true // activate soft-select for pre-filled path.
 	// Initialize tool options from global config.
 	d.geminiOptions.SetDefaults(false)

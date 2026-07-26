@@ -1018,6 +1018,80 @@ func TestNewDialog_ShowInGroup_EmptyDefaultPath(t *testing.T) {
 	}
 }
 
+// TestNewDialog_ShowInGroup_MovesCursorToEndOfPrefilledPath is the #1702
+// regression test.
+//
+// The dialog is a reused singleton, so on every open but the first pathInput
+// still holds the previous open's value AND its cursor position. bubbles'
+// textinput.setValueInternal only snaps the cursor to the end when the OLD
+// value was empty or the old cursor sat past the new value's end
+// (`(pos == 0 && empty) || pos > len(value)`). Reopening on a path longer than
+// the old cursor position therefore left the cursor stale mid-string, and
+// handleOverflow scrolled the view around it — hiding the path tail until the
+// user pressed Ctrl+K or jumped to the end by hand.
+func TestNewDialog_ShowInGroup_MovesCursorToEndOfPrefilledPath(t *testing.T) {
+	// firstPath is deliberately short so the carried-over cursor lands inside
+	// reopenPath, which is the condition bubbles does not correct for us.
+	const firstPath = "/tmp/b"
+
+	tests := []struct {
+		name       string
+		reopenPath string
+	}{
+		{"deeper local path", "/Users/dev/work/deep/nested/project-alpha"},
+		{"remote session path", "/srv/remote/host/checkouts/agent-deck"},
+		{"non-ascii path", "/Users/dev/projekte/größer/ünïcode-checkout"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dialog := NewNewDialog()
+
+			dialog.ShowInGroup("projects", "Projects", firstPath, nil, "")
+			// Normal editing state after the first open: cursor at the end of
+			// the current value.
+			dialog.pathInput.SetCursor(len(firstPath))
+			if got, want := dialog.pathInput.Position(), len(firstPath); got != want {
+				t.Fatalf("setup: cursor should start at end of %q, got %d want %d", firstPath, got, want)
+			}
+			dialog.Hide()
+
+			// Reopen the reused dialog on a longer path.
+			dialog.ShowInGroup("projects", "Projects", tt.reopenPath, nil, "")
+
+			if got := dialog.pathInput.Value(); got != tt.reopenPath {
+				t.Fatalf("pathInput value = %q, want %q", got, tt.reopenPath)
+			}
+			// Cursor position is measured in runes by bubbles.
+			if got, want := dialog.pathInput.Position(), len([]rune(tt.reopenPath)); got != want {
+				t.Errorf("cursor should sit at the end of the pre-filled path so the tail stays visible: got %d, want %d (value %q)", got, want, tt.reopenPath)
+			}
+		})
+	}
+}
+
+// TestNewDialog_ShowInGroup_MovesCursorToEndOfCwdFallback covers the other
+// prefill branch of ShowInGroup (#1702): the cwd fallback taken when the group
+// has no default path.
+func TestNewDialog_ShowInGroup_MovesCursorToEndOfCwdFallback(t *testing.T) {
+	dialog := NewNewDialog()
+
+	const firstPath = "/a"
+	dialog.ShowInGroup("projects", "Projects", firstPath, nil, "")
+	dialog.pathInput.SetCursor(len(firstPath))
+	dialog.Hide()
+
+	dialog.ShowInGroup("projects", "Projects", "", nil, "")
+
+	value := dialog.pathInput.Value()
+	if len(value) <= len(firstPath) {
+		t.Skipf("cwd %q is not longer than %q, so the stale cursor cannot be observed", value, firstPath)
+	}
+	if got, want := dialog.pathInput.Position(), len([]rune(value)); got != want {
+		t.Errorf("cursor should sit at the end of the cwd fallback path: got %d, want %d (value %q)", got, want, value)
+	}
+}
+
 func TestNewDialog_BranchInputInitialized(t *testing.T) {
 	dialog := NewNewDialog()
 
