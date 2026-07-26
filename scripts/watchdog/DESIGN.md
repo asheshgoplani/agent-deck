@@ -72,7 +72,29 @@ A session is excluded if `status` == `"stopped"` (user deliberately stopped it).
 
 Call `agent-deck session restart <id>` — this preserves ClaudeSessionID via `respawn-pane -k`, env_file, config_dir, channels. Exactly what conductors need. No new restart logic in the watchdog; we reuse the battle-tested path.
 
+When agent-deck answers that call with `skipped: true`, a guard inside agent-deck declined on purpose (an auth hold, or the freshness guard from #30). The watchdog stops there: it does **not** escalate to `session start`, which would defeat the guard that just fired.
+
 ## Guardrails
+
+### Liveness confirmation immediately before the restart (#1705)
+
+A restart tears a live pane down, so the decision to fire one must be about the session **now** — not about whenever the triggering sample was taken. Two ways the authorizing `status == error` reading goes wrong:
+
+- **Stale.** Restarts are globally serialized (`MIN_GLOBAL_RESTART_INTERVAL_S`) and a cascade revives serially, so a queued decision can execute minutes after its sample. The session may have recovered in between.
+- **False.** `error` is partly derived from pane *content*, so a banner-shaped line sitting in scrollback keeps the verdict standing while the agent works on happily. Re-reading the status cannot see this: the content does not move, so every read agrees.
+
+So, as the last step inside `_do_restart` (after the serialization wait, not before it), the watchdog re-reads the status and samples the pane twice `LIVENESS_CONFIRM_GAP_S` apart via `session output --pane`. It skips the restart when:
+
+| Reason | Why |
+|---|---|
+| `recovered_before_restart` | the status is no longer `error` — the stale case |
+| `pane_active` | the pane is still producing output; an agent emitting output is not dead |
+| `status_unreadable` | we cannot see the session, so we cannot claim it is dead |
+| `auth_hold` | a restart cannot fix a credential, and each doomed boot races the shared rotating refresh token |
+
+A skip returns the rate-limit slot the caller reserved (a restart that never happened is not an attempt), so a live session the watchdog declined to touch cannot escalate as "keeps crashing". `LIVENESS_SKIP_ESCALATE_AFTER` consecutive `pane_active` skips escalate as `liveness-mismatch` — that is a status-classification problem to investigate, not a dead session.
+
+Every decision, skip or restart, is appended to `~/.agent-deck/watchdog/liveness.log`: both status reads with timestamps and substates, both pane digests, whether the pane moved, the auth-hold reason, and the verdict. Digests, never pane text — the log is meant to be readable and pasteable into a bug report.
 
 ### Per-session rate limit
 
@@ -129,6 +151,8 @@ No external store — state lives in-memory, resets on daemon restart. Acceptabl
 - `~/.agent-deck/watchdog/watchdog.py` — the daemon
 - `~/.agent-deck/watchdog/escalate.sh` — escalation stub (template)
 - `~/.agent-deck/watchdog/escalations.log` — written by daemon
+- `~/.agent-deck/watchdog/restart.log` — one record per restart, skip or refusal
+- `~/.agent-deck/watchdog/liveness.log` — one record per liveness decision, with the readings behind it (#1705)
 - `~/.agent-deck/watchdog/autorestart/<id>` — marker files for explicit opt-in (dir created by daemon)
 - `~/.config/systemd/user/agent-deck-watchdog.service` — user-level systemd unit (disabled until user approves)
 

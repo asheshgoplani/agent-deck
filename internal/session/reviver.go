@@ -118,13 +118,55 @@ func NewReviver() *Reviver {
 // is fixed via Storage.PersistRevivedInstances.
 func (r *Reviver) Classify(inst *Instance) RevivalClass {
 	name := instanceTmuxName(inst)
-	if !r.TmuxExists(name, inst.TmuxSocketName) {
-		return ClassDead
+	tmuxAlive := r.TmuxExists(name, inst.TmuxSocketName)
+	// Read the pipe whenever the server is up, even when the stored status alone
+	// already settles the verdict: the READING is the evidence #1705 asked for, and
+	// a log line that omits it cannot answer "was the session actually dead?" after
+	// the fact. IsConnected is an in-memory map lookup, so this costs nothing.
+	pipeAlive := false
+	if tmuxAlive && r.PipeAlive != nil {
+		pipeAlive = r.PipeAlive(name)
 	}
-	if inst.Status == StatusError || !r.PipeAlive(name) {
-		return ClassErrored
+
+	class := ClassAlive
+	switch {
+	case !tmuxAlive:
+		class = ClassDead
+	case inst.Status == StatusError || !pipeAlive:
+		class = ClassErrored
 	}
-	return ClassAlive
+	r.logClassify(inst, name, tmuxAlive, pipeAlive, class)
+	return class
+}
+
+// logClassify records the readings behind a classification, not just its outcome.
+//
+// Issue #1705 was a live conductor restarted as if it were dead, and the
+// investigation stalled because only the OUTCOME was recoverable afterwards — the
+// readings that produced it were never written down anywhere an operator could
+// retrieve. So every non-alive verdict states its evidence: tmux liveness, the
+// control-pipe reading, the stored status it was judged against, and when. Alive
+// verdicts stay at debug level; they are the overwhelming majority and carry no
+// diagnostic value.
+func (r *Reviver) logClassify(inst *Instance, name string, tmuxAlive, pipeAlive bool, class RevivalClass) {
+	if r.Log == nil {
+		return
+	}
+	attrs := []any{
+		slog.String("title", inst.Title),
+		slog.String("instance_id", inst.ID),
+		slog.String("tmux_session", name),
+		slog.Bool("tmux_alive", tmuxAlive),
+		slog.Bool("pipe_alive", pipeAlive),
+		slog.String("stored_status", string(inst.Status)),
+		slog.String("class", class.String()),
+		slog.Time("sampled_at", time.Now()),
+	}
+	if class == ClassAlive {
+		r.Log.Debug("reviver_classify", attrs...)
+		return
+	}
+	r.Log.Info("reviver_classify", attrs...)
 }
 
 // ReviveAll walks instances, classifies each, and triggers ReviveAction for
