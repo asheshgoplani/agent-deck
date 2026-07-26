@@ -63,16 +63,25 @@ func TestAssertIsolatedTmuxTmpdir_AcceptsPrivateDirs(t *testing.T) {
 	}
 }
 
-// TestIsolateTmuxSocketSetsAPrivateDir is the end-to-end of the same
-// invariant: whatever the helper actually chooses on this host must satisfy it.
-func TestIsolateTmuxSocketSetsAPrivateDir(t *testing.T) {
+// TestIsolateTmuxSocketChoosesAPrivateDir is the end-to-end of the same
+// invariant: whatever dir the helper actually picks on THIS host — where
+// $TMPDIR, /tmp writability and the MkdirTemp fallback all have a say — must
+// satisfy it. The check runs against the value the helper chose, not against a
+// literal.
+func TestIsolateTmuxSocketChoosesAPrivateDir(t *testing.T) {
+	orig, had := os.LookupEnv("TMUX_TMPDIR")
+	defer restore("TMUX_TMPDIR", orig, had)
+
+	cleanup := IsolateTmuxSocket()
 	dir := os.Getenv("TMUX_TMPDIR")
+	cleanup()
+
 	if dir == "" {
-		t.Fatal("package TestMain did not call IsolateTmuxSocket")
+		t.Fatal("IsolateTmuxSocket did not set TMUX_TMPDIR")
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			t.Fatalf("the TMUX_TMPDIR this package is running under (%q) is not private: %v", dir, r)
+			t.Fatalf("IsolateTmuxSocket chose TMUX_TMPDIR=%q on this host, which is not private: %v", dir, r)
 		}
 	}()
 	assertIsolatedTmuxTmpdir(dir)
