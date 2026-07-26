@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -32,7 +34,12 @@ func TestIssue1706_SubmitAnchorsRelativePathToAbsolute(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 
-	const relPath = "issue1706-relative-target-does-not-exist"
+	// Relative on purpose (that is the bug), but unique so the test can never
+	// collide with a directory that happens to exist in the package dir.
+	relPath := fmt.Sprintf("issue1706-relative-target-%d", time.Now().UnixNano())
+	if _, err := os.Stat(relPath); !os.IsNotExist(err) {
+		t.Fatalf("test precondition: %q must not exist (stat err = %v)", relPath, err)
+	}
 	want := filepath.Join(cwd, relPath)
 
 	h := NewHome()
@@ -96,8 +103,15 @@ func TestIssue1706_AbsLocalProjectPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := absLocalProjectPath(tt.input); got != tt.want {
+			got, err := absLocalProjectPath(tt.input)
+			if err != nil {
+				t.Fatalf("absLocalProjectPath(%q) returned error: %v", tt.input, err)
+			}
+			if got != tt.want {
 				t.Fatalf("absLocalProjectPath(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+			if tt.want != "" && !filepath.IsAbs(got) {
+				t.Fatalf("absLocalProjectPath(%q) = %q, which is not absolute", tt.input, got)
 			}
 		})
 	}

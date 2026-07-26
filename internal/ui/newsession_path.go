@@ -1,6 +1,9 @@
 package ui
 
-import "path/filepath"
+import (
+	"fmt"
+	"path/filepath"
+)
 
 // absLocalProjectPath resolves a user-entered LOCAL project path to an
 // absolute, cleaned path.
@@ -28,16 +31,22 @@ import "path/filepath"
 // resolveProjectPathArg); this brings the TUI in line. Remote paths must NEVER
 // pass through this function — they belong to the remote host's filesystem and
 // travel via NewDialog.GetRemoteValues instead.
-func absLocalProjectPath(path string) string {
+//
+// An empty path is returned unchanged: multi-repo mode legitimately submits an
+// empty single-path field, and the emptiness check belongs to Validate.
+// Otherwise the returned path is guaranteed absolute, or an error is returned
+// and the caller must refuse the submission — falling back to the relative
+// string would reintroduce exactly the split-directory bug above.
+func absLocalProjectPath(path string) (string, error) {
 	if path == "" {
-		return path
+		return path, nil
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		// filepath.Abs only fails when the process cwd is unavailable. Keep the
-		// user's input (cleaned) rather than dropping it; the create flow will
-		// surface a normal filesystem error.
-		return filepath.Clean(path)
+		// filepath.Abs only fails when the process cwd is unavailable (e.g. the
+		// directory agent-deck was started in has been deleted), so there is no
+		// anchor to resolve a relative path against.
+		return "", fmt.Errorf("resolve %q: %w", path, err)
 	}
-	return abs
+	return abs, nil
 }
