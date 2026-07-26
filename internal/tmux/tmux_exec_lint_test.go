@@ -91,6 +91,18 @@ func TestNoRawTmuxExec_OutsideAllowlist(t *testing.T) {
 		"cmd/agent-deck/cli_utils.go": {
 			{"tmux", "<expr>"},
 		},
+
+		// testutil's socket-dir teardown kills servers by ABSOLUTE `-S <path>`,
+		// which is the one thing the factory cannot express (it emits
+		// `-L <name>`, resolved against $TMUX_TMPDIR). Resolving by name is
+		// exactly the failure this call exists to prevent: a teardown whose env
+		// has drifted from the spawn's kills nothing and reports success, which
+		// is how ~50 servers survived their tests and drained the host's pty
+		// pool on 2026-07-18. Same justification class as the -S harnesses in
+		// allowedBypassFiles above.
+		"internal/testutil/tmuxenv.go": {
+			{"tmux", "-S"},
+		},
 	}
 
 	violations := scanForRawTmuxExec(t, root)
