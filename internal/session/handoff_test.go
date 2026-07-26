@@ -54,6 +54,40 @@ func TestBuildClaudeToCodexHandoffPrompt_ReadsClaudeTranscript(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeToCodexHandoffPrompt_FindsDifferentlyEncodedTranscript(t *testing.T) {
+	claudeDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+
+	project := "/home/user/proj"
+	sessionID := "eeeeeeee-ffff-0000-1111-222222222222"
+	transcriptDir := filepath.Join(claudeDir, "projects", "--wsl-localhost-Ubuntu-home-user-proj")
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcriptPath := filepath.Join(transcriptDir, sessionID+".jsonl")
+	transcript := `{"type":"user","message":{"role":"user","content":"WSL fallback found me"}}`
+	if err := os.WriteFile(transcriptPath, []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := &Instance{
+		Title:           "wsl-handoff",
+		ProjectPath:     project,
+		Tool:            "claude",
+		ClaudeSessionID: sessionID,
+	}
+	prompt, info, err := BuildClaudeToCodexHandoffPrompt(inst, DefaultHandoffMaxChars)
+	if err != nil {
+		t.Fatalf("BuildClaudeToCodexHandoffPrompt: %v", err)
+	}
+	if info.TranscriptPath != transcriptPath {
+		t.Fatalf("TranscriptPath = %q, want UUID-glob match %q", info.TranscriptPath, transcriptPath)
+	}
+	if !strings.Contains(prompt, "WSL fallback found me") {
+		t.Fatalf("prompt missing differently encoded transcript content:\n%s", prompt)
+	}
+}
+
 func TestBuildClaudeToCodexHandoffPrompt_TruncatesToTail(t *testing.T) {
 	claudeDir := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
