@@ -2055,6 +2055,13 @@ func handleList(profile string, args []string) {
 			Color         string    `json:"color,omitempty"` // issue #391
 			Archived      bool      `json:"archived"`
 			ArchivedAt    time.Time `json:"archived_at,omitempty"`
+			// Deliberately NOT omitempty: `ls --json` used to carry no parent
+			// field at all, so `.parent_id` read null for every session and a
+			// conductor verifying that a child parented could not tell "not
+			// parented" from "this view never had the answer". An always-present
+			// key makes "" mean unparented and a MISSING key mean the binary
+			// predates this fix.
+			ParentID string `json:"parent_id"`
 		}
 		// Warm tmux pane-title cache + load hook statuses so the CLI
 		// reports the same Status the TUI and /api/menu do (issue #610).
@@ -2080,6 +2087,7 @@ func handleList(profile string, args []string) {
 				Color:         inst.Color,
 				Archived:      inst.IsArchived(),
 				ArchivedAt:    inst.ArchivedAt,
+				ParentID:      inst.ParentSessionID,
 			}
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				sj.TmuxSession = tmuxSess.Name
@@ -2146,6 +2154,7 @@ func handleListAllProfiles(jsonOutput bool) {
 			CreatedAt     time.Time `json:"created_at"`
 			SSHHost       string    `json:"ssh_host,omitempty"`
 			SSHRemotePath string    `json:"ssh_remote_path,omitempty"`
+			ParentID      string    `json:"parent_id"` // see handleList
 		}
 		var allSessions []sessionJSON
 
@@ -2170,6 +2179,7 @@ func handleListAllProfiles(jsonOutput bool) {
 					CreatedAt:     inst.CreatedAt,
 					SSHHost:       inst.SSHHost,
 					SSHRemotePath: inst.SSHRemotePath,
+					ParentID:      inst.ParentSessionID,
 				})
 			}
 		}
