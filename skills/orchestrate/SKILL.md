@@ -33,8 +33,10 @@ for one job, use the sub-agent pattern in the `agent-deck` skill.
 You (the session running this skill) are the **conductor**. Hard rules:
 
 - **You never edit code yourself.** All code work happens in child sessions.
-  Running read-only git/gh commands, `mkdir`, and merges per
-  `references/single-issue-split.md` is fine; changing source files is not.
+  Running read-only git/gh commands, `mkdir`, merges per
+  `references/single-issue-split.md`, and the integrating merge of a
+  repo-prescribed endgame (see "When the repo prescribes its own endgame")
+  is fine; changing source files is not.
 - **You never work in the main checkout.** Every task gets a dedicated
   worktree (`launch -w <branch>`), including single-task relay mode.
 - **You never block.** Supervise via the `session children --json` heartbeat;
@@ -77,6 +79,12 @@ committed, pushed, uploaded, or mentioned in a PR.
 `poll.sh` is your heartbeat — see "Context budget". Copy it from the
 agent-deck checkout this skill file lives in (you know that path: you read
 this file); if it isn't there, write it from the listing in that section.
+
+Also read the target repo's `CLAUDE.md` and `CONTRIBUTING.md` now, for the
+one thing this skill cannot know: how work is expected to *land* there. If it
+prescribes an endgame other than a GitHub PR, that changes stages 4–5 — see
+"When the repo prescribes its own endgame", and settle it with the user
+before any task reaches its finish line rather than after.
 
 Maintain a run manifest at `$RUN_DIR/manifest.md` and update it after every
 stage transition — per task: slug, branch, worktree path, session ids with
@@ -403,9 +411,12 @@ or full logs when a targeted read answers the question.
 
 When `session children` shows the implementer done (`done_status=ok`), launch
 a **fresh** reviewer in the **same worktree path** (plain path, no `-w`).
-Back the prompt's read-only rule with tool flags — they block the editing
-tools (Bash stays available for running tests, so the prompt rule still
-carries the rest):
+Back the prompt's read-only rule with tool flags — but understand what they
+do and don't buy you. They block the editing tools; **Bash stays available**
+so the reviewer can run the suite, which means every destructive `git`
+command is still one call away. That gap is not theoretical: a reviewer has
+run `git stash` in a shared worktree and swept a sibling implementer's
+in-flight work. The prompt rule below carries what the flags cannot.
 
 ```bash
 agent-deck launch <worktree-path> -c claude -t "review-<task-slug>-r1" \
@@ -420,7 +431,11 @@ Reviewer prompt template (after the child prompt preamble):
 
 ```text
 You are a code reviewer with fresh eyes. You are READ-ONLY: edit nothing,
-commit nothing, run only read-only commands plus the test suite.
+commit nothing, run only read-only commands plus the test suite. You may be
+sharing this worktree with a live implementer session, so never run a command
+that rewrites the working tree: no `git stash`, `git checkout`, `git restore`,
+`git reset`, `git clean`, no branch switching. A tree that looks dirty or
+wrong is a finding to report, never a thing for you to tidy up.
 
 The task this branch is supposed to implement:
 <task spec: the same spec the implementer received>
@@ -449,6 +464,15 @@ VERDICT: findings blockers=<n> should-fix=<n> nits=<n>
 
 - A findings verdict with `blockers=0 should-fix=0` (nits only) counts as
   clean; list the nits in the final report.
+- **The reviewer proposes a severity; you decide it.** That is why you read
+  findings lists in full (see "Context budget"). One rule is not a judgment
+  call: **a finding whose blast radius is existing data, introduced by this
+  branch, is never a nit.** A gate review once graded "the edit form seeds a
+  stored workload of 0 as 100" a nit; it was a regression that made
+  previously-savable rows unsavable and destroyed the value on an untouched
+  Save. Regrade upward and send it back. Regrading *downward* is a different
+  act — it needs a reason you can write in one line, and it goes in the final
+  report.
 - On findings → `session send` the fix-round prompt to `impl-<task-slug>`
   (write it to `$RUN_DIR/<task-slug>/fix-r<n>.md` and pass
   `--message-file` — findings lists are full of backticks too):
@@ -472,7 +496,11 @@ Do NOT push.
 
 ```text
 You are a code reviewer with fresh eyes. You are READ-ONLY: edit nothing,
-commit nothing, run only read-only commands plus the test suite.
+commit nothing, run only read-only commands plus the test suite. You may be
+sharing this worktree with a live implementer session, so never run a command
+that rewrites the working tree: no `git stash`, `git checkout`, `git restore`,
+`git reset`, `git clean`, no branch switching. A tree that looks dirty or
+wrong is a finding to report, never a thing for you to tidy up.
 
 The task this branch is supposed to implement:
 <task spec: the same spec the implementer received>
@@ -514,6 +542,25 @@ VERDICT: findings blockers=<n> should-fix=<n> nits=<n>
 
 ### 4. PR
 
+**When the repo prescribes its own endgame.** Stages 4 and 5 below are
+written for GitHub and `gh`. Plenty of repos aren't: a GitLab project wants
+`glab` and a merge request, and a repo's own `CLAUDE.md` / `CONTRIBUTING.md`
+may prescribe something else entirely — *merge the feature branch into `dev`*
+is a common one, with no pull request at any point. **The repo's stated
+workflow wins over this skill.** Read it during run setup rather than
+discovering it at the finish line, and when it diverges, confirm the endgame
+with the user **once** — "this repo's CLAUDE.md says merge into `dev` rather
+than open a PR; I'll follow that" — then follow it for every task in the run.
+Improvising a whole endgame per task, at the end, when a run's context is
+already at its largest, is how a finished task fails to land.
+
+Everything upstream of the endgame is unchanged: dedicated worktree, implement,
+review to clean, pre-merge sync, full suite plus build checks. What varies is
+only the last hop and how "green" is observed, so translate rather than skip —
+`gh pr checks` becomes the pipeline status that host offers, and a merge-based
+endgame still requires the same clean review and the same green checks before
+the merge, plus a note in the manifest of the sha you merged.
+
 The branch was cut when the task started and the base may have moved since.
 `session send` the implementer a pre-PR sync step: fetch and merge the
 current <base-branch>, resolve any conflicts preserving both sides' intent,
@@ -537,6 +584,9 @@ no run directory, no orchestrate/session details**.
 
 ### 5. CI babysit
 
+On a repo with a prescribed non-GitHub endgame, translate the commands here
+to that host's equivalents; the loop itself is unchanged.
+
 On every heartbeat, for each open PR: `gh pr checks <pr-url>`. On a failure,
 pull the failing details (`gh pr checks`, `gh run view <run-id> --log-failed`)
 and `session send` them to the still-alive implementer to fix and push.
@@ -546,8 +596,8 @@ touches logic gets one incremental review round on the new commits
 count as done. When a sibling PR from this run merges, rerun stage 4's
 pre-PR sync (fetch/merge base, full suite + build checks, push) for every
 still-open PR — the base just moved under them. A task counts as **done**
-only when the review is clean (or nits-only), the PR exists, and all
-checks are green.
+only when the review is clean (or nits-only), the PR exists (or the
+prescribed endgame has landed), and all checks are green.
 
 ## Answering waiting children
 
