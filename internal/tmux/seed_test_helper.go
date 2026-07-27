@@ -48,6 +48,25 @@ func SeedSessionActivityCacheForTest(t testing.TB, activity map[string]int64) {
 	})
 }
 
+// SeedServerAliveForTest pins IsServerAlive's cached verdict for the next 5
+// seconds so a test can drive code paths that fast-fail when the tmux server
+// is unreachable (notably ui.backgroundStatusUpdate) without depending on
+// whether the test host has a tmux binary or a live server. Cleanup restores
+// the pristine "never probed" state so later tests re-probe for real.
+func SeedServerAliveForTest(t testing.TB, alive bool) {
+	t.Helper()
+	serverAliveMu.Lock()
+	serverAliveVal = alive
+	serverAliveTime = time.Now()
+	serverAliveMu.Unlock()
+	t.Cleanup(func() {
+		serverAliveMu.Lock()
+		serverAliveVal = true
+		serverAliveTime = time.Time{}
+		serverAliveMu.Unlock()
+	})
+}
+
 // ExpireStartupWindowForTest ends the session's startup window (see
 // inStartupWindowLocked) so GetStatus classifies the pane from live evidence
 // instead of reporting "starting".

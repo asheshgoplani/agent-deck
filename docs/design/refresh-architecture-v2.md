@@ -190,13 +190,45 @@ actually polled it plus how many sweeps have been skipped since.
 In `backgroundStatusUpdate`, immediately after the existing PipeManager
 idle-skip, `UpdateStatus` is skipped only when **every** one of these holds:
 
-1. the row is **not** visible (viewport snapshot published by the TUI tick);
+1. the row is **not** visible (viewport snapshot published by the TUI tick) —
+   visible rows go through the hold + budget in §3.2b instead;
 2. the status is one of `running` / `waiting` / `idle` — `error` and `stopped`
    carry their own recheck timers, `starting` must converge fast;
 3. the current fingerprint is usable **and** identical to the last polled one;
 4. fewer than `maxSkips` consecutive skips have already happened.
 
 Any veto polls. There is no path that skips on absent information.
+
+### 3.2b Visible rows: hold + budget (the group-expand case)
+
+The maintainer's live-fleet diagnostic on #1753 showed the lag reproduces with
+a large group **expanded** — visible-row count then approaches fleet size, so a
+policy that exempts visible rows degenerates back to the full per-row storm.
+Visible rows therefore get the same treatment, shaped for what the user sees:
+
+- **Hold** (`refreshLedger.holdVisible`): a visible row whose status is settled
+  and whose fingerprint is unchanged is skipped under the *same* `maxSkips`
+  ceiling as an off-screen row — an expanded quiescent group costs ~zero.
+- **Budget** (`admitVisiblePolls`): visible rows that *do* need a poll compete
+  for `visiblePollBudgetPerSweep` (10, the sweep's worker-pool width) slots per
+  sweep. Deferred rows age a starvation counter and are admitted first on later
+  sweeps, so the budget cycles round-robin: every due visible row is polled
+  within `ceil(due/budget)` sweeps and none can be starved.
+- **Cursor exemption**: the selected row (published as `cursorID` in the
+  viewport snapshot) is always admitted — it drives the preview pane.
+- **Incremental path** (`processStatusUpdate`): the user-activity visible-first
+  pass used to poll *every* visible row per pass; it now holds steady rows
+  read-only (`heldSteady`, no ceiling because the background sweep owns
+  freshness) and budgets + round-robins the rest the same way.
+- **Group expand is a trigger, not a burst**: the expand keypress only rebuilds
+  the flat list (rows render instantly from the existing render snapshot) and
+  republishes the viewport immediately, so the very next sweep sees the new
+  rows as visible and amortizes their catch-up polls through the budget. No
+  path between the keypress and the first frame spawns per-row tmux work.
+
+The fail-open and kill-switch behaviour is shared: with no fresh viewport
+snapshot, or `adaptive_refresh_max_skips < 0`, hold and budget are both off and
+every session polls every sweep, exactly as pre-policy.
 
 **Why unchanged `window_activity` is a sound proof of "no new pane output".**
 This is not a new assumption. `tmux.Session.GetStatus` already gates its
@@ -259,9 +291,16 @@ drift apart.
 - `0` / unset — default `2`: a quiescent off-screen session is polled at least
   every 3rd sweep (~6s).
 - `>0` — custom ceiling; higher trades off-screen transition latency for less
-  tmux load on very large decks.
+  tmux load on very large decks. Clamped to `30`
+  (`session.MaxAdaptiveRefreshMaxSkips`): beyond ~30 skipped sweeps the
+  time-based transitions inside `UpdateStatus` would be delayed long enough to
+  read as a frozen deck.
 - `<0` — **disables the policy**: every sweep polls every session, byte-identical
   to pre-policy behaviour.
+
+The knob is resolved once, at TUI construction (`ui.NewHome` →
+`UISettings.GetAdaptiveRefreshMaxSkips`). Changing it — including flipping the
+kill switch — takes effect on the next TUI restart, not on config reload.
 
 ### 3.6 Expected effect
 

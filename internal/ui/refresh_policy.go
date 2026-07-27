@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -44,17 +45,34 @@ import (
 // UpdateStatus (acknowledged→idle, hook-freshness expiry, debounce
 // confirmation) is delayed by at most maxSkips sweeps rather than suppressed.
 //
-// Rows the user is actually looking at are never skipped — visibility is
-// published by the TUI tick and the gate fails OPEN (polls everything) when no
-// fresh viewport snapshot exists.
+// VISIBLE rows (issue #1753, group-expand diagnostic): with a large group
+// expanded, visible-row count approaches fleet size, so a policy that only
+// skips off-screen rows degenerates to refreshing everything. Visible rows
+// therefore get the same treatment, tuned for what the user can see:
+//
+//   - a visible row whose fingerprint is provably unchanged is HELD (costs
+//     zero) under the same maxSkips ceiling — holdVisible;
+//   - visible rows that DO need a poll are budgeted: at most
+//     visiblePollBudgetPerSweep of them per sweep, round-robin via a
+//     starvation counter so every due row gets its turn — admitVisiblePolls;
+//   - the cursor row is exempt from the budget (it drives the preview pane
+//     and is what the user is reading);
+//   - the gate still fails OPEN (polls everything, no budget) when no fresh
+//     viewport snapshot exists, and the kill switch disables budget and hold
+//     alike.
+//
+// Group expand itself never polls: newly visible rows render from the render
+// snapshot instantly and fill in through this budget on subsequent sweeps.
 
 const (
 	// defaultAdaptiveRefreshMaxSkips is how many consecutive background sweeps
 	// a quiescent off-screen session may be skipped before it is polled
 	// regardless of its fingerprint. 2 means "poll at least every 3rd sweep"
 	// (~6s at baseStatusInterval), which bounds the worst-case staleness of a
-	// time-based transition on an off-screen row.
-	defaultAdaptiveRefreshMaxSkips = 2
+	// time-based transition on an off-screen row. The config knob that
+	// overrides it is resolved (defaulted, kill-switched, and clamped) by
+	// session.UISettings.GetAdaptiveRefreshMaxSkips.
+	defaultAdaptiveRefreshMaxSkips = session.DefaultAdaptiveRefreshMaxSkips
 
 	// visibleSessionsMaxAge is how long a published viewport snapshot is
 	// trusted. The TUI republishes on every tick (baseStatusInterval), so a
@@ -62,6 +80,15 @@ const (
 	// (tea.Exec) — the gate then fails open and polls everything, exactly as
 	// it did before this policy existed.
 	visibleSessionsMaxAge = 10 * time.Second
+
+	// visiblePollBudgetPerSweep is the per-sweep cap on how many VISIBLE rows
+	// may be polled (issue #1753 group-expand case). Matches the sweep's
+	// worker-pool width (g.SetLimit(10) in backgroundStatusUpdate) so one
+	// sweep's visible polls can never exceed one pool of tmux work; due rows
+	// beyond the budget are deferred with a starvation counter and admitted
+	// first on later sweeps, so every due visible row is polled within
+	// ceil(due/budget) sweeps. The cursor row bypasses the budget entirely.
+	visiblePollBudgetPerSweep = 10
 )
 
 // sessionFingerprint is the cheap, cache-only evidence of a session's observable
@@ -147,6 +174,11 @@ type refreshLedger struct {
 type refreshLedgerEntry struct {
 	fp    sessionFingerprint
 	skips int
+	// deferrals counts consecutive sweeps a DUE visible row was pushed past
+	// by the visible-poll budget. Admission orders by it (most-starved first)
+	// so the budget cycles round-robin instead of starving a stable suffix.
+	// Zeroed on every actual poll.
+	deferrals int
 }
 
 func newRefreshLedger() *refreshLedger {
@@ -184,6 +216,79 @@ func (l *refreshLedger) decide(id string, fp sessionFingerprint, status session.
 	return skip, reason
 }
 
+// holdVisible is the sweep-side gate for a VISIBLE row: it skips (and counts
+// the skip toward the ceiling) only when the row's status is settled, the
+// fingerprint is usable and identical to the last polled baseline, and fewer
+// than maxSkips consecutive skips have happened — the same vetoes as the
+// off-screen gate minus visibility itself. On false it mutates NOTHING: the
+// row becomes a budget candidate and the ledger is updated by admitPoll or
+// deferPoll, whichever the admission pass picks.
+func (l *refreshLedger) holdVisible(id string, fp sessionFingerprint, status session.Status, maxSkips int) bool {
+	if l == nil || id == "" || maxSkips <= 0 {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	prev, hasPrev := l.entries[id]
+	if !hasPrev || !statusSettledForSkip(status) || !fp.unchangedFrom(prev.fp) || prev.skips >= maxSkips {
+		return false
+	}
+	l.entries[id] = refreshLedgerEntry{fp: prev.fp, skips: prev.skips + 1, deferrals: prev.deferrals}
+	return true
+}
+
+// heldSteady is the READ-ONLY variant used by the incremental visible-first
+// path (processStatusUpdate): true when the row is settled and its fingerprint
+// matches the last polled baseline. It deliberately has no ceiling and touches
+// no counters — the background sweep owns freshness (it polls every row at
+// least every maxSkips+1 sweeps), so the incremental path may hold a steady
+// row indefinitely without any transition being suppressed.
+func (l *refreshLedger) heldSteady(id string, fp sessionFingerprint, status session.Status) bool {
+	if l == nil || id == "" {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	prev, hasPrev := l.entries[id]
+	return hasPrev && statusSettledForSkip(status) && fp.unchangedFrom(prev.fp)
+}
+
+// admitPoll records that a budget-admitted visible row is being polled this
+// sweep: the fingerprint becomes the new baseline and both counters reset,
+// exactly like decide()'s poll branch.
+func (l *refreshLedger) admitPoll(id string, fp sessionFingerprint) {
+	if l == nil || id == "" {
+		return
+	}
+	l.mu.Lock()
+	l.entries[id] = refreshLedgerEntry{fp: fp}
+	l.mu.Unlock()
+}
+
+// deferPoll records that a due visible row was pushed past this sweep by the
+// budget. Only the starvation counter moves — baseline and skip count stay, so
+// the row remains due and rises in admission priority next sweep.
+func (l *refreshLedger) deferPoll(id string) {
+	if l == nil || id == "" {
+		return
+	}
+	l.mu.Lock()
+	prev := l.entries[id]
+	prev.deferrals++
+	l.entries[id] = prev
+	l.mu.Unlock()
+}
+
+// deferralCount reports how many consecutive sweeps a row has been deferred.
+func (l *refreshLedger) deferralCount(id string) int {
+	if l == nil || id == "" {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.entries[id].deferrals
+}
+
 // forget drops one session's baseline so the next sweep polls it. Called after
 // any path that refreshes a session out of band (attach-return, forced check),
 // so the gate can never hold a session whose state the TUI just invalidated.
@@ -209,6 +314,37 @@ func (l *refreshLedger) prune(live map[string]struct{}) {
 		}
 	}
 	l.mu.Unlock()
+}
+
+// visiblePollCandidate is a visible row the gate could not hold this sweep —
+// it needs a poll and competes for the visible-poll budget.
+type visiblePollCandidate struct {
+	inst      *session.Instance
+	fp        sessionFingerprint
+	deferrals int
+}
+
+// admitVisiblePolls splits the due visible rows into the prefix polled this
+// sweep and the deferred rest. Ordering: the cursor row first (it drives the
+// preview pane, so it is effectively budget-exempt — it always lands in the
+// admitted prefix), then most-starved first so deferred rows rise until
+// admitted and the budget cycles round-robin through every due row.
+func admitVisiblePolls(due []visiblePollCandidate, cursorID string, budget int) (admitted, deferred []visiblePollCandidate) {
+	sort.SliceStable(due, func(i, j int) bool {
+		iCursor := cursorID != "" && due[i].inst != nil && due[i].inst.ID == cursorID
+		jCursor := cursorID != "" && due[j].inst != nil && due[j].inst.ID == cursorID
+		if iCursor != jCursor {
+			return iCursor
+		}
+		return due[i].deferrals > due[j].deferrals
+	})
+	if budget < 1 {
+		budget = 1
+	}
+	if len(due) <= budget {
+		return due, nil
+	}
+	return due[:budget], due[budget:]
 }
 
 // fingerprintSession builds a session's fingerprint from caches the sweep has
@@ -258,7 +394,11 @@ func (h *Home) fingerprintSession(inst *session.Instance) sessionFingerprint {
 // when it was taken so a stale snapshot can fail open.
 type visibleSessionSnapshot struct {
 	ids map[string]struct{}
-	at  time.Time
+	// cursorID is the session under the cursor (empty when the cursor sits on
+	// a group header or nothing). The sweep's visible-poll budget never defers
+	// it: it is the row the preview pane shows.
+	cursorID string
+	at       time.Time
 }
 
 // visibleRowBudget is how many list rows the viewport can hold. Shared by the
@@ -311,39 +451,36 @@ func (h *Home) publishVisibleSessions(extra ...string) {
 			ids[id] = struct{}{}
 		}
 	}
-	h.visibleSessions.Store(visibleSessionSnapshot{ids: ids, at: time.Now()})
+	snap := visibleSessionSnapshot{ids: ids, at: time.Now()}
+	if h.cursor >= 0 && h.cursor < len(h.flatItems) {
+		switch item := h.flatItems[h.cursor]; item.Type {
+		case session.ItemTypeSession:
+			if item.Session != nil {
+				snap.cursorID = item.Session.ID
+			}
+		case session.ItemTypeWindow:
+			snap.cursorID = item.WindowSessionID
+		}
+	}
+	h.visibleSessions.Store(snap)
 }
 
-// visibleSessionsForSweep returns the published viewport set and whether it is
-// fresh enough to trust. ok=false means the gate must fail open: with no recent
-// viewport snapshot (TUI not started yet, event loop suspended by tea.Exec, or
-// wedged) every session is treated as visible and polled, which is the exact
-// pre-policy behaviour.
-func (h *Home) visibleSessionsForSweep() (map[string]struct{}, bool) {
+// visibleSessionsForSweep returns the published viewport snapshot and whether
+// it is fresh enough to trust. ok=false means the gate must fail open: with no
+// recent viewport snapshot (TUI not started yet, event loop suspended by
+// tea.Exec, or wedged) every session is treated as visible and polled with no
+// budget, which is the exact pre-policy behaviour.
+func (h *Home) visibleSessionsForSweep() (visibleSessionSnapshot, bool) {
 	raw := h.visibleSessions.Load()
 	if raw == nil {
-		return nil, false
+		return visibleSessionSnapshot{}, false
 	}
 	snap, typed := raw.(visibleSessionSnapshot)
 	if !typed || snap.ids == nil {
-		return nil, false
+		return visibleSessionSnapshot{}, false
 	}
 	if time.Since(snap.at) > visibleSessionsMaxAge {
-		return nil, false
+		return visibleSessionSnapshot{}, false
 	}
-	return snap.ids, true
-}
-
-// adaptiveRefreshMaxSkips resolves the configured staleness ceiling.
-// 0/unset uses defaultAdaptiveRefreshMaxSkips; any negative value disables the
-// policy entirely (every sweep polls every session, byte-identical to the
-// behaviour before this policy landed).
-func adaptiveRefreshMaxSkips(configured int) int {
-	if configured == 0 {
-		return defaultAdaptiveRefreshMaxSkips
-	}
-	if configured < 0 {
-		return 0
-	}
-	return configured
+	return snap, true
 }

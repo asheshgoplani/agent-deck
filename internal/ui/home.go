@@ -329,16 +329,11 @@ type Home struct {
 	// Instead of updating ALL sessions every tick, we update batches of 5-10 sessions
 	// This reduces CPU usage by 90%+ while maintaining responsiveness
 	statusUpdateIndex atomic.Int32 // Current position in round-robin cycle (atomic for thread safety)
-	// Visible-row round-robin state (#1753): with a large group expanded the
-	// visible set approaches fleet size, so "always refresh every visible row"
-	// degenerates into the same per-row storm the off-screen batching exists to
-	// prevent. Visible rows get their own cursor and per-pass budget instead.
-	visibleStatusUpdateIndex atomic.Int32
-	// visibleRefreshFingerprint remembers, per session, the cached tmux window
-	// activity at the last visible-row refresh, so an unchanged idle row costs
-	// zero. Owned exclusively by the status worker goroutine (processStatusUpdate)
-	// — no lock needed.
-	visibleRefreshFingerprint map[string]int64
+	// visibleUpdateIndex is the round-robin cursor for processStatusUpdate's
+	// VISIBLE-row pass (issue #1753): with a large group expanded, "update all
+	// visible rows every pass" is an O(fleet) subprocess burst, so the pass is
+	// budgeted and cycles from here.
+	visibleUpdateIndex atomic.Int32
 
 	// Background status worker (Priority 1C optimization)
 	// Moves status updates to a separate goroutine, completely decoupling from UI
@@ -1472,7 +1467,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.previewOrientation = cfg.UI.GetPreviewOrientation()
 		h.remoteLatencyRefreshSec = cfg.UI.GetRemoteLatencyRefreshSecs(cfg.SystemStats.GetRefreshSeconds())
 		h.remoteSessionRefreshSec = cfg.UI.GetRemoteSessionRefreshSecs()
-		h.adaptiveMaxSkips = adaptiveRefreshMaxSkips(cfg.UI.AdaptiveRefreshMaxSkips)
+		// Resolved once here — the adaptive-refresh kill switch (and any
+		// ceiling change) therefore requires a TUI restart to take effect.
+		h.adaptiveMaxSkips = cfg.UI.GetAdaptiveRefreshMaxSkips()
 		h.footerMode = cfg.UI.GetFooter()
 		h.attachOnCreate = cfg.UI.GetAttachOnCreate()
 	} else {
@@ -4489,15 +4486,48 @@ func (h *Home) backgroundStatusUpdate() {
 	// Adaptive refresh policy (issue #1753). visibleOK=false means no fresh
 	// viewport snapshot exists, in which case the gate below is bypassed
 	// entirely and every session is polled — the pre-policy behaviour.
-	visibleIDs, visibleOK := h.visibleSessionsForSweep()
+	viewSnap, visibleOK := h.visibleSessionsForSweep()
+	visibleIDs := viewSnap.ids
 	maxSkips := h.adaptiveMaxSkips
 	if !visibleOK {
 		maxSkips = 0
 	}
-	var genSkipped int // sessions held by the adaptive gate this sweep
+	var genSkipped int                    // sessions held by the adaptive gate this sweep
+	var visDeferred int                   // due visible rows pushed past this sweep by the budget
+	var visibleDue []visiblePollCandidate // visible rows that need a poll, competing for the budget
 
 	g := new(errgroup.Group)
 	g.SetLimit(10) // Pool of 10 workers (tmux server serializes, more doesn't help)
+
+	pollInstance := func(inst *session.Instance) {
+		g.Go(func() error {
+			oldStatus := inst.GetStatusThreadSafe()
+			instStart := time.Now()
+			_ = inst.UpdateStatus()
+			instDur := time.Since(instStart)
+
+			if instDur > 50*time.Millisecond {
+				slowMu.Lock()
+				slowSessions = append(slowSessions, fmt.Sprintf("%s=%v", inst.Title, instDur.Round(time.Millisecond)))
+				slowMu.Unlock()
+			}
+			newStatus := inst.GetStatusThreadSafe()
+			if newStatus != oldStatus {
+				statusChanged.Store(true)
+				notifLog.Debug(
+					"status_changed",
+					slog.String("title", inst.Title),
+					slog.String("old", string(oldStatus)),
+					slog.String("new", string(newStatus)),
+				)
+				// T1+T3: synthesize a flicker_detected WARN if this session
+				// has oscillated >3 times within 60s. One alert per burst.
+				session.GlobalFlickerDetector().Observe(inst.ID, string(newStatus))
+				tracker.record(inst.ID, inst.Title, inst.Tool, string(oldStatus), string(newStatus))
+			}
+			return nil
+		})
+	}
 
 	for _, inst := range instances {
 		inst := inst // capture loop variable
@@ -4530,47 +4560,55 @@ func (h *Home) backgroundStatusUpdate() {
 		// control pipe, so the PipeManager skip above covers a handful of rows
 		// and every other quiescent session still pays a full UpdateStatus —
 		// including, for a Claude session parked in hook "waiting", a
-		// capture-pane SUBPROCESS via BackgroundWorkPending. Hold that poll when
-		// the session is off-screen AND its tmux/hook fingerprint proves nothing
-		// observable changed, bounded by adaptiveMaxSkips consecutive sweeps.
+		// capture-pane SUBPROCESS via BackgroundWorkPending. Off-screen rows
+		// are held when their tmux/hook fingerprint proves nothing observable
+		// changed, bounded by adaptiveMaxSkips consecutive sweeps. Visible
+		// rows get the same fingerprint hold (with a large group expanded,
+		// visible ≈ fleet, so exempting them would defeat the policy) and the
+		// ones that DO need a poll compete for a per-sweep budget below.
 		// See refresh_policy.go for the full argument.
 		if maxSkips > 0 {
 			_, isVisible := visibleIDs[inst.ID]
 			fp := h.fingerprintSession(inst)
-			if skip, _ := h.refreshLedger.decide(inst.ID, fp, inst.GetStatusThreadSafe(), isVisible, maxSkips); skip {
-				skipped++
-				genSkipped++
+			if !isVisible {
+				if skip, _ := h.refreshLedger.decide(inst.ID, fp, inst.GetStatusThreadSafe(), false, maxSkips); skip {
+					skipped++
+					genSkipped++
+					continue
+				}
+			} else {
+				if h.refreshLedger.holdVisible(inst.ID, fp, inst.GetStatusThreadSafe(), maxSkips) {
+					skipped++
+					genSkipped++
+					continue
+				}
+				visibleDue = append(visibleDue, visiblePollCandidate{
+					inst: inst, fp: fp, deferrals: h.refreshLedger.deferralCount(inst.ID),
+				})
 				continue
 			}
 		}
 
-		g.Go(func() error {
-			oldStatus := inst.GetStatusThreadSafe()
-			instStart := time.Now()
-			_ = inst.UpdateStatus()
-			instDur := time.Since(instStart)
+		pollInstance(inst)
+	}
 
-			if instDur > 50*time.Millisecond {
-				slowMu.Lock()
-				slowSessions = append(slowSessions, fmt.Sprintf("%s=%v", inst.Title, instDur.Round(time.Millisecond)))
-				slowMu.Unlock()
-			}
-			newStatus := inst.GetStatusThreadSafe()
-			if newStatus != oldStatus {
-				statusChanged.Store(true)
-				notifLog.Debug(
-					"status_changed",
-					slog.String("title", inst.Title),
-					slog.String("old", string(oldStatus)),
-					slog.String("new", string(newStatus)),
-				)
-				// T1+T3: synthesize a flicker_detected WARN if this session
-				// has oscillated >3 times within 60s. One alert per burst.
-				session.GlobalFlickerDetector().Observe(inst.ID, string(newStatus))
-				tracker.record(inst.ID, inst.Title, inst.Tool, string(oldStatus), string(newStatus))
-			}
-			return nil
-		})
+	// Visible-poll budget (issue #1753 group-expand case): at most
+	// visiblePollBudgetPerSweep of the due visible rows are polled this sweep
+	// (cursor row always admitted); the rest are deferred with a starvation
+	// counter so the budget cycles round-robin. Only active when the policy
+	// is on: with the kill switch or a failed-open snapshot, visibleDue stays
+	// empty and every row was already polled above.
+	if len(visibleDue) > 0 {
+		admitted, deferred := admitVisiblePolls(visibleDue, viewSnap.cursorID, visiblePollBudgetPerSweep)
+		for _, c := range admitted {
+			h.refreshLedger.admitPoll(c.inst.ID, c.fp)
+			pollInstance(c.inst)
+		}
+		for _, c := range deferred {
+			h.refreshLedger.deferPoll(c.inst.ID)
+			skipped++
+			visDeferred++
+		}
 	}
 	_ = g.Wait() // Errors are logged within each goroutine
 
@@ -4581,6 +4619,7 @@ func (h *Home) backgroundStatusUpdate() {
 			"idle_sessions_skipped",
 			slog.Int("skipped", skipped),
 			slog.Int("adaptive_skipped", genSkipped),
+			slog.Int("visible_deferred", visDeferred),
 			slog.Int("checked", len(instances)-skipped),
 		)
 	}
@@ -4927,7 +4966,7 @@ func (h *Home) noteGroupToggled(groupPath string) {
 	if !ok || !group.Expanded {
 		return
 	}
-	h.visibleStatusUpdateIndex.Store(0)
+	h.visibleUpdateIndex.Store(0)
 	h.triggerStatusUpdate()
 }
 
@@ -5062,10 +5101,9 @@ func (h *Home) publishCurrentSessionStates() {
 // With batching (3 visible + 2 non-visible per tick), we keep each tick under 100ms.
 func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 	const batchSize = 2 // Reduced from 5 to 2 - fewer CapturePane() calls per tick
-	// Visible rows are budgeted too (#1753): see Step 1 below. 4 rows per pass
-	// keeps a screenful fresh within a few passes while bounding the worst case
-	// (large group expanded => visible ≈ fleet) to a constant per pass.
-	const visibleStatusBatchSize = 4
+	// Visible rows are budgeted too (#1753): see Step 1 below, which caps at
+	// visiblePollBudgetPerSweep (refresh_policy.go) per pass, bounding the
+	// worst case (large group expanded => visible ≈ fleet) to a constant.
 	if hotUntil := h.navigationHotUntil.Load(); hotUntil > 0 && time.Now().UnixNano() < hotUntil {
 		return
 	}
@@ -5104,35 +5142,21 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 	// Track if any status actually changed (for cache invalidation)
 	statusChanged := false
 
-	// Step 1: Visible sessions — budgeted round-robin (#1753).
-	//
-	// This used to refresh EVERY visible row each pass. That is fine when the
-	// visible set is a screenful of a mostly-collapsed list, but with a large
-	// group expanded the visible set approaches fleet size and this became an
-	// unbudgeted burst of per-row UpdateStatus calls — each of which takes the
-	// Instance write lock, sometimes across tmux subprocess round-trips. On the
-	// reporter's ~57-session deck that burst is what stretched the first
-	// post-detach frames into a visible black screen and made group expansion
-	// lag. Visible rows now cycle through their own cursor with a fixed budget
-	// per pass, and an idle row whose cached tmux window activity has not moved
-	// since its last refresh is skipped outright (cost zero). The full
-	// background sweep (2-10s cadence) remains the freshness backstop for every
-	// row, visible or not, so the budget only bounds burst size, not eventual
-	// freshness.
-	if h.visibleRefreshFingerprint == nil {
-		h.visibleRefreshFingerprint = make(map[string]int64)
-	}
-	visibleInstances := make([]*session.Instance, 0, len(visibleIDs))
+	// Step 1: visible sessions first (Priority 1B) — but no longer ALL of
+	// them every pass. With a large group expanded, visible-row count
+	// approaches fleet size and the unconditional loop this used to be was
+	// itself the per-keystroke subprocess storm from issue #1753. Now a
+	// visible row whose fingerprint is unchanged is held read-only (costs
+	// zero; the background sweep owns its freshness ceiling), and the rows
+	// that do need a poll are budgeted per pass, cycling round-robin from
+	// visibleUpdateIndex. The adaptive kill switch (maxSkips<=0) restores the
+	// unconditional loop byte-for-byte.
+	maxSkips := h.adaptiveMaxSkips
+	visible := make([]*session.Instance, 0, len(visibleIDs))
 	for _, inst := range instancesCopy {
-		if visibleIDs[inst.ID] {
-			visibleInstances = append(visibleInstances, inst)
+		if !visibleIDs[inst.ID] {
+			continue
 		}
-	}
-	visRemaining := visibleStatusBatchSize
-	visStart := int(h.visibleStatusUpdateIndex.Load())
-	for i := 0; i < len(visibleInstances) && visRemaining > 0; i++ {
-		idx := (visStart + i) % len(visibleInstances)
-		inst := visibleInstances[idx]
 		// Skip sessions this instance neither owns nor is orphan-polling this
 		// sweep: mirrors the background sweep's gate so the incremental poll
 		// path can't defeat the dedup claim polling promises (flag off or nil
@@ -5140,30 +5164,33 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 		if !h.isPolledByMe(inst.ID) {
 			continue
 		}
-		// Cheap-fingerprint skip: an idle visible row whose cached window
-		// activity is unchanged since its last refresh cannot have new status.
-		// Skipping here (before UpdateStatus) means it does not even pay the
-		// Instance write lock. Non-idle rows always go through — their status
-		// can change without a tmux activity bump (hook files, process exit).
-		if inst.GetStatusThreadSafe() == session.StatusIdle {
-			if ts := inst.GetTmuxSession(); ts != nil {
-				fp := ts.GetCachedWindowActivity()
-				if fp != 0 && fp == h.visibleRefreshFingerprint[inst.ID] {
-					continue
-				}
+		visible = append(visible, inst)
+	}
+	if n := len(visible); n > 0 {
+		start := int(h.visibleUpdateIndex.Load()) % n
+		if start < 0 {
+			start = 0
+		}
+		polled := 0
+		for i := 0; i < n; i++ {
+			idx := (start + i) % n
+			inst := visible[idx]
+			if maxSkips > 0 && h.refreshLedger.heldSteady(inst.ID, h.fingerprintSession(inst), inst.GetStatusThreadSafe()) {
+				updated[inst.ID] = true
+				continue
+			}
+			oldStatus := inst.GetStatusThreadSafe()
+			_ = inst.UpdateStatus() // Ignore errors in background worker
+			if inst.GetStatusThreadSafe() != oldStatus {
+				statusChanged = true
+			}
+			updated[inst.ID] = true
+			polled++
+			h.visibleUpdateIndex.Store(int32((idx + 1) % n)) // #nosec G115 -- idx is bounded by n (slice length), fits in int32
+			if maxSkips > 0 && polled >= visiblePollBudgetPerSweep {
+				break
 			}
 		}
-		oldStatus := inst.GetStatusThreadSafe()
-		_ = inst.UpdateStatus() // Ignore errors in background worker
-		if inst.GetStatusThreadSafe() != oldStatus {
-			statusChanged = true
-		}
-		if ts := inst.GetTmuxSession(); ts != nil {
-			h.visibleRefreshFingerprint[inst.ID] = ts.GetCachedWindowActivity()
-		}
-		updated[inst.ID] = true
-		visRemaining--
-		h.visibleStatusUpdateIndex.Store(int32((idx + 1) % len(visibleInstances))) // #nosec G115 -- idx bounded by slice length
 	}
 
 	// Step 2: Round-robin through non-visible sessions (Priority 1A - batching)
@@ -5180,8 +5207,8 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 		// Skip visible rows here: they are the visible round-robin's job (Step 1,
 		// budgeted). Before the visible budget existed, `updated` covered every
 		// visible row so this loop was implicitly off-screen-only; now that Step 1
-		// refreshes at most visibleStatusBatchSize of them per pass, the skip must
-		// be explicit or off-screen rows would compete with visible ones here.
+		// refreshes at most visiblePollBudgetPerSweep of them per pass, the skip
+		// must be explicit or off-screen rows would compete with visible ones here.
 		if visibleIDs[inst.ID] || updated[inst.ID] {
 			continue
 		}
@@ -8222,6 +8249,12 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 						break
 					}
 				}
+				// Group expand is an explicit refresh trigger (issue #1753):
+				// the rows render instantly from the existing snapshot, and
+				// publishing the new viewport NOW (not on the next tick) lets
+				// the next background sweep budget their catch-up polls
+				// instead of treating them as off-screen.
+				h.publishVisibleSessions()
 				h.saveGroupState()
 				h.noteGroupToggled(groupPath)
 			}
@@ -8599,6 +8632,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						break
 					}
 				}
+				// Group expand is an explicit refresh trigger (issue #1753):
+				// the rows render instantly from the existing snapshot, and
+				// publishing the new viewport NOW (not on the next tick) lets
+				// the next background sweep budget their catch-up polls
+				// instead of treating them as off-screen.
+				h.publishVisibleSessions()
 				h.saveGroupState()
 				h.noteGroupToggled(groupPath)
 			} else if item.Type == session.ItemTypeWindow {
@@ -8661,6 +8700,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						break
 					}
 				}
+				// Group expand is an explicit refresh trigger (issue #1753):
+				// the rows render instantly from the existing snapshot, and
+				// publishing the new viewport NOW (not on the next tick) lets
+				// the next background sweep budget their catch-up polls
+				// instead of treating them as off-screen.
+				h.publishVisibleSessions()
 				h.saveGroupState()
 				h.noteGroupToggled(groupPath)
 			} else if item.Type == session.ItemTypeSession && h.sessionHasWindows(item) {

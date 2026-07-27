@@ -398,8 +398,11 @@ type UISettings struct {
 	//               at least every 3rd sweep (~6s).
 	//   >0        — custom ceiling; higher trades transition latency on
 	//               off-screen rows for less tmux load on very large decks.
+	//               Clamped to MaxAdaptiveRefreshMaxSkips (30).
 	//   <0        — DISABLE the policy: every sweep polls every session, exactly
 	//               as agent-deck behaved before the policy landed (kill switch).
+	// Read once at TUI construction — changes (including the kill switch)
+	// take effect on the next TUI restart. See GetAdaptiveRefreshMaxSkips.
 	AdaptiveRefreshMaxSkips int `toml:"adaptive_refresh_max_skips,omitzero"`
 
 	// ShowOnlyInstalledTools, when true, hides tools from the new-session
@@ -635,6 +638,41 @@ func (u UISettings) GetRemoteSessionRefreshSecs() int {
 	}
 	if val > MaxRemoteSessionRefreshSecs {
 		return MaxRemoteSessionRefreshSecs
+	}
+	return val
+}
+
+// Adaptive refresh ceiling bounds (issue #1753). The default keeps the
+// worst-case staleness of an off-screen row at ~3 sweeps; the max caps how far
+// a config value can push that staleness — beyond ~30 skipped sweeps (~1min at
+// the base cadence) the time-based transitions inside UpdateStatus
+// (acknowledged→idle, hook-freshness expiry, debounce confirmation) would be
+// delayed long enough to read as a frozen deck, which no tmux-load saving
+// justifies.
+const (
+	DefaultAdaptiveRefreshMaxSkips = 2
+	MaxAdaptiveRefreshMaxSkips     = 30
+)
+
+// GetAdaptiveRefreshMaxSkips resolves the [ui] adaptive_refresh_max_skips knob
+// into the effective staleness ceiling for the adaptive refresh policy
+// (issue #1753). 0/unset falls back to DefaultAdaptiveRefreshMaxSkips; any
+// negative value is the kill switch and returns 0 (policy disabled, every
+// sweep polls every session); positive values are clamped to
+// MaxAdaptiveRefreshMaxSkips.
+//
+// NOTE: the TUI reads this once at construction (ui.NewHome), so changing the
+// value — including flipping the kill switch — requires a TUI restart.
+func (u UISettings) GetAdaptiveRefreshMaxSkips() int {
+	val := u.AdaptiveRefreshMaxSkips
+	if val == 0 {
+		return DefaultAdaptiveRefreshMaxSkips
+	}
+	if val < 0 {
+		return 0
+	}
+	if val > MaxAdaptiveRefreshMaxSkips {
+		return MaxAdaptiveRefreshMaxSkips
 	}
 	return val
 }

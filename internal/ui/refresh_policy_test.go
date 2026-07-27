@@ -208,19 +208,6 @@ func TestRefreshLedger_NilReceiverAlwaysPolls(t *testing.T) {
 	l.prune(nil)
 }
 
-func TestAdaptiveRefreshMaxSkips(t *testing.T) {
-	if got := adaptiveRefreshMaxSkips(0); got != defaultAdaptiveRefreshMaxSkips {
-		t.Fatalf("unset = %d, want default %d", got, defaultAdaptiveRefreshMaxSkips)
-	}
-	if got := adaptiveRefreshMaxSkips(5); got != 5 {
-		t.Fatalf("explicit 5 = %d, want 5", got)
-	}
-	// Negative is the documented kill switch: 0 disables the gate entirely.
-	if got := adaptiveRefreshMaxSkips(-1); got != 0 {
-		t.Fatalf("negative = %d, want 0 (policy disabled)", got)
-	}
-}
-
 // ---- fingerprint ----
 
 func TestFingerprintSession_UsesCachesAndTracksPaneTitle(t *testing.T) {
@@ -281,6 +268,237 @@ func TestFingerprintSession_NoEvidenceWhenCachesMissing(t *testing.T) {
 	}
 }
 
+// ---- visible-row hold + budget (issue #1753 group-expand case) ----
+
+// A VISIBLE row with a settled status and an unchanged fingerprint is held
+// under the same ceiling as an off-screen row: hold, hold, then forced poll.
+// This is what makes an expanded 60-row group cost ~zero when quiescent.
+func TestRefreshLedger_HoldVisibleRespectsCeiling(t *testing.T) {
+	l := newRefreshLedger()
+	fp := quiescentFP()
+	l.admitPoll("v1", fp) // baseline from a real poll
+
+	for i := 0; i < 2; i++ {
+		if !l.holdVisible("v1", fp, session.StatusWaiting, 2) {
+			t.Fatalf("hold %d: settled visible row with unchanged fingerprint should be held", i+1)
+		}
+	}
+	if l.holdVisible("v1", fp, session.StatusWaiting, 2) {
+		t.Fatal("ceiling reached: third consecutive hold must be refused")
+	}
+	// The refused hold makes the row a budget candidate; an admitted poll
+	// rebases and the cycle restarts.
+	l.admitPoll("v1", fp)
+	if !l.holdVisible("v1", fp, session.StatusWaiting, 2) {
+		t.Fatal("post-poll hold should be available again")
+	}
+}
+
+func TestRefreshLedger_HoldVisibleVetoes(t *testing.T) {
+	l := newRefreshLedger()
+	fp := quiescentFP()
+	changed := fp
+	changed.activity++
+	l.admitPoll("v1", fp)
+
+	if l.holdVisible("v1", changed, session.StatusWaiting, 2) {
+		t.Fatal("changed fingerprint must not be held")
+	}
+	if l.holdVisible("v1", sessionFingerprint{}, session.StatusWaiting, 2) {
+		t.Fatal("unusable fingerprint must not be held")
+	}
+	if l.holdVisible("v1", fp, session.StatusStarting, 2) {
+		t.Fatal("unsettled status must not be held")
+	}
+	if l.holdVisible("v1", fp, session.StatusWaiting, 0) {
+		t.Fatal("kill switch (maxSkips<=0) must not hold")
+	}
+	if l.holdVisible("no-baseline", fp, session.StatusWaiting, 2) {
+		t.Fatal("row without a polled baseline must not be held")
+	}
+	var nilLedger *refreshLedger
+	if nilLedger.holdVisible("v1", fp, session.StatusWaiting, 2) {
+		t.Fatal("nil ledger must never hold")
+	}
+	// None of the refused holds may have advanced the ceiling counter.
+	if !l.holdVisible("v1", fp, session.StatusWaiting, 1) {
+		t.Fatal("refused holds must not consume the ceiling (skips should still be 0)")
+	}
+}
+
+// heldSteady is the read-only hold used by processStatusUpdate's visible pass.
+// It must never advance the ceiling counter — the background sweep owns
+// freshness — so an arbitrary number of held passes leaves the sweep-side
+// hold/poll pattern untouched.
+func TestRefreshLedger_HeldSteadyIsReadOnly(t *testing.T) {
+	l := newRefreshLedger()
+	fp := quiescentFP()
+	changed := fp
+	changed.title = "typing"
+	l.admitPoll("v1", fp)
+
+	for i := 0; i < 50; i++ {
+		if !l.heldSteady("v1", fp, session.StatusIdle) {
+			t.Fatalf("pass %d: steady visible row should be held read-only", i)
+		}
+	}
+	if l.heldSteady("v1", changed, session.StatusIdle) {
+		t.Fatal("changed fingerprint must not be held")
+	}
+	if l.heldSteady("v1", fp, session.StatusError) {
+		t.Fatal("unsettled status must not be held")
+	}
+	var nilLedger *refreshLedger
+	if nilLedger.heldSteady("v1", fp, session.StatusIdle) {
+		t.Fatal("nil ledger must never hold")
+	}
+	// 50 read-only holds consumed none of the sweep ceiling: both sweep-side
+	// holds must still be available.
+	for i := 0; i < 2; i++ {
+		if !l.holdVisible("v1", fp, session.StatusIdle, 2) {
+			t.Fatalf("sweep hold %d should still be available after read-only holds", i+1)
+		}
+	}
+}
+
+// The budget must cycle: over ceil(due/budget) sweeps every due visible row is
+// polled at least once, because deferred rows age (deferrals++) and admission
+// orders most-starved first.
+func TestAdmitVisiblePolls_RoundRobinCoversAllDueRows(t *testing.T) {
+	const due, budget = 25, 10
+	l := newRefreshLedger()
+	fp := quiescentFP()
+	insts := make([]*session.Instance, due)
+	for i := range insts {
+		insts[i] = &session.Instance{ID: string(rune('A' + i))}
+	}
+
+	polled := make(map[string]int)
+	sweeps := (due + budget - 1) / budget // 3
+	for s := 0; s < sweeps; s++ {
+		candidates := make([]visiblePollCandidate, 0, due)
+		for _, inst := range insts {
+			candidates = append(candidates, visiblePollCandidate{
+				inst: inst, fp: fp, deferrals: l.deferralCount(inst.ID),
+			})
+		}
+		admitted, deferred := admitVisiblePolls(candidates, "", budget)
+		if len(admitted) != budget {
+			t.Fatalf("sweep %d admitted %d rows, want exactly the budget %d", s, len(admitted), budget)
+		}
+		for _, c := range admitted {
+			l.admitPoll(c.inst.ID, c.fp)
+			polled[c.inst.ID]++
+		}
+		for _, c := range deferred {
+			l.deferPoll(c.inst.ID)
+		}
+	}
+	for _, inst := range insts {
+		if polled[inst.ID] == 0 {
+			t.Fatalf("row %s was never polled in %d sweeps (budget starvation)", inst.ID, sweeps)
+		}
+	}
+}
+
+// The cursor row is what the preview pane shows: it must always be in the
+// admitted prefix, even when it is the least-starved candidate.
+func TestAdmitVisiblePolls_CursorRowIsNeverDeferred(t *testing.T) {
+	candidates := make([]visiblePollCandidate, 0, 15)
+	for i := 0; i < 15; i++ {
+		candidates = append(candidates, visiblePollCandidate{
+			inst: &session.Instance{ID: string(rune('a' + i))}, deferrals: 5,
+		})
+	}
+	candidates = append(candidates, visiblePollCandidate{
+		inst: &session.Instance{ID: "cursor-row"}, deferrals: 0,
+	})
+
+	admitted, deferred := admitVisiblePolls(candidates, "cursor-row", 10)
+	for _, c := range deferred {
+		if c.inst.ID == "cursor-row" {
+			t.Fatal("cursor row was deferred by the budget")
+		}
+	}
+	if len(admitted) == 0 || admitted[0].inst.ID != "cursor-row" {
+		t.Fatalf("cursor row should be admitted first, got %v", admitted)
+	}
+}
+
+// The hook and SSE UpdatedAt inputs are what make the "real transitions are
+// not delayed" argument true for event-driven tools: a Stop /Notification/
+// PermissionRequest hook (or an OpenCode /event sample) moves the fingerprint
+// even when the tmux-side evidence (activity/title/command) is unchanged, so
+// the very next sweep polls instead of holding the skip. Pinned here because
+// fingerprintSession is the ONLY reader of these inputs — nothing else fails
+// if they are dropped.
+func TestFingerprintSession_HookAndSSEInputsMoveTheFingerprint(t *testing.T) {
+	const tmuxName = "agentdeck-fp-test-C"
+	inst := instWithTmuxName(t, "fp-C", tmuxName)
+	h := newHomeForSnapshotTest()
+	h.hookWatcher = session.NewStatusFileWatcherForTest(t)
+	h.sseWatcher = session.NewOpenCodeSSEWatcher(nil)
+
+	tmux.SeedSessionActivityCacheForTest(t, map[string]int64{tmuxName: 4242})
+	tmux.SeedPaneInfoCacheForTest(t, map[string]tmux.PaneInfo{
+		tmuxName: {Title: "steady", CurrentCommand: "node"},
+	})
+
+	base := h.fingerprintSession(inst)
+	if !base.ok {
+		t.Fatal("fingerprint should be usable with fresh tmux caches")
+	}
+	if base.hookAt != 0 || base.sseAt != 0 {
+		t.Fatalf("no watcher entries yet: hookAt/sseAt should be 0, got %+v", base)
+	}
+	if again := h.fingerprintSession(inst); !again.unchangedFrom(base) {
+		t.Fatalf("steady state must re-fingerprint identically: %+v vs %+v", again, base)
+	}
+
+	// A Stop hook lands. tmux evidence is untouched, but hookAt must move the
+	// fingerprint so the next sweep polls the transition immediately.
+	hookTime := time.Now()
+	h.hookWatcher.SetHookStatusForTest(t, inst.ID, &session.HookStatus{
+		Status: "waiting", Event: "Stop", UpdatedAt: hookTime,
+	})
+	withHook := h.fingerprintSession(inst)
+	if withHook.unchangedFrom(base) {
+		t.Fatal("a delivered hook must change the fingerprint even with unchanged tmux evidence")
+	}
+	if withHook.hookAt != hookTime.UnixNano() {
+		t.Fatalf("hookAt = %d, want the hook's UpdatedAt %d", withHook.hookAt, hookTime.UnixNano())
+	}
+
+	// A re-delivered hook with identical content but a newer UpdatedAt is a
+	// new event and must move the fingerprint again.
+	h.hookWatcher.SetHookStatusForTest(t, inst.ID, &session.HookStatus{
+		Status: "waiting", Event: "Stop", UpdatedAt: hookTime.Add(time.Second),
+	})
+	rehooked := h.fingerprintSession(inst)
+	if rehooked.unchangedFrom(withHook) {
+		t.Fatal("a re-delivered hook with a newer UpdatedAt must change the fingerprint")
+	}
+
+	// An OpenCode SSE sample moves sseAt the same way (issue #1614).
+	sseTime := time.Now()
+	h.sseWatcher.SetStatusForTest(t, inst.ID, &session.OpenCodeSSEStatus{
+		Status: "running", UpdatedAt: sseTime,
+	})
+	withSSE := h.fingerprintSession(inst)
+	if withSSE.unchangedFrom(rehooked) {
+		t.Fatal("an SSE status sample must change the fingerprint")
+	}
+	if withSSE.sseAt != sseTime.UnixNano() {
+		t.Fatalf("sseAt = %d, want the sample's UpdatedAt %d", withSSE.sseAt, sseTime.UnixNano())
+	}
+
+	// Back to steady state: with all inputs unchanged the fingerprint is
+	// stable again, i.e. the session is once more eligible for the skip.
+	if settled := h.fingerprintSession(inst); !settled.unchangedFrom(withSSE) {
+		t.Fatalf("unchanged hook+SSE inputs must re-fingerprint identically: %+v vs %+v", settled, withSSE)
+	}
+}
+
 // ---- viewport publication ----
 
 func TestPublishVisibleSessions_CoversViewportAndCursor(t *testing.T) {
@@ -302,14 +520,19 @@ func TestPublishVisibleSessions_CoversViewportAndCursor(t *testing.T) {
 
 	h.publishVisibleSessions("attached-1")
 
-	ids, ok := h.visibleSessionsForSweep()
+	snap, ok := h.visibleSessionsForSweep()
 	if !ok {
 		t.Fatal("freshly published viewport should be usable")
 	}
 	for _, want := range []string{"a", "b-parent", "b", "d", "e", "z", "attached-1"} {
-		if _, found := ids[want]; !found {
-			t.Fatalf("visible set missing %q: %v", want, ids)
+		if _, found := snap.ids[want]; !found {
+			t.Fatalf("visible set missing %q: %v", want, snap.ids)
 		}
+	}
+	// The selected row is published as the cursor ID so the sweep's visible
+	// budget can never defer the row the preview pane is showing.
+	if snap.cursorID != "z" {
+		t.Fatalf("cursorID = %q, want %q (the selected row)", snap.cursorID, "z")
 	}
 }
 
