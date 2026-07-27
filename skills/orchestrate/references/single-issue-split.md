@@ -7,16 +7,27 @@ The end state is always **one branch, one PR**.
 
 ## Decompose
 
-**If the planning stage ran** (spec-fed task), decomposition is already done:
-subtasks = the plan's tasks, in plan order, with the plan's parallel-safe
-markings deciding the topology below. Each implementer gets its plan task
-verbatim; do not re-decompose or reorder.
+**If a plan exists** — the planning stage ran (spec-fed task), or you were
+handed one (plan-fed task) — decomposition is already done: subtasks = the
+plan's tasks, in plan order, with the plan's parallel-safe markings deciding
+the topology below. Each implementer gets its plan task verbatim; do not
+re-decompose or reorder. A plan-fed task's plan may lack `tier:` tags; tier
+those tasks yourself from the tier table in `SKILL.md`.
 
 **Otherwise** split the issue yourself into 2–5 subtasks, each independently
 implementable and testable, ordered by dependency. For each subtask write a
 mini-spec: goal, likely files/areas, done criteria. The reason to split is
 **context hygiene** — each session holds one small coherent job — not raw
 speed.
+
+Your own split is subject to the same gate as a planner's plan: it feeds 2+
+implementer sessions, so it gets **one** plan review before any
+implementation — see "Reviewing the plan" in `SKILL.md`. Write the mini-specs
+to `$RUN_DIR/<issue-slug>/subtasks.md` and point the reviewer at that plus the
+issue/spec; it is checking coverage, cross-subtask interface mismatch and
+ordering, not the code you propose. Being the author of the split is not a
+reason to skip it — every downstream reviewer will be handed one mini-spec as
+ground truth and can't see the ones around it.
 
 ## Choose the topology
 
