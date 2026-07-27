@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -47,8 +48,7 @@ func TestEnsureWorkerScratchConfigDir_RepointsSymlinksOnSourceChange(t *testing.
 	srcA := makeProfileDir(t, ".claude.json", "projects", "only-in-a")
 	srcB := makeProfileDir(t, ".claude.json", "projects", "only-in-b")
 
-	scratch, err := inst.EnsureWorkerScratchConfigDir(srcA)
-	if err != nil {
+	if _, err := inst.EnsureWorkerScratchConfigDir(srcA); err != nil {
 		t.Fatalf("seed from srcA: %v", err)
 	}
 	t.Cleanup(inst.CleanupWorkerScratchConfigDir)
@@ -58,12 +58,15 @@ func TestEnsureWorkerScratchConfigDir_RepointsSymlinksOnSourceChange(t *testing.
 	if err != nil {
 		t.Fatalf("reseed from srcB: %v", err)
 	}
-	if scratch2 != scratch {
-		t.Fatalf("scratch dir should be stable per instance: %q vs %q", scratch, scratch2)
-	}
 
+	// Asserted on the EFFECTIVE scratch dir rather than on a fixed path.
+	// Since workerScratchDirFor became content-keyed, a source change lands
+	// on a different dir instead of repointing one in place — the #924
+	// safety property (no old-account state reachable after a switch) is the
+	// same, but the mechanism is structural. Under the pre-#924 bug this
+	// still fails: that code reused the dir with links into srcA.
 	for _, name := range []string{".claude.json", "projects"} {
-		target, rerr := os.Readlink(filepath.Join(scratch, name))
+		target, rerr := os.Readlink(filepath.Join(scratch2, name))
 		if rerr != nil {
 			t.Fatalf("readlink %s: %v", name, rerr)
 		}
@@ -73,14 +76,31 @@ func TestEnsureWorkerScratchConfigDir_RepointsSymlinksOnSourceChange(t *testing.
 	}
 
 	// Entry only in B must be linked in.
-	if target, rerr := os.Readlink(filepath.Join(scratch, "only-in-b")); rerr != nil || target != filepath.Join(srcB, "only-in-b") {
+	if target, rerr := os.Readlink(filepath.Join(scratch2, "only-in-b")); rerr != nil || target != filepath.Join(srcB, "only-in-b") {
 		t.Errorf("only-in-b not linked to new source (target=%q err=%v)", target, rerr)
 	}
 
-	// Leftover symlink to the old profile must be swept — a dangling-but-
-	// valid link into srcA would silently expose the old account's state.
-	if _, lerr := os.Lstat(filepath.Join(scratch, "only-in-a")); !os.IsNotExist(lerr) {
-		t.Errorf("only-in-a leftover from old profile not removed (err=%v)", lerr)
+	// No entry may resolve into the OLD profile — a dangling-but-valid link
+	// into srcA would silently expose the old account's state.
+	assertNoEntriesPointInto(t, scratch2, srcA)
+}
+
+// assertNoEntriesPointInto fails if any symlink in dir resolves inside the
+// given profile directory.
+func assertNoEntriesPointInto(t *testing.T, dir, profile string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read scratch: %v", err)
+	}
+	for _, e := range entries {
+		target, rerr := os.Readlink(filepath.Join(dir, e.Name()))
+		if rerr != nil {
+			continue // not a symlink
+		}
+		if strings.HasPrefix(target, profile+string(filepath.Separator)) {
+			t.Errorf("%s still resolves into the old profile: %s", e.Name(), target)
+		}
 	}
 }
 

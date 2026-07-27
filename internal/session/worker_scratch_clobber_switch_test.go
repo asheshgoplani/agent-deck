@@ -36,18 +36,24 @@ func TestEnsureWorkerScratchConfigDir_ReplacesClobberedClaudeJSONOnSourceChange(
 		t.Fatal(err)
 	}
 
-	if _, err := inst.EnsureWorkerScratchConfigDir(srcB); err != nil {
+	scratchB, err := inst.EnsureWorkerScratchConfigDir(srcB)
+	if err != nil {
 		t.Fatalf("reseed from srcB: %v", err)
 	}
 
-	li, err := os.Lstat(clobbered)
+	// Asserted on the EFFECTIVE post-switch scratch: content-keying means a
+	// source change may land on a different dir rather than resetting one in
+	// place. Either way the old account's clobbered state must not be the
+	// .claude.json claude sees after the switch.
+	effective := filepath.Join(scratchB, ".claude.json")
+	li, err := os.Lstat(effective)
 	if err != nil {
 		t.Fatalf("lstat .claude.json: %v", err)
 	}
 	if li.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf(".claude.json still a real file after source change — stale old-account state survives the switch")
 	}
-	if target, _ := os.Readlink(clobbered); target != filepath.Join(srcB, ".claude.json") {
+	if target, _ := os.Readlink(effective); target != filepath.Join(srcB, ".claude.json") {
 		t.Errorf(".claude.json points at %q, want new source", target)
 	}
 }
@@ -105,10 +111,14 @@ func TestEnsureWorkerScratchConfigDir_InfersPreviousSourceWithoutMarker(t *testi
 		t.Fatal(err)
 	}
 
-	if _, err := inst.EnsureWorkerScratchConfigDir(srcB); err != nil {
+	scratchB, err := inst.EnsureWorkerScratchConfigDir(srcB)
+	if err != nil {
 		t.Fatalf("reseed from srcB: %v", err)
 	}
-	li, err := os.Lstat(clobbered)
+	// As above: assert on the effective post-switch scratch, so the test
+	// holds whether the old dir is reset in place (marker inference) or a
+	// content-keyed switch lands on a fresh one.
+	li, err := os.Lstat(filepath.Join(scratchB, ".claude.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
