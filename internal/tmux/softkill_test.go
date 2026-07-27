@@ -121,6 +121,25 @@ func waitForPidAlive(pid int, d time.Duration) {
 	}
 }
 
+// waitForFile polls until path exists or the deadline passes, returning the
+// last os.Stat error (nil on success). Used to assert on marker files a child
+// writes asynchronously from a signal handler — the write can be delayed on a
+// loaded CI runner under -race, so a fixed sleep-then-Stat flakes; polling
+// asserts the liveness property ("the file eventually appears") without racing.
+func waitForFile(path string, d time.Duration) error {
+	deadline := time.Now().Add(d)
+	var err error
+	for {
+		if _, err = os.Stat(path); err == nil {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestKillStaleControlClients_TerminatesCleanlyOnSIGTERM asserts that
 // softKillProcess sends SIGTERM first and allows the target to shut down
 // cleanly — proven by a marker file the child writes from its SIGTERM
@@ -177,7 +196,15 @@ func TestKillStaleControlClients_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 	// cleanly. Asserting on marker-existence captures the real
 	// regression guarantee (SIGTERM ran before SIGKILL) without the
 	// test-specific zombie race.
-	_, err := os.Stat(marker)
+	//
+	// POLL for the marker rather than a single Stat: the child writes it
+	// from an async SIGTERM handler, and on a loaded CI runner under -race
+	// that write can land after the fixed grace windows above. The property
+	// under test is liveness ("the handler eventually ran"), so poll until
+	// present with a generous deadline — a genuinely-missing marker (the #737
+	// straight-to-SIGKILL regression) still fails after the timeout, while a
+	// merely-slow write no longer flakes.
+	err := waitForFile(marker, 5*time.Second)
 	assert.NoError(t, err, "child's SIGTERM handler must have run (marker file must exist)")
 
 	// Process should be gone.
@@ -284,8 +311,9 @@ func TestControlPipeClose_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 
 	// Marker existence proves the SIGTERM handler ran — SIGKILL cannot
 	// be trapped, so a missing marker means softKillProcessGroup
-	// skipped SIGTERM and went straight to SIGKILL.
-	_, err = os.Stat(marker)
+	// skipped SIGTERM and went straight to SIGKILL. Poll (not a single
+	// Stat) for the async handler write — see waitForFile.
+	err = waitForFile(marker, 5*time.Second)
 	assert.NoError(t, err, "child's SIGTERM handler must have run (marker file must exist)")
 
 	err = syscall.Kill(pid, 0)
