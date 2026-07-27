@@ -17,8 +17,8 @@ import (
 //   - "wire_up_line_exists" — line-level grep over main.go. Fails fast (no
 //     subprocess required) when a future refactor deletes the call line.
 //   - "tui_startup_emits_line" — subprocess integration. Builds the binary,
-//     launches the TUI under an isolated HOME, kills it after a short window,
-//     and greps the resulting debug.log for the canonical OBS-01 substring.
+//     launches the TUI under an isolated HOME, waits for the canonical log line,
+//     then terminates it. Catches the failure mode where the call line is present
 //     Catches the failure mode where the call line is present but unreachable
 //     (e.g. moved after an early os.Exit) — line-level grep cannot detect this.
 //
@@ -79,6 +79,7 @@ func TestLogCgroupIsolationDecision_WiredIntoBootstrap(t *testing.T) {
 			"XDG_DATA_HOME="+xdgDataHome,
 			"XDG_CACHE_HOME="+xdgCacheHome,
 			"AGENTDECK_DEBUG=1",
+			"AGENTDECK_SKIP_UPDATE_CHECK=1",
 			"AGENTDECK_PROFILE=test-obs01",
 			"TERM=dumb",
 		)
@@ -108,6 +109,7 @@ func TestLogCgroupIsolationDecision_WiredIntoBootstrap(t *testing.T) {
 		// own go build, leaving the fixed sleeps with no slack). Poll with a
 		// generous overall ceiling so a genuine wiring regression still
 		// fails, just not on a coin flip.
+
 		logPath := filepath.Join(xdgCacheHome, "agent-deck", "debug.log")
 		deadline := time.Now().Add(20 * time.Second)
 		var data []byte
