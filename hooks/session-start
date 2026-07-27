@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# SessionStart hook for the agent-deck plugin.
+#
+# Injects one of two short preambles depending on whether this session was
+# dispatched as a child (an executor working a task prompt) or is an
+# interactive session with a human at the keyboard.
+#
+# Detection reads ONLY the tmux session environment, which agent-deck populates
+# at launch for parented sessions. Every probe is allowed to fail: no tmux, no
+# tmux server, not an agent-deck session, an old agent-deck without the markers
+# — all of them fall through to the interactive preamble. The hook must never
+# fail a session start, so it exits 0 unconditionally.
+
+set -uo pipefail   # deliberately NOT -e: probes below are expected to fail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# agentdeck_role prints the session's AGENTDECK_ROLE, or nothing.
+agentdeck_role() {
+  command -v tmux >/dev/null 2>&1 || return 0
+  [ -n "${TMUX:-}" ] || return 0
+  local line
+  line="$(tmux show-environment AGENTDECK_ROLE 2>/dev/null)" || return 0
+  # tmux prints "AGENTDECK_ROLE=<value>" when set, and "-AGENTDECK_ROLE"
+  # (leading dash = removed) or nothing when it is not.
+  case "$line" in
+    AGENTDECK_ROLE=*) printf '%s' "${line#AGENTDECK_ROLE=}" ;;
+    *)                return 0 ;;
+  esac
+}
+
+if [ "$(agentdeck_role)" = "child" ]; then
+  preamble_file="${SCRIPT_DIR}/preamble-child.md"
+else
+  preamble_file="${SCRIPT_DIR}/preamble-interactive.md"
+fi
+
+preamble="$(cat "$preamble_file" 2>/dev/null)" || preamble=""
+[ -n "$preamble" ] || exit 0   # nothing to inject; never fail the session
+
+# JSON-escape via bash parameter substitution (one C-level pass each).
+escape_for_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+context="$(escape_for_json "$preamble")"
+
+# Claude Code reads hookSpecificOutput.additionalContext; other SDK-standard
+# harnesses read a top-level additionalContext. Emit exactly one so nothing is
+# injected twice. printf, not a heredoc — bash 5.3+ can hang on heredocs here.
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "$context"
+else
+  printf '{\n  "additionalContext": "%s"\n}\n' "$context"
+fi
+
+exit 0
