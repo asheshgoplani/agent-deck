@@ -59,8 +59,8 @@ func (s *stringSliceFlag) Set(v string) error {
 func handleCredsRefresh(args []string) {
 	fs := flag.NewFlagSet("creds-refresh", flag.ExitOnError)
 	once := fs.Bool("once", false, "run a single refresh pass and exit (cron-friendly)")
-	interval := fs.Duration("interval", credrefresh.DefaultInterval, "refresh cadence when running as a daemon")
-	threshold := fs.Duration("threshold", credrefresh.DefaultThreshold, "refresh when the access token expires within this window")
+	interval := durationFlag(fs, "interval", credrefresh.DefaultInterval, "refresh cadence when running as a daemon")
+	threshold := durationFlag(fs, "threshold", credrefresh.DefaultThreshold, "refresh when the access token expires within this window")
 	endpoint := fs.String("endpoint", credrefresh.DefaultTokenEndpoint, "OAuth token endpoint (override for testing only)")
 	var configDirs stringSliceFlag
 	fs.Var(&configDirs, "config-dir", "profile config dir to keep warm (repeatable); defaults to ~/.claude, ~/.claude-work and every config_dir declared in config.toml")

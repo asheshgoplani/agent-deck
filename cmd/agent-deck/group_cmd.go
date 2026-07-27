@@ -1338,44 +1338,28 @@ func truncateGroupName(s string, max int) string {
 	return s[:max-3] + "..."
 }
 
-// reorderGroupArgs reorders arguments so flags come before positional args
-// This fixes Go's flag package limitation where flags after positional args are ignored
-// e.g., "ios --parent mobile" becomes "--parent mobile ios"
+// reorderGroupArgs is a no-op pass-through kept only so the group handlers read
+// uniformly; normalizeArgs (called immediately after, on the same args) does the
+// hoisting of flags ahead of positionals that Go's flag package needs.
+//
+// It used to do that hoisting itself, using a HARDCODED map of which flags take
+// a value: --parent, --default-path, --position, -p. Every other value-taking
+// flag was treated as a boolean, so its value was orphaned into the positional
+// list and the flag then swallowed whatever positional followed it. That is how
+// `group update <name> --max-concurrent 12` became `--max-concurrent <name> 12`:
+// the group name was parsed as the int, the command exited 2 printing the usage
+// block that documents the very form it had just rejected, and only the
+// `--max-concurrent=12` form worked.
+//
+// The allowlist was the defect, not its contents — a flag added to any group
+// subcommand later is silently broken in its space-separated form until someone
+// remembers a map in an unrelated function. normalizeArgs derives the same
+// question ("does this flag take a value?") from the FlagSet itself via
+// IsBoolFlag, so it cannot drift, and it additionally honours the `--`
+// terminator and a bare `-`. Reordering twice is what produced the mis-parse;
+// reordering once, correctly, is the whole fix.
 func reorderGroupArgs(args []string) []string {
-	if len(args) == 0 {
-		return args
-	}
-
-	// Known flags that take a value
-	valueFlags := map[string]bool{
-		"--parent":       true,
-		"--default-path": true,
-		"--position":     true,
-		"-p":             true,
-	}
-
-	var flags []string
-	var positional []string
-
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-
-		// Check if it's a flag
-		if strings.HasPrefix(arg, "-") {
-			flags = append(flags, arg)
-
-			// Check if this flag takes a value (and value is separate)
-			if !strings.Contains(arg, "=") && valueFlags[arg] && i+1 < len(args) {
-				i++
-				flags = append(flags, args[i])
-			}
-		} else {
-			positional = append(positional, arg)
-		}
-	}
-
-	// Return flags first, then positional args
-	return append(flags, positional...)
+	return args
 }
 
 // handleGroupChange implements issue #447: reparent an entire group (and its

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // This file holds the transcript-tail scan behind completion-sentinel
@@ -18,10 +19,13 @@ import (
 // the daemon's poll loop becomes the retry.
 
 // transcriptContentMessage extracts the assistant message content blocks from
-// a transcript line, for completion-sentinel detection.
+// a transcript line, for completion-sentinel detection. Timestamp is the
+// record's own RFC3339 clock, used to age out a completion against the child's
+// last delivery (see completionIsStale in the CLI).
 type transcriptContentMessage struct {
 	Type        string `json:"type"`
 	IsSidechain bool   `json:"isSidechain"`
+	Timestamp   string `json:"timestamp"`
 	Message     struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
@@ -86,9 +90,48 @@ func ValidateTranscriptPath(path string) (string, bool) {
 // A missing/unreadable file yields pending=false so callers never spin on a
 // path that will not resolve.
 func ScanTranscriptTailForDone(path string) (sig DoneSignal, found bool, pending bool) {
+	sig, _, found, pending = scanTranscriptTailForDone(path)
+	return sig, found, pending
+}
+
+// TranscriptDoneSignal reports the completion sentinel asserted by a
+// transcript's newest main-chain assistant turn, with the timestamp of the
+// record that carried it (zero when the record has no parseable clock).
+//
+// This is the DAEMON-INDEPENDENT read of a completion. The completion ledger is
+// written only by the transition daemon, so whenever that daemon is down every
+// child's done_status reads null indefinitely — indistinguishable from "never
+// finished". Observed 2026-07-20: a macOS Background Task Management LWCR
+// mismatch (the agent-deck binary was reinstalled, invalidating the registered
+// code requirement) left the notifier crash-looping on EX_CONFIG for a week,
+// during which seven workers printed the sentinel and every
+// `until … done_status != null` supervision loop hung until its harness killed
+// it. The sentinel is in the child's own transcript the whole time; reading it
+// there costs one tail read the caller is already doing for context_tokens.
+//
+// Deliberately NOT durable: unlike the ledger (last-wins, kept forever), this
+// answers "did the CURRENT turn finish". Once the child is handed new work its
+// newest assistant turn carries no sentinel and this reports none, so a stale
+// report can never be re-served as the answer to fresh work.
+//
+// pending (the Stop-hook flush race) is not surfaced: a caller polling fleet
+// state wants "no completion yet", and the next poll sees the flushed record.
+func TranscriptDoneSignal(path string) (DoneSignal, time.Time, bool) {
+	sig, at, found, _ := scanTranscriptTailForDone(path)
+	if !found {
+		return DoneSignal{}, time.Time{}, false
+	}
+	return sig, at, true
+}
+
+// scanTranscriptTailForDone is the shared backward walk. It stops at the first
+// main-chain assistant record (the turn that just stopped — scan it) or user
+// record (its reply is not appended yet: pending, and scanning past it would
+// re-read the PREVIOUS turn's sentinel).
+func scanTranscriptTailForDone(path string) (sig DoneSignal, at time.Time, found bool, pending bool) {
 	lines, err := TranscriptTailLines(path, doneScanTailLines)
 	if err != nil {
-		return DoneSignal{}, false, false
+		return DoneSignal{}, time.Time{}, false, false
 	}
 	for i := len(lines) - 1; i >= 0; i-- {
 		var msg transcriptContentMessage
@@ -101,12 +144,29 @@ func ScanTranscriptTailForDone(path string) (sig DoneSignal, found bool, pending
 		switch msg.Type {
 		case "assistant":
 			sig, found = ScanDoneSentinel(transcriptText(msg.Message.Content))
-			return sig, found, false
+			return sig, parseTranscriptTimestamp(msg.Timestamp), found, false
 		case "user":
-			return DoneSignal{}, false, true
+			return DoneSignal{}, time.Time{}, false, true
 		}
 	}
-	return DoneSignal{}, false, true
+	return DoneSignal{}, time.Time{}, false, true
+}
+
+// parseTranscriptTimestamp accepts the RFC3339 shapes Claude Code writes into
+// its JSONL. An absent or unparseable clock yields the zero time, which callers
+// treat as "finish time unknown" rather than discarding the completion.
+func parseTranscriptTimestamp(ts string) time.Time {
+	ts = strings.TrimSpace(ts)
+	if ts == "" {
+		return time.Time{}
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+		return parsed
+	}
+	if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+		return parsed
+	}
+	return time.Time{}
 }
 
 // transcriptText flattens an assistant message's content into plain text.

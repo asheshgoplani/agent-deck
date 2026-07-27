@@ -17,7 +17,7 @@ func handleSessionApprove(profile string, args []string) {
 	fs := flag.NewFlagSet("session approve", flag.ExitOnError)
 	fs.SetOutput(os.Stdout)
 	choiceFlag := fs.String("choice", "", "Approval choice: once, always, session, or displayed option number")
-	timeout := fs.Duration("timeout", 5*time.Second, "Max time to verify that the original approval prompt cleared")
+	timeout := durationFlag(fs, "timeout", 5*time.Second, "Max time to verify that the original approval prompt cleared")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("q", false, "Quiet mode")
 

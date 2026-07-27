@@ -116,6 +116,9 @@ func handleSessionRemove(profile string, args []string) {
 	// matching block in handleRemove for rationale.
 	_, _ = session.SweepInboxesForChildSession(inst.ID)
 	_, _ = session.RemoveNotifyStateRecord(inst.ID)
+	// Drop any prompt this session was queued with, so it cannot be delivered
+	// to a later session that happens to reuse the id.
+	session.DiscardQueuedMessage(inst.ID)
 
 	out.Success(fmt.Sprintf("Removed session: %s", inst.Title), map[string]interface{}{
 		"success": true,
@@ -239,6 +242,7 @@ func bulkRemoveSessions(
 		// Best-effort transition-notifier cleanup (issue #910).
 		_, _ = session.SweepInboxesForChildSession(id)
 		_, _ = session.RemoveNotifyStateRecord(id)
+		session.DiscardQueuedMessage(id)
 	}
 	return removed
 }

@@ -26,7 +26,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 	insecureBind := fs.Bool("insecure-bind", false, "Allow binding a non-loopback address with no --token (UNSAFE: exposes an unauthenticated RCE surface to the network)")
 	pushEnabled := fs.Bool("push", false, "Enable web push notifications (auto-generates VAPID keys per profile)")
 	pushVAPIDSubject := fs.String("push-vapid-subject", "mailto:agentdeck@localhost", "VAPID subject used for web push notifications")
-	pushTestEvery := fs.Duration("push-test-every", 0, "Send periodic push test notifications at this interval (e.g. 10s, 1m); 0 disables")
+	pushTestEvery := durationFlag(fs, "push-test-every", 0, "Send periodic push test notifications at this interval (e.g. 10s, 1m); 0 disables")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck web [options]")
