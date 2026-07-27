@@ -2541,7 +2541,17 @@ func parsePaneDeadStatus(raw string) (int, bool) {
 // Skips any option key that exists in s.OptionOverrides — user-defined options take precedence.
 func (s *Session) buildStatusBarArgs() []string {
 	if !s.injectStatusLine {
-		return nil
+		// Disabling injection must actively turn the bar OFF, not merely skip
+		// setting ours. tmux's own default is `status on`, so a bar — from that
+		// default, the user's tmux config, or an earlier run that had injection
+		// enabled — persists on the session unless we emit `status off`.
+		// Returning nil here is why `inject_status_line = false` silently did
+		// nothing on any session that already showed a bar (#687). Respect an
+		// explicit user `status` entry in [tmux].options.
+		if _, overridden := s.OptionOverrides["status"]; overridden {
+			return nil
+		}
+		return []string{"set-option", "-t", s.Name, "status", "off"}
 	}
 	themeStyle := currentTmuxThemeStyle()
 	rightStatus := s.themedStatusRight(themeStyle)
