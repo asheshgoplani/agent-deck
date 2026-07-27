@@ -1802,7 +1802,9 @@ func TestCanRestartCursor(t *testing.T) {
 	skipIfNoTmuxBinary(t)
 
 	inst := NewInstanceWithTool("cursor-restart-test", "/tmp", "cursor")
-	inst.Command = "sleep 60"
+	// Keep the synthetic process alive when Restart appends --continue; CI does
+	// not install Cursor.
+	inst.Command = "sh -c 'sleep 60' --"
 	err := inst.Start()
 	if err != nil {
 		t.Fatalf("Failed to start session: %v", err)
