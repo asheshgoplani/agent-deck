@@ -1068,6 +1068,57 @@ func (h *Home) getLayoutMode() string {
 	}
 }
 
+// contentChromeTop returns the number of rows rendered ABOVE the main content
+// area (the header line + filter bar + optional update/maintenance banners).
+// The debug footer is NOT included — it renders below the content, so it
+// doesn't shift the content's top edge. Kept in one place so mouse Y-routing
+// and the render path agree on where content starts.
+func (h *Home) contentChromeTop() int {
+	top := 1 // header line
+	top++    // filter bar (always shown, matches View())
+	if h.shouldRenderUpdateNudge() {
+		top++
+	}
+	if h.maintenanceMsg != "" {
+		top++
+	}
+	return top
+}
+
+// stackedPreviewTopY returns the screen Y (0-indexed) of the first row of the
+// PREVIEW region in the stacked layout, i.e. the row just below the horizontal
+// separator. A mouse-wheel event at or below this Y is over the preview and
+// should scroll it rather than move the list cursor. Returns -1 when the
+// current layout is not stacked. Mirrors renderStackedLayout's height split:
+//
+//	[content-top] SESSIONS title (panelTitleLines) + list (listHeight-title)
+//	              + separator (1)  <- divider
+//	[preview-top] PREVIEW title + preview content
+func (h *Home) stackedPreviewTopY() int {
+	if h.getLayoutMode() != LayoutModeStacked {
+		return -1
+	}
+	const helpBarHeight = 2
+	const panelTitleLines = 2
+	filterBarHeight := 1
+	updateBannerHeight := 0
+	if h.shouldRenderUpdateNudge() {
+		updateBannerHeight = 1
+	}
+	maintenanceBannerHeight := 0
+	if h.maintenanceMsg != "" {
+		maintenanceBannerHeight = 1
+	}
+	debugBarHeight := 0
+	if h.debugMode {
+		debugBarHeight = 1
+	}
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
+	listHeight := h.stackedListHeight(contentHeight)
+	// content top + full list block (title + body) + the 1-row separator.
+	return h.contentChromeTop() + listHeight + 1
+}
+
 // Messages
 type loadSessionsMsg struct {
 	instances    []*session.Instance
@@ -5098,15 +5149,24 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return h, nil
 			}
 			// Preview pane scroll (#574): when the wheel event lands in the
-			// preview region of the dual layout, scroll preview content
-			// instead of moving the list cursor. Other layouts keep the
-			// legacy list-scroll behaviour because they have no dedicated
-			// preview click-target (single = no preview; stacked = same-
-			// width column where Y-based routing is ambiguous enough to
-			// leave as list-scroll).
-			if h.getLayoutMode() == LayoutModeDual {
+			// preview region, scroll preview content instead of moving the
+			// list cursor. Dual layout routes by X (preview is the right
+			// column); stacked layout routes by Y (preview is the lower
+			// region, below the horizontal divider). Single layout has no
+			// preview target, so it keeps the legacy list-scroll behaviour.
+			switch h.getLayoutMode() {
+			case LayoutModeDual:
 				leftWidth := h.sessionsPaneWidth()
 				if msg.X >= leftWidth {
+					if msg.Button == tea.MouseButtonWheelUp {
+						h.previewScrollOffset++
+					} else if h.previewScrollOffset > 0 {
+						h.previewScrollOffset--
+					}
+					return h, nil
+				}
+			case LayoutModeStacked:
+				if top := h.stackedPreviewTopY(); top >= 0 && msg.Y >= top {
 					if msg.Button == tea.MouseButtonWheelUp {
 						h.previewScrollOffset++
 					} else if h.previewScrollOffset > 0 {
