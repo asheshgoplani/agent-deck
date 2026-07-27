@@ -17,7 +17,6 @@ import (
 func TestEval_EmbeddedPTY(t *testing.T) {
 	sb := harness.NewSandbox(t)
 	socketName := "ad-embedded-" + randHex(t, 4)
-	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socketName, "kill-server").Run() })
 	configDir := filepath.Join(sb.Home, ".config", "agent-deck")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
@@ -32,6 +31,7 @@ func TestEval_EmbeddedPTY(t *testing.T) {
 	}
 	runBin(t, sb, "add", "-c", "bash", "-t", "embedded-eval", workDir)
 	runBin(t, sb, "session", "start", "embedded-eval")
+	registerTUIEvalCleanup(t, sb, "embedded-eval", socketName)
 
 	p := sb.Spawn("--select", "embedded-eval")
 	defer p.Close()
@@ -41,6 +41,7 @@ func TestEval_EmbeddedPTY(t *testing.T) {
 	p.ExpectOutput("Claude Code Hooks", 8*time.Second)
 	p.Send("\x1b")
 	p.ExpectOutput("embedded-eval", 8*time.Second)
+	assertStartupProtocol(t, p.Output(), true)
 	p.Send("\r")
 	p.ExpectOutput("Ctrl+Q detach", 5*time.Second)
 
@@ -120,12 +121,13 @@ func TestEval_EmbeddedPTY(t *testing.T) {
 func TestEval_ClassicTUI(t *testing.T) {
 	sb := harness.NewSandbox(t)
 	socketName := "ad-classic-" + randHex(t, 4)
-	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socketName, "kill-server").Run() })
 	configDir := filepath.Join(sb.Home, ".config", "agent-deck")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
-	config := "theme = \"dark\"\n\n[tmux]\nsocket_name = \"" + socketName + "\"\n\n[ui]\nembedded_terminal = false\n"
+	// Deliberately omit embedded_terminal: the unset default must retain the
+	// original Agent Deck Bubble Tea terminal protocol.
+	config := "theme = \"dark\"\n\n[tmux]\nsocket_name = \"" + socketName + "\"\n"
 	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatalf("write classic UI config: %v", err)
 	}
@@ -136,6 +138,7 @@ func TestEval_ClassicTUI(t *testing.T) {
 	}
 	runBin(t, sb, "add", "-c", "bash", "-t", "classic-eval", workDir)
 	runBin(t, sb, "session", "start", "classic-eval")
+	registerTUIEvalCleanup(t, sb, "classic-eval", socketName)
 
 	p := sb.SpawnWithEnv([]string{"TERM=xterm-256color"}, "--select", "classic-eval")
 	defer p.Close()
@@ -144,6 +147,7 @@ func TestEval_ClassicTUI(t *testing.T) {
 	p.Send("\x1b")
 	p.ExpectOutput("SESSIONS", 8*time.Second)
 	p.ExpectOutput("classic-eval", 8*time.Second)
+	assertStartupProtocol(t, p.Output(), false)
 	p.Send("\r")
 
 	classicAttached := false
@@ -173,6 +177,56 @@ func TestEval_ClassicTUI(t *testing.T) {
 		out, err := tmuxTryEmbedded(socketName, "list-clients", "-F", "#{client_tty}")
 		return err != nil || strings.TrimSpace(out) == ""
 	}, "Ctrl+Q did not detach the classic full-screen tmux client")
+}
+
+func assertStartupProtocol(t *testing.T, output string, embedded bool) {
+	t.Helper()
+	const (
+		enableCellMotion = "\x1b[?1002h"
+		enableAllMotion  = "\x1b[?1003h"
+		enableFocus      = "\x1b[?1004h"
+	)
+	if embedded {
+		for _, sequence := range []string{enableAllMotion, enableFocus} {
+			if !strings.Contains(output, sequence) {
+				t.Fatalf("embedded startup did not enable terminal protocol %q", sequence)
+			}
+		}
+		if strings.Contains(output, enableCellMotion) {
+			t.Fatal("embedded startup enabled cell-motion instead of all-motion mouse reporting")
+		}
+		return
+	}
+	if !strings.Contains(output, enableCellMotion) {
+		t.Fatal("classic startup did not retain cell-motion mouse reporting")
+	}
+	for _, sequence := range []string{enableAllMotion, enableFocus} {
+		if strings.Contains(output, sequence) {
+			t.Fatalf("classic startup unexpectedly enabled embedded-only terminal protocol %q", sequence)
+		}
+	}
+}
+
+func registerTUIEvalCleanup(t *testing.T, sb *harness.Sandbox, title, socketName string) {
+	t.Helper()
+	t.Cleanup(func() {
+		// The PTY cleanup is registered after this function and therefore runs
+		// first. Stop the persistent session next so no tmux pane or lifecycle
+		// helper can write into Sandbox.Home while testing removes it.
+		if out, err := runBinTry(sb, "session", "stop", title); err != nil {
+			t.Logf("best-effort session stop for %s: %v\n%s", title, err, out)
+		}
+		_ = exec.Command("tmux", "-L", socketName, "kill-server").Run()
+
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := tmuxTryEmbedded(socketName, "list-sessions"); err != nil {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Errorf("tmux server %q remained live during evaluator cleanup", socketName)
+	})
 }
 
 func waitForEmbeddedEval(t *testing.T, timeout time.Duration, condition func() bool, failure string) {
