@@ -31,6 +31,15 @@ import (
 // their respective attach paths (local tmux vs SSH remote).
 const sshAttachReplyQuarantine = 500 * time.Millisecond
 
+// sshStdinPollInterval and sshStdinReaderStopTimeout mirror
+// attachStdinPollInterval / attachStdinReaderStopTimeout in internal/tmux/pty.go.
+// Keep these in sync — the SSH attach path hands stdin back to the TUI the same
+// way the local tmux path does, and for the same reason.
+const (
+	sshStdinPollInterval      = 100 * time.Millisecond
+	sshStdinReaderStopTimeout = time.Second
+)
+
 // sshControlDir is the directory for SSH ControlMaster sockets.
 const sshControlDir = "/tmp/agent-deck-ssh"
 
@@ -337,11 +346,35 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	}()
 
 	// Read stdin, intercept Ctrl+Q (all encodings), forward the rest.
+	//
+	// stdinReaderDone closes when this goroutine returns, and stdinReaderStop
+	// tells it to. Both are required because the remote process can exit on its
+	// own (the <-cmdDone branch below), and on that path nothing pressed Ctrl+Q
+	// — without a stop signal the reader stays parked in a blocking
+	// os.Stdin.Read that closing the PTY cannot interrupt. It would then be
+	// queued on the same tty as Bubble Tea's reader when Attach returns, win the
+	// next keystroke on FIFO wakeup order, and swallow it. Same defect and same
+	// fix as the local tmux attach path (internal/tmux.attachStdinPump).
+	stdinReaderDone := make(chan struct{})
+	stdinReaderStop := make(chan struct{})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(stdinReaderDone)
 		buf := make([]byte, 256)
+		fd := int(os.Stdin.Fd()) // #nosec G115 -- an OS file descriptor is a small positive int
 		for {
+			// Poll before reading so the stop signal is observable; a blocking
+			// read on a tty inherited from the shell is not interruptible.
+			select {
+			case <-stdinReaderStop:
+				return
+			default:
+			}
+			if !tmux.PollFdReady(fd, sshStdinPollInterval) {
+				continue
+			}
+
 			n, err := os.Stdin.Read(buf)
 			if err != nil {
 				break
@@ -385,6 +418,17 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	case <-outputDone:
 	case <-time.After(50 * time.Millisecond):
 	}
+	// Hand stdin back to the TUI: stop the reader, then drop whatever the
+	// remote's teardown left in the input queue and arm the reply quarantine.
+	// Waiting before flushing is what keeps the reader from eating the user's
+	// next keypress; flushing after it stops is what keeps the terminal's
+	// capability replies out of the TUI. Mirrors internal/tmux.quiesceAttachInput.
+	close(stdinReaderStop)
+	select {
+	case <-stdinReaderDone:
+	case <-time.After(sshStdinReaderStopTimeout):
+	}
+	_ = tmux.FlushInput(int(os.Stdin.Fd())) // #nosec G115 -- fd is a small positive int
 	termreply.QuarantineFor(sshAttachReplyQuarantine)
 
 	// Reset terminal styles that may have leaked from the remote session.

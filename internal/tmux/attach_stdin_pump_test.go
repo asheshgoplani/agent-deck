@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -79,19 +80,31 @@ func TestAttachStdinPump_StopsOnContextCancel(t *testing.T) {
 	default:
 	}
 
+	cancelledAt := time.Now()
 	cancel()
 
+	// The bound must stay UNDER attachStdinReaderStopTimeout, not merely under
+	// some generous ceiling. cleanupAttach gives up waiting at that backstop and
+	// returns anyway, so a pump that exits slower than it is still broken in
+	// production - the reader outlives the attach and eats a keypress - while a
+	// test that allowed backstop+1s would happily pass. Assert the invariant
+	// cleanupAttach actually depends on: the pump exits before the backstop fires.
 	select {
 	case res := <-done:
+		if elapsed := time.Since(cancelledAt); elapsed >= attachStdinReaderStopTimeout {
+			t.Errorf("pump took %v to exit, want < %v (cleanupAttach's backstop); "+
+				"at or beyond it the reader outlives the attach",
+				elapsed, attachStdinReaderStopTimeout)
+		}
 		if res.interrupted {
 			t.Errorf("interrupted = true on a context cancel, want false")
 		}
 		if res.outcome != SwitchNone {
 			t.Errorf("outcome = %v, want SwitchNone", res.outcome)
 		}
-	case <-time.After(attachStdinReaderStopTimeout + time.Second):
-		t.Fatal("pump did not exit after context cancel; a surviving reader " +
-			"swallows the first keystroke on return to the deck")
+	case <-time.After(attachStdinReaderStopTimeout):
+		t.Fatal("pump did not exit before cleanupAttach's backstop; a surviving " +
+			"reader swallows the first keystroke on return to the deck")
 	}
 
 	// The pump is gone, so a keystroke arriving now must be left for the next
@@ -99,7 +112,7 @@ func TestAttachStdinPump_StopsOnContextCancel(t *testing.T) {
 	if _, err := w.Write([]byte("x")); err != nil {
 		t.Fatalf("write after cancel: %v", err)
 	}
-	if !pollStdinReady(int(pump.in.Fd()), time.Second) {
+	if !PollFdReady(int(pump.in.Fd()), time.Second) {
 		t.Fatal("keystroke written after the pump exited was consumed by it")
 	}
 	buf := make([]byte, 1)
@@ -184,5 +197,115 @@ func TestAttachStdinPump_StopsOnEOF(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("pump did not exit on stdin EOF")
+	}
+}
+
+// --- quiesceAttachInput: the teardown half of the fix ---
+//
+// These pin the two invariants cleanupAttach depends on and that the pump tests
+// above cannot see: that the stdin reader is joined BEFORE the input queue is
+// flushed, and that the flush runs on every exit path rather than only after a
+// detach keypress.
+
+func TestQuiesceAttachInput_WaitsForReaderBeforeFlushing(t *testing.T) {
+	readerDone := make(chan struct{})
+
+	var mu sync.Mutex
+	var flushedWhileReaderAlive bool
+	var flushed, quarantined bool
+	readerAlive := true
+
+	flush := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		flushed = true
+		if readerAlive {
+			// Flushing here would discard the capability replies the reader is
+			// about to consume anyway, and worse, leave the reader running to
+			// eat a real keystroke after the queue was cleared.
+			flushedWhileReaderAlive = true
+		}
+	}
+	quarantine := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		quarantined = true
+	}
+
+	// Release the reader only after quiesce has had time to block on it.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		mu.Lock()
+		readerAlive = false
+		mu.Unlock()
+		close(readerDone)
+	}()
+
+	exited := quiesceAttachInput(readerDone, attachStdinReaderStopTimeout, flush, quarantine)
+
+	if !exited {
+		t.Error("exited = false, want true (the reader finished well inside the backstop)")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if flushedWhileReaderAlive {
+		t.Error("flushed the input queue while the stdin reader was still running")
+	}
+	if !flushed {
+		t.Error("flush was never called")
+	}
+	if !quarantined {
+		t.Error("quarantine was never armed")
+	}
+}
+
+// TestQuiesceAttachInput_FlushesOnEveryExitPath guards the removal of the old
+// `if didDetach` gate. The flush used to run only when the user pressed the
+// detach key; on the process-exit path the stale reader incidentally swallowed
+// the terminal's capability replies instead. With the reader now stopping
+// cleanly, skipping the flush here would let those bytes reach the TUI.
+func TestQuiesceAttachInput_FlushesOnEveryExitPath(t *testing.T) {
+	readerDone := make(chan struct{})
+	close(readerDone) // reader already gone, as on a process-exit teardown
+
+	flushed, quarantined := false, false
+	exited := quiesceAttachInput(readerDone, attachStdinReaderStopTimeout,
+		func() { flushed = true },
+		func() { quarantined = true },
+	)
+
+	if !exited {
+		t.Error("exited = false, want true")
+	}
+	if !flushed || !quarantined {
+		t.Errorf("flushed=%v quarantined=%v, want both true on every exit path",
+			flushed, quarantined)
+	}
+}
+
+// TestQuiesceAttachInput_BackstopFires covers the wedged-reader case: quiesce
+// must give up rather than hang the TUI forever, and must still flush.
+func TestQuiesceAttachInput_BackstopFires(t *testing.T) {
+	neverDone := make(chan struct{}) // reader wedged in an uninterruptible read
+
+	flushed := false
+	start := time.Now()
+	exited := quiesceAttachInput(neverDone, 100*time.Millisecond,
+		func() { flushed = true },
+		func() {},
+	)
+	elapsed := time.Since(start)
+
+	if exited {
+		t.Error("exited = true, want false (the reader never finished)")
+	}
+	if !flushed {
+		t.Error("flush must still run after the backstop fires")
+	}
+	if elapsed < 100*time.Millisecond {
+		t.Errorf("returned after %v, want >= the 100ms backstop", elapsed)
+	}
+	if elapsed > time.Second {
+		t.Errorf("returned after %v, far past the backstop", elapsed)
 	}
 }

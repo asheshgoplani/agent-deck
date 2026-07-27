@@ -46,9 +46,12 @@ const attachStdinPollInterval = 100 * time.Millisecond
 // in a read that never returns, where proceeding beats hanging the TUI.
 const attachStdinReaderStopTimeout = time.Second
 
-// pollStdinReady reports whether fd has input available within timeout.
+// PollFdReady reports whether fd has input available within timeout.
 // Retries on EINTR so a SIGWINCH mid-poll does not look like "no input".
-func pollStdinReady(fd int, timeout time.Duration) bool {
+//
+// Exported because the SSH attach path (internal/session) needs the same
+// abandonable-read primitive for the same reason — see quiesceAttachInput.
+func PollFdReady(fd int, timeout time.Duration) bool {
 	ms := int(timeout.Milliseconds())
 	if ms < 1 {
 		ms = 1
@@ -285,7 +288,7 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 			return SwitchNone, false
 		}
 		// Poll first so the read below never blocks longer than the interval.
-		if !pollStdinReady(fd, attachStdinPollInterval) {
+		if !PollFdReady(fd, attachStdinPollInterval) {
 			continue
 		}
 
@@ -336,6 +339,35 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 			return SwitchNone, false
 		}
 	}
+}
+
+// quiesceAttachInput ends the attach's ownership of stdin: it waits for the
+// stdin reader to exit, then drops whatever is sitting in the terminal's input
+// queue and arms the reply quarantine.
+//
+// The order is the point, and both halves are load-bearing:
+//
+//   - Wait first. Returning to Bubble Tea with the reader still parked on stdin
+//     leaves two readers on one tty; the stale one wins the next keystroke and
+//     the user loses a keypress. See attachStdinPump.run.
+//   - Flush second, on every exit path. Terminals emit capability/color replies
+//     as the session tears down, and those bytes would otherwise surface in the
+//     TUI as literal fragments. Flushing before the reader has stopped would
+//     just let it consume the post-flush bytes instead.
+//
+// readerDone is the reader's completion channel, timeout the backstop for a
+// wedged reader, and flush/quarantine are injected so the ordering is testable
+// without a live tty. It reports whether the reader exited on its own.
+func quiesceAttachInput(readerDone <-chan struct{}, timeout time.Duration, flush func(), quarantine func()) bool {
+	exited := false
+	select {
+	case <-readerDone:
+		exited = true
+	case <-time.After(timeout):
+	}
+	flush()
+	quarantine()
+	return exited
 }
 
 func waitForAttachOutputDrain(outputDone <-chan struct{}, timeout time.Duration) (bool, time.Duration) {
@@ -529,7 +561,18 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		// Don't close sigwinch - signal.Stop() handles cleanup
 	}()
 
-	// WaitGroup to track ALL goroutines (including SIGWINCH handler)
+	// WaitGroup to track ALL goroutines (including SIGWINCH handler).
+	//
+	// Deliberately never Wait()ed on, and it cannot be: the SIGWINCH handler
+	// only exits when the deferred close(sigwinchDone) runs, which is AFTER
+	// cleanupAttach, and the cmd.Wait() goroutine can outlive a detach by
+	// however long the tmux client takes to go away. Waiting here would
+	// deadlock the first and stall the second.
+	//
+	// The join that actually matters for correctness is stdinReaderDone, which
+	// cleanupAttach waits on individually — that is the goroutine that must not
+	// outlive the attach (see quiesceAttachInput). The WaitGroup stays as
+	// documentation of goroutine ownership.
 	var wg sync.WaitGroup
 
 	// SIGWINCH handler goroutine - properly tracked in WaitGroup
@@ -636,24 +679,16 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		cancel()
 		_ = ptmx.Close()
 		_, _ = waitForAttachOutputDrain(outputDone, attachOutputDrainTimeout)
-		// Stop the stdin reader before touching the input queue or handing the
-		// terminal back. cancel() above makes it exit within one poll interval;
-		// the timeout is a wedged-reader backstop, not the expected path.
-		select {
-		case <-stdinReaderDone:
-		case <-time.After(attachStdinReaderStopTimeout):
-		}
-		// Prompts can issue terminal capability/color queries as they redraw during
-		// teardown. Kitty replies on stdin; if those queued bytes survive until Bubble Tea
-		// resumes, they can leak as literal fragments like terminal version strings or
-		// rgb payloads in the TUI.
-		//
-		// This runs on every exit path, not just the detach key. When the pane
-		// process exits on its own, the reader used to stay blocked on stdin and
-		// incidentally swallow those replies; now that it stops cleanly, the
-		// flush is what keeps them out of the TUI.
-		_ = flushDetachInput(int(os.Stdin.Fd()))
-		termreply.QuarantineFor(attachReplyQuarantine)
+		// Hand stdin back: stop the reader, then flush the input queue and arm
+		// the quarantine. cancel() above makes the reader exit within one poll
+		// interval; the timeout is a wedged-reader backstop, not the expected
+		// path. See quiesceAttachInput for why the order matters.
+		quiesceAttachInput(
+			stdinReaderDone,
+			attachStdinReaderStopTimeout,
+			func() { _ = FlushInput(int(os.Stdin.Fd())) },
+			func() { termreply.QuarantineFor(attachReplyQuarantine) },
+		)
 		// Clear host terminal scrollback before returning to TUI.
 		// The on-attach clear at the top of Attach() covers the "next attach" direction;
 		// this covers the "on detach" direction for belt-and-suspenders coverage
