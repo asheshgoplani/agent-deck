@@ -43,9 +43,41 @@ CHANGELOG.md                                    EDIT (T14)
 
 | Wave | Tasks | Notes |
 | --- | --- | --- |
-| 1 | **T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11** | All touch disjoint files — **safe to run fully in parallel**. |
-| 2 | **T12, T13** | T12 verifies the skill dirs from wave 1 exist; T13 greps for `skills/review/references/*.md` from T1–T4. Disjoint from each other — **T12 ‖ T13**. |
-| 3 | **T14** | Touches `CHANGELOG.md` only; run last so it can describe everything. |
+| 1 | **T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11** | All touch disjoint files — **safe to author in parallel**. Their *commits* are serialized by the mutex below. |
+| 2 | **T12, T13** | T12 verifies the skill dirs from wave 1 exist; T13 greps for `skills/review/references/*.md` from T1–T4. Disjoint from each other — **T12 ‖ T13**, same commit mutex. |
+| 3 | **T14** | Touches `CHANGELOG.md` only; runs alone, so it needs no mutex. |
+
+### Commit protocol — REQUIRED for every task in waves 1 and 2
+
+Disjoint *files* is not disjoint *git*. All of these tasks run in **one shared
+worktree on one branch**, so two concurrent `git add` / `git commit` calls
+collide on `.git/index.lock`, and a loser either fails outright or commits a
+half-staged index. Every task in waves 1 and 2 therefore wraps its two git
+commands in an atomic lock — `mkdir` is the portable atomic test-and-set:
+
+```bash
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
+# ... git add + git commit here ...
+rmdir "$LOCK"
+```
+
+The exact snippet is reproduced inline in every affected task's Commit section
+— copy it verbatim; do not "simplify" it away.
+
+Two operational notes:
+
+- The loop waits up to 10 minutes. If it times out, `git commit` will fail on
+  `index.lock` rather than corrupt anything — that is the intended failure.
+- If a sibling task dies holding the lock, the directory is left behind and
+  every later task blocks for its full 10 minutes. Check with
+  `ls -ld "$(git rev-parse --git-dir)/adeck-commit.lock"`; if its mtime is more
+  than a few minutes old and no sibling is running, `rmdir` it and retry.
+
+**No task may run `git stash`, `git checkout`, `git restore`, `git reset`, or
+`git clean` in this worktree** — a sibling's uncommitted files are in the same
+tree, and any of those commands sweeps them away. This is the same rule
+`orchestrate` gives its reviewer children, for the same reason.
 
 ### Interfaces the later tasks rely on (frozen here — do not renegotiate)
 
@@ -113,7 +145,7 @@ skills/review/references/principles.md
 
 ## T1 — `principles.md` + `deletion-check.md`
 
-**tier: mid** · parallel-safe (wave 1)
+**tier: mid** · wave 1 — authoring is parallel-safe; the commit takes the mutex
 
 ### Files
 
@@ -224,15 +256,20 @@ severity" line; the DoozyX/`/Users/` grep prints `0`.
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add skills/review/references/principles.md skills/review/references/deletion-check.md
 git commit -m "feat(skills): add review principles and deletion-check layers"
+rmdir "$LOCK"
 ```
 
 ---
 
 ## T2 — `adversarial.md`
 
-**tier: mid** · parallel-safe (wave 1)
+**tier: mid** · wave 1 — authoring is parallel-safe; the commit takes the mutex
 
 ### File
 
@@ -343,15 +380,20 @@ the DoozyX grep prints `0`.
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add skills/review/references/adversarial.md
 git commit -m "feat(skills): add adversarial review layer"
+rmdir "$LOCK"
 ```
 
 ---
 
 ## T3 — `edge-cases.md`
 
-**tier: mid** · parallel-safe (wave 1)
+**tier: mid** · wave 1 — authoring is parallel-safe; the commit takes the mutex
 
 ### File
 
@@ -461,15 +503,20 @@ Expected output: `json example OK`.
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add skills/review/references/edge-cases.md
 git commit -m "feat(skills): add edge-case path-tracing review layer"
+rmdir "$LOCK"
 ```
 
 ---
 
 ## T4 — `verification-gap.md`
 
-**tier: mid** · parallel-safe (wave 1)
+**tier: mid** · wave 1 — authoring is parallel-safe; the commit takes the mutex
 
 ### File
 
@@ -566,15 +613,20 @@ least one line; the last prints `0`.
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add skills/review/references/verification-gap.md
 git commit -m "feat(skills): add verification-gap review layer"
+rmdir "$LOCK"
 ```
 
 ---
 
 ## T5 — `skills/review/SKILL.md` (dispatcher)
 
-**tier: mid** · parallel-safe (wave 1)
+**tier: mid** · wave 1 — authoring is parallel-safe; the commit takes the mutex
 
 ### File
 
@@ -682,6 +734,10 @@ Body sections, in this order:
      One line on why: denying the adversarial layer the author's intent is what
      kills anchoring bias; denying the tracing layers repo access would
      manufacture false positives.
+   - One further line naming the shared vocabulary: the adversarial layer
+     checks the diff against `skills/review/references/principles.md`
+     (DRY / KISS / YAGNI / SOLID and their violation smells), so a
+     subagent dispatched for that layer gets that file too.
 
 5. **4. Merge & dedup.**
    - Two findings merge when they are at the **same location** *and* describe
@@ -750,26 +806,31 @@ grep -i 'anchoring' skills/review/SKILL.md
 grep -riE 'doozyx|/Users/' skills/review/SKILL.md | wc -l
 ```
 
-Expected: frontmatter shows `name: review`; 70–120 lines; five `ref ok:` lines
-(`principles` may be referenced indirectly — if it is not referenced, add one
-sentence pointing the adversarial layer at it and re-run); both `VERDICT:`
-greps print; bucket and severity greps ≥ 3 each; the anchoring line prints; the
-DoozyX grep prints `0`.
+Expected: frontmatter shows `name: review`; 70–120 lines; **five** `ref ok:`
+lines (all five layer files, `principles.md` included — the dispatch section
+above requires it, so a `REF MISSING` here means content was dropped, not that
+the gate is wrong); both `VERDICT:` greps print; bucket and severity greps ≥ 3
+each; the anchoring line prints; the DoozyX grep prints `0`.
 
 ### Commit
 
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add skills/review/SKILL.md
 git commit -m "feat(skills): add review dispatcher skill"
+rmdir "$LOCK"
 ```
 
 ---
 
 ## T6 — `skills/design/SKILL.md`
 
-**tier: mid** · parallel-safe (wave 1)
+**tier: mid** · wave 1 — authoring is parallel-safe; the commit takes the mutex
 
 ### File
 
@@ -826,13 +887,15 @@ Body sections, in this order. **The child guard is the first block after the
 H1** — before any other instruction:
 
 1. **Child guard** (first block):
-   > **If this session was dispatched as an executor, stop reading here.** A
-   > session whose environment carries `AGENTDECK_ROLE=child`, or whose prompt
-   > says the work is already designed and approved, does not brainstorm: its
-   > task prompt is the contract. Follow the task prompt. Do not write a spec,
-   > do not propose alternatives, do not wait for an approval that no one in
-   > this session can give. If you believe the task is genuinely wrong, say so
-   > in one line and stop.
+   > **If this session was dispatched as an executor, stop reading here.** Two
+   > tells: the session prompt says the work is already designed and approved,
+   > or `tmux show-environment AGENTDECK_ROLE` prints `AGENTDECK_ROLE=child`.
+   > (Check tmux, not `env` — the marker lives in the tmux *session*
+   > environment, which a process that was already running does not inherit.)
+   > An executor does not brainstorm: its task prompt is the contract. Follow
+   > the task prompt. Do not write a spec, do not propose alternatives, do not
+   > wait for an approval that no one in this session can give. If you believe
+   > the task is genuinely wrong, say so in one line and stop.
 
 2. **The hard gate**, stated once and never qualified:
    > No implementation — and no implementation skill — until the design has
@@ -915,7 +978,7 @@ H1** — before any other instruction:
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 head -6 skills/design/SKILL.md
 wc -l skills/design/SKILL.md
-grep -n 'AGENTDECK_ROLE=child' skills/design/SKILL.md
+grep -n 'tmux show-environment AGENTDECK_ROLE' skills/design/SKILL.md
 grep -n 'check-ignore' skills/design/SKILL.md
 grep -n 'principles.md' skills/design/SKILL.md
 grep -c -e 'orchestrate' -e 'tdd' -e 'verify' skills/design/SKILL.md
@@ -933,15 +996,20 @@ grep ≥ 3; the last grep prints `0`.
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add skills/design/SKILL.md
 git commit -m "feat(skills): add design skill with hard approval gate"
+rmdir "$LOCK"
 ```
 
 ---
 
 ## T7 — `skills/tdd/SKILL.md`
 
-**tier: mid** · parallel-safe (wave 1)
+**tier: mid** · wave 1 — authoring is parallel-safe; the commit takes the mutex
 
 ### File
 
@@ -1057,15 +1125,20 @@ the last prints `0`.
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add skills/tdd/SKILL.md
 git commit -m "feat(skills): add tdd discipline skill"
+rmdir "$LOCK"
 ```
 
 ---
 
 ## T8 — `skills/debug/SKILL.md`
 
-**tier: mid** · parallel-safe (wave 1)
+**tier: mid** · wave 1 — authoring is parallel-safe; the commit takes the mutex
 
 ### File
 
@@ -1168,15 +1241,20 @@ Expected: `name: debug`; 90–125 lines; the iron-law grep prints; the phase gre
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add skills/debug/SKILL.md
 git commit -m "feat(skills): add systematic debugging skill"
+rmdir "$LOCK"
 ```
 
 ---
 
 ## T9 — `skills/verify/SKILL.md`
 
-**tier: mid** · parallel-safe (wave 1)
+**tier: mid** · wave 1 — authoring is parallel-safe; the commit takes the mutex
 
 ### File
 
@@ -1269,15 +1347,20 @@ hedging greps each print; the table-pipe count ≥ 20; the last grep prints `0`.
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add skills/verify/SKILL.md
 git commit -m "feat(skills): add verification evidence-gate skill"
+rmdir "$LOCK"
 ```
 
 ---
 
 ## T10 — Go: export child role markers into the tmux session env
 
-**tier: mid** · parallel-safe (wave 1 — touches only Go files)
+**tier: mid** · wave 1 — touches only Go files; authoring is parallel-safe, the commit takes the mutex
 
 ### Files
 
@@ -1315,6 +1398,26 @@ lookup. From the design, §5:
   that each `return` before reaching the recreate path.
 - `tmux.Session` has `SetEnvironment` and `GetEnvironment`
   (`internal/tmux/tmux.go:1837`, `:1880`) but **no** unset.
+
+### Step 0 — record the test baseline BEFORE editing anything
+
+Do this first, before touching a single file. It is the only safe way to tell
+a pre-existing failure from one you introduced: you share this worktree with
+concurrently-running sibling tasks, so you **cannot** `git stash` to get back to
+a clean tree later (that would sweep away their uncommitted work — see the
+plan's "Commit protocol").
+
+```bash
+cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
+go test -race -count=1 ./internal/session/ ./internal/tmux/ 2>&1 | tail -40
+```
+
+Write down every failing test name. That list is your baseline; you are
+accountable only for failures that are **new** against it, and you must repeat
+the list in your final summary ("baseline: none" if it was all green). Known
+environment-flaky candidates in this package family include tests that shell
+out to `python3` or need a writable tmux PTY — if one of those is already red
+here, it stays not-your-problem.
 
 ### Step 1 — `internal/tmux/tmux.go`
 
@@ -1445,9 +1548,9 @@ import (
 // else silently gives an interactive session the executor preamble (or the
 // reverse), which is invisible until a child starts brainstorming its task.
 
-// startShellSession boots a bare shell session and waits for its tmux session
-// to appear, failing the test if it never does.
-func startShellSession(t *testing.T, tag string) *Instance {
+// newShellInstance builds an unstarted bare-shell Instance with a unique title.
+// The caller sets any parent, calls Start, and waits for the tmux session.
+func newShellInstance(t *testing.T, tag string) *Instance {
 	t.Helper()
 	title := uniqueShellTestTitle(tag)
 	inst := NewInstance(title, t.TempDir())
@@ -1459,7 +1562,7 @@ func TestStart_ParentedSession_ExportsChildRoleEnv(t *testing.T) {
 	skipIfNoTmuxBinary(t)
 	isolateUserHomeForShellRestart(t)
 
-	inst := startShellSession(t, "ChildRoleEnv")
+	inst := newShellInstance(t, "ChildRoleEnv")
 	const parentID = "parent-instance-id-42"
 	inst.SetParentWithPath(parentID, t.TempDir())
 
@@ -1493,7 +1596,7 @@ func TestStart_UnparentedSession_HasNoChildRoleEnv(t *testing.T) {
 	skipIfNoTmuxBinary(t)
 	isolateUserHomeForShellRestart(t)
 
-	inst := startShellSession(t, "NoRoleEnv")
+	inst := newShellInstance(t, "NoRoleEnv")
 	if err := inst.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
@@ -1518,7 +1621,7 @@ func TestEnsureRoleEnv_ClearsStaleMarkersWhenUnparented(t *testing.T) {
 	skipIfNoTmuxBinary(t)
 	isolateUserHomeForShellRestart(t)
 
-	inst := startShellSession(t, "StaleRoleEnv")
+	inst := newShellInstance(t, "StaleRoleEnv")
 	inst.SetParentWithPath("parent-to-be-removed", t.TempDir())
 	if err := inst.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -1592,14 +1695,23 @@ Expected:
   three tmux-dependent ones if no `tmux` binary is present — in that case say
   so explicitly, do not report them as passing);
 - step 4 passes;
-- step 5 passes, **except** for failures that also reproduce on a clean
-  checkout. Confirm any failure is pre-existing before blaming this change:
+- step 5 passes, **except** for the failures already on your Step 0 baseline.
+  Compare against that list — do **not** try to re-derive a clean tree with
+  `git stash`, `git checkout` or `git reset`: sibling tasks have uncommitted
+  files in this worktree and those commands destroy them. If you skipped Step 0
+  and have no baseline, get one non-destructively from a throwaway detached
+  worktree instead:
 
   ```bash
-  git stash && go test -race -count=1 ./internal/session/ ; git stash pop
+  BASE_DIR="$(mktemp -d)"
+  git worktree add --detach "$BASE_DIR" HEAD
+  ( cd "$BASE_DIR" && go test -race -count=1 ./internal/session/ ./internal/tmux/ 2>&1 | tail -40 )
+  git worktree remove --force "$BASE_DIR"
   ```
 
-  Report the baseline failures explicitly in your summary.
+  `HEAD` is the tree without your (still uncommitted) change, which is exactly
+  the baseline you want. Report the baseline failures explicitly in your
+  summary.
 
 **tmux hygiene:** these tests start real tmux sessions. If a run is interrupted,
 sweep leftovers before re-running, or the macOS PTY pool exhausts and later
@@ -1619,8 +1731,13 @@ Kill any leftovers with `tmux kill-session -t <name>` one at a time. **Never
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add internal/tmux/tmux.go internal/session/instance.go internal/session/child_role_env_test.go
 git commit -m "feat(session): export AGENTDECK_ROLE/PARENT_ID for parented sessions"
+rmdir "$LOCK"
 ```
 
 ### Interface this task produces (T11 consumes it)
@@ -1635,7 +1752,7 @@ AGENTDECK_ROLE` exits non-zero or prints `-AGENTDECK_ROLE`.
 
 ## T11 — SessionStart hook
 
-**tier: mid** · parallel-safe (wave 1 — touches only `hooks/`)
+**tier: mid** · wave 1 — touches only `hooks/`; authoring is parallel-safe, the commit takes the mutex
 
 ### Files
 
@@ -1682,8 +1799,7 @@ must follow Claude Code plugin hook conventions.**
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/session-start\"",
-            "shell": "bash",
-            "async": false
+            "timeout": 10
           }
         ]
       }
@@ -1691,6 +1807,13 @@ must follow Claude Code plugin hook conventions.**
   }
 }
 ```
+
+Use **only** the documented hook-entry keys — `type`, `command`, `timeout`. Do
+not add `shell`, `async`, or any other key: a strictly-validated schema rejects
+the whole file, and the failure mode is silent (the hook simply never fires, so
+every session looks normal and no preamble is ever injected). The script has a
+`#!/usr/bin/env bash` shebang and is executable, which is what makes it run
+under bash — the `command` string needs no interpreter of its own.
 
 ### `hooks/session-start`
 
@@ -1818,9 +1941,19 @@ cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 ls -l hooks/hooks.json hooks/session-start hooks/preamble-child.md hooks/preamble-interactive.md
 test -x hooks/session-start && echo EXECUTABLE_OK
 
-# 2. hooks.json is valid JSON with the right matcher.
-python3 -c "import json;d=json.load(open('hooks/hooks.json'));print(d['hooks']['SessionStart'][0]['matcher'])"
-# expect: startup|clear|compact
+# 2. hooks.json is valid JSON, right matcher, only documented keys.
+python3 - <<'PY'
+import json
+d = json.load(open("hooks/hooks.json"))
+entry = d["hooks"]["SessionStart"][0]
+assert entry["matcher"] == "startup|clear|compact", entry["matcher"]
+hook = entry["hooks"][0]
+assert hook["type"] == "command"
+extra = set(hook) - {"type", "command", "timeout"}
+assert not extra, f"undocumented hook keys will be rejected: {extra}"
+print("HOOKS_JSON_OK", entry["matcher"])
+PY
+# expect: HOOKS_JSON_OK startup|clear|compact
 
 # 3. Script is syntactically valid bash.
 bash -n hooks/session-start && echo SYNTAX_OK
@@ -1856,7 +1989,7 @@ tmux -L adhooktest ls 2>/dev/null && echo "LEFTOVER — retry the kill" || echo 
 grep -riE 'doozyx|/Users/' hooks/ | wc -l   # expect: 0
 ```
 
-Expected: `EXECUTABLE_OK`, matcher line, `SYNTAX_OK`, `exit=0` on both plain
+Expected: `EXECUTABLE_OK`, `HOOKS_JSON_OK startup|clear|compact`, `SYNTAX_OK`, `exit=0` on both plain
 runs, `INTERACTIVE_OK`, `CLAUDE_SHAPE_OK`, `CHILD_OK`, `NO_MARKER_OK`,
 `CLEANUP_OK`, and `0` from the last grep.
 
@@ -1876,9 +2009,14 @@ on it. Every tmux call in steps 6–8 must carry the `-L`.
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add hooks/
 git update-index --chmod=+x hooks/session-start
 git commit -m "feat(hooks): child-aware SessionStart preamble injection"
+rmdir "$LOCK"
 git show --stat HEAD | grep session-start   # confirm mode 100755
 ```
 
@@ -1886,7 +2024,7 @@ git show --stat HEAD | grep session-start   # confirm mode 100755
 
 ## T12 — Register the new skills (and the hooks) in the marketplace
 
-**tier: cheap** · wave 2 · parallel-safe with T13
+**tier: cheap** · wave 2 — runs alongside T13; the commit takes the mutex
 
 ### File
 
@@ -2004,15 +2142,20 @@ Expected: nine `registered:` lines, no `MISSING` line.
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add .claude-plugin/marketplace.json
 git commit -m "feat(plugin): register workflow skill suite and SessionStart hook"
+rmdir "$LOCK"
 ```
 
 ---
 
 ## T13 — Orchestrate upgrades (three targeted edits)
 
-**tier: mid** · wave 2 · parallel-safe with T12
+**tier: mid** · wave 2 — runs alongside T12; the commit takes the mutex
 
 ### File
 
@@ -2126,12 +2269,18 @@ eyes.` and ends with the `VERDICT: findings blockers=<n> should-fix=<n>
 nits=<n>` line) with:
 
 ```text
-You are a code reviewer with fresh eyes. You are READ-ONLY: edit nothing,
-commit nothing, run only read-only commands plus the test suite. You may be
-sharing this worktree with a live implementer session, so never run a command
-that rewrites the working tree: no `git stash`, `git checkout`, `git restore`,
-`git reset`, `git clean`, no branch switching. A tree that looks dirty or
-wrong is a finding to report, never a thing for you to tidy up.
+You are a code reviewer with fresh eyes. You are READ-ONLY with exactly one
+exception, stated below: edit nothing in the repository, commit nothing, run
+only read-only commands plus the test suite. You may be sharing this worktree
+with a live implementer session, so never run a command that rewrites the
+working tree: no `git stash`, `git checkout`, `git restore`, `git reset`,
+`git clean`, no branch switching. A tree that looks dirty or wrong is a
+finding to report, never a thing for you to tidy up.
+
+Your ONE permitted write is the verdict file at <verdict-file-path>. It sits
+outside the repository and outside this worktree, so writing it cannot touch
+the branch under review. Create it with a shell redirect (the editing tools
+are disabled for you by flag); create nothing else, anywhere.
 
 The task this branch is supposed to implement is in this file — read it and
 nothing else for the spec: <task-file-path>
@@ -2151,11 +2300,29 @@ Known pre-existing test failures (the implementer's recorded baseline):
 <baseline list, or "none">. These are NOT findings — only failures new
 against this baseline are.
 
-Write your full output to <verdict-file-path>, and print only the findings
-list, the "Checked:" lines and the verdict line as your response.
+Write your full output — every layer's raw findings, the merged list, the
+"Checked:" lines and the verdict line — to <verdict-file-path>. Then print
+ONLY the merged findings list, the "Checked:" lines and the verdict line as
+your response.
 End with exactly one line, using real counts:
 VERDICT: clean
 VERDICT: fix-needed patch=<n> decision-needed=<n> defer=<n>
+```
+
+**The verdict-file interface (the conductor owns the path).** Immediately after
+that template block, add this paragraph so the conductor knows what to
+substitute and how it replaces the old capture:
+
+```text
+Substitute `$RUN_DIR/<task-slug>/review-r<n>.md` for `<verdict-file-path>` —
+the same run directory every other prompt file lives in, which is outside
+every repo by construction. The reviewer writing that file itself replaces
+the old `session output ... > $RUN_DIR/<slug>/review-r<n>.txt` capture: the
+raw layer output lands there without ever passing through your context, and
+you read only the merged findings, the `Checked:` lines and the `VERDICT:`
+line from the child's response. Keep the file — a later round's incremental
+reviewer is handed the previous round's findings from it, and it is the
+evidence trail for a needs-attention task.
 ```
 
 **2b.** In `### 3. Fix loop`, the first bullet currently reads:
@@ -2215,17 +2382,69 @@ VERDICT: fix-needed patch=<n> decision-needed=<n> defer=<n>
 ```
 
 **2e.** In `### 3. Fix loop`, the "Full-branch end gate" bullet says "Gate
-clean or nits-only → proceed to the PR." Change `nits-only` to `defer-only`.
-In `### 5. CI babysit`, the sentence "A task counts as **done** only when the
-review is clean (or nits-only)" becomes "(or defer-only)". In the
+clean or nits-only → proceed to the PR." Under the new contract a defer-only
+verdict **is** `VERDICT: clean` by construction (see 2b), so the disjunction is
+dead wording — collapse it to "Gate `VERDICT: clean` → proceed to the PR."
+Likewise in `### 5. CI babysit`, "A task counts as **done** only when the
+review is clean (or nits-only), the PR exists…" becomes "A task counts as
+**done** only when the review verdict is `clean`, the PR exists…". In the
 `## Final report` template, `open items: <list>` stays as is.
 
 **2f.** In `### 3. Fix loop`, the caps bullet says "Budget exhausted with
 blockers remaining → the task is **needs-attention**, no PR; only
 should-fixes/nits remaining → proceed to the PR". Rewrite the scale words:
-"Budget exhausted with `patch` items remaining → the task is
-**needs-attention**, no PR; only `defer` items remaining → proceed to the PR
+"Budget exhausted with `patch` or `decision-needed` items remaining → the task
+is **needs-attention**, no PR; only `defer` items remaining → proceed to the PR
 and list them in the final report."
+
+**2g.** In `### 3. Fix loop`, the fix-round prompt template sent to the
+implementer currently opens the instruction line as:
+
+```text
+Fix every blocker and should-fix (use judgment on nits). Rerun the full
+```
+
+Replace that line with:
+
+```text
+Fix every finding in the `patch` bucket. `decision-needed` items are not
+yours to resolve and `defer` items are out of scope — leave both alone and
+say so in your summary if any were listed. Rerun the full
+```
+
+Leave the rest of that template (test suite, lint/format, e2e, screenshots,
+commit, do-not-push) unchanged.
+
+**2h.** In `## Context budget` → `### The conductor` → rule **2. Findings yes,
+transcripts never**, two things carry the old contract and must move with it.
+
+First, the prose sentence:
+
+```text
+radius is *existing data*, introduced by *this branch*, is never a nit, no
+```
+
+becomes:
+
+```text
+radius is *existing data*, introduced by *this branch*, is never a `minor`, no
+```
+
+Second, the first row of the table immediately below it currently reads:
+
+```text
+| Reviewer verdict | `session output <id>` | `session output <id> --json --require-fresh > $RUN_DIR/<slug>/review-r<n>.txt`, then read the numbered findings plus the `VERDICT:` / `Checked:` lines |
+```
+
+The reviewer now writes that file itself (see the verdict-file interface in
+change 2), so replace the row with:
+
+```text
+| Reviewer verdict | `session output <id>` | the reviewer already wrote `$RUN_DIR/<slug>/review-r<n>.md`; read only the merged findings plus the `VERDICT:` / `Checked:` lines from it (or from the child's response — they are the same lines) |
+```
+
+These two are the last places the old `blocker/should-fix/nit` vocabulary
+survives; without them the verification gate below cannot reach zero.
 
 ### Change 3 — discipline preambles shrink
 
@@ -2288,14 +2507,16 @@ cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 # The three changes landed.
 grep -c 'task-NN-<name>.md' skills/orchestrate/SKILL.md          # >= 1
 grep -c 'Record (append-only)' skills/orchestrate/SKILL.md       # >= 2
-grep -c 'skills/review/references' skills/orchestrate/SKILL.md   # >= 2
+grep -c 'skills/review/references' skills/orchestrate/SKILL.md   # == 1 (from 2a)
+grep -c 'skills/review/SKILL.md' skills/orchestrate/SKILL.md     # == 2 (2a and 2d)
+grep -c 'review-r<n>.md' skills/orchestrate/SKILL.md             # >= 2 (2a note and 2h)
 grep -c 'VERDICT: fix-needed patch=' skills/orchestrate/SKILL.md # == 2
 grep -n '`tdd`' skills/orchestrate/SKILL.md
 grep -n 'SessionStart' skills/orchestrate/SKILL.md
 
-# The OLD scale is fully gone. Before your edits this prints 15 matching
-# lines (454, 460, 465, 467, 470, 472, 475, 520, 523, 532, 539, 540, 599 and
-# two more inside the same paragraphs); after them it must print 0.
+# The OLD scale is fully gone. Before your edits this prints exactly 15
+# matching lines — 453, 454, 460, 465, 466, 470, 471, 485, 519, 520, 523, 532,
+# 540, 599, 763 — and after them it must print 0.
 grep -cE 'blockers?=|should-fix|nits|blocker \||\bnit\b' skills/orchestrate/SKILL.md   # expect: 0
 
 # The anti-superpowers defense is still there (must NOT be removed).
@@ -2309,14 +2530,28 @@ ls skills/review/SKILL.md skills/review/references/*.md
 git diff --stat skills/orchestrate/SKILL.md
 ```
 
-Expected: the first six greps all print; the old-scale grep prints `0`;
+Expected: the first eight greps all print; the old-scale grep prints `0`;
 `superpowers` still appears 4 times and the preamble block exactly once; the
-`ls` lists six files; `git diff --stat` shows roughly 90–150 changed lines on a
-917-line file — if it shows several hundred, you rewrote it, so
-`git checkout skills/orchestrate/SKILL.md` and redo the targeted edits.
+`ls` lists six files; `git diff --stat` shows roughly 110–170 changed lines on a
+917-line file — if it shows several hundred, you rewrote it. Recovering from
+that is **not** `git checkout` — sibling tasks may have uncommitted files in
+this shared worktree and that command destroys them. Undo your own edit only:
+`git checkout HEAD -- skills/orchestrate/SKILL.md` restores just that one path,
+and nothing else in the tree is touched.
 
-**Every one of the 15 old-scale lines is covered by an edit above** — 454/460
-by 2a, 465 by 2b, 467–475 by 2c, 520/523 by 2d, 532/599 by 2e, 539/540 by 2f.
+**Every one of the 15 old-scale lines is covered by an edit above:**
+
+| Line(s) | Covered by |
+| --- | --- |
+| 453, 454, 460 | 2a (round-1 reviewer template) |
+| 465, 466 | 2b (first fix-loop bullet) |
+| 470, 471 | 2c (severity paragraph) |
+| 485 | 2g (fix-round prompt) |
+| 519, 520, 523 | 2d (incremental reviewer template) |
+| 532, 599 | 2e (end gate + CI babysit) |
+| 540 | 2f (caps bullet) |
+| 763 | 2h (context-budget prose) |
+
 If the final grep is non-zero, find the line and map it back to whichever of
 those changes should have caught it rather than patching it in isolation.
 
@@ -2329,15 +2564,25 @@ contradicts the one above it).
 ```bash
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-workflow-skill-suite
 git branch --show-current   # must print: feature/workflow-skill-suite
+
+# Commit mutex — wave-1/2 siblings share this worktree (see "Commit protocol").
+LOCK="$(git rev-parse --git-dir)/adeck-commit.lock"
+for _ in $(seq 1 120); do mkdir "$LOCK" 2>/dev/null && break; sleep 5; done
 git add skills/orchestrate/SKILL.md
 git commit -m "docs(skills): orchestrate story-file tasks, shared review layers, lean preambles"
+rmdir "$LOCK"
 ```
 
 ---
 
 ## T14 — CHANGELOG entry and final suite check
 
-**tier: cheap** · wave 3 (last)
+**tier: mid** · wave 3 (last)
+
+The CHANGELOG bullets themselves are transcription, but this task also owns the
+whole-repo gate — running the build, `go vet ./...` and the race suite, then
+judging which failures are pre-existing and which the branch introduced. That
+judgment is why this is `mid`, not `cheap`.
 
 ### File
 
@@ -2386,8 +2631,10 @@ go build ./... && echo BUILD_OK
 go vet ./... && echo VET_OK
 go test -race -count=1 ./internal/session/ ./internal/tmux/ ./cmd/agent-deck/ 2>&1 | tail -30
 
-# Every deliverable is present and committed.
-git status --short          # expect: clean after the commit below
+# Every deliverable is present. At this point the ONLY uncommitted path should
+# be CHANGELOG.md (your own edit, committed below); anything else means a
+# wave-1/2 task left work behind — say so rather than committing it for them.
+git status --short
 ls skills/design/SKILL.md skills/review/SKILL.md skills/tdd/SKILL.md \
    skills/debug/SKILL.md skills/verify/SKILL.md \
    skills/review/references/adversarial.md \
@@ -2407,11 +2654,26 @@ for f in skills/design/SKILL.md skills/review/SKILL.md hooks/session-start hooks
 done
 ```
 
-Expected: both CHANGELOG greps print; `BUILD_OK` and `VET_OK`; the Go suite tail
-shows only failures that also reproduce on a clean checkout (verify with
-`git stash` / `git stash pop` and **report the baseline explicitly**); the `ls`
-lists all 14 files; the genericity grep prints `0`; four `tracked ok:` lines and
-no `IGNORED:` line.
+Expected: both CHANGELOG greps print; `BUILD_OK` and `VET_OK`; `git status
+--short` shows `M CHANGELOG.md` and nothing else; the `ls` lists all 14 files;
+the genericity grep prints `0`; four `tracked ok:` lines and no `IGNORED:` line.
+
+On the Go suite: **your own edit is markdown-only**, so no failure here can
+have come from this task. Compare the tail against the baseline T10 reported in
+its summary and attribute anything new to the Go change, not to yourself. If
+you have no baseline to compare against, get one non-destructively — never
+`git stash`, which would sweep away any uncommitted sibling work still in this
+worktree:
+
+```bash
+BASE_DIR="$(mktemp -d)"
+git worktree add --detach "$BASE_DIR" $(git merge-base main HEAD)
+( cd "$BASE_DIR" && go test -race -count=1 ./internal/session/ ./internal/tmux/ ./cmd/agent-deck/ 2>&1 | tail -40 )
+git worktree remove --force "$BASE_DIR"
+```
+
+Report the resulting baseline explicitly in your summary; do not report the
+suite as passing if it is not.
 
 ### Commit
 
