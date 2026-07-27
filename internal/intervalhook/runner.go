@@ -35,10 +35,11 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// rescanInterval is how often the supervisor re-reads config to pick up
-// hooks added / removed / enabled / disabled since the last scan. A var (not
-// const) so tests can shorten it; production callers never change it.
-var rescanInterval = 15 * time.Second
+// defaultRescanInterval is how often the supervisor re-reads config to pick up
+// hooks added / removed / enabled / disabled since the last scan. Held per-Runner
+// (r.rescanInterval) rather than as a mutable global so tests can shorten it on
+// their own instance without a data race against the supervisor goroutine.
+const defaultRescanInterval = 15 * time.Second
 
 // waitDelay bounds how long we wait for a hook's pipes to close after its
 // context is cancelled (i.e. after the timeout kill). Without this, a command
@@ -65,6 +66,10 @@ func defaultLoader() map[string]session.IntervalHookSettings {
 type Runner struct {
 	logger *slog.Logger
 	load   configLoader
+	// rescanInterval is the supervisor's config-rescan cadence. Set once in New
+	// and never mutated after Start, so the supervisor goroutine reads it
+	// race-free. Tests set it on their instance before calling Start.
+	rescanInterval time.Duration
 
 	mu     sync.Mutex
 	stopCh chan struct{}
@@ -82,11 +87,12 @@ type Runner struct {
 // records dropped). Call Start to launch the supervisor.
 func New(logger *slog.Logger) *Runner {
 	return &Runner{
-		logger:     logger,
-		load:       defaultLoader,
-		stopCh:     make(chan struct{}),
-		running:    make(map[string]bool),
-		supervised: make(map[string]bool),
+		logger:         logger,
+		load:           defaultLoader,
+		rescanInterval: defaultRescanInterval,
+		stopCh:         make(chan struct{}),
+		running:        make(map[string]bool),
+		supervised:     make(map[string]bool),
 	}
 }
 
@@ -105,7 +111,7 @@ func (r *Runner) Start() {
 
 	safego.Go(r.logger, "interval_hook:supervisor", func() {
 		r.reconcile() // start any hooks enabled at boot immediately
-		ticker := time.NewTicker(rescanInterval)
+		ticker := time.NewTicker(r.rescanInterval)
 		defer ticker.Stop()
 		for {
 			select {

@@ -14,11 +14,12 @@ import (
 // and a fresh stop channel.
 func newTestRunner(load configLoader) *Runner {
 	return &Runner{
-		logger:     nil,
-		load:       load,
-		stopCh:     make(chan struct{}),
-		running:    make(map[string]bool),
-		supervised: make(map[string]bool),
+		logger:         nil,
+		load:           load,
+		rescanInterval: defaultRescanInterval,
+		stopCh:         make(chan struct{}),
+		running:        make(map[string]bool),
+		supervised:     make(map[string]bool),
 	}
 }
 
@@ -161,11 +162,11 @@ func TestSupervisor_LiveReEnable(t *testing.T) {
 			},
 		}
 	}
-	// Short rescan so the test doesn't wait the production 15s.
+	// Short rescan so the test doesn't wait the production 15s. Set on the
+	// instance BEFORE Start (never mutated after), so the supervisor goroutine
+	// reads it race-free.
 	r := newTestRunner(load)
-	origInterval := rescanInterval
-	rescanInterval = 150 * time.Millisecond
-	defer func() { rescanInterval = origInterval }()
+	r.rescanInterval = 150 * time.Millisecond
 
 	r.Start()
 	defer r.Stop()
