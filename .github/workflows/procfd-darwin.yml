@@ -21,6 +21,8 @@ on:
   pull_request:
     paths:
       - 'internal/procfd/**'
+      - 'internal/session/instance.go'
+      - 'internal/session/instance_test.go'
       - '.github/workflows/procfd-darwin.yml'
 
 permissions:
@@ -36,11 +38,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: go vet
         run: go vet ./internal/procfd/...
