@@ -59,6 +59,10 @@ func (s *Sandbox) SpawnWithEnv(extraEnv []string, args ...string) *PTYSession {
 	p.drainWG.Add(1)
 	go p.drain()
 	go p.wait()
+	// Register immediately after the process starts so it is always reaped
+	// before Sandbox TempDir cleanup, including fatal test exits and callers
+	// that forget an explicit defer. Close is idempotent.
+	s.t.Cleanup(p.Close)
 	return p
 }
 

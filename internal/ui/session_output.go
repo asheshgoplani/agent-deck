@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 )
+
+const maxSessionOutputPayloadBytes = 16 << 20
+
+var errSessionOutputPayloadTooLarge = errors.New("embedded terminal frame exceeds 16 MiB payload limit")
 
 // SessionOutput preserves stdout's file-descriptor identity for Bubble Tea
 // and restores the embedded terminal's hardware cursor after every renderer
@@ -90,20 +95,51 @@ func (w *SessionOutput) Write(p []byte) (int, error) {
 	// at the renderer refresh rate. DEC synchronized output presents the paint
 	// plus final embedded-cursor placement atomically, without toggling cursor
 	// visibility/shape and restarting its animation on every frame.
-	position := w.cursorPositionSequenceLocked()
-	frame := make([]byte, 0, len(ansi.SetModeSynchronizedOutput)+len(p)+len(position)+len(ansi.ResetModeSynchronizedOutput))
-	frame = append(frame, ansi.SetModeSynchronizedOutput...)
-	frame = append(frame, p...)
-	frame = append(frame, position...)
-	frame = append(frame, ansi.ResetModeSynchronizedOutput...)
-	written, err := w.File.Write(frame)
-	if err != nil {
+	if err := validateSessionOutputPayloadSize(len(p)); err != nil {
 		return 0, err
 	}
-	if written != len(frame) {
-		return 0, io.ErrShortWrite
+	position := w.cursorPositionSequenceLocked()
+	if err := writeSessionOutputString(w.File, ansi.SetModeSynchronizedOutput); err != nil {
+		return 0, err
+	}
+	// Synchronized output is a terminal protocol transaction, not a syscall
+	// boundary: writing the bounded payload and framing as separate chunks
+	// remains atomic on screen while avoiding an overflow-prone summed
+	// allocation capacity.
+	written, err := w.File.Write(p)
+	if err != nil || written != len(p) {
+		_, _ = io.WriteString(w.File, ansi.ResetModeSynchronizedOutput)
+		if err == nil {
+			err = io.ErrShortWrite
+		}
+		return written, err
+	}
+	if err := writeSessionOutputString(w.File, position); err != nil {
+		_, _ = io.WriteString(w.File, ansi.ResetModeSynchronizedOutput)
+		return len(p), err
+	}
+	if err := writeSessionOutputString(w.File, ansi.ResetModeSynchronizedOutput); err != nil {
+		return len(p), err
 	}
 	return len(p), nil
+}
+
+func validateSessionOutputPayloadSize(size int) error {
+	if size < 0 || size > maxSessionOutputPayloadBytes {
+		return errSessionOutputPayloadTooLarge
+	}
+	return nil
+}
+
+func writeSessionOutputString(w io.StringWriter, value string) error {
+	written, err := w.WriteString(value)
+	if err != nil {
+		return err
+	}
+	if written != len(value) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func (w *SessionOutput) cursorStateSequenceLocked(shapeChanged, visibilityChanged bool) string {
