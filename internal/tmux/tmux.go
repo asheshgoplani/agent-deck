@@ -1858,6 +1858,31 @@ func (s *Session) SetEnvironment(key, value string) error {
 	return err
 }
 
+// UnsetEnvironment removes an environment variable from this tmux session.
+// Removing a variable that is not set is not an error. Mirrors
+// SetEnvironment's error handling: CombinedOutput so tmux's stderr ("no server
+// running on ...", "can't find session") reaches the caller instead of a bare
+// "exit status 1".
+func (s *Session) UnsetEnvironment(key string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := s.tmuxCmdContext(ctx, "set-environment", "-t", s.Name, "-u", key)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		// Invalidate cache entry so the next GetEnvironment sees the removal.
+		s.envCacheMu.Lock()
+		if s.envCache != nil {
+			delete(s.envCache, key)
+		}
+		s.envCacheMu.Unlock()
+		return nil
+	}
+	if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+		return fmt.Errorf("%w: %s", err, trimmed)
+	}
+	return err
+}
+
 func (s *Session) ApplyThemeOptions() error {
 	themeStyle := currentTmuxThemeStyle()
 	var args []string
