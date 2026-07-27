@@ -141,7 +141,6 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 
 	start := time.Now()
 	deadline := start.Add(opts.HoldWait)
-	lastDraft := ""
 
 	for {
 		raw, err := t.CapturePaneFresh()
@@ -153,7 +152,6 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 		if !visible || draft == "" {
 			return ComposerGuardResult{Held: time.Since(start)}
 		}
-		lastDraft = draft
 		if !time.Now().Before(deadline) {
 			break
 		}
@@ -183,11 +181,10 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 	if !visible || draft == "" {
 		return ComposerGuardResult{Held: time.Since(start)}
 	}
-	lastDraft = draft
 
 	// Save the confirmed operator draft and clear the composer so the
 	// automated message cannot merge with it.
-	res := ComposerGuardResult{SavedDraft: lastDraft}
+	res := ComposerGuardResult{SavedDraft: draft}
 	clearPoll := poll
 	if clearPoll > 100*time.Millisecond {
 		clearPoll = 100 * time.Millisecond
