@@ -484,11 +484,10 @@ type Instance struct {
 	// UpdateStatus() acquires the write lock internally.
 	mu sync.RWMutex
 
-	// spawnGen is bumped on every Start/StartWithMessage/Stop so the fast-death
-	// watcher (#1580) can detect that a newer spawn or a deliberate stop has
-	// superseded it — race-free, without reading the mutex-guarded status fields
-	// from its own goroutine.
-	spawnGen atomic.Uint64
+	// spawnGen supersedes stale fast-death watchers; spawnWatchers lets tests join
+	// them before restoring process-global filesystem environment.
+	spawnGen      atomic.Uint64
+	spawnWatchers sync.WaitGroup
 
 	// spawnGenMu guards spawnGenWake. spawnGenWake lets a generation bump wake a
 	// running watchForFastDeath goroutine immediately instead of it only
@@ -4216,20 +4215,7 @@ func (i *Instance) Start() error {
 	// watcher is handed value snapshots + a supersede generation so it never
 	// touches i's mutex-guarded fields from its own goroutine.
 	if command != "" {
-		// gen AND the wake channel are both produced here, in the caller, so no
-		// bump can slip into the gap before the watcher subscribes (see
-		// newSpawnGenWatch).
-		gen, wake := i.newSpawnGenWatch()
-		// Resolve both write targets HERE, synchronously in the caller, not
-		// inside the goroutine: GetSessionIDLifecycleLogPath()/spawnFailureDir()
-		// read the live $HOME, and watchForFastDeath's goroutine is never
-		// joined — it can still be sleeping on its ticker when a later test
-		// changes $HOME out from under it. Capturing the resolved paths as
-		// plain values at spawn time (Go evaluates `go` call arguments in the
-		// calling goroutine) makes the watcher's writes land in the HOME that
-		// was live when this session started, never whichever HOME happens to
-		// be live when the ticker next fires.
-		go i.watchForFastDeath(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
+		i.startFastDeathWatcher(command, i.tmuxSession, i.ID, i.Tool, sessionLog)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -4496,10 +4482,7 @@ func (i *Instance) StartWithMessage(message string) error {
 
 	// #1580: fast-death watcher (sister path to Start()).
 	if command != "" {
-		gen, wake := i.newSpawnGenWatch()
-		// See the matching comment in Start(): resolve the write targets — and
-		// subscribe to the wake — here, not inside the never-joined goroutine.
-		go i.watchForFastDeath(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
+		i.startFastDeathWatcher(command, i.tmuxSession, i.ID, i.Tool, sessionLog)
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -7379,8 +7362,9 @@ func (i *Instance) killInternal(sync bool) error {
 	// `session restart` would be refused with only --force as a way through.
 	i.clearAuthHoldLocked()
 	i.mu.Unlock()
-	// (gen already bumped at the top of killInternal, before the tmux kill —
-	// see the comment there for why it must happen first, not here.)
+	// The generation was already bumped at the top of killInternal, before the
+	// tmux kill; tests that mutate process-global paths can join the watcher
+	// explicitly with waitForFastDeathWatchers.
 
 	// Clean up sandbox container (only if name matches our prefix convention).
 	// Runs regardless of tmux kill result to avoid orphaned containers.
@@ -8028,6 +8012,7 @@ func (i *Instance) restart(env map[string]string) error {
 // so the next start gets a brand-new tool session ID.
 func (i *Instance) RestartFresh() error {
 	i.prepareRestartMCPConfig()
+	i.spawnGen.Add(1)
 
 	i.clearSessionBindingForFreshStart()
 

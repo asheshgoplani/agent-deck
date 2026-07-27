@@ -461,8 +461,8 @@ func readCapturedClaudeArgv(t *testing.T, logPath string, timeout time.Duration)
 //   - generates a uuid-shaped inst.ClaudeSessionID from 16 random bytes,
 //   - sets inst.Command = "claude" so buildClaudeCommandWithMessage takes
 //     the `baseCommand == "claude"` branch,
-//   - registers t.Cleanup to kill the tmux session via the safe (Name-
-//     scoped) (*tmux.Session).Kill() path.
+//   - registers t.Cleanup to stop the instance through its lifecycle path so
+//     background spawn watchers are joined before the per-test HOME is restored.
 func newClaudeInstanceForDispatch(t *testing.T, home string) *Instance {
 	t.Helper()
 	var idb [4]byte
@@ -491,11 +491,8 @@ func newClaudeInstanceForDispatch(t *testing.T, home string) *Instance {
 	inst.Command = "claude"
 
 	t.Cleanup(func() {
-		// inst.tmuxSession.Kill() targets the unique session Name — SAFE;
-		// does NOT call bare `tmux kill-server`.
-		if inst.tmuxSession != nil {
-			_ = inst.tmuxSession.Kill()
-		}
+		_ = inst.Kill()
+		inst.waitForFastDeathWatchers()
 	})
 	return inst
 }
