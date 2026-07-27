@@ -107,7 +107,9 @@ func TestIssue1580_DeliberateKillDoesNotRecordFastDeath(t *testing.T) {
 	require.NoError(t, inst.Start())
 	require.NoError(t, inst.Kill())
 	inst.waitForFastDeathWatchers()
-	assert.Nil(t, inst.SpawnFailure())
+	rec, err := readSpawnFailureRecord(inst.ID)
+	require.NoError(t, err)
+	assert.Nil(t, rec)
 }
 
 // TestIssue1580_FastDeathWatcherCapturesDyingOutput is the behavioral repro. A
