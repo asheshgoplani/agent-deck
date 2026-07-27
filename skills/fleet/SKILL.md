@@ -183,6 +183,30 @@ until agent-deck session children --json | jq -e 'all(.children[]; .done_status 
 (Cloud-side schedulers — e.g. Claude Code routines — run on remote infra and
 cannot reach your local tmux/state.db; fleet supervision stays local.)
 
+**If `done_status` is null for a child you watched print the sentinel**, check
+the transition-notifier daemon — it writes the completion ledger, and while it
+is down completions used to go unrecorded, so a `done_status != null` loop
+waited forever:
+
+```bash
+launchctl print gui/$UID/com.agentdeck.transition-notifier | grep -E 'state|last exit'   # macOS
+systemctl --user status agentdeck-transition-notifier                                    # Linux
+```
+
+A macOS agent stuck at `last exit code = 78: EX_CONFIG` with `needs LWCR update`
+has a stale Background Task Management code requirement (the binary was
+reinstalled). Re-register it — `kickstart` alone will not clear this:
+
+```bash
+launchctl bootout gui/$UID/com.agentdeck.transition-notifier
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.agentdeck.transition-notifier.plist
+```
+
+`session children` now also reads the sentinel straight from the child's
+transcript when the ledger has no entry, so a dead daemon no longer hides a
+completion — but it does still mute the pushed transition/completion events, so
+fix it rather than living without it.
+
 ### 4. Unblock a child that's waiting on you
 
 A child in `waiting` status has stopped and is asking for input (a question, a

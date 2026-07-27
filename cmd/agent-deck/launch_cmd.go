@@ -663,6 +663,14 @@ func handleLaunch(profile string, args []string) {
 	maxC := session.GroupMaxConcurrent(tree, newInstance.GroupPath)
 	if session.ShouldQueue(instances, newInstance.GroupPath, maxC) {
 		newInstance.Status = session.StatusQueued
+		// The prompt must outlive the queueing. resolveMessageInput has already
+		// consumed --message-file (and drained stdin for "-"), so the caller
+		// cannot re-supply it; without this the session starts later on an empty
+		// composer and the operator has to re-send by hand.
+		if err := session.SaveQueuedMessage(newInstance.ID, initialMessage); err != nil {
+			out.Error(fmt.Sprintf("failed to persist queued prompt: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 		// v1.9.x issue #1031: same targeted single-row pattern as the
 		// initial insert above — saveSessionData → SaveWithGroups is
 		// the load-modify-write rewrite that loses sibling launches'
@@ -678,9 +686,16 @@ func handleLaunch(profile string, args []string) {
 			"status":         "queued",
 			"group":          newInstance.GroupPath,
 			"max_concurrent": maxC,
+			// Tells an automated caller its prompt was retained rather than
+			// silently dropped — the queued path used to look identical either way.
+			"queued_message": initialMessage != "",
 		}
 		addModelInfoJSON(queuedJSON, newInstance.LaunchModelInfo())
-		out.Success(fmt.Sprintf("Queued session: %s (group at cap %d)", newInstance.Title, maxC), queuedJSON)
+		msg := fmt.Sprintf("Queued session: %s (group at cap %d)", newInstance.Title, maxC)
+		if initialMessage != "" {
+			msg += "; its prompt will be delivered on start"
+		}
+		out.Success(msg, queuedJSON)
 		return
 	}
 

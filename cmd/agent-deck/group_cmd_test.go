@@ -274,17 +274,24 @@ func TestGroupCreate_DefaultMaxConcurrent_ConfigN(t *testing.T) {
 }
 
 // TestGroupCreate_FlagOverridesConfigDefault: --max-concurrent beats the config
-// default (precedence: flag > config > built-in 1). Uses the --flag=value form;
-// the space-separated form is mishandled by reorderGroupArgs (a pre-existing
-// arg-parsing issue unrelated to [group_defaults]).
+// default (precedence: flag > config > built-in 1). Both spellings are checked:
+// the space-separated form used to be mishandled by reorderGroupArgs, whose
+// hardcoded "which flags take a value" map never listed --max-concurrent, so
+// the group name was parsed as the int and the command exited printing usage.
 func TestGroupCreate_FlagOverridesConfigDefault(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping CLI subprocess test in -short mode")
 	}
-	home := t.TempDir()
-	writeGroupDefaultsConfig(t, home, "[group_defaults]\nmax_concurrent = 5\n")
-	if got := runGroupCreate(t, home, "g", "--max-concurrent=2"); got != 2 {
-		t.Errorf("flag override: expected max_concurrent=2, got %d", got)
+	for _, args := range [][]string{
+		{"g", "--max-concurrent=2"},
+		{"g", "--max-concurrent", "2"},
+		{"--max-concurrent", "2", "g"},
+	} {
+		home := t.TempDir()
+		writeGroupDefaultsConfig(t, home, "[group_defaults]\nmax_concurrent = 5\n")
+		if got := runGroupCreate(t, home, args...); got != 2 {
+			t.Errorf("%v: expected max_concurrent=2, got %d", args, got)
+		}
 	}
 }
 

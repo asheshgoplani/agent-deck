@@ -263,12 +263,25 @@ func handleSessionStart(profile string, args []string) {
 	max := session.GroupMaxConcurrent(tree, inst.GroupPath)
 	if session.ShouldQueue(instances, inst.GroupPath, max) {
 		inst.Status = session.StatusQueued
+		// Keep the prompt with the queued session — see the same guard in
+		// handleLaunch. A --message-file has already been read by this point,
+		// so dropping it here loses it for good.
+		if initialMessage != "" {
+			if err := session.SaveQueuedMessage(inst.ID, initialMessage); err != nil {
+				out.Error(fmt.Sprintf("failed to persist queued prompt: %v", err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+		}
 		if err := saveSessionData(storage, instances, groups); err != nil {
 			out.Error(fmt.Sprintf("failed to save queued state: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		queuedMsg := fmt.Sprintf("Queued session: %s (group at cap %d)", inst.Title, max)
+		if initialMessage != "" {
+			queuedMsg += "; its prompt will be delivered on start"
+		}
 		out.Success(
-			fmt.Sprintf("Queued session: %s (group at cap %d)", inst.Title, max),
+			queuedMsg,
 			map[string]interface{}{
 				"success":        true,
 				"id":             inst.ID,
@@ -276,9 +289,29 @@ func handleSessionStart(profile string, args []string) {
 				"status":         "queued",
 				"group":          inst.GroupPath,
 				"max_concurrent": max,
+				"queued_message": initialMessage != "",
 			},
 		)
 		return
+	}
+
+	// A session that was parked at the cap carries its prompt in the queued-message
+	// store; this start is the delivery. An explicit --message on THIS invocation
+	// wins (the operator is saying what to send now) and the stale pending prompt
+	// is dropped rather than left to fire on some later start.
+	//
+	// Peek, don't take: the prompt is only consumed once the start actually
+	// succeeds. Consuming first would mean a start that fails (tmux refuses, the
+	// agent binary is missing) destroys the prompt on its way out — the same
+	// silent loss this whole path exists to fix.
+	deliveringQueued := false
+	if initialMessage == "" {
+		if pending, ok := session.PeekQueuedMessage(inst.ID); ok {
+			initialMessage = pending
+			deliveringQueued = true
+		}
+	} else {
+		session.DiscardQueuedMessage(inst.ID)
 	}
 
 	// Start the session (with or without initial message)
@@ -292,6 +325,9 @@ func handleSessionStart(profile string, args []string) {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+	}
+	if deliveringQueued {
+		session.DiscardQueuedMessage(inst.ID)
 	}
 
 	// Capture session ID from tmux env before saving to JSON
@@ -632,11 +668,24 @@ func drainGroupQueue(groupPath string, instances []*session.Instance, groups []*
 	if next == nil {
 		return nil
 	}
-	if err := next.Start(); err != nil {
+	// The prompt the launch was queued with is delivered here — this drain is
+	// often the ONLY start a queued session ever gets, so starting bare would
+	// leave the agent sitting at an empty composer with nothing to do.
+	// Peek, don't take: the message is only consumed once the start succeeds,
+	// so a failed drain leaves it pending for the next attempt.
+	pending, hasPending := session.PeekQueuedMessage(next.ID)
+	start := next.Start
+	if hasPending {
+		start = func() error { return next.StartWithMessage(pending) }
+	}
+	if err := start(); err != nil {
 		// Drain is best-effort. Surface as queued + log; don't fail the stop.
 		next.Status = session.StatusError
 		fmt.Fprintf(os.Stderr, "queue drain failed to start %s: %v\n", next.Title, err)
 		return nil
+	}
+	if hasPending {
+		session.DiscardQueuedMessage(next.ID)
 	}
 	return next
 }
@@ -2589,9 +2638,9 @@ func handleSessionSend(profile string, args []string) {
 	draft := fs.Bool("draft", false, "Pre-fill the prompt without submitting (incompatible with --wait/--stream/--no-wait)")
 	messageFile := fs.String("message-file", "", "Read the message from a file ('-' for stdin) instead of a positional argument; avoids shell quoting of long prompts")
 	deferIfBusy := fs.Bool("defer-if-busy", false, "Hold delivery until the target is idle (turn-finished, hook-driven) instead of interrupting a mid-generation turn (incompatible with --no-wait)")
-	deferTimeout := fs.Duration("defer-timeout", 30*time.Minute, "Max time --defer-if-busy holds a busy target before dropping the message with a non-zero exit")
-	timeout := fs.Duration("timeout", 10*time.Minute, "Max time to wait for the agent to become ready and (with --wait) to finish processing")
-	streamIdle := fs.Duration("stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
+	deferTimeout := durationFlag(fs, "defer-timeout", 30*time.Minute, "Max time --defer-if-busy holds a busy target before dropping the message with a non-zero exit")
+	timeout := durationFlag(fs, "timeout", 10*time.Minute, "Max time to wait for the agent to become ready and (with --wait) to finish processing")
+	streamIdle := durationFlag(fs, "stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
 	streamCharBudget := fs.Int("stream-char-budget", 4000, "Char budget for text flush in --stream mode")
 	streamToolBudget := fs.Int("stream-tool-budget", 3, "Tool-event budget for text flush in --stream mode")
 
@@ -4201,8 +4250,8 @@ func handleSessionChildren(profile string, args []string) {
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	follow := fs.Bool("follow", false, "Stream child state changes as JSONL (one event per line) until interrupted")
-	interval := fs.Duration("interval", 2*time.Second, "Poll interval for --follow")
-	heartbeat := fs.Duration("heartbeat", 60*time.Second, "Heartbeat event interval for --follow (0 disables)")
+	interval := durationFlag(fs, "interval", 2*time.Second, "Poll interval for --follow")
+	heartbeat := durationFlag(fs, "heartbeat", 60*time.Second, "Heartbeat event interval for --follow (0 disables)")
 	untilDone := fs.Bool("until-done", false, "With --follow: exit 0 once every child is terminal (done sentinel, error, or stopped)")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session children [id|title] [options]")

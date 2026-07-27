@@ -40,15 +40,15 @@ type childRow struct {
 // followEvent is one JSONL line on the --follow stream. Consumers key off
 // .event: snapshot|added|status|done|removed|error.
 type followEvent struct {
-	Event       string `json:"event"`
-	ID          string `json:"id,omitempty"`
-	Title       string `json:"title,omitempty"`
-	Status      string `json:"status,omitempty"`
-	From        string `json:"from,omitempty"`
-	To          string `json:"to,omitempty"`
-	DoneStatus  string `json:"done_status,omitempty"`
-	DoneSummary string `json:"done_summary,omitempty"`
-	DoneAt      string `json:"done_at,omitempty"`
+	Event         string `json:"event"`
+	ID            string `json:"id,omitempty"`
+	Title         string `json:"title,omitempty"`
+	Status        string `json:"status,omitempty"`
+	From          string `json:"from,omitempty"`
+	To            string `json:"to,omitempty"`
+	DoneStatus    string `json:"done_status,omitempty"`
+	DoneSummary   string `json:"done_summary,omitempty"`
+	DoneAt        string `json:"done_at,omitempty"`
 	DoneStale     bool   `json:"done_stale,omitempty"`
 	LastSentAt    string `json:"last_sent_at,omitempty"`
 	ContextTokens int    `json:"context_tokens,omitempty"`
@@ -140,6 +140,40 @@ func lastSentClock(db *statedb.StateDB, id string) time.Time {
 	return time.Unix(ts, 0)
 }
 
+// childCompletion resolves a child's last asserted completion from the two
+// sources that can know one, in order:
+//
+//  1. The completion ledger — durable and last-wins, but written ONLY by the
+//     transition daemon.
+//  2. The child's own Claude transcript — the sentinel the worker actually
+//     printed, read directly.
+//
+// Source 2 exists because source 1 has a single point of failure with no
+// visible symptom. The daemon is a launchd/systemd unit; when it is down the
+// ledger simply stops being written and every child reads done_status=null
+// forever — identical to "nobody has finished". Observed 2026-07-20: a macOS
+// Background Task Management LWCR mismatch (the binary was reinstalled, which
+// invalidates the registered code requirement) left the notifier crash-looping
+// on EX_CONFIG for a week. Seven workers printed the sentinel; the ledger
+// recorded none of them; every `until … done_status != null` loop the fleet and
+// orchestrate skills prescribe hung until its harness killed it, and the
+// turn-start fleet snapshot reported "0 done" for a fleet that was finished.
+//
+// The ledger still wins when present: it is durable across the child being
+// handed new work, whereas the transcript only ever answers "did the CURRENT
+// turn finish" (by design — see TranscriptDoneSignal). So the fallback strictly
+// adds signal where there was none and cannot resurrect a superseded report.
+func childCompletion(k *session.Instance) (status, summary string, finishedAt time.Time, ok bool) {
+	if e, found := session.ReadLedgerEntry(k.ID); found {
+		return e.Status, e.Summary, e.FinishedAt, true
+	}
+	sig, at, found := session.TranscriptDoneSignal(session.ClaudeTranscriptPathForInstance(k))
+	if !found {
+		return "", "", time.Time{}, false
+	}
+	return sig.Status, sig.Summary, at, true
+}
+
 // buildChildRows converts refreshed child instances into rows. Callers must
 // have run session.RefreshInstancesForCLIStatus on kids first so UpdateStatus
 // sees warm tmux caches and hook statuses (issue #610).
@@ -156,13 +190,13 @@ func buildChildRows(kids []*session.Instance, db *statedb.StateDB) []childRow {
 		if !lastSent.IsZero() {
 			row.LastSentAt = lastSent.Format(time.RFC3339)
 		}
-		if e, ok := session.ReadLedgerEntry(k.ID); ok {
-			row.DoneStatus = e.Status
-			row.DoneSummary = e.Summary
-			if !e.FinishedAt.IsZero() {
-				row.DoneAt = e.FinishedAt.Format(time.RFC3339)
+		if status, summary, finishedAt, ok := childCompletion(k); ok {
+			row.DoneStatus = status
+			row.DoneSummary = summary
+			if !finishedAt.IsZero() {
+				row.DoneAt = finishedAt.Format(time.RFC3339)
 			}
-			row.DoneStale = completionIsStale(e.FinishedAt, lastSent)
+			row.DoneStale = completionIsStale(finishedAt, lastSent)
 		}
 		if tokens, ok := session.CurrentContextTokensForInstance(k); ok {
 			row.ContextTokens = tokens
