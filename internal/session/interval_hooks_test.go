@@ -28,12 +28,12 @@ func TestIntervalHookSettings_GetIntervalSeconds(t *testing.T) {
 		in   int
 		want int
 	}{
-		{0, DefaultIntervalHookSeconds},                     // unset -> default
-		{-5, DefaultIntervalHookSeconds},                    // negative -> default
-		{1, MinIntervalHookSeconds},                         // below floor -> clamp up
-		{5, 5},                                              // at floor
-		{60, 60},                                            // normal
-		{999999, MaxIntervalHookSeconds},                    // above ceiling -> clamp down
+		{0, DefaultIntervalHookSeconds},  // unset -> default
+		{-5, DefaultIntervalHookSeconds}, // negative -> default
+		{1, MinIntervalHookSeconds},      // below floor -> clamp up
+		{5, 5},                           // at floor
+		{60, 60},                         // normal
+		{999999, MaxIntervalHookSeconds}, // above ceiling -> clamp down
 	}
 	for _, c := range cases {
 		h := IntervalHookSettings{IntervalSeconds: c.in}
