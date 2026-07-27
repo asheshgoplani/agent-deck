@@ -31,26 +31,26 @@ const attachOutputDrainTimeout = 250 * time.Millisecond
 // an attached session.
 const attachReplyQuarantine = 500 * time.Millisecond
 
-// attachStdinPollInterval bounds how long the stdin reader may sit inside
+// AttachStdinPollInterval bounds how long the stdin reader may sit inside
 // poll(2) before it re-checks the attach context. A blocking os.Stdin.Read
 // cannot be interrupted by cancel(), and a tty inherited from the shell is
 // left in blocking mode, so Go never registers fd 0 with the netpoller and
 // SetReadDeadline returns ErrNoDeadline — polling is the only way to make the
 // read abandonable. 100ms is imperceptible on teardown and costs ~10 idle
 // wakeups/sec while attached, against the 4/sec the badge watcher already runs.
-const attachStdinPollInterval = 100 * time.Millisecond
+const AttachStdinPollInterval = 100 * time.Millisecond
 
-// attachStdinReaderStopTimeout bounds how long cleanupAttach waits for the
-// stdin reader to exit. Comfortably above attachStdinPollInterval so a healthy
+// AttachStdinReaderStopTimeout bounds how long cleanupAttach waits for the
+// stdin reader to exit. Comfortably above AttachStdinPollInterval so a healthy
 // reader always wins the race; the timeout only fires if the reader is wedged
 // in a read that never returns, where proceeding beats hanging the TUI.
-const attachStdinReaderStopTimeout = time.Second
+const AttachStdinReaderStopTimeout = time.Second
 
 // PollFdReady reports whether fd has input available within timeout.
 // Retries on EINTR so a SIGWINCH mid-poll does not look like "no input".
 //
 // Exported because the SSH attach path (internal/session) needs the same
-// abandonable-read primitive for the same reason — see quiesceAttachInput.
+// abandonable-read primitive for the same reason — see QuiesceAttachInput.
 func PollFdReady(fd int, timeout time.Duration) bool {
 	ms := int(timeout.Milliseconds())
 	if ms < 1 {
@@ -269,7 +269,7 @@ type attachStdinPump struct {
 // Cancellation is checked between polls rather than relying on the read
 // unblocking: os.Stdin.Read on a blocking tty is not interruptible, so a pump
 // that ignored ctx would survive the attach and steal the caller's next
-// keystroke. run therefore returns within roughly attachStdinPollInterval of
+// keystroke. run therefore returns within roughly AttachStdinPollInterval of
 // cancellation.
 func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 	buf := make([]byte, 32)
@@ -288,7 +288,7 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 			return SwitchNone, false
 		}
 		// Poll first so the read below never blocks longer than the interval.
-		if !PollFdReady(fd, attachStdinPollInterval) {
+		if !PollFdReady(fd, AttachStdinPollInterval) {
 			continue
 		}
 
@@ -341,7 +341,7 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 	}
 }
 
-// quiesceAttachInput ends the attach's ownership of stdin: it waits for the
+// QuiesceAttachInput ends the attach's ownership of stdin: it waits for the
 // stdin reader to exit, then drops whatever is sitting in the terminal's input
 // queue and arms the reply quarantine.
 //
@@ -358,7 +358,7 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 // readerDone is the reader's completion channel, timeout the backstop for a
 // wedged reader, and flush/quarantine are injected so the ordering is testable
 // without a live tty. It reports whether the reader exited on its own.
-func quiesceAttachInput(readerDone <-chan struct{}, timeout time.Duration, flush func(), quarantine func()) bool {
+func QuiesceAttachInput(readerDone <-chan struct{}, timeout time.Duration, flush func(), quarantine func()) bool {
 	exited := false
 	select {
 	case <-readerDone:
@@ -571,7 +571,7 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	//
 	// The join that actually matters for correctness is stdinReaderDone, which
 	// cleanupAttach waits on individually — that is the goroutine that must not
-	// outlive the attach (see quiesceAttachInput). The WaitGroup stays as
+	// outlive the attach (see QuiesceAttachInput). The WaitGroup stays as
 	// documentation of goroutine ownership.
 	var wg sync.WaitGroup
 
@@ -682,10 +682,10 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		// Hand stdin back: stop the reader, then flush the input queue and arm
 		// the quarantine. cancel() above makes the reader exit within one poll
 		// interval; the timeout is a wedged-reader backstop, not the expected
-		// path. See quiesceAttachInput for why the order matters.
-		quiesceAttachInput(
+		// path. See QuiesceAttachInput for why the order matters.
+		QuiesceAttachInput(
 			stdinReaderDone,
-			attachStdinReaderStopTimeout,
+			AttachStdinReaderStopTimeout,
 			func() { _ = FlushInput(int(os.Stdin.Fd())) },
 			func() { termreply.QuarantineFor(attachReplyQuarantine) },
 		)

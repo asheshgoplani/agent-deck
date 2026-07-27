@@ -73,7 +73,7 @@ func TestAttachStdinPump_StopsOnContextCancel(t *testing.T) {
 	done := runPump(ctx, pump)
 
 	// Let the pump settle into its poll loop with no input available.
-	time.Sleep(2 * attachStdinPollInterval)
+	time.Sleep(2 * AttachStdinPollInterval)
 	select {
 	case res := <-done:
 		t.Fatalf("pump exited before cancel: %+v", res)
@@ -83,7 +83,7 @@ func TestAttachStdinPump_StopsOnContextCancel(t *testing.T) {
 	cancelledAt := time.Now()
 	cancel()
 
-	// The bound must stay UNDER attachStdinReaderStopTimeout, not merely under
+	// The bound must stay UNDER AttachStdinReaderStopTimeout, not merely under
 	// some generous ceiling. cleanupAttach gives up waiting at that backstop and
 	// returns anyway, so a pump that exits slower than it is still broken in
 	// production - the reader outlives the attach and eats a keypress - while a
@@ -91,10 +91,10 @@ func TestAttachStdinPump_StopsOnContextCancel(t *testing.T) {
 	// cleanupAttach actually depends on: the pump exits before the backstop fires.
 	select {
 	case res := <-done:
-		if elapsed := time.Since(cancelledAt); elapsed >= attachStdinReaderStopTimeout {
+		if elapsed := time.Since(cancelledAt); elapsed >= AttachStdinReaderStopTimeout {
 			t.Errorf("pump took %v to exit, want < %v (cleanupAttach's backstop); "+
 				"at or beyond it the reader outlives the attach",
-				elapsed, attachStdinReaderStopTimeout)
+				elapsed, AttachStdinReaderStopTimeout)
 		}
 		if res.interrupted {
 			t.Errorf("interrupted = true on a context cancel, want false")
@@ -102,7 +102,7 @@ func TestAttachStdinPump_StopsOnContextCancel(t *testing.T) {
 		if res.outcome != SwitchNone {
 			t.Errorf("outcome = %v, want SwitchNone", res.outcome)
 		}
-	case <-time.After(attachStdinReaderStopTimeout):
+	case <-time.After(AttachStdinReaderStopTimeout):
 		t.Fatal("pump did not exit before cleanupAttach's backstop; a surviving " +
 			"reader swallows the first keystroke on return to the deck")
 	}
@@ -200,7 +200,7 @@ func TestAttachStdinPump_StopsOnEOF(t *testing.T) {
 	}
 }
 
-// --- quiesceAttachInput: the teardown half of the fix ---
+// --- QuiesceAttachInput: the teardown half of the fix ---
 //
 // These pin the two invariants cleanupAttach depends on and that the pump tests
 // above cannot see: that the stdin reader is joined BEFORE the input queue is
@@ -241,7 +241,7 @@ func TestQuiesceAttachInput_WaitsForReaderBeforeFlushing(t *testing.T) {
 		close(readerDone)
 	}()
 
-	exited := quiesceAttachInput(readerDone, attachStdinReaderStopTimeout, flush, quarantine)
+	exited := QuiesceAttachInput(readerDone, AttachStdinReaderStopTimeout, flush, quarantine)
 
 	if !exited {
 		t.Error("exited = false, want true (the reader finished well inside the backstop)")
@@ -269,7 +269,7 @@ func TestQuiesceAttachInput_FlushesOnEveryExitPath(t *testing.T) {
 	close(readerDone) // reader already gone, as on a process-exit teardown
 
 	flushed, quarantined := false, false
-	exited := quiesceAttachInput(readerDone, attachStdinReaderStopTimeout,
+	exited := QuiesceAttachInput(readerDone, AttachStdinReaderStopTimeout,
 		func() { flushed = true },
 		func() { quarantined = true },
 	)
@@ -290,7 +290,7 @@ func TestQuiesceAttachInput_BackstopFires(t *testing.T) {
 
 	flushed := false
 	start := time.Now()
-	exited := quiesceAttachInput(neverDone, 100*time.Millisecond,
+	exited := QuiesceAttachInput(neverDone, 100*time.Millisecond,
 		func() { flushed = true },
 		func() {},
 	)

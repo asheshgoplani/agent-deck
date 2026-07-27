@@ -31,15 +31,6 @@ import (
 // their respective attach paths (local tmux vs SSH remote).
 const sshAttachReplyQuarantine = 500 * time.Millisecond
 
-// sshStdinPollInterval and sshStdinReaderStopTimeout mirror
-// attachStdinPollInterval / attachStdinReaderStopTimeout in internal/tmux/pty.go.
-// Keep these in sync — the SSH attach path hands stdin back to the TUI the same
-// way the local tmux path does, and for the same reason.
-const (
-	sshStdinPollInterval      = 100 * time.Millisecond
-	sshStdinReaderStopTimeout = time.Second
-)
-
 // sshControlDir is the directory for SSH ControlMaster sockets.
 const sshControlDir = "/tmp/agent-deck-ssh"
 
@@ -371,7 +362,7 @@ func (r *SSHRunner) Attach(sessionID string) error {
 				return
 			default:
 			}
-			if !tmux.PollFdReady(fd, sshStdinPollInterval) {
+			if !tmux.PollFdReady(fd, tmux.AttachStdinPollInterval) {
 				continue
 			}
 
@@ -420,16 +411,17 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	}
 	// Hand stdin back to the TUI: stop the reader, then drop whatever the
 	// remote's teardown left in the input queue and arm the reply quarantine.
-	// Waiting before flushing is what keeps the reader from eating the user's
-	// next keypress; flushing after it stops is what keeps the terminal's
-	// capability replies out of the TUI. Mirrors internal/tmux.quiesceAttachInput.
+	// The join-before-flush ordering is the load-bearing invariant here, so this
+	// calls the same tmux.QuiesceAttachInput the local attach path uses rather
+	// than re-implementing it — that function's mutation-checked tests are what
+	// protect the ordering, and an inline copy here would inherit none of them.
 	close(stdinReaderStop)
-	select {
-	case <-stdinReaderDone:
-	case <-time.After(sshStdinReaderStopTimeout):
-	}
-	_ = tmux.FlushInput(int(os.Stdin.Fd())) // #nosec G115 -- fd is a small positive int
-	termreply.QuarantineFor(sshAttachReplyQuarantine)
+	tmux.QuiesceAttachInput(
+		stdinReaderDone,
+		tmux.AttachStdinReaderStopTimeout,
+		func() { _ = tmux.FlushInput(int(os.Stdin.Fd())) }, // #nosec G115 -- fd is a small positive int
+		func() { termreply.QuarantineFor(sshAttachReplyQuarantine) },
+	)
 
 	// Reset terminal styles that may have leaked from the remote session.
 	_, _ = os.Stdout.WriteString("\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m")
