@@ -207,6 +207,14 @@ func TestKillStaleControlClients_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 	err := waitForFile(marker, 5*time.Second)
 	assert.NoError(t, err, "child's SIGTERM handler must have run (marker file must exist)")
 
+	// The marker is written just before os.Exit, so waitForFile can return
+	// while the child is still a zombie. Await the reaper (bounded) before the
+	// ESRCH check so the process is actually gone, not merely exiting.
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+	}
+
 	// Process should be gone.
 	err = syscall.Kill(pid, 0)
 	assert.True(t, errors.Is(err, syscall.ESRCH), "child process should be fully reaped; got err=%v", err)
@@ -315,6 +323,13 @@ func TestControlPipeClose_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 	// Stat) for the async handler write — see waitForFile.
 	err = waitForFile(marker, 5*time.Second)
 	assert.NoError(t, err, "child's SIGTERM handler must have run (marker file must exist)")
+
+	// Marker is written just before os.Exit; await the reaper (bounded) so the
+	// child is actually gone before the ESRCH check, not merely exiting.
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+	}
 
 	err = syscall.Kill(pid, 0)
 	assert.True(t, errors.Is(err, syscall.ESRCH), "child process should be fully reaped; got err=%v", err)

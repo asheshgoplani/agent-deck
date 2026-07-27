@@ -1,6 +1,7 @@
 package intervalhook
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -10,13 +11,17 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// newTestRunner builds a Runner with an injected loader (no config.toml I/O)
-// and a fresh stop channel.
+// newTestRunner builds a Runner with an injected loader (no config.toml I/O),
+// mirroring New's field init (incl. the root context) so runOnce/Stop behave
+// exactly as in production.
 func newTestRunner(load configLoader) *Runner {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Runner{
 		logger:         nil,
 		load:           load,
 		rescanInterval: defaultRescanInterval,
+		rootCtx:        ctx,
+		rootCancel:     cancel,
 		stopCh:         make(chan struct{}),
 		running:        make(map[string]bool),
 		supervised:     make(map[string]bool),
@@ -65,6 +70,46 @@ func TestRunOnce_TimeoutKillsCommand(t *testing.T) {
 	r.runOnce("slow", hook)
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("timeout not enforced: runOnce took %v (want < 3s)", elapsed)
+	}
+}
+
+// TestStop_CancelsInFlightRun is the regression test for the #1628 review item:
+// Stop() must cancel a hook mid-execution (via the shared root context), not
+// leave it running until its own (long) timeout. A `sleep 30` hook with a large
+// timeout is started; Stop() during the run must let runOnce return promptly.
+func TestStop_CancelsInFlightRun(t *testing.T) {
+	r := newTestRunner(nil)
+	// Long command + long timeout: without cancellation, runOnce would block ~30s.
+	hook := session.IntervalHookSettings{Command: "sleep 30", TimeoutSeconds: 30}
+
+	done := make(chan time.Duration, 1)
+	go func() {
+		start := time.Now()
+		r.runOnce("inflight", hook)
+		done <- time.Since(start)
+	}()
+
+	// Wait for the run to actually start (the running flag is set under mu).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		r.mu.Lock()
+		up := r.running["inflight"]
+		r.mu.Unlock()
+		if up {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	r.Stop() // must cancel the in-flight run's context
+
+	select {
+	case elapsed := <-done:
+		if elapsed > 5*time.Second {
+			t.Fatalf("Stop did not cancel the in-flight run: runOnce took %v (want < 5s)", elapsed)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("in-flight run did not return within 6s after Stop (not cancelled)")
 	}
 }
 

@@ -71,6 +71,13 @@ type Runner struct {
 	// race-free. Tests set it on their instance before calling Start.
 	rescanInterval time.Duration
 
+	// rootCtx is the parent of every hook run's timeout context; rootCancel
+	// cancels it. Stop() calls rootCancel so an in-flight CombinedOutput is
+	// killed (via the per-run process-group kill + WaitDelay) as soon as the
+	// app quits, instead of continuing to run detached until its own timeout.
+	rootCtx    context.Context
+	rootCancel context.CancelFunc
+
 	mu     sync.Mutex
 	stopCh chan struct{}
 	// running guards against overlapping runs of the SAME hook: if a hook's
@@ -86,10 +93,13 @@ type Runner struct {
 // New builds a Runner. logger may be nil (panics are still recovered, log
 // records dropped). Call Start to launch the supervisor.
 func New(logger *slog.Logger) *Runner {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Runner{
 		logger:         logger,
 		load:           defaultLoader,
 		rescanInterval: defaultRescanInterval,
+		rootCtx:        ctx,
+		rootCancel:     cancel,
 		stopCh:         make(chan struct{}),
 		running:        make(map[string]bool),
 		supervised:     make(map[string]bool),
@@ -124,18 +134,22 @@ func (r *Runner) Start() {
 	})
 }
 
-// Stop terminates the supervisor and all hook goroutines. Safe to call once.
+// Stop terminates the supervisor and all hook loops, and cancels any in-flight
+// hook run: closing stopCh ends the loops, and rootCancel cancels the shared
+// context every runOnce derives its timeout from, so a command mid-execution is
+// killed (via its process-group kill + WaitDelay) rather than left running
+// detached until its own TimeoutSeconds. Safe to call once; idempotent.
 func (r *Runner) Stop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.started {
-		return
-	}
 	select {
 	case <-r.stopCh:
 		// already closed
 	default:
 		close(r.stopCh)
+	}
+	if r.rootCancel != nil {
+		r.rootCancel()
 	}
 }
 
@@ -243,7 +257,9 @@ func (r *Runner) runOnce(name string, cfg session.IntervalHookSettings) {
 	}()
 
 	timeout := time.Duration(cfg.GetTimeoutSeconds()) * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Derive from the Runner's root context (set in New) so Stop() cancels an
+	// in-flight run instead of leaving it to finish detached.
+	ctx, cancel := context.WithTimeout(r.rootCtx, timeout)
 	defer cancel()
 
 	// The command is user-authored config (config.toml
