@@ -4332,9 +4332,17 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 		time.Sleep(verifyDelay)
 
 		unsentPromptDetected := false
+		// foreignDraftParked (issue #1777): the composer visibly holds content
+		// that is neither our message nor a suggestion/placeholder — e.g. a
+		// Claude autosuggestion materialized as real normal-coloured input.
+		// The fallback Enter nudges below must not fire then: a bare Enter
+		// would submit an instruction no operator wrote. Skipping the nudge
+		// is the safe failure (worst case the delivery stays unconfirmed).
+		foreignDraftParked := false
 		if rawContent, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
 			content := tmux.StripANSI(rawContent)
 			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
+			foreignDraftParked = !unsentPromptDetected && send.EnterWouldSubmitForeignDraft(rawContent, tmux.StripANSI, message)
 		}
 		verifiedStatus, statusErr := i.tmuxSession.GetStatus()
 
@@ -4364,7 +4372,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 				}
 			} else {
 				waitingNoMarkerChecks = 0
-				if retry < 5 || retry%2 == 0 {
+				if (retry < 5 || retry%2 == 0) && !foreignDraftParked {
 					_ = i.tmuxSession.SendEnter()
 				}
 			}
@@ -4372,7 +4380,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 		}
 
 		waitingNoMarkerChecks = 0
-		if retry < 4 {
+		if retry < 4 && !foreignDraftParked {
 			_ = i.tmuxSession.SendEnter()
 		}
 	}

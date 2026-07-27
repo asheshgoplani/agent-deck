@@ -108,6 +108,12 @@ type ComposerGuardResult struct {
 // maxComposerClearAttempts bounds Ctrl+C attempts during save-clear.
 const maxComposerClearAttempts = 2
 
+// saveReconfirmDelay is the settle time before the save-step re-capture. A
+// suggestion sampled in the sub-frame where its text is painted but the dim
+// SGR has not landed reads as an operator draft (issue #1777); one frame of
+// settle is enough for the attribute to land before re-classification.
+const saveReconfirmDelay = 50 * time.Millisecond
+
 // GuardComposerDraft implements the composer-collision guard for automated
 // sends (issue #1409): an automated SendKeysAndEnter against a composer that
 // already holds half-typed operator input would merge with it and submit the
@@ -160,8 +166,27 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 		}
 	}
 
-	// Hold bound reached with the operator draft still present: save it and
-	// clear the composer so the automated message cannot merge with it.
+	// Hold bound reached with the operator draft still present. Before
+	// committing to save-clear-restore, re-capture and re-classify: a single
+	// mid-render sample can show suggestion text whose dim/grey SGR has not
+	// landed yet, and saving it would later RESTORE the suggestion as real,
+	// normal-coloured composer text that a bare Enter could submit (issue
+	// #1777). Only content that classifies as an operator draft on a second,
+	// settled capture is ever saved. On a capture failure nothing is saved —
+	// the guard must not attribute content it cannot re-read.
+	time.Sleep(saveReconfirmDelay)
+	raw, err := t.CapturePaneFresh()
+	if err != nil {
+		return ComposerGuardResult{Held: time.Since(start)}
+	}
+	draft, visible := ComposerDraft(raw, strip)
+	if !visible || draft == "" {
+		return ComposerGuardResult{Held: time.Since(start)}
+	}
+	lastDraft = draft
+
+	// Save the confirmed operator draft and clear the composer so the
+	// automated message cannot merge with it.
 	res := ComposerGuardResult{SavedDraft: lastDraft}
 	clearPoll := poll
 	if clearPoll > 100*time.Millisecond {

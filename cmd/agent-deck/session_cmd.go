@@ -3419,9 +3419,17 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		time.Sleep(opts.checkDelay)
 
 		unsentPromptDetected := false
+		// foreignDraftParked (issue #1777): the composer visibly holds content
+		// that is neither our message nor a suggestion/placeholder — e.g. a
+		// Claude autosuggestion materialized as real normal-coloured input.
+		// The fallback Enter nudges below must not fire then: a bare Enter
+		// would submit an instruction no operator wrote. Skipping the nudge
+		// is the safe failure (the verify then classifies the delivery).
+		foreignDraftParked := false
 		if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil {
 			content := tmux.StripANSI(rawContent)
 			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
+			foreignDraftParked = !unsentPromptDetected && send.EnterWouldSubmitForeignDraft(rawContent, tmux.StripANSI, message)
 			if !sawDeliveryEvidence && deliveryToken != "" && strings.Contains(content, deliveryToken) {
 				sawDeliveryEvidence = true
 			}
@@ -3484,7 +3492,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				// aggressively in the early window (every iteration for first 5
 				// retries) then every 2nd iteration. This addresses bracketed
 				// paste timing failures that are most likely early on.
-				if retry < 5 || retry%2 == 0 {
+				if (retry < 5 || retry%2 == 0) && !foreignDraftParked {
 					_ = target.SendEnter()
 				}
 			}
@@ -3496,7 +3504,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		// Ambiguous state: keep a best-effort Enter retry budget.
 		// Increased from 2 to 4 because some TUI frameworks take longer
 		// to process and reflect state.
-		if retry < 4 {
+		if retry < 4 && !foreignDraftParked {
 			_ = target.SendEnter()
 		}
 	}

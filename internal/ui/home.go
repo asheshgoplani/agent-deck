@@ -10294,7 +10294,10 @@ func deliverToConductorPaneTuned(p conductorPane, msg string, maxChecks int, che
 		case blindEnters < blindEnterCap:
 			// No composer introspection (e.g. codex/cursor) and not yet active.
 			// Re-press Enter a bounded number of times in case the delayed Enter
-			// was dropped, then defer to the status signal above.
+			// was dropped, then defer to the status signal above. A visible
+			// composer holding foreign content never reaches this arm — the
+			// HasCurrentComposerPrompt case above returns first — so this blind
+			// Enter cannot submit text nobody authored (#1777 audit).
 			blindEnters++
 			if err := p.SendEnter(); err != nil {
 				return fmt.Errorf("retry enter: %w", err)
