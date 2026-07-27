@@ -9,9 +9,17 @@
 //
 // Design mirrors internal/sysinfo.Collector (background goroutine +
 // time.NewTicker + stopCh) and internal/session.StartMaintenanceWorker
-// (config re-read each tick so edits to config.toml take effect without a
-// restart). Each hook runs on its own goroutine, wrapped in safego.Go so a
-// panicking command can never take down the TUI.
+// (config re-read so edits to config.toml take effect without a restart).
+//
+// A single SUPERVISOR goroutine rescans config on an interval and reconciles
+// the set of running hook goroutines: it starts a loop for each newly-enabled
+// hook and lets removed/disabled hooks' loops exit. This is what makes live
+// add / pause / resume work without a restart (a hook goroutine started once at
+// boot would never notice a hook added later, and a disabled hook's loop that
+// simply returned could never come back). Each hook loop runs on its own
+// goroutine wrapped in safego.Go so a panicking command can never take down the
+// TUI. Hook commands run in their own process group with a bounded timeout so a
+// daemonizing command cannot wedge its slot forever.
 package intervalhook
 
 import (
@@ -20,19 +28,31 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// configLoader returns the current set of interval hooks. It is called once
-// per tick so config.toml edits are picked up live (add/remove/pause a hook,
-// change its cadence) without restarting the TUI. Injected for testability.
+// rescanInterval is how often the supervisor re-reads config to pick up
+// hooks added / removed / enabled / disabled since the last scan. A var (not
+// const) so tests can shorten it; production callers never change it.
+var rescanInterval = 15 * time.Second
+
+// waitDelay bounds how long we wait for a hook's pipes to close after its
+// context is cancelled (i.e. after the timeout kill). Without this, a command
+// that forks a daemon holding stdout/stderr open would block CombinedOutput
+// forever even after the parent is killed.
+const waitDelay = 3 * time.Second
+
+// configLoader returns the current set of interval hooks. It is called by the
+// supervisor each rescan and by each hook loop each tick so config.toml edits
+// are picked up live. Injected for testability.
 type configLoader func() map[string]session.IntervalHookSettings
 
 // defaultLoader reads the hooks from the on-disk user config (mtime-cached by
-// session.LoadUserConfig, so per-tick calls are cheap).
+// session.LoadUserConfig, so frequent calls are cheap).
 func defaultLoader() map[string]session.IntervalHookSettings {
 	cfg, err := session.LoadUserConfig()
 	if err != nil || cfg == nil {
@@ -52,24 +72,28 @@ type Runner struct {
 	// previous invocation is still executing when its next tick fires, the
 	// tick is skipped rather than piling up. Keyed by hook name.
 	running map[string]bool
-	started bool
+	// supervised tracks which hooks currently have a live loop goroutine, so
+	// the supervisor starts a loop only for newly-enabled hooks. Keyed by name.
+	supervised map[string]bool
+	started    bool
 }
 
 // New builds a Runner. logger may be nil (panics are still recovered, log
-// records dropped). Call Start to launch the supervising goroutines.
+// records dropped). Call Start to launch the supervisor.
 func New(logger *slog.Logger) *Runner {
 	return &Runner{
-		logger:  logger,
-		load:    defaultLoader,
-		stopCh:  make(chan struct{}),
-		running: make(map[string]bool),
+		logger:     logger,
+		load:       defaultLoader,
+		stopCh:     make(chan struct{}),
+		running:    make(map[string]bool),
+		supervised: make(map[string]bool),
 	}
 }
 
-// Start launches one supervising goroutine per configured hook. It is a no-op
-// if there are no enabled hooks, and safe to call once (subsequent calls are
-// ignored). Non-blocking: all work happens on background goroutines, so it is
-// safe to call on the UI's critical path (Home.Init).
+// Start launches the supervisor goroutine, which reconciles the running hook
+// set against config now and every rescanInterval thereafter. Safe to call
+// once (subsequent calls are ignored). Non-blocking — safe on the UI critical
+// path (Home.Init).
 func (r *Runner) Start() {
 	r.mu.Lock()
 	if r.started {
@@ -77,21 +101,24 @@ func (r *Runner) Start() {
 		return
 	}
 	r.started = true
-	hooks := r.load()
 	r.mu.Unlock()
 
-	for name, cfg := range hooks {
-		if !cfg.GetEnabled() {
-			continue
+	safego.Go(r.logger, "interval_hook:supervisor", func() {
+		r.reconcile() // start any hooks enabled at boot immediately
+		ticker := time.NewTicker(rescanInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.stopCh:
+				return
+			case <-ticker.C:
+				r.reconcile()
+			}
 		}
-		name, cfg := name, cfg // capture
-		safego.Go(r.logger, "interval_hook:"+name, func() {
-			r.runLoop(name, cfg.RunAtStartup)
-		})
-	}
+	})
 }
 
-// Stop terminates all hook goroutines. Safe to call once.
+// Stop terminates the supervisor and all hook goroutines. Safe to call once.
 func (r *Runner) Stop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -106,19 +133,49 @@ func (r *Runner) Stop() {
 	}
 }
 
+// reconcile scans config and launches a loop goroutine for each enabled hook
+// that isn't already supervised. Disabled/removed hooks are left to their own
+// loops to notice and exit (which clears their supervised flag). This is the
+// mechanism behind live add / pause / resume.
+func (r *Runner) reconcile() {
+	hooks := r.load()
+	for name, cfg := range hooks {
+		if !cfg.GetEnabled() || strings.TrimSpace(cfg.Command) == "" {
+			continue
+		}
+		r.mu.Lock()
+		alreadyUp := r.supervised[name]
+		if !alreadyUp {
+			r.supervised[name] = true
+		}
+		r.mu.Unlock()
+		if alreadyUp {
+			continue
+		}
+		name, runAtStartup := name, cfg.RunAtStartup // capture
+		safego.Go(r.logger, "interval_hook:"+name, func() {
+			r.runLoop(name, runAtStartup)
+		})
+	}
+}
+
 // runLoop drives a single hook. The cadence and command are re-read from config
 // each tick (via r.currentHook) so live edits take effect; if the hook is
-// removed or disabled, the loop exits cleanly.
+// removed or disabled, the loop exits and clears its supervised flag so the
+// supervisor will restart it on re-enable.
 func (r *Runner) runLoop(name string, runAtStartup bool) {
+	defer func() {
+		r.mu.Lock()
+		delete(r.supervised, name)
+		r.mu.Unlock()
+	}()
+
 	if runAtStartup {
 		if cfg, ok := r.currentHook(name); ok {
 			r.runOnce(name, cfg)
 		}
 	}
 
-	// Seed the ticker from the current interval; re-arm it if the interval
-	// changes across ticks (StartMaintenanceWorker re-reads config per tick,
-	// but its cadence is fixed — here the cadence itself is user-tunable).
 	cfg, ok := r.currentHook(name)
 	if !ok {
 		return
@@ -134,7 +191,8 @@ func (r *Runner) runLoop(name string, runAtStartup bool) {
 		case <-ticker.C:
 			cfg, ok := r.currentHook(name)
 			if !ok {
-				// Hook removed or disabled at runtime — stop supervising it.
+				// Hook removed or disabled at runtime — exit; the supervisor
+				// re-launches this loop if the hook is re-enabled later.
 				return
 			}
 			r.runOnce(name, cfg)
@@ -182,26 +240,50 @@ func (r *Runner) runOnce(name string, cfg session.IntervalHookSettings) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// #nosec G204 -- The command is user-authored config (config.toml
+	// The command is user-authored config (config.toml
 	// [interval_hooks.<name>].command), run intentionally on the user's own
 	// machine, exactly like a crontab entry. It is passed as a single argv
 	// element to `bash -lc`, matching the vetted convention in
 	// internal/tmux.buildBashLCCommand. No external/untrusted input reaches it.
+	// #nosec G204
 	cmd := exec.CommandContext(ctx, bashPath(), "-lc", cfg.Command)
+	// Run the command in its OWN process group so a hook that forks children
+	// (e.g. daemonizes) can be killed as a group on timeout, not just the
+	// direct child. CommandContext kills only cmd.Process; the negative-PID
+	// kill below reaches the whole group.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// Kill the process GROUP (negative pgid). Falls back to the single
+		// process if the group signal fails.
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+	// Bound how long we wait for pipes to close after Cancel fires, so a
+	// forked daemon holding stdout/stderr open cannot block us forever.
+	cmd.WaitDelay = waitDelay
+
 	start := time.Now()
 	out, err := cmd.CombinedOutput()
 	elapsed := time.Since(start)
 
 	if r.logger != nil {
-		if err != nil {
+		switch {
+		case err != nil:
 			r.logger.Warn("interval_hook_failed",
 				slog.String("hook", name),
 				slog.Duration("elapsed", elapsed),
 				slog.Any("error", err),
 				slog.String("output", truncate(string(out), 500)),
 			)
-		} else {
-			r.logger.Debug("interval_hook_ran",
+		default:
+			// INFO (not DEBUG): a periodic exec primitive should leave a
+			// visible trace each time it fires, per maintainer review on #1628.
+			r.logger.Info("interval_hook_ran",
 				slog.String("hook", name),
 				slog.Duration("elapsed", elapsed),
 			)

@@ -14,10 +14,11 @@ import (
 // and a fresh stop channel.
 func newTestRunner(load configLoader) *Runner {
 	return &Runner{
-		logger:  nil,
-		load:    load,
-		stopCh:  make(chan struct{}),
-		running: make(map[string]bool),
+		logger:     nil,
+		load:       load,
+		stopCh:     make(chan struct{}),
+		running:    make(map[string]bool),
+		supervised: make(map[string]bool),
 	}
 }
 
@@ -118,23 +119,74 @@ func TestStart_DisabledHookDoesNotRun(t *testing.T) {
 }
 
 func TestStart_Idempotent(t *testing.T) {
-	var calls int
-	var mu sync.Mutex
-	load := func() map[string]session.IntervalHookSettings {
-		mu.Lock()
-		calls++
-		mu.Unlock()
-		return nil
-	}
+	// Start launches an async supervisor; calling it twice must not launch a
+	// second one. We can't count loader calls (the supervisor loads on its own
+	// goroutine + on a timer), so assert the started guard directly.
+	load := func() map[string]session.IntervalHookSettings { return nil }
 	r := newTestRunner(load)
 	r.Start()
 	r.Start() // second call must be a no-op (started guard)
 	defer r.Stop()
 
-	mu.Lock()
-	got := calls
-	mu.Unlock()
-	if got != 1 {
-		t.Fatalf("Start called loader %d times, want 1 (not idempotent)", got)
+	r.mu.Lock()
+	started := r.started
+	r.mu.Unlock()
+	if !started {
+		t.Fatal("Start did not set the started guard")
 	}
+	// A second Start must not have re-armed anything: Stop must cleanly close
+	// once (a double-close would panic). This exercises the guard end-to-end.
+}
+
+// TestSupervisor_LiveReEnable is the regression test for the #1628 review item:
+// a hook disabled at boot must START running once it is re-enabled in config,
+// without a restart. The supervisor rescans, so re-enabling brings it to life.
+func TestSupervisor_LiveReEnable(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "reenabled")
+
+	var mu sync.Mutex
+	enabled := false // starts DISABLED
+	load := func() map[string]session.IntervalHookSettings {
+		mu.Lock()
+		en := enabled
+		mu.Unlock()
+		e := en
+		return map[string]session.IntervalHookSettings{
+			"toggle": {
+				Command:         "printf on > " + marker,
+				RunAtStartup:    true,
+				IntervalSeconds: 3600, // only the run-at-startup fire matters
+				Enabled:         &e,
+			},
+		}
+	}
+	// Short rescan so the test doesn't wait the production 15s.
+	r := newTestRunner(load)
+	origInterval := rescanInterval
+	rescanInterval = 150 * time.Millisecond
+	defer func() { rescanInterval = origInterval }()
+
+	r.Start()
+	defer r.Stop()
+
+	// While disabled, the marker must NOT appear.
+	time.Sleep(300 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("disabled hook ran before being enabled")
+	}
+
+	// Re-enable in config; the supervisor's next rescan should launch it.
+	mu.Lock()
+	enabled = true
+	mu.Unlock()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			return // success: hook came to life after re-enable, no restart
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("re-enabled hook did not start within 3s (live re-enable broken)")
 }

@@ -499,14 +499,14 @@ enabled = true                # set false to keep the config but pause it
 |-----|------|---------|-------------|
 | `command` | string | `""` | Shell command run each tick via `bash -lc`. A hook with no command never runs. |
 | `interval_seconds` | int | `60` | Seconds between runs. Clamped to `[5, 86400]`. Re-read each tick, so edits apply live. |
-| `timeout_seconds` | int | `min(30, interval)` | Per-run timeout; a run exceeding it is killed so a wedged command can't pile up. Clamped to `[1, interval_seconds]`. |
+| `timeout_seconds` | int | `min(30, interval)` | Per-run timeout; a run exceeding it is killed so a wedged command can't pile up. Clamped to `[1, interval_seconds]`. The command runs in its own process group, so on timeout the whole group is killed — a hook that forks children (or daemonizes) can't outlive its slot. |
 | `run_at_startup` | bool | `false` | Run the command once immediately on TUI start, before the first interval. |
 | `enabled` | bool | `true` when `command` set | Gate the hook. Set `false` to keep the config but pause it. |
 
 Notes:
 - Overlapping runs of the *same* hook are skipped: if a run is still going when the next tick fires, that tick is dropped (logged, not stacked).
-- Hooks are re-read from `config.toml` each tick — add, remove, pause, or re-time a hook without restarting the TUI.
-- Failures (non-zero exit) are logged at WARN with truncated output; successes at DEBUG. A hook is never allowed to crash the TUI.
+- **Live config changes:** a supervisor rescans `config.toml` about every 15s, so you can add, remove, pause (`enabled = false`), or re-enable a hook without restarting the TUI — changes take effect within one rescan. A live hook's own `command` / `interval_seconds` edits are picked up on its next tick. (No restart is required for any of these.)
+- Each run is logged: failures (non-zero exit) at WARN with truncated output, successes at INFO. A hook is never allowed to crash the TUI (each runs in a panic-recovering goroutine).
 
 ## [display] Section
 
