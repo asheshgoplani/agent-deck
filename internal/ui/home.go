@@ -296,6 +296,7 @@ type Home struct {
 	viewOffset          int                   // First visible item index (for scrolling)
 	previewScrollOffset int                   // Lines scrolled up from tail in the preview pane (#574). 0 = tail (default). Reset on cursor move.
 	isAttaching         atomic.Bool           // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
+	lastRenderedFrame   string                // Last non-empty frame View produced; re-served while isAttaching so no frame is ever black (#1753). Event-loop goroutine only.
 	statusFilter        session.Status        // Filter sessions by status ("" = all, or specific status)
 	groupScope          string                // Limit TUI to a specific group path ("" = all groups)
 	initialSelect       string                // Session ID or title to preselect on first load (#709). Does NOT scope groups.
@@ -326,6 +327,16 @@ type Home struct {
 	// Instead of updating ALL sessions every tick, we update batches of 5-10 sessions
 	// This reduces CPU usage by 90%+ while maintaining responsiveness
 	statusUpdateIndex atomic.Int32 // Current position in round-robin cycle (atomic for thread safety)
+	// Visible-row round-robin state (#1753): with a large group expanded the
+	// visible set approaches fleet size, so "always refresh every visible row"
+	// degenerates into the same per-row storm the off-screen batching exists to
+	// prevent. Visible rows get their own cursor and per-pass budget instead.
+	visibleStatusUpdateIndex atomic.Int32
+	// visibleRefreshFingerprint remembers, per session, the cached tmux window
+	// activity at the last visible-row refresh, so an unchanged idle row costs
+	// zero. Owned exclusively by the status worker goroutine (processStatusUpdate)
+	// — no lock needed.
+	visibleRefreshFingerprint map[string]int64
 
 	// Background status worker (Priority 1C optimization)
 	// Moves status updates to a separate goroutine, completely decoupling from UI
@@ -3859,6 +3870,18 @@ type sessionRenderState struct {
 	substate  session.Substate // Honest Status v2: additive refinement (model-unavailable, auth-401, ...)
 	tool      string
 	paneTitle string // Current task description from tmux pane title (stripped of spinner/done markers)
+	// Row-label fields (#1753): the per-row render path used to read these
+	// through Instance getters, each an Instance.mu RLock. A background
+	// UpdateStatus holds that mutex as a WRITER across tmux subprocess calls
+	// (Exists probe 2s cap, DetectTool capture 3s cap), and Go's RWMutex
+	// queues new readers behind a waiting writer — so one mid-sweep session
+	// could stall View() for seconds, scaling with visible row count. That is
+	// the residual "Ctrl+Q → black screen" on large decks with a big group
+	// expanded. Carrying the labels in the snapshot makes row rendering
+	// lock-free.
+	title        string // Instance.Title at snapshot time
+	autoName     bool   // session displays a captured/live task description
+	autoNameDesc string // last persisted auto-name description (fallback when paneTitle empty)
 }
 
 // displaySessionTitle returns the label to render for a session row. For an
@@ -3900,6 +3923,22 @@ func displaySessionTitle(inst *session.Instance, paneTitle string) string {
 	return inst.Title
 }
 
+// displaySessionTitleFromState is displaySessionTitle computed purely from a
+// sessionRenderState — no Instance.mu access, so it can never block behind a
+// background UpdateStatus writer (#1753; see the field comments on
+// sessionRenderState). The overview row renderer must use this form.
+func displaySessionTitleFromState(state sessionRenderState) string {
+	if state.autoName {
+		if state.paneTitle != "" {
+			return state.paneTitle
+		}
+		if state.autoNameDesc != "" {
+			return state.autoNameDesc
+		}
+	}
+	return state.title
+}
+
 // sessionDisplayLabels returns the primary title and the optional dim secondary
 // subtitle to render for a session row, given its live pane title (already
 // cleaned by cleanPaneTitle). Both render paths — the overview
@@ -3915,6 +3954,18 @@ func sessionDisplayLabels(inst *session.Instance, paneTitle string) (title, subt
 	title = displaySessionTitle(inst, paneTitle)
 	if !inst.GetAutoName() {
 		subtitle = paneTitle
+	}
+	return title, subtitle
+}
+
+// sessionDisplayLabelsFromState is the lock-free form of sessionDisplayLabels,
+// reading everything from the render snapshot (#1753). Same policy: an
+// auto-named session promotes the task description to the title and shows no
+// subtitle; everything else keeps its handle and shows the pane title dim.
+func sessionDisplayLabelsFromState(state sessionRenderState) (title, subtitle string) {
+	title = displaySessionTitleFromState(state)
+	if !state.autoName {
+		subtitle = state.paneTitle
 	}
 	return title, subtitle
 }
@@ -3965,6 +4016,11 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			status:   inst.GetStatusThreadSafe(),
 			substate: inst.CachedSubstate(),
 			tool:     inst.GetToolThreadSafe(),
+			// Label fields: read here, on the refresher's goroutine, so the
+			// render path never takes Instance.mu per row (#1753).
+			title:        inst.Title,
+			autoName:     inst.GetAutoName(),
+			autoNameDesc: inst.GetAutoNameDescription(),
 		}
 		// Look up pane title from the already-refreshed tmux cache.
 		// Only RefreshPaneInfoCache (called from backgroundStatusUpdate) keeps
@@ -4002,10 +4058,15 @@ func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState 
 			return state
 		}
 	}
-	// Fallback for newly-added sessions before snapshot refresh.
+	// Fallback for newly-added sessions before snapshot refresh. This path DOES
+	// take Instance.mu (briefly, as a reader); it is bounded to sessions that a
+	// snapshot refresh has not seen yet, never the steady-state whole list.
 	return sessionRenderState{
-		status: inst.GetStatusThreadSafe(),
-		tool:   inst.GetToolThreadSafe(),
+		status:       inst.GetStatusThreadSafe(),
+		tool:         inst.GetToolThreadSafe(),
+		title:        inst.Title,
+		autoName:     inst.GetAutoName(),
+		autoNameDesc: inst.GetAutoNameDescription(),
 	}
 }
 
@@ -4749,6 +4810,23 @@ func (h *Home) updateKeyBindings() {
 	h.boundKeysMu.Unlock()
 }
 
+// noteGroupToggled treats a group EXPAND as a first-class refresh trigger
+// (#1753). Expanding a large group makes many rows newly visible at once; they
+// render instantly from the render snapshot (rebuildFlatItems does no tmux
+// work), and this nudge asks the status worker to start filling them in through
+// the budgeted visible round-robin — amortized over passes, never as a
+// synchronous whole-group burst. The cursor reset makes the newly revealed
+// rows' refresh order start from the top of the visible set. Collapse needs no
+// nudge: it only removes rows.
+func (h *Home) noteGroupToggled(groupPath string) {
+	group, ok := h.groupTree.Groups[groupPath]
+	if !ok || !group.Expanded {
+		return
+	}
+	h.visibleStatusUpdateIndex.Store(0)
+	h.triggerStatusUpdate()
+}
+
 // triggerStatusUpdate sends a non-blocking request to the background worker
 // If the worker is busy, the request is dropped (next tick will retry)
 func (h *Home) triggerStatusUpdate() {
@@ -4881,6 +4959,10 @@ func (h *Home) publishCurrentSessionStates() {
 // With batching (3 visible + 2 non-visible per tick), we keep each tick under 100ms.
 func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 	const batchSize = 2 // Reduced from 5 to 2 - fewer CapturePane() calls per tick
+	// Visible rows are budgeted too (#1753): see Step 1 below. 4 rows per pass
+	// keeps a screenful fresh within a few passes while bounding the worst case
+	// (large group expanded => visible ≈ fleet) to a constant per pass.
+	const visibleStatusBatchSize = 4
 	if hotUntil := h.navigationHotUntil.Load(); hotUntil > 0 && time.Now().UnixNano() < hotUntil {
 		return
 	}
@@ -4919,11 +5001,35 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 	// Track if any status actually changed (for cache invalidation)
 	statusChanged := false
 
-	// Step 1: Always update visible sessions (Priority 1B - visible first)
+	// Step 1: Visible sessions — budgeted round-robin (#1753).
+	//
+	// This used to refresh EVERY visible row each pass. That is fine when the
+	// visible set is a screenful of a mostly-collapsed list, but with a large
+	// group expanded the visible set approaches fleet size and this became an
+	// unbudgeted burst of per-row UpdateStatus calls — each of which takes the
+	// Instance write lock, sometimes across tmux subprocess round-trips. On the
+	// reporter's ~57-session deck that burst is what stretched the first
+	// post-detach frames into a visible black screen and made group expansion
+	// lag. Visible rows now cycle through their own cursor with a fixed budget
+	// per pass, and an idle row whose cached tmux window activity has not moved
+	// since its last refresh is skipped outright (cost zero). The full
+	// background sweep (2-10s cadence) remains the freshness backstop for every
+	// row, visible or not, so the budget only bounds burst size, not eventual
+	// freshness.
+	if h.visibleRefreshFingerprint == nil {
+		h.visibleRefreshFingerprint = make(map[string]int64)
+	}
+	visibleInstances := make([]*session.Instance, 0, len(visibleIDs))
 	for _, inst := range instancesCopy {
-		if !visibleIDs[inst.ID] {
-			continue
+		if visibleIDs[inst.ID] {
+			visibleInstances = append(visibleInstances, inst)
 		}
+	}
+	visRemaining := visibleStatusBatchSize
+	visStart := int(h.visibleStatusUpdateIndex.Load())
+	for i := 0; i < len(visibleInstances) && visRemaining > 0; i++ {
+		idx := (visStart + i) % len(visibleInstances)
+		inst := visibleInstances[idx]
 		// Skip sessions this instance neither owns nor is orphan-polling this
 		// sweep: mirrors the background sweep's gate so the incremental poll
 		// path can't defeat the dedup claim polling promises (flag off or nil
@@ -4931,12 +5037,30 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 		if !h.isPolledByMe(inst.ID) {
 			continue
 		}
+		// Cheap-fingerprint skip: an idle visible row whose cached window
+		// activity is unchanged since its last refresh cannot have new status.
+		// Skipping here (before UpdateStatus) means it does not even pay the
+		// Instance write lock. Non-idle rows always go through — their status
+		// can change without a tmux activity bump (hook files, process exit).
+		if inst.GetStatusThreadSafe() == session.StatusIdle {
+			if ts := inst.GetTmuxSession(); ts != nil {
+				fp := ts.GetCachedWindowActivity()
+				if fp != 0 && fp == h.visibleRefreshFingerprint[inst.ID] {
+					continue
+				}
+			}
+		}
 		oldStatus := inst.GetStatusThreadSafe()
 		_ = inst.UpdateStatus() // Ignore errors in background worker
 		if inst.GetStatusThreadSafe() != oldStatus {
 			statusChanged = true
 		}
+		if ts := inst.GetTmuxSession(); ts != nil {
+			h.visibleRefreshFingerprint[inst.ID] = ts.GetCachedWindowActivity()
+		}
 		updated[inst.ID] = true
+		visRemaining--
+		h.visibleStatusUpdateIndex.Store(int32((idx + 1) % len(visibleInstances))) // #nosec G115 -- idx bounded by slice length
 	}
 
 	// Step 2: Round-robin through non-visible sessions (Priority 1A - batching)
@@ -4950,8 +5074,12 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 		idx := (startIdx + i) % instanceCount
 		inst := instancesCopy[idx]
 
-		// Skip if already updated (visible)
-		if updated[inst.ID] {
+		// Skip visible rows here: they are the visible round-robin's job (Step 1,
+		// budgeted). Before the visible budget existed, `updated` covered every
+		// visible row so this loop was implicitly off-screen-only; now that Step 1
+		// refreshes at most visibleStatusBatchSize of them per pass, the skip must
+		// be explicit or off-screen rows would compete with visible ones here.
+		if visibleIDs[inst.ID] || updated[inst.ID] {
 			continue
 		}
 
@@ -7935,7 +8063,12 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					return h, nil
 				}
 				if item.Session.Exists() {
-					h.isAttaching.Store(true) // Prevent View() output during transition (atomic)
+					// No isAttaching pre-set here: attachSession sets the flag
+					// itself right before returning the tea.Exec Cmd, and can
+					// return nil (GetTmuxSession()==nil on a cross-socket race)
+					// — a premature set followed by a nil return left the flag
+					// stuck true and View() suppressed forever (#1753; same
+					// rationale as the handleWebAttach call site).
 					return h, h.attachSession(item.Session)
 				}
 			} else if item.Type == session.ItemTypeGroup {
@@ -7949,6 +8082,7 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 				h.saveGroupState()
+				h.noteGroupToggled(groupPath)
 			}
 			return h, nil
 		}
@@ -8325,6 +8459,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 				h.saveGroupState()
+				h.noteGroupToggled(groupPath)
 			} else if item.Type == session.ItemTypeWindow {
 				// Find parent session by WindowSessionID
 				var parentInst *session.Instance
@@ -8386,6 +8521,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 				h.saveGroupState()
+				h.noteGroupToggled(groupPath)
 			} else if item.Type == session.ItemTypeSession && h.sessionHasWindows(item) {
 				sid := item.Session.ID
 				h.windowsCollapsed[sid] = !h.windowsCollapsed[sid]
@@ -13229,6 +13365,10 @@ type remoteCreateAndAttachCmd struct {
 	path      string
 	group     string
 	createCtx context.Context
+	// onExit: same contract as attachCmd.onExit (#1753) — clear the attach flag
+	// while Bubble Tea's loop is still parked, so the first View() after resume
+	// never races the ExecCallback goroutine and renders blank.
+	onExit func()
 }
 
 type remoteAttachFailedError struct {
@@ -13244,6 +13384,9 @@ func (e remoteAttachFailedError) Unwrap() error {
 }
 
 func (r remoteCreateAndAttachCmd) Run() error {
+	if r.onExit != nil {
+		defer r.onExit()
+	}
 	baseCtx := r.createCtx
 	if baseCtx == nil {
 		baseCtx = context.Background()
@@ -13283,7 +13426,13 @@ func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path, gro
 	}
 	runner := session.NewSSHRunner(remoteName, rc)
 	h.isAttaching.Store(true)
-	return tea.Exec(remoteCreateAndAttachCmd{runner: runner, tool: tool, title: title, path: path, group: group, createCtx: h.ctx}, func(err error) tea.Msg {
+	return tea.Exec(remoteCreateAndAttachCmd{
+		runner: runner, tool: tool, title: title, path: path, group: group, createCtx: h.ctx,
+		// Clear the flag inside Run(), before Bubble Tea restores the terminal
+		// and resumes the loop (#1753); the callback below is only the belt for
+		// the path where Run() never executes.
+		onExit: func() { h.isAttaching.Store(false) },
+	}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
 		if err != nil {
 			var attachErr remoteAttachFailedError
@@ -13329,7 +13478,13 @@ func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 	}
 	runner := session.NewSSHRunner(remoteName, rc)
 	h.isAttaching.Store(true)
-	return tea.Exec(remoteAttachCmd{runner: runner, sessionID: sessionID}, func(err error) tea.Msg {
+	return tea.Exec(remoteAttachCmd{
+		runner:    runner,
+		sessionID: sessionID,
+		// Clear the flag inside Run() (#1753) — see attachCmd.onExit. The
+		// callback clear below is only the belt for the never-ran path.
+		onExit: func() { h.isAttaching.Store(false) },
+	}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
 		return statusUpdateMsg{}
 	})
@@ -13339,9 +13494,14 @@ func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 type remoteAttachCmd struct {
 	runner    *session.SSHRunner
 	sessionID string
+	// onExit: same contract as attachCmd.onExit (#1753).
+	onExit func()
 }
 
 func (r remoteAttachCmd) Run() error {
+	if r.onExit != nil {
+		defer r.onExit()
+	}
 	return r.runner.Attach(r.sessionID)
 }
 
@@ -13618,12 +13778,37 @@ func (h *Home) updateSizes() {
 
 // View renders the UI
 func (h *Home) View() string {
-	// CRITICAL: Return empty during attach to prevent View() output leakage
-	// (Bubble Tea Issue #431 - View gets printed to stdout during tea.Exec)
+	// CRITICAL: Do not render fresh output during attach (Bubble Tea Issue #431
+	// - View gets printed to stdout during tea.Exec). Historically this
+	// returned "", which had two failure modes (#1753 black-screen family):
+	//   - the frame Bubble Tea renders between Update returning the tea.Exec
+	//     Cmd and the exec actually parking the loop cleared the screen to
+	//     black before tmux took over;
+	//   - any path that left the flag set when the loop resumed (an exec
+	//     ExecCallback racing the first View, a Store(true) with no attach)
+	//     kept the screen black until the next message — or forever.
+	// Returning the last rendered frame is safe in both directions: while the
+	// renderer is still running it diffs against the identical screen content
+	// and writes nothing, and if the flag is ever stale after resume the user
+	// sees the list (at worst a few frames old) instead of black. Only the
+	// very first frame of the process can still be empty here, and no attach
+	// can be triggered before the first render.
 	if h.isAttaching.Load() { // Atomic read for thread safety
-		return ""
+		return h.lastRenderedFrame
 	}
 
+	frame := h.renderFrame()
+	if frame != "" {
+		h.lastRenderedFrame = frame
+	}
+	return frame
+}
+
+// renderFrame is the real frame builder behind View. Split out so View can
+// cache the last rendered frame for the isAttaching fallback above without
+// threading a save through every return site. Runs only on the Bubble Tea
+// event-loop goroutine, as View always has.
+func (h *Home) renderFrame() string {
 	if h.width == 0 {
 		return "Loading..."
 	}
@@ -16306,7 +16491,10 @@ func (h *Home) renderSessionItem(
 	// paneTitle) falls back to the handle automatically. paneSubtitle is the dim
 	// trailing pane title for non-auto-named rows ("" when auto-named, since the
 	// pane title is already promoted to displayTitle) — see sessionDisplayLabels.
-	displayTitle, paneSubtitle := sessionDisplayLabels(inst, instState.paneTitle)
+	// Snapshot form only here: the per-row Instance.mu reads the inst-based
+	// form does can block behind a mid-sweep UpdateStatus writer for seconds,
+	// scaling with visible rows (#1753 black-screen).
+	displayTitle, paneSubtitle := sessionDisplayLabelsFromState(instState)
 	// Pin marker (pin-sessions): a 📌 prefix flags any pinned row. Position in
 	// the list conveys top vs bottom; the emoji conveys "this is pinned".
 	// Prepended before the AutoName truncation budget so width accounting below
@@ -16318,7 +16506,7 @@ func (h *Home) renderSessionItem(
 	if isMaestro {
 		displayTitle = "⬢ " + displayTitle
 	}
-	if inst.GetAutoName() && listWidth > 0 {
+	if instState.autoName && listWidth > 0 {
 		// Task descriptions can be long; truncate to the row's free width so the
 		// tool label and badges stay on-row. Keep the reserved terms below in
 		// sync with the row format that follows.
@@ -18881,6 +19069,15 @@ func (h *Home) openSessionSwitcher(fromID string, reattachOnCancel bool) {
 	if !h.sessionSwitcher.Show(fromID, instances, subtitles) {
 		return
 	}
+	// Snapshot the row labels at open time so the switcher's View renders
+	// lock-free (#1753) — see SessionSwitcher.labels.
+	labels := make(map[string]sessionRenderState, len(instances))
+	for _, inst := range instances {
+		if inst != nil {
+			labels[inst.ID] = h.getSessionRenderState(inst)
+		}
+	}
+	h.sessionSwitcher.labels = labels
 	h.sessionSwitcher.reattachOnCancel = reattachOnCancel
 	// Treat the opening Ctrl+S as the first advance so key-repeat that arrives
 	// right after the attach->TUI handoff is throttled instead of spinning.
