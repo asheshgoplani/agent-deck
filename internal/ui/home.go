@@ -16555,8 +16555,8 @@ func (h *Home) renderSessionItem(
 	// internal/ui/cellwidth.go for the upstream disagreement.
 	if (selected || h.showPaneTitles) && paneSubtitle != "" {
 		// paneSubtitle is non-empty only for non-auto-named rows (auto-named rows
-		// promote the pane title to displayTitle), so the prior !inst.GetAutoName()
-		// guard is now folded into sessionDisplayLabels.
+		// promote the pane title to displayTitle), so the auto-name guard that
+		// used to sit here is folded into the snapshot-based label helper.
 		// Dual layout: sidebar is narrower than h.width (#937). Using full
 		// terminal width here overflows the SESSIONS pane, then lipgloss
 		// truncation disagrees from terminal cells — wrapped lines duplicate
