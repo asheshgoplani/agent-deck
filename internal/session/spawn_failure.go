@@ -257,6 +257,9 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 			}
 			continue
 		}
+		if i.spawnGen.Load() != gen {
+			return
+		}
 
 		// Session is gone — but sess.Exists() shells out to tmux, so a
 		// teardown may well have started during that call: killInternal and

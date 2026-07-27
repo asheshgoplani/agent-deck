@@ -7362,9 +7362,6 @@ func (i *Instance) killInternal(sync bool) error {
 	// `session restart` would be refused with only --force as a way through.
 	i.clearAuthHoldLocked()
 	i.mu.Unlock()
-	// The generation was already bumped at the top of killInternal, before the
-	// tmux kill; tests that mutate process-global paths can join the watcher
-	// explicitly with waitForFastDeathWatchers.
 
 	// Clean up sandbox container (only if name matches our prefix convention).
 	// Runs regardless of tmux kill result to avoid orphaned containers.
