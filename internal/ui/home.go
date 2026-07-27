@@ -1099,7 +1099,6 @@ func (h *Home) stackedPreviewTopY() int {
 		return -1
 	}
 	const helpBarHeight = 2
-	const panelTitleLines = 2
 	filterBarHeight := 1
 	updateBannerHeight := 0
 	if h.shouldRenderUpdateNudge() {
