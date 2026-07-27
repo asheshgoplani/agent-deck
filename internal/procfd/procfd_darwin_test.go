@@ -7,12 +7,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"unsafe"
 )
 
-// TestStructLayoutMatchesProcInfoHeader pins the SDK ABI facts used by
-// OpenVnodePaths. A drift means the kernel would reject or misfill the buffer.
+// TestStructLayoutMatchesProcInfoHeader pins the Go struct layout expected by
+// the libproc calls. It does not read SDK headers; the OpenVnodePaths behavior
+// tests verify these assumptions against the running macOS kernel.
 func TestStructLayoutMatchesProcInfoHeader(t *testing.T) {
 	if got := unsafe.Sizeof(procFDInfo{}); got != 8 {
 		t.Errorf("sizeof(proc_fdinfo) = %d, want 8", got)
@@ -23,6 +25,22 @@ func TestStructLayoutMatchesProcInfoHeader(t *testing.T) {
 	}
 	if got := unsafe.Offsetof(info.Path); got != 176 {
 		t.Errorf("offsetof(vnode_fdinfowithpath, path) = %d, want 176", got)
+	}
+}
+
+func TestOpenVnodePathsRejectsPossiblyTruncatedFDList(t *testing.T) {
+	previous := procPidinfoFn
+	t.Cleanup(func() { procPidinfoFn = previous })
+	procPidinfoFn = func(_ int, _ int, _ uint64, buf unsafe.Pointer, size int) (int, error) {
+		if buf == nil {
+			return int(unsafe.Sizeof(procFDInfo{})), nil
+		}
+		return size, nil
+	}
+
+	_, err := openVnodePaths(123)
+	if err == nil || !strings.Contains(err.Error(), "may be truncated") {
+		t.Fatalf("openVnodePaths full fd buffer error = %v, want truncation error", err)
 	}
 }
 

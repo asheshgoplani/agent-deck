@@ -25,7 +25,8 @@ type procFDInfo struct {
 
 // vnode_fdinfowithpath ends with the only field we need: a MAXPATHLEN
 // pathname. Keep the unused ABI prefix opaque instead of mirroring every C
-// field. Tests pin both the total size and the pathname offset from the SDK.
+// field. The layout test pins these Go assumptions; OpenVnodePaths behavior
+// tests verify them against the running libproc/kernel.
 const vnodeFDInfoWithPathSize = 1200
 
 type vnodeFDInfoWithPath struct {
@@ -33,10 +34,12 @@ type vnodeFDInfoWithPath struct {
 	Path   [maxPathLen]byte
 }
 
+var procPidinfoFn = procPidinfo
+
 func openVnodePaths(pid int) ([]string, error) {
 	// Sizing call: with a nil buffer proc_pidinfo returns the byte size of the
 	// current fd table.
-	n, err := procPidinfo(pid, procPIDListFDs, 0, nil, 0)
+	n, err := procPidinfoFn(pid, procPIDListFDs, 0, nil, 0)
 	if err != nil {
 		return nil, fmt.Errorf("procfd: sizing fd list for pid %d: %w", pid, err)
 	}
@@ -44,9 +47,13 @@ func openVnodePaths(pid int) ([]string, error) {
 	const fdInfoSize = int(unsafe.Sizeof(procFDInfo{}))
 	// Headroom for fds opened between the sizing call and the fill call.
 	fds := make([]procFDInfo, n/fdInfoSize+32)
-	n, err = procPidinfo(pid, procPIDListFDs, 0, unsafe.Pointer(&fds[0]), len(fds)*fdInfoSize)
+	bufSize := len(fds) * fdInfoSize
+	n, err = procPidinfoFn(pid, procPIDListFDs, 0, unsafe.Pointer(&fds[0]), bufSize)
 	if err != nil {
 		return nil, fmt.Errorf("procfd: listing fds for pid %d: %w", pid, err)
+	}
+	if n == bufSize {
+		return nil, fmt.Errorf("procfd: fd list for pid %d may be truncated", pid)
 	}
 	fds = fds[:n/fdInfoSize]
 
