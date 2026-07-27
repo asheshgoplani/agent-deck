@@ -65,6 +65,7 @@ root — outside every repo, so it structurally cannot leak into a commit:
 ```bash
 RUN_DIR="$HOME/.agent-deck/orchestrate/<run-id>"
 mkdir -p "$RUN_DIR"
+cp <agent-deck-repo>/skills/orchestrate/references/poll.sh "$RUN_DIR/"
 ```
 
 Everything any child captures goes under `$RUN_DIR/<task-slug>/`, and the
@@ -72,6 +73,10 @@ prompt files you write for children live there too (`impl-prompt.md`,
 `review-r1-prompt.md`, …) — not `/tmp`, where they collide across runs,
 vanish on reboot, and break resume. Nothing under `$RUN_DIR` is ever
 committed, pushed, uploaded, or mentioned in a PR.
+
+`poll.sh` is your heartbeat — see "Context budget". Copy it from the
+agent-deck checkout this skill file lives in (you know that path: you read
+this file); if it isn't there, write it from the listing in that section.
 
 Maintain a run manifest at `$RUN_DIR/manifest.md` and update it after every
 stage transition — per task: slug, branch, worktree path, session ids with
@@ -572,6 +577,10 @@ should answer:
 
 ## Supervision notes
 
+- **Heartbeat with `bash "$RUN_DIR/poll.sh"`, not a raw `session children`
+  dump** — see "Context budget". Reach for the raw JSON only when you need a
+  field the poll drops (`done_summary` on a fresh completion, a session id to
+  act on).
 - `agent-deck session children --json` returns an object
   `{"children": [...], "parent": "..."}` — iterate `.children[]`, not the
   root array.
@@ -593,6 +602,8 @@ should answer:
 
 ## Context budget
 
+### Children
+
 Every Claude child row in `session children --json` carries `context_tokens`
 — the child's current context size, read from its transcript. Check it on
 every heartbeat and act on two thresholds:
@@ -613,14 +624,130 @@ rarely trip this (each round starts fresh); implementers on big tasks do —
 and a task whose implementer needs rotating twice was mis-sized, which is
 worth a line in the retro.
 
-**Your own context is budgeted too.** The manifest is the state; your context
-is a cache of it. Anything long-lived — findings lists, baselines, pending
-questions, PR urls — goes into `$RUN_DIR` files the moment you learn it, so
-the run survives you losing context at any point. Never ingest full session
-outputs (use `--tail`); relay findings by file, not by pasting. Between task
-completions — when no child is mid-conversation with you — compact
-deliberately (`/compact`) rather than drifting into an automatic one at a
-worse moment; everything you need afterwards is in the manifest.
+### The conductor
+
+Your own context is the one that grows without a natural end. A child's
+context is bounded by its task; yours is bounded by nothing — you outlive
+every child, and the default supervision loop re-reads the same unchanged
+rows for as long as the run lasts. On a five-hour run, heartbeat polling
+alone outweighs every review, every prompt and every finding put together,
+and roughly all of it is state that did not change.
+
+**The invariant: your context grows with decisions taken, never with time
+elapsed.** The manifest is the run's state; your context is a cache of it.
+A conductor that has supervised four idle hours should have paid almost
+nothing for them. Three rules follow.
+
+**1. Poll by delta, never by dump.** Run `bash "$RUN_DIR/poll.sh"` as your
+heartbeat instead of reading raw `session children --json`. It projects each
+child to the fields that actually drive decisions, diffs against the previous
+call, and prints only what moved — a quiet beat costs one line:
+
+```text
+4 children · 3 running 1 waiting · no change
+```
+
+```text
+CHANGED impl-vacancy: idle/ok
+GONE    review-vacancy-r1
+3 children · 1 idle 2 running · ctx impl-picker=soft
+```
+
+The script (also at `references/poll.sh`):
+
+```bash
+#!/usr/bin/env bash
+# Delta heartbeat for the orchestrate conductor.
+# Prints ONLY what changed since the last call. Run it from the conductor
+# every heartbeat: bash "$RUN_DIR/poll.sh"
+set -euo pipefail
+D="$(cd "$(dirname "$0")" && pwd)"
+SOFT="${SOFT:-200000}"
+HARD="${HARD:-250000}"
+
+# ${POLL_CMD} exists so the script is testable with a canned JSON file.
+${POLL_CMD:-agent-deck session children --json} \
+| jq --argjson soft "$SOFT" --argjson hard "$HARD" '
+    [ .children[]
+      | { id, title, status,
+          done: (if .done_stale then "stale" else (.done_status // "-") end),
+          ctx:  (if   (.context_tokens // 0) >= $hard then "HARD"
+                 elif (.context_tokens // 0) >= $soft then "soft"
+                 else "ok" end) } ]
+    | sort_by(.id)' > "$D/.poll-now.json"
+
+[ -f "$D/.poll-prev.json" ] || echo '[]' > "$D/.poll-prev.json"
+
+jq -rn --slurpfile a "$D/.poll-prev.json" --slurpfile b "$D/.poll-now.json" '
+  def key: {id, title, status, done};        # ctx is NOT a diff key — it is
+  ($a[0] | INDEX(.id)) as $old               # reported in the tail instead, so
+| ($b[0] | INDEX(.id)) as $cur               # a bucket crossing never fakes a
+| $b[0] as $new                              # status change.
+| ([ $new[]  | select((. | key) != (($old[.id] // null) | key))
+             | "CHANGED \(.title): \(.status)/\(.done)" ]
+ + [ $a[0][] | select($cur[.id] == null) | "GONE    \(.title)" ]) as $chg
+| ($new | group_by(.status) | map("\(length) \(.[0].status)") | join(" ")) as $roll
+| ([ $new[] | select(.ctx != "ok") | "\(.title)=\(.ctx)" ]) as $ctx
+| (if ($chg | length) == 0
+   then "\($new|length) children · \($roll) · no change"
+   else ($chg | join("\n")) + "\n\($new|length) children · \($roll)"
+   end)
++ (if ($ctx | length) > 0 then " · ctx " + ($ctx | join(" ")) else "" end)'
+
+mv "$D/.poll-now.json" "$D/.poll-prev.json"
+```
+
+Two details in there are load-bearing, so don't "simplify" them away. First,
+**`context_tokens` churns on every single poll** for any live child — diff on
+it raw and nothing is ever "unchanged", which defeats the entire mechanism;
+it is bucketed to `ok`/`soft`/`HARD` and reported in the tail, outside the
+diff key. Second, `done_at` and `last_sent_at` churn the same way and are
+excluded in favour of the `done_stale` boolean the supervision rules already
+turn on. What you lose is precision you weren't using; what you keep is every
+transition that changes what you do next.
+
+**2. Findings yes, transcripts never.** Every large payload lands in a
+`$RUN_DIR` file by shell redirection, and you read only the line that carries
+the decision. You do still read a findings list in full — findings lists are
+short, and judging severity yourself is the point (a finding whose blast
+radius is *existing data*, introduced by *this branch*, is never a nit, no
+matter what the reviewer graded it). What must never enter your context is
+the reasoning around them.
+
+| Read | Instead of | Do |
+| --- | --- | --- |
+| Reviewer verdict | `session output <id>` | `session output <id> --json --require-fresh > $RUN_DIR/<slug>/review-r<n>.txt`, then read the numbered findings plus the `VERDICT:` / `Checked:` lines |
+| Fix-round prompt | retyping the findings | build it by shell (`cat` template + findings file) so the findings never re-enter your context |
+| CI failure | `gh run view --log-failed` | redirect to `$RUN_DIR/<slug>/ci-<run-id>.log`; read the failing check *names*, send the implementer the path |
+| Waiting child's question | `session output <id>` | `session output <id> --tail 40` |
+| Anything large or genuinely unclear | reading and reasoning yourself | dispatch a subagent — it burns its own context and hands you back a summary |
+
+The subagent is the exception, not the routine: a launch per heartbeat is
+slow and heavy for a three-line answer. Reserve it for the rare big read —
+a five-thousand-line CI log, or "why has this child been stuck for twenty
+minutes".
+
+**3. Thresholds, tighter than a child's.** Anything long-lived — findings
+lists, baselines, pending questions, PR urls, HEAD shas — goes into
+`$RUN_DIR` the moment you learn it, so the run survives you losing context at
+any point. Then:
+
+- **Soft (~120k):** flush everything not yet written down into the manifest,
+  and `/compact` at the next inter-task boundary — a moment when no child is
+  mid-conversation with you — rather than drifting into an automatic compact
+  at a worse one.
+- **Hard (~200k):** hand off. Write `$RUN_DIR/conductor-handoff.md` (live
+  tasks and their stage, open questions, anything in flight), launch a fresh
+  conductor pointed at `$RUN_DIR/manifest.md`, re-parent every live child to
+  it (`agent-deck session set-parent <child> <new-conductor-id>`) so waiting
+  and done notifications route to the new session, and archive yourself.
+
+Both numbers sit below the child thresholds deliberately. A child that
+compacts loses one task; you lose supervision state for every task at once,
+and there is no reviewer downstream of you to catch it. If agent-deck's own
+budget handler rotates you first, **check the handoff directory is actually
+non-empty before trusting it** — an automatic rotation has been observed
+producing an empty one.
 
 ## Failure handling
 
