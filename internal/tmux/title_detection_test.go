@@ -144,6 +144,34 @@ func TestRefreshPaneInfoCache(t *testing.T) {
 	}
 }
 
+func TestRefreshPaneInfoCachePreservesFreshDataOnFailure(t *testing.T) {
+	paneCacheMu.Lock()
+	previousData := paneCacheData
+	previousTime := paneCacheTime
+	paneCacheData = map[string]PaneInfo{
+		"known-good": {Title: "⠴ Running tool", CurrentCommand: "bash"},
+	}
+	paneCacheTime = time.Now()
+	paneCacheMu.Unlock()
+
+	previousSocket := DefaultSocketName()
+	SetDefaultSocketName("missing-pane-cache-refresh")
+	t.Cleanup(func() {
+		SetDefaultSocketName(previousSocket)
+		paneCacheMu.Lock()
+		paneCacheData = previousData
+		paneCacheTime = previousTime
+		paneCacheMu.Unlock()
+	})
+
+	RefreshPaneInfoCache()
+
+	info, ok := GetCachedPaneInfo("known-good")
+	if !ok || info.Title != "⠴ Running tool" {
+		t.Fatalf("refresh failure discarded fresh pane cache: info=%+v, ok=%v", info, ok)
+	}
+}
+
 func TestGetCachedPaneInfo_StaleCache(t *testing.T) {
 	// Set cache data with a time far in the past (stale)
 	paneCacheMu.Lock()
