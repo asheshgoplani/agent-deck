@@ -28,6 +28,12 @@ func (h *Home) SetSessionIO(input *SessionInputRouter, output *SessionOutput) {
 	h.sessionOutput = output
 }
 
+// EmbeddedTerminalEnabled reports the resolved startup layout so main can
+// preserve the classic Bubble Tea terminal protocol when the opt-in is off.
+func (h *Home) EmbeddedTerminalEnabled() bool {
+	return h.embeddedLayout
+}
+
 func (h *Home) embeddedPaneRect() terminalCellRect {
 	helpBarHeight := 2
 	filterBarHeight := 1

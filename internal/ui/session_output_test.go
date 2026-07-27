@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -138,5 +139,18 @@ func TestSessionOutputEmitsOnlyChangedCursorState(t *testing.T) {
 	}
 	if count := strings.Count(got, " q"); count != 2 {
 		t.Fatalf("cursor shape emitted %d times, want activation plus style transition: %q", count, got)
+	}
+}
+
+func TestSessionOutputPayloadSizeBound(t *testing.T) {
+	for _, size := range []int{0, maxSessionOutputPayloadBytes - 1, maxSessionOutputPayloadBytes} {
+		if err := validateSessionOutputPayloadSize(size); err != nil {
+			t.Fatalf("payload size %d rejected at or below the limit: %v", size, err)
+		}
+	}
+	for _, size := range []int{-1, maxSessionOutputPayloadBytes + 1} {
+		if err := validateSessionOutputPayloadSize(size); !errors.Is(err, errSessionOutputPayloadTooLarge) {
+			t.Fatalf("payload size %d error = %v, want %v", size, err, errSessionOutputPayloadTooLarge)
+		}
 	}
 }
