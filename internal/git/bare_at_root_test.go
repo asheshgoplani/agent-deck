@@ -279,7 +279,7 @@ echo "at-root-setup done"
 
 	newWT := filepath.Join(bareDir, "worktree-feat")
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(bareDir, newWT, "feature-at-root-e2e", &stdout, &stderr, 0)
+	_, setupErr, err := CreateWorktreeWithSetup(bareDir, newWT, "feature-at-root-e2e", &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("CreateWorktreeWithSetup failed: %v (stderr: %s)", err, stderr.String())
 	}

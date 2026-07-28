@@ -353,3 +353,64 @@ func TestExecuteRemove_NoHooks(t *testing.T) {
 		t.Fatalf("expected no stderr output with empty hooks, got: %s", stderrOutput)
 	}
 }
+
+func TestExecuteCreate_LastLineWins(t *testing.T) {
+	ctx := context.Background()
+	hooks := &cchook.ResolvedHooks{
+		Entries: []cchook.HookEntry{
+			{
+				Command: `bash -c 'echo "HEAD is now at abc123"; echo "/tmp/actual-path"'`,
+				Level:   cchook.LevelUser,
+			},
+		},
+	}
+	payload := cchook.Payload{Cwd: "/tmp", HookEventName: "WorktreeCreate", Name: "test"}
+	path, err := cchook.ExecuteCreate(ctx, hooks, payload, 5*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != "/tmp/actual-path" {
+		t.Fatalf("got %q, want /tmp/actual-path (last non-empty line)", path)
+	}
+}
+
+func TestExecuteCreate_StripsANSI(t *testing.T) {
+	ctx := context.Background()
+	hooks := &cchook.ResolvedHooks{
+		Entries: []cchook.HookEntry{
+			{
+				Command: `bash -c 'printf "\033[32m/tmp/colored-path\033[0m\n"'`,
+				Level:   cchook.LevelUser,
+			},
+		},
+	}
+	payload := cchook.Payload{Cwd: "/tmp", HookEventName: "WorktreeCreate", Name: "test"}
+	path, err := cchook.ExecuteCreate(ctx, hooks, payload, 5*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != "/tmp/colored-path" {
+		t.Fatalf("got %q, want /tmp/colored-path (ANSI stripped)", path)
+	}
+}
+
+func TestExecuteCreate_ResolvesRelativePath(t *testing.T) {
+	ctx := context.Background()
+	hooks := &cchook.ResolvedHooks{
+		Entries: []cchook.HookEntry{
+			{
+				Command: `bash -c 'echo "relative/worktree"'`,
+				Level:   cchook.LevelUser,
+			},
+		},
+	}
+	payload := cchook.Payload{Cwd: "/home/user/project", HookEventName: "WorktreeCreate", Name: "test"}
+	path, err := cchook.ExecuteCreate(ctx, hooks, payload, 5*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join("/home/user/project", "relative/worktree")
+	if path != want {
+		t.Fatalf("got %q, want %q (relative resolved against cwd)", path, want)
+	}
+}

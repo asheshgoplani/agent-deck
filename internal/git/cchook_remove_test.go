@@ -37,9 +37,15 @@ func TestRemoveWorktree_CCHook_Fires(t *testing.T) {
 	if len(data) == 0 {
 		t.Fatal("CC remove hook received empty payload")
 	}
-	// Verify the payload contains correct event name
+	// Verify the payload contains correct event name and worktree path
 	if !strings.Contains(string(data), `"WorktreeRemove"`) {
 		t.Fatalf("expected WorktreeRemove in payload, got: %s", data)
+	}
+	if !strings.Contains(string(data), `"worktree_path"`) {
+		t.Fatalf("expected worktree_path in payload, got: %s", data)
+	}
+	if !strings.Contains(string(data), wtPath) {
+		t.Fatalf("expected payload to contain absolute worktree path %q, got: %s", wtPath, data)
 	}
 }
 

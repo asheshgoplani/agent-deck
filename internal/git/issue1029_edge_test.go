@@ -22,7 +22,7 @@ func TestCreateWorktreeWithStateAndSetup_WiresMaterialization_RegressionFor1029(
 
 	child := filepath.Join(t.TempDir(), "child-wired")
 	var stdout, stderr bytes.Buffer
-	_, err := CreateWorktreeWithStateAndSetup(
+	_, _, err := CreateWorktreeWithStateAndSetup(
 		parent, child, "fork-1029-wired",
 		WorktreeStateOptions{WithState: true},
 		&stdout, &stderr, 0, nil,
@@ -51,7 +51,7 @@ func TestCreateWorktreeWithStateAndSetup_CleansUpOnMaterializeFailure(t *testing
 	child := filepath.Join(t.TempDir(), "child-cleanup")
 	branch := "fork-1029-cleanup"
 	var stdout, stderr bytes.Buffer
-	_, err := CreateWorktreeWithStateAndSetup(
+	_, _, err := CreateWorktreeWithStateAndSetup(
 		parent, child, branch,
 		WorktreeStateOptions{WithState: true},
 		&stdout, &stderr, 0, nil,

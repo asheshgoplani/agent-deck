@@ -1217,7 +1217,7 @@ func handleSessionFork(profile string, args []string) {
 			} else if backend.Type() == vcs.TypeGit {
 				// Non-with-state git path: upstream's combined wrapper unchanged.
 				var cwErr error
-				setupErr, cwErr = git.CreateWorktreeWithSetupOptions(
+				worktreePath, setupErr, cwErr = git.CreateWorktreeWithSetupOptions(
 					repoRoot, worktreePath, wtBranch,
 					git.WorktreeStateOptions{},
 					git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), inst.ProjectPath),

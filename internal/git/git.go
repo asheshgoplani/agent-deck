@@ -725,10 +725,11 @@ func RemoveWorktree(repoDir, worktreePath string, force bool) error {
 	// paths. Non-fatal — removal proceeds even if the script fails.
 	if IsLinkedWorktree(worktreePath) {
 		if resolved := cchook.ResolveWorktreeHooks("WorktreeRemove", repoDir, cchook.DefaultUserClaudeDir(), cchook.DefaultManagedDir()); resolved != nil {
+			absWorktreePath, _ := filepath.Abs(worktreePath)
 			payload := cchook.Payload{
 				Cwd:           repoDir,
 				HookEventName: "WorktreeRemove",
-				Name:          worktreeBranchName(worktreePath),
+				WorktreePath:  absWorktreePath,
 			}
 			cchook.ExecuteRemove(context.Background(), resolved, payload, DefaultWorktreeDestructionTimeout, os.Stderr)
 		}

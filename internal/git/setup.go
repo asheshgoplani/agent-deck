@@ -117,7 +117,7 @@ type CCHookContext struct {
 // for later display) can show the user what happened. Without these,
 // users couldn't tell whether the script had run, finished, or finished
 // cleanly before claude started.
-func CreateWorktreeWithSetup(repoDir, worktreePath, branchName string, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
+func CreateWorktreeWithSetup(repoDir, worktreePath, branchName string, stdout, stderr io.Writer, setupTimeout time.Duration) (effectivePath string, setupErr error, err error) {
 	return CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName, WorktreeStateOptions{}, stdout, stderr, setupTimeout, nil)
 }
 
@@ -141,7 +141,7 @@ type WorktreeStateOptions struct {
 // hookCtx is optional: pass a non-nil *CCHookContext to thread the agent-deck
 // instance ID into the CC hook payload's session_id field. Pass nil when no
 // instance ID is available.
-func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, state WorktreeStateOptions, stdout, stderr io.Writer, setupTimeout time.Duration, hookCtx *CCHookContext) (setupErr error, err error) {
+func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, state WorktreeStateOptions, stdout, stderr io.Writer, setupTimeout time.Duration, hookCtx *CCHookContext) (effectivePath string, setupErr error, err error) {
 	return CreateWorktreeWithSetupOptions(repoDir, worktreePath, branchName, state, WorktreeCreateOptions{}, stdout, stderr, setupTimeout, hookCtx)
 }
 
@@ -153,7 +153,7 @@ func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, s
 // hookCtx is optional: pass a non-nil *CCHookContext to thread the agent-deck
 // instance ID into the CC hook payload's session_id field. Pass nil when no
 // instance ID is available.
-func CreateWorktreeWithSetupOptions(repoDir, worktreePath, branchName string, state WorktreeStateOptions, create WorktreeCreateOptions, stdout, stderr io.Writer, setupTimeout time.Duration, hookCtx *CCHookContext) (setupErr error, err error) {
+func CreateWorktreeWithSetupOptions(repoDir, worktreePath, branchName string, state WorktreeStateOptions, create WorktreeCreateOptions, stdout, stderr io.Writer, setupTimeout time.Duration, hookCtx *CCHookContext) (effectivePath string, setupErr error, err error) {
 	if resolved := cchook.ResolveWorktreeHooks("WorktreeCreate", repoDir, cchook.DefaultUserClaudeDir(), cchook.DefaultManagedDir()); resolved != nil {
 		var sessionID string
 		if hookCtx != nil {
@@ -167,19 +167,19 @@ func CreateWorktreeWithSetupOptions(repoDir, worktreePath, branchName string, st
 		}
 		hookPath, hookErr := cchook.ExecuteCreate(context.Background(), resolved, payload, setupTimeout)
 		if hookErr != nil {
-			return nil, fmt.Errorf("Claude Code WorktreeCreate hook: %w", hookErr)
+			return "", nil, fmt.Errorf("Claude Code WorktreeCreate hook: %w", hookErr)
 		}
 		info, statErr := os.Stat(hookPath)
 		if statErr != nil || !info.IsDir() {
-			return nil, fmt.Errorf("Claude Code WorktreeCreate hook returned invalid path %q", hookPath)
+			return "", nil, fmt.Errorf("Claude Code WorktreeCreate hook returned invalid path %q", hookPath)
 		}
 		if state.WithState {
 			if !IsLinkedWorktree(hookPath) {
-				return nil, fmt.Errorf("with-state requires a git worktree, but Claude Code WorktreeCreate hook created a non-git directory %q", hookPath)
+				return "", nil, fmt.Errorf("with-state requires a git worktree, but Claude Code WorktreeCreate hook created a non-git directory %q", hookPath)
 			}
 			if matErr := MaterializeWipFromParent(repoDir, hookPath, state.WithIgnored); matErr != nil {
 				_ = RemoveWorktree(repoDir, hookPath, true)
-				return nil, fmt.Errorf("materialize parent state into hook-created worktree: %w", matErr)
+				return "", nil, fmt.Errorf("materialize parent state into hook-created worktree: %w", matErr)
 			}
 		}
 
@@ -187,12 +187,12 @@ func CreateWorktreeWithSetupOptions(repoDir, worktreePath, branchName string, st
 			fmt.Fprintf(stderr, "worktreeinclude: %v\n", inclErr)
 		}
 
-		return RunWorktreeSetupAfterCreate(repoDir, hookPath, stdout, stderr, setupTimeout), nil
+		return hookPath, RunWorktreeSetupAfterCreate(repoDir, hookPath, stdout, stderr, setupTimeout), nil
 	}
 
 	createdBranch := !BranchExists(repoDir, branchName)
 	if err = CreateWorktreeWithOptions(repoDir, worktreePath, branchName, create); err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	if state.WithState {
@@ -207,9 +207,9 @@ func CreateWorktreeWithSetupOptions(repoDir, worktreePath, branchName string, st
 				}
 			}
 			if len(cleanupErrs) > 0 {
-				return nil, fmt.Errorf("materialize parent state: %w; cleanup failed: %s", matErr, strings.Join(cleanupErrs, "; "))
+				return "", nil, fmt.Errorf("materialize parent state: %w; cleanup failed: %s", matErr, strings.Join(cleanupErrs, "; "))
 			}
-			return nil, fmt.Errorf("materialize parent state: %w", matErr)
+			return "", nil, fmt.Errorf("materialize parent state: %w", matErr)
 		}
 	}
 
@@ -217,7 +217,7 @@ func CreateWorktreeWithSetupOptions(repoDir, worktreePath, branchName string, st
 		fmt.Fprintf(stderr, "worktreeinclude: %v\n", inclErr)
 	}
 
-	return RunWorktreeSetupAfterCreate(repoDir, worktreePath, stdout, stderr, setupTimeout), nil
+	return worktreePath, RunWorktreeSetupAfterCreate(repoDir, worktreePath, stdout, stderr, setupTimeout), nil
 }
 
 // RunWorktreeSetupAfterCreate runs the worktree setup script for an

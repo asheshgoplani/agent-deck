@@ -41,7 +41,7 @@ func CreateMultiRepoWorktreesWithOptions(allPaths []string, parentDir string, br
 			}
 
 			var buf bytes.Buffer
-			setupErr, err := git.CreateWorktreeWithSetupOptions(
+			effectivePath, setupErr, err := git.CreateWorktreeWithSetupOptions(
 				repoRoot, wtPath, branch,
 				git.WorktreeStateOptions{},
 				git.SparseInheritOptions(inheritSparse, p),
@@ -56,6 +56,7 @@ func CreateMultiRepoWorktreesWithOptions(allPaths []string, parentDir string, br
 			if setupErr != nil {
 				result.Warnings = append(result.Warnings, "worktree_setup_fail: "+p+": "+setupErr.Error())
 			}
+			wtPath = effectivePath
 
 			result.Worktrees = append(result.Worktrees, MultiRepoWorktree{
 				OriginalPath: p,

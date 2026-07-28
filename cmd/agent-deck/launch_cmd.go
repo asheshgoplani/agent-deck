@@ -288,7 +288,8 @@ func handleLaunch(profile string, args []string) {
 
 			// Sparse state is inherited from `path` (the directory the user
 			// launched from), never from backend.RepoDir() — see #1708.
-			setupErr, err := createWorktreeWithSetup(backend, worktreePath, wtBranch,
+			var setupErr error
+			worktreePath, setupErr, err = createWorktreeWithSetup(backend, worktreePath, wtBranch,
 				git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), path),
 				os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 			if err != nil {

@@ -183,7 +183,7 @@ func TestCreateWorktreeWithSetup_NoScript(t *testing.T) {
 	worktreePath := filepath.Join(dir, ".worktrees", "test-branch")
 
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "test-branch", &stdout, &stderr, 0)
+	_, setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "test-branch", &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("worktree creation failed: %v", err)
 	}
@@ -224,7 +224,7 @@ echo "setup done"
 
 	worktreePath := filepath.Join(dir, ".worktrees", "setup-branch")
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "setup-branch", &stdout, &stderr, 0)
+	_, setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "setup-branch", &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("worktree creation failed: %v", err)
 	}
@@ -264,7 +264,7 @@ exit 1
 
 	worktreePath := filepath.Join(dir, ".worktrees", "fail-branch")
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "fail-branch", &stdout, &stderr, 0)
+	_, setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "fail-branch", &stdout, &stderr, 0)
 
 	// Worktree creation should succeed
 	if err != nil {

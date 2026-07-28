@@ -7,10 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
+
+var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 type Payload struct {
 	SessionID string `json:"session_id"`
@@ -19,7 +23,10 @@ type Payload struct {
 	TranscriptPath string `json:"transcript_path"`
 	Cwd            string `json:"cwd"`
 	HookEventName  string `json:"hook_event_name"`
-	Name           string `json:"name"`
+	// Name is the suggested worktree slug (WorktreeCreate).
+	Name string `json:"name,omitempty"`
+	// WorktreePath is the absolute path to the worktree (WorktreeRemove).
+	WorktreePath string `json:"worktree_path,omitempty"`
 }
 
 type hookResult struct {
@@ -39,7 +46,7 @@ func ExecuteCreate(ctx context.Context, hooks *ResolvedHooks, payload Payload, t
 	if winnerResult.Err != nil {
 		return "", fmt.Errorf("WorktreeCreate hook (%s) failed: %w", winnerResult.Level, winnerResult.Err)
 	}
-	path := strings.TrimSpace(winnerResult.Output)
+	path := extractHookPath(winnerResult.Output, payload.Cwd)
 	if path == "" {
 		return "", fmt.Errorf("WorktreeCreate hook (%s) produced no output", winnerResult.Level)
 	}
@@ -76,6 +83,28 @@ func executeAll(ctx context.Context, hooks *ResolvedHooks, payload Payload, time
 
 	wg.Wait()
 	return results
+}
+
+// extractHookPath normalizes raw hook stdout into a clean absolute path,
+// matching Claude Code's pipeline: strip ANSI → split lines → trim → take
+// last non-empty line → resolve relative paths against cwd.
+// CC does NOT reject ".." segments or check for symlink traversal.
+func extractHookPath(output string, cwd string) string {
+	stripped := ansiEscapeRE.ReplaceAllString(output, "")
+	lines := strings.Split(stripped, "\n")
+	var last string
+	for _, line := range lines {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			last = trimmed
+		}
+	}
+	if last == "" {
+		return ""
+	}
+	if !filepath.IsAbs(last) {
+		last = filepath.Join(cwd, last)
+	}
+	return last
 }
 
 func runHook(ctx context.Context, entry HookEntry, payloadJSON []byte, timeout time.Duration) hookResult {

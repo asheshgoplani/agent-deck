@@ -77,12 +77,17 @@ func TestCCHook_E2E_FullLifecycle(t *testing.T) {
 
 	// Step 1: Create worktree with the hook. The hook creates a real worktree.
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithStateAndSetup(repoDir, worktreePath, "ignored-branch", WorktreeStateOptions{}, &stdout, &stderr, 30_000_000_000, nil)
+	effectivePath, setupErr, err := CreateWorktreeWithStateAndSetup(repoDir, worktreePath, "ignored-branch", WorktreeStateOptions{}, &stdout, &stderr, 30_000_000_000, nil)
 	if err != nil {
 		t.Fatalf("create worktree: %v (stderr: %s)", err, stderr.String())
 	}
 	if setupErr != nil {
 		t.Errorf("setup error: %v (stderr: %s)", setupErr, stderr.String())
+	}
+
+	// Verify the effective path is the hook-created worktree path.
+	if effectivePath != hookWorktreePath {
+		t.Errorf("effectivePath = %q, want %q (hook-created worktree)", effectivePath, hookWorktreePath)
 	}
 
 	// Verify standard worktreePath was NOT created (hook took over).
@@ -121,6 +126,9 @@ func TestCCHook_E2E_FullLifecycle(t *testing.T) {
 	if !strings.Contains(string(removePayload), `"WorktreeRemove"`) {
 		t.Fatalf("expected WorktreeRemove in payload, got: %s", removePayload)
 	}
+	if !strings.Contains(string(removePayload), `"worktree_path"`) {
+		t.Fatalf("expected worktree_path in payload, got: %s", removePayload)
+	}
 
 	// Step 5: Verify the worktree was actually removed.
 	if _, statErr := os.Stat(hookWorktreePath); statErr == nil {
@@ -150,7 +158,7 @@ func TestCCHook_E2E_RegressionNoHooks(t *testing.T) {
 
 	// Step 1: Create worktree (standard git worktree add).
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithStateAndSetup(repoDir, worktreePath, "normal-branch", WorktreeStateOptions{}, &stdout, &stderr, 30_000_000_000, nil)
+	_, setupErr, err := CreateWorktreeWithStateAndSetup(repoDir, worktreePath, "normal-branch", WorktreeStateOptions{}, &stdout, &stderr, 30_000_000_000, nil)
 	if err != nil {
 		t.Fatalf("create worktree: %v", err)
 	}

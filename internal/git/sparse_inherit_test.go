@@ -386,7 +386,7 @@ func TestCreateWorktreeWithSetupOptions_SetupScriptObservesSparseWorktree(t *tes
 
 	newWT := filepath.Join(t.TempDir(), "with-setup")
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetupOptions(base, newWT, "feature/with-setup",
+	_, setupErr, err := CreateWorktreeWithSetupOptions(base, newWT, "feature/with-setup",
 		WorktreeStateOptions{}, SparseInheritOptions(true, sparseWT), &stdout, &stderr, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateWorktreeWithSetupOptions: %v (stderr: %s)", err, stderr.String())

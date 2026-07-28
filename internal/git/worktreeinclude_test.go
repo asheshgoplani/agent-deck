@@ -87,7 +87,7 @@ func TestProcessWorktreeInclude_Integration_RunsBeforeSetupScript(t *testing.T) 
 	worktreePath := filepath.Join(repoDir, ".worktrees", "include-integration")
 
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(repoDir, worktreePath, "include-integration", &stdout, &stderr, 0)
+	_, setupErr, err := CreateWorktreeWithSetup(repoDir, worktreePath, "include-integration", &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("worktree creation failed: %v", err)
 	}

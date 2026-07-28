@@ -114,9 +114,9 @@ func detectAndCreateBackend(dir string) (vcs.Backend, error) {
 // PR body.
 // create carries git creation-time options (#1708 sparse-checkout
 // inheritance), which jujutsu workspaces ignore.
-func createWorktreeWithSetup(backend vcs.Backend, worktreePath, branchName string, create git.WorktreeCreateOptions, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
+func createWorktreeWithSetup(backend vcs.Backend, worktreePath, branchName string, create git.WorktreeCreateOptions, stdout, stderr io.Writer, setupTimeout time.Duration) (effectivePath string, setupErr error, err error) {
 	if backend.Type() == vcs.TypeGit {
 		return git.CreateWorktreeWithSetupOptions(backend.RepoDir(), worktreePath, branchName, git.WorktreeStateOptions{}, create, stdout, stderr, setupTimeout, nil)
 	}
-	return nil, backend.CreateWorktree(worktreePath, branchName)
+	return worktreePath, nil, backend.CreateWorktree(worktreePath, branchName)
 }

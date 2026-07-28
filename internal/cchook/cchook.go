@@ -55,6 +55,12 @@ type hookDef struct {
 // ResolveWorktreeHooks reads CC settings from all 4 levels and extracts hook
 // entries for the given event. Returns nil if no hooks are configured.
 // The Entries slice is ordered by priority: user > project > local > managed.
+// This ordering was validated experimentally against Claude Code 2.1.x by
+// configuring WorktreeCreate hooks at all 4 levels, each logging invocation
+// and returning a distinct path. All hooks fired in parallel (confirmed via
+// logs), but "claude --worktree" used the user-level path. Modulating timing
+// (sleep in select hooks) and selective removal confirmed the precedence is
+// deterministic and independent of completion order.
 func ResolveWorktreeHooks(event string, repoDir string, userClaudeDir string, managedDir string) *ResolvedHooks {
 	type source struct {
 		dir   string

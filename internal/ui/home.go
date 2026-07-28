@@ -11210,13 +11210,14 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create parent directory: %w", err), tempID: tempID}
 				}
-				setupErr, err := createWorktreeWithSetupAndLog(backend, worktreePath, worktreeBranch, path)
+				effectivePath, setupErr, err := createWorktreeWithSetupAndLog(backend, worktreePath, worktreeBranch, path)
 				if err != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create worktree: %w", err), tempID: tempID}
 				}
 				if setupErr != nil {
 					setupWarning = formatSetupWarning(setupErr)
 				}
+				worktreePath = effectivePath
 			}
 			path = worktreePath
 		}
@@ -11405,19 +11406,19 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 // ITS sparse-checkout state (#1708). backend.RepoDir() must not be used for
 // that: it is the normalized base root, which carries the main worktree's
 // sparsity instead of the invoking one's.
-func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch, sourceDir string) (setupErr error, err error) {
+func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch, sourceDir string) (effectivePath string, setupErr error, err error) {
 	var buf bytes.Buffer
 	wtSettings := session.GetWorktreeSettings()
-	setupErr, err = vcsbackend.CreateWorktreeWithSetup(backend, wtPath, branch,
+	effectivePath, setupErr, err = vcsbackend.CreateWorktreeWithSetup(backend, wtPath, branch,
 		git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), sourceDir),
 		&buf, &buf, wtSettings.SetupTimeout())
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if setupErr != nil {
 		uiLog.Warn("worktree_setup_script_failed", slog.String("error", setupErr.Error()), slog.String("output", buf.String()))
 	}
-	return setupErr, nil
+	return effectivePath, setupErr, nil
 }
 
 // setupWarningMaxLen bounds the setup-script failure text shown in the footer,
@@ -12308,13 +12309,14 @@ func (h *Home) forkSessionCmdWithOptions(
 				if err := os.MkdirAll(filepath.Dir(opts.WorktreePath), 0o755); err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("failed to create directory: %w", err), sourceID: sourceID}
 				}
-				setupErr, err := createWorktreeWithSetupAndLog(backend, opts.WorktreePath, opts.WorktreeBranch, source.ProjectPath)
+				effectivePath, setupErr, err := createWorktreeWithSetupAndLog(backend, opts.WorktreePath, opts.WorktreeBranch, source.ProjectPath)
 				if err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("worktree creation failed: %w", err), sourceID: sourceID}
 				}
 				if setupErr != nil {
 					setupWarning = formatSetupWarning(setupErr)
 				}
+				opts.WorktreePath = effectivePath
 			}
 		}
 
