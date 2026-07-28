@@ -115,6 +115,67 @@ func TestEnsureRoleEnv_ClearsStaleMarkersWhenUnparented(t *testing.T) {
 	}
 }
 
+// TestParentMutators_RepublishRoleEnvOnLiveSession pins that re-parenting a
+// LIVE session refreshes the tmux markers without any explicit ensureRoleEnv
+// call. The markers used to be published at spawn/respawn only, while
+// set-parent / unset-parent (and the group re-homing paths) mutated
+// ParentSessionID and left the tmux env stale. Because the SessionStart hook
+// matches clear|compact|resume as well as startup, that stale marker is read
+// again on the session's next /clear: a re-parented session would be told it
+// is interactive and instructed to go design something, and an un-parented one
+// would be told it is a dispatched child with no user present.
+func TestParentMutators_RepublishRoleEnvOnLiveSession(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	isolateUserHomeForShellRestart(t)
+
+	inst := newShellInstance(t, "ReparentRoleEnv")
+
+	if err := inst.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { cleanupShellSessions(inst.Title) })
+
+	if !waitForTmuxSession(inst.tmuxSession.Name, 1*time.Second) {
+		t.Fatalf("tmux session %q never appeared after Start", inst.tmuxSession.Name)
+	}
+
+	// Started unparented: no markers.
+	if got, err := inst.tmuxSession.GetEnvironment("AGENTDECK_ROLE"); err == nil {
+		t.Fatalf("precondition: unparented session carries AGENTDECK_ROLE = %q", got)
+	}
+
+	// Re-parent while live — no explicit ensureRoleEnv call.
+	const parentID = "parent-attached-at-runtime"
+	inst.SetParentWithPath(parentID, t.TempDir())
+
+	role, err := inst.tmuxSession.GetEnvironment("AGENTDECK_ROLE")
+	if err != nil {
+		t.Fatalf("after SetParentWithPath, AGENTDECK_ROLE unset: %v", err)
+	}
+	if role != "child" {
+		t.Errorf("AGENTDECK_ROLE = %q, want %q", role, "child")
+	}
+	if got, err := inst.tmuxSession.GetEnvironment("AGENTDECK_PARENT_ID"); err != nil || got != parentID {
+		t.Errorf("AGENTDECK_PARENT_ID = %q (err %v), want %q", got, err, parentID)
+	}
+
+	// Un-parent while live — markers must go away again.
+	inst.ClearParent()
+
+	if got, err := inst.tmuxSession.GetEnvironment("AGENTDECK_ROLE"); err == nil {
+		t.Errorf("after ClearParent, AGENTDECK_ROLE = %q, want it unset", got)
+	}
+	if got, err := inst.tmuxSession.GetEnvironment("AGENTDECK_PARENT_ID"); err == nil {
+		t.Errorf("after ClearParent, AGENTDECK_PARENT_ID = %q, want it unset", got)
+	}
+
+	// SetParent (the path-less mutator) must republish too.
+	inst.SetParent(parentID)
+	if role, err := inst.tmuxSession.GetEnvironment("AGENTDECK_ROLE"); err != nil || role != "child" {
+		t.Errorf("after SetParent, AGENTDECK_ROLE = %q (err %v), want %q", role, err, "child")
+	}
+}
+
 // TestEnsureRoleEnv_NilTmuxSession_NoPanic pins the nil guard: a respawn branch
 // must never panic when the instance has no tmux session.
 func TestEnsureRoleEnv_NilTmuxSession_NoPanic(t *testing.T) {

@@ -39,7 +39,9 @@ State the target you resolved, in one line, before dispatching.
 
 When an Agent/subagent tool is available, dispatch one subagent per layer, all
 in one message so they run in parallel. Each subagent's prompt: read its layer
-file under `skills/review/` — `references/adversarial.md`,
+file under this skill's own directory (`${CLAUDE_PLUGIN_ROOT}/skills/review/`
+when installed as a plugin — never a path relative to the user's repo, which
+is the cwd and does not contain these files) — `references/adversarial.md`,
 `references/edge-cases.md`, `references/verification-gap.md`, or
 `references/deletion-check.md` — and execute it against the resolved target,
 plus its inputs, plus any `also consider` text. Otherwise run the layers
@@ -58,8 +60,9 @@ tracing layers repo access would manufacture false positives.
 | `deletion-check` | diff + full post-change content of touched files + repo read access |
 
 Shared vocabulary: the adversarial layer checks the diff against
-`skills/review/references/principles.md` (DRY / KISS / YAGNI / SOLID and their
-violation smells), so a subagent dispatched for that layer gets that file too.
+`${CLAUDE_PLUGIN_ROOT}/skills/review/references/principles.md` (DRY / KISS /
+YAGNI / SOLID and their violation smells), so a subagent dispatched for that
+layer gets that file too.
 
 ## 4. Merge & dedup
 

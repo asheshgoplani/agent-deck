@@ -75,6 +75,8 @@ jobs:
       # matcher losing a SessionStart source) ships green.
       - name: Test plugin hooks
         timeout-minutes: 2
+        env:
+          HOOK_TEST_STRICT: '1'   # python3 is guaranteed here; a skip is a bug
         run: bash hooks/test-session-start.sh
 
       # Mirrors release.yml "Run tests" exactly — same gotestsum flags, same

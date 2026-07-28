@@ -38,7 +38,9 @@ metadata:
    are part of the change.
 
 5. **REFACTOR — now, while it is green.** Check the result against
-   `skills/review/references/principles.md`. Re-run the suite after.
+   `${CLAUDE_PLUGIN_ROOT}/skills/review/references/principles.md` (relative to
+   the installed plugin, not to the repo you are working in). Re-run the suite
+   after.
 
 ## Gate 1 — before writing a test
 

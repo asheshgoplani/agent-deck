@@ -342,7 +342,7 @@ itself. Then **archive the planner and plan-reviewer sessions** (see
 Two exceptions to proceeding after one round: findings that invalidate the
 **design** rather than the plan (the approved spec itself is unbuildable or
 self-contradictory) are the user's call — stop and surface them, don't have
-the planner improvise. And a plan whose review comes back with blockers
+the planner improvise. And a plan whose review comes back with findings
 across most of its tasks is a mis-planned task, not a fixable document:
 relaunch the planner fresh with the findings as input rather than patching.
 
@@ -407,8 +407,9 @@ rest of that task:
 - **Reviewer oscillates** — a round reports new findings in code an earlier
   round already passed, meaning the reviewer is missing things → escalate
   the reviewer to strong.
-- **Downgraded implementer fails round 2** — round 2 still reports
-  blockers → don't send a third round to the same session; launch the fix
+- **Downgraded implementer fails round 2** — round 2 still reports `patch`
+  or `decision-needed` findings → don't send a third round to the same
+  session; launch the fix
   as a NEW strong-model session in the same worktree (tell it to read
   `git log` and the diff first). Caps the worst case at roughly
   strong-model cost.
@@ -548,7 +549,12 @@ output lands there without ever passing through your context, and you read
 only the merged findings, the `Checked:` lines and the `VERDICT:` line from
 the child's response. Keep the file — a later round's incremental reviewer is
 handed the previous round's findings from it, and it is the evidence trail for
-a needs-attention task. When you build the fix-round prompt from it, extract
+a needs-attention task. **Check the file before you build a fix round from
+it:** if it is absent, or `grep -q '^## Merged findings'` fails, the reviewer
+died or ignored the format — treat that round as failed and relaunch the
+reviewer. Do not build a fix prompt from it, or you will mail the implementer
+a fix round containing no findings and read its "nothing to do" as progress.
+When you do build the prompt, extract
 only the `## Merged findings` section (`sed -n '/^## Merged findings/,$p'`) —
 the raw layer output above that anchor is deliberately hostile, ungraded and
 un-deduped, and shipping it to an implementer undoes the merge step's whole
@@ -937,7 +943,8 @@ producing an empty one.
 
 ## Failure handling
 
-A task that cannot pass its tests, exhausts its 3 review rounds with blockers
+A task that cannot pass its tests, exhausts its 3 review rounds with `patch`
+or `decision-needed` findings
 remaining, or cannot reach green CI after a few fix attempts is reported as
 **needs-attention**: leave its session and worktree fully intact for
 inspection, and never force-push, reset, or delete anything.

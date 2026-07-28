@@ -704,8 +704,13 @@ func (inst *Instance) IsWorktree() bool {
 }
 
 // SetParent sets the parent session ID
+//
+// Republishes the tmux role markers: the hook that reads them fires on
+// clear/compact/resume as well as startup, so a session re-parented while
+// live would otherwise be read with a stale marker on its next /clear.
 func (inst *Instance) SetParent(parentID string) {
 	inst.ParentSessionID = parentID
+	inst.ensureRoleEnv()
 }
 
 // SetParentWithPath sets both parent session ID and parent's project path
@@ -713,12 +718,14 @@ func (inst *Instance) SetParent(parentID string) {
 func (inst *Instance) SetParentWithPath(parentID, parentProjectPath string) {
 	inst.ParentSessionID = parentID
 	inst.ParentProjectPath = parentProjectPath
+	inst.ensureRoleEnv()
 }
 
 // ClearParent removes the parent session link
 func (inst *Instance) ClearParent() {
 	inst.ParentSessionID = ""
 	inst.ParentProjectPath = ""
+	inst.ensureRoleEnv()
 }
 
 // NewInstance creates a new session instance

@@ -26,6 +26,13 @@ check() { # check <description> <condition-exit-status>
 # A skipped assertion is not a passed assertion. Every python3-gated check
 # below reports itself as SKIP and is counted, so a machine without python3
 # can never print a bare "ALL PASS" while the matcher assertion never ran.
+#
+# Skips are reported loudly but exit 0 by default: this script is the first
+# line of `make test`, and failing it on a python3-less machine would abort
+# the target before a single Go test ran. Set HOOK_TEST_STRICT=1 to make a
+# skip fatal — CI does, where python3 is guaranteed, so the matcher assertion
+# can never silently vanish there.
+STRICT="${HOOK_TEST_STRICT:-0}"
 have_python() { command -v python3 >/dev/null 2>&1; }
 
 # 1. The script is executable and syntactically valid.
@@ -102,7 +109,9 @@ if [ "$fails" -ne 0 ]; then
 elif [ "$skips" -ne 0 ]; then
   # Never report a bare pass with assertions unrun — the matcher check is one
   # of the python3-gated ones, and it is the reason this file exists.
-  printf 'ALL PASS (%d SKIPPED — install python3 for full coverage)\n' "$skips"; exit 1
+  printf 'ALL PASS (%d SKIPPED — install python3 for full coverage)\n' "$skips"
+  [ "$STRICT" = "1" ] && { printf 'HOOK_TEST_STRICT=1: skips are fatal\n'; exit 1; }
+  exit 0
 else
   printf 'ALL PASS\n'; exit 0
 fi

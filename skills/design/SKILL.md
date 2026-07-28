@@ -59,7 +59,9 @@ not state, and say what you cut.
 ## 4. Principles pass
 
 Before presenting the chosen architecture, check it against
-`skills/review/references/principles.md`. The question to answer out loud:
+`${CLAUDE_PLUGIN_ROOT}/skills/review/references/principles.md` (that path is
+relative to the installed plugin, not to the repo you are working in). The
+question to answer out loud:
 *does any component here exist for a requirement nobody stated?* Cut or
 justify each one.
 

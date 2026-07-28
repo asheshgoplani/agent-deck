@@ -33,6 +33,13 @@ Find **at least ten issues**.
 > line by line and analyse again — a zero-finding adversarial pass means the
 > analysis failed, not that the code is perfect.
 
+**The floor does not apply to a docs/config-only diff.** `SKILL.md` §2 routes
+those to this layer alone, and a two-line README change does not contain ten
+real issues — insisting would produce exactly the padding the anti-pattern
+table below forbids. On such a diff, report what is genuinely there (often
+nothing), say in one line that the floor was lifted because the diff carries
+no code, and do not HALT on zero.
+
 The quota is a search-depth forcing function, not a licence to pad. A weak
 finding stated honestly ("minor, may be intentional") is allowed; a fabricated
 one is not. If you are short of ten after a genuine pass, keep looking in the
