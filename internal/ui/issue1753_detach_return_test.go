@@ -36,6 +36,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -299,6 +300,26 @@ func TestIssue1753_AttachCmdClearsAttachFlagBeforeReturning(t *testing.T) {
 	}
 }
 
+func TestIssue1753_AttachWindowCmdClearsAttachFlagBeforeReturning(t *testing.T) {
+	h := NewHome()
+	h.isAttaching.Store(true)
+
+	// A session name that cannot exist makes AttachWindow return after its
+	// existence probe, without selecting or attaching to a tmux window.
+	cmd := attachWindowCmd{
+		session:     &tmux.Session{Name: "agentdeck_issue1753_absent_window_session"},
+		windowIndex: 1,
+		detachByte:  17,
+		onExit:      func() { h.isAttaching.Store(false) },
+	}
+	_ = cmd.Run()
+
+	if h.isAttaching.Load() {
+		t.Fatal("attachWindowCmd.Run returned with isAttaching still set: View() will render " +
+			"\"\" on the first frame after Bubble Tea resumes")
+	}
+}
+
 // TestIssue1753_AttachReturnHandlersHaveNoInlineTmuxCalls is the source-level guard.
 // The behavioural tests above can only observe the snapshot; this one states the rule
 // directly, so a future edit that re-adds an inline tmux round-trip to any of the four
@@ -358,18 +379,53 @@ func TestIssue1753_AttachReturnHandlersHaveNoInlineTmuxCalls(t *testing.T) {
 		}
 	}
 
-	// attachSession must wire onExit, or the first repaint goes back to racing the
-	// ExecCallback goroutine.
-	body := funcBody(t, text, "func (h *Home) attachSession(")
-	if !strings.Contains(body, "onExit:") || !strings.Contains(body, "isAttaching.Store(false)") {
-		t.Error("attachSession no longer clears isAttaching via attachCmd.onExit: the first " +
-			"post-detach View can race the ExecCallback goroutine and render blank (#1753)")
+	// Every local attach path must wire onExit, or the first repaint goes back to
+	// racing the ExecCallback goroutine.
+	mainKeyBody := funcBody(t, text, "func (h *Home) handleMainKey(")
+	attachSites := []struct {
+		name string
+		body string
+		cmd  string
+	}{
+		{
+			name: "session",
+			body: funcBody(t, text, "func (h *Home) attachSession("),
+			cmd:  "attachCmd{",
+		},
+		{
+			name: "window",
+			body: handlerBlock(t, mainKeyBody, `case "enter":`),
+			cmd:  "attachWindowCmd{",
+		},
+		{
+			name: "sandbox terminal",
+			body: handlerBlock(t, mainKeyBody, `case "E":`),
+			cmd:  "attachCmd{",
+		},
 	}
+	for _, site := range attachSites {
+		if !strings.Contains(site.body, site.cmd) ||
+			!strings.Contains(site.body, "onExit:") ||
+			!strings.Contains(site.body, "isAttaching.Store(false)") {
+			t.Errorf("%s attach no longer clears isAttaching via onExit: the first "+
+				"post-detach View can race the ExecCallback goroutine and render blank (#1753)",
+				site.name)
+		}
+	}
+
 	// The pane-CWD probe (two tmux subprocess spawns) must stay behind the
 	// follow-cwd setting instead of running on every detach.
+	body := funcBody(t, text, "func (h *Home) attachSession(")
 	if strings.Contains(body, "GetWorkDir()") && !strings.Contains(body, "GetFollowCwdOnAttach()") {
 		t.Error("attachSession probes the pane CWD unconditionally again: GetWorkDir costs two " +
 			"tmux subprocess spawns on the detach path for a feature that defaults to off (#1753)")
+	}
+	followCwdGate := regexp.MustCompile(
+		`if\s+!followCwd\s*\|\|\s*ts\s*==\s*nil\s*\{\s*return\s+""\s*\}`,
+	)
+	if !followCwdGate.MatchString(body) {
+		t.Error("attachSession no longer returns before GetWorkDir when follow-CWD is disabled " +
+			"or the tmux session is nil (#1753)")
 	}
 }
 
