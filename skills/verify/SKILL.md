@@ -5,6 +5,8 @@ metadata:
   compatibility: "claude, opencode"
 ---
 
+# Verify
+
 ## Iron law
 
 > No completion claim without fresh evidence **in this message**. Evidence

@@ -5,6 +5,8 @@ metadata:
   compatibility: "claude, opencode"
 ---
 
+# Review
+
 ## What this is
 
 Three orthogonal reviewers — `adversarial`, `edge-cases`, `verification-gap`

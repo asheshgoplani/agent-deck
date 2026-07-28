@@ -710,7 +710,7 @@ func (inst *Instance) IsWorktree() bool {
 // live would otherwise be read with a stale marker on its next /clear.
 func (inst *Instance) SetParent(parentID string) {
 	inst.ParentSessionID = parentID
-	inst.ensureRoleEnv()
+	inst.refreshRoleEnv()
 }
 
 // SetParentWithPath sets both parent session ID and parent's project path
@@ -718,14 +718,14 @@ func (inst *Instance) SetParent(parentID string) {
 func (inst *Instance) SetParentWithPath(parentID, parentProjectPath string) {
 	inst.ParentSessionID = parentID
 	inst.ParentProjectPath = parentProjectPath
-	inst.ensureRoleEnv()
+	inst.refreshRoleEnv()
 }
 
 // ClearParent removes the parent session link
 func (inst *Instance) ClearParent() {
 	inst.ParentSessionID = ""
 	inst.ParentProjectPath = ""
-	inst.ensureRoleEnv()
+	inst.refreshRoleEnv()
 }
 
 // NewInstance creates a new session instance
@@ -1144,7 +1144,40 @@ func (i *Instance) ensureProfileEnv() {
 // Called alongside ensureProfileEnv at every spawn and respawn site, because
 // each respawn-pane branch in Restart() returns before the fallback recreate
 // path that would otherwise set it.
+//
+// Failures log at Warn here: every caller is a spawn or respawn site where the
+// tmux session was just created, so a set-environment failure is a genuine
+// fault worth surfacing in debug.log. The parent mutators use refreshRoleEnv
+// instead — see there for why they must not share this log level.
 func (i *Instance) ensureRoleEnv() {
+	i.publishRoleEnv(true)
+}
+
+// refreshRoleEnv republishes the markers from a parent mutator (SetParent,
+// SetParentWithPath, ClearParent), where the tmux session may legitimately not
+// exist: `launch` sets the parent long before Start(), and the group re-homing
+// paths run against archived or dead sessions. Both are ordinary, so a failed
+// set-environment is expected rather than a fault and logs at Debug.
+//
+// Why the log level and not a liveness guard: skipping the call outright needs
+// a reliable "is this session live" answer, and none is cheaply available.
+// tmuxSession is populated at construction (NewInstance), so a nil check cannot
+// distinguish not-yet-started from live; tmux.startupAt is zero for reconnected
+// sessions; Exists() is a subprocess, and these mutators run on the UI thread
+// where per-keystroke has-session calls are the documented nav-freeze class;
+// and ExistsCached() answers "false" from a cold cache at the seconds-old spawn
+// sites, which would silently disable the markers entirely. The two doomed
+// set-environment calls per parented launch therefore remain — they cost a
+// subprocess round-trip and nothing else, and no longer pollute the log this
+// repo diagnoses live incidents from.
+func (i *Instance) refreshRoleEnv() {
+	i.publishRoleEnv(false)
+}
+
+// publishRoleEnv does the work for both variants. expectLive selects the log
+// level for set failures; unset failures are always Debug, since an unparented
+// session with no tmux session is the common, uninteresting case.
+func (i *Instance) publishRoleEnv(expectLive bool) {
 	if i.tmuxSession == nil {
 		return
 	}
@@ -1157,11 +1190,18 @@ func (i *Instance) ensureRoleEnv() {
 		}
 		return
 	}
+	logFailure := func(msg string, err error) {
+		if expectLive {
+			sessionLog.Warn(msg, slog.String("error", err.Error()))
+			return
+		}
+		sessionLog.Debug(msg, slog.String("error", err.Error()))
+	}
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_ROLE", "child"); err != nil {
-		sessionLog.Warn("set_role_failed", slog.String("error", err.Error()))
+		logFailure("set_role_failed", err)
 	}
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_PARENT_ID", i.ParentSessionID); err != nil {
-		sessionLog.Warn("set_parent_id_failed", slog.String("error", err.Error()))
+		logFailure("set_parent_id_failed", err)
 	}
 }
 

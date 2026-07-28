@@ -10,8 +10,8 @@ The end state is always **one branch, one PR**.
 **If a plan exists** — the planning stage ran (spec-fed task), or you were
 handed one (plan-fed task) — decomposition is already done: subtasks = the
 plan's tasks, in plan order, with the plan's parallel-safe markings deciding
-the topology below. Each implementer gets its plan task verbatim; do not
-re-decompose or reorder. A plan-fed task's plan may lack `tier:` tags; tier
+the topology below. Each implementer is pointed at its own task file as its
+spec and reads nothing else for it; do not re-decompose or reorder. A plan-fed task's plan may lack `tier:` tags; tier
 those tasks yourself from the tier table in `SKILL.md`.
 
 **Otherwise** split the issue yourself into 2–5 subtasks, each independently
@@ -94,8 +94,11 @@ a fix session and re-check (this counts toward the shared 3-fix-round cap).
 
 Then, in relay mode, run the deferred full-branch gate: one fresh reviewer
 with the stage-2 round-1 prompt, the **whole issue** (all mini-specs / plan
-tasks) as its spec, and the full branch diff. Clean or nits-only → PR;
-findings → the normal fix loop, still under the shared caps. (Parallel mode
+tasks) as its spec, and the full branch diff. `VERDICT: clean` → PR; any
+`patch` or `decision-needed` finding → the normal fix loop, still under the
+shared caps. A verdict carrying only `defer` findings is `clean` by
+construction — that is the reviewer's call to make, not yours to infer from
+severities. (Parallel mode
 already reviewed each subtask branch in full against its own spec, so skip
 this extra gate unless the merges were conflict-heavy.)
 
