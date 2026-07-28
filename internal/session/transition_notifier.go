@@ -394,13 +394,22 @@ func resolveParentNotificationTarget(child *Instance, byID map[string]*Instance)
 	if parent.ID == child.ID {
 		return nil
 	}
-	if isConductorSessionTitle(parent.Title) {
+	if parentNeedsStatusRefresh(parent) {
 		_ = parent.UpdateStatus()
 		if !isLiveSessionStatus(parent.Status) {
 			return nil
 		}
 	}
 	return parent
+}
+
+// parentNeedsStatusRefresh identifies parent tools whose live status controls
+// whether an event-driven wake can safely be delivered. Claude conductors drain
+// their inbox on a turn boundary; Codex parents receive an explicit completion
+// prompt. Both must be re-probed here so a stale persisted "running" state does
+// not suppress a legitimate idle wake.
+func parentNeedsStatusRefresh(parent *Instance) bool {
+	return parent != nil && (isConductorSessionTitle(parent.Title) || IsCodexCompatible(parent.Tool))
 }
 
 func isLiveSessionStatus(status Status) bool {

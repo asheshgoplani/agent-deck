@@ -26,3 +26,9 @@ func TestApplyAssertDoneEmptyMessageStaysEmpty(t *testing.T) {
 		t.Fatalf("expected empty message untouched (nothing to attach to), got: %q", got)
 	}
 }
+
+func TestDefaultAssertDoneEnabledForCodex(t *testing.T) {
+	if !defaultAssertDoneForTool("codex") {
+		t.Fatal("Codex children must receive the completion-sentinel instruction by default")
+	}
+}

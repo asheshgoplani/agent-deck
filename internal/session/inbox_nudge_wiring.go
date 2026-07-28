@@ -29,11 +29,11 @@ import (
 // well under the ~100-300ms Claude pane-pickup cost that dominates real latency.
 const defaultWakeNudgeDebounce = 500 * time.Millisecond
 
-// wakeNudgeMessage is the prompt fired into an idle conductor's pane to wake it.
-// The content does not affect delivery — taking ANY turn runs the conductor's
-// Stop-hook drain, which is what actually consumes the durable inbox. The text
-// only tells the conductor WHY it woke so it acts on the queue immediately.
-const wakeNudgeMessage = "[INBOX] A child just committed a completion to your inbox — drain it and act on each item now."
+// wakeNudgeMessage is the prompt fired into an idle parent pane to wake it.
+// Claude conductors drain the durable inbox at their turn boundary; Codex
+// parents instead use this explicit prompt to inspect their children and resume
+// their orchestration. The commit remains the source of truth in either case.
+const wakeNudgeMessage = "[AGENTDECK] A child completed or became ready. Run `agent-deck session children --json`, inspect the relevant child output, and continue the orchestration now."
 
 // wakeNudgeWiring carries the platform hooks the Tier-2 wake-nudge needs. It is
 // kept out of the WakeNudger policy core so the idle-only/debounced policy stays
@@ -47,8 +47,7 @@ type wakeNudgeWiring struct {
 }
 
 // defaultWakeNudgeWiring is the production wiring: a debounced nudger, the wall
-// clock, the conductor-scoped idle probe, and a best-effort non-blocking pane
-// send.
+// clock, the parent idle probe, and a best-effort non-blocking pane send.
 func defaultWakeNudgeWiring() *wakeNudgeWiring {
 	return &wakeNudgeWiring{
 		nudger: NewWakeNudger(defaultWakeNudgeDebounce),
@@ -60,7 +59,7 @@ func defaultWakeNudgeWiring() *wakeNudgeWiring {
 
 // fireWakeNudge invokes the Tier-2 wake-nudge for a parent that just had a
 // completion durably committed. It is best-effort and MUST NOT affect the commit
-// result: a nil wiring, a non-conductor/busy parent, or a send error are all
+// result: a nil wiring, a non-orchestrating/busy parent, or a send error are all
 // swallowed (the durable record still drains on the next turn/heartbeat). A
 // panic in the injected probe/send is recovered so a wake bug can never take
 // down the producer.
@@ -97,9 +96,9 @@ func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNot
 }
 
 // parentIsNudgeableIdle reports whether parent is safe to wake with a send-keys
-// nudge: it must be a conductor (only conductors drain an inbox on Stop, so a
-// nudge to a non-conductor leaf would be pure noise) AND currently idle/waiting,
-// NOT mid-turn. A send-keys into a RUNNING pane only queues the keystroke
+// nudge: it must be a Claude conductor (which drains an inbox on Stop) or a
+// Codex parent (which receives a direct orchestration prompt), and it must be
+// currently idle/waiting, NOT mid-turn. A send-keys into a RUNNING pane only queues the keystroke
 // (issue #36326) — the exact failure the pull model was built to avoid — so a
 // busy conductor is left to drain at its own turn boundary.
 //
@@ -108,7 +107,7 @@ func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNot
 // moments earlier on the commit path, so a second tmux round-trip would add cost
 // without adding freshness.
 func parentIsNudgeableIdle(parent *Instance) bool {
-	if parent == nil || !isConductorSessionTitle(parent.Title) {
+	if parent == nil || (!isConductorSessionTitle(parent.Title) && !IsCodexCompatible(parent.Tool)) {
 		return false
 	}
 	switch parent.Status {

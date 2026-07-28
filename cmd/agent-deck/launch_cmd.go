@@ -118,6 +118,14 @@ func applyAssertDone(message string, enabled bool) string {
 	return message + assertDoneInstruction
 }
 
+// defaultAssertDoneForTool reports whether a child tool gets the completion
+// sentinel by default. Both Claude and Codex support parented orchestration;
+// without the sentinel, a completed child is indistinguishable from an ordinary
+// idle turn to the parent.
+func defaultAssertDoneForTool(tool string) bool {
+	return session.IsClaudeCompatible(tool) || session.IsCodexCompatible(tool)
+}
+
 // handleLaunch combines add + start + optional send into a single command.
 // It creates a new session, starts it, and optionally sends an initial message.
 func handleLaunch(profile string, args []string) {
@@ -291,11 +299,11 @@ func handleLaunch(profile string, args []string) {
 
 	// --assert-done: append the completion-sentinel instruction so the child
 	// reliably reports back via the ledger / parent inbox. Default-on for
-	// Claude children (a completion signal nobody requests is useless);
+	// Claude and Codex children (a completion signal nobody requests is useless);
 	// --no-assert-done always wins.
 	assertDoneTool := firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
 	assertDoneOn := *assertDone
-	if !*assertDone && !*noAssertDone && session.IsClaudeCompatible(assertDoneTool) {
+	if !*assertDone && !*noAssertDone && defaultAssertDoneForTool(assertDoneTool) {
 		assertDoneOn = true
 	}
 	if *noAssertDone {
