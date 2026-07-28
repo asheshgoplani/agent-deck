@@ -207,6 +207,15 @@ The planner child is the one partial exception: it *writes* a plan, so it may
 use plan-writing skills. It still must not re-open the design or re-brainstorm
 the spec — the spec is approved input.
 
+Keep the preamble to that block. The rest of the executor discipline —
+"use tdd", "verify before reporting done", "do not spawn your own review
+loop" — is injected automatically by the agent-deck plugin's SessionStart
+hook for any session that has a parent, so it does not belong in your prompt
+text. One line pointing at the leaf skills (`tdd`, `debug`, `verify`) is
+enough; the hook carries the rest. The anti-brainstorm block above stays
+regardless: a user's own globally-installed process skills are outside the
+hook's reach.
+
 ## Planning stage (spec-fed tasks, or any task you judge big)
 
 Design and plan are separate artifacts produced by separate roles: the
@@ -237,8 +246,23 @@ Size every task to fit comfortably in a single fresh session's context
 window: if completing it would require reading more than roughly 100k tokens
 of code, docs, and test output, split it further — a task that blows up its
 executor's context costs a handoff mid-implementation.
+
+Then emit one self-contained task file per task at
+docs/plans/<date>-<task-slug>-tasks/task-NN-<name>.md. Each task file must
+stand alone for a child that reads nothing else:
+- the relevant design-doc extracts EMBEDDED verbatim, never linked;
+- acceptance criteria;
+- exact file paths and the actual code or edit;
+- verification commands with expected output;
+- an `## Interfaces` block with `consumes:` and `produces:` — the exact
+  names, signatures, and paths this task relies on and hands over, so a
+  child that sees only its own file knows its neighbours' names;
+- a trailing `## Record (append-only)` section, left empty, for the
+  implementer to append its commits, files touched, and concerns.
+
 No placeholders (no TBD / "add error handling" / "similar to task N").
-Commit the plan to the current branch. Do NOT implement anything.
+Commit the plan and the task files to the current branch. Do NOT implement
+anything.
 ```
 
 Skip this stage for small tasks — a single focused change with an obvious
@@ -296,9 +320,17 @@ across most of its tasks is a mis-planned task, not a fixable document:
 relaunch the planner fresh with the findings as input rather than patching.
 
 The plan's task list now replaces your own decomposition: subtasks = plan
-tasks (see `references/single-issue-split.md`), each implementer receives its
-plan task verbatim as its spec, and each reviewer receives that same plan
-task as the spec to check compliance against.
+tasks (see `references/single-issue-split.md`), each implementer is pointed
+at its own task file as its spec, and each reviewer is pointed at that same
+task file as the spec to check compliance against.
+
+**Implementers read only their own task file.** Do not hand a child the
+design doc or the full plan alongside it — a child that never reads the full
+design cannot drift from it, and the task file was written to be sufficient.
+The `## Record (append-only)` section at the end of each task file is the
+child's audit trail: it appends its commits, the files it touched, and any
+concern it hit. That record costs you no context — you read it only when a
+task goes needs-attention.
 
 ## Model & connector tiering
 
@@ -377,7 +409,11 @@ every `<...>`:
 ```text
 Task: <title>
 
-<task spec: issue body or freeform description>
+Your spec is this file — read it, and read nothing else for the spec:
+<task-file-path>
+
+(For a task with no task file — a freeform or single-small-task run — paste
+the spec here instead: <task spec: issue body or freeform description>)
 
 Work strictly in this worktree on the current branch. Do, in order:
 1. Install dependencies from the frozen lockfile (never regenerate it).
@@ -387,7 +423,8 @@ Work strictly in this worktree on the current branch. Do, in order:
    failures in your final summary ("baseline: none" if all green) — the
    reviewer will be given that list. If the repo has no test suite, say so
    and lean on the lint/build checks plus the e2e verification instead.
-3. Implement the task test-first where practical.
+3. Implement the task test-first (`tdd`), debug failures at the root (`debug`),
+   and gate every completion claim on fresh evidence (`verify`).
 4. Run the FULL test suite; no new failures versus the baseline. Also run
    the repo's lint/format/build checks — whatever CI runs — and fix what
    they flag on your changes.
@@ -430,45 +467,75 @@ reviewer — incremental rounds and the full-branch gate need it.
 Reviewer prompt template (after the child prompt preamble):
 
 ```text
-You are a code reviewer with fresh eyes. You are READ-ONLY: edit nothing,
-commit nothing, run only read-only commands plus the test suite. You may be
-sharing this worktree with a live implementer session, so never run a command
-that rewrites the working tree: no `git stash`, `git checkout`, `git restore`,
-`git reset`, `git clean`, no branch switching. A tree that looks dirty or
-wrong is a finding to report, never a thing for you to tidy up.
+You are a code reviewer with fresh eyes. You are READ-ONLY with exactly one
+exception, stated below: edit nothing in the repository, commit nothing, run
+only read-only commands plus the test suite. You may be sharing this worktree
+with a live implementer session, so never run a command that rewrites the
+working tree: no `git stash`, `git checkout`, `git restore`, `git reset`,
+`git clean`, no branch switching. A tree that looks dirty or wrong is a
+finding to report, never a thing for you to tidy up.
 
-The task this branch is supposed to implement:
-<task spec: the same spec the implementer received>
+Your ONE permitted write is the verdict file at <verdict-file-path>. It sits
+outside the repository and outside this worktree, so writing it cannot touch
+the branch under review. Create it with a shell redirect (the editing tools
+are disabled for you by flag); create nothing else, anywhere.
+
+The task this branch is supposed to implement is in this file — read it and
+nothing else for the spec: <task-file-path>
 
 Review the full branch diff: git diff $(git merge-base <base-branch> HEAD)...HEAD
-Check BOTH: (a) spec compliance — does the diff actually implement the task
-above? Anything missing, extra, or misunderstood is a finding; and (b) code
-quality. Also run the test suite and judge whether the tests actually cover
-the change.
+
+Execute the review layers per <agent-deck-repo>/skills/review/references/ —
+run `adversarial.md`, `edge-cases.md` and `verification-gap.md`, plus
+`deletion-check.md` if the diff removes meaningful code — then merge, dedup,
+grade severity and triage exactly as <agent-deck-repo>/skills/review/SKILL.md
+describes. Add spec compliance against the task file above as an explicit
+concern threaded into every layer: anything missing, extra, or misunderstood
+is a finding. Also run the test suite and judge whether the tests actually
+cover the change.
 
 Known pre-existing test failures (the implementer's recorded baseline):
 <baseline list, or "none">. These are NOT findings — only failures new
 against this baseline are.
 
-Report findings as a numbered list: file:line — severity (blocker |
-should-fix | nit) — one line on what is wrong and why it matters.
-Then print 2-3 lines starting with "Checked:" summarizing what you actually
-verified (which spec points, test suite result, coverage judgment) — a
-verdict with no evidence is not acceptable.
+Write your full output — every layer's raw findings, the merged list, the
+"Checked:" lines and the verdict line — to <verdict-file-path>. Then print
+ONLY the merged findings list, the "Checked:" lines and the verdict line as
+your response.
 End with exactly one line, using real counts:
 VERDICT: clean
-VERDICT: findings blockers=<n> should-fix=<n> nits=<n>
+VERDICT: fix-needed patch=<n> decision-needed=<n> defer=<n>
 ```
+
+**The verdict-file interface (the conductor owns the path).** Substitute
+`$RUN_DIR/<task-slug>/review-r<n>.md` for `<verdict-file-path>` — the same run
+directory every other prompt file lives in, which is outside every repo by
+construction. The reviewer writing that file itself replaces the old
+`session output ... > $RUN_DIR/<slug>/review-r<n>.txt` capture: the raw layer
+output lands there without ever passing through your context, and you read
+only the merged findings, the `Checked:` lines and the `VERDICT:` line from
+the child's response. Keep the file — a later round's incremental reviewer is
+handed the previous round's findings from it, and it is the evidence trail for
+a needs-attention task.
 
 ### 3. Fix loop
 
-- A findings verdict with `blockers=0 should-fix=0` (nits only) counts as
-  clean; list the nits in the final report.
+- The verdict is machine-readable and you branch on it directly. `VERDICT:
+  clean` → proceed. `VERDICT: fix-needed` → look at the buckets, not the raw
+  count:
+  - `patch` items go back to the implementer as a fix round.
+  - `decision-needed` items are **not** the implementer's to resolve —
+    escalate them to the user exactly like a waiting child's question (see
+    "Answering waiting children"), and hold that task while you wait.
+  - `defer` items append to `$RUN_DIR/deferred-work.md` and **never extend
+    the loop**; they are listed in the final report and go no further.
+  A verdict whose only findings are `defer` items is emitted as
+  `VERDICT: clean` by construction, so nothing extra is needed for that case.
 - **The reviewer proposes a severity; you decide it.** That is why you read
   findings lists in full (see "Context budget"). One rule is not a judgment
   call: **a finding whose blast radius is existing data, introduced by this
-  branch, is never a nit.** A gate review once graded "the edit form seeds a
-  stored workload of 0 as 100" a nit; it was a regression that made
+  branch, is never a `minor`.** A gate review once graded "the edit form seeds
+  a stored workload of 0 as 100" a `minor`; it was a regression that made
   previously-savable rows unsavable and destroyed the value on an untouched
   Save. Regrade upward and send it back. Regrading *downward* is a different
   act — it needs a reason you can write in one line, and it goes in the final
@@ -482,7 +549,9 @@ Review round <n> found issues on your branch — fix them:
 
 <findings list, verbatim>
 
-Fix every blocker and should-fix (use judgment on nits). Rerun the full
+Fix every finding in the `patch` bucket. `decision-needed` items are not
+yours to resolve and `defer` items are out of scope — leave both alone and
+say so in your summary if any were listed. Rerun the full
 test suite (no new failures vs your baseline), the lint/format checks, and
 the e2e check; update screenshots if the UI changed again; commit.
 Do NOT push.
@@ -516,11 +585,13 @@ Do, in order:
 4. Run the test suite. Known pre-existing failures (baseline): <list, or
    "none"> — only NEW failures are findings.
 
-Report findings as a numbered list: file:line — severity (blocker |
-should-fix | nit) — one line each. Then 2-3 "Checked:" evidence lines.
+Report findings in the merged format from
+<agent-deck-repo>/skills/review/SKILL.md: file:line — severity (critical |
+major | minor) — [patch | decision-needed | defer] — provenance — one line
+each. Then 2-3 "Checked:" evidence lines.
 End with exactly one line, using real counts:
 VERDICT: clean
-VERDICT: findings blockers=<n> should-fix=<n> nits=<n>
+VERDICT: fix-needed patch=<n> decision-needed=<n> defer=<n>
 ```
 
   Once you have read the previous round's findings, **archive the
@@ -529,15 +600,15 @@ VERDICT: findings blockers=<n> should-fix=<n> nits=<n>
   verdict.** A round-1 clean qualifies directly. A clean from an
   *incremental* round does not — launch one more fresh reviewer with the
   full-branch (round-1) prompt to confirm the branch as a whole. Gate
-  clean or nits-only → proceed to the PR. Gate findings → that is
+  `VERDICT: clean` → proceed to the PR. Gate findings → that is
   oscillation by definition: escalate the reviewer tier (see "Model &
   connector tiering"), send the findings through the fix-round prompt, and continue
   the loop.
 - **Caps: maximum 3 fix rounds** (rounds whose findings go back to the
   implementer — a gate-findings round consumes one like any other) **and 2
-  full-branch gate reviews.** Budget exhausted with
-  blockers remaining → the task is **needs-attention**, no PR; only
-  should-fixes/nits remaining → proceed to the PR and list them in the
+  full-branch gate reviews.** Budget exhausted with `patch` or
+  `decision-needed` items remaining → the task is **needs-attention**, no PR;
+  only `defer` items remaining → proceed to the PR and list them in the
   final report.
 
 ### 4. PR
@@ -596,7 +667,7 @@ touches logic gets one incremental review round on the new commits
 count as done. When a sibling PR from this run merges, rerun stage 4's
 pre-PR sync (fetch/merge base, full suite + build checks, push) for every
 still-open PR — the base just moved under them. A task counts as **done**
-only when the review is clean (or nits-only), the PR exists (or the
+only when the review verdict is `clean`, the PR exists (or the
 prescribed endgame has landed), and all checks are green.
 
 ## Answering waiting children
@@ -760,13 +831,13 @@ transition that changes what you do next.
 `$RUN_DIR` file by shell redirection, and you read only the line that carries
 the decision. You do still read a findings list in full — findings lists are
 short, and judging severity yourself is the point (a finding whose blast
-radius is *existing data*, introduced by *this branch*, is never a nit, no
+radius is *existing data*, introduced by *this branch*, is never a `minor`, no
 matter what the reviewer graded it). What must never enter your context is
 the reasoning around them.
 
 | Read | Instead of | Do |
 | --- | --- | --- |
-| Reviewer verdict | `session output <id>` | `session output <id> --json --require-fresh > $RUN_DIR/<slug>/review-r<n>.txt`, then read the numbered findings plus the `VERDICT:` / `Checked:` lines |
+| Reviewer verdict | `session output <id>` | the reviewer already wrote `$RUN_DIR/<slug>/review-r<n>.md`; read only the merged findings plus the `VERDICT:` / `Checked:` lines from it (or from the child's response — they are the same lines) |
 | Fix-round prompt | retyping the findings | build it by shell (`cat` template + findings file) so the findings never re-enter your context |
 | CI failure | `gh run view --log-failed` | redirect to `$RUN_DIR/<slug>/ci-<run-id>.log`; read the failing check *names*, send the implementer the path |
 | Waiting child's question | `session output <id>` | `session output <id> --tail 40` |
