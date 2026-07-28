@@ -697,16 +697,6 @@ func IsLinkedWorktree(path string) bool {
 	return filepath.Base(filepath.Dir(gitdir)) == "worktrees"
 }
 
-// worktreeBranchName returns the branch name for a worktree path.
-// Falls back to the directory basename if the git command fails.
-func worktreeBranchName(worktreePath string) string {
-	cmd := exec.Command("git", "-C", worktreePath, "rev-parse", "--abbrev-ref", "HEAD")
-	out, err := cmd.Output()
-	if err != nil {
-		return filepath.Base(worktreePath)
-	}
-	return strings.TrimSpace(string(out))
-}
 
 // RemoveWorktree removes a worktree from the repository.
 // If force is true, it will remove even if there are uncommitted changes.
