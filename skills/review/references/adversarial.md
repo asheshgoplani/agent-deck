@@ -15,6 +15,10 @@ from rationalising the code the way the author did. An author who knows "this
 is fine because X happens upstream" will wave away a real problem; you don't
 get to make that excuse because you don't get X.
 
+The one exception is `principles.md`, which is supplied to you alongside the
+diff — it is a rubric, not repo access, and it carries no information about
+this change or its author.
+
 Do not ask for more context. Do not speculate about a spec you cannot see, and
 do not guess at what the "intended" behavior might be — you only have the
 diff. If the diff is unreadable or its purpose is not inferable from the diff
@@ -51,7 +55,8 @@ Work every bucket below against every changed line before you stop.
   secrets or sensitive data written to logs.
 - **Naming & readability** — a name that lies about what the thing does or
   hides a side effect.
-- **Principles violations per `principles.md`** — read that file; at minimum
+- **Principles violations per `principles.md`** — the copy supplied with your
+  diff; at minimum
   check for over-engineering, duplication, and SRP breaks (a
   function/type doing more than one job). Name these three explicitly so this
   checklist still works if `principles.md` is unavailable.

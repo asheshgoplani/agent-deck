@@ -216,6 +216,16 @@ enough; the hook carries the rest. The anti-brainstorm block above stays
 regardless: a user's own globally-installed process skills are outside the
 hook's reach.
 
+**Keep that one line — do not drop it to zero.** The hook ships with the
+plugin, but the `AGENTDECK_ROLE` marker it branches on ships with the
+agent-deck binary. Against an older binary the marker is absent, the hook
+cannot tell a child from an interactive session, and the child receives the
+*interactive* preamble — which opens by telling it to start with `design` and
+produce an approved design document before any code. That is the precise
+behaviour the anti-brainstorm block exists to stop, arriving from inside your
+own tooling. One line in the prompt costs nothing and is version-independent;
+the hook is the optimisation, not the guarantee.
+
 ## Planning stage (spec-fed tasks, or any task you judge big)
 
 Design and plan are separate artifacts produced by separate roles: the
@@ -483,6 +493,9 @@ are disabled for you by flag); create nothing else, anywhere.
 The task this branch is supposed to implement is in this file — read it and
 nothing else for the spec: <task-file-path>
 
+(For a task with no task file — a freeform or single-small-task run — paste
+the spec here instead: <task spec: the same spec the implementer received>)
+
 Review the full branch diff: git diff $(git merge-base <base-branch> HEAD)...HEAD
 
 Execute the review layers per <agent-deck-repo>/skills/review/references/ —
@@ -498,10 +511,12 @@ Known pre-existing test failures (the implementer's recorded baseline):
 <baseline list, or "none">. These are NOT findings — only failures new
 against this baseline are.
 
-Write your full output — every layer's raw findings, the merged list, the
-"Checked:" lines and the verdict line — to <verdict-file-path>. Then print
-ONLY the merged findings list, the "Checked:" lines and the verdict line as
-your response.
+Write your full output to <verdict-file-path>, in this order: every layer's
+raw findings first, then a line containing exactly `## Merged findings`, then
+the merged list, the "Checked:" lines and the verdict line. That heading is a
+parsing anchor — emit it verbatim, exactly once. Then print ONLY the merged
+findings list, the "Checked:" lines and the verdict line as your response. A
+verdict with no evidence is not acceptable.
 End with exactly one line, using real counts:
 VERDICT: clean
 VERDICT: fix-needed patch=<n> decision-needed=<n> defer=<n>
@@ -516,7 +531,20 @@ output lands there without ever passing through your context, and you read
 only the merged findings, the `Checked:` lines and the `VERDICT:` line from
 the child's response. Keep the file — a later round's incremental reviewer is
 handed the previous round's findings from it, and it is the evidence trail for
-a needs-attention task.
+a needs-attention task. When you build the fix-round prompt from it, extract
+only the `## Merged findings` section (`sed -n '/^## Merged findings/,$p'`) —
+the raw layer output above that anchor is deliberately hostile, ungraded and
+un-deduped, and shipping it to an implementer undoes the merge step's whole
+purpose.
+
+**`<agent-deck-repo>` is a path you must resolve, not a placeholder to paste.**
+A reviewer child cannot execute a single layer without it, and that child runs
+inside the *target* repo's worktree, which is not the agent-deck checkout.
+Resolve it once during run setup — the installed plugin root (e.g.
+`~/.claude/plugins/marketplaces/agent-deck`) or a local checkout, whichever
+actually holds `skills/review/references/` — confirm the layer files are
+readable there, record it in the manifest, and substitute the real absolute
+path into every reviewer prompt.
 
 ### 3. Fix loop
 
@@ -564,15 +592,24 @@ Do NOT push.
   Incremental reviewer prompt template:
 
 ```text
-You are a code reviewer with fresh eyes. You are READ-ONLY: edit nothing,
-commit nothing, run only read-only commands plus the test suite. You may be
-sharing this worktree with a live implementer session, so never run a command
-that rewrites the working tree: no `git stash`, `git checkout`, `git restore`,
-`git reset`, `git clean`, no branch switching. A tree that looks dirty or
-wrong is a finding to report, never a thing for you to tidy up.
+You are a code reviewer with fresh eyes. You are READ-ONLY with exactly one
+exception, stated below: edit nothing in the repository, commit nothing, run
+only read-only commands plus the test suite. You may be sharing this worktree
+with a live implementer session, so never run a command that rewrites the
+working tree: no `git stash`, `git checkout`, `git restore`, `git reset`,
+`git clean`, no branch switching. A tree that looks dirty or wrong is a
+finding to report, never a thing for you to tidy up.
 
-The task this branch is supposed to implement:
-<task spec: the same spec the implementer received>
+Your ONE permitted write is the verdict file at <verdict-file-path>. It sits
+outside the repository and outside this worktree, so writing it cannot touch
+the branch under review. Create it with a shell redirect (the editing tools
+are disabled for you by flag); create nothing else, anywhere.
+
+The task this branch is supposed to implement is in this file — read it and
+nothing else for the spec: <task-file-path>
+
+(For a task with no task file — a freeform or single-small-task run — paste
+the spec here instead: <task spec: the same spec the implementer received>)
 
 A previous review at commit <reviewed-sha> reported:
 <previous round's findings, verbatim>
@@ -585,10 +622,20 @@ Do, in order:
 4. Run the test suite. Known pre-existing failures (baseline): <list, or
    "none"> — only NEW failures are findings.
 
+Run the review layers per <agent-deck-repo>/skills/review/references/ against
+`git diff <reviewed-sha>...HEAD` — the same layers the round-1 reviewer ran,
+scoped to the new commits — so every finding carries a real provenance tag.
+
 Report findings in the merged format from
 <agent-deck-repo>/skills/review/SKILL.md: file:line — severity (critical |
 major | minor) — [patch | decision-needed | defer] — provenance — one line
-each. Then 2-3 "Checked:" evidence lines.
+each. Then 2-3 "Checked:" evidence lines. A verdict with no evidence is not
+acceptable.
+
+Write your full output to <verdict-file-path> in the same order and with the
+same verbatim `## Merged findings` anchor the round-1 reviewer used, then
+print ONLY the merged list, the "Checked:" lines and the verdict line as your
+response.
 End with exactly one line, using real counts:
 VERDICT: clean
 VERDICT: fix-needed patch=<n> decision-needed=<n> defer=<n>
@@ -838,7 +885,7 @@ the reasoning around them.
 | Read | Instead of | Do |
 | --- | --- | --- |
 | Reviewer verdict | `session output <id>` | the reviewer already wrote `$RUN_DIR/<slug>/review-r<n>.md`; read only the merged findings plus the `VERDICT:` / `Checked:` lines from it (or from the child's response — they are the same lines) |
-| Fix-round prompt | retyping the findings | build it by shell (`cat` template + findings file) so the findings never re-enter your context |
+| Fix-round prompt | retyping the findings | build it by shell (`cat` template + `sed -n '/^## Merged findings/,$p' review-r<n>.md`) so the findings never re-enter your context — extract that section, never `cat` the whole file, which still holds the raw hostile layer output |
 | CI failure | `gh run view --log-failed` | redirect to `$RUN_DIR/<slug>/ci-<run-id>.log`; read the failing check *names*, send the implementer the path |
 | Waiting child's question | `session output <id>` | `session output <id> --tail 40` |
 | Anything large or genuinely unclear | reading and reasoning yourself | dispatch a subagent — it burns its own context and hands you back a summary |

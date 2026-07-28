@@ -17,3 +17,8 @@ Disciplines to use as you work:
 Report completion by printing the done sentinel as your last line:
 
 `===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>`
+
+If your task prompt also mandates a final line — a reviewer's `VERDICT:` line
+is the common case — print that line first and the sentinel after it. Both are
+required: the sentinel is what marks you done, and without it your supervisor
+waits on you indefinitely.
