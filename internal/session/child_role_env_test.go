@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -221,6 +223,98 @@ func TestRefreshRoleEnv_LogsBelowWarnFromParentMutator(t *testing.T) {
 	}
 	if rec["level"] != "DEBUG" {
 		t.Errorf("set_role_failed level = %v, want DEBUG", rec["level"])
+	}
+}
+
+// TestRestart_ShellSession_CarriesRoleEnv is the end-to-end restart contract,
+// mirroring TestRestart_ShellSession_CarriesProfileEnv. Seven of the nine
+// ensureRoleEnv call sites live inside restart(), and until this test none of
+// them was reached by anything: deleting all seven left `go build` green and
+// the suite at its two accepted pre-existing failures, so a future edit that
+// dropped one would ship green.
+//
+// What that would break is not cosmetic. agent-deck restarts children — the
+// reviver does it unattended — and hooks.json matches `resume` precisely
+// because of that. A restarted child that lost AGENTDECK_ROLE gets the
+// INTERACTIVE preamble instead of the executor one, and starts asking a user
+// who is not there to approve a design.
+//
+// A shell session takes the fallback recreate path (no resume support), which
+// is the branch at the end of restart(); the six respawn branches each return
+// before it, which is why they carry their own calls.
+func TestRestart_ShellSession_CarriesRoleEnv(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	isolateUserHomeForShellRestart(t)
+
+	inst := newShellInstance(t, "RestartRoleEnv")
+	const parentID = "parent-across-restart"
+	inst.SetParentWithPath(parentID, t.TempDir())
+
+	if err := inst.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { cleanupShellSessions(inst.Title) })
+
+	if !waitForTmuxSession(inst.tmuxSession.Name, 1*time.Second) {
+		t.Fatalf("tmux session %q never appeared after Start", inst.tmuxSession.Name)
+	}
+
+	if err := inst.Restart(); err != nil {
+		t.Fatalf("Restart returned error: %v", err)
+	}
+	if !waitForTmuxSession(inst.tmuxSession.Name, 1*time.Second) {
+		t.Fatalf("tmux session %q does not exist after Restart", inst.tmuxSession.Name)
+	}
+
+	role, err := inst.tmuxSession.GetEnvironment("AGENTDECK_ROLE")
+	if err != nil {
+		t.Fatalf("GetEnvironment(AGENTDECK_ROLE) after Restart failed: %v", err)
+	}
+	if role != "child" {
+		t.Errorf("after Restart, AGENTDECK_ROLE = %q, want %q", role, "child")
+	}
+
+	gotParent, err := inst.tmuxSession.GetEnvironment("AGENTDECK_PARENT_ID")
+	if err != nil {
+		t.Fatalf("GetEnvironment(AGENTDECK_PARENT_ID) after Restart failed: %v", err)
+	}
+	if gotParent != parentID {
+		t.Errorf("after Restart, AGENTDECK_PARENT_ID = %q, want %q", gotParent, parentID)
+	}
+}
+
+// TestRoleEnvPairedWithProfileEnvAtEverySpawnSite pins the 9-for-9 invariant
+// that TestRestart_ShellSession_CarriesRoleEnv cannot reach: that test drives
+// only the fallback recreate path, while six respawn branches each return
+// earlier and carry their own call. Executing all six needs a live session per
+// tool (claude, codex, opencode, …), which this package cannot do.
+//
+// So pin it structurally instead. ensureProfileEnv is the established
+// precedent — it must be published at exactly the same set of spawn/respawn
+// sites — so any site that publishes one and not the other is a wiring bug.
+// This was previously a manual `grep -c` in the plan, which no CI run
+// executes; a dropped call would have shipped green.
+func TestRoleEnvPairedWithProfileEnvAtEverySpawnSite(t *testing.T) {
+	src, err := os.ReadFile("instance.go")
+	if err != nil {
+		t.Fatalf("read instance.go: %v", err)
+	}
+	body := string(src)
+
+	// Count call sites only — skip the declarations and this file's own refs.
+	roleCalls := strings.Count(body, "i.ensureRoleEnv()")
+	profileCalls := strings.Count(body, "i.ensureProfileEnv()")
+
+	if roleCalls != profileCalls {
+		t.Errorf("i.ensureRoleEnv() appears %d times, i.ensureProfileEnv() %d — "+
+			"every spawn/respawn site must publish BOTH. A site that sets the "+
+			"profile but not the role silently strips AGENTDECK_ROLE from a "+
+			"restarted child, which then receives the interactive preamble.",
+			roleCalls, profileCalls)
+	}
+	if roleCalls == 0 {
+		t.Fatal("found no i.ensureRoleEnv() call sites — the scan is broken, " +
+			"not the code")
 	}
 }
 

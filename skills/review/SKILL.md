@@ -54,6 +54,13 @@ The information asymmetry below is a rule, not a suggestion: denying the
 adversarial layer the author's intent kills anchoring bias; denying the
 tracing layers repo access would manufacture false positives.
 
+In the sequential in-context fallback there are no separate contexts to
+enforce that with, so the asymmetry is honoured by **ordering**: run
+adversarial first, before you read the spec or any repo file. Once the spec
+is in context it cannot be taken back out, and every later "adversarial"
+judgement is anchored. A caller that hands you a spec up front — an
+orchestrated reviewer prompt is the usual source — does not override this.
+
 | Layer | Gets |
 | --- | --- |
 | `adversarial` | the diff **only** — no spec, no conversation, no repo access |

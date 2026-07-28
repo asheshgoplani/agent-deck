@@ -521,9 +521,13 @@ run `adversarial.md`, `edge-cases.md` and `verification-gap.md`, plus
 `deletion-check.md` if the diff removes meaningful code — then merge, dedup,
 grade severity and triage exactly as <agent-deck-repo>/skills/review/SKILL.md
 describes. Add spec compliance against the task file above as an explicit
-concern threaded into every layer: anything missing, extra, or misunderstood
-is a finding. Also run the test suite and judge whether the tests actually
-cover the change.
+concern threaded into `edge-cases`, `verification-gap` and `deletion-check`:
+anything missing, extra, or misunderstood is a finding. The adversarial layer
+stays spec-blind by design — it receives the diff only, so run it FIRST,
+before you read the task file or any repo file. Not knowing the author's
+intent is exactly what makes that layer catch what the others rationalise;
+handing it the spec restores the anchoring bias it exists to remove. Also run
+the test suite and judge whether the tests actually cover the change.
 
 Known pre-existing test failures (the implementer's recorded baseline):
 <baseline list, or "none">. These are NOT findings — only failures new
