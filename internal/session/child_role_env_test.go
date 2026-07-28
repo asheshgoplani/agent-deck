@@ -3,6 +3,8 @@ package session
 import (
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
 // Child role markers (AGENTDECK_ROLE / AGENTDECK_PARENT_ID) in the tmux session
@@ -173,6 +175,52 @@ func TestParentMutators_RepublishRoleEnvOnLiveSession(t *testing.T) {
 	inst.SetParent(parentID)
 	if role, err := inst.tmuxSession.GetEnvironment("AGENTDECK_ROLE"); err != nil || role != "child" {
 		t.Errorf("after SetParent, AGENTDECK_ROLE = %q (err %v), want %q", role, err, "child")
+	}
+}
+
+// TestRefreshRoleEnv_LogsBelowWarnFromParentMutator pins the LOG LEVEL, which
+// is the entire point of the ensureRoleEnv/refreshRoleEnv split and is not
+// covered by the republish tests above — they assert the markers land, and stay
+// green whether the failure path logs at Warn or Debug.
+//
+// The regression this guards: ensureRoleEnv's only guard is tmuxSession == nil,
+// but NewInstance populates tmuxSession at construction, so the guard never
+// fires for a not-yet-started instance. `launch` sets the parent long before
+// Start(), so routing the mutators at the loud variant makes EVERY parented
+// launch — the orchestrate/fleet hot path — emit two spurious Warn lines into
+// the debug.log this repo triages live incidents from.
+//
+// An unstarted instance is exactly that case: tmuxSession is non-nil, no tmux
+// session exists, so set-environment fails and the failure must be logged below
+// Warn. Asserting the record EXISTS as well as its level keeps the test
+// non-vacuous — a silently skipped publish would otherwise pass.
+func TestRefreshRoleEnv_LogsBelowWarnFromParentMutator(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	dir := t.TempDir()
+	logging.Shutdown()
+	logging.Init(logging.Config{Debug: true, LogDir: dir, Level: "debug"})
+	defer logging.Shutdown()
+
+	// Never started: tmuxSession is non-nil but no tmux session exists.
+	inst := newShellInstance(t, "QuietRoleEnv")
+	inst.SetParentWithPath("parent-that-never-started", t.TempDir())
+
+	logging.Shutdown() // flush before reading
+	records := readLogRecords(t, dir)
+
+	rec := findRecord(records, "set_role_failed")
+	if rec == nil {
+		t.Fatalf("expected a set_role_failed record from the mutator's failed "+
+			"publish; got %d records — if the publish was skipped entirely this "+
+			"test is no longer pinning anything", len(records))
+	}
+	if rec["level"] == "WARN" {
+		t.Errorf("set_role_failed logged at WARN from a parent mutator; want DEBUG — "+
+			"every parented launch would spam the log (record: %v)", rec)
+	}
+	if rec["level"] != "DEBUG" {
+		t.Errorf("set_role_failed level = %v, want DEBUG", rec["level"])
 	}
 }
 
