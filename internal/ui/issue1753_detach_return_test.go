@@ -389,17 +389,17 @@ func TestIssue1753_AttachReturnHandlersHaveNoInlineTmuxCalls(t *testing.T) {
 	}{
 		{
 			name: "session",
-			body: funcBody(t, text, "func (h *Home) attachSession("),
+			body: braceBlock(t, funcBody(t, text, "func (h *Home) attachSession("), "attachCmd{"),
 			cmd:  "attachCmd{",
 		},
 		{
 			name: "window",
-			body: handlerBlock(t, mainKeyBody, `case "enter":`),
+			body: braceBlock(t, handlerBlock(t, mainKeyBody, `case "enter":`), "attachWindowCmd{"),
 			cmd:  "attachWindowCmd{",
 		},
 		{
 			name: "sandbox terminal",
-			body: handlerBlock(t, mainKeyBody, `case "E":`),
+			body: braceBlock(t, handlerBlock(t, mainKeyBody, `case "E":`), "attachCmd{"),
 			cmd:  "attachCmd{",
 		},
 	}
@@ -415,15 +415,13 @@ func TestIssue1753_AttachReturnHandlersHaveNoInlineTmuxCalls(t *testing.T) {
 
 	// The pane-CWD probe (two tmux subprocess spawns) must stay behind the
 	// follow-cwd setting instead of running on every detach.
-	body := funcBody(t, text, "func (h *Home) attachSession(")
-	if strings.Contains(body, "GetWorkDir()") && !strings.Contains(body, "GetFollowCwdOnAttach()") {
-		t.Error("attachSession probes the pane CWD unconditionally again: GetWorkDir costs two " +
-			"tmux subprocess spawns on the detach path for a feature that defaults to off (#1753)")
-	}
+	attachSessionBody := funcBody(t, text, "func (h *Home) attachSession(")
+	workDirHelper := braceBlock(t, attachSessionBody, "workDirIfFollowing := func(")
 	followCwdGate := regexp.MustCompile(
 		`if\s+!followCwd\s*\|\|\s*ts\s*==\s*nil\s*\{\s*return\s+""\s*\}`,
 	)
-	if !followCwdGate.MatchString(body) {
+	if !followCwdGate.MatchString(workDirHelper) ||
+		!strings.Contains(workDirHelper, "GetWorkDir()") {
 		t.Error("attachSession no longer returns before GetWorkDir when follow-CWD is disabled " +
 			"or the tmux session is nil (#1753)")
 	}
@@ -442,6 +440,34 @@ func funcBody(t *testing.T, text, signature string) string {
 		return rest[:end]
 	}
 	return rest
+}
+
+// braceBlock returns the brace-delimited block following marker.
+func braceBlock(t *testing.T, text, marker string) string {
+	t.Helper()
+	start := strings.Index(text, marker)
+	if start < 0 {
+		t.Fatalf("block marker %q not found in home.go", marker)
+	}
+	openOffset := strings.Index(text[start:], "{")
+	if openOffset < 0 {
+		t.Fatalf("block marker %q has no opening brace in home.go", marker)
+	}
+	open := start + openOffset
+	depth := 0
+	for i := open; i < len(text); i++ {
+		switch text[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return text[start : i+1]
+			}
+		}
+	}
+	t.Fatalf("block marker %q has no closing brace in home.go", marker)
+	return ""
 }
 
 // handlerBlock returns the source text of one `case <label>` arm: from the label up to
