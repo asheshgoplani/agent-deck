@@ -1227,14 +1227,14 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 			// through a point where the id can be non-empty, which is deferred
 			// as a follow-up rather than attempted blind here.
 			if recorded := i.recordedClaudeSessionID(); recorded != "" {
-				return fmt.Sprintf(`%s%s%s --resume %s%s`,
+				return fmt.Sprintf(`%sexec %s%s --resume %s%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, recorded, extraFlags)
 			}
 			sessionLog.Warn("resume: continue_mode_unverifiable",
 				slog.String("instance_id", logging.SanitizeValue(i.ID)),
 				slog.String("path", logging.SanitizeValue(i.ProjectPath)),
 				slog.String("reason", "continue_flag_picks_newest_conversation_in_dir"))
-			return fmt.Sprintf(`%s%s%s -c%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
+			return fmt.Sprintf(`%sexec %s%s -c%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
 
 		case "resume":
 			// Resume specific session by ID
@@ -1244,7 +1244,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				// behind canResumeClaudeSession.
 				if canResumeClaudeSession(i, opts.ResumeSessionID) {
 					// Session has conversation history - use normal --resume
-					return fmt.Sprintf(`%s%s%s --resume %s%s`,
+					return fmt.Sprintf(`%sexec %s%s --resume %s%s`,
 						bashExportPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
 				}
 				// Session was never interacted with - use --session-id with same UUID.
@@ -1259,11 +1259,11 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 					freshID = i.replaceRefusedClaudeSessionID()
 				}
 				return fmt.Sprintf(
-					`%s%s%s --session-id "%s"%s`,
+					`%sexec %s%s --session-id "%s"%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, freshID, extraFlags)
 			}
 			// No session ID provided - use -r flag for interactive picker
-			return fmt.Sprintf(`%s%s%s -r%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
+			return fmt.Sprintf(`%sexec %s%s -r%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
 		}
 
 		// Default: new session with capture-resume pattern
@@ -8131,11 +8131,11 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// after the tmux session is restarted. No inline tmux set-environment in the shell string
 	// (which silently fails inside Docker sandbox containers).
 	if useResume {
-		return fmt.Sprintf("%s%s%s --resume %s%s",
+		return fmt.Sprintf("%s%sexec %s --resume %s%s",
 			envPrefix, bashExportPrefix, claudeCmd, i.ClaudeSessionID, extraFlags)
 	}
 	// Session was never interacted with - use --session-id to create fresh session.
-	return fmt.Sprintf("%s%s%s --session-id %s%s",
+	return fmt.Sprintf("%s%sexec %s --session-id %s%s",
 		envPrefix, bashExportPrefix, claudeCmd, i.ClaudeSessionID, extraFlags)
 }
 
