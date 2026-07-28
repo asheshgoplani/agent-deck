@@ -148,6 +148,7 @@ dev:
 
 # Run tests (with race detector)
 test:
+	bash hooks/test-session-start.sh
 	go test -race -v ./...
 
 # Run hard-gated walltime regression tests (Track B). Honors PERF_BUDGET_MULTIPLIER

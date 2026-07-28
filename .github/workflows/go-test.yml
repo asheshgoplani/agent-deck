@@ -70,6 +70,13 @@ jobs:
           tmux -V
           zoxide --version
 
+      # The plugin's SessionStart hook is a shell script, so `go test` cannot
+      # see it. Without this step a regression in hooks/hooks.json (e.g. the
+      # matcher losing a SessionStart source) ships green.
+      - name: Test plugin hooks
+        timeout-minutes: 2
+        run: bash hooks/test-session-start.sh
+
       # Mirrors release.yml "Run tests" exactly — same gotestsum flags, same
       # -race, same 20m per-package timeout, same PERF_BUDGET_MULTIPLIER.
       - name: Run tests

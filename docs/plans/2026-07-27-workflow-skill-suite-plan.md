@@ -1783,6 +1783,15 @@ AGENTDECK_ROLE` exits non-zero or prints `-AGENTDECK_ROLE`.
 > anything else (including non-agent-deck sessions, or no tmux at all) →
 > interactive preamble, degrading silently. No DB lookups.
 
+**Amendment (gate review round 1, 2026-07-28).** The matcher shipped as
+`startup|clear|compact|resume`, one source wider than the design quote above.
+agent-deck restarts children with `claude --resume` — the reviver does it
+unattended — so without `resume` a restarted child fires SessionStart on a
+source the matcher does not cover, the hook never runs, and the executor
+preamble silently disappears for the rest of that child's life. The quote is
+left verbatim as the historical record; the assertions below and the file
+content in this task were updated to the shipped value.
+
 Binding constraint from the plan brief: **the hook script must degrade silently
 outside tmux / outside agent-deck sessions, and `hooks.json` + the hook script
 must follow Claude Code plugin hook conventions.**
@@ -1794,7 +1803,7 @@ must follow Claude Code plugin hook conventions.**
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|clear|compact",
+        "matcher": "startup|clear|compact|resume",
         "hooks": [
           {
             "type": "command",
@@ -1946,14 +1955,14 @@ python3 - <<'PY'
 import json
 d = json.load(open("hooks/hooks.json"))
 entry = d["hooks"]["SessionStart"][0]
-assert entry["matcher"] == "startup|clear|compact", entry["matcher"]
+assert entry["matcher"] == "startup|clear|compact|resume", entry["matcher"]
 hook = entry["hooks"][0]
 assert hook["type"] == "command"
 extra = set(hook) - {"type", "command", "timeout"}
 assert not extra, f"undocumented hook keys will be rejected: {extra}"
 print("HOOKS_JSON_OK", entry["matcher"])
 PY
-# expect: HOOKS_JSON_OK startup|clear|compact
+# expect: HOOKS_JSON_OK startup|clear|compact|resume
 
 # 3. Script is syntactically valid bash.
 bash -n hooks/session-start && echo SYNTAX_OK
@@ -1989,7 +1998,7 @@ tmux -L adhooktest ls 2>/dev/null && echo "LEFTOVER — retry the kill" || echo 
 grep -riE 'doozyx|/Users/' hooks/ | wc -l   # expect: 0
 ```
 
-Expected: `EXECUTABLE_OK`, `HOOKS_JSON_OK startup|clear|compact`, `SYNTAX_OK`, `exit=0` on both plain
+Expected: `EXECUTABLE_OK`, `HOOKS_JSON_OK startup|clear|compact|resume`, `SYNTAX_OK`, `exit=0` on both plain
 runs, `INTERACTIVE_OK`, `CLAUDE_SHAPE_OK`, `CHILD_OK`, `NO_MARKER_OK`,
 `CLEANUP_OK`, and `0` from the last grep.
 

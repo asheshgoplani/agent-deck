@@ -13,20 +13,27 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$HERE/session-start"
 fails=0
+skips=0
 
 ok()   { printf 'ok   — %s\n' "$1"; }
 fail() { printf 'FAIL — %s\n' "$1"; fails=$((fails + 1)); }
+skip() { printf 'SKIP — %s\n' "$1"; skips=$((skips + 1)); }
 
 check() { # check <description> <condition-exit-status>
   if [ "$2" -eq 0 ]; then ok "$1"; else fail "$1"; fi
 }
+
+# A skipped assertion is not a passed assertion. Every python3-gated check
+# below reports itself as SKIP and is counted, so a machine without python3
+# can never print a bare "ALL PASS" while the matcher assertion never ran.
+have_python() { command -v python3 >/dev/null 2>&1; }
 
 # 1. The script is executable and syntactically valid.
 [ -x "$HOOK" ]; check "hook is executable" $?
 bash -n "$HOOK" >/dev/null 2>&1; check "hook parses (bash -n)" $?
 
 # 2. hooks.json is valid JSON and points at this hook.
-if command -v python3 >/dev/null 2>&1; then
+if have_python; then
   python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$HERE/hooks.json" >/dev/null 2>&1
   check "hooks.json is valid JSON" $?
   python3 - "$HERE/hooks.json" <<'PY' >/dev/null 2>&1
@@ -43,7 +50,8 @@ assert entries[0]["hooks"][0]["command"].find("hooks/session-start") != -1
 PY
   check "hooks.json matcher covers startup|clear|compact|resume" $?
 else
-  printf 'skip — python3 unavailable, hooks.json checks skipped\n'
+  skip "hooks.json is valid JSON (no python3)"
+  skip "hooks.json matcher covers startup|clear|compact|resume (no python3)"
 fi
 
 # 3. Both preambles exist and are non-empty.
@@ -71,11 +79,14 @@ check "with CLAUDE_PLUGIN_ROOT: hookSpecificOutput envelope" $?
 
 # 6. Output is valid JSON in both shapes (the preambles contain quotes,
 #    backticks and newlines — this is what escape_for_json exists for).
-if command -v python3 >/dev/null 2>&1; then
+if have_python; then
   printf '%s' "$plain"  | python3 -c 'import json,sys; json.load(sys.stdin)' >/dev/null 2>&1
   check "bare envelope is valid JSON" $?
   printf '%s' "$claude" | python3 -c 'import json,sys; json.load(sys.stdin)' >/dev/null 2>&1
   check "Claude envelope is valid JSON" $?
+else
+  skip "bare envelope is valid JSON (no python3)"
+  skip "Claude envelope is valid JSON (no python3)"
 fi
 
 # 7. A missing preamble file must not fail the session.
@@ -86,8 +97,12 @@ check "exits 0 when preamble files are absent" $?
 rm -rf "$tmp"
 
 printf '\n'
-if [ "$fails" -eq 0 ]; then
-  printf 'ALL PASS\n'; exit 0
+if [ "$fails" -ne 0 ]; then
+  printf '%d FAILED, %d skipped\n' "$fails" "$skips"; exit 1
+elif [ "$skips" -ne 0 ]; then
+  # Never report a bare pass with assertions unrun — the matcher check is one
+  # of the python3-gated ones, and it is the reason this file exists.
+  printf 'ALL PASS (%d SKIPPED — install python3 for full coverage)\n' "$skips"; exit 1
 else
-  printf '%d FAILED\n' "$fails"; exit 1
+  printf 'ALL PASS\n'; exit 0
 fi

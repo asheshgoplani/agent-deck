@@ -216,15 +216,32 @@ enough; the hook carries the rest. The anti-brainstorm block above stays
 regardless: a user's own globally-installed process skills are outside the
 hook's reach.
 
-**Keep that one line — do not drop it to zero.** The hook ships with the
-plugin, but the `AGENTDECK_ROLE` marker it branches on ships with the
-agent-deck binary. Against an older binary the marker is absent, the hook
-cannot tell a child from an interactive session, and the child receives the
-*interactive* preamble — which opens by telling it to start with `design` and
-produce an approved design document before any code. That is the precise
-behaviour the anti-brainstorm block exists to stop, arriving from inside your
-own tooling. One line in the prompt costs nothing and is version-independent;
-the hook is the optimisation, not the guarantee.
+**Keep that one line — and make it carry the contract, not the pointers.**
+The hook ships with the plugin, but the `AGENTDECK_ROLE` marker it branches on
+ships with the agent-deck binary. Against an older binary the marker is
+absent, the hook cannot tell a child from an interactive session, and the
+child receives the *interactive* preamble — which opens by telling it to start
+with `design` and produce an approved design document before any code. That is
+the precise behaviour the anti-brainstorm block exists to stop, arriving from
+inside your own tooling.
+
+So the retained line must be the part that is **lost** on that path, not the
+part the interactive preamble already duplicates. Leaf-skill pointers are
+duplicated (the interactive preamble names `tdd`, `debug` and `verify` too);
+"do not spawn your own review loop" is not, and a child that reviews itself
+produces exactly the self-certified verdict stage 2 exists to prevent. Use:
+
+```text
+Use `tdd`, `debug` and `verify` as you work. Do not spawn your own review
+loop — a fresh reviewer runs after you. End your final message with the
+`===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>` sentinel as the
+last line, after any `VERDICT:` line your prompt also mandates.
+```
+
+The sentinel clause is belt-and-braces: `launch` already appends a
+completion-sentinel instruction for `-c claude` (`--assert-done`, default on),
+so restating it only matters if someone passes `--no-assert-done`. The hook is
+the optimisation; this line is the guarantee.
 
 ## Planning stage (spec-fed tasks, or any task you judge big)
 
@@ -632,10 +649,11 @@ major | minor) — [patch | decision-needed | defer] — provenance — one line
 each. Then 2-3 "Checked:" evidence lines. A verdict with no evidence is not
 acceptable.
 
-Write your full output to <verdict-file-path> in the same order and with the
-same verbatim `## Merged findings` anchor the round-1 reviewer used, then
-print ONLY the merged list, the "Checked:" lines and the verdict line as your
-response.
+Write your full output to <verdict-file-path>, in this order: every layer's
+raw findings first, then a line containing exactly `## Merged findings`, then
+the merged list, the "Checked:" lines and the verdict line. That heading is a
+parsing anchor — emit it verbatim, exactly once. Then print ONLY the merged
+list, the "Checked:" lines and the verdict line as your response.
 End with exactly one line, using real counts:
 VERDICT: clean
 VERDICT: fix-needed patch=<n> decision-needed=<n> defer=<n>
