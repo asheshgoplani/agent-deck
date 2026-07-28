@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Workflow discipline skills shipped with the plugin.** Five new skills —
+  `design` (collaborative brainstorming behind a hard approval gate, writing a
+  committed design doc), `review` (an adversarial pass, a mechanical edge-case
+  path trace and a verification-gap check, merged into one deduplicated,
+  severity-graded, triaged findings list with a machine-readable verdict),
+  `tdd`, `debug` and `verify` — plus a shared review methodology under
+  `skills/review/references/` that both the interactive `review` skill and
+  `orchestrate`'s fresh-reviewer children execute from the same files. The
+  `orchestrate` skill gains self-contained per-task story files (each with
+  embedded design extracts and a consumes/produces interfaces block, so an
+  implementer reads only its own task), reviewer children that run the shared
+  layers, and leaner child preambles.
+- **Child sessions announce themselves in their tmux environment.** A session
+  launched with a parent now carries `AGENTDECK_ROLE=child` and
+  `AGENTDECK_PARENT_ID=<parent id>` in its tmux session environment, alongside
+  the existing `AGENTDECK_INSTANCE_ID` and `AGENTDECK_PROFILE`. An unparented
+  session carries neither, and the markers are cleared if a session loses its
+  parent. This lets in-session hooks distinguish a dispatched executor from an
+  interactive session without a database lookup — the plugin's new SessionStart
+  hook uses it to inject an executor preamble into children and a lean pipeline
+  nudge into interactive sessions, degrading silently to the interactive
+  preamble outside tmux and outside agent-deck.
 - **Opt-in claim-based polling to dedupe work across concurrent `-g` instances.** New `[performance] claim_polling = true` in `config.toml` makes multiple `agent-deck -g <scope>` instances against the same profile coordinate via a `session_claims` table in `state.db` instead of each redundantly polling every session. Each session is claimed by exactly one instance (30s staleness, longer-scope-wins on overlapping `-g` scopes); ownership is tracked by a per-process token (`<pid>-<started-unix>-<random>`) rather than the raw PID, so a claim can't be mistaken for a different process after PID reuse. Only the owning instance runs the status sweep, idle-timeout watcher, reviver, and control-mode pipe pinning for that session; non-owning instances render statuses from the shared DB state instead of polling tmux themselves. Whichever instance wins a periodic heartbeat-based primary election additionally slow-polls and persists statuses for any orphaned sessions — those claimed by no live instance — on a 30s cadence, without ever claiming them itself. Degradation is fail-open: if `state.db` or the claim table is unavailable, the instance falls back to polling every session itself, exactly as with the flag off. The flag defaults to off, and with it off, behavior is byte-for-byte unchanged: `session_claims` stays empty and every instance polls independently as before.
 - **Copy visible terminal text directly from the TUI.** Select a local session and press `V` to copy its current visible pane as plain text, including links. ANSI and terminal control sequences are removed, while the existing native clipboard and OSC 52 fallback chain remains unchanged. The troubleshooting guide also documents Option-drag in iTerm2 and Shift-drag in Linux and Windows terminals. ([#1595](https://github.com/asheshgoplani/agent-deck/issues/1595))
 - **Prompt-aware Codex approval command.** `agent-deck session approve <id> [once|always|session|N]` resolves a currently visible Codex approval menu with one digit keypress and no trailing Enter. It requires a live numbered approval overlay, revalidates the same prompt immediately before dispatch, and verifies that the original prompt clears without blindly retrying. This prevents `session send <id> "1"` from racing the approval overlay and submitting `1` as composer text or interrupting the resumed turn.
