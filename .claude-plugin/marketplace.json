@@ -6,20 +6,26 @@
   },
   "metadata": {
     "description": "Skills for managing AI coding agent sessions with agent-deck CLI",
-    "version": "1.1.0"
+    "version": "1.2.0"
   },
   "plugins": [
     {
       "name": "agent-deck",
-      "description": "Complete guide for managing AI coding agent sessions via agent-deck CLI - session lifecycle, MCP management, groups, profiles, and automation",
+      "description": "Complete guide for managing AI coding agent sessions via agent-deck CLI - session lifecycle, MCP management, groups, profiles, automation, and the workflow discipline suite (design, review, tdd, debug, verify)",
       "source": "./",
       "strict": false,
       "skills": [
         "./skills/agent-deck",
         "./skills/session-share",
         "./skills/fleet",
-        "./skills/orchestrate"
-      ]
+        "./skills/orchestrate",
+        "./skills/design",
+        "./skills/review",
+        "./skills/tdd",
+        "./skills/debug",
+        "./skills/verify"
+      ],
+      "hooks": "./hooks/hooks.json"
     }
   ]
 }
