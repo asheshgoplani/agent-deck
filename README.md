@@ -292,6 +292,19 @@ default_location = "subdirectory"  # "sibling" (default), "subdirectory", or a c
 
 `sibling` creates worktrees next to the repo (`repo-branch`). `subdirectory` creates them inside it (`repo/.worktrees/branch`). A custom path like `~/worktrees` or `/tmp/worktrees` creates repo-namespaced worktrees at `<path>/<repo_name>/<branch>`. The `--location` flag overrides the config per session.
 
+#### Sparse Checkout (large monorepos)
+
+If the session you create the worktree from uses [sparse checkout](https://git-scm.com/docs/git-sparse-checkout), a new worktree normally checks out the *whole* repository first — minutes of I/O on a monorepo with hundreds of thousands of files. Opt into inheriting the sparse configuration instead:
+
+```toml
+[worktree]
+sparse_checkout = "inherit"   # "off" (default) keeps git's normal checkout
+```
+
+With `inherit`, agent-deck reads the sparse mode (cone / non-cone, sparse index) and patterns from the worktree you invoked from, creates the new worktree with `--no-checkout`, and materializes it directly with those patterns — the excluded tree is never written. `.worktreeinclude` and `.agent-deck/worktree-setup.sh` still run afterwards, so the setup script sees the same sparse paths the source session has.
+
+A non-sparse source, or `off`/unset, keeps today's behavior exactly. Inheritance replays the patterns through `git sparse-checkout set` and pins the sparse-index setting explicitly, so it needs git 2.32 or newer; the default (`off`) has no version requirement.
+
 #### Copying Gitignored Files (`.worktreeinclude`)
 
 Gitignored files (`.env`, `.mcp.json`, etc.) aren't copied into new worktrees by default.

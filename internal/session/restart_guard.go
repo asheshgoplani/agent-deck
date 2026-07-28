@@ -16,15 +16,32 @@ const restartFreshnessWindow = 60 * time.Second
 // ShouldSkipRestart decides whether `agent-deck session restart` should
 // short-circuit instead of calling Instance.Restart().
 //
-// Returns skip=true (with a human-readable reason) when the session is in a
-// healthy state AND was started within restartFreshnessWindow. The force
-// parameter (wired to the CLI --force flag) bypasses the guard.
+// Two independent guards, both bypassed by force (the CLI --force flag):
 //
-// A zero LastStartedAt is treated as "unknown" — we always permit the
-// restart so users can recover legacy records.
+//  1. AUTH HOLD — the session's agent could not authenticate. A restart cannot
+//     fix a credential, and each doomed boot races the single rotating refresh
+//     token shared by every session on the host, which is how one expired token
+//     became a fleet-wide outage on 2026-07-26. Checked FIRST: it applies
+//     regardless of freshness, and it is the more consequential of the two.
+//
+//     This guard deliberately lives on the CLI path only. `session restart <id>`
+//     is what watchdogs, cron jobs and conductor sweeps call — the automation
+//     that must not flap. A human pressing R in the TUI calls Instance.Restart()
+//     in-process and is never gated: pressing R is the explicit "I fixed the
+//     credentials" signal the hold is waiting for.
+//
+//  2. FRESHNESS (issue #30) — the session is healthy and was started within
+//     restartFreshnessWindow, so a restart would tear down a just-created tmux
+//     scope for nothing.
+//
+// A zero LastStartedAt is treated as "unknown" for the freshness guard — we
+// always permit the restart so users can recover legacy records.
 func ShouldSkipRestart(inst *Instance, now time.Time, force bool) (bool, string) {
 	if inst == nil || force {
 		return false, ""
+	}
+	if held, remedy := inst.IsAuthHeld(); held {
+		return true, remedy + " (use --force to restart anyway)"
 	}
 	if inst.LastStartedAt.IsZero() {
 		return false, ""

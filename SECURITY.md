@@ -27,3 +27,11 @@ Out of scope: third-party Claude / agent CLI tools agent-deck wraps, third-party
   ```bash
   gh attestation verify agent-deck_*_linux_amd64.tar.gz --repo asheshgoplani/agent-deck
   ```
+  **Known gap: v1.10.9, v1.10.10 and v1.10.11 have no attestation.** A failure
+  publishing the Homebrew tap aborted the release job before the signing step, so
+  `gh attestation verify` reports "no attestations found" for those three tags —
+  a broken pipeline, not a tampered artifact. Their assets were checked by hand
+  against `checksums.txt`; a hand check is not a signature, so treat those three
+  tags as unattested. Fixed in [#1760](https://github.com/asheshgoplani/agent-deck/issues/1760):
+  provenance is now signed *before* a release is published, and the tap can no
+  longer fail the release job. Releases after v1.10.11 are attested again.

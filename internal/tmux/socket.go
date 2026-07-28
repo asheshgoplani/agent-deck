@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -168,6 +169,9 @@ func tmuxArgs(socketName string, args ...string) []string {
 // `exec.Command("tmux", args...)`, preserving the contract of every
 // pre-v1.7.50 call site that was rewritten in #697.
 func tmuxExec(socketName string, args ...string) *exec.Cmd {
+	// Refuse, before the subprocess exists, to point a test binary at the
+	// user's live default server. See default_socket_guard.go.
+	assertTmuxSpawnIsolated(socketName, args)
 	// #nosec G204,G702 -- "tmux" is a fixed binary and every dynamic value is
 	// passed as a distinct argv element, never through a shell. Call sites may
 	// supply user-selected paths, but those cannot alter the executable or argv
@@ -182,6 +186,7 @@ func tmuxExec(socketName string, args ...string) *exec.Cmd {
 // timeout (e.g. SetEnvironment at internal/tmux/tmux.go:1412); this keeps
 // the -L plumbing centralised for them too.
 func tmuxExecContext(ctx context.Context, socketName string, args ...string) *exec.Cmd {
+	assertTmuxSpawnIsolated(socketName, args)
 	cmd := exec.CommandContext(ctx, "tmux", tmuxArgs(socketName, args...)...)
 	cmd.WaitDelay = tmuxSubprocessWaitDelay
 	return cmd
@@ -316,6 +321,72 @@ func (s *Session) runBoundedRun(args ...string) error {
 	return runBoundedRun(s.SocketName, args...)
 }
 
+// tmuxMutationTimeout bounds the state-CHANGING tmux commands: kill-session,
+// switch-client, detach-client. The fd leak that motivates every deadline in
+// this file is a property of the tmux CLIENT, not of the subcommand it carries,
+// so a mutation client wedges exactly like a poll client — and these run on the
+// same cadences (the notification-bar sweep issues one switch/detach per
+// attached client; kill-session runs on every teardown).
+//
+// It is deliberately longer than tmuxPollTimeout. The asymmetry is in what a
+// FALSE timeout costs: a read that gives up too early is re-issued by the next
+// poll a second later, while a kill-session abandoned early can leave a session
+// the user asked to be gone lingering until the next sweep. Both directions are
+// tolerated at the call sites — Kill/KillAndWait re-probe Exists() and treat
+// "gone" as success, SwitchAttachedClients falls back to a focus_request,
+// DetachClientsOnSockets leaves the TUI attached where it was — so the failure
+// mode is a no-op, never a corrupted half-state.
+var tmuxMutationTimeout = 5 * time.Second
+
+// errTmuxTimeout marks a command we abandoned at its deadline, as opposed to
+// one tmux answered with a failure. Callers need the distinction: "we gave up"
+// is a benign, retryable non-event that should fall through to a slower path,
+// while "tmux said no" is a real error that must surface. Without it every
+// timeout arrives as an opaque `signal: killed` ExitError and gets treated as
+// the latter.
+var errTmuxTimeout = errors.New("tmux command exceeded its deadline")
+
+// annotateDeadline wraps a failed run with errTmuxTimeout when the command's
+// context deadline had fired, preserving the original error for logs. The
+// deadline only matters for a run that FAILED: a command can complete
+// successfully just as its deadline expires, and that is a success.
+func annotateDeadline(ctxErr, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(ctxErr, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", errTmuxTimeout, err)
+	}
+	return err
+}
+
+// runBoundedMutation runs a state-changing tmux command under
+// tmuxMutationTimeout. Timeout-guarded replacement for the bare
+// tmuxExec(socket, args...).Run() / s.tmuxCmd(args...).Run() mutation sites.
+// A deadline failure comes back wrapped in errTmuxTimeout.
+func runBoundedMutation(socketName string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxMutationTimeout)
+	defer cancel()
+	err := tmuxExecContext(ctx, socketName, args...).Run()
+	return annotateDeadline(ctx.Err(), err)
+}
+
+// runBoundedMutation is the per-Session convenience wrapper, targeting the
+// session's own socket (see tmuxCmd for why the socket must not drift).
+func (s *Session) runBoundedMutation(args ...string) error {
+	return runBoundedMutation(s.SocketName, args...)
+}
+
+// OutputBounded is the public counterpart to runBoundedOutput, for cadence
+// queries fired from outside internal/tmux (internal/session pane-PID probes,
+// CLI helpers). Prefer it over Exec(...).Output() for anything on a timer:
+// Exec has no deadline, and a tmux client that has leaked its fd table spins
+// at 100% CPU forever rather than exiting, so an unbounded .Output() never
+// returns. See tmuxPollTimeout.
+func OutputBounded(socketName string, args ...string) ([]byte, error) {
+	return runBoundedOutput(socketName, args...)
+}
+
 // Exec is the public package counterpart to tmuxExec. Call sites outside
 // internal/tmux (the session package, CLI helpers, web terminal bridge) use
 // this when they have a socket name — typically Instance.TmuxSocketName —
@@ -346,5 +417,9 @@ func ExecContext(ctx context.Context, socketName string, args ...string) *exec.C
 // Empty / whitespace-only socket name returns the input args unchanged, so
 // pre-v1.7.50 call sites see byte-identical argv.
 func buildInnerTmuxArgs(socketName string, args ...string) []string {
+	// This argv is always spawned (directly, or spliced into a systemd-run
+	// argv), so it needs the same refusal as the exec factories — the layer of
+	// indirection is the only difference. See default_socket_guard.go.
+	assertTmuxSpawnIsolated(socketName, args)
 	return tmuxArgs(socketName, args...)
 }

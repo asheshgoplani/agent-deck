@@ -1,11 +1,25 @@
 package tmux
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
+)
+
+const (
+	// keySenderHandshakeTimeout bounds the wait for tmux's first control-mode
+	// response block (%begin … %end) after `attach-session`. Matches the
+	// control-pipe handshake budget; a slow server is not a failure, so a
+	// timeout falls through to "assume attached" rather than erroring.
+	keySenderHandshakeTimeout = 4 * time.Second
+	// keySenderEOFExitGrace is how long Close waits for the child to exit on
+	// its own after stdin EOF before escalating to a process-group kill.
+	keySenderEOFExitGrace = 200 * time.Millisecond
 )
 
 // KeySender pushes keystrokes to a tmux pane over a persistent connection,
@@ -13,7 +27,7 @@ import (
 // to #1096). #1096 added 15ms rune batching, but at realistic typing speeds
 // (>15ms between keys) every keystroke still triggers its own fork+exec — on
 // macOS each one costs 10-50ms, so the user feels per-keystroke lag despite
-// the batch window. KeySender opens one `tmux -L <socket> -C` subprocess at
+// the batch window. KeySender opens one `tmux -C attach-session` subprocess at
 // the start of an insert-mode session and streams send-keys commands over
 // stdin for the lifetime of that mode, dropping per-call dispatch to a stdin
 // write (<1ms regardless of platform).
@@ -29,12 +43,15 @@ type KeySender interface {
 }
 
 // localKeySender is the in-process KeySender backed by a long-running
-// `tmux -L <socket> -C` subprocess. Each Send writes one command line to its
-// stdin; tmux executes commands in-server without spawning new clients.
+// `tmux -L <socket> -C attach-session -t <target>` subprocess. Each Send
+// writes one command line to its stdin; tmux executes commands in-server
+// without spawning new clients.
 type localKeySender struct {
 	target string
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
+
+	waitOnce sync.Once
 
 	mu     sync.Mutex
 	closed bool
@@ -42,17 +59,36 @@ type localKeySender struct {
 
 // OpenKeySender starts a persistent tmux control-mode client on `socket`
 // (empty = the user's default tmux server) and returns a KeySender bound to
-// `target` (a tmux session/pane selector like "my-session" or "id:0.0").
+// `target` (the tmux session insert mode is typing into).
 //
-// The subprocess does NOT attach to any session — it stays in control mode,
-// reads commands from stdin, and emits status notifications on stdout (which
-// are drained and discarded). At least one session must exist on the server
-// for it to remain running; this is always true at the call site because
-// insert mode targets an existing session.
+// The client attaches EXPLICITLY to `target`:
 //
-// Returns a started KeySender on success. On any setup failure the
-// subprocess is cleaned up and an error is returned, so callers can fall
-// back to per-call fork+exec (the legacy path via Session.SendKeys).
+//	tmux [-L <socket>] -C attach-session -t <target>
+//
+// The explicit `attach-session` is load-bearing twice over, and both reasons
+// are incident findings — do not "simplify" it back to a bare `tmux -C`:
+//
+//  1. No implicit session. A bare `tmux -C` carries no command, so tmux
+//     falls back to `new-session`: every call minted a fresh session with a
+//     live shell pane that Close() never killed (each holding a pty). ~26 of
+//     those orphans helped exhaust the macOS pty pool on 2026-07-18, after
+//     which no process on the machine could attach to anything.
+//
+//  2. Honest argv. On macOS a process keeps the argv it was exec'd with, so
+//     a DEFAULT-socket server auto-started by a bare client is itself named
+//     exactly "tmux -C" — indistinguishable from the leaked clients. On
+//     2026-07-26 the hourly reaper matched `pgrep -fx "tmux -C"`, hit the
+//     main server, and killed all ~65 live sessions at once. Nothing this
+//     package spawns may ever carry that argv again; scripts/reap-stale-tmux.sh
+//     now identifies servers by socket path for the same reason.
+//
+// Attaching does not resize the target: control-mode clients impose no size
+// unless they ask for one (`refresh-client -C`), which this one never does.
+//
+// Returns a started KeySender on success. On any setup failure — including a
+// target that no longer exists — the subprocess is cleaned up and an error is
+// returned, so callers fall back to per-call fork+exec (the legacy path via
+// Session.SendKeys).
 func OpenKeySender(socket, target string) (KeySender, error) {
 	if strings.TrimSpace(target) == "" {
 		return nil, fmt.Errorf("keysender: target required")
@@ -62,7 +98,10 @@ func OpenKeySender(socket, target string) (KeySender, error) {
 	// <socket>` selector, and the lint test in tmux_exec_lint_test.go
 	// enforces this. Plain `exec.Command("tmux", ...)` would silently
 	// defeat socket isolation when the user has opted in (#687).
-	cmd := tmuxExec(socket, "-C")
+	cmd := tmuxExec(socket, "-C", "attach-session", "-t", target)
+	// Own process group so Close can take down the whole subtree, matching
+	// ControlPipe. Without it a wedged child's descendants outlive Close.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("keysender: stdin pipe: %w", err)
@@ -75,13 +114,71 @@ func OpenKeySender(socket, target string) (KeySender, error) {
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
-		return nil, fmt.Errorf("keysender: start tmux -C: %w", err)
+		return nil, fmt.Errorf("keysender: start tmux -C attach-session: %w", err)
 	}
-	// Drain stdout so the OS pipe buffer never fills and blocks Send writes.
-	// We don't parse %begin/%end responses — send-keys never returns useful
-	// data, and any error is reflected when the next stdin write fails.
-	go func() { _, _ = io.Copy(io.Discard, stdout) }()
-	return &localKeySender{target: target, cmd: cmd, stdin: stdin}, nil
+	k := &localKeySender{target: target, cmd: cmd, stdin: stdin}
+
+	// Drain stdout so the OS pipe buffer never fills and blocks Send writes,
+	// and settle the attach handshake on the way past. tmux answers the
+	// attach with one %begin…%end block on success, or %begin…%error…%exit
+	// when the target is gone.
+	handshake := make(chan error, 1)
+	go k.drain(stdout, handshake)
+
+	select {
+	case err := <-handshake:
+		if err != nil {
+			_ = k.Close()
+			return nil, err
+		}
+	case <-time.After(keySenderHandshakeTimeout):
+		// A slow server is not a failed attach. Proceed; a genuinely dead
+		// client surfaces as a write error on the first Send, which is the
+		// same signal callers already fall back on.
+	}
+	return k, nil
+}
+
+// drain consumes the control-mode stream for the client's lifetime and
+// reports the outcome of the initial attach on `handshake` exactly once.
+func (k *localKeySender) drain(stdout io.ReadCloser, handshake chan<- error) {
+	// Reap before anyone can observe EOF so the child never lingers as a
+	// zombie when the server drops the client on its own (#677).
+	defer k.reap()
+
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	settled := false
+	settle := func(err error) {
+		if !settled {
+			settled = true
+			handshake <- err
+		}
+	}
+	// tmux puts the human-readable reason on the line before %error.
+	lastDetail := ""
+
+	for sc.Scan() {
+		line := sc.Text()
+		switch {
+		case strings.HasPrefix(line, "%end"):
+			settle(nil)
+		case strings.HasPrefix(line, "%error"):
+			settle(fmt.Errorf("keysender: attach %q: %s", k.target, lastDetail))
+		case strings.HasPrefix(line, "%exit"):
+			settle(fmt.Errorf("keysender: attach %q: tmux exited during attach", k.target))
+		case !strings.HasPrefix(line, "%"):
+			lastDetail = line
+		}
+	}
+	settle(fmt.Errorf("keysender: attach %q: tmux exited before handshake", k.target))
+}
+
+// reap harvests the child's exit status exactly once, from whichever of
+// drain / Close gets there first.
+func (k *localKeySender) reap() {
+	k.waitOnce.Do(func() { _ = k.cmd.Wait() })
 }
 
 func (k *localKeySender) SendKeys(text string) error {
@@ -125,15 +222,16 @@ func (k *localKeySender) Close() error {
 	cmd := k.cmd
 	k.mu.Unlock()
 
+	// Stage 1: stdin EOF makes the control client detach and exit cleanly.
 	if stdin != nil {
 		_ = stdin.Close()
 	}
+	// Stage 2: reap it, escalating to a process-group kill if EOF alone
+	// doesn't land (rare; observed once on a hung tmux 3.4 socket during the
+	// v1.5.x cascade incident). Killing the GROUP — not just the pid — is
+	// what guarantees Close tears down everything Open spawned.
 	if cmd != nil && cmd.Process != nil {
-		// stdin close should make tmux -C exit cleanly; kill as a backstop in
-		// case the server is in an unresponsive state (rare; observed once on
-		// a hung tmux 3.4 socket during the v1.5.x cascade incident).
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
+		_ = reapWithEOFGrace(k.reap, cmd.Process, keySenderEOFExitGrace, controlClientKillGrace)
 	}
 	return nil
 }

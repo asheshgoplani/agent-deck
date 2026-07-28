@@ -38,9 +38,14 @@ func tmuxCtl1167(t *testing.T, socket string, args ...string) {
 	}
 }
 
-// newDetachedSession1167 reproduces production session birth: a detached
-// session with NO -x/-y (so tmux uses its 80x24 default-size) plus the
-// window-size=largest / aggressive-resize=on options Session.Start pins.
+// newDetachedSession1167 builds the worst-case window this fix has to survive:
+// a detached session with NO -x/-y (so tmux uses its 80x24 default-size) plus
+// the window-size=largest / aggressive-resize=on options Session.Start pins.
+//
+// Production no longer births sessions this way — startCommandSpec passes
+// -x/-y from InitialWindowSize (#1694) — but the attach client must still
+// pre-size itself, or it would shrink a correctly-sized window back down. The
+// unsized birth is kept here deliberately: it isolates the attach half.
 func newDetachedSession1167(t *testing.T, name string) string {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {

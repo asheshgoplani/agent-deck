@@ -3479,7 +3479,19 @@ func TestStatusUpdateMsg_PreservesSelectedSessionAcrossRebuild(t *testing.T) {
 	}
 }
 
-func TestStatusUpdateMsg_ReconcilesAttachedSessionBeforeRender(t *testing.T) {
+// TestStatusUpdateMsg_ReconcilesAttachedSessionViaDeferredCmd was
+// ...BeforeRender until #1753: the reconciliation used to run inline in the
+// statusUpdateMsg handler, which held the Bubble Tea event loop — and therefore the
+// first repaint of the list after Ctrl+Q — behind O(fleet) tmux round-trips. It now
+// runs on the Cmd the handler returns.
+//
+// The protection this test encodes is unchanged and still enforced below: a stale
+// "running" hook file must not keep an exited pane green, the render snapshot must
+// agree, and the stale hook file must be gone. Only the timing moved — from "before
+// the first render" to "on the returned Cmd", i.e. one extra repaint later, which is
+// milliseconds. The pre-Cmd assertions make that ordering explicit so a future edit
+// cannot quietly put the blocking work back on the event loop.
+func TestStatusUpdateMsg_ReconcilesAttachedSessionViaDeferredCmd(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
@@ -3503,8 +3515,24 @@ func TestStatusUpdateMsg_ReconcilesAttachedSessionBeforeRender(t *testing.T) {
 		t.Fatalf("write stale hook: %v", err)
 	}
 
-	model, _ := h.Update(statusUpdateMsg{attachedSessionID: inst.ID})
+	model, cmd := h.Update(statusUpdateMsg{attachedSessionID: inst.ID})
 	home := model.(*Home)
+
+	// #1753: nothing may have happened yet — the event loop has to be free to repaint
+	// the list from the last snapshot.
+	if got := inst.GetStatusThreadSafe(); got != session.StatusRunning {
+		t.Fatalf("status reconciled inline on the event loop: status = %q, want it still %q "+
+			"until the deferred Cmd runs (#1753)", got, session.StatusRunning)
+	}
+	if _, err := os.Stat(hookPath); err != nil {
+		t.Fatalf("stale hook file removed inline on the event loop (#1753): %v", err)
+	}
+
+	// Now run the deferred reconciliation the handler scheduled.
+	if !yieldsMsg(cmd, "ui.attachReturnSyncedMsg") {
+		t.Fatal("statusUpdateMsg returned no deferred reconcile Cmd, so the exited pane " +
+			"would stay green forever (#1753)")
+	}
 
 	if got := inst.GetStatusThreadSafe(); got != session.StatusError {
 		t.Fatalf("attached session status = %q, want %q", got, session.StatusError)

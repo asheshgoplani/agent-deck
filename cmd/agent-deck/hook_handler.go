@@ -78,6 +78,13 @@ type hookStatusFile struct {
 	// (issue #1186 flush race). The daemon re-scans this path on its poll
 	// loop; the synchronous Stop hook (#1225) must not wait out the flush.
 	TranscriptPath string `json:"transcript_path,omitempty"`
+	// Cwd is the working directory the hook payload reported for this event.
+	// Issue #1729: the session-binding path uses it as same-session evidence —
+	// a candidate session id whose cwd is provably outside the instance's
+	// declared paths (e.g. a headless `claude -p` worker at $TMPDIR that
+	// inherited AGENTDECK_INSTANCE_ID) must never bind. omitempty keeps legacy
+	// files byte-identical when the agent sends no cwd.
+	Cwd string `json:"cwd,omitempty"`
 }
 
 // normalizeHookEventKey folds hook event names from Claude (PascalCase), Cursor
@@ -205,9 +212,9 @@ func handleHookHandler() {
 	}
 
 	if isStopHookEvent(payload.HookEventName) {
-		writeHookStatusWithScan(instanceID, status, sessionID, payload.HookEventName, detectDoneSentinel(data))
+		writeHookStatusWithScan(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, detectDoneSentinel(data))
 	} else {
-		writeHookStatus(instanceID, status, sessionID, payload.HookEventName)
+		writeHookStatus(instanceID, status, sessionID, payload.HookEventName, payload.Cwd)
 	}
 
 	// #572: Sync agent-deck title from Claude Code's --name / /rename value.
@@ -291,19 +298,19 @@ func parentIsDSP() bool {
 // writeHookStatus writes a hook status file atomically for one instance.
 // The optional done argument carries a completion sentinel (issue #1186);
 // when supplied its status/summary are persisted alongside the hook status.
-func writeHookStatus(instanceID, status, sessionID, event string, done ...session.DoneSignal) {
+func writeHookStatus(instanceID, status, sessionID, event, cwd string, done ...session.DoneSignal) {
 	scan := doneScanResult{}
 	if len(done) > 0 {
 		scan.signal = &done[0]
 	}
-	writeHookStatusWithScan(instanceID, status, sessionID, event, scan)
+	writeHookStatusWithScan(instanceID, status, sessionID, event, cwd, scan)
 }
 
 // writeHookStatusWithScan is writeHookStatus plus the full Stop-edge scan
 // outcome: a parsed sentinel persists as done_status/done_summary; an
 // unflushed tail persists as transcript_path so the daemon can finish the
 // scan (issue #1186 flush race).
-func writeHookStatusWithScan(instanceID, status, sessionID, event string, scan doneScanResult) {
+func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, scan doneScanResult) {
 	if instanceID == "" || status == "" {
 		return
 	}
@@ -330,6 +337,7 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event string, scan d
 		SessionID: sessionID,
 		Event:     event,
 		Timestamp: time.Now().Unix(),
+		Cwd:       strings.TrimSpace(cwd),
 	}
 	if scan.signal != nil {
 		statusFile.DoneStatus = scan.signal.Status

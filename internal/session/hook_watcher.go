@@ -49,6 +49,11 @@ type HookStatus struct {
 	// because the turn's assistant record had not flushed yet (issue #1186
 	// flush race). The transition daemon re-scans this path on its poll loop.
 	TranscriptPath string
+	// Cwd is the working directory the hook payload reported. Issue #1729:
+	// used as same-session evidence when deciding whether a candidate session
+	// id may bind — empty (legacy files, agents that send no cwd) means "no
+	// evidence either way" and never blocks.
+	Cwd string
 }
 
 // StatusFileWatcher watches ~/.agent-deck/hooks/ for status file changes
@@ -325,6 +330,7 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			DoneStatus     string `json:"done_status"`
 			DoneSummary    string `json:"done_summary"`
 			TranscriptPath string `json:"transcript_path"`
+			Cwd            string `json:"cwd"`
 		}
 		if uerr := json.Unmarshal(data, &raw); uerr != nil {
 			continue
@@ -337,6 +343,7 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			DoneStatus:     raw.DoneStatus,
 			DoneSummary:    raw.DoneSummary,
 			TranscriptPath: raw.TranscriptPath,
+			Cwd:            raw.Cwd,
 		}
 	}
 }
@@ -465,6 +472,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		DoneStatus     string `json:"done_status"`
 		DoneSummary    string `json:"done_summary"`
 		TranscriptPath string `json:"transcript_path"`
+		Cwd            string `json:"cwd"`
 	}
 	if err := json.Unmarshal(data, &status); err != nil {
 		hookLog.Warn("hook_file_corrupt",
@@ -484,6 +492,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		DoneStatus:     status.DoneStatus,
 		DoneSummary:    status.DoneSummary,
 		TranscriptPath: status.TranscriptPath,
+		Cwd:            status.Cwd,
 	}
 
 	w.mu.Lock()

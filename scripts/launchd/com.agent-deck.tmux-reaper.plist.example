@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Example launchd agent for scripts/reap-stale-tmux.sh (macOS maintainer hosts).
+
+  Copy to ~/Library/LaunchAgents/com.agent-deck.tmux-reaper.plist, replace every
+  REPLACE_ME with your short username, and read docs/tmux-reaper.md BEFORE
+  loading it. The reaper is opt-in and stays unloaded until that checklist is
+  satisfied.
+
+  What was wrong with the plist this replaces:
+
+    * No EnvironmentVariables at all. launchd hands an agent almost no
+      environment, so $HOME was empty, the script's default log path expanded to
+      "/.agent-deck/logs/tmux-reaper.log", every append failed, and the job ran
+      hourly for weeks with no record of what it did. When it eventually killed
+      the whole session fleet there was nothing to read.
+    * No StandardOutPath / StandardErrPath, so anything the script printed
+      outside its own log — including shell errors — went nowhere.
+    * RunAtLoad true, which means a mistake in the rules reaches every server on
+      the host the moment the plist is loaded, before any dry run.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.agent-deck.tmux-reaper</string>
+
+  <!-- Absolute paths only: launchd provides no useful PATH. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/REPLACE_ME/.agent-deck/scripts/reap-stale-tmux.sh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- The script's default log path is built from HOME. Set it explicitly;
+         without it the log silently goes nowhere. -->
+    <key>HOME</key>
+    <string>/Users/REPLACE_ME</string>
+    <!-- tmux is what identifies and kills servers; lsof (/usr/sbin) is what
+         proves which executable a pid is running on darwin. Both must be
+         reachable or the corresponding phase is skipped. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!-- Observation period: log every target, kill nothing. Start here, read a
+         week of logs, and only then remove these two lines. -->
+    <key>DRY_RUN</key>
+    <string>1</string>
+  </dict>
+
+  <!-- Anything the script writes outside its own log lands here instead of
+       being discarded. -->
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/.agent-deck/logs/tmux-reaper.out.log</string>
+  <key>StandardErrPath</key>
+  <string>/Users/REPLACE_ME/.agent-deck/logs/tmux-reaper.err.log</string>
+
+  <key>WorkingDirectory</key>
+  <string>/tmp</string>
+
+  <key>StartInterval</key>
+  <integer>3600</integer>
+
+  <!-- Deliberately false: a load should not immediately sweep the host. Trigger
+       the first pass by hand (`launchctl kickstart -k gui/$(id -u)/com.agent-deck.tmux-reaper`)
+       once you have read the dry-run output. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>

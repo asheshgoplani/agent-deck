@@ -101,6 +101,9 @@ func ClaudeTranscriptPathForInstance(inst *Instance) string {
 
 func claudeTranscriptPathIn(configDir string, inst *Instance, sessionID string) string {
 	projectPath := inst.EffectiveWorkingDir()
+	if transcript := resolveClaudeTranscriptPath(configDir, projectPath, sessionID); transcript != "" {
+		return transcript
+	}
 	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
 		projectPath = resolved
 	}

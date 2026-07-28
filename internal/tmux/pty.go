@@ -258,12 +258,16 @@ func emitScrollbackClear(w io.Writer) {
 // StartAttachPTY starts cmd attached to a new PTY pre-sized to tty's current
 // dimensions.
 //
-// #1167: tmux clients connect at their PTY's size. A detached `new-session`
-// (no -x/-y) is born at tmux's 80x24 default-size, and a bare pty.Start creates
-// the attach client's PTY at the same 80x24 default — so window-size=largest
-// pins the window to 80 cols, ~half of a wide terminal, until an async SIGWINCH
-// grows it. Reading the controlling terminal's real size up front and starting
-// the PTY with it makes the client full-width from frame one.
+// #1167: tmux clients connect at their PTY's size, and a bare pty.Start creates
+// the attach client's PTY at tmux's 80x24 default — so window-size=largest pins
+// the window to 80 cols, ~half of a wide terminal, until an async SIGWINCH grows
+// it. Reading the controlling terminal's real size up front and starting the PTY
+// with it makes the client full-width from frame one.
+//
+// The session's own birth size is the other half of this and is fixed
+// separately: see InitialWindowSize (#1694). Both are needed — this one keeps
+// the attaching client from shrinking a correctly-sized window, that one keeps
+// the tool's very first paint from being laid out at 80 columns.
 //
 // When tty is not a terminal (size probe fails), it falls back to a plain start
 // at the default size: a degraded attach is still better than no attach.

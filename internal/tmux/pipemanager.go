@@ -569,10 +569,13 @@ func killStaleControlClients(sessionName, socketName string) {
 	// reach. See reapOrphanedPollClients.
 	orphanReapOnce.Do(reapOrphanedPollClients)
 
-	out, err := tmuxExec(socketName,
+	// Bounded — see tmuxPollTimeout. This is the sweep that reaps stale
+	// clients; if its own enumeration hangs on an fd-exhausted client, the
+	// cleanup path becomes another leak source instead of a fix.
+	out, err := runBoundedOutput(socketName,
 		"list-clients", "-t", sessionName,
 		"-F", "#{client_control_mode} #{client_pid}",
-	).Output()
+	)
 	if err != nil {
 		return // session may not exist or no clients attached
 	}

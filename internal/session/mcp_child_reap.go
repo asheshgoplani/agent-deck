@@ -144,8 +144,17 @@ func (i *Instance) discoverMCPChildrenFromPaneTree() {
 // collectTmuxPaneProcessTreePIDs (which also takes its own snapshot).
 func (i *Instance) readPanePID() int {
 	target := i.tmuxSession.Name + ":"
-	out, err := tmux.Exec(i.TmuxSocketName, "list-panes", "-t", target, "-F", "#{pane_pid}").Output()
+	// Bounded — see tmux.OutputBounded. This runs on the MCP child-reap path;
+	// an unbounded probe would leave orphaned children unreaped indefinitely.
+	out, err := tmux.OutputBounded(i.TmuxSocketName, "list-panes", "-t", target, "-F", "#{pane_pid}")
 	if err != nil {
+		// Returning 0 no-ops MCP child discovery in killInternal, which is
+		// single-shot with no retry — so a timeout here silently resurrects the
+		// setsid-MCP orphan leak (#965) for that kill. Log it rather than
+		// letting the reap quietly do nothing.
+		slog.Warn("pane_pid_probe_failed",
+			slog.String("session", i.Title),
+			slog.String("error", err.Error()))
 		return 0
 	}
 	pidStr := strings.TrimSpace(string(out))

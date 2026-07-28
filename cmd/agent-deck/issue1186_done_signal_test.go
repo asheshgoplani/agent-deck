@@ -132,7 +132,7 @@ func TestWriteHookStatus_PersistsDoneFields(t *testing.T) {
 	instanceID := "inst-done"
 
 	done := session.DoneSignal{Status: "ok", Summary: "done and dusted"}
-	writeHookStatus(instanceID, "waiting", "sess-1", "Stop", done)
+	writeHookStatus(instanceID, "waiting", "sess-1", "Stop", "", done)
 
 	data, err := os.ReadFile(filepath.Join(getHooksDir(), instanceID+".json"))
 	if err != nil {
@@ -155,7 +155,7 @@ func TestWriteHookStatus_NoDoneFieldsWhenAbsent(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	instanceID := "inst-nodone"
 
-	writeHookStatus(instanceID, "waiting", "sess-2", "Stop")
+	writeHookStatus(instanceID, "waiting", "sess-2", "Stop", "")
 
 	data, err := os.ReadFile(filepath.Join(getHooksDir(), instanceID+".json"))
 	if err != nil {
@@ -181,7 +181,7 @@ func TestWriteHookStatusWithScan_PersistsPendingTranscript(t *testing.T) {
 	instanceID := "inst-pending"
 
 	pendingPath := filepath.Join(tmpHome, ".claude", "projects", "p", "transcript.jsonl")
-	writeHookStatusWithScan(instanceID, "waiting", "sess-3", "Stop", doneScanResult{pendingTranscript: pendingPath})
+	writeHookStatusWithScan(instanceID, "waiting", "sess-3", "Stop", "", doneScanResult{pendingTranscript: pendingPath})
 
 	data, err := os.ReadFile(filepath.Join(getHooksDir(), instanceID+".json"))
 	if err != nil {

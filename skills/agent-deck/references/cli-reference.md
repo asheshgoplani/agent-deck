@@ -8,6 +8,7 @@ Complete reference for all agent-deck CLI commands.
 - [Basic Commands](#basic-commands)
 - [Web Command](#web-command)
 - [Session Commands](#session-commands)
+- [Fleet Recovery Commands](#fleet-recovery-commands)
 - [Worktree Commands](#worktree-commands)
 - [MCP Commands](#mcp-commands)
 - [Skill Commands](#skill-commands)
@@ -302,6 +303,93 @@ agent-deck session switch-account "My Project" work
 ```
 
 Accounts are the profiles named in `config.toml` (`[profiles.<name>.claude].config_dir`).
+
+## Fleet Recovery Commands
+
+Recovery from a *fleet-wide* session death: every managed pane on the host gone
+at once (a killed tmux server, a host reboot, an auth cascade that made the
+agents exit). For a single session use `session restart`; for sessions whose
+pane is still alive but whose control pipe broke use `session revive`.
+
+### fleet status
+
+```bash
+agent-deck fleet status [--group <path>] [--include-idle] [--json]
+```
+
+Reports which sessions the registry believes are alive but whose tmux session is
+gone. **Read-only** — no restarts, no writes. Prints a `MASS DEATH detected` line
+when the down set is large enough (both in absolute count and as a share of
+should-be-alive sessions) to be a fleet-wide event rather than one crash.
+
+A session is only counted as down after two independent tmux probes agree it is
+gone (`--confirm-probes`), because a single `has-session` miss right after a tmux
+server restart is not proof of death.
+
+Sessions you stopped or queued, and archived sessions, are never counted. Status
+`idle` is excluded by default (it is also the status of a session that was added
+but never started) — `--include-idle` opts in.
+
+### fleet recover
+
+```bash
+agent-deck fleet recover                       # plan only (dry run)
+agent-deck fleet recover --yes                 # actually recover
+agent-deck fleet recover --yes --spacing 8s --limit 10
+agent-deck fleet recover --yes --group agent-deck --json
+```
+
+Restarts the down sessions **one at a time**, waiting `--spacing` (default 5s,
+jittered) between boots and verifying each boot before starting the next.
+Sequential spacing is the point: a burst of simultaneous agent boots is what
+forks a shared rotating OAuth refresh token and 401s the whole fleet.
+
+**Dry run by default.** Without `--yes` the command prints the plan (order,
+waits, estimated runtime) and exits without restarting anything.
+
+Each boot is verified before the next begins: the pane must be back AND the
+session must reach a state only a booted agent produces. A restart that returns
+successfully but never proves it booted is reported as `unverified`, never as
+`recovered`.
+
+The sweep halts early when the trouble looks systemic:
+
+| Brake | Flag | Default | Why |
+|-------|------|---------|-----|
+| Consecutive failed restarts | `--max-failures` | 3 | Three failures in a row means a common cause; grinding through the rest multiplies the damage |
+| Sessions that restart and then die immediately | `--max-dead-boots` | 3 | A pane that is gone again by verification time means the session exited on boot — the way a dead credential actually presents (the agent quits on the 401, so there is no banner to read). Three in a row is a host- or credential-level fault (`0` disables) |
+| Sessions booting into an auth failure | `--auth-halt-after` | 2 | Restarting the fleet against a broken credential deepens the cascade (`0` disables) |
+
+A slow boot is not a dead one: a pane that is up but still `starting` when the
+verify timeout expires is reported `unverified` and does not trip any brake.
+
+A halted sweep exits non-zero (with `--json` too) and reports the reason.
+
+Options:
+
+```bash
+--yes                    Actually restart (without it, plan only)
+--dry-run                Force plan-only mode even with --yes
+--spacing <dur>          Gap between boots (default 5s; 0 disables — not recommended)
+--jitter <fraction>      Random +/- fraction applied to each gap (default 0.2)
+--limit <n>              Restart at most N sessions (0 = all)
+--verify-timeout <dur>   How long one session may take to prove it booted (default 30s)
+--verify-poll <dur>      Verification poll interval (default 500ms)
+--max-failures <n>       Halt after N consecutive failed restarts (default 3)
+--max-dead-boots <n>     Halt after N consecutive boots whose pane died immediately (default 3, 0 disables)
+--auth-halt-after <n>    Halt after N auth-failed boots (default 2, 0 disables)
+--group <path>           Only consider sessions in this group and its descendants
+--include-idle           Also treat status=idle sessions as down
+--confirm-probes <n>     Probes that must agree a session is gone (default 2)
+--confirm-delay <dur>    Delay between confirming probes (default 750ms)
+--min-dead <n>           Minimum down sessions for a mass-death verdict (default 3)
+--dead-fraction <f>      Share of should-be-alive sessions that must be down (default 0.5)
+--json, -q               Machine-readable / minimal output
+```
+
+Recovery only ever writes the rows it restarted, one at a time, through a
+targeted write with no table sweep — a session added by another process during
+the (multi-minute) sweep can never be lost.
 
 ## Worktree Commands
 

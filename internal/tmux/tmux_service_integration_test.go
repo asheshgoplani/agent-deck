@@ -170,16 +170,16 @@ func TestTmuxService_ExplicitStopDoesNotTriggerRestart(t *testing.T) {
 		"expected tmux daemon to stay dead after systemctl stop; got PID %d", after)
 }
 
-// TestStopServiceUnit_HandlesMissingSystemd: on hosts without systemctl
-// the helper must return nil (no-op) so `agent-deck remove` on a
-// non-systemd host doesn't spew errors.
-func TestStopServiceUnit_HandlesMissingSystemd(t *testing.T) {
-	// We can't easily remove systemctl from PATH in a test without
-	// mutating global state. Instead, call StopServiceUnit with a
-	// name that will never match an existing unit and verify it
-	// returns nil (best-effort semantics).
-	err := StopServiceUnit("does-not-exist-" + randomServerSuffix(t))
-	require.NoError(t, err, "StopServiceUnit must never return an error — it's best-effort cleanup")
+// TestStopServiceUnitOwned_UnknownSessionNeverErrors: the teardown gate is
+// best-effort on every host — an unknown session name (and therefore an
+// unknown unit) must produce a decision, never a panic or an error, so
+// `agent-deck remove` on a non-systemd host doesn't spew errors.
+func TestStopServiceUnitOwned_UnknownSessionNeverErrors(t *testing.T) {
+	name := "does-not-exist-" + randomServerSuffix(t)
+	dec := StopServiceUnitOwned(ServiceUnitOwnership{SessionName: name})
+	require.Equal(t, ServiceUnitName(name), dec.Unit,
+		"decision must name the unit derived from the session")
+	require.NotEmpty(t, dec.Reason, "every decision must carry a reason")
 }
 
 // waitForServicePID polls systemctl show until MainPID becomes non-zero

@@ -185,7 +185,7 @@ func handleCodexNotify() {
 		sessionID = strings.TrimSpace(os.Getenv("CODEX_SESSION_ID"))
 	}
 
-	writeHookStatus(instanceID, status, sessionID, event)
+	writeHookStatus(instanceID, status, sessionID, event, "")
 }
 
 func handleCodexHooks(args []string) {

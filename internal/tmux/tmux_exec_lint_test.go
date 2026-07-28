@@ -81,13 +81,27 @@ func TestNoRawTmuxExec_OutsideAllowlist(t *testing.T) {
 		// is passed; adding -L based on DefaultSocketName would over-
 		// restrict and break users who run `agent-deck session current`
 		// from a non-agent-deck tmux pane. Documented at each call site.
+		//
+		// All four former display-message sites now funnel through the single
+		// bounded helper tmuxProbeBounded (cli_utils.go), so the argv arrives
+		// here as a variadic <expr> rather than a literal. That consolidation is
+		// deliberate: one sanctioned bypass is auditable, four scattered ones
+		// were not — and the scattered ones silently escaped the deadline rule
+		// in TestPollCommandsAreBounded until the 2026-07-21 fd-leak incident.
 		"cmd/agent-deck/cli_utils.go": {
-			{"tmux", "display-message", "-p", "#S"},
+			{"tmux", "<expr>"},
 		},
-		"cmd/agent-deck/session_cmd.go": {
-			{"tmux", "display-message", "-p", "#{session_name}\t#{pane_current_path}"},
-			{"tmux", "display-message", "-p", ""}, // multi-field variant (empty sentinel; matched loosely below)
-			{"tmux", "display-message", "-p", "#{session_name}"},
+
+		// testutil's socket-dir teardown kills servers by ABSOLUTE `-S <path>`,
+		// which is the one thing the factory cannot express (it emits
+		// `-L <name>`, resolved against $TMUX_TMPDIR). Resolving by name is
+		// exactly the failure this call exists to prevent: a teardown whose env
+		// has drifted from the spawn's kills nothing and reports success, which
+		// is how ~50 servers survived their tests and drained the host's pty
+		// pool on 2026-07-18. Same justification class as the -S harnesses in
+		// allowedBypassFiles above.
+		"internal/testutil/tmuxenv.go": {
+			{"tmux", "-S"},
 		},
 	}
 

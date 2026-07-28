@@ -92,12 +92,19 @@ func (m *WebMutator) beginHeadlessTx() (unlock func(), err error) {
 }
 
 // CreateSession creates and starts a new session, persisting it to storage.
-func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
+func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
 	unlock, err := m.beginHeadlessTx()
 	if err != nil {
 		return "", err
 	}
 	defer unlock()
+	// #1706: project_path is identity and must be absolute — the request may
+	// carry a relative path, which tmux would resolve against the tmux server's
+	// cwd rather than this process's.
+	projectPath, err = session.ResolveProjectPath(projectPath)
+	if err != nil {
+		return "", err
+	}
 	var inst *session.Instance
 	if groupPath != "" {
 		inst = session.NewInstanceWithGroupAndTool(title, projectPath, groupPath, tool)
@@ -110,6 +117,11 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID 
 
 	if modelID = strings.TrimSpace(modelID); modelID != "" {
 		if err := inst.ApplyLaunchModel(modelID); err != nil {
+			return "", err
+		}
+	}
+	if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" {
+		if err := inst.ApplyLaunchReasoningEffort(reasoningEffort); err != nil {
 			return "", err
 		}
 	}
@@ -448,7 +460,15 @@ func (m *WebMutator) UpdateSession(id string, updates map[string]string) ([]stri
 			m.h.instancesMu.Unlock()
 			return nil, false, err
 		}
-		if oldValue == value {
+		// #1706: SetField canonicalizes a project path, so a request carrying
+		// another spelling of the stored path is a no-op — compare what was
+		// actually stored, not the raw request value, or it would be reported
+		// as changed and restart-required.
+		newValue := value
+		if field == session.FieldPath {
+			newValue = inst.ProjectPath
+		}
+		if oldValue == newValue {
 			continue
 		}
 		changed = append(changed, field)

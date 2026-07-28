@@ -659,6 +659,15 @@ func handleSessionRestart(profile string, args []string) {
 		fmt.Println("60 seconds. This prevents watchdog double-fires from destroying a")
 		fmt.Println("just-created tmux scope (issue #30). Use --force to restart anyway.")
 		fmt.Println()
+		fmt.Println("A restart is also skipped when the session's agent could not authenticate")
+		fmt.Println("(401 / invalid credentials): a restart cannot fix a credential, and each")
+		fmt.Println("attempt races the rotating token shared by every session on this host.")
+		fmt.Println("Re-authenticate (run /login), then restart — --force overrides the hold.")
+		fmt.Println()
+		fmt.Println("--all paces restarts with a jittered stagger, caps how many un-verified")
+		fmt.Println("boots run at once, skips auth-held sessions, and STOPS early if several")
+		fmt.Println("restarts in a row die on authentication (reported as auth_tripped).")
+		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
 		fmt.Println()
@@ -758,7 +767,16 @@ func handleSessionRestart(profile string, args []string) {
 	out.Success(fmt.Sprintf("Restarted session: %s", inst.Title), data)
 }
 
-// restartAllSessions restarts every active session one by one.
+// restartAllSessions restarts every active session, paced and gated by
+// session.BootSweep.
+//
+// This is the path that turned an expired token into a fleet outage on
+// 2026-07-26: it used to boot every session back-to-back with no brake, so
+// during a credential failure it both wasted every restart AND had every fresh
+// agent race the single rotating refresh token. The sweep now skips sessions
+// already held for auth, staggers boots with jitter, caps how many unverified
+// boots contend for the token at once, and stops entirely after a few
+// consecutive auth-deaths with one loud message instead of burning the fleet.
 func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*session.Instance, groups []*session.GroupData, env map[string]string) {
 	var active []*session.Instance
 	for _, inst := range instances {
@@ -772,14 +790,15 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 		os.Exit(1)
 	}
 
-	var results []map[string]interface{}
-	var failed int
+	results := make(map[string]map[string]interface{}, len(active))
 
-	for _, inst := range active {
+	sweep := session.NewBootSweep()
+	sweepResult := sweep.Run(active, func(inst *session.Instance) error {
 		result := map[string]interface{}{
 			"id":    inst.ID,
 			"title": inst.Title,
 		}
+		results[inst.ID] = result
 
 		if !out.jsonMode {
 			fmt.Printf("Restarting %s...\n", inst.Title)
@@ -792,9 +811,7 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 			}
 			result["success"] = false
 			result["error"] = errMsg
-			failed++
-			results = append(results, result)
-			continue
+			return err
 		}
 		inst.LastStartedAt = time.Now()
 
@@ -812,10 +829,17 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 		if warning != "" {
 			result["warning"] = warning
 		}
-		results = append(results, result)
 
 		if !out.jsonMode {
 			fmt.Printf("  Done: %s\n", inst.Title)
+		}
+		return nil
+	})
+
+	ordered := restartAllSessionRecords(results, sweepResult.Attempts)
+	for _, attempt := range sweepResult.Attempts {
+		if attempt.Skipped && !out.jsonMode && !out.quietMode {
+			fmt.Printf("Skipped %s: %s\n", attempt.Title, attempt.SkipReason)
 		}
 	}
 
@@ -825,23 +849,27 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 		os.Exit(1)
 	}
 
+	if sweepResult.TripMessage != "" && !out.jsonMode {
+		fmt.Fprintf(os.Stderr, "\n🔒 %s\n", sweepResult.TripMessage)
+	}
+
 	if out.jsonMode {
-		out.Success("", map[string]interface{}{
-			"success":   failed == 0,
-			"total":     len(active),
-			"restarted": len(active) - failed,
-			"failed":    failed,
-			"sessions":  results,
-		})
+		out.Success("", restartAllSessionsJSONPayload(len(active), sweepResult, ordered))
 	} else if !out.quietMode {
-		fmt.Printf("Restarted %d/%d sessions", len(active)-failed, len(active))
-		if failed > 0 {
-			fmt.Printf(" (%d failed)", failed)
+		fmt.Printf("Restarted %d/%d sessions", sweepResult.Booted, len(active))
+		if sweepResult.Failed > 0 {
+			fmt.Printf(" (%d failed)", sweepResult.Failed)
+		}
+		if sweepResult.SkippedHeld > 0 {
+			fmt.Printf(" (%d held for auth)", sweepResult.SkippedHeld)
+		}
+		if sweepResult.Abandoned > 0 {
+			fmt.Printf(" (%d abandoned after auth circuit tripped)", sweepResult.Abandoned)
 		}
 		fmt.Println()
 	}
 
-	if failed > 0 {
+	if restartAllSessionsExitCode(sweepResult) != 0 {
 		os.Exit(1)
 	}
 }
@@ -1117,7 +1145,10 @@ func handleSessionFork(profile string, args []string) {
 					os.Exit(1)
 				}
 
-				createdBranch, cwErr := git.CreateWorktreeAtStartPoint(repoRoot, worktreePath, wtBranch, parentHead)
+				// #1708: inherit the PARENT SESSION's sparse state (its own
+				// worktree), not repoRoot's — see git.CaptureSparseCheckout.
+				createdBranch, cwErr := git.CreateWorktreeAtStartPointWithOptions(repoRoot, worktreePath, wtBranch, parentHead,
+					git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), inst.ProjectPath))
 				if cwErr != nil {
 					out.Error(fmt.Sprintf("worktree creation failed: %v", cwErr), ErrCodeInvalidOperation)
 					os.Exit(1)
@@ -1186,9 +1217,10 @@ func handleSessionFork(profile string, args []string) {
 			} else if backend.Type() == vcs.TypeGit {
 				// Non-with-state git path: upstream's combined wrapper unchanged.
 				var cwErr error
-				setupErr, cwErr = git.CreateWorktreeWithStateAndSetup(
+				setupErr, cwErr = git.CreateWorktreeWithSetupOptions(
 					repoRoot, worktreePath, wtBranch,
 					git.WorktreeStateOptions{},
+					git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), inst.ProjectPath),
 					os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout(),
 					&git.CCHookContext{InstanceID: inst.ID})
 				if cwErr != nil {
@@ -1686,6 +1718,19 @@ func handleSessionShow(profile string, args []string) {
 		}
 	}
 
+	// An auth hold explains a bare "error" that no restart can clear, and tells
+	// automation (conductors, watchdogs reading --json) to stop retrying.
+	authHold := inst.AuthHold()
+	if authHold != nil {
+		jsonData["auth_hold"] = map[string]interface{}{
+			"reason":        authHold.Reason,
+			"remedy":        authHold.Remedy(),
+			"evidence":      authHold.Evidence,
+			"boot_attempts": authHold.BootAttempts,
+			"ts":            authHold.Timestamp,
+		}
+	}
+
 	// Build human-readable output
 	var sb strings.Builder
 
@@ -1781,6 +1826,13 @@ func handleSessionShow(profile string, args []string) {
 	if spawnFailure != nil {
 		sb.WriteString("\n")
 		sb.WriteString(spawnFailure.FormatForDisplay())
+	}
+
+	// The auth block goes LAST so it is the final thing on screen: it is the only
+	// one of these diagnostics that names an action the user must take.
+	if authHold != nil {
+		sb.WriteString("\n")
+		sb.WriteString(authHold.FormatForDisplay())
 	}
 
 	out.Print(sb.String(), jsonData)
@@ -1892,6 +1944,11 @@ func handleSessionSet(profile string, args []string) {
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
+	// #1706: SetField canonicalizes a project path (expand + absolutize), so
+	// report what was actually stored rather than the raw argument.
+	if field == session.FieldPath {
+		value = inst.ProjectPath
+	}
 	// CLI holds no lock — run tmux side effects inline. TUI defers them
 	// until after instancesMu.Unlock.
 	if postCommit != nil {
@@ -1995,9 +2052,8 @@ func findSessionByTmuxAcrossProfiles() (*session.Instance, string) {
 
 // findSessionByTmux tries to find a session by matching tmux session name or working directory
 func findSessionByTmux(instances []*session.Instance) *session.Instance {
-	// Get current tmux session name
-	cmd := exec.Command("tmux", "display-message", "-p", "#{session_name}\t#{pane_current_path}")
-	output, err := cmd.Output()
+	// Get current tmux session name (bounded — see tmuxProbeTimeout)
+	output, err := tmuxProbeBounded("display-message", "-p", "#{session_name}\t#{pane_current_path}")
 	if err != nil {
 		return nil
 	}
@@ -2051,10 +2107,9 @@ func findSessionByTmux(instances []*session.Instance) *session.Instance {
 
 // showTmuxSessionInfo shows information about the current tmux session (unregistered)
 func showTmuxSessionInfo(out *CLIOutput, jsonOutput bool) {
-	// Get tmux session info
-	cmd := exec.Command("tmux", "display-message", "-p",
+	// Get tmux session info (bounded — see tmuxProbeTimeout)
+	output, err := tmuxProbeBounded("display-message", "-p",
 		"#{session_name}\t#{pane_current_path}\t#{session_created}\t#{window_name}")
-	output, err := cmd.Output()
 	if err != nil {
 		out.Error("failed to get tmux session info", ErrCodeNotFound)
 		os.Exit(1)
@@ -3970,8 +4025,8 @@ func handleSessionCurrent(profileArg string, args []string) {
 
 // getCurrentTmuxSessionName gets the current tmux session name (single subprocess call)
 func getCurrentTmuxSessionName() (string, error) {
-	cmd := exec.Command("tmux", "display-message", "-p", "#{session_name}")
-	output, err := cmd.Output()
+	// Bounded — see tmuxProbeTimeout.
+	output, err := tmuxProbeBounded("display-message", "-p", "#{session_name}")
 	if err != nil {
 		return "", err
 	}

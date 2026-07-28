@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,9 +9,32 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+// tmuxProbeTimeout bounds the plain-argv tmux probes the CLI fires to identify
+// the caller's own session. These deliberately omit -L so tmux auto-routes via
+// $TMUX (see the display-message entries in TestNoRawTmuxExec_OutsideAllowlist),
+// which is why they cannot use tmux.OutputBounded — that helper always emits
+// -L <name>. They still need a deadline: on tmux 3.0a a client leaks an epoll
+// fd per event-loop iteration, and once it hits RLIMIT_NOFILE it spins at 100%
+// CPU in EMFILE retries and never exits. These probes run on conductor-polled
+// CLI paths, so an unbounded one accumulates wedged clients exactly like the
+// cadence pollers in internal/tmux did.
+const tmuxProbeTimeout = 3 * time.Second
+
+// tmuxProbeBounded runs `tmux <args…>` under tmuxProbeTimeout and returns
+// stdout. exec.CommandContext SIGKILLs a wedged client at the deadline; the
+// WaitDelay bounds the post-kill stdio drain.
+func tmuxProbeBounded(args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxProbeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", args...)
+	cmd.WaitDelay = 2 * time.Second
+	return cmd.Output()
+}
 
 // normalizeArgs reorders args so flags come before positional arguments.
 // Go's flag package stops parsing at the first non-flag argument, which means
@@ -182,6 +206,8 @@ func shouldInheritParentGroup(explicitGroupProvided, inheritGroupFlag bool, path
 }
 
 // resolveAddPath resolves the user-provided positional path arg for `agent-deck add`.
+// Also used by `agent-deck session move` (#1706): both take a user-supplied
+// positional project path and must resolve it the same way.
 // Handles ".", "~", "~/foo", "$VAR/foo", and relative/absolute paths uniformly.
 // session.ExpandPath runs first so a literal tilde from a non-expanding shell
 // (e.g. SSH-driven invocation) reaches a real home directory before Abs.
@@ -354,9 +380,8 @@ func GetCurrentSessionID() string {
 		return ""
 	}
 
-	// Get current tmux session name
-	cmd := exec.Command("tmux", "display-message", "-p", "#S")
-	output, err := cmd.Output()
+	// Get current tmux session name (bounded — see tmuxProbeTimeout)
+	output, err := tmuxProbeBounded("display-message", "-p", "#S")
 	if err != nil {
 		return ""
 	}

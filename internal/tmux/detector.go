@@ -412,6 +412,19 @@ var claudeBannerStructuralMarkers = []string{" · ", `{"type":"error"`}
 // hasClaudeErrorBanner scans the last 15 non-empty lines (same window as
 // hasClaudePrompt) for a banner-shaped error line.
 func hasClaudeErrorBanner(content string) bool {
+	return scanClaudeBannerLines(content, claudeErrorBannerSubstrings)
+}
+
+// scanClaudeBannerLines reports whether any of the last 15 non-empty lines is a
+// banner-shaped line containing one of patterns. It carries the over-match
+// guards that make banner detection trustworthy — quoted/input lines are
+// skipped, and an assistant-turn line must also show a structural banner marker
+// so prose merely mentioning the text does not match.
+//
+// Shared by hasClaudeErrorBanner (any tool-rendered failure banner) and the
+// auth-specific scan (authFailureBannerPatterns) so the two can never drift
+// apart on the guards.
+func scanClaudeBannerLines(content string, patterns []string) bool {
 	lines := strings.Split(content, "\n")
 	checked := 0
 	for i := len(lines) - 1; i >= 0 && checked < 15; i-- {
@@ -428,7 +441,7 @@ func hasClaudeErrorBanner(content string) bool {
 		if strings.HasPrefix(line, claudeAssistantLinePrefix) && !containsAny(line, claudeBannerStructuralMarkers) {
 			continue
 		}
-		for _, pat := range claudeErrorBannerSubstrings {
+		for _, pat := range patterns {
 			if strings.Contains(line, pat) {
 				return true
 			}

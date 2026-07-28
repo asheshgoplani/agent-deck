@@ -1961,6 +1961,27 @@ type WorktreeSettings struct {
 	// systemd, docker). Reporter @Clindbergh flagged the v1.7.65 behaviour
 	// (`0 = default`) as counter-convention in the PR review for #727.
 	SetupTimeoutSeconds *int `toml:"setup_timeout_seconds,omitempty"`
+
+	// SparseCheckout controls whether a new worktree inherits the invoking
+	// worktree's sparse-checkout configuration (issue #1708):
+	//   ""/"off" (default) → today's behavior: plain `git worktree add`
+	//   "inherit"          → capture the source worktree's mode + patterns and
+	//                        create with --no-checkout, so a sparse monorepo
+	//                        never materializes the full tree first
+	// Unknown values are treated as "off" so a typo can never change checkout
+	// behavior. String (not bool) to leave room for future modes.
+	SparseCheckout string `toml:"sparse_checkout,omitempty"`
+}
+
+// WorktreeSparseCheckoutInherit is the only value of [worktree] sparse_checkout
+// that turns inheritance on (#1708).
+const WorktreeSparseCheckoutInherit = "inherit"
+
+// InheritSparseCheckout reports whether worktree creation should inherit the
+// invoking worktree's sparse-checkout state. Matching is case- and
+// whitespace-insensitive; every other value (including "off" and typos) is false.
+func (w WorktreeSettings) InheritSparseCheckout() bool {
+	return strings.EqualFold(strings.TrimSpace(w.SparseCheckout), WorktreeSparseCheckoutInherit)
 }
 
 // DefaultWorktreeSetupTimeout is the fallback used when no explicit value is

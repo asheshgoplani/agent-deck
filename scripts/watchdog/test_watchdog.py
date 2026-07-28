@@ -12,6 +12,51 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parent))
 import watchdog as wd_mod
 
+_ISOLATION = {}
+
+# Every module-level name this suite overrides, so tearDownModule can put the
+# real ones back and nothing leaks between test runs in the same interpreter.
+_ISOLATED_NAMES = (
+    "AGENT_DECK_BIN", "WATCHDOG_DIR", "AUTORESTART_DIR", "ESCALATIONS_LOG",
+    "RESTART_LOG", "LIVENESS_LOG", "ESCALATE_SCRIPT",
+    "MIN_GLOBAL_RESTART_INTERVAL_S", "LIVENESS_CONFIRM_GAP_S",
+)
+
+
+def setUpModule():
+    """Keep the suite off the live agent-deck install, and make it fast.
+
+    watchdog.py resolves its log paths under AGENT_DECK_ROOT (default
+    ~/.agent-deck, which on a maintainer machine is the LIVE data directory) and
+    shells out to AGENT_DECK_BIN. Unguarded, a test run appends to the real
+    watchdog logs and can invoke the real CLI against real sessions. Redirect
+    both, point the binary at a path that cannot exist, and drop the two sleeps
+    (inter-restart spacing, liveness sample gap) so the suite finishes in seconds
+    instead of minutes — which is what lets it run in CI at all.
+    """
+    _ISOLATION["tmp"] = tempfile.TemporaryDirectory()
+    root = Path(_ISOLATION["tmp"].name)
+    (root / "watchdog" / "autorestart").mkdir(parents=True, exist_ok=True)
+    _ISOLATION["saved"] = {name: getattr(wd_mod, name) for name in _ISOLATED_NAMES}
+
+    wd_mod.AGENT_DECK_BIN = str(root / "no-such-agent-deck-binary")
+    wd_mod.WATCHDOG_DIR = root / "watchdog"
+    wd_mod.AUTORESTART_DIR = root / "watchdog" / "autorestart"
+    wd_mod.ESCALATIONS_LOG = root / "watchdog" / "escalations.log"
+    wd_mod.RESTART_LOG = root / "watchdog" / "restart.log"
+    wd_mod.LIVENESS_LOG = root / "watchdog" / "liveness.log"
+    wd_mod.ESCALATE_SCRIPT = root / "watchdog" / "escalate.sh"  # deliberately absent
+    wd_mod.MIN_GLOBAL_RESTART_INTERVAL_S = 0
+    wd_mod.LIVENESS_CONFIRM_GAP_S = 0.0
+
+
+def tearDownModule():
+    for name, value in _ISOLATION.get("saved", {}).items():
+        setattr(wd_mod, name, value)
+    tmp = _ISOLATION.pop("tmp", None)
+    if tmp is not None:
+        tmp.cleanup()
+
 
 def make_sess(sid="c-1", title="conductor-travel", group="", profile="personal",
               status="error", is_conductor=False):
@@ -689,6 +734,260 @@ class TestWaitingTooLong(unittest.TestCase):
             for args in call_args
         )
         self.assertTrue(found_send, f"expected session send call, got: {call_args}")
+
+
+class TestLivenessConfirmation(unittest.TestCase):
+    """Issue #1705: a conductor was restarted mid-turn while its agent was alive
+    and working. A restart tears the pane down, so the last thing the watchdog does
+    before firing one is confirm — right then — that the session really is stuck."""
+
+    def setUp(self):
+        self.wd = wd_mod.Watchdog(dry_run=True)
+        self.sess = make_sess(sid="cond-live", title="conductor-bruce")
+
+    def _liveness_records(self):
+        path = Path(wd_mod.LIVENESS_LOG)
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def _restart_records(self):
+        path = Path(wd_mod.RESTART_LOG)
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_moving_pane_vetoes_the_restart(self):
+        """The #1705 case: status says error, but the pane keeps producing output.
+        An agent that is still emitting output is not dead, whatever the status
+        reading says — and re-reading the status cannot see this, because a
+        content-derived verdict does not move while the agent works."""
+        with mock.patch.object(wd_mod, "show_session", return_value=self.sess), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot",
+                               side_effect=["…curl running", "…curl finished, next tool"]):
+            proceed, record = self.wd._confirm_restart_needed("cond-live", "conductor-bruce", "personal")
+
+        self.assertFalse(proceed, "a pane that is still moving must not be restarted")
+        self.assertEqual(record["reason"], "pane_active")
+        self.assertTrue(record["pane"]["changed"])
+
+    def test_recovery_during_the_serialization_wait_vetoes_the_restart(self):
+        """Restarts are serialized (and cascades revive serially), so the decision
+        can execute long after the sample that justified it. By then the session may
+        have recovered on its own — the stale half of #1705."""
+        recovered = make_sess(sid="cond-live", title="conductor-bruce", status="running")
+        with mock.patch.object(wd_mod, "show_session", return_value=recovered), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value="frozen"):
+            proceed, record = self.wd._confirm_restart_needed("cond-live", "conductor-bruce", "personal")
+
+        self.assertFalse(proceed)
+        self.assertEqual(record["reason"], "recovered_before_restart")
+
+    def test_frozen_pane_and_two_agreeing_reads_confirm_the_restart(self):
+        """The genuine death this watchdog exists for still restarts."""
+        with mock.patch.object(wd_mod, "show_session", return_value=self.sess), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value=""):
+            proceed, record = self.wd._confirm_restart_needed("cond-live", "conductor-bruce", "personal")
+
+        self.assertTrue(proceed)
+        self.assertEqual(record["reason"], "confirmed_dead")
+        self.assertEqual(len(record["reads"]), 2, "the decision must rest on two status reads")
+
+    def test_unreadable_status_is_not_treated_as_death(self):
+        with mock.patch.object(wd_mod, "show_session", return_value=None), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value="x"):
+            proceed, record = self.wd._confirm_restart_needed("cond-live", "conductor-bruce", "personal")
+
+        self.assertFalse(proceed, "if we cannot see the session we cannot claim it is dead")
+        self.assertEqual(record["reason"], "status_unreadable")
+
+    def test_shutdown_mid_sample_leaves_the_session_alone(self):
+        self.wd.stop_event.set()
+        try:
+            with mock.patch.object(wd_mod, "show_session", return_value=self.sess), \
+                 mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value="frozen"):
+                proceed, record = self.wd._confirm_restart_needed(
+                    "cond-live", "conductor-bruce", "personal")
+        finally:
+            self.wd.stop_event.clear()
+
+        self.assertFalse(proceed, "shutting down is the worst time to be wrong about a pane")
+        self.assertEqual(record["reason"], "shutting_down")
+
+    def test_auth_held_session_is_left_alone_and_escalated(self):
+        """Merged auth-hold policy: a restart cannot fix a credential, and each
+        doomed boot races the shared rotating refresh token."""
+        held = dict(self.sess)
+        held["substate"] = "auth-401"
+        held["auth_hold"] = {
+            "reason": "auth_death",
+            "remedy": "run /login, then restart it explicitly",
+            "evidence": "API Error: 401 <pane tail>",
+        }
+        with mock.patch.object(wd_mod, "show_session", return_value=held), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value="") as pane, \
+             mock.patch.object(wd_mod, "telegram_send", return_value=True) as tg:
+            proceed, record = self.wd._confirm_restart_needed(
+                "cond-live", "conductor-bruce", "personal", escalate_critical=True)
+
+        self.assertFalse(proceed)
+        self.assertEqual(record["reason"], "auth_hold")
+        self.assertEqual(record["auth_hold_reason"], "auth_death")
+        pane.assert_not_called()
+        tg.assert_called_once()
+        self.assertIn("auth-hold", Path(wd_mod.ESCALATIONS_LOG).read_text())
+
+    def test_record_carries_digests_not_pane_text(self):
+        """The record is written to be read by humans and pasted into bug reports,
+        so it must never carry pane content, prompts or secrets."""
+        private = "DO-NOT-LOG-THIS-PANE-TEXT and this conversation content"
+        with mock.patch.object(wd_mod, "show_session", return_value=self.sess), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", side_effect=[private, private + "!"]):
+            _, record = self.wd._confirm_restart_needed("cond-live", "conductor-bruce", "personal")
+
+        serialized = json.dumps(record)
+        self.assertNotIn("DO-NOT-LOG-THIS-PANE-TEXT", serialized)
+        self.assertNotIn("conversation content", serialized)
+        self.assertEqual(len(record["pane"]["first"]), 16)
+        self.assertNotEqual(record["pane"]["first"], record["pane"]["second"])
+
+        persisted = self._liveness_records()[-1]
+        self.assertEqual(persisted["reason"], "pane_active", "every decision is recorded")
+        self.assertEqual(persisted["pane"], record["pane"])
+        self.assertNotIn("DO-NOT-LOG-THIS-PANE-TEXT", json.dumps(persisted))
+
+    def test_skipped_restart_does_not_burn_the_rate_limit_budget(self):
+        """A restart that never happened is not an attempt: otherwise a live
+        session the watchdog correctly declined to touch would exhaust its
+        3-per-10-min budget and escalate as "keeps crashing"."""
+        moving = ["frame-%d" % i for i in range(40)]
+        with mock.patch.object(wd_mod, "show_session", return_value=self.sess), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", side_effect=moving), \
+             mock.patch.object(wd_mod, "telegram_send", return_value=True):
+            for _ in range(wd_mod.RATE_LIMIT_MAX + 1):
+                self.wd.cooldown_until.pop("cond-live", None)
+                self.wd.maybe_restart(self.sess)
+
+        self.assertEqual(len(self.wd.restart_history.get("cond-live", [])), 0)
+        skipped = [r for r in self._restart_records() if r.get("action") == "skipped-alive"]
+        self.assertTrue(skipped, "the skip is auditable from the restart log too")
+        self.assertNotIn("keeps crashing", Path(wd_mod.ESCALATIONS_LOG).read_text())
+
+    def test_repeated_alive_skips_escalate_as_a_classification_problem(self):
+        moving = ["frame-%d" % i for i in range(40)]
+        with mock.patch.object(wd_mod, "show_session", return_value=self.sess), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", side_effect=moving), \
+             mock.patch.object(wd_mod, "telegram_send", return_value=True) as tg:
+            for _ in range(wd_mod.LIVENESS_SKIP_ESCALATE_AFTER):
+                self.wd._confirm_restart_needed(
+                    "cond-live", "conductor-bruce", "personal", escalate_critical=True)
+
+        tg.assert_called_once()
+        self.assertIn("liveness-mismatch", Path(wd_mod.ESCALATIONS_LOG).read_text())
+
+    def test_auth_hold_is_reported_once_per_episode_not_once_per_poll(self):
+        """A hold only a human can clear is observed on every poll for as long as it
+        lasts. Repeating the alert every few minutes is how a channel stops being
+        read — so it fires once, and again only after the session is seen healthy."""
+        held = dict(self.sess)
+        held["auth_hold"] = {"reason": "auth_death", "remedy": "run /login"}
+        healthy = make_sess(sid="cond-live", title="conductor-bruce", status="running")
+
+        with mock.patch.object(wd_mod, "telegram_send", return_value=True) as tg:
+            with mock.patch.object(wd_mod, "show_session", return_value=held):
+                for _ in range(4):
+                    self.wd._confirm_restart_needed(
+                        "cond-live", "conductor-bruce", "personal", escalate_critical=True)
+            self.assertEqual(tg.call_count, 1, "one alert per episode")
+
+            # Seen healthy → episode over, counter cleared.
+            with mock.patch.object(wd_mod, "show_session", return_value=healthy):
+                self.wd.maybe_restart(healthy)
+            self.assertNotIn("cond-live", self.wd.liveness_skips)
+
+            # It comes back: that is a new episode and does speak up again.
+            self.wd.last_escalation_at.clear()  # past the 5-min escalation dedup
+            with mock.patch.object(wd_mod, "show_session", return_value=held):
+                self.wd._confirm_restart_needed(
+                    "cond-live", "conductor-bruce", "personal", escalate_critical=True)
+            self.assertEqual(tg.call_count, 2)
+
+    def test_confirmation_runs_after_the_serialization_wait(self):
+        """Ordering is the whole point: confirming before the wait would confirm a
+        session that has been sitting in a restart queue ever since."""
+        events = []
+        wd = wd_mod.Watchdog(dry_run=True)
+
+        def _tracking_wait(timeout=None):
+            events.append(("wait", timeout))
+            return False  # never "stopped"; return immediately instead of sleeping
+
+        def _tracking_sample(sid, profile):
+            events.append(("sample", None))
+            return "frozen"
+
+        saved_interval = wd_mod.MIN_GLOBAL_RESTART_INTERVAL_S
+        wd_mod.MIN_GLOBAL_RESTART_INTERVAL_S = 30
+        try:
+            wd.last_global_restart_at = time.time()
+            with mock.patch.object(wd.stop_event, "wait", side_effect=_tracking_wait), \
+                 mock.patch.object(wd_mod, "show_session", return_value=self.sess), \
+                 mock.patch.object(wd_mod, "fetch_pane_snapshot", side_effect=_tracking_sample):
+                wd._do_restart("cond-live", "conductor-bruce", "personal")
+        finally:
+            wd_mod.MIN_GLOBAL_RESTART_INTERVAL_S = saved_interval
+
+        self.assertTrue(events, "expected the restart path to both wait and sample")
+        kind, timeout = events[0]
+        self.assertEqual(kind, "wait")
+        self.assertGreater(timeout, 1.0, "the first wait must be the serialization wait")
+        self.assertIn(
+            "sample", [k for k, _ in events],
+            "the liveness sample must be taken after the serialization wait, not before",
+        )
+
+
+class TestCliRefusedRestart(unittest.TestCase):
+    """A guard inside agent-deck (auth hold, or the #30 freshness guard) answers
+    `session restart` with success + skipped=true. Falling through to
+    `session start` would defeat exactly the guard that just fired."""
+
+    def test_refusal_does_not_fall_back_to_session_start(self):
+        wd = wd_mod.Watchdog(dry_run=False)
+        sess = make_sess(sid="cond-refused", title="conductor-bruce")
+        refusal = json.dumps({
+            "success": True, "skipped": True,
+            "reason": "the agent exited because it could not authenticate — "
+                      "automatic restarts are held (use --force to restart anyway)",
+            "id": "cond-refused", "title": "conductor-bruce",
+        })
+
+        calls = []
+
+        def _run_cmd(args, timeout=None):
+            calls.append(list(args))
+            if "restart" in args:
+                return 0, refusal, ""
+            return 0, "", ""
+
+        with mock.patch.object(wd_mod, "show_session", return_value=sess), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value=""), \
+             mock.patch.object(wd_mod, "fetch_session_output", return_value=""), \
+             mock.patch.object(wd_mod, "run_cmd", side_effect=_run_cmd), \
+             mock.patch.object(wd_mod, "telegram_send", return_value=True):
+            ok = wd._do_restart("cond-refused", "conductor-bruce", "personal")
+
+        self.assertFalse(ok)
+        self.assertFalse(
+            any("start" in args for args in calls),
+            f"a deliberate refusal must not be escalated to `session start`: {calls}",
+        )
+        self.assertFalse(
+            any("send" in args for args in calls),
+            "no continuity message for a session that was never restarted",
+        )
+        self.assertEqual(wd.consecutive_failures.get("cond-refused", 0), 0,
+                         "someone else's guard firing is not our restart failing")
 
 
 if __name__ == "__main__":
