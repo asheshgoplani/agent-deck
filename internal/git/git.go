@@ -697,7 +697,6 @@ func IsLinkedWorktree(path string) bool {
 	return filepath.Base(filepath.Dir(gitdir)) == "worktrees"
 }
 
-
 // RemoveWorktree removes a worktree from the repository.
 // If force is true, it will remove even if there are uncommitted changes.
 // When force is true and git fails (e.g. "Directory not empty" due to
