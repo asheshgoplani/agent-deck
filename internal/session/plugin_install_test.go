@@ -112,6 +112,36 @@ auto_install = true
 	}
 }
 
+func TestEnsurePluginsInstalled_RepairsRegistryPointingAtAnotherProfile(t *testing.T) {
+	home := withTempHome(t)
+	writeConfig(t, home, `
+[plugins.octopus]
+name = "octopus"
+source = "nyldn/claude-octopus"
+`)
+	source := t.TempDir()
+	other := t.TempDir()
+	pluginDir := filepath.Join(source, "plugins", "cache", "nyldn/claude-octopus", "octopus", "1.0.0")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(source, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry := `{"plugins":{"octopus@nyldn/claude-octopus":[{"installPath":"` +
+		filepath.Join(other, "plugins", "cache", "nyldn/claude-octopus", "octopus", "1.0.0") + `"}]}}`
+	if err := os.WriteFile(filepath.Join(source, "plugins", "installed_plugins.json"), []byte(registry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	calls, _ := withStubPluginExec(t)
+	inst := &Instance{ID: "x", Tool: "claude", Plugins: []string{"octopus"}}
+	_ = inst.EnsurePluginsInstalled(source)
+	if len(*calls) != 2 {
+		t.Fatalf("stale cross-profile registry must trigger reinstall; got calls=%v", *calls)
+	}
+}
+
 // TestEnsurePluginsInstalled_RunsMarketplaceAddThenInstall asserts the
 // happy-path order: `claude plugin marketplace add` then
 // `claude plugin install <id>`.

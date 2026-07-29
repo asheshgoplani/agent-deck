@@ -11,6 +11,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -159,9 +160,51 @@ func pluginInstalled(sourceProfileDir string, def *PluginDef) bool {
 	if err != nil {
 		return false
 	}
+	hasCache := false
 	for _, entry := range entries {
 		if entry.IsDir() {
-			return true
+			hasCache = true
+			break
+		}
+	}
+	if !hasCache {
+		return false
+	}
+
+	// Claude also requires an installed_plugins.json entry for the active
+	// profile. A copied/stale cache alone is not an installation: this occurs
+	// when profiles share plugin files or a previous profile's registry entry
+	// points outside sourceProfileDir. Treat that state as missing so the
+	// profile-aware `claude plugin install` call repairs the registry.
+	registryPath := filepath.Join(sourceProfileDir, "plugins", "installed_plugins.json")
+	raw, err := os.ReadFile(registryPath)
+	if os.IsNotExist(err) {
+		// Preserve compatibility with older Claude versions that predate the
+		// registry file and used cache presence as the installation marker.
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	var registry struct {
+		Plugins map[string][]struct {
+			InstallPath string `json:"installPath"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(raw, &registry); err != nil {
+		return false
+	}
+	profilePluginsDir := canonicalProfileDir(filepath.Join(sourceProfileDir, "plugins"))
+	for _, installed := range registry.Plugins[def.ID()] {
+		if installed.InstallPath == "" {
+			continue
+		}
+		installPath := canonicalProfileDir(installed.InstallPath)
+		rel, err := filepath.Rel(profilePluginsDir, installPath)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if info, statErr := os.Stat(installed.InstallPath); statErr == nil && info.IsDir() {
+				return true
+			}
 		}
 	}
 	return false

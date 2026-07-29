@@ -34,6 +34,9 @@ import (
 // longer silent. Issue #922, reported by @bautrey.
 func TestBuildClaudeCommand_WorkerScratchOverrideEmitsInfoLog(t *testing.T) {
 	withTelegramConductorPresent(t)
+	origGOOS := runtimeGOOS
+	runtimeGOOS = func() string { return "linux" }
+	t.Cleanup(func() { runtimeGOOS = origGOOS })
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profile := filepath.Join(home, ".claude")
@@ -93,6 +96,9 @@ func TestBuildClaudeCommand_WorkerScratchOverrideEmitsInfoLog(t *testing.T) {
 // session behaves.
 func TestBuildClaudeResume_WorkerScratchOverrideEmitsInfoLog(t *testing.T) {
 	withTelegramConductorPresent(t)
+	origGOOS := runtimeGOOS
+	runtimeGOOS = func() string { return "linux" }
+	t.Cleanup(func() { runtimeGOOS = origGOOS })
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profile := filepath.Join(home, ".claude")

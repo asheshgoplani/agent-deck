@@ -24,6 +24,12 @@ import (
 // was routed to an opaque scratch path the keychain never saw, triggering
 // login + theme + trust prompts on every spawn. Fix restores the gating.
 func TestIssue949_ScratchInjectionGate(t *testing.T) {
+	// Pin the historical file-backed credential behavior. macOS now keeps the
+	// stable profile identity and loads scratch settings via --settings.
+	origGOOS := runtimeGOOS
+	runtimeGOOS = func() string { return "linux" }
+	t.Cleanup(func() { runtimeGOOS = origGOOS })
+
 	tmpHome := t.TempDir()
 	origHome := os.Getenv("HOME")
 	origProfile := os.Getenv("AGENTDECK_PROFILE")

@@ -298,12 +298,14 @@ func TestEnsureWorkerScratchConfigDir_TelegramAbsentStillPinsDisabled(t *testing
 	}
 }
 
-// buildClaudeCommand must route CLAUDE_CONFIG_DIR through the scratch
-// dir once Instance.WorkerScratchConfigDir is set. This is the
-// load-bearing wire: without it, the plugin still loads the ambient
-// profile's settings.json and reads the conductor's bot token.
-func TestBuildClaudeCommand_UsesWorkerScratchConfigDir(t *testing.T) {
+// On macOS buildClaudeCommand must keep CLAUDE_CONFIG_DIR on the stable
+// account profile and load the scratch settings through --settings. This keeps
+// the plugin isolation without creating an independent Keychain identity.
+func TestBuildClaudeCommand_MacOSUsesStableProfileWithScratchSettings(t *testing.T) {
 	withTelegramConductorPresent(t)
+	origGOOS := runtimeGOOS
+	runtimeGOOS = func() string { return "darwin" }
+	t.Cleanup(func() { runtimeGOOS = origGOOS })
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
@@ -336,18 +338,19 @@ func TestBuildClaudeCommand_UsesWorkerScratchConfigDir(t *testing.T) {
 
 	cmd := inst.buildClaudeCommand("claude")
 
-	// Accept either the inline form (`CLAUDE_CONFIG_DIR=<dir> claude`) or
-	// the bash-export form (`export CLAUDE_CONFIG_DIR=<dir>;`). The
-	// command builder picks between them per session mode — both must
-	// point at the scratch dir.
+	// The scratch path must appear only as the settings overlay.
+	settingsFlag := "--settings " + filepath.Join(scratch, "settings.json")
+	if !strings.Contains(cmd, settingsFlag) {
+		t.Errorf("built command must load scratch settings\n  want contains: %q\n  got: %s", settingsFlag, cmd)
+	}
 	scratchInline := fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", scratch)
 	scratchExport := fmt.Sprintf("CLAUDE_CONFIG_DIR=%s;", scratch)
-	if !strings.Contains(cmd, scratchInline) && !strings.Contains(cmd, scratchExport) {
-		t.Errorf("built command must point CLAUDE_CONFIG_DIR at scratch dir\n  want contains one of: %q | %q\n  got: %s", scratchInline, scratchExport, cmd)
+	if strings.Contains(cmd, scratchInline) || strings.Contains(cmd, scratchExport) {
+		t.Errorf("built command must not use scratch as CLAUDE_CONFIG_DIR\n  got: %s", cmd)
 	}
 	profileInline := fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", profile)
 	profileExport := fmt.Sprintf("CLAUDE_CONFIG_DIR=%s;", profile)
-	if strings.Contains(cmd, profileInline) || strings.Contains(cmd, profileExport) {
-		t.Errorf("built command must NOT use ambient profile when scratch is set\n  got: %s", cmd)
+	if !strings.Contains(cmd, profileInline) && !strings.Contains(cmd, profileExport) {
+		t.Errorf("built command must keep the stable profile as CLAUDE_CONFIG_DIR\n  got: %s", cmd)
 	}
 }

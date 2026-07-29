@@ -333,13 +333,12 @@ type Instance struct {
 	// directly by users.
 	AutoLinkedChannels []string `json:"auto_linked_channels,omitempty"`
 
-	// WorkerScratchConfigDir is the ephemeral CLAUDE_CONFIG_DIR prepared
-	// for a non-conductor claude worker (issue #59, v1.7.68). The
-	// scratch dir copies the ambient profile's settings.json with the
-	// telegram plugin explicitly disabled, symlinks the rest of the
-	// profile, and is cleaned up on session stop/remove. Empty for
-	// conductor sessions, explicit telegram channel owners, and
-	// non-claude tools — they use the ambient profile as-is.
+	// WorkerScratchConfigDir holds the generated per-session Claude settings
+	// overlay (issue #59, v1.7.68). On macOS the stable account profile remains
+	// CLAUDE_CONFIG_DIR and this directory's settings.json is passed via
+	// --settings, avoiding a per-session Keychain identity. Other platforms
+	// retain the historical scratch CLAUDE_CONFIG_DIR behavior. Empty means no
+	// per-session settings isolation is needed.
 	WorkerScratchConfigDir string `json:"worker_scratch_config_dir,omitempty"`
 
 	// IdleTimeoutSecs is the auto-stop threshold (#1143). When > 0, a central
@@ -1263,6 +1262,16 @@ func extraArgsSupplyModel(extraArgs []string) bool {
 // Also handles instance-level flags like --add-dir for subagent access
 func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	var flags []string
+
+	// macOS Claude Code keys OAuth credentials by the literal
+	// CLAUDE_CONFIG_DIR. Pointing it at a worker scratch directory therefore
+	// forks the profile's rotating refresh token into a separate Keychain item.
+	// Keep CLAUDE_CONFIG_DIR on the stable account profile and load only the
+	// generated per-session settings overlay through Claude's supported flag.
+	if runtimeGOOS() == "darwin" && i.WorkerScratchConfigDir != "" {
+		settingsPath := filepath.Join(i.WorkerScratchConfigDir, "settings.json")
+		flags = append(flags, "--settings "+shellescape.Quote(settingsPath))
+	}
 
 	// Instance-level flags (not from ClaudeOptions)
 	// --add-dir: Grant subagent access to parent's project directory (for worktrees, etc.)

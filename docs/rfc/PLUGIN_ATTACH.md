@@ -258,39 +258,24 @@ Forks / alternative telegram plugins (`plugin:telegram@<other-fork>`) are NOT re
 
 Test: `internal/session/plugin_telegram_refusal_test.go` — `TestPluginRefuse_TelegramOfficial_AtCLI`, `TestPluginRefuse_TelegramOfficial_AtMutator`, `TestPluginRefuse_TelegramOfficial_AtCatalogLoad`, `TestPluginAllow_TelegramFork_LandsInPlugins`.
 
-## 7. macOS OAuth handling (v1 policy)
+## 7. macOS OAuth handling
 
 Issue #759 documents that on macOS, Claude Code keys OAuth credentials by the literal `CLAUDE_CONFIG_DIR` path string. A per-session scratch dir under `~/.agent-deck/worker-scratch/<instance-id>/` has no prior login association and triggers a "login required" prompt on first claude spawn.
 
-v1 strategy: **loud warning + best-effort, no blocking**.
+Agent Deck keeps the resolved account profile as `CLAUDE_CONFIG_DIR` on macOS,
+so every session for that account shares Claude's single canonical Keychain
+credential. The generated scratch `settings.json` is loaded with Claude's
+per-session `--settings <path>` flag. Agent Deck never reads, copies, or writes
+Claude OAuth secrets in the macOS Keychain.
 
-At first scratch creation (detected by checking `~/.agent-deck/state.json` for a `macos_plugin_warning_shown_for_profile_<name>` flag):
+Linux keeps the scratch directory as `CLAUDE_CONFIG_DIR`; its canonical
+`.credentials.json` is shared into the scratch through the existing symlink.
 
-- Print to stderr (and to session log) a multiline warning:
-  ```
-  ┌─ NOTICE: per-session plugin scratch on macOS ──────────────────┐
-  │ This session enables plugins via a per-session CLAUDE_CONFIG_DIR. │
-  │ On macOS, Claude Code keys OAuth credentials to the literal     │
-  │ config-dir path, so this session may show "login required."     │
-  │                                                                  │
-  │ If that happens:                                                 │
-  │   1. Open a regular shell                                        │
-  │   2. Run: CLAUDE_CONFIG_DIR=<path> claude                        │
-  │   3. Authenticate                                                │
-  │   4. Restart this agent-deck session                             │
-  │                                                                  │
-  │ See: docs/rfc/PLUGIN_ATTACH.md §7                                │
-  └──────────────────────────────────────────────────────────────────┘
-  ```
-- Mark the flag in `state.json` so the warning shows once per profile (not on every session start).
-
-Linux/Docker hosts skip this warning (no path-keyed OAuth issue).
-
-Hosts WITH `hostHasTelegramConductor() == true` already use scratch dirs today and have presumably handled the OAuth issue; the warning still fires there if a `--plugin` is the trigger (because the messaging is plugin-specific).
-
-Test: `internal/session/macos_oauth_warning_test.go` — `TestMacOSWarning_ShowsOnceAtFirstScratchEvent`, `TestMacOSWarning_SkippedOnLinux`, `TestMacOSWarning_StateFlagPersists`.
-
-A structural fix (proactively symlinking `.credentials.json`, or filing a Claude Code issue for path-independent keying) is deferred to a follow-up RFC.
+Regression coverage:
+`TestBuildClaudeCommand_MacOSUsesStableProfileWithScratchSettings` verifies
+that the macOS command uses the stable profile for `CLAUDE_CONFIG_DIR`, loads
+the scratch settings overlay, and never uses the scratch path as an auth
+identity.
 
 ## 8. Test mandate map
 

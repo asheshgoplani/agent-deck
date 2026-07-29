@@ -1,11 +1,11 @@
 ---
-name: design
+name: brainstorming
 description: Collaborative design and brainstorming before any code is written — explores project context, asks one clarifying question at a time, offers 2–3 approaches with trade-offs, and writes an approved, committed design document. Use before building a feature, adding functionality, or changing behavior, and whenever the user says "let's build", "I want to add", "how should we do X", or asks for a design or spec. Hard-gates implementation until the design is approved.
 metadata:
   compatibility: "claude, opencode"
 ---
 
-# Design
+# Brainstorming
 
 **If this session was dispatched as an executor, stop reading here.** Two
 tells: the session prompt says the work is already designed and approved,

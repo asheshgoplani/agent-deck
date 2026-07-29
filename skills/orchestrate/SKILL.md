@@ -221,7 +221,7 @@ The hook ships with the plugin, but the `AGENTDECK_ROLE` marker it branches on
 ships with the agent-deck binary. Against an older binary the marker is
 absent, the hook cannot tell a child from an interactive session, and the
 child receives the *interactive* preamble — which opens by telling it to start
-with `design` and produce an approved design document before any code. That is
+with `brainstorming` and produce an approved design document before any code. That is
 the precise behaviour the anti-brainstorm block exists to stop, arriving from
 inside your own tooling.
 

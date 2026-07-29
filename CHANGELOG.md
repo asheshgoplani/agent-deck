@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Workflow discipline skills shipped with the plugin.** Five new skills —
-  `design` (collaborative brainstorming behind a hard approval gate, writing a
+  `brainstorming` (collaborative design behind a hard approval gate, writing a
   committed design doc), `review` (an adversarial pass, a mechanical edge-case
   path trace and a verification-gap check, merged into one deduplicated,
   severity-graded, triaged findings list with a machine-readable verdict),

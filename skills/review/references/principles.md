@@ -1,4 +1,4 @@
-Shared vocabulary for the `design` architecture pass, the `tdd` refactor
+Shared vocabulary for the `brainstorming` architecture pass, the `tdd` refactor
 step, and the adversarial review layer: use these four lenses to name what's
 actually wrong in a diff, not to enforce style for its own sake.
 

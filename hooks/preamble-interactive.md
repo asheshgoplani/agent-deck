@@ -2,7 +2,7 @@ Workflow skills are available in this session. Reach for them when they fit —
 this is a pipeline nudge, not a mandate:
 
 - Building a feature, adding functionality, or changing behavior → start with
-  `design`: it explores context, asks one question at a time, and produces an
+  `brainstorming`: it explores context, asks one question at a time, and produces an
   approved, committed design document before any code is written.
 - Something is broken — a bug, a failing test, unexpected behavior → `debug`:
   root-cause investigation before any fix, with a circuit breaker after three
