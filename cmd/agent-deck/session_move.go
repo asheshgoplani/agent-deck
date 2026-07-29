@@ -112,6 +112,21 @@ func handleSessionMove(profile string, args []string) {
 		return
 	}
 
+	// #1706: resolve the positional path exactly as `add` does. The stored
+	// project_path is identity — the Claude-history migration below derives its
+	// slug from it, and tmux would resolve a relative value against the tmux
+	// server's cwd rather than the caller's. An SSH session's path names a
+	// directory on the remote host, so this machine's cwd is not a valid anchor
+	// for it; leave those verbatim.
+	if !inst.IsSSH() {
+		resolved, resErr := resolveAddPath(newPath)
+		if resErr != nil {
+			out.Error(fmt.Sprintf("resolve new path: %v", resErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		newPath = resolved
+	}
+
 	oldPath := inst.ProjectPath
 	oldGroup := inst.GroupPath
 

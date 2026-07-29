@@ -76,6 +76,12 @@ type Release struct {
 	PublishedAt time.Time `json:"published_at"`
 	HTMLURL     string    `json:"html_url"`
 	Assets      []Asset   `json:"assets"`
+	// Draft and Prerelease let the publish-window fallback mirror GitHub's
+	// /releases/latest semantics when it walks the full release listing, which
+	// (unlike /releases/latest) includes drafts and pre-releases. See
+	// SelectInstallableRelease.
+	Draft      bool `json:"draft"`
+	Prerelease bool `json:"prerelease"`
 }
 
 // Asset represents a release asset (binary download)
@@ -106,6 +112,13 @@ type UpdateInfo struct {
 	// current version, capped at recentReleasesLimit. Populated when the
 	// full /releases listing is fetched alongside /releases/latest.
 	ReleasesBehind int
+	// PublishingVersion is set when the newest release on GitHub has no
+	// installable binary for this platform yet — i.e. the release is mid-publish
+	// (#1759). LatestVersion/DownloadURL then point at the newest release that
+	// IS installable, so an update still works; callers should mention
+	// StillPublishingHint so the user knows a newer version is imminent.
+	// Empty in the normal case.
+	PublishingVersion string
 }
 
 // NudgeThreshold is the minimum "releases behind" count that triggers the
@@ -473,15 +486,52 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 		return info, err
 	}
 
+	// Count how many releases the user is behind. A failure here is
+	// non-fatal — we fall back to 0 behind (no nudge) but still report
+	// Available so the standard banner renders. The same listing backs the
+	// publish-window fallback below.
+	releasesBehind := 0
+	recent, recentErr := fetchRecentReleases(recentReleasesLimit)
+	if recentErr == nil {
+		releasesBehind = CountReleasesBehind(currentVersion, recent)
+	}
+
+	// Publish-window tolerance (#1759): GitHub reports the new tag as latest
+	// before its assets finish uploading. Offering that release would hand every
+	// downstream path an empty DownloadURL and a "no release binary available"
+	// error, so instead fall back to the newest release we can actually install
+	// and remember which version is still publishing.
+	//
+	// The fallback is only taken when a usable older release actually exists.
+	// If nothing in the listing is installable we leave the result exactly as it
+	// was before this change: that is not a publish window but an unsupported
+	// platform (no goreleaser target for this GOOS/GOARCH), and flagging it on
+	// every check would suppress caching forever and burn the anonymous API
+	// rate limit.
+	publishingVersion := ""
+	if recentErr == nil && !HasPlatformAsset(release, runtime.GOOS, runtime.GOARCH) {
+		if installable, _, selErr := SelectInstallableRelease(recent, runtime.GOOS, runtime.GOARCH); selErr == nil {
+			publishingVersion = strings.TrimPrefix(release.TagName, "v")
+			release = installable
+		}
+	}
+
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
 	downloadURL := getAssetURL(release)
 
-	// Count how many releases the user is behind. A failure here is
-	// non-fatal — we fall back to 0 behind (no nudge) but still report
-	// Available so the standard banner renders.
-	releasesBehind := 0
-	if recent, err := fetchRecentReleases(recentReleasesLimit); err == nil {
-		releasesBehind = CountReleasesBehind(currentVersion, recent)
+	info.LatestVersion = latestVersion
+	info.DownloadURL = downloadURL
+	info.ReleaseURL = release.HTMLURL
+	info.ReleasesBehind = releasesBehind
+	info.PublishingVersion = publishingVersion
+	info.Available = CompareVersions(currentVersion, latestVersion) < 0
+
+	// Don't persist a mid-publish answer. Caching it would pin the user to the
+	// older release for a full checkInterval (an hour by default) after the real
+	// release finished publishing minutes later; re-checking on the next
+	// invocation costs one API call and self-heals as soon as the assets land.
+	if publishingVersion != "" {
+		return info, nil
 	}
 
 	// Update cache
@@ -494,12 +544,6 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 		ReleasesBehind: releasesBehind,
 	}
 	_ = saveCache(cache) // Ignore cache save errors
-
-	info.LatestVersion = latestVersion
-	info.DownloadURL = downloadURL
-	info.ReleaseURL = release.HTMLURL
-	info.ReleasesBehind = releasesBehind
-	info.Available = CompareVersions(currentVersion, latestVersion) < 0
 
 	return info, nil
 }

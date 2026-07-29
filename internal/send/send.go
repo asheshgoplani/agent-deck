@@ -13,6 +13,54 @@ func HasUnsentPastedPrompt(content string) bool {
 	return strings.Contains(strings.ToLower(content), "[pasted text")
 }
 
+// firstNonEmptyLine returns the first physical line of s that is non-empty
+// after trimming. Used to reconstruct what the composer actually renders for a
+// multi-line message: Claude's input box shows the message's first physical
+// line and truncates the rest behind a blank line (see HasUnsentComposerPrompt).
+func firstNonEmptyLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+// messageTail returns the normalized content of message that follows its first
+// non-empty physical line. For a multi-line message this "tail" is the part that
+// makes it identifiable beyond an opening line another draft might share, and is
+// used to corroborate a first-line match before recovering (see
+// HasUnsentComposerPrompt).
+func messageTail(message string) string {
+	lines := strings.Split(message, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			return NormalizePromptText(strings.Join(lines[i+1:], " "))
+		}
+	}
+	return ""
+}
+
+// maxTailNeedleLen bounds how much of a multi-line message's tail must be
+// visible in the pane to corroborate a first-line match: long enough to be
+// message-specific, short enough to tolerate terminal wrapping of the content.
+const maxTailNeedleLen = 48
+
+// paneContainsTail reports whether a bounded, message-specific fragment of a
+// multi-line message's tail is visible in the pane content. It corroborates a
+// first-line match so an unrelated draft that merely shares the same opening
+// line is not mistaken for this message.
+func paneContainsTail(content, tail string) bool {
+	if tail == "" {
+		return false
+	}
+	needle := []rune(tail)
+	if len(needle) > maxTailNeedleLen {
+		needle = needle[:maxTailNeedleLen]
+	}
+	return strings.Contains(NormalizePromptText(content), string(needle))
+}
+
 // NormalizePromptText normalizes whitespace in prompt text by replacing NBSP
 // with regular spaces, trimming, and collapsing multiple whitespace runs.
 func NormalizePromptText(s string) string {
@@ -176,6 +224,32 @@ func HasUnsentComposerPrompt(content, message string) bool {
 	const minWrappedPrefixLen = 16
 	if len(promptBody) >= minWrappedPrefixLen && strings.HasPrefix(msg, promptBody) {
 		return true
+	}
+
+	// Multi-line messages: CurrentComposerPrompt stops collecting at the first
+	// blank line, so the composer body it recovers is only the message's first
+	// physical line. This is the shape of every `launch -m` / `session send`
+	// prompt once the completion-sentinel instruction is appended — its trailing
+	// "\n\n## Final step …" block introduces a blank line. On a cold first start
+	// the initial Enter can be swallowed while the child's TUI is still mounting,
+	// leaving the whole message sitting unsent in the composer; when the first
+	// line is shorter than minWrappedPrefixLen the whole-message comparisons
+	// above all miss it and the send-verify loop never fires a recovery Enter.
+	//
+	// Match the message's first physical line so that stuck state is detected
+	// regardless of first-line length — but a first-line match alone is
+	// ambiguous: two different messages can open with the same line, so acting
+	// on it risks firing a recovery Enter that submits an unrelated draft. Guard
+	// it with corroborating message-specific content: a fragment of the tail
+	// (everything past the first line) must also be visible in the pane. Only
+	// engages for genuinely multi-line messages (firstLine != msg), so
+	// single-line behavior is unchanged.
+	if firstLine := NormalizePromptText(firstNonEmptyLine(message)); firstLine != "" && firstLine != msg {
+		firstLineMatch := promptBody == firstLine ||
+			(len(promptBody) >= minWrappedPrefixLen && strings.HasPrefix(firstLine, promptBody))
+		if firstLineMatch && paneContainsTail(content, messageTail(message)) {
+			return true
+		}
 	}
 
 	// Fallback: compare a short message prefix to handle truncation/formatting

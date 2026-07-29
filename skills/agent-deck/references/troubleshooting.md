@@ -286,6 +286,35 @@ Use this template:
 
 ## Recovery
 
+### Every Session Died At Once
+
+Symptom: the whole deck flips to red (or the panes are simply gone) after a tmux
+server was killed, the host rebooted, or an auth failure cascaded through the
+fleet.
+
+```bash
+agent-deck fleet status          # read-only: what is actually down?
+agent-deck fleet recover         # dry run: the plan, in order, with waits
+agent-deck fleet recover --yes   # run it
+```
+
+`fleet recover` restarts the down sessions **one at a time** with ~5s between
+boots and verifies each boot before starting the next. Do not replace it with a
+loop that restarts everything at once: simultaneous agent boots are what fork a
+shared rotating OAuth refresh token, which turns a recoverable outage into a
+fleet-wide 401.
+
+The sweep stops on its own if three restarts fail in a row, or if sessions come
+up showing an auth-failure banner (re-authenticate first, then re-run). Sessions
+you stopped or archived are never touched.
+
+If the panes are still ALIVE and only agent-deck thinks they are broken (a
+killed control pipe, e.g. after an SSH logout), the cheaper fix is:
+
+```bash
+agent-deck session revive --all
+```
+
 ### Session Metadata Lost
 
 Data stored in SQLite:

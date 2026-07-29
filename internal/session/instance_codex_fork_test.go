@@ -75,6 +75,31 @@ func TestCreateForkedCodexInstance_UsesWorktreeAndForkCommand(t *testing.T) {
 	}
 }
 
+func TestCreateForkedCodexInstance_PreservesReasoningEffort(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	sid := "11111111-2222-3333-4444-555555555555"
+	seedCodexRollout(t, home, sid)
+
+	parent := NewInstanceWithTool("cx parent", "/tmp/original", "codex")
+	parent.CodexSessionID = sid
+	parent.CodexDetectedAt = time.Now()
+	if err := parent.ApplyLaunchReasoningEffort("high"); err != nil {
+		t.Fatalf("ApplyLaunchReasoningEffort: %v", err)
+	}
+
+	forked, cmd, err := parent.CreateForkedCodexInstanceWithOptions("cx fork", "", nil)
+	if err != nil {
+		t.Fatalf("CreateForkedCodexInstanceWithOptions: %v", err)
+	}
+	if got := forked.LaunchReasoningEffort(); got != "high" {
+		t.Fatalf("forked LaunchReasoningEffort() = %q, want high", got)
+	}
+	if !strings.Contains(cmd, "--config model_reasoning_effort=high") {
+		t.Fatalf("fork command missing reasoning effort: %s", cmd)
+	}
+}
+
 func TestCreateForkedCodexInstance_UsesConfiguredCodexHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

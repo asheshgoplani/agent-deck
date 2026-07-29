@@ -42,15 +42,31 @@ func TestIsolatedTmuxSocket1031_ReapsPriorLeak(t *testing.T) {
 	}
 
 	socket := uniqueTmuxSocketName1031(t)
+
+	// Every tmux call here runs under tmuxEnvForIssue1031 — the SAME socket
+	// resolution the launch subprocesses use. Seeding the fake leak with the
+	// test process's own env instead would place it under the isolated
+	// TMUX_TMPDIR, where a real leak never lands: the test would then be
+	// rehearsing a reap on a socket path production never uses, and would go on
+	// passing while the actual leak accumulated. That mismatch is the 2026-07-18
+	// bug itself, so it must not survive anywhere in this file.
+	tmux := func(args ...string) *exec.Cmd {
+		cmd := exec.Command("tmux", args...)
+		cmd.Env = tmuxEnvForIssue1031()
+		return cmd
+	}
+
 	// The socket name is deterministic, so a prior crashed run of THIS test may
 	// have left a server (with the "leaked" session) on it — which would make
 	// the new-session seed below fail with "duplicate session". Reap any such
 	// leftover first so the seed starts from a clean server. Best-effort: a
 	// missing server just makes kill-server a no-op.
-	_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
+	if err := killTmuxServer1031(socket); err != nil {
+		t.Logf("pre-seed reap: %v", err)
+	}
 	// Simulate a server leaked by a previous timed-out/SIGKILL'd run.
-	if err := exec.Command("tmux", "-L", socket, "new-session", "-d", "-s", "leaked").Run(); err != nil {
-		t.Fatalf("seed leaked server: %v", err)
+	if out, err := tmux("-L", socket, "new-session", "-d", "-s", "leaked").CombinedOutput(); err != nil {
+		t.Fatalf("seed leaked server: %v: %s", err, out)
 	}
 
 	// isolatedTmuxSocket1031 must resolve to the SAME socket (deterministic)
@@ -60,7 +76,7 @@ func TestIsolatedTmuxSocket1031_ReapsPriorLeak(t *testing.T) {
 		t.Fatalf("helper resolved a different socket (%q) than the deterministic name (%q); a leak would be unreachable", got, socket)
 	}
 
-	if err := exec.Command("tmux", "-L", socket, "has-session", "-t", "leaked").Run(); err == nil {
+	if err := tmux("-L", socket, "has-session", "-t", "leaked").Run(); err == nil {
 		t.Fatal("prior leaked server should have been reaped at setup, but it is still alive")
 	}
 }

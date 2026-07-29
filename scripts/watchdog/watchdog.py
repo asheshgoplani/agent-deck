@@ -85,6 +85,28 @@ CIRCUIT_BREAKER_429_WINDOW_S = 600            # counted over last 10 min
 CIRCUIT_BREAKER_PAUSE_S = 600                 # breaker pauses restarts for 10 min
 PROMPT_RESUME_TIMEOUT_S = 120                 # one-shot `claude --resume -p` timeout
 
+# --- liveness confirmation before a restart (issue #1705) ---
+# A restart is destructive: it tears the pane down and interrupts whatever the
+# agent was doing. The `status == error` reading that authorizes one can be wrong
+# in two different ways, and #1705 was a conductor restarted mid-turn:
+#
+#   STALE  — the reading and the restart are not the same moment. Restarts are
+#            globally serialized MIN_GLOBAL_RESTART_INTERVAL_S apart and a cascade
+#            revives serially, so a queued decision can execute minutes after the
+#            sample that justified it, long after the session recovered by itself.
+#   FALSE  — `error` is partly derived from pane CONTENT, so a banner-shaped line
+#            sitting in scrollback keeps the verdict standing while the agent works
+#            on happily. Re-reading the status does not help here: the content does
+#            not move, so every read agrees.
+#
+# So confirm at the moment of the restart, and let observed pane ACTIVITY veto it:
+# an agent that is still producing output is not dead, whatever the status says.
+# Every decision (restart or skip) is recorded with its readings, so a future
+# false positive can be diagnosed from the log instead of reconstructed.
+LIVENESS_CONFIRM_GAP_S = 2.0        # spacing between the two pane samples
+LIVENESS_LOG = WATCHDOG_DIR / "liveness.log"
+LIVENESS_SKIP_ESCALATE_AFTER = 3    # consecutive skips on one session → tell a human
+
 # Patterns we grep against tmux pane output / subprocess stderr.
 RATE_LIMIT_PATTERNS = (
     re.compile(r"\brate[- ]?limit", re.IGNORECASE),
@@ -173,6 +195,45 @@ def fetch_session_output(instance_id, profile):
     if rc != 0:
         return ""
     return out or ""
+
+
+def fetch_pane_snapshot(instance_id, profile):
+    """Raw tmux pane capture (`session output --pane`) — the liveness probe's sample.
+
+    Deliberately NOT the parsed transcript output `fetch_session_output` returns:
+    that only changes when a turn ends, so a session in the middle of a long tool
+    call looks frozen. The pane capture moves with every spinner frame and every
+    line a tool prints, which is exactly the "is this agent still producing
+    output?" signal a restart decision needs.
+
+    Returns the pane text, or None when the pane could not be sampled at all
+    (which is different from "" — an empty but readable pane)."""
+    args = [AGENT_DECK_BIN]
+    if profile:
+        args += ["-p", profile]
+    args += ["session", "output", instance_id, "--pane", "-q"]
+    rc, out, _ = run_cmd(args, timeout=15)
+    if rc != 0:
+        return None
+    return out or ""
+
+
+def digest_pane(text):
+    """Short content digest of a pane sample. The liveness record stores this and
+    never the text itself: panes carry prompts, transcripts and secrets, and this
+    log exists to be read by humans and pasted into bug reports."""
+    if text is None:
+        return ""
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def parse_cli_json(text):
+    """Parse an `agent-deck ... --json` payload, tolerating anything unexpected."""
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def detect_rate_limit(text):
@@ -429,6 +490,10 @@ class Watchdog:
         self.last_poller_restart_at = {}          # sid -> ts
         # v1.7.63 capability B: per-waiting-child {first_seen_at, pane_hash, last_nudge_at}
         self.waiting_tracker = {}
+        # #1705: consecutive liveness-confirmation skips per session. A session that
+        # keeps reporting error while its pane keeps moving is a status-classifier
+        # bug, not a dead session — after a few skips a human should hear about it.
+        self.liveness_skips = {}
 
     # ---- logging helpers ----
 
@@ -530,6 +595,138 @@ class Watchdog:
         """Must be called with self.lock held."""
         return now < self.rate_limited_until.get(sid, 0)
 
+    # ---- liveness confirmation (issue #1705) ----
+
+    def _forget_restart_attempt(self, sid):
+        """Give back the rate-limit slot a caller reserved for a restart that never
+        happened. A skipped restart is not an attempt: without this, a live session
+        the watchdog correctly declined to touch would still burn its
+        RATE_LIMIT_MAX budget and escalate as "keeps crashing"."""
+        with self.lock:
+            hist = self.restart_history.get(sid)
+            if hist:
+                hist.pop()
+
+    def _liveness_verdict(self, record, proceed, reason, escalate_critical):
+        """Finish a liveness record, persist it, and apply the bookkeeping the
+        verdict implies. Returns proceed unchanged so callers can `return`
+        straight through it."""
+        sid = record["id"]
+        record["decision"] = "restart" if proceed else "skip"
+        record["reason"] = reason
+        if proceed:
+            with self.lock:
+                self.liveness_skips.pop(sid, None)
+            log.info("liveness: %s confirmed not making progress (%s) — restarting", sid, reason)
+            self._audit(LIVENESS_LOG, record)
+            return proceed, record
+
+        self._forget_restart_attempt(sid)
+        with self.lock:
+            skips = self.liveness_skips.get(sid, 0) + 1
+            self.liveness_skips[sid] = skips
+        record["consecutive_skips"] = skips
+        log.warning("liveness: SKIPPING restart of %s — %s (skip #%d)", sid, reason, skips)
+        # Audited only once the record is complete, so the persisted evidence
+        # carries the skip count a reader needs to judge a recurring mismatch.
+        self._audit(LIVENESS_LOG, record)
+
+        # Both escalations fire ONCE per episode, not once per skip: a held or
+        # misreported session is observed every poll for as long as it lasts, and
+        # nagging every few minutes about a condition only a human can clear is how
+        # an alert channel stops being read. The counter resets when the session is
+        # next seen healthy (see maybe_restart), so a recurrence does speak up again.
+        if reason == "auth_hold" and skips == 1:
+            # The merged auth-hold policy (2026-07-26 fleet death) exists because a
+            # restart cannot fix a credential and each doomed boot races the shared
+            # rotating refresh token. Tell a human; do not retry.
+            self.escalate(
+                "auth-hold",
+                f"{sid} is held for an auth failure ({record.get('auth_hold_reason', 'unknown')}) — "
+                f"a restart cannot fix a credential. Repair the login, then restart it explicitly.",
+                telegram=escalate_critical,
+                sid=sid,
+            )
+        elif reason == "pane_active" and skips == LIVENESS_SKIP_ESCALATE_AFTER:
+            self.escalate(
+                "liveness-mismatch",
+                f"{sid} has reported status=error {skips}x while its pane kept producing "
+                f"output — the session is alive and the restart was skipped each time. "
+                f"This is a status-classification problem, not a dead session.",
+                telegram=escalate_critical,
+                sid=sid,
+            )
+        return proceed, record
+
+    def _confirm_restart_needed(self, sid, title, profile, escalate_critical=False):
+        """Final liveness confirmation, run at the moment of the restart.
+
+        Returns (proceed, record). See the LIVENESS_* constants for why a single
+        `status == error` reading is not enough to authorize tearing a pane down.
+
+        The record is the post-hoc evidence #1705 asked for: both status reads with
+        their timestamps and substates, both pane digests, whether the pane moved,
+        the auth-hold reason if any, and the final decision. Digests only — never
+        pane text, prompts or environment."""
+        record = {
+            "ts": time.time(), "id": sid, "title": title, "profile": profile,
+            "gap_s": LIVENESS_CONFIRM_GAP_S, "reads": [],
+        }
+
+        def _read():
+            detail = show_session(sid, profile=profile)
+            status = (detail.get("status") or "").lower() if detail else ""
+            entry = {"ts": time.time(), "status": status or "unreadable"}
+            if detail and detail.get("substate"):
+                entry["substate"] = detail.get("substate")
+            record["reads"].append(entry)
+            return detail, entry["status"]
+
+        detail, status = _read()
+        if status == "unreadable":
+            # We cannot see the session, so we cannot claim it is dead. Restarting
+            # blind is how a CLI hiccup turns into a torn-down healthy pane.
+            return self._liveness_verdict(record, False, "status_unreadable", escalate_critical)
+        if status != "error":
+            # The stale-decision case: it recovered between the trigger and here.
+            return self._liveness_verdict(record, False, "recovered_before_restart", escalate_critical)
+
+        auth_hold = detail.get("auth_hold")
+        if isinstance(auth_hold, dict) and auth_hold:
+            # Reason only — auth_hold.evidence is retained pane text.
+            record["auth_hold_reason"] = auth_hold.get("reason") or "unknown"
+            return self._liveness_verdict(record, False, "auth_hold", escalate_critical)
+
+        first = fetch_pane_snapshot(sid, profile)
+        if self.stop_event.wait(LIVENESS_CONFIRM_GAP_S):
+            # Daemon is shutting down mid-sample: we have no second reading, and
+            # tearing a pane down on the way out is the worst possible time to be
+            # wrong. Leave it for the next run.
+            return self._liveness_verdict(record, False, "shutting_down", escalate_critical)
+        second = fetch_pane_snapshot(sid, profile)
+        sampled = first is not None and second is not None
+        record["pane"] = {
+            "first": digest_pane(first),
+            "second": digest_pane(second),
+            "sampled": sampled,
+            "changed": bool(sampled and first != second),
+            "empty": bool(sampled and not first and not second),
+        }
+        if record["pane"]["changed"]:
+            # Output is still flowing: the agent is alive and working. This is the
+            # #1705 false positive — a content-derived `error` verdict standing over
+            # a busy pane — and the one signal that re-reading the status cannot give.
+            return self._liveness_verdict(record, False, "pane_active", escalate_critical)
+
+        _, status2 = _read()
+        if status2 == "unreadable":
+            return self._liveness_verdict(record, False, "status_unreadable", escalate_critical)
+        if status2 != "error":
+            return self._liveness_verdict(record, False, "recovered_before_restart", escalate_critical)
+
+        # Two agreeing error reads, and nothing moved in the pane between them.
+        return self._liveness_verdict(record, True, "confirmed_dead", escalate_critical)
+
     # ---- single-session restart path ----
 
     def _poll_status(self, sid, profile, timeout_s, want_not="error"):
@@ -547,26 +744,34 @@ class Watchdog:
 
     def _restart_or_start(self, sid, profile):
         """Call `session restart`, verify status recovered; if not, fall back to `session start`.
-        Returns (ok, final_status, err_msg)."""
+        Returns (ok, final_status, err_msg, refused)."""
         base = [AGENT_DECK_BIN]
         if profile:
             base += ["-p", profile]
-        rc, _, err = run_cmd(base + ["session", "restart", sid], timeout=60)
+        rc, out_text, err = run_cmd(base + ["session", "restart", sid, "--json"], timeout=60)
         if rc != 0:
-            return False, None, f"restart rc={rc}: {err.strip()[:200]}"
+            return False, None, f"restart rc={rc}: {err.strip()[:200]}", False
+        payload = parse_cli_json(out_text)
+        if payload.get("skipped"):
+            # agent-deck refused ON PURPOSE — the auth hold, or the #30 freshness
+            # guard. Falling through to `session start` would defeat exactly the
+            # guard that just fired, and for an auth hold that means one more doomed
+            # boot racing the shared rotating refresh token (2026-07-26 fleet death).
+            reason = str(payload.get("reason") or "no reason given")[:200]
+            return False, None, f"agent-deck refused the restart: {reason}", True
         # Restart can silently no-op when tmux was fully dead. Poll up to 4s first.
         status = self._poll_status(sid, profile, timeout_s=4)
         if status.lower() != "error":
-            return True, status, None
+            return True, status, None, False
         log.warning("%s still in error after restart; falling back to session start", sid)
         rc2, _, err2 = run_cmd(base + ["session", "start", sid], timeout=60)
         if rc2 != 0:
-            return False, status, f"fallback start rc={rc2}: {err2.strip()[:200]}"
+            return False, status, f"fallback start rc={rc2}: {err2.strip()[:200]}", False
         # `start` can take longer — tmux bootstrap + claude cold start.
         status2 = self._poll_status(sid, profile, timeout_s=15)
         if status2.lower() == "error":
-            return False, status2, "fallback start returned success but status still error after 15s"
-        return True, status2, None
+            return False, status2, "fallback start returned success but status still error after 15s", False
+        return True, status2, None, False
 
     def _prompt_resume_personal(self, sid, profile):
         """One-shot `claude --resume <claude_sid> -p "continue..."` to burn a
@@ -640,6 +845,22 @@ class Watchdog:
                     log.info("%s still rate-limited, aborting restart", sid)
                     return False
 
+            # FINAL LIVENESS CONFIRMATION (#1705). Deliberately here and not in the
+            # callers: this is the last instruction before the pane is torn down, and
+            # the only point at which "is it actually stuck?" is being asked about
+            # NOW rather than about whenever the triggering sample was taken — which
+            # can be a minute or more ago after the serialization wait above.
+            proceed, liveness = self._confirm_restart_needed(
+                sid, title, profile, escalate_critical=escalate_critical,
+            )
+            if not proceed:
+                self._audit(RESTART_LOG, {
+                    "ts": time.time(), "id": sid, "title": title, "profile": profile,
+                    "action": "skipped-alive", "reason": liveness.get("reason"),
+                    "dry_run": self.dry_run,
+                })
+                return False
+
             log.info("RESTART %s (%s) profile=%s dry_run=%s", sid, title, profile, self.dry_run)
             self._audit(RESTART_LOG, {
                 "ts": time.time(), "id": sid, "title": title, "profile": profile,
@@ -648,8 +869,18 @@ class Watchdog:
             if self.dry_run:
                 self.last_global_restart_at = time.time()
                 return True
-            ok, final_status, err_msg = self._restart_or_start(sid, profile)
+            ok, final_status, err_msg, refused = self._restart_or_start(sid, profile)
             self.last_global_restart_at = time.time()
+
+            if refused:
+                # Not a failure of ours — a guard inside agent-deck declined. Log it
+                # and stop: retrying and counting crashes would fight the guard.
+                log.warning("restart of %s refused by agent-deck: %s", sid, err_msg)
+                self._audit(RESTART_LOG, {
+                    "ts": time.time(), "id": sid, "title": title, "profile": profile,
+                    "action": "cli-refused", "reason": err_msg,
+                })
+                return False
 
             # Inspect pane output if we failed — distinguish 429 from real crash
             # from deferred-tool-marker (where the -p fallback can help).
@@ -736,6 +967,9 @@ class Watchdog:
             log.debug("session %s status=%s (not error), skip", sid, status)
             with self.lock:
                 self.first_error_seen_at.pop(sid, None)
+                # Seen healthy: this error episode is over, so a later one starts
+                # counting liveness skips (and escalating) from scratch.
+                self.liveness_skips.pop(sid, None)
             return
 
         # Escalation-critical is a stricter classification than restart-critical.

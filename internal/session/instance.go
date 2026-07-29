@@ -103,10 +103,7 @@ const (
 	// timestamp on every received line, so 30s of silence means the stream
 	// (and likely the process) is gone — fall back to tmux polling.
 	opencodeSSEFreshnessWindow = 30 * time.Second
-	// codexProbeScanInterval rate-limits process-file probing to avoid
-	// repeated /proc and lsof scans on every status tick.
-	codexProbeScanInterval    = 2 * time.Second
-	codexProbeMissingSentinel = "__AGENT_DECK_MISSING_TOOL__"
+	codexProbeMissingSentinel  = "__AGENT_DECK_MISSING_TOOL__"
 	// codexLsofProbeTimeout hard-caps a single lsof invocation so a slow or
 	// hung child can never stall the shared status pass. lsof is also run with
 	// -n -P (no host/port name resolution) to avoid reverse-DNS PTR lookups on
@@ -223,6 +220,14 @@ type Instance struct {
 	// pendingCodexRestartWarning is consumed by UI/CLI after Restart() succeeds.
 	// It is intentionally transient and never persisted.
 	pendingCodexRestartWarning string `json:"-"`
+
+	// Hermes CLI integration. Hermes mints a new session ID each launch and does
+	// not export it (no env var / hook), so agent-deck captures it from
+	// `hermes sessions list` at restart time and resumes with --resume. Not
+	// persisted (json:"-"): it is re-captured on every restart, so it needs no
+	// lifetime beyond a single Restart() call — which also keeps it out of the
+	// JSON marshaling that could otherwise race the restart-time write.
+	HermesSessionID string `json:"-"`
 	// restartEnv contains one-shot environment overrides while RestartWithEnv is
 	// building the replacement process. It is cleared before the call returns.
 	restartEnv map[string]string
@@ -403,6 +408,8 @@ type Instance struct {
 
 	tmuxSession *tmux.Session // Internal tmux session
 
+	paneDeadExitStatusForTest func() (int, bool) // nil uses tmuxSession.PaneDeadExitStatus
+
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
 	hookStatus     string    // running, idle, waiting, dead (empty = no hook data)
 	hookEvent      string    // Hook event name that caused the last status (e.g. "PermissionRequest")
@@ -454,6 +461,20 @@ type Instance struct {
 	// conductor. Set when we hold the first such sample at running; cleared on any
 	// settled (running/idle) outcome or once the flip is confirmed. Not serialized.
 	tmuxFlipFromRunningPending bool
+
+	// Auth-hold state (see auth_hold.go). authFailureSeenAt is when a live
+	// credential-failure banner was last observed, used to attribute a LATER
+	// pane death to authentication within authHoldDeathWindow. authHeld mirrors
+	// the durable sidecar so the TUI render hot path (CachedSubstate, once per
+	// row per frame) never touches the filesystem. authHoldCheckedAt throttles
+	// the sidecar read on the death path. None are serialized — the sidecar is
+	// the cross-process source of truth and these re-derive from it.
+	// authHoldClearedOnce records that this process has already swept any stale
+	// sidecar for this session (see clearAuthHoldLocked).
+	authFailureSeenAt   time.Time
+	authHeld            bool
+	authHoldCheckedAt   time.Time
+	authHoldClearedOnce bool
 
 	// addedThisProcess is true only for instances built by a NewInstance*
 	// constructor in the current process (i.e. just `add`ed), and false for
@@ -550,6 +571,42 @@ func (inst *Instance) EffectiveWorkingDir() string {
 		return inst.MultiRepoTempDir
 	}
 	return inst.ProjectPath
+}
+
+// hookCwdIsForeign reports whether a hook-reported cwd is provably OUTSIDE
+// every path this instance is declared to own: EffectiveWorkingDir,
+// ProjectPath, and each user-declared additional path — including their
+// subdirectories, since a session may legitimately `cd` deeper inside its
+// project tree between hook events (issue #1729).
+//
+// This is same-session evidence for the bind/rebind decision only; it never
+// gates status updates for the already-bound session id. Empty cwd returns
+// false (no evidence — legacy hook files and agents that send no cwd must not
+// be penalized). Symlinks are resolved on both sides so macOS /tmp vs
+// /private/tmp (and worktree symlinks) compare equal.
+func (i *Instance) hookCwdIsForeign(cwd string) bool {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return false
+	}
+	resolve := func(p string) string {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Clean(resolved)
+		}
+		return filepath.Clean(p)
+	}
+	candidate := resolve(cwd)
+	owned := append([]string{i.EffectiveWorkingDir()}, i.AllProjectPaths()...)
+	for _, p := range owned {
+		if p == "" {
+			continue
+		}
+		root := resolve(p)
+		if candidate == root || strings.HasPrefix(candidate, root+string(os.PathSeparator)) {
+			return false
+		}
+	}
+	return true
 }
 
 // CleanupMultiRepoTempDir removes the multi-repo temporary directory.
@@ -1338,6 +1395,10 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 		}
 	}
 
+	if opts != nil && strings.TrimSpace(opts.Effort) != "" {
+		flags = append(flags, "--effort "+shellescape.Quote(strings.TrimSpace(opts.Effort)))
+	}
+
 	// Options-level flags
 	if opts != nil {
 		if opts.SkipPermissions {
@@ -1610,6 +1671,15 @@ func (i *Instance) resolveCodexModelFlag() string {
 	return ""
 }
 
+func (i *Instance) resolveCodexReasoningEffortFlag() string {
+	opts := i.GetCodexOptions()
+	if opts != nil && strings.TrimSpace(opts.ReasoningEffort) != "" {
+		value := "model_reasoning_effort=" + strings.TrimSpace(opts.ReasoningEffort)
+		return " --config " + shellescape.Quote(value)
+	}
+	return ""
+}
+
 func (i *Instance) resolveCodexCommand(baseCommand string) string {
 	command := strings.TrimSpace(baseCommand)
 	if i.Tool == "codex" && (command == "" || command == "codex") {
@@ -1754,6 +1824,7 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 
 	yoloFlag := i.resolveCodexYoloFlag()
 	modelFlag := i.resolveCodexModelFlag()
+	reasoningFlag := i.resolveCodexReasoningEffortFlag()
 	command := i.resolveCodexCommand(baseCommand)
 	codexHome := getCodexHomeDirForCommand(command)
 
@@ -1791,16 +1862,16 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 			slog.String("instance_id", i.ID),
 			slog.String("title", i.Title),
 			slog.String("sid", i.CodexSessionID))
-		return envPrefix + fmt.Sprintf("%s%s%s fork %s",
-			command, yoloFlag, modelFlag, i.CodexSessionID)
+		return envPrefix + fmt.Sprintf("%s%s%s%s fork %s",
+			command, yoloFlag, modelFlag, reasoningFlag, i.CodexSessionID)
 	}
 
 	if i.CodexSessionID != "" {
-		return envPrefix + fmt.Sprintf("%s%s%s resume %s",
-			command, yoloFlag, modelFlag, i.CodexSessionID)
+		return envPrefix + fmt.Sprintf("%s%s%s%s resume %s",
+			command, yoloFlag, modelFlag, reasoningFlag, i.CodexSessionID)
 	}
 
-	return envPrefix + command + yoloFlag + modelFlag
+	return envPrefix + command + yoloFlag + modelFlag + reasoningFlag
 }
 
 // buildCodexCommandWithPrompt builds the Codex launch command with an initial
@@ -2645,7 +2716,16 @@ func (i *Instance) shouldRunCodexProcessProbe(force bool) bool {
 		return true
 	}
 
-	if !i.lastCodexProbeAt.IsZero() && time.Since(i.lastCodexProbeAt) < codexProbeScanInterval {
+	// Fast cadence only while bootstrapping (no session ID yet) — that phase is
+	// bounded by discovery succeeding within seconds. Once an ID is known the
+	// probe is just a rotation safety net behind the notify hook and tmux env,
+	// so it backs off to the rotation cadence (issue #1552).
+	interval := codexBootstrapScanInterval
+	if i.CodexSessionID != "" {
+		interval = codexRotationScanInterval
+	}
+
+	if !i.lastCodexProbeAt.IsZero() && time.Since(i.lastCodexProbeAt) < interval {
 		return false
 	}
 
@@ -2663,7 +2743,10 @@ func (i *Instance) collectTmuxPaneProcessTreePIDs() []int {
 	// Target the same tmux server the session was created on (issue #687).
 	// A session on an isolated agent-deck socket would return no panes from
 	// the default server and we would mistakenly treat it as empty.
-	out, err := tmux.Exec(i.TmuxSocketName, "list-panes", "-t", target, "-F", "#{pane_pid}").Output()
+	// Bounded — see tmux.OutputBounded. Exec(...).Output() has no deadline, and
+	// a tmux client that has exhausted its fd table never exits, so this probe
+	// would hang the caller forever.
+	out, err := tmux.OutputBounded(i.TmuxSocketName, "list-panes", "-t", target, "-F", "#{pane_pid}")
 	if err != nil {
 		return nil
 	}
@@ -4157,17 +4240,79 @@ func shouldDebounceTmuxFlipForTool(tool string) bool {
 // terminatedPaneStatus classifies a session whose tmux pane/session has
 // vanished (or gone dead under remain-on-exit) AFTER having been started.
 //
-// For hook-emitting tools a dead pane genuinely means a crash, so it maps to
-// StatusError. OpenCode, however, emits no lifecycle hooks (issue #1617): it is
-// not in IsHookEmittingTool, so status detection falls back to tmux content
-// sniffing. An in-session `/exit` closes the OpenCode pane exactly like a crash
-// would, and without remain-on-exit there is no exit code left to inspect — so
-// a clean exit is misread as an error banner (✕) instead of a clean shutdown.
-// A vanished OpenCode pane is overwhelmingly a user-initiated exit, so classify
-// it as StatusStopped (done, ■) rather than StatusError. Error stays reserved
+// Exit code first: when tmux still holds the dead pane (remain-on-exit — set
+// for sandbox sessions, and opt-in via [tmux] options for any session) the
+// real process exit code is available. A one-shot worker that finishes and
+// exits 0 is a clean shutdown (done, ■ StatusStopped), NOT a crash — reporting
+// it as StatusError (✕) makes a successful completion indistinguishable from a
+// real failure. A non-zero exit is a genuine crash → StatusError.
+//
+// No exit code available (pane torn down without remain-on-exit, so tmux
+// discarded the exit status) falls back to a per-tool heuristic. For
+// hook-emitting tools a vanished pane genuinely means a crash → StatusError.
+// OpenCode emits no lifecycle hooks (issue #1617), so an in-session `/exit`
+// closes its pane exactly like a crash would; a vanished OpenCode pane is
+// overwhelmingly a user-initiated exit → StatusStopped. Error stays reserved
 // for a LIVE pane that renders an actual error banner.
+//
+// NOTE: PaneDeadExitStatus shells out to tmux and can block up to its probe
+// timeout. Callers on the UpdateStatus path (which run under i.mu) must NOT use
+// this directly when a live tmux session may be queried — use
+// applyTerminatedPaneStatus, which drops i.mu around the query. This method is
+// safe to call under i.mu only when i.tmuxSession is nil (no subprocess runs).
 func (i *Instance) terminatedPaneStatus() Status {
-	if i.Tool == "opencode" {
+	exitCode, haveExitCode := 0, false
+	if i.tmuxSession != nil {
+		exitCode, haveExitCode = i.tmuxSession.PaneDeadExitStatus()
+	}
+	return classifyTerminatedPane(exitCode, haveExitCode, i.Tool)
+}
+
+// applyTerminatedPaneStatus writes the terminated-pane classification to
+// i.Status without holding i.mu across the (potentially slow) tmux query.
+//
+// PaneDeadExitStatus can block for the full tmux probe timeout, and every
+// UpdateStatus caller runs under i.mu — so querying tmux under the lock lets a
+// wedged tmux server stall concurrent lifecycle operations. Instead: snapshot
+// the tmux session and tool under the lock, release i.mu for the query, then
+// reacquire and apply the result. The caller MUST hold i.mu on entry; i.mu is
+// held again on return.
+//
+// Because the lock is dropped, i.Status may change under us (e.g. a concurrent
+// Stop()), so the stopped-state guard is re-evaluated after reacquiring: a
+// session the user stopped mid-query must not be clobbered with error/stopped.
+func (i *Instance) applyTerminatedPaneStatus() {
+	tmuxSession := i.tmuxSession
+	tool := i.Tool
+	paneDeadExitStatus := i.paneDeadExitStatusForTest
+
+	i.mu.Unlock()
+	exitCode, haveExitCode := 0, false
+	if tmuxSession != nil {
+		if paneDeadExitStatus == nil {
+			paneDeadExitStatus = tmuxSession.PaneDeadExitStatus
+		}
+		exitCode, haveExitCode = paneDeadExitStatus()
+	}
+	status := classifyTerminatedPane(exitCode, haveExitCode, tool)
+	i.mu.Lock()
+
+	if i.Status != StatusStopped {
+		i.Status = status
+	}
+}
+
+// classifyTerminatedPane is the pure decision behind terminatedPaneStatus,
+// split out so the clean-exit-vs-crash rule can be exercised without a live
+// tmux server. See terminatedPaneStatus for the full rationale.
+func classifyTerminatedPane(exitCode int, haveExitCode bool, tool string) Status {
+	if haveExitCode {
+		if exitCode == 0 {
+			return StatusStopped
+		}
+		return StatusError
+	}
+	if tool == "opencode" {
 		return StatusStopped
 	}
 	return StatusError
@@ -4203,6 +4348,10 @@ func (i *Instance) UpdateStatus() error {
 			i.Status = StatusIdle
 		} else if i.Status != StatusStopped {
 			i.Status = i.terminatedPaneStatus()
+			// Was this death a credential failure? If so the status stays error
+			// but the substate now says auth-401, and the automatic boot paths
+			// hold off (see auth_hold.go).
+			i.refreshAuthHoldOnDeathLocked()
 		}
 		return nil
 	}
@@ -4221,8 +4370,17 @@ func (i *Instance) UpdateStatus() error {
 			// Added but never started: no tmux session was ever created, so an
 			// absent tmux is expected — classify as idle, not error (✕ → ○).
 			i.Status = StatusIdle
-		} else if i.Status != StatusStopped {
-			i.Status = i.terminatedPaneStatus()
+		} else {
+			// tmux session is non-nil here, so the exit-status probe can block;
+			// applyTerminatedPaneStatus drops i.mu for the query and keeps the
+			// stopped-state guard on write.
+			i.applyTerminatedPaneStatus()
+			// Attribute the death to authentication when the pane's last live
+			// sample showed a credential banner: the fleet-death case, which no
+			// restart can fix (see auth_hold.go). Runs regardless of the
+			// exit-code verdict above — a 401 exit can be a clean exit(0), and it
+			// still must not be auto-restarted.
+			i.refreshAuthHoldOnDeathLocked()
 		}
 		i.lastErrorCheck = time.Now() // Record when we confirmed error/stopped
 		return nil
@@ -4370,6 +4528,11 @@ func (i *Instance) UpdateStatus() error {
 				}
 			}
 		}
+		// A healthy hook sample proves the credential works again, so release any
+		// auth hold. Needed here as well as on the tmux path: a recovered session
+		// reports through the hook fast path and returns before the tmux-derived
+		// reconciliation below would ever run.
+		i.releaseAuthHoldIfHealthyLocked()
 		return nil
 	}
 
@@ -4387,6 +4550,7 @@ func (i *Instance) UpdateStatus() error {
 			if i.tmuxSession != nil {
 				i.tmuxSession.ResetAcknowledged()
 			}
+			i.releaseAuthHoldIfHealthyLocked()
 			return nil
 		case "waiting":
 			if i.tmuxSession != nil && i.tmuxSession.IsAcknowledged() {
@@ -4394,6 +4558,7 @@ func (i *Instance) UpdateStatus() error {
 			} else {
 				i.Status = StatusWaiting
 			}
+			i.releaseAuthHoldIfHealthyLocked()
 			return nil
 		}
 	}
@@ -4464,13 +4629,21 @@ func (i *Instance) UpdateStatus() error {
 		// progress without user action — report error, not waiting.
 		i.Status = StatusError
 	case "inactive":
-		// Pane is gone/dead. A crash for hook tools, but a clean `/exit` for
-		// OpenCode (no hooks, no exit code to read) — classify per tool so a
-		// clean OpenCode shutdown reads as stopped (■), not error (✕). #1617.
-		i.Status = i.terminatedPaneStatus()
+		// Pane is dead/gone. terminatedPaneStatus prefers the real exit code
+		// when remain-on-exit still holds the dead pane — a clean exit 0 reads
+		// as stopped (■), a non-zero exit or an unknowable exit falls back to a
+		// per-tool heuristic (crash → ✕ for hook tools, clean `/exit` → ■ for
+		// OpenCode). #1617, and clean one-shot completions. The probe can block,
+		// so applyTerminatedPaneStatus runs it without holding i.mu.
+		i.applyTerminatedPaneStatus()
 	default:
 		i.Status = StatusError
 	}
+
+	// Reconcile the auth hold with this sample. Runs after the status mapping so
+	// it sees the settled verdict, and before the debounce so a held session's
+	// substate is already correct when the debounce returns early.
+	i.reconcileAuthHoldLocked(status)
 
 	// Debounce a purely tmux-inferred flip away from running (see
 	// tmuxFlipFromRunningPending). A long single tool-call past the hook freshness
@@ -4747,6 +4920,25 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		if sessionID == i.ClaudeSessionID {
+			return
+		}
+		// Issue #1729 guard: a candidate whose hook-reported cwd is provably
+		// outside every path this instance owns is a foreign ephemeral — the
+		// classic case is a headless `claude -p --no-session-persistence`
+		// worker (spawned by a plugin with cwd=$TMPDIR) that inherited our
+		// AGENTDECK_INSTANCE_ID from the tmux pane environment. Such
+		// candidates must never influence instance state: no bind (including
+		// cold start, which previously accepted ANY first candidate), no
+		// rebind, and no status flip (restore the pre-event fields). An empty
+		// cwd (legacy hook files, agents that send none) is not evidence and
+		// never blocks.
+		if i.hookCwdIsForeign(status.Cwd) {
+			i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
+				HookEvent: status.Event, Reason: "candidate_cwd_outside_instance_paths",
+			})
 			return
 		}
 		// Cold start — no session bound yet. Accept the first candidate
@@ -5342,10 +5534,17 @@ func (i *Instance) PreviewFull() (string, error) {
 	return content, nil
 }
 
-// spawnFailurePreview returns the formatted spawn-failure record for this
-// instance, or "" when there is none. Used as a preview fallback when the tmux
+// spawnFailurePreview returns the formatted diagnostic for a session whose pane
+// is gone, or "" when there is none. Used as a preview fallback when the tmux
 // pane no longer exists (#1580).
+//
+// The auth hold is checked FIRST: when a session died because it could not
+// authenticate, "run /login, then press R" is the only thing the user needs to
+// read, and it must not be buried under a generic spawn-failure block.
 func (i *Instance) spawnFailurePreview() string {
+	if hold := i.AuthHold(); hold != nil {
+		return hold.FormatForDisplay()
+	}
 	rec, err := readSpawnFailureRecord(i.ID)
 	if err != nil || rec == nil {
 		return ""
@@ -5444,6 +5643,12 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		i.CopilotSessionID = ""
 		i.CopilotDetectedAt = time.Time{}
 		i.CopilotStartedAt = 0
+	}
+
+	if i.Tool == "hermes" {
+		// Drop the captured resume ID so the next launch starts a new session
+		// and Restart() re-captures rather than resuming the old conversation.
+		i.HermesSessionID = ""
 	}
 }
 
@@ -5738,9 +5943,26 @@ func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string) strin
 
 	// Primary: the directory name Claude derives from the project path. Claude
 	// replaces every non-alphanumeric char with a hyphen.
-	primary := filepath.Join(projectsDir, ConvertToClaudeDirName(resolvedPath), sessionID+".jsonl")
-	if _, err := os.Stat(primary); err == nil {
-		return primary
+	//
+	// Both encodings of the project path are tried as EXACT candidates, resolved
+	// first: Claude names the directory from getcwd() (the physical path), but a
+	// transcript recorded through a symlinked path — or copied from another host
+	// — can carry the unresolved form. Checking the second candidate here keeps
+	// the resolution deterministic and, more importantly, keeps it OUT of the
+	// glob fallback below, which cannot tell two projects apart when they share
+	// a session id (issue #1720).
+	candidateDirs := []string{resolvedPath}
+	if projectPath != resolvedPath {
+		candidateDirs = append(candidateDirs, projectPath)
+	}
+	for _, candidateDir := range candidateDirs {
+		if candidateDir == "" {
+			continue
+		}
+		candidate := filepath.Join(projectsDir, ConvertToClaudeDirName(candidateDir), sessionID+".jsonl")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
 	}
 
 	// Fallback: the transcript may live under a differently-encoded directory name
@@ -6346,19 +6568,33 @@ func parseGenericOutput(content, tool string) (*ResponseOutput, error) {
 	}, nil
 }
 
-// StopServiceUnit best-effort stops + resets-failed the transient
-// systemd-user service unit associated with this instance's tmux
-// server (if LaunchAs=service was used). Intended for the remove/delete
-// code path ONLY — NOT for restart, which needs the unit to persist so
-// it can re-spawn tmux.
+// ServiceUnitOwnership snapshots the evidence needed to decide whether
+// this instance may retire its transient systemd-user service unit
+// (issue #1721). MUST be called BEFORE teardown: it reads the pid of the
+// tmux server generation this session belongs to, which is unobservable
+// once the session is killed.
 //
-// No-ops on non-systemd hosts. Returns nil when the unit doesn't exist
-// or was never started (best-effort semantics per v1.7.21 spec).
-func (i *Instance) StopServiceUnit() error {
+// Returns a zero value (which always skips the stop) when the instance has
+// no tmux session.
+func (i *Instance) ServiceUnitOwnership() tmux.ServiceUnitOwnership {
 	if i.tmuxSession == nil {
-		return nil
+		return tmux.ServiceUnitOwnership{}
 	}
-	return tmux.StopServiceUnit(i.tmuxSession.Name)
+	return i.tmuxSession.ServiceUnitOwnership()
+}
+
+// RetireServiceUnit stops + resets-failed the transient systemd-user
+// service unit associated with this instance's tmux server (if
+// LaunchAs=service was used) — but ONLY when `own` proves this session was
+// its exclusive owner. Intended for the remove/delete code path ONLY —
+// NOT for restart, which needs the unit to persist so it can re-spawn tmux.
+//
+// `own` must come from ServiceUnitOwnership() called BEFORE teardown. The
+// returned decision reports whether the unit was stopped and why (see the
+// tmux.UnitStop* reasons); a skip is never an error — leaving a transient
+// unit behind is recoverable, killing a sibling session is not.
+func (i *Instance) RetireServiceUnit(own tmux.ServiceUnitOwnership) tmux.ServiceUnitDecision {
+	return tmux.StopServiceUnitOwned(own)
 }
 
 // Kill terminates the tmux session and cleans up sandbox container if present.
@@ -6422,6 +6658,12 @@ func (i *Instance) killInternal(sync bool) error {
 		}
 	}
 	i.Status = StatusStopped
+	// A deliberate stop releases any auth hold: the session's whole runtime state
+	// is being discarded, and the next start is by definition a user act — the
+	// same intent the hold is waiting for. Without this, a session that showed a
+	// 401 and was then stopped by hand would stay held, and the user's own
+	// `session restart` would be refused with only --force as a way through.
+	i.clearAuthHoldLocked()
 	i.mu.Unlock()
 	// #1580: supersede any in-flight fast-death watcher so a deliberate stop is
 	// never mistaken for a spawn failure.
@@ -6901,6 +7143,15 @@ func (i *Instance) restart(env map[string]string) error {
 		command = i.buildOpenCodeCommand("opencode")
 	} else if IsCodexCompatible(i.Tool) && i.CodexSessionID != "" {
 		command = i.buildCodexCommand(i.Command)
+	} else if i.Tool == "hermes" {
+		// Re-capture the pane's hermes session ID on EVERY restart (hermes
+		// doesn't export it). Overwriting rather than caching once self-heals a
+		// stale ID: if the previously-resumed session was pruned, the query
+		// returns the current most-recent session, or "" — in which case
+		// buildHermesCommand starts fresh instead of resuming a dead ID forever.
+		// Scoped to the working dir to avoid picking up an unrelated session.
+		i.HermesSessionID = captureHermesSessionID(i.EffectiveWorkingDir())
+		command = i.buildHermesCommand(i.Command)
 	} else {
 		// Route to appropriate command builder based on tool
 		switch {
@@ -6924,8 +7175,6 @@ func (i *Instance) restart(env map[string]string) error {
 			command = i.buildCrushCommand(i.Command)
 		case i.Tool == "cursor":
 			command = i.buildCursorCommand(i.Command, true)
-		case i.Tool == "hermes":
-			command = i.buildHermesCommand(i.Command)
 		default:
 			// Check if this is a custom tool with session resume config
 			if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -7328,6 +7577,14 @@ func (i *Instance) CanRestart() bool {
 		return true
 	}
 
+	// Hermes resumes via `--resume <id>`; the ID is captured from
+	// `hermes sessions list` at restart time. Always restartable (resumes when a
+	// session is found, else starts fresh) rather than only when dead/errored,
+	// which left a live hermes session silently un-restartable.
+	if i.Tool == "hermes" {
+		return true
+	}
+
 	// Custom tools: check if they have session resume support
 	if i.CanRestartGeneric() {
 		return true
@@ -7351,6 +7608,10 @@ func (i *Instance) CanRestartFresh() bool {
 	}
 	if i.Tool == "codex" {
 		return i.CodexSessionID != ""
+	}
+	// Hermes fresh-restart discards the resume binding and starts a new session.
+	if i.Tool == "hermes" {
+		return true
 	}
 	return i.CanRestartGeneric()
 }
@@ -7797,6 +8058,7 @@ func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand 
 		shellescape.Quote(target.ID), shellescape.Quote(target.Title), shellescape.Quote(target.Tool), shellescape.Quote(sessionProfileEnvValue()))
 	yoloFlag := target.resolveCodexYoloFlag()
 	modelFlag := target.resolveCodexModelFlag()
+	reasoningFlag := target.resolveCodexReasoningEffortFlag()
 	command := target.resolveCodexCommand(baseCommand)
 	if target.isCodexHomeExplicit() {
 		codexHome := strings.TrimSpace(target.getCodexHomeDir())
@@ -7809,7 +8071,7 @@ func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand 
 			envPrefix += "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
 		}
 	}
-	return envPrefix + fmt.Sprintf("%s%s%s fork %s", command, yoloFlag, modelFlag, shellescape.Quote(i.CodexSessionID)), nil
+	return envPrefix + fmt.Sprintf("%s%s%s%s fork %s", command, yoloFlag, modelFlag, reasoningFlag, shellescape.Quote(i.CodexSessionID)), nil
 }
 
 // CreateForkedCodexInstanceWithOptions creates a forked Codex instance. Mirrors
@@ -7838,6 +8100,12 @@ func (i *Instance) CreateForkedCodexInstanceWithOptions(
 		baseCommand = "codex"
 	}
 	forked.Command = baseCommand
+	if parentOpts := i.GetCodexOptions(); parentOpts != nil && parentOpts.ReasoningEffort != "" {
+		forkOpts := &CodexOptions{ReasoningEffort: parentOpts.ReasoningEffort}
+		if err := forked.SetCodexOptions(forkOpts); err != nil {
+			return nil, "", fmt.Errorf("persist fork reasoning effort: %w", err)
+		}
+	}
 
 	cmd, err := i.buildCodexForkCommandForTarget(forked, baseCommand)
 	if err != nil {
@@ -7873,7 +8141,17 @@ func (i *Instance) GetTmuxSession() *tmux.Session {
 // when there is no tmux session, the pane is dead, or the tool has no substate
 // heuristics. This is an enrichment of Status, not a replacement — it never
 // changes the canonical status reported by GetStatus/UpdateStatus.
+// An auth hold overrides both accessors: a session whose agent EXITED on a
+// credential failure has no pane left to classify, so the tmux layer honestly
+// reports SubstateNone — which is exactly the blindness that made a fleet-wide
+// 401 look like anonymous mass death. The hold is the durable memory of the last
+// live verdict, so surfacing it here gives every reporting layer (TUI glyph, CLI
+// status --json, web, transition events) the auth-401 substate for a dead
+// session without any of them changing.
 func (i *Instance) Substate() Substate {
+	if held, _ := i.IsAuthHeld(); held {
+		return SubstateAuth401
+	}
 	tmuxSess := i.GetTmuxSession()
 	if tmuxSess == nil {
 		return SubstateNone
@@ -7897,7 +8175,12 @@ func (i *Instance) stallTracker() *stallTracker {
 // CachedSubstate returns the last substate computed by a prior status check
 // WITHOUT capturing the pane. Use it on the TUI render hot path; the background
 // status loop keeps the value fresh.
+// Like Substate, an auth hold wins — read from the in-memory mirror so the
+// render path stays filesystem-free.
 func (i *Instance) CachedSubstate() Substate {
+	if i.AuthHeldCached() {
+		return SubstateAuth401
+	}
 	tmuxSess := i.GetTmuxSession()
 	if tmuxSess == nil {
 		return SubstateNone
@@ -8644,10 +8927,17 @@ func (i *Instance) OpenContainerShell() (string, error) {
 	// Omit -w flag: the container's workdir was set during create (respects worktree path).
 	// Pass the docker exec command as discrete tmux args to avoid shell interpolation of
 	// the container name (defence-in-depth against state file tampering).
+	//
+	// #1694: -x/-y are mandatory on every detached new-session — without them
+	// the pane is born at tmux's 80x24 default and the shell (plus anything the
+	// user runs in it) paints its first frames clipped. See
+	// tmux.InitialWindowSize.
+	cols, rows := tmux.InitialWindowSize()
 	newCtx, newCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer newCancel()
 	out, err := tmux.ExecContext(newCtx, i.TmuxSocketName,
 		"new-session", "-d", "-s", tmuxName,
+		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows),
 		"docker", "exec", "-it", i.SandboxContainer, "/bin/sh",
 	).CombinedOutput()
 	if err != nil {

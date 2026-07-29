@@ -302,8 +302,8 @@ func TestWriteHookStatus_EmptyEventDoesNotBackfillJSON(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	instanceID := "inst-sticky"
-	writeHookStatus(instanceID, "waiting", "sess-1", "SessionStart")
-	writeHookStatus(instanceID, "running", "", "UserPromptSubmit")
+	writeHookStatus(instanceID, "waiting", "sess-1", "SessionStart", "")
+	writeHookStatus(instanceID, "running", "", "UserPromptSubmit", "")
 
 	data, err := os.ReadFile(filepath.Join(getHooksDir(), instanceID+".json"))
 	if err != nil {
@@ -326,9 +326,9 @@ func TestWriteHookStatus_ClearsStickySessionOnSessionEnd(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	instanceID := "inst-end"
-	writeHookStatus(instanceID, "waiting", "sess-2", "SessionStart")
-	writeHookStatus(instanceID, "dead", "", "SessionEnd")
-	writeHookStatus(instanceID, "waiting", "", "Stop")
+	writeHookStatus(instanceID, "waiting", "sess-2", "SessionStart", "")
+	writeHookStatus(instanceID, "dead", "", "SessionEnd", "")
+	writeHookStatus(instanceID, "waiting", "", "Stop", "")
 
 	data, err := os.ReadFile(filepath.Join(getHooksDir(), instanceID+".json"))
 	if err != nil {
@@ -351,8 +351,8 @@ func TestWriteHookStatus_StopDoesNotClearStickySession(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	instanceID := "inst-stop"
-	writeHookStatus(instanceID, "waiting", "sess-3", "SessionStart")
-	writeHookStatus(instanceID, "waiting", "", "Stop")
+	writeHookStatus(instanceID, "waiting", "sess-3", "SessionStart", "")
+	writeHookStatus(instanceID, "waiting", "", "Stop", "")
 
 	if got := session.ReadHookSessionAnchor(instanceID); got != "sess-3" {
 		t.Fatalf("session anchor = %q, want sess-3", got)

@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -108,11 +109,24 @@ func TestIsolateTmuxSocket_UnsetsTmuxPane(t *testing.T) {
 	}
 }
 
-// TestIsolateTmuxSocket_RestoresOriginalsOnCleanup ensures the cleanup
-// function puts the parent-process view of TMUX/TMUX_PANE back, so that
-// `go test` does not permanently break the developer's interactive shell
-// env if the test process leaks them somehow.
-func TestIsolateTmuxSocket_RestoresOriginalsOnCleanup(t *testing.T) {
+// TestIsolateTmuxSocket_CleanupKeepsIsolationSticky pins the deliberate
+// INVERSION of this helper's original cleanup contract.
+//
+// Cleanup used to restore TMUX/TMUX_PANE, reasoning that `go test` should not
+// "permanently break the developer's interactive shell env". It cannot: a child
+// process has no way to alter its parent shell's environment. The only reader of
+// the restored values was the dying test binary — and agent-deck leaves
+// background goroutines running there (status pollers, Instance.watchForFastDeath)
+// that outlive the test which started them. Restoring the values re-pointed
+// those late tmux calls at the developer's REAL default server. It was caught in
+// the act: a leaked watchForFastDeath goroutine running `tmux has-session`
+// against /tmp/tmux-<uid>/default after the suite had printed PASS.
+//
+// So isolation is now sticky for the life of the process, and TMUX_TMPDIR is
+// parked on a path that can never be a directory — a late tmux call fails
+// instantly instead of reaching the live fleet, and cannot create a server that
+// no teardown would ever reap.
+func TestIsolateTmuxSocket_CleanupKeepsIsolationSticky(t *testing.T) {
 	origTmux, hadTmux := os.LookupEnv("TMUX")
 	origPane, hadPane := os.LookupEnv("TMUX_PANE")
 	origTmuxTmpdir, hadTmuxTmpdir := os.LookupEnv("TMUX_TMPDIR")
@@ -122,10 +136,11 @@ func TestIsolateTmuxSocket_RestoresOriginalsOnCleanup(t *testing.T) {
 		restore("TMUX_TMPDIR", origTmuxTmpdir, hadTmuxTmpdir)
 	}()
 
-	sentinelTmux := "/tmp/tmux-1000/default,98765,0"
-	sentinelPane := "%99"
-	os.Setenv("TMUX", sentinelTmux)
-	os.Setenv("TMUX_PANE", sentinelPane)
+	// Simulate the outermost case: a test binary whose process has no isolation
+	// yet, launched from inside the developer's tmux pane.
+	os.Setenv("TMUX", "/tmp/tmux-1000/default,98765,0")
+	os.Setenv("TMUX_PANE", "%99")
+	os.Unsetenv("TMUX_TMPDIR")
 
 	cleanup := IsolateTmuxSocket()
 
@@ -134,14 +149,60 @@ func TestIsolateTmuxSocket_RestoresOriginalsOnCleanup(t *testing.T) {
 		t.Fatal("during isolation, TMUX and TMUX_PANE must be unset")
 	}
 
+	dir := os.Getenv("TMUX_TMPDIR")
 	cleanup()
 
-	// After cleanup, both restored.
-	if got := os.Getenv("TMUX"); got != sentinelTmux {
-		t.Errorf("cleanup did not restore TMUX: got %q, want %q", got, sentinelTmux)
+	// After cleanup, the process must still be unable to reach a live server.
+	if got := os.Getenv("TMUX"); got != "" {
+		t.Errorf("cleanup restored TMUX=%q — a goroutine outliving the suite would "+
+			"then resolve tmux to the developer's live server", got)
 	}
-	if got := os.Getenv("TMUX_PANE"); got != sentinelPane {
-		t.Errorf("cleanup did not restore TMUX_PANE: got %q, want %q", got, sentinelPane)
+	if got := os.Getenv("TMUX_PANE"); got != "" {
+		t.Errorf("cleanup restored TMUX_PANE=%q; isolation must be sticky", got)
+	}
+	torn := os.Getenv("TMUX_TMPDIR")
+	if torn == "" {
+		t.Error("cleanup left TMUX_TMPDIR unset — an unselected tmux spawn then " +
+			"resolves to the default socket /tmp/tmux-<uid>/default")
+	}
+	if torn == dir {
+		t.Errorf("cleanup left TMUX_TMPDIR at the REMOVED isolated dir %q; a late "+
+			"`new-session` would recreate it and leak a server nothing reaps", torn)
+	}
+	// The parked path must be unusable, not merely different: no component under
+	// it can be created, so tmux fails before it can spawn anything.
+	if err := os.MkdirAll(filepath.Join(torn, "probe"), 0o700); err == nil {
+		t.Errorf("cleanup parked TMUX_TMPDIR at %q, but a directory could be created "+
+			"there — a late tmux call could still start a server", torn)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("cleanup did not remove the isolated dir %q (stat err=%v)", dir, err)
+	}
+}
+
+// TestIsolateTmuxSocket_CleanupRestoresAnOuterIsolatedDir covers the nested
+// case: a test that isolates on top of its package's TestMain must hand the
+// package's own isolation back, or every later test in that package would run
+// against the parked (unusable) path. An outer dir that is already isolated is
+// by definition safe to restore — which is exactly what distinguishes it from an
+// unset or default-base value.
+func TestIsolateTmuxSocket_CleanupRestoresAnOuterIsolatedDir(t *testing.T) {
+	origTmuxTmpdir, hadTmuxTmpdir := os.LookupEnv("TMUX_TMPDIR")
+	defer restore("TMUX_TMPDIR", origTmuxTmpdir, hadTmuxTmpdir)
+
+	outer := t.TempDir()
+	os.Setenv("TMUX_TMPDIR", outer)
+
+	cleanup := IsolateTmuxSocket()
+	inner := os.Getenv("TMUX_TMPDIR")
+	if inner == outer {
+		t.Fatalf("nested IsolateTmuxSocket did not repoint TMUX_TMPDIR (still %q)", outer)
+	}
+	cleanup()
+
+	if got := os.Getenv("TMUX_TMPDIR"); got != outer {
+		t.Errorf("cleanup left TMUX_TMPDIR=%q, want the outer isolated dir %q — later "+
+			"tests in the package would lose their isolated socket", got, outer)
 	}
 }
 

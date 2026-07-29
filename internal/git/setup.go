@@ -127,8 +127,16 @@ type WorktreeStateOptions struct {
 // Materialization happens BEFORE worktreeinclude processing and the setup
 // script so both observe the realized state, per @smorin's spec.
 func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, state WorktreeStateOptions, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
+	return CreateWorktreeWithSetupOptions(repoDir, worktreePath, branchName, state, WorktreeCreateOptions{}, stdout, stderr, setupTimeout)
+}
+
+// CreateWorktreeWithSetupOptions is CreateWorktreeWithStateAndSetup plus
+// creation-time options (#1708). Sparse inheritance happens inside worktree
+// creation, so parent-state materialization, .worktreeinclude, and the setup
+// script still run afterwards in exactly this order.
+func CreateWorktreeWithSetupOptions(repoDir, worktreePath, branchName string, state WorktreeStateOptions, create WorktreeCreateOptions, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
 	createdBranch := !BranchExists(repoDir, branchName)
-	if err = CreateWorktree(repoDir, worktreePath, branchName); err != nil {
+	if err = CreateWorktreeWithOptions(repoDir, worktreePath, branchName, create); err != nil {
 		return nil, err
 	}
 

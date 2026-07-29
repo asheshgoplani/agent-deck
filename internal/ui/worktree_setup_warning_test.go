@@ -68,7 +68,7 @@ func TestFormatSetupWarning(t *testing.T) {
 // a with-state fork reaches the setup step deterministically without touching a
 // real git repo. runSetup is left for the caller to set.
 func forkWithStateSetupDeps() forkWithStateWorktreeDeps {
-	deps := defaultForkWithStateWorktreeDeps()
+	deps := defaultForkWithStateWorktreeDeps("")
 	deps.statPath = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 	deps.mkdirAll = func(string, os.FileMode) error { return nil }
 	deps.validateDestination = func(string, string) error { return nil }

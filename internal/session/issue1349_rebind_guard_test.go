@@ -120,10 +120,38 @@ func bootstrapDaemonProfile(t *testing.T, profile string) (*TransitionDaemon, *S
 // + session id with `n` conversation records (each containing a "sessionId"
 // field, which is what sessionHasConversationData detects). Larger n => larger
 // byte size, so it can win the v1.7.23 size guard during a rebind.
+//
+// The transcript lands under the SYMLINK-RESOLVED project encoding because that
+// is what Claude Code itself produces (it derives the directory name from
+// getcwd(), which is always the physical path) and therefore what
+// resolveClaudeTranscriptPath looks up first. Writing the unresolved encoding
+// instead made every lookup miss its primary path on macOS, where t.TempDir()
+// lives under /var/folders → /private/var/folders, and fall back to the
+// session-id glob — which cross-mapped two different projects onto one
+// transcript (issue #1720). writeTranscript1349Raw writes the other encoding on
+// purpose, to exercise the second exact candidate.
 func writeTranscript1349(t *testing.T, inst *Instance, sessionID string, n int) {
 	t.Helper()
-	configDir := GetClaudeConfigDirForInstance(inst)
-	projDir := filepath.Join(configDir, "projects", ConvertToClaudeDirName(inst.EffectiveWorkingDir()))
+	dir := inst.EffectiveWorkingDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	writeTranscript1349At(t, GetClaudeConfigDirForInstance(inst), dir, sessionID, n)
+}
+
+// writeTranscript1349Raw materializes the transcript under the UNRESOLVED
+// project-path encoding, modelling a transcript directory whose name does not
+// match the physical path (the WSL Linux-vs-Windows cwd case, and any host where
+// the project path traverses a symlink). Used to pin the second exact candidate
+// in resolveClaudeTranscriptPath — the one checked before the glob fallback.
+func writeTranscript1349Raw(t *testing.T, inst *Instance, sessionID string, n int) {
+	t.Helper()
+	writeTranscript1349At(t, GetClaudeConfigDirForInstance(inst), inst.EffectiveWorkingDir(), sessionID, n)
+}
+
+func writeTranscript1349At(t *testing.T, configDir, projectPath, sessionID string, n int) {
+	t.Helper()
+	projDir := filepath.Join(configDir, "projects", ConvertToClaudeDirName(projectPath))
 	if err := os.MkdirAll(projDir, 0o755); err != nil {
 		t.Fatalf("mkdir transcript dir: %v", err)
 	}
@@ -418,6 +446,75 @@ func TestGetJSONLPathChecked_SameIDDifferentProjectIsNotCollision(t *testing.T) 
 	}
 	if gotA == "" || gotB == "" || gotA == gotB {
 		t.Fatalf("expected two distinct non-empty transcript paths, got a=%q b=%q", gotA, gotB)
+	}
+}
+
+// TestResolveClaudeTranscriptPath_UnresolvedEncodingStaysPerProject pins the
+// issue #1720 hardening in resolveClaudeTranscriptPath: when a transcript
+// directory is named from the UNRESOLVED project path (project path traverses a
+// symlink — on macOS every t.TempDir() does, via /var → /private/var), the exact
+// second candidate must win. Before the fix the primary (resolved) candidate
+// missed and the session-id glob answered instead, handing two different
+// projects that share a session id the SAME transcript file — the cross-routing
+// hazard #1349 exists to prevent.
+func TestResolveClaudeTranscriptPath_UnresolvedEncodingStaysPerProject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+	t.Setenv("AGENT_DECK_HOME", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	ClearUserConfigCache()
+	t.Cleanup(func() { ClearUserConfigCache() })
+
+	// A symlinked project root guarantees resolved != unresolved on every
+	// platform, so the test pins the fallback rather than accidentally hitting
+	// the primary candidate.
+	physical := filepath.Join(home, "physical")
+	if err := os.MkdirAll(physical, 0o755); err != nil {
+		t.Fatalf("mkdir physical: %v", err)
+	}
+	linked := filepath.Join(home, "linked")
+	if err := os.Symlink(physical, linked); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	const sharedID = "UNRESOLVED-ENCODING-SESSION"
+
+	mk := func(id, sub string) *Instance {
+		pp := filepath.Join(linked, sub)
+		if err := os.MkdirAll(pp, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", sub, err)
+		}
+		inst := &Instance{
+			ID:              id,
+			Title:           id,
+			ProjectPath:     pp,
+			GroupPath:       DefaultGroupPath,
+			Tool:            "claude",
+			Status:          StatusRunning,
+			ClaudeSessionID: sharedID,
+			CreatedAt:       time.Now(),
+		}
+		writeTranscript1349Raw(t, inst, sharedID, 2)
+		return inst
+	}
+	a := mk("inst-a-unresolved", "projA")
+	b := mk("inst-b-unresolved", "projB")
+
+	gotA := a.GetJSONLPath()
+	gotB := b.GetJSONLPath()
+	if gotA == "" || gotB == "" {
+		t.Fatalf("transcript stored under the unresolved encoding must still resolve, got a=%q b=%q", gotA, gotB)
+	}
+	if gotA == gotB {
+		t.Fatalf("two projects sharing a session id must not resolve to one transcript, got %q for both", gotA)
+	}
+	wantA := filepath.Join(GetClaudeConfigDirForInstance(a), "projects",
+		ConvertToClaudeDirName(a.ProjectPath), sharedID+".jsonl")
+	if gotA != wantA {
+		t.Fatalf("expected the exact unresolved-encoding candidate\n got:  %s\n want: %s", gotA, wantA)
 	}
 }
 

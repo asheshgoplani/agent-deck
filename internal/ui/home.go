@@ -700,10 +700,11 @@ type Home struct {
 
 // reloadState preserves UI state during storage reload
 type reloadState struct {
-	cursorSessionID string          // ID of session at cursor (if cursor on session)
-	cursorGroupPath string          // Path of group at cursor (if cursor on group)
-	expandedGroups  map[string]bool // Expanded group paths
-	viewOffset      int             // Scroll position
+	cursorSessionID  string          // ID of session at cursor (if cursor on session)
+	cursorGroupPath  string          // Path of group at cursor (if cursor on group)
+	cursorCreatingID string          // tempID of creating placeholder at cursor (if cursor on placeholder)
+	expandedGroups   map[string]bool // Expanded group paths
+	viewOffset       int             // Scroll position
 }
 
 // uiState persists cursor, preview mode, and status filter across restarts
@@ -718,6 +719,7 @@ type uiState struct {
 type selectedItemIdentity struct {
 	groupPath       string
 	sessionID       string
+	creatingID      string
 	windowSessionID string
 	windowIndex     int
 	remoteName      string
@@ -1151,6 +1153,13 @@ type switcherCommitMsg struct {
 
 type attachReturnRefreshMsg struct{}
 
+// attachReturnSyncedMsg lands when the attach-return reconciliation that used to
+// run inline on the Bubble Tea event loop (tmux cache refresh + a forced status
+// check for the session we just left) has finished on its own goroutine. The
+// handler only re-derives the list rows from the already-updated snapshot, which
+// is pure in-memory work. See attachReturnSyncCmd for why the split exists.
+type attachReturnSyncedMsg struct{}
+
 // storageChangedMsg signals that state.db was modified externally
 type storageChangedMsg struct{}
 
@@ -1303,6 +1312,22 @@ func NewHomeWithProfile(profile string) *Home {
 // TestMain disables eager workers for unit tests. Production keeps the default
 // so status, log, pipe, and storage updates continue while the TUI is running.
 var homeBackgroundWorkersEnabled = true
+
+// shouldAutoInstallCursorHooks reports whether TUI startup should run the
+// Cursor hook auto-install/watcher-start block in NewHomeWithProfileAndMode:
+// background workers must be enabled, the user must not have durably opted
+// out via [cursor] hooks_enabled = false (persisted by `agent-deck
+// cursor-hooks uninstall`, issue #1672), and a cursor command must be
+// configured. cursorCmd is expected to already be trimmed by the caller.
+//
+// Extracted as a pure predicate (issue #1675) so the gate itself is
+// unit-testable without exercising NewHomeWithProfileAndMode's side effects
+// (storage, tmux, goroutines) — mirrors why AutoInstallCursorHooks was pulled
+// out of this same function in #1673.
+func shouldAutoInstallCursorHooks(userConfig *session.UserConfig, cursorCmd string) bool {
+	cursorHooksEnabled := userConfig == nil || userConfig.Cursor.GetHooksEnabled()
+	return homeBackgroundWorkersEnabled && cursorHooksEnabled && cursorCmd != ""
+}
 
 // NewHomeWithProfileAndMode creates a new Home with the specified profile.
 // All instances manage the notification bar equally via shared SQLite state.
@@ -1653,8 +1678,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// (set durably by `agent-deck cursor-hooks uninstall`, issue #1672).
 	// The opt-out gates the watcher too, matching the [claude] hooks_enabled
 	// gate above.
-	cursorHooksEnabled := userConfig == nil || userConfig.Cursor.GetHooksEnabled()
-	if cursorCmd := strings.TrimSpace(session.GetToolCommand("cursor")); homeBackgroundWorkersEnabled && cursorHooksEnabled && cursorCmd != "" {
+	cursorCmd := strings.TrimSpace(session.GetToolCommand("cursor"))
+	if shouldAutoInstallCursorHooks(userConfig, cursorCmd) {
 		if cursorFields := strings.Fields(cursorCmd); len(cursorFields) > 0 {
 			cursorBin := cursorFields[0]
 			if _, err := exec.LookPath(cursorBin); err == nil {
@@ -2018,6 +2043,8 @@ func (h *Home) preserveState() reloadState {
 		case session.ItemTypeSession:
 			if item.Session != nil {
 				state.cursorSessionID = item.Session.ID
+			} else if item.CreatingID != "" {
+				state.cursorCreatingID = item.CreatingID
 			}
 		case session.ItemTypeGroup:
 			state.cursorGroupPath = item.Path
@@ -2060,6 +2087,18 @@ func (h *Home) restoreState(state reloadState) {
 			if item.Type == session.ItemTypeSession &&
 				item.Session != nil &&
 				item.Session.ID == state.cursorSessionID {
+				h.cursor = i
+				found = true
+				break
+			}
+		}
+	}
+
+	// Creating-session placeholder: match by tempID so selection survives
+	// reloads/rebuilds during the (long) worktree setup window.
+	if !found && state.cursorCreatingID != "" {
+		for i, item := range h.flatItems {
+			if item.CreatingID == state.cursorCreatingID {
 				h.cursor = i
 				found = true
 				break
@@ -2182,6 +2221,8 @@ func (h *Home) captureSelectedItemIdentity() selectedItemIdentity {
 	case session.ItemTypeSession:
 		if item.Session != nil {
 			identity.sessionID = item.Session.ID
+		} else if item.CreatingID != "" {
+			identity.creatingID = item.CreatingID
 		}
 	case session.ItemTypeWindow:
 		identity.windowSessionID = item.WindowSessionID
@@ -2205,6 +2246,9 @@ func (h *Home) restoreSelectedItemIdentity(identity selectedItemIdentity) bool {
 			h.cursor = i
 			return true
 		case identity.sessionID != "" && item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == identity.sessionID:
+			h.cursor = i
+			return true
+		case identity.creatingID != "" && item.CreatingID == identity.creatingID:
 			h.cursor = i
 			return true
 		case identity.groupPath != "" && item.Type == session.ItemTypeGroup && item.Path == identity.groupPath:
@@ -4788,6 +4832,48 @@ func (h *Home) triggerStatusUpdate() {
 	}
 }
 
+// attachReturnSyncCmd reconciles the session the user just detached from, OFF the
+// Bubble Tea event loop.
+//
+// Issue #1753: refreshAttachedSessionStatus was called inline from the attach-return
+// message handler, so the first repaint of the list waited on two tmux control-mode
+// round-trips (list-windows -a, list-panes -a — both O(fleet)), a forced capture-pane
+// for the session we left, a hook-status file removal, a possible SQLite status write,
+// and a full render-snapshot rebuild. Until that chain finished the event loop could
+// not run Update/View, and View() returns "" while isAttaching is set, so the user
+// looked at a blank screen for the whole duration. At ~70 sessions that is exactly the
+// "Ctrl+Q takes noticeably long to come back" report.
+//
+// The split: the event loop repaints the list immediately from the last snapshot, this
+// Cmd does the tmux/disk work on its own goroutine, and attachReturnSyncedMsg triggers
+// one more cheap repaint with the reconciled row. Worst case a row shows its pre-attach
+// status for a few frames instead of the list being frozen. Every call in the body
+// already runs on the background status worker (backgroundStatusUpdate /
+// processStatusUpdate), so no new concurrency contract is introduced — see
+// refreshAttachedSessionStatus.
+func (h *Home) attachReturnSyncCmd(sessionID string) tea.Cmd {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		h.refreshAttachedSessionStatus(sessionID)
+		return attachReturnSyncedMsg{}
+	}
+}
+
+// attachReturnRefreshCmd is the fleet-wide half of the same split: the delayed
+// post-attach catch-up (attachReturnRefreshMsg) refreshed both tmux caches inline,
+// which is a second event-loop stall ~350ms after the list came back. Same contract
+// as attachReturnSyncCmd: tmux work here, row rebuild on the event loop.
+func (h *Home) attachReturnRefreshCmd() tea.Cmd {
+	return func() tea.Msg {
+		tmux.RefreshSessionCache()
+		tmux.RefreshPaneInfoCache()
+		h.refreshSessionRenderSnapshot(nil)
+		return attachReturnSyncedMsg{}
+	}
+}
+
 func (h *Home) refreshAttachedSessionStatus(sessionID string) {
 	if strings.TrimSpace(sessionID) == "" {
 		return
@@ -5193,10 +5279,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if currentItem.Session != nil {
 							msg.restoreState.cursorSessionID = currentItem.Session.ID
 							msg.restoreState.cursorGroupPath = ""
+							msg.restoreState.cursorCreatingID = ""
+						} else if currentItem.CreatingID != "" {
+							msg.restoreState.cursorCreatingID = currentItem.CreatingID
+							msg.restoreState.cursorSessionID = ""
+							msg.restoreState.cursorGroupPath = ""
 						}
 					case session.ItemTypeGroup:
 						msg.restoreState.cursorGroupPath = currentItem.Path
 						msg.restoreState.cursorSessionID = ""
+						msg.restoreState.cursorCreatingID = ""
 					}
 				}
 				msg.restoreState.viewOffset = h.viewOffset
@@ -6102,9 +6194,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.isAttaching.Store(false) // Atomic store for thread safety
 		now := time.Now()
 		h.beginAttachReturnGrace(now)
-		// Reconcile the attached session synchronously before the normal delayed
-		// refresh so an exited pane does not render as still running for a tick.
-		h.refreshAttachedSessionStatus(msg.attachedSessionID)
+		// Reconcile the session we just left on its own goroutine (#1753). It used
+		// to run inline here, which held the event loop — and therefore the first
+		// repaint of the list — behind O(fleet) tmux round-trips. attachReturnSyncCmd
+		// carries the rationale; attachReturnSyncedMsg repaints when it lands.
+		syncCmd := h.attachReturnSyncCmd(msg.attachedSessionID)
 
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
@@ -6150,7 +6244,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		reloading := h.isReloading
 		h.reloadMu.Unlock()
 		if reloading {
-			return h, tea.EnableMouseCellMotion
+			// syncCmd still has to run: the inline refresh it replaced happened
+			// before this early return, so dropping it here would leave the row we
+			// just detached from unreconciled.
+			return h, tea.Batch(tea.EnableMouseCellMotion, syncCmd)
 		}
 
 		h.followAttachReturnCwd(msg)
@@ -6174,6 +6271,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.EnableMouseCellMotion,
 			RestoreLegacyKeyboardCmd(os.Stdout),
 			tea.WindowSize(),
+			syncCmd,
 			tea.Tick(attachReturnRefreshDelay, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} }),
 		)
 
@@ -6184,18 +6282,27 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// by handleSessionSwitcherKey.
 		h.isAttaching.Store(false)
 		h.beginAttachReturnGrace(time.Now())
-		h.refreshAttachedSessionStatus(msg.fromSessionID)
+		syncCmd := h.attachReturnSyncCmd(msg.fromSessionID)
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
 		h.followAttachReturnCwd(statusUpdateMsg{
 			attachedSessionID: msg.fromSessionID,
 			attachedWorkDir:   msg.attachedWorkDir,
 		})
+		// Deliberate consequence of the #1753 split: openSessionSwitcher reads the
+		// dim pane-title subtitles out of the render snapshot, which syncCmd now
+		// republishes a few ms AFTER this point instead of just before it. The
+		// picker therefore opens with subtitles from the last background sweep (at
+		// most one sweep interval old) rather than freshly captured ones. That is
+		// the trade the issue asks for: the picker appears at once instead of after
+		// an O(fleet) tmux stall, and the stale value is a secondary hint, never a
+		// status.
 		h.openSessionSwitcher(msg.fromSessionID, true)
 		return h, tea.Batch(
 			tea.EnableMouseCellMotion,
 			RestoreLegacyKeyboardCmd(os.Stdout),
 			tea.WindowSize(),
+			syncCmd,
 			tea.Tick(attachReturnRefreshDelay, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} }),
 		)
 
@@ -6206,7 +6313,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// capture. Esc re-attaches; Ctrl+Q returns to the list.
 		h.isAttaching.Store(false)
 		h.beginAttachReturnGrace(time.Now())
-		h.refreshAttachedSessionStatus(msg.fromSessionID)
+		syncCmd := h.attachReturnSyncCmd(msg.fromSessionID)
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
 		h.followAttachReturnCwd(statusUpdateMsg{
@@ -6218,6 +6325,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.EnableMouseCellMotion,
 			RestoreLegacyKeyboardCmd(os.Stdout),
 			tea.WindowSize(),
+			syncCmd,
 			captureCmd,
 		)
 
@@ -6237,11 +6345,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.handleSwitcherCommit(msg)
 
 	case attachReturnRefreshMsg:
+		// The tmux cache refresh moved to its own goroutine (#1753) — running it
+		// here stalled the event loop a second time, ~350ms after the list came
+		// back. The row rebuild happens in attachReturnSyncedMsg, on the loop,
+		// where h.flatItems/h.cursor are safe to touch.
+		return h, h.attachReturnRefreshCmd()
+
+	case attachReturnSyncedMsg:
+		// Async attach-return reconciliation finished: re-derive the rows from the
+		// snapshot it just published. Pure in-memory work, no tmux, no disk.
 		selectedBefore := h.captureSelectedItemIdentity()
-		tmux.RefreshSessionCache()
-		tmux.RefreshPaneInfoCache()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
-		h.refreshSessionRenderSnapshot(nil)
 		return h, nil
 
 	case previewDebounceMsg:
@@ -7169,6 +7283,13 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		if projectPath == "" {
 			projectPath = "."
 		}
+		// #1706: "." (and any relative CWD a search result carries) must not be
+		// persisted as project_path — tmux resolves it against the tmux server's
+		// cwd, and the Claude project slug derived from it would point elsewhere
+		// again.
+		if resolved, resErr := session.ResolveProjectPath(projectPath); resErr == nil {
+			projectPath = resolved
+		}
 
 		// Create instance. Issue #666: resolveNewSessionGroup rescues empty
 		// cursor-group (Window / RemoteGroup / placeholder flatItems) so
@@ -7329,6 +7450,33 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		// Get values including worktree settings.
 		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
+		// #1706: a relative entry must be anchored to this process's cwd here,
+		// before it reaches the directory-exists check, os.MkdirAll, the
+		// worktree/VCS probe or the instance itself — tmux would otherwise
+		// resolve it against the tmux server's cwd and put the session
+		// somewhere other than the folder we created. Runs after the remote
+		// branch above returns, so remote paths are never touched.
+		//
+		// Multi-repo paths are resolved here too (not at their use site further
+		// down) so the single "cannot resolve" refusal happens while the dialog
+		// is still open and can show the error. A declared path that stayed
+		// relative could also never match a hook-reported cwd (#1731).
+		multiRepoPaths, multiRepoEnabled := h.newDialog.GetMultiRepoPaths()
+		absPath, absErr := absLocalProjectPath(path)
+		if absErr == nil {
+			path = absPath
+			for i, p := range multiRepoPaths {
+				if multiRepoPaths[i], absErr = absLocalProjectPath(p); absErr != nil {
+					break
+				}
+			}
+		}
+		if absErr != nil {
+			// filepath.Abs only fails when this process has no usable cwd, so
+			// there is nothing to anchor a relative path to.
+			h.newDialog.SetError("Cannot resolve a relative path here — enter an absolute path")
+			return h, nil
+		}
 
 		// Remember the submitted tool so the next new-session dialog preselects
 		// it (UX top-3 #2). Best-effort: persisted in the profile StateDB, never
@@ -7373,7 +7521,10 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			claudeStartQuery = h.newDialog.GetClaudeStartQuery()
 		} else if command == "codex" {
 			yolo := h.newDialog.GetCodexYoloMode()
-			codexOpts := &session.CodexOptions{YoloMode: &yolo}
+			codexOpts := &session.CodexOptions{
+				YoloMode:        &yolo,
+				ReasoningEffort: h.newDialog.GetLaunchReasoningEffort(),
+			}
 			toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
 		} else if command == "hermes" {
 			yolo := h.newDialog.GetHermesYoloMode()
@@ -7398,10 +7549,10 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		geminiYoloMode := h.newDialog.IsGeminiYoloMode()
 		sandboxMode := h.newDialog.IsSandboxEnabled()
-		multiRepoPaths, multiRepoEnabled := h.newDialog.GetMultiRepoPaths()
 		var additionalPaths []string
 		if multiRepoEnabled && len(multiRepoPaths) > 1 {
-			// First path stays as ProjectPath, rest are additional
+			// First path stays as ProjectPath, rest are additional.
+			// Already absolutized above (#1706).
 			path = multiRepoPaths[0]
 			additionalPaths = multiRepoPaths[1:]
 		}
@@ -8261,7 +8412,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						}
 
 						h.isAttaching.Store(true)
-						return h, tea.Exec(attachWindowCmd{session: tmuxSess, windowIndex: item.WindowIndex, detachByte: h.detachByte()}, func(err error) tea.Msg {
+						return h, tea.Exec(attachWindowCmd{
+							session:     tmuxSess,
+							windowIndex: item.WindowIndex,
+							detachByte:  h.detachByte(),
+							onExit:      func() { h.isAttaching.Store(false) },
+						}, func(err error) tea.Msg {
 							h.isAttaching.Store(false)
 							parentInst.MarkAccessed()
 							return statusUpdateMsg{}
@@ -8735,7 +8891,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			termSession := &tmux.Session{Name: tmuxName}
 			h.isAttaching.Store(true)
-			return h, tea.Exec(attachCmd{session: termSession, opts: tmux.AttachOptions{DetachByte: h.detachByte()}}, func(err error) tea.Msg {
+			return h, tea.Exec(attachCmd{
+				session: termSession,
+				opts:    tmux.AttachOptions{DetachByte: h.detachByte()},
+				onExit:  func() { h.isAttaching.Store(false) },
+			}, func(err error) tea.Msg {
 				h.isAttaching.Store(false)
 				return statusUpdateMsg{}
 			})
@@ -11110,7 +11270,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create parent directory: %w", err), tempID: tempID}
 				}
-				setupErr, err := createWorktreeWithSetupAndLog(backend, worktreePath, worktreeBranch)
+				setupErr, err := createWorktreeWithSetupAndLog(backend, worktreePath, worktreeBranch, path)
 				if err != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create worktree: %w", err), tempID: tempID}
 				}
@@ -11206,7 +11366,8 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				}
 				inst.MultiRepoTempDir = parentDir
 
-				wtResult := session.CreateMultiRepoWorktrees(allPaths, parentDir, worktreeBranch, session.GetWorktreeSettings().SetupTimeout())
+				wtSettings := session.GetWorktreeSettings()
+				wtResult := session.CreateMultiRepoWorktreesWithOptions(allPaths, parentDir, worktreeBranch, wtSettings.SetupTimeout(), wtSettings.InheritSparseCheckout())
 				for _, w := range wtResult.Warnings {
 					uiLog.Warn("multi_repo_worktree", slog.String("detail", w))
 				}
@@ -11299,9 +11460,17 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 // is created regardless, but the caller surfaces setupErr to the user. err is
 // the fatal worktree-creation error. The full setup output is logged here; only
 // the concise setupErr is returned for display (see formatSetupWarning).
-func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch string) (setupErr error, err error) {
+// sourceDir is the directory the session was created/forked from; when
+// `[worktree] sparse_checkout = "inherit"` is set, the new worktree inherits
+// ITS sparse-checkout state (#1708). backend.RepoDir() must not be used for
+// that: it is the normalized base root, which carries the main worktree's
+// sparsity instead of the invoking one's.
+func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch, sourceDir string) (setupErr error, err error) {
 	var buf bytes.Buffer
-	setupErr, err = vcsbackend.CreateWorktreeWithSetup(backend, wtPath, branch, &buf, &buf, session.GetWorktreeSettings().SetupTimeout())
+	wtSettings := session.GetWorktreeSettings()
+	setupErr, err = vcsbackend.CreateWorktreeWithSetup(backend, wtPath, branch,
+		git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), sourceDir),
+		&buf, &buf, wtSettings.SetupTimeout())
 	if err != nil {
 		return nil, err
 	}
@@ -11848,7 +12017,11 @@ type forkWithStateWorktreeDeps struct {
 	deleteBranch              func(string, string, bool) error
 }
 
-func defaultForkWithStateWorktreeDeps() forkWithStateWorktreeDeps {
+// sparseSourceDir is the parent session's worktree: with
+// `[worktree] sparse_checkout = "inherit"` the fork's worktree inherits ITS
+// sparse-checkout state (#1708). Pass "" to keep git's default checkout.
+func defaultForkWithStateWorktreeDeps(sparseSourceDir string) forkWithStateWorktreeDeps {
+	createOpts := git.SparseInheritOptions(session.GetWorktreeSettings().InheritSparseCheckout(), sparseSourceDir)
 	return forkWithStateWorktreeDeps{
 		statPath:                  os.Stat,
 		mkdirAll:                  os.MkdirAll,
@@ -11856,12 +12029,14 @@ func defaultForkWithStateWorktreeDeps() forkWithStateWorktreeDeps {
 		detectInProgressOperation: git.DetectInProgressOperation,
 		hasSubmodules:             git.HasSubmodules,
 		headCommit:                git.HeadCommit,
-		createAtStartPoint:        git.CreateWorktreeAtStartPoint,
-		materialize:               git.MaterializeWipFromParent,
-		processInclude:            git.ProcessWorktreeInclude,
-		runSetup:                  git.RunWorktreeSetupAfterCreate,
-		removeWorktree:            git.RemoveWorktree,
-		deleteBranch:              git.DeleteBranch,
+		createAtStartPoint: func(repoDir, worktreePath, branch, startPoint string) (bool, error) {
+			return git.CreateWorktreeAtStartPointWithOptions(repoDir, worktreePath, branch, startPoint, createOpts)
+		},
+		materialize:    git.MaterializeWipFromParent,
+		processInclude: git.ProcessWorktreeInclude,
+		runSetup:       git.RunWorktreeSetupAfterCreate,
+		removeWorktree: git.RemoveWorktree,
+		deleteBranch:   git.DeleteBranch,
 	}
 }
 
@@ -12160,7 +12335,7 @@ func (h *Home) forkSessionCmdWithOptions(
 						opts.WorktreePath,
 						opts.WorktreeBranch,
 						forkState,
-						defaultForkWithStateWorktreeDeps(),
+						defaultForkWithStateWorktreeDeps(source.ProjectPath),
 					)
 					if err != nil {
 						return sessionForkedMsg{err: err, sourceID: sourceID}
@@ -12196,7 +12371,7 @@ func (h *Home) forkSessionCmdWithOptions(
 				if err := os.MkdirAll(filepath.Dir(opts.WorktreePath), 0o755); err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("failed to create directory: %w", err), sourceID: sourceID}
 				}
-				setupErr, err := createWorktreeWithSetupAndLog(backend, opts.WorktreePath, opts.WorktreeBranch)
+				setupErr, err := createWorktreeWithSetupAndLog(backend, opts.WorktreePath, opts.WorktreeBranch, source.ProjectPath)
 				if err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("worktree creation failed: %w", err), sourceID: sourceID}
 				}
@@ -12921,11 +13096,22 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// which would lose the tmux session state)
 	h.isAttaching.Store(true) // Prevent View() output only during actual attach transition
 	res := &attachResult{}
-	return tea.Exec(attachCmd{session: tmuxSess, opts: h.attachOptions(tmuxSess), result: res}, func(err error) tea.Msg {
-		// CRITICAL: Set isAttaching to false BEFORE returning the message
-		// This prevents a race condition where View() could be called with
-		// isAttaching=true before Update() processes statusUpdateMsg,
-		// causing a blank screen on return from attached session
+	return tea.Exec(attachCmd{
+		session: tmuxSess,
+		opts:    h.attachOptions(tmuxSess),
+		result:  res,
+		// #1753: clear the flag inside Run(), i.e. BEFORE Bubble Tea restores the
+		// terminal and resumes the loop. The ExecCallback below runs on its own
+		// goroutine, so clearing it only there raced the first View() after resume:
+		// View() returns "" while isAttaching is set, so losing that race meant the
+		// list stayed blank until the NEXT message arrived. Clearing it here makes
+		// the first post-detach repaint deterministic. Nothing can call View() in
+		// between — the event loop is parked inside Program.exec for the whole
+		// attach.
+		onExit: func() { h.isAttaching.Store(false) },
+	}, func(err error) tea.Msg {
+		// Belt for the path where Bubble Tea fails to release the terminal and
+		// invokes this callback without ever running attachCmd.Run().
 		h.isAttaching.Store(false) // Atomic store for thread safety
 
 		// NOTE: No manual screen clear here. Bubble Tea's RestoreTerminal()
@@ -12940,7 +13126,22 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		// This lets running sessions stay green through attach/detach cycles.
 
 		// Capture current pane CWD after attach returns for optional path follow.
-		currentWorkDir := strings.TrimSpace(tmuxSess.GetWorkDir())
+		//
+		// #1753: only when the feature is actually on. GetWorkDir costs two tmux
+		// subprocess spawns (Exists + display-message), and on macOS every fork
+		// briefly quiesces the whole process — measured at 5-13ms of dead time here,
+		// the single largest item between the detach key and the first repaint, paid
+		// on every detach for a feature that defaults to off. followAttachReturnCwd
+		// consults the same setting, so an empty value changes nothing when it is off.
+		instanceSettings := session.GetInstanceSettings()
+		followCwd := instanceSettings.GetFollowCwdOnAttach()
+		workDirIfFollowing := func(ts *tmux.Session) string {
+			if !followCwd || ts == nil {
+				return ""
+			}
+			return strings.TrimSpace(ts.GetWorkDir())
+		}
+		currentWorkDir := workDirIfFollowing(tmuxSess)
 
 		// The user pressed the session-switch key while attached: surface the
 		// in-attach switcher instead of just returning to the list.
@@ -12965,10 +13166,8 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 				h.instancesMu.RUnlock()
 				if switched != nil {
 					fromID = switched.ID
-					if ts := switched.GetTmuxSession(); ts != nil {
-						if wd := strings.TrimSpace(ts.GetWorkDir()); wd != "" {
-							fromWorkDir = wd
-						}
+					if wd := workDirIfFollowing(switched.GetTmuxSession()); wd != "" {
+						fromWorkDir = wd
 					}
 				}
 			}
@@ -13053,11 +13252,19 @@ type attachCmd struct {
 	session *tmux.Session
 	opts    tmux.AttachOptions
 	result  *attachResult
+	// onExit runs as Run returns, i.e. while Bubble Tea's event loop is still
+	// parked inside Program.exec and before it restores the terminal. It exists so
+	// the attach flag can be cleared without racing the first repaint (#1753); see
+	// the call site in attachSession.
+	onExit func()
 }
 
 func (a attachCmd) Run() error {
 	// NOTE: Screen clearing is ONLY done in the tea.Exec callback (after Attach returns)
 	// Removing clear screen here prevents double-clearing which corrupts terminal state
+	if a.onExit != nil {
+		defer a.onExit()
+	}
 
 	ctx := context.Background()
 	intent, err := a.session.AttachWithOptions(ctx, a.opts)
@@ -13157,9 +13364,14 @@ type attachWindowCmd struct {
 	session     *tmux.Session
 	windowIndex int
 	detachByte  byte
+	// onExit: same contract as attachCmd.onExit (#1753).
+	onExit func()
 }
 
 func (a attachWindowCmd) Run() error {
+	if a.onExit != nil {
+		defer a.onExit()
+	}
 	ctx := context.Background()
 	return a.session.AttachWindow(ctx, a.windowIndex, a.detachByte)
 }
@@ -14216,6 +14428,10 @@ func clampViewToViewport(content string, width, height int) string {
 		}
 	}
 
+	const sgrReset = "\x1b[0m"
+	var rendered strings.Builder
+	rendered.Grow(len(content) + len(lines)*2*len(sgrReset))
+
 	for i, line := range lines {
 		// #937 v2: cellWidth/cellTruncate (not ansi.*) so this final
 		// viewport-clamp safety net sees keycap clusters at their true
@@ -14229,10 +14445,24 @@ func clampViewToViewport(content string, width, height int) string {
 		// glyphs — the iTerm2 "ghost line" artifact on session-list scroll
 		// (#607 row-offset drift). fitCellWidth does both, on cellWidth so
 		// this post-join clamp stays a true terminal-cell net.
-		lines[i] = fitCellWidth(line, width)
+		//
+		// #699 follow-up: isolate SGR state at BOTH row boundaries. Bubble
+		// Tea's incremental renderer skips unchanged rows and repaints only
+		// changed ones. A captured preview background can therefore still be
+		// active when a later row starts rendering, even though the original
+		// fix appended a reset to every preview line. Prefixing and suffixing
+		// the final physical rows makes repaint order irrelevant. SGR resets
+		// occupy zero terminal cells, so the exact viewport dimensions are
+		// unchanged.
+		if i > 0 {
+			rendered.WriteByte('\n')
+		}
+		rendered.WriteString(sgrReset)
+		rendered.WriteString(fitCellWidth(line, width))
+		rendered.WriteString(sgrReset)
 	}
 
-	return strings.Join(lines, "\n")
+	return rendered.String()
 }
 
 // ensureExactWidth ensures each line in content has exactly the specified visual width.
@@ -14326,10 +14556,12 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	if h.draggingDivider {
 		separatorColor = ColorAccent
 	}
-	separatorStyle := lipgloss.NewStyle().Foreground(separatorColor)
+	// Every row is the same constant string, so style it once and reuse it
+	// instead of paying a lipgloss render per screen row per frame.
+	separatorCell := lipgloss.NewStyle().Foreground(separatorColor).Render(" │ ")
 	separatorLines := make([]string, contentHeight)
 	for i := range separatorLines {
-		separatorLines[i] = separatorStyle.Render(" │ ")
+		separatorLines[i] = separatorCell
 	}
 	separator := strings.Join(separatorLines, "\n")
 
@@ -14350,7 +14582,27 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	// h.width due to separator ANSI codes or rounding. Any line that wraps in the
 	// terminal adds a visual line, which shifts Bubble Tea's cursor tracking and
 	// causes duplicated/stacked content on scroll.
-	mainContent = lipgloss.NewStyle().MaxWidth(h.width).Render(mainContent)
+	//
+	// Issue #1753: that pass re-truncates and rebuilds every line of the whole
+	// composed frame, and it ran on every View() — every keystroke and every tick.
+	// Profiling a switching workload put it at 38% of this function and ~14% of
+	// total process CPU, while on a normal terminal it changes nothing. Measuring
+	// is far cheaper than rebuilding, so measure first and only pay when there is
+	// something to do. lipgloss.Width returns the widest line of a multi-line
+	// string using the same ansi.StringWidth basis MaxWidth truncates by, so the
+	// two agree by construction on whether the frame overflows.
+	//
+	// This has to be a MEASUREMENT, not arithmetic: leftWidth +
+	// paneSeparatorWidth + rightWidth == h.width does NOT imply the joined frame
+	// fits. ensureExactWidth pads a too-short line but never re-truncates a
+	// too-wide one, and MaxWidth truncation of an emoji/keycap grapheme cluster
+	// can land one cell OVER the requested width. JoinHorizontal then pads every
+	// row out to that inflated block width and the frame overflows by a column —
+	// see TestIssue1753_NarrowPaneKeycapStillRunsSafetyNet, which is exactly the
+	// case an arithmetic guard got wrong.
+	if lipgloss.Width(mainContent) > h.width {
+		mainContent = lipgloss.NewStyle().MaxWidth(h.width).Render(mainContent)
+	}
 
 	b.WriteString(mainContent)
 
@@ -15842,28 +16094,31 @@ func (h *Home) renderCreatingSessionItem(
 	// Leading hotkey gutter so creating rows align with group/session rows.
 	b.WriteString(strings.Repeat(" ", leftGutterWidth))
 
-	// Selection styling
-	if selected {
-		b.WriteString(lipgloss.NewStyle().
-			Foreground(ColorAccent).
-			Bold(true).
-			Render("▸ "))
-	} else {
-		b.WriteString("  ")
-	}
-
-	// Tree connector
-	if item.Level > 0 {
-		b.WriteString(TreeConnectorStyle.Render("├── "))
-	}
-
-	// Spinner + title
+	// Same selection styles as real session rows so a selected placeholder
+	// reads as selected at a glance (highlight bar, not just a dim marker).
+	treeStyle := TreeConnectorStyle
+	selectionPrefix := "  "
 	spinnerStyle := lipgloss.NewStyle().Foreground(ColorPurple)
 	titleStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
+	subtitleStyle := lipgloss.NewStyle().Foreground(ColorTextDim).Italic(true)
+	if selected {
+		selectionPrefix = SessionSelectionPrefix.Render("▶ ")
+		treeStyle = TreeConnectorSelStyle
+		titleStyle = SessionTitleSelStyle.Italic(true)
+		subtitleStyle = SessionTitleSelStyle.Italic(true).Faint(true)
+		spinnerStyle = SessionStatusSelStyle
+	}
+
+	b.WriteString(selectionPrefix)
+
+	if item.Level > 0 {
+		b.WriteString(treeStyle.Render("├── "))
+	}
+
 	b.WriteString(spinnerStyle.Render(spinner))
 	b.WriteString(" ")
 	b.WriteString(titleStyle.Render(item.CreatingTitle))
-	b.WriteString(lipgloss.NewStyle().Foreground(ColorTextDim).Italic(true).Render(" (creating worktree...)"))
+	b.WriteString(subtitleStyle.Render(" (creating worktree...)"))
 	b.WriteString("\n")
 }
 
@@ -17049,6 +17304,16 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	b.WriteString("  ")
 	b.WriteString(statusBadge)
 	b.WriteString("\n")
+
+	// Auth hold banner. A session whose agent exited on a 401 shows a bare
+	// "error" status that no amount of restarting will clear, and during a
+	// fleet-wide credential failure that reads as unexplained mass death (the
+	// 2026-07-26 incident). Say what happened and what to do, right under the
+	// status, before anything else in the preview. Reads the in-memory mirror so
+	// the render path never touches the filesystem.
+	if selected.AuthHeldCached() {
+		b.WriteString(authHoldBannerLines(width))
+	}
 
 	// Info lines: path and activity time
 	infoStyle := lipgloss.NewStyle().Foreground(ColorText)

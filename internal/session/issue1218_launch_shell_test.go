@@ -27,13 +27,26 @@ import (
 // unchanged, sandbox/SSH/shell sessions are excluded, and both per-session
 // and global config levels work correctly.
 
-// launchShellTestEnv isolates HOME and SHELL for deterministic testing.
+// launchShellTestEnv isolates HOME, SHELL and ZDOTDIR for deterministic testing.
+//
+// ZDOTDIR matters (issue #1720): zsh reads its startup files from $ZDOTDIR when
+// that variable is set and only falls back to $HOME when it is not. Developer
+// setups that manage zsh through a dotfiles manager (nix home-manager, chezmoi,
+// …) export ZDOTDIR from the login shell, so the variable is INHERITED by
+// `go test` and by every child zsh it spawns. Overriding HOME alone then leaves
+// the fixture ~/.zshrc unread — the real zsh config is loaded instead — and the
+// zsh happy-path test fails on that machine while passing on CI (where ZDOTDIR
+// is unset). Pinning ZDOTDIR to the sandbox HOME makes "~/.zshrc" and
+// "$ZDOTDIR/.zshrc" the same fixture file on every host.
 func launchShellTestEnv(t *testing.T) {
 	t.Helper()
 	origHome := os.Getenv("HOME")
 	origShell := os.Getenv("SHELL")
-	os.Setenv("HOME", t.TempDir())
+	origZDotDir, hadZDotDir := os.LookupEnv("ZDOTDIR")
+	home := t.TempDir()
+	os.Setenv("HOME", home)
 	os.Setenv("SHELL", "/bin/zsh") // Set a deterministic shell for tests
+	os.Setenv("ZDOTDIR", home)     // zsh startup files must resolve inside the sandbox
 	ClearUserConfigCache()
 	t.Cleanup(func() {
 		os.Setenv("HOME", origHome)
@@ -41,6 +54,11 @@ func launchShellTestEnv(t *testing.T) {
 			os.Setenv("SHELL", origShell)
 		} else {
 			os.Unsetenv("SHELL")
+		}
+		if hadZDotDir {
+			os.Setenv("ZDOTDIR", origZDotDir)
+		} else {
+			os.Unsetenv("ZDOTDIR")
 		}
 		ClearUserConfigCache()
 	})
@@ -53,8 +71,14 @@ func runLaunchShellCommand(t *testing.T, wrapped, shell string) string {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", wrapped)
+	// ZDOTDIR is passed explicitly for the same reason it is pinned in
+	// launchShellTestEnv: an inherited value would send the child zsh looking
+	// for startup files outside the sandbox HOME (issue #1720). Later entries
+	// win in os/exec's environment de-duplication, so these override whatever
+	// os.Environ() carried in.
 	cmd.Env = append(os.Environ(),
 		"HOME="+os.Getenv("HOME"),
+		"ZDOTDIR="+os.Getenv("HOME"),
 		"SHELL="+shell,
 		"PS1=",
 		"PROMPT=",
@@ -103,14 +127,18 @@ func TestLaunchShell_ZshRCLoadedWhenEnabled(t *testing.T) {
 	inst := NewInstanceWithTool("ls-opencode", t.TempDir(), "opencode")
 	inst.LaunchShell = boolPtr(true)
 
-	raw := `printf '__AGENT_DECK__%s__' "$AGENT_DECK_LAUNCH_SHELL_TEST"`
+	// The fixture value comes first so the assertion below is a plain prefix
+	// match; the trailing startup dir is diagnostic only — if some host still
+	// redirects zsh's startup files (e.g. a system /etc/zshenv that sets
+	// ZDOTDIR), the failure output names the directory it actually read.
+	raw := `printf '__AGENT_DECK__%s__(startup_dir=%s)' "$AGENT_DECK_LAUNCH_SHELL_TEST" "${ZDOTDIR:-$HOME}"`
 	wrapped := inst.wrapLaunchShell(raw)
 
 	if !strings.HasPrefix(wrapped, "/bin/zsh -il -c '") {
 		t.Fatalf("wrapped command must start with '/bin/zsh -il -c ', got:\n%s", wrapped)
 	}
 	if out := runLaunchShellCommand(t, wrapped, "/bin/zsh"); !strings.Contains(out, "__AGENT_DECK__zshrc__") {
-		t.Fatalf("wrapped command must load ~/.zshrc, output:\n%s", out)
+		t.Fatalf("wrapped command must load the sandbox ~/.zshrc (%s), output:\n%s", os.Getenv("HOME"), out)
 	}
 }
 

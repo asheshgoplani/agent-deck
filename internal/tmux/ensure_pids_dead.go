@@ -17,6 +17,7 @@
 package tmux
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -168,8 +169,15 @@ func (s *Session) KillAndWait() error {
 
 	_, oldPIDs := s.getPaneProcessTree()
 
-	cmd := execCommand("tmux", "kill-session", "-t", s.Name)
-	killErr := cmd.Run()
+	// Bounded — see tmuxMutationTimeout. This is the CLI path (`agent-deck
+	// remove`), where an unbounded wedge hangs the user's terminal outright
+	// rather than a background goroutine. The argv stays plain (no -L): keeping
+	// the execCommand seam's exact shape is what the launcher-fallback tests
+	// assert on, and which server this targets is a separate question from
+	// whether it terminates.
+	killCtx, cancelKill := context.WithTimeout(context.Background(), tmuxMutationTimeout)
+	defer cancelKill()
+	killErr := execCommandContext(killCtx, "tmux", "kill-session", "-t", s.Name).Run()
 
 	if len(oldPIDs) > 0 {
 		EnsurePIDsDead(oldPIDs, 3*time.Second)

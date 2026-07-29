@@ -246,6 +246,15 @@ func TestUpdateStatus_ShellForegroundPromotion(t *testing.T) {
 	// Wait past the 1.5s grace period so UpdateStatus does real detection.
 	time.Sleep(2 * time.Second)
 
+	// End the tmux-side startup window (issue #1720). Otherwise the pane only
+	// leaves "starting" when a poll recognises the login shell's prompt, and the
+	// recognised prompts are the literal "$ ", "# " and "% " — so on a machine
+	// whose shell prints anything else (fish/starship/powerlevel10k "❯", any
+	// dotfiles-managed prompt) every case below would read StatusStarting and
+	// this test would assert the developer's shell configuration rather than the
+	// promotion logic it covers.
+	tmux.ExpireStartupWindowForTest(t, inst.tmuxSession)
+
 	// Fresh cache + flag on: the foreground process promotes idle→running.
 	tmux.SeedPaneInfoCacheForTest(t, map[string]tmux.PaneInfo{
 		inst.tmuxSession.Name: {CurrentCommand: "node"},

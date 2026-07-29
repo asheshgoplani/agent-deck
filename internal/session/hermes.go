@@ -1,14 +1,99 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
+
+	"al.essio.dev/pkg/shellescape"
 )
+
+// hermesSessionIDPattern matches a hermes session ID (e.g. "20260720_143254_a3db50"):
+// {YYYYMMDD}_{HHMMSS}_{hex}. Used to pick the ID column out of `hermes sessions
+// list` output and to reject header/garbage rows.
+var hermesSessionIDPattern = regexp.MustCompile(`^[0-9]{8}_[0-9]{6}_[0-9a-fA-F]+$`)
+
+// parseHermesSessionsLatestID returns the session ID of the first data row in
+// `hermes sessions list` output (the most recent, since the list is sorted
+// recent-first / queried with --limit 1). Columns are Title, Workspace, Last
+// Active, ID; the ID is the last whitespace-delimited token and is the only
+// column with no spaces, so it parses deterministically. Header and box-drawing
+// separator rows are skipped. Returns "" when no session row is present.
+func parseHermesSessionsLatestID(listOutput string) string {
+	seenHeader := false
+	for _, line := range strings.Split(listOutput, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) == 0 {
+			continue
+		}
+		last := fields[len(fields)-1]
+		if !seenHeader {
+			// Only read rows AFTER the table header (whose ID column is literally
+			// labelled "ID"), so a banner/notice printed above the table can't be
+			// mistaken for a session row. No header => not the expected table =>
+			// return "" (fail closed to a fresh restart).
+			if last == "ID" {
+				seenHeader = true
+			}
+			continue
+		}
+		if hermesSessionIDPattern.MatchString(last) {
+			return last
+		}
+	}
+	return ""
+}
+
+// hermesSessionsListTimeout bounds the `hermes sessions list` capture so a
+// wedged hermes binary can never hang a restart. Overridable in tests.
+var hermesSessionsListTimeout = 5 * time.Second
+
+// captureHermesSessionID queries hermes for the most-recent CLI session in the
+// given workspace and returns its ID, or "" if none is found or hermes errors.
+// This is how agent-deck learns the ID of the session running in a pane, since
+// hermes doesn't export it. workspace scopes the lookup to the pane's directory
+// so it doesn't pick up an unrelated session; empty workspace = most recent CLI
+// session overall (best-effort fallback). Any failure returns "" so restart
+// falls back to a fresh launch and never blocks.
+//
+// The hermes binary is taken as the first whitespace-delimited token of
+// GetToolCommand("hermes"); a custom `[hermes] command` must therefore be a
+// plain binary/path token (no shell quoting or embedded spaces), else the
+// lookup falls back to "" (fresh restart) rather than resuming.
+func captureHermesSessionID(workspace string) string {
+	// GetToolCommand may be "hermes" or a path; take the first token as the binary.
+	bin := strings.Fields(GetToolCommand("hermes"))
+	if len(bin) == 0 {
+		return ""
+	}
+	args := append(bin[1:], "sessions", "list", "--source", "cli", "--limit", "1")
+	if workspace != "" {
+		args = append(args, "--workspace", workspace)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hermesSessionsListTimeout)
+	defer cancel()
+	// #nosec G204 -- bin[0] is the configured/built-in hermes binary (GetToolCommand),
+	// not runtime user input; args are fixed subcommand literals plus workspace, a
+	// filesystem path passed as an argv element (no shell), so no injection surface.
+	cmd := exec.CommandContext(ctx, bin[0], args...)
+	// WaitDelay force-closes the I/O pipes shortly after the context is
+	// cancelled, so a wedged hermes (or a lingering grandchild holding stdout)
+	// can't keep Output() blocked past the timeout — Output() otherwise waits on
+	// the pipe, not just the direct child.
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return parseHermesSessionsLatestID(string(out))
+}
 
 // HermesOptions holds launch options for Hermes Agent CLI sessions.
 // Binary: `hermes` from github.com/NousResearch/hermes-agent (MIT, v0.13.0+).
@@ -85,6 +170,14 @@ func (i *Instance) buildHermesCommand(baseCommand string) string {
 	}
 
 	cmd := GetToolCommand("hermes")
+
+	// Resume the captured hermes session when known. Hermes mints a fresh ID per
+	// launch and never exports it, so HermesSessionID is captured from
+	// `hermes sessions list` at restart time (see Instance.Restart). Empty on a
+	// first launch or an intentional fresh restart, which starts a new session.
+	if i.HermesSessionID != "" {
+		cmd += " --resume " + shellescape.Quote(i.HermesSessionID)
+	}
 
 	// Apply flags from ToolOptionsJSON (includes --yolo if set at session creation)
 	if len(i.ToolOptionsJSON) > 0 {

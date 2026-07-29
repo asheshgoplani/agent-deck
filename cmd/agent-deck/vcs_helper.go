@@ -112,9 +112,11 @@ func detectAndCreateBackend(dir string) (vcs.Backend, error) {
 // backends (jujutsu) the worktree is created without running a setup
 // script — this is the Option B minimal-port limitation noted in the
 // PR body.
-func createWorktreeWithSetup(backend vcs.Backend, worktreePath, branchName string, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
+// create carries git creation-time options (#1708 sparse-checkout
+// inheritance), which jujutsu workspaces ignore.
+func createWorktreeWithSetup(backend vcs.Backend, worktreePath, branchName string, create git.WorktreeCreateOptions, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
 	if backend.Type() == vcs.TypeGit {
-		return git.CreateWorktreeWithSetup(backend.RepoDir(), worktreePath, branchName, stdout, stderr, setupTimeout)
+		return git.CreateWorktreeWithSetupOptions(backend.RepoDir(), worktreePath, branchName, git.WorktreeStateOptions{}, create, stdout, stderr, setupTimeout)
 	}
 	return nil, backend.CreateWorktree(worktreePath, branchName)
 }

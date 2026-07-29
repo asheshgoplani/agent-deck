@@ -83,13 +83,123 @@ func TestNewDialog_ModelInputForCodex(t *testing.T) {
 	if !strings.Contains(view, "Model ID") {
 		t.Fatal("codex new-session dialog should render a model input")
 	}
-	if !strings.Contains(view, "gpt-5.5") || !strings.Contains(view, "gpt-5.4") {
+	if !strings.Contains(view, "gpt-5.6-sol") || !strings.Contains(view, "gpt-5.5") {
 		t.Fatalf("codex model hints should include current ChatGPT versions: %q", view)
 	}
 
-	d.modelInput.SetValue("gpt-5.5")
-	if got := d.GetLaunchModelID(); got != "gpt-5.5" {
-		t.Fatalf("GetLaunchModelID() = %q, want gpt-5.5", got)
+	d.modelInput.SetValue("gpt-5.6-sol")
+	if got := d.GetLaunchModelID(); got != "gpt-5.6-sol" {
+		t.Fatalf("GetLaunchModelID() = %q, want gpt-5.6-sol", got)
+	}
+}
+
+func TestKnownModelIDsForTool_CodexStartsWithGPT56Tiers(t *testing.T) {
+	want := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+	got := knownModelIDsForTool("codex")
+	if len(got) < len(want) || !reflect.DeepEqual(got[:len(want)], want) {
+		t.Fatalf("Codex model catalog prefix = %v, want %v", got, want)
+	}
+}
+
+func TestNewDialog_ModelInputForClaude(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("claude")
+	d.SetSize(100, 50)
+	d.Show()
+
+	if !d.selectedToolSupportsModel() {
+		t.Fatal("claude should support model selection")
+	}
+	if idx := d.indexOf(focusModel); idx < 0 {
+		t.Fatal("model input should be focusable for claude")
+	}
+	view := d.View()
+	if !strings.Contains(view, "Model ID") {
+		t.Fatal("claude new-session dialog should render a model input")
+	}
+	if !strings.Contains(view, "claude-opus-5") || !strings.Contains(view, "claude-sonnet-5") {
+		t.Fatalf("claude model hints should include current Claude versions: %q", view)
+	}
+
+	d.modelInput.SetValue("claude-opus-5")
+	if got := d.GetLaunchModelID(); got != "claude-opus-5" {
+		t.Fatalf("GetLaunchModelID() = %q, want claude-opus-5", got)
+	}
+}
+
+func TestNewDialog_ModelSuggestions_FilterAndSelectClaude(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("claude")
+	d.SetSize(100, 50)
+	d.Show()
+	d.focusIndex = d.indexOf(focusModel)
+	d.updateFocus()
+
+	d.modelInput.SetValue("opus")
+	d.filterModelSuggestions()
+
+	if len(d.modelSuggestions) == 0 || d.modelSuggestions[0] != "claude-opus-5" {
+		t.Fatalf("filtered model suggestions = %v, want claude-opus-5 first", d.modelSuggestions)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !d.IsModelSuggestionsActive() {
+		t.Fatal("enter on model input should activate the model suggestions dropdown")
+	}
+	if view := d.View(); !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "claude-opus-5") {
+		t.Fatalf("model dropdown should show custom entry and known model IDs after enter: %q", view)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if d.modelSuggestionCursor != 1 {
+		t.Fatalf("modelSuggestionCursor = %d, want 1", d.modelSuggestionCursor)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if got := d.GetLaunchModelID(); got != "claude-opus-5" {
+		t.Fatalf("GetLaunchModelID() = %q, want claude-opus-5", got)
+	}
+	// Accepting a model advances focus off the model field. The exact next
+	// target depends on the focus order rebuildFocusTargets produces — Path
+	// when it is present, Worktree when multi-repo hides it — so assert the
+	// advance rather than pinning a target the environment can change.
+	if got := d.currentTarget(); got == focusModel {
+		t.Fatal("accepting a model should advance focus off the model field")
+	}
+}
+
+// TestPreselectDefaultModel covers the catalog-membership gate in
+// preselectDefaultModel: a [claude] default_model is honored only when the ID
+// is in knownModelIDsForTool. An ID missing from the catalog is discarded
+// silently — no error, no log — so the session launches with no --model flag
+// at all. That is how a valid `default_model = "claude-opus-5"` became inert
+// while the catalog still stopped at 4.8.
+func TestPreselectDefaultModel(t *testing.T) {
+	withModel := func(id string) *session.UserConfig {
+		cfg := &session.UserConfig{}
+		cfg.Claude.DefaultModel = id
+		return cfg
+	}
+
+	cases := []struct {
+		name   string
+		config *session.UserConfig
+		tool   string
+		want   string
+	}{
+		{"in catalog is honored", withModel("claude-opus-5"), "claude", "claude-opus-5"},
+		{"older in-catalog ID still honored", withModel("claude-opus-4-8"), "claude", "claude-opus-4-8"},
+		{"unknown ID degrades to unset", withModel("claude-opus-9"), "claude", ""},
+		{"bare alias is not a catalog ID", withModel("opus"), "claude", ""},
+		{"surrounding whitespace tolerated", withModel("  claude-sonnet-5  "), "claude", "claude-sonnet-5"},
+		{"empty default is unset", withModel(""), "claude", ""},
+		{"nil config is safe", nil, "claude", ""},
+		{"non-claude tool ignores claude default", withModel("claude-opus-5"), "codex", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := preselectDefaultModel(tc.config, tc.tool); got != tc.want {
+				t.Fatalf("preselectDefaultModel(%q) = %q, want %q", tc.tool, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -101,17 +211,17 @@ func TestNewDialog_ModelSuggestions_FilterAndSelectCodex(t *testing.T) {
 	d.focusIndex = d.indexOf(focusModel)
 	d.updateFocus()
 
-	d.modelInput.SetValue("5.5")
+	d.modelInput.SetValue("5.6")
 	d.filterModelSuggestions()
 
-	if len(d.modelSuggestions) == 0 || d.modelSuggestions[0] != "gpt-5.5" {
-		t.Fatalf("filtered model suggestions = %v, want gpt-5.5 first", d.modelSuggestions)
+	if len(d.modelSuggestions) != 3 || d.modelSuggestions[0] != "gpt-5.6-sol" {
+		t.Fatalf("filtered model suggestions = %v, want three GPT-5.6 tiers with Sol first", d.modelSuggestions)
 	}
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if !d.IsModelSuggestionsActive() {
 		t.Fatal("enter on model input should activate the model suggestions dropdown")
 	}
-	if view := d.View(); !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "gpt-5.5") {
+	if view := d.View(); !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "gpt-5.6-terra") || !strings.Contains(view, "gpt-5.6-luna") {
 		t.Fatalf("model dropdown should show custom entry and known model IDs after enter: %q", view)
 	}
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -123,13 +233,13 @@ func TestNewDialog_ModelSuggestions_FilterAndSelectCodex(t *testing.T) {
 	}
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
-	if got := d.GetLaunchModelID(); got != "gpt-5.5" {
-		t.Fatalf("GetLaunchModelID() = %q, want gpt-5.5", got)
+	if got := d.GetLaunchModelID(); got != "gpt-5.6-sol" {
+		t.Fatalf("GetLaunchModelID() = %q, want gpt-5.6-sol", got)
 	}
-	// UX top-3 #3: order is Tool -> Model -> Path, so accepting a model advances
-	// focus to the Path field (previously Worktree).
-	if d.currentTarget() != focusPath {
-		t.Fatalf("currentTarget after accepting model = %v, want focusPath", d.currentTarget())
+	// Reasoning effort is grouped directly after the model, so accepting a
+	// model advances to the effort picker before Path.
+	if d.currentTarget() != focusReasoningEffort {
+		t.Fatalf("currentTarget after accepting model = %v, want focusReasoningEffort", d.currentTarget())
 	}
 }
 
@@ -145,7 +255,7 @@ func TestNewDialog_ModelDropdownVisibleOnFocus(t *testing.T) {
 		t.Fatal("model dropdown should be visible on focus without taking active dropdown control")
 	}
 	view := d.View()
-	if !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "gpt-5.5") {
+	if !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "gpt-5.6-sol") {
 		t.Fatalf("model dropdown should show custom entry and known model IDs on focus: %q", view)
 	}
 
@@ -155,6 +265,46 @@ func TestNewDialog_ModelDropdownVisibleOnFocus(t *testing.T) {
 	}
 	if d.modelSuggestionCursor != 1 {
 		t.Fatalf("modelSuggestionCursor = %d, want 1", d.modelSuggestionCursor)
+	}
+}
+
+func TestNewDialog_ReasoningEffortPickerUsesToolSpecificChoices(t *testing.T) {
+	tests := []struct {
+		tool string
+		want string
+	}{
+		{tool: "claude", want: "low"},
+		{tool: "codex", want: "minimal"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tool, func(t *testing.T) {
+			d := NewNewDialog()
+			d.SetDefaultTool(tt.tool)
+			d.Show()
+			idx := d.indexOf(focusReasoningEffort)
+			if idx < 0 {
+				t.Fatalf("%s dialog missing reasoning-effort focus target", tt.tool)
+			}
+			d.focusIndex = idx
+			d.updateFocus()
+			d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRight})
+			if got := d.GetLaunchReasoningEffort(); got != tt.want {
+				t.Fatalf("GetLaunchReasoningEffort() = %q, want %q", got, tt.want)
+			}
+			view := d.View()
+			if !strings.Contains(view, "Reasoning effort") || !strings.Contains(strings.ToLower(view), tt.want) {
+				t.Fatalf("reasoning picker not rendered for %s: %q", tt.tool, view)
+			}
+		})
+	}
+}
+
+func TestNewDialog_ReasoningEffortHiddenForUnsupportedTool(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("gemini")
+	d.Show()
+	if idx := d.indexOf(focusReasoningEffort); idx >= 0 {
+		t.Fatalf("Gemini dialog unexpectedly has reasoning-effort focus target at %d", idx)
 	}
 }
 
@@ -200,10 +350,9 @@ func TestNewDialog_ModelDropdown_TabAndShiftTabMoveFocus(t *testing.T) {
 	if d.IsModelSuggestionsActive() {
 		t.Fatal("tab should close the model dropdown")
 	}
-	// UX top-3 #3: the order is Tool -> Model -> Path, so Tab from Model lands
-	// on the Path field (previously it advanced to Worktree).
-	if d.currentTarget() != focusPath {
-		t.Fatalf("currentTarget after tab from model dropdown = %v, want focusPath", d.currentTarget())
+	// The effort picker follows Model, so Tab lands there before Path.
+	if d.currentTarget() != focusReasoningEffort {
+		t.Fatalf("currentTarget after tab from model dropdown = %v, want focusReasoningEffort", d.currentTarget())
 	}
 }
 
@@ -869,6 +1018,80 @@ func TestNewDialog_ShowInGroup_EmptyDefaultPath(t *testing.T) {
 	}
 }
 
+// TestNewDialog_ShowInGroup_MovesCursorToEndOfPrefilledPath is the #1702
+// regression test.
+//
+// The dialog is a reused singleton, so on every open but the first pathInput
+// still holds the previous open's value AND its cursor position. bubbles'
+// textinput.setValueInternal only snaps the cursor to the end when the OLD
+// value was empty or the old cursor sat past the new value's end
+// (`(pos == 0 && empty) || pos > len(value)`). Reopening on a path longer than
+// the old cursor position therefore left the cursor stale mid-string, and
+// handleOverflow scrolled the view around it — hiding the path tail until the
+// user pressed Ctrl+K or jumped to the end by hand.
+func TestNewDialog_ShowInGroup_MovesCursorToEndOfPrefilledPath(t *testing.T) {
+	// firstPath is deliberately short so the carried-over cursor lands inside
+	// reopenPath, which is the condition bubbles does not correct for us.
+	const firstPath = "/tmp/b"
+
+	tests := []struct {
+		name       string
+		reopenPath string
+	}{
+		{"deeper local path", "/Users/dev/work/deep/nested/project-alpha"},
+		{"remote session path", "/srv/remote/host/checkouts/agent-deck"},
+		{"non-ascii path", "/Users/dev/projekte/größer/ünïcode-checkout"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dialog := NewNewDialog()
+
+			dialog.ShowInGroup("projects", "Projects", firstPath, nil, "")
+			// Normal editing state after the first open: cursor at the end of
+			// the current value.
+			dialog.pathInput.SetCursor(len(firstPath))
+			if got, want := dialog.pathInput.Position(), len(firstPath); got != want {
+				t.Fatalf("setup: cursor should start at end of %q, got %d want %d", firstPath, got, want)
+			}
+			dialog.Hide()
+
+			// Reopen the reused dialog on a longer path.
+			dialog.ShowInGroup("projects", "Projects", tt.reopenPath, nil, "")
+
+			if got := dialog.pathInput.Value(); got != tt.reopenPath {
+				t.Fatalf("pathInput value = %q, want %q", got, tt.reopenPath)
+			}
+			// Cursor position is measured in runes by bubbles.
+			if got, want := dialog.pathInput.Position(), len([]rune(tt.reopenPath)); got != want {
+				t.Errorf("cursor should sit at the end of the pre-filled path so the tail stays visible: got %d, want %d (value %q)", got, want, tt.reopenPath)
+			}
+		})
+	}
+}
+
+// TestNewDialog_ShowInGroup_MovesCursorToEndOfCwdFallback covers the other
+// prefill branch of ShowInGroup (#1702): the cwd fallback taken when the group
+// has no default path.
+func TestNewDialog_ShowInGroup_MovesCursorToEndOfCwdFallback(t *testing.T) {
+	dialog := NewNewDialog()
+
+	const firstPath = "/a"
+	dialog.ShowInGroup("projects", "Projects", firstPath, nil, "")
+	dialog.pathInput.SetCursor(len(firstPath))
+	dialog.Hide()
+
+	dialog.ShowInGroup("projects", "Projects", "", nil, "")
+
+	value := dialog.pathInput.Value()
+	if len(value) <= len(firstPath) {
+		t.Skipf("cwd %q is not longer than %q, so the stale cursor cannot be observed", value, firstPath)
+	}
+	if got, want := dialog.pathInput.Position(), len([]rune(value)); got != want {
+		t.Errorf("cursor should sit at the end of the cwd fallback path: got %d, want %d (value %q)", got, want, value)
+	}
+}
+
 func TestNewDialog_BranchInputInitialized(t *testing.T) {
 	dialog := NewNewDialog()
 
@@ -984,21 +1207,24 @@ func TestNewDialog_FocusOrder_HotPathNameToolPath(t *testing.T) {
 	}
 }
 
-// With a model-capable tool the Model field sits between Tool and Path, keeping
-// it grouped with the tool selector while preserving Name -> Tool -> ... -> Path.
-func TestNewDialog_FocusOrder_ModelBetweenToolAndPath(t *testing.T) {
+// With a reasoning-capable tool, Model and Reasoning sit between Tool and Path.
+func TestNewDialog_FocusOrder_ModelAndReasoningBetweenToolAndPath(t *testing.T) {
 	d := NewNewDialog()
 	d.SetDefaultTool("claude")
 	d.Show()
 
 	cmdIdx := d.indexOf(focusCommand)
 	modelIdx := d.indexOf(focusModel)
+	reasoningIdx := d.indexOf(focusReasoningEffort)
 	pathIdx := d.indexOf(focusPath)
 	if modelIdx < 0 {
 		t.Fatal("focusModel should be present for a model-capable tool (claude)")
 	}
-	if !(cmdIdx < modelIdx && modelIdx < pathIdx) {
-		t.Fatalf("want Tool(%d) < Model(%d) < Path(%d)", cmdIdx, modelIdx, pathIdx)
+	if reasoningIdx < 0 {
+		t.Fatal("focusReasoningEffort should be present for Claude")
+	}
+	if !(cmdIdx < modelIdx && modelIdx < reasoningIdx && reasoningIdx < pathIdx) {
+		t.Fatalf("want Tool(%d) < Model(%d) < Reasoning(%d) < Path(%d)", cmdIdx, modelIdx, reasoningIdx, pathIdx)
 	}
 }
 

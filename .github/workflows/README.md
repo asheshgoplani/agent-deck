@@ -22,7 +22,57 @@ file an issue and fix it, don't merge through it.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `release.yml` | push tag `v*` | Validates the tag matches `cmd/agent-deck/main.go`'s `Version`, runs `go test -race ./...`, runs `goreleaser --clean` to build Darwin/Linux × amd64/arm64 tarballs, publishes the GitHub Release, and asserts the expected five assets + `checksums.txt` landed. Replaces the pre-#332 manual `make release-local` step. |
+| `release.yml` | push tag `v*` | Validates the tag matches `cmd/agent-deck/main.go`'s `Version`, runs `go test -race ./...`, runs `goreleaser --clean` to build Darwin/Linux × amd64/arm64 tarballs into a **draft** release, asserts the four tarballs + `checksums.txt` landed, verifies every tarball against its published SHA-256, signs SLSA build provenance — and only then publishes the release. Finally it pushes the Homebrew formula, best-effort. Replaces the pre-#332 manual `make release-local` step. |
+| `homebrew-verify.yml` | `workflow_run` after `release.yml` completes successfully (plus weekly cron, `workflow_dispatch`, and PRs touching install docs) | Probes the live tap: formula exists, its version matches `/releases/latest`, and every URL in it resolves. Moved off the tag-push trigger in #1759 because it used to race the release it was verifying. |
+
+### The release is published last, and only once (#1759)
+
+Assets are attached to a **draft** (`release.draft: true` in `.goreleaser.yml`) and
+`release.yml`'s `Publish release` step is the only thing that ever makes a
+release visible — after asset presence and checksum verification pass. If any
+step fails, the draft is never published, so `agent-deck update`, `brew`, and
+`agent-deck remote update` keep resolving the previous good release instead of
+an empty one. A leftover draft is adopted by the next run of the workflow for
+that tag (`release.use_existing_draft: true`).
+
+**Cutting a release therefore means pushing the tag — nothing else.** Never
+create the GitHub release yourself, and never with `gh release create` without
+`--draft`: GoReleaser copies the draft flag of a release that already exists, so
+a pre-published release stays public and asset-less for the whole ~11-minute
+build (exactly what broke v1.10.10 and v1.10.11). `release.yml` now forces such
+a release back to draft before building, but that safety net exists to catch
+mistakes, not to be relied on.
+
+### Provenance is signed before publishing; the tap is pushed after (#1760, #1763)
+
+The tail of `release.yml` is ordered deliberately:
+
+1. **Attest build provenance** — signs the verified artifacts. It runs *before*
+   publishing so provenance is a precondition of a release being visible. If
+   signing fails, the draft is never published and nobody is handed an
+   artifact that `gh attestation verify` cannot check (SECURITY.md advertises
+   exactly that command).
+2. **Publish release** — the one place a release becomes visible.
+3. **Update Homebrew tap formula** — `continue-on-error: true`. Best effort, and
+   after publishing because the formula's download URLs only resolve once the
+   release is public.
+
+GoReleaser used to push the tap itself, in the middle of `goreleaser release`.
+That put a third-party package manager in the release's critical path: when
+`HOMEBREW_TAP_GITHUB_TOKEN` started returning `401 Bad credentials`, the
+GoReleaser step failed and **every step after it was skipped**, so v1.10.9,
+v1.10.10 and v1.10.11 shipped with no SLSA provenance at all (#1760). Now
+`brews.skip_upload: true` in `.goreleaser.yml` makes GoReleaser stop at
+generating `dist/homebrew/Formula/agent-deck.rb`, and the workflow owns the push.
+
+The tap step cannot fail a release, but it is not silent either: it emits a
+`::warning::` annotation plus a job summary with recovery commands, and it
+refuses to push unless the generated formula's version matches the tag and all
+four of its `sha256` values match the release's verified `checksums.txt` — a
+formula with a stale checksum breaks `brew install` for everyone. A red-but-
+ignored tap step on a green release means the tap needs attention (usually the
+token), not that the release is bad.
+
 | `pages.yml` | push to `main` touching `site/**`, or `workflow_dispatch` | Deploys the static landing site under `site/` to GitHub Pages. |
 
 ## Notification-only (no gate, no build)

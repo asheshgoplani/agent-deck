@@ -71,7 +71,7 @@ func TestXDGTask6_HookStatusUsesXDGDataAndLegacyFallback(t *testing.T) {
 		t.Fatalf("getHooksDir() = %q, want %q", got, wantXDG)
 	}
 
-	writeHookStatus("xdg-hook", "waiting", "sess-xdg", "SessionStart")
+	writeHookStatus("xdg-hook", "waiting", "sess-xdg", "SessionStart", "")
 	if _, err := os.Stat(filepath.Join(wantXDG, "xdg-hook.json")); err != nil {
 		t.Fatalf("status file should be written under XDG data: %v", err)
 	}

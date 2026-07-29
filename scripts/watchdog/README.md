@@ -20,6 +20,27 @@ See `DESIGN.md` for architecture.
    (`parent_session_id` set) stuck in `status=waiting` with an unchanged tmux
    pane for >10 min, inject `report status?` via `agent-deck session send`
    (max one nudge per hour per session).
+4. **Liveness confirmation before every restart (#1705)** — the last thing before
+   a pane is torn down. A restart is destructive and the `status == error`
+   reading that authorizes one can be *stale* (restarts are serialized, and a
+   cascade revives serially, so a queued decision can execute minutes after its
+   sample) or *false* (`error` is partly derived from pane content, so a
+   banner-shaped line in scrollback keeps the verdict standing while the agent
+   works on). At the moment of the restart the watchdog therefore re-reads the
+   status, samples the pane twice, and skips the restart when the session
+   recovered, when the pane is still producing output, when the status cannot be
+   read, or when the session is held for an auth failure — a restart cannot fix
+   a credential. Every decision, skip or restart, is recorded in `liveness.log`
+   with its readings (statuses, substates, timestamps, pane digests). Digests
+   only: the log never carries pane text.
+
+   A skipped restart does not consume the per-session rate-limit budget, so a
+   session the watchdog correctly declined to touch cannot escalate as "keeps
+   crashing". Three consecutive skips on a moving pane escalate as
+   `liveness-mismatch` instead — that is a status-classification problem, not a
+   dead session. Both that alert and the auth-hold one fire once per error
+   episode, not once per poll; the counter resets when the session is next seen
+   healthy.
 
 ## Install
 
@@ -69,17 +90,12 @@ python3 -m unittest test_watchdog -v
 pytest test_watchdog.py
 ```
 
-The full suite takes ~9 minutes because several tests exercise the global
-restart serialization (`MIN_GLOBAL_RESTART_INTERVAL_S=60`). For iterating on
-the v1.7.63 additions specifically:
-
-```bash
-python3 -m unittest \
-  test_watchdog.TestPollerExistence \
-  test_watchdog.TestBunTelegramStateDirs \
-  test_watchdog.TestWaitingTooLong
-# Runs in <1s.
-```
+The whole suite runs in well under a second. `setUpModule` redirects every log
+path to a temp dir, points `AGENT_DECK_BIN` at a path that cannot exist, and
+zeroes the two sleeps (`MIN_GLOBAL_RESTART_INTERVAL_S`, `LIVENESS_CONFIRM_GAP_S`).
+That isolation is not optional: the defaults resolve under `~/.agent-deck`, which
+on a maintainer machine is the live data directory, and the real CLI would be
+invoked against real sessions. Keep any new test inside it.
 
 ## Operational notes
 
@@ -87,4 +103,7 @@ python3 -m unittest \
   send / Telegram. Safe to leave running.
 - **One-shot** (`--once`) executes a single safety-poll pass and exits. Useful
   from shell scripts or cron alongside the systemd service.
-- Logs land in `$AGENT_DECK_ROOT/watchdog/{watchdog.log,restart.log,escalations.log}`.
+- Logs land in `$AGENT_DECK_ROOT/watchdog/{watchdog.log,restart.log,escalations.log,liveness.log}`.
+- `liveness.log` is the first thing to read after an unexpected restart (or an
+  expected one that never came): one JSON record per decision, carrying the
+  readings behind it rather than only its outcome.

@@ -38,7 +38,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.10.10" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.10.11" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -289,6 +289,9 @@ func main() {
 			return
 		case "session":
 			handleSession(profile, args[1:])
+			return
+		case "fleet":
+			handleFleet(profile, args[1:])
 			return
 		case "mcp":
 			handleMCP(profile, args[1:])
@@ -1584,7 +1587,11 @@ func handleAdd(profile string, args []string) {
 
 			// Create worktree atomically (git handles existence checks).
 			// This avoids a TOCTOU race from separate check-then-create steps.
-			setupErr, err := createWorktreeWithSetup(backend, worktreePath, wtBranch, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+			// Sparse state is inherited from `path` (the directory the user
+			// pointed at), never from backend.RepoDir() — see #1708.
+			setupErr, err := createWorktreeWithSetup(backend, worktreePath, wtBranch,
+				git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), path),
+				os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 			if err != nil {
 				if isWorktreeAlreadyExistsError(err) {
 					fmt.Fprintf(os.Stderr, "Error: worktree already exists at %s\n", worktreePath)
@@ -2284,6 +2291,12 @@ func handleRemove(profile string, args []string) {
 	removedID := inst.ID
 	removedTitle := inst.Title
 
+	// Snapshot service-unit ownership BEFORE teardown (issue #1721): the
+	// pid of the tmux server generation this session belongs to is only
+	// observable while the session is still live, and it is what proves
+	// the unit we may stop later is the one we actually retired.
+	serviceUnitOwnership := inst.ServiceUnitOwnership()
+
 	// Always attempt to kill the tmux session, even if Exists() returns false.
 	// The saved status may be stale (e.g., "error" in DB but tmux session still alive).
 	// KillAndWait is safe to call on non-existent sessions (returns error which we handle).
@@ -2304,7 +2317,12 @@ func handleRemove(profile string, args []string) {
 	// stop + reset-failed the unit here so `agent-deck remove` is truly
 	// terminal. No-op on non-service-mode sessions and on non-systemd
 	// hosts.
-	_ = inst.StopServiceUnit()
+	//
+	// Gated on proven exclusive ownership (issue #1721): the unit
+	// supervises a tmux SERVER, which on the default socket is shared by
+	// every sibling session, so an unconditional stop could kill sessions
+	// this removal was never allowed to touch.
+	_ = inst.RetireServiceUnit(serviceUnitOwnership)
 
 	// Clean up worktree directory if this is a worktree session
 	if inst.IsWorktree() {
@@ -2902,6 +2920,15 @@ func handleUpdate(args []string) {
 		os.Exit(1)
 	}
 
+	// #1759: a release is visible on GitHub before its binaries finish
+	// uploading. CheckForUpdate degrades to the newest installable release and
+	// reports the in-flight one here, so say that plainly instead of either
+	// erroring out or implying the user is already current.
+	if info.PublishingVersion != "" {
+		fmt.Printf("\nℹ v%s was just released but its binaries are not attached yet.\n", info.PublishingVersion)
+		fmt.Println("  Re-run `agent-deck update` in a few minutes to get it.")
+	}
+
 	if !info.Available {
 		fmt.Println("✓ You're running the latest version!")
 		return
@@ -3210,6 +3237,7 @@ func printHelp() {
 	fmt.Println("  rename, mv       Rename a session")
 	fmt.Println("  status           Show session status summary")
 	fmt.Println("  session          Manage session lifecycle")
+	fmt.Println("  fleet            Detect and recover from a fleet-wide session death")
 	fmt.Println("  mcp              Manage MCP servers")
 	fmt.Println("  skill            Manage project skills")
 	fmt.Println("  codex-hooks      Manage Codex notify hook integration")
@@ -3237,6 +3265,10 @@ func printHelp() {
 	fmt.Println("  session fork <id>         Fork Claude or Pi session with context")
 	fmt.Println("  session attach <id>       Attach to session interactively")
 	fmt.Println("  session show [id]         Show session details")
+	fmt.Println()
+	fmt.Println("Fleet Recovery Commands:")
+	fmt.Println("  fleet status              Report sessions whose panes are gone (read-only)")
+	fmt.Println("  fleet recover             Plan a sequential recovery sweep (add --yes to run it)")
 	fmt.Println()
 	fmt.Println("MCP Commands:")
 	fmt.Println("  mcp list                  List available MCPs from config.toml")

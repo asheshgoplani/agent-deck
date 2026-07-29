@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -222,8 +223,17 @@ func (b *tmuxPTYBridge) Close() {
 	})
 }
 
+// tmuxHasSessionProbeTimeout bounds the has-session existence probe. The web
+// bridge re-probes on every (re)connect, which is a cadence: on tmux 3.0a a
+// client that has exhausted its fd table spins at 100% CPU in EMFILE retries
+// and never exits, so an unbounded probe both hangs the connect request and
+// leaks a core-burning orphan per reconnect attempt.
+const tmuxHasSessionProbeTimeout = 3 * time.Second
+
 func tmuxSessionExists(name, socketName string) (bool, error) {
-	cmd := tmuxCommand(socketName, "has-session", "-t", name)
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxHasSessionProbeTimeout)
+	defer cancel()
+	cmd := tmuxCommandContext(ctx, socketName, "has-session", "-t", name)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return true, nil
@@ -249,11 +259,21 @@ func tmuxSessionExists(name, socketName string) (bool, error) {
 // legacy env-based fallback is preserved so running `agent-deck web` inside
 // an existing tmux pane keeps working for users who haven't opted into the
 // new per-session socket config (issue #687 phase 1).
+// Callers that poll on a cadence must use tmuxCommandContext with a deadline
+// instead — see tmuxHasSessionProbeTimeout. This unbounded form is correct only
+// for long-lived interactive commands such as attach-session.
 func tmuxCommand(socketName string, args ...string) *exec.Cmd {
+	return tmuxCommandContext(context.Background(), socketName, args...)
+}
+
+// tmuxCommandContext is the deadline-carrying variant of tmuxCommand. A context
+// with a timeout lets exec.CommandContext SIGKILL a tmux client that has wedged
+// on its own leaked fd table rather than blocking the caller forever.
+func tmuxCommandContext(ctx context.Context, socketName string, args ...string) *exec.Cmd {
 	// Explicit per-session socket name wins — this is the v1.7.50 path.
 	if trimmed := strings.TrimSpace(socketName); trimmed != "" {
 		finalArgs := append([]string{"-L", trimmed}, args...)
-		cmd := exec.Command("tmux", finalArgs...)
+		cmd := exec.CommandContext(ctx, "tmux", finalArgs...)
 		// Unset TMUX so tmux-in-tmux guards don't trip: we are explicitly
 		// directing this to a different server than the one we're in.
 		cmd.Env = environWithoutTMUX(os.Environ())
@@ -267,7 +287,7 @@ func tmuxCommand(socketName string, args ...string) *exec.Cmd {
 		finalArgs = append([]string{"-S", socketPath}, args...)
 	}
 
-	cmd := exec.Command("tmux", finalArgs...)
+	cmd := exec.CommandContext(ctx, "tmux", finalArgs...)
 	if hasSocket {
 		cmd.Env = environWithoutTMUX(os.Environ())
 	}
@@ -283,7 +303,13 @@ func tmuxAttachCommand(sessionName, socketName string) *exec.Cmd {
 	// for ALL attached clients (Ghostty, iTerm) — the dots-in-window symptom.
 	// With largest in effect, every client sees content sized to the biggest
 	// viewer; smaller clients see a clipped portion rather than dot-filled void.
-	cmd := tmuxCommand(socketName, "attach-session", "-t", sessionName)
+	// `-u` forces UTF-8 output regardless of the daemon's locale. Same class of
+	// bug as the TERM handling below: when the web daemon runs under launchd/
+	// systemd its environment carries no LANG/LC_*, so tmux treats this client as
+	// non-UTF-8 and downgrades every non-ASCII glyph (⏵, box-drawing, spinners)
+	// to '_' on the wire — the browser/mobile terminal then shows '_' where the
+	// agent drew Unicode, while tmux's own buffer (capture-pane) stays correct.
+	cmd := tmuxCommand(socketName, "-u", "attach-session", "-t", sessionName)
 	// Guarantee a usable TERM for the attach client. When the web daemon runs
 	// under launchd/systemd its environment carries no TERM, and a tmux attach
 	// client with an empty/unset TERM aborts with "open terminal failed:

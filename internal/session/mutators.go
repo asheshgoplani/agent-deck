@@ -149,7 +149,19 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 
 	case FieldPath:
 		oldValue = inst.ProjectPath
-		inst.ProjectPath = value
+		// #1706: store the canonical absolute path so tmux, the Claude project
+		// slug and the #1731 hook-cwd check all read the same directory. An SSH
+		// session's path names a directory on the remote host, so this machine's
+		// cwd is not a valid anchor for it — leave those verbatim.
+		if inst.IsSSH() {
+			inst.ProjectPath = value
+			break
+		}
+		resolved, resErr := ResolveProjectPath(value)
+		if resErr != nil {
+			return oldValue, nil, &MutationError{Field: field, Msg: resErr.Error()}
+		}
+		inst.ProjectPath = resolved
 
 	case FieldCommand:
 		oldValue = inst.Command

@@ -559,6 +559,74 @@ func TestDetectTool(t *testing.T) {
 	}
 }
 
+// seedPaneCommand installs a fresh pane-info cache entry reporting cmd as the
+// session's tmux foreground command, restoring the previous cache on cleanup.
+func seedPaneCommand(t *testing.T, sessionName, cmd string) {
+	t.Helper()
+
+	paneCacheMu.Lock()
+	previousData := paneCacheData
+	previousTime := paneCacheTime
+	paneCacheData = map[string]PaneInfo{
+		sessionName: {CurrentCommand: cmd},
+	}
+	paneCacheTime = time.Now()
+	paneCacheMu.Unlock()
+
+	t.Cleanup(func() {
+		paneCacheMu.Lock()
+		paneCacheData = previousData
+		paneCacheTime = previousTime
+		paneCacheMu.Unlock()
+	})
+}
+
+func TestDetectToolPrefersPaneCommandOverConversationContent(t *testing.T) {
+	sess := NewSession("tool-detection-precedence", "/tmp")
+	sess.Command = "shell"
+	sess.cacheContent = "A Gemini API key can be used for image generation."
+	sess.cacheTime = time.Now()
+
+	seedPaneCommand(t, sess.Name, "claude")
+
+	if got := sess.DetectTool(); got != "claude" {
+		t.Fatalf("DetectTool() = %q, want %q when pane command identifies the running tool", got, "claude")
+	}
+}
+
+// A recognized runtime must survive detection-cache expiry: tmux reports the
+// child process Claude spawned for a tool call as the foreground command, so a
+// single `codex` sample must not relabel the session.
+func TestDetectToolKeepsRecognizedRuntimeWhenPaneCommandIsChildTool(t *testing.T) {
+	sess := NewSession("tool-detection-child-command", "/tmp")
+	sess.Command = "shell"
+	sess.detectedTool = "claude"
+	sess.toolDetectedAt = time.Now().Add(-time.Hour) // detection cache expired
+
+	seedPaneCommand(t, sess.Name, "codex")
+
+	if got := sess.DetectTool(); got != "claude" {
+		t.Fatalf("DetectTool() = %q, want %q when a recognized runtime runs another tool as a child", got, "claude")
+	}
+}
+
+// Same guard for the content fallback: an unrecognized foreground command must
+// not open the door for conversation text to relabel a recognized runtime.
+func TestDetectToolKeepsRecognizedRuntimeWhenContentMentionsOtherTool(t *testing.T) {
+	sess := NewSession("tool-detection-child-shell", "/tmp")
+	sess.Command = "shell"
+	sess.detectedTool = "claude"
+	sess.toolDetectedAt = time.Now().Add(-time.Hour) // detection cache expired
+	sess.cacheContent = "A Gemini API key can be used for image generation."
+	sess.cacheTime = time.Now()
+
+	seedPaneCommand(t, sess.Name, "bash")
+
+	if got := sess.DetectTool(); got != "claude" {
+		t.Fatalf("DetectTool() = %q, want %q when pane content merely mentions another tool", got, "claude")
+	}
+}
+
 func TestDetectToolFromCommand(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -2940,9 +3008,13 @@ func TestStartCommandSpec_Default(t *testing.T) {
 		WorkDir: "/tmp/project",
 	}
 
+	// #1694: -x/-y are part of the argv contract now.
+	pinInitialWindowSize(t, 173, 41, true)
+
 	launcher, args := s.startCommandSpec("/tmp/project", "")
 	assert.Equal(t, "tmux", launcher)
-	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project"}, args)
+	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project",
+		"-x", "173", "-y", "41"}, args)
 }
 
 func TestStartCommandSpec_UserScope(t *testing.T) {
@@ -2952,12 +3024,15 @@ func TestStartCommandSpec_UserScope(t *testing.T) {
 		LaunchInUserScope: true,
 	}
 
+	pinInitialWindowSize(t, 173, 41, true)
+
 	launcher, args := s.startCommandSpec("/tmp/project", "")
 	require.Equal(t, "systemd-run", launcher)
 	require.GreaterOrEqual(t, len(args), 8)
 	assert.Equal(t, []string{"--user", "--scope", "--quiet", "--collect", "--unit"}, args[:5])
 	assert.Equal(t, "agentdeck-tmux-agentdeck-test-session-1234abcd", args[5])
-	assert.Equal(t, []string{"tmux", "new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project"}, args[6:])
+	assert.Equal(t, []string{"tmux", "new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project",
+		"-x", "173", "-y", "41"}, args[6:])
 }
 
 // TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent is the
@@ -3012,10 +3087,11 @@ func TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent(t *testing
 			require.Equal(t, "tmux", launcher)
 			// #1567/#1580: the command is delivered as SEPARATE argv tokens
 			// (bash, -c, COMMAND) so tmux execvp()s bash directly instead of
-			// wrapping the string through the server default-shell. That is 9
-			// args total: new-session -d -s NAME -c DIR bash -c COMMAND.
-			require.Equal(t, 9, len(args),
-				"expected 9 args (new-session -d -s NAME -c DIR bash -c COMMAND)")
+			// wrapping the string through the server default-shell. With the
+			// #1694 birth size that is 13 args total:
+			// new-session -d -s NAME -c DIR -x COLS -y ROWS bash -c COMMAND.
+			require.Equal(t, 13, len(args),
+				"expected 13 args (new-session -d -s NAME -c DIR -x COLS -y ROWS bash -c COMMAND)")
 
 			require.Equal(t, "bash", args[len(args)-3],
 				"command must be exec'd under bash for fish/zsh/bash compatibility")

@@ -13,8 +13,28 @@ import { displayLabelForTool, resolveCreateSessionPickerTools } from './pickerTo
 
 const CUSTOM_MODEL = '__custom__'
 
+const REASONING_EFFORT_CATALOG = {
+  claude: [
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra high' },
+    { value: 'max', label: 'Max' },
+  ],
+  codex: [
+    { value: 'minimal', label: 'Minimal' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra high' },
+  ],
+}
+
 const MODEL_ID_CATALOG = {
   claude: [
+    { value: 'claude-opus-5', label: 'Claude Opus 5' },
+    { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+    { value: 'claude-fable-5', label: 'Claude Fable 5' },
     { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
     { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
     { value: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
@@ -22,6 +42,9 @@ const MODEL_ID_CATALOG = {
     { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 pinned' },
   ],
   codex: [
+    { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+    { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
+    { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
     { value: 'gpt-5.5', label: 'GPT-5.5' },
     { value: 'gpt-5.5-pro', label: 'GPT-5.5 Pro' },
     { value: 'gpt-5.4', label: 'GPT-5.4' },
@@ -62,6 +85,9 @@ const MODEL_ID_CATALOG = {
     { value: 'openai/gpt-5.3-codex', label: 'OpenAI GPT-5.3 Codex' },
     { value: 'openai/gpt-5', label: 'OpenAI GPT-5' },
     { value: 'openai/o3', label: 'OpenAI o3' },
+    { value: 'anthropic/claude-opus-5', label: 'Anthropic Claude Opus 5' },
+    { value: 'anthropic/claude-sonnet-5', label: 'Anthropic Claude Sonnet 5' },
+    { value: 'anthropic/claude-fable-5', label: 'Anthropic Claude Fable 5' },
     { value: 'anthropic/claude-sonnet-4-6', label: 'Anthropic Claude Sonnet 4.6' },
     { value: 'anthropic/claude-opus-4-8', label: 'Anthropic Claude Opus 4.8' },
     { value: 'anthropic/claude-opus-4-7', label: 'Anthropic Claude Opus 4.7' },
@@ -73,11 +99,16 @@ function modelIDsForTool(tool) {
   return MODEL_ID_CATALOG[tool] || []
 }
 
+function reasoningEffortsForTool(tool) {
+  return REASONING_EFFORT_CATALOG[tool] || []
+}
+
 export function CreateSessionDialog() {
   const [title, setTitle] = useState('')
   const [tool, setTool] = useState('claude')
   const [modelId, setModelId] = useState('')
   const [customModel, setCustomModel] = useState('')
+  const [reasoningEffort, setReasoningEffort] = useState('')
   const [path, setPath] = useState('')
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
@@ -95,6 +126,7 @@ export function CreateSessionDialog() {
       const payload = { title, tool, projectPath: path }
       const modelId = selectedModelId()
       if (modelId) payload.modelId = modelId
+      if (reasoningEffort) payload.reasoningEffort = reasoningEffort
       await apiFetch('POST', '/api/sessions', payload)
       createSessionDialogSignal.value = false
     } catch (err) {
@@ -108,6 +140,7 @@ export function CreateSessionDialog() {
     setTool(nextTool)
     setModelId('')
     setCustomModel('')
+    setReasoningEffort('')
   }
 
   function selectedModelId() {
@@ -118,6 +151,7 @@ export function CreateSessionDialog() {
   const close = () => (createSessionDialogSignal.value = false)
   const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const modelIDs = modelIDsForTool(tool)
+  const reasoningEfforts = reasoningEffortsForTool(tool)
   const shownTools = resolveCreateSessionPickerTools(pickerToolsSignal.value)
   const needsCustomModel = modelId === CUSTOM_MODEL
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
@@ -174,6 +208,17 @@ export function CreateSessionDialog() {
                 <input required value=${customModel} onInput=${e => setCustomModel(e.target.value)} placeholder="provider/model-or-version"/>
               </div>
             `}
+          `}
+          ${reasoningEfforts.length > 0 && html`
+            <div class="field">
+              <label>REASONING EFFORT</label>
+              <select value=${reasoningEffort} onInput=${e => setReasoningEffort(e.target.value)}>
+                <option value="">Tool default</option>
+                ${reasoningEfforts.map(effort => html`
+                  <option key=${effort.value} value=${effort.value}>${effort.label} — ${effort.value}</option>
+                `)}
+              </select>
+            </div>
           `}
           ${error && html`
             <div style="font-family: var(--mono); font-size: 11.5px; color: var(--tn-red); padding: 8px 10px;

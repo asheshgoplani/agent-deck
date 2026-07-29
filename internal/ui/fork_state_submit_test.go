@@ -84,7 +84,7 @@ func TestForkSessionCmdWithOptions_AcceptsForkState(t *testing.T) {
 
 func TestForkWithStateWorktree_RefusesExistingPathBeforeCreate(t *testing.T) {
 	var created bool
-	deps := defaultForkWithStateWorktreeDeps()
+	deps := defaultForkWithStateWorktreeDeps("")
 	deps.validateDestination = func(string, string) error { return nil }
 	deps.statPath = func(string) (os.FileInfo, error) { return fakeFileInfo{}, nil }
 	deps.createAtStartPoint = func(string, string, string, string) (bool, error) {
@@ -103,7 +103,7 @@ func TestForkWithStateWorktree_RefusesExistingPathBeforeCreate(t *testing.T) {
 
 func TestForkWithStateWorktree_RefusesMidOperationBeforeCreate(t *testing.T) {
 	var created bool
-	deps := defaultForkWithStateWorktreeDeps()
+	deps := defaultForkWithStateWorktreeDeps("")
 	deps.statPath = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 	deps.mkdirAll = func(string, os.FileMode) error { return nil }
 	deps.validateDestination = func(string, string) error { return nil }
@@ -125,7 +125,7 @@ func TestForkWithStateWorktree_RefusesMidOperationBeforeCreate(t *testing.T) {
 func TestForkWithStateWorktree_CleansUpMaterializeFailure(t *testing.T) {
 	var removed bool
 	var deleted bool
-	deps := defaultForkWithStateWorktreeDeps()
+	deps := defaultForkWithStateWorktreeDeps("")
 	deps.statPath = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 	deps.mkdirAll = func(string, os.FileMode) error { return nil }
 	deps.validateDestination = func(string, string) error { return nil }
@@ -147,7 +147,7 @@ func TestForkWithStateWorktree_CleansUpMaterializeFailure(t *testing.T) {
 }
 
 func TestForkWithStateWorktree_ReportsManualCleanupWhenCleanupFails(t *testing.T) {
-	deps := defaultForkWithStateWorktreeDeps()
+	deps := defaultForkWithStateWorktreeDeps("")
 	deps.statPath = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 	deps.mkdirAll = func(string, os.FileMode) error { return nil }
 	deps.validateDestination = func(string, string) error { return nil }
@@ -210,7 +210,7 @@ func TestForkWithStateWorktree_UsesParentHead(t *testing.T) {
 	}
 
 	forkPath := filepath.Join(root, "fork")
-	_, err := forkWithStateWorktree(parent, base, forkPath, "fork/from-parent", git.WorktreeStateOptions{WithState: true}, defaultForkWithStateWorktreeDeps())
+	_, err := forkWithStateWorktree(parent, base, forkPath, "fork/from-parent", git.WorktreeStateOptions{WithState: true}, defaultForkWithStateWorktreeDeps(""))
 	if err != nil {
 		t.Fatalf("forkWithStateWorktree: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestForkSessionCmdWithOptions_WithStateRoutesByBackend(t *testing.T) {
 
 func TestForkWithStateWorktree_FailsClosedWhenDetectErrors(t *testing.T) {
 	var created bool
-	deps := defaultForkWithStateWorktreeDeps()
+	deps := defaultForkWithStateWorktreeDeps("")
 	deps.statPath = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 	deps.mkdirAll = func(string, os.FileMode) error { return nil }
 	deps.validateDestination = func(string, string) error { return nil }

@@ -66,7 +66,14 @@ func assertTestTmuxIsolation() {
 	// exactly the condition that killed every session three times today.
 	tmuxEnv := os.Getenv("TMUX")
 	if tmuxEnv == "" {
-		// Safe enough — there's no inherited socket to leak onto.
+		// NOT safe, despite what this branch used to claim ("no inherited
+		// socket to leak onto"). tmux finds the user's live server without
+		// $TMUX: with no -S, no -L and no TMUX_TMPDIR it resolves to
+		// <tmpdir>/tmux-<uid>/default all by itself. That blind spot is why
+		// assertTmuxSpawnIsolated (default_socket_guard.go) now refuses at the
+		// argv factory based on the RESOLVED socket path, which covers this
+		// path and every other spawn in the package. The warning stays as the
+		// nudge toward proper package isolation.
 		slog.Warn("tmux_isolation_guard_no_marker_but_tmux_unset",
 			slog.String("hint", "test binary did not set AGENT_DECK_TEST_ISOLATED=1; "+
 				"call testutil.IsolateTmuxSocket() from TestMain to enable the full guard"))

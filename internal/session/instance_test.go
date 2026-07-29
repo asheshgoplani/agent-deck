@@ -4617,3 +4617,47 @@ func TestInstance_RefreshLiveSessionIDs_NoOpForNonAgenticTool(t *testing.T) {
 		t.Errorf("GeminiSessionID mutated for non-agentic tool: got %q", inst.GeminiSessionID)
 	}
 }
+
+// TestShouldRunCodexProcessProbeSteadyStateBackoff covers issue #1552: once a
+// Codex session ID is known, the process-file probe (lsof on macOS) must back
+// off to codexRotationScanInterval instead of re-running every
+// codexBootstrapScanInterval. Several parked Codex sessions probing lsof every
+// two seconds generated enough filesystem metadata traffic to stall the machine.
+func TestShouldRunCodexProcessProbeSteadyStateBackoff(t *testing.T) {
+	t.Run("bootstrap keeps fast interval while ID unknown", func(t *testing.T) {
+		inst := &Instance{}
+		inst.lastCodexProbeAt = time.Now().Add(-codexBootstrapScanInterval - time.Second)
+		if !inst.shouldRunCodexProcessProbe(false) {
+			t.Fatal("expected probe to run at fast cadence while session ID is unknown")
+		}
+	})
+
+	t.Run("throttles inside fast interval while ID unknown", func(t *testing.T) {
+		inst := &Instance{}
+		inst.lastCodexProbeAt = time.Now()
+		if inst.shouldRunCodexProcessProbe(false) {
+			t.Fatal("expected probe to be throttled within codexBootstrapScanInterval")
+		}
+	})
+
+	t.Run("known ID backs off to steady-state interval", func(t *testing.T) {
+		inst := &Instance{CodexSessionID: "0199a213-81b0-7800-8000-aaaaaaaaaaaa"}
+		inst.lastCodexProbeAt = time.Now().Add(-codexBootstrapScanInterval - time.Second)
+		if inst.shouldRunCodexProcessProbe(false) {
+			t.Fatal("3s after last probe with a known session ID: expected steady-state backoff to skip")
+		}
+
+		inst.lastCodexProbeAt = time.Now().Add(-codexRotationScanInterval - time.Second)
+		if !inst.shouldRunCodexProcessProbe(false) {
+			t.Fatal("past codexRotationScanInterval: expected probe to run")
+		}
+	})
+
+	t.Run("force bypasses backoff", func(t *testing.T) {
+		inst := &Instance{CodexSessionID: "0199a213-81b0-7800-8000-aaaaaaaaaaaa"}
+		inst.lastCodexProbeAt = time.Now()
+		if !inst.shouldRunCodexProcessProbe(true) {
+			t.Fatal("force=true must always probe")
+		}
+	})
+}

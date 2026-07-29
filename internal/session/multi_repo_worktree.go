@@ -16,6 +16,15 @@ type MultiRepoWorktreeResult struct {
 }
 
 func CreateMultiRepoWorktrees(allPaths []string, parentDir string, branch string, setupTimeout time.Duration) MultiRepoWorktreeResult {
+	return CreateMultiRepoWorktreesWithOptions(allPaths, parentDir, branch, setupTimeout, false)
+}
+
+// CreateMultiRepoWorktreesWithOptions is CreateMultiRepoWorktrees plus the
+// #1708 sparse-checkout inheritance switch (`[worktree] sparse_checkout`,
+// resolved by the caller). Each repo inherits from its OWN input path — the
+// directory the user selected — because that, and not the base root this
+// function derives from it, is the worktree carrying the sparse configuration.
+func CreateMultiRepoWorktreesWithOptions(allPaths []string, parentDir string, branch string, setupTimeout time.Duration, inheritSparse bool) MultiRepoWorktreeResult {
 	var result MultiRepoWorktreeResult
 	dirnames := DeduplicateDirnames(allPaths)
 
@@ -32,7 +41,12 @@ func CreateMultiRepoWorktrees(allPaths []string, parentDir string, branch string
 			}
 
 			var buf bytes.Buffer
-			setupErr, err := git.CreateWorktreeWithSetup(repoRoot, wtPath, branch, &buf, &buf, setupTimeout)
+			setupErr, err := git.CreateWorktreeWithSetupOptions(
+				repoRoot, wtPath, branch,
+				git.WorktreeStateOptions{},
+				git.SparseInheritOptions(inheritSparse, p),
+				&buf, &buf, setupTimeout,
+			)
 			if err != nil {
 				result.Warnings = append(result.Warnings, "worktree_create_fail: "+p+": "+err.Error())
 				_ = os.Symlink(p, wtPath)
