@@ -851,6 +851,15 @@ func (i *Instance) applyWorkerScratchOverride(resolvedConfigDir string) string {
 // claude would start with enabledPlugins[<id>]=true but without the
 // plugin code reachable, until the next restart rebuilt scratch.
 func (i *Instance) prepareWorkerScratchConfigDirForSpawn() {
+	// Materialize the declarative group/conductor loadout before computing the
+	// plugin allow-list. Sessions created before loadout persistence (or loaded
+	// after a config edit) can have an empty Instance.Plugins even though their
+	// group declares plugins. Building scratch first would therefore pin every
+	// catalog plugin to false; the later ApplyConfiguredLoadout calls in the
+	// spawn/restart paths are too late because Claude has already been given
+	// this settings overlay.
+	ApplyConfiguredLoadout(i)
+
 	// Heal lost channel wiring BEFORE evaluating the scratch gates: a
 	// conductor whose persisted Channels lost the telegram entry must
 	// re-arm needsScratchForTelegramChannelOwner on this very spawn
