@@ -121,6 +121,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck mcp attach <name> <mcp>` | Attach MCP (then restart) |
 | `agent-deck status` | Quick status summary |
 | `agent-deck add --worktree <branch>` | Create session in git worktree |
+| `agent-deck try <name>` | Scratch session in a dated experiment folder |
 | `agent-deck worktree list` | List worktrees with sessions |
 | `agent-deck worktree cleanup` | Find orphaned worktrees/sessions |
 | `agent-deck feedback` | Submit feedback (opens rating prompt + optional comment) |
@@ -454,6 +455,33 @@ agent-deck worktree cleanup --force
 | **Feature isolation** | Keep main branch clean while agent experiments |
 | **Code review** | Agent reviews PR in worktree while main work continues |
 | **Hotfix work** | Quick branch off main without disrupting feature work |
+
+## Scratch Sessions (`agent-deck try`)
+
+**Use when:** the user wants a throwaway playground, a quick experiment, or a scratch repo to dry-run something — "spin up a scratch session", "try this out somewhere disposable", "make a playground".
+
+```bash
+# Find-or-create a dated experiment folder and start a session in it
+agent-deck try redis-cache            # → <experiments-dir>/2026-07-29-redis-cache/
+agent-deck try rds                    # Fuzzy-matches an existing experiment (e.g. redis-cache)
+agent-deck try myproject -c gemini    # Non-default tool
+agent-deck try myproject --no-session # Create/find the folder only
+agent-deck try scratch --sandbox      # Run the session in a Docker sandbox
+agent-deck try --list [query]         # List (or fuzzy-search) existing experiments
+```
+
+The argument is an **experiment name**, not a prompt. `try` finds or creates `<experiments-dir>/<YYYY-MM-DD>-<name>/`, reuses an existing session for that path if one exists, and otherwise creates one in the `experiments` group and starts it.
+
+**The base directory is configurable** — important when your machine only trusts certain roots for agent workspaces:
+
+```toml
+[experiments]
+directory = "~/code/tries"    # Default: ~/src/tries
+date_prefix = true            # YYYY-MM-DD- prefix on folder names
+default_tool = "claude"       # Tool when -c is omitted
+```
+
+Note: `try` creates a plain folder, not a git repo — run `git init` in it first if the experiment needs one.
 
 ## Watchers
 

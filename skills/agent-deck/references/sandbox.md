@@ -28,8 +28,9 @@ agent-deck add --sandbox .
 # Create sandboxed session with custom image
 agent-deck add --sandbox-image myregistry/custom:v1 .
 
-# One-shot sandboxed task
-agent-deck try "refactor the auth module"
+# Sandboxed scratch session in a dated experiment folder
+# (argument is an experiment NAME, not a prompt — see the Scratch Sessions section in SKILL.md)
+agent-deck try auth-refactor --sandbox
 
 # Remove session (auto-cleans container)
 agent-deck remove <session>
