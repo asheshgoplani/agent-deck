@@ -811,6 +811,16 @@ agent-deck session set <session> account <account>
 2. **Restart after MCP attach:** Always run `session restart` after `mcp attach`
 3. **Never poll from other agents** - can interfere with target session
 
+## What agent-deck is NOT: a process supervisor
+
+agent-deck manages **interactive agent sessions**. It is not a supervisor for always-on daemons or network listeners, and reaching for it as one leads to subtle failures. Before wrapping a long-lived service (a webhook listener, an SSE bridge, a `claude remote-control` server, any daemon) in a deck session, check this boundary:
+
+- **Sessions live in a user tmux server and die with it.** An SSH logout can take every session down ([#958](https://github.com/asheshgoplani/agent-deck/issues/958) — mitigate with `loginctl enable-linger` + `launch_in_user_scope=true`, but the failure mode remains).
+- **Nothing auto-restarts a crashed session** unless you run the optional watchdog daemon ([documentation/WATCHDOG.md](https://github.com/asheshgoplani/agent-deck/blob/main/documentation/WATCHDOG.md)) — and the watchdog restarts *sessions*, with session semantics.
+- **`session restart` has conversation semantics, not daemon semantics.** For a Claude session it rebuilds the pane command around `claude --resume <id>` — correct for resuming a chat, wrong for "bring my listener back exactly as it was". Custom-command sessions re-run their stored wrapper, but registry drift on custom commands is a known trap ([#956](https://github.com/asheshgoplani/agent-deck/issues/956), [#911](https://github.com/asheshgoplani/agent-deck/issues/911)).
+
+**Rule of thumb:** always-on listeners and daemons belong under the OS supervisor (launchd on macOS, systemd on Linux — the headless `web --no-tui` daemon itself is run that way, see [#1452](https://github.com/asheshgoplani/agent-deck/issues/1452)); agent-deck owns the interactive sessions and workers. When a session merely *talks to* a service, supervise the service outside the deck and keep the session disposable.
+
 ## Known Gotchas (v1.7.0+)
 
 Friction points discovered during real usage. Work around them per the patterns below.
