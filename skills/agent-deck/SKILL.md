@@ -114,6 +114,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session send <name> --message-file <file>` | Send message from file (`-` = stdin); no shell quoting. Also on `launch`/`session start` |
 | `agent-deck session output <name>` | Get last response |
+| `agent-deck session children --json` | Child sessions' live status + asserted completions (non-blocking, read-only) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
 | `agent-deck session fork <name>` | Fork Claude/Pi conversation |
 | `agent-deck session switch-account <name> <account>` | Switch Claude account, conversation follows |
@@ -144,6 +145,10 @@ The script auto-detects current session/profile and creates a child session.
 | **Fire & forget** | (no --wait) | Default. Tell user: "Ask me to check when ready" |
 | **On-demand** | `agent-deck session output "Title"` | User asks to check |
 | **Blocking** | `--wait` flag | Need immediate result |
+
+### Fanning out several children?
+
+This section covers **one** child (launch + one of the three retrieval modes). For a *fleet* — several children in parallel, supervised non-blockingly from the parent — load the sibling [fleet skill](../fleet/SKILL.md) instead. It covers parented fan-out, polling live status and asserted completions via `agent-deck session children --json` (plus the push variant `--follow --until-done`), answering children stuck in `waiting`, and the grouping/`--parent` pitfalls.
 
 ### Recommended MCPs
 
@@ -967,3 +972,4 @@ See the [Self-Improvement](#self-improvement) section for how these were discove
 - [self-improvement.md](references/self-improvement.md) - Deep dive into the transcript-mining pipeline: architecture, privacy layers, output schemas, lessons learned
 - [goal.md](references/goal.md) - Deep dive into goal-driven worker autonomy: three-entity design, done-condition shell commands, manager loop, nudge generator, escalation bundle, implementation phases
 - [session-share skill](../session-share/SKILL.md) - Export/import sessions for collaboration
+- [fleet skill](../fleet/SKILL.md) - Fan out parallel child sessions and supervise them non-blockingly (`session children`)
