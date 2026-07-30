@@ -730,11 +730,11 @@ func (s *Session) StreamOutput(ctx context.Context, w io.Writer) error {
 // target to assert argv shape against without spawning PTYs.
 
 func (s *Session) attachCmd(ctx context.Context) *exec.Cmd {
-	return s.tmuxCmdContext(ctx, "attach-session", "-t", s.Name)
+	return s.tmuxCmdContext(ctx, "-u", "attach-session", "-t", s.Name)
 }
 
 func (s *Session) attachReadOnlyCmd(ctx context.Context) *exec.Cmd {
-	return s.tmuxCmdContext(ctx, "attach-session", "-r", "-t", s.Name)
+	return s.tmuxCmdContext(ctx, "-u", "attach-session", "-r", "-t", s.Name)
 }
 
 func (s *Session) resizeCmd(cols, rows int) *exec.Cmd {
