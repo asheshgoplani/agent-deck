@@ -165,6 +165,13 @@ func TestHandleCodexNotify_EmptyTailEventKeepsJSONEmptyAndPersistsAnchor(t *test
 	if hook.SessionID != "" {
 		t.Fatalf("hook session_id = %q, want empty for compatibility", hook.SessionID)
 	}
+	if hook.StateSessionID != "thr-sticky" {
+		t.Fatalf("hook retained session_id = %q, want thr-sticky", hook.StateSessionID)
+	}
+	if hook.LastTurnStartedGeneration == 0 ||
+		hook.LastTurnCompletedGeneration <= hook.LastTurnStartedGeneration {
+		t.Fatalf("turn generations not retained: %#v", hook)
+	}
 	if got := session.ReadHookSessionAnchor("inst-sticky"); got != "thr-sticky" {
 		t.Fatalf("session anchor = %q, want thr-sticky", got)
 	}

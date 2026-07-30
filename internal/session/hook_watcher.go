@@ -41,6 +41,14 @@ type HookStatus struct {
 	SessionID string    // Claude session ID
 	Event     string    // Hook event name
 	UpdatedAt time.Time // When this status was received
+	// Retained Codex turn evidence. StateSessionID remains populated when a
+	// completion payload omits the legacy latest-event session_id.
+	StateSessionID              string
+	Generation                  uint64
+	LastTurnStartedGeneration   uint64
+	LastTurnCompletedGeneration uint64
+	LastTurnStartedAt           int64
+	LastTurnCompletedAt         int64
 	// DoneStatus/DoneSummary carry a worker-printed completion sentinel
 	// detected on the Stop edge (issue #1186). Empty for ordinary turns.
 	DoneStatus  string // "ok" or "fail" when a completion sentinel was seen
@@ -54,6 +62,25 @@ type HookStatus struct {
 	// id may bind — empty (legacy files, agents that send no cwd) means "no
 	// evidence either way" and never blocks.
 	Cwd string
+}
+
+func hookStatusFromDocument(state HookStateDocument, updatedAt time.Time) *HookStatus {
+	return &HookStatus{
+		Status:                      state.Status,
+		SessionID:                   state.SessionID,
+		StateSessionID:              state.StateSessionID,
+		Event:                       state.Event,
+		UpdatedAt:                   updatedAt,
+		Generation:                  state.Generation,
+		LastTurnStartedGeneration:   state.LastTurnStartedGeneration,
+		LastTurnCompletedGeneration: state.LastTurnCompletedGeneration,
+		LastTurnStartedAt:           state.LastTurnStartedAt,
+		LastTurnCompletedAt:         state.LastTurnCompletedAt,
+		DoneStatus:                  state.DoneStatus,
+		DoneSummary:                 state.DoneSummary,
+		TranscriptPath:              state.TranscriptPath,
+		Cwd:                         state.Cwd,
+	}
 }
 
 // StatusFileWatcher watches ~/.agent-deck/hooks/ for status file changes
@@ -322,29 +349,11 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 		if rerr != nil {
 			continue
 		}
-		var raw struct {
-			Status         string `json:"status"`
-			SessionID      string `json:"session_id"`
-			Event          string `json:"event"`
-			Timestamp      int64  `json:"ts"`
-			DoneStatus     string `json:"done_status"`
-			DoneSummary    string `json:"done_summary"`
-			TranscriptPath string `json:"transcript_path"`
-			Cwd            string `json:"cwd"`
-		}
+		var raw HookStateDocument
 		if uerr := json.Unmarshal(data, &raw); uerr != nil {
 			continue
 		}
-		out[instanceID] = &HookStatus{
-			Status:         raw.Status,
-			SessionID:      raw.SessionID,
-			Event:          raw.Event,
-			UpdatedAt:      time.Unix(raw.Timestamp, 0),
-			DoneStatus:     raw.DoneStatus,
-			DoneSummary:    raw.DoneSummary,
-			TranscriptPath: raw.TranscriptPath,
-			Cwd:            raw.Cwd,
-		}
+		out[instanceID] = hookStatusFromDocument(raw, time.Unix(raw.Timestamp, 0))
 	}
 }
 
@@ -464,16 +473,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		return
 	}
 
-	var status struct {
-		Status         string `json:"status"`
-		SessionID      string `json:"session_id"`
-		Event          string `json:"event"`
-		Timestamp      int64  `json:"ts"`
-		DoneStatus     string `json:"done_status"`
-		DoneSummary    string `json:"done_summary"`
-		TranscriptPath string `json:"transcript_path"`
-		Cwd            string `json:"cwd"`
-	}
+	var status HookStateDocument
 	if err := json.Unmarshal(data, &status); err != nil {
 		hookLog.Warn("hook_file_corrupt",
 			slog.String("path", filePath),
@@ -484,16 +484,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		return
 	}
 
-	hookStatus := &HookStatus{
-		Status:         status.Status,
-		SessionID:      status.SessionID,
-		Event:          status.Event,
-		UpdatedAt:      time.Unix(status.Timestamp, 0),
-		DoneStatus:     status.DoneStatus,
-		DoneSummary:    status.DoneSummary,
-		TranscriptPath: status.TranscriptPath,
-		Cwd:            status.Cwd,
-	}
+	hookStatus := hookStatusFromDocument(status, time.Unix(status.Timestamp, 0))
 
 	w.mu.Lock()
 	w.statuses[instanceID] = hookStatus
