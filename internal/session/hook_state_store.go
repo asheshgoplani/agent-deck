@@ -2,12 +2,15 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"golang.org/x/sys/unix"
 )
+
+var errHookStateDecode = errors.New("decode hook state")
 
 // WriteHookState applies one event under a per-instance file lock and replaces
 // the status document atomically with a randomized same-directory temp file.
@@ -38,7 +41,10 @@ func writeHookStateAt(hooksDir, instanceID string, event HookStateEvent) error {
 	statePath := filepath.Join(hooksDir, instanceID+".json")
 	previous, err := readHookStateAt(statePath)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read hook state: %w", err)
+		if !errors.Is(err, errHookStateDecode) {
+			return fmt.Errorf("read hook state: %w", err)
+		}
+		previous = HookStateDocument{}
 	}
 	next, err := AdvanceHookState(previous, event)
 	if err != nil {
@@ -92,7 +98,7 @@ func readHookStateAt(path string) (HookStateDocument, error) {
 	}
 	var state HookStateDocument
 	if err := json.Unmarshal(data, &state); err != nil {
-		return HookStateDocument{}, fmt.Errorf("decode hook state: %w", err)
+		return HookStateDocument{}, fmt.Errorf("%w: %w", errHookStateDecode, err)
 	}
 	return state, nil
 }

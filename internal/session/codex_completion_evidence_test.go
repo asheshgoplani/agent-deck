@@ -113,3 +113,40 @@ func TestInstanceRetainsMatchingCodexCompletionEvidence(t *testing.T) {
 		t.Fatal("matching retained completion was not available to status debounce")
 	}
 }
+
+func TestCodexSubagentCompletionCannotReplaceMainCompletionEvidence(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+
+	mainSID := uniqueSID(t)
+	childSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, childSID, "subagent", mainSID, true)
+
+	inst.CodexSessionID = mainSID
+	inst.UpdateHookStatus(&HookStatus{
+		Status:                      "waiting",
+		SessionID:                   mainSID,
+		StateSessionID:              mainSID,
+		Event:                       "agent-turn-complete",
+		UpdatedAt:                   time.Now(),
+		Generation:                  5,
+		LastTurnStartedGeneration:   4,
+		LastTurnCompletedGeneration: 5,
+	})
+	inst.UpdateHookStatus(&HookStatus{
+		Status:                      "waiting",
+		SessionID:                   childSID,
+		StateSessionID:              childSID,
+		Event:                       "agent-turn-complete",
+		UpdatedAt:                   time.Now().Add(time.Second),
+		Generation:                  6,
+		LastTurnStartedGeneration:   4,
+		LastTurnCompletedGeneration: 6,
+	})
+
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+	if !inst.hasMatchingCodexCompletionLocked() {
+		t.Fatal("rejected subagent completion replaced the main thread's retained completion evidence")
+	}
+}

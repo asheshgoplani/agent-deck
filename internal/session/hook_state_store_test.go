@@ -101,3 +101,32 @@ func TestWriteHookStateAtRejectsSymlinkWithoutTouchingTarget(t *testing.T) {
 		t.Fatalf("symlink target changed: %q", data)
 	}
 }
+
+func TestWriteHookStateAtRecoversFromCorruptDocument(t *testing.T) {
+	t.Parallel()
+
+	hooksDir := filepath.Join(t.TempDir(), "hooks")
+	if err := os.Mkdir(hooksDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	statePath := filepath.Join(hooksDir, "instance-1.json")
+	if err := os.WriteFile(statePath, []byte(`{"status":`), 0o600); err != nil {
+		t.Fatalf("write corrupt state: %v", err)
+	}
+
+	err := writeHookStateAt(hooksDir, "instance-1", HookStateEvent{
+		Kind: HookTurnCompleted, Status: "waiting", SessionID: "thread-1", Event: "turn.completed",
+	})
+	if err != nil {
+		t.Fatalf("writeHookStateAt did not recover from corrupt state: %v", err)
+	}
+
+	state, err := readHookStateAt(statePath)
+	if err != nil {
+		t.Fatalf("read recovered state: %v", err)
+	}
+	if state.Generation != 1 || state.StateSessionID != "thread-1" ||
+		state.LastTurnCompletedGeneration != 1 {
+		t.Fatalf("recovered state = %#v, want fresh completed generation", state)
+	}
+}

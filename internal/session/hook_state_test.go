@@ -69,6 +69,32 @@ func TestAdvanceHookStateNewSessionCannotReusePriorCompletion(t *testing.T) {
 	}
 }
 
+func TestAdvanceHookStateDeadEventClearsRetainedEvidence(t *testing.T) {
+	t.Parallel()
+
+	state := HookStateDocument{
+		SchemaVersion:               HookStateSchemaV1,
+		Generation:                  5,
+		SessionID:                   "thread-1",
+		StateSessionID:              "thread-1",
+		LastTurnStartedGeneration:   4,
+		LastTurnCompletedGeneration: 5,
+		LastTurnStartedAt:           100,
+		LastTurnCompletedAt:         200,
+	}
+	next, err := AdvanceHookState(state, HookStateEvent{
+		Kind: HookStatusOnly, Status: "dead", Event: "session.dead",
+	})
+	if err != nil {
+		t.Fatalf("AdvanceHookState: %v", err)
+	}
+	if next.StateSessionID != "" || next.LastTurnStartedGeneration != 0 ||
+		next.LastTurnCompletedGeneration != 0 || next.LastTurnStartedAt != 0 ||
+		next.LastTurnCompletedAt != 0 {
+		t.Fatalf("dead event did not clear retained evidence: %#v", next)
+	}
+}
+
 func TestValidateHookInstanceIDRejectsUnsafePaths(t *testing.T) {
 	t.Parallel()
 

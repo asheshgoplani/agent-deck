@@ -5637,6 +5637,10 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// refuses turn/start and error-loops the session. See
 		// codex_subagent_gate.go.
 		if i.shouldRejectCodexSubagentRebind(sessionID) {
+			i.hookStateSessionID = prevHookStateSessionID
+			i.hookGeneration = prevHookGeneration
+			i.hookLastTurnStartedGeneration = prevHookStartedGeneration
+			i.hookLastTurnCompletedGeneration = prevHookCompletedGeneration
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.CodexSessionID, Candidate: sessionID,
