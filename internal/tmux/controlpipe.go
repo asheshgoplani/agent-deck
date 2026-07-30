@@ -36,6 +36,8 @@ const (
 // ControlPipe wraps a persistent `tmux -C -u attach-session -t <name>` process.
 // It provides event-driven output detection via %output events and
 // zero-subprocess command execution through the stdin/stdout pipe.
+// It is deliberately headless: it never opens /dev/tty, so detached callers
+// without a controlling terminal (the #1114 failure mode) are supported.
 type ControlPipe struct {
 	sessionName string
 	socketName  string // tmux -L value; "" means user's default server

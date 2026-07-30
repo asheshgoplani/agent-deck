@@ -46,6 +46,8 @@ type KeySender interface {
 // `tmux -L <socket> -C -u attach-session -t <target>` subprocess. Each Send
 // writes one command line to its stdin; tmux executes commands in-server
 // without spawning new clients.
+// It is deliberately headless: its stdin/stdout are pipes and it never opens
+// /dev/tty, so detached callers without a controlling terminal (#1114) work.
 type localKeySender struct {
 	target string
 	cmd    *exec.Cmd
