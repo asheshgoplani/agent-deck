@@ -50,14 +50,30 @@ var usageLimitBannerPatterns = []string{
 	"/usage-credits",
 }
 
-// usageLimitInputPrefixes mark lines that carry user-typed content: someone
-// asking ABOUT a usage limit must not be read as being subject to one. This is
-// claudeQuotedLinePrefixes MINUS "⎿", because "⎿" is the connector Claude
-// renders the real banner behind (see the package comment above).
+// usageLimitInputPrefixes mark the FIRST visual line of a user-typed block:
+// someone asking ABOUT a usage limit must not be read as being subject to one.
+// This is claudeQuotedLinePrefixes MINUS "⎿", because "⎿" is the connector
+// Claude renders the real banner behind (see the package comment above).
+//
+// A prefix alone is not enough: a wrapped question puts its later visual lines
+// below the prefixed one with no marker of their own, so matching per-line would
+// read the continuation of "why did we ❯ hit your session limit?" as a live
+// banner. hasUsageLimitBanner therefore tracks input blocks rather than lines.
 var usageLimitInputPrefixes = []string{"❯", ">", "│"}
 
-// hasUsageLimitBanner scans the last 15 non-empty lines — the same window as
-// hasClaudePrompt and scanClaudeBannerLines — for a usage-limit banner line.
+// usageLimitBlockEndPrefixes are the glyphs Claude renders at message level. Any
+// of them means the user's input block has ended and what follows is
+// tool-rendered again, so continuation-skipping must stop there: "⎿" is the
+// tool-result connector the banner itself renders behind, "⏺" an assistant turn,
+// "✻"/"●" a completion or tool-call line.
+var usageLimitBlockEndPrefixes = []string{"⎿", "⏺", "✻", "●"}
+
+// hasUsageLimitBanner looks for a usage-limit banner in the last 15 non-empty
+// lines — the same window as hasClaudePrompt and scanClaudeBannerLines.
+//
+// Unlike those two it walks FORWARD, because whether a line is a continuation of
+// user input is only knowable from the line above it. A reverse scan meets the
+// continuation first and cannot classify it.
 func hasUsageLimitBanner(content string) bool {
 	// Fast reject before the line walk: ClassifySubstate runs per session per
 	// poll, and the scan below allocates (Split) and can touch 15 lines. Every
@@ -71,15 +87,38 @@ func hasUsageLimitBanner(content string) bool {
 		return false
 	}
 
-	lines := strings.Split(stripped, "\n")
-	checked := 0
-	for i := len(lines) - 1; i >= 0 && checked < 15; i-- {
-		line := strings.TrimSpace(lines[i])
+	all := strings.Split(stripped, "\n")
+
+	// Window: the last 15 non-empty lines, kept in document order so the walk
+	// below can see each line's predecessor. Blank lines stay in the window
+	// because a blank line terminates a user-input block.
+	start := len(all)
+	nonEmpty := 0
+	for i := len(all) - 1; i >= 0 && nonEmpty < 15; i-- {
+		if strings.TrimSpace(all[i]) != "" {
+			nonEmpty++
+		}
+		start = i
+	}
+
+	// inUserInput is true while walking the visual lines of a user-typed block:
+	// set by an input prefix, cleared by a blank line or any message-level glyph.
+	// Continuations inside such a block are skipped, which is what keeps a
+	// wrapped question about a limit from reading as a live banner.
+	inUserInput := false
+	for _, raw := range all[start:] {
+		line := strings.TrimSpace(raw)
 		if line == "" {
+			inUserInput = false
 			continue
 		}
-		checked++
 		if hasAnyPrefix(line, usageLimitInputPrefixes) {
+			inUserInput = true
+			continue
+		}
+		if hasAnyPrefix(line, usageLimitBlockEndPrefixes) {
+			inUserInput = false
+		} else if inUserInput {
 			continue
 		}
 		// Same guard scanClaudeBannerLines applies: on an assistant-turn line,

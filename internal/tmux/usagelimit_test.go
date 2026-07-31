@@ -49,6 +49,41 @@ func TestIsUsageLimitContent(t *testing.T) {
 			want:    false,
 		},
 		{
+			name: "wrapped user question: phrase only on the continuation line",
+			tool: "claude",
+			// Regression for the review finding on #1803: only the FIRST visual
+			// line of an input block carries "❯", so matching per-line read the
+			// wrapped remainder of a question as a live banner.
+			content: "❯ why did the worker stall yesterday, did we\n" +
+				"  hit your session limit or something else?\n",
+			want: false,
+		},
+		{
+			name: "wrapped user question mentioning the credits hint on continuation",
+			tool: "claude",
+			content: "❯ what does it mean when claude tells me to run\n" +
+				"  /usage-credits to get more quota?\n",
+			want: false,
+		},
+		{
+			name: "input block ends at the tool-result connector, banner still matches",
+			tool: "claude",
+			// The continuation-skip must stop at "⎿": in the real pane the banner
+			// renders immediately below a wrapped user message.
+			content: "❯ [HEARTBEAT] Check sessions in your group (x). List any that are waiting,\n" +
+				"  and report what needs my attention.\n" +
+				"  ⎿  You've hit your session limit · resets 8:50pm (UTC)\n",
+			want: true,
+		},
+		{
+			name: "blank line ends the input block",
+			tool: "claude",
+			content: "❯ was it a quota thing?\n" +
+				"\n" +
+				"  ⎿  You've hit your session limit · resets 8:50pm (UTC)\n",
+			want: true,
+		},
+		{
 			name: "agent prose about a usage limit is not a limited session",
 			tool: "claude",
 			// "⏺" assistant line with no structural banner marker: an agent
