@@ -334,3 +334,31 @@ func TestUsageLimited_ConcurrentCallersAgree(t *testing.T) {
 		t.Fatal("no scan was stamped despite concurrent callers")
 	}
 }
+
+// Pins the Substate wiring itself, deterministically and without touching the
+// filesystem: seeding the throttle window makes usageLimited short-circuit on the
+// memo, so this asserts the precedence branch rather than the detector.
+//
+// Without this, removing the branch from Substate would break no test — the rest
+// of this file exercises usageLimited and the transcript walk, not the wiring.
+func TestSubstate_ReportsUsageLimitWhenLimited(t *testing.T) {
+	inst := NewInstanceWithTool("usage-limit-substate", t.TempDir(), "claude")
+	inst.ClaudeSessionID = "bound-session-id"
+
+	inst.mu.Lock()
+	inst.lastUsageLimitScanAt = time.Now()
+	inst.usageLimitedCached = true
+	inst.mu.Unlock()
+
+	if got := inst.Substate(); got != SubstateUsageLimit {
+		t.Fatalf("Substate() = %q with a live usage-limit verdict, want %q", got, SubstateUsageLimit)
+	}
+
+	inst.mu.Lock()
+	inst.usageLimitedCached = false
+	inst.mu.Unlock()
+
+	if got := inst.Substate(); got == SubstateUsageLimit {
+		t.Fatalf("Substate() = %q with no verdict, want anything else", got)
+	}
+}
