@@ -8024,12 +8024,17 @@ func (i *Instance) Substate() Substate {
 	if held, _ := i.IsAuthHeld(); held {
 		return SubstateAuth401
 	}
-	// A quota rejection is checked before the pane verdict, and specifically
-	// before the pane's auth banner, because it is strictly newer and stronger
-	// evidence: the transcript record IS the latest assistant turn, and a 429
-	// proves the request was authenticated. A stale "Please run /login" line
-	// still sitting in the scrollback would otherwise win on category order and
-	// mislabel a session whose credentials demonstrably work (#1802).
+	// A RECENT quota rejection is checked before the pane verdict, including the
+	// pane's auth banner: it is the latest assistant turn and a 429 proves the
+	// request was authenticated, so a stale "Please run /login" line still in the
+	// scrollback must not win on category order and mislabel a session whose
+	// credentials demonstrably work.
+	//
+	// "Recent" is load-bearing rather than decorative. A 429 only proves
+	// authentication AT ITS OWN TIMESTAMP, so an old one must not mask newer pane
+	// evidence — a freshly rendered 401, or a dropped socket that never arms the
+	// credential hold. usageLimited enforces that bound (usageLimitMaxAge), which
+	// is what keeps this ordering honest (#1802).
 	if i.usageLimited() {
 		return SubstateUsageLimit
 	}
@@ -8049,12 +8054,12 @@ func (i *Instance) CachedSubstate() Substate {
 	if i.AuthHeldCached() {
 		return SubstateAuth401
 	}
-	// In-memory mirror only: this path must stay filesystem-free, so it reads the
-	// verdict the throttled scan already computed rather than re-reading the
-	// transcript. Same precedence as Substate.
-	if i.UsageLimitedCached() {
-		return SubstateUsageLimit
-	}
+	// Deliberately NOT wired for usage-limit: this path must stay
+	// filesystem-free, and nothing in the background status pass populates a
+	// usage-limit mirror, so a branch here would be dead on the TUI/Web/transition
+	// surfaces while looking supported. usage-limit is a live-Substate signal in
+	// this change (CLI/JSON/fleet); wiring the cached path belongs with whatever
+	// populates it. See usagelimit.go (#1802).
 	tmuxSess := i.GetTmuxSession()
 	if tmuxSess == nil {
 		return SubstateNone
