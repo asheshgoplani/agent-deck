@@ -223,6 +223,20 @@ func main() {
 		_ = os.Setenv("AGENTDECK_PROFILE", profile)
 	}
 
+	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
+	// -p/--profile above). One-shot, non-persisted bypass of the worktree
+	// script consent gate for non-interactive callers (CI) that can't answer
+	// a prompt and would otherwise fail closed under the "prompt" default.
+	allowRepoScripts, args2 := extractAllowRepoScriptsFlag(args)
+	args = args2
+	if envVal := strings.TrimSpace(os.Getenv("AGENT_DECK_ALLOW_REPO_SCRIPTS")); envVal != "" {
+		allowRepoScripts = allowRepoScripts || envVal == "1" || strings.EqualFold(envVal, "true")
+	}
+	git.SetScriptConsentConfig(git.ScriptConsentConfig{
+		Policy:        session.GetWorktreeSettings().ScriptConsentPolicy(),
+		AllowOverride: allowRepoScripts,
+	})
+
 	// Seed the tmux socket-isolation default from `[tmux].socket_name` once
 	// per process (v1.7.50+, issue #687). Package-level tmux probes
 	// (KillSessionsWithEnvValue, ListAllSessions, version check, stale-
@@ -965,6 +979,27 @@ func extractProfileFlag(args []string) (string, []string) {
 	}
 
 	return profile, remaining
+}
+
+// extractAllowRepoScriptsFlag extracts --allow-repo-scripts from args,
+// returning whether it was present and the args with it removed. Mirrors
+// extractNoTuiFlag's boolean-flag scan (web_cmd.go): supports bare
+// --allow-repo-scripts and --allow-repo-scripts=true/false/1.
+func extractAllowRepoScriptsFlag(args []string) (bool, []string) {
+	allow := false
+	remaining := make([]string, 0, len(args))
+	for _, a := range args {
+		switch {
+		case a == "--allow-repo-scripts":
+			allow = true
+		case strings.HasPrefix(a, "--allow-repo-scripts="):
+			v := strings.TrimPrefix(a, "--allow-repo-scripts=")
+			allow = v == "true" || v == "1"
+		default:
+			remaining = append(remaining, a)
+		}
+	}
+	return allow, remaining
 }
 
 // extractGroupFlag extracts -g or --group from args, returning the group path and remaining args.

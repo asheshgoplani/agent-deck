@@ -21,6 +21,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
+	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 	"github.com/asheshgoplani/agent-deck/internal/safeio"
@@ -1971,6 +1972,28 @@ type WorktreeSettings struct {
 	// Unknown values are treated as "off" so a typo can never change checkout
 	// behavior. String (not bool) to leave room for future modes.
 	SparseCheckout string `toml:"sparse_checkout,omitempty"`
+
+	// RunRepoScripts controls whether .agent-deck/worktree-setup.sh and
+	// worktree-destruction.sh — arbitrary shell content committed to the
+	// repo, run with the caller's full environment (SSH agent, tokens) — are
+	// allowed to execute automatically:
+	//   "prompt" (default, "" also means prompt) → run only after a human
+	//     approves the exact script content once (per repo root + SHA-256);
+	//     re-prompts if the content changes; non-interactive callers (a
+	//     remote worktree-mutation request, a CI job) fail closed instead
+	//     of hanging or silently executing.
+	//   "always" → pre-gate behavior: run unconditionally, no prompt. Opt-in.
+	//   "never"  → never run these scripts, trusted or not.
+	// Unknown values are treated as "prompt" so a typo can never downgrade
+	// to "always". See --allow-repo-scripts / AGENT_DECK_ALLOW_REPO_SCRIPTS
+	// for a one-shot, non-persisted bypass (CI).
+	RunRepoScripts string `toml:"run_repo_scripts,omitempty"`
+}
+
+// ScriptConsentPolicy returns the parsed [worktree] run_repo_scripts value.
+// Unset/unknown values resolve to git.ScriptConsentPrompt (fail closed).
+func (w WorktreeSettings) ScriptConsentPolicy() git.ScriptConsentPolicy {
+	return git.ParseScriptConsentPolicy(w.RunRepoScripts)
 }
 
 // WorktreeSparseCheckoutInherit is the only value of [worktree] sparse_checkout
@@ -4102,6 +4125,12 @@ auto_cleanup = true
 #   {branch}         -> sanitized (human-friendly, may collide)
 #   {branch-escaped} -> URL-escaped (collision-resistant, reversible)
 # path_template = "../worktrees/{repo-name}/{branch}"
+# Whether .agent-deck/worktree-setup.sh and worktree-destruction.sh may run
+# automatically: "prompt" (default, ask once per repo root + script content,
+# re-asks if the content changes), "always" (run unconditionally, pre-gate
+# behavior), or "never" (block them entirely). Non-interactive callers under
+# "prompt" fail closed instead of hanging; see --allow-repo-scripts for CI.
+# run_repo_scripts = "prompt"
 
 # Default scope for MCP operations: "local", "global", or "user"
 # "local" writes to .mcp.json (project-only, default)

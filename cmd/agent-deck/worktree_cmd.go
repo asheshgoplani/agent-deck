@@ -29,6 +29,8 @@ func handleWorktree(profile string, args []string) {
 		handleWorktreeCleanup(profile, args[1:])
 	case "finish":
 		handleWorktreeFinish(profile, args[1:])
+	case "trust-scripts":
+		handleWorktreeTrustScripts(args[1:])
 	case "help", "-h", "--help":
 		printWorktreeUsage()
 	default:
@@ -49,6 +51,7 @@ func printWorktreeUsage() {
 	fmt.Println("  info <session>    Show worktree info for a session")
 	fmt.Println("  finish <session>  Merge branch, remove worktree, and delete session")
 	fmt.Println("  cleanup [--force] Find and remove orphaned worktrees/sessions")
+	fmt.Println("  trust-scripts <repo-path>  Approve .agent-deck/worktree-*.sh for this repo")
 	fmt.Println()
 	fmt.Println("Global Options:")
 	fmt.Println("  -p, --profile <name>   Use specific profile")
@@ -63,6 +66,69 @@ func printWorktreeUsage() {
 	fmt.Println("  agent-deck worktree finish \"My Session\" --into develop")
 	fmt.Println("  agent-deck worktree cleanup")
 	fmt.Println("  agent-deck worktree cleanup --force")
+	fmt.Println("  agent-deck worktree trust-scripts .")
+	fmt.Println("  agent-deck worktree trust-scripts . --revoke")
+}
+
+// handleWorktreeTrustScripts pre-approves (or revokes approval for) the
+// .agent-deck/worktree-setup.sh and worktree-destruction.sh scripts found in
+// a repository, recording their current SHA-256 so [worktree]
+// run_repo_scripts = "prompt" (the default) never needs to ask interactively
+// for this exact content again. This is the intended way to grant consent
+// from a non-interactive context (CI approving a change ahead of time,
+// scripting) rather than relying on the terminal prompt or
+// --allow-repo-scripts.
+func handleWorktreeTrustScripts(args []string) {
+	fs := flag.NewFlagSet("worktree trust-scripts", flag.ExitOnError)
+	revoke := fs.Bool("revoke", false, "Remove previously stored trust instead of granting it")
+	_ = fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: agent-deck worktree trust-scripts <repo-path> [--revoke]")
+		os.Exit(1)
+	}
+
+	repoRoot, err := git.GetRepoRoot(rest[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s is not inside a git repository: %v\n", rest[0], err)
+		os.Exit(1)
+	}
+
+	kinds := []struct {
+		name string
+		find func(string) (string, os.FileMode)
+	}{
+		{"setup", git.FindWorktreeSetupScript},
+		{"destruction", git.FindWorktreeDestructionScript},
+	}
+
+	found := 0
+	for _, k := range kinds {
+		scriptPath, _ := k.find(repoRoot)
+		if scriptPath == "" {
+			continue
+		}
+		found++
+		if *revoke {
+			if err := git.RevokeScriptConsent(repoRoot, k.name); err != nil {
+				fmt.Fprintf(os.Stderr, "Error revoking trust for %s: %v\n", scriptPath, err)
+				os.Exit(1)
+			}
+			fmt.Printf("Revoked trust for %s script: %s\n", k.name, scriptPath)
+			continue
+		}
+		hash, err := git.TrustScript(repoRoot, k.name, scriptPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error trusting %s: %v\n", scriptPath, err)
+			os.Exit(1)
+		}
+		fmt.Printf("Trusted %s script: %s (sha256:%s)\n", k.name, scriptPath, hash[:12])
+	}
+
+	if found == 0 {
+		fmt.Printf("No .agent-deck/worktree-setup.sh or worktree-destruction.sh found under %s\n", repoRoot)
+	}
 }
 
 // handleWorktreeList lists all worktrees with session associations
