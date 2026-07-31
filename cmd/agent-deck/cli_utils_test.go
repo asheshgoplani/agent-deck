@@ -4,6 +4,8 @@ import (
 	"flag"
 	"reflect"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func TestNormalizeArgs(t *testing.T) {
@@ -419,6 +421,31 @@ func TestShouldInheritParentGroup(t *testing.T) {
 			}
 			if probed != tt.wantProbe {
 				t.Fatalf("git worktree probe called = %v, want %v (lazy thunk must not run when steps 1-2 decide)", probed, tt.wantProbe)
+			}
+		})
+	}
+}
+
+// SubstateLabel must have a human label for every substate the detector can
+// return, so the verbose CLI never renders a session's refinement as blank
+// (#1802 added usage-limit).
+func TestSubstateLabel(t *testing.T) {
+	tests := []struct {
+		sub  session.Substate
+		want string
+	}{
+		{session.SubstateModelUnavailable, "model unavailable"},
+		{session.SubstateAuth401, "auth (login)"},
+		{session.SubstateUsageLimit, "usage limit"},
+		{session.SubstateIdleAtEmptyPrompt, "idle at prompt"},
+		{session.SubstateRunning, "working"},
+		{session.SubstateNone, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.sub), func(t *testing.T) {
+			if got := SubstateLabel(tt.sub); got != tt.want {
+				t.Fatalf("SubstateLabel(%q) = %q, want %q", tt.sub, got, tt.want)
 			}
 		})
 	}

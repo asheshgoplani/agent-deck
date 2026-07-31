@@ -61,7 +61,7 @@ const (
 
 // Substate is the additive Honest-Status-v2 refinement of a session's coarse
 // status (see tmux.Substate). It explains WHY a session is in its status
-// (model-unavailable, auth-401, idle-at-empty-prompt, running) without altering
+// (model-unavailable, auth-401, usage-limit, idle-at-empty-prompt, running) without altering
 // the byte-stable canonical status. Re-exported here so the CLI/TUI can consume
 // it without importing the tmux package directly.
 type Substate = tmux.Substate
@@ -72,6 +72,7 @@ const (
 	SubstateIdleAtEmptyPrompt = tmux.SubstateIdleAtEmptyPrompt
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
+	SubstateUsageLimit        = tmux.SubstateUsageLimit
 )
 
 const wrapperPlaceholder = "{command}"

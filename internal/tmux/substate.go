@@ -37,6 +37,14 @@ const (
 	// /login", "API Error: 401", "socket connection closed"). Pairs with
 	// status "error". Built on the #1400 error-banner detection.
 	SubstateAuth401 Substate = "auth-401"
+
+	// SubstateUsageLimit marks a session whose plan usage window is exhausted
+	// ("You've hit your session limit · resets 8:50pm (UTC)"): the pane is
+	// healthy and accepts input, but every submitted turn is rejected in zero
+	// seconds until the window resets. Pairs with status "idle"/"waiting" —
+	// which is precisely why it needs its own signal, since "idle" is the state
+	// periodic senders treat as safe to send into. See usagelimit.go (#1802).
+	SubstateUsageLimit Substate = "usage-limit"
 )
 
 // modelUnavailableSubstrings are fragments of the Fable/model-down no-op the
@@ -71,9 +79,13 @@ const crunchedNoopMarker = "Crunched for 0s"
 //     no-op: if the session is crunching NOW, an older "Crunched for 0s" /
 //     "unavailable" line is stale. Deliberately does NOT treat a bare "✶" as a
 //     cue, so the no-op completion line's decorative asterisk does not match.
-//  3. model-unavailable — the Fable-down no-op loop with no live busy cue.
-//  4. idle-at-empty-prompt — sitting at the prompt with nothing happening.
-//  5. none      — no distinct refinement.
+//  3. usage-limit — the plan's usage window is spent. Checked before
+//     model-unavailable because both render a zero-duration completion and the
+//     "Crunched for 0s" spelling is common to each; the limit banner is the
+//     specific, correct explanation when it is present.
+//  4. model-unavailable — the Fable-down no-op loop with no live busy cue.
+//  5. idle-at-empty-prompt — sitting at the prompt with nothing happening.
+//  6. none      — no distinct refinement.
 func (d *PromptDetector) ClassifySubstate(content string) Substate {
 	if d.tool != "claude" {
 		return SubstateNone
@@ -93,7 +105,18 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 		return SubstateRunning
 	}
 
-	// 3. Model-unavailable no-op loop (Fable down) with no live busy cue: the
+	// 3. Usage/quota exhaustion with no live busy cue: credentials are valid and
+	//    the pane accepts input, but every turn bounces until the window resets.
+	//    Checked BEFORE model-unavailable because these rejections render a
+	//    zero-duration completion whose verb varies ("Cooked for 0s", "Crunched
+	//    for 0s", …) — the "Crunched" spelling collides with the Fable no-op
+	//    marker, so without this a throttled session is reported as a dead
+	//    model, pointing the operator at the wrong subsystem.
+	if hasUsageLimitBanner(content) {
+		return SubstateUsageLimit
+	}
+
+	// 4. Model-unavailable no-op loop (Fable down) with no live busy cue: the
 	//    "Crunched for 0s" / "is currently unavailable" line is the actionable
 	//    signal. Scan the recent tail so a stale line scrolled far up does not
 	//    match.
@@ -101,7 +124,7 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 		return SubstateModelUnavailable
 	}
 
-	// 4. Sitting at the input prompt with no busy/error signal = genuinely idle.
+	// 5. Sitting at the input prompt with no busy/error signal = genuinely idle.
 	if d.hasClaudePrompt(content) {
 		return SubstateIdleAtEmptyPrompt
 	}
