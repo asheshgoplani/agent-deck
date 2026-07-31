@@ -232,12 +232,20 @@ func resolveSkillSourcePath(path string) (string, error) {
 }
 
 func isContainedIn(basePath, targetPath string) bool {
-	normalizedBase := filepath.Clean(basePath)
-	normalizedTarget := filepath.Clean(targetPath)
-	if normalizedBase == normalizedTarget {
+	// filepath.Rel-based containment instead of a string-prefix compare: with
+	// base "/" the old base+PathSeparator prefix became "//", which no cleaned
+	// path carries, so every legitimate target under a root-based project was
+	// rejected (attach/detach/apply all failed). Rel handles the root base and
+	// any trailing-separator quirks uniformly; "." means equal-to-base, which
+	// was previously accepted and stays accepted.
+	rel, err := filepath.Rel(filepath.Clean(basePath), filepath.Clean(targetPath))
+	if err != nil {
+		return false
+	}
+	if rel == "." {
 		return true
 	}
-	return strings.HasPrefix(normalizedTarget, normalizedBase+string(os.PathSeparator))
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 // GetSkillsRootPath returns the Agent Deck skills config directory, falling back

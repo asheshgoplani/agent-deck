@@ -185,6 +185,51 @@ func TestResolveContainedTargetPath_AllowsFinalComponentSymlink(t *testing.T) {
 	}
 }
 
+// TestIsContainedIn_RootBase proves containment works when the base is the
+// filesystem root: the old base+PathSeparator string-prefix compare produced
+// "//" as the required prefix, which no cleaned path carries, so every
+// legitimate target under a root-based project was rejected. The
+// filepath.Rel-based check accepts root-based targets and still refuses
+// escapes.
+func TestIsContainedIn_RootBase(t *testing.T) {
+	root := string(os.PathSeparator)
+	cases := []struct {
+		base, target string
+		want         bool
+	}{
+		{root, filepath.Join(root, ".claude", "skills"), true},
+		{root, root, true},
+		{filepath.Join(root, ".claude", "skills"), filepath.Join(root, ".claude", "skills", "my-skill"), true},
+		{filepath.Join(root, ".claude", "skills"), filepath.Join(root, ".claude"), false},
+		{filepath.Join(root, ".claude", "skills"), filepath.Join(root, "elsewhere"), false},
+		{filepath.Join(root, "a"), filepath.Join(root, "ab"), false},
+	}
+	for _, c := range cases {
+		if got := isContainedIn(c.base, c.target); got != c.want {
+			t.Errorf("isContainedIn(%q, %q) = %v, want %v", c.base, c.target, got, c.want)
+		}
+	}
+}
+
+// TestResolveContainedTargetPath_RootProjectPath proves the full containment
+// pipeline accepts a managed target for a project rooted at "/" (read-only:
+// nothing is created; resolution walks up to the deepest existing ancestor).
+func TestResolveContainedTargetPath_RootProjectPath(t *testing.T) {
+	projectPath := string(os.PathSeparator)
+	if _, err := os.Lstat(filepath.Join(projectPath, ".claude")); err == nil {
+		t.Skip("/.claude exists on this host; skipping literal-root check")
+	}
+	targetRel := buildProjectSkillTargetPath(projectClaudeSkillsDir, "my-skill")
+	got, err := resolveContainedTargetPath(projectPath, targetRel)
+	if err != nil {
+		t.Fatalf("expected root-based managed target to be allowed, got: %v", err)
+	}
+	want := resolveTargetPath(projectPath, targetRel)
+	if got != want {
+		t.Fatalf("resolveContainedTargetPath = %q, want %q", got, want)
+	}
+}
+
 // TestResolveContainedTargetPath_AllowsNonExistingTargetUnderRealDir proves
 // the creation path still works when neither the target nor the managed dir
 // exists yet (first attach creates them).
