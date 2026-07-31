@@ -204,16 +204,19 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 			if errors.As(err, &netErr) && netErr.Timeout() {
 				logging.ForComponent(logging.CompWeb).Warn("websocket_keepalive_timeout",
 					slog.String("session_id", logSessionID),
-					slog.String("error", err.Error()))
+					slog.String("error", logging.SanitizeValue(err.Error())))
 			} else if websocket.IsUnexpectedCloseError(
 				err,
 				websocket.CloseNormalClosure,
 				websocket.CloseGoingAway,
 				websocket.CloseNoStatusReceived,
 			) {
+				// err may be a *websocket.CloseError whose Text is the
+				// peer-supplied close reason (attacker-controlled) — sanitize
+				// it same as logSessionID above (go/log-injection).
 				logging.ForComponent(logging.CompWeb).Warn("websocket_closed_unexpectedly",
 					slog.String("session_id", logSessionID),
-					slog.String("error", err.Error()))
+					slog.String("error", logging.SanitizeValue(err.Error())))
 			}
 			return
 		}
