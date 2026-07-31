@@ -128,7 +128,19 @@ func mapEventToStatus(event string) string {
 	case "onsessionstart":
 		return "waiting" // Hermes session started, waiting for first prompt
 	case "onsessionend":
-		return "dead" // Hermes session ended
+		// Hermes fires on_session_end at the end of EVERY run_conversation
+		// call — once per user message — NOT at process exit. It is the
+		// turn-end edge, and the only one an interrupted turn gets
+		// (post_llm_call is skipped when interrupted). Mapping it to dead
+		// showed an error ✕ after every completed turn.
+		return "waiting"
+	case "onsessionfinalize":
+		return "dead" // Hermes process exit / session reset — the real session end
+	case "preapirequest", "postapirequest":
+		// Per-API-call heartbeat within a turn: refreshes "running" so a
+		// long multi-step turn doesn't outlive the hook freshness window
+		// and fade to idle mid-work.
+		return "running"
 	case "userpromptsubmit", "beforesubmitprompt":
 		return "running" // user sent prompt, agent is processing
 	case "stop":
