@@ -185,6 +185,98 @@ func TestResolveContainedTargetPath_AllowsFinalComponentSymlink(t *testing.T) {
 	}
 }
 
+// TestResolveContainedTargetPath_RefusesSkillsDirSymlinkedInsideProject
+// proves the adversarial variant where the symlink points back INSIDE the
+// project: .claude/skills -> .. makes ".claude/skills/.git" physically the
+// project's .git dir while still resolving inside the project root, so a
+// resolved-prefix compare against the project alone would pass. The
+// no-symlinked-ancestor-components rule refuses it and the .git content
+// survives.
+func TestResolveContainedTargetPath_RefusesSkillsDirSymlinkedInsideProject(t *testing.T) {
+	projectPath := t.TempDir()
+
+	gitDir := filepath.Join(projectPath, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	gitFile := filepath.Join(gitDir, "HEAD")
+	if err := os.WriteFile(gitFile, []byte("ref: refs/heads/main"), 0o600); err != nil {
+		t.Fatalf("write .git/HEAD: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectPath, ".claude"), 0o755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	if err := os.Symlink("..", filepath.Join(projectPath, ".claude", "skills")); err != nil {
+		t.Fatalf("symlink skills dir: %v", err)
+	}
+
+	targetRel := buildProjectSkillTargetPath(projectClaudeSkillsDir, ".git")
+	if _, err := resolveContainedTargetPath(projectPath, targetRel); err == nil {
+		t.Fatalf("expected refusal for skills dir symlinked back into the project, got nil error")
+	}
+	if err := safeRemoveManagedTarget(projectPath, targetRel); err == nil {
+		t.Fatalf("expected safeRemoveManagedTarget to refuse, got nil error")
+	}
+	if _, err := os.Stat(gitFile); err != nil {
+		t.Fatalf(".git content was deleted through the symlinked skills dir: %v", err)
+	}
+}
+
+// TestResolveContainedTargetPath_RefusesDanglingSymlinkedAncestor proves a
+// DANGLING skills-dir symlink is refused rather than treated as an absent
+// component: .claude/skills -> /outside/not-yet-created ENOENTs under
+// EvalSymlinks, which an existence-based walk would misread as "nothing
+// there yet" and pass lexically — but materializing through it would create
+// the outside tree once the destination becomes creatable.
+func TestResolveContainedTargetPath_RefusesDanglingSymlinkedAncestor(t *testing.T) {
+	projectPath := t.TempDir()
+	outside := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(projectPath, ".claude"), 0o755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	dangling := filepath.Join(outside, "not-yet-created")
+	if err := os.Symlink(dangling, filepath.Join(projectPath, ".claude", "skills")); err != nil {
+		t.Fatalf("symlink skills dir: %v", err)
+	}
+
+	targetRel := buildProjectSkillTargetPath(projectClaudeSkillsDir, "victim")
+	if _, err := resolveContainedTargetPath(projectPath, targetRel); err == nil {
+		t.Fatalf("expected refusal for dangling symlinked skills dir, got nil error")
+	}
+}
+
+// TestResolveContainedTargetPath_RefusesManagedDirItself proves the target
+// must be a STRICT descendant: a tampered ".claude/skills/." cleans to the
+// managed dir itself, and RemoveAll there would wipe the whole catalog.
+func TestResolveContainedTargetPath_RefusesManagedDirItself(t *testing.T) {
+	projectPath := t.TempDir()
+
+	skillsDir := filepath.Join(projectPath, ".claude", "skills")
+	if err := os.MkdirAll(filepath.Join(skillsDir, "my-skill"), 0o755); err != nil {
+		t.Fatalf("mkdir skills content: %v", err)
+	}
+	keepFile := filepath.Join(skillsDir, "my-skill", "SKILL.md")
+	if err := os.WriteFile(keepFile, []byte("# my-skill"), 0o600); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	for _, rel := range []string{
+		projectClaudeSkillsDir,
+		projectClaudeSkillsDir + "/.",
+	} {
+		if _, err := resolveContainedTargetPath(projectPath, rel); err == nil {
+			t.Fatalf("expected refusal for managed-dir-itself target %q, got nil error", rel)
+		}
+		if err := safeRemoveManagedTarget(projectPath, rel); err == nil {
+			t.Fatalf("expected safeRemoveManagedTarget to refuse %q, got nil error", rel)
+		}
+	}
+	if _, err := os.Stat(keepFile); err != nil {
+		t.Fatalf("skills catalog content was wiped: %v", err)
+	}
+}
+
 // TestIsContainedIn_RootBase proves containment works when the base is the
 // filesystem root: the old base+PathSeparator string-prefix compare produced
 // "//" as the required prefix, which no cleaned path carries, so every

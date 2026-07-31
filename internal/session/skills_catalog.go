@@ -884,36 +884,152 @@ func copyDir(src, dst string) error {
 	return nil
 }
 
-func materializeSkillCopyOnly(sourcePath, targetPath string) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return "", err
+// copyFileIntoRoot copies src (read with plain os APIs — the source is a
+// trusted skill pool/config dir) to dstRel inside root, creating the file
+// descriptor-relative so a hostile path swap under the managed dir cannot
+// redirect the write outside it.
+func copyFileIntoRoot(root *os.Root, src, dstRel string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
 	}
-	if err := os.RemoveAll(targetPath); err != nil {
-		return "", err
+	defer srcFile.Close()
+
+	info, err := srcFile.Stat()
+	if err != nil {
+		return err
 	}
 
+	if dir := filepath.Dir(dstRel); dir != "." {
+		if err := root.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+
+	dstFile, err := root.OpenFile(dstRel, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+	return nil
+}
+
+// copyDirIntoRoot mirrors copyDir but writes descriptor-relative inside root.
+// Symlinked SOURCE entries are resolved and copied as content, same as before.
+func copyDirIntoRoot(root *os.Root, src, dstRel string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	if err := root.MkdirAll(dstRel, 0o755); err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		entryRel := filepath.Join(dstRel, entry.Name())
+
+		info, err := os.Lstat(srcPath)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			realPath, err := filepath.EvalSymlinks(srcPath)
+			if err != nil {
+				return err
+			}
+			info, err = os.Stat(realPath)
+			if err != nil {
+				return err
+			}
+			srcPath = realPath
+		}
+
+		if info.IsDir() {
+			if err := copyDirIntoRoot(root, srcPath, entryRel); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFileIntoRoot(root, srcPath, entryRel); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func copySkillIntoRoot(root *os.Root, sourcePath, targetRel string) (string, error) {
 	info, err := os.Stat(sourcePath)
 	if err != nil {
 		return "", err
 	}
 	if info.IsDir() {
-		if err := copyDir(sourcePath, targetPath); err != nil {
+		if err := copyDirIntoRoot(root, sourcePath, targetRel); err != nil {
 			return "", err
 		}
 	} else {
-		if err := copyFile(sourcePath, targetPath); err != nil {
+		if err := copyFileIntoRoot(root, sourcePath, targetRel); err != nil {
 			return "", err
 		}
 	}
 	return "copy", nil
 }
 
-func materializeSkill(sourcePath, targetPath string) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+// openManagedTargetRoot validates targetRel via managedTargetBaseAndRel,
+// ensures the managed skills dir exists, and opens it as an os.Root so all
+// mutations happen descriptor-relative (no path re-traversal, no TOCTOU
+// escape). Returns the root, the target's root-relative path, and the
+// validated absolute target path (for read-only checks and messages).
+func openManagedTargetRoot(projectPath, targetRel string) (*os.Root, string, string, error) {
+	base, rel, err := managedTargetBaseAndRel(projectPath, targetRel)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return nil, "", "", err
+	}
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return root, rel, filepath.Join(base, rel), nil
+}
+
+func materializeSkillCopyOnly(projectPath, sourcePath, targetRel string) (string, error) {
+	root, rel, _, err := openManagedTargetRoot(projectPath, targetRel)
+	if err != nil {
 		return "", err
 	}
+	defer root.Close()
 
-	if err := os.RemoveAll(targetPath); err != nil {
+	if dir := filepath.Dir(rel); dir != "." {
+		if err := root.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+	}
+	if err := root.RemoveAll(rel); err != nil {
+		return "", err
+	}
+	return copySkillIntoRoot(root, sourcePath, rel)
+}
+
+func materializeSkill(projectPath, sourcePath, targetRel string) (string, error) {
+	root, rel, targetPath, err := openManagedTargetRoot(projectPath, targetRel)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+
+	if dir := filepath.Dir(rel); dir != "." {
+		if err := root.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+	}
+	if err := root.RemoveAll(rel); err != nil {
 		return "", err
 	}
 
@@ -932,17 +1048,22 @@ func materializeSkill(sourcePath, targetPath string) (string, error) {
 
 	relTarget, relErr := filepath.Rel(relBase, resolvedSourcePath)
 	if relErr == nil {
-		if err := os.Symlink(relTarget, targetPath); err == nil {
-			// Validate that the symlink resolves to a real target.
-			// If it does not, fall back to copy mode below.
+		// Root.Symlink creates the link descriptor-relative; the link CONTENT
+		// may point at the pool outside the root — creating it is fine, Root
+		// only forbids traversing through escapes.
+		if err := root.Symlink(relTarget, rel); err == nil {
+			// Validate that the symlink resolves to a real target. Use plain
+			// os.Stat on the absolute path: Root.Stat refuses symlinks that
+			// resolve outside the root, and legitimate pool links do exactly
+			// that. If the link dangles, fall back to copy mode below.
 			if _, err := os.Stat(targetPath); err == nil {
 				return "symlink", nil
 			}
-			_ = os.Remove(targetPath)
+			_ = root.Remove(rel)
 		}
 	}
 
-	return materializeSkillCopyOnly(sourcePath, targetPath)
+	return copySkillIntoRoot(root, sourcePath, rel)
 }
 
 func resolveTargetPath(projectPath, targetPath string) string {
@@ -950,35 +1071,6 @@ func resolveTargetPath(projectPath, targetPath string) string {
 		return filepath.Clean(targetPath)
 	}
 	return filepath.Clean(filepath.Join(projectPath, filepath.FromSlash(targetPath)))
-}
-
-// resolveSymlinkedAncestors resolves every EXISTING component of path through
-// symlinks. When path (or a suffix of it) does not exist yet — the normal case
-// on the materialization path, where the target is created by the caller — the
-// deepest existing ancestor is resolved via filepath.EvalSymlinks and the
-// non-existing remainder is re-appended verbatim. Any filesystem error other
-// than "does not exist" is returned so callers refuse rather than guess.
-func resolveSymlinkedAncestors(path string) (string, error) {
-	existing := filepath.Clean(path)
-	var suffix []string
-	for {
-		resolved, err := filepath.EvalSymlinks(existing)
-		if err == nil {
-			for i := len(suffix) - 1; i >= 0; i-- {
-				resolved = filepath.Join(resolved, suffix[i])
-			}
-			return resolved, nil
-		}
-		if !os.IsNotExist(err) {
-			return "", err
-		}
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			return "", err
-		}
-		suffix = append(suffix, filepath.Base(existing))
-		existing = parent
-	}
 }
 
 // resolveContainedTargetPath resolves targetRel against projectPath and REFUSES
@@ -992,15 +1084,25 @@ func resolveSymlinkedAncestors(path string) (string, error) {
 // knownProjectSkillsDirs(). Callers must check the error and must not fall
 // back to the raw, unchecked resolveTargetPath for the same operation.
 //
-// Containment is checked on SYMLINK-RESOLVED paths, not just cleaned strings:
-// a repo that ships .claude/skills (or any ancestor component) as a symlink
-// pointing outside the project would otherwise string-pass the prefix check
-// while the target physically lives — and gets removed or materialized — at
-// the symlink destination. Only ancestor components are resolved; the FINAL
-// target component is deliberately left unresolved because pool-attached
-// skills are themselves symlinks inside the managed dir (os.RemoveAll on a
-// symlink removes the link, never the destination), and containment is about
+// Containment is symlink-aware, not just string-based: the project root is
+// resolved via EvalSymlinks (its OWN ancestry may legitimately contain
+// symlinks, e.g. macOS /tmp -> /private/tmp), then every component from the
+// project root down to the target is Lstat-walked. Any EXISTING non-final
+// component that is itself a symlink is refused outright — whether it points
+// outside the project, back INSIDE it (a repo shipping .claude/skills -> ..
+// would otherwise expose the project root, .git included, to RemoveAll), or
+// DANGLES (an EvalSymlinks-based check reads a dangling link's ENOENT as
+// "component absent" and passes it lexically). The managed skills dir is
+// therefore required to sit at its canonical physical location with no
+// symlinked components. Missing components are fine: the creation path
+// materializes them as real directories. The FINAL target component may be a
+// symlink — pool-attached skills are symlinks inside the managed dir, and
+// removal deletes the link, never its destination; containment is about
 // where the target path lives, not what a final-component link points to.
+//
+// The target must also be a STRICT descendant of the managed dir: a tampered
+// ".claude/skills/." cleans to the managed dir itself, and RemoveAll there
+// would wipe the whole catalog.
 func resolveContainedTargetPath(projectPath, targetRel string) (string, error) {
 	targetPath := resolveTargetPath(projectPath, targetRel)
 	skillDir, ok := managedProjectSkillsDirForTarget(targetRel)
@@ -1011,38 +1113,55 @@ func resolveContainedTargetPath(projectPath, targetRel string) (string, error) {
 	if !isContainedIn(base, targetPath) {
 		return "", fmt.Errorf("refusing to use path outside project skills dir: %s", targetPath)
 	}
+	if targetPath == filepath.Clean(base) {
+		return "", fmt.Errorf("refusing to operate on the managed project skills dir itself: %s", targetPath)
+	}
 
-	// Symlink-aware containment. Resolve the project root, the managed base,
-	// and the target's PARENT through any existing symlinked ancestors (the
-	// base and target often do not exist yet on the creation path — the
-	// deepest existing ancestor is resolved and the rest re-appended).
-	resolvedProject, err := resolveSymlinkedAncestors(projectPath)
+	resolvedProject, err := filepath.EvalSymlinks(projectPath)
 	if err != nil {
 		return "", fmt.Errorf("refusing to use unresolvable project path %s: %w", projectPath, err)
 	}
-	resolvedBase, err := resolveSymlinkedAncestors(base)
-	if err != nil {
-		return "", fmt.Errorf("refusing to use unresolvable project skills dir %s: %w", base, err)
+	relFromProject, err := filepath.Rel(filepath.Clean(projectPath), targetPath)
+	if err != nil || relFromProject == "." || relFromProject == ".." ||
+		strings.HasPrefix(relFromProject, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("refusing to use path outside the project: %s", targetPath)
 	}
-	// A managed skills dir whose components symlink outside the project (e.g.
-	// a repo shipping .claude/skills -> /elsewhere) must not be treated as a
-	// managed dir at all: RemoveAll/materialize through it acts outside the
-	// project.
-	if !isContainedIn(resolvedProject, resolvedBase) {
-		return "", fmt.Errorf("refusing to use project skills dir that resolves outside the project: %s -> %s", base, resolvedBase)
-	}
-	resolvedParent, err := resolveSymlinkedAncestors(filepath.Dir(targetPath))
-	if err != nil {
-		return "", fmt.Errorf("refusing to use unresolvable target path %s: %w", targetPath, err)
-	}
-	resolvedTarget := resolvedParent
-	if targetPath != filepath.Dir(targetPath) {
-		resolvedTarget = filepath.Join(resolvedParent, filepath.Base(targetPath))
-	}
-	if !isContainedIn(resolvedBase, resolvedTarget) {
-		return "", fmt.Errorf("refusing to use target path that resolves outside the project skills dir: %s -> %s", targetPath, resolvedTarget)
+	current := resolvedProject
+	components := strings.Split(relFromProject, string(os.PathSeparator))
+	for i, component := range components {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// This component (and everything below it) does not exist yet;
+				// the creation path will materialize real directories here.
+				break
+			}
+			return "", fmt.Errorf("refusing to use unresolvable target path %s: %w", targetPath, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 && i < len(components)-1 {
+			return "", fmt.Errorf("refusing to use target path with a symlinked ancestor component: %s", current)
+		}
 	}
 	return targetPath, nil
+}
+
+// managedTargetBaseAndRel returns the canonical managed skills dir for
+// targetRel plus the target's path relative to it, after full containment
+// validation. It is the shared setup for the descriptor-relative (os.Root)
+// mutation sinks below.
+func managedTargetBaseAndRel(projectPath, targetRel string) (string, string, error) {
+	targetPath, err := resolveContainedTargetPath(projectPath, targetRel)
+	if err != nil {
+		return "", "", err
+	}
+	skillDir, _ := managedProjectSkillsDirForTarget(targetRel)
+	base := filepath.Join(projectPath, filepath.FromSlash(skillDir))
+	rel, err := filepath.Rel(filepath.Clean(base), targetPath)
+	if err != nil {
+		return "", "", err
+	}
+	return filepath.Clean(base), rel, nil
 }
 
 func removeAttachmentTarget(projectPath string, attachment ProjectSkillAttachment) error {
@@ -1050,18 +1169,31 @@ func removeAttachmentTarget(projectPath string, attachment ProjectSkillAttachmen
 }
 
 // safeRemoveManagedTarget removes targetRel (resolved against projectPath) only
-// when it is contained in a managed project-skills dir, then RemoveAll's it.
-// A non-managed, absolute, or "../"-escaping target is REFUSED and never removed.
-// Every os.RemoveAll that operates on a manifest-derived TargetPath (attach
-// detach + the migration branches in attachSkillCandidate / reconcileProjectSkills)
-// must route through here so a tampered manifest can't trigger deletion outside
-// the project skills dir. Audit M3.
+// when it is contained in a managed project-skills dir. A non-managed,
+// absolute, or "../"-escaping target is REFUSED and never removed. Every
+// removal that operates on a manifest-derived TargetPath (attach, detach + the
+// migration branches in attachSkillCandidate / reconcileProjectSkills) must
+// route through here so a tampered manifest can't trigger deletion outside the
+// project skills dir. Audit M3.
+//
+// The removal itself is descriptor-relative: the managed skills dir is opened
+// with os.Root and the target removed via Root.RemoveAll, so even a path swap
+// between validation and mutation (TOCTOU) cannot escape the managed dir —
+// the kernel enforces no-traversal semantics on every operation inside Root.
 func safeRemoveManagedTarget(projectPath, targetRel string) error {
-	targetPath, err := resolveContainedTargetPath(projectPath, targetRel)
+	base, rel, err := managedTargetBaseAndRel(projectPath, targetRel)
 	if err != nil {
 		return fmt.Errorf("refusing to remove path outside managed project skills dirs: %w", err)
 	}
-	return os.RemoveAll(targetPath)
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer root.Close()
+	return root.RemoveAll(rel)
 }
 
 func buildAttachment(tool string, candidate SkillCandidate, mode string) ProjectSkillAttachment {
@@ -1193,12 +1325,12 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 			}
 			mode := ""
 			if sourceToUse == currentTargetPath {
-				mode, err = materializeSkillCopyOnly(sourceToUse, desiredTargetPath)
+				mode, err = materializeSkillCopyOnly(projectPath, sourceToUse, desiredTargetRel)
 			} else {
 				if err := validateAttachableSkillCandidate(candidate); err != nil {
 					return nil, err
 				}
-				mode, err = materializeSkill(sourceToUse, desiredTargetPath)
+				mode, err = materializeSkill(projectPath, sourceToUse, desiredTargetRel)
 			}
 			if err != nil {
 				return nil, err
@@ -1228,7 +1360,7 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 			if err := validateAttachableSkillCandidate(candidate); err != nil {
 				return nil, err
 			}
-			mode, err := materializeSkill(sourceToUse, currentTargetPath)
+			mode, err := materializeSkill(projectPath, sourceToUse, existing.TargetPath)
 			if err != nil {
 				return nil, err
 			}
@@ -1268,7 +1400,7 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 		return nil, err
 	}
 
-	mode, err := materializeSkill(candidate.SourcePath, targetPath)
+	mode, err := materializeSkill(projectPath, candidate.SourcePath, attachment.TargetPath)
 	if err != nil {
 		return nil, err
 	}
@@ -1476,12 +1608,12 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 				} else {
 					mode := ""
 					if sourceToUse == currentTargetPath {
-						mode, err = materializeSkillCopyOnly(sourceToUse, desiredTargetPath)
+						mode, err = materializeSkillCopyOnly(projectPath, sourceToUse, desiredTargetRel)
 					} else {
 						if err := validateAttachableSkillCandidate(candidate); err != nil {
 							return err
 						}
-						mode, err = materializeSkill(sourceToUse, desiredTargetPath)
+						mode, err = materializeSkill(projectPath, sourceToUse, desiredTargetRel)
 					}
 					if err != nil {
 						return err
@@ -1509,7 +1641,7 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 					if err := validateAttachableSkillCandidate(candidate); err != nil {
 						return err
 					}
-					mode, err := materializeSkill(sourceToUse, desiredTargetPath)
+					mode, err := materializeSkill(projectPath, sourceToUse, desiredTargetRel)
 					if err != nil {
 						return err
 					}
@@ -1524,8 +1656,7 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 		}
 
 		attachment := buildAttachment(tool, candidate, "")
-		targetPath, err := resolveContainedTargetPath(projectPath, attachment.TargetPath)
-		if err != nil {
+		if _, err := resolveContainedTargetPath(projectPath, attachment.TargetPath); err != nil {
 			return err
 		}
 		sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, "")
@@ -1535,7 +1666,7 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 		if err := validateAttachableSkillCandidate(candidate); err != nil {
 			return err
 		}
-		mode, err := materializeSkill(sourceToUse, targetPath)
+		mode, err := materializeSkill(projectPath, sourceToUse, attachment.TargetPath)
 		if err != nil {
 			return err
 		}

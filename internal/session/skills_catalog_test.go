@@ -613,8 +613,12 @@ func TestMaterializeSkill_SymlinkedTargetPathCreatesReadableTarget(t *testing.T)
 		t.Skipf("symlink not supported in this environment: %v", err)
 	}
 
-	targetPath := filepath.Join(aliasBase, "project", ".claude", "skills", "lint")
-	mode, err := materializeSkill(sourcePath, targetPath)
+	projectPath := filepath.Join(aliasBase, "project")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatalf("failed to create project path: %v", err)
+	}
+	targetPath := filepath.Join(projectPath, ".claude", "skills", "lint")
+	mode, err := materializeSkill(projectPath, sourcePath, buildProjectSkillTargetPath(projectClaudeSkillsDir, "lint"))
 	if err != nil {
 		t.Fatalf("materializeSkill failed: %v", err)
 	}
