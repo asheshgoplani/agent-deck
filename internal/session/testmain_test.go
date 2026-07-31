@@ -125,6 +125,77 @@ func skipIfNoClaudeBinary(t *testing.T) {
 	skipIfClaudePaneUnreliable(t)
 }
 
+// skipIfNoCursorBinary skips when the `cursor` CLI is absent. Restart() on a
+// cursor session respawns the pane with `cursor agent --continue`; with no such
+// binary the login shell exits immediately, tmux tears down the pane, and with
+// it the session — so a test asserting the session survives Restart cannot pass
+// here for reasons that have nothing to do with the code under test.
+//
+// Mirrors skipIfNoClaudeBinary / skipIfNoOpenCode for the cursor path.
+func skipIfNoCursorBinary(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("cursor"); err != nil {
+		t.Skip("cursor binary not available (Restart respawns `cursor agent --continue`; without it the pane exits and tmux drops the session)")
+	}
+}
+
+// waitForLivePane polls until the instance's tmux pane is observably alive, or
+// the deadline passes. Returns whether it came up.
+//
+// A single fixed sleep cannot express this: respawn-pane swaps the pane leader,
+// and how quickly that is observable moves with host load. The same lesson is
+// already recorded in skipIfClaudePaneUnreliable, where one 400ms sample was
+// flaky under the full suite.
+func waitForLivePane(inst *Instance, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for {
+		if s := inst.GetTmuxSession(); s != nil && s.Exists() && !s.IsPaneDead() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// waitForLivePane is the load-tolerant replacement for a fixed sleep, so cover
+// both verdicts directly rather than only through its caller (which skips on
+// hosts without the cursor CLI).
+func TestWaitForLivePane(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	t.Run("returns true for a live pane", func(t *testing.T) {
+		inst := NewInstanceWithTool("wait-live-pane-alive", t.TempDir(), "claude")
+		inst.Command = "sleep 60"
+		if err := inst.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+		defer func() { _ = inst.Kill() }()
+
+		if !waitForLivePane(inst, 2*time.Second) {
+			t.Fatal("waitForLivePane = false for a live pane, want true")
+		}
+	})
+
+	t.Run("returns false once the pane is gone", func(t *testing.T) {
+		inst := NewInstanceWithTool("wait-live-pane-dead", t.TempDir(), "claude")
+		inst.Command = "sleep 60"
+		if err := inst.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+		if err := inst.Kill(); err != nil {
+			t.Fatalf("Kill failed: %v", err)
+		}
+
+		// Short window: the point is that it reports the absence rather than
+		// hanging for the full budget.
+		if waitForLivePane(inst, 300*time.Millisecond) {
+			t.Fatal("waitForLivePane = true after Kill, want false")
+		}
+	})
+}
+
 func TestMain(m *testing.M) {
 	os.Exit(runTestMain(m))
 }

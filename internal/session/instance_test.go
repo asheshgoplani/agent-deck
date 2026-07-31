@@ -1783,6 +1783,7 @@ func TestBuildCodexCommand_InlineCodexHomeDropsStaleID(t *testing.T) {
 
 func TestCanRestartCursor(t *testing.T) {
 	skipIfNoTmuxBinary(t)
+	skipIfNoCursorBinary(t)
 
 	inst := NewInstanceWithTool("cursor-restart-test", "/tmp", "cursor")
 	inst.Command = "sleep 60"
@@ -1804,8 +1805,11 @@ func TestCanRestartCursor(t *testing.T) {
 	if err := inst.Restart(); err != nil {
 		t.Fatalf("Restart failed: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if inst.tmuxSession == nil || !inst.tmuxSession.Exists() {
+	// Poll instead of sampling once. respawn-pane replaces the pane process, so
+	// how long the new leader takes to be observable varies with host load —
+	// exactly the flakiness skipIfClaudePaneUnreliable already documents for the
+	// Claude path ("a single 400ms sample was flaky under the full test suite").
+	if !waitForLivePane(inst, 2*time.Second) {
 		t.Fatal("tmux session should exist after Restart")
 	}
 	if inst.Status == StatusError {
