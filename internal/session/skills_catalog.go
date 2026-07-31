@@ -944,6 +944,35 @@ func resolveTargetPath(projectPath, targetPath string) string {
 	return filepath.Clean(filepath.Join(projectPath, filepath.FromSlash(targetPath)))
 }
 
+// resolveSymlinkedAncestors resolves every EXISTING component of path through
+// symlinks. When path (or a suffix of it) does not exist yet — the normal case
+// on the materialization path, where the target is created by the caller — the
+// deepest existing ancestor is resolved via filepath.EvalSymlinks and the
+// non-existing remainder is re-appended verbatim. Any filesystem error other
+// than "does not exist" is returned so callers refuse rather than guess.
+func resolveSymlinkedAncestors(path string) (string, error) {
+	existing := filepath.Clean(path)
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(existing)
+		if err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return resolved, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return "", err
+		}
+		suffix = append(suffix, filepath.Base(existing))
+		existing = parent
+	}
+}
+
 // resolveContainedTargetPath resolves targetRel against projectPath and REFUSES
 // any result that is not contained in a managed project-skills dir — the same
 // containment guard #1200 added for worktree deletion (Audit M3), applied here
@@ -954,6 +983,16 @@ func resolveTargetPath(projectPath, targetPath string) string {
 // ApplyProjectSkills only ever see a path proven to sit inside one of
 // knownProjectSkillsDirs(). Callers must check the error and must not fall
 // back to the raw, unchecked resolveTargetPath for the same operation.
+//
+// Containment is checked on SYMLINK-RESOLVED paths, not just cleaned strings:
+// a repo that ships .claude/skills (or any ancestor component) as a symlink
+// pointing outside the project would otherwise string-pass the prefix check
+// while the target physically lives — and gets removed or materialized — at
+// the symlink destination. Only ancestor components are resolved; the FINAL
+// target component is deliberately left unresolved because pool-attached
+// skills are themselves symlinks inside the managed dir (os.RemoveAll on a
+// symlink removes the link, never the destination), and containment is about
+// where the target path lives, not what a final-component link points to.
 func resolveContainedTargetPath(projectPath, targetRel string) (string, error) {
 	targetPath := resolveTargetPath(projectPath, targetRel)
 	skillDir, ok := managedProjectSkillsDirForTarget(targetRel)
@@ -963,6 +1002,37 @@ func resolveContainedTargetPath(projectPath, targetRel string) (string, error) {
 	base := filepath.Join(projectPath, filepath.FromSlash(skillDir))
 	if !isContainedIn(base, targetPath) {
 		return "", fmt.Errorf("refusing to use path outside project skills dir: %s", targetPath)
+	}
+
+	// Symlink-aware containment. Resolve the project root, the managed base,
+	// and the target's PARENT through any existing symlinked ancestors (the
+	// base and target often do not exist yet on the creation path — the
+	// deepest existing ancestor is resolved and the rest re-appended).
+	resolvedProject, err := resolveSymlinkedAncestors(projectPath)
+	if err != nil {
+		return "", fmt.Errorf("refusing to use unresolvable project path %s: %w", projectPath, err)
+	}
+	resolvedBase, err := resolveSymlinkedAncestors(base)
+	if err != nil {
+		return "", fmt.Errorf("refusing to use unresolvable project skills dir %s: %w", base, err)
+	}
+	// A managed skills dir whose components symlink outside the project (e.g.
+	// a repo shipping .claude/skills -> /elsewhere) must not be treated as a
+	// managed dir at all: RemoveAll/materialize through it acts outside the
+	// project.
+	if !isContainedIn(resolvedProject, resolvedBase) {
+		return "", fmt.Errorf("refusing to use project skills dir that resolves outside the project: %s -> %s", base, resolvedBase)
+	}
+	resolvedParent, err := resolveSymlinkedAncestors(filepath.Dir(targetPath))
+	if err != nil {
+		return "", fmt.Errorf("refusing to use unresolvable target path %s: %w", targetPath, err)
+	}
+	resolvedTarget := resolvedParent
+	if targetPath != filepath.Dir(targetPath) {
+		resolvedTarget = filepath.Join(resolvedParent, filepath.Base(targetPath))
+	}
+	if !isContainedIn(resolvedBase, resolvedTarget) {
+		return "", fmt.Errorf("refusing to use target path that resolves outside the project skills dir: %s -> %s", targetPath, resolvedTarget)
 	}
 	return targetPath, nil
 }
