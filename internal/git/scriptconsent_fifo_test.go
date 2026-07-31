@@ -54,3 +54,67 @@ func TestGateAndRunWorktreeSetupScript_FIFO_RejectedWithoutHanging(t *testing.T)
 		})
 	}
 }
+
+// TestHashScriptFile_FIFO_RejectedWithoutHanging pins that hashScriptFile
+// itself — not just the GateAndRun* wrappers — refuses to hang on a FIFO.
+// This matters because TrustScript (used by `agent-deck worktree
+// trust-scripts`, a CLI entry point with no consent-policy short-circuit or
+// caller-side IsRegular guard in front of it at all) calls hashScriptFile
+// directly, so the safety has to live inside hashScriptFile/
+// openScriptFileForHashing to cover that path too.
+func TestHashScriptFile_FIFO_RejectedWithoutHanging(t *testing.T) {
+	repoDir := t.TempDir()
+	fifoPath := filepath.Join(repoDir, "fifo")
+	if err := syscall.Mkfifo(fifoPath, 0o644); err != nil {
+		t.Skipf("mkfifo not supported on this platform/filesystem: %v", err)
+	}
+
+	done := make(chan struct {
+		hash string
+		err  error
+	}, 1)
+	go func() {
+		hash, err := hashScriptFile(fifoPath)
+		done <- struct {
+			hash string
+			err  error
+		}{hash, err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.err == nil {
+			t.Fatalf("expected hashScriptFile to reject a FIFO, got hash=%q err=nil", r.hash)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("hashScriptFile hung opening/reading a FIFO with no writer")
+	}
+}
+
+// TestTrustScript_FIFO_RejectedWithoutHanging exercises the actual CLI trust
+// path end-to-end: TrustScript has no other guard in front of it (unlike
+// GateAndRunWorktreeSetupScript, which checks scriptMode.IsRegular() before
+// ever calling hashScriptFile), so this is the test that would have caught
+// the gap a reviewer found in the first version of this fix.
+func TestTrustScript_FIFO_RejectedWithoutHanging(t *testing.T) {
+	repoDir := t.TempDir()
+	fifoPath := filepath.Join(repoDir, "fifo")
+	if err := syscall.Mkfifo(fifoPath, 0o644); err != nil {
+		t.Skipf("mkfifo not supported on this platform/filesystem: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := TrustScript(repoDir, "setup", fifoPath)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected TrustScript to reject a FIFO, got nil error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("TrustScript hung opening/reading a FIFO with no writer")
+	}
+}

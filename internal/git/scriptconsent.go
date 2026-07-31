@@ -140,15 +140,23 @@ const maxScriptHashBytes = 10 << 20 // 10 MiB
 // need executing via a captured file descriptor (e.g. /proc/self/fd or
 // fexecve-equivalent) rather than by path — out of scope for this gate.
 //
-// Callers must reject non-regular files (scriptMode.IsRegular() == false)
-// before calling this — a committed symlink pointing at /dev/zero or a
-// FIFO passes os.Stat/os.Open fine but then blocks io.Copy forever, which
-// would hang consent checking (and, under [worktree] run_repo_scripts =
-// "never", would hang BEFORE the policy ever gets a chance to deny it, if
-// this were called unconditionally). See scriptConsentPolicyShortCircuit
-// and the IsRegular guard in setup.go's GateAndRun* wrappers.
+// The file is opened via openScriptFileForHashing, not a plain os.Open: a
+// committed symlink pointing at a FIFO (or, on some platforms, a device
+// that blocks at open()) would otherwise hang the open() call itself before
+// a single byte is read — capping the read length below does not help,
+// because io.CopyN still blocks inside the underlying Read() call on a
+// stalled reader; it only bounds bytes read from a source that IS
+// responding. openScriptFileForHashing closes that hole by opening
+// non-blocking and checking the *resulting descriptor's* mode via fstat
+// (not a second path-based Stat, which would just reopen the same race) —
+// this makes hashScriptFile itself, and therefore every caller including
+// TrustScript (the CLI trust command, which has no other guard in front of
+// it), safe against a non-regular script file, rather than depending on
+// each call site to have separately checked FindWorktree*Script's mode
+// first. See also scriptConsentPolicyShortCircuit, which additionally lets
+// "always"/"never" resolve without calling this function at all.
 func hashScriptFile(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := openScriptFileForHashing(path)
 	if err != nil {
 		return "", err
 	}

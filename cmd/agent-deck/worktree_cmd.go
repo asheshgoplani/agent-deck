@@ -78,23 +78,45 @@ func printWorktreeUsage() {
 // from a non-interactive context (CI approving a change ahead of time,
 // scripting) rather than relying on the terminal prompt or
 // --allow-repo-scripts.
-func handleWorktreeTrustScripts(args []string) {
-	// Go's stdlib flag.Parse stops consuming flags at the first non-flag
-	// argument. Our own usage text prints "trust-scripts . --revoke" (repo
-	// path before the flag) — under a plain fs.Parse(args), "." is seen
-	// first, parsing stops immediately, and "--revoke" is swallowed into
-	// the positional args instead of being recognized, so *revoke stays
-	// false and the command silently GRANTS trust instead of revoking it.
-	// Partition args by leading "-" before handing them to flag.Parse so
-	// flag position relative to the repo-path positional never matters.
-	var flagArgs, positional []string
+// partitionWorktreeTrustScriptsArgs splits args into flag tokens and
+// positional tokens so `agent-deck worktree trust-scripts` accepts a flag
+// in any position relative to the repo-path positional.
+//
+// Go's stdlib flag.Parse stops consuming flags at the first non-flag
+// argument. Our own usage text prints "trust-scripts . --revoke" (repo path
+// before the flag) — under a plain fs.Parse(args), "." is seen first,
+// parsing stops immediately, and "--revoke" is swallowed into the
+// positional args instead of being recognized, so *revoke stays false and
+// the command silently GRANTS trust instead of revoking it. Partitioning
+// args by leading "-" before handing them to flag.Parse fixes that: flag
+// position relative to the repo-path positional no longer matters.
+//
+// A literal "--" is honored as the conventional end-of-flags marker
+// (matching flag.Parse's own behavior): everything after it is treated as
+// positional even if it starts with "-", so a repo path that itself begins
+// with a dash can still be passed via `trust-scripts --revoke -- -repo`.
+// This subcommand only ever declares boolean flags, so there is no case
+// where a flag's value (as opposed to the flag itself) needs to be
+// distinguished from a positional argument.
+func partitionWorktreeTrustScriptsArgs(args []string) (flagArgs, positional []string) {
+	endOfFlags := false
 	for _, a := range args {
-		if strings.HasPrefix(a, "-") {
+		switch {
+		case endOfFlags:
+			positional = append(positional, a)
+		case a == "--":
+			endOfFlags = true
+		case strings.HasPrefix(a, "-") && a != "-":
 			flagArgs = append(flagArgs, a)
-			continue
+		default:
+			positional = append(positional, a)
 		}
-		positional = append(positional, a)
 	}
+	return flagArgs, positional
+}
+
+func handleWorktreeTrustScripts(args []string) {
+	flagArgs, positional := partitionWorktreeTrustScriptsArgs(args)
 
 	fs := flag.NewFlagSet("worktree trust-scripts", flag.ExitOnError)
 	revoke := fs.Bool("revoke", false, "Remove previously stored trust instead of granting it")
