@@ -362,3 +362,54 @@ func TestSubstate_ReportsUsageLimitWhenLimited(t *testing.T) {
 		t.Fatalf("Substate() = %q with no verdict, want anything else", got)
 	}
 }
+
+// #1806 review (CodeRabbit): the empty-id gate alone cannot close the window,
+// because locateHandoffTranscript re-reads ClaudeSessionID after the lock is
+// released and falls back to the newest conversation for the project when it is
+// empty. So the guarantee is made about the resolved PATH instead of the timing.
+func TestTranscriptBelongsToSession(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		sessionID string
+		want      bool
+	}{
+		{
+			name:      "path for our own session",
+			path:      "/home/u/.claude/projects/-home-u-proj/abc123.jsonl",
+			sessionID: "abc123",
+			want:      true,
+		},
+		{
+			name:      "path for a sibling session is refused",
+			path:      "/home/u/.claude/projects/-home-u-proj/other999.jsonl",
+			sessionID: "abc123",
+			want:      false,
+		},
+		{
+			name:      "empty path",
+			path:      "",
+			sessionID: "abc123",
+			want:      false,
+		},
+		{
+			name:      "empty session id never matches",
+			path:      "/home/u/.claude/projects/-home-u-proj/abc123.jsonl",
+			sessionID: "",
+			want:      false,
+		},
+		{
+			name:      "prefix collision is not a match",
+			path:      "/home/u/.claude/projects/-home-u-proj/abc1234.jsonl",
+			sessionID: "abc123",
+			want:      false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := transcriptBelongsToSession(tt.path, tt.sessionID); got != tt.want {
+				t.Fatalf("transcriptBelongsToSession(%q, %q) = %v, want %v", tt.path, tt.sessionID, got, tt.want)
+			}
+		})
+	}
+}

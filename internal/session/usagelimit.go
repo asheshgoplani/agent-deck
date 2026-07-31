@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -213,6 +214,19 @@ func readTranscriptTailLines(path string, tailBytes int64) (lines []string, comp
 	return out, complete, nil
 }
 
+// transcriptBelongsToSession reports whether a resolved transcript path is the
+// one for sessionID.
+//
+// Every branch of the resolver builds "<config>/projects/<encoded>/<sid>.jsonl",
+// so the basename is the session identity — which makes this a cheap way to
+// refuse a path that belongs to some other conversation, whatever produced it.
+func transcriptBelongsToSession(path, sessionID string) bool {
+	if path == "" || sessionID == "" {
+		return false
+	}
+	return filepath.Base(path) == sessionID+".jsonl"
+}
+
 // usageLimited reports whether this instance's latest assistant turn was a
 // recent quota rejection, throttled to usageLimitScanInterval.
 func (i *Instance) usageLimited() bool {
@@ -227,22 +241,21 @@ func (i *Instance) usageLimited() bool {
 	if i.IsSSH() {
 		return false
 	}
-	// A bound session id is required, not merely helpful. With an empty id
+	// Read the session id, check the throttle and claim the window in ONE critical
+	// section. Split apart, two callers whose window had expired could both pass
+	// the check, both scan, and publish their results in either order — and the
+	// id could change between its own read and the claim.
+	//
+	// A bound session id is required, not merely helpful: with an empty id
 	// LocateConversationConfigDir deliberately falls back to the NEWEST
-	// conversation for the project across every config dir, so an unbound
-	// instance would inherit whichever sibling session wrote last and be marked
-	// usage-limited on another session's rejection.
-	i.mu.RLock()
+	// conversation for the project across every config dir, so an unbound instance
+	// would inherit whichever sibling session wrote last.
+	i.mu.Lock()
 	sessionID := strings.TrimSpace(i.ClaudeSessionID)
-	i.mu.RUnlock()
 	if sessionID == "" {
+		i.mu.Unlock()
 		return false
 	}
-
-	// Check and stamp in ONE critical section. Split across an RLock read and a
-	// later Lock, two callers whose window had expired could both pass the check,
-	// both scan, and publish their results in either order.
-	i.mu.Lock()
 	if !i.lastUsageLimitScanAt.IsZero() && time.Since(i.lastUsageLimitScanAt) < usageLimitScanInterval {
 		cached := i.usageLimitedCached
 		i.mu.Unlock()
@@ -256,6 +269,14 @@ func (i *Instance) usageLimited() bool {
 
 	path := locateHandoffTranscript(i)
 	if path == "" {
+		return cached
+	}
+	// Verify the answer belongs to the id we gated on. Holding the lock across the
+	// check is not enough on its own: the resolver re-reads ClaudeSessionID itself
+	// (migrate_locate.go) after the lock is released, so a concurrent rebind could
+	// still steer it onto the newest-conversation fallback. Checking the resolved
+	// path makes the guarantee structural instead of dependent on timing.
+	if !transcriptBelongsToSession(path, sessionID) {
 		return cached
 	}
 
