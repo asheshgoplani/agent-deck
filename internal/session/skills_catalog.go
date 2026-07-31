@@ -884,52 +884,68 @@ func copyDir(src, dst string) error {
 	return nil
 }
 
-// resolveContainedSourcePath validates a materialization SOURCE path the way
+// openContainedSourceRoot validates a materialization SOURCE path the way
 // targets are validated (CodeQL go/path-injection, alert 237): the destination
 // side is Root-confined, but the source still arrives from manifest- or
-// candidate-derived data and is opened by path. A source is accepted only when
-// it sits strictly inside a registered skill source root (sources.toml: the
-// managed pool, claude-global, and operator-registered dirs) or strictly
-// inside one of the project's own managed skills dirs (the migration fallback
-// that copies from the current, already containment-checked target). Anything
-// else — absolute paths into arbitrary trees, "../" escapes — is refused
-// before any filesystem read.
-func resolveContainedSourcePath(projectPath, sourcePath string) (string, error) {
+// candidate-derived data. A source is accepted only when it sits strictly
+// inside a registered skill source root (sources.toml: the managed pool,
+// claude-global, and operator-registered dirs) or strictly inside one of the
+// project's own managed skills dirs (the migration fallback that copies from
+// the current, already containment-checked target). The accepted root is
+// returned as an os.Root opened at the REGISTERED root path, so every
+// subsequent source read is descriptor-relative and cannot traverse outside
+// it. Anything else — absolute paths into arbitrary trees, "../" escapes —
+// is refused before any filesystem read.
+func openContainedSourceRoot(projectPath, sourcePath string) (*os.Root, string, string, error) {
 	resolved, err := resolveSkillSourcePath(sourcePath)
 	if err != nil {
-		return "", err
+		return nil, "", "", err
+	}
+
+	openAt := func(rootPath string) (*os.Root, string, string, error) {
+		root, err := os.OpenRoot(rootPath)
+		if err != nil {
+			return nil, "", "", err
+		}
+		rel, err := filepath.Rel(rootPath, resolved)
+		if err != nil {
+			root.Close()
+			return nil, "", "", err
+		}
+		return root, rel, resolved, nil
 	}
 
 	sources, err := LoadSkillSources()
 	if err != nil {
-		return "", err
+		return nil, "", "", err
 	}
 	for _, def := range sources {
 		rootPath := expandSkillPath(def.Path)
 		if rootPath == "" || !filepath.IsAbs(rootPath) {
 			continue
 		}
-		if resolved != filepath.Clean(rootPath) && isContainedIn(rootPath, resolved) {
-			return resolved, nil
+		rootPath = filepath.Clean(rootPath)
+		if resolved != rootPath && isContainedIn(rootPath, resolved) {
+			return openAt(rootPath)
 		}
 	}
 
 	for _, dir := range knownProjectSkillsDirs() {
-		base := filepath.Join(projectPath, filepath.FromSlash(dir))
-		if resolved != filepath.Clean(base) && isContainedIn(base, resolved) {
-			return resolved, nil
+		base := filepath.Clean(filepath.Join(projectPath, filepath.FromSlash(dir)))
+		if resolved != base && isContainedIn(base, resolved) {
+			return openAt(base)
 		}
 	}
 
-	return "", fmt.Errorf("refusing to materialize from source outside registered skill sources: %s", resolved)
+	return nil, "", "", fmt.Errorf("refusing to materialize from source outside registered skill sources: %s", resolved)
 }
 
-// copyFileIntoRoot copies src (read with plain os APIs — src has passed
-// resolveContainedSourcePath at the materialize entry points) to dstRel inside
-// root, creating the file descriptor-relative so a hostile path swap under
-// the managed dir cannot redirect the write outside it.
-func copyFileIntoRoot(root *os.Root, src, dstRel string) error {
-	srcFile, err := os.Open(src)
+// copyFileIntoRoot copies srcRel (read descriptor-relative inside srcRoot, a
+// registered skill source root) to dstRel inside dstRoot, so neither side of
+// the copy can be redirected outside its root by a hostile path swap. A
+// symlinked source file is followed only within srcRoot; escapes error.
+func copyFileIntoRoot(dstRoot, srcRoot *os.Root, srcRel, dstRel string) error {
+	srcFile, err := srcRoot.Open(srcRel)
 	if err != nil {
 		return err
 	}
@@ -941,12 +957,12 @@ func copyFileIntoRoot(root *os.Root, src, dstRel string) error {
 	}
 
 	if dir := filepath.Dir(dstRel); dir != "." {
-		if err := root.MkdirAll(dir, 0o755); err != nil {
+		if err := dstRoot.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
 
-	dstFile, err := root.OpenFile(dstRel, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	dstFile, err := dstRoot.OpenFile(dstRel, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
 	if err != nil {
 		return err
 	}
@@ -958,43 +974,41 @@ func copyFileIntoRoot(root *os.Root, src, dstRel string) error {
 	return nil
 }
 
-// copyDirIntoRoot mirrors copyDir but writes descriptor-relative inside root.
-// Symlinked SOURCE entries are resolved and copied as content, same as before.
-func copyDirIntoRoot(root *os.Root, src, dstRel string) error {
-	entries, err := os.ReadDir(src)
+// copyDirIntoRoot mirrors copyDir but reads and writes descriptor-relative.
+// Symlinked SOURCE entries are followed and copied as content like before,
+// with one deliberate tightening: a source symlink may only resolve within
+// the registered source root — an escape errors instead of being followed.
+func copyDirIntoRoot(dstRoot, srcRoot *os.Root, srcRel, dstRel string) error {
+	srcDir, err := srcRoot.Open(srcRel)
 	if err != nil {
 		return err
 	}
-	if err := root.MkdirAll(dstRel, 0o755); err != nil {
+	entries, err := srcDir.ReadDir(-1)
+	srcDir.Close()
+	if err != nil {
+		return err
+	}
+	if err := dstRoot.MkdirAll(dstRel, 0o755); err != nil {
 		return err
 	}
 
 	for _, entry := range entries {
-		srcPath := filepath.Join(src, entry.Name())
-		entryRel := filepath.Join(dstRel, entry.Name())
+		entrySrcRel := filepath.Join(srcRel, entry.Name())
+		entryDstRel := filepath.Join(dstRel, entry.Name())
 
-		info, err := os.Lstat(srcPath)
+		// Stat (not Lstat): follows in-root symlinked source entries so their
+		// CONTENT is copied, matching the previous EvalSymlinks behavior.
+		info, err := srcRoot.Stat(entrySrcRel)
 		if err != nil {
 			return err
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			realPath, err := filepath.EvalSymlinks(srcPath)
-			if err != nil {
-				return err
-			}
-			info, err = os.Stat(realPath)
-			if err != nil {
-				return err
-			}
-			srcPath = realPath
-		}
 
 		if info.IsDir() {
-			if err := copyDirIntoRoot(root, srcPath, entryRel); err != nil {
+			if err := copyDirIntoRoot(dstRoot, srcRoot, entrySrcRel, entryDstRel); err != nil {
 				return err
 			}
 		} else {
-			if err := copyFileIntoRoot(root, srcPath, entryRel); err != nil {
+			if err := copyFileIntoRoot(dstRoot, srcRoot, entrySrcRel, entryDstRel); err != nil {
 				return err
 			}
 		}
@@ -1002,17 +1016,17 @@ func copyDirIntoRoot(root *os.Root, src, dstRel string) error {
 	return nil
 }
 
-func copySkillIntoRoot(root *os.Root, sourcePath, targetRel string) (string, error) {
-	info, err := os.Stat(sourcePath)
+func copySkillIntoRoot(dstRoot, srcRoot *os.Root, srcRel, dstRel string) (string, error) {
+	info, err := srcRoot.Stat(srcRel)
 	if err != nil {
 		return "", err
 	}
 	if info.IsDir() {
-		if err := copyDirIntoRoot(root, sourcePath, targetRel); err != nil {
+		if err := copyDirIntoRoot(dstRoot, srcRoot, srcRel, dstRel); err != nil {
 			return "", err
 		}
 	} else {
-		if err := copyFileIntoRoot(root, sourcePath, targetRel); err != nil {
+		if err := copyFileIntoRoot(dstRoot, srcRoot, srcRel, dstRel); err != nil {
 			return "", err
 		}
 	}
@@ -1029,10 +1043,21 @@ func openManagedTargetRoot(projectPath, targetRel string) (*os.Root, string, str
 	if err != nil {
 		return nil, "", "", err
 	}
-	if err := os.MkdirAll(base, 0o755); err != nil {
+	skillDir, _ := managedProjectSkillsDirForTarget(targetRel)
+	// Create and open the managed dir descriptor-relative to the project root:
+	// skillDir is one of the knownProjectSkillsDirs constants, so nothing
+	// manifest-derived reaches MkdirAll, and the sub-Root open cannot traverse
+	// a component swapped in after validation.
+	projRoot, err := os.OpenRoot(projectPath)
+	if err != nil {
 		return nil, "", "", err
 	}
-	root, err := os.OpenRoot(base)
+	defer projRoot.Close()
+	skillDirRel := filepath.FromSlash(skillDir)
+	if err := projRoot.MkdirAll(skillDirRel, 0o755); err != nil {
+		return nil, "", "", err
+	}
+	root, err := projRoot.OpenRoot(skillDirRel)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -1040,10 +1065,11 @@ func openManagedTargetRoot(projectPath, targetRel string) (*os.Root, string, str
 }
 
 func materializeSkillCopyOnly(projectPath, sourcePath, targetRel string) (string, error) {
-	sourcePath, err := resolveContainedSourcePath(projectPath, sourcePath)
+	srcRoot, srcRel, _, err := openContainedSourceRoot(projectPath, sourcePath)
 	if err != nil {
 		return "", err
 	}
+	defer srcRoot.Close()
 	root, rel, _, err := openManagedTargetRoot(projectPath, targetRel)
 	if err != nil {
 		return "", err
@@ -1058,14 +1084,15 @@ func materializeSkillCopyOnly(projectPath, sourcePath, targetRel string) (string
 	if err := root.RemoveAll(rel); err != nil {
 		return "", err
 	}
-	return copySkillIntoRoot(root, sourcePath, rel)
+	return copySkillIntoRoot(root, srcRoot, srcRel, rel)
 }
 
 func materializeSkill(projectPath, sourcePath, targetRel string) (string, error) {
-	sourcePath, err := resolveContainedSourcePath(projectPath, sourcePath)
+	srcRoot, srcRel, resolvedSource, err := openContainedSourceRoot(projectPath, sourcePath)
 	if err != nil {
 		return "", err
 	}
+	defer srcRoot.Close()
 	root, rel, targetPath, err := openManagedTargetRoot(projectPath, targetRel)
 	if err != nil {
 		return "", err
@@ -1084,8 +1111,8 @@ func materializeSkill(projectPath, sourcePath, targetRel string) (string, error)
 	// Resolve symlinks before computing relative paths.
 	// This avoids broken relative links when target lives under a symlinked path
 	// (for example macOS /tmp -> /private/tmp).
-	resolvedSourcePath := sourcePath
-	if resolved, err := filepath.EvalSymlinks(sourcePath); err == nil {
+	resolvedSourcePath := resolvedSource
+	if resolved, err := filepath.EvalSymlinks(resolvedSource); err == nil {
 		resolvedSourcePath = resolved
 	}
 
@@ -1111,7 +1138,7 @@ func materializeSkill(projectPath, sourcePath, targetRel string) (string, error)
 		}
 	}
 
-	return copySkillIntoRoot(root, sourcePath, rel)
+	return copySkillIntoRoot(root, srcRoot, srcRel, rel)
 }
 
 func resolveTargetPath(projectPath, targetPath string) string {
@@ -1165,20 +1192,27 @@ func resolveContainedTargetPath(projectPath, targetRel string) (string, error) {
 		return "", fmt.Errorf("refusing to operate on the managed project skills dir itself: %s", targetPath)
 	}
 
-	resolvedProject, err := filepath.EvalSymlinks(projectPath)
+	// Walk descriptor-relative from the project root: os.Root pins the
+	// directory once, so the per-component Lstat can neither be redirected by
+	// a concurrent path swap above the project nor traverse an escape (Root
+	// errors instead). The project's OWN ancestry may contain legitimate
+	// symlinks (macOS /tmp -> /private/tmp); opening the Root traverses those
+	// once and the checks below only see components INSIDE the project.
+	projRoot, err := os.OpenRoot(projectPath)
 	if err != nil {
 		return "", fmt.Errorf("refusing to use unresolvable project path %s: %w", projectPath, err)
 	}
+	defer projRoot.Close()
 	relFromProject, err := filepath.Rel(filepath.Clean(projectPath), targetPath)
 	if err != nil || relFromProject == "." || relFromProject == ".." ||
 		strings.HasPrefix(relFromProject, ".."+string(os.PathSeparator)) {
 		return "", fmt.Errorf("refusing to use path outside the project: %s", targetPath)
 	}
-	current := resolvedProject
+	relSoFar := ""
 	components := strings.Split(relFromProject, string(os.PathSeparator))
 	for i, component := range components {
-		current = filepath.Join(current, component)
-		info, err := os.Lstat(current)
+		relSoFar = filepath.Join(relSoFar, component)
+		info, err := projRoot.Lstat(relSoFar)
 		if err != nil {
 			if os.IsNotExist(err) {
 				// This component (and everything below it) does not exist yet;
@@ -1188,7 +1222,7 @@ func resolveContainedTargetPath(projectPath, targetRel string) (string, error) {
 			return "", fmt.Errorf("refusing to use unresolvable target path %s: %w", targetPath, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 && i < len(components)-1 {
-			return "", fmt.Errorf("refusing to use target path with a symlinked ancestor component: %s", current)
+			return "", fmt.Errorf("refusing to use target path with a symlinked ancestor component: %s", filepath.Join(projectPath, relSoFar))
 		}
 	}
 	return targetPath, nil
