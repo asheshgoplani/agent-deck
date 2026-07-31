@@ -9,13 +9,17 @@ import (
 )
 
 // resetScriptConsentForTest installs cfg for the duration of the test and
-// restores the fail-closed default afterward, so tests never leak policy
-// state into later tests in this package.
+// restores whatever was ambient beforehand afterward (TestMain sets the
+// package-wide default to ScriptConsentAlways so the rest of this package's
+// tests, written before the consent gate existed, keep working unattended).
+// Restoring the prior value rather than a hardcoded one keeps these tests
+// order-independent.
 func resetScriptConsentForTest(t *testing.T, cfg ScriptConsentConfig) {
 	t.Helper()
+	prev := getScriptConsentConfig()
 	SetScriptConsentConfig(cfg)
 	t.Cleanup(func() {
-		SetScriptConsentConfig(ScriptConsentConfig{Policy: ScriptConsentPrompt})
+		SetScriptConsentConfig(prev)
 	})
 }
 

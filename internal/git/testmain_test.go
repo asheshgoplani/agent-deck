@@ -35,5 +35,17 @@ func runTestMain(m *testing.M) int {
 	cleanupTmux := testutil.IsolateTmuxSocket()
 	defer cleanupTmux()
 
+	// Every pre-existing test in this package that writes a worktree
+	// setup/destruction script and drives it through a gated entry point
+	// (CreateWorktreeWithSetup*, RunWorktreeSetupAfterCreate, RemoveWorktree)
+	// predates the consent gate (scriptconsent.go) and asserts the script
+	// just runs — go test has no TTY, so the gate's fail-closed "prompt"
+	// default would otherwise block every one of them. "always" restores
+	// that expectation package-wide; the gate's own behavior (prompt/never/
+	// override) is covered independently and explicitly by
+	// scriptconsent_test.go, which saves and restores this ambient value
+	// around each of its subtests so it never leaks between tests.
+	SetScriptConsentConfig(ScriptConsentConfig{Policy: ScriptConsentAlways})
+
 	return m.Run()
 }
