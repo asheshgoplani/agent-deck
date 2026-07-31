@@ -203,6 +203,15 @@ func GateAndRunWorktreeSetupScript(repoDir, worktreePath string, stdout, stderr 
 	if scriptPath == "" {
 		return nil
 	}
+	if handled, err := scriptConsentPolicyShortCircuit("setup", scriptPath); handled {
+		if err != nil {
+			return err
+		}
+		return RunWorktreeSetupScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
+	}
+	if !scriptMode.IsRegular() {
+		return fmt.Errorf("worktree setup script consent: %s is not a regular file (refusing to hash a symlink/FIFO/device target, which could hang indefinitely); point .agent-deck/worktree-setup.sh at a real file", scriptPath)
+	}
 	hash, err := hashScriptFile(scriptPath)
 	if err != nil {
 		return fmt.Errorf("worktree setup script: reading %s for consent check: %w", scriptPath, err)
@@ -219,6 +228,15 @@ func GateAndRunWorktreeDestructionScript(repoDir, worktreePath string, stdout, s
 	scriptPath, scriptMode := FindWorktreeDestructionScript(repoDir)
 	if scriptPath == "" {
 		return nil
+	}
+	if handled, err := scriptConsentPolicyShortCircuit("destruction", scriptPath); handled {
+		if err != nil {
+			return err
+		}
+		return RunWorktreeDestructionScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
+	}
+	if !scriptMode.IsRegular() {
+		return fmt.Errorf("worktree destruction script consent: %s is not a regular file (refusing to hash a symlink/FIFO/device target, which could hang indefinitely); point .agent-deck/worktree-destruction.sh at a real file", scriptPath)
 	}
 	hash, err := hashScriptFile(scriptPath)
 	if err != nil {

@@ -79,19 +79,35 @@ func printWorktreeUsage() {
 // scripting) rather than relying on the terminal prompt or
 // --allow-repo-scripts.
 func handleWorktreeTrustScripts(args []string) {
+	// Go's stdlib flag.Parse stops consuming flags at the first non-flag
+	// argument. Our own usage text prints "trust-scripts . --revoke" (repo
+	// path before the flag) — under a plain fs.Parse(args), "." is seen
+	// first, parsing stops immediately, and "--revoke" is swallowed into
+	// the positional args instead of being recognized, so *revoke stays
+	// false and the command silently GRANTS trust instead of revoking it.
+	// Partition args by leading "-" before handing them to flag.Parse so
+	// flag position relative to the repo-path positional never matters.
+	var flagArgs, positional []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			flagArgs = append(flagArgs, a)
+			continue
+		}
+		positional = append(positional, a)
+	}
+
 	fs := flag.NewFlagSet("worktree trust-scripts", flag.ExitOnError)
 	revoke := fs.Bool("revoke", false, "Remove previously stored trust instead of granting it")
-	_ = fs.Parse(args)
+	_ = fs.Parse(flagArgs)
 
-	rest := fs.Args()
-	if len(rest) < 1 {
+	if len(positional) < 1 {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck worktree trust-scripts <repo-path> [--revoke]")
 		os.Exit(1)
 	}
 
-	repoRoot, err := git.GetRepoRoot(rest[0])
+	repoRoot, err := git.GetRepoRoot(positional[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s is not inside a git repository: %v\n", rest[0], err)
+		fmt.Fprintf(os.Stderr, "Error: %s is not inside a git repository: %v\n", positional[0], err)
 		os.Exit(1)
 	}
 
@@ -106,18 +122,31 @@ func handleWorktreeTrustScripts(args []string) {
 	found := 0
 	for _, k := range kinds {
 		scriptPath, _ := k.find(repoRoot)
+		if *revoke {
+			// Always attempt revocation, independent of whether the script
+			// still exists on disk right now — the trust store can hold an
+			// entry for a script that was since deleted or renamed, and
+			// that entry must still be removable via the CLI rather than
+			// becoming permanently stale.
+			existed, err := git.RevokeScriptConsent(repoRoot, k.name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error revoking trust for %s script in %s: %v\n", k.name, repoRoot, err)
+				os.Exit(1)
+			}
+			if existed {
+				found++
+				if scriptPath != "" {
+					fmt.Printf("Revoked trust for %s script: %s\n", k.name, scriptPath)
+				} else {
+					fmt.Printf("Revoked trust for %s script (no longer present on disk) in %s\n", k.name, repoRoot)
+				}
+			}
+			continue
+		}
 		if scriptPath == "" {
 			continue
 		}
 		found++
-		if *revoke {
-			if err := git.RevokeScriptConsent(repoRoot, k.name); err != nil {
-				fmt.Fprintf(os.Stderr, "Error revoking trust for %s: %v\n", scriptPath, err)
-				os.Exit(1)
-			}
-			fmt.Printf("Revoked trust for %s script: %s\n", k.name, scriptPath)
-			continue
-		}
 		hash, err := git.TrustScript(repoRoot, k.name, scriptPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error trusting %s: %v\n", scriptPath, err)
@@ -127,7 +156,11 @@ func handleWorktreeTrustScripts(args []string) {
 	}
 
 	if found == 0 {
-		fmt.Printf("No .agent-deck/worktree-setup.sh or worktree-destruction.sh found under %s\n", repoRoot)
+		if *revoke {
+			fmt.Printf("No stored trust found for worktree setup/destruction scripts under %s\n", repoRoot)
+		} else {
+			fmt.Printf("No .agent-deck/worktree-setup.sh or worktree-destruction.sh found under %s\n", repoRoot)
+		}
 	}
 }
 

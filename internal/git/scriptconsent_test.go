@@ -198,8 +198,23 @@ func TestRevokeScriptConsent(t *testing.T) {
 		t.Fatalf("expected freshly trusted script to be trusted, trusted=%v err=%v", trusted, err)
 	}
 
-	if err := RevokeScriptConsent(repoDir, "setup"); err != nil {
+	existed, err := RevokeScriptConsent(repoDir, "setup")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !existed {
+		t.Error("expected RevokeScriptConsent to report an existing entry was removed")
+	}
+
+	// Revoking again (or revoking a kind/repo that was never trusted) must
+	// stay a no-op, not an error — this is what lets the CLI call it
+	// unconditionally even when the script file has since been deleted.
+	existedAgain, err := RevokeScriptConsent(repoDir, "setup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if existedAgain {
+		t.Error("expected second revoke of the same entry to report nothing existed")
 	}
 	trusted, err = lookupScriptConsent(repoRootAbs, "setup", hash)
 	if err != nil {
@@ -263,5 +278,100 @@ func TestGateAndRunWorktreeSetupScript_AlwaysPolicy_Runs(t *testing.T) {
 	}
 	if _, statErr := os.Stat(marker); statErr != nil {
 		t.Errorf("expected setup script to have run and created %s: %v", marker, statErr)
+	}
+}
+
+// TestPromptScriptConsent_AllowPromptFalse_NeverAsks pins the plumbing fix
+// for the TUI/web finding: when AllowInteractivePrompt is false, the prompt
+// must never attempt to read stdin or write prompt text, regardless of what
+// isInteractiveConsoleStdio would otherwise report — this is what stops a
+// blocking bufio.ReadString from racing bubbletea's raw-mode input reader
+// (and stealing keystrokes) or blocking a remote HTTP handler on an
+// operator's terminal nobody is watching.
+func TestPromptScriptConsent_AllowPromptFalse_NeverAsks(t *testing.T) {
+	var out bytes.Buffer
+	approved, interactive := promptScriptConsent("setup", "/some/repo", "/some/repo/.agent-deck/worktree-setup.sh", &out, false)
+	if approved || interactive {
+		t.Errorf("expected allowPrompt=false to short-circuit to (approved=false, interactive=false), got approved=%v interactive=%v", approved, interactive)
+	}
+	if out.Len() != 0 {
+		t.Errorf("expected no prompt text written when allowPrompt=false, got: %q", out.String())
+	}
+}
+
+// TestCheckScriptConsent_PromptPolicy_InteractivePromptDisallowed_FailsClosed
+// exercises the same behavior at the checkScriptConsent level: an
+// unrecognized script under the "prompt" policy with AllowInteractivePrompt
+// forced false must fail closed with the same remediation message as the
+// no-TTY case, never silently run and never block.
+func TestCheckScriptConsent_PromptPolicy_InteractivePromptDisallowed_FailsClosed(t *testing.T) {
+	repoDir := t.TempDir()
+	scriptPath := writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
+	hash, err := hashScriptFile(scriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentPrompt, AllowInteractivePrompt: false})
+
+	err = checkScriptConsent("setup", repoDir, scriptPath, hash, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected AllowInteractivePrompt=false to deny an unrecognized script even if stdio happened to be a terminal")
+	}
+	if !strings.Contains(err.Error(), "trust-scripts") {
+		t.Errorf("expected remediation pointing at `agent-deck worktree trust-scripts`, got: %v", err)
+	}
+}
+
+// TestScriptConsentPolicyShortCircuit pins that "always"/"never" resolve
+// without needing scriptConsentPolicyShortCircuit's caller to ever touch the
+// script's content, and that "prompt" defers to the hash-based path.
+func TestScriptConsentPolicyShortCircuit(t *testing.T) {
+	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentAlways})
+	if handled, err := scriptConsentPolicyShortCircuit("setup", "/does/not/matter"); !handled || err != nil {
+		t.Errorf("expected ScriptConsentAlways to short-circuit with no error, got handled=%v err=%v", handled, err)
+	}
+
+	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentNever})
+	if handled, err := scriptConsentPolicyShortCircuit("setup", "/does/not/matter"); !handled || err == nil {
+		t.Errorf("expected ScriptConsentNever to short-circuit with a denial error, got handled=%v err=%v", handled, err)
+	}
+
+	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentPrompt})
+	if handled, err := scriptConsentPolicyShortCircuit("setup", "/does/not/matter"); handled {
+		t.Errorf("expected ScriptConsentPrompt to NOT short-circuit, got handled=%v err=%v", handled, err)
+	}
+}
+
+// TestGateAndRunWorktreeSetupScript_NonRegularFile_RejectedBeforeHashing
+// proves the IsRegular guard rejects a non-regular script (simulated here
+// via a symlink to a directory, which is portable across CI's macOS/Linux
+// runners — a symlink-to-FIFO/device is the real-world attack shape and is
+// covered separately by the platform-specific hang test) before any attempt
+// to open/hash it, under the "prompt" policy where hashing would otherwise
+// be attempted.
+func TestGateAndRunWorktreeSetupScript_NonRegularFile_RejectedBeforeHashing(t *testing.T) {
+	repoDir := t.TempDir()
+	dir := filepath.Join(repoDir, ".agent-deck")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(repoDir, "some-directory")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(dir, "worktree-setup.sh")
+	if err := os.Symlink(target, scriptPath); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+
+	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentPrompt})
+
+	err := GateAndRunWorktreeSetupScript(repoDir, repoDir, &bytes.Buffer{}, &bytes.Buffer{}, 0)
+	if err == nil {
+		t.Fatal("expected a non-regular (directory-target symlink) script file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("expected the IsRegular guard's error message, got: %v", err)
 	}
 }

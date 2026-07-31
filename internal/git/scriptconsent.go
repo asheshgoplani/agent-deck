@@ -75,11 +75,32 @@ type ScriptConsentConfig struct {
 	// persists trust: every run under the override re-warns. Intended for
 	// CI and other non-interactive automation that cannot answer a prompt.
 	AllowOverride bool
+	// AllowInteractivePrompt gates whether checkScriptConsent may attempt a
+	// synchronous stdin/stdout prompt at all, independent of whether
+	// isInteractiveConsoleStdio reports a TTY. It must be false whenever a
+	// blocking read on os.Stdin would be unsafe or meaningless even though
+	// stdio happens to be a terminal:
+	//   - the bubbletea TUI owns the terminal in raw mode (stdin/stdout are
+	//     still term.IsTerminal==true in raw mode, so the TTY check alone
+	//     cannot tell the two apart) — a blocking bufio read here races the
+	//     TUI's own input reader and can steal keystrokes or never return
+	//     (Enter yields '\r' in raw mode, not the '\n' ReadString waits for).
+	//   - the call was triggered remotely (agent-deck web / the mutation
+	//     HTTP handler) — even if the hosting process's own stdio is a
+	//     plain, non-raw terminal, no operator is watching it for a prompt
+	//     in response to someone else's HTTP request.
+	// When false, checkScriptConsent always resolves through the
+	// non-interactive, fail-closed branch (same remediation message as "no
+	// TTY at all"). Direct CLI subcommands that return before the TUI/web
+	// server ever starts are unaffected and keep prompting as before.
+	AllowInteractivePrompt bool
 }
 
 var (
-	scriptConsentMu  sync.RWMutex
-	scriptConsentCfg = ScriptConsentConfig{Policy: ScriptConsentPrompt} // fail closed before SetScriptConsentConfig ever runs
+	scriptConsentMu sync.RWMutex
+	// Fail closed before SetScriptConsentConfig ever runs: AllowInteractivePrompt
+	// is false by zero-value already, but spelled out here for clarity.
+	scriptConsentCfg = ScriptConsentConfig{Policy: ScriptConsentPrompt, AllowInteractivePrompt: false}
 )
 
 // SetScriptConsentConfig installs the process-wide consent policy. Call
@@ -100,11 +121,32 @@ func getScriptConsentConfig() ScriptConsentConfig {
 	return scriptConsentCfg
 }
 
+// maxScriptHashBytes bounds how much of a worktree lifecycle script
+// hashScriptFile will read. Generous for a shell/setup script; refuses to
+// hash (and therefore refuses consent for, and therefore refuses to run
+// under the "prompt" policy) anything larger, rather than either hanging
+// on an unbounded read or silently hashing a truncated prefix.
+const maxScriptHashBytes = 10 << 20 // 10 MiB
+
 // hashScriptFile returns the hex-encoded SHA-256 of a script's content at
 // the moment of discovery — read once, alongside the os.Stat that captures
-// scriptMode (#861), so the consent decision and the dispatch decision are
-// both bound to a single atomic snapshot of the file rather than being
-// vulnerable to a TOCTOU swap between the check and the run.
+// scriptMode (#861), so the consent decision and the dispatch decision at
+// least see the same mode bits and narrow the TOCTOU window between the
+// check and the run. This is NOT a full atomicity guarantee: the hash is
+// read from the path once here, but RunWorktree*Script later re-opens and
+// executes the same path by name rather than an fd/handle carried from this
+// read, so a local writer with the right timing can still swap the file's
+// content between the hash and the exec. Closing that window fully would
+// need executing via a captured file descriptor (e.g. /proc/self/fd or
+// fexecve-equivalent) rather than by path — out of scope for this gate.
+//
+// Callers must reject non-regular files (scriptMode.IsRegular() == false)
+// before calling this — a committed symlink pointing at /dev/zero or a
+// FIFO passes os.Stat/os.Open fine but then blocks io.Copy forever, which
+// would hang consent checking (and, under [worktree] run_repo_scripts =
+// "never", would hang BEFORE the policy ever gets a chance to deny it, if
+// this were called unconditionally). See scriptConsentPolicyShortCircuit
+// and the IsRegular guard in setup.go's GateAndRun* wrappers.
 func hashScriptFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -112,10 +154,35 @@ func hashScriptFile(path string) (string, error) {
 	}
 	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	n, err := io.CopyN(h, f, maxScriptHashBytes+1)
+	if err != nil && err != io.EOF {
 		return "", err
 	}
+	if n > maxScriptHashBytes {
+		return "", fmt.Errorf("worktree script %s exceeds the %d byte consent-hash limit", path, maxScriptHashBytes)
+	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// scriptConsentPolicyShortCircuit resolves the "always"/"never" policy
+// tiers without ever touching the script's content — no os.Open, no read,
+// nothing that could block. handled=true means the policy alone decided
+// the outcome (err is nil for "always", non-nil for "never"); handled=false
+// means the caller is under "prompt" and must go on to compute the content
+// hash and consult the trust store. This exists specifically so that
+// run_repo_scripts = "never" rejects instantly — including for a script
+// file that would otherwise hang a content read (symlink to /dev/zero, a
+// FIFO with no writer) — instead of hanging during hashing before the
+// policy ever gets consulted.
+func scriptConsentPolicyShortCircuit(kind, scriptPath string) (handled bool, err error) {
+	switch getScriptConsentConfig().Policy {
+	case ScriptConsentAlways:
+		return true, nil
+	case ScriptConsentNever:
+		return true, fmt.Errorf("worktree %s script blocked by [worktree] run_repo_scripts = \"never\": %s", kind, scriptPath)
+	default:
+		return false, nil
+	}
 }
 
 // scriptConsentEntry is one persisted trust decision.
@@ -232,20 +299,32 @@ func recordScriptConsent(repoRootAbs, kind, hash string) error {
 }
 
 // RevokeScriptConsent removes any stored trust decision for repoDir+kind.
-// Used by `agent-deck worktree trust-scripts --revoke`.
-func RevokeScriptConsent(repoDir, kind string) error {
+// Used by `agent-deck worktree trust-scripts --revoke`. Deliberately takes
+// no dependency on the script still existing on disk at repoDir — a stale
+// consent-store entry for a script that was since deleted must still be
+// removable, so the caller (the CLI) should invoke this unconditionally
+// under --revoke rather than gating it on FindWorktree*Script finding a
+// file. existed reports whether an entry was actually present to remove,
+// for user-facing messaging; deleting a non-existent key is a no-op, not
+// an error.
+func RevokeScriptConsent(repoDir, kind string) (existed bool, err error) {
 	repoRootAbs, err := filepath.Abs(repoDir)
 	if err != nil {
-		return fmt.Errorf("resolve repo root: %w", err)
+		return false, fmt.Errorf("resolve repo root: %w", err)
 	}
 	scriptConsentFileMu.Lock()
 	defer scriptConsentFileMu.Unlock()
-	store, err := loadScriptConsentStore()
-	if err != nil {
-		return err
+	store, loadErr := loadScriptConsentStore()
+	if loadErr != nil {
+		return false, loadErr
 	}
-	delete(store.Entries, scriptConsentKey(repoRootAbs, kind))
-	return saveScriptConsentStore(store)
+	key := scriptConsentKey(repoRootAbs, kind)
+	_, existed = store.Entries[key]
+	if !existed {
+		return false, nil
+	}
+	delete(store.Entries, key)
+	return true, saveScriptConsentStore(store)
 }
 
 // TrustScript pre-approves the script at scriptPath for repoDir+kind,
@@ -275,10 +354,11 @@ func isInteractiveConsoleStdio() bool {
 
 // promptScriptConsent asks the user, on stderr/stdin, whether to trust a
 // worktree lifecycle script. Returns approved=false, interactive=false when
-// no terminal is available to ask on at all (the caller must then fail
-// closed with a remediation message rather than hang).
-func promptScriptConsent(kind, repoRootAbs, scriptPath string, out io.Writer) (approved bool, interactive bool) {
-	if !isInteractiveConsoleStdio() {
+// no terminal is available to ask on at all, or when allowPrompt is false
+// (the caller must then fail closed with a remediation message rather than
+// hang or prompt on the wrong terminal — see ScriptConsentConfig.AllowInteractivePrompt).
+func promptScriptConsent(kind, repoRootAbs, scriptPath string, out io.Writer, allowPrompt bool) (approved bool, interactive bool) {
+	if !allowPrompt || !isInteractiveConsoleStdio() {
 		return false, false
 	}
 	verb := "creating"
@@ -327,7 +407,7 @@ func checkScriptConsent(kind, repoDir, scriptPath, hash string, out io.Writer) e
 		return nil
 	}
 
-	approved, interactive := promptScriptConsent(kind, repoRootAbs, scriptPath, out)
+	approved, interactive := promptScriptConsent(kind, repoRootAbs, scriptPath, out, cfg.AllowInteractivePrompt)
 	if approved {
 		if err := recordScriptConsent(repoRootAbs, kind, hash); err != nil {
 			fmt.Fprintf(out, "agent-deck: warning: could not persist worktree script consent: %v\n", err)
