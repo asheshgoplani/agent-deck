@@ -277,6 +277,38 @@ func TestResolveContainedTargetPath_RefusesManagedDirItself(t *testing.T) {
 	}
 }
 
+// TestMaterializeSkill_RefusesUnregisteredSource proves the SOURCE side of
+// materialization is gated too (CodeQL go/path-injection alert 237): the
+// destination is Root-confined, but the source path arrives from manifest or
+// candidate data and is opened by path. A source outside every registered
+// skill source root and outside the project's managed skills dirs is refused
+// before any read.
+func TestMaterializeSkill_RefusesUnregisteredSource(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	projectPath, err := os.MkdirTemp("", "agentdeck-1809-src-project-*")
+	if err != nil {
+		t.Fatalf("failed to create project path: %v", err)
+	}
+	defer os.RemoveAll(projectPath)
+
+	outside, err := os.MkdirTemp("", "agentdeck-1809-src-outside-*")
+	if err != nil {
+		t.Fatalf("failed to create outside path: %v", err)
+	}
+	defer os.RemoveAll(outside)
+	writeSkillDir(t, outside, "evil", "evil", "Not from a registered source")
+
+	targetRel := buildProjectSkillTargetPath(projectClaudeSkillsDir, "evil")
+	if _, err := materializeSkill(projectPath, filepath.Join(outside, "evil"), targetRel); err == nil {
+		t.Fatalf("expected materializeSkill to refuse a source outside registered skill sources")
+	}
+	if _, err := materializeSkillCopyOnly(projectPath, filepath.Join(outside, "evil"), targetRel); err == nil {
+		t.Fatalf("expected materializeSkillCopyOnly to refuse a source outside registered skill sources")
+	}
+}
+
 // TestIsContainedIn_RootBase proves containment works when the base is the
 // filesystem root: the old base+PathSeparator string-prefix compare produced
 // "//" as the required prefix, which no cleaned path carries, so every

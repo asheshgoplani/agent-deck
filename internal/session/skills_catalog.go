@@ -884,10 +884,50 @@ func copyDir(src, dst string) error {
 	return nil
 }
 
-// copyFileIntoRoot copies src (read with plain os APIs — the source is a
-// trusted skill pool/config dir) to dstRel inside root, creating the file
-// descriptor-relative so a hostile path swap under the managed dir cannot
-// redirect the write outside it.
+// resolveContainedSourcePath validates a materialization SOURCE path the way
+// targets are validated (CodeQL go/path-injection, alert 237): the destination
+// side is Root-confined, but the source still arrives from manifest- or
+// candidate-derived data and is opened by path. A source is accepted only when
+// it sits strictly inside a registered skill source root (sources.toml: the
+// managed pool, claude-global, and operator-registered dirs) or strictly
+// inside one of the project's own managed skills dirs (the migration fallback
+// that copies from the current, already containment-checked target). Anything
+// else — absolute paths into arbitrary trees, "../" escapes — is refused
+// before any filesystem read.
+func resolveContainedSourcePath(projectPath, sourcePath string) (string, error) {
+	resolved, err := resolveSkillSourcePath(sourcePath)
+	if err != nil {
+		return "", err
+	}
+
+	sources, err := LoadSkillSources()
+	if err != nil {
+		return "", err
+	}
+	for _, def := range sources {
+		rootPath := expandSkillPath(def.Path)
+		if rootPath == "" || !filepath.IsAbs(rootPath) {
+			continue
+		}
+		if resolved != filepath.Clean(rootPath) && isContainedIn(rootPath, resolved) {
+			return resolved, nil
+		}
+	}
+
+	for _, dir := range knownProjectSkillsDirs() {
+		base := filepath.Join(projectPath, filepath.FromSlash(dir))
+		if resolved != filepath.Clean(base) && isContainedIn(base, resolved) {
+			return resolved, nil
+		}
+	}
+
+	return "", fmt.Errorf("refusing to materialize from source outside registered skill sources: %s", resolved)
+}
+
+// copyFileIntoRoot copies src (read with plain os APIs — src has passed
+// resolveContainedSourcePath at the materialize entry points) to dstRel inside
+// root, creating the file descriptor-relative so a hostile path swap under
+// the managed dir cannot redirect the write outside it.
 func copyFileIntoRoot(root *os.Root, src, dstRel string) error {
 	srcFile, err := os.Open(src)
 	if err != nil {
@@ -1000,6 +1040,10 @@ func openManagedTargetRoot(projectPath, targetRel string) (*os.Root, string, str
 }
 
 func materializeSkillCopyOnly(projectPath, sourcePath, targetRel string) (string, error) {
+	sourcePath, err := resolveContainedSourcePath(projectPath, sourcePath)
+	if err != nil {
+		return "", err
+	}
 	root, rel, _, err := openManagedTargetRoot(projectPath, targetRel)
 	if err != nil {
 		return "", err
@@ -1018,6 +1062,10 @@ func materializeSkillCopyOnly(projectPath, sourcePath, targetRel string) (string
 }
 
 func materializeSkill(projectPath, sourcePath, targetRel string) (string, error) {
+	sourcePath, err := resolveContainedSourcePath(projectPath, sourcePath)
+	if err != nil {
+		return "", err
+	}
 	root, rel, targetPath, err := openManagedTargetRoot(projectPath, targetRel)
 	if err != nil {
 		return "", err

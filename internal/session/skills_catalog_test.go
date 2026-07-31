@@ -598,10 +598,18 @@ func TestAttachSkillToProject_RematerializesBrokenSymlink(t *testing.T) {
 }
 
 func TestMaterializeSkill_SymlinkedTargetPathCreatesReadableTarget(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
 	root := t.TempDir()
 
 	sourceRoot := filepath.Join(root, "source")
 	sourcePath := writeSkillDir(t, sourceRoot, "lint", "lint", "Linting best practices")
+	if err := SaveSkillSources(map[string]SkillSourceDef{
+		"local": {Path: sourceRoot, Enabled: boolPtr(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
 
 	realBase := filepath.Join(root, "real", "nested", "path")
 	if err := os.MkdirAll(realBase, 0o755); err != nil {
