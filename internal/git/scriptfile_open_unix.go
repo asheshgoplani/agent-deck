@@ -21,8 +21,14 @@ import (
 // since the fd is bound to whatever inode open() actually returned).
 // O_NONBLOCK has no effect on read blocking for a genuine regular file, so
 // once this check passes, the returned *os.File reads normally.
+//
+// O_CLOEXEC is included in the same open() call (not set afterward via a
+// separate fcntl, which would leave a window where a concurrently forked
+// child of this process could still inherit the descriptor): os.Open always
+// opens close-on-exec internally, and dropping to the raw syscall.Open here
+// to get O_NONBLOCK must not silently lose that property.
 func openScriptFileForHashing(path string) (*os.File, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
