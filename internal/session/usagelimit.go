@@ -187,7 +187,11 @@ func readTranscriptTailLines(path string, tailBytes int64) ([]string, error) {
 //
 // Claude-compatible tools only: the transcript shape is Claude's.
 func (i *Instance) usageLimited() bool {
-	if !IsClaudeCompatible(i.Tool) {
+	// The transcript is a local file. An SSH-backed session keeps its
+	// conversation on the remote host and stores a remote ProjectPath, so there
+	// is no local path to resolve — bail before doing any path work rather than
+	// resolving a meaningless local path and failing to open it forever.
+	if !IsClaudeCompatible(i.Tool) || i.IsSSH() {
 		return false
 	}
 
@@ -200,25 +204,34 @@ func (i *Instance) usageLimited() bool {
 		return cached
 	}
 
+	// Stamp the attempt BEFORE doing the work, so every exit below is throttled.
+	// Stamping only on success would leave one path unthrottled — a session whose
+	// transcript never resolves — and that is the worst one to leave open:
+	// locateHandoffTranscript loads user config and stats several candidate paths,
+	// and a session that cannot resolve once will not resolve on the next poll
+	// either, so it would pay that cost forever.
+	i.mu.Lock()
+	i.lastUsageLimitScanAt = time.Now()
+	i.mu.Unlock()
+
 	path := locateHandoffTranscript(i)
 	if path == "" {
 		return cached
 	}
 
 	limited, ok := latestAssistantTurnIsRateLimited(path)
+	if !ok {
+		// No formed verdict (unreadable file, or a tail with no assistant turn):
+		// leave the previous answer standing rather than silently reporting
+		// "not limited", which is the mistake this detector exists to stop.
+		return cached
+	}
 
 	i.mu.Lock()
-	i.lastUsageLimitScanAt = time.Now()
-	if ok {
-		// Only a formed verdict updates the mirror. An unreadable or
-		// assistant-less tail leaves the previous answer standing rather than
-		// silently reporting "not limited".
-		i.usageLimitedCached = limited
-	}
-	cached = i.usageLimitedCached
+	i.usageLimitedCached = limited
 	i.mu.Unlock()
 
-	return cached
+	return limited
 }
 
 // UsageLimitedCached reports the last computed verdict without any filesystem

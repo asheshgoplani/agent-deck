@@ -164,6 +164,50 @@ func TestUsageLimited_NonClaudeToolNeverScans(t *testing.T) {
 	}
 }
 
+// Regression for the review findings on #1806.
+func TestUsageLimited_SkipsSSHInstances(t *testing.T) {
+	inst := NewInstanceWithTool("usage-limit-ssh", t.TempDir(), "claude")
+	inst.SSHHost = "devbox.example"
+	inst.ClaudeSessionID = "abc123"
+
+	if inst.usageLimited() {
+		t.Fatal("usageLimited() = true for an SSH instance, want false")
+	}
+	if !inst.lastUsageLimitScanAt.IsZero() {
+		t.Fatal("SSH instance should bail before doing any path work or stamping a scan")
+	}
+}
+
+// The throttle must cover the "path never resolves" exit too. Stamping only on
+// success left that case calling locateHandoffTranscript — user-config load plus
+// several stats — on every status poll, which is precisely the cost the throttle
+// exists to bound.
+func TestUsageLimited_ThrottlesWhenTranscriptUnresolvable(t *testing.T) {
+	inst := NewInstanceWithTool("usage-limit-unresolvable", t.TempDir(), "claude")
+	// No ClaudeSessionID: nothing to resolve a transcript from.
+	inst.ClaudeSessionID = ""
+
+	if inst.usageLimited() {
+		t.Fatal("usageLimited() = true with no transcript, want false")
+	}
+
+	inst.mu.RLock()
+	stamped := inst.lastUsageLimitScanAt
+	inst.mu.RUnlock()
+	if stamped.IsZero() {
+		t.Fatal("scan attempt was not stamped, so the throttle never engages on this path")
+	}
+
+	// Second call inside the window must not re-stamp (i.e. it short-circuits).
+	inst.usageLimited()
+	inst.mu.RLock()
+	again := inst.lastUsageLimitScanAt
+	inst.mu.RUnlock()
+	if !again.Equal(stamped) {
+		t.Fatalf("second call re-stamped (%v -> %v); throttle did not short-circuit", stamped, again)
+	}
+}
+
 // The mirror is what CachedSubstate reads, so it must stay consistent with the
 // substate it drives and must not require filesystem access.
 func TestCachedSubstate_UsesUsageLimitMirror(t *testing.T) {
