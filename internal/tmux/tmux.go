@@ -1829,10 +1829,10 @@ func KillSessionsWithEnvValue(envKey, envValue, excludeName string) {
 		if idx := strings.IndexByte(line, '='); idx >= 0 {
 			if line[idx+1:] == envValue {
 				statusLog.Warn("killing_duplicate_session",
-					slog.String("session", name),
-					slog.String("env_key", envKey),
-					slog.String("env_value", envValue),
-					slog.String("kept", excludeName))
+					slog.String("session", logging.SanitizeValue(name)),
+					slog.String("env_key", logging.SanitizeValue(envKey)),
+					slog.String("env_value", logging.SanitizeValue(envValue)),
+					slog.String("kept", logging.SanitizeValue(excludeName)))
 				// Bounded — see tmuxMutationTimeout. Best-effort already (error
 				// discarded), so a timeout changes nothing but the wait.
 				_ = runBoundedMutation(socket, "kill-session", "-t", name)
