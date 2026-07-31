@@ -72,6 +72,7 @@ const (
 	SubstateIdleAtEmptyPrompt = tmux.SubstateIdleAtEmptyPrompt
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
+	SubstateUsageLimit        = tmux.SubstateUsageLimit
 )
 
 const wrapperPlaceholder = "{command}"
@@ -211,11 +212,16 @@ type Instance struct {
 	lastOpenCodeScanAt time.Time // Rate-limits expensive `opencode session list` scans
 
 	// Codex CLI integration
-	CodexSessionID   string    `json:"codex_session_id,omitempty"`
-	CodexDetectedAt  time.Time `json:"codex_detected_at,omitempty"`
-	CodexStartedAt   int64     `json:"-"` // Unix millis when we started Codex (for session matching, not persisted)
-	lastCodexScanAt  time.Time // Rate-limits expensive ~/.codex/sessions scans
-	lastCodexProbeAt time.Time // Rate-limits expensive Codex process-file probes
+	CodexSessionID  string    `json:"codex_session_id,omitempty"`
+	CodexDetectedAt time.Time `json:"codex_detected_at,omitempty"`
+	CodexStartedAt  int64     `json:"-"` // Unix millis when we started Codex (for session matching, not persisted)
+	lastCodexScanAt time.Time // Rate-limits expensive ~/.codex/sessions scans
+	// Usage-limit detection (#1802). lastUsageLimitScanAt rate-limits the
+	// transcript tail read; usageLimitedCached mirrors the verdict so the TUI
+	// render path can read it without filesystem access. Guarded by i.mu.
+	lastUsageLimitScanAt time.Time
+	usageLimitedCached   bool
+	lastCodexProbeAt     time.Time // Rate-limits expensive Codex process-file probes
 	// pendingCodexRestartWarning is consumed by UI/CLI after Restart() succeeds.
 	// It is intentionally transient and never persisted.
 	pendingCodexRestartWarning string `json:"-"`
@@ -8018,6 +8024,15 @@ func (i *Instance) Substate() Substate {
 	if held, _ := i.IsAuthHeld(); held {
 		return SubstateAuth401
 	}
+	// A quota rejection is checked before the pane verdict, and specifically
+	// before the pane's auth banner, because it is strictly newer and stronger
+	// evidence: the transcript record IS the latest assistant turn, and a 429
+	// proves the request was authenticated. A stale "Please run /login" line
+	// still sitting in the scrollback would otherwise win on category order and
+	// mislabel a session whose credentials demonstrably work (#1802).
+	if i.usageLimited() {
+		return SubstateUsageLimit
+	}
 	tmuxSess := i.GetTmuxSession()
 	if tmuxSess == nil {
 		return SubstateNone
@@ -8033,6 +8048,12 @@ func (i *Instance) Substate() Substate {
 func (i *Instance) CachedSubstate() Substate {
 	if i.AuthHeldCached() {
 		return SubstateAuth401
+	}
+	// In-memory mirror only: this path must stay filesystem-free, so it reads the
+	// verdict the throttled scan already computed rather than re-reading the
+	// transcript. Same precedence as Substate.
+	if i.UsageLimitedCached() {
+		return SubstateUsageLimit
 	}
 	tmuxSess := i.GetTmuxSession()
 	if tmuxSess == nil {

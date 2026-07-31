@@ -37,6 +37,18 @@ const (
 	// /login", "API Error: 401", "socket connection closed"). Pairs with
 	// status "error". Built on the #1400 error-banner detection.
 	SubstateAuth401 Substate = "auth-401"
+
+	// SubstateUsageLimit marks a session whose plan usage window is exhausted:
+	// the pane is healthy and accepts input, but every submitted turn is
+	// rejected until the window resets. Pairs with status "idle"/"waiting" —
+	// which is precisely why it needs its own signal, since "idle" is the state
+	// periodic senders treat as safe to send into.
+	//
+	// Unlike its neighbours this substate is NOT derived from pane text. The
+	// rejection is structured data in the agent's transcript, so the verdict is
+	// formed there (see internal/session/usagelimit.go, #1802) and surfaced
+	// through Instance.Substate rather than ClassifySubstate.
+	SubstateUsageLimit Substate = "usage-limit"
 )
 
 // modelUnavailableSubstrings are fragments of the Fable/model-down no-op the
