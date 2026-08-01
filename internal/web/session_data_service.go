@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
@@ -146,6 +147,12 @@ type storageOpener func(profile string) (storageLoader, error)
 
 // SessionDataService loads profile session data and transforms it into web-friendly DTOs.
 type SessionDataService struct {
+	// profileMu guards profile — LoadMenuSnapshot/LoadArchivedMenuSnapshot
+	// can be called concurrently (HTTP handlers + the push-service poller
+	// share one SessionDataService), and resolveAndOpenStorage writes the
+	// resolved name back to profile on every call (#1822 F3 follow-up:
+	// Codex found this was an unsynchronized data race).
+	profileMu        sync.Mutex
 	profile          string
 	openStorage      storageOpener
 	now              func() time.Time
@@ -186,6 +193,8 @@ func defaultStorageOpener(profile string) (storageLoader, error) {
 // empty/inferred) value passed to NewSessionDataService rather than the
 // guard-resolved effective name — see NewSessionDataService.
 func (s *SessionDataService) Profile() string {
+	s.profileMu.Lock()
+	defer s.profileMu.Unlock()
 	return s.profile
 }
 
@@ -194,15 +203,30 @@ func (s *SessionDataService) Profile() string {
 // whatever profile was actually opened, so callers built on Profile() and
 // BuildMenuSnapshot's profile label observe the true effective name (post
 // #1790 guard/fallback) rather than the raw input.
-func (s *SessionDataService) resolveAndOpenStorage() (storageLoader, error) {
-	storage, err := s.openStorage(s.profile)
+//
+// profileMu guards the read-then-write below: LoadMenuSnapshot and
+// LoadArchivedMenuSnapshot can run concurrently against one
+// SessionDataService (HTTP handlers + the push-service poller share one
+// instance), and without a lock two concurrent calls racing through this
+// read-modify-write would trip Go's race detector and could interleave a
+// stale profile into an error message or BuildMenuSnapshot call.
+func (s *SessionDataService) resolveAndOpenStorage() (storageLoader, string, error) {
+	s.profileMu.Lock()
+	requested := s.profile
+	s.profileMu.Unlock()
+
+	storage, err := s.openStorage(requested)
 	if err != nil {
-		return nil, fmt.Errorf("open storage for profile %q: %w", s.profile, err)
+		return nil, "", fmt.Errorf("open storage for profile %q: %w", requested, err)
 	}
+	resolved := requested
 	if opened := storage.Profile(); opened != "" {
+		resolved = opened
+		s.profileMu.Lock()
 		s.profile = opened
+		s.profileMu.Unlock()
 	}
-	return storage, nil
+	return storage, resolved, nil
 }
 
 // LoadMenuSnapshot loads sessions/groups and returns a deterministic flattened menu DTO.
@@ -217,7 +241,7 @@ func (s *SessionDataService) LoadMenuSnapshot() (*MenuSnapshot, error) {
 		s.now = time.Now
 	}
 
-	storage, err := s.resolveAndOpenStorage()
+	storage, profile, err := s.resolveAndOpenStorage()
 	if err != nil {
 		return nil, err
 	}
@@ -225,14 +249,14 @@ func (s *SessionDataService) LoadMenuSnapshot() (*MenuSnapshot, error) {
 
 	instances, groupsData, err := storage.LoadWithGroups()
 	if err != nil {
-		return nil, fmt.Errorf("load sessions for profile %q: %w", s.profile, err)
+		return nil, fmt.Errorf("load sessions for profile %q: %w", profile, err)
 	}
 	if s.refreshLiveState {
 		s.refreshStatuses(instances)
 	}
 
 	active := session.FilterInstancesByArchive(instances, false)
-	return BuildMenuSnapshot(s.profile, active, groupsData, s.now()), nil
+	return BuildMenuSnapshot(profile, active, groupsData, s.now()), nil
 }
 
 // LoadArchivedMenuSnapshot returns a menu containing only archived sessions.
@@ -247,7 +271,7 @@ func (s *SessionDataService) LoadArchivedMenuSnapshot() (*MenuSnapshot, error) {
 		s.now = time.Now
 	}
 
-	storage, err := s.resolveAndOpenStorage()
+	storage, profile, err := s.resolveAndOpenStorage()
 	if err != nil {
 		return nil, err
 	}
@@ -255,10 +279,10 @@ func (s *SessionDataService) LoadArchivedMenuSnapshot() (*MenuSnapshot, error) {
 
 	instances, groupsData, err := storage.LoadWithGroups()
 	if err != nil {
-		return nil, fmt.Errorf("load sessions for profile %q: %w", s.profile, err)
+		return nil, fmt.Errorf("load sessions for profile %q: %w", profile, err)
 	}
 	archived := session.FilterInstancesByArchive(instances, true)
-	return BuildMenuSnapshot(s.profile, archived, groupsData, s.now()), nil
+	return BuildMenuSnapshot(profile, archived, groupsData, s.now()), nil
 }
 
 func toMenuSession(inst *session.Instance) *MenuSession {

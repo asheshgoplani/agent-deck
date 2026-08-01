@@ -18,7 +18,6 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
-	"github.com/asheshgoplani/agent-deck/internal/profile"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -3961,10 +3960,22 @@ func handleSessionCurrent(profileArg string, args []string) {
 		os.Exit(1)
 	}
 
-	// Detect profile: use explicit arg if provided, otherwise auto-detect
+	// Detect profile: use explicit arg if provided, otherwise auto-detect.
+	// #1790/#1822: route the auto-detect path through ResolveProfileForStorage,
+	// not the bare GetEffectiveProfile(""). The
+	// result below is handed straight to findInstanceDataByTmuxFast, which
+	// opens/creates storage for it (NewStorageWithProfile) — a bare
+	// GetEffectiveProfile result would look like an explicit -p selection to
+	// that call's own guard, bypassing it a second hop downstream, the same
+	// class of bug fixed at the other call sites.
 	detectedProfile := profileArg
 	if detectedProfile == "" || detectedProfile == session.DefaultProfile {
-		detectedProfile = profile.DetectCurrentProfile()
+		resolved, err := session.ResolveProfileForStorage("")
+		if err != nil {
+			out.Error(fmt.Sprintf("failed to resolve profile: %v", err), ErrCodeNotFound)
+			os.Exit(1)
+		}
+		detectedProfile = resolved
 	}
 
 	// Try fast path: LoadLite + match by tmux session name
