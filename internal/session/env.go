@@ -699,8 +699,13 @@ var telegramEnvVarsToStrip = []string{
 // the full env for the rare case of debugging the poller from a fork.
 //
 // Fires when ALL hold:
-//  1. Tool is "claude" — TELEGRAM_* are Claude Code plugin env vars;
-//     don't mutate codex / gemini spawns.
+//  1. The spawn actually execs the claude binary — TELEGRAM_* are Claude
+//     Code plugin env vars; don't mutate codex / gemini spawns. This is
+//     Tool=="claude", OR (#1800/#1821) a Tool=="shell"
+//     subcommand-passthrough instance (resolveSessionCommand routes
+//     "claude <subcommand> ..." through Tool="shell" to skip agent-deck's
+//     own flag injection, but the spawned binary is still claude) — see
+//     instInvokesClaudeBinary.
 //  2. Title does NOT start with "conductor-". Conductors are the
 //     legitimate bot owners even before `Channels` is set.
 //  3. No entry in `Channels` carries the `plugin:telegram@` prefix.
@@ -716,7 +721,7 @@ func telegramStateDirStripExpr(inst *Instance) string {
 	if inst == nil {
 		return ""
 	}
-	if inst.Tool != "claude" {
+	if !instInvokesClaudeBinary(inst) {
 		return ""
 	}
 	if inst.InheritTelegramEnv {
@@ -747,6 +752,30 @@ func telegramExecEnvStripFlags(inst *Instance) string {
 		parts = append(parts, "-u", v)
 	}
 	return strings.Join(parts, " ")
+}
+
+// instInvokesClaudeBinary reports whether inst spawns the real claude
+// binary — either directly (Tool == "claude") or as a Tool=="shell"
+// subcommand-passthrough instance (#1800/#1821: resolveSessionCommand
+// routes "claude <subcommand> ..." to Tool="shell", Command=raw
+// specifically to skip agent-deck's own flag injection, but the spawned
+// process is still claude). Those still need the TELEGRAM_* strip
+// (#1133/S8) and the same CLAUDE_CONFIG_DIR/account routing every other
+// claude spawn gets — see buildShellPassthroughCommand. MatchTool mirrors
+// resolveSessionCommand's own base-tool detection (cli_utils.go
+// detectTool), so a configured claude alias (e.g. "cdw") is recognized
+// identically here.
+func instInvokesClaudeBinary(inst *Instance) bool {
+	if inst == nil {
+		return false
+	}
+	if inst.Tool == "claude" {
+		return true
+	}
+	if inst.Tool != "shell" {
+		return false
+	}
+	return MatchTool(inst.Command) == "claude"
 }
 
 // ScrubProcessEnvForChildLaunch removes TELEGRAM_* vars from the

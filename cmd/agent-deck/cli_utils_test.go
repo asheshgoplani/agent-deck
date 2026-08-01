@@ -2,8 +2,12 @@ package main
 
 import (
 	"flag"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func TestNormalizeArgs(t *testing.T) {
@@ -397,6 +401,88 @@ func TestResolveSessionCommand_PlainClaudeUnaffected(t *testing.T) {
 	}
 	if command == "" {
 		t.Fatal("command should not be empty")
+	}
+}
+
+// TestResolveSessionCommand_CustomToolSubcommand_ResolvesConfiguredCommand is
+// the regression test for the Codex bot P1 review finding on PR #1821: a
+// custom tool configured with a `command` override (e.g.
+// [tools.reviewbot].command = "/opt/bin/review-wrapper") must resolve
+// through that configured command when invoked with a subcommand-shaped
+// extra arg (`-c "reviewbot serve"`) — not the literal, possibly
+// non-existent-on-PATH tool name the user typed, which is what the raw text
+// happens to spell for a built-in tool but is NOT true for a custom one.
+func TestResolveSessionCommand_CustomToolSubcommand_ResolvesConfiguredCommand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	configDir := filepath.Join(home, ".config", "agent-deck")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	toml := "[tools.reviewbot]\ncommand = \"/opt/bin/review-wrapper\"\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	tool, command, wrapper, note, err := resolveSessionCommand("reviewbot serve", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tool != "shell" {
+		t.Fatalf("tool = %q, want shell", tool)
+	}
+	if wrapper != "" {
+		t.Fatalf("wrapper = %q, want empty (no wrapper suffix for a subcommand)", wrapper)
+	}
+	if note == "" {
+		t.Fatal("expected a note explaining the subcommand-passthrough routing")
+	}
+	want := "/opt/bin/review-wrapper serve"
+	if command != want {
+		t.Fatalf("command = %q, want %q (the configured command, not the literal tool name)", command, want)
+	}
+}
+
+// TestSplitShellTokens_TrailingBackslashRefused pins the REFUSE contract
+// (#1800) for a trailing unescaped backslash: it is ambiguous (a literal
+// backslash, or an incomplete escape?) so it must error, not silently
+// become a literal token.
+func TestSplitShellTokens_TrailingBackslashRefused(t *testing.T) {
+	_, err := splitShellTokens(`remote-control \`)
+	if err == nil {
+		t.Fatal("expected an error for a trailing unescaped backslash, got nil")
+	}
+}
+
+// TestResolveSessionCommand_FlagThenSubcommand_KnownResidualGap pins the
+// currently-accepted scope limitation flagged in review of PR #1821
+// (finding #4): resolveSessionCommand only inspects the FIRST extra-args
+// token to decide subcommand vs. flag. When a root flag precedes the
+// subcommand (e.g. "claude --debug remote-control"), the first token IS
+// flag-shaped, so the old wrapper-suffix path still fires and can still
+// reproduce #1800's flags-before-subcommand ordering. Flag arity is
+// unknowable in general (does "--debug" take a value or not?) without a
+// full per-tool grammar, so this is a deliberate, documented trade-off
+// (see EVIDENCE.md) rather than a bug to fix here — this test exists so a
+// future change to the heuristic has to consciously update this pinned
+// expectation instead of silently drifting.
+func TestResolveSessionCommand_FlagThenSubcommand_KnownResidualGap(t *testing.T) {
+	tool, _, wrapper, _, err := resolveSessionCommand("claude --debug remote-control", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tool != "claude" {
+		t.Fatalf("tool = %q, want claude (known gap: flag-shaped first token still takes the old "+
+			"wrapper-suffix path)", tool)
+	}
+	if wrapper == "" {
+		t.Fatal("expected the wrapper-suffix path to fire for this known-gap case (wrapper should be non-empty)")
 	}
 }
 

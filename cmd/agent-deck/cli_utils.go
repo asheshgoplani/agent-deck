@@ -144,7 +144,20 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 			// this applies uniformly to every tool.
 			if !isFlagShapedToken(tokens[0]) {
 				toolName = "shell"
-				command = raw
+				// A custom tool (e.g. [tools.reviewbot]) resolves its bare
+				// name through toolDef.Command — the raw text the user typed
+				// is the CONFIGURED tool name, not necessarily an executable
+				// on PATH (e.g. `reviewbot serve` where
+				// [tools.reviewbot].command = "/opt/bin/review-wrapper").
+				// Substitute the resolved command so the subcommand
+				// invocation still launches; built-in tool names (claude,
+				// codex, ...) already are the literal binary name, so raw
+				// text is used as-is for them.
+				if toolDef := session.GetToolDef(baseTool); toolDef != nil {
+					command = strings.TrimSpace(toolDef.Command + " " + extra)
+				} else {
+					command = raw
+				}
 				note = fmt.Sprintf(
 					"detected subcommand-shaped argument %q after tool '%s' — running "+
 						"the command as-is with no session/permission flag injection "+
@@ -221,6 +234,13 @@ func splitShellTokens(s string) ([]string, error) {
 			i++
 			cur.WriteByte(s[i])
 			haveToken = true
+		case c == '\\':
+			// Trailing unescaped backslash with nothing after it — ambiguous
+			// (is it a literal backslash or an incomplete escape?). REFUSE
+			// rather than silently emit it as a literal token (#1800: the
+			// contract is to refuse when quoting/escaping is ambiguous, not
+			// guess).
+			return nil, fmt.Errorf("trailing unescaped backslash")
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
 			if haveToken {
 				tokens = append(tokens, cur.String())

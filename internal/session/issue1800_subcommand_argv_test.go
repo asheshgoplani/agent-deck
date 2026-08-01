@@ -79,10 +79,13 @@ func runBuiltCommandCapturingArgv(t *testing.T, cmd, binDir, logPath string) str
 // routes "claude remote-control --name rc-test" to Tool="shell",
 // Command=raw, Wrapper="" (see TestResolveSessionCommand's
 // "claude subcommand runs as-is, no wrapper" case) — this test proves that
-// choice, once built into an actual shell command by
-// buildClaudeCommand/prepareCommand, delivers the subcommand to the binary
-// untouched: no --session-id, no --dangerously-skip-permissions spliced in
-// before "remote-control".
+// choice, once built by the ACTUAL production dispatch a Tool=="shell"
+// instance takes at spawn time (Start()'s default case →
+// buildShellPassthroughCommand, not buildClaudeCommand — Tool=="shell"
+// never reaches buildClaudeCommand in production, see
+// IsClaudeCompatible(i.Tool) at instance.go's Start() switch), delivers the
+// subcommand to the binary untouched: no --session-id, no
+// --dangerously-skip-permissions spliced in before "remote-control".
 //
 // Before the fix, resolveSessionCommand instead produced Command="claude",
 // Wrapper="{command} remote-control --name rc-test", and
@@ -91,11 +94,17 @@ func runBuiltCommandCapturingArgv(t *testing.T, cmd, binDir, logPath string) str
 // in TestIssue1800_PreFix_WrapperShape_DemotesSubcommand.
 func TestIssue1800_ClaudeSubcommand_RunsWithoutFlagInjection(t *testing.T) {
 	origHome := os.Getenv("HOME")
+	origConfigDir, hadConfigDir := os.LookupEnv("CLAUDE_CONFIG_DIR")
 	os.Setenv("HOME", t.TempDir())
 	os.Unsetenv("CLAUDE_CONFIG_DIR")
 	ClearUserConfigCache()
 	t.Cleanup(func() {
 		os.Setenv("HOME", origHome)
+		if hadConfigDir {
+			os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+		} else {
+			os.Unsetenv("CLAUDE_CONFIG_DIR")
+		}
 		ClearUserConfigCache()
 	})
 
@@ -107,7 +116,19 @@ func TestIssue1800_ClaudeSubcommand_RunsWithoutFlagInjection(t *testing.T) {
 	inst.Command = "claude remote-control --name rc-test"
 	inst.Wrapper = ""
 
-	cmd := inst.buildClaudeCommand(inst.Command)
+	// buildShellPassthroughCommand is what Start()'s default case actually
+	// calls for a Tool=="shell" instance (instance.go) — exercising it here
+	// (rather than buildClaudeCommand, which Tool=="shell" never reaches)
+	// proves the production dispatch, not just the string shape.
+	cmd := inst.buildShellPassthroughCommand(inst.Command)
+	if !strings.Contains(cmd, "AGENTDECK_INSTANCE_ID="+inst.ID) {
+		t.Fatalf("expected buildShellPassthroughCommand to restore the AGENTDECK_INSTANCE_ID "+
+			"env prefix that Tool=\"shell\"'s bare default case (command = i.Command) dropped; got: %s", cmd)
+	}
+	if strings.Contains(cmd, "--session-id") {
+		t.Fatalf("buildShellPassthroughCommand must never inject --session-id; got: %s", cmd)
+	}
+
 	wrapped, _, err := inst.prepareCommand(cmd)
 	if err != nil {
 		t.Fatalf("prepareCommand: %v", err)
@@ -130,11 +151,17 @@ func TestIssue1800_ClaudeSubcommand_RunsWithoutFlagInjection(t *testing.T) {
 // rather than trying to reorder flags within it.
 func TestIssue1800_PreFix_WrapperShape_DemotesSubcommand(t *testing.T) {
 	origHome := os.Getenv("HOME")
+	origConfigDir, hadConfigDir := os.LookupEnv("CLAUDE_CONFIG_DIR")
 	os.Setenv("HOME", t.TempDir())
 	os.Unsetenv("CLAUDE_CONFIG_DIR")
 	ClearUserConfigCache()
 	t.Cleanup(func() {
 		os.Setenv("HOME", origHome)
+		if hadConfigDir {
+			os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+		} else {
+			os.Unsetenv("CLAUDE_CONFIG_DIR")
+		}
 		ClearUserConfigCache()
 	})
 
@@ -164,6 +191,96 @@ func TestIssue1800_PreFix_WrapperShape_DemotesSubcommand(t *testing.T) {
 	if subcmdIdx < sessionIdx {
 		t.Fatalf("subcommand unexpectedly precedes --session-id — the bug this test documents did not "+
 			"reproduce; got: %s", got)
+	}
+}
+
+// TestIssue1800_ShellPassthroughClaude_StripsTelegramEnv is the regression
+// test for the review finding on #1821: a Tool=="shell" instance whose
+// Command still execs claude (the #1800 subcommand-passthrough shape) must
+// keep the #1133/S8 TELEGRAM_* strip. Before instInvokesClaudeBinary
+// (env.go), telegramStateDirStripExpr's Tool=="claude" gate never fired for
+// these instances, so a long-lived `claude remote-control` spawned from a
+// conductor pane would inherit TELEGRAM_STATE_DIR / TELEGRAM_BOT_TOKEN and
+// could start a duplicate poller against the same bot token (Telegram 409).
+func TestIssue1800_ShellPassthroughClaude_StripsTelegramEnv(t *testing.T) {
+	cfg := &UserConfig{
+		MCPs:       make(map[string]MCPDef),
+		Conductors: map[string]ConductorOverrides{},
+		Groups:     map[string]GroupSettings{},
+	}
+	defer resetUserConfigCache(t, cfg)()
+
+	inst := &Instance{
+		Title:       "launch-child",
+		Tool:        "shell",
+		Command:     "claude remote-control --name rc-test",
+		ProjectPath: "/tmp",
+	}
+
+	got := inst.buildEnvSourceCommand()
+	if !strings.Contains(got, "TELEGRAM_STATE_DIR") || !strings.Contains(got, "unset ") {
+		t.Fatalf("shell-routed claude subcommand must still strip TELEGRAM_STATE_DIR\nbuildEnvSourceCommand() = %q", got)
+	}
+
+	// A genuinely plain shell command must NOT be treated as a claude spawn
+	// — the strip stays gated to commands that actually exec claude.
+	plainShell := &Instance{Title: "plain", Tool: "shell", Command: "ls -la", ProjectPath: "/tmp"}
+	if got := plainShell.buildEnvSourceCommand(); strings.Contains(got, "TELEGRAM_STATE_DIR") {
+		t.Fatalf("a plain shell command must not get the claude-only TELEGRAM strip\nbuildEnvSourceCommand() = %q", got)
+	}
+}
+
+// TestIssue1800_ShellPassthroughCodex_GetsAgentdeckEnv proves the codex half
+// of the #1821 review finding: a Tool=="shell" subcommand-passthrough
+// instance whose Command execs codex (e.g. `-c "codex mcp list"`) still gets
+// the AGENTDECK_* env vars codex's hook subprocesses rely on to find this
+// session's state — the same treatment buildCodexCommand's own
+// `trimmed != "codex"` passthrough branch applies when Tool=="codex".
+func TestIssue1800_ShellPassthroughCodex_GetsAgentdeckEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	inst := NewInstanceWithTool("codex-sub", t.TempDir(), "shell")
+	inst.Command = "codex mcp list"
+
+	cmd := inst.buildShellPassthroughCommand(inst.Command)
+	if !strings.Contains(cmd, "AGENTDECK_INSTANCE_ID="+inst.ID) {
+		t.Fatalf("expected AGENTDECK_INSTANCE_ID for a shell-routed codex subcommand; got: %s", cmd)
+	}
+	if !strings.HasSuffix(cmd, inst.Command) {
+		t.Fatalf("expected the codex subcommand to run verbatim with no flag injection, got: %s", cmd)
+	}
+}
+
+// TestIssue1800_ShellPassthroughCustomTool_ResolvesConfiguredCommand is the
+// regression test for the Codex bot review finding on PR #1821: a custom
+// tool configured with a `command` override (e.g. [tools.reviewbot].command
+// = "/opt/bin/review-wrapper") must still resolve through that configured
+// command when invoked with a subcommand-shaped extra arg
+// (`-c "reviewbot serve"`) — not fall back to the literal, possibly
+// non-existent-on-PATH tool name the user typed.
+func TestIssue1800_ShellPassthroughCustomTool_ResolvesConfiguredCommand(t *testing.T) {
+	cfg := &UserConfig{
+		MCPs:       make(map[string]MCPDef),
+		Conductors: map[string]ConductorOverrides{},
+		Groups:     map[string]GroupSettings{},
+		Tools: map[string]ToolDef{
+			"reviewbot": {Command: "/opt/bin/review-wrapper"},
+		},
+	}
+	defer resetUserConfigCache(t, cfg)()
+
+	toolDef := GetToolDef("reviewbot")
+	if toolDef == nil {
+		t.Fatal("expected reviewbot to resolve as a configured custom tool")
+	}
+	if toolDef.Command != "/opt/bin/review-wrapper" {
+		t.Fatalf("toolDef.Command = %q, want /opt/bin/review-wrapper", toolDef.Command)
 	}
 }
 

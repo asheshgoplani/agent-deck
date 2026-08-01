@@ -3090,6 +3090,67 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 		baseCommand, dangerousFlag)
 }
 
+// buildShellPassthroughCommand builds the launch command for a Tool=="shell"
+// instance. A genuinely plain/unrecognized shell command (e.g. "ls -la") is
+// returned byte-identical to the pre-existing behavior — this function only
+// changes anything for commands MatchTool recognizes as a known tool, so it
+// cannot regress an ordinary `-c 'some shell command'` session.
+//
+// #1800/#1821: resolveSessionCommand (cmd/agent-deck/cli_utils.go) routes
+// "<tool> <subcommand> ..." invocations here — Tool="shell", Command=raw —
+// specifically to skip agent-deck's own --session-id/permission-flag
+// injection (those flags are never valid after a subcommand). The spawned
+// binary in that case is still claude or codex, though, so this restores
+// the same AGENTDECK_*/CLAUDE_CONFIG_DIR/CODEX_HOME/TELEGRAM-strip
+// treatment their own builders apply on an equivalent passthrough
+// (buildClaudeCommandWithMessage's custom-command branch,
+// buildCodexCommand's `trimmed != "codex"` branch) — without resurrecting
+// any of the claude/codex-specific status-detection or hook dispatch that
+// motivated routing through Tool="shell" in the first place (those stay
+// gated on IsClaudeCompatible/IsCodexCompatible(i.Tool) elsewhere, which is
+// false here). Every other builtin tool's own passthrough guard already
+// reduces to plain env-file sourcing (gemini, opencode, cursor, hermes), so
+// a recognized-but-not-claude-or-codex match falls to that same treatment
+// below.
+func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
+	matched := MatchTool(baseCommand)
+	if matched == "shell" {
+		// Not recognized as any known tool invocation — preserve the
+		// pre-#1821 behavior for ordinary shell commands exactly.
+		return baseCommand
+	}
+
+	envPrefix := i.buildEnvSourceCommand()
+
+	switch matched {
+	case "claude":
+		instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s ",
+			i.ID, shellescape.Quote(sessionProfileEnvValue()))
+		configDirPrefix := ""
+		if IsClaudeConfigDirExplicitForInstance(i) {
+			configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
+			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
+		}
+		execEnvPrefix := ""
+		if flags := telegramExecEnvStripFlags(i); flags != "" {
+			execEnvPrefix = "env " + flags + " "
+		}
+		return envPrefix + instanceIDPrefix + configDirPrefix + execEnvPrefix + baseCommand
+	case "codex":
+		agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
+			i.ID, i.Title, i.Tool, shellescape.Quote(sessionProfileEnvValue()))
+		codexHomePrefix := ""
+		if isCodexHomeExplicit() {
+			if codexHome := strings.TrimSpace(getCodexHomeDir()); codexHome != "" {
+				codexHomePrefix = "CODEX_HOME=" + codexHome + " "
+			}
+		}
+		return envPrefix + agentdeckEnvPrefix + codexHomePrefix + baseCommand
+	default:
+		return envPrefix + baseCommand
+	}
+}
+
 // GetGenericSessionID gets session ID from tmux environment for a custom tool
 // Uses the session_id_env field from tool config
 func (i *Instance) GetGenericSessionID() string {
@@ -3523,7 +3584,7 @@ func (i *Instance) Start() error {
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
 			command = i.buildGenericCommand(i.Command)
 		} else {
-			command = i.Command
+			command = i.buildShellPassthroughCommand(i.Command)
 		}
 	}
 
@@ -3792,7 +3853,7 @@ func (i *Instance) StartWithMessage(message string) error {
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
 			command = i.buildGenericCommand(i.Command)
 		} else {
-			command = i.Command
+			command = i.buildShellPassthroughCommand(i.Command)
 		}
 	}
 
