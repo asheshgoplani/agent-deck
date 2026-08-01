@@ -322,6 +322,52 @@ func TestStatusPersistence_UpdatedStatus(t *testing.T) {
 		"loaded instance should reflect the updated StatusWaiting")
 }
 
+// TestSubcommandPassthroughPersistence_ClearingSurvivesSave is the
+// regression test for the Codex review follow-up on PR #1821:
+// SubcommandPassthrough=false must survive a save even when the PREVIOUS
+// saved row had it true. subcommand_passthrough lives in the tool_data
+// extras zone (like idle_timeout_secs), and statedb's MergeToolDataExtras
+// preserves an old extras key whenever the new blob doesn't set it — which
+// would silently resurrect a stale `true` if WriteSubcommandPassthroughToToolData
+// deleted the key on false instead of always writing it explicitly. This
+// exercises the real save→edit→save→load cycle through SQLite, not just
+// the in-memory helper functions.
+func TestSubcommandPassthroughPersistence_ClearingSurvivesSave(t *testing.T) {
+	s := newTestStorage(t)
+
+	inst := &Instance{
+		ID:                    "passthrough-clear-1",
+		Title:                 "Passthrough Clear Test",
+		ProjectPath:           "/tmp/test",
+		GroupPath:             "test-group",
+		Command:               "claude mcp list",
+		Tool:                  "shell",
+		Status:                StatusRunning,
+		CreatedAt:             time.Now(),
+		SubcommandPassthrough: true,
+	}
+
+	require.NoError(t, s.SaveWithGroups([]*Instance{inst}, nil), "first save should succeed")
+
+	loaded, _, err := s.LoadWithGroups()
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	assert.True(t, loaded[0].SubcommandPassthrough, "first load should reflect SubcommandPassthrough=true")
+
+	// Simulate SetField(FieldCommand, ...) clearing the flag on a direct
+	// command edit, then re-saving — the scenario the mutator fix covers.
+	inst.Command = `claude "review this repo"`
+	inst.SubcommandPassthrough = false
+	require.NoError(t, s.SaveWithGroups([]*Instance{inst}, nil), "second save (clearing the flag) should succeed")
+
+	loaded2, _, err := s.LoadWithGroups()
+	require.NoError(t, err)
+	require.Len(t, loaded2, 1)
+	assert.False(t, loaded2[0].SubcommandPassthrough,
+		"SubcommandPassthrough must stay false after being explicitly cleared and re-saved — "+
+			"a stale true from the previous save must not be resurrected by the tool_data extras merge")
+}
+
 // TestStatusPersistence_MultipleInstances verifies that multiple instances with
 // different statuses all persist and load correctly.
 func TestStatusPersistence_MultipleInstances(t *testing.T) {
