@@ -2303,11 +2303,25 @@ func (s *Session) Start(command string) error {
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
 	// reader (e.g. iTerm2 on macOS). Only binds on agentdeck-managed sessions.
+	//
+	// #1808: tmux key bindings live on the SERVER (one per socket), not on the
+	// session — an `if-shell [ "#{session_name}" = "<s.Name>" ]` guard is
+	// re-installed by every Start(), so it only ever matches whichever
+	// session started most recently on this socket. In every other session
+	// sharing the socket the else-branch is empty, tmux consumes nothing, and
+	// Ctrl+Q falls through to the running app (killing Claude Code instead of
+	// detaching). Use run-shell to re-check the CURRENT client's session at
+	// keypress time instead of baking in one session name — this scopes the
+	// detach to "whichever agentdeck session this client is attached to"
+	// rather than "the one session that happened to Start() last", and
+	// matches the same prefix-check pattern BindMouseStatusRightDetach
+	// already uses for its detach binding. The inner `tmux` invocations run
+	// as a child of the server that owns this socket, so they stay on the
+	// right socket automatically (see BindMouseStatusRightDetach).
 	// Bounded — see tmuxMutationTimeout. Best-effort already, and it runs on
 	// the session-create path where a wedged client would stall the create.
 	_ = s.runBoundedMutation("bind-key", "-n", "-T", "root", "C-q",
-		"if-shell", fmt.Sprintf("[ \"#{session_name}\" = \"%s\" ]", s.Name),
-		"detach-client", "")
+		"run-shell", ctrlQDetachScript())
 
 	// Apply user-specified tmux option overrides from config (after defaults).
 	// These are batched into a single call when multiple overrides are present.
@@ -6044,6 +6058,27 @@ func UnbindKey(key string) error {
 	// bind-key 1 select-window -t :1
 	_ = runBoundedMutation(socket, "bind-key", key, "select-window", "-t", ":"+key)
 	return nil
+}
+
+// ctrlQDetachScript returns the run-shell script installed on the socket-wide
+// (server-wide) "-n -T root C-q" binding in Session.Start.
+//
+// #1808: tmux key bindings live on the SERVER, one per socket, not on the
+// session. The binding used to be guarded by a baked-in `if-shell [
+// "#{session_name}" = "<one session's name>" ]`, re-installed by every
+// Start() call — so it only ever matched whichever session started most
+// recently on the socket. Every OTHER session sharing that socket hit the
+// empty else-branch, tmux consumed nothing, and Ctrl+Q fell through to the
+// running app (killing Claude Code instead of detaching) whenever more than
+// one agentdeck session shared a socket.
+//
+// This script is re-evaluated by tmux at KEYPRESS time against whichever
+// session the invoking client is currently attached to, rather than a name
+// captured once at bind time — so it stays correct for every session on the
+// socket regardless of Start() order. Same prefix-check pattern as
+// BindMouseStatusRightDetach below.
+func ctrlQDetachScript() string {
+	return fmt.Sprintf(`S=$(tmux display-message -p '#{session_name}'); case "$S" in %s*) tmux detach-client ;; esac`, SessionPrefix)
 }
 
 // BindMouseStatusRightDetach binds a mouse click on the status-right area to detach.
