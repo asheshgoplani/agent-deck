@@ -66,7 +66,9 @@ Commands accept: **exact title**, **ID prefix** (e.g., first 4 chars), **path**,
 | `running` (green) | Claude is actively processing | Do nothing. Wait. |
 | `waiting` (yellow) | Claude finished, needs input | Read output, decide: auto-respond or escalate |
 | `idle` (gray) | Waiting, but user acknowledged | User knows about it. Skip unless asked. |
-| `error` (red) | Session crashed or missing | Try `session restart`. If that fails, escalate. |
+| `error` (red) | Session crashed or missing | Check the substate first. Then try `session restart`; if that fails, escalate. |
+
+**Substate (refines status in `list`/`show` JSON):** `auth-401` covers two different cases — read the pane before acting. A credential banner (`Please run /login`, `API Error: 401`, `Invalid API key`) means the fleet is HOLDING the session and a restart will NOT fix it — escalate for re-login. A dropped-socket banner (`socket connection closed`) also reports as `auth-401` but is NOT held and IS restart-recoverable — restart it. `model-unavailable` means the selected model is down (shows as error, not running); restart it — self-heal switches the session to an available model and reissues (or run `session set model` yourself first). `idle` means bash-idle. Never restart-loop an `error` session that is genuinely credential-held — check the pane content, not just the substate label, before deciding.
 
 ## Heartbeat Protocol
 
