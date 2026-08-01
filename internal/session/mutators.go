@@ -138,8 +138,8 @@ func normalizeToolSessionID(field, value string) (string, error) {
 func SetField(inst *Instance, field, value string, extraArgsTokens []string) (oldValue string, postCommit func(), err error) {
 	switch field {
 	case FieldTitle:
-		oldValue = inst.Title
-		inst.Title = value
+		oldValue = inst.GetTitleThreadSafe()
+		inst.SetTitleThreadSafe(value)
 		inst.SetAutoName(false) // a user/explicit name replaces the auto handle
 		// An explicit rename is user intent: lock the title so the #572
 		// Claude-name sync (plan titles, /rename) can't revert it on the

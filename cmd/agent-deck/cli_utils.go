@@ -512,6 +512,8 @@ func SubstateLabel(sub session.Substate) string {
 		return "model unavailable"
 	case session.SubstateAuth401:
 		return "auth (login)"
+	case session.SubstateUsageLimit:
+		return "usage limit"
 	case session.SubstateIdleAtEmptyPrompt:
 		return "idle at prompt"
 	case session.SubstateRunning:

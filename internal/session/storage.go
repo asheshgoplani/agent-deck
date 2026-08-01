@@ -199,8 +199,12 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 		}
 	}
 
-	// Get effective profile
-	effectiveProfile := GetEffectiveProfile(profile)
+	// Get effective profile, guarding against silently auto-creating a
+	// profile that was merely inferred from CLAUDE_CONFIG_DIR (#1790).
+	effectiveProfile, err := ResolveProfileForStorage(profile)
+	if err != nil {
+		return nil, err
+	}
 
 	// Get profile directory
 	profileDir, err := GetProfileDir(effectiveProfile)

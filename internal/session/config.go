@@ -311,6 +311,31 @@ func SetDefaultProfile(profile string) error {
 	return SaveConfig(config)
 }
 
+// Profile resolution sources returned by getEffectiveProfileWithSource.
+// Callers that must decide whether it is safe to silently materialise a
+// profile on first use (e.g. NewStorageWithProfile) key off this value —
+// see issue #1790.
+const (
+	// ProfileSourceExplicit means the caller passed a profile explicitly
+	// (typically the -p/--profile flag). Auto-creating on first use is the
+	// documented, intentional way to spin up a new profile.
+	ProfileSourceExplicit = "explicit"
+	// ProfileSourceEnv means AGENTDECK_PROFILE selected the profile. Also
+	// explicit user/CI intent (e.g. AGENTDECK_PROFILE=_test); auto-create
+	// on first use is expected and unchanged.
+	ProfileSourceEnv = "env"
+	// ProfileSourceInferred means the profile name was *derived* from
+	// CLAUDE_CONFIG_DIR (issue #881), not chosen by the user for
+	// agent-deck's purposes. CLAUDE_CONFIG_DIR selects a Claude account,
+	// not an agent-deck profile — a name landing here that doesn't match
+	// an existing profile must not be silently auto-created (#1790).
+	ProfileSourceInferred = "inferred"
+	// ProfileSourceConfigDefault means config.json's default_profile applied.
+	ProfileSourceConfigDefault = "config-default"
+	// ProfileSourceFallback means nothing resolved and "default" applied.
+	ProfileSourceFallback = "fallback-default"
+)
+
 // GetEffectiveProfile returns the profile to use, considering:
 // 1. Explicitly provided profile (from -p flag)
 // 2. Environment variable AGENTDECK_PROFILE
@@ -324,28 +349,115 @@ func SetDefaultProfile(profile string) error {
 // see different sessions in TUI vs web. Both call sites now route through
 // this function to guarantee a single source of truth.
 func GetEffectiveProfile(explicit string) string {
+	profile, _ := getEffectiveProfileWithSource(explicit)
+	return profile
+}
+
+// getEffectiveProfileWithSource is GetEffectiveProfile plus the resolution
+// source, so callers that create on-disk state (NewStorageWithProfile) can
+// tell an explicit/env-selected profile (safe to auto-create) apart from one
+// merely inferred from CLAUDE_CONFIG_DIR (must not be silently materialised
+// if it doesn't already exist — #1790).
+func getEffectiveProfileWithSource(explicit string) (string, string) {
 	if explicit != "" {
-		return explicit
+		return explicit, ProfileSourceExplicit
 	}
 
 	if envProfile := os.Getenv("AGENTDECK_PROFILE"); envProfile != "" {
-		return envProfile
+		return envProfile, ProfileSourceEnv
 	}
 
 	if inferred := profileFromClaudeConfigDir(os.Getenv("CLAUDE_CONFIG_DIR")); inferred != "" {
-		return inferred
+		return inferred, ProfileSourceInferred
 	}
 
 	config, err := LoadConfig()
 	if err != nil {
-		return DefaultProfile
+		return DefaultProfile, ProfileSourceFallback
 	}
 
 	if config.DefaultProfile != "" {
-		return config.DefaultProfile
+		return config.DefaultProfile, ProfileSourceConfigDefault
 	}
 
-	return DefaultProfile
+	return DefaultProfile, ProfileSourceFallback
+}
+
+// configuredDefaultProfile returns config.json's default_profile, or
+// DefaultProfile ("default") when unset or unreadable. This mirrors the
+// tail of getEffectiveProfileWithSource (priority 4-5) and is the safe
+// landing spot ResolveProfileForStorage falls back to instead of an
+// unrecognized CLAUDE_CONFIG_DIR-inferred name (#1790).
+func configuredDefaultProfile() string {
+	config, err := LoadConfig()
+	if err != nil || config.DefaultProfile == "" {
+		return DefaultProfile
+	}
+	return config.DefaultProfile
+}
+
+// ResolveProfileForStorage is GetEffectiveProfile plus the #1790 safety
+// guard: a profile name merely *inferred* from CLAUDE_CONFIG_DIR (e.g.
+// ~/.claude-work -> "work") is not user intent to select an agent-deck
+// profile — CLAUDE_CONFIG_DIR picks a Claude account, a separate axis. If
+// that inferred name doesn't already exist, this warns on stderr and falls
+// back to the configured default profile instead of a name that would go on
+// to be silently auto-created as an empty profile, potentially shadowing a
+// real configured default with no message. This matches #1790's "Expected"
+// behavior verbatim: do not auto-create, and do not hard-error either — say
+// so and fall back. A hard error here would make agent-deck refuse to start
+// from any shell exporting an unrelated CLAUDE_CONFIG_DIR whose basename
+// merely contains a dash (profileFromClaudeConfigDir's generic last-segment
+// fallback is intentionally broad, per #881/profile_resolver_test.go) —
+// turning "wrong profile inferred" into "agent-deck won't launch", which is
+// strictly worse for a class of paths far wider than the CLAUDE_CONFIG_DIR
+// dual-account pattern this inference exists for.
+//
+// Every call site that is about to CREATE or OPEN on-disk profile state from
+// a possibly-empty/possibly-inferred profile argument (NewStorageWithProfile,
+// and any pre-resolution done before handing a profile name down to it, e.g.
+// the web server bootstrap in cmd/agent-deck/main.go) must route through
+// this function rather than GetEffectiveProfile, or the guard is bypassed:
+// once a caller has already resolved "" to a concrete inferred name and
+// passes that name onward, it looks indistinguishable from an explicit -p
+// selection to any code further down the chain.
+//
+// Explicit (-p) and env (AGENTDECK_PROFILE) resolution are unaffected —
+// those remain the documented way to spin up a brand-new profile on first
+// use.
+//
+// The only error this returns is a genuine ProfileExists I/O failure
+// (permission, transient filesystem); it never fails open on such an error
+// (fail open would silently restore the pre-#1790 auto-create hole).
+func ResolveProfileForStorage(explicit string) (string, error) {
+	effectiveProfile, source := getEffectiveProfileWithSource(explicit)
+	if source != ProfileSourceInferred {
+		return effectiveProfile, nil
+	}
+
+	exists, existsErr := ProfileExists(effectiveProfile)
+	if existsErr != nil {
+		return "", fmt.Errorf("checking whether inferred profile %q exists: %w", effectiveProfile, existsErr)
+	}
+	if exists {
+		return effectiveProfile, nil
+	}
+
+	fallback := configuredDefaultProfile()
+	known, listErr := ListProfiles()
+	knownDesc := "none yet"
+	if listErr == nil && len(known) > 0 {
+		knownDesc = strings.Join(known, ", ")
+	}
+	fmt.Fprintf(os.Stderr,
+		"agent-deck: CLAUDE_CONFIG_DIR=%q would select profile %q, which does not exist; "+
+			"falling back to profile %q instead of creating it. Known profiles: %s. "+
+			"Pass -p/--profile or set AGENTDECK_PROFILE explicitly to pick a different profile, "+
+			"run `agent-deck profile create %s` if you intend to create it, "+
+			"or unset CLAUDE_CONFIG_DIR to use the default profile.\n",
+		os.Getenv("CLAUDE_CONFIG_DIR"), effectiveProfile, fallback, knownDesc, effectiveProfile,
+	)
+	return fallback, nil
 }
 
 // profileFromClaudeConfigDir maps a CLAUDE_CONFIG_DIR path to a profile name.
