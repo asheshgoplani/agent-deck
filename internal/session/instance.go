@@ -6763,6 +6763,15 @@ func (i *Instance) restart(env map[string]string) error {
 	}
 	defer recordInstanceSpawn(i.ID)
 
+	// #1775: supersede the fast-death watcher from the PREVIOUS spawn here, at
+	// the single entry point, rather than deeper down. restart() has several
+	// early-returning fast paths (the claude respawn-pane branch and its
+	// per-tool siblings) that never reach the fallback-recreate block, so a
+	// bump placed there left a restart inside the 15s window watching the
+	// REPLACEMENT pane with the old spawn's command and start time — and
+	// recording a failure against it if that pane died.
+	i.bumpSpawnGenAndBarrier()
+
 	if len(env) > 0 {
 		i.restartEnv = make(map[string]string, len(env))
 		for key, value := range env {
@@ -7102,12 +7111,8 @@ func (i *Instance) restart(env map[string]string) error {
 
 	mcpLog.Debug("restart_fallback_recreate")
 
-	// #1775: supersede any in-flight fast-death watcher from the old spawn
-	// before touching its tmux session. Unconditionally, not inside the
-	// Exists() branch below: a watcher whose session has ALREADY vanished is
-	// exactly the one about to record a spurious spawn_died_fast, and it would
-	// otherwise stay current all the way to the eventual bump inside Start().
-	i.bumpSpawnGenAndBarrier()
+	// (the watcher was already superseded at the top of restart(), which covers
+	// this path and every early-returning respawn fast path alike.)
 
 	// Kill old tmux session to prevent orphans before recreating (#138)
 	if i.tmuxSession != nil && i.tmuxSession.Exists() {
