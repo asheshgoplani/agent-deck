@@ -103,6 +103,16 @@ type ComposerGuardResult struct {
 	// regardless (delivery must not be dropped), accepting the residual
 	// merge risk for this pathological case.
 	ClearFailed bool
+	// ComposerPasteMarkerFree is true when the guard's LAST successful
+	// capture showed a composer holding no "[Pasted text …]" marker. It is
+	// the pre-send provenance evidence the attribution gate needs to tell
+	// agent-deck's own collapsed paste apart from a foreign one parked in the
+	// composer (issue #1777): with no marker there before the send, a marker
+	// seen afterwards can only be the one our own paste created. False
+	// whenever the guard could not establish that (capture failure, or a
+	// marker still present), which fails safe — the gate then withholds the
+	// Enter nudge.
+	ComposerPasteMarkerFree bool
 }
 
 // maxComposerClearAttempts bounds Ctrl+C attempts during save-clear.
@@ -150,7 +160,9 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 		}
 		draft, visible := ComposerDraft(raw, strip)
 		if !visible || draft == "" {
-			return ComposerGuardResult{Held: time.Since(start)}
+			// Composer empty, suggestion or absent: no parked paste marker,
+			// so a marker seen after the send belongs to our own paste.
+			return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
 		}
 		if !time.Now().Before(deadline) {
 			break
@@ -179,7 +191,7 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 	}
 	draft, visible := ComposerDraft(raw, strip)
 	if !visible || draft == "" {
-		return ComposerGuardResult{Held: time.Since(start)}
+		return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
 	}
 
 	// Save the confirmed operator draft and clear the composer so the
@@ -198,6 +210,9 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 			raw, err := t.CapturePaneFresh()
 			if err == nil && !ComposerHasDraft(raw, strip) {
 				res.DraftCleared = true
+				// The composer is confirmed empty right before the send, so
+				// any paste marker appearing afterwards is our own (#1777).
+				res.ComposerPasteMarkerFree = true
 				res.Held = time.Since(start)
 				return res
 			}

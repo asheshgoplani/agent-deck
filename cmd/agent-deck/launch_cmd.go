@@ -651,6 +651,12 @@ func handleLaunch(profile string, args []string) {
 			if _, err := sendWithRetryTarget(tmuxSess, initialMessage, skipClaudeDeliveryVerify(newInstance.Tool), sendRetryOptions{
 				maxRetries: 8,
 				checkDelay: 150 * time.Millisecond,
+				// #1777 provenance probe: a freshly launched session has an
+				// empty composer, so a "[Pasted text …]" marker appearing
+				// during verification is this prompt's own collapse and the
+				// Enter nudge stays attributable. If the probe cannot confirm
+				// that, the gate withholds the nudge.
+				composerPasteFreeBeforeSend: composerPasteFree(tmuxSess),
 			}); err != nil {
 				out.Error(fmt.Sprintf("failed to send initial message: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)

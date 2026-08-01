@@ -216,3 +216,32 @@ func TestGuardComposerDraft_StripIsApplied(t *testing.T) {
 		t.Fatalf("expected stripped empty composer to pass through, got %+v", res)
 	}
 }
+
+// Issue #1777: the guard's last pre-send observation is the provenance
+// evidence the attribution gate uses to tell agent-deck's own collapsed paste
+// from a foreign one parked in the composer.
+func TestGuardComposerDraft_ReportsComposerPasteMarkerFree(t *testing.T) {
+	empty := &fakeGuardTarget{captures: []string{renderComposer("")}}
+	if res := GuardComposerDraft(empty, ComposerGuardOptions{
+		HoldWait: time.Second, PollInterval: time.Millisecond, ClearWait: time.Millisecond,
+	}); !res.ComposerPasteMarkerFree {
+		t.Fatal("an empty composer before the send means a later paste marker is ours")
+	}
+
+	parked := &fakeGuardTarget{
+		captures: []string{renderComposer("[Pasted text #1 +89 lines]")},
+		ctrlCErr: errors.New("ctrl-c failed"),
+	}
+	if res := GuardComposerDraft(parked, ComposerGuardOptions{
+		HoldWait: 0, PollInterval: time.Millisecond, ClearWait: time.Millisecond,
+	}); res.ComposerPasteMarkerFree {
+		t.Fatal("a paste marker still parked in the composer must not be reported as clear")
+	}
+
+	broken := &fakeGuardTarget{captureErr: errors.New("pane gone")}
+	if res := GuardComposerDraft(broken, ComposerGuardOptions{
+		HoldWait: time.Second, PollInterval: time.Millisecond, ClearWait: time.Millisecond,
+	}); res.ComposerPasteMarkerFree {
+		t.Fatal("a capture failure yields no provenance evidence; must fail safe")
+	}
+}

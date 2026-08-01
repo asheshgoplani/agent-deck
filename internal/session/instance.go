@@ -4306,6 +4306,18 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 		return fmt.Errorf("timeout waiting for agent to be ready")
 	}
 
+	// Pre-send provenance probe for the #1777 attribution gate: Claude
+	// collapses a bulk paste behind "[Pasted text #N +M lines]", so the
+	// composer body can no longer be matched against our payload. Observing
+	// an unmarked composer immediately before typing is the evidence that a
+	// marker seen afterwards is OUR collapse and not a foreign paste parked
+	// there. A capture failure leaves it false, and the gate then withholds
+	// the nudge.
+	composerPasteFreeBeforeSend := false
+	if raw, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
+		composerPasteFreeBeforeSend = !send.ComposerHoldsPasteMarker(raw, tmux.StripANSI)
+	}
+
 	if err := i.tmuxSession.SendKeysAndEnter(message); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
@@ -4327,29 +4339,34 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	waitingNoMarkerChecks := 0
 	activeChecks := 0
 	sawActiveAfterSend := false
+	// attrib is the #1777 attribution gate. EVERY bare Enter below —
+	// including the unsent-prompt branch, which used to press unconditionally
+	// whenever a "[Pasted text …]" marker appeared anywhere in the pane —
+	// routes through attrib.NudgeEnter, so no branch can submit composer
+	// content agent-deck cannot attribute to its own delivery.
+	attrib := send.EnterAttribution{
+		Message:        message,
+		OwnPasteMarker: composerPasteFreeBeforeSend,
+	}
 
 	for retry := 0; retry < verifyRetries; retry++ {
 		time.Sleep(verifyDelay)
 
 		unsentPromptDetected := false
-		// foreignDraftParked (issue #1777): the composer visibly holds content
-		// that is neither our message nor a suggestion/placeholder — e.g. a
-		// Claude autosuggestion materialized as real normal-coloured input.
-		// The fallback Enter nudges below must not fire then: a bare Enter
-		// would submit an instruction no operator wrote. Skipping the nudge
-		// is the safe failure (worst case the delivery stays unconfirmed).
-		foreignDraftParked := false
-		if rawContent, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
-			content := tmux.StripANSI(rawContent)
+		// rawContent is this iteration's ANSI-bearing capture ("" when the
+		// capture failed), and is what the attribution gate reads.
+		rawContent := ""
+		if captured, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
+			rawContent = captured
+			content := tmux.StripANSI(captured)
 			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
-			foreignDraftParked = !unsentPromptDetected && send.EnterWouldSubmitForeignDraft(rawContent, tmux.StripANSI, message)
 		}
 		verifiedStatus, statusErr := i.tmuxSession.GetStatus()
 
 		if unsentPromptDetected {
 			waitingNoMarkerChecks = 0
 			activeChecks = 0
-			_ = i.tmuxSession.SendEnter()
+			attrib.NudgeEnter(i.tmuxSession, rawContent, tmux.StripANSI)
 			continue
 		}
 
@@ -4372,16 +4389,16 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 				}
 			} else {
 				waitingNoMarkerChecks = 0
-				if (retry < 5 || retry%2 == 0) && !foreignDraftParked {
-					_ = i.tmuxSession.SendEnter()
+				if retry < 5 || retry%2 == 0 {
+					attrib.NudgeEnter(i.tmuxSession, rawContent, tmux.StripANSI)
 				}
 			}
 			continue
 		}
 
 		waitingNoMarkerChecks = 0
-		if retry < 4 && !foreignDraftParked {
-			_ = i.tmuxSession.SendEnter()
+		if retry < 4 {
+			attrib.NudgeEnter(i.tmuxSession, rawContent, tmux.StripANSI)
 		}
 	}
 
