@@ -1209,7 +1209,27 @@ func (p *projectRoot) targetExists(targetRel string) (bool, error) {
 	if !filepath.IsAbs(dest) {
 		dest = filepath.Join(p.physicalDirOf(targetRel), dest)
 	}
-	if _, err := os.Stat(filepath.Clean(dest)); err != nil {
+
+	// The link destination is attacker-influenced, so NO filesystem call may
+	// touch it as a bare path (CodeQL go/path-injection). It is routed through
+	// the same containment gate every other source takes: openContainedSource
+	// requires it to sit strictly inside a registered sources.toml root or a
+	// managed project skills dir, follows further hops under that same rule
+	// with a capped hop count, and hands back a Root anchored at the validated
+	// root — the existence check is then descriptor-relative inside it.
+	//
+	// A destination that resolves OUTSIDE every registered root is not probed
+	// at all: it is a foreign replacement, reported as PRESENT so the loadout
+	// layer refuses it rather than silently overwriting it.
+	srcRoot, srcRel, _, err := p.openContainedSource(dest)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return true, nil
+	}
+	defer srcRoot.Close()
+	if _, err := srcRoot.Stat(srcRel); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}

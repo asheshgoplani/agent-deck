@@ -721,3 +721,41 @@ func TestTargetExists_ForeignResolvableLinkCountsPresent(t *testing.T) {
 		t.Fatalf("foreign but resolvable link must count as present")
 	}
 }
+
+// TestMaterialize_RefusesPoolLinkPointingOutsideRegisteredRoots proves the
+// other direction of the source-symlink hop: a managed entry whose link
+// escapes every registered source root is refused as a materialization source
+// (no filesystem call touches the destination), while the legitimate pool link
+// keeps migrating (TestMaterialize_MigratesFromPoolSymlinkWhenSourceGone).
+func TestMaterialize_RefusesPoolLinkPointingOutsideRegisteredRoots(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	poolRoot := t.TempDir()
+	writeSkillDir(t, poolRoot, "lint", "lint", "Linting best practices")
+	if err := SaveSkillSources(map[string]SkillSourceDef{
+		"pool": {Path: poolRoot, Enabled: boolPtr(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
+
+	projectPath := t.TempDir()
+	outside := t.TempDir()
+	writeSkillDir(t, outside, "lint", "lint", "Planted outside every registered root")
+
+	skillsDir := filepath.Join(projectPath, ".claude", "skills")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatalf("mkdir skills dir: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "lint"), filepath.Join(skillsDir, "lint")); err != nil {
+		t.Fatalf("symlink outside dir: %v", err)
+	}
+
+	targetRel := buildProjectSkillTargetPath(projectAgentsSkillsDir, "lint")
+	if _, err := materializeSkillCopyOnly(projectPath, filepath.Join(skillsDir, "lint"), targetRel); err == nil {
+		t.Fatalf("expected refusal for a managed link escaping every registered source root")
+	}
+	if _, err := os.Stat(filepath.Join(projectPath, ".agents", "skills", "lint")); !os.IsNotExist(err) {
+		t.Fatalf("nothing should have been materialized, stat err = %v", err)
+	}
+}
