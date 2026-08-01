@@ -52,7 +52,9 @@ Commands accept: **exact title**, **ID prefix** (e.g., first 4 chars), **path**,
 | ` + "`" + `running` + "`" + ` (green) | The conductor is actively processing | Do nothing. Wait. |
 | ` + "`" + `waiting` + "`" + ` (yellow) | The conductor finished and needs input | Read output, decide: auto-respond or escalate |
 | ` + "`" + `idle` + "`" + ` (gray) | Waiting, but user acknowledged | User knows about it. Skip unless asked. |
-| ` + "`" + `error` + "`" + ` (red) | Session crashed or missing | Try ` + "`" + `session restart` + "`" + `. If that fails, escalate. |
+| ` + "`" + `error` + "`" + ` (red) | Session crashed or missing | Check the substate first. Then try ` + "`" + `session restart` + "`" + `; if that fails, escalate. |
+
+**Substate (refines status in ` + "`" + `list` + "`" + `/` + "`" + `show` + "`" + ` JSON):** ` + "`" + `auth-401` + "`" + ` means the session's credentials are dead; the fleet HOLDS these sessions instead of flapping them, and restarting will NOT fix it — escalate for re-login. ` + "`" + `model-unavailable` + "`" + ` means the selected model is down (shows as error, not running). ` + "`" + `idle` + "`" + ` means bash-idle. Never restart-loop an ` + "`" + `error` + "`" + ` session whose substate says auth or model is the cause.
 
 ## Heartbeat Protocol
 
