@@ -269,20 +269,41 @@ func TestLongestLineBytes(t *testing.T) {
 	}
 }
 
-// TestRuneSafeCut pins that the chunked fallback never splits a rune.
+// TestRuneSafeCut pins that the chunked fallback never splits a rune, and
+// that the one case where it cannot avoid doing so still makes progress.
 func TestRuneSafeCut(t *testing.T) {
-	s := strings.Repeat("あ", 10) // 3 bytes per rune
-	for size := 1; size < len(s); size++ {
+	const runeWidth = 3 // "あ" is 3 bytes
+	s := strings.Repeat("あ", 10)
+
+	// Any cut with at least one whole rune behind it must land on a
+	// boundary.
+	for size := runeWidth; size < len(s); size++ {
 		cut := runeSafeCut(s, size)
 		if cut > size {
 			t.Fatalf("runeSafeCut(%d) = %d: must never cut beyond the requested size", size, cut)
 		}
-		if cut%3 != 0 {
+		if cut%runeWidth != 0 {
 			t.Fatalf("runeSafeCut(%d) = %d: lands mid-rune", size, cut)
 		}
+		if cut == 0 {
+			t.Fatalf("runeSafeCut(%d) = 0: a zero-length cut would loop forever in splitIntoChunks", size)
+		}
 	}
+
+	// A cut smaller than the rune it lands in has no safe answer. It must
+	// still return something non-zero, or splitIntoChunks never terminates.
+	for size := 1; size < runeWidth; size++ {
+		if got := runeSafeCut(s, size); got != size {
+			t.Fatalf("runeSafeCut(%d) = %d: with no safe cut available it must fall back to the requested size", size, got)
+		}
+	}
+
 	if got := runeSafeCut("abcdef", 100); got != 6 {
 		t.Fatalf("runeSafeCut past end = %d, want 6", got)
+	}
+	// Invalid UTF-8 must not send the backoff searching indefinitely.
+	if got := runeSafeCut("\x80\x80\x80\x80\x80\x80", 4); got != 4 {
+		t.Fatalf("runeSafeCut on invalid UTF-8 = %d, want the raw cut 4", got)
 	}
 }
 

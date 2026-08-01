@@ -40,6 +40,16 @@ import (
 // it is "big sends into a canonical-mode reader are impossible", and the only
 // honest handling is to detect that state and refuse rather than to type half
 // a line into a buffer that will discard it.
+//
+// Scope note, so this is not over-credited. The reporter of #1793 lost a
+// 4095-byte payload against Codex on Linux, and Linux's canonical buffer was
+// then measured (in CI, see canonMinLinux) to carry exactly that much. Codex
+// runs its pane in raw mode anyway. So THEIR loss was not canonical overflow;
+// what fixes their report is the CLI refusing to call an unconfirmed send a
+// success (cmd/agent-deck: verifyContentArrival). This file closes the
+// adjacent hole the investigation turned up — the one case where the terminal
+// itself guarantees the message cannot arrive — so it is caught before
+// anything is typed rather than after nothing was delivered.
 
 const (
 	// canonicalSafeBytes is the largest payload guaranteed to survive any
@@ -58,18 +68,22 @@ const (
 	// measured cliff above.
 	canonMinDarwin = 1024
 
-	// canonMinLinux is the usable n_tty canonical buffer on Linux. The buffer
-	// is N_TTY_BUF_SIZE = 4096 (drivers/tty/n_tty.c) but n_tty_receive_char
-	// discards input once read_cnt reaches N_TTY_BUF_SIZE-1, so 4095 bytes
-	// including the terminator is what actually survives — which is why the
-	// 4095-byte payload in issue #1793 was lost on Linux while a 4094-byte
-	// one would not have been.
+	// canonMinLinux is the n_tty canonical buffer on Linux: N_TTY_BUF_SIZE =
+	// 4096 (drivers/tty/n_tty.c), terminator included.
+	//
+	// Measured, not assumed. The first CI run of
+	// TestIssue1793_CanonicalPane_OverLimitLineIsMeasuredLostThenRefused had
+	// this constant at 4095 on the reasoning that n_tty stops at
+	// N_TTY_BUF_SIZE-1; ubuntu-latest answered with "4096 bytes arrived" and
+	// the test failed. 4095 bytes of body plus the terminator survives on
+	// Linux, so the buffer is the full 4096 and the largest deliverable line
+	// is 4095.
 	//
 	// This constant is deliberately used in preference to
 	// fpathconf(_PC_MAX_CANON), which reports the POSIX minimum of 255 on
-	// Linux while the kernel really buffers 4095; trusting fpathconf there
+	// Linux while the kernel really buffers 4096; trusting fpathconf there
 	// would reject ordinary 300-byte sends.
-	canonMinLinux = 4095
+	canonMinLinux = 4096
 )
 
 // ErrCanonicalLineOverflow reports that a payload cannot be delivered to the
@@ -157,24 +171,24 @@ func longestLineBytes(content string) int {
 }
 
 // runeSafeCut returns the largest cut point ≤ maxSize that does not land in
-// the middle of a UTF-8 sequence. A rune is at most 4 bytes, so backing off
-// past 4 continuation bytes is impossible; if it happens the input was not
-// valid UTF-8 to begin with and the raw maxSize cut is returned unchanged.
+// the middle of a UTF-8 sequence.
+//
+// A rune is at most 4 bytes, so at most 3 continuation bytes are ever backed
+// over. Two cases cannot be satisfied and fall back to the raw maxSize cut:
+// input that was not valid UTF-8 to begin with, and a maxSize smaller than
+// the rune it lands in (no safe cut point exists at all). Returning maxSize
+// rather than 0 there is load-bearing — the caller splits in a loop and a
+// zero-length cut would never terminate.
 func runeSafeCut(s string, maxSize int) int {
 	if maxSize >= len(s) {
 		return len(s)
 	}
-	cut := maxSize
-	for i := 0; i < 3 && cut > 0; i++ {
-		// 0b10xxxxxx marks a UTF-8 continuation byte: cutting here would
+	for cut := maxSize; cut > 0 && maxSize-cut < 4; cut-- {
+		// 0b10xxxxxx marks a UTF-8 continuation byte: cutting there would
 		// split the rune that started earlier.
 		if s[cut]&0xC0 != 0x80 {
 			return cut
 		}
-		cut--
-	}
-	if cut > 0 && s[cut]&0xC0 != 0x80 {
-		return cut
 	}
 	return maxSize
 }
