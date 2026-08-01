@@ -37,6 +37,18 @@ func verifyPromptConsumedAfterLaunch(
 	if pollPromptConsumed(target, message, maxWait, pollInterval) {
 		return
 	}
+	// The retry types the message and presses Enter, so it submits whatever
+	// the composer holds at that moment. If that is content agent-deck cannot
+	// attribute — a materialized autosuggestion, an operator draft — the
+	// retry would submit it with our prompt appended (#1777). Withhold it and
+	// let the warning below surface the unconsumed prompt instead.
+	attrib := send.EnterAttribution{Message: message}
+	if attrib.EnterWouldSubmitForeignDraft(send.CaptureOutcome(target.CapturePaneFresh()), tmux.StripANSI) {
+		if warn != nil {
+			fmt.Fprintln(warn, "warning: launch prompt not consumed and the composer holds unattributable content; skipping the retry so nothing unauthored is submitted")
+		}
+		return
+	}
 	_ = target.SendKeysAndEnter(message)
 	if pollPromptConsumed(target, message, maxWait, pollInterval) {
 		return

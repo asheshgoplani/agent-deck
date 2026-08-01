@@ -3454,11 +3454,11 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		time.Sleep(opts.checkDelay)
 
 		unsentPromptDetected := false
-		// rawContent is this iteration's ANSI-bearing capture ("" when the
-		// capture failed), and is what the attribution gate reads.
-		rawContent := ""
-		if captured, captureErr := target.CapturePaneFresh(); captureErr == nil {
-			rawContent = captured
+		// paneNow is this iteration's observation (raw ANSI + whether the
+		// capture succeeded at all), and is what the attribution gate reads.
+		captured, captureErr := target.CapturePaneFresh()
+		paneNow := send.CaptureOutcome(captured, captureErr)
+		if paneNow.OK {
 			content := tmux.StripANSI(captured)
 			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
 			if !sawDeliveryEvidence && deliveryToken != "" && strings.Contains(content, deliveryToken) {
@@ -3473,7 +3473,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			waitingNoMarkerChecks = 0
 			waitingNoActivityChecks = 0
 			activeChecks = 0
-			attrib.NudgeEnter(target, rawContent, tmux.StripANSI)
+			attrib.NudgeEnter(target, paneNow, tmux.StripANSI)
 			continue
 		}
 
@@ -3507,8 +3507,21 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				if waitingNoActivityChecks >= fullResendThreshold && fullResendCount < maxFullResends {
 					fullResendCount++
 					waitingNoActivityChecks = 0
-					_ = target.SendCtrlC()
+					// The resend types the message and presses Enter, so it
+					// submits whatever the composer still holds. Ctrl+C is
+					// meant to empty it first — but a failed Ctrl+C, or one
+					// the agent ignored, would leave foreign content to be
+					// submitted with our payload appended (#1777). Re-read
+					// the pane and skip the resend unless the composer is
+					// verifiably clear of content we cannot attribute.
+					if ctrlCErr := target.SendCtrlC(); ctrlCErr != nil {
+						continue
+					}
 					time.Sleep(200 * time.Millisecond)
+					if attrib.EnterWouldSubmitForeignDraft(
+						send.CaptureOutcome(target.CapturePaneFresh()), tmux.StripANSI) {
+						continue
+					}
 					// A successful resend is not yet evidence of receipt — the
 					// next iteration must still observe a positive signal — so
 					// we intentionally do NOT set sawDeliveryEvidence here, even
@@ -3524,7 +3537,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				// retries) then every 2nd iteration. This addresses bracketed
 				// paste timing failures that are most likely early on.
 				if retry < 5 || retry%2 == 0 {
-					attrib.NudgeEnter(target, rawContent, tmux.StripANSI)
+					attrib.NudgeEnter(target, paneNow, tmux.StripANSI)
 				}
 			}
 			continue
@@ -3536,7 +3549,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		// Increased from 2 to 4 because some TUI frameworks take longer
 		// to process and reflect state.
 		if retry < 4 {
-			attrib.NudgeEnter(target, rawContent, tmux.StripANSI)
+			attrib.NudgeEnter(target, paneNow, tmux.StripANSI)
 		}
 	}
 

@@ -4353,11 +4353,11 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 		time.Sleep(verifyDelay)
 
 		unsentPromptDetected := false
-		// rawContent is this iteration's ANSI-bearing capture ("" when the
-		// capture failed), and is what the attribution gate reads.
-		rawContent := ""
-		if captured, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
-			rawContent = captured
+		// paneNow is this iteration's observation (raw ANSI + whether the
+		// capture succeeded at all), and is what the attribution gate reads.
+		captured, captureErr := i.tmuxSession.CapturePaneFresh()
+		paneNow := send.CaptureOutcome(captured, captureErr)
+		if paneNow.OK {
 			content := tmux.StripANSI(captured)
 			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
 		}
@@ -4366,7 +4366,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 		if unsentPromptDetected {
 			waitingNoMarkerChecks = 0
 			activeChecks = 0
-			attrib.NudgeEnter(i.tmuxSession, rawContent, tmux.StripANSI)
+			attrib.NudgeEnter(i.tmuxSession, paneNow, tmux.StripANSI)
 			continue
 		}
 
@@ -4390,7 +4390,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 			} else {
 				waitingNoMarkerChecks = 0
 				if retry < 5 || retry%2 == 0 {
-					attrib.NudgeEnter(i.tmuxSession, rawContent, tmux.StripANSI)
+					attrib.NudgeEnter(i.tmuxSession, paneNow, tmux.StripANSI)
 				}
 			}
 			continue
@@ -4398,7 +4398,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 
 		waitingNoMarkerChecks = 0
 		if retry < 4 {
-			attrib.NudgeEnter(i.tmuxSession, rawContent, tmux.StripANSI)
+			attrib.NudgeEnter(i.tmuxSession, paneNow, tmux.StripANSI)
 		}
 	}
 
