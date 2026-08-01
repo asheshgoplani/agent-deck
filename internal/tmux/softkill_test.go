@@ -17,6 +17,13 @@ import (
 )
 
 // runSoftkillHelper implements child-process behaviours selected by env.
+// softkillReadyEnv names the readiness-marker path handed to the helper. It is
+// namespaced rather than a bare "READY" because the helper inherits the full
+// parent environment: a CI runner that already exports READY for its own
+// purposes would otherwise point the helper at a path the parent never watches,
+// and every spawn would fail its readiness wait.
+const softkillReadyEnv = "AGENTDECK_SOFTKILL_READY"
+
 // Dispatched from testmain_test.go's TestMain when SOFTKILL_TEST_HELPER is
 // set. We cannot rely on /bin/sh traps because dash/bash on Linux delay trap
 // dispatch until the foreground `sleep` returns — SIGTERM-while-sleeping is
@@ -29,14 +36,15 @@ import (
 //     $ANTIMARKER and exit 1 (proves the parent took the signal-driven
 //     path when it should have taken the EOF path).
 //
-// Immediately after signal.Notify registers the handler, touch $READY (if
+// Immediately after signal.Notify registers the handler, touch the readiness
+// marker (if
 // set) so the parent can wait on real readiness instead of guessing — see
 // waitForReady's doc comment for why the previous kill(pid,0)+fixed-sleep
 // heuristic was flaky (#1776).
 func runSoftkillHelper(role string) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM)
-	if ready := os.Getenv("READY"); ready != "" {
+	if ready := os.Getenv(softkillReadyEnv); ready != "" {
 		_ = os.WriteFile(ready, []byte("ok"), 0o644)
 	}
 	switch role {
@@ -88,7 +96,7 @@ func spawnHelper(t *testing.T, role string, extraEnv ...string) *exec.Cmd {
 	require.NoError(t, err)
 	cmd := exec.Command(exe, "-test.run=^$") // run no tests in child
 	ready := filepath.Join(t.TempDir(), "ready")
-	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role, "READY="+ready)
+	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role, softkillReadyEnv+"="+ready)
 	env = append(env, extraEnv...)
 	cmd.Env = env
 	// Isolate child so it doesn't write to the parent's test output.
@@ -111,7 +119,7 @@ func spawnHelperInOwnGroup(t *testing.T, role string, extraEnv ...string) *exec.
 	require.NoError(t, err)
 	cmd := exec.Command(exe, "-test.run=^$") // run no tests in child
 	ready := filepath.Join(t.TempDir(), "ready")
-	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role, "READY="+ready)
+	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role, softkillReadyEnv+"="+ready)
 	env = append(env, extraEnv...)
 	cmd.Env = env
 	cmd.Stdout = nil
@@ -187,7 +195,8 @@ func registerOrphanReaper(t *testing.T, cmd *exec.Cmd) {
 // "term-handled: no such file or directory" flake (#1776).
 //
 // The fix is explicit synchronization instead of a bigger guess: the
-// helper itself touches $READY the instant signal.Notify returns (see
+// helper itself touches the readiness marker the instant signal.Notify
+// returns (see
 // runSoftkillHelper), and the parent waits on that file rather than on a
 // proxy for it.
 func waitForReady(t *testing.T, path string, d time.Duration) {
@@ -418,7 +427,7 @@ func spawnHelperWithStdinPipe(t *testing.T, role string, extraEnv ...string) (*e
 	require.NoError(t, err)
 	cmd := exec.Command(exe, "-test.run=^$")
 	ready := filepath.Join(t.TempDir(), "ready")
-	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role, "READY="+ready)
+	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role, softkillReadyEnv+"="+ready)
 	env = append(env, extraEnv...)
 	cmd.Env = env
 	cmd.Stdout = nil
