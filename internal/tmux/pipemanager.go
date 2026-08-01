@@ -691,6 +691,33 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 // instead of re-scanning all of /proc on every Connect.
 var orphanReapOnce sync.Once
 
+// isReapableTmuxClientComm reports whether a /proc/<pid>/comm value identifies
+// a tmux CLIENT — the only process class reapOrphanedPollClients may kill.
+//
+// tmux renames both of its process roles after startup, so comm is "tmux:
+// client" / "tmux: server" rather than the bare "tmux" of the argv[0] the
+// process was exec'd with. (Verified on tmux 3.0a / Linux 5.4: `pgrep -x tmux`
+// matches nothing on a host running twenty tmux processes.) An earlier
+// equality test against "tmux" therefore matched no process at all and left
+// the sweep inert — orphaned query clients spun at 100% CPU for as long as the
+// host stayed up.
+//
+// The bare "tmux" case is kept because the rename is a tmux implementation
+// detail, not a guarantee: a client that has not yet renamed itself, or a
+// version that never does, must still be reapable.
+//
+// "tmux: server" MUST NOT match. The sweep SIGKILLs whatever it matches, and a
+// server holds every session it hosts, so a false positive there destroys the
+// user's running work rather than a leaked one-shot query.
+func isReapableTmuxClientComm(comm string) bool {
+	switch strings.TrimSpace(comm) {
+	case "tmux", "tmux: client":
+		return true
+	default:
+		return false
+	}
+}
+
 // reapOrphanedPollClients kills leaked one-shot tmux *command* clients — the
 // `list-clients` / `display-message` / `list-panes` / status `set-option`
 // invocations agent-deck fires on a cadence — that a previous run spawned and
@@ -705,8 +732,8 @@ var orphanReapOnce sync.Once
 // timeout because the TUI was SIGKILL'd / OOM-killed mid-command.
 //
 // Safety — a process is killed only when ALL hold:
-//   - it is the `tmux` client binary (comm == "tmux"; the server is
-//     "tmux: server" and never matches),
+//   - it is a tmux CLIENT process (isReapableTmuxClientComm; the server
+//     renames itself to "tmux: server" and is never matched),
 //   - its argv targets an agent-deck session (contains SessionPrefix), so a
 //     user's unrelated tmux is never touched, and
 //   - it is a reparented orphan no longer owned by any live agent-deck TUI
@@ -734,7 +761,7 @@ func reapOrphanedPollClients() {
 			continue
 		}
 		comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-		if err != nil || strings.TrimSpace(string(comm)) != "tmux" {
+		if err != nil || !isReapableTmuxClientComm(string(comm)) {
 			continue
 		}
 		// cmdline fields are NUL-separated; substring search still matches the
