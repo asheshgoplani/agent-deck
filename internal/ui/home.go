@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"al.essio.dev/pkg/shellescape"
 	"github.com/BurntSushi/toml"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
@@ -7401,7 +7402,12 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		var cmdBuilder strings.Builder
 		if session.IsClaudeConfigDirExplicitForGroup(inst.GroupPath) {
 			configDir := session.GetClaudeConfigDirForGroup(inst.GroupPath)
-			cmdBuilder.WriteString(fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir))
+			// #1815 (Codex review on #1830): quote exactly as
+			// Instance.buildBashExportPrefix does (instance.go, audit F2) —
+			// this string is baked into inst.Command and ends up in a
+			// `bash -c` payload, so an unquoted config_dir containing
+			// whitespace, ;, or $(...) breaks the command or injects.
+			cmdBuilder.WriteString(fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(configDir)))
 		}
 		// #1815: the TUI picker builds a resume command too, so it routes
 		// through the same resume-time identity guard as restart / start /
