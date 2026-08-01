@@ -526,3 +526,165 @@ func TestMaterialize_RefusesSymlinkedProjectSourceDir(t *testing.T) {
 		t.Fatalf("expected refusal for source under a symlinked project skills dir")
 	}
 }
+
+// --- Round-5 hardening: pinned directory descriptors ---
+
+// TestOpenPinnedDir_RefusesSymlinkedComponentInsideProject proves the pinning
+// walk refuses a managed-dir component that is a symlink even when it stays
+// INSIDE the project (".claude/skills -> .."), which os.Root alone permits
+// because it never leaves the root. Removal and materialization must not be
+// able to reach the project root that way.
+func TestOpenPinnedDir_RefusesSymlinkedComponentInsideProject(t *testing.T) {
+	projectPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectPath, ".claude"), 0o755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	if err := os.Symlink("..", filepath.Join(projectPath, ".claude", "skills")); err != nil {
+		t.Fatalf("symlink skills dir: %v", err)
+	}
+
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		t.Fatalf("openProjectRoot: %v", err)
+	}
+	defer p.Close()
+
+	if _, err := p.openPinnedDir(filepath.FromSlash(projectClaudeSkillsDir), false); err == nil {
+		t.Fatalf("expected pinned open to refuse a symlinked component")
+	}
+	if _, err := p.openPinnedDir(filepath.FromSlash(projectClaudeSkillsDir), true); err == nil {
+		t.Fatalf("expected pinned open (create) to refuse a symlinked component")
+	}
+}
+
+// TestOpenTargetParent_AllowsRealManagedDirAndPoolLink proves the pinned path
+// still serves the legitimate flows: a real managed dir is pinned and created
+// on demand, and a final-component pool symlink inside it is addressed by name.
+func TestOpenTargetParent_AllowsRealManagedDirAndPoolLink(t *testing.T) {
+	projectPath := t.TempDir()
+	pool := t.TempDir()
+	poolSkill := filepath.Join(pool, "my-skill")
+	if err := os.MkdirAll(poolSkill, 0o755); err != nil {
+		t.Fatalf("mkdir pool skill: %v", err)
+	}
+
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		t.Fatalf("openProjectRoot: %v", err)
+	}
+	defer p.Close()
+
+	targetRel := buildProjectSkillTargetPath(projectClaudeSkillsDir, "my-skill")
+	parent, name, err := p.openTargetParent(targetRel, true)
+	if err != nil {
+		t.Fatalf("expected managed dir to be created and pinned, got: %v", err)
+	}
+	if name != "my-skill" {
+		t.Fatalf("entry name = %q, want my-skill", name)
+	}
+	if err := parent.Symlink(poolSkill, name); err != nil {
+		t.Fatalf("pool symlink creation failed: %v", err)
+	}
+	parent.Close()
+
+	if err := p.removeManagedTarget(targetRel); err != nil {
+		t.Fatalf("removal of pool symlink failed: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(projectPath, ".claude", "skills", "my-skill")); !os.IsNotExist(err) {
+		t.Fatalf("expected the link to be removed, got: %v", err)
+	}
+	if _, err := os.Stat(poolSkill); err != nil {
+		t.Fatalf("pool destination was deleted through the link: %v", err)
+	}
+}
+
+// TestSaveManifest_UsesExclusiveRandomTempFile proves the manifest save no
+// longer truncates a predictable temp path (which could be pre-created as a
+// hard link to a victim file) and leaves no temp file behind.
+func TestSaveManifest_UsesExclusiveRandomTempFile(t *testing.T) {
+	projectPath := t.TempDir()
+	dir := filepath.Join(projectPath, projectSkillsDirName)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir .agent-deck: %v", err)
+	}
+	squatted := filepath.Join(dir, projectSkillsManifest+".tmp")
+	if err := os.WriteFile(squatted, []byte("victim"), 0o600); err != nil {
+		t.Fatalf("seed squatted temp file: %v", err)
+	}
+
+	if err := SaveProjectSkillsManifest(projectPath, &ProjectSkillsManifest{}); err != nil {
+		t.Fatalf("SaveProjectSkillsManifest failed: %v", err)
+	}
+
+	content, err := os.ReadFile(squatted)
+	if err != nil {
+		t.Fatalf("squatted temp file disappeared: %v", err)
+	}
+	if string(content) != "victim" {
+		t.Fatalf("squatted temp file was overwritten: %q", string(content))
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read manifest dir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != projectSkillsManifest && e.Name() != projectSkillsManifest+".tmp" {
+			t.Fatalf("save left a stray temp file behind: %s", e.Name())
+		}
+	}
+}
+
+// TestTargetExists_DanglingPoolLinkCountsAbsent proves a leftover link into a
+// pool entry that no longer exists is treated as ABSENT (so attach
+// rematerializes) rather than as an attached skill.
+func TestTargetExists_DanglingPoolLinkCountsAbsent(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	poolRoot := t.TempDir()
+	writeSkillDir(t, poolRoot, "lint", "lint", "Linting best practices")
+	if err := SaveSkillSources(map[string]SkillSourceDef{
+		"pool": {Path: poolRoot, Enabled: boolPtr(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
+
+	projectPath := t.TempDir()
+	skillsDir := filepath.Join(projectPath, ".claude", "skills")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatalf("mkdir skills dir: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(poolRoot, "gone"), filepath.Join(skillsDir, "lint")); err != nil {
+		t.Fatalf("symlink dangling pool entry: %v", err)
+	}
+
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		t.Fatalf("openProjectRoot: %v", err)
+	}
+	defer p.Close()
+
+	targetRel := buildProjectSkillTargetPath(projectClaudeSkillsDir, "lint")
+	exists, err := p.targetExists(targetRel)
+	if err != nil {
+		t.Fatalf("targetExists failed: %v", err)
+	}
+	if exists {
+		t.Fatalf("dangling pool link should count as absent")
+	}
+
+	// A live pool link counts as present.
+	if err := os.Remove(filepath.Join(skillsDir, "lint")); err != nil {
+		t.Fatalf("remove dangling link: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(poolRoot, "lint"), filepath.Join(skillsDir, "lint")); err != nil {
+		t.Fatalf("symlink live pool entry: %v", err)
+	}
+	exists, err = p.targetExists(targetRel)
+	if err != nil {
+		t.Fatalf("targetExists failed: %v", err)
+	}
+	if !exists {
+		t.Fatalf("live pool link should count as present")
+	}
+}

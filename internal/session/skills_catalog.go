@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -727,12 +728,16 @@ func sortAttachments(skills []ProjectSkillAttachment) {
 // but a repo can still ship .agent-deck as a symlink; requireNoSymlinkAncestors
 // refuses that instead of reading (or later writing) through it.
 func (p *projectRoot) loadManifest() (*ProjectSkillsManifest, error) {
-	rel := filepath.Join(projectSkillsDirName, projectSkillsManifest)
-	if err := p.requireNoSymlinkAncestors(rel, false); err != nil {
+	dir, err := p.openPinnedDir(projectSkillsDirName, false)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &ProjectSkillsManifest{Skills: []ProjectSkillAttachment{}}, nil
+		}
 		return nil, err
 	}
+	defer dir.Close()
 
-	data, err := p.root.ReadFile(rel)
+	data, err := dir.ReadFile(projectSkillsManifest)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &ProjectSkillsManifest{Skills: []ProjectSkillAttachment{}}, nil
@@ -769,13 +774,11 @@ func (p *projectRoot) saveManifest(manifest *ProjectSkillsManifest) error {
 	}
 	sortAttachments(manifest.Skills)
 
-	rel := filepath.Join(projectSkillsDirName, projectSkillsManifest)
-	if err := p.requireNoSymlinkAncestors(rel, false); err != nil {
-		return err
+	dir, err := p.openPinnedDir(projectSkillsDirName, true)
+	if err != nil {
+		return fmt.Errorf("failed to open manifest directory: %w", err)
 	}
-	if err := p.root.MkdirAll(projectSkillsDirName, 0o700); err != nil {
-		return fmt.Errorf("failed to create manifest directory: %w", err)
-	}
+	defer dir.Close()
 
 	var buf bytes.Buffer
 	encoder := toml.NewEncoder(&buf)
@@ -783,12 +786,29 @@ func (p *projectRoot) saveManifest(manifest *ProjectSkillsManifest) error {
 		return fmt.Errorf("failed to encode skills manifest: %w", err)
 	}
 
-	tmpRel := rel + ".tmp"
-	if err := p.root.WriteFile(tmpRel, buf.Bytes(), 0o600); err != nil {
+	// Randomized name + O_CREATE|O_EXCL: a predictable, truncating temp path
+	// can be pre-created as a hard link to a victim file, which the save would
+	// then truncate. O_EXCL refuses to reuse any existing entry.
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
 		return fmt.Errorf("failed to write skills manifest: %w", err)
 	}
-	if err := p.root.Rename(tmpRel, rel); err != nil {
-		_ = p.root.Remove(tmpRel)
+	tmpName := fmt.Sprintf("%s.%x.tmp", projectSkillsManifest, nonce)
+	tmpFile, err := dir.OpenFile(tmpName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to write skills manifest: %w", err)
+	}
+	if _, err := tmpFile.Write(buf.Bytes()); err != nil {
+		_ = tmpFile.Close()
+		_ = dir.Remove(tmpName)
+		return fmt.Errorf("failed to write skills manifest: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = dir.Remove(tmpName)
+		return fmt.Errorf("failed to write skills manifest: %w", err)
+	}
+	if err := dir.Rename(tmpName, projectSkillsManifest); err != nil {
+		_ = dir.Remove(tmpName)
 		return fmt.Errorf("failed to save skills manifest: %w", err)
 	}
 	return nil
@@ -933,6 +953,7 @@ func copyDir(src, dst string) error {
 type projectRoot struct {
 	path string
 	root *os.Root
+	info os.FileInfo // the pinned project dir itself, for device identity
 }
 
 func openProjectRoot(projectPath string) (*projectRoot, error) {
@@ -940,7 +961,117 @@ func openProjectRoot(projectPath string) (*projectRoot, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &projectRoot{path: filepath.Clean(projectPath), root: root}, nil
+	info, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return &projectRoot{path: filepath.Clean(projectPath), root: root, info: info}, nil
+}
+
+// openPinnedChildDir opens ONE component below parent as a pinned child root.
+//
+// This is what makes validation and mutation inseparable. Checking a name and
+// then operating on that name again leaves a window in which the entry can be
+// swapped for a symlink that still resolves INSIDE the project (".claude/skills
+// -> ..", which os.Root permits because it never leaves the root) — the check
+// passes and the mutation lands on the project root. Here the entry is
+// inspected with Lstat, opened, and the OPENED DESCRIPTOR is then verified to
+// be the very inode that was inspected (os.SameFile). A swap in between
+// changes the identity and is refused; everything afterwards runs against the
+// descriptor, which no rename can redirect.
+//
+// The component must be a real directory (never a symlink) on the same
+// filesystem as the project, so a mount planted at a managed dir cannot
+// redirect removal or materialization onto foreign content either.
+func (p *projectRoot) openPinnedChildDir(parent *os.Root, name string, create bool) (*os.Root, error) {
+	info, err := parent.Lstat(name)
+	if err != nil {
+		if !os.IsNotExist(err) || !create {
+			return nil, err
+		}
+		if err := parent.Mkdir(name, 0o755); err != nil && !os.IsExist(err) {
+			return nil, err
+		}
+		info, err = parent.Lstat(name)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to use symlinked directory component: %s", name)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("refusing to use non-directory component: %s", name)
+	}
+	child, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	pinned, err := child.Stat(".")
+	if err != nil {
+		_ = child.Close()
+		return nil, err
+	}
+	if !os.SameFile(info, pinned) {
+		_ = child.Close()
+		return nil, fmt.Errorf("refusing to use directory component that changed identity during validation: %s", name)
+	}
+	if !sameFilesystem(p.info, pinned) {
+		_ = child.Close()
+		return nil, fmt.Errorf("refusing to use directory component on a different filesystem: %s", name)
+	}
+	return child, nil
+}
+
+// openPinnedDir walks rel component by component, pinning each directory by
+// descriptor identity. The returned root is the deepest directory; the caller
+// operates on entries inside it by NAME ONLY, never by reassembled path.
+func (p *projectRoot) openPinnedDir(rel string, create bool) (*os.Root, error) {
+	current := p.root
+	owned := false
+	for _, component := range strings.Split(filepath.Clean(rel), string(os.PathSeparator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		next, err := p.openPinnedChildDir(current, component, create)
+		if err != nil {
+			if owned {
+				_ = current.Close()
+			}
+			return nil, err
+		}
+		if owned {
+			_ = current.Close()
+		}
+		current = next
+		owned = true
+	}
+	if !owned {
+		return nil, fmt.Errorf("refusing to pin the project root itself")
+	}
+	return current, nil
+}
+
+// openTargetParent validates a managed target and returns the PINNED directory
+// that contains it plus the final entry name. Every managed-target operation
+// (exists checks, RemoveAll, Symlink, copy) runs through this pair, so nothing
+// downstream ever re-resolves a path.
+func (p *projectRoot) openTargetParent(targetRel string, create bool) (*os.Root, string, error) {
+	rel, err := p.validateManagedTarget(targetRel)
+	if err != nil {
+		return nil, "", err
+	}
+	dir, name := filepath.Split(rel)
+	dir = filepath.Clean(dir)
+	if name == "" {
+		return nil, "", fmt.Errorf("refusing to operate on the managed project skills dir itself: %s", p.abs(rel))
+	}
+	parent, err := p.openPinnedDir(dir, create)
+	if err != nil {
+		return nil, "", err
+	}
+	return parent, name, nil
 }
 
 func (p *projectRoot) Close() {
@@ -1036,23 +1167,82 @@ func (p *projectRoot) validateManagedTarget(targetRel string) (string, error) {
 // while a pool symlink whose destination legitimately lives outside the
 // project is "present" (Root refuses to traverse the escape, which is itself
 // proof the entry exists as an escaping link).
-func (p *projectRoot) targetExists(rel string) (bool, error) {
-	if _, err := p.root.Stat(rel); err == nil {
-		return true, nil
-	} else if !os.IsNotExist(err) {
-		if _, lerr := p.root.Lstat(rel); lerr == nil {
-			return true, nil
-		} else if !os.IsNotExist(lerr) {
-			return false, err
+func (p *projectRoot) targetExists(targetRel string) (bool, error) {
+	parent, name, err := p.openTargetParent(targetRel, false)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
 		}
+		return false, err
 	}
-	return false, nil
+	defer parent.Close()
+
+	if _, err := parent.Stat(name); err == nil {
+		return true, nil
+	} else if os.IsNotExist(err) {
+		return false, nil
+	}
+
+	// Root.Stat reports the escape before it reports whether the destination
+	// exists, so an out-of-root link lands here whether it is a live pool
+	// attachment or a dangling leftover. Read the link and check the
+	// destination through a registered source root: a live pool skill counts
+	// as present, a dangling or non-source destination counts as ABSENT so the
+	// attach flow rematerializes over it instead of reporting it attached.
+	info, lerr := parent.Lstat(name)
+	if lerr != nil {
+		if os.IsNotExist(lerr) {
+			return false, nil
+		}
+		return false, lerr
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return true, nil
+	}
+	dest, rerr := parent.Readlink(name)
+	if rerr != nil {
+		return false, nil
+	}
+	if !filepath.IsAbs(dest) {
+		dest = filepath.Join(p.physicalDirOf(targetRel), dest)
+	}
+	srcRoot, srcRel, _, err := p.openContainedSource(dest)
+	if err != nil {
+		return false, nil
+	}
+	defer srcRoot.Close()
+	if _, err := srcRoot.Stat(srcRel); err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+// physicalDirOf returns the canonical, symlink-resolved directory that holds
+// targetRel. Relative link text must be joined against the PHYSICAL directory
+// (that is what the kernel does, and what materialize used when it computed
+// the link text); joining against a lexical alias would resolve pool links to
+// the wrong path on alias-accessed projects.
+func (p *projectRoot) physicalDirOf(targetRel string) string {
+	dir := filepath.Dir(resolveTargetPath(p.path, targetRel))
+	if physical, err := filepath.EvalSymlinks(dir); err == nil {
+		return physical
+	}
+	return dir
 }
 
 // targetEntryExists reports whether the entry itself exists (Lstat semantics:
 // a symlink counts even when it dangles).
-func (p *projectRoot) targetEntryExists(rel string) (bool, error) {
-	if _, err := p.root.Lstat(rel); err == nil {
+func (p *projectRoot) targetEntryExists(targetRel string) (bool, error) {
+	parent, name, err := p.openTargetParent(targetRel, false)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer parent.Close()
+
+	if _, err := parent.Lstat(name); err == nil {
 		return true, nil
 	} else if !os.IsNotExist(err) {
 		return false, err
@@ -1098,7 +1288,11 @@ func (p *projectRoot) openContainedSource(sourcePath string) (*os.Root, string, 
 			return nil, "", "", rerr
 		}
 		if !filepath.IsAbs(dest) {
-			dest = filepath.Join(filepath.Dir(abs), dest)
+			baseDir := filepath.Dir(abs)
+			if physical, perr := filepath.EvalSymlinks(baseDir); perr == nil {
+				baseDir = physical
+			}
+			dest = filepath.Join(baseDir, dest)
 		}
 		resolved = filepath.Clean(dest)
 	}
@@ -1148,7 +1342,9 @@ func (p *projectRoot) openSourceRootFor(resolved string) (*os.Root, string, stri
 		if err := p.requireNoSymlinkAncestors(rel, true); err != nil {
 			return nil, "", "", err
 		}
-		root, err := p.root.OpenRoot(filepath.FromSlash(dir))
+		// Pinned by descriptor identity, same as the target side: a source dir
+		// swapped for a symlink after validation cannot be opened.
+		root, err := p.openPinnedDir(filepath.FromSlash(dir), false)
 		if err != nil {
 			return nil, "", "", err
 		}
@@ -1269,16 +1465,13 @@ func (p *projectRoot) materialize(sourcePath, targetRel string, copyOnly bool) (
 	}
 	defer srcRoot.Close()
 
-	rel, err := p.validateManagedTarget(targetRel)
+	parent, name, err := p.openTargetParent(targetRel, true)
 	if err != nil {
 		return "", err
 	}
-	if dir := filepath.Dir(rel); dir != "." {
-		if err := p.root.MkdirAll(dir, 0o755); err != nil {
-			return "", err
-		}
-	}
-	if err := p.root.RemoveAll(rel); err != nil {
+	defer parent.Close()
+
+	if err := parent.RemoveAll(name); err != nil {
 		return "", err
 	}
 
@@ -1292,24 +1485,21 @@ func (p *projectRoot) materialize(sourcePath, targetRel string, copyOnly bool) (
 		// path: the source exists (its root Stat'ed it below) and the link text
 		// is verified to rejoin exactly to the source.
 		if _, serr := srcRoot.Stat(srcRel); serr == nil {
-			linkBase := p.abs(filepath.Dir(rel))
-			if resolvedBase, rerr := filepath.EvalSymlinks(linkBase); rerr == nil {
-				linkBase = resolvedBase
-			}
+			linkBase := p.physicalDirOf(targetRel)
 			sourceTarget := srcAbs
 			if resolvedSource, rerr := filepath.EvalSymlinks(srcAbs); rerr == nil {
 				sourceTarget = resolvedSource
 			}
 			if linkText, rerr := filepath.Rel(linkBase, sourceTarget); rerr == nil &&
 				filepath.Clean(filepath.Join(linkBase, linkText)) == filepath.Clean(sourceTarget) {
-				if err := p.root.Symlink(linkText, rel); err == nil {
+				if err := parent.Symlink(linkText, name); err == nil {
 					return "symlink", nil
 				}
 			}
 		}
 	}
 
-	return copySkillIntoRoot(p.root, srcRoot, srcRel, rel)
+	return copySkillIntoRoot(parent, srcRoot, srcRel, name)
 }
 
 // removeManagedTarget validates and removes in one descriptor-relative step:
@@ -1317,11 +1507,15 @@ func (p *projectRoot) materialize(sourcePath, targetRel string, copyOnly bool) (
 // root, so there is no revalidated-by-name window between them. A non-managed,
 // absolute, or "../"-escaping target is REFUSED and never removed (Audit M3).
 func (p *projectRoot) removeManagedTarget(targetRel string) error {
-	rel, err := p.validateManagedTarget(targetRel)
+	parent, name, err := p.openTargetParent(targetRel, false)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return fmt.Errorf("refusing to remove path outside managed project skills dirs: %w", err)
 	}
-	return p.root.RemoveAll(rel)
+	defer parent.Close()
+	return parent.RemoveAll(name)
 }
 
 // materializeSkill / materializeSkillCopyOnly / safeRemoveManagedTarget are the
