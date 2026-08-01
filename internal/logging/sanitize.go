@@ -9,31 +9,30 @@ import "strings"
 // original value stays legible without letting it inject new record
 // boundaries. Call this on any user- or session-supplied string (path,
 // title, session ID, env value, ...) before passing it to a log call.
+//
+// Every path builds a fresh string; the input is never returned. The two
+// former fast paths ("" and "nothing needed escaping" returned s unchanged)
+// were behaviorally identical but made this function useless as a sanitizer
+// barrier: dataflow analysis follows those returns and sees the tainted value
+// arriving at the log sink untouched, so go/log-injection kept firing on every
+// call site no matter how many were fixed. Returning a built string on all
+// paths is what makes the barrier real.
 func SanitizeValue(s string) string {
-	if s == "" {
-		return s
-	}
 	var b strings.Builder
-	dirty := false
+	b.Grow(len(s))
 	for _, r := range s {
 		switch {
 		case r == '\n':
-			dirty = true
 			b.WriteString(`\n`)
 		case r == '\r':
-			dirty = true
 			b.WriteString(`\r`)
 		case r == '\t':
 			b.WriteByte('\t')
 		case r < 0x20 || r == 0x7f:
-			dirty = true
 			b.WriteRune(0xfffd)
 		default:
 			b.WriteRune(r)
 		}
-	}
-	if !dirty {
-		return s
 	}
 	return b.String()
 }

@@ -1,6 +1,9 @@
 package logging
 
-import "testing"
+import (
+	"testing"
+	"unsafe"
+)
 
 func TestSanitizeValue(t *testing.T) {
 	cases := []struct {
@@ -27,5 +30,29 @@ func TestSanitizeValue(t *testing.T) {
 				t.Fatalf("SanitizeValue(%q) left the injected control character untouched", tc.in)
 			}
 		})
+	}
+}
+
+// TestSanitizeValue_NeverAliasesItsInput pins the property that makes
+// SanitizeValue usable as a sanitizer barrier: no input, however clean, is
+// returned as-is. The value must always come from the builder.
+//
+// This is not stylistic. While the function short-circuited with `return s`
+// for empty and already-clean inputs — behaviorally identical results —
+// dataflow analysis followed those returns and saw the tainted argument
+// reaching the log sink unchanged, so CodeQL's go/log-injection kept firing on
+// every call site regardless of how many were wrapped. Restoring a
+// pass-through would silently un-fix all of them, so assert against the string
+// data pointer, which equality alone cannot catch.
+func TestSanitizeValue_NeverAliasesItsInput(t *testing.T) {
+	for _, in := range []string{"", "my-session-42", "col1\tcol2", "sess-éè"} {
+		got := SanitizeValue(in)
+		if got != in {
+			t.Fatalf("SanitizeValue(%q) = %q, want the value unchanged", in, got)
+		}
+		if len(in) > 0 && unsafe.StringData(got) == unsafe.StringData(in) {
+			t.Fatalf("SanitizeValue(%q) returned its input rather than a built string; "+
+				"that pass-through defeats CodeQL sanitizer detection at every call site", in)
+		}
 	}
 }
