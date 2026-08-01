@@ -50,10 +50,19 @@ func spawnFailureRecordPath(instanceID string) string {
 // writeSpawnFailureRecord persists a record atomically. Best-effort: a failure
 // to write must never block or crash the caller.
 func writeSpawnFailureRecord(rec SpawnFailureRecord) error {
+	return writeSpawnFailureRecordTo(rec, spawnFailureDir())
+}
+
+// writeSpawnFailureRecordTo is the path-explicit variant, used by
+// watchForFastDeath. dir is resolved once by the caller at goroutine-spawn
+// time (see the comment on watchForFastDeath) rather than re-resolved here
+// from the live $HOME, which could have moved on by the time the watcher's
+// goroutine — never joined — actually gets to write.
+func writeSpawnFailureRecordTo(rec SpawnFailureRecord, dir string) error {
 	if rec.Timestamp == 0 {
 		rec.Timestamp = time.Now().Unix()
 	}
-	path := spawnFailureRecordPath(rec.InstanceID)
+	path := filepath.Join(dir, rec.InstanceID+".json")
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("create spawn-failure dir: %w", err)
 	}
@@ -161,7 +170,14 @@ const (
 // bumpSpawnGen()'s wake channel (see instance.go) lets that supersession be
 // noticed immediately rather than only on the next spawnFastDeathTick poll —
 // see spawnGenWake's doc comment for why the up-to-one-tick tail mattered.
-func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Session, id, tool string, logger *slog.Logger) {
+//
+// lifecycleLogPath and failureDir are likewise passed by value rather than
+// resolved here from the live $HOME: this goroutine is never joined, so it
+// can still be alive (parked on the ticker) after its caller's test has
+// finished and a later test has repointed $HOME. Resolving live at write
+// time would make the watcher write into whatever $HOME happens to be
+// current when it fires, not the one that was current when it was spawned.
+func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string) {
 	if sess == nil {
 		return
 	}
@@ -203,12 +219,12 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Sess
 			}
 			if time.Now().After(deadline) {
 				// Survived the window: healthy start.
-				_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
 					InstanceID: id,
 					Tool:       tool,
 					Action:     "spawn_survived",
 					Source:     "spawn_watcher",
-				})
+				}, lifecycleLogPath)
 				return
 			}
 			continue
@@ -224,7 +240,7 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Sess
 			DyingOutput: lastSnapshot,
 			ElapsedMs:   elapsed,
 		}
-		if err := writeSpawnFailureRecord(rec); err != nil {
+		if err := writeSpawnFailureRecordTo(rec, failureDir); err != nil {
 			logger.Warn("spawn_failure_record_write_failed",
 				slog.String("instance_id", id),
 				slog.String("error", err.Error()))
@@ -235,13 +251,13 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Sess
 			slog.String("command", command),
 			slog.Int64("elapsed_ms", elapsed),
 			slog.String("dying_output", lastSnapshot))
-		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+		_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
 			InstanceID: id,
 			Tool:       tool,
 			Action:     "spawn_died_fast",
 			Source:     "spawn_watcher",
 			Reason:     fmt.Sprintf("exited after %dms", elapsed),
-		})
+		}, lifecycleLogPath)
 		return
 	}
 }

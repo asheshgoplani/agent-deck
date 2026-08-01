@@ -95,6 +95,7 @@ func spawnHelper(t *testing.T, role string, extraEnv ...string) *exec.Cmd {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	require.NoError(t, cmd.Start())
+	registerOrphanReaper(t, cmd)
 	waitForReady(t, ready, 5*time.Second)
 	return cmd
 }
@@ -117,8 +118,31 @@ func spawnHelperInOwnGroup(t *testing.T, role string, extraEnv ...string) *exec.
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
+	registerOrphanReaper(t, cmd)
 	waitForReady(t, ready, 5*time.Second)
 	return cmd
+}
+
+// registerOrphanReaper registers a t.Cleanup that force-kills and reaps cmd,
+// guarding against a leaked helper process. It must be called immediately
+// after cmd.Start() succeeds — specifically BEFORE waitForReady, whose
+// t.Fatalf on a timeout would otherwise abort the test before the caller's
+// own (more careful, waitDone-synchronized) cleanup ever gets registered,
+// leaving the just-started helper orphaned. The "ignore" role in particular
+// drains SIGTERM and blocks forever (see runSoftkillHelper), so an orphaned
+// instance of it survives indefinitely on the runner rather than exiting on
+// its own — the exact process-exhaustion failure mode this repo has hit
+// before (see the tmux hygiene rules in CLAUDE.md).
+//
+// Cleanups run LIFO, so on the success path this runs after the caller's own
+// cleanup and is a cheap no-op (Kill/Wait on an already-reaped process just
+// return an error, which is ignored).
+func registerOrphanReaper(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
 }
 
 // waitForReady polls until the helper's readiness marker file exists, or
@@ -376,6 +400,7 @@ func spawnHelperWithStdinPipe(t *testing.T, role string, extraEnv ...string) (*e
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)
 	require.NoError(t, cmd.Start())
+	registerOrphanReaper(t, cmd)
 	waitForReady(t, ready, 5*time.Second)
 	return cmd, stdin
 }
