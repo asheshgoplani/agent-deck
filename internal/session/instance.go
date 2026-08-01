@@ -3348,10 +3348,11 @@ func (i *Instance) ensureClaudeSessionIDFromDisk() {
 	// in a shared directory can belong to another session. Record it as
 	// UNVERIFIED so the resume-time identity guard refuses to --resume it.
 	i.adoptDiscoveredClaudeSessionID(uuid)
-	sessionLog.Info("resume: id="+uuid+" reason=jsonl_discovery",
-		slog.String("instance_id", i.ID),
-		slog.String("claude_session_id", uuid),
-		slog.String("path", lookupPath),
+	safeUUID := logging.SanitizeValue(uuid)
+	sessionLog.Info("resume: id="+safeUUID+" reason=jsonl_discovery",
+		slog.String("instance_id", logging.SanitizeValue(i.ID)),
+		slog.String("claude_session_id", safeUUID),
+		slog.String("path", logging.SanitizeValue(lookupPath)),
 		slog.String("reason", "jsonl_discovery"))
 }
 
@@ -3398,10 +3399,11 @@ func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
 	if i.ClaudeDetectedAt.IsZero() {
 		i.ClaudeDetectedAt = time.Now()
 	}
-	sessionLog.Info("resume: id="+uuid+" reason=jsonl_discovery_restart",
-		slog.String("instance_id", i.ID),
-		slog.String("claude_session_id", uuid),
-		slog.String("path", lookupPath),
+	safeUUID := logging.SanitizeValue(uuid)
+	sessionLog.Info("resume: id="+safeUUID+" reason=jsonl_discovery_restart",
+		slog.String("instance_id", logging.SanitizeValue(i.ID)),
+		slog.String("claude_session_id", safeUUID),
+		slog.String("path", logging.SanitizeValue(lookupPath)),
 		slog.String("reason", "jsonl_discovery_restart"))
 }
 
@@ -4407,6 +4409,8 @@ func (i *Instance) UpdateStatus() error {
 			case IsClaudeCompatible(i.Tool):
 				if i.hookSessionID != i.ClaudeSessionID {
 					i.ClaudeSessionID = i.hookSessionID
+					// #1815: own hook anchor — verified ownership.
+					i.markClaudeSessionIDVerified()
 					i.ClaudeDetectedAt = time.Now()
 				}
 			case IsCodexCompatible(i.Tool):
@@ -5342,6 +5346,8 @@ func (i *Instance) WaitForClaudeSession(maxWait time.Duration) string {
 		// Check tmux environment (set by capture-resume pattern)
 		if sessionID := i.GetSessionIDFromTmux(); sessionID != "" {
 			i.ClaudeSessionID = sessionID
+			// #1815: this instance's OWN pane env identifies this session.
+			i.markClaudeSessionIDVerified()
 			i.ClaudeDetectedAt = time.Now()
 			return sessionID
 		}
@@ -5619,6 +5625,8 @@ func (i *Instance) SyncSessionIDsFromTmux() {
 
 	if id, err := i.tmuxSession.GetEnvironment("CLAUDE_SESSION_ID"); err == nil && id != "" {
 		i.ClaudeSessionID = id
+		// #1815: own pane env — verified ownership.
+		i.markClaudeSessionIDVerified()
 		if i.ClaudeDetectedAt.IsZero() {
 			i.ClaudeDetectedAt = time.Now()
 		}
@@ -5713,6 +5721,8 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 		// Refresh from tmux env (fast path)
 		if sessionID := i.GetSessionIDFromTmux(); sessionID != "" {
 			i.ClaudeSessionID = sessionID
+			// #1815: own pane env — verified ownership.
+			i.markClaudeSessionIDVerified()
 			i.ClaudeDetectedAt = time.Now()
 			if recovered, recoverErr := i.getClaudeLastResponse(); recoverErr == nil {
 				return recovered, nil
@@ -7290,11 +7300,13 @@ func (i *Instance) buildClaudeResumeCommand() string {
 		i.logResumeRefusal(refused, decision.Reason)
 		fresh := i.replaceRefusedClaudeSessionID()
 		extraFlags := i.buildClaudeExtraFlags(opts)
+		// `fresh` is minted here so it is trusted, but `refused` and the path
+		// are session-supplied; sanitize both (CodeQL go/log-injection).
 		sessionLog.Info("resume: id="+fresh+" reason=identity_guard_fresh_session",
-			slog.String("instance_id", i.ID),
+			slog.String("instance_id", logging.SanitizeValue(i.ID)),
 			slog.String("claude_session_id", fresh),
-			slog.String("refused_session_id", refused),
-			slog.String("path", i.ProjectPath),
+			slog.String("refused_session_id", logging.SanitizeValue(refused)),
+			slog.String("path", logging.SanitizeValue(i.ProjectPath)),
 			slog.String("reason", "identity_guard_fresh_session"))
 		return fmt.Sprintf("%s%s%s --session-id %s%s",
 			envPrefix, configDirPrefix, claudeCmd, fresh, extraFlags)
@@ -7322,17 +7334,22 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// buildClaudeResumeCommand call — NOT sync.Once'd. See CONTEXT Decision 2.
 	// Every Start / StartWithMessage / Restart dispatch that routes through
 	// this helper produces exactly one "resume: id=<id> reason=<why>" line.
+	// Same sanitization as the identity-guard line above: the id and path are
+	// session-supplied (CodeQL go/log-injection).
+	safeSID := logging.SanitizeValue(i.ClaudeSessionID)
+	safeInstID := logging.SanitizeValue(i.ID)
+	safePath := logging.SanitizeValue(i.ProjectPath)
 	if useResume {
-		sessionLog.Info("resume: id="+i.ClaudeSessionID+" reason=conversation_data_present",
-			slog.String("instance_id", i.ID),
-			slog.String("claude_session_id", i.ClaudeSessionID),
-			slog.String("path", i.ProjectPath),
+		sessionLog.Info("resume: id="+safeSID+" reason=conversation_data_present",
+			slog.String("instance_id", safeInstID),
+			slog.String("claude_session_id", safeSID),
+			slog.String("path", safePath),
 			slog.String("reason", "conversation_data_present"))
 	} else {
-		sessionLog.Info("resume: id="+i.ClaudeSessionID+" reason=session_id_flag_no_jsonl",
-			slog.String("instance_id", i.ID),
-			slog.String("claude_session_id", i.ClaudeSessionID),
-			slog.String("path", i.ProjectPath),
+		sessionLog.Info("resume: id="+safeSID+" reason=session_id_flag_no_jsonl",
+			slog.String("instance_id", safeInstID),
+			slog.String("claude_session_id", safeSID),
+			slog.String("path", safePath),
 			slog.String("reason", "session_id_flag_no_jsonl"))
 	}
 
@@ -8288,6 +8305,8 @@ func (i *Instance) RefreshLiveSessionIDs() {
 	if IsClaudeCompatible(i.Tool) {
 		if id := i.GetSessionIDFromTmux(); id != "" && id != i.ClaudeSessionID {
 			i.ClaudeSessionID = id
+			// #1815: own pane env — verified ownership.
+			i.markClaudeSessionIDVerified()
 			i.ClaudeDetectedAt = time.Now()
 		}
 	}

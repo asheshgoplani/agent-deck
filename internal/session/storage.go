@@ -77,6 +77,11 @@ type InstanceData struct {
 	// Claude session (persisted for resume after app restart)
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
+	// #1815: true when ClaudeSessionID came from a disk scan and was never
+	// verified as this session's own. Persisted so the taint survives a
+	// process restart and the id can never launder itself into a resumable
+	// one just by being written and read back.
+	ClaudeSessionIDUnverified bool `json:"claude_session_id_unverified,omitempty"`
 
 	// Gemini session (persisted for resume after app restart)
 	GeminiSessionID  string    `json:"gemini_session_id,omitempty"`
@@ -923,6 +928,11 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// the positional MarshalToolData signature so legacy binaries that don't
 	// know the key preserve it via MergeToolDataExtras.
 	toolData = WriteIdleTimeoutSecsToToolData(toolData, inst.IdleTimeoutSecs)
+	// #1815: the resume-identity taint travels with the id it describes, so a
+	// writer that saves a discovered conversation id without ever passing
+	// through the resume builder (e.g. `switch-account --no-restart`) cannot
+	// leave an unverified id on disk that the next process treats as recorded.
+	toolData = WriteClaudeSessionUnverifiedToToolData(toolData, inst.claudeSessionIDIsUnverified())
 
 	return &statedb.InstanceRow{
 		ID:                  inst.ID,
@@ -1094,6 +1104,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			AutoLinkedChannels:        autoLinkedChannels2,
 			Color:                     color2,
 			IdleTimeoutSecs:           ReadIdleTimeoutSecsFromToolData(r.ToolData),
+			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 		}
 	}
 
@@ -1213,6 +1224,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			AutoLinkedChannels:        autoLinkedChannels,
 			Color:                     color,
 			IdleTimeoutSecs:           ReadIdleTimeoutSecsFromToolData(r.ToolData),
+			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 		}
 	}
 
@@ -1414,59 +1426,60 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 		projectPath := ExpandPath(fixMalformedTildePath(instData.ProjectPath))
 
 		inst := &Instance{
-			ID:                        instData.ID,
-			Title:                     instData.Title,
-			ProjectPath:               projectPath,
-			GroupPath:                 groupPath,
-			Order:                     instData.Order,
-			ParentSessionID:           instData.ParentSessionID,
-			IsConductor:               instData.IsConductor,
-			NoTransitionNotify:        instData.NoTransitionNotify,
-			TitleLocked:               instData.TitleLocked,
-			AutoName:                  instData.AutoName,
-			autoNameDescription:       instData.AutoNameDescription,
-			Command:                   instData.Command,
-			Wrapper:                   instData.Wrapper,
-			Tool:                      instData.Tool,
-			Status:                    instData.Status,
-			CreatedAt:                 instData.CreatedAt,
-			LastAccessedAt:            instData.LastAccessedAt,
-			ArchivedAt:                instData.ArchivedAt,
-			WorktreePath:              instData.WorktreePath,
-			WorktreeRepoRoot:          instData.WorktreeRepoRoot,
-			WorktreeBranch:            instData.WorktreeBranch,
-			Account:                   instData.Account,
-			Pin:                       instData.Pin,
-			TmuxSocketName:            instData.TmuxSocketName,
-			ClaudeSessionID:           instData.ClaudeSessionID,
-			ClaudeDetectedAt:          instData.ClaudeDetectedAt,
-			GeminiSessionID:           instData.GeminiSessionID,
-			GeminiDetectedAt:          instData.GeminiDetectedAt,
-			GeminiYoloMode:            instData.GeminiYoloMode,
-			GeminiModel:               instData.GeminiModel,
-			OpenCodeSessionID:         instData.OpenCodeSessionID,
-			OpenCodeDetectedAt:        instData.OpenCodeDetectedAt,
-			CodexSessionID:            instData.CodexSessionID,
-			CodexDetectedAt:           instData.CodexDetectedAt,
-			ToolOptionsJSON:           instData.ToolOptionsJSON,
-			LatestPrompt:              instData.LatestPrompt,
-			Notes:                     instData.Notes,
-			LoadedMCPNames:            instData.LoadedMCPNames,
-			Channels:                  instData.Channels,
-			ExtraArgs:                 instData.ExtraArgs,
-			Plugins:                   instData.Plugins,
-			PluginChannelLinkDisabled: instData.PluginChannelLinkDisabled,
-			AutoLinkedChannels:        instData.AutoLinkedChannels,
-			Color:                     instData.Color,
-			IdleTimeoutSecs:           instData.IdleTimeoutSecs,
-			Sandbox:                   instData.Sandbox,
-			SandboxContainer:          instData.SandboxContainer,
-			SSHHost:                   instData.SSHHost,
-			SSHRemotePath:             instData.SSHRemotePath,
-			MultiRepoEnabled:          instData.MultiRepoEnabled,
-			AdditionalPaths:           instData.AdditionalPaths,
-			MultiRepoTempDir:          instData.MultiRepoTempDir,
-			tmuxSession:               tmuxSess,
+			ID:                           instData.ID,
+			Title:                        instData.Title,
+			ProjectPath:                  projectPath,
+			GroupPath:                    groupPath,
+			Order:                        instData.Order,
+			ParentSessionID:              instData.ParentSessionID,
+			IsConductor:                  instData.IsConductor,
+			NoTransitionNotify:           instData.NoTransitionNotify,
+			TitleLocked:                  instData.TitleLocked,
+			AutoName:                     instData.AutoName,
+			autoNameDescription:          instData.AutoNameDescription,
+			Command:                      instData.Command,
+			Wrapper:                      instData.Wrapper,
+			Tool:                         instData.Tool,
+			Status:                       instData.Status,
+			CreatedAt:                    instData.CreatedAt,
+			LastAccessedAt:               instData.LastAccessedAt,
+			ArchivedAt:                   instData.ArchivedAt,
+			WorktreePath:                 instData.WorktreePath,
+			WorktreeRepoRoot:             instData.WorktreeRepoRoot,
+			WorktreeBranch:               instData.WorktreeBranch,
+			Account:                      instData.Account,
+			Pin:                          instData.Pin,
+			TmuxSocketName:               instData.TmuxSocketName,
+			ClaudeSessionID:              instData.ClaudeSessionID,
+			ClaudeDetectedAt:             instData.ClaudeDetectedAt,
+			claudeSessionIDUnverifiedFor: restoreClaudeSessionTaint(instData.ClaudeSessionID, instData.ClaudeSessionIDUnverified),
+			GeminiSessionID:              instData.GeminiSessionID,
+			GeminiDetectedAt:             instData.GeminiDetectedAt,
+			GeminiYoloMode:               instData.GeminiYoloMode,
+			GeminiModel:                  instData.GeminiModel,
+			OpenCodeSessionID:            instData.OpenCodeSessionID,
+			OpenCodeDetectedAt:           instData.OpenCodeDetectedAt,
+			CodexSessionID:               instData.CodexSessionID,
+			CodexDetectedAt:              instData.CodexDetectedAt,
+			ToolOptionsJSON:              instData.ToolOptionsJSON,
+			LatestPrompt:                 instData.LatestPrompt,
+			Notes:                        instData.Notes,
+			LoadedMCPNames:               instData.LoadedMCPNames,
+			Channels:                     instData.Channels,
+			ExtraArgs:                    instData.ExtraArgs,
+			Plugins:                      instData.Plugins,
+			PluginChannelLinkDisabled:    instData.PluginChannelLinkDisabled,
+			AutoLinkedChannels:           instData.AutoLinkedChannels,
+			Color:                        instData.Color,
+			IdleTimeoutSecs:              instData.IdleTimeoutSecs,
+			Sandbox:                      instData.Sandbox,
+			SandboxContainer:             instData.SandboxContainer,
+			SSHHost:                      instData.SSHHost,
+			SSHRemotePath:                instData.SSHRemotePath,
+			MultiRepoEnabled:             instData.MultiRepoEnabled,
+			AdditionalPaths:              instData.AdditionalPaths,
+			MultiRepoTempDir:             instData.MultiRepoTempDir,
+			tmuxSession:                  tmuxSess,
 		}
 		// Convert multi-repo worktree data
 		for _, wt := range instData.MultiRepoWorktrees {

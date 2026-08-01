@@ -1,0 +1,71 @@
+package session
+
+import "encoding/json"
+
+// Persistence of the resume-identity taint (#1815).
+//
+// The in-memory taint alone was bypassable: a writer that saves a discovered
+// conversation id WITHOUT going through the resume builder (`switch-account
+// --no-restart` is the plain example) puts an unverified id on disk, and the
+// next process to load it sees a plain recorded id and happily resumes it.
+// That is the incident's own shape — one step diagnoses a problem, a later
+// step acts as if it had not.
+//
+// So the taint travels with the id. It rides the tool_data extras zone,
+// outside the positional MarshalToolData signature, exactly like #1143's
+// idle_timeout_secs: MergeToolDataExtras preserves unknown keys across
+// INSERT OR REPLACE, so a row written by a new binary survives a round-trip
+// through an old one and vice versa. A legacy row simply has no key, which
+// reads as "not tainted" — the pre-#1815 status quo for ids that were already
+// on disk.
+const toolDataClaudeSessionUnverifiedKey = "claude_session_id_unverified"
+
+// WriteClaudeSessionUnverifiedToToolData merges the taint flag into a
+// tool_data blob. false removes the key, keeping the blob byte-identical to a
+// pre-#1815 row so downgrades stay clean.
+func WriteClaudeSessionUnverifiedToToolData(td json.RawMessage, unverified bool) json.RawMessage {
+	m := map[string]json.RawMessage{}
+	if len(td) > 0 {
+		_ = json.Unmarshal(td, &m)
+	}
+	if unverified {
+		m[toolDataClaudeSessionUnverifiedKey] = json.RawMessage("true")
+	} else {
+		delete(m, toolDataClaudeSessionUnverifiedKey)
+	}
+	out, _ := json.Marshal(m)
+	return out
+}
+
+// ReadClaudeSessionUnverifiedFromToolData extracts the taint flag. Missing,
+// malformed or legacy rows read as false.
+func ReadClaudeSessionUnverifiedFromToolData(td json.RawMessage) bool {
+	if len(td) == 0 {
+		return false
+	}
+	var blob struct {
+		Unverified bool `json:"claude_session_id_unverified"`
+	}
+	_ = json.Unmarshal(td, &blob)
+	return blob.Unverified
+}
+
+// claudeSessionIDIsUnverified reports whether the instance's CURRENT
+// conversation id is the tainted one. This is the value that gets persisted;
+// keeping it a derived predicate (rather than a second stored bool) means the
+// flag can never disagree with the id it describes.
+func (i *Instance) claudeSessionIDIsUnverified() bool {
+	if i == nil || i.ClaudeSessionID == "" {
+		return false
+	}
+	return i.ClaudeSessionID == i.claudeSessionIDUnverifiedFor
+}
+
+// restoreClaudeSessionTaint re-applies a persisted taint at load time, so a
+// process restart cannot launder an unverified id into a recorded one.
+func restoreClaudeSessionTaint(claudeSessionID string, unverified bool) string {
+	if !unverified {
+		return ""
+	}
+	return claudeSessionID
+}

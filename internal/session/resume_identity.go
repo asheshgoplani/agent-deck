@@ -3,6 +3,8 @@ package session
 import (
 	"log/slog"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
 // Resume-time identity guard (#1815).
@@ -121,13 +123,20 @@ func (i *Instance) resumeIdentityAllowed(candidate string) resumeIdentityDecisio
 // other session — so the refusal must be visible in the log even though the
 // user-visible effect (a fresh session) looks unremarkable.
 func (i *Instance) logResumeRefusal(candidate, reason string) {
-	sessionLog.Warn("resume refused: id="+candidate+" reason="+reason,
-		slog.String("instance_id", i.ID),
-		slog.String("title", i.Title),
-		slog.String("candidate_session_id", candidate),
-		slog.String("recorded_session_id", i.recordedClaudeSessionID()),
-		slog.String("path", i.ProjectPath),
-		slog.String("reason", reason),
+	// Every value here is session-supplied (ids come from disk filenames and
+	// tmux/hook payloads; title and path from user input), so each one is
+	// sanitized before it reaches the log — message text and structured
+	// fields alike. CodeQL go/log-injection.
+	safeCandidate := logging.SanitizeValue(candidate)
+	safeRecorded := logging.SanitizeValue(i.recordedClaudeSessionID())
+	safeReason := logging.SanitizeValue(reason)
+	sessionLog.Warn("resume refused: id="+safeCandidate+" reason="+safeReason,
+		slog.String("instance_id", logging.SanitizeValue(i.ID)),
+		slog.String("title", logging.SanitizeValue(i.Title)),
+		slog.String("candidate_session_id", safeCandidate),
+		slog.String("recorded_session_id", safeRecorded),
+		slog.String("path", logging.SanitizeValue(i.ProjectPath)),
+		slog.String("reason", safeReason),
 		slog.String("action", "start_fresh"),
 	)
 }

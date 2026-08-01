@@ -212,3 +212,62 @@ func TestResumeGuard_VerifiedSourcesClearDiscoveryTaint(t *testing.T) {
 		t.Fatalf("id replaced after a discovery must not inherit the taint; got %q", inst.recordedClaudeSessionID())
 	}
 }
+
+// TestResumeGuard_TaintIsPersisted covers the bypass that the in-memory-only
+// taint left open: a writer that SAVES a discovered conversation id without
+// ever going through the resume builder (`switch-account --no-restart` is the
+// plain case) would put an unverified id on disk, and the next process to load
+// it would see a plain recorded id and resume it. The taint therefore rides
+// the tool_data blob alongside the id.
+func TestResumeGuard_TaintIsPersisted(t *testing.T) {
+	const id = "f0f0f0f0-6666-4777-8888-999999999999"
+
+	blob := WriteClaudeSessionUnverifiedToToolData(nil, true)
+	if !ReadClaudeSessionUnverifiedFromToolData(blob) {
+		t.Fatal("an unverified id must round-trip as unverified")
+	}
+	// Clearing removes the key, so a verified row is byte-shape-identical to a
+	// pre-#1815 row (clean downgrades).
+	cleared := WriteClaudeSessionUnverifiedToToolData(blob, false)
+	if ReadClaudeSessionUnverifiedFromToolData(cleared) {
+		t.Fatal("clearing the taint must remove it from the blob")
+	}
+	if strings.Contains(string(cleared), toolDataClaudeSessionUnverifiedKey) {
+		t.Fatalf("cleared blob must not carry the key: %s", cleared)
+	}
+	// A legacy row has no key at all and reads as verified — the pre-#1815
+	// status quo for ids already on disk.
+	if ReadClaudeSessionUnverifiedFromToolData([]byte(`{"claude_session_id":"x"}`)) {
+		t.Fatal("a legacy row must not read as tainted")
+	}
+
+	// Write side: the flag is derived from the instance, so it can never
+	// disagree with the id it describes.
+	inst := &Instance{ID: "persist-taint", Tool: "claude"}
+	inst.adoptDiscoveredClaudeSessionID(id)
+	if !inst.claudeSessionIDIsUnverified() {
+		t.Fatal("a discovered id must be persisted as unverified")
+	}
+	inst.markClaudeSessionIDVerified()
+	if inst.claudeSessionIDIsUnverified() {
+		t.Fatal("a verified id must be persisted as verified")
+	}
+
+	// Load side: a persisted taint is re-applied, so a process restart cannot
+	// launder an unverified id into a resumable one.
+	reloaded := &Instance{
+		ID:                           "persist-taint",
+		Tool:                         "claude",
+		ClaudeSessionID:              id,
+		claudeSessionIDUnverifiedFor: restoreClaudeSessionTaint(id, true),
+	}
+	if got := reloaded.recordedClaudeSessionID(); got != "" {
+		t.Fatalf("a reloaded tainted id must not count as recorded; got %q", got)
+	}
+	if decision := reloaded.resumeIdentityAllowed(id); decision.Allow {
+		t.Fatal("a reloaded tainted id must still be refused for --resume")
+	}
+	if restoreClaudeSessionTaint(id, false) != "" {
+		t.Fatal("an untainted row must load clean")
+	}
+}
