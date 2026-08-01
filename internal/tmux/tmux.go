@@ -5066,7 +5066,7 @@ func (s *Session) sendKeysAndEnterToTarget(target, keys string) error {
 }
 
 // SendKeysChunked sends large content to the tmux session in chunks to avoid
-// tmux/OS buffer limits. Content ≤4KB is sent directly via SendKeys.
+// tmux/OS buffer limits. Content ≤ chunkSize is sent directly via SendKeys.
 // Larger content is split at newline boundaries with a short delay between chunks.
 func (s *Session) SendKeysChunked(content string) error {
 	return s.sendKeysChunkedToTarget(s.Name, content)
@@ -5074,7 +5074,25 @@ func (s *Session) SendKeysChunked(content string) error {
 
 // sendKeysChunkedToTarget is SendKeysChunked against an explicit tmux target.
 func (s *Session) sendKeysChunkedToTarget(target, content string) error {
-	const chunkSize = 4096
+	// chunkSize must stay comfortably below the Linux tty line discipline's
+	// canonical-mode input buffer (N_TTY_BUF_SIZE / MAX_CANON = 4096 bytes,
+	// internal/tmux/N_TTY_BUF_SIZE). A single `tmux send-keys -l` write for a
+	// pane in canonical mode delivers its payload as one or more tty writes;
+	// once the in-kernel line buffer is within a few bytes of full, the
+	// terminating Enter that SendKeysAndEnter issues as a SEPARATE write right
+	// after can be silently dropped by the line discipline instead of queued —
+	// the composer shows the pasted text but the turn never submits, and the
+	// caller (which only observes the tmux command's own exit code) reports
+	// success. #1793 reproduced this exact "phantom send" at a 4095-byte
+	// payload: one byte under the 4096 canonical limit, i.e. every byte of
+	// slack was consumed by the content itself, leaving zero room for Enter.
+	// 1023 bytes is the measured-safe chunk size: it leaves >3KB of headroom
+	// in the canonical buffer for every chunk, including the last one that
+	// immediately precedes the separate Enter write in
+	// sendKeysAndEnterToTarget. This is a correctness stopgap; the strategic
+	// fix is the mailbox/receipt delivery model (tracked separately) that
+	// proves turn-submission instead of inferring it from transport success.
+	const chunkSize = 1023
 	const chunkDelay = 50 * time.Millisecond
 
 	if len(content) <= chunkSize {
