@@ -2594,6 +2594,10 @@ func handleStatus(profile string, args []string) {
 			fmt.Printf("Error: invalid --threshold %q: %v\n", *staleThreshold, err)
 			os.Exit(1)
 		}
+		if threshold < 0 {
+			fmt.Printf("Error: --threshold must not be negative, got %q\n", *staleThreshold)
+			os.Exit(1)
+		}
 		runStatusStale(profile, threshold, *jsonOutput)
 		return
 	}

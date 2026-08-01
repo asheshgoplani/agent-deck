@@ -19,9 +19,13 @@ import (
 //
 // HARD CONSTRAINT (per the issue's accepted design + the standing
 // never-auto-stop/never-auto-delete rule): this view is suggest-only. It
-// never stops, removes, or otherwise mutates a session — it only reads
-// already-loaded Instance state and prints it. There is no code path from
-// this file that calls Stop/Remove/Save.
+// never stops or removes a session, and never writes session state back to
+// storage — there is no code path from this file that calls Stop/Remove/
+// Save. It does call the same status-refresh (RefreshInstancesForCLIStatus +
+// UpdateStatus) that plain `status`/`status -v` already run, which can
+// create/update/clear an auth-hold sidecar file exactly as those commands
+// do today; this file introduces no new mutation surface, but "read-only"
+// above refers specifically to the session record, not every byte on disk.
 
 // defaultStaleThreshold is the default staleness window applied when
 // --threshold is not given. 24h matches "sat around overnight with nobody
@@ -39,8 +43,8 @@ type staleReason string
 
 const (
 	reasonNeverStarted staleReason = "never-started" // added but Start() was never called
-	reasonBashIdle     staleReason = "bash-idle"     // started, now idle (user-acknowledged, per status table)
-	reasonLastActivity staleReason = "last-activity" // waiting/stopped with no observed activity past the threshold
+	reasonBashIdle     staleReason = "bash-idle"     // tool=="shell" session sitting at an idle prompt
+	reasonLastActivity staleReason = "last-activity" // waiting/idle/stopped with no observed activity past the threshold
 )
 
 // staleCandidate is one session flagged by the heuristic view, carrying the
@@ -86,6 +90,13 @@ func classifyStale(inst *session.Instance, now time.Time, threshold time.Duratio
 		return nil
 	}
 
+	// LastStartedAt is persisted via the tool_data extras zone (see
+	// internal/session/last_started_persist.go, added alongside this
+	// heuristic) so this reads a real cross-process value, not an
+	// always-zero in-memory-only field. Zero still means "unknown" for a
+	// record saved by a binary that predates that fix — those keep reading
+	// as never-started until the session is started again, matching
+	// Instance.LastStartedAt's documented zero-value contract.
 	neverStarted := inst.LastStartedAt.IsZero()
 	if neverStarted {
 		if now.Sub(inst.CreatedAt) >= threshold {
@@ -98,7 +109,13 @@ func classifyStale(inst *session.Instance, now time.Time, threshold time.Duratio
 	if activityAge < threshold {
 		return nil
 	}
-	if inst.Status == session.StatusIdle {
+	// StatusIdle is overloaded: for tool=="shell" it means a genuine bash
+	// prompt sitting idle (see UpdateStatus's "idle"/"waiting" tmux-status
+	// handling for shell), but for Claude/Codex/Gemini/etc it means
+	// "waiting, user-acknowledged" (Instance.UpdateStatus's IsAcknowledged
+	// branch) — a different situation that belongs under last-activity, not
+	// under a reason literally named bash-idle.
+	if inst.Status == session.StatusIdle && inst.Tool == "shell" {
 		return []staleReason{reasonBashIdle}
 	}
 	return []staleReason{reasonLastActivity}
@@ -214,5 +231,5 @@ func runStatusStale(profile string, threshold time.Duration, jsonOutput bool) {
 			truncate(c.Title, 16), c.Tool, c.Status, strings.Join(c.Reasons, ","), age.Round(time.Minute), c.Path)
 	}
 	fmt.Println()
-	fmt.Println("Suggest-only: review each candidate, then use `session stop`/`session remove` yourself. Nothing here was mutated.")
+	fmt.Println("Suggest-only: review each candidate, then use `session stop`/`session remove` yourself. This command never stops or removes a session.")
 }

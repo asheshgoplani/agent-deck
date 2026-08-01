@@ -104,14 +104,30 @@ func TestClassifyStale_Heuristics(t *testing.T) {
 			want: []staleReason{reasonLastActivity},
 		},
 		{
-			name: "started_then_idle_past_threshold_is_bash_idle",
+			name: "started_then_idle_shell_past_threshold_is_bash_idle",
 			inst: &session.Instance{
 				Status:         session.StatusIdle,
+				Tool:           "shell", // reasonBashIdle only applies to genuine bash-idle tools
 				CreatedAt:      now.Add(-72 * time.Hour),
 				LastStartedAt:  now.Add(-72 * time.Hour), // was started, so NOT never-started
 				LastAccessedAt: now.Add(-48 * time.Hour),
 			},
 			want: []staleReason{reasonBashIdle},
+		},
+		{
+			// Regression guard (#1826 review finding #3): StatusIdle on a
+			// non-shell tool means "waiting, user-acknowledged" (see
+			// UpdateStatus's IsAcknowledged branch), not a bash prompt sitting
+			// idle. It must classify as last-activity, never bash-idle.
+			name: "started_then_idle_claude_past_threshold_is_last_activity_not_bash_idle",
+			inst: &session.Instance{
+				Status:         session.StatusIdle,
+				Tool:           "claude",
+				CreatedAt:      now.Add(-72 * time.Hour),
+				LastStartedAt:  now.Add(-72 * time.Hour),
+				LastAccessedAt: now.Add(-48 * time.Hour),
+			},
+			want: []staleReason{reasonLastActivity},
 		},
 	}
 
@@ -271,5 +287,162 @@ func TestStatusStale_CLI_CandidateViewAndMutatesNothing(t *testing.T) {
 	}
 	if !strings.Contains(textOut, "read-only") {
 		t.Fatalf("text --stale output should reassert read-only/suggest-only framing: %s", textOut)
+	}
+}
+
+// TestStatusStale_CLI_StartedSessionIsNotNeverStarted closes the #1826
+// review's blind spot: the original CLI test only ever exercised a session
+// that was genuinely never started, so a heuristic that (bug) classified
+// EVERYTHING as never-started would still pass it. This test actually starts
+// a real session, lets tmux settle it to idle, and asserts through the
+// SQLite-backed CLI subprocess (a real process boundary, not an in-memory
+// Instance literal) that:
+//   - never_started is false and last_started_at is populated
+//   - the reason is bash-idle (tool=="shell"), not never-started
+//   - the candidate's status field is asserted, not just its reasons
+func TestStatusStale_CLI_StartedSessionIsNotNeverStarted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess integration test in short mode")
+	}
+
+	tmpHome := t.TempDir()
+	xdgConfigHome := filepath.Join(tmpHome, ".config")
+	xdgDataHome := filepath.Join(tmpHome, ".local", "share")
+	xdgCacheHome := filepath.Join(tmpHome, ".cache")
+	projectDir := filepath.Join(tmpHome, "project")
+	for _, dir := range []string{xdgConfigHome, xdgDataHome, xdgCacheHome, projectDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	binPath := filepath.Join(t.TempDir(), "agent-deck-stale-started-test")
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\noutput: %s", err, out)
+	}
+
+	var env []string
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "TMUX") ||
+			strings.HasPrefix(kv, "AGENTDECK_") ||
+			strings.HasPrefix(kv, "HOME=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env,
+		"HOME="+tmpHome,
+		"XDG_CONFIG_HOME="+xdgConfigHome,
+		"XDG_DATA_HOME="+xdgDataHome,
+		"XDG_CACHE_HOME="+xdgCacheHome,
+		"AGENTDECK_PROFILE=test-1704-stale-started",
+		"TERM=dumb",
+	)
+
+	run := func(args ...string) (string, string, error) {
+		cmd := exec.Command(binPath, args...)
+		cmd.Env = env
+		cmd.Dir = projectDir
+		var stdout, stderr strings.Builder
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		return stdout.String(), stderr.String(), err
+	}
+
+	addOut, addErr, err := run("add", projectDir, "-t", "started-probe", "-c", "shell", "--no-parent", "--json")
+	if err != nil {
+		t.Fatalf("add failed: %v\nstdout=%s\nstderr=%s", err, addOut, addErr)
+	}
+	var added struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(addOut), &added); err != nil || added.ID == "" {
+		t.Fatalf("unmarshal add --json: %v\nraw=%s", err, addOut)
+	}
+	// Stop the tmux pane at the end regardless of outcome — this test spawns
+	// a real tmux session on the isolated per-test profile/socket.
+	t.Cleanup(func() {
+		_, _, _ = run("session", "stop", added.ID)
+	})
+
+	startOut, startErr, err := run("session", "start", added.ID, "--json")
+	if err != nil {
+		t.Fatalf("session start failed: %v\nstdout=%s\nstderr=%s", err, startOut, startErr)
+	}
+
+	// Poll list --json until tmux settles the shell to a terminal status
+	// (idle, given no foreground process) or the deadline expires.
+	type listRow struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	var lastStatus string
+	for time.Now().Before(deadline) {
+		listOut, listErrOut, err := run("list", "--json")
+		if err != nil {
+			t.Fatalf("list --json failed: %v\nstdout=%s\nstderr=%s", err, listOut, listErrOut)
+		}
+		var rows []listRow
+		if err := json.Unmarshal([]byte(listOut), &rows); err != nil {
+			t.Fatalf("unmarshal list --json: %v\nraw=%s", err, listOut)
+		}
+		for _, r := range rows {
+			if r.ID == added.ID {
+				lastStatus = r.Status
+			}
+		}
+		if lastStatus == "idle" || lastStatus == "waiting" {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if lastStatus != "idle" && lastStatus != "waiting" {
+		t.Fatalf("started shell session never settled to idle/waiting (last seen %q) — cannot exercise the started-then-idle path", lastStatus)
+	}
+
+	staleOut, staleErrOut, err := run("status", "--stale", "--threshold", "0s", "--json")
+	if err != nil {
+		t.Fatalf("status --stale --threshold 0s failed: %v\nstdout=%s\nstderr=%s", err, staleOut, staleErrOut)
+	}
+	var resp staleCandidatesJSON
+	if err := json.Unmarshal([]byte(staleOut), &resp); err != nil {
+		t.Fatalf("unmarshal --stale --json: %v\nraw=%s", err, staleOut)
+	}
+	var cand *staleCandidate
+	for i := range resp.Candidates {
+		if resp.Candidates[i].ID == added.ID {
+			cand = &resp.Candidates[i]
+		}
+	}
+	if cand == nil {
+		t.Fatalf("started session missing from --stale candidates: %+v", resp)
+	}
+	if cand.NeverStarted {
+		t.Fatalf("started session reported NeverStarted=true (the #1826 blocker regressed): %+v", cand)
+	}
+	if cand.LastStartedAt == "" {
+		t.Fatalf("started session missing last_started_at: %+v", cand)
+	}
+	if cand.Status != lastStatus {
+		t.Fatalf("candidate.Status = %q, want %q (the observed list --json status)", cand.Status, lastStatus)
+	}
+	if len(cand.Reasons) != 1 {
+		t.Fatalf("expected exactly one reason, got %v", cand.Reasons)
+	}
+	switch lastStatus {
+	case "idle":
+		if cand.Reasons[0] != string(reasonBashIdle) {
+			t.Fatalf("idle shell session reason = %q, want %q", cand.Reasons[0], reasonBashIdle)
+		}
+	case "waiting":
+		if cand.Reasons[0] != string(reasonLastActivity) {
+			t.Fatalf("waiting session reason = %q, want %q", cand.Reasons[0], reasonLastActivity)
+		}
+	}
+	if cand.Reasons[0] == string(reasonNeverStarted) {
+		t.Fatalf("started session classified as never-started: %+v", cand)
 	}
 }
