@@ -66,11 +66,8 @@ func TestClaudeCommandsExecSoAgentLeadsPane(t *testing.T) {
 			// either the agent itself or `env …` re-exec'ing it, never another
 			// shell builtin that would leave the wrapper in place.
 			rest := strings.TrimSpace(cmd[idx+len("exec "):])
-			if !strings.HasPrefix(rest, "claude") && !strings.HasPrefix(rest, "env ") {
-				t.Errorf("exec must hand off to the agent (optionally via env), got: %s", cmd)
-			}
-			if !strings.Contains(rest, "claude") {
-				t.Errorf("exec'd command must invoke claude, got: %s", cmd)
+			if target := execTarget(rest); target != "claude" {
+				t.Errorf("exec must hand off to claude, it runs %q instead: %s", target, cmd)
 			}
 
 			// exec only makes the agent the pane leader if nothing follows it:
@@ -134,17 +131,51 @@ func TestClaudeResumeWithConversationHistoryExecs(t *testing.T) {
 	if !strings.Contains(cmd, "--resume "+sessionID) {
 		t.Fatalf("fixture did not reach the --resume branch (still on the --session-id fallback), got: %s", cmd)
 	}
+	// the two are mutually exclusive: seeing both would mean the branch was
+	// taken but the fallback flag leaked in alongside it
+	if strings.Contains(cmd, "--session-id") {
+		t.Errorf("resume-with-history must not carry the --session-id fallback, got: %s", cmd)
+	}
 	idx := strings.LastIndex(cmd, "exec ")
 	if idx < 0 {
 		t.Fatalf("resume-with-history must exec the agent so it leads the pane, got: %s", cmd)
 	}
 	rest := strings.TrimSpace(cmd[idx+len("exec "):])
-	if !strings.HasPrefix(rest, "claude") && !strings.HasPrefix(rest, "env ") {
-		t.Errorf("exec must hand off to the agent (optionally via env), got: %s", cmd)
+	if target := execTarget(rest); target != "claude" {
+		t.Errorf("exec must hand off to claude, it runs %q instead: %s", target, cmd)
 	}
 	for _, sep := range []string{";", "&&", "||", "|", "&"} {
 		if strings.Contains(rest, sep) {
 			t.Errorf("exec'd invocation must be the final statement, found %q after it: %s", sep, cmd)
 		}
 	}
+}
+
+// execTarget returns the program an exec'd command actually runs, stepping over
+// an `env` wrapper and the flags and NAME=value assignments it consumes.
+//
+// Checking that the command merely starts with "env " and mentions claude
+// somewhere would pass on `exec env -u FOO something-else --flag=claude`, which
+// leaves the pane led by the wrong process, so the target is resolved instead.
+func execTarget(rest string) string {
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	if fields[0] != "env" {
+		return fields[0]
+	}
+	for i := 1; i < len(fields); i++ {
+		switch {
+		case fields[i] == "-u" || fields[i] == "-C" || fields[i] == "-S":
+			i++ // consumes the following argument
+		case strings.HasPrefix(fields[i], "-"):
+			// standalone flag such as -i
+		case strings.Contains(fields[i], "="):
+			// NAME=value assignment
+		default:
+			return fields[i]
+		}
+	}
+	return ""
 }
