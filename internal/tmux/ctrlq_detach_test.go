@@ -60,21 +60,24 @@ func TestCtrlQDetachIfShellFormat_ScopedToSessionPrefixNotOneSessionName(t *test
 // back to run-shell can't slip past review unnoticed.
 func TestCtrlQDetachBindArgs_UsesIfShellDetachClientDirectly(t *testing.T) {
 	args := ctrlQDetachBindArgs()
-	joined := strings.Join(args, " ")
 
-	if strings.Contains(joined, "run-shell") {
-		t.Fatalf("binding must not use run-shell (reintroduces the #1820 shell-injection surface): %v", args)
+	// Exact argv, in order — not just substring presence — so a reordered or
+	// malformed arg list (e.g. -F landing after the format, or a stray extra
+	// element) fails the test instead of slipping through on a loose
+	// strings.Contains check.
+	want := []string{"if-shell", "-F", ctrlQDetachIfShellFormat(), "detach-client", ""}
+	if len(args) != len(want) {
+		t.Fatalf("bind-key args have wrong shape: got %v, want %v", args, want)
 	}
-	if len(args) == 0 || args[0] != "if-shell" {
-		t.Fatalf("binding must use if-shell as its first arg: %v", args)
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("bind-key args[%d] = %q, want %q (full: got %v, want %v)", i, args[i], want[i], args, want)
+		}
 	}
-	if !strings.Contains(joined, "-F") {
-		t.Fatalf("binding must use if-shell -F so the guard is a tmux FORMAT, not a shell command: %v", args)
-	}
-	if !strings.Contains(joined, "detach-client") {
-		t.Fatalf("binding must detach-client directly, not via a subprocess: %v", args)
-	}
-	if !strings.Contains(joined, ctrlQDetachIfShellFormat()) {
-		t.Fatalf("binding must guard with ctrlQDetachIfShellFormat(): %v", args)
+
+	for _, a := range args {
+		if strings.Contains(a, "run-shell") {
+			t.Fatalf("binding must not use run-shell (reintroduces the #1820 shell-injection surface): %v", args)
+		}
 	}
 }

@@ -2312,8 +2312,8 @@ func (s *Session) Start(command string) error {
 	// attached to the socket before it ever reaches the pane — so in every
 	// other session sharing the socket, the guard's empty else-branch did NOT
 	// let the key fall through to the running app; it silently swallowed the
-	// keypress instead (and, for a client nested inside another tmux, could
-	// drop the operator to the login shell rather than detaching). Use
+	// keypress instead, so Ctrl+Q simply did nothing until a client attached
+	// to the one session Start() most recently ran on the socket. Use
 	// if-shell -F to re-evaluate a tmux FORMAT against the CURRENT client's
 	// session at keypress time instead of baking in one session name — this
 	// scopes the detach to "whichever agentdeck session this client is
