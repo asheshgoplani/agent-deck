@@ -432,8 +432,7 @@ type Instance struct {
 	// from its own goroutine.
 	spawnGen atomic.Uint64
 
-	// spawnGenMu guards spawnGenWake and spawnWatchDones. spawnGenWake lets a
-	// generation bump wake a
+	// spawnGenMu guards spawnGenWake. spawnGenWake lets a generation bump wake a
 	// running watchForFastDeath goroutine immediately instead of it only
 	// noticing the bump on its next spawnFastDeathTick (250ms) poll (#1775).
 	// That up-to-250ms tail after a deliberate Stop/Kill was long enough for
@@ -447,17 +446,17 @@ type Instance struct {
 	spawnGenMu   sync.Mutex
 	spawnGenWake chan struct{}
 
-	// spawnWatchDones holds one channel per watcher that has not returned yet,
-	// each closed by its own watcher on exit. Teardown joins them (bounded)
-	// after bumping, so no watcher write is still in flight once a deliberate
-	// stop/restart proceeds — a generation check alone only narrows that window
-	// to the gap between the check and the write.
-	//
-	// It is a slice, not a single channel: a rapid Start→Start can leave the
-	// previous watcher still finishing, and keeping only the newest channel
-	// would silently drop the older watcher — the one actually capable of
-	// recording a stale failure — from every future join.
-	spawnWatchDones []chan struct{}
+	// spawnWriteMu serializes a watcher's writes against teardown. A generation
+	// check alone leaves a check-then-write gap: the watcher can pass the check
+	// and be descheduled a moment before its write while the bumping goroutine
+	// races ahead and tears down (in tests, removes the very $HOME the watcher
+	// captured). The watcher takes this mutex around its write AND re-checks the
+	// generation while holding it, so a teardown that bumps and then takes the
+	// same mutex is guaranteed that every write is either already complete or
+	// will be suppressed. Only the file writes are covered — never the tmux
+	// calls — so the barrier costs teardown at most one file write and can never
+	// be held hostage by a wedged tmux subprocess.
+	spawnWriteMu sync.Mutex
 
 	// lastErrorCheck tracks when we last confirmed the session doesn't exist
 	// Used to skip expensive Exists() checks for ghost sessions (sessions in JSON but not in tmux)
@@ -531,96 +530,59 @@ type Instance struct {
 // the up-to-250ms tail the wake channel exists to remove. Producing gen and the
 // channel together under one lock closes that gap: any bump ordered after this
 // call is guaranteed to close the very channel the watcher is selecting on.
-// The returned done channel must be closed by the watcher goroutine when it
-// returns; callers that take a watch must therefore always start the watcher.
-func (i *Instance) newSpawnGenWatch() (uint64, <-chan struct{}, chan struct{}) {
-	i.spawnGenMu.Lock()
-	gen, superseded := i.bumpAndTakePendingLocked()
-	i.spawnGenWake = make(chan struct{})
-	wake := i.spawnGenWake
-	done := make(chan struct{})
-	i.spawnWatchDones = append(i.spawnWatchDones, done)
-	i.spawnGenMu.Unlock()
-
-	// Join the watchers this bump superseded BEFORE handing the caller a new
-	// one. Bumping alone lets an older watcher that already passed its final
-	// generation check still land a spawn_survived/spawn_died_fast belonging to
-	// the previous spawn, after the new one has begun — tracking completion
-	// only for a later teardown would notice that too late, the event having
-	// already been persisted.
-	i.drainWatchers(superseded)
-
-	return gen, wake, done
+func (i *Instance) newSpawnGenWatch() (uint64, <-chan struct{}) {
+	return i.bumpSpawnGen(true)
 }
 
-// bumpAndTakePendingLocked advances the generation, wakes the current watcher,
-// and hands back (clearing) the set of watchers that bump supersedes. Callers
-// must hold spawnGenMu; doing all three under one acquisition is what keeps
-// "who did this bump supersede" unambiguous when a Start and a Stop race.
-func (i *Instance) bumpAndTakePendingLocked() (uint64, []chan struct{}) {
+// bumpSpawnGenAndBarrier supersedes the running watcher and then waits out any
+// write it already has in flight, so a teardown can proceed knowing no watcher
+// will write again.
+//
+// Ordering is what makes it a guarantee rather than a small window: the bump
+// happens first, and the watcher re-checks the generation while holding
+// spawnWriteMu. Any write that has not yet taken the mutex will therefore see
+// the new generation and suppress itself, and any write that already holds it
+// completes before this returns. Unlike joining the goroutine, this waits only
+// on file I/O — a watcher parked in a wedged tmux call is not something a
+// deliberate stop should ever wait for.
+func (i *Instance) bumpSpawnGenAndBarrier() uint64 {
+	gen, _ := i.bumpSpawnGen(false)
+	i.spawnWriteMu.Lock()
+	i.spawnWriteMu.Unlock() //nolint:staticcheck // barrier: waits out an in-flight watcher write
+	return gen
+}
+
+// bumpSpawnGen advances the generation and wakes the current watcher. When
+// resubscribe is set it also installs the channel the next bump will close and
+// returns it, so a new watcher's subscription is established under the same
+// lock acquisition as its own bump.
+func (i *Instance) bumpSpawnGen(resubscribe bool) (uint64, <-chan struct{}) {
+	i.spawnGenMu.Lock()
+	defer i.spawnGenMu.Unlock()
+	// Increment under the same lock that publishes the wake, so a bump can
+	// never be observed as "channel closed but generation not yet advanced".
 	gen := i.spawnGen.Add(1)
 	if i.spawnGenWake != nil {
 		close(i.spawnGenWake)
 		i.spawnGenWake = nil
 	}
-	pending := i.spawnWatchDones
-	i.spawnWatchDones = nil
-	return gen, pending
+	if !resubscribe {
+		return gen, nil
+	}
+	i.spawnGenWake = make(chan struct{})
+	return gen, i.spawnGenWake
 }
 
-// spawnWatchDrainTimeout bounds how long a bump waits for the watchers it
-// superseded to return. The bump wakes them immediately, so the only thing
-// that can take measurable time is a tmux call already in flight.
-const spawnWatchDrainTimeout = time.Second
-
-// drainWatchers waits for each superseded watcher to return, bounded overall by
-// spawnWatchDrainTimeout.
-//
-// The timeout is a deliberate trade, not a claim of completeness: a watcher
-// parked in a wedged tmux subprocess must not be able to turn a deliberate stop
-// into a hang. Watchers not reached before the deadline are put BACK on the
-// pending list rather than dropped, so the next bump joins them instead of
-// forgetting them forever — the alternative would let a slow watcher escape
-// every future join and outlive the teardown that was supposed to contain it.
-func (i *Instance) drainWatchers(pending []chan struct{}) {
-	if len(pending) == 0 {
+// commitSpawnWatchWrite runs a watcher's write under spawnWriteMu, skipping it
+// if the watcher has been superseded in the meantime. Every watcher write goes
+// through here; that is the whole contract bumpSpawnGenAndBarrier relies on.
+func (i *Instance) commitSpawnWatchWrite(gen uint64, write func()) {
+	i.spawnWriteMu.Lock()
+	defer i.spawnWriteMu.Unlock()
+	if i.spawnGen.Load() != gen {
 		return
 	}
-	deadline := time.NewTimer(spawnWatchDrainTimeout)
-	defer deadline.Stop()
-
-	unreached := -1
-join:
-	for idx, done := range pending {
-		select {
-		case <-done:
-		case <-deadline.C:
-			unreached = idx
-			break join
-		}
-	}
-	if unreached < 0 {
-		return
-	}
-	i.spawnGenMu.Lock()
-	i.spawnWatchDones = append(i.spawnWatchDones, pending[unreached:]...)
-	i.spawnGenMu.Unlock()
-}
-
-// bumpSpawnGenAndDrain bumps the generation and then joins every watcher that
-// bump superseded.
-//
-// The bump alone is not enough for teardown. A watcher can pass its generation
-// check and then be descheduled a microsecond before its write; the bumping
-// goroutine would race ahead and tear down (in tests, remove the very $HOME the
-// watcher captured) while that write is still pending. Joining the watchers'
-// completion closes that gap.
-func (i *Instance) bumpSpawnGenAndDrain() uint64 {
-	i.spawnGenMu.Lock()
-	gen, pending := i.bumpAndTakePendingLocked()
-	i.spawnGenMu.Unlock()
-	i.drainWatchers(pending)
-	return gen
+	write()
 }
 
 // SandboxConfig holds per-session Docker sandbox settings.
@@ -3701,7 +3663,7 @@ func (i *Instance) Start() error {
 		// gen AND the wake channel are both produced here, in the caller, so no
 		// bump can slip into the gap before the watcher subscribes (see
 		// newSpawnGenWatch).
-		gen, wake, watchDone := i.newSpawnGenWatch()
+		gen, wake := i.newSpawnGenWatch()
 		// Resolve both write targets HERE, synchronously in the caller, not
 		// inside the goroutine: GetSessionIDLifecycleLogPath()/spawnFailureDir()
 		// read the live $HOME, and watchForFastDeath's goroutine is never
@@ -3711,7 +3673,7 @@ func (i *Instance) Start() error {
 		// calling goroutine) makes the watcher's writes land in the HOME that
 		// was live when this session started, never whichever HOME happens to
 		// be live when the ticker next fires.
-		go i.watchForFastDeath(command, gen, wake, watchDone, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
+		go i.watchForFastDeath(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -3972,10 +3934,10 @@ func (i *Instance) StartWithMessage(message string) error {
 
 	// #1580: fast-death watcher (sister path to Start()).
 	if command != "" {
-		gen, wake, watchDone := i.newSpawnGenWatch()
+		gen, wake := i.newSpawnGenWatch()
 		// See the matching comment in Start(): resolve the write targets — and
 		// subscribe to the wake — here, not inside the never-joined goroutine.
-		go i.watchForFastDeath(command, gen, wake, watchDone, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
+		go i.watchForFastDeath(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -6643,7 +6605,7 @@ func (i *Instance) killInternal(sync bool) error {
 	// observed by the watcher as a "fast death" mid-teardown — including the
 	// up-to-3s KillAndWait escalation below, which used to run entirely
 	// inside the stale-gen window.
-	i.bumpSpawnGenAndDrain()
+	i.bumpSpawnGenAndBarrier()
 
 	// Issue #965 wiring (PR #1000 follow-up): claude/codex/gemini spawn
 	// stdio MCP children when they read .mcp.json — agent-deck never
@@ -7145,7 +7107,7 @@ func (i *Instance) restart(env map[string]string) error {
 		// and the eventual Start() leave a gap before the next bump, wide
 		// enough for a stale watcher to see Exists()==false and record a
 		// spurious spawn_died_fast for a deliberate restart.
-		i.bumpSpawnGenAndDrain()
+		i.bumpSpawnGenAndBarrier()
 		mcpLog.Debug("restart_killing_old_session", slog.String("session_name", i.tmuxSession.Name))
 		if killErr := i.tmuxSession.Kill(); killErr != nil {
 			mcpLog.Warn("restart_kill_old_session_failed", slog.String("error", killErr.Error()))
@@ -7315,7 +7277,7 @@ func (i *Instance) RestartFresh() error {
 		// #1775: same reasoning as the restart-fallback-recreate path above —
 		// bump before kill so a stale watcher can't outlive the gap between
 		// this Kill() and the eventual gen bump inside Start().
-		i.bumpSpawnGenAndDrain()
+		i.bumpSpawnGenAndBarrier()
 		if killErr := i.tmuxSession.Kill(); killErr != nil {
 			mcpLog.Warn("restart_fresh_kill_old_session_failed", slog.String("error", killErr.Error()))
 		}

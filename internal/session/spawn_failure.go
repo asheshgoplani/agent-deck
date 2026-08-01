@@ -180,9 +180,13 @@ const (
 // spawn_died_fast for what was a deliberate teardown (and written into a HOME
 // the owning test may already be tearing down).
 //
-// done is closed on return. Teardown paths bump the generation and then join
-// it, so the remaining check-then-write gap is not merely small but closed:
-// once the join returns, this goroutine has finished all of its I/O.
+// Every write additionally goes through commitSpawnWatchWrite, which re-checks
+// the generation while holding spawnWriteMu. That is what turns the remaining
+// check-then-write gap from small into closed: a teardown that bumps and then
+// takes the same mutex (bumpSpawnGenAndBarrier) is guaranteed that any write
+// still pending here either completed before it, or sees the new generation and
+// is suppressed. Only the writes are covered, never the tmux calls, so a stop
+// never waits on tmux.
 //
 // lifecycleLogPath and failureDir are likewise passed by value rather than
 // resolved here from the live $HOME: this goroutine is never joined, so it
@@ -190,11 +194,7 @@ const (
 // finished and a later test has repointed $HOME. Resolving live at write
 // time would make the watcher write into whatever $HOME happens to be
 // current when it fires, not the one that was current when it was spawned.
-func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, done chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string) {
-	// Closing done is what lets a teardown join this goroutine (see
-	// bumpSpawnGenAndDrain). It must cover every return path, including the
-	// nil-session one below, or the join would always burn its full timeout.
-	defer close(done)
+func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string) {
 	if sess == nil {
 		return
 	}
@@ -234,33 +234,30 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 				}
 			}
 			if time.Now().After(deadline) {
-				// Re-check: CapturePane above also shells out to tmux.
-				if i.spawnGen.Load() != gen {
-					return
-				}
-				// Survived the window: healthy start.
-				_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
-					InstanceID: id,
-					Tool:       tool,
-					Action:     "spawn_survived",
-					Source:     "spawn_watcher",
-				}, lifecycleLogPath)
+				// Survived the window: healthy start. The commit re-checks the
+				// generation under the write barrier — CapturePane above shells
+				// out to tmux, so a teardown can easily have started since the
+				// check at the top of this iteration.
+				i.commitSpawnWatchWrite(gen, func() {
+					_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
+						InstanceID: id,
+						Tool:       tool,
+						Action:     "spawn_survived",
+						Source:     "spawn_watcher",
+					}, lifecycleLogPath)
+				})
 				return
 			}
 			continue
 		}
 
-		// Session is gone. Re-check the generation before concluding it was a
-		// fast death: killInternal/restart bump it BEFORE killing tmux, so a
-		// teardown that started while sess.Exists() was in flight is visible
-		// here even though it was not visible at the top of the iteration.
-		// Without this, the very window the bump-before-kill ordering exists
-		// to close would be reopened by the duration of the tmux call itself.
-		if i.spawnGen.Load() != gen {
-			return
-		}
-
-		// Not a deliberate stop → fast death.
+		// Session is gone — but sess.Exists() shells out to tmux, so a
+		// teardown may well have started during that call: killInternal and
+		// the restart paths bump the generation BEFORE killing tmux, precisely
+		// so this is visible here even though it was not visible at the top of
+		// the iteration. Everything below therefore commits under the write
+		// barrier, which re-checks the generation, rather than trusting the
+		// earlier check.
 		elapsed := time.Since(start).Milliseconds()
 		rec := SpawnFailureRecord{
 			InstanceID:  id,
@@ -270,24 +267,26 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 			DyingOutput: lastSnapshot,
 			ElapsedMs:   elapsed,
 		}
-		if err := writeSpawnFailureRecordTo(rec, failureDir); err != nil {
-			logger.Warn("spawn_failure_record_write_failed",
+		i.commitSpawnWatchWrite(gen, func() {
+			if err := writeSpawnFailureRecordTo(rec, failureDir); err != nil {
+				logger.Warn("spawn_failure_record_write_failed",
+					slog.String("instance_id", id),
+					slog.String("error", err.Error()))
+			}
+			logger.Error("spawn_died_fast",
 				slog.String("instance_id", id),
-				slog.String("error", err.Error()))
-		}
-		logger.Error("spawn_died_fast",
-			slog.String("instance_id", id),
-			slog.String("tool", tool),
-			slog.String("command", command),
-			slog.Int64("elapsed_ms", elapsed),
-			slog.String("dying_output", lastSnapshot))
-		_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
-			InstanceID: id,
-			Tool:       tool,
-			Action:     "spawn_died_fast",
-			Source:     "spawn_watcher",
-			Reason:     fmt.Sprintf("exited after %dms", elapsed),
-		}, lifecycleLogPath)
+				slog.String("tool", tool),
+				slog.String("command", command),
+				slog.Int64("elapsed_ms", elapsed),
+				slog.String("dying_output", lastSnapshot))
+			_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
+				InstanceID: id,
+				Tool:       tool,
+				Action:     "spawn_died_fast",
+				Source:     "spawn_watcher",
+				Reason:     fmt.Sprintf("exited after %dms", elapsed),
+			}, lifecycleLogPath)
+		})
 		return
 	}
 }
