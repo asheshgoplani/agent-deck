@@ -93,19 +93,30 @@ func classifyStale(inst *session.Instance, now time.Time, threshold time.Duratio
 	// LastStartedAt is persisted via the tool_data extras zone (see
 	// internal/session/last_started_persist.go, added alongside this
 	// heuristic) so this reads a real cross-process value, not an
-	// always-zero in-memory-only field. Zero still means "unknown" for a
-	// record saved by a binary that predates that fix — those keep reading
-	// as never-started until the session is started again, matching
-	// Instance.LastStartedAt's documented zero-value contract.
-	neverStarted := inst.LastStartedAt.IsZero()
-	if neverStarted {
+	// always-zero in-memory-only field. But zero is still ambiguous: it
+	// means either "genuinely never started" or "started before this
+	// field's persistence landed" (last_started_at is a brand-new tool_data
+	// key — every row saved before this fix shipped reads back as zero even
+	// though the session ran fine, and that describes literally every
+	// pre-existing session in the fleet on first deploy). Reporting the
+	// stronger "never-started" claim on an unproven zero is exactly the
+	// false-positive class this view exists to avoid (see the maintainer's
+	// PR #1826 review comment: "make the unknown case render as unknown
+	// rather than collapsing into a definite claim"). Corroborate with
+	// independent evidence collected by staleActivityEvidence — confirmed
+	// tmux activity, a TUI attach, or a durable hook-status sample — before
+	// asserting never-started: if any of those fired after CreatedAt,
+	// something DID happen, so fall through to the activity-based
+	// classification below instead.
+	evidence := staleActivityEvidence(inst)
+	if inst.LastStartedAt.IsZero() && evidence.Equal(inst.CreatedAt) {
 		if now.Sub(inst.CreatedAt) >= threshold {
 			return []staleReason{reasonNeverStarted}
 		}
 		return nil
 	}
 
-	activityAge := now.Sub(staleActivityEvidence(inst))
+	activityAge := now.Sub(evidence)
 	if activityAge < threshold {
 		return nil
 	}
@@ -152,21 +163,31 @@ func computeStaleCandidates(instances []*session.Instance, now time.Time, thresh
 			continue
 		}
 		reasonStrs := make([]string, 0, len(reasons))
+		neverStartedConfirmed := false
 		for _, r := range reasons {
 			reasonStrs = append(reasonStrs, string(r))
+			if r == reasonNeverStarted {
+				neverStartedConfirmed = true
+			}
 		}
 		lastActivity := staleActivityEvidence(inst)
 		c := staleCandidate{
-			ID:                  inst.ID,
-			Title:               inst.Title,
-			Tool:                inst.Tool,
-			Status:              StatusString(inst.Status),
-			Substate:            string(inst.Substate()),
-			Path:                inst.ProjectPath,
-			GroupPath:           inst.GroupPath,
-			ParentSessionID:     inst.ParentSessionID,
-			Reasons:             reasonStrs,
-			NeverStarted:        inst.LastStartedAt.IsZero(),
+			ID:              inst.ID,
+			Title:           inst.Title,
+			Tool:            inst.Tool,
+			Status:          StatusString(inst.Status),
+			Substate:        string(inst.Substate()),
+			Path:            inst.ProjectPath,
+			GroupPath:       inst.GroupPath,
+			ParentSessionID: inst.ParentSessionID,
+			Reasons:         reasonStrs,
+			// NeverStarted mirrors the actual classification reason (not a
+			// raw LastStartedAt.IsZero() check) so this boolean can never
+			// contradict Reasons — a zero LastStartedAt that was
+			// corroborated by other activity evidence and classified under
+			// last-activity/bash-idle instead must not also claim
+			// never-started here.
+			NeverStarted:        neverStartedConfirmed,
 			CreatedAt:           inst.CreatedAt.Format(time.RFC3339),
 			LastActivityAt:      lastActivity.Format(time.RFC3339),
 			LastActivityAgeSecs: int64(now.Sub(lastActivity).Seconds()),

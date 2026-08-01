@@ -115,6 +115,23 @@ func TestClassifyStale_Heuristics(t *testing.T) {
 			want: []staleReason{reasonBashIdle},
 		},
 		{
+			// Regression guard (#1826 re-review BLOCKING finding): a zero
+			// LastStartedAt is ambiguous — it also describes every row
+			// persisted before last_started_at existed as a tool_data key,
+			// i.e. every live session in the fleet on first deploy of this
+			// fix. LastAccessedAt here proves the session WAS used after
+			// creation, so classifyStale must not assert the stronger,
+			// unproven never-started claim; it must fall through to the
+			// ordinary activity-based classification instead.
+			name: "zero_last_started_at_with_corroborating_activity_is_not_never_started",
+			inst: &session.Instance{
+				Status:         session.StatusWaiting,
+				CreatedAt:      now.Add(-72 * time.Hour),
+				LastAccessedAt: now.Add(-48 * time.Hour), // proves activity after creation; LastStartedAt left zero
+			},
+			want: []staleReason{reasonLastActivity},
+		},
+		{
 			// Regression guard (#1826 review finding #3): StatusIdle on a
 			// non-shell tool means "waiting, user-acknowledged" (see
 			// UpdateStatus's IsAcknowledged branch), not a bash prompt sitting
