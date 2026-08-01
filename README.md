@@ -241,9 +241,9 @@ By default, agent-deck syncs a session's displayed title from the tool's own ses
 | --- | --- |
 | This one session keeps the title I gave it | `--title-lock` (alias `--no-title-sync`) on `agent-deck add` / `agent-deck launch`, or `agent-deck session set-title-lock <id> on` at runtime |
 | No session in this installation ever gets renamed by its agent | `sync_title = false` in `config.toml` |
-| A throwaway session where the live task description matters more than a fixed name | `agent-deck add --quick` (`-Q` in the TUI) — the list shows the session's current Claude task in place of the generated handle |
+| A throwaway session where the live task description matters more than a fixed name | `agent-deck add --quick` (`-Q` short flag) — the list shows the session's current Claude task in place of the generated handle |
 
-An explicit `-t/--title` implies a lock is unnecessary until the agent renames the session; pass `--title-lock` alongside it if the title must never move. A locked title is never silently overwritten by the sync path — it only changes via an explicit rename or `session set-title-lock <id> off`.
+An explicit `-t/--title` locks the title automatically, the same as passing `--title-lock` — there's no separate opt-in needed. There's also no create-time opt-out: if you want a session with an explicit title to still pick up the agent's renames, unlock it afterward with `agent-deck session set-title-lock <id> off`. A locked title is never silently overwritten by the sync path — it only changes via an explicit rename or `session set-title-lock <id> off`.
 
 #### Groups vs. parent linkage
 
