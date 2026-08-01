@@ -74,7 +74,18 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 			return "", fmt.Errorf("%w under %s", ErrNoConversation, srcProjDir)
 		}
 		srcFile, sid = newestFile, newestID
-		inst.ClaudeSessionID = newestID
+		if inst.ClaudeSessionID == "" {
+			// #1815: with no stored id, "newest conversation in the project
+			// dir" is a guess — in a shared working directory it can be
+			// another session's transcript. Migrating it is harmless (a copy),
+			// but it must not authorize a `--resume` after the switch's
+			// restart, so record it as unverified.
+			inst.adoptDiscoveredClaudeSessionID(newestID)
+		} else {
+			// A stale stored id (the resume renamed the file) is a repair of a
+			// conversation this session is known to own.
+			inst.ClaudeSessionID = newestID
+		}
 	}
 
 	dstProjDir := filepath.Join(dst, "projects", projDirName)

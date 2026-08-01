@@ -7266,8 +7266,24 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 			configDir := session.GetClaudeConfigDirForGroup(inst.GroupPath)
 			cmdBuilder.WriteString(fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir))
 		}
-		cmdBuilder.WriteString("claude --resume ")
-		cmdBuilder.WriteString(result.SessionID)
+		// #1815: the TUI picker builds a resume command too, so it routes
+		// through the same resume-time identity guard as restart / start /
+		// fork. The id was just recorded onto inst above (the user picked
+		// this conversation FOR this session), so the check passes by
+		// construction today — it is here so a future change that reuses an
+		// existing instance here cannot resume a conversation that instance
+		// does not own. Only the identity half applies: the user's explicit
+		// pick must not be downgraded to a fresh session by the
+		// conversation-data heuristics.
+		if allowed, _ := session.ResumeIdentityAllowed(inst, result.SessionID); allowed {
+			cmdBuilder.WriteString("claude --resume ")
+			cmdBuilder.WriteString(result.SessionID)
+		} else {
+			freshID := session.NewClaudeSessionUUID()
+			inst.ClaudeSessionID = freshID
+			cmdBuilder.WriteString("claude --session-id ")
+			cmdBuilder.WriteString(freshID)
+		}
 		if opts.SkipPermissions {
 			cmdBuilder.WriteString(" --dangerously-skip-permissions")
 		} else if opts.AllowSkipPermissions {

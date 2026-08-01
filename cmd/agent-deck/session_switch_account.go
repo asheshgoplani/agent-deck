@@ -112,7 +112,13 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	if locatedDir != "" {
 		srcDir = locatedDir
 		if inst.ClaudeSessionID == "" && locatedSID != "" {
-			inst.ClaudeSessionID = locatedSID
+			// #1815: with no recorded id, this is "the newest conversation in
+			// the project dir" — a guess that a shared working directory can
+			// answer with another session's transcript. It is good enough to
+			// migrate (a copy), never good enough to resume: record it as
+			// unverified so the restart starts fresh instead of adopting a
+			// conversation this session may not own.
+			session.AdoptDiscoveredClaudeSessionID(inst, locatedSID)
 		}
 	}
 	migrated, migErr := session.MigrateConversationFrom(inst, srcDir, targetDir)
@@ -131,6 +137,13 @@ func handleSessionSwitchAccount(profile string, args []string) {
 			out.Error(fmt.Sprintf("conversation not verified in target config dir, account not switched: %v", verifyErr), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+	}
+
+	// #1815 Guard 2: a failed transcript verification must STOP the sequence,
+	// not annotate it.
+	if blocked, why := switchAccountRestartUnsafe(inst, locatedDir, wasRunning, *noRestart); blocked {
+		out.Error(fmt.Sprintf("conversation verification failed for %s: %s", inst.Title, why), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
 
 	// Pre-seed the folder-trust entry for (target config dir, project path)
@@ -191,6 +204,40 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		"claude_session_id": inst.ClaudeSessionID,
 		"restarted":         restarted,
 	})
+}
+
+// switchAccountRestartUnsafe reports whether switch-account must ABORT rather
+// than restart the session, and why (#1815 Guard 2).
+//
+// In the reported incident the switch correctly diagnosed that it had no
+// transcript to move ("no conversation to migrate, fresh session") for a
+// session that had demonstrably been running a conversation — and then
+// restarted it anyway. The restart's disk-discovery prelude, with no id to
+// work from, adopted the newest transcript filed under the shared working
+// directory (one belonging to a different session) and resumed it. A failed
+// verification has to stop the sequence.
+//
+// The discriminator is ClaudeDetectedAt: a session that never bound a
+// conversation id has nothing to lose and nothing to hijack (the Start
+// prelude's #608 gate skips discovery for it). A session that HAS run,
+// arriving here with no recorded id and no conversation located in ANY
+// configured config dir, is exactly the unsafe state.
+//
+// The abort is scoped to the case where this command would itself perform the
+// restart; --no-restart (or an already-stopped session) is the documented way
+// through, and the resume-time identity guard covers the later manual start.
+func switchAccountRestartUnsafe(inst *session.Instance, locatedDir string, wasRunning, noRestart bool) (bool, string) {
+	if inst == nil || !wasRunning || noRestart {
+		return false, ""
+	}
+	if locatedDir != "" || inst.ClaudeSessionID != "" || inst.ClaudeDetectedAt.IsZero() {
+		return false, ""
+	}
+	return true, "this session previously held a Claude conversation, but none was found in any " +
+		"configured config dir and it has no recorded conversation id; account not switched and " +
+		"session NOT restarted (restarting in this state can adopt a transcript belonging to another " +
+		"session in the same directory). Re-run with --no-restart to switch the account only, then " +
+		"start it manually once the conversation is located"
 }
 
 // configuredAccountNames lists profile names that have a Claude config_dir —

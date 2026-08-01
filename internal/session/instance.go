@@ -195,6 +195,17 @@ type Instance struct {
 	// Claude Code integration
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
+	// claudeSessionIDUnverifiedFor holds the ClaudeSessionID value that came
+	// from mtime-based disk discovery rather than from a source identifying
+	// THIS session (own tmux env, own hook payload, explicit --session-id,
+	// or an id this process minted). While it equals ClaudeSessionID, the id
+	// must never authorize `--resume` — see resume_identity.go (#1815).
+	// Storing the id (not a bare bool) means any later assignment of a
+	// different id is verified by default, so the flag can never go stale
+	// onto an unrelated value. Not persisted: the guard replaces an
+	// unverified id with a freshly minted one before any spawn, so nothing
+	// unverified reaches the save cycle.
+	claudeSessionIDUnverifiedFor string
 
 	// Gemini CLI integration
 	GeminiSessionID  string                  `json:"gemini_session_id,omitempty"`
@@ -1019,18 +1030,29 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		case "resume":
 			// Resume specific session by ID
 			if opts.ResumeSessionID != "" {
-				// Check if session has actual conversation data
-				if sessionHasConversationData(i, opts.ResumeSessionID) {
+				// #1815: identity first (the id must be this session's own),
+				// then the conversation-data / project-dir check. Both live
+				// behind canResumeClaudeSession.
+				if canResumeClaudeSession(i, opts.ResumeSessionID) {
 					// Session has conversation history - use normal --resume
 					return fmt.Sprintf(`%s%s%s --resume %s%s`,
 						configDirPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
 				}
 				// Session was never interacted with - use --session-id with same UUID.
 				// CLAUDE_SESSION_ID is propagated via host-side SyncSessionIDsToTmux after start.
+				//
+				// #1815: when the refusal was an IDENTITY refusal the id may
+				// belong to another session, so it must not be reused via
+				// --session-id either (a shared id also makes the duplicate
+				// sweeper kill one of the pair). Mint a fresh one.
+				freshID := opts.ResumeSessionID
+				if !i.resumeIdentityAllowed(opts.ResumeSessionID).Allow {
+					freshID = i.replaceRefusedClaudeSessionID()
+				}
 				bashExportPrefix := i.buildBashExportPrefix()
 				return fmt.Sprintf(
 					`%s%s%s --session-id "%s"%s`,
-					bashExportPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
+					bashExportPrefix, execEnvPrefix, claudeCmd, freshID, extraFlags)
 			}
 			// No session ID provided - use -r flag for interactive picker
 			return fmt.Sprintf(`%s%s%s -r%s`, configDirPrefix, execEnvPrefix, claudeCmd, extraFlags)
@@ -3235,6 +3257,10 @@ func (i *Instance) adoptExplicitClaudeSessionID(reason string) bool {
 	if !ok {
 		return false
 	}
+	// #1815: an explicit `--session-id` in this session's OWN command is a
+	// verified ownership declaration, and it also corrects an id a previous
+	// discovery left unverified.
+	i.markClaudeSessionIDVerified()
 	if i.ClaudeSessionID != explicit {
 		i.ClaudeSessionID = explicit
 		sessionLog.Info("resume: id="+explicit+" reason="+reason,
@@ -3318,7 +3344,10 @@ func (i *Instance) ensureClaudeSessionIDFromDisk() {
 	if !found {
 		return
 	}
-	i.ClaudeSessionID = uuid
+	// #1815: discovery returns the newest transcript in this directory, which
+	// in a shared directory can belong to another session. Record it as
+	// UNVERIFIED so the resume-time identity guard refuses to --resume it.
+	i.adoptDiscoveredClaudeSessionID(uuid)
 	sessionLog.Info("resume: id="+uuid+" reason=jsonl_discovery",
 		slog.String("instance_id", i.ID),
 		slog.String("claude_session_id", uuid),
@@ -3363,7 +3392,9 @@ func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
 	if !found {
 		return
 	}
-	i.ClaudeSessionID = uuid
+	// #1815: see ensureClaudeSessionIDFromDisk — a discovered id is a hint,
+	// not proof of ownership, and must not authorize --resume.
+	i.adoptDiscoveredClaudeSessionID(uuid)
 	if i.ClaudeDetectedAt.IsZero() {
 		i.ClaudeDetectedAt = time.Now()
 	}
@@ -4705,6 +4736,9 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 					Source: "tmux_env", OldID: i.ClaudeSessionID, NewID: sessionID,
 				})
 				i.ClaudeSessionID = sessionID
+				// #1815: CLAUDE_SESSION_ID read from this instance's OWN
+				// tmux pane identifies this session — verified ownership.
+				i.markClaudeSessionIDVerified()
 			}
 		}
 		i.ClaudeDetectedAt = time.Now()
@@ -5690,12 +5724,17 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 		// transcript on disk that carries a real assistant reply. Mirrors the
 		// Gemini syncGeminiSessionFromDisk fallback below.
 		if id, recovered := i.findLatestClaudeTranscriptOnDisk(); recovered != nil {
-			i.ClaudeSessionID = id
+			// #1815: this is an mtime-based disk scan — the same evidence
+			// class as the restart discovery prelude, and in a shared working
+			// directory the newest transcript can belong to another session.
+			// Good enough to READ a last response from; never ownership. Mark
+			// it unverified so it cannot authorize a later `--resume`, and do
+			// NOT write it into this pane's CLAUDE_SESSION_ID: that would
+			// launder a scanned id into a "bound from my own tmux env" one on
+			// the next status poll, which is exactly the resume this guard
+			// exists to prevent.
+			i.adoptDiscoveredClaudeSessionID(id)
 			i.ClaudeDetectedAt = time.Now()
-			// Sync back to tmux so subsequent reads (and restarts) stay current.
-			if i.tmuxSession != nil && i.tmuxSession.Exists() {
-				_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", id)
-			}
 			return recovered, nil
 		}
 	}
@@ -7242,10 +7281,29 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// common flush-race case without slowing the happy path (retry only
 	// fires when the first check comes back negative AND we have a
 	// non-empty ClaudeSessionID).
-	useResume := sessionHasConversationData(i, i.ClaudeSessionID)
+	// #1815 identity guard: refuse outright when the id about to be resumed
+	// is not this session's own recorded conversation id (missing recorded id,
+	// or a mismatch). The refused id is replaced by a freshly minted one so
+	// the session starts clean instead of claiming another session's id.
+	if decision := i.resumeIdentityAllowed(i.ClaudeSessionID); !decision.Allow {
+		refused := i.ClaudeSessionID
+		i.logResumeRefusal(refused, decision.Reason)
+		fresh := i.replaceRefusedClaudeSessionID()
+		extraFlags := i.buildClaudeExtraFlags(opts)
+		sessionLog.Info("resume: id="+fresh+" reason=identity_guard_fresh_session",
+			slog.String("instance_id", i.ID),
+			slog.String("claude_session_id", fresh),
+			slog.String("refused_session_id", refused),
+			slog.String("path", i.ProjectPath),
+			slog.String("reason", "identity_guard_fresh_session"))
+		return fmt.Sprintf("%s%s%s --session-id %s%s",
+			envPrefix, configDirPrefix, claudeCmd, fresh, extraFlags)
+	}
+
+	useResume := canResumeClaudeSession(i, i.ClaudeSessionID)
 	if !useResume && i.ClaudeSessionID != "" {
 		time.Sleep(resumeCheckRetryDelay)
-		useResume = sessionHasConversationData(i, i.ClaudeSessionID)
+		useResume = canResumeClaudeSession(i, i.ClaudeSessionID)
 		sessionLog.Debug(
 			"session_data_retry_after_wait",
 			slog.String("session_id", i.ClaudeSessionID),
@@ -7608,6 +7666,16 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 
 	if !i.CanFork() {
 		return "", fmt.Errorf("cannot fork: no active Claude session")
+	}
+
+	// #1815: a fork is a `--resume <source id> --fork-session`, so it needs
+	// the same identity verification as any other resume — forking a
+	// transcript this session does not own would clone another session's
+	// context (and its authority) into a new pane.
+	if decision := i.resumeIdentityAllowed(i.ClaudeSessionID); !decision.Allow {
+		i.logResumeRefusal(i.ClaudeSessionID, "fork_"+decision.Reason)
+		return "", fmt.Errorf("cannot fork: conversation id %q is not verified as this session's own (%s)",
+			i.ClaudeSessionID, decision.Reason)
 	}
 
 	workDir := target.ProjectPath
@@ -8516,6 +8584,9 @@ func (i *Instance) bindClaudeSessionFromHook(sessionID, hookSource, hookEvent, a
 		HookEvent: hookEvent,
 	})
 	i.ClaudeSessionID = sessionID
+	// #1815: a hook payload correlated to this instance identifies THIS
+	// session, so the id is verified ownership.
+	i.markClaudeSessionIDVerified()
 	i.ClaudeDetectedAt = time.Now()
 	i.hookSessionID = sessionID
 
