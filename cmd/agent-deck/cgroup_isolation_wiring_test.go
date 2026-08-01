@@ -91,10 +91,11 @@ func TestLogCgroupIsolationDecision_WiredIntoBootstrap(t *testing.T) {
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start binary: %v", err)
 		}
-		defer func() {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-			_, _ = cmd.Process.Wait()
-		}()
+		// Register the reap IMMEDIATELY after a successful Start, before any
+		// wait/poll that can fail the test: every early-return path below
+		// (including t.Fatalf) must still terminate and reap the TUI, or the
+		// subprocess is orphaned for the lifetime of the runner.
+		t.Cleanup(func() { terminateTUI(cmd) })
 
 		// Poll for the OBS-01 line instead of assuming a fixed 2s startup +
 		// 200ms lumberjack-flush budget is always enough. This test builds
@@ -123,4 +124,37 @@ func TestLogCgroupIsolationDecision_WiredIntoBootstrap(t *testing.T) {
 		}
 		t.Fatalf("OBS-01-WIRE-UP-MISSING: debug.log at %s missing 'tmux cgroup isolation:' line after 20s; contents:\n%s", logPath, data)
 	})
+}
+
+// terminateTUI shuts the started TUI subprocess down and reaps it, without
+// ever blocking indefinitely.
+//
+// SIGTERM goes to the whole process group (the child was started with
+// Setpgid) so lumberjack gets a chance to flush and any grandchild goes with
+// it. If the TUI declines to exit — a bubbletea program on TERM=dumb has no
+// obligation to — the wait would otherwise hang until the package's test
+// timeout with the subprocess still running, so escalate to SIGKILL after a
+// short grace. Wait() is called exactly once, on the goroutine that owns it,
+// and is what actually reaps the child rather than leaving a zombie.
+func terminateTUI(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	// Signal first, start the waiter second: no reap can be in flight while
+	// the signal is being delivered, so the pgid cannot have been recycled
+	// under us. The later SIGKILL is likewise only reached while done is
+	// still open, i.e. while Wait has provably not returned.
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() {
+		_, _ = cmd.Process.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(5 * time.Second):
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	<-done
 }

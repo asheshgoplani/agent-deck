@@ -137,10 +137,26 @@ func spawnHelperInOwnGroup(t *testing.T, role string, extraEnv ...string) *exec.
 // Cleanups run LIFO, so on the success path this runs after the caller's own
 // cleanup and is a cheap no-op (Kill/Wait on an already-reaped process just
 // return an error, which is ignored).
+//
+// The Wait is what actually reaps: a killed-but-unwaited child stays a zombie
+// for the lifetime of the test binary, so "kill without wait" is only half a
+// cleanup.
+//
+// Both calls go through the os.Process handle rather than a raw
+// syscall.Kill(pid|-pid, ...). That is deliberate: os.Process remembers that
+// it has been waited on and returns ErrProcessDone without sending any
+// signal, so running after the caller's own reap is both idempotent and
+// incapable of signaling an unrelated process that has meanwhile recycled the
+// pid. (Raw pid/pgid signaling from a cleanup is precisely the friendly-fire
+// shape that has bitten this repo before.)
 func registerOrphanReaper(t *testing.T, cmd *exec.Cmd) {
 	t.Helper()
+	if cmd.Process == nil {
+		t.Fatalf("registerOrphanReaper called before a successful cmd.Start()")
+	}
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
+		// Must wait, or the killed child lingers as a zombie.
 		_, _ = cmd.Process.Wait()
 	})
 }
@@ -282,6 +298,7 @@ func TestKillStaleControlClients_FallsBackToSIGKILL(t *testing.T) {
 func TestSoftKillProcess_AlreadyDeadIsNoop(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "exit 0")
 	require.NoError(t, cmd.Start())
+	registerOrphanReaper(t, cmd) // before any require that could abort pre-Wait
 	pid := cmd.Process.Pid
 	_, _ = cmd.Process.Wait() // fully reap
 
@@ -401,6 +418,13 @@ func spawnHelperWithStdinPipe(t *testing.T, role string, extraEnv ...string) (*e
 	require.NoError(t, err)
 	require.NoError(t, cmd.Start())
 	registerOrphanReaper(t, cmd)
+	// Close the parent's write end too. We never call cmd.Wait() (the tests
+	// reap via cmd.Process.Wait()), so exec.Cmd never closes it for us: an
+	// early return from waitForReady would otherwise leak the fd AND keep the
+	// child's stdin open forever, denying it the EOF it is waiting for.
+	// Double-close is harmless — the tests that close it themselves get an
+	// already-closed error here, which is ignored.
+	t.Cleanup(func() { _ = stdin.Close() })
 	waitForReady(t, ready, 5*time.Second)
 	return cmd, stdin
 }
@@ -492,6 +516,7 @@ func TestReapWithEOFGrace_AlreadyDeadIsNoop(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "exit 0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
+	registerOrphanReaper(t, cmd) // before any require that could abort pre-Wait
 	proc := cmd.Process
 
 	// Already-reaped: the once-guarded reap completes instantly.
@@ -518,6 +543,7 @@ func TestSoftKillProcessGroup_AlreadyDeadIsNoop(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "exit 0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
+	registerOrphanReaper(t, cmd) // Getpgid below can fail the test pre-Wait
 	pid := cmd.Process.Pid
 	pgid, err := syscall.Getpgid(pid)
 	require.NoError(t, err)
