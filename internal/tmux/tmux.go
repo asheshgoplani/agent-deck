@@ -5075,15 +5075,93 @@ func (s *Session) sendKeysAndEnterToTarget(target, keys string) error {
 	return s.sendEnterRawToTarget(target)
 }
 
-// SendKeysChunked sends large content to the tmux session in chunks to avoid
-// tmux/OS buffer limits. Content ≤4KB is sent directly via SendKeys.
-// Larger content is split at newline boundaries with a short delay between chunks.
+// SendKeysChunked delivers content to the tmux session's active window.
+// Payloads at or below canonicalSafeBytes go out as a single `send-keys -l`,
+// exactly as before. Larger payloads take the paste transport (load-buffer
+// from stdin + paste-buffer) after the pane's line discipline has been
+// checked; see sendKeysChunkedToTarget and canonical_line.go.
 func (s *Session) SendKeysChunked(content string) error {
 	return s.sendKeysChunkedToTarget(s.Name, content)
 }
 
 // sendKeysChunkedToTarget is SendKeysChunked against an explicit tmux target.
+//
+// Three sizes of payload, three behaviors (issue #1793):
+//
+//   - ≤ canonicalSafeBytes: one `send-keys -l`. Guaranteed to fit any line
+//     discipline, so nothing is inspected and nothing costs extra. This is
+//     the overwhelming majority of sends and is byte-for-byte unchanged.
+//
+//   - larger, pane readable and canonical: refuse with
+//     *CanonicalOverflowError when the longest line does not fit the pane's
+//     canonical buffer. The kernel would discard the overflow AND the
+//     submitting Enter, so typing it would leave a half-line in the composer
+//     and report a success that never happened. Refusing types nothing.
+//
+//   - larger, otherwise: deliver via load-buffer + paste-buffer. tmux reads
+//     the body from our stdin instead of argv, which removes the ARG_MAX
+//     exposure and replaces N paced `send-keys` subprocesses with two calls.
+//     If the paste transport is unavailable the chunked send-keys path is
+//     still there as a fallback.
+//
+// The paste transport is NOT what fixes canonical overflow — it was measured
+// to fall off the identical cliff (canonical_line.go). Only the refusal, and
+// the caller's post-send verification, make the outcome honest.
 func (s *Session) sendKeysChunkedToTarget(target, content string) error {
+	if len(content) <= canonicalSafeBytes {
+		return s.sendKeysToTarget(target, content)
+	}
+
+	// Above the always-safe size the pane itself decides. An unreadable
+	// discipline is "unknown", not "unsafe": deliver and let the caller
+	// verify rather than refusing a send that would have worked.
+	if ld, err := s.paneLineDiscipline(target); err == nil && ld.Canonical && ld.MaxLine > 0 {
+		if longest := longestLineBytes(content); longest > ld.MaxLine-1 {
+			return &CanonicalOverflowError{
+				LineBytes:  longest,
+				LimitBytes: ld.MaxLine,
+				TTY:        ld.TTY,
+			}
+		}
+	}
+
+	if err := s.pasteToTarget(target, content); err == nil {
+		return nil
+	}
+	return s.sendKeysChunkedFallback(target, content)
+}
+
+// pasteBufferName is the tmux buffer agent-deck stages large payloads in. A
+// fixed name (rather than tmux's numbered stack) keeps the user's copy
+// buffers untouched, and `paste-buffer -d` deletes it immediately after.
+const pasteBufferName = "agent-deck-send"
+
+// pasteToTarget delivers content through tmux's paste path: `load-buffer -`
+// reads the body from this process's stdin (no argv size limit, no shell
+// quoting), then `paste-buffer -d` writes it to the pane and drops the buffer.
+func (s *Session) pasteToTarget(target, content string) error {
+	s.invalidateCache()
+
+	load := keySenderExec(s.SocketName, "load-buffer", "-b", pasteBufferName, "-")
+	load.Stdin = strings.NewReader(content)
+	if err := runSendKeysBounded(load); err != nil {
+		return fmt.Errorf("load-buffer: %w", err)
+	}
+
+	paste := keySenderExec(s.SocketName, "paste-buffer", "-d", "-b", pasteBufferName, "-t", target)
+	if err := runSendKeysBounded(paste); err != nil {
+		// -d never ran, so the staged buffer would linger. Drop it before
+		// falling back, otherwise the fallback's content and this stale copy
+		// both sit in the buffer stack.
+		_ = runSendKeysBounded(keySenderExec(s.SocketName, "delete-buffer", "-b", pasteBufferName))
+		return fmt.Errorf("paste-buffer: %w", err)
+	}
+	return nil
+}
+
+// sendKeysChunkedFallback is the historical paced `send-keys -l` transport,
+// kept as the fallback for tmux builds where the paste path fails.
+func (s *Session) sendKeysChunkedFallback(target, content string) error {
 	const chunkSize = 4096
 	const chunkDelay = 50 * time.Millisecond
 
@@ -5130,9 +5208,13 @@ func splitIntoChunks(content string, maxSize int) []string {
 			chunks = append(chunks, remaining[:cutPoint+1])
 			remaining = remaining[cutPoint+1:]
 		} else {
-			// No newline found: hard split at maxSize
-			chunks = append(chunks, remaining[:maxSize])
-			remaining = remaining[maxSize:]
+			// No newline found: hard split at maxSize, backed off to the
+			// nearest rune boundary so a multi-byte character is never cut in
+			// half across two `send-keys -l` calls (which would put invalid
+			// UTF-8 on the wire and corrupt the character in the pane).
+			cut := runeSafeCut(remaining, maxSize)
+			chunks = append(chunks, remaining[:cut])
+			remaining = remaining[cut:]
 		}
 	}
 

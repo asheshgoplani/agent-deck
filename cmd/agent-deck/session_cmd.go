@@ -2834,9 +2834,17 @@ func handleSessionSend(profile string, args []string) {
 		extra := sendRes.jsonFields()
 		extra["session_id"] = inst.ID
 		extra["session_title"] = inst.Title
-		if sendRes.delivery == deliveryTypedNotSubmitted {
+		switch sendRes.delivery {
+		case deliveryTypedNotSubmitted:
 			out.ErrorWithData(fmt.Sprintf("message typed but not submitted to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
-		} else {
+		case deliveryLineTooLong:
+			// Nothing was typed, so the composer is exactly as the operator
+			// left it. Retrying the same body is pointless; the actionable
+			// advice is to break the line or send a file reference.
+			out.ErrorWithData(fmt.Sprintf("message too long for '%s' to receive as one line: %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
+		case deliveryNoEvidence:
+			out.ErrorWithData(fmt.Sprintf("message not delivered to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
+		default:
 			out.ErrorWithData(fmt.Sprintf("failed to send message: %v", sendErr), ErrCodeInvalidOperation, extra)
 		}
 		os.Exit(1)
@@ -2981,10 +2989,24 @@ const (
 	// deliverySubmitted: positive evidence the agent accepted the message
 	// (an "active" transition, or the composer cleared after holding it).
 	deliverySubmitted = "submitted"
-	// deliveryUnverified: the message was sent but this tool's TUI exposes
-	// no Claude-shaped verification signals, so submission is unverified
-	// (non-Claude tools; legacy best-effort contract).
+	// deliveryUnverified: the message was sent but neither Claude-shaped
+	// submission signals nor a content-arrival check could reach a verdict,
+	// so submission is genuinely unknown. Since issue #1793 this is the
+	// narrow "we could not tell" bucket, not the catch-all it used to be:
+	// a send only lands here when the payload is small enough that the
+	// canonical-overflow failure mode cannot apply and it carries no token
+	// distinctive enough to look for in the pane.
 	deliveryUnverified = "unverified"
+	// deliveryArrived: the message body was observed in the target pane (or
+	// the agent went active right after the send), so it demonstrably
+	// arrived. Used for tools whose TUI exposes no Claude-shaped submit
+	// signal — arrival is proven, submission is inferred from it.
+	deliveryArrived = "arrived"
+	// deliveryLineTooLong: refused before typing anything because the pane's
+	// reader is in canonical mode and a payload line exceeds its line buffer
+	// (issue #1793). The kernel would discard the overflow and the
+	// submitting Enter with it, so this can never be reported as success.
+	deliveryLineTooLong = "line_too_long"
 	// deliveryTypedNotSubmitted: the message body is still sitting unsent in
 	// the composer after the bounded Enter-retry budget (issue #1413).
 	deliveryTypedNotSubmitted = "typed_not_submitted"
@@ -3287,11 +3309,23 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	}
 
 	if err := target.SendKeysAndEnter(message); err != nil {
+		// A refused over-long line is a distinct, actionable outcome: the
+		// transport typed nothing, so the composer is untouched and the
+		// caller must not retry the same body against the same pane
+		// (issue #1793).
+		if errors.Is(err, tmux.ErrCanonicalLineOverflow) {
+			return deliveryLineTooLong, fmt.Errorf("message not delivered: %w", err)
+		}
 		return deliverySendFailed, fmt.Errorf("failed to send message: %w", err)
 	}
 
 	if skipVerify {
-		return deliveryUnverified, nil
+		// Issue #1793: "the tmux command returned" is not delivery. This
+		// path used to return success on transport alone, which is exactly
+		// how a 4095-byte payload that never reached the agent was reported
+		// as `{"success":true,"delivery":"unverified"}`. Confirm the body
+		// actually reached the pane before claiming anything.
+		return verifyContentArrival(target, message, opts)
 	}
 
 	// Verify the agent accepted Enter and began processing.
@@ -3457,6 +3491,80 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 // suitable for "did this body appear in the pane?" verification. Returns "" if
 // the message contains no usefully-distinctive token (e.g. all whitespace, or
 // only short common words).
+// arrivalVerifyChecks bounds the post-send content-arrival poll. The body
+// echoes into the pane as fast as the agent redraws, so this only has to
+// cover a redraw, not a reply: at the callers' 200ms checkDelay that is ~2s.
+const arrivalVerifyChecks = 10
+
+// arrivalStrictBytes is the payload size at or above which a failed arrival
+// check is a hard failure rather than an "unverified" shrug. It is the same
+// always-safe line size the tmux transport uses (internal/tmux
+// canonicalSafeBytes): below it the canonical-overflow loss mode of issue
+// #1793 cannot occur, so a missed pane match is far more likely to be a
+// rendering quirk than a lost message, and the historical best-effort
+// contract is kept. At or above it a missed match is the actual bug
+// signature and must not be reported as success.
+const arrivalStrictBytes = 1023
+
+// verifyContentArrival confirms that message reached the target pane, for
+// tools whose TUI exposes no Claude-shaped submit signal (issue #1793).
+//
+// Evidence is either the message body appearing in the captured pane, or the
+// session going "active" right after the send — an agent that started working
+// necessarily received what it is working on.
+//
+// The pane comparison is whitespace-insensitive because a pane wraps long
+// lines at its width and capture-pane returns those wraps as newlines, so a
+// byte-exact search for a 64-character token fails on any message wider than
+// the remaining columns. Stripping whitespace from both sides restores the
+// contiguity the terminal broke.
+func verifyContentArrival(target sendRetryTarget, message string, opts sendRetryOptions) (string, error) {
+	token := collapseWhitespace(messageDeliveryToken(message))
+	if token == "" {
+		// No distinctive token to look for (very short or all-whitespace
+		// message). Verification is impossible rather than failed: say so
+		// instead of inventing either verdict.
+		return deliveryUnverified, nil
+	}
+
+	checks := opts.maxRetries
+	if checks > arrivalVerifyChecks {
+		checks = arrivalVerifyChecks
+	}
+	if checks < 1 {
+		checks = 1
+	}
+
+	for i := 0; i < checks; i++ {
+		if raw, err := target.CapturePaneFresh(); err == nil {
+			if strings.Contains(collapseWhitespace(tmux.StripANSI(raw)), token) {
+				return deliveryArrived, nil
+			}
+		}
+		if status, err := target.GetStatus(); err == nil && status == "active" {
+			return deliveryArrived, nil
+		}
+		if i < checks-1 {
+			time.Sleep(opts.checkDelay)
+		}
+	}
+
+	if len(message) >= arrivalStrictBytes {
+		return deliveryNoEvidence, fmt.Errorf(
+			"send not delivered: a %d-byte message never appeared in the pane and the agent never went active "+
+				"after %d checks (issue #1793). A payload this size is lost outright when the pane's reader "+
+				"buffers input per line, so this is reported as a failure rather than as an unverified success",
+			len(message), checks)
+	}
+	return deliveryUnverified, nil
+}
+
+// collapseWhitespace removes every whitespace byte, so a comparison survives
+// the line wrapping a terminal applies to long content.
+func collapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), "")
+}
+
 func messageDeliveryToken(message string) string {
 	const minTokenLen = 12
 	const maxTokenLen = 64
