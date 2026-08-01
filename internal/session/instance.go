@@ -8847,8 +8847,8 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 		case foreignHit:
 			sessionLog.Debug(
 				"session_data_cross_project_rejected",
-				slog.String("found_path", fallbackPath),
-				slog.String("instance_working_dir", projectPath),
+				slog.String("found_path", logging.SanitizeValue(fallbackPath)),
+				slog.String("instance_working_dir", logging.SanitizeValue(projectPath)),
 				slog.String("result", "use_session_id"),
 			)
 			emitDecision(false, "foreign_project_dir_resume_would_fail")
@@ -8860,7 +8860,7 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 			emitDecision(false, "file_not_found")
 			return false
 		default:
-			sessionLog.Debug("session_data_cross_project_found", slog.String("path", fallbackPath))
+			sessionLog.Debug("session_data_cross_project_found", slog.String("path", logging.SanitizeValue(fallbackPath)))
 			sessionFile = fallbackPath
 		}
 	}
