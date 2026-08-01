@@ -1251,29 +1251,31 @@ func (p *projectRoot) targetExists(targetRel, expectedSource string) (bool, erro
 
 	if _, err := parent.Stat(name); err == nil {
 		return true, nil
-	} else if os.IsNotExist(err) {
-		return false, nil
 	}
 
-	// Root.Stat reports the escape before it reports whether the destination
-	// exists, so an out-of-root link lands here whether it is a live pool
-	// attachment or a dangling leftover. Resolve the link explicitly and let
-	// the DESTINATION decide: a link that resolves (pool attachment, or a
-	// foreign replacement the loadout layer must report rather than silently
-	// overwrite) counts as present; a dangling link counts as ABSENT so the
-	// attach flow rematerializes over it. This is a read-only metadata check
-	// on the link's own destination — the same thing the previous os.Stat on
-	// the target did — while every mutation stays descriptor-relative.
+	// Stat failing is NOT proof of absence, and concluding absence from it was
+	// a bug: a dangling link whose destination stays inside the managed root
+	// (say "lint -> unrelated-missing") ENOENTs here, and returning early made
+	// attach delete and replace a foreign entry instead of reporting it. Lstat
+	// the ENTRY first, then let ownership classification decide.
 	info, lerr := parent.Lstat(name)
 	if lerr != nil {
 		if os.IsNotExist(lerr) {
+			// Genuinely missing: nothing is there to report or overwrite.
 			return false, nil
 		}
 		return false, lerr
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
+		// A real entry that Stat could not resolve still EXISTS.
 		return true, nil
 	}
+
+	// From here the entry is a symlink. Its destination decides: only a link
+	// proven to be THIS attachment's own (below) may count as absent so the
+	// attach flow can heal it. Everything else — live pool attachments and
+	// foreign replacements alike — counts as present, leaving the call to the
+	// loadout layer rather than silently overwriting it.
 	dest, rerr := parent.Readlink(name)
 	if rerr != nil {
 		return true, nil
@@ -1324,15 +1326,15 @@ func (p *projectRoot) targetExists(targetRel, expectedSource string) (bool, erro
 	// managed project skills dir, follows further hops under that same rule
 	// with a capped hop count, and hands back a Root anchored at the validated
 	// root — the existence check is then descriptor-relative inside it.
-	srcRoot, srcRel, _, err := p.openContainedSource(dest)
+	src, err := p.openContainedSource(dest)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
 		return true, nil
 	}
-	defer srcRoot.Close()
-	if _, err := srcRoot.Stat(srcRel); err != nil {
+	defer src.Close()
+	if _, err := src.root.Stat(src.rel); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
@@ -1374,42 +1376,67 @@ func (p *projectRoot) targetEntryExists(targetRel string) (bool, error) {
 // from an existing pool-attached symlink work when the recorded source path is
 // gone: the managed entry is a link into the pool, so reading it as a source
 // means validating the POOL destination, not refusing the escape.
-func (p *projectRoot) openContainedSource(sourcePath string) (*os.Root, string, string, error) {
+// containedSource is a validated materialization source: a pinned root, the
+// entry's path relative to that root, the lexical absolute path (for messages
+// and link-text interpretation), and the root's PHYSICAL path captured when
+// the root was opened. rootPhys is what makes it possible to name the source
+// after pinning WITHOUT a fresh pathname lookup — resolving srcAbs again post
+// validation would follow a component swapped in afterwards and could point a
+// managed attachment straight out of the source root.
+type containedSource struct {
+	root     *os.Root
+	rel      string
+	abs      string
+	rootPhys string
+}
+
+// target is the absolute path the source occupies, derived purely from pinned
+// state: the root's captured physical path plus the validated remainder.
+func (c *containedSource) target() string {
+	return filepath.Join(c.rootPhys, c.rel)
+}
+
+func (c *containedSource) Close() {
+	if c != nil && c.root != nil {
+		_ = c.root.Close()
+	}
+}
+
+func (p *projectRoot) openContainedSource(sourcePath string) (*containedSource, error) {
 	resolved, err := resolveSkillSourcePath(sourcePath)
 	if err != nil {
-		return nil, "", "", err
+		return nil, err
 	}
 
 	// The budget counts LINKS FOLLOWED; the terminal path is always validated
 	// because each iteration returns as soon as the entry is not a symlink.
 	for hop := 0; hop <= maxSourceSymlinkHops; hop++ {
-		root, rel, abs, err := p.openSourceRootFor(resolved)
+		src, err := p.openSourceRootFor(resolved)
 		if err != nil {
-			return nil, "", "", err
+			return nil, err
 		}
-		info, lerr := root.Lstat(rel)
+		info, lerr := src.root.Lstat(src.rel)
 		if lerr != nil {
-			root.Close()
-			return nil, "", "", lerr
+			src.Close()
+			return nil, lerr
 		}
 		if info.Mode()&os.ModeSymlink == 0 {
-			return root, rel, abs, nil
+			return src, nil
 		}
-		dest, rerr := root.Readlink(rel)
-		root.Close()
+		dest, rerr := src.root.Readlink(src.rel)
+		linkDir := filepath.Dir(src.target())
+		src.Close()
 		if rerr != nil {
-			return nil, "", "", rerr
+			return nil, rerr
 		}
 		if !filepath.IsAbs(dest) {
-			baseDir := filepath.Dir(abs)
-			if physical, perr := filepath.EvalSymlinks(baseDir); perr == nil {
-				baseDir = physical
-			}
-			dest = filepath.Join(baseDir, dest)
+			// Joined against the pinned root's captured physical path, not a
+			// fresh EvalSymlinks of the link's own directory.
+			dest = filepath.Join(linkDir, dest)
 		}
 		resolved = filepath.Clean(dest)
 	}
-	return nil, "", "", fmt.Errorf("refusing to materialize from source with more than %d symlink levels: %s", maxSourceSymlinkHops, resolved)
+	return nil, fmt.Errorf("refusing to materialize from source with more than %d symlink levels: %s", maxSourceSymlinkHops, resolved)
 }
 
 // relUnderBase reports whether target is a STRICT descendant of base and, if
@@ -1432,10 +1459,10 @@ func relUnderBase(base, target string) (string, bool) {
 // opened — a shipped ".agents/skills -> /outside" is refused rather than
 // anchored — and are then opened RELATIVE to the project root using the
 // constant managed-dir component, never by reassembled absolute path.
-func (p *projectRoot) openSourceRootFor(resolved string) (*os.Root, string, string, error) {
+func (p *projectRoot) openSourceRootFor(resolved string) (*containedSource, error) {
 	sources, err := LoadSkillSources()
 	if err != nil {
-		return nil, "", "", err
+		return nil, err
 	}
 	resolvedPhys := physicalPath(resolved)
 	for _, def := range sources {
@@ -1459,9 +1486,12 @@ func (p *projectRoot) openSourceRootFor(resolved string) (*os.Root, string, stri
 		}
 		root, err := os.OpenRoot(rootPath)
 		if err != nil {
-			return nil, "", "", err
+			return nil, err
 		}
-		return root, rel, resolved, nil
+		// physicalPath is evaluated HERE, at open time, and never again for
+		// this source: everything downstream names the entry as
+		// rootPhys + rel.
+		return &containedSource{root: root, rel: rel, abs: resolved, rootPhys: physicalPath(rootPath)}, nil
 	}
 
 	for _, dir := range knownProjectSkillsDirs() {
@@ -1478,18 +1508,19 @@ func (p *projectRoot) openSourceRootFor(resolved string) (*os.Root, string, stri
 		// resolves identically whether the caller handed us a lexical or a
 		// physical path.
 		if err := p.requireNoSymlinkAncestors(filepath.Join(suffix, innerRel), true); err != nil {
-			return nil, "", "", err
+			return nil, err
 		}
 		// Pinned by descriptor identity, same as the target side: a source dir
-		// swapped for a symlink after validation cannot be opened.
-		root, _, err := p.openPinnedDir(suffix, false)
+		// swapped for a symlink after validation cannot be opened. rootPhys
+		// comes out of that same pin walk.
+		root, rootPhys, err := p.openPinnedDir(suffix, false)
 		if err != nil {
-			return nil, "", "", err
+			return nil, err
 		}
-		return root, innerRel, resolved, nil
+		return &containedSource{root: root, rel: innerRel, abs: resolved, rootPhys: rootPhys}, nil
 	}
 
-	return nil, "", "", fmt.Errorf("refusing to materialize from source outside registered skill sources: %s", resolved)
+	return nil, fmt.Errorf("refusing to materialize from source outside registered skill sources: %s", resolved)
 }
 
 // copyFileIntoRoot copies srcRel (read descriptor-relative inside srcRoot, a
@@ -1596,13 +1627,13 @@ func copySkillIntoRoot(dstRoot, srcRoot *os.Root, srcRel, dstRel string) (string
 // mode is skipped (the migration case, where the source IS the current
 // target's content).
 func (p *projectRoot) materialize(sourcePath, targetRel string, copyOnly bool) (string, error) {
-	srcRoot, srcRel, srcAbs, err := p.openContainedSource(sourcePath)
+	src, err := p.openContainedSource(sourcePath)
 	if err != nil {
 		return "", err
 	}
-	defer srcRoot.Close()
+	defer src.Close()
 
-	parent, name, parentPhys, err := p.openTargetParent(targetRel, true)
+	parent, name, _, err := p.openTargetParent(targetRel, true)
 	if err != nil {
 		return "", err
 	}
@@ -1613,32 +1644,26 @@ func (p *projectRoot) materialize(sourcePath, targetRel string, copyOnly bool) (
 	}
 
 	if !copyOnly {
-		// Link text is computed from the validated Root-relative target and the
-		// source's own root; the link is CREATED descriptor-relative. The link
-		// content may point at the pool outside the project — creating such a
-		// link is fine, os.Root only forbids traversing through escapes.
+		// The link TARGET is derived purely from pinned state: the source
+		// root's physical path captured when that root was opened, plus the
+		// remainder validated inside it. It is never re-resolved from a
+		// pathname after pinning — doing so would follow a source entry
+		// swapped for an external symlink in the meantime and point the
+		// managed attachment straight out of the source root.
 		//
-		// Correctness of the link is proven without re-Stat'ing the target by
-		// path: the source exists (its root Stat'ed it below) and the link text
-		// is verified to rejoin exactly to the source.
-		if _, serr := srcRoot.Stat(srcRel); serr == nil {
-			// parentPhys came out of the pin walk (project physical path plus
-			// components already proven to be real directories). Re-deriving it
-			// with a pathname lookup here would let a rename between pinning
-			// and link creation compute the link against a replacement
-			// directory while creating it in the pinned original.
-			linkBase := parentPhys
-			sourceTarget := physicalPath(srcAbs)
-			if linkText, rerr := filepath.Rel(linkBase, sourceTarget); rerr == nil &&
-				filepath.Clean(filepath.Join(linkBase, linkText)) == filepath.Clean(sourceTarget) {
-				if err := parent.Symlink(linkText, name); err == nil {
-					return "symlink", nil
-				}
+		// The ABSOLUTE form is used deliberately: a relative link would have to
+		// be measured against the target parent's path, which cannot be
+		// re-derived after pinning without the same class of lookup. The link
+		// is still CREATED descriptor-relative; link CONTENT pointing outside
+		// the project is fine, os.Root only forbids traversing escapes.
+		if _, serr := src.root.Stat(src.rel); serr == nil {
+			if err := parent.Symlink(src.target(), name); err == nil {
+				return "symlink", nil
 			}
 		}
 	}
 
-	return copySkillIntoRoot(parent, srcRoot, srcRel, name)
+	return copySkillIntoRoot(parent, src.root, src.rel, name)
 }
 
 // removeManagedTarget validates and removes in one descriptor-relative step:
@@ -1748,13 +1773,13 @@ func (p *projectRoot) validateAttachableSkillCandidate(candidate SkillCandidate)
 		return fmt.Errorf("%w: %s", ErrSkillUnsupportedKind, candidate.Name)
 	}
 
-	srcRoot, srcRel, _, err := p.openContainedSource(candidate.SourcePath)
+	src, err := p.openContainedSource(candidate.SourcePath)
 	if err != nil {
 		return err
 	}
-	defer srcRoot.Close()
+	defer src.Close()
 
-	info, err := srcRoot.Stat(srcRel)
+	info, err := src.root.Stat(src.rel)
 	if err != nil {
 		return err
 	}
@@ -1762,9 +1787,9 @@ func (p *projectRoot) validateAttachableSkillCandidate(candidate SkillCandidate)
 		return fmt.Errorf("%w: %s", ErrSkillUnsupportedKind, candidate.Name)
 	}
 
-	if _, err := srcRoot.Stat(filepath.Join(srcRel, "SKILL.md")); err != nil {
+	if _, err := src.root.Stat(filepath.Join(src.rel, "SKILL.md")); err != nil {
 		if os.IsNotExist(err) {
-			if pluginInfo, perr := srcRoot.Stat(filepath.Join(srcRel, ".claude-plugin", "plugin.json")); perr == nil && !pluginInfo.IsDir() {
+			if pluginInfo, perr := src.root.Stat(filepath.Join(src.rel, ".claude-plugin", "plugin.json")); perr == nil && !pluginInfo.IsDir() {
 				return nil
 			}
 			return fmt.Errorf("%w: %s", ErrSkillUnsupportedKind, candidate.Name)
@@ -1793,9 +1818,9 @@ func (p *projectRoot) resolveMaterializationSource(sourcePath, fallbackRel strin
 		// the existence check descriptor-relative inside the validated root. A
 		// source that is unreachable OR outside every registered root simply
 		// falls through to the current-target fallback below.
-		if srcRoot, srcRel, _, err := p.openContainedSource(sourcePath); err == nil {
-			_, statErr := srcRoot.Stat(srcRel)
-			srcRoot.Close()
+		if src, err := p.openContainedSource(sourcePath); err == nil {
+			_, statErr := src.root.Stat(src.rel)
+			src.Close()
 			if statErr == nil {
 				return sourcePath, false, nil
 			}

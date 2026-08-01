@@ -936,3 +936,92 @@ func TestAliasRegisteredSourceRoot_AttachMigrateAndHeal(t *testing.T) {
 		t.Fatalf("dangling alias-registered link must count as absent so it can heal")
 	}
 }
+
+// --- Final round: source-side pinning and dangling-link classification ---
+
+// TestMaterialize_LinkTargetComesFromPinnedSourceRoot pins the invariant behind
+// the source-side no-reopen-after-pinning rule: the created managed link names
+// the entry INSIDE the registered source root (root physical path + validated
+// remainder), never a path re-resolved from the source after validation. That
+// is what stops a source entry swapped for an external symlink between
+// validation and link creation from becoming a managed attachment pointing
+// outside the source root.
+func TestMaterialize_LinkTargetComesFromPinnedSourceRoot(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	root := t.TempDir()
+	realPool := filepath.Join(root, "real-pool")
+	writeSkillDir(t, realPool, "lint", "lint", "Linting best practices")
+	aliasPool := filepath.Join(root, "alias-pool")
+	if err := os.Symlink(realPool, aliasPool); err != nil {
+		t.Skipf("symlink not supported in this environment: %v", err)
+	}
+	if err := SaveSkillSources(map[string]SkillSourceDef{
+		"pool": {Path: aliasPool, Enabled: boolPtr(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
+
+	projectPath := t.TempDir()
+	attached, err := AttachSkillToProject(projectPath, "claude", "lint", "pool")
+	if err != nil {
+		t.Fatalf("attach failed: %v", err)
+	}
+	entry := filepath.Join(projectPath, ".claude", "skills", "lint")
+	info, err := os.Lstat(entry)
+	if err != nil {
+		t.Fatalf("lstat attached entry: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Skipf("attach fell back to copy mode (%s)", attached.Mode)
+	}
+
+	linkText, err := os.Readlink(entry)
+	if err != nil {
+		t.Fatalf("readlink attached entry: %v", err)
+	}
+	if !filepath.IsAbs(linkText) {
+		linkText = filepath.Join(filepath.Dir(entry), linkText)
+	}
+	poolPhysical := physicalPath(aliasPool)
+	if _, inside := relUnderBase(poolPhysical, filepath.Clean(linkText)); !inside {
+		t.Fatalf("managed link %q must name an entry inside the registered source root %q", linkText, poolPhysical)
+	}
+	if _, err := os.Stat(filepath.Join(entry, "SKILL.md")); err != nil {
+		t.Fatalf("expected the link to resolve to the skill: %v", err)
+	}
+}
+
+// TestTargetExists_DanglingLinkOutsideManagedDirsCountsPresent covers the
+// classification-ordering fix: a Stat failure is no longer treated as proof of
+// absence. A RELATIVE dangling link that stays inside the managed os.Root but
+// resolves outside the managed skills dirs is a foreign entry and must be
+// reported (present), not deleted and replaced.
+func TestTargetExists_DanglingLinkOutsideManagedDirsCountsPresent(t *testing.T) {
+	projectPath := t.TempDir()
+	skillsDir := filepath.Join(projectPath, ".claude", "skills")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatalf("mkdir skills dir: %v", err)
+	}
+	// Resolves to <project>/.claude/evil-missing: inside the project, outside
+	// every managed skills dir, and dangling.
+	if err := os.Symlink(filepath.Join("..", "evil-missing"), filepath.Join(skillsDir, "lint")); err != nil {
+		t.Fatalf("install dangling foreign link: %v", err)
+	}
+
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		t.Fatalf("openProjectRoot: %v", err)
+	}
+	defer p.Close()
+
+	exists, err := p.targetExists(buildProjectSkillTargetPath(projectClaudeSkillsDir, "lint"),
+		filepath.Join(t.TempDir(), "lint"))
+	if err != nil {
+		t.Fatalf("targetExists failed: %v", err)
+	}
+	if !exists {
+		t.Fatalf("a dangling foreign link must count as present, not be overwritten")
+	}
+}
