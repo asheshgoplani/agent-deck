@@ -5,41 +5,76 @@ import (
 	"testing"
 )
 
-// TestCtrlQDetachScript_ScopedToSessionPrefixNotOneSessionName is a
-// regression test for #1808.
+// TestCtrlQDetachIfShellFormat_ScopedToSessionPrefixNotOneSessionName is a
+// regression test for #1808 (and its #1820 shell-injection fix).
 //
 // tmux key bindings live on the SERVER, one per socket, not on the session.
 // The Ctrl+Q detach binding installed by Session.Start used to guard itself
 // with `if-shell [ "#{session_name}" = "<one hardcoded session name>" ]`,
-// re-installed by every Start() call. That only ever matched whichever
-// session started most recently on the socket — every OTHER session sharing
-// that socket hit the empty else-branch, tmux consumed nothing, and Ctrl+Q
-// fell through to the running app (killing Claude Code instead of
-// detaching) as soon as a socket hosted more than one session.
+// re-installed by every Start() call. Because the binding is "-n -T root",
+// tmux's root key table consumes Ctrl+Q on every client on the socket before
+// it reaches the pane — so that guard only ever matched whichever session
+// started most recently; every OTHER session sharing the socket hit the
+// empty else-branch and Ctrl+Q was silently swallowed instead of detaching.
 //
-// The fix (ctrlQDetachScript) must not bake any single session's name into
-// the script; it must re-check the CURRENT client's session via
-// #{session_name} at keypress time and match on the shared SessionPrefix,
-// so it stays correct for every agentdeck session sharing the socket
-// regardless of Start() order.
-func TestCtrlQDetachScript_ScopedToSessionPrefixNotOneSessionName(t *testing.T) {
-	script := ctrlQDetachScript()
+// The fix must not bake any single session's name into the guard, and the
+// guard itself must be a pure tmux FORMAT (never a shell script — see
+// TestCtrlQDetachBindArgs_UsesIfShellDetachClientDirectly): re-checked
+// against the CURRENT client's session at keypress time and matched on the
+// shared SessionPrefix, so (a) it stays correct for every agentdeck session
+// sharing the socket regardless of Start() order, and (b) a session name can
+// never reach a shell, so it can't be used to inject commands (#1820).
+func TestCtrlQDetachIfShellFormat_ScopedToSessionPrefixNotOneSessionName(t *testing.T) {
+	format := ctrlQDetachIfShellFormat()
 
-	if !strings.Contains(script, SessionPrefix) {
-		t.Fatalf("script does not reference SessionPrefix, so it can't recognize any agentdeck session sharing the socket: %q", script)
+	if !strings.Contains(format, SessionPrefix) {
+		t.Fatalf("format does not reference SessionPrefix, so it can't recognize any agentdeck session sharing the socket: %q", format)
 	}
-	if !strings.Contains(script, "#{session_name}") {
-		t.Fatalf("script must re-check the CURRENT client's session via #{session_name} at keypress time, not a name baked in once at bind time: %q", script)
+	if !strings.Contains(format, "#{session_name}") {
+		t.Fatalf("format must re-check the CURRENT client's session via #{session_name} at keypress time, not a name baked in once at bind time: %q", format)
 	}
-	if !strings.Contains(script, "detach-client") {
-		t.Fatalf("script must actually detach the invoking client: %q", script)
+	if strings.ContainsAny(format, `'"`) {
+		t.Fatalf("format must never quote the session name for a shell — it is a tmux FORMAT evaluated by the tmux server, not shell input; quoting here is exactly the #1820 injection shape: %q", format)
 	}
 
-	// The script must be identical no matter how many times it is generated
-	// (Start() re-installs it for every session on the socket) — if a caller
-	// ever starts interpolating a per-call session name again, the
+	// The format must be identical no matter how many times it is generated
+	// (Start() re-installs the binding for every session on the socket) — if
+	// a caller ever starts interpolating a per-call session name again, the
 	// socket-wide, single-session-guard bug (#1808) is back.
-	if again := ctrlQDetachScript(); again != script {
-		t.Fatalf("script must be stable across calls, not vary per session: first=%q second=%q", script, again)
+	if again := ctrlQDetachIfShellFormat(); again != format {
+		t.Fatalf("format must be stable across calls, not vary per session: first=%q second=%q", format, again)
+	}
+}
+
+// TestCtrlQDetachBindArgs_UsesIfShellDetachClientDirectly locks in that the
+// binding is installed as a plain `if-shell -F ... detach-client` command —
+// never routed through run-shell / an embedded shell script.
+//
+// A shell script re-introduces the #1820 injection surface: tmux expands
+// FORMATS into the script text before /bin/sh ever parses it, so a session
+// name containing shell metacharacters can break out of the substitution.
+// Routing detach-client through a run-shell subprocess also makes tmux
+// resolve "the client to detach" via a most-recently-active-client
+// heuristic instead of the client that actually pressed the key — this
+// asserts on the real args Session.Start feeds to bind-key so a regression
+// back to run-shell can't slip past review unnoticed.
+func TestCtrlQDetachBindArgs_UsesIfShellDetachClientDirectly(t *testing.T) {
+	args := ctrlQDetachBindArgs()
+	joined := strings.Join(args, " ")
+
+	if strings.Contains(joined, "run-shell") {
+		t.Fatalf("binding must not use run-shell (reintroduces the #1820 shell-injection surface): %v", args)
+	}
+	if len(args) == 0 || args[0] != "if-shell" {
+		t.Fatalf("binding must use if-shell as its first arg: %v", args)
+	}
+	if !strings.Contains(joined, "-F") {
+		t.Fatalf("binding must use if-shell -F so the guard is a tmux FORMAT, not a shell command: %v", args)
+	}
+	if !strings.Contains(joined, "detach-client") {
+		t.Fatalf("binding must detach-client directly, not via a subprocess: %v", args)
+	}
+	if !strings.Contains(joined, ctrlQDetachIfShellFormat()) {
+		t.Fatalf("binding must guard with ctrlQDetachIfShellFormat(): %v", args)
 	}
 }
