@@ -23,8 +23,10 @@ import (
 // with the value intact, for paths a user can legitimately have (spaces) and
 // for hostile ones.
 func TestIssue1830_GlobalSearchConfigDirIsQuoted(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("bash not available")
+	for _, bin := range []string{"bash", "printenv"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s not available", bin)
+		}
 	}
 
 	marker := "/tmp/agentdeck-pwned-1830-ui"
@@ -44,12 +46,21 @@ func TestIssue1830_GlobalSearchConfigDirIsQuoted(t *testing.T) {
 			// Exactly the construction the fixed call site uses.
 			assignment := fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(dir))
 
-			// Run it the way it is ultimately run: as a bash -c payload.
-			out, err := exec.Command("bash", "-c", assignment+`printf '%s' "$CLAUDE_CONFIG_DIR"`).Output()
+			// Run it the way it is ultimately run: as a bash -c payload where
+			// the assignment prefixes the command.
+			//
+			// Read the value back with printenv (an EXTERNAL command) rather
+			// than expanding "$CLAUDE_CONFIG_DIR" in the same command line: a
+			// var-assignment prefix is applied when the command is executed,
+			// but parameter expansion on that same line happens BEFORE it, so
+			// an in-line expansion reads empty and would fail every case
+			// including the benign one. printenv also matches how the real
+			// claude process receives the variable -- from its environment.
+			out, err := exec.Command("bash", "-c", assignment+"printenv CLAUDE_CONFIG_DIR").Output()
 			if err != nil {
 				t.Fatalf("bash rejected the assignment for %q: %v", dir, err)
 			}
-			if got := string(out); got != dir {
+			if got := strings.TrimSuffix(string(out), "\n"); got != dir {
 				t.Errorf("config dir mangled by the shell:\n got: %q\nwant: %q", got, dir)
 			}
 			if _, statErr := os.Stat(marker); statErr == nil {
