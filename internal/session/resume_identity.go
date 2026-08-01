@@ -209,9 +209,20 @@ func NewClaudeSessionUUID() string { return generateUUID() }
 // adoptDiscoveredClaudeSessionID records an id obtained from mtime-based disk
 // discovery. The id is marked UNVERIFIED: it is a hint about which transcript
 // exists in this directory, never proof of ownership.
+//
+// Order matters: the taint is recorded BEFORE ClaudeSessionID is assigned.
+// ClaudeSessionID itself is a plain field with no dedicated lock (pre-existing
+// throughout this package; a full lock would need to cover every one of its
+// ~20 writer sites, out of scope here), so a concurrent recordedClaudeSessionID()
+// read is not excluded by this function. Writing the taint first closes the
+// specific window a review finding on #1830 flagged: with the old
+// ID-then-taint order, a reader could observe the new id with the taint not
+// yet present and treat a disk-scanned id as recorded for one instant.
+// Taint-first means any interleaving instead sees either the OLD id (taint
+// irrelevant) or the NEW id already tainted -- never the new id un-tainted.
 func (i *Instance) adoptDiscoveredClaudeSessionID(uuid string) {
-	i.ClaudeSessionID = uuid
 	i.markClaudeSessionIDFromDiskScan(uuid)
+	i.ClaudeSessionID = uuid
 }
 
 // markClaudeSessionIDFromDiskScan records that uuid came from a disk scan.

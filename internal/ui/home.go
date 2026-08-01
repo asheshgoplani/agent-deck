@@ -11311,12 +11311,22 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		// ToolOptionsJSON, which canResumeClaudeSession never reads) and
 		// silently mints a fresh id instead of resuming the one the operator
 		// picked (review finding on #1830).
+		//
+		// The field is free-text (internal/ui/claudeoptions.go's resumeIDInput
+		// applies no validation), so a well-formed-UUID check is required
+		// before trusting it as an ownership declaration: without it, a value
+		// containing shell metacharacters would still be vouched as verified
+		// here and later reach the unquoted `--resume %s` command build
+		// (review finding on #1830). A malformed value is left unassigned and
+		// falls through to the normal fresh-id path instead.
 		if tool == "claude" && len(toolOptionsJSON) > 0 {
 			if opts, err := session.UnmarshalClaudeOptions(toolOptionsJSON); err == nil && opts != nil &&
-				opts.SessionMode == "resume" && strings.TrimSpace(opts.ResumeSessionID) != "" {
-				inst.ClaudeSessionID = strings.TrimSpace(opts.ResumeSessionID)
-				session.MarkClaudeSessionIDVerified(inst)
-				inst.ClaudeDetectedAt = time.Now()
+				opts.SessionMode == "resume" {
+				if candidate := strings.TrimSpace(opts.ResumeSessionID); candidate != "" && session.IsBareClaudeSessionUUID(candidate) {
+					inst.ClaudeSessionID = candidate
+					session.MarkClaudeSessionIDVerified(inst)
+					inst.ClaudeDetectedAt = time.Now()
+				}
 			}
 		}
 

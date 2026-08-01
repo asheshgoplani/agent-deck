@@ -21,12 +21,20 @@ import "encoding/json"
 const toolDataClaudeSessionUnverifiedKey = "claude_session_id_unverified"
 
 // WriteClaudeSessionUnverifiedToToolData merges the taint flag into a
-// tool_data blob. false removes the key, keeping the blob byte-identical to a
-// pre-#1815 row so downgrades stay clean.
+// tool_data blob. false writes the key explicitly rather than deleting it,
+// keeping the write idempotent (see the comment below); a legacy row with no
+// key at all still reads as "not tainted" via ReadClaudeSessionUnverifiedFromToolData.
 func WriteClaudeSessionUnverifiedToToolData(td json.RawMessage, unverified bool) json.RawMessage {
 	m := map[string]json.RawMessage{}
 	if len(td) > 0 {
-		_ = json.Unmarshal(td, &m)
+		if err := json.Unmarshal(td, &m); err != nil {
+			// Malformed or non-object blob: leave it untouched rather than
+			// silently replacing every other persisted tool_data key
+			// (claude_session_id, sandbox, extra_args, plugins, ...) with a
+			// blob containing only the taint marker (CodeRabbit finding on
+			// #1830).
+			return td
+		}
 	}
 	// The key is written EXPLICITLY in both directions, never deleted.
 	// MergeToolDataExtras preserves keys absent from the replacement blob, so
@@ -37,7 +45,10 @@ func WriteClaudeSessionUnverifiedToToolData(td json.RawMessage, unverified bool)
 	} else {
 		m[toolDataClaudeSessionUnverifiedKey] = json.RawMessage("false")
 	}
-	out, _ := json.Marshal(m)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return td
+	}
 	return out
 }
 

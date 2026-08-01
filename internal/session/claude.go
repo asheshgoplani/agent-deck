@@ -24,6 +24,17 @@ var uuidSessionFileRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]
 // command string before we trust them as the explicit session id.
 var uuidBareRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// IsBareClaudeSessionUUID reports whether s is a well-formed bare UUID (no
+// surrounding whitespace or suffix). Exported so callers outside this
+// package that accept a free-text conversation id from an operator (e.g. the
+// TUI's "resume by session ID" panel field) can reject shell-metacharacter
+// or otherwise malformed input before treating it as an ownership
+// declaration and baking it into an unquoted `--resume %s` command (review
+// finding on #1830).
+func IsBareClaudeSessionUUID(s string) bool {
+	return uuidBareRegex.MatchString(s)
+}
+
 // extractExplicitClaudeSessionID parses the user-supplied wrapper command
 // string and returns the literal UUID argument of `--session-id <uuid>`
 // (or `--session-id=<uuid>`) if exactly one is present and well-formed.
