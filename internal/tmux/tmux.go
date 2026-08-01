@@ -2134,8 +2134,8 @@ func (s *Session) Start(command string) error {
 	if workDirErr != nil {
 		if !s.WorkDirIsPlaceholder {
 			statusLog.Warn("tmux_start_refused_bad_workdir",
-				slog.String("session", s.Name),
-				slog.String("requested_workdir", s.WorkDir),
+				slog.String("session", logging.SanitizeValue(s.Name)),
+				slog.String("requested_workdir", logging.SanitizeValue(s.WorkDir)),
 				slog.String("error", workDirErr.Error()))
 			return workDirErr
 		}
@@ -2143,8 +2143,8 @@ func (s *Session) Start(command string) error {
 		// ssh client, so a missing local directory must not block the start.
 		// Keep tmux's historical $HOME landing, but say so instead of hiding it.
 		statusLog.Warn("tmux_start_placeholder_workdir_fallback",
-			slog.String("session", s.Name),
-			slog.String("requested_workdir", workDir),
+			slog.String("session", logging.SanitizeValue(s.Name)),
+			slog.String("requested_workdir", logging.SanitizeValue(workDir)),
 			slog.String("error", workDirErr.Error()))
 		home, homeErr := resolveStartWorkDir(os.Getenv("HOME"))
 		if homeErr != nil {
@@ -2294,7 +2294,7 @@ func (s *Session) Start(command string) error {
 	if cwdErr := s.verifyPaneWorkDirUnlessPlaceholder(workDir); cwdErr != nil {
 		if killErr := s.Kill(); killErr != nil {
 			statusLog.Warn("deleted_cwd_session_cleanup_failed",
-				slog.String("session", s.Name),
+				slog.String("session", logging.SanitizeValue(s.Name)),
 				slog.String("error", killErr.Error()))
 		}
 		return cwdErr
