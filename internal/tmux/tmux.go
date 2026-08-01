@@ -5057,6 +5057,20 @@ func (s *Session) SendKeysAndEnterToWindow(windowIndex int, keys string) error {
 // (active window) and SendKeysAndEnterToWindow (explicit window).
 func (s *Session) sendKeysAndEnterToTarget(target, keys string) error {
 	s.invalidateCache()
+	// Pin the pane before anything else touches it. A session-name target is
+	// re-resolved by tmux on EVERY command, so the probe, the body and the
+	// Enter are three independent lookups: if the active window or pane
+	// changes between them, agent-deck can inspect the line discipline of
+	// pane A, paste the body into pane B and submit it in pane C — a false
+	// refusal or an undetected loss, depending which way it drifts. `#{pane_id}`
+	// is immutable for the life of the pane, so resolving it once removes the
+	// drift for every step that follows. Only done for payloads big enough to
+	// need the probe, so ordinary sends pay nothing (issue #1793).
+	if len(keys) > canonicalSafeBytes {
+		if paneID, err := s.resolvePaneID(target); err == nil && paneID != "" {
+			target = paneID
+		}
+	}
 	// Guarantee the composer is in insert mode BEFORE the paste so a vim
 	// normal-mode prompt doesn't interpret the message body as motion/command
 	// keystrokes (issue #1264). No-op unless VimMode is set.
@@ -5125,11 +5139,37 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 		}
 	}
 
-	if err := s.pasteToTarget(target, content); err == nil {
+	err := s.pasteToTarget(target, content)
+	if err == nil {
 		return nil
 	}
-	return s.sendKeysChunkedFallback(target, content)
+	// Fall back ONLY when the failure happened before any byte could reach the
+	// pane. Once `paste-buffer` has been invoked its failure is ambiguous — a
+	// timeout can fire after some or all of the body was already written — and
+	// re-sending the whole message through send-keys would duplicate or
+	// concatenate it in the composer. An ambiguous transport failure is
+	// reported, never retried.
+	if errors.Is(err, errPasteNotStaged) {
+		return s.sendKeysChunkedFallback(target, content)
+	}
+	return err
 }
+
+// resolvePaneID returns the immutable `#{pane_id}` (e.g. "%17") currently
+// backing target, so subsequent commands address that exact pane rather than
+// re-resolving a session name that may have moved.
+func (s *Session) resolvePaneID(target string) (string, error) {
+	out, err := s.runBoundedOutput("display-message", "-t", target, "-p", "#{pane_id}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// errPasteNotStaged marks a paste failure that happened BEFORE `paste-buffer`
+// ran, so no byte of the payload can have reached the pane and retrying
+// through another transport is safe.
+var errPasteNotStaged = errors.New("payload was never staged into the pane")
 
 // pasteBufferSeq makes every staged buffer name unique within this process.
 var pasteBufferSeq atomic.Uint64
@@ -5163,7 +5203,9 @@ func (s *Session) pasteToTarget(target, content string) error {
 		// deadline fires mid-write), so drop it rather than leaving a
 		// half-written payload sitting on the server.
 		_ = runSendKeysBounded(keySenderExec(s.SocketName, "delete-buffer", "-b", buf))
-		return fmt.Errorf("load-buffer: %w", err)
+		// Nothing was pasted: the payload only ever existed in a server-side
+		// buffer, so another transport may safely try again.
+		return fmt.Errorf("load-buffer: %v: %w", err, errPasteNotStaged)
 	}
 
 	paste := keySenderExec(s.SocketName, "paste-buffer", "-d", "-b", buf, "-t", target)
@@ -5172,7 +5214,11 @@ func (s *Session) pasteToTarget(target, content string) error {
 		// falling back, otherwise the fallback's content and this stale copy
 		// both sit in the buffer stack.
 		_ = runSendKeysBounded(keySenderExec(s.SocketName, "delete-buffer", "-b", buf))
-		return fmt.Errorf("paste-buffer: %w", err)
+		// Deliberately NOT errPasteNotStaged: paste-buffer already ran, so an
+		// unknown amount of the body may be in the composer. Deleting the
+		// buffer does not un-write those bytes.
+		return fmt.Errorf("paste-buffer failed after writing to the pane, delivery is indeterminate "+
+			"and must not be retried: %w", err)
 	}
 	return nil
 }

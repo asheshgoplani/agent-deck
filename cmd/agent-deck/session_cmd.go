@@ -2997,11 +2997,14 @@ const (
 	// canonical-overflow failure mode cannot apply and it carries no token
 	// distinctive enough to look for in the pane.
 	deliveryUnverified = "unverified"
-	// deliveryArrived: the message body was observed in the target pane (or
-	// the agent went active right after the send), so it demonstrably
-	// arrived. Used for tools whose TUI exposes no Claude-shaped submit
-	// signal — arrival is proven, submission is inferred from it.
-	deliveryArrived = "arrived"
+	// deliveryTyped: the message body was observed reaching the target pane,
+	// but nothing proved the agent accepted it as a turn. Strictly better
+	// than the old blind "unverified" — the bytes demonstrably arrived — and
+	// strictly weaker than deliverySubmitted, which is the point: content
+	// sitting in a composer is not an accepted turn, and calling it one is
+	// how issue #1793 happened in the first place. Carries
+	// `"submitted": false` in --json so callers cannot mistake it.
+	deliveryTyped = "typed"
 	// deliveryLineTooLong: refused before typing anything because the pane's
 	// reader is in canonical mode and a payload line exceeds its line buffer
 	// (issue #1793). The kernel would discard the overflow and the
@@ -3046,6 +3049,11 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 	fields := map[string]interface{}{}
 	if r.delivery != "" {
 		fields["delivery"] = r.delivery
+		// Explicit, machine-checkable: a caller must not have to know which
+		// delivery strings imply an accepted turn. Only deliverySubmitted
+		// does; `typed` in particular means the bytes arrived and nothing
+		// confirmed the agent took them up (issue #1793).
+		fields["submitted"] = r.delivery == deliverySubmitted
 	}
 	if ms := r.held.Milliseconds(); ms > 0 {
 		fields["held_for_composer_ms"] = ms
@@ -3514,15 +3522,19 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 // cover a redraw, not a reply: at the callers' 200ms checkDelay that is ~2s.
 const arrivalVerifyChecks = 10
 
-// arrivalStrictBytes is the payload size at or above which a failed arrival
-// check is a hard failure rather than an "unverified" shrug. It is the same
-// always-safe line size the tmux transport uses (internal/tmux
-// canonicalSafeBytes): below it the canonical-overflow loss mode of issue
-// #1793 cannot occur, so a missed pane match is far more likely to be a
-// rendering quirk than a lost message, and the historical best-effort
-// contract is kept. At or above it a missed match is the actual bug
-// signature and must not be reported as success.
-const arrivalStrictBytes = 1023
+// arrivalSafeLineBytes is the longest LINE that no line discipline can lose,
+// and therefore the threshold above which an unconfirmed send is a failure
+// rather than an "unverified" shrug. Same figure the tmux transport treats as
+// always-safe (internal/tmux canonicalSafeBytes): at or below it the
+// canonical-overflow loss mode of issue #1793 cannot occur, so a missed pane
+// match is far likelier to be a rendering quirk than a lost message and the
+// historical best-effort contract is kept. Above it a missed match is the
+// actual bug signature and must not be reported as success.
+//
+// Measured per LINE, deliberately. Gating on total payload size would fail a
+// 20 KB body of short lines that the transport in this same change delivers
+// without trouble.
+const arrivalSafeLineBytes = 1023
 
 // sendArrivalBaseline is the pre-send state the arrival check measures change
 // against. Every field here is meaningless on its own and meaningful only as a
@@ -3531,16 +3543,30 @@ type sendArrivalBaseline struct {
 	// occurrences is how many copies of the message body were already
 	// visible in the pane before the send.
 	occurrences int
+	// paneOK reports that the pre-send capture actually succeeded. When it
+	// did not there is NO baseline, and the content signal must be switched
+	// off rather than defaulted to zero: a failed look would otherwise make
+	// a pre-existing copy of a repeated message read as a new arrival.
+	paneOK bool
 	// wasActive reports whether the agent was already working before the
 	// send, in which case "it is active now" proves nothing.
 	wasActive bool
+	// statusOK reports that the pre-send status read succeeded. Same reason:
+	// a failed read defaulting to "was not active" would turn a
+	// continuously-busy agent into a fake not-active-to-active transition.
+	statusOK bool
 }
 
-// captureArrivalBaseline snapshots the pane and status before a send.
+// captureArrivalBaseline snapshots the pane and status before a send. Each
+// signal records whether it was actually observed; a signal without a valid
+// baseline is disabled, never guessed.
 func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalBaseline {
-	base := sendArrivalBaseline{occurrences: countMessageInPane(target, message)}
-	if status, err := target.GetStatus(); err == nil && status == "active" {
-		base.wasActive = true
+	base := sendArrivalBaseline{}
+	if n, ok := countMessageInPane(target, message); ok {
+		base.occurrences, base.paneOK = n, true
+	}
+	if status, err := target.GetStatus(); err == nil {
+		base.wasActive, base.statusOK = status == "active", true
 	}
 	return base
 }
@@ -3555,21 +3581,43 @@ func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalB
 // already busy stays busy regardless, so that case proves nothing and is not
 // accepted.
 //
+// The two signals are not equal in strength, and the result says which one
+// was found. An idle agent going active is attributable to this send, so that
+// is deliverySubmitted. The body appearing is only deliveryTyped: bytes in a
+// composer are not an accepted turn — Enter can still have been swallowed,
+// which is the failure #1413 and #1793 are both about.
+//
 // The pane comparison is whitespace-insensitive because a pane wraps long
 // lines at its width and capture-pane returns those wraps as newlines, so a
 // byte-exact search for a 64-character token fails on any message wider than
 // the remaining columns. Stripping whitespace from both sides restores the
 // contiguity the terminal broke.
 //
-// A failed pre-send capture yields a zero baseline, which degrades the check
-// to plain containment — what it would have been anyway — rather than to a
-// stricter verdict the evidence doesn't support.
+// A signal whose pre-send baseline could not be read is switched OFF, not
+// defaulted: without a baseline there is no transition to measure, and
+// guessing one is how a failed capture would quietly become fake evidence.
 func verifyContentArrival(target sendRetryTarget, message string, opts sendRetryOptions, baseline sendArrivalBaseline) (string, error) {
+	// Whether an unverified outcome is a failure depends on the longest LINE,
+	// not on the total payload. Canonical buffering is per line — that is the
+	// whole finding this fix rests on — so a 20 KB body of 80-byte lines is
+	// as deliverable as a one-liner, and failing it for its total size would
+	// contradict the transport in the same commit.
+	riskyLine := longestMessageLineBytes(message) > arrivalSafeLineBytes
+
 	token := collapseWhitespace(messageDeliveryToken(message))
 	if token == "" {
-		// No distinctive token to look for (very short or all-whitespace
-		// message). Verification is impossible rather than failed: say so
-		// instead of inventing either verdict.
+		// Nothing distinctive enough to look for. Verification is impossible
+		// rather than failed — but "impossible" must not become an exit 0 for
+		// a payload with a line big enough to be silently eaten, which would
+		// leave the reported bug wide open through the token-less door.
+		if riskyLine {
+			return deliveryNoEvidence, fmt.Errorf(
+				"send could not be verified: this message has a %d-byte line, long enough that a "+
+					"canonical-mode reader can discard it along with the submitting Enter, and it carries no "+
+					"content distinctive enough to look for in the pane (issue #1793). Refusing to report "+
+					"success for a send nothing can confirm",
+				longestMessageLineBytes(message))
+		}
 		return deliveryUnverified, nil
 	}
 
@@ -3581,13 +3629,20 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 		checks = 1
 	}
 
+	sawBody := false
 	for i := 0; i < checks; i++ {
-		if countMessageInPane(target, message) > baseline.occurrences {
-			return deliveryArrived, nil
-		}
-		if !baseline.wasActive {
+		// Strongest signal first: an idle agent that starts working received
+		// what it started working on, which is submission, not just arrival.
+		if baseline.statusOK && !baseline.wasActive {
 			if status, err := target.GetStatus(); err == nil && status == "active" {
-				return deliveryArrived, nil
+				return deliverySubmitted, nil
+			}
+		}
+		if baseline.paneOK {
+			if n, ok := countMessageInPane(target, message); ok && n > baseline.occurrences {
+				// Keep polling: the body is in, but the turn may still start
+				// within the budget and upgrade this to submitted.
+				sawBody = true
 			}
 		}
 		if i < checks-1 {
@@ -3595,30 +3650,51 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 		}
 	}
 
-	if len(message) >= arrivalStrictBytes {
+	if sawBody {
+		// The bytes demonstrably reached the pane and nothing showed the
+		// agent taking them up. Reported honestly as typed, never as
+		// submitted.
+		return deliveryTyped, nil
+	}
+
+	if riskyLine {
 		return deliveryNoEvidence, fmt.Errorf(
-			"send not delivered: a %d-byte message never appeared in the pane and the agent showed no new "+
-				"activity after %d checks (issue #1793). A payload this size is lost outright when the pane's "+
-				"reader buffers input per line, so this is reported as a failure rather than as an unverified "+
-				"success",
-			len(message), checks)
+			"send could not be confirmed: a message with a %d-byte line never appeared in the pane and the "+
+				"agent showed no new activity after %d checks (issue #1793). A line that long is discarded "+
+				"outright — together with the submitting Enter — by a canonical-mode reader, so this is "+
+				"reported as a failure rather than as an unverified success",
+			longestMessageLineBytes(message), checks)
 	}
 	return deliveryUnverified, nil
 }
 
+// longestMessageLineBytes is the length of the longest \n-delimited line of
+// message. Mirrors the quantity the tmux transport measures, because the
+// terminal limit this whole fix is about is per line, not per payload.
+func longestMessageLineBytes(message string) int {
+	longest := 0
+	for _, line := range strings.Split(message, "\n") {
+		if len(line) > longest {
+			longest = len(line)
+		}
+	}
+	return longest
+}
+
 // countMessageInPane reports how many times the message's distinctive token
-// appears in the pane right now. Returns 0 when the pane cannot be captured
-// or the message has no usable token — a failed look is never evidence.
-func countMessageInPane(target sendRetryTarget, message string) int {
+// appears in the pane right now. The bool reports whether the pane was
+// actually read: a failed look is not "zero occurrences", it is no
+// observation at all, and callers must not treat the two the same.
+func countMessageInPane(target sendRetryTarget, message string) (int, bool) {
 	token := collapseWhitespace(messageDeliveryToken(message))
 	if token == "" {
-		return 0
+		return 0, false
 	}
 	raw, err := target.CapturePaneFresh()
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	return strings.Count(collapseWhitespace(tmux.StripANSI(raw)), token)
+	return strings.Count(collapseWhitespace(tmux.StripANSI(raw)), token), true
 }
 
 // collapseWhitespace removes every whitespace byte, so a comparison survives

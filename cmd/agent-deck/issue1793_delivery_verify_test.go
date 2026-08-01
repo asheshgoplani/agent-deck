@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -50,13 +51,13 @@ func TestIssue1793_LargePayloadNeverSeenInPane_IsAFailureNotAnUnverifiedSuccess(
 	}
 }
 
-// TestIssue1793_LargePayloadVisibleInPane_IsReportedArrived pins the positive
-// direction, and pins it through terminal line wrapping: a pane wraps long
+// TestIssue1793_LargePayloadVisibleInPane_IsReportedTypedNotSubmitted pins the
+// positive direction, and pins it through terminal line wrapping: a pane wraps long
 // content at its width and capture-pane returns those wraps as newlines, so a
 // byte-exact search for the body fails on any real wide message. Verification
 // that cannot see a delivered message is worse than none — it turns working
 // sends into failures.
-func TestIssue1793_LargePayloadVisibleInPane_IsReportedArrived(t *testing.T) {
+func TestIssue1793_LargePayloadVisibleInPane_IsReportedTypedNotSubmitted(t *testing.T) {
 	msg := bigMessage(4095)
 
 	// Render the message the way a 80-column pane would: hard-wrapped.
@@ -82,8 +83,13 @@ func TestIssue1793_LargePayloadVisibleInPane_IsReportedArrived(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a message visible in the pane must not be reported as lost: %v", err)
 	}
-	if delivery != deliveryArrived {
-		t.Fatalf("delivery: want %q, got %q", deliveryArrived, delivery)
+	// Seen in the pane, but the agent never took it up: typed, NOT submitted.
+	// Calling this "submitted" would be the original bug wearing a new status.
+	if delivery != deliveryTyped {
+		t.Fatalf("delivery: want %q, got %q", deliveryTyped, delivery)
+	}
+	if fields := (sendDeliveryResult{delivery: delivery}).jsonFields(); fields["submitted"] != false {
+		t.Fatalf("typed must report submitted=false in --json, got %v", fields["submitted"])
 	}
 }
 
@@ -113,10 +119,11 @@ func TestIssue1793_IdenticalMessageAlreadyOnScreen_IsNotEvidence(t *testing.T) {
 	}
 }
 
-// TestIssue1793_LargePayload_AgentGoingActiveCountsAsArrival: an agent that
-// starts working necessarily received what it is working on, even if its TUI
-// never echoes the body.
-func TestIssue1793_LargePayload_AgentGoingActiveCountsAsArrival(t *testing.T) {
+// TestIssue1793_LargePayload_IdleAgentGoingActiveIsSubmitted: an agent that
+// was idle and starts working necessarily received what it is working on,
+// even if its TUI never echoes the body. That is the one signal here strong
+// enough to claim submission.
+func TestIssue1793_LargePayload_IdleAgentGoingActiveIsSubmitted(t *testing.T) {
 	msg := bigMessage(4095)
 	// Index 0 is the pre-send baseline: the agent was idle, so going active
 	// afterwards is a transition attributable to this send.
@@ -131,8 +138,8 @@ func TestIssue1793_LargePayload_AgentGoingActiveCountsAsArrival(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if delivery != deliveryArrived {
-		t.Fatalf("delivery: want %q, got %q", deliveryArrived, delivery)
+	if delivery != deliverySubmitted {
+		t.Fatalf("delivery: want %q, got %q", deliverySubmitted, delivery)
 	}
 }
 
@@ -203,6 +210,80 @@ func TestIssue1793_UnverifiableMessageSaysSoInsteadOfGuessing(t *testing.T) {
 	}
 }
 
+// TestIssue1793_LargeMultilinePayloadIsNotFailedForItsTotalSize is the
+// regression for a contradiction in an earlier cut of this fix: the transport
+// refuses on the longest LINE (canonical buffering is per line), but the CLI
+// gated its hard failure on the TOTAL payload size. A 20 KB body of 80-byte
+// lines transports fine — the tmux suite proves it against a real pane — yet
+// would have been reported as lost whenever the agent's TUI does not echo it.
+func TestIssue1793_LargeMultilinePayloadIsNotFailedForItsTotalSize(t *testing.T) {
+	// 20 KB total, longest line 80 bytes: far above any total-size threshold,
+	// far below every canonical line buffer.
+	body := strings.Repeat(strings.Repeat("m", 79)+"\n", 250)
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{"a pane that never echoes anything\n"},
+	}
+
+	delivery, err := sendWithRetryTarget(mock, body, true, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0,
+	})
+	if err != nil {
+		t.Fatalf("a %d-byte payload whose longest line is 79 bytes is deliverable and must not be "+
+			"reported as lost: %v", len(body), err)
+	}
+	if delivery != deliveryUnverified {
+		t.Fatalf("delivery: want %q, got %q", deliveryUnverified, delivery)
+	}
+}
+
+// TestIssue1793_TokenlessOverLongLineIsNotAFreePass closes the door a
+// verification check leaves open by construction: a payload with no content
+// distinctive enough to search for. If such a message also carries a line long
+// enough to be eaten whole, "we could not look" must not come back as exit 0 —
+// that is the reported bug reached through the token-less path.
+func TestIssue1793_TokenlessOverLongLineIsNotAFreePass(t *testing.T) {
+	// Whitespace only: messageDeliveryToken yields nothing to search for.
+	body := strings.Repeat(" ", 4095)
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{"\n"},
+	}
+
+	delivery, err := sendWithRetryTarget(mock, body, true, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0,
+	})
+	if err == nil {
+		t.Fatal("an unverifiable message with an over-long line must not report success")
+	}
+	if delivery != deliveryNoEvidence {
+		t.Fatalf("delivery: want %q, got %q", deliveryNoEvidence, delivery)
+	}
+}
+
+// TestIssue1793_FailedBaselineDisablesTheSignalItBelongsTo: a baseline that
+// could not be read is not a baseline of zero. If the pre-send capture fails
+// and the pane already holds a copy of a repeated message, treating the
+// missing baseline as 0 would read that stale copy as a fresh arrival.
+func TestIssue1793_FailedBaselineDisablesTheSignalItBelongsTo(t *testing.T) {
+	msg := bigMessage(4095)
+	mock := &mockSendRetryTarget{
+		statuses: []string{"active"}, // busy before and after: no transition
+		panes:    []string{"❯ " + msg + "\n"},
+		paneErrs: []error{errors.New("capture failed")}, // baseline unreadable
+	}
+
+	delivery, err := sendWithRetryTarget(mock, msg, true, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0,
+	})
+	if err == nil {
+		t.Fatal("with no readable baseline, a pre-existing copy must not certify the send")
+	}
+	if delivery != deliveryNoEvidence {
+		t.Fatalf("delivery: want %q, got %q", deliveryNoEvidence, delivery)
+	}
+}
+
 // TestIssue1793_CanonicalOverflowIsItsOwnDeliveryStatus: when the transport
 // refuses because the pane's canonical buffer cannot hold the line, nothing
 // was typed. That is a distinct, non-retryable outcome and must not be
@@ -253,7 +334,7 @@ func TestIssue1793_CanonicalOverflowSurvivesTheClaudeVerifiedPath(t *testing.T) 
 // statuses are actually machine-readable by the callers that key off them
 // (watchers, conductors, bridges), rather than only existing in Go.
 func TestIssue1793_DeliveryStatusReachesTheJSONContract(t *testing.T) {
-	for _, status := range []string{deliveryLineTooLong, deliveryNoEvidence, deliveryArrived} {
+	for _, status := range []string{deliveryLineTooLong, deliveryNoEvidence, deliveryTyped} {
 		res := sendDeliveryResult{delivery: status}
 		fields := res.jsonFields()
 		if fields["delivery"] != status {
