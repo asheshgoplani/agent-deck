@@ -973,6 +973,14 @@ type Session struct {
 	InstanceID  string // Agent-deck instance ID for hook callbacks
 	startupAt   time.Time
 
+	// WorkDirIsPlaceholder marks a session whose local WorkDir is not where the
+	// work happens — today that means an SSH session, whose pane only runs an
+	// `ssh` client while the project lives on the remote host. Such a session
+	// keeps working even if the local directory disappears, so it opts out of
+	// the #1713 working-directory guards (see workdir_guard.go) rather than
+	// being refused a start over a path nothing reads.
+	WorkDirIsPlaceholder bool
+
 	// SocketName is the tmux `-L <name>` socket selector for this session.
 	// When empty (pre-v1.7.50 default), every tmux call targets the user's
 	// default server at $TMUX_TMPDIR/tmux-<uid>/default, preserving the
@@ -2112,6 +2120,40 @@ func (s *Session) Start(command string) error {
 	// See assertTestTmuxIsolation for the full rationale.
 	assertTestTmuxIsolation()
 
+	// #1713: resolve and validate the working directory BEFORE mutating session
+	// state or spawning anything. tmux does NOT fail when -c points at a missing
+	// directory — it silently starts the pane in $HOME — so without this check a
+	// session whose project directory (or worktree) was deleted starts "fine"
+	// and runs the agent against the user's home directory instead. Failing here
+	// keeps the session untouched and surfaces the real reason at the CLI.
+	workDir := s.WorkDir
+	if workDir == "" {
+		workDir = os.Getenv("HOME")
+	}
+	resolvedWorkDir, workDirErr := resolveStartWorkDir(workDir)
+	if workDirErr != nil {
+		if !s.WorkDirIsPlaceholder {
+			statusLog.Warn("tmux_start_refused_bad_workdir",
+				slog.String("session", logging.SanitizeValue(s.Name)),
+				slog.String("requested_workdir", logging.SanitizeValue(s.WorkDir)),
+				slog.String("error", workDirErr.Error()))
+			return workDirErr
+		}
+		// An SSH session's local path is a placeholder: the pane only runs an
+		// ssh client, so a missing local directory must not block the start.
+		// Keep tmux's historical $HOME landing, but say so instead of hiding it.
+		statusLog.Warn("tmux_start_placeholder_workdir_fallback",
+			slog.String("session", logging.SanitizeValue(s.Name)),
+			slog.String("requested_workdir", logging.SanitizeValue(workDir)),
+			slog.String("error", workDirErr.Error()))
+		home, homeErr := resolveStartWorkDir(os.Getenv("HOME"))
+		if homeErr != nil {
+			return workDirErr
+		}
+		resolvedWorkDir = home
+	}
+	workDir = resolvedWorkDir
+
 	s.Command = command
 	s.invalidateCache()
 	s.Created = time.Now()
@@ -2130,17 +2172,16 @@ func (s *Session) Start(command string) error {
 		s.Name = SessionPrefix + sanitized + "_" + generateShortID()
 	}
 
-	// Ensure working directory exists
-	workDir := s.WorkDir
-	if workDir == "" {
-		workDir = os.Getenv("HOME")
-	}
-
 	// Create new tmux session in detached mode with the command as the initial
 	// process. This avoids the slow shell-wait-sendkeys path (~2s pane ready poll).
 	// Commands containing bash-specific syntax are wrapped for fish compatibility.
+	//
+	// workDir was resolved and validated at the top of Start (#1713).
 	launcher, args := s.startCommandSpec(workDir, command)
-	cmd := execCommand(launcher, args...)
+	// newSpawnCommand (not bare execCommand) so the spawn — and any tmux server
+	// it starts — runs from SpawnBaseDir and can never inherit a directory that
+	// is later deleted. See workdir_guard.go.
+	cmd := newSpawnCommand(launcher, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if launcher == "tmux" {
@@ -2153,7 +2194,7 @@ func (s *Session) Start(command string) error {
 				statusLog.Warn("tmux_start_retry_after_socket_recovery",
 					slog.String("session", s.Name),
 				)
-				output, err = execCommand(launcher, args...).CombinedOutput()
+				output, err = newSpawnCommand(launcher, args...).CombinedOutput()
 			}
 		}
 	}
@@ -2197,7 +2238,7 @@ func (s *Session) Start(command string) error {
 		triedScope := false
 		if wasServiceModeArgs(args) {
 			scopeRetryArgs := buildScopeArgsFromTmuxArgs(s.Name, tmuxArgs)
-			scopeOutput, scopeErr = execCommand("systemd-run", scopeRetryArgs...).CombinedOutput()
+			scopeOutput, scopeErr = newSpawnCommand("systemd-run", scopeRetryArgs...).CombinedOutput()
 			triedScope = true
 			if scopeErr == nil {
 				output = scopeOutput
@@ -2215,7 +2256,7 @@ func (s *Session) Start(command string) error {
 		// initial attempt was scope-mode, in which case it's the next
 		// tier down).
 		if err != nil {
-			retryOutput, retryErr := execCommand("tmux", tmuxArgs...).CombinedOutput()
+			retryOutput, retryErr := newSpawnCommand("tmux", tmuxArgs...).CombinedOutput()
 			if retryErr == nil {
 				output = retryOutput
 				err = nil
@@ -2242,6 +2283,22 @@ func (s *Session) Start(command string) error {
 	// Register session in cache immediately to prevent race condition
 	// where Exists() returns false because cache was refreshed before session creation
 	registerSessionInCache(s.Name)
+
+	// #1713: a tmux server whose OWN cwd was unlinked stops honouring -c and
+	// births every pane in that dead directory, where the pane's shell cannot
+	// getcwd() and the agent never execs. SpawnBaseDir prevents that for servers
+	// agent-deck starts, but a server started earlier (or by another tool) can
+	// already be poisoned, so confirm where the pane actually landed. Reporting
+	// such a session as started is the exact "looked created, never ran the
+	// agent" failure from the report — tear it down and say why instead.
+	if cwdErr := s.verifyPaneWorkDirUnlessPlaceholder(workDir); cwdErr != nil {
+		if killErr := s.Kill(); killErr != nil {
+			statusLog.Warn("deleted_cwd_session_cleanup_failed",
+				slog.String("session", logging.SanitizeValue(s.Name)),
+				slog.String("error", killErr.Error()))
+		}
+		return cwdErr
+	}
 
 	// PERFORMANCE: Batch all session options into a single subprocess call.
 	// Before: 7 separate exec.Command calls = 7 subprocess spawns (~50-70ms)
@@ -2303,11 +2360,41 @@ func (s *Session) Start(command string) error {
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
 	// reader (e.g. iTerm2 on macOS). Only binds on agentdeck-managed sessions.
+	//
+	// #1808: tmux key bindings live on the SERVER (one per socket), not on the
+	// session — a baked-in `if-shell [ "#{session_name}" = "<s.Name>" ]`
+	// guard, re-installed by every Start(), only ever matched whichever
+	// session started most recently on this socket. Because the binding is
+	// "-n -T root", tmux's root key table consumes Ctrl+Q on every client
+	// attached to the socket before it ever reaches the pane — so in every
+	// other session sharing the socket, the guard's empty else-branch did NOT
+	// let the key fall through to the running app; it silently swallowed the
+	// keypress instead, so Ctrl+Q simply did nothing until a client attached
+	// to the one session Start() most recently ran on the socket. Use
+	// if-shell -F to re-evaluate a tmux FORMAT against the CURRENT client's
+	// session at keypress time instead of baking in one session name — this
+	// scopes the detach to "whichever agentdeck session this client is
+	// attached to" rather than "the one session that happened to Start()
+	// last", and matches the same prefix-match pattern
+	// BindMouseStatusRightDetach already uses for its detach binding.
+	//
+	// #1820: the guard used to be a `run-shell` shell script with the
+	// session name substituted into a single-quoted shell word by tmux's
+	// FORMATS expansion BEFORE the string reached /bin/sh — a session name
+	// containing a single quote (tmux permits quotes in names; only "."
+	// and ":" are forbidden) could break out of the quoting and have the
+	// remainder executed as shell commands on whichever socket owns the
+	// pane, including the user's own default tmux server. `if-shell -F`
+	// evaluates its pattern (#{m:pattern,string}) entirely inside tmux's own
+	// format engine — nothing is ever handed to a shell, so no session name
+	// can break out of anything — and "detach-client" runs directly on the
+	// invoking client's own command queue (no run-shell subprocess), so it
+	// detaches exactly the client that pressed the key even when the session
+	// has more than one client attached (e.g. a web `tmux -C` control client
+	// alongside a native terminal client; see controlpipe.go).
 	// Bounded — see tmuxMutationTimeout. Best-effort already, and it runs on
 	// the session-create path where a wedged client would stall the create.
-	_ = s.runBoundedMutation("bind-key", "-n", "-T", "root", "C-q",
-		"if-shell", fmt.Sprintf("[ \"#{session_name}\" = \"%s\" ]", s.Name),
-		"detach-client", "")
+	_ = s.runBoundedMutation(append([]string{"bind-key", "-n", "-T", "root", "C-q"}, ctrlQDetachBindArgs()...)...)
 
 	// Apply user-specified tmux option overrides from config (after defaults).
 	// These are batched into a single call when multiple overrides are present.
@@ -6056,15 +6143,38 @@ func UnbindKey(key string) error {
 	return nil
 }
 
+// ctrlQDetachIfShellFormat returns the tmux FORMAT used to guard the
+// socket-wide (server-wide) "-n -T root C-q" binding in Session.Start: true
+// (non-"0", non-empty) exactly when the invoking client's current session
+// name starts with SessionPrefix.
+//
+// #{m:pattern,string} is evaluated entirely inside the tmux server's own
+// format engine at keypress time, against whichever session the invoking
+// client is currently attached to — never handed to a shell, so a session
+// name can never break out of any quoting (see the #1820 doc comment on the
+// call site in Session.Start for the injection this replaced). Same
+// prefix-match pattern as BindMouseStatusRightDetach below.
+func ctrlQDetachIfShellFormat() string {
+	return fmt.Sprintf("#{m:%s*,#{session_name}}", SessionPrefix)
+}
+
+// ctrlQDetachBindArgs returns the bind-key arguments (after "C-q") that
+// install the Ctrl+Q detach guard: a pure `if-shell -F ... detach-client`
+// command, never a run-shell/embedded-shell-script form. Kept as its own
+// function so tests can assert on the exact args Session.Start installs.
+func ctrlQDetachBindArgs() []string {
+	return []string{"if-shell", "-F", ctrlQDetachIfShellFormat(), "detach-client", ""}
+}
+
 // BindMouseStatusRightDetach binds a mouse click on the status-right area to detach.
 // Only fires inside agentdeck sessions (guards against detaching the user's outer tmux).
 func BindMouseStatusRightDetach() error {
-	// Guard: only detach if current session is an agentdeck-managed session
-	// The inner `tmux display-message` / `tmux detach-client` invocations run
-	// inside the tmux server that fired run-shell, so they stay on the right
-	// socket automatically.
-	script := `S=$(tmux display-message -p '#{session_name}'); case "$S" in agentdeck_*) tmux detach-client ;; esac`
-	return tmuxExec(DefaultSocketName(), "bind", "-n", "MouseDown1StatusRight", "run-shell", script).Run()
+	// Guard: only detach if current session is an agentdeck-managed session.
+	// #{m:pattern,string} is evaluated entirely inside tmux's format engine
+	// (see ctrlQDetachIfShellFormat) — never handed to a shell, so a session
+	// name containing shell metacharacters can't break out of anything.
+	return tmuxExec(DefaultSocketName(), "bind", "-n", "MouseDown1StatusRight",
+		"if-shell", "-F", ctrlQDetachIfShellFormat(), "detach-client", "").Run()
 }
 
 // UnbindMouseStatusClicks removes mouse click bindings from the status bar.

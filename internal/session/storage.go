@@ -54,8 +54,13 @@ type InstanceData struct {
 	Status              Status    `json:"status"`
 	CreatedAt           time.Time `json:"created_at"`
 	LastAccessedAt      time.Time `json:"last_accessed_at,omitempty"`
-	ArchivedAt          time.Time `json:"archived_at,omitempty"`
-	TmuxSession         string    `json:"tmux_session"`
+	// LastStartedAt mirrors Instance.LastStartedAt (issue #30 / #1704 fix).
+	// Persisted via the tool_data extras zone (see last_started_persist.go),
+	// not a typed SQL column. Zero means unknown (old record or never
+	// started).
+	LastStartedAt time.Time `json:"last_started_at,omitempty"`
+	ArchivedAt    time.Time `json:"archived_at,omitempty"`
+	TmuxSession   string    `json:"tmux_session"`
 	// TmuxSocketName is the tmux -L selector captured at Instance creation
 	// (issue #687, v1.7.50). Empty for pre-v1.7.50 rows — those keep hitting
 	// the default server after upgrade.
@@ -933,6 +938,10 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// through the resume builder (e.g. `switch-account --no-restart`) cannot
 	// leave an unverified id on disk that the next process treats as recorded.
 	toolData = WriteClaudeSessionUnverifiedToToolData(toolData, inst.claudeSessionIDIsUnverified())
+	// #1704 blocker fix: same extras-zone treatment for last_started_at, so
+	// `status --stale` (and ShouldSkipRestart's freshness guard) see a real
+	// value from a fresh CLI process instead of always-zero.
+	toolData = WriteLastStartedAtToToolData(toolData, inst.LastStartedAt)
 
 	return &statedb.InstanceRow{
 		ID:                  inst.ID,
@@ -1105,6 +1114,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			Color:                     color2,
 			IdleTimeoutSecs:           ReadIdleTimeoutSecsFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
+			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 		}
 	}
 
@@ -1225,6 +1235,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			Color:                     color,
 			IdleTimeoutSecs:           ReadIdleTimeoutSecsFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
+			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 		}
 	}
 
@@ -1472,6 +1483,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			AutoLinkedChannels:           instData.AutoLinkedChannels,
 			Color:                        instData.Color,
 			IdleTimeoutSecs:              instData.IdleTimeoutSecs,
+			LastStartedAt:                instData.LastStartedAt,
 			Sandbox:                      instData.Sandbox,
 			SandboxContainer:             instData.SandboxContainer,
 			SSHHost:                      instData.SSHHost,

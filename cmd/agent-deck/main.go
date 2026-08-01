@@ -1309,9 +1309,9 @@ func handleAdd(profile string, args []string) {
 	attach := fs.Bool("attach", false, "Start and attach to the session immediately after creating it (requires an interactive terminal; not supported with --ssh)")
 
 	// Worktree flags
-	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch")
-	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
+	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch (not supported with --ssh)")
+	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch (not supported with --ssh)")
+	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree; not supported with --ssh)")
 	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
 
@@ -1418,7 +1418,8 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("  agent-deck add --worktree fix/bug-123 --new-branch /path/to/repo")
 		fmt.Println()
 		fmt.Println("SSH Examples:")
-		fmt.Println("  agent-deck add --ssh user@host --remote-path ~/project -c claude")
+		fmt.Println("  agent-deck add --ssh user@host --remote-path /home/user/project -c claude")
+		fmt.Println("  agent-deck add /home/user/project --ssh user@host -c claude   # positional path shortcut for --remote-path; must be absolute")
 		fmt.Println("  agent-deck add --ssh user@host -c claude -t \"remote-dev\"")
 	}
 
@@ -1552,14 +1553,35 @@ func handleAdd(profile string, args []string) {
 
 	// Verify path exists and is a directory (skip for SSH remote sessions)
 	if *sshHost != "" {
-		// For SSH sessions, use CWD as local placeholder path (project lives on remote)
-		if path == "" {
-			path, err = os.Getwd()
-			if err != nil {
-				fmt.Printf("Error: failed to get current directory: %v\n", err)
-				os.Exit(1)
-			}
+		// An explicitly given path (positional arg, e.g. `add <remote-path>
+		// --ssh <host>`) names the REMOTE working directory when --ssh is in
+		// play: the project lives on the remote host, so this is never a
+		// local path to validate or launch tmux in. Prior to this fix an
+		// explicit positional path was silently dropped on the floor here:
+		// it became the session's local ProjectPath placeholder (nonsensical,
+		// since it names a path that typically doesn't exist locally) while
+		// SSHRemotePath stayed empty, so wrapForSSH never `cd`'d into it and
+		// the session launched in the SSH login shell's default directory
+		// instead of the intended remote worktree. Route it into
+		// --remote-path (an explicit --remote-path flag still wins, matching
+		// the documented `--ssh --remote-path` pattern) and fall back to CWD
+		// as the local placeholder, exactly as the no-positional-path case
+		// already does. Fixes asheshgoplani/agent-deck#1711 / #1710.
+		// A positional path is routed as the RAW argument (rawPathArg, before
+		// resolveAddPath's local ExpandPath/Abs above), never the already
+		// locally-resolved `path`: see resolveSSHAddPaths' doc comment for why
+		// local resolution of a remote path is never correct.
+		if explicitPathProvided && *sshRemotePath != "" {
+			fmt.Fprintf(os.Stderr, "warning: both a positional path (%q) and --remote-path (%q) were given; "+
+				"the positional path is discarded, --remote-path is used\n", rawPathArg, *sshRemotePath)
 		}
+		var localPlaceholder string
+		localPlaceholder, *sshRemotePath, err = resolveSSHAddPaths(explicitPathProvided, rawPathArg, *sshRemotePath)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		path = localPlaceholder
 	} else {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -1575,6 +1597,26 @@ func handleAdd(profile string, args []string) {
 	// Handle worktree creation
 	var worktreePath, worktreeRepoRoot, worktreeType string
 	if wtBranch != "" {
+		// -w/-b worktree creation is a 100% local filesystem operation
+		// (detectAndCreateBackend + git/jj worktree add below all run against
+		// `path` on THIS machine). Combined with --ssh, `path` at this point
+		// is the local CWD placeholder (see the --ssh branch above), never
+		// the remote repo the director intended. Before this fix that meant
+		// silently creating a worktree in the local Mac's checkout instead of
+		// on the remote host, ignoring --remote-path entirely. Remote
+		// worktree creation over SSH is not yet implemented, so refuse loudly
+		// rather than repeat that silent local-Mac side effect. Workaround:
+		// create the worktree on the remote host directly
+		// (ssh <host> "cd <repo> && git worktree add <path> ..."), then
+		// register it with `agent-deck add --ssh <host> --remote-path <path>`.
+		// Tracking: asheshgoplani/agent-deck#1711 / #1710.
+		if *sshHost != "" {
+			fmt.Fprintln(os.Stderr, "Error: -w/--worktree (and -b) cannot be combined with --ssh; agent-deck cannot create a git worktree on a remote host yet")
+			fmt.Fprintln(os.Stderr, "Workaround: create the worktree on the remote host directly, then register it:")
+			fmt.Fprintln(os.Stderr, "  ssh "+*sshHost+" \"cd <remote-repo> && git worktree add <remote-worktree-path> "+wtBranch+"\"")
+			fmt.Fprintln(os.Stderr, "  agent-deck add --ssh "+*sshHost+" --remote-path <remote-worktree-path> ...")
+			os.Exit(1)
+		}
 		backend, err := detectAndCreateBackend(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -2552,6 +2594,12 @@ func handleStatus(profile string, args []string) {
 	quiet := fs.Bool("quiet", false, "Only output waiting count (for scripts)")
 	quietShort := fs.Bool("q", false, "Only output waiting count (short)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	// --stale (#1704): read-only lifecycle candidate view. See status_stale.go
+	// for the heuristics (never-started / bash-idle / last-activity) and the
+	// hard suggest-only constraint — this flag branches out before any of the
+	// counting/printing logic below and never mutates a session.
+	stale := fs.Bool("stale", false, "Show read-only stale-session candidates (never stops or removes anything)")
+	staleThreshold := fs.String("threshold", defaultStaleThreshold.String(), "Staleness age threshold for --stale, e.g. 24h, 48h, 168h (Go duration syntax)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck status [options]")
@@ -2566,10 +2614,36 @@ func handleStatus(profile string, args []string) {
 		fmt.Println("  agent-deck status -v           # Detailed list")
 		fmt.Println("  agent-deck status -q           # Just waiting count")
 		fmt.Println("  agent-deck -p work status      # Status for 'work' profile")
+		fmt.Println("  agent-deck status --stale                  # Read-only stale-candidate view (never-started/bash-idle/last-activity)")
+		fmt.Println("  agent-deck status --stale --threshold 48h  # Widen the staleness window")
+		fmt.Println("  agent-deck status --stale --json           # Machine-readable candidates, for agents")
+		fmt.Println()
+		fmt.Println("--stale --json shape:")
+		fmt.Println(`  {"threshold_seconds":86400,"total":5,"stale_count":2,"note":"...",`)
+		fmt.Println(`   "candidates":[{"id":"...","title":"...","tool":"...","status":"idle",`)
+		fmt.Println(`     "substate":"...","path":"...","group_path":"...","parent_session_id":"...",`)
+		fmt.Println(`     "reasons":["never-started"],"never_started":true,"created_at":"...",`)
+		fmt.Println(`     "last_started_at":"...","last_activity_at":"...","last_activity_age_seconds":90000}]}`)
+		fmt.Println("  --stale is READ-ONLY: it never stops or removes a session. Review candidates,")
+		fmt.Println("  then act yourself via `session stop`/`session remove`.")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
+	}
+
+	if *stale {
+		threshold, err := time.ParseDuration(*staleThreshold)
+		if err != nil {
+			fmt.Printf("Error: invalid --threshold %q: %v\n", *staleThreshold, err)
+			os.Exit(1)
+		}
+		if threshold < 0 {
+			fmt.Printf("Error: --threshold must not be negative, got %q\n", *staleThreshold)
+			os.Exit(1)
+		}
+		runStatusStale(profile, threshold, *jsonOutput)
+		return
 	}
 
 	// Load sessions

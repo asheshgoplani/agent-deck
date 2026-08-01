@@ -47,11 +47,18 @@ func GetSessionIDLifecycleLogPath() string {
 
 // WriteSessionIDLifecycleEvent appends a single JSONL event.
 func WriteSessionIDLifecycleEvent(event SessionIDLifecycleEvent) error {
+	return writeSessionIDLifecycleEventTo(event, GetSessionIDLifecycleLogPath())
+}
+
+// writeSessionIDLifecycleEventTo is the path-explicit variant, used by
+// watchForFastDeath. logPath is resolved once by the caller at goroutine-spawn
+// time (see the comment on watchForFastDeath) instead of being re-resolved
+// here from the live $HOME on every call.
+func writeSessionIDLifecycleEventTo(event SessionIDLifecycleEvent, logPath string) error {
 	if event.Timestamp == 0 {
 		event.Timestamp = time.Now().Unix()
 	}
 
-	logPath := GetSessionIDLifecycleLogPath()
 	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
 		return fmt.Errorf("create lifecycle log dir: %w", err)
 	}

@@ -728,13 +728,19 @@ func (s *Session) StreamOutput(ctx context.Context, w io.Writer) error {
 // when isolation is configured, and byte-identical plain argv when it is
 // not. Keeping these as named methods gives the regression lint a stable
 // target to assert argv shape against without spawning PTYs.
+//
+// These are interactive clients: AttachWithOptions and AttachReadOnly require
+// stdin to be a real terminal so they can enter raw mode. From a detached
+// setsid process like the hook in #1114, they return "failed to set raw mode".
+// StartAttachPTY gives attachCmd's tmux child its own controlling PTY, while
+// attachReadOnlyCmd uses the caller's terminal directly.
 
 func (s *Session) attachCmd(ctx context.Context) *exec.Cmd {
-	return s.tmuxCmdContext(ctx, "attach-session", "-t", s.Name)
+	return s.tmuxCmdContext(ctx, "-u", "attach-session", "-t", s.Name)
 }
 
 func (s *Session) attachReadOnlyCmd(ctx context.Context) *exec.Cmd {
-	return s.tmuxCmdContext(ctx, "attach-session", "-r", "-t", s.Name)
+	return s.tmuxCmdContext(ctx, "-u", "attach-session", "-r", "-t", s.Name)
 }
 
 func (s *Session) resizeCmd(cols, rows int) *exec.Cmd {
