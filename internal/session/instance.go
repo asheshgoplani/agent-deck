@@ -432,7 +432,8 @@ type Instance struct {
 	// from its own goroutine.
 	spawnGen atomic.Uint64
 
-	// spawnGenMu guards spawnGenWake. spawnGenWake lets bumpSpawnGen() wake a
+	// spawnGenMu guards spawnGenWake and spawnWatchDones. spawnGenWake lets a
+	// generation bump wake a
 	// running watchForFastDeath goroutine immediately instead of it only
 	// noticing the bump on its next spawnFastDeathTick (250ms) poll (#1775).
 	// That up-to-250ms tail after a deliberate Stop/Kill was long enough for
@@ -519,24 +520,6 @@ type Instance struct {
 	hermesGatewayOK        bool
 }
 
-// bumpSpawnGen increments spawnGen and wakes any watchForFastDeath goroutine
-// blocked on spawnGenWakeChan, so a superseded watcher notices and exits on
-// this same tick instead of waiting out the rest of spawnFastDeathTick.
-// Replaces the direct i.spawnGen.Add(1) call at every Start/StartWithMessage/
-// Stop site so the wake-up is never forgotten at a new call site (#1775).
-func (i *Instance) bumpSpawnGen() uint64 {
-	i.spawnGenMu.Lock()
-	defer i.spawnGenMu.Unlock()
-	// Increment under the same lock that publishes the wake, so a bump can
-	// never be observed as "channel closed but generation not yet advanced".
-	gen := i.spawnGen.Add(1)
-	if i.spawnGenWake != nil {
-		close(i.spawnGenWake)
-		i.spawnGenWake = nil
-	}
-	return gen
-}
-
 // newSpawnGenWatch bumps the generation and hands back both the new generation
 // and the channel that the NEXT bump will close.
 //
@@ -552,54 +535,29 @@ func (i *Instance) bumpSpawnGen() uint64 {
 // returns; callers that take a watch must therefore always start the watcher.
 func (i *Instance) newSpawnGenWatch() (uint64, <-chan struct{}, chan struct{}) {
 	i.spawnGenMu.Lock()
-	defer i.spawnGenMu.Unlock()
-	gen := i.spawnGen.Add(1)
-	if i.spawnGenWake != nil {
-		close(i.spawnGenWake)
-	}
+	gen, superseded := i.bumpAndTakePendingLocked()
 	i.spawnGenWake = make(chan struct{})
+	wake := i.spawnGenWake
 	done := make(chan struct{})
-	// Keep every watcher that has not returned yet, dropping the ones that
-	// have, so the list stays bounded without ever forgetting a live watcher.
-	live := i.spawnWatchDones[:0]
-	for _, ch := range i.spawnWatchDones {
-		select {
-		case <-ch:
-		default:
-			live = append(live, ch)
-		}
-	}
-	i.spawnWatchDones = append(live, done)
-	return gen, i.spawnGenWake, done
+	i.spawnWatchDones = append(i.spawnWatchDones, done)
+	i.spawnGenMu.Unlock()
+
+	// Join the watchers this bump superseded BEFORE handing the caller a new
+	// one. Bumping alone lets an older watcher that already passed its final
+	// generation check still land a spawn_survived/spawn_died_fast belonging to
+	// the previous spawn, after the new one has begun — tracking completion
+	// only for a later teardown would notice that too late, the event having
+	// already been persisted.
+	i.drainWatchers(superseded)
+
+	return gen, wake, done
 }
 
-// spawnWatchDrainTimeout bounds how long a teardown waits for the watchers it
-// superseded to return. The bump wakes them immediately, so the only thing
-// that can take measurable time is a tmux call already in flight.
-const spawnWatchDrainTimeout = time.Second
-
-// bumpSpawnGenAndDrain bumps the generation and then joins every watcher that
-// bump superseded, bounded overall by spawnWatchDrainTimeout.
-//
-// The bump alone is not enough for teardown. A watcher can pass its generation
-// check and then be descheduled a microsecond before its write; the bumping
-// goroutine would race ahead and tear down (in tests, remove the very $HOME the
-// watcher captured) while that write is still pending. Joining the watchers'
-// completion closes that gap.
-//
-// The bump and the snapshot of pending watchers happen under a single
-// acquisition of spawnGenMu. Taking the lock twice would let a concurrent
-// Start slip in between and leave teardown joining the NEW watcher — which
-// this bump did not supersede and which may legitimately outlive the timeout —
-// while the watcher it did supersede is never waited for at all.
-//
-// The timeout is a deliberate trade, not a claim of completeness: a watcher
-// parked in a wedged tmux subprocess must not be able to turn a deliberate
-// stop into a hang, so on expiry teardown proceeds and the (already
-// generation-superseded, therefore write-suppressed on its next check) watcher
-// is left to finish on its own.
-func (i *Instance) bumpSpawnGenAndDrain() uint64 {
-	i.spawnGenMu.Lock()
+// bumpAndTakePendingLocked advances the generation, wakes the current watcher,
+// and hands back (clearing) the set of watchers that bump supersedes. Callers
+// must hold spawnGenMu; doing all three under one acquisition is what keeps
+// "who did this bump supersede" unambiguous when a Start and a Stop race.
+func (i *Instance) bumpAndTakePendingLocked() (uint64, []chan struct{}) {
 	gen := i.spawnGen.Add(1)
 	if i.spawnGenWake != nil {
 		close(i.spawnGenWake)
@@ -607,20 +565,61 @@ func (i *Instance) bumpSpawnGenAndDrain() uint64 {
 	}
 	pending := i.spawnWatchDones
 	i.spawnWatchDones = nil
-	i.spawnGenMu.Unlock()
+	return gen, pending
+}
 
+// spawnWatchDrainTimeout bounds how long a bump waits for the watchers it
+// superseded to return. The bump wakes them immediately, so the only thing
+// that can take measurable time is a tmux call already in flight.
+const spawnWatchDrainTimeout = time.Second
+
+// drainWatchers waits for each superseded watcher to return, bounded overall by
+// spawnWatchDrainTimeout.
+//
+// The timeout is a deliberate trade, not a claim of completeness: a watcher
+// parked in a wedged tmux subprocess must not be able to turn a deliberate stop
+// into a hang. Watchers not reached before the deadline are put BACK on the
+// pending list rather than dropped, so the next bump joins them instead of
+// forgetting them forever — the alternative would let a slow watcher escape
+// every future join and outlive the teardown that was supposed to contain it.
+func (i *Instance) drainWatchers(pending []chan struct{}) {
 	if len(pending) == 0 {
-		return gen
+		return
 	}
 	deadline := time.NewTimer(spawnWatchDrainTimeout)
 	defer deadline.Stop()
-	for _, done := range pending {
+
+	unreached := -1
+join:
+	for idx, done := range pending {
 		select {
 		case <-done:
 		case <-deadline.C:
-			return gen
+			unreached = idx
+			break join
 		}
 	}
+	if unreached < 0 {
+		return
+	}
+	i.spawnGenMu.Lock()
+	i.spawnWatchDones = append(i.spawnWatchDones, pending[unreached:]...)
+	i.spawnGenMu.Unlock()
+}
+
+// bumpSpawnGenAndDrain bumps the generation and then joins every watcher that
+// bump superseded.
+//
+// The bump alone is not enough for teardown. A watcher can pass its generation
+// check and then be descheduled a microsecond before its write; the bumping
+// goroutine would race ahead and tear down (in tests, remove the very $HOME the
+// watcher captured) while that write is still pending. Joining the watchers'
+// completion closes that gap.
+func (i *Instance) bumpSpawnGenAndDrain() uint64 {
+	i.spawnGenMu.Lock()
+	gen, pending := i.bumpAndTakePendingLocked()
+	i.spawnGenMu.Unlock()
+	i.drainWatchers(pending)
 	return gen
 }
 

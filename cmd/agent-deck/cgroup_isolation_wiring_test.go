@@ -133,7 +133,11 @@ func TestLogCgroupIsolationDecision_WiredIntoBootstrap(t *testing.T) {
 const tuiTermGrace = 2 * time.Second
 
 // terminateTUI tears the started TUI subprocess down and reaps it, leaving
-// nothing behind and never blocking indefinitely.
+// nothing behind. Its only wait follows an uncatchable SIGKILL, so the process
+// is already dead or dying when it runs; it is not a timed wait, because a
+// process that cannot be reaped after SIGKILL is in uninterruptible kernel
+// sleep, which no amount of userspace timeout would let the test escape
+// cleanly anyway.
 //
 // Both signals go to the whole process group (the child was started with
 // Setpgid), and the SIGKILL sweep is UNCONDITIONAL rather than a fallback for
