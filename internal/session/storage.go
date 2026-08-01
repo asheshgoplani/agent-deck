@@ -18,6 +18,12 @@ import (
 
 var storageLog = logging.ForComponent(logging.CompStorage)
 
+// ErrInferredProfileNotFound is wrapped into the error NewStorageWithProfile
+// returns when CLAUDE_CONFIG_DIR-inferred profile resolution (see
+// profileFromClaudeConfigDir) names a profile that doesn't exist on disk.
+// Callers/tests can match it with errors.Is.
+var ErrInferredProfileNotFound = errors.New("inferred profile does not exist")
+
 // fixMalformedTildePath fixes paths where the UI textinput suggestion appended
 // instead of replacing, producing paths like "/some/path~/actual/path".
 // Returns the path starting from the last "~/" occurrence.
@@ -189,8 +195,12 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 		}
 	}
 
-	// Get effective profile
-	effectiveProfile := GetEffectiveProfile(profile)
+	// Get effective profile, guarding against silently auto-creating a
+	// profile that was merely inferred from CLAUDE_CONFIG_DIR (#1790).
+	effectiveProfile, err := ResolveProfileForStorage(profile)
+	if err != nil {
+		return nil, err
+	}
 
 	// Get profile directory
 	profileDir, err := GetProfileDir(effectiveProfile)

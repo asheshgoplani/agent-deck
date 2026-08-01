@@ -1172,6 +1172,39 @@ func (i *Instance) ensureProfileEnv() {
 	}
 }
 
+// ensureClaudeConfigDirEnv sets CLAUDE_CONFIG_DIR host-side on the instance's
+// tmux session (#1791), mirroring ensureProfileEnv. Without this, the var was
+// only ever applied as an inline command-prefix (CLAUDE_CONFIG_DIR=x claude
+// ...) or, on some paths, not applied to the persistent pane env at all — a
+// fleet survey found it missing from the pane shell in 14/40 sampled panes.
+// A hand-restart inside the pane (Ctrl-C, then `claude`) then falls back to
+// the default ~/.claude root: wrong billed account, and (when config roots
+// share a `projects/` symlink) a transcript the deck can no longer find to
+// resume. Same gate as buildBashExportPrefix/buildClaudeCommandWithMessage:
+// only set when the instance has an explicit, resolved config_dir; a bare
+// CLAUDE_CONFIG_DIR="" would otherwise mask the profile-scoped identity of
+// panes intentionally left on the ambient ~/.claude root. Must run on every
+// spawn/respawn success path alongside ensureProfileEnv. Best-effort: a
+// failure is logged, not fatal.
+func (i *Instance) ensureClaudeConfigDirEnv() {
+	if i.tmuxSession == nil {
+		return
+	}
+	if !IsClaudeCompatible(i.Tool) {
+		return
+	}
+	if !IsClaudeConfigDirExplicitForInstance(i) {
+		return
+	}
+	configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
+	if configDir == "" {
+		return
+	}
+	if err := i.tmuxSession.SetEnvironment("CLAUDE_CONFIG_DIR", configDir); err != nil {
+		sessionLog.Warn("set_claude_config_dir_failed", slog.String("error", err.Error()))
+	}
+}
+
 // logClaudeConfigResolution emits the CFG-07 observability line documenting
 // which priority level resolved CLAUDE_CONFIG_DIR for this session.
 // Owns the single CFG-07 slog message literal for this package.
@@ -3590,6 +3623,7 @@ func (i *Instance) Start() error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
+	i.ensureClaudeConfigDirEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
 	// sandbox and non-sandbox sessions). This replaces the previous approach of embedding
@@ -3852,6 +3886,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
+	i.ensureClaudeConfigDirEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
 	// sandbox and non-sandbox sessions).
@@ -6729,6 +6764,7 @@ func (i *Instance) restart(env map[string]string) error {
 		// Re-assert AGENTDECK_PROFILE host-side: this respawn branch returns
 		// before the fallback recreate path that would otherwise set it.
 		i.ensureProfileEnv()
+		i.ensureClaudeConfigDirEnv()
 
 		// Persist .sid sidecar so hook events after restart can be correlated
 		WriteHookSessionAnchor(i.ID, i.ClaudeSessionID)
@@ -6774,6 +6810,7 @@ func (i *Instance) restart(env map[string]string) error {
 		// carries no inline AGENTDECK_PROFILE prefix, and this branch returns
 		// before the fallback recreate path that would otherwise set it.
 		i.ensureProfileEnv()
+		i.ensureClaudeConfigDirEnv()
 
 		// Persist .sid sidecar so hook events after restart can be correlated
 		WriteHookSessionAnchor(i.ID, i.GeminiSessionID)
@@ -6834,6 +6871,7 @@ func (i *Instance) restart(env map[string]string) error {
 		// carries no inline AGENTDECK_PROFILE prefix, and this branch returns
 		// before the fallback recreate path that would otherwise set it.
 		i.ensureProfileEnv()
+		i.ensureClaudeConfigDirEnv()
 
 		// Persist .sid sidecar so hook events after restart can be correlated
 		if i.OpenCodeSessionID != "" {
@@ -6903,6 +6941,7 @@ func (i *Instance) restart(env map[string]string) error {
 		// inline prefix buildCodexCommand already injects; this branch returns
 		// before the fallback recreate path that would otherwise set it.
 		i.ensureProfileEnv()
+		i.ensureClaudeConfigDirEnv()
 
 		// Persist .sid sidecar so hook events after restart can be correlated
 		WriteHookSessionAnchor(i.ID, i.CodexSessionID)
@@ -6932,6 +6971,7 @@ func (i *Instance) restart(env map[string]string) error {
 
 		sessionLog.Info("restart_cursor_respawn_succeeded")
 		i.ensureProfileEnv()
+		i.ensureClaudeConfigDirEnv()
 		i.sweepDuplicateToolSessions()
 		i.CaptureLoadedMCPs()
 		i.Status = StatusWaiting
@@ -6978,6 +7018,7 @@ func (i *Instance) restart(env map[string]string) error {
 		// bare `<cmd> <resumeFlag> <sid>` with no inline AGENTDECK_PROFILE prefix,
 		// and this branch returns before the fallback recreate path.
 		i.ensureProfileEnv()
+		i.ensureClaudeConfigDirEnv()
 
 		i.loadCustomPatternsFromConfig() // Reload custom patterns
 		i.Status = StatusWaiting
@@ -7109,6 +7150,7 @@ func (i *Instance) restart(env map[string]string) error {
 	// than falling back to "default". Covers shells/OpenCode/etc. that have no
 	// inline env-prefix injection of their own.
 	i.ensureProfileEnv()
+	i.ensureClaudeConfigDirEnv()
 
 	// Propagate all known tool session IDs to the tmux environment (host-side).
 	// This covers Restart() which uses buildClaudeResumeCommand() and similar

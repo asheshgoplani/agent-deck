@@ -806,7 +806,19 @@ func main() {
 	// When --no-tui is also set, run the HTTP server in the foreground and
 	// skip bubbletea entirely — the perf win that motivated this flag.
 	if webEnabled {
-		effectiveProfile := session.GetEffectiveProfile(profile)
+		// #1790: resolve (and refuse to silently auto-create) the same way
+		// NewStorageWithProfile does. Without this, GetEffectiveProfile
+		// returns a CLAUDE_CONFIG_DIR-inferred name unconditionally, and
+		// passing that concrete name into NewSessionDataService below makes
+		// its own internal NewStorageWithProfile call look like an explicit
+		// -p selection — bypassing the guard and re-opening the exact
+		// silent-empty-profile hole the guard exists to close, just via the
+		// web/headless entry point instead of the CLI/TUI one.
+		effectiveProfile, err := session.ResolveProfileForStorage(profile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to resolve profile for web server: %v\n", err)
+			os.Exit(1)
+		}
 		fallbackMenuData := web.NewSessionDataService(effectiveProfile)
 		liveMenuData := web.NewMemoryMenuData(fallbackMenuData)
 		homeModel.SetWebMenuData(liveMenuData)
