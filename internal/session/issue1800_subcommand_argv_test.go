@@ -275,9 +275,14 @@ func TestIssue1800_ShellPassthroughCodex_GetsAgentdeckEnv(t *testing.T) {
 // AGENTDECK_TITLE with Go's %q, which quotes for Go syntax, not shell
 // syntax — a double-quoted string is still subject to shell $(...) /
 // backtick command substitution, so a session title an attacker (or
-// careless user) set to something like `x$(touch /tmp/pwned)` would run
+// careless user) set to something like `x$(touch <sentinel>)` would run
 // arbitrary code at every spawn of a shell-routed codex subcommand
-// session. shellescape.Quote (single-quoted, escape-safe) closes that.
+// session. shellescape.Quote (single-quoted) closes that: inside single
+// quotes POSIX shells never expand $(...), so the substring is still
+// present in the built command text (that alone proves nothing) — this
+// test actually EXECUTES the built command through `sh -c`, exactly as
+// prepareCommand's real dispatch would, and asserts the embedded
+// $(touch <sentinel>) never ran.
 func TestIssue1800_ShellPassthroughCodex_ShellEscapesTitle(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -287,14 +292,24 @@ func TestIssue1800_ShellPassthroughCodex_ShellEscapesTitle(t *testing.T) {
 	ClearUserConfigCache()
 	t.Cleanup(ClearUserConfigCache)
 
+	binDir, logPath := buildFakeBinArgvCapture(t, "codex")
+	sentinel := filepath.Join(t.TempDir(), "pwned")
+
 	inst := NewInstanceWithTool("codex-sub", t.TempDir(), "shell")
-	inst.Title = "x$(touch /tmp/pwned)"
+	inst.Title = "x$(touch " + sentinel + ")"
 	inst.Command = "codex mcp list"
 
 	cmd := inst.buildShellPassthroughCommand(inst.Command)
-	if strings.Contains(cmd, "$(touch") {
-		t.Fatalf("session title's $(...) must be shell-escaped, not passed through live "+
-			"inside a double-quoted AGENTDECK_TITLE; got: %s", cmd)
+	wrapped, _, err := inst.prepareCommand(cmd)
+	if err != nil {
+		t.Fatalf("prepareCommand: %v", err)
+	}
+
+	runBuiltCommandCapturingArgv(t, wrapped, binDir, logPath)
+
+	if _, statErr := os.Stat(sentinel); statErr == nil {
+		t.Fatalf("session title's $(...) executed via command substitution — AGENTDECK_TITLE "+
+			"injection is NOT shell-safe; command was: %s", wrapped)
 	}
 }
 
