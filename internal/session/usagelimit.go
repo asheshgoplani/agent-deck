@@ -52,14 +52,21 @@ const (
 // The verdict is "the latest assistant turn was a quota rejection", which clears
 // itself the moment a real turn completes — but only if one ever does. A session
 // that receives no further input after the window reopens would otherwise stay
-// classified from that old rejection indefinitely. Rather than parse the
-// advertised reset text ("resets 8:50pm (UTC)"), which needs 12-hour parsing, a
-// timezone and day-rollover handling and is still only a promise, this bounds
-// belief by the length of the rolling window itself.
+// classified from that old rejection indefinitely.
 //
-// The erring direction is deliberate: where a plan uses a longer cap (a weekly
-// one), this clears early and reports the session as unremarkable — which is the
-// pre-existing behaviour, not a new false positive.
+// KNOWN LIMITATION, accepted deliberately: this bounds the staleness but does not
+// track the ACTUAL reset. The banner carries one ("resets 8:50pm (UTC)") and this
+// does not read it, so a rejection stamped 20:35 whose window reopened at 20:50 is
+// still believed until 01:35 — up to ~5h of false usage-limit in the
+// no-further-input case. The cost is bounded and is a mislabel rather than an
+// action, since nothing consumes this substate yet; the alternative is parsing a
+// human-facing 12-hour local-time string (timezone, day rollover, wording drift)
+// to obtain a promise rather than an observation. Revisit when a consumer starts
+// acting on the verdict, and prefer a revalidation signal over parsing the prose.
+//
+// The erring direction of the bound itself is also deliberate: where a plan uses a
+// longer cap (a weekly one), this clears early and reports the session as
+// unremarkable — the pre-existing behaviour, not a new false positive.
 const usageLimitMaxAge = 5 * time.Hour
 
 // usageLimitScanInterval throttles the transcript read. Substate is computed per
@@ -68,21 +75,23 @@ const usageLimitMaxAge = 5 * time.Hour
 // so a few seconds of staleness costs nothing.
 const usageLimitScanInterval = 5 * time.Second
 
-// usageLimitTailSteps are the tail sizes tried in order until a
-// main-conversation assistant record is found.
+// usageLimitFirstTailBytes is the first window read, sized for the common case:
+// a real transcript has assistant records throughout, so this answers in one read.
+const usageLimitFirstTailBytes = 512 * 1024
+
+// usageLimitTailGrowth multiplies the window when a read found no
+// main-conversation assistant record.
 //
-// One fixed window is not enough. A single oversized record (a file-history
-// snapshot, a compaction) can fill it, and later non-assistant traffic can push
-// the decisive rejection out of it. When that happens a long-lived process keeps
-// its memo, but a fresh CLI invocation starts with no memo and would report the
-// session as healthy — the exact false negative this detector exists to prevent.
-// So escalate rather than give up, and stop at a bound so a pathological
-// transcript cannot turn a status poll into an unbounded read.
-var usageLimitTailSteps = []int64{
-	512 * 1024,
-	8 * 1024 * 1024,
-	64 * 1024 * 1024,
-}
+// There is deliberately NO ceiling. A fixed one does not remove the cold-start
+// failure it appears to bound, it just moves it further out: if the decisive
+// rejection sits beyond the cap and everything after it is non-assistant traffic,
+// every step returns no verdict, and a fresh process then starts with no memo and
+// reports the session as healthy — the false negative this detector exists to
+// prevent. Growth instead terminates on reading the whole file, so the answer is
+// always eventually found. The throttle bounds how often this can happen, and the
+// pathological case (no assistant record in tens of megabytes) is not what a real
+// transcript looks like.
+const usageLimitTailGrowth = 8
 
 // transcriptRecord is the subset of a transcript line this detector reads.
 type transcriptRecord struct {
@@ -141,7 +150,7 @@ func (r transcriptRecord) fresh(now time.Time, maxAge time.Duration) bool {
 // Callers must treat that as "unknown", never as "fine" — silence being mistaken
 // for health is the failure this whole detector exists to stop.
 func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool, ok bool) {
-	for _, tail := range usageLimitTailSteps {
+	for tail := int64(usageLimitFirstTailBytes); ; tail *= usageLimitTailGrowth {
 		lines, complete, err := readTranscriptTailLines(path, tail)
 		if err != nil {
 			return false, false
@@ -161,11 +170,10 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 			return rec.fresh(now, usageLimitMaxAge), true
 		}
 		if complete {
-			// The whole file was read and holds no assistant turn at all.
+			// The whole file has been read and holds no assistant turn at all.
 			return false, false
 		}
 	}
-	return false, false
 }
 
 // readTranscriptTailLines returns the complete JSONL lines in the last tailBytes
@@ -241,10 +249,11 @@ func (i *Instance) usageLimited() bool {
 	if i.IsSSH() {
 		return false
 	}
+
 	// Read the session id, check the throttle and claim the window in ONE critical
 	// section. Split apart, two callers whose window had expired could both pass
-	// the check, both scan, and publish their results in either order — and the
-	// id could change between its own read and the claim.
+	// the check, both scan, and publish their results in either order — and the id
+	// could change between its own read and the claim.
 	//
 	// A bound session id is required, not merely helpful: with an empty id
 	// LocateConversationConfigDir deliberately falls back to the NEWEST
@@ -256,14 +265,28 @@ func (i *Instance) usageLimited() bool {
 		i.mu.Unlock()
 		return false
 	}
+	// The memo carries the id it was formed for. A session normally rebinds
+	// (A→B) on the same Instance, and an identity-less memo would hand B the
+	// verdict formed for A — indefinitely, if B never produces an assistant turn
+	// of its own. A mismatch is therefore not a cache miss to be papered over but
+	// a reason to discard both the verdict and the throttle claim.
+	if i.usageLimitSessionID != sessionID {
+		i.usageLimitSessionID = sessionID
+		i.usageLimitedCached = false
+		i.lastUsageLimitScanAt = time.Time{}
+	}
 	if !i.lastUsageLimitScanAt.IsZero() && time.Since(i.lastUsageLimitScanAt) < usageLimitScanInterval {
 		cached := i.usageLimitedCached
 		i.mu.Unlock()
 		return cached
 	}
 	// Claim the window before releasing the lock so a concurrent caller sees it
-	// taken. The I/O below deliberately runs unlocked.
+	// taken, and take a generation stamp. The stamp records scan START, so a scan
+	// slower than the interval can overlap the next claim; the generation is what
+	// stops the older one publishing over the newer result.
 	i.lastUsageLimitScanAt = time.Now()
+	i.usageLimitScanGen++
+	gen := i.usageLimitScanGen
 	cached := i.usageLimitedCached
 	i.mu.Unlock()
 
@@ -282,14 +305,21 @@ func (i *Instance) usageLimited() bool {
 
 	limited, ok := latestAssistantTurnIsRateLimited(path, time.Now())
 	if !ok {
-		// No formed verdict (unreadable, or no assistant turn within the
-		// escalation bound): leave the previous answer standing rather than
-		// silently reporting "not limited".
+		// No formed verdict (unreadable, or no assistant turn in the file): leave
+		// the previous answer standing rather than silently reporting "not
+		// limited".
 		return cached
 	}
 
 	i.mu.Lock()
-	i.usageLimitedCached = limited
+	// Publish only if this scan is still the current one AND the instance is still
+	// bound to the id it was formed for. Either check failing means a newer claim
+	// or a rebind happened while the read was in flight, and this result is stale.
+	if i.usageLimitScanGen == gen && i.usageLimitSessionID == sessionID {
+		i.usageLimitedCached = limited
+	} else {
+		limited = i.usageLimitedCached
+	}
 	i.mu.Unlock()
 
 	return limited

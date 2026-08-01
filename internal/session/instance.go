@@ -216,11 +216,16 @@ type Instance struct {
 	CodexDetectedAt time.Time `json:"codex_detected_at,omitempty"`
 	CodexStartedAt  int64     `json:"-"` // Unix millis when we started Codex (for session matching, not persisted)
 	lastCodexScanAt time.Time // Rate-limits expensive ~/.codex/sessions scans
-	// Usage-limit detection (#1802). lastUsageLimitScanAt rate-limits the
-	// transcript tail read; usageLimitedCached mirrors the verdict so the TUI
-	// render path can read it without filesystem access. Guarded by i.mu.
+	// Usage-limit detection (#1802), all guarded by i.mu.
+	// lastUsageLimitScanAt throttles the transcript read (records scan START).
+	// usageLimitedCached memoises the verdict for that window, and
+	// usageLimitSessionID records the session id it was formed for so a rebind
+	// cannot inherit it. usageLimitScanGen versions in-flight scans so one slower
+	// than the interval cannot publish over a newer result.
 	lastUsageLimitScanAt time.Time
 	usageLimitedCached   bool
+	usageLimitSessionID  string
+	usageLimitScanGen    uint64
 	lastCodexProbeAt     time.Time // Rate-limits expensive Codex process-file probes
 	// pendingCodexRestartWarning is consumed by UI/CLI after Restart() succeeds.
 	// It is intentionally transient and never persisted.

@@ -57,15 +57,6 @@ func writeUsageLimitTranscript(t *testing.T, records ...string) string {
 	return path
 }
 
-// withTailSteps runs fn with a pinned escalation ladder, so a test can assert
-// what a single window can and cannot decide.
-func withTailSteps(steps []int64, fn func()) {
-	saved := usageLimitTailSteps
-	usageLimitTailSteps = steps
-	defer func() { usageLimitTailSteps = saved }()
-	fn()
-}
-
 func TestLatestAssistantTurnIsRateLimited(t *testing.T) {
 	recent := stampAt(-time.Minute)
 
@@ -187,22 +178,31 @@ func TestLatestAssistantTurnIsRateLimited_RecoversAfterTailEviction(t *testing.T
 	if _, err := f.WriteString(recRateLimitAt(stampAt(-time.Minute)) + "\n"); err != nil {
 		t.Fatalf("write rejection: %v", err)
 	}
-	// Bury it under more than one tail step of user records. No assistant turn
-	// among them, so the first step can form no verdict.
+	// Bury it under more than the first window of user records. No assistant turn
+	// among them, so that window alone can form no verdict.
 	filler := recUserAt(stampAt(-time.Minute))
-	for written := int64(0); written < usageLimitTailSteps[0]+64*1024; written += int64(len(filler)) + 1 {
+	for written := int64(0); written < usageLimitFirstTailBytes+64*1024; written += int64(len(filler)) + 1 {
 		if _, err := f.WriteString(filler + "\n"); err != nil {
 			t.Fatalf("write filler: %v", err)
 		}
 	}
 	_ = f.Close()
 
-	// Premise: one window alone must be unable to answer.
-	withTailSteps(usageLimitTailSteps[:1], func() {
-		if _, ok := latestAssistantTurnIsRateLimited(path, refNow); ok {
-			t.Fatal("premise broken: a single tail step formed a verdict, so eviction is not exercised")
+	// Premise, asserted rather than assumed: the first window really does not
+	// contain the decisive record, so this exercises escalation and not a
+	// single-read path that happens to work.
+	lines, complete, err := readTranscriptTailLines(path, usageLimitFirstTailBytes)
+	if err != nil {
+		t.Fatalf("premise read: %v", err)
+	}
+	if complete {
+		t.Fatal("premise broken: the first window covered the whole file")
+	}
+	for _, l := range lines {
+		if strings.Contains(l, `"rate_limit"`) {
+			t.Fatal("premise broken: the rejection is inside the first window, so eviction is not exercised")
 		}
-	})
+	}
 
 	limited, ok := latestAssistantTurnIsRateLimited(path, refNow)
 	if !limited || !ok {
@@ -348,6 +348,10 @@ func TestSubstate_ReportsUsageLimitWhenLimited(t *testing.T) {
 	inst.mu.Lock()
 	inst.lastUsageLimitScanAt = time.Now()
 	inst.usageLimitedCached = true
+	// The memo is keyed by the id it was formed for, so seed that too — without
+	// it the identity check correctly discards the verdict as belonging to some
+	// other session. (This test caught exactly that when the keying landed.)
+	inst.usageLimitSessionID = inst.ClaudeSessionID
 	inst.mu.Unlock()
 
 	if got := inst.Substate(); got != SubstateUsageLimit {
@@ -411,5 +415,65 @@ func TestTranscriptBelongsToSession(t *testing.T) {
 				t.Fatalf("transcriptBelongsToSession(%q, %q) = %v, want %v", tt.path, tt.sessionID, got, tt.want)
 			}
 		})
+	}
+}
+
+// #1806 cycle-3 review: the memo had no session identity, so an Instance rebound
+// from session A to session B returned A's verdict for B — indefinitely when B
+// never forms one of its own. The memo is now keyed by the id it was formed for.
+func TestUsageLimited_RebindDoesNotInheritVerdict(t *testing.T) {
+	inst := NewInstanceWithTool("usage-limit-rebind", t.TempDir(), "claude")
+	inst.ClaudeSessionID = "session-A"
+
+	// Seed a live verdict for A, exactly as a completed scan would.
+	inst.mu.Lock()
+	inst.usageLimitSessionID = "session-A"
+	inst.usageLimitedCached = true
+	inst.lastUsageLimitScanAt = time.Now()
+	inst.mu.Unlock()
+
+	if !inst.usageLimited() {
+		t.Fatal("premise broken: A's own verdict should be returned for A")
+	}
+
+	// Normal rebind onto the same Instance.
+	inst.ClaudeSessionID = "session-B"
+
+	if inst.usageLimited() {
+		t.Fatal("B inherited A's usage-limit verdict")
+	}
+
+	inst.mu.RLock()
+	gotID, gotCached := inst.usageLimitSessionID, inst.usageLimitedCached
+	inst.mu.RUnlock()
+	if gotID != "session-B" {
+		t.Fatalf("memo identity = %q after rebind, want %q", gotID, "session-B")
+	}
+	if gotCached {
+		t.Fatal("stale verdict survived the rebind")
+	}
+}
+
+// The rebind must also drop the throttle claim, otherwise B would be answered
+// from A's window instead of being scanned.
+func TestUsageLimited_RebindClearsThrottleClaim(t *testing.T) {
+	inst := NewInstanceWithTool("usage-limit-rebind-throttle", t.TempDir(), "claude")
+	inst.ClaudeSessionID = "session-A"
+
+	inst.mu.Lock()
+	inst.usageLimitSessionID = "session-A"
+	inst.usageLimitedCached = true
+	claimed := time.Now()
+	inst.lastUsageLimitScanAt = claimed
+	inst.mu.Unlock()
+
+	inst.ClaudeSessionID = "session-B"
+	_ = inst.usageLimited()
+
+	inst.mu.RLock()
+	stamped := inst.lastUsageLimitScanAt
+	inst.mu.RUnlock()
+	if stamped.Equal(claimed) {
+		t.Fatal("rebind kept A's throttle claim, so B is answered from A's window")
 	}
 }
