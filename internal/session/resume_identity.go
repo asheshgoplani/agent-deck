@@ -155,6 +155,10 @@ func (i *Instance) logResumeRefusal(candidate, reason string) {
 // canResumeClaudeSession is the single resume-time chokepoint: it answers
 // "may this instance be started with `--resume <sessionID>`?".
 //
+// Nothing outside this file decides that question: callers ask here, and both
+// layers below run in order, so a future caller cannot take only half of the
+// check by accident.
+//
 // Layer 1 (this change, #1815): identity — the id must be this instance's own
 // recorded conversation id.
 // Layer 2 (sessionHasConversationData, hardened by #1788): the transcript must
