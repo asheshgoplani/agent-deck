@@ -180,13 +180,21 @@ const (
 // spawn_died_fast for what was a deliberate teardown (and written into a HOME
 // the owning test may already be tearing down).
 //
+// done is closed on return. Teardown paths bump the generation and then join
+// it, so the remaining check-then-write gap is not merely small but closed:
+// once the join returns, this goroutine has finished all of its I/O.
+//
 // lifecycleLogPath and failureDir are likewise passed by value rather than
 // resolved here from the live $HOME: this goroutine is never joined, so it
 // can still be alive (parked on the ticker) after its caller's test has
 // finished and a later test has repointed $HOME. Resolving live at write
 // time would make the watcher write into whatever $HOME happens to be
 // current when it fires, not the one that was current when it was spawned.
-func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string) {
+func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, done chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string) {
+	// Closing done is what lets a teardown join this goroutine (see
+	// bumpSpawnGenAndDrain). It must cover every return path, including the
+	// nil-session one below, or the join would always burn its full timeout.
+	defer close(done)
 	if sess == nil {
 		return
 	}

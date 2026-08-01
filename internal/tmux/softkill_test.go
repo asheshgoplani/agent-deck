@@ -416,15 +416,16 @@ func spawnHelperWithStdinPipe(t *testing.T, role string, extraEnv ...string) (*e
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)
+	// Close the parent's write end on cleanup, registered before Start so even
+	// a failed Start cannot leak the fd. We never call cmd.Wait() (the tests
+	// reap via cmd.Process.Wait()), so exec.Cmd never closes it for us: an
+	// early return would otherwise leak the fd AND keep the child's stdin open
+	// forever, denying it the EOF it is waiting for. Double-close is harmless —
+	// the tests that close it themselves get an already-closed error here,
+	// which is ignored.
+	t.Cleanup(func() { _ = stdin.Close() })
 	require.NoError(t, cmd.Start())
 	registerOrphanReaper(t, cmd)
-	// Close the parent's write end too. We never call cmd.Wait() (the tests
-	// reap via cmd.Process.Wait()), so exec.Cmd never closes it for us: an
-	// early return from waitForReady would otherwise leak the fd AND keep the
-	// child's stdin open forever, denying it the EOF it is waiting for.
-	// Double-close is harmless — the tests that close it themselves get an
-	// already-closed error here, which is ignored.
-	t.Cleanup(func() { _ = stdin.Close() })
 	waitForReady(t, ready, 5*time.Second)
 	return cmd, stdin
 }

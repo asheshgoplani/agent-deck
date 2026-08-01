@@ -446,6 +446,12 @@ type Instance struct {
 	spawnGenMu   sync.Mutex
 	spawnGenWake chan struct{}
 
+	// spawnWatchDone is closed by the current watcher when it returns. Teardown
+	// joins it (bounded) after bumping, so no watcher write can still be in
+	// flight once a deliberate stop/restart proceeds — a generation check alone
+	// only narrows that window to the gap between the check and the write.
+	spawnWatchDone chan struct{}
+
 	// lastErrorCheck tracks when we last confirmed the session doesn't exist
 	// Used to skip expensive Exists() checks for ghost sessions (sessions in JSON but not in tmux)
 	// Not serialized - resets on load, but that's fine since we'll recheck on first poll
@@ -536,7 +542,9 @@ func (i *Instance) bumpSpawnGen() uint64 {
 // the up-to-250ms tail the wake channel exists to remove. Producing gen and the
 // channel together under one lock closes that gap: any bump ordered after this
 // call is guaranteed to close the very channel the watcher is selecting on.
-func (i *Instance) newSpawnGenWatch() (uint64, <-chan struct{}) {
+// The returned done channel must be closed by the watcher goroutine when it
+// returns; callers that take a watch must therefore always start the watcher.
+func (i *Instance) newSpawnGenWatch() (uint64, <-chan struct{}, chan struct{}) {
 	i.spawnGenMu.Lock()
 	defer i.spawnGenMu.Unlock()
 	gen := i.spawnGen.Add(1)
@@ -544,7 +552,39 @@ func (i *Instance) newSpawnGenWatch() (uint64, <-chan struct{}) {
 		close(i.spawnGenWake)
 	}
 	i.spawnGenWake = make(chan struct{})
-	return gen, i.spawnGenWake
+	i.spawnWatchDone = make(chan struct{})
+	return gen, i.spawnGenWake, i.spawnWatchDone
+}
+
+// spawnWatchDrainTimeout bounds how long a teardown waits for a superseded
+// watcher to return. The bump wakes it immediately, so the only thing that can
+// take measurable time is a tmux call already in flight; the timeout exists so
+// a wedged tmux can never turn a stop into a hang.
+const spawnWatchDrainTimeout = time.Second
+
+// bumpSpawnGenAndDrain bumps the generation and then waits — bounded by
+// spawnWatchDrainTimeout — for the watcher it just superseded to actually
+// return.
+//
+// The bump alone is not enough for teardown. A watcher can pass its generation
+// check and then be descheduled a microsecond before its write; the bumping
+// goroutine would race ahead and tear down (in tests, remove the very $HOME the
+// watcher captured) while that write is still pending. Joining the watcher's
+// completion turns "the window is small" into "there is no window": once this
+// returns, the watcher has provably finished all of its I/O.
+func (i *Instance) bumpSpawnGenAndDrain() uint64 {
+	gen := i.bumpSpawnGen() // also wakes the watcher, so the join is short
+	i.spawnGenMu.Lock()
+	done := i.spawnWatchDone
+	i.spawnGenMu.Unlock()
+	if done == nil {
+		return gen
+	}
+	select {
+	case <-done:
+	case <-time.After(spawnWatchDrainTimeout):
+	}
+	return gen
 }
 
 // SandboxConfig holds per-session Docker sandbox settings.
@@ -3625,7 +3665,7 @@ func (i *Instance) Start() error {
 		// gen AND the wake channel are both produced here, in the caller, so no
 		// bump can slip into the gap before the watcher subscribes (see
 		// newSpawnGenWatch).
-		gen, wake := i.newSpawnGenWatch()
+		gen, wake, watchDone := i.newSpawnGenWatch()
 		// Resolve both write targets HERE, synchronously in the caller, not
 		// inside the goroutine: GetSessionIDLifecycleLogPath()/spawnFailureDir()
 		// read the live $HOME, and watchForFastDeath's goroutine is never
@@ -3635,7 +3675,7 @@ func (i *Instance) Start() error {
 		// calling goroutine) makes the watcher's writes land in the HOME that
 		// was live when this session started, never whichever HOME happens to
 		// be live when the ticker next fires.
-		go i.watchForFastDeath(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
+		go i.watchForFastDeath(command, gen, wake, watchDone, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -3896,10 +3936,10 @@ func (i *Instance) StartWithMessage(message string) error {
 
 	// #1580: fast-death watcher (sister path to Start()).
 	if command != "" {
-		gen, wake := i.newSpawnGenWatch()
+		gen, wake, watchDone := i.newSpawnGenWatch()
 		// See the matching comment in Start(): resolve the write targets — and
 		// subscribe to the wake — here, not inside the never-joined goroutine.
-		go i.watchForFastDeath(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
+		go i.watchForFastDeath(command, gen, wake, watchDone, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -6567,7 +6607,7 @@ func (i *Instance) killInternal(sync bool) error {
 	// observed by the watcher as a "fast death" mid-teardown — including the
 	// up-to-3s KillAndWait escalation below, which used to run entirely
 	// inside the stale-gen window.
-	i.bumpSpawnGen()
+	i.bumpSpawnGenAndDrain()
 
 	// Issue #965 wiring (PR #1000 follow-up): claude/codex/gemini spawn
 	// stdio MCP children when they read .mcp.json — agent-deck never
@@ -7069,7 +7109,7 @@ func (i *Instance) restart(env map[string]string) error {
 		// and the eventual Start() leave a gap before the next bump, wide
 		// enough for a stale watcher to see Exists()==false and record a
 		// spurious spawn_died_fast for a deliberate restart.
-		i.bumpSpawnGen()
+		i.bumpSpawnGenAndDrain()
 		mcpLog.Debug("restart_killing_old_session", slog.String("session_name", i.tmuxSession.Name))
 		if killErr := i.tmuxSession.Kill(); killErr != nil {
 			mcpLog.Warn("restart_kill_old_session_failed", slog.String("error", killErr.Error()))
@@ -7239,7 +7279,7 @@ func (i *Instance) RestartFresh() error {
 		// #1775: same reasoning as the restart-fallback-recreate path above —
 		// bump before kill so a stale watcher can't outlive the gap between
 		// this Kill() and the eventual gen bump inside Start().
-		i.bumpSpawnGen()
+		i.bumpSpawnGenAndDrain()
 		if killErr := i.tmuxSession.Kill(); killErr != nil {
 			mcpLog.Warn("restart_fresh_kill_old_session_failed", slog.String("error", killErr.Error()))
 		}
