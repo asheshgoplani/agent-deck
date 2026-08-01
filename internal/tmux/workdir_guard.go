@@ -121,11 +121,15 @@ func resolveStartWorkDir(workDir string) (string, error) {
 	// internal/web/handlers_sessions.go -> WebMutator.CreateSession ->
 	// tmux.NewSession) — not local-CLI-only as an earlier pass through this
 	// file claimed. Accepted, not a false positive: that endpoint requires
-	// WebMutations enabled plus token auth, binds 127.0.0.1 by default, and
-	// refuses non-loopback requests without a token (internal/web/server.go);
-	// it already authorizes running an arbitrary agent process at the
-	// supplied path, a strictly greater capability than this existence-only
-	// Stat. There is also no "safe base directory" to contain dir within the
+	// WebMutations enabled (off by default), binds loopback-only unless the
+	// operator opts into a wider bind with --insecure-bind or a configured
+	// --token (internal/web/bind.go CheckBindSecurity; a token, when set, is
+	// then required on every request, but an empty token is NOT itself a
+	// requirement — it just means "authorize everything", which loopback-only
+	// binding is what actually contains). Either way, this endpoint already
+	// authorizes running an arbitrary agent process at the supplied path, a
+	// strictly greater capability than this existence-only Stat. There is
+	// also no "safe base directory" to contain dir within the
 	// way #1771's fix does for skills_catalog.go's manifest-derived targets —
 	// a session's working directory is meant to be able to name any directory
 	// on disk, so a containment check would just be wrong here. This Stat
@@ -175,8 +179,16 @@ const (
 // an unlinked cwd as "/path (deleted)" and macOS reports the stale path
 // verbatim; both fail the stat, so both are caught.
 func classifyPaneCwd(requested, panePath string) paneCwdVerdict {
-	panePath = strings.TrimSpace(panePath)
-	if panePath == "" {
+	// Strip only the newline tmux's display-message output is terminated
+	// with, never plain spaces — a real directory name may legitimately have
+	// them, and stripping would compare requested (space-preserving) against
+	// a shortened panePath, producing a false paneCwdDeleted/paneCwdElsewhere
+	// verdict for a healthy pane. A result that is blank once spaces are also
+	// considered (empty, or all-whitespace) is treated as no real report at
+	// all — that judgment uses TrimSpace only to decide emptiness, the value
+	// actually stat()ed below keeps its interior/trailing spaces intact.
+	panePath = strings.Trim(panePath, "\n\r\t\v\f")
+	if strings.TrimSpace(panePath) == "" {
 		return paneCwdUnknown
 	}
 	if _, err := os.Stat(panePath); err != nil {
@@ -196,11 +208,11 @@ func classifyPaneCwd(requested, panePath string) paneCwdVerdict {
 //
 // CodeQL go/path-injection: a is the already-validated requested workDir (see
 // resolveStartWorkDir's comment above — reachable from POST /api/sessions,
-// but gated by WebMutations+token+loopback and strictly weaker than that
-// endpoint's own authorized capability, accepted not false-positive);
-// b is panePath, tmux's own report of #{pane_current_path} for a pane this
-// process just created. Both Stat calls only check existence/identity, never
-// read or write file contents.
+// but gated by WebMutations + loopback-only-by-default bind, and strictly
+// weaker than that endpoint's own authorized capability; accepted, not
+// false-positive); b is panePath, tmux's own report of #{pane_current_path}
+// for a pane this process just created. Both Stat calls only check
+// existence/identity, never read or write file contents.
 func sameDirectory(a, b string) bool {
 	if a == b {
 		return true
@@ -223,7 +235,10 @@ var panePathProbe = func(s *Session) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	// Strip only the trailing newline tmux's own output framing adds — not
+	// spaces, which may be a real part of the reported directory name. See
+	// classifyPaneCwd, which re-trims with the same restricted cutset.
+	return strings.Trim(string(out), "\n\r\t\v\f"), nil
 }
 
 // paneCwdRecheckDelay spaces the re-probes below. tmux creates the pane process
@@ -287,14 +302,14 @@ func (s *Session) verifyPaneWorkDir(workDir string) error {
 		// Not a failure: a pane command may legitimately change directory
 		// (the fork/multi-repo paths build a `cd <dir> && …` command).
 		// resolveStartWorkDir's pre-flight Stat rules out tmux's $HOME
-		// substitution for the common case, but not a TOCTOU race — if
-		// workDir is removed between that Stat and this pane actually
-		// spawning, tmux still substitutes $HOME and lands here as
-		// "elsewhere" rather than "deleted", so this warn-only path is a
-		// known gap, not a closed one. Kept warn-only deliberately (the
-		// legitimate cd-elsewhere case is far more common than the race),
-		// but a mismatch landing exactly on $HOME deserves scrutiny over one
-		// landing anywhere else. Logged either way so it is diagnosable.
+		// substitution for the common case, but not a TOCTOU race: if workDir
+		// is removed between that Stat and this pane actually spawning, the
+		// outcome depends on exact timing. tmux may still substitute $HOME and
+		// land here as "elsewhere" — or the removal may instead be caught by
+		// classifyPaneCwd's own re-stat and surface as paneCwdDeleted above.
+		// Either way this is a known gap in the guard, not a closed one. Kept
+		// warn-only here deliberately (the legitimate cd-elsewhere case is far
+		// more common than the race). Logged either way so it is diagnosable.
 		statusLog.Warn("pane_cwd_differs_from_requested",
 			slog.String("session", logging.SanitizeValue(s.Name)),
 			slog.String("requested_workdir", logging.SanitizeValue(workDir)),
