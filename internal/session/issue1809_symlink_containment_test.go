@@ -636,7 +636,10 @@ func TestSaveManifest_UsesExclusiveRandomTempFile(t *testing.T) {
 
 // TestTargetExists_DanglingPoolLinkCountsAbsent proves a leftover link into a
 // pool entry that no longer exists is treated as ABSENT (so attach
-// rematerializes) rather than as an attached skill.
+// rematerializes) rather than as an attached skill, while a live pool link
+// still counts as present. A FOREIGN but resolvable replacement also stays
+// "present" on purpose: the loadout layer reports those instead of silently
+// overwriting them (TestLoadout_RefusesForeignReplacementOfManagedSymlink).
 func TestTargetExists_DanglingPoolLinkCountsAbsent(t *testing.T) {
 	_, cleanup := setupSkillTestEnv(t)
 	defer cleanup()
@@ -686,5 +689,35 @@ func TestTargetExists_DanglingPoolLinkCountsAbsent(t *testing.T) {
 	}
 	if !exists {
 		t.Fatalf("live pool link should count as present")
+	}
+}
+
+// TestTargetExists_ForeignResolvableLinkCountsPresent pins the policy the
+// loadout layer depends on: a managed entry replaced by a link to an unrelated
+// but existing directory is PRESENT (reported as already attached, then
+// refused as unhealthy upstream), never silently rematerialized over.
+func TestTargetExists_ForeignResolvableLinkCountsPresent(t *testing.T) {
+	projectPath := t.TempDir()
+	foreign := t.TempDir()
+	skillsDir := filepath.Join(projectPath, ".claude", "skills")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatalf("mkdir skills dir: %v", err)
+	}
+	if err := os.Symlink(foreign, filepath.Join(skillsDir, "lint")); err != nil {
+		t.Fatalf("symlink foreign dir: %v", err)
+	}
+
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		t.Fatalf("openProjectRoot: %v", err)
+	}
+	defer p.Close()
+
+	exists, err := p.targetExists(buildProjectSkillTargetPath(projectClaudeSkillsDir, "lint"))
+	if err != nil {
+		t.Fatalf("targetExists failed: %v", err)
+	}
+	if !exists {
+		t.Fatalf("foreign but resolvable link must count as present")
 	}
 }

@@ -1185,10 +1185,13 @@ func (p *projectRoot) targetExists(targetRel string) (bool, error) {
 
 	// Root.Stat reports the escape before it reports whether the destination
 	// exists, so an out-of-root link lands here whether it is a live pool
-	// attachment or a dangling leftover. Read the link and check the
-	// destination through a registered source root: a live pool skill counts
-	// as present, a dangling or non-source destination counts as ABSENT so the
-	// attach flow rematerializes over it instead of reporting it attached.
+	// attachment or a dangling leftover. Resolve the link explicitly and let
+	// the DESTINATION decide: a link that resolves (pool attachment, or a
+	// foreign replacement the loadout layer must report rather than silently
+	// overwrite) counts as present; a dangling link counts as ABSENT so the
+	// attach flow rematerializes over it. This is a read-only metadata check
+	// on the link's own destination — the same thing the previous os.Stat on
+	// the target did — while every mutation stays descriptor-relative.
 	info, lerr := parent.Lstat(name)
 	if lerr != nil {
 		if os.IsNotExist(lerr) {
@@ -1201,18 +1204,16 @@ func (p *projectRoot) targetExists(targetRel string) (bool, error) {
 	}
 	dest, rerr := parent.Readlink(name)
 	if rerr != nil {
-		return false, nil
+		return true, nil
 	}
 	if !filepath.IsAbs(dest) {
 		dest = filepath.Join(p.physicalDirOf(targetRel), dest)
 	}
-	srcRoot, srcRel, _, err := p.openContainedSource(dest)
-	if err != nil {
-		return false, nil
-	}
-	defer srcRoot.Close()
-	if _, err := srcRoot.Stat(srcRel); err != nil {
-		return false, nil
+	if _, err := os.Stat(filepath.Clean(dest)); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return true, nil
 	}
 	return true, nil
 }
