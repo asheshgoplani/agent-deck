@@ -75,25 +75,41 @@ const usageLimitMaxAge = 5 * time.Hour
 // so a few seconds of staleness costs nothing.
 const usageLimitScanInterval = 5 * time.Second
 
-// usageLimitScanChunkBytes is how much of the transcript is read at a time.
+// usageLimitScanChunkBytes is how much of the transcript is scanned for line
+// boundaries at a time.
 //
-// The scan walks BACKWARD in non-overlapping chunks of this size until it finds
-// the latest main-conversation assistant record or reaches the start of the file.
-// Two properties matter and neither is optional:
+// The scan walks BACKWARD in non-overlapping chunks until it finds the latest
+// main-conversation assistant record or reaches the start of the file. Two
+// properties matter and neither is optional:
 //
 //   - No ceiling. A fixed cap does not remove the cold-start false negative it
 //     appears to bound, it relocates it: if the decisive rejection sits beyond the
 //     cap with only non-assistant traffic after it, no verdict forms and a fresh
 //     process reports the session healthy.
-//   - No overlap, bounded memory. An earlier revision grew the window
-//     geometrically and re-read what it had already seen — 512 KiB + 4 MiB + the
-//     whole file for one verdict on a 5.8 MB transcript, with the final read
-//     copied whole into memory. Chunking reads each byte at most once and holds
-//     one chunk at a time, which matters because this runs on a status path.
+//   - Bounded, non-overlapping I/O. Each chunk is read once to find newlines, and
+//     each candidate line is then read once by its own bounded ReadAt. This runs on
+//     a status path, so neither whole-file reads nor repeated recopying of a long
+//     line is acceptable.
 //
 // A var rather than a const so tests can shrink it and exercise a many-chunk walk
 // without writing a multi-megabyte fixture.
-var usageLimitScanChunkBytes int64 = 512 * 1024
+const defaultUsageLimitScanChunkBytes = 512 * 1024
+
+var usageLimitScanChunkBytes int64 = defaultUsageLimitScanChunkBytes
+
+// usageLimitMaxLineBytes bounds the size of a line this detector will read.
+//
+// Claude /compact writes multi-megabyte single-line records. Those are never the
+// assistant turn being looked for, and pulling one into memory on a status path is
+// exactly the cost the chunked walk exists to avoid — so a line longer than this is
+// skipped on its measured length, without being read at all.
+const usageLimitMaxLineBytes = 1 << 20 // 1 MiB
+
+// usageLimitScanObserver is a TEST SEAM: when non-nil it receives the byte range
+// of every chunk read, which is what lets a test assert non-overlap and bounded
+// I/O rather than merely assert that the answer came out right. Always nil in
+// production.
+var usageLimitScanObserver func(start, end int64)
 
 // transcriptRecord is the subset of a transcript line this detector reads.
 type transcriptRecord struct {
@@ -165,56 +181,78 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 
 	chunk := usageLimitScanChunkBytes
 	if chunk <= 0 {
-		chunk = 512 * 1024
+		chunk = defaultUsageLimitScanChunkBytes
 	}
+	buf := make([]byte, chunk)
 
-	// carry holds the leftmost, still-incomplete line of the chunk processed
-	// previously (which sits LATER in the file). Its head is at the end of the
-	// chunk about to be read, so appending it there reassembles that line exactly
-	// once — no byte is read twice and no record is split across the boundary.
-	var carry []byte
+	// lineEnd is the exclusive end of the line currently being delimited. Walking
+	// backwards, a '\n' at offset i closes the line [i+1, lineEnd) and opens the
+	// next one ending at i.
+	//
+	// Each line is then read exactly once, by its own bounded ReadAt. An earlier
+	// revision instead prepended a growing "carry" to every chunk, which recopied
+	// a multi-chunk line once per chunk — quadratic in line length, and this repo
+	// documents /compact producing multi-megabyte single-line records.
+	lineEnd := info.Size()
+
+	consider := func(start, end int64) (bool, bool, bool) {
+		if end <= start {
+			return false, false, false
+		}
+		if end-start > usageLimitMaxLineBytes {
+			// A line this large is a compaction/file-history snapshot, not a turn
+			// this detector can act on. Skipped WITHOUT reading it: the whole point
+			// of the bound is not to pull megabytes onto a status path.
+			return false, false, false
+		}
+		line := make([]byte, end-start)
+		if _, err := f.ReadAt(line, start); err != nil && err != io.EOF {
+			return false, false, false
+		}
+		trimmed := strings.TrimSpace(string(line))
+		if trimmed == "" {
+			return false, false, false
+		}
+		var rec transcriptRecord
+		if err := json.Unmarshal([]byte(trimmed), &rec); err != nil {
+			return false, false, false
+		}
+		if !rec.isAssistantTurn() {
+			return false, false, false
+		}
+		if !rec.isRateLimitRejection() {
+			return false, true, true
+		}
+		// A rejection older than the window is no longer evidence about now.
+		return rec.fresh(now, usageLimitMaxAge), true, true
+	}
 
 	for end := info.Size(); end > 0; {
 		start := end - chunk
 		if start < 0 {
 			start = 0
 		}
-		buf := make([]byte, end-start)
-		if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
+		n := end - start
+		if usageLimitScanObserver != nil {
+			usageLimitScanObserver(start, end)
+		}
+		if _, err := f.ReadAt(buf[:n], start); err != nil && err != io.EOF {
 			return false, false
 		}
-		data := append(buf, carry...)
-
-		lines := strings.Split(string(data), "\n")
-		// Unless this chunk starts at byte 0, its first line began earlier in the
-		// file and must not be parsed yet.
-		firstComplete := 0
-		if start > 0 {
-			firstComplete = 1
-			carry = []byte(lines[0])
-		} else {
-			carry = nil
-		}
-
-		for i := len(lines) - 1; i >= firstComplete; i-- {
-			line := strings.TrimSpace(lines[i])
-			if line == "" {
+		for i := n - 1; i >= 0; i-- {
+			if buf[i] != '\n' {
 				continue
 			}
-			var rec transcriptRecord
-			if err := json.Unmarshal([]byte(line), &rec); err != nil {
-				continue
+			if lim, o, decided := consider(start+i+1, lineEnd); decided {
+				return lim, o
 			}
-			if !rec.isAssistantTurn() {
-				continue
-			}
-			if !rec.isRateLimitRejection() {
-				return false, true
-			}
-			// A rejection older than the window is no longer evidence about now.
-			return rec.fresh(now, usageLimitMaxAge), true
+			lineEnd = start + i
 		}
 		end = start
+	}
+	// The first line of the file has no preceding newline to close it.
+	if lim, o, decided := consider(0, lineEnd); decided {
+		return lim, o
 	}
 	// The whole file was read and holds no main-conversation assistant turn.
 	return false, false
@@ -227,8 +265,8 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 // safe, and racing two real scans to exercise it is not something a test can do
 // deterministically. A scan may publish only if it is still the current claim AND
 // the instance is still bound to the session it read.
-func usageLimitPublishable(currentGen, scanGen uint64, currentSessionID, scanSessionID string) bool {
-	return currentGen == scanGen && currentSessionID == scanSessionID
+func usageLimitPublishable(currentGen, scanGen uint64, liveSessionID, scanSessionID string) bool {
+	return currentGen == scanGen && liveSessionID == scanSessionID
 }
 
 // usageLimitedNow reads the memo under the lock.
@@ -334,7 +372,11 @@ func (i *Instance) usageLimited() bool {
 	}
 
 	i.mu.Lock()
-	if usageLimitPublishable(i.usageLimitScanGen, gen, i.usageLimitSessionID, sessionID) {
+	// Compare against the LIVE ClaudeSessionID, not usageLimitSessionID. The memo
+	// key only changes when a mismatch is observed at claim time, so during an
+	// in-flight A→B rebind it still reads "A" — and a scan for A would publish onto
+	// an Instance already bound to B.
+	if usageLimitPublishable(i.usageLimitScanGen, gen, strings.TrimSpace(i.ClaudeSessionID), sessionID) {
 		i.usageLimitedCached = limited
 	} else {
 		// A newer claim or a rebind happened while this read was in flight, so this
