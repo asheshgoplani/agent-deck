@@ -446,11 +446,17 @@ type Instance struct {
 	spawnGenMu   sync.Mutex
 	spawnGenWake chan struct{}
 
-	// spawnWatchDone is closed by the current watcher when it returns. Teardown
-	// joins it (bounded) after bumping, so no watcher write can still be in
-	// flight once a deliberate stop/restart proceeds — a generation check alone
-	// only narrows that window to the gap between the check and the write.
-	spawnWatchDone chan struct{}
+	// spawnWatchDones holds one channel per watcher that has not returned yet,
+	// each closed by its own watcher on exit. Teardown joins them (bounded)
+	// after bumping, so no watcher write is still in flight once a deliberate
+	// stop/restart proceeds — a generation check alone only narrows that window
+	// to the gap between the check and the write.
+	//
+	// It is a slice, not a single channel: a rapid Start→Start can leave the
+	// previous watcher still finishing, and keeping only the newest channel
+	// would silently drop the older watcher — the one actually capable of
+	// recording a stale failure — from every future join.
+	spawnWatchDones []chan struct{}
 
 	// lastErrorCheck tracks when we last confirmed the session doesn't exist
 	// Used to skip expensive Exists() checks for ghost sessions (sessions in JSON but not in tmux)
@@ -552,37 +558,68 @@ func (i *Instance) newSpawnGenWatch() (uint64, <-chan struct{}, chan struct{}) {
 		close(i.spawnGenWake)
 	}
 	i.spawnGenWake = make(chan struct{})
-	i.spawnWatchDone = make(chan struct{})
-	return gen, i.spawnGenWake, i.spawnWatchDone
+	done := make(chan struct{})
+	// Keep every watcher that has not returned yet, dropping the ones that
+	// have, so the list stays bounded without ever forgetting a live watcher.
+	live := i.spawnWatchDones[:0]
+	for _, ch := range i.spawnWatchDones {
+		select {
+		case <-ch:
+		default:
+			live = append(live, ch)
+		}
+	}
+	i.spawnWatchDones = append(live, done)
+	return gen, i.spawnGenWake, done
 }
 
-// spawnWatchDrainTimeout bounds how long a teardown waits for a superseded
-// watcher to return. The bump wakes it immediately, so the only thing that can
-// take measurable time is a tmux call already in flight; the timeout exists so
-// a wedged tmux can never turn a stop into a hang.
+// spawnWatchDrainTimeout bounds how long a teardown waits for the watchers it
+// superseded to return. The bump wakes them immediately, so the only thing
+// that can take measurable time is a tmux call already in flight.
 const spawnWatchDrainTimeout = time.Second
 
-// bumpSpawnGenAndDrain bumps the generation and then waits — bounded by
-// spawnWatchDrainTimeout — for the watcher it just superseded to actually
-// return.
+// bumpSpawnGenAndDrain bumps the generation and then joins every watcher that
+// bump superseded, bounded overall by spawnWatchDrainTimeout.
 //
 // The bump alone is not enough for teardown. A watcher can pass its generation
 // check and then be descheduled a microsecond before its write; the bumping
 // goroutine would race ahead and tear down (in tests, remove the very $HOME the
-// watcher captured) while that write is still pending. Joining the watcher's
-// completion turns "the window is small" into "there is no window": once this
-// returns, the watcher has provably finished all of its I/O.
+// watcher captured) while that write is still pending. Joining the watchers'
+// completion closes that gap.
+//
+// The bump and the snapshot of pending watchers happen under a single
+// acquisition of spawnGenMu. Taking the lock twice would let a concurrent
+// Start slip in between and leave teardown joining the NEW watcher — which
+// this bump did not supersede and which may legitimately outlive the timeout —
+// while the watcher it did supersede is never waited for at all.
+//
+// The timeout is a deliberate trade, not a claim of completeness: a watcher
+// parked in a wedged tmux subprocess must not be able to turn a deliberate
+// stop into a hang, so on expiry teardown proceeds and the (already
+// generation-superseded, therefore write-suppressed on its next check) watcher
+// is left to finish on its own.
 func (i *Instance) bumpSpawnGenAndDrain() uint64 {
-	gen := i.bumpSpawnGen() // also wakes the watcher, so the join is short
 	i.spawnGenMu.Lock()
-	done := i.spawnWatchDone
+	gen := i.spawnGen.Add(1)
+	if i.spawnGenWake != nil {
+		close(i.spawnGenWake)
+		i.spawnGenWake = nil
+	}
+	pending := i.spawnWatchDones
+	i.spawnWatchDones = nil
 	i.spawnGenMu.Unlock()
-	if done == nil {
+
+	if len(pending) == 0 {
 		return gen
 	}
-	select {
-	case <-done:
-	case <-time.After(spawnWatchDrainTimeout):
+	deadline := time.NewTimer(spawnWatchDrainTimeout)
+	defer deadline.Stop()
+	for _, done := range pending {
+		select {
+		case <-done:
+		case <-deadline.C:
+			return gen
+		}
 	}
 	return gen
 }
