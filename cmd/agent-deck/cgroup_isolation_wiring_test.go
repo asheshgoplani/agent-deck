@@ -126,35 +126,38 @@ func TestLogCgroupIsolationDecision_WiredIntoBootstrap(t *testing.T) {
 	})
 }
 
-// terminateTUI shuts the started TUI subprocess down and reaps it, without
-// ever blocking indefinitely.
+// tuiTermGrace is how long the TUI's process group gets to exit on SIGTERM
+// before the unconditional SIGKILL sweep. It only affects cleanup latency —
+// every assertion has already been made by the time terminateTUI runs — so it
+// can be generous without making anything flaky.
+const tuiTermGrace = 2 * time.Second
+
+// terminateTUI tears the started TUI subprocess down and reaps it, leaving
+// nothing behind and never blocking indefinitely.
 //
-// SIGTERM goes to the whole process group (the child was started with
-// Setpgid) so lumberjack gets a chance to flush and any grandchild goes with
-// it. If the TUI declines to exit — a bubbletea program on TERM=dumb has no
-// obligation to — the wait would otherwise hang until the package's test
-// timeout with the subprocess still running, so escalate to SIGKILL after a
-// short grace. Wait() is called exactly once, on the goroutine that owns it,
-// and is what actually reaps the child rather than leaving a zombie.
+// Both signals go to the whole process group (the child was started with
+// Setpgid), and the SIGKILL sweep is UNCONDITIONAL rather than a fallback for
+// when the direct child outlives SIGTERM. Waiting only on the direct child
+// would declare success the moment it exits and silently strand any
+// grandchild that ignored SIGTERM — a leaked-process class this repo has been
+// burned by before.
+//
+// The ordering is what makes the sweep safe: the direct child is not reaped
+// until after the SIGKILL, so its pid — which is also this pgid, it being the
+// group leader — cannot be recycled in between, and neither signal can reach
+// an unrelated group. The final Wait is the only wait in the function and
+// follows an uncatchable SIGKILL, so it returns promptly; it is also what
+// actually reaps the child rather than leaving a zombie.
 func terminateTUI(cmd *exec.Cmd) {
 	if cmd.Process == nil {
 		return
 	}
-	// Signal first, start the waiter second: no reap can be in flight while
-	// the signal is being delivered, so the pgid cannot have been recycled
-	// under us. The later SIGKILL is likewise only reached while done is
-	// still open, i.e. while Wait has provably not returned.
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-	done := make(chan struct{})
-	go func() {
-		_, _ = cmd.Process.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return
-	case <-time.After(5 * time.Second):
-	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	<-done
+	pgid := cmd.Process.Pid
+	// Polite first, so lumberjack can flush and the TUI can restore state.
+	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+	time.Sleep(tuiTermGrace)
+	// Sweep: kills the TUI if it ignored SIGTERM, plus anything it spawned.
+	// ESRCH here just means the group is already empty.
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	_, _ = cmd.Process.Wait()
 }

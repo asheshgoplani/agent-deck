@@ -513,27 +513,38 @@ type Instance struct {
 // Replaces the direct i.spawnGen.Add(1) call at every Start/StartWithMessage/
 // Stop site so the wake-up is never forgotten at a new call site (#1775).
 func (i *Instance) bumpSpawnGen() uint64 {
-	gen := i.spawnGen.Add(1)
 	i.spawnGenMu.Lock()
+	defer i.spawnGenMu.Unlock()
+	// Increment under the same lock that publishes the wake, so a bump can
+	// never be observed as "channel closed but generation not yet advanced".
+	gen := i.spawnGen.Add(1)
 	if i.spawnGenWake != nil {
 		close(i.spawnGenWake)
 		i.spawnGenWake = nil
 	}
-	i.spawnGenMu.Unlock()
 	return gen
 }
 
-// spawnGenWakeChan returns the channel bumpSpawnGen closes on its next call,
-// lazily creating one if needed. watchForFastDeath selects on this alongside
-// its poll ticker so a deliberate Stop/Kill (or a superseding Start) wakes it
-// immediately rather than after up to one spawnFastDeathTick.
-func (i *Instance) spawnGenWakeChan() chan struct{} {
+// newSpawnGenWatch bumps the generation and hands back both the new generation
+// and the channel that the NEXT bump will close.
+//
+// It exists so the caller — not the watcher goroutine — subscribes to the wake.
+// If the watcher fetched its own channel after being started, a bump landing in
+// the gap between `go watchForFastDeath(...)` and that fetch would close a nil
+// (or already-replaced) channel, the watcher would install a fresh one, and the
+// supersession would only be noticed on the next spawnFastDeathTick — exactly
+// the up-to-250ms tail the wake channel exists to remove. Producing gen and the
+// channel together under one lock closes that gap: any bump ordered after this
+// call is guaranteed to close the very channel the watcher is selecting on.
+func (i *Instance) newSpawnGenWatch() (uint64, <-chan struct{}) {
 	i.spawnGenMu.Lock()
 	defer i.spawnGenMu.Unlock()
-	if i.spawnGenWake == nil {
-		i.spawnGenWake = make(chan struct{})
+	gen := i.spawnGen.Add(1)
+	if i.spawnGenWake != nil {
+		close(i.spawnGenWake)
 	}
-	return i.spawnGenWake
+	i.spawnGenWake = make(chan struct{})
+	return gen, i.spawnGenWake
 }
 
 // SandboxConfig holds per-session Docker sandbox settings.
@@ -3611,7 +3622,10 @@ func (i *Instance) Start() error {
 	// watcher is handed value snapshots + a supersede generation so it never
 	// touches i's mutex-guarded fields from its own goroutine.
 	if command != "" {
-		gen := i.bumpSpawnGen()
+		// gen AND the wake channel are both produced here, in the caller, so no
+		// bump can slip into the gap before the watcher subscribes (see
+		// newSpawnGenWatch).
+		gen, wake := i.newSpawnGenWatch()
 		// Resolve both write targets HERE, synchronously in the caller, not
 		// inside the goroutine: GetSessionIDLifecycleLogPath()/spawnFailureDir()
 		// read the live $HOME, and watchForFastDeath's goroutine is never
@@ -3621,7 +3635,7 @@ func (i *Instance) Start() error {
 		// calling goroutine) makes the watcher's writes land in the HOME that
 		// was live when this session started, never whichever HOME happens to
 		// be live when the ticker next fires.
-		go i.watchForFastDeath(command, gen, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
+		go i.watchForFastDeath(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -3882,10 +3896,10 @@ func (i *Instance) StartWithMessage(message string) error {
 
 	// #1580: fast-death watcher (sister path to Start()).
 	if command != "" {
-		gen := i.bumpSpawnGen()
-		// See the matching comment in Start(): resolve the write targets here,
-		// not inside the never-joined goroutine.
-		go i.watchForFastDeath(command, gen, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
+		gen, wake := i.newSpawnGenWatch()
+		// See the matching comment in Start(): resolve the write targets — and
+		// subscribe to the wake — here, not inside the never-joined goroutine.
+		go i.watchForFastDeath(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level

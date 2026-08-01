@@ -167,9 +167,18 @@ const (
 // stop or a restart/respawn bumps i.spawnGen, so a mismatch means this watcher
 // has been superseded and must exit quietly (#1580 data-race fix).
 //
-// bumpSpawnGen()'s wake channel (see instance.go) lets that supersession be
-// noticed immediately rather than only on the next spawnFastDeathTick poll —
-// see spawnGenWake's doc comment for why the up-to-one-tick tail mattered.
+// wake is the supersede channel, subscribed by the caller via
+// newSpawnGenWatch() before this goroutine starts (see instance.go). Closing
+// it lets a supersession be noticed immediately rather than only on the next
+// spawnFastDeathTick poll — see spawnGenWake's doc comment for why the
+// up-to-one-tick tail mattered.
+//
+// The generation is re-checked immediately before each write, not just once
+// per iteration: sess.Exists() shells out to tmux and can take tens of
+// milliseconds, and a Stop/Kill landing inside that call would otherwise be
+// observed as a vanished session — i.e. recorded as a spurious
+// spawn_died_fast for what was a deliberate teardown (and written into a HOME
+// the owning test may already be tearing down).
 //
 // lifecycleLogPath and failureDir are likewise passed by value rather than
 // resolved here from the live $HOME: this goroutine is never joined, so it
@@ -177,11 +186,10 @@ const (
 // finished and a later test has repointed $HOME. Resolving live at write
 // time would make the watcher write into whatever $HOME happens to be
 // current when it fires, not the one that was current when it was spawned.
-func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string) {
+func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string) {
 	if sess == nil {
 		return
 	}
-	wake := i.spawnGenWakeChan()
 	start := time.Now()
 	deadline := start.Add(spawnFastDeathWindow)
 	var lastSnapshot string
@@ -193,13 +201,13 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Sess
 		select {
 		case <-ticker.C:
 		case <-wake:
-			// bumpSpawnGen() closed this — a newer spawn or a deliberate
-			// stop happened. Re-fetch the (now possibly-replaced) wake
-			// channel so a subsequent bump can wake us again, then fall
-			// through to the generation check below, which will see the
-			// mismatch and return on this same iteration instead of
-			// waiting out the rest of the current tick interval.
-			wake = i.spawnGenWakeChan()
+			// A bump closed this — a newer spawn or a deliberate stop
+			// happened, so the generation check below is guaranteed to
+			// mismatch and return on this same iteration instead of waiting
+			// out the rest of the tick interval. Drop the channel so a
+			// closed-channel receive can never spin the loop if that
+			// invariant is ever weakened.
+			wake = nil
 		}
 
 		// A newer spawn or a deliberate stop bumped the generation — this
@@ -218,6 +226,10 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Sess
 				}
 			}
 			if time.Now().After(deadline) {
+				// Re-check: CapturePane above also shells out to tmux.
+				if i.spawnGen.Load() != gen {
+					return
+				}
 				// Survived the window: healthy start.
 				_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
 					InstanceID: id,
@@ -230,7 +242,17 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Sess
 			continue
 		}
 
-		// Session is gone and it was not a deliberate stop → fast death.
+		// Session is gone. Re-check the generation before concluding it was a
+		// fast death: killInternal/restart bump it BEFORE killing tmux, so a
+		// teardown that started while sess.Exists() was in flight is visible
+		// here even though it was not visible at the top of the iteration.
+		// Without this, the very window the bump-before-kill ordering exists
+		// to close would be reopened by the duration of the tmux call itself.
+		if i.spawnGen.Load() != gen {
+			return
+		}
+
+		// Not a deliberate stop → fast death.
 		elapsed := time.Since(start).Milliseconds()
 		rec := SpawnFailureRecord{
 			InstanceID:  id,
