@@ -80,16 +80,91 @@ func TestIssue1793_LargePayloadVisibleInPane_IsReportedTypedNotSubmitted(t *test
 	delivery, err := sendWithRetryTarget(mock, msg, true, sendRetryOptions{
 		maxRetries: 4, checkDelay: 0,
 	})
-	if err != nil {
-		t.Fatalf("a message visible in the pane must not be reported as lost: %v", err)
+	// Seen in the pane, but the agent never took it up: typed, NOT submitted,
+	// and NOT a success. Text sitting unsent in a composer is the reported
+	// bug; returning nil here would give the caller exit 0 and
+	// "success": true right next to "submitted": false.
+	if err == nil {
+		t.Fatal("issue #1793: a message that reached the pane but was never submitted must not report success")
 	}
-	// Seen in the pane, but the agent never took it up: typed, NOT submitted.
-	// Calling this "submitted" would be the original bug wearing a new status.
 	if delivery != deliveryTyped {
 		t.Fatalf("delivery: want %q, got %q", deliveryTyped, delivery)
 	}
 	if fields := (sendDeliveryResult{delivery: delivery}).jsonFields(); fields["submitted"] != false {
 		t.Fatalf("typed must report submitted=false in --json, got %v", fields["submitted"])
+	}
+}
+
+// TestIssue1793_ClaudePath_TypedButNeverSubmitted_IsNotSuccess is the Claude
+// half of the same defect. The Claude verification loop treated "the body is
+// visible in the pane" as delivery evidence and, at the end of its budget,
+// returned deliverySubmitted on the strength of it — re-certifying the exact
+// state #1793 is about, on the path most sessions actually use.
+//
+// Body visible, composer never shows an unsent marker, agent never goes
+// active: that is arrival without submission and must fail.
+func TestIssue1793_ClaudePath_TypedButNeverSubmitted_IsNotSuccess(t *testing.T) {
+	const msg = "please re-run the integration suite against staging"
+	// The body is on screen, but no composer marker and the status never
+	// leaves "waiting" — nothing ever showed the agent taking it up.
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{"some prior output\n" + msg + "\n"},
+	}
+
+	delivery, err := sendWithRetryTarget(mock, msg, false, sendRetryOptions{
+		maxRetries: 5, checkDelay: 0, verifyDelivery: true,
+	})
+	if err == nil {
+		t.Fatal("issue #1793: body text alone is arrival, not submission, and must not report success")
+	}
+	if delivery == deliverySubmitted {
+		t.Fatal("issue #1793: the Claude path must not promote visible body text to submitted")
+	}
+	if delivery != deliveryTyped {
+		t.Fatalf("delivery: want %q, got %q", deliveryTyped, delivery)
+	}
+}
+
+// TestIssue1793_ClaudePath_ActiveTransitionStillReportsSubmitted guards the
+// other direction: the fix above must not stop the Claude path recognising a
+// genuinely accepted turn.
+func TestIssue1793_ClaudePath_ActiveTransitionStillReportsSubmitted(t *testing.T) {
+	const msg = "please re-run the integration suite against staging"
+	mock := &mockSendRetryTarget{
+		statuses: []string{"active", "active"},
+		panes:    []string{""},
+	}
+
+	delivery, err := sendWithRetryTarget(mock, msg, false, sendRetryOptions{
+		maxRetries: 5, checkDelay: 0, verifyDelivery: true,
+	})
+	if err != nil {
+		t.Fatalf("an agent that went active accepted the turn: %v", err)
+	}
+	if delivery != deliverySubmitted {
+		t.Fatalf("delivery: want %q, got %q", deliverySubmitted, delivery)
+	}
+}
+
+// TestIssue1793_TypedIsAFailingExitNotASuccessfulOne pins the contract the
+// CLI exposes: JSON, exit code and human text must agree. `typed` carries
+// submitted=false, so it must also carry success=false and a nonzero exit.
+func TestIssue1793_TypedIsAFailingExitNotASuccessfulOne(t *testing.T) {
+	fields := (sendDeliveryResult{delivery: deliveryTyped}).jsonFields()
+	if fields["submitted"] != false {
+		t.Fatalf("typed must report submitted=false, got %v", fields["submitted"])
+	}
+	// The command maps a non-nil sendErr to ErrorWithData + os.Exit(1); the
+	// statuses that must travel that path are pinned here so a future edit
+	// cannot quietly route `typed` into the success branch.
+	for _, failing := range []string{deliveryTyped, deliveryNoEvidence, deliveryLineTooLong, deliveryTypedNotSubmitted} {
+		if failing == deliverySubmitted {
+			t.Fatalf("%q must never be treated as a successful delivery", failing)
+		}
+		if got := (sendDeliveryResult{delivery: failing}).jsonFields()["submitted"]; got != false {
+			t.Errorf("%q must report submitted=false, got %v", failing, got)
+		}
 	}
 }
 

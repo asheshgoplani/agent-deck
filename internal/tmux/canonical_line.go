@@ -3,6 +3,7 @@ package tmux
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -150,24 +151,54 @@ func (s *Session) paneLineDiscipline(target string) (lineDiscipline, error) {
 	return ld, nil
 }
 
-// longestLineBytes returns the length in bytes of the longest \n-delimited
-// line in content. Canonical buffering is per line, so this — not len(content)
-// — is the quantity that has to fit.
+// longestLineBytes returns the length in bytes of the longest line in content.
+// Canonical buffering is per line, so this — not len(content) — is the
+// quantity that has to fit.
+//
+// Both \n and \r end a line. A tty with ICRNL set (the default) turns an
+// incoming CR into NL before the line discipline sees it, so a CR-delimited or
+// CRLF payload is just as line-delimited as an LF one. Counting only \n would
+// measure a CR-delimited body as one enormous line and refuse a send that
+// would have delivered perfectly.
 func longestLineBytes(content string) int {
-	longest := 0
-	for {
-		i := strings.IndexByte(content, '\n')
-		if i < 0 {
-			if len(content) > longest {
-				longest = len(content)
+	longest, current := 0, 0
+	for i := 0; i < len(content); i++ {
+		if content[i] == '\n' || content[i] == '\r' {
+			if current > longest {
+				longest = current
 			}
-			return longest
+			current = 0
+			continue
 		}
-		if i > longest {
-			longest = i
-		}
-		content = content[i+1:]
+		current++
 	}
+	if current > longest {
+		longest = current
+	}
+	return longest
+}
+
+// PaneLineCapacity reports the largest single line, in bytes, that this
+// session's pane can currently accept, and whether that could be determined.
+//
+// A raw-mode reader has no line limit at all, so it reports math.MaxInt: the
+// caller's job is to distinguish "this pane cannot take a line that long" from
+// "this pane can take anything", and a raw pane is the second. A canonical
+// reader reports its buffer minus the byte the terminator needs. When the
+// discipline cannot be read at all the bool is false and the caller must fall
+// back to the universal floor rather than inventing a capacity.
+func (s *Session) PaneLineCapacity() (int, bool) {
+	ld, err := s.paneLineDiscipline(s.Name)
+	if err != nil {
+		return 0, false
+	}
+	if !ld.Canonical {
+		return math.MaxInt, true
+	}
+	if ld.MaxLine <= 0 {
+		return 0, false
+	}
+	return ld.MaxLine - 1, true
 }
 
 // runeSafeCut returns the largest cut point ≤ maxSize that does not land in

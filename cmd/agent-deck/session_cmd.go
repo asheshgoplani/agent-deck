@@ -2842,6 +2842,8 @@ func handleSessionSend(profile string, args []string) {
 			// left it. Retrying the same body is pointless; the actionable
 			// advice is to break the line or send a file reference.
 			out.ErrorWithData(fmt.Sprintf("message too long for '%s' to receive as one line: %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
+		case deliveryTyped:
+			out.ErrorWithData(fmt.Sprintf("message reached '%s' but was never confirmed submitted: %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
 		case deliveryNoEvidence:
 			out.ErrorWithData(fmt.Sprintf("message not delivered to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
 		default:
@@ -2998,12 +3000,13 @@ const (
 	// distinctive enough to look for in the pane.
 	deliveryUnverified = "unverified"
 	// deliveryTyped: the message body was observed reaching the target pane,
-	// but nothing proved the agent accepted it as a turn. Strictly better
-	// than the old blind "unverified" — the bytes demonstrably arrived — and
-	// strictly weaker than deliverySubmitted, which is the point: content
-	// sitting in a composer is not an accepted turn, and calling it one is
-	// how issue #1793 happened in the first place. Carries
-	// `"submitted": false` in --json so callers cannot mistake it.
+	// but nothing proved the agent accepted it as a turn. Content sitting in
+	// a composer is not an accepted turn, and calling it one is how issue
+	// #1793 happened in the first place — so this is a FAILURE: nonzero exit,
+	// `"success": false`, `"submitted": false`. It is distinct from
+	// deliveryTypedNotSubmitted, which is the stronger claim that the
+	// composer was still positively holding the message at the end of the
+	// bounded Enter retries.
 	deliveryTyped = "typed"
 	// deliveryLineTooLong: refused before typing anything because the pane's
 	// reader is in canonical mode and a payload line exceeds its line buffer
@@ -3384,11 +3387,26 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	fullResendCount := 0
 	// sawDeliveryEvidence flips true on any positive signal that the message
 	// reached the agent: an "active" status transition, an unsent-prompt
-	// composer marker, the message body appearing verbatim in the pane, or a
-	// successful full resend. When opts.verifyDelivery is set and this stays
-	// false for the entire budget, the function returns an error instead of
-	// silently succeeding (issue #876).
+	// composer marker, or the message body appearing verbatim in the pane.
+	// When opts.verifyDelivery is set and this stays false for the entire
+	// budget, the function returns an error instead of silently succeeding
+	// (issue #876).
+	//
+	// ARRIVAL IS NOT SUBMISSION. Two of those three signals — body text in the
+	// pane, and an unsent-prompt marker — say the bytes got there and say
+	// nothing about the agent accepting them. The unsent-prompt marker
+	// literally means the opposite. Only sawActiveAfterSend below is
+	// submission evidence, and conflating the two is what let this function
+	// return deliverySubmitted for a message still sitting in a composer:
+	// the exact phantom success of issue #1793, on the Claude path.
 	sawDeliveryEvidence := false
+	// sawUnsentMarker records that the composer was positively observed
+	// HOLDING this message at some point. Combined with the composer being
+	// clear at the end of the budget (checked below), held-then-cleared is
+	// genuine submission evidence: the agent took the message out of the
+	// composer. Body text merely being visible is not the same thing and must
+	// not be treated as if it were.
+	sawUnsentMarker := false
 	// Snippet of the message body to look for in captured pane content. Some
 	// TUI frameworks (and non-Claude tools) won't render a "[Pasted text …]"
 	// or "❯ <msg>" marker, so direct verbatim content is the only signal.
@@ -3410,6 +3428,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 
 		if unsentPromptDetected {
 			sawDeliveryEvidence = true
+			sawUnsentMarker = true
 			waitingNoMarkerChecks = 0
 			waitingNoActivityChecks = 0
 			activeChecks = 0
@@ -3504,9 +3523,26 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				"and the message body was not visible in the pane. Verify the inner agent is reading from "+
 				"its TTY before retrying", opts.maxRetries)
 		}
-		// Evidence was observed and the composer no longer holds the message:
-		// it was accepted at some point during the budget.
-		return deliverySubmitted, nil
+		if sawActiveAfterSend {
+			// The agent went active after the send: it took the message up.
+			return deliverySubmitted, nil
+		}
+		if sawUnsentMarker {
+			// The composer was observed holding this message and — per the
+			// typed_not_submitted check just above, which did not fire — is
+			// no longer holding it. Held-then-cleared means the agent took it
+			// out of the composer, which is submission.
+			return deliverySubmitted, nil
+		}
+		// The only thing ever observed was the body being visible somewhere in
+		// the pane. That proves the bytes arrived and proves nothing about the
+		// agent accepting them: the Enter can still have been swallowed. Do
+		// not promote arrival to submission — that promotion IS issue #1793.
+		return deliveryTyped, fmt.Errorf(
+			"message reached the pane but submission was never confirmed after %d checks (issue #1793): "+
+				"the body was visible but the agent never began processing it and the composer was never "+
+				"observed taking it. Treat this as NOT delivered — the submitting Enter may have been "+
+				"swallowed", opts.maxRetries)
 	}
 
 	// Legacy best-effort contract for paths that gate verification elsewhere.
@@ -3602,7 +3638,17 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 	// whole finding this fix rests on — so a 20 KB body of 80-byte lines is
 	// as deliverable as a one-liner, and failing it for its total size would
 	// contradict the transport in the same commit.
-	riskyLine := longestMessageLineBytes(message) > arrivalSafeLineBytes
+	//
+	// The comparison is against the pane's own capacity where that can be
+	// measured, and only against the universal floor when it cannot. The
+	// floor is what EVERY pane can take, not what THIS pane can take: a
+	// raw-mode pane has no line limit at all, so judging it by the floor
+	// would condemn perfectly deliverable sends.
+	longestLine := longestMessageLineBytes(message)
+	riskyLine := false
+	if longestLine > arrivalSafeLineBytes {
+		riskyLine = longestLine > maxDeliverableLineBytes(target)
+	}
 
 	token := collapseWhitespace(messageDeliveryToken(message))
 	if token == "" {
@@ -3616,7 +3662,7 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 					"canonical-mode reader can discard it along with the submitting Enter, and it carries no "+
 					"content distinctive enough to look for in the pane (issue #1793). Refusing to report "+
 					"success for a send nothing can confirm",
-				longestMessageLineBytes(message))
+				longestLine)
 		}
 		return deliveryUnverified, nil
 	}
@@ -3652,9 +3698,15 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 
 	if sawBody {
 		// The bytes demonstrably reached the pane and nothing showed the
-		// agent taking them up. Reported honestly as typed, never as
-		// submitted.
-		return deliveryTyped, nil
+		// agent taking them up. This is NOT a success: text sitting unsent in
+		// a composer is precisely the state issue #1793 reported as a false
+		// success, and returning nil here would hand the caller exit 0 and
+		// `"success": true` next to `"submitted": false`. Fail, so scripts and
+		// agents cannot read it as delivered.
+		return deliveryTyped, fmt.Errorf(
+			"message reached the pane but submission was never confirmed after %d checks (issue #1793): "+
+				"the body is visible but the agent never began processing it. Treat this as NOT delivered — "+
+				"the submitting Enter may have been swallowed", checks)
 	}
 
 	if riskyLine {
@@ -3663,22 +3715,53 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 				"agent showed no new activity after %d checks (issue #1793). A line that long is discarded "+
 				"outright — together with the submitting Enter — by a canonical-mode reader, so this is "+
 				"reported as a failure rather than as an unverified success",
-			longestMessageLineBytes(message), checks)
+			longestLine, checks)
 	}
 	return deliveryUnverified, nil
 }
 
-// longestMessageLineBytes is the length of the longest \n-delimited line of
-// message. Mirrors the quantity the tmux transport measures, because the
-// terminal limit this whole fix is about is per line, not per payload.
+// longestMessageLineBytes is the length of the longest line of message.
+// Mirrors the quantity the tmux transport measures, because the terminal
+// limit this whole fix is about is per line, not per payload. Both \n and \r
+// end a line: with ICRNL set (the tty default) an incoming CR becomes NL
+// before the line discipline sees it, so counting only \n would read a
+// CR-delimited body as one enormous line.
 func longestMessageLineBytes(message string) int {
 	longest := 0
-	for _, line := range strings.Split(message, "\n") {
+	for _, line := range strings.FieldsFunc(message, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}) {
 		if len(line) > longest {
 			longest = len(line)
 		}
 	}
 	return longest
+}
+
+// paneLineCapacityReporter is implemented by *tmux.Session. It is an optional
+// capability, discovered by type assertion, so the interface sendRetryTarget
+// stays small and existing fakes keep working: a target that cannot report a
+// capacity simply falls back to the universal floor.
+type paneLineCapacityReporter interface {
+	PaneLineCapacity() (int, bool)
+}
+
+// maxDeliverableLineBytes returns the longest single line this target can
+// accept. It prefers the pane's DETECTED capacity — a raw-mode pane has no
+// line limit and a Linux canonical pane holds four times what the floor
+// assumes — and only falls back to arrivalSafeLineBytes when the pane cannot
+// be probed. Without this, a 2000-byte line that delivers perfectly to any
+// raw-mode agent TUI would be reported as lost purely because 2000 > 1023.
+//
+// Only consulted when a line already exceeds the floor, so ordinary sends
+// never pay for the probe.
+func maxDeliverableLineBytes(target sendRetryTarget) int {
+	if reporter, ok := target.(paneLineCapacityReporter); ok {
+		if capacity, known := reporter.PaneLineCapacity(); known && capacity > 0 {
+			return capacity
+		}
+	}
+	return arrivalSafeLineBytes
 }
 
 // countMessageInPane reports how many times the message's distinctive token
