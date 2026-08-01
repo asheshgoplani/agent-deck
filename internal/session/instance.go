@@ -1160,6 +1160,21 @@ func (i *Instance) buildResolvedAccountHintExports() string {
 // (rather than relying on shell inheritance) so a child spawned from a
 // child carries its own profile and not a stale inherited one.
 func sessionProfileEnvValue() string {
+	return resolvedProcessProfile()
+}
+
+// resolvedProcessProfile returns the profile this process actually opened
+// storage under, routing through the same #1790 guard as the host's own
+// startup path (ResolveProfileForStorage) rather than a bare
+// GetEffectiveProfile(""). Any caller that uses a resolved profile name to
+// look up or select per-profile state (spawned-pane env, per-profile Codex
+// config, etc.) must go through this, not GetEffectiveProfile("") directly:
+// the guard falls the host back to the configured default when
+// CLAUDE_CONFIG_DIR infers a profile that doesn't exist, and
+// GetEffectiveProfile("") alone recomputes the rejected inferred name from
+// the same unchanged environment, bypassing the fallback (#1822 F1, and its
+// Codex-tool analogue in getCodexHomeDir/isCodexHomeExplicit below).
+func resolvedProcessProfile() string {
 	resolved, err := ResolveProfileForStorage("")
 	if err != nil {
 		sessionLog.Warn("resolve_profile_env_failed", slog.String("error", err.Error()))
@@ -2362,7 +2377,7 @@ func getCodexHomeDir() string {
 	}
 
 	if cfg, err := LoadUserConfig(); err == nil && cfg != nil {
-		profile := GetEffectiveProfile("")
+		profile := resolvedProcessProfile()
 		if profileDir := cfg.GetProfileCodexConfigDir(profile); profileDir != "" {
 			return profileDir
 		}
@@ -2386,7 +2401,7 @@ func isCodexHomeExplicit() bool {
 	if err != nil || cfg == nil {
 		return false
 	}
-	profile := GetEffectiveProfile("")
+	profile := resolvedProcessProfile()
 	if cfg.GetProfileCodexConfigDir(profile) != "" {
 		return true
 	}

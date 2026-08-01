@@ -376,7 +376,13 @@ func resolveClaudeConfigDir(opts resolveOpts) (path, source string) {
 	}
 
 	if userConfig != nil {
-		profile := GetEffectiveProfile("")
+		// #1822 F1-class: route through the process's resolved profile
+		// (the same #1790 guard/fallback the host storage layer used) so
+		// this last-resort per-profile config_dir lookup keys off the
+		// profile this process actually opened, not a raw
+		// GetEffectiveProfile("") recomputation that can still return an
+		// inferred-but-rejected CLAUDE_CONFIG_DIR-derived name.
+		profile := resolvedProcessProfile()
 		if profileDir := userConfig.GetProfileClaudeConfigDir(profile); profileDir != "" {
 			return profileDir, "profile"
 		}
