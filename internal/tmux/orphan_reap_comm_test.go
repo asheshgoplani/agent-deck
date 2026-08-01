@@ -51,12 +51,77 @@ func TestIsReapableTmuxClientComm(t *testing.T) {
 		{"tmuxp", "tmuxp", false},
 		{"empty", "", false},
 		{"unrelated", "bash", false},
+
+		// A tmux invoked under a longer argv[0] still names its role as long
+		// as "<progname>: <role>" survives the 15-char comm limit. The role
+		// token is what authorises the kill, not the program name, so these
+		// are reapable — see tmuxCommRole.
+		{"five-char progname keeps role", "tmuxx: client", true},
+		{"five-char progname server", "tmuxx: server", false},
+
+		// Measured, not assumed: invoking /usr/bin/tmux through a symlink
+		// named "tmux-3.5a" yields exactly this comm — the role token is gone
+		// entirely, not truncated to a prefix. tmux formats "<progname>:
+		// <role> (<socket>)", the kernel caps comm at 15 chars, and tmux then
+		// cuts the result back to its last space, which for a 9-char progname
+		// lands immediately after the colon.
+		//
+		// A SERVER under the same binary produces the identical string, so
+		// nothing here can tell the two apart. Refusing to match is the only
+		// safe answer: a false positive SIGKILLs a server and takes every
+		// session it hosts with it. agent-deck never spawns tmux this way
+		// (every call site is exec.Command("tmux", …), so argv[0] is the
+		// literal "tmux"), so no orphan of its own can land in this state.
+		{"renamed binary loses role", "tmux-3.5a:", false},
+		{"renamed binary loses role, newline", "tmux-3.5a:\n", false},
+		{"colon with no role", "tmux:", false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isReapableTmuxClientComm(tc.comm); got != tc.want {
 				t.Errorf("isReapableTmuxClientComm(%q) = %v, want %v", tc.comm, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsTruncatedTmuxComm pins which comm values the sweep must REPORT rather
+// than silently pass over.
+//
+// The original defect was not that the sweep killed the wrong thing — it was
+// that it killed nothing at all and said nothing about it, so two orphans burned
+// a core each for 14 hours with a healthy TUI running beside them. A comm whose
+// role token was lost to truncation puts the sweep back in exactly that state
+// for the affected process: it cannot be classified, so it cannot be reaped.
+// That is the right call, but it must be visible, not silent.
+func TestIsTruncatedTmuxComm(t *testing.T) {
+	tests := []struct {
+		name string
+		comm string
+		want bool
+	}{
+		// Role lost to truncation — unclassifiable, so worth reporting.
+		{"renamed binary", "tmux-3.5a:", true},
+		{"renamed binary with newline", "tmux-3.5a:\n", true},
+		{"bare colon", "tmux:", true},
+
+		// Classifiable: handled normally, nothing to report.
+		{"client", "tmux: client", false},
+		{"server", "tmux: server", false},
+		{"bare tmux", "tmux", false},
+		{"long progname keeping role", "tmuxx: client", false},
+
+		// Not tmux at all — the sweep skips these silently and always did.
+		{"bash", "bash", false},
+		{"empty", "", false},
+		{"unrelated with colon", "systemd:", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTruncatedTmuxComm(tc.comm); got != tc.want {
+				t.Errorf("isTruncatedTmuxComm(%q) = %v, want %v", tc.comm, got, tc.want)
 			}
 		})
 	}
