@@ -718,6 +718,69 @@ func isReapableTmuxClientComm(comm string) bool {
 	}
 }
 
+// reapableOneShotVerbs are the tmux subcommands reapOrphanedPollClients may
+// kill: the short-lived cadence queries and option writes agent-deck fires on a
+// timer, every one of which is safe to lose because its caller re-issues it on
+// the next tick. The set mirrors the poll/mutation lists that
+// TestPollCommandsAreBounded enforces deadlines for — same commands, same
+// reason: they run on a cadence, so they are the ones that leak.
+var reapableOneShotVerbs = map[string]struct{}{
+	"bind-key":         {},
+	"capture-pane":     {},
+	"detach-client":    {},
+	"display-message":  {},
+	"has-session":      {},
+	"kill-session":     {},
+	"list-clients":     {},
+	"list-panes":       {},
+	"list-sessions":    {},
+	"refresh-client":   {},
+	"set-option":       {},
+	"show-environment": {},
+	"show-option":      {},
+	"switch-client":    {},
+	"unbind-key":       {},
+}
+
+// neverReapVerbs are the subcommands that disqualify a process outright, even
+// if the same argv also carries a reapable verb (tmux accepts `;`-chained
+// commands, so both can appear). Each names a process whose death costs the
+// user something this sweep has no standing to spend:
+//
+//   - attach-session — an interactive client is the user's live view of a
+//     session, and a control-mode one belongs to a TUI. Orphaned control
+//     clients are reapStaleControlClients' job; it filters on
+//     client_control_mode and so cannot mistake a hand-run `tmux attach` for
+//     a leak. This sweep, matching only on comm + argv + parentage, can:
+//     isControlClientOrphan calls ANY non-agent-deck parent an orphan, so a
+//     client attached from the user's own shell qualifies while that shell is
+//     still alive.
+//   - new-session — a server inherits the creating client's comm ("tmux:
+//     client", set by proc_start before the fork) and argv until its own
+//     proc_start("server") runs after daemon(). A server killed in that window
+//     takes the session it was starting with it.
+var neverReapVerbs = map[string]struct{}{
+	"attach-session": {},
+	"new-session":    {},
+}
+
+// isReapableOneShotArgv reports whether a /proc/<pid>/cmdline names a one-shot
+// cadence command and nothing more dangerous. cmdline fields are NUL-separated
+// and NUL-terminated, so each argv element is compared whole — a session name
+// or path that merely contains a verb as a substring cannot match.
+func isReapableOneShotArgv(cmdline string) bool {
+	reapable := false
+	for _, field := range strings.Split(strings.TrimRight(cmdline, "\x00"), "\x00") {
+		if _, denied := neverReapVerbs[field]; denied {
+			return false
+		}
+		if _, ok := reapableOneShotVerbs[field]; ok {
+			reapable = true
+		}
+	}
+	return reapable
+}
+
 // reapOrphanedPollClients kills leaked one-shot tmux *command* clients — the
 // `list-clients` / `display-message` / `list-panes` / status `set-option`
 // invocations agent-deck fires on a cadence — that a previous run spawned and
@@ -735,7 +798,10 @@ func isReapableTmuxClientComm(comm string) bool {
 //   - it is a tmux CLIENT process (isReapableTmuxClientComm; the server
 //     renames itself to "tmux: server" and is never matched),
 //   - its argv targets an agent-deck session (contains SessionPrefix), so a
-//     user's unrelated tmux is never touched, and
+//     user's unrelated tmux is never touched,
+//   - its argv names a one-shot cadence verb and no attach/new-session verb
+//     (isReapableOneShotArgv), so neither a live interactive client nor a
+//     server still inside its startup rename window can be hit, and
 //   - it is a reparented orphan no longer owned by any live agent-deck TUI
 //     (isControlClientOrphan — its parentage check is client-type-agnostic
 //     despite the name). A live TUI's own in-flight poll has PPID == our PID,
@@ -768,6 +834,12 @@ func reapOrphanedPollClients() {
 		// "agentdeck_" target token regardless of separators.
 		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 		if err != nil || !strings.Contains(string(raw), SessionPrefix) {
+			continue
+		}
+		// Narrow comm+prefix down to the cadence commands this sweep exists
+		// for: an interactive attach and a server mid-startup both clear the
+		// checks above, and killing either costs the user real work.
+		if !isReapableOneShotArgv(string(raw)) {
 			continue
 		}
 		if !isControlClientOrphan(pid) {
