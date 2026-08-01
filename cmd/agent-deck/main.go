@@ -1309,9 +1309,9 @@ func handleAdd(profile string, args []string) {
 	attach := fs.Bool("attach", false, "Start and attach to the session immediately after creating it (requires an interactive terminal; not supported with --ssh)")
 
 	// Worktree flags
-	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch")
-	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
+	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch (not supported with --ssh)")
+	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch (not supported with --ssh)")
+	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree; not supported with --ssh)")
 	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
 
@@ -1418,7 +1418,8 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("  agent-deck add --worktree fix/bug-123 --new-branch /path/to/repo")
 		fmt.Println()
 		fmt.Println("SSH Examples:")
-		fmt.Println("  agent-deck add --ssh user@host --remote-path ~/project -c claude")
+		fmt.Println("  agent-deck add --ssh user@host --remote-path /home/user/project -c claude")
+		fmt.Println("  agent-deck add /home/user/project --ssh user@host -c claude   # positional path shortcut for --remote-path; must be absolute")
 		fmt.Println("  agent-deck add --ssh user@host -c claude -t \"remote-dev\"")
 	}
 
@@ -1566,10 +1567,18 @@ func handleAdd(profile string, args []string) {
 		// the documented `--ssh --remote-path` pattern) and fall back to CWD
 		// as the local placeholder, exactly as the no-positional-path case
 		// already does. Fixes asheshgoplani/agent-deck#1711 / #1710.
+		// A positional path is routed as the RAW argument (rawPathArg, before
+		// resolveAddPath's local ExpandPath/Abs above), never the already
+		// locally-resolved `path`: see resolveSSHAddPaths' doc comment for why
+		// local resolution of a remote path is never correct.
+		if explicitPathProvided && *sshRemotePath != "" {
+			fmt.Fprintf(os.Stderr, "warning: both a positional path (%q) and --remote-path (%q) were given; "+
+				"the positional path is discarded, --remote-path is used\n", rawPathArg, *sshRemotePath)
+		}
 		var localPlaceholder string
-		localPlaceholder, *sshRemotePath, err = resolveSSHAddPaths(explicitPathProvided, path, *sshRemotePath)
+		localPlaceholder, *sshRemotePath, err = resolveSSHAddPaths(explicitPathProvided, rawPathArg, *sshRemotePath)
 		if err != nil {
-			fmt.Printf("Error: failed to get current directory: %v\n", err)
+			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
 		path = localPlaceholder
@@ -1602,10 +1611,10 @@ func handleAdd(profile string, args []string) {
 		// register it with `agent-deck add --ssh <host> --remote-path <path>`.
 		// Tracking: asheshgoplani/agent-deck#1711 / #1710.
 		if *sshHost != "" {
-			fmt.Println("Error: -w/--worktree (and -b) cannot be combined with --ssh; agent-deck cannot create a git worktree on a remote host yet")
-			fmt.Println("Workaround: create the worktree on the remote host directly, then register it:")
-			fmt.Println("  ssh " + *sshHost + " \"cd <remote-repo> && git worktree add <remote-worktree-path> " + wtBranch + "\"")
-			fmt.Println("  agent-deck add --ssh " + *sshHost + " --remote-path <remote-worktree-path> ...")
+			fmt.Fprintln(os.Stderr, "Error: -w/--worktree (and -b) cannot be combined with --ssh; agent-deck cannot create a git worktree on a remote host yet")
+			fmt.Fprintln(os.Stderr, "Workaround: create the worktree on the remote host directly, then register it:")
+			fmt.Fprintln(os.Stderr, "  ssh "+*sshHost+" \"cd <remote-repo> && git worktree add <remote-worktree-path> "+wtBranch+"\"")
+			fmt.Fprintln(os.Stderr, "  agent-deck add --ssh "+*sshHost+" --remote-path <remote-worktree-path> ...")
 			os.Exit(1)
 		}
 		backend, err := detectAndCreateBackend(path)

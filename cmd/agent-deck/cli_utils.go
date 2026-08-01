@@ -233,16 +233,36 @@ func resolveAddPath(rawPathArg string) (string, error) {
 // session launched in the SSH login shell's default directory instead of the
 // registered worktree. Fixes asheshgoplani/agent-deck#1711 / #1710.
 //
+// rawPositionalPath must be the RAW positional argument, taken before
+// resolveAddPath runs session.ExpandPath + filepath.Abs on it: those
+// resolutions describe the controller machine, not the remote host, so
+// running them here would rewrite `~/x` or `./x` into a local filesystem
+// path (e.g. the controller's home directory or CWD) and ship that local
+// path to the remote shell as the session's working directory. wrapForSSH
+// also single-quotes SSHRemotePath verbatim before handing it to the remote
+// shell, so a stored `~/x` or `$VAR/x` reaches the remote host inert (the
+// remote shell does not expand a quoted `~` or `$VAR`); a non-absolute
+// remote path can never resolve correctly today, so it is refused outright
+// rather than stored and silently misinterpreted.
+//
 // Returns the local placeholder path (always CWD for --ssh sessions, used
 // only for local bookkeeping such as tmux pane naming, never launched into)
 // and the resolved remote path to store as Instance.SSHRemotePath.
-func resolveSSHAddPaths(explicitPathProvided bool, positionalPath, explicitRemotePath string) (localPlaceholder, remotePath string, err error) {
+func resolveSSHAddPaths(explicitPathProvided bool, rawPositionalPath, explicitRemotePath string) (localPlaceholder, remotePath string, err error) {
+	localPlaceholder, err = os.Getwd()
+	if err != nil {
+		return "", "", err
+	}
 	remotePath = explicitRemotePath
 	if explicitPathProvided && remotePath == "" {
-		remotePath = positionalPath
+		if !strings.HasPrefix(rawPositionalPath, "/") {
+			return "", "", fmt.Errorf("--ssh remote path must be absolute (got %q); "+
+				"agent-deck cannot resolve %q against the remote host's filesystem "+
+				"(no local ~ or $VAR expansion applies there)", rawPositionalPath, rawPositionalPath)
+		}
+		remotePath = rawPositionalPath
 	}
-	localPlaceholder, err = os.Getwd()
-	return localPlaceholder, remotePath, err
+	return localPlaceholder, remotePath, nil
 }
 
 // CLIOutput handles consistent output formatting across all CLI commands
