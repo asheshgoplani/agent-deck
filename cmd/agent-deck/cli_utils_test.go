@@ -265,13 +265,14 @@ func TestReorderArgsForFlagParsing_CmdAndGroup(t *testing.T) {
 
 func TestResolveSessionCommand(t *testing.T) {
 	tests := []struct {
-		name            string
-		raw             string
-		explicitWrapper string
-		wantTool        string
-		wantWrapper     string
-		wantNote        bool
-		wantRawCommand  bool
+		name                      string
+		raw                       string
+		explicitWrapper           string
+		wantTool                  string
+		wantWrapper               string
+		wantNote                  bool
+		wantRawCommand            bool
+		wantSubcommandPassthrough bool
 	}{
 		{
 			name:           "plain tool uses tool command",
@@ -290,12 +291,20 @@ func TestResolveSessionCommand(t *testing.T) {
 			wantRawCommand: false,
 		},
 		{
-			name:           "generic shell command kept raw",
-			raw:            "bash -lc 'echo hi'",
-			wantTool:       "shell",
-			wantWrapper:    "",
-			wantNote:       false,
-			wantRawCommand: true,
+			// A generic shell command is kept raw, but — unlike the
+			// subcommand-passthrough cases below — it never went through the
+			// claude/codex subcommand check at all, so it must NOT be marked
+			// SubcommandPassthrough (Claude review, PR #1821 HIGH #1: that
+			// flag is the provenance gate buildShellPassthroughCommand relies
+			// on, and it must stay false for anything resolveSessionCommand
+			// didn't actually validate).
+			name:                      "generic shell command kept raw",
+			raw:                       "bash -lc 'echo hi'",
+			wantTool:                  "shell",
+			wantWrapper:               "",
+			wantNote:                  false,
+			wantRawCommand:            true,
+			wantSubcommandPassthrough: false,
 		},
 		{
 			name:            "explicit wrapper wins",
@@ -313,34 +322,37 @@ func TestResolveSessionCommand(t *testing.T) {
 			// subcommand, silently demoting it to a positional argument of
 			// plain interactive claude. The subcommand-shaped first token
 			// routes the whole line through unmodified instead.
-			name:           "claude subcommand runs as-is, no wrapper",
-			raw:            "claude remote-control --name rc-test",
-			wantTool:       "shell",
-			wantWrapper:    "",
-			wantNote:       true,
-			wantRawCommand: true,
+			name:                      "claude subcommand runs as-is, no wrapper",
+			raw:                       "claude remote-control --name rc-test",
+			wantTool:                  "shell",
+			wantWrapper:               "",
+			wantNote:                  true,
+			wantRawCommand:            true,
+			wantSubcommandPassthrough: true,
 		},
 		{
 			// Any claude subcommand hits this, not just remote-control —
 			// confirms there is no per-subcommand special-casing.
-			name:           "different claude subcommand also runs as-is",
-			raw:            "claude mcp list",
-			wantTool:       "shell",
-			wantWrapper:    "",
-			wantNote:       true,
-			wantRawCommand: true,
+			name:                      "different claude subcommand also runs as-is",
+			raw:                       "claude mcp list",
+			wantTool:                  "shell",
+			wantWrapper:               "",
+			wantNote:                  true,
+			wantRawCommand:            true,
+			wantSubcommandPassthrough: true,
 		},
 		{
 			// Codex bot review (PR #1821 P2): "fork" was missing from
 			// codexKnownSubcommands, so agent-deck's flags were still
 			// injected ahead of it via the wrapper-suffix path. Pins the
 			// fix: a known codex subcommand runs as-is like any other.
-			name:           "codex fork subcommand runs as-is, no wrapper",
-			raw:            "codex fork abc123",
-			wantTool:       "shell",
-			wantWrapper:    "",
-			wantNote:       true,
-			wantRawCommand: true,
+			name:                      "codex fork subcommand runs as-is, no wrapper",
+			raw:                       "codex fork abc123",
+			wantTool:                  "shell",
+			wantWrapper:               "",
+			wantNote:                  true,
+			wantRawCommand:            true,
+			wantSubcommandPassthrough: true,
 		},
 		{
 			// Explicit wrapper still wins even for a subcommand-shaped
@@ -357,7 +369,7 @@ func TestResolveSessionCommand(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tool, command, wrapper, note, err := resolveSessionCommand(tt.raw, tt.explicitWrapper)
+			tool, command, wrapper, note, isPassthrough, err := resolveSessionCommand(tt.raw, tt.explicitWrapper)
 			if err != nil {
 				t.Fatalf("resolveSessionCommand returned unexpected error: %v", err)
 			}
@@ -377,6 +389,9 @@ func TestResolveSessionCommand(t *testing.T) {
 			if tt.wantRawCommand && command != tt.raw {
 				t.Fatalf("command = %q, want raw %q", command, tt.raw)
 			}
+			if isPassthrough != tt.wantSubcommandPassthrough {
+				t.Fatalf("isSubcommandPassthrough = %v, want %v", isPassthrough, tt.wantSubcommandPassthrough)
+			}
 		})
 	}
 }
@@ -388,7 +403,7 @@ func TestResolveSessionCommand(t *testing.T) {
 func TestResolveSessionCommand_RefusesUnparseableExtraArgs(t *testing.T) {
 	raw := `claude remote-control --name "unterminated`
 
-	_, _, _, _, err := resolveSessionCommand(raw, "")
+	_, _, _, _, _, err := resolveSessionCommand(raw, "")
 	if err == nil {
 		t.Fatalf("expected an error for unterminated quote in %q, got nil", raw)
 	}
@@ -398,7 +413,7 @@ func TestResolveSessionCommand_RefusesUnparseableExtraArgs(t *testing.T) {
 // subcommand-detection branch must never fire for the common, currently
 // working case of a plain "-c claude" invocation with no extra args.
 func TestResolveSessionCommand_PlainClaudeUnaffected(t *testing.T) {
-	tool, command, wrapper, note, err := resolveSessionCommand("claude", "")
+	tool, command, wrapper, note, _, err := resolveSessionCommand("claude", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -453,7 +468,7 @@ func TestResolveSessionCommand_CustomToolSubcommand_UsesWrapperSuffix(t *testing
 	// path — which was never actually broken for custom tools, since
 	// buildGenericCommand appends a tool's dangerous_flag at the very end of
 	// the command rather than injecting it ahead of a wrapper substitution.
-	tool, command, wrapper, note, err := resolveSessionCommand("reviewbot serve", "")
+	tool, command, wrapper, note, _, err := resolveSessionCommand("reviewbot serve", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -494,7 +509,7 @@ func TestResolveSessionCommand_PositionalPromptNotMisclassifiedAsSubcommand(t *t
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tool, _, wrapper, _, err := resolveSessionCommand(tt.raw, "")
+			tool, _, wrapper, _, _, err := resolveSessionCommand(tt.raw, "")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -534,7 +549,7 @@ func TestSplitShellTokens_TrailingBackslashRefused(t *testing.T) {
 // future change to the heuristic has to consciously update this pinned
 // expectation instead of silently drifting.
 func TestResolveSessionCommand_FlagThenSubcommand_KnownResidualGap(t *testing.T) {
-	tool, _, wrapper, _, err := resolveSessionCommand("claude --debug remote-control", "")
+	tool, _, wrapper, _, _, err := resolveSessionCommand("claude --debug remote-control", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

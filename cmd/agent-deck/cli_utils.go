@@ -125,11 +125,19 @@ func firstNonEmpty(values ...string) string {
 // Returns a non-nil err only when the extra-args portion of rawCommand can't be
 // tokenized unambiguously (e.g. an unterminated quote) — in that case agent-deck
 // refuses to guess flag placement rather than silently building a broken command.
-func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, command, wrapper, note string, err error) {
+// isSubcommandPassthrough reports whether toolName/command/wrapper came from
+// the no-flag-injection passthrough branch below (Tool="shell", the raw
+// command run verbatim). Callers must propagate it onto the created
+// Instance's SubcommandPassthrough field — see that field's doc for why:
+// it's the only thing that lets buildShellPassthroughCommand (instance.go)
+// tell "this session's command was explicitly validated as a claude/codex
+// subcommand invocation" apart from "an ordinary Tool==shell command that
+// merely mentions claude/codex" at spawn time (Claude review, PR #1821 HIGH #1).
+func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, command, wrapper, note string, isSubcommandPassthrough bool, err error) {
 	raw := strings.TrimSpace(rawCommand)
 	wrapper = strings.TrimSpace(explicitWrapper)
 	if raw == "" {
-		return "", "", wrapper, "", nil
+		return "", "", wrapper, "", false, nil
 	}
 
 	toolName = detectTool(raw)
@@ -141,7 +149,7 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 		if baseTool != "shell" {
 			tokens, tokenizeErr := splitShellTokens(extra)
 			if tokenizeErr != nil {
-				return "", "", "", "", fmt.Errorf(
+				return "", "", "", "", false, fmt.Errorf(
 					"could not parse extra arguments in --cmd %q (%v); agent-deck refuses "+
 						"to guess where its flags belong when quoting is ambiguous — use "+
 						"--wrapper to control placement explicitly, or wrap the whole "+
@@ -164,7 +172,7 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 						"the command as-is with no session/permission flag injection "+
 						"(those flags aren't valid after a subcommand)",
 					tokens[0], base)
-				return toolName, command, wrapper, note, nil
+				return toolName, command, wrapper, note, true, nil
 			}
 
 			toolName = baseTool
@@ -175,7 +183,7 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 			}
 			wrapper = strings.TrimSpace("{command} " + extra)
 			note = fmt.Sprintf("parsed --cmd as tool '%s' and forwarded extra args via wrapper", toolName)
-			return toolName, command, wrapper, note, nil
+			return toolName, command, wrapper, note, false, nil
 		}
 	}
 
@@ -184,7 +192,7 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 	} else {
 		command = raw
 	}
-	return toolName, command, wrapper, note, nil
+	return toolName, command, wrapper, note, false, nil
 }
 
 // claudeKnownSubcommands / codexKnownSubcommands are the real CLI subcommands

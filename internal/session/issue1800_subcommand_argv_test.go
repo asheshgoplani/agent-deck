@@ -115,6 +115,7 @@ func TestIssue1800_ClaudeSubcommand_RunsWithoutFlagInjection(t *testing.T) {
 	inst := NewInstanceWithTool("rc-collide", t.TempDir(), "shell")
 	inst.Command = "claude remote-control --name rc-test"
 	inst.Wrapper = ""
+	inst.SubcommandPassthrough = true
 
 	// buildShellPassthroughCommand is what Start()'s default case actually
 	// calls for a Tool=="shell" instance (instance.go) — exercising it here
@@ -211,10 +212,11 @@ func TestIssue1800_ShellPassthroughClaude_StripsTelegramEnv(t *testing.T) {
 	defer resetUserConfigCache(t, cfg)()
 
 	inst := &Instance{
-		Title:       "launch-child",
-		Tool:        "shell",
-		Command:     "claude remote-control --name rc-test",
-		ProjectPath: "/tmp",
+		Title:                 "launch-child",
+		Tool:                  "shell",
+		Command:               "claude remote-control --name rc-test",
+		ProjectPath:           "/tmp",
+		SubcommandPassthrough: true,
 	}
 
 	got := inst.buildEnvSourceCommand()
@@ -227,6 +229,25 @@ func TestIssue1800_ShellPassthroughClaude_StripsTelegramEnv(t *testing.T) {
 	plainShell := &Instance{Title: "plain", Tool: "shell", Command: "ls -la", ProjectPath: "/tmp"}
 	if got := plainShell.buildEnvSourceCommand(); strings.Contains(got, "TELEGRAM_STATE_DIR") {
 		t.Fatalf("a plain shell command must not get the claude-only TELEGRAM strip\nbuildEnvSourceCommand() = %q", got)
+	}
+
+	// Same Command text as inst above, but SubcommandPassthrough is unset —
+	// e.g. a pre-existing/TUI-created custom-command session that merely
+	// happens to run `claude remote-control ...` and was never routed
+	// through resolveSessionCommand's #1821 passthrough. This must NOT be
+	// treated as a claude spawn either: instInvokesClaudeBinary's whole-line
+	// MatchTool match previously misfired here too (Claude review, PR #1821
+	// MEDIUM #3 / same root cause as HIGH #1's retroactive-capture finding).
+	untaggedSameCommand := &Instance{
+		Title:       "untagged",
+		Tool:        "shell",
+		Command:     "claude remote-control --name rc-test",
+		ProjectPath: "/tmp",
+	}
+	if got := untaggedSameCommand.buildEnvSourceCommand(); strings.Contains(got, "TELEGRAM_STATE_DIR") {
+		t.Fatalf("a Tool==shell instance whose Command merely mentions claude, but was never "+
+			"routed through resolveSessionCommand's passthrough (SubcommandPassthrough unset), "+
+			"must not get the claude-only TELEGRAM strip\nbuildEnvSourceCommand() = %q", got)
 	}
 }
 
@@ -247,6 +268,7 @@ func TestIssue1800_ShellPassthroughCodex_GetsAgentdeckEnv(t *testing.T) {
 
 	inst := NewInstanceWithTool("codex-sub", t.TempDir(), "shell")
 	inst.Command = "codex mcp list"
+	inst.SubcommandPassthrough = true
 
 	cmd := inst.buildShellPassthroughCommand(inst.Command)
 	if !strings.Contains(cmd, "AGENTDECK_INSTANCE_ID="+inst.ID) {
@@ -298,6 +320,7 @@ func TestIssue1800_ShellPassthroughCodex_ShellEscapesTitle(t *testing.T) {
 	inst := NewInstanceWithTool("codex-sub", t.TempDir(), "shell")
 	inst.Title = "x$(touch " + sentinel + ")"
 	inst.Command = "codex mcp list"
+	inst.SubcommandPassthrough = true
 
 	cmd := inst.buildShellPassthroughCommand(inst.Command)
 	wrapped, _, err := inst.prepareCommand(cmd)
@@ -350,10 +373,11 @@ func TestIssue1821_ShellPassthroughClaude_HonorsConfiguredCommand(t *testing.T) 
 	defer resetUserConfigCache(t, cfg)()
 
 	inst := &Instance{
-		Title:       "launch-child",
-		Tool:        "shell",
-		Command:     "claude remote-control --name rc-test",
-		ProjectPath: "/tmp",
+		Title:                 "launch-child",
+		Tool:                  "shell",
+		Command:               "claude remote-control --name rc-test",
+		ProjectPath:           "/tmp",
+		SubcommandPassthrough: true,
 	}
 
 	got := inst.buildShellPassthroughCommand(inst.Command)
@@ -378,10 +402,11 @@ func TestIssue1821_ShellPassthroughCodex_HonorsConfiguredCommand(t *testing.T) {
 	defer resetUserConfigCache(t, cfg)()
 
 	inst := &Instance{
-		Title:       "codex-sub",
-		Tool:        "shell",
-		Command:     "codex mcp list",
-		ProjectPath: "/tmp",
+		Title:                 "codex-sub",
+		Tool:                  "shell",
+		Command:               "codex mcp list",
+		ProjectPath:           "/tmp",
+		SubcommandPassthrough: true,
 	}
 
 	got := inst.buildShellPassthroughCommand(inst.Command)
@@ -411,10 +436,11 @@ func TestIssue1821_ShellPassthroughClaude_NeverRewritesExplicitBinary(t *testing
 	defer resetUserConfigCache(t, cfg)()
 
 	inst := &Instance{
-		Title:       "canary-child",
-		Tool:        "shell",
-		Command:     "/opt/canary/claude remote-control --name rc-test",
-		ProjectPath: "/tmp",
+		Title:                 "canary-child",
+		Tool:                  "shell",
+		Command:               "/opt/canary/claude remote-control --name rc-test",
+		ProjectPath:           "/tmp",
+		SubcommandPassthrough: true,
 	}
 
 	got := inst.buildShellPassthroughCommand(inst.Command)
@@ -439,10 +465,11 @@ func TestIssue1821_ShellPassthroughCodex_NeverRewritesExplicitBinary(t *testing.
 	defer resetUserConfigCache(t, cfg)()
 
 	inst := &Instance{
-		Title:       "canary-codex",
-		Tool:        "shell",
-		Command:     "codex-canary mcp list",
-		ProjectPath: "/tmp",
+		Title:                 "canary-codex",
+		Tool:                  "shell",
+		Command:               "codex-canary mcp list",
+		ProjectPath:           "/tmp",
+		SubcommandPassthrough: true,
 	}
 
 	got := inst.buildShellPassthroughCommand(inst.Command)
@@ -476,10 +503,11 @@ func TestIssue1821_ShellPassthroughCodex_ExplicitBinarySkipsConfiguredHome(t *te
 	defer resetUserConfigCache(t, cfg)()
 
 	explicit := &Instance{
-		Title:       "canary-codex-home",
-		Tool:        "shell",
-		Command:     "codex-canary mcp list",
-		ProjectPath: "/tmp",
+		Title:                 "canary-codex-home",
+		Tool:                  "shell",
+		Command:               "codex-canary mcp list",
+		ProjectPath:           "/tmp",
+		SubcommandPassthrough: true,
 	}
 	got := explicit.buildShellPassthroughCommand(explicit.Command)
 	if strings.Contains(got, "CODEX_HOME=") {
@@ -488,10 +516,11 @@ func TestIssue1821_ShellPassthroughCodex_ExplicitBinarySkipsConfiguredHome(t *te
 	}
 
 	literal := &Instance{
-		Title:       "literal-codex-home",
-		Tool:        "shell",
-		Command:     "codex mcp list",
-		ProjectPath: "/tmp",
+		Title:                 "literal-codex-home",
+		Tool:                  "shell",
+		Command:               "codex mcp list",
+		ProjectPath:           "/tmp",
+		SubcommandPassthrough: true,
 	}
 	got = literal.buildShellPassthroughCommand(literal.Command)
 	if !strings.Contains(got, "CODEX_HOME=") {
@@ -516,11 +545,12 @@ func TestIssue1821_ShellPassthroughClaude_IncludesResolvedAccountHints(t *testin
 	defer resetUserConfigCache(t, cfg)()
 
 	inst := &Instance{
-		Title:       "launch-child",
-		Tool:        "shell",
-		Command:     "claude remote-control --name rc-test",
-		ProjectPath: "/tmp",
-		GroupPath:   "fleet/workers",
+		Title:                 "launch-child",
+		Tool:                  "shell",
+		Command:               "claude remote-control --name rc-test",
+		ProjectPath:           "/tmp",
+		GroupPath:             "fleet/workers",
+		SubcommandPassthrough: true,
 	}
 
 	got := inst.buildShellPassthroughCommand(inst.Command)
@@ -532,5 +562,154 @@ func TestIssue1821_ShellPassthroughClaude_IncludesResolvedAccountHints(t *testin
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %s in shell-routed claude subcommand command; got: %s", want, got)
 		}
+	}
+}
+
+// TestIssue1821_ShellPassthroughClaude_RetroactiveCaptureDenied is the
+// regression test for the Claude review HIGH #1 finding on PR #1821:
+// buildShellPassthroughCommand must return a Tool=="shell" instance's
+// Command byte-identical when SubcommandPassthrough is unset — regardless
+// of what the command text contains — because that's the only signal
+// distinguishing "resolveSessionCommand's #1800/#1821 passthrough actually
+// validated this" from "a pre-existing or TUI-created custom-command
+// session whose text happens to mention claude/codex". Before this fix, a
+// session created via the TUI's free-text custom-command dialog with
+// e.g. `claude --resume <id>` (persisted as Tool="shell" long before this
+// field existed) would be silently reclassified as a claude spawn on every
+// restart: its leading word "claude" would get swapped for a configured
+// account-switcher alias, and CLAUDE_CONFIG_DIR would be injected — running
+// the session under a DIFFERENT account than the one it was created under,
+// and breaking `--resume <id>` against the old account's session store.
+func TestIssue1821_ShellPassthroughClaude_RetroactiveCaptureDenied(t *testing.T) {
+	cfg := &UserConfig{
+		MCPs:       make(map[string]MCPDef),
+		Conductors: map[string]ConductorOverrides{},
+		Groups:     map[string]GroupSettings{},
+		Claude:     ClaudeSettings{Command: "cdw", ConfigDir: "/opt/configured-claude-home"},
+	}
+	defer resetUserConfigCache(t, cfg)()
+
+	// SubcommandPassthrough is deliberately left unset (false): this
+	// instance was never routed through resolveSessionCommand's passthrough
+	// branch, exactly like a session created before that field existed or
+	// via the TUI's free-text custom-command dialog.
+	inst := &Instance{
+		Title:       "pre-existing-custom-command",
+		Tool:        "shell",
+		Command:     "claude --resume abc123",
+		ProjectPath: "/tmp",
+	}
+
+	got := inst.buildShellPassthroughCommand(inst.Command)
+	if got != inst.Command {
+		t.Fatalf("a Tool==shell instance with SubcommandPassthrough unset must be returned "+
+			"byte-identical, regardless of what its Command mentions — no binary substitution, "+
+			"no CLAUDE_CONFIG_DIR, no AGENTDECK_* injection; got: %q, want: %q", got, inst.Command)
+	}
+}
+
+// TestIssue1821_ShellPassthroughSubcommand_WrapsInBashCForNonBashShells is
+// the regression test for the Claude review HIGH #2 finding on PR #1821: a
+// SubcommandPassthrough instance's built command contains bash/POSIX-only
+// syntax (inline `VAR=val` assignments, `export ... && `, `[ -f x ] && . x`)
+// that instance.prepareCommand must wrap in `bash -c '...'` — Tool=="shell"
+// instances are delivered via tmux send-keys into the user's actual
+// interactive login shell, which is not necessarily bash (e.g. fish, which
+// has no `export` builtin and rejects bare `VAR=val` assignment syntax).
+// Without the wrap, a fish user's pane received a fish syntax error instead
+// of running the subcommand. This test proves both the wrap shape AND that
+// the wrapped command still functionally reaches the target binary intact.
+func TestIssue1821_ShellPassthroughSubcommand_WrapsInBashCForNonBashShells(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	binDir, logPath := buildFakeBinArgvCapture(t, "codex")
+
+	inst := NewInstanceWithTool("fish-safety", t.TempDir(), "shell")
+	inst.Command = "codex mcp list"
+	inst.SubcommandPassthrough = true
+
+	cmd := inst.buildShellPassthroughCommand(inst.Command)
+	wrapped, _, err := inst.prepareCommand(cmd)
+	if err != nil {
+		t.Fatalf("prepareCommand: %v", err)
+	}
+
+	if !strings.HasPrefix(wrapped, "bash -c '") {
+		t.Fatalf("expected a SubcommandPassthrough instance's command to be wrapped in "+
+			"bash -c '...' so its bash-only injected syntax runs correctly under any login "+
+			"shell (e.g. fish); got: %s", wrapped)
+	}
+
+	got := runBuiltCommandCapturingArgv(t, wrapped, binDir, logPath)
+	want := "ARGV: mcp list"
+	if got != want {
+		t.Fatalf("fake codex received wrong argv through the bash -c wrap.\n  got:  %s\n  want: %s\n(command was: %s)", got, want, wrapped)
+	}
+}
+
+// TestIssue1821_ShellPassthroughClaude_ConfigDirNotForcedOntoAlias is the
+// regression test for the CodeRabbit review finding on PR #1821: when a
+// configured [claude].command (conductor/group/global, e.g. "cdw") is a
+// custom alias rather than the literal "claude" binary,
+// buildShellPassthroughCommand must NOT inject CLAUDE_CONFIG_DIR even if an
+// explicit config_dir also resolves for the instance — the alias is
+// designed to manage its own config-dir selection, mirroring
+// buildClaudeCommandWithMessage's own "the alias handles it" gate. Forcing
+// CLAUDE_CONFIG_DIR onto the alias broke parity between the direct claude
+// spawn path and this shell-passthrough path for any session combining a
+// configured account-switcher command with an explicit config_dir.
+func TestIssue1821_ShellPassthroughClaude_ConfigDirNotForcedOntoAlias(t *testing.T) {
+	cfg := &UserConfig{
+		MCPs:       make(map[string]MCPDef),
+		Conductors: map[string]ConductorOverrides{},
+		Groups:     map[string]GroupSettings{},
+		Claude:     ClaudeSettings{Command: "cdw", ConfigDir: "/opt/configured-claude-home"},
+	}
+	defer resetUserConfigCache(t, cfg)()
+
+	aliased := &Instance{
+		Title:                 "aliased-config-dir",
+		Tool:                  "shell",
+		Command:               "claude remote-control --name rc-test",
+		ProjectPath:           "/tmp",
+		SubcommandPassthrough: true,
+	}
+	got := aliased.buildShellPassthroughCommand(aliased.Command)
+	if strings.Contains(got, "CLAUDE_CONFIG_DIR=") {
+		t.Fatalf("configured CLAUDE_CONFIG_DIR must not be injected ahead of a configured "+
+			"[claude].command alias (\"cdw\") — the alias manages its own config dir; got: %s", got)
+	}
+	if !strings.HasSuffix(got, "cdw remote-control --name rc-test") {
+		t.Fatalf("expected the configured alias to still replace the literal \"claude\"; got: %s", got)
+	}
+
+	// Regression guard: with no configured alias (literal "claude" resolves
+	// to itself), an explicit config_dir must still be injected exactly as
+	// before.
+	cfg2 := &UserConfig{
+		MCPs:       make(map[string]MCPDef),
+		Conductors: map[string]ConductorOverrides{},
+		Groups:     map[string]GroupSettings{},
+		Claude:     ClaudeSettings{ConfigDir: "/opt/configured-claude-home"},
+	}
+	defer resetUserConfigCache(t, cfg2)()
+
+	literal := &Instance{
+		Title:                 "literal-config-dir",
+		Tool:                  "shell",
+		Command:               "claude remote-control --name rc-test",
+		ProjectPath:           "/tmp",
+		SubcommandPassthrough: true,
+	}
+	got = literal.buildShellPassthroughCommand(literal.Command)
+	if !strings.Contains(got, "CLAUDE_CONFIG_DIR=") {
+		t.Fatalf("configured CLAUDE_CONFIG_DIR must still be injected for the bare literal "+
+			"\"claude\" invocation with no configured alias; got: %s", got)
 	}
 }

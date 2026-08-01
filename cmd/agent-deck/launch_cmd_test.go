@@ -19,7 +19,7 @@ import (
 func TestLaunch_ToolWithFlags_FoldsExtrasIntoWrapper(t *testing.T) {
 	raw := "codex --dangerously-bypass-approvals-and-sandbox --session-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
-	tool, command, wrapper, note, err := resolveSessionCommand(raw, "")
+	tool, command, wrapper, note, _, err := resolveSessionCommand(raw, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestLaunch_ToolWithFlags_FoldsExtrasIntoWrapper(t *testing.T) {
 func TestLaunch_ToolWithSessionIdFlag_IsPreserved(t *testing.T) {
 	raw := "my-claude-wrapper --session-id abc-123 --dangerously-skip-permissions"
 
-	_, command, wrapper, _, err := resolveSessionCommand(raw, "")
+	_, command, wrapper, _, _, err := resolveSessionCommand(raw, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

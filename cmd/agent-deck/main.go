@@ -1449,7 +1449,7 @@ func handleAdd(profile string, args []string) {
 	sessionGroup := mergeFlags(*group, *groupShort)
 	explicitGroupProvided := strings.TrimSpace(sessionGroup) != ""
 	sessionCommandInput := mergeFlags(*command, *commandShort)
-	sessionCommandTool, sessionCommandResolved, sessionWrapperResolved, sessionCommandNote, cmdErr := resolveSessionCommand(sessionCommandInput, *wrapper)
+	sessionCommandTool, sessionCommandResolved, sessionWrapperResolved, sessionCommandNote, sessionCommandIsPassthrough, cmdErr := resolveSessionCommand(sessionCommandInput, *wrapper)
 	if cmdErr != nil {
 		fmt.Printf("Error: %v\n", cmdErr)
 		os.Exit(1)
@@ -1732,6 +1732,7 @@ func handleAdd(profile string, args []string) {
 	if sessionCommandInput != "" {
 		newInstance.Tool = firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
 		newInstance.Command = sessionCommandResolved
+		newInstance.SubcommandPassthrough = sessionCommandIsPassthrough
 	}
 
 	// Apply --channel flags (claude only — channels is a Claude Code CLI flag).

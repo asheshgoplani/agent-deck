@@ -133,6 +133,27 @@ type Instance struct {
 	// `--title-lock` on add/launch or `session set-title-lock`.
 	TitleLocked bool `json:"title_locked,omitempty"`
 
+	// SubcommandPassthrough, when true, marks a Tool=="shell" instance whose
+	// Command was routed here BY NAME — i.e. resolveSessionCommand
+	// (cmd/agent-deck/cli_utils.go) itself validated that the user's raw
+	// `-c`/`--cmd` input was a real `claude <subcommand>` /
+	// `codex <subcommand>` invocation (e.g. "claude remote-control --name X")
+	// and deliberately skipped agent-deck's own flag injection for it (#1800).
+	// Set exactly once, at creation, by the CLI `add`/`launch` call sites.
+	//
+	// buildShellPassthroughCommand (instance.go) gates its claude/codex
+	// env/binary substitution on this field rather than re-deriving intent
+	// from Command at every spawn. Without it, an ordinary Tool=="shell"
+	// session — including one created before this field existed, or a
+	// custom TUI command that merely mentions "claude"/"codex" — would be
+	// reclassified as a claude/codex spawn on every restart purely because
+	// MatchTool's builtin detection is a whole-line substring match, up to
+	// and including silently swapping its binary/account (Claude review,
+	// PR #1821 HIGH #1). This field is the one thing a re-derived string
+	// match can never fake: real provenance from the route that actually
+	// checked.
+	SubcommandPassthrough bool `json:"subcommand_passthrough,omitempty"`
+
 	// AutoName, when true, marks Title as a machine-generated adjective-noun
 	// handle (from a --quick / TUI-Q create). The TUI then displays the
 	// session's live Claude task description (tmux pane title) in place of the
@@ -3091,32 +3112,61 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 }
 
 // buildShellPassthroughCommand builds the launch command for a Tool=="shell"
-// instance. A genuinely plain/unrecognized shell command (e.g. "ls -la") is
-// returned byte-identical to the pre-existing behavior — this function only
-// changes anything for commands MatchTool recognizes as a known tool, so it
-// cannot regress an ordinary `-c 'some shell command'` session.
+// instance. Any instance that isn't SubcommandPassthrough — which is every
+// Tool=="shell" instance except the ones resolveSessionCommand itself just
+// routed here — is returned byte-identical to the pre-#1821 behavior.
 //
 // #1800/#1821: resolveSessionCommand (cmd/agent-deck/cli_utils.go) routes
-// "<tool> <subcommand> ..." invocations here — Tool="shell", Command=raw —
-// specifically to skip agent-deck's own --session-id/permission-flag
-// injection (those flags are never valid after a subcommand). The spawned
-// binary in that case is still claude or codex, though, so this restores
-// the same AGENTDECK_*/CLAUDE_CONFIG_DIR/CODEX_HOME/TELEGRAM-strip
-// treatment their own builders apply on an equivalent passthrough
-// (buildClaudeCommandWithMessage's custom-command branch,
-// buildCodexCommand's `trimmed != "codex"` branch) — without resurrecting
-// any of the claude/codex-specific status-detection or hook dispatch that
-// motivated routing through Tool="shell" in the first place (those stay
-// gated on IsClaudeCompatible/IsCodexCompatible(i.Tool) elsewhere, which is
-// false here). Every other builtin tool's own passthrough guard already
-// reduces to plain env-file sourcing (gemini, opencode, cursor, hermes), so
-// a recognized-but-not-claude-or-codex match falls to that same treatment
-// below.
+// "<tool> <subcommand> ..." invocations here — Tool="shell", Command=raw,
+// SubcommandPassthrough=true — specifically to skip agent-deck's own
+// --session-id/permission-flag injection (those flags are never valid after
+// a subcommand). The spawned binary in that case is still claude or codex,
+// though, so this restores the same AGENTDECK_*/CLAUDE_CONFIG_DIR/
+// CODEX_HOME/TELEGRAM-strip treatment their own builders apply on an
+// equivalent passthrough (buildClaudeCommandWithMessage's custom-command
+// branch, buildCodexCommand's `trimmed != "codex"` branch) — without
+// resurrecting any of the claude/codex-specific status-detection or hook
+// dispatch that motivated routing through Tool="shell" in the first place
+// (those stay gated on IsClaudeCompatible/IsCodexCompatible(i.Tool)
+// elsewhere, which is false here).
+//
+// The gate is on SubcommandPassthrough (explicit provenance recorded once
+// at creation), not on re-running MatchTool against Command at every spawn.
+// MatchTool's builtin claude/codex classification is a whole-line substring
+// match (detectSubstrings, toolregistry.go Match()), so classifying by
+// re-matching an arbitrary Tool=="shell" command at spawn time would also
+// fire for a pre-existing/TUI-created shell session whose command merely
+// CONTAINS "claude"/"codex" anywhere in the line — e.g. a custom command
+// `claude --resume <id>` persisted before this field existed, or an
+// everyday `tail -f ~/.claude/logs/x` / `cd /x && claude`. Routing those
+// through account/binary substitution on every future restart could
+// silently start them under a different account than the one they were
+// created under (Claude review, PR #1821 HIGH #1), and — for the compound
+// `cd /x && claude` shape — inject inline env assignments ahead of a `cd`
+// that a POSIX shell would simply ignore (Claude review, PR #1821 LOW #4).
+// SubcommandPassthrough sidesteps both: it is true only when
+// resolveSessionCommand already checked that the FIRST token of Command is
+// a real claude/codex subcommand invocation.
 func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
-	matched := MatchTool(baseCommand)
+	if !i.SubcommandPassthrough {
+		return baseCommand
+	}
+
+	// Classify off the FIRST TOKEN only, not MatchTool(baseCommand) against
+	// the whole line — see the function doc above (Claude review, PR #1821
+	// MEDIUM #3). SubcommandPassthrough guarantees fields[0] is the literal
+	// claude/codex tool name or an explicit path containing it (resolveSessionCommand
+	// validated that before setting the field), so this is strictly narrower
+	// than the whole-line match, never broader.
+	fields := strings.Fields(baseCommand)
+	if len(fields) == 0 {
+		return baseCommand
+	}
+	matched := MatchTool(fields[0])
 	if matched == "shell" {
-		// Not recognized as any known tool invocation — preserve the
-		// pre-#1821 behavior for ordinary shell commands exactly.
+		// Defensive: should be unreachable given SubcommandPassthrough's
+		// invariant, but never treat an unrecognized leading token as
+		// claude/codex-shaped.
 		return baseCommand
 	}
 
@@ -3126,8 +3176,22 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 	case "claude":
 		instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s ",
 			i.ID, shellescape.Quote(sessionProfileEnvValue()))
+		// claudeCmd/hasCustomClaudeCommand mirrors buildClaudeCommandWithMessage's
+		// own gate exactly (instance.go, "the alias handles it"): when a
+		// configured [claude].command (conductor/group/global, e.g. "cdw") is
+		// a custom alias rather than the literal binary, CLAUDE_CONFIG_DIR is
+		// skipped because the alias manages its own config dir selection.
+		// This shell-passthrough branch calls GetClaudeCommandForInstance(i)
+		// again below for substituteResolvedBinary, so the custom-command
+		// information was already available but previously unused for this
+		// gate — forcing CLAUDE_CONFIG_DIR onto an alias broke parity with
+		// the direct spawn path for any session combining a configured
+		// account-switcher command with an explicit config_dir (CodeRabbit
+		// review, PR #1821).
+		claudeCmd := GetClaudeCommandForInstance(i)
+		hasCustomClaudeCommand := claudeCmd != "claude"
 		configDirPrefix := ""
-		if IsClaudeConfigDirExplicitForInstance(i) {
+		if !hasCustomClaudeCommand && IsClaudeConfigDirExplicitForInstance(i) {
 			configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
 			// Shell-quote: configDir is a filesystem path and may contain
 			// spaces (e.g. a macOS $HOME with a space in the username).
@@ -3172,7 +3236,7 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 		resolvedHintPrefix := fmt.Sprintf(
 			"AGENTDECK_RESOLVED_CONFIG_DIR=%s AGENTDECK_RESOLVED_GROUP=%s AGENTDECK_RESOLVED_SOURCE=%s ",
 			shellescape.Quote(resolvedConfigDir), shellescape.Quote(i.GroupPath), shellescape.Quote(resolvedSource))
-		resolvedCommand := substituteResolvedBinary(baseCommand, "claude", GetClaudeCommandForInstance(i))
+		resolvedCommand := substituteResolvedBinary(baseCommand, "claude", claudeCmd)
 		return envPrefix + instanceIDPrefix + configDirPrefix + resolvedHintPrefix + execEnvPrefix + resolvedCommand
 	case "codex":
 		// AGENTDECK_TOOL uses `matched` ("codex"), not i.Tool (which is
@@ -9170,7 +9234,21 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	// base command from leaking into the outer shell parse, and — critically —
 	// keeps trailing wrapper-suffix flags INSIDE a single quoted argv so they
 	// reach the child process intact.
-	if i.hasEffectiveWrapper() {
+	//
+	// A SubcommandPassthrough Tool=="shell" instance needs the same wrap for
+	// a different reason even though it has no configured wrapper:
+	// buildShellPassthroughCommand injects bash/POSIX-only syntax ahead of
+	// the subcommand — `export VAR='val' && `, `[ -f x ] && . x && `, inline
+	// `VAR=val cmd` prefix assignments. Tool=="shell" instances are delivered
+	// via tmux send-keys into the user's actual interactive login shell
+	// (RunCommandAsInitialProcess is false for them), which is not
+	// necessarily bash — a fish user's pane would receive a fish syntax
+	// error ("Unsupported use of '='") instead of running the subcommand
+	// (Claude review, PR #1821 HIGH #2). Explicitly invoking `bash -c '...'`
+	// is itself valid syntax in any shell, so wrapping guarantees the
+	// injected bash syntax is interpreted by bash regardless of the user's
+	// default shell.
+	if i.hasEffectiveWrapper() || (i.Tool == "shell" && i.SubcommandPassthrough) {
 		escaped := strings.ReplaceAll(wrapped, "'", "'\"'\"'")
 		wrapped = fmt.Sprintf("bash -c '%s'", escaped)
 	}
