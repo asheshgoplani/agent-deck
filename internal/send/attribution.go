@@ -187,9 +187,20 @@ func composerBodyIsOurMessage(content, message string) bool {
 		return false
 	}
 
-	// Composer holds our message verbatim (or our message plus trailing
-	// characters the terminal echoed, e.g. a cursor glyph).
-	if promptBody == msg || strings.HasPrefix(promptBody, msg) {
+	// Composer holds our message verbatim, or our message plus a SHORT
+	// trailing addition the terminal echoed (e.g. a cursor glyph, a stray
+	// space). This bound is load-bearing, not cosmetic: an unbounded
+	// promptBody-has-prefix-msg check would itself be the #1778 finding-1
+	// bug it claims to fix above — "continue" is a prefix of the foreign
+	// autosuggestion "continue the refactor and delete the stale
+	// worktrees", so the two-line comment's promise only holds if the
+	// extra bytes beyond msg are capped to what a terminal actually adds,
+	// not left open to arbitrary foreign continuation text.
+	const maxTrailingEcho = 4
+	if promptBody == msg {
+		return true
+	}
+	if strings.HasPrefix(promptBody, msg) && len(promptBody)-len(msg) <= maxTrailingEcho {
 		return true
 	}
 

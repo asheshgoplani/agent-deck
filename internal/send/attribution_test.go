@@ -38,6 +38,29 @@ func TestEnterWouldSubmitForeignDraft_OwnMessageIsAttributable(t *testing.T) {
 	}
 }
 
+// #1778 review finding 1 (codex, round 2): composerBodyIsOurMessage's own
+// doc comment claims a foreign autosuggestion "continue the refactor and
+// delete the stale worktrees" must not be classified as attributable just
+// because it contains the short message "continue" — but the unbounded
+// strings.HasPrefix(promptBody, msg) check made exactly that claim false.
+func TestEnterWouldSubmitForeignDraft_ShortMessagePrefixOfLongForeignDraftBlocksEnter(t *testing.T) {
+	a := EnterAttribution{Message: "continue"}
+	composer := "\x1b[39m❯ continue the refactor and delete the stale worktrees"
+	if !a.EnterWouldSubmitForeignDraft(Captured(pane(composer)), stripANSI) {
+		t.Fatal("a foreign draft that merely starts with our short message must block a bare Enter")
+	}
+}
+
+func TestEnterWouldSubmitForeignDraft_OwnMessagePlusShortTerminalEchoIsAttributable(t *testing.T) {
+	// A cursor glyph or a stray padding character the terminal appends after
+	// our own message verbatim must not defeat the recovery Enter.
+	a := EnterAttribution{Message: attribMessage}
+	composer := "\x1b[39m❯ " + attribMessage + " "
+	if a.EnterWouldSubmitForeignDraft(Captured(pane(composer)), stripANSI) {
+		t.Fatal("our own message plus a short terminal-echoed trailer must not block the recovery Enter")
+	}
+}
+
 func TestEnterWouldSubmitForeignDraft_EmptyAndGhostComposersAreSafe(t *testing.T) {
 	for name, fixture := range map[string]string{
 		"empty":     fixtureEmptyComposer,
