@@ -1,9 +1,6 @@
 package logging
 
-import (
-	"testing"
-	"unsafe"
-)
+import "testing"
 
 func TestSanitizeValue(t *testing.T) {
 	cases := []struct {
@@ -36,26 +33,21 @@ func TestSanitizeValue(t *testing.T) {
 	}
 }
 
-// TestSanitizeValue_NeverAliasesItsInput pins the property that makes
-// SanitizeValue usable as a sanitizer barrier: no input, however clean, is
-// returned as-is. The value must always come from the builder.
+// TestSanitizeValue_CleanInputRoundTrips pins that removing the old
+// pass-through fast paths did not change results for input needing no
+// escaping: the value must still come back byte-identical, only now rebuilt
+// rather than returned as-is.
 //
-// This is not stylistic. While the function short-circuited with `return s`
-// for empty and already-clean inputs — behaviorally identical results —
-// dataflow analysis followed those returns and saw the tainted argument
-// reaching the log sink unchanged, so CodeQL's go/log-injection kept firing on
-// every call site regardless of how many were wrapped. Restoring a
-// pass-through would silently un-fix all of them, so assert against the string
-// data pointer, which equality alone cannot catch.
-func TestSanitizeValue_NeverAliasesItsInput(t *testing.T) {
-	for _, in := range []string{"", "my-session-42", "col1\tcol2", "sess-éè"} {
-		got := SanitizeValue(in)
-		if got != in {
+// The rebuild is what makes the function a sanitizer barrier — dataflow
+// analysis follows a `return s` and sees the tainted value reaching the log
+// sink untouched, which is why go/log-injection kept firing at every call site
+// while the fast paths existed. That property is enforced by CodeQL in CI
+// rather than asserted here: probing string backing storage would be testing
+// an allocation detail the language does not promise.
+func TestSanitizeValue_CleanInputRoundTrips(t *testing.T) {
+	for _, in := range []string{"", "my-session-42", "col1\tcol2", "sess-\u00e9\u00e8", "/path/to/thing:42"} {
+		if got := SanitizeValue(in); got != in {
 			t.Fatalf("SanitizeValue(%q) = %q, want the value unchanged", in, got)
-		}
-		if len(in) > 0 && unsafe.StringData(got) == unsafe.StringData(in) {
-			t.Fatalf("SanitizeValue(%q) returned its input rather than a built string; "+
-				"that pass-through defeats CodeQL sanitizer detection at every call site", in)
 		}
 	}
 }

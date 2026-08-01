@@ -142,19 +142,29 @@ func spawnHelperInOwnGroup(t *testing.T, role string, extraEnv ...string) *exec.
 // for the lifetime of the test binary, so "kill without wait" is only half a
 // cleanup.
 //
-// Both calls go through the os.Process handle rather than a raw
-// syscall.Kill(pid|-pid, ...). That is deliberate: os.Process remembers that
-// it has been waited on and returns ErrProcessDone without sending any
-// signal, so running after the caller's own reap is both idempotent and
-// incapable of signaling an unrelated process that has meanwhile recycled the
-// pid. (Raw pid/pgid signaling from a cleanup is precisely the friendly-fire
-// shape that has bitten this repo before.)
+// Helpers started in their own process group get a group-wide SIGKILL first,
+// so a descendant cannot survive the leader. That raw pgid signal is gated on
+// a liveness probe: os.Process.Signal reports ErrProcessDone once the process
+// has been waited on, and only while it has NOT been waited on is its pid —
+// which is also the pgid — guaranteed not to have been recycled. On the normal
+// path the caller's own cleanup has already reaped the child, the probe says
+// so, and no raw signal is sent at all. Signaling a pgid unconditionally from
+// a cleanup is precisely the friendly-fire shape that has bitten this repo
+// before, so the probe is load-bearing, not decoration.
 func registerOrphanReaper(t *testing.T, cmd *exec.Cmd) {
 	t.Helper()
 	if cmd.Process == nil {
 		t.Fatalf("registerOrphanReaper called before a successful cmd.Start()")
 	}
+	pid := cmd.Process.Pid
+	ownGroup := cmd.SysProcAttr != nil && cmd.SysProcAttr.Setpgid
 	t.Cleanup(func() {
+		// Signal(0) succeeds only while the process has not been reaped, which
+		// is exactly when the pid cannot have been handed to anyone else.
+		unreaped := cmd.Process.Signal(syscall.Signal(0)) == nil
+		if ownGroup && unreaped {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}
 		_ = cmd.Process.Kill()
 		// Must wait, or the killed child lingers as a zombie.
 		_, _ = cmd.Process.Wait()
