@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"al.essio.dev/pkg/shellescape"
 	"golang.org/x/sync/singleflight"
@@ -5074,24 +5075,41 @@ func (s *Session) SendKeysChunked(content string) error {
 
 // sendKeysChunkedToTarget is SendKeysChunked against an explicit tmux target.
 func (s *Session) sendKeysChunkedToTarget(target, content string) error {
-	// chunkSize must stay comfortably below the Linux tty line discipline's
-	// canonical-mode input buffer (N_TTY_BUF_SIZE / MAX_CANON = 4096 bytes,
-	// internal/tmux/N_TTY_BUF_SIZE). A single `tmux send-keys -l` write for a
-	// pane in canonical mode delivers its payload as one or more tty writes;
-	// once the in-kernel line buffer is within a few bytes of full, the
-	// terminating Enter that SendKeysAndEnter issues as a SEPARATE write right
-	// after can be silently dropped by the line discipline instead of queued —
-	// the composer shows the pasted text but the turn never submits, and the
-	// caller (which only observes the tmux command's own exit code) reports
-	// success. #1793 reproduced this exact "phantom send" at a 4095-byte
-	// payload: one byte under the 4096 canonical limit, i.e. every byte of
-	// slack was consumed by the content itself, leaving zero room for Enter.
-	// 1023 bytes is the measured-safe chunk size: it leaves >3KB of headroom
-	// in the canonical buffer for every chunk, including the last one that
-	// immediately precedes the separate Enter write in
-	// sendKeysAndEnterToTarget. This is a correctness stopgap; the strategic
-	// fix is the mailbox/receipt delivery model (tracked separately) that
-	// proves turn-submission instead of inferring it from transport success.
+	// #1793 reported a "phantom send": a 4095-byte Codex prompt was
+	// delivered as a single `tmux send-keys -l` write followed by a
+	// SEPARATE Enter write (sendKeysAndEnterToTarget), and the Enter was
+	// silently swallowed — the composer showed the pasted text but the
+	// turn never submitted, while the tmux command itself still exited 0.
+	//
+	// CAUTION for future maintainers: the original theory here was that
+	// this is the Linux tty line discipline's canonical-mode input buffer
+	// (N_TTY_BUF_SIZE / MAX_CANON = 4096 bytes) running out of headroom,
+	// and that splitting the payload into multiple sub-4096 writes fixes
+	// it. That theory does not hold up: canonical-mode buffering is keyed
+	// on the LINE, not the individual write() call — the kernel
+	// accumulates bytes across separate writes until it sees a line
+	// terminator, so a newline-free payload split into N chunks still
+	// occupies exactly as many bytes in the canonical line buffer as it
+	// did as one write, and the trailing Enter is exactly as much at risk
+	// (see internal/integration/conductor_test.go's chunked-delivery test,
+	// which relies on embedded newlines for this reason). Interactive TUI
+	// apps (Codex, Claude Code, vim) also typically run their pty in
+	// raw/cbreak mode via bracketed paste, where MAX_CANON does not apply
+	// at all — so the real constraint for the reported repro is more
+	// likely a buffer internal to the target application's own
+	// paste/input handling, or the kernel's tty flip-buffer, neither of
+	// which is characterized here.
+	//
+	// Splitting into chunkSize-byte literal writes with a short delay
+	// between them is a heuristic, defense-in-depth mitigation — smaller,
+	// paced writes give a bursty reader more chances to drain — NOT a
+	// proven fix for the exact reported mechanism. It has not been
+	// measured against the reported repro (Codex CLI 0.145.0 + tmux 3.6a):
+	// this host's policy forbids running live agent CLI sessions to
+	// validate it. Treat this as a correctness stopgap pending the
+	// mailbox/receipt delivery model (tracked separately, see #1793) that
+	// proves turn-submission instead of inferring it from transport
+	// success.
 	const chunkSize = 1023
 	const chunkDelay = 50 * time.Millisecond
 
@@ -5104,7 +5122,16 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 		if err := s.sendKeysToTarget(target, chunk); err != nil {
 			return fmt.Errorf("failed to send chunk %d/%d: %w", i+1, len(chunks), err)
 		}
-		if i < len(chunks)-1 {
+		// Skip the pacing delay after a chunk that already ends on a line
+		// terminator: splitIntoChunks prefers newline boundaries, so most
+		// chunks of a large multi-line payload end in "\n" and the
+		// receiving line discipline has already flushed that line without
+		// needing a wait. Only chunks produced by the no-newline hard-split
+		// fallback (the case this delay actually paces for) still sleep.
+		// Without this, large newline-free-per-chunk transfers pay a full
+		// chunkDelay per chunk: a 500KB payload split at 1023 bytes is ~489
+		// chunks, ~24s of sleeps versus ~6s at the old 4096-byte chunkSize.
+		if i < len(chunks)-1 && !strings.HasSuffix(chunk, "\n") {
 			time.Sleep(chunkDelay)
 		}
 	}
@@ -5113,7 +5140,11 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 
 // splitIntoChunks splits content into chunks of at most maxSize bytes,
 // preferring to split at newline boundaries. If a single line exceeds maxSize,
-// it is split at the byte boundary as a fallback.
+// it is split at the byte boundary as a fallback, backed off to the nearest
+// complete UTF-8 rune boundary so a chunk never ends (and the next chunk
+// never begins) mid-rune — content is UTF-8, and cutting a multibyte
+// character in half would hand tmux an invalid byte sequence in one argv and
+// an orphan continuation byte in the next.
 func splitIntoChunks(content string, maxSize int) []string {
 	if content == "" {
 		return nil
@@ -5138,9 +5169,24 @@ func splitIntoChunks(content string, maxSize int) []string {
 			chunks = append(chunks, remaining[:cutPoint+1])
 			remaining = remaining[cutPoint+1:]
 		} else {
-			// No newline found: hard split at maxSize
-			chunks = append(chunks, remaining[:maxSize])
-			remaining = remaining[maxSize:]
+			// No newline found: hard split at maxSize, backed off to the
+			// last complete rune boundary at or before maxSize. A UTF-8
+			// continuation byte has the high bits "10xxxxxx"
+			// (utf8.RuneStart reports false for those); walking back at
+			// most 3 bytes (the longest UTF-8 encoding is 4 bytes) always
+			// finds a rune start for well-formed UTF-8.
+			cut := maxSize
+			for cut > 0 && !utf8.RuneStart(remaining[cut]) {
+				cut--
+			}
+			if cut == 0 {
+				// No rune boundary found within the backoff window (e.g.
+				// malformed input) — fall back to the raw byte cut rather
+				// than emitting an empty chunk or looping forever.
+				cut = maxSize
+			}
+			chunks = append(chunks, remaining[:cut])
+			remaining = remaining[cut:]
 		}
 	}
 

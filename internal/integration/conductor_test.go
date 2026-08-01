@@ -179,9 +179,11 @@ func TestConductor_HeartbeatRoundTrip(t *testing.T) {
 	assert.Contains(t, content, heartbeatMsg, "pane should contain the full heartbeat message")
 }
 
-// TestConductor_ChunkedSendDelivery verifies that a message exceeding the 4096-byte
-// tmux chunk threshold is delivered intact via SendKeysChunked. The large payload is
-// split into multiple chunks with 50ms inter-chunk delay. (COND-04)
+// TestConductor_ChunkedSendDelivery verifies that a message exceeding the
+// 1023-byte tmux chunk threshold (see chunkSize in sendKeysChunkedToTarget,
+// internal/tmux/tmux.go) is delivered intact via SendKeysChunked. The large
+// payload is split into multiple chunks, each ending in a newline, so no
+// inter-chunk pacing delay applies. (COND-04)
 //
 // The payload uses embedded newlines so that each chunk is flushed through the
 // terminal line discipline independently (canonical mode buffers up to ~4096 bytes
@@ -202,7 +204,8 @@ func TestConductor_ChunkedSendDelivery(t *testing.T) {
 
 	// Build a multi-line message >4096 bytes that triggers chunked sending.
 	// Each line is short enough for the terminal line buffer, but the total
-	// payload exceeds the 4096-byte chunk threshold.
+	// payload exceeds the 1023-byte chunk threshold (well past it, so the
+	// exact threshold value doesn't need to track chunkSize here).
 	var lines []string
 	lines = append(lines, "CHUNK-START")
 	// Each line is ~82 bytes with newline. 55 lines = ~4510 bytes total.
@@ -227,8 +230,8 @@ func TestConductor_ChunkedSendDelivery(t *testing.T) {
 	assert.Contains(t, content, "CHUNK-END", "pane should contain end marker, proving full chunked delivery")
 }
 
-// TestConductor_SmallSendDelivery verifies that a message below the 4096-byte
-// threshold is delivered via the non-chunked (single SendKeys) path. (COND-04)
+// TestConductor_SmallSendDelivery verifies that a message below the 1023-byte
+// chunk threshold is delivered via the non-chunked (single SendKeys) path. (COND-04)
 func TestConductor_SmallSendDelivery(t *testing.T) {
 	h := NewTmuxHarness(t)
 
@@ -243,7 +246,7 @@ func TestConductor_SmallSendDelivery(t *testing.T) {
 	tmuxSess := inst.GetTmuxSession()
 	require.NotNil(t, tmuxSess, "tmux session should not be nil")
 
-	// Build a small message that stays under the 4096-byte threshold.
+	// Build a small message that stays under the 1023-byte chunk threshold.
 	smallMsg := "SMALL-MSG-" + strings.Repeat("A", 100) + "-END"
 	require.Less(t, len(smallMsg), 4096, "message must be under chunk threshold")
 
