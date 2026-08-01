@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -81,5 +83,68 @@ func TestClaudeCommandsExecSoAgentLeadsPane(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// "resume" splits on whether canResumeClaudeSession says yes: when it does the
+// command is `--resume <id>`, otherwise it falls back to `--session-id <id>`.
+// A fresh temp instance satisfies neither half of that gate, so the table above
+// only ever reaches the fallback. This sets up both halves so the --resume
+// branch is exercised too, and asserts the branch was actually taken rather
+// than passing quietly on the fallback again.
+//
+// Both halves are needed (#1815): the transcript on disk satisfies the
+// conversation-data check, and recording the id on the instance satisfies the
+// identity check, which refuses any candidate that is not the instance's own
+// recorded conversation. That mirrors a real explicit resume, where the id is
+// written to the instance before the command is built.
+func TestClaudeResumeWithConversationHistoryExecs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+
+	projectDir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(projectDir)
+	if err != nil {
+		resolved = projectDir
+	}
+
+	const sessionID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	transcriptDir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(resolved))
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		t.Fatalf("create transcript dir: %v", err)
+	}
+	// the check scans for a "sessionId" field, so an arbitrary JSON line is
+	// not enough to count as conversation history
+	transcript := filepath.Join(transcriptDir, sessionID+".jsonl")
+	line := `{"sessionId":"` + sessionID + `","type":"user","message":{"role":"user","content":"hi"}}` + "\n"
+	if err := os.WriteFile(transcript, []byte(line), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	inst := NewInstanceWithTool("test", projectDir, "claude")
+	inst.ClaudeSessionID = sessionID
+	opts := NewClaudeOptions(nil)
+	opts.SessionMode = "resume"
+	opts.ResumeSessionID = sessionID
+	inst.SetClaudeOptions(opts)
+
+	cmd := inst.buildClaudeCommand("claude")
+
+	if !strings.Contains(cmd, "--resume "+sessionID) {
+		t.Fatalf("fixture did not reach the --resume branch (still on the --session-id fallback), got: %s", cmd)
+	}
+	idx := strings.LastIndex(cmd, "exec ")
+	if idx < 0 {
+		t.Fatalf("resume-with-history must exec the agent so it leads the pane, got: %s", cmd)
+	}
+	rest := strings.TrimSpace(cmd[idx+len("exec "):])
+	if !strings.HasPrefix(rest, "claude") && !strings.HasPrefix(rest, "env ") {
+		t.Errorf("exec must hand off to the agent (optionally via env), got: %s", cmd)
+	}
+	for _, sep := range []string{";", "&&", "||", "|", "&"} {
+		if strings.Contains(rest, sep) {
+			t.Errorf("exec'd invocation must be the final statement, found %q after it: %s", sep, cmd)
+		}
 	}
 }
