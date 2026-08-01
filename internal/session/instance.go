@@ -3409,9 +3409,14 @@ func (i *Instance) adoptExplicitClaudeSessionID(reason string) bool {
 	}
 	if i.ClaudeSessionID != explicit {
 		i.ClaudeSessionID = explicit
-		sessionLog.Info("resume: id="+explicit+" reason="+reason,
-			slog.String("instance_id", i.ID),
-			slog.String("claude_session_id", explicit),
+		// #1815 / CodeQL go/log-injection: explicit is parsed out of this
+		// session's own command string, which is session-supplied; reason is
+		// always one of this file's own string-literal call sites, never a
+		// variable from outside, so it needs no sanitizing.
+		safeExplicit := logging.SanitizeValue(explicit)
+		sessionLog.Info("resume: id="+safeExplicit+" reason="+reason,
+			slog.String("instance_id", logging.SanitizeValue(i.ID)),
+			slog.String("claude_session_id", safeExplicit),
 			slog.String("reason", reason))
 	}
 	// #1815: vouch AFTER the assignment, so the suspicion cleared is the one
@@ -7530,21 +7535,29 @@ func (i *Instance) buildClaudeResumeCommand() string {
 			envPrefix, configDirPrefix, claudeCmd, fresh, extraFlags)
 	}
 
+	// #1815 / CodeQL go/log-injection: i.ClaudeSessionID, i.ID and
+	// i.ProjectPath are session-supplied, so every log call in this function
+	// — including the two Debug sibling calls below, not only the final Info
+	// record — sanitizes them. Computed once, before first use.
+	safeSID := logging.SanitizeValue(i.ClaudeSessionID)
+	safeInstID := logging.SanitizeValue(i.ID)
+	safePath := logging.SanitizeValue(i.ProjectPath)
+
 	useResume := canResumeClaudeSession(i, i.ClaudeSessionID)
 	if !useResume && i.ClaudeSessionID != "" {
 		time.Sleep(resumeCheckRetryDelay)
 		useResume = canResumeClaudeSession(i, i.ClaudeSessionID)
 		sessionLog.Debug(
 			"session_data_retry_after_wait",
-			slog.String("session_id", i.ClaudeSessionID),
+			slog.String("session_id", safeSID),
 			slog.Duration("wait", resumeCheckRetryDelay),
 			slog.Bool("use_resume_after_retry", useResume),
 		)
 	}
 	sessionLog.Debug(
 		"session_data_build_resume",
-		slog.String("session_id", i.ClaudeSessionID),
-		slog.String("path", i.ProjectPath),
+		slog.String("session_id", safeSID),
+		slog.String("path", safePath),
 		slog.Bool("use_resume", useResume),
 	)
 
@@ -7552,11 +7565,6 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// buildClaudeResumeCommand call — NOT sync.Once'd. See CONTEXT Decision 2.
 	// Every Start / StartWithMessage / Restart dispatch that routes through
 	// this helper produces exactly one "resume: id=<id> reason=<why>" line.
-	// Same sanitization as the identity-guard line above: the id and path are
-	// session-supplied (CodeQL go/log-injection).
-	safeSID := logging.SanitizeValue(i.ClaudeSessionID)
-	safeInstID := logging.SanitizeValue(i.ID)
-	safePath := logging.SanitizeValue(i.ProjectPath)
 	if useResume {
 		sessionLog.Info("resume: id="+safeSID+" reason=conversation_data_present",
 			slog.String("instance_id", safeInstID),

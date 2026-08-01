@@ -7252,6 +7252,12 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		// would otherwise override the extractGroupPath default with "".
 		inst := session.NewInstanceWithGroupAndTool(title, projectPath, h.resolveNewSessionGroup(), "claude")
 		inst.ClaudeSessionID = result.SessionID
+		// #1815: the user picked this exact conversation for this brand-new
+		// instance — an explicit ownership declaration, not a disk-scan
+		// guess. Route it through the chokepoint like every other explicit
+		// writer (launch_cmd.go, mutators.go) instead of relying on a fresh
+		// instance's taint map being empty by construction.
+		session.MarkClaudeSessionIDVerified(inst)
 
 		// Build resume command with config dir and permission flags
 		userConfig, _ := session.LoadUserConfig()
@@ -7281,6 +7287,10 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		} else {
 			freshID := session.NewClaudeSessionUUID()
 			inst.ClaudeSessionID = freshID
+			// #1815: a freshly minted id is vouched ownership, same as every
+			// other minted-id writer (Instance.replaceRefusedClaudeSessionID,
+			// buildClaudeCommandWithMessage's own mint path).
+			session.MarkClaudeSessionIDVerified(inst)
 			cmdBuilder.WriteString("claude --session-id ")
 			cmdBuilder.WriteString(freshID)
 		}
