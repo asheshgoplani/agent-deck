@@ -3308,15 +3308,22 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		opts.checkDelay = 0
 	}
 
-	// Baseline for the arrival check below. Taken BEFORE the send, because
-	// "the body is on screen" is not evidence on its own: re-sending an
-	// identical message (a heartbeat, an inbox nudge, a retry) would match
-	// the previous copy still sitting in the pane and certify a send that
-	// vanished. Only an INCREASE in occurrences is evidence. Costs one pane
-	// capture, and only on the path that needs it.
-	arrivalBaseline := 0
+	// Baseline for the arrival check below, taken BEFORE the send. Neither
+	// signal the check uses means anything as a snapshot — only as a change:
+	//
+	//   - "the body is on screen": re-sending an identical message (a
+	//     heartbeat, an inbox nudge, a retry) would match the previous copy
+	//     still sitting in the pane and certify a send that vanished.
+	//   - "the agent is active": a pane that was ALREADY busy is still busy a
+	//     moment later whether or not it received anything.
+	//
+	// Both would hand back a success for a message that never arrived, which
+	// is the exact phantom this is here to kill. Only a transition away from
+	// this baseline counts. Costs one pane capture plus one status read, and
+	// only on the path that needs them.
+	var arrivalBaseline sendArrivalBaseline
 	if skipVerify {
-		arrivalBaseline = countMessageInPane(target, message)
+		arrivalBaseline = captureArrivalBaseline(target, message)
 	}
 
 	if err := target.SendKeysAndEnter(message); err != nil {
@@ -3517,19 +3524,47 @@ const arrivalVerifyChecks = 10
 // signature and must not be reported as success.
 const arrivalStrictBytes = 1023
 
+// sendArrivalBaseline is the pre-send state the arrival check measures change
+// against. Every field here is meaningless on its own and meaningful only as a
+// delta (see the comment at the capture site).
+type sendArrivalBaseline struct {
+	// occurrences is how many copies of the message body were already
+	// visible in the pane before the send.
+	occurrences int
+	// wasActive reports whether the agent was already working before the
+	// send, in which case "it is active now" proves nothing.
+	wasActive bool
+}
+
+// captureArrivalBaseline snapshots the pane and status before a send.
+func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalBaseline {
+	base := sendArrivalBaseline{occurrences: countMessageInPane(target, message)}
+	if status, err := target.GetStatus(); err == nil && status == "active" {
+		base.wasActive = true
+	}
+	return base
+}
+
 // verifyContentArrival confirms that message reached the target pane, for
 // tools whose TUI exposes no Claude-shaped submit signal (issue #1793).
 //
-// Evidence is either the message body appearing in the captured pane, or the
-// session going "active" right after the send — an agent that started working
-// necessarily received what it is working on.
+// Evidence is a TRANSITION from the pre-send baseline, never a snapshot:
+// either a new copy of the body appearing in the pane, or the agent going
+// active when it was not active before the send — an idle agent that starts
+// working necessarily received what it started working on. An agent that was
+// already busy stays busy regardless, so that case proves nothing and is not
+// accepted.
 //
 // The pane comparison is whitespace-insensitive because a pane wraps long
 // lines at its width and capture-pane returns those wraps as newlines, so a
 // byte-exact search for a 64-character token fails on any message wider than
 // the remaining columns. Stripping whitespace from both sides restores the
 // contiguity the terminal broke.
-func verifyContentArrival(target sendRetryTarget, message string, opts sendRetryOptions, baseline int) (string, error) {
+//
+// A failed pre-send capture yields a zero baseline, which degrades the check
+// to plain containment — what it would have been anyway — rather than to a
+// stricter verdict the evidence doesn't support.
+func verifyContentArrival(target sendRetryTarget, message string, opts sendRetryOptions, baseline sendArrivalBaseline) (string, error) {
 	token := collapseWhitespace(messageDeliveryToken(message))
 	if token == "" {
 		// No distinctive token to look for (very short or all-whitespace
@@ -3547,11 +3582,13 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 	}
 
 	for i := 0; i < checks; i++ {
-		if countMessageInPane(target, message) > baseline {
+		if countMessageInPane(target, message) > baseline.occurrences {
 			return deliveryArrived, nil
 		}
-		if status, err := target.GetStatus(); err == nil && status == "active" {
-			return deliveryArrived, nil
+		if !baseline.wasActive {
+			if status, err := target.GetStatus(); err == nil && status == "active" {
+				return deliveryArrived, nil
+			}
 		}
 		if i < checks-1 {
 			time.Sleep(opts.checkDelay)
@@ -3560,9 +3597,10 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 
 	if len(message) >= arrivalStrictBytes {
 		return deliveryNoEvidence, fmt.Errorf(
-			"send not delivered: a %d-byte message never appeared in the pane and the agent never went active "+
-				"after %d checks (issue #1793). A payload this size is lost outright when the pane's reader "+
-				"buffers input per line, so this is reported as a failure rather than as an unverified success",
+			"send not delivered: a %d-byte message never appeared in the pane and the agent showed no new "+
+				"activity after %d checks (issue #1793). A payload this size is lost outright when the pane's "+
+				"reader buffers input per line, so this is reported as a failure rather than as an unverified "+
+				"success",
 			len(message), checks)
 	}
 	return deliveryUnverified, nil

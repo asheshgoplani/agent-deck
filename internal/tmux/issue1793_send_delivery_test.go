@@ -200,9 +200,18 @@ func TestIssue1793_CanonicalPane_OverLimitLineIsMeasuredLostThenRefused(t *testi
 	if err := lost.sendEnterRawToTarget(lost.Name); err != nil {
 		t.Fatalf("raw transport Enter: %v", err)
 	}
-	if got := awaitBytes(lostOut, 1, 3*time.Second); len(got) != 0 {
-		t.Fatalf("expected the canonical buffer to discard a %d-byte line, but %d bytes arrived; "+
-			"this platform's limit is not %d and the constant needs re-measuring", len(body), len(got), limit)
+	// The invariant is "this line does not arrive as a submitted line", not
+	// "nothing arrives" — kernels lose it differently and both losses are the
+	// #1793 phantom. macOS discards the whole overflowing line, so the reader
+	// sees 0 bytes. Linux hands over the 4096 bytes it buffered and eats the
+	// terminator, so the reader sees a truncated body and no Enter, and the
+	// turn never starts. Asserting the macOS shape specifically is what failed
+	// this test on ubuntu-latest.
+	if got := awaitBytes(lostOut, len(body)+1, 3*time.Second); len(got) == len(body)+1 {
+		t.Fatalf("expected a %d-byte line to be unsubmittable through a %d-byte canonical buffer, "+
+			"but the reader received the whole body AND the terminator (%d bytes); "+
+			"this platform's limit is not %d and the constant needs re-measuring",
+			len(body), limit, len(got), limit)
 	}
 
 	// --- the fix ---------------------------------------------------------

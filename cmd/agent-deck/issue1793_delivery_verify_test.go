@@ -118,9 +118,11 @@ func TestIssue1793_IdenticalMessageAlreadyOnScreen_IsNotEvidence(t *testing.T) {
 // never echoes the body.
 func TestIssue1793_LargePayload_AgentGoingActiveCountsAsArrival(t *testing.T) {
 	msg := bigMessage(4095)
+	// Index 0 is the pre-send baseline: the agent was idle, so going active
+	// afterwards is a transition attributable to this send.
 	mock := &mockSendRetryTarget{
-		statuses: []string{"active"},
-		panes:    []string{"thinking…\n"},
+		statuses: []string{"waiting", "active"},
+		panes:    []string{"❯ \n", "thinking…\n"},
 	}
 
 	delivery, err := sendWithRetryTarget(mock, msg, true, sendRetryOptions{
@@ -131,6 +133,32 @@ func TestIssue1793_LargePayload_AgentGoingActiveCountsAsArrival(t *testing.T) {
 	}
 	if delivery != deliveryArrived {
 		t.Fatalf("delivery: want %q, got %q", deliveryArrived, delivery)
+	}
+}
+
+// TestIssue1793_AlreadyActiveAgent_IsNotEvidenceOfArrival is the second half
+// of the same trap as the leftover-copy test, and the more dangerous one: a
+// pane that was ALREADY working is still working a moment later whether or not
+// it received anything. Accepting "it is active now" as proof would hand back
+// success for a message that vanished into a busy agent — the #1793 phantom,
+// reintroduced through the status signal instead of the pane signal. Only a
+// transition from not-active to active counts.
+func TestIssue1793_AlreadyActiveAgent_IsNotEvidenceOfArrival(t *testing.T) {
+	msg := bigMessage(4095)
+	// Busy before the send, busy throughout, and the body never appears.
+	mock := &mockSendRetryTarget{
+		statuses: []string{"active"},
+		panes:    []string{"thinking…\n"},
+	}
+
+	delivery, err := sendWithRetryTarget(mock, msg, true, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0,
+	})
+	if err == nil {
+		t.Fatal("an agent that was already busy before the send does not prove the send arrived")
+	}
+	if delivery != deliveryNoEvidence {
+		t.Fatalf("delivery: want %q, got %q", deliveryNoEvidence, delivery)
 	}
 }
 
