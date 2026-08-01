@@ -549,10 +549,10 @@ func TestOpenPinnedDir_RefusesSymlinkedComponentInsideProject(t *testing.T) {
 	}
 	defer p.Close()
 
-	if _, err := p.openPinnedDir(filepath.FromSlash(projectClaudeSkillsDir), false); err == nil {
+	if _, _, err := p.openPinnedDir(filepath.FromSlash(projectClaudeSkillsDir), false); err == nil {
 		t.Fatalf("expected pinned open to refuse a symlinked component")
 	}
-	if _, err := p.openPinnedDir(filepath.FromSlash(projectClaudeSkillsDir), true); err == nil {
+	if _, _, err := p.openPinnedDir(filepath.FromSlash(projectClaudeSkillsDir), true); err == nil {
 		t.Fatalf("expected pinned open (create) to refuse a symlinked component")
 	}
 }
@@ -575,7 +575,7 @@ func TestOpenTargetParent_AllowsRealManagedDirAndPoolLink(t *testing.T) {
 	defer p.Close()
 
 	targetRel := buildProjectSkillTargetPath(projectClaudeSkillsDir, "my-skill")
-	parent, name, err := p.openTargetParent(targetRel, true)
+	parent, name, _, err := p.openTargetParent(targetRel, true)
 	if err != nil {
 		t.Fatalf("expected managed dir to be created and pinned, got: %v", err)
 	}
@@ -844,5 +844,95 @@ func TestRemovePinned_RemovesTreeWithoutFollowingLinks(t *testing.T) {
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Fatalf("removal followed a symlink out of the project: %v", err)
+	}
+}
+
+// TestAliasRegisteredSourceRoot_AttachMigrateAndHeal is the regression test for
+// sources registered through a symlink alias (/alias/pool -> /real/pool), which
+// is a normal local setup. Physical link destinations never match a lexical
+// registered root, so attach worked but migration from the managed link and
+// healing of a dangling attachment silently failed. All three paths are pinned
+// here.
+func TestAliasRegisteredSourceRoot_AttachMigrateAndHeal(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	root := t.TempDir()
+	realPool := filepath.Join(root, "real-pool")
+	writeSkillDir(t, realPool, "lint", "lint", "Linting best practices")
+	aliasPool := filepath.Join(root, "alias-pool")
+	if err := os.Symlink(realPool, aliasPool); err != nil {
+		t.Skipf("symlink not supported in this environment: %v", err)
+	}
+
+	// Registered through the ALIAS, while the filesystem answers physically.
+	if err := SaveSkillSources(map[string]SkillSourceDef{
+		"pool": {Path: aliasPool, Enabled: boolPtr(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
+
+	projectPath := t.TempDir()
+
+	// 1. Attach.
+	if _, err := AttachSkillToProject(projectPath, "claude", "lint", "pool"); err != nil {
+		t.Fatalf("attach from alias-registered source failed: %v", err)
+	}
+	claudeEntry := filepath.Join(projectPath, ".claude", "skills", "lint")
+	if _, err := os.Stat(filepath.Join(claudeEntry, "SKILL.md")); err != nil {
+		t.Fatalf("expected attached skill content: %v", err)
+	}
+
+	// 2. Migrate from the managed link (recorded source unavailable).
+	stale := SkillCandidate{
+		ID:         buildSkillID("pool", "lint"),
+		Name:       "lint",
+		Source:     "pool",
+		SourcePath: filepath.Join(aliasPool, "gone-away"),
+		EntryName:  "lint",
+		Kind:       "dir",
+	}
+	if err := ApplyProjectSkills(projectPath, "codex", []SkillCandidate{stale}); err != nil {
+		t.Fatalf("migration from alias-registered managed link failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(projectPath, ".agents", "skills", "lint", "SKILL.md")); err != nil {
+		t.Fatalf("expected migrated skill content: %v", err)
+	}
+
+	// 3. Heal a dangling attachment whose link points at the alias-registered
+	//    source: it must count as ABSENT so attach rematerializes it.
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		t.Fatalf("openProjectRoot: %v", err)
+	}
+	defer p.Close()
+
+	agentsEntry := filepath.Join(projectPath, ".agents", "skills", "lint")
+	if err := os.RemoveAll(agentsEntry); err != nil {
+		t.Fatalf("clear migrated entry: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(aliasPool, "lint"), agentsEntry); err != nil {
+		t.Fatalf("install alias pool link: %v", err)
+	}
+	exists, err := p.targetExists(buildProjectSkillTargetPath(projectAgentsSkillsDir, "lint"), filepath.Join(aliasPool, "lint"))
+	if err != nil {
+		t.Fatalf("targetExists failed: %v", err)
+	}
+	if !exists {
+		t.Fatalf("live alias-registered pool link must count as present")
+	}
+
+	if err := os.Remove(agentsEntry); err != nil {
+		t.Fatalf("remove link: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(aliasPool, "vanished"), agentsEntry); err != nil {
+		t.Fatalf("install dangling alias link: %v", err)
+	}
+	exists, err = p.targetExists(buildProjectSkillTargetPath(projectAgentsSkillsDir, "lint"), filepath.Join(aliasPool, "vanished"))
+	if err != nil {
+		t.Fatalf("targetExists failed: %v", err)
+	}
+	if exists {
+		t.Fatalf("dangling alias-registered link must count as absent so it can heal")
 	}
 }
