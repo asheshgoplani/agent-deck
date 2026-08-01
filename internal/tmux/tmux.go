@@ -1876,6 +1876,34 @@ func (s *Session) SetEnvironment(key, value string) error {
 	return err
 }
 
+// UnsetEnvironment removes an environment variable from this tmux session's
+// environment table (`set-environment -u`), so it is no longer inherited by
+// panes/processes tmux spawns afterward. Used to clear a stale value set by
+// a previous SetEnvironment call once the condition that set it no longer
+// applies (#1822 F7) — e.g. CLAUDE_CONFIG_DIR after a session's tool changes
+// away from Claude or its account override is removed. Without this, a
+// stale value would survive in the tmux session env and be inherited by any
+// later respawn, silently pointing a differently-configured pane at the
+// wrong account.
+func (s *Session) UnsetEnvironment(key string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := s.tmuxCmdContext(ctx, "set-environment", "-u", "-t", s.Name, key)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		s.envCacheMu.Lock()
+		if s.envCache != nil {
+			delete(s.envCache, key)
+		}
+		s.envCacheMu.Unlock()
+		return nil
+	}
+	if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+		return fmt.Errorf("%w: %s", err, trimmed)
+	}
+	return err
+}
+
 func (s *Session) ApplyThemeOptions() error {
 	themeStyle := currentTmuxThemeStyle()
 	var args []string

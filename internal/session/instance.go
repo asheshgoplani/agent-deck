@@ -951,38 +951,26 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 
 	// Get the configured Claude command (e.g., "claude", "cdw", "cdp"),
 	// resolved per instance: conductor > group (ancestor-walk) > global.
-	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
 	claudeCmd := GetClaudeCommandForInstance(i)
-	hasCustomCommand := claudeCmd != "claude"
 
-	// Resolve CLAUDE_CONFIG_DIR for this spawn. We inject the prefix only
-	// when the user has an explicit config_dir resolved for this instance
-	// (env var, profile, group, conductor, or `[claude].config_dir`). When
-	// the gate is open, a prepared WorkerScratchConfigDir overrides the
-	// resolved value — scratch carries the mutated enabledPlugins overlay
-	// (per-session plugin attach state, issue #59 / RFC PLUGIN_ATTACH.md).
-	//
-	// Issue #949: injecting scratch unconditionally breaks macOS Claude
-	// Code's keychain-keyed-by-CLAUDE_CONFIG_DIR-path OAuth on hosts where
-	// scratch is created for telegram-poller defense (#759) but the user
-	// has no explicit config_dir — the worker is routed to an opaque
-	// scratch path the keychain never saw, triggering login + onboarding
-	// every spawn. Gating restores the v1.9.1 behaviour: dormant scratch
-	// in that case, ambient ~/.claude wins.
-	// Issue #922 (reporter @bautrey): route the worker-scratch swap through
-	// applyWorkerScratchOverride so it emits an INFO log instead of being silent.
-	configDirPrefix := ""
-	if !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i) {
-		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
-		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
-	}
-
-	// AGENTDECK_INSTANCE_ID is set as an inline env var so Claude's hook subprocesses
-	// can identify which agent-deck session they belong to. AGENTDECK_PROFILE is
-	// injected alongside it so an in-session `agent-deck` command resolves this
-	// session's own profile instead of falling back to "default".
-	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s ", i.ID, shellescape.Quote(sessionProfileEnvValue()))
-	configDirPrefix = instanceIDPrefix + configDirPrefix
+	// #1791/#1822 F5: every branch below (continue/-c, resume/--resume,
+	// resume-picker/-r, and fresh --session-id) shares a single `export ...;`
+	// prefix rather than each building its own inline `KEY=val cmd` form.
+	// A bare `KEY=val cmd` prefix scopes the variable to that ONE command
+	// only (standard shell semantics) — when exit_to_shell (#1161) then
+	// appends `; exec "$SHELL" -i` after the agent exits, that fallback
+	// shell does NOT inherit a non-exported prefix var, so CLAUDE_CONFIG_DIR
+	// silently reverts to the ambient ~/.claude root the moment the user
+	// exits Claude and gets dropped into the pane's shell — the exact
+	// wrong-account symptom #1791 exists to fix, just one step later than
+	// the original repro (Codex review, PR #1822). `export` persists the
+	// variable in the wrapping bash process's own environment, so it
+	// survives into anything that process execs afterward, including the
+	// exit-to-shell fallback. See buildBashExportPrefix for what it emits
+	// (AGENTDECK_INSTANCE_ID/PROFILE always; CLAUDE_CONFIG_DIR only when
+	// IsClaudeConfigDirExplicitForInstance(i), mirroring the previous
+	// per-branch gate here).
+	bashExportPrefix := i.buildBashExportPrefix()
 
 	// Get options - either from instance or create defaults from config
 	opts := i.GetClaudeOptions()
@@ -1014,7 +1002,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		switch opts.SessionMode {
 		case "continue":
 			// Simple -c mode: continue last session
-			return fmt.Sprintf(`%s%s%s -c%s`, configDirPrefix, execEnvPrefix, claudeCmd, extraFlags)
+			return fmt.Sprintf(`%s%s%s -c%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
 
 		case "resume":
 			// Resume specific session by ID
@@ -1023,17 +1011,16 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				if sessionHasConversationData(i, opts.ResumeSessionID) {
 					// Session has conversation history - use normal --resume
 					return fmt.Sprintf(`%s%s%s --resume %s%s`,
-						configDirPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
+						bashExportPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
 				}
 				// Session was never interacted with - use --session-id with same UUID.
 				// CLAUDE_SESSION_ID is propagated via host-side SyncSessionIDsToTmux after start.
-				bashExportPrefix := i.buildBashExportPrefix()
 				return fmt.Sprintf(
 					`%s%s%s --session-id "%s"%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
 			}
 			// No session ID provided - use -r flag for interactive picker
-			return fmt.Sprintf(`%s%s%s -r%s`, configDirPrefix, execEnvPrefix, claudeCmd, extraFlags)
+			return fmt.Sprintf(`%s%s%s -r%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
 		}
 
 		// Default: new session with capture-resume pattern
@@ -1044,8 +1031,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		//
 		// NOTE: These commands get wrapped in `bash -c` for fish compatibility (#47),
 		// so shell aliases won't work — but real binaries/scripts are fine.
-		//
-		bashExportPrefix := i.buildBashExportPrefix()
+		// bashExportPrefix is the shared export prefix built above.
 
 		// Pre-generate UUID in Go to avoid shell uuidgen (may be absent in Docker sandbox).
 		// CLAUDE_SESSION_ID is also propagated via host-side SetEnvironment after tmux start.
@@ -1190,18 +1176,40 @@ func (i *Instance) ensureClaudeConfigDirEnv() {
 	if i.tmuxSession == nil {
 		return
 	}
+	// #1822 F7: any early return past this point means CLAUDE_CONFIG_DIR
+	// should NOT be set for this instance right now. Clear a stale value a
+	// previous call may have left in the tmux session env (e.g. the tool
+	// changed away from Claude, or an account override was removed) so a
+	// later respawn doesn't inherit an env stuck pointing at the wrong
+	// account — the same class of bug #1791 fixes, just in reverse.
 	if !IsClaudeCompatible(i.Tool) {
+		i.clearClaudeConfigDirEnv()
 		return
 	}
 	if !IsClaudeConfigDirExplicitForInstance(i) {
+		i.clearClaudeConfigDirEnv()
 		return
 	}
 	configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
 	if configDir == "" {
+		i.clearClaudeConfigDirEnv()
 		return
 	}
 	if err := i.tmuxSession.SetEnvironment("CLAUDE_CONFIG_DIR", configDir); err != nil {
 		sessionLog.Warn("set_claude_config_dir_failed", slog.String("error", err.Error()))
+	}
+}
+
+// clearClaudeConfigDirEnv unsets CLAUDE_CONFIG_DIR from the tmux session env.
+// Best-effort: a failure (e.g. no prior value, session already gone) is
+// logged at debug, not warn — unlike SetEnvironment failing, there is no
+// stale-account risk if this is a no-op.
+func (i *Instance) clearClaudeConfigDirEnv() {
+	if i.tmuxSession == nil {
+		return
+	}
+	if err := i.tmuxSession.UnsetEnvironment("CLAUDE_CONFIG_DIR"); err != nil {
+		sessionLog.Debug("unset_claude_config_dir_noop", slog.String("error", err.Error()))
 	}
 }
 
@@ -7221,30 +7229,14 @@ func (i *Instance) buildClaudeResumeCommand() string {
 
 	// Get the configured Claude command (e.g., "claude", "cdw", "cdp"),
 	// resolved per instance: conductor > group (ancestor-walk) > global.
-	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
 	claudeCmd := GetClaudeCommandForInstance(i)
-	hasCustomCommand := claudeCmd != "claude"
 
-	// Resolve CLAUDE_CONFIG_DIR for this restart. Mirrors the gating logic
-	// in buildClaudeCommandWithMessage: we inject only when an explicit
-	// config_dir is resolved, with WorkerScratchConfigDir overriding the
-	// resolved value when set. See the comment there (issue #949) for the
-	// macOS-OAuth-keying motivation.
-	// Issue #922 (reporter @bautrey): route the worker-scratch swap through
-	// applyWorkerScratchOverride so the third spawn-env builder logs the swap
-	// with identical wording to the other two.
-	configDirPrefix := ""
-	if !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i) {
-		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
-		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
-	}
-
-	// AGENTDECK_INSTANCE_ID is set as an inline env var so hook subprocesses
-	// can identify which agent-deck session they belong to. AGENTDECK_PROFILE is
-	// injected alongside it so an in-session `agent-deck` command resolves this
-	// session's own profile instead of falling back to "default".
-	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s ", i.ID, shellescape.Quote(sessionProfileEnvValue()))
-	configDirPrefix = instanceIDPrefix + configDirPrefix
+	// #1791/#1822 F5: use the shared `export ...;` prefix, not a bare
+	// `KEY=val cmd` prefix — see the identical comment in
+	// buildClaudeCommandWithMessage for why (exit_to_shell's trailing
+	// `exec "$SHELL" -i` only inherits exported vars, not a single-command
+	// prefix scoped to the claude invocation alone).
+	bashExportPrefix := i.buildBashExportPrefix()
 
 	// Get per-session permission settings (falls back to config if not persisted)
 	opts := i.GetClaudeOptions()
@@ -7313,11 +7305,11 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// (which silently fails inside Docker sandbox containers).
 	if useResume {
 		return fmt.Sprintf("%s%s%s --resume %s%s",
-			envPrefix, configDirPrefix, claudeCmd, i.ClaudeSessionID, extraFlags)
+			envPrefix, bashExportPrefix, claudeCmd, i.ClaudeSessionID, extraFlags)
 	}
 	// Session was never interacted with - use --session-id to create fresh session.
 	return fmt.Sprintf("%s%s%s --session-id %s%s",
-		envPrefix, configDirPrefix, claudeCmd, i.ClaudeSessionID, extraFlags)
+		envPrefix, bashExportPrefix, claudeCmd, i.ClaudeSessionID, extraFlags)
 }
 
 // SetGeminiModel sets the Gemini model for this session and triggers a restart if running.

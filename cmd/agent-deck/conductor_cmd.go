@@ -239,7 +239,18 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Fprintln(os.Stderr, "Error: -claude-md and -shared-claude-md are only valid with --agent=claude")
 		os.Exit(1)
 	}
-	resolvedProfile := session.GetEffectiveProfile(profile)
+	// #1790/#1822 F2: route through the guarded resolver, not a bare
+	// GetEffectiveProfile — this value goes on to SetupConductorWithAgent
+	// and NewStorageWithProfile below, both of which create on-disk state.
+	// A bare GetEffectiveProfile would let a CLAUDE_CONFIG_DIR-inferred name
+	// that doesn't match an existing profile look like an explicit -p
+	// selection once resolved here, bypassing the #1790 guard a second hop
+	// downstream.
+	resolvedProfile, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to resolve profile: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Auto-migrate legacy conductors
 	runAutoMigration(*jsonOutput)

@@ -135,6 +135,11 @@ type MenuSession struct {
 type storageLoader interface {
 	LoadWithGroups() ([]*session.Instance, []*session.GroupData, error)
 	Close() error
+	// Profile returns the profile name actually opened — which, per the
+	// #1790 guard inside NewStorageWithProfile, may differ from the raw
+	// name requested (e.g. an unrecognized CLAUDE_CONFIG_DIR-inferred name
+	// falls back to the configured default). See NewSessionDataService.
+	Profile() string
 }
 
 type storageOpener func(profile string) (storageLoader, error)
@@ -149,9 +154,22 @@ type SessionDataService struct {
 }
 
 // NewSessionDataService creates a SessionDataService for a profile.
+//
+// #1790/#1822 F3: profile is stored RAW (possibly empty/possibly a
+// CLAUDE_CONFIG_DIR-inferred name) rather than pre-resolved via
+// GetEffectiveProfile. Pre-resolving here and handing the concrete result to
+// openStorage/NewStorageWithProfile would make it indistinguishable from an
+// explicit -p selection, bypassing NewStorageWithProfile's own #1790 guard a
+// second hop downstream — every caller of NewSessionDataService (web server
+// bootstrap, the standalone test-server binary, internal/web.NewServer's
+// fallback) inherited that hole. Real resolution, including the guard,
+// happens once inside the shared storage layer when the profile is actually
+// opened; s.profile is synced to the profile that was actually opened
+// afterwards (see resolveAndOpenStorage), so Profile()/BuildMenuSnapshot
+// still report the true effective name rather than the raw input.
 func NewSessionDataService(profile string) *SessionDataService {
 	return &SessionDataService{
-		profile:          session.GetEffectiveProfile(profile),
+		profile:          profile,
 		openStorage:      defaultStorageOpener,
 		now:              time.Now,
 		refreshLiveState: true,
@@ -163,9 +181,28 @@ func defaultStorageOpener(profile string) (storageLoader, error) {
 	return session.NewStorageWithProfile(profile)
 }
 
-// Profile returns the effective profile this service reads from.
+// Profile returns the effective profile this service reads from. Before the
+// first successful Load*MenuSnapshot call this may be the raw (possibly
+// empty/inferred) value passed to NewSessionDataService rather than the
+// guard-resolved effective name — see NewSessionDataService.
 func (s *SessionDataService) Profile() string {
 	return s.profile
+}
+
+// resolveAndOpenStorage opens storage for the raw profile this service was
+// constructed with (see NewSessionDataService) and syncs s.profile to
+// whatever profile was actually opened, so callers built on Profile() and
+// BuildMenuSnapshot's profile label observe the true effective name (post
+// #1790 guard/fallback) rather than the raw input.
+func (s *SessionDataService) resolveAndOpenStorage() (storageLoader, error) {
+	storage, err := s.openStorage(s.profile)
+	if err != nil {
+		return nil, fmt.Errorf("open storage for profile %q: %w", s.profile, err)
+	}
+	if opened := storage.Profile(); opened != "" {
+		s.profile = opened
+	}
+	return storage, nil
 }
 
 // LoadMenuSnapshot loads sessions/groups and returns a deterministic flattened menu DTO.
@@ -180,9 +217,9 @@ func (s *SessionDataService) LoadMenuSnapshot() (*MenuSnapshot, error) {
 		s.now = time.Now
 	}
 
-	storage, err := s.openStorage(s.profile)
+	storage, err := s.resolveAndOpenStorage()
 	if err != nil {
-		return nil, fmt.Errorf("open storage for profile %q: %w", s.profile, err)
+		return nil, err
 	}
 	defer func() { _ = storage.Close() }()
 
@@ -210,9 +247,9 @@ func (s *SessionDataService) LoadArchivedMenuSnapshot() (*MenuSnapshot, error) {
 		s.now = time.Now
 	}
 
-	storage, err := s.openStorage(s.profile)
+	storage, err := s.resolveAndOpenStorage()
 	if err != nil {
-		return nil, fmt.Errorf("open storage for profile %q: %w", s.profile, err)
+		return nil, err
 	}
 	defer func() { _ = storage.Close() }()
 
