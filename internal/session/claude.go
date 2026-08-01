@@ -58,6 +58,26 @@ func extractExplicitClaudeResumeID(command string) (string, bool) {
 	return extractExplicitClaudeIDForFlags(command, "--resume")
 }
 
+// commandHasToken reports whether `command`, tokenized the same coarse way
+// as extractExplicitClaudeIDForFlags, contains the literal token `flag`
+// (bare, or as its `flag=...` form). Used to gate the `--resume` ownership
+// fallback: presence of ANY `--session-id` or `--fork-session` token means
+// this command matches the fork builder's shape (`--resume <SOURCE id>
+// --fork-session`), where the resume id names the PARENT's conversation, not
+// this session's own — that id must never be adopted as this instance's
+// verified identity (review finding on #1830).
+func commandHasToken(command, flag string) bool {
+	if command == "" {
+		return false
+	}
+	for _, f := range strings.Fields(command) {
+		if f == flag || strings.HasPrefix(f, flag+"=") {
+			return true
+		}
+	}
+	return false
+}
+
 func extractExplicitClaudeIDForFlags(command, flag string) (string, bool) {
 	if command == "" {
 		return "", false

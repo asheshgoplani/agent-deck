@@ -102,7 +102,13 @@ func (i *Instance) recordedClaudeSessionID() string {
 		return ""
 	}
 	id := strings.TrimSpace(i.ClaudeSessionID)
-	if id == "" || i.claudeSessionIDsFromDiskScan[id] {
+	if id == "" {
+		return ""
+	}
+	i.claudeSessionIDsFromDiskScanMu.Lock()
+	tainted := i.claudeSessionIDsFromDiskScan[id]
+	i.claudeSessionIDsFromDiskScanMu.Unlock()
+	if tainted {
 		return ""
 	}
 	return id
@@ -214,6 +220,8 @@ func (i *Instance) markClaudeSessionIDFromDiskScan(uuid string) {
 	if id == "" {
 		return
 	}
+	i.claudeSessionIDsFromDiskScanMu.Lock()
+	defer i.claudeSessionIDsFromDiskScanMu.Unlock()
 	if i.claudeSessionIDsFromDiskScan == nil {
 		i.claudeSessionIDsFromDiskScan = map[string]bool{}
 	}
@@ -225,7 +233,10 @@ func (i *Instance) markClaudeSessionIDFromDiskScan(uuid string) {
 // pane, a hook payload it owns, an explicit `--session-id` in its own command,
 // or an id this process minted for it.
 func (i *Instance) markClaudeSessionIDVerified() {
-	delete(i.claudeSessionIDsFromDiskScan, strings.TrimSpace(i.ClaudeSessionID))
+	id := strings.TrimSpace(i.ClaudeSessionID)
+	i.claudeSessionIDsFromDiskScanMu.Lock()
+	delete(i.claudeSessionIDsFromDiskScan, id)
+	i.claudeSessionIDsFromDiskScanMu.Unlock()
 }
 
 // noteClaudeSessionIDFromOwnPane records a WEAK vouch: the id was read back
@@ -241,7 +252,13 @@ func (i *Instance) markClaudeSessionIDVerified() {
 // and never spawned, the pane cannot legitimately hold one.
 func (i *Instance) noteClaudeSessionIDFromOwnPane() {
 	id := strings.TrimSpace(i.ClaudeSessionID)
-	if id == "" || i.claudeSessionIDsFromDiskScan[id] {
+	if id == "" {
+		return
+	}
+	i.claudeSessionIDsFromDiskScanMu.Lock()
+	tainted := i.claudeSessionIDsFromDiskScan[id]
+	i.claudeSessionIDsFromDiskScanMu.Unlock()
+	if tainted {
 		return
 	}
 	i.markClaudeSessionIDVerified()

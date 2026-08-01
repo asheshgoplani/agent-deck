@@ -205,10 +205,6 @@ func RestoreOrphanedConversationBackup(inst *Instance, configDir string) (string
 	return live, nil
 }
 
-// newestConversationFile returns the most recently modified UUID-named
-// conversation file in projDir (and its session id), skipping agent-*.jsonl.
-// Unlike findActiveSessionIDExcluding it has no recency cutoff: a conversation
-// being migrated may be arbitrarily old.
 // conversationCount reports how many UUID-named conversation files live in
 // projDir. More than one means the directory is shared, so "the newest one"
 // identifies nothing (#1815).
@@ -228,6 +224,10 @@ func conversationCount(projDir string) int {
 	return n
 }
 
+// newestConversationFile returns the most recently modified UUID-named
+// conversation file in projDir (and its session id), skipping agent-*.jsonl.
+// Unlike findActiveSessionIDExcluding it has no recency cutoff: a conversation
+// being migrated may be arbitrarily old.
 func newestConversationFile(projDir string) (path, sessionID string) {
 	files, err := filepath.Glob(filepath.Join(projDir, "*.jsonl"))
 	if err != nil {

@@ -62,6 +62,8 @@ func (i *Instance) claudeSessionIDIsUnverified() bool {
 	if i == nil || i.ClaudeSessionID == "" {
 		return false
 	}
+	i.claudeSessionIDsFromDiskScanMu.Lock()
+	defer i.claudeSessionIDsFromDiskScanMu.Unlock()
 	return i.claudeSessionIDsFromDiskScan[i.ClaudeSessionID]
 }
 

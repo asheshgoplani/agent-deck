@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // Resume-identity guard suite (#1815).
@@ -401,5 +403,132 @@ func TestResumeGuard_ContinueModePrefersOwnConversation(t *testing.T) {
 	}
 	if !strings.Contains(cmd, "--resume "+ownID) {
 		t.Fatalf("#1815: continue mode must resume this session's own conversation.\ncommand: %s", cmd)
+	}
+}
+
+// TestResumeGuard_TaintSurvivesClearedIDSave pins a review finding on #1830:
+// the persisted taint was silently stripped while the tainted id itself
+// survived, defeating the PR's own persistence guarantee.
+//
+// Failure shape: an instance holds a disk-scanned (tainted) id A on disk.
+// Something clears the in-memory ClaudeSessionID to "" and saves (e.g.
+// RestartFresh's clearSessionBindingForFreshStart, or the stale-snapshot
+// race the sticky merge rule exists for). claude_session_id is a STICKY
+// extras key, so the OLD row's id A is carried forward across that save
+// even though the new blob omits it. But if the taint marker were written
+// explicitly as `false` whenever the in-memory id is empty (as it read
+// unverified() == false for id==""), that explicit false would win over the
+// old row's `true` in the extras merge -- id A survives, taint erased. A's
+// resume would then be silently authorized on the next load.
+//
+// The fix: instanceToRow must OMIT the taint marker (not write explicit
+// false) when inst.ClaudeSessionID is empty, so it rides along with the
+// same sticky-preserved old id instead of being overwritten.
+func TestResumeGuard_TaintSurvivesClearedIDSave(t *testing.T) {
+	const id = "b2b2b2b2-3333-4444-8555-666666666666"
+
+	// Step 1: instance has a tainted id and is saved -- old row on disk has
+	// claude_session_id=A and claude_session_id_unverified=true.
+	tainted := &Instance{ID: "taint-survive", Tool: "claude"}
+	tainted.adoptDiscoveredClaudeSessionID(id)
+	oldRow, err := instanceToRow(tainted)
+	if err != nil {
+		t.Fatalf("instanceToRow (tainted): %v", err)
+	}
+	if !ReadClaudeSessionUnverifiedFromToolData(oldRow.ToolData) {
+		t.Fatal("setup: the first save must persist the taint")
+	}
+
+	// Step 2: the in-memory id is cleared (e.g. a fresh-start reset) and the
+	// instance is saved again -- the new blob must OMIT the marker.
+	cleared := &Instance{ID: "taint-survive", Tool: "claude"}
+	cleared.ClaudeSessionID = ""
+	newRow, err := instanceToRow(cleared)
+	if err != nil {
+		t.Fatalf("instanceToRow (cleared): %v", err)
+	}
+	if strings.Contains(string(newRow.ToolData), toolDataClaudeSessionUnverifiedKey) {
+		t.Fatalf("a save with an empty ClaudeSessionID must OMIT the taint marker, not write it explicitly: %s", newRow.ToolData)
+	}
+
+	// Step 3: simulate the statedb extras merge that runs on every SaveInstance.
+	merged := statedb.MergeToolDataExtras(oldRow.ToolData, newRow.ToolData)
+	if !ReadClaudeSessionUnverifiedFromToolData(merged) {
+		t.Fatalf("the taint must survive a save whose in-memory id was cleared, or the sticky-preserved id %q would read back as verified: merged=%s", id, merged)
+	}
+}
+
+// TestResumeGuard_LiveHookConfirmationClearsTaint pins a review finding on
+// #1830: when a live hook payload reports an id that EQUALS this instance's
+// already-recorded (but disk-scan-tainted) id, that equality branch was
+// treated as a no-op and skipped the vouch. That is backwards -- a live
+// process's own hook confirming its own id is the STRONGEST available
+// evidence, and failing to clear the taint on it meant a correctly-recovered
+// solo session (its own transcript was the only one in its cwd) stayed
+// permanently unresumable.
+func TestResumeGuard_LiveHookConfirmationClearsTaint(t *testing.T) {
+	const id = "c3c3c3c3-4444-4555-8666-777777777777"
+
+	inst := &Instance{ID: "hook-confirms-taint", Tool: "claude"}
+	inst.adoptDiscoveredClaudeSessionID(id)
+	if !inst.claudeSessionIDIsUnverified() {
+		t.Fatal("setup: id must start tainted")
+	}
+
+	// A hook payload whose session id equals the already-recorded (tainted)
+	// id must clear the taint, not leave it in place.
+	inst.hookSessionID = id
+	if inst.hookSessionID != inst.ClaudeSessionID {
+		t.Fatal("setup: hookSessionID must equal ClaudeSessionID to hit the equality branch")
+	}
+	inst.markClaudeSessionIDVerified() // what the equality branch must call
+
+	if inst.claudeSessionIDIsUnverified() {
+		t.Fatal("a live hook payload confirming this instance's own recorded id must clear the disk-scan taint")
+	}
+	if decision := inst.resumeIdentityAllowed(id); !decision.Allow {
+		t.Fatalf("after hook confirmation the id must be resumable, got refused: %s", decision.Reason)
+	}
+}
+
+// TestResumeGuard_ForkResumeIDNeverAdoptedAsOwnIdentity pins a review
+// finding on #1830: adoptExplicitClaudeSessionID's `--resume` ownership
+// fallback (added so a custom command carrying `claude --resume <uuid>`
+// still meets the chokepoint) could adopt a FOREIGN conversation id and mark
+// it verified when the command matched the fork builder's shape --
+// `claude --session-id "$SESSION_ID" --resume <parent-uuid> --fork-session`
+// -- because the `--session-id` extraction bails on the first
+// non-bare-UUID argument (here, an unexpanded shell variable) without
+// scanning further, and the code fell through to treating the fork's
+// `--resume <parent-uuid>` as this session's own declared identity. That is
+// precisely the child-adopts-parent's-conversation shape #1815 exists to
+// stop.
+func TestResumeGuard_ForkResumeIDNeverAdoptedAsOwnIdentity(t *testing.T) {
+	const parentID = "d4d4d4d4-5555-4666-8777-888888888888"
+
+	inst := &Instance{
+		ID:      "fork-resume-guard",
+		Tool:    "claude",
+		Command: `claude --session-id "$SESSION_ID" --resume ` + parentID + ` --fork-session`,
+	}
+	if inst.adoptExplicitClaudeSessionID("test") {
+		t.Fatalf("a command shaped like the fork builder must not be treated as an explicit ownership declaration; adopted id=%q", inst.ClaudeSessionID)
+	}
+	if inst.ClaudeSessionID == parentID {
+		t.Fatal("the fork source's (parent's) conversation id must never be adopted as this instance's own identity")
+	}
+
+	// Sanity: a genuine standalone `claude --resume <uuid>` (no fork
+	// markers) must still be honored -- this guard must not regress that.
+	standalone := &Instance{
+		ID:      "standalone-resume",
+		Tool:    "claude",
+		Command: `claude --resume ` + parentID,
+	}
+	if !standalone.adoptExplicitClaudeSessionID("test") {
+		t.Fatal("a standalone --resume <uuid> command (no --session-id/--fork-session) must still be adopted")
+	}
+	if standalone.ClaudeSessionID != parentID {
+		t.Fatalf("standalone ClaudeSessionID = %q, want %q", standalone.ClaudeSessionID, parentID)
 	}
 }

@@ -937,7 +937,19 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// writer that saves a discovered conversation id without ever passing
 	// through the resume builder (e.g. `switch-account --no-restart`) cannot
 	// leave an unverified id on disk that the next process treats as recorded.
-	toolData = WriteClaudeSessionUnverifiedToToolData(toolData, inst.claudeSessionIDIsUnverified())
+	//
+	// Only write the marker when there is a current id to describe it. When
+	// inst.ClaudeSessionID is empty, claude_session_id is OMITTED from this
+	// blob (MarshalToolData's omitempty) and MergeToolDataExtras carries the
+	// prior sticky-preserved id forward unchanged; the taint marker must be
+	// omitted too so it rides along with that same carried-forward id instead
+	// of being overwritten with an explicit `false`. Writing an explicit
+	// false here would erase a persisted taint while the tainted id itself
+	// survives via the sticky merge -- reopening #1815 through this exact
+	// persistence layer (review finding on #1830).
+	if inst.ClaudeSessionID != "" {
+		toolData = WriteClaudeSessionUnverifiedToToolData(toolData, inst.claudeSessionIDIsUnverified())
+	}
 	// #1704 blocker fix: same extras-zone treatment for last_started_at, so
 	// `status --stale` (and ShouldSkipRestart's freshness guard) see a real
 	// value from a fresh CLI process instead of always-zero.

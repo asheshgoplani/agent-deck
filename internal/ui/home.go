@@ -11303,6 +11303,23 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			inst.ToolOptionsJSON = toolOptionsJSON
 		}
 
+		// #1815: an operator who typed a conversation UUID into the "resume by
+		// session ID" panel field made an explicit ownership declaration for
+		// THIS session, exactly like --resume-session on the CLI (see
+		// launch_cmd.go / main.go). Vouch for it here too, or the chokepoint
+		// sees no recorded ClaudeSessionID (only opts.ResumeSessionID inside
+		// ToolOptionsJSON, which canResumeClaudeSession never reads) and
+		// silently mints a fresh id instead of resuming the one the operator
+		// picked (review finding on #1830).
+		if tool == "claude" && len(toolOptionsJSON) > 0 {
+			if opts, err := session.UnmarshalClaudeOptions(toolOptionsJSON); err == nil && opts != nil &&
+				opts.SessionMode == "resume" && strings.TrimSpace(opts.ResumeSessionID) != "" {
+				inst.ClaudeSessionID = strings.TrimSpace(opts.ResumeSessionID)
+				session.MarkClaudeSessionIDVerified(inst)
+				inst.ClaudeDetectedAt = time.Now()
+			}
+		}
+
 		if launchModelID != "" {
 			if err := inst.ApplyLaunchModel(launchModelID); err != nil {
 				return sessionCreatedMsg{err: fmt.Errorf("failed to apply model override: %w", err), tempID: tempID}
