@@ -1449,7 +1449,11 @@ func handleAdd(profile string, args []string) {
 	sessionGroup := mergeFlags(*group, *groupShort)
 	explicitGroupProvided := strings.TrimSpace(sessionGroup) != ""
 	sessionCommandInput := mergeFlags(*command, *commandShort)
-	sessionCommandTool, sessionCommandResolved, sessionWrapperResolved, sessionCommandNote := resolveSessionCommand(sessionCommandInput, *wrapper)
+	sessionCommandTool, sessionCommandResolved, sessionWrapperResolved, sessionCommandNote, cmdErr := resolveSessionCommand(sessionCommandInput, *wrapper)
+	if cmdErr != nil {
+		fmt.Printf("Error: %v\n", cmdErr)
+		os.Exit(1)
+	}
 	sessionParent := mergeFlags(*parent, *parentShort)
 	if sessionParent != "" && *noParent {
 		fmt.Println("Error: --parent and --no-parent cannot be used together")

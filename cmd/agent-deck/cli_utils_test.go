@@ -302,11 +302,49 @@ func TestResolveSessionCommand(t *testing.T) {
 			wantNote:        false,
 			wantRawCommand:  false,
 		},
+		{
+			// #1800: "claude remote-control --name X" must NOT become a
+			// wrapper suffix — that path let flag injection place
+			// --session-id/--dangerously-skip-permissions BEFORE the
+			// subcommand, silently demoting it to a positional argument of
+			// plain interactive claude. The subcommand-shaped first token
+			// routes the whole line through unmodified instead.
+			name:           "claude subcommand runs as-is, no wrapper",
+			raw:            "claude remote-control --name rc-test",
+			wantTool:       "shell",
+			wantWrapper:    "",
+			wantNote:       true,
+			wantRawCommand: true,
+		},
+		{
+			// Any claude subcommand hits this, not just remote-control —
+			// confirms there is no per-subcommand special-casing.
+			name:           "different claude subcommand also runs as-is",
+			raw:            "claude mcp list",
+			wantTool:       "shell",
+			wantWrapper:    "",
+			wantNote:       true,
+			wantRawCommand: true,
+		},
+		{
+			// Explicit wrapper still wins even for a subcommand-shaped
+			// command — the user asked for specific flag placement.
+			name:            "explicit wrapper wins over subcommand detection",
+			raw:             "claude remote-control --name rc-test",
+			explicitWrapper: "{command} --explicit",
+			wantTool:        "claude",
+			wantWrapper:     "{command} --explicit",
+			wantNote:        false,
+			wantRawCommand:  false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tool, command, wrapper, note := resolveSessionCommand(tt.raw, tt.explicitWrapper)
+			tool, command, wrapper, note, err := resolveSessionCommand(tt.raw, tt.explicitWrapper)
+			if err != nil {
+				t.Fatalf("resolveSessionCommand returned unexpected error: %v", err)
+			}
 
 			if tool != tt.wantTool {
 				t.Fatalf("tool = %q, want %q", tool, tt.wantTool)
@@ -324,6 +362,41 @@ func TestResolveSessionCommand(t *testing.T) {
 				t.Fatalf("command = %q, want raw %q", command, tt.raw)
 			}
 		})
+	}
+}
+
+// TestResolveSessionCommand_RefusesUnparseableExtraArgs pins the REFUSE half
+// of #1800's fix: when the extra-args portion of --cmd can't be tokenized
+// unambiguously (unterminated quote), resolveSessionCommand must return a
+// clear error instead of guessing flag placement.
+func TestResolveSessionCommand_RefusesUnparseableExtraArgs(t *testing.T) {
+	raw := `claude remote-control --name "unterminated`
+
+	_, _, _, _, err := resolveSessionCommand(raw, "")
+	if err == nil {
+		t.Fatalf("expected an error for unterminated quote in %q, got nil", raw)
+	}
+}
+
+// TestResolveSessionCommand_PlainClaudeUnaffected is the RISK guard: the
+// subcommand-detection branch must never fire for the common, currently
+// working case of a plain "-c claude" invocation with no extra args.
+func TestResolveSessionCommand_PlainClaudeUnaffected(t *testing.T) {
+	tool, command, wrapper, note, err := resolveSessionCommand("claude", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tool != "claude" {
+		t.Fatalf("tool = %q, want claude", tool)
+	}
+	if wrapper != "" {
+		t.Fatalf("wrapper = %q, want empty for plain claude", wrapper)
+	}
+	if note != "" {
+		t.Fatalf("note = %q, want empty for plain claude", note)
+	}
+	if command == "" {
+		t.Fatal("command should not be empty")
 	}
 }
 

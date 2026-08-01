@@ -96,25 +96,63 @@ func firstNonEmpty(values ...string) string {
 //
 // Behavior:
 //   - Plain tool name (e.g. "claude", "codex"): use built-in/default command.
-//   - Tool with extra args (e.g. "codex --dangerously-bypass-approvals-and-sandbox"):
+//   - Tool with extra *flags* (e.g. "codex --dangerously-bypass-approvals-and-sandbox"):
 //     keep tool detection but forward extra args via wrapper so they are not lost.
+//   - Tool with a *subcommand* (e.g. "claude remote-control --name X"): agent-deck's
+//     injected flags (--session-id, permission mode, …) are only valid on the plain
+//     interactive invocation, never after a subcommand — see #1800, where injecting
+//     them before "remote-control" silently turned it into a positional argument of
+//     a different program. Run the line as-is instead of guessing where flags belong.
 //   - Generic shell command: keep full command as-is.
 //   - Explicit wrapper always wins.
-func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, command, wrapper, note string) {
+//
+// Returns a non-nil err only when the extra-args portion of rawCommand can't be
+// tokenized unambiguously (e.g. an unterminated quote) — in that case agent-deck
+// refuses to guess flag placement rather than silently building a broken command.
+func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, command, wrapper, note string, err error) {
 	raw := strings.TrimSpace(rawCommand)
 	wrapper = strings.TrimSpace(explicitWrapper)
 	if raw == "" {
-		return "", "", wrapper, ""
+		return "", "", wrapper, "", nil
 	}
 
 	toolName = detectTool(raw)
 	base, extra := splitFirstWord(raw)
 
 	// No explicit wrapper provided and command looks like "tool arg1 arg2".
-	// Preserve extra args by turning them into wrapper suffix.
 	if wrapper == "" && extra != "" {
 		baseTool := detectTool(base)
 		if baseTool != "shell" {
+			tokens, tokenizeErr := splitShellTokens(extra)
+			if tokenizeErr != nil {
+				return "", "", "", "", fmt.Errorf(
+					"could not parse extra arguments in --cmd %q (%v); agent-deck refuses "+
+						"to guess where its flags belong when quoting is ambiguous — use "+
+						"--wrapper to control placement explicitly, or wrap the whole "+
+						"command yourself (e.g. bash -c '...')",
+					raw, tokenizeErr)
+			}
+
+			// Positionally-aware, tool-agnostic check: if the first extra token
+			// is not flag-shaped, it's a subcommand (claude has several:
+			// remote-control, mcp, plugin, install, …). Injected root flags are
+			// never valid after a subcommand for any of them, so route the
+			// whole line through unmodified — the same behavior as the
+			// documented `bash -c 'exec …'` escape hatch — instead of folding
+			// it into a wrapper suffix that flag-injection would place after
+			// agent-deck's own flags (#1800). No per-subcommand special-casing:
+			// this applies uniformly to every tool.
+			if !isFlagShapedToken(tokens[0]) {
+				toolName = "shell"
+				command = raw
+				note = fmt.Sprintf(
+					"detected subcommand-shaped argument %q after tool '%s' — running "+
+						"the command as-is with no session/permission flag injection "+
+						"(those flags aren't valid after a subcommand)",
+					tokens[0], base)
+				return toolName, command, wrapper, note, nil
+			}
+
 			toolName = baseTool
 			if toolDef := session.GetToolDef(toolName); toolDef != nil {
 				command = toolDef.Command
@@ -123,7 +161,7 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 			}
 			wrapper = strings.TrimSpace("{command} " + extra)
 			note = fmt.Sprintf("parsed --cmd as tool '%s' and forwarded extra args via wrapper", toolName)
-			return toolName, command, wrapper, note
+			return toolName, command, wrapper, note, nil
 		}
 	}
 
@@ -132,7 +170,76 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 	} else {
 		command = raw
 	}
-	return toolName, command, wrapper, note
+	return toolName, command, wrapper, note, nil
+}
+
+// isFlagShapedToken reports whether tok looks like a CLI flag ("-x",
+// "--model", "--model=opus") rather than a subcommand or positional
+// argument. A bare "-" (stdin marker) does not count as flag-shaped.
+func isFlagShapedToken(tok string) bool {
+	return len(tok) > 1 && tok[0] == '-'
+}
+
+// splitShellTokens performs minimal POSIX-ish tokenization of s: splits on
+// whitespace, honors single/double quoting, and backslash-escapes the
+// following character outside single quotes. It exists so resolveSessionCommand
+// can inspect the *first* extra-args token without a full shell parser. It
+// returns an error on an unterminated quote so callers can distinguish
+// "genuinely ambiguous input" from "just didn't need quoting" — used to
+// REFUSE rather than guess (#1800).
+func splitShellTokens(s string) ([]string, error) {
+	var tokens []string
+	var cur strings.Builder
+	haveToken := false
+	inSingle, inDouble := false, false
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case inSingle:
+			if c == '\'' {
+				inSingle = false
+			} else {
+				cur.WriteByte(c)
+			}
+		case inDouble:
+			if c == '"' {
+				inDouble = false
+			} else if c == '\\' && i+1 < len(s) && strings.ContainsRune(`"\$`+"`", rune(s[i+1])) {
+				i++
+				cur.WriteByte(s[i])
+			} else {
+				cur.WriteByte(c)
+			}
+		case c == '\'':
+			inSingle = true
+			haveToken = true
+		case c == '"':
+			inDouble = true
+			haveToken = true
+		case c == '\\' && i+1 < len(s):
+			i++
+			cur.WriteByte(s[i])
+			haveToken = true
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			if haveToken {
+				tokens = append(tokens, cur.String())
+				cur.Reset()
+				haveToken = false
+			}
+		default:
+			cur.WriteByte(c)
+			haveToken = true
+		}
+	}
+
+	if inSingle || inDouble {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	if haveToken {
+		tokens = append(tokens, cur.String())
+	}
+	return tokens, nil
 }
 
 func splitFirstWord(raw string) (string, string) {
