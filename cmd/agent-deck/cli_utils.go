@@ -98,13 +98,29 @@ func firstNonEmpty(values ...string) string {
 //   - Plain tool name (e.g. "claude", "codex"): use built-in/default command.
 //   - Tool with extra *flags* (e.g. "codex --dangerously-bypass-approvals-and-sandbox"):
 //     keep tool detection but forward extra args via wrapper so they are not lost.
-//   - Tool with a *subcommand* (e.g. "claude remote-control --name X"): agent-deck's
-//     injected flags (--session-id, permission mode, …) are only valid on the plain
-//     interactive invocation, never after a subcommand — see #1800, where injecting
-//     them before "remote-control" silently turned it into a positional argument of
-//     a different program. Run the line as-is instead of guessing where flags belong.
+//   - Tool with a *known* claude/codex *subcommand* (e.g. "claude remote-control --name X",
+//     "codex mcp list"): agent-deck's injected flags (--session-id, permission mode, …)
+//     are only valid on the plain interactive invocation, never after a subcommand —
+//     see #1800, where injecting them before "remote-control" silently turned it into a
+//     positional argument of a different program. Run the line as-is instead of
+//     guessing where flags belong.
 //   - Generic shell command: keep full command as-is.
 //   - Explicit wrapper always wins.
+//
+// The subcommand check is a fixed, explicit allowlist (claudeKnownSubcommands /
+// codexKnownSubcommands) rather than "any non-flag-shaped first token" — an early
+// version of this fix used that broader heuristic and it misfired on an ordinary
+// positional prompt (e.g. `-c 'claude "review this repo"'`): the prompt's first
+// token isn't flag-shaped either, so it was wrongly routed through the no-injection
+// path and silently lost --session-id / permission-mode, which a plain
+// flags-then-prompt claude invocation had always gotten correctly before #1821.
+// Only claude and codex are covered because they're the only builtins whose own
+// command builders inject flags *inside* the wrapper substitution point (ahead of
+// any trailing subcommand text); every other tool's flags (e.g. a custom
+// [tools.X].dangerous_flag) are appended at the very end of the fully-built
+// command by buildGenericCommand, so wrapper-suffix ordering never misplaces them
+// — a custom tool's subcommand-shaped --cmd (e.g. "reviewbot serve") correctly
+// keeps using the wrapper-suffix path below and needs no special-casing.
 //
 // Returns a non-nil err only when the extra-args portion of rawCommand can't be
 // tokenized unambiguously (e.g. an unterminated quote) — in that case agent-deck
@@ -133,31 +149,12 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 					raw, tokenizeErr)
 			}
 
-			// Positionally-aware, tool-agnostic check: if the first extra token
-			// is not flag-shaped, it's a subcommand (claude has several:
-			// remote-control, mcp, plugin, install, …). Injected root flags are
-			// never valid after a subcommand for any of them, so route the
-			// whole line through unmodified — the same behavior as the
-			// documented `bash -c 'exec …'` escape hatch — instead of folding
-			// it into a wrapper suffix that flag-injection would place after
-			// agent-deck's own flags (#1800). No per-subcommand special-casing:
-			// this applies uniformly to every tool.
-			if !isFlagShapedToken(tokens[0]) {
+			// Only route through the no-flag-injection passthrough when the
+			// first extra token is a REAL, known claude/codex subcommand —
+			// see the allowlist rationale in the function doc above.
+			if isKnownSubcommandToken(baseTool, tokens[0]) {
 				toolName = "shell"
-				// A custom tool (e.g. [tools.reviewbot]) resolves its bare
-				// name through toolDef.Command — the raw text the user typed
-				// is the CONFIGURED tool name, not necessarily an executable
-				// on PATH (e.g. `reviewbot serve` where
-				// [tools.reviewbot].command = "/opt/bin/review-wrapper").
-				// Substitute the resolved command so the subcommand
-				// invocation still launches; built-in tool names (claude,
-				// codex, ...) already are the literal binary name, so raw
-				// text is used as-is for them.
-				if toolDef := session.GetToolDef(baseTool); toolDef != nil {
-					command = strings.TrimSpace(toolDef.Command + " " + extra)
-				} else {
-					command = raw
-				}
+				command = raw
 				note = fmt.Sprintf(
 					"detected subcommand-shaped argument %q after tool '%s' — running "+
 						"the command as-is with no session/permission flag injection "+
@@ -186,11 +183,49 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 	return toolName, command, wrapper, note, nil
 }
 
-// isFlagShapedToken reports whether tok looks like a CLI flag ("-x",
-// "--model", "--model=opus") rather than a subcommand or positional
-// argument. A bare "-" (stdin marker) does not count as flag-shaped.
-func isFlagShapedToken(tok string) bool {
-	return len(tok) > 1 && tok[0] == '-'
+// claudeKnownSubcommands / codexKnownSubcommands are the real CLI subcommands
+// of the two builtins whose own command builders inject agent-deck flags
+// (--session-id, permission-mode, --yolo, --model, …) ahead of any trailing
+// text. A --cmd whose first extra-args token exactly matches one of these
+// gets routed through unmodified instead of via wrapper-suffix flag
+// injection (#1800). This is deliberately a fixed, maintained list rather
+// than "anything that isn't flag-shaped" — see resolveSessionCommand's doc.
+// A future claude/codex subcommand not yet listed here falls back to the
+// wrapper-suffix path and can still reproduce #1800's ordering bug; that is
+// an accepted, bounded gap (same trade-off already accepted for a root flag
+// preceding a subcommand, e.g. "claude --debug remote-control") in exchange
+// for never misrouting an ordinary positional prompt.
+var claudeKnownSubcommands = map[string]bool{
+	"mcp":            true,
+	"plugin":         true,
+	"install":        true,
+	"remote-control": true,
+	"update":         true,
+	"doctor":         true,
+	"config":         true,
+}
+
+var codexKnownSubcommands = map[string]bool{
+	"mcp":    true,
+	"exec":   true,
+	"login":  true,
+	"logout": true,
+	"apply":  true,
+	"resume": true,
+}
+
+// isKnownSubcommandToken reports whether tok is a real subcommand of the
+// given builtin tool. Returns false for any tool other than claude/codex —
+// see resolveSessionCommand's doc for why only those two need this check.
+func isKnownSubcommandToken(tool, tok string) bool {
+	switch tool {
+	case "claude":
+		return claudeKnownSubcommands[tok]
+	case "codex":
+		return codexKnownSubcommands[tok]
+	default:
+		return false
+	}
 }
 
 // splitShellTokens performs minimal POSIX-ish tokenization of s: splits on

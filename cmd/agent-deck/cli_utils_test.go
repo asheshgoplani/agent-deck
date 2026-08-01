@@ -412,7 +412,7 @@ func TestResolveSessionCommand_PlainClaudeUnaffected(t *testing.T) {
 // extra arg (`-c "reviewbot serve"`) — not the literal, possibly
 // non-existent-on-PATH tool name the user typed, which is what the raw text
 // happens to spell for a built-in tool but is NOT true for a custom one.
-func TestResolveSessionCommand_CustomToolSubcommand_ResolvesConfiguredCommand(t *testing.T) {
+func TestResolveSessionCommand_CustomToolSubcommand_UsesWrapperSuffix(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -430,22 +430,71 @@ func TestResolveSessionCommand_CustomToolSubcommand_ResolvesConfiguredCommand(t 
 	session.ClearUserConfigCache()
 	t.Cleanup(session.ClearUserConfigCache)
 
+	// Regression test for the Codex bot P1 review finding on PR #1821 (round
+	// 1): an earlier version of this fix routed ANY non-flag-shaped first
+	// token through the no-injection passthrough, including for custom
+	// tools, and replaced the raw typed tool name with a made-up
+	// "toolDef.Command + extra" substitution. The correct behavior needs no
+	// special-casing at all: only claude/codex are in the known-subcommand
+	// allowlist (resolveSessionCommand's doc explains why), so a custom
+	// tool's subcommand-shaped --cmd keeps using the ordinary wrapper-suffix
+	// path — which was never actually broken for custom tools, since
+	// buildGenericCommand appends a tool's dangerous_flag at the very end of
+	// the command rather than injecting it ahead of a wrapper substitution.
 	tool, command, wrapper, note, err := resolveSessionCommand("reviewbot serve", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tool != "shell" {
-		t.Fatalf("tool = %q, want shell", tool)
+	if tool != "reviewbot" {
+		t.Fatalf("tool = %q, want reviewbot (custom tools are never routed through the "+
+			"claude/codex-only subcommand passthrough)", tool)
 	}
-	if wrapper != "" {
-		t.Fatalf("wrapper = %q, want empty (no wrapper suffix for a subcommand)", wrapper)
+	if command != "/opt/bin/review-wrapper" {
+		t.Fatalf("command = %q, want the configured toolDef.Command", command)
+	}
+	wantWrapper := "{command} serve"
+	if wrapper != wantWrapper {
+		t.Fatalf("wrapper = %q, want %q (wrapper-suffix path, same as any other extra-args case)", wrapper, wantWrapper)
 	}
 	if note == "" {
-		t.Fatal("expected a note explaining the subcommand-passthrough routing")
+		t.Fatal("expected a note explaining the wrapper-suffix routing")
 	}
-	want := "/opt/bin/review-wrapper serve"
-	if command != want {
-		t.Fatalf("command = %q, want %q (the configured command, not the literal tool name)", command, want)
+}
+
+// TestResolveSessionCommand_PositionalPromptNotMisclassifiedAsSubcommand is
+// the regression test for the review finding on PR #1821 (finding #1,
+// High): an earlier version of this fix treated ANY non-flag-shaped first
+// extra-args token as a subcommand, which misfires on an ordinary
+// positional prompt — e.g. `-c 'claude "review this repo"'` — whose first
+// (and only) token isn't flag-shaped either. That version silently dropped
+// --session-id / permission-mode injection for a plain flags-then-prompt
+// invocation that had always worked correctly before #1821. The fixed
+// behavior only treats a first token as a subcommand when it exactly
+// matches the claude/codex known-subcommand allowlist; anything else keeps
+// the wrapper-suffix path (flags injected, prompt appended after).
+func TestResolveSessionCommand_PositionalPromptNotMisclassifiedAsSubcommand(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{"quoted multi-word prompt", `claude "review this repo"`},
+		{"unquoted single-word prompt", "claude review"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool, _, wrapper, _, err := resolveSessionCommand(tt.raw, "")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tool != "claude" {
+				t.Fatalf("tool = %q, want claude (a positional prompt must not be routed to shell "+
+					"passthrough, which would drop --session-id/permission-mode injection)", tool)
+			}
+			if wrapper == "" {
+				t.Fatal("expected the wrapper-suffix path (non-empty wrapper) so flags are still injected " +
+					"ahead of the prompt")
+			}
+		})
 	}
 }
 

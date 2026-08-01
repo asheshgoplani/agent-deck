@@ -257,32 +257,17 @@ func TestIssue1800_ShellPassthroughCodex_GetsAgentdeckEnv(t *testing.T) {
 	}
 }
 
-// TestIssue1800_ShellPassthroughCustomTool_ResolvesConfiguredCommand is the
-// regression test for the Codex bot review finding on PR #1821: a custom
-// tool configured with a `command` override (e.g. [tools.reviewbot].command
-// = "/opt/bin/review-wrapper") must still resolve through that configured
-// command when invoked with a subcommand-shaped extra arg
-// (`-c "reviewbot serve"`) — not fall back to the literal, possibly
-// non-existent-on-PATH tool name the user typed.
-func TestIssue1800_ShellPassthroughCustomTool_ResolvesConfiguredCommand(t *testing.T) {
-	cfg := &UserConfig{
-		MCPs:       make(map[string]MCPDef),
-		Conductors: map[string]ConductorOverrides{},
-		Groups:     map[string]GroupSettings{},
-		Tools: map[string]ToolDef{
-			"reviewbot": {Command: "/opt/bin/review-wrapper"},
-		},
-	}
-	defer resetUserConfigCache(t, cfg)()
-
-	toolDef := GetToolDef("reviewbot")
-	if toolDef == nil {
-		t.Fatal("expected reviewbot to resolve as a configured custom tool")
-	}
-	if toolDef.Command != "/opt/bin/review-wrapper" {
-		t.Fatalf("toolDef.Command = %q, want /opt/bin/review-wrapper", toolDef.Command)
-	}
-}
+// Note: a custom tool's subcommand-shaped --cmd (e.g. "reviewbot serve")
+// never reaches buildShellPassthroughCommand at all — resolveSessionCommand
+// (cmd/agent-deck/cli_utils.go) only routes claude/codex through the
+// no-flag-injection passthrough (see its doc for why only those two
+// builtins need it); a custom tool keeps the ordinary wrapper-suffix path,
+// which already resolves through toolDef.Command correctly. That is
+// covered by cli_utils_test.go's
+// TestResolveSessionCommand_CustomToolSubcommand_UsesWrapperSuffix, in the
+// package that owns resolveSessionCommand — this package only tests the
+// Tool=="shell" dispatch a *claude/codex* subcommand-passthrough instance
+// takes, so there is no custom-tool test here.
 
 // Note: the REFUSE-path coverage for an unparseable --cmd (unterminated
 // quote) lives in cmd/agent-deck/cli_utils_test.go's
