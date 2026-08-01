@@ -404,7 +404,7 @@ func TestResolveSessionCommand_PlainClaudeUnaffected(t *testing.T) {
 	}
 }
 
-// TestResolveSessionCommand_CustomToolSubcommand_ResolvesConfiguredCommand is
+// TestResolveSessionCommand_CustomToolSubcommand_UsesWrapperSuffix is
 // the regression test for the Codex bot P1 review finding on PR #1821: a
 // custom tool configured with a `command` override (e.g.
 // [tools.reviewbot].command = "/opt/bin/review-wrapper") must resolve

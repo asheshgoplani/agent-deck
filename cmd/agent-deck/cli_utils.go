@@ -151,8 +151,12 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 
 			// Only route through the no-flag-injection passthrough when the
 			// first extra token is a REAL, known claude/codex subcommand —
-			// see the allowlist rationale in the function doc above.
-			if isKnownSubcommandToken(baseTool, tokens[0]) {
+			// see the allowlist rationale in the function doc above. The
+			// length guard is defensive: today `extra` is non-empty so
+			// splitShellTokens always yields at least one token, but a
+			// future tokenizer change (e.g. treating a bare `''` as
+			// producing no token) must not turn this into a panic.
+			if len(tokens) > 0 && isKnownSubcommandToken(baseTool, tokens[0]) {
 				toolName = "shell"
 				command = raw
 				note = fmt.Sprintf(
