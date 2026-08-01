@@ -70,9 +70,10 @@ func TestIssue1793_LargePayloadVisibleInPane_IsReportedArrived(t *testing.T) {
 		wrapped.WriteString("\n")
 	}
 
+	// Index 0 is the pre-send baseline capture, the rest are post-send.
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
-		panes:    []string{"❯ " + wrapped.String()},
+		panes:    []string{"❯ \n", "❯ " + wrapped.String()},
 	}
 
 	delivery, err := sendWithRetryTarget(mock, msg, true, sendRetryOptions{
@@ -83,6 +84,32 @@ func TestIssue1793_LargePayloadVisibleInPane_IsReportedArrived(t *testing.T) {
 	}
 	if delivery != deliveryArrived {
 		t.Fatalf("delivery: want %q, got %q", deliveryArrived, delivery)
+	}
+}
+
+// TestIssue1793_IdenticalMessageAlreadyOnScreen_IsNotEvidence guards the
+// nastiest false positive available to a "is the body in the pane?" check.
+// Automated senders repeat themselves — heartbeats, inbox nudges, retries of
+// the same body. If the previous copy is still on screen, a naive containment
+// check certifies the NEXT send even when that one vanished. Only an increase
+// in occurrences counts.
+func TestIssue1793_IdenticalMessageAlreadyOnScreen_IsNotEvidence(t *testing.T) {
+	msg := bigMessage(4095)
+	// The same body is already in the pane before the send, and the pane
+	// never changes afterwards: the new send went nowhere.
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{"❯ " + msg + "\n"},
+	}
+
+	delivery, err := sendWithRetryTarget(mock, msg, true, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0,
+	})
+	if err == nil {
+		t.Fatal("a leftover copy of an identical message must not certify a send that vanished")
+	}
+	if delivery != deliveryNoEvidence {
+		t.Fatalf("delivery: want %q, got %q", deliveryNoEvidence, delivery)
 	}
 }
 

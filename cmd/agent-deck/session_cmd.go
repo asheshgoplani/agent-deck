@@ -3308,6 +3308,17 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		opts.checkDelay = 0
 	}
 
+	// Baseline for the arrival check below. Taken BEFORE the send, because
+	// "the body is on screen" is not evidence on its own: re-sending an
+	// identical message (a heartbeat, an inbox nudge, a retry) would match
+	// the previous copy still sitting in the pane and certify a send that
+	// vanished. Only an INCREASE in occurrences is evidence. Costs one pane
+	// capture, and only on the path that needs it.
+	arrivalBaseline := 0
+	if skipVerify {
+		arrivalBaseline = countMessageInPane(target, message)
+	}
+
 	if err := target.SendKeysAndEnter(message); err != nil {
 		// A refused over-long line is a distinct, actionable outcome: the
 		// transport typed nothing, so the composer is untouched and the
@@ -3325,7 +3336,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		// how a 4095-byte payload that never reached the agent was reported
 		// as `{"success":true,"delivery":"unverified"}`. Confirm the body
 		// actually reached the pane before claiming anything.
-		return verifyContentArrival(target, message, opts)
+		return verifyContentArrival(target, message, opts, arrivalBaseline)
 	}
 
 	// Verify the agent accepted Enter and began processing.
@@ -3518,7 +3529,7 @@ const arrivalStrictBytes = 1023
 // byte-exact search for a 64-character token fails on any message wider than
 // the remaining columns. Stripping whitespace from both sides restores the
 // contiguity the terminal broke.
-func verifyContentArrival(target sendRetryTarget, message string, opts sendRetryOptions) (string, error) {
+func verifyContentArrival(target sendRetryTarget, message string, opts sendRetryOptions, baseline int) (string, error) {
 	token := collapseWhitespace(messageDeliveryToken(message))
 	if token == "" {
 		// No distinctive token to look for (very short or all-whitespace
@@ -3536,10 +3547,8 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 	}
 
 	for i := 0; i < checks; i++ {
-		if raw, err := target.CapturePaneFresh(); err == nil {
-			if strings.Contains(collapseWhitespace(tmux.StripANSI(raw)), token) {
-				return deliveryArrived, nil
-			}
+		if countMessageInPane(target, message) > baseline {
+			return deliveryArrived, nil
 		}
 		if status, err := target.GetStatus(); err == nil && status == "active" {
 			return deliveryArrived, nil
@@ -3557,6 +3566,21 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 			len(message), checks)
 	}
 	return deliveryUnverified, nil
+}
+
+// countMessageInPane reports how many times the message's distinctive token
+// appears in the pane right now. Returns 0 when the pane cannot be captured
+// or the message has no usable token — a failed look is never evidence.
+func countMessageInPane(target sendRetryTarget, message string) int {
+	token := collapseWhitespace(messageDeliveryToken(message))
+	if token == "" {
+		return 0
+	}
+	raw, err := target.CapturePaneFresh()
+	if err != nil {
+		return 0
+	}
+	return strings.Count(collapseWhitespace(tmux.StripANSI(raw)), token)
 }
 
 // collapseWhitespace removes every whitespace byte, so a comparison survives

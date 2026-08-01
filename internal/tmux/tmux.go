@@ -5131,10 +5131,23 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 	return s.sendKeysChunkedFallback(target, content)
 }
 
-// pasteBufferName is the tmux buffer agent-deck stages large payloads in. A
-// fixed name (rather than tmux's numbered stack) keeps the user's copy
-// buffers untouched, and `paste-buffer -d` deletes it immediately after.
-const pasteBufferName = "agent-deck-send"
+// pasteBufferSeq makes every staged buffer name unique within this process.
+var pasteBufferSeq atomic.Uint64
+
+// pasteBufferName returns the tmux buffer name to stage one payload in.
+//
+// The name MUST be unique per send. tmux buffers are per-SERVER, not per
+// session, so a fixed name would be a cross-session data race: two concurrent
+// large sends (a conductor fanning messages out to its children is the normal
+// case) would have the second `load-buffer` overwrite the first's content
+// between its load and its paste, and the first pane would receive the other
+// session's message. pid + counter keeps concurrent senders — in this process
+// or in a second agent-deck process on the same server — off each other's
+// buffers. Named rather than using tmux's numbered stack so the user's own
+// copy buffers stay untouched.
+func pasteBufferName() string {
+	return fmt.Sprintf("agent-deck-send-%d-%d", os.Getpid(), pasteBufferSeq.Add(1))
+}
 
 // pasteToTarget delivers content through tmux's paste path: `load-buffer -`
 // reads the body from this process's stdin (no argv size limit, no shell
@@ -5142,18 +5155,23 @@ const pasteBufferName = "agent-deck-send"
 func (s *Session) pasteToTarget(target, content string) error {
 	s.invalidateCache()
 
-	load := keySenderExec(s.SocketName, "load-buffer", "-b", pasteBufferName, "-")
+	buf := pasteBufferName()
+	load := keySenderExec(s.SocketName, "load-buffer", "-b", buf, "-")
 	load.Stdin = strings.NewReader(content)
 	if err := runSendKeysBounded(load); err != nil {
+		// load-buffer can fail after partially creating the buffer (e.g. the
+		// deadline fires mid-write), so drop it rather than leaving a
+		// half-written payload sitting on the server.
+		_ = runSendKeysBounded(keySenderExec(s.SocketName, "delete-buffer", "-b", buf))
 		return fmt.Errorf("load-buffer: %w", err)
 	}
 
-	paste := keySenderExec(s.SocketName, "paste-buffer", "-d", "-b", pasteBufferName, "-t", target)
+	paste := keySenderExec(s.SocketName, "paste-buffer", "-d", "-b", buf, "-t", target)
 	if err := runSendKeysBounded(paste); err != nil {
 		// -d never ran, so the staged buffer would linger. Drop it before
 		// falling back, otherwise the fallback's content and this stale copy
 		// both sit in the buffer stack.
-		_ = runSendKeysBounded(keySenderExec(s.SocketName, "delete-buffer", "-b", pasteBufferName))
+		_ = runSendKeysBounded(keySenderExec(s.SocketName, "delete-buffer", "-b", buf))
 		return fmt.Errorf("paste-buffer: %w", err)
 	}
 	return nil
