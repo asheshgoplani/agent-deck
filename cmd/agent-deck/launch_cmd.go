@@ -41,7 +41,7 @@ func handleLaunch(profile string, args []string) {
 	groupShort := fs.String("g", "", "Group path (short)")
 	command := fs.String("cmd", "", "Tool/command to run (e.g., 'claude' or 'codex --dangerously-bypass-approvals-and-sandbox')")
 	commandShort := fs.String("c", "", "Tool/command to run (short)")
-	wrapper := fs.String("wrapper", "", "Wrapper command (use {command} to include tool command; auto-generated when --cmd includes extra args)")
+	wrapper := fs.String("wrapper", "", "Wrapper command (use {command} to include tool command; auto-generated when --cmd includes extra flags; a known claude/codex subcommand in --cmd runs as-is with no wrapper instead)")
 	message := fs.String("message", "", "Initial message to send once agent is ready")
 	messageShort := fs.String("m", "", "Initial message to send (short)")
 	messageFile := fs.String("message-file", "", "Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts")

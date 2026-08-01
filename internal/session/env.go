@@ -122,8 +122,12 @@ func (i *Instance) buildEnvSourceCommand() string {
 	//    the env_file source (step 4) so an inline key deterministically
 	//    wins over the same key from the file; the conductor map is applied
 	//    over the group map (CFG-08 precedence: conductor > group). Same
-	//    tool gate as the claude branch of getToolEnvFile.
-	if i.Tool == "claude" {
+	//    tool gate as the claude branch of getToolEnvFile. Uses
+	//    instInvokesClaudeBinary (not a bare i.Tool == "claude" check) so a
+	//    Tool=="shell" claude-subcommand-passthrough instance (#1800/#1821)
+	//    gets the same group/conductor claude env a direct claude session
+	//    would.
+	if instInvokesClaudeBinary(i) {
 		if claudeEnv := i.getClaudeInlineEnv(config); claudeEnv != "" {
 			sources = append(sources, claudeEnv)
 		}
@@ -566,7 +570,19 @@ func (i *Instance) getToolEnvFile() string {
 		return ""
 	}
 
-	switch i.Tool {
+	// #1800/#1821: resolve a Tool=="shell" claude/codex subcommand-passthrough
+	// instance to its real binary before the switch, so it gets the same
+	// env_file resolution a direct claude/codex session gets instead of
+	// silently falling through to the "unknown tool" default case below.
+	effectiveTool := i.Tool
+	switch {
+	case instInvokesClaudeBinary(i):
+		effectiveTool = "claude"
+	case instInvokesCodexBinary(i):
+		effectiveTool = "codex"
+	}
+
+	switch effectiveTool {
 	case "claude":
 		// Conductor block wins over group (CFG-08 precedence chain).
 		// NOTE: This is separate from getConductorEnv below which sources
@@ -776,6 +792,25 @@ func instInvokesClaudeBinary(inst *Instance) bool {
 		return false
 	}
 	return MatchTool(inst.Command) == "claude"
+}
+
+// instInvokesCodexBinary is instInvokesClaudeBinary's codex counterpart:
+// reports whether inst spawns the real codex binary, either directly
+// (Tool == "codex") or as a Tool=="shell" subcommand-passthrough instance
+// (#1800/#1821, e.g. `-c "codex mcp list"`). Used to extend codex's own
+// group/conductor env-file resolution (getToolEnvFile) to a shell-routed
+// codex subcommand the same way instInvokesClaudeBinary extends claude's.
+func instInvokesCodexBinary(inst *Instance) bool {
+	if inst == nil {
+		return false
+	}
+	if inst.Tool == "codex" {
+		return true
+	}
+	if inst.Tool != "shell" {
+		return false
+	}
+	return MatchTool(inst.Command) == "codex"
 }
 
 // ScrubProcessEnvForChildLaunch removes TELEGRAM_* vars from the

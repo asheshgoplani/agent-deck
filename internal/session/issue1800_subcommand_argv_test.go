@@ -255,6 +255,47 @@ func TestIssue1800_ShellPassthroughCodex_GetsAgentdeckEnv(t *testing.T) {
 	if !strings.HasSuffix(cmd, inst.Command) {
 		t.Fatalf("expected the codex subcommand to run verbatim with no flag injection, got: %s", cmd)
 	}
+	// Review finding on PR #1821: AGENTDECK_TOOL must reflect the real
+	// spawned binary ("codex", from MatchTool), not the routing tool
+	// ("shell") — hook subprocesses that key off AGENTDECK_TOOL=="codex"
+	// would otherwise silently stop matching for every shell-routed codex
+	// subcommand.
+	if !strings.Contains(cmd, "AGENTDECK_TOOL=codex") {
+		t.Fatalf("expected AGENTDECK_TOOL=codex (the matched binary identity), not the routing "+
+			"Tool=%q; got: %s", inst.Tool, cmd)
+	}
+	if strings.Contains(cmd, "AGENTDECK_TOOL=shell") {
+		t.Fatalf("AGENTDECK_TOOL must not leak the routing tool name \"shell\"; got: %s", cmd)
+	}
+}
+
+// TestIssue1800_ShellPassthroughCodex_ShellEscapesTitle is the regression
+// test for the Major/Security review finding on PR #1821: an earlier
+// version of buildShellPassthroughCommand's codex branch injected
+// AGENTDECK_TITLE with Go's %q, which quotes for Go syntax, not shell
+// syntax — a double-quoted string is still subject to shell $(...) /
+// backtick command substitution, so a session title an attacker (or
+// careless user) set to something like `x$(touch /tmp/pwned)` would run
+// arbitrary code at every spawn of a shell-routed codex subcommand
+// session. shellescape.Quote (single-quoted, escape-safe) closes that.
+func TestIssue1800_ShellPassthroughCodex_ShellEscapesTitle(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	inst := NewInstanceWithTool("codex-sub", t.TempDir(), "shell")
+	inst.Title = "x$(touch /tmp/pwned)"
+	inst.Command = "codex mcp list"
+
+	cmd := inst.buildShellPassthroughCommand(inst.Command)
+	if strings.Contains(cmd, "$(touch") {
+		t.Fatalf("session title's $(...) must be shell-escaped, not passed through live "+
+			"inside a double-quoted AGENTDECK_TITLE; got: %s", cmd)
+	}
 }
 
 // Note: a custom tool's subcommand-shaped --cmd (e.g. "reviewbot serve")

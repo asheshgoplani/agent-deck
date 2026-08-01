@@ -3129,7 +3129,9 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 		configDirPrefix := ""
 		if IsClaudeConfigDirExplicitForInstance(i) {
 			configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
-			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
+			// Shell-quote: configDir is a filesystem path and may contain
+			// spaces (e.g. a macOS $HOME with a space in the username).
+			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(configDir))
 		}
 		execEnvPrefix := ""
 		if flags := telegramExecEnvStripFlags(i); flags != "" {
@@ -3137,12 +3139,20 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 		}
 		return envPrefix + instanceIDPrefix + configDirPrefix + execEnvPrefix + baseCommand
 	case "codex":
-		agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
-			i.ID, i.Title, i.Tool, shellescape.Quote(sessionProfileEnvValue()))
+		// AGENTDECK_TOOL uses `matched` ("codex"), not i.Tool (which is
+		// "shell" for this passthrough instance) — buildCodexCommand's
+		// equivalent injection uses the real codex identity so hook
+		// subprocesses that key off AGENTDECK_TOOL=="codex" still find it.
+		// AGENTDECK_TITLE is shell-quoted (not Go-%q-quoted): i.Title is
+		// user-editable and %q does not stop $(...) / backtick command
+		// substitution inside the double quotes it produces — a title like
+		// `x$(touch /tmp/pwned)` would execute at every spawn otherwise.
+		agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%s AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
+			i.ID, shellescape.Quote(i.Title), matched, shellescape.Quote(sessionProfileEnvValue()))
 		codexHomePrefix := ""
 		if isCodexHomeExplicit() {
 			if codexHome := strings.TrimSpace(getCodexHomeDir()); codexHome != "" {
-				codexHomePrefix = "CODEX_HOME=" + codexHome + " "
+				codexHomePrefix = "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
 			}
 		}
 		return envPrefix + agentdeckEnvPrefix + codexHomePrefix + baseCommand
