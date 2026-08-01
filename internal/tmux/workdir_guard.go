@@ -181,14 +181,14 @@ const (
 // an unlinked cwd as "/path (deleted)" and macOS reports the stale path
 // verbatim; both fail the stat, so both are caught.
 func classifyPaneCwd(requested, panePath string) paneCwdVerdict {
-	// Strip only the newline tmux's display-message output is terminated
-	// with, never plain spaces — a real directory name may legitimately have
-	// them, and stripping would compare requested (space-preserving) against
-	// a shortened panePath, producing a false paneCwdDeleted/paneCwdElsewhere
-	// verdict for a healthy pane. A result that is blank once spaces are also
-	// considered (empty, or all-whitespace) is treated as no real report at
-	// all — that judgment uses TrimSpace only to decide emptiness, the value
-	// actually stat()ed below keeps its interior/trailing spaces intact.
+	// Strip only newline/tab/control framing (never plain spaces) — a real
+	// directory name may legitimately have them, and stripping would compare
+	// requested (space-preserving) against a shortened panePath, producing a
+	// false paneCwdDeleted/paneCwdElsewhere verdict for a healthy pane. A
+	// result that is blank once spaces are also considered (empty, or
+	// all-whitespace) is treated as no real report at all — that judgment
+	// uses TrimSpace only to decide emptiness; the value actually stat()ed
+	// below keeps its interior/trailing spaces intact.
 	panePath = strings.Trim(panePath, "\n\r\t\v\f")
 	if strings.TrimSpace(panePath) == "" {
 		return paneCwdUnknown
