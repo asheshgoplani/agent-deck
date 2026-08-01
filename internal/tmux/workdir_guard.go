@@ -92,7 +92,13 @@ var ErrPaneCwdDeleted = errors.New("tmux pane started in a deleted working direc
 // an absolute path is the only form the pane-cwd verification below can compare
 // against.
 func resolveStartWorkDir(workDir string) (string, error) {
-	dir := strings.TrimSpace(workDir)
+	// Trim only newline/tab/control whitespace picked up from config files or
+	// flag parsing — never plain spaces. POSIX directory names may legitimately
+	// contain leading/trailing spaces; stripping those would silently retarget
+	// the start to a different (possibly nonexistent-vs-existent) path than the
+	// one actually recorded for the session, which is exactly the class of
+	// wrong-directory failure this guard exists to catch.
+	dir := strings.Trim(workDir, "\n\r\t\v\f")
 	if dir == "" {
 		return "", fmt.Errorf(
 			"%w: no working directory is recorded for this session and $HOME is unset — "+
@@ -110,18 +116,22 @@ func resolveStartWorkDir(workDir string) (string, error) {
 		dir = abs
 	}
 
-	// CodeQL go/path-injection: dir traces back to Session.WorkDir, which is
-	// only ever set by local CLI/TUI flows on the operator's own machine
-	// (internal/ui/home.go, internal/tmux/tmux.go, internal/session/storage.go
-	// — grepped, none reachable from internal/web), never from an HTTP request
-	// or other remote-attacker-controlled input. There is also no "safe base
-	// directory" to contain dir within the way #1771's fix does for
-	// skills_catalog.go's manifest-derived targets — a session's working
-	// directory is meant to be able to name any directory on disk, so a
-	// containment check would just be wrong. This Stat only checks existence
-	// (see the os.IsNotExist branch below); it never reads, writes, or reveals
-	// file contents. Genuinely safe by construction.
-	info, err := os.Stat(dir) // lgtm[go/path-injection] -- local session-owner path, existence check only, see comment above
+	// CodeQL go/path-injection: dir traces back to Session.WorkDir, which IS
+	// reachable from POST /api/sessions (CreateSessionRequest.ProjectPath in
+	// internal/web/handlers_sessions.go -> WebMutator.CreateSession ->
+	// tmux.NewSession) — not local-CLI-only as an earlier pass through this
+	// file claimed. Accepted, not a false positive: that endpoint requires
+	// WebMutations enabled plus token auth, binds 127.0.0.1 by default, and
+	// refuses non-loopback requests without a token (internal/web/server.go);
+	// it already authorizes running an arbitrary agent process at the
+	// supplied path, a strictly greater capability than this existence-only
+	// Stat. There is also no "safe base directory" to contain dir within the
+	// way #1771's fix does for skills_catalog.go's manifest-derived targets —
+	// a session's working directory is meant to be able to name any directory
+	// on disk, so a containment check would just be wrong here. This Stat
+	// only checks existence (see the os.IsNotExist branch below); it never
+	// reads, writes, or reveals file contents.
+	info, err := os.Stat(dir) // lgtm[go/path-injection] -- accepted, existence check only, see comment above
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", fmt.Errorf(
@@ -185,7 +195,9 @@ func classifyPaneCwd(requested, panePath string) paneCwdVerdict {
 // symlinked prefixes (macOS reports /private/tmp/x for /tmp/x).
 //
 // CodeQL go/path-injection: a is the already-validated requested workDir (see
-// resolveStartWorkDir's comment — local session-owner path, no remote input);
+// resolveStartWorkDir's comment above — reachable from POST /api/sessions,
+// but gated by WebMutations+token+loopback and strictly weaker than that
+// endpoint's own authorized capability, accepted not false-positive);
 // b is panePath, tmux's own report of #{pane_current_path} for a pane this
 // process just created. Both Stat calls only check existence/identity, never
 // read or write file contents.
@@ -193,7 +205,7 @@ func sameDirectory(a, b string) bool {
 	if a == b {
 		return true
 	}
-	ai, err := os.Stat(a) // lgtm[go/path-injection] -- local session-owner path, see doc above
+	ai, err := os.Stat(a) // lgtm[go/path-injection] -- accepted, see doc above
 	if err != nil {
 		return false
 	}
@@ -273,9 +285,16 @@ func (s *Session) verifyPaneWorkDir(workDir string) error {
 		return deletedPaneCwdError(s.SocketName, workDir, panePath)
 	case paneCwdElsewhere:
 		// Not a failure: a pane command may legitimately change directory
-		// (the fork/multi-repo paths build a `cd <dir> && …` command), and
-		// tmux's $HOME substitution is already prevented by
-		// resolveStartWorkDir. Logged so the mismatch is diagnosable.
+		// (the fork/multi-repo paths build a `cd <dir> && …` command).
+		// resolveStartWorkDir's pre-flight Stat rules out tmux's $HOME
+		// substitution for the common case, but not a TOCTOU race — if
+		// workDir is removed between that Stat and this pane actually
+		// spawning, tmux still substitutes $HOME and lands here as
+		// "elsewhere" rather than "deleted", so this warn-only path is a
+		// known gap, not a closed one. Kept warn-only deliberately (the
+		// legitimate cd-elsewhere case is far more common than the race),
+		// but a mismatch landing exactly on $HOME deserves scrutiny over one
+		// landing anywhere else. Logged either way so it is diagnosable.
 		statusLog.Warn("pane_cwd_differs_from_requested",
 			slog.String("session", logging.SanitizeValue(s.Name)),
 			slog.String("requested_workdir", logging.SanitizeValue(workDir)),
