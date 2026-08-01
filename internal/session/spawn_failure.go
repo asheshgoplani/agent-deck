@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/safeio"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -270,15 +271,19 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 		i.commitSpawnWatchWrite(gen, func() {
 			if err := writeSpawnFailureRecordTo(rec, failureDir); err != nil {
 				logger.Warn("spawn_failure_record_write_failed",
-					slog.String("instance_id", id),
-					slog.String("error", err.Error()))
+					slog.String("instance_id", logging.SanitizeValue(id)),
+					slog.String("error", logging.SanitizeValue(err.Error())))
 			}
+			// Every value here is session-supplied: the tool and command come
+			// from user config, and dying_output is raw captured pane content —
+			// newlines and control characters in it would otherwise forge log
+			// records (CodeQL go/log-injection).
 			logger.Error("spawn_died_fast",
-				slog.String("instance_id", id),
-				slog.String("tool", tool),
-				slog.String("command", command),
+				slog.String("instance_id", logging.SanitizeValue(id)),
+				slog.String("tool", logging.SanitizeValue(tool)),
+				slog.String("command", logging.SanitizeValue(command)),
 				slog.Int64("elapsed_ms", elapsed),
-				slog.String("dying_output", lastSnapshot))
+				slog.String("dying_output", logging.SanitizeValue(lastSnapshot)))
 			_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
 				InstanceID: id,
 				Tool:       tool,

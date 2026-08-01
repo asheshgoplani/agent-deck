@@ -544,7 +544,9 @@ func (i *Instance) newSpawnGenWatch() (uint64, <-chan struct{}) {
 // the new generation and suppress itself, and any write that already holds it
 // completes before this returns. Unlike joining the goroutine, this waits only
 // on file I/O — a watcher parked in a wedged tmux call is not something a
-// deliberate stop should ever wait for.
+// deliberate stop should ever wait for. It does wait on the watcher's own file
+// writes and log line — bounded, local I/O on the same paths the caller is
+// about to touch anyway.
 func (i *Instance) bumpSpawnGenAndBarrier() uint64 {
 	gen, _ := i.bumpSpawnGen(false)
 	i.spawnWriteMu.Lock()
@@ -7100,14 +7102,15 @@ func (i *Instance) restart(env map[string]string) error {
 
 	mcpLog.Debug("restart_fallback_recreate")
 
+	// #1775: supersede any in-flight fast-death watcher from the old spawn
+	// before touching its tmux session. Unconditionally, not inside the
+	// Exists() branch below: a watcher whose session has ALREADY vanished is
+	// exactly the one about to record a spurious spawn_died_fast, and it would
+	// otherwise stay current all the way to the eventual bump inside Start().
+	i.bumpSpawnGenAndBarrier()
+
 	// Kill old tmux session to prevent orphans before recreating (#138)
 	if i.tmuxSession != nil && i.tmuxSession.Exists() {
-		// #1775: supersede any in-flight fast-death watcher from the old
-		// spawn BEFORE killing its tmux session — recreateTmuxSession() below
-		// and the eventual Start() leave a gap before the next bump, wide
-		// enough for a stale watcher to see Exists()==false and record a
-		// spurious spawn_died_fast for a deliberate restart.
-		i.bumpSpawnGenAndBarrier()
 		mcpLog.Debug("restart_killing_old_session", slog.String("session_name", i.tmuxSession.Name))
 		if killErr := i.tmuxSession.Kill(); killErr != nil {
 			mcpLog.Warn("restart_kill_old_session_failed", slog.String("error", killErr.Error()))
@@ -7273,11 +7276,12 @@ func (i *Instance) RestartFresh() error {
 
 	i.clearSessionBindingForFreshStart()
 
+	// #1775: same reasoning as the restart-fallback-recreate path above, and
+	// likewise unconditional — an old watcher whose session is already gone is
+	// the one most likely to write a spurious failure.
+	i.bumpSpawnGenAndBarrier()
+
 	if i.tmuxSession != nil && i.tmuxSession.Exists() {
-		// #1775: same reasoning as the restart-fallback-recreate path above —
-		// bump before kill so a stale watcher can't outlive the gap between
-		// this Kill() and the eventual gen bump inside Start().
-		i.bumpSpawnGenAndBarrier()
 		if killErr := i.tmuxSession.Kill(); killErr != nil {
 			mcpLog.Warn("restart_fresh_kill_old_session_failed", slog.String("error", killErr.Error()))
 		}
