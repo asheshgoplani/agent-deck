@@ -1,5 +1,7 @@
 package send
 
+import "strings"
+
 // EnterAttribution is the single chokepoint every automated bare-Enter press
 // must route through (issue #1777).
 //
@@ -116,7 +118,7 @@ func (a EnterAttribution) EnterWouldSubmitForeignDraft(c PaneCapture, strip func
 		// Empty composer, suggestion, or placeholder: Enter submits nothing.
 		return false
 	}
-	if a.Message != "" && HasUnsentComposerPrompt(strip(raw), a.Message) {
+	if a.Message != "" && composerBodyIsOurMessage(strip(raw), a.Message) {
 		// The composer holds agent-deck's own payload verbatim: attributable.
 		return false
 	}
@@ -152,4 +154,53 @@ func orIdentity(strip func(string) string) func(string) string {
 		return func(s string) string { return s }
 	}
 	return strip
+}
+
+// composerBodyIsOurMessage reports whether the composer body currently
+// visible in content is agent-deck's own message — not merely a FOREIGN
+// draft that happens to contain it.
+//
+// send.go's HasUnsentComposerPrompt is intentionally loose for its own
+// callers (the send-verify retry loop, deciding whether a resend is still
+// needed): it matches on bare `strings.Contains(promptBody, msg)` and, as a
+// last resort, on any 32-char prefix of msg appearing anywhere in the
+// prompt body. A false positive there just skips a resend — recoverable.
+// This function backs the attribution gate instead, where a false positive
+// presses Enter on text nobody authored — unrecoverable. It therefore keeps
+// only the prefix-anchored matches (composer holds our message verbatim, or
+// the wrapped first visual line is a genuine prefix of it) and drops the
+// bare-containment and 32-char-substring branches entirely: e.g. a foreign
+// autosuggestion "continue the refactor and delete the stale worktrees"
+// must not be classified as attributable just because it contains the short
+// message "continue" (#1778 review finding 1).
+func composerBodyIsOurMessage(content, message string) bool {
+	msg := NormalizePromptText(message)
+	if msg == "" {
+		return false
+	}
+	promptBody, hasPrompt := CurrentComposerPrompt(content)
+	if !hasPrompt {
+		return false
+	}
+	promptBody = NormalizePromptText(promptBody)
+	if promptBody == "" {
+		return false
+	}
+
+	// Composer holds our message verbatim (or our message plus trailing
+	// characters the terminal echoed, e.g. a cursor glyph).
+	if promptBody == msg || strings.HasPrefix(promptBody, msg) {
+		return true
+	}
+
+	// Wrapped prompts: Claude often shows only the first visual line of the
+	// current composer input. A substantial prefix match is safe because it
+	// can only agree with OUR message, not an unrelated foreign one, absent
+	// a coincidence over minWrappedPrefixLen characters.
+	const minWrappedPrefixLen = 16
+	if len(promptBody) >= minWrappedPrefixLen && strings.HasPrefix(msg, promptBody) {
+		return true
+	}
+
+	return false
 }

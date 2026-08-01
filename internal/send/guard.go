@@ -124,6 +124,29 @@ const maxComposerClearAttempts = 2
 // settle is enough for the attribute to land before re-classification.
 const saveReconfirmDelay = 50 * time.Millisecond
 
+// composerProvenanceFree reports whether raw is safe pre-send evidence that
+// no foreign paste marker is parked in the composer — the same guarantee
+// ComposerPasteMarkerFree promises callers (issue #1777 provenance).
+//
+// A VISIBLE, EMPTY composer proves it directly. An UNSCOPABLE pane
+// (!visible — codex/cursor, or a transiently unreadable Claude pane) must
+// NOT be folded into that case: ComposerHoldsPasteMarker makes the OPPOSITE
+// call on purpose for !visible, falling back to a whole-pane scan, because
+// "no composer to scope to" yields no usable provenance on its own. Before
+// this fix GuardComposerDraft (the producer for the highest-volume send
+// path) granted provenance on any !visible read regardless, disagreeing
+// with ComposerHoldsPasteMarker on the identical pane state and letting a
+// foreign marker that renders later be misattributed as ours (#1778 review
+// finding 2). Mirror ComposerHoldsPasteMarker's choice here so the two
+// producers of this evidence never disagree.
+func composerProvenanceFree(raw string, strip func(string) string) bool {
+	draft, visible := ComposerDraft(raw, strip)
+	if visible {
+		return draft == ""
+	}
+	return !ComposerHoldsPasteMarker(raw, strip)
+}
+
 // GuardComposerDraft implements the composer-collision guard for automated
 // sends (issue #1409): an automated SendKeysAndEnter against a composer that
 // already holds half-typed operator input would merge with it and submit the
@@ -158,10 +181,7 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 			// Pane not introspectable: never block delivery on it.
 			return ComposerGuardResult{Held: time.Since(start)}
 		}
-		draft, visible := ComposerDraft(raw, strip)
-		if !visible || draft == "" {
-			// Composer empty, suggestion or absent: no parked paste marker,
-			// so a marker seen after the send belongs to our own paste.
+		if composerProvenanceFree(raw, strip) {
 			return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
 		}
 		if !time.Now().Before(deadline) {
@@ -189,10 +209,10 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 	if err != nil {
 		return ComposerGuardResult{Held: time.Since(start)}
 	}
-	draft, visible := ComposerDraft(raw, strip)
-	if !visible || draft == "" {
+	if composerProvenanceFree(raw, strip) {
 		return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
 	}
+	draft, _ := ComposerDraft(raw, strip)
 
 	// Save the confirmed operator draft and clear the composer so the
 	// automated message cannot merge with it.

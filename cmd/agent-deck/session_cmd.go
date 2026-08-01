@@ -3505,8 +3505,6 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				// visible but the input handler wasn't ready, so sent keys were
 				// discarded. Clear stale input and re-send the full message.
 				if waitingNoActivityChecks >= fullResendThreshold && fullResendCount < maxFullResends {
-					fullResendCount++
-					waitingNoActivityChecks = 0
 					// The resend types the message and presses Enter, so it
 					// submits whatever the composer still holds. Ctrl+C is
 					// meant to empty it first — but a failed Ctrl+C, or one
@@ -3514,6 +3512,16 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 					// submitted with our payload appended (#1777). Re-read
 					// the pane and skip the resend unless the composer is
 					// verifiably clear of content we cannot attribute.
+					//
+					// fullResendCount and waitingNoActivityChecks are consumed
+					// below, ONLY once a resend is actually about to fire —
+					// not here. Either abort path (Ctrl+C error, or a pane
+					// that still reads as foreign after it) sends nothing, so
+					// charging the finite resend budget or resetting the
+					// waiting-check counter here would burn a scarce slot for
+					// no send and force a fresh fullResendThreshold wait
+					// before the next attempt, right after Ctrl+C may have
+					// already wiped the composer (#1778 review finding 3).
 					if ctrlCErr := target.SendCtrlC(); ctrlCErr != nil {
 						continue
 					}
@@ -3522,6 +3530,8 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 						send.CaptureOutcome(target.CapturePaneFresh()), tmux.StripANSI) {
 						continue
 					}
+					fullResendCount++
+					waitingNoActivityChecks = 0
 					// A successful resend is not yet evidence of receipt — the
 					// next iteration must still observe a positive signal — so
 					// we intentionally do NOT set sawDeliveryEvidence here, even
