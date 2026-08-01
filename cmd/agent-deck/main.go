@@ -2550,6 +2550,12 @@ func handleStatus(profile string, args []string) {
 	quiet := fs.Bool("quiet", false, "Only output waiting count (for scripts)")
 	quietShort := fs.Bool("q", false, "Only output waiting count (short)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	// --stale (#1704): read-only lifecycle candidate view. See status_stale.go
+	// for the heuristics (never-started / bash-idle / last-activity) and the
+	// hard suggest-only constraint — this flag branches out before any of the
+	// counting/printing logic below and never mutates a session.
+	stale := fs.Bool("stale", false, "Show read-only stale-session candidates (never stops or removes anything)")
+	staleThreshold := fs.String("threshold", defaultStaleThreshold.String(), "Staleness age threshold for --stale, e.g. 24h, 48h, 168h (Go duration syntax)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck status [options]")
@@ -2564,10 +2570,32 @@ func handleStatus(profile string, args []string) {
 		fmt.Println("  agent-deck status -v           # Detailed list")
 		fmt.Println("  agent-deck status -q           # Just waiting count")
 		fmt.Println("  agent-deck -p work status      # Status for 'work' profile")
+		fmt.Println("  agent-deck status --stale                  # Read-only stale-candidate view (never-started/bash-idle/last-activity)")
+		fmt.Println("  agent-deck status --stale --threshold 48h  # Widen the staleness window")
+		fmt.Println("  agent-deck status --stale --json           # Machine-readable candidates, for agents")
+		fmt.Println()
+		fmt.Println("--stale --json shape:")
+		fmt.Println(`  {"threshold_seconds":86400,"total":5,"stale_count":2,"note":"...",`)
+		fmt.Println(`   "candidates":[{"id":"...","title":"...","tool":"...","status":"idle",`)
+		fmt.Println(`     "substate":"...","path":"...","group_path":"...","parent_session_id":"...",`)
+		fmt.Println(`     "reasons":["never-started"],"never_started":true,"created_at":"...",`)
+		fmt.Println(`     "last_started_at":"...","last_activity_at":"...","last_activity_age_seconds":90000}]}`)
+		fmt.Println("  --stale is READ-ONLY: it never stops or removes a session. Review candidates,")
+		fmt.Println("  then act yourself via `session stop`/`session remove`.")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
+	}
+
+	if *stale {
+		threshold, err := time.ParseDuration(*staleThreshold)
+		if err != nil {
+			fmt.Printf("Error: invalid --threshold %q: %v\n", *staleThreshold, err)
+			os.Exit(1)
+		}
+		runStatusStale(profile, threshold, *jsonOutput)
+		return
 	}
 
 	// Load sessions
