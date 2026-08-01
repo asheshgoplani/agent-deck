@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -213,7 +214,7 @@ func TestLatestAssistantTurnIsRateLimited_ReadsEachByteOnce(t *testing.T) {
 
 	var chunkBytes, lineBytes int64
 	prevStart := info.Size()
-	chunks := 0
+	chunks, lineEvents := 0, 0
 	for n, r := range reads {
 		switch r.Kind {
 		case "chunk":
@@ -225,11 +226,21 @@ func TestLatestAssistantTurnIsRateLimited_ReadsEachByteOnce(t *testing.T) {
 			if r.End-r.Start > usageLimitScanChunkBytes {
 				t.Fatalf("chunk read %d spans %d bytes, over the %d-byte bound", n, r.End-r.Start, usageLimitScanChunkBytes)
 			}
-			chunkBytes += r.End - r.Start
+			chunkBytes += r.Bytes
 			prevStart = r.Start
 		case "line":
-			lineBytes += r.End - r.Start
+			lineEvents++
+			lineBytes += r.Bytes
 		}
+	}
+
+	// PREMISE FIRST. #1806 cycle-7 caught that without this the bound below is
+	// vacuous: a walker that never reads candidate lines emits no line events, so
+	// lineBytes stays 0 and "0 > size" is trivially false. The bound only means
+	// something once line work is known to have been observed at all.
+	if lineEvents == 0 || lineBytes == 0 {
+		t.Fatalf("no candidate-line work observed (%d events, %d bytes); the bound below would be vacuous",
+			lineEvents, lineBytes)
 	}
 	if chunks < 100 {
 		t.Fatalf("only %d chunk reads for a %d-byte file at %d-byte chunks", chunks, info.Size(), usageLimitScanChunkBytes)
@@ -308,9 +319,44 @@ func TestLatestAssistantTurnIsRateLimited_DoesNotAllocateForEmptyTranscript(t *t
 		t.Fatalf("empty transcript performed %d reads, want 0", reads)
 	}
 
-	allocs := testing.AllocsPerRun(20, func() { _, _ = latestAssistantTurnIsRateLimited(empty, refNow) })
-	if allocs > 8 {
-		t.Fatalf("empty transcript allocated %.0f times per scan; a chunk buffer is being allocated before the size check", allocs)
+	// Measured in BYTES, not allocation events. #1806 cycle-7: AllocsPerRun counts
+	// events, so the old always-full 512 KiB buffer was a single event and slipped
+	// under any count threshold. Bytes are the quantity that actually differs.
+	bytesPerScan := func(path string) int64 {
+		const runs = 50
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for n := 0; n < runs; n++ {
+			_, _ = latestAssistantTurnIsRateLimited(path, refNow)
+		}
+		runtime.ReadMemStats(&after)
+		return int64(after.TotalAlloc-before.TotalAlloc) / runs
+	}
+
+	if usageLimitScanChunkBytes != defaultUsageLimitScanChunkBytes {
+		t.Fatalf("chunk knob is %d, but the bounds below are written against the %d default",
+			usageLimitScanChunkBytes, defaultUsageLimitScanChunkBytes)
+	}
+
+	// A full chunk buffer lands near 512 KiB here; the early return lands near zero.
+	if got := bytesPerScan(empty); got > 16*1024 {
+		t.Fatalf("empty transcript allocated ~%d bytes per scan; a chunk buffer is being allocated before the size check", got)
+	}
+
+	// A tiny NON-EMPTY file too: min(chunk, size) can regress independently of the
+	// empty-file early return, which the earlier version of this test never covered.
+	tiny := filepath.Join(dir, "tiny.jsonl")
+	if err := os.WriteFile(tiny, []byte(recUserAt(stampAt(-time.Minute))+"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	tinyInfo, err := os.Stat(tiny)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := bytesPerScan(tiny); got > 64*1024 {
+		t.Fatalf("a %d-byte transcript allocated ~%d bytes per scan; the buffer is not sized to min(chunk, size)",
+			tinyInfo.Size(), got)
 	}
 }
 
@@ -708,5 +754,111 @@ func TestUsageLimited_RebindDuringScanDoesNotReturnOldVerdict(t *testing.T) {
 	}
 	if got {
 		t.Fatal("returned A's verdict for an Instance rebound to B mid-scan")
+	}
+}
+
+// #1806 cycle-7 [High] #1: the helper exits (path-empty, ownership-mismatch,
+// no-verdict) read the memo without consulting the LIVE id, so an A→B rebind let B
+// receive A's verdict. The existing in-flight test cannot reach these exits — its
+// fixture forms a verdict (ok=true) and lands in the final switch — so this one uses
+// a transcript that yields NO verdict and therefore takes the no-verdict exit.
+func TestUsageLimited_HelperExitDoesNotLeakVerdictAcrossRebind(t *testing.T) {
+	const sidA = "helper-exit-A"
+	project := t.TempDir()
+	inst := NewInstanceWithTool("usage-limit-helper-exit", project, "claude")
+	inst.ClaudeSessionID = sidA
+
+	dir := filepath.Join(GetClaudeConfigDirForInstance(inst), "projects", ConvertToClaudeDirName(project))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A user record only: scanned, forms no verdict, so the no-verdict exit runs.
+	if err := os.WriteFile(filepath.Join(dir, sidA+".jsonl"),
+		[]byte(recUserAt(stampAt(-time.Minute))+"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if locateHandoffTranscript(inst) == "" {
+		t.Skip("resolver did not find the fixture; environment-dependent")
+	}
+
+	inst.mu.Lock()
+	inst.usageLimitSessionID = sidA
+	inst.usageLimitedCached = true // A is limited
+	inst.lastUsageLimitScanAt = time.Time{}
+	inst.mu.Unlock()
+
+	rebound := false
+	usageLimitScanObserver = func(usageLimitScanRead) {
+		if rebound {
+			return
+		}
+		rebound = true
+		inst.mu.Lock()
+		inst.ClaudeSessionID = "helper-exit-B"
+		inst.mu.Unlock()
+	}
+	defer func() { usageLimitScanObserver = nil }()
+
+	got := inst.usageLimited()
+	if !rebound {
+		t.Fatal("premise broken: no read happened, so no rebind was injected mid-scan")
+	}
+	if got {
+		t.Fatal("the no-verdict exit returned A's verdict for an Instance rebound to B")
+	}
+}
+
+// #1806 cycle-7 [High] #2: the generation-mismatch default read the memo without
+// checking the memo KEY, so in an A→B→A sequence — B claims and publishes while A is
+// still in I/O, then live returns to A — scan A returned B's verdict. Reproduced by
+// simulating B's claim and publication from inside the scan.
+func TestUsageLimited_GenerationMismatchDoesNotLeakOtherSessionVerdict(t *testing.T) {
+	const sidA = "gen-mismatch-A"
+	project := t.TempDir()
+	inst := NewInstanceWithTool("usage-limit-gen-mismatch", project, "claude")
+	inst.ClaudeSessionID = sidA
+
+	dir := filepath.Join(GetClaudeConfigDirForInstance(inst), "projects", ConvertToClaudeDirName(project))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A fresh rejection, so this scan forms a verdict and reaches the final switch.
+	if err := os.WriteFile(filepath.Join(dir, sidA+".jsonl"),
+		[]byte(recRateLimitAt(stampAt(-time.Minute))+"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if locateHandoffTranscript(inst) == "" {
+		t.Skip("resolver did not find the fixture; environment-dependent")
+	}
+
+	injected := false
+	usageLimitScanObserver = func(usageLimitScanRead) {
+		if injected {
+			return
+		}
+		injected = true
+		// While scan A is in flight: B claims (generation moves) and publishes its
+		// own verdict. live then returns to A before A finishes.
+		inst.mu.Lock()
+		inst.usageLimitScanGen++
+		inst.usageLimitSessionID = "gen-mismatch-B"
+		inst.usageLimitedCached = true
+		inst.ClaudeSessionID = sidA
+		inst.mu.Unlock()
+	}
+	defer func() { usageLimitScanObserver = nil }()
+
+	got := inst.usageLimited()
+	if !injected {
+		t.Fatal("premise broken: no read happened, so no interleaving was injected")
+	}
+	inst.mu.RLock()
+	key := inst.usageLimitSessionID
+	inst.mu.RUnlock()
+	if key != "gen-mismatch-B" {
+		t.Fatalf("premise broken: memo key is %q, so the generation-mismatch path was not exercised", key)
+	}
+	if got {
+		t.Fatal("the generation-mismatch default returned another session's verdict")
 	}
 }

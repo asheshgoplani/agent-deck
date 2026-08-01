@@ -115,6 +115,17 @@ const usageLimitMaxLineBytes = 1 << 20 // 1 MiB
 type usageLimitScanRead struct {
 	Kind       string
 	Start, End int64
+	// Bytes is how many bytes this event actually moved into memory: End-Start for
+	// "chunk" and "line", and 0 for "line-skipped" since the whole point of the skip
+	// is that nothing was read.
+	//
+	// Reporting WORK rather than only ranges is what lets a test see a walker that
+	// re-copies the same line once per chunk. Ranges cannot: a copy-heavy
+	// implementation can produce byte-identical chunk ranges, and one that never
+	// reads candidate lines at all emits no line events, so a bound on line bytes
+	// is vacuously satisfied. A test must therefore assert the premise that line
+	// work was observed at all.
+	Bytes int64
 }
 
 // usageLimitScanObserver is a TEST SEAM: when non-nil it receives every read the
@@ -225,7 +236,7 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 		}
 		if end-start > usageLimitMaxLineBytes {
 			if usageLimitScanObserver != nil {
-				usageLimitScanObserver(usageLimitScanRead{Kind: "line-skipped", Start: start, End: end})
+				usageLimitScanObserver(usageLimitScanRead{Kind: "line-skipped", Start: start, End: end, Bytes: 0})
 			}
 			// A line this large is a compaction/file-history snapshot, not a turn
 			// this detector can act on. Skipped WITHOUT reading it: the whole point
@@ -233,7 +244,7 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 			return false, false, false
 		}
 		if usageLimitScanObserver != nil {
-			usageLimitScanObserver(usageLimitScanRead{Kind: "line", Start: start, End: end})
+			usageLimitScanObserver(usageLimitScanRead{Kind: "line", Start: start, End: end, Bytes: end - start})
 		}
 		line := make([]byte, end-start)
 		if _, err := f.ReadAt(line, start); err != nil && err != io.EOF {
@@ -264,7 +275,7 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 		}
 		n := end - start
 		if usageLimitScanObserver != nil {
-			usageLimitScanObserver(usageLimitScanRead{Kind: "chunk", Start: start, End: end})
+			usageLimitScanObserver(usageLimitScanRead{Kind: "chunk", Start: start, End: end, Bytes: end - start})
 		}
 		if _, err := f.ReadAt(buf[:n], start); err != nil && err != io.EOF {
 			return false, false
@@ -299,21 +310,40 @@ func usageLimitPublishable(currentGen, scanGen uint64, liveSessionID, scanSessio
 	return currentGen == scanGen && liveSessionID == scanSessionID
 }
 
-// usageLimitVerdictFor reads the memo under the lock, but only if the memo was
-// formed for sessionID.
+// usageLimitVerdictFor reads the memo under the lock, and only when all three
+// identities agree: the LIVE ClaudeSessionID, the memo key, and the session this
+// scan was gated on.
 //
-// Two separate mistakes led here and both are worth naming. First, returning the
-// snapshot taken at claim time let a slow scan report a value a newer scan had
-// already superseded, so callers observed completion order inverted. Second — and
-// worse — reading the memo unconditionally was identity-blind: guarding only the
-// WRITE stopped scan A publishing after an A→B rebind but still handed A's verdict
-// back for B, because the memo key only moves when a mismatch is observed at claim
-// time. A mismatch here means "no verdict for this session", not "not limited by
-// inheritance".
-func (i *Instance) usageLimitVerdictFor(sessionID string) bool {
+// ONE invariant, stated once, because getting it partially right produced the same
+// class of bug three revisions running:
+//
+//	live == memoKey == scanID  →  the memo describes this caller's session
+//
+// Any pair alone is insufficient, and both failures were found in review rather
+// than by me:
+//
+//   - scanID vs memoKey passes during an A→B rebind — both still read "A", since
+//     the key only moves when a mismatch is observed at claim time — and hands A's
+//     verdict to B.
+//   - scanID vs live passes in an A→B→A sequence while the memo still holds B's
+//     verdict, because transcript I/O runs outside i.mu and B can claim and publish
+//     in between.
+//
+// A mismatch on any leg means "no verdict for this caller", never "not limited".
+func (i *Instance) usageLimitVerdictFor(scanSessionID string) bool {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	if i.usageLimitSessionID != sessionID {
+	return i.usageLimitVerdictForLocked(scanSessionID)
+}
+
+// usageLimitVerdictForLocked is usageLimitVerdictFor for callers already holding
+// i.mu, so the publish path can apply the identical invariant instead of an
+// open-coded approximation of it.
+func (i *Instance) usageLimitVerdictForLocked(scanSessionID string) bool {
+	if strings.TrimSpace(i.ClaudeSessionID) != scanSessionID {
+		return false
+	}
+	if i.usageLimitSessionID != scanSessionID {
 		return false
 	}
 	return i.usageLimitedCached
@@ -426,9 +456,12 @@ func (i *Instance) usageLimited() bool {
 	case usageLimitPublishable(i.usageLimitScanGen, gen, live, sessionID):
 		i.usageLimitedCached = limited
 	default:
-		// A newer claim for the SAME session landed while this read was in flight,
-		// so this result is stale — report what the memo now holds.
-		limited = i.usageLimitedCached
+		// A newer claim for the same live session landed while this read was in
+		// flight, so this result is stale. Report the memo through the SAME
+		// three-way invariant: reading usageLimitedCached directly here was
+		// identity-blind under A→B→A, where live and scan both read "A" while the
+		// memo holds B's verdict.
+		limited = i.usageLimitVerdictForLocked(sessionID)
 	}
 	i.mu.Unlock()
 
