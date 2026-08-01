@@ -329,3 +329,99 @@ func TestIssue1800_ShellPassthroughCodex_ShellEscapesTitle(t *testing.T) {
 // quote) lives in cmd/agent-deck/cli_utils_test.go's
 // TestResolveSessionCommand_RefusesUnparseableExtraArgs — that's the
 // package that owns resolveSessionCommand and the tokenizer.
+
+// TestIssue1821_ShellPassthroughClaude_HonorsConfiguredCommand is the
+// regression test for the Codex bot P1 finding on the allowlist-scoped fix
+// (PR #1821, reviewed commit 520407c): the normal claude spawn path
+// (buildClaudeCommandWithMessage) resolves a configured account-switcher
+// command (conductor/group/global [claude].command, e.g. "cdw"/"cdp") even
+// when the user literally typed "claude" — losing that for a
+// subcommand-shaped --cmd would silently run the wrong binary/account for
+// e.g. `claude remote-control`. buildShellPassthroughCommand must swap only
+// the leading "claude" word for the resolved override, leaving the
+// subcommand and its args untouched.
+func TestIssue1821_ShellPassthroughClaude_HonorsConfiguredCommand(t *testing.T) {
+	cfg := &UserConfig{
+		MCPs:       make(map[string]MCPDef),
+		Conductors: map[string]ConductorOverrides{},
+		Groups:     map[string]GroupSettings{},
+		Claude:     ClaudeSettings{Command: "cdw"},
+	}
+	defer resetUserConfigCache(t, cfg)()
+
+	inst := &Instance{
+		Title:       "launch-child",
+		Tool:        "shell",
+		Command:     "claude remote-control --name rc-test",
+		ProjectPath: "/tmp",
+	}
+
+	got := inst.buildShellPassthroughCommand(inst.Command)
+	if !strings.HasSuffix(got, "cdw remote-control --name rc-test") {
+		t.Fatalf("expected the configured [claude].command override (\"cdw\") to replace the "+
+			"literal \"claude\" the user typed while preserving the subcommand tail; got: %s", got)
+	}
+	if strings.Contains(got, "--session-id") {
+		t.Fatalf("resolving the configured command must not resurrect flag injection; got: %s", got)
+	}
+}
+
+// TestIssue1821_ShellPassthroughCodex_HonorsConfiguredCommand is the codex
+// half of the same finding.
+func TestIssue1821_ShellPassthroughCodex_HonorsConfiguredCommand(t *testing.T) {
+	cfg := &UserConfig{
+		MCPs:       make(map[string]MCPDef),
+		Conductors: map[string]ConductorOverrides{},
+		Groups:     map[string]GroupSettings{},
+		Codex:      CodexSettings{Command: "codex-nightly"},
+	}
+	defer resetUserConfigCache(t, cfg)()
+
+	inst := &Instance{
+		Title:       "codex-sub",
+		Tool:        "shell",
+		Command:     "codex mcp list",
+		ProjectPath: "/tmp",
+	}
+
+	got := inst.buildShellPassthroughCommand(inst.Command)
+	if !strings.HasSuffix(got, "codex-nightly mcp list") {
+		t.Fatalf("expected the configured [codex].command override to replace the literal "+
+			"\"codex\" the user typed; got: %s", got)
+	}
+}
+
+// TestIssue1821_ShellPassthroughClaude_IncludesResolvedAccountHints is the
+// regression test for the Codex bot P2 finding: buildShellPassthroughCommand
+// must promise the same AGENTDECK_RESOLVED_CONFIG_DIR/GROUP/SOURCE hint vars
+// the normal claude spawn path exports (buildBashExportPrefix ->
+// buildResolvedAccountHintExports), so statusline/hook/fleet-placement
+// consumers don't silently lose the resolved-account label for a
+// shell-routed claude subcommand session.
+func TestIssue1821_ShellPassthroughClaude_IncludesResolvedAccountHints(t *testing.T) {
+	cfg := &UserConfig{
+		MCPs:       make(map[string]MCPDef),
+		Conductors: map[string]ConductorOverrides{},
+		Groups:     map[string]GroupSettings{},
+	}
+	defer resetUserConfigCache(t, cfg)()
+
+	inst := &Instance{
+		Title:       "launch-child",
+		Tool:        "shell",
+		Command:     "claude remote-control --name rc-test",
+		ProjectPath: "/tmp",
+		GroupPath:   "fleet/workers",
+	}
+
+	got := inst.buildShellPassthroughCommand(inst.Command)
+	for _, want := range []string{
+		"AGENTDECK_RESOLVED_CONFIG_DIR=",
+		"AGENTDECK_RESOLVED_GROUP=",
+		"AGENTDECK_RESOLVED_SOURCE=",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %s in shell-routed claude subcommand command; got: %s", want, got)
+		}
+	}
+}

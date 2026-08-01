@@ -3137,7 +3137,28 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 		if flags := telegramExecEnvStripFlags(i); flags != "" {
 			execEnvPrefix = "env " + flags + " "
 		}
-		return envPrefix + instanceIDPrefix + configDirPrefix + execEnvPrefix + baseCommand
+		// Codex bot review (PR #1821): the normal claude spawn path
+		// (buildClaudeCommandWithMessage) resolves the configured
+		// conductor/group/global claude command (e.g. an account-switcher
+		// alias like "cdw"/"cdp") via GetClaudeCommandForInstance and honors
+		// it even for a literal "claude" the user typed — losing that here
+		// would silently run the wrong binary/account for a subcommand-shaped
+		// --cmd. substituteResolvedBinary swaps only the leading word,
+		// leaving the subcommand + its args (the whole reason this path
+		// exists) untouched. It also promises the same
+		// AGENTDECK_RESOLVED_CONFIG_DIR/GROUP/SOURCE hint vars the normal
+		// path exports for statusline/hook/fleet-placement consumers — kept
+		// in this function's inline `VAR=val ` style (not
+		// buildResolvedAccountHintExports' `export VAR=val;` style) because
+		// envPrefix ends in `&& `, and `;` has lower precedence than `&&` in
+		// bash: interleaving `export ...;` here would let this vars-and-command
+		// tail run even when an earlier env-source step in envPrefix failed.
+		resolvedConfigDir, resolvedSource := GetClaudeConfigDirSourceForInstance(i)
+		resolvedHintPrefix := fmt.Sprintf(
+			"AGENTDECK_RESOLVED_CONFIG_DIR=%s AGENTDECK_RESOLVED_GROUP=%s AGENTDECK_RESOLVED_SOURCE=%s ",
+			shellescape.Quote(resolvedConfigDir), shellescape.Quote(i.GroupPath), shellescape.Quote(resolvedSource))
+		resolvedCommand := substituteResolvedBinary(baseCommand, GetClaudeCommandForInstance(i))
+		return envPrefix + instanceIDPrefix + configDirPrefix + resolvedHintPrefix + execEnvPrefix + resolvedCommand
 	case "codex":
 		// AGENTDECK_TOOL uses `matched` ("codex"), not i.Tool (which is
 		// "shell" for this passthrough instance) — buildCodexCommand's
@@ -3155,10 +3176,36 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 				codexHomePrefix = "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
 			}
 		}
-		return envPrefix + agentdeckEnvPrefix + codexHomePrefix + baseCommand
+		// Same rationale as the claude case above: honor [codex].command
+		// (e.g. a wrapper/account-switcher) instead of always running the
+		// literal binary name the user typed after "codex".
+		resolvedCommand := substituteResolvedBinary(baseCommand, GetCodexCommand())
+		return envPrefix + agentdeckEnvPrefix + codexHomePrefix + resolvedCommand
 	default:
 		return envPrefix + baseCommand
 	}
+}
+
+// substituteResolvedBinary replaces the leading whitespace-delimited word of
+// baseCommand (the literal tool name the user typed, e.g. "claude") with
+// resolvedBinary (the configured conductor/group/global override for that
+// tool, e.g. an account-switcher alias) while leaving the rest of
+// baseCommand — the subcommand and its args — untouched. A no-op (returns
+// baseCommand unchanged) when resolvedBinary is empty, already matches the
+// leading word, or baseCommand has no leading word to replace; this keeps
+// the common no-override case byte-identical to before.
+func substituteResolvedBinary(baseCommand, resolvedBinary string) string {
+	resolvedBinary = strings.TrimSpace(resolvedBinary)
+	if resolvedBinary == "" {
+		return baseCommand
+	}
+	trimmed := strings.TrimSpace(baseCommand)
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 || fields[0] == resolvedBinary {
+		return baseCommand
+	}
+	rest := strings.TrimPrefix(trimmed, fields[0])
+	return resolvedBinary + rest
 }
 
 // GetGenericSessionID gets session ID from tmux environment for a custom tool
