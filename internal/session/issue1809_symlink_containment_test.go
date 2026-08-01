@@ -379,3 +379,150 @@ func TestResolveContainedTargetPath_AllowsNonExistingTargetUnderRealDir(t *testi
 		t.Fatalf("expected non-existing target under existing managed dir to be allowed, got: %v", err)
 	}
 }
+
+// --- Round-4 hardening: one pinned project descriptor, no reopen-by-name ---
+
+// TestMaterialize_MigratesFromPoolSymlinkWhenSourceGone is the regression test
+// for the migration path: the source being copied is the CURRENT managed
+// entry, which for a pool-attached skill is a symlink whose destination lives
+// outside the project. Reading it strictly inside the project skills root
+// refused that escape and broke migration. The source resolver now follows a
+// final-component symlink one hop and re-validates the DESTINATION as a
+// registered source, so migration works while non-source destinations stay
+// refused.
+func TestMaterialize_MigratesFromPoolSymlinkWhenSourceGone(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	poolRoot := t.TempDir()
+	writeSkillDir(t, poolRoot, "lint", "lint", "Linting best practices")
+	if err := SaveSkillSources(map[string]SkillSourceDef{
+		"pool": {Path: poolRoot, Enabled: boolPtr(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
+
+	projectPath := t.TempDir()
+	attached, err := AttachSkillToProject(projectPath, "claude", "lint", "pool")
+	if err != nil {
+		t.Fatalf("attach failed: %v", err)
+	}
+	claudeEntry := filepath.Join(projectPath, ".claude", "skills", "lint")
+	info, err := os.Lstat(claudeEntry)
+	if err != nil {
+		t.Fatalf("lstat attached entry: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Skipf("attach fell back to copy mode (%s); symlink migration path not exercised", attached.Mode)
+	}
+
+	// Migrate to the .agents/skills dir by copying FROM the pool symlink,
+	// exactly as the migration branch does when the recorded source is gone.
+	targetRel := buildProjectSkillTargetPath(projectAgentsSkillsDir, "lint")
+	if _, err := materializeSkillCopyOnly(projectPath, claudeEntry, targetRel); err != nil {
+		t.Fatalf("migration from pool symlink failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(projectPath, ".agents", "skills", "lint", "SKILL.md")); err != nil {
+		t.Fatalf("expected migrated skill content, got: %v", err)
+	}
+}
+
+// TestApplyProjectSkills_MigratesPoolSymlinkWithStaleSourcePath drives the same
+// regression end to end: a desired candidate whose recorded SourcePath no
+// longer exists, migrating a pool-symlinked entry from .claude/skills to
+// .agents/skills.
+func TestApplyProjectSkills_MigratesPoolSymlinkWithStaleSourcePath(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	poolRoot := t.TempDir()
+	writeSkillDir(t, poolRoot, "lint", "lint", "Linting best practices")
+	if err := SaveSkillSources(map[string]SkillSourceDef{
+		"pool": {Path: poolRoot, Enabled: boolPtr(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
+
+	projectPath := t.TempDir()
+	if _, err := AttachSkillToProject(projectPath, "claude", "lint", "pool"); err != nil {
+		t.Fatalf("attach failed: %v", err)
+	}
+
+	stale := SkillCandidate{
+		ID:         buildSkillID("pool", "lint"),
+		Name:       "lint",
+		Source:     "pool",
+		SourcePath: filepath.Join(poolRoot, "gone-away"),
+		EntryName:  "lint",
+		Kind:       "dir",
+	}
+	if err := ApplyProjectSkills(projectPath, "codex", []SkillCandidate{stale}); err != nil {
+		t.Fatalf("apply with stale source path failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(projectPath, ".agents", "skills", "lint", "SKILL.md")); err != nil {
+		t.Fatalf("expected migrated skill content, got: %v", err)
+	}
+}
+
+// TestManifestWrites_RefuseSymlinkedAgentDeckDir proves manifest I/O goes
+// through the pinned project descriptor: a repo shipping ".agent-deck" as a
+// symlink out of the project must not redirect the manifest write.
+func TestManifestWrites_RefuseSymlinkedAgentDeckDir(t *testing.T) {
+	projectPath := t.TempDir()
+	outside := t.TempDir()
+
+	if err := os.Symlink(outside, filepath.Join(projectPath, projectSkillsDirName)); err != nil {
+		t.Fatalf("symlink .agent-deck: %v", err)
+	}
+
+	manifest := &ProjectSkillsManifest{Skills: []ProjectSkillAttachment{{
+		ID: "pool/lint", Name: "lint", Source: "pool", EntryName: "lint",
+		TargetPath: buildProjectSkillTargetPath(projectClaudeSkillsDir, "lint"),
+	}}}
+	if err := SaveProjectSkillsManifest(projectPath, manifest); err == nil {
+		t.Fatalf("expected manifest save to refuse a symlinked .agent-deck dir")
+	}
+	if _, err := LoadProjectSkillsManifest(projectPath); err == nil {
+		t.Fatalf("expected manifest load to refuse a symlinked .agent-deck dir")
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read outside dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("manifest write escaped into %s: %v", outside, entries)
+	}
+}
+
+// TestMaterialize_RefusesSymlinkedProjectSourceDir proves project-local source
+// dirs are validated BEFORE being opened: ".agents/skills -> /outside" must be
+// refused as a materialization source, not anchored and read through.
+func TestMaterialize_RefusesSymlinkedProjectSourceDir(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	poolRoot := t.TempDir()
+	writeSkillDir(t, poolRoot, "lint", "lint", "Linting best practices")
+	if err := SaveSkillSources(map[string]SkillSourceDef{
+		"pool": {Path: poolRoot, Enabled: boolPtr(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
+
+	projectPath := t.TempDir()
+	outside := t.TempDir()
+	writeSkillDir(t, outside, "evil", "evil", "Planted outside the project")
+
+	if err := os.MkdirAll(filepath.Join(projectPath, ".agents"), 0o755); err != nil {
+		t.Fatalf("mkdir .agents: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(projectPath, ".agents", "skills")); err != nil {
+		t.Fatalf("symlink .agents/skills: %v", err)
+	}
+
+	source := filepath.Join(projectPath, ".agents", "skills", "evil")
+	targetRel := buildProjectSkillTargetPath(projectClaudeSkillsDir, "evil")
+	if _, err := materializeSkillCopyOnly(projectPath, source, targetRel); err == nil {
+		t.Fatalf("expected refusal for source under a symlinked project skills dir")
+	}
+}

@@ -722,15 +722,26 @@ func sortAttachments(skills []ProjectSkillAttachment) {
 	})
 }
 
-// LoadProjectSkillsManifest reads project attachment state.
-func LoadProjectSkillsManifest(projectPath string) (*ProjectSkillsManifest, error) {
-	manifestPath := GetProjectSkillsManifestPath(projectPath)
-	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
-		return &ProjectSkillsManifest{Skills: []ProjectSkillAttachment{}}, nil
+// loadManifest reads project attachment state through the pinned project
+// descriptor. The manifest lives at the constant path .agent-deck/skills.toml,
+// but a repo can still ship .agent-deck as a symlink; requireNoSymlinkAncestors
+// refuses that instead of reading (or later writing) through it.
+func (p *projectRoot) loadManifest() (*ProjectSkillsManifest, error) {
+	rel := filepath.Join(projectSkillsDirName, projectSkillsManifest)
+	if err := p.requireNoSymlinkAncestors(rel, false); err != nil {
+		return nil, err
+	}
+
+	data, err := p.root.ReadFile(rel)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &ProjectSkillsManifest{Skills: []ProjectSkillAttachment{}}, nil
+		}
+		return nil, fmt.Errorf("failed to read skills manifest: %w", err)
 	}
 
 	var manifest ProjectSkillsManifest
-	if _, err := toml.DecodeFile(manifestPath, &manifest); err != nil {
+	if err := toml.Unmarshal(data, &manifest); err != nil {
 		return nil, fmt.Errorf("failed to parse skills manifest: %w", err)
 	}
 	if manifest.Skills == nil {
@@ -743,8 +754,10 @@ func LoadProjectSkillsManifest(projectPath string) (*ProjectSkillsManifest, erro
 	return &manifest, nil
 }
 
-// SaveProjectSkillsManifest writes project attachment state atomically.
-func SaveProjectSkillsManifest(projectPath string, manifest *ProjectSkillsManifest) error {
+// saveManifest writes project attachment state atomically through the pinned
+// project descriptor (MkdirAll + WriteFile + Rename all Root-relative), so a
+// shipped ".agent-deck -> /outside" cannot redirect the write.
+func (p *projectRoot) saveManifest(manifest *ProjectSkillsManifest) error {
 	if manifest == nil {
 		manifest = &ProjectSkillsManifest{}
 	}
@@ -756,8 +769,11 @@ func SaveProjectSkillsManifest(projectPath string, manifest *ProjectSkillsManife
 	}
 	sortAttachments(manifest.Skills)
 
-	manifestPath := GetProjectSkillsManifestPath(projectPath)
-	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o700); err != nil {
+	rel := filepath.Join(projectSkillsDirName, projectSkillsManifest)
+	if err := p.requireNoSymlinkAncestors(rel, false); err != nil {
+		return err
+	}
+	if err := p.root.MkdirAll(projectSkillsDirName, 0o700); err != nil {
 		return fmt.Errorf("failed to create manifest directory: %w", err)
 	}
 
@@ -767,15 +783,38 @@ func SaveProjectSkillsManifest(projectPath string, manifest *ProjectSkillsManife
 		return fmt.Errorf("failed to encode skills manifest: %w", err)
 	}
 
-	tmpPath := manifestPath + ".tmp"
-	if err := os.WriteFile(tmpPath, buf.Bytes(), 0o600); err != nil {
+	tmpRel := rel + ".tmp"
+	if err := p.root.WriteFile(tmpRel, buf.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("failed to write skills manifest: %w", err)
 	}
-	if err := os.Rename(tmpPath, manifestPath); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := p.root.Rename(tmpRel, rel); err != nil {
+		_ = p.root.Remove(tmpRel)
 		return fmt.Errorf("failed to save skills manifest: %w", err)
 	}
 	return nil
+}
+
+// LoadProjectSkillsManifest reads project attachment state.
+func LoadProjectSkillsManifest(projectPath string) (*ProjectSkillsManifest, error) {
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &ProjectSkillsManifest{Skills: []ProjectSkillAttachment{}}, nil
+		}
+		return nil, err
+	}
+	defer p.Close()
+	return p.loadManifest()
+}
+
+// SaveProjectSkillsManifest writes project attachment state atomically.
+func SaveProjectSkillsManifest(projectPath string, manifest *ProjectSkillsManifest) error {
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+	return p.saveManifest(manifest)
 }
 
 // GetAttachedProjectSkills returns manifest-backed attached skills.
@@ -884,25 +923,207 @@ func copyDir(src, dst string) error {
 	return nil
 }
 
-// openContainedSourceRoot validates a materialization SOURCE path the way
-// targets are validated (CodeQL go/path-injection, alert 237): the destination
-// side is Root-confined, but the source still arrives from manifest- or
-// candidate-derived data. A source is accepted only when it sits strictly
-// inside a registered skill source root (sources.toml: the managed pool,
-// claude-global, and operator-registered dirs) or strictly inside one of the
-// project's own managed skills dirs (the migration fallback that copies from
-// the current, already containment-checked target). The accepted root is
-// returned as an os.Root opened at the REGISTERED root path, so every
-// subsequent source read is descriptor-relative and cannot traverse outside
-// it. Anything else — absolute paths into arbitrary trees, "../" escapes —
-// is refused before any filesystem read.
-func openContainedSourceRoot(projectPath, sourcePath string) (*os.Root, string, string, error) {
+// projectRoot is a single live descriptor pinned on the project directory.
+// Every containment check AND every mutation in the attach / detach / apply /
+// materialize / manifest paths runs through this one Root, so validation and
+// mutation observe the same pinned directory and no already-validated path is
+// ever reopened by name. That is the structural fix for the class of findings
+// that kept moving between call sites: separating "validate a string" from
+// "operate on a path" leaves a window (and a fresh traversal) every time.
+type projectRoot struct {
+	path string
+	root *os.Root
+}
+
+func openProjectRoot(projectPath string) (*projectRoot, error) {
+	root, err := os.OpenRoot(projectPath)
+	if err != nil {
+		return nil, err
+	}
+	return &projectRoot{path: filepath.Clean(projectPath), root: root}, nil
+}
+
+func (p *projectRoot) Close() {
+	_ = p.root.Close()
+}
+
+// abs renders a Root-relative path for error messages and for computing
+// symlink link text. It is never fed back to a path-based filesystem API.
+func (p *projectRoot) abs(rel string) string {
+	return filepath.Join(p.path, rel)
+}
+
+// projectRel converts an absolute or project-relative path into a path
+// relative to the pinned project root, refusing anything that escapes it or
+// designates the project root itself.
+func (p *projectRoot) projectRel(path string) (string, error) {
+	abs := resolveTargetPath(p.path, path)
+	rel, err := filepath.Rel(p.path, abs)
+	if err != nil || rel == "." || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("refusing to use path outside the project: %s", abs)
+	}
+	return rel, nil
+}
+
+// requireNoSymlinkAncestors walks rel component by component through the
+// pinned project descriptor and refuses any EXISTING component that is a
+// symlink — whether it points outside the project, back INSIDE it (a repo
+// shipping ".claude/skills -> .." would otherwise expose the project root,
+// .git included), or DANGLES (a dangling link ENOENTs under EvalSymlinks and
+// an existence-based check would read that as "component absent"). Missing
+// components are fine: the creation path materializes them as real
+// directories. When allowFinalSymlink is set, the LAST component may be a
+// symlink — pool-attached skills are symlinks inside the managed dir, and
+// removal deletes the link, never its destination.
+func (p *projectRoot) requireNoSymlinkAncestors(rel string, allowFinalSymlink bool) error {
+	components := strings.Split(rel, string(os.PathSeparator))
+	relSoFar := ""
+	for i, component := range components {
+		relSoFar = filepath.Join(relSoFar, component)
+		info, err := p.root.Lstat(relSoFar)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("refusing to use unresolvable path %s: %w", p.abs(rel), err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if allowFinalSymlink && i == len(components)-1 {
+				return nil
+			}
+			return fmt.Errorf("refusing to use path with a symlinked ancestor component: %s", p.abs(relSoFar))
+		}
+	}
+	return nil
+}
+
+// validateManagedTarget is the single containment gate for every managed-skill
+// path. It returns the target's PROJECT-RELATIVE path, which is what all
+// mutations use against the pinned descriptor — callers never receive an
+// absolute path to re-traverse.
+//
+// The target must name a managed project-skills dir, must be a STRICT
+// descendant of it (a tampered ".claude/skills/." cleans to the managed dir
+// itself, and RemoveAll there would wipe the whole catalog), must not escape
+// the project, and must have no symlinked ancestor component.
+func (p *projectRoot) validateManagedTarget(targetRel string) (string, error) {
+	targetPath := resolveTargetPath(p.path, targetRel)
+	skillDir, ok := managedProjectSkillsDirForTarget(targetRel)
+	if !ok {
+		return "", fmt.Errorf("refusing to use path outside managed project skills dirs: %s", targetPath)
+	}
+	base := filepath.Clean(filepath.Join(p.path, filepath.FromSlash(skillDir)))
+	if !isContainedIn(base, targetPath) {
+		return "", fmt.Errorf("refusing to use path outside project skills dir: %s", targetPath)
+	}
+	if targetPath == base {
+		return "", fmt.Errorf("refusing to operate on the managed project skills dir itself: %s", targetPath)
+	}
+	rel, err := p.projectRel(targetPath)
+	if err != nil {
+		return "", err
+	}
+	if err := p.requireNoSymlinkAncestors(rel, true); err != nil {
+		return "", err
+	}
+	return rel, nil
+}
+
+// targetExists reports whether a validated managed target currently resolves
+// to something, with the follow-the-link semantics the attach flow relies on:
+// a broken link inside the project is "absent" (so reattach rematerializes),
+// while a pool symlink whose destination legitimately lives outside the
+// project is "present" (Root refuses to traverse the escape, which is itself
+// proof the entry exists as an escaping link).
+func (p *projectRoot) targetExists(rel string) (bool, error) {
+	if _, err := p.root.Stat(rel); err == nil {
+		return true, nil
+	} else if !os.IsNotExist(err) {
+		if _, lerr := p.root.Lstat(rel); lerr == nil {
+			return true, nil
+		} else if !os.IsNotExist(lerr) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// targetEntryExists reports whether the entry itself exists (Lstat semantics:
+// a symlink counts even when it dangles).
+func (p *projectRoot) targetEntryExists(rel string) (bool, error) {
+	if _, err := p.root.Lstat(rel); err == nil {
+		return true, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	return false, nil
+}
+
+// openContainedSource validates a materialization SOURCE and returns it as an
+// os.Root plus a root-relative path, so every source read is descriptor-
+// relative too. A source is accepted only when it lives strictly inside a
+// registered skill source root (sources.toml: the managed pool, claude-global,
+// operator-registered dirs) or strictly inside one of the project's own
+// managed skills dirs — the migration fallback that copies from the current,
+// already containment-checked target.
+//
+// A FINAL-component symlink is followed one hop at a time and the destination
+// is re-validated as a source in its own right. That is what makes migration
+// from an existing pool-attached symlink work when the recorded source path is
+// gone: the managed entry is a link into the pool, so reading it as a source
+// means validating the POOL destination, not refusing the escape.
+func (p *projectRoot) openContainedSource(sourcePath string) (*os.Root, string, string, error) {
 	resolved, err := resolveSkillSourcePath(sourcePath)
 	if err != nil {
 		return nil, "", "", err
 	}
 
-	openAt := func(rootPath string) (*os.Root, string, string, error) {
+	for hop := 0; hop < 8; hop++ {
+		root, rel, abs, err := p.openSourceRootFor(resolved)
+		if err != nil {
+			return nil, "", "", err
+		}
+		info, lerr := root.Lstat(rel)
+		if lerr != nil {
+			root.Close()
+			return nil, "", "", lerr
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return root, rel, abs, nil
+		}
+		dest, rerr := root.Readlink(rel)
+		root.Close()
+		if rerr != nil {
+			return nil, "", "", rerr
+		}
+		if !filepath.IsAbs(dest) {
+			dest = filepath.Join(filepath.Dir(abs), dest)
+		}
+		resolved = filepath.Clean(dest)
+	}
+	return nil, "", "", fmt.Errorf("refusing to materialize from source with too many symlink levels: %s", resolved)
+}
+
+// openSourceRootFor picks the root a resolved source belongs to. Project-local
+// candidates are validated through the pinned project descriptor BEFORE being
+// opened — a shipped ".agents/skills -> /outside" is refused rather than
+// anchored — and are then opened RELATIVE to the project root using the
+// constant managed-dir component, never by reassembled absolute path.
+func (p *projectRoot) openSourceRootFor(resolved string) (*os.Root, string, string, error) {
+	sources, err := LoadSkillSources()
+	if err != nil {
+		return nil, "", "", err
+	}
+	for _, def := range sources {
+		rootPath := expandSkillPath(def.Path)
+		if rootPath == "" || !filepath.IsAbs(rootPath) {
+			continue
+		}
+		rootPath = filepath.Clean(rootPath)
+		if resolved == rootPath || !isContainedIn(rootPath, resolved) {
+			continue
+		}
 		root, err := os.OpenRoot(rootPath)
 		if err != nil {
 			return nil, "", "", err
@@ -915,26 +1136,28 @@ func openContainedSourceRoot(projectPath, sourcePath string) (*os.Root, string, 
 		return root, rel, resolved, nil
 	}
 
-	sources, err := LoadSkillSources()
-	if err != nil {
-		return nil, "", "", err
-	}
-	for _, def := range sources {
-		rootPath := expandSkillPath(def.Path)
-		if rootPath == "" || !filepath.IsAbs(rootPath) {
+	for _, dir := range knownProjectSkillsDirs() {
+		base := filepath.Clean(filepath.Join(p.path, filepath.FromSlash(dir)))
+		if resolved == base || !isContainedIn(base, resolved) {
 			continue
 		}
-		rootPath = filepath.Clean(rootPath)
-		if resolved != rootPath && isContainedIn(rootPath, resolved) {
-			return openAt(rootPath)
+		rel, err := p.projectRel(resolved)
+		if err != nil {
+			return nil, "", "", err
 		}
-	}
-
-	for _, dir := range knownProjectSkillsDirs() {
-		base := filepath.Clean(filepath.Join(projectPath, filepath.FromSlash(dir)))
-		if resolved != base && isContainedIn(base, resolved) {
-			return openAt(base)
+		if err := p.requireNoSymlinkAncestors(rel, true); err != nil {
+			return nil, "", "", err
 		}
+		root, err := p.root.OpenRoot(filepath.FromSlash(dir))
+		if err != nil {
+			return nil, "", "", err
+		}
+		innerRel, err := filepath.Rel(base, resolved)
+		if err != nil {
+			root.Close()
+			return nil, "", "", err
+		}
+		return root, innerRel, resolved, nil
 	}
 
 	return nil, "", "", fmt.Errorf("refusing to materialize from source outside registered skill sources: %s", resolved)
@@ -1033,112 +1256,106 @@ func copySkillIntoRoot(dstRoot, srcRoot *os.Root, srcRel, dstRel string) (string
 	return "copy", nil
 }
 
-// openManagedTargetRoot validates targetRel via managedTargetBaseAndRel,
-// ensures the managed skills dir exists, and opens it as an os.Root so all
-// mutations happen descriptor-relative (no path re-traversal, no TOCTOU
-// escape). Returns the root, the target's root-relative path, and the
-// validated absolute target path (for read-only checks and messages).
-func openManagedTargetRoot(projectPath, targetRel string) (*os.Root, string, string, error) {
-	base, rel, err := managedTargetBaseAndRel(projectPath, targetRel)
+// materialize places sourcePath at the validated managed target, entirely
+// through the pinned project descriptor: MkdirAll, RemoveAll, Symlink and the
+// copy fallback are all Root-relative, so a component swapped in after
+// validation cannot redirect any of them. When copyOnly is set the symlink
+// mode is skipped (the migration case, where the source IS the current
+// target's content).
+func (p *projectRoot) materialize(sourcePath, targetRel string, copyOnly bool) (string, error) {
+	srcRoot, srcRel, srcAbs, err := p.openContainedSource(sourcePath)
 	if err != nil {
-		return nil, "", "", err
+		return "", err
 	}
-	skillDir, _ := managedProjectSkillsDirForTarget(targetRel)
-	// Create and open the managed dir descriptor-relative to the project root:
-	// skillDir is one of the knownProjectSkillsDirs constants, so nothing
-	// manifest-derived reaches MkdirAll, and the sub-Root open cannot traverse
-	// a component swapped in after validation.
-	projRoot, err := os.OpenRoot(projectPath)
+	defer srcRoot.Close()
+
+	rel, err := p.validateManagedTarget(targetRel)
 	if err != nil {
-		return nil, "", "", err
+		return "", err
 	}
-	defer projRoot.Close()
-	skillDirRel := filepath.FromSlash(skillDir)
-	if err := projRoot.MkdirAll(skillDirRel, 0o755); err != nil {
-		return nil, "", "", err
+	if dir := filepath.Dir(rel); dir != "." {
+		if err := p.root.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
 	}
-	root, err := projRoot.OpenRoot(skillDirRel)
+	if err := p.root.RemoveAll(rel); err != nil {
+		return "", err
+	}
+
+	if !copyOnly {
+		// Link text is computed from the validated Root-relative target and the
+		// source's own root; the link is CREATED descriptor-relative. The link
+		// content may point at the pool outside the project — creating such a
+		// link is fine, os.Root only forbids traversing through escapes.
+		//
+		// Correctness of the link is proven without re-Stat'ing the target by
+		// path: the source exists (its root Stat'ed it below) and the link text
+		// is verified to rejoin exactly to the source.
+		if _, serr := srcRoot.Stat(srcRel); serr == nil {
+			linkBase := p.abs(filepath.Dir(rel))
+			if resolvedBase, rerr := filepath.EvalSymlinks(linkBase); rerr == nil {
+				linkBase = resolvedBase
+			}
+			sourceTarget := srcAbs
+			if resolvedSource, rerr := filepath.EvalSymlinks(srcAbs); rerr == nil {
+				sourceTarget = resolvedSource
+			}
+			if linkText, rerr := filepath.Rel(linkBase, sourceTarget); rerr == nil &&
+				filepath.Clean(filepath.Join(linkBase, linkText)) == filepath.Clean(sourceTarget) {
+				if err := p.root.Symlink(linkText, rel); err == nil {
+					return "symlink", nil
+				}
+			}
+		}
+	}
+
+	return copySkillIntoRoot(p.root, srcRoot, srcRel, rel)
+}
+
+// removeManagedTarget validates and removes in one descriptor-relative step:
+// the containment walk and the RemoveAll run against the SAME pinned project
+// root, so there is no revalidated-by-name window between them. A non-managed,
+// absolute, or "../"-escaping target is REFUSED and never removed (Audit M3).
+func (p *projectRoot) removeManagedTarget(targetRel string) error {
+	rel, err := p.validateManagedTarget(targetRel)
 	if err != nil {
-		return nil, "", "", err
+		return fmt.Errorf("refusing to remove path outside managed project skills dirs: %w", err)
 	}
-	return root, rel, filepath.Join(base, rel), nil
+	return p.root.RemoveAll(rel)
+}
+
+// materializeSkill / materializeSkillCopyOnly / safeRemoveManagedTarget are the
+// path-based entry points kept for callers (and tests) that only have a project
+// path. They open the project root once and delegate; nothing else in this file
+// reopens a root per operation.
+func materializeSkill(projectPath, sourcePath, targetRel string) (string, error) {
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		return "", err
+	}
+	defer p.Close()
+	return p.materialize(sourcePath, targetRel, false)
 }
 
 func materializeSkillCopyOnly(projectPath, sourcePath, targetRel string) (string, error) {
-	srcRoot, srcRel, _, err := openContainedSourceRoot(projectPath, sourcePath)
+	p, err := openProjectRoot(projectPath)
 	if err != nil {
 		return "", err
 	}
-	defer srcRoot.Close()
-	root, rel, _, err := openManagedTargetRoot(projectPath, targetRel)
-	if err != nil {
-		return "", err
-	}
-	defer root.Close()
-
-	if dir := filepath.Dir(rel); dir != "." {
-		if err := root.MkdirAll(dir, 0o755); err != nil {
-			return "", err
-		}
-	}
-	if err := root.RemoveAll(rel); err != nil {
-		return "", err
-	}
-	return copySkillIntoRoot(root, srcRoot, srcRel, rel)
+	defer p.Close()
+	return p.materialize(sourcePath, targetRel, true)
 }
 
-func materializeSkill(projectPath, sourcePath, targetRel string) (string, error) {
-	srcRoot, srcRel, resolvedSource, err := openContainedSourceRoot(projectPath, sourcePath)
+func safeRemoveManagedTarget(projectPath, targetRel string) error {
+	p, err := openProjectRoot(projectPath)
 	if err != nil {
-		return "", err
-	}
-	defer srcRoot.Close()
-	root, rel, targetPath, err := openManagedTargetRoot(projectPath, targetRel)
-	if err != nil {
-		return "", err
-	}
-	defer root.Close()
-
-	if dir := filepath.Dir(rel); dir != "." {
-		if err := root.MkdirAll(dir, 0o755); err != nil {
-			return "", err
+		if os.IsNotExist(err) {
+			return nil
 		}
+		return err
 	}
-	if err := root.RemoveAll(rel); err != nil {
-		return "", err
-	}
-
-	// Resolve symlinks before computing relative paths.
-	// This avoids broken relative links when target lives under a symlinked path
-	// (for example macOS /tmp -> /private/tmp).
-	resolvedSourcePath := resolvedSource
-	if resolved, err := filepath.EvalSymlinks(resolvedSource); err == nil {
-		resolvedSourcePath = resolved
-	}
-
-	relBase := filepath.Dir(targetPath)
-	if resolvedBase, err := filepath.EvalSymlinks(relBase); err == nil {
-		relBase = resolvedBase
-	}
-
-	relTarget, relErr := filepath.Rel(relBase, resolvedSourcePath)
-	if relErr == nil {
-		// Root.Symlink creates the link descriptor-relative; the link CONTENT
-		// may point at the pool outside the root — creating it is fine, Root
-		// only forbids traversing through escapes.
-		if err := root.Symlink(relTarget, rel); err == nil {
-			// Validate that the symlink resolves to a real target. Use plain
-			// os.Stat on the absolute path: Root.Stat refuses symlinks that
-			// resolve outside the root, and legitimate pool links do exactly
-			// that. If the link dangles, fall back to copy mode below.
-			if _, err := os.Stat(targetPath); err == nil {
-				return "symlink", nil
-			}
-			_ = root.Remove(rel)
-		}
-	}
-
-	return copySkillIntoRoot(root, srcRoot, srcRel, rel)
+	defer p.Close()
+	return p.removeManagedTarget(targetRel)
 }
 
 func resolveTargetPath(projectPath, targetPath string) string {
@@ -1148,134 +1365,26 @@ func resolveTargetPath(projectPath, targetPath string) string {
 	return filepath.Clean(filepath.Join(projectPath, filepath.FromSlash(targetPath)))
 }
 
-// resolveContainedTargetPath resolves targetRel against projectPath and REFUSES
-// any result that is not contained in a managed project-skills dir — the same
-// containment guard #1200 added for worktree deletion (Audit M3), applied here
-// to every filesystem sink (Stat/Lstat/symlink/copy) that consumes a
-// manifest- or candidate-derived path, not just os.RemoveAll. A non-managed,
-// absolute, or "../"-escaping target returns an error instead of a path, so
-// CodeQL's go/path-injection sinks in attachSkillCandidate and
-// ApplyProjectSkills only ever see a path proven to sit inside one of
-// knownProjectSkillsDirs(). Callers must check the error and must not fall
-// back to the raw, unchecked resolveTargetPath for the same operation.
-//
-// Containment is symlink-aware, not just string-based: the project root is
-// resolved via EvalSymlinks (its OWN ancestry may legitimately contain
-// symlinks, e.g. macOS /tmp -> /private/tmp), then every component from the
-// project root down to the target is Lstat-walked. Any EXISTING non-final
-// component that is itself a symlink is refused outright — whether it points
-// outside the project, back INSIDE it (a repo shipping .claude/skills -> ..
-// would otherwise expose the project root, .git included, to RemoveAll), or
-// DANGLES (an EvalSymlinks-based check reads a dangling link's ENOENT as
-// "component absent" and passes it lexically). The managed skills dir is
-// therefore required to sit at its canonical physical location with no
-// symlinked components. Missing components are fine: the creation path
-// materializes them as real directories. The FINAL target component may be a
-// symlink — pool-attached skills are symlinks inside the managed dir, and
-// removal deletes the link, never its destination; containment is about
-// where the target path lives, not what a final-component link points to.
-//
-// The target must also be a STRICT descendant of the managed dir: a tampered
-// ".claude/skills/." cleans to the managed dir itself, and RemoveAll there
-// would wipe the whole catalog.
+// resolveContainedTargetPath is the read-only façade over
+// projectRoot.validateManagedTarget for callers that only need to know whether
+// a manifest- or candidate-derived target is acceptable. It returns the
+// absolute path for comparison and messages ONLY — every mutation goes through
+// the pinned descriptor via projectRoot, never through this path.
 func resolveContainedTargetPath(projectPath, targetRel string) (string, error) {
-	targetPath := resolveTargetPath(projectPath, targetRel)
-	skillDir, ok := managedProjectSkillsDirForTarget(targetRel)
-	if !ok {
-		return "", fmt.Errorf("refusing to use path outside managed project skills dirs: %s", targetPath)
-	}
-	base := filepath.Join(projectPath, filepath.FromSlash(skillDir))
-	if !isContainedIn(base, targetPath) {
-		return "", fmt.Errorf("refusing to use path outside project skills dir: %s", targetPath)
-	}
-	if targetPath == filepath.Clean(base) {
-		return "", fmt.Errorf("refusing to operate on the managed project skills dir itself: %s", targetPath)
-	}
-
-	// Walk descriptor-relative from the project root: os.Root pins the
-	// directory once, so the per-component Lstat can neither be redirected by
-	// a concurrent path swap above the project nor traverse an escape (Root
-	// errors instead). The project's OWN ancestry may contain legitimate
-	// symlinks (macOS /tmp -> /private/tmp); opening the Root traverses those
-	// once and the checks below only see components INSIDE the project.
-	projRoot, err := os.OpenRoot(projectPath)
+	p, err := openProjectRoot(projectPath)
 	if err != nil {
 		return "", fmt.Errorf("refusing to use unresolvable project path %s: %w", projectPath, err)
 	}
-	defer projRoot.Close()
-	relFromProject, err := filepath.Rel(filepath.Clean(projectPath), targetPath)
-	if err != nil || relFromProject == "." || relFromProject == ".." ||
-		strings.HasPrefix(relFromProject, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("refusing to use path outside the project: %s", targetPath)
+	defer p.Close()
+	rel, err := p.validateManagedTarget(targetRel)
+	if err != nil {
+		return "", err
 	}
-	relSoFar := ""
-	components := strings.Split(relFromProject, string(os.PathSeparator))
-	for i, component := range components {
-		relSoFar = filepath.Join(relSoFar, component)
-		info, err := projRoot.Lstat(relSoFar)
-		if err != nil {
-			if os.IsNotExist(err) {
-				// This component (and everything below it) does not exist yet;
-				// the creation path will materialize real directories here.
-				break
-			}
-			return "", fmt.Errorf("refusing to use unresolvable target path %s: %w", targetPath, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 && i < len(components)-1 {
-			return "", fmt.Errorf("refusing to use target path with a symlinked ancestor component: %s", filepath.Join(projectPath, relSoFar))
-		}
-	}
-	return targetPath, nil
+	return p.abs(rel), nil
 }
 
-// managedTargetBaseAndRel returns the canonical managed skills dir for
-// targetRel plus the target's path relative to it, after full containment
-// validation. It is the shared setup for the descriptor-relative (os.Root)
-// mutation sinks below.
-func managedTargetBaseAndRel(projectPath, targetRel string) (string, string, error) {
-	targetPath, err := resolveContainedTargetPath(projectPath, targetRel)
-	if err != nil {
-		return "", "", err
-	}
-	skillDir, _ := managedProjectSkillsDirForTarget(targetRel)
-	base := filepath.Join(projectPath, filepath.FromSlash(skillDir))
-	rel, err := filepath.Rel(filepath.Clean(base), targetPath)
-	if err != nil {
-		return "", "", err
-	}
-	return filepath.Clean(base), rel, nil
-}
-
-func removeAttachmentTarget(projectPath string, attachment ProjectSkillAttachment) error {
-	return safeRemoveManagedTarget(projectPath, attachment.TargetPath)
-}
-
-// safeRemoveManagedTarget removes targetRel (resolved against projectPath) only
-// when it is contained in a managed project-skills dir. A non-managed,
-// absolute, or "../"-escaping target is REFUSED and never removed. Every
-// removal that operates on a manifest-derived TargetPath (attach, detach + the
-// migration branches in attachSkillCandidate / reconcileProjectSkills) must
-// route through here so a tampered manifest can't trigger deletion outside the
-// project skills dir. Audit M3.
-//
-// The removal itself is descriptor-relative: the managed skills dir is opened
-// with os.Root and the target removed via Root.RemoveAll, so even a path swap
-// between validation and mutation (TOCTOU) cannot escape the managed dir —
-// the kernel enforces no-traversal semantics on every operation inside Root.
-func safeRemoveManagedTarget(projectPath, targetRel string) error {
-	base, rel, err := managedTargetBaseAndRel(projectPath, targetRel)
-	if err != nil {
-		return fmt.Errorf("refusing to remove path outside managed project skills dirs: %w", err)
-	}
-	root, err := os.OpenRoot(base)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	defer root.Close()
-	return root.RemoveAll(rel)
+func removeAttachmentTarget(p *projectRoot, attachment ProjectSkillAttachment) error {
+	return p.removeManagedTarget(attachment.TargetPath)
 }
 
 func buildAttachment(tool string, candidate SkillCandidate, mode string) ProjectSkillAttachment {
@@ -1330,22 +1439,29 @@ func hasPluginManifest(dir string) bool {
 	return err == nil && !info.IsDir()
 }
 
-func resolveMaterializationSource(sourcePath, fallbackPath string) (string, error) {
+// resolveMaterializationSource picks the source to materialize from: the
+// recorded source path when it still exists, otherwise the CURRENT managed
+// target (fallbackRel, project-relative), which is checked through the pinned
+// descriptor rather than by path. usedFallback tells the caller it is copying
+// the existing target's own content rather than a fresh source.
+func (p *projectRoot) resolveMaterializationSource(sourcePath, fallbackRel string) (source string, usedFallback bool, err error) {
 	if strings.TrimSpace(sourcePath) != "" {
 		if _, err := os.Stat(sourcePath); err == nil {
-			return sourcePath, nil
+			return sourcePath, false, nil
 		} else if !os.IsNotExist(err) {
-			return "", err
+			return "", false, err
 		}
 	}
-	if strings.TrimSpace(fallbackPath) != "" {
-		if _, err := os.Stat(fallbackPath); err == nil {
-			return fallbackPath, nil
-		} else if !os.IsNotExist(err) {
-			return "", err
+	if strings.TrimSpace(fallbackRel) != "" {
+		exists, err := p.targetExists(fallbackRel)
+		if err != nil {
+			return "", false, err
+		}
+		if exists {
+			return p.abs(fallbackRel), true, nil
 		}
 	}
-	return "", os.ErrNotExist
+	return "", false, os.ErrNotExist
 }
 
 func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*ProjectSkillAttachment, error) {
@@ -1356,7 +1472,13 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 		return nil, fmt.Errorf("%w: %s", ErrSkillUnsupportedKind, candidate.Name)
 	}
 
-	manifest, err := LoadProjectSkillsManifest(projectPath)
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		return nil, err
+	}
+	defer p.Close()
+
+	manifest, err := p.loadManifest()
 	if err != nil {
 		return nil, err
 	}
@@ -1374,11 +1496,11 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 		if !targetPathUsesSkillDir(existing.TargetPath, expectedDir) {
 			desiredTargetRel = expectedTargetRel
 		}
-		desiredTargetPath, err := resolveContainedTargetPath(projectPath, desiredTargetRel)
+		desiredTargetRelPath, err := p.validateManagedTarget(desiredTargetRel)
 		if err != nil {
 			return nil, err
 		}
-		currentTargetPath, err := resolveContainedTargetPath(projectPath, existing.TargetPath)
+		currentTargetRelPath, err := p.validateManagedTarget(existing.TargetPath)
 		if err != nil {
 			return nil, err
 		}
@@ -1391,14 +1513,14 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 				return nil, fmt.Errorf("target already managed by %s", other.Name)
 			}
 		}
-		if currentTargetPath != desiredTargetPath {
-			if _, err := os.Lstat(desiredTargetPath); err == nil {
-				return nil, fmt.Errorf("target already exists and is not managed: %s", desiredTargetPath)
-			} else if !os.IsNotExist(err) {
+		if currentTargetRelPath != desiredTargetRelPath {
+			if exists, err := p.targetEntryExists(desiredTargetRelPath); err != nil {
 				return nil, err
+			} else if exists {
+				return nil, fmt.Errorf("target already exists and is not managed: %s", p.abs(desiredTargetRelPath))
 			}
 
-			sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, currentTargetPath)
+			sourceToUse, usedCurrentTarget, err := p.resolveMaterializationSource(candidate.SourcePath, currentTargetRelPath)
 			if err != nil {
 				if errors.Is(err, os.ErrNotExist) {
 					return nil, fmt.Errorf("cannot migrate attached skill %s: source and current target are unavailable", existing.Name)
@@ -1406,33 +1528,33 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 				return nil, err
 			}
 			mode := ""
-			if sourceToUse == currentTargetPath {
-				mode, err = materializeSkillCopyOnly(projectPath, sourceToUse, desiredTargetRel)
+			if usedCurrentTarget {
+				mode, err = p.materialize(sourceToUse, desiredTargetRel, true)
 			} else {
 				if err := validateAttachableSkillCandidate(candidate); err != nil {
 					return nil, err
 				}
-				mode, err = materializeSkill(projectPath, sourceToUse, desiredTargetRel)
+				mode, err = p.materialize(sourceToUse, desiredTargetRel, false)
 			}
 			if err != nil {
 				return nil, err
 			}
-			// Audit M3: guard the manifest-derived currentTargetPath removal so a
+			// Audit M3: guard the manifest-derived current-target removal so a
 			// tampered TargetPath can't delete outside the project skills dir.
-			if err := safeRemoveManagedTarget(projectPath, existing.TargetPath); err != nil {
-				_ = safeRemoveManagedTarget(projectPath, desiredTargetRel)
+			if err := p.removeManagedTarget(existing.TargetPath); err != nil {
+				_ = p.removeManagedTarget(desiredTargetRel)
 				return nil, err
 			}
 			existing.TargetPath = desiredTargetRel
 			existing.Mode = mode
 			existing.AttachedAt = time.Now().Format(time.RFC3339)
 		} else {
-			if _, err := os.Stat(currentTargetPath); err == nil {
-				return nil, fmt.Errorf("%w: %s", ErrSkillAlreadyAttached, candidate.Name)
-			} else if !os.IsNotExist(err) {
+			if exists, err := p.targetExists(currentTargetRelPath); err != nil {
 				return nil, err
+			} else if exists {
+				return nil, fmt.Errorf("%w: %s", ErrSkillAlreadyAttached, candidate.Name)
 			}
-			sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, "")
+			sourceToUse, _, err := p.resolveMaterializationSource(candidate.SourcePath, "")
 			if err != nil {
 				if errors.Is(err, os.ErrNotExist) {
 					return nil, fmt.Errorf("cannot rematerialize attached skill %s: source path is unavailable", existing.Name)
@@ -1442,7 +1564,7 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 			if err := validateAttachableSkillCandidate(candidate); err != nil {
 				return nil, err
 			}
-			mode, err := materializeSkill(projectPath, sourceToUse, existing.TargetPath)
+			mode, err := p.materialize(sourceToUse, existing.TargetPath, false)
 			if err != nil {
 				return nil, err
 			}
@@ -1453,7 +1575,7 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 		existing.SourcePath = candidate.SourcePath
 		existing.EntryName = candidate.EntryName
 		manifest.Skills[i] = normalizeAttachment(existing)
-		if err := SaveProjectSkillsManifest(projectPath, manifest); err != nil {
+		if err := p.saveManifest(manifest); err != nil {
 			return nil, err
 		}
 		updated := manifest.Skills[i]
@@ -1465,7 +1587,7 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 	}
 
 	attachment := buildAttachment(tool, candidate, "")
-	targetPath, err := resolveContainedTargetPath(projectPath, attachment.TargetPath)
+	targetRelPath, err := p.validateManagedTarget(attachment.TargetPath)
 	if err != nil {
 		return nil, err
 	}
@@ -1476,13 +1598,13 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 		}
 	}
 
-	if _, err := os.Lstat(targetPath); err == nil {
-		return nil, fmt.Errorf("target already exists and is not managed: %s", targetPath)
-	} else if !os.IsNotExist(err) {
+	if exists, err := p.targetEntryExists(targetRelPath); err != nil {
 		return nil, err
+	} else if exists {
+		return nil, fmt.Errorf("target already exists and is not managed: %s", p.abs(targetRelPath))
 	}
 
-	mode, err := materializeSkill(projectPath, candidate.SourcePath, attachment.TargetPath)
+	mode, err := p.materialize(candidate.SourcePath, attachment.TargetPath, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1490,8 +1612,8 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 	attachment = normalizeAttachment(attachment)
 
 	manifest.Skills = append(manifest.Skills, attachment)
-	if err := SaveProjectSkillsManifest(projectPath, manifest); err != nil {
-		_ = removeAttachmentTarget(projectPath, attachment)
+	if err := p.saveManifest(manifest); err != nil {
+		_ = removeAttachmentTarget(p, attachment)
 		return nil, err
 	}
 
@@ -1534,7 +1656,13 @@ func matchesAttachmentReference(a ProjectSkillAttachment, skillRef, sourceName s
 
 // DetachSkillFromProject detaches one managed skill and removes its manifest entry.
 func DetachSkillFromProject(projectPath, skillRef, sourceName string) (*ProjectSkillAttachment, error) {
-	manifest, err := LoadProjectSkillsManifest(projectPath)
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		return nil, err
+	}
+	defer p.Close()
+
+	manifest, err := p.loadManifest()
 	if err != nil {
 		return nil, err
 	}
@@ -1556,12 +1684,12 @@ func DetachSkillFromProject(projectPath, skillRef, sourceName string) (*ProjectS
 	}
 
 	removed := manifest.Skills[matchedIdx]
-	if err := removeAttachmentTarget(projectPath, removed); err != nil {
+	if err := removeAttachmentTarget(p, removed); err != nil {
 		return nil, err
 	}
 
 	manifest.Skills = append(manifest.Skills[:matchedIdx], manifest.Skills[matchedIdx+1:]...)
-	if err := SaveProjectSkillsManifest(projectPath, manifest); err != nil {
+	if err := p.saveManifest(manifest); err != nil {
 		return nil, err
 	}
 
@@ -1575,7 +1703,13 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 		return fmt.Errorf("project skills are not supported for %s sessions", tool)
 	}
 
-	manifest, err := LoadProjectSkillsManifest(projectPath)
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	manifest, err := p.loadManifest()
 	if err != nil {
 		return err
 	}
@@ -1623,14 +1757,14 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 	for _, id := range orderedIDs {
 		targetRel := desiredTargetByID[id]
 		targetKey := normalizeSkillToken(targetRel)
-		targetPath, err := resolveContainedTargetPath(projectPath, targetRel)
+		targetRelPath, err := p.validateManagedTarget(targetRel)
 		if err != nil {
 			return err
 		}
 
-		currentTargetPath := ""
+		currentTargetRelPath := ""
 		if current, exists := currentByID[id]; exists {
-			currentTargetPath, err = resolveContainedTargetPath(projectPath, current.TargetPath)
+			currentTargetRelPath, err = p.validateManagedTarget(current.TargetPath)
 			if err != nil {
 				return err
 			}
@@ -1642,18 +1776,20 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 			}
 		}
 
-		if _, err := os.Lstat(targetPath); err == nil {
-			if currentTargetPath == targetPath {
+		exists, err := p.targetEntryExists(targetRelPath)
+		if err != nil {
+			return err
+		}
+		if exists {
+			if currentTargetRelPath == targetRelPath {
 				continue
 			}
-			if existingOwner, exists := managedTargetOwner[targetKey]; exists && existingOwner != id {
+			if existingOwner, owned := managedTargetOwner[targetKey]; owned && existingOwner != id {
 				if _, keep := desiredByID[existingOwner]; !keep {
 					continue
 				}
 			}
-			return fmt.Errorf("target already exists and is not managed: %s", targetPath)
-		} else if !os.IsNotExist(err) {
-			return err
+			return fmt.Errorf("target already exists and is not managed: %s", p.abs(targetRelPath))
 		}
 	}
 
@@ -1662,7 +1798,7 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 		if _, keep := desiredByID[id]; keep {
 			continue
 		}
-		if err := removeAttachmentTarget(projectPath, attachment); err != nil {
+		if err := removeAttachmentTarget(p, attachment); err != nil {
 			return err
 		}
 	}
@@ -1672,16 +1808,16 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 		candidate := desiredByID[id]
 		desiredTargetRel := desiredTargetByID[id]
 		if current, exists := currentByID[id]; exists {
-			currentTargetPath, err := resolveContainedTargetPath(projectPath, current.TargetPath)
+			currentTargetRelPath, err := p.validateManagedTarget(current.TargetPath)
 			if err != nil {
 				return err
 			}
-			desiredTargetPath, err := resolveContainedTargetPath(projectPath, desiredTargetRel)
+			desiredTargetRelPath, err := p.validateManagedTarget(desiredTargetRel)
 			if err != nil {
 				return err
 			}
-			if currentTargetPath != desiredTargetPath {
-				sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, currentTargetPath)
+			if currentTargetRelPath != desiredTargetRelPath {
+				sourceToUse, usedCurrentTarget, err := p.resolveMaterializationSource(candidate.SourcePath, currentTargetRelPath)
 				if err != nil {
 					if errors.Is(err, os.ErrNotExist) {
 						return fmt.Errorf("cannot migrate attached skill %s: source and current target are unavailable", current.Name)
@@ -1689,31 +1825,30 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 					return err
 				} else {
 					mode := ""
-					if sourceToUse == currentTargetPath {
-						mode, err = materializeSkillCopyOnly(projectPath, sourceToUse, desiredTargetRel)
+					if usedCurrentTarget {
+						mode, err = p.materialize(sourceToUse, desiredTargetRel, true)
 					} else {
 						if err := validateAttachableSkillCandidate(candidate); err != nil {
 							return err
 						}
-						mode, err = materializeSkill(projectPath, sourceToUse, desiredTargetRel)
+						mode, err = p.materialize(sourceToUse, desiredTargetRel, false)
 					}
 					if err != nil {
 						return err
 					}
-					// Audit M3: guard the manifest-derived currentTargetPath removal.
-					if err := safeRemoveManagedTarget(projectPath, current.TargetPath); err != nil {
-						_ = safeRemoveManagedTarget(projectPath, desiredTargetRel)
+					// Audit M3: guard the manifest-derived current-target removal.
+					if err := p.removeManagedTarget(current.TargetPath); err != nil {
+						_ = p.removeManagedTarget(desiredTargetRel)
 						return err
 					}
 					current.TargetPath = desiredTargetRel
 					current.Mode = mode
 					current.AttachedAt = time.Now().Format(time.RFC3339)
 				}
-			} else if _, err := os.Stat(desiredTargetPath); err != nil {
-				if !os.IsNotExist(err) {
-					return err
-				}
-				sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, "")
+			} else if exists, err := p.targetExists(desiredTargetRelPath); err != nil {
+				return err
+			} else if !exists {
+				sourceToUse, _, err := p.resolveMaterializationSource(candidate.SourcePath, "")
 				if err != nil {
 					if errors.Is(err, os.ErrNotExist) {
 						return fmt.Errorf("cannot rematerialize attached skill %s: source path is unavailable", current.Name)
@@ -1723,7 +1858,7 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 					if err := validateAttachableSkillCandidate(candidate); err != nil {
 						return err
 					}
-					mode, err := materializeSkill(projectPath, sourceToUse, desiredTargetRel)
+					mode, err := p.materialize(sourceToUse, desiredTargetRel, false)
 					if err != nil {
 						return err
 					}
@@ -1738,17 +1873,17 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 		}
 
 		attachment := buildAttachment(tool, candidate, "")
-		if _, err := resolveContainedTargetPath(projectPath, attachment.TargetPath); err != nil {
+		if _, err := p.validateManagedTarget(attachment.TargetPath); err != nil {
 			return err
 		}
-		sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, "")
+		sourceToUse, _, err := p.resolveMaterializationSource(candidate.SourcePath, "")
 		if err != nil {
 			return err
 		}
 		if err := validateAttachableSkillCandidate(candidate); err != nil {
 			return err
 		}
-		mode, err := materializeSkill(projectPath, sourceToUse, attachment.TargetPath)
+		mode, err := p.materialize(sourceToUse, attachment.TargetPath, false)
 		if err != nil {
 			return err
 		}
@@ -1757,5 +1892,5 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 	}
 
 	manifest.Skills = newManifest
-	return SaveProjectSkillsManifest(projectPath, manifest)
+	return p.saveManifest(manifest)
 }
