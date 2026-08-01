@@ -245,3 +245,27 @@ func TestGuardComposerDraft_ReportsComposerPasteMarkerFree(t *testing.T) {
 		t.Fatal("a capture failure yields no provenance evidence; must fail safe")
 	}
 }
+
+// #1778 review findings 1+2: a non-introspectable pane (no ❯ composer to
+// scope to — codex/cursor, or a transiently unreadable Claude pane) that
+// still shows a foreign "[Pasted text ...]" marker anywhere in the whole-pane
+// scan must be held with NO Ctrl+C attempt and must NOT be reported as
+// ComposerPasteMarkerFree. Before the fix, the save-clear path discarded the
+// visible bit from ComposerDraft, sent a blind Ctrl+C into a pane it never
+// confirmed had a composer, and then granted ComposerPasteMarkerFree because
+// ComposerHasDraft is trivially false for !visible.
+func TestGuardComposerDraft_NonIntrospectablePaneWithForeignMarkerNeverClears(t *testing.T) {
+	target := &fakeGuardTarget{captures: []string{"codex>\n[Pasted text #1 +42 lines]\nplain output\n"}}
+	res := GuardComposerDraft(target, ComposerGuardOptions{
+		HoldWait: 0, PollInterval: time.Millisecond, ClearWait: time.Millisecond,
+	})
+	if target.ctrlCCalls != 0 {
+		t.Fatalf("must not Ctrl+C a pane with no introspectable composer, got %d calls", target.ctrlCCalls)
+	}
+	if res.ComposerPasteMarkerFree {
+		t.Fatal("provenance cannot be established on a non-introspectable pane; must fail safe")
+	}
+	if res.DraftCleared || res.SavedDraft != "" {
+		t.Fatalf("nothing to save or clear on a non-introspectable pane, got %+v", res)
+	}
+}

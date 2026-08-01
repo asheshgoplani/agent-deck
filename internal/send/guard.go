@@ -212,7 +212,15 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 	if composerProvenanceFree(raw, strip) {
 		return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
 	}
-	draft, _ := ComposerDraft(raw, strip)
+	draft, visible := ComposerDraft(raw, strip)
+	if !visible {
+		// No introspectable composer, yet the pane still shows a foreign
+		// paste-marker pattern: provenance cannot be established and there
+		// is no composer to clear. Fail safe without a blind Ctrl+C (#1778
+		// review finding 1) rather than falling through into the save-clear
+		// flow with an empty draft.
+		return ComposerGuardResult{Held: time.Since(start)}
+	}
 
 	// Save the confirmed operator draft and clear the composer so the
 	// automated message cannot merge with it.
@@ -228,7 +236,15 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 		clearDeadline := time.Now().Add(opts.ClearWait)
 		for {
 			raw, err := t.CapturePaneFresh()
-			if err == nil && !ComposerHasDraft(raw, strip) {
+			// Require a POSITIVELY visible, empty composer before granting
+			// ComposerPasteMarkerFree: a capture that comes back !visible
+			// (transiently unreadable pane, dialog, etc.) is not evidence the
+			// clear succeeded, so it must not be folded into "cleared" (#1778
+			// review finding 2 — ComposerHasDraft is false for !visible too,
+			// which previously let this branch grant provenance it never
+			// established).
+			clearedDraft, clearedVisible := ComposerDraft(raw, strip)
+			if err == nil && clearedVisible && clearedDraft == "" {
 				res.DraftCleared = true
 				// The composer is confirmed empty right before the send, so
 				// any paste marker appearing afterwards is our own (#1777).
