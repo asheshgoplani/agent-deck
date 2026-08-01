@@ -228,6 +228,34 @@ func (i *Instance) markClaudeSessionIDVerified() {
 	delete(i.claudeSessionIDsFromDiskScan, strings.TrimSpace(i.ClaudeSessionID))
 }
 
+// noteClaudeSessionIDFromOwnPane records a WEAK vouch: the id was read back
+// from this instance's own tmux pane environment.
+//
+// Weak because the pane env is downstream of us — agent-deck writes it — so
+// treating it as proof would close a laundering loop (scan an id, publish it,
+// read it back as "verified"). It therefore records ownership only for a
+// value no disk scan ever produced; a suspect value stays suspect until a
+// source that is NOT downstream of us vouches for it (an explicit flag, an
+// operator's set, a hook payload from the live process, or a minted id).
+// Since a suspect id is never published to the pane (SyncSessionIDsToTmux)
+// and never spawned, the pane cannot legitimately hold one.
+func (i *Instance) noteClaudeSessionIDFromOwnPane() {
+	id := strings.TrimSpace(i.ClaudeSessionID)
+	if id == "" || i.claudeSessionIDsFromDiskScan[id] {
+		return
+	}
+	i.markClaudeSessionIDVerified()
+}
+
+// NoteClaudeSessionIDFromOwnPane is the exported weak vouch, for the CLI and
+// TUI refresh paths that re-read CLAUDE_SESSION_ID from a session's own pane.
+func NoteClaudeSessionIDFromOwnPane(inst *Instance) {
+	if inst == nil {
+		return
+	}
+	inst.noteClaudeSessionIDFromOwnPane()
+}
+
 // MarkClaudeSessionIDVerified is the exported form, for the CLI and TUI
 // writers that assign an id from a source identifying THIS session (an
 // operator's explicit --resume-session / --session-id, a picked conversation,

@@ -46,6 +46,19 @@ var uuidBareRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 //     (e.g. `--session-id "$VAR"`) — the user is doing dynamic id
 //     resolution; we cannot safely declare the id without expansion.
 func extractExplicitClaudeSessionID(command string) (string, bool) {
+	return extractExplicitClaudeIDForFlags(command, "--session-id")
+}
+
+// extractExplicitClaudeResumeID is the `--resume <uuid>` counterpart (#1815).
+// A conversation id the operator baked into this session's OWN command is an
+// ownership declaration exactly like `--session-id`; without reading it, a
+// custom command carrying `claude --resume <id>` would execute verbatim and
+// never meet the resume-time chokepoint at all.
+func extractExplicitClaudeResumeID(command string) (string, bool) {
+	return extractExplicitClaudeIDForFlags(command, "--resume")
+}
+
+func extractExplicitClaudeIDForFlags(command, flag string) (string, bool) {
 	if command == "" {
 		return "", false
 	}
@@ -60,13 +73,13 @@ func extractExplicitClaudeSessionID(command string) (string, bool) {
 	for idx, f := range fields {
 		var candidate string
 		switch {
-		case f == "--session-id":
+		case f == flag:
 			if idx+1 >= len(fields) {
 				return "", false
 			}
 			candidate = fields[idx+1]
-		case strings.HasPrefix(f, "--session-id="):
-			candidate = strings.TrimPrefix(f, "--session-id=")
+		case strings.HasPrefix(f, flag+"="):
+			candidate = strings.TrimPrefix(f, flag+"=")
 		default:
 			continue
 		}

@@ -1028,7 +1028,23 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		// Handle different session modes
 		switch opts.SessionMode {
 		case "continue":
-			// Simple -c mode: continue last session
+			// Simple -c mode: continue last session.
+			//
+			// #1815: `-c` asks Claude to pick "the latest conversation in this
+			// directory" — the same mtime guess that started the incident,
+			// made inside the CLI where this guard cannot see it. When the
+			// session has a conversation id of its own, resume THAT instead:
+			// same intent, verified identity. `-c` is left as-is only when
+			// there is no owned id to prefer, since it is then the operator's
+			// explicit instruction and there is nothing better to offer.
+			if recorded := i.recordedClaudeSessionID(); recorded != "" {
+				return fmt.Sprintf(`%s%s%s --resume %s%s`,
+					configDirPrefix, execEnvPrefix, claudeCmd, recorded, extraFlags)
+			}
+			sessionLog.Warn("resume: continue_mode_unverifiable",
+				slog.String("instance_id", logging.SanitizeValue(i.ID)),
+				slog.String("path", logging.SanitizeValue(i.ProjectPath)),
+				slog.String("reason", "continue_flag_picks_newest_conversation_in_dir"))
 			return fmt.Sprintf(`%s%s%s -c%s`, configDirPrefix, execEnvPrefix, claudeCmd, extraFlags)
 
 		case "resume":
@@ -3261,12 +3277,16 @@ func (i *Instance) buildTmuxOptionOverrides() map[string]string {
 func (i *Instance) adoptExplicitClaudeSessionID(reason string) bool {
 	explicit, ok := extractExplicitClaudeSessionID(i.Command)
 	if !ok {
+		// #1815: a custom command carrying `claude --resume <uuid>` executes
+		// verbatim, so without adopting that id the instance would reach the
+		// spawn with an empty id and never meet the chokepoint at all.
+		// Baking it into this session's own command is the same ownership
+		// declaration as --session-id.
+		explicit, ok = extractExplicitClaudeResumeID(i.Command)
+	}
+	if !ok {
 		return false
 	}
-	// #1815: an explicit `--session-id` in this session's OWN command is a
-	// verified ownership declaration, and it also corrects an id a previous
-	// discovery left unverified.
-	i.markClaudeSessionIDVerified()
 	if i.ClaudeSessionID != explicit {
 		i.ClaudeSessionID = explicit
 		sessionLog.Info("resume: id="+explicit+" reason="+reason,
@@ -3274,6 +3294,10 @@ func (i *Instance) adoptExplicitClaudeSessionID(reason string) bool {
 			slog.String("claude_session_id", explicit),
 			slog.String("reason", reason))
 	}
+	// #1815: vouch AFTER the assignment, so the suspicion cleared is the one
+	// on the EXPLICIT value — clearing before would absolve whatever id
+	// happened to be current and leave the explicit one's history intact.
+	i.markClaudeSessionIDVerified()
 	if i.ClaudeDetectedAt.IsZero() {
 		i.ClaudeDetectedAt = time.Now()
 	}
@@ -4747,8 +4771,8 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 				})
 				i.ClaudeSessionID = sessionID
 				// #1815: CLAUDE_SESSION_ID read from this instance's OWN
-				// tmux pane identifies this session — verified ownership.
-				i.markClaudeSessionIDVerified()
+				// tmux pane is a WEAK vouch (the env is downstream of us).
+				i.noteClaudeSessionIDFromOwnPane()
 			}
 		}
 		i.ClaudeDetectedAt = time.Now()
@@ -5352,8 +5376,9 @@ func (i *Instance) WaitForClaudeSession(maxWait time.Duration) string {
 		// Check tmux environment (set by capture-resume pattern)
 		if sessionID := i.GetSessionIDFromTmux(); sessionID != "" {
 			i.ClaudeSessionID = sessionID
-			// #1815: this instance's OWN pane env identifies this session.
-			i.markClaudeSessionIDVerified()
+			// #1815: own pane env is a WEAK vouch — see
+			// noteClaudeSessionIDFromOwnPane.
+			i.noteClaudeSessionIDFromOwnPane()
 			i.ClaudeDetectedAt = time.Now()
 			return sessionID
 		}
@@ -5519,8 +5544,14 @@ func (i *Instance) SyncSessionIDsToTmux() {
 		return
 	}
 
-	// Sync ClaudeSessionID
-	if i.ClaudeSessionID != "" {
+	// Sync ClaudeSessionID.
+	//
+	// #1815: never publish a disk-scanned id into the pane env. The env is
+	// read back as an ownership signal, so publishing a suspect id would
+	// launder it into a resumable one on the next poll — the guard's own
+	// bypass. A suspect id is refused at spawn anyway, so the pane never
+	// legitimately holds one.
+	if i.ClaudeSessionID != "" && !i.claudeSessionIDsFromDiskScan[i.ClaudeSessionID] {
 		_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", i.ClaudeSessionID)
 	}
 
@@ -5631,8 +5662,8 @@ func (i *Instance) SyncSessionIDsFromTmux() {
 
 	if id, err := i.tmuxSession.GetEnvironment("CLAUDE_SESSION_ID"); err == nil && id != "" {
 		i.ClaudeSessionID = id
-		// #1815: own pane env — verified ownership.
-		i.markClaudeSessionIDVerified()
+		// #1815: own pane env — weak vouch.
+		i.noteClaudeSessionIDFromOwnPane()
 		if i.ClaudeDetectedAt.IsZero() {
 			i.ClaudeDetectedAt = time.Now()
 		}
@@ -5727,8 +5758,8 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 		// Refresh from tmux env (fast path)
 		if sessionID := i.GetSessionIDFromTmux(); sessionID != "" {
 			i.ClaudeSessionID = sessionID
-			// #1815: own pane env — verified ownership.
-			i.markClaudeSessionIDVerified()
+			// #1815: own pane env — weak vouch.
+			i.noteClaudeSessionIDFromOwnPane()
 			i.ClaudeDetectedAt = time.Now()
 			if recovered, recoverErr := i.getClaudeLastResponse(); recoverErr == nil {
 				return recovered, nil
@@ -8313,8 +8344,8 @@ func (i *Instance) RefreshLiveSessionIDs() {
 	if IsClaudeCompatible(i.Tool) {
 		if id := i.GetSessionIDFromTmux(); id != "" && id != i.ClaudeSessionID {
 			i.ClaudeSessionID = id
-			// #1815: own pane env — verified ownership.
-			i.markClaudeSessionIDVerified()
+			// #1815: own pane env — weak vouch.
+			i.noteClaudeSessionIDFromOwnPane()
 			i.ClaudeDetectedAt = time.Now()
 		}
 	}

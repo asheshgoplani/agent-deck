@@ -234,14 +234,16 @@ func TestResumeGuard_TaintIsPersisted(t *testing.T) {
 	if !ReadClaudeSessionUnverifiedFromToolData(blob) {
 		t.Fatal("an unverified id must round-trip as unverified")
 	}
-	// Clearing removes the key, so a verified row is byte-shape-identical to a
-	// pre-#1815 row (clean downgrades).
+	// Clearing writes an explicit false rather than deleting the key: the
+	// extras merge preserves keys missing from the replacement blob, so a
+	// delete would let a stale `true` merge back and strand a since-verified
+	// session as permanently unresumable.
 	cleared := WriteClaudeSessionUnverifiedToToolData(blob, false)
 	if ReadClaudeSessionUnverifiedFromToolData(cleared) {
-		t.Fatal("clearing the taint must remove it from the blob")
+		t.Fatal("clearing the taint must read back as verified")
 	}
-	if strings.Contains(string(cleared), toolDataClaudeSessionUnverifiedKey) {
-		t.Fatalf("cleared blob must not carry the key: %s", cleared)
+	if !strings.Contains(string(cleared), toolDataClaudeSessionUnverifiedKey) {
+		t.Fatalf("the cleared verdict must be written explicitly, not deleted: %s", cleared)
 	}
 	// A legacy row has no key at all and reads as verified — the pre-#1815
 	// status quo for ids already on disk.
@@ -317,5 +319,87 @@ func TestResumeGuard_MigrateFallbackNeverLaunders(t *testing.T) {
 	}
 	if decision := inst.resumeIdentityAllowed(neighbourID); decision.Allow {
 		t.Fatal("the migrated-by-guess conversation must not authorize --resume")
+	}
+}
+
+// TestResumeGuard_TmuxCannotLaunderAScannedID pins the laundering loop the
+// adversarial pass found: agent-deck writes CLAUDE_SESSION_ID into the pane
+// and reads it back as an ownership signal, so publishing a disk-scanned id
+// would let it return as "verified" on the next poll.
+func TestResumeGuard_TmuxCannotLaunderAScannedID(t *testing.T) {
+	home := isolatedHomeDir(t)
+	inst := newGuardInstance(t, home)
+
+	const scanned = "b2b2b2b2-8888-4999-8aaa-bbbbbbbbbbbb"
+	inst.adoptDiscoveredClaudeSessionID(scanned)
+
+	// A pane read must NOT absolve a scanned id...
+	inst.noteClaudeSessionIDFromOwnPane()
+	if got := inst.recordedClaudeSessionID(); got != "" {
+		t.Fatalf("reading our own published value back must not verify it; got %q", got)
+	}
+	// ...while a value no scan produced is ownable through the same path.
+	const minted = "c3c3c3c3-9999-4aaa-8bbb-cccccccccccc"
+	inst.ClaudeSessionID = minted
+	inst.noteClaudeSessionIDFromOwnPane()
+	if inst.recordedClaudeSessionID() != minted {
+		t.Fatalf("a never-scanned id from our own pane is ownable; got %q", inst.recordedClaudeSessionID())
+	}
+	// A source that is not downstream of us still clears the suspicion.
+	inst.ClaudeSessionID = scanned
+	inst.markClaudeSessionIDVerified()
+	if inst.recordedClaudeSessionID() != scanned {
+		t.Fatal("an explicit vouch must still clear a scan suspicion")
+	}
+}
+
+// TestResumeGuard_ExplicitResumeInCommandIsAdopted covers the custom-command
+// bypass: `claude --resume <id>` baked into the session's own command executes
+// verbatim, so the id must be adopted (and owned) rather than left invisible
+// to the chokepoint.
+func TestResumeGuard_ExplicitResumeInCommandIsAdopted(t *testing.T) {
+	home := isolatedHomeDir(t)
+	inst := newGuardInstance(t, home)
+
+	const explicit = "d4d4d4d4-aaaa-4bbb-8ccc-dddddddddddd"
+	// Pre-existing suspicion on the very value the operator names must clear.
+	inst.adoptDiscoveredClaudeSessionID(explicit)
+	inst.ClaudeSessionID = ""
+	inst.Command = "claude --resume " + explicit + " --model opus"
+
+	if !inst.adoptExplicitClaudeSessionID("test") {
+		t.Fatal("an embedded --resume <uuid> must be adopted as an explicit ownership declaration")
+	}
+	if inst.ClaudeSessionID != explicit {
+		t.Fatalf("adopted id = %q, want %q", inst.ClaudeSessionID, explicit)
+	}
+	if inst.recordedClaudeSessionID() != explicit {
+		t.Fatal("the vouch must apply to the EXPLICIT value, not to whatever id was current before it")
+	}
+}
+
+// TestResumeGuard_ContinueModePrefersOwnConversation pins the `-c` hole:
+// `claude -c` picks the newest conversation in the directory inside the CLI,
+// where this guard cannot see it. With an owned id, resume that instead.
+func TestResumeGuard_ContinueModePrefersOwnConversation(t *testing.T) {
+	home := isolatedHomeDir(t)
+	inst := newGuardInstance(t, home)
+
+	const ownID = "e5e5e5e5-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	inst.ClaudeSessionID = ownID
+	inst.markClaudeSessionIDVerified()
+
+	opts := NewClaudeOptions(nil)
+	opts.SessionMode = "continue"
+	if err := inst.SetClaudeOptions(opts); err != nil {
+		t.Fatalf("SetClaudeOptions: %v", err)
+	}
+
+	cmd := inst.buildClaudeCommand("claude")
+	if strings.Contains(cmd, " -c") {
+		t.Fatalf("#1815: with an owned conversation id, continue mode must not defer to the CLI's newest-in-dir pick.\ncommand: %s", cmd)
+	}
+	if !strings.Contains(cmd, "--resume "+ownID) {
+		t.Fatalf("#1815: continue mode must resume this session's own conversation.\ncommand: %s", cmd)
 	}
 }

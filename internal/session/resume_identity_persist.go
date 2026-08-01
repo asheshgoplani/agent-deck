@@ -28,10 +28,14 @@ func WriteClaudeSessionUnverifiedToToolData(td json.RawMessage, unverified bool)
 	if len(td) > 0 {
 		_ = json.Unmarshal(td, &m)
 	}
+	// The key is written EXPLICITLY in both directions, never deleted.
+	// MergeToolDataExtras preserves keys absent from the replacement blob, so
+	// a delete would let a stale `true` merge itself back on the next save and
+	// strand a since-verified session as permanently unresumable.
 	if unverified {
 		m[toolDataClaudeSessionUnverifiedKey] = json.RawMessage("true")
 	} else {
-		delete(m, toolDataClaudeSessionUnverifiedKey)
+		m[toolDataClaudeSessionUnverifiedKey] = json.RawMessage("false")
 	}
 	out, _ := json.Marshal(m)
 	return out
