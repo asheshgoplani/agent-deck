@@ -957,7 +957,7 @@ func copyDir(src, dst string) error {
 // "operate on a path" leaves a window (and a fresh traversal) every time.
 type projectRoot struct {
 	path string
-	phys string      // physical (symlink-resolved) project path, resolved ONCE
+	phys string // physical (symlink-resolved) project path, resolved ONCE
 	root *os.Root
 	info os.FileInfo // the pinned project dir itself, for device identity
 }
@@ -1340,7 +1340,6 @@ func (p *projectRoot) targetExists(targetRel, expectedSource string) (bool, erro
 	}
 	return true, nil
 }
-
 
 // targetEntryExists reports whether the entry itself exists (Lstat semantics:
 // a symlink counts even when it dangles).
