@@ -455,6 +455,51 @@ func TestIssue1821_ShellPassthroughCodex_NeverRewritesExplicitBinary(t *testing.
 	}
 }
 
+// TestIssue1821_ShellPassthroughCodex_ExplicitBinarySkipsConfiguredHome pins
+// the follow-up finding from the Codex CLI review of the P1-A fix itself:
+// CODEX_HOME selects which account's Codex config/credentials the spawned
+// process reads, so injecting it ahead of an explicitly configured
+// non-canonical binary (e.g. "codex-nightly", itself potentially an
+// account-selection wrapper) risks starting under the wrong account —
+// the same class of bug as substituteResolvedBinary above.
+// buildCodexCommand's own custom-command early-return already skips this
+// injection for an explicit command; buildShellPassthroughCommand's codex
+// branch must match that, injecting CODEX_HOME only for the bare literal
+// "codex".
+func TestIssue1821_ShellPassthroughCodex_ExplicitBinarySkipsConfiguredHome(t *testing.T) {
+	cfg := &UserConfig{
+		MCPs:       make(map[string]MCPDef),
+		Conductors: map[string]ConductorOverrides{},
+		Groups:     map[string]GroupSettings{},
+		Codex:      CodexSettings{ConfigDir: "/opt/configured-codex-home"},
+	}
+	defer resetUserConfigCache(t, cfg)()
+
+	explicit := &Instance{
+		Title:       "canary-codex-home",
+		Tool:        "shell",
+		Command:     "codex-canary mcp list",
+		ProjectPath: "/tmp",
+	}
+	got := explicit.buildShellPassthroughCommand(explicit.Command)
+	if strings.Contains(got, "CODEX_HOME=") {
+		t.Fatalf("configured CODEX_HOME must not be injected ahead of an explicit "+
+			"non-canonical codex binary; got: %s", got)
+	}
+
+	literal := &Instance{
+		Title:       "literal-codex-home",
+		Tool:        "shell",
+		Command:     "codex mcp list",
+		ProjectPath: "/tmp",
+	}
+	got = literal.buildShellPassthroughCommand(literal.Command)
+	if !strings.Contains(got, "CODEX_HOME=") {
+		t.Fatalf("configured CODEX_HOME must still be injected for the bare literal "+
+			"\"codex\" invocation; got: %s", got)
+	}
+}
+
 // TestIssue1821_ShellPassthroughClaude_IncludesResolvedAccountHints is the
 // regression test for the Codex bot P2 finding: buildShellPassthroughCommand
 // must promise the same AGENTDECK_RESOLVED_CONFIG_DIR/GROUP/SOURCE hint vars

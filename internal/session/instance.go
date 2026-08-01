@@ -3185,8 +3185,18 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 		// `x$(touch /tmp/pwned)` would execute at every spawn otherwise.
 		agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%s AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
 			i.ID, shellescape.Quote(i.Title), matched, shellescape.Quote(sessionProfileEnvValue()))
+		// CODEX_HOME selects which account's Codex config/credentials the
+		// spawned process reads — injecting it ahead of an explicitly
+		// configured non-canonical binary (e.g. "codex-nightly", itself
+		// potentially an account-selection wrapper) risks the process
+		// starting under the wrong account, same class of bug as
+		// substituteResolvedBinary below (Codex review, PR #1821 follow-up).
+		// buildCodexCommand's own custom-command early-return already
+		// skips this injection entirely for an explicit command; mirror
+		// that here by only injecting when the user typed the bare
+		// literal "codex".
 		codexHomePrefix := ""
-		if isCodexHomeExplicit() {
+		if isLiteralToolInvocation(baseCommand, "codex") && isCodexHomeExplicit() {
 			if codexHome := strings.TrimSpace(getCodexHomeDir()); codexHome != "" {
 				codexHomePrefix = "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
 			}
@@ -3234,13 +3244,29 @@ func substituteResolvedBinary(baseCommand, literalName, resolvedBinary string) s
 	if resolvedBinary == "" {
 		return baseCommand
 	}
+	if !isLiteralToolInvocation(baseCommand, literalName) {
+		return baseCommand
+	}
 	trimmed := strings.TrimSpace(baseCommand)
 	fields := strings.Fields(trimmed)
-	if len(fields) == 0 || fields[0] != literalName || fields[0] == resolvedBinary {
+	if fields[0] == resolvedBinary {
 		return baseCommand
 	}
 	rest := strings.TrimPrefix(trimmed, fields[0])
 	return resolvedBinary + rest
+}
+
+// isLiteralToolInvocation reports whether baseCommand's leading
+// whitespace-delimited word is exactly literalName — i.e. the user typed
+// the bare tool name ("claude"/"codex") rather than an explicit,
+// potentially non-canonical, executable path or wrapper. Account-selection
+// env/binary substitution in buildShellPassthroughCommand is gated on this:
+// an explicit path is the operator's deliberate choice and must never be
+// second-guessed, only the bare literal is eligible (see
+// substituteResolvedBinary and the codexHomePrefix gate above).
+func isLiteralToolInvocation(baseCommand, literalName string) bool {
+	fields := strings.Fields(strings.TrimSpace(baseCommand))
+	return len(fields) > 0 && fields[0] == literalName
 }
 
 // GetGenericSessionID gets session ID from tmux environment for a custom tool
