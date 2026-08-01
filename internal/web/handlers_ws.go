@@ -79,6 +79,10 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "session id is required")
 		return
 	}
+	// sessionID is attacker-controlled (raw URL path segment); every log call
+	// below must use this sanitized copy, never sessionID itself, so a crafted
+	// CRLF/control-char id can't forge fake log lines (go/log-injection).
+	logSessionID := logging.SanitizeValue(sessionID)
 
 	snapshot, err := s.menuData.LoadMenuSnapshot()
 	if err != nil {
@@ -156,7 +160,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		bridge, err = newTmuxPTYBridge(menuSession.TmuxSession, menuSession.TmuxSocketName, sessionID, writer)
 		if err != nil {
 			logging.ForComponent(logging.CompWeb).Error("terminal_attach_failed",
-				slog.String("session_id", sessionID),
+				slog.String("session_id", logSessionID),
 				slog.String("tmux_session", menuSession.TmuxSession),
 				slog.String("error", err.Error()))
 			code := "TERMINAL_ATTACH_FAILED"
@@ -199,17 +203,20 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
 				logging.ForComponent(logging.CompWeb).Warn("websocket_keepalive_timeout",
-					slog.String("session_id", sessionID),
-					slog.String("error", err.Error()))
+					slog.String("session_id", logSessionID),
+					slog.String("error", logging.SanitizeValue(err.Error())))
 			} else if websocket.IsUnexpectedCloseError(
 				err,
 				websocket.CloseNormalClosure,
 				websocket.CloseGoingAway,
 				websocket.CloseNoStatusReceived,
 			) {
+				// err may be a *websocket.CloseError whose Text is the
+				// peer-supplied close reason (attacker-controlled) — sanitize
+				// it same as logSessionID above (go/log-injection).
 				logging.ForComponent(logging.CompWeb).Warn("websocket_closed_unexpectedly",
-					slog.String("session_id", sessionID),
-					slog.String("error", err.Error()))
+					slog.String("session_id", logSessionID),
+					slog.String("error", logging.SanitizeValue(err.Error())))
 			}
 			return
 		}

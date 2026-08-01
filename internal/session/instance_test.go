@@ -1798,18 +1798,51 @@ func TestCanRestartCursor(t *testing.T) {
 		t.Fatal("CanRestart() should return true for a running Cursor session with live tmux pane")
 	}
 
-	// Simulate persisted command from a real Cursor session before restart.
-	inst.Command = "cursor agent"
+	// Stand in for the persisted Cursor command. A real `cursor agent` cannot be
+	// assumed: required CI installs tmux and zoxide only, and without the binary
+	// the respawned login shell exits at once and tmux drops the session — which
+	// is what made this test fail on every such host. The stand-in keeps the
+	// Cursor respawn path executing for real instead of being skipped.
+	inst.Command = fakeCursorExecutable(t, "exec sleep 60")
 
 	if err := inst.Restart(); err != nil {
 		t.Fatalf("Restart failed: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if inst.tmuxSession == nil || !inst.tmuxSession.Exists() {
-		t.Fatal("tmux session should exist after Restart")
-	}
+	// Require STABLE liveness rather than one sample. respawn-pane swaps the pane
+	// leader, so a single check can catch a pane that is about to exit — and the
+	// fixed 100ms sleep this replaces is the flakiness skipIfClaudePaneUnreliable
+	// already documents for the Claude path ("a single 400ms sample was flaky
+	// under the full test suite").
+	requireStableLivePane(t, inst, time.Second)
 	if inst.Status == StatusError {
 		t.Fatalf("after Restart, Status = %s; want != error", inst.Status)
+	}
+}
+
+// Pins the liveness probe itself. A Cursor binary that exists but quits
+// immediately must be reported as not-live — Session.Exists can still say
+// otherwise from a positive cache hit or the PipeManager connection RespawnPane
+// re-establishes, and Session.IsPaneDead reads a list-panes error as "not dead".
+// Without this, requireStableLivePane could pass on a dead session and the
+// regression above would be decorative.
+func TestCanRestartCursor_ProbeNoticesImmediateExit(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	inst := NewInstanceWithTool("cursor-restart-probe-test", "/tmp", "cursor")
+	inst.Command = "sleep 60"
+	if err := inst.Start(); err != nil {
+		t.Fatalf("Failed to start session: %v", err)
+	}
+	defer func() { _ = inst.Kill() }()
+	inst.Status = StatusRunning
+
+	inst.Command = fakeCursorExecutable(t, "exit 0")
+	// Restart may itself report failure here; the point under test is that the
+	// probe does not claim the pane is live afterwards.
+	_ = inst.Restart()
+
+	if !paneGoneWithin(inst, 3*time.Second) {
+		t.Fatal("probe still reported a live pane after the stand-in exited immediately")
 	}
 }
 

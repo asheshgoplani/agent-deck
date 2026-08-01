@@ -3517,6 +3517,11 @@ func (i *Instance) Start() error {
 	case i.Tool == "cursor":
 		command = i.buildCursorCommand(i.Command, false)
 	case i.Tool == "hermes":
+		// Hermes emits no lifecycle event at process launch (on_session_start
+		// fires only at the first turn), so seed the "waiting" baseline the
+		// prompt represents — otherwise a fresh session has no status icon
+		// until the user types.
+		i.seedHermesHookBaseline()
 		command = i.buildHermesCommand(i.Command)
 	default:
 		// Check if this is a custom tool with session resume config
@@ -3786,6 +3791,11 @@ func (i *Instance) StartWithMessage(message string) error {
 	case i.Tool == "cursor":
 		command = i.buildCursorCommand(i.Command, false)
 	case i.Tool == "hermes":
+		// Hermes emits no lifecycle event at process launch (on_session_start
+		// fires only at the first turn), so seed the "waiting" baseline the
+		// prompt represents — otherwise a fresh session has no status icon
+		// until the user types.
+		i.seedHermesHookBaseline()
 		command = i.buildHermesCommand(i.Command)
 	default:
 		// Check if this is a custom tool with session resume config
@@ -7018,6 +7028,16 @@ func (i *Instance) restart(env map[string]string) error {
 		// buildHermesCommand starts fresh instead of resuming a dead ID forever.
 		// Scoped to the working dir to avoid picking up an unrelated session.
 		i.HermesSessionID = captureHermesSessionID(i.EffectiveWorkingDir())
+		// Drop any stale hook state from the previous process, then seed a
+		// synthetic "waiting" baseline. Hermes fires on_session_start only at
+		// the FIRST TURN of a brand-new session (not at process launch), so
+		// after a restart NOTHING writes a hook status until the user types:
+		// without the clear a pre-restart on_session_finalize "dead" shows an
+		// error ✕ for the whole freshness window, and without the seed the
+		// session shows no state at all. The freshly respawned process sits at
+		// its prompt, which is exactly "waiting".
+		i.ClearHookStatus()
+		i.seedHermesHookBaseline()
 		command = i.buildHermesCommand(i.Command)
 	} else {
 		// Route to appropriate command builder based on tool

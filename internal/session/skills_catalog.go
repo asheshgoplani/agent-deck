@@ -944,27 +944,44 @@ func resolveTargetPath(projectPath, targetPath string) string {
 	return filepath.Clean(filepath.Join(projectPath, filepath.FromSlash(targetPath)))
 }
 
+// resolveContainedTargetPath resolves targetRel against projectPath and REFUSES
+// any result that is not contained in a managed project-skills dir — the same
+// containment guard #1200 added for worktree deletion (Audit M3), applied here
+// to every filesystem sink (Stat/Lstat/symlink/copy) that consumes a
+// manifest- or candidate-derived path, not just os.RemoveAll. A non-managed,
+// absolute, or "../"-escaping target returns an error instead of a path, so
+// CodeQL's go/path-injection sinks in attachSkillCandidate and
+// ApplyProjectSkills only ever see a path proven to sit inside one of
+// knownProjectSkillsDirs(). Callers must check the error and must not fall
+// back to the raw, unchecked resolveTargetPath for the same operation.
+func resolveContainedTargetPath(projectPath, targetRel string) (string, error) {
+	targetPath := resolveTargetPath(projectPath, targetRel)
+	skillDir, ok := managedProjectSkillsDirForTarget(targetRel)
+	if !ok {
+		return "", fmt.Errorf("refusing to use path outside managed project skills dirs: %s", targetPath)
+	}
+	base := filepath.Join(projectPath, filepath.FromSlash(skillDir))
+	if !isContainedIn(base, targetPath) {
+		return "", fmt.Errorf("refusing to use path outside project skills dir: %s", targetPath)
+	}
+	return targetPath, nil
+}
+
 func removeAttachmentTarget(projectPath string, attachment ProjectSkillAttachment) error {
 	return safeRemoveManagedTarget(projectPath, attachment.TargetPath)
 }
 
 // safeRemoveManagedTarget removes targetRel (resolved against projectPath) only
 // when it is contained in a managed project-skills dir, then RemoveAll's it.
-// A non-managed, absolute, or "../"-escaping target is REFUSED and never removed
-// — the same containment guard #1200 added for worktree deletion. Every
-// os.RemoveAll that operates on a manifest-derived TargetPath (attach detach +
-// the migration branches in attachSkillCandidate / reconcileProjectSkills) must
-// route through here so a tampered manifest can't trigger deletion outside the
-// project skills dir. Audit M3.
+// A non-managed, absolute, or "../"-escaping target is REFUSED and never removed.
+// Every os.RemoveAll that operates on a manifest-derived TargetPath (attach
+// detach + the migration branches in attachSkillCandidate / reconcileProjectSkills)
+// must route through here so a tampered manifest can't trigger deletion outside
+// the project skills dir. Audit M3.
 func safeRemoveManagedTarget(projectPath, targetRel string) error {
-	targetPath := resolveTargetPath(projectPath, targetRel)
-	skillDir, ok := managedProjectSkillsDirForTarget(targetRel)
-	if !ok {
-		return fmt.Errorf("refusing to remove path outside managed project skills dirs: %s", targetPath)
-	}
-	base := filepath.Join(projectPath, filepath.FromSlash(skillDir))
-	if !isContainedIn(base, targetPath) {
-		return fmt.Errorf("refusing to remove path outside project skills dir: %s", targetPath)
+	targetPath, err := resolveContainedTargetPath(projectPath, targetRel)
+	if err != nil {
+		return fmt.Errorf("refusing to remove path outside managed project skills dirs: %w", err)
 	}
 	return os.RemoveAll(targetPath)
 }
@@ -1065,8 +1082,14 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 		if !targetPathUsesSkillDir(existing.TargetPath, expectedDir) {
 			desiredTargetRel = expectedTargetRel
 		}
-		desiredTargetPath := resolveTargetPath(projectPath, desiredTargetRel)
-		currentTargetPath := resolveTargetPath(projectPath, existing.TargetPath)
+		desiredTargetPath, err := resolveContainedTargetPath(projectPath, desiredTargetRel)
+		if err != nil {
+			return nil, err
+		}
+		currentTargetPath, err := resolveContainedTargetPath(projectPath, existing.TargetPath)
+		if err != nil {
+			return nil, err
+		}
 
 		for _, other := range manifest.Skills {
 			if normalizeSkillToken(skillIDForAttachment(other)) == normalizeSkillToken(candidateID) {
@@ -1150,7 +1173,10 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 	}
 
 	attachment := buildAttachment(tool, candidate, "")
-	targetPath := resolveTargetPath(projectPath, attachment.TargetPath)
+	targetPath, err := resolveContainedTargetPath(projectPath, attachment.TargetPath)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, existing := range manifest.Skills {
 		if normalizeSkillToken(existing.TargetPath) == normalizeSkillToken(attachment.TargetPath) {
@@ -1305,11 +1331,17 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 	for _, id := range orderedIDs {
 		targetRel := desiredTargetByID[id]
 		targetKey := normalizeSkillToken(targetRel)
-		targetPath := resolveTargetPath(projectPath, targetRel)
+		targetPath, err := resolveContainedTargetPath(projectPath, targetRel)
+		if err != nil {
+			return err
+		}
 
 		currentTargetPath := ""
 		if current, exists := currentByID[id]; exists {
-			currentTargetPath = resolveTargetPath(projectPath, current.TargetPath)
+			currentTargetPath, err = resolveContainedTargetPath(projectPath, current.TargetPath)
+			if err != nil {
+				return err
+			}
 		}
 
 		if existingOwner, exists := managedTargetOwner[targetKey]; exists && existingOwner != id {
@@ -1348,8 +1380,14 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 		candidate := desiredByID[id]
 		desiredTargetRel := desiredTargetByID[id]
 		if current, exists := currentByID[id]; exists {
-			currentTargetPath := resolveTargetPath(projectPath, current.TargetPath)
-			desiredTargetPath := resolveTargetPath(projectPath, desiredTargetRel)
+			currentTargetPath, err := resolveContainedTargetPath(projectPath, current.TargetPath)
+			if err != nil {
+				return err
+			}
+			desiredTargetPath, err := resolveContainedTargetPath(projectPath, desiredTargetRel)
+			if err != nil {
+				return err
+			}
 			if currentTargetPath != desiredTargetPath {
 				sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, currentTargetPath)
 				if err != nil {
@@ -1408,7 +1446,10 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 		}
 
 		attachment := buildAttachment(tool, candidate, "")
-		targetPath := resolveTargetPath(projectPath, attachment.TargetPath)
+		targetPath, err := resolveContainedTargetPath(projectPath, attachment.TargetPath)
+		if err != nil {
+			return err
+		}
 		sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, "")
 		if err != nil {
 			return err

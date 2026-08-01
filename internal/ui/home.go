@@ -19162,7 +19162,7 @@ func (h *Home) runWorktreeSetup(inst *session.Instance) tea.Cmd {
 	wtPath := inst.WorktreePath
 	title := inst.Title
 	return func() tea.Msg {
-		scriptPath, scriptMode := git.FindWorktreeSetupScript(repoRoot)
+		scriptPath, _ := git.FindWorktreeSetupScript(repoRoot)
 		if scriptPath == "" {
 			return worktreeSetupResultMsg{
 				sessionID:    id,
@@ -19171,7 +19171,10 @@ func (h *Home) runWorktreeSetup(inst *session.Instance) tea.Cmd {
 			}
 		}
 		var buf bytes.Buffer
-		err := git.RunWorktreeSetupScript(scriptPath, scriptMode, repoRoot, wtPath, &buf, &buf, session.GetWorktreeSettings().SetupTimeout())
+		// Routed through the consent gate (GateAndRunWorktreeSetupScript) so a
+		// manual re-run can never execute a script the user hasn't approved —
+		// same trust check as the automatic run at worktree-creation time.
+		err := git.GateAndRunWorktreeSetupScript(repoRoot, wtPath, &buf, &buf, session.GetWorktreeSettings().SetupTimeout())
 		if err != nil {
 			return worktreeSetupResultMsg{sessionID: id, sessionTitle: title, err: err}
 		}

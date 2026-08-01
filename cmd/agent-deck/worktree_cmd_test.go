@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -161,4 +162,92 @@ func containsPath(output, path string) bool {
 	// Simple substring check - path should appear in output
 	return len(output) > 0 && len(path) > 0 && filepath.Clean(output) != "" &&
 		(output == path || len(output) > len(path))
+}
+
+// TestPartitionWorktreeTrustScriptsArgs pins the fix for a security-relevant
+// CLI bug: `agent-deck worktree trust-scripts . --revoke` (exactly the form
+// our own usage text prints) used to silently GRANT trust instead of
+// revoking it, because stdlib flag.Parse stops consuming flags at the first
+// positional argument. Every ordering below must resolve "--revoke" as a
+// flag, and a literal "--" must still work as the conventional
+// end-of-flags marker so a dash-prefixed repo path remains reachable.
+func TestPartitionWorktreeTrustScriptsArgs(t *testing.T) {
+	tests := []struct {
+		name           string
+		args           []string
+		wantFlagArgs   []string
+		wantPositional []string
+	}{
+		{
+			name:           "flag after positional (the documented usage form)",
+			args:           []string{".", "--revoke"},
+			wantFlagArgs:   []string{"--revoke"},
+			wantPositional: []string{"."},
+		},
+		{
+			name:           "flag before positional",
+			args:           []string{"--revoke", "."},
+			wantFlagArgs:   []string{"--revoke"},
+			wantPositional: []string{"."},
+		},
+		{
+			name:           "no flag",
+			args:           []string{"."},
+			wantFlagArgs:   nil,
+			wantPositional: []string{"."},
+		},
+		{
+			name:           "-- terminator lets a dash-prefixed path through as positional",
+			args:           []string{"--revoke", "--", "-repo"},
+			wantFlagArgs:   []string{"--revoke"},
+			wantPositional: []string{"-repo"},
+		},
+		{
+			name:           "bare - is treated as positional, not a flag",
+			args:           []string{"--revoke", "-"},
+			wantFlagArgs:   []string{"--revoke"},
+			wantPositional: []string{"-"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flagArgs, positional := partitionWorktreeTrustScriptsArgs(tt.args)
+			if !slicesEqual(flagArgs, tt.wantFlagArgs) {
+				t.Errorf("flagArgs = %v, want %v", flagArgs, tt.wantFlagArgs)
+			}
+			if !slicesEqual(positional, tt.wantPositional) {
+				t.Errorf("positional = %v, want %v", positional, tt.wantPositional)
+			}
+
+			// The partition must actually produce the intended --revoke
+			// value once run through flag.Parse, not just look right.
+			fs := flag.NewFlagSet("t", flag.ContinueOnError)
+			revoke := fs.Bool("revoke", false, "")
+			if err := fs.Parse(flagArgs); err != nil {
+				t.Fatalf("fs.Parse(%v) failed: %v", flagArgs, err)
+			}
+			wantRevoke := false
+			for _, a := range tt.args {
+				if a == "--revoke" {
+					wantRevoke = true
+				}
+			}
+			if *revoke != wantRevoke {
+				t.Errorf("revoke = %v, want %v (args=%v)", *revoke, wantRevoke, tt.args)
+			}
+		})
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

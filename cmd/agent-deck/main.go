@@ -223,6 +223,26 @@ func main() {
 		_ = os.Setenv("AGENTDECK_PROFILE", profile)
 	}
 
+	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
+	// -p/--profile above). One-shot, non-persisted bypass of the worktree
+	// script consent gate for non-interactive callers (CI) that can't answer
+	// a prompt and would otherwise fail closed under the "prompt" default.
+	allowRepoScripts, args2 := extractAllowRepoScriptsFlag(args)
+	args = args2
+	if envVal := strings.TrimSpace(os.Getenv("AGENT_DECK_ALLOW_REPO_SCRIPTS")); envVal != "" {
+		allowRepoScripts = allowRepoScripts || envVal == "1" || strings.EqualFold(envVal, "true")
+	}
+	git.SetScriptConsentConfig(git.ScriptConsentConfig{
+		Policy:        session.GetWorktreeSettings().ScriptConsentPolicy(),
+		AllowOverride: allowRepoScripts,
+		// True here: every switch case below that can reach a worktree
+		// script (add/remove/worktree/session/etc.) `return`s before the
+		// TUI/web startup code further down, so it's still a real CLI
+		// invocation with a real, non-raw terminal — safe to prompt as
+		// before. Overridden to false just below for the TUI/web paths.
+		AllowInteractivePrompt: true,
+	})
+
 	// Seed the tmux socket-isolation default from `[tmux].socket_name` once
 	// per process (v1.7.50+, issue #687). Package-level tmux probes
 	// (KillSessionsWithEnvValue, ListAllSessions, version check, stale-
@@ -380,6 +400,23 @@ func main() {
 			return
 		}
 	}
+
+	// Every path that reaches this point boots the bubbletea TUI (which
+	// takes raw-mode ownership of stdin/stdout — term.IsTerminal stays true
+	// in raw mode, so a blocking synchronous read here would race the TUI's
+	// own input reader, most likely never return since Enter yields '\r'
+	// under raw mode rather than the '\n' a prompt waits for, and steal
+	// keystrokes either way) and/or runs the web/remote server (a mutation
+	// arriving over HTTP must never block on the operator's terminal, even
+	// a real non-raw one, since nobody is watching it for that request).
+	// Re-resolve the consent config with interactive prompting forced off;
+	// every CLI subcommand that wants the original prompt-on-a-real-terminal
+	// behavior already returned above and never reaches this line.
+	git.SetScriptConsentConfig(git.ScriptConsentConfig{
+		Policy:                 session.GetWorktreeSettings().ScriptConsentPolicy(),
+		AllowOverride:          allowRepoScripts,
+		AllowInteractivePrompt: false,
+	})
 
 	// Startup reviver scan (v1.7.8, REPORT-D). Fire-and-forget — rebuilds
 	// control pipes for any instance whose tmux server is alive but whose
@@ -965,6 +1002,27 @@ func extractProfileFlag(args []string) (string, []string) {
 	}
 
 	return profile, remaining
+}
+
+// extractAllowRepoScriptsFlag extracts --allow-repo-scripts from args,
+// returning whether it was present and the args with it removed. Mirrors
+// extractNoTuiFlag's boolean-flag scan (web_cmd.go): supports bare
+// --allow-repo-scripts and --allow-repo-scripts=true/false/1.
+func extractAllowRepoScriptsFlag(args []string) (bool, []string) {
+	allow := false
+	remaining := make([]string, 0, len(args))
+	for _, a := range args {
+		switch {
+		case a == "--allow-repo-scripts":
+			allow = true
+		case strings.HasPrefix(a, "--allow-repo-scripts="):
+			v := strings.TrimPrefix(a, "--allow-repo-scripts=")
+			allow = v == "true" || v == "1"
+		default:
+			remaining = append(remaining, a)
+		}
+	}
+	return allow, remaining
 }
 
 // extractGroupFlag extracts -g or --group from args, returning the group path and remaining args.
