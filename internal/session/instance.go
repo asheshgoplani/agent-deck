@@ -432,6 +432,20 @@ type Instance struct {
 	// from its own goroutine.
 	spawnGen atomic.Uint64
 
+	// spawnGenMu guards spawnGenWake. spawnGenWake lets bumpSpawnGen() wake a
+	// running watchForFastDeath goroutine immediately instead of it only
+	// noticing the bump on its next spawnFastDeathTick (250ms) poll (#1775).
+	// That up-to-250ms tail after a deliberate Stop/Kill was long enough for
+	// the watcher's eventual WriteSessionIDLifecycleEvent call — which
+	// re-resolves its target path from the live $HOME env var, not a value
+	// captured at goroutine-start — to land inside whatever OTHER test's
+	// isolated HOME happened to be active at that instant, racing that
+	// test's t.TempDir() cleanup (observed as
+	// TestPersistence_DiscoverLatestClaudeJSONL_Unit's flaky
+	// "TempDir RemoveAll cleanup: ... /.local: directory not empty").
+	spawnGenMu   sync.Mutex
+	spawnGenWake chan struct{}
+
 	// lastErrorCheck tracks when we last confirmed the session doesn't exist
 	// Used to skip expensive Exists() checks for ghost sessions (sessions in JSON but not in tmux)
 	// Not serialized - resets on load, but that's fine since we'll recheck on first poll
@@ -491,6 +505,35 @@ type Instance struct {
 	// Gateway health cache for Hermes sessions (volatile, not persisted).
 	hermesGatewayCheckedAt time.Time
 	hermesGatewayOK        bool
+}
+
+// bumpSpawnGen increments spawnGen and wakes any watchForFastDeath goroutine
+// blocked on spawnGenWakeChan, so a superseded watcher notices and exits on
+// this same tick instead of waiting out the rest of spawnFastDeathTick.
+// Replaces the direct i.spawnGen.Add(1) call at every Start/StartWithMessage/
+// Stop site so the wake-up is never forgotten at a new call site (#1775).
+func (i *Instance) bumpSpawnGen() uint64 {
+	gen := i.spawnGen.Add(1)
+	i.spawnGenMu.Lock()
+	if i.spawnGenWake != nil {
+		close(i.spawnGenWake)
+		i.spawnGenWake = nil
+	}
+	i.spawnGenMu.Unlock()
+	return gen
+}
+
+// spawnGenWakeChan returns the channel bumpSpawnGen closes on its next call,
+// lazily creating one if needed. watchForFastDeath selects on this alongside
+// its poll ticker so a deliberate Stop/Kill (or a superseding Start) wakes it
+// immediately rather than after up to one spawnFastDeathTick.
+func (i *Instance) spawnGenWakeChan() chan struct{} {
+	i.spawnGenMu.Lock()
+	defer i.spawnGenMu.Unlock()
+	if i.spawnGenWake == nil {
+		i.spawnGenWake = make(chan struct{})
+	}
+	return i.spawnGenWake
 }
 
 // SandboxConfig holds per-session Docker sandbox settings.
@@ -3568,7 +3611,7 @@ func (i *Instance) Start() error {
 	// watcher is handed value snapshots + a supersede generation so it never
 	// touches i's mutex-guarded fields from its own goroutine.
 	if command != "" {
-		gen := i.spawnGen.Add(1)
+		gen := i.bumpSpawnGen()
 		go i.watchForFastDeath(command, gen, i.tmuxSession, i.ID, i.Tool, sessionLog)
 	}
 
@@ -3830,7 +3873,7 @@ func (i *Instance) StartWithMessage(message string) error {
 
 	// #1580: fast-death watcher (sister path to Start()).
 	if command != "" {
-		gen := i.spawnGen.Add(1)
+		gen := i.bumpSpawnGen()
 		go i.watchForFastDeath(command, gen, i.tmuxSession, i.ID, i.Tool, sessionLog)
 	}
 
@@ -6545,7 +6588,7 @@ func (i *Instance) killInternal(sync bool) error {
 	i.mu.Unlock()
 	// #1580: supersede any in-flight fast-death watcher so a deliberate stop is
 	// never mistaken for a spawn failure.
-	i.spawnGen.Add(1)
+	i.bumpSpawnGen()
 
 	// Clean up sandbox container (only if name matches our prefix convention).
 	// Runs regardless of tmux kill result to avoid orphaned containers.

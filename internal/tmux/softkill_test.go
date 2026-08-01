@@ -28,9 +28,17 @@ import (
 //   - "eof_clean": exit 0 on stdin EOF. If SIGTERM arrives first, write
 //     $ANTIMARKER and exit 1 (proves the parent took the signal-driven
 //     path when it should have taken the EOF path).
+//
+// Immediately after signal.Notify registers the handler, touch $READY (if
+// set) so the parent can wait on real readiness instead of guessing — see
+// waitForReady's doc comment for why the previous kill(pid,0)+fixed-sleep
+// heuristic was flaky (#1776).
 func runSoftkillHelper(role string) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM)
+	if ready := os.Getenv("READY"); ready != "" {
+		_ = os.WriteFile(ready, []byte("ok"), 0o644)
+	}
 	switch role {
 	case "clean":
 		<-ch
@@ -71,54 +79,77 @@ func runSoftkillHelper(role string) {
 }
 
 // spawnHelper starts the test binary in helper mode and returns the cmd.
-// Caller is responsible for reaping.
+// Caller is responsible for reaping. Blocks until the helper's SIGTERM
+// handler is actually installed (see waitForReady) so a softKill sent
+// right after this returns cannot race the child's own startup.
 func spawnHelper(t *testing.T, role string, extraEnv ...string) *exec.Cmd {
 	t.Helper()
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	cmd := exec.Command(exe, "-test.run=^$") // run no tests in child
-	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role)
+	ready := filepath.Join(t.TempDir(), "ready")
+	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role, "READY="+ready)
 	env = append(env, extraEnv...)
 	cmd.Env = env
 	// Isolate child so it doesn't write to the parent's test output.
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	require.NoError(t, cmd.Start())
+	waitForReady(t, ready, 5*time.Second)
 	return cmd
 }
 
 // spawnHelperInOwnGroup is like spawnHelper but puts the child in its own
 // process group via Setpgid. Required for softKillProcessGroup tests:
 // without isolation, syscall.Kill(-pgid, ...) on the inherited pgid would
-// also signal the test runner itself.
+// also signal the test runner itself. Blocks until the helper's SIGTERM
+// handler is installed (see waitForReady).
 func spawnHelperInOwnGroup(t *testing.T, role string, extraEnv ...string) *exec.Cmd {
 	t.Helper()
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	cmd := exec.Command(exe, "-test.run=^$") // run no tests in child
-	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role)
+	ready := filepath.Join(t.TempDir(), "ready")
+	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role, "READY="+ready)
 	env = append(env, extraEnv...)
 	cmd.Env = env
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
+	waitForReady(t, ready, 5*time.Second)
 	return cmd
 }
 
-// waitForPidAlive polls until syscall.Kill(pid, 0) returns nil (process
-// exists) or the deadline passes. Used to ensure the helper has installed
-// its signal handler before the parent sends SIGTERM.
-func waitForPidAlive(pid int, d time.Duration) {
+// waitForReady polls until the helper's readiness marker file exists, or
+// fails the test if the deadline passes first.
+//
+// This replaces a former kill(pid,0)+fixed-50ms-sleep heuristic
+// ("process is visible to the OS, give it a beat to install
+// signal.Notify"). That heuristic assumed 50ms was always enough time
+// between fork/exec completing and the child's signal.Notify call actually
+// registering. Under the -race build the helper binary is instrumented and
+// far slower to reach main() under CI load, so the assumption
+// intermittently failed: softKillProcess(Group) sent SIGTERM into the gap
+// before the handler was installed, the OS default disposition terminated
+// the child immediately, and the clean-shutdown marker file the handler
+// would have written never appeared — the observed
+// "term-handled: no such file or directory" flake (#1776).
+//
+// The fix is explicit synchronization instead of a bigger guess: the
+// helper itself touches $READY the instant signal.Notify returns (see
+// runSoftkillHelper), and the parent waits on that file rather than on a
+// proxy for it.
+func waitForReady(t *testing.T, path string, d time.Duration) {
+	t.Helper()
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); err == nil {
-			// alive — give it a beat to install signal.Notify
-			time.Sleep(50 * time.Millisecond)
+		if _, err := os.Stat(path); err == nil {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(2 * time.Millisecond)
 	}
+	t.Fatalf("helper never signaled ready (missing %s) within %s", path, d)
 }
 
 // TestKillStaleControlClients_TerminatesCleanlyOnSIGTERM asserts that
@@ -150,9 +181,6 @@ func TestKillStaleControlClients_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 		_ = cmd.Process.Kill()
 		<-waitDone
 	})
-
-	// Give the helper time to install its signal handler.
-	waitForPidAlive(pid, 1*time.Second)
 
 	_ = softKillProcess(pid, 500*time.Millisecond)
 
@@ -204,8 +232,6 @@ func TestKillStaleControlClients_FallsBackToSIGKILL(t *testing.T) {
 		_ = cmd.Process.Kill()
 		<-waitDone
 	})
-
-	waitForPidAlive(pid, 1*time.Second)
 
 	start := time.Now()
 	usedSIGKILL := softKillProcess(pid, 500*time.Millisecond)
@@ -273,8 +299,6 @@ func TestControlPipeClose_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 		<-waitDone
 	})
 
-	waitForPidAlive(pid, 1*time.Second)
-
 	_ = softKillProcessGroup(pgid, 500*time.Millisecond)
 
 	select {
@@ -315,8 +339,6 @@ func TestControlPipeClose_FallsBackToSIGKILL(t *testing.T) {
 		<-waitDone
 	})
 
-	waitForPidAlive(pid, 1*time.Second)
-
 	start := time.Now()
 	usedSIGKILL := softKillProcessGroup(pgid, 500*time.Millisecond)
 	elapsed := time.Since(start)
@@ -337,13 +359,15 @@ func TestControlPipeClose_FallsBackToSIGKILL(t *testing.T) {
 // connects an os.Pipe to the child's stdin and returns the writable end
 // so the test can close it to deliver EOF to the helper. Used by
 // reapWithEOFGrace tests where the production code's contract is "close
-// stdin and wait."
+// stdin and wait." Blocks until the helper's SIGTERM handler is installed
+// (see waitForReady).
 func spawnHelperWithStdinPipe(t *testing.T, role string, extraEnv ...string) (*exec.Cmd, io.WriteCloser) {
 	t.Helper()
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	cmd := exec.Command(exe, "-test.run=^$")
-	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role)
+	ready := filepath.Join(t.TempDir(), "ready")
+	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role, "READY="+ready)
 	env = append(env, extraEnv...)
 	cmd.Env = env
 	cmd.Stdout = nil
@@ -352,6 +376,7 @@ func spawnHelperWithStdinPipe(t *testing.T, role string, extraEnv ...string) (*e
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)
 	require.NoError(t, cmd.Start())
+	waitForReady(t, ready, 5*time.Second)
 	return cmd, stdin
 }
 
@@ -369,8 +394,6 @@ func TestReapWithEOFGrace_FastPathOnEOF(t *testing.T) {
 	antiMarker := filepath.Join(tmpDir, "term-fired")
 
 	cmd, stdin := spawnHelperWithStdinPipe(t, "eof_clean", "ANTIMARKER="+antiMarker)
-	pid := cmd.Process.Pid
-	waitForPidAlive(pid, 1*time.Second)
 
 	// Mirror production: caller closes stdin, then reapWithEOFGrace runs
 	// reap (cmd.Wait wrapped) with a timeout.
@@ -413,8 +436,6 @@ func TestReapWithEOFGrace_FallbackOnHungChild(t *testing.T) {
 	pgid, err := syscall.Getpgid(pid)
 	require.NoError(t, err)
 	require.Equal(t, pid, pgid, "child must be its own pgroup leader")
-
-	waitForPidAlive(pid, 1*time.Second)
 
 	once := sync.Once{}
 	reap := func() {

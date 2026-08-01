@@ -157,10 +157,15 @@ const (
 // and tool, and gen — a snapshot of i.spawnGen taken at launch. A deliberate
 // stop or a restart/respawn bumps i.spawnGen, so a mismatch means this watcher
 // has been superseded and must exit quietly (#1580 data-race fix).
+//
+// bumpSpawnGen()'s wake channel (see instance.go) lets that supersession be
+// noticed immediately rather than only on the next spawnFastDeathTick poll —
+// see spawnGenWake's doc comment for why the up-to-one-tick tail mattered.
 func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Session, id, tool string, logger *slog.Logger) {
 	if sess == nil {
 		return
 	}
+	wake := i.spawnGenWakeChan()
 	start := time.Now()
 	deadline := start.Add(spawnFastDeathWindow)
 	var lastSnapshot string
@@ -169,7 +174,17 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Sess
 	defer ticker.Stop()
 
 	for {
-		<-ticker.C
+		select {
+		case <-ticker.C:
+		case <-wake:
+			// bumpSpawnGen() closed this — a newer spawn or a deliberate
+			// stop happened. Re-fetch the (now possibly-replaced) wake
+			// channel so a subsequent bump can wake us again, then fall
+			// through to the generation check below, which will see the
+			// mismatch and return on this same iteration instead of
+			// waiting out the rest of the current tick interval.
+			wake = i.spawnGenWakeChan()
+		}
 
 		// A newer spawn or a deliberate stop bumped the generation — this
 		// watcher is stale, so stop quietly and never record a failure.

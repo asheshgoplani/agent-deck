@@ -84,26 +84,43 @@ func TestLogCgroupIsolationDecision_WiredIntoBootstrap(t *testing.T) {
 		)
 		cmd := exec.Command(binPath)
 		cmd.Env = env
-		// TUI blocks on stdin — detach with its own pgroup and SIGTERM the
-		// whole group after a short window so lumberjack has time to flush.
+		// TUI blocks on stdin — detach with its own pgroup so it can be
+		// SIGTERM'd as a unit once we're done with it (see the deferred
+		// cleanup below, which runs on both the success and failure path).
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start binary: %v", err)
 		}
-		time.Sleep(2 * time.Second)
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		_, _ = cmd.Process.Wait()
+		defer func() {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+			_, _ = cmd.Process.Wait()
+		}()
 
-		// Allow lumberjack to flush after SIGTERM.
-		time.Sleep(200 * time.Millisecond)
-
+		// Poll for the OBS-01 line instead of assuming a fixed 2s startup +
+		// 200ms lumberjack-flush budget is always enough. This test builds
+		// its own binary AND launches it as a subprocess while the rest of
+		// `go test -race ./...` runs concurrently — under CI scheduler
+		// contention the fixed budget intermittently elapses before the TUI
+		// even reaches session.LogCgroupIsolationDecision(), which is a
+		// deadline-too-short flake, not a real wiring regression (#1776:
+		// "52s then fails" — the elapsed time is dominated by this test's
+		// own go build, leaving the fixed sleeps with no slack). Poll with a
+		// generous overall ceiling so a genuine wiring regression still
+		// fails, just not on a coin flip.
 		logPath := filepath.Join(xdgCacheHome, "agent-deck", "debug.log")
-		data, err := os.ReadFile(logPath)
-		if err != nil {
-			t.Fatalf("OBS-01-WIRE-UP-MISSING: read debug.log at %s: %v", logPath, err)
+		deadline := time.Now().Add(20 * time.Second)
+		var data []byte
+		var readErr error
+		for time.Now().Before(deadline) {
+			data, readErr = os.ReadFile(logPath)
+			if readErr == nil && strings.Contains(string(data), "tmux cgroup isolation:") {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
-		if !strings.Contains(string(data), "tmux cgroup isolation:") {
-			t.Fatalf("OBS-01-WIRE-UP-MISSING: debug.log at %s missing 'tmux cgroup isolation:' line; contents:\n%s", logPath, data)
+		if readErr != nil {
+			t.Fatalf("OBS-01-WIRE-UP-MISSING: read debug.log at %s: %v", logPath, readErr)
 		}
+		t.Fatalf("OBS-01-WIRE-UP-MISSING: debug.log at %s missing 'tmux cgroup isolation:' line after 20s; contents:\n%s", logPath, data)
 	})
 }
