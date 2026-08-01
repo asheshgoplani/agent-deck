@@ -702,20 +702,80 @@ var orphanReapOnce sync.Once
 // the sweep inert — orphaned query clients spun at 100% CPU for as long as the
 // host stayed up.
 //
-// The bare "tmux" case is kept because the rename is a tmux implementation
-// detail, not a guarantee: a client that has not yet renamed itself, or a
-// version that never does, must still be reapable.
+// The bare "tmux" case is kept for the window between exec and the client's own
+// proc_start: a process that has not renamed itself yet is a client that has not
+// connected yet, never a server (the server is forked from an already-renamed
+// client, so it never presents a bare name).
 //
-// "tmux: server" MUST NOT match. The sweep SIGKILLs whatever it matches, and a
-// server holds every session it hosts, so a false positive there destroys the
-// user's running work rather than a leaked one-shot query.
+// It is the ROLE token that authorises the kill, not the program name — see
+// tmuxCommRole for why a longer argv[0] is still safe to reap when its role
+// survives, and isTruncatedTmuxComm for what happens when it does not.
+//
+// A server MUST NOT match. The sweep SIGKILLs whatever it matches, and a server
+// holds every session it hosts, so a false positive there destroys the user's
+// running work rather than a leaked one-shot query.
 func isReapableTmuxClientComm(comm string) bool {
-	switch strings.TrimSpace(comm) {
-	case "tmux", "tmux: client":
+	trimmed := strings.TrimSpace(comm)
+	if trimmed == "tmux" {
 		return true
-	default:
+	}
+	role, ok := tmuxCommRole(trimmed)
+	return ok && role == "client"
+}
+
+// tmuxCommRole splits tmux's setproctitle-style comm into its role token.
+// tmux formats "<progname>: <role> (<socket path>)", so the role is whatever
+// follows the first ": ".
+//
+// Keying on the role rather than on the literal "tmux: client" keeps the sweep
+// working for an installation whose binary is invoked under a longer name: a
+// 5-char progname still yields "tmuxx: client", which names its role
+// unambiguously and is as safe to reap as the canonical form.
+//
+// The role either survives whole or vanishes whole — it is never truncated to a
+// prefix. The kernel caps comm at 15 bytes and tmux then cuts the result back to
+// its last space, which is the one separating the role from the socket path. So
+// a partial "clie"/"serve" cannot reach this function, and matching role ==
+// "client" can never be satisfied by a server.
+func tmuxCommRole(comm string) (string, bool) {
+	idx := strings.Index(comm, ": ")
+	if idx <= 0 {
+		return "", false
+	}
+	role := comm[idx+2:]
+	if role == "" {
+		return "", false
+	}
+	return role, true
+}
+
+// isTruncatedTmuxComm reports whether comm looks like tmux's setproctitle output
+// whose role token was lost entirely to the 15-byte comm limit.
+//
+// Measured, not inferred: invoking /usr/bin/tmux through a symlink named
+// "tmux-3.5a" produces the comm "tmux-3.5a:" — cut back to the space right after
+// the colon, taking "client"/"server" with it. A server under that binary
+// produces the identical string, so such a process cannot be classified at all
+// and must not be killed.
+//
+// agent-deck cannot produce one of these itself: every spawn is
+// exec.Command("tmux", …), so argv[0] is the literal "tmux" whatever the binary
+// is called on disk. The case therefore belongs to a user's own tmux, which the
+// sweep has no business killing regardless.
+//
+// It is still worth reporting. The bug this whole sweep exists to prevent was
+// invisible — an inert filter that killed nothing and logged nothing while two
+// orphans burned a core each for 14 hours. Anything that silently narrows the
+// sweep back toward inert should say so.
+func isTruncatedTmuxComm(comm string) bool {
+	trimmed := strings.TrimSpace(comm)
+	if trimmed == "tmux" {
 		return false
 	}
+	if _, ok := tmuxCommRole(trimmed); ok {
+		return false
+	}
+	return strings.Contains(trimmed, "tmux") && strings.HasSuffix(trimmed, ":")
 }
 
 // reapableOneShotVerbs are the tmux subcommands reapOrphanedPollClients may
@@ -820,6 +880,7 @@ func reapOrphanedPollClients() {
 	}
 	myPID := os.Getpid()
 	killed := 0
+	skipped := 0
 	start := time.Now()
 	for _, e := range entries {
 		pid, err := strconv.Atoi(e.Name())
@@ -827,7 +888,16 @@ func reapOrphanedPollClients() {
 			continue
 		}
 		comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-		if err != nil || !isReapableTmuxClientComm(string(comm)) {
+		if err != nil {
+			continue
+		}
+		reapable := isReapableTmuxClientComm(string(comm))
+		// A comm whose role token was truncated away cannot be classified as
+		// client or server. It is not killed; it is carried to the end of the
+		// gauntlet so that a process which is otherwise indistinguishable from
+		// a leak gets reported instead of vanishing from the sweep in silence.
+		unclassifiable := !reapable && isTruncatedTmuxComm(string(comm))
+		if !reapable && !unclassifiable {
 			continue
 		}
 		// cmdline fields are NUL-separated; substring search still matches the
@@ -845,15 +915,25 @@ func reapOrphanedPollClients() {
 		if !isControlClientOrphan(pid) {
 			continue // owned by a live agent-deck TUI (incl. a sibling) — keep
 		}
+		if unclassifiable {
+			skipped++
+			pipeLog.Warn("orphan_sweep_skipped_unclassifiable_tmux",
+				slog.Int("pid", pid),
+				slog.String("comm", strings.TrimSpace(string(comm))),
+				slog.String("reason", "comm lost its role token to truncation; "+
+					"cannot prove this is a client rather than a server, so it is left alone"))
+			continue
+		}
 		usedSIGKILL := softKillProcess(pid, controlClientKillGrace)
 		killed++
 		pipeLog.Debug("reaped_orphaned_poll_client",
 			slog.Int("pid", pid),
 			slog.Bool("used_sigkill", usedSIGKILL))
 	}
-	if killed > 0 {
+	if killed > 0 || skipped > 0 {
 		pipeLog.Info("orphaned_poll_clients_reaped",
 			slog.Int("kill_count", killed),
+			slog.Int("skipped_unclassifiable", skipped),
 			slog.Duration("duration", time.Since(start)))
 	}
 }
