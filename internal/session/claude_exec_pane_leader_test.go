@@ -70,6 +70,16 @@ func TestClaudeCommandsExecSoAgentLeadsPane(t *testing.T) {
 			if !strings.Contains(rest, "claude") {
 				t.Errorf("exec'd command must invoke claude, got: %s", cmd)
 			}
+
+			// exec only makes the agent the pane leader if nothing follows it:
+			// `exec claude …; cleanup` is not an exec'd pane, it is a shell that
+			// happens to contain the word. Without this the assertion above
+			// passes on exactly the regression it exists to catch.
+			for _, sep := range []string{";", "&&", "||", "|", "&"} {
+				if strings.Contains(rest, sep) {
+					t.Errorf("exec'd invocation must be the final statement, found %q after it: %s", sep, cmd)
+				}
+			}
 		})
 	}
 }
