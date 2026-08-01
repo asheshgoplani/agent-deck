@@ -3031,7 +3031,9 @@ func parsePSParentChildMap(procTable []byte) map[int][]int {
 	scanner := bufio.NewScanner(bytes.NewReader(procTable))
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) != 2 {
+		// tolerant of trailing columns so the same snapshot can carry comm=
+		// for callers that also need to identify the pane leader
+		if len(fields) < 2 {
 			continue
 		}
 		pid, err := strconv.Atoi(fields[0])
@@ -3045,6 +3047,28 @@ func parsePSParentChildMap(procTable []byte) map[int][]int {
 		childrenByParent[ppid] = append(childrenByParent[ppid], pid)
 	}
 	return childrenByParent
+}
+
+// parsePSCommandNames reads `pid=,ppid=,comm=` output into pid -> command
+// name. Comm is the last column and may contain spaces, so everything from
+// the third field on is joined. macOS reports comm as an absolute path while
+// Linux reports the bare name, so the result is reduced to the base name to
+// give callers one shape to compare against.
+func parsePSCommandNames(procTable []byte) map[int]string {
+	commByPID := make(map[int]string)
+	scanner := bufio.NewScanner(bytes.NewReader(procTable))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		commByPID[pid] = filepath.Base(strings.Join(fields[2:], " "))
+	}
+	return commByPID
 }
 
 func collectProcessTreePIDsViaPgrep(rootPID int) []int {
