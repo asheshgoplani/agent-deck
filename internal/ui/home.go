@@ -4017,8 +4017,11 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			substate: inst.CachedSubstate(),
 			tool:     inst.GetToolThreadSafe(),
 			// Label fields: read here, on the refresher's goroutine, so the
-			// render path never takes Instance.mu per row (#1753).
-			title:        inst.Title,
+			// render path never takes Instance.mu per row (#1753). Title goes
+			// through GetTitleThreadSafe because SetField/ReconcileTitleFromClaude/
+			// pending-title reapply can mutate it concurrently from the Bubble
+			// Tea event-loop goroutine.
+			title:        inst.GetTitleThreadSafe(),
 			autoName:     inst.GetAutoName(),
 			autoNameDesc: inst.GetAutoNameDescription(),
 		}
@@ -4064,7 +4067,7 @@ func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState 
 	return sessionRenderState{
 		status:       inst.GetStatusThreadSafe(),
 		tool:         inst.GetToolThreadSafe(),
-		title:        inst.Title,
+		title:        inst.GetTitleThreadSafe(),
 		autoName:     inst.GetAutoName(),
 		autoNameDesc: inst.GetAutoNameDescription(),
 	}
@@ -5454,8 +5457,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				applied := false
 				for id, pt := range h.pendingTitleChanges {
 					if inst := h.getInstanceByID(id); inst != nil {
-						if inst.Title != pt.title {
-							inst.Title = pt.title
+						if inst.GetTitleThreadSafe() != pt.title {
+							inst.SetTitleThreadSafe(pt.title)
 							inst.SyncTmuxDisplayName()
 							applied = true
 							uiLog.Info("pending_rename_reapplied",

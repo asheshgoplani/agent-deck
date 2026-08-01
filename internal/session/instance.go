@@ -669,6 +669,28 @@ func (inst *Instance) GetToolThreadSafe() string {
 	return t
 }
 
+// GetTitleThreadSafe returns the session title with read-lock protection.
+// Use this when reading Title from a goroutine concurrent with title syncs
+// (SetField, ReconcileTitleFromClaude, pending-title reapplication) — those
+// writers go through SetTitleThreadSafe below, so this getter is the other
+// half of the pair readers on a different goroutine need.
+func (inst *Instance) GetTitleThreadSafe() string {
+	inst.mu.RLock()
+	t := inst.Title
+	inst.mu.RUnlock()
+	return t
+}
+
+// SetTitleThreadSafe sets the session title with write-lock protection. All
+// cross-goroutine writers (SetField, ReconcileTitleFromClaude, pending-title
+// reapplication) must go through this rather than assigning Title directly,
+// or GetTitleThreadSafe's read lock buys nothing.
+func (inst *Instance) SetTitleThreadSafe(t string) {
+	inst.mu.Lock()
+	inst.Title = t
+	inst.mu.Unlock()
+}
+
 // SetToolThreadSafe sets the tool name with write-lock protection.
 func (inst *Instance) SetToolThreadSafe(t string) {
 	inst.mu.Lock()
