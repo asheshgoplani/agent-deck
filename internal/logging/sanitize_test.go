@@ -19,6 +19,9 @@ func TestSanitizeValue(t *testing.T) {
 		{name: "tab_preserved", in: "col1\tcol2", want: "col1\tcol2"},
 		{name: "control_char", in: "bad\x00value", want: "bad�value", dirty: true},
 		{name: "unicode_preserved", in: "sess-éè", want: "sess-éè"},
+		// Rebuilding rune by rune replaces undecodable bytes. Intentional: raw
+		// invalid bytes are exactly what corrupts a log stream.
+		{name: "invalid_utf8_replaced", in: "bad-\xff-byte", want: "bad-\uFFFD-byte", dirty: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

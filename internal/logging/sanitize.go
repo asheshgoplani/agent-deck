@@ -17,6 +17,12 @@ import "strings"
 // arriving at the log sink untouched, so go/log-injection kept firing on every
 // call site no matter how many were fixed. Returning a built string on all
 // paths is what makes the barrier real.
+//
+// One deliberate consequence: because the value is rebuilt rune by rune,
+// invalid UTF-8 bytes become U+FFFD rather than surviving intact as they did
+// on the old fast path. That is the right outcome for a log sanitizer — raw
+// undecodable bytes are exactly what corrupts a log stream — but it is a real
+// behavior change for non-UTF-8 input, so it is pinned by a test.
 func SanitizeValue(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

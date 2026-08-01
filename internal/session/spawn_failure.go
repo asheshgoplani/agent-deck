@@ -239,7 +239,7 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 				// generation under the write barrier — CapturePane above shells
 				// out to tmux, so a teardown can easily have started since the
 				// check at the top of this iteration.
-				i.commitSpawnWatchWrite(gen, func() {
+				_ = i.commitSpawnWatchWrite(gen, func() {
 					_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
 						InstanceID: id,
 						Tool:       tool,
@@ -268,22 +268,9 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 			DyingOutput: lastSnapshot,
 			ElapsedMs:   elapsed,
 		}
-		i.commitSpawnWatchWrite(gen, func() {
-			if err := writeSpawnFailureRecordTo(rec, failureDir); err != nil {
-				logger.Warn("spawn_failure_record_write_failed",
-					slog.String("instance_id", logging.SanitizeValue(id)),
-					slog.String("error", logging.SanitizeValue(err.Error())))
-			}
-			// Every value here is session-supplied: the tool and command come
-			// from user config, and dying_output is raw captured pane content —
-			// newlines and control characters in it would otherwise forge log
-			// records (CodeQL go/log-injection).
-			logger.Error("spawn_died_fast",
-				slog.String("instance_id", logging.SanitizeValue(id)),
-				slog.String("tool", logging.SanitizeValue(tool)),
-				slog.String("command", logging.SanitizeValue(command)),
-				slog.Int64("elapsed_ms", elapsed),
-				slog.String("dying_output", logging.SanitizeValue(lastSnapshot)))
+		var writeErr error
+		committed := i.commitSpawnWatchWrite(gen, func() {
+			writeErr = writeSpawnFailureRecordTo(rec, failureDir)
 			_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
 				InstanceID: id,
 				Tool:       tool,
@@ -292,6 +279,30 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 				Reason:     fmt.Sprintf("exited after %dms", elapsed),
 			}, lifecycleLogPath)
 		})
+		if !committed {
+			// Superseded mid-flight: a deliberate stop, not a spawn failure.
+			return
+		}
+
+		// Logging happens OUTSIDE the write barrier. Teardown waits on that
+		// mutex, and a slow or blocking log handler is not something a
+		// deliberate stop should ever be held up by; the records above are the
+		// part that must be ordered against teardown, not the diagnostics.
+		if writeErr != nil {
+			logger.Warn("spawn_failure_record_write_failed",
+				slog.String("instance_id", logging.SanitizeValue(id)),
+				slog.String("error", logging.SanitizeValue(writeErr.Error())))
+		}
+		// Every value here is session-supplied: the tool and command come from
+		// user config, and dying_output is raw captured pane content — newlines
+		// and control characters in it would otherwise forge log records
+		// (CodeQL go/log-injection).
+		logger.Error("spawn_died_fast",
+			slog.String("instance_id", logging.SanitizeValue(id)),
+			slog.String("tool", logging.SanitizeValue(tool)),
+			slog.String("command", logging.SanitizeValue(command)),
+			slog.Int64("elapsed_ms", elapsed),
+			slog.String("dying_output", logging.SanitizeValue(lastSnapshot)))
 		return
 	}
 }

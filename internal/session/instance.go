@@ -530,8 +530,25 @@ type Instance struct {
 // the up-to-250ms tail the wake channel exists to remove. Producing gen and the
 // channel together under one lock closes that gap: any bump ordered after this
 // call is guaranteed to close the very channel the watcher is selecting on.
+//
+// It also takes the write barrier, exactly as teardown does: superseding an old
+// watcher is not enough if that watcher had already passed its generation check
+// and was mid-write, since its stale record would then land after the new spawn
+// had begun. Waiting the barrier out here means a new watcher never starts
+// while its predecessor still has a write in flight.
 func (i *Instance) newSpawnGenWatch() (uint64, <-chan struct{}) {
-	return i.bumpSpawnGen(true)
+	gen, wake := i.bumpSpawnGen(true)
+	i.awaitWatcherWrites()
+	return gen, wake
+}
+
+// awaitWatcherWrites blocks until no watcher write is in flight. Callers must
+// bump the generation FIRST: that ordering is what makes this a guarantee
+// rather than a narrow window, because any write not yet holding the mutex
+// re-checks the generation under it and suppresses itself.
+func (i *Instance) awaitWatcherWrites() {
+	i.spawnWriteMu.Lock()
+	i.spawnWriteMu.Unlock() //nolint:staticcheck // barrier: waits out an in-flight watcher write
 }
 
 // bumpSpawnGenAndBarrier supersedes the running watcher and then waits out any
@@ -542,15 +559,15 @@ func (i *Instance) newSpawnGenWatch() (uint64, <-chan struct{}) {
 // happens first, and the watcher re-checks the generation while holding
 // spawnWriteMu. Any write that has not yet taken the mutex will therefore see
 // the new generation and suppress itself, and any write that already holds it
-// completes before this returns. Unlike joining the goroutine, this waits only
-// on file I/O — a watcher parked in a wedged tmux call is not something a
-// deliberate stop should ever wait for. It does wait on the watcher's own file
-// writes and log line — bounded, local I/O on the same paths the caller is
-// about to touch anyway.
+// completes before this returns.
+//
+// What it waits on is deliberately minimal: two small file writes to paths the
+// caller is about to touch anyway. Never a tmux call, and never the watcher's
+// log line — those stay outside the mutex — so a wedged tmux or a slow log
+// handler cannot delay a deliberate stop.
 func (i *Instance) bumpSpawnGenAndBarrier() uint64 {
 	gen, _ := i.bumpSpawnGen(false)
-	i.spawnWriteMu.Lock()
-	i.spawnWriteMu.Unlock() //nolint:staticcheck // barrier: waits out an in-flight watcher write
+	i.awaitWatcherWrites()
 	return gen
 }
 
@@ -576,15 +593,19 @@ func (i *Instance) bumpSpawnGen(resubscribe bool) (uint64, <-chan struct{}) {
 }
 
 // commitSpawnWatchWrite runs a watcher's write under spawnWriteMu, skipping it
-// if the watcher has been superseded in the meantime. Every watcher write goes
-// through here; that is the whole contract bumpSpawnGenAndBarrier relies on.
-func (i *Instance) commitSpawnWatchWrite(gen uint64, write func()) {
+// if the watcher has been superseded in the meantime, and reports whether it
+// ran. Every watcher write goes through here; that is the whole contract
+// bumpSpawnGenAndBarrier relies on. Keep the callback to the writes themselves
+// — anything slow or unbounded (tmux, log handlers) belongs outside, since
+// teardown blocks on this mutex.
+func (i *Instance) commitSpawnWatchWrite(gen uint64, write func()) bool {
 	i.spawnWriteMu.Lock()
 	defer i.spawnWriteMu.Unlock()
 	if i.spawnGen.Load() != gen {
-		return
+		return false
 	}
 	write()
+	return true
 }
 
 // SandboxConfig holds per-session Docker sandbox settings.
