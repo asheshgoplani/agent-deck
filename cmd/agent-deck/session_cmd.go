@@ -18,7 +18,6 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
-	"github.com/asheshgoplani/agent-deck/internal/profile"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -2834,9 +2833,19 @@ func handleSessionSend(profile string, args []string) {
 		extra := sendRes.jsonFields()
 		extra["session_id"] = inst.ID
 		extra["session_title"] = inst.Title
-		if sendRes.delivery == deliveryTypedNotSubmitted {
+		switch sendRes.delivery {
+		case deliveryTypedNotSubmitted:
 			out.ErrorWithData(fmt.Sprintf("message typed but not submitted to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
-		} else {
+		case deliveryLineTooLong:
+			// Nothing was typed, so the composer is exactly as the operator
+			// left it. Retrying the same body is pointless; the actionable
+			// advice is to break the line or send a file reference.
+			out.ErrorWithData(fmt.Sprintf("message too long for '%s' to receive as one line: %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
+		case deliveryTyped:
+			out.ErrorWithData(fmt.Sprintf("message reached '%s' but was never confirmed submitted: %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
+		case deliveryNoEvidence:
+			out.ErrorWithData(fmt.Sprintf("message not delivered to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
+		default:
 			out.ErrorWithData(fmt.Sprintf("failed to send message: %v", sendErr), ErrCodeInvalidOperation, extra)
 		}
 		os.Exit(1)
@@ -2905,6 +2914,9 @@ func handleSessionSend(profile string, args []string) {
 		if session.IsClaudeCompatible(inst.Tool) {
 			if freshID := inst.GetSessionIDFromTmux(); freshID != "" {
 				inst.ClaudeSessionID = freshID
+				// #1815: own pane env — weak vouch (see
+				// NoteClaudeSessionIDFromOwnPane).
+				session.NoteClaudeSessionIDFromOwnPane(inst)
 				inst.ClaudeDetectedAt = time.Now()
 			}
 		}
@@ -2981,10 +2993,28 @@ const (
 	// deliverySubmitted: positive evidence the agent accepted the message
 	// (an "active" transition, or the composer cleared after holding it).
 	deliverySubmitted = "submitted"
-	// deliveryUnverified: the message was sent but this tool's TUI exposes
-	// no Claude-shaped verification signals, so submission is unverified
-	// (non-Claude tools; legacy best-effort contract).
+	// deliveryUnverified: the message was sent but neither Claude-shaped
+	// submission signals nor a content-arrival check could reach a verdict,
+	// so submission is genuinely unknown. Since issue #1793 this is the
+	// narrow "we could not tell" bucket, not the catch-all it used to be:
+	// a send only lands here when the payload is small enough that the
+	// canonical-overflow failure mode cannot apply and it carries no token
+	// distinctive enough to look for in the pane.
 	deliveryUnverified = "unverified"
+	// deliveryTyped: the message body was observed reaching the target pane,
+	// but nothing proved the agent accepted it as a turn. Content sitting in
+	// a composer is not an accepted turn, and calling it one is how issue
+	// #1793 happened in the first place — so this is a FAILURE: nonzero exit,
+	// `"success": false`, `"submitted": false`. It is distinct from
+	// deliveryTypedNotSubmitted, which is the stronger claim that the
+	// composer was still positively holding the message at the end of the
+	// bounded Enter retries.
+	deliveryTyped = "typed"
+	// deliveryLineTooLong: refused before typing anything because the pane's
+	// reader is in canonical mode and a payload line exceeds its line buffer
+	// (issue #1793). The kernel would discard the overflow and the
+	// submitting Enter with it, so this can never be reported as success.
+	deliveryLineTooLong = "line_too_long"
 	// deliveryTypedNotSubmitted: the message body is still sitting unsent in
 	// the composer after the bounded Enter-retry budget (issue #1413).
 	deliveryTypedNotSubmitted = "typed_not_submitted"
@@ -3024,6 +3054,11 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 	fields := map[string]interface{}{}
 	if r.delivery != "" {
 		fields["delivery"] = r.delivery
+		// Explicit, machine-checkable: a caller must not have to know which
+		// delivery strings imply an accepted turn. Only deliverySubmitted
+		// does; `typed` in particular means the bytes arrived and nothing
+		// confirmed the agent took them up (issue #1793).
+		fields["submitted"] = r.delivery == deliverySubmitted
 	}
 	if ms := r.held.Milliseconds(); ms > 0 {
 		fields["held_for_composer_ms"] = ms
@@ -3129,6 +3164,11 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 		res.held = guard.Held
 		res.draftSaved = guard.SavedDraft
 		res.draftCleared = guard.DraftCleared
+		// Provenance for the #1777 attribution gate, taken from the capture
+		// the guard already made just before we type: with no paste marker
+		// parked in the composer then, a marker seen during verification is
+		// the collapsed form of our own payload and may be nudged.
+		tun.retry.composerPasteFreeBeforeSend = guard.ComposerPasteMarkerFree
 	}
 
 	delivery, err := sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), tun.retry)
@@ -3272,6 +3312,27 @@ type sendRetryOptions struct {
 	// error instead of the prior best-effort `nil`. Closes the silent-drop
 	// path reported in issue #876.
 	verifyDelivery bool
+
+	// composerPasteFreeBeforeSend is the pre-send provenance evidence for the
+	// #1777 attribution gate: the caller positively observed, immediately
+	// before this send, a composer holding no "[Pasted text …]" marker. Only
+	// then can a marker seen during the verify loop be attributed to the
+	// collapse of our own payload and receive an Enter nudge. Left false, a
+	// composer paste marker counts as foreign content and no nudge fires —
+	// the fail-safe default for callers that cannot establish provenance.
+	composerPasteFreeBeforeSend bool
+}
+
+// composerPasteFree captures the pane and reports whether the composer is
+// currently free of a "[Pasted text …]" marker — the pre-send provenance
+// probe for sendRetryOptions.composerPasteFreeBeforeSend (issue #1777). A
+// capture failure returns false (fail safe: no evidence, no attribution).
+func composerPasteFree(target sendRetryTarget) bool {
+	raw, err := target.CapturePaneFresh()
+	if err != nil {
+		return false
+	}
+	return !send.ComposerHoldsPasteMarker(raw, tmux.StripANSI)
 }
 
 // sendWithRetryTarget sends the message and runs the bounded submit
@@ -3286,12 +3347,42 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		opts.checkDelay = 0
 	}
 
+	// Baseline for the arrival check below, taken BEFORE the send. Neither
+	// signal the check uses means anything as a snapshot — only as a change:
+	//
+	//   - "the body is on screen": re-sending an identical message (a
+	//     heartbeat, an inbox nudge, a retry) would match the previous copy
+	//     still sitting in the pane and certify a send that vanished.
+	//   - "the agent is active": a pane that was ALREADY busy is still busy a
+	//     moment later whether or not it received anything.
+	//
+	// Both would hand back a success for a message that never arrived, which
+	// is the exact phantom this is here to kill. Only a transition away from
+	// this baseline counts. Costs one pane capture plus one status read, and
+	// only on the path that needs them.
+	var arrivalBaseline sendArrivalBaseline
+	if skipVerify {
+		arrivalBaseline = captureArrivalBaseline(target, message)
+	}
+
 	if err := target.SendKeysAndEnter(message); err != nil {
+		// A refused over-long line is a distinct, actionable outcome: the
+		// transport typed nothing, so the composer is untouched and the
+		// caller must not retry the same body against the same pane
+		// (issue #1793).
+		if errors.Is(err, tmux.ErrCanonicalLineOverflow) {
+			return deliveryLineTooLong, fmt.Errorf("message not delivered: %w", err)
+		}
 		return deliverySendFailed, fmt.Errorf("failed to send message: %w", err)
 	}
 
 	if skipVerify {
-		return deliveryUnverified, nil
+		// Issue #1793: "the tmux command returned" is not delivery. This
+		// path used to return success on transport alone, which is exactly
+		// how a 4095-byte payload that never reached the agent was reported
+		// as `{"success":true,"delivery":"unverified"}`. Confirm the body
+		// actually reached the pane before claiming anything.
+		return verifyContentArrival(target, message, opts, arrivalBaseline)
 	}
 
 	// Verify the agent accepted Enter and began processing.
@@ -3324,23 +3415,51 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	fullResendCount := 0
 	// sawDeliveryEvidence flips true on any positive signal that the message
 	// reached the agent: an "active" status transition, an unsent-prompt
-	// composer marker, the message body appearing verbatim in the pane, or a
-	// successful full resend. When opts.verifyDelivery is set and this stays
-	// false for the entire budget, the function returns an error instead of
-	// silently succeeding (issue #876).
+	// composer marker, or the message body appearing verbatim in the pane.
+	// When opts.verifyDelivery is set and this stays false for the entire
+	// budget, the function returns an error instead of silently succeeding
+	// (issue #876).
+	//
+	// ARRIVAL IS NOT SUBMISSION. Two of those three signals — body text in the
+	// pane, and an unsent-prompt marker — say the bytes got there and say
+	// nothing about the agent accepting them. The unsent-prompt marker
+	// literally means the opposite. Only sawActiveAfterSend below is
+	// submission evidence, and conflating the two is what let this function
+	// return deliverySubmitted for a message still sitting in a composer:
+	// the exact phantom success of issue #1793, on the Claude path.
 	sawDeliveryEvidence := false
+	// sawUnsentMarker records that the composer was positively observed
+	// HOLDING this message at some point. Combined with the composer being
+	// clear at the end of the budget (checked below), held-then-cleared is
+	// genuine submission evidence: the agent took the message out of the
+	// composer. Body text merely being visible is not the same thing and must
+	// not be treated as if it were.
+	sawUnsentMarker := false
 	// Snippet of the message body to look for in captured pane content. Some
 	// TUI frameworks (and non-Claude tools) won't render a "[Pasted text …]"
 	// or "❯ <msg>" marker, so direct verbatim content is the only signal.
 	// Take the first run of non-whitespace content, capped, to avoid false
 	// positives from matching common short strings.
 	deliveryToken := messageDeliveryToken(message)
+	// attrib is the #1777 attribution gate. EVERY bare Enter in this loop —
+	// including the unsent-prompt branch, which used to press unconditionally
+	// whenever a "[Pasted text …]" marker appeared anywhere in the pane —
+	// goes through attrib.NudgeEnter, so no branch can submit composer
+	// content agent-deck cannot attribute to its own delivery.
+	attrib := send.EnterAttribution{
+		Message:        message,
+		OwnPasteMarker: opts.composerPasteFreeBeforeSend,
+	}
 	for retry := 0; retry < opts.maxRetries; retry++ {
 		time.Sleep(opts.checkDelay)
 
 		unsentPromptDetected := false
-		if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil {
-			content := tmux.StripANSI(rawContent)
+		// paneNow is this iteration's observation (raw ANSI + whether the
+		// capture succeeded at all), and is what the attribution gate reads.
+		captured, captureErr := target.CapturePaneFresh()
+		paneNow := send.CaptureOutcome(captured, captureErr)
+		if paneNow.OK {
+			content := tmux.StripANSI(captured)
 			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
 			if !sawDeliveryEvidence && deliveryToken != "" && strings.Contains(content, deliveryToken) {
 				sawDeliveryEvidence = true
@@ -3350,10 +3469,11 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 
 		if unsentPromptDetected {
 			sawDeliveryEvidence = true
+			sawUnsentMarker = true
 			waitingNoMarkerChecks = 0
 			waitingNoActivityChecks = 0
 			activeChecks = 0
-			_ = target.SendEnter()
+			attrib.NudgeEnter(target, paneNow, tmux.StripANSI)
 			continue
 		}
 
@@ -3385,10 +3505,33 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				// visible but the input handler wasn't ready, so sent keys were
 				// discarded. Clear stale input and re-send the full message.
 				if waitingNoActivityChecks >= fullResendThreshold && fullResendCount < maxFullResends {
+					// The resend types the message and presses Enter, so it
+					// submits whatever the composer still holds. Ctrl+C is
+					// meant to empty it first — but a failed Ctrl+C, or one
+					// the agent ignored, would leave foreign content to be
+					// submitted with our payload appended (#1777). Re-read
+					// the pane and skip the resend unless the composer is
+					// verifiably clear of content we cannot attribute.
+					//
+					// fullResendCount and waitingNoActivityChecks are consumed
+					// below, ONLY once a resend is actually about to fire —
+					// not here. Either abort path (Ctrl+C error, or a pane
+					// that still reads as foreign after it) sends nothing, so
+					// charging the finite resend budget or resetting the
+					// waiting-check counter here would burn a scarce slot for
+					// no send and force a fresh fullResendThreshold wait
+					// before the next attempt, right after Ctrl+C may have
+					// already wiped the composer (#1778 review finding 3).
+					if ctrlCErr := target.SendCtrlC(); ctrlCErr != nil {
+						continue
+					}
+					time.Sleep(200 * time.Millisecond)
+					if attrib.EnterWouldSubmitForeignDraft(
+						send.CaptureOutcome(target.CapturePaneFresh()), tmux.StripANSI) {
+						continue
+					}
 					fullResendCount++
 					waitingNoActivityChecks = 0
-					_ = target.SendCtrlC()
-					time.Sleep(200 * time.Millisecond)
 					// A successful resend is not yet evidence of receipt — the
 					// next iteration must still observe a positive signal — so
 					// we intentionally do NOT set sawDeliveryEvidence here, even
@@ -3404,7 +3547,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				// retries) then every 2nd iteration. This addresses bracketed
 				// paste timing failures that are most likely early on.
 				if retry < 5 || retry%2 == 0 {
-					_ = target.SendEnter()
+					attrib.NudgeEnter(target, paneNow, tmux.StripANSI)
 				}
 			}
 			continue
@@ -3416,7 +3559,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		// Increased from 2 to 4 because some TUI frameworks take longer
 		// to process and reflect state.
 		if retry < 4 {
-			_ = target.SendEnter()
+			attrib.NudgeEnter(target, paneNow, tmux.StripANSI)
 		}
 	}
 
@@ -3444,9 +3587,26 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				"and the message body was not visible in the pane. Verify the inner agent is reading from "+
 				"its TTY before retrying", opts.maxRetries)
 		}
-		// Evidence was observed and the composer no longer holds the message:
-		// it was accepted at some point during the budget.
-		return deliverySubmitted, nil
+		if sawActiveAfterSend {
+			// The agent went active after the send: it took the message up.
+			return deliverySubmitted, nil
+		}
+		if sawUnsentMarker {
+			// The composer was observed holding this message and — per the
+			// typed_not_submitted check just above, which did not fire — is
+			// no longer holding it. Held-then-cleared means the agent took it
+			// out of the composer, which is submission.
+			return deliverySubmitted, nil
+		}
+		// The only thing ever observed was the body being visible somewhere in
+		// the pane. That proves the bytes arrived and proves nothing about the
+		// agent accepting them: the Enter can still have been swallowed. Do
+		// not promote arrival to submission — that promotion IS issue #1793.
+		return deliveryTyped, fmt.Errorf(
+			"message reached the pane but submission was never confirmed after %d checks (issue #1793): "+
+				"the body was visible but the agent never began processing it and the composer was never "+
+				"observed taking it. Treat this as NOT delivered — the submitting Enter may have been "+
+				"swallowed", opts.maxRetries)
 	}
 
 	// Legacy best-effort contract for paths that gate verification elsewhere.
@@ -3457,6 +3617,239 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 // suitable for "did this body appear in the pane?" verification. Returns "" if
 // the message contains no usefully-distinctive token (e.g. all whitespace, or
 // only short common words).
+// arrivalVerifyChecks bounds the post-send content-arrival poll. The body
+// echoes into the pane as fast as the agent redraws, so this only has to
+// cover a redraw, not a reply: at the callers' 200ms checkDelay that is ~2s.
+const arrivalVerifyChecks = 10
+
+// arrivalSafeLineBytes is the longest LINE that no line discipline can lose,
+// and therefore the threshold above which an unconfirmed send is a failure
+// rather than an "unverified" shrug. Same figure the tmux transport treats as
+// always-safe (internal/tmux canonicalSafeBytes): at or below it the
+// canonical-overflow loss mode of issue #1793 cannot occur, so a missed pane
+// match is far likelier to be a rendering quirk than a lost message and the
+// historical best-effort contract is kept. Above it a missed match is the
+// actual bug signature and must not be reported as success.
+//
+// Measured per LINE, deliberately. Gating on total payload size would fail a
+// 20 KB body of short lines that the transport in this same change delivers
+// without trouble.
+const arrivalSafeLineBytes = 1023
+
+// sendArrivalBaseline is the pre-send state the arrival check measures change
+// against. Every field here is meaningless on its own and meaningful only as a
+// delta (see the comment at the capture site).
+type sendArrivalBaseline struct {
+	// occurrences is how many copies of the message body were already
+	// visible in the pane before the send.
+	occurrences int
+	// paneOK reports that the pre-send capture actually succeeded. When it
+	// did not there is NO baseline, and the content signal must be switched
+	// off rather than defaulted to zero: a failed look would otherwise make
+	// a pre-existing copy of a repeated message read as a new arrival.
+	paneOK bool
+	// wasActive reports whether the agent was already working before the
+	// send, in which case "it is active now" proves nothing.
+	wasActive bool
+	// statusOK reports that the pre-send status read succeeded. Same reason:
+	// a failed read defaulting to "was not active" would turn a
+	// continuously-busy agent into a fake not-active-to-active transition.
+	statusOK bool
+}
+
+// captureArrivalBaseline snapshots the pane and status before a send. Each
+// signal records whether it was actually observed; a signal without a valid
+// baseline is disabled, never guessed.
+func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalBaseline {
+	base := sendArrivalBaseline{}
+	if n, ok := countMessageInPane(target, message); ok {
+		base.occurrences, base.paneOK = n, true
+	}
+	if status, err := target.GetStatus(); err == nil {
+		base.wasActive, base.statusOK = status == "active", true
+	}
+	return base
+}
+
+// verifyContentArrival confirms that message reached the target pane, for
+// tools whose TUI exposes no Claude-shaped submit signal (issue #1793).
+//
+// Evidence is a TRANSITION from the pre-send baseline, never a snapshot:
+// either a new copy of the body appearing in the pane, or the agent going
+// active when it was not active before the send — an idle agent that starts
+// working necessarily received what it started working on. An agent that was
+// already busy stays busy regardless, so that case proves nothing and is not
+// accepted.
+//
+// The two signals are not equal in strength, and the result says which one
+// was found. An idle agent going active is attributable to this send, so that
+// is deliverySubmitted. The body appearing is only deliveryTyped: bytes in a
+// composer are not an accepted turn — Enter can still have been swallowed,
+// which is the failure #1413 and #1793 are both about.
+//
+// The pane comparison is whitespace-insensitive because a pane wraps long
+// lines at its width and capture-pane returns those wraps as newlines, so a
+// byte-exact search for a 64-character token fails on any message wider than
+// the remaining columns. Stripping whitespace from both sides restores the
+// contiguity the terminal broke.
+//
+// A signal whose pre-send baseline could not be read is switched OFF, not
+// defaulted: without a baseline there is no transition to measure, and
+// guessing one is how a failed capture would quietly become fake evidence.
+func verifyContentArrival(target sendRetryTarget, message string, opts sendRetryOptions, baseline sendArrivalBaseline) (string, error) {
+	// Whether an unverified outcome is a failure depends on the longest LINE,
+	// not on the total payload. Canonical buffering is per line — that is the
+	// whole finding this fix rests on — so a 20 KB body of 80-byte lines is
+	// as deliverable as a one-liner, and failing it for its total size would
+	// contradict the transport in the same commit.
+	//
+	// The comparison is against the pane's own capacity where that can be
+	// measured, and only against the universal floor when it cannot. The
+	// floor is what EVERY pane can take, not what THIS pane can take: a
+	// raw-mode pane has no line limit at all, so judging it by the floor
+	// would condemn perfectly deliverable sends.
+	longestLine := longestMessageLineBytes(message)
+	riskyLine := false
+	if longestLine > arrivalSafeLineBytes {
+		riskyLine = longestLine > maxDeliverableLineBytes(target)
+	}
+
+	token := collapseWhitespace(messageDeliveryToken(message))
+	if token == "" {
+		// Nothing distinctive enough to look for. Verification is impossible
+		// rather than failed — but "impossible" must not become an exit 0 for
+		// a payload with a line big enough to be silently eaten, which would
+		// leave the reported bug wide open through the token-less door.
+		if riskyLine {
+			return deliveryNoEvidence, fmt.Errorf(
+				"send could not be verified: this message has a %d-byte line, long enough that a "+
+					"canonical-mode reader can discard it along with the submitting Enter, and it carries no "+
+					"content distinctive enough to look for in the pane (issue #1793). Refusing to report "+
+					"success for a send nothing can confirm",
+				longestLine)
+		}
+		return deliveryUnverified, nil
+	}
+
+	checks := opts.maxRetries
+	if checks > arrivalVerifyChecks {
+		checks = arrivalVerifyChecks
+	}
+	if checks < 1 {
+		checks = 1
+	}
+
+	sawBody := false
+	for i := 0; i < checks; i++ {
+		// Strongest signal first: an idle agent that starts working received
+		// what it started working on, which is submission, not just arrival.
+		if baseline.statusOK && !baseline.wasActive {
+			if status, err := target.GetStatus(); err == nil && status == "active" {
+				return deliverySubmitted, nil
+			}
+		}
+		if baseline.paneOK {
+			if n, ok := countMessageInPane(target, message); ok && n > baseline.occurrences {
+				// Keep polling: the body is in, but the turn may still start
+				// within the budget and upgrade this to submitted.
+				sawBody = true
+			}
+		}
+		if i < checks-1 {
+			time.Sleep(opts.checkDelay)
+		}
+	}
+
+	if sawBody {
+		// The bytes demonstrably reached the pane and nothing showed the
+		// agent taking them up. This is NOT a success: text sitting unsent in
+		// a composer is precisely the state issue #1793 reported as a false
+		// success, and returning nil here would hand the caller exit 0 and
+		// `"success": true` next to `"submitted": false`. Fail, so scripts and
+		// agents cannot read it as delivered.
+		return deliveryTyped, fmt.Errorf(
+			"message reached the pane but submission was never confirmed after %d checks (issue #1793): "+
+				"the body is visible but the agent never began processing it. Treat this as NOT delivered — "+
+				"the submitting Enter may have been swallowed", checks)
+	}
+
+	if riskyLine {
+		return deliveryNoEvidence, fmt.Errorf(
+			"send could not be confirmed: a message with a %d-byte line never appeared in the pane and the "+
+				"agent showed no new activity after %d checks (issue #1793). A line that long is discarded "+
+				"outright — together with the submitting Enter — by a canonical-mode reader, so this is "+
+				"reported as a failure rather than as an unverified success",
+			longestLine, checks)
+	}
+	return deliveryUnverified, nil
+}
+
+// longestMessageLineBytes is the length of the longest line of message.
+// Mirrors the quantity the tmux transport measures, because the terminal
+// limit this whole fix is about is per line, not per payload. Both \n and \r
+// end a line: with ICRNL set (the tty default) an incoming CR becomes NL
+// before the line discipline sees it, so counting only \n would read a
+// CR-delimited body as one enormous line.
+func longestMessageLineBytes(message string) int {
+	longest := 0
+	for _, line := range strings.FieldsFunc(message, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}) {
+		if len(line) > longest {
+			longest = len(line)
+		}
+	}
+	return longest
+}
+
+// paneLineCapacityReporter is implemented by *tmux.Session. It is an optional
+// capability, discovered by type assertion, so the interface sendRetryTarget
+// stays small and existing fakes keep working: a target that cannot report a
+// capacity simply falls back to the universal floor.
+type paneLineCapacityReporter interface {
+	PaneLineCapacity() (int, bool)
+}
+
+// maxDeliverableLineBytes returns the longest single line this target can
+// accept. It prefers the pane's DETECTED capacity — a raw-mode pane has no
+// line limit and a Linux canonical pane holds four times what the floor
+// assumes — and only falls back to arrivalSafeLineBytes when the pane cannot
+// be probed. Without this, a 2000-byte line that delivers perfectly to any
+// raw-mode agent TUI would be reported as lost purely because 2000 > 1023.
+//
+// Only consulted when a line already exceeds the floor, so ordinary sends
+// never pay for the probe.
+func maxDeliverableLineBytes(target sendRetryTarget) int {
+	if reporter, ok := target.(paneLineCapacityReporter); ok {
+		if capacity, known := reporter.PaneLineCapacity(); known && capacity > 0 {
+			return capacity
+		}
+	}
+	return arrivalSafeLineBytes
+}
+
+// countMessageInPane reports how many times the message's distinctive token
+// appears in the pane right now. The bool reports whether the pane was
+// actually read: a failed look is not "zero occurrences", it is no
+// observation at all, and callers must not treat the two the same.
+func countMessageInPane(target sendRetryTarget, message string) (int, bool) {
+	token := collapseWhitespace(messageDeliveryToken(message))
+	if token == "" {
+		return 0, false
+	}
+	raw, err := target.CapturePaneFresh()
+	if err != nil {
+		return 0, false
+	}
+	return strings.Count(collapseWhitespace(tmux.StripANSI(raw)), token), true
+}
+
+// collapseWhitespace removes every whitespace byte, so a comparison survives
+// the line wrapping a terminal applies to long content.
+func collapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), "")
+}
+
 func messageDeliveryToken(message string) string {
 	const minTokenLen = 12
 	const maxTokenLen = 64
@@ -3705,6 +4098,8 @@ func streamSessionSend(inst *session.Instance, sessionRef, profile string, sentA
 	if session.IsClaudeCompatible(inst.Tool) {
 		if fresh := inst.GetSessionIDFromTmux(); fresh != "" {
 			inst.ClaudeSessionID = fresh
+			// #1815: own pane env — weak vouch.
+			session.NoteClaudeSessionIDFromOwnPane(inst)
 			inst.ClaudeDetectedAt = time.Now()
 		}
 	}
@@ -3816,6 +4211,8 @@ func handleSessionOutput(profile string, args []string) {
 	if session.IsClaudeCompatible(inst.Tool) {
 		if freshID := inst.GetSessionIDFromTmux(); freshID != "" {
 			inst.ClaudeSessionID = freshID
+			// #1815: own pane env — weak vouch.
+			session.NoteClaudeSessionIDFromOwnPane(inst)
 			inst.ClaudeDetectedAt = time.Now()
 		}
 	}
@@ -3961,10 +4358,22 @@ func handleSessionCurrent(profileArg string, args []string) {
 		os.Exit(1)
 	}
 
-	// Detect profile: use explicit arg if provided, otherwise auto-detect
+	// Detect profile: use explicit arg if provided, otherwise auto-detect.
+	// #1790/#1822: route the auto-detect path through ResolveProfileForStorage,
+	// not the bare GetEffectiveProfile(""). The
+	// result below is handed straight to findInstanceDataByTmuxFast, which
+	// opens/creates storage for it (NewStorageWithProfile) — a bare
+	// GetEffectiveProfile result would look like an explicit -p selection to
+	// that call's own guard, bypassing it a second hop downstream, the same
+	// class of bug fixed at the other call sites.
 	detectedProfile := profileArg
 	if detectedProfile == "" || detectedProfile == session.DefaultProfile {
-		detectedProfile = profile.DetectCurrentProfile()
+		resolved, err := session.ResolveProfileForStorage("")
+		if err != nil {
+			out.Error(fmt.Sprintf("failed to resolve profile: %v", err), ErrCodeNotFound)
+			os.Exit(1)
+		}
+		detectedProfile = resolved
 	}
 
 	// Try fast path: LoadLite + match by tmux session name

@@ -530,9 +530,21 @@ config_dir = "~/.claude-work"
 		t.Errorf("Should use custom command 'cdw' from config, got: %s", cmd)
 	}
 
-	// Should include CLAUDE_CONFIG_DIR since config_dir is explicitly set
-	if !strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
-		t.Errorf("Should include CLAUDE_CONFIG_DIR for capture-resume commands, got: %s", cmd)
+	// #1822 F3: a custom Claude command/alias (e.g. "cdw") is expected to
+	// resolve CLAUDE_CONFIG_DIR itself, so the deck must not also export
+	// its own resolved value ahead of it -- doing so would override the
+	// alias's own fallback resolution with the deck's value, which is the
+	// same wrong-account bug class #1822 exists to fix. This gate now
+	// applies uniformly across every buildClaudeCommandWithMessage branch
+	// (previously only continue/resume/-r respected it; the default
+	// capture-resume path here did not -- see PR #1822 review Finding 3).
+	// AGENTDECK_RESOLVED_CONFIG_DIR (the informational hint var, not the
+	// live override) is still always emitted.
+	if strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
+		t.Errorf("Should NOT export CLAUDE_CONFIG_DIR for a custom-alias command, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "AGENTDECK_RESOLVED_CONFIG_DIR=") {
+		t.Errorf("Should still emit the AGENTDECK_RESOLVED_CONFIG_DIR hint var, got: %s", cmd)
 	}
 
 	// Should use --session-id with a literal Go-generated UUID (not shell variable)
@@ -770,7 +782,10 @@ func TestInstance_UpdateClaudeSession_RejectZombie(t *testing.T) {
 		}
 	}()
 
-	projectPath := "/tmp/claude-zombie-reject"
+	// A real directory: this test calls Start(), and a session whose project
+	// directory does not exist is now refused rather than silently started in
+	// $HOME (#1713). The path only needs to be stable within the test.
+	projectPath := t.TempDir()
 	projectDir := filepath.Join(configDir, "projects", ConvertToClaudeDirName(projectPath))
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("mkdir project dir: %v", err)

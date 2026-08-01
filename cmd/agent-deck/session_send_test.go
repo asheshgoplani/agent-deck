@@ -1537,10 +1537,17 @@ func TestSendWithRetryTarget_VerifyDelivery_AcceptsUnsentMarker(t *testing.T) {
 	}
 }
 
-func TestSendWithRetryTarget_VerifyDelivery_AcceptsMessageInPane(t *testing.T) {
+func TestSendWithRetryTarget_VerifyDelivery_MessageInPaneIsReceiptNotSubmission(t *testing.T) {
 	// If the message body itself shows up in the captured pane (e.g. behind a
 	// non-Claude composer that doesn't render an "unsent paste" marker), that
-	// is direct evidence the keystrokes were received. Must not error.
+	// is direct evidence the keystrokes were RECEIVED — so this must never be
+	// reported as the #876 silent drop.
+	//
+	// Updated for issue #1793: it is not evidence the message was SUBMITTED.
+	// This test previously asserted err == nil, which meant a body sitting in
+	// a composer whose Enter was swallowed exited 0 as "delivered" — the
+	// phantom success #1793 was filed about. Receipt and submission are now
+	// separate verdicts.
 	statuses := make([]string, 6)
 	panes := make([]string, 6)
 	for i := range statuses {
@@ -1548,11 +1555,20 @@ func TestSendWithRetryTarget_VerifyDelivery_AcceptsMessageInPane(t *testing.T) {
 		panes[i] = "DELIVERY_TOKEN_876 — verbatim message body in pane"
 	}
 	mock := &mockSendRetryTarget{statuses: statuses, panes: panes}
-	_, err := sendWithRetryTarget(mock, "DELIVERY_TOKEN_876", false, sendRetryOptions{
+	delivery, err := sendWithRetryTarget(mock, "DELIVERY_TOKEN_876", false, sendRetryOptions{
 		maxRetries: 6, checkDelay: 0, verifyDelivery: true,
 	})
-	if err != nil {
-		t.Fatalf("verifyDelivery must accept message-in-pane as receipt evidence: %v", err)
+	if delivery == deliveryNoEvidence {
+		t.Fatal("#876: a verbatim body in the pane is receipt evidence and must not be a silent drop")
+	}
+	if err != nil && strings.Contains(err.Error(), "dropped silently") {
+		t.Fatalf("#876: must not report a silent drop when the body is visible: %v", err)
+	}
+	if delivery != deliveryTyped {
+		t.Fatalf("delivery: want %q (received, submission unconfirmed), got %q", deliveryTyped, delivery)
+	}
+	if err == nil {
+		t.Fatal("issue #1793: received-but-not-submitted must not report success")
 	}
 }
 

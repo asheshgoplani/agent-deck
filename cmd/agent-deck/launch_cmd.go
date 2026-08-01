@@ -235,6 +235,18 @@ func handleLaunch(profile string, args []string) {
 			out.Error("--resume-session only works with Claude sessions (-c claude)", ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		// #1815 (Codex review on #1830): the value below is passed to
+		// MarkClaudeSessionIDVerified — it becomes a VOUCHED ownership
+		// declaration — and is then interpolated into `--session-id "%s"`,
+		// a double-quoted shell context where $(...) still substitutes.
+		// "Operator-named" has to mean the operator named an actual
+		// conversation id, so refuse anything that is not a bare UUID
+		// rather than vouching for it or silently continuing unverified.
+		if !session.IsBareClaudeSessionUUID(*resumeSession) {
+			out.Error("--resume-session must be a bare Claude conversation UUID "+
+				"(8-4-4-4-12 lowercase hex, e.g. 91fd7978-1a2b-3c4d-5e6f-7a8b9c0d1e2f)", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 	}
 
 	// Handle worktree creation
@@ -487,6 +499,10 @@ func handleLaunch(profile string, args []string) {
 
 	if *resumeSession != "" {
 		newInstance.ClaudeSessionID = *resumeSession
+		// #1815: the operator named this conversation for this session —
+		// explicit ownership, so vouch for it (ownership is positive state;
+		// an unvouched id is refused at resume time).
+		session.MarkClaudeSessionIDVerified(newInstance)
 		newInstance.ClaudeDetectedAt = time.Now()
 
 		opts := newInstance.GetClaudeOptions()
@@ -640,6 +656,12 @@ func handleLaunch(profile string, args []string) {
 			if _, err := sendWithRetryTarget(tmuxSess, initialMessage, skipClaudeDeliveryVerify(newInstance.Tool), sendRetryOptions{
 				maxRetries: 8,
 				checkDelay: 150 * time.Millisecond,
+				// #1777 provenance probe: a freshly launched session has an
+				// empty composer, so a "[Pasted text …]" marker appearing
+				// during verification is this prompt's own collapse and the
+				// Enter nudge stays attributable. If the probe cannot confirm
+				// that, the gate withholds the nudge.
+				composerPasteFreeBeforeSend: composerPasteFree(tmuxSess),
 			}); err != nil {
 				out.Error(fmt.Sprintf("failed to send initial message: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)

@@ -30,13 +30,19 @@ const switcherRepeatGuard = 80 * time.Millisecond
 // cycle forward / backward, arrow keys browse, and the highlight is attached on
 // Enter or after a brief idle once you've cycled.
 type SessionSwitcher struct {
-	visible          bool
-	width, height    int
-	sessions         []*session.Instance // active sessions, MRU-ordered
-	cursor           int
-	fromID           string            // session the picker was opened from
-	subtitles        map[string]string // sessionID -> dim conversation/pane title (matches the overview)
-	reattachOnCancel bool              // Esc re-attaches to fromID (opened while attached) vs. just closing (opened from the overview)
+	visible       bool
+	width, height int
+	sessions      []*session.Instance // active sessions, MRU-ordered
+	cursor        int
+	fromID        string            // session the picker was opened from
+	subtitles     map[string]string // sessionID -> dim conversation/pane title (matches the overview)
+	// labels carries the render-snapshot state per session so View() can build
+	// rows lock-free (#1753): the switcher opens on the event loop right after
+	// a switch-return, and per-row Instance.mu reads could block behind a
+	// mid-sweep UpdateStatus writer for seconds. Nil (e.g. in direct Show
+	// callers/tests) falls back to the Instance getters.
+	labels           map[string]sessionRenderState
+	reattachOnCancel bool // Esc re-attaches to fromID (opened while attached) vs. just closing (opened from the overview)
 	// commitGen is bumped on every open/cycle/cancel so a stale idle-commit
 	// timer (scheduled before a later keypress) is ignored when it fires. It is
 	// intentionally monotonic — never reset — so a timer from a previous
@@ -143,6 +149,7 @@ func (s *SessionSwitcher) Hide() {
 	s.sessions = nil
 	s.fromID = ""
 	s.subtitles = nil
+	s.labels = nil
 	s.reattachOnCancel = false
 	s.lastCycleAt = time.Time{}
 }
@@ -227,12 +234,20 @@ func (s *SessionSwitcher) View() string {
 	// horizontal padding). The dialog grows to fit it, capped at the terminal.
 	natural := max(cellWidth(header), cellWidth(footerCycle), cellWidth(footerNav))
 	for i, inst := range s.sessions {
-		indicator := statusIndicator(inst.GetStatusThreadSafe())
+		var indicator, label, subtitle string
+		if state, ok := s.labels[inst.ID]; ok {
+			// Lock-free path (#1753): status and labels from the render
+			// snapshot captured at open time — no Instance.mu per row.
+			indicator = statusIndicator(state.status)
+			label, subtitle = sessionDisplayLabelsFromState(state)
+		} else {
+			indicator = statusIndicator(inst.GetStatusThreadSafe())
+			label, subtitle = sessionDisplayLabels(inst, s.subtitles[inst.ID])
+		}
 		tool := ""
 		if inst.Tool != "" {
 			tool = fmt.Sprintf(" (%s)", inst.Tool)
 		}
-		label, subtitle := sessionDisplayLabels(inst, s.subtitles[inst.ID])
 		title := label + tool
 
 		marker := "  "

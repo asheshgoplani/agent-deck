@@ -26,10 +26,25 @@ func TestMapEventToStatus(t *testing.T) {
 		{"PreCompact", ""},
 		{"UnknownEvent", ""},
 		// Hermes shell hook events
+		{"pre_llm_call", "running"},
+		{"post_llm_call", "waiting"},
 		{"pre_tool_call", "running"},
-		{"post_tool_call", "waiting"},
+		// Hermes-only key: mid-turn, a finished tool call means the LLM keeps
+		// working; the turn-end waiting edge belongs to post_llm_call.
+		{"post_tool_call", "running"},
+		// Claude/Cursor post-tool events keep mapping to waiting.
+		{"PostToolUse", "waiting"},
 		{"on_session_start", "waiting"},
-		{"on_session_end", "dead"},
+		// Hermes fires on_session_end after EVERY run_conversation call (once
+		// per user message), not at process exit — it is the turn-end edge,
+		// and the only one an interrupted turn gets (post_llm_call is skipped
+		// on interrupt). The real process-exit event is on_session_finalize.
+		{"on_session_end", "waiting"},
+		{"on_session_finalize", "dead"},
+		// Per-API-call heartbeat: keeps "running" fresh through long
+		// multi-step turns that would outlive the hook freshness window.
+		{"pre_api_request", "running"},
+		{"post_api_request", "running"},
 		{"subagent_stop", ""},
 		// Cursor Agent CLI hook events (camelCase)
 		{"sessionStart", "waiting"},

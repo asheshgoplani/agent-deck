@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -157,5 +158,67 @@ func TestProfilesUnauthorized(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), ErrCodeUnauthorized) {
 		t.Errorf("expected UNAUTHORIZED error, got: %s", rr.Body.String())
+	}
+}
+
+// Issue #1682: GET /api/settings carries the terminal link-open policy so the
+// web UI can skip the confirm for trusted hosts. A Config that never set
+// ConfirmLinkOpen must still report the confirm ON — a false there would
+// silently disable the prompt for every host.
+func TestSettingsLinkPolicy_DefaultsToConfirmOn(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: "default"})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	var got SettingsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode settings: %v", err)
+	}
+	if !got.ConfirmLinkOpen {
+		t.Error("confirmLinkOpen = false with ConfirmLinkOpen unset, want true (confirm stays on)")
+	}
+	if len(got.TrustedDomains) != 0 {
+		t.Errorf("trustedDomains = %v, want empty when unconfigured", got.TrustedDomains)
+	}
+}
+
+func TestSettingsLinkPolicy_ServesConfiguredAllowlistAndToggle(t *testing.T) {
+	off := false
+	srv := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		Profile:         "default",
+		TrustedDomains:  []string{"gitlab.corp.example", "*.ci.corp.example"},
+		ConfirmLinkOpen: &off,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	var got SettingsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode settings: %v", err)
+	}
+	if got.ConfirmLinkOpen {
+		t.Error("confirmLinkOpen = true, want false when ConfirmLinkOpen is explicitly false")
+	}
+	want := []string{"gitlab.corp.example", "*.ci.corp.example"}
+	if len(got.TrustedDomains) != len(want) {
+		t.Fatalf("trustedDomains = %v, want %v", got.TrustedDomains, want)
+	}
+	for i := range want {
+		if got.TrustedDomains[i] != want[i] {
+			t.Errorf("trustedDomains[%d] = %q, want %q", i, got.TrustedDomains[i], want[i])
+		}
 	}
 }

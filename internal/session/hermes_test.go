@@ -250,6 +250,46 @@ func TestBuildHermesCommand_Passthrough(t *testing.T) {
 	}
 }
 
+// TestBuildHermesCommand_InjectsInstanceIDEnv pins the fix for the state
+// indicator: the shell hooks Hermes spawns run `agent-deck hook-handler`, which
+// reads AGENTDECK_INSTANCE_ID and silently no-ops without it. Both the default
+// and custom-command (passthrough) launch paths must export it.
+func TestBuildHermesCommand_InjectsInstanceIDEnv(t *testing.T) {
+	restore := resetUserConfigCache(t, &UserConfig{})
+	defer restore()
+
+	inst := &Instance{ID: "abc-123", Title: "dev", Tool: "hermes"}
+
+	cmd := inst.buildHermesCommand("hermes")
+	if !strings.Contains(cmd, "AGENTDECK_INSTANCE_ID=abc-123") {
+		t.Errorf("buildHermesCommand() = %q, want it to export AGENTDECK_INSTANCE_ID", cmd)
+	}
+	// VAR=... assignments only apply to the command they precede, so the
+	// prefix must end up before the hermes command word, not after it.
+	if !strings.HasSuffix(cmd, " hermes") {
+		t.Errorf("buildHermesCommand() = %q, want env assignments to prefix the hermes command word", cmd)
+	}
+	if pass := inst.buildHermesCommand("hermes --special-flag"); !strings.Contains(pass, "AGENTDECK_INSTANCE_ID=abc-123") {
+		t.Errorf("buildHermesCommand passthrough = %q, want it to export AGENTDECK_INSTANCE_ID", pass)
+	}
+
+	// Title is user-editable text landing in an executed command string; $ and
+	// backticks stay live inside double quotes, so it must be single-quoted to
+	// reach the hook env byte-for-byte instead of being expanded or executed.
+	hostile := &Instance{ID: "abc-123", Title: "check `date` $(id) $HOME", Tool: "hermes"}
+	if cmd := hostile.buildHermesCommand("hermes"); !strings.Contains(cmd, "AGENTDECK_TITLE='check `date` $(id) $HOME'") {
+		t.Errorf("buildHermesCommand() = %q, want the title single-quoted verbatim", cmd)
+	}
+
+	// The env prefix must compose with --resume (both features prepend/append
+	// around the same base command).
+	resumed := &Instance{ID: "abc-123", Title: "dev", Tool: "hermes", HermesSessionID: "20260720_143254_a3db50"}
+	if cmd := resumed.buildHermesCommand("hermes"); !strings.Contains(cmd, "AGENTDECK_INSTANCE_ID=abc-123") ||
+		!strings.HasSuffix(cmd, "hermes --resume 20260720_143254_a3db50") {
+		t.Errorf("buildHermesCommand() = %q, want env prefix and trailing --resume together", cmd)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Gateway health check tests
 // ---------------------------------------------------------------------------

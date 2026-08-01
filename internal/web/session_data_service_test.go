@@ -13,6 +13,10 @@ type fakeStorage struct {
 	groups    []*session.GroupData
 	loadErr   error
 	closed    bool
+	// profile, if set, is what Profile() reports was actually opened. Left
+	// "" in most fixtures so SessionDataService.resolveAndOpenStorage
+	// leaves s.profile unchanged (see its own "opened != """ guard).
+	profile string
 }
 
 func (f *fakeStorage) LoadWithGroups() ([]*session.Instance, []*session.GroupData, error) {
@@ -25,6 +29,10 @@ func (f *fakeStorage) LoadWithGroups() ([]*session.Instance, []*session.GroupDat
 func (f *fakeStorage) Close() error {
 	f.closed = true
 	return nil
+}
+
+func (f *fakeStorage) Profile() string {
+	return f.profile
 }
 
 func TestSessionDataService_LoadMenuSnapshot(t *testing.T) {
@@ -209,6 +217,40 @@ func TestSessionDataService_LoadMenuSnapshotLoadError(t *testing.T) {
 	}
 	if !fake.closed {
 		t.Fatal("expected storage Close() to be called")
+	}
+}
+
+// TestSessionDataService_UnrecognizedInferredProfile_FallsBackNotBypassesGuard
+// is the F3 regression test: NewSessionDataService must not pre-resolve its
+// raw profile argument via GetEffectiveProfile before the real storage layer
+// ever sees it, or NewStorageWithProfile's own #1790 guard is bypassed a
+// second hop downstream (the concrete pre-resolved name looks identical to
+// an explicit -p selection). Exercises the REAL defaultStorageOpener /
+// session.NewStorageWithProfile path, not a fake.
+func TestSessionDataService_UnrecognizedInferredProfile_FallsBackNotBypassesGuard(t *testing.T) {
+	t.Setenv("AGENTDECK_PROFILE", "") // TestMain sets this package-wide; this test needs inference to actually apply.
+	missingProfile := "sessiondatasvc1822missing"
+	t.Setenv("CLAUDE_CONFIG_DIR", "/home/u/.claude-"+missingProfile)
+
+	svc := NewSessionDataService("")
+
+	snapshot, err := svc.LoadMenuSnapshot()
+	if err != nil {
+		t.Fatalf("LoadMenuSnapshot() should fall back rather than error, got: %v", err)
+	}
+	if snapshot.Profile == missingProfile {
+		t.Fatalf("snapshot must not report the unrecognized inferred profile %q as opened", missingProfile)
+	}
+	if svc.Profile() == missingProfile {
+		t.Fatalf("service must not adopt the unrecognized inferred profile %q after load", missingProfile)
+	}
+
+	exists, existsErr := session.ProfileExists(missingProfile)
+	if existsErr != nil {
+		t.Fatalf("ProfileExists: %v", existsErr)
+	}
+	if exists {
+		t.Errorf("profile %q must not have been auto-created via NewSessionDataService", missingProfile)
 	}
 }
 

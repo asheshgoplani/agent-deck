@@ -9,6 +9,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { EmptyStateDashboard } from './EmptyStateDashboard.js'
 import { terminalKeymap } from './terminalKeys.js'
+import { createTerminalLinkHandler } from './terminalLinks.js'
 
 // Mobile detection: pointer:coarse for touch devices
 function isMobileDevice() {
@@ -139,6 +140,10 @@ export function TerminalPanel() {
       disableStdin: false,
       fontFamily: 'IBM Plex Mono, Menlo, Consolas, monospace',
       fontSize: 13,
+      // Issue #1682: replaces xterm's built-in OSC-8 activate handler, which
+      // confirms on every link. Ours skips the confirm for `[web]
+      // trusted_domains` hosts and honors `confirm_link_open`.
+      linkHandler: createTerminalLinkHandler(),
       scrollback: 10000,
       theme: {
         background: '#0a1220',

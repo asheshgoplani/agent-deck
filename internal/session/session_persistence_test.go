@@ -1255,6 +1255,17 @@ func writeCustomWrapperScript(t *testing.T, home string) string {
 	return wrapperPath
 }
 
+// TestPersistence_CustomCommandResumesFromLatestJSONL pinned REQ-7's
+// discovery-resume: a custom-wrapper session that lost its conversation id
+// resumed the newest transcript in its working directory.
+//
+// CONTRACT NARROWED BY #1815. Mtime order does not establish ownership: the
+// newest transcript in a shared working directory is just as likely to belong
+// to a neighbouring session, and resuming it brings that session's context
+// and authority up in this pane (the incident #1815 reports). Discovery still
+// runs and still write-throughs a candidate id — what changed is that the
+// candidate no longer AUTHORIZES --resume. The Start dispatch keeps its shape
+// (claude spawn path, explicit session id) and starts fresh.
 func TestPersistence_CustomCommandResumesFromLatestJSONL(t *testing.T) {
 	requireTmux(t)
 	home := isolatedHomeDir(t)
@@ -1299,20 +1310,25 @@ func TestPersistence_CustomCommandResumesFromLatestJSONL(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// PERSIST-12 write-through check fires FIRST so the RED diagnostic is
-	// unambiguous even when the pre-fix dispatch never invokes the stub.
-	if inst.ClaudeSessionID != newerUUID {
-		t.Fatalf("TEST-09 PERSIST-12 RED: after Start() with Command=%q, empty ClaudeSessionID, and TWO JSONLs (%s older, %s newer) under %s, inst.ClaudeSessionID=%q, want %q (newer JSONL UUID). The Phase 5 helper must mutate i.ClaudeSessionID before spawn so subsequent Restart() takes the Phase 3 fast path. This is the 2026-04-15 incident REQ-7 root cause: Start()'s empty-ID branch at instance.go:1895-1901 dispatches through buildClaudeCommand (fresh UUID) instead of discovering the newest JSONL on disk.", inst.Command, olderUUID, newerUUID, projectDir, inst.ClaudeSessionID, newerUUID)
+	// PERSIST-12 write-through, post-#1815: the instance must carry a
+	// conversation id after Start (so the next Restart takes the Phase 3 fast
+	// path), but it must NOT be the discovered uuid — that transcript is not
+	// verifiably this session's own, so the guard replaced it with a freshly
+	// minted id.
+	if inst.ClaudeSessionID == "" || inst.ClaudeSessionID == newerUUID || inst.ClaudeSessionID == olderUUID {
+		t.Fatalf("#1815: after Start() the instance must carry a freshly minted conversation id, not a discovered one; got %q (discovered candidates: %s, %s)", inst.ClaudeSessionID, newerUUID, olderUUID)
 	}
-
 	argv := readCapturedClaudeArgv(t, argvLog, 3*time.Second)
 	joined := strings.Join(argv, " ")
 
-	if !strings.Contains(joined, "--resume") || !strings.Contains(joined, newerUUID) {
-		t.Fatalf("TEST-09 RED: after inst.Start() captured claude argv MUST contain '--resume %s'. Got argv: %v. Phase 5 plan 05-02 must route empty-ID Claude-compatible Starts through buildClaudeResumeCommand (via discoverLatestClaudeJSONL write-through).", newerUUID, argv)
+	if strings.Contains(joined, "--resume") {
+		t.Fatalf("#1815: an unowned discovered transcript must not be resumed. Got argv: %v", argv)
 	}
-	if strings.Contains(joined, olderUUID) {
-		t.Fatalf("TEST-09 RED: claude argv contains the OLDER JSONL uuid %s; newer %s must win on mtime. Argv: %v", olderUUID, newerUUID, argv)
+	if !strings.Contains(joined, "--session-id") {
+		t.Fatalf("#1815: the refusal must still spawn claude with an explicit fresh session id (REQ-7 dispatch shape survives). Got argv: %v", argv)
+	}
+	if strings.Contains(joined, newerUUID) || strings.Contains(joined, olderUUID) {
+		t.Fatalf("#1815: neither discovered uuid may be claimed via --session-id — they may belong to other sessions. Argv: %v", argv)
 	}
 
 	// PERSIST-13 fresh-fallback: no JSONL → no --resume, no error. This sub-case

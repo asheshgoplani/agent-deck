@@ -107,12 +107,32 @@ func TestSendWithRetryTarget_VerifyDelivery_LargePromptBodyMatch(t *testing.T) {
 	panes := []string{"", paneAfterPaste, paneAfterPaste, paneAfterPaste, paneAfterPaste}
 	mock := &mockSendRetryTarget{statuses: statuses, panes: panes}
 
-	_, err := sendWithRetryTarget(mock, body, false, sendRetryOptions{
+	delivery, err := sendWithRetryTarget(mock, body, false, sendRetryOptions{
 		maxRetries: 5, checkDelay: 0, verifyDelivery: true,
 	})
-	if err != nil {
-		t.Fatalf("verifyDelivery on large prompt must accept body-prefix match: got error %v "+
-			"(this is the S-CLI-4 / #876 conductor large-prompt silent-drop scenario)", err)
+	// #876's gap was the loop never NOTICING a large body, so it reported the
+	// message "dropped silently". The body-prefix match still closes that: the
+	// result must not be deliveryNoEvidence and must not be the silent-drop
+	// error.
+	if delivery == deliveryNoEvidence {
+		t.Fatalf("verifyDelivery on large prompt must accept body-prefix match as evidence the body "+
+			"arrived: got %q (this is the S-CLI-4 / #876 conductor large-prompt silent-drop scenario)", delivery)
+	}
+	if err != nil && strings.Contains(err.Error(), "dropped silently") {
+		t.Fatalf("#876: a visible body must not be reported as a silent drop: %v", err)
+	}
+	// Updated for issue #1793. This test used to assert err == nil, i.e. that
+	// a visible body means "delivered". It does not: here the status never
+	// leaves "waiting" and the composer is never seen taking the message, so
+	// the body arrived and nothing shows the agent accepted it. Reporting that
+	// as success is the phantom #1793 was filed about, so the honest outcome
+	// is `typed` with a non-nil error. #876's own guarantee — don't call a
+	// visible body a silent drop — is asserted above and still holds.
+	if delivery != deliveryTyped {
+		t.Fatalf("delivery: want %q (arrived, submission unconfirmed), got %q", deliveryTyped, delivery)
+	}
+	if err == nil {
+		t.Fatal("issue #1793: body visible but never submitted must not report success")
 	}
 	// Sanity: the initial send fired exactly once. A regression that decided
 	// "large body → just retry harder" would inflate this and re-open #479.

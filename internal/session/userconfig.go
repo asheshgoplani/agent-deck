@@ -221,6 +221,11 @@ type UserConfig struct {
 	// Watcher defines event watcher settings
 	Watcher WatcherSettings `toml:"watcher,omitempty"`
 
+	// IntervalHooks defines shell commands run on a wall-clock interval while
+	// the TUI is running, independent of session activity. Keyed by a
+	// user-chosen name (used in logs). See IntervalHookSettings.
+	IntervalHooks map[string]IntervalHookSettings `toml:"interval_hooks,omitempty"`
+
 	// Feedback defines in-product feedback prompt settings (v1.7.38+).
 	// Mirrors the opt-out in ~/.agent-deck/feedback-state.json so it is visible
 	// to the user and editable without running `agent-deck feedback`.
@@ -665,6 +670,19 @@ type WebSettings struct {
 	// MutationsEnabled controls whether POST/PATCH/DELETE endpoints accept
 	// requests. nil (omitted) defaults to true. Forced off by --read-only.
 	MutationsEnabled *bool `toml:"mutations_enabled,omitempty"`
+
+	// TrustedDomains lists hosts whose links open from the web terminal
+	// without the "this link could potentially be dangerous" confirm
+	// (issue #1682). Entries are hosts, not URLs — a full URL is accepted
+	// and reduced to its host. A leading `*.` matches subdomains only
+	// (`*.corp.example` matches `git.corp.example`, not `corp.example`).
+	// Everything not on the list still confirms.
+	TrustedDomains []string `toml:"trusted_domains,omitempty"`
+
+	// ConfirmLinkOpen controls the web terminal's link-open confirm for
+	// hosts that are NOT on TrustedDomains. nil (omitted) defaults to true.
+	// Setting it false accepts the risk and opens every link directly.
+	ConfirmLinkOpen *bool `toml:"confirm_link_open,omitempty"`
 }
 
 // FeedbackSettings controls the in-product feedback prompts.
@@ -3533,6 +3551,104 @@ func GetWebMutationsEnabled() bool {
 	return *config.Web.MutationsEnabled
 }
 
+// GetWebTrustedDomains returns the normalized `[web].trusted_domains` hosts.
+// Links whose host matches an entry skip the web terminal's link-open confirm
+// (issue #1682). Returns an empty slice when the key is absent, so the
+// confirm stays on for everything by default.
+func GetWebTrustedDomains() []string {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return nil
+	}
+	return NormalizeTrustedDomains(config.Web.TrustedDomains)
+}
+
+// GetWebConfirmLinkOpen reports whether the web terminal confirms before
+// opening a link whose host is not on `[web].trusted_domains`. Defaults to
+// true when `[web].confirm_link_open` is omitted.
+func GetWebConfirmLinkOpen() bool {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil || config.Web.ConfirmLinkOpen == nil {
+		return true
+	}
+	return *config.Web.ConfirmLinkOpen
+}
+
+// NormalizeTrustedDomains reduces raw `[web].trusted_domains` entries to
+// lowercase hosts suitable for exact comparison against a URL host:
+//
+//   - "https://gitlab.corp.example/group/repo" -> "gitlab.corp.example"
+//   - "GitLab.Corp.Example:8443"               -> "gitlab.corp.example"
+//   - "*.corp.example"                         -> "*.corp.example" (subdomains)
+//
+// Blank entries, bare wildcards ("*", "*."), and entries that carry no host
+// are dropped. Duplicates are removed, input order is preserved.
+func NormalizeTrustedDomains(entries []string) []string {
+	out := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, raw := range entries {
+		host := normalizeTrustedDomain(raw)
+		if host == "" {
+			continue
+		}
+		if _, dup := seen[host]; dup {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// normalizeTrustedDomain normalizes one entry; "" means "unusable, drop it".
+func normalizeTrustedDomain(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" {
+		return ""
+	}
+	// Accept a pasted URL: strip scheme, then anything from the first
+	// path/query/fragment separator onward.
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	// Strip userinfo ("user:pass@host") — the host is what we match on.
+	if i := strings.LastIndex(s, "@"); i >= 0 {
+		s = s[i+1:]
+	}
+	wildcard := strings.HasPrefix(s, "*.")
+	if wildcard {
+		s = s[2:]
+	}
+	// Strip the port. Bracketed IPv6 literals keep their brackets so the
+	// colons inside are not mistaken for a port separator.
+	if strings.HasPrefix(s, "[") {
+		if i := strings.Index(s, "]"); i >= 0 {
+			s = s[:i+1]
+		}
+	} else if i := strings.LastIndex(s, ":"); i >= 0 && !strings.Contains(s[i+1:], ":") {
+		s = s[:i]
+	}
+	s = strings.TrimSuffix(s, ".")
+	if s == "" || strings.ContainsAny(s, " \t*") {
+		return ""
+	}
+	if wildcard {
+		// A subdomain wildcard needs a registrable base with a dot, else
+		// "*.example" would silently allow every single-label host.
+		if !strings.Contains(s, ".") {
+			return ""
+		}
+		return "*." + s
+	}
+	return s
+}
+
 // GetHotkeyOverrides returns user-configured hotkey overrides from config.toml.
 //
 // Merge order (issue #434):
@@ -4667,6 +4783,86 @@ func (s SystemStatsSettings) GetShow() []string {
 		return s.Show
 	}
 	return []string{"cpu", "ram", "disk", "network"}
+}
+
+// IntervalHookSettings configures a single interval hook: a shell command run
+// on a wall-clock cadence while the TUI is running, independent of any session
+// activity. This is a general-purpose "cron inside the TUI" primitive — e.g. a
+// periodic sync, a health probe, or a poll that dispatches work to sessions via
+// the `agent-deck session` CLI. The command runs through `bash -lc`.
+type IntervalHookSettings struct {
+	// Command is the shell command to run each tick (via `bash -lc <command>`).
+	Command string `toml:"command,omitempty"`
+
+	// IntervalSeconds is the cadence between runs. Clamped to [5, 86400].
+	// Default: 60.
+	IntervalSeconds int `toml:"interval_seconds,omitzero"`
+
+	// Enabled gates the hook. Defaults to true when a Command is set, so a
+	// bare [interval_hooks.name] with a command is live without extra config;
+	// set false to keep the config but pause it.
+	Enabled *bool `toml:"enabled,omitempty"`
+
+	// TimeoutSeconds bounds a single run; a hook exceeding it is killed so a
+	// wedged command can't pile up. Clamped to [1, IntervalSeconds]. Default:
+	// min(30, interval).
+	TimeoutSeconds int `toml:"timeout_seconds,omitzero"`
+
+	// RunAtStartup runs the command once immediately when the TUI starts,
+	// before the first interval elapses. Default: false.
+	RunAtStartup bool `toml:"run_at_startup,omitempty"`
+}
+
+// Interval-hook bounds. IntervalSeconds has a 5s floor so a misconfigured hook
+// can't busy-loop, and a 1-day ceiling.
+const (
+	DefaultIntervalHookSeconds = 60
+	MinIntervalHookSeconds     = 5
+	MaxIntervalHookSeconds     = 86400
+	DefaultIntervalHookTimeout = 30
+)
+
+// GetEnabled reports whether the hook should run. A hook with a non-empty
+// Command defaults to enabled; an explicit `enabled = false` pauses it.
+func (h IntervalHookSettings) GetEnabled() bool {
+	if h.Enabled != nil {
+		return *h.Enabled
+	}
+	return strings.TrimSpace(h.Command) != ""
+}
+
+// GetIntervalSeconds returns the cadence, clamped to
+// [MinIntervalHookSeconds, MaxIntervalHookSeconds]. Unset falls back to
+// DefaultIntervalHookSeconds.
+func (h IntervalHookSettings) GetIntervalSeconds() int {
+	if h.IntervalSeconds <= 0 {
+		return DefaultIntervalHookSeconds
+	}
+	if h.IntervalSeconds < MinIntervalHookSeconds {
+		return MinIntervalHookSeconds
+	}
+	if h.IntervalSeconds > MaxIntervalHookSeconds {
+		return MaxIntervalHookSeconds
+	}
+	return h.IntervalSeconds
+}
+
+// GetTimeoutSeconds returns the per-run timeout, clamped to
+// [1, GetIntervalSeconds()]. Unset falls back to min(DefaultIntervalHookTimeout,
+// interval) so a run never outlives its own cadence.
+func (h IntervalHookSettings) GetTimeoutSeconds() int {
+	interval := h.GetIntervalSeconds()
+	t := h.TimeoutSeconds
+	if t <= 0 {
+		t = DefaultIntervalHookTimeout
+	}
+	if t > interval {
+		t = interval
+	}
+	if t < 1 {
+		t = 1
+	}
+	return t
 }
 
 // WatcherSettings configures the event watcher system.

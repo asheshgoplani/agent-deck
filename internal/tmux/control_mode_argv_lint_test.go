@@ -20,8 +20,8 @@ package tmux
 // The second failure is the reason this lint scans argv shape rather than
 // trusting the reaper to be careful: scripts/reap-stale-tmux.sh now matches by
 // socket path only, but nothing this repo spawns should be ambiguous in the
-// first place. Pass the command you actually want — `attach-session -t <target>`
-// for a client bound to a session.
+// first place. Pass `-u attach-session -t <target>` for a UTF-8 client bound
+// to the session.
 
 import (
 	"go/ast"
@@ -79,7 +79,7 @@ func TestNoBareControlModeTmuxSpawn(t *testing.T) {
 		t.Errorf("%d bare `tmux -C` spawn site(s) — a control-mode client with no "+
 			"command implicitly creates a session (leaking a pty), and its argv is "+
 			"indistinguishable from the server it may auto-start. Pass an explicit "+
-			"command, e.g. `\"-C\", \"attach-session\", \"-t\", target`:\n  %s",
+			"command, e.g. `\"-C\", \"-u\", \"attach-session\", \"-t\", target`:\n  %s",
 			len(violations), strings.Join(violations, "\n  "))
 	}
 }

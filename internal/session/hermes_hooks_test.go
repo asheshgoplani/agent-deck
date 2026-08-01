@@ -59,7 +59,7 @@ func TestInjectHermesHooks_AllEventsPresent(t *testing.T) {
 		t.Fatal("no hooks section in config.yaml")
 	}
 
-	for _, event := range []string{"pre_tool_call", "post_tool_call", "on_session_start", "on_session_end"} {
+	for _, event := range []string{"pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "pre_tool_call", "post_tool_call", "on_session_start", "on_session_end", "on_session_finalize"} {
 		entries, _ := hooksSection[event].([]interface{})
 		found := false
 		for _, e := range entries {
@@ -71,6 +71,69 @@ func TestInjectHermesHooks_AllEventsPresent(t *testing.T) {
 		if !found {
 			t.Errorf("event %q missing agent-deck hook-handler entry", event)
 		}
+	}
+}
+
+// TestInjectHermesHooks_UpgradesLegacyInstall pins the self-heal promise: an
+// install predating the pre/post_llm_call events (only the original four) must
+// gain exactly the two missing entries on the next inject, without duplicating
+// the existing agent-deck entries or dropping user hooks. This must keep
+// working even if InjectHermesHooks ever grows an "already installed"
+// fast path keyed on something weaker than the full event set.
+func TestInjectHermesHooks_UpgradesLegacyInstall(t *testing.T) {
+	dir := t.TempDir()
+	legacy := []byte(`hooks:
+  pre_tool_call:
+    - command: agent-deck hook-handler
+    - command: /usr/local/bin/my-hook.sh
+  post_tool_call:
+    - command: agent-deck hook-handler
+  on_session_start:
+    - command: agent-deck hook-handler
+  on_session_end:
+    - command: agent-deck hook-handler
+`)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), legacy, 0644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	installed, err := session.InjectHermesHooks(dir)
+	if err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+	if !installed {
+		t.Fatal("InjectHermesHooks() = false, want true (legacy install lacks the llm_call events)")
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("parse config.yaml: %v", err)
+	}
+	hooksSection, _ := raw["hooks"].(map[string]interface{})
+	if hooksSection == nil {
+		t.Fatal("no hooks section in config.yaml")
+	}
+
+	for _, event := range []string{"pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "pre_tool_call", "post_tool_call", "on_session_start", "on_session_end", "on_session_finalize"} {
+		entries, _ := hooksSection[event].([]interface{})
+		count := 0
+		for _, e := range entries {
+			em, _ := e.(map[string]interface{})
+			if cmd, _ := em["command"].(string); strings.Contains(cmd, "agent-deck hook-handler") {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("event %q has %d agent-deck entries, want exactly 1", event, count)
+		}
+	}
+
+	if !strings.Contains(string(data), "/usr/local/bin/my-hook.sh") {
+		t.Error("user hook was dropped during upgrade")
 	}
 }
 

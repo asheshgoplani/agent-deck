@@ -150,7 +150,7 @@ func (i *Instance) ReconcileTitleFromClaude(sessionID string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	i.Title = name
+	i.SetTitleThreadSafe(name)
 	i.SyncTmuxDisplayName()
 	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.Name != "" {
 		_ = tmux.WriteBadgeUpdate(tmuxSess.Name, name)

@@ -2851,6 +2851,10 @@ func TestBuildStatusBarArgs(t *testing.T) {
 }
 
 func TestBuildStatusBarArgs_InjectDisabled(t *testing.T) {
+	// Disabling injection must emit `status off` — not nil — so a bar already on
+	// the server (tmux's `status on` default, user config, or a prior enabled
+	// run) is actually removed. The real-tmux guard for this is
+	// tests/eval/session TestEval_Session_BarOff_RealTmux (#687).
 	s := &Session{
 		Name:             "test-sess",
 		DisplayName:      "proj",
@@ -2858,7 +2862,22 @@ func TestBuildStatusBarArgs_InjectDisabled(t *testing.T) {
 		injectStatusLine: false,
 	}
 	args := s.buildStatusBarArgs()
-	assert.Nil(t, args, "args should be nil when injectStatusLine is false")
+	assert.Equal(t, []string{"set-option", "-t", "test-sess", "status", "off"}, args,
+		"disabling injection must turn the status bar off")
+}
+
+func TestBuildStatusBarArgs_InjectDisabled_UserStatusOverride(t *testing.T) {
+	// An explicit user `status` in [tmux].options wins: agent-deck must not
+	// force it off.
+	s := &Session{
+		Name:             "test-sess",
+		DisplayName:      "proj",
+		WorkDir:          "/tmp",
+		injectStatusLine: false,
+		OptionOverrides:  map[string]string{"status": "on"},
+	}
+	assert.Nil(t, s.buildStatusBarArgs(),
+		"user status override must not be overridden when injection is disabled")
 }
 
 func TestBuildTerminalTitleArgs(t *testing.T) {

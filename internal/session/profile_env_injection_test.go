@@ -65,7 +65,7 @@ func TestBuildBashExportPrefix_ExportsProfile(t *testing.T) {
 	withProfileEnv(t, "work")
 
 	inst := NewInstanceWithTool("test", "/tmp/test", "claude")
-	prefix := inst.buildBashExportPrefix()
+	prefix := inst.buildBashExportPrefix(false)
 
 	if !strings.Contains(prefix, "export AGENTDECK_PROFILE=work;") {
 		t.Errorf("bash export prefix should export AGENTDECK_PROFILE=work, got: %s", prefix)

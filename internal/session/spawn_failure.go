@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/safeio"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -50,10 +51,19 @@ func spawnFailureRecordPath(instanceID string) string {
 // writeSpawnFailureRecord persists a record atomically. Best-effort: a failure
 // to write must never block or crash the caller.
 func writeSpawnFailureRecord(rec SpawnFailureRecord) error {
+	return writeSpawnFailureRecordTo(rec, spawnFailureDir())
+}
+
+// writeSpawnFailureRecordTo is the path-explicit variant, used by
+// watchForFastDeath. dir is resolved once by the caller at goroutine-spawn
+// time (see the comment on watchForFastDeath) rather than re-resolved here
+// from the live $HOME, which could have moved on by the time the watcher's
+// goroutine — never joined — actually gets to write.
+func writeSpawnFailureRecordTo(rec SpawnFailureRecord, dir string) error {
 	if rec.Timestamp == 0 {
 		rec.Timestamp = time.Now().Unix()
 	}
-	path := spawnFailureRecordPath(rec.InstanceID)
+	path := filepath.Join(dir, rec.InstanceID+".json")
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("create spawn-failure dir: %w", err)
 	}
@@ -157,7 +167,35 @@ const (
 // and tool, and gen — a snapshot of i.spawnGen taken at launch. A deliberate
 // stop or a restart/respawn bumps i.spawnGen, so a mismatch means this watcher
 // has been superseded and must exit quietly (#1580 data-race fix).
-func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Session, id, tool string, logger *slog.Logger) {
+//
+// wake is the supersede channel, subscribed by the caller via
+// newSpawnGenWatch() before this goroutine starts (see instance.go). Closing
+// it lets a supersession be noticed immediately rather than only on the next
+// spawnFastDeathTick poll — see spawnGenWake's doc comment for why the
+// up-to-one-tick tail mattered.
+//
+// The generation is re-checked immediately before each write, not just once
+// per iteration: sess.Exists() shells out to tmux and can take tens of
+// milliseconds, and a Stop/Kill landing inside that call would otherwise be
+// observed as a vanished session — i.e. recorded as a spurious
+// spawn_died_fast for what was a deliberate teardown (and written into a HOME
+// the owning test may already be tearing down).
+//
+// Every write additionally goes through commitSpawnWatchWrite, which re-checks
+// the generation while holding spawnWriteMu. That is what turns the remaining
+// check-then-write gap from small into closed: a teardown that bumps and then
+// takes the same mutex (bumpSpawnGenAndBarrier) is guaranteed that any write
+// still pending here either completed before it, or sees the new generation and
+// is suppressed. Only the writes are covered, never the tmux calls, so a stop
+// never waits on tmux.
+//
+// lifecycleLogPath and failureDir are likewise passed by value rather than
+// resolved here from the live $HOME: this goroutine is never joined, so it
+// can still be alive (parked on the ticker) after its caller's test has
+// finished and a later test has repointed $HOME. Resolving live at write
+// time would make the watcher write into whatever $HOME happens to be
+// current when it fires, not the one that was current when it was spawned.
+func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string) {
 	if sess == nil {
 		return
 	}
@@ -169,7 +207,17 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Sess
 	defer ticker.Stop()
 
 	for {
-		<-ticker.C
+		select {
+		case <-ticker.C:
+		case <-wake:
+			// A bump closed this — a newer spawn or a deliberate stop
+			// happened, so the generation check below is guaranteed to
+			// mismatch and return on this same iteration instead of waiting
+			// out the rest of the tick interval. Drop the channel so a
+			// closed-channel receive can never spin the loop if that
+			// invariant is ever weakened.
+			wake = nil
+		}
 
 		// A newer spawn or a deliberate stop bumped the generation — this
 		// watcher is stale, so stop quietly and never record a failure.
@@ -187,19 +235,30 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Sess
 				}
 			}
 			if time.Now().After(deadline) {
-				// Survived the window: healthy start.
-				_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
-					InstanceID: id,
-					Tool:       tool,
-					Action:     "spawn_survived",
-					Source:     "spawn_watcher",
+				// Survived the window: healthy start. The commit re-checks the
+				// generation under the write barrier — CapturePane above shells
+				// out to tmux, so a teardown can easily have started since the
+				// check at the top of this iteration.
+				_ = i.commitSpawnWatchWrite(gen, func() {
+					_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
+						InstanceID: id,
+						Tool:       tool,
+						Action:     "spawn_survived",
+						Source:     "spawn_watcher",
+					}, lifecycleLogPath)
 				})
 				return
 			}
 			continue
 		}
 
-		// Session is gone and it was not a deliberate stop → fast death.
+		// Session is gone — but sess.Exists() shells out to tmux, so a
+		// teardown may well have started during that call: killInternal and
+		// the restart paths bump the generation BEFORE killing tmux, precisely
+		// so this is visible here even though it was not visible at the top of
+		// the iteration. Everything below therefore commits under the write
+		// barrier, which re-checks the generation, rather than trusting the
+		// earlier check.
 		elapsed := time.Since(start).Milliseconds()
 		rec := SpawnFailureRecord{
 			InstanceID:  id,
@@ -209,24 +268,41 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, sess *tmux.Sess
 			DyingOutput: lastSnapshot,
 			ElapsedMs:   elapsed,
 		}
-		if err := writeSpawnFailureRecord(rec); err != nil {
-			logger.Warn("spawn_failure_record_write_failed",
-				slog.String("instance_id", id),
-				slog.String("error", err.Error()))
-		}
-		logger.Error("spawn_died_fast",
-			slog.String("instance_id", id),
-			slog.String("tool", tool),
-			slog.String("command", command),
-			slog.Int64("elapsed_ms", elapsed),
-			slog.String("dying_output", lastSnapshot))
-		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
-			InstanceID: id,
-			Tool:       tool,
-			Action:     "spawn_died_fast",
-			Source:     "spawn_watcher",
-			Reason:     fmt.Sprintf("exited after %dms", elapsed),
+		var writeErr error
+		committed := i.commitSpawnWatchWrite(gen, func() {
+			writeErr = writeSpawnFailureRecordTo(rec, failureDir)
+			_ = writeSessionIDLifecycleEventTo(SessionIDLifecycleEvent{
+				InstanceID: id,
+				Tool:       tool,
+				Action:     "spawn_died_fast",
+				Source:     "spawn_watcher",
+				Reason:     fmt.Sprintf("exited after %dms", elapsed),
+			}, lifecycleLogPath)
 		})
+		if !committed {
+			// Superseded mid-flight: a deliberate stop, not a spawn failure.
+			return
+		}
+
+		// Logging happens OUTSIDE the write barrier. Teardown waits on that
+		// mutex, and a slow or blocking log handler is not something a
+		// deliberate stop should ever be held up by; the records above are the
+		// part that must be ordered against teardown, not the diagnostics.
+		if writeErr != nil {
+			logger.Warn("spawn_failure_record_write_failed",
+				slog.String("instance_id", logging.SanitizeValue(id)),
+				slog.String("error", logging.SanitizeValue(writeErr.Error())))
+		}
+		// Every value here is session-supplied: the tool and command come from
+		// user config, and dying_output is raw captured pane content — newlines
+		// and control characters in it would otherwise forge log records
+		// (CodeQL go/log-injection).
+		logger.Error("spawn_died_fast",
+			slog.String("instance_id", logging.SanitizeValue(id)),
+			slog.String("tool", logging.SanitizeValue(tool)),
+			slog.String("command", logging.SanitizeValue(command)),
+			slog.Int64("elapsed_ms", elapsed),
+			slog.String("dying_output", logging.SanitizeValue(lastSnapshot)))
 		return
 	}
 }

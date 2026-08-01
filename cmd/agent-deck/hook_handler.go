@@ -111,14 +111,36 @@ func mapEventToStatus(event string) string {
 		return "running" // Gemini received user input and is processing
 	case "afteragent":
 		return "waiting" // Gemini completed response, back to waiting
+	case "prellmcall":
+		return "running" // Hermes: turn started (LLM/tool-calling loop), agent is working
+	case "postllmcall":
+		return "waiting" // Hermes: turn complete, final response produced, back at prompt
 	case "pretoolcall", "pretooluse":
 		return "running" // executing a tool call
-	case "posttoolcall", "posttooluse", "posttoolusefailure":
+	case "posttoolcall":
+		// Hermes only (other tools' post-tool events normalize to
+		// "posttooluse"). Mid-turn a finished tool call means the LLM is
+		// generating the next step, not that the agent is back at the prompt;
+		// post_llm_call owns the turn-end waiting edge.
+		return "running"
+	case "posttooluse", "posttoolusefailure":
 		return "waiting" // finished a tool call, back at prompt
 	case "onsessionstart":
 		return "waiting" // Hermes session started, waiting for first prompt
 	case "onsessionend":
-		return "dead" // Hermes session ended
+		// Hermes fires on_session_end at the end of EVERY run_conversation
+		// call — once per user message — NOT at process exit. It is the
+		// turn-end edge, and the only one an interrupted turn gets
+		// (post_llm_call is skipped when interrupted). Mapping it to dead
+		// showed an error ✕ after every completed turn.
+		return "waiting"
+	case "onsessionfinalize":
+		return "dead" // Hermes process exit / session reset — the real session end
+	case "preapirequest", "postapirequest":
+		// Per-API-call heartbeat within a turn: refreshes "running" so a
+		// long multi-step turn doesn't outlive the hook freshness window
+		// and fade to idle mid-work.
+		return "running"
 	case "userpromptsubmit", "beforesubmitprompt":
 		return "running" // user sent prompt, agent is processing
 	case "stop":

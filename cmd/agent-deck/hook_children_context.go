@@ -117,8 +117,13 @@ func formatChildrenContext(rows []childRow) string {
 // snapshot, or "" when the session has none (or anything fails — the hook
 // must never break a turn over supervision sugar).
 func buildChildrenContextSummary(instanceID string) string {
-	profile := session.GetEffectiveProfile("")
-	storage, instances, _, err := loadSessionData(profile)
+	// #1790/#1822: pass "" straight through to loadSessionData/
+	// NewStorageWithProfile rather than pre-resolving via GetEffectiveProfile
+	// here. Pre-resolving would hand NewStorageWithProfile an already-concrete
+	// name, which its internal ResolveProfileForStorage guard cannot then
+	// distinguish from an explicit -p selection — reopening the same
+	// second-hop bypass fixed at the other call sites (F1/F2/F3).
+	storage, instances, _, err := loadSessionData("")
 	if err != nil {
 		return ""
 	}

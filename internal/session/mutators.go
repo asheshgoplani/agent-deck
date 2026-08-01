@@ -138,8 +138,8 @@ func normalizeToolSessionID(field, value string) (string, error) {
 func SetField(inst *Instance, field, value string, extraArgsTokens []string) (oldValue string, postCommit func(), err error) {
 	switch field {
 	case FieldTitle:
-		oldValue = inst.Title
-		inst.Title = value
+		oldValue = inst.GetTitleThreadSafe()
+		inst.SetTitleThreadSafe(value)
 		inst.SetAutoName(false) // a user/explicit name replaces the auto handle
 		// An explicit rename is user intent: lock the title so the #572
 		// Claude-name sync (plan titles, /rename) can't revert it on the
@@ -306,6 +306,9 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 	case FieldClaudeSessionID:
 		oldValue = inst.ClaudeSessionID
 		inst.ClaudeSessionID = value
+		// #1815: an operator naming the conversation id for this session is
+		// an explicit ownership declaration.
+		inst.markClaudeSessionIDVerified()
 		inst.ClaudeDetectedAt = time.Now()
 		postCommit = makeSessionEnvPostCommit(inst, "CLAUDE_SESSION_ID", value)
 		// Issue #923 (reporter @bautrey): when the user explicitly clears
