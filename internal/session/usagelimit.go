@@ -105,11 +105,23 @@ var usageLimitScanChunkBytes int64 = defaultUsageLimitScanChunkBytes
 // skipped on its measured length, without being read at all.
 const usageLimitMaxLineBytes = 1 << 20 // 1 MiB
 
-// usageLimitScanObserver is a TEST SEAM: when non-nil it receives the byte range
-// of every chunk read, which is what lets a test assert non-overlap and bounded
-// I/O rather than merely assert that the answer came out right. Always nil in
-// production.
-var usageLimitScanObserver func(start, end int64)
+// usageLimitScanRead describes one read the scan performed. kind is "chunk" for a
+// newline-scanning window and "line" for a candidate record read.
+//
+// Recording BOTH matters: chunk ranges alone cannot distinguish this walker from
+// the carry-based one it replaced, whose chunk windows were also descending,
+// contiguous and single-coverage — its defect was repeated copying of a growing
+// line, which chunk instrumentation cannot see. Line reads are where that shows up.
+type usageLimitScanRead struct {
+	Kind       string
+	Start, End int64
+}
+
+// usageLimitScanObserver is a TEST SEAM: when non-nil it receives every read the
+// scan performs. It is what lets a test assert non-overlap, bounded I/O and the
+// oversized-line skip rather than merely assert that the answer came out right.
+// Always nil in production.
+var usageLimitScanObserver func(usageLimitScanRead)
 
 // transcriptRecord is the subset of a transcript line this detector reads.
 type transcriptRecord struct {
@@ -179,11 +191,23 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 		return false, false
 	}
 
+	if info.Size() == 0 {
+		// Nothing to read, and nothing to allocate: an empty transcript used to cost
+		// a full chunk buffer on every eligible scan.
+		return false, false
+	}
+
 	chunk := usageLimitScanChunkBytes
 	if chunk <= 0 {
 		chunk = defaultUsageLimitScanChunkBytes
 	}
-	buf := make([]byte, chunk)
+	// Size the buffer to the file when it is smaller than a chunk. A just-created
+	// 200-byte transcript should not allocate 512 KiB per scan.
+	bufSize := chunk
+	if info.Size() < bufSize {
+		bufSize = info.Size()
+	}
+	buf := make([]byte, bufSize)
 
 	// lineEnd is the exclusive end of the line currently being delimited. Walking
 	// backwards, a '\n' at offset i closes the line [i+1, lineEnd) and opens the
@@ -200,10 +224,16 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 			return false, false, false
 		}
 		if end-start > usageLimitMaxLineBytes {
+			if usageLimitScanObserver != nil {
+				usageLimitScanObserver(usageLimitScanRead{Kind: "line-skipped", Start: start, End: end})
+			}
 			// A line this large is a compaction/file-history snapshot, not a turn
 			// this detector can act on. Skipped WITHOUT reading it: the whole point
 			// of the bound is not to pull megabytes onto a status path.
 			return false, false, false
+		}
+		if usageLimitScanObserver != nil {
+			usageLimitScanObserver(usageLimitScanRead{Kind: "line", Start: start, End: end})
 		}
 		line := make([]byte, end-start)
 		if _, err := f.ReadAt(line, start); err != nil && err != io.EOF {
@@ -234,7 +264,7 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 		}
 		n := end - start
 		if usageLimitScanObserver != nil {
-			usageLimitScanObserver(start, end)
+			usageLimitScanObserver(usageLimitScanRead{Kind: "chunk", Start: start, End: end})
 		}
 		if _, err := f.ReadAt(buf[:n], start); err != nil && err != io.EOF {
 			return false, false
@@ -269,15 +299,23 @@ func usageLimitPublishable(currentGen, scanGen uint64, liveSessionID, scanSessio
 	return currentGen == scanGen && liveSessionID == scanSessionID
 }
 
-// usageLimitedNow reads the memo under the lock.
+// usageLimitVerdictFor reads the memo under the lock, but only if the memo was
+// formed for sessionID.
 //
-// Every post-claim exit goes through this rather than returning the snapshot taken
-// at claim time. Returning the snapshot let a slow scan report a value that a
-// newer scan had already superseded: the memo stayed correct, but callers observed
-// completion order inverted.
-func (i *Instance) usageLimitedNow() bool {
+// Two separate mistakes led here and both are worth naming. First, returning the
+// snapshot taken at claim time let a slow scan report a value a newer scan had
+// already superseded, so callers observed completion order inverted. Second — and
+// worse — reading the memo unconditionally was identity-blind: guarding only the
+// WRITE stopped scan A publishing after an A→B rebind but still handed A's verdict
+// back for B, because the memo key only moves when a mismatch is observed at claim
+// time. A mismatch here means "no verdict for this session", not "not limited by
+// inheritance".
+func (i *Instance) usageLimitVerdictFor(sessionID string) bool {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
+	if i.usageLimitSessionID != sessionID {
+		return false
+	}
 	return i.usageLimitedCached
 }
 
@@ -352,7 +390,7 @@ func (i *Instance) usageLimited() bool {
 
 	path := locateHandoffTranscript(i)
 	if path == "" {
-		return i.usageLimitedNow()
+		return i.usageLimitVerdictFor(sessionID)
 	}
 	// Verify the answer belongs to the id we gated on. Holding the lock across the
 	// check is not enough on its own: the resolver re-reads ClaudeSessionID itself
@@ -360,7 +398,7 @@ func (i *Instance) usageLimited() bool {
 	// still steer it onto the newest-conversation fallback. Checking the resolved
 	// path makes the guarantee structural instead of dependent on timing.
 	if !transcriptBelongsToSession(path, sessionID) {
-		return i.usageLimitedNow()
+		return i.usageLimitVerdictFor(sessionID)
 	}
 
 	limited, ok := latestAssistantTurnIsRateLimited(path, time.Now())
@@ -368,19 +406,28 @@ func (i *Instance) usageLimited() bool {
 		// No formed verdict (unreadable, or no assistant turn in the file): leave
 		// the previous answer standing rather than silently reporting "not
 		// limited".
-		return i.usageLimitedNow()
+		return i.usageLimitVerdictFor(sessionID)
 	}
 
 	i.mu.Lock()
-	// Compare against the LIVE ClaudeSessionID, not usageLimitSessionID. The memo
-	// key only changes when a mismatch is observed at claim time, so during an
-	// in-flight A→B rebind it still reads "A" — and a scan for A would publish onto
-	// an Instance already bound to B.
-	if usageLimitPublishable(i.usageLimitScanGen, gen, strings.TrimSpace(i.ClaudeSessionID), sessionID) {
+	// Order matters here, and getting it wrong once already produced this exact bug
+	// twice: check the LIVE ClaudeSessionID against the scan's id FIRST.
+	//
+	// usageLimitSessionID is the memo KEY and only moves when a mismatch is observed
+	// at claim time, so during an in-flight A→B rebind it still reads "A". Comparing
+	// against it — anywhere, on the write path or the read path — hands A's verdict
+	// to B. The live field is the only thing that knows about the rebind.
+	live := strings.TrimSpace(i.ClaudeSessionID)
+	switch {
+	case live != sessionID:
+		// Rebound while this read was in flight. There is no verdict for the new
+		// session, and inheriting one is the bug.
+		limited = false
+	case usageLimitPublishable(i.usageLimitScanGen, gen, live, sessionID):
 		i.usageLimitedCached = limited
-	} else {
-		// A newer claim or a rebind happened while this read was in flight, so this
-		// result is stale — report what the memo now holds instead.
+	default:
+		// A newer claim for the SAME session landed while this read was in flight,
+		// so this result is stale — report what the memo now holds.
 		limited = i.usageLimitedCached
 	}
 	i.mu.Unlock()

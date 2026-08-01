@@ -169,12 +169,12 @@ func TestLatestAssistantTurnIsRateLimited_MissingFile(t *testing.T) {
 // non-assistant traffic must still be found. A long-lived process keeps its memo,
 // but a fresh CLI invocation starts with none and would otherwise report a
 // limited session as healthy.
-// #1806 cycle-5 audit: the previous version proved only fixture depth — it asserted
-// the answer came out right, which an overlapping or whole-file reader also
-// achieves. What the change actually claims is *non-overlapping, bounded* I/O that
-// still reaches byte 0, so that is what this asserts, using the scan's observer
-// seam to record every byte range read.
-func TestLatestAssistantTurnIsRateLimited_ReadsBoundedNonOverlappingChunks(t *testing.T) {
+// #1806 cycle-6 audit: recording only chunk ranges could NOT distinguish this
+// walker from the carry-based one it replaced — that one's chunk windows were also
+// descending, contiguous and single-coverage, and its defect (repeated copying of a
+// growing line) was invisible to chunk instrumentation. Line reads are where it
+// shows, so the observer now records both and this asserts both.
+func TestLatestAssistantTurnIsRateLimited_ReadsEachByteOnce(t *testing.T) {
 	savedChunk := usageLimitScanChunkBytes
 	usageLimitScanChunkBytes = 1024
 	defer func() { usageLimitScanChunkBytes = savedChunk }()
@@ -198,48 +198,119 @@ func TestLatestAssistantTurnIsRateLimited_ReadsBoundedNonOverlappingChunks(t *te
 	}
 	_ = f.Close()
 
-	size, err := os.Stat(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
 
-	type rng struct{ start, end int64 }
-	var reads []rng
-	usageLimitScanObserver = func(start, end int64) { reads = append(reads, rng{start, end}) }
+	var reads []usageLimitScanRead
+	usageLimitScanObserver = func(r usageLimitScanRead) { reads = append(reads, r) }
 	defer func() { usageLimitScanObserver = nil }()
 
-	limited, ok := latestAssistantTurnIsRateLimited(path, refNow)
-	if !limited || !ok {
+	if limited, ok := latestAssistantTurnIsRateLimited(path, refNow); !limited || !ok {
 		t.Fatalf("deep walk = (%v, %v), want (true, true)", limited, ok)
 	}
 
-	if len(reads) < 100 {
-		t.Fatalf("only %d chunk reads for a %d-byte file at %d-byte chunks; the walk is not chunking",
-			len(reads), size.Size(), usageLimitScanChunkBytes)
-	}
-
-	// Descending, contiguous, non-overlapping, and terminating at byte 0.
-	var total int64
-	prevStart := size.Size()
+	var chunkBytes, lineBytes int64
+	prevStart := info.Size()
+	chunks := 0
 	for n, r := range reads {
-		if r.end != prevStart {
-			t.Fatalf("read %d is [%d,%d) but the previous read started at %d — chunks must be contiguous and non-overlapping",
-				n, r.start, r.end, prevStart)
+		switch r.Kind {
+		case "chunk":
+			chunks++
+			if r.End != prevStart {
+				t.Fatalf("chunk read %d is [%d,%d) but the previous chunk started at %d — must be contiguous and non-overlapping",
+					n, r.Start, r.End, prevStart)
+			}
+			if r.End-r.Start > usageLimitScanChunkBytes {
+				t.Fatalf("chunk read %d spans %d bytes, over the %d-byte bound", n, r.End-r.Start, usageLimitScanChunkBytes)
+			}
+			chunkBytes += r.End - r.Start
+			prevStart = r.Start
+		case "line":
+			lineBytes += r.End - r.Start
 		}
-		if r.end-r.start > usageLimitScanChunkBytes {
-			t.Fatalf("read %d spans %d bytes, over the %d-byte chunk bound", n, r.end-r.start, usageLimitScanChunkBytes)
-		}
-		total += r.end - r.start
-		prevStart = r.start
+	}
+	if chunks < 100 {
+		t.Fatalf("only %d chunk reads for a %d-byte file at %d-byte chunks", chunks, info.Size(), usageLimitScanChunkBytes)
 	}
 	if prevStart != 0 {
-		t.Fatalf("walk stopped at byte %d instead of reaching 0 — a ceiling would look exactly like this", prevStart)
+		t.Fatalf("walk stopped at byte %d instead of reaching 0 — a ceiling looks exactly like this", prevStart)
 	}
-	// Chunk scanning reads the file once. Line reads add the lines actually parsed,
-	// which for this fixture is a small tail, so a generous multiple still catches
-	// the old geometric re-reading (which cost >1.5x on this shape).
-	if total != size.Size() {
-		t.Fatalf("chunk reads covered %d bytes for a %d-byte file; expected exact single coverage", total, size.Size())
+	if chunkBytes != info.Size() {
+		t.Fatalf("chunk reads covered %d bytes of a %d-byte file; expected exact single coverage", chunkBytes, info.Size())
+	}
+	// The load-bearing assertion for the quadratic fix: line reads must be bounded
+	// by the file, not a multiple of it. The carry walker recopied a long line once
+	// per chunk, which lands far above 1x here.
+	if lineBytes > info.Size() {
+		t.Fatalf("line reads totalled %d bytes for a %d-byte file — a line is being read more than once", lineBytes, info.Size())
+	}
+}
+
+// A line larger than the bound must be skipped on its MEASURED length, never read.
+// /compact writes multi-megabyte single-line records and this runs on a status path.
+func TestLatestAssistantTurnIsRateLimited_SkipsOversizedLineWithoutReading(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "huge.jsonl")
+	huge := `{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":"` +
+		strings.Repeat("x", usageLimitMaxLineBytes+1024) + `"}}`
+	body := recRateLimitAt(stampAt(-time.Minute)) + "\n" + huge + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	var lineReads []usageLimitScanRead
+	usageLimitScanObserver = func(r usageLimitScanRead) {
+		if r.Kind == "line" || r.Kind == "line-skipped" {
+			lineReads = append(lineReads, r)
+		}
+	}
+	defer func() { usageLimitScanObserver = nil }()
+
+	// The oversized record is skipped, so the rejection beneath it is the verdict.
+	limited, ok := latestAssistantTurnIsRateLimited(path, refNow)
+	if !limited || !ok {
+		t.Fatalf("= (%v, %v), want (true, true) — the oversized line should be skipped, not fatal", limited, ok)
+	}
+
+	sawSkip := false
+	for _, r := range lineReads {
+		if r.End-r.Start > usageLimitMaxLineBytes {
+			if r.Kind == "line" {
+				t.Fatalf("oversized line [%d,%d) was READ; it must be skipped on measured length", r.Start, r.End)
+			}
+			sawSkip = true
+		}
+	}
+	if !sawSkip {
+		t.Fatal("premise broken: no oversized line was encountered")
+	}
+}
+
+// Allocation on the status path: an empty transcript must not allocate a chunk
+// buffer, and a tiny one must size the buffer to the file.
+func TestLatestAssistantTurnIsRateLimited_DoesNotAllocateForEmptyTranscript(t *testing.T) {
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "empty.jsonl")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	var reads int
+	usageLimitScanObserver = func(usageLimitScanRead) { reads++ }
+	defer func() { usageLimitScanObserver = nil }()
+
+	limited, ok := latestAssistantTurnIsRateLimited(empty, refNow)
+	if limited || ok {
+		t.Fatalf("empty transcript = (%v, %v), want (false, false)", limited, ok)
+	}
+	if reads != 0 {
+		t.Fatalf("empty transcript performed %d reads, want 0", reads)
+	}
+
+	allocs := testing.AllocsPerRun(20, func() { _, _ = latestAssistantTurnIsRateLimited(empty, refNow) })
+	if allocs > 8 {
+		t.Fatalf("empty transcript allocated %.0f times per scan; a chunk buffer is being allocated before the size check", allocs)
 	}
 }
 
@@ -320,7 +391,7 @@ func TestUsageLimited_EarlyExitReportsMemoPublishedDuringScan(t *testing.T) {
 	}
 
 	scanned := false
-	usageLimitScanObserver = func(int64, int64) {
+	usageLimitScanObserver = func(usageLimitScanRead) {
 		scanned = true
 		// Publish a newer verdict while this scan is in flight, exactly as a
 		// concurrent scan would. Old code captured its snapshot before this point
@@ -584,5 +655,58 @@ func TestUsageLimited_RebindClearsThrottleClaim(t *testing.T) {
 	inst.mu.RUnlock()
 	if stamped.Equal(claimed) {
 		t.Fatal("rebind kept A's throttle claim, so B is answered from A's window")
+	}
+}
+
+// #1806 cycle-6 [High]: guarding only the WRITE stopped scan A publishing after an
+// A→B rebind but still returned A's memo for B, because every memo read was
+// identity-blind and the memo key only moves when a mismatch is seen at claim time.
+// This is the integration test the finding asked for: rebind INSIDE the scan.
+func TestUsageLimited_RebindDuringScanDoesNotReturnOldVerdict(t *testing.T) {
+	const sidA = "rebind-during-scan-A"
+	project := t.TempDir()
+	inst := NewInstanceWithTool("usage-limit-rebind-inflight", project, "claude")
+	inst.ClaudeSessionID = sidA
+
+	dir := filepath.Join(GetClaudeConfigDirForInstance(inst), "projects", ConvertToClaudeDirName(project))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A's transcript holds a fresh rejection, so a completed scan for A says true.
+	if err := os.WriteFile(filepath.Join(dir, sidA+".jsonl"),
+		[]byte(recRateLimitAt(stampAt(-time.Minute))+"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := locateHandoffTranscript(inst); got == "" {
+		t.Skip("resolver did not find the fixture; environment-dependent")
+	}
+
+	// Seed a live true verdict for A exactly as a completed scan would.
+	inst.mu.Lock()
+	inst.usageLimitSessionID = sidA
+	inst.usageLimitedCached = true
+	inst.lastUsageLimitScanAt = time.Time{} // force a fresh claim
+	inst.mu.Unlock()
+
+	rebound := false
+	usageLimitScanObserver = func(usageLimitScanRead) {
+		if rebound {
+			return
+		}
+		rebound = true
+		// The instance is rebound to a different session while this scan is in
+		// flight. Nothing has formed a verdict for B.
+		inst.mu.Lock()
+		inst.ClaudeSessionID = "rebind-during-scan-B"
+		inst.mu.Unlock()
+	}
+	defer func() { usageLimitScanObserver = nil }()
+
+	got := inst.usageLimited()
+	if !rebound {
+		t.Fatal("premise broken: no read happened, so no rebind was injected mid-scan")
+	}
+	if got {
+		t.Fatal("returned A's verdict for an Instance rebound to B mid-scan")
 	}
 }
