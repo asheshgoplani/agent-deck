@@ -195,17 +195,21 @@ type Instance struct {
 	// Claude Code integration
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
-	// claudeSessionIDUnverifiedFor holds the ClaudeSessionID value that came
-	// from mtime-based disk discovery rather than from a source identifying
-	// THIS session (own tmux env, own hook payload, explicit --session-id,
-	// or an id this process minted). While it equals ClaudeSessionID, the id
-	// must never authorize `--resume` — see resume_identity.go (#1815).
-	// Storing the id (not a bare bool) means any later assignment of a
-	// different id is verified by default, so the flag can never go stale
-	// onto an unrelated value. Not persisted: the guard replaces an
-	// unverified id with a freshly minted one before any spawn, so nothing
-	// unverified reaches the save cycle.
-	claudeSessionIDUnverifiedFor string
+	// claudeSessionIDsFromDiskScan records every conversation id this
+	// instance ever obtained from an mtime-based DISK SCAN rather than from a
+	// source identifying THIS session (own tmux env, own hook payload, an
+	// explicit --session-id/--resume-session in its own command, an
+	// operator's explicit set, or an id this process minted). While an id is
+	// in this set it may not authorize `--resume` — see resume_identity.go
+	// (#1815).
+	//
+	// A SET, not one value: a scanned candidate stays suspect even after the
+	// field moves on and comes back, so no writer can launder it by simply
+	// re-assigning it. Membership is persisted for the current id (see
+	// resume_identity_persist.go), so a process restart cannot launder it
+	// either. Clearing is explicit and only from a source that identifies
+	// this session (markClaudeSessionIDVerified).
+	claudeSessionIDsFromDiskScan map[string]bool
 
 	// Gemini CLI integration
 	GeminiSessionID  string                  `json:"gemini_session_id,omitempty"`
@@ -1076,6 +1080,8 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		// the bash process with claude, enabling proper job control (Ctrl+Z suspend / fg resume).
 		sessionUUID := generateUUID()
 		i.ClaudeSessionID = sessionUUID
+		// #1815: minted here for this session — vouched ownership.
+		i.markClaudeSessionIDVerified()
 
 		// Startup query (#725, v1.7.67): appended as one shell-quoted
 		// positional arg so multi-word queries survive bash -c. Empty
@@ -7719,6 +7725,8 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	// enabling proper job control (Ctrl+Z suspend / fg resume).
 	forkUUID := generateUUID()
 	target.ClaudeSessionID = forkUUID
+	// #1815: minted for the fork target — vouched ownership.
+	target.markClaudeSessionIDVerified()
 	cmd := fmt.Sprintf(
 		`cd '%s' && `+
 			`%sexec claude --session-id "%s" --resume %s --fork-session%s`,

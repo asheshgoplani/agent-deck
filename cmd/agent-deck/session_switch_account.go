@@ -114,11 +114,20 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		if inst.ClaudeSessionID == "" && locatedSID != "" {
 			// #1815: with no recorded id, this is "the newest conversation in
 			// the project dir" — a guess that a shared working directory can
-			// answer with another session's transcript. It is good enough to
-			// migrate (a copy), never good enough to resume: record it as
-			// unverified so the restart starts fresh instead of adopting a
-			// conversation this session may not own.
-			session.AdoptDiscoveredClaudeSessionID(inst, locatedSID)
+			// answer with a NEIGHBOURING session's transcript. Copying first
+			// and refusing to resume later is not good enough: the copy has
+			// already carried someone else's conversation into another
+			// account's config dir. Ambiguous discovery copies nothing.
+			//
+			// The operator can resolve the ambiguity explicitly and re-run.
+			out.Error(fmt.Sprintf(
+				"cannot identify %s's conversation: it has no recorded conversation id, and the only "+
+					"candidate is the newest transcript in its working directory (%s), which may belong "+
+					"to another session there. Nothing was copied and the account was NOT switched. "+
+					"Name the conversation explicitly if it is this session's own "+
+					"(agent-deck session set claude-session-id <uuid> %s) and re-run.",
+				inst.Title, locatedSID, inst.Title), ErrCodeInvalidOperation)
+			os.Exit(1)
 		}
 	}
 	migrated, migErr := session.MigrateConversationFrom(inst, srcDir, targetDir)

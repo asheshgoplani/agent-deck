@@ -19255,6 +19255,8 @@ func getSessionContent(inst *session.Instance) (string, error) {
 func getSessionContentWithLive(inst *session.Instance, liveClaudeID string) (string, error) {
 	if session.IsClaudeCompatible(inst.Tool) && liveClaudeID != "" && liveClaudeID != inst.ClaudeSessionID {
 		inst.ClaudeSessionID = liveClaudeID
+		// #1815: read from this session's OWN pane env — vouched ownership.
+		session.MarkClaudeSessionIDVerified(inst)
 	}
 
 	// Use best-effort: richer recovery than GetLastResponse if the refreshed

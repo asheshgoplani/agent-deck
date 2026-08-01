@@ -145,7 +145,7 @@ func TestResumeGuard_MatchingIDStillResumes(t *testing.T) {
 	if !canResumeClaudeSession(inst, ownID) {
 		t.Fatal("exact id match must resume")
 	}
-	if decision := inst.resumeIdentityAllowed(ownID[:8]); !decision.Allow {
+	if decision := inst.resumeIdentityAllowed(ownID[:16]); !decision.Allow {
 		t.Fatalf("id PREFIX form must be accepted (the CLI resolves --resume by prefix); reason=%s", decision.Reason)
 	}
 
@@ -167,9 +167,9 @@ func TestClaudeSessionIDsMatch(t *testing.T) {
 		{"exact", full, full, true},
 		{"case insensitive", full, strings.ToUpper(full), true},
 		{"whitespace trimmed", full, "  " + full + "\n", true},
-		{"candidate is prefix", full, full[:8], true},
-		{"recorded is prefix", full[:12], full, true},
-		{"prefix too short", full, full[:4], false},
+		{"candidate is prefix", full, full[:16], true},
+		{"recorded is prefix", full[:20], full, true},
+		{"prefix too short", full, full[:8], false},
 		{"different ids", full, "99999999-9999-4999-8999-999999999999", false},
 		{"empty recorded", "", full, false},
 		{"empty candidate", full, "", false},
@@ -202,14 +202,22 @@ func TestResumeGuard_VerifiedSourcesClearDiscoveryTaint(t *testing.T) {
 		t.Fatalf("a verified id must be recorded; got %q", inst.recordedClaudeSessionID())
 	}
 
-	// A LATER assignment of a different id is verified by default — the taint
-	// is bound to the discovered value, so it can never go stale onto an
-	// unrelated id and refuse a legitimate resume.
+	// Suspicion is keyed to the VALUE and does not expire: a writer cannot
+	// launder a scanned id by moving the field away and back again. This is
+	// the property that makes the guard unbypassable by re-assignment.
 	inst.adoptDiscoveredClaudeSessionID(id)
-	const boundByHook = "eeeeeeee-5555-4666-8777-888888888888"
-	inst.ClaudeSessionID = boundByHook
-	if inst.recordedClaudeSessionID() != boundByHook {
-		t.Fatalf("id replaced after a discovery must not inherit the taint; got %q", inst.recordedClaudeSessionID())
+	const boundElsewhere = "eeeeeeee-5555-4666-8777-888888888888"
+	inst.ClaudeSessionID = boundElsewhere
+	if inst.recordedClaudeSessionID() != boundElsewhere {
+		t.Fatalf("an id that never came from a disk scan is ownable; got %q", inst.recordedClaudeSessionID())
+	}
+	inst.ClaudeSessionID = id // back to the scanned value
+	if got := inst.recordedClaudeSessionID(); got != "" {
+		t.Fatalf("re-assigning a previously scanned id must NOT launder it into ownership; got %q", got)
+	}
+	inst.markClaudeSessionIDVerified()
+	if inst.recordedClaudeSessionID() != id {
+		t.Fatalf("an explicit vouch must clear the suspicion; got %q", inst.recordedClaudeSessionID())
 	}
 }
 
@@ -259,7 +267,7 @@ func TestResumeGuard_TaintIsPersisted(t *testing.T) {
 		ID:                           "persist-taint",
 		Tool:                         "claude",
 		ClaudeSessionID:              id,
-		claudeSessionIDUnverifiedFor: restoreClaudeSessionTaint(id, true),
+		claudeSessionIDsFromDiskScan: restoreClaudeSessionVerification(id, true),
 	}
 	if got := reloaded.recordedClaudeSessionID(); got != "" {
 		t.Fatalf("a reloaded tainted id must not count as recorded; got %q", got)
@@ -267,7 +275,47 @@ func TestResumeGuard_TaintIsPersisted(t *testing.T) {
 	if decision := reloaded.resumeIdentityAllowed(id); decision.Allow {
 		t.Fatal("a reloaded tainted id must still be refused for --resume")
 	}
-	if restoreClaudeSessionTaint(id, false) != "" {
-		t.Fatal("an untainted row must load clean")
+	if restoreClaudeSessionVerification(id, false) != nil {
+		t.Fatal("a pre-#1815 / untainted row must load clean so it keeps resuming")
+	}
+}
+
+// TestResumeGuard_MigrateFallbackNeverLaunders pins the adversarial-review
+// finding: MigrateConversationFrom's "newest conversation in the project dir"
+// fallback picks a DIFFERENT conversation by mtime, and that is equally a
+// guess whether or not a stale id was stored. Marking it only in the
+// empty-id case let a stale-id session adopt (and resume) a neighbour's
+// transcript.
+func TestResumeGuard_MigrateFallbackNeverLaunders(t *testing.T) {
+	home := isolatedHomeDir(t)
+	inst := newGuardInstance(t, home)
+	inst.Tool = "claude"
+
+	src, dst := filepath.Join(home, "src-cfg"), filepath.Join(home, "dst-cfg")
+	projDir := filepath.Join(src, "projects", ConvertToClaudeDirName(inst.ProjectPath))
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatalf("mkdir src project dir: %v", err)
+	}
+	const neighbourID = "a1a1a1a1-7777-4888-8999-aaaaaaaaaaaa"
+	body := `{"type":"user","sessionId":"` + neighbourID + `","text":"hi"}` + "\n"
+	if err := os.WriteFile(filepath.Join(projDir, neighbourID+".jsonl"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write neighbour transcript: %v", err)
+	}
+
+	// A STALE stored id: its file is gone, so the fallback fires.
+	inst.ClaudeSessionID = "deadbeef-0000-4000-8000-000000000000"
+	inst.markClaudeSessionIDVerified()
+
+	if _, err := MigrateConversationFrom(inst, src, dst); err != nil {
+		t.Fatalf("MigrateConversationFrom: %v", err)
+	}
+	if inst.ClaudeSessionID != neighbourID {
+		t.Fatalf("precondition: the fallback should have adopted the newest transcript; got %q", inst.ClaudeSessionID)
+	}
+	if got := inst.recordedClaudeSessionID(); got != "" {
+		t.Fatalf("a mtime-chosen replacement is not owned just because an older id existed; recorded = %q", got)
+	}
+	if decision := inst.resumeIdentityAllowed(neighbourID); decision.Allow {
+		t.Fatal("the migrated-by-guess conversation must not authorize --resume")
 	}
 }

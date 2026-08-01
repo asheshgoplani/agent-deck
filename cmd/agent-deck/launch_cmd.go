@@ -482,6 +482,10 @@ func handleLaunch(profile string, args []string) {
 
 	if *resumeSession != "" {
 		newInstance.ClaudeSessionID = *resumeSession
+		// #1815: the operator named this conversation for this session —
+		// explicit ownership, so vouch for it (ownership is positive state;
+		// an unvouched id is refused at resume time).
+		session.MarkClaudeSessionIDVerified(newInstance)
 		newInstance.ClaudeDetectedAt = time.Now()
 
 		opts := newInstance.GetClaudeOptions()

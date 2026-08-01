@@ -1452,7 +1452,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			TmuxSocketName:               instData.TmuxSocketName,
 			ClaudeSessionID:              instData.ClaudeSessionID,
 			ClaudeDetectedAt:             instData.ClaudeDetectedAt,
-			claudeSessionIDUnverifiedFor: restoreClaudeSessionTaint(instData.ClaudeSessionID, instData.ClaudeSessionIDUnverified),
+			claudeSessionIDsFromDiskScan: restoreClaudeSessionVerification(instData.ClaudeSessionID, instData.ClaudeSessionIDUnverified),
 			GeminiSessionID:              instData.GeminiSessionID,
 			GeminiDetectedAt:             instData.GeminiDetectedAt,
 			GeminiYoloMode:               instData.GeminiYoloMode,

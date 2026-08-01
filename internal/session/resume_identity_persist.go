@@ -58,14 +58,19 @@ func (i *Instance) claudeSessionIDIsUnverified() bool {
 	if i == nil || i.ClaudeSessionID == "" {
 		return false
 	}
-	return i.ClaudeSessionID == i.claudeSessionIDUnverifiedFor
+	return i.claudeSessionIDsFromDiskScan[i.ClaudeSessionID]
 }
 
-// restoreClaudeSessionTaint re-applies a persisted taint at load time, so a
-// process restart cannot launder an unverified id into a recorded one.
-func restoreClaudeSessionTaint(claudeSessionID string, unverified bool) string {
-	if !unverified {
-		return ""
+// restoreClaudeSessionVerification maps the persisted NEGATIVE marker back
+// onto the in-memory POSITIVE state at load time, so a process restart cannot
+// launder an unverified id into a recorded one.
+//
+// The marker is negative on purpose: a row written before #1815 carries no
+// key and must keep resuming exactly as it did — a positive-on-disk model
+// would refuse every pre-existing session once, on upgrade, for nothing.
+func restoreClaudeSessionVerification(claudeSessionID string, unverified bool) map[string]bool {
+	if !unverified || claudeSessionID == "" {
+		return nil
 	}
-	return claudeSessionID
+	return map[string]bool{claudeSessionID: true}
 }

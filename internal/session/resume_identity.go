@@ -47,7 +47,13 @@ import (
 // `--resume` ids by prefix, so an operator-supplied or CLI-echoed prefix is a
 // legitimate spelling of the same id — but a prefix short enough to collide
 // across unrelated UUIDs is not identity evidence.
-const minResumeIDPrefixLen = 8
+//
+// 16 hex characters (the UUID's first two groups, ~64 bits) is the floor. The
+// obvious 8 is only 32 bits: a neighbouring transcript sharing eight leading
+// hex characters would pass, and the whole point of this guard is that a
+// neighbouring transcript must not pass. Nothing legitimate abbreviates a
+// conversation id below two groups.
+const minResumeIDPrefixLen = 16
 
 // claudeSessionIDsMatch reports whether candidate denotes the same
 // conversation as recorded. Exact match, or either value being a
@@ -81,6 +87,11 @@ type resumeIdentityDecision struct {
 // recordedClaudeSessionID returns the conversation id this instance is known
 // to OWN, or "" when no such id is recorded.
 //
+// The suspicion is keyed to the VALUE and never expires on its own: once an id
+// has been produced by a disk scan, no later writer can launder it into
+// ownership by re-assigning it; only an explicit vouch from a source that
+// identifies this session clears it.
+//
 // An id populated by disk discovery is deliberately NOT recorded ownership:
 // discovery picks the newest transcript filed under the working directory,
 // which in a shared directory is somebody else's. Such an id is usable as a
@@ -91,7 +102,7 @@ func (i *Instance) recordedClaudeSessionID() string {
 		return ""
 	}
 	id := strings.TrimSpace(i.ClaudeSessionID)
-	if id != "" && id == i.claudeSessionIDUnverifiedFor {
+	if id == "" || i.claudeSessionIDsFromDiskScan[id] {
 		return ""
 	}
 	return id
@@ -190,18 +201,19 @@ func NewClaudeSessionUUID() string { return generateUUID() }
 // exists in this directory, never proof of ownership.
 func (i *Instance) adoptDiscoveredClaudeSessionID(uuid string) {
 	i.ClaudeSessionID = uuid
-	i.claudeSessionIDUnverifiedFor = strings.TrimSpace(uuid)
+	i.markClaudeSessionIDFromDiskScan(uuid)
 }
 
-// AdoptDiscoveredClaudeSessionID is the exported form for callers outside
-// this package that resolve a conversation id by scanning disk (the
-// account-switch command, which locates "the newest conversation in this
-// project dir" when the session carries no recorded id).
-func AdoptDiscoveredClaudeSessionID(inst *Instance, uuid string) {
-	if inst == nil {
+// markClaudeSessionIDFromDiskScan records that uuid came from a disk scan.
+func (i *Instance) markClaudeSessionIDFromDiskScan(uuid string) {
+	id := strings.TrimSpace(uuid)
+	if id == "" {
 		return
 	}
-	inst.adoptDiscoveredClaudeSessionID(uuid)
+	if i.claudeSessionIDsFromDiskScan == nil {
+		i.claudeSessionIDsFromDiskScan = map[string]bool{}
+	}
+	i.claudeSessionIDsFromDiskScan[id] = true
 }
 
 // markClaudeSessionIDVerified records that the current ClaudeSessionID came
@@ -209,7 +221,19 @@ func AdoptDiscoveredClaudeSessionID(inst *Instance, uuid string) {
 // pane, a hook payload it owns, an explicit `--session-id` in its own command,
 // or an id this process minted for it.
 func (i *Instance) markClaudeSessionIDVerified() {
-	i.claudeSessionIDUnverifiedFor = ""
+	delete(i.claudeSessionIDsFromDiskScan, strings.TrimSpace(i.ClaudeSessionID))
+}
+
+// MarkClaudeSessionIDVerified is the exported form, for the CLI and TUI
+// writers that assign an id from a source identifying THIS session (an
+// operator's explicit --resume-session / --session-id, a picked conversation,
+// an id the command just minted). Calling it is what clears an earlier
+// disk-scan suspicion on that value.
+func MarkClaudeSessionIDVerified(inst *Instance) {
+	if inst == nil {
+		return
+	}
+	inst.markClaudeSessionIDVerified()
 }
 
 // replaceRefusedClaudeSessionID mints and records a fresh conversation id
