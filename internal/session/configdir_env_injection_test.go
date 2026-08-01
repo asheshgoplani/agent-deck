@@ -194,7 +194,7 @@ func TestBuildBashExportPrefix_ExportsClaudeConfigDir(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", wantDir)
 
 	inst := NewInstanceWithTool("test", "/tmp/test", "claude")
-	prefix := inst.buildBashExportPrefix()
+	prefix := inst.buildBashExportPrefix(false)
 
 	if !strings.Contains(prefix, "export CLAUDE_CONFIG_DIR="+wantDir+";") {
 		t.Errorf("bash export prefix should export CLAUDE_CONFIG_DIR=%s, got: %s", wantDir, prefix)

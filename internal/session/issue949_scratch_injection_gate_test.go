@@ -84,7 +84,7 @@ token = "fake-token-for-test"
 			t.Errorf("scratch must NOT be injected when no explicit config_dir is set (#949)\ngot: %s", cmd)
 		}
 
-		exp := inst.buildBashExportPrefix()
+		exp := inst.buildBashExportPrefix(false)
 		if strings.Contains(exp, "CLAUDE_CONFIG_DIR=") {
 			t.Errorf("buildBashExportPrefix must NOT export CLAUDE_CONFIG_DIR when no explicit config_dir is set (#949)\ngot: %s", exp)
 		}
