@@ -199,6 +199,10 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 // an accepted, bounded gap (same trade-off already accepted for a root flag
 // preceding a subcommand, e.g. "claude --debug remote-control") in exchange
 // for never misrouting an ordinary positional prompt.
+//
+// Canonical subcommand source: `claude --help` (Claude Code CLI top-level
+// command list) as of the claude version this repo currently targets —
+// cross-check there when adding a new one.
 var claudeKnownSubcommands = map[string]bool{
 	"mcp":            true,
 	"plugin":         true,
@@ -209,6 +213,15 @@ var claudeKnownSubcommands = map[string]bool{
 	"config":         true,
 }
 
+// Canonical subcommand source: `codex --help` (Codex CLI top-level command
+// list) as of the codex version this repo currently targets — cross-check
+// there when adding a new one. This is a fixed, maintained list (see the
+// doc comment above); it is only ever as complete as the day it was last
+// checked against `codex --help`, so a native subcommand added upstream
+// after that will fall back to the wrapper-suffix path until it's added
+// here (accepted, bounded gap — see the doc comment above). "fork" added
+// per Codex review, PR #1821 P2: it was missing, so `-c "codex fork ..."`
+// still had agent-deck's flags injected ahead of it.
 var codexKnownSubcommands = map[string]bool{
 	"mcp":    true,
 	"exec":   true,
@@ -216,6 +229,7 @@ var codexKnownSubcommands = map[string]bool{
 	"logout": true,
 	"apply":  true,
 	"resume": true,
+	"fork":   true,
 }
 
 // isKnownSubcommandToken reports whether tok is a real subcommand of the

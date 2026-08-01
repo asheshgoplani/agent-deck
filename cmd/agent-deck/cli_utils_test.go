@@ -331,6 +331,18 @@ func TestResolveSessionCommand(t *testing.T) {
 			wantRawCommand: true,
 		},
 		{
+			// Codex bot review (PR #1821 P2): "fork" was missing from
+			// codexKnownSubcommands, so agent-deck's flags were still
+			// injected ahead of it via the wrapper-suffix path. Pins the
+			// fix: a known codex subcommand runs as-is like any other.
+			name:           "codex fork subcommand runs as-is, no wrapper",
+			raw:            "codex fork abc123",
+			wantTool:       "shell",
+			wantWrapper:    "",
+			wantNote:       true,
+			wantRawCommand: true,
+		},
+		{
 			// Explicit wrapper still wins even for a subcommand-shaped
 			// command — the user asked for specific flag placement.
 			name:            "explicit wrapper wins over subcommand detection",

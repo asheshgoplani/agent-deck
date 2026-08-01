@@ -3143,9 +3143,24 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 		// alias like "cdw"/"cdp") via GetClaudeCommandForInstance and honors
 		// it even for a literal "claude" the user typed — losing that here
 		// would silently run the wrong binary/account for a subcommand-shaped
-		// --cmd. substituteResolvedBinary swaps only the leading word,
-		// leaving the subcommand + its args (the whole reason this path
-		// exists) untouched. It also promises the same
+		// --cmd. substituteResolvedBinary swaps only the leading word, and
+		// ONLY when that leading word is the bare literal "claude" — exactly
+		// mirroring buildClaudeCommandWithMessage's own `if baseCommand ==
+		// "claude"` gate above, which likewise never touches an explicit
+		// non-canonical path (its "custom commands" branch below returns
+		// baseCommand untouched). MatchTool detects "claude"-shaped via a
+		// substring match, so `matched == "claude"` alone is not sufficient
+		// to gate substitution: it also fires for an explicitly configured
+		// non-canonical executable (e.g. "/opt/canary/claude",
+		// "codex-nightly") that merely contains the tool name. On this
+		// maintainer's machines the configured account/group command is
+		// often itself an account-selection wrapper, so overwriting an
+		// operator-chosen path with it can silently start the subcommand
+		// under the wrong account (Codex review, PR #1821 P1). Detection
+		// here only classifies ("this is claude-shaped, route accordingly");
+		// it must never rewrite an operator's explicit path out from under
+		// them — leaving the subcommand + its args (the whole reason this
+		// path exists) untouched. It also promises the same
 		// AGENTDECK_RESOLVED_CONFIG_DIR/GROUP/SOURCE hint vars the normal
 		// path exports for statusline/hook/fleet-placement consumers — kept
 		// in this function's inline `VAR=val ` style (not
@@ -3157,7 +3172,7 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 		resolvedHintPrefix := fmt.Sprintf(
 			"AGENTDECK_RESOLVED_CONFIG_DIR=%s AGENTDECK_RESOLVED_GROUP=%s AGENTDECK_RESOLVED_SOURCE=%s ",
 			shellescape.Quote(resolvedConfigDir), shellescape.Quote(i.GroupPath), shellescape.Quote(resolvedSource))
-		resolvedCommand := substituteResolvedBinary(baseCommand, GetClaudeCommandForInstance(i))
+		resolvedCommand := substituteResolvedBinary(baseCommand, "claude", GetClaudeCommandForInstance(i))
 		return envPrefix + instanceIDPrefix + configDirPrefix + resolvedHintPrefix + execEnvPrefix + resolvedCommand
 	case "codex":
 		// AGENTDECK_TOOL uses `matched` ("codex"), not i.Tool (which is
@@ -3178,8 +3193,11 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 		}
 		// Same rationale as the claude case above: honor [codex].command
 		// (e.g. a wrapper/account-switcher) instead of always running the
-		// literal binary name the user typed after "codex".
-		resolvedCommand := substituteResolvedBinary(baseCommand, GetCodexCommand())
+		// literal binary name the user typed after "codex" — but ONLY when
+		// the user typed the bare literal "codex"; an explicit non-canonical
+		// path (e.g. "codex-nightly") is never rewritten. See the extended
+		// comment on the "claude" case above.
+		resolvedCommand := substituteResolvedBinary(baseCommand, "codex", GetCodexCommand())
 		return envPrefix + agentdeckEnvPrefix + codexHomePrefix + resolvedCommand
 	default:
 		return envPrefix + baseCommand
@@ -3187,21 +3205,38 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 }
 
 // substituteResolvedBinary replaces the leading whitespace-delimited word of
-// baseCommand (the literal tool name the user typed, e.g. "claude") with
-// resolvedBinary (the configured conductor/group/global override for that
-// tool, e.g. an account-switcher alias) while leaving the rest of
-// baseCommand — the subcommand and its args — untouched. A no-op (returns
-// baseCommand unchanged) when resolvedBinary is empty, already matches the
-// leading word, or baseCommand has no leading word to replace; this keeps
-// the common no-override case byte-identical to before.
-func substituteResolvedBinary(baseCommand, resolvedBinary string) string {
+// baseCommand with resolvedBinary (the configured conductor/group/global
+// override for the tool, e.g. an account-switcher alias) — but ONLY when
+// that leading word is exactly literalName (the bare tool name, "claude" or
+// "codex"), leaving the rest of baseCommand — the subcommand and its args —
+// untouched.
+//
+// literalName gates the substitution deliberately: buildShellPassthroughCommand's
+// caller classifies baseCommand via MatchTool, which detects "claude"/"codex"
+// by a *substring* match — it also fires for an explicitly configured
+// non-canonical executable that merely contains the tool name, e.g.
+// "/opt/canary/claude" or "codex-nightly". If the caller chose that path on
+// purpose (often itself an account-selection wrapper on this maintainer's
+// machines), substituting resolvedBinary in its place would silently run a
+// *different* binary/account than the one explicitly configured (Codex
+// review, PR #1821 P1). Detection classifies; it must never rewrite an
+// operator's explicit path. Substitution is therefore restricted to the one
+// case where there is no explicit path to protect: the user typed the bare
+// literal tool name, exactly mirroring buildClaudeCommandWithMessage's own
+// `if baseCommand == "claude"` gate, whose "custom commands" branch likewise
+// returns a non-literal baseCommand untouched.
+//
+// A no-op (returns baseCommand unchanged) when resolvedBinary is empty, the
+// leading word isn't literalName, or it already equals resolvedBinary; this
+// keeps the common no-override case byte-identical to before.
+func substituteResolvedBinary(baseCommand, literalName, resolvedBinary string) string {
 	resolvedBinary = strings.TrimSpace(resolvedBinary)
 	if resolvedBinary == "" {
 		return baseCommand
 	}
 	trimmed := strings.TrimSpace(baseCommand)
 	fields := strings.Fields(trimmed)
-	if len(fields) == 0 || fields[0] == resolvedBinary {
+	if len(fields) == 0 || fields[0] != literalName || fields[0] == resolvedBinary {
 		return baseCommand
 	}
 	rest := strings.TrimPrefix(trimmed, fields[0])

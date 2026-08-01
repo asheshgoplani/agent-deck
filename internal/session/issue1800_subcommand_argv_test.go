@@ -391,6 +391,70 @@ func TestIssue1821_ShellPassthroughCodex_HonorsConfiguredCommand(t *testing.T) {
 	}
 }
 
+// TestIssue1821_ShellPassthroughClaude_NeverRewritesExplicitBinary is the
+// regression test for Codex bot P1 on the follow-up review of PR #1821:
+// substituteResolvedBinary must never overwrite an explicitly configured
+// non-canonical executable (e.g. "/opt/canary/claude") with the resolved
+// [claude].command override, even though MatchTool classifies the line as
+// claude-shaped (it substring-matches "claude"). On this maintainer's
+// machines the configured override is often itself an account-selection
+// wrapper, so substituting it in place of an operator-chosen path can
+// silently start the subcommand under the wrong account. Only the bare
+// literal "claude" is eligible for substitution.
+func TestIssue1821_ShellPassthroughClaude_NeverRewritesExplicitBinary(t *testing.T) {
+	cfg := &UserConfig{
+		MCPs:       make(map[string]MCPDef),
+		Conductors: map[string]ConductorOverrides{},
+		Groups:     map[string]GroupSettings{},
+		Claude:     ClaudeSettings{Command: "cdw"},
+	}
+	defer resetUserConfigCache(t, cfg)()
+
+	inst := &Instance{
+		Title:       "canary-child",
+		Tool:        "shell",
+		Command:     "/opt/canary/claude remote-control --name rc-test",
+		ProjectPath: "/tmp",
+	}
+
+	got := inst.buildShellPassthroughCommand(inst.Command)
+	if !strings.HasSuffix(got, "/opt/canary/claude remote-control --name rc-test") {
+		t.Fatalf("expected the explicit /opt/canary/claude path to survive untouched "+
+			"despite a configured [claude].command override (\"cdw\"); got: %s", got)
+	}
+	if strings.Contains(got, "cdw ") {
+		t.Fatalf("configured override must not have been substituted for the explicit path; got: %s", got)
+	}
+}
+
+// TestIssue1821_ShellPassthroughCodex_NeverRewritesExplicitBinary is the
+// codex half of the same finding.
+func TestIssue1821_ShellPassthroughCodex_NeverRewritesExplicitBinary(t *testing.T) {
+	cfg := &UserConfig{
+		MCPs:       make(map[string]MCPDef),
+		Conductors: map[string]ConductorOverrides{},
+		Groups:     map[string]GroupSettings{},
+		Codex:      CodexSettings{Command: "codex-nightly"},
+	}
+	defer resetUserConfigCache(t, cfg)()
+
+	inst := &Instance{
+		Title:       "canary-codex",
+		Tool:        "shell",
+		Command:     "codex-canary mcp list",
+		ProjectPath: "/tmp",
+	}
+
+	got := inst.buildShellPassthroughCommand(inst.Command)
+	if !strings.HasSuffix(got, "codex-canary mcp list") {
+		t.Fatalf("expected the explicit codex-canary binary to survive untouched despite "+
+			"a configured [codex].command override (\"codex-nightly\"); got: %s", got)
+	}
+	if strings.Contains(got, "codex-nightly") {
+		t.Fatalf("configured override must not have been substituted for the explicit binary; got: %s", got)
+	}
+}
+
 // TestIssue1821_ShellPassthroughClaude_IncludesResolvedAccountHints is the
 // regression test for the Codex bot P2 finding: buildShellPassthroughCommand
 // must promise the same AGENTDECK_RESOLVED_CONFIG_DIR/GROUP/SOURCE hint vars
