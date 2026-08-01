@@ -221,14 +221,17 @@ func TestPreviewScroll_StackedLayoutMode_WheelRoutesByY(t *testing.T) {
 	h, _ := previewScrollSessionWithLines(t, 120, 40, 50)
 	h.previewOrientation = PreviewOrientationBelow
 
-	// A second session gives the cursor somewhere to move.
-	inst2 := session.NewInstance("second", t.TempDir())
-	inst2.Status = session.StatusRunning
-	h.instancesMu.Lock()
-	h.instances = append(h.instances, inst2)
-	h.instanceByID[inst2.ID] = inst2
-	h.instancesMu.Unlock()
-	h.flatItems = append(h.flatItems, session.Item{Type: session.ItemTypeSession, Session: inst2})
+	// A second item gives the cursor somewhere to move. It's a RemoteSession
+	// deliberately: wheel routing is item-type agnostic (it decides by
+	// coordinates, then moves the cursor through skipDivider), so the
+	// fall-through path has to behave identically when the item it lands on is
+	// remote rather than local.
+	remote := session.RemoteSessionInfo{ID: "remote-1", Title: "remote-second", RemoteName: "myserver"}
+	h.flatItems = append(h.flatItems, session.Item{
+		Type:          session.ItemTypeRemoteSession,
+		RemoteSession: &remote,
+		RemoteName:    "myserver",
+	})
 
 	if got := h.getLayoutMode(); got != LayoutModeStacked {
 		t.Fatalf("layout mode = %q, want %q", got, LayoutModeStacked)
@@ -252,11 +255,15 @@ func TestPreviewScroll_StackedLayoutMode_WheelRoutesByY(t *testing.T) {
 	}
 
 	// The divider row itself is above the boundary, so it belongs to the list.
+	// The cursor lands on the RemoteSession item here.
 	model, _ = h.Update(tea.MouseMsg{X: 100, Y: top - 1, Button: tea.MouseButtonWheelDown})
 	h = model.(*Home)
 
 	if h.cursor != 1 {
 		t.Fatalf("stacked WheelDown at Y=%d (list region): cursor=%d, want 1", top-1, h.cursor)
+	}
+	if got := h.flatItems[h.cursor].Type; got != session.ItemTypeRemoteSession {
+		t.Fatalf("cursor landed on item type %v, want ItemTypeRemoteSession (the remote fall-through case is the point of this assertion)", got)
 	}
 	if h.previewScrollOffset != 0 {
 		t.Fatalf("stacked WheelDown at Y=%d (list region): previewScrollOffset=%d, want 0 (should reset on cursor move)", top-1, h.previewScrollOffset)
