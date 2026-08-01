@@ -75,23 +75,25 @@ const usageLimitMaxAge = 5 * time.Hour
 // so a few seconds of staleness costs nothing.
 const usageLimitScanInterval = 5 * time.Second
 
-// usageLimitFirstTailBytes is the first window read, sized for the common case:
-// a real transcript has assistant records throughout, so this answers in one read.
-const usageLimitFirstTailBytes = 512 * 1024
-
-// usageLimitTailGrowth multiplies the window when a read found no
-// main-conversation assistant record.
+// usageLimitScanChunkBytes is how much of the transcript is read at a time.
 //
-// There is deliberately NO ceiling. A fixed one does not remove the cold-start
-// failure it appears to bound, it just moves it further out: if the decisive
-// rejection sits beyond the cap and everything after it is non-assistant traffic,
-// every step returns no verdict, and a fresh process then starts with no memo and
-// reports the session as healthy — the false negative this detector exists to
-// prevent. Growth instead terminates on reading the whole file, so the answer is
-// always eventually found. The throttle bounds how often this can happen, and the
-// pathological case (no assistant record in tens of megabytes) is not what a real
-// transcript looks like.
-const usageLimitTailGrowth = 8
+// The scan walks BACKWARD in non-overlapping chunks of this size until it finds
+// the latest main-conversation assistant record or reaches the start of the file.
+// Two properties matter and neither is optional:
+//
+//   - No ceiling. A fixed cap does not remove the cold-start false negative it
+//     appears to bound, it relocates it: if the decisive rejection sits beyond the
+//     cap with only non-assistant traffic after it, no verdict forms and a fresh
+//     process reports the session healthy.
+//   - No overlap, bounded memory. An earlier revision grew the window
+//     geometrically and re-read what it had already seen — 512 KiB + 4 MiB + the
+//     whole file for one verdict on a 5.8 MB transcript, with the final read
+//     copied whole into memory. Chunking reads each byte at most once and holds
+//     one chunk at a time, which matters because this runs on a status path.
+//
+// A var rather than a const so tests can shrink it and exercise a many-chunk walk
+// without writing a multi-megabyte fixture.
+var usageLimitScanChunkBytes int64 = 512 * 1024
 
 // transcriptRecord is the subset of a transcript line this detector reads.
 type transcriptRecord struct {
@@ -150,14 +152,57 @@ func (r transcriptRecord) fresh(now time.Time, maxAge time.Duration) bool {
 // Callers must treat that as "unknown", never as "fine" — silence being mistaken
 // for health is the failure this whole detector exists to stop.
 func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool, ok bool) {
-	for tail := int64(usageLimitFirstTailBytes); ; tail *= usageLimitTailGrowth {
-		lines, complete, err := readTranscriptTailLines(path, tail)
-		if err != nil {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, false
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return false, false
+	}
+
+	chunk := usageLimitScanChunkBytes
+	if chunk <= 0 {
+		chunk = 512 * 1024
+	}
+
+	// carry holds the leftmost, still-incomplete line of the chunk processed
+	// previously (which sits LATER in the file). Its head is at the end of the
+	// chunk about to be read, so appending it there reassembles that line exactly
+	// once — no byte is read twice and no record is split across the boundary.
+	var carry []byte
+
+	for end := info.Size(); end > 0; {
+		start := end - chunk
+		if start < 0 {
+			start = 0
+		}
+		buf := make([]byte, end-start)
+		if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
 			return false, false
 		}
-		for i := len(lines) - 1; i >= 0; i-- {
+		data := append(buf, carry...)
+
+		lines := strings.Split(string(data), "\n")
+		// Unless this chunk starts at byte 0, its first line began earlier in the
+		// file and must not be parsed yet.
+		firstComplete := 0
+		if start > 0 {
+			firstComplete = 1
+			carry = []byte(lines[0])
+		} else {
+			carry = nil
+		}
+
+		for i := len(lines) - 1; i >= firstComplete; i-- {
+			line := strings.TrimSpace(lines[i])
+			if line == "" {
+				continue
+			}
 			var rec transcriptRecord
-			if err := json.Unmarshal([]byte(lines[i]), &rec); err != nil {
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
 				continue
 			}
 			if !rec.isAssistantTurn() {
@@ -169,65 +214,43 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 			// A rejection older than the window is no longer evidence about now.
 			return rec.fresh(now, usageLimitMaxAge), true
 		}
-		if complete {
-			// The whole file has been read and holds no assistant turn at all.
-			return false, false
-		}
+		end = start
 	}
+	// The whole file was read and holds no main-conversation assistant turn.
+	return false, false
 }
 
-// readTranscriptTailLines returns the complete JSONL lines in the last tailBytes
-// of path, and whether that read covered the whole file.
+// usageLimitPublishable reports whether a finished scan may write its result to
+// the memo.
 //
-// The first line of a mid-file read is dropped: a byte offset lands wherever it
-// lands, so that line is a fragment. Dropping it explicitly keeps the intent
-// legible and stops a truncated record from being parsed as a whole one.
-func readTranscriptTailLines(path string, tailBytes int64) (lines []string, complete bool, err error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, false, err
-	}
-	defer f.Close()
+// Split out as a pure function because it is the rule that makes concurrent scans
+// safe, and racing two real scans to exercise it is not something a test can do
+// deterministically. A scan may publish only if it is still the current claim AND
+// the instance is still bound to the session it read.
+func usageLimitPublishable(currentGen, scanGen uint64, currentSessionID, scanSessionID string) bool {
+	return currentGen == scanGen && currentSessionID == scanSessionID
+}
 
-	info, err := f.Stat()
-	if err != nil {
-		return nil, false, err
-	}
-
-	offset := int64(0)
-	complete = true
-	if info.Size() > tailBytes {
-		offset = info.Size() - tailBytes
-		complete = false
-	}
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return nil, false, err
-	}
-
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return nil, false, err
-	}
-
-	split := strings.Split(string(data), "\n")
-	if !complete && len(split) > 0 {
-		split = split[1:]
-	}
-	out := make([]string, 0, len(split))
-	for _, l := range split {
-		if strings.TrimSpace(l) != "" {
-			out = append(out, l)
-		}
-	}
-	return out, complete, nil
+// usageLimitedNow reads the memo under the lock.
+//
+// Every post-claim exit goes through this rather than returning the snapshot taken
+// at claim time. Returning the snapshot let a slow scan report a value that a
+// newer scan had already superseded: the memo stayed correct, but callers observed
+// completion order inverted.
+func (i *Instance) usageLimitedNow() bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.usageLimitedCached
 }
 
 // transcriptBelongsToSession reports whether a resolved transcript path is the
 // one for sessionID.
 //
 // Every branch of the resolver builds "<config>/projects/<encoded>/<sid>.jsonl",
-// so the basename is the session identity — which makes this a cheap way to
-// refuse a path that belongs to some other conversation, whatever produced it.
+// so the basename is the session identity — which makes this a cheap way to refuse
+// a path belonging to some other conversation, whatever produced it. Locking the
+// id check alone cannot do that, because the resolver re-reads ClaudeSessionID
+// itself after the lock is released.
 func transcriptBelongsToSession(path, sessionID string) bool {
 	if path == "" || sessionID == "" {
 		return false
@@ -287,12 +310,11 @@ func (i *Instance) usageLimited() bool {
 	i.lastUsageLimitScanAt = time.Now()
 	i.usageLimitScanGen++
 	gen := i.usageLimitScanGen
-	cached := i.usageLimitedCached
 	i.mu.Unlock()
 
 	path := locateHandoffTranscript(i)
 	if path == "" {
-		return cached
+		return i.usageLimitedNow()
 	}
 	// Verify the answer belongs to the id we gated on. Holding the lock across the
 	// check is not enough on its own: the resolver re-reads ClaudeSessionID itself
@@ -300,7 +322,7 @@ func (i *Instance) usageLimited() bool {
 	// still steer it onto the newest-conversation fallback. Checking the resolved
 	// path makes the guarantee structural instead of dependent on timing.
 	if !transcriptBelongsToSession(path, sessionID) {
-		return cached
+		return i.usageLimitedNow()
 	}
 
 	limited, ok := latestAssistantTurnIsRateLimited(path, time.Now())
@@ -308,16 +330,15 @@ func (i *Instance) usageLimited() bool {
 		// No formed verdict (unreadable, or no assistant turn in the file): leave
 		// the previous answer standing rather than silently reporting "not
 		// limited".
-		return cached
+		return i.usageLimitedNow()
 	}
 
 	i.mu.Lock()
-	// Publish only if this scan is still the current one AND the instance is still
-	// bound to the id it was formed for. Either check failing means a newer claim
-	// or a rebind happened while the read was in flight, and this result is stale.
-	if i.usageLimitScanGen == gen && i.usageLimitSessionID == sessionID {
+	if usageLimitPublishable(i.usageLimitScanGen, gen, i.usageLimitSessionID, sessionID) {
 		i.usageLimitedCached = limited
 	} else {
+		// A newer claim or a rebind happened while this read was in flight, so this
+		// result is stale — report what the memo now holds instead.
 		limited = i.usageLimitedCached
 	}
 	i.mu.Unlock()

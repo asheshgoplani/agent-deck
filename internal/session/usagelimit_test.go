@@ -169,8 +169,17 @@ func TestLatestAssistantTurnIsRateLimited_MissingFile(t *testing.T) {
 // non-assistant traffic must still be found. A long-lived process keeps its memo,
 // but a fresh CLI invocation starts with none and would otherwise report a
 // limited session as healthy.
-func TestLatestAssistantTurnIsRateLimited_RecoversAfterTailEviction(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "evicted.jsonl")
+// #1806 cycle-4 audit: the previous version of this test buried the record by only
+// ~576 KiB, which the old 8 MiB step would also have found — so it passed before
+// and after and guarded nothing. Shrinking the chunk lets the walk cross MANY
+// boundaries at a trivial file size, which is the property that actually
+// distinguishes an uncapped backward walk from any fixed ladder.
+func TestLatestAssistantTurnIsRateLimited_WalksBackAcrossManyChunks(t *testing.T) {
+	saved := usageLimitScanChunkBytes
+	usageLimitScanChunkBytes = 1024
+	defer func() { usageLimitScanChunkBytes = saved }()
+
+	path := filepath.Join(t.TempDir(), "deep.jsonl")
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -178,62 +187,101 @@ func TestLatestAssistantTurnIsRateLimited_RecoversAfterTailEviction(t *testing.T
 	if _, err := f.WriteString(recRateLimitAt(stampAt(-time.Minute)) + "\n"); err != nil {
 		t.Fatalf("write rejection: %v", err)
 	}
-	// Bury it under more than the first window of user records. No assistant turn
-	// among them, so that window alone can form no verdict.
+	// Bury it far beyond what a three-step ladder of this chunk size could reach
+	// (1 KiB + 8 KiB + 64 KiB ≈ 73 KiB): ~200 KiB of user records, no assistant
+	// turn among them.
 	filler := recUserAt(stampAt(-time.Minute))
-	for written := int64(0); written < usageLimitFirstTailBytes+64*1024; written += int64(len(filler)) + 1 {
-		if _, err := f.WriteString(filler + "\n"); err != nil {
+	var buried int64
+	for buried < 200*1024 {
+		n, err := f.WriteString(filler + "\n")
+		if err != nil {
 			t.Fatalf("write filler: %v", err)
 		}
+		buried += int64(n)
 	}
 	_ = f.Close()
 
-	// Premise, asserted rather than assumed: the first window really does not
-	// contain the decisive record, so this exercises escalation and not a
-	// single-read path that happens to work.
-	lines, complete, err := readTranscriptTailLines(path, usageLimitFirstTailBytes)
+	info, err := os.Stat(path)
 	if err != nil {
-		t.Fatalf("premise read: %v", err)
+		t.Fatalf("stat: %v", err)
 	}
-	if complete {
-		t.Fatal("premise broken: the first window covered the whole file")
-	}
-	for _, l := range lines {
-		if strings.Contains(l, `"rate_limit"`) {
-			t.Fatal("premise broken: the rejection is inside the first window, so eviction is not exercised")
-		}
+	chunks := info.Size() / usageLimitScanChunkBytes
+	if chunks < 100 {
+		t.Fatalf("premise broken: only %d chunks, want a deep walk", chunks)
 	}
 
 	limited, ok := latestAssistantTurnIsRateLimited(path, refNow)
 	if !limited || !ok {
-		t.Fatalf("after eviction = (%v, %v), want (true, true) via tail escalation", limited, ok)
+		t.Fatalf("deep walk = (%v, %v), want (true, true) across ~%d chunks", limited, ok, chunks)
 	}
 }
 
-// A tail offset landing inside a record must drop that partial line and keep the
-// complete ones. Sized from the fixture rather than hardcoded, so the offset
-// really lands inside the filler line.
-func TestReadTranscriptTailLines_DropsPartialFirstLine(t *testing.T) {
+// A record straddling a chunk boundary must be reassembled, not silently dropped
+// or half-parsed. Chosen chunk size guarantees the rejection spans a boundary.
+func TestLatestAssistantTurnIsRateLimited_RecordSpanningChunkBoundary(t *testing.T) {
 	rec := recRateLimitAt(stampAt(-time.Minute))
-	filler := strings.Repeat("A", 400)
-	path := filepath.Join(t.TempDir(), "t.jsonl")
-	if err := os.WriteFile(path, []byte(filler+"\n"+rec+"\n"), 0o600); err != nil {
+	saved := usageLimitScanChunkBytes
+	// Half the record length: the rejection cannot fit in one chunk.
+	usageLimitScanChunkBytes = int64(len(rec) / 2)
+	defer func() { usageLimitScanChunkBytes = saved }()
+
+	path := filepath.Join(t.TempDir(), "split.jsonl")
+	body := recUserAt(stampAt(-time.Minute)) + "\n" + rec + "\n" + recUserAt(stampAt(-time.Minute)) + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
-	// Covers the whole record plus part of the filler line above it.
-	lines, complete, err := readTranscriptTailLines(path, int64(len(rec)+100))
-	if err != nil {
-		t.Fatalf("readTranscriptTailLines: %v", err)
+	limited, ok := latestAssistantTurnIsRateLimited(path, refNow)
+	if !limited || !ok {
+		t.Fatalf("boundary-spanning record = (%v, %v), want (true, true)", limited, ok)
 	}
-	if complete {
-		t.Fatal("premise broken: the read covered the whole file, so no partial line exists")
+}
+
+// The pure publish rule, exhaustively — racing two real scans to exercise it is
+// not something a test can do deterministically, which is why the rule is split
+// out. #1806 cycle-4 audit noted usageLimitScanGen had no regression at all.
+func TestUsageLimitPublishable(t *testing.T) {
+	tests := []struct {
+		name                  string
+		curGen, myGen         uint64
+		curSession, mySession string
+		want                  bool
+	}{
+		{"current claim, same session", 7, 7, "s1", "s1", true},
+		{"superseded by a newer claim", 8, 7, "s1", "s1", false},
+		{"rebound while in flight", 7, 7, "s2", "s1", false},
+		{"both moved", 9, 7, "s2", "s1", false},
 	}
-	if len(lines) != 1 {
-		t.Fatalf("got %d lines, want exactly the one complete record: %#v", len(lines), lines)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := usageLimitPublishable(tt.curGen, tt.myGen, tt.curSession, tt.mySession); got != tt.want {
+				t.Fatalf("usageLimitPublishable = %v, want %v", got, tt.want)
+			}
+		})
 	}
-	if lines[0] != rec {
-		t.Fatalf("kept line is not the intact record:\n got %q\nwant %q", lines[0], rec)
+}
+
+// #1806 cycle-4: post-claim early returns used to hand back the snapshot taken at
+// claim time, so a slow scan could report a value a newer scan had already
+// superseded. Every post-claim exit now reads the memo, which this pins on the
+// unresolvable-path exit: it must observe the newer verdict, not the older one it
+// started with.
+func TestUsageLimited_EarlyExitReportsCurrentMemo(t *testing.T) {
+	inst := NewInstanceWithTool("usage-limit-exit-order", t.TempDir(), "claude")
+	inst.ClaudeSessionID = "no-such-session-id"
+
+	// First call takes the claim and the path does not resolve.
+	_ = inst.usageLimited()
+
+	// Simulate a newer scan having published true while an older caller was still
+	// in flight, then force the older caller's path again by expiring the throttle.
+	inst.mu.Lock()
+	inst.usageLimitedCached = true
+	inst.lastUsageLimitScanAt = time.Now().Add(-2 * usageLimitScanInterval)
+	inst.mu.Unlock()
+
+	if got := inst.usageLimited(); !got {
+		t.Fatal("early exit returned a stale snapshot instead of the current memo")
 	}
 }
 
