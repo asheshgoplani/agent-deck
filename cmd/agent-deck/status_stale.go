@@ -105,7 +105,7 @@ func classifyStale(inst *session.Instance, now time.Time, threshold time.Duratio
 		return nil
 	}
 
-	activityAge := now.Sub(inst.DisplayLastActivityTime())
+	activityAge := now.Sub(staleActivityEvidence(inst))
 	if activityAge < threshold {
 		return nil
 	}
@@ -119,6 +119,26 @@ func classifyStale(inst *session.Instance, now time.Time, threshold time.Duratio
 		return []staleReason{reasonBashIdle}
 	}
 	return []staleReason{reasonLastActivity}
+}
+
+// staleActivityEvidence returns the most credible "last active" timestamp
+// available for classification. DisplayLastActivityTime() alone is not
+// enough here: it only counts LastObservedActivity, a process-local tmux
+// tracker that a short-lived `status --stale` CLI invocation never runs
+// long enough to populate, so it falls straight through to the persisted
+// LastAccessedAt/CreatedAt fallback. That fallback can be stale for a
+// worker that just finished real work but was never attached in the TUI.
+// UpdateStatus's cold-load path (called by runStatusStale before this runs)
+// reads the on-disk hook status sidecar regardless of process age, so
+// LastHookActivityTime is durable, real evidence of recent activity — take
+// whichever timestamp is more recent (never the reverse: this can only
+// shrink the reported age, never inflate it into a false negative).
+func staleActivityEvidence(inst *session.Instance) time.Time {
+	activity := inst.DisplayLastActivityTime()
+	if hookTime, ok := inst.LastHookActivityTime(); ok && hookTime.After(activity) {
+		return hookTime
+	}
+	return activity
 }
 
 // computeStaleCandidates scans instances (already status-refreshed by the
@@ -135,7 +155,7 @@ func computeStaleCandidates(instances []*session.Instance, now time.Time, thresh
 		for _, r := range reasons {
 			reasonStrs = append(reasonStrs, string(r))
 		}
-		lastActivity := inst.DisplayLastActivityTime()
+		lastActivity := staleActivityEvidence(inst)
 		c := staleCandidate{
 			ID:                  inst.ID,
 			Title:               inst.Title,

@@ -5005,6 +5005,28 @@ func (i *Instance) GetHookStatus() (string, bool) {
 	return i.hookStatus, fresh
 }
 
+// LastHookActivityTime returns the on-disk hook status file's UpdatedAt
+// timestamp for this instance, and true when a hook sample has been
+// recorded. Unlike LastObservedActivity's process-local tmux tracker, this
+// is populated even by a cold, short-lived CLI process: UpdateStatus's
+// "COLD LOAD" branch reads the sidecar hook file straight off disk before
+// this can be called. That makes it durable cross-process evidence of real
+// activity, which status --stale needs (issue #1704 dual-review finding):
+// a fresh CLI invocation never gets to observe LastObservedActivity, so
+// without this a session that just finished real work and has no
+// LastAccessedAt (never attached in the TUI) would misreport its
+// last-activity age against CreatedAt instead of the moment it actually
+// went idle/waiting.
+func (i *Instance) LastHookActivityTime() (time.Time, bool) {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	if i.hookStatus == "" || i.hookLastUpdate.IsZero() {
+		return time.Time{}, false
+	}
+	return i.hookLastUpdate, true
+}
+
 // GetAutoNameDescription returns the last captured Claude task description for
 // an AutoName session (empty if none captured yet). Thread-safe.
 func (i *Instance) GetAutoNameDescription() string {

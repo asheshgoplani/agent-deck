@@ -146,6 +146,50 @@ func TestClassifyStale_Heuristics(t *testing.T) {
 	}
 }
 
+// TestStaleActivityEvidence_PrefersDurableHookTimestamp is a regression
+// guard for the #1826 review's second P1 (chatgpt-codex-connector,
+// status_stale.go:110): DisplayLastActivityTime() alone only counts
+// process-local LastObservedActivity, which a short-lived `status --stale`
+// CLI invocation never runs long enough to populate, so it silently falls
+// back to the (possibly very old) CreatedAt/LastAccessedAt. A session that
+// just finished real work — proven by a fresh on-disk hook status sample —
+// must not be misclassified as stale against its creation time.
+func TestStaleActivityEvidence_PrefersDurableHookTimestamp(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	old := time.Now().Add(-72 * time.Hour)
+	recent := time.Now().Add(-30 * time.Second)
+
+	inst := &session.Instance{
+		ID:            "stale-evidence-test",
+		Status:        session.StatusWaiting,
+		Tool:          "claude",
+		CreatedAt:     old,
+		LastStartedAt: old, // started, so classifyStale takes the activity-age branch
+		// No LastAccessedAt: never attached in the TUI, so
+		// DisplayLastActivityTime() would otherwise fall all the way back
+		// to the 72h-old CreatedAt.
+	}
+
+	// A hook sample with no SessionID/Event is a no-op past setting the
+	// hookStatus/hookLastUpdate fields themselves (see UpdateHookStatus:
+	// empty SessionID + no session-anchor file on this fresh HOME resolves
+	// to an early return before any session-id binding logic runs).
+	inst.UpdateHookStatus(&session.HookStatus{Status: "waiting", UpdatedAt: recent})
+
+	got := staleActivityEvidence(inst)
+	if !got.Equal(recent) {
+		t.Fatalf("staleActivityEvidence() = %v, want the durable hook timestamp %v (got CreatedAt-derived instead)", got, recent)
+	}
+
+	// End-to-end: with a 1h threshold, this session must NOT be flagged
+	// stale, even though CreatedAt is 72h old — the hook proves it was
+	// active 30s ago.
+	if got := classifyStale(inst, time.Now(), time.Hour); len(got) != 0 {
+		t.Fatalf("classifyStale() = %v, want nil: durable hook activity 30s ago must not read as stale under a 1h threshold", got)
+	}
+}
+
 // TestStatusStale_CLI_CandidateViewAndMutatesNothing is the end-to-end gate:
 // builds the real binary, adds a never-started session (nothing else could
 // legitimately reach candidate status without tmux in a test sandbox), and
