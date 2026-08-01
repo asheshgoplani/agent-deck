@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -694,6 +697,282 @@ func TestHandleAddFallsBackToCwdWhenGlobalDefaultPathMissing(t *testing.T) {
 	if got := onlyAddedSessionPath(t, profile); got != cwd {
 		t.Fatalf("added path = %q, want cwd %q", got, cwd)
 	}
+}
+
+// =============================================================================
+// Tests for duplicate-registration reporting on `add`
+// =============================================================================
+
+// `add <path>` twice is allowed — two agents on one checkout is a real workflow
+// — but before this it happened silently, so a forgotten existing session showed
+// up as a mystery "proj (2)". duplicatePathNotice makes the auto-rename visible.
+// It is advisory only: the caller prints it to stderr and never changes the exit
+// code, per docs/design/2026-07-26-session-identity-and-group-purpose.md §C.
+func TestDuplicatePathNotice(t *testing.T) {
+	tests := []struct {
+		name       string
+		base       string
+		final      string
+		wantNotice bool
+	}{
+		{
+			name:       "no rename means no notice",
+			base:       "My Project",
+			final:      "My Project",
+			wantNotice: false,
+		},
+		{
+			name:       "renamed to (2) warns",
+			base:       "My Project",
+			final:      "My Project (2)",
+			wantNotice: true,
+		},
+		{
+			name:       "timestamp fallback rename also warns",
+			base:       "My Project",
+			final:      "My Project (1785600000)",
+			wantNotice: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := duplicatePathNotice(tt.base, tt.final, "/home/user/project")
+			if !tt.wantNotice {
+				if got != "" {
+					t.Fatalf("duplicatePathNotice(%q, %q) = %q, want empty (title unchanged)", tt.base, tt.final, got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatalf("duplicatePathNotice(%q, %q) = empty, want a warning", tt.base, tt.final)
+			}
+			// The notice has to name all three things the user needs to act:
+			// what already existed, where, and what this session became.
+			for _, want := range []string{tt.base, tt.final, "/home/user/project"} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("notice %q does not mention %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+// The rename notice must not reach stdout, because stdout carries the `--json`
+// payload and the success summary that scripts parse. Asserting on the streams
+// separately is the point: a notice on stdout would corrupt `add --json` output
+// even though the string itself is correct.
+func TestHandleAdd_DuplicatePath_WarnsOnStderrNotStdout(t *testing.T) {
+	_, cwd, profile := setupAddDefaultPathTest(t)
+
+	// First add takes the folder-name title unchallenged.
+	handleAdd(profile, []string{"--quiet", cwd})
+
+	stdout, stderr := captureAddOutput(t, func() {
+		// No --quiet: the notice is suppressed under --quiet/--json.
+		handleAdd(profile, []string{cwd})
+	})
+
+	base := filepath.Base(cwd)
+	if !strings.Contains(stderr, "already exists") {
+		t.Fatalf("stderr = %q, want a duplicate-path warning", stderr)
+	}
+	if !strings.Contains(stderr, base) {
+		t.Fatalf("stderr = %q, want it to name the existing title %q", stderr, base)
+	}
+	if strings.Contains(stdout, "already exists") {
+		t.Fatalf("the warning leaked onto stdout, which carries --json/script output:\n%s", stdout)
+	}
+
+	// Advisory, not fatal: the second session is still registered.
+	instances := loadAddedSessions(t, profile)
+	if len(instances) != 2 {
+		t.Fatalf("registered %d sessions, want 2 (the warning must never fail the create)", len(instances))
+	}
+	titles := []string{instances[0].Title, instances[1].Title}
+	if titles[0] == titles[1] {
+		t.Fatalf("both sessions got title %q; the auto-rename did not happen", titles[0])
+	}
+}
+
+// --json and --quiet must silence the advisory entirely so machine consumers
+// never see it. --json is the load-bearing case: stderr noise is tolerable, but
+// this asserts the documented suppression actually happens.
+func TestHandleAdd_DuplicatePath_SuppressedUnderJSONAndQuiet(t *testing.T) {
+	for _, flag := range []string{"--json", "--quiet"} {
+		t.Run(flag, func(t *testing.T) {
+			_, cwd, profile := setupAddDefaultPathTest(t)
+			handleAdd(profile, []string{"--quiet", cwd})
+
+			stdout, stderr := captureAddOutput(t, func() {
+				handleAdd(profile, []string{flag, cwd})
+			})
+
+			if strings.Contains(stderr, "already exists") {
+				t.Fatalf("%s should suppress the advisory, got stderr:\n%s", flag, stderr)
+			}
+			if strings.Contains(stdout, "already exists") {
+				t.Fatalf("%s should suppress the advisory, got stdout:\n%s", flag, stdout)
+			}
+		})
+	}
+}
+
+// The exact-duplicate case (same title AND same path) registers nothing, so it
+// is an error rather than an advisory: ALREADY_EXISTS with a non-zero exit,
+// matching `agent-deck launch` (launch_cmd.go) and the rest of the CLI. It used
+// to print to stdout and exit 0, which made "nothing happened" indistinguishable
+// from success for any script checking the exit code.
+//
+// Runs as a subprocess because the code path calls os.Exit.
+func TestHandleAdd_ExactDuplicate_ErrorsWithNonZeroExit(t *testing.T) {
+	tests := []struct {
+		name      string
+		jsonMode  bool
+		wantInOut []string
+	}{
+		{
+			name:      "human output",
+			jsonMode:  false,
+			wantInOut: []string{"Error:", "session already exists", "dup-target"},
+		},
+		{
+			name:      "json output",
+			jsonMode:  true,
+			wantInOut: []string{`"code": "ALREADY_EXISTS"`, `"success": false`, "session already exists"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mode := "exact-duplicate"
+			if tt.jsonMode {
+				mode = "exact-duplicate-json"
+			}
+			out, exitCode := runAddHelperProcess(t, mode)
+
+			if exitCode == 0 {
+				t.Fatalf("exit code = 0, want non-zero — a refused registration must not look like success:\n%s", out)
+			}
+			if exitCode != 1 {
+				t.Fatalf("exit code = %d, want 1 (matching launch_cmd.go's ALREADY_EXISTS exit):\n%s", exitCode, out)
+			}
+			for _, want := range tt.wantInOut {
+				if !strings.Contains(out, want) {
+					t.Fatalf("output does not contain %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+// runAddHelperProcess re-execs the test binary into TestAddHelperProcess and
+// returns its combined output plus exit code. Needed because the exact-duplicate
+// path ends in os.Exit, which would kill the test binary itself.
+func runAddHelperProcess(t *testing.T, mode string) (output string, exitCode int) {
+	t.Helper()
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestAddHelperProcess", "--", mode)
+	cmd.Env = append(os.Environ(), "AGENT_DECK_ADD_HELPER_PROCESS=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return string(out), 0
+	}
+	exitErr := &exec.ExitError{}
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("helper process failed unexpectedly: %v\n%s", err, out)
+	}
+	return string(out), exitErr.ExitCode()
+}
+
+func TestAddHelperProcess(t *testing.T) {
+	if os.Getenv("AGENT_DECK_ADD_HELPER_PROCESS") != "1" {
+		return
+	}
+	args := os.Args
+	for len(args) > 0 && args[0] != "--" {
+		args = args[1:]
+	}
+	if len(args) > 0 {
+		args = args[1:]
+	}
+	if len(args) != 1 {
+		os.Exit(2)
+	}
+
+	_, cwd, profile := setupAddDefaultPathTest(t)
+
+	switch args[0] {
+	case "exact-duplicate":
+		handleAdd(profile, []string{"--title", "dup-target", "--quiet", cwd})
+		handleAdd(profile, []string{"--title", "dup-target", cwd})
+	case "exact-duplicate-json":
+		handleAdd(profile, []string{"--title", "dup-target", "--quiet", cwd})
+		handleAdd(profile, []string{"--title", "dup-target", "--json", cwd})
+	default:
+		os.Exit(2)
+	}
+	// Reaching here means the duplicate was accepted instead of refused.
+	os.Exit(0)
+}
+
+// captureAddOutput runs fn with os.Stdout and os.Stderr redirected to pipes and
+// returns what each received, so a test can tell the two streams apart.
+func captureAddOutput(t *testing.T, fn func()) (stdout, stderr string) {
+	t.Helper()
+
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stdout: %v", err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stderr: %v", err)
+	}
+
+	origStdout, origStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outW, errW
+	restore := func() { os.Stdout, os.Stderr = origStdout, origStderr }
+	t.Cleanup(restore)
+
+	// Drain concurrently: a pipe buffer is finite and `add` prints a multi-line
+	// summary, so reading only after fn returns can deadlock.
+	var outBuf, errBuf bytes.Buffer
+	done := make(chan struct{}, 2)
+	go func() { _, _ = outBuf.ReadFrom(outR); done <- struct{}{} }()
+	go func() { _, _ = errBuf.ReadFrom(errR); done <- struct{}{} }()
+
+	fn()
+
+	restore()
+	if err := outW.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+	if err := errW.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	<-done
+	<-done
+
+	return outBuf.String(), errBuf.String()
+}
+
+// loadAddedSessions returns every session registered under the profile. Unlike
+// onlyAddedSessionPath it does not assert a count, since the duplicate tests
+// expect more than one.
+func loadAddedSessions(t *testing.T, profile string) []*session.Instance {
+	t.Helper()
+
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile: %v", err)
+	}
+	defer storage.Close()
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("LoadWithGroups: %v", err)
+	}
+	return instances
 }
 
 func setupAddDefaultPathTest(t *testing.T) (home, cwd, profile string) {

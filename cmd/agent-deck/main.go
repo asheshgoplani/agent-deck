@@ -1213,6 +1213,25 @@ func generateUniqueTitle(instances []*session.Instance, baseTitle, path string) 
 	return fmt.Sprintf("%s (%d)", baseTitle, time.Now().Unix())
 }
 
+// duplicatePathNotice returns the advisory warning for an auto-renamed session,
+// or "" when generateUniqueTitle left the title alone (the non-duplicate case).
+//
+// Registering a second session at a path the user already has one at is allowed
+// — two agents on one checkout is a real workflow — but it should not be
+// invisible, because the usual cause is a forgotten existing session. Advisory
+// per docs/design/2026-07-26-session-identity-and-group-purpose.md §C: goes to
+// stderr, never changes the exit code, and never fails the create.
+func duplicatePathNotice(baseTitle, finalTitle, path string) string {
+	if finalTitle == baseTitle {
+		return ""
+	}
+	return fmt.Sprintf(
+		"Warning: a session titled %q already exists at %s; registering this one as %q instead. "+
+			"Use -t to name it yourself, or 'agent-deck list' to find the existing session.",
+		baseTitle, path, finalTitle,
+	)
+}
+
 // isWorktreeAlreadyExistsError detects whether git worktree creation failed because
 // the destination path already exists. This preserves friendly UX while avoiding
 // TOCTOU race windows from separate filesystem pre-checks.
@@ -1698,6 +1717,12 @@ func handleAdd(profile string, args []string) {
 		path = worktreePath
 	}
 
+	// Constructed here rather than after the instance is built because the
+	// duplicate-registration check below reports through it, and that report
+	// has to honour --json/--quiet like every other CLI diagnostic.
+	quietMode := *quiet || *quietShort
+	out := NewCLIOutput(*jsonOutput, quietMode)
+
 	// Default title to folder name
 	if sessionTitle == "" {
 		sessionTitle = filepath.Base(path)
@@ -1711,13 +1736,27 @@ func handleAdd(profile string, args []string) {
 		// Quick mode: use auto-generated adjective-noun name
 		sessionTitle = session.GenerateUniqueSessionName(instances, sessionGroup)
 	} else if !userProvidedTitle {
-		// User didn't provide title - auto-generate unique title for this path
+		// User didn't provide title - auto-generate unique title for this path.
+		// The rename is advisory-warned, not refused: `add <path>` twice is a
+		// legitimate way to run two agents on one checkout, but silently ending
+		// up with "proj" and "proj (2)" hides the fact that it happened.
+		baseTitle := sessionTitle
 		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
+		if notice := duplicatePathNotice(baseTitle, sessionTitle, path); notice != "" && !*jsonOutput && !quietMode {
+			fmt.Fprintln(os.Stderr, notice)
+		}
 	} else {
-		// User provided explicit title - check for exact duplicate (same title AND path)
+		// User provided explicit title - check for exact duplicate (same title AND path).
+		// Same title AND same path means the session the user asked for already
+		// exists, so nothing gets registered. Reported as an error with a
+		// non-zero exit, matching `agent-deck launch` (launch_cmd.go) and the
+		// ALREADY_EXISTS convention the rest of the CLI uses.
 		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
-			fmt.Printf("Session already exists with same title and path: %s (%s)\n", existingInst.Title, existingInst.ID)
-			os.Exit(0)
+			out.Error(
+				fmt.Sprintf("session already exists: %s (%s)", existingInst.Title, existingInst.ID),
+				ErrCodeAlreadyExists,
+			)
+			os.Exit(1)
 		}
 	}
 
@@ -1922,9 +1961,6 @@ func handleAdd(profile string, args []string) {
 			os.Exit(1)
 		}
 	}
-
-	quietMode := *quiet || *quietShort
-	out := NewCLIOutput(*jsonOutput, quietMode)
 
 	// --attach: create → start → attach, so `add --attach` "instantly opens"
 	// the new session in one step. Refused loudly (never silently) under
