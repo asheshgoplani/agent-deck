@@ -120,16 +120,18 @@ func resolveStartWorkDir(workDir string) (string, error) {
 	// reachable from POST /api/sessions (CreateSessionRequest.ProjectPath in
 	// internal/web/handlers_sessions.go -> WebMutator.CreateSession ->
 	// tmux.NewSession) — not local-CLI-only as an earlier pass through this
-	// file claimed. Accepted, not a false positive: that endpoint requires
-	// WebMutations enabled (off by default), binds loopback-only unless the
-	// operator opts into a wider bind with --insecure-bind or a configured
-	// --token (internal/web/bind.go CheckBindSecurity; a token, when set, is
-	// then required on every request, but an empty token is NOT itself a
-	// requirement — it just means "authorize everything", which loopback-only
-	// binding is what actually contains). Either way, this endpoint already
-	// authorizes running an arbitrary agent process at the supplied path, a
-	// strictly greater capability than this existence-only Stat. There is
-	// also no "safe base directory" to contain dir within the
+	// file claimed. Accepted, not a false positive: WebMutations defaults to
+	// true (session.GetWebMutationsEnabled), so it is NOT what contains this
+	// endpoint, and an empty/unset token authorizes every request too (see
+	// authorizeRequest), so token presence isn't a requirement either. The
+	// actual containment is `agent-deck web`'s default bind: 127.0.0.1-only,
+	// and CheckBindSecurity (internal/web/bind.go) refuses to start on a
+	// non-loopback address unless the operator explicitly passes
+	// --insecure-bind or configures a --token for the wider bind. Whenever
+	// this endpoint IS reachable, it already authorizes running an arbitrary
+	// agent process at the supplied path, a strictly greater capability than
+	// this existence-only Stat. There is also no "safe base directory" to
+	// contain dir within the
 	// way #1771's fix does for skills_catalog.go's manifest-derived targets —
 	// a session's working directory is meant to be able to name any directory
 	// on disk, so a containment check would just be wrong here. This Stat
@@ -208,11 +210,12 @@ func classifyPaneCwd(requested, panePath string) paneCwdVerdict {
 //
 // CodeQL go/path-injection: a is the already-validated requested workDir (see
 // resolveStartWorkDir's comment above — reachable from POST /api/sessions,
-// but gated by WebMutations + loopback-only-by-default bind, and strictly
-// weaker than that endpoint's own authorized capability; accepted, not
-// false-positive); b is panePath, tmux's own report of #{pane_current_path}
-// for a pane this process just created. Both Stat calls only check
-// existence/identity, never read or write file contents.
+// but contained by the web server's default loopback-only bind rather than
+// by WebMutations or a token, and strictly weaker than that endpoint's own
+// authorized capability; accepted, not false-positive); b is panePath,
+// tmux's own report of #{pane_current_path} for a pane this process just
+// created. Both Stat calls only check existence/identity, never read or
+// write file contents.
 func sameDirectory(a, b string) bool {
 	if a == b {
 		return true
@@ -235,7 +238,7 @@ var panePathProbe = func(s *Session) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Strip only the trailing newline tmux's own output framing adds — not
+	// Strip only newline/tab/control framing from tmux's own output — not
 	// spaces, which may be a real part of the reported directory name. See
 	// classifyPaneCwd, which re-trims with the same restricted cutset.
 	return strings.Trim(string(out), "\n\r\t\v\f"), nil
