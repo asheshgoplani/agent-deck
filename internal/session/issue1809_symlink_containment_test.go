@@ -668,12 +668,22 @@ func TestTargetExists_DanglingPoolLinkCountsAbsent(t *testing.T) {
 	defer p.Close()
 
 	targetRel := buildProjectSkillTargetPath(projectClaudeSkillsDir, "lint")
-	exists, err := p.targetExists(targetRel)
+	exists, err := p.targetExists(targetRel, filepath.Join(poolRoot, "gone"))
 	if err != nil {
 		t.Fatalf("targetExists failed: %v", err)
 	}
 	if exists {
-		t.Fatalf("dangling pool link should count as absent")
+		t.Fatalf("dangling link to this attachment's own source should count as absent")
+	}
+
+	// A dangling link into an UNRELATED pool entry is a foreign replacement:
+	// present, so the loadout layer reports it instead of overwriting it.
+	exists, err = p.targetExists(targetRel, filepath.Join(poolRoot, "lint"))
+	if err != nil {
+		t.Fatalf("targetExists failed: %v", err)
+	}
+	if !exists {
+		t.Fatalf("dangling link to an unrelated pool entry must count as present")
 	}
 
 	// A live pool link counts as present.
@@ -683,7 +693,7 @@ func TestTargetExists_DanglingPoolLinkCountsAbsent(t *testing.T) {
 	if err := os.Symlink(filepath.Join(poolRoot, "lint"), filepath.Join(skillsDir, "lint")); err != nil {
 		t.Fatalf("symlink live pool entry: %v", err)
 	}
-	exists, err = p.targetExists(targetRel)
+	exists, err = p.targetExists(targetRel, filepath.Join(poolRoot, "lint"))
 	if err != nil {
 		t.Fatalf("targetExists failed: %v", err)
 	}
@@ -713,7 +723,7 @@ func TestTargetExists_ForeignResolvableLinkCountsPresent(t *testing.T) {
 	}
 	defer p.Close()
 
-	exists, err := p.targetExists(buildProjectSkillTargetPath(projectClaudeSkillsDir, "lint"))
+	exists, err := p.targetExists(buildProjectSkillTargetPath(projectClaudeSkillsDir, "lint"), "")
 	if err != nil {
 		t.Fatalf("targetExists failed: %v", err)
 	}
@@ -757,5 +767,82 @@ func TestMaterialize_RefusesPoolLinkPointingOutsideRegisteredRoots(t *testing.T)
 	}
 	if _, err := os.Stat(filepath.Join(projectPath, ".agents", "skills", "lint")); !os.IsNotExist(err) {
 		t.Fatalf("nothing should have been materialized, stat err = %v", err)
+	}
+}
+
+// TestCopyIntoRoot_RefusesToTruncateSquattedDestination proves the copy path
+// creates its leaves exclusively: a name squatted at the destination (in the
+// real attack, a hard link to a victim file, which os.Root cannot constrain)
+// is refused rather than truncated.
+func TestCopyIntoRoot_RefusesToTruncateSquattedDestination(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "SKILL.md"), []byte("new"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	victim := filepath.Join(dstDir, "SKILL.md")
+	if err := os.WriteFile(victim, []byte("victim"), 0o600); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+
+	srcRoot, err := os.OpenRoot(srcDir)
+	if err != nil {
+		t.Fatalf("open source root: %v", err)
+	}
+	defer srcRoot.Close()
+	dstRoot, err := os.OpenRoot(dstDir)
+	if err != nil {
+		t.Fatalf("open dest root: %v", err)
+	}
+	defer dstRoot.Close()
+
+	if err := copyFileIntoRoot(dstRoot, srcRoot, "SKILL.md", "SKILL.md"); err == nil {
+		t.Fatalf("expected refusal to write over an existing destination entry")
+	}
+	content, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("victim disappeared: %v", err)
+	}
+	if string(content) != "victim" {
+		t.Fatalf("victim was truncated/overwritten: %q", string(content))
+	}
+}
+
+// TestRemovePinned_RemovesTreeWithoutFollowingLinks proves the replacement for
+// Root.RemoveAll deletes a real managed subtree, unlinks symlinks instead of
+// following them, and leaves link destinations untouched.
+func TestRemovePinned_RemovesTreeWithoutFollowingLinks(t *testing.T) {
+	projectPath := t.TempDir()
+	outside := t.TempDir()
+	keep := filepath.Join(outside, "keep.txt")
+	if err := os.WriteFile(keep, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("seed outside file: %v", err)
+	}
+
+	entry := filepath.Join(projectPath, ".claude", "skills", "lint")
+	if err := os.MkdirAll(filepath.Join(entry, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir entry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "nested", "SKILL.md"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed skill file: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(entry, "linked")); err != nil {
+		t.Fatalf("symlink into entry: %v", err)
+	}
+
+	p, err := openProjectRoot(projectPath)
+	if err != nil {
+		t.Fatalf("openProjectRoot: %v", err)
+	}
+	defer p.Close()
+
+	if err := p.removeManagedTarget(buildProjectSkillTargetPath(projectClaudeSkillsDir, "lint")); err != nil {
+		t.Fatalf("removeManagedTarget failed: %v", err)
+	}
+	if _, err := os.Lstat(entry); !os.IsNotExist(err) {
+		t.Fatalf("managed entry should be gone, stat err = %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("removal followed a symlink out of the project: %v", err)
 	}
 }

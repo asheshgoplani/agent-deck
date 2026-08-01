@@ -17,6 +17,11 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 )
 
+// maxSourceSymlinkHops bounds how many symlink levels a materialization source
+// may traverse, mirroring the kernel's own ELOOP budget rather than a tighter
+// limit that would reject chains the OS (and skill discovery) accept.
+const maxSourceSymlinkHops = 32
+
 const (
 	skillsDirName            = "skills"
 	skillSourcesFileName     = "sources.toml"
@@ -1053,6 +1058,50 @@ func (p *projectRoot) openPinnedDir(rel string, create bool) (*os.Root, error) {
 	return current, nil
 }
 
+// removePinned deletes name inside the PINNED parent without ever crossing a
+// filesystem boundary. os.Root.RemoveAll happily descends through mount points
+// (root confinement stops traversal escapes, not mounts), so a mount planted
+// at or below a managed entry could be recursively deleted. This walks the
+// tree itself: symlinks and non-directories are unlinked (never followed), and
+// every directory it descends into is re-pinned through openPinnedChildDir,
+// which enforces both non-symlink identity and same-filesystem residency.
+func (p *projectRoot) removePinned(parent *os.Root, name string) error {
+	info, err := parent.Lstat(name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return parent.Remove(name)
+	}
+
+	child, err := p.openPinnedChildDir(parent, name, false)
+	if err != nil {
+		return err
+	}
+	dir, err := child.Open(".")
+	if err != nil {
+		_ = child.Close()
+		return err
+	}
+	entries, err := dir.ReadDir(-1)
+	_ = dir.Close()
+	if err != nil {
+		_ = child.Close()
+		return err
+	}
+	for _, entry := range entries {
+		if err := p.removePinned(child, entry.Name()); err != nil {
+			_ = child.Close()
+			return err
+		}
+	}
+	_ = child.Close()
+	return parent.Remove(name)
+}
+
 // openTargetParent validates a managed target and returns the PINNED directory
 // that contains it plus the final entry name. Every managed-target operation
 // (exists checks, RemoveAll, Symlink, copy) runs through this pair, so nothing
@@ -1167,7 +1216,7 @@ func (p *projectRoot) validateManagedTarget(targetRel string) (string, error) {
 // while a pool symlink whose destination legitimately lives outside the
 // project is "present" (Root refuses to traverse the escape, which is itself
 // proof the entry exists as an escaping link).
-func (p *projectRoot) targetExists(targetRel string) (bool, error) {
+func (p *projectRoot) targetExists(targetRel, expectedSource string) (bool, error) {
 	parent, name, err := p.openTargetParent(targetRel, false)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1210,6 +1259,33 @@ func (p *projectRoot) targetExists(targetRel string) (bool, error) {
 		dest = filepath.Join(p.physicalDirOf(targetRel), dest)
 	}
 
+	// Only THIS attachment's own link may be treated as healable. A link is
+	// ours when it points at the recorded source, or when it points back into
+	// the project's own managed skills dirs (the "lint -> missing-target"
+	// leftover a previous run wrote). Anything else — including a link into an
+	// UNRELATED entry under a registered pool root — is a foreign replacement
+	// and counts as PRESENT, so the loadout layer reports it instead of
+	// silently overwriting it.
+	dest = filepath.Clean(dest)
+	ours := false
+	if expectedSource != "" {
+		if resolvedExpected, eerr := resolveSkillSourcePath(expectedSource); eerr == nil && resolvedExpected == dest {
+			ours = true
+		}
+	}
+	if !ours {
+		for _, dir := range knownProjectSkillsDirs() {
+			base := filepath.Clean(filepath.Join(p.path, filepath.FromSlash(dir)))
+			if dest != base && isContainedIn(base, dest) {
+				ours = true
+				break
+			}
+		}
+	}
+	if !ours {
+		return true, nil
+	}
+
 	// The link destination is attacker-influenced, so NO filesystem call may
 	// touch it as a bare path (CodeQL go/path-injection). It is routed through
 	// the same containment gate every other source takes: openContainedSource
@@ -1217,10 +1293,6 @@ func (p *projectRoot) targetExists(targetRel string) (bool, error) {
 	// managed project skills dir, follows further hops under that same rule
 	// with a capped hop count, and hands back a Root anchored at the validated
 	// root — the existence check is then descriptor-relative inside it.
-	//
-	// A destination that resolves OUTSIDE every registered root is not probed
-	// at all: it is a foreign replacement, reported as PRESENT so the loadout
-	// layer refuses it rather than silently overwriting it.
 	srcRoot, srcRel, _, err := p.openContainedSource(dest)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1290,7 +1362,9 @@ func (p *projectRoot) openContainedSource(sourcePath string) (*os.Root, string, 
 		return nil, "", "", err
 	}
 
-	for hop := 0; hop < 8; hop++ {
+	// The budget counts LINKS FOLLOWED; the terminal path is always validated
+	// because each iteration returns as soon as the entry is not a symlink.
+	for hop := 0; hop <= maxSourceSymlinkHops; hop++ {
 		root, rel, abs, err := p.openSourceRootFor(resolved)
 		if err != nil {
 			return nil, "", "", err
@@ -1317,7 +1391,7 @@ func (p *projectRoot) openContainedSource(sourcePath string) (*os.Root, string, 
 		}
 		resolved = filepath.Clean(dest)
 	}
-	return nil, "", "", fmt.Errorf("refusing to materialize from source with too many symlink levels: %s", resolved)
+	return nil, "", "", fmt.Errorf("refusing to materialize from source with more than %d symlink levels: %s", maxSourceSymlinkHops, resolved)
 }
 
 // openSourceRootFor picks the root a resolved source belongs to. Project-local
@@ -1402,7 +1476,11 @@ func copyFileIntoRoot(dstRoot, srcRoot *os.Root, srcRel, dstRel string) error {
 		}
 	}
 
-	dstFile, err := dstRoot.OpenFile(dstRel, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	// O_EXCL, never O_TRUNC: the destination was just removed, so a name that
+	// exists here appeared in a race — possibly a hard link to a victim file,
+	// which os.Root cannot constrain (root confinement is about traversal, not
+	// about which inode a link points to). Refuse instead of truncating it.
+	dstFile, err := dstRoot.OpenFile(dstRel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode())
 	if err != nil {
 		return err
 	}
@@ -1492,7 +1570,7 @@ func (p *projectRoot) materialize(sourcePath, targetRel string, copyOnly bool) (
 	}
 	defer parent.Close()
 
-	if err := parent.RemoveAll(name); err != nil {
+	if err := p.removePinned(parent, name); err != nil {
 		return "", err
 	}
 
@@ -1536,7 +1614,7 @@ func (p *projectRoot) removeManagedTarget(targetRel string) error {
 		return fmt.Errorf("refusing to remove path outside managed project skills dirs: %w", err)
 	}
 	defer parent.Close()
-	return parent.RemoveAll(name)
+	return p.removePinned(parent, name)
 }
 
 // materializeSkill / materializeSkillCopyOnly / safeRemoveManagedTarget are the
@@ -1668,7 +1746,7 @@ func (p *projectRoot) resolveMaterializationSource(sourcePath, fallbackRel strin
 		}
 	}
 	if strings.TrimSpace(fallbackRel) != "" {
-		exists, err := p.targetExists(fallbackRel)
+		exists, err := p.targetExists(fallbackRel, sourcePath)
 		if err != nil {
 			return "", false, err
 		}
@@ -1764,7 +1842,7 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 			existing.Mode = mode
 			existing.AttachedAt = time.Now().Format(time.RFC3339)
 		} else {
-			if exists, err := p.targetExists(currentTargetRelPath); err != nil {
+			if exists, err := p.targetExists(currentTargetRelPath, candidate.SourcePath); err != nil {
 				return nil, err
 			} else if exists {
 				return nil, fmt.Errorf("%w: %s", ErrSkillAlreadyAttached, candidate.Name)
@@ -2060,7 +2138,7 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 					current.Mode = mode
 					current.AttachedAt = time.Now().Format(time.RFC3339)
 				}
-			} else if exists, err := p.targetExists(desiredTargetRelPath); err != nil {
+			} else if exists, err := p.targetExists(desiredTargetRelPath, candidate.SourcePath); err != nil {
 				return err
 			} else if !exists {
 				sourceToUse, _, err := p.resolveMaterializationSource(candidate.SourcePath, "")
