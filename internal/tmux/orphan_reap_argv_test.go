@@ -10,37 +10,28 @@ func nulArgv(fields ...string) string {
 	return strings.Join(fields, "\x00") + "\x00"
 }
 
-// TestIsReapableOneShotArgv pins WHICH tmux clients the orphan sweep may kill.
+// TestIsKnownCadenceArgv pins the SCOPE this sweep targets: the one-shot
+// poll/query/status commands agent-deck fires on a cadence. It is
+// deliberately NOT a safety test — isKnownCadenceArgv is an allowlist that
+// only ever narrows the sweep, never a denylist that could be trusted to keep
+// something out. See TestIsLiveTmuxClientOrServer_ChainedAliasRepro for the
+// actual safety guarantee and why it cannot live in this function.
 //
-// Matching on comm alone (a tmux client) plus SessionPrefix (argv mentions an
-// agent-deck session) is too broad in two directions, both of which SIGKILL
-// something the user cares about:
-//
-//   - An INTERACTIVE client. A user who runs `tmux attach-session -t
-//     agentdeck_foo` by hand gets a client whose parent is their shell, not
-//     agent-deck — and isControlClientOrphan treats any non-agent-deck parent
-//     as an orphan even while that parent is alive. Verified on a live host:
-//     such a client is selected for the kill. The session survives on the
-//     server, but the user is detached mid-interaction. Control-mode clients
-//     are already covered by reapStaleControlClients, which filters on
-//     client_control_mode and does not have this blind spot, so attach clients
-//     of either kind have no business in this sweep.
-//
-//   - A NASCENT SERVER. tmux renames the client to "tmux: client" before it
-//     forks the server (client.c calls proc_start("client") ahead of
-//     client_connect), and the forked server inherits that comm until its own
-//     proc_start("server") runs after daemon(). In that window a starting
-//     server presents comm "tmux: client" AND the creating client's argv
-//     (servers keep it — confirmed live: a running server shows
-//     `new-session -d -s agentdeck_…`) AND a parent that is either tmux or
-//     init. All three kill conditions hold. The window is sub-millisecond, but
-//     agent-deck starts one server per session during restore, concurrently
-//     with the first Connect that fires the sweep.
-//
-// Constraining the sweep to the one-shot cadence verbs it documents as its
-// target set closes both: neither attach-session nor new-session is a cadence
-// query, so neither is reapable regardless of comm or parentage.
-func TestIsReapableOneShotArgv(t *testing.T) {
+// History: this file used to pin isReapableOneShotArgv, which paired this
+// same allowlist with a denylist (neverReapVerbs) matching only the literal
+// strings "attach-session" / "new-session" and trusted that pairing as the
+// safety boundary. It was wrong to: tmux resolves command names by
+// unambiguous prefix, so "attach" (a real tmux alias), "attac", "att", "at",
+// even bare "a" all invoke attach-session unmodified (verified live on tmux
+// 3.7b — `tmux -C a -t sess` attaches). A chained
+// `tmux attach -t agentdeck_x \; set-option status on` cleared the old
+// denylist (wrong spelling) while "set-option" satisfied this allowlist, so
+// isReapableOneShotArgv ruled the whole line reapable with a live client
+// behind it. isKnownCadenceArgv keeps only the allowlist half — a miss here
+// means "skip", a hit means only "maybe, ask the server" — and
+// isLiveTmuxClientOrServer supplies the actual guarantee by asking the tmux
+// server itself, which cannot be abbreviated around.
+func TestIsKnownCadenceArgv(t *testing.T) {
 	tests := []struct {
 		name string
 		argv []string
@@ -58,19 +49,15 @@ func TestIsReapableOneShotArgv(t *testing.T) {
 		{"has-session", []string{"tmux", "has-session", "-t", "agentdeck_x"}, true},
 		{"kill-session mutation", []string{"tmux", "kill-session", "-t", "agentdeck_x"}, true},
 
-		// Interactive and control-mode attaches: never this sweep's business.
-		{"interactive attach", []string{"tmux", "attach-session", "-t", "agentdeck_dev_d83a1787"}, false},
-		{"control-mode attach", []string{"tmux", "-C", "attach-session", "-t", "agentdeck_npm_a0e435da"}, false},
-
-		// A server being born carries the creating client's argv.
-		{"new-session", []string{"tmux", "-L", "ad-sock", "new-session", "-d", "-s", "agentdeck_x", "-c", "/home/u"}, false},
-
-		// A chained command that both attaches and sets an option must lose:
-		// the deny side is fail-safe, the allow side is an optimisation.
-		{"attach chained with set-option", []string{"tmux", "attach-session", "-t", "agentdeck_x", ";", "set-option", "status", "on"}, false},
+		// A cadence verb chained after an attach still matches the allowlist —
+		// that is expected and fine, because this function no longer decides
+		// whether the process is safe to kill. isLiveTmuxClientOrServer does.
+		{"attach chained with set-option", []string{"tmux", "attach-session", "-t", "agentdeck_x", ";", "set-option", "status", "on"}, true},
+		{"alias attach chained with set-option", []string{"tmux", "attach", "-t", "agentdeck_x", ";", "set-option", "status", "on"}, true},
 
 		// Verbs outside the cadence set are not reapable even though they are
 		// legitimate tmux commands against an agent-deck session.
+		{"bare attach-session, no cadence verb", []string{"tmux", "attach-session", "-t", "agentdeck_dev_d83a1787"}, false},
 		{"pipe-pane", []string{"tmux", "pipe-pane", "-t", "agentdeck_x", "cat > /tmp/log"}, false},
 		{"send-keys", []string{"tmux", "send-keys", "-t", "agentdeck_x", "hello", "Enter"}, false},
 		{"no verb at all", []string{"tmux"}, false},
@@ -79,9 +66,9 @@ func TestIsReapableOneShotArgv(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isReapableOneShotArgv(nulArgv(tc.argv...))
+			got := isKnownCadenceArgv(nulArgv(tc.argv...))
 			if got != tc.want {
-				t.Errorf("isReapableOneShotArgv(%q) = %v, want %v", tc.argv, got, tc.want)
+				t.Errorf("isKnownCadenceArgv(%q) = %v, want %v", tc.argv, got, tc.want)
 			}
 		})
 	}
