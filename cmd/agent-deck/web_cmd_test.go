@@ -134,14 +134,14 @@ func TestBuildWebServer_WiresMutator(t *testing.T) {
 	}
 }
 
-// TestBuildWebServer_WiresMCPManager is a regression guard for the headless
-// web MCP endpoints. The server registers /api/mcps unconditionally, but if
-// buildWebServer does not install the production MCP manager, the endpoint
-// returns 503 MCP_MANAGER_UNAVAILABLE at runtime.
-func TestBuildWebServer_WiresMCPManager(t *testing.T) {
+// TestBuildWebServer_WiresMCPManagerWhenAuthenticated is a regression guard
+// for authenticated headless web MCP access. The server registers /api/mcps
+// unconditionally, but the production manager must only be available when a
+// bearer token protects the endpoint.
+func TestBuildWebServer_WiresMCPManagerWhenAuthenticated(t *testing.T) {
 	withTempHomeAndConfig(t, "")
 
-	server, err := buildWebServer("test-profile", []string{"--listen", "127.0.0.1:0"}, nil, noopMutator{})
+	server, err := buildWebServer("test-profile", []string{"--listen", "127.0.0.1:0", "--token", "secret"}, nil, noopMutator{})
 	if err != nil {
 		t.Fatalf("buildWebServer: %v", err)
 	}

@@ -133,7 +133,9 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 	if mutator != nil {
 		server.SetMutator(mutator)
 	}
-	server.SetMCPManager(web.NewDefaultMCPManager())
+	if resolvedToken != "" {
+		server.SetMCPManager(web.NewDefaultMCPManager())
+	}
 
 	return server, nil
 }

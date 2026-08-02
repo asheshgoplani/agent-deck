@@ -30,6 +30,9 @@ func TestBuildWebServer_AllowsNonLoopbackWithToken(t *testing.T) {
 	if srv == nil {
 		t.Fatal("expected a server")
 	}
+	if !srv.HasMCPManager() {
+		t.Fatal("authenticated server should wire the MCP manager")
+	}
 }
 
 func TestBuildWebServer_AllowsNonLoopbackWithTokenFile(t *testing.T) {
@@ -44,16 +47,19 @@ func TestBuildWebServer_AllowsNonLoopbackWithTokenFile(t *testing.T) {
 	if srv == nil {
 		t.Fatal("expected a server")
 	}
+	if !srv.HasMCPManager() {
+		t.Fatal("token-file authenticated server should wire the MCP manager")
+	}
 
-	validReq := httptest.NewRequest(http.MethodGet, "/api/command-center/status", nil)
+	validReq := httptest.NewRequest(http.MethodGet, "/api/mcps", nil)
 	validReq.Header.Set("Authorization", "Bearer secret-from-file")
 	validResponse := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(validResponse, validReq)
-	if validResponse.Code == http.StatusUnauthorized {
-		t.Fatalf("token read from --token-file should authorize requests, got %d", validResponse.Code)
+	if validResponse.Code != http.StatusOK {
+		t.Fatalf("token read from --token-file should expose the authenticated MCP route with 200, got %d", validResponse.Code)
 	}
 
-	invalidReq := httptest.NewRequest(http.MethodGet, "/api/command-center/status", nil)
+	invalidReq := httptest.NewRequest(http.MethodGet, "/api/mcps", nil)
 	invalidReq.Header.Set("Authorization", "Bearer wrong-token")
 	invalidResponse := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(invalidResponse, invalidReq)
@@ -92,6 +98,7 @@ func TestBuildWebServer_AllowsNonLoopbackWithInsecureBind(t *testing.T) {
 	if srv == nil {
 		t.Fatal("expected a server")
 	}
+	assertMCPManagerUnavailable(t, srv)
 }
 
 func TestBuildWebServer_DefaultLoopbackUnchanged(t *testing.T) {
@@ -101,5 +108,23 @@ func TestBuildWebServer_DefaultLoopbackUnchanged(t *testing.T) {
 	}
 	if srv == nil {
 		t.Fatal("expected a server")
+	}
+	assertMCPManagerUnavailable(t, srv)
+}
+
+func assertMCPManagerUnavailable(t *testing.T, srv interface {
+	HasMCPManager() bool
+	Handler() http.Handler
+}) {
+	t.Helper()
+	if srv.HasMCPManager() {
+		t.Fatal("tokenless server must not wire the MCP manager")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mcps", nil)
+	response := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("tokenless MCP route should remain unavailable with 503, got %d", response.Code)
 	}
 }
