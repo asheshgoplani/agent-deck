@@ -103,6 +103,22 @@ func TestVendorFilesServed(t *testing.T) {
 	}
 }
 
+func TestAuthTokenIsNeverPersistedToWebStorage(t *testing.T) {
+	s := NewServer(Config{})
+	mux := http.NewServeMux()
+	mux.Handle("/static/", http.StripPrefix("/static/", s.staticFileServer()))
+
+	req := httptest.NewRequest(http.MethodGet, "/static/app/main.js", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /static/app/main.js: expected 200, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "agentdeck.webToken") {
+		t.Fatal("bearer token must remain in memory and never be persisted to Web Storage")
+	}
+}
+
 // TestAddonCanvasDeleted is the regression gate for Phase 8 / Plan 03
 // (PERF-C). xterm v6 never references the canvas renderer, so the 94 KB
 // vendor file was dead weight. This test ensures the file stays deleted:

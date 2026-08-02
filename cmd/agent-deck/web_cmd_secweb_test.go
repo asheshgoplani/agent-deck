@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,8 +17,8 @@ func TestBuildWebServer_RefusesNonLoopbackWithoutToken(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected buildWebServer to refuse non-loopback bind without a token")
 	}
-	if !strings.Contains(err.Error(), "--token") || !strings.Contains(err.Error(), "--insecure-bind") {
-		t.Fatalf("refusal error should be actionable (mention --token and --insecure-bind), got: %v", err)
+	if !strings.Contains(err.Error(), "--token") || !strings.Contains(err.Error(), "--token-file") || !strings.Contains(err.Error(), "--insecure-bind") {
+		t.Fatalf("refusal error should be actionable (mention --token, --token-file, and --insecure-bind), got: %v", err)
 	}
 }
 
@@ -41,6 +43,22 @@ func TestBuildWebServer_AllowsNonLoopbackWithTokenFile(t *testing.T) {
 	}
 	if srv == nil {
 		t.Fatal("expected a server")
+	}
+
+	validReq := httptest.NewRequest(http.MethodGet, "/api/command-center/status", nil)
+	validReq.Header.Set("Authorization", "Bearer secret-from-file")
+	validResponse := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(validResponse, validReq)
+	if validResponse.Code == http.StatusUnauthorized {
+		t.Fatalf("token read from --token-file should authorize requests, got %d", validResponse.Code)
+	}
+
+	invalidReq := httptest.NewRequest(http.MethodGet, "/api/command-center/status", nil)
+	invalidReq.Header.Set("Authorization", "Bearer wrong-token")
+	invalidResponse := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(invalidResponse, invalidReq)
+	if invalidResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong token should be rejected with 401, got %d", invalidResponse.Code)
 	}
 }
 

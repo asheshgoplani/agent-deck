@@ -24,7 +24,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 	readOnly := fs.Bool("read-only", false, "Run in read-only mode (input disabled)")
 	token := fs.String("token", "", "Bearer token for API/WS access")
 	tokenFile := fs.String("token-file", "", "Read bearer token for API/WS access from file")
-	insecureBind := fs.Bool("insecure-bind", false, "Allow binding a non-loopback address with no --token (UNSAFE: exposes an unauthenticated RCE surface to the network)")
+	insecureBind := fs.Bool("insecure-bind", false, "Allow binding a non-loopback address with no --token or --token-file (UNSAFE: exposes an unauthenticated RCE surface to the network)")
 	pushEnabled := fs.Bool("push", false, "Enable web push notifications (auto-generates VAPID keys per profile)")
 	pushVAPIDSubject := fs.String("push-vapid-subject", "mailto:agentdeck@localhost", "VAPID subject used for web push notifications")
 	pushTestEvery := fs.Duration("push-test-every", 0, "Send periodic push test notifications at this interval (e.g. 10s, 1m); 0 disables")
@@ -52,7 +52,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		fmt.Println("  agent-deck web --listen 0.0.0.0:8420 --token-file ~/.config/agent-deck/web-token")
 		fmt.Println()
 		fmt.Println("Security: the server binds loopback (127.0.0.1) by default. Binding a")
-		fmt.Println("non-loopback address without --token is refused — it would expose an")
+		fmt.Println("non-loopback address without --token or --token-file is refused — it would expose an")
 		fmt.Println("unauthenticated remote-code-execution surface. Override with --insecure-bind")
 		fmt.Println("(unsafe) only when you understand the risk.")
 	}

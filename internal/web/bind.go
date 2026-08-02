@@ -30,7 +30,7 @@ func CheckBindSecurity(listenAddr, token string, insecureBind bool) error {
 			"remote-code-execution surface (terminal bridge + session-create API) to the network.\n"+
 			"  Fix one of:\n"+
 			"    - bind loopback only:  --listen 127.0.0.1:8420  (default)\n"+
-			"    - set an auth token:   --token <secret>\n"+
+			"    - set an auth token:   --token <secret> or --token-file <path>\n"+
 			"    - override (unsafe):   --insecure-bind",
 		listenAddr,
 	)
