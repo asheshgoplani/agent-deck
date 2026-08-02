@@ -487,6 +487,7 @@ func TestSubcommandNeedsTmuxPreflight(t *testing.T) {
 		"ls",
 		"status",
 		"web",
+		"try",
 		"run-task",
 	}
 	for _, cmd := range tmuxCommands {
