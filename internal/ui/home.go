@@ -1990,11 +1990,6 @@ func (h *Home) publishWebMenuSnapshot() {
 		return
 	}
 
-	h.instancesMu.RLock()
-	instancesCopy := make([]*session.Instance, len(h.instances))
-	copy(instancesCopy, h.instances)
-	h.instancesMu.RUnlock()
-
 	// Archived sessions live in h.instances — the TUI drops them at render time
 	// in rebuildFlatItems, not at load time. The web snapshot is built from
 	// h.instances instead of h.flatItems, so it must apply the archive filter
@@ -2002,7 +1997,14 @@ func (h *Home) publishWebMenuSnapshot() {
 	// SessionDataService.LoadMenuSnapshot, the storage-backed loader that serves
 	// headless mode. The archived view is fed separately by
 	// LoadArchivedMenuSnapshot, so nothing here needs to preserve them.
-	instancesCopy = session.FilterInstancesByArchive(instancesCopy, false)
+	//
+	// FilterInstancesByArchive allocates the copy this function needs anyway, so
+	// it replaces the previous make+copy rather than adding to it — same one
+	// allocation per publish, and the archive read happens under the same lock
+	// that guards the slice.
+	h.instancesMu.RLock()
+	instancesCopy := session.FilterInstancesByArchive(h.instances, false)
+	h.instancesMu.RUnlock()
 
 	groupTreeCopy := h.groupTree.ShallowCopyForSave()
 	groupsData := make([]*session.GroupData, 0, len(groupTreeCopy.GroupList))
