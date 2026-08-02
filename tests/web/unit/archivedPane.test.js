@@ -6,9 +6,15 @@
 // (`if archived { icon, style = "■", SessionStatusStopped }`); projectArchived
 // is the web-side equivalent.
 //
-// Tests projectArchived directly rather than rendering ArchivedPane: the vitest
-// alias map cannot currently resolve preact/hooks for component sources, so no
-// unit test renders a hooks-using component.
+// Tests projectArchived directly rather than rendering ArchivedPane. Importing
+// the component works (the vitest alias order was fixed alongside this test),
+// but rendering it still throws "Cannot read properties of undefined (reading
+// '__$f')" from @preact/signals — the signals hook integration and the preact
+// instance doing the rendering are not the same copy under this alias map.
+// Fixing that is test-infra work beyond this bug; projectArchived is the whole
+// of the behaviour under test, so assert it directly. If the render harness is
+// repaired later, a render-level test asserting the .dot class would be a
+// strictly better pin, since it would cover the Dot wiring too.
 import { describe, expect, it } from 'vitest'
 
 const archivedPaneModulePath = '../../../internal/web/static/app/panes/ArchivedPane.js'
