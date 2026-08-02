@@ -1997,11 +1997,13 @@ func handleList(profile string, args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	allProfiles := fs.Bool("all", false, "List sessions from all profiles")
+	archivedOnly := fs.Bool("archived", false, "List archived sessions only")
+	includeArchived := fs.Bool("include-archived", false, "Include archived sessions")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck list [options]")
 		fmt.Println()
-		fmt.Println("List all sessions.")
+		fmt.Println("List active sessions. Archived sessions are excluded by default.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -2015,9 +2017,13 @@ func handleList(profile string, args []string) {
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
+	if *archivedOnly && *includeArchived {
+		fmt.Println("Error: --archived and --include-archived cannot be used together")
+		os.Exit(1)
+	}
 
 	if *allProfiles {
-		handleListAllProfiles(*jsonOutput)
+		handleListAllProfiles(*jsonOutput, *archivedOnly, *includeArchived)
 		return
 	}
 
@@ -2027,7 +2033,7 @@ func handleList(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	instances, _, err := storage.LoadWithGroups()
+	instances, _, err := loadInstancesForList(storage, *archivedOnly, *includeArchived)
 	if err != nil {
 		fmt.Printf("Error: failed to load sessions: %v\n", err)
 		os.Exit(1)
@@ -2136,8 +2142,19 @@ func handleList(profile string, args []string) {
 	printUpdateNotice()
 }
 
+func loadInstancesForList(storage *session.Storage, archivedOnly, includeArchived bool) ([]*session.Instance, []*session.GroupData, error) {
+	switch {
+	case archivedOnly:
+		return storage.LoadArchivedWithGroups()
+	case includeArchived:
+		return storage.LoadWithGroups()
+	default:
+		return storage.LoadActiveWithGroups()
+	}
+}
+
 // handleListAllProfiles lists sessions from all profiles
-func handleListAllProfiles(jsonOutput bool) {
+func handleListAllProfiles(jsonOutput, archivedOnly, includeArchived bool) {
 	profiles, err := session.ListProfiles()
 	if err != nil {
 		fmt.Printf("Error: failed to list profiles: %v\n", err)
@@ -2170,7 +2187,7 @@ func handleListAllProfiles(jsonOutput bool) {
 			if err != nil {
 				continue
 			}
-			instances, _, err := storage.LoadWithGroups()
+			instances, _, err := loadInstancesForList(storage, archivedOnly, includeArchived)
 			if err != nil {
 				continue
 			}
@@ -2207,7 +2224,7 @@ func handleListAllProfiles(jsonOutput bool) {
 		if err != nil {
 			continue
 		}
-		instances, _, err := storage.LoadWithGroups()
+		instances, _, err := loadInstancesForList(storage, archivedOnly, includeArchived)
 		if err != nil {
 			continue
 		}

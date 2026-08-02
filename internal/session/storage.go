@@ -1115,6 +1115,23 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 
 // LoadWithGroups reads instances and groups from SQLite, reconnects tmux sessions.
 func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
+	return s.loadWithGroups(false, false)
+}
+
+// LoadActiveWithGroups reads only non-archived sessions and reconnects their
+// tmux sessions. Use it for active-list views so a large archive does not pay
+// the reconstruction or status-polling cost.
+func (s *Storage) LoadActiveWithGroups() ([]*Instance, []*GroupData, error) {
+	return s.loadWithGroups(true, false)
+}
+
+// LoadArchivedWithGroups reads only archived sessions and reconnects their
+// tmux sessions for explicit archive views.
+func (s *Storage) LoadArchivedWithGroups() ([]*Instance, []*GroupData, error) {
+	return s.loadWithGroups(true, true)
+}
+
+func (s *Storage) loadWithGroups(filterArchive, archived bool) ([]*Instance, []*GroupData, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1124,7 +1141,15 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 	}
 
 	// Load from SQLite
-	dbRows, err := s.db.LoadInstances()
+	var (
+		dbRows []*statedb.InstanceRow
+		err    error
+	)
+	if filterArchive {
+		dbRows, err = s.db.LoadInstancesByArchive(archived)
+	} else {
+		dbRows, err = s.db.LoadInstances()
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load instances: %w", err)
 	}

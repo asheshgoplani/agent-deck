@@ -1010,15 +1010,31 @@ func (s *StateDB) ClearAllInstances() error {
 
 // LoadInstances returns all instances ordered by sort_order.
 func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
-	rows, err := s.db.Query(`
+	return s.loadInstances("")
+}
+
+// LoadInstancesByArchive returns either active or archived instances ordered by
+// sort_order. Keeping this filter in SQLite is important for callers that need
+// to avoid reconnecting a large archived backlog to tmux just to discard it.
+func (s *StateDB) LoadInstancesByArchive(archived bool) ([]*InstanceRow, error) {
+	where := "WHERE archived_at = 0"
+	if archived {
+		where = "WHERE archived_at > 0"
+	}
+	return s.loadInstances(where)
+}
+
+func (s *StateDB) loadInstances(where string) ([]*InstanceRow, error) {
+	query := `
 		SELECT id, title, project_path, group_path, sort_order,
 			command, wrapper, tool, status, tmux_session, tmux_socket_name,
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
 			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
-		FROM instances ORDER BY sort_order
-	`)
+		FROM instances ` + where + ` ORDER BY sort_order
+	`
+	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, err
 	}

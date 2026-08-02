@@ -136,7 +136,7 @@ func TestListAllProfilesJSON_ExposesParentID(t *testing.T) {
 		t.Fatalf("Close storage: %v", err)
 	}
 
-	out := captureListStdout(t, func() { handleListAllProfiles(true) })
+	out := captureListStdout(t, func() { handleListAllProfiles(true, false, false) })
 
 	var rows []map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(out), &rows); err != nil {

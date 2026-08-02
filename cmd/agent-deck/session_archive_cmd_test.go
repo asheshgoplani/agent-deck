@@ -6,11 +6,15 @@ import (
 	"testing"
 )
 
-// archivedFlag parses `list --json` and returns the archived flag for the
-// session with the given id. Fails the test if the id is absent.
+// archivedFlag parses the full inventory view and returns the archived flag
+// for the session with the given id. The default list intentionally omits
+// archived sessions.
 func archivedFlag(t *testing.T, home, id string) bool {
 	t.Helper()
-	listJSON := readSessionsJSON(t, home)
+	listJSON, stderr, code := runAgentDeck(t, home, "list", "--json", "--include-archived")
+	if code != 0 {
+		t.Fatalf("agent-deck list --include-archived --json failed (exit %d): %s", code, stderr)
+	}
 	var sessions []struct {
 		ID       string `json:"id"`
 		Archived bool   `json:"archived"`
@@ -47,6 +51,53 @@ func TestSessionArchive_MarksArchived(t *testing.T) {
 	}
 	if !archivedFlag(t, home, id) {
 		t.Errorf("session %s not archived after archive command", id)
+	}
+}
+
+func TestList_ExcludesArchivedUnlessRequested(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	archivedID := addTestSession(t, home, filepath.Join(home, "archived-proj"), "archived-list")
+	activeID := addTestSession(t, home, filepath.Join(home, "active-proj"), "active-list")
+
+	if _, stderr, code := runAgentDeck(t, home, "session", "archive", archivedID, "--json"); code != 0 {
+		t.Fatalf("archive setup failed (exit %d): %s", code, stderr)
+	}
+
+	assertListIDs := func(args ...string) map[string]bool {
+		t.Helper()
+		stdout, stderr, code := runAgentDeck(t, home, args...)
+		if code != 0 {
+			t.Fatalf("agent-deck %v failed (exit %d): %s", args, code, stderr)
+		}
+		var rows []struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &rows); err != nil {
+			t.Fatalf("parse list JSON: %v\noutput: %s", err, stdout)
+		}
+		ids := make(map[string]bool, len(rows))
+		for _, row := range rows {
+			ids[row.ID] = true
+		}
+		return ids
+	}
+
+	active := assertListIDs("list", "--json")
+	if !active[activeID] || active[archivedID] || len(active) != 1 {
+		t.Errorf("default list ids = %v, want only active %s", active, activeID)
+	}
+
+	archived := assertListIDs("list", "--json", "--archived")
+	if !archived[archivedID] || archived[activeID] || len(archived) != 1 {
+		t.Errorf("archived list ids = %v, want only archived %s", archived, archivedID)
+	}
+
+	all := assertListIDs("list", "--json", "--include-archived")
+	if !all[activeID] || !all[archivedID] || len(all) != 2 {
+		t.Errorf("full list ids = %v, want active %s and archived %s", all, activeID, archivedID)
 	}
 }
 
