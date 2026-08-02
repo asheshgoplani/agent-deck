@@ -9,15 +9,17 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-// publishWebMenuSnapshot runs at the end of rebuildFlatItems, which is on the
-// TUI list hot path. Benchmarks the two candidate shapes for the archive filter
-// so the cost of the fix is measured rather than assumed.
+// benchInstances builds n sessions with roughly a third archived, matching a
+// well-used deck. Shared fixture for the benchmarks below.
+//
+// These exist because publishWebMenuSnapshot runs at the end of
+// rebuildFlatItems, which is on the TUI list hot path, so the cost of the
+// archive filter is measured rather than assumed.
 func benchInstances(n int) []*session.Instance {
 	out := make([]*session.Instance, 0, n)
 	for i := range n {
 		inst := session.NewInstanceWithTool(fmt.Sprintf("s%d", i), "/tmp/x", "claude")
 		inst.Status = session.StatusIdle
-		// Roughly a third archived, matching a well-used deck.
 		if i%3 == 0 {
 			inst.ArchivedAt = time.Now().UTC()
 		}
@@ -26,7 +28,8 @@ func benchInstances(n int) []*session.Instance {
 	return out
 }
 
-// The shape that shipped: filter allocates the copy directly.
+// BenchmarkPublishFilterOnly measures the shape that shipped: the filter
+// allocates the copy directly, replacing the previous make+copy.
 func BenchmarkPublishFilterOnly(b *testing.B) {
 	for _, n := range []int{10, 100, 1000} {
 		instances := benchInstances(n)
@@ -39,7 +42,8 @@ func BenchmarkPublishFilterOnly(b *testing.B) {
 	}
 }
 
-// The pre-fix shape (make+copy, no filter) — the baseline this replaced.
+// BenchmarkPublishCopyOnly measures the pre-fix shape (make+copy, no filter) —
+// the baseline the archive filter replaced.
 func BenchmarkPublishCopyOnly(b *testing.B) {
 	for _, n := range []int{10, 100, 1000} {
 		instances := benchInstances(n)
@@ -54,7 +58,8 @@ func BenchmarkPublishCopyOnly(b *testing.B) {
 	}
 }
 
-// End-to-end publish cost, the number that actually matters.
+// BenchmarkPublishWebMenuSnapshot measures end-to-end publish cost, the number
+// the filter's overhead should be judged against.
 func BenchmarkPublishWebMenuSnapshot(b *testing.B) {
 	for _, n := range []int{10, 100, 1000} {
 		instances := benchInstances(n)
