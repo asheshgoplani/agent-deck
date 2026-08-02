@@ -1799,7 +1799,7 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 	// injected, so clear any stale port from a prior launch — otherwise the
 	// SSE watcher could connect to a freed port later reused by an unrelated
 	// process (issue #1614). Status falls back to tmux content sniffing.
-	i.OpenCodePort = 0
+	i.setOpenCodePort(0)
 	return envPrefix + baseCommand
 }
 
@@ -1836,16 +1836,16 @@ func (i *Instance) buildOpenCodeExtraFlags() string {
 // be allocated — status detection then falls back to tmux polling.
 func (i *Instance) buildOpenCodeSSEPortFlag() string {
 	if config, err := LoadUserConfig(); err == nil && config != nil && config.OpenCode.DisableSSEStatus {
-		i.OpenCodePort = 0
+		i.setOpenCodePort(0)
 		return ""
 	}
 	port, err := allocateLocalPort()
 	if err != nil {
 		sessionLog.Warn("opencode_sse_port_alloc_failed", slog.String("error", err.Error()))
-		i.OpenCodePort = 0
+		i.setOpenCodePort(0)
 		return ""
 	}
-	i.OpenCodePort = port
+	i.setOpenCodePort(port)
 	return fmt.Sprintf(" --port %d", port)
 }
 
@@ -1868,6 +1868,12 @@ func (i *Instance) GetOpenCodePort() int {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.OpenCodePort
+}
+
+func (i *Instance) setOpenCodePort(port int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.OpenCodePort = port
 }
 
 // UpdateOpenCodeSSEStatus feeds an SSE-derived status ("running"/"waiting")
@@ -7617,15 +7623,12 @@ func (i *Instance) restart(env map[string]string) error {
 			}
 		}
 
-		var rawCmd string
-		if i.OpenCodeSessionID != "" {
-			// OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
-			rawCmd = fmt.Sprintf("opencode -s %s", i.OpenCodeSessionID)
-		} else {
-			rawCmd = "opencode"
+		if i.OpenCodeSessionID == "" {
 			i.OpenCodeStartedAt = time.Now().UnixMilli()
 		}
-		rawCmd = i.buildRestartEnvPrefix() + rawCmd
+		// Reuse the canonical builder so live-pane respawns retain the same
+		// configured command, model, agent, and SSE flags as every other start.
+		rawCmd := i.buildOpenCodeCommand("opencode")
 		resumeCmd, containerName, err := i.prepareCommand(rawCmd)
 		if err != nil {
 			return err
