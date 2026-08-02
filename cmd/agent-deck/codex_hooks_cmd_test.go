@@ -165,8 +165,72 @@ func TestHandleCodexNotify_EmptyTailEventKeepsJSONEmptyAndPersistsAnchor(t *test
 	if hook.SessionID != "" {
 		t.Fatalf("hook session_id = %q, want empty for compatibility", hook.SessionID)
 	}
+	if hook.StateSessionID != "thr-sticky" {
+		t.Fatalf("hook retained session_id = %q, want thr-sticky", hook.StateSessionID)
+	}
+	if hook.LastTurnStartedGeneration == 0 ||
+		hook.LastTurnCompletedGeneration <= hook.LastTurnStartedGeneration {
+		t.Fatalf("turn generations not retained: %#v", hook)
+	}
 	if got := session.ReadHookSessionAnchor("inst-sticky"); got != "thr-sticky" {
 		t.Fatalf("session anchor = %q, want thr-sticky", got)
+	}
+}
+
+func TestHandleCodexNotify_SubagentCannotOverwritePersistedMainThreadEvidence(t *testing.T) {
+	tmpHome := t.TempDir()
+	codexHome := filepath.Join(tmpHome, "configured-codex")
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, "xdg-config"))
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-subagent-disk-gate")
+	t.Setenv("CODEX_SESSION_ID", "")
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Codex: session.CodexSettings{ConfigDir: codexHome},
+	}); err != nil {
+		t.Fatalf("save configured Codex home: %v", err)
+	}
+	session.ClearUserConfigCache()
+
+	origArgs := os.Args
+	defer func() { os.Args = origArgs }()
+
+	const mainSID = "thread-main-disk-gate"
+	const childSID = "thread-child-disk-gate"
+	os.Args = []string{"agent-deck", "codex-notify", `{"event":"turn/started","thread_id":"` + mainSID + `"}`}
+	handleCodexNotify()
+	os.Args = []string{"agent-deck", "codex-notify", `{"event":"turn/completed","thread_id":"` + mainSID + `"}`}
+	handleCodexNotify()
+
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "08", "02")
+	if err := os.MkdirAll(rolloutDir, 0o700); err != nil {
+		t.Fatalf("mkdir rollout dir: %v", err)
+	}
+	childRollout := `{"type":"session_meta","payload":{"id":"` + childSID + `","thread_source":"subagent","parent_thread_id":"` + mainSID + `"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(rolloutDir, "rollout-2026-08-02T00-00-00-"+childSID+".jsonl"), []byte(childRollout), 0o600); err != nil {
+		t.Fatalf("write child rollout: %v", err)
+	}
+
+	os.Args = []string{"agent-deck", "codex-notify", `{"event":"turn/completed","thread_id":"` + childSID + `"}`}
+	handleCodexNotify()
+
+	hookPath := filepath.Join(getHooksDir(), "inst-subagent-disk-gate.json")
+	data, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("read hook file: %v", err)
+	}
+	var hook hookStatusFile
+	if err := json.Unmarshal(data, &hook); err != nil {
+		t.Fatalf("unmarshal hook: %v", err)
+	}
+	if hook.StateSessionID != mainSID || hook.Generation != 2 ||
+		hook.LastTurnStartedGeneration != 1 || hook.LastTurnCompletedGeneration != 2 {
+		t.Fatalf("subagent overwrote main-thread evidence: %#v", hook)
+	}
+	if got := session.ReadHookSessionAnchor("inst-subagent-disk-gate"); got != mainSID {
+		t.Fatalf("subagent overwrote main-thread anchor: got %q, want %q", got, mainSID)
 	}
 }
 

@@ -472,6 +472,13 @@ type Instance struct {
 	hookEvent      string    // Hook event name that caused the last status (e.g. "PermissionRequest")
 	hookSessionID  string    // Session ID from hook payload
 	hookLastUpdate time.Time // When hook status was last received
+	// Retained turn evidence is written atomically by hook processes. It lets a
+	// fresh CLI process distinguish an explicit Codex completion from a
+	// pane-only running→waiting sample that still needs debounce.
+	hookStateSessionID              string
+	hookGeneration                  uint64
+	hookLastTurnStartedGeneration   uint64
+	hookLastTurnCompletedGeneration uint64
 
 	// SSE-based status detection for OpenCode (set by OpenCodeSSEWatcher,
 	// issue #1614). Not persisted; rebuilt from the live event stream.
@@ -4767,6 +4774,37 @@ func debounceFlipFromRunning(prev, derived Status, tmuxRaw, hookStatus string, p
 	return derived, false, false
 }
 
+// debounceFlipFromRunningWithCompletion preserves the existing one-sample hold
+// unless an explicit matching-session Codex completion corroborates a waiting
+// pane. Errors remain debounceable because completion evidence does not explain
+// a failed pane capture or an error banner.
+func debounceFlipFromRunningWithCompletion(prev, derived Status, tmuxRaw, hookStatus string, pending, matchingCompletion bool) (apply Status, nextPending bool, held bool) {
+	if matchingCompletion && derived == StatusWaiting {
+		return derived, false, false
+	}
+	return debounceFlipFromRunning(prev, derived, tmuxRaw, hookStatus, pending)
+}
+
+func codexCompletionMatchesBoundSession(stateSessionID, boundSessionID string, generation, started, completed uint64) bool {
+	return stateSessionID != "" &&
+		boundSessionID != "" &&
+		stateSessionID == boundSessionID &&
+		completed > 0 &&
+		completed == generation &&
+		completed >= started
+}
+
+func (i *Instance) hasMatchingCodexCompletionLocked() bool {
+	return IsCodexCompatible(i.Tool) &&
+		codexCompletionMatchesBoundSession(
+			i.hookStateSessionID,
+			i.CodexSessionID,
+			i.hookGeneration,
+			i.hookLastTurnStartedGeneration,
+			i.hookLastTurnCompletedGeneration,
+		)
+}
+
 func shouldDebounceTmuxFlipForTool(tool string) bool {
 	return tool == "" || IsClaudeCompatible(tool) || IsCodexCompatible(tool) ||
 		tool == "gemini" || tool == "hermes" || tool == "cursor"
@@ -4943,12 +4981,16 @@ func (i *Instance) UpdateStatus() error {
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
+	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
 			i.hookLastUpdate = hs.UpdatedAt
 			i.hookSessionID = hs.SessionID
+			i.hookStateSessionID = hs.StateSessionID
+			i.hookGeneration = hs.Generation
+			i.hookLastTurnStartedGeneration = hs.LastTurnStartedGeneration
+			i.hookLastTurnCompletedGeneration = hs.LastTurnCompletedGeneration
 			// Reset stale acknowledged flag from ReconnectSessionLazy.
 			// Without this, sessions loaded from SQLite with previousStatus="idle"
 			// would report idle even when the hook file says waiting/running.
@@ -5204,7 +5246,15 @@ func (i *Instance) UpdateStatus() error {
 	// tmuxFlipFromRunningPending = false and holds the status at running on the
 	// first sample, then exits before the second confirming sample can fire.
 	if shouldDebounceTmuxFlipForTool(i.Tool) {
-		if apply, nextPending, held := debounceFlipFromRunning(prevStatus, i.Status, status, i.hookStatus, i.tmuxFlipFromRunningPending); held {
+		matchingCompletion := i.hasMatchingCodexCompletionLocked()
+		if apply, nextPending, held := debounceFlipFromRunningWithCompletion(
+			prevStatus,
+			i.Status,
+			status,
+			i.hookStatus,
+			i.tmuxFlipFromRunningPending,
+			matchingCompletion,
+		); held {
 			i.tmuxFlipFromRunningPending = nextPending
 			i.Status = apply
 			return nil
@@ -5212,6 +5262,13 @@ func (i *Instance) UpdateStatus() error {
 		// Confirmed flip (second consecutive sample) or a non-debounceable outcome:
 		// clear the marker so a later genuine flip starts a fresh debounce.
 		i.tmuxFlipFromRunningPending = false
+		// A matching retained completion plus a waiting pane is already the
+		// complete status decision. The bound Codex session ID is part of that
+		// evidence, so a fresh CLI does not need the later DetectTool/session
+		// metadata probes that the ordinary tmux fallback performs.
+		if matchingCompletion && i.Status == StatusWaiting {
+			return nil
+		}
 	} else {
 		i.tmuxFlipFromRunningPending = false
 	}
@@ -5419,6 +5476,10 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	// it carried had already been written here and stuck, flipping this
 	// instance's status. See the candidate_has_no_conversation_data branch.
 	prevHookStatus, prevHookEvent, prevHookLastUpdate := i.hookStatus, i.hookEvent, i.hookLastUpdate
+	prevHookStateSessionID := i.hookStateSessionID
+	prevHookGeneration := i.hookGeneration
+	prevHookStartedGeneration := i.hookLastTurnStartedGeneration
+	prevHookCompletedGeneration := i.hookLastTurnCompletedGeneration
 
 	// Detect whether this is genuinely new data (newer timestamp than last seen).
 	// Only reset acknowledgment on new events — not on re-application of the same
@@ -5428,6 +5489,10 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	i.hookStatus = status.Status
 	i.hookEvent = status.Event
 	i.hookLastUpdate = status.UpdatedAt
+	i.hookStateSessionID = status.StateSessionID
+	i.hookGeneration = status.Generation
+	i.hookLastTurnStartedGeneration = status.LastTurnStartedGeneration
+	i.hookLastTurnCompletedGeneration = status.LastTurnCompletedGeneration
 
 	// Permission-type events are always attention-needed, even if the user
 	// previously acknowledged this session. A mid-task permission block is new
@@ -5490,6 +5555,10 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// never blocks.
 		if i.hookCwdIsForeign(status.Cwd) {
 			i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
+			i.hookStateSessionID = prevHookStateSessionID
+			i.hookGeneration = prevHookGeneration
+			i.hookLastTurnStartedGeneration = prevHookStartedGeneration
+			i.hookLastTurnCompletedGeneration = prevHookCompletedGeneration
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
@@ -5512,6 +5581,10 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 			// foreign hook is a no-op, not a flip. (A real /clear or fork carries
 			// conversation data and never reaches this branch.)
 			i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
+			i.hookStateSessionID = prevHookStateSessionID
+			i.hookGeneration = prevHookGeneration
+			i.hookLastTurnStartedGeneration = prevHookStartedGeneration
+			i.hookLastTurnCompletedGeneration = prevHookCompletedGeneration
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
@@ -5566,6 +5639,11 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// refuses turn/start and error-loops the session. See
 		// codex_subagent_gate.go.
 		if i.shouldRejectCodexSubagentRebind(sessionID) {
+			i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
+			i.hookStateSessionID = prevHookStateSessionID
+			i.hookGeneration = prevHookGeneration
+			i.hookLastTurnStartedGeneration = prevHookStartedGeneration
+			i.hookLastTurnCompletedGeneration = prevHookCompletedGeneration
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.CodexSessionID, Candidate: sessionID,
@@ -5746,7 +5824,13 @@ func (i *Instance) SetAutoNameDescription(desc string) {
 func (i *Instance) ClearHookStatus() {
 	i.mu.Lock()
 	i.hookStatus = ""
+	i.hookEvent = ""
+	i.hookSessionID = ""
 	i.hookLastUpdate = time.Time{}
+	i.hookStateSessionID = ""
+	i.hookGeneration = 0
+	i.hookLastTurnStartedGeneration = 0
+	i.hookLastTurnCompletedGeneration = 0
 	i.mu.Unlock()
 
 	// Remove the persisted status file. Sandbox sessions bridge a PER-INSTANCE

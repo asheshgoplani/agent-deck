@@ -61,31 +61,9 @@ func resolveStopHookActive(p hookPayload) bool {
 	return p.StopHookActive == nil || *p.StopHookActive
 }
 
-// hookStatusFile is the JSON written to ~/.agent-deck/hooks/{instance_id}.json
-type hookStatusFile struct {
-	Status    string `json:"status"`
-	SessionID string `json:"session_id,omitempty"`
-	Event     string `json:"event"`
-	Timestamp int64  `json:"ts"`
-	// DoneStatus/DoneSummary carry a worker-printed completion sentinel
-	// detected on the Stop edge (issue #1186). omitempty so ordinary Stops
-	// (no sentinel) leave the fields absent, which the daemon reads as
-	// "no finished event to emit."
-	DoneStatus  string `json:"done_status,omitempty"`
-	DoneSummary string `json:"done_summary,omitempty"`
-	// TranscriptPath is persisted ONLY when the Stop-edge sentinel scan was
-	// inconclusive because the turn's assistant record had not flushed yet
-	// (issue #1186 flush race). The daemon re-scans this path on its poll
-	// loop; the synchronous Stop hook (#1225) must not wait out the flush.
-	TranscriptPath string `json:"transcript_path,omitempty"`
-	// Cwd is the working directory the hook payload reported for this event.
-	// Issue #1729: the session-binding path uses it as same-session evidence —
-	// a candidate session id whose cwd is provably outside the instance's
-	// declared paths (e.g. a headless `claude -p` worker at $TMPDIR that
-	// inherited AGENTDECK_INSTANCE_ID) must never bind. omitempty keeps legacy
-	// files byte-identical when the agent sends no cwd.
-	Cwd string `json:"cwd,omitempty"`
-}
+// Preserve the historical command-package name while the serialized schema is
+// owned by internal/session.
+type hookStatusFile = session.HookStateDocument
 
 // normalizeHookEventKey folds hook event names from Claude (PascalCase), Cursor
 // (camelCase), Hermes (snake_case), and Codex into a single lookup key.
@@ -96,6 +74,23 @@ func normalizeHookEventKey(event string) string {
 
 func isStopHookEvent(event string) bool {
 	return normalizeHookEventKey(event) == "stop"
+}
+
+func hookStateEventKind(event string) session.HookStateEventKind {
+	key := strings.ToLower(strings.TrimSpace(event))
+	key = strings.NewReplacer("_", "", "-", "", " ", "", ".", "", "/", "").Replace(key)
+	switch key {
+	case "userpromptsubmit", "beforesubmitprompt", "beforeagent",
+		"agentturnstart", "agentturnstarted", "turnstart", "turnstarted":
+		return session.HookTurnStarted
+	case "stop", "afteragent",
+		"agentturncomplete", "agentturncompleted",
+		"turncomplete", "turncompleted", "turnfailed", "turnaborted",
+		"turncancelled", "turncanceled":
+		return session.HookTurnCompleted
+	default:
+		return session.HookStatusOnly
+	}
 }
 
 // mapEventToStatus maps a hook event to an agent-deck status string.
@@ -354,47 +349,24 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, s
 		session.WriteHookSessionAnchor(instanceID, sessionID)
 	}
 
-	statusFile := hookStatusFile{
+	stateEvent := session.HookStateEvent{
+		Kind:      hookStateEventKind(event),
 		Status:    status,
 		SessionID: sessionID,
 		Event:     event,
-		Timestamp: time.Now().Unix(),
+		At:        time.Now(),
 		Cwd:       strings.TrimSpace(cwd),
 	}
 	if scan.signal != nil {
-		statusFile.DoneStatus = scan.signal.Status
-		statusFile.DoneSummary = scan.signal.Summary
+		stateEvent.DoneStatus = scan.signal.Status
+		stateEvent.DoneSummary = scan.signal.Summary
 	}
-	statusFile.TranscriptPath = scan.pendingTranscript
-
-	jsonData, err := json.Marshal(statusFile)
-	if err != nil {
-		hookHandlerLog.Warn("hook_status_marshal_failed",
-			slog.String("instance", instanceID),
-			slog.String("error", err.Error()),
-		)
-		return
-	}
-
-	filePath := filepath.Join(hooksDir, filepath.Base(instanceID)+".json")
-	tmpPath := filePath + ".tmp"
-	if err := os.WriteFile(tmpPath, jsonData, 0600); err != nil {
+	stateEvent.TranscriptPath = scan.pendingTranscript
+	if err := session.WriteHookState(instanceID, stateEvent); err != nil {
 		hookHandlerLog.Warn("hook_status_write_failed",
-			slog.String("path", tmpPath),
 			slog.String("instance", instanceID),
 			slog.String("error", err.Error()),
 		)
-		return
-	}
-	if err := os.Rename(tmpPath, filePath); err != nil {
-		hookHandlerLog.Warn("hook_status_rename_failed",
-			slog.String("from", tmpPath),
-			slog.String("to", filePath),
-			slog.String("instance", instanceID),
-			slog.String("error", err.Error()),
-		)
-		// Best-effort cleanup of the orphaned temp file.
-		_ = os.Remove(tmpPath)
 		return
 	}
 

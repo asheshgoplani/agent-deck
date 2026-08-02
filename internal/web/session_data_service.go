@@ -344,13 +344,6 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 	}
 }
 
-type rawHookStatus struct {
-	Status    string `json:"status"`
-	SessionID string `json:"session_id"`
-	Event     string `json:"event"`
-	Timestamp int64  `json:"ts"`
-}
-
 func defaultLoadHookStatuses() map[string]*session.HookStatus {
 	hooksByInstance := make(map[string]*session.HookStatus)
 	hooksDir := session.GetHooksDir()
@@ -389,7 +382,7 @@ func defaultLoadHookStatuses() map[string]*session.HookStatus {
 			continue
 		}
 
-		var parsed rawHookStatus
+		var parsed session.HookStateDocument
 		if err := json.Unmarshal(raw, &parsed); err != nil {
 			hookStatusLog.Warn("hook_status_unmarshal_failed",
 				slog.String("file", entry.Name()),
@@ -409,12 +402,7 @@ func defaultLoadHookStatuses() map[string]*session.HookStatus {
 			}
 		}
 
-		hooksByInstance[instanceID] = &session.HookStatus{
-			Status:    parsed.Status,
-			SessionID: parsed.SessionID,
-			Event:     parsed.Event,
-			UpdatedAt: updatedAt,
-		}
+		hooksByInstance[instanceID] = session.HookStatusFromDocument(parsed, updatedAt)
 	}
 
 	return hooksByInstance

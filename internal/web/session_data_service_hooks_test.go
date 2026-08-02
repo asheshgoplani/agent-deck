@@ -50,6 +50,44 @@ func TestDefaultLoadHookStatuses(t *testing.T) {
 	}
 }
 
+func TestDefaultLoadHookStatusesRetainsGenerationEvidence(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	at := time.Date(2026, 7, 28, 18, 15, 0, 0, time.UTC)
+	if err := session.WriteHookState("web-hook-state", session.HookStateEvent{
+		Kind:      session.HookTurnStarted,
+		Status:    "running",
+		SessionID: "thread-web",
+		Event:     "turn.started",
+		At:        at,
+	}); err != nil {
+		t.Fatalf("write start state: %v", err)
+	}
+	if err := session.WriteHookState("web-hook-state", session.HookStateEvent{
+		Kind:      session.HookTurnCompleted,
+		Status:    "waiting",
+		SessionID: "thread-web",
+		Event:     "agent-turn-complete",
+		At:        at,
+	}); err != nil {
+		t.Fatalf("write completion state: %v", err)
+	}
+
+	hook := defaultLoadHookStatuses()["web-hook-state"]
+	if hook == nil {
+		t.Fatal("hook state not loaded")
+	}
+	if hook.StateSessionID != "thread-web" || hook.Generation != 2 ||
+		hook.LastTurnStartedGeneration != 1 || hook.LastTurnCompletedGeneration != 2 {
+		t.Fatalf("retained evidence = (%q,%d,%d,%d), want (thread-web,2,1,2)",
+			hook.StateSessionID,
+			hook.Generation,
+			hook.LastTurnStartedGeneration,
+			hook.LastTurnCompletedGeneration)
+	}
+}
+
 func TestSessionDataServiceRefreshStatusesAppliesHookData(t *testing.T) {
 	inst := &session.Instance{
 		ID: "sess-1",
