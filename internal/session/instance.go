@@ -4785,11 +4785,12 @@ func debounceFlipFromRunningWithCompletion(prev, derived Status, tmuxRaw, hookSt
 	return debounceFlipFromRunning(prev, derived, tmuxRaw, hookStatus, pending)
 }
 
-func codexCompletionMatchesBoundSession(stateSessionID, boundSessionID string, started, completed uint64) bool {
+func codexCompletionMatchesBoundSession(stateSessionID, boundSessionID string, generation, started, completed uint64) bool {
 	return stateSessionID != "" &&
 		boundSessionID != "" &&
 		stateSessionID == boundSessionID &&
 		completed > 0 &&
+		completed == generation &&
 		completed >= started
 }
 
@@ -4798,6 +4799,7 @@ func (i *Instance) hasMatchingCodexCompletionLocked() bool {
 		codexCompletionMatchesBoundSession(
 			i.hookStateSessionID,
 			i.CodexSessionID,
+			i.hookGeneration,
 			i.hookLastTurnStartedGeneration,
 			i.hookLastTurnCompletedGeneration,
 		)

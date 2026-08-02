@@ -750,7 +750,7 @@ func readHookStatusFile(instanceID string) *HookStatus {
 	if raw.Timestamp > 0 {
 		updatedAt = time.Unix(raw.Timestamp, 0)
 	}
-	return hookStatusFromDocument(raw, updatedAt)
+	return HookStatusFromDocument(raw, updatedAt)
 }
 
 func (d *TransitionDaemon) emitHookTransitionCandidates(

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 const codexNotifyMarkerBegin = "# BEGIN AGENTDECK CODEX NOTIFY"
@@ -183,6 +185,9 @@ func handleCodexNotify() {
 
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(os.Getenv("CODEX_SESSION_ID"))
+	}
+	if session.IsCodexSubagentThread(sessionID, filepath.Dir(getCodexConfigPath())) {
+		return
 	}
 
 	writeHookStatus(instanceID, status, sessionID, event, "")

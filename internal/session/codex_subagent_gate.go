@@ -149,14 +149,21 @@ func codexThreadMetaForSession(sessionID, codexHome string) (codexThreadMeta, bo
 	return meta, true
 }
 
+// IsCodexSubagentThread reports whether a flushed rollout proves that the
+// session was spawned as a Codex subagent. Missing or unreadable rollouts are
+// not evidence and return false so newly-created user threads remain usable.
+func IsCodexSubagentThread(sessionID, codexHome string) bool {
+	meta, ok := codexThreadMetaForSession(sessionID, codexHome)
+	return ok && meta.ThreadSource == "subagent"
+}
+
 // shouldRejectCodexSubagentRebind reports whether a candidate session id from
 // any rotation source (notify hook, live-process FD probe, disk scan) must be
 // rejected because it names a subagent-spawned thread. Candidates without a
 // flushed rollout are allowed through (fail-open, matching the pre-gate
 // behavior for freshly created sessions).
 func (i *Instance) shouldRejectCodexSubagentRebind(candidateID string) bool {
-	meta, ok := codexThreadMetaForSession(candidateID, i.getCodexHomeDir())
-	return ok && meta.ThreadSource == "subagent"
+	return IsCodexSubagentThread(candidateID, i.getCodexHomeDir())
 }
 
 // codexSessionNeedsFork reports whether the bound session id names a

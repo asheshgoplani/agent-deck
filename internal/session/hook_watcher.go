@@ -64,7 +64,9 @@ type HookStatus struct {
 	Cwd string
 }
 
-func hookStatusFromDocument(state HookStateDocument, updatedAt time.Time) *HookStatus {
+// HookStatusFromDocument converts the shared persisted hook-state document to
+// the in-memory shape consumed by every status surface.
+func HookStatusFromDocument(state HookStateDocument, updatedAt time.Time) *HookStatus {
 	return &HookStatus{
 		Status:                      state.Status,
 		SessionID:                   state.SessionID,
@@ -353,7 +355,7 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 		if uerr := json.Unmarshal(data, &raw); uerr != nil {
 			continue
 		}
-		out[instanceID] = hookStatusFromDocument(raw, time.Unix(raw.Timestamp, 0))
+		out[instanceID] = HookStatusFromDocument(raw, time.Unix(raw.Timestamp, 0))
 	}
 }
 
@@ -484,7 +486,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		return
 	}
 
-	hookStatus := hookStatusFromDocument(status, time.Unix(status.Timestamp, 0))
+	hookStatus := HookStatusFromDocument(status, time.Unix(status.Timestamp, 0))
 
 	w.mu.Lock()
 	w.statuses[instanceID] = hookStatus

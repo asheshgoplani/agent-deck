@@ -12,25 +12,27 @@ func TestCodexCompletionMatchesBoundSession(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		stateID   string
-		boundID   string
-		started   uint64
-		completed uint64
-		want      bool
+		name       string
+		stateID    string
+		boundID    string
+		generation uint64
+		started    uint64
+		completed  uint64
+		want       bool
 	}{
-		{name: "matching completion", stateID: "thread-1", boundID: "thread-1", started: 4, completed: 5, want: true},
-		{name: "completion without observed start", stateID: "thread-1", boundID: "thread-1", completed: 1, want: true},
-		{name: "newer start", stateID: "thread-1", boundID: "thread-1", started: 6, completed: 5},
-		{name: "different session", stateID: "thread-2", boundID: "thread-1", started: 4, completed: 5},
-		{name: "missing retained identity", boundID: "thread-1", started: 4, completed: 5},
-		{name: "no completion", stateID: "thread-1", boundID: "thread-1", started: 4},
+		{name: "matching current completion", stateID: "thread-1", boundID: "thread-1", generation: 5, started: 4, completed: 5, want: true},
+		{name: "completion without observed start", stateID: "thread-1", boundID: "thread-1", generation: 1, completed: 1, want: true},
+		{name: "later event makes completion stale", stateID: "thread-1", boundID: "thread-1", generation: 6, started: 4, completed: 5},
+		{name: "newer start", stateID: "thread-1", boundID: "thread-1", generation: 6, started: 6, completed: 5},
+		{name: "different session", stateID: "thread-2", boundID: "thread-1", generation: 5, started: 4, completed: 5},
+		{name: "missing retained identity", boundID: "thread-1", generation: 5, started: 4, completed: 5},
+		{name: "no completion", stateID: "thread-1", boundID: "thread-1", generation: 4, started: 4},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := codexCompletionMatchesBoundSession(tc.stateID, tc.boundID, tc.started, tc.completed); got != tc.want {
-				t.Fatalf("codexCompletionMatchesBoundSession(%q, %q, %d, %d) = %v, want %v",
-					tc.stateID, tc.boundID, tc.started, tc.completed, got, tc.want)
+			if got := codexCompletionMatchesBoundSession(tc.stateID, tc.boundID, tc.generation, tc.started, tc.completed); got != tc.want {
+				t.Fatalf("codexCompletionMatchesBoundSession(%q, %q, %d, %d, %d) = %v, want %v",
+					tc.stateID, tc.boundID, tc.generation, tc.started, tc.completed, got, tc.want)
 			}
 		})
 	}
