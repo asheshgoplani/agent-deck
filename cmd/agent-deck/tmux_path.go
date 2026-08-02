@@ -7,10 +7,17 @@ import (
 	"strings"
 )
 
-// tmuxInstallDirs are the well-known locations a `tmux` binary lands in but that
-// the launchd default PATH (/usr/bin:/bin:/usr/sbin:/sbin) omits: Homebrew on
-// Apple Silicon and Intel, then MacPorts.
-var tmuxInstallDirs = []string{"/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"}
+// tmuxInstallDirs are the well-known locations where a tmux binary may be
+// installed but omitted from a sparse desktop-launcher, service, or non-login
+// shell PATH.
+var tmuxInstallDirs = []string{
+	"/usr/bin",
+	"/opt/homebrew/bin",
+	"/usr/local/bin",
+	"/opt/local/bin",
+	"/home/linuxbrew/.linuxbrew/bin",
+	"/snap/bin",
+}
 
 // resolveTmuxPATH returns path augmented with the first candidate dir that holds
 // a tmux binary, when tmux is not already resolvable on path. It never
