@@ -130,3 +130,26 @@ func TestWriteHookStateAtRecoversFromCorruptDocument(t *testing.T) {
 		t.Fatalf("recovered state = %#v, want fresh completed generation", state)
 	}
 }
+
+func TestWriteHookStateAtPropagatesNonDecodeReadError(t *testing.T) {
+	t.Parallel()
+
+	hooksDir := filepath.Join(t.TempDir(), "hooks")
+	if err := os.Mkdir(hooksDir, 0o700); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	statePath := filepath.Join(hooksDir, "instance-1.json")
+	if err := os.Mkdir(statePath, 0o700); err != nil {
+		t.Fatalf("mkdir state-path obstruction: %v", err)
+	}
+
+	err := writeHookStateAt(hooksDir, "instance-1", HookStateEvent{
+		Kind: HookTurnCompleted, Status: "waiting", SessionID: "thread-1", Event: "turn.completed",
+	})
+	if err == nil {
+		t.Fatal("non-decode read error was silently recovered")
+	}
+	if info, statErr := os.Stat(statePath); statErr != nil || !info.IsDir() {
+		t.Fatalf("state-path obstruction changed: info=%v err=%v", info, statErr)
+	}
+}

@@ -4981,7 +4981,7 @@ func (i *Instance) UpdateStatus() error {
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
+	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
@@ -5639,6 +5639,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// refuses turn/start and error-loops the session. See
 		// codex_subagent_gate.go.
 		if i.shouldRejectCodexSubagentRebind(sessionID) {
+			i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
 			i.hookStateSessionID = prevHookStateSessionID
 			i.hookGeneration = prevHookGeneration
 			i.hookLastTurnStartedGeneration = prevHookStartedGeneration

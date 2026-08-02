@@ -125,12 +125,13 @@ func TestCodexSubagentCompletionCannotReplaceMainCompletionEvidence(t *testing.T
 	seedCodexRolloutWithMeta(t, codexHome, childSID, "subagent", mainSID, true)
 
 	inst.CodexSessionID = mainSID
+	mainCompletionAt := time.Now()
 	inst.UpdateHookStatus(&HookStatus{
 		Status:                      "waiting",
 		SessionID:                   mainSID,
 		StateSessionID:              mainSID,
-		Event:                       "agent-turn-complete",
-		UpdatedAt:                   time.Now(),
+		Event:                       "main-turn-complete",
+		UpdatedAt:                   mainCompletionAt,
 		Generation:                  5,
 		LastTurnStartedGeneration:   4,
 		LastTurnCompletedGeneration: 5,
@@ -150,5 +151,60 @@ func TestCodexSubagentCompletionCannotReplaceMainCompletionEvidence(t *testing.T
 	defer inst.mu.RUnlock()
 	if !inst.hasMatchingCodexCompletionLocked() {
 		t.Fatal("rejected subagent completion replaced the main thread's retained completion evidence")
+	}
+	if inst.hookStatus != "waiting" || inst.hookEvent != "main-turn-complete" ||
+		!inst.hookLastUpdate.Equal(mainCompletionAt) {
+		t.Fatalf("rejected subagent completion replaced main hook status: status=%q event=%q updated=%v",
+			inst.hookStatus, inst.hookEvent, inst.hookLastUpdate)
+	}
+}
+
+func TestCodexCompatibleToolColdLoadsRetainedCompletionEvidence(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, "xdg-config"))
+	t.Setenv("CODEX_HOME", filepath.Join(tmpHome, "codex"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+	if err := SaveUserConfig(&UserConfig{Tools: map[string]ToolDef{
+		"custom-codex": {Command: "codex", CompatibleWith: "codex"},
+	}}); err != nil {
+		t.Fatalf("save custom Codex tool: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("custom-codex-cold-load", tmpHome, "custom-codex")
+	if err := inst.tmuxSession.Start("sleep 3600"); err != nil {
+		t.Fatalf("start tmux fixture: %v", err)
+	}
+	defer func() { _ = inst.tmuxSession.Kill() }()
+
+	const threadID = "thread-custom-cold-load"
+	inst.Status = StatusRunning
+	inst.CodexSessionID = threadID
+	if err := WriteHookState(inst.ID, HookStateEvent{
+		Kind: HookTurnStarted, Status: "running", SessionID: threadID,
+		Event: "turn.started", At: time.Now(),
+	}); err != nil {
+		t.Fatalf("write retained start: %v", err)
+	}
+	if err := WriteHookState(inst.ID, HookStateEvent{
+		Kind: HookTurnCompleted, Status: "waiting", SessionID: threadID,
+		Event: "turn.completed", At: time.Now(),
+	}); err != nil {
+		t.Fatalf("write retained completion: %v", err)
+	}
+
+	if err := inst.UpdateStatus(); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+	if inst.hookStateSessionID != threadID || inst.hookGeneration != 2 ||
+		inst.hookLastTurnCompletedGeneration != 2 {
+		t.Fatalf("Codex-compatible cold load lost retained evidence: state=%q generation=%d completed=%d",
+			inst.hookStateSessionID, inst.hookGeneration, inst.hookLastTurnCompletedGeneration)
 	}
 }

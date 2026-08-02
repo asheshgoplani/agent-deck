@@ -179,11 +179,20 @@ func TestHandleCodexNotify_EmptyTailEventKeepsJSONEmptyAndPersistsAnchor(t *test
 
 func TestHandleCodexNotify_SubagentCannotOverwritePersistedMainThreadEvidence(t *testing.T) {
 	tmpHome := t.TempDir()
-	codexHome := filepath.Join(tmpHome, "codex")
+	codexHome := filepath.Join(tmpHome, "configured-codex")
 	t.Setenv("HOME", tmpHome)
-	t.Setenv("CODEX_HOME", codexHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, "xdg-config"))
+	t.Setenv("CODEX_HOME", "")
 	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-subagent-disk-gate")
 	t.Setenv("CODEX_SESSION_ID", "")
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Codex: session.CodexSettings{ConfigDir: codexHome},
+	}); err != nil {
+		t.Fatalf("save configured Codex home: %v", err)
+	}
+	session.ClearUserConfigCache()
 
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()

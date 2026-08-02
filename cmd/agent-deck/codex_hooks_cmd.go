@@ -186,7 +186,7 @@ func handleCodexNotify() {
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(os.Getenv("CODEX_SESSION_ID"))
 	}
-	if session.IsCodexSubagentThread(sessionID, filepath.Dir(getCodexConfigPath())) {
+	if session.IsCodexSubagentThread(sessionID, session.GetCodexConfigDir()) {
 		return
 	}
 
