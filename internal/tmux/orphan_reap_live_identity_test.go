@@ -125,7 +125,14 @@ func reparentedControlClient(t *testing.T, socket, session string, verbArgs ...s
 	pidPath := filepath.Join(dir, "pid")
 	logPath := filepath.Join(dir, "out.log")
 
-	argv := append([]string{"tmux", "-S", socket, "-C"}, verbArgs...)
+	// -L, not -S: candidateSocketName only resolves -L (or no socket flag at
+	// all) because that is the only shape agent-deck's own tmuxExecContext
+	// factory ever produces (see candidateSocketName's doc comment) — a -S
+	// candidate is deliberately refused as unresolvable. Using -S here would
+	// also point this client at a different, nonexistent socket path than the
+	// one startOrphanLiveSession created with -L, so it would never actually
+	// reach the real server at all.
+	argv := append([]string{"tmux", "-L", socket, "-C"}, verbArgs...)
 	quoted := make([]string, len(argv))
 	for i, a := range argv {
 		quoted[i] = shQuote(a)
@@ -198,7 +205,7 @@ func TestIsLiveTmuxClientOrServer_ChainedAliasRepro(t *testing.T) {
 		"attach", "-t", session, ";", "set-option", "status", "on")
 
 	live, ok := isLiveTmuxClientOrServer(pid, []string{
-		"tmux", "-S", socket, "-C", "attach", "-t", session, ";", "set-option", "status", "on",
+		"tmux", "-L", socket, "-C", "attach", "-t", session, ";", "set-option", "status", "on",
 	})
 	if !ok {
 		t.Fatalf("isLiveTmuxClientOrServer could not classify pid %d — the query itself must succeed against a live server", pid)
@@ -223,7 +230,7 @@ func TestIsLiveTmuxClientOrServer_AbbreviatedAttach(t *testing.T) {
 
 	pid := reparentedControlClient(t, socket, session, "a", "-t", session)
 
-	live, ok := isLiveTmuxClientOrServer(pid, []string{"tmux", "-S", socket, "-C", "a", "-t", session})
+	live, ok := isLiveTmuxClientOrServer(pid, []string{"tmux", "-L", socket, "-C", "a", "-t", session})
 	if !ok {
 		t.Fatalf("isLiveTmuxClientOrServer could not classify pid %d", pid)
 	}
@@ -244,7 +251,7 @@ func TestIsLiveTmuxClientOrServer_FullVerbAttach(t *testing.T) {
 
 	pid := reparentedControlClient(t, socket, session, "attach-session", "-t", session)
 
-	live, ok := isLiveTmuxClientOrServer(pid, []string{"tmux", "-S", socket, "-C", "attach-session", "-t", session})
+	live, ok := isLiveTmuxClientOrServer(pid, []string{"tmux", "-L", socket, "-C", "attach-session", "-t", session})
 	if !ok {
 		t.Fatalf("isLiveTmuxClientOrServer could not classify pid %d", pid)
 	}
@@ -301,7 +308,7 @@ func TestIsLiveTmuxClientOrServer_OneShotClient_NotLive(t *testing.T) {
 	const session = "agentdeck_1832_oneshot"
 	startOrphanLiveSession(t, socket, session)
 
-	cmd := exec.Command("tmux", "-S", socket, "list-clients", "-F", "#{client_pid}")
+	cmd := exec.Command("tmux", "-L", socket, "list-clients", "-F", "#{client_pid}")
 	devnull, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatalf("open devnull: %v", err)
@@ -320,7 +327,7 @@ func TestIsLiveTmuxClientOrServer_OneShotClient_NotLive(t *testing.T) {
 		t.Fatalf("SIGSTOP one-shot client: %v", err)
 	}
 
-	live, ok := isLiveTmuxClientOrServer(pid, []string{"tmux", "-S", socket, "list-clients", "-F", "#{client_pid}"})
+	live, ok := isLiveTmuxClientOrServer(pid, []string{"tmux", "-L", socket, "list-clients", "-F", "#{client_pid}"})
 	if !ok {
 		t.Fatalf("isLiveTmuxClientOrServer could not classify the frozen one-shot client %d", pid)
 	}
