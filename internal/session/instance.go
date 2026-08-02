@@ -9521,19 +9521,46 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 		if err != nil {
 			primaryStatErr = err.Error()
 		}
-		// File doesn't exist at expected location - try cross-project search
-		// This handles path hash mismatches (e.g., session created from different directory)
+		// File doesn't exist at expected location - try cross-project search.
+		// This handles ENCODING mismatches that still denote the same real
+		// directory (symlinked project paths: the primary lookup encodes the
+		// resolved path, while Claude may have filed under the unresolved
+		// spelling, or vice versa).
+		//
+		// It must NOT accept a jsonl belonging to a genuinely different
+		// project. `claude --resume` only consults the project dir derived
+		// from its own cwd, so a foreign-directory hit is not evidence that
+		// --resume will succeed — it guarantees the opposite: Claude prints
+		// "No conversation found with session ID: <id>" and exits within a
+		// second, flapping the session to `error` on every restart forever.
+		// Returning false instead routes to --session-id, which starts
+		// cleanly in the correct project dir.
 		fallbackTried = true
-		if fallbackPath := findSessionFileInAllProjects(inst, sessionID); fallbackPath != "" {
+		fallbackPath := findSessionFileInAllProjects(inst, sessionID)
+		foreignHit := fallbackPath != "" &&
+			!encodesSameWorkingDir(filepath.Base(filepath.Dir(fallbackPath)), projectPath, resolvedPath)
+		if fallbackPath != "" {
 			fallbackPathFound = fallbackPath
-			sessionLog.Debug("session_data_cross_project_found", slog.String("path", fallbackPath))
-			sessionFile = fallbackPath
-		} else {
+		}
+		switch {
+		case foreignHit:
+			sessionLog.Debug(
+				"session_data_cross_project_rejected",
+				slog.String("found_path", logging.SanitizeValue(fallbackPath)),
+				slog.String("instance_working_dir", logging.SanitizeValue(projectPath)),
+				slog.String("result", "use_session_id"),
+			)
+			emitDecision(false, "foreign_project_dir_resume_would_fail")
+			return false
+		case fallbackPath == "":
 			// File doesn't exist anywhere - use --session-id to create fresh session
 			// (there's nothing to resume if the file doesn't exist)
 			sessionLog.Debug("session_data_file_not_found", slog.String("result", "use_session_id"))
 			emitDecision(false, "file_not_found")
 			return false
+		default:
+			sessionLog.Debug("session_data_cross_project_found", slog.String("path", logging.SanitizeValue(fallbackPath)))
+			sessionFile = fallbackPath
 		}
 	}
 
@@ -9586,10 +9613,44 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 	return false
 }
 
+// encodesSameWorkingDir reports whether encodedDir — a directory name found
+// under {config_dir}/projects — is a plausible Claude encoding of this
+// instance's own working directory, given both its literal and
+// symlink-resolved spellings.
+//
+// This gates the cross-project fallback in sessionHasConversationData. The
+// fallback globs every project dir, so it happily returns a jsonl belonging to
+// an unrelated session. That is worse than not finding one: `claude --resume`
+// derives its project dir from its own cwd, so acting on a foreign hit makes
+// Claude exit immediately with "No conversation found with session ID: <id>".
+// Only an encoding that denotes the SAME real directory (the symlinked-path
+// case the fallback exists for) is safe to accept.
+func encodesSameWorkingDir(encodedDir, projectPath, resolvedPath string) bool {
+	if encodedDir == "" {
+		return false
+	}
+	for _, candidate := range []string{projectPath, resolvedPath} {
+		if candidate == "" {
+			continue
+		}
+		if encodedDir == ConvertToClaudeDirName(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 // findSessionFileInAllProjects searches all Claude project directories for a session file
 // This handles path hash mismatches when agent-deck runs from a different directory
 // than where the Claude session was originally created.
 // Returns the full path to the session file, or empty string if not found.
+//
+// CAUTION: a hit here means "this jsonl exists somewhere", NOT "Claude can
+// resume it". `claude --resume` only consults the project dir derived from its
+// own cwd. Callers deciding between --resume and --session-id must therefore
+// gate this result through encodesSameWorkingDir; callers that merely need the
+// file's size or mtime (sessionConversationByteSize, sessionConversationMtime)
+// can use it unguarded.
 // Uses the PER-INSTANCE config dir (via GetClaudeConfigDirForInstance) when
 // inst is non-nil so sessions with conductor/group config_dir overrides find
 // their own JSONLs. Passing inst == nil degrades to the global lookup.
