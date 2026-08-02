@@ -2500,6 +2500,32 @@ func (s *Session) Start(command string) error {
 // tests.
 var hasSessionProbeTimeout = 2 * time.Second
 
+// isTmuxProtocolMismatch reports whether tmux output signals a client/server
+// protocol version mismatch. tmux prints "protocol version mismatch (client X,
+// server Y)" when a client binary of one protocol version talks to a server
+// started by a binary of a different version — common when the running server
+// uses a newer tmux (e.g. one installed under a Nix profile) while the client's
+// PATH resolves an older system tmux. Crucially, a mismatch response is proof
+// that the SERVER is alive and reachable: it answered with its version. The
+// failure is purely in the client binary, not in the session. Callers must
+// therefore treat a mismatch as indeterminate (assume alive), never as an
+// authoritative "session gone".
+//
+// An authoritative absence reply always wins over the mismatch marker. tmux
+// echoes the requested target in "can't find session: <name>", so a session
+// NAMED like the marker (e.g. "protocol version mismatch") would otherwise make
+// the bare substring test below fire on a genuine "gone" reply and wrongly keep
+// a dead session alive. A real mismatch means the client never reached the
+// server, so it can't also carry an authoritative absence — the two are
+// mutually exclusive, and giving absence precedence is safe.
+func isTmuxProtocolMismatch(output string) bool {
+	lower := strings.ToLower(output)
+	if strings.Contains(lower, "can't find session") {
+		return false
+	}
+	return strings.Contains(lower, "protocol version mismatch")
+}
+
 // Exists checks if the tmux session exists
 // Uses cached session list when available (refreshed by RefreshExistingSessions)
 // Falls back to direct tmux call if cache is stale
@@ -2539,9 +2565,18 @@ func (s *Session) Exists() bool {
 	// that actually completes with a non-success status means "gone".
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
-	err := s.tmuxCmdContext(ctx, "has-session", "-t", s.Name).Run()
+	out, err := s.tmuxCmdContext(ctx, "has-session", "-t", s.Name).CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return true // probe timed out: indeterminate, assume still alive
+	}
+	// A client/server protocol version mismatch fails the probe fast with a
+	// non-zero exit, but it does NOT mean the session is gone: the mismatch reply
+	// proves the server (and this session) is alive — only the client binary is
+	// wrong. Treating it as "gone" flipped live sessions to StatusError (via
+	// terminatedPaneStatus) even though nothing crashed. Assume alive, like the
+	// timeout branch, and let a later poll with a matching client resolve it.
+	if err != nil && isTmuxProtocolMismatch(string(out)) {
+		return true
 	}
 	return err == nil
 }
