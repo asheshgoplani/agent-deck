@@ -94,6 +94,30 @@ func ExpireStartupWindowForTest(t testing.TB, s *Session) {
 	s.mu.Unlock()
 }
 
+// SeedConnectedPipeForTest injects a fake, already-alive ControlPipe for
+// sessionName into pm's pipe map, reporting lastOutput as its most recent
+// %output event, without spawning a real `tmux -C` process or requiring a
+// tmux server. Lets internal/ui drive the sweep's PipeManager quiet-pipe
+// fast path (pm.IsConnected / pm.LastOutputTime) deterministically.
+//
+// The fake pipe answers only IsAlive() and LastOutputTime() truthfully
+// (both are plain mutex-guarded field reads); SendCommand and the other
+// process-backed methods are never exercised by that fast path and would
+// panic on this fake if called, which is intentional — it keeps the fake
+// from silently covering more surface than the sweep actually touches.
+func SeedConnectedPipeForTest(t testing.TB, pm *PipeManager, sessionName string, lastOutput time.Time) {
+	t.Helper()
+	fake := &ControlPipe{sessionName: sessionName, alive: true, lastOutput: lastOutput}
+	pm.mu.Lock()
+	pm.pipes[sessionName] = fake
+	pm.mu.Unlock()
+	t.Cleanup(func() {
+		pm.mu.Lock()
+		delete(pm.pipes, sessionName)
+		pm.mu.Unlock()
+	})
+}
+
 // ExpirePaneInfoCacheForTest leaves the cache contents intact but rewinds the
 // timestamp past the freshness threshold so GetCachedPaneInfo treats it as
 // stale. Used to model the case where backgroundStatusUpdate hasn't run for a

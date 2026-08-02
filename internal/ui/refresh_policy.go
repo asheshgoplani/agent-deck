@@ -54,9 +54,17 @@ import (
 //     zero) under the same maxSkips ceiling — holdVisible;
 //   - visible rows that DO need a poll are budgeted: at most
 //     visiblePollBudgetPerSweep of them per sweep, round-robin via a
-//     starvation counter so every due row gets its turn — admitVisiblePolls;
+//     starvation counter so every due row gets its turn — admitVisiblePolls.
+//     The budget is soft, maxSkips is hard: any row deferred maxSkips or more
+//     times is admitted regardless of budget, so the round-robin's ceiling
+//     can never exceed the documented one, even with far more due rows than
+//     budget;
 //   - the cursor row is exempt from the budget (it drives the preview pane
 //     and is what the user is reading);
+//   - the sweep's separate PipeManager quiet-pipe shortcut (only
+//     livePipeLRUCapacity=3 + attached sessions) is bounded by this same
+//     ceiling too — pipeIdleSkip — so it can no longer hold a session forever
+//     purely because PipeManager reports no new output;
 //   - the gate still fails OPEN (polls everything, no budget) when no fresh
 //     viewport snapshot exists, and the kill switch disables budget and hold
 //     alike.
@@ -289,6 +297,53 @@ func (l *refreshLedger) deferralCount(id string) int {
 	return l.entries[id].deferrals
 }
 
+// pipeIdleSkip bounds the sweep's separate PipeManager quiet-pipe shortcut
+// (home.go backgroundStatusUpdate: "skip idle sessions when PipeManager
+// knows they haven't produced output") by the SAME per-session staleness
+// ceiling the fingerprint gate uses below, sharing its skip counter.
+//
+// That shortcut predates this policy and runs BEFORE the fingerprint gate:
+// for the narrow set of sessions holding a live control pipe
+// (livePipeLRUCapacity = 3 + attached sessions), it used to skip
+// unconditionally for as long as PipeManager reported no recent output —
+// never reaching decide()/holdVisible(), so a session's ledger baseline was
+// never refreshed and heldSteady() (the read-only hold used by the
+// incremental visible-first path in processStatusUpdate) could hold it
+// forever. No ceiling, contradicting the design doc's "the ceiling bounds
+// the only real exposure" claim.
+//
+// Sharing the skip counter here closes that gap without adding a second,
+// independent bound to reason about: once maxSkips consecutive pipe-idle
+// sweeps have elapsed for a session, this returns false and RESETS the
+// entry (dropping the stale baseline), so the caller must fall through to
+// the normal fingerprint gate / poll path instead of skipping. The
+// zero-value baseline is certain to mismatch the freshly computed
+// fingerprint, so that fallthrough always forces a real poll and rebases —
+// exactly mirroring what happens when decide()/holdVisible() themselves hit
+// the ceiling.
+//
+// maxSkips<=0 (adaptive policy disabled — kill switch, or no fresh viewport
+// snapshot this sweep) returns true unconditionally: PipeManager alone
+// decides, byte-identical to the pre-policy shortcut this augments.
+func (l *refreshLedger) pipeIdleSkip(id string, maxSkips int) bool {
+	if l == nil || id == "" || maxSkips <= 0 {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.entries == nil {
+		l.entries = make(map[string]refreshLedgerEntry)
+	}
+	e := l.entries[id]
+	if e.skips >= maxSkips {
+		l.entries[id] = refreshLedgerEntry{}
+		return false
+	}
+	e.skips++
+	l.entries[id] = e
+	return true
+}
+
 // forget drops one session's baseline so the next sweep polls it. Called after
 // any path that refreshes a session out of band (attach-return, forced check),
 // so the gate can never hold a session whose state the TUI just invalidated.
@@ -329,7 +384,25 @@ type visiblePollCandidate struct {
 // preview pane, so it is effectively budget-exempt — it always lands in the
 // admitted prefix), then most-starved first so deferred rows rise until
 // admitted and the budget cycles round-robin through every due row.
-func admitVisiblePolls(due []visiblePollCandidate, cursorID string, budget int) (admitted, deferred []visiblePollCandidate) {
+//
+// Round-robin priority alone only bounds staleness by ceil(due/budget) — a
+// function of how many rows happen to be due at once, not of maxSkips. With
+// enough simultaneously-due rows (e.g. a large group expand) that can exceed
+// the maxSkips ceiling the design doc promises for visible rows by an
+// arbitrary factor: N due rows at budget B and a steady inflow of new due
+// rows can starve the tail indefinitely, since nothing ever forces admission
+// regardless of budget.
+//
+// maxSkips is therefore a HARD floor, not just a priority: any candidate
+// already deferred maxSkips or more times is admitted unconditionally, even
+// when that pushes this sweep's total above budget. The budget stays the
+// common case (deferral counts rarely reach maxSkips), but it can never be
+// the reason a visible row waits longer than the documented ceiling —
+// exactly the same trade the fingerprint gate itself makes (decide's
+// staleness-ceiling veto also overrides a "nothing changed" skip). Pass
+// maxSkips<=0 to disable forced admission (policy off; callers already keep
+// visibleDue empty in that case, so this is belt-and-suspenders).
+func admitVisiblePolls(due []visiblePollCandidate, cursorID string, budget int, maxSkips int) (admitted, deferred []visiblePollCandidate) {
 	sort.SliceStable(due, func(i, j int) bool {
 		iCursor := cursorID != "" && due[i].inst != nil && due[i].inst.ID == cursorID
 		jCursor := cursorID != "" && due[j].inst != nil && due[j].inst.ID == cursorID
@@ -344,7 +417,16 @@ func admitVisiblePolls(due []visiblePollCandidate, cursorID string, budget int) 
 	if len(due) <= budget {
 		return due, nil
 	}
-	return due[:budget], due[budget:]
+	admitted = due[:budget]
+	rest := due[budget:]
+	for _, c := range rest {
+		if maxSkips > 0 && c.deferrals >= maxSkips {
+			admitted = append(admitted, c)
+		} else {
+			deferred = append(deferred, c)
+		}
+	}
+	return admitted, deferred
 }
 
 // fingerprintSession builds a session's fingerprint from caches the sweep has

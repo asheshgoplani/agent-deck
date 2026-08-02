@@ -4546,10 +4546,20 @@ func (h *Home) backgroundStatusUpdate() {
 
 		// Skip idle sessions when PipeManager knows they haven't produced output.
 		// Only skip if pipe is alive (otherwise we need UpdateStatus for Error detection).
+		//
+		// Bounded by the SAME staleness ceiling as the fingerprint gate below
+		// (refreshLedger.pipeIdleSkip, sharing its skip counter): this shortcut
+		// predates the adaptive-refresh policy and used to skip unconditionally
+		// for as long as PipeManager reported no output, with no ceiling at
+		// all — the one path that could hold a session forever regardless of
+		// adaptiveMaxSkips. Once the ceiling is reached this falls through to
+		// the fingerprint gate / poll below instead of skipping, so a piped
+		// session can no longer be held indefinitely purely because
+		// PipeManager stays quiet. See pipeIdleSkip's doc comment.
 		if pm != nil {
 			if ts := inst.GetTmuxSession(); ts != nil && pm.IsConnected(ts.Name) {
 				lastOut := pm.LastOutputTime(ts.Name)
-				if !lastOut.IsZero() && time.Since(lastOut) > 5*time.Second {
+				if !lastOut.IsZero() && time.Since(lastOut) > 5*time.Second && h.refreshLedger.pipeIdleSkip(inst.ID, maxSkips) {
 					skipped++
 					continue
 				}
@@ -4592,14 +4602,18 @@ func (h *Home) backgroundStatusUpdate() {
 		pollInstance(inst)
 	}
 
-	// Visible-poll budget (issue #1753 group-expand case): at most
+	// Visible-poll budget (issue #1753 group-expand case): normally at most
 	// visiblePollBudgetPerSweep of the due visible rows are polled this sweep
 	// (cursor row always admitted); the rest are deferred with a starvation
-	// counter so the budget cycles round-robin. Only active when the policy
-	// is on: with the kill switch or a failed-open snapshot, visibleDue stays
-	// empty and every row was already polled above.
+	// counter so the budget cycles round-robin. The budget is soft — a row
+	// deferred maxSkips or more times is admitted regardless, so this can
+	// exceed visiblePollBudgetPerSweep on a sweep with many simultaneously
+	// due rows rather than let any one of them wait longer than the
+	// documented staleness ceiling. Only active when the policy is on: with
+	// the kill switch or a failed-open snapshot, visibleDue stays empty and
+	// every row was already polled above.
 	if len(visibleDue) > 0 {
-		admitted, deferred := admitVisiblePolls(visibleDue, viewSnap.cursorID, visiblePollBudgetPerSweep)
+		admitted, deferred := admitVisiblePolls(visibleDue, viewSnap.cursorID, visiblePollBudgetPerSweep, maxSkips)
 		for _, c := range admitted {
 			h.refreshLedger.admitPoll(c.inst.ID, c.fp)
 			pollInstance(c.inst)

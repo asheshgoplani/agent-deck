@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -382,7 +383,10 @@ func TestAdmitVisiblePolls_RoundRobinCoversAllDueRows(t *testing.T) {
 				inst: inst, fp: fp, deferrals: l.deferralCount(inst.ID),
 			})
 		}
-		admitted, deferred := admitVisiblePolls(candidates, "", budget)
+		// maxSkips huge: never large enough to force admission within these
+		// sweeps, so this test stays a pure round-robin check (the
+		// maxSkips-as-hard-floor behaviour has its own test below).
+		admitted, deferred := admitVisiblePolls(candidates, "", budget, 1000)
 		if len(admitted) != budget {
 			t.Fatalf("sweep %d admitted %d rows, want exactly the budget %d", s, len(admitted), budget)
 		}
@@ -414,7 +418,7 @@ func TestAdmitVisiblePolls_CursorRowIsNeverDeferred(t *testing.T) {
 		inst: &session.Instance{ID: "cursor-row"}, deferrals: 0,
 	})
 
-	admitted, deferred := admitVisiblePolls(candidates, "cursor-row", 10)
+	admitted, deferred := admitVisiblePolls(candidates, "cursor-row", 10, 1000)
 	for _, c := range deferred {
 		if c.inst.ID == "cursor-row" {
 			t.Fatal("cursor row was deferred by the budget")
@@ -422,6 +426,147 @@ func TestAdmitVisiblePolls_CursorRowIsNeverDeferred(t *testing.T) {
 	}
 	if len(admitted) == 0 || admitted[0].inst.ID != "cursor-row" {
 		t.Fatalf("cursor row should be admitted first, got %v", admitted)
+	}
+}
+
+// TestAdmitVisiblePolls_MaxSkipsBoundsStalenessRegardlessOfDueCount proves
+// the fix for the review's second HIGH finding: round-robin priority alone
+// only bounds staleness by ceil(due/budget) — a function of how many rows
+// happen to be due at once, not of maxSkips. Before this fix, a due set far
+// larger than budget*maxSkips could push an individual row's wait
+// arbitrarily past the "at most maxSkips sweeps stale" ceiling the design
+// doc promises for visible rows (e.g. 100 due rows at budget 10 and
+// maxSkips 2: the tail could wait up to 9 sweeps, not 2).
+//
+// This drives many more due rows than budget*maxSkips would allow under a
+// pure round-robin and asserts NO row is ever deferred more than maxSkips
+// consecutive times before being admitted — maxSkips must be a hard floor
+// that overrides the budget, not just a priority hint.
+func TestAdmitVisiblePolls_MaxSkipsBoundsStalenessRegardlessOfDueCount(t *testing.T) {
+	const due, budget, maxSkips = 137, 10, 3 // ceil(due/budget) = 14 sweeps under pure round-robin >> maxSkips
+	l := newRefreshLedger()
+	fp := quiescentFP()
+	insts := make([]*session.Instance, due)
+	for i := range insts {
+		insts[i] = &session.Instance{ID: fmt.Sprintf("row-%03d", i)}
+	}
+
+	streak := make(map[string]int) // consecutive sweeps each row has been deferred
+	everAdmitted := make(map[string]bool)
+
+	for s := 0; s < 40; s++ { // far more sweeps than either bound would need
+		candidates := make([]visiblePollCandidate, 0, due)
+		for _, inst := range insts {
+			candidates = append(candidates, visiblePollCandidate{
+				inst: inst, fp: fp, deferrals: l.deferralCount(inst.ID),
+			})
+		}
+		admitted, deferred := admitVisiblePolls(candidates, "", budget, maxSkips)
+		for _, c := range admitted {
+			l.admitPoll(c.inst.ID, c.fp)
+			if streak[c.inst.ID] > maxSkips {
+				t.Fatalf("sweep %d: row %s waited %d consecutive sweeps before admission, want <= %d (maxSkips)",
+					s, c.inst.ID, streak[c.inst.ID], maxSkips)
+			}
+			streak[c.inst.ID] = 0
+			everAdmitted[c.inst.ID] = true
+		}
+		for _, c := range deferred {
+			l.deferPoll(c.inst.ID)
+			streak[c.inst.ID]++
+			if streak[c.inst.ID] > maxSkips {
+				t.Fatalf("sweep %d: row %s has been deferred %d consecutive times without being admitted, want <= %d (maxSkips)",
+					s, c.inst.ID, streak[c.inst.ID], maxSkips)
+			}
+		}
+	}
+	for _, inst := range insts {
+		if !everAdmitted[inst.ID] {
+			t.Fatalf("row %s was never admitted across 40 sweeps", inst.ID)
+		}
+	}
+}
+
+// TestAdmitVisiblePolls_MaxSkipsDisabledFallsBackToPureRoundRobin pins the
+// maxSkips<=0 branch: with the adaptive policy off (kill switch, or a
+// failed-open sweep) forced admission must not fire — callers already keep
+// visibleDue empty in that state, but the function itself must not depend on
+// that to stay safe.
+func TestAdmitVisiblePolls_MaxSkipsDisabledFallsBackToPureRoundRobin(t *testing.T) {
+	candidates := make([]visiblePollCandidate, 0, 20)
+	for i := 0; i < 20; i++ {
+		candidates = append(candidates, visiblePollCandidate{
+			inst: &session.Instance{ID: fmt.Sprintf("row-%d", i)}, deferrals: 999,
+		})
+	}
+	admitted, deferred := admitVisiblePolls(candidates, "", 5, 0)
+	if len(admitted) != 5 {
+		t.Fatalf("maxSkips<=0 must not force extra admissions: admitted = %d, want budget 5", len(admitted))
+	}
+	if len(deferred) != 15 {
+		t.Fatalf("maxSkips<=0 must not force extra admissions: deferred = %d, want 15", len(deferred))
+	}
+}
+
+// TestRefreshLedger_PipeIdleSkip_BoundsTheQuietPipeShortcut proves the fix
+// for the review's first HIGH finding: the sweep's PipeManager quiet-pipe
+// shortcut used to skip a session unconditionally for as long as
+// PipeManager reported no output, never reaching decide()/holdVisible() and
+// therefore never refreshing the session's ledger baseline — so
+// heldSteady() (the incremental visible-first path's read-only hold) could
+// hold that session forever. pipeIdleSkip shares the same skip counter and
+// ceiling as the fingerprint gate, so the shortcut can no longer hold a
+// session past maxSkips consecutive sweeps.
+func TestRefreshLedger_PipeIdleSkip_BoundsTheQuietPipeShortcut(t *testing.T) {
+	l := newRefreshLedger()
+	const maxSkips = 2
+
+	// A pipe that reports "no new output" every single sweep, indefinitely,
+	// must still eventually be forced open — the ceiling, not PipeManager,
+	// has the final say.
+	for round := 0; round < 5; round++ {
+		for i := 0; i < maxSkips; i++ {
+			if !l.pipeIdleSkip("piped-1", maxSkips) {
+				t.Fatalf("round %d, sweep %d: expected a skip (still under the ceiling)", round, i)
+			}
+		}
+		if l.pipeIdleSkip("piped-1", maxSkips) {
+			t.Fatalf("round %d: pipeIdleSkip must return false at the ceiling — a piped session cannot be held forever", round)
+		}
+		// The forced-open sweep resets the entry to a mismatching (unusable)
+		// baseline: the caller's fallthrough to decide()/holdVisible() is
+		// therefore guaranteed to see "fingerprint-changed" and actually poll.
+		entry, ok := ledgerEntry(l, "piped-1")
+		if !ok {
+			t.Fatalf("round %d: forced-open must leave a (reset) entry, not delete it", round)
+		}
+		if entry.skips != 0 || entry.fp.ok {
+			t.Fatalf("round %d: forced-open entry not reset: %+v", round, entry)
+		}
+	}
+}
+
+// TestRefreshLedger_PipeIdleSkip_KillSwitchIsUnconditional pins the
+// maxSkips<=0 branch: PipeManager alone decides, matching the pre-adaptive-
+// policy shortcut byte-for-byte (skip forever, no forced poll) — this
+// function must never introduce a ceiling the kill switch didn't ask for.
+func TestRefreshLedger_PipeIdleSkip_KillSwitchIsUnconditional(t *testing.T) {
+	l := newRefreshLedger()
+	for i := 0; i < 50; i++ {
+		if !l.pipeIdleSkip("piped-killswitch", 0) {
+			t.Fatalf("sweep %d: maxSkips<=0 must always skip (pre-policy behaviour)", i)
+		}
+	}
+}
+
+func TestRefreshLedger_PipeIdleSkip_NilSafety(t *testing.T) {
+	var nilLedger *refreshLedger
+	if !nilLedger.pipeIdleSkip("x", 2) {
+		t.Fatal("nil ledger must behave like the pre-policy shortcut: always skip")
+	}
+	l := newRefreshLedger()
+	if !l.pipeIdleSkip("", 2) {
+		t.Fatal("empty id must always skip (matches every other nil/empty-safe ledger method)")
 	}
 }
 

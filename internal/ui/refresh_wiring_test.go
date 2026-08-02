@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -250,5 +251,58 @@ func TestRefreshAttachedSessionStatus_ForgetsLedgerBaseline(t *testing.T) {
 	if entry, ok := ledgerEntry(h.refreshLedger, inst.ID); ok {
 		t.Fatalf("attach-return must forget the adaptive-refresh baseline, entry survived: %+v (skips %d)",
 			entry.fp, entry.skips)
+	}
+}
+
+// TestBackgroundStatusUpdate_PipeIdleShortcutIsBoundedByCeiling pins the fix
+// for the review's first HIGH finding: the PipeManager quiet-pipe shortcut
+// ("skip idle sessions when PipeManager knows they haven't produced output")
+// runs BEFORE the fingerprint gate and, before this fix, skipped
+// unconditionally for as long as PipeManager reported no output — never
+// reaching refreshLedger, so a piped session's baseline was never refreshed
+// and it could be held forever.
+//
+// Drives the REAL backgroundStatusUpdate against a fake, permanently-quiet
+// connected pipe (tmux.SeedConnectedPipeForTest — no real tmux -C process,
+// no tmux server) for h.adaptiveMaxSkips consecutive sweeps, asserting the
+// shortcut is ALLOWED to skip (status stays Running, unpolled) up to the
+// ceiling, then MUST stop skipping on the next sweep even though
+// PipeManager keeps reporting the identical stale lastOutput throughout.
+// Catches deletion of the pipeIdleSkip bound in backgroundStatusUpdate: an
+// unbounded shortcut would keep the row at StatusRunning forever and the
+// final assertion would fail.
+func TestBackgroundStatusUpdate_PipeIdleShortcutIsBoundedByCeiling(t *testing.T) {
+	tmux.SeedServerAliveForTest(t, true)
+	const tmuxName = "agentdeck-wiring-piped"
+	inst := runningInst(t, "wiring-piped", tmuxName)
+	h := newWiringHome(t, inst)
+	// A fresh viewport snapshot that does NOT include this row keeps it
+	// off-screen and keeps maxSkips resolved at its normal value (not the
+	// fail-open 0) — the case under test.
+	h.visibleSessions.Store(visibleSessionSnapshot{
+		ids: map[string]struct{}{"some-other-row": {}},
+		at:  time.Now(),
+	})
+
+	pm := tmux.NewPipeManager(context.Background(), nil)
+	staleOutput := time.Now().Add(-10 * time.Second) // > the 5s PipeManager-idle threshold
+	tmux.SeedConnectedPipeForTest(t, pm, tmuxName, staleOutput)
+	tmux.SetPipeManager(pm)
+	t.Cleanup(func() { tmux.SetPipeManager(nil) })
+
+	for i := 0; i < h.adaptiveMaxSkips; i++ {
+		h.backgroundStatusUpdate()
+		if got := inst.GetStatusThreadSafe(); got != session.StatusRunning {
+			t.Fatalf("sweep %d: PipeManager shortcut should still be allowed to skip (under the ceiling), but status became %q", i, got)
+		}
+	}
+
+	// The ceiling is now exhausted: this sweep must force a real poll
+	// despite PipeManager reporting the SAME stale lastOutput as every prior
+	// sweep. A real UpdateStatus against a nonexistent tmux session moves
+	// the status off Running.
+	h.backgroundStatusUpdate()
+	if got := inst.GetStatusThreadSafe(); got == session.StatusRunning {
+		t.Fatal("PipeManager quiet-pipe shortcut held the row past the staleness ceiling: it was never polled")
 	}
 }
