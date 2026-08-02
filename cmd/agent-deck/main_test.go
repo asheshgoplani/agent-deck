@@ -478,38 +478,3 @@ func TestEnsureTmuxInPath(t *testing.T) {
 		}
 	})
 }
-
-func TestSubcommandNeedsTmuxPreflight(t *testing.T) {
-	tmuxCommands := []string{
-		"launch",
-		"session",
-		"list",
-		"ls",
-		"status",
-		"web",
-		"try",
-		"run-task",
-	}
-	for _, cmd := range tmuxCommands {
-		if !subcommandNeedsTmuxPreflight(cmd) {
-			t.Fatalf("%q should run ensureTmuxInPath before dispatch", cmd)
-		}
-	}
-
-	nonTmuxCommands := []string{
-		"version",
-		"--version",
-		"-v",
-		"help",
-		"--help",
-		"-h",
-		"mcp",
-		"plugin",
-		"skill",
-	}
-	for _, cmd := range nonTmuxCommands {
-		if subcommandNeedsTmuxPreflight(cmd) {
-			t.Fatalf("%q should not require tmux before dispatch", cmd)
-		}
-	}
-}

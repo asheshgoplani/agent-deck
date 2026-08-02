@@ -108,6 +108,7 @@ func handleTry(profile string, args []string) {
 		)
 		return
 	}
+	ensureTmuxInPathOrExit()
 
 	// Create and start session
 	storage, instances, groups, err := loadSessionData(profile)
