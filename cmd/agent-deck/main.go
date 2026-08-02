@@ -28,6 +28,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/intervalhook"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -534,6 +535,17 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sigChan
+		// Stop interval hooks and wait for their kill to land. Hook commands
+		// run in their own process groups — intentionally detached from the
+		// terminal's hangup safety net — and only the in-app quit path
+		// (performFinalShutdown) stopped the runner, so a hook mid-run when
+		// the terminal closed or the process was signalled kept running until
+		// its own timeout, stacking one orphan per launch/close cycle (#1829).
+		// Stop blocks (bounded) until in-flight runs are reaped, which is
+		// what makes it safe to os.Exit below.
+		if hooks := intervalhook.GetGlobal(); hooks != nil {
+			hooks.Stop()
+		}
 		// Close control-mode pipes so their tmux clients detach cleanly instead
 		// of orphaning. PipeManager.Close drives the staged EOF teardown, which
 		// avoids the signal-driven detach that races tmux/tmux#4980. The clean
