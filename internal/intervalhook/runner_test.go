@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/integration"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/testutil/logassert"
 )
 
 // newTestRunner builds a Runner with an injected loader (no config.toml I/O),
@@ -26,13 +28,39 @@ func newTestRunner(load configLoader) *Runner {
 		logger:         nil,
 		load:           load,
 		rescanInterval: defaultRescanInterval,
+		tickInterval:   defaultTickInterval,
 		rootCtx:        ctx,
 		rootCancel:     cancel,
 		stopCh:         make(chan struct{}),
-		running:        make(map[string]bool),
 		supervised:     make(map[string]bool),
 		startupRan:     make(map[string]bool),
 	}
+}
+
+// readPid parses a pid that a hook command wrote via `echo $$ > file` (or
+// `$!`), returning 0 while the file is missing or incomplete.
+func readPid(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
+}
+
+// requirePid returns the pid recorded at path, failing the test if absent,
+// and guarantees the process cannot leak past the test.
+func requirePid(t *testing.T, path string) int {
+	t.Helper()
+	pid := readPid(path)
+	if pid == 0 {
+		t.Fatalf("no valid pid recorded in %s", path)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	return pid
 }
 
 func TestRunOnce_ExecutesCommand(t *testing.T) {
@@ -50,22 +78,6 @@ func TestRunOnce_ExecutesCommand(t *testing.T) {
 	}
 	if string(got) != "ok" {
 		t.Fatalf("marker = %q, want %q", string(got), "ok")
-	}
-}
-
-func TestRunOnce_OverlapSkipped(t *testing.T) {
-	// Mark a hook as already running; runOnce must skip (not write the marker).
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "ran")
-	r := newTestRunner(nil)
-	r.mu.Lock()
-	r.running["busy"] = true
-	r.mu.Unlock()
-
-	r.runOnce("busy", session.IntervalHookSettings{Command: "printf ok > " + marker})
-
-	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("overlapping run was not skipped: marker was written")
 	}
 }
 
@@ -108,72 +120,30 @@ func TestRunOnce_KillsBackgroundedChildrenOnCompletion(t *testing.T) {
 	r.runOnce("bg", session.IntervalHookSettings{
 		Command: fmt.Sprintf("sleep 30 >/dev/null 2>&1 & echo $! > %s", pidFile),
 	})
-
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatalf("backgrounded child's pid file not written: %v", err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
-		t.Fatalf("bad pid in pid file: %q (%v)", data, err)
-	}
+	pid := requirePid(t, pidFile)
 
 	// The child must be gone shortly after runOnce returns (allow a brief
 	// window for the orphan to be reaped after SIGKILL).
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if syscall.Kill(pid, 0) != nil {
-			return // ESRCH: child is dead — contract holds
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	_ = syscall.Kill(pid, syscall.SIGKILL) // don't leak it past the test
-	t.Fatalf("backgrounded child (pid %d) outlived its slot after a normal exit", pid)
+	integration.WaitForCondition(t, 2*time.Second, 20*time.Millisecond,
+		"backgrounded child killed with its slot after a normal exit",
+		func() bool { return syscall.Kill(pid, 0) != nil })
 }
 
 // TestRunOnce_FailureLogsCapturedOutput pins the logging contract across the
 // CombinedOutput→boundedBuffer change: a failing hook's log record must still
 // carry the (truncated) combined output it produced.
 func TestRunOnce_FailureLogsCapturedOutput(t *testing.T) {
-	var mu sync.Mutex
-	var records []map[string]string
-	logger := slog.New(slogRecorder{mu: &mu, records: &records})
-
+	cap := logassert.NewCapture()
 	r := newTestRunner(nil)
-	r.logger = logger
+	r.logger = slog.New(cap)
+
 	r.runOnce("boom", session.IntervalHookSettings{Command: "echo boom-output; exit 3"})
 
-	mu.Lock()
-	defer mu.Unlock()
-	for _, rec := range records {
-		if rec["msg"] == "interval_hook_failed" && strings.Contains(rec["output"], "boom-output") {
-			return
-		}
+	rec := cap.MustOne(t, "interval_hook_failed")
+	if got := rec.String("output"); !strings.Contains(got, "boom-output") {
+		t.Fatalf("interval_hook_failed record lacks the command output; output = %q", got)
 	}
-	t.Fatalf("no interval_hook_failed record carrying the command output; got %v", records)
 }
-
-// slogRecorder is a minimal slog.Handler that flattens each record's string
-// attrs into a map for assertions.
-type slogRecorder struct {
-	mu      *sync.Mutex
-	records *[]map[string]string
-}
-
-func (s slogRecorder) Enabled(context.Context, slog.Level) bool { return true }
-func (s slogRecorder) Handle(_ context.Context, r slog.Record) error {
-	rec := map[string]string{"msg": r.Message}
-	r.Attrs(func(a slog.Attr) bool {
-		rec[a.Key] = a.Value.String()
-		return true
-	})
-	s.mu.Lock()
-	*s.records = append(*s.records, rec)
-	s.mu.Unlock()
-	return nil
-}
-func (s slogRecorder) WithAttrs([]slog.Attr) slog.Handler { return s }
-func (s slogRecorder) WithGroup(string) slog.Handler      { return s }
 
 func TestRunOnce_TimeoutKillsCommand(t *testing.T) {
 	// A 1s-timeout hook running `sleep 5` must return well before 5s.
@@ -191,9 +161,14 @@ func TestRunOnce_TimeoutKillsCommand(t *testing.T) {
 // leave it running until its own (long) timeout. A `sleep 30` hook with a large
 // timeout is started; Stop() during the run must let runOnce return promptly.
 func TestStop_CancelsInFlightRun(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "inflight.pid")
 	r := newTestRunner(nil)
 	// Long command + long timeout: without cancellation, runOnce would block ~30s.
-	hook := session.IntervalHookSettings{Command: "sleep 30", TimeoutSeconds: 30}
+	hook := session.IntervalHookSettings{
+		Command:        fmt.Sprintf("echo $$ > %s; sleep 30", pidFile),
+		TimeoutSeconds: 30,
+	}
 
 	done := make(chan time.Duration, 1)
 	go func() {
@@ -202,24 +177,12 @@ func TestStop_CancelsInFlightRun(t *testing.T) {
 		done <- time.Since(start)
 	}()
 
-	// Wait for the run to actually start (the running flag is set under mu).
-	// Failing hard on the deadline matters (#1829 item 6): without it the
-	// test called Stop() regardless and could pass vacuously when the run
-	// never started.
-	deadline := time.Now().Add(2 * time.Second)
-	started := false
-	for time.Now().Before(deadline) {
-		r.mu.Lock()
-		started = r.running["inflight"]
-		r.mu.Unlock()
-		if started {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !started {
-		t.Fatal("in-flight run never reached the running state within 2s; cannot exercise Stop cancellation")
-	}
+	// Wait for the run to actually start. Failing hard on the deadline
+	// matters (#1829 item 6): without it the test called Stop() regardless
+	// and could pass vacuously when the run never started.
+	integration.WaitForCondition(t, 2*time.Second, 10*time.Millisecond,
+		"in-flight run started (pid file written)",
+		func() bool { return readPid(pidFile) != 0 })
 
 	r.Stop() // must cancel the in-flight run's context
 
@@ -255,20 +218,10 @@ func TestStop_WaitsForInFlightKillDelivery(t *testing.T) {
 	go r.runOnce("inflight", hook)
 
 	// Wait for the hook process to exist.
-	var pid int
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if data, err := os.ReadFile(pidFile); err == nil {
-			if p, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && p > 0 {
-				pid = p
-				break
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if pid == 0 {
-		t.Fatal("hook process never wrote its pid within 2s; cannot exercise Stop")
-	}
+	integration.WaitForCondition(t, 2*time.Second, 10*time.Millisecond,
+		"hook process wrote its pid",
+		func() bool { return readPid(pidFile) != 0 })
+	pid := requirePid(t, pidFile)
 
 	r.Stop()
 
@@ -276,7 +229,6 @@ func TestStop_WaitsForInFlightKillDelivery(t *testing.T) {
 	// delivered and the process reaped (runOnce's Wait returned), exactly the
 	// guarantee the signal handler needs before os.Exit.
 	if syscall.Kill(pid, 0) == nil {
-		_ = syscall.Kill(pid, syscall.SIGKILL) // don't leak it past the test
 		t.Fatalf("hook process (pid %d) still alive when Stop returned; os.Exit on the signal path would orphan it", pid)
 	}
 }
@@ -352,17 +304,6 @@ func TestRunAtStartup_FiresOncePerProcessAcrossConfigFlaps(t *testing.T) {
 		}
 		return strings.Count(string(data), "run")
 	}
-	waitFor := func(desc string, cond func() bool) {
-		t.Helper()
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			if cond() {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		t.Fatalf("timed out waiting for %s", desc)
-	}
 	supervised := func() bool {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -372,17 +313,20 @@ func TestRunAtStartup_FiresOncePerProcessAcrossConfigFlaps(t *testing.T) {
 	// 1. The startup run fires (marker written; the command then sleeps).
 	// Flip the config to failing while the run is still in flight, so the
 	// loop's post-startup config read sees the flap and the loop exits.
-	waitFor("initial startup run", func() bool { return countRuns() == 1 })
+	integration.WaitForCondition(t, 3*time.Second, 10*time.Millisecond,
+		"initial startup run", func() bool { return countRuns() == 1 })
 	mu.Lock()
 	loadable = false
 	mu.Unlock()
-	waitFor("hook loop exit on load failure", func() bool { return !supervised() })
+	integration.WaitForCondition(t, 3*time.Second, 10*time.Millisecond,
+		"hook loop exit on load failure", func() bool { return !supervised() })
 
 	// 3. Config recovers: the supervisor relaunches the loop.
 	mu.Lock()
 	loadable = true
 	mu.Unlock()
-	waitFor("loop relaunch after recovery", func() bool { return supervised() })
+	integration.WaitForCondition(t, 3*time.Second, 10*time.Millisecond,
+		"loop relaunch after recovery", func() bool { return supervised() })
 
 	// 4. The relaunched loop must NOT re-fire the startup command. Give a
 	// buggy implementation ample time to do so before declaring success.
@@ -443,10 +387,7 @@ func TestStart_Idempotent(t *testing.T) {
 // tick, so without an explicit drain a long run is followed by an immediate
 // back-to-back run and no drop is ever logged.
 func TestRunLoop_TickDuringRunIsDroppedAndLogged(t *testing.T) {
-	var mu sync.Mutex
-	var records []map[string]string
-	logger := slog.New(slogRecorder{mu: &mu, records: &records})
-
+	cap := logassert.NewCapture()
 	load := func() map[string]session.IntervalHookSettings {
 		return map[string]session.IntervalHookSettings{
 			// Each run (350ms) spans several 100ms ticks.
@@ -454,38 +395,19 @@ func TestRunLoop_TickDuringRunIsDroppedAndLogged(t *testing.T) {
 		}
 	}
 	r := newTestRunner(load)
-	r.logger = logger
+	r.logger = slog.New(cap)
 	// Sub-second cadence for the test; production derives this from the
 	// clamped (>=5s) GetIntervalSeconds, which would make this test crawl.
 	r.tickInterval = func(session.IntervalHookSettings) time.Duration { return 100 * time.Millisecond }
 	r.Start()
 	defer r.Stop()
 
-	count := func(msg string) int {
-		mu.Lock()
-		defer mu.Unlock()
-		n := 0
-		for _, rec := range records {
-			if rec["msg"] == msg {
-				n++
-			}
-		}
-		return n
-	}
-
 	// Wait until at least two runs completed, so at least one tick has fired
 	// mid-run and been handled one way or the other.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if count("interval_hook_ran") >= 2 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := count("interval_hook_ran"); got < 2 {
-		t.Fatalf("hook ran %d times within 5s; want >= 2 (test setup broken)", got)
-	}
-	if got := count("interval_hook_overlap_skipped"); got == 0 {
+	integration.WaitForCondition(t, 5*time.Second, 10*time.Millisecond,
+		"two completed hook runs",
+		func() bool { return len(cap.WithMessage("interval_hook_ran")) >= 2 })
+	if len(cap.WithMessage("interval_hook_overlap_skipped")) == 0 {
 		t.Fatal("no interval_hook_overlap_skipped logged although every run spans multiple ticks; pending tick was consumed as a back-to-back run instead of being dropped")
 	}
 }
