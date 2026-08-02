@@ -355,12 +355,13 @@ func handleLaunch(profile string, args []string) {
 		sessionTitle = filepath.Base(path)
 	}
 
-	// Check for duplicate and generate unique title
+	// Check for duplicate and generate unique title. `launch` has no --ssh
+	// flag, so the session always runs locally at `path`.
 	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
 	if !userProvidedTitle {
-		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
+		sessionTitle = generateUniqueTitle(instances, sessionTitle, localLocation(path))
 	} else {
-		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
+		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, localLocation(path)); isDupe {
 			out.Error(
 				fmt.Sprintf("session already exists: %s (%s)", existingInst.Title, existingInst.ID),
 				ErrCodeAlreadyExists,

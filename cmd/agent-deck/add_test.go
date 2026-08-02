@@ -76,7 +76,7 @@ func TestIsDuplicateSession_SamePath_DifferentTitle_NotDuplicate(t *testing.T) {
 	}
 
 	// Test: adding new session at same path with DIFFERENT title "Frontend Work"
-	isDup, existing := isDuplicateSession(instances, "Frontend Work", "/home/user/project")
+	isDup, existing := isDuplicateSession(instances, "Frontend Work", localLocation("/home/user/project"))
 
 	// Expect: NOT a duplicate - different titles should be allowed at same path
 	if isDup {
@@ -98,7 +98,7 @@ func TestIsDuplicateSession_SamePath_SameTitle_IsDuplicate(t *testing.T) {
 	}
 
 	// Test: adding new session at same path with SAME title "API Work"
-	isDup, existing := isDuplicateSession(instances, "API Work", "/home/user/project")
+	isDup, existing := isDuplicateSession(instances, "API Work", localLocation("/home/user/project"))
 
 	// Expect: IS a duplicate - exact same title and path
 	if !isDup {
@@ -123,7 +123,7 @@ func TestIsDuplicateSession_DifferentPath_SameTitle_NotDuplicate(t *testing.T) {
 	}
 
 	// Test: adding new session at DIFFERENT path with same title
-	isDup, existing := isDuplicateSession(instances, "My Work", "/home/user/project-b")
+	isDup, existing := isDuplicateSession(instances, "My Work", localLocation("/home/user/project-b"))
 
 	// Expect: NOT a duplicate - different paths, even if same title
 	if isDup {
@@ -139,7 +139,7 @@ func TestIsDuplicateSession_EmptyInstances(t *testing.T) {
 	instances := []*session.Instance{}
 
 	// Test: adding first session
-	isDup, existing := isDuplicateSession(instances, "New Project", "/home/user/project")
+	isDup, existing := isDuplicateSession(instances, "New Project", localLocation("/home/user/project"))
 
 	// Expect: NOT a duplicate - no existing sessions
 	if isDup {
@@ -163,7 +163,7 @@ func TestIsDuplicateSession_CaseInsensitiveTitle(t *testing.T) {
 	// Test: adding session with "API Work" (different case) at same path
 	// This tests whether title comparison is case-sensitive or not
 	// The expected behavior depends on implementation - adjust if needed
-	isDup, _ := isDuplicateSession(instances, "API Work", "/home/user/project")
+	isDup, _ := isDuplicateSession(instances, "API Work", localLocation("/home/user/project"))
 
 	// Expect: This may or may not be a duplicate depending on implementation
 	// If case-insensitive: isDup = true
@@ -188,7 +188,7 @@ func TestIsDuplicateSession_PathNormalization(t *testing.T) {
 	}
 
 	// Test: adding session with same path but without trailing slash
-	isDup, existing := isDuplicateSession(instances, "My Project", "/home/user/project")
+	isDup, existing := isDuplicateSession(instances, "My Project", localLocation("/home/user/project"))
 
 	// Expect: IS a duplicate - paths should be normalized
 	if !isDup {
@@ -220,7 +220,7 @@ func TestIsDuplicateSession_MultipleExistingSessions(t *testing.T) {
 	}
 
 	// Test 1: Adding "Backend" at same path - should be duplicate
-	isDup, existing := isDuplicateSession(instances, "Backend", "/home/user/project")
+	isDup, existing := isDuplicateSession(instances, "Backend", localLocation("/home/user/project"))
 	if !isDup {
 		t.Errorf("Expected duplicate for 'Backend' at /home/user/project")
 	}
@@ -229,7 +229,7 @@ func TestIsDuplicateSession_MultipleExistingSessions(t *testing.T) {
 	}
 
 	// Test 2: Adding "Testing" at same path - should NOT be duplicate
-	isDup, existing = isDuplicateSession(instances, "Testing", "/home/user/project")
+	isDup, existing = isDuplicateSession(instances, "Testing", localLocation("/home/user/project"))
 	if isDup {
 		t.Errorf("Expected non-duplicate for 'Testing' at /home/user/project")
 	}
@@ -302,7 +302,7 @@ func TestGenerateUniqueTitle_NoConflict(t *testing.T) {
 	}
 
 	// Test: generate title for "My Project" at same path
-	title := generateUniqueTitle(instances, "My Project", "/home/user/project")
+	title := generateUniqueTitle(instances, "My Project", localLocation("/home/user/project"))
 
 	// Expect: baseTitle unchanged
 	if title != "My Project" {
@@ -321,7 +321,7 @@ func TestGenerateUniqueTitle_OneConflict(t *testing.T) {
 	}
 
 	// Test: generate title for "My Project" at same path
-	title := generateUniqueTitle(instances, "My Project", "/home/user/project")
+	title := generateUniqueTitle(instances, "My Project", localLocation("/home/user/project"))
 
 	// Expect: "My Project (2)"
 	if title != "My Project (2)" {
@@ -350,7 +350,7 @@ func TestGenerateUniqueTitle_MultipleConflicts(t *testing.T) {
 	}
 
 	// Test: generate title for "My Project" at same path
-	title := generateUniqueTitle(instances, "My Project", "/home/user/project")
+	title := generateUniqueTitle(instances, "My Project", localLocation("/home/user/project"))
 
 	// Expect: "My Project (4)"
 	if title != "My Project (4)" {
@@ -374,7 +374,7 @@ func TestGenerateUniqueTitle_GapInNumbers(t *testing.T) {
 	}
 
 	// Test: generate title for "My Project" at same path
-	title := generateUniqueTitle(instances, "My Project", "/home/user/project")
+	title := generateUniqueTitle(instances, "My Project", localLocation("/home/user/project"))
 
 	// Expect: "My Project (2)" - fills the gap
 	if title != "My Project (2)" {
@@ -393,7 +393,7 @@ func TestGenerateUniqueTitle_SameTitleDifferentPath_NoConflict(t *testing.T) {
 	}
 
 	// Test: generate title for "My Project" at DIFFERENT path
-	title := generateUniqueTitle(instances, "My Project", "/home/user/project-b")
+	title := generateUniqueTitle(instances, "My Project", localLocation("/home/user/project-b"))
 
 	// Expect: baseTitle unchanged - different paths don't conflict
 	if title != "My Project" {
@@ -406,7 +406,7 @@ func TestGenerateUniqueTitle_EmptyInstances(t *testing.T) {
 	instances := []*session.Instance{}
 
 	// Test: generate title
-	title := generateUniqueTitle(instances, "New Project", "/home/user/project")
+	title := generateUniqueTitle(instances, "New Project", localLocation("/home/user/project"))
 
 	// Expect: baseTitle unchanged
 	if title != "New Project" {
@@ -419,7 +419,7 @@ func TestGenerateUniqueTitle_EmptyBaseTitle(t *testing.T) {
 	instances := []*session.Instance{}
 
 	// Test: generate title with empty base
-	title := generateUniqueTitle(instances, "", "/home/user/project")
+	title := generateUniqueTitle(instances, "", localLocation("/home/user/project"))
 
 	// Expect: empty string (or implementation may provide a default)
 	// This documents edge case behavior
@@ -439,7 +439,7 @@ func TestGenerateUniqueTitle_SpecialCharactersInTitle(t *testing.T) {
 	}
 
 	// Test: generate title for same special title at same path
-	title := generateUniqueTitle(instances, "My (Project) #1", "/home/user/project")
+	title := generateUniqueTitle(instances, "My (Project) #1", localLocation("/home/user/project"))
 
 	// Expect: "My (Project) #1 (2)" - handles special chars correctly
 	if title != "My (Project) #1 (2)" {
@@ -458,7 +458,7 @@ func TestGenerateUniqueTitle_TitleWithExistingNumber(t *testing.T) {
 	}
 
 	// Test: generate title for "My Project" at same path
-	title := generateUniqueTitle(instances, "My Project", "/home/user/project")
+	title := generateUniqueTitle(instances, "My Project", localLocation("/home/user/project"))
 
 	// Expect: "My Project" unchanged - base title doesn't exist
 	if title != "My Project" {
@@ -487,21 +487,85 @@ func TestGenerateUniqueTitle_MixedPathsMultipleTitles(t *testing.T) {
 	}
 
 	// Test 1: Adding "Work" at project-a - should get (3) since (2) exists
-	title := generateUniqueTitle(instances, "Work", "/home/user/project-a")
+	title := generateUniqueTitle(instances, "Work", localLocation("/home/user/project-a"))
 	if title != "Work (3)" {
 		t.Errorf("Expected 'Work (3)' for project-a, got '%s'", title)
 	}
 
 	// Test 2: Adding "Work" at project-b - should get (2) since only base exists
-	title = generateUniqueTitle(instances, "Work", "/home/user/project-b")
+	title = generateUniqueTitle(instances, "Work", localLocation("/home/user/project-b"))
 	if title != "Work (2)" {
 		t.Errorf("Expected 'Work (2)' for project-b, got '%s'", title)
 	}
 
 	// Test 3: Adding "Work" at project-c - should stay unchanged
-	title = generateUniqueTitle(instances, "Work", "/home/user/project-c")
+	title = generateUniqueTitle(instances, "Work", localLocation("/home/user/project-c"))
 	if title != "Work" {
 		t.Errorf("Expected 'Work' for project-c (no conflict), got '%s'", title)
+	}
+}
+
+// The auto-rename path has to agree with isDuplicateSession about what counts
+// as the same location, or `add --ssh` renames a genuinely new remote session
+// just because an unrelated one was registered from the same local directory.
+func TestGenerateUniqueTitle_SSHLocationsAreDistinct(t *testing.T) {
+	// Both existing sessions carry the same local placeholder ProjectPath,
+	// which is what `add --ssh` stores (the controller's CWD).
+	const localPlaceholder = "/home/user/cwd"
+	instances := []*session.Instance{
+		{
+			ID: "ssh001", Title: "app", ProjectPath: localPlaceholder,
+			SSHHost: "alice@host-a", SSHRemotePath: "/srv/app",
+		},
+		{
+			ID: "local001", Title: "app", ProjectPath: localPlaceholder,
+		},
+	}
+
+	// A different host is a different location: no rename.
+	if got := generateUniqueTitle(instances, "app", sessionLocation{
+		sshHost: "bob@host-b", sshRemotePath: "/srv/app", projectPath: localPlaceholder,
+	}); got != "app" {
+		t.Errorf("different SSH host: got %q, want %q (no rename — distinct location)", got, "app")
+	}
+
+	// A different remote path on the same host is also a different location.
+	if got := generateUniqueTitle(instances, "app", sessionLocation{
+		sshHost: "alice@host-a", sshRemotePath: "/srv/other", projectPath: localPlaceholder,
+	}); got != "app" {
+		t.Errorf("different remote path: got %q, want %q (no rename — distinct location)", got, "app")
+	}
+
+	// Same host AND same remote path IS the same location: rename.
+	if got := generateUniqueTitle(instances, "app", sessionLocation{
+		sshHost: "alice@host-a", sshRemotePath: "/srv/app", projectPath: localPlaceholder,
+	}); got != "app (2)" {
+		t.Errorf("same host and remote path: got %q, want %q", got, "app (2)")
+	}
+
+	// The local session at the placeholder path is its own location, and the
+	// remote sessions sharing that ProjectPath must not affect it.
+	if got := generateUniqueTitle(instances, "app", localLocation(localPlaceholder)); got != "app (2)" {
+		t.Errorf("local placeholder path: got %q, want %q", got, "app (2)")
+	}
+}
+
+// The auto-rename advisory must name where the session actually runs. Naming
+// the local placeholder path for a remote session points the user at a
+// directory that has nothing to do with the collision.
+func TestDuplicatePathNotice_RemoteLocationNamesHostNotPlaceholder(t *testing.T) {
+	const localPlaceholder = "/home/user/cwd"
+	notice := duplicatePathNotice("app", "app (2)", sessionLocation{
+		sshHost: "alice@host-a", sshRemotePath: "/srv/app", projectPath: localPlaceholder,
+	})
+	if notice == "" {
+		t.Fatal("expected a warning for a renamed remote session, got empty")
+	}
+	if !strings.Contains(notice, "alice@host-a:/srv/app") {
+		t.Errorf("notice %q does not name the remote location %q", notice, "alice@host-a:/srv/app")
+	}
+	if strings.Contains(notice, localPlaceholder) {
+		t.Errorf("notice %q names the misleading local placeholder path %q", notice, localPlaceholder)
 	}
 }
 
@@ -737,7 +801,7 @@ func TestDuplicatePathNotice(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := duplicatePathNotice(tt.base, tt.final, "/home/user/project")
+			got := duplicatePathNotice(tt.base, tt.final, localLocation("/home/user/project"))
 			if !tt.wantNotice {
 				if got != "" {
 					t.Fatalf("duplicatePathNotice(%q, %q) = %q, want empty (title unchanged)", tt.base, tt.final, got)

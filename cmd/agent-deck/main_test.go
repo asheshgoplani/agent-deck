@@ -337,59 +337,136 @@ func TestIsDuplicateSession(t *testing.T) {
 		{ID: "abc123", Title: "Test Session", ProjectPath: "/home/user/project"},
 		{ID: "def456", Title: "Another Session", ProjectPath: "/home/user/other"},
 		{ID: "ghi789", Title: "Root Session", ProjectPath: "/"},
+		// Two remote sessions registered from the same local directory, so
+		// they share the placeholder ProjectPath that `add --ssh` stores.
+		// Their real locations differ in both host and remote path.
+		{
+			ID: "ssh001", Title: "shared", ProjectPath: "/home/user/cwd",
+			SSHHost: "alice@host-a", SSHRemotePath: "/srv/app-a",
+		},
+		{
+			ID: "ssh002", Title: "shared", ProjectPath: "/home/user/cwd",
+			SSHHost: "bob@host-b", SSHRemotePath: "/opt/app-b",
+		},
+		// A remote session with no explicit remote path: it lands wherever
+		// the remote login shell does, which is its own location.
+		{
+			ID: "ssh003", Title: "login-dir", ProjectPath: "/home/user/cwd",
+			SSHHost: "alice@host-a",
+		},
 	}
 
 	tests := []struct {
 		name      string
 		title     string
-		path      string
+		loc       sessionLocation
 		expectDup bool
 		expectID  string
 	}{
 		{
 			name:      "exact duplicate",
 			title:     "Test Session",
-			path:      "/home/user/project",
+			loc:       localLocation("/home/user/project"),
 			expectDup: true,
 			expectID:  "abc123",
 		},
 		{
 			name:      "same title different path",
 			title:     "Test Session",
-			path:      "/home/user/different",
+			loc:       localLocation("/home/user/different"),
 			expectDup: false,
 		},
 		{
 			name:      "different title same path",
 			title:     "New Name",
-			path:      "/home/user/project",
+			loc:       localLocation("/home/user/project"),
 			expectDup: false,
 		},
 		{
 			name:      "no duplicate",
 			title:     "Unique Session",
-			path:      "/home/user/unique",
+			loc:       localLocation("/home/user/unique"),
 			expectDup: false,
 		},
 		{
 			name:      "trailing slash normalization - duplicate",
 			title:     "Test Session",
-			path:      "/home/user/project/",
+			loc:       localLocation("/home/user/project/"),
 			expectDup: true,
 			expectID:  "abc123",
 		},
 		{
 			name:      "root path duplicate",
 			title:     "Root Session",
-			path:      "/",
+			loc:       localLocation("/"),
 			expectDup: true,
 			expectID:  "ghi789",
+		},
+		{
+			name:      "remote duplicate: same host and same remote path",
+			title:     "shared",
+			loc:       sessionLocation{sshHost: "alice@host-a", sshRemotePath: "/srv/app-a", projectPath: "/home/user/cwd"},
+			expectDup: true,
+			expectID:  "ssh001",
+		},
+		{
+			name:      "remote trailing slash normalization",
+			title:     "shared",
+			loc:       sessionLocation{sshHost: "bob@host-b", sshRemotePath: "/opt/app-b/", projectPath: "/home/user/cwd"},
+			expectDup: true,
+			expectID:  "ssh002",
+		},
+		{
+			// The regression this type exists for. Both remote sessions share
+			// the local placeholder ProjectPath; comparing that path reported
+			// this genuinely-new session as a duplicate of ssh001/ssh002.
+			name:      "remote sessions on different hosts do NOT collide",
+			title:     "shared",
+			loc:       sessionLocation{sshHost: "carol@host-c", sshRemotePath: "/var/app-c", projectPath: "/home/user/cwd"},
+			expectDup: false,
+		},
+		{
+			name:      "same host different remote path does NOT collide",
+			title:     "shared",
+			loc:       sessionLocation{sshHost: "alice@host-a", sshRemotePath: "/srv/app-elsewhere", projectPath: "/home/user/cwd"},
+			expectDup: false,
+		},
+		{
+			// A local session must never match a remote one, even when the
+			// local path is spelled the same as the remote path.
+			name:      "local path does not collide with same-spelled remote path",
+			title:     "shared",
+			loc:       localLocation("/srv/app-a"),
+			expectDup: false,
+		},
+		{
+			// ...and the reverse: the remote placeholder path is not a
+			// location, so it must not match the local session that owns it.
+			name:      "remote does not collide with the local placeholder path",
+			title:     "local-at-cwd",
+			loc:       sessionLocation{sshHost: "alice@host-a", sshRemotePath: "/home/user/cwd", projectPath: "/home/user/cwd"},
+			expectDup: false,
+		},
+		{
+			name:      "remote login directory duplicate",
+			title:     "login-dir",
+			loc:       sessionLocation{sshHost: "alice@host-a", projectPath: "/home/user/cwd"},
+			expectDup: true,
+			expectID:  "ssh003",
+		},
+		{
+			// An unset remote path means the login directory, which is not
+			// knowably "/" -- so it must not match an explicit root.
+			name:      "remote login directory is not remote root",
+			title:     "login-dir",
+			loc:       sessionLocation{sshHost: "alice@host-a", sshRemotePath: "/", projectPath: "/home/user/cwd"},
+			expectDup: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isDup, inst := isDuplicateSession(instances, tt.title, tt.path)
+			isDup, inst := isDuplicateSession(instances, tt.title, tt.loc)
 			if isDup != tt.expectDup {
 				t.Errorf("isDuplicateSession() isDup = %v, want %v", isDup, tt.expectDup)
 			}

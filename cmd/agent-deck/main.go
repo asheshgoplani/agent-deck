@@ -1160,37 +1160,100 @@ func reorderArgsForFlagParsing(args []string) []string {
 	return append(flags, positional...)
 }
 
-// isDuplicateSession checks if a session with the same title AND path already exists.
-// Returns (isDuplicate, existingInstance)
-// Paths are normalized by removing trailing slashes for comparison.
-func isDuplicateSession(instances []*session.Instance, title, path string) (bool, *session.Instance) {
-	// Normalize path by removing trailing slash (except for root "/")
-	normalizedPath := strings.TrimSuffix(path, "/")
-	if normalizedPath == "" {
-		normalizedPath = "/"
+// sessionLocation identifies WHERE a session runs, which together with the
+// title forms a session's identity for duplicate detection.
+//
+// ProjectPath alone is not that location. For an --ssh session the project
+// lives on the remote host: handleAdd stores the real directory in
+// SSHRemotePath and leaves ProjectPath as a local placeholder that defaults to
+// the controller's CWD (see resolveSSHAddPaths). Comparing ProjectPath
+// therefore collapsed every remote session registered from the same local
+// directory into one location, so two genuinely different remote sessions --
+// different hosts AND different remote paths -- were reported as duplicates of
+// each other.
+type sessionLocation struct {
+	sshHost       string
+	sshRemotePath string
+	projectPath   string
+}
+
+// localLocation returns the location of a session running on this machine.
+func localLocation(projectPath string) sessionLocation {
+	return sessionLocation{projectPath: projectPath}
+}
+
+// instanceLocation returns the location of an already-registered session.
+func instanceLocation(inst *session.Instance) sessionLocation {
+	return sessionLocation{
+		sshHost:       inst.SSHHost,
+		sshRemotePath: inst.SSHRemotePath,
+		projectPath:   inst.ProjectPath,
 	}
+}
 
+// key returns the comparison key for this location. Local and remote keys are
+// namespaced so a local path can never collide with a remote one that happens
+// to spell the same string.
+func (l sessionLocation) key() string {
+	if l.sshHost == "" {
+		return "local:" + normalizeLocationPath(l.projectPath)
+	}
+	// An empty SSHRemotePath means "wherever the remote login shell lands",
+	// which is a different location from an explicit "/", so it deliberately
+	// skips normalizeLocationPath's empty-to-root mapping.
+	remotePath := l.sshRemotePath
+	if remotePath != "" {
+		remotePath = normalizeLocationPath(remotePath)
+	}
+	return "ssh:" + l.sshHost + ":" + remotePath
+}
+
+// description renders the location for human-facing diagnostics. Naming the
+// local placeholder path in a message about a remote session would be
+// actively misleading, so remote locations report the host and remote path.
+func (l sessionLocation) description() string {
+	if l.sshHost == "" {
+		return l.projectPath
+	}
+	if l.sshRemotePath == "" {
+		return l.sshHost + " (remote login directory)"
+	}
+	return l.sshHost + ":" + l.sshRemotePath
+}
+
+// normalizeLocationPath trims a trailing slash so "/a/b/" and "/a/b" compare
+// equal, mapping an empty path to root rather than the empty string.
+func normalizeLocationPath(path string) string {
+	normalized := strings.TrimSuffix(path, "/")
+	if normalized == "" {
+		return "/"
+	}
+	return normalized
+}
+
+// isDuplicateSession checks if a session with the same title AND location
+// already exists. Returns (isDuplicate, existingInstance).
+func isDuplicateSession(instances []*session.Instance, title string, loc sessionLocation) (bool, *session.Instance) {
+	locKey := loc.key()
 	for _, inst := range instances {
-		// Normalize existing path for comparison
-		existingPath := strings.TrimSuffix(inst.ProjectPath, "/")
-		if existingPath == "" {
-			existingPath = "/"
-		}
-
-		if existingPath == normalizedPath && inst.Title == title {
+		if instanceLocation(inst).key() == locKey && inst.Title == title {
 			return true, inst
 		}
 	}
 	return false, nil
 }
 
-// generateUniqueTitle generates a unique title for sessions at the same path.
-// If "project" exists at path, returns "project (2)", then "project (3)", etc.
-func generateUniqueTitle(instances []*session.Instance, baseTitle, path string) string {
-	// Check if base title is available at this path
+// generateUniqueTitle generates a unique title for sessions at the same location.
+// If "project" exists there, returns "project (2)", then "project (3)", etc.
+func generateUniqueTitle(instances []*session.Instance, baseTitle string, loc sessionLocation) string {
+	locKey := loc.key()
+	// Check if base title is available at this location. Matching on the same
+	// key as isDuplicateSession also fixes a latent inconsistency: this check
+	// compared ProjectPath verbatim, so a trailing slash made it disagree with
+	// isDuplicateSession about whether two sessions shared a path.
 	titleExists := func(title string) bool {
 		for _, inst := range instances {
-			if inst.ProjectPath == path && inst.Title == title {
+			if instanceLocation(inst).key() == locKey && inst.Title == title {
 				return true
 			}
 		}
@@ -1221,14 +1284,14 @@ func generateUniqueTitle(instances []*session.Instance, baseTitle, path string) 
 // invisible, because the usual cause is a forgotten existing session. Advisory
 // per docs/design/2026-07-26-session-identity-and-group-purpose.md §C: goes to
 // stderr, never changes the exit code, and never fails the create.
-func duplicatePathNotice(baseTitle, finalTitle, path string) string {
+func duplicatePathNotice(baseTitle, finalTitle string, loc sessionLocation) string {
 	if finalTitle == baseTitle {
 		return ""
 	}
 	return fmt.Sprintf(
 		"Warning: a session titled %q already exists at %s; registering this one as %q instead. "+
 			"Use -t to name it yourself, or 'agent-deck list' to find the existing session.",
-		baseTitle, path, finalTitle,
+		baseTitle, loc.description(), finalTitle,
 	)
 }
 
@@ -1408,6 +1471,15 @@ func handleAdd(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Arguments:")
 		fmt.Println("  [path]    Project directory (defaults to the group or global default_path, else current directory)")
+		fmt.Println()
+		fmt.Println("Duplicate sessions:")
+		fmt.Println("  A session is identified by its title plus where it runs (the project")
+		fmt.Println("  directory, or the host and remote directory for --ssh sessions).")
+		fmt.Println("  With -t: if that session already exists, nothing is registered and add")
+		fmt.Println("           fails with exit code 1 and code ALREADY_EXISTS.")
+		fmt.Println("  Without -t: a second session in the same place is registered with a")
+		fmt.Println("           numbered title (\"proj (2)\") and a warning on stderr; the exit")
+		fmt.Println("           code stays 0. Suppressed by --json and -q/--quiet.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -1728,6 +1800,17 @@ func handleAdd(profile string, args []string) {
 		sessionTitle = filepath.Base(path)
 	}
 
+	// Where this session will actually run. For --ssh that is the remote
+	// host plus remote directory, NOT `path`, which is only a local
+	// placeholder by this point (see the --ssh branch above and
+	// resolveSSHAddPaths). Both SSH values are already resolved here: the
+	// --ssh branch runs well before this check, and the same values are
+	// assigned to the instance below.
+	location := localLocation(path)
+	if *sshHost != "" {
+		location = sessionLocation{sshHost: *sshHost, sshRemotePath: *sshRemotePath, projectPath: path}
+	}
+
 	// Track if user provided explicit title or we auto-generated from folder name
 	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
 	isQuick := *quickCreate || *quickCreateShort
@@ -1736,22 +1819,23 @@ func handleAdd(profile string, args []string) {
 		// Quick mode: use auto-generated adjective-noun name
 		sessionTitle = session.GenerateUniqueSessionName(instances, sessionGroup)
 	} else if !userProvidedTitle {
-		// User didn't provide title - auto-generate unique title for this path.
-		// The rename is advisory-warned, not refused: `add <path>` twice is a
-		// legitimate way to run two agents on one checkout, but silently ending
-		// up with "proj" and "proj (2)" hides the fact that it happened.
+		// User didn't provide title - auto-generate unique title for this
+		// location. The rename is advisory-warned, not refused: `add <path>`
+		// twice is a legitimate way to run two agents on one checkout, but
+		// silently ending up with "proj" and "proj (2)" hides that it happened.
 		baseTitle := sessionTitle
-		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
-		if notice := duplicatePathNotice(baseTitle, sessionTitle, path); notice != "" && !*jsonOutput && !quietMode {
+		sessionTitle = generateUniqueTitle(instances, sessionTitle, location)
+		if notice := duplicatePathNotice(baseTitle, sessionTitle, location); notice != "" && !*jsonOutput && !quietMode {
 			fmt.Fprintln(os.Stderr, notice)
 		}
 	} else {
-		// User provided explicit title - check for exact duplicate (same title AND path).
-		// Same title AND same path means the session the user asked for already
-		// exists, so nothing gets registered. Reported as an error with a
-		// non-zero exit, matching `agent-deck launch` (launch_cmd.go) and the
-		// ALREADY_EXISTS convention the rest of the CLI uses.
-		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
+		// User provided explicit title - check for exact duplicate (same title
+		// AND location). Same title AND same location means the session the
+		// user asked for already exists, so nothing gets registered. Reported
+		// as an error with a non-zero exit, matching `agent-deck launch`
+		// (launch_cmd.go) and the ALREADY_EXISTS convention the rest of the
+		// CLI uses.
+		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, location); isDupe {
 			out.Error(
 				fmt.Sprintf("session already exists: %s (%s)", existingInst.Title, existingInst.ID),
 				ErrCodeAlreadyExists,
@@ -2548,11 +2632,16 @@ func handleRename(profile string, args []string) {
 
 	oldTitle := inst.Title
 
-	// Check for duplicate title at the same path (but allow renaming to same title)
+	// Check for duplicate title at the same location (but allow renaming to
+	// same title). The location comes from the instance itself, so a remote
+	// session is compared on its host and remote path rather than on the local
+	// placeholder ProjectPath it shares with every other remote session
+	// registered from the same directory.
 	if newTitle != oldTitle {
-		if isDup, existing := isDuplicateSession(instances, newTitle, inst.ProjectPath); isDup {
+		location := instanceLocation(inst)
+		if isDup, existing := isDuplicateSession(instances, newTitle, location); isDup {
 			out.Error(
-				fmt.Sprintf("session with title %q already exists at path %q (id: %s)", newTitle, inst.ProjectPath, existing.ID),
+				fmt.Sprintf("session with title %q already exists at path %q (id: %s)", newTitle, location.description(), existing.ID),
 				ErrCodeInvalidOperation,
 			)
 			os.Exit(1)
