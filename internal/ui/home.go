@@ -1483,7 +1483,11 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// Interval-hook runner. Constructed unconditionally (cheap); Start() is a
 	// no-op when no [interval_hooks] are configured, and hooks are re-read from
 	// config each tick so they can be added/removed without a restart.
+	// Registered globally so the signal-exit path in cmd/agent-deck/main.go
+	// can stop in-flight hook runs before os.Exit (#1829); the in-app quit
+	// path stops it via performFinalShutdown.
 	h.intervalHookRunner = intervalhook.New(uiLog)
+	intervalhook.SetGlobal(h.intervalHookRunner)
 
 	// Keep settings panel profile-aware so profile overrides (e.g., Claude config dir)
 	// are displayed and edited in the correct scope.
