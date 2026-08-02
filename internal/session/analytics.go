@@ -88,7 +88,8 @@ var modelContextWindowPrefixes = []struct {
 	{"claude-3-5", 200000},
 	{"claude-3-opus", 200000},
 	// MiniMax models
-	{"MiniMax-M2.7", 1000000},          // 1M context
+	{"MiniMax-M3", 1000000},            // 1M context
+	{"MiniMax-M2.7", 204800},           // 204.8K context
 	{"MiniMax-M2.5-highspeed", 204000}, // 204K context (must precede M2.5)
 	{"MiniMax-M2.5", 204000},           // 204K context
 }
@@ -130,7 +131,8 @@ var modelPricing = map[string]ModelPricing{
 	"claude-3-5-sonnet":        {Input: 3.0, Output: 15.0, CacheRead: 0.30, CacheWrite: 3.75},
 	"claude-3-5-haiku":         {Input: 0.80, Output: 4.0, CacheRead: 0.08, CacheWrite: 1.0},
 	// MiniMax models
-	"MiniMax-M2.7":           {Input: 0.70, Output: 2.80},
+	"MiniMax-M3":             {Input: 0.60, Output: 2.40, CacheRead: 0.12},
+	"MiniMax-M2.7":           {Input: 0.30, Output: 1.20, CacheRead: 0.06, CacheWrite: 0.375},
 	"MiniMax-M2.7-highspeed": {Input: 0.35, Output: 1.40},
 	"MiniMax-M2.5":           {Input: 0.50, Output: 2.00},
 	"MiniMax-M2.5-highspeed": {Input: 0.15, Output: 0.60},
