@@ -594,8 +594,8 @@ func TestBridgeTemplate_HeartbeatScopesToConductorGroups(t *testing.T) {
 	patterns := []string{
 		"def select_heartbeat_conductors(conductors: list[dict]) -> list[dict]:",
 		"conductors = select_heartbeat_conductors(all_conductors)",
-		`s_group = s.get("group", "") or ""`,
-		`if s_group != name and not s_group.startswith(f"{name}/"):`,
+		"def session_in_conductor_scope(conductor: dict, session: dict) -> bool:",
+		"if session_in_conductor_scope(conductor, s)",
 		`for s in scoped_sessions:`,
 	}
 

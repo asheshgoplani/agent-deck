@@ -304,11 +304,31 @@ def discover_conductors() -> list[dict]:
             if meta_path.exists():
                 try:
                     with open(meta_path) as f:
-                        conductors.append(json.load(f))
+                        meta = json.load(f)
                 except (json.JSONDecodeError, IOError) as e:
                     log.warning("Failed to read %s: %s", meta_path, e)
+                    continue
+                meta["agent"] = meta.get("agent") or "claude"
+                conductors.append(meta)
     conductors.sort(key=lambda c: c.get("name", ""))
     return conductors
+
+
+def session_in_conductor_scope(conductor: dict, session: dict) -> bool:
+    """True if a session belongs in this conductor's heartbeat scope.
+
+    Conductors normally monitor only sessions whose group matches their
+    name (or "<name>/..." subgroups). meta.json ``"scope": "all"`` widens
+    the scope to every session except other conductors.
+    """
+    title = session.get("title", "untitled") or ""
+    if title.startswith("conductor-"):
+        return False
+    if str(conductor.get("scope") or "").lower() == "all":
+        return True
+    name = conductor.get("name", "") or ""
+    group = session.get("group", "") or ""
+    return group == name or group.startswith(f"{name}/")
 
 
 def conductor_session_title(name: str) -> str:
@@ -919,8 +939,14 @@ def _find_conductor_session_by_path(
     return (matches[0] if matches else None), False
 
 
-async def ensure_conductor_running(name: str, profile: str) -> bool:
-    """Ensure the conductor session exists and is running."""
+async def ensure_conductor_running(
+    name: str, profile: str, agent: str = "claude"
+) -> bool:
+    """Ensure the conductor session exists and is running.
+
+    ``agent`` is the agent-deck tool used when the session must be created
+    (from the conductor's meta.json ``"agent"`` field; defaults to claude).
+    """
     session_title = conductor_session_title(name)
     session_path = str(CONDUCTOR_DIR / name)
     loop = asyncio.get_running_loop()
@@ -1052,7 +1078,7 @@ async def ensure_conductor_running(name: str, profile: str) -> bool:
                 "-t",
                 session_title,
                 "-c",
-                "claude",
+                agent,
                 "-g",
                 "conductor",
                 "--title-lock",
@@ -1669,7 +1695,11 @@ def create_telegram_bot(config: dict):
                 cleaned_msg = stdout
 
         # Ensure conductor is running for this profile
-        if not await ensure_conductor_running(target_conductor["name"], target_profile):
+        if not await ensure_conductor_running(
+            target_conductor["name"],
+            target_profile,
+            target_conductor.get("agent") or "claude",
+        ):
             await message.answer(
                 f"[Could not start conductor for {target_profile}. Check agent-deck.]"
             )
@@ -2014,7 +2044,9 @@ def create_slack_app(config: dict):
         session_title = conductor_session_title(target["name"])
         profile = target["profile"]
 
-        if not await ensure_conductor_running(target["name"], profile):
+        if not await ensure_conductor_running(
+            target["name"], profile, target.get("agent") or "claude"
+        ):
             await _safe_say(
                 say,
                 text=f"[Could not start conductor {target['name']}. Check agent-deck.]",
@@ -2650,7 +2682,9 @@ def create_discord_bot(config: dict):
         session_title = conductor_session_title(target["name"])
         profile = target["profile"]
 
-        if not await ensure_conductor_running(target["name"], profile):
+        if not await ensure_conductor_running(
+            target["name"], profile, target.get("agent") or "claude"
+        ):
             await message.channel.send(
                 f"[Could not start conductor {target['name']}. Check agent-deck.]",
             )
@@ -2780,17 +2814,12 @@ async def heartbeat_loop(
                 session_title = conductor_session_title(name)
 
                 # Scope heartbeat monitoring to this conductor's own group
-                # (mirrors the deployed bridge: per-conductor, not profile-wide).
+                # (or everything, for conductors with "scope": "all").
                 sessions = get_sessions_list(profile)
-                scoped_sessions = []
-                for s in sessions:
-                    s_title = s.get("title", "untitled")
-                    s_group = s.get("group", "") or ""
-                    if s_title.startswith("conductor-"):
-                        continue
-                    if s_group != name and not s_group.startswith(f"{name}/"):
-                        continue
-                    scoped_sessions.append(s)
+                scoped_sessions = [
+                    s for s in sessions
+                    if session_in_conductor_scope(conductor, s)
+                ]
 
                 waiting = sum(1 for s in scoped_sessions if s.get("status", "") == "waiting")
                 running = sum(1 for s in scoped_sessions if s.get("status", "") == "running")
@@ -2870,7 +2899,9 @@ async def heartbeat_loop(
                         heartbeat_msg = stdout
 
                 # Ensure conductor is running for this profile
-                if not await ensure_conductor_running(name, profile):
+                if not await ensure_conductor_running(
+                    name, profile, conductor.get("agent") or "claude"
+                ):
                     log.error(
                         "Heartbeat [%s]: conductor not running, skipping",
                         name,
@@ -3084,7 +3115,9 @@ async def main():
 
     # Pre-start all conductors so they're warm when messages arrive
     for c in conductors:
-        if await ensure_conductor_running(c["name"], c["profile"]):
+        if await ensure_conductor_running(
+            c["name"], c["profile"], c.get("agent") or "claude"
+        ):
             log.info("Conductor %s is running", c["name"])
         else:
             log.warning("Failed to pre-start conductor %s", c["name"])
