@@ -23,7 +23,8 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 	listenAddr := fs.String("listen", "127.0.0.1:8420", "Listen address for web server")
 	readOnly := fs.Bool("read-only", false, "Run in read-only mode (input disabled)")
 	token := fs.String("token", "", "Bearer token for API/WS access")
-	insecureBind := fs.Bool("insecure-bind", false, "Allow binding a non-loopback address with no --token (UNSAFE: exposes an unauthenticated RCE surface to the network)")
+	tokenFile := fs.String("token-file", "", "Read bearer token for API/WS access from file")
+	insecureBind := fs.Bool("insecure-bind", false, "Allow binding a non-loopback address with no --token or --token-file (UNSAFE: exposes an unauthenticated RCE surface to the network)")
 	pushEnabled := fs.Bool("push", false, "Enable web push notifications (auto-generates VAPID keys per profile)")
 	pushVAPIDSubject := fs.String("push-vapid-subject", "mailto:agentdeck@localhost", "VAPID subject used for web push notifications")
 	pushTestEvery := fs.Duration("push-test-every", 0, "Send periodic push test notifications at this interval (e.g. 10s, 1m); 0 disables")
@@ -48,10 +49,10 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		fmt.Println("  agent-deck web --push --push-test-every 10s")
 		fmt.Println("  agent-deck web --no-tui                 # headless, perf win")
 		fmt.Println("  agent-deck web --no-tui --listen 127.0.0.1:9000")
-		fmt.Println("  agent-deck web --listen 0.0.0.0:8420 --token secret  # expose to LAN (token REQUIRED)")
+		fmt.Println("  agent-deck web --listen 0.0.0.0:8420 --token-file ~/.config/agent-deck/web-token")
 		fmt.Println()
 		fmt.Println("Security: the server binds loopback (127.0.0.1) by default. Binding a")
-		fmt.Println("non-loopback address without --token is refused — it would expose an")
+		fmt.Println("non-loopback address without --token or --token-file is refused — it would expose an")
 		fmt.Println("unauthenticated remote-code-execution surface. Override with --insecure-bind")
 		fmt.Println("(unsafe) only when you understand the risk.")
 	}
@@ -71,11 +72,15 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 	if *pushTestEvery > 0 && !*pushEnabled {
 		return nil, fmt.Errorf("--push-test-every requires --push")
 	}
+	resolvedToken, err := resolveWebToken(*token, *tokenFile)
+	if err != nil {
+		return nil, err
+	}
 
 	// Report #1: refuse an unauthenticated non-loopback bind before the TUI
 	// boots. Fails fast with an actionable error rather than silently exposing
 	// an unauthenticated RCE surface (terminal bridge + session-create API).
-	if err := web.CheckBindSecurity(*listenAddr, *token, *insecureBind); err != nil {
+	if err := web.CheckBindSecurity(*listenAddr, resolvedToken, *insecureBind); err != nil {
 		return nil, err
 	}
 
@@ -114,7 +119,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		Profile:             effectiveProfile,
 		ReadOnly:            *readOnly,
 		WebMutations:        resolveMutationsEnabled(*readOnly),
-		Token:               *token,
+		Token:               resolvedToken,
 		InsecureBind:        *insecureBind,
 		TrustedDomains:      session.GetWebTrustedDomains(),
 		ConfirmLinkOpen:     &confirmLinkOpen,
@@ -128,8 +133,29 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 	if mutator != nil {
 		server.SetMutator(mutator)
 	}
+	if resolvedToken != "" {
+		server.SetMCPManager(web.NewDefaultMCPManager())
+	}
 
 	return server, nil
+}
+
+func resolveWebToken(token, tokenFile string) (string, error) {
+	if token != "" && tokenFile != "" {
+		return "", fmt.Errorf("--token and --token-file are mutually exclusive")
+	}
+	if tokenFile == "" {
+		return token, nil
+	}
+	data, err := os.ReadFile(tokenFile)
+	if err != nil {
+		return "", fmt.Errorf("read --token-file: %w", err)
+	}
+	resolved := strings.TrimSpace(string(data))
+	if resolved == "" {
+		return "", fmt.Errorf("--token-file %s is empty", tokenFile)
+	}
+	return resolved, nil
 }
 
 // resolveMutationsEnabled applies precedence: --read-only forces mutations off;
