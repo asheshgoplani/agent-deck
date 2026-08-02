@@ -1,14 +1,17 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // bootstrapSessionName is the idle tmux session kept alive for the lifetime
@@ -123,6 +126,80 @@ func skipIfClaudePaneUnreliable(t *testing.T) {
 func skipIfNoClaudeBinary(t *testing.T) {
 	t.Helper()
 	skipIfClaudePaneUnreliable(t)
+}
+
+// fakeCursorExecutable writes an executable stand-in for the `cursor` CLI and
+// returns its absolute path.
+//
+// buildCursorCommand appends `--continue` to whatever Instance.Command holds, so
+// the script must tolerate arbitrary args. Using a stand-in rather than skipping
+// when `cursor` is missing is what keeps the Cursor restart path in required CI:
+// go-test.yml installs tmux and zoxide only, so a binary-presence skip would
+// mean the regression never runs there at all.
+func fakeCursorExecutable(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cursor-stand-in")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatalf("write cursor stand-in: %v", err)
+	}
+	return path
+}
+
+// paneAliveNow probes the pane directly, bypassing every cache, and treats a
+// query error as NOT live.
+//
+// That is deliberately the opposite of Session.IsPaneDead, which reports "not
+// dead" when list-panes errors so a briefly-wedged server cannot flip live
+// sessions into an error state. That stance is right in production and wrong
+// here: a test asserting a pane survived must notice a pane that has gone, and
+// after the session vanishes list-panes errors. Session.Exists is unusable for
+// the same class of reason — it trusts a positive cache hit and a live
+// PipeManager connection, and RespawnPane reconnects that pipe itself.
+func paneAliveNow(sess *tmux.Session) bool {
+	if sess == nil {
+		return false
+	}
+	args := []string{}
+	if sock := strings.TrimSpace(sess.SocketName); sock != "" {
+		args = append(args, "-L", sock)
+	}
+	args = append(args, "list-panes", "-t", sess.Name+":0.0", "-F", "#{pane_dead}")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", args...).Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "0"
+}
+
+// requireStableLivePane fails unless the pane is alive on EVERY sample across a
+// settle window. One sample cannot tell a pane that survived the respawn from
+// one that is about to exit, which is exactly the case a stand-in that quits
+// immediately produces.
+func requireStableLivePane(t *testing.T, inst *Instance, window time.Duration) {
+	t.Helper()
+	const samples = 5
+	for n := 1; n <= samples; n++ {
+		time.Sleep(window / samples)
+		if !paneAliveNow(inst.GetTmuxSession()) {
+			t.Fatalf("pane not live on sample %d/%d within %s of Restart", n, samples, window)
+		}
+	}
+}
+
+// paneGoneWithin reports whether the pane is observed not-live before the
+// deadline. Used to pin the probe itself against a stand-in that exits at once.
+func paneGoneWithin(inst *Instance, window time.Duration) bool {
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		if !paneAliveNow(inst.GetTmuxSession()) {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
 }
 
 func TestMain(m *testing.M) {

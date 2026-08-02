@@ -130,6 +130,12 @@ func IsolateTmuxSocket() func() {
 	}
 }
 
+// isolatedTmuxDirUsable reports whether a TMUX_TMPDIR value is safe to use.
+// Whitespace-only values fall back to tmux's default socket directory.
+func isolatedTmuxDirUsable(dir string) bool {
+	return strings.TrimSpace(dir) != ""
+}
+
 // tornDownTmuxTmpdir is where TMUX_TMPDIR points after cleanup. /dev/null is a
 // character device on every supported platform, so no component beneath it can
 // be created or opened: any tmux invocation resolving here fails immediately and
@@ -187,7 +193,7 @@ func isDefaultTmuxBase(dir string) bool {
 // test — but "best effort" here means every socket present gets a kill
 // attempt, not that the attempt is optional.
 func KillTmuxServersUnder(dir string) {
-	if dir == "" {
+	if !isolatedTmuxDirUsable(dir) {
 		return
 	}
 	if _, err := exec.LookPath("tmux"); err != nil {

@@ -12,11 +12,13 @@ import (
 	"os/exec"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -29,6 +31,41 @@ const attachOutputDrainTimeout = 250 * time.Millisecond
 // being short enough that the TUI does not feel frozen on return from
 // an attached session.
 const attachReplyQuarantine = 500 * time.Millisecond
+
+// AttachStdinPollInterval bounds how long the stdin reader may sit inside
+// poll(2) before it re-checks the attach context. A blocking os.Stdin.Read
+// cannot be interrupted by cancel(), and a tty inherited from the shell is
+// left in blocking mode, so Go never registers fd 0 with the netpoller and
+// SetReadDeadline returns ErrNoDeadline — polling is the only way to make the
+// read abandonable. 100ms is imperceptible on teardown and costs ~10 idle
+// wakeups/sec while attached, against the 4/sec the badge watcher already runs.
+const AttachStdinPollInterval = 100 * time.Millisecond
+
+// AttachStdinReaderStopTimeout bounds how long cleanupAttach waits for the
+// stdin reader to exit. Comfortably above AttachStdinPollInterval so a healthy
+// reader always wins the race; the timeout only fires if the reader is wedged
+// in a read that never returns, where proceeding beats hanging the TUI.
+const AttachStdinReaderStopTimeout = time.Second
+
+// PollFdReady reports whether fd has input available within timeout.
+// Retries on EINTR so a SIGWINCH mid-poll does not look like "no input".
+//
+// Exported because the SSH attach path (internal/session) needs the same
+// abandonable-read primitive for the same reason — see QuiesceAttachInput.
+func PollFdReady(fd int, timeout time.Duration) bool {
+	ms := int(timeout.Milliseconds())
+	if ms < 1 {
+		ms = 1
+	}
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}} // #nosec G115 -- fd is a real OS file descriptor (small positive int), fits in int32
+	for {
+		n, err := unix.Poll(fds, ms)
+		if err == unix.EINTR {
+			continue // retry after signal interruption
+		}
+		return err == nil && n > 0
+	}
+}
 
 // IndexDetachKey returns the index of a control-key sequence in data, or -1 if
 // not found. detachByte is the raw ASCII byte (e.g. 0x11 for Ctrl+Q).
@@ -211,6 +248,136 @@ func resolveAttachInterrupt(chunk []byte, detach byte, opts AttachOptions) (int,
 		outcome = ScrollbackRequested
 	}
 	return interruptIdx, outcome
+}
+
+// attachStdinPump forwards host stdin into the attached tmux PTY, filtering
+// terminal control replies and intercepting the detach / switch / scrollback
+// interrupt keys. Extracted from AttachWithOptions so the loop's cancellation
+// behaviour is unit-testable against an os.Pipe instead of a live tty.
+type attachStdinPump struct {
+	in        *os.File  // host stdin, in raw mode
+	out       io.Writer // the tmux attach PTY
+	detach    byte
+	opts      AttachOptions
+	startTime time.Time    // attach start, for the reply-quarantine window
+	ioErrors  chan<- error // buffered; sends are best-effort
+}
+
+// run pumps input until ctx is cancelled, stdin reaches EOF, an interrupt key
+// is pressed, or an I/O error occurs. It reports the switch intent and whether
+// an interrupt key was what stopped it.
+//
+// Cancellation is checked between polls rather than relying on the read
+// unblocking: os.Stdin.Read on a blocking tty is not interruptible, so a pump
+// that ignored ctx would survive the attach and steal the caller's next
+// keystroke. run therefore returns within roughly AttachStdinPollInterval of
+// cancellation.
+func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
+	buf := make([]byte, 32)
+	var replyFilter termreply.Filter
+	fd := int(p.in.Fd()) // #nosec G115 -- an OS file descriptor is a small positive int
+
+	reportErr := func(err error) {
+		select {
+		case p.ioErrors <- err:
+		default: // channel full, error already reported
+		}
+	}
+
+	for {
+		if ctx.Err() != nil {
+			return SwitchNone, false
+		}
+		// Poll first so the read below never blocks longer than the interval.
+		if !PollFdReady(fd, AttachStdinPollInterval) {
+			continue
+		}
+		// Re-check cancellation: ctx can be cancelled while this goroutine was
+		// parked inside poll, and a keystroke can land in that same window. The
+		// stale byte still gets read below without this check — harmless today
+		// only because the unconditional flush in QuiesceAttachInput discards it
+		// moments later, but that's an incidental backstop, not a reason to read
+		// stdin after the caller has already asked us to stop.
+		if ctx.Err() != nil {
+			return SwitchNone, false
+		}
+
+		n, err := p.in.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				return SwitchNone, false
+			}
+			reportErr(fmt.Errorf("stdin read error: %w", err))
+			return SwitchNone, false
+		}
+
+		chunk := buf[:n]
+		// Always run the reply filter: escape-string replies (DCS/OSC/etc.)
+		// can arrive long after the initial quarantine (e.g. iTerm2
+		// XTVERSION reply on window focus/resize — #731). `armed` stays
+		// gated to the quarantine window so generic CSI pass-through
+		// works for keyboard input outside it.
+		armed := time.Since(p.startTime) < attachReplyQuarantine
+		chunk = replyFilter.Consume(chunk, armed, false)
+		if len(chunk) == 0 {
+			continue
+		}
+
+		// Check for the detach key and any session-switch keys anywhere in
+		// the input chunk. Some terminals coalesce reads, so these must not
+		// require a single-byte read. Handles raw byte, xterm
+		// modifyOtherKeys, and kitty CSI u encodings.
+		// Whichever interrupt key appears first in the buffer wins, with
+		// detach > switch > scrollback precedence on a tie. Resolved by a
+		// pure helper so the precedence is unit-testable.
+		interruptIdx, outcome := resolveAttachInterrupt(chunk, p.detach, p.opts)
+
+		if interruptIdx >= 0 {
+			// Forward any bytes before the interrupt key, then stop.
+			if interruptIdx > 0 {
+				if _, err := p.out.Write(chunk[:interruptIdx]); err != nil {
+					reportErr(fmt.Errorf("PTY write error: %w", err))
+					return SwitchNone, false
+				}
+			}
+			return outcome, true
+		}
+
+		// Forward other input to tmux PTY
+		if _, err := p.out.Write(chunk); err != nil {
+			reportErr(fmt.Errorf("PTY write error: %w", err))
+			return SwitchNone, false
+		}
+	}
+}
+
+// QuiesceAttachInput ends the attach's ownership of stdin: it waits for the
+// stdin reader to exit, then drops whatever is sitting in the terminal's input
+// queue and arms the reply quarantine.
+//
+// The order is the point, and both halves are load-bearing:
+//
+//   - Wait first. Returning to Bubble Tea with the reader still parked on stdin
+//     leaves two readers on one tty; the stale one wins the next keystroke and
+//     the user loses a keypress. See attachStdinPump.run.
+//   - Flush second, on every exit path. Terminals emit capability/color replies
+//     as the session tears down, and those bytes would otherwise surface in the
+//     TUI as literal fragments. Flushing before the reader has stopped would
+//     just let it consume the post-flush bytes instead.
+//
+// readerDone is the reader's completion channel, timeout the backstop for a
+// wedged reader, and flush/quarantine are injected so the ordering is testable
+// without a live tty. It reports whether the reader exited on its own.
+func QuiesceAttachInput(readerDone <-chan struct{}, timeout time.Duration, flush func(), quarantine func()) bool {
+	exited := false
+	select {
+	case <-readerDone:
+		exited = true
+	case <-time.After(timeout):
+	}
+	flush()
+	quarantine()
+	return exited
 }
 
 func waitForAttachOutputDrain(outputDone <-chan struct{}, timeout time.Duration) (bool, time.Duration) {
@@ -404,7 +571,18 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		// Don't close sigwinch - signal.Stop() handles cleanup
 	}()
 
-	// WaitGroup to track ALL goroutines (including SIGWINCH handler)
+	// WaitGroup to track ALL goroutines (including SIGWINCH handler).
+	//
+	// Deliberately never Wait()ed on, and it cannot be: the SIGWINCH handler
+	// only exits when the deferred close(sigwinchDone) runs, which is AFTER
+	// cleanupAttach, and the cmd.Wait() goroutine can outlive a detach by
+	// however long the tmux client takes to go away. Waiting here would
+	// deadlock the first and stall the second.
+	//
+	// The join that actually matters for correctness is stdinReaderDone, which
+	// cleanupAttach waits on individually — that is the goroutine that must not
+	// outlive the attach (see QuiesceAttachInput). The WaitGroup stays as
+	// documentation of goroutine ownership.
 	var wg sync.WaitGroup
 
 	// SIGWINCH handler goroutine - properly tracked in WaitGroup
@@ -432,11 +610,16 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	detachCh := make(chan struct{})
 
 	// switchOutcome is written by the stdin goroutine before it closes
-	// detachCh when a session-switch key is pressed. The close establishes a
-	// happens-before edge, so the main goroutine can read it after <-detachCh
-	// without additional synchronization. It stays SwitchNone for a plain
-	// detach or a pane-process exit.
-	var switchOutcome SwitchIntent
+	// detachCh when a session-switch key is pressed. On the <-detachCh path the
+	// close establishes a happens-before edge, so that read needs no extra
+	// synchronization. But QuiesceAttachInput's stdinReaderStopTimeout backstop
+	// means cleanupAttach can return (and this function read switchOutcome at
+	// the bottom) before the pump goroutine exits — a wedged reader can still be
+	// mid-write here when the main goroutine reads it, which is a real
+	// happens-before gap the race detector can catch under CI's -race build.
+	// atomic.Int32 closes it cheaply; SwitchIntent is a small int, so storing it
+	// as one loses nothing.
+	var switchOutcome atomic.Int32
 
 	// Channel for I/O errors (buffered to prevent goroutine leaks)
 	ioErrors := make(chan error, 2)
@@ -461,74 +644,38 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		}
 	}()
 
-	// Goroutine 2: Read stdin, intercept detach key, forward rest to PTY
+	// Goroutine 2: Read stdin, intercept detach key, forward rest to PTY.
+	//
+	// stdinReaderDone closes when the pump returns. cleanupAttach waits on it
+	// so the attach never hands stdin back to Bubble Tea while this reader is
+	// still parked in a read. Two readers blocked on the same tty are woken in
+	// FIFO order, so a surviving reader wins the next keystroke, forwards it to
+	// the closed PTY and dies — eating exactly one keypress on the deck.
+	stdinReaderDone := make(chan struct{})
+	pump := &attachStdinPump{
+		in:        os.Stdin,
+		out:       ptmx,
+		detach:    detach,
+		opts:      opts,
+		startTime: startTime,
+		ioErrors:  ioErrors,
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 32)
-		var replyFilter termreply.Filter
-		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				// Report stdin read error
-				select {
-				case ioErrors <- fmt.Errorf("stdin read error: %w", err):
-				default:
-				}
-				return
-			}
-
-			chunk := buf[:n]
-			// Always run the reply filter: escape-string replies (DCS/OSC/etc.)
-			// can arrive long after the initial quarantine (e.g. iTerm2
-			// XTVERSION reply on window focus/resize — #731). `armed` stays
-			// gated to the quarantine window so generic CSI pass-through
-			// works for keyboard input outside it.
-			armed := time.Since(startTime) < attachReplyQuarantine
-			chunk = replyFilter.Consume(chunk, armed, false)
-			if len(chunk) == 0 {
-				continue
-			}
-
-			// Check for the detach key and any session-switch keys anywhere in
-			// the input chunk. Some terminals coalesce reads, so these must not
-			// require a single-byte read. Handles raw byte, xterm
-			// modifyOtherKeys, and kitty CSI u encodings.
-			// Whichever interrupt key appears first in the buffer wins, with
-			// detach > switch > scrollback precedence on a tie. Resolved by a
-			// pure helper so the precedence is unit-testable.
-			interruptIdx, outcome := resolveAttachInterrupt(chunk, detach, opts)
-
-			if interruptIdx >= 0 {
-				// Forward any bytes before the interrupt key, then stop.
-				if interruptIdx > 0 {
-					if _, err := ptmx.Write(chunk[:interruptIdx]); err != nil {
-						select {
-						case ioErrors <- fmt.Errorf("PTY write error: %w", err):
-						default:
-						}
-						return
-					}
-				}
-				switchOutcome = outcome
-				close(detachCh)
-				cancel()
-				return
-			}
-
-			// Forward other input to tmux PTY
-			if _, err := ptmx.Write(chunk); err != nil {
-				// Report PTY write error
-				select {
-				case ioErrors <- fmt.Errorf("PTY write error: %w", err):
-				default:
-				}
-				return
-			}
+		defer close(stdinReaderDone)
+		outcome, interrupted := pump.run(ctx)
+		if !interrupted {
+			return
 		}
+		// Write switchOutcome before closing detachCh: the close establishes
+		// the happens-before edge the main goroutine relies on after <-detachCh.
+		// The atomic store is the belt-and-suspenders half, for the backstop
+		// timeout path where cleanupAttach can read switchOutcome before this
+		// goroutine ever reaches this line.
+		switchOutcome.Store(int32(outcome)) // #nosec G115 -- SwitchIntent is a 3-value iota enum, always in int32 range
+		close(detachCh)
+		cancel()
 	}()
 
 	// Wait for command to finish - tracked in WaitGroup
@@ -538,8 +685,6 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		defer wg.Done()
 		cmdDone <- cmd.Wait()
 	}()
-
-	didDetach := false
 
 	// Ensures we don't return to Bubble Tea while PTY output is still being written.
 	// This avoids terminal style leakage (for example underline/hyperlink state)
@@ -552,14 +697,16 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		cancel()
 		_ = ptmx.Close()
 		_, _ = waitForAttachOutputDrain(outputDone, attachOutputDrainTimeout)
-		// Prompts can issue terminal capability/color queries as they redraw during
-		// detach. Kitty replies on stdin; if those queued bytes survive until Bubble Tea
-		// resumes, they can leak as literal fragments like terminal version strings or
-		// rgb payloads in the TUI.
-		if didDetach {
-			_ = flushDetachInput(int(os.Stdin.Fd()))
-			termreply.QuarantineFor(attachReplyQuarantine)
-		}
+		// Hand stdin back: stop the reader, then flush the input queue and arm
+		// the quarantine. cancel() above makes the reader exit within one poll
+		// interval; the timeout is a wedged-reader backstop, not the expected
+		// path. See QuiesceAttachInput for why the order matters.
+		QuiesceAttachInput(
+			stdinReaderDone,
+			AttachStdinReaderStopTimeout,
+			func() { _ = FlushInput(int(os.Stdin.Fd())) },
+			func() { termreply.QuarantineFor(attachReplyQuarantine) },
+		)
 		// Clear host terminal scrollback before returning to TUI.
 		// The on-attach clear at the top of Attach() covers the "next attach" direction;
 		// this covers the "on detach" direction for belt-and-suspenders coverage
@@ -579,7 +726,6 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	select {
 	case <-detachCh:
 		// User pressed the detach key, detach gracefully
-		didDetach = true
 		attachErr = nil
 	case err := <-cmdDone:
 		if err != nil {
@@ -605,7 +751,7 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	}
 
 	cleanupAttach()
-	return switchOutcome, attachErr
+	return SwitchIntent(switchOutcome.Load()), attachErr
 }
 
 // AttachWindow attaches to a specific window within this tmux session.
@@ -728,13 +874,19 @@ func (s *Session) StreamOutput(ctx context.Context, w io.Writer) error {
 // when isolation is configured, and byte-identical plain argv when it is
 // not. Keeping these as named methods gives the regression lint a stable
 // target to assert argv shape against without spawning PTYs.
+//
+// These are interactive clients: AttachWithOptions and AttachReadOnly require
+// stdin to be a real terminal so they can enter raw mode. From a detached
+// setsid process like the hook in #1114, they return "failed to set raw mode".
+// StartAttachPTY gives attachCmd's tmux child its own controlling PTY, while
+// attachReadOnlyCmd uses the caller's terminal directly.
 
 func (s *Session) attachCmd(ctx context.Context) *exec.Cmd {
-	return s.tmuxCmdContext(ctx, "attach-session", "-t", s.Name)
+	return s.tmuxCmdContext(ctx, "-u", "attach-session", "-t", s.Name)
 }
 
 func (s *Session) attachReadOnlyCmd(ctx context.Context) *exec.Cmd {
-	return s.tmuxCmdContext(ctx, "attach-session", "-r", "-t", s.Name)
+	return s.tmuxCmdContext(ctx, "-u", "attach-session", "-r", "-t", s.Name)
 }
 
 func (s *Session) resizeCmd(cols, rows int) *exec.Cmd {

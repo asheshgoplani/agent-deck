@@ -65,11 +65,16 @@ func TestCapability_LaunchWTSetup(t *testing.T) {
 	}
 
 	token := "PINGLAUNCH-WORKTREE-SETUP"
+	// --allow-repo-scripts: the consent gate's "prompt" default fails
+	// closed with no TTY (this subprocess has none), by design — use the
+	// documented non-interactive bypass rather than a TTY the harness
+	// can't provide, same as any other CI/automation caller would.
 	c.run(t, "launch", repo,
 		"-c", "echobot",
 		"-t", "cap-launch-wt",
 		"-w", "caplaunch",
 		"-b",
+		"--allow-repo-scripts",
 		"-m", token,
 	)
 	defer c.stopQuietly("cap-launch-wt")

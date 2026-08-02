@@ -113,6 +113,12 @@ type SettingsResponse struct {
 	// show_only_installed_tools ("" mapped to "shell" for web).
 	HiddenTools []string `json:"hiddenTools"`
 	PickerTools []string `json:"pickerTools"`
+
+	// Link-open policy for the web terminal (issue #1682). TrustedDomains
+	// are normalized hosts whose links open without a confirm;
+	// ConfirmLinkOpen reports whether every other host still confirms.
+	TrustedDomains  []string `json:"trustedDomains"`
+	ConfirmLinkOpen bool     `json:"confirmLinkOpen"`
 }
 
 // ProfilesResponse is returned by GET /api/profiles.

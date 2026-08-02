@@ -17,6 +17,13 @@ import (
 )
 
 // runSoftkillHelper implements child-process behaviours selected by env.
+// softkillReadyEnv names the readiness-marker path handed to the helper. It is
+// namespaced rather than a bare "READY" because the helper inherits the full
+// parent environment: a CI runner that already exports READY for its own
+// purposes would otherwise point the helper at a path the parent never watches,
+// and every spawn would fail its readiness wait.
+const softkillReadyEnv = "AGENTDECK_SOFTKILL_READY"
+
 // Dispatched from testmain_test.go's TestMain when SOFTKILL_TEST_HELPER is
 // set. We cannot rely on /bin/sh traps because dash/bash on Linux delay trap
 // dispatch until the foreground `sleep` returns — SIGTERM-while-sleeping is
@@ -28,9 +35,18 @@ import (
 //   - "eof_clean": exit 0 on stdin EOF. If SIGTERM arrives first, write
 //     $ANTIMARKER and exit 1 (proves the parent took the signal-driven
 //     path when it should have taken the EOF path).
+//
+// Immediately after signal.Notify registers the handler, touch the readiness
+// marker (if
+// set) so the parent can wait on real readiness instead of guessing — see
+// waitForReady's doc comment for why the previous kill(pid,0)+fixed-sleep
+// heuristic was flaky (#1776).
 func runSoftkillHelper(role string) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM)
+	if ready := os.Getenv(softkillReadyEnv); ready != "" {
+		_ = os.WriteFile(ready, []byte("ok"), 0o644)
+	}
 	switch role {
 	case "clean":
 		<-ch
@@ -71,51 +87,144 @@ func runSoftkillHelper(role string) {
 }
 
 // spawnHelper starts the test binary in helper mode and returns the cmd.
-// Caller is responsible for reaping.
+// Caller is responsible for reaping. Blocks until the helper's SIGTERM
+// handler is actually installed (see waitForReady) so a softKill sent
+// right after this returns cannot race the child's own startup.
 func spawnHelper(t *testing.T, role string, extraEnv ...string) *exec.Cmd {
 	t.Helper()
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	cmd := exec.Command(exe, "-test.run=^$") // run no tests in child
-	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role)
+	ready := filepath.Join(t.TempDir(), "ready")
+	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role, softkillReadyEnv+"="+ready)
 	env = append(env, extraEnv...)
 	cmd.Env = env
 	// Isolate child so it doesn't write to the parent's test output.
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	require.NoError(t, cmd.Start())
+	registerOrphanReaper(t, cmd)
+	waitForReady(t, ready, 5*time.Second)
 	return cmd
 }
 
 // spawnHelperInOwnGroup is like spawnHelper but puts the child in its own
 // process group via Setpgid. Required for softKillProcessGroup tests:
 // without isolation, syscall.Kill(-pgid, ...) on the inherited pgid would
-// also signal the test runner itself.
+// also signal the test runner itself. Blocks until the helper's SIGTERM
+// handler is installed (see waitForReady).
 func spawnHelperInOwnGroup(t *testing.T, role string, extraEnv ...string) *exec.Cmd {
 	t.Helper()
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	cmd := exec.Command(exe, "-test.run=^$") // run no tests in child
-	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role)
+	ready := filepath.Join(t.TempDir(), "ready")
+	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role, softkillReadyEnv+"="+ready)
 	env = append(env, extraEnv...)
 	cmd.Env = env
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
+	registerOrphanReaper(t, cmd)
+	waitForReady(t, ready, 5*time.Second)
 	return cmd
 }
 
-// waitForPidAlive polls until syscall.Kill(pid, 0) returns nil (process
-// exists) or the deadline passes. Used to ensure the helper has installed
-// its signal handler before the parent sends SIGTERM.
-func waitForPidAlive(pid int, d time.Duration) {
+// registerOrphanReaper registers a t.Cleanup that force-kills and reaps cmd,
+// guarding against a leaked helper process. It must be called immediately
+// after cmd.Start() succeeds — specifically BEFORE waitForReady, whose
+// t.Fatalf on a timeout would otherwise abort the test before the caller's
+// own (more careful, waitDone-synchronized) cleanup ever gets registered,
+// leaving the just-started helper orphaned. The "ignore" role in particular
+// drains SIGTERM and blocks forever (see runSoftkillHelper), so an orphaned
+// instance of it survives indefinitely on the runner rather than exiting on
+// its own — the exact process-exhaustion failure mode this repo has hit
+// before (see the tmux hygiene rules in CLAUDE.md).
+//
+// Cleanups run LIFO, so on the success path this runs after the caller's own
+// cleanup and is a cheap no-op (Kill/Wait on an already-reaped process just
+// return an error, which is ignored).
+//
+// The Wait is what actually reaps: a killed-but-unwaited child stays a zombie
+// for the lifetime of the test binary, so "kill without wait" is only half a
+// cleanup.
+//
+// Helpers started in their own process group get a group-wide SIGKILL first,
+// so a descendant cannot survive the leader. That raw pgid signal is gated on
+// a liveness probe: os.Process.Signal reports ErrProcessDone once the process
+// has been waited on, and only while it has NOT been waited on is its pid —
+// which is also the pgid — guaranteed not to have been recycled. On the normal
+// path the caller's own cleanup has already reaped the child, the probe says
+// so, and no raw signal is sent at all. Signaling a pgid unconditionally from
+// a cleanup is precisely the friendly-fire shape that has bitten this repo
+// before, so the probe is load-bearing, not decoration.
+func registerOrphanReaper(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	if cmd.Process == nil {
+		t.Fatalf("registerOrphanReaper called before a successful cmd.Start()")
+	}
+	pid := cmd.Process.Pid
+	ownGroup := cmd.SysProcAttr != nil && cmd.SysProcAttr.Setpgid
+	t.Cleanup(func() {
+		// Signal(0) succeeds only while the process has not been reaped, which
+		// is exactly when the pid cannot have been handed to anyone else.
+		unreaped := cmd.Process.Signal(syscall.Signal(0)) == nil
+		if ownGroup && unreaped {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}
+		_ = cmd.Process.Kill()
+		// Must wait, or the killed child lingers as a zombie.
+		_, _ = cmd.Process.Wait()
+	})
+}
+
+// waitForReady polls until the helper's readiness marker file exists, or
+// fails the test if the deadline passes first.
+//
+// This replaces a former kill(pid,0)+fixed-50ms-sleep heuristic
+// ("process is visible to the OS, give it a beat to install
+// signal.Notify"). That heuristic assumed 50ms was always enough time
+// between fork/exec completing and the child's signal.Notify call actually
+// registering. Under the -race build the helper binary is instrumented and
+// far slower to reach main() under CI load, so the assumption
+// intermittently failed: softKillProcess(Group) sent SIGTERM into the gap
+// before the handler was installed, the OS default disposition terminated
+// the child immediately, and the clean-shutdown marker file the handler
+// would have written never appeared — the observed
+// "term-handled: no such file or directory" flake (#1776).
+//
+// The fix is explicit synchronization instead of a bigger guess: the
+// helper itself touches the readiness marker the instant signal.Notify
+// returns (see
+// runSoftkillHelper), and the parent waits on that file rather than on a
+// proxy for it.
+func waitForReady(t *testing.T, path string, d time.Duration) {
+	t.Helper()
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); err == nil {
-			// alive — give it a beat to install signal.Notify
-			time.Sleep(50 * time.Millisecond)
+		if _, err := os.Stat(path); err == nil {
 			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("helper never signaled ready (missing %s) within %s", path, d)
+}
+
+// waitForFile polls until path exists or the deadline passes, returning the
+// last os.Stat error (nil on success). Used to assert on marker files a child
+// writes asynchronously from a signal handler — the write can be delayed on a
+// loaded CI runner under -race, so a fixed sleep-then-Stat flakes; polling
+// asserts the liveness property ("the file eventually appears") without racing.
+func waitForFile(path string, d time.Duration) error {
+	deadline := time.Now().Add(d)
+	var err error
+	for {
+		if _, err = os.Stat(path); err == nil {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return err
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -151,9 +260,6 @@ func TestKillStaleControlClients_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 		<-waitDone
 	})
 
-	// Give the helper time to install its signal handler.
-	waitForPidAlive(pid, 1*time.Second)
-
 	_ = softKillProcess(pid, 500*time.Millisecond)
 
 	// Let the reaper goroutine finish before asserting on the marker.
@@ -177,8 +283,24 @@ func TestKillStaleControlClients_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 	// cleanly. Asserting on marker-existence captures the real
 	// regression guarantee (SIGTERM ran before SIGKILL) without the
 	// test-specific zombie race.
-	_, err := os.Stat(marker)
+	//
+	// POLL for the marker rather than a single Stat: the child writes it
+	// from an async SIGTERM handler, and on a loaded CI runner under -race
+	// that write can land after the fixed grace windows above. The property
+	// under test is liveness ("the handler eventually ran"), so poll until
+	// present with a generous deadline — a genuinely-missing marker (the #737
+	// straight-to-SIGKILL regression) still fails after the timeout, while a
+	// merely-slow write no longer flakes.
+	err := waitForFile(marker, 5*time.Second)
 	assert.NoError(t, err, "child's SIGTERM handler must have run (marker file must exist)")
+
+	// The marker is written just before os.Exit, so waitForFile can return
+	// while the child is still a zombie. Await the reaper (bounded) before the
+	// ESRCH check so the process is actually gone, not merely exiting.
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+	}
 
 	// Process should be gone.
 	err = syscall.Kill(pid, 0)
@@ -205,8 +327,6 @@ func TestKillStaleControlClients_FallsBackToSIGKILL(t *testing.T) {
 		<-waitDone
 	})
 
-	waitForPidAlive(pid, 1*time.Second)
-
 	start := time.Now()
 	usedSIGKILL := softKillProcess(pid, 500*time.Millisecond)
 	elapsed := time.Since(start)
@@ -232,6 +352,7 @@ func TestKillStaleControlClients_FallsBackToSIGKILL(t *testing.T) {
 func TestSoftKillProcess_AlreadyDeadIsNoop(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "exit 0")
 	require.NoError(t, cmd.Start())
+	registerOrphanReaper(t, cmd) // before any require that could abort pre-Wait
 	pid := cmd.Process.Pid
 	_, _ = cmd.Process.Wait() // fully reap
 
@@ -273,8 +394,6 @@ func TestControlPipeClose_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 		<-waitDone
 	})
 
-	waitForPidAlive(pid, 1*time.Second)
-
 	_ = softKillProcessGroup(pgid, 500*time.Millisecond)
 
 	select {
@@ -284,9 +403,17 @@ func TestControlPipeClose_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 
 	// Marker existence proves the SIGTERM handler ran — SIGKILL cannot
 	// be trapped, so a missing marker means softKillProcessGroup
-	// skipped SIGTERM and went straight to SIGKILL.
-	_, err = os.Stat(marker)
+	// skipped SIGTERM and went straight to SIGKILL. Poll (not a single
+	// Stat) for the async handler write — see waitForFile.
+	err = waitForFile(marker, 5*time.Second)
 	assert.NoError(t, err, "child's SIGTERM handler must have run (marker file must exist)")
+
+	// Marker is written just before os.Exit; await the reaper (bounded) so the
+	// child is actually gone before the ESRCH check, not merely exiting.
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+	}
 
 	err = syscall.Kill(pid, 0)
 	assert.True(t, errors.Is(err, syscall.ESRCH), "child process should be fully reaped; got err=%v", err)
@@ -315,8 +442,6 @@ func TestControlPipeClose_FallsBackToSIGKILL(t *testing.T) {
 		<-waitDone
 	})
 
-	waitForPidAlive(pid, 1*time.Second)
-
 	start := time.Now()
 	usedSIGKILL := softKillProcessGroup(pgid, 500*time.Millisecond)
 	elapsed := time.Since(start)
@@ -337,13 +462,15 @@ func TestControlPipeClose_FallsBackToSIGKILL(t *testing.T) {
 // connects an os.Pipe to the child's stdin and returns the writable end
 // so the test can close it to deliver EOF to the helper. Used by
 // reapWithEOFGrace tests where the production code's contract is "close
-// stdin and wait."
+// stdin and wait." Blocks until the helper's SIGTERM handler is installed
+// (see waitForReady).
 func spawnHelperWithStdinPipe(t *testing.T, role string, extraEnv ...string) (*exec.Cmd, io.WriteCloser) {
 	t.Helper()
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	cmd := exec.Command(exe, "-test.run=^$")
-	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role)
+	ready := filepath.Join(t.TempDir(), "ready")
+	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role, softkillReadyEnv+"="+ready)
 	env = append(env, extraEnv...)
 	cmd.Env = env
 	cmd.Stdout = nil
@@ -351,7 +478,17 @@ func spawnHelperWithStdinPipe(t *testing.T, role string, extraEnv ...string) (*e
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)
+	// Close the parent's write end on cleanup, registered before Start so even
+	// a failed Start cannot leak the fd. We never call cmd.Wait() (the tests
+	// reap via cmd.Process.Wait()), so exec.Cmd never closes it for us: an
+	// early return would otherwise leak the fd AND keep the child's stdin open
+	// forever, denying it the EOF it is waiting for. Double-close is harmless —
+	// the tests that close it themselves get an already-closed error here,
+	// which is ignored.
+	t.Cleanup(func() { _ = stdin.Close() })
 	require.NoError(t, cmd.Start())
+	registerOrphanReaper(t, cmd)
+	waitForReady(t, ready, 5*time.Second)
 	return cmd, stdin
 }
 
@@ -369,8 +506,6 @@ func TestReapWithEOFGrace_FastPathOnEOF(t *testing.T) {
 	antiMarker := filepath.Join(tmpDir, "term-fired")
 
 	cmd, stdin := spawnHelperWithStdinPipe(t, "eof_clean", "ANTIMARKER="+antiMarker)
-	pid := cmd.Process.Pid
-	waitForPidAlive(pid, 1*time.Second)
 
 	// Mirror production: caller closes stdin, then reapWithEOFGrace runs
 	// reap (cmd.Wait wrapped) with a timeout.
@@ -414,8 +549,6 @@ func TestReapWithEOFGrace_FallbackOnHungChild(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, pid, pgid, "child must be its own pgroup leader")
 
-	waitForPidAlive(pid, 1*time.Second)
-
 	once := sync.Once{}
 	reap := func() {
 		once.Do(func() {
@@ -446,6 +579,7 @@ func TestReapWithEOFGrace_AlreadyDeadIsNoop(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "exit 0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
+	registerOrphanReaper(t, cmd) // before any require that could abort pre-Wait
 	proc := cmd.Process
 
 	// Already-reaped: the once-guarded reap completes instantly.
@@ -472,6 +606,7 @@ func TestSoftKillProcessGroup_AlreadyDeadIsNoop(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "exit 0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
+	registerOrphanReaper(t, cmd) // Getpgid below can fail the test pre-Wait
 	pid := cmd.Process.Pid
 	pgid, err := syscall.Getpgid(pid)
 	require.NoError(t, err)

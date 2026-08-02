@@ -37,6 +37,18 @@ func verifyPromptConsumedAfterLaunch(
 	if pollPromptConsumed(target, message, maxWait, pollInterval) {
 		return
 	}
+	// The retry types the message and presses Enter, so it submits whatever
+	// the composer holds at that moment. If that is content agent-deck cannot
+	// attribute — a materialized autosuggestion, an operator draft — the
+	// retry would submit it with our prompt appended (#1777). Withhold it and
+	// let the warning below surface the unconsumed prompt instead.
+	attrib := send.EnterAttribution{Message: message}
+	if attrib.EnterWouldSubmitForeignDraft(send.CaptureOutcome(target.CapturePaneFresh()), tmux.StripANSI) {
+		if warn != nil {
+			fmt.Fprintln(warn, "warning: launch prompt not consumed and the composer holds unattributable content; skipping the retry so nothing unauthored is submitted")
+		}
+		return
+	}
 	_ = target.SendKeysAndEnter(message)
 	if pollPromptConsumed(target, message, maxWait, pollInterval) {
 		return
@@ -47,9 +59,19 @@ func verifyPromptConsumedAfterLaunch(
 }
 
 // pollPromptConsumed returns true once the pane shows a rendered composer
-// whose input line no longer contains the message — i.e., Enter was
-// accepted. Returns false on timeout. Capture errors are treated as "not
-// yet consumed" so we keep polling until the budget expires.
+// that is genuinely empty — i.e., Enter was accepted and nothing (ours or
+// foreign) is sitting in the input line. Returns false on timeout. Capture
+// errors are treated as "not yet consumed" so we keep polling until the
+// budget expires.
+//
+// Consumed must NOT be inferred merely from "our message isn't in the
+// composer" (#1777): a materialized autosuggestion or an unrelated draft
+// parked in the composer instead of our message would satisfy that weaker
+// check and short-circuit this poll as a false success, skipping the
+// attribution gate below entirely — the retry-withhold-and-warn path could
+// then never fire because the caller believes delivery already succeeded.
+// ComposerHasDraft reports true for ANY visible draft, ours or foreign, so
+// only a truly empty (or suggestion/placeholder) composer counts as consumed.
 func pollPromptConsumed(target sendRetryTarget, message string, maxWait, pollInterval time.Duration) bool {
 	if pollInterval <= 0 {
 		pollInterval = 100 * time.Millisecond
@@ -58,7 +80,7 @@ func pollPromptConsumed(target sendRetryTarget, message string, maxWait, pollInt
 	for {
 		if raw, err := target.CapturePaneFresh(); err == nil {
 			content := tmux.StripANSI(raw)
-			if send.HasCurrentComposerPrompt(content) && !send.HasUnsentComposerPrompt(content, message) {
+			if send.HasCurrentComposerPrompt(content) && !send.ComposerHasDraft(raw, tmux.StripANSI) {
 				return true
 			}
 		}

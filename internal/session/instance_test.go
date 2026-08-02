@@ -530,9 +530,21 @@ config_dir = "~/.claude-work"
 		t.Errorf("Should use custom command 'cdw' from config, got: %s", cmd)
 	}
 
-	// Should include CLAUDE_CONFIG_DIR since config_dir is explicitly set
-	if !strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
-		t.Errorf("Should include CLAUDE_CONFIG_DIR for capture-resume commands, got: %s", cmd)
+	// #1822 F3: a custom Claude command/alias (e.g. "cdw") is expected to
+	// resolve CLAUDE_CONFIG_DIR itself, so the deck must not also export
+	// its own resolved value ahead of it -- doing so would override the
+	// alias's own fallback resolution with the deck's value, which is the
+	// same wrong-account bug class #1822 exists to fix. This gate now
+	// applies uniformly across every buildClaudeCommandWithMessage branch
+	// (previously only continue/resume/-r respected it; the default
+	// capture-resume path here did not -- see PR #1822 review Finding 3).
+	// AGENTDECK_RESOLVED_CONFIG_DIR (the informational hint var, not the
+	// live override) is still always emitted.
+	if strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
+		t.Errorf("Should NOT export CLAUDE_CONFIG_DIR for a custom-alias command, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "AGENTDECK_RESOLVED_CONFIG_DIR=") {
+		t.Errorf("Should still emit the AGENTDECK_RESOLVED_CONFIG_DIR hint var, got: %s", cmd)
 	}
 
 	// Should use --session-id with a literal Go-generated UUID (not shell variable)
@@ -770,7 +782,10 @@ func TestInstance_UpdateClaudeSession_RejectZombie(t *testing.T) {
 		}
 	}()
 
-	projectPath := "/tmp/claude-zombie-reject"
+	// A real directory: this test calls Start(), and a session whose project
+	// directory does not exist is now refused rather than silently started in
+	// $HOME (#1713). The path only needs to be stable within the test.
+	projectPath := t.TempDir()
 	projectDir := filepath.Join(configDir, "projects", ConvertToClaudeDirName(projectPath))
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("mkdir project dir: %v", err)
@@ -1798,18 +1813,51 @@ func TestCanRestartCursor(t *testing.T) {
 		t.Fatal("CanRestart() should return true for a running Cursor session with live tmux pane")
 	}
 
-	// Simulate persisted command from a real Cursor session before restart.
-	inst.Command = "cursor agent"
+	// Stand in for the persisted Cursor command. A real `cursor agent` cannot be
+	// assumed: required CI installs tmux and zoxide only, and without the binary
+	// the respawned login shell exits at once and tmux drops the session — which
+	// is what made this test fail on every such host. The stand-in keeps the
+	// Cursor respawn path executing for real instead of being skipped.
+	inst.Command = fakeCursorExecutable(t, "exec sleep 60")
 
 	if err := inst.Restart(); err != nil {
 		t.Fatalf("Restart failed: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if inst.tmuxSession == nil || !inst.tmuxSession.Exists() {
-		t.Fatal("tmux session should exist after Restart")
-	}
+	// Require STABLE liveness rather than one sample. respawn-pane swaps the pane
+	// leader, so a single check can catch a pane that is about to exit — and the
+	// fixed 100ms sleep this replaces is the flakiness skipIfClaudePaneUnreliable
+	// already documents for the Claude path ("a single 400ms sample was flaky
+	// under the full test suite").
+	requireStableLivePane(t, inst, time.Second)
 	if inst.Status == StatusError {
 		t.Fatalf("after Restart, Status = %s; want != error", inst.Status)
+	}
+}
+
+// Pins the liveness probe itself. A Cursor binary that exists but quits
+// immediately must be reported as not-live — Session.Exists can still say
+// otherwise from a positive cache hit or the PipeManager connection RespawnPane
+// re-establishes, and Session.IsPaneDead reads a list-panes error as "not dead".
+// Without this, requireStableLivePane could pass on a dead session and the
+// regression above would be decorative.
+func TestCanRestartCursor_ProbeNoticesImmediateExit(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	inst := NewInstanceWithTool("cursor-restart-probe-test", "/tmp", "cursor")
+	inst.Command = "sleep 60"
+	if err := inst.Start(); err != nil {
+		t.Fatalf("Failed to start session: %v", err)
+	}
+	defer func() { _ = inst.Kill() }()
+	inst.Status = StatusRunning
+
+	inst.Command = fakeCursorExecutable(t, "exit 0")
+	// Restart may itself report failure here; the point under test is that the
+	// probe does not claim the pane is live afterwards.
+	_ = inst.Restart()
+
+	if !paneGoneWithin(inst, 3*time.Second) {
+		t.Fatal("probe still reported a live pane after the stand-in exited immediately")
 	}
 }
 

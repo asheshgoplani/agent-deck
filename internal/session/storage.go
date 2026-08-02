@@ -37,25 +37,35 @@ type StorageData struct {
 
 // InstanceData represents the serializable session data
 type InstanceData struct {
-	ID                  string    `json:"id"`
-	Title               string    `json:"title"`
-	ProjectPath         string    `json:"project_path"`
-	GroupPath           string    `json:"group_path"`
-	Order               int       `json:"order"`
-	ParentSessionID     string    `json:"parent_session_id,omitempty"`     // Links to parent session (sub-session support)
-	IsConductor         bool      `json:"is_conductor,omitempty"`          // True if this session is a conductor orchestrator
-	NoTransitionNotify  bool      `json:"no_transition_notify,omitempty"`  // Suppress transition event dispatch
-	TitleLocked         bool      `json:"title_locked,omitempty"`          // #697: block Claude session-name sync into Title
-	AutoName            bool      `json:"auto_name,omitempty"`             // marks Title as a machine-generated quick-session handle
-	AutoNameDescription string    `json:"auto_name_description,omitempty"` // last captured Claude task description for an AutoName session
-	Command             string    `json:"command"`
-	Wrapper             string    `json:"wrapper,omitempty"`
-	Tool                string    `json:"tool"`
-	Status              Status    `json:"status"`
-	CreatedAt           time.Time `json:"created_at"`
-	LastAccessedAt      time.Time `json:"last_accessed_at,omitempty"`
-	ArchivedAt          time.Time `json:"archived_at,omitempty"`
-	TmuxSession         string    `json:"tmux_session"`
+	ID                 string `json:"id"`
+	Title              string `json:"title"`
+	ProjectPath        string `json:"project_path"`
+	GroupPath          string `json:"group_path"`
+	Order              int    `json:"order"`
+	ParentSessionID    string `json:"parent_session_id,omitempty"`    // Links to parent session (sub-session support)
+	IsConductor        bool   `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
+	NoTransitionNotify bool   `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch
+	TitleLocked        bool   `json:"title_locked,omitempty"`         // #697: block Claude session-name sync into Title
+	// SubcommandPassthrough mirrors Instance.SubcommandPassthrough (#1821).
+	// Persisted via the tool_data extras zone (see
+	// WriteSubcommandPassthroughToToolData), not a dedicated SQL column, so
+	// it round-trips across binary versions without a schema migration.
+	SubcommandPassthrough bool      `json:"subcommand_passthrough,omitempty"`
+	AutoName              bool      `json:"auto_name,omitempty"`             // marks Title as a machine-generated quick-session handle
+	AutoNameDescription   string    `json:"auto_name_description,omitempty"` // last captured Claude task description for an AutoName session
+	Command               string    `json:"command"`
+	Wrapper               string    `json:"wrapper,omitempty"`
+	Tool                  string    `json:"tool"`
+	Status                Status    `json:"status"`
+	CreatedAt             time.Time `json:"created_at"`
+	LastAccessedAt        time.Time `json:"last_accessed_at,omitempty"`
+	// LastStartedAt mirrors Instance.LastStartedAt (issue #30 / #1704 fix).
+	// Persisted via the tool_data extras zone (see last_started_persist.go),
+	// not a typed SQL column. Zero means unknown (old record or never
+	// started).
+	LastStartedAt time.Time `json:"last_started_at,omitempty"`
+	ArchivedAt    time.Time `json:"archived_at,omitempty"`
+	TmuxSession   string    `json:"tmux_session"`
 	// TmuxSocketName is the tmux -L selector captured at Instance creation
 	// (issue #687, v1.7.50). Empty for pre-v1.7.50 rows — those keep hitting
 	// the default server after upgrade.
@@ -77,6 +87,11 @@ type InstanceData struct {
 	// Claude session (persisted for resume after app restart)
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
+	// #1815: true when ClaudeSessionID came from a disk scan and was never
+	// verified as this session's own. Persisted so the taint survives a
+	// process restart and the id can never launder itself into a resumable
+	// one just by being written and read back.
+	ClaudeSessionIDUnverified bool `json:"claude_session_id_unverified,omitempty"`
 
 	// Gemini session (persisted for resume after app restart)
 	GeminiSessionID  string    `json:"gemini_session_id,omitempty"`
@@ -189,8 +204,12 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 		}
 	}
 
-	// Get effective profile
-	effectiveProfile := GetEffectiveProfile(profile)
+	// Get effective profile, guarding against silently auto-creating a
+	// profile that was merely inferred from CLAUDE_CONFIG_DIR (#1790).
+	effectiveProfile, err := ResolveProfileForStorage(profile)
+	if err != nil {
+		return nil, err
+	}
 
 	// Get profile directory
 	profileDir, err := GetProfileDir(effectiveProfile)
@@ -923,6 +942,32 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// the positional MarshalToolData signature so legacy binaries that don't
 	// know the key preserve it via MergeToolDataExtras.
 	toolData = WriteIdleTimeoutSecsToToolData(toolData, inst.IdleTimeoutSecs)
+	// #1821: subcommand_passthrough lives in the same extras zone — see
+	// Instance.SubcommandPassthrough's doc for why losing it on reload must
+	// never silently re-enable claude/codex account-routing treatment for a
+	// command that was never explicitly validated as one.
+	toolData = WriteSubcommandPassthroughToToolData(toolData, inst.SubcommandPassthrough)
+	// #1815: the resume-identity taint travels with the id it describes, so a
+	// writer that saves a discovered conversation id without ever passing
+	// through the resume builder (e.g. `switch-account --no-restart`) cannot
+	// leave an unverified id on disk that the next process treats as recorded.
+	//
+	// Only write the marker when there is a current id to describe it. When
+	// inst.ClaudeSessionID is empty, claude_session_id is OMITTED from this
+	// blob (MarshalToolData's omitempty) and MergeToolDataExtras carries the
+	// prior sticky-preserved id forward unchanged; the taint marker must be
+	// omitted too so it rides along with that same carried-forward id instead
+	// of being overwritten with an explicit `false`. Writing an explicit
+	// false here would erase a persisted taint while the tainted id itself
+	// survives via the sticky merge -- reopening #1815 through this exact
+	// persistence layer (review finding on #1830).
+	if inst.ClaudeSessionID != "" {
+		toolData = WriteClaudeSessionUnverifiedToToolData(toolData, inst.claudeSessionIDIsUnverified())
+	}
+	// #1704 blocker fix: same extras-zone treatment for last_started_at, so
+	// `status --stale` (and ShouldSkipRestart's freshness guard) see a real
+	// value from a fresh CLI process instead of always-zero.
+	toolData = WriteLastStartedAtToToolData(toolData, inst.LastStartedAt)
 
 	return &statedb.InstanceRow{
 		ID:                  inst.ID,
@@ -1094,6 +1139,9 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			AutoLinkedChannels:        autoLinkedChannels2,
 			Color:                     color2,
 			IdleTimeoutSecs:           ReadIdleTimeoutSecsFromToolData(r.ToolData),
+			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
+			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
+			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 		}
 	}
 
@@ -1238,6 +1286,9 @@ func (s *Storage) loadWithGroups(filterArchive, archived bool) ([]*Instance, []*
 			AutoLinkedChannels:        autoLinkedChannels,
 			Color:                     color,
 			IdleTimeoutSecs:           ReadIdleTimeoutSecsFromToolData(r.ToolData),
+			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
+			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
+			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 		}
 	}
 
@@ -1439,59 +1490,62 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 		projectPath := ExpandPath(fixMalformedTildePath(instData.ProjectPath))
 
 		inst := &Instance{
-			ID:                        instData.ID,
-			Title:                     instData.Title,
-			ProjectPath:               projectPath,
-			GroupPath:                 groupPath,
-			Order:                     instData.Order,
-			ParentSessionID:           instData.ParentSessionID,
-			IsConductor:               instData.IsConductor,
-			NoTransitionNotify:        instData.NoTransitionNotify,
-			TitleLocked:               instData.TitleLocked,
-			AutoName:                  instData.AutoName,
-			autoNameDescription:       instData.AutoNameDescription,
-			Command:                   instData.Command,
-			Wrapper:                   instData.Wrapper,
-			Tool:                      instData.Tool,
-			Status:                    instData.Status,
-			CreatedAt:                 instData.CreatedAt,
-			LastAccessedAt:            instData.LastAccessedAt,
-			ArchivedAt:                instData.ArchivedAt,
-			WorktreePath:              instData.WorktreePath,
-			WorktreeRepoRoot:          instData.WorktreeRepoRoot,
-			WorktreeBranch:            instData.WorktreeBranch,
-			Account:                   instData.Account,
-			Pin:                       instData.Pin,
-			TmuxSocketName:            instData.TmuxSocketName,
-			ClaudeSessionID:           instData.ClaudeSessionID,
-			ClaudeDetectedAt:          instData.ClaudeDetectedAt,
-			GeminiSessionID:           instData.GeminiSessionID,
-			GeminiDetectedAt:          instData.GeminiDetectedAt,
-			GeminiYoloMode:            instData.GeminiYoloMode,
-			GeminiModel:               instData.GeminiModel,
-			OpenCodeSessionID:         instData.OpenCodeSessionID,
-			OpenCodeDetectedAt:        instData.OpenCodeDetectedAt,
-			CodexSessionID:            instData.CodexSessionID,
-			CodexDetectedAt:           instData.CodexDetectedAt,
-			ToolOptionsJSON:           instData.ToolOptionsJSON,
-			LatestPrompt:              instData.LatestPrompt,
-			Notes:                     instData.Notes,
-			LoadedMCPNames:            instData.LoadedMCPNames,
-			Channels:                  instData.Channels,
-			ExtraArgs:                 instData.ExtraArgs,
-			Plugins:                   instData.Plugins,
-			PluginChannelLinkDisabled: instData.PluginChannelLinkDisabled,
-			AutoLinkedChannels:        instData.AutoLinkedChannels,
-			Color:                     instData.Color,
-			IdleTimeoutSecs:           instData.IdleTimeoutSecs,
-			Sandbox:                   instData.Sandbox,
-			SandboxContainer:          instData.SandboxContainer,
-			SSHHost:                   instData.SSHHost,
-			SSHRemotePath:             instData.SSHRemotePath,
-			MultiRepoEnabled:          instData.MultiRepoEnabled,
-			AdditionalPaths:           instData.AdditionalPaths,
-			MultiRepoTempDir:          instData.MultiRepoTempDir,
-			tmuxSession:               tmuxSess,
+			ID:                           instData.ID,
+			Title:                        instData.Title,
+			ProjectPath:                  projectPath,
+			GroupPath:                    groupPath,
+			Order:                        instData.Order,
+			ParentSessionID:              instData.ParentSessionID,
+			IsConductor:                  instData.IsConductor,
+			NoTransitionNotify:           instData.NoTransitionNotify,
+			TitleLocked:                  instData.TitleLocked,
+			AutoName:                     instData.AutoName,
+			autoNameDescription:          instData.AutoNameDescription,
+			Command:                      instData.Command,
+			Wrapper:                      instData.Wrapper,
+			Tool:                         instData.Tool,
+			Status:                       instData.Status,
+			CreatedAt:                    instData.CreatedAt,
+			LastAccessedAt:               instData.LastAccessedAt,
+			ArchivedAt:                   instData.ArchivedAt,
+			WorktreePath:                 instData.WorktreePath,
+			WorktreeRepoRoot:             instData.WorktreeRepoRoot,
+			WorktreeBranch:               instData.WorktreeBranch,
+			Account:                      instData.Account,
+			Pin:                          instData.Pin,
+			TmuxSocketName:               instData.TmuxSocketName,
+			ClaudeSessionID:              instData.ClaudeSessionID,
+			ClaudeDetectedAt:             instData.ClaudeDetectedAt,
+			claudeSessionIDsFromDiskScan: restoreClaudeSessionVerification(instData.ClaudeSessionID, instData.ClaudeSessionIDUnverified),
+			GeminiSessionID:              instData.GeminiSessionID,
+			GeminiDetectedAt:             instData.GeminiDetectedAt,
+			GeminiYoloMode:               instData.GeminiYoloMode,
+			GeminiModel:                  instData.GeminiModel,
+			OpenCodeSessionID:            instData.OpenCodeSessionID,
+			OpenCodeDetectedAt:           instData.OpenCodeDetectedAt,
+			CodexSessionID:               instData.CodexSessionID,
+			CodexDetectedAt:              instData.CodexDetectedAt,
+			ToolOptionsJSON:              instData.ToolOptionsJSON,
+			LatestPrompt:                 instData.LatestPrompt,
+			Notes:                        instData.Notes,
+			LoadedMCPNames:               instData.LoadedMCPNames,
+			Channels:                     instData.Channels,
+			ExtraArgs:                    instData.ExtraArgs,
+			Plugins:                      instData.Plugins,
+			PluginChannelLinkDisabled:    instData.PluginChannelLinkDisabled,
+			AutoLinkedChannels:           instData.AutoLinkedChannels,
+			Color:                        instData.Color,
+			IdleTimeoutSecs:              instData.IdleTimeoutSecs,
+			SubcommandPassthrough:        instData.SubcommandPassthrough,
+			LastStartedAt:                instData.LastStartedAt,
+			Sandbox:                      instData.Sandbox,
+			SandboxContainer:             instData.SandboxContainer,
+			SSHHost:                      instData.SSHHost,
+			SSHRemotePath:                instData.SSHRemotePath,
+			MultiRepoEnabled:             instData.MultiRepoEnabled,
+			AdditionalPaths:              instData.AdditionalPaths,
+			MultiRepoTempDir:             instData.MultiRepoTempDir,
+			tmuxSession:                  tmuxSess,
 		}
 		// Convert multi-repo worktree data
 		for _, wt := range instData.MultiRepoWorktrees {

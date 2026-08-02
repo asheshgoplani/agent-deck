@@ -79,7 +79,17 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		return nil, err
 	}
 
-	effectiveProfile := session.GetEffectiveProfile(profile)
+	// #1790/#1822 F1: route through the guarded resolver, not a bare
+	// GetEffectiveProfile. The only current caller (main.go) already passes
+	// an already-guarded value here, but re-deriving with GetEffectiveProfile
+	// is a latent bypass for any other/future caller (this function is
+	// unexported but its contract should not depend on caller discipline
+	// alone) — EnsurePushVAPIDKeys below and NewSessionDataService inside
+	// web.NewServer both go on to create on-disk profile state from this.
+	effectiveProfile, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve profile: %w", err)
+	}
 
 	resolvedPushSubject := *pushVAPIDSubject
 	resolvedPushPublic := ""
@@ -98,6 +108,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		}
 	}
 
+	confirmLinkOpen := session.GetWebConfirmLinkOpen()
 	server := web.NewServer(web.Config{
 		ListenAddr:          *listenAddr,
 		Profile:             effectiveProfile,
@@ -105,6 +116,8 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		WebMutations:        resolveMutationsEnabled(*readOnly),
 		Token:               *token,
 		InsecureBind:        *insecureBind,
+		TrustedDomains:      session.GetWebTrustedDomains(),
+		ConfirmLinkOpen:     &confirmLinkOpen,
 		MenuData:            menuData,
 		PushVAPIDPublicKey:  resolvedPushPublic,
 		PushVAPIDPrivateKey: resolvedPushPrivate,

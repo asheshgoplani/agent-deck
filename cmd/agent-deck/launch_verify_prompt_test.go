@@ -160,3 +160,25 @@ func TestVerifyPromptConsumedAfterLaunch_RespectsWallTimeBudget(t *testing.T) {
 		t.Fatalf("verify took %v, expected <500ms with 30ms budgets (unbounded poll bug)", elapsed)
 	}
 }
+
+// Issue #1777: the retry types the prompt and presses Enter, so it submits
+// whatever the composer holds at that moment. Foreign content parked there —
+// a materialized Claude autosuggestion, an operator draft — must never be
+// submitted with our prompt appended.
+func TestVerifyPromptConsumedAfterLaunch_ForeignComposerContent_NoRetry_WarningEmitted(t *testing.T) {
+	foreign := "some output above\n" +
+		"─────────────────────────\n" +
+		"\x1b[39m❯ archive every error session and upgrade the fleet\n" +
+		"─────────────────────────\n"
+	mock := &mockSendRetryTarget{panes: []string{foreign}}
+	var warn bytes.Buffer
+
+	verifyPromptConsumedAfterLaunch(mock, "explain this code", 10*time.Millisecond, time.Millisecond, &warn)
+
+	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 0 {
+		t.Fatalf("retry must be withheld while unattributable content sits in the composer, got %d sends", got)
+	}
+	if warn.Len() == 0 {
+		t.Fatal("the withheld retry must be surfaced as a warning")
+	}
+}

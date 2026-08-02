@@ -96,25 +96,85 @@ func firstNonEmpty(values ...string) string {
 //
 // Behavior:
 //   - Plain tool name (e.g. "claude", "codex"): use built-in/default command.
-//   - Tool with extra args (e.g. "codex --dangerously-bypass-approvals-and-sandbox"):
+//   - Tool with extra *flags* (e.g. "codex --dangerously-bypass-approvals-and-sandbox"):
 //     keep tool detection but forward extra args via wrapper so they are not lost.
+//   - Tool with a *known* claude/codex *subcommand* (e.g. "claude remote-control --name X",
+//     "codex mcp list"): agent-deck's injected flags (--session-id, permission mode, …)
+//     are only valid on the plain interactive invocation, never after a subcommand —
+//     see #1800, where injecting them before "remote-control" silently turned it into a
+//     positional argument of a different program. Run the line as-is instead of
+//     guessing where flags belong.
 //   - Generic shell command: keep full command as-is.
 //   - Explicit wrapper always wins.
-func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, command, wrapper, note string) {
+//
+// The subcommand check is a fixed, explicit allowlist (claudeKnownSubcommands /
+// codexKnownSubcommands) rather than "any non-flag-shaped first token" — an early
+// version of this fix used that broader heuristic and it misfired on an ordinary
+// positional prompt (e.g. `-c 'claude "review this repo"'`): the prompt's first
+// token isn't flag-shaped either, so it was wrongly routed through the no-injection
+// path and silently lost --session-id / permission-mode, which a plain
+// flags-then-prompt claude invocation had always gotten correctly before #1821.
+// Only claude and codex are covered because they're the only builtins whose own
+// command builders inject flags *inside* the wrapper substitution point (ahead of
+// any trailing subcommand text); every other tool's flags (e.g. a custom
+// [tools.X].dangerous_flag) are appended at the very end of the fully-built
+// command by buildGenericCommand, so wrapper-suffix ordering never misplaces them
+// — a custom tool's subcommand-shaped --cmd (e.g. "reviewbot serve") correctly
+// keeps using the wrapper-suffix path below and needs no special-casing.
+//
+// Returns a non-nil err only when the extra-args portion of rawCommand can't be
+// tokenized unambiguously (e.g. an unterminated quote) — in that case agent-deck
+// refuses to guess flag placement rather than silently building a broken command.
+// isSubcommandPassthrough reports whether toolName/command/wrapper came from
+// the no-flag-injection passthrough branch below (Tool="shell", the raw
+// command run verbatim). Callers must propagate it onto the created
+// Instance's SubcommandPassthrough field — see that field's doc for why:
+// it's the only thing that lets buildShellPassthroughCommand (instance.go)
+// tell "this session's command was explicitly validated as a claude/codex
+// subcommand invocation" apart from "an ordinary Tool==shell command that
+// merely mentions claude/codex" at spawn time (Claude review, PR #1821 HIGH #1).
+func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, command, wrapper, note string, isSubcommandPassthrough bool, err error) {
 	raw := strings.TrimSpace(rawCommand)
 	wrapper = strings.TrimSpace(explicitWrapper)
 	if raw == "" {
-		return "", "", wrapper, ""
+		return "", "", wrapper, "", false, nil
 	}
 
 	toolName = detectTool(raw)
 	base, extra := splitFirstWord(raw)
 
 	// No explicit wrapper provided and command looks like "tool arg1 arg2".
-	// Preserve extra args by turning them into wrapper suffix.
 	if wrapper == "" && extra != "" {
 		baseTool := detectTool(base)
 		if baseTool != "shell" {
+			tokens, tokenizeErr := splitShellTokens(extra)
+			if tokenizeErr != nil {
+				return "", "", "", "", false, fmt.Errorf(
+					"could not parse extra arguments in --cmd %q (%v); agent-deck refuses "+
+						"to guess where its flags belong when quoting is ambiguous — use "+
+						"--wrapper to control placement explicitly, or wrap the whole "+
+						"command yourself (e.g. bash -c '...')",
+					raw, tokenizeErr)
+			}
+
+			// Only route through the no-flag-injection passthrough when the
+			// first extra token is a REAL, known claude/codex subcommand —
+			// see the allowlist rationale in the function doc above. The
+			// length guard is defensive: today `extra` is non-empty so
+			// splitShellTokens always yields at least one token, but a
+			// future tokenizer change (e.g. treating a bare `''` as
+			// producing no token) must not turn this into a panic.
+			if len(tokens) > 0 && isKnownSubcommandToken(baseTool, tokens[0]) {
+				toolName = "shell"
+				command = raw
+				note = fmt.Sprintf(
+					"detected subcommand-shaped argument %q after tool '%s' — running "+
+						"the command as-is with no session/permission flag injection "+
+						"(those flags aren't valid after a subcommand)",
+					tokens[0], base)
+				return toolName, command, wrapper, note, true, nil
+			}
+
 			toolName = baseTool
 			if toolDef := session.GetToolDef(toolName); toolDef != nil {
 				command = toolDef.Command
@@ -123,7 +183,7 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 			}
 			wrapper = strings.TrimSpace("{command} " + extra)
 			note = fmt.Sprintf("parsed --cmd as tool '%s' and forwarded extra args via wrapper", toolName)
-			return toolName, command, wrapper, note
+			return toolName, command, wrapper, note, false, nil
 		}
 	}
 
@@ -132,7 +192,135 @@ func resolveSessionCommand(rawCommand, explicitWrapper string) (toolName, comman
 	} else {
 		command = raw
 	}
-	return toolName, command, wrapper, note
+	return toolName, command, wrapper, note, false, nil
+}
+
+// claudeKnownSubcommands / codexKnownSubcommands are the real CLI subcommands
+// of the two builtins whose own command builders inject agent-deck flags
+// (--session-id, permission-mode, --yolo, --model, …) ahead of any trailing
+// text. A --cmd whose first extra-args token exactly matches one of these
+// gets routed through unmodified instead of via wrapper-suffix flag
+// injection (#1800). This is deliberately a fixed, maintained list rather
+// than "anything that isn't flag-shaped" — see resolveSessionCommand's doc.
+// A future claude/codex subcommand not yet listed here falls back to the
+// wrapper-suffix path and can still reproduce #1800's ordering bug; that is
+// an accepted, bounded gap (same trade-off already accepted for a root flag
+// preceding a subcommand, e.g. "claude --debug remote-control") in exchange
+// for never misrouting an ordinary positional prompt.
+//
+// Canonical subcommand source: `claude --help` (Claude Code CLI top-level
+// command list) as of the claude version this repo currently targets —
+// cross-check there when adding a new one.
+var claudeKnownSubcommands = map[string]bool{
+	"mcp":            true,
+	"plugin":         true,
+	"install":        true,
+	"remote-control": true,
+	"update":         true,
+	"doctor":         true,
+	"config":         true,
+}
+
+// Canonical subcommand source: `codex --help` (Codex CLI top-level command
+// list) as of the codex version this repo currently targets — cross-check
+// there when adding a new one. This is a fixed, maintained list (see the
+// doc comment above); it is only ever as complete as the day it was last
+// checked against `codex --help`, so a native subcommand added upstream
+// after that will fall back to the wrapper-suffix path until it's added
+// here (accepted, bounded gap — see the doc comment above). "fork" added
+// per Codex review, PR #1821 P2: it was missing, so `-c "codex fork ..."`
+// still had agent-deck's flags injected ahead of it.
+var codexKnownSubcommands = map[string]bool{
+	"mcp":    true,
+	"exec":   true,
+	"login":  true,
+	"logout": true,
+	"apply":  true,
+	"resume": true,
+	"fork":   true,
+}
+
+// isKnownSubcommandToken reports whether tok is a real subcommand of the
+// given builtin tool. Returns false for any tool other than claude/codex —
+// see resolveSessionCommand's doc for why only those two need this check.
+func isKnownSubcommandToken(tool, tok string) bool {
+	switch tool {
+	case "claude":
+		return claudeKnownSubcommands[tok]
+	case "codex":
+		return codexKnownSubcommands[tok]
+	default:
+		return false
+	}
+}
+
+// splitShellTokens performs minimal POSIX-ish tokenization of s: splits on
+// whitespace, honors single/double quoting, and backslash-escapes the
+// following character outside single quotes. It exists so resolveSessionCommand
+// can inspect the *first* extra-args token without a full shell parser. It
+// returns an error on an unterminated quote so callers can distinguish
+// "genuinely ambiguous input" from "just didn't need quoting" — used to
+// REFUSE rather than guess (#1800).
+func splitShellTokens(s string) ([]string, error) {
+	var tokens []string
+	var cur strings.Builder
+	haveToken := false
+	inSingle, inDouble := false, false
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case inSingle:
+			if c == '\'' {
+				inSingle = false
+			} else {
+				cur.WriteByte(c)
+			}
+		case inDouble:
+			if c == '"' {
+				inDouble = false
+			} else if c == '\\' && i+1 < len(s) && strings.ContainsRune(`"\$`+"`", rune(s[i+1])) {
+				i++
+				cur.WriteByte(s[i])
+			} else {
+				cur.WriteByte(c)
+			}
+		case c == '\'':
+			inSingle = true
+			haveToken = true
+		case c == '"':
+			inDouble = true
+			haveToken = true
+		case c == '\\' && i+1 < len(s):
+			i++
+			cur.WriteByte(s[i])
+			haveToken = true
+		case c == '\\':
+			// Trailing unescaped backslash with nothing after it — ambiguous
+			// (is it a literal backslash or an incomplete escape?). REFUSE
+			// rather than silently emit it as a literal token (#1800: the
+			// contract is to refuse when quoting/escaping is ambiguous, not
+			// guess).
+			return nil, fmt.Errorf("trailing unescaped backslash")
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			if haveToken {
+				tokens = append(tokens, cur.String())
+				cur.Reset()
+				haveToken = false
+			}
+		default:
+			cur.WriteByte(c)
+			haveToken = true
+		}
+	}
+
+	if inSingle || inDouble {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	if haveToken {
+		tokens = append(tokens, cur.String())
+	}
+	return tokens, nil
 }
 
 func splitFirstWord(raw string) (string, string) {
@@ -227,6 +415,53 @@ func resolveAddPath(rawPathArg string) (string, error) {
 		return os.Getwd()
 	}
 	return filepath.Abs(session.ExpandPath(rawPathArg))
+}
+
+// resolveSSHAddPaths applies `agent-deck add`'s --ssh path-routing rule: the
+// project lives on the remote host, so the resolved positional path is never
+// a local path to validate or launch tmux in.
+//
+// An explicitly given positional path (explicitPathProvided) names the
+// REMOTE working directory, unless an explicit --remote-path was already
+// given, which always wins (matching the documented
+// `add --ssh <host> --remote-path <path>` pattern). Without this routing, a
+// positional path given alongside --ssh (e.g. `add <remote-worktree-path>
+// --ssh <host>`) was silently misused as the session's local ProjectPath
+// placeholder while remotePath stayed empty, so the actual SSH-wrapped
+// launch command never `cd`'d into the intended remote directory: the
+// session launched in the SSH login shell's default directory instead of the
+// registered worktree. Fixes asheshgoplani/agent-deck#1711 / #1710.
+//
+// rawPositionalPath must be the RAW positional argument, taken before
+// resolveAddPath runs session.ExpandPath + filepath.Abs on it: those
+// resolutions describe the controller machine, not the remote host, so
+// running them here would rewrite `~/x` or `./x` into a local filesystem
+// path (e.g. the controller's home directory or CWD) and ship that local
+// path to the remote shell as the session's working directory. wrapForSSH
+// also single-quotes SSHRemotePath verbatim before handing it to the remote
+// shell, so a stored `~/x` or `$VAR/x` reaches the remote host inert (the
+// remote shell does not expand a quoted `~` or `$VAR`); a non-absolute
+// remote path can never resolve correctly today, so it is refused outright
+// rather than stored and silently misinterpreted.
+//
+// Returns the local placeholder path (always CWD for --ssh sessions, used
+// only for local bookkeeping such as tmux pane naming, never launched into)
+// and the resolved remote path to store as Instance.SSHRemotePath.
+func resolveSSHAddPaths(explicitPathProvided bool, rawPositionalPath, explicitRemotePath string) (localPlaceholder, remotePath string, err error) {
+	localPlaceholder, err = os.Getwd()
+	if err != nil {
+		return "", "", err
+	}
+	remotePath = explicitRemotePath
+	if explicitPathProvided && remotePath == "" {
+		if !strings.HasPrefix(rawPositionalPath, "/") {
+			return "", "", fmt.Errorf("--ssh remote path must be absolute (got %q); "+
+				"agent-deck cannot resolve %q against the remote host's filesystem "+
+				"(no local ~ or $VAR expansion applies there)", rawPositionalPath, rawPositionalPath)
+		}
+		remotePath = rawPositionalPath
+	}
+	return localPlaceholder, remotePath, nil
 }
 
 // CLIOutput handles consistent output formatting across all CLI commands
@@ -499,6 +734,8 @@ func SubstateLabel(sub session.Substate) string {
 		return "model unavailable"
 	case session.SubstateAuth401:
 		return "auth (login)"
+	case session.SubstateUsageLimit:
+		return "usage limit"
 	case session.SubstateIdleAtEmptyPrompt:
 		return "idle at prompt"
 	case session.SubstateRunning:

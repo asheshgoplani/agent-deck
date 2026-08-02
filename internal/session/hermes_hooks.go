@@ -82,14 +82,34 @@ func isAgentDeckOwnedHook(cmd string) bool {
 }
 
 // hermesHookEvents are the Hermes lifecycle events we subscribe to.
-// pre_tool_call/post_tool_call bracket each tool call (running/waiting).
+// pre_llm_call/post_llm_call bracket the WHOLE turn (running/waiting): per the
+// Hermes docs, pre_llm_call fires once per turn before the tool-calling loop
+// begins and post_llm_call fires once per turn after the final response is
+// produced. Without these, a turn that generates text without calling a tool
+// (the common case) never flips to "running" — the indicator was stuck on the
+// prior post_tool_call/on_session_start "waiting" state while Hermes was busy.
+// pre_tool_call/post_tool_call fire around each tool call nested inside that
+// bracket; both map to "running", because after a tool returns the LLM is
+// still generating the next step — post_llm_call owns the waiting edge.
+// pre_api_request/post_api_request fire around every LLM API call and act as
+// a mid-turn "running" heartbeat, so long multi-step turns don't outlive the
+// hook freshness window and fade to idle.
 // on_session_start provides an initial waiting state.
-// on_session_end signals the session is dead.
+// on_session_end fires after EVERY run_conversation call (once per user
+// message), so it is a turn-end "waiting" edge — the only one an interrupted
+// turn gets, since post_llm_call is skipped on interrupt.
+// on_session_finalize is the real session end (CLI exit//reset, gateway
+// session eviction) and maps to "dead".
 var hermesHookEvents = []string{
+	"pre_llm_call",
+	"post_llm_call",
+	"pre_api_request",
+	"post_api_request",
 	"pre_tool_call",
 	"post_tool_call",
 	"on_session_start",
 	"on_session_end",
+	"on_session_finalize",
 }
 
 // GetHermesConfigDir returns the Hermes config directory (~/.hermes).

@@ -38,7 +38,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.10.11" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.11.0" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -237,6 +237,26 @@ func main() {
 	// config-dependent setup below. See the init() comment above.
 	initUpdateSettings()
 
+	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
+	// -p/--profile above). One-shot, non-persisted bypass of the worktree
+	// script consent gate for non-interactive callers (CI) that can't answer
+	// a prompt and would otherwise fail closed under the "prompt" default.
+	allowRepoScripts, args2 := extractAllowRepoScriptsFlag(args)
+	args = args2
+	if envVal := strings.TrimSpace(os.Getenv("AGENT_DECK_ALLOW_REPO_SCRIPTS")); envVal != "" {
+		allowRepoScripts = allowRepoScripts || envVal == "1" || strings.EqualFold(envVal, "true")
+	}
+	git.SetScriptConsentConfig(git.ScriptConsentConfig{
+		Policy:        session.GetWorktreeSettings().ScriptConsentPolicy(),
+		AllowOverride: allowRepoScripts,
+		// True here: every switch case below that can reach a worktree
+		// script (add/remove/worktree/session/etc.) `return`s before the
+		// TUI/web startup code further down, so it's still a real CLI
+		// invocation with a real, non-raw terminal — safe to prompt as
+		// before. Overridden to false just below for the TUI/web paths.
+		AllowInteractivePrompt: true,
+	})
+
 	// Seed the tmux socket-isolation default from `[tmux].socket_name` once
 	// per process (v1.7.50+, issue #687). Package-level tmux probes
 	// (KillSessionsWithEnvValue, ListAllSessions, version check, stale-
@@ -394,6 +414,23 @@ func main() {
 			return
 		}
 	}
+
+	// Every path that reaches this point boots the bubbletea TUI (which
+	// takes raw-mode ownership of stdin/stdout — term.IsTerminal stays true
+	// in raw mode, so a blocking synchronous read here would race the TUI's
+	// own input reader, most likely never return since Enter yields '\r'
+	// under raw mode rather than the '\n' a prompt waits for, and steal
+	// keystrokes either way) and/or runs the web/remote server (a mutation
+	// arriving over HTTP must never block on the operator's terminal, even
+	// a real non-raw one, since nobody is watching it for that request).
+	// Re-resolve the consent config with interactive prompting forced off;
+	// every CLI subcommand that wants the original prompt-on-a-real-terminal
+	// behavior already returned above and never reaches this line.
+	git.SetScriptConsentConfig(git.ScriptConsentConfig{
+		Policy:                 session.GetWorktreeSettings().ScriptConsentPolicy(),
+		AllowOverride:          allowRepoScripts,
+		AllowInteractivePrompt: false,
+	})
 
 	// Startup reviver scan (v1.7.8, REPORT-D). Fire-and-forget — rebuilds
 	// control pipes for any instance whose tmux server is alive but whose
@@ -783,7 +820,19 @@ func main() {
 	// When --no-tui is also set, run the HTTP server in the foreground and
 	// skip bubbletea entirely — the perf win that motivated this flag.
 	if webEnabled {
-		effectiveProfile := session.GetEffectiveProfile(profile)
+		// #1790: resolve (and refuse to silently auto-create) the same way
+		// NewStorageWithProfile does. Without this, GetEffectiveProfile
+		// returns a CLAUDE_CONFIG_DIR-inferred name unconditionally, and
+		// passing that concrete name into NewSessionDataService below makes
+		// its own internal NewStorageWithProfile call look like an explicit
+		// -p selection — bypassing the guard and re-opening the exact
+		// silent-empty-profile hole the guard exists to close, just via the
+		// web/headless entry point instead of the CLI/TUI one.
+		effectiveProfile, err := session.ResolveProfileForStorage(profile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to resolve profile for web server: %v\n", err)
+			os.Exit(1)
+		}
 		fallbackMenuData := web.NewSessionDataService(effectiveProfile)
 		liveMenuData := web.NewMemoryMenuData(fallbackMenuData)
 		homeModel.SetWebMenuData(liveMenuData)
@@ -979,6 +1028,27 @@ func extractProfileFlag(args []string) (string, []string) {
 	}
 
 	return profile, remaining
+}
+
+// extractAllowRepoScriptsFlag extracts --allow-repo-scripts from args,
+// returning whether it was present and the args with it removed. Mirrors
+// extractNoTuiFlag's boolean-flag scan (web_cmd.go): supports bare
+// --allow-repo-scripts and --allow-repo-scripts=true/false/1.
+func extractAllowRepoScriptsFlag(args []string) (bool, []string) {
+	allow := false
+	remaining := make([]string, 0, len(args))
+	for _, a := range args {
+		switch {
+		case a == "--allow-repo-scripts":
+			allow = true
+		case strings.HasPrefix(a, "--allow-repo-scripts="):
+			v := strings.TrimPrefix(a, "--allow-repo-scripts=")
+			allow = v == "true" || v == "1"
+		default:
+			remaining = append(remaining, a)
+		}
+	}
+	return allow, remaining
 }
 
 // extractGroupFlag extracts -g or --group from args, returning the group path and remaining args.
@@ -1265,9 +1335,9 @@ func handleAdd(profile string, args []string) {
 	attach := fs.Bool("attach", false, "Start and attach to the session immediately after creating it (requires an interactive terminal; not supported with --ssh)")
 
 	// Worktree flags
-	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch")
-	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
+	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch (not supported with --ssh)")
+	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch (not supported with --ssh)")
+	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree; not supported with --ssh)")
 	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
 
@@ -1374,7 +1444,8 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("  agent-deck add --worktree fix/bug-123 --new-branch /path/to/repo")
 		fmt.Println()
 		fmt.Println("SSH Examples:")
-		fmt.Println("  agent-deck add --ssh user@host --remote-path ~/project -c claude")
+		fmt.Println("  agent-deck add --ssh user@host --remote-path /home/user/project -c claude")
+		fmt.Println("  agent-deck add /home/user/project --ssh user@host -c claude   # positional path shortcut for --remote-path; must be absolute")
 		fmt.Println("  agent-deck add --ssh user@host -c claude -t \"remote-dev\"")
 	}
 
@@ -1405,7 +1476,11 @@ func handleAdd(profile string, args []string) {
 	sessionGroup := mergeFlags(*group, *groupShort)
 	explicitGroupProvided := strings.TrimSpace(sessionGroup) != ""
 	sessionCommandInput := mergeFlags(*command, *commandShort)
-	sessionCommandTool, sessionCommandResolved, sessionWrapperResolved, sessionCommandNote := resolveSessionCommand(sessionCommandInput, *wrapper)
+	sessionCommandTool, sessionCommandResolved, sessionWrapperResolved, sessionCommandNote, sessionCommandIsPassthrough, cmdErr := resolveSessionCommand(sessionCommandInput, *wrapper)
+	if cmdErr != nil {
+		fmt.Printf("Error: %v\n", cmdErr)
+		os.Exit(1)
+	}
 	sessionParent := mergeFlags(*parent, *parentShort)
 	if sessionParent != "" && *noParent {
 		fmt.Println("Error: --parent and --no-parent cannot be used together")
@@ -1417,6 +1492,18 @@ func handleAdd(profile string, args []string) {
 		tool := firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
 		if tool != "claude" {
 			fmt.Println("Error: --resume-session only works with Claude sessions (-c claude)")
+			os.Exit(1)
+		}
+		// #1815 (Codex review on #1830): the value below is passed to
+		// MarkClaudeSessionIDVerified — it becomes a VOUCHED ownership
+		// declaration — and is then interpolated into `--session-id "%s"`,
+		// a double-quoted shell context where $(...) still substitutes.
+		// "Operator-named" has to mean the operator named an actual
+		// conversation id, so refuse anything that is not a bare UUID
+		// rather than vouching for it or silently continuing unverified.
+		if !session.IsBareClaudeSessionUUID(*resumeSession) {
+			fmt.Println("Error: --resume-session must be a bare Claude conversation UUID " +
+				"(8-4-4-4-12 lowercase hex, e.g. 91fd7978-1a2b-3c4d-5e6f-7a8b9c0d1e2f)")
 			os.Exit(1)
 		}
 	}
@@ -1508,14 +1595,35 @@ func handleAdd(profile string, args []string) {
 
 	// Verify path exists and is a directory (skip for SSH remote sessions)
 	if *sshHost != "" {
-		// For SSH sessions, use CWD as local placeholder path (project lives on remote)
-		if path == "" {
-			path, err = os.Getwd()
-			if err != nil {
-				fmt.Printf("Error: failed to get current directory: %v\n", err)
-				os.Exit(1)
-			}
+		// An explicitly given path (positional arg, e.g. `add <remote-path>
+		// --ssh <host>`) names the REMOTE working directory when --ssh is in
+		// play: the project lives on the remote host, so this is never a
+		// local path to validate or launch tmux in. Prior to this fix an
+		// explicit positional path was silently dropped on the floor here:
+		// it became the session's local ProjectPath placeholder (nonsensical,
+		// since it names a path that typically doesn't exist locally) while
+		// SSHRemotePath stayed empty, so wrapForSSH never `cd`'d into it and
+		// the session launched in the SSH login shell's default directory
+		// instead of the intended remote worktree. Route it into
+		// --remote-path (an explicit --remote-path flag still wins, matching
+		// the documented `--ssh --remote-path` pattern) and fall back to CWD
+		// as the local placeholder, exactly as the no-positional-path case
+		// already does. Fixes asheshgoplani/agent-deck#1711 / #1710.
+		// A positional path is routed as the RAW argument (rawPathArg, before
+		// resolveAddPath's local ExpandPath/Abs above), never the already
+		// locally-resolved `path`: see resolveSSHAddPaths' doc comment for why
+		// local resolution of a remote path is never correct.
+		if explicitPathProvided && *sshRemotePath != "" {
+			fmt.Fprintf(os.Stderr, "warning: both a positional path (%q) and --remote-path (%q) were given; "+
+				"the positional path is discarded, --remote-path is used\n", rawPathArg, *sshRemotePath)
 		}
+		var localPlaceholder string
+		localPlaceholder, *sshRemotePath, err = resolveSSHAddPaths(explicitPathProvided, rawPathArg, *sshRemotePath)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		path = localPlaceholder
 	} else {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -1531,6 +1639,26 @@ func handleAdd(profile string, args []string) {
 	// Handle worktree creation
 	var worktreePath, worktreeRepoRoot, worktreeType string
 	if wtBranch != "" {
+		// -w/-b worktree creation is a 100% local filesystem operation
+		// (detectAndCreateBackend + git/jj worktree add below all run against
+		// `path` on THIS machine). Combined with --ssh, `path` at this point
+		// is the local CWD placeholder (see the --ssh branch above), never
+		// the remote repo the director intended. Before this fix that meant
+		// silently creating a worktree in the local Mac's checkout instead of
+		// on the remote host, ignoring --remote-path entirely. Remote
+		// worktree creation over SSH is not yet implemented, so refuse loudly
+		// rather than repeat that silent local-Mac side effect. Workaround:
+		// create the worktree on the remote host directly
+		// (ssh <host> "cd <repo> && git worktree add <path> ..."), then
+		// register it with `agent-deck add --ssh <host> --remote-path <path>`.
+		// Tracking: asheshgoplani/agent-deck#1711 / #1710.
+		if *sshHost != "" {
+			fmt.Fprintln(os.Stderr, "Error: -w/--worktree (and -b) cannot be combined with --ssh; agent-deck cannot create a git worktree on a remote host yet")
+			fmt.Fprintln(os.Stderr, "Workaround: create the worktree on the remote host directly, then register it:")
+			fmt.Fprintln(os.Stderr, "  ssh "+*sshHost+" \"cd <remote-repo> && git worktree add <remote-worktree-path> "+wtBranch+"\"")
+			fmt.Fprintln(os.Stderr, "  agent-deck add --ssh "+*sshHost+" --remote-path <remote-worktree-path> ...")
+			os.Exit(1)
+		}
 		backend, err := detectAndCreateBackend(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1684,6 +1812,7 @@ func handleAdd(profile string, args []string) {
 	if sessionCommandInput != "" {
 		newInstance.Tool = firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
 		newInstance.Command = sessionCommandResolved
+		newInstance.SubcommandPassthrough = sessionCommandIsPassthrough
 	}
 
 	// Apply --channel flags (claude only — channels is a Claude Code CLI flag).
@@ -1772,6 +1901,8 @@ func handleAdd(profile string, args []string) {
 	// Handle --resume-session: set Claude session ID and resume mode
 	if *resumeSession != "" {
 		newInstance.ClaudeSessionID = *resumeSession
+		// #1815: operator-named conversation — explicit ownership.
+		session.MarkClaudeSessionIDVerified(newInstance)
 		newInstance.ClaudeDetectedAt = time.Now()
 
 		opts := newInstance.GetClaudeOptions()
@@ -2533,6 +2664,12 @@ func handleStatus(profile string, args []string) {
 	quiet := fs.Bool("quiet", false, "Only output waiting count (for scripts)")
 	quietShort := fs.Bool("q", false, "Only output waiting count (short)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	// --stale (#1704): read-only lifecycle candidate view. See status_stale.go
+	// for the heuristics (never-started / bash-idle / last-activity) and the
+	// hard suggest-only constraint — this flag branches out before any of the
+	// counting/printing logic below and never mutates a session.
+	stale := fs.Bool("stale", false, "Show read-only stale-session candidates (never stops or removes anything)")
+	staleThreshold := fs.String("threshold", defaultStaleThreshold.String(), "Staleness age threshold for --stale, e.g. 24h, 48h, 168h (Go duration syntax)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck status [options]")
@@ -2547,10 +2684,36 @@ func handleStatus(profile string, args []string) {
 		fmt.Println("  agent-deck status -v           # Detailed list")
 		fmt.Println("  agent-deck status -q           # Just waiting count")
 		fmt.Println("  agent-deck -p work status      # Status for 'work' profile")
+		fmt.Println("  agent-deck status --stale                  # Read-only stale-candidate view (never-started/bash-idle/last-activity)")
+		fmt.Println("  agent-deck status --stale --threshold 48h  # Widen the staleness window")
+		fmt.Println("  agent-deck status --stale --json           # Machine-readable candidates, for agents")
+		fmt.Println()
+		fmt.Println("--stale --json shape:")
+		fmt.Println(`  {"threshold_seconds":86400,"total":5,"stale_count":2,"note":"...",`)
+		fmt.Println(`   "candidates":[{"id":"...","title":"...","tool":"...","status":"idle",`)
+		fmt.Println(`     "substate":"...","path":"...","group_path":"...","parent_session_id":"...",`)
+		fmt.Println(`     "reasons":["never-started"],"never_started":true,"created_at":"...",`)
+		fmt.Println(`     "last_started_at":"...","last_activity_at":"...","last_activity_age_seconds":90000}]}`)
+		fmt.Println("  --stale is READ-ONLY: it never stops or removes a session. Review candidates,")
+		fmt.Println("  then act yourself via `session stop`/`session remove`.")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
+	}
+
+	if *stale {
+		threshold, err := time.ParseDuration(*staleThreshold)
+		if err != nil {
+			fmt.Printf("Error: invalid --threshold %q: %v\n", *staleThreshold, err)
+			os.Exit(1)
+		}
+		if threshold < 0 {
+			fmt.Printf("Error: --threshold must not be negative, got %q\n", *staleThreshold)
+			os.Exit(1)
+		}
+		runStatusStale(profile, threshold, *jsonOutput)
+		return
 	}
 
 	// Load sessions

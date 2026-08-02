@@ -19,7 +19,10 @@ import (
 func TestLaunch_ToolWithFlags_FoldsExtrasIntoWrapper(t *testing.T) {
 	raw := "codex --dangerously-bypass-approvals-and-sandbox --session-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
-	tool, command, wrapper, note := resolveSessionCommand(raw, "")
+	tool, command, wrapper, note, _, err := resolveSessionCommand(raw, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if tool != "codex" {
 		t.Fatalf("tool = %q, want codex", tool)
@@ -44,7 +47,10 @@ func TestLaunch_ToolWithFlags_FoldsExtrasIntoWrapper(t *testing.T) {
 func TestLaunch_ToolWithSessionIdFlag_IsPreserved(t *testing.T) {
 	raw := "my-claude-wrapper --session-id abc-123 --dangerously-skip-permissions"
 
-	_, command, wrapper, _ := resolveSessionCommand(raw, "")
+	_, command, wrapper, _, _, err := resolveSessionCommand(raw, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if command != "my-claude-wrapper" {
 		t.Fatalf("command = %q, want %q (base tool only)", command, "my-claude-wrapper")

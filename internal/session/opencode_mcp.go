@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
 // opencodeMCPServer represents one server entry in opencode.json under "mcp".
@@ -225,7 +226,7 @@ func buildOpenCodeMCPServers(enabledNames []string) map[string]opencodeMCPServer
 // OpenCode's local config uses {"mcp": {"name": {"type":"local","command":[...]}}} format.
 func WriteOpenCodeProjectMCP(projectPath string, enabledNames []string) error {
 	if !GetManageMCPJson() {
-		mcpCatLog.Debug("opencode_mcp_json_management_disabled", "path", projectPath)
+		mcpCatLog.Debug("opencode_mcp_json_management_disabled", "path", logging.SanitizeValue(projectPath))
 		return nil
 	}
 	if projectPath == "" {

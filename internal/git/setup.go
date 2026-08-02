@@ -170,14 +170,19 @@ func CreateWorktreeWithSetupOptions(repoDir, worktreePath, branchName string, st
 // so the fork-with-state path can sequence Create → Materialize → Setup
 // with per-step error handling. Returns the script's exit error; nil if no
 // script. Caller is responsible for ProcessWorktreeInclude if desired.
+//
+// Every caller (CreateWorktreeWithSetupOptions and its callers in
+// cmd/session_cmd.go, vcs_helper.go, vcsbackend.go, multi_repo_worktree.go)
+// funnels through here, so the consent gate (GateAndRunWorktreeSetupScript)
+// applies uniformly without needing a change at each of those call sites.
 func RunWorktreeSetupAfterCreate(repoDir, worktreePath string, stdout, stderr io.Writer, setupTimeout time.Duration) error {
-	scriptPath, scriptMode := FindWorktreeSetupScript(repoDir)
+	scriptPath, _ := FindWorktreeSetupScript(repoDir)
 	if scriptPath == "" {
 		return nil
 	}
 	fmt.Fprintln(stderr, "Running worktree setup script...")
 	start := time.Now()
-	setupErr := RunWorktreeSetupScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, setupTimeout)
+	setupErr := GateAndRunWorktreeSetupScript(repoDir, worktreePath, stdout, stderr, setupTimeout)
 	elapsed := time.Since(start).Round(100 * time.Millisecond)
 	if setupErr != nil {
 		fmt.Fprintf(stderr, "Worktree setup script failed after %s: %v\n", elapsed, setupErr)
@@ -185,6 +190,62 @@ func RunWorktreeSetupAfterCreate(repoDir, worktreePath string, stdout, stderr io
 		fmt.Fprintf(stderr, "Worktree setup script completed in %s\n", elapsed)
 	}
 	return setupErr
+}
+
+// GateAndRunWorktreeSetupScript finds, content-hashes, consent-gates, and —
+// only if permitted — runs .agent-deck/worktree-setup.sh. This is the single
+// entry point every caller (TUI, CLI, session layer) should use instead of
+// pairing FindWorktreeSetupScript with RunWorktreeSetupScript directly,
+// so the trust decision can never be bypassed by a new call site forgetting
+// the gate. Returns nil if no script exists. See scriptconsent.go.
+func GateAndRunWorktreeSetupScript(repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
+	scriptPath, scriptMode := FindWorktreeSetupScript(repoDir)
+	if scriptPath == "" {
+		return nil
+	}
+	if handled, err := scriptConsentPolicyShortCircuit("setup", scriptPath); handled {
+		if err != nil {
+			return err
+		}
+		return RunWorktreeSetupScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
+	}
+	if !scriptMode.IsRegular() {
+		return fmt.Errorf("worktree setup script consent: %s is not a regular file (refusing to hash a symlink/FIFO/device target, which could hang indefinitely); point .agent-deck/worktree-setup.sh at a real file", scriptPath)
+	}
+	hash, err := hashScriptFile(scriptPath)
+	if err != nil {
+		return fmt.Errorf("worktree setup script: reading %s for consent check: %w", scriptPath, err)
+	}
+	if err := checkScriptConsent("setup", repoDir, scriptPath, hash, stderr); err != nil {
+		return err
+	}
+	return RunWorktreeSetupScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
+}
+
+// GateAndRunWorktreeDestructionScript mirrors GateAndRunWorktreeSetupScript
+// for .agent-deck/worktree-destruction.sh.
+func GateAndRunWorktreeDestructionScript(repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
+	scriptPath, scriptMode := FindWorktreeDestructionScript(repoDir)
+	if scriptPath == "" {
+		return nil
+	}
+	if handled, err := scriptConsentPolicyShortCircuit("destruction", scriptPath); handled {
+		if err != nil {
+			return err
+		}
+		return RunWorktreeDestructionScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
+	}
+	if !scriptMode.IsRegular() {
+		return fmt.Errorf("worktree destruction script consent: %s is not a regular file (refusing to hash a symlink/FIFO/device target, which could hang indefinitely); point .agent-deck/worktree-destruction.sh at a real file", scriptPath)
+	}
+	hash, err := hashScriptFile(scriptPath)
+	if err != nil {
+		return fmt.Errorf("worktree destruction script: reading %s for consent check: %w", scriptPath, err)
+	}
+	if err := checkScriptConsent("destruction", repoDir, scriptPath, hash, stderr); err != nil {
+		return err
+	}
+	return RunWorktreeDestructionScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
 }
 
 // DefaultWorktreeDestructionTimeout bounds how long
@@ -215,14 +276,23 @@ func RunWorktreeDestructionScript(scriptPath string, scriptMode os.FileMode, rep
 // RunWorktreeDestructionBeforeRemove runs the destruction script (if present)
 // just before a worktree is removed. Failure is non-fatal: removal proceeds
 // regardless, mirroring setup's "hook failure doesn't block the operation".
+//
+// This is the ONLY caller of the destruction script, and RemoveWorktree
+// (git.go) is the ONLY caller of this function — so gating here, rather
+// than at each of RemoveWorktree's ten call sites (cmd/session_cmd.go,
+// cmd/worktree_cmd.go, cmd/main.go, internal/ui/home.go, web_mutator.go,
+// vcsbackend.go, session/worktree_removal.go, plus RemoveWorktree's own
+// rollback call in this file), closes all of them at once, including the
+// remote-triggered path in web_mutator.go which has no terminal to prompt
+// on and must fail closed rather than silently execute.
 func RunWorktreeDestructionBeforeRemove(repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
-	scriptPath, scriptMode := FindWorktreeDestructionScript(repoDir)
+	scriptPath, _ := FindWorktreeDestructionScript(repoDir)
 	if scriptPath == "" {
 		return nil
 	}
 	fmt.Fprintln(stderr, "Running worktree destruction script...")
 	start := time.Now()
-	err := RunWorktreeDestructionScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
+	err := GateAndRunWorktreeDestructionScript(repoDir, worktreePath, stdout, stderr, timeout)
 	elapsed := time.Since(start).Round(100 * time.Millisecond)
 	if err != nil {
 		fmt.Fprintf(stderr, "Worktree destruction script failed after %s: %v\n", elapsed, err)

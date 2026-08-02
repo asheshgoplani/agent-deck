@@ -114,6 +114,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session send <name> --message-file <file>` | Send message from file (`-` = stdin); no shell quoting. Also on `launch`/`session start` |
 | `agent-deck session output <name>` | Get last response |
+| `agent-deck session children --json` | Child sessions' live status + asserted completions (non-blocking, read-only) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
 | `agent-deck session fork <name>` | Fork Claude/Pi conversation |
 | `agent-deck session switch-account <name> <account>` | Switch Claude account, conversation follows |
@@ -121,6 +122,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck mcp attach <name> <mcp>` | Attach MCP (then restart) |
 | `agent-deck status` | Quick status summary |
 | `agent-deck add --worktree <branch>` | Create session in git worktree |
+| `agent-deck try <name>` | Scratch session in a dated experiment folder |
 | `agent-deck worktree list` | List worktrees with sessions |
 | `agent-deck worktree cleanup` | Find orphaned worktrees/sessions |
 | `agent-deck feedback` | Submit feedback (opens rating prompt + optional comment) |
@@ -144,6 +146,10 @@ The script auto-detects current session/profile and creates a child session.
 | **Fire & forget** | (no --wait) | Default. Tell user: "Ask me to check when ready" |
 | **On-demand** | `agent-deck session output "Title"` | User asks to check |
 | **Blocking** | `--wait` flag | Need immediate result |
+
+### Fanning out several children?
+
+This section covers **one** child (launch + one of the three retrieval modes). For a *fleet* — several children in parallel, supervised non-blockingly from the parent — load the sibling [fleet skill](../fleet/SKILL.md) instead. It covers parented fan-out, polling live status and asserted completions via `agent-deck session children --json` (plus the push variant `--follow --until-done`), answering children stuck in `waiting`, and the grouping/`--parent` pitfalls.
 
 ### Recommended MCPs
 
@@ -454,6 +460,33 @@ agent-deck worktree cleanup --force
 | **Feature isolation** | Keep main branch clean while agent experiments |
 | **Code review** | Agent reviews PR in worktree while main work continues |
 | **Hotfix work** | Quick branch off main without disrupting feature work |
+
+## Scratch Sessions (`agent-deck try`)
+
+**Use when:** the user wants a throwaway playground, a quick experiment, or a scratch repo to dry-run something — "spin up a scratch session", "try this out somewhere disposable", "make a playground".
+
+```bash
+# Find-or-create a dated experiment folder and start a session in it
+agent-deck try redis-cache            # → <experiments-dir>/2026-07-29-redis-cache/
+agent-deck try rds                    # Fuzzy-matches an existing experiment (e.g. redis-cache)
+agent-deck try myproject -c gemini    # Non-default tool
+agent-deck try myproject --no-session # Create/find the folder only
+agent-deck try scratch --sandbox      # Run the session in a Docker sandbox
+agent-deck try --list [query]         # List (or fuzzy-search) existing experiments
+```
+
+The argument is an **experiment name**, not a prompt. `try` finds or creates `<experiments-dir>/<YYYY-MM-DD>-<name>/`, reuses an existing session for that path if one exists, and otherwise creates one in the `experiments` group and starts it.
+
+**The base directory is configurable** — important when your machine only trusts certain roots for agent workspaces:
+
+```toml
+[experiments]
+directory = "~/code/tries"    # Default: ~/src/tries
+date_prefix = true            # YYYY-MM-DD- prefix on folder names
+default_tool = "claude"       # Tool when -c is omitted
+```
+
+Note: `try` creates a plain folder, not a git repo — run `git init` in it first if the experiment needs one.
 
 ## Watchers
 
@@ -811,6 +844,16 @@ agent-deck session set <session> account <account>
 2. **Restart after MCP attach:** Always run `session restart` after `mcp attach`
 3. **Never poll from other agents** - can interfere with target session
 
+## What agent-deck is NOT: a process supervisor
+
+agent-deck manages **interactive agent sessions**. It is not a supervisor for always-on daemons or network listeners, and reaching for it as one leads to subtle failures. Before wrapping a long-lived service (a webhook listener, an SSE bridge, a `claude remote-control` server, any daemon) in a deck session, check this boundary:
+
+- **Sessions live in a user tmux server and die with it.** An SSH logout can take every session down ([#958](https://github.com/asheshgoplani/agent-deck/issues/958) — mitigate with `loginctl enable-linger` + `launch_in_user_scope=true`, but the failure mode remains).
+- **Nothing auto-restarts a crashed session** unless you run the optional watchdog daemon ([documentation/WATCHDOG.md](https://github.com/asheshgoplani/agent-deck/blob/main/documentation/WATCHDOG.md)) — and the watchdog restarts *sessions*, with session semantics.
+- **`session restart` has conversation semantics, not daemon semantics.** For a Claude session it rebuilds the pane command around `claude --resume <id>` — correct for resuming a chat, wrong for "bring my listener back exactly as it was". Custom-command sessions re-run their stored wrapper, but registry drift on custom commands is a known trap ([#956](https://github.com/asheshgoplani/agent-deck/issues/956), [#911](https://github.com/asheshgoplani/agent-deck/issues/911)).
+
+**Rule of thumb:** always-on listeners and daemons belong under the OS supervisor (launchd on macOS, systemd on Linux — the headless `web --no-tui` daemon itself is run that way, see [#1452](https://github.com/asheshgoplani/agent-deck/issues/1452)); agent-deck owns the interactive sessions and workers. When a session merely *talks to* a service, supervise the service outside the deck and keep the session disposable.
+
 ## Known Gotchas (v1.7.0+)
 
 Friction points discovered during real usage. Work around them per the patterns below.
@@ -848,6 +891,26 @@ rm "$TARGET.old"
 ```
 
 Kernel tracks inodes, not names. Running processes keep a reference to the renamed inode; new invocations resolve through the original name to the new inode.
+
+### `-c "claude <subcommand> ..."` silently rewritten — injected flags demote the subcommand (#1800)
+
+> **This is a known bug, not intended behaviour.** Tracked as [#1800](https://github.com/asheshgoplani/agent-deck/issues/1800); a fix is in flight. Delete this entire section once that fix ships — the workaround below is a stopgap, not the supported way to run claude subcommands.
+
+Passing a claude **subcommand** as the session command — e.g. `-c "claude remote-control --name X"` or `-c "claude mcp serve"` — does not run the command you gave. Tool detection splits it into `claude` + extra args and re-appends the extras *after* agent-deck's injected flags, so the pane runs:
+
+```
+claude --session-id <uuid> --dangerously-skip-permissions remote-control --name X
+```
+
+The subcommand becomes a positional argument of plain interactive claude; no Remote Control server (or MCP server, etc.) ever starts. This affects any claude subcommand. See [#1800](https://github.com/asheshgoplani/agent-deck/issues/1800).
+
+**Workaround — wrap in a shell so tool detection treats the command as opaque:**
+
+```bash
+agent-deck add -t rc-server -c "bash -c 'exec claude remote-control --name X'" /path
+```
+
+The wrapped form injects nothing and runs the command verbatim. Trade-off: the session is opaque to claude session-id tracking / resume-on-restart — fine for server-style subcommands, which have no conversation to resume. Extra *flags* (e.g. `-c "claude --model opus"`) are unaffected — the wrapper-suffix path handles those correctly.
 
 ### Cross-machine config drift (macOS ↔ Linux)
 
@@ -967,3 +1030,4 @@ See the [Self-Improvement](#self-improvement) section for how these were discove
 - [self-improvement.md](references/self-improvement.md) - Deep dive into the transcript-mining pipeline: architecture, privacy layers, output schemas, lessons learned
 - [goal.md](references/goal.md) - Deep dive into goal-driven worker autonomy: three-entity design, done-condition shell commands, manager loop, nudge generator, escalation bundle, implementation phases
 - [session-share skill](../session-share/SKILL.md) - Export/import sessions for collaboration
+- [fleet skill](../fleet/SKILL.md) - Fan out parallel child sessions and supervise them non-blockingly (`session children`)

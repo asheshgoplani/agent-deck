@@ -72,6 +72,9 @@ func TestContextWindowForModel(t *testing.T) {
 	assert.Equal(t, 200000, contextWindowForModel("claude-haiku-4-5"))
 	// 3.x models: 200k
 	assert.Equal(t, 200000, contextWindowForModel("claude-3-5-sonnet"))
+	// MiniMax models
+	assert.Equal(t, 1000000, contextWindowForModel("MiniMax-M3"))
+	assert.Equal(t, 204800, contextWindowForModel("MiniMax-M2.7"))
 	// Unknown/empty: 200k fallback
 	assert.Equal(t, 200000, contextWindowForModel("unknown-model"))
 	assert.Equal(t, 200000, contextWindowForModel(""))
@@ -337,6 +340,18 @@ func TestCostCalculation_HaikuModel(t *testing.T) {
 	// Expected: (1M * 0.80 + 100K * 4 + 500K * 0.08 + 200K * 1.0) / 1M
 	// = (0.80 + 0.4 + 0.04 + 0.2) = $1.44
 	assert.InDelta(t, 1.44, cost, 0.01)
+}
+
+func TestCostCalculation_MiniMaxModels(t *testing.T) {
+	analytics := &SessionAnalytics{
+		InputTokens:      1000000,
+		OutputTokens:     1000000,
+		CacheReadTokens:  1000000,
+		CacheWriteTokens: 1000000,
+	}
+
+	assert.InDelta(t, 3.12, analytics.CalculateCost("MiniMax-M3"), 0.001)
+	assert.InDelta(t, 1.935, analytics.CalculateCost("MiniMax-M2.7"), 0.001)
 }
 
 func TestCostCalculation_DefaultFallback(t *testing.T) {

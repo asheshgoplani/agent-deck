@@ -75,14 +75,17 @@ func TestMiniMaxPricing(t *testing.T) {
 	p := NewPricer(PricerConfig{})
 
 	tests := []struct {
-		model  string
-		input  int64
-		output int64
+		model      string
+		input      int64
+		output     int64
+		cacheRead  int64
+		cacheWrite int64
 	}{
-		{"MiniMax-M2.7", 700_000, 2_800_000},
-		{"MiniMax-M2.7-highspeed", 350_000, 1_400_000},
-		{"MiniMax-M2.5", 500_000, 2_000_000},
-		{"MiniMax-M2.5-highspeed", 150_000, 600_000},
+		{"MiniMax-M3", 600_000, 2_400_000, 120_000, 0},
+		{"MiniMax-M2.7", 300_000, 1_200_000, 60_000, 375_000},
+		{"MiniMax-M2.7-highspeed", 350_000, 1_400_000, 0, 0},
+		{"MiniMax-M2.5", 500_000, 2_000_000, 0, 0},
+		{"MiniMax-M2.5-highspeed", 150_000, 600_000, 0, 0},
 	}
 
 	for _, tt := range tests {
@@ -90,15 +93,16 @@ func TestMiniMaxPricing(t *testing.T) {
 		assert.True(t, ok, "model %s should have pricing", tt.model)
 		assert.Equal(t, tt.input, mp.InputPerMtokMicro, "model %s input pricing", tt.model)
 		assert.Equal(t, tt.output, mp.OutputPerMtokMicro, "model %s output pricing", tt.model)
+		assert.Equal(t, tt.cacheRead, mp.CacheReadPerMtokMicro, "model %s cache read pricing", tt.model)
+		assert.Equal(t, tt.cacheWrite, mp.CacheWritePerMtokMicro, "model %s cache write pricing", tt.model)
 	}
 }
 
 func TestMiniMaxComputeCost(t *testing.T) {
 	p := NewPricer(PricerConfig{})
-	// MiniMax-M2.7: input=$0.70/Mtok, output=$2.80/Mtok
-	// 1M input = $0.70, 1M output = $2.80 → total $3.50 = 3,500,000 microdollars
-	cost := p.ComputeCost("MiniMax-M2.7", 1_000_000, 1_000_000, 0, 0)
-	assert.Equal(t, int64(3_500_000), cost)
+	// MiniMax-M2.7: $0.30 input + $1.20 output + $0.06 cache read + $0.375 cache write.
+	cost := p.ComputeCost("MiniMax-M2.7", 1_000_000, 1_000_000, 1_000_000, 1_000_000)
+	assert.Equal(t, int64(1_935_000), cost)
 }
 
 func TestPricerModelNormalization(t *testing.T) {

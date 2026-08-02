@@ -155,6 +155,15 @@ export const toolFilterFallbackSignal = signal(false)
 export const hiddenToolsSignal = signal([])
 export const pickerToolsSignal = signal([])
 
+// Web terminal link-open policy (issue #1682), hydrated from /api/settings.
+// trustedDomainsSignal holds the `[web].trusted_domains` hosts whose links
+// open without the confirm; confirmLinkOpenSignal is `[web].confirm_link_open`
+// and gates the prompt for every other host. Defaults are the safe ones (no
+// trusted hosts, confirm on) so the prompt only relaxes once the real config
+// arrives.
+export const trustedDomainsSignal = signal([])
+export const confirmLinkOpenSignal = signal(true)
+
 // POL-1 (Phase 9, plan 01): sidebar load state for skeleton render gate.
 // Initialized false; flipped to true on the first /api/menu response OR the
 // first SSE `menu` snapshot in main.js. Never flips back — once the sidebar

@@ -273,6 +273,32 @@ Closes [issue #602](https://github.com/asheshgoplani/agent-deck/issues/602).
 
 `agent-deck session switch-account <session> <account>` moves an existing session to another Claude account — **conversation included**. The session stops, its conversation file is migrated into the target account's config dir (copy-only, with a destination backup and size verification), the account is set, and the session restarts with `--resume`. `session set <session> account <name>` auto-migrates too.
 
+### Session naming
+
+Titles and groups answer different questions — "what is this, at a glance?" versus "why do these sessions belong together?" — and each has its own controls.
+
+#### Stable titles
+
+By default, agent-deck syncs a session's displayed title from the tool's own session name (Claude's `/rename`, `claude --name`, etc.), which is useful for watching a list of live agents but means a title you set can later be overwritten. Pick the control that matches how stable you need the title to be:
+
+| You want | Do this |
+| --- | --- |
+| This one session keeps the title I gave it | `--title-lock` (alias `--no-title-sync`) on `agent-deck add` / `agent-deck launch`, or `agent-deck session set-title-lock <id> on` at runtime |
+| No session in this installation ever gets renamed by its agent | `sync_title = false` in `config.toml` |
+| A throwaway session where the live task description matters more than a fixed name | `agent-deck add --quick` (`-Q` short flag) — the list shows the session's current Claude task in place of the generated handle |
+
+An explicit `-t/--title` locks the title automatically, the same as passing `--title-lock` — there's no separate opt-in needed. There's also no create-time opt-out: if you want a session with an explicit title to still pick up the agent's renames, unlock it afterward with `agent-deck session set-title-lock <id> off`. A locked title is never silently overwritten by the sync path — it only changes via an explicit rename or `session set-title-lock <id> off`.
+
+#### Groups vs. parent linkage
+
+Groups carry real policy — `max_concurrent` (serial vs. bounded parallelism), `default_path`, and per-group Claude account/config (see [Declarative groups](#declarative-groups) and [Per-group Claude config](#per-group-claude-config) above). Treat that policy as the test for whether a new group is warranted:
+
+- **Don't encode dispatch relationships in a group name.** A conductor fanning out workers doesn't need `work`, `work-infra`, `work-hygiene` siblings to say "these came from the same orchestrator" — that's what parent linkage is for. Launch with `--parent <id>` (or let `agent-deck launch` auto-parent), and read the fleet back with `agent-deck session children`.
+- **Create a new group when something policy-shaped differs** from the parent group — a different concurrency cap, working directory, or Claude account. If nothing enforced differs, the thing you have is a topic, not a group; carry it in the title and parent linkage instead.
+- **Don't rely on titles or group names as machine keys.** Both are user-editable; a script or agent matching on either is relying on something that can change under it.
+
+There's no automated warning or enforcement for group sprawl yet — this is a documented convention, not a gate. See [`docs/design/2026-07-26-session-identity-and-group-purpose.md`](docs/design/2026-07-26-session-identity-and-group-purpose.md) for the fuller design writeup (task-identity field, group `--purpose`, advisory sprawl warning) if you hit a concrete gap this section doesn't cover.
+
 ### MCP Socket Pool
 
 Running many sessions? Socket pooling shares MCP processes across all sessions via Unix sockets, reducing MCP memory usage by 85-90%. Connections auto-recover from MCP crashes in ~3 seconds via a reconnecting proxy. Enable with `pool_all = true` in [config.toml](skills/agent-deck/references/config-reference.md).
@@ -746,7 +772,7 @@ Hide tools you don't use from the new-session picker with `[ui].hidden_tools` (a
 Track token usage and costs across all your AI agent sessions in real-time.
 
 - **Automatic collection** — Claude Code hook integration reads transcript files on each turn. Gemini/Codex/MiniMax support via output parsing (untested)
-- **14 models priced** — Claude Opus 4.6/4.7, Sonnet 4.6, Haiku 4.5, Gemini Pro/Flash, GPT-4o/4.1, o3, o4-mini, MiniMax M2.7/M2.7-highspeed/M2.5/M2.5-highspeed with daily price refresh
+- **15 models priced** — Claude Opus 4.6/4.7, Sonnet 4.6, Haiku 4.5, Gemini Pro/Flash, GPT-4o/4.1, o3, o4-mini, MiniMax M3/M2.7/M2.7-highspeed/M2.5/M2.5-highspeed with daily price refresh
 - **TUI dashboard** — press `$` to view today/week/month costs, top sessions, model breakdown
 - **Web dashboard** — `/costs` page with Chart.js charts, group drill-down, session detail views, SSE live updates
 - **Budget limits** — configurable daily/weekly/monthly/per-group/per-session limits with 80% warning and 100% hard stop (untested)

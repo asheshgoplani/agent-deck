@@ -15,6 +15,13 @@ import (
 // accounts should treat this as non-fatal: there is simply nothing to migrate.
 var ErrNoConversation = errors.New("no conversation file found")
 
+// ErrAmbiguousConversation reports that the source project dir holds several
+// conversations while the instance has no id that resolves to one of them, so
+// no transcript can be attributed to it (#1815). Distinct from
+// ErrNoConversation: something IS there, it just cannot be shown to be this
+// session's, and copying a guess across accounts is not acceptable.
+var ErrAmbiguousConversation = errors.New("conversation cannot be attributed to this session")
+
 // MigrateConversation copies the session's Claude conversation file from its
 // currently resolved config dir into targetConfigDir, so `claude --resume`
 // finds the history after an account switch (#924 follow-up). Copy-only: the
@@ -73,8 +80,25 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 		if newestFile == "" {
 			return "", fmt.Errorf("%w under %s", ErrNoConversation, srcProjDir)
 		}
+		// #1815: "newest conversation in the project dir" is a guess, and it
+		// is a guess whether or not an older id was stored — the fallback is
+		// choosing a DIFFERENT conversation by mtime either way, so a stale
+		// stored id does not make the replacement owned.
+		//
+		// Where the guess is AMBIGUOUS (more than one conversation in the
+		// directory, i.e. sessions share this cwd) it is refused outright
+		// rather than copied: copying first and refusing to resume later has
+		// already carried a neighbouring session's conversation into another
+		// account's config dir. Where the directory holds exactly one
+		// conversation there is nothing to confuse it with, so the repair the
+		// fallback exists for still works — but the id stays suspect until
+		// something vouches for it, so it cannot authorize a `--resume`.
+		if conversationCount(srcProjDir) > 1 {
+			return "", fmt.Errorf("%w: %s holds several conversations and %s has no resolvable id of its own, so the newest one cannot be attributed to it",
+				ErrAmbiguousConversation, srcProjDir, inst.Title)
+		}
 		srcFile, sid = newestFile, newestID
-		inst.ClaudeSessionID = newestID
+		inst.adoptDiscoveredClaudeSessionID(newestID)
 	}
 
 	dstProjDir := filepath.Join(dst, "projects", projDirName)
@@ -179,6 +203,25 @@ func RestoreOrphanedConversationBackup(inst *Instance, configDir string) (string
 		return "", err
 	}
 	return live, nil
+}
+
+// conversationCount reports how many UUID-named conversation files live in
+// projDir. More than one means the directory is shared, so "the newest one"
+// identifies nothing (#1815).
+func conversationCount(projDir string) int {
+	files, err := filepath.Glob(filepath.Join(projDir, "*.jsonl"))
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, file := range files {
+		base := filepath.Base(file)
+		if strings.HasPrefix(base, "agent-") || !uuidSessionFileRegex.MatchString(base) {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // newestConversationFile returns the most recently modified UUID-named

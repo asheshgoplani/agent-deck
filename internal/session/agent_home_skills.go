@@ -134,7 +134,17 @@ func (s *homeSkillStore) attach(skillRef, sourceName string) (*ProjectSkillAttac
 	if err != nil {
 		return nil, err
 	}
-	if err := validateAttachableSkillCandidate(*candidate); err != nil {
+	// Attaching a first skill is also the first operation that materializes a
+	// home, so create its root before pinning it for source validation.
+	if err := os.MkdirAll(s.home, 0o700); err != nil {
+		return nil, fmt.Errorf("create %s home for skill validation: %w", s.label, err)
+	}
+	root, err := openProjectRoot(s.home)
+	if err != nil {
+		return nil, fmt.Errorf("open %s home for skill validation: %w", s.label, err)
+	}
+	defer root.Close()
+	if err := root.validateAttachableSkillCandidate(*candidate); err != nil {
 		return nil, err
 	}
 	lock, err := acquireCodexConfigLock(s.manifestPath())

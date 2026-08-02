@@ -103,10 +103,49 @@ type ComposerGuardResult struct {
 	// regardless (delivery must not be dropped), accepting the residual
 	// merge risk for this pathological case.
 	ClearFailed bool
+	// ComposerPasteMarkerFree is true when the guard's LAST successful
+	// capture showed a composer holding no "[Pasted text …]" marker. It is
+	// the pre-send provenance evidence the attribution gate needs to tell
+	// agent-deck's own collapsed paste apart from a foreign one parked in the
+	// composer (issue #1777): with no marker there before the send, a marker
+	// seen afterwards can only be the one our own paste created. False
+	// whenever the guard could not establish that (capture failure, or a
+	// marker still present), which fails safe — the gate then withholds the
+	// Enter nudge.
+	ComposerPasteMarkerFree bool
 }
 
 // maxComposerClearAttempts bounds Ctrl+C attempts during save-clear.
 const maxComposerClearAttempts = 2
+
+// saveReconfirmDelay is the settle time before the save-step re-capture. A
+// suggestion sampled in the sub-frame where its text is painted but the dim
+// SGR has not landed reads as an operator draft (issue #1777); one frame of
+// settle is enough for the attribute to land before re-classification.
+const saveReconfirmDelay = 50 * time.Millisecond
+
+// composerProvenanceFree reports whether raw is safe pre-send evidence that
+// no foreign paste marker is parked in the composer — the same guarantee
+// ComposerPasteMarkerFree promises callers (issue #1777 provenance).
+//
+// A VISIBLE, EMPTY composer proves it directly. An UNSCOPABLE pane
+// (!visible — codex/cursor, or a transiently unreadable Claude pane) must
+// NOT be folded into that case: ComposerHoldsPasteMarker makes the OPPOSITE
+// call on purpose for !visible, falling back to a whole-pane scan, because
+// "no composer to scope to" yields no usable provenance on its own. Before
+// this fix GuardComposerDraft (the producer for the highest-volume send
+// path) granted provenance on any !visible read regardless, disagreeing
+// with ComposerHoldsPasteMarker on the identical pane state and letting a
+// foreign marker that renders later be misattributed as ours (#1778 review
+// finding 2). Mirror ComposerHoldsPasteMarker's choice here so the two
+// producers of this evidence never disagree.
+func composerProvenanceFree(raw string, strip func(string) string) bool {
+	draft, visible := ComposerDraft(raw, strip)
+	if visible {
+		return draft == ""
+	}
+	return !ComposerHoldsPasteMarker(raw, strip)
+}
 
 // GuardComposerDraft implements the composer-collision guard for automated
 // sends (issue #1409): an automated SendKeysAndEnter against a composer that
@@ -135,7 +174,6 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 
 	start := time.Now()
 	deadline := start.Add(opts.HoldWait)
-	lastDraft := ""
 
 	for {
 		raw, err := t.CapturePaneFresh()
@@ -143,11 +181,9 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 			// Pane not introspectable: never block delivery on it.
 			return ComposerGuardResult{Held: time.Since(start)}
 		}
-		draft, visible := ComposerDraft(raw, strip)
-		if !visible || draft == "" {
-			return ComposerGuardResult{Held: time.Since(start)}
+		if composerProvenanceFree(raw, strip) {
+			return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
 		}
-		lastDraft = draft
 		if !time.Now().Before(deadline) {
 			break
 		}
@@ -160,9 +196,35 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 		}
 	}
 
-	// Hold bound reached with the operator draft still present: save it and
-	// clear the composer so the automated message cannot merge with it.
-	res := ComposerGuardResult{SavedDraft: lastDraft}
+	// Hold bound reached with the operator draft still present. Before
+	// committing to save-clear-restore, re-capture and re-classify: a single
+	// mid-render sample can show suggestion text whose dim/grey SGR has not
+	// landed yet, and saving it would later RESTORE the suggestion as real,
+	// normal-coloured composer text that a bare Enter could submit (issue
+	// #1777). Only content that classifies as an operator draft on a second,
+	// settled capture is ever saved. On a capture failure nothing is saved —
+	// the guard must not attribute content it cannot re-read.
+	time.Sleep(saveReconfirmDelay)
+	raw, err := t.CapturePaneFresh()
+	if err != nil {
+		return ComposerGuardResult{Held: time.Since(start)}
+	}
+	if composerProvenanceFree(raw, strip) {
+		return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
+	}
+	draft, visible := ComposerDraft(raw, strip)
+	if !visible {
+		// No introspectable composer, yet the pane still shows a foreign
+		// paste-marker pattern: provenance cannot be established and there
+		// is no composer to clear. Fail safe without a blind Ctrl+C (#1778
+		// review finding 1) rather than falling through into the save-clear
+		// flow with an empty draft.
+		return ComposerGuardResult{Held: time.Since(start)}
+	}
+
+	// Save the confirmed operator draft and clear the composer so the
+	// automated message cannot merge with it.
+	res := ComposerGuardResult{SavedDraft: draft}
 	clearPoll := poll
 	if clearPoll > 100*time.Millisecond {
 		clearPoll = 100 * time.Millisecond
@@ -174,8 +236,19 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 		clearDeadline := time.Now().Add(opts.ClearWait)
 		for {
 			raw, err := t.CapturePaneFresh()
-			if err == nil && !ComposerHasDraft(raw, strip) {
+			// Require a POSITIVELY visible, empty composer before granting
+			// ComposerPasteMarkerFree: a capture that comes back !visible
+			// (transiently unreadable pane, dialog, etc.) is not evidence the
+			// clear succeeded, so it must not be folded into "cleared" (#1778
+			// review finding 2 — ComposerHasDraft is false for !visible too,
+			// which previously let this branch grant provenance it never
+			// established).
+			clearedDraft, clearedVisible := ComposerDraft(raw, strip)
+			if err == nil && clearedVisible && clearedDraft == "" {
 				res.DraftCleared = true
+				// The composer is confirmed empty right before the send, so
+				// any paste marker appearing afterwards is our own (#1777).
+				res.ComposerPasteMarkerFree = true
 				res.Held = time.Since(start)
 				return res
 			}

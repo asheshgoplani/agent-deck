@@ -337,11 +337,46 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	}()
 
 	// Read stdin, intercept Ctrl+Q (all encodings), forward the rest.
+	//
+	// stdinReaderDone closes when this goroutine returns, and stdinReaderStop
+	// tells it to. Both are required because the remote process can exit on its
+	// own (the <-cmdDone branch below), and on that path nothing pressed Ctrl+Q
+	// — without a stop signal the reader stays parked in a blocking
+	// os.Stdin.Read that closing the PTY cannot interrupt. It would then be
+	// queued on the same tty as Bubble Tea's reader when Attach returns, win the
+	// next keystroke on FIFO wakeup order, and swallow it. Same defect and same
+	// fix as the local tmux attach path (internal/tmux.attachStdinPump).
+	stdinReaderDone := make(chan struct{})
+	stdinReaderStop := make(chan struct{})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(stdinReaderDone)
 		buf := make([]byte, 256)
+		fd := int(os.Stdin.Fd()) // #nosec G115 -- an OS file descriptor is a small positive int
 		for {
+			// Poll before reading so the stop signal is observable; a blocking
+			// read on a tty inherited from the shell is not interruptible.
+			select {
+			case <-stdinReaderStop:
+				return
+			default:
+			}
+			if !tmux.PollFdReady(fd, tmux.AttachStdinPollInterval) {
+				continue
+			}
+			// Re-check the stop signal: it can fire while this goroutine was
+			// parked inside poll, and a keystroke can land in that same window.
+			// Reading it here isn't user-visible today only because the
+			// unconditional flush in QuiesceAttachInput discards it moments
+			// later — an incidental backstop, not a reason to read stdin after
+			// the caller already asked us to stop.
+			select {
+			case <-stdinReaderStop:
+				return
+			default:
+			}
+
 			n, err := os.Stdin.Read(buf)
 			if err != nil {
 				break
@@ -377,6 +412,11 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	}
 
 	// Cleanup: close PTY and wait for output to drain.
+	// Stop the stdin reader first, before the PTY closes: a keystroke that
+	// lands during the drain would otherwise be consumed and written to a
+	// closed PTY, losing it. Mirrors cleanupAttach in internal/tmux/pty.go,
+	// which cancels the pump before closing the PTY.
+	close(stdinReaderStop)
 	_ = ptmx.Close()
 	if cmd.Process != nil {
 		_ = cmd.Process.Kill()
@@ -385,7 +425,18 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	case <-outputDone:
 	case <-time.After(50 * time.Millisecond):
 	}
-	termreply.QuarantineFor(sshAttachReplyQuarantine)
+	// Hand stdin back to the TUI: drop whatever the remote's teardown left in
+	// the input queue and arm the reply quarantine. The join-before-flush
+	// ordering is the load-bearing invariant here, so this calls the same
+	// tmux.QuiesceAttachInput the local attach path uses rather than
+	// re-implementing it — that function's mutation-checked tests are what
+	// protect the ordering, and an inline copy here would inherit none of them.
+	tmux.QuiesceAttachInput(
+		stdinReaderDone,
+		tmux.AttachStdinReaderStopTimeout,
+		func() { _ = tmux.FlushInput(int(os.Stdin.Fd())) }, // #nosec G115 -- fd is a small positive int
+		func() { termreply.QuarantineFor(sshAttachReplyQuarantine) },
+	)
 
 	// Reset terminal styles that may have leaked from the remote session.
 	_, _ = os.Stdout.WriteString("\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m")

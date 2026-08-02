@@ -27,7 +27,7 @@ const (
 // to #1096). #1096 added 15ms rune batching, but at realistic typing speeds
 // (>15ms between keys) every keystroke still triggers its own fork+exec — on
 // macOS each one costs 10-50ms, so the user feels per-keystroke lag despite
-// the batch window. KeySender opens one `tmux -C attach-session` subprocess at
+// the batch window. KeySender opens one `tmux -C -u attach-session` subprocess at
 // the start of an insert-mode session and streams send-keys commands over
 // stdin for the lifetime of that mode, dropping per-call dispatch to a stdin
 // write (<1ms regardless of platform).
@@ -43,9 +43,11 @@ type KeySender interface {
 }
 
 // localKeySender is the in-process KeySender backed by a long-running
-// `tmux -L <socket> -C attach-session -t <target>` subprocess. Each Send
+// `tmux -L <socket> -C -u attach-session -t <target>` subprocess. Each Send
 // writes one command line to its stdin; tmux executes commands in-server
 // without spawning new clients.
+// It is deliberately headless: its stdin/stdout are pipes and it never opens
+// /dev/tty, so detached callers without a controlling terminal (#1114) work.
 type localKeySender struct {
 	target string
 	cmd    *exec.Cmd
@@ -63,7 +65,7 @@ type localKeySender struct {
 //
 // The client attaches EXPLICITLY to `target`:
 //
-//	tmux [-L <socket>] -C attach-session -t <target>
+//	tmux [-L <socket>] -C -u attach-session -t <target>
 //
 // The explicit `attach-session` is load-bearing twice over, and both reasons
 // are incident findings — do not "simplify" it back to a bare `tmux -C`:
@@ -98,7 +100,7 @@ func OpenKeySender(socket, target string) (KeySender, error) {
 	// <socket>` selector, and the lint test in tmux_exec_lint_test.go
 	// enforces this. Plain `exec.Command("tmux", ...)` would silently
 	// defeat socket isolation when the user has opted in (#687).
-	cmd := tmuxExec(socket, "-C", "attach-session", "-t", target)
+	cmd := tmuxExec(socket, "-C", "-u", "attach-session", "-t", target)
 	// Own process group so Close can take down the whole subtree, matching
 	// ControlPipe. Without it a wedged child's descendants outlive Close.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -114,7 +116,7 @@ func OpenKeySender(socket, target string) (KeySender, error) {
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
-		return nil, fmt.Errorf("keysender: start tmux -C attach-session: %w", err)
+		return nil, fmt.Errorf("keysender: start tmux -C -u attach-session: %w", err)
 	}
 	k := &localKeySender{target: target, cmd: cmd, stdin: stdin}
 

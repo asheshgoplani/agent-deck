@@ -52,7 +52,9 @@ Commands accept: **exact title**, **ID prefix** (e.g., first 4 chars), **path**,
 | ` + "`" + `running` + "`" + ` (green) | The conductor is actively processing | Do nothing. Wait. |
 | ` + "`" + `waiting` + "`" + ` (yellow) | The conductor finished and needs input | Read output, decide: auto-respond or escalate |
 | ` + "`" + `idle` + "`" + ` (gray) | Waiting, but user acknowledged | User knows about it. Skip unless asked. |
-| ` + "`" + `error` + "`" + ` (red) | Session crashed or missing | Try ` + "`" + `session restart` + "`" + `. If that fails, escalate. |
+| ` + "`" + `error` + "`" + ` (red) | Crashed, missing, or wedged (auth/model failure) | Check the substate first. Then try ` + "`" + `session restart` + "`" + `; if that fails, escalate. |
+
+**Substate (Claude sessions only; refines status in ` + "`" + `list` + "`" + `/` + "`" + `show` + "`" + ` JSON):** ` + "`" + `auth-401` + "`" + ` covers two different pane banners. A credential banner (` + "`" + `Please run /login` + "`" + `, ` + "`" + `API Error: 401` + "`" + `) means the fleet is HOLDING the session; restarting will NOT fix it. Check ` + "`" + `session show --json <id>` + "`" + ` for the ` + "`" + `auth_hold` + "`" + ` object (the authoritative source, present even after the pane exits) and escalate for re-login. A dropped-socket banner (` + "`" + `socket connection closed` + "`" + `) also classifies as ` + "`" + `auth-401` + "`" + ` but is NOT held and IS restart-recoverable: restart it. ` + "`" + `model-unavailable` + "`" + ` means the selected model is down (shows as error, not running); self-heal currently only observes this and takes no action, so switch it yourself with ` + "`" + `agent-deck -p <PROFILE> session set <id> model <model>` + "`" + ` then ` + "`" + `agent-deck -p <PROFILE> session restart <id>` + "`" + `. ` + "`" + `idle-at-empty-prompt` + "`" + ` (shown as coarse status ` + "`" + `idle` + "`" + ` or ` + "`" + `waiting` + "`" + `) means the session is genuinely sitting at its prompt with nothing happening. Never restart-loop an ` + "`" + `error` + "`" + ` session that ` + "`" + `auth_hold` + "`" + ` confirms is credential-held.
 
 ## Heartbeat Protocol
 

@@ -122,8 +122,12 @@ func (i *Instance) buildEnvSourceCommand() string {
 	//    the env_file source (step 4) so an inline key deterministically
 	//    wins over the same key from the file; the conductor map is applied
 	//    over the group map (CFG-08 precedence: conductor > group). Same
-	//    tool gate as the claude branch of getToolEnvFile.
-	if i.Tool == "claude" {
+	//    tool gate as the claude branch of getToolEnvFile. Uses
+	//    instInvokesClaudeBinary (not a bare i.Tool == "claude" check) so a
+	//    Tool=="shell" claude-subcommand-passthrough instance (#1800/#1821)
+	//    gets the same group/conductor claude env a direct claude session
+	//    would.
+	if instInvokesClaudeBinary(i) {
 		if claudeEnv := i.getClaudeInlineEnv(config); claudeEnv != "" {
 			sources = append(sources, claudeEnv)
 		}
@@ -566,7 +570,19 @@ func (i *Instance) getToolEnvFile() string {
 		return ""
 	}
 
-	switch i.Tool {
+	// #1800/#1821: resolve a Tool=="shell" claude/codex subcommand-passthrough
+	// instance to its real binary before the switch, so it gets the same
+	// env_file resolution a direct claude/codex session gets instead of
+	// silently falling through to the "unknown tool" default case below.
+	effectiveTool := i.Tool
+	switch {
+	case instInvokesClaudeBinary(i):
+		effectiveTool = "claude"
+	case instInvokesCodexBinary(i):
+		effectiveTool = "codex"
+	}
+
+	switch effectiveTool {
 	case "claude":
 		// Conductor block wins over group (CFG-08 precedence chain).
 		// NOTE: This is separate from getConductorEnv below which sources
@@ -702,8 +718,13 @@ var telegramEnvVarsToStrip = []string{
 // the full env for the rare case of debugging the poller from a fork.
 //
 // Fires when ALL hold:
-//  1. Tool is "claude" — TELEGRAM_* are Claude Code plugin env vars;
-//     don't mutate codex / gemini spawns.
+//  1. The spawn actually execs the claude binary — TELEGRAM_* are Claude
+//     Code plugin env vars; don't mutate codex / gemini spawns. This is
+//     Tool=="claude", OR (#1800/#1821) a Tool=="shell"
+//     subcommand-passthrough instance (resolveSessionCommand routes
+//     "claude <subcommand> ..." through Tool="shell" to skip agent-deck's
+//     own flag injection, but the spawned binary is still claude) — see
+//     instInvokesClaudeBinary.
 //  2. Title does NOT start with "conductor-". Conductors are the
 //     legitimate bot owners even before `Channels` is set.
 //  3. No entry in `Channels` carries the `plugin:telegram@` prefix.
@@ -719,7 +740,7 @@ func telegramStateDirStripExpr(inst *Instance) string {
 	if inst == nil {
 		return ""
 	}
-	if inst.Tool != "claude" {
+	if !instInvokesClaudeBinary(inst) {
 		return ""
 	}
 	if inst.InheritTelegramEnv {
@@ -750,6 +771,61 @@ func telegramExecEnvStripFlags(inst *Instance) string {
 		parts = append(parts, "-u", v)
 	}
 	return strings.Join(parts, " ")
+}
+
+// instInvokesClaudeBinary reports whether inst spawns the real claude
+// binary — either directly (Tool == "claude") or as a Tool=="shell"
+// SubcommandPassthrough instance (#1800/#1821: resolveSessionCommand
+// routes "claude <subcommand> ..." to Tool="shell", Command=raw,
+// SubcommandPassthrough=true, specifically to skip agent-deck's own flag
+// injection, but the spawned process is still claude). Those still need the
+// TELEGRAM_* strip (#1133/S8) and the same CLAUDE_CONFIG_DIR/account
+// routing every other claude spawn gets — see buildShellPassthroughCommand.
+//
+// Gated on inst.SubcommandPassthrough, not a bare MatchTool(inst.Command)
+// re-match against the whole command line: the latter is a substring match
+// (toolregistry.go Match()), so it would also fire — and wrongly extend the
+// TELEGRAM strip / env_file resolution — for an ordinary, never-#1821-routed
+// Tool=="shell" session whose command merely CONTAINS "claude" somewhere in
+// the line, e.g. `tail -f ~/.claude/logs/x` (Claude review, PR #1821
+// MEDIUM #3, same root cause as HIGH #1). fields[0] (not the whole line) is
+// still checked against MatchTool to tell claude-shaped from codex-shaped
+// passthrough instances; SubcommandPassthrough alone doesn't distinguish
+// the two.
+func instInvokesClaudeBinary(inst *Instance) bool {
+	if inst == nil {
+		return false
+	}
+	if inst.Tool == "claude" {
+		return true
+	}
+	if inst.Tool != "shell" || !inst.SubcommandPassthrough {
+		return false
+	}
+	fields := strings.Fields(inst.Command)
+	return len(fields) > 0 && MatchTool(fields[0]) == "claude"
+}
+
+// instInvokesCodexBinary is instInvokesClaudeBinary's codex counterpart:
+// reports whether inst spawns the real codex binary, either directly
+// (Tool == "codex") or as a Tool=="shell" SubcommandPassthrough instance
+// (#1800/#1821, e.g. `-c "codex mcp list"`). Used to extend codex's own
+// group/conductor env-file resolution (getToolEnvFile) to a shell-routed
+// codex subcommand the same way instInvokesClaudeBinary extends claude's.
+// See instInvokesClaudeBinary's doc for why this gates on
+// inst.SubcommandPassthrough rather than re-matching the whole command line.
+func instInvokesCodexBinary(inst *Instance) bool {
+	if inst == nil {
+		return false
+	}
+	if inst.Tool == "codex" {
+		return true
+	}
+	if inst.Tool != "shell" || !inst.SubcommandPassthrough {
+		return false
+	}
+	fields := strings.Fields(inst.Command)
+	return len(fields) > 0 && MatchTool(fields[0]) == "codex"
 }
 
 // ScrubProcessEnvForChildLaunch removes TELEGRAM_* vars from the

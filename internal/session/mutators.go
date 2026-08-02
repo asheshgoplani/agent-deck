@@ -138,8 +138,8 @@ func normalizeToolSessionID(field, value string) (string, error) {
 func SetField(inst *Instance, field, value string, extraArgsTokens []string) (oldValue string, postCommit func(), err error) {
 	switch field {
 	case FieldTitle:
-		oldValue = inst.Title
-		inst.Title = value
+		oldValue = inst.GetTitleThreadSafe()
+		inst.SetTitleThreadSafe(value)
 		inst.SetAutoName(false) // a user/explicit name replaces the auto handle
 		// An explicit rename is user intent: lock the title so the #572
 		// Claude-name sync (plan titles, /rename) can't revert it on the
@@ -166,6 +166,21 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 	case FieldCommand:
 		oldValue = inst.Command
 		inst.Command = value
+		// #1821: any direct command edit through this generic mutator
+		// invalidates the SubcommandPassthrough provenance guarantee —
+		// that flag means "resolveSessionCommand itself validated this
+		// exact command's first token as a real claude/codex subcommand",
+		// and this path never runs that validation. Without clearing it, a
+		// session created via `-c "claude mcp list"` (SubcommandPassthrough
+		// = true) whose command is later edited here to something else
+		// entirely (e.g. a plain positional prompt) would keep getting
+		// claude/codex account-routing treatment on every future restart
+		// for a command nobody ever checked (Codex review, PR #1821
+		// follow-up). Always clearing — even when the edited text still
+		// happens to look like a subcommand — is the safe default; the
+		// flag can only become true again through the CLI passthrough
+		// route that actually validates it.
+		inst.SubcommandPassthrough = false
 
 	case FieldTool:
 		oldValue = inst.Tool
@@ -291,6 +306,9 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 	case FieldClaudeSessionID:
 		oldValue = inst.ClaudeSessionID
 		inst.ClaudeSessionID = value
+		// #1815: an operator naming the conversation id for this session is
+		// an explicit ownership declaration.
+		inst.markClaudeSessionIDVerified()
 		inst.ClaudeDetectedAt = time.Now()
 		postCommit = makeSessionEnvPostCommit(inst, "CLAUDE_SESSION_ID", value)
 		// Issue #923 (reporter @bautrey): when the user explicitly clears

@@ -33,9 +33,11 @@ const (
 	controlPipeEOFExitGrace = 200 * time.Millisecond
 )
 
-// ControlPipe wraps a persistent `tmux -C attach-session -t <name>` process.
+// ControlPipe wraps a persistent `tmux -C -u attach-session -t <name>` process.
 // It provides event-driven output detection via %output events and
 // zero-subprocess command execution through the stdin/stdout pipe.
+// It is deliberately headless: it never opens /dev/tty, so detached callers
+// without a controlling terminal (the #1114 failure mode) are supported.
 type ControlPipe struct {
 	sessionName string
 	socketName  string // tmux -L value; "" means user's default server
@@ -110,7 +112,7 @@ func NewControlPipe(sessionName, socketName string) (*ControlPipe, error) {
 }
 
 func newControlPipeOnce(sessionName, socketName string) (*ControlPipe, error) {
-	cmd := tmuxExec(socketName, "-C", "attach-session", "-t", sessionName)
+	cmd := tmuxExec(socketName, "-C", "-u", "attach-session", "-t", sessionName)
 	// Put in own process group so we can kill the entire group on shutdown
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -361,7 +363,7 @@ func (cp *ControlPipe) Done() <-chan struct{} {
 
 // Close shuts down the control mode pipe.
 //
-// Teardown is staged: (1) close stdin so the `tmux -C attach-session`
+// Teardown is staged: (1) close stdin so the `tmux -C -u attach-session`
 // child sees EOF and orderly-detaches via the control protocol's %exit
 // path; (2) wait up to controlPipeEOFExitGrace (200ms) for that to
 // complete — the vast majority of cases settle in 1-4ms; (3) only on
