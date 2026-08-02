@@ -30,7 +30,13 @@ func runTestMain(m *testing.M) int {
 	// values with a fresh ad-home-* temp dir, breaking the test (and silently
 	// resolving to the wrong sandbox). The inherited env is already off the
 	// real home, so data-safety is preserved by NOT re-isolating.
-	isHelperProcess := os.Getenv("AGENT_DECK_TASK6_HELPER_PROCESS") != ""
+	//
+	// Every helper-spawning test must be listed here. A helper that isn't
+	// re-isolates, then exits via os.Exit from inside its own test body,
+	// skipping the cleanup defers below and leaking the temp dirs this
+	// function exists to remove.
+	isHelperProcess := os.Getenv("AGENT_DECK_TASK6_HELPER_PROCESS") != "" ||
+		os.Getenv("AGENT_DECK_ADD_HELPER_PROCESS") != ""
 
 	if !isHelperProcess {
 		// Isolate HOME+XDG so agent-deck path resolution lands in a temp dir,

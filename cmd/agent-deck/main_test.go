@@ -354,6 +354,11 @@ func TestIsDuplicateSession(t *testing.T) {
 			ID: "ssh003", Title: "login-dir", ProjectPath: "/home/user/cwd",
 			SSHHost: "alice@host-a",
 		},
+		// A LOCAL session at the same directory the remote sessions above use
+		// as their placeholder. Without this, the "remote does not collide
+		// with the local placeholder path" case below would pass on the title
+		// check alone and assert nothing about location keying.
+		{ID: "local001", Title: "local-at-cwd", ProjectPath: "/home/user/cwd"},
 	}
 
 	tests := []struct {
