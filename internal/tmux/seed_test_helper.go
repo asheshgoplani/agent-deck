@@ -26,6 +26,47 @@ func SeedPaneInfoCacheForTest(t testing.TB, info map[string]PaneInfo) {
 	})
 }
 
+// SeedSessionActivityCacheForTest replaces the package's session cache (the
+// list-sessions snapshot that backs Session.GetCachedWindowActivity) with the
+// supplied session_name -> window_activity map and marks it fresh. Cleanup
+// restores the pristine zero state.
+//
+// Production callers must use RefreshExistingSessions / RefreshSessionCache;
+// this exists so internal/ui can drive the adaptive-refresh fingerprint tests
+// (refresh_policy.go) without standing up a real tmux server.
+func SeedSessionActivityCacheForTest(t testing.TB, activity map[string]int64) {
+	t.Helper()
+	sessionCacheMu.Lock()
+	sessionCacheData = activity
+	sessionCacheTime = time.Now()
+	sessionCacheMu.Unlock()
+	t.Cleanup(func() {
+		sessionCacheMu.Lock()
+		sessionCacheData = nil
+		sessionCacheTime = time.Time{}
+		sessionCacheMu.Unlock()
+	})
+}
+
+// SeedServerAliveForTest pins IsServerAlive's cached verdict for the next 5
+// seconds so a test can drive code paths that fast-fail when the tmux server
+// is unreachable (notably ui.backgroundStatusUpdate) without depending on
+// whether the test host has a tmux binary or a live server. Cleanup restores
+// the pristine "never probed" state so later tests re-probe for real.
+func SeedServerAliveForTest(t testing.TB, alive bool) {
+	t.Helper()
+	serverAliveMu.Lock()
+	serverAliveVal = alive
+	serverAliveTime = time.Now()
+	serverAliveMu.Unlock()
+	t.Cleanup(func() {
+		serverAliveMu.Lock()
+		serverAliveVal = true
+		serverAliveTime = time.Time{}
+		serverAliveMu.Unlock()
+	})
+}
+
 // ExpireStartupWindowForTest ends the session's startup window (see
 // inStartupWindowLocked) so GetStatus classifies the pane from live evidence
 // instead of reporting "starting".
@@ -51,6 +92,30 @@ func ExpireStartupWindowForTest(t testing.TB, s *Session) {
 	s.mu.Lock()
 	s.startupAt = time.Time{}
 	s.mu.Unlock()
+}
+
+// SeedConnectedPipeForTest injects a fake, already-alive ControlPipe for
+// sessionName into pm's pipe map, reporting lastOutput as its most recent
+// %output event, without spawning a real `tmux -C` process or requiring a
+// tmux server. Lets internal/ui drive the sweep's PipeManager quiet-pipe
+// fast path (pm.IsConnected / pm.LastOutputTime) deterministically.
+//
+// The fake pipe answers only IsAlive() and LastOutputTime() truthfully
+// (both are plain mutex-guarded field reads); SendCommand and the other
+// process-backed methods are never exercised by that fast path and would
+// panic on this fake if called, which is intentional — it keeps the fake
+// from silently covering more surface than the sweep actually touches.
+func SeedConnectedPipeForTest(t testing.TB, pm *PipeManager, sessionName string, lastOutput time.Time) {
+	t.Helper()
+	fake := &ControlPipe{sessionName: sessionName, alive: true, lastOutput: lastOutput}
+	pm.mu.Lock()
+	pm.pipes[sessionName] = fake
+	pm.mu.Unlock()
+	t.Cleanup(func() {
+		pm.mu.Lock()
+		delete(pm.pipes, sessionName)
+		pm.mu.Unlock()
+	})
 }
 
 // ExpirePaneInfoCacheForTest leaves the cache contents intact but rewinds the

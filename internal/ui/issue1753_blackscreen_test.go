@@ -359,10 +359,10 @@ func TestIssue1753_VisibleRowRefreshIsBudgeted(t *testing.T) {
 			changed++
 		}
 	}
-	// visibleStatusBatchSize(4) + the off-screen batch(2) is the absolute upper
+	// visiblePollBudgetPerSweep (10, refresh_policy.go) is the absolute upper
 	// bound of UpdateStatus calls in one pass; all 30 rows are visible here so
-	// the off-screen batch has nothing to do.
-	if changed > 6 {
+	// the off-screen batch (Step 2) has nothing to do.
+	if changed > 10 {
 		t.Fatalf("one processStatusUpdate pass refreshed %d of %d visible rows: the visible-row "+
 			"burst is back — with a large group expanded this is an unbudgeted storm of "+
 			"Instance write locks right when the user expects a frame (#1753)", changed, fleet)
@@ -373,7 +373,7 @@ func TestIssue1753_VisibleRowRefreshIsBudgeted(t *testing.T) {
 	}
 
 	// The round-robin must CYCLE: repeated passes eventually cover every row.
-	// 12 passes x 4-row budget > 30 rows even with slack for skips.
+	// 12 passes x 10-row budget > 30 rows even with slack for skips.
 	for pass := 0; pass < 12; pass++ {
 		h.processStatusUpdate(req)
 	}

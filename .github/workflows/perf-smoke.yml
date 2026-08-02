@@ -24,6 +24,14 @@ on:
       - '**/*_perf_test.go'
       - '.github/workflows/perf-smoke.yml'
       - 'docs/perf-budget-suite.md'
+      # internal/ui's background status sweep (PR #1765, issue #1753) is a
+      # hot path every session's rendering goes through but ships no
+      # cmd/agent-deck/*.go changes of its own, so it was invisible to this
+      # gate even though internal/ui/refresh_policy_perf_test.go (a
+      # **/*_perf_test.go match, already covered above) lives here. Listing
+      # the package explicitly makes the filter trigger on the package's
+      # non-test source changes too, not only on the perf test file itself.
+      - 'internal/ui/**'
   workflow_dispatch: {}
 
 permissions:
