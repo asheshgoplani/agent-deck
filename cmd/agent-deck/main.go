@@ -252,20 +252,16 @@ func main() {
 	// the installation-wide fallback for callers without a session handle.
 	tmux.SetDefaultSocketName(session.GetTmuxSettings().GetSocketName())
 
-	if len(args) > 0 && subcommandNeedsTmuxPreflight(args[0]) {
-		ensureTmuxInPathOrExit()
-	}
-
 	// Nudge macOS users whose tmux predates the upstream fix for the
 	// control-mode NULL-deref (tmux #4980, issue #737). Once per process,
 	// no-op on non-macOS, suppressible via AGENTDECK_SUPPRESS_TMUX_WARNING.
 	tmux.WarnIfVulnerableTmux()
 
 	var webEnabled bool
-	var webArgs []string
 	// webHeadless: true when --no-tui is passed to the `web` subcommand.
 	// Skips bubbletea boot (the bulk of ~60 MB RSS) and runs HTTP-server only.
 	var webHeadless bool
+	var webOptions webCommandOptions
 
 	// Handle subcommands
 	if len(args) > 0 {
@@ -351,11 +347,17 @@ func main() {
 			return
 		case "web":
 			webEnabled = true
-			// Extract --no-tui out of webArgs before buildWebServer's flag set
-			// sees it. The TUI-vs-headless decision is made at bootstrap (it
-			// controls whether bubbletea ever boots), so it lives outside the
-			// per-server flag set.
-			webHeadless, webArgs = extractNoTuiFlag(args[1:])
+			var err error
+			webOptions, err = parseWebCommandOptions(args[1:])
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: web flag parsing failed: %v\n", err)
+				os.Exit(1)
+			}
+			webHeadless = webOptions.noTUI
+			ensureTmuxInPathOrExit()
 			// fall through to TUI launch below (or headless server boot if --no-tui)
 		case "uninstall":
 			handleUninstall(args[1:])
@@ -484,8 +486,11 @@ func main() {
 		}
 	}
 
-	// Check if tmux is available (with fallback path search)
-	ensureTmuxInPathOrExit()
+	// Web parses its own flags and preflights during subcommand dispatch so
+	// help remains tmux-free and startup probes see the repaired PATH.
+	if !webEnabled {
+		ensureTmuxInPathOrExit()
+	}
 
 	// Create storage early to register instance via SQLite
 	earlyStorage, err := session.NewStorageWithProfile(profile)
@@ -820,7 +825,7 @@ func main() {
 			homeModel.SetHeadless(true)
 		}
 
-		server, err := buildWebServer(effectiveProfile, webArgs, liveMenuData, ui.NewWebMutator(homeModel))
+		server, err := buildWebServerFromOptions(effectiveProfile, webOptions, liveMenuData, ui.NewWebMutator(homeModel))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: web server setup failed: %v\n", err)
 			os.Exit(1)
@@ -2125,6 +2130,7 @@ func handleList(profile string, args []string) {
 		handleListAllProfiles(*jsonOutput)
 		return
 	}
+	ensureTmuxInPathOrExit()
 
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
@@ -2648,7 +2654,6 @@ func handleStatus(profile string, args []string) {
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
-
 	if *stale {
 		threshold, err := time.ParseDuration(*staleThreshold)
 		if err != nil {
@@ -2659,9 +2664,11 @@ func handleStatus(profile string, args []string) {
 			fmt.Printf("Error: --threshold must not be negative, got %q\n", *staleThreshold)
 			os.Exit(1)
 		}
+		ensureTmuxInPathOrExit()
 		runStatusStale(profile, threshold, *jsonOutput)
 		return
 	}
+	ensureTmuxInPathOrExit()
 
 	// Load sessions
 	storage, err := session.NewStorageWithProfile(profile)
@@ -3980,15 +3987,6 @@ func isOuterTmuxWithoutOptIn() bool {
 	return true
 }
 
-func subcommandNeedsTmuxPreflight(cmd string) bool {
-	switch cmd {
-	case "launch", "session", "list", "ls", "status", "web", "try", "run-task":
-		return true
-	default:
-		return false
-	}
-}
-
 func ensureTmuxInPathOrExit() {
 	if err := ensureTmuxInPath(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error: tmux not found")
@@ -4015,33 +4013,11 @@ func ensureTmuxInPathOrExit() {
 // directories. When tmux is found via fallback, the containing directory is
 // prepended to PATH so every subsequent exec.Command("tmux", …) succeeds.
 func ensureTmuxInPath() error {
-	if _, err := exec.LookPath("tmux"); err == nil {
-		return nil
+	ensureTmuxOnPath()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return fmt.Errorf("tmux not found in PATH or common locations")
 	}
-
-	// Well-known paths where tmux is commonly installed.
-	fallbacks := []string{
-		"/usr/bin/tmux",
-		"/usr/local/bin/tmux",
-		"/opt/homebrew/bin/tmux",
-		"/home/linuxbrew/.linuxbrew/bin/tmux",
-		"/snap/bin/tmux",
-	}
-
-	for _, p := range fallbacks {
-		info, err := os.Stat(p)
-		if err != nil {
-			continue
-		}
-		// Must be a regular file (or symlink target) with at least one execute bit.
-		if info.Mode().IsRegular() && info.Mode()&0111 != 0 {
-			dir := filepath.Dir(p)
-			_ = os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-			return nil
-		}
-	}
-
-	return fmt.Errorf("tmux not found in PATH or common locations")
+	return nil
 }
 
 // formatSize formats bytes into human-readable size
