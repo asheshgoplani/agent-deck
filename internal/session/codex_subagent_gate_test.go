@@ -309,6 +309,7 @@ func TestUpdateCodexSession_DiskScan_PrefersUserOverSubagent(t *testing.T) {
 
 func TestUpdateCodexSession_DiskScan_RejectsLoneSubagent(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
+	inst.lastCodexProbeAt = time.Now().Add(time.Hour) // This test isolates disk selection.
 	if err := os.MkdirAll(inst.ProjectPath, 0o755); err != nil {
 		t.Fatalf("mkdir project: %v", err)
 	}

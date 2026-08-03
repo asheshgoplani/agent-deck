@@ -3239,11 +3239,13 @@ func codexProcFDProbeScript(procRoot string) string {
 	exit 0
 }
 proc_root=%s
+saw_process=0
 incomplete=0
 for p in "$proc_root"/[0-9]*; do
 	if [ "$p" = "$proc_root/[0-9]*" ]; then
 		break
 	fi
+	saw_process=1
 	if [ ! -d "$p" ]; then
 		incomplete=1
 		continue
@@ -3268,6 +3270,9 @@ for p in "$proc_root"/[0-9]*; do
 		esac
 	done
 done
+if [ "$saw_process" -eq 0 ]; then
+	incomplete=1
+fi
 if [ "$incomplete" -ne 0 ]; then
 	echo %q
 fi`,

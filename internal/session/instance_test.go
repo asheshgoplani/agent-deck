@@ -3897,6 +3897,13 @@ func TestCodexProcFDProbeScriptCompleteness(t *testing.T) {
 		}
 	})
 
+	t.Run("empty proc root is incomplete", func(t *testing.T) {
+		out := run(t, t.TempDir())
+		if !bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) {
+			t.Fatalf("empty proc root output = %q, want incomplete sentinel", out)
+		}
+	})
+
 	t.Run("missing fd directory is incomplete", func(t *testing.T) {
 		root := t.TempDir()
 		if err := os.Mkdir(filepath.Join(root, "100"), 0o755); err != nil {

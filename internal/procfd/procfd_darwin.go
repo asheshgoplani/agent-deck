@@ -41,14 +41,17 @@ var (
 )
 
 func openVnodePaths(pid int) ([]string, error) {
+	const fdInfoSize = int(unsafe.Sizeof(procFDInfo{}))
+
 	// Sizing call: with a nil buffer proc_pidinfo returns the byte size of the
 	// current fd table.
 	n, err := procPidinfoFn(pid, procPIDListFDs, 0, nil, 0)
 	if err != nil {
 		return nil, fmt.Errorf("procfd: sizing fd list for pid %d: %w", pid, err)
 	}
-
-	const fdInfoSize = int(unsafe.Sizeof(procFDInfo{}))
+	if n%fdInfoSize != 0 {
+		return nil, fmt.Errorf("procfd: fd list size for pid %d is not record-aligned: %d bytes", pid, n)
+	}
 	// Headroom for fds opened between the sizing call and the fill call.
 	fds := make([]procFDInfo, n/fdInfoSize+32)
 	bufSize := len(fds) * fdInfoSize
@@ -56,8 +59,11 @@ func openVnodePaths(pid int) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("procfd: listing fds for pid %d: %w", pid, err)
 	}
-	if n == bufSize {
+	if n >= bufSize {
 		return nil, fmt.Errorf("procfd: fd list for pid %d may be truncated", pid)
+	}
+	if n%fdInfoSize != 0 {
+		return nil, fmt.Errorf("procfd: fd list for pid %d ends with a partial record: %d bytes", pid, n)
 	}
 	fds = fds[:n/fdInfoSize]
 

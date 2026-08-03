@@ -45,6 +45,22 @@ func TestOpenVnodePathsRejectsPossiblyTruncatedFDList(t *testing.T) {
 	}
 }
 
+func TestOpenVnodePathsRejectsPartialFDRecord(t *testing.T) {
+	previous := procPidinfoFn
+	t.Cleanup(func() { procPidinfoFn = previous })
+	procPidinfoFn = func(_ int, _ int, _ uint64, buf unsafe.Pointer, _ int) (int, error) {
+		if buf == nil {
+			return int(unsafe.Sizeof(procFDInfo{})), nil
+		}
+		return int(unsafe.Sizeof(procFDInfo{})) - 1, nil
+	}
+
+	_, err := openVnodePaths(123)
+	if err == nil || !strings.Contains(err.Error(), "partial record") {
+		t.Fatalf("openVnodePaths partial fd record error = %v, want partial-record error", err)
+	}
+}
+
 func TestOpenVnodePathsReportsUnresolvedVnodes(t *testing.T) {
 	previousInfo, previousFDInfo := procPidinfoFn, procPidfdinfoFn
 	t.Cleanup(func() {
