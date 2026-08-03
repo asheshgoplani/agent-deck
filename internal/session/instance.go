@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +28,7 @@ import (
 	"time"
 
 	"al.essio.dev/pkg/shellescape"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
@@ -41,6 +44,16 @@ var (
 	uuidPatternRE               = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 	geminiPromptRE              = regexp.MustCompile(`^(>|>>>|\$|❯|➜|gemini>|✦)\s*$`)
 	shellPromptRE               = regexp.MustCompile(`^[\s]*(>|>>>|\$|❯|➜|#|%)\s*$`)
+	openCodeSessionHTTPClient   = &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	openCodeCLIQueryGroup singleflight.Group
+	openCodeCLIQueryCache = struct {
+		sync.Mutex
+		entries map[string]openCodeCLIQueryCacheEntry
+	}{entries: make(map[string]openCodeCLIQueryCacheEntry)}
 )
 
 // Status represents the current state of a session
@@ -97,6 +110,9 @@ const (
 	opencodeRotationScanInterval   = 15 * time.Second
 	opencodeRotationActivityWindow = 30 * time.Second
 	opencodeStartupTimeSkew        = 5 * time.Second
+	// openCodeSessionResponseLimit bounds allocation if a persisted OpenCode
+	// port is later occupied by an unrelated loopback listener.
+	openCodeSessionResponseLimit = 8 << 20
 	// opencodeSSEFreshnessWindow bounds how long an SSE-derived status stays
 	// authoritative without stream traffic (issue #1614). OpenCode heartbeats
 	// its /event stream roughly every 10s, and the watcher refreshes the
@@ -255,7 +271,7 @@ type Instance struct {
 	OpenCodeDetectedAt time.Time `json:"opencode_detected_at,omitempty"`
 	OpenCodeStartedAt  int64     `json:"-"`                       // Unix millis when we started OpenCode (for session matching, not persisted)
 	OpenCodePort       int       `json:"opencode_port,omitempty"` // Localhost port of OpenCode's event server (issue #1614); 0 = none
-	lastOpenCodeScanAt time.Time // Rate-limits expensive `opencode session list` scans
+	lastOpenCodeScanAt time.Time // Rate-limits OpenCode session-discovery scans
 
 	// Codex CLI integration
 	CodexSessionID  string    `json:"codex_session_id,omitempty"`
@@ -2323,8 +2339,9 @@ func codexRolloutExistsInHome(sessionID, codexHome string) bool {
 
 // detectOpenCodeSessionAsync detects the OpenCode session ID after startup
 // OpenCode generates session IDs internally (format: ses_XXXXX)
-// We query "opencode session list --format json" and match by project directory,
-// picking the most recently updated session (since OpenCode auto-resumes the last session)
+// We query the managed OpenCode HTTP server (or the bounded compatibility CLI
+// fallback) and match by project directory, picking the most recently updated
+// session since OpenCode auto-resumes the last session.
 func (i *Instance) detectOpenCodeSessionAsync() {
 	time.Sleep(1 * time.Second)
 
@@ -2374,7 +2391,10 @@ func (i *Instance) watchForOpenCodeSession() {
 		time.Sleep(pollInterval)
 		attempt++
 
-		if i.OpenCodeSessionID != "" {
+		i.mu.RLock()
+		alreadyDetected := i.OpenCodeSessionID != ""
+		i.mu.RUnlock()
+		if alreadyDetected {
 			sessionLog.Debug("opencode_watcher_already_set")
 			return
 		}
@@ -2397,12 +2417,24 @@ func (i *Instance) watchForOpenCodeSession() {
 
 // setOpenCodeSession sets the session ID and stores it in tmux environment.
 func (i *Instance) setOpenCodeSession(sessionID string) {
+	i.mu.Lock()
+	i.setOpenCodeSessionLocked(sessionID)
+	tmuxSession := i.tmuxSession
+	i.mu.Unlock()
+	i.syncOpenCodeSessionEnvironment(tmuxSession, sessionID)
+}
+
+// setOpenCodeSessionLocked updates in-memory binding state. The caller must
+// hold i.mu for writing.
+func (i *Instance) setOpenCodeSessionLocked(sessionID string) {
 	i.OpenCodeSessionID = sessionID
 	i.OpenCodeDetectedAt = time.Now()
 	i.OpenCodeStartedAt = 0
+}
 
-	if i.tmuxSession != nil {
-		if err := i.tmuxSession.SetEnvironment("OPENCODE_SESSION_ID", sessionID); err != nil {
+func (i *Instance) syncOpenCodeSessionEnvironment(tmuxSession *tmux.Session, sessionID string) {
+	if tmuxSession != nil {
+		if err := tmuxSession.SetEnvironment("OPENCODE_SESSION_ID", sessionID); err != nil {
 			sessionLog.Warn("opencode_set_env_failed", slog.String("error", err.Error()))
 		}
 	}
@@ -2414,6 +2446,24 @@ type openCodeSessionMetadata struct {
 	Path      string `json:"path"`
 	Created   int64  `json:"created"`
 	Updated   int64  `json:"updated"`
+}
+
+type openCodeHTTPSessionMetadata struct {
+	ID        string `json:"id"`
+	Directory string `json:"directory"`
+	Path      string `json:"path"`
+	Location  struct {
+		Directory string `json:"directory"`
+	} `json:"location"`
+	Time struct {
+		Created int64 `json:"created"`
+		Updated int64 `json:"updated"`
+	} `json:"time"`
+}
+
+type openCodeCLIQueryCacheEntry struct {
+	queriedAt time.Time
+	sessions  []openCodeSessionMetadata
 }
 
 // findBestOpenCodeSession keeps an existing binding if that session still exists
@@ -2489,40 +2539,179 @@ func findBestOpenCodeSession(sessions []openCodeSessionMetadata, projectPath, cu
 	return bestMatch
 }
 
-// queryOpenCodeSession queries OpenCode CLI for sessions matching our project
-// directory. Unbound instances adopt the most recently updated session, while
-// already-bound instances keep their current ID as long as it still exists.
+// queryOpenCodeSession queries the managed OpenCode HTTP server for sessions
+// matching our project directory. Unbound instances adopt the most recently
+// updated session, while already-bound instances keep their current ID as long
+// as it still exists. Instances without a managed port retain a coalesced,
+// rate-limited CLI compatibility path.
 //
-// Bounded wall-clock cost:
+// CLI fallback wall-clock bounds:
 //   - 5s context deadline for the subprocess itself.
 //   - WaitDelay=500ms so cmd.Output() returns after the context fires even if
 //     an opencode grandchild keeps stdout pipes open (Go 1.20+).
 //
 // 5s is the ceiling for cold opencode CLI on large session stores; on slower
-// machines this still usually succeeds, and on genuine hangs we log a Warn
-// and lastOpenCodeScanAt schedules the next retry 15s later.
+// machines this still usually succeeds, and on genuine hangs the cache and
+// lastOpenCodeScanAt schedule a later retry instead of spawning a poll storm.
 func (i *Instance) queryOpenCodeSession() string {
+	i.mu.RLock()
+	port := i.OpenCodePort
+	projectPath := i.ProjectPath
+	currentID := i.OpenCodeSessionID
+	startedAt := i.OpenCodeStartedAt
+	i.mu.RUnlock()
+
+	var sessions []openCodeSessionMetadata
+	if port > 0 {
+		var err error
+		sessions, err = i.queryOpenCodeSessionsHTTP(port, projectPath)
+		if err != nil {
+			sessionLog.Debug("opencode_http_query_failed",
+				slog.String("dir", projectPath),
+				slog.Int("port", port),
+				slog.String("error", err.Error()),
+			)
+			return ""
+		}
+	} else {
+		sessions = i.queryOpenCodeSessionsCLI(projectPath)
+	}
+
+	sessionLog.Debug("opencode_parsed_sessions", slog.Int("count", len(sessions)))
+
+	var activityAt int64
+	if currentID != "" {
+		lastActivity := i.GetLastActivityTime()
+		if !lastActivity.IsZero() && time.Since(lastActivity) <= opencodeRotationActivityWindow {
+			activityAt = lastActivity.UnixMilli()
+		}
+	}
+
+	bestMatch := findBestOpenCodeSession(sessions, projectPath, currentID, startedAt, activityAt)
+	sessionLog.Debug(
+		"opencode_best_match",
+		slog.String("session_id", bestMatch),
+		slog.String("current_id", currentID),
+	)
+	return bestMatch
+}
+
+func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]openCodeSessionMetadata, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	endpoint := url.URL{
+		Scheme: "http",
+		Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		Path:   "/session",
+	}
+	query := endpoint.Query()
+	query.Set("directory", projectPath)
+	endpoint.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := openCodeSessionHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("opencode session endpoint returned %s", resp.Status)
+	}
+
+	var payload []openCodeHTTPSessionMetadata
+	if err := json.NewDecoder(io.LimitReader(resp.Body, openCodeSessionResponseLimit)).Decode(&payload); err != nil {
+		return nil, err
+	}
+
+	sessions := make([]openCodeSessionMetadata, 0, len(payload))
+	for _, session := range payload {
+		directory := session.Directory
+		if directory == "" {
+			directory = session.Location.Directory
+		}
+		sessions = append(sessions, openCodeSessionMetadata{
+			ID:        session.ID,
+			Directory: directory,
+			Path:      session.Path,
+			Created:   session.Time.Created,
+			Updated:   session.Time.Updated,
+		})
+	}
+	return sessions, nil
+}
+
+func (i *Instance) queryOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
+	cacheKey := normalizePath(projectPath)
+	if sessions, ok := cachedOpenCodeCLISessions(cacheKey); ok {
+		return sessions
+	}
+
+	result, _, _ := openCodeCLIQueryGroup.Do(cacheKey, func() (any, error) {
+		if sessions, ok := cachedOpenCodeCLISessions(cacheKey); ok {
+			return sessions, nil
+		}
+		sessions := i.runOpenCodeSessionsCLI(projectPath)
+		cacheOpenCodeCLISessions(cacheKey, sessions)
+		return sessions, nil
+	})
+	sessions, ok := result.([]openCodeSessionMetadata)
+	if !ok {
+		return nil
+	}
+	return append([]openCodeSessionMetadata(nil), sessions...)
+}
+
+func cachedOpenCodeCLISessions(cacheKey string) ([]openCodeSessionMetadata, bool) {
+	now := time.Now()
+	openCodeCLIQueryCache.Lock()
+	defer openCodeCLIQueryCache.Unlock()
+	if cached, ok := openCodeCLIQueryCache.entries[cacheKey]; ok && now.Sub(cached.queriedAt) < opencodeRotationScanInterval {
+		return append([]openCodeSessionMetadata(nil), cached.sessions...), true
+	}
+	return nil, false
+}
+
+func cacheOpenCodeCLISessions(cacheKey string, sessions []openCodeSessionMetadata) {
+	now := time.Now()
+	openCodeCLIQueryCache.Lock()
+	defer openCodeCLIQueryCache.Unlock()
+	for key, cached := range openCodeCLIQueryCache.entries {
+		if now.Sub(cached.queriedAt) >= opencodeRotationScanInterval {
+			delete(openCodeCLIQueryCache.entries, key)
+		}
+	}
+	openCodeCLIQueryCache.entries[cacheKey] = openCodeCLIQueryCacheEntry{
+		queriedAt: now,
+		sessions:  append([]openCodeSessionMetadata(nil), sessions...),
+	}
+}
+
+func (i *Instance) runOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Run: opencode session list --format json
 	cmd := exec.CommandContext(ctx, "opencode", "session", "list", "--format", "json")
-	cmd.Dir = i.ProjectPath
+	cmd.Dir = projectPath
 	cmd.WaitDelay = 500 * time.Millisecond
 
-	sessionLog.Debug("opencode_query_sessions", slog.String("dir", i.ProjectPath))
+	sessionLog.Debug("opencode_query_sessions", slog.String("dir", projectPath))
 
 	output, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			sessionLog.Warn("opencode_query_timeout",
-				slog.String("dir", i.ProjectPath),
+				slog.String("dir", projectPath),
 				slog.String("instance_id", i.ID),
 			)
 		} else {
 			sessionLog.Debug("opencode_query_failed", slog.String("error", err.Error()))
 		}
-		return ""
+		return nil
 	}
 
 	sessionLog.Debug("opencode_session_data_size", slog.Int("bytes", len(output)))
@@ -2533,26 +2722,9 @@ func (i *Instance) queryOpenCodeSession() string {
 
 	if err := json.Unmarshal(output, &sessions); err != nil {
 		sessionLog.Debug("opencode_parse_failed", slog.String("error", err.Error()))
-		return ""
+		return nil
 	}
-
-	sessionLog.Debug("opencode_parsed_sessions", slog.Int("count", len(sessions)))
-
-	var activityAt int64
-	if currentID := i.OpenCodeSessionID; currentID != "" {
-		lastActivity := i.GetLastActivityTime()
-		if !lastActivity.IsZero() && time.Since(lastActivity) <= opencodeRotationActivityWindow {
-			activityAt = lastActivity.UnixMilli()
-		}
-	}
-
-	bestMatch := findBestOpenCodeSession(sessions, i.ProjectPath, i.OpenCodeSessionID, i.OpenCodeStartedAt, activityAt)
-	sessionLog.Debug(
-		"opencode_best_match",
-		slog.String("session_id", bestMatch),
-		slog.String("current_id", i.OpenCodeSessionID),
-	)
-	return bestMatch
+	return sessions
 }
 
 // normalizePath normalizes a file path for comparison
@@ -5813,15 +5985,15 @@ func (i *Instance) UpdateGeminiSession(excludeIDs map[string]bool) {
 	i.updateGeminiLatestPrompt()
 }
 
-// UpdateOpenCodeSession refreshes the OpenCode session ID from OpenCode CLI
-// state without stealing a different tab's session from the same project.
+// UpdateOpenCodeSession refreshes the OpenCode session ID from OpenCode state
+// without stealing a different tab's session from the same project.
 func (i *Instance) UpdateOpenCodeSession() {
 	i.updateOpenCodeSession(false)
 }
 
 // updateOpenCodeSession self-manages i.mu: state reads/writes happen under the
-// lock but the queryOpenCodeSession subprocess runs outside it, so a slow
-// opencode CLI cannot starve render-path RLocks on this instance.
+// lock but queryOpenCodeSession I/O runs outside it, so a slow OpenCode server
+// or compatibility CLI cannot starve render-path RLocks on this instance.
 //
 // Contract: callers MUST NOT hold i.mu when invoking this function.
 func (i *Instance) updateOpenCodeSession(force bool) {
@@ -5839,10 +6011,7 @@ func (i *Instance) updateOpenCodeSession(force bool) {
 	i.mu.Unlock()
 
 	candidate := i.queryOpenCodeSession()
-
-	i.mu.Lock()
 	i.applyOpenCodeSessionCandidate(candidate)
-	i.mu.Unlock()
 }
 
 func (i *Instance) applyOpenCodeSessionCandidate(candidate string) bool {
@@ -5850,10 +6019,12 @@ func (i *Instance) applyOpenCodeSessionCandidate(candidate string) bool {
 		return false
 	}
 
+	i.mu.Lock()
 	if candidate == i.OpenCodeSessionID {
 		if i.OpenCodeDetectedAt.IsZero() {
 			i.OpenCodeDetectedAt = time.Now()
 		}
+		i.mu.Unlock()
 		return false
 	}
 
@@ -5875,7 +6046,10 @@ func (i *Instance) applyOpenCodeSessionCandidate(candidate string) bool {
 		slog.String("new_id", candidate),
 	)
 
-	i.setOpenCodeSession(candidate)
+	i.setOpenCodeSessionLocked(candidate)
+	tmuxSession := i.tmuxSession
+	i.mu.Unlock()
+	i.syncOpenCodeSessionEnvironment(tmuxSession, candidate)
 	return true
 }
 
