@@ -3238,15 +3238,25 @@ func codexProcFDProbeScript(procRoot string) string {
 	echo %q
 	exit 0
 }
+proc_root=%s
 incomplete=0
-for d in %s/[0-9]*/fd; do
-	[ -d "$d" ] || continue
-	if [ ! -r "$d" ] || [ ! -x "$d" ]; then
+for p in "$proc_root"/[0-9]*; do
+	if [ "$p" = "$proc_root/[0-9]*" ]; then
+		break
+	fi
+	if [ ! -d "$p" ]; then
+		incomplete=1
+		continue
+	fi
+	d="$p/fd"
+	if [ ! -d "$d" ] || [ ! -r "$d" ] || [ ! -x "$d" ]; then
 		incomplete=1
 		continue
 	fi
 	for f in "$d"/*; do
-		[ -L "$f" ] || continue
+		if [ "$f" = "$d/*" ]; then
+			break
+		fi
 		if ! t=$(readlink "$f" 2>/dev/null); then
 			incomplete=1
 			continue

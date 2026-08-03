@@ -3897,6 +3897,32 @@ func TestCodexProcFDProbeScriptCompleteness(t *testing.T) {
 		}
 	})
 
+	t.Run("missing fd directory is incomplete", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Mkdir(filepath.Join(root, "100"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		out := run(t, root)
+		if !bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) {
+			t.Fatalf("missing fd directory output = %q, want incomplete sentinel", out)
+		}
+	})
+
+	t.Run("failed fd readlink is incomplete", func(t *testing.T) {
+		root := t.TempDir()
+		fdDir := filepath.Join(root, "100", "fd")
+		if err := os.MkdirAll(fdDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fdDir, "3"), []byte("not a symlink"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := run(t, root)
+		if !bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) {
+			t.Fatalf("failed readlink output = %q, want incomplete sentinel", out)
+		}
+	})
+
 	t.Run("deleted open rollout remains discoverable", func(t *testing.T) {
 		root := t.TempDir()
 		fdDir := filepath.Join(root, "100", "fd")
