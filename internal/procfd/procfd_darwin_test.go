@@ -3,6 +3,7 @@
 package procfd
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,64 @@ func TestOpenVnodePathsRejectsPossiblyTruncatedFDList(t *testing.T) {
 	_, err := openVnodePaths(123)
 	if err == nil || !strings.Contains(err.Error(), "may be truncated") {
 		t.Fatalf("openVnodePaths full fd buffer error = %v, want truncation error", err)
+	}
+}
+
+func TestOpenVnodePathsReportsUnresolvedVnodes(t *testing.T) {
+	previousInfo, previousFDInfo := procPidinfoFn, procPidfdinfoFn
+	t.Cleanup(func() {
+		procPidinfoFn = previousInfo
+		procPidfdinfoFn = previousFDInfo
+	})
+	procPidinfoFn = func(_ int, _ int, _ uint64, buf unsafe.Pointer, _ int) (int, error) {
+		if buf == nil {
+			return int(unsafe.Sizeof(procFDInfo{})), nil
+		}
+		*(*procFDInfo)(buf) = procFDInfo{FD: 7, FDType: proxFDTypeVnode}
+		return int(unsafe.Sizeof(procFDInfo{})), nil
+	}
+
+	tests := []struct {
+		name  string
+		probe func(unsafe.Pointer, int) (int, error)
+		want  string
+	}{
+		{
+			name: "error",
+			probe: func(_ unsafe.Pointer, _ int) (int, error) {
+				return 0, errors.New("fd closed")
+			},
+			want: "reading vnode fd 7",
+		},
+		{
+			name: "short result",
+			probe: func(_ unsafe.Pointer, size int) (int, error) {
+				return size - 1, nil
+			},
+			want: "short vnode fd 7 result",
+		},
+		{
+			name: "empty path",
+			probe: func(_ unsafe.Pointer, size int) (int, error) {
+				return size, nil
+			},
+			want: "empty vnode path for fd 7",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			procPidfdinfoFn = func(_ int, _ int, _ int, buf unsafe.Pointer, size int) (int, error) {
+				return test.probe(buf, size)
+			}
+			paths, err := openVnodePaths(123)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("openVnodePaths unresolved vnode error = %v, want %q", err, test.want)
+			}
+			if len(paths) != 0 {
+				t.Fatalf("openVnodePaths unresolved vnode paths = %v, want none", paths)
+			}
+		})
 	}
 }
 

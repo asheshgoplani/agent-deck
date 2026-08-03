@@ -3,6 +3,7 @@
 package procfd
 
 import (
+	"errors"
 	"fmt"
 	"syscall"
 	"unsafe" // for go:linkname and libproc buffer passing
@@ -34,7 +35,10 @@ type vnodeFDInfoWithPath struct {
 	Path   [maxPathLen]byte
 }
 
-var procPidinfoFn = procPidinfo
+var (
+	procPidinfoFn   = procPidinfo
+	procPidfdinfoFn = procPidfdinfo
+)
 
 func openVnodePaths(pid int) ([]string, error) {
 	// Sizing call: with a nil buffer proc_pidinfo returns the byte size of the
@@ -57,22 +61,32 @@ func openVnodePaths(pid int) ([]string, error) {
 	}
 	fds = fds[:n/fdInfoSize]
 
-	var paths []string
+	var (
+		paths    []string
+		probeErr error
+	)
 	for _, fd := range fds {
 		if fd.FDType != proxFDTypeVnode {
 			continue
 		}
 		var info vnodeFDInfoWithPath
-		size, err := procPidfdinfo(pid, int(fd.FD), procPIDFDVnodePathInfo, unsafe.Pointer(&info), int(unsafe.Sizeof(info)))
-		if err != nil || size < int(unsafe.Sizeof(info)) {
-			// The fd closed mid-scan or its path is unavailable; skip it.
+		size, err := procPidfdinfoFn(pid, int(fd.FD), procPIDFDVnodePathInfo, unsafe.Pointer(&info), int(unsafe.Sizeof(info)))
+		if err != nil {
+			probeErr = errors.Join(probeErr, fmt.Errorf("procfd: reading vnode fd %d for pid %d: %w", fd.FD, pid, err))
 			continue
 		}
-		if path := cString(info.Path[:]); path != "" {
-			paths = append(paths, path)
+		if size < int(unsafe.Sizeof(info)) {
+			probeErr = errors.Join(probeErr, fmt.Errorf("procfd: short vnode fd %d result for pid %d: got %d bytes, want %d", fd.FD, pid, size, unsafe.Sizeof(info)))
+			continue
 		}
+		path := cString(info.Path[:])
+		if path == "" {
+			probeErr = errors.Join(probeErr, fmt.Errorf("procfd: empty vnode path for fd %d in pid %d", fd.FD, pid))
+			continue
+		}
+		paths = append(paths, path)
 	}
-	return paths, nil
+	return paths, probeErr
 }
 
 func cString(b []byte) string {

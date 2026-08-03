@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -3472,6 +3473,7 @@ func TestInstance_UpdateCodexSession_ScanCooldown(t *testing.T) {
 	}
 
 	inst := NewInstanceWithTool("codex-cooldown", projectPath, "codex")
+	inst.lastCodexProbeAt = time.Now().Add(time.Hour) // This test isolates disk-scan cooldown.
 
 	sessionID1 := "11111111-1111-4111-8111-111111111111"
 	sessionID2 := "22222222-2222-4222-8222-222222222222"
@@ -3572,6 +3574,7 @@ func TestInstance_CodexSessionExclusion_SameProjectPath(t *testing.T) {
 
 	// Instance 1 picks up sessionB (most recent) with no exclusions.
 	inst1 := NewInstanceWithTool("codex-excl-1", projectPath, "codex")
+	inst1.lastCodexProbeAt = time.Now().Add(time.Hour) // This test isolates disk exclusion.
 	inst1.UpdateCodexSession(nil)
 	if inst1.CodexSessionID != sessionB {
 		t.Fatalf("inst1 picked %q, want %q", inst1.CodexSessionID, sessionB)
@@ -3579,6 +3582,7 @@ func TestInstance_CodexSessionExclusion_SameProjectPath(t *testing.T) {
 
 	// Instance 2 excludes inst1's session and gets sessionA instead.
 	inst2 := NewInstanceWithTool("codex-excl-2", projectPath, "codex")
+	inst2.lastCodexProbeAt = time.Now().Add(time.Hour)
 	exclude := map[string]bool{sessionB: true}
 	inst2.UpdateCodexSession(exclude)
 	if inst2.CodexSessionID != sessionA {
@@ -3681,6 +3685,48 @@ func TestCodexLsofProbe_TimeoutBoundsHungLsof(t *testing.T) {
 	}
 }
 
+func TestQueryCodexSessionFromHostLsofCompleteness(t *testing.T) {
+	const wantID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	tests := []struct {
+		name    string
+		script  string
+		wantID  string
+		wantErr bool
+	}{
+		{name: "all probes fail", script: "exit 2\n", wantErr: true},
+		{
+			name:    "one failed probe makes a negative incomplete",
+			script:  "[ \"$4\" = 123 ] && exit 2\necho /dev/null\n",
+			wantErr: true,
+		},
+		{name: "all successful probes with no match", script: "echo /dev/null\n"},
+		{
+			name:   "a positive probe is definitive despite an earlier failure",
+			script: "[ \"$4\" = 123 ] && exit 2\necho /tmp/sessions/2026/07/01/rollout-2026-07-01T00-00-00-" + wantID + ".jsonl\n",
+			wantID: wantID,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fakeLsof := filepath.Join(dir, "lsof")
+			if err := os.WriteFile(fakeLsof, []byte("#!/bin/sh\n"+test.script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+
+			gotID, missingDep, err := (&Instance{}).queryCodexSessionFromHostLsof([]int{123, 456})
+			if gotID != test.wantID || (err != nil) != test.wantErr {
+				t.Fatalf("lsof probe = (%q, %q, %v), want ID %q, error=%v", gotID, missingDep, err, test.wantID, test.wantErr)
+			}
+			if missingDep != "" {
+				t.Fatalf("lsof probe missing dependency = %q, want empty", missingDep)
+			}
+		})
+	}
+}
+
 func TestExtractCodexSessionIDFromLsofOutput_DockerStyleLine(t *testing.T) {
 	lsofOutput := []byte(`codex 44 root 36w REG 0,608 3392413 5176210 /root/.codex/sessions/2026/02/23/rollout-2026-02-23T18-37-01-019c8a12-e903-7670-bd12-709c6a4c5451.jsonl
 `)
@@ -3730,6 +3776,62 @@ func TestCollectProcessTreePIDsFromTable(t *testing.T) {
 	want := []int{100, 101, 102, 103}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("collectProcessTreePIDsFromTable() = %#v, want %#v", got, want)
+	}
+}
+
+func TestCollectProcessTreePIDsFromTableRequiresRoot(t *testing.T) {
+	if got := collectProcessTreePIDsFromTable(100, []byte("101 1\n")); got != nil {
+		t.Fatalf("process tree without root = %v, want nil", got)
+	}
+}
+
+func TestCollectProcessTreePIDsViaPgrepReportsFailure(t *testing.T) {
+	dir := t.TempDir()
+	fakePgrep := filepath.Join(dir, "pgrep")
+	if err := os.WriteFile(fakePgrep, []byte("#!/bin/sh\nexit 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	pids, err := collectProcessTreePIDsViaPgrep(100)
+	if err == nil {
+		t.Fatal("pgrep execution failure must make process-tree discovery incomplete")
+	}
+	if want := []int{100}; !reflect.DeepEqual(pids, want) {
+		t.Fatalf("partial process tree = %v, want %v", pids, want)
+	}
+}
+
+func TestCodexProcessCandidateDiscoveryFailureIsUndetermined(t *testing.T) {
+	inst := &Instance{}
+	if _, err := inst.collectCodexProcessCandidates(); err == nil {
+		t.Fatal("missing tmux session must make candidate discovery undetermined")
+	}
+	if _, _, err := inst.queryCodexSessionFromProcessFiles(); err == nil {
+		t.Fatal("incomplete candidate discovery must reach the process-file caller")
+	}
+}
+
+func TestUpdateCodexSessionUndeterminedProbeSkipsDiskFallback(t *testing.T) {
+	const diskID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	dir := filepath.Join(codexHome, "sessions", "2026", "08", "03")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inst := &Instance{
+		Tool:           "codex",
+		CodexStartedAt: time.Now().Add(-time.Second).UnixMilli(),
+	}
+	path := filepath.Join(dir, "rollout-2026-08-03T00-00-00-"+diskID+".jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	inst.updateCodexSession(nil, true)
+	if inst.CodexSessionID != "" {
+		t.Fatalf("undetermined process probe fell through to disk ID %q", inst.CodexSessionID)
 	}
 }
 
@@ -4702,9 +4804,9 @@ func TestQueryCodexSessionFromHostNative(t *testing.T) {
 	}()
 
 	inst := &Instance{}
-	gotID, ok := inst.queryCodexSessionFromHostNative([]int{cmd.Process.Pid})
-	if !ok {
-		t.Fatal("native probe failed to answer on darwin")
+	gotID, err := inst.queryCodexSessionFromHostNative([]int{cmd.Process.Pid})
+	if err != nil {
+		t.Fatalf("native probe failed to answer on darwin: %v", err)
 	}
 	if gotID != wantID {
 		t.Errorf("native probe session ID = %q, want %q", gotID, wantID)
@@ -4712,9 +4814,9 @@ func TestQueryCodexSessionFromHostNative(t *testing.T) {
 }
 
 // TestQueryCodexSessionFromHostNativeSemantics pins the native probe's
-// answered/fallback contract and its ID extraction on every platform via the
-// procfdOpenVnodePaths seam, so the ubuntu CI gate exercises the logic that
-// decides whether the lsof fallback runs (#1552).
+// found/absent/undetermined contract and its ID extraction on every platform
+// via the procfdOpenVnodePaths seam, so the ubuntu CI gate exercises the logic
+// that decides whether the lsof fallback runs (#1552).
 func TestQueryCodexSessionFromHostNativeSemantics(t *testing.T) {
 	const wantID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
 	restore := procfdOpenVnodePaths
@@ -4729,9 +4831,9 @@ func TestQueryCodexSessionFromHostNativeSemantics(t *testing.T) {
 				"/Users/u/.codex/sessions/2026/07/01/rollout-2026-07-01T00-00-00-" + wantID + ".jsonl",
 			}, nil
 		}
-		gotID, ok := inst.queryCodexSessionFromHostNative([]int{123})
-		if !ok || gotID != wantID {
-			t.Fatalf("got (%q, %v), want (%q, true)", gotID, ok, wantID)
+		gotID, err := inst.queryCodexSessionFromHostNative([]int{123})
+		if err != nil || gotID != wantID {
+			t.Fatalf("got (%q, %v), want (%q, nil)", gotID, err, wantID)
 		}
 	})
 
@@ -4739,15 +4841,15 @@ func TestQueryCodexSessionFromHostNativeSemantics(t *testing.T) {
 		procfdOpenVnodePaths = func(int) ([]string, error) {
 			return nil, fmt.Errorf("proc_pidinfo: %w", os.ErrPermission)
 		}
-		if _, ok := inst.queryCodexSessionFromHostNative([]int{123, 456}); ok {
-			t.Fatal("errored probes must report unanswered (ok=false) to trigger the lsof fallback")
+		if _, err := inst.queryCodexSessionFromHostNative([]int{123, 456}); err == nil {
+			t.Fatal("errored probes must return undetermined to trigger the lsof fallback")
 		}
 	})
 
 	t.Run("unsupported platform is unanswered", func(t *testing.T) {
 		procfdOpenVnodePaths = func(int) ([]string, error) { return nil, procfd.ErrUnsupported }
-		if _, ok := inst.queryCodexSessionFromHostNative([]int{123}); ok {
-			t.Fatal("ErrUnsupported must report unanswered (ok=false)")
+		if _, err := inst.queryCodexSessionFromHostNative([]int{123}); !errors.Is(err, procfd.ErrUnsupported) {
+			t.Fatalf("ErrUnsupported probe error = %v, want ErrUnsupported", err)
 		}
 	})
 
@@ -4760,9 +4862,21 @@ func TestQueryCodexSessionFromHostNativeSemantics(t *testing.T) {
 			}
 			return []string{"/dev/null"}, nil
 		}
-		gotID, ok := inst.queryCodexSessionFromHostNative([]int{123, 456})
-		if ok || gotID != "" {
-			t.Fatalf("got (%q, %v), want (\"\", false): a partial scan cannot answer conclusively", gotID, ok)
+		gotID, err := inst.queryCodexSessionFromHostNative([]int{123, 456})
+		if err == nil || gotID != "" {
+			t.Fatalf("got (%q, %v), want (\"\", error): a partial scan cannot answer conclusively", gotID, err)
+		}
+	})
+
+	t.Run("a positive partial scan is still definitive", func(t *testing.T) {
+		procfdOpenVnodePaths = func(int) ([]string, error) {
+			return []string{
+				"/Users/u/.codex/sessions/2026/07/01/rollout-2026-07-01T00-00-00-" + wantID + ".jsonl",
+			}, os.ErrPermission
+		}
+		gotID, err := inst.queryCodexSessionFromHostNative([]int{123})
+		if err != nil || gotID != wantID {
+			t.Fatalf("got (%q, %v), want (%q, nil)", gotID, err, wantID)
 		}
 	})
 
@@ -4770,9 +4884,9 @@ func TestQueryCodexSessionFromHostNativeSemantics(t *testing.T) {
 		procfdOpenVnodePaths = func(int) ([]string, error) {
 			return []string{"/dev/null"}, nil
 		}
-		gotID, ok := inst.queryCodexSessionFromHostNative([]int{123, 456})
-		if !ok || gotID != "" {
-			t.Fatalf("got (%q, %v), want (\"\", true)", gotID, ok)
+		gotID, err := inst.queryCodexSessionFromHostNative([]int{123, 456})
+		if err != nil || gotID != "" {
+			t.Fatalf("got (%q, %v), want (\"\", nil)", gotID, err)
 		}
 	})
 
@@ -4783,8 +4897,8 @@ func TestQueryCodexSessionFromHostNativeSemantics(t *testing.T) {
 		}
 		// lsof would scan nothing either, so the fallback (and its
 		// missing-lsof warning) must not be triggered.
-		if _, ok := inst.queryCodexSessionFromHostNative(nil); !ok {
-			t.Error("empty candidate list must count as answered")
+		if _, err := inst.queryCodexSessionFromHostNative(nil); err != nil {
+			t.Errorf("empty candidate list error = %v, want nil", err)
 		}
 	})
 }
