@@ -16551,7 +16551,7 @@ func (h *Home) renderSessionItem(
 			hookStatus = h.hookWatcher.GetHookStatus(inst.ID)
 		}
 		confirmedTs, confirmedObserved := inst.LastObservedActivity()
-		ts := pickBadgeTime(inst.CreatedAt, inst.LastStartedAt, hookStatus, confirmedTs, confirmedObserved)
+		ts := sessionActivityTime(inst.CreatedAt, inst.LastStartedAt, inst.LastActivityAt(), inst.LastAccessedAt, confirmedTs, confirmedObserved, hookStatus)
 		timestampBadge = tsStyle.Render(" " + formatRelativeTime(ts))
 	}
 
@@ -17499,11 +17499,17 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	b.WriteString(infoStyle.Render("📁 " + pathStr))
 	b.WriteString("\n")
 
-	// Activity time - shows when session was last active. Uses the display-
-	// oriented accessor so sessions with no confirmed activity (error/idle/
-	// stopped) fall back to the persisted last-accessed time — matching the
-	// web — instead of leaking the tmux tracker's ~load-time seed.
-	activityTime := selected.DisplayLastActivityTime()
+	// Activity time - shows when session was last active. Composed with
+	// sessionActivityTime — the SAME formula as the row badge (issue #1846:
+	// the preview used to read DisplayLastActivityTime while the badge used
+	// pickBadgeTime, so the two surfaces showed different ages for the same
+	// session; both were stale once the underlying evidence was destroyed).
+	var previewHookStatus *session.HookStatus
+	if h.hookWatcher != nil {
+		previewHookStatus = h.hookWatcher.GetHookStatus(selected.ID)
+	}
+	confirmedTs, confirmedObserved := selected.LastObservedActivity()
+	activityTime := sessionActivityTime(selected.CreatedAt, selected.LastStartedAt, selected.LastActivityAt(), selected.LastAccessedAt, confirmedTs, confirmedObserved, previewHookStatus)
 	activityStr := formatRelativeTime(activityTime)
 	if selectedStatus == session.StatusRunning {
 		activityStr = "active now"
@@ -18762,14 +18768,19 @@ func truncatePath(path string, maxLen int) string {
 	return string(runes[:startLen]) + "..." + string(runes[len(runes)-endLen:])
 }
 
-// pickBadgeTime returns the most recent of the four signals the session-row
+// pickBadgeTime returns the most recent of the five signals the session-row
 // timestamp badge layers over, ignoring any signal that is unset / not
-// observed. Pure function — kept out of renderSessionItem so the 4-layer
+// observed. Pure function — kept out of renderSessionItem so the 5-layer
 // composition can be unit-tested without faking renderer dependencies.
 //
+// lastActivityAt is the durable record from tool_data.last_activity_at
+// (issue #1846): hook-evidenced activity that survives attach-return
+// deleting the hook file and TUI restarts losing the tmux tracker.
+//
 // LastAccessedAt is deliberately not a parameter: peeking at a quiet
-// session isn't an "update".
-func pickBadgeTime(createdAt, lastStartedAt time.Time, hookEvent *session.HookStatus, confirmedActivity time.Time, confirmedObserved bool) time.Time {
+// session isn't an "update". (sessionActivityTime layers it in as a
+// fallback when no activity evidence exists at all.)
+func pickBadgeTime(createdAt, lastStartedAt time.Time, hookEvent *session.HookStatus, lastActivityAt time.Time, confirmedActivity time.Time, confirmedObserved bool) time.Time {
 	ts := createdAt
 	if lastStartedAt.After(ts) {
 		ts = lastStartedAt
@@ -18777,8 +18788,28 @@ func pickBadgeTime(createdAt, lastStartedAt time.Time, hookEvent *session.HookSt
 	if hookEvent != nil && hookEvent.UpdatedAt.After(ts) {
 		ts = hookEvent.UpdatedAt
 	}
+	if lastActivityAt.After(ts) {
+		ts = lastActivityAt
+	}
 	if confirmedObserved && confirmedActivity.After(ts) {
 		ts = confirmedActivity
+	}
+	return ts
+}
+
+// sessionActivityTime is the single "last activity" composition BOTH the
+// session-row badge and the preview's "⏱" line render from (issue #1846:
+// the two surfaces used different formulas over different stale fallbacks
+// and showed two different wrong ages for the same session).
+//
+// Layering: pickBadgeTime's activity evidence wins outright; LastAccessedAt
+// participates only as a fallback when no evidence beyond CreatedAt exists —
+// a TUI attach is a better floor than creation time, but a peek at a quiet
+// session must never override recorded activity.
+func sessionActivityTime(createdAt, lastStartedAt, lastActivityAt, lastAccessedAt, confirmedActivity time.Time, confirmedObserved bool, hookEvent *session.HookStatus) time.Time {
+	ts := pickBadgeTime(createdAt, lastStartedAt, hookEvent, lastActivityAt, confirmedActivity, confirmedObserved)
+	if ts.Equal(createdAt) && lastAccessedAt.After(ts) {
+		return lastAccessedAt
 	}
 	return ts
 }

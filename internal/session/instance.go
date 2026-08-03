@@ -473,6 +473,14 @@ type Instance struct {
 	hookSessionID  string    // Session ID from hook payload
 	hookLastUpdate time.Time // When hook status was last received
 
+	// Durable last-activity record (issue #1846). Unlike hookLastUpdate this
+	// survives ClearHookStatus and, via tool_data.last_activity_at, TUI
+	// restarts. lastActivityPersisted tracks the last value flushed to the
+	// DB so the hook observation path can throttle its targeted UPDATEs.
+	// See last_activity_persist.go.
+	lastActivityAt        time.Time
+	lastActivityPersisted time.Time
+
 	// SSE-based status detection for OpenCode (set by OpenCodeSSEWatcher,
 	// issue #1614). Not persisted; rebuilt from the live event stream.
 	sseStatus     string    // "running" or "waiting" (empty = no SSE data)
@@ -870,9 +878,24 @@ func (inst *Instance) SetToolThreadSafe(t string) {
 	inst.mu.Unlock()
 }
 
-// MarkAccessed updates the LastAccessedAt timestamp to now
+// MarkAccessed updates the LastAccessedAt timestamp to now.
+//
+// #1846: also persists it via a targeted single-row UPDATE. The in-memory
+// value used to reach SQLite only on the next full save cycle, which may
+// never come before the TUI exits — leaving the preview's fallback hours
+// stale after a restart. A full saveInstances here would be too heavy for
+// the attach path (see attachSession's no-synchronous-save note); one
+// UPDATE is not.
 func (inst *Instance) MarkAccessed() {
 	inst.LastAccessedAt = time.Now()
+	if db := statedb.GetGlobal(); db != nil {
+		if err := db.WriteLastAccessed(inst.ID, inst.LastAccessedAt); err != nil {
+			sessionLog.Debug("last_accessed_persist_failed",
+				slog.String("instance", inst.ID),
+				slog.String("error", err.Error()),
+			)
+		}
+	}
 }
 
 // GetLastActivityTime returns when the session was last active (content changed)
@@ -896,13 +919,21 @@ func (inst *Instance) GetLastActivityTime() time.Time {
 // stopped panes) and also feeds OpenCode rotation windows, so its semantics
 // must not change.
 //
-// Here we consult only CONFIRMED activity (LastObservedActivity guards on
-// realActivityConfirmed). When none has been observed we fall back to the
-// persisted last-accessed time — matching what the web serves — and finally
-// to CreatedAt. This keeps the TUI "⏱ last active" line in agreement with
-// the web instead of resetting to the most recent TUI load.
+// Here we consult only real activity evidence: CONFIRMED tmux activity
+// (LastObservedActivity guards on realActivityConfirmed) and the durable
+// last-activity record (#1846), whichever is newer. When neither exists we
+// fall back to the persisted last-accessed time — matching what the web
+// serves — and finally to CreatedAt. This keeps the TUI "⏱ last active"
+// line in agreement with the web instead of resetting to the most recent
+// TUI load. A LastAccessedAt newer than recorded activity deliberately does
+// NOT win: attaching to look at a quiet session is a peek, not activity —
+// the same principle the row badge's pickBadgeTime documents.
 func (inst *Instance) DisplayLastActivityTime() time.Time {
-	if ts, ok := inst.LastObservedActivity(); ok {
+	ts, ok := inst.LastObservedActivity()
+	if la := inst.LastActivityAt(); la.After(ts) {
+		ts, ok = la, true
+	}
+	if ok {
 		return ts
 	}
 	if !inst.LastAccessedAt.IsZero() {
@@ -4949,6 +4980,8 @@ func (i *Instance) UpdateStatus() error {
 			i.hookEvent = hs.Event
 			i.hookLastUpdate = hs.UpdatedAt
 			i.hookSessionID = hs.SessionID
+			// #1846: a disk-read hook sample is activity evidence too.
+			i.noteAgentActivityLocked(hs.UpdatedAt, false)
 			// Reset stale acknowledged flag from ReconnectSessionLazy.
 			// Without this, sessions loaded from SQLite with previousStatus="idle"
 			// would report idle even when the hook file says waiting/running.
@@ -5409,6 +5442,12 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	// Issue #1846: whatever hookLastUpdate ends up COMMITTED when this call
+	// returns is agent-activity evidence — fold it into the durable record.
+	// Runs before the mutex defer releases the lock. The reject branches
+	// below restore the pre-event value first, so a foreign ephemeral's
+	// timestamp is never credited to this instance.
+	defer func() { i.noteAgentActivityLocked(i.hookLastUpdate, false) }()
 
 	// Snapshot the prior hook-status fields so a candidate that fails the
 	// ownership check below can RESTORE them rather than leaving its status
@@ -5745,6 +5784,11 @@ func (i *Instance) SetAutoNameDescription(desc string) {
 // after an Escape interrupt where the Stop hook didn't fire).
 func (i *Instance) ClearHookStatus() {
 	i.mu.Lock()
+	// #1846: the file removed below is the only durable record of this
+	// session's last real activity, and the in-memory copy is zeroed right
+	// after. Fold it into the durable last-activity record first, bypassing
+	// the write throttle — this evidence has no other way to survive.
+	i.noteAgentActivityLocked(i.hookLastUpdate, true)
 	i.hookStatus = ""
 	i.hookLastUpdate = time.Time{}
 	i.mu.Unlock()
