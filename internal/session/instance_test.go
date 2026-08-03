@@ -3701,8 +3701,8 @@ func TestQueryCodexSessionFromHostLsofCompleteness(t *testing.T) {
 		},
 		{name: "all successful probes with no match", script: "echo /dev/null\n"},
 		{
-			name:   "a positive probe is definitive despite an earlier failure",
-			script: "[ \"$4\" = 123 ] && exit 2\necho /tmp/sessions/2026/07/01/rollout-2026-07-01T00-00-00-" + wantID + ".jsonl\n",
+			name:   "positive output is definitive despite command failure",
+			script: "echo /tmp/sessions/2026/07/01/rollout-2026-07-01T00-00-00-" + wantID + ".jsonl\nexit 2\n",
 			wantID: wantID,
 		},
 	}
@@ -3758,9 +3758,10 @@ func TestExtractCodexSessionIDFromPath_CustomCodexHome(t *testing.T) {
 
 func TestParsePSParentChildMap(t *testing.T) {
 	procTable := []byte("100 1\n101 100\n102 100\n103 101\nbad-line\n104 invalid\n105 0\n")
-	got := parsePSParentChildMap(procTable)
+	got, err := parsePSParentChildMap(procTable)
 
 	want := map[int][]int{
+		0:   {105},
 		1:   {100},
 		100: {101, 102},
 		101: {103},
@@ -3768,20 +3769,37 @@ func TestParsePSParentChildMap(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parsePSParentChildMap() = %#v, want %#v", got, want)
 	}
+	if err == nil {
+		t.Fatal("malformed ps rows must make the process table incomplete")
+	}
 }
 
 func TestCollectProcessTreePIDsFromTable(t *testing.T) {
 	procTable := []byte("100 1\n101 100\n102 100\n103 101\n104 999\n")
-	got := collectProcessTreePIDsFromTable(100, procTable)
-	want := []int{100, 101, 102, 103}
+	got, err := collectProcessTreePIDsFromTable([]int{100, 104}, procTable)
+	want := []int{100, 104, 101, 102, 103}
+	if err != nil {
+		t.Fatalf("collectProcessTreePIDsFromTable() error = %v", err)
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("collectProcessTreePIDsFromTable() = %#v, want %#v", got, want)
 	}
 }
 
 func TestCollectProcessTreePIDsFromTableRequiresRoot(t *testing.T) {
-	if got := collectProcessTreePIDsFromTable(100, []byte("101 1\n")); got != nil {
-		t.Fatalf("process tree without root = %v, want nil", got)
+	got, err := collectProcessTreePIDsFromTable([]int{100}, []byte("101 1\n"))
+	if len(got) != 0 || err == nil {
+		t.Fatalf("process tree without root = (%v, %v), want (empty, error)", got, err)
+	}
+}
+
+func TestParsePositivePIDsReportsPartialOutput(t *testing.T) {
+	pids, err := parsePositivePIDs([]byte("100\ninvalid\n200\n"), "tmux pane")
+	if want := []int{100, 200}; !reflect.DeepEqual(pids, want) {
+		t.Fatalf("parsed pane pids = %v, want %v", pids, want)
+	}
+	if err == nil {
+		t.Fatal("invalid pane pid must make candidate discovery incomplete")
 	}
 }
 
@@ -3799,6 +3817,52 @@ func TestCollectProcessTreePIDsViaPgrepReportsFailure(t *testing.T) {
 	}
 	if want := []int{100}; !reflect.DeepEqual(pids, want) {
 		t.Fatalf("partial process tree = %v, want %v", pids, want)
+	}
+}
+
+func TestIsLikelyCodexProcessPIDReportsPSFailure(t *testing.T) {
+	if _, err := isLikelyCodexProcessPID(99999999); err == nil {
+		t.Fatal("ps failure must not be reported as a non-Codex process")
+	}
+}
+
+func TestQueryCodexSessionFromDockerProcFDCompleteness(t *testing.T) {
+	const wantID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	tests := []struct {
+		name        string
+		output      string
+		exitCode    int
+		wantID      string
+		wantMissing string
+		wantErr     bool
+	}{
+		{name: "clean absence"},
+		{name: "readlink missing", output: codexProbeMissingSentinel, wantMissing: "readlink", wantErr: true},
+		{name: "incomplete fd scan", output: codexProbeIncompleteSentinel, wantErr: true},
+		{name: "docker failure", exitCode: 2, wantErr: true},
+		{
+			name:   "positive path wins over incomplete sentinel",
+			output: "/tmp/sessions/2026/08/03/rollout-2026-08-03T00-00-00-" + wantID + ".jsonl\n" + codexProbeIncompleteSentinel,
+			wantID: wantID,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fakeDocker := filepath.Join(dir, "docker")
+			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' %q\nexit %d\n", test.output, test.exitCode)
+			if err := os.WriteFile(fakeDocker, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+
+			inst := &Instance{SandboxContainer: "test"}
+			gotID, missingDep, err := inst.queryCodexSessionFromDockerProcFD()
+			if gotID != test.wantID || missingDep != test.wantMissing || (err != nil) != test.wantErr {
+				t.Fatalf("docker probe = (%q, %q, %v), want (%q, %q, error=%v)", gotID, missingDep, err, test.wantID, test.wantMissing, test.wantErr)
+			}
+		})
 	}
 }
 

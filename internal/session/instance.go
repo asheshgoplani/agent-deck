@@ -103,8 +103,9 @@ const (
 	// its /event stream roughly every 10s, and the watcher refreshes the
 	// timestamp on every received line, so 30s of silence means the stream
 	// (and likely the process) is gone — fall back to tmux polling.
-	opencodeSSEFreshnessWindow = 30 * time.Second
-	codexProbeMissingSentinel  = "__AGENT_DECK_MISSING_TOOL__"
+	opencodeSSEFreshnessWindow   = 30 * time.Second
+	codexProbeMissingSentinel    = "__AGENT_DECK_MISSING_TOOL__"
+	codexProbeIncompleteSentinel = "__AGENT_DECK_INCOMPLETE_PROBE__"
 	// codexLsofProbeTimeout hard-caps a single lsof invocation so a slow or
 	// hung child can never stall the shared status pass. lsof is also run with
 	// -n -P (no host/port name resolution) to avoid reverse-DNS PTR lookups on
@@ -2965,8 +2966,8 @@ func (i *Instance) shouldRunCodexProcessProbe(force bool) bool {
 	return true
 }
 
-// collectTmuxPaneProcessTreePIDs returns the pane PID and descendants. A
-// non-nil error means the returned process tree may be incomplete.
+// collectTmuxPaneProcessTreePIDs returns every pane PID and descendant. A
+// non-nil error means the returned process forest may be incomplete.
 func (i *Instance) collectTmuxPaneProcessTreePIDs() ([]int, error) {
 	if i.tmuxSession == nil || !i.tmuxSession.Exists() {
 		return nil, errors.New("codex process probe: tmux session is unavailable")
@@ -2983,51 +2984,95 @@ func (i *Instance) collectTmuxPaneProcessTreePIDs() ([]int, error) {
 	if err != nil {
 		return nil, fmt.Errorf("codex process probe: list tmux panes: %w", err)
 	}
-
-	tmp := strings.TrimSpace(string(out))
-	if idx := strings.IndexByte(tmp, '\n'); idx >= 0 {
-		tmp = tmp[:idx]
-	}
-	panePID, err := strconv.Atoi(tmp)
-	if err != nil || panePID <= 0 {
-		return nil, fmt.Errorf("codex process probe: invalid pane pid %q", tmp)
+	panePIDs, paneErr := parsePositivePIDs(out, "tmux pane")
+	if len(panePIDs) == 0 {
+		return nil, paneErr
 	}
 
 	// Single snapshot of the process table is substantially cheaper than
 	// spawning pgrep once per node in deep process trees.
 	procTable, psErr := exec.Command("ps", "-eo", "pid=,ppid=").Output()
 	if psErr == nil {
-		if allPIDs := collectProcessTreePIDsFromTable(panePID, procTable); len(allPIDs) > 0 {
-			return allPIDs, nil
+		allPIDs, treeErr := collectProcessTreePIDsFromTable(panePIDs, procTable)
+		if treeErr == nil {
+			return allPIDs, paneErr
 		}
-		psErr = fmt.Errorf("pane pid %d missing from ps process table", panePID)
+		psErr = treeErr
 	}
 
 	// Fallback path for environments where ps output is unavailable/unexpected.
-	allPIDs, pgrepErr := collectProcessTreePIDsViaPgrep(panePID)
-	if pgrepErr != nil {
-		return allPIDs, errors.Join(fmt.Errorf("codex process probe: ps: %w", psErr), pgrepErr)
-	}
-	return allPIDs, nil
-}
-func collectProcessTreePIDsFromTable(rootPID int, procTable []byte) []int {
-	childrenByParent := parsePSParentChildMap(procTable)
-	rootSeen := false
-	for _, children := range childrenByParent {
-		for _, pid := range children {
-			if pid == rootPID {
-				rootSeen = true
-				break
+	var (
+		allPIDs  []int
+		pgrepErr error
+	)
+	seen := make(map[int]bool)
+	for _, panePID := range panePIDs {
+		pids, err := collectProcessTreePIDsViaPgrep(panePID)
+		pgrepErr = errors.Join(pgrepErr, err)
+		for _, pid := range pids {
+			if !seen[pid] {
+				seen[pid] = true
+				allPIDs = append(allPIDs, pid)
 			}
 		}
 	}
-	if !rootSeen {
-		return nil
+	if pgrepErr != nil {
+		pgrepErr = errors.Join(fmt.Errorf("codex process probe: ps: %w", psErr), pgrepErr)
+	}
+	return allPIDs, errors.Join(paneErr, pgrepErr)
+}
+
+func parsePositivePIDs(output []byte, source string) ([]int, error) {
+	var (
+		pids     []int
+		parseErr error
+	)
+	seen := make(map[int]bool)
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for line := 1; scanner.Scan(); line++ {
+		text := strings.TrimSpace(scanner.Text())
+		if text == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(text)
+		if err != nil || pid <= 0 {
+			parseErr = errors.Join(parseErr, fmt.Errorf("codex process probe: invalid %s pid on line %d: %q", source, line, text))
+			continue
+		}
+		if !seen[pid] {
+			seen[pid] = true
+			pids = append(pids, pid)
+		}
+	}
+	parseErr = errors.Join(parseErr, scanner.Err())
+	if len(pids) == 0 && parseErr == nil {
+		parseErr = fmt.Errorf("codex process probe: %s output contained no pids", source)
+	}
+	return pids, parseErr
+}
+
+func collectProcessTreePIDsFromTable(rootPIDs []int, procTable []byte) ([]int, error) {
+	childrenByParent, parseErr := parsePSParentChildMap(procTable)
+	present := make(map[int]bool)
+	for _, children := range childrenByParent {
+		for _, pid := range children {
+			present[pid] = true
+		}
 	}
 
 	var allPIDs []int
-	seen := map[int]bool{rootPID: true}
-	queue := []int{rootPID}
+	seen := make(map[int]bool)
+	queue := make([]int, 0, len(rootPIDs))
+	for _, rootPID := range rootPIDs {
+		if !present[rootPID] {
+			parseErr = errors.Join(parseErr, fmt.Errorf("codex process probe: pane pid %d missing from ps process table", rootPID))
+			continue
+		}
+		if !seen[rootPID] {
+			seen[rootPID] = true
+			queue = append(queue, rootPID)
+		}
+	}
 	for len(queue) > 0 {
 		parent := queue[0]
 		queue = queue[1:]
@@ -3041,28 +3086,33 @@ func collectProcessTreePIDsFromTable(rootPID int, procTable []byte) []int {
 			queue = append(queue, childPID)
 		}
 	}
-	return allPIDs
+	return allPIDs, parseErr
 }
 
-func parsePSParentChildMap(procTable []byte) map[int][]int {
+func parsePSParentChildMap(procTable []byte) (map[int][]int, error) {
 	childrenByParent := make(map[int][]int)
+	var parseErr error
 	scanner := bufio.NewScanner(bytes.NewReader(procTable))
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
+	for line := 1; scanner.Scan(); line++ {
+		text := scanner.Text()
+		fields := strings.Fields(text)
 		if len(fields) != 2 {
+			parseErr = errors.Join(parseErr, fmt.Errorf("codex process probe: invalid ps row %d: %q", line, text))
 			continue
 		}
 		pid, err := strconv.Atoi(fields[0])
 		if err != nil || pid <= 0 {
+			parseErr = errors.Join(parseErr, fmt.Errorf("codex process probe: invalid ps pid on row %d: %q", line, fields[0]))
 			continue
 		}
 		ppid, err := strconv.Atoi(fields[1])
-		if err != nil || ppid <= 0 {
+		if err != nil || ppid < 0 {
+			parseErr = errors.Join(parseErr, fmt.Errorf("codex process probe: invalid ps parent pid on row %d: %q", line, fields[1]))
 			continue
 		}
 		childrenByParent[ppid] = append(childrenByParent[ppid], pid)
 	}
-	return childrenByParent
+	return childrenByParent, errors.Join(parseErr, scanner.Err())
 }
 
 func collectProcessTreePIDsViaPgrep(rootPID int) ([]int, error) {
@@ -3088,16 +3138,9 @@ func collectProcessTreePIDsViaPgrep(rootPID int) ([]int, error) {
 			probeErr = errors.Join(probeErr, fmt.Errorf("codex process probe: pgrep children of %d: %w", parent, err))
 			continue
 		}
-		for _, line := range strings.Split(strings.TrimSpace(string(childrenRaw)), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			childPID, convErr := strconv.Atoi(line)
-			if convErr != nil || childPID <= 0 {
-				probeErr = errors.Join(probeErr, fmt.Errorf("codex process probe: invalid pgrep pid %q", line))
-				continue
-			}
+		children, parseErr := parsePositivePIDs(childrenRaw, "pgrep")
+		probeErr = errors.Join(probeErr, parseErr)
+		for _, childPID := range children {
 			if seen[childPID] {
 				continue
 			}
@@ -3197,28 +3240,40 @@ func (i *Instance) queryCodexSessionFromDockerProcFD() (string, string, error) {
 	echo %q
 	exit 0
 }
+incomplete=0
 for f in /proc/[0-9]*/fd/*; do
-	t=$(readlink "$f" 2>/dev/null || true)
+	[ -e "$f" ] || continue
+	if ! t=$(readlink "$f" 2>/dev/null); then
+		incomplete=1
+		continue
+	fi
 	case "$t" in
 		*/sessions/*rollout-*.jsonl*)
 			printf '%%s\n' "$t"
 			;;
 	esac
-done`,
+done
+if [ "$incomplete" -ne 0 ]; then
+	echo %q
+fi`,
 		codexProbeMissingSentinel,
+		codexProbeIncompleteSentinel,
 	)
 	// #nosec G204 -- "docker exec" with internal SandboxContainer name and a
-	// hardcoded shell probe script (codexProbeMissingSentinel is a compile-time
-	// constant); no external input flows here.
+	// hardcoded shell probe script (the sentinels are compile-time constants);
+	// no external input flows here.
 	out, err := exec.Command("docker", "exec", i.SandboxContainer, "sh", "-lc", script).Output()
 	if err != nil {
 		return "", "", fmt.Errorf("codex process probe: docker exec: %w", err)
 	}
+	if sessionID := extractCodexSessionIDFromLsofOutput(out); sessionID != "" {
+		return sessionID, "", nil
+	}
 	if bytes.Contains(out, []byte(codexProbeMissingSentinel)) {
 		return "", "readlink", errors.New("codex process probe: readlink is unavailable")
 	}
-	if sessionID := extractCodexSessionIDFromLsofOutput(out); sessionID != "" {
-		return sessionID, "", nil
+	if bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) {
+		return "", "", errors.New("codex process probe: container fd scan is incomplete")
 	}
 	return "", "", nil
 }

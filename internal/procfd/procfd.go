@@ -18,9 +18,9 @@ import "errors"
 var ErrUnsupported = errors.New("procfd: not supported on this platform")
 
 // OpenVnodePaths returns the filesystem paths of the vnode (file-backed) file
-// descriptors currently open in pid. A non-nil error means at least one vnode
-// could not be resolved, so the returned paths are incomplete. Probing a dead
-// PID or another user's process fails; current macOS reports EINVAL for both
+// descriptors currently open in pid. A non-nil error means the returned paths
+// may be incomplete. Probing a dead PID or another user's process fails; current
+// macOS reports EINVAL for both
 // (not ESRCH/EPERM as one might expect).
 func OpenVnodePaths(pid int) ([]string, error) {
 	return openVnodePaths(pid)
