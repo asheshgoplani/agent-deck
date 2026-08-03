@@ -187,8 +187,18 @@ if [ -n "$EXISTING" ]; then
     # Just update the session to point to the new session ID
     agent-deck -p "$PROFILE" session set "$IMPORT_TITLE" claude-session-id "$SESSION_ID"
 else
-    # Create new session
-    agent-deck -p "$PROFILE" add -t "$IMPORT_TITLE" -c claude "$PROJECT_PATH"
+    # Create new session.
+    #
+    # `add` exits 1 when a session with this title already exists at this path,
+    # and this branch can be reached with the session already present: the check
+    # above matches on title alone and its `|| echo ""` also lands here when the
+    # `list` probe fails transiently. Under `set -e` that exit would abort the
+    # import before the `session set` below — the step that actually completes
+    # it — so tolerate a non-zero `add` here. The existence poll that follows,
+    # and `session set` itself, still fail the script if the session genuinely
+    # was not created.
+    agent-deck -p "$PROFILE" add -t "$IMPORT_TITLE" -c claude "$PROJECT_PATH" ||
+        echo "Note: 'agent-deck add' exited non-zero; checking whether the session exists anyway..." >&2
 
     # Poll for session creation (up to 10 attempts, 0.5s each)
     SESSION_FOUND=false

@@ -56,6 +56,7 @@ agent-deck add -t "Quick" -c claude --attach .   # create → start → drop int
 Notes:
 - Parent auto-link is enabled by default when `AGENT_DECK_SESSION_ID` is present and neither `--parent` nor `--no-parent` is passed.
 - `--attach` does create → start → attach in one step. Without an interactive terminal (or with `--json`) it exits non-zero with a clear error, leaving the session created and started so you can attach later.
+- A session is identified by its title plus where it runs, so `-t` on a title that already exists at the same location registers nothing and exits 1 (`--json` gives `"code": "ALREADY_EXISTS"`). Two sessions may share a title if they run in different directories, or on different SSH hosts or remote paths. Without `-t`, a colliding session is registered under a numbered title with a warning on stderr and exit 0, suppressed under `--json`/`-q`.
 - `--parent` and `--no-parent` are mutually exclusive.
 - Explicit `-g/--group` overrides inherited parent group.
 - If `--cmd` contains extra args and no explicit `--wrapper` is provided, agent-deck auto-generates a wrapper to preserve those args.

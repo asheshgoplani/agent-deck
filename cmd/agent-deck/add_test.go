@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -73,7 +76,7 @@ func TestIsDuplicateSession_SamePath_DifferentTitle_NotDuplicate(t *testing.T) {
 	}
 
 	// Test: adding new session at same path with DIFFERENT title "Frontend Work"
-	isDup, existing := isDuplicateSession(instances, "Frontend Work", "/home/user/project")
+	isDup, existing := isDuplicateSession(instances, "Frontend Work", localLocation("/home/user/project"))
 
 	// Expect: NOT a duplicate - different titles should be allowed at same path
 	if isDup {
@@ -95,7 +98,7 @@ func TestIsDuplicateSession_SamePath_SameTitle_IsDuplicate(t *testing.T) {
 	}
 
 	// Test: adding new session at same path with SAME title "API Work"
-	isDup, existing := isDuplicateSession(instances, "API Work", "/home/user/project")
+	isDup, existing := isDuplicateSession(instances, "API Work", localLocation("/home/user/project"))
 
 	// Expect: IS a duplicate - exact same title and path
 	if !isDup {
@@ -120,7 +123,7 @@ func TestIsDuplicateSession_DifferentPath_SameTitle_NotDuplicate(t *testing.T) {
 	}
 
 	// Test: adding new session at DIFFERENT path with same title
-	isDup, existing := isDuplicateSession(instances, "My Work", "/home/user/project-b")
+	isDup, existing := isDuplicateSession(instances, "My Work", localLocation("/home/user/project-b"))
 
 	// Expect: NOT a duplicate - different paths, even if same title
 	if isDup {
@@ -136,7 +139,7 @@ func TestIsDuplicateSession_EmptyInstances(t *testing.T) {
 	instances := []*session.Instance{}
 
 	// Test: adding first session
-	isDup, existing := isDuplicateSession(instances, "New Project", "/home/user/project")
+	isDup, existing := isDuplicateSession(instances, "New Project", localLocation("/home/user/project"))
 
 	// Expect: NOT a duplicate - no existing sessions
 	if isDup {
@@ -160,7 +163,7 @@ func TestIsDuplicateSession_CaseInsensitiveTitle(t *testing.T) {
 	// Test: adding session with "API Work" (different case) at same path
 	// This tests whether title comparison is case-sensitive or not
 	// The expected behavior depends on implementation - adjust if needed
-	isDup, _ := isDuplicateSession(instances, "API Work", "/home/user/project")
+	isDup, _ := isDuplicateSession(instances, "API Work", localLocation("/home/user/project"))
 
 	// Expect: This may or may not be a duplicate depending on implementation
 	// If case-insensitive: isDup = true
@@ -185,7 +188,7 @@ func TestIsDuplicateSession_PathNormalization(t *testing.T) {
 	}
 
 	// Test: adding session with same path but without trailing slash
-	isDup, existing := isDuplicateSession(instances, "My Project", "/home/user/project")
+	isDup, existing := isDuplicateSession(instances, "My Project", localLocation("/home/user/project"))
 
 	// Expect: IS a duplicate - paths should be normalized
 	if !isDup {
@@ -217,7 +220,7 @@ func TestIsDuplicateSession_MultipleExistingSessions(t *testing.T) {
 	}
 
 	// Test 1: Adding "Backend" at same path - should be duplicate
-	isDup, existing := isDuplicateSession(instances, "Backend", "/home/user/project")
+	isDup, existing := isDuplicateSession(instances, "Backend", localLocation("/home/user/project"))
 	if !isDup {
 		t.Errorf("Expected duplicate for 'Backend' at /home/user/project")
 	}
@@ -226,7 +229,7 @@ func TestIsDuplicateSession_MultipleExistingSessions(t *testing.T) {
 	}
 
 	// Test 2: Adding "Testing" at same path - should NOT be duplicate
-	isDup, existing = isDuplicateSession(instances, "Testing", "/home/user/project")
+	isDup, existing = isDuplicateSession(instances, "Testing", localLocation("/home/user/project"))
 	if isDup {
 		t.Errorf("Expected non-duplicate for 'Testing' at /home/user/project")
 	}
@@ -299,7 +302,7 @@ func TestGenerateUniqueTitle_NoConflict(t *testing.T) {
 	}
 
 	// Test: generate title for "My Project" at same path
-	title := generateUniqueTitle(instances, "My Project", "/home/user/project")
+	title := generateUniqueTitle(instances, "My Project", localLocation("/home/user/project"))
 
 	// Expect: baseTitle unchanged
 	if title != "My Project" {
@@ -318,7 +321,7 @@ func TestGenerateUniqueTitle_OneConflict(t *testing.T) {
 	}
 
 	// Test: generate title for "My Project" at same path
-	title := generateUniqueTitle(instances, "My Project", "/home/user/project")
+	title := generateUniqueTitle(instances, "My Project", localLocation("/home/user/project"))
 
 	// Expect: "My Project (2)"
 	if title != "My Project (2)" {
@@ -347,7 +350,7 @@ func TestGenerateUniqueTitle_MultipleConflicts(t *testing.T) {
 	}
 
 	// Test: generate title for "My Project" at same path
-	title := generateUniqueTitle(instances, "My Project", "/home/user/project")
+	title := generateUniqueTitle(instances, "My Project", localLocation("/home/user/project"))
 
 	// Expect: "My Project (4)"
 	if title != "My Project (4)" {
@@ -371,7 +374,7 @@ func TestGenerateUniqueTitle_GapInNumbers(t *testing.T) {
 	}
 
 	// Test: generate title for "My Project" at same path
-	title := generateUniqueTitle(instances, "My Project", "/home/user/project")
+	title := generateUniqueTitle(instances, "My Project", localLocation("/home/user/project"))
 
 	// Expect: "My Project (2)" - fills the gap
 	if title != "My Project (2)" {
@@ -390,7 +393,7 @@ func TestGenerateUniqueTitle_SameTitleDifferentPath_NoConflict(t *testing.T) {
 	}
 
 	// Test: generate title for "My Project" at DIFFERENT path
-	title := generateUniqueTitle(instances, "My Project", "/home/user/project-b")
+	title := generateUniqueTitle(instances, "My Project", localLocation("/home/user/project-b"))
 
 	// Expect: baseTitle unchanged - different paths don't conflict
 	if title != "My Project" {
@@ -403,7 +406,7 @@ func TestGenerateUniqueTitle_EmptyInstances(t *testing.T) {
 	instances := []*session.Instance{}
 
 	// Test: generate title
-	title := generateUniqueTitle(instances, "New Project", "/home/user/project")
+	title := generateUniqueTitle(instances, "New Project", localLocation("/home/user/project"))
 
 	// Expect: baseTitle unchanged
 	if title != "New Project" {
@@ -416,7 +419,7 @@ func TestGenerateUniqueTitle_EmptyBaseTitle(t *testing.T) {
 	instances := []*session.Instance{}
 
 	// Test: generate title with empty base
-	title := generateUniqueTitle(instances, "", "/home/user/project")
+	title := generateUniqueTitle(instances, "", localLocation("/home/user/project"))
 
 	// Expect: empty string (or implementation may provide a default)
 	// This documents edge case behavior
@@ -436,7 +439,7 @@ func TestGenerateUniqueTitle_SpecialCharactersInTitle(t *testing.T) {
 	}
 
 	// Test: generate title for same special title at same path
-	title := generateUniqueTitle(instances, "My (Project) #1", "/home/user/project")
+	title := generateUniqueTitle(instances, "My (Project) #1", localLocation("/home/user/project"))
 
 	// Expect: "My (Project) #1 (2)" - handles special chars correctly
 	if title != "My (Project) #1 (2)" {
@@ -455,7 +458,7 @@ func TestGenerateUniqueTitle_TitleWithExistingNumber(t *testing.T) {
 	}
 
 	// Test: generate title for "My Project" at same path
-	title := generateUniqueTitle(instances, "My Project", "/home/user/project")
+	title := generateUniqueTitle(instances, "My Project", localLocation("/home/user/project"))
 
 	// Expect: "My Project" unchanged - base title doesn't exist
 	if title != "My Project" {
@@ -484,21 +487,85 @@ func TestGenerateUniqueTitle_MixedPathsMultipleTitles(t *testing.T) {
 	}
 
 	// Test 1: Adding "Work" at project-a - should get (3) since (2) exists
-	title := generateUniqueTitle(instances, "Work", "/home/user/project-a")
+	title := generateUniqueTitle(instances, "Work", localLocation("/home/user/project-a"))
 	if title != "Work (3)" {
 		t.Errorf("Expected 'Work (3)' for project-a, got '%s'", title)
 	}
 
 	// Test 2: Adding "Work" at project-b - should get (2) since only base exists
-	title = generateUniqueTitle(instances, "Work", "/home/user/project-b")
+	title = generateUniqueTitle(instances, "Work", localLocation("/home/user/project-b"))
 	if title != "Work (2)" {
 		t.Errorf("Expected 'Work (2)' for project-b, got '%s'", title)
 	}
 
 	// Test 3: Adding "Work" at project-c - should stay unchanged
-	title = generateUniqueTitle(instances, "Work", "/home/user/project-c")
+	title = generateUniqueTitle(instances, "Work", localLocation("/home/user/project-c"))
 	if title != "Work" {
 		t.Errorf("Expected 'Work' for project-c (no conflict), got '%s'", title)
+	}
+}
+
+// The auto-rename path has to agree with isDuplicateSession about what counts
+// as the same location, or `add --ssh` renames a genuinely new remote session
+// just because an unrelated one was registered from the same local directory.
+func TestGenerateUniqueTitle_SSHLocationsAreDistinct(t *testing.T) {
+	// Both existing sessions carry the same local placeholder ProjectPath,
+	// which is what `add --ssh` stores (the controller's CWD).
+	const localPlaceholder = "/home/user/cwd"
+	instances := []*session.Instance{
+		{
+			ID: "ssh001", Title: "app", ProjectPath: localPlaceholder,
+			SSHHost: "alice@host-a", SSHRemotePath: "/srv/app",
+		},
+		{
+			ID: "local001", Title: "app", ProjectPath: localPlaceholder,
+		},
+	}
+
+	// A different host is a different location: no rename.
+	if got := generateUniqueTitle(instances, "app", sessionLocation{
+		sshHost: "bob@host-b", sshRemotePath: "/srv/app", projectPath: localPlaceholder,
+	}); got != "app" {
+		t.Errorf("different SSH host: got %q, want %q (no rename — distinct location)", got, "app")
+	}
+
+	// A different remote path on the same host is also a different location.
+	if got := generateUniqueTitle(instances, "app", sessionLocation{
+		sshHost: "alice@host-a", sshRemotePath: "/srv/other", projectPath: localPlaceholder,
+	}); got != "app" {
+		t.Errorf("different remote path: got %q, want %q (no rename — distinct location)", got, "app")
+	}
+
+	// Same host AND same remote path IS the same location: rename.
+	if got := generateUniqueTitle(instances, "app", sessionLocation{
+		sshHost: "alice@host-a", sshRemotePath: "/srv/app", projectPath: localPlaceholder,
+	}); got != "app (2)" {
+		t.Errorf("same host and remote path: got %q, want %q", got, "app (2)")
+	}
+
+	// The local session at the placeholder path is its own location, and the
+	// remote sessions sharing that ProjectPath must not affect it.
+	if got := generateUniqueTitle(instances, "app", localLocation(localPlaceholder)); got != "app (2)" {
+		t.Errorf("local placeholder path: got %q, want %q", got, "app (2)")
+	}
+}
+
+// The auto-rename advisory must name where the session actually runs. Naming
+// the local placeholder path for a remote session points the user at a
+// directory that has nothing to do with the collision.
+func TestDuplicatePathNotice_RemoteLocationNamesHostNotPlaceholder(t *testing.T) {
+	const localPlaceholder = "/home/user/cwd"
+	notice := duplicatePathNotice("app", "app (2)", sessionLocation{
+		sshHost: "alice@host-a", sshRemotePath: "/srv/app", projectPath: localPlaceholder,
+	})
+	if notice == "" {
+		t.Fatal("expected a warning for a renamed remote session, got empty")
+	}
+	if !strings.Contains(notice, "alice@host-a:/srv/app") {
+		t.Errorf("notice %q does not name the remote location %q", notice, "alice@host-a:/srv/app")
+	}
+	if strings.Contains(notice, localPlaceholder) {
+		t.Errorf("notice %q names the misleading local placeholder path %q", notice, localPlaceholder)
 	}
 }
 
@@ -694,6 +761,326 @@ func TestHandleAddFallsBackToCwdWhenGlobalDefaultPathMissing(t *testing.T) {
 	if got := onlyAddedSessionPath(t, profile); got != cwd {
 		t.Fatalf("added path = %q, want cwd %q", got, cwd)
 	}
+}
+
+// =============================================================================
+// Tests for duplicate-registration reporting on `add`
+// =============================================================================
+
+// `add <path>` twice is allowed — two agents on one checkout is a real workflow
+// — but before this it happened silently, so a forgotten existing session showed
+// up as a mystery "proj (2)". duplicatePathNotice makes the auto-rename visible.
+// It is advisory only: the caller prints it to stderr and never changes the exit
+// code, per docs/design/2026-07-26-session-identity-and-group-purpose.md §C.
+func TestDuplicatePathNotice(t *testing.T) {
+	tests := []struct {
+		name       string
+		base       string
+		final      string
+		wantNotice bool
+	}{
+		{
+			name:       "no rename means no notice",
+			base:       "My Project",
+			final:      "My Project",
+			wantNotice: false,
+		},
+		{
+			name:       "renamed to (2) warns",
+			base:       "My Project",
+			final:      "My Project (2)",
+			wantNotice: true,
+		},
+		{
+			name:       "timestamp fallback rename also warns",
+			base:       "My Project",
+			final:      "My Project (1785600000)",
+			wantNotice: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := duplicatePathNotice(tt.base, tt.final, localLocation("/home/user/project"))
+			if !tt.wantNotice {
+				if got != "" {
+					t.Fatalf("duplicatePathNotice(%q, %q) = %q, want empty (title unchanged)", tt.base, tt.final, got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatalf("duplicatePathNotice(%q, %q) = empty, want a warning", tt.base, tt.final)
+			}
+			// The notice has to name all three things the user needs to act:
+			// what already existed, where, and what this session became.
+			for _, want := range []string{tt.base, tt.final, "/home/user/project"} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("notice %q does not mention %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+// The rename notice must not reach stdout, because stdout carries the `--json`
+// payload and the success summary that scripts parse. Asserting on the streams
+// separately is the point: a notice on stdout would corrupt `add --json` output
+// even though the string itself is correct.
+func TestHandleAdd_DuplicatePath_WarnsOnStderrNotStdout(t *testing.T) {
+	_, cwd, profile := setupAddDefaultPathTest(t)
+
+	// First add takes the folder-name title unchallenged.
+	handleAdd(profile, []string{"--quiet", cwd})
+
+	stdout, stderr := captureAddOutput(t, func() {
+		// No --quiet: the notice is suppressed under --quiet/--json.
+		handleAdd(profile, []string{cwd})
+	})
+
+	base := filepath.Base(cwd)
+	if !strings.Contains(stderr, "already exists") {
+		t.Fatalf("stderr = %q, want a duplicate-path warning", stderr)
+	}
+	if !strings.Contains(stderr, base) {
+		t.Fatalf("stderr = %q, want it to name the existing title %q", stderr, base)
+	}
+	if strings.Contains(stdout, "already exists") {
+		t.Fatalf("the warning leaked onto stdout, which carries --json/script output:\n%s", stdout)
+	}
+
+	// Advisory, not fatal: the second session is still registered.
+	instances := loadAddedSessions(t, profile)
+	if len(instances) != 2 {
+		t.Fatalf("registered %d sessions, want 2 (the warning must never fail the create)", len(instances))
+	}
+	titles := []string{instances[0].Title, instances[1].Title}
+	if titles[0] == titles[1] {
+		t.Fatalf("both sessions got title %q; the auto-rename did not happen", titles[0])
+	}
+}
+
+// --json and --quiet must silence the advisory entirely so machine consumers
+// never see it. --json is the load-bearing case: stderr noise is tolerable, but
+// this asserts the documented suppression actually happens.
+func TestHandleAdd_DuplicatePath_SuppressedUnderJSONAndQuiet(t *testing.T) {
+	for _, flag := range []string{"--json", "--quiet"} {
+		t.Run(flag, func(t *testing.T) {
+			_, cwd, profile := setupAddDefaultPathTest(t)
+			handleAdd(profile, []string{"--quiet", cwd})
+
+			stdout, stderr := captureAddOutput(t, func() {
+				handleAdd(profile, []string{flag, cwd})
+			})
+
+			if strings.Contains(stderr, "already exists") {
+				t.Fatalf("%s should suppress the advisory, got stderr:\n%s", flag, stderr)
+			}
+			if strings.Contains(stdout, "already exists") {
+				t.Fatalf("%s should suppress the advisory, got stdout:\n%s", flag, stdout)
+			}
+		})
+	}
+}
+
+// The exact-duplicate case (same title AND same path) registers nothing, so it
+// is an error rather than an advisory: ALREADY_EXISTS with a non-zero exit,
+// matching `agent-deck launch` (launch_cmd.go) and the rest of the CLI. It used
+// to print to stdout and exit 0, which made "nothing happened" indistinguishable
+// from success for any script checking the exit code.
+//
+// Runs as a subprocess because the code path calls os.Exit.
+func TestHandleAdd_ExactDuplicate_ErrorsWithNonZeroExit(t *testing.T) {
+	tests := []struct {
+		name      string
+		jsonMode  bool
+		wantInOut []string
+	}{
+		{
+			name:      "human output",
+			jsonMode:  false,
+			wantInOut: []string{"Error:", "session already exists", "dup-target"},
+		},
+		{
+			name:      "json output",
+			jsonMode:  true,
+			wantInOut: []string{`"code": "ALREADY_EXISTS"`, `"success": false`, "session already exists"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mode := "exact-duplicate"
+			if tt.jsonMode {
+				mode = "exact-duplicate-json"
+			}
+			out, exitCode := runAddHelperProcess(t, mode)
+
+			if exitCode == 0 {
+				t.Fatalf("exit code = 0, want non-zero — a refused registration must not look like success:\n%s", out)
+			}
+			if exitCode != 1 {
+				t.Fatalf("exit code = %d, want 1 (matching launch_cmd.go's ALREADY_EXISTS exit):\n%s", exitCode, out)
+			}
+			for _, want := range tt.wantInOut {
+				if !strings.Contains(out, want) {
+					t.Fatalf("output does not contain %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+// TestHandleAdd_SSHLocationsEndToEnd drives handleAdd itself, not the location
+// helpers, so it covers the assignment that decides between a local and a
+// remote location. The helper-level SSH tests all build sessionLocation values
+// by hand, which leaves that assignment unpinned: reverting it to an
+// unconditional localLocation(path) — reintroducing exactly the bug this change
+// fixes — passes every other test in the package.
+//
+// Runs as a subprocess because the refusal path calls os.Exit.
+func TestHandleAdd_SSHLocationsEndToEnd(t *testing.T) {
+	t.Run("different hosts both register", func(t *testing.T) {
+		out, exitCode := runAddHelperProcess(t, "ssh-different-hosts")
+		if exitCode != 0 {
+			t.Fatalf("exit code = %d, want 0 — two same-titled sessions on different "+
+				"remote hosts are not duplicates:\n%s", exitCode, out)
+		}
+	})
+
+	t.Run("same host and remote path is refused", func(t *testing.T) {
+		out, exitCode := runAddHelperProcess(t, "ssh-same-host-duplicate")
+		if exitCode != 1 {
+			t.Fatalf("exit code = %d, want 1 — same title at the same remote "+
+				"location is a duplicate:\n%s", exitCode, out)
+		}
+		if !strings.Contains(out, "session already exists") {
+			t.Fatalf("output does not report the duplicate:\n%s", out)
+		}
+	})
+}
+
+// runAddHelperProcess re-execs the test binary into TestAddHelperProcess and
+// returns its combined output plus exit code. Needed because the exact-duplicate
+// path ends in os.Exit, which would kill the test binary itself.
+func runAddHelperProcess(t *testing.T, mode string) (output string, exitCode int) {
+	t.Helper()
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestAddHelperProcess", "--", mode)
+	cmd.Env = append(os.Environ(), "AGENT_DECK_ADD_HELPER_PROCESS=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return string(out), 0
+	}
+	exitErr := &exec.ExitError{}
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("helper process failed unexpectedly: %v\n%s", err, out)
+	}
+	return string(out), exitErr.ExitCode()
+}
+
+func TestAddHelperProcess(t *testing.T) {
+	if os.Getenv("AGENT_DECK_ADD_HELPER_PROCESS") != "1" {
+		return
+	}
+	args := os.Args
+	for len(args) > 0 && args[0] != "--" {
+		args = args[1:]
+	}
+	if len(args) > 0 {
+		args = args[1:]
+	}
+	if len(args) != 1 {
+		os.Exit(2)
+	}
+
+	_, cwd, profile := setupAddDefaultPathTest(t)
+
+	switch args[0] {
+	case "exact-duplicate":
+		handleAdd(profile, []string{"--title", "dup-target", "--quiet", cwd})
+		handleAdd(profile, []string{"--title", "dup-target", cwd})
+	case "exact-duplicate-json":
+		handleAdd(profile, []string{"--title", "dup-target", "--quiet", cwd})
+		handleAdd(profile, []string{"--title", "dup-target", "--json", cwd})
+	case "ssh-different-hosts":
+		// Two same-titled sessions on DIFFERENT remote hosts. Both must
+		// register: they are not duplicates, because they run in different
+		// places. Reaching the os.Exit(0) below is the pass condition.
+		handleAdd(profile, []string{"--title", "shared", "--ssh", "alice@host-a",
+			"--remote-path", "/srv/app-a", "--quiet", cwd})
+		handleAdd(profile, []string{"--title", "shared", "--ssh", "bob@host-b",
+			"--remote-path", "/opt/app-b", "--quiet", cwd})
+	case "ssh-same-host-duplicate":
+		// Same host AND same remote path: a real duplicate, must be refused
+		// even though nothing about the local placeholder path changed.
+		handleAdd(profile, []string{"--title", "shared", "--ssh", "alice@host-a",
+			"--remote-path", "/srv/app-a", "--quiet", cwd})
+		handleAdd(profile, []string{"--title", "shared", "--ssh", "alice@host-a",
+			"--remote-path", "/srv/app-a", cwd})
+	default:
+		os.Exit(2)
+	}
+	// Reaching here means the duplicate was accepted instead of refused.
+	os.Exit(0)
+}
+
+// captureAddOutput runs fn with os.Stdout and os.Stderr redirected to pipes and
+// returns what each received, so a test can tell the two streams apart.
+func captureAddOutput(t *testing.T, fn func()) (stdout, stderr string) {
+	t.Helper()
+
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stdout: %v", err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stderr: %v", err)
+	}
+
+	origStdout, origStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outW, errW
+	restore := func() { os.Stdout, os.Stderr = origStdout, origStderr }
+	t.Cleanup(restore)
+
+	// Drain concurrently: a pipe buffer is finite and `add` prints a multi-line
+	// summary, so reading only after fn returns can deadlock.
+	var outBuf, errBuf bytes.Buffer
+	done := make(chan struct{}, 2)
+	go func() { _, _ = outBuf.ReadFrom(outR); done <- struct{}{} }()
+	go func() { _, _ = errBuf.ReadFrom(errR); done <- struct{}{} }()
+
+	fn()
+
+	restore()
+	if err := outW.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+	if err := errW.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	<-done
+	<-done
+
+	return outBuf.String(), errBuf.String()
+}
+
+// loadAddedSessions returns every session registered under the profile. Unlike
+// onlyAddedSessionPath it does not assert a count, since the duplicate tests
+// expect more than one.
+func loadAddedSessions(t *testing.T, profile string) []*session.Instance {
+	t.Helper()
+
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile: %v", err)
+	}
+	defer storage.Close()
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("LoadWithGroups: %v", err)
+	}
+	return instances
 }
 
 func setupAddDefaultPathTest(t *testing.T) (home, cwd, profile string) {
