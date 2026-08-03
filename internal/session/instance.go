@@ -44,8 +44,13 @@ var (
 	uuidPatternRE               = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 	geminiPromptRE              = regexp.MustCompile(`^(>|>>>|\$|❯|➜|gemini>|✦)\s*$`)
 	shellPromptRE               = regexp.MustCompile(`^[\s]*(>|>>>|\$|❯|➜|#|%)\s*$`)
-	openCodeCLIQueryGroup       singleflight.Group
-	openCodeCLIQueryCache       = struct {
+	openCodeSessionHTTPClient   = &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	openCodeCLIQueryGroup singleflight.Group
+	openCodeCLIQueryCache = struct {
 		sync.Mutex
 		entries map[string]openCodeCLIQueryCacheEntry
 	}{entries: make(map[string]openCodeCLIQueryCacheEntry)}
@@ -2580,13 +2585,13 @@ func (i *Instance) queryOpenCodeSessionsHTTP(port int) ([]openCodeSessionMetadat
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := openCodeSessionHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("OpenCode session endpoint returned %s", resp.Status)
+		return nil, fmt.Errorf("opencode session endpoint returned %s", resp.Status)
 	}
 
 	var payload []openCodeHTTPSessionMetadata

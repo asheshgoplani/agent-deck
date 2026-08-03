@@ -1,7 +1,6 @@
 package session
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -30,8 +29,6 @@ func TestUpdateOpenCodeSession_ManagedPortUsesHTTPNestedTimes(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	// The pre-fix implementation invokes the CLI even with a managed port.
-	// Keep that RED path hermetic: it must never reach the installed OpenCode.
 	fakeBin := t.TempDir()
 	fakeOpenCode := filepath.Join(fakeBin, "opencode")
 	if err := os.WriteFile(fakeOpenCode, []byte("#!/bin/sh\nprintf '[]'\n"), 0o755); err != nil {
@@ -92,22 +89,39 @@ func TestQueryOpenCodeSession_ManagedPortRetriesHTTPAfterFailure(t *testing.T) {
 	}
 }
 
+func TestQueryOpenCodeSession_ManagedPortRefusesRedirect(t *testing.T) {
+	projectPath := t.TempDir()
+	var redirectedRequests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirectedRequests.Add(1)
+		fmt.Fprintf(w, `[{"id":"ses_REDIRECTED","directory":%q,"time":{"created":1000,"updated":2000}}]`, projectPath)
+	}))
+	t.Cleanup(target.Close)
+
+	redirect := httptest.NewServer(http.RedirectHandler(target.URL, http.StatusTemporaryRedirect))
+	t.Cleanup(redirect.Close)
+	inst := &Instance{
+		Tool:         "opencode",
+		ProjectPath:  projectPath,
+		OpenCodePort: redirect.Listener.Addr().(*net.TCPAddr).Port,
+	}
+
+	if got := inst.queryOpenCodeSession(); got != "" {
+		t.Fatalf("redirected query session ID = %q, want empty", got)
+	}
+	if got := redirectedRequests.Load(); got != 0 {
+		t.Fatalf("redirect target request count = %d, want 0", got)
+	}
+}
+
 func TestQueryOpenCodeSession_NoManagedPortRateLimitsCLIFallback(t *testing.T) {
 	projectPath := t.TempDir()
-	payload, err := json.Marshal([]openCodeSessionMetadata{{
-		ID:        "ses_COMPAT",
-		Directory: projectPath,
-		Created:   1000,
-		Updated:   2000,
-	}})
-	if err != nil {
-		t.Fatalf("marshal fake CLI response: %v", err)
-	}
+	payload := fmt.Sprintf(`[{"id":"ses_COMPAT","directory":%q,"created":1000,"updated":2000}]`, projectPath)
 
 	marker := filepath.Join(t.TempDir(), "cli-invocations")
 	fakeBin := t.TempDir()
 	fakeOpenCode := filepath.Join(fakeBin, "opencode")
-	script := fmt.Sprintf("#!/bin/sh\nprintf x >> %q\nprintf '%%s\\n' %q\n", marker, string(payload))
+	script := fmt.Sprintf("#!/bin/sh\nprintf x >> %q\nprintf '%%s\\n' %q\n", marker, payload)
 	if err := os.WriteFile(fakeOpenCode, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake opencode: %v", err)
 	}
@@ -131,20 +145,12 @@ func TestQueryOpenCodeSession_NoManagedPortRateLimitsCLIFallback(t *testing.T) {
 
 func TestQueryOpenCodeSession_NoManagedPortCoalescesConcurrentCLIFallback(t *testing.T) {
 	projectPath := t.TempDir()
-	payload, err := json.Marshal([]openCodeSessionMetadata{{
-		ID:        "ses_COALESCED",
-		Directory: projectPath,
-		Created:   1000,
-		Updated:   2000,
-	}})
-	if err != nil {
-		t.Fatalf("marshal fake CLI response: %v", err)
-	}
+	payload := fmt.Sprintf(`[{"id":"ses_COALESCED","directory":%q,"created":1000,"updated":2000}]`, projectPath)
 
 	marker := filepath.Join(t.TempDir(), "cli-invocations")
 	fakeBin := t.TempDir()
 	fakeOpenCode := filepath.Join(fakeBin, "opencode")
-	script := fmt.Sprintf("#!/bin/sh\nprintf x >> %q\n/bin/sleep 1\nprintf '%%s\\n' %q\n", marker, string(payload))
+	script := fmt.Sprintf("#!/bin/sh\nprintf x >> %q\n/bin/sleep 1\nprintf '%%s\\n' %q\n", marker, payload)
 	if err := os.WriteFile(fakeOpenCode, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake opencode: %v", err)
 	}
