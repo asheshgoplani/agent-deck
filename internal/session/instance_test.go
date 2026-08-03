@@ -1,14 +1,17 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +19,8 @@ import (
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/asheshgoplani/agent-deck/internal/docker"
+	"github.com/asheshgoplani/agent-deck/internal/procfd"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1800,7 +1805,9 @@ func TestCanRestartCursor(t *testing.T) {
 	skipIfNoTmuxBinary(t)
 
 	inst := NewInstanceWithTool("cursor-restart-test", "/tmp", "cursor")
-	inst.Command = "sleep 60"
+	// Keep the synthetic process alive when Restart appends --continue; CI does
+	// not install Cursor.
+	inst.Command = "sh -c 'sleep 60' --"
 	err := inst.Start()
 	if err != nil {
 		t.Fatalf("Failed to start session: %v", err)
@@ -3468,6 +3475,7 @@ func TestInstance_UpdateCodexSession_ScanCooldown(t *testing.T) {
 	}
 
 	inst := NewInstanceWithTool("codex-cooldown", projectPath, "codex")
+	inst.lastCodexProbeAt = time.Now().Add(time.Hour) // This test isolates disk-scan cooldown.
 
 	sessionID1 := "11111111-1111-4111-8111-111111111111"
 	sessionID2 := "22222222-2222-4222-8222-222222222222"
@@ -3568,6 +3576,7 @@ func TestInstance_CodexSessionExclusion_SameProjectPath(t *testing.T) {
 
 	// Instance 1 picks up sessionB (most recent) with no exclusions.
 	inst1 := NewInstanceWithTool("codex-excl-1", projectPath, "codex")
+	inst1.lastCodexProbeAt = time.Now().Add(time.Hour) // This test isolates disk exclusion.
 	inst1.UpdateCodexSession(nil)
 	if inst1.CodexSessionID != sessionB {
 		t.Fatalf("inst1 picked %q, want %q", inst1.CodexSessionID, sessionB)
@@ -3575,6 +3584,7 @@ func TestInstance_CodexSessionExclusion_SameProjectPath(t *testing.T) {
 
 	// Instance 2 excludes inst1's session and gets sessionA instead.
 	inst2 := NewInstanceWithTool("codex-excl-2", projectPath, "codex")
+	inst2.lastCodexProbeAt = time.Now().Add(time.Hour)
 	exclude := map[string]bool{sessionB: true}
 	inst2.UpdateCodexSession(exclude)
 	if inst2.CodexSessionID != sessionA {
@@ -3677,6 +3687,48 @@ func TestCodexLsofProbe_TimeoutBoundsHungLsof(t *testing.T) {
 	}
 }
 
+func TestQueryCodexSessionFromHostLsofCompleteness(t *testing.T) {
+	const wantID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	tests := []struct {
+		name    string
+		script  string
+		wantID  string
+		wantErr bool
+	}{
+		{name: "all probes fail", script: "exit 2\n", wantErr: true},
+		{
+			name:    "one failed probe makes a negative incomplete",
+			script:  "[ \"$4\" = 123 ] && exit 2\necho /dev/null\n",
+			wantErr: true,
+		},
+		{name: "all successful probes with no match", script: "echo /dev/null\n"},
+		{
+			name:   "positive output is definitive despite command failure",
+			script: "echo /tmp/sessions/2026/07/01/rollout-2026-07-01T00-00-00-" + wantID + ".jsonl\nexit 2\n",
+			wantID: wantID,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fakeLsof := filepath.Join(dir, "lsof")
+			if err := os.WriteFile(fakeLsof, []byte("#!/bin/sh\n"+test.script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+
+			gotID, missingDep, err := (&Instance{}).queryCodexSessionFromHostLsof([]int{123, 456})
+			if gotID != test.wantID || (err != nil) != test.wantErr {
+				t.Fatalf("lsof probe = (%q, %q, %v), want ID %q, error=%v", gotID, missingDep, err, test.wantID, test.wantErr)
+			}
+			if missingDep != "" {
+				t.Fatalf("lsof probe missing dependency = %q, want empty", missingDep)
+			}
+		})
+	}
+}
+
 func TestExtractCodexSessionIDFromLsofOutput_DockerStyleLine(t *testing.T) {
 	lsofOutput := []byte(`codex 44 root 36w REG 0,608 3392413 5176210 /root/.codex/sessions/2026/02/23/rollout-2026-02-23T18-37-01-019c8a12-e903-7670-bd12-709c6a4c5451.jsonl
 `)
@@ -3708,9 +3760,10 @@ func TestExtractCodexSessionIDFromPath_CustomCodexHome(t *testing.T) {
 
 func TestParsePSParentChildMap(t *testing.T) {
 	procTable := []byte("100 1\n101 100\n102 100\n103 101\nbad-line\n104 invalid\n105 0\n")
-	got := parsePSParentChildMap(procTable)
+	got, err := parsePSParentChildMap(procTable)
 
 	want := map[int][]int{
+		0:   {105},
 		1:   {100},
 		100: {101, 102},
 		101: {103},
@@ -3718,14 +3771,294 @@ func TestParsePSParentChildMap(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parsePSParentChildMap() = %#v, want %#v", got, want)
 	}
+	if err == nil {
+		t.Fatal("malformed ps rows must make the process table incomplete")
+	}
 }
 
 func TestCollectProcessTreePIDsFromTable(t *testing.T) {
 	procTable := []byte("100 1\n101 100\n102 100\n103 101\n104 999\n")
-	got := collectProcessTreePIDsFromTable(100, procTable)
-	want := []int{100, 101, 102, 103}
+	got, err := collectProcessTreePIDsFromTable([]int{100, 104}, procTable)
+	want := []int{100, 104, 101, 102, 103}
+	if err != nil {
+		t.Fatalf("collectProcessTreePIDsFromTable() error = %v", err)
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("collectProcessTreePIDsFromTable() = %#v, want %#v", got, want)
+	}
+}
+
+func TestCollectProcessTreePIDsFromTableRequiresRoot(t *testing.T) {
+	got, err := collectProcessTreePIDsFromTable([]int{100}, []byte("101 1\n"))
+	if len(got) != 0 || err == nil {
+		t.Fatalf("process tree without root = (%v, %v), want (empty, error)", got, err)
+	}
+}
+
+func TestParsePositivePIDsReportsPartialOutput(t *testing.T) {
+	pids, err := parsePositivePIDs([]byte("100\ninvalid\n200\n"), "tmux pane")
+	if want := []int{100, 200}; !reflect.DeepEqual(pids, want) {
+		t.Fatalf("parsed pane pids = %v, want %v", pids, want)
+	}
+	if err == nil {
+		t.Fatal("invalid pane pid must make candidate discovery incomplete")
+	}
+}
+
+func TestCollectTmuxPaneProcessTreePIDsUsesEveryWindow(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	fakeTmux := filepath.Join(dir, "tmux")
+	script := fmt.Sprintf(`#!/bin/sh
+case " $* " in
+*" has-session "*) exit 0 ;;
+*" list-panes "*)
+	printf '%%s\n' "$@" > %s
+	printf '99999990\n99999991\n'
+	exit 0
+	;;
+esac
+exit 1
+`, shellescape.Quote(argsFile))
+	if err := os.WriteFile(fakeTmux, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	inst := &Instance{
+		TmuxSocketName: "test-socket",
+		tmuxSession:    &tmux.Session{Name: "multi-window", SocketName: "test-socket"},
+	}
+	pids, err := inst.collectTmuxPaneProcessTreePIDs()
+	if err != nil {
+		t.Fatalf("collect session panes: %v", err)
+	}
+	if want := []int{99999990, 99999991}; !reflect.DeepEqual(pids, want) {
+		t.Fatalf("collected pane pids = %v, want %v", pids, want)
+	}
+
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotArgs := strings.Fields(string(rawArgs))
+	wantArgs := []string{"-L", "test-socket", "list-panes", "-s", "-t", "multi-window", "-F", "#{pane_pid}"}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("tmux args = %q, want %q", gotArgs, wantArgs)
+	}
+}
+
+func TestCollectProcessTreePIDsViaPgrepReportsFailure(t *testing.T) {
+	dir := t.TempDir()
+	fakePgrep := filepath.Join(dir, "pgrep")
+	if err := os.WriteFile(fakePgrep, []byte("#!/bin/sh\nexit 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	pids, err := collectProcessTreePIDsViaPgrep(100)
+	if err == nil {
+		t.Fatal("pgrep execution failure must make process-tree discovery incomplete")
+	}
+	if want := []int{100}; !reflect.DeepEqual(pids, want) {
+		t.Fatalf("partial process tree = %v, want %v", pids, want)
+	}
+}
+
+func TestIsLikelyCodexProcessPIDReportsPSFailure(t *testing.T) {
+	if _, err := isLikelyCodexProcessPID(99999999); err == nil {
+		t.Fatal("ps failure must not be reported as a non-Codex process")
+	}
+}
+
+func TestCodexProcFDProbeScriptCompleteness(t *testing.T) {
+	const wantID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	run := func(t *testing.T, root string) []byte {
+		t.Helper()
+		out, err := exec.Command("/bin/sh", "-c", codexProcFDProbeScript(root)).CombinedOutput()
+		if err != nil {
+			t.Fatalf("run procfd probe script: %v\n%s", err, out)
+		}
+		return out
+	}
+
+	t.Run("clean absence", func(t *testing.T) {
+		root := t.TempDir()
+		fdDir := filepath.Join(root, "100", "fd")
+		if err := os.MkdirAll(fdDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("/dev/null", filepath.Join(fdDir, "3")); err != nil {
+			t.Fatal(err)
+		}
+		out := run(t, root)
+		if bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) || extractCodexSessionIDFromLsofOutput(out) != "" {
+			t.Fatalf("clean procfd output = %q, want complete absence", out)
+		}
+	})
+
+	t.Run("empty proc root is incomplete", func(t *testing.T) {
+		out := run(t, t.TempDir())
+		if !bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) {
+			t.Fatalf("empty proc root output = %q, want incomplete sentinel", out)
+		}
+	})
+
+	t.Run("missing fd directory is incomplete", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Mkdir(filepath.Join(root, "100"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		out := run(t, root)
+		if !bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) {
+			t.Fatalf("missing fd directory output = %q, want incomplete sentinel", out)
+		}
+	})
+
+	t.Run("empty fd directory is incomplete", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, "100", "fd"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		out := run(t, root)
+		if !bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) {
+			t.Fatalf("empty fd directory output = %q, want incomplete sentinel", out)
+		}
+	})
+
+	t.Run("failed fd readlink is incomplete", func(t *testing.T) {
+		root := t.TempDir()
+		fdDir := filepath.Join(root, "100", "fd")
+		if err := os.MkdirAll(fdDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fdDir, "3"), []byte("not a symlink"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := run(t, root)
+		if !bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) {
+			t.Fatalf("failed readlink output = %q, want incomplete sentinel", out)
+		}
+	})
+
+	t.Run("deleted open rollout remains discoverable", func(t *testing.T) {
+		root := t.TempDir()
+		fdDir := filepath.Join(root, "100", "fd")
+		rolloutDir := filepath.Join(root, "sessions", "2026", "08", "03")
+		if err := os.MkdirAll(fdDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		rollout := filepath.Join(rolloutDir, "rollout-2026-08-03T00-00-00-"+wantID+".jsonl")
+		if err := os.WriteFile(rollout, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(rollout, filepath.Join(fdDir, "4")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(rollout); err != nil {
+			t.Fatal(err)
+		}
+		if got := extractCodexSessionIDFromLsofOutput(run(t, root)); got != wantID {
+			t.Fatalf("deleted rollout session ID = %q, want %q", got, wantID)
+		}
+	})
+
+	t.Run("unreadable fd directory is incomplete", func(t *testing.T) {
+		root := t.TempDir()
+		fdDir := filepath.Join(root, "100", "fd")
+		if err := os.MkdirAll(fdDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(fdDir, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(fdDir, 0o700) })
+		out := run(t, root)
+		if !bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) {
+			t.Fatalf("unreadable fd directory output = %q, want incomplete sentinel", out)
+		}
+	})
+}
+
+func TestQueryCodexSessionFromDockerProcFDCompleteness(t *testing.T) {
+	const wantID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	tests := []struct {
+		name        string
+		output      string
+		exitCode    int
+		wantID      string
+		wantMissing string
+		wantErr     bool
+	}{
+		{name: "clean absence"},
+		{name: "readlink missing", output: codexProbeMissingSentinel, wantMissing: "readlink", wantErr: true},
+		{name: "incomplete fd scan", output: codexProbeIncompleteSentinel, wantErr: true},
+		{name: "docker failure", exitCode: 2, wantErr: true},
+		{
+			name:     "positive output wins over docker failure",
+			output:   "/tmp/sessions/2026/08/03/rollout-2026-08-03T00-00-00-" + wantID + ".jsonl",
+			exitCode: 2,
+			wantID:   wantID,
+		},
+		{
+			name:   "positive path wins over incomplete sentinel",
+			output: "/tmp/sessions/2026/08/03/rollout-2026-08-03T00-00-00-" + wantID + ".jsonl\n" + codexProbeIncompleteSentinel,
+			wantID: wantID,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fakeDocker := filepath.Join(dir, "docker")
+			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' %q\nexit %d\n", test.output, test.exitCode)
+			if err := os.WriteFile(fakeDocker, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+
+			inst := &Instance{SandboxContainer: "test"}
+			gotID, missingDep, err := inst.queryCodexSessionFromDockerProcFD()
+			if gotID != test.wantID || missingDep != test.wantMissing || (err != nil) != test.wantErr {
+				t.Fatalf("docker probe = (%q, %q, %v), want (%q, %q, error=%v)", gotID, missingDep, err, test.wantID, test.wantMissing, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestCodexProcessCandidateDiscoveryFailureIsUndetermined(t *testing.T) {
+	inst := &Instance{}
+	if _, err := inst.collectCodexProcessCandidates(); err == nil {
+		t.Fatal("missing tmux session must make candidate discovery undetermined")
+	}
+	if _, _, err := inst.queryCodexSessionFromProcessFiles(); err == nil {
+		t.Fatal("incomplete candidate discovery must reach the process-file caller")
+	}
+}
+
+func TestUpdateCodexSessionUndeterminedProbeSkipsDiskFallback(t *testing.T) {
+	const diskID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	dir := filepath.Join(codexHome, "sessions", "2026", "08", "03")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inst := &Instance{
+		Tool:           "codex",
+		CodexStartedAt: time.Now().Add(-time.Second).UnixMilli(),
+	}
+	path := filepath.Join(dir, "rollout-2026-08-03T00-00-00-"+diskID+".jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	inst.updateCodexSession(nil, true)
+	if inst.CodexSessionID != "" {
+		t.Fatalf("undetermined process probe fell through to disk ID %q", inst.CodexSessionID)
 	}
 }
 
@@ -4664,6 +4997,137 @@ func TestInstance_RefreshLiveSessionIDs_NoOpForNonAgenticTool(t *testing.T) {
 	if inst.GeminiSessionID != "leftover-gemini" {
 		t.Errorf("GeminiSessionID mutated for non-agentic tool: got %q", inst.GeminiSessionID)
 	}
+}
+
+// TestQueryCodexSessionFromHostNative exercises the issue #1552 replacement
+// for per-PID lsof against the real libproc scan: a child process holding a
+// rollout-shaped file open, probed in-process via internal/procfd. The probe
+// semantics themselves are pinned cross-platform by
+// TestQueryCodexSessionFromHostNativeSemantics below.
+func TestQueryCodexSessionFromHostNative(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("real native probe requires darwin; semantics covered by TestQueryCodexSessionFromHostNativeSemantics")
+	}
+
+	const wantID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	dir := filepath.Join(t.TempDir(), "sessions", "2026", "07", "01")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout, err := os.Create(filepath.Join(dir, "rollout-2026-07-01T00-00-00-"+wantID+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rollout.Close()
+
+	cmd := exec.Command("/bin/sleep", "30")
+	cmd.Stdout = rollout
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+
+	inst := &Instance{}
+	gotID, err := inst.queryCodexSessionFromHostNative([]int{cmd.Process.Pid})
+	if err != nil {
+		t.Fatalf("native probe failed to answer on darwin: %v", err)
+	}
+	if gotID != wantID {
+		t.Errorf("native probe session ID = %q, want %q", gotID, wantID)
+	}
+}
+
+// TestQueryCodexSessionFromHostNativeSemantics pins the native probe's
+// found/absent/undetermined contract and its ID extraction on every platform
+// via the procfdOpenVnodePaths seam, so the ubuntu CI gate exercises the logic
+// that decides whether the lsof fallback runs (#1552).
+func TestQueryCodexSessionFromHostNativeSemantics(t *testing.T) {
+	const wantID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	restore := procfdOpenVnodePaths
+	defer func() { procfdOpenVnodePaths = restore }()
+
+	inst := &Instance{}
+
+	t.Run("extracts session ID from an open rollout path", func(t *testing.T) {
+		procfdOpenVnodePaths = func(int) ([]string, error) {
+			return []string{
+				"/dev/null",
+				"/Users/u/.codex/sessions/2026/07/01/rollout-2026-07-01T00-00-00-" + wantID + ".jsonl",
+			}, nil
+		}
+		gotID, err := inst.queryCodexSessionFromHostNative([]int{123})
+		if err != nil || gotID != wantID {
+			t.Fatalf("got (%q, %v), want (%q, nil)", gotID, err, wantID)
+		}
+	})
+
+	t.Run("all PIDs erroring means unanswered so lsof fallback stays reachable", func(t *testing.T) {
+		procfdOpenVnodePaths = func(int) ([]string, error) {
+			return nil, fmt.Errorf("proc_pidinfo: %w", os.ErrPermission)
+		}
+		if _, err := inst.queryCodexSessionFromHostNative([]int{123, 456}); err == nil {
+			t.Fatal("errored probes must return undetermined to trigger the lsof fallback")
+		}
+	})
+
+	t.Run("unsupported platform is unanswered", func(t *testing.T) {
+		procfdOpenVnodePaths = func(int) ([]string, error) { return nil, procfd.ErrUnsupported }
+		if _, err := inst.queryCodexSessionFromHostNative([]int{123}); !errors.Is(err, procfd.ErrUnsupported) {
+			t.Fatalf("ErrUnsupported probe error = %v, want ErrUnsupported", err)
+		}
+	})
+
+	t.Run("partial scan failure falls back to lsof", func(t *testing.T) {
+		calls := 0
+		procfdOpenVnodePaths = func(int) ([]string, error) {
+			calls++
+			if calls == 1 {
+				return nil, fmt.Errorf("proc_pidinfo: %w", os.ErrPermission)
+			}
+			return []string{"/dev/null"}, nil
+		}
+		gotID, err := inst.queryCodexSessionFromHostNative([]int{123, 456})
+		if err == nil || gotID != "" {
+			t.Fatalf("got (%q, %v), want (\"\", error): a partial scan cannot answer conclusively", gotID, err)
+		}
+	})
+
+	t.Run("a positive partial scan is still definitive", func(t *testing.T) {
+		procfdOpenVnodePaths = func(int) ([]string, error) {
+			return []string{
+				"/Users/u/.codex/sessions/2026/07/01/rollout-2026-07-01T00-00-00-" + wantID + ".jsonl",
+			}, os.ErrPermission
+		}
+		gotID, err := inst.queryCodexSessionFromHostNative([]int{123})
+		if err != nil || gotID != wantID {
+			t.Fatalf("got (%q, %v), want (%q, nil)", gotID, err, wantID)
+		}
+	})
+
+	t.Run("all successful scans with no match answer negatively", func(t *testing.T) {
+		procfdOpenVnodePaths = func(int) ([]string, error) {
+			return []string{"/dev/null"}, nil
+		}
+		gotID, err := inst.queryCodexSessionFromHostNative([]int{123, 456})
+		if err != nil || gotID != "" {
+			t.Fatalf("got (%q, %v), want (\"\", nil)", gotID, err)
+		}
+	})
+
+	t.Run("empty candidate list counts as answered", func(t *testing.T) {
+		procfdOpenVnodePaths = func(int) ([]string, error) {
+			t.Fatal("probe must not be called with no candidates")
+			return nil, nil
+		}
+		// lsof would scan nothing either, so the fallback (and its
+		// missing-lsof warning) must not be triggered.
+		if _, err := inst.queryCodexSessionFromHostNative(nil); err != nil {
+			t.Errorf("empty candidate list error = %v, want nil", err)
+		}
+	})
 }
 
 // TestShouldRunCodexProcessProbeSteadyStateBackoff covers issue #1552: once a

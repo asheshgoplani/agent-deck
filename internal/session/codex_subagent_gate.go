@@ -3,6 +3,7 @@ package session
 import (
 	"bufio"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,7 @@ import (
 // <sid>` is the escape: it mints a fresh thread_source=user thread carrying
 // the full context, which accepts turns indefinitely.
 //
-// Three defenses, all keyed off the rollout's session_meta head line:
+// Two defenses, both keyed off the rollout's session_meta head line:
 //  1. Rebind gate — never rebind to a thread whose rollout says
 //     thread_source=subagent (shouldRejectCodexSubagentRebind). This guards
 //     every id-rotation path that can pick a subagent rollout: the notify
@@ -157,6 +158,21 @@ func codexThreadMetaForSession(sessionID, codexHome string) (codexThreadMeta, bo
 func (i *Instance) shouldRejectCodexSubagentRebind(candidateID string) bool {
 	meta, ok := codexThreadMetaForSession(candidateID, i.getCodexHomeDir())
 	return ok && meta.ThreadSource == "subagent"
+}
+
+func (i *Instance) filterCodexProcessProbeCandidate(candidateID string) string {
+	if candidateID == "" || !i.shouldRejectCodexSubagentRebind(candidateID) {
+		return candidateID
+	}
+	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+		InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+		Source: "process_probe", OldID: i.CodexSessionID, Candidate: candidateID,
+		Reason: "candidate_is_subagent_thread",
+	})
+	sessionLog.Debug("codex_session_probe_rejected_subagent",
+		slog.String("old_id", i.CodexSessionID),
+		slog.String("candidate", candidateID))
+	return ""
 }
 
 // codexSessionNeedsFork reports whether the bound session id names a

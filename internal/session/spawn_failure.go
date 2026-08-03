@@ -168,33 +168,39 @@ const (
 // stop or a restart/respawn bumps i.spawnGen, so a mismatch means this watcher
 // has been superseded and must exit quietly (#1580 data-race fix).
 //
-// wake is the supersede channel, subscribed by the caller via
-// newSpawnGenWatch() before this goroutine starts (see instance.go). Closing
-// it lets a supersession be noticed immediately rather than only on the next
-// spawnFastDeathTick poll — see spawnGenWake's doc comment for why the
-// up-to-one-tick tail mattered.
+// wake is the supersede channel, subscribed synchronously by
+// startFastDeathWatcher via newSpawnGenWatch before the goroutine starts.
+// Closing it lets a supersession be noticed immediately rather than only on
+// the next spawnFastDeathTick poll.
 //
 // The generation is re-checked immediately before each write, not just once
 // per iteration: sess.Exists() shells out to tmux and can take tens of
 // milliseconds, and a Stop/Kill landing inside that call would otherwise be
-// observed as a vanished session — i.e. recorded as a spurious
-// spawn_died_fast for what was a deliberate teardown (and written into a HOME
-// the owning test may already be tearing down).
+// recorded as a spurious spawn_died_fast event.
 //
 // Every write additionally goes through commitSpawnWatchWrite, which re-checks
-// the generation while holding spawnWriteMu. That is what turns the remaining
-// check-then-write gap from small into closed: a teardown that bumps and then
-// takes the same mutex (bumpSpawnGenAndBarrier) is guaranteed that any write
-// still pending here either completed before it, or sees the new generation and
-// is suppressed. Only the writes are covered, never the tmux calls, so a stop
-// never waits on tmux.
+// the generation while holding spawnWriteMu. A teardown that bumps and then
+// takes the same mutex is therefore guaranteed that any pending write either
+// completed before it or sees the new generation and is suppressed.
 //
-// lifecycleLogPath and failureDir are likewise passed by value rather than
-// resolved here from the live $HOME: this goroutine is never joined, so it
-// can still be alive (parked on the ticker) after its caller's test has
-// finished and a later test has repointed $HOME. Resolving live at write
-// time would make the watcher write into whatever $HOME happens to be
-// current when it fires, not the one that was current when it was spawned.
+// lifecycleLogPath and failureDir are resolved before the goroutine starts and
+// passed by value, so even callers that do not explicitly join the watcher
+// cannot make it write through a later process-global HOME value.
+func (i *Instance) startFastDeathWatcher(command string, sess *tmux.Session, id, tool string, logger *slog.Logger) {
+	gen, wake := i.newSpawnGenWatch()
+	lifecycleLogPath := GetSessionIDLifecycleLogPath()
+	failureDir := spawnFailureDir()
+	i.spawnWatchers.Add(1)
+	go func() {
+		defer i.spawnWatchers.Done()
+		i.watchForFastDeath(command, gen, wake, sess, id, tool, logger, lifecycleLogPath, failureDir)
+	}()
+}
+
+func (i *Instance) waitForFastDeathWatchers() {
+	i.spawnWatchers.Wait()
+}
+
 func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string) {
 	if sess == nil {
 		return
@@ -250,6 +256,9 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 				return
 			}
 			continue
+		}
+		if i.spawnGen.Load() != gen {
+			return
 		}
 
 		// Session is gone — but sess.Exists() shells out to tmux, so a

@@ -282,8 +282,56 @@ func seedCodexRolloutCwd(t *testing.T, codexHome, sid, threadSource, cwd string)
 	}
 }
 
+func TestResolveCodexDetectionCandidateRejectsSubagent(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	userSID := uniqueSID(t)
+	subSID := uniqueSID(t)
+	seedCodexRolloutCwd(t, codexHome, userSID, "user", inst.ProjectPath)
+	seedCodexRolloutCwd(t, codexHome, subSID, "subagent", inst.ProjectPath)
+
+	if got := inst.resolveCodexDetectionCandidate(subSID, nil); got != userSID {
+		t.Fatalf("async candidate resolution = %q, want user thread %q", got, userSID)
+	}
+}
+
+func TestRejectedSubagentProbePreservesIncompleteResult(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	userSID := uniqueSID(t)
+	subSID := uniqueSID(t)
+	seedCodexRolloutCwd(t, codexHome, userSID, "user", inst.ProjectPath)
+	seedCodexRolloutCwd(t, codexHome, subSID, "subagent", inst.ProjectPath)
+	subPath := codexRolloutPathInHome(subSID, codexHome)
+
+	restore := procfdOpenVnodePaths
+	t.Cleanup(func() { procfdOpenVnodePaths = restore })
+	procfdOpenVnodePaths = func(int) ([]string, error) {
+		return []string{subPath}, os.ErrPermission
+	}
+	sessionID, probeErr := inst.queryCodexSessionFromHostNative([]int{123})
+	if sessionID != "" || probeErr == nil {
+		t.Fatalf("native subagent partial probe = (%q, %v), want (empty, error)", sessionID, probeErr)
+	}
+	if got := inst.resolveCodexDetectionCandidate(sessionID, probeErr); got != "" {
+		t.Fatalf("undetermined async probe fell through to disk ID %q", got)
+	}
+
+	dir := t.TempDir()
+	fakeDocker := filepath.Join(dir, "docker")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' %q\nexit 2\n", subPath)
+	if err := os.WriteFile(fakeDocker, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	inst.SandboxContainer = "test"
+	sessionID, _, probeErr = inst.queryCodexSessionFromDockerProcFD()
+	if sessionID != "" || probeErr == nil {
+		t.Fatalf("docker subagent partial probe = (%q, %v), want (empty, error)", sessionID, probeErr)
+	}
+}
+
 func TestUpdateCodexSession_DiskScan_PrefersUserOverSubagent(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
+	inst.lastCodexProbeAt = time.Now().Add(time.Hour) // This test isolates disk selection.
 	if err := os.MkdirAll(inst.ProjectPath, 0o755); err != nil {
 		t.Fatalf("mkdir project: %v", err)
 	}
@@ -308,6 +356,7 @@ func TestUpdateCodexSession_DiskScan_PrefersUserOverSubagent(t *testing.T) {
 
 func TestUpdateCodexSession_DiskScan_RejectsLoneSubagent(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
+	inst.lastCodexProbeAt = time.Now().Add(time.Hour) // This test isolates disk selection.
 	if err := os.MkdirAll(inst.ProjectPath, 0o755); err != nil {
 		t.Fatalf("mkdir project: %v", err)
 	}

@@ -18,7 +18,12 @@ import (
 // bound the Unix-socket dial. The sweep removes the dead socket so the next ssh
 // opens a fresh master instead of blocking.
 func TestIssue1421_CleanStaleSSHSockets(t *testing.T) {
-	dir := t.TempDir()
+	// t.TempDir includes the long test name, which can exceed Darwin's 104-byte sun_path limit.
+	dir, err := os.MkdirTemp("", "ad-ssh-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	// (a) Stale socket: a leftover socket inode with no listener — exactly the
 	// on-disk state a crashed/killed SSH master leaves behind. SetUnlinkOnClose

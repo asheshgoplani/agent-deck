@@ -156,7 +156,6 @@ func TestUpdateStatus_CLIvsTUIParity_SameTmuxState(t *testing.T) {
 
 	writeHookFile(t, base.ID, "running", 180)
 	setPaneTitle(t, base.tmuxSession.Name, "⠴ Running tool")
-	time.Sleep(2 * time.Second)
 
 	tuiInst := reloadInstanceForParityTest(base)
 	cliInst := reloadInstanceForParityTest(base)

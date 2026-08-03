@@ -104,8 +104,8 @@ func (i *Instance) discoverMCPChildrenFromPaneTree() {
 	if err != nil || len(procTable) == 0 {
 		return
 	}
-	childrenByParent := parsePSParentChildMap(procTable)
-	if len(childrenByParent) == 0 {
+	childrenByParent, parseErr := parsePSParentChildMap(procTable)
+	if parseErr != nil || len(childrenByParent) == 0 {
 		return
 	}
 

@@ -96,6 +96,22 @@ func TestIssue1580_TmuxStartFailureRecorded(t *testing.T) {
 	assert.Contains(t, readLifecycleLog(t), "spawn_failed")
 }
 
+func TestIssue1580_DeliberateKillDoesNotRecordFastDeath(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	inst := NewInstance("test-1580-deliberate-kill", "/tmp")
+	inst.Tool = "customlive1580"
+	inst.Command = "sleep 60"
+	t.Cleanup(func() { clearSpawnFailureRecord(inst.ID) })
+
+	require.NoError(t, inst.Start())
+	require.NoError(t, inst.Kill())
+	inst.waitForFastDeathWatchers()
+	rec, err := readSpawnFailureRecord(inst.ID)
+	require.NoError(t, err)
+	assert.Nil(t, rec)
+}
+
 // TestIssue1580_FastDeathWatcherCapturesDyingOutput is the behavioral repro. A
 // real tmux session runs a custom command whose initial process prints a marker
 // then exits non-zero. The watcher must capture the dying output and persist a
@@ -118,11 +134,14 @@ func TestIssue1580_FastDeathWatcherCapturesDyingOutput(t *testing.T) {
 	defer func() { _ = inst.Kill() }()
 
 	// Wait for the watcher (250ms tick, 15s window) to observe the death and
-	// persist the record.
+	// persist both the record and lifecycle event.
 	var rec *SpawnFailureRecord
+	var lifecycle string
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		if rec = inst.SpawnFailure(); rec != nil && rec.Reason == "spawn_died_fast" {
+		rec = inst.SpawnFailure()
+		lifecycle = readLifecycleLog(t)
+		if rec != nil && rec.Reason == "spawn_died_fast" && strings.Contains(lifecycle, "spawn_died_fast") {
 			break
 		}
 		time.Sleep(150 * time.Millisecond)
@@ -135,7 +154,7 @@ func TestIssue1580_FastDeathWatcherCapturesDyingOutput(t *testing.T) {
 	assert.Greater(t, rec.ElapsedMs, int64(0), "elapsed time must be positive")
 
 	// The lifecycle log must carry the spawn_died_fast trace.
-	assert.Contains(t, readLifecycleLog(t), "spawn_died_fast")
+	assert.Contains(t, lifecycle, "spawn_died_fast")
 
 	// PreviewFull falls back to the record now that the pane is gone.
 	preview, err := inst.PreviewFull()

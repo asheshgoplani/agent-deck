@@ -21,6 +21,10 @@ on:
     paths:
       - '.goreleaser.yml'
       - 'cmd/agent-deck/**'
+      # darwin-only asm/linkname code (//go:build darwin): the goreleaser
+      # cross-compile here is the only linux-side PR gate that links it.
+      # Native darwin tests run in procfd-darwin.yml.
+      - 'internal/procfd/**'
       - '.github/workflows/release.yml'
       - '.github/workflows/release-snapshot.yml'
 
@@ -34,12 +38,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Run GoReleaser (snapshot, no publish)
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
