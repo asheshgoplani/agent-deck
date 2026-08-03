@@ -7,9 +7,24 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func setFakeOpenCodePath(t *testing.T, script string, includeSystemPath bool) {
+	t.Helper()
+	fakeBin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fakeBin, "opencode"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake opencode: %v", err)
+	}
+	pathValue := fakeBin
+	if includeSystemPath && os.Getenv("PATH") != "" {
+		pathValue += string(os.PathListSeparator) + os.Getenv("PATH")
+	}
+	t.Setenv("PATH", pathValue)
+}
 
 func TestUpdateOpenCodeSession_ManagedPortUsesHTTPNestedTimes(t *testing.T) {
 	projectPath := t.TempDir()
@@ -22,19 +37,14 @@ func TestUpdateOpenCodeSession_ManagedPortUsesHTTPNestedTimes(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `[
 			{"id":"ses_OLD","directory":%q,"time":{"created":1000,"updated":2000}},
-			{"id":"ses_NEW","directory":%q,"time":{"created":3000,"updated":4000}},
+			{"id":"ses_NEW","location":{"directory":%q},"time":{"created":3000,"updated":4000}},
 			{"id":"ses_OTHER","directory":"/another/project","time":{"created":5000,"updated":6000}}
 		]`, projectPath, projectPath)
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	fakeBin := t.TempDir()
-	fakeOpenCode := filepath.Join(fakeBin, "opencode")
-	if err := os.WriteFile(fakeOpenCode, []byte("#!/bin/sh\nprintf '[]'\n"), 0o755); err != nil {
-		t.Fatalf("write fake opencode: %v", err)
-	}
-	t.Setenv("PATH", fakeBin)
+	setFakeOpenCodePath(t, "#!/bin/sh\nprintf '[]'\n", false)
 
 	inst := &Instance{
 		Tool:         "opencode",
@@ -62,13 +72,8 @@ func TestQueryOpenCodeSession_ManagedPortRetriesHTTPAfterFailure(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	marker := filepath.Join(t.TempDir(), "cli-invoked")
-	fakeBin := t.TempDir()
-	fakeOpenCode := filepath.Join(fakeBin, "opencode")
-	script := fmt.Sprintf("#!/bin/sh\ntouch %q\nprintf '[]'\n", marker)
-	if err := os.WriteFile(fakeOpenCode, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake opencode: %v", err)
-	}
-	t.Setenv("PATH", fakeBin)
+	script := fmt.Sprintf("#!/bin/sh\nprintf x > %q\nprintf '[]'\n", marker)
+	setFakeOpenCodePath(t, script, false)
 
 	inst := &Instance{
 		Tool:         "opencode",
@@ -100,6 +105,8 @@ func TestQueryOpenCodeSession_ManagedPortRefusesRedirect(t *testing.T) {
 
 	redirect := httptest.NewServer(http.RedirectHandler(target.URL, http.StatusTemporaryRedirect))
 	t.Cleanup(redirect.Close)
+	cliMarker := filepath.Join(t.TempDir(), "cli-invoked")
+	setFakeOpenCodePath(t, fmt.Sprintf("#!/bin/sh\nprintf x > %q\nprintf '[]'\n", cliMarker), false)
 	inst := &Instance{
 		Tool:         "opencode",
 		ProjectPath:  projectPath,
@@ -112,6 +119,59 @@ func TestQueryOpenCodeSession_ManagedPortRefusesRedirect(t *testing.T) {
 	if got := redirectedRequests.Load(); got != 0 {
 		t.Fatalf("redirect target request count = %d, want 0", got)
 	}
+	if _, err := os.Stat(cliMarker); !os.IsNotExist(err) {
+		t.Fatalf("redirect invoked CLI; marker stat error = %v", err)
+	}
+}
+
+func TestQueryOpenCodeSession_SnapshotsBindingWhileHTTPIsInFlight(t *testing.T) {
+	projectPath := t.TempDir()
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(requestStarted)
+		<-releaseResponse
+		fmt.Fprintf(w, `[
+			{"id":"ses_OLD","directory":%q,"time":{"created":1000,"updated":2000}},
+			{"id":"ses_NEW","directory":%q,"time":{"created":3000,"updated":4000}}
+		]`, projectPath, projectPath)
+	}))
+	t.Cleanup(server.Close)
+
+	inst := &Instance{
+		Tool:              "opencode",
+		ProjectPath:       projectPath,
+		OpenCodePort:      server.Listener.Addr().(*net.TCPAddr).Port,
+		OpenCodeSessionID: "ses_OLD",
+	}
+	result := make(chan string, 1)
+	go func() { result <- inst.queryOpenCodeSession() }()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("HTTP query did not start")
+	}
+	inst.setOpenCodeSession("ses_NEW")
+	close(releaseResponse)
+
+	if got := <-result; got != "ses_OLD" {
+		t.Fatalf("query result = %q, want snapshotted binding ses_OLD", got)
+	}
+}
+
+func TestQueryOpenCodeSessionsHTTP_RejectsOversizedResponse(t *testing.T) {
+	const oversizedPayload = (8 << 20) + 1024
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `[{"id":%q,"directory":"/project","time":{"created":1000,"updated":2000}}]`, strings.Repeat("x", oversizedPayload))
+	}))
+	t.Cleanup(server.Close)
+
+	inst := &Instance{Tool: "opencode", ProjectPath: "/project"}
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+	if _, err := inst.queryOpenCodeSessionsHTTP(port, inst.ProjectPath); err == nil {
+		t.Fatal("oversized OpenCode session response unexpectedly succeeded")
+	}
 }
 
 func TestQueryOpenCodeSession_NoManagedPortRateLimitsCLIFallback(t *testing.T) {
@@ -119,13 +179,8 @@ func TestQueryOpenCodeSession_NoManagedPortRateLimitsCLIFallback(t *testing.T) {
 	payload := fmt.Sprintf(`[{"id":"ses_COMPAT","directory":%q,"created":1000,"updated":2000}]`, projectPath)
 
 	marker := filepath.Join(t.TempDir(), "cli-invocations")
-	fakeBin := t.TempDir()
-	fakeOpenCode := filepath.Join(fakeBin, "opencode")
 	script := fmt.Sprintf("#!/bin/sh\nprintf x >> %q\nprintf '%%s\\n' %q\n", marker, payload)
-	if err := os.WriteFile(fakeOpenCode, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake opencode: %v", err)
-	}
-	t.Setenv("PATH", fakeBin)
+	setFakeOpenCodePath(t, script, false)
 
 	inst := &Instance{Tool: "opencode", ProjectPath: projectPath}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -148,13 +203,8 @@ func TestQueryOpenCodeSession_NoManagedPortCoalescesConcurrentCLIFallback(t *tes
 	payload := fmt.Sprintf(`[{"id":"ses_COALESCED","directory":%q,"created":1000,"updated":2000}]`, projectPath)
 
 	marker := filepath.Join(t.TempDir(), "cli-invocations")
-	fakeBin := t.TempDir()
-	fakeOpenCode := filepath.Join(fakeBin, "opencode")
-	script := fmt.Sprintf("#!/bin/sh\nprintf x >> %q\n/bin/sleep 1\nprintf '%%s\\n' %q\n", marker, payload)
-	if err := os.WriteFile(fakeOpenCode, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake opencode: %v", err)
-	}
-	t.Setenv("PATH", fakeBin)
+	script := fmt.Sprintf("#!/bin/sh\nprintf x >> %q\nsleep 1\nprintf '%%s\\n' %q\n", marker, payload)
+	setFakeOpenCodePath(t, script, true)
 
 	inst := &Instance{Tool: "opencode", ProjectPath: projectPath}
 	const callers = 8

@@ -110,6 +110,9 @@ const (
 	opencodeRotationScanInterval   = 15 * time.Second
 	opencodeRotationActivityWindow = 30 * time.Second
 	opencodeStartupTimeSkew        = 5 * time.Second
+	// openCodeSessionResponseLimit bounds allocation if a persisted OpenCode
+	// port is later occupied by an unrelated loopback listener.
+	openCodeSessionResponseLimit = 8 << 20
 	// opencodeSSEFreshnessWindow bounds how long an SSE-derived status stays
 	// authoritative without stream traffic (issue #1614). OpenCode heartbeats
 	// its /event stream roughly every 10s, and the watcher refreshes the
@@ -2388,7 +2391,10 @@ func (i *Instance) watchForOpenCodeSession() {
 		time.Sleep(pollInterval)
 		attempt++
 
-		if i.OpenCodeSessionID != "" {
+		i.mu.RLock()
+		alreadyDetected := i.OpenCodeSessionID != ""
+		i.mu.RUnlock()
+		if alreadyDetected {
 			sessionLog.Debug("opencode_watcher_already_set")
 			return
 		}
@@ -2411,12 +2417,24 @@ func (i *Instance) watchForOpenCodeSession() {
 
 // setOpenCodeSession sets the session ID and stores it in tmux environment.
 func (i *Instance) setOpenCodeSession(sessionID string) {
+	i.mu.Lock()
+	i.setOpenCodeSessionLocked(sessionID)
+	tmuxSession := i.tmuxSession
+	i.mu.Unlock()
+	i.syncOpenCodeSessionEnvironment(tmuxSession, sessionID)
+}
+
+// setOpenCodeSessionLocked updates in-memory binding state. The caller must
+// hold i.mu for writing.
+func (i *Instance) setOpenCodeSessionLocked(sessionID string) {
 	i.OpenCodeSessionID = sessionID
 	i.OpenCodeDetectedAt = time.Now()
 	i.OpenCodeStartedAt = 0
+}
 
-	if i.tmuxSession != nil {
-		if err := i.tmuxSession.SetEnvironment("OPENCODE_SESSION_ID", sessionID); err != nil {
+func (i *Instance) syncOpenCodeSessionEnvironment(tmuxSession *tmux.Session, sessionID string) {
+	if tmuxSession != nil {
+		if err := tmuxSession.SetEnvironment("OPENCODE_SESSION_ID", sessionID); err != nil {
 			sessionLog.Warn("opencode_set_env_failed", slog.String("error", err.Error()))
 		}
 	}
@@ -2434,7 +2452,10 @@ type openCodeHTTPSessionMetadata struct {
 	ID        string `json:"id"`
 	Directory string `json:"directory"`
 	Path      string `json:"path"`
-	Time      struct {
+	Location  struct {
+		Directory string `json:"directory"`
+	} `json:"location"`
+	Time struct {
 		Created int64 `json:"created"`
 		Updated int64 `json:"updated"`
 	} `json:"time"`
@@ -2533,42 +2554,49 @@ func findBestOpenCodeSession(sessions []openCodeSessionMetadata, projectPath, cu
 // machines this still usually succeeds, and on genuine hangs the cache and
 // lastOpenCodeScanAt schedule a later retry instead of spawning a poll storm.
 func (i *Instance) queryOpenCodeSession() string {
+	i.mu.RLock()
+	port := i.OpenCodePort
+	projectPath := i.ProjectPath
+	currentID := i.OpenCodeSessionID
+	startedAt := i.OpenCodeStartedAt
+	i.mu.RUnlock()
+
 	var sessions []openCodeSessionMetadata
-	if port := i.GetOpenCodePort(); port > 0 {
+	if port > 0 {
 		var err error
-		sessions, err = i.queryOpenCodeSessionsHTTP(port)
+		sessions, err = i.queryOpenCodeSessionsHTTP(port, projectPath)
 		if err != nil {
 			sessionLog.Debug("opencode_http_query_failed",
-				slog.String("dir", i.ProjectPath),
+				slog.String("dir", projectPath),
 				slog.Int("port", port),
 				slog.String("error", err.Error()),
 			)
 			return ""
 		}
 	} else {
-		sessions = i.queryOpenCodeSessionsCLI()
+		sessions = i.queryOpenCodeSessionsCLI(projectPath)
 	}
 
 	sessionLog.Debug("opencode_parsed_sessions", slog.Int("count", len(sessions)))
 
 	var activityAt int64
-	if currentID := i.OpenCodeSessionID; currentID != "" {
+	if currentID != "" {
 		lastActivity := i.GetLastActivityTime()
 		if !lastActivity.IsZero() && time.Since(lastActivity) <= opencodeRotationActivityWindow {
 			activityAt = lastActivity.UnixMilli()
 		}
 	}
 
-	bestMatch := findBestOpenCodeSession(sessions, i.ProjectPath, i.OpenCodeSessionID, i.OpenCodeStartedAt, activityAt)
+	bestMatch := findBestOpenCodeSession(sessions, projectPath, currentID, startedAt, activityAt)
 	sessionLog.Debug(
 		"opencode_best_match",
 		slog.String("session_id", bestMatch),
-		slog.String("current_id", i.OpenCodeSessionID),
+		slog.String("current_id", currentID),
 	)
 	return bestMatch
 }
 
-func (i *Instance) queryOpenCodeSessionsHTTP(port int) ([]openCodeSessionMetadata, error) {
+func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]openCodeSessionMetadata, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -2578,7 +2606,7 @@ func (i *Instance) queryOpenCodeSessionsHTTP(port int) ([]openCodeSessionMetadat
 		Path:   "/session",
 	}
 	query := endpoint.Query()
-	query.Set("directory", i.ProjectPath)
+	query.Set("directory", projectPath)
 	endpoint.RawQuery = query.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
@@ -2595,15 +2623,19 @@ func (i *Instance) queryOpenCodeSessionsHTTP(port int) ([]openCodeSessionMetadat
 	}
 
 	var payload []openCodeHTTPSessionMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, openCodeSessionResponseLimit)).Decode(&payload); err != nil {
 		return nil, err
 	}
 
 	sessions := make([]openCodeSessionMetadata, 0, len(payload))
 	for _, session := range payload {
+		directory := session.Directory
+		if directory == "" {
+			directory = session.Location.Directory
+		}
 		sessions = append(sessions, openCodeSessionMetadata{
 			ID:        session.ID,
-			Directory: session.Directory,
+			Directory: directory,
 			Path:      session.Path,
 			Created:   session.Time.Created,
 			Updated:   session.Time.Updated,
@@ -2612,8 +2644,8 @@ func (i *Instance) queryOpenCodeSessionsHTTP(port int) ([]openCodeSessionMetadat
 	return sessions, nil
 }
 
-func (i *Instance) queryOpenCodeSessionsCLI() []openCodeSessionMetadata {
-	cacheKey := normalizePath(i.ProjectPath)
+func (i *Instance) queryOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
+	cacheKey := normalizePath(projectPath)
 	if sessions, ok := cachedOpenCodeCLISessions(cacheKey); ok {
 		return sessions
 	}
@@ -2622,11 +2654,15 @@ func (i *Instance) queryOpenCodeSessionsCLI() []openCodeSessionMetadata {
 		if sessions, ok := cachedOpenCodeCLISessions(cacheKey); ok {
 			return sessions, nil
 		}
-		sessions := i.runOpenCodeSessionsCLI()
+		sessions := i.runOpenCodeSessionsCLI(projectPath)
 		cacheOpenCodeCLISessions(cacheKey, sessions)
 		return sessions, nil
 	})
-	return append([]openCodeSessionMetadata(nil), result.([]openCodeSessionMetadata)...)
+	sessions, ok := result.([]openCodeSessionMetadata)
+	if !ok {
+		return nil
+	}
+	return append([]openCodeSessionMetadata(nil), sessions...)
 }
 
 func cachedOpenCodeCLISessions(cacheKey string) ([]openCodeSessionMetadata, bool) {
@@ -2654,22 +2690,22 @@ func cacheOpenCodeCLISessions(cacheKey string, sessions []openCodeSessionMetadat
 	}
 }
 
-func (i *Instance) runOpenCodeSessionsCLI() []openCodeSessionMetadata {
+func (i *Instance) runOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Run: opencode session list --format json
 	cmd := exec.CommandContext(ctx, "opencode", "session", "list", "--format", "json")
-	cmd.Dir = i.ProjectPath
+	cmd.Dir = projectPath
 	cmd.WaitDelay = 500 * time.Millisecond
 
-	sessionLog.Debug("opencode_query_sessions", slog.String("dir", i.ProjectPath))
+	sessionLog.Debug("opencode_query_sessions", slog.String("dir", projectPath))
 
 	output, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			sessionLog.Warn("opencode_query_timeout",
-				slog.String("dir", i.ProjectPath),
+				slog.String("dir", projectPath),
 				slog.String("instance_id", i.ID),
 			)
 		} else {
@@ -5975,10 +6011,7 @@ func (i *Instance) updateOpenCodeSession(force bool) {
 	i.mu.Unlock()
 
 	candidate := i.queryOpenCodeSession()
-
-	i.mu.Lock()
 	i.applyOpenCodeSessionCandidate(candidate)
-	i.mu.Unlock()
 }
 
 func (i *Instance) applyOpenCodeSessionCandidate(candidate string) bool {
@@ -5986,10 +6019,12 @@ func (i *Instance) applyOpenCodeSessionCandidate(candidate string) bool {
 		return false
 	}
 
+	i.mu.Lock()
 	if candidate == i.OpenCodeSessionID {
 		if i.OpenCodeDetectedAt.IsZero() {
 			i.OpenCodeDetectedAt = time.Now()
 		}
+		i.mu.Unlock()
 		return false
 	}
 
@@ -6011,7 +6046,10 @@ func (i *Instance) applyOpenCodeSessionCandidate(candidate string) bool {
 		slog.String("new_id", candidate),
 	)
 
-	i.setOpenCodeSession(candidate)
+	i.setOpenCodeSessionLocked(candidate)
+	tmuxSession := i.tmuxSession
+	i.mu.Unlock()
+	i.syncOpenCodeSessionEnvironment(tmuxSession, candidate)
 	return true
 }
 
