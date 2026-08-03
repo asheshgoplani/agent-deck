@@ -7627,6 +7627,20 @@ func (i *Instance) GetJSONLPath() string {
 	return resolveClaudeTranscriptPath(GetClaudeConfigDir(), i.ProjectPath, i.ClaudeSessionID)
 }
 
+// ResolveClaudeTranscriptPath returns the path to the Claude JSONL transcript
+// for a session id under a specific config dir, or "" when none exists.
+//
+// It is exported for callers that must resolve a transcript against a
+// PER-INSTANCE config dir. GetJSONLPath resolves against the process-wide
+// GetClaudeConfigDir(), which agent-deck's account/conductor/group scoping and
+// per-session scratch homes make frequently wrong for a given instance.
+func ResolveClaudeTranscriptPath(configDir, projectPath, sessionID string) string {
+	if configDir == "" || sessionID == "" {
+		return ""
+	}
+	return resolveClaudeTranscriptPath(configDir, projectPath, sessionID)
+}
+
 // getClaudeLastResponse extracts the last assistant message from Claude's JSONL file
 func (i *Instance) getClaudeLastResponse() (*ResponseOutput, error) {
 	// Require stored session ID - no fallback to file scanning

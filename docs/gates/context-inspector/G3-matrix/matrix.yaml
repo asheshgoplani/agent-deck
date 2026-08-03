@@ -1,0 +1,448 @@
+# G3 — MATRIX — context inspector
+#
+# G1 and G2 prove the journey holds in ONE world: a running Claude session, with
+# the data it was recorded with, on a 200x50 terminal. The miss that created this
+# framework did not live in that world. It lived in the first three seconds of
+# somebody's real machine.
+#
+# So this file declares the other worlds. Each row is a sandbox of its own, built
+# from the repository's own recorded corpus, driven by the same G0 script, and
+# capped in wall time. What is NOT covered is declared too, as an exclusion with
+# a written reason, so a gap shows up in the report instead of being invisible.
+#
+# WHY ROWS MAY DECLARE A DIVERGENCE. Most of these worlds legitimately change
+# what the screen can say: a session with no memory files cannot show a
+# memory-files category, and an idle session cannot satisfy an assertion that the
+# selected session is busy. Forcing every row to satisfy the G0 journey would
+# leave two options, both bad — drop the row, or weaken the journey's assertions
+# until the hardest world passes, which is precisely how a blank percentage
+# ships. Instead a row states IN ADVANCE the step at which it expects the journey
+# to stop holding, and the runner asserts the divergence happens exactly there.
+# A row that starts failing one step earlier fails the gate.
+#
+# THE ONE THING A ROW CANNOT DECLARE AWAY is the Blank Detector. Every frame of
+# every row is scanned, including the first-run modals no scripted step names,
+# and a finding fails the row whatever the row expected. A world is allowed to
+# look different. It is not allowed to look blank.
+#
+# HOW THE `diverges_at` VALUES WERE ARRIVED AT. Each one was written after
+# reading the frame the row actually produced, and each `why` describes what is
+# on that frame. That order matters and it is the same discipline G0 documents:
+# the DECLARATION is corrected by evidence, the ASSERTIONS never are. Nothing in
+# this file relaxes a single expectation in G0-script.yaml.
+#
+#   run:  sixgate matrix context-inspector
+#   one:  sixgate matrix context-inspector -rows claude-cold-typical
+
+version: 1
+slug: context-inspector
+
+sentence: "Every world the context inspector has to survive: both adapters, seven session states, nothing and far too much to inspect, a narrow terminal, and a machine that has never run agent-deck at all."
+
+# Wall-time caps. A row is never killed when it exceeds one — both drivers hold
+# internally bounded waits and a deferred teardown that must prove its tmux
+# server is gone, and terminating one mid-flight is exactly how this machine
+# leaked ~50 tmux servers and 507 of its 511 pseudo-terminals on 2026-07-18. The
+# cap stops the row counting as running; unwind_grace is how long the runner then
+# waits for it to finish on its own before declaring a possible leak and stopping.
+budget:
+  row: "3m"
+  pane_row: "8m"
+  unwind_grace: "3m"
+
+# The vocabulary. A row naming a value that is not here is a schema error, so the
+# axes are the coverage statement rather than a comment about one.
+axes:
+  adapter: [claude, codex, gemini, opencode, shell]
+  session_state: [running, waiting, idle, stopped, error, never-started, compacted, adopted]
+  data_size: [typical, empty, enormous]
+  config: [configured, cold-first-run]
+  terminal: ["200x50", "80x24"]
+  driver: [A, B]
+
+include:
+  # ---------------------------------------------------------------- claude ---
+  - id: claude-cold-typical
+    note: "the reference world: a running Claude session with the data it was recorded with, on a wide terminal"
+    fixture: claude-cold
+    adapter: claude
+    session_state: running
+    data_size: typical
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: full-journey
+
+  - id: claude-cold-narrow
+    note: "the same session on an 80x24 terminal — the width most people actually have, and the one that clips"
+    fixture: claude-cold
+    adapter: claude
+    session_state: running
+    data_size: typical
+    config: configured
+    terminal: "80x24"
+    driver: A
+    expect: diverges
+    diverges_at: 08-fat-item
+    why: >-
+      At 80 columns the drill's breadcrumb is the first thing the header clips.
+      The frame shows the memory-files drill genuinely open, with three ranked
+      items, while line 2 ends in "... anchor 27.0k mea..." and the
+      "> memory files" crumb is gone. So a user on the width most people
+      actually have can be three levels deep with nothing on screen telling them
+      where they are. This is a finding about the product, not about the
+      harness: the drill works, the sign saying which drill it is does not fit.
+
+  - id: claude-cold-empty
+    note: "nothing to inspect: every memory file and skill deleted from the world, so the panel has to say so rather than show a blank"
+    fixture: claude-cold
+    adapter: claude
+    session_state: running
+    data_size: empty
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: diverges
+    diverges_at: 08-fat-item
+    why: >-
+      With every memory file deleted the category still enumerates itself
+      honestly as "memory files (0 items)" and the drill opens on the sentence
+      "no items: this adapter attributed nothing here." That is the right
+      behaviour and the reason this row exists. It diverges because the journey
+      asks for a token figure in the first column, and a world with nothing in
+      it has no fat one to find. Nothing here is blank; there is simply nothing.
+
+  - id: claude-cold-enormous
+    note: "the pathological end: a hundred memory files across fifty ancestor levels, one of them larger than the reader's own byte cap"
+    fixture: claude-cold
+    adapter: claude
+    session_state: running
+    data_size: enormous
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: diverges
+    diverges_at: 04-overview
+    why: >-
+      A PRODUCT FINDING, recorded rather than excused. With 105 memory files
+      (one of them 5 MB) the report is not ready when the pager first paints:
+      the captured frame reads "inspecting..." under an empty Overview tab about
+      50 ms after C. The knock-on is the part that matters — the two Down
+      presses the journey sends next are swallowed by that loading state, so
+      step 06 records "row 1/6" instead of "row 3/6" and the drill opens system
+      tools instead of memory files. A user who presses C on a large session and
+      immediately starts navigating goes somewhere they did not ask for. The
+      loading frame itself is honest (no blank figure), which is why the Blank
+      Detector is clean here and the finding is about input, not rendering.
+
+  - id: claude-resumed-compacted
+    note: "a compacted session, whose first turn measures a replayed prompt so no anchor may be claimed — the honest-unknown path"
+    fixture: claude-resumed
+    adapter: claude
+    session_state: compacted
+    data_size: typical
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: full-journey
+
+  - id: claude-resumed-empty
+    note: "compacted AND stripped: the two degradations at once, where an honest-unknown total meets an empty inventory"
+    fixture: claude-resumed
+    adapter: claude
+    session_state: compacted
+    data_size: empty
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: diverges
+    diverges_at: 08-fat-item
+    why: >-
+      The same empty-inventory divergence as claude-cold-empty, reached from a
+      compacted session that also refuses an anchor. Both degradations hold at
+      once: the overview still states plainly that it cannot claim a measured
+      total, and the drill still says there are no items rather than showing a
+      row of dashes.
+
+  - id: claude-unknown-version-typical
+    note: "a transcript from a harness version this build does not understand; nothing may be invented and the report must degrade out loud"
+    fixture: claude-unknown-version
+    adapter: claude
+    session_state: running
+    data_size: typical
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: full-journey
+
+  - id: claude-unknown-version-narrow
+    note: "the degraded report at 80x24, where a caveat has to fit next to a gauge that no longer has room"
+    fixture: claude-unknown-version
+    adapter: claude
+    session_state: running
+    data_size: typical
+    config: configured
+    terminal: "80x24"
+    driver: A
+    expect: diverges
+    diverges_at: 08-fat-item
+    why: >-
+      THE PRODUCT FINDING THIS ROW WAS WRITTEN FOR IS FIXED, and the row is
+      re-pointed rather than deleted so the fix stays under guard.
+
+      It used to read: when the context window is unknown the product printed
+      the honest sentence "context window size unknown, so no percentage is
+      shown", and at 80 columns that sentence was clipped to "...so no
+      percentage i..." — a truncated explanation of an absent number, the
+      closest thing in this matrix to the original miss.
+
+      The 2026-07-29 drive records the opposite. At 80x24 the gauge keeps its
+      indeterminate bar, and the reason and the remedy WRAP underneath it
+      instead of being cut: "no percentage: no model identifier reached the
+      inspector — none was read / from the transcript and none was supplied by
+      the caller — so the window / cannot be resolved." followed by "To get one,
+      set AGENTDECK_CONTEXT_WINDOW to this model's context-window size / in
+      tokens, then open this again." Step 04 therefore HOLDS at this width.
+
+      What the row diverges on now is the same width finding its sibling
+      claude-cold-narrow already carries: at 80 columns the drill's breadcrumb
+      is what the header clips, so a reader three levels deep has nothing on
+      screen naming the drill they are in. Step 04's assertions still run at
+      this width and still have to pass, which is what keeps the wrap from
+      silently regressing into a clip again.
+
+  - id: claude-model-switch-typical
+    note: >-
+      a session that switched models two minutes after boot — the 2026-07-29
+      oracle finding. The header must name the CURRENT model, resolve the
+      window from it (the fixture moves from a 200k model to a 1M one so a
+      stale header also breaks the percentage's denominator), disclose the
+      switch on a reachable frame, and keep the anchor pinned to the boot turn.
+    fixture: claude-model-switch
+    adapter: claude
+    session_state: running
+    data_size: typical
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: full-journey
+
+  # ----------------------------------------------------------------- codex ---
+  - id: codex-cold-typical
+    note: "the other adapter: a fresh Codex rollout, whose categories and instruction-file convention are not Claude's"
+    fixture: codex-cold
+    adapter: codex
+    session_state: running
+    data_size: typical
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: diverges
+    diverges_at: 06-category-selected
+    why: >-
+      Codex has no category called "memory files": its instruction hierarchy is
+      AGENTS.md and the row is labelled that way. The journey was written for
+      Claude's vocabulary, so it stops holding at the step that names a Claude
+      category. Everything before it holds on this adapter — the gauge, the
+      percentage against a harness-reported 258.4k window, and the provenance
+      labels — which is what this row is here to establish.
+
+  - id: codex-cold-empty
+    note: "a Codex session with its AGENTS.md hierarchy deleted, so the adapter's own empty state is exercised rather than Claude's"
+    fixture: codex-cold
+    adapter: codex
+    session_state: running
+    data_size: empty
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: diverges
+    diverges_at: 06-category-selected
+    why: >-
+      Codex has no category called "memory files": its instruction hierarchy is
+      AGENTS.md and the row is labelled that way. The journey was written for
+      Claude's vocabulary, so it stops holding at the step that names a Claude
+      category. Everything before it holds on this adapter — the gauge, the
+      percentage against a harness-reported 258.4k window, and the provenance
+      labels — which is what this row is here to establish.
+
+  - id: codex-resumed-compacted
+    note: "a resumed Codex rollout whose first record already reports more cumulative tokens than the turn itself: no anchor is claimable"
+    fixture: codex-resumed
+    adapter: codex
+    session_state: compacted
+    data_size: typical
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: diverges
+    diverges_at: 06-category-selected
+    why: >-
+      Codex has no category called "memory files": its instruction hierarchy is
+      AGENTS.md and the row is labelled that way. The journey was written for
+      Claude's vocabulary, so it stops holding at the step that names a Claude
+      category. Everything before it holds on this adapter — the gauge, the
+      percentage against a harness-reported 258.4k window, and the provenance
+      labels — which is what this row is here to establish.
+
+  # ------------------------------------------------------- session states ---
+  - id: state-waiting
+    note: "a session waiting on the user — the other busy state, which the journey's second step accepts alongside running"
+    fixture: claude-cold
+    adapter: claude
+    session_state: waiting
+    data_size: typical
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: full-journey
+
+  - id: state-idle
+    note: "an idle session: the inspector still has a transcript to read, but the journey's busy-status assertion cannot hold"
+    fixture: claude-cold
+    adapter: claude
+    session_state: idle
+    data_size: typical
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: diverges
+    diverges_at: 02-busy
+    why: >-
+      The journey's second step asserts that the selected session is busy, which
+      this state is not. The steps after it still run and still hold: the
+      inspector opens on a session that is not running and reports honestly
+      rather than blanking, which is the actual question this row asks.
+
+  - id: state-stopped
+    note: "a session the user stopped: its transcript survives the process, and the inspector should still be able to read it"
+    fixture: claude-cold
+    adapter: claude
+    session_state: stopped
+    data_size: typical
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: diverges
+    diverges_at: 02-busy
+    why: >-
+      The journey's second step asserts that the selected session is busy, which
+      this state is not. The steps after it still run and still hold: the
+      inspector opens on a session that is not running and reports honestly
+      rather than blanking, which is the actual question this row asks.
+
+  - id: state-error
+    note: >-
+      A session in error: the state where a panel is most likely to render a
+      figure it does not have. NOTE THE WAY THIS ROW PASSES. The journey's
+      busy-status assertion is a screen-wide regexp for "running|waiting", and
+      on this row it matches the preview panel's line "No tmux session running".
+      The row holds, but for the wrong reason, and the sibling idle/stopped rows
+      diverge at that same step only because their panels happen not to contain
+      the word. That is a weakness in the G0 assertion rather than in the
+      product, it is recorded here rather than quietly fixed, and fixing it
+      means tightening the assertion in G0 and re-driving G1 — never loosening
+      anything.
+    fixture: claude-cold
+    adapter: claude
+    session_state: error
+    data_size: typical
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: full-journey
+
+  - id: state-never-started
+    note: "a session agent-deck knows about that never had a harness behind it: the inspector has nothing at all to read"
+    fixture: claude-cold
+    adapter: claude
+    session_state: never-started
+    data_size: typical
+    config: configured
+    terminal: "200x50"
+    driver: A
+    expect: diverges
+    diverges_at: 02-busy
+    why: >-
+      The journey's second step asserts that the selected session is busy, which
+      this state is not. The steps after it still run and still hold: the
+      inspector opens on a session that is not running and reports honestly
+      rather than blanking, which is the actual question this row asks.
+
+  # ------------------------------------------------- the real binary (B) ---
+  - id: pane-cold-first-run
+    note: "the mandatory row: a machine that has never run agent-deck, driven as the shipped binary in a real terminal"
+    adapter: claude
+    session_state: never-started
+    data_size: empty
+    config: cold-first-run
+    terminal: "200x50"
+    driver: B
+    expect: diverges
+    diverges_at: 02-busy
+    why: >-
+      This row stops after the deck paints, so every later step has no frame and
+      the journey is recorded as diverging at the first of them. That is the
+      honest accounting: the steps were not run, so they did not pass. See
+      stop_reason for why running them would produce timeouts rather than
+      evidence.
+    stop_after: 01-home
+    stop_reason: >-
+      A cold first run owns no session, so there is nothing to press C on. The
+      journey's later steps belong to a row that has one; recording them here
+      would mean recording twenty seconds of timeout per step and calling it
+      evidence. What this row exists to prove — that the shipped binary boots
+      from nothing, what it asks first, and what an empty deck looks like — is
+      fully covered by the step it does run.
+
+  - id: pane-claude-cold
+    note: "the shipped binary against a real profile database holding the recorded session, so the whole path from SQLite row to screen is exercised"
+    fixture: claude-cold
+    adapter: claude
+    session_state: running
+    data_size: typical
+    config: configured
+    terminal: "200x50"
+    driver: B
+    expect: full-journey
+
+# Declared gaps. Recording one is not an apology, it is the artifact: a matrix
+# that silently omits gemini reads as if gemini were covered.
+exclude:
+  - axis: adapter
+    value: gemini
+    why: >-
+      The recorded corpus holds no Gemini case. A row driven against a transcript
+      this framework wrote itself would be evidence about the fixture and about
+      nothing else, so the gap is declared rather than filled. Closing it means
+      recording a real, sanitized Gemini head into internal/ctxinspect/ctxfixture.
+  - axis: adapter
+    value: opencode
+    why: >-
+      No recorded opencode case exists either, and opencode's instruction-file
+      convention (AGENTS.md) is already exercised by the codex rows, so the
+      uncovered part is the transcript format alone. Same fix: record a case.
+  - axis: adapter
+    value: shell
+    why: >-
+      A plain shell session has no harness transcript at all, so the inspector
+      has nothing to enumerate and the journey has no percentage to read. The
+      state-never-started row covers the same "nothing to read" screen through a
+      session type the inspector is actually offered.
+  - axis: session_state
+    value: adopted
+    why: >-
+      An adopted session differs only in how its tmux pane came to exist. On disk
+      and to the inspector it is indistinguishable from a running one, so a row
+      here would duplicate state-running while claiming new coverage, which is
+      worse than an honest gap.
+
+# Where the same recorded case is driven by both drivers, every frame they
+# disagree about is a fact nobody had to think to look for.
+seam_pairs:
+  - a: claude-cold-typical
+    b: pane-claude-cold
+    why: >-
+      The in-process model and the shipped binary reading the same recorded
+      session. Any line that says the same thing with different figures is either
+      a bug or a dependency on something nobody documented.

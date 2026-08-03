@@ -89,6 +89,8 @@ func handleSession(profile string, args []string) {
 		handleSessionSendKeys(profile, args[1:])
 	case "output":
 		handleSessionOutput(profile, args[1:])
+	case "context":
+		handleSessionContext(profile, args[1:])
 	case "children":
 		handleSessionChildren(profile, args[1:])
 	case "search":
@@ -129,6 +131,7 @@ func printSessionHelp() {
 	fmt.Println("  send <id> <message>     Send a message to a running session")
 	fmt.Println("  approve <id> [choice]   Resolve a visible Codex approval prompt")
 	fmt.Println("  output <id>             Get the last response from a session")
+	fmt.Println("  context [id]            Show what is loaded into the agent's context, ranked by cost")
 	fmt.Println("  children [id]           List sub-sessions with status + last completion")
 	fmt.Println("  search <query>          Search message content across Claude sessions")
 	fmt.Println("  set-parent <id> <parent>  Link session as sub-session of parent")
@@ -160,6 +163,9 @@ func printSessionHelp() {
 	fmt.Println("  agent-deck session set-title-lock SCRUM-351 off        # Re-enable title sync")
 	fmt.Println("  agent-deck session output my-project                 # Get last response from session")
 	fmt.Println("  agent-deck session output my-project --json          # Get response as JSON")
+	fmt.Println("  agent-deck session context my-project                # What is in the agent's context")
+	fmt.Println("  agent-deck session context my-project --tab breakdown # Ranked by token cost")
+	fmt.Println("  agent-deck session context my-project --json         # Full report with provenance")
 	fmt.Println("  agent-deck session archive my-project                # Stop and hide the session")
 	fmt.Println("  agent-deck session unarchive my-project              # Restore an archived session")
 	fmt.Println()
