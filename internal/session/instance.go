@@ -2973,14 +2973,15 @@ func (i *Instance) collectTmuxPaneProcessTreePIDs() ([]int, error) {
 		return nil, errors.New("codex process probe: tmux session is unavailable")
 	}
 
-	target := i.tmuxSession.Name + ":"
+	target := i.tmuxSession.Name
 	// Target the same tmux server the session was created on (issue #687).
 	// A session on an isolated agent-deck socket would return no panes from
 	// the default server and we would mistakenly treat it as empty.
 	// Bounded — see tmux.OutputBounded. Exec(...).Output() has no deadline, and
 	// a tmux client that has exhausted its fd table never exits, so this probe
-	// would hang the caller forever.
-	out, err := tmux.OutputBounded(i.TmuxSocketName, "list-panes", "-t", target, "-F", "#{pane_pid}")
+	// would hang the caller forever. -s makes list-panes cover every window in
+	// the session rather than only the target's current window.
+	out, err := tmux.OutputBounded(i.TmuxSocketName, "list-panes", "-s", "-t", target, "-F", "#{pane_pid}")
 	if err != nil {
 		return nil, fmt.Errorf("codex process probe: list tmux panes: %w", err)
 	}
@@ -3230,35 +3231,48 @@ func (i *Instance) queryCodexSessionFromHostProcFD() (string, error) {
 	return "", probeErr
 }
 
-func (i *Instance) queryCodexSessionFromDockerProcFD() (string, string, error) {
-	if strings.TrimSpace(i.SandboxContainer) == "" {
-		return "", "", errors.New("codex process probe: sandbox container is unavailable")
-	}
-
-	script := fmt.Sprintf(
+func codexProcFDProbeScript(procRoot string) string {
+	root := shellescape.Quote(strings.TrimRight(procRoot, "/"))
+	return fmt.Sprintf(
 		`command -v readlink >/dev/null 2>&1 || {
 	echo %q
 	exit 0
 }
 incomplete=0
-for f in /proc/[0-9]*/fd/*; do
-	[ -e "$f" ] || continue
-	if ! t=$(readlink "$f" 2>/dev/null); then
+for d in %s/[0-9]*/fd; do
+	[ -d "$d" ] || continue
+	if [ ! -r "$d" ] || [ ! -x "$d" ]; then
 		incomplete=1
 		continue
 	fi
-	case "$t" in
-		*/sessions/*rollout-*.jsonl*)
-			printf '%%s\n' "$t"
-			;;
-	esac
+	for f in "$d"/*; do
+		[ -L "$f" ] || continue
+		if ! t=$(readlink "$f" 2>/dev/null); then
+			incomplete=1
+			continue
+		fi
+		case "$t" in
+			*/sessions/*rollout-*.jsonl*)
+				printf '%%s\n' "$t"
+				;;
+		esac
+	done
 done
 if [ "$incomplete" -ne 0 ]; then
 	echo %q
 fi`,
 		codexProbeMissingSentinel,
+		root,
 		codexProbeIncompleteSentinel,
 	)
+}
+
+func (i *Instance) queryCodexSessionFromDockerProcFD() (string, string, error) {
+	if strings.TrimSpace(i.SandboxContainer) == "" {
+		return "", "", errors.New("codex process probe: sandbox container is unavailable")
+	}
+
+	script := codexProcFDProbeScript("/proc")
 	// #nosec G204 -- "docker exec" with internal SandboxContainer name and a
 	// hardcoded shell probe script (the sentinels are compile-time constants);
 	// no external input flows here.

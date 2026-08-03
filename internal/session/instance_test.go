@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"al.essio.dev/pkg/shellescape"
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/procfd"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/stretchr/testify/require"
 )
 
@@ -3803,6 +3805,49 @@ func TestParsePositivePIDsReportsPartialOutput(t *testing.T) {
 	}
 }
 
+func TestCollectTmuxPaneProcessTreePIDsUsesEveryWindow(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	fakeTmux := filepath.Join(dir, "tmux")
+	script := fmt.Sprintf(`#!/bin/sh
+case " $* " in
+*" has-session "*) exit 0 ;;
+*" list-panes "*)
+	printf '%%s\n' "$@" > %s
+	printf '99999990\n99999991\n'
+	exit 0
+	;;
+esac
+exit 1
+`, shellescape.Quote(argsFile))
+	if err := os.WriteFile(fakeTmux, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	inst := &Instance{
+		TmuxSocketName: "test-socket",
+		tmuxSession:    &tmux.Session{Name: "multi-window", SocketName: "test-socket"},
+	}
+	pids, err := inst.collectTmuxPaneProcessTreePIDs()
+	if err != nil {
+		t.Fatalf("collect session panes: %v", err)
+	}
+	if want := []int{99999990, 99999991}; !reflect.DeepEqual(pids, want) {
+		t.Fatalf("collected pane pids = %v, want %v", pids, want)
+	}
+
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotArgs := strings.Fields(string(rawArgs))
+	wantArgs := []string{"-L", "test-socket", "list-panes", "-s", "-t", "multi-window", "-F", "#{pane_pid}"}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("tmux args = %q, want %q", gotArgs, wantArgs)
+	}
+}
+
 func TestCollectProcessTreePIDsViaPgrepReportsFailure(t *testing.T) {
 	dir := t.TempDir()
 	fakePgrep := filepath.Join(dir, "pgrep")
@@ -3824,6 +3869,74 @@ func TestIsLikelyCodexProcessPIDReportsPSFailure(t *testing.T) {
 	if _, err := isLikelyCodexProcessPID(99999999); err == nil {
 		t.Fatal("ps failure must not be reported as a non-Codex process")
 	}
+}
+
+func TestCodexProcFDProbeScriptCompleteness(t *testing.T) {
+	const wantID = "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	run := func(t *testing.T, root string) []byte {
+		t.Helper()
+		out, err := exec.Command("/bin/sh", "-c", codexProcFDProbeScript(root)).CombinedOutput()
+		if err != nil {
+			t.Fatalf("run procfd probe script: %v\n%s", err, out)
+		}
+		return out
+	}
+
+	t.Run("clean absence", func(t *testing.T) {
+		root := t.TempDir()
+		fdDir := filepath.Join(root, "100", "fd")
+		if err := os.MkdirAll(fdDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("/dev/null", filepath.Join(fdDir, "3")); err != nil {
+			t.Fatal(err)
+		}
+		out := run(t, root)
+		if bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) || extractCodexSessionIDFromLsofOutput(out) != "" {
+			t.Fatalf("clean procfd output = %q, want complete absence", out)
+		}
+	})
+
+	t.Run("deleted open rollout remains discoverable", func(t *testing.T) {
+		root := t.TempDir()
+		fdDir := filepath.Join(root, "100", "fd")
+		rolloutDir := filepath.Join(root, "sessions", "2026", "08", "03")
+		if err := os.MkdirAll(fdDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		rollout := filepath.Join(rolloutDir, "rollout-2026-08-03T00-00-00-"+wantID+".jsonl")
+		if err := os.WriteFile(rollout, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(rollout, filepath.Join(fdDir, "4")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(rollout); err != nil {
+			t.Fatal(err)
+		}
+		if got := extractCodexSessionIDFromLsofOutput(run(t, root)); got != wantID {
+			t.Fatalf("deleted rollout session ID = %q, want %q", got, wantID)
+		}
+	})
+
+	t.Run("unreadable fd directory is incomplete", func(t *testing.T) {
+		root := t.TempDir()
+		fdDir := filepath.Join(root, "100", "fd")
+		if err := os.MkdirAll(fdDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(fdDir, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(fdDir, 0o700) })
+		out := run(t, root)
+		if !bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) {
+			t.Fatalf("unreadable fd directory output = %q, want incomplete sentinel", out)
+		}
+	})
 }
 
 func TestQueryCodexSessionFromDockerProcFDCompleteness(t *testing.T) {
