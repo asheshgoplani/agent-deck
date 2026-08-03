@@ -78,31 +78,60 @@ func (i *Instance) LastActivityAt() time.Time {
 	return i.lastActivityAt
 }
 
-// noteAgentActivityLocked folds t into the durable last-activity record
-// (monotonic: an older timestamp never rewinds it) and persists via a
-// targeted UPDATE. Caller must hold i.mu. force bypasses the write
-// throttle — pass true when the evidence backing the in-memory value is
-// about to be destroyed (ClearHookStatus deleting the hook file).
-func (i *Instance) noteAgentActivityLocked(t time.Time, force bool) {
+// noteAgentActivityLocked folds t into the in-memory last-activity record
+// (monotonic: an older timestamp never rewinds it). Caller must hold i.mu.
+//
+// Deliberately memory-only: the SQLite flush lives in persistLastActivity,
+// which callers invoke AFTER releasing i.mu. WriteLastActivityAt goes
+// through withBusyRetry on connections with busy_timeout=5000, so under
+// contention a single write can stall for seconds — and i.mu gates the TUI
+// render path, so holding it across the write would freeze the UI
+// (CodeRabbit finding on #1847).
+func (i *Instance) noteAgentActivityLocked(t time.Time) {
 	if !t.IsZero() && t.After(i.lastActivityAt) {
 		i.lastActivityAt = t
 	}
-	if i.lastActivityAt.IsZero() || !i.lastActivityAt.After(i.lastActivityPersisted) {
+}
+
+// persistLastActivity flushes the in-memory last-activity record to SQLite.
+// Caller must NOT hold i.mu — the lock is taken only briefly to snapshot
+// state on either side of the (potentially slow) DB write. force bypasses
+// the write throttle; pass true when the evidence backing the in-memory
+// value is about to be destroyed (ClearHookStatus deleting the hook file).
+//
+// lastActivityPersistMu serializes persists per instance so two concurrent
+// callers cannot write out of order (an older snapshot landing after a
+// newer one would leave the DB behind the throttle marker forever); each
+// caller re-snapshots the latest value once it holds the persist lock, so
+// writes are strictly monotonic.
+func (i *Instance) persistLastActivity(force bool) {
+	i.lastActivityPersistMu.Lock()
+	defer i.lastActivityPersistMu.Unlock()
+
+	i.mu.RLock()
+	to := i.lastActivityAt
+	skip := to.IsZero() || !to.After(i.lastActivityPersisted) ||
+		(!force && to.Sub(i.lastActivityPersisted) < lastActivityPersistInterval)
+	i.mu.RUnlock()
+	if skip {
 		return
 	}
-	if !force && i.lastActivityAt.Sub(i.lastActivityPersisted) < lastActivityPersistInterval {
-		return
-	}
+
 	db := statedb.GetGlobal()
 	if db == nil {
 		return
 	}
-	if err := db.WriteLastActivityAt(i.ID, i.lastActivityAt); err != nil {
+	if err := db.WriteLastActivityAt(i.ID, to); err != nil {
 		sessionLog.Debug("last_activity_persist_failed",
 			slog.String("instance", i.ID),
 			slog.String("error", err.Error()),
 		)
 		return
 	}
-	i.lastActivityPersisted = i.lastActivityAt
+
+	i.mu.Lock()
+	if to.After(i.lastActivityPersisted) {
+		i.lastActivityPersisted = to
+	}
+	i.mu.Unlock()
 }

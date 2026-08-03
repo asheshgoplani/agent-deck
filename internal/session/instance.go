@@ -476,10 +476,12 @@ type Instance struct {
 	// Durable last-activity record (issue #1846). Unlike hookLastUpdate this
 	// survives ClearHookStatus and, via tool_data.last_activity_at, TUI
 	// restarts. lastActivityPersisted tracks the last value flushed to the
-	// DB so the hook observation path can throttle its targeted UPDATEs.
-	// See last_activity_persist.go.
+	// DB so the hook observation path can throttle its targeted UPDATEs;
+	// lastActivityPersistMu serializes those flushes WITHOUT holding i.mu
+	// across the DB write. See last_activity_persist.go.
 	lastActivityAt        time.Time
 	lastActivityPersisted time.Time
+	lastActivityPersistMu sync.Mutex
 
 	// SSE-based status detection for OpenCode (set by OpenCodeSSEWatcher,
 	// issue #1614). Not persisted; rebuilt from the live event stream.
@@ -4885,6 +4887,11 @@ func classifyTerminatedPane(exitCode int, haveExitCode bool, tool string) Status
 }
 
 func (i *Instance) UpdateStatus() error {
+	// #1846: flush any unpersisted last-activity evidence once the lock is
+	// released (declared before Lock so it runs after the Unlock defer).
+	// Cheap no-op unless the cold-load fold below (or an earlier
+	// UpdateHookStatus within the throttle window) left something behind.
+	defer i.persistLastActivity(false)
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
@@ -4981,7 +4988,8 @@ func (i *Instance) UpdateStatus() error {
 			i.hookLastUpdate = hs.UpdatedAt
 			i.hookSessionID = hs.SessionID
 			// #1846: a disk-read hook sample is activity evidence too.
-			i.noteAgentActivityLocked(hs.UpdatedAt, false)
+			// Flushed by this function's persistLastActivity defer.
+			i.noteAgentActivityLocked(hs.UpdatedAt)
 			// Reset stale acknowledged flag from ReconnectSessionLazy.
 			// Without this, sessions loaded from SQLite with previousStatus="idle"
 			// would report idle even when the hook file says waiting/running.
@@ -5441,13 +5449,16 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	}
 
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	// Issue #1846: whatever hookLastUpdate ends up COMMITTED when this call
 	// returns is agent-activity evidence — fold it into the durable record.
-	// Runs before the mutex defer releases the lock. The reject branches
-	// below restore the pre-event value first, so a foreign ephemeral's
-	// timestamp is never credited to this instance.
-	defer func() { i.noteAgentActivityLocked(i.hookLastUpdate, false) }()
+	// The reject branches below restore the pre-event value first, so a
+	// foreign ephemeral's timestamp is never credited to this instance.
+	// Defer order (LIFO): the fold runs under the lock, then the lock is
+	// released, then the throttled SQLite flush runs OUTSIDE it — the DB
+	// write can stall on SQLITE_BUSY and must not hold up i.mu readers.
+	defer i.persistLastActivity(false)
+	defer i.mu.Unlock()
+	defer func() { i.noteAgentActivityLocked(i.hookLastUpdate) }()
 
 	// Snapshot the prior hook-status fields so a candidate that fails the
 	// ownership check below can RESTORE them rather than leaving its status
@@ -5786,12 +5797,15 @@ func (i *Instance) ClearHookStatus() {
 	i.mu.Lock()
 	// #1846: the file removed below is the only durable record of this
 	// session's last real activity, and the in-memory copy is zeroed right
-	// after. Fold it into the durable last-activity record first, bypassing
-	// the write throttle — this evidence has no other way to survive.
-	i.noteAgentActivityLocked(i.hookLastUpdate, true)
+	// after. Fold it into the durable last-activity record first.
+	i.noteAgentActivityLocked(i.hookLastUpdate)
 	i.hookStatus = ""
 	i.hookLastUpdate = time.Time{}
 	i.mu.Unlock()
+	// Flush BEFORE removing the file below, bypassing the write throttle —
+	// this evidence has no other way to survive. Outside i.mu: the SQLite
+	// write can stall on SQLITE_BUSY (see persistLastActivity).
+	i.persistLastActivity(true)
 
 	// Remove the persisted status file. Sandbox sessions bridge a PER-INSTANCE
 	// scoped subdir (…/hooks/sandbox/<id>/<id>.json) from the container, and the
