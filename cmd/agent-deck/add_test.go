@@ -930,6 +930,35 @@ func TestHandleAdd_ExactDuplicate_ErrorsWithNonZeroExit(t *testing.T) {
 	}
 }
 
+// TestHandleAdd_SSHLocationsEndToEnd drives handleAdd itself, not the location
+// helpers, so it covers the assignment that decides between a local and a
+// remote location. The helper-level SSH tests all build sessionLocation values
+// by hand, which leaves that assignment unpinned: reverting it to an
+// unconditional localLocation(path) — reintroducing exactly the bug this change
+// fixes — passes every other test in the package.
+//
+// Runs as a subprocess because the refusal path calls os.Exit.
+func TestHandleAdd_SSHLocationsEndToEnd(t *testing.T) {
+	t.Run("different hosts both register", func(t *testing.T) {
+		out, exitCode := runAddHelperProcess(t, "ssh-different-hosts")
+		if exitCode != 0 {
+			t.Fatalf("exit code = %d, want 0 — two same-titled sessions on different "+
+				"remote hosts are not duplicates:\n%s", exitCode, out)
+		}
+	})
+
+	t.Run("same host and remote path is refused", func(t *testing.T) {
+		out, exitCode := runAddHelperProcess(t, "ssh-same-host-duplicate")
+		if exitCode != 1 {
+			t.Fatalf("exit code = %d, want 1 — same title at the same remote "+
+				"location is a duplicate:\n%s", exitCode, out)
+		}
+		if !strings.Contains(out, "session already exists") {
+			t.Fatalf("output does not report the duplicate:\n%s", out)
+		}
+	})
+}
+
 // runAddHelperProcess re-execs the test binary into TestAddHelperProcess and
 // returns its combined output plus exit code. Needed because the exact-duplicate
 // path ends in os.Exit, which would kill the test binary itself.
@@ -973,6 +1002,21 @@ func TestAddHelperProcess(t *testing.T) {
 	case "exact-duplicate-json":
 		handleAdd(profile, []string{"--title", "dup-target", "--quiet", cwd})
 		handleAdd(profile, []string{"--title", "dup-target", "--json", cwd})
+	case "ssh-different-hosts":
+		// Two same-titled sessions on DIFFERENT remote hosts. Both must
+		// register: they are not duplicates, because they run in different
+		// places. Reaching the os.Exit(0) below is the pass condition.
+		handleAdd(profile, []string{"--title", "shared", "--ssh", "alice@host-a",
+			"--remote-path", "/srv/app-a", "--quiet", cwd})
+		handleAdd(profile, []string{"--title", "shared", "--ssh", "bob@host-b",
+			"--remote-path", "/opt/app-b", "--quiet", cwd})
+	case "ssh-same-host-duplicate":
+		// Same host AND same remote path: a real duplicate, must be refused
+		// even though nothing about the local placeholder path changed.
+		handleAdd(profile, []string{"--title", "shared", "--ssh", "alice@host-a",
+			"--remote-path", "/srv/app-a", "--quiet", cwd})
+		handleAdd(profile, []string{"--title", "shared", "--ssh", "alice@host-a",
+			"--remote-path", "/srv/app-a", cwd})
 	default:
 		os.Exit(2)
 	}

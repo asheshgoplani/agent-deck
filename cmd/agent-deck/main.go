@@ -2641,7 +2641,11 @@ func handleRename(profile string, args []string) {
 		location := instanceLocation(inst)
 		if isDup, existing := isDuplicateSession(instances, newTitle, location); isDup {
 			out.Error(
-				fmt.Sprintf("session with title %q already exists at path %q (id: %s)", newTitle, location.description(), existing.ID),
+				// %s, and no "path": description() renders a location, which for a
+				// remote session is "host:/remote/path" or a prose phrase for the
+				// login directory — neither is a path, and quoting one as if it
+				// were reads as a corrupt value.
+				fmt.Sprintf("session with title %q already exists at %s (id: %s)", newTitle, location.description(), existing.ID),
 				ErrCodeInvalidOperation,
 			)
 			os.Exit(1)
