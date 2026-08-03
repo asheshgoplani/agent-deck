@@ -3915,6 +3915,17 @@ func TestCodexProcFDProbeScriptCompleteness(t *testing.T) {
 		}
 	})
 
+	t.Run("empty fd directory is incomplete", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, "100", "fd"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		out := run(t, root)
+		if !bytes.Contains(out, []byte(codexProbeIncompleteSentinel)) {
+			t.Fatalf("empty fd directory output = %q, want incomplete sentinel", out)
+		}
+	})
+
 	t.Run("failed fd readlink is incomplete", func(t *testing.T) {
 		root := t.TempDir()
 		fdDir := filepath.Join(root, "100", "fd")
@@ -3986,6 +3997,12 @@ func TestQueryCodexSessionFromDockerProcFDCompleteness(t *testing.T) {
 		{name: "readlink missing", output: codexProbeMissingSentinel, wantMissing: "readlink", wantErr: true},
 		{name: "incomplete fd scan", output: codexProbeIncompleteSentinel, wantErr: true},
 		{name: "docker failure", exitCode: 2, wantErr: true},
+		{
+			name:     "positive output wins over docker failure",
+			output:   "/tmp/sessions/2026/08/03/rollout-2026-08-03T00-00-00-" + wantID + ".jsonl",
+			exitCode: 2,
+			wantID:   wantID,
+		},
 		{
 			name:   "positive path wins over incomplete sentinel",
 			output: "/tmp/sessions/2026/08/03/rollout-2026-08-03T00-00-00-" + wantID + ".jsonl\n" + codexProbeIncompleteSentinel,

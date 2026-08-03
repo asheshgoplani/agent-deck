@@ -2586,6 +2586,14 @@ func (i *Instance) DetectCodexSession() {
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
 // Session ID is a UUID that can be extracted from the filename
 // Since Codex has no "session list" command, we scan the filesystem
+func (i *Instance) resolveCodexDetectionCandidate(sessionID string, probeErr error) string {
+	sessionID = i.filterCodexProcessProbeCandidate(sessionID)
+	if sessionID == "" && probeErr == nil {
+		return i.queryCodexSession(i.collectOtherCodexSessionIDs(), true)
+	}
+	return sessionID
+}
+
 func (i *Instance) detectCodexSessionAsync() {
 	// Brief wait for Codex to initialize
 	time.Sleep(1 * time.Second)
@@ -2599,9 +2607,7 @@ func (i *Instance) detectCodexSessionAsync() {
 		}
 
 		sessionID, _, probeErr := i.queryCodexSessionFromProcessFiles()
-		if sessionID == "" && probeErr == nil {
-			sessionID = i.queryCodexSession(i.collectOtherCodexSessionIDs(), true)
-		}
+		sessionID = i.resolveCodexDetectionCandidate(sessionID, probeErr)
 		if sessionID != "" {
 			i.CodexSessionID = sessionID
 			i.CodexDetectedAt = time.Now()
@@ -3257,6 +3263,7 @@ for p in "$proc_root"/[0-9]*; do
 	fi
 	for f in "$d"/*; do
 		if [ "$f" = "$d/*" ]; then
+			incomplete=1
 			break
 		fi
 		if ! t=$(readlink "$f" 2>/dev/null); then
@@ -3292,11 +3299,11 @@ func (i *Instance) queryCodexSessionFromDockerProcFD() (string, string, error) {
 	// hardcoded shell probe script (the sentinels are compile-time constants);
 	// no external input flows here.
 	out, err := exec.Command("docker", "exec", i.SandboxContainer, "sh", "-lc", script).Output()
-	if err != nil {
-		return "", "", fmt.Errorf("codex process probe: docker exec: %w", err)
-	}
 	if sessionID := extractCodexSessionIDFromLsofOutput(out); sessionID != "" {
 		return sessionID, "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("codex process probe: docker exec: %w", err)
 	}
 	if bytes.Contains(out, []byte(codexProbeMissingSentinel)) {
 		return "", "readlink", errors.New("codex process probe: readlink is unavailable")
@@ -3446,40 +3453,22 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 	missingProbeDep := ""
 	if i.shouldRunCodexProcessProbe(forceProbe) {
 		sessionID, missingDep, probeErr := i.queryCodexSessionFromProcessFiles()
+		sessionID = i.filterCodexProcessProbeCandidate(sessionID)
 		if sessionID != "" {
-			// Subagent-thread gate (incident 2026-07-15): a codex TUI holds the
-			// rollouts of the subagents it spawned open alongside its main
-			// thread, so the FD probe can surface a subagent id. Binding it here
-			// is the same poisoning the hook gate prevents, reached by the other
-			// rotation path — and once bound, a restart resumes a thread codex
-			// refuses user turns on. Reject it and keep the current binding; the
-			// probe will pick the main thread on a later cycle. See
-			// codex_subagent_gate.go.
-			if i.shouldRejectCodexSubagentRebind(sessionID) {
-				_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
-					InstanceID: i.ID, Tool: i.Tool, Action: "reject",
-					Source: "process_probe", OldID: i.CodexSessionID, Candidate: sessionID,
-					Reason: "candidate_is_subagent_thread",
-				})
-				sessionLog.Debug("codex_session_probe_rejected_subagent",
+			changed := sessionID != i.CodexSessionID
+			if changed {
+				sessionLog.Debug(
+					"codex_session_update_from_probe",
 					slog.String("old_id", i.CodexSessionID),
-					slog.String("candidate", sessionID))
-			} else {
-				changed := sessionID != i.CodexSessionID
-				if changed {
-					sessionLog.Debug(
-						"codex_session_update_from_probe",
-						slog.String("old_id", i.CodexSessionID),
-						slog.String("new_id", sessionID),
-					)
-				}
-				i.CodexSessionID = sessionID
-				i.CodexDetectedAt = time.Now()
-				if i.tmuxSession != nil && i.tmuxSession.Exists() && (changed || envSessionID == "") {
-					_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", i.CodexSessionID)
-				}
-				return ""
+					slog.String("new_id", sessionID),
+				)
 			}
+			i.CodexSessionID = sessionID
+			i.CodexDetectedAt = time.Now()
+			if i.tmuxSession != nil && i.tmuxSession.Exists() && (changed || envSessionID == "") {
+				_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", i.CodexSessionID)
+			}
+			return ""
 		}
 		if missingDep != "" {
 			missingProbeDep = missingDep

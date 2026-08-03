@@ -282,6 +282,18 @@ func seedCodexRolloutCwd(t *testing.T, codexHome, sid, threadSource, cwd string)
 	}
 }
 
+func TestResolveCodexDetectionCandidateRejectsSubagent(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	userSID := uniqueSID(t)
+	subSID := uniqueSID(t)
+	seedCodexRolloutCwd(t, codexHome, userSID, "user", inst.ProjectPath)
+	seedCodexRolloutCwd(t, codexHome, subSID, "subagent", inst.ProjectPath)
+
+	if got := inst.resolveCodexDetectionCandidate(subSID, nil); got != userSID {
+		t.Fatalf("async candidate resolution = %q, want user thread %q", got, userSID)
+	}
+}
+
 func TestUpdateCodexSession_DiskScan_PrefersUserOverSubagent(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
 	inst.lastCodexProbeAt = time.Now().Add(time.Hour) // This test isolates disk selection.
