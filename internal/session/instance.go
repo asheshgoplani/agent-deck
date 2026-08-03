@@ -3203,7 +3203,23 @@ func extractCodexSessionIDFromLsofOutput(output []byte) string {
 	return ""
 }
 
-func extractCodexSessionIDFromProcFD(pid int) (string, error) {
+func (i *Instance) extractAcceptedCodexSessionIDFromOutput(output []byte) string {
+	seen := make(map[string]bool)
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		candidateID := extractCodexSessionIDFromPath(scanner.Text())
+		if candidateID == "" || seen[candidateID] {
+			continue
+		}
+		seen[candidateID] = true
+		if sessionID := i.filterCodexProcessProbeCandidate(candidateID); sessionID != "" {
+			return sessionID
+		}
+	}
+	return ""
+}
+
+func (i *Instance) extractCodexSessionIDFromProcFD(pid int) (string, error) {
 	fdDir := filepath.Join("/proc", strconv.Itoa(pid), "fd")
 	entries, err := os.ReadDir(fdDir)
 	if err != nil {
@@ -3218,8 +3234,10 @@ func extractCodexSessionIDFromProcFD(pid int) (string, error) {
 			probeErr = errors.Join(probeErr, fmt.Errorf("codex process probe: readlink %s: %w", targetPath, err))
 			continue
 		}
-		if sessionID := extractCodexSessionIDFromPath(target); sessionID != "" {
-			return sessionID, nil
+		if candidateID := extractCodexSessionIDFromPath(target); candidateID != "" {
+			if sessionID := i.filterCodexProcessProbeCandidate(candidateID); sessionID != "" {
+				return sessionID, nil
+			}
 		}
 	}
 	return "", probeErr
@@ -3228,7 +3246,7 @@ func extractCodexSessionIDFromProcFD(pid int) (string, error) {
 func (i *Instance) queryCodexSessionFromHostProcFD() (string, error) {
 	candidates, probeErr := i.collectCodexProcessCandidates()
 	for _, pid := range candidates {
-		sessionID, err := extractCodexSessionIDFromProcFD(pid)
+		sessionID, err := i.extractCodexSessionIDFromProcFD(pid)
 		if sessionID != "" {
 			return sessionID, nil
 		}
@@ -3299,7 +3317,7 @@ func (i *Instance) queryCodexSessionFromDockerProcFD() (string, string, error) {
 	// hardcoded shell probe script (the sentinels are compile-time constants);
 	// no external input flows here.
 	out, err := exec.Command("docker", "exec", i.SandboxContainer, "sh", "-lc", script).Output()
-	if sessionID := extractCodexSessionIDFromLsofOutput(out); sessionID != "" {
+	if sessionID := i.extractAcceptedCodexSessionIDFromOutput(out); sessionID != "" {
 		return sessionID, "", nil
 	}
 	if err != nil {
@@ -3328,7 +3346,8 @@ func (i *Instance) queryCodexSessionFromHostNative(pids []int) (string, error) {
 	for _, pid := range pids {
 		paths, err := procfdOpenVnodePaths(pid)
 		for _, path := range paths {
-			if sessionID := extractCodexSessionIDFromPath(path); sessionID != "" {
+			candidateID := extractCodexSessionIDFromPath(path)
+			if sessionID := i.filterCodexProcessProbeCandidate(candidateID); sessionID != "" {
 				return sessionID, nil
 			}
 		}
@@ -3356,7 +3375,7 @@ func (i *Instance) queryCodexSessionFromHostLsof(pids []int) (string, string, er
 		// #nosec G204 -- "lsof" is a fixed binary; only dynamic arg is strconv.Itoa(int).
 		out, err := exec.CommandContext(ctx, "lsof", "-n", "-P", "-p", strconv.Itoa(pid)).Output()
 		cancel()
-		if sessionID := extractCodexSessionIDFromLsofOutput(out); sessionID != "" {
+		if sessionID := i.extractAcceptedCodexSessionIDFromOutput(out); sessionID != "" {
 			return sessionID, "", nil
 		}
 		if err != nil {
