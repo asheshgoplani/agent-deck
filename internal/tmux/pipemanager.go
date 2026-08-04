@@ -689,6 +689,212 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 // instead of re-scanning all of /proc on every Connect.
 var orphanReapOnce sync.Once
 
+// isReapableTmuxClientComm reports whether a /proc/<pid>/comm value identifies
+// a tmux CLIENT — the only process class reapOrphanedPollClients may kill.
+//
+// tmux renames both of its process roles after startup, so comm is "tmux:
+// client" / "tmux: server" rather than the bare "tmux" of the argv[0] the
+// process was exec'd with. (Verified on tmux 3.0a / Linux 5.4: `pgrep -x tmux`
+// matches nothing on a host running twenty tmux processes.) An earlier
+// equality test against "tmux" therefore matched no process at all and left
+// the sweep inert — orphaned query clients spun at 100% CPU for as long as the
+// host stayed up.
+//
+// The bare "tmux" case is kept for the window between exec and the client's own
+// proc_start: a process that has not renamed itself yet is a client that has not
+// connected yet, never a server (the server is forked from an already-renamed
+// client, so it never presents a bare name).
+//
+// It is the ROLE token that authorises the kill, not the program name — see
+// tmuxCommRole for why a longer argv[0] is still safe to reap when its role
+// survives, and isTruncatedTmuxComm for what happens when it does not.
+//
+// A server MUST NOT match. The sweep SIGKILLs whatever it matches, and a server
+// holds every session it hosts, so a false positive there destroys the user's
+// running work rather than a leaked one-shot query.
+func isReapableTmuxClientComm(comm string) bool {
+	trimmed := strings.TrimSpace(comm)
+	if trimmed == "tmux" {
+		return true
+	}
+	role, ok := tmuxCommRole(trimmed)
+	return ok && role == "client"
+}
+
+// tmuxCommRole splits tmux's setproctitle-style comm into its role token.
+// tmux formats "<progname>: <role> (<socket path>)", so the role is whatever
+// follows the first ": ".
+//
+// Keying on the role rather than on the literal "tmux: client" keeps the sweep
+// working for an installation whose binary is invoked under a longer name: a
+// 5-char progname still yields "tmuxx: client", which names its role
+// unambiguously and is as safe to reap as the canonical form.
+//
+// The role either survives whole or vanishes whole — it is never truncated to a
+// prefix. The kernel caps comm at 15 bytes and tmux then cuts the result back to
+// its last space, which is the one separating the role from the socket path. So
+// a partial "clie"/"serve" cannot reach this function, and matching role ==
+// "client" can never be satisfied by a server.
+func tmuxCommRole(comm string) (string, bool) {
+	idx := strings.Index(comm, ": ")
+	if idx <= 0 {
+		return "", false
+	}
+	role := comm[idx+2:]
+	if role == "" {
+		return "", false
+	}
+	return role, true
+}
+
+// isTruncatedTmuxComm reports whether comm looks like tmux's setproctitle output
+// whose role token was lost entirely to the 15-byte comm limit.
+//
+// Measured, not inferred: invoking /usr/bin/tmux through a symlink named
+// "tmux-3.5a" produces the comm "tmux-3.5a:" — cut back to the space right after
+// the colon, taking "client"/"server" with it. A server under that binary
+// produces the identical string, so such a process cannot be classified at all
+// and must not be killed.
+//
+// agent-deck cannot produce one of these itself: every spawn is
+// exec.Command("tmux", …), so argv[0] is the literal "tmux" whatever the binary
+// is called on disk. The case therefore belongs to a user's own tmux, which the
+// sweep has no business killing regardless.
+//
+// It is still worth reporting. The bug this whole sweep exists to prevent was
+// invisible — an inert filter that killed nothing and logged nothing while two
+// orphans burned a core each for 14 hours. Anything that silently narrows the
+// sweep back toward inert should say so.
+func isTruncatedTmuxComm(comm string) bool {
+	trimmed := strings.TrimSpace(comm)
+	if trimmed == "tmux" {
+		return false
+	}
+	if _, ok := tmuxCommRole(trimmed); ok {
+		return false
+	}
+	return strings.Contains(trimmed, "tmux") && strings.HasSuffix(trimmed, ":")
+}
+
+// reapableOneShotVerbs are the tmux subcommands reapOrphanedPollClients may
+// kill: the short-lived cadence queries and option writes agent-deck fires on a
+// timer, every one of which is safe to lose because its caller re-issues it on
+// the next tick. The set mirrors the poll/mutation lists that
+// TestPollCommandsAreBounded enforces deadlines for — same commands, same
+// reason: they run on a cadence, so they are the ones that leak.
+var reapableOneShotVerbs = map[string]struct{}{
+	"bind-key":         {},
+	"capture-pane":     {},
+	"detach-client":    {},
+	"display-message":  {},
+	"has-session":      {},
+	"kill-session":     {},
+	"list-clients":     {},
+	"list-panes":       {},
+	"list-sessions":    {},
+	"refresh-client":   {},
+	"set-option":       {},
+	"show-environment": {},
+	"show-option":      {},
+	"switch-client":    {},
+	"unbind-key":       {},
+}
+
+// neverReapVerbs are the subcommands that disqualify a process outright, even
+// if the same argv also carries a reapable verb (tmux accepts `;`-chained
+// commands, so both can appear). Each names a process whose death costs the
+// user something this sweep has no standing to spend:
+//
+//   - attach-session — an interactive client is the user's live view of a
+//     session, and a control-mode one belongs to a TUI. Orphaned control
+//     clients are reapStaleControlClients' job; it filters on
+//     client_control_mode and so cannot mistake a hand-run `tmux attach` for
+//     a leak. This sweep, matching only on comm + argv + parentage, can:
+//     isControlClientOrphan calls ANY non-agent-deck parent an orphan, so a
+//     client attached from the user's own shell qualifies while that shell is
+//     still alive.
+//   - new-session — a server inherits the creating client's comm ("tmux:
+//     client", set by proc_start before the fork) and argv until its own
+//     proc_start("server") runs after daemon(). A server killed in that window
+//     takes the session it was starting with it.
+//
+// Each entry carries the alias tmux's own command table gives it, because the
+// deny-list has to recognise a verb in every spelling tmux will accept for it —
+// see isNeverReapVerb.
+var neverReapVerbs = []struct {
+	name  string
+	alias string
+}{
+	{name: "attach-session", alias: "attach"}, // cmd-attach-session.c
+	{name: "new-session", alias: "new"},       // cmd-new-session.c
+}
+
+// tmuxVerbToken strips the command separator tmux itself strips before it
+// resolves anything. cmd_parse_from_arguments (cmd-parse.y) takes ONE unescaped
+// trailing ";" off an argument and treats it as the boundary, so the separator
+// need not stand alone: `tmux attach\; set-option …` puts the single field
+// "attach;" in argv and still runs attach-session. Escaping it (`att\;` quoted
+// through to tmux) leaves the ";" in the command name, which tmux rejects with
+// "unknown command: att;" — verified on 3.0a, and the parser is unchanged on
+// master.
+func tmuxVerbToken(field string) string {
+	if strings.HasSuffix(field, ";") && !strings.HasSuffix(field, `\;`) {
+		return strings.TrimSuffix(field, ";")
+	}
+	return field
+}
+
+// isNeverReapVerb reports whether an argv field names a denied verb in any
+// spelling tmux resolves. cmd_find() accepts three, and a fourth comes from the
+// parser that runs before it; matching only the full name leaves the rest as a
+// way through the deny-list into the allow-list:
+//
+//   - the full name;
+//   - the alias, matched whole ("attach", "new");
+//   - any prefix of the full name, if unambiguous. Verified against tmux 3.0a:
+//     `att -t x` reaches attach-session and `new-sess -d -s x` creates a
+//     session. A prefix of the ALIAS does not resolve ("lscl" is rejected while
+//     "lsc" works), so the alias needs equality and the name needs HasPrefix.
+//   - any of the above with the separator glued on — see tmuxVerbToken.
+//
+// Prefixes are honoured down to a single character, including ones tmux itself
+// rejects as ambiguous ("n" could be new-session, new-window, next-layout or
+// next-window; "a" is unambiguously attach-session). An ambiguous one dies on
+// tmux's own error instead of attaching, so denying it costs at most a skipped
+// reap — the direction this sweep is required to fail in.
+//
+// The allow-list stays exact-match: an unrecognised spelling of a cadence verb
+// leaves reapable false, which is the same fail-safe outcome.
+func isNeverReapVerb(field string) bool {
+	field = tmuxVerbToken(field)
+	if field == "" {
+		return false
+	}
+	for _, verb := range neverReapVerbs {
+		if field == verb.alias || strings.HasPrefix(verb.name, field) {
+			return true
+		}
+	}
+	return false
+}
+
+// isReapableOneShotArgv reports whether a /proc/<pid>/cmdline names a one-shot
+// cadence command and nothing more dangerous. cmdline fields are NUL-separated
+// and NUL-terminated, so each argv element is compared whole — a session name
+// or path that merely contains a verb as a substring cannot match.
+func isReapableOneShotArgv(cmdline string) bool {
+	reapable := false
+	for _, field := range strings.Split(strings.TrimRight(cmdline, "\x00"), "\x00") {
+		if isNeverReapVerb(field) {
+			return false
+		}
+		if _, ok := reapableOneShotVerbs[field]; ok {
+			reapable = true
+		}
+	}
+	return reapable
+}
+
 // reapOrphanedPollClients kills leaked one-shot tmux *command* clients — the
 // `list-clients` / `display-message` / `list-panes` / status `set-option`
 // invocations agent-deck fires on a cadence — that a previous run spawned and
@@ -703,10 +909,13 @@ var orphanReapOnce sync.Once
 // timeout because the TUI was SIGKILL'd / OOM-killed mid-command.
 //
 // Safety — a process is killed only when ALL hold:
-//   - it is the `tmux` client binary (comm == "tmux"; the server is
-//     "tmux: server" and never matches),
+//   - it is a tmux CLIENT process (isReapableTmuxClientComm; the server
+//     renames itself to "tmux: server" and is never matched),
 //   - its argv targets an agent-deck session (contains SessionPrefix), so a
-//     user's unrelated tmux is never touched, and
+//     user's unrelated tmux is never touched,
+//   - its argv names a one-shot cadence verb and no attach/new-session verb
+//     (isReapableOneShotArgv), so neither a live interactive client nor a
+//     server still inside its startup rename window can be hit, and
 //   - it is a reparented orphan no longer owned by any live agent-deck TUI
 //     (isControlClientOrphan — its parentage check is client-type-agnostic
 //     despite the name). A live TUI's own in-flight poll has PPID == our PID,
@@ -725,6 +934,7 @@ func reapOrphanedPollClients() {
 	}
 	myPID := os.Getpid()
 	killed := 0
+	skipped := 0
 	start := time.Now()
 	for _, e := range entries {
 		pid, err := strconv.Atoi(e.Name())
@@ -732,7 +942,16 @@ func reapOrphanedPollClients() {
 			continue
 		}
 		comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-		if err != nil || strings.TrimSpace(string(comm)) != "tmux" {
+		if err != nil {
+			continue
+		}
+		reapable := isReapableTmuxClientComm(string(comm))
+		// A comm whose role token was truncated away cannot be classified as
+		// client or server. It is not killed; it is carried to the end of the
+		// gauntlet so that a process which is otherwise indistinguishable from
+		// a leak gets reported instead of vanishing from the sweep in silence.
+		unclassifiable := !reapable && isTruncatedTmuxComm(string(comm))
+		if !reapable && !unclassifiable {
 			continue
 		}
 		// cmdline fields are NUL-separated; substring search still matches the
@@ -741,8 +960,23 @@ func reapOrphanedPollClients() {
 		if err != nil || !strings.Contains(string(raw), SessionPrefix) {
 			continue
 		}
+		// Narrow comm+prefix down to the cadence commands this sweep exists
+		// for: an interactive attach and a server mid-startup both clear the
+		// checks above, and killing either costs the user real work.
+		if !isReapableOneShotArgv(string(raw)) {
+			continue
+		}
 		if !isControlClientOrphan(pid) {
 			continue // owned by a live agent-deck TUI (incl. a sibling) — keep
+		}
+		if unclassifiable {
+			skipped++
+			pipeLog.Warn("orphan_sweep_skipped_unclassifiable_tmux",
+				slog.Int("pid", pid),
+				slog.String("comm", strings.TrimSpace(string(comm))),
+				slog.String("reason", "comm lost its role token to truncation; "+
+					"cannot prove this is a client rather than a server, so it is left alone"))
+			continue
 		}
 		usedSIGKILL := softKillProcess(pid, controlClientKillGrace)
 		killed++
@@ -750,9 +984,10 @@ func reapOrphanedPollClients() {
 			slog.Int("pid", pid),
 			slog.Bool("used_sigkill", usedSIGKILL))
 	}
-	if killed > 0 {
+	if killed > 0 || skipped > 0 {
 		pipeLog.Info("orphaned_poll_clients_reaped",
 			slog.Int("kill_count", killed),
+			slog.Int("skipped_unclassifiable", skipped),
 			slog.Duration("duration", time.Since(start)))
 	}
 }
