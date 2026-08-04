@@ -817,9 +817,47 @@ var reapableOneShotVerbs = map[string]struct{}{
 //     client", set by proc_start before the fork) and argv until its own
 //     proc_start("server") runs after daemon(). A server killed in that window
 //     takes the session it was starting with it.
-var neverReapVerbs = map[string]struct{}{
-	"attach-session": {},
-	"new-session":    {},
+//
+// Each entry carries the alias tmux's own command table gives it, because the
+// deny-list has to recognise a verb in every spelling tmux will accept for it —
+// see isNeverReapVerb.
+var neverReapVerbs = []struct {
+	name  string
+	alias string
+}{
+	{name: "attach-session", alias: "attach"}, // cmd-attach-session.c
+	{name: "new-session", alias: "new"},       // cmd-new-session.c
+}
+
+// isNeverReapVerb reports whether an argv field names a denied verb in any
+// spelling tmux resolves. cmd_find() accepts three, and matching only the first
+// leaves the other two as a way through the deny-list into the allow-list:
+//
+//   - the full name;
+//   - the alias, matched whole ("attach", "new");
+//   - any prefix of the full name, if unambiguous. Verified against tmux 3.0a:
+//     `att -t x` reaches attach-session and `new-sess -d -s x` creates a
+//     session. A prefix of the ALIAS does not resolve ("lscl" is rejected while
+//     "lsc" works), so the alias needs equality and the name needs HasPrefix.
+//
+// Prefixes are honoured down to a single character, including ones tmux itself
+// rejects as ambiguous ("n" could be new-session, new-window, next-layout or
+// next-window; "a" is unambiguously attach-session). An ambiguous one dies on
+// tmux's own error instead of attaching, so denying it costs at most a skipped
+// reap — the direction this sweep is required to fail in.
+//
+// The allow-list stays exact-match: an unrecognised spelling of a cadence verb
+// leaves reapable false, which is the same fail-safe outcome.
+func isNeverReapVerb(field string) bool {
+	if field == "" {
+		return false
+	}
+	for _, verb := range neverReapVerbs {
+		if field == verb.alias || strings.HasPrefix(verb.name, field) {
+			return true
+		}
+	}
+	return false
 }
 
 // isReapableOneShotArgv reports whether a /proc/<pid>/cmdline names a one-shot
@@ -829,7 +867,7 @@ var neverReapVerbs = map[string]struct{}{
 func isReapableOneShotArgv(cmdline string) bool {
 	reapable := false
 	for _, field := range strings.Split(strings.TrimRight(cmdline, "\x00"), "\x00") {
-		if _, denied := neverReapVerbs[field]; denied {
+		if isNeverReapVerb(field) {
 			return false
 		}
 		if _, ok := reapableOneShotVerbs[field]; ok {
