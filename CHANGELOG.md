@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Remote (SSH) sessions now use the same status indicators as local ones.** The remote row renderer carried its own copy of the status-glyph switch, and it had drifted: waiting showed ◉ instead of ◐, error showed ✗ (U+2717) instead of ✕ (U+2715), and the glyph was colored from the raw ANSI palette so it ignored the active theme. The remote preview pane was a third copy that disagreed with the row — one waiting remote session rendered ◉ in the list and ◐ in its own preview. All three now share `rowStatusGlyph`. Remote rows also gain the states the private copy had no case for: ■ for stopped and archived (an archived remote kept a live glyph, because archiving does not reset Status), and the ⚡ model-unavailable / 🔒 auth-401 substate glyphs. `list --json` on the remote already emitted `substate` and `archived`; `RemoteSessionInfo` was dropping them. A remote too old to send those fields degrades to the coarse-status glyph. Same class of bug as [#1091](https://github.com/asheshgoplani/agent-deck/issues/1091), in the same function. ([#1864](https://github.com/asheshgoplani/agent-deck/issues/1864))
+
 ## [1.11.0] - 2026-08-01
 
 Security and correctness release. Repo-supplied worktree scripts now require explicit consent, path handling around the skills catalog and logs is hardened, `session send` tells the truth about delivery, restarted sessions can no longer resume the wrong conversation, and Ctrl+Q detach works on every session sharing a tmux socket.
