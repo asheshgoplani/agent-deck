@@ -40,6 +40,64 @@ func nulArgv(fields ...string) string {
 // Constraining the sweep to the one-shot cadence verbs it documents as its
 // target set closes both: neither attach-session nor new-session is a cadence
 // query, so neither is reapable regardless of comm or parentage.
+// TestNeverReapVerb pins the spelling rule the deny-list has to survive.
+//
+// tmux does not require the full verb. cmd_find() resolves a command name three
+// ways, and the deny-list is only safe if it recognises all of them:
+//
+//   - the full name — `attach-session`;
+//   - the alias, matched whole — `attach`, `new` (cmd-attach-session.c and
+//     cmd-new-session.c both carry a .alias field; they are entries in tmux's
+//     own command table, not documentation shorthand);
+//   - ANY unambiguous prefix of the full name — verified against tmux 3.0a:
+//     `attach-sess`, `att` and even `a` all reach attach-session, and
+//     `new-sess -d -s x` creates a session. A prefix of the *alias* does not
+//     resolve (`lscl` is rejected while `lsc` works), so an exact-match test is
+//     enough for the alias but not for the name.
+//
+// Prefixes are matched to the shortest form on purpose, including ones tmux
+// itself would reject as ambiguous (`n` could be new-session, new-window,
+// next-layout or next-window). Such a process dies on its own error rather than
+// attaching, so denying it costs one skipped reap — the direction this sweep is
+// required to fail in. `new-window`/`neww` are not denied: neither is a prefix
+// or alias of new-session, and this list names the verbs whose death costs the
+// user a live client or a session being born, not everything tmux can spell.
+func TestNeverReapVerb(t *testing.T) {
+	tests := []struct {
+		field string
+		want  bool
+	}{
+		{"attach-session", true},
+		{"attach", true},
+		{"attach-sess", true},
+		{"att", true},
+		{"a", true},
+		{"new-session", true},
+		{"new", true},
+		{"new-sess", true},
+		{"n", true},
+
+		{"", false},
+		{"attach-sessions", false},
+		{"attaché", false},
+		{"new-window", false},
+		{"neww", false},
+		{"next-window", false},
+		{"set-option", false},
+		{"list-clients", false},
+		{"agentdeck_npm_a0e435da", false},
+		{"-t", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.field, func(t *testing.T) {
+			if got := isNeverReapVerb(tc.field); got != tc.want {
+				t.Errorf("isNeverReapVerb(%q) = %v, want %v", tc.field, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsReapableOneShotArgv(t *testing.T) {
 	tests := []struct {
 		name string
@@ -68,6 +126,15 @@ func TestIsReapableOneShotArgv(t *testing.T) {
 		// A chained command that both attaches and sets an option must lose:
 		// the deny side is fail-safe, the allow side is an optimisation.
 		{"attach chained with set-option", []string{"tmux", "attach-session", "-t", "agentdeck_x", ";", "set-option", "status", "on"}, false},
+
+		// Same chain, spelled the way tmux also accepts it. A deny-list keyed on
+		// the full verb alone lets every one of these through to the allow-list's
+		// set-option and reaps a live interactive client (see TestNeverReapVerb).
+		{"alias attach chained with set-option", []string{"tmux", "attach", "-t", "agentdeck_x", ";", "set-option", "status", "on"}, false},
+		{"alias new chained with set-option", []string{"tmux", "new", "-d", "-s", "agentdeck_x", ";", "set-option", "status", "on"}, false},
+		{"prefix attach-sess chained with set-option", []string{"tmux", "attach-sess", "-t", "agentdeck_x", ";", "set-option", "status", "on"}, false},
+		{"prefix att chained with set-option", []string{"tmux", "att", "-t", "agentdeck_x", ";", "set-option", "status", "on"}, false},
+		{"prefix new-sess chained with set-option", []string{"tmux", "new-sess", "-d", "-s", "agentdeck_x", ";", "set-option", "status", "on"}, false},
 
 		// Verbs outside the cadence set are not reapable even though they are
 		// legitimate tmux commands against an agent-deck session.
