@@ -829,9 +829,25 @@ var neverReapVerbs = []struct {
 	{name: "new-session", alias: "new"},       // cmd-new-session.c
 }
 
+// tmuxVerbToken strips the command separator tmux itself strips before it
+// resolves anything. cmd_parse_from_arguments (cmd-parse.y) takes ONE unescaped
+// trailing ";" off an argument and treats it as the boundary, so the separator
+// need not stand alone: `tmux attach\; set-option …` puts the single field
+// "attach;" in argv and still runs attach-session. Escaping it (`att\;` quoted
+// through to tmux) leaves the ";" in the command name, which tmux rejects with
+// "unknown command: att;" — verified on 3.0a, and the parser is unchanged on
+// master.
+func tmuxVerbToken(field string) string {
+	if strings.HasSuffix(field, ";") && !strings.HasSuffix(field, `\;`) {
+		return strings.TrimSuffix(field, ";")
+	}
+	return field
+}
+
 // isNeverReapVerb reports whether an argv field names a denied verb in any
-// spelling tmux resolves. cmd_find() accepts three, and matching only the first
-// leaves the other two as a way through the deny-list into the allow-list:
+// spelling tmux resolves. cmd_find() accepts three, and a fourth comes from the
+// parser that runs before it; matching only the full name leaves the rest as a
+// way through the deny-list into the allow-list:
 //
 //   - the full name;
 //   - the alias, matched whole ("attach", "new");
@@ -839,6 +855,7 @@ var neverReapVerbs = []struct {
 //     `att -t x` reaches attach-session and `new-sess -d -s x` creates a
 //     session. A prefix of the ALIAS does not resolve ("lscl" is rejected while
 //     "lsc" works), so the alias needs equality and the name needs HasPrefix.
+//   - any of the above with the separator glued on — see tmuxVerbToken.
 //
 // Prefixes are honoured down to a single character, including ones tmux itself
 // rejects as ambiguous ("n" could be new-session, new-window, next-layout or
@@ -849,6 +866,7 @@ var neverReapVerbs = []struct {
 // The allow-list stays exact-match: an unrecognised spelling of a cadence verb
 // leaves reapable false, which is the same fail-safe outcome.
 func isNeverReapVerb(field string) bool {
+	field = tmuxVerbToken(field)
 	if field == "" {
 		return false
 	}
