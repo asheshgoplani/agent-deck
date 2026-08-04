@@ -366,6 +366,9 @@ func TestEnsureSafeForTest_HonorsHomeIsolationMarker(t *testing.T) {
 	resolved := filepath.Join(isolated, ".agent-deck")
 
 	t.Setenv("HOME", isolated)
+	for _, e := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"} {
+		t.Setenv(e, "")
+	}
 
 	t.Setenv("AGENT_DECK_TEST_HOME_ISOLATED", "")
 	if err := ensureSafeForTest(resolved); err == nil {
@@ -388,10 +391,40 @@ func TestEnsureSafeForTest_MarkerDoesNotBypassWhenHomeIsTheRealHome(t *testing.T
 		t.Skip("no passwd home to test the guard against")
 	}
 	t.Setenv("HOME", realHome)
+	for _, e := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"} {
+		t.Setenv(e, "")
+	}
 	t.Setenv("AGENT_DECK_TEST_HOME_ISOLATED", "1")
 
 	if err := ensureSafeForTest(filepath.Join(realHome, ".agent-deck")); err == nil {
 		t.Fatal("marker bypassed the guard while HOME was the real home")
+	}
+}
+
+// A test that isolates only a specific XDG dir — pointing it at its own
+// t.TempDir(), which lives under TMPDIR rather than under the isolated HOME —
+// must also be honored. This is the shape that actually fails in the Nix
+// sandbox, where TMPDIR sits under the passwd home.
+func TestEnsureSafeForTest_HonorsIsolatedXDGRoots(t *testing.T) {
+	realHome := osUserRealHome()
+	if realHome == "" {
+		t.Skip("no passwd home to test the guard against")
+	}
+	t.Setenv("HOME", realHome)
+	for _, e := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"} {
+		t.Setenv(e, "")
+	}
+	// A tempdir nested under the passwd home, as t.TempDir() is in the sandbox.
+	cacheRoot := filepath.Join(realHome, "sandbox-tmp", "xdg-cache")
+	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+	t.Setenv("AGENT_DECK_TEST_HOME_ISOLATED", "1")
+
+	if err := ensureSafeForTest(filepath.Join(cacheRoot, "agent-deck")); err != nil {
+		t.Fatalf("guard rejected a path inside an isolated XDG root: %v", err)
+	}
+	// ...but the legacy dir under the un-isolated HOME is still refused.
+	if err := ensureSafeForTest(filepath.Join(realHome, ".agent-deck")); err == nil {
+		t.Fatal("an isolated XDG root licensed a path under the real home")
 	}
 }
 
@@ -402,6 +435,9 @@ func TestEnsureSafeForTest_MarkerDoesNotBypassOutsideTheIsolatedTree(t *testing.
 		t.Skip("no passwd home to test the guard against")
 	}
 	t.Setenv("HOME", filepath.Join(realHome, "nested-sandbox-home"))
+	for _, e := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"} {
+		t.Setenv(e, "")
+	}
 	t.Setenv("AGENT_DECK_TEST_HOME_ISOLATED", "1")
 
 	if err := ensureSafeForTest(filepath.Join(realHome, ".agent-deck")); err == nil {
@@ -418,6 +454,9 @@ func TestEnsureSafeForTest_IgnoresOtherMarkerValues(t *testing.T) {
 	}
 	isolated := filepath.Join(realHome, "nested-sandbox-home")
 	t.Setenv("HOME", isolated)
+	for _, e := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"} {
+		t.Setenv(e, "")
+	}
 	resolved := filepath.Join(isolated, ".agent-deck")
 
 	for _, v := range []string{"0", "true", "yes", " 1"} {
