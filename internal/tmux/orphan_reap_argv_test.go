@@ -43,7 +43,8 @@ func nulArgv(fields ...string) string {
 // TestNeverReapVerb pins the spelling rule the deny-list has to survive.
 //
 // tmux does not require the full verb. cmd_find() resolves a command name three
-// ways, and the deny-list is only safe if it recognises all of them:
+// ways, and the deny-list is only safe if it recognises all of them — plus a
+// fourth spelling that the parser produces before cmd_find() ever sees it:
 //
 //   - the full name — `attach-session`;
 //   - the alias, matched whole — `attach`, `new` (cmd-attach-session.c and
@@ -53,7 +54,11 @@ func nulArgv(fields ...string) string {
 //     `attach-sess`, `att` and even `a` all reach attach-session, and
 //     `new-sess -d -s x` creates a session. A prefix of the *alias* does not
 //     resolve (`lscl` is rejected while `lsc` works), so an exact-match test is
-//     enough for the alias but not for the name.
+//     enough for the alias but not for the name;
+//   - any of those with the command separator glued on. The separator does not
+//     have to stand alone as its own argv field: cmd_parse_from_arguments
+//     strips one unescaped trailing ";" from an argument, so `tmux attach\;
+//     set-option …` resolves attach-session out of the single field "attach;".
 //
 // Prefixes are matched to the shortest form on purpose, including ones tmux
 // itself would reject as ambiguous (`n` could be new-session, new-window,
@@ -76,6 +81,20 @@ func TestNeverReapVerb(t *testing.T) {
 		{"new", true},
 		{"new-sess", true},
 		{"n", true},
+
+		// A trailing separator glued to the verb. tmux strips one unescaped ";"
+		// off an argument before resolving it, so these are the same commands.
+		{"attach;", true},
+		{"att;", true},
+		{"new;", true},
+		{"new-sess;", true},
+
+		// Escaped, so the ";" survives into the command name and tmux rejects
+		// the whole thing ("unknown command: att;"). Only one separator is
+		// stripped, so "attach;;" is rejected the same way.
+		{`att\;`, false},
+		{"attach;;", false},
+		{";", false},
 
 		{"", false},
 		{"attach-sessions", false},
@@ -135,6 +154,13 @@ func TestIsReapableOneShotArgv(t *testing.T) {
 		{"prefix attach-sess chained with set-option", []string{"tmux", "attach-sess", "-t", "agentdeck_x", ";", "set-option", "status", "on"}, false},
 		{"prefix att chained with set-option", []string{"tmux", "att", "-t", "agentdeck_x", ";", "set-option", "status", "on"}, false},
 		{"prefix new-sess chained with set-option", []string{"tmux", "new-sess", "-d", "-s", "agentdeck_x", ";", "set-option", "status", "on"}, false},
+
+		// `tmux attach\; set-option …` — the separator glues to the verb rather
+		// than standing alone, so the field is "attach;" and a deny keyed on the
+		// bare spellings misses it. tmux resolves it to attach-session all the
+		// same, which is a live client.
+		{"glued separator attach chained with set-option", []string{"tmux", "attach;", "set-option", "-t", "agentdeck_x", "status", "on"}, false},
+		{"glued separator new chained with set-option", []string{"tmux", "new;", "set-option", "-t", "agentdeck_x", "status", "on"}, false},
 
 		// Verbs outside the cadence set are not reapable even though they are
 		// legitimate tmux commands against an agent-deck session.
