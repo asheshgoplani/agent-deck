@@ -17113,20 +17113,14 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	b.WriteString(nameStyle.Render(rs.Title))
 	b.WriteString("  ")
 
-	statusColor := ColorTextDim
-	statusIcon := "○"
-	switch rs.Status {
-	case "running":
-		statusIcon = "●"
-		statusColor = ColorGreen
-	case "waiting":
-		statusIcon = "◐"
-		statusColor = ColorYellow
-	case "error":
-		statusIcon = "✗"
-		statusColor = ColorRed
+	statusIcon, statusStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
+	// The archived override swaps the glyph to ■ regardless of the stale live
+	// Status, so the label has to follow it or the row reads "■ running".
+	statusLabel := rs.Status
+	if rs.Archived {
+		statusLabel = "archived"
 	}
-	b.WriteString(lipgloss.NewStyle().Foreground(statusColor).Render(statusIcon + " " + rs.Status))
+	b.WriteString(statusStyle.Render(statusIcon + " " + statusLabel))
 	b.WriteString("\n\n")
 
 	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
@@ -17312,24 +17306,7 @@ func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, se
 		return
 	}
 
-	statusIcon := "○"
-	statusColor := lipgloss.Color("8") // gray
-	switch rs.Status {
-	case "running":
-		statusIcon = "●"
-		statusColor = lipgloss.Color("2") // green
-	case "waiting":
-		statusIcon = "◉"
-		statusColor = lipgloss.Color("3") // yellow
-	case "idle":
-		statusIcon = "○"
-		statusColor = lipgloss.Color("8")
-	case "error":
-		statusIcon = "✗"
-		statusColor = lipgloss.Color("1") // red
-	}
-
-	sStyle := lipgloss.NewStyle().Foreground(statusColor)
+	statusIcon, sStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
 	titleStyle := lipgloss.NewStyle().Foreground(ColorText)
 	if selected {
 		sStyle = SessionStatusSelStyle

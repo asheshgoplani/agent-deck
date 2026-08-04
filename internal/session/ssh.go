@@ -968,6 +968,16 @@ type RemoteSessionInfo struct {
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
 
+	// Substate and Archived are what the local row needs to pick the same
+	// status glyph a local session would get: the ⚡/🔒 substate refinements
+	// and the archived override (an archived session keeps a live Status, so
+	// without this flag it renders as still running). `list --json` on the
+	// remote has always emitted both; they were simply dropped here. A remote
+	// too old to send them omits the keys, which unmarshal to ""/false and
+	// degrade to the coarse-status glyph.
+	Substate string `json:"substate"`
+	Archived bool   `json:"archived"`
+
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`
 }
