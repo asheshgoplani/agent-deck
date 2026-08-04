@@ -76,6 +76,25 @@ func rowStatusGlyph(status session.Status, substate session.Substate, archived b
 	return icon, style
 }
 
+// remoteRowStatusGlyph is the remote-session entry point to rowStatusGlyph.
+//
+// A remote row's state arrives as raw JSON strings from `agent-deck list --json`
+// on the far side (session.RemoteSessionInfo), never as typed values. Those
+// strings are emitted from the same session.Status / tmux.Substate constants
+// (see StatusString in cmd/agent-deck/cli_utils.go), so the conversion is a
+// direct cast; an unrecognized value — including the empty string an older
+// remote sends for a field it predates — falls through to rowStatusGlyph's
+// ○ idle default.
+//
+// Routing remotes through the same helper as local rows is what stops the two
+// from drifting. Before this, remote rows carried a private copy of the switch
+// that had diverged to ◉ for waiting and ✗ (U+2717, vs the local ✕ U+2715) for
+// error, colored from the raw ANSI palette so it ignored the active theme, and
+// with no case at all for stopped/queued/archived or the substate glyphs.
+func remoteRowStatusGlyph(status, substate string, archived bool) (icon string, style lipgloss.Style) {
+	return rowStatusGlyph(session.Status(status), session.Substate(substate), archived)
+}
+
 // authHoldHintLines is the preview-pane hint for a session held out of automatic
 // restarts because its agent cannot authenticate.
 //
