@@ -313,24 +313,20 @@ var pollChildRows = loadChildRows
 // status refresh, row build. Storage is closed before returning so the poll
 // loop never accumulates DB handles.
 func loadChildRows(profile, parentID string) ([]childRow, error) {
-	storage, instances, _, err := loadSessionData(profile)
+	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = storage.Close() }()
 
-	parentExists := false
-	for _, inst := range instances {
-		if inst != nil && inst.ID == parentID {
-			parentExists = true
-			break
-		}
+	kids, parentExists, err := storage.LoadChildInstances(parentID)
+	if err != nil {
+		return nil, err
 	}
 	if !parentExists {
 		return nil, fmt.Errorf("parent session %s no longer exists", parentID)
 	}
 
-	kids := childrenOf(parentID, instances)
 	session.RefreshInstancesForCLIStatus(kids)
 	return buildChildRows(kids, storage.GetDB()), nil
 }

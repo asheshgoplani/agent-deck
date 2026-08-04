@@ -3017,7 +3017,7 @@ func decodeJSONStringField(raw map[string]json.RawMessage, key string) string {
 func (i *Instance) collectOtherCodexSessionIDs() map[string]bool {
 	exclude := make(map[string]bool)
 
-	tmuxSessions, err := tmux.ListAgentDeckSessions()
+	sessionIDs, err := loadCodexSessionIDs()
 	if err != nil {
 		return exclude
 	}
@@ -3027,14 +3027,11 @@ func (i *Instance) collectOtherCodexSessionIDs() map[string]bool {
 		myTmuxName = i.tmuxSession.Name
 	}
 
-	for _, sessName := range tmuxSessions {
+	for sessName, id := range sessionIDs {
 		if sessName == myTmuxName {
 			continue
 		}
-		other := &tmux.Session{Name: sessName}
-		if id, err := other.GetEnvironment("CODEX_SESSION_ID"); err == nil && id != "" {
-			exclude[id] = true
-		}
+		exclude[id] = true
 	}
 
 	return exclude
@@ -3110,7 +3107,7 @@ func (i *Instance) collectTmuxPaneProcessTreePIDs() []int {
 
 	// Single snapshot of the process table is substantially cheaper than
 	// spawning pgrep once per node in deep process trees.
-	procTable, err := exec.Command("ps", "-eo", "pid=,ppid=").Output()
+	procTable, err := loadCodexProcessTable()
 	if err == nil {
 		if allPIDs := collectProcessTreePIDsFromTable(panePID, procTable); len(allPIDs) > 0 {
 			return allPIDs

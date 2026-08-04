@@ -106,6 +106,37 @@ func TestGetUpdatedAtEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadChildInstancesLoadsOnlyDirectChildren(t *testing.T) {
+	s := newTestStorage(t)
+	instances := []*Instance{
+		{ID: "parent", Title: "parent", ProjectPath: "/tmp/parent", GroupPath: "g", Tool: "claude", Status: StatusIdle, CreatedAt: time.Now()},
+		{ID: "child", Title: "child", ProjectPath: "/tmp/child", GroupPath: "g", ParentSessionID: "parent", Tool: "claude", Status: StatusIdle, CreatedAt: time.Now()},
+		{ID: "other", Title: "other", ProjectPath: "/tmp/other", GroupPath: "g", Tool: "claude", Status: StatusIdle, CreatedAt: time.Now()},
+	}
+	if err := s.SaveWithGroups(instances, nil); err != nil {
+		t.Fatalf("SaveWithGroups: %v", err)
+	}
+
+	children, found, err := s.LoadChildInstances("parent")
+	if err != nil {
+		t.Fatalf("LoadChildInstances: %v", err)
+	}
+	if !found {
+		t.Fatal("parent was not found")
+	}
+	if len(children) != 1 || children[0].ID != "child" {
+		t.Fatalf("children = %#v, want only child", children)
+	}
+
+	_, found, err = s.LoadChildInstances("missing")
+	if err != nil {
+		t.Fatalf("LoadChildInstances missing parent: %v", err)
+	}
+	if found {
+		t.Fatal("missing parent reported as found")
+	}
+}
+
 // TestLoadLite verifies that LoadLite returns raw InstanceData without tmux initialization
 func TestLoadLite(t *testing.T) {
 	s := newTestStorage(t)

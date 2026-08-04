@@ -1173,6 +1173,82 @@ func (s *Storage) LoadActiveWithGroups() ([]*Instance, []*GroupData, error) {
 	return s.loadWithGroups(true, false)
 }
 
+// LoadChildInstances loads only a parent's direct children. Follow-mode CLI
+// monitors use this narrow path so a large unrelated fleet is not rebuilt on
+// every poll.
+func (s *Storage) LoadChildInstances(parentID string) ([]*Instance, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return nil, false, nil
+	}
+	parent, err := s.db.LoadInstanceByID(parentID)
+	if err != nil {
+		return nil, false, fmt.Errorf("load parent instance: %w", err)
+	}
+	if parent == nil {
+		return nil, false, nil
+	}
+	rows, err := s.db.LoadInstanceChildren(parentID)
+	if err != nil {
+		return nil, true, fmt.Errorf("load child instances: %w", err)
+	}
+
+	data := &StorageData{Instances: make([]*InstanceData, len(rows))}
+	for idx, row := range rows {
+		data.Instances[idx] = instanceDataFromRow(row)
+	}
+	instances, _, err := s.convertToInstances(data)
+	if err != nil {
+		return nil, true, err
+	}
+	return instances, true, nil
+}
+
+func instanceDataFromRow(r *statedb.InstanceRow) *InstanceData {
+	claudeSID, claudeAt,
+		geminiSID, geminiAt,
+		geminiYolo, geminiModel,
+		opencodeSID, opencodeAt,
+		codexSID, codexAt,
+		latestPrompt, notes, loadedMCPs,
+		toolOpts,
+		sandboxJSON, sandboxContainer,
+		sshHost, sshRemotePath,
+		mrEnabled, addPaths,
+		mrTempDir, mrWorktrees,
+		channels,
+		extraArgs,
+		plugins,
+		pluginChannelLinkDisabled,
+		autoLinkedChannels,
+		color := statedb.UnmarshalToolData(r.ToolData)
+
+	return &InstanceData{
+		ID: r.ID, Title: r.Title, ProjectPath: r.ProjectPath, GroupPath: r.GroupPath,
+		Order: r.Order, ParentSessionID: r.ParentSessionID, IsConductor: r.IsConductor,
+		NoTransitionNotify: r.NoTransitionNotify, TitleLocked: r.TitleLocked, AutoName: r.AutoName,
+		AutoNameDescription: r.AutoNameDescription, Command: r.Command, Wrapper: r.Wrapper,
+		Tool: r.Tool, Status: Status(r.Status), CreatedAt: r.CreatedAt, LastAccessedAt: r.LastAccessed,
+		ArchivedAt: r.ArchivedAt, TmuxSession: r.TmuxSession, TmuxSocketName: r.TmuxSocketName,
+		WorktreePath: r.WorktreePath, WorktreeRepoRoot: r.WorktreeRepo, WorktreeBranch: r.WorktreeBranch,
+		Account: r.Account, Pin: PinMode(r.Pin), ClaudeSessionID: claudeSID, ClaudeDetectedAt: claudeAt,
+		GeminiSessionID: geminiSID, GeminiDetectedAt: geminiAt, GeminiYoloMode: geminiYolo,
+		GeminiModel: geminiModel, OpenCodeSessionID: opencodeSID, OpenCodeDetectedAt: opencodeAt,
+		CodexSessionID: codexSID, CodexDetectedAt: codexAt, LatestPrompt: latestPrompt, Notes: notes,
+		ToolOptionsJSON: toolOpts, LoadedMCPNames: loadedMCPs, Sandbox: decodeSandboxConfig(sandboxJSON),
+		SandboxContainer: sandboxContainer, SSHHost: sshHost, SSHRemotePath: sshRemotePath,
+		MultiRepoEnabled: mrEnabled, AdditionalPaths: addPaths, MultiRepoTempDir: mrTempDir,
+		MultiRepoWorktrees: mrWorktrees, Channels: channels, ExtraArgs: extraArgs, Plugins: plugins,
+		PluginChannelLinkDisabled: pluginChannelLinkDisabled, AutoLinkedChannels: autoLinkedChannels,
+		Color: color, IdleTimeoutSecs: ReadIdleTimeoutSecsFromToolData(r.ToolData),
+		SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
+		ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
+		LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
+	}
+}
+
 // LoadArchivedWithGroups reads only archived sessions and reconnects their
 // tmux sessions for explicit archive views.
 func (s *Storage) LoadArchivedWithGroups() ([]*Instance, []*GroupData, error) {
