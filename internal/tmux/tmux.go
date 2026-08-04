@@ -5152,10 +5152,11 @@ func (s *Session) SendNamedKey(key string) error {
 }
 
 // SendKeysAndEnter sends literal text followed by Enter as two separate tmux
-// calls with a short delay between them. The delay is necessary because tmux
-// 3.2+ wraps send-keys -l in bracketed paste sequences (\e[200~...\e[201~).
-// Without the delay, Enter arrives in the same PTY buffer as the paste-end
-// marker and gets swallowed by async TUI frameworks (Ink/Node.js, curses).
+// calls with a short delay between them. sendKeysChunkedToTarget wraps
+// multi-line content in bracketed paste (\e[200~...\e[201~) via `paste-buffer
+// -p` (see issue #1855); the delay gives async TUI frameworks (Ink/Node.js,
+// curses) time to finish processing the paste-end marker before Enter
+// arrives, so it isn't swallowed alongside it.
 func (s *Session) SendKeysAndEnter(keys string) error {
 	return s.sendKeysAndEnterToTarget(s.Name, keys)
 }
@@ -5205,39 +5206,48 @@ func (s *Session) sendKeysAndEnterToTarget(target, keys string) error {
 }
 
 // SendKeysChunked delivers content to the tmux session's active window.
-// Payloads at or below canonicalSafeBytes go out as a single `send-keys -l`,
-// exactly as before. Larger payloads take the paste transport (load-buffer
-// from stdin + paste-buffer) after the pane's line discipline has been
-// checked; see sendKeysChunkedToTarget and canonical_line.go.
+// Single-line payloads at or below canonicalSafeBytes go out as a single
+// `send-keys -l`, exactly as before. Multi-line payloads, and anything larger,
+// take the paste transport (load-buffer from stdin + paste-buffer) after the
+// pane's line discipline has been checked; see sendKeysChunkedToTarget and
+// canonical_line.go.
 func (s *Session) SendKeysChunked(content string) error {
 	return s.sendKeysChunkedToTarget(s.Name, content)
 }
 
 // sendKeysChunkedToTarget is SendKeysChunked against an explicit tmux target.
 //
-// Three sizes of payload, three behaviors (issue #1793):
+//   - single-line, ≤ canonicalSafeBytes: one `send-keys -l`. Guaranteed to fit
+//     any line discipline, so nothing is inspected and nothing costs extra.
+//     This is the overwhelming majority of sends and is byte-for-byte
+//     unchanged.
 //
-//   - ≤ canonicalSafeBytes: one `send-keys -l`. Guaranteed to fit any line
-//     discipline, so nothing is inspected and nothing costs extra. This is
-//     the overwhelming majority of sends and is byte-for-byte unchanged.
+//   - multi-line, of any size: deliver via load-buffer + paste-buffer -p -r
+//     (see pasteToTarget). `send-keys -l` puts the embedded line breaks on
+//     the wire byte-for-byte — that was verified directly against a real
+//     pane, they are not lost in transit — but an Ink-style composer
+//     (Claude Code, and likely Codex/Copilot/OpenCode, since they're built on
+//     the same class of framework) has no way to tell a bare LF apart from a
+//     paste it wasn't told about, and silently drops it rather than inserting
+//     a line break, gluing the two lines together with no separator (issue
+//     #1855). Bracketed paste is the signal that tells the composer "this is
+//     pasted text, take it literally"; only paste-buffer's -p flag can add
+//     that wrapping, and only tmux send-keys -l cannot. -p is a no-op against
+//     a pane that never requested bracketed-paste mode, so this is free for
+//     every other kind of pane.
 //
-//   - larger, pane readable and canonical: refuse with
-//     *CanonicalOverflowError when the longest line does not fit the pane's
-//     canonical buffer. The kernel would discard the overflow AND the
-//     submitting Enter, so typing it would leave a half-line in the composer
-//     and report a success that never happened. Refusing types nothing.
-//
-//   - larger, otherwise: deliver via load-buffer + paste-buffer. tmux reads
-//     the body from our stdin instead of argv, which removes the ARG_MAX
-//     exposure and replaces N paced `send-keys` subprocesses with two calls.
-//     If the paste transport is unavailable the chunked send-keys path is
-//     still there as a fallback.
+//   - larger (including now any multi-line payload), pane readable and
+//     canonical: refuse with *CanonicalOverflowError when the longest line
+//     does not fit the pane's canonical buffer. The kernel would discard the
+//     overflow AND the submitting Enter, so typing it would leave a half-line
+//     in the composer and report a success that never happened. Refusing
+//     types nothing.
 //
 // The paste transport is NOT what fixes canonical overflow — it was measured
 // to fall off the identical cliff (canonical_line.go). Only the refusal, and
 // the caller's post-send verification, make the outcome honest.
 func (s *Session) sendKeysChunkedToTarget(target, content string) error {
-	if len(content) <= canonicalSafeBytes {
+	if len(content) <= canonicalSafeBytes && !strings.ContainsAny(content, "\r\n") {
 		return s.sendKeysToTarget(target, content)
 	}
 
@@ -5306,7 +5316,21 @@ func pasteBufferName() string {
 
 // pasteToTarget delivers content through tmux's paste path: `load-buffer -`
 // reads the body from this process's stdin (no argv size limit, no shell
-// quoting), then `paste-buffer -d` writes it to the pane and drops the buffer.
+// quoting), then `paste-buffer -d -p -r` writes it to the pane and drops the
+// buffer.
+//
+// -r stops tmux replacing embedded LF with CR, which is its documented
+// default; without it a multi-line payload is at the mercy of whatever a
+// given tmux build actually does with linefeeds, on top of everything -p
+// already needs LF preserved for (see below).
+//
+// -p wraps the buffer in bracketed-paste markers (\e[200~...\e[201~) — but
+// ONLY if the destination pane has itself requested bracketed-paste mode
+// (tmux tracks this per pane; it's a no-op otherwise, so this costs nothing
+// against panes that never asked). That wrapping is what tells an Ink-style
+// composer "this is pasted text, insert it literally" instead of trying to
+// interpret each embedded LF as a keystroke and dropping the ones it doesn't
+// recognize — see the sendKeysChunkedToTarget doc comment and issue #1855.
 func (s *Session) pasteToTarget(target, content string) error {
 	s.invalidateCache()
 
@@ -5323,7 +5347,7 @@ func (s *Session) pasteToTarget(target, content string) error {
 		return fmt.Errorf("load-buffer: %v: %w", err, errPasteNotStaged)
 	}
 
-	paste := keySenderExec(s.SocketName, "paste-buffer", "-d", "-b", buf, "-t", target)
+	paste := keySenderExec(s.SocketName, "paste-buffer", "-d", "-p", "-r", "-b", buf, "-t", target)
 	if err := runSendKeysBounded(paste); err != nil {
 		// -d never ran, so the staged buffer would linger. Drop it before
 		// falling back, otherwise the fallback's content and this stale copy
