@@ -347,3 +347,83 @@ func setupHome(t *testing.T) string {
 	t.Setenv("HOME", home)
 	return home
 }
+
+// ensureSafeForTest must honor the isolation marker testutil.IsolateHome sets,
+// for paths inside the isolated tree.
+//
+// The guard compares the resolved path against user.Current().HomeDir, read
+// from /etc/passwd. In some build sandboxes the isolated tempdir NESTS inside
+// that home — the Nix sandbox puts nixbld's passwd home and TMPDIR both under
+// /build — so a test that correctly isolated its HOME is still refused.
+func TestEnsureSafeForTest_HonorsHomeIsolationMarker(t *testing.T) {
+	realHome := osUserRealHome()
+	if realHome == "" {
+		t.Skip("no passwd home to test the guard against")
+	}
+	// An isolated HOME that nests inside the passwd home, reproducing the
+	// sandbox shape.
+	isolated := filepath.Join(realHome, "nested-sandbox-home")
+	resolved := filepath.Join(isolated, ".agent-deck")
+
+	t.Setenv("HOME", isolated)
+
+	t.Setenv("AGENT_DECK_TEST_HOME_ISOLATED", "")
+	if err := ensureSafeForTest(resolved); err == nil {
+		t.Fatal("guard allowed a path under the real home without the isolation marker")
+	}
+
+	t.Setenv("AGENT_DECK_TEST_HOME_ISOLATED", "1")
+	if err := ensureSafeForTest(resolved); err != nil {
+		t.Fatalf("guard rejected a path inside the isolated tree: %v", err)
+	}
+}
+
+// The marker must NOT disable the guard when HOME points back at the real
+// home. A test doing that is deliberately exercising the un-isolated path
+// (internal/session/config_pathguard_test.go does exactly this), and the
+// marker is still set process-wide by the package's TestMain.
+func TestEnsureSafeForTest_MarkerDoesNotBypassWhenHomeIsTheRealHome(t *testing.T) {
+	realHome := osUserRealHome()
+	if realHome == "" {
+		t.Skip("no passwd home to test the guard against")
+	}
+	t.Setenv("HOME", realHome)
+	t.Setenv("AGENT_DECK_TEST_HOME_ISOLATED", "1")
+
+	if err := ensureSafeForTest(filepath.Join(realHome, ".agent-deck")); err == nil {
+		t.Fatal("marker bypassed the guard while HOME was the real home")
+	}
+}
+
+// The marker must not license a path OUTSIDE the isolated tree.
+func TestEnsureSafeForTest_MarkerDoesNotBypassOutsideTheIsolatedTree(t *testing.T) {
+	realHome := osUserRealHome()
+	if realHome == "" {
+		t.Skip("no passwd home to test the guard against")
+	}
+	t.Setenv("HOME", filepath.Join(realHome, "nested-sandbox-home"))
+	t.Setenv("AGENT_DECK_TEST_HOME_ISOLATED", "1")
+
+	if err := ensureSafeForTest(filepath.Join(realHome, ".agent-deck")); err == nil {
+		t.Fatal("marker bypassed the guard for a path outside the isolated tree")
+	}
+}
+
+// Only the exact marker value counts — a stray non-empty value must not
+// disable a data-loss guard.
+func TestEnsureSafeForTest_IgnoresOtherMarkerValues(t *testing.T) {
+	realHome := osUserRealHome()
+	if realHome == "" {
+		t.Skip("no passwd home to test the guard against")
+	}
+	isolated := filepath.Join(realHome, "nested-sandbox-home")
+	t.Setenv("HOME", isolated)
+	resolved := filepath.Join(isolated, ".agent-deck")
+
+	for _, v := range []string{"0", "true", "yes", " 1"} {
+		t.Setenv("AGENT_DECK_TEST_HOME_ISOLATED", v)
+		if err := ensureSafeForTest(resolved); err == nil {
+			t.Errorf("marker value %q disabled the guard; only \"1\" may", v)
+		}
+	}
+}

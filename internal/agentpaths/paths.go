@@ -90,6 +90,28 @@ func ensureSafeForTest(resolved string) error {
 	if !testing.Testing() {
 		return nil
 	}
+	// Honor the marker testutil.IsolateHome (internal/testutil/homeenv.go)
+	// sets once it has swapped HOME+XDG to a fresh tempdir — but only for a
+	// path under that tempdir, and only while HOME is genuinely somewhere
+	// other than the passwd home.
+	//
+	// The guard compares against user.Current().HomeDir, read from
+	// /etc/passwd. In some build sandboxes the isolated tempdir NESTS inside
+	// that home: the Nix sandbox puts nixbld's passwd home and TMPDIR both
+	// under /build, so an isolated HOME of /build/tmp.XXXX is "under the real
+	// home" by prefix and every correctly-isolated test is refused.
+	//
+	// The two extra conditions keep the guard honest. A test that points HOME
+	// back at the real home to exercise the refusal path is NOT isolated,
+	// marker or not, and must still be refused — so must anything resolving
+	// outside the isolated tree.
+	if os.Getenv("AGENT_DECK_TEST_HOME_ISOLATED") == "1" {
+		if isolated := filepath.Clean(os.Getenv("HOME")); isolated != "" && isolated != "." {
+			if isolated != osUserRealHome() && pathUnderRealHome(resolved, isolated) {
+				return nil
+			}
+		}
+	}
 	if realHome := osUserRealHome(); pathUnderRealHome(resolved, realHome) {
 		warnUnsafeTestPathOnce(resolved)
 		return fmt.Errorf(
