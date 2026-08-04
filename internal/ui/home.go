@@ -273,6 +273,8 @@ type Home struct {
 	toolVisibilityPanel  *ToolVisibilityPanel  // Edits [ui].hidden_tools
 	watcherEngine        *watcher.Engine       // nil until Init (D-07: lifecycle tied to TUI startup)
 
+	codexDisconnectRecovery *session.CodexDisconnectRecovery // TUI-only resume after confirmed Codex transport disconnect
+
 	// Configurable hotkeys
 	hotkeys        map[string]string // action -> configured key
 	hotkeyLookup   map[string]string // pressed key -> canonical key used by switch cases
@@ -1443,6 +1445,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		statusTrigger:             make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
 		statusWorkerDone:          statusWorkerDone,
 		idleTimeoutWatcher:        session.NewIdleTimeoutWatcher(session.IdleTimeoutWatcherConfig{}),
+		codexDisconnectRecovery:   session.NewCodexDisconnectRecovery(),
 		lastPersistedStatus:       make(map[string]string),
 		lastPersistedAutoNameDesc: make(map[string]string),
 		logUpdateChan:             make(chan *session.Instance, 100), // Buffered to absorb bursts
@@ -6204,12 +6207,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case reviverTickMsg:
-		// Fire-and-forget reviver sweep for instances whose tmux server
-		// survived an SSH scope cleanup but whose pipe was reaped. Runs in
-		// a goroutine so it never blocks the Bubble Tea update loop.
+		// The same coarse TUI-only tick handles two safe recoveries: a tmux
+		// control-pipe reviver and a confirmed, exact Codex transport failure.
+		// Both run outside Bubble Tea's update loop.
+		if h.codexDisconnectRecovery == nil {
+			h.codexDisconnectRecovery = session.NewCodexDisconnectRecovery()
+		}
+		recovery := h.codexDisconnectRecovery
 		go func(instances []*session.Instance) {
 			rev := session.NewReviver()
 			_ = rev.ReviveAll(instances)
+			recovery.Scan(instances)
 		}(h.ownedOnly(append([]*session.Instance(nil), h.instances...)))
 		return h, h.reviverTick()
 
