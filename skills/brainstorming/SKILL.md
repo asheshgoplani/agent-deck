@@ -65,19 +65,27 @@ question to answer out loud:
 *does any component here exist for a requirement nobody stated?* Cut or
 justify each one.
 
-## 5. Present in sections, approve after each
+## 5. Present the complete design, approve once
 
-Motivation → decisions → architecture → interfaces → out-of-scope. Stop
-after each section for approval rather than delivering the whole thing at
-once — a wrong premise caught in section one saves rewriting sections two
-through five.
+Present motivation, decisions, architecture, interfaces, and out-of-scope
+together in a skimmable document. Ask once: `Approve this design?` A single
+explicit approval covers all of those sections and the committed document.
+
+Do not ask for per-section approvals. Ask again only if later self-review
+materially changes the approved scope: user-visible behavior, public
+interfaces, data handling, or an explicitly excluded item. State the change
+and why it needs confirmation; editorial fixes and clarifications do not need
+another approval.
 
 ## 6. Write the spec
 
 **Location:** honor the repo's visible convention — look for a directory
 that already contains design docs (`docs/plans/`, `docs/specs/`,
 `docs/design/`, `docs/rfcs/`) and use it. Only when none exists, default to
-`docs/plans/YYYY-MM-DD-<topic>-design.md`.
+`docs/plans/YYYY-MM-DD-<topic>-design.md`. Before writing, check the exact
+candidate path with `git check-ignore -q <spec-path>`: exit 0 means choose the
+next conventional directory; exit 1 means the candidate is tracked. Never
+write first and move the document later.
 
 **Always committed, and verified committed.** A spec written into an
 ignored directory looks committed and is invisible to every downstream
@@ -89,27 +97,32 @@ git add <spec-path> && git commit -m "docs(plans): <topic> design"
 git log -1 --oneline -- <spec-path>      # must print a commit
 ```
 
-If `check-ignore` matches, move the file to a tracked directory — do not
-force-add it into an ignored tree.
+If `check-ignore` matches, choose a tracked directory before creating the
+file — do not force-add it into an ignored tree.
 
-## 7. Spec self-review, then the user review gate
+## 7. Spec self-review and commit
 
-Before handing it over, read your own document for: placeholders (`TBD`,
-"etc.", "handle errors"), internal contradictions, scope creep past what
-was approved, and ambiguity a fresh reader would resolve differently than
-you meant. Fix what you find, then explicitly ask the user to review the
-written file — approval of the conversation is not approval of the
-document.
+Before committing, read the document for placeholders (`TBD`, "etc.",
+"handle errors"), internal contradictions, scope creep past what was
+approved, and ambiguity a fresh reader would resolve differently than you
+meant. Make non-material fixes and commit. The prior design approval covers
+that committed document; do not ask for a second document-review approval.
+
+If self-review makes a material change to scope, user-visible behavior,
+interfaces, data handling, or an explicitly excluded item, stop and obtain
+one approval for that change before committing.
 
 ## 8. Tiered exit
 
 After approval, size the work and take exactly one exit:
 
-- **Multi-task / multi-file / PR-worthy →** hand the committed design doc
-  path to the `orchestrate` skill. Do not write the plan yourself:
-  orchestrate's planner child writes it against the codebase.
-- **Genuinely tiny** — one file, one sitting, no new interfaces →
-  implement in-session under `tdd`, then `verify` before claiming done.
+- **Orchestrated** — several independent tasks, non-obvious decomposition, a
+  dedicated PR pipeline, or separate executor/reviewer sessions are needed →
+  hand the committed design doc to `orchestrate`. Do not write the plan
+  yourself: orchestrate's planner child writes it against the codebase.
+- **Focused** — an obvious, low-risk change, even across a few closely related
+  files → implement in-session under `tdd`, then `verify` before claiming
+  done. Multi-file alone does not require orchestration.
 - **Borderline →** ask **one** final question with your recommendation, and
   take the answer.
 
@@ -121,4 +134,4 @@ After approval, size the work and take exactly one exit:
 | "I'll design as I code" | That's implementation wearing a design costume. Stop and present first. |
 | "The spec dir is gitignored, I'll just keep it in the chat" | Chat isn't discoverable by the next session. Move it to a tracked dir. |
 | "I'll ask all my questions at once to save time" | One merged answer covers two of five questions; the rest go unasked. |
-| "They said build it, so approval is implied" | "Build it" approved the idea, not the design. Present sections and get explicit sign-off. |
+| "They said build it, so approval is implied" | "Build it" approved the idea, not the design. Present the complete design and get one explicit sign-off. |
