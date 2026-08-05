@@ -391,7 +391,7 @@ func handleMCPAttach(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	instances, _, err := storage.LoadWithGroups()
+	instances, groupsData, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
 		os.Exit(1)
@@ -475,6 +475,18 @@ func handleMCPAttach(profile string, args []string) {
 			}
 		} else {
 			restarted = true
+			// Restart recreated the tmux session under a new name, which so far
+			// exists only on this in-memory Instance. Persist it or the stored
+			// name points at a session that no longer exists: the TUI reports the
+			// session as errored, and the live tmux session is orphaned because
+			// nothing knows its name. Warn rather than exit, matching the restart
+			// failure above -- the MCP config change already succeeded and must
+			// not be reported as failed.
+			if saveErr := saveSessionData(storage, instances, groupsData); saveErr != nil {
+				if !*jsonOutput && !quietMode {
+					fmt.Fprintf(os.Stderr, "Warning: restarted, but saving the new tmux session name failed: %v\n", saveErr)
+				}
+			}
 			// Auto-continue: wait for the agent to initialize, then send continue message.
 			time.Sleep(2 * time.Second)
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && inst.Tool != "cursor" {
@@ -552,7 +564,7 @@ func handleMCPDetach(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	instances, _, err := storage.LoadWithGroups()
+	instances, groupsData, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
 		os.Exit(1)
@@ -636,6 +648,18 @@ func handleMCPDetach(profile string, args []string) {
 			}
 		} else {
 			restarted = true
+			// Restart recreated the tmux session under a new name, which so far
+			// exists only on this in-memory Instance. Persist it or the stored
+			// name points at a session that no longer exists: the TUI reports the
+			// session as errored, and the live tmux session is orphaned because
+			// nothing knows its name. Warn rather than exit, matching the restart
+			// failure above -- the MCP config change already succeeded and must
+			// not be reported as failed.
+			if saveErr := saveSessionData(storage, instances, groupsData); saveErr != nil {
+				if !*jsonOutput && !quietMode {
+					fmt.Fprintf(os.Stderr, "Warning: restarted, but saving the new tmux session name failed: %v\n", saveErr)
+				}
+			}
 			// Auto-continue: wait for the agent to initialize, then send continue message.
 			time.Sleep(2 * time.Second)
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && inst.Tool != "cursor" {

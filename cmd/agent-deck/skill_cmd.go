@@ -17,7 +17,20 @@ func projectSkillsUnsupportedMessage() string {
 	return "project skills are supported for Claude, Gemini, Codex, and Pi sessions"
 }
 
-func restartProjectSkillsSession(inst *session.Instance, jsonOutput, quietMode bool) bool {
+// restartProjectSkillsSession restarts inst so it picks up a skills change.
+//
+// storage/instances/groups are needed because a restart recreates the tmux
+// session under a NEW name that exists only on the in-memory Instance until
+// saved. Without persisting it the stored name points at a session that no
+// longer exists: the TUI reports the session as errored, and the live tmux
+// session is orphaned because nothing knows its name.
+func restartProjectSkillsSession(
+	inst *session.Instance,
+	storage *session.Storage,
+	instances []*session.Instance,
+	groups []*session.GroupData,
+	jsonOutput, quietMode bool,
+) bool {
 	if inst == nil || !session.ShouldRestartProjectSkills(inst.Tool) {
 		return false
 	}
@@ -26,6 +39,13 @@ func restartProjectSkillsSession(inst *session.Instance, jsonOutput, quietMode b
 			fmt.Fprintf(os.Stderr, "Warning: failed to restart session: %v\n", err)
 		}
 		return false
+	}
+	// Warn rather than fail: the skills change already succeeded and must not
+	// be reported as failed, matching the restart-failure branch above.
+	if saveErr := saveSessionData(storage, instances, groups); saveErr != nil {
+		if !jsonOutput && !quietMode {
+			fmt.Fprintf(os.Stderr, "Warning: restarted, but saving the new tmux session name failed: %v\n", saveErr)
+		}
 	}
 	if session.IsClaudeCompatible(inst.Tool) {
 		time.Sleep(2 * time.Second)
@@ -336,7 +356,7 @@ func handleSkillAttach(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	instances, _, err := storage.LoadWithGroups()
+	instances, groupsData, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
 		os.Exit(1)
@@ -376,7 +396,7 @@ func handleSkillAttach(profile string, args []string) {
 
 	restarted := false
 	if *restart {
-		restarted = restartProjectSkillsSession(inst, *jsonOutput, quietMode)
+		restarted = restartProjectSkillsSession(inst, storage, instances, groupsData, *jsonOutput, quietMode)
 	}
 
 	if *jsonOutput {
@@ -438,7 +458,7 @@ func handleSkillDetach(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	instances, _, err := storage.LoadWithGroups()
+	instances, groupsData, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
 		os.Exit(1)
@@ -467,7 +487,7 @@ func handleSkillDetach(profile string, args []string) {
 
 	restarted := false
 	if *restart {
-		restarted = restartProjectSkillsSession(inst, *jsonOutput, quietMode)
+		restarted = restartProjectSkillsSession(inst, storage, instances, groupsData, *jsonOutput, quietMode)
 	}
 
 	if *jsonOutput {
