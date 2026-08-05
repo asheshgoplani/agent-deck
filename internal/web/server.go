@@ -41,6 +41,7 @@ type Config struct {
 	PushVAPIDPrivateKey string
 	PushVAPIDSubject    string
 	PushTestInterval    time.Duration
+	RemoteFleet         RemoteFleetLoader
 }
 
 // confirmLinkOpen resolves Config.ConfirmLinkOpen, defaulting to true so an
@@ -167,6 +168,7 @@ type Server struct {
 	mutator         SessionMutator
 	skills          SkillsService
 	mcpMgr          MCPManager
+	remoteFleet     RemoteFleetLoader
 	mutationLimiter *rate.Limiter
 
 	// hookStatusLoader returns the latest hook payload for every instance
@@ -195,10 +197,15 @@ func NewServer(cfg Config) *Server {
 	s := &Server{
 		cfg:              cfg,
 		menuData:         menuData,
+		remoteFleet:      cfg.RemoteFleet,
 		menuSubscribers:  make(map[chan struct{}]struct{}),
 		mutationLimiter:  mutationLimiter,
 		hookStatusLoader: defaultLoadHookStatuses,
 	}
+	if s.remoteFleet == nil {
+		s.remoteFleet = session.NewRemoteFleetScanner()
+	}
+	s.remoteFleet = newRemoteFleetCache(s.remoteFleet)
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	webLog := logging.ForComponent(logging.CompWeb)
 	if pushSvc, err := newPushService(cfg, menuData); err != nil {
@@ -238,6 +245,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/menu", s.handleMenu)
 	mux.HandleFunc("/api/session/", s.handleSessionByID)
 	mux.HandleFunc("/api/sessions", s.handleSessionsCollection)
+	mux.HandleFunc("/api/remotes", s.handleRemotes)
 	// /api/sessions/undelete is a collection-level action (Chrome-style
 	// ctrl+z undo). Register before the subtree pattern so Go 1.22+
 	// ServeMux precedence routes it cleanly instead of treating
