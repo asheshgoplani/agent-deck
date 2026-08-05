@@ -681,10 +681,14 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 		// 500ms fallback for clients that ignore TERM.
 		usedSIGKILL, signalled := softKillProcessChecked(pid, identity, controlClientKillGrace)
 		if !signalled {
-			// The pid changed hands between the snapshot and now. Nothing was
-			// signalled, so nothing is counted — the burst metric below exists
-			// to observe real kill cascades.
-			pipeLog.Debug("skipped_recycled_control_client_pid",
+			// Nothing was sent, so nothing is counted — the burst metric below
+			// exists to observe real kill cascades. Two causes share this
+			// branch and the event name stays neutral between them: the pid's
+			// identity no longer matches (it changed hands since the snapshot),
+			// or it was already gone by the time we signalled (ESRCH). Only
+			// the first is a recycled pid, and from here they are not
+			// distinguishable.
+			pipeLog.Debug("skipped_control_client_not_signalled",
 				slog.String("session", sessionLabel),
 				slog.Int("pid", pid))
 			continue
@@ -925,8 +929,15 @@ func readProcessIdentity(pid int) (string, error) {
 		}
 		return fields[startTimeIndex], nil
 	}
+	// Bounded, unlike the sibling ps probes: this one runs once per candidate
+	// pid on the boot path, where SweepStaleControlClients already refuses to
+	// let a hung query stall startup (staleControlSweepTimeout). A deadline
+	// miss surfaces as an error, which leaves the guard unarmed — the sweep
+	// keeps working, it just stops being able to detect reuse.
+	ctx, cancel := context.WithTimeout(context.Background(), processProbeTimeout)
+	defer cancel()
 	// #nosec G204 -- "ps" is a fixed binary; only arg is strconv.Itoa(int).
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	out, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
 	if err != nil {
 		return "", err
 	}
@@ -941,6 +952,12 @@ func readProcessIdentity(pid int) (string, error) {
 // to change hands mid-grace. Forcing a real reuse would take a full pid_max
 // wrap inside a 100ms window.
 var processIdentityOf = readProcessIdentity
+
+// processProbeTimeout bounds the `ps` fallback in readProcessIdentity so a
+// wedged probe cannot stall the boot-path sweep that calls it. Matches
+// staleControlSweepTimeout, which bounds the list-clients query feeding the
+// same sweep.
+var processProbeTimeout = 2 * time.Second
 
 // controlClientKillGrace is how long softKillProcess waits after SIGTERM
 // before escalating to SIGKILL. 500ms matches empirical clean-shutdown
