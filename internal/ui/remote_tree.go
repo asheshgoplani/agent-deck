@@ -22,16 +22,28 @@ import (
 // (Path = "remotes/<name>"), so callers append it directly. Sub-group headers
 // carry Path = "remotes/<name>/<group-path>" so cursor-identity restore, which
 // matches ItemTypeRemoteGroup on RemoteName+Path, keeps working unchanged.
-func buildRemoteFlatItems(remoteName string, sessions []session.RemoteSessionInfo) []session.Item {
+//
+// collapsed holds the header paths the user has folded shut, keyed exactly like
+// Item.Path. A collapsed header is still emitted — only its descendants are
+// withheld — so the row stays on screen and can be reopened. Passing nil emits
+// the full tree, which is what every caller did before collapsing existed.
+func buildRemoteFlatItems(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool) []session.Item {
 	items := make([]session.Item, 0, len(sessions)+2)
+
+	remoteRoot := "remotes/" + remoteName
 
 	// Level-0 remote header. Rendering/latency for this row is unchanged.
 	items = append(items, session.Item{
 		Type:       session.ItemTypeRemoteGroup,
 		RemoteName: remoteName,
-		Path:       "remotes/" + remoteName,
+		Path:       remoteRoot,
 		Level:      0,
 	})
+
+	// Whole remote folded shut: the header alone, no groups and no sessions.
+	if collapsed[remoteRoot] {
+		return items
+	}
 
 	// Bucket sessions by normalized group path. Preserve input order within a
 	// bucket (the fetch layer already sorted them) by tracking indices.
@@ -57,22 +69,36 @@ func buildRemoteFlatItems(remoteName string, sessions []session.RemoteSessionInf
 		// nested "a/b/c" gets headers for "a", "a/b", "a/b/c" in order.
 		segments := strings.Split(gp, "/")
 		prefix := ""
+		hidden := false // an ancestor header (or gp itself) is collapsed
 		for depth, seg := range segments {
 			if prefix == "" {
 				prefix = seg
 			} else {
 				prefix = prefix + "/" + seg
 			}
-			if emitted[prefix] {
-				continue
+			// Set by the previous iteration: everything below that ancestor
+			// stays unwritten, including the deeper headers of this path.
+			if hidden {
+				break
 			}
-			emitted[prefix] = true
-			items = append(items, session.Item{
-				Type:       session.ItemTypeRemoteGroup,
-				RemoteName: remoteName,
-				Path:       "remotes/" + remoteName + "/" + prefix,
-				Level:      depth + 1, // Level 0 is the remote header
-			})
+			full := remoteRoot + "/" + prefix
+			if !emitted[prefix] {
+				emitted[prefix] = true
+				items = append(items, session.Item{
+					Type:       session.ItemTypeRemoteGroup,
+					RemoteName: remoteName,
+					Path:       full,
+					Level:      depth + 1, // Level 0 is the remote header
+				})
+			}
+			// Checked outside the emit guard: a header emitted while walking an
+			// earlier sibling path must still hide this path's descendants.
+			if collapsed[full] {
+				hidden = true
+			}
+		}
+		if hidden {
+			continue // sessions of a collapsed group stay folded away
 		}
 
 		// Sessions sit one level below their owning group header.

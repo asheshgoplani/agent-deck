@@ -371,6 +371,12 @@ type Home struct {
 	// Window toggle state — sessions with collapsed window sub-items
 	windowsCollapsed map[string]bool // sessionID -> true if windows hidden
 
+	// Remote tree fold state — headers the user collapsed, keyed by Item.Path
+	// ("remotes/<name>" or "remotes/<name>/<group>"). Remote groups are
+	// synthetic UI buckets, not rows in groupTree, so they need their own
+	// store rather than groupTree's expanded flags.
+	remoteGroupsCollapsed map[string]bool
+
 	// Worktree dirty status cache (lazy, 10s TTL)
 	worktreeDirtyCache   map[string]bool      // sessionID -> isDirty
 	worktreeDirtyCacheTs map[string]time.Time // sessionID -> cache timestamp
@@ -722,6 +728,10 @@ type uiState struct {
 	PreviewMode     int    `json:"preview_mode"`
 	StatusFilter    string `json:"status_filter,omitempty"`
 	GroupViewMode   int    `json:"group_view_mode,omitempty"`
+	// Collapsed remote headers, keyed like Item.Path. Local group folds live in
+	// groupTree, which is persisted separately by saveGroupState; remote groups
+	// are synthetic UI rows and have no home there.
+	RemoteGroupsCollapsed []string `json:"remote_groups_collapsed,omitempty"`
 }
 
 type selectedItemIdentity struct {
@@ -1004,6 +1014,17 @@ func (h *Home) collapseOrNavUp() {
 			}
 		}
 		collapsed = true
+	} else if item.Type == session.ItemTypeRemoteGroup {
+		// Fold shut if open; if already shut, walk to the parent header so the
+		// key keeps behaving like "collapse or go up" on the remote side too.
+		if !h.setRemoteGroupCollapsed(item.RemoteName, item.Path, true) {
+			if parent := remoteGroupParentPath(item.Path); parent != "" {
+				h.moveCursorToRemoteGroup(item.RemoteName, parent)
+			}
+		}
+	} else if item.Type == session.ItemTypeRemoteSession {
+		// Item.Path is the owning group header's path.
+		h.setRemoteGroupCollapsed(item.RemoteName, item.Path, true)
 	}
 	if collapsed {
 		h.saveGroupState()
@@ -1419,6 +1440,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		creatingSessions:          make(map[string]*CreatingSession),
 		lastLogActivity:           make(map[string]time.Time),
 		windowsCollapsed:          make(map[string]bool),
+		remoteGroupsCollapsed:     make(map[string]bool),
 		worktreeDirtyCache:        make(map[string]bool),
 		worktreeDirtyCacheTs:      make(map[string]time.Time),
 		statusTrigger:             make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
@@ -2211,6 +2233,65 @@ func (h *Home) moveCursorToGroup(path string) {
 	}
 }
 
+// moveCursorToRemoteGroup parks the cursor on a remote header after a rebuild.
+// Remote headers are identified by RemoteName+Path, the same pair that
+// cursor-identity restore matches on.
+func (h *Home) moveCursorToRemoteGroup(remoteName, path string) {
+	for i, fi := range h.flatItems {
+		if fi.Type == session.ItemTypeRemoteGroup && fi.RemoteName == remoteName && fi.Path == path {
+			h.cursor = i
+			return
+		}
+	}
+}
+
+// isRemoteGroupCollapsed reports whether a remote header is folded shut.
+func (h *Home) isRemoteGroupCollapsed(path string) bool {
+	return h.remoteGroupsCollapsed[path]
+}
+
+// setRemoteGroupCollapsed folds a remote header open or shut, rebuilds the tree
+// and keeps the cursor on the header the user acted on. Returns false when the
+// state was already what was asked for, so callers can fall through to
+// navigation instead of repainting for nothing.
+func (h *Home) setRemoteGroupCollapsed(remoteName, path string, collapsed bool) bool {
+	if h.remoteGroupsCollapsed == nil {
+		h.remoteGroupsCollapsed = make(map[string]bool)
+	}
+	if h.remoteGroupsCollapsed[path] == collapsed {
+		return false
+	}
+	if collapsed {
+		h.remoteGroupsCollapsed[path] = true
+	} else {
+		delete(h.remoteGroupsCollapsed, path)
+	}
+	h.rebuildFlatItems()
+	h.moveCursorToRemoteGroup(remoteName, path)
+	h.saveUIState()
+	return true
+}
+
+// toggleRemoteGroup flips a remote header's fold state.
+func (h *Home) toggleRemoteGroup(remoteName, path string) {
+	h.setRemoteGroupCollapsed(remoteName, path, !h.remoteGroupsCollapsed[path])
+}
+
+// remoteGroupParentPath returns the header one level up from a remote path, or
+// "" for the Level-0 remote root. "remotes/<name>/a/b" -> "remotes/<name>/a",
+// "remotes/<name>/a" -> "remotes/<name>".
+func remoteGroupParentPath(path string) string {
+	idx := strings.LastIndex(path, "/")
+	if idx < 0 {
+		return ""
+	}
+	parent := path[:idx]
+	if parent == "remotes" {
+		return ""
+	}
+	return parent
+}
+
 func (h *Home) captureSelectedItemIdentity() selectedItemIdentity {
 	if h.cursor < 0 || h.cursor >= len(h.flatItems) {
 		return selectedItemIdentity{windowIndex: -1}
@@ -2474,7 +2555,7 @@ func (h *Home) rebuildFlatItems() {
 		for _, remoteName := range remoteNames {
 			// #1553: nest each remote's sessions under their Group paths
 			// instead of dumping them flat at Level 1.
-			h.flatItems = append(h.flatItems, buildRemoteFlatItems(remoteName, remotes[remoteName])...)
+			h.flatItems = append(h.flatItems, buildRemoteFlatItems(remoteName, remotes[remoteName], h.remoteGroupsCollapsed)...)
 		}
 	}
 
@@ -8133,6 +8214,8 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 				h.saveGroupState()
 				h.noteGroupToggled(groupPath)
+			} else if item.Type == session.ItemTypeRemoteGroup {
+				h.toggleRemoteGroup(item.RemoteName, item.Path)
 			}
 			return h, nil
 		}
@@ -8510,6 +8593,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				h.saveGroupState()
 				h.noteGroupToggled(groupPath)
+			} else if item.Type == session.ItemTypeRemoteGroup {
+				// Enter on a remote header folds it, mirroring local groups.
+				// There is nothing to attach to on a header row.
+				h.toggleRemoteGroup(item.RemoteName, item.Path)
 			} else if item.Type == session.ItemTypeWindow {
 				// Find parent session by WindowSessionID
 				var parentInst *session.Instance
@@ -8572,6 +8659,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				h.saveGroupState()
 				h.noteGroupToggled(groupPath)
+			} else if item.Type == session.ItemTypeRemoteGroup {
+				h.toggleRemoteGroup(item.RemoteName, item.Path)
 			} else if item.Type == session.ItemTypeSession && h.sessionHasWindows(item) {
 				sid := item.Session.ID
 				h.windowsCollapsed[sid] = !h.windowsCollapsed[sid]
@@ -11295,6 +11384,19 @@ func (h *Home) saveUIState() {
 		GroupViewMode: int(h.groupViewMode),
 	}
 
+	// Sorted so an unchanged fold state marshals byte-identically and doesn't
+	// churn the metadata row on every save.
+	if len(h.remoteGroupsCollapsed) > 0 {
+		paths := make([]string, 0, len(h.remoteGroupsCollapsed))
+		for path, isCollapsed := range h.remoteGroupsCollapsed {
+			if isCollapsed {
+				paths = append(paths, path)
+			}
+		}
+		sort.Strings(paths)
+		state.RemoteGroupsCollapsed = paths
+	}
+
 	// Capture cursor position
 	if h.cursor >= 0 && h.cursor < len(h.flatItems) {
 		item := h.flatItems[h.cursor]
@@ -11341,6 +11443,15 @@ func (h *Home) loadUIState() {
 	if err := json.Unmarshal([]byte(val), &state); err != nil {
 		uiLog.Warn("load_ui_state_unmarshal_failed", slog.String("error", err.Error()))
 		return
+	}
+
+	// Remote fold state applies immediately: rebuildFlatItems reads the map on
+	// the first paint, before any remote sessions have even been fetched.
+	if h.remoteGroupsCollapsed == nil {
+		h.remoteGroupsCollapsed = make(map[string]bool)
+	}
+	for _, path := range state.RemoteGroupsCollapsed {
+		h.remoteGroupsCollapsed[path] = true
 	}
 
 	// Apply preview mode, status filter, and group view mode immediately
@@ -16839,6 +16950,9 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true) // yellow
 	countStyle := DimStyle
 	expandIcon := "▾"
+	if h.isRemoteGroupCollapsed(item.Path) {
+		expandIcon = "▸" // same glyph pair the local group rows use
+	}
 	if selected {
 		nameStyle = GroupNameSelStyle
 		countStyle = GroupCountSelStyle
