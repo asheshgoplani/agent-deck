@@ -23,6 +23,31 @@ import (
 // exit.
 const mcpReapGracePeriod = 1 * time.Second
 
+// mcpReapMinDepth returns the shallowest depth below the pane PID at which a
+// process is an MCP child rather than the tool itself, given the pane leader's
+// command name.
+//
+// The two spawn shapes put the tool at different depths:
+//
+//	shell-led pane:  sh (0) -> claude (1) -> MCP server (2)
+//	agent-led pane:  claude (0)           -> MCP server (1)
+//
+// agent-deck execs the agent wherever it can, which makes the agent the pane
+// leader and leaves nothing at depth 1 but its own children. Tools that are
+// not exec'd (or panes whose leader is a login shell) keep the older shape,
+// where depth 1 is the tool and must not be pre-empted. Assuming a single
+// depth silently drops one of the two: hardcoding 2 leaves agent-led panes
+// with no #965 defence at all, and hardcoding 1 would SIGTERM the tool.
+//
+// An unknown or unreadable leader falls back to 2, which is the conservative
+// direction: it can under-register, never signal the tool by mistake.
+func mcpReapMinDepth(paneLeaderComm string) int {
+	if paneLeaderComm != "" && !isShellBinary(paneLeaderComm) {
+		return 1
+	}
+	return 2
+}
+
 // mcpReapVerifyTimeout is how long we wait AFTER SIGKILL for the child
 // to actually be gone (reaped by init or exit'd by the kernel). Without
 // this verification, killInternal returns while children are still
@@ -77,15 +102,19 @@ func (i *Instance) UnregisterMCPChild(pid int) {
 //
 // Filtering rules:
 //   - Pane PID itself is skipped: tmux teardown signals it directly.
-//   - Direct children of the pane PID (typically the tool process —
-//     claude/codex/gemini) are also skipped: tmux's pgroup-wide
-//     kill-session is the right path for them, and pre-empting it
-//     with SIGTERM causes the session to auto-destroy before
-//     kill-session runs, which surfaces a cosmetic teardown error.
+//   - The tool process (claude/codex/gemini) is skipped: tmux's
+//     pgroup-wide kill-session is the right path for it, and
+//     pre-empting that with SIGTERM causes the session to
+//     auto-destroy before kill-session runs, which surfaces a
+//     cosmetic teardown error.
 //   - Everything deeper IS registered: this is where stdio MCPs and
 //     their helpers (uvx, python, node, bun) live. Some MCPs setsid
 //     into their own session, escaping tmux's pgroup kill — those
 //     are exactly the leakers from issue #965.
+//
+// Which depth holds the tool process depends on how the pane was
+// spawned, so it is read from the pane leader rather than assumed —
+// see mcpReapMinDepth.
 //
 // Issue #965 wiring follow-up to PR #1000. Hardened in issue #1086
 // to use a single ps snapshot (was: two snapshots, which could
@@ -100,7 +129,7 @@ func (i *Instance) discoverMCPChildrenFromPaneTree() {
 		return
 	}
 
-	procTable, err := exec.Command("ps", "-eo", "pid=,ppid=").Output()
+	procTable, err := exec.Command("ps", "-eo", "pid=,ppid=,comm=").Output()
 	if err != nil || len(procTable) == 0 {
 		return
 	}
@@ -108,9 +137,12 @@ func (i *Instance) discoverMCPChildrenFromPaneTree() {
 	if len(childrenByParent) == 0 {
 		return
 	}
+	// Same snapshot, so the leader identity cannot disagree with the tree.
+	minDepth := mcpReapMinDepth(parsePSCommandNames(procTable)[panePID])
 
 	// BFS from pane PID with depth tracking. Single snapshot — every
-	// classification decision (depth-1 skip vs depth-2+ register) is
+	// classification decision (skip below minDepth vs register at or
+	// past it, and the pane-leader read that sets minDepth) is
 	// against the same ps output, removing the two-snapshot race the
 	// previous implementation had between collectTmuxPaneProcessTreePIDs
 	// and the per-pid parent lookup.
@@ -130,7 +162,7 @@ func (i *Instance) discoverMCPChildrenFromPaneTree() {
 			}
 			seen[child] = true
 			childDepth := node.depth + 1
-			if childDepth >= 2 {
+			if childDepth >= minDepth {
 				i.RegisterMCPChild(child)
 			}
 			queue = append(queue, queued{pid: child, depth: childDepth})

@@ -1227,14 +1227,14 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 			// through a point where the id can be non-empty, which is deferred
 			// as a follow-up rather than attempted blind here.
 			if recorded := i.recordedClaudeSessionID(); recorded != "" {
-				return fmt.Sprintf(`%s%s%s --resume %s%s`,
+				return fmt.Sprintf(`%sexec %s%s --resume %s%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, recorded, extraFlags)
 			}
 			sessionLog.Warn("resume: continue_mode_unverifiable",
 				slog.String("instance_id", logging.SanitizeValue(i.ID)),
 				slog.String("path", logging.SanitizeValue(i.ProjectPath)),
 				slog.String("reason", "continue_flag_picks_newest_conversation_in_dir"))
-			return fmt.Sprintf(`%s%s%s -c%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
+			return fmt.Sprintf(`%sexec %s%s -c%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
 
 		case "resume":
 			// Resume specific session by ID
@@ -1244,7 +1244,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				// behind canResumeClaudeSession.
 				if canResumeClaudeSession(i, opts.ResumeSessionID) {
 					// Session has conversation history - use normal --resume
-					return fmt.Sprintf(`%s%s%s --resume %s%s`,
+					return fmt.Sprintf(`%sexec %s%s --resume %s%s`,
 						bashExportPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
 				}
 				// Session was never interacted with - use --session-id with same UUID.
@@ -1259,11 +1259,11 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 					freshID = i.replaceRefusedClaudeSessionID()
 				}
 				return fmt.Sprintf(
-					`%s%s%s --session-id "%s"%s`,
+					`%sexec %s%s --session-id "%s"%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, freshID, extraFlags)
 			}
 			// No session ID provided - use -r flag for interactive picker
-			return fmt.Sprintf(`%s%s%s -r%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
+			return fmt.Sprintf(`%sexec %s%s -r%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
 		}
 
 		// Default: new session with capture-resume pattern
@@ -3031,7 +3031,9 @@ func parsePSParentChildMap(procTable []byte) map[int][]int {
 	scanner := bufio.NewScanner(bytes.NewReader(procTable))
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) != 2 {
+		// tolerant of trailing columns so the same snapshot can carry comm=
+		// for callers that also need to identify the pane leader
+		if len(fields) < 2 {
 			continue
 		}
 		pid, err := strconv.Atoi(fields[0])
@@ -3045,6 +3047,28 @@ func parsePSParentChildMap(procTable []byte) map[int][]int {
 		childrenByParent[ppid] = append(childrenByParent[ppid], pid)
 	}
 	return childrenByParent
+}
+
+// parsePSCommandNames reads `pid=,ppid=,comm=` output into pid -> command
+// name. Comm is the last column and may contain spaces, so everything from
+// the third field on is joined. macOS reports comm as an absolute path while
+// Linux reports the bare name, so the result is reduced to the base name to
+// give callers one shape to compare against.
+func parsePSCommandNames(procTable []byte) map[int]string {
+	commByPID := make(map[int]string)
+	scanner := bufio.NewScanner(bytes.NewReader(procTable))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		commByPID[pid] = filepath.Base(strings.Join(fields[2:], " "))
+	}
+	return commByPID
 }
 
 func collectProcessTreePIDsViaPgrep(rootPID int) []int {
@@ -8131,11 +8155,11 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// after the tmux session is restarted. No inline tmux set-environment in the shell string
 	// (which silently fails inside Docker sandbox containers).
 	if useResume {
-		return fmt.Sprintf("%s%s%s --resume %s%s",
+		return fmt.Sprintf("%s%sexec %s --resume %s%s",
 			envPrefix, bashExportPrefix, claudeCmd, i.ClaudeSessionID, extraFlags)
 	}
 	// Session was never interacted with - use --session-id to create fresh session.
-	return fmt.Sprintf("%s%s%s --session-id %s%s",
+	return fmt.Sprintf("%s%sexec %s --session-id %s%s",
 		envPrefix, bashExportPrefix, claudeCmd, i.ClaudeSessionID, extraFlags)
 }
 
