@@ -5898,6 +5898,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case sessionRemoveBlockedMsg:
+		h.setError(fmt.Errorf("cannot remove '%s': its tmux process is still running; close or delete it first", msg.title))
+		return h, nil
+
 	case sessionClosedMsg:
 		// Keep session metadata, just reflect runtime termination state.
 		if msg.killErr != nil {
@@ -12816,6 +12820,12 @@ type sessionDeletedMsg struct {
 	killErr   error // Error from Kill() if any
 }
 
+// sessionRemoveBlockedMsg keeps a live tmux session registered when the TUI's
+// cached status was stale enough to make it look stopped or errored.
+type sessionRemoveBlockedMsg struct {
+	title string
+}
+
 // sessionClosedMsg signals that a session process was closed without deleting metadata.
 type sessionClosedMsg struct {
 	sessionID string
@@ -12992,15 +13002,20 @@ func (h *Home) unarchiveSession(inst *session.Instance) tea.Cmd {
 	}
 }
 
-// removeSession removes a session from the registry without killing the
-// process or cleaning its worktree. The key handler already enforced the
-// stopped/error gate. Emits sessionDeletedMsg so the existing delete
-// handler in Update persists the change.
+// removeSession removes an actually stopped session from the registry without
+// killing the process or cleaning its worktree. Status is only a cached hint;
+// re-check tmux here so an error/stopped status cannot orphan a live process.
 func (h *Home) removeSession(inst *session.Instance) tea.Cmd {
-	id := inst.ID
 	return func() tea.Msg {
-		return sessionDeletedMsg{deletedID: id}
+		return registryRemovalMsg(inst)
 	}
+}
+
+func registryRemovalMsg(inst *session.Instance) tea.Msg {
+	if inst.Exists() {
+		return sessionRemoveBlockedMsg{title: inst.Title}
+	}
+	return sessionDeletedMsg{deletedID: inst.ID}
 }
 
 // bulkRemoveErrored removes every session currently in the 'error' state.
@@ -13008,20 +13023,20 @@ func (h *Home) removeSession(inst *session.Instance) tea.Cmd {
 // on repeated deletedIDs.
 func (h *Home) bulkRemoveErrored() tea.Cmd {
 	h.instancesMu.RLock()
-	ids := make([]string, 0, len(h.instances))
+	instances := make([]*session.Instance, 0, len(h.instances))
 	for _, inst := range h.instances {
 		// pin-protects-from-stop: pinned errored sessions are left alone in
 		// bulk removal; an explicit Shift+D on the session still works.
 		if inst.Status == session.StatusError && inst.Pin == session.PinNone {
-			ids = append(ids, inst.ID)
+			instances = append(instances, inst)
 		}
 	}
 	h.instancesMu.RUnlock()
 
-	cmds := make([]tea.Cmd, 0, len(ids))
-	for _, id := range ids {
-		id := id
-		cmds = append(cmds, func() tea.Msg { return sessionDeletedMsg{deletedID: id} })
+	cmds := make([]tea.Cmd, 0, len(instances))
+	for _, inst := range instances {
+		inst := inst
+		cmds = append(cmds, func() tea.Msg { return registryRemovalMsg(inst) })
 	}
 	return tea.Batch(cmds...)
 }
