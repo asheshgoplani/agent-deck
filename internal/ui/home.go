@@ -6000,8 +6000,43 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.cachedStatusCounts.valid.Store(false)
 				h.rebuildFlatItems()
 			}
-			// Save the updated session state (new tmux session name)
-			h.saveInstances()
+			// Save the updated session state (new tmux session name).
+			//
+			// Must be a FORCE save. restart() kills the old tmux session and
+			// calls recreateTmuxSession, whose tmux.NewSession mints a fresh
+			// name unconditionally, and that name lives only in memory until
+			// this save. A routine save aborts on a detected external DB
+			// change and schedules a reload instead, and the reload replaces
+			// h.instances with the rows on disk -- whose tmux_session column
+			// still holds the dead name. The TUI then polls a session that
+			// does not exist and reports "error" for a session whose tmux
+			// process is running fine.
+			//
+			// That failure is self-sustaining rather than transient. An abort
+			// never advances lastLoadMtime, and the reload's own value is
+			// captured BEFORE its load, so a write landing in that window
+			// leaves lastLoadMtime behind the DB and re-arms the abort. Every
+			// retry spawns another orphaned tmux session and none of the
+			// names are ever recorded.
+			//
+			// #1550 exempted force saves from the external-change abort
+			// precisely because they carry critical mutations; a new tmux
+			// session name is that, and the save is upsert-only so it cannot
+			// delete another process's rows. Every sibling handler that mints
+			// tmux state already force-saves (sessionCreatedMsg,
+			// sessionForkedMsg, sessionRestoredMsg); restart was the outlier.
+			//
+			// This covers the save-time abort, not every concurrency hazard on
+			// the path. The restart itself runs in a tea.Cmd on its own
+			// goroutine, so a reload CAN land mid-restart and swap the pointers
+			// this handler will read. Two pre-existing guards keep that from
+			// losing the name: the Cmd re-resolves the instance by ID at
+			// execution time, and this handler re-resolves again before saving.
+			// A loss would need a reload wedged between recreateTmuxSession
+			// setting the field and this save reading it; that stays possible,
+			// but it is a one-off the next restart re-mints and re-saves, not
+			// the self-sustaining failure above.
+			h.forceSaveInstances()
 			if msg.warning != "" {
 				h.setError(fmt.Errorf("%s", msg.warning))
 			} else if msg.unarchived {
