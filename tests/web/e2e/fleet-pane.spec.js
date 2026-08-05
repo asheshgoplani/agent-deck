@@ -113,4 +113,37 @@ test.describe('fleet pane', () => {
     await expect(page.locator('[data-testid="fleet-stat-running"] .num')).toHaveText('1')
     await expect(page.locator('[data-testid="fleet-stat-sessions"] .num')).toHaveText('4')
   })
+
+  test('configured remotes render alongside local groups', async ({ page }) => {
+    await page.route('**/api/remotes', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        observedAt: '2026-08-05T12:00:00Z',
+        counts: {
+          remotesOnline: 1, remotesOffline: 1, sessions: 2,
+          running: 1, waiting: 1, idle: 0, error: 0, stopped: 0,
+        },
+        remotes: [
+          {
+            name: 'build', online: true, latencyMs: 24,
+            sessions: [
+              { id: 'remote-1', title: 'release', path: '/srv/release', tool: 'codex', status: 'running' },
+              { id: 'remote-2', title: 'review', path: '/srv/review', tool: 'claude', status: 'waiting' },
+            ],
+          },
+          { name: 'offline', online: false, issue: 'unavailable', sessions: [] },
+        ],
+      }),
+    }))
+
+    await page.goto('/')
+    await expect(page.locator('[data-testid="fleet-remote-card"]')).toHaveCount(2)
+    await expect(page.locator('[data-testid="fleet-remote-card"][data-remote-name="build"]'))
+      .toContainText('24ms')
+    await expect(page.locator('[data-testid="fleet-remote-session-tile"]')).toHaveCount(2)
+    await expect(page.locator('[data-testid="fleet-stat-remotes"]')).toHaveText('1/2 remotes online')
+    await expect(page.locator('[data-testid="fleet-stat-sessions"] .num')).toHaveText('6')
+    await expect(page.locator('[data-testid="fleet-group-card"]')).toHaveCount(3)
+  })
 })
