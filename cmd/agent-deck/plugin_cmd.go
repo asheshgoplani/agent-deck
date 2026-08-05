@@ -244,6 +244,15 @@ func pluginAttachOrDetach(profile string, args []string, op string) {
 			out.Error(fmt.Sprintf("restart failed: %s", err.Error()), ErrCodeNotFound)
 			os.Exit(1)
 		}
+		// Restart recreates the tmux session under a new name, so the save
+		// above (which ran before the restart) recorded the old one. Persist
+		// again or the stored name points at a session that no longer exists:
+		// the TUI reports the session as errored, and the live tmux session is
+		// orphaned because nothing knows its name.
+		if err := saveSessionData(storage, instances, groupsData); err != nil {
+			out.Error(fmt.Sprintf("restarted, but saving the new tmux session name failed: %s", err.Error()), ErrCodeNotFound)
+			os.Exit(1)
+		}
 	}
 }
 
