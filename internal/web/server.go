@@ -202,10 +202,11 @@ func NewServer(cfg Config) *Server {
 		mutationLimiter:  mutationLimiter,
 		hookStatusLoader: defaultLoadHookStatuses,
 	}
-	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	if s.remoteFleet == nil {
 		s.remoteFleet = session.NewRemoteFleetScanner()
 	}
+	s.remoteFleet = newRemoteFleetCache(s.remoteFleet)
+	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	webLog := logging.ForComponent(logging.CompWeb)
 	if pushSvc, err := newPushService(cfg, menuData); err != nil {
 		webLog.Warn("push_disabled", slog.String("error", err.Error()))

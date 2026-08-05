@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -74,4 +76,72 @@ func TestRemotesAPIFailsClosed(t *testing.T) {
 			t.Fatalf("unsafe error response = %q", body)
 		}
 	})
+}
+
+type blockingRemoteFleetLoader struct {
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+	release chan struct{}
+}
+
+func (f *blockingRemoteFleetLoader) Scan(context.Context) (session.RemoteFleetSnapshot, error) {
+	f.mu.Lock()
+	f.calls++
+	if f.calls == 1 {
+		close(f.started)
+	}
+	f.mu.Unlock()
+	<-f.release
+	return session.RemoteFleetSnapshot{Counts: session.RemoteFleetCounts{RemotesOnline: 1}}, nil
+}
+
+func TestRemoteFleetCacheCoalescesAndReusesScans(t *testing.T) {
+	loader := &blockingRemoteFleetLoader{
+		started: make(chan struct{}), release: make(chan struct{}),
+	}
+	cache := newRemoteFleetCache(loader)
+	cache.ttl = time.Minute
+
+	const callers = 12
+	results := make(chan error, callers)
+	go func() {
+		_, err := cache.Scan(context.Background())
+		results <- err
+	}()
+	<-loader.started
+	for range callers - 1 {
+		go func() {
+			_, err := cache.Scan(context.Background())
+			results <- err
+		}()
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		cache.mu.Lock()
+		waiters := cache.inFlight.waiters
+		cache.mu.Unlock()
+		if waiters == callers-1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("coalesced waiters = %d, want %d", waiters, callers-1)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(loader.release)
+	for range callers {
+		if err := <-results; err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+	}
+	if _, err := cache.Scan(context.Background()); err != nil {
+		t.Fatalf("cached Scan: %v", err)
+	}
+	loader.mu.Lock()
+	calls := loader.calls
+	loader.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("loader calls = %d, want 1", calls)
+	}
 }
