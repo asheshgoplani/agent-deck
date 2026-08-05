@@ -651,6 +651,18 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 		if pid == myPID {
 			continue // don't kill our own process
 		}
+		// Capture the identity now, while the decision is being made. Every
+		// check below reads /proc for this pid, and the kill can land up to
+		// grace-per-earlier-victim later; the identity is what ties the two
+		// ends together. An unreadable identity leaves the guard unarmed
+		// rather than skipping the kill, so a host that cannot report start
+		// times keeps the cleanup it had before (see softKillProcessChecked);
+		// a pid that is simply gone still falls out of the SIGTERM's ESRCH
+		// path as it always did.
+		identity, err := processIdentityOf(pid)
+		if err != nil {
+			identity = ""
+		}
 		if !isControlClientOrphan(pid) {
 			// Live sibling TUI — leave its pipe alone. Without this guard
 			// two concurrent agent-deck TUIs (allow_multiple=true) would
@@ -667,7 +679,20 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 		// the entire tmux server, wiping every agent-deck session. A SIGTERM
 		// lets the client drain and exit cleanly; SIGKILL is retained as a
 		// 500ms fallback for clients that ignore TERM.
-		usedSIGKILL := softKillProcess(pid, controlClientKillGrace)
+		usedSIGKILL, signalled := softKillProcessChecked(pid, identity, controlClientKillGrace)
+		if !signalled {
+			// Nothing was sent, so nothing is counted — the burst metric below
+			// exists to observe real kill cascades. Two causes share this
+			// branch and the event name stays neutral between them: the pid's
+			// identity no longer matches (it changed hands since the snapshot),
+			// or it was already gone by the time we signalled (ESRCH). Only
+			// the first is a recycled pid, and from here they are not
+			// distinguishable.
+			pipeLog.Debug("skipped_control_client_not_signalled",
+				slog.String("session", sessionLabel),
+				slog.Int("pid", pid))
+			continue
+		}
 		killCount++
 		pipeLog.Debug("killed_stale_control_client",
 			slog.String("session", sessionLabel),
@@ -872,6 +897,68 @@ func readProcessExe(pid int) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// readProcessIdentity returns a token that distinguishes one incarnation of a
+// PID from the next. A PID alone does not identify a process: the kernel
+// reissues it once the number wraps, so a PID read out of a `list-clients`
+// snapshot can belong to something else by the time it is signalled.
+//
+// Linux uses starttime (field 22 of /proc/<pid>/stat) — the boot-relative tick
+// the process started on, which the kernel never rewrites. Two incarnations of
+// the same PID cannot share it in practice: reuse requires wrapping the whole
+// pid_max range, which takes far longer than the field's 10ms resolution.
+// macOS (or a Linux host without /proc) falls back to `ps -o lstart=`, the same
+// fact at second resolution.
+//
+// Read errors are returned rather than swallowed: an unreadable identity is
+// the caller's signal that the guard cannot be armed, which is a different
+// state from "the identity changed" and is handled differently — see
+// softKillProcessChecked.
+func readProcessIdentity(pid int) (string, error) {
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		// Same parse as readParentPID: the comm field can contain ')', so
+		// split after the LAST one. Fields then start at state (field 3), so
+		// starttime (field 22) sits at index 19.
+		idx := strings.LastIndex(string(data), ")")
+		if idx < 0 {
+			return "", fmt.Errorf("malformed /proc/%d/stat", pid)
+		}
+		fields := strings.Fields(string(data[idx+1:]))
+		const startTimeIndex = 19
+		if len(fields) <= startTimeIndex {
+			return "", fmt.Errorf("/proc/%d/stat: too few fields", pid)
+		}
+		return fields[startTimeIndex], nil
+	}
+	// Bounded, unlike the sibling ps probes: this one runs once per candidate
+	// pid on the boot path, where SweepStaleControlClients already refuses to
+	// let a hung query stall startup (staleControlSweepTimeout). A deadline
+	// miss surfaces as an error, which leaves the guard unarmed — the sweep
+	// keeps working, it just stops being able to detect reuse.
+	ctx, cancel := context.WithTimeout(context.Background(), processProbeTimeout)
+	defer cancel()
+	// #nosec G204 -- "ps" is a fixed binary; only arg is strconv.Itoa(int).
+	out, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	if err != nil {
+		return "", err
+	}
+	identity := strings.TrimSpace(string(out))
+	if identity == "" {
+		return "", fmt.Errorf("no start time for pid %d", pid)
+	}
+	return identity, nil
+}
+
+// processIdentityOf is the seam the PID-reuse tests swap to make a pid appear
+// to change hands mid-grace. Forcing a real reuse would take a full pid_max
+// wrap inside a 100ms window.
+var processIdentityOf = readProcessIdentity
+
+// processProbeTimeout bounds the `ps` fallback in readProcessIdentity so a
+// wedged probe cannot stall the boot-path sweep that calls it. Matches
+// staleControlSweepTimeout, which bounds the list-clients query feeding the
+// same sweep.
+var processProbeTimeout = 2 * time.Second
+
 // controlClientKillGrace is how long softKillProcess waits after SIGTERM
 // before escalating to SIGKILL. 500ms matches empirical clean-shutdown
 // times for `tmux -C attach-session` on macOS + Linux.
@@ -882,14 +969,71 @@ const controlClientKillGrace = 500 * time.Millisecond
 // SIGKILL was ultimately used. A non-existent pid (ESRCH) is treated as
 // already-dead and returns false without escalation.
 func softKillProcess(pid int, grace time.Duration) bool {
+	identity, err := processIdentityOf(pid)
+	if err != nil {
+		// Unreadable, or already gone. Either way there is nothing to compare
+		// against; softKillProcessChecked treats "" as an unarmed guard and
+		// behaves exactly as this function did before the guard existed.
+		identity = ""
+	}
+	usedSIGKILL, _ := softKillProcessChecked(pid, identity, grace)
+	return usedSIGKILL
+}
+
+// stillSameIncarnation reports whether pid still refers to the process that
+// identity was taken from, i.e. whether it is still the process the caller
+// decided to kill.
+//
+// An empty identity means the caller could not establish one, so the guard is
+// unarmed and the signal proceeds — the pre-guard behaviour. A read that fails
+// now means the process is gone (or has become unreadable), and there is
+// nothing worth signalling either way.
+func stillSameIncarnation(pid int, identity string) bool {
+	if identity == "" {
+		return true
+	}
+	current, err := processIdentityOf(pid)
+	if err != nil {
+		return false
+	}
+	return current == identity
+}
+
+// softKillProcessChecked is softKillProcess for a caller that decided to kill
+// pid at some earlier point and captured its identity then. It re-checks that
+// identity immediately before each signal, so a PID that changed hands between
+// the decision and the signal is left alone.
+//
+// Both checks are load-bearing, and they close different windows:
+//
+//   - Before the SIGTERM, because the caller's decision can be arbitrarily
+//     old. reapStaleControlClients works through a `list-clients` snapshot
+//     sequentially and blocks up to grace per victim, so the last PID in a
+//     burst is acted on N × grace after it was observed.
+//   - Before the SIGKILL, because the victim may have exited cleanly inside
+//     the grace period and had its number reissued. The poll below uses
+//     kill(pid, 0), which answers "some process holds this number", not "the
+//     one you signalled" — so without this check a well-behaved client that
+//     obeyed SIGTERM promptly is indistinguishable from one that ignored it,
+//     and the escalation lands on the new occupant.
+//
+// signalled reports whether anything was sent at all. Callers count kills and
+// log one line per victim, and a pid the guard refused to touch is not a
+// victim — reporting it as one would make the sweep's burst metric, which
+// exists to observe the kill cascade, count kills that never happened.
+func softKillProcessChecked(pid int, identity string, grace time.Duration) (usedSIGKILL, signalled bool) {
+	if !stillSameIncarnation(pid, identity) {
+		return false, false
+	}
+
 	// Initial SIGTERM. If the process is already gone, we're done.
 	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
 		if errors.Is(err, syscall.ESRCH) {
-			return false
+			return false, false
 		}
 		// Permission or other error — try SIGKILL as last resort.
 		_ = syscall.Kill(pid, syscall.SIGKILL)
-		return true
+		return true, true
 	}
 
 	// Poll for exit. syscall.Kill(pid, 0) returns ESRCH once the process
@@ -903,13 +1047,17 @@ func softKillProcess(pid int, grace time.Duration) bool {
 	for time.Now().Before(deadline) {
 		time.Sleep(pollInterval)
 		if err := syscall.Kill(pid, 0); err != nil && errors.Is(err, syscall.ESRCH) {
-			return false
+			return false, true
 		}
 	}
 
-	// Still alive after grace — escalate.
+	// Something still holds the number after grace. Escalate only if it is
+	// still the process we signalled.
+	if !stillSameIncarnation(pid, identity) {
+		return false, true
+	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
-	return true
+	return true, true
 }
 
 // softKillProcessGroup is the process-group analogue of softKillProcess.
