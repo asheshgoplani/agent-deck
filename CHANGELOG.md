@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A restarted session no longer shows a permanent false "error" while its tmux process runs fine.** Restart recreates the tmux session under a newly minted name, and the TUI's save of that name aborted whenever the state DB had changed since the TUI last loaded, so the next reload restored the dead name from disk. The TUI then polled a session that no longer existed and reported an error for a healthy session, and `Enter`/`R` could not clear it: an aborted save never advances the TUI's last-load timestamp, so each retry aborted for the same reason and leaked another orphaned tmux session. The restart handler now force-saves, matching every sibling handler that mints tmux state.
+
 ## [1.11.0] - 2026-08-01
 
 Security and correctness release. Repo-supplied worktree scripts now require explicit consent, path handling around the skills catalog and logs is hardened, `session send` tells the truth about delivery, restarted sessions can no longer resume the wrong conversation, and Ctrl+Q detach works on every session sharing a tmux socket.
