@@ -72,6 +72,7 @@ const (
 	SubstateIdleAtEmptyPrompt = tmux.SubstateIdleAtEmptyPrompt
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
+	SubstateAPIError          = tmux.SubstateAPIError
 	SubstateStalled           = tmux.SubstateStalled
 	SubstateUsageLimit        = tmux.SubstateUsageLimit
 )

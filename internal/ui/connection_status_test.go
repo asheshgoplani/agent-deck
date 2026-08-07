@@ -58,6 +58,12 @@ func TestRowStatusGlyph(t *testing.T) {
 		{"substate glyph only applies in error status", session.StatusRunning, session.SubstateAuth401, false, "●"},
 		{"archived overrides a live status", session.StatusRunning, "", true, "■"},
 		{"archived overrides an error substate glyph", session.StatusError, session.SubstateAuth401, true, "■"},
+		{"idle + api-error substate", session.StatusIdle, session.SubstateAPIError, false, "🌐"},
+		{"waiting + api-error substate", session.StatusWaiting, session.SubstateAPIError, false, "🌐"},
+		{"api-error glyph does NOT render under error status", session.StatusError, session.SubstateAPIError, false, "✕"},
+		{"api-error glyph does NOT render under running", session.StatusRunning, session.SubstateAPIError, false, "●"},
+		{"archived overrides the api-error glyph", session.StatusIdle, session.SubstateAPIError, true, "■"},
+		{"stalled still renders alongside api-error", session.StatusIdle, session.SubstateStalled, false, "🧊"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

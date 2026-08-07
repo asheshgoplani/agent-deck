@@ -412,19 +412,25 @@ var claudeBannerStructuralMarkers = []string{" · ", `{"type":"error"`}
 // hasClaudeErrorBanner scans the last 15 non-empty lines (same window as
 // hasClaudePrompt) for a banner-shaped error line.
 func hasClaudeErrorBanner(content string) bool {
-	return scanClaudeBannerLines(content, claudeErrorBannerSubstrings)
+	return scanClaudeBannerLines(content, claudeErrorBannerSubstrings, claudeBannerStructuralMarkers)
 }
 
 // scanClaudeBannerLines reports whether any of the last 15 non-empty lines is a
 // banner-shaped line containing one of patterns. It carries the over-match
 // guards that make banner detection trustworthy — quoted/input lines are
-// skipped, and an assistant-turn line must also show a structural banner marker
-// so prose merely mentioning the text does not match.
+// skipped, and an assistant-turn line must also show one of structural so prose
+// merely mentioning the text does not match.
 //
-// Shared by hasClaudeErrorBanner (any tool-rendered failure banner) and the
-// auth-specific scan (authFailureBannerPatterns) so the two can never drift
-// apart on the guards.
-func scanClaudeBannerLines(content string, patterns []string) bool {
+// Shared by hasClaudeErrorBanner (any tool-rendered failure banner), the
+// auth-specific scan (authFailureBannerPatterns) and the transport scan
+// (apiErrorBannerSubstrings) so the three can never drift apart on the guards.
+//
+// structural is a PARAMETER rather than the package-level
+// claudeBannerStructuralMarkers because the transport banner needs a wider set:
+// the field capture `⏺ API Error: Unable to connect to API (ENOTFOUND)` carries
+// neither the " · " segment separator nor the error JSON, so the shared set
+// would skip the one line the transport detector exists to catch.
+func scanClaudeBannerLines(content string, patterns, structural []string) bool {
 	lines := strings.Split(content, "\n")
 	checked := 0
 	for i := len(lines) - 1; i >= 0 && checked < 15; i-- {
@@ -438,7 +444,7 @@ func scanClaudeBannerLines(content string, patterns []string) bool {
 		}
 		// On an assistant-turn line, require a structural banner marker so
 		// prose mentioning the banner text is not misread as a live banner.
-		if strings.HasPrefix(line, claudeAssistantLinePrefix) && !containsAny(line, claudeBannerStructuralMarkers) {
+		if strings.HasPrefix(line, claudeAssistantLinePrefix) && !containsAny(line, structural) {
 			continue
 		}
 		for _, pat := range patterns {
@@ -448,6 +454,48 @@ func scanClaudeBannerLines(content string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// apiErrorBannerSubstrings are fragments of the TRANSPORT-failure banner Claude
+// Code renders when it cannot reach the API. Field evidence (2026-08-07, a DNS
+// outage that wedged 3 of 32 live sessions for 16, 18 and 39 minutes):
+//
+//	⏺ API Error: Unable to connect to API (ENOTFOUND)
+//	✻ Sautéed for 39m 27s
+//
+// Deliberately a SEPARATE set from claudeErrorBannerSubstrings: a 401 is
+// terminal and a transport error is not, so the two earn different substates and
+// different recovery. Anchored on the rendered wording and the Node/undici error
+// codes, never on a bare token like "API Error".
+var apiErrorBannerSubstrings = []string{
+	"Unable to connect to API",
+	"ENOTFOUND",
+	"ECONNREFUSED",
+	"ConnectionRefused",
+}
+
+// apiErrorBannerStructuralMarkers are the co-signals required on an
+// assistant-glyph ("⏺") line before a transport banner is believed.
+//
+// claudeBannerStructuralMarkers alone would reject the REAL banner: the field
+// capture carries neither the " · " segment separator nor the error JSON, so the
+// assistant-line guard would skip it and the substate could never fire. The
+// PARENTHESISED transport code is the structural shape prose does not carry —
+// a conductor writing "the worker showed API Error: Unable to connect to API"
+// does not reproduce it — so it joins the set for this scan only.
+var apiErrorBannerStructuralMarkers = []string{
+	" · ",
+	`{"type":"error"`,
+	"(ENOTFOUND)",
+	"(ECONNREFUSED)",
+	"(ConnectionRefused)",
+}
+
+// hasClaudeAPIErrorBanner scans the recent pane tail for a TRANSPORT-failure
+// banner, reusing the same quoted-line and assistant-prose guards as the auth
+// scan so a conductor quoting a child's banner behind "⎿" never matches.
+func hasClaudeAPIErrorBanner(content string) bool {
+	return scanClaudeBannerLines(content, apiErrorBannerSubstrings, apiErrorBannerStructuralMarkers)
 }
 
 // containsAny reports whether s contains any of the given substrings.

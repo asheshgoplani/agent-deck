@@ -755,3 +755,33 @@ transport banner to StatusError, so a glyph gated there would never render."
 - `internal/ui/connection_status.go`: `rowStatusGlyph` renders `"🌐"` for `SubstateAPIError` under `StatusIdle`/`StatusWaiting` only
 
 ## Record (append-only)
+
+### 2026-08-07 — implemented
+
+- Files touched: `internal/tmux/detector.go`, `internal/tmux/authfailure.go`,
+  `internal/tmux/substate.go`, `internal/tmux/apierror_test.go` (new),
+  `internal/session/instance.go`, `internal/session/stall.go`,
+  `internal/session/stall_test.go`, `cmd/agent-deck/cli_utils.go`,
+  `internal/ui/connection_status.go`, `internal/ui/connection_status_test.go`.
+- Implemented exactly as written; no deviations.
+- Verification: `gofmt -l` on all ten files → empty. `go build ./...` → exit 0.
+  `go test ./internal/tmux/ -run 'APIError|ClassifySubstate|AuthFailure|ErrorBanner' -v`
+  → 61 PASS, 0 FAIL, sentinel `TestClassifySubstate_TransportBanner_IsAPIError`
+  PASS. `go test ./internal/session/ -run PromoteStalled -v` → EXIT=0, all 7
+  pre-existing plus both new PASS, sentinel
+  `TestPromoteStalled_APIErrorFrozenDraft_BecomesStalled` PASS.
+  `go test ./internal/ui/ -run RowStatusGlyph -v` → EXIT=0, sentinel
+  `TestRowStatusGlyph/api-error_glyph_does_NOT_render_under_error_status` PASS.
+  `go test ./internal/ui/ -run ConnectionStatus -v` → ok.
+  `grep -rn 'SubstateStalled' internal/selfheal/` → no output (criterion 8 holds).
+- Concern (pre-existing, NOT introduced here): `go vet ./internal/session/`
+  reports `issue1225_wake_nudge_wiring_test.go:217:9: range var c copies lock`.
+  That file is untouched by this task (`git diff --stat HEAD` on it is empty,
+  last touched by `fa28c475`), and `golangci-lint` is the CI gate rather than
+  bare `go vet`. Left alone.
+- Baseline test failures carried in from before this task (env-flaky, unrelated):
+  `TestPerf_ColdStart_Help`, `TestPerf_ColdStart_Version` (cmd/agent-deck),
+  `TestIssue1421_CleanStaleSSHSockets` (internal/session),
+  `TestTestMainDoesNotLeakBootstrapServer` (internal/testutil),
+  `TestPipeManager_ConnectPreservesLiveSibling`,
+  `TestTmuxBootstrap_ServerIsRunning` (internal/tmux).

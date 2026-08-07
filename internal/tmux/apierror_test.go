@@ -1,0 +1,103 @@
+package tmux
+
+import "testing"
+
+// The captured 2026-08-07 pane. Both lines are real: the banner renders on an
+// assistant-glyph line and the whimsical completion line follows it.
+const apiErrorPaneCapture = `⏺ Read(internal/session/instance.go)
+  ⎿  Read 40 lines
+
+⏺ API Error: Unable to connect to API (ENOTFOUND)
+✻ Sautéed for 39m 27s
+
+╭──────────────────────────────────────────╮
+│ ❯                                        │
+╰──────────────────────────────────────────╯`
+
+func claudeDetector() *PromptDetector { return NewPromptDetector("claude") }
+
+// §6: the captured 2026-08-07 pane classifies api-error.
+func TestClassifySubstate_TransportBanner_IsAPIError(t *testing.T) {
+	if got := claudeDetector().ClassifySubstate(apiErrorPaneCapture); got != SubstateAPIError {
+		t.Fatalf("captured transport pane: want %q, got %q", SubstateAPIError, got)
+	}
+}
+
+// §6: a conductor quoting the banner behind "⎿" does not match.
+func TestClassifySubstate_QuotedTransportBanner_NotAPIError(t *testing.T) {
+	quoted := `⏺ Bash(agent-deck session output worker-3)
+  ⎿  ⏺ API Error: Unable to connect to API (ENOTFOUND)
+  ⎿  ✻ Sautéed for 39m 27s
+
+╭──────────────────────────────────────────╮
+│ ❯                                        │
+╰──────────────────────────────────────────╯`
+	if got := claudeDetector().ClassifySubstate(quoted); got == SubstateAPIError {
+		t.Fatalf("a quoted child banner must not classify api-error, got %q", got)
+	}
+}
+
+// §6: assistant-line prose mentioning the banner does not match. No
+// parenthesised transport code, no " · ", no error JSON — nothing structural.
+func TestClassifySubstate_ProseAboutTransportBanner_NotAPIError(t *testing.T) {
+	prose := `⏺ The worker showed API Error: Unable to connect to API and never recovered, so I restarted it.
+
+╭──────────────────────────────────────────╮
+│ ❯                                        │
+╰──────────────────────────────────────────╯`
+	if got := claudeDetector().ClassifySubstate(prose); got == SubstateAPIError {
+		t.Fatalf("assistant prose must not classify api-error, got %q", got)
+	}
+}
+
+// §6: a recovered pane carrying BOTH the banner and a live spinner classifies
+// running. A transport error is recoverable, so the spinner is the truth.
+func TestClassifySubstate_TransportBannerWithLiveSpinner_IsRunning(t *testing.T) {
+	recovered := `⏺ API Error: Unable to connect to API (ENOTFOUND)
+✻ Sautéed for 39m 27s
+⠋ Reticulating… (12s · ↓ 431 tokens · esc to interrupt)`
+	if got := claudeDetector().ClassifySubstate(recovered); got != SubstateRunning {
+		t.Fatalf("recovered pane with a live spinner: want %q, got %q", SubstateRunning, got)
+	}
+}
+
+// §6: a banner scrolled beyond the recent tail stops matching. The scan window
+// is the last 15 NON-EMPTY lines, so 20 lines of later output bury it.
+func TestClassifySubstate_TransportBannerScrolledAway_NotAPIError(t *testing.T) {
+	buried := "⏺ API Error: Unable to connect to API (ENOTFOUND)\n"
+	for i := 0; i < 20; i++ {
+		buried += "⏺ Ordinary assistant output line\n"
+	}
+	buried += "╭──────────────────────────────────────────╮\n│ ❯                                        │\n╰──────────────────────────────────────────╯"
+	if got := claudeDetector().ClassifySubstate(buried); got == SubstateAPIError {
+		t.Fatalf("a banner scrolled out of the tail must not classify api-error, got %q", got)
+	}
+}
+
+// §6: "API Error: 401" still classifies auth-401, not api-error. auth-401 is
+// checked FIRST and the two marker sets are disjoint.
+func TestClassifySubstate_Auth401_StillAuth401(t *testing.T) {
+	auth := `⏺ API Error: 401 · Please run /login
+
+╭──────────────────────────────────────────╮
+│ ❯                                        │
+╰──────────────────────────────────────────╯`
+	if got := claudeDetector().ClassifySubstate(auth); got != SubstateAuth401 {
+		t.Fatalf("401 banner: want %q, got %q", SubstateAuth401, got)
+	}
+}
+
+// The transport markers must not leak into the auth-hold decision: a transport
+// failure is restart-recoverable and must stay outside the credential hold.
+func TestIsAuthFailureContent_TransportBanner_NotAuthFailure(t *testing.T) {
+	if IsAuthFailureContent("claude", apiErrorPaneCapture) {
+		t.Fatal("a transport banner must never arm the credential auth hold")
+	}
+}
+
+// A non-claude tool has no substate heuristics at all.
+func TestClassifySubstate_NonClaude_NoAPIError(t *testing.T) {
+	if got := NewPromptDetector("codex").ClassifySubstate(apiErrorPaneCapture); got != SubstateNone {
+		t.Fatalf("non-claude tool: want %q, got %q", SubstateNone, got)
+	}
+}
