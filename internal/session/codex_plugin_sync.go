@@ -4,12 +4,72 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
+
+	"github.com/BurntSushi/toml"
 )
 
+var codexPluginSyncMu sync.Mutex
+
+// ReconcileGroupCodexPlugins restores a group's declarative native plugin
+// floor when CODEX_HOME/config.toml has lost an enabled plugin or its
+// marketplace. Healthy homes are read-only and do not spawn the Codex CLI.
+func ReconcileGroupCodexPlugins(groupPath, codexHome string) error {
+	config, err := LoadUserConfig()
+	if err != nil {
+		return fmt.Errorf("load config.toml: %w", err)
+	}
+	if config == nil || len(config.GetGroupCodexPlugins(groupPath)) == 0 {
+		return nil
+	}
+
+	codexPluginSyncMu.Lock()
+	defer codexPluginSyncMu.Unlock()
+
+	desired := config.GetGroupCodexPlugins(groupPath)
+	healthy, err := groupCodexPluginsHealthy(filepath.Join(codexHome, "config.toml"), desired)
+	if err != nil {
+		return err
+	}
+	if healthy {
+		return nil
+	}
+	return SyncGroupCodexPlugins(groupPath)
+}
+
+func groupCodexPluginsHealthy(configPath string, desired []string) (bool, error) {
+	data, err := os.ReadFile(configPath)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read Codex config %s: %w", configPath, err)
+	}
+	var cfg map[string]any
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return false, fmt.Errorf("refusing to reconcile unparseable Codex config %s: %w", configPath, err)
+	}
+	plugins, _ := cfg["plugins"].(map[string]any)
+	marketplaces, _ := cfg["marketplaces"].(map[string]any)
+	for _, plugin := range desired {
+		entry, ok := plugins[plugin].(map[string]any)
+		if !ok || entry["enabled"] != true {
+			return false, nil
+		}
+		if at := strings.LastIndex(plugin, "@"); at >= 0 {
+			if _, ok := marketplaces[plugin[at+1:]]; !ok {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
 // SyncGroupCodexPlugins registers configured marketplaces and installs native
-// plugins into the group's preselected CODEX_HOME. It is explicit: session
-// startup never mutates plugins or marketplaces.
+// plugins into the group's preselected CODEX_HOME. Operators can invoke it
+// explicitly; startup also invokes it after detecting loadout drift.
 func SyncGroupCodexPlugins(groupPath string) error {
 	config, err := LoadUserConfig()
 	if err != nil {

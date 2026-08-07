@@ -7,6 +7,66 @@ import (
 	"testing"
 )
 
+func TestApplyConfiguredLoadout_CodexHealsMissingNativePlugins(t *testing.T) {
+	home := t.TempDir()
+	codexHome := filepath.Join(home, "codex-work")
+	record := filepath.Join(home, "plugin-invocation.txt")
+	fakeCodex := filepath.Join(home, "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$CODEX_HOME $*\" >> " + record + "\n"
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	withIsolatedHomeAndConfig(t, `
+[groups."work".codex]
+config_dir = "`+codexHome+`"
+command = "`+fakeCodex+`"
+marketplaces = ["team-marketplace"]
+plugins = ["agent-deck@team"]
+`)
+
+	inst := NewInstanceWithGroupAndTool("codex-loadout", t.TempDir(), "work", "codex")
+	if warnings := ApplyConfiguredLoadout(inst); len(warnings) != 0 {
+		t.Fatalf("unexpected loadout warnings: %v", warnings)
+	}
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("read plugin invocations: %v", err)
+	}
+	for _, fragment := range []string{
+		"plugin marketplace add team-marketplace --json",
+		"plugin add agent-deck@team --json",
+	} {
+		if !strings.Contains(string(data), fragment) {
+			t.Errorf("missing %q in invocations:\n%s", fragment, data)
+		}
+	}
+}
+
+func TestGroupCodexPluginsHealthyRequiresEnabledPluginAndMarketplace(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("[plugins.\"agent-deck@team\"]\nenabled = true\n")
+	if healthy, err := groupCodexPluginsHealthy(configPath, []string{"agent-deck@team"}); err != nil || healthy {
+		t.Fatalf("plugin without marketplace healthy=%v err=%v", healthy, err)
+	}
+
+	write("[marketplaces.team]\nsource = \"/tmp/team\"\n[plugins.\"agent-deck@team\"]\nenabled = false\n")
+	if healthy, err := groupCodexPluginsHealthy(configPath, []string{"agent-deck@team"}); err != nil || healthy {
+		t.Fatalf("disabled plugin healthy=%v err=%v", healthy, err)
+	}
+
+	write("[marketplaces.team]\nsource = \"/tmp/team\"\n[plugins.\"agent-deck@team\"]\nenabled = true\n")
+	if healthy, err := groupCodexPluginsHealthy(configPath, []string{"agent-deck@team"}); err != nil || !healthy {
+		t.Fatalf("complete plugin floor healthy=%v err=%v", healthy, err)
+	}
+}
+
 func TestApplyConfiguredLoadout_CodexGroupUsesHomeSkillsAndGroupHomeMCP(t *testing.T) {
 	home := withIsolatedHomeAndConfig(t, `
 [mcps.memory]

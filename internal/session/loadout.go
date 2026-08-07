@@ -11,8 +11,9 @@ import (
 
 // ApplyConfiguredLoadout materializes the declarative per-group /
 // per-conductor skill, plugin, and MCP loadout for Claude sessions, and the
-// per-group skill and MCP loadout for Codex sessions. Declarative skills use
-// the resolved CLAUDE_CONFIG_DIR/skills or CODEX_HOME/skills directory;
+// per-group skill, native plugin, and MCP loadout for Codex sessions.
+// Declarative skills use the resolved CLAUDE_CONFIG_DIR/skills or
+// CODEX_HOME/skills directory;
 // explicit skill attach remains project-scoped. Called at session create
 // (add/launch) and
 // re-asserted before every
@@ -34,8 +35,8 @@ import (
 //
 // The effective Claude lists are the union of the group ancestor chain and,
 // for conductor sessions, the conductor block (group floor + conductor
-// extras). Codex uses its group ancestor chain only; native plugins remain
-// pre-provisioned in the selected CODEX_HOME.
+// extras). Codex uses its group ancestor chain only; native plugins are healed
+// in the selected CODEX_HOME when their config entries disappear.
 //
 // Returns the warnings (also slog-warned) so CLI call sites can print them;
 // a nil return means nothing to do or everything healthy. Failures never
@@ -101,8 +102,13 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 		codexHome, err := ResolveInstanceCodexHome(inst)
 		if err != nil {
 			warn("Codex TUI defaults: %v", err)
-		} else if err := ApplyCodexTUISettings(codexHome, config.Codex.TUI); err != nil {
-			warn("Codex TUI defaults: %v", err)
+		} else {
+			if err := ApplyCodexTUISettings(codexHome, config.Codex.TUI); err != nil {
+				warn("Codex TUI defaults: %v", err)
+			}
+			if err := ReconcileGroupCodexPlugins(inst.GroupPath, codexHome); err != nil {
+				warn("Codex plugins: %v", err)
+			}
 		}
 	}
 	if len(skills) == 0 && len(plugins) == 0 && len(mcps) == 0 {
