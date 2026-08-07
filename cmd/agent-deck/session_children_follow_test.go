@@ -180,7 +180,7 @@ func TestRunChildrenFollowStopsOnDeadStream(t *testing.T) {
 			w := &errWriter{}
 			done := make(chan int, 1)
 			go func() {
-				done <- runChildrenFollow("p", "parent", time.Millisecond, 0, false, w)
+				done <- runChildrenFollow("p", "parent", "", time.Millisecond, 0, false, w)
 			}()
 
 			select {
@@ -198,6 +198,52 @@ func TestRunChildrenFollowStopsOnDeadStream(t *testing.T) {
 				t.Fatal("runChildrenFollow kept polling after the stream closed")
 			}
 		})
+	}
+}
+
+// Codex keeps the stdout pipe for old tool calls open after a turn completes.
+// The follower must therefore use the owning Agent Deck session lifecycle,
+// rather than waiting forever for a write failure that will never arrive.
+func TestRunChildrenFollowStopsWhenAgentOwnerStopsRunning(t *testing.T) {
+	restoreRows := pollChildRows
+	restoreOwner := pollFollowOwnerRunning
+	t.Cleanup(func() {
+		pollChildRows = restoreRows
+		pollFollowOwnerRunning = restoreOwner
+	})
+
+	polls := 0
+	pollChildRows = func(string, string) ([]childRow, error) {
+		polls++
+		return []childRow{{ID: "child", Status: "running"}}, nil
+	}
+	ownerPolls := 0
+	pollFollowOwnerRunning = func(profile, ownerID string) (bool, error) {
+		ownerPolls++
+		if profile != "p" || ownerID != "owner" {
+			t.Fatalf("owner poll = (%q, %q), want (p, owner)", profile, ownerID)
+		}
+		return false, nil
+	}
+
+	done := make(chan int, 1)
+	go func() {
+		done <- runChildrenFollow("p", "parent", "owner", time.Millisecond, 0, false, io.Discard)
+	}()
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if ownerPolls != 2 {
+			t.Fatalf("owner polls = %d, want two-observation shutdown", ownerPolls)
+		}
+		if polls != 2 {
+			t.Fatalf("child polls = %d, want 2", polls)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("follower did not exit after owner stopped running")
 	}
 }
 

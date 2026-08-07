@@ -324,6 +324,30 @@ func summarizeChildren(event string, rows []childRow) followSummary {
 // so tests can drive the loop without standing up storage.
 var pollChildRows = loadChildRows
 
+// pollFollowOwnerRunning reports whether the agent session that started a
+// follow stream is still executing a turn. Codex keeps subprocess pipes open
+// across completed turns, so stdout never closes and ordinary SIGPIPE cleanup
+// cannot reap a forgotten follower. Keep this injectable for loop tests.
+var pollFollowOwnerRunning = loadFollowOwnerRunning
+
+func loadFollowOwnerRunning(profile, ownerID string) (bool, error) {
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = storage.Close() }()
+
+	db := storage.GetDB()
+	if db == nil {
+		return false, nil
+	}
+	owner, err := db.LoadInstanceByID(ownerID)
+	if err != nil {
+		return false, err
+	}
+	return owner != nil && owner.Status == string(session.StatusRunning), nil
+}
+
 // loadChildRows does one full poll: fresh DB read, parent existence check,
 // status refresh, row build. Storage is closed before returning so the poll
 // loop never accumulates DB handles.
@@ -347,9 +371,10 @@ func loadChildRows(profile, parentID string) ([]childRow, error) {
 }
 
 // runChildrenFollow streams child state changes as JSONL until interrupted,
-// --until-done is satisfied, or polling fails repeatedly. Every terminal state
-// is visible on the stream (done ok/fail, error, stopped, removed) so silence
-// only ever means "nothing changed" — the heartbeat line proves liveness.
+// --until-done is satisfied, its agent owner finishes a turn, or polling fails
+// repeatedly. Every terminal state is visible on the stream (done ok/fail,
+// error, stopped, removed) so silence only ever means "nothing changed" — the
+// heartbeat line proves liveness.
 //
 // interval must be positive; the caller validates it, since a non-positive
 // sleep would turn the poll into a busy-loop that reopens storage every pass.
@@ -357,7 +382,7 @@ func loadChildRows(profile, parentID string) ([]childRow, error) {
 // With untilDone, a parent that currently has no children is already "all
 // terminal" and completes immediately. Callers that mean to watch for children
 // yet to be spawned must attach after at least one child exists.
-func runChildrenFollow(profile, parentID string, interval, heartbeat time.Duration, untilDone bool, w io.Writer) int {
+func runChildrenFollow(profile, parentID, ownerID string, interval, heartbeat time.Duration, untilDone bool, w io.Writer) int {
 	// emit reports whether the stream is still writable. A consumer that goes
 	// away mid-stream (`... | head -1`) makes every later write fail; without
 	// this the loop would keep polling the DB forever with nowhere to write.
@@ -374,6 +399,7 @@ func runChildrenFollow(profile, parentID string, interval, heartbeat time.Durati
 	var prev []childRow
 	first := true
 	failures := 0
+	ownerNotRunning := 0
 	lastHeartbeat := time.Now()
 
 	for {
@@ -414,6 +440,22 @@ func runChildrenFollow(profile, parentID string, interval, heartbeat time.Durati
 				return 0
 			}
 			lastHeartbeat = time.Now()
+		}
+
+		// Agent Deck sessions move away from running when their turn finishes.
+		// Two consecutive observations avoid a launch-time status race. Shell
+		// callers pass no ownerID and retain the traditional unbounded stream.
+		if ownerID != "" {
+			if running, err := pollFollowOwnerRunning(profile, ownerID); err == nil {
+				if running {
+					ownerNotRunning = 0
+				} else {
+					ownerNotRunning++
+					if ownerNotRunning >= 2 {
+						return 0
+					}
+				}
+			}
 		}
 		time.Sleep(interval)
 	}

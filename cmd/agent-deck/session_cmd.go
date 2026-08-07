@@ -4720,7 +4720,7 @@ func handleSessionChildren(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
-	follow := fs.Bool("follow", false, "Stream child state changes as JSONL (one event per line) until interrupted")
+	follow := fs.Bool("follow", false, "Stream child state changes as JSONL until interrupted (or the owning agent turn ends)")
 	interval := durationFlag(fs, "interval", 2*time.Second, "Poll interval for --follow")
 	heartbeat := durationFlag(fs, "heartbeat", 60*time.Second, "Heartbeat event interval for --follow (0 disables)")
 	untilDone := fs.Bool("until-done", false, "With --follow: exit 0 once every child is terminal (done sentinel, error, or stopped)")
@@ -4736,6 +4736,7 @@ func handleSessionChildren(profile string, args []string) {
 		fmt.Println("--follow emits JSONL events: snapshot (initial state per child), added,")
 		fmt.Println("status (from/to transition), done (completion sentinel), removed, error,")
 		fmt.Println("plus periodic heartbeat and a final complete line with --until-done.")
+		fmt.Println("Inside a Codex/Claude session, the stream exits when that agent turn ends.")
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck session children --json")
@@ -4784,7 +4785,15 @@ func handleSessionChildren(profile string, args []string) {
 	}
 	if *follow {
 		// The stream is JSONL by contract; --json/-q are irrelevant here.
-		os.Exit(runChildrenFollow(profile, parent.ID, *interval, *heartbeat, *untilDone, os.Stdout))
+		// Agent runtimes keep tool subprocess pipes open after a turn ends. Tie
+		// their followers to the owning turn's session status; ordinary shell
+		// callers intentionally retain an unbounded stream.
+		ownerID := ""
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENTDECK_TOOL"))) {
+		case "codex", "claude":
+			ownerID = strings.TrimSpace(os.Getenv("AGENTDECK_INSTANCE_ID"))
+		}
+		os.Exit(runChildrenFollow(profile, parent.ID, ownerID, *interval, *heartbeat, *untilDone, os.Stdout))
 	}
 
 	kids := childrenOf(parent.ID, instances)
