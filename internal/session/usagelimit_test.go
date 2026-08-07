@@ -150,7 +150,7 @@ func TestLatestAssistantTurnIsRateLimited(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			limited, ok := latestAssistantTurnIsRateLimited(writeUsageLimitTranscript(t, tt.records...), refNow)
+			limited, _, _, ok := latestAssistantTurnIsRateLimited(writeUsageLimitTranscript(t, tt.records...), refNow)
 			if limited != tt.wantLimited || ok != tt.wantOK {
 				t.Fatalf("latestAssistantTurnIsRateLimited = (%v, %v), want (%v, %v)",
 					limited, ok, tt.wantLimited, tt.wantOK)
@@ -160,7 +160,7 @@ func TestLatestAssistantTurnIsRateLimited(t *testing.T) {
 }
 
 func TestLatestAssistantTurnIsRateLimited_MissingFile(t *testing.T) {
-	limited, ok := latestAssistantTurnIsRateLimited(filepath.Join(t.TempDir(), "absent.jsonl"), refNow)
+	limited, _, _, ok := latestAssistantTurnIsRateLimited(filepath.Join(t.TempDir(), "absent.jsonl"), refNow)
 	if limited || ok {
 		t.Fatalf("missing transcript = (%v, %v), want (false, false)", limited, ok)
 	}
@@ -208,7 +208,7 @@ func TestLatestAssistantTurnIsRateLimited_ReadsEachByteOnce(t *testing.T) {
 	usageLimitScanObserver = func(r usageLimitScanRead) { reads = append(reads, r) }
 	defer func() { usageLimitScanObserver = nil }()
 
-	if limited, ok := latestAssistantTurnIsRateLimited(path, refNow); !limited || !ok {
+	if limited, _, _, ok := latestAssistantTurnIsRateLimited(path, refNow); !limited || !ok {
 		t.Fatalf("deep walk = (%v, %v), want (true, true)", limited, ok)
 	}
 
@@ -279,7 +279,7 @@ func TestLatestAssistantTurnIsRateLimited_SkipsOversizedLineWithoutReading(t *te
 	defer func() { usageLimitScanObserver = nil }()
 
 	// The oversized record is skipped, so the rejection beneath it is the verdict.
-	limited, ok := latestAssistantTurnIsRateLimited(path, refNow)
+	limited, _, _, ok := latestAssistantTurnIsRateLimited(path, refNow)
 	if !limited || !ok {
 		t.Fatalf("= (%v, %v), want (true, true) — the oversized line should be skipped, not fatal", limited, ok)
 	}
@@ -311,7 +311,7 @@ func TestLatestAssistantTurnIsRateLimited_DoesNotAllocateForEmptyTranscript(t *t
 	usageLimitScanObserver = func(usageLimitScanRead) { reads++ }
 	defer func() { usageLimitScanObserver = nil }()
 
-	limited, ok := latestAssistantTurnIsRateLimited(empty, refNow)
+	limited, _, _, ok := latestAssistantTurnIsRateLimited(empty, refNow)
 	if limited || ok {
 		t.Fatalf("empty transcript = (%v, %v), want (false, false)", limited, ok)
 	}
@@ -328,7 +328,7 @@ func TestLatestAssistantTurnIsRateLimited_DoesNotAllocateForEmptyTranscript(t *t
 		runtime.GC()
 		runtime.ReadMemStats(&before)
 		for n := 0; n < runs; n++ {
-			_, _ = latestAssistantTurnIsRateLimited(path, refNow)
+			_, _, _, _ = latestAssistantTurnIsRateLimited(path, refNow)
 		}
 		runtime.ReadMemStats(&after)
 		return int64(after.TotalAlloc-before.TotalAlloc) / runs
@@ -375,7 +375,7 @@ func TestLatestAssistantTurnIsRateLimited_RecordSpanningChunkBoundary(t *testing
 		t.Fatalf("write: %v", err)
 	}
 
-	limited, ok := latestAssistantTurnIsRateLimited(path, refNow)
+	limited, _, _, ok := latestAssistantTurnIsRateLimited(path, refNow)
 	if !limited || !ok {
 		t.Fatalf("boundary-spanning record = (%v, %v), want (true, true)", limited, ok)
 	}

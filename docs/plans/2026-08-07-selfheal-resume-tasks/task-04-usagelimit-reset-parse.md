@@ -812,3 +812,36 @@ the whole record's unmarshal on the other and silently un-detected it."
 - `internal/session/instance.go`: `Instance.usageLimitNotBeforeCached time.Time` (unexported; only `UsageLimitNotBefore()` reads it)
 
 ## Record (append-only)
+
+### 2026-08-07 — implemented (COMPLETE)
+
+- Files touched: `internal/session/usagelimit.go`,
+  `internal/session/usagelimit_reset_test.go` (new),
+  `internal/session/usagelimit_test.go`, `internal/session/instance.go`.
+- Implemented exactly as written; no deviations. All seven edits applied:
+  constants + regexp, `transcriptRecord` dual-shape `Content json.RawMessage` +
+  `contentBlock` + `text()` + `decodeTranscriptText()` + `recordTime()`,
+  `parseUsageLimitReset`, `usageLimitNotBefore`, the widened 4-value
+  `latestAssistantTurnIsRateLimited` (all five bare returns + the `consider`
+  closure + both call sites + the final return), the memo wiring in
+  `usageLimited()` (rebind discard, scan destructure, publish switch),
+  `(*Instance).UsageLimitNotBefore()`, and the
+  `Instance.usageLimitNotBeforeCached` field.
+- All seven `usagelimit_test.go` call sites updated to destructure four values
+  (lines 153, 163, 211, 282, 314, 331, 378); `grep -n` confirms no 2-value form
+  remains.
+- Verification:
+  `gofmt -l internal/session/usagelimit.go internal/session/usagelimit_test.go
+  internal/session/usagelimit_reset_test.go internal/session/instance.go` → empty.
+  `go build ./...` → exit 0.
+  `go vet ./internal/session/` → clean apart from the pre-existing
+  `issue1225_wake_nudge_wiring_test.go:217 range var c copies lock` noted in
+  task 01's Record (untouched file, not introduced here).
+  `go test ./internal/session/ -run 'UsageLimit|TranscriptRecord' -count=1 -v`
+  → EXIT=0, `ok`, 37 `--- PASS`, 0 FAIL; sentinel
+  `TestUsageLimitNotBefore_FreshRejectionAfterAttempt_Rearms` PASS.
+  `go test ./internal/session/ -run 'TestLatestAssistantTurn|TestUsageLimited'
+  -count=1 -v` → 29 `--- PASS`, `ok` (the signature change altered no verdict).
+- Scope note honoured: `usageLimitMaxAge` is unchanged and belief was NOT
+  extended to the parsed reset.
+- No concerns.

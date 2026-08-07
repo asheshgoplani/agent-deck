@@ -274,7 +274,14 @@ type Instance struct {
 	usageLimitedCached   bool
 	usageLimitSessionID  string
 	usageLimitScanGen    uint64
-	lastCodexProbeAt     time.Time // Rate-limits expensive Codex process-file probes
+	// usageLimitNotBeforeCached is when a resume may next be attempted for the
+	// memoised rejection: the reset moment parsed out of the rejection's own
+	// prose, or a fixed backoff when that prose is absent, unparseable or
+	// describes a window that demonstrably did not open. Keyed by the same
+	// usageLimitSessionID as the verdict and discarded with it on a rebind, so a
+	// new conversation can never inherit the old one's schedule.
+	usageLimitNotBeforeCached time.Time
+	lastCodexProbeAt          time.Time // Rate-limits expensive Codex process-file probes
 	// pendingCodexRestartWarning is consumed by UI/CLI after Restart() succeeds.
 	// It is intentionally transient and never persisted.
 	pendingCodexRestartWarning string `json:"-"`
