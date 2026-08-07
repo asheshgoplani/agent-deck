@@ -403,6 +403,39 @@ func TestExecuteIfAuthorized_EveryOtherPair_Refuses(t *testing.T) {
 	}
 }
 
+// An acting engine holding no executor is a mis-wire. It must report one: a nil
+// error there reads as an ordinary quiet decline to anything inspecting it.
+func TestExecuteIfAuthorized_ActingEngineWithNoExecutor_IsAnError(t *testing.T) {
+	e := &Engine{mode: ModeResume, caps: DefaultCaps(), policy: NewPolicyMachine(DefaultCaps()), sink: &MemorySink{}, exec: nil, prevSig: map[string]string{}, confirmed: map[string]confirmState{}, substateSeen: map[string]substateEntry{}}
+	outcome, action, err := e.executeIfAuthorized(Candidate{SessionID: "s1"}, ActionResume)
+	if !errors.Is(err, ErrNoExecutor) {
+		t.Fatalf("want ErrNoExecutor, got %v", err)
+	}
+	if action != ActionNone {
+		t.Fatalf("a mis-wire takes no action, got %q", action)
+	}
+	if outcome != "no_executor" {
+		t.Fatalf("outcome = %q, want no_executor", outcome)
+	}
+}
+
+// The executor builds its outcome through ResumeOutcome and the engine matches it
+// here. The two live in different packages, so the round-trip is the only thing
+// stopping a drift from silently reclassifying every recovery.
+func TestResumeOutcome_RoundTripsThroughOutcomeIsDelivered(t *testing.T) {
+	if got := ResumeOutcome("submitted"); got != "resumed:submitted" {
+		t.Fatalf("ResumeOutcome(submitted) = %q", got)
+	}
+	if !outcomeIsDelivered(ResumeOutcome("submitted")) {
+		t.Fatal("a submitted delivery is the healthy outcome")
+	}
+	for _, d := range []string{"typed", "typed_not_submitted", "unverified", "no_evidence", "line_too_long", "send_failed", "submitted_late"} {
+		if outcomeIsDelivered(ResumeOutcome(d)) {
+			t.Fatalf("%q must count as a FAILED recovery — only an accepted turn resets the breaker", d)
+		}
+	}
+}
+
 // §6: ModeObserve still constructs no executor.
 func TestNewObserveEngine_StillHasNoExecutor(t *testing.T) {
 	e := NewObserveEngine(DefaultCaps(), &MemorySink{})

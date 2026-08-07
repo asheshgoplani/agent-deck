@@ -78,8 +78,22 @@ is the fastest way to answer "why was this session not resumed":
 | `held_composer_draft` | The composer holds text a human typed. No action, and no cap spent. |
 | `resumed:submitted` | The prompt was delivered and accepted. The only healthy outcome. |
 | `resumed:typed_not_submitted` | The bytes reached a composer that is not accepting Enter. Counted as a **failed** recovery; two consecutive failures open the circuit breaker. |
-| `resumed:<other>` | Any other `session send` delivery verdict, recorded verbatim. |
-| `error:<message>` | The executor itself failed. No action taken. |
+| `resumed:<other>` | Any other `session send` delivery verdict, recorded verbatim. Counted as a failed recovery, same as above. |
+| `error:<message>` | The executor itself failed before any delivery. No action taken — and **not** counted by the circuit breaker. |
+
+Which outcomes open the circuit breaker, precisely: only the ones where an
+action actually ran, i.e. the `resumed:*` family. `resumed:submitted` is the
+success that resets the consecutive-failure count; every other `resumed:*` value
+is a failure, and two consecutive failures open the breaker for that session.
+
+`error:*` is different and it is worth knowing why. An executor error is
+reported as "no action taken", so the breaker never sees it and a session that
+errors on every attempt never trips one — but the attempt was already recorded
+before the executor ran, so **it still consumes one of the two recoveries the
+session gets per 6 hours**. A session erroring repeatedly therefore goes quiet
+after two attempts by hitting `cap_hit`, not `breaker_open`. If a session stops
+being resumed and the audit shows `error:*` records, read the error text: the
+breaker will not tell you about it.
 
 The `decision` field records the gate that stopped a candidate earlier:
 `skip_dwell`, `skip_confirm`, `skip_not_before` (a usage window that has not

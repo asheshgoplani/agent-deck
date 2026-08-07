@@ -71,8 +71,14 @@ const (
 	// resumePromptTransport is the transport-error continuation. Field evidence
 	// 2026-08-07: one prompt of this shape resumed all three wedged sessions on
 	// the first attempt.
+	//
+	// "may have recovered" rather than "has recovered": nothing on this path
+	// checks reachability before sending, so if the outage is still in progress
+	// the stronger claim is simply false — the agent acts on it, fails again, and
+	// spends one of its two 6-hour recoveries. The hedge is true either way and
+	// asks for the same thing.
 	resumePromptTransport = "[agent-deck self-heal] Your previous turn ended on an API transport error " +
-		"(the API was unreachable). The connection has since recovered and nothing else has changed. " +
+		"(the API was unreachable). The connection may have recovered and nothing else has changed. " +
 		"Continue exactly where you left off: re-run the step that failed, then carry on."
 
 	// resumePromptUsageLimit is the usage-limit continuation. The subagent warning
@@ -135,6 +141,14 @@ func (x *ResumeExecutor) instance(id string) *Instance {
 	return x.byID[id]
 }
 
+// setSendForTest installs a sender override under the same lock sender() reads
+// it through. Writing the field directly races that read.
+func (x *ResumeExecutor) setSendForTest(fn SelfHealSendFunc) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.send = fn
+}
+
 func (x *ResumeExecutor) sender() SelfHealSendFunc {
 	x.mu.RLock()
 	override := x.send
@@ -147,10 +161,11 @@ func (x *ResumeExecutor) sender() SelfHealSendFunc {
 
 // Execute delivers ONE continuation prompt and reports the real delivery verdict.
 //
-// The outcome is "resumed:<delivery>", matching the engine's
-// outcomeDeliveredPrefix contract: only "resumed:submitted" counts as a healthy
-// recovery, so a message typed into a composer that never accepted Enter is
-// recorded as the failure it is and feeds the circuit breaker.
+// The outcome is built by selfheal.ResumeOutcome, which is the single producer
+// of the "resumed:<delivery>" string the engine matches on: only
+// "resumed:submitted" counts as a healthy recovery, so a message typed into a
+// composer that never accepted Enter is recorded as the failure it is and feeds
+// the circuit breaker.
 //
 // A delivery verdict is returned with a NIL error even when the send path itself
 // errored — it errors for every delivery except "submitted", and collapsing that
@@ -184,5 +199,5 @@ func (x *ResumeExecutor) Execute(c selfheal.Candidate, a selfheal.Action) (strin
 		"delivery", delivery,
 		"send_error", errString(sendErr),
 	)
-	return "resumed:" + delivery, nil
+	return selfheal.ResumeOutcome(delivery), nil
 }

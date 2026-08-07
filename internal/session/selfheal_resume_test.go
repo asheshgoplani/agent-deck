@@ -30,7 +30,7 @@ func (f *fakeSend) fn(inst *Instance, message string) (string, error) {
 func executorWith(t *testing.T, f *fakeSend, insts ...*Instance) *ResumeExecutor {
 	t.Helper()
 	x := NewResumeExecutor()
-	x.send = f.fn
+	x.setSendForTest(f.fn)
 	x.SetInstances(insts)
 	return x
 }
@@ -174,7 +174,11 @@ func TestSelfHealResume_UnknownSession_Errors(t *testing.T) {
 func TestSelfHealResume_NoSender_Errors(t *testing.T) {
 	x := NewResumeExecutor()
 	x.SetInstances([]*Instance{{ID: "s1"}})
+	// selfHealSender is process-wide: leaving it nulled would silently unregister
+	// the send path for every test that runs after this one in the package.
+	prev := registeredSelfHealSender()
 	SetSelfHealSender(nil)
+	t.Cleanup(func() { SetSelfHealSender(prev) })
 	_, err := x.Execute(resumeCandidate("s1", tmux.SubstateAPIError), selfheal.ActionResume)
 	if !errors.Is(err, ErrSelfHealNoSender) {
 		t.Fatalf("want ErrSelfHealNoSender, got %v", err)

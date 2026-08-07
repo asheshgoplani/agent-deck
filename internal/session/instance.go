@@ -9076,10 +9076,10 @@ func (i *Instance) Substate() Substate {
 	if tmuxSess == nil {
 		return SubstateNone
 	}
-	// promoteStalled refines an idle-at-empty-prompt verdict into
+	// promoteStalled refines an idle-at-empty-prompt or api-error verdict into
 	// SubstateStalled when the composer is in fact holding an unchanging
 	// draft. It needs a second (cache-backed) pane read, so it only runs on
-	// the one verdict that can be wrong this way.
+	// the two verdicts that can be wrong this way (stall.go).
 	return promoteStalled(tmuxSess.GetSubstate(), tmuxSess, i.stallTracker())
 }
 

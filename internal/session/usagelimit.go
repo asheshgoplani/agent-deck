@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
 // Usage-limit detection (#1802).
@@ -272,11 +274,26 @@ func parseUsageLimitReset(text string, recordTS time.Time) (time.Time, bool) {
 	} else if hour == 12 {
 		hour = 0
 	}
-	loc, err := time.LoadLocation(strings.TrimSpace(m[4]))
+	zone := strings.TrimSpace(m[4])
+	loc, err := time.LoadLocation(zone)
 	if err != nil {
+		// A host with no zoneinfo database fails EVERY zone, permanently — every
+		// parse degrades to the 20-minute fallback and nothing else would say so.
+		// Logged separately from the pattern miss because the remedy is different:
+		// install tzdata, rather than look at what Claude rendered.
+		logging.ForComponent(logging.CompNotif).Debug("usage_limit_reset_zone_unloadable",
+			"zone", zone,
+			"error", err.Error(),
+		)
 		return time.Time{}, false
 	}
 	local := recordTS.In(loc)
+	// A wall time inside a DST gap or overlap normalises silently here. Both
+	// directions land EARLY relative to the true reset (a gap time rolls forward
+	// into the new offset; an overlap resolves to the first, earlier instant), so
+	// the harm is one attempt made up to an hour before the window reopens —
+	// bounded by the dwell and by the confirm read, and self-correcting: a resume
+	// that is still rejected produces a fresh 429 that rearms the schedule.
 	reset := time.Date(local.Year(), local.Month(), local.Day(), hour, minute, 0, 0, loc)
 	if !reset.After(recordTS) {
 		reset = reset.AddDate(0, 0, 1)
@@ -306,7 +323,27 @@ func usageLimitNotBefore(text string, recordTS, prevNotBefore time.Time) time.Ti
 	if reset, ok := parseUsageLimitReset(text, recordTS); ok {
 		return reset
 	}
+	// The fallback is safe but INVISIBLE: without this line an operator cannot
+	// tell a session parked on a parsed reset from one parked on a permanent
+	// 20-minute guess, and the two behave very differently over a long window.
+	// The rendered text is included because the wording has drifted before and
+	// the drift is what the log is for.
+	logging.ForComponent(logging.CompNotif).Debug("usage_limit_reset_unparsed",
+		"record_ts", recordTS.UTC().Format(time.RFC3339),
+		"backoff", usageLimitResetBackoff.String(),
+		"text", truncateForLog(text, 200),
+	)
 	return recordTS.Add(usageLimitResetBackoff)
+}
+
+// truncateForLog bounds a transcript excerpt so a multi-megabyte /compact record
+// cannot land in the log line.
+func truncateForLog(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // isRateLimitRejection reports whether this record is a plan-quota rejection.

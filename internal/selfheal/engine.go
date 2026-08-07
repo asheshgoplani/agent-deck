@@ -14,6 +14,12 @@ import (
 // the chokepoint at all.
 var ErrActionInGuardedMode = errors.New("selfheal: actions are HELD (Stages 2-3 not re-approved)")
 
+// ErrNoExecutor is returned when an ACTING engine reaches the chokepoint holding
+// no executor. NewResumeEngine requires one, so this is a mis-wire — and it is
+// reported as an error rather than a nil-error no-op precisely so it cannot read
+// as a normal quiet decline in the audit or to a caller inspecting the error.
+var ErrNoExecutor = errors.New("selfheal: acting engine has no executor")
+
 // ActionExecutor performs a real recovery. It is reachable ONLY through
 // Engine.executeIfAuthorized, and only for the pair (ModeResume, ActionResume) —
 // observe holds a nil executor and every other mode/action pair is refused with
@@ -294,6 +300,15 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 	// Feed the circuit breaker only when a real action ran. A refusal is not a
 	// failed recovery — counting it would open the breaker on sessions self-heal
 	// never touched.
+	//
+	// Note what this deliberately makes invisible: an executor ERROR also returns
+	// ActionNone, so it never reaches the breaker either, even though
+	// RecordAttempt above has already spent one of the session's two 6-hour
+	// recoveries. A session that errors every attempt goes quiet after two, via
+	// cap_hit rather than breaker_open. The per-session cap is what bounds the
+	// damage, and docs/self-heal.md tells operators to read the error text
+	// because the breaker will not. Whether the breaker SHOULD see executor
+	// errors is an open design question, not an oversight here.
 	if action != ActionNone {
 		e.policy.RecordOutcome(c, err == nil && outcomeIsDelivered(outcome))
 	}
@@ -301,17 +316,32 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 	return ev
 }
 
-// outcomeDeliveredPrefix marks an executor outcome that reached the agent as an
-// accepted turn. The executor formats its outcome as "resumed:<delivery>", where
-// delivery is the `session send` contract value — and ONLY "submitted" means the
-// agent took the message up. "typed_not_submitted" in particular means the bytes
-// are sitting in a composer that is not accepting Enter, which is a failure.
-const outcomeDeliveredPrefix = "resumed:submitted"
+// outcomeResumePrefix is the executor's outcome namespace: a resume reports
+// "resumed:<delivery>", where delivery is the `session send` contract value.
+//
+// ResumeOutcome is the ONE producer of that string, and outcomeIsDelivered the
+// one matcher. They live together because the executor is in another package
+// (internal/session, which cannot be imported from here) and the two halves used
+// to be joined only by a sentence in the task spec — a drift in either would
+// silently reclassify every recovery as a failure, or worse, the reverse.
+const outcomeResumePrefix = "resumed:"
+
+// outcomeDelivered is the ONLY outcome that means the agent actually took the
+// message up. It is an exact value, not a prefix: "typed_not_submitted" in
+// particular means the bytes are sitting in a composer that is not accepting
+// Enter, which is a failure, and a prefix match on "resumed:submitted" would
+// also swallow a future "resumed:submitted_late".
+const outcomeDelivered = outcomeResumePrefix + "submitted"
+
+// ResumeOutcome formats an ActionResume executor's outcome from the `session
+// send` delivery verdict. Executors must build their outcome through this rather
+// than concatenating the prefix themselves.
+func ResumeOutcome(delivery string) string { return outcomeResumePrefix + delivery }
 
 // outcomeIsDelivered reports whether an executor outcome represents a genuinely
 // accepted turn, for the circuit breaker's consecutive-failure count.
 func outcomeIsDelivered(outcome string) bool {
-	return outcome == outcomeDeliveredPrefix
+	return outcome == outcomeDelivered
 }
 
 // updateSubstateAnchor tracks when the current stuck substate was first observed
@@ -362,8 +392,9 @@ func (e *Engine) executeIfAuthorized(c Candidate, would Action) (string, Action,
 		return "held_stage_2_3", ActionNone, ErrActionInGuardedMode
 	}
 	if e.exec == nil {
-		// An acting engine with no executor is a mis-wire, not a quiet no-op.
-		return "no_executor", ActionNone, nil
+		// An acting engine with no executor is a mis-wire, not a quiet no-op — so
+		// it returns an error, matching what this comment has always claimed.
+		return "no_executor", ActionNone, ErrNoExecutor
 	}
 	outcome, err := e.exec.Execute(c, would)
 	if err != nil {
