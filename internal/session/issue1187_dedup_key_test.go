@@ -121,6 +121,59 @@ func TestIssue1187_IdlePaneKeyStableAcrossPolls(t *testing.T) {
 	}
 }
 
+// A grouped/profile-scoped Claude session stores its transcript under that
+// instance's configured Claude directory, not the process-global default.
+// Resolving through the global directory returns an empty key, which degrades
+// Stop-edge dedup to the 90-second from/to fallback and lets one long-lived
+// logical turn notify the parent repeatedly.
+func TestTransitionContentSignal_UsesInstanceClaudeConfigDir(t *testing.T) {
+	home := t.TempDir()
+	globalConfigDir := filepath.Join(home, ".claude-default")
+	groupConfigDir := filepath.Join(home, ".claude-uniqcast")
+	projectPath := t.TempDir()
+
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("AGENT_DECK_HOME", "")
+	t.Setenv("AGENT_DECK_PROFILE", "")
+	agentDeckDir := filepath.Join(home, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir agent-deck config dir: %v", err)
+	}
+	configDoc := `[claude]
+config_dir = "` + globalConfigDir + `"
+
+[groups."uniqcast".claude]
+config_dir = "` + groupConfigDir + `"
+`
+	if err := os.WriteFile(filepath.Join(agentDeckDir, "config.toml"), []byte(configDoc), 0o600); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	const sessionID = "0456008b-c1d2-44f3-8ce3-038e52ddba15"
+	projectDir := claudeProjectDirForTest(t, groupConfigDir, projectPath)
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir projectDir: %v", err)
+	}
+	transcript := filepath.Join(projectDir, sessionID+".jsonl")
+	if err := os.WriteFile(transcript, []byte("one logical turn\n"), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	inst := &Instance{
+		ID:              "profile-child",
+		Tool:            "claude",
+		ClaudeSessionID: sessionID,
+		ProjectPath:     projectPath,
+		GroupPath:       "uniqcast/dispatcher",
+	}
+	if got := transitionContentSignal(inst); got == "" {
+		t.Fatal("profile-scoped transcript must produce a content dedup signal")
+	}
+}
+
 // Test 3 (user-visible flood, integration via the dedup boundary): simulate 20
 // poll ticks of an animating-but-idle pane. Each tick re-derives LastOutputHash
 // the way the daemon does (transitionEventOutputHash) against an UNCHANGED

@@ -503,7 +503,18 @@ func transitionEventOutputHash(inst *Instance) string {
 // on a genuine new turn. Returns "" when no transcript is resolvable (e.g.
 // non-Claude tools), which routes the caller to the legacy 90s window.
 func transitionContentSignal(inst *Instance) string {
-	path := inst.GetJSONLPath()
+	if inst == nil || !IsClaudeCompatible(inst.Tool) || inst.ClaudeSessionID == "" {
+		return ""
+	}
+	// Transcript placement follows the instance's group/profile/account
+	// config. Using the process-global Claude directory here makes grouped
+	// children look transcript-less, degrading Stop-edge dedup to the coarse
+	// 90-second fallback and replaying one logical turn to the parent.
+	path := resolveClaudeTranscriptPath(
+		GetClaudeConfigDirForInstance(inst),
+		inst.ProjectPath,
+		inst.ClaudeSessionID,
+	)
 	if path == "" {
 		return ""
 	}
