@@ -41,8 +41,10 @@ ground truth and can't see the ones around it.
 ## Sequential relay (default)
 
 1. Launch subtask 1's implementer with a fresh worktree for the whole issue:
-   `agent-deck launch <repo-root> -w <issue-branch> -c claude -t "impl-<issue-slug>-1" --message-file ...`
-   using the stage-1 prompt template with the subtask's mini-spec.
+   `agent-deck launch <repo-root> -w <issue-branch> -c claude -t "impl-<issue-slug>-1" "${LEAN[@]}" --message-file ...`
+   using the stage-1 prompt template with the subtask's mini-spec. Every
+   launch here carries `"${LEAN[@]}"` like any other child (see "Child startup
+   baseline" in SKILL.md) — drop it only for a subtask that drives a browser.
 2. Run stages 1–3 (implement, fresh review, fix loop) for subtask 1 in that
    worktree.
 3. When clean, record the worktree's HEAD sha in the manifest as subtask 2's

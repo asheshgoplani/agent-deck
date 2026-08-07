@@ -37,10 +37,29 @@ You (the session running this skill) are the **conductor**. Hard rules:
   `references/single-issue-split.md`, and the integrating merge of a
   repo-prescribed endgame (see "When the repo prescribes its own endgame")
   is fine; changing source files is not.
+- **You never `Read` or `Edit` a repo file either — not just never write one.**
+  Your `Read`/`Edit`/`Write` tools exist for exactly one thing: `$RUN_DIR`
+  bookkeeping (`manifest.md`, `conductor-handoff.md`, `deferred-work.md`).
+  Every question about repo *content* — what a design doc says, whether an
+  approach fits, why a test fails, what a diff changed — is delegated to a
+  child or a subagent that burns its own context and hands you back a
+  conclusion. Anything you must see with your own eyes goes through a shell
+  redirect and you read only the deciding line (see "Findings yes,
+  transcripts never"). This is the rule that keeps the invariant true: your
+  context grows with decisions taken, never with material inspected.
+- **Delegate down the ladder, not just outward.** You run on the strong model
+  because arbitration is your job; nothing else you do needs it. A file to
+  read, a log to search, a spec to summarise, a lockfile to diff — that is
+  cheap-tier work, and running it in your own strong-model context pays the
+  highest per-token rate for the lowest-value tokens *and* permanently
+  occupies the one context nobody can rotate. Push it to a child on the cheap
+  or mid tier, or to a subagent. See "Model & connector tiering" for the
+  ladder per connector.
 - **You never work in the main checkout.** Every task gets a dedicated
   worktree (`launch -w <branch>`), including single-task relay mode.
-- **You never block.** Supervise via the `session children --json` heartbeat;
-  answer `waiting` children; poll `gh pr checks` on the same heartbeat.
+- **You never block.** Supervise via the `poll.sh` heartbeat (never a raw
+  `session children --json` dump — see "Context budget"); answer `waiting`
+  children; poll `gh pr checks` on the same heartbeat.
 - **You never open an image and you never type a prompt body.** Both are pure
   context burn with a cheaper substitute — see "Context budget" and "Rendering
   child prompts". These are the two things that took a real conductor to 839k.
@@ -72,6 +91,11 @@ RUN_DIR="$HOME/.agent-deck/orchestrate/<run-id>"
 mkdir -p "$RUN_DIR"
 cp <agent-deck-repo>/skills/orchestrate/references/poll.sh "$RUN_DIR/"
 cp -R <agent-deck-repo>/skills/orchestrate/references/prompts "$RUN_DIR/"
+
+# Lean child launch flags — see "Child startup baseline" under Context budget.
+# Drop them for a child that must drive a browser.
+LEAN=(--extra-arg --strict-mcp-config --extra-arg --mcp-config
+      --extra-arg '{"mcpServers":{}}')
 ```
 
 Everything any child captures goes under `$RUN_DIR/<task-slug>/`, and the
@@ -291,7 +315,8 @@ user's session's:
 ```bash
 bash "$RUN_DIR/prompts/render.sh" plan "$RUN_DIR/<task-slug>/plan-prompt.md" \
   SPEC_PATH=<spec-path> DATE=<date> TASK_SLUG=<task-slug>
-agent-deck launch <repo-root> -w <branch> -c claude -t "plan-<task-slug>" --message-file "$RUN_DIR/<task-slug>/plan-prompt.md"
+agent-deck launch <repo-root> -w <branch> -c claude -t "plan-<task-slug>" "${LEAN[@]}" \
+  --message-file "$RUN_DIR/<task-slug>/plan-prompt.md"
 ```
 
 The planner writes `docs/plans/<date>-<task-slug>-plan.md` plus one
@@ -448,7 +473,7 @@ test -f "$WORKTREE_PATH/<task-file-path>"
 bash "$RUN_DIR/prompts/render.sh" impl "$RUN_DIR/<task-slug>/impl-prompt.md" \
   TASK_TITLE="<title>" SPEC_BLOCK@="$RUN_DIR/<task-slug>/spec-block.md" \
   RUN_DIR="$RUN_DIR" TASK_SLUG="<task-slug>"
-agent-deck launch "$WORKTREE_PATH" -c claude -t "impl-<task-slug>" \
+agent-deck launch "$WORKTREE_PATH" -c claude -t "impl-<task-slug>" "${LEAN[@]}" \
   --message-file "$RUN_DIR/<task-slug>/impl-prompt.md"
 ```
 
@@ -482,7 +507,7 @@ bash "$RUN_DIR/prompts/render.sh" review-full "$RUN_DIR/<task-slug>/review-r1-pr
   VERDICT_FILE="$RUN_DIR/<task-slug>/review-r1.md" \
   SPEC_BLOCK@="$RUN_DIR/<task-slug>/spec-block.md" \
   BASE_BRANCH=<base-branch> AGENT_DECK_REPO=<agent-deck-repo> BASELINE="<baseline, or none>"
-agent-deck launch <worktree-path> -c claude -t "review-<task-slug>-r1" \
+agent-deck launch <worktree-path> -c claude -t "review-<task-slug>-r1" "${LEAN[@]}" \
   --extra-arg --disallowedTools --extra-arg "Edit,Write,NotebookEdit" \
   --message-file "$RUN_DIR/<task-slug>/review-r1-prompt.md"
 ```
@@ -707,6 +732,39 @@ should answer:
 
 ## Context budget
 
+### Child startup baseline
+
+A child pays for its *configuration* on every turn, not once. Measured over
+688 orchestrate children (Jul–Aug 2026): median context **before the child
+does anything** was 51k, and multiplying each child's startup size by its turn
+count accounts for **37% of every input token those 688 sessions billed**
+(3.87B of 10.43B). It is cached, so the dollar cost is a tenth of the headline
+— but it is not compressible at all, and it is a quarter of the window gone
+before the task starts. That is why the median child peaked at 149k and 22%
+crossed the soft threshold.
+
+Three components, in the order worth attacking:
+
+- **MCP tool listings — ~5.6k/session, measured.** Children inherit every
+  globally-registered MCP server. In the sample, 106 of 120 children carried
+  `finance-local`, 105 carried `claude-in-chrome`, and ~34 carried Gmail,
+  Google Calendar and Google Drive — into backend implementer sessions that
+  could never use them. `"${LEAN[@]}"` (see "Run setup") drops all of it:
+  `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` disables file-based
+  *and* plugin-supplied MCPs. Verified: 34,820 → 29,238 tokens at startup.
+- **The repo's `CLAUDE.md` — 1k to 8.4k/session.** One repo in the sample
+  shipped a 33.5kB `CLAUDE.md`; its children started at 57k against 43k for
+  the leanest repo. You cannot fix this mid-run, but it belongs in the retro:
+  a `CLAUDE.md` is read by every child of every future run.
+- **~29k harness floor** — system prompt, core tools, skill listings. Not
+  yours to change.
+
+**Pass `"${LEAN[@]}"` on every child launch except one case: a child that must
+drive a browser.** `--strict-mcp-config` takes playwright and chrome-devtools
+with it. A UI implementer or a reviewer that reproduces UI behaviour launches
+without it; planners, reviewers of non-UI work, fix children, merge and
+integration children never need the browser MCPs at all.
+
 ### Children
 
 Every Claude child row in `session children --json` carries `context_tokens`
@@ -775,6 +833,24 @@ You copied it during run setup; you do not need to read it. Its knobs are
 env vars: `SOFT`/`HARD` for child thresholds, `SELF_SOFT`/`SELF_HARD` for
 yours, `POLL_CMD` to feed it canned JSON in a test.
 
+**Never run `session children --json` yourself — use the two lookups instead.**
+Measured across August 2026 runs: 282 raw dumps against 87 heartbeats, and 213
+of those 282 were asking for something the heartbeat withholds by design.
+`poll.sh` answers both directly, one line each, without disturbing the diff
+state the next heartbeat needs:
+
+```bash
+bash "$RUN_DIR/poll.sh" ctx                    # exact tokens, every child, largest first
+bash "$RUN_DIR/poll.sh" ctx impl-<task-slug>   # exact tokens, one child
+ID=$(bash "$RUN_DIR/poll.sh" id impl-<task-slug>)   # bare id for send/output/archive
+```
+
+Reach for `ctx` when a child buckets to `soft` and you need the real number to
+decide between a wind-down and a rotation — that is the whole reason the raw
+dump kept winning. `id` exits non-zero on no match rather than printing an
+empty string, so a typo'd title fails the command instead of silently
+retargeting `session send` at nothing.
+
 Two details in there are load-bearing, so don't "simplify" them away. First,
 **`context_tokens` churns on every single poll** for any live child — diff on
 it raw and nothing is ever "unchanged", which defeats the entire mechanism;
@@ -807,15 +883,24 @@ a five-thousand-line CI log, or "why has this child been stuck for twenty
 minutes".
 
 **Never open an image.** You do not `Read` a screenshot, ever — not to check a
-child's work, not to settle a UI question, not "just this one". A single PNG
-costs 30–40k tokens; a conductor that looked at ten of them spent 275k on
-pictures, more than every review in that run combined. Screenshots are the
+child's work, not to settle a UI question, not "just this one". Measured over
+533 image-only turns, a screenshot costs a median of **1.4k tokens** (p75 2.0k,
+p95 5.6k, worst observed 30.4k) — so the cost of any *one* image is small and
+the reason for the rule is not the single read. It is that images arrive in
+streaks: you open one to settle a question, then five more for context, and a
+conductor already at 300k has no room for a habit that compounds. Judge by the
+p95, not the median, because a full-page retina capture is exactly the kind you
+reach for when you are trying to settle something. Screenshots are the
 implementer's evidence and the final report's payload: you handle their
 *paths*. The implementer's prompt requires it to describe in words what each
 screenshot shows — that description is what you read. If a visual judgment
-genuinely has to be made, dispatch a subagent to look and report back in text,
-or hand the path to the user. The same rule covers any binary or generated
-blob: PDFs, `dist/` bundles, minified JS, lockfiles.
+genuinely has to be made, hand the path to the user, or send it back to the
+child that produced it. Do **not** dispatch a subagent purely to look at one
+image: a subagent launch costs more than the ~1.4k the image would have, so
+that trade only pays for a batch of them or for a genuinely hard question.
+The same rule covers any binary or generated blob: PDFs, `dist/` bundles,
+minified JS, lockfiles — those have no comparable measured ceiling and a
+single one can be far worse than any screenshot.
 
 **3. Thresholds, tighter than a child's.** Anything long-lived — findings
 lists, baselines, pending questions, PR urls, HEAD shas — goes into
@@ -832,6 +917,13 @@ any point. Then:
   conductor pointed at `$RUN_DIR/manifest.md`, re-parent every live child to
   it (`agent-deck session set-parent <child> <new-conductor-id>`) so waiting
   and done notifications route to the new session, and archive yourself.
+  **`poll.sh` exits 3 from here on, every beat, until you do it** — your
+  heartbeat is a failing command now, not a warning you can read past. This
+  is deliberate: measured over 12 real conductors the banner alone did not
+  work, with a median peak of 348k and half the runs sailing past this exact
+  line. A non-zero heartbeat is not a bug to work around and not a reason to
+  stop polling; it is the handoff instruction. The diff baseline still
+  advances on a failing beat, so nothing is re-reported while you wind down.
 
 Both numbers match the child thresholds. Your loss is the worse one when it
 lands — a child that compacts loses one task; you lose supervision state for

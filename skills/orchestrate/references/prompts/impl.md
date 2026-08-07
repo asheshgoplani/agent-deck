@@ -31,4 +31,24 @@ Work strictly in this worktree on the current branch. Do, in order:
 Keep your context lean: delegate broad exploration (find-the-code sweeps,
 "where is X handled" questions) to subagents so file dumps land outside your
 context; read test-output tails rather than full runs; never cat large files
-or full logs when a targeted read answers the question.
+or full logs when a targeted read answers the question. File reads are what
+actually fills an implementer — measured across 688 orchestrate children, the
+ones that blew past 250k got there on `Read`/`grep`/`cat` output, not on
+screenshots.
+
+**Wind yourself down; do not wait to be told.** The conductor watches your
+context size, but its warning cannot reach you when it matters: `session send`
+only delivers to an idle session, and a child near the wall is by definition
+busy. So the instruction to wrap up will silently fail to arrive. Own it
+yourself — when you judge your context is getting large (roughly: you have run
+the full suite more than twice, or you have been reading files for a long
+stretch without committing):
+
+1. Commit whatever is complete and green. Never leave finished work uncommitted.
+2. Write `{{RUN_DIR}}/{{TASK_SLUG}}/handoff.md` — decisions made, files
+   touched, what remains, and the next concrete step.
+3. Say so in your final message, so the conductor rotates you deliberately
+   instead of you hitting an automatic compaction.
+
+A deliberate handoff beats a lossy auto-summary of your own half-finished
+work, and it is the only wind-down path that is guaranteed to work.

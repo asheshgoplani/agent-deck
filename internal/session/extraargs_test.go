@@ -72,6 +72,46 @@ func TestStartCommandAppendsExtraArgs(t *testing.T) {
 	}
 }
 
+// TestExtraArgsCarryLeanMCPTokens pins the exact token trio the orchestrate
+// skill puts on every child launch to suppress inherited MCP servers
+// ("Child startup baseline" in skills/orchestrate/SKILL.md). Measured, that
+// trio is worth ~5.6k tokens of startup context per child, and the skill now
+// tells the conductor to pass it on every launch — so the JSON value must
+// survive quoting intact. It contains braces and a colon, which is exactly
+// the shape a naive re-tokenizer would split; if this test ever fails, the
+// children silently go back to loading every globally-registered MCP server
+// and nothing else reports it.
+func TestExtraArgsCarryLeanMCPTokens(t *testing.T) {
+	extraArgsTestEnv(t)
+
+	const mcpJSON = `{"mcpServers":{}}`
+	inst := NewInstanceWithTool("ea-lean", t.TempDir(), "claude")
+	setExtraArgsField(t, inst, []string{"--strict-mcp-config", "--mcp-config", mcpJSON})
+
+	// Each token must also pass the spawn-time validator the CLI applies, or
+	// `launch --extra-arg` would reject what the skill documents.
+	for _, tok := range []string{"--strict-mcp-config", "--mcp-config", mcpJSON} {
+		if err := ValidateClaudeExtraArgToken(tok); err != nil {
+			t.Fatalf("ValidateClaudeExtraArgToken(%q) rejected a token the orchestrate skill documents: %v", tok, err)
+		}
+	}
+
+	cmd := inst.buildClaudeCommand("claude")
+
+	if !strings.Contains(cmd, "--strict-mcp-config") {
+		t.Errorf("built command missing --strict-mcp-config, got:\n%s", cmd)
+	}
+	if !strings.Contains(cmd, "--mcp-config") {
+		t.Errorf("built command missing --mcp-config, got:\n%s", cmd)
+	}
+	// The JSON must survive as ONE argument. Asserting on the shell-quoted
+	// form is the point: an unquoted {"mcpServers":{}} would reach claude as
+	// several words and the flag would take a partial value.
+	if !strings.Contains(cmd, mcpJSON) {
+		t.Errorf("built command lost the MCP JSON value %s, got:\n%s", mcpJSON, cmd)
+	}
+}
+
 // TestStartCommandOmitsExtraArgsWhenEmpty asserts no extra flags are
 // emitted when ExtraArgs is empty (avoids leading/trailing garbage).
 func TestStartCommandOmitsExtraArgsWhenEmpty(t *testing.T) {

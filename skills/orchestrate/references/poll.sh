@@ -3,6 +3,20 @@
 # Prints ONLY what changed since the last call, plus the conductor's OWN
 # context size on every beat. Run it from the conductor every heartbeat:
 #   bash "$RUN_DIR/poll.sh"
+#
+# Two lookups share this script because measurement said they had to. Across
+# August 2026 runs the conductor ran `session children --json` raw 282 times
+# against 87 poll.sh calls, and 213 of those 282 were not laziness — they were
+# the two questions poll.sh could not answer:
+#   133x  the exact context number for one child (the heartbeat buckets it to
+#         ok/soft/HARD on purpose, so the bucket can't churn the diff)
+#    80x  the id for a title, needed by every send/output/archive
+# Each raw dump re-imports every field of every child. These subcommands answer
+# the same questions in one line, so there is no longer a reason to reach past
+# the heartbeat:
+#   bash "$RUN_DIR/poll.sh" ctx            # exact context_tokens, all children
+#   bash "$RUN_DIR/poll.sh" ctx <title>    # exact context_tokens, one child
+#   bash "$RUN_DIR/poll.sh" id  <title>    # bare id, for $(...) substitution
 set -euo pipefail
 D="$(cd "$(dirname "$0")" && pwd)"
 SOFT="${SOFT:-200000}"
@@ -17,6 +31,37 @@ SELF_HARD="${SELF_HARD:-250000}"
 RAW="$D/.poll-raw.json"
 # ${POLL_CMD} exists so the script is testable with a canned JSON file.
 ${POLL_CMD:-agent-deck session children --json} > "$RAW"
+
+# Lookup subcommands. They deliberately do NOT touch .poll-prev.json: asking
+# "how big is impl-foo" must never consume a status transition the next
+# heartbeat still has to report.
+case "${1:-}" in
+  ctx)
+    if [ -n "${2:-}" ]; then
+      jq -r --arg t "$2" '
+        .children[] | select(.title == $t)
+        | "\(.title) \((.context_tokens // 0) / 1000 | floor)k"' "$RAW"
+    else
+      jq -r '
+        [ .children[] | {t: .title, c: (.context_tokens // 0)} ]
+        | sort_by(-.c)[]
+        | "\(.t) \((.c / 1000) | floor)k"' "$RAW"
+    fi
+    exit 0
+    ;;
+  id)
+    [ -n "${2:-}" ] || { echo "usage: poll.sh id <title>" >&2; exit 2; }
+    # Exit 1 on no match rather than printing an empty string: a bare id is
+    # almost always consumed as $(poll.sh id X), and an empty substitution
+    # turns `session send "$ID" ...` into a command that targets nothing.
+    jq -er --arg t "$2" '
+      [ .children[] | select(.title == $t) | .id ] | first
+      // ("poll.sh: no child titled \($t)\n" | halt_error(1))' "$RAW"
+    exit 0
+    ;;
+  "") ;;
+  *) echo "poll.sh: unknown subcommand '${1}' (want: ctx | id)" >&2; exit 2 ;;
+esac
 
 jq --argjson soft "$SOFT" --argjson hard "$HARD" '
     [ .children[]
@@ -35,10 +80,18 @@ SELF="$(jq -r '.parent_context_tokens // -1' "$RAW")"
 
 self_note=" · self=n/a (upgrade agent-deck: no parent_context_tokens)"
 banner=""
+# Exit status carries the hard threshold, because the banner alone did not.
+# Measured over 12 real conductors: median peak 348k, p90 645k, worst 839k —
+# 6 of 12 ran past this same hard line while the banner repeated every beat.
+# A warning printed to a session that is already overloaded is exactly the
+# thing that gets skimmed, so at hard the heartbeat FAILS instead: the
+# conductor's own routine command stops returning success until it hands off.
+poll_rc=0
 if [ "$SELF" -ge 0 ]; then
   self_note="$(printf ' · self=%dk' $((SELF / 1000)))"
   if [ "$SELF" -ge "$SELF_HARD" ]; then
-    banner="$(printf '!! SELF-CONTEXT %dk >= hard %dk — HAND OFF NOW: write $RUN_DIR/conductor-handoff.md, launch a fresh conductor on manifest.md, re-parent every live child, archive yourself.' $((SELF / 1000)) $((SELF_HARD / 1000)))"
+    banner="$(printf '!! SELF-CONTEXT %dk >= hard %dk — HAND OFF NOW: write $RUN_DIR/conductor-handoff.md, launch a fresh conductor on manifest.md, re-parent every live child, archive yourself. (poll.sh will keep exiting 3 until you do)' $((SELF / 1000)) $((SELF_HARD / 1000)))"
+    poll_rc=3
   elif [ "$SELF" -ge "$SELF_SOFT" ]; then
     banner="$(printf '!! SELF-CONTEXT %dk >= soft %dk — flush everything unwritten into manifest.md and /compact at the next inter-task boundary.' $((SELF / 1000)) $((SELF_SOFT / 1000)))"
   fi
@@ -69,3 +122,8 @@ jq -rn --slurpfile a "$D/.poll-prev.json" --slurpfile b "$D/.poll-now.json" \
 + $self'
 
 mv "$D/.poll-now.json" "$D/.poll-prev.json"
+
+# Last line, after the diff state is committed: a failing heartbeat must still
+# have advanced the baseline, or the next beat re-reports every row as CHANGED
+# and the failure costs more context than it saves.
+exit "$poll_rc"
