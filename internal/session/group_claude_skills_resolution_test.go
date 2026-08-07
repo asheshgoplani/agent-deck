@@ -61,6 +61,51 @@ skills = []
 	}
 }
 
+// A registry group with no [groups.X] block at all makes no declaration about
+// the shared home, so it must resolve cleanly rather than being treated like an
+// explicit `skills = []` opt-out. Erroring here discards config.toml wholesale
+// and drops the session to bare defaults — which is what agent-deck's own
+// built-in "conductor" and "my-sessions" groups hit, along with any group
+// created by a name that does not match a config block (e.g. "Uniqcast" vs
+// "uniqcast").
+func TestResolveGroupClaudeHomeSkillsAllowsUndeclaredGroupSharingPopulatedHome(t *testing.T) {
+	home := withIsolatedHomeAndConfig(t, `
+[claude]
+config_dir = "~/.claude-shared"
+[groups.alpha.claude]
+skills = ["store/alpha"]
+`)
+
+	gotHome, skills, err := ResolveGroupClaudeHomeSkills("Alpha")
+	if err != nil {
+		t.Fatalf("undeclared group must not conflict: %v", err)
+	}
+	if gotHome != filepath.Join(home, ".claude-shared") {
+		t.Fatalf("home=%q", gotHome)
+	}
+	if len(skills) != 0 {
+		t.Fatalf("skills=%v", skills)
+	}
+}
+
+// An undeclared child still inherits its declared parent's skills, so the
+// divergence guard must keep applying through the ancestor chain.
+func TestResolveGroupClaudeHomeSkillsGuardsUndeclaredChildOfDeclaredParent(t *testing.T) {
+	withIsolatedHomeAndConfig(t, `
+[claude]
+config_dir = "~/.claude-shared"
+[groups.alpha.claude]
+skills = ["store/alpha"]
+[groups.beta.claude]
+skills = ["store/beta"]
+`)
+
+	_, _, err := ResolveGroupClaudeHomeSkills("alpha/sub")
+	if err == nil || !strings.Contains(err.Error(), "beta") {
+		t.Fatalf("expected beta conflict through inherited skills, got %v", err)
+	}
+}
+
 func TestResolveGroupClaudeHomeSkillsRejectsChildAdditionInSharedHome(t *testing.T) {
 	withIsolatedHomeAndConfig(t, `
 [claude]

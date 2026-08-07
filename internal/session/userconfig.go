@@ -1615,6 +1615,21 @@ func (c *UserConfig) GetGroupClaudeEnvFile(groupPath string) string {
 	return ""
 }
 
+// hasGroupBlock reports whether groupPath or any ancestor has a [groups.X]
+// block in config.toml. Walks the same chain as findGroupClaudeSetting so
+// "declared" means exactly "some level of this chain can contribute settings".
+func (c *UserConfig) hasGroupBlock(groupPath string) bool {
+	if c == nil || groupPath == "" || c.Groups == nil {
+		return false
+	}
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if _, ok := c.Groups[p]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // findGroupClaudeSetting walks the group ancestor chain (exact path first,
 // then each parent) and returns the first non-empty value the extractor
 // yields, plus the group path it matched. Shared walk for the scalar

@@ -28,6 +28,18 @@ func ResolveGroupClaudeHomeSkills(groupPath string) (string, []string, error) {
 		return "", nil, fmt.Errorf("group %q has Claude skills but no config_dir", groupPath)
 	}
 
+	// A group with no [groups.X] block anywhere in its ancestor chain has made
+	// no declaration about this home: it neither installs skills nor opts out
+	// of them, so there is nothing for the divergence guard to protect. Only an
+	// explicit `skills = []` is a contradiction worth rejecting. Treating the
+	// two alike failed resolution for every registry group absent from
+	// config.toml — including agent-deck's own "conductor" and "my-sessions" —
+	// and failure here discards config.toml wholesale, dropping the session to
+	// bare defaults instead of the shared home's configured loadout.
+	if !config.hasGroupBlock(groupPath) {
+		return home, skills, nil
+	}
+
 	paths := make([]string, 0, len(config.Groups))
 	for path := range config.Groups {
 		paths = append(paths, path)
