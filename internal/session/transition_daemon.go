@@ -419,12 +419,14 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		}
 	}
 
-	// Self-heal Stage 1 (observe-only): evaluate every instance through the
-	// profile's observe engine, logging what it WOULD do and taking ZERO action.
-	// Runs every poll (including the first) so the dwell/confirm clocks start
-	// immediately. Reuses the instances/hookStatuses already loaded above — no
-	// extra capture, no new goroutine (F3). Disabled-by-config → cheap no-op.
-	d.runSelfHealObservePass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
+	// Self-heal: evaluate every instance through the profile's engine. In every
+	// mode but "resume" this logs what it WOULD do and takes ZERO action; in
+	// "resume" it may deliver ONE continuation prompt to a confirmed api-error /
+	// usage-limit candidate whose composer is empty. Runs every poll (including
+	// the first) so the dwell/confirm clocks start immediately. Reuses the
+	// instances/hookStatuses already loaded above — no new goroutine (F3).
+	// Disabled-by-config → cheap no-op.
+	d.runSelfHealPass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
 
 	if !d.initialized[profile] {
 		// Cover fast transitions that completed before we observed a running snapshot.

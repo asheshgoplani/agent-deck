@@ -682,3 +682,36 @@ No new timer, goroutine or unit — the existing 1-3s poll drives it."
 - `internal/session/userconfig.go`: `SelfHealSettings.SelfHealMode()` now returns `"resume"` for that configured value
 
 ## Record (append-only)
+
+### 2026-08-07 — implemented
+
+- Files touched: `internal/session/selfheal_pass.go`,
+  `internal/session/selfheal_pass_test.go`,
+  `internal/session/transition_daemon.go`, `internal/session/userconfig.go`.
+- Implemented exactly as written; no deviations.
+- Preconditions checked: `ModeResume` in `selfheal.go` → 4, `NewResumeEngine` in
+  `engine.go` → 2, `NewResumeExecutor` in `selfheal_resume.go` → 2,
+  `UsageLimitNotBefore` in `usagelimit.go` → 2. All ≥ 1.
+- TDD: the replacement tests were written first and failed to build
+  (`assignment mismatch: 2 variables but r.engineFor returns 1 value`,
+  `too many arguments in call to r.engineFor`, `r.execs undefined`) before the
+  pass rewrite landed.
+- Verification:
+  `gofmt -l internal/session/ internal/selfheal/ cmd/agent-deck/` → empty.
+  `go build ./...` → `BUILD_EXIT=0`.
+  `go vet ./internal/session/ ./cmd/agent-deck/` → clean apart from the
+  pre-existing `issue1225_wake_nudge_wiring_test.go:217` noted in task 01.
+  `go test ./internal/session/ -run 'SelfHeal|ComposerHasDraft' -count=1 -v` →
+  `TEST_EXIT=0`, `ok  github.com/asheshgoplani/agent-deck/internal/session 0.462s`,
+  **21 `--- PASS`, 0 FAIL**; run-specific sentinel
+  `--- PASS: TestSelfHealRegistry_ResumeMode_BuildsActingEngine` present.
+  `grep -n 'r.engines\[' internal/session/selfheal_pass_test.go` → no output (the
+  registry tests go through the real `engineFor` MISS path).
+  `go test ./internal/selfheal/ -count=1` → `ok  …/internal/selfheal 0.187s`.
+  `grep -rn 'runSelfHealObservePass' --include='*.go' .` → no output (the old name
+  is fully gone).
+  `grep -n 'Enabled bool' -A2 internal/session/userconfig.go` →
+  `Enabled bool \`toml:"enabled,omitempty"\`` with no default-true anywhere, and
+  `TestSelfHealMode_AcceptsResume` PASS pins `SelfHealSettings{}` as disabled +
+  observe.
+- No concerns.
