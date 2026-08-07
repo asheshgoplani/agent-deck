@@ -1,7 +1,7 @@
 # Task 05 — resume executor + send seam
 
 tier: strong
-depends on: task 02 (`ActionResume`), task 03 (`ActionExecutor` contract, `"resumed:<delivery>"` outcome format)
+depends on: task 02 (`ActionResume`), task 03 (`ActionExecutor` contract, `"resumed:<delivery>"` outcome format); transitively task 01 via 02 (`tmux.SubstateAPIError`, which this task reads off `c.Substate`)
 parallel with: nothing
 worktree: `/Users/doozyx/DoozyX/agent-deck/.worktrees/feature-selfheal-auto-resume` (branch `feature/selfheal-auto-resume`)
 

@@ -108,8 +108,11 @@ unchanged" clause actually taking effect rather than staying dormant.
      and the executor is **not** called.
 3. `ModeObserve` still returns before ever reaching the chokepoint, and
    `NewObserveEngine` still builds an engine with `exec == nil`.
-4. `c.ComposerDraft` downgrades `ActionResume` to `ActionEscalate` before the
-   mode check, so a drafted composer can never execute.
+4. `c.ComposerDraft` downgrades `ActionResume` to `ActionEscalate` **before
+   `e.policy.Gate` and `e.policy.RecordAttempt`**, so a drafted composer can
+   never execute and never spends a recovery from the 2-per-6h cap. The
+   downgrade carries its own audit outcome `"held_composer_draft"`, not
+   `"held_stage_2_3"`.
 5. `actionParams` returns `{"reason": "transport"}` for `SubstateAPIError` and
    `{"reason": "usage_limit"}` for `SubstateUsageLimit`.
 6. `Event.Outcome` carries the executor's outcome string verbatim.
@@ -148,21 +151,69 @@ func NewResumeEngine(caps Caps, sink EventSink, exec ActionExecutor) *Engine {
 
 ### 2. The composer downgrade + the execute call in `ProcessRead`
 
-Replace the block from `would := WouldHaveAction(c.Substate)` (line 214) to the
-end of `ProcessRead` (line 233) with:
+**The downgrade goes BEFORE the safety gate, not after it.** This is the whole
+point of the edit and the one thing not to "simplify" back:
+`e.policy.Gate(...)` is immediately followed by `e.policy.RecordAttempt(c, now)`,
+so a downgrade placed after them would let a session holding an operator's draft
+pass the gate, **consume one of its 2-per-6h recoveries**, do nothing, repeat on
+the next confirm cycle, consume the second, and then sit `cap_hit` for the rest
+of the six-hour window. By the time the human cleared their draft there would be
+no budget left to resume the session — the exact opposite of what D6 protects.
+
+Replace the block from `// Two confirming reads of the SAME substate.`
+(line 191) to the end of `ProcessRead` (line 233) with:
 
 ```go
+	// Two confirming reads of the SAME substate. Record both signatures.
+	second := thisRead
+	ev.Reads = []ReadSig{first.read, second}
+
 	would := WouldHaveAction(c.Substate)
 
-	// D6: an operator draft in the composer is a HARD precondition, checked
-	// before authority. Submitting someone else's text is not a decision a status
-	// probe gets to make — and the force-send path is known to CONSUME the draft
-	// rather than restore it (2026-08-07, conductor2-testfix). Downgrading to
-	// escalate here means the audit records a session that needs a human, and no
-	// mode can execute past it.
+	// D6: an operator draft in the composer is a HARD precondition, evaluated
+	// BEFORE the safety machine on purpose — see the note above this code block.
+	// A draft is not a failed recovery and must not spend one.
+	//
+	// Submitting someone else's text is not a decision a status probe gets to
+	// make, and the force-send path is known to CONSUME the draft rather than
+	// restore it (2026-08-07, conductor2-testfix). Downgrading to escalate here
+	// means the audit records a session that needs a human, no cap is spent, and
+	// no mode — including observe — can proceed past it. Observe short-circuits
+	// on the same branch deliberately: observe exists to model what resume WOULD
+	// do, and resume spends nothing here.
 	if would == ActionResume && c.ComposerDraft {
-		would = ActionEscalate
+		delete(e.confirmed, c.SessionID)
+		ev.Decision = DecisionAct
+		ev.WouldHave = ActionEscalate
+		ev.Action = ActionNone
+		ev.ActionParams = actionParams(c.Substate)
+		// Its OWN outcome string. "held_stage_2_3" means "Stages 2-3 are held",
+		// which is a different fact entirely; an operator grepping the audit for
+		// why a session was never resumed has to be able to see that a human's
+		// draft is what stopped it.
+		ev.Outcome = "held_composer_draft"
+		_ = e.sink.Append(ev)
+		return ev
 	}
+
+	// Safety machine: caps / backoff / breaker / flicker.
+	gate, capsState := e.policy.Gate(c, now)
+	ev.Caps = capsState
+	if gate != DecisionAct {
+		// Blocked by a guard — escalate-only, take no recovery. Reset the confirm
+		// chain so we re-confirm before the next would-be attempt.
+		delete(e.confirmed, c.SessionID)
+		ev.Decision = gate
+		ev.WouldHave = ActionEscalate
+		_ = e.sink.Append(ev)
+		return ev
+	}
+
+	// Gate allowed: this is a confirmed, in-budget candidate. The safety machine
+	// records the would-be attempt so caps/backoff advance and the next cycle
+	// reflects it (Stage-1 brief item 4: the machine is exercised + logged).
+	e.policy.RecordAttempt(c, now)
+	delete(e.confirmed, c.SessionID)
 
 	ev.Decision = DecisionAct
 	ev.WouldHave = would
@@ -329,7 +380,40 @@ Add `"errors"` to the file's import block if it is not already there.
 
 ### 2. New tests — append to `engine_test.go`
 
+**Read this before writing the timings — it is the thing that silently breaks
+these tests.** `ProcessRead` computes its own dwell anchor and **overwrites** the
+caller's value (`engine.go:139-141`): `anchor := e.updateSubstateAnchor(c, now)`
+then `c.StatusChangedAt = anchor`, unconditionally. On the *first* read of a
+stuck substate `updateSubstateAnchor` returns `now` (`engine.go:256-260`), so the
+dwell is 0 regardless of what the `Candidate` carried. (The doc comment at
+`engine.go:137-138` claiming `StatusChangedAt` is used "only as a floor" does not
+match the code — do not trust it.)
+
+An `api-error` candidate therefore needs **three** reads, because task 02 gives
+it a 60 s dwell:
+
+| read | at | decision |
+|---|---|---|
+| anchor | `now` | `DecisionSkipDwell` — starts the clock |
+| confirm 1 | `now + 61s` | `DecisionSkipConfirm` — past the dwell, first qualifying read |
+| confirm 2 | `now + 63s` | `DecisionAct` — executes |
+
+The existing suite already encodes this shape at `engine_test.go:220-221`
+(`// anchor (dwell 0)` then `// dwelled -> first confirm`). A pre-dwelled
+`StatusChangedAt` with two reads two seconds apart looks like it should work and
+silently returns `skip_dwell` on both. **If a test below fails, fix the timing —
+never weaken an assertion to make it pass.**
+
+The two usage-limit `ProcessRead` tests are unaffected: `usage-limit` has dwell 0.
+
 ```go
+// The three reads an api-error candidate needs, given task 02's 60s dwell.
+const (
+	apiReadAnchor   = 0 * time.Second  // starts the dwell clock (skip_dwell)
+	apiReadConfirm1 = 61 * time.Second // first read past the dwell (skip_confirm)
+	apiReadConfirm2 = 63 * time.Second // second confirming read (act)
+)
+
 // resumeSpy records what the executor was asked to do and returns a canned
 // outcome, so the chokepoint can be tested without any tmux or send path.
 type resumeSpy struct {
@@ -347,13 +431,19 @@ func resumeEngineFor(exec ActionExecutor, sink EventSink) *Engine {
 	return NewResumeEngine(DefaultCaps(), sink, exec)
 }
 
-// A dwelled api-error candidate, confirmed over two reads.
-func dwelledAPIErrorCand(now time.Time) Candidate {
+// apiErrorCand is a session showing the transport banner, with a stable output
+// signature so nothing reads as movement.
+//
+// StatusChangedAt is `now`, NOT a pre-dwelled past time: ProcessRead overwrites
+// it with its own anchor (see the note above), so pre-dwelling the field does
+// nothing and only makes the test read as if the dwell were already satisfied.
+// Dwell comes from the read timings, never from this struct.
+func apiErrorCand(now time.Time) Candidate {
 	return Candidate{
 		SessionID:       "s1",
 		Title:           "worker-3",
 		Substate:        tmux.SubstateAPIError,
-		StatusChangedAt: now.Add(-10 * time.Minute),
+		StatusChangedAt: now,
 		OutputSig:       "sig-stable",
 	}
 }
@@ -414,23 +504,29 @@ func TestNewObserveEngine_StillHasNoExecutor(t *testing.T) {
 	}
 }
 
-// End-to-end through ProcessRead: two confirming reads, then exactly one execution.
+// End-to-end through ProcessRead: anchor, dwell, two confirming reads, then
+// exactly one execution.
 func TestProcessRead_ResumeMode_ExecutesOncePerConfirmedCandidate(t *testing.T) {
 	now := time.Unix(1780000000, 0).UTC()
 	spy := &resumeSpy{outcome: "resumed:submitted"}
 	sink := &MemorySink{}
 	e := resumeEngineFor(spy, sink)
-	c := dwelledAPIErrorCand(now)
+	c := apiErrorCand(now)
 
-	first := e.ProcessRead(c, now)
+	anchor := e.ProcessRead(c, now.Add(apiReadAnchor))
+	if anchor.Decision != DecisionSkipDwell {
+		t.Fatalf("the first read only starts the dwell clock, got %q", anchor.Decision)
+	}
+
+	first := e.ProcessRead(c, now.Add(apiReadConfirm1))
 	if first.Decision != DecisionSkipConfirm {
-		t.Fatalf("the first read must only record the confirm, got %q", first.Decision)
+		t.Fatalf("the first dwelled read must only record the confirm, got %q", first.Decision)
 	}
 	if len(spy.calls) != 0 {
-		t.Fatal("one read is never enough — no execution on the first read")
+		t.Fatal("one qualifying read is never enough — no execution before the confirm")
 	}
 
-	second := e.ProcessRead(c, now.Add(2*time.Second))
+	second := e.ProcessRead(c, now.Add(apiReadConfirm2))
 	if second.Decision != DecisionAct {
 		t.Fatalf("the second confirming read must act, got %q", second.Decision)
 	}
@@ -453,19 +549,66 @@ func TestProcessRead_DraftedComposer_EscalatesWithoutActing(t *testing.T) {
 	now := time.Unix(1780000000, 0).UTC()
 	spy := &resumeSpy{outcome: "resumed:submitted"}
 	e := resumeEngineFor(spy, &MemorySink{})
-	c := dwelledAPIErrorCand(now)
+	c := apiErrorCand(now)
 	c.ComposerDraft = true
 
-	e.ProcessRead(c, now)
-	ev := e.ProcessRead(c, now.Add(2*time.Second))
+	e.ProcessRead(c, now.Add(apiReadAnchor))
+	e.ProcessRead(c, now.Add(apiReadConfirm1))
+	ev := e.ProcessRead(c, now.Add(apiReadConfirm2))
 	if ev.WouldHave != ActionEscalate {
 		t.Fatalf("a drafted composer must downgrade to %q, got %q", ActionEscalate, ev.WouldHave)
 	}
 	if ev.Action != ActionNone {
 		t.Fatalf("a drafted composer must take no action, got %q", ev.Action)
 	}
+	if ev.Outcome != "held_composer_draft" {
+		t.Fatalf("the audit must say a human's draft is what stopped it, got %q", ev.Outcome)
+	}
 	if len(spy.calls) != 0 {
 		t.Fatal("autonomous code must never submit text a human typed")
+	}
+}
+
+// The downgrade must not SPEND a recovery. Evaluated after RecordAttempt, a
+// session parked behind an operator draft burns both of its 2-per-6h attempts
+// doing nothing and is then cap-locked for six hours — so by the time the human
+// clears the draft there is no budget left to resume it, which is the exact
+// opposite of what D6 protects. This test fails if the downgrade is moved back
+// below e.policy.Gate / e.policy.RecordAttempt.
+func TestProcessRead_DraftedComposer_BurnsNoRecoveryBudget(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{outcome: "resumed:submitted"}
+	e := resumeEngineFor(spy, &MemorySink{})
+	c := apiErrorCand(now)
+	c.ComposerDraft = true
+
+	// Anchor once; the engine's anchor persists while the substate holds and the
+	// output signature does not move, so the dwell keeps growing from here.
+	e.ProcessRead(c, now.Add(apiReadAnchor))
+
+	// Six drafted confirm cycles — three times the per-session cap of 2.
+	at := now.Add(apiReadConfirm1)
+	for i := 0; i < 6; i++ {
+		e.ProcessRead(c, at)
+		ev := e.ProcessRead(c, at.Add(2*time.Second))
+		if ev.Outcome != "held_composer_draft" {
+			t.Fatalf("cycle %d: want held_composer_draft, got %q", i, ev.Outcome)
+		}
+		at = at.Add(4 * time.Second)
+	}
+	if len(spy.calls) != 0 {
+		t.Fatalf("nothing may execute behind a draft, got %d calls", len(spy.calls))
+	}
+
+	// The operator clears their draft. The session must be resumable AT ONCE.
+	c.ComposerDraft = false
+	e.ProcessRead(c, at)
+	ev := e.ProcessRead(c, at.Add(2*time.Second))
+	if ev.Decision != DecisionAct {
+		t.Fatalf("a cleared draft must be immediately resumable, got %q (cap-locked?)", ev.Decision)
+	}
+	if len(spy.calls) != 1 {
+		t.Fatalf("want exactly one resume once the draft cleared, got %d", len(spy.calls))
 	}
 }
 
@@ -521,16 +664,18 @@ func TestProcessRead_TypedNotSubmitted_CountsAsFailedRecovery(t *testing.T) {
 	now := time.Unix(1780000000, 0).UTC()
 	spy := &resumeSpy{outcome: "resumed:typed_not_submitted"}
 	e := resumeEngineFor(spy, &MemorySink{})
-	c := dwelledAPIErrorCand(now)
+	c := apiErrorCand(now)
 
-	e.ProcessRead(c, now)
-	ev := e.ProcessRead(c, now.Add(2*time.Second))
+	e.ProcessRead(c, now.Add(apiReadAnchor))
+	e.ProcessRead(c, now.Add(apiReadConfirm1))
+	ev := e.ProcessRead(c, now.Add(apiReadConfirm2))
 	if ev.Outcome != "resumed:typed_not_submitted" {
 		t.Fatalf("the audit must carry the real delivery, got %q", ev.Outcome)
 	}
 	// K for a non-auth class is 2: one more failed recovery opens the breaker.
-	e.ProcessRead(c, now.Add(4*time.Second))
-	e.ProcessRead(c, now.Add(6*time.Second))
+	// The dwell is long satisfied by now, so this is confirm+act, not anchor+confirm.
+	e.ProcessRead(c, now.Add(65*time.Second))
+	e.ProcessRead(c, now.Add(67*time.Second))
 	if !e.Policy().IsQuarantined("s1") {
 		t.Fatal("two consecutive undelivered resumes must open the breaker")
 	}
@@ -541,10 +686,11 @@ func TestProcessRead_ExecutorError_RecordedNoAction(t *testing.T) {
 	now := time.Unix(1780000000, 0).UTC()
 	spy := &resumeSpy{err: errors.New("pane is gone")}
 	e := resumeEngineFor(spy, &MemorySink{})
-	c := dwelledAPIErrorCand(now)
+	c := apiErrorCand(now)
 
-	e.ProcessRead(c, now)
-	ev := e.ProcessRead(c, now.Add(2*time.Second))
+	e.ProcessRead(c, now.Add(apiReadAnchor))
+	e.ProcessRead(c, now.Add(apiReadConfirm1))
+	ev := e.ProcessRead(c, now.Add(apiReadConfirm2))
 	if ev.Action != ActionNone {
 		t.Fatalf("a failed execution takes no action, got %q", ev.Action)
 	}
@@ -578,7 +724,18 @@ is the exhaustive 27-pair matrix and its absence means the file did not compile 
 ```sh
 go test ./internal/selfheal/ -run 'ExecuteIfAuthorized|ProcessRead_Resume|DraftedComposer|NotBefore|TypedNotSubmitted|ObserveEngine_StillHasNoExecutor' -count=1 -v
 ```
-Expected: all PASS.
+Expected: all PASS. If any api-error `ProcessRead` test reports `skip_dwell` where
+it expected `skip_confirm` or `act`, the read timings were collapsed back to two
+reads — fix the timings, **do not weaken the assertion**.
+
+Structural check that the composer downgrade sits ahead of the safety machine
+(this is the ordering the whole D6 protection turns on):
+```sh
+awk '/held_composer_draft/{d=NR} /e\.policy\.RecordAttempt/{r=NR} END{print "draft="d" recordattempt="r; exit !(d && r && d<r)}' internal/selfheal/engine.go; echo "EXIT=$?"
+```
+Expected: `EXIT=0`, with the printed `draft=` line number **lower** than
+`recordattempt=`. A non-zero exit means the downgrade is below `RecordAttempt`
+and a drafted session will burn its recovery budget doing nothing.
 
 Structural check that observe mode is still unable to act:
 ```sh
@@ -598,8 +755,14 @@ single pair and refuses all 27 others with ErrActionInGuardedMode, which the
 signature finally surfaces instead of standing in for it with an outcome string.
 The held outcome string is byte-identical so existing audit history still matches.
 
-An operator draft in the composer downgrades resume to escalate before the mode
-check, so no mode can submit text a human typed. The delivery verdict the
+An operator draft in the composer downgrades resume to escalate before the safety
+gate, so no mode can submit text a human typed AND no cap is spent doing it:
+downgrading after RecordAttempt would burn both of a session's 2-per-6h
+recoveries on a no-op and leave it cap-locked for six hours, so clearing the
+draft would find no budget left. The hold carries its own audit outcome,
+held_composer_draft, because held_stage_2_3 states a different fact.
+
+The delivery verdict the
 executor reports is recorded verbatim in the audit and feeds the circuit breaker:
 a resume typed into a gated composer is a failed recovery, not a success.
 
@@ -610,7 +773,7 @@ single_action and full are untouched and stay HELD."
 ## Interfaces
 
 ### consumes
-- `internal/selfheal/selfheal.go`: `Mode`, `ModeObserve`, `ModeSingleAction`, `ModeFull`, `ModeResume` (**task 02**), `Action`, `ActionNone`, `ActionResume` (**task 02**), `ActionResend`, `ActionEscalate`, `ActionRestart`, `ActionRestartModelSwitch`, `ActionRestartReassertCreds`, `Decision`, `DecisionAct`, `DecisionSkipConfirm`, `DecisionSkipNotBefore` (**task 02**), `WouldHaveAction(tmux.Substate) Action`
+- `internal/selfheal/selfheal.go`: `Mode`, `ModeObserve`, `ModeSingleAction`, `ModeFull`, `ModeResume` (**task 02**), `Action`, `ActionNone`, `ActionResume` (**task 02**), `ActionResend`, `ActionEscalate`, `ActionRestart`, `ActionRestartModelSwitch`, `ActionRestartReassertCreds`, `Decision`, `DecisionAct`, `DecisionSkipConfirm`, `DecisionSkipDwell`, `DecisionSkipNotBefore` (**task 02**), `WouldHaveAction(tmux.Substate) Action`
 - `internal/selfheal/candidate.go`: `Candidate` incl. `NotBefore` and `ComposerDraft` (**task 02**), `Evaluate`, `PredicateResult`
 - `internal/selfheal/policy.go`: `Caps`, `DefaultCaps()`, `NewPolicyMachine`, `(*PolicyMachine).Gate`, `(*PolicyMachine).RecordAttempt`, `(*PolicyMachine).RecordOutcome(c Candidate, healthy bool)`, `(*PolicyMachine).IsQuarantined`
 - `internal/selfheal/event.go`: `Event`, `EventSink`, `MemorySink`, `ReadSig`, `formatTS`
@@ -622,5 +785,6 @@ single_action and full are untouched and stay HELD."
 - `internal/selfheal/engine.go`: `const outcomeDeliveredPrefix = "resumed:submitted"` and `func outcomeIsDelivered(outcome string) bool` — **the executor in task 05 MUST format its outcome as `"resumed:" + delivery`**, where `delivery` is the `session send` contract value (`submitted` / `typed` / `typed_not_submitted` / `unverified` / `no_evidence` / `line_too_long` / `send_failed`). Only `"resumed:submitted"` counts as a healthy recovery.
 - `internal/selfheal/engine.go`: `actionParams(tmux.SubstateAPIError) == map[string]any{"reason": "transport"}`; `actionParams(tmux.SubstateUsageLimit) == map[string]any{"reason": "usage_limit"}` — **the executor in task 05 reads `c.Substate`, not these params, to pick its prompt**; the params exist for the audit record.
 - `internal/selfheal/engine.go`: `ActionExecutor` interface unchanged in shape — `Execute(c Candidate, a Action) (outcome string, err error)`
+- `internal/selfheal/engine.go`: **new audit outcome string** `"held_composer_draft"` — emitted with `Decision: act`, `WouldHave: escalate`, `Action: none`, and **no** cap spent, whenever `ActionResume` meets `Candidate.ComposerDraft`. Distinct from `"held_stage_2_3"` (a guarded mode) on purpose. Task 07's documentation lists it.
 
 ## Record (append-only)

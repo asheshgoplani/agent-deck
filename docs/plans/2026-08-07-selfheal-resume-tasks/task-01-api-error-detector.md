@@ -1,4 +1,4 @@
-# Task 01 — `api-error` detector, substate, ordering, glyph/label
+# Task 01 — `api-error` detector, substate, ordering, glyph/label, `stalled` preservation
 
 tier: mid
 depends on: nothing
@@ -104,6 +104,38 @@ Resolution (do exactly this): make the structural set a **parameter** of
 parenthesised transport codes. Both design §6 requirements then hold — the real
 banner matches, and assistant-line prose without a parenthesised code does not.
 
+## Second regression this task must not ship (settled decision — implement as written)
+
+Adding `api-error` ahead of the idle verdict makes **`SubstateStalled`
+unreachable for the panes it was built for**, and that is a regression, not a
+tidy-up.
+
+`SubstateStalled` is defined by exactly the banner this task now claims
+(`internal/tmux/substate.go`: *"a transport failure (\"API Error: Unable to
+connect to API (ConnectionRefused)\")"*, and the 2026-07-24 incident recorded in
+`internal/session/stall_test.go`). `Instance.Substate()` refines the tmux verdict
+through `promoteStalled` (`internal/session/stall.go`), and `promoteStalled`
+today refines **only** `SubstateIdleAtEmptyPrompt`. Once `ClassifySubstate`
+returns `api-error` first, such a pane never reaches the idle verdict, so it can
+never be promoted.
+
+That matters beyond labelling: `session nudge` refuses to send when the substate
+is `stalled` (`cmd/agent-deck/session_nudge_cmd.go:212`), and **that refusal is
+what stops a send from destroying an operator's in-flight composer draft.**
+
+Required behaviour (this is the approved resolution — do not redesign it):
+
+| pane | substate | consequence |
+|---|---|---|
+| banner + **empty** composer | stays `api-error` | self-heal resumes it after the 60 s dwell (tasks 02/03/06); there is no operator text to destroy |
+| banner + **drafted** composer | `api-error`, then `stalled` once the existing 10-minute `StallDwell` elapses | 🧊 renders, `session nudge` still refuses |
+
+Implement it by letting `promoteStalled` refine `SubstateAPIError` as well as
+`SubstateIdleAtEmptyPrompt` (edit 7 below). This does **not** wire
+`SubstateStalled` into self-heal: it stays out of `stuckDwellThresholds` and
+`actionForSubstate` (task 02 owns both and leaves it out), so design section 5
+still holds. Nothing here changes `StallDwell`, the tracker, or the idle branch.
+
 ## Acceptance criteria
 
 1. `tmux.SubstateAPIError` exists with value `"api-error"`.
@@ -113,9 +145,16 @@ banner matches, and assistant-line prose without a parenthesised code does not.
    behaviour is unchanged.
 4. `session.SubstateAPIError` re-export exists.
 5. `SubstateLabel` returns a non-empty label for it; the TUI renders a distinct
-   glyph for it under `StatusError`.
+   glyph for it under **`StatusIdle` / `StatusWaiting`** — *not* under
+   `StatusError`, which a transport banner never produces (see edit 6) — and a
+   test pins it.
 6. All six §6 detector cases pass as unit tests.
-7. `gofmt -l` clean on every file touched.
+7. `promoteStalled` refines `SubstateAPIError` as well as
+   `SubstateIdleAtEmptyPrompt`: banner + empty composer stays `api-error`;
+   banner + an unchanging draft becomes `SubstateStalled` after `StallDwell`.
+   Both branches are pinned by tests.
+8. `SubstateStalled` is **not** added to any self-heal map by this task.
+9. `gofmt -l` clean on every file touched.
 
 ## Edits
 
@@ -252,7 +291,18 @@ Add the constant to the `const (...)` block, immediately after
 	// network had recovered long before anyone noticed, and one continuation
 	// prompt resumed all three on the first attempt. The panes were never
 	// frozen — they repainted and accepted keystrokes — so every content-only
-	// heuristic read them as a healthy empty prompt. Pairs with status "error".
+	// heuristic read them as a healthy empty prompt.
+	//
+	// Pairs with status IDLE or WAITING, never "error": nothing maps a transport
+	// banner to StatusError (claudeErrorBannerSubstrings holds only the 401 /
+	// login / socket-closed shapes), and that is deliberate — a 401 is terminal
+	// and this is not. Anything keyed off this substate must therefore gate on
+	// idle/waiting, exactly like SubstateStalled does.
+	//
+	// A pane in this state whose composer holds an unchanging operator draft is
+	// promoted to SubstateStalled after StallDwell (see promoteStalled in
+	// internal/session/stall.go): the banner alone is recoverable by one
+	// continuation prompt, but text a human typed is not ours to submit.
 	SubstateAPIError Substate = "api-error"
 ```
 
@@ -305,21 +355,98 @@ In `SubstateLabel`, add a case after `case session.SubstateAuth401:`:
 
 ### 6. `internal/ui/connection_status.go`
 
-In the `if status == session.StatusError { switch substate { ... } }` block, add:
+**Do NOT add the glyph to the `status == session.StatusError` block.** A
+transport banner never produces `StatusError`: the tmux "error" verdict comes
+from `HasErrorBanner` → `hasClaudeErrorBanner` → `claudeErrorBannerSubstrings`
+(`internal/tmux/detector.go`), which holds only `API Error: 401`,
+`API Error (401`, `Please run /login` and `socket connection closed` — and this
+task deliberately keeps the transport markers in a *separate* set and changes no
+status derivation. An `api-error` pane stays `idle`/`waiting`, so a glyph gated
+on `StatusError` is dead code.
+
+The in-repo precedent is `SubstateStalled`, gated on `StatusIdle || StatusWaiting`
+for exactly this reason. Mirror it: replace the stalled block (currently lines
+63-72) with a shared idle/waiting block covering both substates:
 
 ```go
+	// Two substates pair with idle/waiting, NOT error, and both look perfectly
+	// healthy in a single frame — quiet pane, visible prompt — which is exactly
+	// why each needs its own glyph. Rendered as a plain "○"/"◐" they are
+	// indistinguishable from a session that is simply done, and an operator
+	// scanning the list has no reason to look closer.
+	//
+	// "🧊" = stalled: the composer holds text it cannot submit.
+	// "🌐" = the API is unreachable (transport). RECOVERABLE, and it reads
+	// nothing like a credential failure — an operator must not go hunting for a
+	// login when the network is what broke. Deliberately NOT under StatusError:
+	// no status derivation maps a transport banner to error, so a glyph gated
+	// there would never render.
+	if status == session.StatusIdle || status == session.StatusWaiting {
+		switch substate {
+		case session.SubstateStalled:
+			icon = "🧊"
 		case session.SubstateAPIError:
 			icon = "🌐"
+		}
+	}
 ```
 
-and extend the comment block just above it (currently ending `"🔒" = auth/login
-needed.`) with one line:
+Leave the `status == session.StatusError` block (model-unavailable / auth-401)
+and the stopped-auth block exactly as they are.
+
+### 7. `internal/session/stall.go` — keep `stalled` reachable
+
+Replace the doc comment and the base guard of `promoteStalled` (currently lines
+121-135). **Only the doc comment and the one `if` change**; the tracker, the
+capture, `send.ComposerDraft` and every other line stay byte-identical:
 
 ```go
-	// "🌐" = the API is unreachable (transport), which is RECOVERABLE and reads
-	// nothing like a credential failure — an operator must not go hunting for a
-	// login when the network is what broke.
+// promoteStalled refines an already-computed substate with dwell information,
+// returning SubstateStalled when a session that looks idle — or that is showing
+// a transport-error banner — is in fact holding an unchanging composer draft.
+//
+// Two bases are eligible:
+//
+//   - SubstateIdleAtEmptyPrompt — the original case: content-only heuristics
+//     cannot tell a wedged composer from a healthy empty prompt.
+//   - SubstateAPIError — the SAME case, now classified one step earlier. This
+//     substate is defined by precisely the banner this detector was built from
+//     ("API Error: Unable to connect to API (ConnectionRefused)", 2026-07-24),
+//     and it is checked ahead of the idle verdict, so refining only the idle
+//     base would make SubstateStalled unreachable for the panes it exists to
+//     describe.
+//
+// The split is load-bearing for recovery, not cosmetic:
+//
+//   - banner + EMPTY composer  -> stays api-error, and self-heal may deliver one
+//     continuation prompt after its dwell; there is no operator text to destroy.
+//   - banner + DRAFTED composer -> stalled, and `session nudge` REFUSES to send.
+//     That refusal is the thing standing between an operator's in-flight draft
+//     and a send that consumes it (the --force path is known to consume rather
+//     than restore it). Submitting someone else's text is not a decision a
+//     status probe gets to make.
+//
+// SubstateStalled remains reporting-only: it is deliberately absent from
+// selfheal's stuckDwellThresholds and actionForSubstate, so promotion here can
+// only ever protect a session, never schedule an action against it.
+//
+// A running, auth-failed or model-unavailable session is already being described
+// accurately, and a session with no composer at all has nothing to stall on.
+func promoteStalled(base tmux.Substate, src stallSource, tracker *stallTracker) tmux.Substate {
+	if tracker == nil {
+		return base
+	}
+	if base != tmux.SubstateIdleAtEmptyPrompt && base != tmux.SubstateAPIError {
+		tracker.reset()
+		return base
+	}
 ```
+
+Everything from `if src == nil {` onward is unchanged.
+
+Note for the implementer: `stall.go` already imports `internal/tmux`, so no
+import change is needed, and `Instance.Substate()` needs no edit — it already
+routes through `promoteStalled`.
 
 ## Tests — new file `internal/tmux/apierror_test.go`
 
@@ -429,13 +556,94 @@ func TestClassifySubstate_NonClaude_NoAPIError(t *testing.T) {
 }
 ```
 
+## Tests — append to `internal/session/stall_test.go`
+
+These pin acceptance criterion 7 — both branches of the api-error/stalled split.
+They reuse the file's existing helpers (`withStallClock`, `fakePane`,
+`paneWithComposer`); add no new imports.
+
+```go
+// A transport banner over an EMPTY composer stays api-error. This is the branch
+// self-heal acts on: there is no operator text to destroy, so one continuation
+// prompt is safe.
+func TestPromoteStalled_APIErrorEmptyComposer_StaysAPIError(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	withStallClock(t, &now)
+
+	pane := &fakePane{content: paneWithComposer("")}
+	tracker := &stallTracker{}
+
+	for i := 0; i < 3; i++ {
+		now = now.Add(time.Hour)
+		if got := promoteStalled(tmux.SubstateAPIError, pane, tracker); got != tmux.SubstateAPIError {
+			t.Fatalf("an empty composer under a transport banner must stay %q, got %q", tmux.SubstateAPIError, got)
+		}
+	}
+}
+
+// A transport banner over a FROZEN operator draft is promoted to stalled once
+// StallDwell elapses. Without this, classifying api-error ahead of the idle
+// verdict would make SubstateStalled unreachable for the exact pane it was built
+// from (2026-07-24) — and `session nudge` would stop refusing, which is the only
+// thing protecting the operator's draft from being consumed by a send.
+func TestPromoteStalled_APIErrorFrozenDraft_BecomesStalled(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	withStallClock(t, &now)
+
+	pane := &fakePane{content: paneWithComposer("target release-6.18.1")}
+	tracker := &stallTracker{}
+
+	// First observation starts the clock — never stalled on sight.
+	if got := promoteStalled(tmux.SubstateAPIError, pane, tracker); got != tmux.SubstateAPIError {
+		t.Fatalf("first observation: want %q, got %q", tmux.SubstateAPIError, got)
+	}
+
+	// Still inside the dwell: self-heal's own 60s dwell has passed by now, so
+	// this window is precisely where the two detectors disagree — and api-error
+	// is the correct answer only until the draft proves itself frozen.
+	now = now.Add(9 * time.Minute)
+	if got := promoteStalled(tmux.SubstateAPIError, pane, tracker); got != tmux.SubstateAPIError {
+		t.Fatalf("inside dwell: want %q, got %q", tmux.SubstateAPIError, got)
+	}
+
+	// Past the dwell with the same unchanged draft: wedged, and the nudge gate
+	// must see it.
+	now = now.Add(2 * time.Minute)
+	if got := promoteStalled(tmux.SubstateAPIError, pane, tracker); got != tmux.SubstateStalled {
+		t.Fatalf("past dwell: want %q, got %q", tmux.SubstateStalled, got)
+	}
+}
+```
+
+`TestPromoteStalled_OnlyRefinesIdleVerdict` already pins the pass-through bases
+(`running`, `auth-401`, `model-unavailable`, `none`) and must keep passing
+unchanged — do **not** add `SubstateAPIError` to its list.
+
+## Tests — append to `internal/ui/connection_status_test.go`
+
+This is the test that would have caught the dead glyph. Add these rows to
+`TestRowStatusGlyph`'s table (criterion 5):
+
+```go
+		{"idle + api-error substate", session.StatusIdle, session.SubstateAPIError, false, "🌐"},
+		{"waiting + api-error substate", session.StatusWaiting, session.SubstateAPIError, false, "🌐"},
+		{"api-error glyph does NOT render under error status", session.StatusError, session.SubstateAPIError, false, "✕"},
+		{"api-error glyph does NOT render under running", session.StatusRunning, session.SubstateAPIError, false, "●"},
+		{"archived overrides the api-error glyph", session.StatusIdle, session.SubstateAPIError, true, "■"},
+		{"stalled still renders alongside api-error", session.StatusIdle, session.SubstateStalled, false, "🧊"},
+```
+
+The third row is the load-bearing one: it fails against the naive
+"`case session.SubstateAPIError` inside the `StatusError` block" edit, and passes
+only once the glyph is gated on idle/waiting.
+
 ## Verification
 
 Run from the worktree root. Do **not** pipe — read the bare exit status.
 
 ```sh
 cd /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-selfheal-auto-resume
-gofmt -l internal/tmux/detector.go internal/tmux/authfailure.go internal/tmux/substate.go internal/tmux/apierror_test.go internal/session/instance.go cmd/agent-deck/cli_utils.go internal/ui/connection_status.go
+gofmt -l internal/tmux/detector.go internal/tmux/authfailure.go internal/tmux/substate.go internal/tmux/apierror_test.go internal/session/instance.go internal/session/stall.go internal/session/stall_test.go cmd/agent-deck/cli_utils.go internal/ui/connection_status.go internal/ui/connection_status_test.go
 ```
 Expected output: **nothing** (empty). Any filename printed means run `gofmt -w` on it.
 
@@ -453,11 +661,35 @@ is the run-specific sentinel — if it is absent from the output the test file w
 not compiled into the package.
 
 ```sh
+go test ./internal/session/ -run PromoteStalled -v; echo "EXIT=$?"
+```
+Expected: `EXIT=0`, with **every** pre-existing `TestPromoteStalled_*` still
+PASS plus the two new ones. Run-specific sentinel:
+`TestPromoteStalled_APIErrorFrozenDraft_BecomesStalled` must appear as
+`--- PASS` — its absence means the promotion guard was not widened and `stalled`
+is now unreachable for transport-wedged panes.
+
+```sh
+go test ./internal/ui/ -run RowStatusGlyph -v; echo "EXIT=$?"
+```
+Expected: `EXIT=0`. Run-specific sentinel: the subtest
+`TestRowStatusGlyph/api-error_glyph_does_NOT_render_under_error_status` must
+appear as `--- PASS`. If it fails with `got "🌐", want "✕"`, the glyph was gated
+on `StatusError` instead of idle/waiting.
+
+```sh
 go test ./internal/ui/ -run ConnectionStatus -v; echo "EXIT=$?"
 ```
 Expected: `EXIT=0`. (If `internal/ui` reports a zoxide-related failure unrelated
 to `ConnectionStatus`, that is a known sandbox flake — confirm the failing test
 name is not one you touched, and record it in the Record section.)
+
+Structural check that this task did not wire `stalled` into self-heal (criterion 8):
+```sh
+grep -rn 'SubstateStalled' internal/selfheal/
+```
+Expected: **no output**. `SubstateStalled` must not appear anywhere in
+`internal/selfheal/` after this task.
 
 ```sh
 go vet ./internal/tmux/ ./internal/session/ ./internal/ui/ ./cmd/agent-deck/
@@ -470,7 +702,9 @@ Expected: no output, exit 0.
 git -C /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-selfheal-auto-resume add \
   internal/tmux/detector.go internal/tmux/authfailure.go internal/tmux/substate.go \
   internal/tmux/apierror_test.go internal/session/instance.go \
-  cmd/agent-deck/cli_utils.go internal/ui/connection_status.go
+  internal/session/stall.go internal/session/stall_test.go \
+  cmd/agent-deck/cli_utils.go internal/ui/connection_status.go \
+  internal/ui/connection_status_test.go
 git -C /Users/doozyx/DoozyX/agent-deck/.worktrees/feature-selfheal-auto-resume commit -m "feat(tmux): classify transport failures as the api-error substate
 
 A DNS outage on 2026-08-07 wedged 3 of 32 live sessions for 16-39 minutes.
@@ -486,7 +720,17 @@ separator nor the error JSON, so the shared set would have skipped the one line
 this detector exists to catch.
 
 Ordered after the busy check, unlike auth-401: a transport error is recoverable,
-so a live spinner means the session already came back."
+so a live spinner means the session already came back.
+
+promoteStalled is widened to refine api-error too. SubstateStalled is defined by
+exactly this banner, and classifying api-error ahead of the idle verdict would
+otherwise make it unreachable for the panes it was built from — silently
+disarming the nudge gate that keeps a send from consuming an operator's draft.
+A banner over an empty composer stays api-error and is recoverable; a banner over
+a frozen draft still becomes stalled after the 10-minute dwell.
+
+The TUI glyph is gated on idle/waiting, not error: no status derivation maps a
+transport banner to StatusError, so a glyph gated there would never render."
 ```
 
 ## Interfaces
@@ -496,7 +740,10 @@ so a live spinner means the session already came back."
 - `internal/tmux/substate.go`: `Substate string`, `SubstateNone`, `SubstateRunning`, `SubstateAuth401`, `SubstateModelUnavailable`, `(*PromptDetector).ClassifySubstate(content string) Substate`, `(*PromptDetector).hasClaudeBusyIndicator(content string) bool`, `hasModelUnavailableNoop(content string) bool`
 - `internal/tmux/authfailure.go`: `authFailureBannerPatterns []string`, `IsAuthFailureContent(tool, content string) bool`
 - `cmd/agent-deck/cli_utils.go`: `SubstateLabel(sub session.Substate) string`
-- `internal/ui/connection_status.go`: the `status == session.StatusError` substate switch
+- `internal/ui/connection_status.go`: `rowStatusGlyph(status session.Status, substate session.Substate, archived bool) (string, lipgloss.Style)` — specifically its `StatusIdle || StatusWaiting` substate block
+- `internal/session/stall.go`: `promoteStalled(base tmux.Substate, src stallSource, tracker *stallTracker) tmux.Substate`, `stallSource`, `stallTracker`, `StallDwell`
+- `internal/session/stall_test.go`: `withStallClock(t, *time.Time)`, `fakePane`, `paneWithComposer(text string) string`
+- `internal/tmux/substate.go`: `SubstateStalled`, `SubstateIdleAtEmptyPrompt`
 
 ### produces
 - `internal/tmux/substate.go`: `const SubstateAPIError Substate = "api-error"`
@@ -504,5 +751,7 @@ so a live spinner means the session already came back."
 - `internal/tmux/detector.go`: **changed signature** `func scanClaudeBannerLines(content string, patterns, structural []string) bool`
 - `internal/session/instance.go`: `const SubstateAPIError = tmux.SubstateAPIError` (re-export, type `session.Substate`)
 - `cmd/agent-deck/cli_utils.go`: `SubstateLabel(session.SubstateAPIError) == "api unreachable (transport)"`
+- `internal/session/stall.go`: **widened base guard** — `promoteStalled` now refines `SubstateAPIError` in addition to `SubstateIdleAtEmptyPrompt`. Signature unchanged. Consequence downstream: `(*Instance).Substate()` reports `stalled` for a transport-banner pane holding a frozen draft, so `session nudge`'s existing `SubstateStalled` refusal (`cmd/agent-deck/session_nudge_cmd.go`) keeps covering it. **Task 06's `buildSelfHealCandidate` reads `CachedSubstate()`, which does not route through `promoteStalled`, so `SubstateStalled` never reaches self-heal — that separation is intentional and must be preserved.**
+- `internal/ui/connection_status.go`: `rowStatusGlyph` renders `"🌐"` for `SubstateAPIError` under `StatusIdle`/`StatusWaiting` only
 
 ## Record (append-only)

@@ -91,7 +91,7 @@ detector that this feature does not need. Leave `usageLimitMaxAge` alone.
 ## Acceptance criteria
 
 1. `latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool, text string, recordTS time.Time, ok bool)`
-   — the single canonical signature; the old 2-value form is gone and all eight
+   — the single canonical signature; the old 2-value form is gone and all seven
    existing test call sites are updated.
 2. `parseUsageLimitReset(text string, recordTS time.Time) (time.Time, bool)` handles
    `resets 6:10pm (Europe/Skopje)`, `resets 6pm (UTC)`, day rollover, unknown zone.
@@ -479,9 +479,10 @@ In the `Instance` struct, immediately after `usageLimitScanGen    uint64`
 	usageLimitNotBeforeCached time.Time
 ```
 
-### 7. `internal/session/usagelimit_test.go` — update the eight call sites
+### 7. `internal/session/usagelimit_test.go` — update the seven call sites
 
-Mechanical. Apply exactly:
+Mechanical. Apply exactly (`grep -c 'latestAssistantTurnIsRateLimited('
+internal/session/usagelimit_test.go` returns 7 — the list below is complete):
 
 - line 153: `limited, ok := latestAssistantTurnIsRateLimited(...)` → `limited, _, _, ok := latestAssistantTurnIsRateLimited(...)`
 - line 163: same shape → `limited, _, _, ok := ...`

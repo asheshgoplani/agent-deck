@@ -7,10 +7,11 @@ Task files: `docs/plans/2026-08-07-selfheal-resume-tasks/task-NN-<name>.md`.
 Every task file is self-contained. An implementer reads **only its own task file**
 and needs nothing else.
 
-## Two spec gaps this plan resolves (design intent preserved, not reopened)
+## Three spec gaps this plan resolves (design intent preserved, not reopened)
 
-Both were found by reading the code the design points at. Neither changes a
-decision; both are the concrete form D1/D5 leave unstated.
+All three were found by reading the code the design points at. None changes a
+decision; each is the concrete form D1/D5 — or design section 5's
+`SubstateStalled` boundary — leaves unstated.
 
 1. **D1's assistant-line guard would reject the real banner.**
    `scanClaudeBannerLines` skips a `⏺`-prefixed line unless it also carries a
@@ -31,11 +32,34 @@ decision; both are the concrete form D1/D5 leave unstated.
    `executeSend` in an `init()`. The executor still calls the one verified send
    path; nothing is reimplemented. (Task 05.)
 
+3. **D1's ordering silently takes `SubstateStalled` off the board.**
+   `SubstateStalled` is defined by exactly the banner D1 now claims
+   (`internal/tmux/substate.go`: *"a transport failure (\"API Error: Unable to
+   connect to API (ConnectionRefused)\")"*, the 2026-07-24 incident). But
+   `promoteStalled` (`internal/session/stall.go`) refines only
+   `SubstateIdleAtEmptyPrompt`, and D1 puts `api-error` **ahead** of the idle
+   verdict — so such a pane could never reach the promotion and `stalled` would
+   become unreachable for the panes it was built for. That is not cosmetic:
+   `session nudge` refuses to send when the substate is `stalled`
+   (`cmd/agent-deck/session_nudge_cmd.go`), and that refusal is what stops a
+   send from consuming an operator's in-flight composer draft.
+   Resolution: `promoteStalled` refines `SubstateAPIError` too. Banner + empty
+   composer stays `api-error` and is resumable; banner + a frozen draft still
+   becomes `stalled` after the existing 10-minute `StallDwell`. This does **not**
+   wire `SubstateStalled` into self-heal — it stays out of
+   `stuckDwellThresholds` and `actionForSubstate`, so design section 5's
+   "wiring `SubstateStalled` in" exclusion is untouched. (Task 01.)
+
 ## Invariants every task must preserve
 
 - Shipped defaults do not change: `[selfheal] enabled = false`, `mode = "observe"`.
 - `ModeSingleAction` / `ModeFull` keep returning `ErrActionInGuardedMode`.
 - `ActionResend` stays unexecutable and stays the `idle-at-empty-prompt` `would_have`.
+- `SubstateStalled` is never added to `stuckDwellThresholds` or
+  `actionForSubstate`. `grep -rn 'SubstateStalled' internal/selfheal/` must stay
+  empty (design section 5). Task 01 keeps the substate *reachable*; no task makes
+  it *actionable*.
+- `CHANGELOG.md` is not edited by any task (`CONTRIBUTING.md` house rule).
 - No new goroutine, timer, cron or launchd unit (design D8).
 - Repo gate: `make fmt` and `make lint` clean; conventional commit messages
   (`feat:` / `fix:` / `docs:` / `refactor:`); the contributor self-check at
@@ -45,25 +69,26 @@ decision; both are the concrete form D1/D5 leave unstated.
 
 | # | Task | Tier | Depends on | Parallel with |
 |---|------|------|-----------|---------------|
-| 01 | `api-error` detector, substate, ordering, glyph/label | mid | — | — |
+| 01 | `api-error` detector, substate, ordering, glyph/label, `stalled` preservation | mid | — | — |
 | 02 | selfheal policy surface: `ModeResume`, `ActionResume`, `NotBefore`, dwell map | mid | 01 | 04 |
 | 03 | engine authorization: `(ModeResume × ActionResume)` chokepoint | strong | 02 | — |
 | 04 | usage-limit reset parsing → `NotBefore` | strong | — | 02 |
 | 05 | resume executor + send seam | strong | 02, 03 | — |
 | 06 | daemon wiring in `selfheal_pass.go` | strong | 01–05 | — |
-| 07 | config docs, CHANGELOG, full repo gate | mid | 01–06 | — |
+| 07 | operator docs (`docs/self-heal.md`), full repo gate | mid | 01–06 | — |
 
 **Parallel-safe pair: 02 and 04.** Disjoint files (`internal/selfheal/*` vs
 `internal/session/usagelimit.go` + `internal/session/instance.go`). Nothing else
 in this plan is parallel-safe: 01 and 04 both edit `internal/session/instance.go`,
 and 03/05/06 each consume the previous task's new names.
 
-### Task 01 — `api-error` detector + substate (tier: mid)
+### Task 01 — `api-error` detector + substate + `stalled` preservation (tier: mid)
 
 Files: `internal/tmux/detector.go`, `internal/tmux/authfailure.go`,
 `internal/tmux/substate.go`, `internal/tmux/apierror_test.go` (new),
-`internal/session/instance.go`, `cmd/agent-deck/cli_utils.go`,
-`internal/ui/connection_status.go`.
+`internal/session/instance.go`, `internal/session/stall.go`,
+`internal/session/stall_test.go`, `cmd/agent-deck/cli_utils.go`,
+`internal/ui/connection_status.go`, `internal/ui/connection_status_test.go`.
 
 - `scanClaudeBannerLines(content string, patterns, structural []string) bool`
   — new third parameter; both existing call sites pass
@@ -73,9 +98,23 @@ Files: `internal/tmux/detector.go`, `internal/tmux/authfailure.go`,
 - New `tmux.SubstateAPIError = "api-error"`, classified in `ClassifySubstate`
   after the busy check and before `model-unavailable`.
 - Re-export alias `session.SubstateAPIError`; label in `SubstateLabel`; glyph
-  `🌐` in `connection_status.go` under `StatusError`.
+  `🌐` in `connection_status.go` gated on `StatusIdle`/`StatusWaiting` —
+  **not** `StatusError`, which a transport banner never produces (nothing maps
+  the transport markers to the tmux "error" verdict, so a glyph gated there
+  would be dead code). Mirrors `SubstateStalled`'s existing gating.
+- `promoteStalled` (`internal/session/stall.go`) refines `SubstateAPIError` as
+  well as `SubstateIdleAtEmptyPrompt`. Without this, classifying `api-error`
+  ahead of the idle verdict makes `SubstateStalled` **unreachable** for the
+  panes it was built from — and `session nudge`'s `SubstateStalled` refusal is
+  what stops a send from consuming an operator's in-flight draft. Net
+  behaviour: banner + empty composer stays `api-error` (self-heal resumes it);
+  banner + frozen draft becomes `stalled` after the existing 10-minute
+  `StallDwell` (🧊, nudge refuses). `SubstateStalled` is still **not** wired
+  into self-heal — design section 5 holds.
 
-Verification (design §6 "Detector (unit)"): `go test ./internal/tmux/ -run 'APIError|Substate|AuthFailure|ErrorBanner' -v`.
+Verification (design §6 "Detector (unit)"): `go test ./internal/tmux/ -run 'APIError|Substate|AuthFailure|ErrorBanner' -v`,
+plus `go test ./internal/session/ -run PromoteStalled -v` and
+`go test ./internal/ui/ -run RowStatusGlyph -v`.
 
 Produces for later tasks: `tmux.SubstateAPIError`, `session.SubstateAPIError`.
 
@@ -106,7 +145,11 @@ Files: `internal/selfheal/engine.go`, `internal/selfheal/engine_test.go`.
   the pair `(ModeResume, ActionResume)`; everything else returns
   `ErrActionInGuardedMode`.
 - Composer-draft downgrade (D6): `ActionResume` becomes `ActionEscalate` when
-  `c.ComposerDraft` is true, before the mode check.
+  `c.ComposerDraft` is true — **before `policy.Gate` / `policy.RecordAttempt`**,
+  not just before the mode check. After them, a session holding an operator's
+  draft burns both of its 2-per-6h recoveries doing nothing and is then
+  cap-locked for six hours, so clearing the draft finds no budget left. The
+  downgrade carries its own audit outcome `held_composer_draft`.
 - `actionParams` returns `{"reason": "transport"}` / `{"reason": "usage_limit"}`.
 - Executed outcome feeds `policy.RecordOutcome`.
 - The existing `TestExecuteIfAuthorized_GuardedModes_Refuse` is updated for the
@@ -120,6 +163,8 @@ contract for task 05.
 ### Task 04 — usage-limit reset parsing (tier: strong)
 
 Files: `internal/session/usagelimit.go`, `internal/session/instance.go`,
+`internal/session/usagelimit_test.go` (the seven existing
+`latestAssistantTurnIsRateLimited` call sites move to the 4-value signature),
 `internal/session/usagelimit_reset_test.go` (new).
 
 - `latestAssistantTurnIsRateLimited` returns
@@ -157,10 +202,21 @@ Produces: `NewResumeExecutor`, `SetSelfHealSender`, consumed by task 06.
 
 ### Task 06 — daemon wiring (tier: strong)
 
-Files: `internal/session/selfheal_pass.go`, `internal/session/selfheal_pass_test.go`.
+Files: `internal/session/selfheal_pass.go`, `internal/session/selfheal_pass_test.go`,
+`internal/session/userconfig.go`, `internal/session/transition_daemon.go`.
 
 - `selfHealRegistry.engineFor` takes the mode and builds either the observe
-  engine or the resume engine.
+  engine or the resume engine. The engine stays cached per profile — it holds
+  the two-read confirm and every cap/backoff/breaker window, so rebuilding it
+  per pass would reset them. Consequence, documented rather than engineered
+  away: changing `mode` in config takes effect only after a transition-daemon
+  restart. Task 06 states it in `engineFor`'s doc comment and pins it with a
+  test; task 07 states it for operators.
+- The registry tests must construct through the real `engineFor` path
+  (pre-injecting `r.engines[profile]` hits the cache-return and asserts on the
+  injected value, so such a test cannot fail). `internal/session`'s `TestMain`
+  already calls `testutil.IsolateHome()`, so the real NDJSON sink lands in the
+  sandbox.
 - `SelfHealSettings.SelfHealMode()` accepts `"resume"`.
 - `buildSelfHealCandidate` gains the usage-limit substate lift (the cached
   substate is deliberately usage-limit-blind), the `NotBefore` population, and
@@ -168,15 +224,32 @@ Files: `internal/session/selfheal_pass.go`, `internal/session/selfheal_pass_test
 
 Verification: `go test ./internal/session/ -run SelfHeal -v`.
 
-### Task 07 — docs, CHANGELOG, full gate (tier: mid)
+### Task 07 — operator docs, full gate (tier: mid)
 
-Files: `CHANGELOG.md`, `docs/plans/2026-08-07-selfheal-auto-resume-design.md`
-(status line only).
+Files: `docs/self-heal.md` (new), `README.md` (one User-guides row),
+`docs/plans/2026-08-07-selfheal-auto-resume-design.md` (status line only).
 
-- `## [Unreleased] / ### Added` entry.
+- **No `CHANGELOG.md` edit.** `CONTRIBUTING.md` forbids it in a PR ("entries are
+  added at landing time"), and task 07's own gate would flag it. The release
+  note lives in the PR body; task 07 carries the prose verbatim.
+- `docs/self-heal.md` is the documentation target that keeps the feature from
+  shipping documented nowhere: every `[selfheal]` key with its shipped default,
+  what `mode = "resume"` authorises, design section 4's `global_per_hour`
+  guidance (default 5, raise to ~30 for a fleet, and why), the audit outcome
+  strings, the mode-change-needs-restart caveat, and the deployment note.
+  Linked from the README so it is reachable without knowing the filename.
 - Full gate: `make fmt`, `make lint`, `go build ./...`, `go vet ./...`,
   `go test ./internal/tmux/ ./internal/selfheal/ ./internal/session/ ./cmd/agent-deck/`,
   and `.github/skills/agent-deck-contributor/scripts/self-check.sh`.
+
+## Verification not owned by any task
+
+Design section 6's **Manual** step — *"Enable locally; on the next transport blip
+confirm the audit NDJSON records a real `action: resume` with
+`delivery: submitted`, and that the pane resumed"* — is **the operator's,
+post-merge, and is owned by no task in this plan**. No task installs, restarts or
+bootstraps anything on the operator machine (design section 7 lists why that is
+its own hazard). Task 07 carries the step into the PR body so it is not lost.
 
 ## Known-flaky tests in this sandbox
 
