@@ -41,6 +41,9 @@ You (the session running this skill) are the **conductor**. Hard rules:
   worktree (`launch -w <branch>`), including single-task relay mode.
 - **You never block.** Supervise via the `session children --json` heartbeat;
   answer `waiting` children; poll `gh pr checks` on the same heartbeat.
+- **You never open an image and you never type a prompt body.** Both are pure
+  context burn with a cheaper substitute — see "Context budget" and "Rendering
+  child prompts". These are the two things that took a real conductor to 839k.
 - **You never pass `-g` to a child launch.** Worktree children auto-inherit your
   group; an explicit `-g` overrides that inheritance, and a group name guessed
   from the repo folder (`-g baba` when the group is really `doozyx/baba`) strands
@@ -68,17 +71,20 @@ root — outside every repo, so it structurally cannot leak into a commit:
 RUN_DIR="$HOME/.agent-deck/orchestrate/<run-id>"
 mkdir -p "$RUN_DIR"
 cp <agent-deck-repo>/skills/orchestrate/references/poll.sh "$RUN_DIR/"
+cp -R <agent-deck-repo>/skills/orchestrate/references/prompts "$RUN_DIR/"
 ```
 
 Everything any child captures goes under `$RUN_DIR/<task-slug>/`, and the
-prompt files you write for children live there too (`impl-prompt.md`,
+prompt files you render for children live there too (`impl-prompt.md`,
 `review-r1-prompt.md`, …) — not `/tmp`, where they collide across runs,
 vanish on reboot, and break resume. Nothing under `$RUN_DIR` is ever
 committed, pushed, uploaded, or mentioned in a PR.
 
-`poll.sh` is your heartbeat — see "Context budget". Copy it from the
-agent-deck checkout this skill file lives in (you know that path: you read
-this file); if it isn't there, write it from the listing in that section.
+`poll.sh` is your heartbeat — see "Context budget". `prompts/` holds every
+child prompt template plus `render.sh`, which fills them; you never type a
+prompt body, so no template ever enters your context (see "Rendering child
+prompts"). Copy both from the agent-deck checkout this skill file lives in
+(you know that path: you read this file).
 
 Also read the target repo's `CLAUDE.md` and `CONTRIBUTING.md` now, for the
 one thing this skill cannot know: how work is expected to *land* there. If it
@@ -188,22 +194,17 @@ gate cannot be satisfied, so the child either stalls as `waiting` asking you
 to approve a design, or writes a spec document instead of doing its task.
 Subagent-exemption clauses in those skills do **not** cover your children.
 
-Prefix every child prompt — planner, implementer, reviewer, fix, merge,
-integration — with:
-
-```text
-This is EXECUTION of already-approved work, not design. The design and plan
-exist and the user approved them; they are quoted or linked below and are
-your requirements. Do not invoke a brainstorming/design skill, do not
-propose alternative approaches, do not write or revise a spec, and do not
-wait for design approval — there is no user in this session to give it. If
-you think the spec or plan is actually wrong, stop and say so in one line;
-do not redesign around it.
-```
+Every child prompt — planner, implementer, reviewer, fix, merge, integration —
+is prefixed with an anti-brainstorm block that says, in short: this is
+execution of already-approved work, invoke no design skill, propose no
+alternatives, write no spec, and do not wait for an approval no one is here to
+give. It lives in `references/prompts/preamble.md` and is prepended for you by
+every template — you never type it.
 
 The planner child is the one partial exception: it *writes* a plan, so it may
-use plan-writing skills. It still must not re-open the design or re-brainstorm
-the spec — the spec is approved input.
+use plan-writing skills (`prompts/plan.md` carries its own variant). It still
+must not re-open the design or re-brainstorm the spec — the spec is approved
+input.
 
 Keep the preamble to that block. The rest of the executor discipline —
 "use tdd", "verify before reporting done", "do not spawn your own review
@@ -227,19 +228,55 @@ So the retained line must be the part that is **lost** on that path, not the
 part the interactive preamble already duplicates. Leaf-skill pointers are
 duplicated (the interactive preamble names `tdd`, `debug` and `verify` too);
 "do not spawn your own review loop" is not, and a child that reviews itself
-produces exactly the self-certified verdict stage 2 exists to prevent. Use:
+produces exactly the self-certified verdict stage 2 exists to prevent. That
+line is the second paragraph of `prompts/preamble.md`; leave it there.
 
-```text
-Use `tdd`, `debug` and `verify` as you work. Do not spawn your own review
-loop — a fresh reviewer runs after you. End your final message with the
-`===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>` sentinel as the
-last line, after any `VERDICT:` line your prompt also mandates.
-```
-
-The sentinel clause is belt-and-braces: `launch` already appends a
+The sentinel clause it carries is belt-and-braces: `launch` already appends a
 completion-sentinel instruction for `-c claude` (`--assert-done`, default on),
 so restating it only matters if someone passes `--no-assert-done`. The hook is
-the optimisation; this line is the guarantee.
+the optimisation; that line is the guarantee.
+
+## Rendering child prompts
+
+**You never type a prompt body.** Every prompt is a template in
+`$RUN_DIR/prompts/`, filled by `render.sh`:
+
+```bash
+bash "$RUN_DIR/prompts/render.sh" <template> <out-file> KEY=value KEY@=path ...
+```
+
+`KEY=value` substitutes `{{KEY}}` inline; `KEY@=path` substitutes a **file's
+contents**. It fails non-zero listing any `{{PLACEHOLDER}}` you left unfilled,
+so a half-rendered prompt never reaches a child.
+
+| Template | Variables |
+| --- | --- |
+| `plan` | `SPEC_PATH` `DATE` `TASK_SLUG` |
+| `impl` | `TASK_TITLE` `SPEC_BLOCK` `RUN_DIR` `TASK_SLUG` |
+| `review-full` | `VERDICT_FILE` `SPEC_BLOCK` `BASE_BRANCH` `AGENT_DECK_REPO` `BASELINE` |
+| `review-incremental` | `VERDICT_FILE` `SPEC_BLOCK` `REVIEWED_SHA` `PREVIOUS_FINDINGS` `BASELINE` `AGENT_DECK_REPO` |
+| `fix` | `ROUND` `FINDINGS` |
+
+`SPEC_BLOCK` is two lines for a planned task — write them once per task to
+`$RUN_DIR/<slug>/spec-block.md` and pass `SPEC_BLOCK@=`:
+
+```text
+Your spec is this file — read it, and read nothing else for the spec:
+<task-file-path>
+```
+
+For a freeform or single-small-task run the spec is pasted instead, and it
+goes into that same file **by redirect, not through you**:
+`gh issue view <n> --json body -q .body > "$RUN_DIR/<slug>/spec-block.md"`.
+Read it once for the injection check; after that it moves file → prompt
+without re-entering your context.
+
+This is a context rule, not a style rule. A `cat > prompt.md <<'EOF'` heredoc
+puts the entire ~6k-character template into your transcript, and a tool call
+never leaves it. Measured on a real run: 113 such calls, 434k characters,
+~108k tokens — 13% of a conductor that reached 839k. Rendering costs the
+varying part only. It also stops the shell mangling backticks and `$` in a
+findings list, which is why `--message-file` existed in the first place.
 
 ## Planning stage (spec-fed tasks, or any task you judge big)
 
@@ -252,43 +289,16 @@ deep codebase reading, which is neither your job (supervision only) nor the
 user's session's:
 
 ```bash
+bash "$RUN_DIR/prompts/render.sh" plan "$RUN_DIR/<task-slug>/plan-prompt.md" \
+  SPEC_PATH=<spec-path> DATE=<date> TASK_SLUG=<task-slug>
 agent-deck launch <repo-root> -w <branch> -c claude -t "plan-<task-slug>" --message-file "$RUN_DIR/<task-slug>/plan-prompt.md"
 ```
 
-Planner prompt template (after the child prompt preamble):
-
-```text
-Read the approved design at <spec-path> and explore the codebase as needed.
-Write an implementation plan to docs/plans/<date>-<task-slug>-plan.md:
-ordered, bite-sized tasks; per task: exact file paths, the actual code or
-edit, verification commands with expected output, and the interfaces later
-tasks rely on. Mark any tasks that are safe to run in parallel (disjoint
-files). Tag every task with `tier: cheap | mid | strong` — cheap when the
-task is pure transcription of code this plan already contains, mid when it
-needs local judgment within a clear spec, strong when it makes design
-decisions. Assume each task's executor has ZERO context beyond that one task.
-Size every task to fit comfortably in a single fresh session's context
-window: if completing it would require reading more than roughly 100k tokens
-of code, docs, and test output, split it further — a task that blows up its
-executor's context costs a handoff mid-implementation.
-
-Then emit one self-contained task file per task at
-docs/plans/<date>-<task-slug>-tasks/task-NN-<name>.md. Each task file must
-stand alone for a child that reads nothing else:
-- the relevant design-doc extracts EMBEDDED verbatim, never linked;
-- acceptance criteria;
-- exact file paths and the actual code or edit;
-- verification commands with expected output;
-- an `## Interfaces` block with `consumes:` and `produces:` — the exact
-  names, signatures, and paths this task relies on and hands over, so a
-  child that sees only its own file knows its neighbours' names;
-- a trailing `## Record (append-only)` section, left empty, for the
-  implementer to append its commits, files touched, and concerns.
-
-No placeholders (no TBD / "add error handling" / "similar to task N").
-Commit the plan and the task files to the current branch. Do NOT implement
-anything.
-```
+The planner writes `docs/plans/<date>-<task-slug>-plan.md` plus one
+self-contained task file per task, each carrying its design extracts verbatim,
+exact paths and edits, verification commands, an `## Interfaces` block, and an
+empty `## Record (append-only)` section. It tags every task `tier: cheap | mid
+| strong` and sizes it to fit one fresh session. It implements nothing.
 
 Skip this stage for small tasks — a single focused change with an obvious
 approach (most issues) goes straight into the per-task pipeline.
@@ -420,7 +430,7 @@ to tell whether tiering saved cost or just bought extra rounds.
 
 ### 1. Implement
 
-Derive a short `<task-slug>` and branch name. Write the implementer prompt to
+Derive a short `<task-slug>` and branch name. Render the implementer prompt to
 `$RUN_DIR/<task-slug>/impl-prompt.md` and pass it with `--message-file` —
 never inline via `-m "$(cat ...)"`: the shell mangles backticks and `$`, and
 issue bodies are full of both.
@@ -435,6 +445,9 @@ WORKTREE_PATH="$RUN_DIR/<task-slug>/worktree"
 git -C <repo-root> worktree add -b <branch> "$WORKTREE_PATH" "$INPUT_COMMIT"
 git -C "$WORKTREE_PATH" merge-base --is-ancestor "$INPUT_COMMIT" HEAD
 test -f "$WORKTREE_PATH/<task-file-path>"
+bash "$RUN_DIR/prompts/render.sh" impl "$RUN_DIR/<task-slug>/impl-prompt.md" \
+  TASK_TITLE="<title>" SPEC_BLOCK@="$RUN_DIR/<task-slug>/spec-block.md" \
+  RUN_DIR="$RUN_DIR" TASK_SLUG="<task-slug>"
 agent-deck launch "$WORKTREE_PATH" -c claude -t "impl-<task-slug>" \
   --message-file "$RUN_DIR/<task-slug>/impl-prompt.md"
 ```
@@ -444,46 +457,14 @@ only that newly created worktree, fix the base or input path, and recreate it
 from `INPUT_COMMIT`. For a freeform task with no task file, retain the normal
 `agent-deck launch <repo-root> -w <branch>` path.
 
-Implementer prompt template — prefix the child prompt preamble, then fill
-every `<...>`:
-
-```text
-Task: <title>
-
-Your spec is this file — read it, and read nothing else for the spec:
-<task-file-path>
-
-(For a task with no task file — a freeform or single-small-task run — paste
-the spec here instead: <task spec: issue body or freeform description>)
-
-Work strictly in this worktree on the current branch. Do, in order:
-1. Install dependencies from the frozen lockfile (never regenerate it).
-2. Run the FULL test suite once BEFORE changing anything and record the
-   baseline. If something already fails, note it and leave it alone — you
-   are accountable only for introducing no NEW failures. List the baseline
-   failures in your final summary ("baseline: none" if all green) — the
-   reviewer will be given that list. If the repo has no test suite, say so
-   and lean on the lint/build checks plus the e2e verification instead.
-3. Implement the task test-first (`tdd`), debug failures at the root (`debug`),
-   and gate every completion claim on fresh evidence (`verify`).
-4. Run the FULL test suite; no new failures versus the baseline. Also run
-   the repo's lint/format/build checks — whatever CI runs — and fix what
-   they flag on your changes.
-5. Verify the change end-to-end by actually driving the app — not only tests.
-   For browser work use an isolated browser instance (Playwright-style), not
-   a shared Chrome — other tasks may be driving browsers in parallel.
-6. Only if the change affects UI: capture before/after screenshots into
-   <run-dir>/<task-slug>/ using descriptive names (before-<what>.png,
-   after-<what>.png). Never commit them, never mention them or that
-   directory in any commit message, and take a screenshot of the final
-   working state.
-7. Commit your work in clear logical commits. Do NOT push yet.
-
-Keep your context lean: delegate broad exploration (find-the-code sweeps,
-"where is X handled" questions) to subagents so file dumps land outside your
-context; read test-output tails rather than full runs; never cat large files
-or full logs when a targeted read answers the question.
-```
+The rendered prompt tells the implementer to work strictly in this worktree
+and, in order: install from the frozen lockfile, record a full-suite baseline
+*before* touching anything, implement test-first, rerun the full suite plus
+the repo's lint/format/build checks, verify end-to-end by driving the app
+(isolated browser instance — siblings are driving browsers too), capture
+before/after screenshots into `$RUN_DIR/<task-slug>/` **and describe in words
+what each one shows**, and commit without pushing. It closes with the
+keep-your-context-lean rules (delegate sweeps to subagents, read output tails).
 
 ### 2. Fresh review
 
@@ -497,6 +478,10 @@ run `git stash` in a shared worktree and swept a sibling implementer's
 in-flight work. The prompt rule below carries what the flags cannot.
 
 ```bash
+bash "$RUN_DIR/prompts/render.sh" review-full "$RUN_DIR/<task-slug>/review-r1-prompt.md" \
+  VERDICT_FILE="$RUN_DIR/<task-slug>/review-r1.md" \
+  SPEC_BLOCK@="$RUN_DIR/<task-slug>/spec-block.md" \
+  BASE_BRANCH=<base-branch> AGENT_DECK_REPO=<agent-deck-repo> BASELINE="<baseline, or none>"
 agent-deck launch <worktree-path> -c claude -t "review-<task-slug>-r1" \
   --extra-arg --disallowedTools --extra-arg "Edit,Write,NotebookEdit" \
   --message-file "$RUN_DIR/<task-slug>/review-r1-prompt.md"
@@ -505,60 +490,16 @@ agent-deck launch <worktree-path> -c claude -t "review-<task-slug>-r1" \
 Record the worktree's current HEAD sha in the manifest when you launch each
 reviewer — incremental rounds and the full-branch gate need it.
 
-Reviewer prompt template (after the child prompt preamble):
+The rendered prompt makes the reviewer read-only with exactly one permitted
+write (the verdict file, outside the repo), forbids every working-tree-rewriting
+command in a worktree it may share with a live implementer, runs the review
+layers with `adversarial` **first and spec-blind**, threads spec compliance
+through the other layers, hands over the implementer's baseline as
+not-a-finding, and demands the `## Merged findings` anchor plus a
+machine-readable `VERDICT:` line.
 
-```text
-You are a code reviewer with fresh eyes. You are READ-ONLY with exactly one
-exception, stated below: edit nothing in the repository, commit nothing, run
-only read-only commands plus the test suite. You may be sharing this worktree
-with a live implementer session, so never run a command that rewrites the
-working tree: no `git stash`, `git checkout`, `git restore`, `git reset`,
-`git clean`, no branch switching. A tree that looks dirty or wrong is a
-finding to report, never a thing for you to tidy up.
-
-Your ONE permitted write is the verdict file at <verdict-file-path>. It sits
-outside the repository and outside this worktree, so writing it cannot touch
-the branch under review. Create it with a shell redirect (the editing tools
-are disabled for you by flag); create nothing else, anywhere.
-
-The task this branch is supposed to implement is in this file — read it and
-nothing else for the spec: <task-file-path>
-
-(For a task with no task file — a freeform or single-small-task run — paste
-the spec here instead: <task spec: the same spec the implementer received>)
-
-Review the full branch diff: git diff $(git merge-base <base-branch> HEAD)...HEAD
-
-Execute the review layers per <agent-deck-repo>/skills/review/references/ —
-run `adversarial.md`, `edge-cases.md` and `verification-gap.md`, plus
-`deletion-check.md` if the diff removes meaningful code — then merge, dedup,
-grade severity and triage exactly as <agent-deck-repo>/skills/review/SKILL.md
-describes. Add spec compliance against the task file above as an explicit
-concern threaded into `edge-cases`, `verification-gap` and `deletion-check`:
-anything missing, extra, or misunderstood is a finding. The adversarial layer
-stays spec-blind by design — it receives the diff only, so run it FIRST,
-before you read the task file or any repo file. Not knowing the author's
-intent is exactly what makes that layer catch what the others rationalise;
-handing it the spec restores the anchoring bias it exists to remove. Also run
-the test suite and judge whether the tests actually cover the change.
-
-Known pre-existing test failures (the implementer's recorded baseline):
-<baseline list, or "none">. These are NOT findings — only failures new
-against this baseline are.
-
-Write your full output to <verdict-file-path>, in this order: every layer's
-raw findings first, then a line containing exactly `## Merged findings`, then
-the merged list, the "Checked:" lines and the verdict line. That heading is a
-parsing anchor — emit it verbatim, exactly once. Then print ONLY the merged
-findings list, the "Checked:" lines and the verdict line as your response. A
-verdict with no evidence is not acceptable.
-End with exactly one line, using real counts:
-VERDICT: clean
-VERDICT: fix-needed patch=<n> decision-needed=<n> defer=<n>
-```
-
-**The verdict-file interface (the conductor owns the path).** Substitute
-`$RUN_DIR/<task-slug>/review-r<n>.md` for `<verdict-file-path>` — the same run
+**The verdict-file interface (the conductor owns the path).** `VERDICT_FILE` is
+always `$RUN_DIR/<task-slug>/review-r<n>.md` — the same run
 directory every other prompt file lives in, which is outside every repo by
 construction. The reviewer writing that file itself replaces the old
 `session output ... > $RUN_DIR/<slug>/review-r<n>.txt` capture: the raw layer
@@ -608,79 +549,34 @@ path into every reviewer prompt.
   Save. Regrade upward and send it back. Regrading *downward* is a different
   act — it needs a reason you can write in one line, and it goes in the final
   report.
-- On findings → `session send` the fix-round prompt to `impl-<task-slug>`
-  (write it to `$RUN_DIR/<task-slug>/fix-r<n>.md` and pass
-  `--message-file` — findings lists are full of backticks too):
+- On findings → render the fix-round prompt and `session send` it to
+  `impl-<task-slug>` with `--message-file` (findings lists are full of
+  backticks too). Pipe the findings **file to file**: they were written by the
+  reviewer and never need to pass through you a second time.
 
-```text
-Review round <n> found issues on your branch — fix them:
-
-<findings list, verbatim>
-
-Fix every finding in the `patch` bucket. `decision-needed` items are not
-yours to resolve and `defer` items are out of scope — leave both alone and
-say so in your summary if any were listed. Rerun the full
-test suite (no new failures vs your baseline), the lint/format checks, and
-the e2e check; update screenshots if the UI changed again; commit.
-Do NOT push.
+```bash
+sed -n '/^## Merged findings/,$p' "$RUN_DIR/<slug>/review-r<n>.md" > "$RUN_DIR/<slug>/findings-r<n>.md"
+bash "$RUN_DIR/prompts/render.sh" fix "$RUN_DIR/<slug>/fix-r<n>.md" \
+  ROUND=<n> FINDINGS@="$RUN_DIR/<slug>/findings-r<n>.md"
 ```
 
 - When the implementer is done, launch the next fresh reviewer
   (`review-<task-slug>-r2`, then `-r3`) with the same `--disallowedTools`
   flags. **Rounds 2+ are incremental** — the round-1 full review already
-  happened, so re-reviewing the whole branch each round is wasted cost.
-  Incremental reviewer prompt template:
+  happened, so re-reviewing the whole branch each round is wasted cost. It
+  reuses the same findings file the fix round was built from:
 
-```text
-You are a code reviewer with fresh eyes. You are READ-ONLY with exactly one
-exception, stated below: edit nothing in the repository, commit nothing, run
-only read-only commands plus the test suite. You may be sharing this worktree
-with a live implementer session, so never run a command that rewrites the
-working tree: no `git stash`, `git checkout`, `git restore`, `git reset`,
-`git clean`, no branch switching. A tree that looks dirty or wrong is a
-finding to report, never a thing for you to tidy up.
-
-Your ONE permitted write is the verdict file at <verdict-file-path>. It sits
-outside the repository and outside this worktree, so writing it cannot touch
-the branch under review. Create it with a shell redirect (the editing tools
-are disabled for you by flag); create nothing else, anywhere.
-
-The task this branch is supposed to implement is in this file — read it and
-nothing else for the spec: <task-file-path>
-
-(For a task with no task file — a freeform or single-small-task run — paste
-the spec here instead: <task spec: the same spec the implementer received>)
-
-A previous review at commit <reviewed-sha> reported:
-<previous round's findings, verbatim>
-
-Do, in order:
-1. Verify each finding above is actually fixed — an unfixed or half-fixed
-   finding is a new finding.
-2. Closely review the commits made since then: git diff <reviewed-sha>...HEAD
-3. Quick-scan the rest of the branch diff for anything the fixes broke.
-4. Run the test suite. Known pre-existing failures (baseline): <list, or
-   "none"> — only NEW failures are findings.
-
-Run the review layers per <agent-deck-repo>/skills/review/references/ against
-`git diff <reviewed-sha>...HEAD` — the same layers the round-1 reviewer ran,
-scoped to the new commits — so every finding carries a real provenance tag.
-
-Report findings in the merged format from
-<agent-deck-repo>/skills/review/SKILL.md: file:line — severity (critical |
-major | minor) — [patch | decision-needed | defer] — provenance — one line
-each. Then 2-3 "Checked:" evidence lines. A verdict with no evidence is not
-acceptable.
-
-Write your full output to <verdict-file-path>, in this order: every layer's
-raw findings first, then a line containing exactly `## Merged findings`, then
-the merged list, the "Checked:" lines and the verdict line. That heading is a
-parsing anchor — emit it verbatim, exactly once. Then print ONLY the merged
-list, the "Checked:" lines and the verdict line as your response.
-End with exactly one line, using real counts:
-VERDICT: clean
-VERDICT: fix-needed patch=<n> decision-needed=<n> defer=<n>
+```bash
+bash "$RUN_DIR/prompts/render.sh" review-incremental "$RUN_DIR/<slug>/review-r<n+1>-prompt.md" \
+  VERDICT_FILE="$RUN_DIR/<slug>/review-r<n+1>.md" \
+  SPEC_BLOCK@="$RUN_DIR/<slug>/spec-block.md" \
+  REVIEWED_SHA=<reviewed-sha> PREVIOUS_FINDINGS@="$RUN_DIR/<slug>/findings-r<n>.md" \
+  BASELINE="<baseline, or none>" AGENT_DECK_REPO=<agent-deck-repo>
 ```
+
+  It carries the same read-only contract and verdict format as the full
+  review, but scopes the layers to `git diff <reviewed-sha>...HEAD` and makes
+  every unfixed prior finding a new finding.
 
   Once you have read the previous round's findings, **archive the
   superseded reviewer** (see "Archiving finished sessions").
@@ -845,7 +741,19 @@ and roughly all of it is state that did not change.
 **The invariant: your context grows with decisions taken, never with time
 elapsed.** The manifest is the run's state; your context is a cache of it.
 A conductor that has supervised four idle hours should have paid almost
-nothing for them. Three rules follow.
+nothing for them. Four rules follow.
+
+**0. Watch your own number, every beat.** `poll.sh` ends every line with
+`self=NNNk` — your context size, from `parent_context_tokens` on `session
+children --json`. It is the only signal that fires before you are already in
+trouble, because nobody downstream is watching you: children are rotated by
+you, and you are rotated by nothing. The script prints a loud banner at each
+threshold in rule 3 and **keeps printing it every beat** until you act.
+
+If it reads `self=n/a (upgrade agent-deck: no parent_context_tokens)`, the
+binary predates this field and you are flying blind — say so to the user, and
+fall back to compacting on a fixed schedule (every task completion) rather
+than guessing. A missing signal is not a low reading.
 
 **1. Poll by delta, never by dump.** Run `bash "$RUN_DIR/poll.sh"` as your
 heartbeat instead of reading raw `session children --json`. It projects each
@@ -853,58 +761,19 @@ child to the fields that actually drive decisions, diffs against the previous
 call, and prints only what moved — a quiet beat costs one line:
 
 ```text
-4 children · 3 running 1 waiting · no change
+4 children · 3 running 1 waiting · no change · self=63k
 ```
 
 ```text
+!! SELF-CONTEXT 131k >= soft 120k — flush everything unwritten into manifest.md and /compact at the next inter-task boundary.
 CHANGED impl-vacancy: idle/ok
 GONE    review-vacancy-r1
-3 children · 1 idle 2 running · ctx impl-picker=soft
+3 children · 1 idle 2 running · ctx impl-picker=soft · self=131k
 ```
 
-The script (also at `references/poll.sh`):
-
-```bash
-#!/usr/bin/env bash
-# Delta heartbeat for the orchestrate conductor.
-# Prints ONLY what changed since the last call. Run it from the conductor
-# every heartbeat: bash "$RUN_DIR/poll.sh"
-set -euo pipefail
-D="$(cd "$(dirname "$0")" && pwd)"
-SOFT="${SOFT:-200000}"
-HARD="${HARD:-250000}"
-
-# ${POLL_CMD} exists so the script is testable with a canned JSON file.
-${POLL_CMD:-agent-deck session children --json} \
-| jq --argjson soft "$SOFT" --argjson hard "$HARD" '
-    [ .children[]
-      | { id, title, status,
-          done: (if .done_stale then "stale" else (.done_status // "-") end),
-          ctx:  (if   (.context_tokens // 0) >= $hard then "HARD"
-                 elif (.context_tokens // 0) >= $soft then "soft"
-                 else "ok" end) } ]
-    | sort_by(.id)' > "$D/.poll-now.json"
-
-[ -f "$D/.poll-prev.json" ] || echo '[]' > "$D/.poll-prev.json"
-
-jq -rn --slurpfile a "$D/.poll-prev.json" --slurpfile b "$D/.poll-now.json" '
-  def key: {id, title, status, done};        # ctx is NOT a diff key — it is
-  ($a[0] | INDEX(.id)) as $old               # reported in the tail instead, so
-| ($b[0] | INDEX(.id)) as $cur               # a bucket crossing never fakes a
-| $b[0] as $new                              # status change.
-| ([ $new[]  | select((. | key) != (($old[.id] // null) | key))
-             | "CHANGED \(.title): \(.status)/\(.done)" ]
- + [ $a[0][] | select($cur[.id] == null) | "GONE    \(.title)" ]) as $chg
-| ($new | group_by(.status) | map("\(length) \(.[0].status)") | join(" ")) as $roll
-| ([ $new[] | select(.ctx != "ok") | "\(.title)=\(.ctx)" ]) as $ctx
-| (if ($chg | length) == 0
-   then "\($new|length) children · \($roll) · no change"
-   else ($chg | join("\n")) + "\n\($new|length) children · \($roll)"
-   end)
-+ (if ($ctx | length) > 0 then " · ctx " + ($ctx | join(" ")) else "" end)'
-
-mv "$D/.poll-now.json" "$D/.poll-prev.json"
-```
+You copied it during run setup; you do not need to read it. Its knobs are
+env vars: `SOFT`/`HARD` for child thresholds, `SELF_SOFT`/`SELF_HARD` for
+yours, `POLL_CMD` to feed it canned JSON in a test.
 
 Two details in there are load-bearing, so don't "simplify" them away. First,
 **`context_tokens` churns on every single poll** for any live child — diff on
@@ -926,15 +795,27 @@ the reasoning around them.
 | Read | Instead of | Do |
 | --- | --- | --- |
 | Reviewer verdict | `session output <id>` | the reviewer already wrote `$RUN_DIR/<slug>/review-r<n>.md`; read only the merged findings plus the `VERDICT:` / `Checked:` lines from it (or from the child's response — they are the same lines) |
-| Fix-round prompt | retyping the findings | build it by shell (`cat` template + `sed -n '/^## Merged findings/,$p' review-r<n>.md`) so the findings never re-enter your context — extract that section, never `cat` the whole file, which still holds the raw hostile layer output |
+| Fix-round prompt | retyping the findings | `sed -n '/^## Merged findings/,$p'` into a findings file, then `render.sh fix ... FINDINGS@=<that file>` — file to file, never through you. Extract that section; never `cat` the whole verdict file, which still holds the raw hostile layer output |
+| Child prompt of any kind | a `cat > prompt.md <<'EOF'` heredoc | `render.sh` (see "Rendering child prompts") — the template body never enters your transcript |
 | CI failure | `gh run view --log-failed` | redirect to `$RUN_DIR/<slug>/ci-<run-id>.log`; read the failing check *names*, send the implementer the path |
-| Waiting child's question | `session output <id>` | `session output <id> --tail 40` |
+| Waiting child's question | `session output <id>` | `agent-deck session output <id> -q \| tail -40` — there is no `--tail` flag |
 | Anything large or genuinely unclear | reading and reasoning yourself | dispatch a subagent — it burns its own context and hands you back a summary |
 
 The subagent is the exception, not the routine: a launch per heartbeat is
 slow and heavy for a three-line answer. Reserve it for the rare big read —
 a five-thousand-line CI log, or "why has this child been stuck for twenty
 minutes".
+
+**Never open an image.** You do not `Read` a screenshot, ever — not to check a
+child's work, not to settle a UI question, not "just this one". A single PNG
+costs 30–40k tokens; a conductor that looked at ten of them spent 275k on
+pictures, more than every review in that run combined. Screenshots are the
+implementer's evidence and the final report's payload: you handle their
+*paths*. The implementer's prompt requires it to describe in words what each
+screenshot shows — that description is what you read. If a visual judgment
+genuinely has to be made, dispatch a subagent to look and report back in text,
+or hand the path to the user. The same rule covers any binary or generated
+blob: PDFs, `dist/` bundles, minified JS, lockfiles.
 
 **3. Thresholds, tighter than a child's.** Anything long-lived — findings
 lists, baselines, pending questions, PR urls, HEAD shas — goes into
@@ -944,7 +825,8 @@ any point. Then:
 - **Soft (~120k):** flush everything not yet written down into the manifest,
   and `/compact` at the next inter-task boundary — a moment when no child is
   mid-conversation with you — rather than drifting into an automatic compact
-  at a worse one.
+  at a worse one. `poll.sh` starts shouting this at you; the banner repeats
+  every beat, and it does not stop because you noticed it once.
 - **Hard (~200k):** hand off. Write `$RUN_DIR/conductor-handoff.md` (live
   tasks and their stage, open questions, anything in flight), launch a fresh
   conductor pointed at `$RUN_DIR/manifest.md`, re-parent every live child to

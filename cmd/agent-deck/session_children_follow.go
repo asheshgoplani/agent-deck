@@ -206,6 +206,21 @@ func buildChildRows(kids []*session.Instance, db *statedb.StateDB) []childRow {
 	return rows
 }
 
+// parentContextFields renders a parent's own context size for `session
+// children` output: the suffix appended to the human header, and whether the
+// JSON payload should carry parent_context_tokens.
+//
+// Unresolvable (non-Claude parent, no assistant turn yet) and zero both mean
+// "unknown", and both must stay OUT of the JSON rather than surface as 0 — a
+// supervisor thresholding on the field would read a zero as "context is
+// empty" and skip the very rotation the field exists to trigger.
+func parentContextFields(tokens int, ok bool) (suffix string, emit bool) {
+	if !ok || tokens <= 0 {
+		return "", false
+	}
+	return fmt.Sprintf("  self-ctx=%dk", tokens/1000), true
+}
+
 func snapshotEvent(event string, r childRow) followEvent {
 	return followEvent{
 		Event: event, ID: r.ID, Title: r.Title, Status: r.Status,

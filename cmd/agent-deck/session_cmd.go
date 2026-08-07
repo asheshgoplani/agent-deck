@@ -4784,8 +4784,15 @@ func handleSessionChildren(profile string, args []string) {
 	session.RefreshInstancesForCLIStatus(kids)
 
 	rows := buildChildRows(kids, storage.GetDB())
+	// The supervisor's own context is the one that grows without a natural end:
+	// it outlives every child. Reporting only the children's sizes leaves the
+	// one session that cannot be rotated by anyone else flying blind, so a
+	// long run drifts past its own handoff threshold unnoticed. Same source as
+	// a child's — the newest assistant turn's prompt size.
+	parentContextTokens, hasParentContext := session.CurrentContextTokensForInstance(parent)
+	selfCtx, emitParentContext := parentContextFields(parentContextTokens, hasParentContext)
 	var human strings.Builder
-	fmt.Fprintf(&human, "Children of %s (%s):\n", parent.Title, parent.ID)
+	fmt.Fprintf(&human, "Children of %s (%s)%s:\n", parent.Title, parent.ID, selfCtx)
 	for _, row := range rows {
 		done := row.DoneStatus
 		if done == "" {
@@ -4805,7 +4812,11 @@ func handleSessionChildren(profile string, args []string) {
 	if len(kids) == 0 {
 		human.WriteString("  (no sub-sessions)\n")
 	}
-	out.Print(human.String(), map[string]interface{}{"parent": parent.ID, "children": rows})
+	payload := map[string]interface{}{"parent": parent.ID, "children": rows}
+	if emitParentContext {
+		payload["parent_context_tokens"] = parentContextTokens
+	}
+	out.Print(human.String(), payload)
 }
 
 // handleSessionSearch implements issue #483 — search across Claude session
