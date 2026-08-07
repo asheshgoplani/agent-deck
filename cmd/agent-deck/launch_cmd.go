@@ -441,7 +441,12 @@ func handleLaunch(profile string, args []string) {
 	// land in the project group (e.g. `agent-deck`) instead of the
 	// conductor's own group (`conductor`). The parent group is now a
 	// fallback for path mappings that produce no group.
-	cwdDerivedGroup := session.GroupPathForProject(path)
+	// The derived group carries the casing the filesystem uses, which is not
+	// the casing the group was declared with (~/DoozyX/Uniqcast → "Uniqcast"
+	// beside the real "uniqcast"). Snap it onto the existing group the same
+	// way an explicit -g selector is resolved above.
+	cwdDerivedGroup := session.CanonicalizeGroupPath(
+		groupPathsFrom(instances, groups), session.GroupPathForProject(path))
 	// A worktree child auto-inherits its parent's group (issue: fleets fanned
 	// into worktrees scattered into junk per-branch / `worktrees` groups, or
 	// a deliberately-named group, detached from the parent). `path` is already
@@ -530,6 +535,11 @@ func handleLaunch(profile string, args []string) {
 	} else {
 		newInstance = session.NewInstance(sessionTitle, path)
 	}
+	// NewInstance derives the group off the project path when sessionGroup is
+	// empty (no parent, no -g), which bypasses the canonicalization applied to
+	// cwdDerivedGroup above.
+	newInstance.GroupPath = session.CanonicalizeGroupPath(
+		groupPathsFrom(instances, groups), newInstance.GroupPath)
 
 	// Socket-isolation CLI override (issue #687 phase 1, v1.7.50).
 	// Matches `agent-deck add --tmux-socket`. Whitespace-only flag falls

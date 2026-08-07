@@ -1432,12 +1432,59 @@ func (t *GroupTree) GroupCount() int {
 	return len(t.Groups)
 }
 
+// CanonicalGroupPath snaps a group path onto an existing group that differs
+// only in case or spacing, leaving anything else untouched. See
+// CanonicalizeGroupPath for why path-derived groups need this.
+func (t *GroupTree) CanonicalGroupPath(path string) string {
+	return CanonicalizeGroupPath(t.GetGroupPaths(), path)
+}
+
+// CanonicalizeGroupPath maps a group path onto an existing one that differs
+// only in case or in spaces-versus-hyphens.
+//
+// A session gets its group from the filesystem when no -g is passed, so
+// ~/DoozyX/Uniqcast/dispatcher derives "Uniqcast" with the casing the disk
+// happens to use, while the group the user declared in config.toml is
+// "uniqcast". The two paths are distinct keys, so the derived one silently
+// forked a stray top-level twin holding a single session, detached from its
+// 200-odd siblings. Explicit -g selectors already normalize this way; derived
+// ones did not.
+//
+// An exact match always wins, so a group deliberately created with different
+// casing stays reachable. A path matching nothing is returned unchanged: that
+// is how a genuinely new group gets created.
+func CanonicalizeGroupPath(existingPaths []string, path string) string {
+	if path == "" {
+		return path
+	}
+	for _, existing := range existingPaths {
+		if existing == path {
+			return path
+		}
+	}
+	normalized := normalizeGroupPathForMatch(path)
+	for _, existing := range existingPaths {
+		if normalizeGroupPathForMatch(existing) == normalized {
+			return existing
+		}
+	}
+	return path
+}
+
+func normalizeGroupPathForMatch(path string) string {
+	return strings.ToLower(strings.ReplaceAll(path, " ", "-"))
+}
+
 // AddSession adds a session to the appropriate group
 func (t *GroupTree) AddSession(inst *Instance) {
 	groupPath := inst.GroupPath
 	if groupPath == "" {
 		groupPath = DefaultGroupPath
 		inst.GroupPath = groupPath
+	}
+	if canonical := t.CanonicalGroupPath(groupPath); canonical != groupPath {
+		groupPath = canonical
+		inst.GroupPath = canonical
 	}
 
 	group, exists := t.Groups[groupPath]

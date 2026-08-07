@@ -1770,6 +1770,9 @@ func handleAdd(profile string, args []string) {
 	} else {
 		newInstance = session.NewInstance(sessionTitle, path)
 	}
+	// A group derived from the project path carries the filesystem's casing
+	// ("Uniqcast"), not the declared group's ("uniqcast"); snap it back.
+	newInstance.GroupPath = groupTree.CanonicalGroupPath(newInstance.GroupPath)
 
 	// Quick mode generated a machine-named adjective-noun handle; mark it so the
 	// TUI shows Claude's live task description in place of the random name. This
