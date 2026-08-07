@@ -90,7 +90,15 @@ root — outside every repo, so it structurally cannot leak into a commit:
 RUN_DIR="$HOME/.agent-deck/orchestrate/<run-id>"
 mkdir -p "$RUN_DIR"
 cp <agent-deck-repo>/skills/orchestrate/references/poll.sh "$RUN_DIR/"
+cp <agent-deck-repo>/skills/orchestrate/references/rotate-conductor.sh "$RUN_DIR/"
+cp <agent-deck-repo>/skills/orchestrate/references/heartbeat.sh "$RUN_DIR/"
 cp -R <agent-deck-repo>/skills/orchestrate/references/prompts "$RUN_DIR/"
+
+# Arm the wall-clock watchdog. Do this before launching the first child, and
+# exactly once per run — see "The conductor" under Context budget for why a
+# run without it can sit finished and unnoticed for hours.
+agent-deck session show --json | jq -r '(.data // .).id' > "$RUN_DIR/.conductor-id"
+nohup bash "$RUN_DIR/heartbeat.sh" >> "$RUN_DIR/heartbeat.log" 2>&1 &
 
 # Lean child launch flags — see "Child startup baseline" under Context budget.
 # Drop them for a child that must drive a browser.
@@ -104,11 +112,19 @@ prompt files you render for children live there too (`impl-prompt.md`,
 vanish on reboot, and break resume. Nothing under `$RUN_DIR` is ever
 committed, pushed, uploaded, or mentioned in a PR.
 
-`poll.sh` is your heartbeat — see "Context budget". `prompts/` holds every
-child prompt template plus `render.sh`, which fills them; you never type a
-prompt body, so no template ever enters your context (see "Rendering child
-prompts"). Copy both from the agent-deck checkout this skill file lives in
+`poll.sh` is your heartbeat, `heartbeat.sh` is what makes sure the heartbeat
+keeps happening, and `rotate-conductor.sh` is how you replace yourself when
+your context runs out — all three under "Context budget". `prompts/` holds
+every child prompt template plus `render.sh`, which fills them; you never type
+a prompt body, so no template ever enters your context (see "Rendering child
+prompts"). Copy them all from the agent-deck checkout this skill file lives in
 (you know that path: you read this file).
+
+**Nothing in this run ever asks the user to type a slash command.** You cannot
+issue one — `/compact` and friends are typed by a human into the composer, and
+a conductor that ends its turn asking for one stalls the whole run until
+somebody notices. Every remedy in this skill is a shell command you run
+yourself, unattended.
 
 Also read the target repo's `CLAUDE.md` and `CONTRIBUTING.md` now, for the
 one thing this skill cannot know: how work is expected to *land* there. If it
@@ -711,6 +727,25 @@ should answer:
   dump** — see "Context budget". Reach for the raw JSON only when you need a
   field the poll drops (`done_summary` on a fresh completion, a session id to
   act on).
+- **Something else has to wake you.** Your supervision loop only advances when
+  you take a turn, and you never take one on your own: end a turn with four
+  children running and you are inert until a Stop-hook notification arrives.
+  Those arrive late, and sometimes not at all — so without a floor, "the run
+  finished" and "the run has been sitting finished for three hours" look
+  identical from outside. `heartbeat.sh`, started detached at run setup, is
+  that floor: every 15 minutes it nudges you to run one `poll.sh`.
+  - It uses `session nudge`, not `session send`, so a beat that lands while
+    you are mid-turn comes back `skipped_busy` and is dropped rather than
+    interrupting you. Active supervision costs it nothing.
+  - It reads the conductor id from `$RUN_DIR/.conductor-id` on **every** beat,
+    so it follows a rotation without a restart. `rotate-conductor.sh` rewrites
+    that file; nothing else should.
+  - It gives up after 4 consecutive undeliverable beats and says why in
+    `$RUN_DIR/heartbeat.log`. If a run goes quiet, read that log first — a
+    watchdog that exited is the difference between "stalled" and "nobody was
+    watching".
+  - Tune with `HEARTBEAT_INTERVAL` (seconds) and `HEARTBEAT_MAX_MISSES`.
+    Touch `$RUN_DIR/.heartbeat-stop` to shut it down cleanly at end of run.
 - `agent-deck session children --json` returns an object
   `{"children": [...], "parent": "..."}` — iterate `.children[]`, not the
   root array.
@@ -810,8 +845,10 @@ threshold in rule 3 and **keeps printing it every beat** until you act.
 
 If it reads `self=n/a (upgrade agent-deck: no parent_context_tokens)`, the
 binary predates this field and you are flying blind — say so to the user, and
-fall back to compacting on a fixed schedule (every task completion) rather
-than guessing. A missing signal is not a low reading.
+fall back to a fixed schedule instead of guessing: flush to the manifest and
+refresh `conductor-handoff.md` at every task completion, and rotate
+(`bash "$RUN_DIR/rotate-conductor.sh"`) every fourth one. A missing signal is
+not a low reading.
 
 **1. Poll by delta, never by dump.** Run `bash "$RUN_DIR/poll.sh"` as your
 heartbeat instead of reading raw `session children --json`. It projects each
@@ -823,7 +860,7 @@ call, and prints only what moved — a quiet beat costs one line:
 ```
 
 ```text
-!! SELF-CONTEXT 214k >= soft 200k — flush everything unwritten into manifest.md and /compact at the next inter-task boundary.
+!! SELF-CONTEXT 214k >= soft 200k — flush now, this turn, without asking: write everything unwritten into $RUN_DIR/manifest.md, then bring $RUN_DIR/conductor-handoff.md up to date (live tasks + their stage, open questions, anything in flight). Do NOT stop and do NOT wait for a human. Rotation at hard is then one command.
 CHANGED impl-vacancy: idle/ok
 GONE    review-vacancy-r1
 3 children · 1 idle 2 running · ctx impl-picker=soft · self=214k
@@ -907,32 +944,47 @@ lists, baselines, pending questions, PR urls, HEAD shas — goes into
 `$RUN_DIR` the moment you learn it, so the run survives you losing context at
 any point. Then:
 
-- **Soft (~200k):** flush everything not yet written down into the manifest,
-  and `/compact` at the next inter-task boundary — a moment when no child is
-  mid-conversation with you — rather than drifting into an automatic compact
-  at a worse one. `poll.sh` starts shouting this at you; the banner repeats
-  every beat, and it does not stop because you noticed it once.
-- **Hard (~250k):** hand off. Write `$RUN_DIR/conductor-handoff.md` (live
-  tasks and their stage, open questions, anything in flight), launch a fresh
-  conductor pointed at `$RUN_DIR/manifest.md`, re-parent every live child to
-  it (`agent-deck session set-parent <child> <new-conductor-id>`) so waiting
-  and done notifications route to the new session, and archive yourself.
-  **`poll.sh` exits 3 from here on, every beat, until you do it** — your
-  heartbeat is a failing command now, not a warning you can read past. This
-  is deliberate: measured over 12 real conductors the banner alone did not
-  work, with a median peak of 348k and half the runs sailing past this exact
-  line. A non-zero heartbeat is not a bug to work around and not a reason to
-  stop polling; it is the handoff instruction. The diff baseline still
-  advances on a failing beat, so nothing is re-reported while you wind down.
+- **Soft (~200k):** flush, in the turn the banner appears, without asking
+  anyone. Everything not yet written down goes into `$RUN_DIR/manifest.md`,
+  and `$RUN_DIR/conductor-handoff.md` gets brought up to date: live tasks and
+  the stage each reached, open questions, anything in flight. That file is not
+  paperwork for later — it is the precondition `rotate-conductor.sh` checks,
+  so keeping it current is what makes the hard threshold a single command
+  instead of a scramble. `poll.sh` repeats the banner every beat, and it does
+  not stop because you noticed it once. **You do not pause here.** Flush, then
+  carry straight on with the run.
+- **Hard (~250k):** rotate, unattended:
+
+  ```bash
+  bash "$RUN_DIR/rotate-conductor.sh"
+  ```
+
+  It refuses to run while `conductor-handoff.md` is missing or empty (an
+  automatic rotation into an empty handoff has been observed in the field, and
+  the successor inherits the manifest with nothing about what was in flight),
+  then launches your successor on the manifest plus the handoff, re-parents
+  every live child so waiting and done notifications route to it, repoints the
+  wall-clock watchdog, and archives you. It is one command because the
+  five-step prose version it replaces was measured across 12 real conductors:
+  median peak 348k, and half the runs sailed straight past this line.
+
+  **`poll.sh` exits 3 from here on, every beat, until you go** — your
+  heartbeat is a failing command now, not a warning you can read past. A
+  non-zero heartbeat is not a bug to work around and not a reason to stop
+  polling; it is the rotation instruction. The diff baseline still advances on
+  a failing beat, so nothing is re-reported while you wind down.
 
 Both numbers match the child thresholds. Your loss is the worse one when it
 lands — a child that compacts loses one task; you lose supervision state for
 every task at once, and there is no reviewer downstream of you to catch it —
-but your soft remedy is also the cheaper one (`/compact` at a boundary, no
-rotation, no re-parenting), so you are not made to stop earlier. If agent-deck's own
-budget handler rotates you first, **check the handoff directory is actually
-non-empty before trusting it** — an automatic rotation has been observed
-producing an empty one.
+but your soft remedy is also the cheaper one (write two files, no rotation, no
+re-parenting), so you are not made to stop earlier. If agent-deck's own budget
+handler rotates you first, **check the handoff directory is actually non-empty
+before trusting it** — an automatic rotation has been observed producing an
+empty one. Note that handler only runs while the TUI is open
+(`internal/ui/context_budget_ui.go`), so on a headless run these thresholds
+and `rotate-conductor.sh` are the only thing standing between you and a
+million-token conductor.
 
 ## Failure handling
 
@@ -985,6 +1037,18 @@ path from the name you typed.
 If review feedback arrives on the PR later, recreate a worktree from the
 remote branch. **Needs-attention tasks are the exception**: leave their
 session, worktree, and branch fully intact for inspection.
+
+Once every task is done or parked and the final report is written, retire the
+wall-clock watchdog — otherwise it keeps nudging you into pointless turns
+until it times itself out:
+
+```bash
+touch "$RUN_DIR/.heartbeat-stop"
+```
+
+Do this **last**, after the report. A run that stops its own heartbeat while
+work is still live has removed the only thing that would have noticed it going
+quiet.
 
 ## Final report
 
