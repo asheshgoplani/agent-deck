@@ -54,7 +54,7 @@ You (the session running this skill) are the **conductor**. Hard rules:
   highest per-token rate for the lowest-value tokens *and* permanently
   occupies the one context nobody can rotate. Push it to a child on the cheap
   or mid tier, or to a subagent. See "Model & connector tiering" for the
-  ladder per connector.
+  ladder per connector and the table of jobs that belong on cheap.
 - **You never work in the main checkout.** Every task gets a dedicated
   worktree (`launch -w <branch>`), including single-task relay mode.
 - **You never block.** Supervise via the `poll.sh` heartbeat (never a raw
@@ -536,6 +536,26 @@ review is verification work (diff vs. spec, run the suite) and the
 Checked/VERDICT format keeps it honest. Freeform or design-heavy tasks get
 a strong reviewer because spec compliance there is a judgment call, not a
 checklist.
+
+Cheap keeps one home: work you would otherwise do yourself. Three properties
+make a job safe to hand down — bounded input, extraction rather than
+judgment, and a result you can check at a glance without opening the source.
+Reach for it by default on:
+
+| Job | Hand back |
+| --- | --- |
+| A red CI run | the failing job, the first real error line, the file:line |
+| A fetched issue or PR body | the ask in three lines, plus any acceptance criteria stated |
+| `gh pr checks` after a push | green / red, and which check if red |
+| A long child transcript or verdict file | the VERDICT line and any `decision-needed` finding |
+| A lockfile or generated-file diff | which dependencies moved, and whether anything else did |
+
+Every row is something a conductor reads directly by reflex, and reading it
+directly is the expensive mistake twice over: the highest per-token rate for
+the lowest-value tokens, spent in the one context nobody can rotate. A child
+that gets it wrong costs you one re-read; doing it yourself costs you the
+context permanently. Cheap does not extend to implementing or reviewing —
+those have their own floor above.
 
 Escalations are one-way — once a role escalates, it stays strong for the
 rest of that task:
