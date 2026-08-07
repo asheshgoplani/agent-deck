@@ -662,3 +662,45 @@ work and reports the task done."
 - `cmd/agent-deck/selfheal_send.go`: `func init()` registering `sendForSelfHeal`
 
 ## Record (append-only)
+
+### 2026-08-07 — implemented
+
+- Files touched: `internal/session/selfheal_resume.go` (new),
+  `internal/session/selfheal_resume_test.go` (new),
+  `cmd/agent-deck/selfheal_send.go` (new).
+- Precondition checked: `grep -n 'outcomeDeliveredPrefix\|ActionResume'
+  internal/selfheal/engine.go internal/selfheal/selfheal.go` → 13 lines
+  (tasks 02/03 landed as `2aabcf6f` / `35fee38c`).
+- **One deviation, forced by a redeclaration:** the task file's edit block ends
+  with a `func errString(err error) string` helper. That exact function already
+  exists in the same package at `internal/session/hook_watcher.go:351` with an
+  identical body, so writing it verbatim is a compile error
+  (`errString redeclared in this block`). The helper was omitted from the new
+  file and the existing one is used instead — the `Execute` log call is
+  unchanged. Everything else is verbatim.
+- Confirmed before writing: `logging.CompNotif` exists
+  (`internal/logging/logger.go:19`) and the `logging.ForComponent(logging.CompNotif).Info(...)`
+  call shape matches `cmd/agent-deck/notify_daemon_cmd.go:49`. The seam's call
+  `executeSend(tmuxSess, inst.Tool, message, false, defaultSendTuning())` is
+  byte-identical to `session nudge`'s at `cmd/agent-deck/session_nudge_cmd.go:154`.
+- TDD: the test file was written first and failed to build with nine `undefined:`
+  errors (`ResumeExecutor`, `NewResumeExecutor`, `SetSelfHealSender`, all three
+  sentinels) before the implementation landed.
+- Verification:
+  `gofmt -l internal/session/selfheal_resume.go internal/session/selfheal_resume_test.go
+  cmd/agent-deck/selfheal_send.go` → empty.
+  `go build ./...` → `BUILD_EXIT=0`.
+  `go vet ./internal/session/ ./cmd/agent-deck/` → clean apart from the
+  pre-existing `issue1225_wake_nudge_wiring_test.go:217 range var c copies lock`
+  recorded in task 01 (untouched file; filtered).
+  `go test ./internal/session/ -run SelfHealResume -count=1 -v` → `TEST_EXIT=0`,
+  `ok  github.com/asheshgoplani/agent-deck/internal/session 0.734s`, **9 `--- PASS`,
+  0 FAIL**; run-specific sentinel
+  `--- PASS: TestSelfHealResume_TypedNotSubmitted_IsAFailureOutcome` present.
+  `grep -n 'SetSelfHealSender' cmd/agent-deck/selfheal_send.go
+  internal/session/selfheal_resume.go` → one call site in the seam file, the
+  declaration in the executor file.
+- Branch baseline for this session, from `go test ./...` at `96a3484f` before any
+  edit: one failure, `TestIssue1421_CleanStaleSSHSockets` (internal/session) — a
+  member of the env-flaky set recorded in task 01's Record. The other five in that
+  set passed on this run.
