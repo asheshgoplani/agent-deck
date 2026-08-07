@@ -8,20 +8,21 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
-// ErrActionInGuardedMode is returned if an action executor is ever invoked while
-// the engine is in a guarded mode (single_action / full). Stages 2-3 are HELD
-// pending Ashesh re-approval + the three §9 gap-fixes, so those modes refuse to
-// act. observe never reaches an executor at all.
+// ErrActionInGuardedMode is returned by the execution chokepoint for every
+// (mode, action) pair except (ModeResume, ActionResume). single_action / full
+// are HELD pending re-approval + the three §9 gap-fixes; observe never reaches
+// the chokepoint at all.
 var ErrActionInGuardedMode = errors.New("selfheal: actions are HELD (Stages 2-3 not re-approved)")
 
-// ActionExecutor performs a real recovery. STAGE 1 NEVER CONSTRUCTS ONE — the
-// observe-mode engine has a nil executor and a guarded mode refuses to call it.
-// The interface exists so the wiring is in place for Stage 2 without reshaping
-// the engine, but every method is unreachable in v1.9.67.
+// ActionExecutor performs a real recovery. It is reachable ONLY through
+// Engine.executeIfAuthorized, and only for the pair (ModeResume, ActionResume) —
+// observe holds a nil executor and every other mode/action pair is refused with
+// ErrActionInGuardedMode.
 type ActionExecutor interface {
 	// Execute applies the action to the candidate and reports the immediate
-	// outcome string. Only ever called in single_action/full AFTER the §9 gaps
-	// close and Ashesh re-approves.
+	// outcome string. The outcome MUST carry the real delivery verdict (the
+	// caller records it verbatim in the audit event), so a resume that was typed
+	// but never submitted is visible as a failure rather than a success.
 	Execute(c Candidate, a Action) (outcome string, err error)
 }
 
@@ -92,6 +93,27 @@ func NewObserveEngine(caps Caps, sink EventSink) *Engine {
 		policy:       NewPolicyMachine(caps),
 		sink:         sink,
 		exec:         nil,
+		prevSig:      map[string]string{},
+		confirmed:    map[string]confirmState{},
+		substateSeen: map[string]substateEntry{},
+	}
+}
+
+// NewResumeEngine builds the ONE acting engine: mode "resume", authorised for
+// exactly the pair (ModeResume, ActionResume) and nothing else. Every other
+// action — including ActionResend and the two restart actions — still refuses at
+// the chokepoint, so approving this mode approves one narrow path rather than
+// reopening single_action / full.
+//
+// exec must be non-nil; an acting engine with no executor is a mis-wire, and the
+// chokepoint reports it as such rather than silently doing nothing.
+func NewResumeEngine(caps Caps, sink EventSink, exec ActionExecutor) *Engine {
+	return &Engine{
+		mode:         ModeResume,
+		caps:         caps,
+		policy:       NewPolicyMachine(caps),
+		sink:         sink,
+		exec:         exec,
 		prevSig:      map[string]string{},
 		confirmed:    map[string]confirmState{},
 		substateSeen: map[string]substateEntry{},
@@ -192,6 +214,34 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 	second := thisRead
 	ev.Reads = []ReadSig{first.read, second}
 
+	would := WouldHaveAction(c.Substate)
+
+	// D6: an operator draft in the composer is a HARD precondition, evaluated
+	// BEFORE the safety machine on purpose — see the note above this code block.
+	// A draft is not a failed recovery and must not spend one.
+	//
+	// Submitting someone else's text is not a decision a status probe gets to
+	// make, and the force-send path is known to CONSUME the draft rather than
+	// restore it (2026-08-07, conductor2-testfix). Downgrading to escalate here
+	// means the audit records a session that needs a human, no cap is spent, and
+	// no mode — including observe — can proceed past it. Observe short-circuits
+	// on the same branch deliberately: observe exists to model what resume WOULD
+	// do, and resume spends nothing here.
+	if would == ActionResume && c.ComposerDraft {
+		delete(e.confirmed, c.SessionID)
+		ev.Decision = DecisionAct
+		ev.WouldHave = ActionEscalate
+		ev.Action = ActionNone
+		ev.ActionParams = actionParams(c.Substate)
+		// Its OWN outcome string. "held_stage_2_3" means "Stages 2-3 are held",
+		// which is a different fact entirely; an operator grepping the audit for
+		// why a session was never resumed has to be able to see that a human's
+		// draft is what stopped it.
+		ev.Outcome = "held_composer_draft"
+		_ = e.sink.Append(ev)
+		return ev
+	}
+
 	// Safety machine: caps / backoff / breaker / flicker.
 	gate, capsState := e.policy.Gate(c, now)
 	ev.Caps = capsState
@@ -211,7 +261,6 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 	e.policy.RecordAttempt(c, now)
 	delete(e.confirmed, c.SessionID)
 
-	would := WouldHaveAction(c.Substate)
 	ev.Decision = DecisionAct
 	ev.WouldHave = would
 	ev.ActionParams = actionParams(c.Substate)
@@ -224,12 +273,32 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 		return ev
 	}
 
-	// Non-observe modes are HELD. The executor is refused even if one were set.
-	outcome, action := e.executeIfAuthorized(c, would)
+	// Every non-observe mode goes through the chokepoint. Only (resume, resume)
+	// is authorised; single_action and full stay HELD.
+	outcome, action, err := e.executeIfAuthorized(c, would)
 	ev.Action = action
 	ev.Outcome = outcome
+	// Feed the circuit breaker only when a real action ran. A refusal is not a
+	// failed recovery — counting it would open the breaker on sessions self-heal
+	// never touched.
+	if action != ActionNone {
+		e.policy.RecordOutcome(c, err == nil && outcomeIsDelivered(outcome))
+	}
 	_ = e.sink.Append(ev)
 	return ev
+}
+
+// outcomeDeliveredPrefix marks an executor outcome that reached the agent as an
+// accepted turn. The executor formats its outcome as "resumed:<delivery>", where
+// delivery is the `session send` contract value — and ONLY "submitted" means the
+// agent took the message up. "typed_not_submitted" in particular means the bytes
+// are sitting in a composer that is not accepting Enter, which is a failure.
+const outcomeDeliveredPrefix = "resumed:submitted"
+
+// outcomeIsDelivered reports whether an executor outcome represents a genuinely
+// accepted turn, for the circuit breaker's consecutive-failure count.
+func outcomeIsDelivered(outcome string) bool {
+	return outcome == outcomeDeliveredPrefix
 }
 
 // updateSubstateAnchor tracks when the current stuck substate was first observed
@@ -262,25 +331,32 @@ func (e *Engine) updateSubstateAnchor(c Candidate, now time.Time) time.Time {
 	return prev.since
 }
 
-// executeIfAuthorized is the single chokepoint where a real action could ever
-// run. It REFUSES in every mode that ships in v1.9.67: observe (no executor) and
-// the HELD single_action/full. Returns the outcome string and the action
-// actually taken (ActionNone when refused).
-func (e *Engine) executeIfAuthorized(c Candidate, would Action) (string, Action) {
-	// Stages 2-3 are HELD pending re-approval + the three §9 gap-fixes. Until
-	// then, even single_action/full refuse to act.
-	if e.mode != ModeObserve { // both guarded modes land here
-		return "held_stage_2_3", ActionNone
+// executeIfAuthorized is the single chokepoint where a real action can run. It
+// authorises EXACTLY ONE pair — (ModeResume, ActionResume) — and refuses
+// everything else with ErrActionInGuardedMode: observe never gets here, and
+// single_action / full stay HELD pending re-approval + the three §9 gap-fixes.
+//
+// The pair check is deliberately a conjunction rather than two nested guards: a
+// future mode that forgets to narrow its action set, or a substate that starts
+// mapping to a restart, both land on the refusal instead of on a live restart.
+//
+// Returns the outcome string, the action actually taken (ActionNone when
+// refused), and the refusal/execution error.
+func (e *Engine) executeIfAuthorized(c Candidate, would Action) (string, Action, error) {
+	if e.mode != ModeResume || would != ActionResume {
+		// Byte-identical to the pre-resume outcome string so anything reading the
+		// audit history for held records keeps matching.
+		return "held_stage_2_3", ActionNone, ErrActionInGuardedMode
 	}
-	// Unreachable in observe (handled by the caller), but defensive: never act.
 	if e.exec == nil {
-		return "no_executor", ActionNone
+		// An acting engine with no executor is a mis-wire, not a quiet no-op.
+		return "no_executor", ActionNone, nil
 	}
 	outcome, err := e.exec.Execute(c, would)
 	if err != nil {
-		return "error:" + err.Error(), ActionNone
+		return "error:" + err.Error(), ActionNone, err
 	}
-	return outcome, would
+	return outcome, would, nil
 }
 
 // actionParams records the would-be action's parameters for the audit (§5).
@@ -290,6 +366,15 @@ func actionParams(s tmux.Substate) map[string]any {
 		return map[string]any{"model": "opus", "reissue": true}
 	case tmux.SubstateAuth401:
 		return map[string]any{"reassert_creds": true}
+	case tmux.SubstateAPIError:
+		// The reason selects the executor's prompt text. A transport resume just
+		// asks the turn to continue.
+		return map[string]any{"reason": "transport"}
+	case tmux.SubstateUsageLimit:
+		// The usage_limit prompt additionally warns that a SUBAGENT may have been
+		// terminated by the limit and needs re-dispatching — resuming the parent
+		// does not restore a child's work.
+		return map[string]any{"reason": "usage_limit"}
 	default:
 		return nil
 	}

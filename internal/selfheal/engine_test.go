@@ -1,6 +1,7 @@
 package selfheal
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -177,12 +178,15 @@ func TestExecuteIfAuthorized_GuardedModes_Refuse(t *testing.T) {
 	for _, m := range []Mode{ModeSingleAction, ModeFull} {
 		spy := &spyExecutor{}
 		e := &Engine{mode: m, caps: DefaultCaps(), policy: NewPolicyMachine(DefaultCaps()), sink: &MemorySink{}, exec: spy, prevSig: map[string]string{}, confirmed: map[string]confirmState{}, substateSeen: map[string]substateEntry{}}
-		outcome, action := e.executeIfAuthorized(c, ActionRestartModelSwitch)
+		outcome, action, err := e.executeIfAuthorized(c, ActionRestartModelSwitch)
 		if action != ActionNone {
 			t.Fatalf("mode %q: HELD modes must take no action, got %q", m, action)
 		}
 		if outcome != "held_stage_2_3" {
 			t.Fatalf("mode %q: want held_stage_2_3 outcome, got %q", m, outcome)
+		}
+		if !errors.Is(err, ErrActionInGuardedMode) {
+			t.Fatalf("mode %q: want ErrActionInGuardedMode, got %v", m, err)
 		}
 		if len(spy.calls) != 0 {
 			t.Fatalf("mode %q: executor must NOT be called (Stages 2-3 HELD), got %d calls", m, len(spy.calls))
@@ -310,5 +314,297 @@ func TestObserve_IdleAfterOutputMoved_NotStaleSendCandidate(t *testing.T) {
 	ev := e.ProcessRead(idle, now.Add(1*time.Second))
 	if ev.Decision == DecisionAct {
 		t.Fatal("a freshly-idle session must not fire off a 30-min-old send (anchor reset on output movement)")
+	}
+}
+
+// The three reads an api-error candidate needs, given task 02's 60s dwell.
+const (
+	apiReadAnchor   = 0 * time.Second  // starts the dwell clock (skip_dwell)
+	apiReadConfirm1 = 61 * time.Second // first read past the dwell (skip_confirm)
+	apiReadConfirm2 = 63 * time.Second // second confirming read (act)
+)
+
+// resumeSpy records what the executor was asked to do and returns a canned
+// outcome, so the chokepoint can be tested without any tmux or send path.
+type resumeSpy struct {
+	calls   []Action
+	outcome string
+	err     error
+}
+
+func (s *resumeSpy) Execute(c Candidate, a Action) (string, error) {
+	s.calls = append(s.calls, a)
+	return s.outcome, s.err
+}
+
+func resumeEngineFor(exec ActionExecutor, sink EventSink) *Engine {
+	return NewResumeEngine(DefaultCaps(), sink, exec)
+}
+
+// apiErrorCand is a session showing the transport banner, with a stable output
+// signature so nothing reads as movement.
+//
+// StatusChangedAt is `now`, NOT a pre-dwelled past time: ProcessRead overwrites
+// it with its own anchor (see the note above), so pre-dwelling the field does
+// nothing and only makes the test read as if the dwell were already satisfied.
+// Dwell comes from the read timings, never from this struct.
+func apiErrorCand(now time.Time) Candidate {
+	return Candidate{
+		SessionID:       "s1",
+		Title:           "worker-3",
+		Substate:        tmux.SubstateAPIError,
+		StatusChangedAt: now,
+		OutputSig:       "sig-stable",
+	}
+}
+
+// §6: (ModeResume, ActionResume) executes.
+func TestExecuteIfAuthorized_ResumePair_Executes(t *testing.T) {
+	spy := &resumeSpy{outcome: "resumed:submitted"}
+	e := resumeEngineFor(spy, &MemorySink{})
+	outcome, action, err := e.executeIfAuthorized(Candidate{SessionID: "s1", Substate: tmux.SubstateAPIError}, ActionResume)
+	if err != nil {
+		t.Fatalf("the authorised pair must not error, got %v", err)
+	}
+	if action != ActionResume {
+		t.Fatalf("want %q, got %q", ActionResume, action)
+	}
+	if outcome != "resumed:submitted" {
+		t.Fatalf("outcome must be the executor's verbatim, got %q", outcome)
+	}
+	if len(spy.calls) != 1 {
+		t.Fatalf("executor must be called exactly once, got %d", len(spy.calls))
+	}
+}
+
+// §6: every other (mode, action) pair returns ErrActionInGuardedMode. This is the
+// exhaustive matrix — the whole point of the chokepoint.
+func TestExecuteIfAuthorized_EveryOtherPair_Refuses(t *testing.T) {
+	modes := []Mode{ModeObserve, ModeSingleAction, ModeFull, ModeResume}
+	actions := []Action{ActionRestartModelSwitch, ActionRestart, ActionResend, ActionRestartReassertCreds, ActionEscalate, ActionResume, ActionNone}
+	for _, m := range modes {
+		for _, a := range actions {
+			if m == ModeResume && a == ActionResume {
+				continue // the one authorised pair
+			}
+			spy := &resumeSpy{outcome: "resumed:submitted"}
+			e := &Engine{mode: m, caps: DefaultCaps(), policy: NewPolicyMachine(DefaultCaps()), sink: &MemorySink{}, exec: spy, prevSig: map[string]string{}, confirmed: map[string]confirmState{}, substateSeen: map[string]substateEntry{}}
+			_, action, err := e.executeIfAuthorized(Candidate{SessionID: "s1"}, a)
+			if !errors.Is(err, ErrActionInGuardedMode) {
+				t.Fatalf("(%q, %q): want ErrActionInGuardedMode, got %v", m, a, err)
+			}
+			if action != ActionNone {
+				t.Fatalf("(%q, %q): must take no action, got %q", m, a, action)
+			}
+			if len(spy.calls) != 0 {
+				t.Fatalf("(%q, %q): executor must not be called", m, a)
+			}
+		}
+	}
+}
+
+// §6: ModeObserve still constructs no executor.
+func TestNewObserveEngine_StillHasNoExecutor(t *testing.T) {
+	e := NewObserveEngine(DefaultCaps(), &MemorySink{})
+	if e.exec != nil {
+		t.Fatal("the observe engine must hold no executor — that is the structural guarantee")
+	}
+	if e.Mode() != ModeObserve {
+		t.Fatalf("want %q, got %q", ModeObserve, e.Mode())
+	}
+}
+
+// End-to-end through ProcessRead: anchor, dwell, two confirming reads, then
+// exactly one execution.
+func TestProcessRead_ResumeMode_ExecutesOncePerConfirmedCandidate(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{outcome: "resumed:submitted"}
+	sink := &MemorySink{}
+	e := resumeEngineFor(spy, sink)
+	c := apiErrorCand(now)
+
+	anchor := e.ProcessRead(c, now.Add(apiReadAnchor))
+	if anchor.Decision != DecisionSkipDwell {
+		t.Fatalf("the first read only starts the dwell clock, got %q", anchor.Decision)
+	}
+
+	first := e.ProcessRead(c, now.Add(apiReadConfirm1))
+	if first.Decision != DecisionSkipConfirm {
+		t.Fatalf("the first dwelled read must only record the confirm, got %q", first.Decision)
+	}
+	if len(spy.calls) != 0 {
+		t.Fatal("one qualifying read is never enough — no execution before the confirm")
+	}
+
+	second := e.ProcessRead(c, now.Add(apiReadConfirm2))
+	if second.Decision != DecisionAct {
+		t.Fatalf("the second confirming read must act, got %q", second.Decision)
+	}
+	if second.Action != ActionResume {
+		t.Fatalf("want action %q, got %q", ActionResume, second.Action)
+	}
+	if second.Outcome != "resumed:submitted" {
+		t.Fatalf("the audit must carry the real delivery, got %q", second.Outcome)
+	}
+	if got := second.ActionParams["reason"]; got != "transport" {
+		t.Fatalf("api-error params reason: want transport, got %v", got)
+	}
+	if len(spy.calls) != 1 {
+		t.Fatalf("exactly one delivery per confirmed candidate, got %d", len(spy.calls))
+	}
+}
+
+// §6 (policy bullet): a drafted composer yields ActionEscalate and never executes.
+func TestProcessRead_DraftedComposer_EscalatesWithoutActing(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{outcome: "resumed:submitted"}
+	e := resumeEngineFor(spy, &MemorySink{})
+	c := apiErrorCand(now)
+	c.ComposerDraft = true
+
+	e.ProcessRead(c, now.Add(apiReadAnchor))
+	e.ProcessRead(c, now.Add(apiReadConfirm1))
+	ev := e.ProcessRead(c, now.Add(apiReadConfirm2))
+	if ev.WouldHave != ActionEscalate {
+		t.Fatalf("a drafted composer must downgrade to %q, got %q", ActionEscalate, ev.WouldHave)
+	}
+	if ev.Action != ActionNone {
+		t.Fatalf("a drafted composer must take no action, got %q", ev.Action)
+	}
+	if ev.Outcome != "held_composer_draft" {
+		t.Fatalf("the audit must say a human's draft is what stopped it, got %q", ev.Outcome)
+	}
+	if len(spy.calls) != 0 {
+		t.Fatal("autonomous code must never submit text a human typed")
+	}
+}
+
+// The downgrade must not SPEND a recovery. Evaluated after RecordAttempt, a
+// session parked behind an operator draft burns both of its 2-per-6h attempts
+// doing nothing and is then cap-locked for six hours — so by the time the human
+// clears the draft there is no budget left to resume it, which is the exact
+// opposite of what D6 protects. This test fails if the downgrade is moved back
+// below e.policy.Gate / e.policy.RecordAttempt.
+func TestProcessRead_DraftedComposer_BurnsNoRecoveryBudget(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{outcome: "resumed:submitted"}
+	e := resumeEngineFor(spy, &MemorySink{})
+	c := apiErrorCand(now)
+	c.ComposerDraft = true
+
+	// Anchor once; the engine's anchor persists while the substate holds and the
+	// output signature does not move, so the dwell keeps growing from here.
+	e.ProcessRead(c, now.Add(apiReadAnchor))
+
+	// Six drafted confirm cycles — three times the per-session cap of 2.
+	at := now.Add(apiReadConfirm1)
+	for i := 0; i < 6; i++ {
+		e.ProcessRead(c, at)
+		ev := e.ProcessRead(c, at.Add(2*time.Second))
+		if ev.Outcome != "held_composer_draft" {
+			t.Fatalf("cycle %d: want held_composer_draft, got %q", i, ev.Outcome)
+		}
+		at = at.Add(4 * time.Second)
+	}
+	if len(spy.calls) != 0 {
+		t.Fatalf("nothing may execute behind a draft, got %d calls", len(spy.calls))
+	}
+
+	// The operator clears their draft. The session must be resumable AT ONCE.
+	c.ComposerDraft = false
+	e.ProcessRead(c, at)
+	ev := e.ProcessRead(c, at.Add(2*time.Second))
+	if ev.Decision != DecisionAct {
+		t.Fatalf("a cleared draft must be immediately resumable, got %q (cap-locked?)", ev.Decision)
+	}
+	if len(spy.calls) != 1 {
+		t.Fatalf("want exactly one resume once the draft cleared, got %d", len(spy.calls))
+	}
+}
+
+// A future NotBefore keeps a usage-limit candidate out of the executor entirely.
+func TestProcessRead_UsageLimit_NotBefore_DoesNotExecute(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{outcome: "resumed:submitted"}
+	e := resumeEngineFor(spy, &MemorySink{})
+	c := Candidate{
+		SessionID:       "s1",
+		Substate:        tmux.SubstateUsageLimit,
+		StatusChangedAt: now.Add(-time.Minute),
+		NotBefore:       now.Add(2 * time.Hour),
+		OutputSig:       "sig-stable",
+	}
+	for i := 0; i < 4; i++ {
+		ev := e.ProcessRead(c, now.Add(time.Duration(i)*2*time.Second))
+		if ev.Decision != DecisionSkipNotBefore {
+			t.Fatalf("read %d: want %q, got %q", i, DecisionSkipNotBefore, ev.Decision)
+		}
+	}
+	if len(spy.calls) != 0 {
+		t.Fatalf("a scheduled candidate must not be executed early, got %d calls", len(spy.calls))
+	}
+}
+
+// usage-limit carries the reason the executor needs to warn about a terminated
+// subagent.
+func TestProcessRead_UsageLimit_PastNotBefore_ReasonIsUsageLimit(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{outcome: "resumed:submitted"}
+	e := resumeEngineFor(spy, &MemorySink{})
+	c := Candidate{
+		SessionID:       "s1",
+		Substate:        tmux.SubstateUsageLimit,
+		StatusChangedAt: now.Add(-time.Minute),
+		NotBefore:       now.Add(-time.Second),
+		OutputSig:       "sig-stable",
+	}
+	e.ProcessRead(c, now)
+	ev := e.ProcessRead(c, now.Add(2*time.Second))
+	if ev.Action != ActionResume {
+		t.Fatalf("want %q, got %q", ActionResume, ev.Action)
+	}
+	if got := ev.ActionParams["reason"]; got != "usage_limit" {
+		t.Fatalf("want reason usage_limit, got %v", got)
+	}
+}
+
+// A typed-but-unsubmitted delivery is recorded as a FAILURE, not a success, and
+// feeds the circuit breaker.
+func TestProcessRead_TypedNotSubmitted_CountsAsFailedRecovery(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{outcome: "resumed:typed_not_submitted"}
+	e := resumeEngineFor(spy, &MemorySink{})
+	c := apiErrorCand(now)
+
+	e.ProcessRead(c, now.Add(apiReadAnchor))
+	e.ProcessRead(c, now.Add(apiReadConfirm1))
+	ev := e.ProcessRead(c, now.Add(apiReadConfirm2))
+	if ev.Outcome != "resumed:typed_not_submitted" {
+		t.Fatalf("the audit must carry the real delivery, got %q", ev.Outcome)
+	}
+	// K for a non-auth class is 2: one more failed recovery opens the breaker.
+	// The dwell is long satisfied by now, so this is confirm+act, not anchor+confirm.
+	e.ProcessRead(c, now.Add(65*time.Second))
+	e.ProcessRead(c, now.Add(67*time.Second))
+	if !e.Policy().IsQuarantined("s1") {
+		t.Fatal("two consecutive undelivered resumes must open the breaker")
+	}
+}
+
+// An executor error is surfaced in the audit and takes no action.
+func TestProcessRead_ExecutorError_RecordedNoAction(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{err: errors.New("pane is gone")}
+	e := resumeEngineFor(spy, &MemorySink{})
+	c := apiErrorCand(now)
+
+	e.ProcessRead(c, now.Add(apiReadAnchor))
+	e.ProcessRead(c, now.Add(apiReadConfirm1))
+	ev := e.ProcessRead(c, now.Add(apiReadConfirm2))
+	if ev.Action != ActionNone {
+		t.Fatalf("a failed execution takes no action, got %q", ev.Action)
+	}
+	if ev.Outcome != "error:pane is gone" {
+		t.Fatalf("want the error surfaced in the outcome, got %q", ev.Outcome)
 	}
 }

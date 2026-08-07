@@ -788,3 +788,34 @@ single_action and full are untouched and stay HELD."
 - `internal/selfheal/engine.go`: **new audit outcome string** `"held_composer_draft"` — emitted with `Decision: act`, `WouldHave: escalate`, `Action: none`, and **no** cap spent, whenever `ActionResume` meets `Candidate.ComposerDraft`. Distinct from `"held_stage_2_3"` (a guarded mode) on purpose. Task 07's documentation lists it.
 
 ## Record (append-only)
+
+### 2026-08-07 — implemented
+
+- Files touched: `internal/selfheal/engine.go`, `internal/selfheal/engine_test.go`.
+- Implemented exactly as written; no deviations.
+- Precondition checked: `grep -n 'ModeResume|ActionResume|ComposerDraft'` printed
+  10 lines (task 02 landed as `2aabcf6f`).
+- Verification: `gofmt -l internal/selfheal/` → empty. `go build ./...` → exit 0.
+  `go vet ./internal/selfheal/` → exit 0.
+  `go test ./internal/selfheal/ -count=1 -v` → EXIT=0, `ok`, 58 `--- PASS`, 0 FAIL;
+  sentinel `TestExecuteIfAuthorized_EveryOtherPair_Refuses` PASS (the 27-pair matrix).
+  Targeted run of `ExecuteIfAuthorized|ProcessRead_Resume|DraftedComposer|NotBefore|
+  TypedNotSubmitted|ObserveEngine_StillHasNoExecutor` → 14/14 PASS, `ok`.
+  Composer-ordering awk check → `draft=240 recordattempt=261`, `EXIT=0` (downgrade
+  sits ahead of the safety machine, as D6 requires).
+  No test timings had to be adjusted — the three-read shape in the task file was
+  correct as written.
+- Concern (task-file expectation vs. task-file edits, not a code defect):
+  the verification step says `grep -c 'ModeObserve' internal/selfheal/engine.go`
+  should print `4` or more. It prints **2**. That is a consequence of the task's
+  OWN prescribed replacement text: the new chokepoint comment and the new
+  `ActionExecutor` doc comment both spell it lowercase ("observe never gets here",
+  "observe holds a nil executor") rather than as the identifier `ModeObserve`, and
+  the chokepoint condition itself changed from `e.mode != ModeObserve` to
+  `e.mode != ModeResume || would != ActionResume`. The stated failure condition —
+  "if it drops to 0 the observe guarantee was deleted" — does not hold: both
+  load-bearing sites survive (`engine.go:91` `mode: ModeObserve` in
+  `NewObserveEngine`, `engine.go:270` the ProcessRead early return), and they are
+  pinned by `TestNewObserveEngine_StillHasNoExecutor` plus the four pre-existing
+  `TestObserve_*` tests, all PASS. No code change made for this; flagging the
+  stale threshold only.
