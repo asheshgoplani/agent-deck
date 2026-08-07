@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/selfheal"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 func TestBuildSelfHealCandidate_FoldsSignals(t *testing.T) {
@@ -196,7 +197,7 @@ func TestIsSelfHealResumeSubstate(t *testing.T) {
 func TestBuildSelfHealCandidate_NoPane_NoComposerDraft(t *testing.T) {
 	inst := &Instance{ID: "s1", Title: "worker-3"}
 	c := buildSelfHealCandidate(inst, "idle", nil, time.Time{}, false)
-	if c.ComposerDraft {
+	if c.ComposerDraft != nil {
 		t.Fatal("no pane means nothing to protect")
 	}
 	if !c.NotBefore.IsZero() {
@@ -204,10 +205,123 @@ func TestBuildSelfHealCandidate_NoPane_NoComposerDraft(t *testing.T) {
 	}
 }
 
-// instanceComposerHasDraft fails SAFE: a capture that errors must read as
-// "there might be a draft", never as "the composer is empty".
-func TestInstanceComposerHasDraft_NoPane(t *testing.T) {
+// A session with no pane has nothing to protect and nothing to send to, so the
+// lookup reports no draft rather than taking the fail-safe branch.
+func TestInstanceComposerHasDraft_NoPane_ReportsNoDraft(t *testing.T) {
 	if instanceComposerHasDraft(&Instance{ID: "s1"}) {
 		t.Fatal("a nil tmux session has no composer to hold a draft")
+	}
+}
+
+// The fail-safe: a capture that ERRORS must read as "there might be a draft",
+// never as "the composer is empty". It is the only thing protecting an
+// operator's typed text when tmux is unreachable, and it is a different branch
+// from the no-pane case above.
+func TestInstanceComposerHasDraft_CaptureError_FailsSafe(t *testing.T) {
+	// A tmux session bound to a name no server has: CapturePaneFresh's subprocess
+	// exits non-zero, which is the branch under test.
+	inst := &Instance{ID: "s1"}
+	inst.SetTmuxSessionForTest(&tmux.Session{Name: "agentdeck-no-such-session-selfheal-failsafe"})
+	if !instanceComposerHasDraft(inst) {
+		t.Fatal("a capture that fails must read as 'there might be a draft'")
+	}
+}
+
+// buildSelfHealCandidate must NOT resolve the draft: each resolution forks a
+// tmux capture-pane with a 3s timeout, and the daemon builds a candidate for
+// every wedged session on every 1-3s poll inside one serial loop. Under a
+// correlated outage that is the multi-second-freeze class this repo has hit
+// before, and most of those reads can only return skip_dwell / skip_confirm.
+func TestBuildSelfHealCandidate_ComposerDraftIsDeferred(t *testing.T) {
+	calls := 0
+	prev := composerDraftLookup
+	composerDraftLookup = func(*Instance) bool { calls++; return true }
+	t.Cleanup(func() { composerDraftLookup = prev })
+
+	inst := usageLimitedInstance(t, "selfheal-deferred-draft", time.Now().Add(90*time.Minute))
+
+	c := buildSelfHealCandidate(inst, "waiting", nil, time.Time{}, false)
+	if calls != 0 {
+		t.Fatalf("building a candidate must capture nothing, got %d captures", calls)
+	}
+	if c.ComposerDraft == nil {
+		t.Fatal("a resume substate must carry a draft lookup for the engine to resolve")
+	}
+	if !c.ComposerDraft() {
+		t.Fatal("the lookup must return what the underlying check says")
+	}
+	if calls != 1 {
+		t.Fatalf("resolving the lookup captures exactly once, got %d", calls)
+	}
+}
+
+// The lookup is attached only for the substates that can produce a resume, so
+// every other session pays nothing at all — not even a deferred one.
+func TestBuildSelfHealCandidate_NonResumeSubstate_NoDraftLookup(t *testing.T) {
+	inst := NewInstanceWithTool("selfheal-no-draft-lookup", t.TempDir(), "claude")
+	if c := buildSelfHealCandidate(inst, "waiting", nil, time.Time{}, false); c.ComposerDraft != nil {
+		t.Fatal("a non-resume substate must carry no draft lookup")
+	}
+}
+
+// usageLimitedInstance seeds a live usage-limit verdict with a schedule, exactly
+// as a completed scan would publish it, and claims the throttle window so the
+// next read is answered from the memo instead of rescanning.
+func usageLimitedInstance(t *testing.T, title string, notBefore time.Time) *Instance {
+	t.Helper()
+	inst := NewInstanceWithTool(title, t.TempDir(), "claude")
+	inst.ClaudeSessionID = "session-A"
+	inst.mu.Lock()
+	inst.usageLimitSessionID = "session-A"
+	inst.usageLimitedCached = true
+	inst.usageLimitNotBeforeCached = notBefore
+	inst.lastUsageLimitScanAt = time.Now()
+	inst.mu.Unlock()
+	return inst
+}
+
+// Task 06 AC 3 / task 04 AC 4-5: a usage-limited session is LIFTED to
+// SubstateUsageLimit and carries the parsed schedule. CachedSubstate is
+// deliberately usage-limit-blind (it is the TUI render hot path), so without
+// this lift a quota-rejected session reaches self-heal labelled
+// idle_at_empty_prompt and is never scheduled at all.
+func TestBuildSelfHealCandidate_UsageLimited_LiftsSubstateAndSchedule(t *testing.T) {
+	notBefore := time.Now().Add(90 * time.Minute).UTC()
+	inst := usageLimitedInstance(t, "selfheal-usage-limit-lift", notBefore)
+
+	c := buildSelfHealCandidate(inst, "waiting", nil, time.Time{}, false)
+	if c.Substate != SubstateUsageLimit {
+		t.Fatalf("a usage-limited session must reach self-heal as %q, got %q", SubstateUsageLimit, c.Substate)
+	}
+	if !c.NotBefore.Equal(notBefore) {
+		t.Fatalf("the schedule must ride along with the verdict: want %s, got %s", notBefore, c.NotBefore)
+	}
+	if c.ComposerDraft == nil {
+		t.Fatal("usage-limit is a resume substate and must carry a draft lookup")
+	}
+}
+
+// The method-level accessor, and the rebind that must clear it: the memo is keyed
+// by the Claude session id, so an A→B rebind discards both the verdict and its
+// schedule rather than handing B the schedule formed for A.
+func TestUsageLimitNotBefore_MethodReportsMemo_RebindClearsIt(t *testing.T) {
+	notBefore := time.Now().Add(90 * time.Minute).UTC()
+	inst := usageLimitedInstance(t, "selfheal-notbefore-rebind", notBefore)
+
+	if got := inst.UsageLimitNotBefore(); !got.Equal(notBefore) {
+		t.Fatalf("the accessor must report the live memo: want %s, got %s", notBefore, got)
+	}
+	if limited, nb := inst.usageLimitedWithSchedule(); !limited || !nb.Equal(notBefore) {
+		t.Fatalf("verdict and schedule must arrive together, got limited=%v notBefore=%s", limited, nb)
+	}
+
+	// Normal rebind onto the same Instance.
+	inst.ClaudeSessionID = "session-B"
+
+	if limited, nb := inst.usageLimitedWithSchedule(); limited || !nb.IsZero() {
+		t.Fatalf("a rebind must discard A's verdict and schedule, got limited=%v notBefore=%s", limited, nb)
+	}
+	if got := inst.UsageLimitNotBefore(); !got.IsZero() {
+		t.Fatalf("no verdict means no schedule, got %s", got)
 	}
 }

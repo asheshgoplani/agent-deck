@@ -454,13 +454,105 @@ func TestProcessRead_ResumeMode_ExecutesOncePerConfirmedCandidate(t *testing.T) 
 	}
 }
 
+// draftPresent / draftAbsent are the deferred-lookup forms of "the composer holds
+// operator text" and "it does not".
+func draftPresent() bool { return true }
+func draftAbsent() bool  { return false }
+
+// countingDraft returns a lookup and a pointer to its resolution count. Each
+// resolution is a real `tmux capture-pane` subprocess in production, so the count
+// is the cost being measured.
+func countingDraft(answer bool) (func() bool, *int) {
+	n := 0
+	return func() bool { n++; return answer }, &n
+}
+
+// The draft lookup must be resolved ONLY on the read that is deciding to act.
+// Resolving it per read forks a capture-pane (3s timeout) for every wedged
+// session on every 1-3s poll, inside the daemon's serial instance loop — and a
+// transport outage wedges sessions in correlated batches. The anchor read and the
+// confirm read can only return skip_dwell / skip_confirm, which never consult it.
+func TestProcessRead_ComposerDraftLookup_ResolvedOnlyWhenDeciding(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{outcome: "resumed:submitted"}
+	e := resumeEngineFor(spy, &MemorySink{})
+	lookup, calls := countingDraft(false)
+	c := apiErrorCand(now)
+	c.ComposerDraft = lookup
+
+	if ev := e.ProcessRead(c, now.Add(apiReadAnchor)); ev.Decision != DecisionSkipDwell {
+		t.Fatalf("premise broken: want %q, got %q", DecisionSkipDwell, ev.Decision)
+	}
+	if *calls != 0 {
+		t.Fatalf("the anchor read cannot act and must capture nothing, got %d", *calls)
+	}
+
+	if ev := e.ProcessRead(c, now.Add(apiReadConfirm1)); ev.Decision != DecisionSkipConfirm {
+		t.Fatalf("premise broken: want %q, got %q", DecisionSkipConfirm, ev.Decision)
+	}
+	if *calls != 0 {
+		t.Fatalf("the confirm read cannot act and must capture nothing, got %d", *calls)
+	}
+
+	if ev := e.ProcessRead(c, now.Add(apiReadConfirm2)); ev.Decision != DecisionAct {
+		t.Fatalf("premise broken: want %q, got %q", DecisionAct, ev.Decision)
+	}
+	if *calls != 1 {
+		t.Fatalf("the deciding read resolves the lookup exactly once, got %d", *calls)
+	}
+}
+
+// Observe mode is advertised as capture-free. Every read it takes over a wedged
+// session that has not yet confirmed must resolve nothing: observe runs against
+// the whole fleet by default, so a per-read capture there is the freeze.
+func TestObserve_ComposerDraftLookup_NeverResolvedBeforeDeciding(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	e := NewObserveEngine(DefaultCaps(), &MemorySink{})
+	lookup, calls := countingDraft(true)
+
+	// Alternate the output signature so movement keeps every read short of the
+	// confirm — the steady state of a fleet being polled every 1-3 seconds.
+	for i := 0; i < 20; i++ {
+		c := apiErrorCand(now)
+		c.ComposerDraft = lookup
+		c.OutputSig = []string{"sigA", "sigB"}[i%2]
+		ev := e.ProcessRead(c, now.Add(apiReadAnchor+time.Duration(i)*2*time.Second))
+		if ev.Decision == DecisionAct {
+			t.Fatalf("read %d reached act; this test must stay on the non-deciding path", i)
+		}
+	}
+	if *calls != 0 {
+		t.Fatalf("observe must capture nothing on reads that cannot act, got %d", *calls)
+	}
+}
+
+// A nil lookup — the caller had no way to look — reads as "no draft" and must not
+// panic. Every non-resume substate carries one.
+func TestProcessRead_NilComposerDraftLookup_ReadsAsNoDraft(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{outcome: "resumed:submitted"}
+	e := resumeEngineFor(spy, &MemorySink{})
+	c := apiErrorCand(now)
+	c.ComposerDraft = nil
+
+	e.ProcessRead(c, now.Add(apiReadAnchor))
+	e.ProcessRead(c, now.Add(apiReadConfirm1))
+	ev := e.ProcessRead(c, now.Add(apiReadConfirm2))
+	if ev.Outcome == "held_composer_draft" {
+		t.Fatal("a missing lookup must not be read as a draft")
+	}
+	if len(spy.calls) != 1 {
+		t.Fatalf("want exactly one resume, got %d", len(spy.calls))
+	}
+}
+
 // §6 (policy bullet): a drafted composer yields ActionEscalate and never executes.
 func TestProcessRead_DraftedComposer_EscalatesWithoutActing(t *testing.T) {
 	now := time.Unix(1780000000, 0).UTC()
 	spy := &resumeSpy{outcome: "resumed:submitted"}
 	e := resumeEngineFor(spy, &MemorySink{})
 	c := apiErrorCand(now)
-	c.ComposerDraft = true
+	c.ComposerDraft = draftPresent
 
 	e.ProcessRead(c, now.Add(apiReadAnchor))
 	e.ProcessRead(c, now.Add(apiReadConfirm1))
@@ -490,7 +582,7 @@ func TestProcessRead_DraftedComposer_BurnsNoRecoveryBudget(t *testing.T) {
 	spy := &resumeSpy{outcome: "resumed:submitted"}
 	e := resumeEngineFor(spy, &MemorySink{})
 	c := apiErrorCand(now)
-	c.ComposerDraft = true
+	c.ComposerDraft = draftPresent
 
 	// Anchor once; the engine's anchor persists while the substate holds and the
 	// output signature does not move, so the dwell keeps growing from here.
@@ -511,7 +603,7 @@ func TestProcessRead_DraftedComposer_BurnsNoRecoveryBudget(t *testing.T) {
 	}
 
 	// The operator clears their draft. The session must be resumable AT ONCE.
-	c.ComposerDraft = false
+	c.ComposerDraft = draftAbsent
 	e.ProcessRead(c, at)
 	ev := e.ProcessRead(c, at.Add(2*time.Second))
 	if ev.Decision != DecisionAct {

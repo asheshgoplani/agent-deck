@@ -68,13 +68,41 @@ type Candidate struct {
 	// the turn or produces a fresh rejection that rearms the gate.
 	NotBefore time.Time
 
-	// ComposerDraft is true when the target's composer holds text the operator
+	// ComposerDraft reports whether the target's composer holds text the operator
 	// typed. It is a hard precondition, not a preference: submitting someone
 	// else's text is not a decision a status probe gets to make, and the
 	// `session nudge --force` path is known to CONSUME an operator draft rather
 	// than restore it (2026-08-07, conductor2-testfix, "target release-6.18.1").
-	// The engine downgrades ActionResume to ActionEscalate when this is set.
-	ComposerDraft bool
+	// The engine downgrades ActionResume to ActionEscalate when it reports true.
+	//
+	// It is a DEFERRED lookup rather than a bool because resolving it costs a
+	// fresh `tmux capture-pane` subprocess (3s timeout) against the target pane,
+	// and the daemon evaluates every wedged session on every 1-3s poll inside one
+	// serial loop. A transport outage is correlated by construction, so a
+	// resolve-per-read would fork one capture per wedged session per poll —
+	// including for the reads that can only ever return skip_dwell / skip_confirm
+	// and never consult it. That is the multi-second-freeze class this repo has
+	// hit before.
+	//
+	// The engine resolves it exactly once, at the point it holds a confirmed
+	// candidate and is deciding whether to act — the same position in the
+	// sequence the value was read from before, still BEFORE policy.RecordAttempt,
+	// so a draft never spends one of the session's two 6-hour recoveries.
+	//
+	// nil means the caller has no way to look, which reads as "no draft". The
+	// fail-safe for a capture that ERRORS ("there might be a draft") belongs to
+	// the lookup itself, since only the caller knows a capture failed.
+	ComposerDraft func() bool
+}
+
+// hasComposerDraft resolves the deferred composer-draft lookup. Call it once,
+// and only where the answer is about to decide something: each call is a pane
+// capture.
+func (c Candidate) hasComposerDraft() bool {
+	if c.ComposerDraft == nil {
+		return false
+	}
+	return c.ComposerDraft()
 }
 
 // dwellAnchor returns the timestamp the dwell window is measured from for this

@@ -130,17 +130,32 @@ func buildSelfHealCandidate(inst *Instance, status string, hs *HookStatus, lastS
 	//
 	// Gated on not-busy so an actively working session never pays for the scan,
 	// and because a busy session is disqualified downstream regardless.
-	if !busy && inst.usageLimited() {
-		sub = SubstateUsageLimit
-		notBefore = inst.UsageLimitNotBefore()
+	//
+	// The verdict and its schedule come from ONE accessor: read apart, a rebind
+	// landing between them yields substate usage-limit with a zero NotBefore,
+	// which is a candidate with no gate.
+	if !busy {
+		if limited, nb := inst.usageLimitedWithSchedule(); limited {
+			sub = SubstateUsageLimit
+			notBefore = nb
+		}
 	}
 
-	// D6: an operator draft in the composer is a hard precondition. Read only for
-	// the substates that can produce a resume — every other session skips the pane
-	// capture entirely.
-	composerDraft := false
+	// D6: an operator draft in the composer is a hard precondition. Attached as a
+	// DEFERRED lookup rather than resolved here: each resolution forks a
+	// `tmux capture-pane` with a 3s timeout, and this runs inside syncProfile's
+	// serial instance loop on every 1-3s poll. A transport outage is correlated by
+	// construction — the incident this feature exists for wedged 3 of 32 sessions
+	// at once — so resolving eagerly would fork one capture per wedged session per
+	// poll, including on the reads that can only return skip_dwell / skip_confirm
+	// and never consult the answer. The engine resolves it once, on the read where
+	// it is deciding to act, still ahead of RecordAttempt (candidate.go).
+	//
+	// Scoped to the substates that can produce a resume: every other session
+	// carries no lookup at all.
+	var composerDraft func() bool
 	if isSelfHealResumeSubstate(sub) {
-		composerDraft = instanceComposerHasDraft(inst)
+		composerDraft = func() bool { return composerDraftLookup(inst) }
 	}
 
 	return selfheal.Candidate{
@@ -162,6 +177,11 @@ func buildSelfHealCandidate(inst *Instance, status string, hs *HookStatus, lastS
 		ComposerDraft:    composerDraft,
 	}
 }
+
+// composerDraftLookup is the seam the deferred draft check goes through, so a
+// test can count resolutions — and prove there are none on the read path —
+// without a live tmux server to capture from.
+var composerDraftLookup = instanceComposerHasDraft
 
 // instanceComposerHasDraft reports whether the instance's composer holds operator
 // text. A capture failure returns TRUE — fail-safe: unable to prove the composer

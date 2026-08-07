@@ -227,7 +227,20 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 	// no mode — including observe — can proceed past it. Observe short-circuits
 	// on the same branch deliberately: observe exists to model what resume WOULD
 	// do, and resume spends nothing here.
-	if would == ActionResume && c.ComposerDraft {
+	//
+	// This is also the ONLY place the deferred draft lookup is resolved. Every
+	// earlier exit — not-a-candidate, skip_dwell, skip_confirm — returns without
+	// touching it, so a wedged session costs a pane capture only on the read that
+	// is actually deciding to act, not on every poll (candidate.go).
+	//
+	// The gate is narrowed to ActionResume because ActionResume is the only
+	// action this PR authorises, NOT because a draft is safe to type over for the
+	// others: D6's rationale — submitting someone else's text is not a decision a
+	// status probe gets to make — is not action-specific. ActionResend refuses at
+	// the chokepoint today, which is the only reason idle_at_empty_prompt is not
+	// a live hole. Whoever authorises ActionResend next must widen this gate in
+	// the same change.
+	if would == ActionResume && c.hasComposerDraft() {
 		delete(e.confirmed, c.SessionID)
 		ev.Decision = DecisionAct
 		ev.WouldHave = ActionEscalate

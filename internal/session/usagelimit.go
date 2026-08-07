@@ -665,3 +665,31 @@ func (i *Instance) UsageLimitNotBefore() time.Time {
 	}
 	return i.usageLimitNotBeforeCached
 }
+
+// usageLimitedWithSchedule returns the usage-limit verdict together with the
+// schedule that belongs to THAT verdict.
+//
+// It exists because reading the two through separate accessors is a torn read
+// with teeth: a session rebind landing between them clears
+// usageLimitNotBeforeCached (the memo-identity discard in usageLimited), so the
+// caller would build a candidate with substate usage-limit and a ZERO NotBefore
+// — no gate at all — and resume on the next confirming read, hours before the
+// quota window reopens. The window is narrow, but what it removes is a safety
+// gate rather than adding one.
+//
+// The refresh scan runs first (it must: the memo is what makes the answer
+// current), then BOTH fields are read under one lock acquisition. A rebind that
+// lands in between is then observed as "no longer usage-limited" — the honest
+// answer for a session whose transcript identity just changed — rather than as
+// "usage-limited, unscheduled".
+func (i *Instance) usageLimitedWithSchedule() (bool, time.Time) {
+	if !i.usageLimited() {
+		return false, time.Time{}
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if !i.usageLimitedCached {
+		return false, time.Time{}
+	}
+	return true, i.usageLimitNotBeforeCached
+}
