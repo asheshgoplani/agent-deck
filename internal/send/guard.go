@@ -113,6 +113,11 @@ type ComposerGuardResult struct {
 	// marker still present), which fails safe — the gate then withholds the
 	// Enter nudge.
 	ComposerPasteMarkerFree bool
+	// QueuedMessageReceiptPresent records whether the guard's last successful
+	// pre-send pane capture already showed Claude's queued-message receipt.
+	// The verifier uses this baseline so an old queued message cannot certify a
+	// later send merely because the same receipt remains visible.
+	QueuedMessageReceiptPresent bool
 }
 
 // maxComposerClearAttempts bounds Ctrl+C attempts during save-clear.
@@ -182,7 +187,11 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 			return ComposerGuardResult{Held: time.Since(start)}
 		}
 		if composerProvenanceFree(raw, strip) {
-			return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
+			return ComposerGuardResult{
+				Held:                        time.Since(start),
+				ComposerPasteMarkerFree:     true,
+				QueuedMessageReceiptPresent: HasQueuedMessageReceipt(strip(raw)),
+			}
 		}
 		if !time.Now().Before(deadline) {
 			break
@@ -210,7 +219,11 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 		return ComposerGuardResult{Held: time.Since(start)}
 	}
 	if composerProvenanceFree(raw, strip) {
-		return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
+		return ComposerGuardResult{
+			Held:                        time.Since(start),
+			ComposerPasteMarkerFree:     true,
+			QueuedMessageReceiptPresent: HasQueuedMessageReceipt(strip(raw)),
+		}
 	}
 	draft, visible := ComposerDraft(raw, strip)
 	if !visible {
@@ -219,12 +232,18 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 		// is no composer to clear. Fail safe without a blind Ctrl+C (#1778
 		// review finding 1) rather than falling through into the save-clear
 		// flow with an empty draft.
-		return ComposerGuardResult{Held: time.Since(start)}
+		return ComposerGuardResult{
+			Held:                        time.Since(start),
+			QueuedMessageReceiptPresent: HasQueuedMessageReceipt(strip(raw)),
+		}
 	}
 
 	// Save the confirmed operator draft and clear the composer so the
 	// automated message cannot merge with it.
-	res := ComposerGuardResult{SavedDraft: draft}
+	res := ComposerGuardResult{
+		SavedDraft:                  draft,
+		QueuedMessageReceiptPresent: HasQueuedMessageReceipt(strip(raw)),
+	}
 	clearPoll := poll
 	if clearPoll > 100*time.Millisecond {
 		clearPoll = 100 * time.Millisecond
@@ -249,6 +268,7 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 				// The composer is confirmed empty right before the send, so
 				// any paste marker appearing afterwards is our own (#1777).
 				res.ComposerPasteMarkerFree = true
+				res.QueuedMessageReceiptPresent = res.QueuedMessageReceiptPresent || HasQueuedMessageReceipt(strip(raw))
 				res.Held = time.Since(start)
 				return res
 			}

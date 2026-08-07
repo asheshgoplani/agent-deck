@@ -13,6 +13,14 @@ func HasUnsentPastedPrompt(content string) bool {
 	return strings.Contains(strings.ToLower(content), "[pasted text")
 }
 
+// HasQueuedMessageReceipt detects Claude's acknowledgement that a message was
+// accepted while another turn is still running. The send verifier compares
+// this against a pre-send pane baseline; the marker is evidence only when it
+// newly appears, never when an older queued message already produced it.
+func HasQueuedMessageReceipt(content string) bool {
+	return strings.Contains(strings.ToLower(content), "press up to edit queued messages")
+}
+
 // firstNonEmptyLine returns the first physical line of s that is non-empty
 // after trimming. Used to reconstruct what the composer actually renders for a
 // multi-line message: Claude's input box shows the message's first physical

@@ -456,6 +456,48 @@ func TestSendWithRetryTarget_StopsWhenActive(t *testing.T) {
 	}
 }
 
+// A message sent while Claude is already mid-turn is accepted into Claude's
+// own queue rather than starting a second active transition. The queue receipt
+// is positive acceptance evidence; reporting issue-#876 no_evidence here tells
+// callers to retry and double-queues the message.
+func TestSendWithRetryTarget_NewQueuedMessageReceiptIsSubmitted(t *testing.T) {
+	mock := &mockSendRetryTarget{
+		statuses: []string{"running"},
+		panes: []string{
+			"working on the current turn\n",
+			"working on the current turn\n❯ Press up to edit queued messages\n",
+		},
+	}
+
+	delivery, err := sendWithRetryTarget(mock, "STOP REVIEWING AND WRITE YOUR VERDICT FILE NOW", false, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0, verifyDelivery: true,
+	})
+	if err != nil {
+		t.Fatalf("a newly visible Claude queue receipt confirms acceptance: %v", err)
+	}
+	if delivery != deliverySubmitted {
+		t.Fatalf("delivery: want %q, got %q", deliverySubmitted, delivery)
+	}
+}
+
+func TestSendWithRetryTarget_PreExistingQueueReceiptIsNotEvidence(t *testing.T) {
+	const queuedPane = "working on the current turn\n❯ Press up to edit queued messages\n"
+	mock := &mockSendRetryTarget{
+		statuses: []string{"running"},
+		panes:    []string{queuedPane},
+	}
+
+	delivery, err := sendWithRetryTarget(mock, "a second message that vanished", false, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0, verifyDelivery: true, queuedReceiptBeforeSend: true,
+	})
+	if err == nil {
+		t.Fatal("a queue marker that predates this send must not certify it")
+	}
+	if delivery == deliverySubmitted {
+		t.Fatal("stale queue marker must not report submitted")
+	}
+}
+
 // TestSendWithRetryTarget_WaitingWithoutPasteMarker_ErrorsUnderVerifyDelivery
 // is the rewrite of the prior _WaitingWithoutPasteMarkerReturnsSuccess
 // canonization test. The legacy assertion (`err == nil` for waiting-only

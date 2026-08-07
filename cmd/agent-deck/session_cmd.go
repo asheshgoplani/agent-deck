@@ -3267,6 +3267,7 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 		// parked in the composer then, a marker seen during verification is
 		// the collapsed form of our own payload and may be nudged.
 		tun.retry.composerPasteFreeBeforeSend = guard.ComposerPasteMarkerFree
+		tun.retry.queuedReceiptBeforeSend = guard.QueuedMessageReceiptPresent
 	}
 
 	delivery, err := sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), tun.retry)
@@ -3422,6 +3423,10 @@ type sendRetryOptions struct {
 	// composer paste marker counts as foreign content and no nudge fires —
 	// the fail-safe default for callers that cannot establish provenance.
 	composerPasteFreeBeforeSend bool
+	// queuedReceiptBeforeSend is the pre-send baseline for Claude's explicit
+	// "Press up to edit queued messages" acknowledgement. A marker is evidence
+	// for this send only when it was absent at the baseline and appears later.
+	queuedReceiptBeforeSend bool
 }
 
 // composerPasteFree captures the pane and reports whether the composer is
@@ -3465,7 +3470,6 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	if skipVerify {
 		arrivalBaseline = captureArrivalBaseline(target, message)
 	}
-
 	if err := target.SendKeysAndEnter(message); err != nil {
 		// A refused over-long line is a distinct, actionable outcome: the
 		// transport typed nothing, so the composer is untouched and the
@@ -3581,6 +3585,9 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		paneNow := send.CaptureOutcome(captured, captureErr)
 		if paneNow.OK {
 			content := tmux.StripANSI(captured)
+			if !opts.queuedReceiptBeforeSend && send.HasQueuedMessageReceipt(content) {
+				return deliverySubmitted, nil
+			}
 			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
 			if !sawDeliveryEvidence && deliveryToken != "" && strings.Contains(content, deliveryToken) {
 				sawDeliveryEvidence = true
