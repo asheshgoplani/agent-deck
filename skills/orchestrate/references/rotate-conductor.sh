@@ -7,10 +7,12 @@
 # It exists because the hard threshold's remedy used to be a five-step prose
 # recipe ending in "archive yourself" — and measured over 12 real conductors, 6
 # sailed straight past that line. A single command has no steps to skip and no
-# step that needs a human. Nothing in here is a slash command: a session cannot
-# type one at itself (`session send` skips its slash-registration gate under
-# --no-wait, and the keystrokes are silently dropped), so every action below is
-# a plain CLI call the conductor can already make.
+# step that needs a human.
+#
+# Rotation is the hard-threshold remedy, not compaction. At the soft threshold
+# the conductor compacts in place with `agent-deck session compact`; by the time
+# it gets here compaction is no longer enough and the run needs a successor with
+# a fresh window.
 set -euo pipefail
 D="$(cd "$(dirname "$0")" && pwd)"          # = $RUN_DIR
 HANDOFF="$D/conductor-handoff.md"

@@ -85,6 +85,11 @@ func handleSession(profile string, args []string) {
 		handleSessionSend(profile, args[1:])
 	case "nudge":
 		handleSessionNudge(profile, args[1:])
+	case "compact":
+		handleSessionCompact(profile, args[1:])
+	case "compact-watch":
+		// Internal: the detached half of `session compact --resume`.
+		handleSessionCompactWatch(profile, args[1:])
 	case "approve":
 		handleSessionApprove(profile, args[1:])
 	case "send-keys":
@@ -130,6 +135,7 @@ func printSessionHelp() {
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session")
 	fmt.Println("  nudge <id> <message>    Send only if the session can receive it; verify submission (for watchdogs)")
+	fmt.Println("  compact [id]            Compact a Claude session's conversation (defaults to the calling session)")
 	fmt.Println("  approve <id> [choice]   Resolve a visible Codex approval prompt")
 	fmt.Println("  output <id>             Get the last response from a session")
 	fmt.Println("  children [id]           List sub-sessions with status + last completion")

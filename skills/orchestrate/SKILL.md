@@ -120,11 +120,11 @@ a prompt body, so no template ever enters your context (see "Rendering child
 prompts"). Copy them all from the agent-deck checkout this skill file lives in
 (you know that path: you read this file).
 
-**Nothing in this run ever asks the user to type a slash command.** You cannot
-issue one — `/compact` and friends are typed by a human into the composer, and
-a conductor that ends its turn asking for one stalls the whole run until
-somebody notices. Every remedy in this skill is a shell command you run
-yourself, unattended.
+**Nothing in this run ever asks the user to type a slash command.** A
+conductor that ends its turn asking for `/compact` stalls the entire run until
+somebody notices, and nobody is watching. Every remedy in this skill is a
+shell command you run yourself, unattended — including compaction, which is
+`agent-deck session compact` (see "Thresholds"), not a `/compact` you ask for.
 
 Also read the target repo's `CLAUDE.md` and `CONTRIBUTING.md` now, for the
 one thing this skill cannot know: how work is expected to *land* there. If it
@@ -944,15 +944,34 @@ lists, baselines, pending questions, PR urls, HEAD shas — goes into
 `$RUN_DIR` the moment you learn it, so the run survives you losing context at
 any point. Then:
 
-- **Soft (~200k):** flush, in the turn the banner appears, without asking
-  anyone. Everything not yet written down goes into `$RUN_DIR/manifest.md`,
-  and `$RUN_DIR/conductor-handoff.md` gets brought up to date: live tasks and
-  the stage each reached, open questions, anything in flight. That file is not
-  paperwork for later — it is the precondition `rotate-conductor.sh` checks,
-  so keeping it current is what makes the hard threshold a single command
-  instead of a scramble. `poll.sh` repeats the banner every beat, and it does
-  not stop because you noticed it once. **You do not pause here.** Flush, then
-  carry straight on with the run.
+- **Soft (~200k):** flush, then compact yourself — both in the turn the banner
+  appears, without asking anyone.
+
+  First, everything not yet written down goes into `$RUN_DIR/manifest.md`, and
+  `$RUN_DIR/conductor-handoff.md` gets brought up to date: live tasks and the
+  stage each reached, open questions, anything in flight. Compaction is lossy
+  and you are about to run one, so anything still only in your head is about
+  to stop existing. That file is also the precondition `rotate-conductor.sh`
+  checks, which is what makes the hard threshold a single command rather than
+  a scramble.
+
+  Then, as the last thing you do in the turn:
+
+  ```bash
+  agent-deck session compact \
+    --instructions "Keep: the run dir path, every live task and its stage, open questions, PR urls, HEAD shas." \
+    --resume 'bash "$RUN_DIR/poll.sh"'
+  ```
+
+  With no id it compacts *you*. It returns immediately — a self-compact runs
+  once your turn ends, so it reports `queued`, never `verified`, and that is
+  correct rather than a failure. `--resume` is delivered by a detached watcher
+  after the compaction is recorded, which is why you must not send yourself
+  follow-up work by hand: **a message arriving while a compaction starts
+  cancels it**, and you would carry on at full context with nothing reclaimed.
+
+  `poll.sh` repeats the banner every beat and does not stop because you
+  noticed it once. **You do not pause here and you do not ask the user.**
 - **Hard (~250k):** rotate, unattended:
 
   ```bash

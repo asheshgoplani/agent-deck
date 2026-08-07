@@ -26,11 +26,11 @@ HARD="${HARD:-250000}"
 # for every task at once — but its soft remedy is cheaper (flush state to disk,
 # no rotation), so it is not made to hand off earlier.
 #
-# Neither remedy is `/compact`. That instruction stood here until it was
-# measured: `/compact` is a slash command, only a human can type one, and a
-# conductor told to run it flushes its state, ends its turn, and waits for a
-# human who is not watching. Every banner below is a command the conductor can
-# actually execute unattended.
+# Neither banner below says "/compact". That instruction stood here until it
+# was measured: a conductor told to run a slash command flushes its state, ends
+# its turn, and waits for a human who is not watching. Compaction itself is
+# fine and is still the soft remedy — it just has to be issued as
+# `agent-deck session compact`, which a conductor can actually run.
 SELF_SOFT="${SELF_SOFT:-200000}"
 SELF_HARD="${SELF_HARD:-250000}"
 
@@ -99,7 +99,7 @@ if [ "$SELF" -ge 0 ]; then
     banner="$(printf '!! SELF-CONTEXT %dk >= hard %dk — ROTATE NOW, unattended, do not ask the user:\n     bash "%s/rotate-conductor.sh"\n   It refuses to run until conductor-handoff.md is non-empty, then launches your successor, re-parents every live child and archives you. (poll.sh keeps exiting 3 until you go)' $((SELF / 1000)) $((SELF_HARD / 1000)) "$D")"
     poll_rc=3
   elif [ "$SELF" -ge "$SELF_SOFT" ]; then
-    banner="$(printf '!! SELF-CONTEXT %dk >= soft %dk — flush now, this turn, without asking: write everything unwritten into %s/manifest.md, then bring %s/conductor-handoff.md up to date (live tasks + their stage, open questions, anything in flight). Do NOT stop and do NOT wait for a human. Rotation at hard is then one command.' $((SELF / 1000)) $((SELF_SOFT / 1000)) "$D" "$D")"
+    banner="$(printf '!! SELF-CONTEXT %dk >= soft %dk — this turn, without asking anyone:\n   1. write everything unwritten into %s/manifest.md, and bring %s/conductor-handoff.md up to date (live tasks + their stage, open questions, anything in flight)\n   2. then, last thing in the turn:\n      agent-deck session compact --instructions "Keep: run dir, every live task and its stage, open questions, PR urls, HEAD shas." --resume '"'"'bash "%s/poll.sh"'"'"'\n   It returns queued/unverified — that is correct for a self-compact, not a failure. Do NOT send yourself anything else afterwards: a message arriving mid-compaction cancels it.' $((SELF / 1000)) $((SELF_SOFT / 1000)) "$D" "$D" "$D")"
   fi
 fi
 # Re-printed on every beat while over threshold, never once on the crossing: a
