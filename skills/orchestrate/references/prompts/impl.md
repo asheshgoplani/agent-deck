@@ -4,6 +4,12 @@ Task: {{TASK_TITLE}}
 
 {{SPEC_BLOCK}}
 
+That file lives outside this worktree, in the root checkout, and is
+git-ignored on purpose: it is scaffolding for this run, not part of the
+change. Read it there, append your `## Record (append-only)` entries there,
+and never copy it into this worktree or `git add` it. Your diff contains code
+and tests — no plan, spec, or task document.
+
 Work strictly in this worktree on the current branch. Do, in order:
 1. Install dependencies from the frozen lockfile (never regenerate it).
 2. Run the FULL test suite once BEFORE changing anything and record the
@@ -26,7 +32,8 @@ Work strictly in this worktree on the current branch. Do, in order:
    directory in any commit message, and take a screenshot of the final
    working state. Describe in words what each screenshot shows — the
    conductor supervising you never opens them.
-7. Commit your work in clear logical commits. Do NOT push yet.
+7. Commit your work in clear logical commits — stage paths explicitly, never
+   `git add -A`. Do NOT push yet.
 
 Keep your context lean: delegate broad exploration (find-the-code sweeps,
 "where is X handled" questions) to subagents so file dumps land outside your

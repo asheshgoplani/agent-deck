@@ -1,6 +1,6 @@
 ---
 name: brainstorming
-description: Collaborative design and brainstorming before any code is written — explores project context, asks one clarifying question at a time, offers 2–3 approaches with trade-offs, and writes an approved, committed design document. Use before building a feature, adding functionality, or changing behavior, and whenever the user says "let's build", "I want to add", "how should we do X", or asks for a design or spec. Hard-gates implementation until the design is approved.
+description: Collaborative design and brainstorming before any code is written — explores project context, asks one clarifying question at a time, offers 2–3 approaches with trade-offs, and writes an approved design document to `.agent-deck/designs/` in the root worktree (git-ignored, never committed). Use before building a feature, adding functionality, or changing behavior, and whenever the user says "let's build", "I want to add", "how should we do X", or asks for a design or spec. Hard-gates implementation until the design is approved.
 metadata:
   compatibility: "claude, opencode"
 ---
@@ -69,7 +69,7 @@ justify each one.
 
 Present motivation, decisions, architecture, interfaces, and out-of-scope
 together in a skimmable document. Ask once: `Approve this design?` A single
-explicit approval covers all of those sections and the committed document.
+explicit approval covers all of those sections and the written document.
 
 Do not ask for per-section approvals. Ask again only if later self-review
 materially changes the approved scope: user-visible behavior, public
@@ -79,38 +79,57 @@ another approval.
 
 ## 6. Write the spec
 
-**Location:** honor the repo's visible convention — look for a directory
-that already contains design docs (`docs/plans/`, `docs/specs/`,
-`docs/design/`, `docs/rfcs/`) and use it. Only when none exists, default to
-`docs/plans/YYYY-MM-DD-<topic>-design.md`. Before writing, check the exact
-candidate path with `git check-ignore -q <spec-path>`: exit 0 means choose the
-next conventional directory; exit 1 means the candidate is tracked. Never
-write first and move the document later.
-
-**Always committed, and verified committed.** A spec written into an
-ignored directory looks committed and is invisible to every downstream
-session. The check, verbatim:
+**Location: `.agent-deck/designs/` in the root worktree, git-ignored, never
+committed.** A design doc is scaffolding for the work, not a deliverable — it
+must not land in a branch, a diff, or a PR. It goes in the repo's **main
+checkout** (not a worktree you may be sitting in), in the one directory every
+agent skill here writes to, so `orchestrate` finds its plans, prompts and
+screenshots for the same work in the same place. Resolve the path and make the
+directory ignored *before* writing:
 
 ```bash
-git check-ignore -v <spec-path>          # must find nothing (exit 1)
-git add <spec-path> && git commit -m "docs(plans): <topic> design"
-git log -1 --oneline -- <spec-path>      # must print a commit
+ROOT_WT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
+SPEC_PATH="$ROOT_WT/.agent-deck/designs/YYYY-MM-DD-<topic>-design.md"
+git -C "$ROOT_WT" check-ignore -q "$ROOT_WT/.agent-deck/.probe" || \
+  printf '.agent-deck/\n' >> "$(git -C "$ROOT_WT" rev-parse --git-common-dir)/info/exclude"
+git -C "$ROOT_WT" check-ignore -q "$ROOT_WT/.agent-deck/.probe"  # exit 0 before you write
+mkdir -p "$(dirname "$SPEC_PATH")"
 ```
 
-If `check-ignore` matches, choose a tracked directory before creating the
-file — do not force-add it into an ignored tree.
+Probe with a path *inside* the directory, not the directory: asked about a
+directory that has tracked files under it, `check-ignore` answers "not
+ignored" even when the pattern matches, and you would add a duplicate rule and
+still fail the gate. `.probe` need not exist.
 
-## 7. Spec self-review and commit
+`.git/info/exclude` is untracked and applies to every worktree of the repo, so
+this costs the user no commit.
 
-Before committing, read the document for placeholders (`TBD`, "etc.",
+A repo whose convention is a *tracked* design-doc directory (`docs/plans/`,
+`docs/rfcs/`) is the one case to raise: say you are writing to
+`.agent-deck/designs/` instead and why, and take the user's answer.
+
+**Never `git add` the spec, and never verify it by looking for a commit.** Its
+absolute path is what makes it findable — downstream sessions in other
+worktrees read `$SPEC_PATH` directly, which works regardless of what any
+branch contains. Verify that instead:
+
+```bash
+test -f "$SPEC_PATH" && git -C "$ROOT_WT" status --porcelain "$SPEC_PATH"
+```
+
+The file must exist and `status` must print nothing (ignored ⇒ invisible).
+
+## 7. Spec self-review
+
+Once written, read the document for placeholders (`TBD`, "etc.",
 "handle errors"), internal contradictions, scope creep past what was
 approved, and ambiguity a fresh reader would resolve differently than you
-meant. Make non-material fixes and commit. The prior design approval covers
-that committed document; do not ask for a second document-review approval.
+meant. Make non-material fixes in place. The prior design approval covers
+that document; do not ask for a second document-review approval.
 
 If self-review makes a material change to scope, user-visible behavior,
 interfaces, data handling, or an explicitly excluded item, stop and obtain
-one approval for that change before committing.
+one approval for that change before handing the spec on.
 
 ## 8. Tiered exit
 
@@ -118,8 +137,9 @@ After approval, size the work and take exactly one exit:
 
 - **Orchestrated** — several independent tasks, non-obvious decomposition, a
   dedicated PR pipeline, or separate executor/reviewer sessions are needed →
-  hand the committed design doc to `orchestrate`. Do not write the plan
-  yourself: orchestrate's planner child writes it against the codebase.
+  hand `$SPEC_PATH` (the absolute path, not the contents) to `orchestrate`. Do
+  not write the plan yourself: orchestrate's planner child writes it against
+  the codebase.
 - **Focused** — an obvious, low-risk change, even across a few closely related
   files → implement in-session under `tdd`, then `verify` before claiming
   done. Multi-file alone does not require orchestration.
@@ -132,6 +152,7 @@ After approval, size the work and take exactly one exit:
 |---|---|
 | "This is obviously what they want" | Confirm it anyway — the gate exists for the 20% of cases where it isn't. |
 | "I'll design as I code" | That's implementation wearing a design costume. Stop and present first. |
-| "The spec dir is gitignored, I'll just keep it in the chat" | Chat isn't discoverable by the next session. Move it to a tracked dir. |
+| "The spec dir is gitignored, I'll just keep it in the chat" | Chat isn't discoverable by the next session. Ignored is the point — write the file and hand on its absolute path. |
+| "Downstream sessions need it committed to see it" | They read it by absolute path from the root worktree. Committing it only puts scaffolding in someone's PR. |
 | "I'll ask all my questions at once to save time" | One merged answer covers two of five questions; the rest go unasked. |
 | "They said build it, so approval is implied" | "Build it" approved the idea, not the design. Present the complete design and get one explicit sign-off. |

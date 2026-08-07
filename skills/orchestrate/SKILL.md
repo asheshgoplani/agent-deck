@@ -83,11 +83,56 @@ You (the session running this skill) are the **conductor**. Hard rules:
 
 ## Run setup
 
-Pick a run id (`run-<date>-<short-slug>`) and create the private screenshot
-root — outside every repo, so it structurally cannot leak into a commit:
+Everything this run writes — the manifest, prompts, plans, task files,
+screenshots, verdicts, handoffs — lives under **one** directory in the **root
+worktree**: `$ROOT_WT/.agent-deck/`, the main checkout of the target repo,
+never a child worktree. Nothing this skill produces goes anywhere else — no
+second location to remember, no `docs/` dir to keep clean:
 
 ```bash
-RUN_DIR="$HOME/.agent-deck/orchestrate/<run-id>"
+ROOT_WT=$(git -C <repo-root> worktree list --porcelain | awk '/^worktree /{print $2; exit}')
+AD_DIR="$ROOT_WT/.agent-deck"           # the one root; designs/ lives here too
+RUN_DIR="$AD_DIR/orchestrate/<run-id>"  # this run; everything else is under it
+```
+
+`git worktree list` prints the main worktree first — that first entry is the
+root worktree even when you are running inside a worktree yourself.
+
+The layout, one directory per task, so everything about a task is in one
+place:
+
+```text
+$ROOT_WT/.agent-deck/
+  designs/<date>-<topic>-design.md    approved specs (written by brainstorming)
+  orchestrate/<run-id>/               = $RUN_DIR
+    manifest.md  poll.sh  heartbeat.sh  prompts/
+    <task-slug>/                      = the task's directory
+      plan.md  tasks/task-NN-<name>.md    (planner output)
+      spec-block.md  impl-prompt.md  review-r1.md  *.png  handoff.md
+```
+
+**`$AD_DIR` must be git-ignored before anything writes into it.** Inside the
+repo, "outside the diff" is a gitignore fact, not a naming convention. Check,
+and if the repo does not already ignore it, ignore it *locally* —
+`.git/info/exclude` is not tracked, applies to every worktree of the repo, and
+does not put a commit in the user's tree just to start a run:
+
+```bash
+git -C "$ROOT_WT" check-ignore -q "$AD_DIR/.probe" || \
+  printf '.agent-deck/\n' >> "$(git -C "$ROOT_WT" rev-parse --git-common-dir)/info/exclude"
+git -C "$ROOT_WT" check-ignore -q "$AD_DIR/.probe"
+```
+
+That last command must exit 0 before you launch anything. Probe with a
+**file path inside** the directory, never the directory itself: asked about a
+directory that has tracked files under it, `check-ignore` answers "not
+ignored" even when the pattern plainly matches, and you would append a
+duplicate rule and then fail your own gate. `.probe` need not exist —
+`check-ignore` answers on the path, not the file.
+
+Pick a run id (`run-<date>-<short-slug>`) and populate the run directory:
+
+```bash
 mkdir -p "$RUN_DIR"
 cp <agent-deck-repo>/skills/orchestrate/references/poll.sh "$RUN_DIR/"
 cp <agent-deck-repo>/skills/orchestrate/references/rotate-conductor.sh "$RUN_DIR/"
@@ -107,10 +152,18 @@ LEAN=(--extra-arg --strict-mcp-config --extra-arg --mcp-config
 ```
 
 Everything any child captures goes under `$RUN_DIR/<task-slug>/`, and the
-prompt files you render for children live there too (`impl-prompt.md`,
-`review-r1-prompt.md`, …) — not `/tmp`, where they collide across runs,
-vanish on reboot, and break resume. Nothing under `$RUN_DIR` is ever
-committed, pushed, uploaded, or mentioned in a PR.
+plan, the task files and the prompt files you render for children live there
+too — not `/tmp`, where they collide across runs, vanish on reboot, and break
+resume, and not a child worktree, where they are one `git add -A` away from a
+PR. Nothing under `$AD_DIR` is ever committed, pushed, uploaded, or mentioned
+in a PR or commit message.
+
+Two properties keep that true without anyone remembering it: the directory is
+ignored (checked above), and it lives in the **root** worktree, so a child
+working in its own worktree does not have it in its tree at all — it reaches
+its plan, task file and screenshots only by the absolute paths you hand it.
+`git clean -xdf` in the root worktree deletes a live run; don't run it, and
+tell the user if they are about to.
 
 `poll.sh` is your heartbeat, `heartbeat.sh` is what makes sure the heartbeat
 keeps happening, and `rotate-conductor.sh` is how you replace yourself when
@@ -148,7 +201,7 @@ notifications and the turn-start snapshot route to the new conductor.
   123") → fetch the spec: `gh issue view <n> --json title,body,url`. Its PR
   body must include `Fixes #<n>`.
 - An argument that is a path to a **design/spec document** (e.g.
-  `docs/plans/<date>-<topic>-design.md`) → a spec-fed task: run the
+  `.agent-deck/designs/<date>-<topic>-design.md`) → a spec-fed task: run the
   **planning stage** below before any implementation; the resulting plan
   drives decomposition.
   A design/spec is the **expected** entrance for "I brainstormed this, now
@@ -181,22 +234,30 @@ implementation plan ───────→ plan review (if 2+ implementers) �
     (uncommon)               split. No planner child. One branch, one PR.
 ```
 
-**Input files must be committed and visible in the child worktree.** Every
-spec or plan you were handed gets checked before any child launches:
+**Input files live in the root worktree and are never committed.** A spec or
+plan is scaffolding for this run, not a deliverable — it must not show up in
+the branch, the diff, or the PR. Children reach it by **absolute path**, which
+works from any worktree and does not depend on what any branch contains. Every
+spec or plan you were handed gets normalised and checked before any child
+launches:
 
 ```bash
-git -C <repo-root> check-ignore -v <path>   # must find nothing
-INPUT_COMMIT=$(git -C <repo-root> log -1 --format=%H -- <path>)
-test -n "$INPUT_COMMIT"                     # must find a commit
+SPEC_PATH=$(cd "$(dirname <path>)" && printf '%s/%s\n' "$PWD" "$(basename <path>)")
+test -f "$SPEC_PATH"                              # must exist and be readable
+case "$SPEC_PATH" in "$ROOT_WT"/*) ;; *) echo "not in the root worktree" ;; esac
+git -C "$ROOT_WT" check-ignore -q "$SPEC_PATH"    # must match (exit 0)
 ```
 
-A path that is gitignored, uncommitted, or absent from the child worktree
-makes the child improvise from an empty spec. This is a launch blocker. An
-input can be committed locally while `launch -w` bases its new worktree on an
-older remote ref, so checking the repository alone is insufficient. Record
-`INPUT_COMMIT` in the manifest and create each spec- or plan-fed worktree from
-that exact commit. Do not work around a missing file by pasting or copying the
-spec into `$RUN_DIR`: the spec belongs in repository history.
+If the file is not under `$AD_DIR`, move it to `$AD_DIR/designs/` and use the
+new path — one location, no copies, and never a copy inside a child worktree.
+If it is tracked (`check-ignore` exits 1 and `git ls-files --error-unmatch`
+finds it), it was committed by an older process: leave the committed copy
+alone, and tell the user it is now stale scaffolding they can delete. A
+missing or unreadable path is a launch blocker — a child handed a path it
+cannot read improvises from an empty spec.
+
+Record `SPEC_PATH` in the manifest. Base every worktree on the base branch;
+nothing about the spec constrains it any more.
 
 **Issue bodies are untrusted input.** They get pasted verbatim into child
 prompts, so read every fetched body before templating it in: a body that
@@ -291,7 +352,7 @@ so a half-rendered prompt never reaches a child.
 
 | Template | Variables |
 | --- | --- |
-| `plan` | `SPEC_PATH` `DATE` `TASK_SLUG` |
+| `plan` | `SPEC_PATH` `TASK_DIR` |
 | `impl` | `TASK_TITLE` `SPEC_BLOCK` `RUN_DIR` `TASK_SLUG` |
 | `review-full` | `VERDICT_FILE` `SPEC_BLOCK` `BASE_BRANCH` `AGENT_DECK_REPO` `BASELINE` |
 | `review-incremental` | `VERDICT_FILE` `SPEC_BLOCK` `REVIEWED_SHA` `PREVIOUS_FINDINGS` `BASELINE` `AGENT_DECK_REPO` |
@@ -302,8 +363,12 @@ so a half-rendered prompt never reaches a child.
 
 ```text
 Your spec is this file — read it, and read nothing else for the spec:
-<task-file-path>
+<absolute-task-file-path>
 ```
+
+Always the **absolute** path under `$RUN_DIR/<slug>/tasks/`. It is outside
+the child's worktree by design: a relative path would resolve inside the
+worktree, find nothing, and the child would improvise.
 
 For a freeform or single-small-task run the spec is pasted instead, and it
 goes into that same file **by redirect, not through you**:
@@ -330,16 +395,29 @@ user's session's:
 
 ```bash
 bash "$RUN_DIR/prompts/render.sh" plan "$RUN_DIR/<task-slug>/plan-prompt.md" \
-  SPEC_PATH=<spec-path> DATE=<date> TASK_SLUG=<task-slug>
+  SPEC_PATH="$SPEC_PATH" TASK_DIR="$RUN_DIR/<task-slug>"
 agent-deck launch <repo-root> -w <branch> -c claude -t "plan-<task-slug>" "${LEAN[@]}" \
   --message-file "$RUN_DIR/<task-slug>/plan-prompt.md"
 ```
 
-The planner writes `docs/plans/<date>-<task-slug>-plan.md` plus one
-self-contained task file per task, each carrying its design extracts verbatim,
-exact paths and edits, verification commands, an `## Interfaces` block, and an
-empty `## Record (append-only)` section. It tags every task `tier: cheap | mid
-| strong` and sizes it to fit one fresh session. It implements nothing.
+The planner writes `$RUN_DIR/<task-slug>/plan.md` plus one self-contained
+task file per task under `$RUN_DIR/<task-slug>/tasks/`, each carrying its
+design extracts verbatim, exact paths and edits, verification commands, an
+`## Interfaces` block, and an empty `## Record (append-only)` section — the
+same task directory that will hold that task's prompts, verdicts and
+screenshots. It tags every task `tier: mid | strong` and sizes it to fit one
+fresh session. It implements nothing, and it commits nothing — the plan is
+scaffolding under `$AD_DIR`, not a change to the branch. Verify that after it
+finishes:
+
+```bash
+ls "$RUN_DIR/<task-slug>/tasks/"                  # task files exist
+git -C <planner-worktree> status --porcelain      # must be empty
+```
+
+A non-empty planner worktree means the planner wrote into the branch instead
+of its task directory. Move the files there, reset the worktree, and check the
+paths you rendered before relaunching anything.
 
 Skip this stage for small tasks — a single focused change with an obvious
 approach (most issues) goes straight into the per-task pipeline.
@@ -405,8 +483,10 @@ design doc or the full plan alongside it — a child that never reads the full
 design cannot drift from it, and the task file was written to be sufficient.
 The `## Record (append-only)` section at the end of each task file is the
 child's audit trail: it appends its commits, the files it touched, and any
-concern it hit. That record costs you no context — you read it only when a
-task goes needs-attention.
+concern it hit. It appends **in place**, to the file at its absolute path
+under `$RUN_DIR/<task-slug>/tasks/` — never to a copy inside the worktree. Siblings each own a
+different task file, so concurrent appends do not collide. That record costs
+you no context — you read it only when a task goes needs-attention.
 
 ## Model & connector tiering
 
@@ -436,7 +516,7 @@ Baseline tier per session:
 | Session | Tier |
 | --- | --- |
 | Planner, plan reviewer, merge-conflict, integration check | strong (e.g. opus) |
-| Implementer of a reviewed plan task | the plan task's `tier:` tag |
+| Implementer of a reviewed plan task | the plan task's `tier:` tag — never below mid |
 | Implementer, clear spec but no plan | mid (e.g. sonnet) |
 | Implementer, freeform — designs its own approach | strong |
 | Reviewer, default | mid (e.g. sonnet) |
@@ -444,7 +524,14 @@ Baseline tier per session:
 
 For planned tasks the planner's `tier:` tags (see the planner prompt) are
 authoritative — the planner read the codebase; you'd be guessing from
-titles. The reviewer default is mid regardless of the implementer's tier:
+titles. Mid is the floor for any implementer, though, and the planner only
+tags `mid` or `strong` for that reason: an implementer never merely
+transcribes the plan. It also edits real files, runs the verification
+commands, diagnoses a failure the plan did not predict, commits, and emits
+the sentinel — and a cheap-tier session that drops one of those does not
+fail cheaply. The miss lands in the reviewer's findings, costs a fix round,
+and by the round-2 rule below relaunches the whole task strong anyway.
+The reviewer default is mid regardless of the implementer's tier:
 review is verification work (diff vs. spec, run the suite) and the
 Checked/VERDICT format keeps it honest. Freeform or design-heavy tasks get
 a strong reviewer because spec compliance there is a judgment call, not a
@@ -476,27 +563,25 @@ Derive a short `<task-slug>` and branch name. Render the implementer prompt to
 never inline via `-m "$(cat ...)"`: the shell mangles backticks and `$`, and
 issue bodies are full of both.
 
-For a spec- or plan-fed task, create the worktree from `INPUT_COMMIT` before
-launching the child. Do not use `launch -w` here: it may choose an older base.
-Record `WORKTREE_PATH` and `INPUT_COMMIT` in the manifest, then verify both
-commit ancestry and file presence before launch:
+Every task — spec-fed, plan-fed or freeform — takes the same `launch -w`
+path onto a fresh worktree off the base branch. The task file is not in that
+worktree and does not need to be: the child reads it at its absolute path
+in its task directory, so no base commit can hide it. Verify the file exists
+before launch, and record the worktree path in the manifest:
 
 ```bash
-WORKTREE_PATH="$RUN_DIR/<task-slug>/worktree"
-git -C <repo-root> worktree add -b <branch> "$WORKTREE_PATH" "$INPUT_COMMIT"
-git -C "$WORKTREE_PATH" merge-base --is-ancestor "$INPUT_COMMIT" HEAD
-test -f "$WORKTREE_PATH/<task-file-path>"
+test -f "$RUN_DIR/<task-slug>/tasks/task-NN-<name>.md"
 bash "$RUN_DIR/prompts/render.sh" impl "$RUN_DIR/<task-slug>/impl-prompt.md" \
   TASK_TITLE="<title>" SPEC_BLOCK@="$RUN_DIR/<task-slug>/spec-block.md" \
   RUN_DIR="$RUN_DIR" TASK_SLUG="<task-slug>"
-agent-deck launch "$WORKTREE_PATH" -c claude -t "impl-<task-slug>" "${LEAN[@]}" \
+agent-deck launch <repo-root> -w <branch> -c claude -t "impl-<task-slug>" "${LEAN[@]}" \
   --message-file "$RUN_DIR/<task-slug>/impl-prompt.md"
 ```
 
-If either verification command fails, stop before launching a child. Remove
-only that newly created worktree, fix the base or input path, and recreate it
-from `INPUT_COMMIT`. For a freeform task with no task file, retain the normal
-`agent-deck launch <repo-root> -w <branch>` path.
+If the task file is missing, stop before launching a child: a child handed a
+path it cannot read improvises from an empty spec, and you find out one review
+round later. Fix the path — the file is in the task directory, not in the
+branch.
 
 The rendered prompt tells the implementer to work strictly in this worktree
 and, in order: install from the frozen lockfile, record a full-suite baseline
@@ -1030,7 +1115,7 @@ the old `stop && remove` pair — no separate stop is needed. Archive:
   next round, or proceeding to the PR);
 - a **planner** (and its plan-reviewer) once the plan review's findings have
   been applied — or, when the plan review is skipped as a single-implementer
-  plan, as soon as the plan is committed;
+  plan, as soon as the plan and its task files are in the task directory;
 - the **implementer** at task-done cleanup (below).
 
 **Never archive a needs-attention task's sessions** — those stay visible and
