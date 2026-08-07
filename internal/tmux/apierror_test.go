@@ -50,6 +50,31 @@ func TestClassifySubstate_ProseAboutTransportBanner_NotAPIError(t *testing.T) {
 	}
 }
 
+// A bare transport-code token is NOT a banner. Under mode="resume" a false
+// api-error injects a continuation prompt into a session that was never wedged,
+// so the discriminator is the rendered wording plus the parenthesised code —
+// never a token that ordinary output, test failures or SOURCE CODE can carry.
+func TestClassifySubstate_BareTransportTokens_NotAPIError(t *testing.T) {
+	tail := "\n\n╭──────────────────────────────────────────╮\n│ ❯                                        │\n╰──────────────────────────────────────────╯"
+	cases := []struct {
+		name string
+		line string
+	}{
+		{"curl output", `curl: (7) Failed to connect: ECONNREFUSED`},
+		{"go test failure", `api_test.go:41: dial tcp 127.0.0.1:8080: connect: ECONNREFUSED`},
+		{"go source line", `if errors.Is(err, syscall.ECONNREFUSED) {`},
+		{"assistant prose with · separator", `⏺ Fixed the ENOTFOUND lookup · all tests pass`},
+		{"assistant prose quoting the banner with a · separator", `⏺ worker-3 showed Unable to connect to API · I restarted it`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := claudeDetector().ClassifySubstate(tc.line + tail); got == SubstateAPIError {
+				t.Fatalf("%q must not classify api-error, got %q", tc.line, got)
+			}
+		})
+	}
+}
+
 // §6: a recovered pane carrying BOTH the banner and a live spinner classifies
 // running. A transport error is recoverable, so the spinner is the truth.
 func TestClassifySubstate_TransportBannerWithLiveSpinner_IsRunning(t *testing.T) {

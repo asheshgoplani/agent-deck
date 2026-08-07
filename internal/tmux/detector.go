@@ -465,13 +465,16 @@ func scanClaudeBannerLines(content string, patterns, structural []string) bool {
 //
 // Deliberately a SEPARATE set from claudeErrorBannerSubstrings: a 401 is
 // terminal and a transport error is not, so the two earn different substates and
-// different recovery. Anchored on the rendered wording and the Node/undici error
-// codes, never on a bare token like "API Error".
+// different recovery. Anchored on the rendered WORDING only, never on a bare
+// error-code token: "ENOTFOUND" / "ECONNREFUSED" / "ConnectionRefused" appear in
+// curl output, `go test` failures and Go source lines
+// (`if errors.Is(err, syscall.ECONNREFUSED) {`), none of which are banners. A
+// standalone line matches on this substring alone, so a token here would
+// classify any such line api-error — and under mode="resume" that injects a
+// continuation prompt into a session that was never wedged. The codes stay, but
+// only PARENTHESISED, as the structural co-signal below.
 var apiErrorBannerSubstrings = []string{
 	"Unable to connect to API",
-	"ENOTFOUND",
-	"ECONNREFUSED",
-	"ConnectionRefused",
 }
 
 // apiErrorBannerStructuralMarkers are the co-signals required on an
@@ -482,9 +485,13 @@ var apiErrorBannerSubstrings = []string{
 // assistant-line guard would skip it and the substate could never fire. The
 // PARENTHESISED transport code is the structural shape prose does not carry —
 // a conductor writing "the worker showed API Error: Unable to connect to API"
-// does not reproduce it — so it joins the set for this scan only.
+// does not reproduce it — so it is the discriminator for this scan.
+//
+// " · " is deliberately ABSENT even though the shared set carries it: Claude
+// joins ordinary prose with the same separator ("⏺ worker-3 showed Unable to
+// connect to API · I restarted it"), so it would readmit exactly the assistant
+// -line prose the guard exists to reject.
 var apiErrorBannerStructuralMarkers = []string{
-	" · ",
 	`{"type":"error"`,
 	"(ENOTFOUND)",
 	"(ECONNREFUSED)",
