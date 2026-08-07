@@ -139,3 +139,64 @@ func TestClearQuarantine(t *testing.T) {
 		t.Fatal("ClearQuarantine must release the breaker")
 	}
 }
+
+// The two new stuck classes are registered with the intended dwell windows.
+func TestStuckSubstates_APIErrorAndUsageLimit(t *testing.T) {
+	if !IsStuckSubstate(tmux.SubstateAPIError) {
+		t.Fatal("api-error must be a self-heal-actionable stuck class")
+	}
+	if !IsStuckSubstate(tmux.SubstateUsageLimit) {
+		t.Fatal("usage-limit must be a self-heal-actionable stuck class")
+	}
+	if d, _ := DwellThreshold(tmux.SubstateAPIError); d != 60*time.Second {
+		t.Fatalf("api-error dwell: want 60s, got %s", d)
+	}
+	if d, ok := DwellThreshold(tmux.SubstateUsageLimit); !ok || d != 0 {
+		t.Fatalf("usage-limit dwell: want 0/ok, got %s/%v", d, ok)
+	}
+}
+
+// Both new classes resolve to the one executable action.
+func TestWouldHaveAction_ResumeClasses(t *testing.T) {
+	for _, s := range []tmux.Substate{tmux.SubstateAPIError, tmux.SubstateUsageLimit} {
+		if got := WouldHaveAction(s); got != ActionResume {
+			t.Fatalf("%q: want %q, got %q", s, ActionResume, got)
+		}
+	}
+}
+
+// ActionResend is untouched: it stays the idle-at-empty-prompt would_have and is
+// never produced for the resume classes.
+func TestWouldHaveAction_ResendUnchanged(t *testing.T) {
+	if got := WouldHaveAction(tmux.SubstateIdleAtEmptyPrompt); got != ActionResend {
+		t.Fatalf("idle-at-empty-prompt must still map to %q, got %q", ActionResend, got)
+	}
+}
+
+// §6: caps still fire ahead of the action for a resume-class candidate. The
+// per-session window is 2 in 6h for every non-auth class.
+func TestGate_PerSessionCap_AppliesToAPIError(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	p := NewPolicyMachine(DefaultCaps())
+	c := Candidate{SessionID: "s1", Substate: tmux.SubstateAPIError}
+	for i := 0; i < 2; i++ {
+		if d, _ := p.Gate(c, now); d != DecisionAct {
+			t.Fatalf("attempt %d should be allowed, got %q", i, d)
+		}
+		p.RecordAttempt(c, now)
+	}
+	if d, _ := p.Gate(c, now); d != DecisionCapHit {
+		t.Fatalf("third attempt in the 6h window must be %q, got %q", DecisionCapHit, d)
+	}
+}
+
+// Flicker quarantine still fires ahead of the action.
+func TestGate_Flicker_BlocksAPIError(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	p := NewPolicyMachine(DefaultCaps())
+	p.SetFlickering("s1", true)
+	c := Candidate{SessionID: "s1", Substate: tmux.SubstateAPIError}
+	if d, st := p.Gate(c, now); d != DecisionBreakerOpen || !st.BreakerOpen {
+		t.Fatalf("a flapping session must be quarantine-equivalent, got %q/%+v", d, st)
+	}
+}

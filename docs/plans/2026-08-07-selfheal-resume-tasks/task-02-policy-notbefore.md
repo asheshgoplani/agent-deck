@@ -481,3 +481,18 @@ own: ModeResume is defined but the engine chokepoint is a separate change."
 - `internal/selfheal/candidate.go`: `Evaluate` returns `PredicateResult{Decision: DecisionSkipNotBefore}` when `!c.NotBefore.IsZero() && now.Before(c.NotBefore)`
 
 ## Record (append-only)
+
+### 2026-08-07 — implemented
+
+- Files touched: `internal/selfheal/selfheal.go`, `internal/selfheal/candidate.go`,
+  `internal/selfheal/predicate_test.go`, `internal/selfheal/policy_test.go`.
+- Implemented exactly as written; no deviations.
+- Precondition checked: `grep -n 'SubstateAPIError' internal/tmux/substate.go` →
+  lines 41/61/156 (task 01 landed as `d07176c4`).
+- Verification: `gofmt -l internal/selfheal/` → empty. `go build ./...` → exit 0.
+  `go vet ./internal/selfheal/` → exit 0.
+  `go test ./internal/selfheal/ -count=1 -v` → EXIT=0, `ok`, 48 `--- PASS`, 0 FAIL;
+  sentinel `TestEvaluate_NotBeforeInFuture_Skips` PASS.
+  `go test ./internal/selfheal/ -run 'NotBefore|APIError|UsageLimit|Resume|Resend'
+  -count=1 -v` → all 12 new tests PASS, `ok`.
+- No concerns.

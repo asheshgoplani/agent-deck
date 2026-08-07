@@ -57,6 +57,24 @@ type Candidate struct {
 	// "we never sent it anything" → a long-waiting deliberate-idle session,
 	// never a candidate.
 	LastSentAt time.Time
+
+	// NotBefore blocks action until a known-future moment. Zero means no gate.
+	//
+	// It exists because a usage limit is not a dwell problem: the window reopens
+	// at a wall-clock time hours away, and no dwell threshold can express "wait
+	// until T". The caller derives it from the rejection's own reset string
+	// (falling back to record + 20m), so the schedule is a hint and the observed
+	// outcome remains the authority — a resume attempted at T either completes
+	// the turn or produces a fresh rejection that rearms the gate.
+	NotBefore time.Time
+
+	// ComposerDraft is true when the target's composer holds text the operator
+	// typed. It is a hard precondition, not a preference: submitting someone
+	// else's text is not a decision a status probe gets to make, and the
+	// `session nudge --force` path is known to CONSUME an operator draft rather
+	// than restore it (2026-08-07, conductor2-testfix, "target release-6.18.1").
+	// The engine downgrades ActionResume to ActionEscalate when this is set.
+	ComposerDraft bool
 }
 
 // dwellAnchor returns the timestamp the dwell window is measured from for this
@@ -64,8 +82,10 @@ type Candidate struct {
 //
 //   - idle_at_empty_prompt is anchored on LastSentAt: it is only stuck if WE sent
 //     something and nothing happened. No send → not a candidate (§1.4).
-//   - every other stuck class is anchored on StatusChangedAt (when the banner /
-//     stuck state was entered).
+//   - every other stuck class — including api-error and usage-limit — is anchored
+//     on StatusChangedAt (when the banner / stuck state was entered). For
+//     api-error that is deliberate: the banner is direct positive evidence, so a
+//     session nobody ever sent anything to is still eligible.
 func (c Candidate) dwellAnchor() (time.Time, bool) {
 	if c.Substate == tmux.SubstateIdleAtEmptyPrompt {
 		if c.LastSentAt.IsZero() {
@@ -141,6 +161,14 @@ func Evaluate(c Candidate, now time.Time) PredicateResult {
 	dwell, ok := c.Dwell(now)
 	if !ok || dwell < threshold {
 		return PredicateResult{Decision: DecisionSkipDwell, Dwell: dwell}
+	}
+	// A scheduled wake: the candidate is genuinely stuck and has dwelled, but the
+	// condition is known not to have cleared yet (a usage window that reopens at
+	// a wall-clock time). Acting early burns one of the two per-session
+	// recoveries in the 6h window on an attempt that cannot succeed, which is
+	// exactly what the schedule exists to prevent.
+	if !c.NotBefore.IsZero() && now.Before(c.NotBefore) {
+		return PredicateResult{Decision: DecisionSkipNotBefore, Dwell: dwell}
 	}
 	return PredicateResult{Candidate: true, Decision: DecisionAct, Dwell: dwell}
 }
