@@ -429,3 +429,176 @@ machine alone.
 - No Go symbols. Nothing depends on this task.
 
 ## Record (append-only)
+
+### 2026-08-07 — implemented
+
+- Files touched: `docs/self-heal.md` (new), `README.md`,
+  `docs/plans/2026-08-07-selfheal-auto-resume-design.md`. `CHANGELOG.md` NOT
+  touched (`git status --porcelain -- CHANGELOG.md` → no output).
+- Precondition: `go build ./...` → `BUILD_OK`;
+  `grep -c 'runSelfHealPass' internal/session/selfheal_pass.go` → 2.
+- Every fact on the doc page was checked against the code before committing:
+  `DefaultCaps()` (`internal/selfheal/policy.go:30`) → `PerSession6h: 2`,
+  `PerSessionAuth401: 1`, `GlobalPerHour: 5`;
+  `SelfHealAuditPath` (`internal/session/userconfig.go:4086-4107`) →
+  `runtimeDataPath("selfheal/selfheal-audit-<profile>.ndjson")`, i.e.
+  `<data-dir>/runtime/selfheal/…` exactly as the page claims; the five `Decision`
+  values named on the page all exist (`selfheal.go:87-93`); the five outcome
+  strings all exist (`engine.go:240,271,296,349,357`).
+- Verification (each run bare, exit status never read through a pipe):
+  `make fmt` → `FMT_EXIT=0`, reformatted nothing —
+  `git status --porcelain` afterwards showed only the three files above.
+  `LC_ALL=C grep -anP "[\x00-\x08\x0b\x0c\x0e-\x1f]" docs/self-heal.md` →
+  `EXIT=1`, no matches.
+  Doc criteria: `DOC_OK`; `global_per_hour`=3, `mode    = "resume"`=1,
+  `held_composer_draft`=1, `restarting the transition daemon`=1,
+  `docs/self-heal.md` in README=1.
+  `go build ./...` → exit 0.
+  Scoped tests: `internal/selfheal` `ok 0.302s`; `internal/tmux -run
+  'APIError|ClassifySubstate|AuthFailure|ErrorBanner'` `ok 0.365s`;
+  `internal/session -run 'SelfHeal|UsageLimit|TranscriptRecord|ComposerHasDraft'`
+  `ok 0.460s`; `cmd/agent-deck -run 'Send|Nudge'` `ok 4.464s` — all exit 0.
+  Shipped-defaults assertion (throwaway `zz_…_test.go`, removed afterwards and
+  confirmed absent from `git status --porcelain`) →
+  `--- PASS: TestShippedSelfHealDefaultsUnchanged`.
+  **Full suite** `go test ./...` run serially with nothing else running →
+  49 `ok`, exactly one failure, `TestIssue1421_CleanStaleSSHSockets`
+  (internal/session) — identical to this session's pre-edit baseline. **Zero new
+  failures.**
+
+#### `make lint` — first run in this branch (11 findings, none in touched files)
+
+`make lint` → `LINT_EXIT=2`, 11 issues: forbidigo 1, gosec 2, govet 1, unused 7.
+All eleven land in files this branch never touched, verified against
+`git diff --name-only 6316e477..HEAD`:
+
+| File | Linter |
+|---|---|
+| `internal/session/codex_plugin_sync.go:113,130` | forbidigo, gosec |
+| `internal/statedb/statedb.go:1028` | gosec |
+| `internal/session/issue1225_wake_nudge_wiring_test.go:217` | govet (the known pre-existing one) |
+| `internal/session/codex_home_skills.go` (6 symbols) | unused |
+| `internal/session/loadout.go:270` | unused |
+
+Per the task file ("a finding in a file this feature touched must be fixed; a
+pre-existing finding elsewhere should be recorded, not fixed here") none were
+fixed. No finding in any of the 26 files this branch touched.
+
+#### `self-check.sh` — 2 FAIL, both explained
+
+`BASE_REF=origin/main` (the default) gives a misleading result: origin/main is
+**163 commits behind local main**, so the diff picks up 230 unrelated files
+(+30800) and someone else's `CHANGELOG.md` edit. That run reported
+`FAIL diff-size` and `FAIL forbidden-paths (CHANGELOG.md is edited)`. Re-run with
+`BASE_REF=6316e477` (this feature's branch point) both disappear:
+`PASS no-changelog`, and diff-size drops to a `WARN` at `+2280/-147`. Confirmed
+directly: `git diff --name-only main...HEAD -- CHANGELOG.md` → 0 files.
+
+Honest-base result: **6 PASS, 2 FAIL, 3 WARN**.
+
+- `FAIL go-vet` — the single pre-existing
+  `issue1225_wake_nudge_wiring_test.go:217 range var c copies lock`, recorded in
+  task 01's Record. Untouched file (0 lines in `git diff 6316e477..HEAD`), and
+  it is the same finding `golangci-lint` reports. Not introduced here, not fixed
+  here. This is why criterion 9's "zero FAIL" is not reachable on this branch.
+- `FAIL sandboxed-tests` — `TestPerf_ColdStart_Help`, `TestPerf_ColdStart_Version`
+  (both on task 01's env-flaky baseline list) and
+  `TestAwaitComposerReadyBestEffort_CappedAtMaxWait`. All three live in files this
+  branch never touched, and **all three PASS standalone**:
+  `go test ./cmd/agent-deck/ -run '…' -count=1 -v` → 3 `--- PASS`, `ok 27.433s`.
+  They are load/timing-sensitive under the sandbox.
+- `WARN revert-check` — expected: the new tests reference symbols that do not
+  exist on the base.
+- `WARN diff-size` +2280/-147 — a seven-task feature landed as one branch;
+  justify in the PR body.
+- `WARN pr-body` — no `pr-body.md` written; the release note for the PR body is
+  in this task file above.
+
+**Self-inflicted false failure, recorded so a successor does not chase it:** an
+earlier run had `TestForbidigo_BansRawOSEnvironInSpawnPath` failing too. Root
+cause was mine, not the code — that test writes a shared fixture
+`internal/session/zz_issue1163_forbidigo_fixture.go`, lints it and deletes it, and
+I had `self-check.sh` running concurrently with `go test ./...`, so the two runs
+clobbered each other's fixture (the failure text is literally
+`no such file or directory` on that fixture). Run serially it passes
+(`--- PASS … (14.66s)`). **Never run `self-check.sh` and `go test ./...` at the
+same time in this repo.**
+
+#### End-to-end against a real daemon
+
+Driven for real, in a sandbox that could not see the operator's installation:
+`HOME` moved to a throwaway dir with every `XDG_*` unset, `AGENTDECK_PROFILE=selfheal_lab`,
+`TMUX_TMPDIR` on a private short path with `[tmux] socket_name = "selfheal-lab"`,
+and `TMUX`/`TMUX_PANE` unset. The operator's 50 live tmux sessions were verified
+untouched afterwards; the lab socket dir was removed and `kill-server` was never
+run.
+
+A real session was created (`agent-deck add … -cmd claude`, so `Tool: claude`),
+its command repointed at a script that paints a transport banner over an empty
+composer, and started. The real binary classified it:
+
+```
+{'id': '5ac625ef-1786130870', 'status': 'waiting', 'substate': 'api-error',
+ 'title': 'wedged-worker', 'tool': 'claude'}
+```
+
+`agent-deck notify-daemon` was then run in the foreground for 110 s with
+`enabled = true, mode = "resume"`. The audit NDJSON records the whole chain:
+
+```
+30 × decision=skip_dwell        stage=resume      (the 60 s dwell accumulating)
+ 1 × decision=skip_confirm      stage=resume      (the two-read confirm)
+ 1 × decision=act               action=resume     outcome=resumed:typed
+10 × decision=skip_healthy      stage=resume      (banner gone after the send)
+```
+
+The acting record in full:
+
+```json
+{"ts":"2026-08-07T19:29:53Z","session_id":"5ac625ef-1786130870","title":"wedged-worker",
+ "group":"lab","profile":"selfheal_lab","substate":"api-error","dwell_seconds":63.183947,
+ "reads":[{"t":"2026-08-07T19:29:51Z"},{"t":"2026-08-07T19:29:53Z"}],
+ "decision":"act","action":"resume","action_params":{"reason":"transport"},
+ "caps":{"session_6h":0,"global_hour":0,"breaker_fails":0,"breaker_open":false},
+ "outcome":"resumed:typed","stage":"resume","would_have":"resume"}
+```
+
+and task 05's executor emitted its own log line, with the send path's verbatim
+verdict:
+
+```
+{"level":"INFO","msg":"selfheal_resume_delivered","component":"notif",
+ "session_id":"5ac625ef-1786130870","title":"wedged-worker","substate":"api-error",
+ "delivery":"typed","send_error":"message reached the pane but submission was never
+ confirmed after 50 checks (issue #1793): …"}
+```
+
+`resumed:typed` rather than `resumed:submitted` is **correct here and is the
+stronger evidence**: the pane is a shell loop, not Claude, so the #1793 submit
+verification rightly refused to certify a turn had begun. The executor reported
+that verdict verbatim with a nil error instead of collapsing it into
+`error:…` — exactly the task 05 contract, demonstrated on a live run rather than
+only in a unit test. Confirming a real `resumed:submitted` needs a genuinely
+wedged Claude, which design §6 assigns to the operator post-merge.
+
+The two non-acting configurations were driven on the same live session:
+
+- **shipped default** (no `[selfheal]` section at all) → `notify-daemon --once`
+  exit 0, audit line count `before=42 after=42`. A pure no-op; no engine built.
+- **`enabled = true` with the default mode** → the newest record carries
+  `stage=observe`, versus `stage=resume` from the run before it. The mode switch
+  is real, and observe still holds no executor.
+
+- Concern 1 (carried forward from task 03, unresolved by design):
+  `grep -c 'ModeObserve' internal/selfheal/engine.go` prints **2**, not the 4 the
+  task-03 file expects. As recorded there, this is caused by task 03's own
+  prescribed replacement text (lowercase prose, plus the chokepoint condition
+  changing to `e.mode != ModeResume || would != ActionResume`). Both load-bearing
+  sites survive — `engine.go:91` and `engine.go:270` — and are pinned by passing
+  tests. No comment was edited to game the count. Task 07's gate does not re-run
+  this grep, so it blocks nothing.
+- Concern 2: acceptance criterion 9 ("no FAIL lines" from `self-check.sh`) is
+  **not met**, and cannot be met by this feature: the `go-vet` FAIL is a
+  pre-existing defect in an untouched test file, and the `sandboxed-tests` FAIL is
+  three untouched tests that pass standalone. Fixing either would mean editing
+  files outside this feature's scope. Both are itemised above with evidence.
