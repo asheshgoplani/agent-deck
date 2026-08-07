@@ -3,7 +3,7 @@
 **Date:** 2026-08-07
 **Status:** implemented.
 **Follows:** `2026-07-27-conductor-context-budget-design.md`, which introduced
-the delta heartbeat and the 120k/200k thresholds. Those landed; conductors
+the delta heartbeat and the conductor thresholds. Those landed; conductors
 still reached 839k. This is why.
 
 ## Evidence
@@ -37,7 +37,7 @@ combined. The conductor was opening screenshots to check its children's work.
 ## Root causes
 
 1. **No self-signal.** `session children --json` reports `context_tokens` for
-   every child and nothing for the parent. The 120k/200k thresholds from the
+   every child and nothing for the parent. The conductor thresholds from the
    previous design were therefore unenforceable: the one session nobody
    downstream rotates was also the one session with no number to watch. This
    is why a documented 200k hard ceiling produced an 839k conductor.
@@ -60,7 +60,7 @@ empty" and skip exactly the rotation the field exists to trigger. The
 suffix/emit decision is `parentContextFields`, tested for both directions.
 
 **2. `poll.sh` reports and shouts.** Every heartbeat line now ends in
-`self=NNNk`. Crossing `SELF_SOFT` (120k) or `SELF_HARD` (200k) prints a banner
+`self=NNNk`. Crossing `SELF_SOFT` (200k) or `SELF_HARD` (250k) prints a banner
 naming the action — flush and `/compact`, or hand off — and **repeats it every
 beat** while over threshold, because a one-time warning scrolls away behind
 four heartbeats. A build with no `parent_context_tokens` prints
@@ -104,9 +104,14 @@ Also corrected while in the table: `session output --tail 40` does not exist
 
 On the baba run's shape: ~108k from here-docs and a large share of the 89k of
 results become renders and file-to-file pipes; the self-signal makes the
-existing 120k/200k rules fire instead of being advisory. On the Adaptam run's
+existing conductor thresholds fire instead of being advisory. On the Adaptam run's
 shape, the image rule removes 275k outright. A conductor that still grows past
-200k now hands off deliberately rather than discovering the ceiling.
+250k now hands off deliberately rather than discovering the ceiling.
+
+Thresholds were set at 200k soft / 250k hard, matching the child thresholds
+rather than sitting under them (2026-08-07, user's call). The conductor's
+soft remedy is the cheap one — `/compact` at an inter-task boundary, no
+rotation and no re-parenting — so an earlier stop bought little.
 
 ## Not done
 

@@ -765,10 +765,10 @@ call, and prints only what moved — a quiet beat costs one line:
 ```
 
 ```text
-!! SELF-CONTEXT 131k >= soft 120k — flush everything unwritten into manifest.md and /compact at the next inter-task boundary.
+!! SELF-CONTEXT 214k >= soft 200k — flush everything unwritten into manifest.md and /compact at the next inter-task boundary.
 CHANGED impl-vacancy: idle/ok
 GONE    review-vacancy-r1
-3 children · 1 idle 2 running · ctx impl-picker=soft · self=131k
+3 children · 1 idle 2 running · ctx impl-picker=soft · self=214k
 ```
 
 You copied it during run setup; you do not need to read it. Its knobs are
@@ -822,20 +822,22 @@ lists, baselines, pending questions, PR urls, HEAD shas — goes into
 `$RUN_DIR` the moment you learn it, so the run survives you losing context at
 any point. Then:
 
-- **Soft (~120k):** flush everything not yet written down into the manifest,
+- **Soft (~200k):** flush everything not yet written down into the manifest,
   and `/compact` at the next inter-task boundary — a moment when no child is
   mid-conversation with you — rather than drifting into an automatic compact
   at a worse one. `poll.sh` starts shouting this at you; the banner repeats
   every beat, and it does not stop because you noticed it once.
-- **Hard (~200k):** hand off. Write `$RUN_DIR/conductor-handoff.md` (live
+- **Hard (~250k):** hand off. Write `$RUN_DIR/conductor-handoff.md` (live
   tasks and their stage, open questions, anything in flight), launch a fresh
   conductor pointed at `$RUN_DIR/manifest.md`, re-parent every live child to
   it (`agent-deck session set-parent <child> <new-conductor-id>`) so waiting
   and done notifications route to the new session, and archive yourself.
 
-Both numbers sit below the child thresholds deliberately. A child that
-compacts loses one task; you lose supervision state for every task at once,
-and there is no reviewer downstream of you to catch it. If agent-deck's own
+Both numbers match the child thresholds. Your loss is the worse one when it
+lands — a child that compacts loses one task; you lose supervision state for
+every task at once, and there is no reviewer downstream of you to catch it —
+but your soft remedy is also the cheaper one (`/compact` at a boundary, no
+rotation, no re-parenting), so you are not made to stop earlier. If agent-deck's own
 budget handler rotates you first, **check the handoff directory is actually
 non-empty before trusting it** — an automatic rotation has been observed
 producing an empty one.

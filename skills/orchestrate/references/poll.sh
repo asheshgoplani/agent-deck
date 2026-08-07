@@ -7,11 +7,12 @@ set -euo pipefail
 D="$(cd "$(dirname "$0")" && pwd)"
 SOFT="${SOFT:-200000}"
 HARD="${HARD:-250000}"
-# The conductor's thresholds sit BELOW a child's deliberately: a child that
-# compacts loses one task, the conductor loses supervision state for every task
-# at once, and there is no reviewer downstream of it to catch the loss.
-SELF_SOFT="${SELF_SOFT:-120000}"
-SELF_HARD="${SELF_HARD:-200000}"
+# The conductor's thresholds match a child's. Its loss is worse when it happens
+# — a child that compacts loses one task, the conductor loses supervision state
+# for every task at once — but it also has a cheaper remedy (/compact at an
+# inter-task boundary, no rotation), so it is not made to hand off earlier.
+SELF_SOFT="${SELF_SOFT:-200000}"
+SELF_HARD="${SELF_HARD:-250000}"
 
 RAW="$D/.poll-raw.json"
 # ${POLL_CMD} exists so the script is testable with a canned JSON file.
