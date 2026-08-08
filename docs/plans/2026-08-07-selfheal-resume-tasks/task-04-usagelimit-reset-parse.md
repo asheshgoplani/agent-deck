@@ -845,3 +845,41 @@ the whole record's unmarshal on the other and silently un-detected it."
 - Scope note honoured: `usageLimitMaxAge` is unchanged and belief was NOT
   extended to the parsed reset.
 - No concerns.
+
+### 2026-08-08 — amended by review round 2 (commits `225ff78f`, `7187cc75`)
+
+The Record above said "implemented exactly as written; no deviations". That was
+true when written and is no longer — the round-1/round-2 fixes changed one thing
+this task specifies by name, and this Record was not amended with it at the time
+(caught by round 3, finding 5).
+
+- **AC 4** mandates `(*Instance).UsageLimitNotBefore()` as the exported accessor.
+  That method is **deleted**. `225ff78f` replaced it with
+  `(*Instance).usageLimitedWithSchedule() (bool, time.Time)`, which reads the
+  verdict and its schedule together under ONE `RLock`; `7187cc75` then removed
+  the orphaned `UsageLimitNotBefore` once nothing referenced it.
+  `grep -rn 'UsageLimitNotBefore' --include='*.go' .` → no output.
+- Why: read apart, the two fields are a torn read. A rebind between the verdict
+  read and the schedule read hands the caller session B's "limited" with session
+  A's `NotBefore`, which schedules a resume against a window that was never
+  session B's. The single-accessor form makes that unrepresentable.
+- What did NOT change: everything else in this task. `parseUsageLimitReset`, the
+  constants and regexp, the dual-shape `transcriptRecord`, the widened 4-value
+  `latestAssistantTurnIsRateLimited`, the memo wiring in `usageLimited()`, the
+  `usageLimitNotBeforeCached` field, `usageLimitMaxAge` and the deliberate
+  non-extension of belief to the parsed reset are all as written. Only the shape
+  of the ACCESSOR moved.
+- Also from round 1 (`dff232ce`), affecting this task's parse path but no AC:
+  the two silent fallbacks are now observable — `usage_limit_reset_unparsed` and
+  `usage_limit_reset_zone_unloadable` debug lines — and the DST normalisation is
+  documented in place. The 24-hour rendering (`resets 18:10`) remains out of
+  scope and takes the logged flat-backoff fallback, as this task specified.
+
+### 2026-08-08 — amended by review round 3 (this round)
+
+- No AC changed. Round 3 finding 2 rewrote the usage-limit resume prompt, which
+  this task's parse path feeds: because the schedule that releases a send is
+  frequently the flat `usageLimitResetBackoff` guess rather than a parsed reset —
+  taken for an absent reset string, an unparseable one, an unresolvable zone, and
+  every 24-hour rendering this task deferred — the prompt no longer asserts the
+  window HAS reset. See task 05's round-3 amendment for the text.

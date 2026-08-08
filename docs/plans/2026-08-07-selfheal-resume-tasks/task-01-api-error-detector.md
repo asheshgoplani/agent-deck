@@ -785,3 +785,61 @@ transport banner to StatusError, so a glyph gated there would never render."
   `TestTestMainDoesNotLeakBootstrapServer` (internal/testutil),
   `TestPipeManager_ConnectPreservesLiveSibling`,
   `TestTmuxBootstrap_ServerIsRunning` (internal/tmux).
+
+### 2026-08-08 — amended by review round 3 (this round)
+
+Two changes, both to shipped code this task owns. No AC was rewritten; AC 7 is
+now actually delivered on the surface it describes.
+
+**1. The transport scan's structural guard covers EVERY non-quoted line.**
+
+Rounds 1 and 2 both hardened the detector against prose that merely NAMES the
+banner, and both only ever inspected lines opening with the `⏺` assistant glyph.
+Claude wraps a reply across pane lines and only the FIRST carries the glyph, so a
+continuation line —
+
+    ⏺ The worker showed API Error:
+      Unable to connect to API and never recovered, so I restarted it.
+
+— was an ordinary non-quoted line and matched on the bare substring with no
+structural check at all, classifying a healthy session `api-error`. Under
+`mode = "resume"` that injects a continuation prompt into it.
+
+`scanClaudeBannerLines` now takes a `bannerStructuralScope`. The transport scan
+passes `structuralOnEveryLine`; `hasClaudeErrorBanner` and `IsAuthFailureContent`
+pass `structuralOnAssistantLines`, which is byte-identical to the previous
+behaviour, so neither of those two contracts moved. Both renderings of the real
+transport banner — assistant-glyph and standalone — carry a parenthesised
+transport code, so the stricter scope costs no real detection; the standalone
+form is now pinned by its own test.
+
+The negative-fixture shape this file lacked is added:
+`TestClassifySubstate_WrappedProseAboutTransportBanner_NotAPIError` (three
+shapes). Every prior negative prose fixture was a single unwrapped `⏺` line —
+the only shape the guard inspected — which is precisely why two rounds of fixes
+could not see the hole.
+
+**2. AC 7's glyph now renders for a drafted transport-error pane.**
+
+AC 7 describes a banner pane holding an unchanging operator draft as stalled
+(🧊), not transport (🌐). `promoteStalled` refines both bases and delivers that on
+the LIVE path, but the TUI row reads a cached accessor, and
+`(*Instance).CachedSubstate` refines only the idle base — so that row rendered 🌐
+and disagreed with `session nudge`, which reads the live substate and refuses
+correctly.
+
+The fix is contained to rendering: a new `(*Instance).DisplaySubstate()` applies
+the api-error → stalled promotion in memory (no pane capture, so the render hot
+path is unchanged) and `internal/ui/home.go`'s render snapshot calls it instead
+of `CachedSubstate`. `CachedSubstate` itself is DELIBERATELY not widened —
+`buildSelfHealCandidate` reads it, and self-heal must keep seeing a drafted
+api-error session AS api-error or it audits as `skip_healthy` and the
+`held_composer_draft` record explaining the hold disappears. Pinned by
+`TestPromoteDisplaySubstate_DraftedAPIErrorRendersStalled`,
+`TestCachedSubstate_DoesNotCarryTheDisplayPromotion` and
+`TestRowStatusGlyph_DraftedAPIErrorRendersStalled`.
+
+Files touched this round: `internal/tmux/detector.go`,
+`internal/tmux/authfailure.go`, `internal/tmux/apierror_test.go`,
+`internal/session/instance.go`, `internal/session/stall_test.go`,
+`internal/ui/home.go`, `internal/ui/connection_status_test.go`.

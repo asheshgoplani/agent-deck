@@ -704,3 +704,26 @@ work and reports the task done."
   edit: one failure, `TestIssue1421_CleanStaleSSHSockets` (internal/session) — a
   member of the env-flaky set recorded in task 01's Record. The other five in that
   set passed on this run.
+
+### 2026-08-08 — amended by review rounds 1 and 3 (commits `dff232ce`, this round)
+
+The task file's edit block specifies both prompt strings verbatim. Neither
+shipped string matches it any more — both were softened, for the same reason, in
+two different rounds. No AC changed: the prompts still differ by reason and the
+usage-limit one still carries the mandatory terminated-subagent warning.
+
+- **Round 1 (finding 10), `resumePromptTransport`**: "The connection has
+  recovered" → "**may have** recovered". Nothing on this path checks
+  reachability before sending, so if the outage is still in progress the strong
+  claim is false; the agent acts on it, fails again, and spends one of its two
+  6-hour recoveries.
+- **Round 3 (finding 2), `resumePromptUsageLimit`**: "The window has since
+  reset." → "**The usage window may have reset.**" The identical argument, and it
+  is not transport-specific. The schedule that releases this send is frequently
+  the flat `usageLimitResetBackoff` guess rather than a parsed reset — taken for
+  an absent reset string, an unparseable one, a zone `time.LoadLocation` cannot
+  resolve, and every 24-hour rendering (`resets 18:10`), which task 04 deferred
+  as out of scope. In all of those the window has very likely NOT reset.
+- Both hedges are now pinned by `TestSelfHealResume_PromptsHedgeRecovery`, which
+  also rejects "has recovered" / "has since reset" / "has reset" outright, so the
+  two prompts cannot drift apart again.

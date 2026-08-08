@@ -715,3 +715,39 @@ No new timer, goroutine or unit — the existing 1-3s poll drives it."
   `TestSelfHealMode_AcceptsResume` PASS pins `SelfHealSettings{}` as disabled +
   observe.
 - No concerns.
+
+### 2026-08-08 — amended by review round 2 (commits `225ff78f`, `7187cc75`)
+
+The Record above said "implemented exactly as written; no deviations", and its
+precondition list cites `UsageLimitNotBefore in usagelimit.go → 2`. Both have
+stopped being true; this amendment records why (round 3, finding 5).
+
+- **AC 3** names `(*Instance).UsageLimitNotBefore()` as the source of the
+  candidate's `NotBefore`. That method no longer exists. `buildSelfHealCandidate`
+  now reads `(*Instance).usageLimitedWithSchedule()`, which returns the
+  usage-limit VERDICT and its schedule together under one `RLock` — see task 04's
+  round-2 amendment for the torn-read argument. The precondition check quoted
+  above returns **0** today; the equivalent check is
+  `grep -c 'usageLimitedWithSchedule' internal/session/usagelimit.go`.
+- **The lift itself is unchanged and is still what AC 3 requires**: a
+  usage-limited session reaches self-heal as `SubstateUsageLimit` carrying its
+  schedule, pinned by
+  `TestBuildSelfHealCandidate_UsageLimited_LiftsSubstateAndSchedule` and
+  `TestUsageLimitedWithSchedule_ReportsMemo_RebindClearsIt`.
+- Everything else in this task is as written: the registry, `engineFor`'s
+  observe-by-default construction, the `!settings.Enabled` early return, the
+  shipped defaults (`Enabled bool` with no default-true) and the serial
+  per-instance pass.
+
+### 2026-08-08 — amended by review round 3 (this round)
+
+- No AC changed; no behaviour changed. Round 3 finding 6 was DECIDED as
+  "accepted as designed": the resume send stays SYNCHRONOUS inside
+  `Engine.ProcessRead`, driven from this task's serial per-instance loop, because
+  design F3 forbids a new watchdog layer or goroutine. A comment at the
+  `engine.ProcessRead(c, now)` call site in `selfheal_pass.go` now records the
+  accepted trade-off explicitly — a correlated outage can add tens of seconds to
+  ONE profile's poll, the empty-composer precondition makes the 10s guard hold
+  unlikely in the common case, and the bounded-worker alternative was considered
+  and deliberately not taken. Recorded as an open design question for after the
+  merge, not absorbed silently.

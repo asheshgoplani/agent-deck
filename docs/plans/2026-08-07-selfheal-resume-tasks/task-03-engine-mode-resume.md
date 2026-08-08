@@ -870,3 +870,37 @@ added an unspecified contract to this file's package:
   "only on the read that is actually deciding to act, not on every poll" (true of
   the first half, but it implied a bound that did not exist) and candidate.go's
   "resolves it exactly once".
+
+### 2026-08-08 — amended by review round 3 (this round)
+
+No AC changed. **AC 4's ordering is untouched**: the D6 composer-draft branch
+still sits ahead of both `e.policy.Gate` and `e.policy.RecordAttempt`, and this
+file's ordering check still passes. Three housekeeping changes in `engine.go`:
+
+- **The composer-draft memo is now evicted, not only written.** Round 2 added
+  `draftMemo` but never deleted from it, while its three siblings (`confirmed`,
+  `substateSeen`) are evicted. The engine is long-lived per profile in a daemon
+  that runs for weeks, so every session it had ever evaluated left a permanent
+  entry. `delete(e.draftMemo, c.SessionID)` now sits beside the existing
+  `delete(e.confirmed, …)` in the not-a-candidate branch — the point at which the
+  session has demonstrably left the stuck class, which also makes the next answer
+  fresher rather than staler. Pinned by
+  `TestProcessRead_DraftMemo_EvictedWhenNoLongerACandidate`.
+- **`RecordOutcome`'s dead conjunct is gone.** It read
+  `e.policy.RecordOutcome(c, err == nil && outcomeIsDelivered(outcome))` under
+  `if action != ActionNone`, and every `executeIfAuthorized` path returning a
+  non-`ActionNone` action returns a nil error — so `err == nil` could never be
+  false there. It read as if executor errors were handled, directly beneath the
+  long comment explaining that they deliberately are not. The success argument is
+  now `outcomeIsDelivered(outcome)` alone and that comment is the sole statement
+  of the policy. No behaviour change.
+- **`ErrNoExecutor`'s doc states its real effect.** Its only caller discards the
+  error, so the one thing it changes for an operator today is the `"no_executor"`
+  outcome string in the audit record. The doc now says that, and says the value
+  exists for a future caller that DOES inspect the error.
+
+Also decided this round and NOT acted on (round 3 finding 8, deferred): the
+`held_composer_draft` event serialises a zero `CapsState` because it is appended
+before `Gate` runs. The direct fix is to call `Gate` for its snapshot, which is
+exactly what AC 4 forbids ahead of the downgrade. A non-mutating caps accessor is
+a separate change.
