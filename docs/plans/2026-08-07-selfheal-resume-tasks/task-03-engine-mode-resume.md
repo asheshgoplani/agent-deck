@@ -819,3 +819,54 @@ single_action and full are untouched and stay HELD."
   pinned by `TestNewObserveEngine_StillHasNoExecutor` plus the four pre-existing
   `TestObserve_*` tests, all PASS. No code change made for this; flagging the
   stale threshold only.
+
+### 2026-08-08 — amended by review round 1 (commits `225ff78f`, `dff232ce`)
+
+The Record above said "implemented exactly as written; no deviations". That was
+true when written and is no longer. Round 1 changed the prescribed D6 read and
+added an unspecified contract to this file's package:
+
+- **AC 4 / the prescribed snippet** read `if would == ActionResume &&
+  c.ComposerDraft {`. `Candidate.ComposerDraft` became a deferred
+  `func() bool` (see task 02's round-1 amendment for why), so the shipped branch
+  RESOLVES it here instead of reading a pre-set bool.
+- **AC 4's ordering is unchanged and is the point**: the branch still sits ahead
+  of both `e.policy.Gate` and `e.policy.RecordAttempt`, so a drafted composer
+  still cannot execute and still spends no recovery. The ordering check in this
+  file's verification section still passes.
+- **New in this package, not in the task text**: `outcomeResumePrefix`,
+  `outcomeDelivered`, `ResumeOutcome(delivery string) string` and
+  `outcomeIsDelivered` were pulled into `engine.go` as the SHARED resume-outcome
+  contract. Task 05's executor is in `internal/session`, which cannot import
+  back, so the producer and the matcher had been joined only by a sentence in a
+  task file — a drift in either would silently reclassify every recovery as a
+  failure, or the reverse. `AC 6` (the outcome is carried verbatim) is unaffected.
+- **Also new**: the breaker's blind spot is now documented in place — an executor
+  ERROR returns `ActionNone`, so it never reaches `RecordOutcome` even though
+  `RecordAttempt` already spent a recovery. A session that errors every attempt
+  goes quiet after two via `cap_hit`, not `breaker_open`. No behaviour changed;
+  the comment records that this is a known open design question rather than an
+  oversight.
+
+### 2026-08-08 — amended by review round 2 (commit `d51925e1`)
+
+- **No AC changed, and AC 4's ordering is deliberately untouched.** The D6
+  branch still precedes `Gate` and `RecordAttempt`. The alternative fix
+  considered — peek the gate and skip the capture when it would refuse — was
+  REJECTED as a spec change against AC 4: it would audit a drafted-and-blocked
+  session as `skip_backoff` / `cap_hit` rather than `held_composer_draft`.
+- What changed is only how often the deferred lookup re-forks a capture. Because
+  the branch sits above the safety machine, a session whose breaker is open or
+  whose 2-per-6h cap is spent keeps clearing the two-read confirm and reaching it
+  indefinitely: measured against the real engine, one session wedged for 30
+  minutes at a 2s poll gave `reads=900 draft_lookups=435`, decisions
+  `map[act:2 breaker_open:433 skip_confirm:435 skip_dwell:30]`. The engine now
+  memoises the answer per session for `composerDraftTTL` (10s), which bounds it
+  to ~one lookup per TTL (145 on the same drive) with the decision map
+  byte-identical. Only an answer the lookup produced is memoised; an errored
+  capture surfaces as "there might be a draft" and so can never be cached as a
+  negative.
+- Two comments in this file's shipped code were corrected as false: engine.go's
+  "only on the read that is actually deciding to act, not on every poll" (true of
+  the first half, but it implied a bound that did not exist) and candidate.go's
+  "resolves it exactly once".
