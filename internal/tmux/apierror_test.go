@@ -87,6 +87,55 @@ func TestClassifySubstate_ProseAboutTransportBanner_NotAPIError(t *testing.T) {
 	}
 }
 
+// Claude wraps assistant prose across pane lines and only the FIRST visual line
+// carries the "⏺" glyph. A continuation line is therefore an ordinary non-quoted
+// line, so a guard that only inspects glyph lines lets wrapped prose naming the
+// banner phrase classify api-error with no structural check at all — and under
+// mode="resume" that injects a continuation prompt into a healthy session. The
+// transport scan requires the structural co-signal on EVERY non-quoted line.
+func TestClassifySubstate_WrappedProseAboutTransportBanner_NotAPIError(t *testing.T) {
+	tail := "\n\n╭──────────────────────────────────────────╮\n│ ❯                                        │\n╰──────────────────────────────────────────╯"
+	cases := []struct {
+		name  string
+		prose string
+	}{
+		{
+			"phrase on the wrapped continuation line",
+			"⏺ The worker showed API Error:\n  Unable to connect to API and never recovered, so I restarted it.",
+		},
+		{
+			"continuation line carrying the · separator too",
+			"⏺ The worker wedged this morning:\n  Unable to connect to API · it recovered after a restart.",
+		},
+		{
+			"phrase three lines below the glyph",
+			"⏺ Here is what happened during the outage:\n  three of the workers stopped mid-turn and the pane showed\n  Unable to connect to API for about forty minutes.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := claudeDetector().ClassifySubstate(tc.prose + tail); got == SubstateAPIError {
+				t.Fatalf("wrapped assistant prose must not classify api-error, got %q", got)
+			}
+		})
+	}
+}
+
+// The structural requirement on every non-quoted line must not make the real
+// banner unmatchable in its STANDALONE (no assistant glyph) rendering — that
+// form carries the parenthesised transport code and keeps matching.
+func TestClassifySubstate_StandaloneTransportBanner_IsAPIError(t *testing.T) {
+	standalone := `API Error: Unable to connect to API (ENOTFOUND api.anthropic.com)
+✻ Sautéed for 39m 27s
+
+╭──────────────────────────────────────────╮
+│ ❯                                        │
+╰──────────────────────────────────────────╯`
+	if got := claudeDetector().ClassifySubstate(standalone); got != SubstateAPIError {
+		t.Fatalf("standalone transport banner: want %q, got %q", SubstateAPIError, got)
+	}
+}
+
 // A bare transport-code token is NOT a banner. Under mode="resume" a false
 // api-error injects a continuation prompt into a session that was never wedged,
 // so the discriminator is the rendered wording plus the parenthesised code —

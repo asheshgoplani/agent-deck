@@ -52,7 +52,7 @@ func IsAuthFailureContent(tool, content string) bool {
 	if strings.ToLower(strings.TrimSpace(tool)) != "claude" {
 		return false
 	}
-	return scanClaudeBannerLines(content, authFailureBannerPatterns, claudeBannerStructuralMarkers)
+	return scanClaudeBannerLines(content, authFailureBannerPatterns, claudeBannerStructuralMarkers, structuralOnAssistantLines)
 }
 
 // IsAuthFailure reports whether this detector's tool would render the given
