@@ -491,11 +491,18 @@ var apiErrorBannerSubstrings = []string{
 // joins ordinary prose with the same separator ("⏺ worker-3 showed Unable to
 // connect to API · I restarted it"), so it would readmit exactly the assistant
 // -line prose the guard exists to reject.
+// The OPENING paren alone is the co-signal; the closing one is not part of it.
+// Node/undici routinely names the host inside the parens
+// ("(ENOTFOUND api.anthropic.com)", "(ECONNREFUSED 127.0.0.1:443)"), so
+// requiring ")" immediately after the code would reject the form a real outage
+// most often produces and leave the whole opt-in feature inert. Nothing in the
+// rejected prose puts an open paren immediately before a transport code, so the
+// discriminator survives the loosening.
 var apiErrorBannerStructuralMarkers = []string{
 	`{"type":"error"`,
-	"(ENOTFOUND)",
-	"(ECONNREFUSED)",
-	"(ConnectionRefused)",
+	"(ENOTFOUND",
+	"(ECONNREFUSED",
+	"(ConnectionRefused",
 }
 
 // hasClaudeAPIErrorBanner scans the recent pane tail for a TRANSPORT-failure

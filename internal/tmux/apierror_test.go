@@ -23,6 +23,43 @@ func TestClassifySubstate_TransportBanner_IsAPIError(t *testing.T) {
 	}
 }
 
+// The ordinary Node/undici rendering names the host INSIDE the parens, so the
+// code is not followed by ")". Matching on a literal closing paren would make
+// the feature inert against the form a real outage most often produces.
+func TestClassifySubstate_TransportBannerWithHost_IsAPIError(t *testing.T) {
+	tail := "\n\n╭──────────────────────────────────────────╮\n│ ❯                                        │\n╰──────────────────────────────────────────╯"
+	cases := []struct {
+		name string
+		line string
+	}{
+		{"ENOTFOUND with host", `⏺ API Error: Unable to connect to API (ENOTFOUND api.anthropic.com)`},
+		{"ECONNREFUSED with address", `⏺ API Error: Unable to connect to API (ECONNREFUSED 127.0.0.1:443)`},
+		{"ConnectionRefused with address", `⏺ API Error: Unable to connect to API (ConnectionRefused 127.0.0.1:443)`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := claudeDetector().ClassifySubstate(tc.line + tail); got != SubstateAPIError {
+				t.Fatalf("%q: want %q, got %q", tc.line, SubstateAPIError, got)
+			}
+		})
+	}
+}
+
+// A host-bearing banner quoted behind "⎿" stays rejected: dropping the closing
+// paren must not weaken the conductor guard.
+func TestClassifySubstate_QuotedTransportBannerWithHost_NotAPIError(t *testing.T) {
+	quoted := `⏺ Bash(agent-deck session output worker-3)
+  ⎿  ⏺ API Error: Unable to connect to API (ENOTFOUND api.anthropic.com)
+  ⎿  ✻ Sautéed for 39m 27s
+
+╭──────────────────────────────────────────╮
+│ ❯                                        │
+╰──────────────────────────────────────────╯`
+	if got := claudeDetector().ClassifySubstate(quoted); got == SubstateAPIError {
+		t.Fatalf("a quoted host-bearing child banner must not classify api-error, got %q", got)
+	}
+}
+
 // §6: a conductor quoting the banner behind "⎿" does not match.
 func TestClassifySubstate_QuotedTransportBanner_NotAPIError(t *testing.T) {
 	quoted := `⏺ Bash(agent-deck session output worker-3)
