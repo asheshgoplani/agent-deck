@@ -140,6 +140,38 @@ func TestSelfHealResume_PromptDiffersByReason(t *testing.T) {
 	}
 }
 
+// Neither prompt may assert recovery as FACT. Nothing on this path checks
+// reachability, and the schedule that released a usage-limit send is frequently
+// the flat backoff guess rather than a parsed reset — so a strong claim is
+// simply false, the agent acts on it, is rejected again, and burns one of its
+// two 6-hour recoveries. Pinned on both so the pair cannot drift apart again.
+func TestSelfHealResume_PromptsHedgeRecovery(t *testing.T) {
+	f := &fakeSend{delivery: "submitted"}
+	x := executorWith(t, f, &Instance{ID: "s1"})
+
+	for _, s := range []tmux.Substate{tmux.SubstateAPIError, tmux.SubstateUsageLimit} {
+		if _, err := x.Execute(resumeCandidate("s1", s), selfheal.ActionResume); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport, usage := strings.ToLower(f.calls[0].message), strings.ToLower(f.calls[1].message)
+
+	if !strings.Contains(transport, "may have recovered") {
+		t.Fatalf("the transport prompt must hedge, got %q", transport)
+	}
+	if !strings.Contains(usage, "may have reset") {
+		t.Fatalf("the usage-limit prompt must hedge, got %q", usage)
+	}
+	for _, claim := range []string{"has recovered", "has since reset", "has reset"} {
+		if strings.Contains(transport, claim) {
+			t.Fatalf("the transport prompt must not assert %q as fact, got %q", claim, transport)
+		}
+		if strings.Contains(usage, claim) {
+			t.Fatalf("the usage-limit prompt must not assert %q as fact, got %q", claim, usage)
+		}
+	}
+}
+
 // A non-resume action is a mis-wire alarm, not a silent no-op.
 func TestSelfHealResume_WrongAction_Errors(t *testing.T) {
 	f := &fakeSend{delivery: "submitted"}

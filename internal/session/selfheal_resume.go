@@ -86,8 +86,16 @@ const (
 	// means a SUBAGENT hit the limit, and resuming the parent does not restore the
 	// subagent's work — without this sentence a parent silently loses a child's
 	// output and reports the task done.
+	//
+	// "may have reset" rather than "has since reset", for the same reason the
+	// transport prompt hedges: the schedule that released this send is frequently
+	// the flat usageLimitResetBackoff guess rather than a parsed reset — taken for
+	// an absent reset string, an unparseable one, a zone time.LoadLocation cannot
+	// resolve, and every 24-hour rendering ("resets 18:10"). In all of those the
+	// window has very likely NOT reset, so the strong claim is false, the agent
+	// acts on it, is rejected again, and spends one of its two 6-hour recoveries.
 	resumePromptUsageLimit = "[agent-deck self-heal] Your previous turn was rejected because the plan usage " +
-		"window was exhausted. The window has since reset. Continue exactly where you left off. " +
+		"window was exhausted. The usage window may have reset. Continue exactly where you left off. " +
 		"IMPORTANT: if you had dispatched a subagent when the limit hit, that subagent was terminated " +
 		"by the limit and its work was NOT saved — re-dispatch it rather than assuming it finished."
 )
