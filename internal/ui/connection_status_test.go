@@ -125,3 +125,37 @@ func TestAuthHoldBannerLines_NamesTheRemedy(t *testing.T) {
 		t.Error("banner must still render on a zero-width pane")
 	}
 }
+
+// The row-glyph pipeline for a drafted transport-error pane, end to end:
+// Instance.DisplaySubstate promotes api-error to stalled when the composer holds
+// an unchanging draft, and rowStatusGlyph must then render 🧊 rather than 🌐.
+// The two halves are pinned together because the regression was in the WIRING —
+// rowStatusGlyph already mapped stalled correctly; the render snapshot was
+// simply reading an accessor that never promoted.
+func TestRowStatusGlyph_DraftedAPIErrorRendersStalled(t *testing.T) {
+	var inst session.Instance
+	// A live pane is not needed: with no tmux session the cached substate is
+	// none, which is what pins the OTHER half — a stalled dwell must not
+	// manufacture a glyph for a session that shows no banner.
+	if got := inst.DisplaySubstate(); got != session.SubstateNone {
+		t.Fatalf("no pane: want %q, got %q", session.SubstateNone, got)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		status   session.Status
+		substate session.Substate
+		wantIcon string
+	}{
+		{"drafted api-error (promoted) renders the stalled glyph", session.StatusIdle, session.SubstateStalled, "🧊"},
+		{"undrafted api-error keeps the transport glyph", session.StatusIdle, session.SubstateAPIError, "🌐"},
+		{"drafted api-error while waiting also renders stalled", session.StatusWaiting, session.SubstateStalled, "🧊"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			icon, _ := rowStatusGlyph(tc.status, tc.substate, false)
+			if icon != tc.wantIcon {
+				t.Fatalf("rowStatusGlyph(%q, %q) icon = %q, want %q", tc.status, tc.substate, icon, tc.wantIcon)
+			}
+		})
+	}
+}

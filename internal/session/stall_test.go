@@ -279,3 +279,43 @@ func TestPromoteStalled_APIErrorFrozenDraft_BecomesStalled(t *testing.T) {
 		t.Fatalf("past dwell: want %q, got %q", tmux.SubstateStalled, got)
 	}
 }
+
+// The RENDER surface must agree with the live verdict: a pane holding a
+// transport banner AND an unchanging operator draft has to show the stalled
+// glyph, not the transport one. Before DisplaySubstate that row read 🌐, because
+// ClassifySubstate returns api-error whether or not the composer holds text and
+// CachedSubstate refines only the idle base — so the TUI and `session nudge`
+// disagreed about the same pane on the surface an operator actually scans.
+func TestPromoteDisplaySubstate_DraftedAPIErrorRendersStalled(t *testing.T) {
+	cases := []struct {
+		name    string
+		cached  Substate
+		stalled bool
+		want    Substate
+	}{
+		{"drafted api-error promotes", SubstateAPIError, true, SubstateStalled},
+		{"api-error with no frozen draft stays api-error", SubstateAPIError, false, SubstateAPIError},
+		{"a stalled tracker never rewrites an unrelated substate", SubstateAuth401, true, SubstateAuth401},
+		{"nor model-unavailable", SubstateModelUnavailable, true, SubstateModelUnavailable},
+		{"nor an already-stalled verdict", SubstateStalled, true, SubstateStalled},
+		{"nor a healthy one", SubstateNone, true, SubstateNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := promoteDisplaySubstate(tc.cached, tc.stalled); got != tc.want {
+				t.Fatalf("promoteDisplaySubstate(%q, %v) = %q, want %q", tc.cached, tc.stalled, got, tc.want)
+			}
+		})
+	}
+}
+
+// And the promotion must stay OUT of the self-heal read. buildSelfHealCandidate
+// reads CachedSubstate, which must keep reporting api-error for a drafted pane:
+// that is what carries the candidate to the composer-draft branch and produces
+// the held_composer_draft audit record. Promoted to stalled it would audit as
+// skip_healthy and the record explaining the hold would vanish.
+func TestCachedSubstate_DoesNotCarryTheDisplayPromotion(t *testing.T) {
+	if got := promoteDisplaySubstate(SubstateIdleAtEmptyPrompt, true); got != SubstateIdleAtEmptyPrompt {
+		t.Fatalf("the display promotion must not duplicate CachedSubstate's idle refinement, got %q", got)
+	}
+}

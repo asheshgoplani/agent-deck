@@ -9123,6 +9123,38 @@ func (i *Instance) CachedSubstate() Substate {
 	return cached
 }
 
+// DisplaySubstate is CachedSubstate for RENDERING surfaces only: it applies the
+// same in-memory stall refinement to an api-error verdict that promoteStalled
+// applies on the live path, so a pane holding a transport banner AND an
+// unchanging operator draft shows the stalled glyph rather than the transport
+// one. Like CachedSubstate it captures nothing, so the render hot path is
+// unchanged.
+//
+// It is a SEPARATE accessor rather than a widening of CachedSubstate, and the
+// difference is load-bearing. CachedSubstate is what buildSelfHealCandidate
+// reads (selfheal_pass.go), and self-heal must keep seeing a drafted api-error
+// session AS api-error: that is what carries it to the composer-draft branch and
+// produces the `held_composer_draft` audit record. Promoted to stalled it would
+// instead audit as skip_healthy — the protection would still hold, but the
+// record explaining WHY would vanish. Rendering has no such stake; it only needs
+// to describe the pane, and 🧊 ("someone's text is sitting in there") is the
+// accurate description.
+func (i *Instance) DisplaySubstate() Substate {
+	return promoteDisplaySubstate(i.CachedSubstate(), i.stallTracker().stalled(stallClock()))
+}
+
+// promoteDisplaySubstate is DisplaySubstate's decision, split out so it can be
+// pinned without standing up a live tmux pane. Only the api-error base is
+// promoted here: CachedSubstate already refines the idle base, and every other
+// substate (auth-401, model-unavailable, running) is describing the pane
+// accurately as it stands.
+func promoteDisplaySubstate(cached Substate, stalled bool) Substate {
+	if cached == SubstateAPIError && stalled {
+		return SubstateStalled
+	}
+	return cached
+}
+
 // SetAcknowledgedFromShared applies an acknowledgment from another TUI instance
 // (read from SQLite). This transitions a YELLOW (waiting) session to GRAY (idle)
 // without requiring the user to interact with this specific TUI instance.
