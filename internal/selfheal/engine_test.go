@@ -559,6 +559,95 @@ func TestObserve_ComposerDraftLookup_NeverResolvedBeforeDeciding(t *testing.T) {
 	}
 }
 
+// The tail is what the two tests above cannot see: they stop at the first act,
+// and the cost is AFTER it. The D6 branch sits above the safety machine, so a
+// session that keeps clearing the two-read confirm reaches it forever — and that
+// is exactly what a wedged session does once its recoveries are spent and its
+// breaker is open. Measured against the unmemoised engine, a single session
+// wedged for 30 minutes at a 2s poll cost 900 reads → 435 lookups, i.e. 435
+// `tmux capture-pane` forks inside the daemon's serial instance loop, scaling
+// with the poll rate and unbounded in time.
+//
+// The memo makes the rate a function of wall-clock instead: at most one lookup
+// per composerDraftTTL.
+func TestProcessRead_WedgedTail_BoundsTheDraftLookupRate(t *testing.T) {
+	const (
+		poll     = 2 * time.Second
+		reads    = 900 // 30 minutes at a 2s poll
+		unmemoed = 435 // the measured pre-fix lookup count for this exact drive
+	)
+	now := time.Unix(1780000000, 0).UTC()
+	// A delivery that is NOT "resumed:submitted" counts as a failed recovery, so
+	// the breaker opens after BreakerK=2 — the state the tail is about.
+	spy := &resumeSpy{outcome: ResumeOutcome("typed_not_submitted")}
+	e := resumeEngineFor(spy, &MemorySink{})
+	lookup, calls := countingDraft(false)
+
+	decisions := map[Decision]int{}
+	for i := 0; i < reads; i++ {
+		c := apiErrorCand(now)
+		c.ComposerDraft = lookup
+		ev := e.ProcessRead(c, now.Add(time.Duration(i)*poll))
+		decisions[ev.Decision]++
+	}
+
+	if decisions[DecisionBreakerOpen] == 0 {
+		t.Fatalf("premise broken: the tail must run with the breaker open, decisions=%v", decisions)
+	}
+	if len(spy.calls) == 0 {
+		t.Fatalf("premise broken: the drive must poll PAST the first act, decisions=%v", decisions)
+	}
+	// Every read that clears the confirm still consults the branch — the fix is
+	// not a peek at the gate, and this pins that it is not.
+	if decisions[DecisionSkipConfirm] < unmemoed {
+		t.Fatalf("premise broken: want >= %d confirm-clearing reads, got %d (decisions=%v)",
+			unmemoed, decisions[DecisionSkipConfirm], decisions)
+	}
+
+	// One lookup per TTL over the drive's span, plus one for the first read.
+	span := time.Duration(reads-1) * poll
+	bound := int(span/composerDraftTTL) + 1
+	if *calls > bound {
+		t.Fatalf("lookups = %d, want <= %d (one per %s over %s)", *calls, bound, composerDraftTTL, span)
+	}
+	// And it must be a hard cut, not a rounding win.
+	if *calls*2 > unmemoed {
+		t.Fatalf("lookups = %d; the memo must cut the measured %d tail by more than half", *calls, unmemoed)
+	}
+	t.Logf("reads=%d draft_lookups=%d (was %d) decisions=%v", reads, *calls, unmemoed, decisions)
+}
+
+// The memo is bounded in the OTHER direction too: it may delay noticing that a
+// draft appeared or cleared, but never by more than composerDraftTTL.
+func TestProcessRead_DraftMemo_GoesStaleWithinTheTTL(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{outcome: ResumeOutcome("submitted")}
+	e := resumeEngineFor(spy, &MemorySink{})
+	drafted := true
+	c := apiErrorCand(now)
+	c.ComposerDraft = func() bool { return drafted }
+
+	e.ProcessRead(c, now.Add(apiReadAnchor))
+	e.ProcessRead(c, now.Add(apiReadConfirm1))
+	if ev := e.ProcessRead(c, now.Add(apiReadConfirm2)); ev.Outcome != "held_composer_draft" {
+		t.Fatalf("premise broken: want held_composer_draft, got %q", ev.Outcome)
+	}
+
+	// The operator clears the draft. Drive confirm cycles from the moment the
+	// memo was written until the engine acts; it must take no longer than the TTL.
+	drafted = false
+	memoAt := now.Add(apiReadConfirm2)
+	for at := memoAt.Add(2 * time.Second); !at.After(memoAt.Add(composerDraftTTL + 4*time.Second)); at = at.Add(2 * time.Second) {
+		if ev := e.ProcessRead(c, at); ev.Decision == DecisionAct && ev.Action == ActionResume {
+			if stale := at.Sub(memoAt); stale > composerDraftTTL+2*time.Second {
+				t.Fatalf("a cleared draft went unnoticed for %s, TTL is %s", stale, composerDraftTTL)
+			}
+			return
+		}
+	}
+	t.Fatalf("a cleared draft was never noticed within %s of the memo", composerDraftTTL)
+}
+
 // A nil lookup — the caller had no way to look — reads as "no draft" and must not
 // panic. Every non-resume substate carries one.
 func TestProcessRead_NilComposerDraftLookup_ReadsAsNoDraft(t *testing.T) {

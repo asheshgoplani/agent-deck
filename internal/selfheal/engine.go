@@ -68,6 +68,33 @@ type Engine struct {
 	// moves. It fixes anchoring the dwell on a stale waiting timestamp and an
 	// old send timestamp surviving a legitimate later idle.
 	substateSeen map[string]substateEntry
+	// draftMemo caches the composer-draft answer per session for
+	// composerDraftTTL. See hasComposerDraft.
+	draftMemo map[string]draftEntry
+}
+
+// composerDraftTTL bounds how stale a memoised composer-draft answer may be.
+//
+// It has to sit between two costs. Below it, a wedged session that keeps
+// clearing the two-read confirm forever — which is what a session does once the
+// breaker is open or its 2-per-6h cap is spent — re-forks `tmux capture-pane`
+// on every act-eligible read, roughly every other poll, unbounded in time.
+// Above it, an operator who starts typing goes unnoticed for that long and their
+// draft can be typed over.
+//
+// 10s: the shortest dwell threshold in the policy is 60s, so this is one sixth
+// of the window a session must sit stuck before anything can happen to it, and
+// it is at least three polls at the fastest 1s cadence. Against the measured
+// 30-minute wedged tail (900 reads at a 2s poll, 435 act-eligible reads, 435
+// lookups) it bounds the lookups at ~180 — the tail stops scaling with the poll
+// rate and starts scaling with wall-clock, which is the property that was
+// missing.
+const composerDraftTTL = 10 * time.Second
+
+// draftEntry is one memoised composer-draft answer and when it was resolved.
+type draftEntry struct {
+	draft bool
+	at    time.Time
 }
 
 // confirmState is the first qualifying read recorded for the two-read confirm.
@@ -102,6 +129,7 @@ func NewObserveEngine(caps Caps, sink EventSink) *Engine {
 		prevSig:      map[string]string{},
 		confirmed:    map[string]confirmState{},
 		substateSeen: map[string]substateEntry{},
+		draftMemo:    map[string]draftEntry{},
 	}
 }
 
@@ -123,6 +151,7 @@ func NewResumeEngine(caps Caps, sink EventSink, exec ActionExecutor) *Engine {
 		prevSig:      map[string]string{},
 		confirmed:    map[string]confirmState{},
 		substateSeen: map[string]substateEntry{},
+		draftMemo:    map[string]draftEntry{},
 	}
 }
 
@@ -234,10 +263,17 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 	// on the same branch deliberately: observe exists to model what resume WOULD
 	// do, and resume spends nothing here.
 	//
-	// This is also the ONLY place the deferred draft lookup is resolved. Every
-	// earlier exit — not-a-candidate, skip_dwell, skip_confirm — returns without
-	// touching it, so a wedged session costs a pane capture only on the read that
-	// is actually deciding to act, not on every poll (candidate.go).
+	// This is the ONLY place the deferred draft lookup is consulted. Every earlier
+	// exit — not-a-candidate, skip_dwell, skip_confirm — returns without touching
+	// it, so the reads that can only decline cost no pane capture at all.
+	//
+	// It is NOT once per wedged session. This branch sits above the safety
+	// machine, so every read that clears the two-read confirm reaches it — and a
+	// session whose breaker is open or whose 2-per-6h cap is spent keeps clearing
+	// that confirm indefinitely, at roughly every other poll, for as long as it
+	// stays wedged. hasComposerDraft is what bounds the resulting capture rate:
+	// the branch still asks on every such read, it just does not re-fork if it
+	// already asked within composerDraftTTL.
 	//
 	// The gate is narrowed to ActionResume because ActionResume is the only
 	// action this PR authorises, NOT because a draft is safe to type over for the
@@ -246,7 +282,7 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 	// the chokepoint today, which is the only reason idle_at_empty_prompt is not
 	// a live hole. Whoever authorises ActionResend next must widen this gate in
 	// the same change.
-	if would == ActionResume && c.hasComposerDraft() {
+	if would == ActionResume && e.hasComposerDraft(c, now) {
 		delete(e.confirmed, c.SessionID)
 		ev.Decision = DecisionAct
 		ev.WouldHave = ActionEscalate
@@ -342,6 +378,34 @@ func ResumeOutcome(delivery string) string { return outcomeResumePrefix + delive
 // accepted turn, for the circuit breaker's consecutive-failure count.
 func outcomeIsDelivered(outcome string) bool {
 	return outcome == outcomeDelivered
+}
+
+// hasComposerDraft answers "does the target's composer hold operator text",
+// resolving the candidate's deferred lookup at most once per composerDraftTTL
+// per session. Callers must hold e.mu.
+//
+// A nil lookup means the caller has no way to look, which reads as "no draft"
+// and is never memoised — there is nothing to memoise and no subprocess to save.
+//
+// What is memoised is the ANSWER, in both directions, and only an answer the
+// lookup actually produced. A capture that FAILS never arrives here as "no
+// draft": the lookup owns that fail-safe and reports a failed capture as "there
+// might be a draft" (candidate.go), so the value this stores after an error is
+// true. The memo can therefore delay a resume by up to the TTL after an operator
+// clears their draft, but it can never turn a failed look into permission to
+// type over one.
+func (e *Engine) hasComposerDraft(c Candidate, now time.Time) bool {
+	if c.ComposerDraft == nil {
+		return false
+	}
+	if memo, ok := e.draftMemo[c.SessionID]; ok {
+		if age := now.Sub(memo.at); age >= 0 && age < composerDraftTTL {
+			return memo.draft
+		}
+	}
+	draft := c.ComposerDraft()
+	e.draftMemo[c.SessionID] = draftEntry{draft: draft, at: now}
+	return draft
 }
 
 // updateSubstateAnchor tracks when the current stuck substate was first observed

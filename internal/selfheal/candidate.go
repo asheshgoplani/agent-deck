@@ -6,12 +6,21 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
-// Candidate is a pure snapshot of one session's self-heal-relevant state for a
-// single evaluation cycle. It is assembled by the daemon adapter from the data
-// the poll loop already read (status, substate, hook freshness, output
-// signatures, the dwell anchors). The policy never reaches back into tmux or the
-// DB; everything it needs to decide is in here. This is what makes the predicate
-// deterministic and the observe-only invariant structural.
+// Candidate is one session's self-heal-relevant state for a single evaluation
+// cycle. It is assembled by the daemon adapter from the data the poll loop
+// already read (status, substate, hook freshness, output signatures, the dwell
+// anchors).
+//
+// Every field except ComposerDraft is a plain value read before evaluation
+// starts, which is what keeps Evaluate — the §1.3 stuck predicate — pure: same
+// inputs, same verdict, no reach back into tmux or the DB.
+//
+// ComposerDraft is the one exception and it is deliberate. It is a live callback
+// into `tmux capture-pane`, resolved by the Engine (in every mode, observe
+// included) at the point the D6 hard precondition is decided, which is inside
+// ProcessRead and after Evaluate has already returned. It sits outside the pure
+// predicate precisely so the predicate stays pure; see the field's own doc for
+// why the lookup is deferred rather than pre-read.
 type Candidate struct {
 	// Identity (carried into the audit event).
 	SessionID string
@@ -84,25 +93,25 @@ type Candidate struct {
 	// and never consult it. That is the multi-second-freeze class this repo has
 	// hit before.
 	//
-	// The engine resolves it exactly once, at the point it holds a confirmed
+	// The engine consults it at exactly one point: where it holds a confirmed
 	// candidate and is deciding whether to act — the same position in the
 	// sequence the value was read from before, still BEFORE policy.RecordAttempt,
 	// so a draft never spends one of the session's two 6-hour recoveries.
 	//
+	// That point is reached repeatedly, not once: it sits above the safety
+	// machine, so a session whose breaker is open or whose cap is spent keeps
+	// arriving there for as long as it stays wedged. The engine therefore
+	// MEMOISES the answer per session with a short TTL rather than re-forking a
+	// capture each time (see Engine.hasComposerDraft / composerDraftTTL). The
+	// memo is why this callback may be invoked far fewer times than the branch
+	// that consults it runs.
+	//
 	// nil means the caller has no way to look, which reads as "no draft". The
 	// fail-safe for a capture that ERRORS ("there might be a draft") belongs to
-	// the lookup itself, since only the caller knows a capture failed.
+	// the lookup itself, since only the caller knows a capture failed — and the
+	// engine relies on that: it memoises whatever this returns, so an errored
+	// capture must surface as true, never as false.
 	ComposerDraft func() bool
-}
-
-// hasComposerDraft resolves the deferred composer-draft lookup. Call it once,
-// and only where the answer is about to decide something: each call is a pane
-// capture.
-func (c Candidate) hasComposerDraft() bool {
-	if c.ComposerDraft == nil {
-		return false
-	}
-	return c.ComposerDraft()
 }
 
 // dwellAnchor returns the timestamp the dwell window is measured from for this
