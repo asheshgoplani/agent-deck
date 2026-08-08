@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
@@ -338,12 +339,21 @@ func usageLimitNotBefore(text string, recordTS, prevNotBefore time.Time) time.Ti
 
 // truncateForLog bounds a transcript excerpt so a multi-megabyte /compact record
 // cannot land in the log line.
+//
+// max is a BYTE bound (the thing worth capping), but the cut is taken on a rune
+// boundary: the excerpt is a Claude-rendered rejection string and those routinely
+// carry "…" and "·", so a bare s[:max] can land mid-rune and write invalid UTF-8
+// into the log.
 func truncateForLog(s string, max int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "…"
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // isRateLimitRejection reports whether this record is a plan-quota rejection.
@@ -684,23 +694,6 @@ func (i *Instance) usageLimited() bool {
 	i.mu.Unlock()
 
 	return limited
-}
-
-// UsageLimitNotBefore returns the moment a resume may next be attempted for this
-// instance's CURRENT usage-limit verdict, or the zero time when the instance is
-// not usage-limited.
-//
-// It reads the memo only. Call usageLimited() first (which the substate path
-// already does) so the memo reflects the current transcript; calling this alone
-// on a cold instance correctly reports "no schedule" rather than scheduling a
-// resume from nothing.
-func (i *Instance) UsageLimitNotBefore() time.Time {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-	if !i.usageLimitedCached {
-		return time.Time{}
-	}
-	return i.usageLimitNotBeforeCached
 }
 
 // usageLimitedWithSchedule returns the usage-limit verdict together with the

@@ -2,8 +2,10 @@ package session
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func mustTime(t *testing.T, s string) time.Time {
@@ -163,6 +165,33 @@ func TestUsageLimitNotBefore_SameRecordReread_DoesNotDrift(t *testing.T) {
 func TestUsageLimitNotBefore_ZeroRecordTS_NoSchedule(t *testing.T) {
 	if got := usageLimitNotBefore("resets 6:10pm (UTC)", time.Time{}, time.Time{}); !got.IsZero() {
 		t.Fatalf("want the zero time, got %s", got.Format(time.RFC3339))
+	}
+}
+
+// The excerpt this logs is a Claude-rendered rejection string, which routinely
+// carries "…" and "·" — multi-byte runes. A byte-index cut lands mid-rune and
+// writes invalid UTF-8 into the log line, so the truncation must respect rune
+// boundaries.
+func TestTruncateForLog_CutsOnARuneBoundary(t *testing.T) {
+	// "·" is 2 bytes; a 40-char run of it puts a rune boundary at every EVEN byte
+	// index, so every odd max lands mid-rune.
+	multi := strings.Repeat("·", 40)
+	for max := 1; max <= 60; max++ {
+		got := truncateForLog(multi, max)
+		if !utf8.ValidString(got) {
+			t.Fatalf("max=%d produced invalid UTF-8: %q", max, got)
+		}
+		if len(got) > max+len("…") {
+			t.Fatalf("max=%d: result is %d bytes, over the bound", max, len(got))
+		}
+	}
+
+	// The same for a 3-byte rune, and for a string that needs no cut at all.
+	if got := truncateForLog(strings.Repeat("…", 30), 20); !utf8.ValidString(got) {
+		t.Fatalf("3-byte runes produced invalid UTF-8: %q", got)
+	}
+	if got := truncateForLog("  short · text  ", 200); got != "short · text" {
+		t.Fatalf("an under-bound string must only be trimmed, got %q", got)
 	}
 }
 

@@ -301,16 +301,17 @@ func TestBuildSelfHealCandidate_UsageLimited_LiftsSubstateAndSchedule(t *testing
 	}
 }
 
-// The method-level accessor, and the rebind that must clear it: the memo is keyed
-// by the Claude session id, so an A→B rebind discards both the verdict and its
-// schedule rather than handing B the schedule formed for A.
-func TestUsageLimitNotBefore_MethodReportsMemo_RebindClearsIt(t *testing.T) {
+// The atomic accessor reports the live memo, and a rebind must clear it: the memo
+// is keyed by the Claude session id, so an A→B rebind discards both the verdict
+// and its schedule rather than handing B the schedule formed for A.
+//
+// A schedule is only ever legible alongside the verdict it belongs to, so there
+// is deliberately no separate NotBefore accessor to assert against — reading the
+// two apart is the torn read usageLimitedWithSchedule exists to prevent.
+func TestUsageLimitedWithSchedule_ReportsMemo_RebindClearsIt(t *testing.T) {
 	notBefore := time.Now().Add(90 * time.Minute).UTC()
 	inst := usageLimitedInstance(t, "selfheal-notbefore-rebind", notBefore)
 
-	if got := inst.UsageLimitNotBefore(); !got.Equal(notBefore) {
-		t.Fatalf("the accessor must report the live memo: want %s, got %s", notBefore, got)
-	}
 	if limited, nb := inst.usageLimitedWithSchedule(); !limited || !nb.Equal(notBefore) {
 		t.Fatalf("verdict and schedule must arrive together, got limited=%v notBefore=%s", limited, nb)
 	}
@@ -318,10 +319,10 @@ func TestUsageLimitNotBefore_MethodReportsMemo_RebindClearsIt(t *testing.T) {
 	// Normal rebind onto the same Instance.
 	inst.ClaudeSessionID = "session-B"
 
+	// Both halves, in one read: no verdict must mean no schedule. Asserting the
+	// zero NotBefore here is what the deleted accessor's test covered — a
+	// surviving A-schedule on a B-verdict would be a resume with no gate at all.
 	if limited, nb := inst.usageLimitedWithSchedule(); limited || !nb.IsZero() {
 		t.Fatalf("a rebind must discard A's verdict and schedule, got limited=%v notBefore=%s", limited, nb)
-	}
-	if got := inst.UsageLimitNotBefore(); !got.IsZero() {
-		t.Fatalf("no verdict means no schedule, got %s", got)
 	}
 }
