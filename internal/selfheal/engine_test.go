@@ -177,7 +177,7 @@ func TestExecuteIfAuthorized_GuardedModes_Refuse(t *testing.T) {
 	c := Candidate{SessionID: "s1", Substate: tmux.SubstateModelUnavailable}
 	for _, m := range []Mode{ModeSingleAction, ModeFull} {
 		spy := &spyExecutor{}
-		e := &Engine{mode: m, caps: DefaultCaps(), policy: NewPolicyMachine(DefaultCaps()), sink: &MemorySink{}, exec: spy, prevSig: map[string]string{}, confirmed: map[string]confirmState{}, substateSeen: map[string]substateEntry{}}
+		e := &Engine{mode: m, caps: DefaultCaps(), policy: NewPolicyMachine(DefaultCaps()), sink: &MemorySink{}, exec: spy, prevSig: map[string]string{}, confirmed: map[string]confirmState{}, substateSeen: map[string]substateEntry{}, draftMemo: map[string]draftEntry{}}
 		outcome, action, err := e.executeIfAuthorized(c, ActionRestartModelSwitch)
 		if action != ActionNone {
 			t.Fatalf("mode %q: HELD modes must take no action, got %q", m, action)
@@ -388,7 +388,7 @@ func TestExecuteIfAuthorized_EveryOtherPair_Refuses(t *testing.T) {
 				continue // the one authorised pair
 			}
 			spy := &resumeSpy{outcome: "resumed:submitted"}
-			e := &Engine{mode: m, caps: DefaultCaps(), policy: NewPolicyMachine(DefaultCaps()), sink: &MemorySink{}, exec: spy, prevSig: map[string]string{}, confirmed: map[string]confirmState{}, substateSeen: map[string]substateEntry{}}
+			e := &Engine{mode: m, caps: DefaultCaps(), policy: NewPolicyMachine(DefaultCaps()), sink: &MemorySink{}, exec: spy, prevSig: map[string]string{}, confirmed: map[string]confirmState{}, substateSeen: map[string]substateEntry{}, draftMemo: map[string]draftEntry{}}
 			_, action, err := e.executeIfAuthorized(Candidate{SessionID: "s1"}, a)
 			if !errors.Is(err, ErrActionInGuardedMode) {
 				t.Fatalf("(%q, %q): want ErrActionInGuardedMode, got %v", m, a, err)
@@ -406,7 +406,7 @@ func TestExecuteIfAuthorized_EveryOtherPair_Refuses(t *testing.T) {
 // An acting engine holding no executor is a mis-wire. It must report one: a nil
 // error there reads as an ordinary quiet decline to anything inspecting it.
 func TestExecuteIfAuthorized_ActingEngineWithNoExecutor_IsAnError(t *testing.T) {
-	e := &Engine{mode: ModeResume, caps: DefaultCaps(), policy: NewPolicyMachine(DefaultCaps()), sink: &MemorySink{}, exec: nil, prevSig: map[string]string{}, confirmed: map[string]confirmState{}, substateSeen: map[string]substateEntry{}}
+	e := &Engine{mode: ModeResume, caps: DefaultCaps(), policy: NewPolicyMachine(DefaultCaps()), sink: &MemorySink{}, exec: nil, prevSig: map[string]string{}, confirmed: map[string]confirmState{}, substateSeen: map[string]substateEntry{}, draftMemo: map[string]draftEntry{}}
 	outcome, action, err := e.executeIfAuthorized(Candidate{SessionID: "s1"}, ActionResume)
 	if !errors.Is(err, ErrNoExecutor) {
 		t.Fatalf("want ErrNoExecutor, got %v", err)
