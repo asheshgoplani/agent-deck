@@ -263,6 +263,17 @@ func (d *TransitionDaemon) runSelfHealPass(profile string, instances []*Instance
 		// api-error/usage-limit candidate with an empty composer — delivers one
 		// continuation prompt. We deliberately ignore the returned event here: the
 		// audit sink already persisted it.
+		//
+		// ACCEPTED TRADE-OFF (design F3: "no new watchdog layer, no new
+		// goroutine"): that send is SYNCHRONOUS inside this serial per-instance
+		// loop, and the send tuning carries a 10s guard hold plus a submit-
+		// verification retry budget. A correlated outage — the incident this
+		// feature exists for wedged 3 of 32 sessions at once — can therefore add
+		// tens of seconds to ONE profile's transition-daemon poll. Moving the send
+		// behind a bounded worker was considered and deliberately not taken: it is
+		// a design change, not a fix, and the empty-composer precondition makes the
+		// guard hold unlikely in the common case. Recorded as an open design
+		// question rather than silently absorbed.
 		_ = engine.ProcessRead(c, now)
 	}
 }
