@@ -17,7 +17,13 @@ var ErrActionInGuardedMode = errors.New("selfheal: actions are HELD (Stages 2-3 
 // ErrNoExecutor is returned when an ACTING engine reaches the chokepoint holding
 // no executor. NewResumeEngine requires one, so this is a mis-wire — and it is
 // reported as an error rather than a nil-error no-op precisely so it cannot read
-// as a normal quiet decline in the audit or to a caller inspecting the error.
+// as a normal quiet decline to a caller inspecting the error.
+//
+// Be clear about its OBSERVABLE effect today: executeIfAuthorized is called from
+// exactly one place, which discards the error, so the only thing this value
+// changes for an operator is the "no_executor" outcome string in the audit
+// record. It exists so a future caller that DOES inspect the error can tell a
+// mis-wire from a refusal.
 var ErrNoExecutor = errors.New("selfheal: acting engine has no executor")
 
 // ActionExecutor performs a real recovery. It is reachable ONLY through
@@ -222,8 +228,14 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 	}
 
 	if !res.Candidate {
-		// Not a candidate this read → the confirm chain resets.
+		// Not a candidate this read → the confirm chain resets. The session has
+		// demonstrably left the stuck class, so drop its composer-draft memo too:
+		// the engine is long-lived per profile in a daemon that runs for weeks, and
+		// without this every session it has ever evaluated leaves a permanent
+		// entry. Evicting here also makes the next answer fresher rather than
+		// staler.
 		delete(e.confirmed, c.SessionID)
+		delete(e.draftMemo, c.SessionID)
 		ev.Reads = []ReadSig{{T: formatTS(now), Sig: c.OutputSig}}
 		_ = e.sink.Append(ev)
 		return ev
@@ -330,7 +342,7 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 
 	// Every non-observe mode goes through the chokepoint. Only (resume, resume)
 	// is authorised; single_action and full stay HELD.
-	outcome, action, err := e.executeIfAuthorized(c, would)
+	outcome, action, _ := e.executeIfAuthorized(c, would)
 	ev.Action = action
 	ev.Outcome = outcome
 	// Feed the circuit breaker only when a real action ran. A refusal is not a
@@ -345,8 +357,13 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 	// damage, and docs/self-heal.md tells operators to read the error text
 	// because the breaker will not. Whether the breaker SHOULD see executor
 	// errors is an open design question, not an oversight here.
+	//
+	// The success argument is outcomeIsDelivered alone, deliberately: every
+	// executeIfAuthorized path that returns a non-ActionNone action returns a nil
+	// error, so conjoining err == nil here would read as error handling the
+	// comment above has just said is not happening.
 	if action != ActionNone {
-		e.policy.RecordOutcome(c, err == nil && outcomeIsDelivered(outcome))
+		e.policy.RecordOutcome(c, outcomeIsDelivered(outcome))
 	}
 	_ = e.sink.Append(ev)
 	return ev

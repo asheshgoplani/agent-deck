@@ -648,6 +648,37 @@ func TestProcessRead_DraftMemo_GoesStaleWithinTheTTL(t *testing.T) {
 	t.Fatalf("a cleared draft was never noticed within %s of the memo", composerDraftTTL)
 }
 
+// The memo must be EVICTED when a session leaves the stuck class, not left to
+// accumulate. The engine is long-lived per profile in a daemon that runs for
+// weeks, so a memo that is only ever written leaves a permanent entry for every
+// session the engine has ever evaluated.
+func TestProcessRead_DraftMemo_EvictedWhenNoLongerACandidate(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{outcome: ResumeOutcome("submitted")}
+	e := resumeEngineFor(spy, &MemorySink{})
+	c := apiErrorCand(now)
+	c.ComposerDraft = func() bool { return true }
+
+	e.ProcessRead(c, now.Add(apiReadAnchor))
+	e.ProcessRead(c, now.Add(apiReadConfirm1))
+	if ev := e.ProcessRead(c, now.Add(apiReadConfirm2)); ev.Outcome != "held_composer_draft" {
+		t.Fatalf("premise broken: want held_composer_draft, got %q", ev.Outcome)
+	}
+	if _, ok := e.draftMemo[c.SessionID]; !ok {
+		t.Fatal("premise broken: the deciding read must have written a memo")
+	}
+
+	// The session recovers: a healthy substate is not a candidate at all.
+	healthy := apiErrorCand(now)
+	healthy.Substate = tmux.SubstateNone
+	healthy.ComposerDraft = func() bool { return true }
+	e.ProcessRead(healthy, now.Add(apiReadConfirm2+2*time.Second))
+
+	if _, ok := e.draftMemo[c.SessionID]; ok {
+		t.Fatal("the memo must be evicted once the session leaves the stuck class")
+	}
+}
+
 // A nil lookup — the caller had no way to look — reads as "no draft" and must not
 // panic. Every non-resume substate carries one.
 func TestProcessRead_NilComposerDraftLookup_ReadsAsNoDraft(t *testing.T) {
