@@ -121,6 +121,48 @@ func TestClassifySubstate_WrappedProseAboutTransportBanner_NotAPIError(t *testin
 	}
 }
 
+// The shape three rounds of fixes could not see: ONE prose line carrying BOTH
+// the banner phrase AND a parenthesised transport code, because the assistant is
+// SUMMARISING an incident and quotes the banner verbatim. Requiring the
+// co-signal on every line does not help — the line has it. This fleet writes
+// exactly these sentences: conductors report on wedged children, and
+// docs/self-heal.md puts the literal strings in the repo the sessions work in.
+//
+// The discriminator is position: the real banner OPENS its line (optionally
+// behind the "⏺" glyph); prose reaches the phrase mid-sentence.
+//
+// Known residual, deliberate: a wrapped continuation line that itself BEGINS
+// "API Error:" is indistinguishable from the standalone banner rendering by
+// content alone, and still classifies. That is a far narrower target than any
+// sentence merely containing the phrase.
+func TestClassifySubstate_ProseQuotingBannerWithCode_NotAPIError(t *testing.T) {
+	tail := "\n\n╭──────────────────────────────────────────╮\n│ ❯                                        │\n╰──────────────────────────────────────────╯"
+	cases := []struct {
+		name  string
+		prose string
+	}{
+		{
+			"glyph line quoting the banner verbatim mid-sentence",
+			`⏺ worker-3 showed "API Error: Unable to connect to API (ENOTFOUND api.anthropic.com)" so I restarted it.`,
+		},
+		{
+			"glyph line narrating the outage with the code inline",
+			`⏺ The 2026-08-07 outage rendered API Error: Unable to connect to API (ENOTFOUND) in three panes.`,
+		},
+		{
+			"bulleted doc line naming the banner form",
+			"⏺ The two renderings are:\n  - banner form: API Error: Unable to connect to API (ECONNREFUSED 127.0.0.1:443)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := claudeDetector().ClassifySubstate(tc.prose + tail); got == SubstateAPIError {
+				t.Fatalf("prose quoting the banner must not classify api-error, got %q", got)
+			}
+		})
+	}
+}
+
 // The structural requirement on every non-quoted line must not make the real
 // banner unmatchable in its STANDALONE (no assistant glyph) rendering — that
 // form carries the parenthesised transport code and keeps matching.
