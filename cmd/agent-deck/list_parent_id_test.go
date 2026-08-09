@@ -119,6 +119,44 @@ func TestListJSON_ExposesParentID(t *testing.T) {
 	}
 }
 
+func TestListJSON_ExposesClaudePeerMessagingMetadata(t *testing.T) {
+	profile := setupListParentIDTest(t)
+
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile: %v", err)
+	}
+	instances := []*session.Instance{
+		{ID: "a1b2c3d4-1111-2222-3333-444455556666", Title: "Claude Worker", Tool: "claude", ProjectPath: t.TempDir()},
+		{ID: "ffeeddcc-1111-2222-3333-444455556666", Title: "Codex Worker", Tool: "codex", ProjectPath: t.TempDir()},
+	}
+	if err := storage.SaveWithGroups(instances, session.NewGroupTree(nil)); err != nil {
+		t.Fatalf("SaveWithGroups: %v", err)
+	}
+	if err := storage.Close(); err != nil {
+		t.Fatalf("Close storage: %v", err)
+	}
+
+	out := captureListStdout(t, func() { handleList(profile, []string{"--json"}) })
+	var rows []map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatalf("unmarshal list JSON: %v\n%s", err, out)
+	}
+	byTool := map[string]map[string]interface{}{}
+	for _, row := range rows {
+		byTool[row["tool"].(string)] = row
+	}
+	if got := byTool["claude"]["peer_name"]; got != "claude-worker-a1b2c3d4" {
+		t.Fatalf("Claude peer_name = %#v, want deterministic address", got)
+	}
+	if got := byTool["claude"]["peer_messaging_candidate"]; got != true {
+		t.Fatalf("Claude peer_messaging_candidate = %#v, want true", got)
+	}
+	if _, ok := byTool["codex"]["peer_name"]; ok {
+		t.Fatal("Codex list row must not expose a Claude peer name")
+	}
+}
+
 func TestListAllProfilesJSON_ExposesParentID(t *testing.T) {
 	profile := setupListParentIDTest(t)
 

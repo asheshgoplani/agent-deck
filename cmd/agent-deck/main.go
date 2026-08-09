@@ -2202,6 +2202,8 @@ func handleList(profile string, args []string) {
 			Color         string    `json:"color,omitempty"` // issue #391
 			Archived      bool      `json:"archived"`
 			ArchivedAt    time.Time `json:"archived_at,omitempty"`
+			PeerName      string    `json:"peer_name,omitempty"`
+			PeerCandidate bool      `json:"peer_messaging_candidate,omitempty"`
 			// Deliberately NOT omitempty: `ls --json` used to carry no parent
 			// field at all, so `.parent_id` read null for every session and a
 			// conductor verifying that a child parented could not tell "not
@@ -2235,6 +2237,10 @@ func handleList(profile string, args []string) {
 				Archived:      inst.IsArchived(),
 				ArchivedAt:    inst.ArchivedAt,
 				ParentID:      inst.ParentSessionID,
+			}
+			if inst.PeerMessagingCandidate() {
+				sj.PeerName = inst.ClaudePeerName()
+				sj.PeerCandidate = true
 			}
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				sj.TmuxSession = tmuxSess.Name
@@ -2313,6 +2319,8 @@ func handleListAllProfiles(jsonOutput, archivedOnly, includeArchived bool) {
 			SSHHost       string    `json:"ssh_host,omitempty"`
 			SSHRemotePath string    `json:"ssh_remote_path,omitempty"`
 			ParentID      string    `json:"parent_id"` // see handleList
+			PeerName      string    `json:"peer_name,omitempty"`
+			PeerCandidate bool      `json:"peer_messaging_candidate,omitempty"`
 		}
 		var allSessions []sessionJSON
 
@@ -2326,7 +2334,7 @@ func handleListAllProfiles(jsonOutput, archivedOnly, includeArchived bool) {
 				continue
 			}
 			for _, inst := range instances {
-				allSessions = append(allSessions, sessionJSON{
+				row := sessionJSON{
 					ID:            inst.ID,
 					Title:         inst.Title,
 					Path:          inst.ProjectPath,
@@ -2338,7 +2346,12 @@ func handleListAllProfiles(jsonOutput, archivedOnly, includeArchived bool) {
 					SSHHost:       inst.SSHHost,
 					SSHRemotePath: inst.SSHRemotePath,
 					ParentID:      inst.ParentSessionID,
-				})
+				}
+				if inst.PeerMessagingCandidate() {
+					row.PeerName = inst.ClaudePeerName()
+					row.PeerCandidate = true
+				}
+				allSessions = append(allSessions, row)
 			}
 		}
 

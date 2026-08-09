@@ -339,6 +339,23 @@ All read-only / on-demand — none of them block your session:
   consuming anything, so only drain if you specifically want to clear the queue.
 - `agent-deck session stop <id>` / `agent-deck session remove <id>` — teardown.
 
+### Native Claude peer messages
+
+Claude child rows include `peer_messaging_candidate` and `peer_name`. For a
+short status question, dependency handoff, review finding, or unblock answer:
+
+1. Call Claude Code's `ListAgents` and match the child's exact `peer_name`.
+2. When exactly one reachable peer matches, prefer `SendMessage`; it delivers
+   between tool calls and does not interfere with the child's terminal composer.
+3. Fall back to `agent-deck session send <id> "<msg>"` when the peer is absent
+   or ambiguous, delivery is held/refused, native tools are unavailable, or the
+   child is not Claude.
+
+Native messaging is a live coordination fast path, **not completion proof**.
+The durable agent-deck inbox, `session children` completion fields, and the
+`===AGENTDECK_DONE===` sentinel remain authoritative. Do not change Claude
+inbound or permission settings to make a message pass.
+
 There is no always-on background watcher started for you — "monitored by
 default" means transition/completion events **queue** in your inbox; you still
 choose when to look (poll `session children`, or `inbox drain`).
