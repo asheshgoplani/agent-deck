@@ -74,19 +74,20 @@ type Engine struct {
 	// moves. It fixes anchoring the dwell on a stale waiting timestamp and an
 	// old send timestamp surviving a legitimate later idle.
 	substateSeen map[string]substateEntry
-	// draftMemo caches the composer-draft answer per session for
-	// composerDraftTTL. See hasComposerDraft.
+	// draftMemo caches protective "draft present" answers per session for
+	// composerDraftTTL. Empty answers are never cached. See hasComposerDraft.
 	draftMemo map[string]draftEntry
 }
 
-// composerDraftTTL bounds how stale a memoised composer-draft answer may be.
+// composerDraftTTL bounds how long a protective "draft present" answer delays
+// another composer capture.
 //
-// It has to sit between two costs. Below it, a wedged session that keeps
-// clearing the two-read confirm forever — which is what a session does once the
-// breaker is open or its 2-per-6h cap is spent — re-forks `tmux capture-pane`
-// on every act-eligible read, roughly every other poll, unbounded in time.
-// Above it, an operator who starts typing goes unnoticed for that long and their
-// draft can be typed over.
+// It has to sit between two costs. Below it, a drafted wedged session that keeps
+// clearing the two-read confirm forever re-forks `tmux capture-pane` on every
+// act-eligible read, roughly every other poll, unbounded in time. Above it, a
+// cleared draft remains conservatively held for longer than necessary. Empty
+// answers are not memoised, so a newly-typed draft is visible on the next
+// deciding read regardless of this TTL.
 //
 // 10s: the shortest dwell threshold in the policy is 60s, so this is one sixth
 // of the window a session must sit stuck before anything can happen to it, and
@@ -97,10 +98,9 @@ type Engine struct {
 // missing.
 const composerDraftTTL = 10 * time.Second
 
-// draftEntry is one memoised composer-draft answer and when it was resolved.
+// draftEntry records when a memoised "draft present" answer was resolved.
 type draftEntry struct {
-	draft bool
-	at    time.Time
+	at time.Time
 }
 
 // confirmState is the first qualifying read recorded for the two-read confirm.
@@ -397,31 +397,34 @@ func outcomeIsDelivered(outcome string) bool {
 	return outcome == outcomeDelivered
 }
 
-// hasComposerDraft answers "does the target's composer hold operator text",
-// resolving the candidate's deferred lookup at most once per composerDraftTTL
-// per session. Callers must hold e.mu.
+// hasComposerDraft answers "does the target's composer hold operator text".
+// Protective true answers are memoised for composerDraftTTL; false answers are
+// permission for the current deciding read only and are resolved again on the
+// next deciding read. Callers must hold e.mu.
 //
 // A nil lookup means the caller has no way to look, which reads as "no draft"
 // and is never memoised — there is nothing to memoise and no subprocess to save.
 //
-// What is memoised is the ANSWER, in both directions, and only an answer the
-// lookup actually produced. A capture that FAILS never arrives here as "no
-// draft": the lookup owns that fail-safe and reports a failed capture as "there
-// might be a draft" (candidate.go), so the value this stores after an error is
-// true. The memo can therefore delay a resume by up to the TTL after an operator
-// clears their draft, but it can never turn a failed look into permission to
-// type over one.
+// A capture that FAILS never arrives here as "no draft": the lookup owns that
+// fail-safe and reports a failed capture as "there might be a draft"
+// (candidate.go), so failures receive the same protective true memo. The memo
+// can delay a resume by up to the TTL after an operator clears their draft, but
+// it can never let a newly-typed draft hide behind a stale empty answer.
 func (e *Engine) hasComposerDraft(c Candidate, now time.Time) bool {
 	if c.ComposerDraft == nil {
 		return false
 	}
 	if memo, ok := e.draftMemo[c.SessionID]; ok {
 		if age := now.Sub(memo.at); age >= 0 && age < composerDraftTTL {
-			return memo.draft
+			return true
 		}
 	}
 	draft := c.ComposerDraft()
-	e.draftMemo[c.SessionID] = draftEntry{draft: draft, at: now}
+	if draft {
+		e.draftMemo[c.SessionID] = draftEntry{at: now}
+	} else {
+		delete(e.draftMemo, c.SessionID)
+	}
 	return draft
 }
 

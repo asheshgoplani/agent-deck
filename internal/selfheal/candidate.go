@@ -101,16 +101,16 @@ type Candidate struct {
 	// That point is reached repeatedly, not once: it sits above the safety
 	// machine, so a session whose breaker is open or whose cap is spent keeps
 	// arriving there for as long as it stays wedged. The engine therefore
-	// MEMOISES the answer per session with a short TTL rather than re-forking a
-	// capture each time (see Engine.hasComposerDraft / composerDraftTTL). The
-	// memo is why this callback may be invoked far fewer times than the branch
-	// that consults it runs.
+	// MEMOISES protective "draft present" answers per session with a short TTL
+	// rather than re-forking a capture each time (see Engine.hasComposerDraft /
+	// composerDraftTTL). Empty answers are deliberately fresh on every deciding
+	// read, because the operator may begin typing between confirmed cycles.
 	//
 	// nil means the caller has no way to look, which reads as "no draft". The
 	// fail-safe for a capture that ERRORS ("there might be a draft") belongs to
 	// the lookup itself, since only the caller knows a capture failed — and the
-	// engine relies on that: it memoises whatever this returns, so an errored
-	// capture must surface as true, never as false.
+	// engine relies on that: an errored capture must surface as true, never as
+	// false, so it receives the same protective memo as a visible draft.
 	ComposerDraft func() bool
 }
 

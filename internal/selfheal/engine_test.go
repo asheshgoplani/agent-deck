@@ -561,41 +561,43 @@ func TestObserve_ComposerDraftLookup_NeverResolvedBeforeDeciding(t *testing.T) {
 
 // The tail is what the two tests above cannot see: they stop at the first act,
 // and the cost is AFTER it. The D6 branch sits above the safety machine, so a
-// session that keeps clearing the two-read confirm reaches it forever — and that
-// is exactly what a wedged session does once its recoveries are spent and its
-// breaker is open. Measured against the unmemoised engine, a single session
-// wedged for 30 minutes at a 2s poll cost 900 reads → 435 lookups, i.e. 435
-// `tmux capture-pane` forks inside the daemon's serial instance loop, scaling
-// with the poll rate and unbounded in time.
+// drafted session that keeps clearing the two-read confirm reaches it forever.
+// Measured against the unmemoised engine, a single drafted session wedged for
+// 30 minutes at a 2s poll cost 900 reads → 435 lookups, i.e. 435 `tmux
+// capture-pane` forks inside the daemon's serial instance loop, scaling with the
+// poll rate and unbounded in time.
 //
-// The memo makes the rate a function of wall-clock instead: at most one lookup
-// per composerDraftTTL.
-func TestProcessRead_WedgedTail_BoundsTheDraftLookupRate(t *testing.T) {
+// Protective true answers make that rate a function of wall-clock instead: at
+// most one lookup per composerDraftTTL. Empty answers are intentionally outside
+// this bound because they must be fresh before every RecordAttempt.
+func TestProcessRead_DraftedTail_BoundsTheDraftLookupRate(t *testing.T) {
 	const (
 		poll     = 2 * time.Second
 		reads    = 900 // 30 minutes at a 2s poll
 		unmemoed = 435 // the measured pre-fix lookup count for this exact drive
 	)
 	now := time.Unix(1780000000, 0).UTC()
-	// A delivery that is NOT "resumed:submitted" counts as a failed recovery, so
-	// the breaker opens after BreakerK=2 — the state the tail is about.
-	spy := &resumeSpy{outcome: ResumeOutcome("typed_not_submitted")}
+	spy := &resumeSpy{outcome: ResumeOutcome("submitted")}
 	e := resumeEngineFor(spy, &MemorySink{})
-	lookup, calls := countingDraft(false)
+	lookup, calls := countingDraft(true)
 
 	decisions := map[Decision]int{}
+	held := 0
 	for i := 0; i < reads; i++ {
 		c := apiErrorCand(now)
 		c.ComposerDraft = lookup
 		ev := e.ProcessRead(c, now.Add(time.Duration(i)*poll))
 		decisions[ev.Decision]++
+		if ev.Outcome == "held_composer_draft" {
+			held++
+		}
 	}
 
-	if decisions[DecisionBreakerOpen] == 0 {
-		t.Fatalf("premise broken: the tail must run with the breaker open, decisions=%v", decisions)
+	if held == 0 {
+		t.Fatalf("premise broken: the drafted tail must reach the D6 hold, decisions=%v", decisions)
 	}
-	if len(spy.calls) == 0 {
-		t.Fatalf("premise broken: the drive must poll PAST the first act, decisions=%v", decisions)
+	if len(spy.calls) != 0 {
+		t.Fatalf("a drafted tail must never execute, got %d calls", len(spy.calls))
 	}
 	// Every read that clears the confirm still consults the branch — the fix is
 	// not a peek at the gate, and this pins that it is not.
@@ -614,11 +616,12 @@ func TestProcessRead_WedgedTail_BoundsTheDraftLookupRate(t *testing.T) {
 	if *calls*2 > unmemoed {
 		t.Fatalf("lookups = %d; the memo must cut the measured %d tail by more than half", *calls, unmemoed)
 	}
-	t.Logf("reads=%d draft_lookups=%d (was %d) decisions=%v", reads, *calls, unmemoed, decisions)
+	t.Logf("reads=%d held=%d draft_lookups=%d (was %d) decisions=%v", reads, held, *calls, unmemoed, decisions)
 }
 
-// The memo is bounded in the OTHER direction too: it may delay noticing that a
-// draft appeared or cleared, but never by more than composerDraftTTL.
+// The protective true memo is bounded in the OTHER direction too: it may delay
+// noticing that a draft cleared, but never by more than composerDraftTTL. A
+// newly appearing draft is never delayed because false is not memoised.
 func TestProcessRead_DraftMemo_GoesStaleWithinTheTTL(t *testing.T) {
 	now := time.Unix(1780000000, 0).UTC()
 	spy := &resumeSpy{outcome: ResumeOutcome("submitted")}
@@ -646,6 +649,45 @@ func TestProcessRead_DraftMemo_GoesStaleWithinTheTTL(t *testing.T) {
 		}
 	}
 	t.Fatalf("a cleared draft was never noticed within %s of the memo", composerDraftTTL)
+}
+
+// An empty composer answer is permission for the current deciding read only.
+// If the operator starts typing before the next confirmed cycle, that cycle
+// must see the draft before RecordAttempt rather than spend another recovery on
+// a send that the downstream composer guard will refuse.
+func TestProcessRead_DraftAppearsAfterEmptyRead_HoldsWithoutSpendingBudget(t *testing.T) {
+	now := time.Unix(1780000000, 0).UTC()
+	spy := &resumeSpy{outcome: ResumeOutcome("submitted")}
+	e := resumeEngineFor(spy, &MemorySink{})
+	drafted := false
+	c := apiErrorCand(now)
+	c.ComposerDraft = func() bool { return drafted }
+
+	e.ProcessRead(c, now.Add(apiReadAnchor))
+	e.ProcessRead(c, now.Add(apiReadConfirm1))
+	if ev := e.ProcessRead(c, now.Add(apiReadConfirm2)); ev.Action != ActionResume {
+		t.Fatalf("premise broken: the empty composer must permit the first resume, got action %q outcome %q", ev.Action, ev.Outcome)
+	}
+	_, before := e.policy.Gate(c, now.Add(apiReadConfirm2+time.Second))
+	if before.Session6h != 1 || before.GlobalHour != 1 {
+		t.Fatalf("premise broken: first resume must spend one recovery, caps=%+v", before)
+	}
+
+	// Still within composerDraftTTL of the empty answer, the operator starts
+	// typing and the next two reads form another confirmed cycle.
+	drafted = true
+	e.ProcessRead(c, now.Add(apiReadConfirm2+2*time.Second))
+	ev := e.ProcessRead(c, now.Add(apiReadConfirm2+4*time.Second))
+	if ev.Outcome != "held_composer_draft" {
+		t.Fatalf("a newly-typed draft must hold before RecordAttempt, got action %q outcome %q", ev.Action, ev.Outcome)
+	}
+	if ev.Action != ActionNone {
+		t.Fatalf("a newly-typed draft must take no action, got %q", ev.Action)
+	}
+	_, after := e.policy.Gate(c, now.Add(apiReadConfirm2+5*time.Second))
+	if after.Session6h != before.Session6h || after.GlobalHour != before.GlobalHour {
+		t.Fatalf("holding a new draft must not spend recovery budget: before=%+v after=%+v", before, after)
+	}
 }
 
 // The memo must be EVICTED when a session leaves the stuck class, not left to
