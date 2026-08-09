@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,6 +177,66 @@ func TestHandleAddEmptyGroupDefaultReachesGlobalDefaultPath(t *testing.T) {
 		t.Fatalf("issue #1879: pathless add into a group with an empty default_path landed in %q, "+
 			"want the global config default_path %q", got, globalDefault)
 	}
+}
+
+// TestDescribeGroupDefaultPathDistinguishesDerivedFromExplicit pins the second
+// half of #1879: `group show`/`create`/`update` must not present the
+// most-recent-session guess as if it were the group's configured default_path.
+func TestDescribeGroupDefaultPathDistinguishesDerivedFromExplicit(t *testing.T) {
+	inst := session.NewInstanceWithGroupAndTool("existing", "/home/user/some-other-project", "my-group", "claude")
+	inst.LastAccessedAt = time.Now()
+	instances := []*session.Instance{inst}
+
+	t.Run("derived", func(t *testing.T) {
+		tree := session.NewGroupTreeWithGroups(instances, []*session.GroupData{
+			{Name: "MyGroup", Path: "my-group", Expanded: true, DefaultPath: ""},
+		})
+
+		got := describeGroupDefaultPath(tree, "my-group")
+		if got.Source != "recent_session" {
+			t.Fatalf("Source = %q, want %q", got.Source, "recent_session")
+		}
+		if got.Effective != "/home/user/some-other-project" {
+			t.Fatalf("Effective = %q, want %q", got.Effective, "/home/user/some-other-project")
+		}
+		if got.Explicit != "" {
+			t.Fatalf("Explicit = %q, want \"\": no default_path is configured on this group", got.Explicit)
+		}
+		if !strings.Contains(got.Display(), "derived") {
+			t.Fatalf("Display() = %q, want it to mark the value as derived", got.Display())
+		}
+	})
+
+	t.Run("explicit", func(t *testing.T) {
+		tree := session.NewGroupTreeWithGroups(instances, []*session.GroupData{
+			{Name: "MyGroup", Path: "my-group", Expanded: true, DefaultPath: "/home/user/configured"},
+		})
+
+		got := describeGroupDefaultPath(tree, "my-group")
+		if got.Source != "explicit" {
+			t.Fatalf("Source = %q, want %q", got.Source, "explicit")
+		}
+		if got.Effective != "/home/user/configured" || got.Explicit != "/home/user/configured" {
+			t.Fatalf("got Effective=%q Explicit=%q, want both %q", got.Effective, got.Explicit, "/home/user/configured")
+		}
+		if strings.Contains(got.Display(), "derived") {
+			t.Fatalf("Display() = %q, must not annotate a configured default_path as derived", got.Display())
+		}
+	})
+
+	t.Run("none", func(t *testing.T) {
+		tree := session.NewGroupTreeWithGroups(nil, []*session.GroupData{
+			{Name: "Empty", Path: "empty", Expanded: true},
+		})
+
+		got := describeGroupDefaultPath(tree, "empty")
+		if got.Source != "none" || got.Effective != "" || got.Explicit != "" {
+			t.Fatalf("got %+v, want an empty report with Source %q", got, "none")
+		}
+		if got.Display() != "(none)" {
+			t.Fatalf("Display() = %q, want %q", got.Display(), "(none)")
+		}
+	})
 }
 
 // TestHandleAddRecentSessionStillUsedWithoutGlobalDefault mirrors the launch

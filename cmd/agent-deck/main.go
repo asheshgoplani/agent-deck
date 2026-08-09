@@ -1365,7 +1365,8 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("Add a new session to Agent Deck.")
 		fmt.Println()
 		fmt.Println("Arguments:")
-		fmt.Println("  [path]    Project directory (defaults to the group or global default_path, else current directory)")
+		fmt.Println("  [path]    Project directory (default: group default_path, then global default_path,")
+		fmt.Println("            then the group's most recent session path, then current directory)")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -1525,15 +1526,28 @@ func handleAdd(profile string, args []string) {
 			os.Exit(1)
 		}
 	} else {
-		// No explicit path provided: use group default path first, then global
-		// config default_path, then cwd fallback.
+		// No explicit path provided: use the group's explicitly configured
+		// default_path first, then global config default_path, then the
+		// group's most-recent-session path, then cwd.
+		//
+		// #1879: the most-recent-session path is derived, not configured — it
+		// must not shadow the global config default_path the way an explicit
+		// per-group default_path does.
+		var recentSessionPath string
 		if sessionGroup != "" {
-			path = groupTree.DefaultPathForGroup(sessionGroup)
+			if explicitPath, hasExplicit := groupTree.ExplicitDefaultPathForGroup(sessionGroup); hasExplicit {
+				path = explicitPath
+			} else {
+				recentSessionPath = groupTree.RecentSessionPathForGroup(sessionGroup)
+			}
 		}
 		if path == "" {
 			if userCfg, cfgErr := session.LoadUserConfig(); cfgErr == nil {
 				path = resolveConfiguredDefaultPath(userCfg.DefaultPath)
 			}
+		}
+		if path == "" {
+			path = recentSessionPath
 		}
 		if path == "" {
 			path, err = os.Getwd()
