@@ -907,7 +907,11 @@ func readProcessExe(pid int) (string, error) {
 // the same PID cannot share it in practice: reuse requires wrapping the whole
 // pid_max range, which takes far longer than the field's 10ms resolution.
 // macOS (or a Linux host without /proc) falls back to `ps -o lstart=`, the same
-// fact at second resolution.
+// fact at second resolution — which is the fallback's one real weakness: a pid
+// reused inside the same second reads as the same incarnation there, and the
+// guard passes it through. That is still strictly better than the bare pid it
+// replaces, and Linux, where this sweep's worst incident happened, gets the
+// 10ms field.
 //
 // Read errors are returned rather than swallowed: an unreadable identity is
 // the caller's signal that the guard cannot be armed, which is a different
@@ -1016,6 +1020,13 @@ func stillSameIncarnation(pid int, identity string) bool {
 //     one you signalled" — so without this check a well-behaved client that
 //     obeyed SIGTERM promptly is indistinguishable from one that ignored it,
 //     and the escalation lands on the new occupant.
+//
+// What this does NOT do is close the window — it narrows it. A pid can still
+// change hands between the check returning and the kill(2) landing; the race is
+// simply one syscall wide now instead of the ~500ms the escalation used to hold
+// it open. Closing it outright needs a handle the kernel resolves atomically —
+// pidfd_send_signal(2) on Linux 5.1+, which the host this surfaced on has —
+// and that is a bigger change than the sweep is worth today.
 //
 // signalled reports whether anything was sent at all. Callers count kills and
 // log one line per victim, and a pid the guard refused to touch is not a

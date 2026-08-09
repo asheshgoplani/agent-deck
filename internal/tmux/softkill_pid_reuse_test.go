@@ -190,6 +190,13 @@ func TestSoftKillProcess_SkipsEscalationWhenPIDRecycledDuringGrace(t *testing.T)
 	usedSIGKILL := softKillProcess(pid, 100*time.Millisecond)
 
 	assert.False(t, usedSIGKILL, "escalation must not fire once the pid changed hands")
+	// Without this, the test passes just as happily when the SIGTERM never went
+	// out at all — a pre-signal check that started failing would skip straight
+	// past the escalation this test exists to cover, and usedSIGKILL would be
+	// false for the wrong reason. The third read IS the escalation check, so
+	// reaching it proves the guarded path ran end to end.
+	assert.GreaterOrEqual(t, calls, 3,
+		"the escalation check must have been reached (capture, pre-signal check, then escalation)")
 	select {
 	case <-exited:
 		t.Fatal("the new occupant of the pid was SIGKILL'd by the escalation")
