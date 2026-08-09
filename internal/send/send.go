@@ -10,7 +10,22 @@ import (
 // HasUnsentPastedPrompt detects Claude's composer marker for a pasted-but-unsent prompt.
 // Example: "[Pasted text #1 +89 lines]".
 func HasUnsentPastedPrompt(content string) bool {
-	return strings.Contains(strings.ToLower(content), "[pasted text")
+	return CountPasteMarkers(content) > 0
+}
+
+// CountPasteMarkers reports HOW MANY "[Pasted text …]" markers content holds.
+// It is the same match HasUnsentPastedPrompt makes, kept as one implementation
+// so the boolean and the count can never drift apart.
+//
+// The count exists because presence alone is not a signal for a caller that
+// must attribute a marker to ONE send: a submitted paste leaves its collapsed
+// marker on screen for good, so "a marker is visible" is permanently true
+// after the first multi-line delivery to a pane, while "one more marker than
+// before" stays true of each subsequent send (issue #1855). Callers measuring
+// a delta must count; callers asking a yes/no question about the pane right
+// now (the #1777 attribution gate) must not.
+func CountPasteMarkers(content string) int {
+	return strings.Count(strings.ToLower(content), "[pasted text")
 }
 
 // firstNonEmptyLine returns the first physical line of s that is non-empty

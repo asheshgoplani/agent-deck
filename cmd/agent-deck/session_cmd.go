@@ -3648,14 +3648,18 @@ type sendArrivalBaseline struct {
 	// off rather than defaulted to zero: a failed look would otherwise make
 	// a pre-existing copy of a repeated message read as a new arrival.
 	paneOK bool
-	// pasteMarker reports whether a "[Pasted text …]" collapse marker was
-	// already visible before the send. Only meaningful when paneOK is true —
-	// it comes from the same capture. Needed because the transport frames
-	// multi-line bodies as bracketed pastes (issue #1855), which a composer
-	// renders as that marker instead of the verbatim body: a marker that was
-	// NOT there before the send is this send's own payload arriving, and
-	// without the baseline a stale marker in scrollback would read as one.
-	pasteMarker bool
+	// pasteMarkers is how many "[Pasted text …]" collapse markers the
+	// composer already held before the send. Only meaningful when paneOK is
+	// true — it comes from the same capture. Needed because the transport
+	// frames multi-line bodies as bracketed pastes (issue #1855), which a
+	// composer renders as that marker instead of the verbatim body.
+	//
+	// A COUNT, exactly like occurrences above, and for the same reason: a
+	// submitted paste leaves its marker on screen permanently, so a boolean
+	// "a marker was already there" is armed forever after the first
+	// multi-line send to a pane and kills the signal for every later one.
+	// Only "one more than before" is attributable to THIS send.
+	pasteMarkers int
 	// wasActive reports whether the agent was already working before the
 	// send, in which case "it is active now" proves nothing.
 	wasActive bool
@@ -3670,8 +3674,8 @@ type sendArrivalBaseline struct {
 // baseline is disabled, never guessed.
 func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalBaseline {
 	base := sendArrivalBaseline{}
-	if n, marker, ok := paneArrivalObservation(target, message); ok {
-		base.occurrences, base.pasteMarker, base.paneOK = n, marker, true
+	if n, markers, ok := paneArrivalObservation(target, message); ok {
+		base.occurrences, base.pasteMarkers, base.paneOK = n, markers, true
 	}
 	if status, err := target.GetStatus(); err == nil {
 		base.wasActive, base.statusOK = status == "active", true
@@ -3757,20 +3761,29 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 			}
 		}
 		if baseline.paneOK {
-			if n, marker, ok := paneArrivalObservation(target, message); ok {
+			if n, markers, ok := paneArrivalObservation(target, message); ok {
 				if n > baseline.occurrences {
 					// Keep polling: the body is in, but the turn may still
 					// start within the budget and upgrade this to submitted.
 					sawBody = true
 				}
-				// A paste marker that was not there before the send is the
-				// collapsed rendering of this send's own framed body (issue
-				// #1855) — codex-style composers render agent-deck's
+				// A paste marker the COMPOSER did not hold before the send is
+				// the collapsed rendering of this send's own framed body
+				// (issue #1855) — codex-style composers render agent-deck's
 				// multi-line paste as "[Pasted text …]" too, so the verbatim
 				// token may never become visible. Same evidentiary strength
-				// as the body itself: bytes reached the composer, and
-				// nothing about the agent accepting them.
-				if marker && !baseline.pasteMarker {
+				// as the body itself: bytes reached the composer, and nothing
+				// about the agent accepting them.
+				//
+				// Measured as `markers > baseline.pasteMarkers`, the same
+				// delta idiom as the body count above and for the same
+				// reason. A boolean here would be wrong twice over: a
+				// submitted paste leaves its marker on screen, so the
+				// baseline arms permanently after the first multi-line send
+				// to the pane, and a marker sitting in the TRANSCRIPT (the
+				// shape of a send that SUCCEEDED) is not a composer holding
+				// unsent bytes.
+				if markers > baseline.pasteMarkers {
 					sawBody = true
 				}
 			}
@@ -3850,24 +3863,38 @@ func maxDeliverableLineBytes(target sendRetryTarget) int {
 
 // paneArrivalObservation reads the pane ONCE and reports both arrival signals
 // the check compares against its baseline: how many times the message's
-// distinctive token is visible, and whether a "[Pasted text …]" collapse
-// marker is visible. One capture serving both signals is deliberate — they
-// must describe the same instant, and the scripted-capture test fakes index
-// captures by call count. The final bool reports whether the pane was
-// actually read: a failed look is not "zero occurrences", it is no
+// distinctive token is visible in the pane, and how many "[Pasted text …]"
+// collapse markers the COMPOSER holds. One capture serving both signals is
+// deliberate — they must describe the same instant, and the scripted-capture
+// test fakes index captures by call count. The final bool reports whether the
+// pane was actually read: a failed look is not "zero occurrences", it is no
 // observation at all, and callers must not treat the two the same. A message
 // too short to yield a token reports false without reading the pane.
-func paneArrivalObservation(target sendRetryTarget, message string) (int, bool, bool) {
+//
+// The two signals are scoped differently on purpose. The body token is looked
+// for across the WHOLE pane, because a body that scrolled out of the composer
+// into the transcript still arrived. The marker is scoped to the COMPOSER
+// (send.ComposerPasteMarkerCount, the counting form of the helper the sibling
+// paths at launch_verify_prompt.go:76 and internal/ui/home.go:10308 already
+// use), because a marker in the TRANSCRIPT is the ordinary trace of a
+// SUCCESSFUL multi-line send: reading it as this send's unsent bytes turns a
+// delivered message into a "submission was never confirmed" failure, and a
+// false negative is the input to the double-delivery class (#876). Only a
+// composer holding one more marker than before is unsubmitted payload.
+//
+// Both counts are raw observations; the caller compares them to its baseline.
+func paneArrivalObservation(target sendRetryTarget, message string) (int, int, bool) {
 	token := collapseWhitespace(messageDeliveryToken(message))
 	if token == "" {
-		return 0, false, false
+		return 0, 0, false
 	}
 	raw, err := target.CapturePaneFresh()
 	if err != nil {
-		return 0, false, false
+		return 0, 0, false
 	}
 	content := tmux.StripANSI(raw)
-	return strings.Count(collapseWhitespace(content), token), send.HasUnsentPastedPrompt(content), true
+	return strings.Count(collapseWhitespace(content), token),
+		send.ComposerPasteMarkerCount(raw, tmux.StripANSI), true
 }
 
 // collapseWhitespace removes every whitespace byte, so a comparison survives
