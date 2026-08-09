@@ -970,6 +970,7 @@ agent-deck web --token my-secret
 | Guide | What's Inside |
 |-------|---------------|
 | [Conductor](docs/conductor/) | What a conductor is, channel pairing, state files, multi-conductor setups |
+| [Self-heal](docs/self-heal.md) | Supervision pass: modes, caps, the `resume` action, reading the audit, deployment gotchas |
 | [Skills](documentation/SKILLS.md) | User-level vs pool skills, authoring, attach/detach, when to use which tier |
 | [Watchdog](documentation/WATCHDOG.md) | Optional Python daemon that auto-restarts critical sessions and nudges stuck children |
 | [Watchers](documentation/WATCHERS.md) | Event-forwarding framework: doorbell model, built-in adapters, custom watchers, gotchas |

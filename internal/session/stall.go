@@ -119,17 +119,41 @@ type stallSource interface {
 }
 
 // promoteStalled refines an already-computed substate with dwell information,
-// returning SubstateStalled when a session reported as idle-at-empty-prompt is
-// in fact holding an unchanging composer draft.
+// returning SubstateStalled when a session that looks idle — or that is showing
+// a transport-error banner — is in fact holding an unchanging composer draft.
 //
-// Only the idle-at-empty-prompt verdict is eligible: a running, auth-failed or
-// model-unavailable session is already being described accurately, and a
-// session with no composer at all has nothing to stall on.
+// Two bases are eligible:
+//
+//   - SubstateIdleAtEmptyPrompt — the original case: content-only heuristics
+//     cannot tell a wedged composer from a healthy empty prompt.
+//   - SubstateAPIError — the SAME case, now classified one step earlier. This
+//     substate is defined by precisely the banner this detector was built from
+//     ("API Error: Unable to connect to API (ConnectionRefused)", 2026-07-24),
+//     and it is checked ahead of the idle verdict, so refining only the idle
+//     base would make SubstateStalled unreachable for the panes it exists to
+//     describe.
+//
+// The split is load-bearing for recovery, not cosmetic:
+//
+//   - banner + EMPTY composer  -> stays api-error, and self-heal may deliver one
+//     continuation prompt after its dwell; there is no operator text to destroy.
+//   - banner + DRAFTED composer -> stalled, and `session nudge` REFUSES to send.
+//     That refusal is the thing standing between an operator's in-flight draft
+//     and a send that consumes it (the --force path is known to consume rather
+//     than restore it). Submitting someone else's text is not a decision a
+//     status probe gets to make.
+//
+// SubstateStalled remains reporting-only: it is deliberately absent from
+// selfheal's stuckDwellThresholds and actionForSubstate, so promotion here can
+// only ever protect a session, never schedule an action against it.
+//
+// A running, auth-failed or model-unavailable session is already being described
+// accurately, and a session with no composer at all has nothing to stall on.
 func promoteStalled(base tmux.Substate, src stallSource, tracker *stallTracker) tmux.Substate {
 	if tracker == nil {
 		return base
 	}
-	if base != tmux.SubstateIdleAtEmptyPrompt {
+	if base != tmux.SubstateIdleAtEmptyPrompt && base != tmux.SubstateAPIError {
 		tracker.reset()
 		return base
 	}

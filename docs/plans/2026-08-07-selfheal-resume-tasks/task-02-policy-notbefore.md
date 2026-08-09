@@ -481,3 +481,48 @@ own: ModeResume is defined but the engine chokepoint is a separate change."
 - `internal/selfheal/candidate.go`: `Evaluate` returns `PredicateResult{Decision: DecisionSkipNotBefore}` when `!c.NotBefore.IsZero() && now.Before(c.NotBefore)`
 
 ## Record (append-only)
+
+### 2026-08-07 — implemented
+
+- Files touched: `internal/selfheal/selfheal.go`, `internal/selfheal/candidate.go`,
+  `internal/selfheal/predicate_test.go`, `internal/selfheal/policy_test.go`.
+- Implemented exactly as written; no deviations.
+- Precondition checked: `grep -n 'SubstateAPIError' internal/tmux/substate.go` →
+  lines 41/61/156 (task 01 landed as `d07176c4`).
+- Verification: `gofmt -l internal/selfheal/` → empty. `go build ./...` → exit 0.
+  `go vet ./internal/selfheal/` → exit 0.
+  `go test ./internal/selfheal/ -count=1 -v` → EXIT=0, `ok`, 48 `--- PASS`, 0 FAIL;
+  sentinel `TestEvaluate_NotBeforeInFuture_Skips` PASS.
+  `go test ./internal/selfheal/ -run 'NotBefore|APIError|UsageLimit|Resume|Resend'
+  -count=1 -v` → all 12 new tests PASS, `ok`.
+- No concerns.
+
+### 2026-08-08 — amended by review round 1 (commit `225ff78f`)
+
+The Record above said "implemented exactly as written; no deviations". That was
+true when written and is no longer. Round 1 changed one thing this task
+specified, and the spec text above was not amended with it:
+
+- **AC 2 and Interfaces → produces** both specify
+  `Candidate.ComposerDraft bool`. The shipped field is
+  `Candidate.ComposerDraft func() bool` — a DEFERRED lookup, not a pre-read
+  value.
+- Why: as a bool, the daemon adapter had to resolve it while ASSEMBLING every
+  candidate, which is a fresh `tmux capture-pane` (3s timeout) per wedged
+  session per 1-3s poll, inside the daemon's serial instance loop — including
+  for the reads that can only ever return `skip_dwell` / `skip_confirm` and
+  never consult it. A transport outage wedges sessions in correlated batches, so
+  that is the multi-second-freeze class this repo has hit before. Deferring it
+  moves the cost to the one branch that actually reads it.
+- What did NOT change: the field is still task 03's to act on, this task still
+  only adds it, and every other AC in this task is unaffected. `NotBefore`,
+  the dwell thresholds, `actionForSubstate` and `Evaluate` are all as written.
+
+### 2026-08-08 — amended by review round 2 (commit `d51925e1`)
+
+- No AC changed. The `Candidate` TYPE comment was corrected: it still claimed
+  "the policy never reaches back into tmux or the DB; everything it needs to
+  decide is in here", which stopped being true the moment `ComposerDraft` became
+  a callback. It now states the accurate invariant — every field except
+  `ComposerDraft` is a value read before evaluation, which is what keeps
+  `Evaluate` pure, and `ComposerDraft` is resolved by the engine outside it.

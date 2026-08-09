@@ -91,7 +91,7 @@ detector that this feature does not need. Leave `usageLimitMaxAge` alone.
 ## Acceptance criteria
 
 1. `latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool, text string, recordTS time.Time, ok bool)`
-   — the single canonical signature; the old 2-value form is gone and all eight
+   — the single canonical signature; the old 2-value form is gone and all seven
    existing test call sites are updated.
 2. `parseUsageLimitReset(text string, recordTS time.Time) (time.Time, bool)` handles
    `resets 6:10pm (Europe/Skopje)`, `resets 6pm (UTC)`, day rollover, unknown zone.
@@ -479,9 +479,10 @@ In the `Instance` struct, immediately after `usageLimitScanGen    uint64`
 	usageLimitNotBeforeCached time.Time
 ```
 
-### 7. `internal/session/usagelimit_test.go` — update the eight call sites
+### 7. `internal/session/usagelimit_test.go` — update the seven call sites
 
-Mechanical. Apply exactly:
+Mechanical. Apply exactly (`grep -c 'latestAssistantTurnIsRateLimited('
+internal/session/usagelimit_test.go` returns 7 — the list below is complete):
 
 - line 153: `limited, ok := latestAssistantTurnIsRateLimited(...)` → `limited, _, _, ok := latestAssistantTurnIsRateLimited(...)`
 - line 163: same shape → `limited, _, _, ok := ...`
@@ -811,3 +812,74 @@ the whole record's unmarshal on the other and silently un-detected it."
 - `internal/session/instance.go`: `Instance.usageLimitNotBeforeCached time.Time` (unexported; only `UsageLimitNotBefore()` reads it)
 
 ## Record (append-only)
+
+### 2026-08-07 — implemented (COMPLETE)
+
+- Files touched: `internal/session/usagelimit.go`,
+  `internal/session/usagelimit_reset_test.go` (new),
+  `internal/session/usagelimit_test.go`, `internal/session/instance.go`.
+- Implemented exactly as written; no deviations. All seven edits applied:
+  constants + regexp, `transcriptRecord` dual-shape `Content json.RawMessage` +
+  `contentBlock` + `text()` + `decodeTranscriptText()` + `recordTime()`,
+  `parseUsageLimitReset`, `usageLimitNotBefore`, the widened 4-value
+  `latestAssistantTurnIsRateLimited` (all five bare returns + the `consider`
+  closure + both call sites + the final return), the memo wiring in
+  `usageLimited()` (rebind discard, scan destructure, publish switch),
+  `(*Instance).UsageLimitNotBefore()`, and the
+  `Instance.usageLimitNotBeforeCached` field.
+- All seven `usagelimit_test.go` call sites updated to destructure four values
+  (lines 153, 163, 211, 282, 314, 331, 378); `grep -n` confirms no 2-value form
+  remains.
+- Verification:
+  `gofmt -l internal/session/usagelimit.go internal/session/usagelimit_test.go
+  internal/session/usagelimit_reset_test.go internal/session/instance.go` → empty.
+  `go build ./...` → exit 0.
+  `go vet ./internal/session/` → clean apart from the pre-existing
+  `issue1225_wake_nudge_wiring_test.go:217 range var c copies lock` noted in
+  task 01's Record (untouched file, not introduced here).
+  `go test ./internal/session/ -run 'UsageLimit|TranscriptRecord' -count=1 -v`
+  → EXIT=0, `ok`, 37 `--- PASS`, 0 FAIL; sentinel
+  `TestUsageLimitNotBefore_FreshRejectionAfterAttempt_Rearms` PASS.
+  `go test ./internal/session/ -run 'TestLatestAssistantTurn|TestUsageLimited'
+  -count=1 -v` → 29 `--- PASS`, `ok` (the signature change altered no verdict).
+- Scope note honoured: `usageLimitMaxAge` is unchanged and belief was NOT
+  extended to the parsed reset.
+- No concerns.
+
+### 2026-08-08 — amended by review round 2 (commits `225ff78f`, `7187cc75`)
+
+The Record above said "implemented exactly as written; no deviations". That was
+true when written and is no longer — the round-1/round-2 fixes changed one thing
+this task specifies by name, and this Record was not amended with it at the time
+(caught by round 3, finding 5).
+
+- **AC 4** mandates `(*Instance).UsageLimitNotBefore()` as the exported accessor.
+  That method is **deleted**. `225ff78f` replaced it with
+  `(*Instance).usageLimitedWithSchedule() (bool, time.Time)`, which reads the
+  verdict and its schedule together under ONE `RLock`; `7187cc75` then removed
+  the orphaned `UsageLimitNotBefore` once nothing referenced it.
+  `grep -rn 'UsageLimitNotBefore' --include='*.go' .` → no output.
+- Why: read apart, the two fields are a torn read. A rebind between the verdict
+  read and the schedule read hands the caller session B's "limited" with session
+  A's `NotBefore`, which schedules a resume against a window that was never
+  session B's. The single-accessor form makes that unrepresentable.
+- What did NOT change: everything else in this task. `parseUsageLimitReset`, the
+  constants and regexp, the dual-shape `transcriptRecord`, the widened 4-value
+  `latestAssistantTurnIsRateLimited`, the memo wiring in `usageLimited()`, the
+  `usageLimitNotBeforeCached` field, `usageLimitMaxAge` and the deliberate
+  non-extension of belief to the parsed reset are all as written. Only the shape
+  of the ACCESSOR moved.
+- Also from round 1 (`dff232ce`), affecting this task's parse path but no AC:
+  the two silent fallbacks are now observable — `usage_limit_reset_unparsed` and
+  `usage_limit_reset_zone_unloadable` debug lines — and the DST normalisation is
+  documented in place. The 24-hour rendering (`resets 18:10`) remains out of
+  scope and takes the logged flat-backoff fallback, as this task specified.
+
+### 2026-08-08 — amended by review round 3 (this round)
+
+- No AC changed. Round 3 finding 2 rewrote the usage-limit resume prompt, which
+  this task's parse path feeds: because the schedule that releases a send is
+  frequently the flat `usageLimitResetBackoff` guess rather than a parsed reset —
+  taken for an absent reset string, an unparseable one, an unresolvable zone, and
+  every 24-hour rendering this task deferred — the prompt no longer asserts the
+  window HAS reset. See task 05's round-3 amendment for the text.

@@ -8,20 +8,33 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
-// ErrActionInGuardedMode is returned if an action executor is ever invoked while
-// the engine is in a guarded mode (single_action / full). Stages 2-3 are HELD
-// pending Ashesh re-approval + the three §9 gap-fixes, so those modes refuse to
-// act. observe never reaches an executor at all.
+// ErrActionInGuardedMode is returned by the execution chokepoint for every
+// (mode, action) pair except (ModeResume, ActionResume). single_action / full
+// are HELD pending re-approval + the three §9 gap-fixes; observe never reaches
+// the chokepoint at all.
 var ErrActionInGuardedMode = errors.New("selfheal: actions are HELD (Stages 2-3 not re-approved)")
 
-// ActionExecutor performs a real recovery. STAGE 1 NEVER CONSTRUCTS ONE — the
-// observe-mode engine has a nil executor and a guarded mode refuses to call it.
-// The interface exists so the wiring is in place for Stage 2 without reshaping
-// the engine, but every method is unreachable in v1.9.67.
+// ErrNoExecutor is returned when an ACTING engine reaches the chokepoint holding
+// no executor. NewResumeEngine requires one, so this is a mis-wire — and it is
+// reported as an error rather than a nil-error no-op precisely so it cannot read
+// as a normal quiet decline to a caller inspecting the error.
+//
+// Be clear about its OBSERVABLE effect today: executeIfAuthorized is called from
+// exactly one place, which discards the error, so the only thing this value
+// changes for an operator is the "no_executor" outcome string in the audit
+// record. It exists so a future caller that DOES inspect the error can tell a
+// mis-wire from a refusal.
+var ErrNoExecutor = errors.New("selfheal: acting engine has no executor")
+
+// ActionExecutor performs a real recovery. It is reachable ONLY through
+// Engine.executeIfAuthorized, and only for the pair (ModeResume, ActionResume) —
+// observe holds a nil executor and every other mode/action pair is refused with
+// ErrActionInGuardedMode.
 type ActionExecutor interface {
 	// Execute applies the action to the candidate and reports the immediate
-	// outcome string. Only ever called in single_action/full AFTER the §9 gaps
-	// close and Ashesh re-approves.
+	// outcome string. The outcome MUST carry the real delivery verdict (the
+	// caller records it verbatim in the audit event), so a resume that was typed
+	// but never submitted is visible as a failure rather than a success.
 	Execute(c Candidate, a Action) (outcome string, err error)
 }
 
@@ -61,6 +74,33 @@ type Engine struct {
 	// moves. It fixes anchoring the dwell on a stale waiting timestamp and an
 	// old send timestamp surviving a legitimate later idle.
 	substateSeen map[string]substateEntry
+	// draftMemo caches protective "draft present" answers per session for
+	// composerDraftTTL. Empty answers are never cached. See hasComposerDraft.
+	draftMemo map[string]draftEntry
+}
+
+// composerDraftTTL bounds how long a protective "draft present" answer delays
+// another composer capture.
+//
+// It has to sit between two costs. Below it, a drafted wedged session that keeps
+// clearing the two-read confirm forever re-forks `tmux capture-pane` on every
+// act-eligible read, roughly every other poll, unbounded in time. Above it, a
+// cleared draft remains conservatively held for longer than necessary. Empty
+// answers are not memoised, so a newly-typed draft is visible on the next
+// deciding read regardless of this TTL.
+//
+// 10s: the shortest dwell threshold in the policy is 60s, so this is one sixth
+// of the window a session must sit stuck before anything can happen to it, and
+// it is at least three polls at the fastest 1s cadence. Against the measured
+// 30-minute wedged tail (900 reads at a 2s poll, 435 act-eligible reads, 435
+// lookups) it bounds the lookups at ~180 — the tail stops scaling with the poll
+// rate and starts scaling with wall-clock, which is the property that was
+// missing.
+const composerDraftTTL = 10 * time.Second
+
+// draftEntry records when a memoised "draft present" answer was resolved.
+type draftEntry struct {
+	at time.Time
 }
 
 // confirmState is the first qualifying read recorded for the two-read confirm.
@@ -95,6 +135,29 @@ func NewObserveEngine(caps Caps, sink EventSink) *Engine {
 		prevSig:      map[string]string{},
 		confirmed:    map[string]confirmState{},
 		substateSeen: map[string]substateEntry{},
+		draftMemo:    map[string]draftEntry{},
+	}
+}
+
+// NewResumeEngine builds the ONE acting engine: mode "resume", authorised for
+// exactly the pair (ModeResume, ActionResume) and nothing else. Every other
+// action — including ActionResend and the two restart actions — still refuses at
+// the chokepoint, so approving this mode approves one narrow path rather than
+// reopening single_action / full.
+//
+// exec must be non-nil; an acting engine with no executor is a mis-wire, and the
+// chokepoint reports it as such rather than silently doing nothing.
+func NewResumeEngine(caps Caps, sink EventSink, exec ActionExecutor) *Engine {
+	return &Engine{
+		mode:         ModeResume,
+		caps:         caps,
+		policy:       NewPolicyMachine(caps),
+		sink:         sink,
+		exec:         exec,
+		prevSig:      map[string]string{},
+		confirmed:    map[string]confirmState{},
+		substateSeen: map[string]substateEntry{},
+		draftMemo:    map[string]draftEntry{},
 	}
 }
 
@@ -165,8 +228,14 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 	}
 
 	if !res.Candidate {
-		// Not a candidate this read → the confirm chain resets.
+		// Not a candidate this read → the confirm chain resets. The session has
+		// demonstrably left the stuck class, so drop its composer-draft memo too:
+		// the engine is long-lived per profile in a daemon that runs for weeks, and
+		// without this every session it has ever evaluated leaves a permanent
+		// entry. Evicting here also makes the next answer fresher rather than
+		// staler.
 		delete(e.confirmed, c.SessionID)
+		delete(e.draftMemo, c.SessionID)
 		ev.Reads = []ReadSig{{T: formatTS(now), Sig: c.OutputSig}}
 		_ = e.sink.Append(ev)
 		return ev
@@ -192,6 +261,54 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 	second := thisRead
 	ev.Reads = []ReadSig{first.read, second}
 
+	would := WouldHaveAction(c.Substate)
+
+	// D6: an operator draft in the composer is a HARD precondition, evaluated
+	// BEFORE the safety machine on purpose — see the note above this code block.
+	// A draft is not a failed recovery and must not spend one.
+	//
+	// Submitting someone else's text is not a decision a status probe gets to
+	// make, and the force-send path is known to CONSUME the draft rather than
+	// restore it (2026-08-07, conductor2-testfix). Downgrading to escalate here
+	// means the audit records a session that needs a human, no cap is spent, and
+	// no mode — including observe — can proceed past it. Observe short-circuits
+	// on the same branch deliberately: observe exists to model what resume WOULD
+	// do, and resume spends nothing here.
+	//
+	// This is the ONLY place the deferred draft lookup is consulted. Every earlier
+	// exit — not-a-candidate, skip_dwell, skip_confirm — returns without touching
+	// it, so the reads that can only decline cost no pane capture at all.
+	//
+	// It is NOT once per wedged session. This branch sits above the safety
+	// machine, so every read that clears the two-read confirm reaches it — and a
+	// session whose breaker is open or whose 2-per-6h cap is spent keeps clearing
+	// that confirm indefinitely, at roughly every other poll, for as long as it
+	// stays wedged. hasComposerDraft is what bounds the resulting capture rate:
+	// the branch still asks on every such read, it just does not re-fork if it
+	// already asked within composerDraftTTL.
+	//
+	// The gate is narrowed to ActionResume because ActionResume is the only
+	// action this PR authorises, NOT because a draft is safe to type over for the
+	// others: D6's rationale — submitting someone else's text is not a decision a
+	// status probe gets to make — is not action-specific. ActionResend refuses at
+	// the chokepoint today, which is the only reason idle_at_empty_prompt is not
+	// a live hole. Whoever authorises ActionResend next must widen this gate in
+	// the same change.
+	if would == ActionResume && e.hasComposerDraft(c, now) {
+		delete(e.confirmed, c.SessionID)
+		ev.Decision = DecisionAct
+		ev.WouldHave = ActionEscalate
+		ev.Action = ActionNone
+		ev.ActionParams = actionParams(c.Substate)
+		// Its OWN outcome string. "held_stage_2_3" means "Stages 2-3 are held",
+		// which is a different fact entirely; an operator grepping the audit for
+		// why a session was never resumed has to be able to see that a human's
+		// draft is what stopped it.
+		ev.Outcome = "held_composer_draft"
+		_ = e.sink.Append(ev)
+		return ev
+	}
+
 	// Safety machine: caps / backoff / breaker / flicker.
 	gate, capsState := e.policy.Gate(c, now)
 	ev.Caps = capsState
@@ -211,7 +328,6 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 	e.policy.RecordAttempt(c, now)
 	delete(e.confirmed, c.SessionID)
 
-	would := WouldHaveAction(c.Substate)
 	ev.Decision = DecisionAct
 	ev.WouldHave = would
 	ev.ActionParams = actionParams(c.Substate)
@@ -224,12 +340,92 @@ func (e *Engine) ProcessRead(c Candidate, now time.Time) Event {
 		return ev
 	}
 
-	// Non-observe modes are HELD. The executor is refused even if one were set.
-	outcome, action := e.executeIfAuthorized(c, would)
+	// Every non-observe mode goes through the chokepoint. Only (resume, resume)
+	// is authorised; single_action and full stay HELD.
+	outcome, action, _ := e.executeIfAuthorized(c, would)
 	ev.Action = action
 	ev.Outcome = outcome
+	// Feed the circuit breaker only when a real action ran. A refusal is not a
+	// failed recovery — counting it would open the breaker on sessions self-heal
+	// never touched.
+	//
+	// Note what this deliberately makes invisible: an executor ERROR also returns
+	// ActionNone, so it never reaches the breaker either, even though
+	// RecordAttempt above has already spent one of the session's two 6-hour
+	// recoveries. A session that errors every attempt goes quiet after two, via
+	// cap_hit rather than breaker_open. The per-session cap is what bounds the
+	// damage, and docs/self-heal.md tells operators to read the error text
+	// because the breaker will not. Whether the breaker SHOULD see executor
+	// errors is an open design question, not an oversight here.
+	//
+	// The success argument is outcomeIsDelivered alone, deliberately: every
+	// executeIfAuthorized path that returns a non-ActionNone action returns a nil
+	// error, so conjoining err == nil here would read as error handling the
+	// comment above has just said is not happening.
+	if action != ActionNone {
+		e.policy.RecordOutcome(c, outcomeIsDelivered(outcome))
+	}
 	_ = e.sink.Append(ev)
 	return ev
+}
+
+// outcomeResumePrefix is the executor's outcome namespace: a resume reports
+// "resumed:<delivery>", where delivery is the `session send` contract value.
+//
+// ResumeOutcome is the ONE producer of that string, and outcomeIsDelivered the
+// one matcher. They live together because the executor is in another package
+// (internal/session, which cannot be imported from here) and the two halves used
+// to be joined only by a sentence in the task spec — a drift in either would
+// silently reclassify every recovery as a failure, or worse, the reverse.
+const outcomeResumePrefix = "resumed:"
+
+// outcomeDelivered is the ONLY outcome that means the agent actually took the
+// message up. It is an exact value, not a prefix: "typed_not_submitted" in
+// particular means the bytes are sitting in a composer that is not accepting
+// Enter, which is a failure, and a prefix match on "resumed:submitted" would
+// also swallow a future "resumed:submitted_late".
+const outcomeDelivered = outcomeResumePrefix + "submitted"
+
+// ResumeOutcome formats an ActionResume executor's outcome from the `session
+// send` delivery verdict. Executors must build their outcome through this rather
+// than concatenating the prefix themselves.
+func ResumeOutcome(delivery string) string { return outcomeResumePrefix + delivery }
+
+// outcomeIsDelivered reports whether an executor outcome represents a genuinely
+// accepted turn, for the circuit breaker's consecutive-failure count.
+func outcomeIsDelivered(outcome string) bool {
+	return outcome == outcomeDelivered
+}
+
+// hasComposerDraft answers "does the target's composer hold operator text".
+// Protective true answers are memoised for composerDraftTTL; false answers are
+// permission for the current deciding read only and are resolved again on the
+// next deciding read. Callers must hold e.mu.
+//
+// A nil lookup means the caller has no way to look, which reads as "no draft"
+// and is never memoised — there is nothing to memoise and no subprocess to save.
+//
+// A capture that FAILS never arrives here as "no draft": the lookup owns that
+// fail-safe and reports a failed capture as "there might be a draft"
+// (candidate.go), so failures receive the same protective true memo. The memo
+// can delay a resume by up to the TTL after an operator clears their draft, but
+// it can never let a newly-typed draft hide behind a stale empty answer.
+func (e *Engine) hasComposerDraft(c Candidate, now time.Time) bool {
+	if c.ComposerDraft == nil {
+		return false
+	}
+	if memo, ok := e.draftMemo[c.SessionID]; ok {
+		if age := now.Sub(memo.at); age >= 0 && age < composerDraftTTL {
+			return true
+		}
+	}
+	draft := c.ComposerDraft()
+	if draft {
+		e.draftMemo[c.SessionID] = draftEntry{at: now}
+	} else {
+		delete(e.draftMemo, c.SessionID)
+	}
+	return draft
 }
 
 // updateSubstateAnchor tracks when the current stuck substate was first observed
@@ -262,25 +458,33 @@ func (e *Engine) updateSubstateAnchor(c Candidate, now time.Time) time.Time {
 	return prev.since
 }
 
-// executeIfAuthorized is the single chokepoint where a real action could ever
-// run. It REFUSES in every mode that ships in v1.9.67: observe (no executor) and
-// the HELD single_action/full. Returns the outcome string and the action
-// actually taken (ActionNone when refused).
-func (e *Engine) executeIfAuthorized(c Candidate, would Action) (string, Action) {
-	// Stages 2-3 are HELD pending re-approval + the three §9 gap-fixes. Until
-	// then, even single_action/full refuse to act.
-	if e.mode != ModeObserve { // both guarded modes land here
-		return "held_stage_2_3", ActionNone
+// executeIfAuthorized is the single chokepoint where a real action can run. It
+// authorises EXACTLY ONE pair — (ModeResume, ActionResume) — and refuses
+// everything else with ErrActionInGuardedMode: observe never gets here, and
+// single_action / full stay HELD pending re-approval + the three §9 gap-fixes.
+//
+// The pair check is deliberately a conjunction rather than two nested guards: a
+// future mode that forgets to narrow its action set, or a substate that starts
+// mapping to a restart, both land on the refusal instead of on a live restart.
+//
+// Returns the outcome string, the action actually taken (ActionNone when
+// refused), and the refusal/execution error.
+func (e *Engine) executeIfAuthorized(c Candidate, would Action) (string, Action, error) {
+	if e.mode != ModeResume || would != ActionResume {
+		// Byte-identical to the pre-resume outcome string so anything reading the
+		// audit history for held records keeps matching.
+		return "held_stage_2_3", ActionNone, ErrActionInGuardedMode
 	}
-	// Unreachable in observe (handled by the caller), but defensive: never act.
 	if e.exec == nil {
-		return "no_executor", ActionNone
+		// An acting engine with no executor is a mis-wire, not a quiet no-op — so
+		// it returns an error, matching what this comment has always claimed.
+		return "no_executor", ActionNone, ErrNoExecutor
 	}
 	outcome, err := e.exec.Execute(c, would)
 	if err != nil {
-		return "error:" + err.Error(), ActionNone
+		return "error:" + err.Error(), ActionNone, err
 	}
-	return outcome, would
+	return outcome, would, nil
 }
 
 // actionParams records the would-be action's parameters for the audit (§5).
@@ -290,6 +494,15 @@ func actionParams(s tmux.Substate) map[string]any {
 		return map[string]any{"model": "opus", "reissue": true}
 	case tmux.SubstateAuth401:
 		return map[string]any{"reassert_creds": true}
+	case tmux.SubstateAPIError:
+		// The reason selects the executor's prompt text. A transport resume just
+		// asks the turn to continue.
+		return map[string]any{"reason": "transport"}
+	case tmux.SubstateUsageLimit:
+		// The usage_limit prompt additionally warns that a SUBAGENT may have been
+		// terminated by the limit and needs re-dispatching — resuming the parent
+		// does not restore a child's work.
+		return map[string]any{"reason": "usage_limit"}
 	default:
 		return nil
 	}

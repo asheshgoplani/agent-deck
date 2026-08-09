@@ -734,6 +734,8 @@ func SubstateLabel(sub session.Substate) string {
 		return "model unavailable"
 	case session.SubstateAuth401:
 		return "auth (login)"
+	case session.SubstateAPIError:
+		return "api unreachable (transport)"
 	case session.SubstateUsageLimit:
 		return "usage limit"
 	case session.SubstateIdleAtEmptyPrompt:

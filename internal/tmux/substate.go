@@ -38,6 +38,28 @@ const (
 	// status "error". Built on the #1400 error-banner detection.
 	SubstateAuth401 Substate = "auth-401"
 
+	// SubstateAPIError marks a TRANSPORT failure banner: Claude could not reach
+	// the API at all ("API Error: Unable to connect to API (ENOTFOUND)").
+	//
+	// Unlike SubstateAuth401 this is RECOVERABLE. Field evidence 2026-08-07: a
+	// DNS failure wedged 3 of 32 live sessions for 16, 18 and 39 minutes; the
+	// network had recovered long before anyone noticed, and one continuation
+	// prompt resumed all three on the first attempt. The panes were never
+	// frozen — they repainted and accepted keystrokes — so every content-only
+	// heuristic read them as a healthy empty prompt.
+	//
+	// Pairs with status IDLE or WAITING, never "error": nothing maps a transport
+	// banner to StatusError (claudeErrorBannerSubstrings holds only the 401 /
+	// login / socket-closed shapes), and that is deliberate — a 401 is terminal
+	// and this is not. Anything keyed off this substate must therefore gate on
+	// idle/waiting, exactly like SubstateStalled does.
+	//
+	// A pane in this state whose composer holds an unchanging operator draft is
+	// promoted to SubstateStalled after StallDwell (see promoteStalled in
+	// internal/session/stall.go): the banner alone is recoverable by one
+	// continuation prompt, but text a human typed is not ours to submit.
+	SubstateAPIError Substate = "api-error"
+
 	// SubstateStalled marks the wedge SubstateIdleAtEmptyPrompt was always
 	// meant to be distinguished from: a session that LOOKS idle but is not.
 	// Its composer holds unsent text that has not changed for the stall dwell
@@ -98,9 +120,12 @@ const crunchedNoopMarker = "Crunched for 0s"
 //     no-op: if the session is crunching NOW, an older "Crunched for 0s" /
 //     "unavailable" line is stale. Deliberately does NOT treat a bare "✶" as a
 //     cue, so the no-op completion line's decorative asterisk does not match.
-//  3. model-unavailable — the Fable-down no-op loop with no live busy cue.
-//  4. idle-at-empty-prompt — sitting at the prompt with nothing happening.
-//  5. none      — no distinct refinement.
+//  3. api-error — a TRANSPORT failure banner ("Unable to connect to API"). AFTER
+//     busy on purpose: a transport error is recoverable, so a live spinner means
+//     the session already came back and must not be prompted.
+//  4. model-unavailable — the Fable-down no-op loop with no live busy cue.
+//  5. idle-at-empty-prompt — sitting at the prompt with nothing happening.
+//  6. none      — no distinct refinement.
 func (d *PromptDetector) ClassifySubstate(content string) Substate {
 	if d.tool != "claude" {
 		return SubstateNone
@@ -120,7 +145,18 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 		return SubstateRunning
 	}
 
-	// 3. Model-unavailable no-op loop (Fable down) with no live busy cue: the
+	// 3. TRANSPORT failure banner. Ordered AFTER busy, unlike auth-401: a
+	//    credential failure is terminal and stops the spinner, but a transport
+	//    error is not — the session may already have recovered, in which case a
+	//    live spinner is the truth. The cost of a false api-error is injecting a
+	//    prompt into a working session, and that asymmetry sets the ordering.
+	//    Scoped to the recent tail, so a banner scrolled up into history stops
+	//    matching.
+	if hasClaudeAPIErrorBanner(content) {
+		return SubstateAPIError
+	}
+
+	// 4. Model-unavailable no-op loop (Fable down) with no live busy cue: the
 	//    "Crunched for 0s" / "is currently unavailable" line is the actionable
 	//    signal. Scan the recent tail so a stale line scrolled far up does not
 	//    match.
@@ -128,7 +164,7 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 		return SubstateModelUnavailable
 	}
 
-	// 4. Sitting at the input prompt with no busy/error signal = genuinely idle.
+	// 5. Sitting at the input prompt with no busy/error signal = genuinely idle.
 	if d.hasClaudePrompt(content) {
 		return SubstateIdleAtEmptyPrompt
 	}

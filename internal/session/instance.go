@@ -72,6 +72,7 @@ const (
 	SubstateIdleAtEmptyPrompt = tmux.SubstateIdleAtEmptyPrompt
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
+	SubstateAPIError          = tmux.SubstateAPIError
 	SubstateStalled           = tmux.SubstateStalled
 	SubstateUsageLimit        = tmux.SubstateUsageLimit
 )
@@ -273,7 +274,14 @@ type Instance struct {
 	usageLimitedCached   bool
 	usageLimitSessionID  string
 	usageLimitScanGen    uint64
-	lastCodexProbeAt     time.Time // Rate-limits expensive Codex process-file probes
+	// usageLimitNotBeforeCached is when a resume may next be attempted for the
+	// memoised rejection: the reset moment parsed out of the rejection's own
+	// prose, or a fixed backoff when that prose is absent, unparseable or
+	// describes a window that demonstrably did not open. Keyed by the same
+	// usageLimitSessionID as the verdict and discarded with it on a rebind, so a
+	// new conversation can never inherit the old one's schedule.
+	usageLimitNotBeforeCached time.Time
+	lastCodexProbeAt          time.Time // Rate-limits expensive Codex process-file probes
 	// pendingCodexRestartWarning is consumed by UI/CLI after Restart() succeeds.
 	// It is intentionally transient and never persisted.
 	pendingCodexRestartWarning string `json:"-"`
@@ -9068,10 +9076,10 @@ func (i *Instance) Substate() Substate {
 	if tmuxSess == nil {
 		return SubstateNone
 	}
-	// promoteStalled refines an idle-at-empty-prompt verdict into
+	// promoteStalled refines an idle-at-empty-prompt or api-error verdict into
 	// SubstateStalled when the composer is in fact holding an unchanging
 	// draft. It needs a second (cache-backed) pane read, so it only runs on
-	// the one verdict that can be wrong this way.
+	// the two verdicts that can be wrong this way (stall.go).
 	return promoteStalled(tmuxSess.GetSubstate(), tmuxSess, i.stallTracker())
 }
 
@@ -9110,6 +9118,38 @@ func (i *Instance) CachedSubstate() Substate {
 	// caller has ever observed this session's composer, the tracker is empty
 	// and the cached verdict passes through unchanged.
 	if cached == SubstateIdleAtEmptyPrompt && i.stallTracker().stalled(stallClock()) {
+		return SubstateStalled
+	}
+	return cached
+}
+
+// DisplaySubstate is CachedSubstate for RENDERING surfaces only: it applies the
+// same in-memory stall refinement to an api-error verdict that promoteStalled
+// applies on the live path, so a pane holding a transport banner AND an
+// unchanging operator draft shows the stalled glyph rather than the transport
+// one. Like CachedSubstate it captures nothing, so the render hot path is
+// unchanged.
+//
+// It is a SEPARATE accessor rather than a widening of CachedSubstate, and the
+// difference is load-bearing. CachedSubstate is what buildSelfHealCandidate
+// reads (selfheal_pass.go), and self-heal must keep seeing a drafted api-error
+// session AS api-error: that is what carries it to the composer-draft branch and
+// produces the `held_composer_draft` audit record. Promoted to stalled it would
+// instead audit as skip_healthy — the protection would still hold, but the
+// record explaining WHY would vanish. Rendering has no such stake; it only needs
+// to describe the pane, and 🧊 ("someone's text is sitting in there") is the
+// accurate description.
+func (i *Instance) DisplaySubstate() Substate {
+	return promoteDisplaySubstate(i.CachedSubstate(), i.stallTracker().stalled(stallClock()))
+}
+
+// promoteDisplaySubstate is DisplaySubstate's decision, split out so it can be
+// pinned without standing up a live tmux pane. Only the api-error base is
+// promoted here: CachedSubstate already refines the idle base, and every other
+// substate (auth-401, model-unavailable, running) is describing the pane
+// accurately as it stands.
+func promoteDisplaySubstate(cached Substate, stalled bool) Substate {
+	if cached == SubstateAPIError && stalled {
 		return SubstateStalled
 	}
 	return cached

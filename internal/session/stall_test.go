@@ -228,3 +228,94 @@ func TestStallTracker_StalledIsPaneFree(t *testing.T) {
 			pane.calls-capturesAfterObserve)
 	}
 }
+
+// A transport banner over an EMPTY composer stays api-error. This is the branch
+// self-heal acts on: there is no operator text to destroy, so one continuation
+// prompt is safe.
+func TestPromoteStalled_APIErrorEmptyComposer_StaysAPIError(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	withStallClock(t, &now)
+
+	pane := &fakePane{content: paneWithComposer("")}
+	tracker := &stallTracker{}
+
+	for i := 0; i < 3; i++ {
+		now = now.Add(time.Hour)
+		if got := promoteStalled(tmux.SubstateAPIError, pane, tracker); got != tmux.SubstateAPIError {
+			t.Fatalf("an empty composer under a transport banner must stay %q, got %q", tmux.SubstateAPIError, got)
+		}
+	}
+}
+
+// A transport banner over a FROZEN operator draft is promoted to stalled once
+// StallDwell elapses. Without this, classifying api-error ahead of the idle
+// verdict would make SubstateStalled unreachable for the exact pane it was built
+// from (2026-07-24) — and `session nudge` would stop refusing, which is the only
+// thing protecting the operator's draft from being consumed by a send.
+func TestPromoteStalled_APIErrorFrozenDraft_BecomesStalled(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	withStallClock(t, &now)
+
+	pane := &fakePane{content: paneWithComposer("target release-6.18.1")}
+	tracker := &stallTracker{}
+
+	// First observation starts the clock — never stalled on sight.
+	if got := promoteStalled(tmux.SubstateAPIError, pane, tracker); got != tmux.SubstateAPIError {
+		t.Fatalf("first observation: want %q, got %q", tmux.SubstateAPIError, got)
+	}
+
+	// Still inside the dwell: self-heal's own 60s dwell has passed by now, so
+	// this window is precisely where the two detectors disagree — and api-error
+	// is the correct answer only until the draft proves itself frozen.
+	now = now.Add(9 * time.Minute)
+	if got := promoteStalled(tmux.SubstateAPIError, pane, tracker); got != tmux.SubstateAPIError {
+		t.Fatalf("inside dwell: want %q, got %q", tmux.SubstateAPIError, got)
+	}
+
+	// Past the dwell with the same unchanged draft: wedged, and the nudge gate
+	// must see it.
+	now = now.Add(2 * time.Minute)
+	if got := promoteStalled(tmux.SubstateAPIError, pane, tracker); got != tmux.SubstateStalled {
+		t.Fatalf("past dwell: want %q, got %q", tmux.SubstateStalled, got)
+	}
+}
+
+// The RENDER surface must agree with the live verdict: a pane holding a
+// transport banner AND an unchanging operator draft has to show the stalled
+// glyph, not the transport one. Before DisplaySubstate that row read 🌐, because
+// ClassifySubstate returns api-error whether or not the composer holds text and
+// CachedSubstate refines only the idle base — so the TUI and `session nudge`
+// disagreed about the same pane on the surface an operator actually scans.
+func TestPromoteDisplaySubstate_DraftedAPIErrorRendersStalled(t *testing.T) {
+	cases := []struct {
+		name    string
+		cached  Substate
+		stalled bool
+		want    Substate
+	}{
+		{"drafted api-error promotes", SubstateAPIError, true, SubstateStalled},
+		{"api-error with no frozen draft stays api-error", SubstateAPIError, false, SubstateAPIError},
+		{"a stalled tracker never rewrites an unrelated substate", SubstateAuth401, true, SubstateAuth401},
+		{"nor model-unavailable", SubstateModelUnavailable, true, SubstateModelUnavailable},
+		{"nor an already-stalled verdict", SubstateStalled, true, SubstateStalled},
+		{"nor a healthy one", SubstateNone, true, SubstateNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := promoteDisplaySubstate(tc.cached, tc.stalled); got != tc.want {
+				t.Fatalf("promoteDisplaySubstate(%q, %v) = %q, want %q", tc.cached, tc.stalled, got, tc.want)
+			}
+		})
+	}
+}
+
+// And the promotion must stay OUT of the self-heal read. buildSelfHealCandidate
+// reads CachedSubstate, which must keep reporting api-error for a drafted pane:
+// that is what carries the candidate to the composer-draft branch and produces
+// the held_composer_draft audit record. Promoted to stalled it would audit as
+// skip_healthy and the record explaining the hold would vanish.
+func TestCachedSubstate_DoesNotCarryTheDisplayPromotion(t *testing.T) {
+	if got := promoteDisplaySubstate(SubstateIdleAtEmptyPrompt, true); got != SubstateIdleAtEmptyPrompt {
+		t.Fatalf("the display promotion must not duplicate CachedSubstate's idle refinement, got %q", got)
+	}
+}

@@ -399,8 +399,12 @@ var claudeQuotedLinePrefixes = []string{"⎿", "❯", ">", "│"}
 // explaining "the worker showed API Error: 401 · Please run /login"). To avoid
 // a false error verdict on prose, an assistant line must ALSO carry a
 // structural banner co-signal (see claudeBannerStructuralMarkers) to match;
-// standalone banner lines (no assistant glyph) keep matching on the substring
-// alone.
+// under structuralOnAssistantLines, standalone banner lines (no assistant
+// glyph) keep matching on the substring alone.
+//
+// The glyph marks only the FIRST visual line of a wrapped reply, so this prefix
+// is not a reliable "is this prose?" test on its own — see
+// bannerStructuralScope and structuralOnEveryLine.
 const claudeAssistantLinePrefix = "⏺"
 
 // claudeBannerStructuralMarkers are shapes the rendered banner reliably carries
@@ -412,19 +416,82 @@ var claudeBannerStructuralMarkers = []string{" · ", `{"type":"error"`}
 // hasClaudeErrorBanner scans the last 15 non-empty lines (same window as
 // hasClaudePrompt) for a banner-shaped error line.
 func hasClaudeErrorBanner(content string) bool {
-	return scanClaudeBannerLines(content, claudeErrorBannerSubstrings)
+	return scanClaudeBannerLines(content, claudeErrorBannerSubstrings, claudeBannerStructuralMarkers, structuralOnAssistantLines, "")
+}
+
+// bannerStructuralScope selects WHICH non-quoted lines must carry a structural
+// co-signal before a pattern match is believed.
+type bannerStructuralScope int
+
+const (
+	// structuralOnAssistantLines requires the co-signal only on lines opening
+	// with the "⏺" assistant glyph; any other non-quoted line matches on the
+	// pattern substring alone. This is the original contract, kept byte-identical
+	// for the error-banner and auth scans.
+	structuralOnAssistantLines bannerStructuralScope = iota
+	// structuralOnEveryLine requires the co-signal on EVERY non-quoted line.
+	// Claude wraps assistant prose across pane lines and only the first visual
+	// line carries the glyph, so under structuralOnAssistantLines a continuation
+	// line naming the pattern matches with no structural check at all. Both
+	// renderings of the transport banner carry a parenthesised transport code, so
+	// the stricter scope costs the transport scan no real detection.
+	structuralOnEveryLine
+)
+
+// requiresStructural reports whether a line of the given shape must carry a
+// structural co-signal under this scope.
+func (s bannerStructuralScope) requiresStructural(line string) bool {
+	return s == structuralOnEveryLine || strings.HasPrefix(line, claudeAssistantLinePrefix)
+}
+
+// bannerLineAnchored reports whether line OPENS with anchor, ignoring an
+// optional leading assistant glyph and its spacing. An empty anchor means the
+// scan asks for no position requirement and every line qualifies.
+//
+// This is the guard content cannot supply. Every co-signal a rendered banner
+// carries — the phrase, the parens, the transport code — an assistant
+// SUMMARISING that banner reproduces verbatim ("worker-3 showed \"API Error:
+// Unable to connect to API (ENOTFOUND api.anthropic.com)\" so I restarted it"),
+// and this fleet writes exactly those sentences. What prose does not do is
+// START its line with the banner: the phrase arrives mid-sentence, after a
+// subject, a date or a list bullet. Position is therefore the discriminator,
+// and it is checked in ADDITION to the structural co-signal, never instead.
+//
+// The line is already trimmed by the caller, so the only prefix to strip is the
+// glyph itself.
+func bannerLineAnchored(line, anchor string) bool {
+	if anchor == "" {
+		return true
+	}
+	return strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(line, claudeAssistantLinePrefix)), anchor)
 }
 
 // scanClaudeBannerLines reports whether any of the last 15 non-empty lines is a
 // banner-shaped line containing one of patterns. It carries the over-match
 // guards that make banner detection trustworthy — quoted/input lines are
-// skipped, and an assistant-turn line must also show a structural banner marker
-// so prose merely mentioning the text does not match.
+// skipped, and an assistant-turn line must also show one of structural so prose
+// merely mentioning the text does not match.
 //
-// Shared by hasClaudeErrorBanner (any tool-rendered failure banner) and the
-// auth-specific scan (authFailureBannerPatterns) so the two can never drift
-// apart on the guards.
-func scanClaudeBannerLines(content string, patterns []string) bool {
+// Shared by hasClaudeErrorBanner (any tool-rendered failure banner), the
+// auth-specific scan (authFailureBannerPatterns) and the transport scan
+// (apiErrorBannerSubstrings) so the three can never drift apart on the guards.
+//
+// structural is a PARAMETER rather than the package-level
+// claudeBannerStructuralMarkers because the transport banner needs a wider set:
+// the field capture `⏺ API Error: Unable to connect to API (ENOTFOUND)` carries
+// neither the " · " segment separator nor the error JSON, so the shared set
+// would skip the one line the transport detector exists to catch.
+//
+// scope is likewise per-scan: see bannerStructuralScope. The transport scan
+// requires the co-signal on every non-quoted line because wrapped assistant
+// prose puts the phrase on a glyph-less continuation line; the error-banner and
+// auth scans keep the original assistant-lines-only contract.
+//
+// anchor is a per-scan POSITION requirement, empty for scans that want none:
+// see bannerLineAnchored. Content guards alone cannot separate a real banner
+// from an assistant SUMMARISING one, because an incident summary quotes the
+// banner — phrase, parens and transport code — verbatim.
+func scanClaudeBannerLines(content string, patterns, structural []string, scope bannerStructuralScope, anchor string) bool {
 	lines := strings.Split(content, "\n")
 	checked := 0
 	for i := len(lines) - 1; i >= 0 && checked < 15; i-- {
@@ -436,9 +503,13 @@ func scanClaudeBannerLines(content string, patterns []string) bool {
 		if hasAnyPrefix(line, claudeQuotedLinePrefixes) {
 			continue
 		}
-		// On an assistant-turn line, require a structural banner marker so
+		// Require a structural banner marker on every line the scope covers, so
 		// prose mentioning the banner text is not misread as a live banner.
-		if strings.HasPrefix(line, claudeAssistantLinePrefix) && !containsAny(line, claudeBannerStructuralMarkers) {
+		if scope.requiresStructural(line) && !containsAny(line, structural) {
+			continue
+		}
+		// Require the banner to OPEN its line, for scans that ask for it.
+		if !bannerLineAnchored(line, anchor) {
 			continue
 		}
 		for _, pat := range patterns {
@@ -448,6 +519,87 @@ func scanClaudeBannerLines(content string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// apiErrorBannerSubstrings are fragments of the TRANSPORT-failure banner Claude
+// Code renders when it cannot reach the API. Field evidence (2026-08-07, a DNS
+// outage that wedged 3 of 32 live sessions for 16, 18 and 39 minutes):
+//
+//	⏺ API Error: Unable to connect to API (ENOTFOUND)
+//	✻ Sautéed for 39m 27s
+//
+// Deliberately a SEPARATE set from claudeErrorBannerSubstrings: a 401 is
+// terminal and a transport error is not, so the two earn different substates and
+// different recovery. Anchored on the rendered WORDING only, never on a bare
+// error-code token: "ENOTFOUND" / "ECONNREFUSED" / "ConnectionRefused" appear in
+// curl output, `go test` failures and Go source lines
+// (`if errors.Is(err, syscall.ECONNREFUSED) {`), none of which are banners. A
+// token here would put the whole burden of rejecting them on the structural
+// co-signal — and under mode="resume" a false api-error injects a continuation
+// prompt into a session that was never wedged. The codes stay, but only
+// PARENTHESISED, as the structural co-signal below.
+var apiErrorBannerSubstrings = []string{
+	"Unable to connect to API",
+}
+
+// apiErrorBannerStructuralMarkers are the co-signals required on EVERY
+// non-quoted line before a transport banner is believed (structuralOnEveryLine).
+//
+// Glyph lines are not the only prose shape: Claude wraps a reply across pane
+// lines and only the first carries "⏺", so a continuation line reading
+// "  Unable to connect to API and never recovered, so I restarted it." is an
+// ordinary non-quoted line. Requiring the co-signal there too costs nothing —
+// both renderings of the real banner (assistant-glyph and standalone) carry a
+// parenthesised transport code.
+//
+// claudeBannerStructuralMarkers alone would reject the REAL banner: the field
+// capture carries neither the " · " segment separator nor the error JSON, so the
+// assistant-line guard would skip it and the substate could never fire. The
+// PARENTHESISED transport code is the structural shape prose does not carry —
+// a conductor writing "the worker showed API Error: Unable to connect to API"
+// does not reproduce it — so it is the discriminator for this scan.
+//
+// " · " is deliberately ABSENT even though the shared set carries it: Claude
+// joins ordinary prose with the same separator ("⏺ worker-3 showed Unable to
+// connect to API · I restarted it"), so it would readmit exactly the assistant
+// -line prose the guard exists to reject.
+// The OPENING paren alone is the co-signal; the closing one is not part of it.
+// Node/undici routinely names the host inside the parens
+// ("(ENOTFOUND api.anthropic.com)", "(ECONNREFUSED 127.0.0.1:443)"), so
+// requiring ")" immediately after the code would reject the form a real outage
+// most often produces and leave the whole opt-in feature inert. Nothing in the
+// rejected prose puts an open paren immediately before a transport code, so the
+// discriminator survives the loosening.
+var apiErrorBannerStructuralMarkers = []string{
+	`{"type":"error"`,
+	"(ENOTFOUND",
+	"(ECONNREFUSED",
+	"(ConnectionRefused",
+}
+
+// apiErrorBannerLineAnchor is the text the transport banner OPENS its line with,
+// in both observed renderings — behind the assistant glyph
+// (`⏺ API Error: Unable to connect to API (ENOTFOUND)`) and standalone.
+//
+// Required as a POSITION guard on top of the structural co-signal, because the
+// co-signal alone cannot survive an assistant quoting the banner verbatim while
+// summarising an incident — see bannerLineAnchored. It is deliberately not added
+// to apiErrorBannerSubstrings: as a substring it would match anywhere on the
+// line, which is the very thing this guard exists to reject.
+//
+// Residual, accepted: a wrapped continuation line that itself begins
+// "API Error:" is indistinguishable from the standalone rendering by content
+// alone and still matches. That is a far narrower target than "any line
+// mentioning the phrase", and the dwell timer plus the substate's own recovery
+// path bound what a rare miss costs.
+const apiErrorBannerLineAnchor = "API Error:"
+
+// hasClaudeAPIErrorBanner scans the recent pane tail for a TRANSPORT-failure
+// banner, reusing the same quoted-line and assistant-prose guards as the auth
+// scan so a conductor quoting a child's banner behind "⎿" never matches, and
+// additionally requiring the banner to open its own line.
+func hasClaudeAPIErrorBanner(content string) bool {
+	return scanClaudeBannerLines(content, apiErrorBannerSubstrings, apiErrorBannerStructuralMarkers, structuralOnEveryLine, apiErrorBannerLineAnchor)
 }
 
 // containsAny reports whether s contains any of the given substrings.

@@ -266,10 +266,15 @@ type SelfHealSettings struct {
 	// run the observe-only Stage 1.
 	Enabled bool `toml:"enabled,omitempty"`
 
-	// Mode is the authority level: "observe" (default, the only acting mode in
-	// v1.9.67 — logs would_have, takes no action), "single_action" / "full"
-	// (Stages 2-3, DEFINED but GUARDED, refuse to act). An unknown/empty value
-	// is normalized to "observe".
+	// Mode is the authority level:
+	//   "observe"       (DEFAULT) — logs would_have, takes no action.
+	//   "resume"                  — authorises exactly one path: deliver a single
+	//                               continuation prompt to a session wedged by a
+	//                               transport error (api-error) or an exhausted
+	//                               usage window (usage-limit). Every other action
+	//                               still refuses.
+	//   "single_action" / "full"  — Stages 2-3, DEFINED but GUARDED, refuse to act.
+	// An unknown/empty value is normalized to "observe".
 	Mode string `toml:"mode,omitempty"`
 
 	// AuditPath overrides where the durable NDJSON audit log lands. Empty uses
@@ -299,9 +304,14 @@ type SelfHealSettings struct {
 // SelfHealMode normalizes the configured mode to a known value. Empty / unknown
 // → "observe" (the safe default). Used by the daemon when constructing the
 // engine. The string return matches selfheal.Mode values.
+//
+// "resume" is the ONE acting mode: it authorises exactly (resume mode × resume
+// action) — deliver a single continuation prompt to a session wedged by a
+// transport error or an exhausted usage window — and nothing else.
+// "single_action" / "full" remain DEFINED but GUARDED.
 func (s SelfHealSettings) SelfHealMode() string {
 	switch s.Mode {
-	case "single_action", "full":
+	case "single_action", "full", "resume":
 		return s.Mode
 	default:
 		return "observe"

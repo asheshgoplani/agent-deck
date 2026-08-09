@@ -36,6 +36,13 @@ const (
 	ModeSingleAction Mode = "single_action"
 	// ModeFull is Stage 3 (all classes, auto within caps). DEFINED but GUARDED.
 	ModeFull Mode = "full"
+	// ModeResume is the ONE authorised acting mode: it permits exactly the pair
+	// (ModeResume, ActionResume) and nothing else. It exists so the owner can
+	// approve one narrow new path — deliver a single continuation prompt to a
+	// session wedged by a transport error or a usage limit — without reopening
+	// single_action / full, which stay HELD pending the §9 gap-fixes. Not the
+	// default: [selfheal] mode ships as "observe".
+	ModeResume Mode = "resume"
 )
 
 // Action is what self-heal would do for a candidate. It is recorded in the audit
@@ -52,6 +59,15 @@ const (
 	// ActionResend — re-send the last intent once before any restart
 	// (idle_at_empty_prompt, §2.3).
 	ActionResend Action = "resend"
+	// ActionResume — deliver ONE continuation prompt through the verified
+	// `session nudge` send path (api-error, usage-limit). Params carry
+	// {"reason": "transport"} or {"reason": "usage_limit"}.
+	//
+	// Deliberately not ActionResend: "resend" means replay the last intent,
+	// which can redo work when a turn partially completed and has nothing to
+	// replay when LastSentAt is zero. One action rather than two because both
+	// triggers deliver one prompt through one send path.
+	ActionResume Action = "resume"
 	// ActionRestartReassertCreds — one restart that reasserts the credential
 	// symlink, the known fix for the scratch-clobber 401 class (auth_401, §2.2).
 	ActionRestartReassertCreds Action = "restart_reassert_creds"
@@ -64,25 +80,37 @@ const (
 type Decision string
 
 const (
-	DecisionAct         Decision = "act"          // would act (observe: would_have set)
-	DecisionSkipHealthy Decision = "skip_healthy" // substate not a stuck class
-	DecisionSkipBusy    Decision = "skip_busy"    // live busy indicator (authoritative)
-	DecisionSkipMidTurn Decision = "skip_midturn" // fresh hook-running / output moved
-	DecisionSkipDwell   Decision = "skip_dwell"   // not dwelled past threshold yet
-	DecisionSkipConfirm Decision = "skip_confirm" // second read disagreed (2-read drop)
-	DecisionSkipStopped Decision = "skip_stopped" // session stopped (user-intentional)
-	DecisionSkipOptOut  Decision = "skip_optout"  // per-session/group opt-out
-	DecisionCapHit      Decision = "cap_hit"      // per-session or global cap exceeded
-	DecisionBreakerOpen Decision = "breaker_open" // circuit breaker / flicker quarantine
+	DecisionAct           Decision = "act"             // would act (observe: would_have set)
+	DecisionSkipHealthy   Decision = "skip_healthy"    // substate not a stuck class
+	DecisionSkipBusy      Decision = "skip_busy"       // live busy indicator (authoritative)
+	DecisionSkipMidTurn   Decision = "skip_midturn"    // fresh hook-running / output moved
+	DecisionSkipDwell     Decision = "skip_dwell"      // not dwelled past threshold yet
+	DecisionSkipNotBefore Decision = "skip_not_before" // scheduled for a known-future moment
+	DecisionSkipConfirm   Decision = "skip_confirm"    // second read disagreed (2-read drop)
+	DecisionSkipStopped   Decision = "skip_stopped"    // session stopped (user-intentional)
+	DecisionSkipOptOut    Decision = "skip_optout"     // per-session/group opt-out
+	DecisionCapHit        Decision = "cap_hit"         // per-session or global cap exceeded
+	DecisionBreakerOpen   Decision = "breaker_open"    // circuit breaker / flicker quarantine
 )
 
-// stuckDwellThresholds are the §1.3 cause-specific dwell windows. usage_limit is
-// intentionally absent (never auto-restart, §2). A substate not present here is
-// not a self-heal-actionable stuck class.
+// stuckDwellThresholds are the §1.3 cause-specific dwell windows. A substate not
+// present here is not a self-heal-actionable stuck class.
 var stuckDwellThresholds = map[tmux.Substate]time.Duration{
 	tmux.SubstateModelUnavailable:  90 * time.Second,
 	tmux.SubstateAuth401:           60 * time.Second,
 	tmux.SubstateIdleAtEmptyPrompt: 5 * time.Minute,
+	// A transport banner is DIRECT positive evidence of a wedge, so 60s of it
+	// with no busy cue and no output movement is enough. Anchored on
+	// StatusChangedAt, not LastSentAt (see Candidate.dwellAnchor): the banner
+	// stands on its own, so a session whose last prompt a human typed by hand is
+	// equally eligible. Without that, every hand-driven root session stays
+	// unhealed.
+	tmux.SubstateAPIError: 60 * time.Second,
+	// A usage limit does not dwell at all. Waiting is expressed by
+	// Candidate.NotBefore — "wait until T, then act", where T is hours away and
+	// no dwell window can express it. The two-read confirm, the caps and the
+	// breaker all still apply on top.
+	tmux.SubstateUsageLimit: 0,
 }
 
 // actionForSubstate maps a confirmed stuck substate to the action self-heal
@@ -91,6 +119,10 @@ var actionForSubstate = map[tmux.Substate]Action{
 	tmux.SubstateModelUnavailable:  ActionRestartModelSwitch,
 	tmux.SubstateAuth401:           ActionRestartReassertCreds,
 	tmux.SubstateIdleAtEmptyPrompt: ActionResend,
+	// Both recover the same way: one continuation prompt through the verified
+	// send path. Only these two are ever executable, and only under ModeResume.
+	tmux.SubstateAPIError:   ActionResume,
+	tmux.SubstateUsageLimit: ActionResume,
 }
 
 // IsStuckSubstate reports whether a substate is a self-heal-actionable stuck

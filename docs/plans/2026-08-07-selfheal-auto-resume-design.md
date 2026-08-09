@@ -1,6 +1,7 @@
 # Self-heal auto-resume: transport errors and usage limits
 
-Status: approved 2026-08-07
+Status: approved 2026-08-07 · implemented on `feature/selfheal-auto-resume`
+Implementation plan: `docs/plans/2026-08-07-selfheal-resume-plan.md`
 Scope: `internal/tmux`, `internal/selfheal`, `internal/session`
 
 ## 1. Motivation

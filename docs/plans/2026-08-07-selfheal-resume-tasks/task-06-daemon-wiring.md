@@ -114,8 +114,11 @@ still one extra capture on an already-running poll, for a handful of sessions.
 
 1. `SelfHealSettings.SelfHealMode()` returns `"resume"` for `mode = "resume"`,
    and still normalizes empty/unknown to `"observe"`.
-2. The registry builds a resume engine (with an executor) for mode `"resume"`,
-   and an observe engine (executor nil) for every other mode.
+2. The registry **builds** a resume engine (with an executor) for mode
+   `"resume"`, and an observe engine (executor nil) for every other mode. The
+   test must exercise the real `engineFor` construction path on a fresh registry
+   — pre-injecting `r.engines[profile]` hits the cache-return and asserts on the
+   injected value, so it cannot fail.
 3. `buildSelfHealCandidate` lifts a usage-limited session to
    `SubstateUsageLimit` and populates `NotBefore` from `UsageLimitNotBefore()`.
 4. `buildSelfHealCandidate` sets `ComposerDraft` for the two resume substates
@@ -123,7 +126,10 @@ still one extra capture on an already-running poll, for a handful of sessions.
 5. The executor's instance view is refreshed at the top of every pass.
 6. The shipped default is unchanged: with no `[selfheal]` config, the pass is a
    no-op and no engine is built.
-7. `go test ./internal/session/ -run SelfHeal -v` green.
+7. `engineFor`'s doc comment states that the engine is cached per profile and
+   the mode is read only on the miss, so changing `[selfheal] mode` takes effect
+   only after a transition-daemon restart. A test pins that behaviour.
+8. `go test ./internal/session/ -run SelfHeal -v` green.
 
 ## Edits
 
@@ -219,6 +225,14 @@ func newSelfHealRegistry() *selfHealRegistry {
 // no action" a structural property rather than a runtime check.
 //
 // The returned executor is nil for a non-acting engine.
+//
+// CACHING CAVEAT, deliberate: mode is read only on the MISS path. The engine has
+// to outlive a poll cycle — the two-read confirm and the cap/backoff/breaker
+// windows accumulate inside it, and rebuilding it per pass would silently reset
+// every one of them. The consequence is that editing `[selfheal] mode` in config
+// changes nothing until the transition daemon is restarted. That is documented
+// for operators in docs/self-heal.md (task 07); a rebuild-on-mode-change
+// mechanism is out of scope for this PR.
 func (r *selfHealRegistry) engineFor(profile string, caps selfheal.Caps, mode string) (*selfheal.Engine, *ResumeExecutor) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -432,18 +446,33 @@ At line 422-427, replace the comment and call with:
 
 ## Tests — `internal/session/selfheal_pass_test.go`
 
-Replace `TestSelfHealRegistry_ObserveEngineOnly` (lines 104-112) with:
+Replace `TestSelfHealRegistry_ObserveEngineOnly` (lines 104-112) with the tests
+below.
+
+**These must construct through the real `engineFor` MISS path — do not
+pre-inject `r.engines["p"]`.** Pre-injecting hits the cache-return at the top of
+`engineFor`, so the test asserts on the value it just injected and *cannot fail*;
+it would pass against an `engineFor` that ignores `mode` entirely, which is
+precisely acceptance criterion 2. Nothing needs mocking to reach the real path:
+`internal/session`'s `TestMain` (`internal/session/testmain_test.go`) already
+calls `testutil.IsolateHome()`, so `SelfHealAuditPath` + `NewNDJSONSink` resolve
+and create under the sandboxed HOME, never the operator's data dir.
 
 ```go
-// A non-resume mode still gets an observe-only engine: no executor, ever.
-func TestSelfHealRegistry_NonResumeMode_ObserveEngine(t *testing.T) {
+// The registry must BUILD the right engine for the mode — constructed through
+// the real engineFor path, one fresh registry per mode so every call is a cache
+// MISS. A pre-injected engine would only re-assert the injected value.
+func TestSelfHealRegistry_NonResumeMode_BuildsObserveEngine(t *testing.T) {
 	for _, mode := range []string{"observe", "single_action", "full", "", "nonsense"} {
 		r := newSelfHealRegistry()
-		// Inject a memory-backed engine so we don't depend on the filesystem path.
-		r.engines["p"] = selfheal.NewObserveEngine(selfheal.DefaultCaps(), &selfheal.MemorySink{})
 		e, exec := r.engineFor("p", selfheal.DefaultCaps(), mode)
+		if e == nil {
+			t.Fatalf("mode %q: engineFor returned nil — the audit sink could not be opened. "+
+				"internal/session's TestMain calls testutil.IsolateHome(); if that stopped "+
+				"happening this test would write to the real data dir", mode)
+		}
 		if e.Mode() != selfheal.ModeObserve {
-			t.Fatalf("mode %q: registry engine must be observe, got %q", mode, e.Mode())
+			t.Fatalf("mode %q: registry must build an observe engine, got %q", mode, e.Mode())
 		}
 		if exec != nil {
 			t.Fatalf("mode %q: a non-resume engine must hold no executor", mode)
@@ -451,18 +480,47 @@ func TestSelfHealRegistry_NonResumeMode_ObserveEngine(t *testing.T) {
 	}
 }
 
-// The resume mode builds the acting engine, with an executor.
-func TestSelfHealRegistry_ResumeMode_ActingEngine(t *testing.T) {
+// Acceptance criterion 2: mode "resume" BUILDS the acting engine, with an
+// executor. Fresh registry, so this exercises the construction branch.
+func TestSelfHealRegistry_ResumeMode_BuildsActingEngine(t *testing.T) {
 	r := newSelfHealRegistry()
-	exec := NewResumeExecutor()
-	r.engines["p"] = selfheal.NewResumeEngine(selfheal.DefaultCaps(), &selfheal.MemorySink{}, exec)
-	r.execs["p"] = exec
-	e, got := r.engineFor("p", selfheal.DefaultCaps(), "resume")
+	e, exec := r.engineFor("p", selfheal.DefaultCaps(), "resume")
+	if e == nil {
+		t.Fatal("engineFor returned nil — the audit sink could not be opened")
+	}
 	if e.Mode() != selfheal.ModeResume {
 		t.Fatalf("want %q, got %q", selfheal.ModeResume, e.Mode())
 	}
-	if got == nil {
+	if exec == nil {
 		t.Fatal("the resume engine must hand back its executor so the pass can refresh the view")
+	}
+	if r.execs["p"] != exec {
+		t.Fatal("the executor must be retained in the registry, not rebuilt per pass")
+	}
+}
+
+// Pins the documented caching caveat rather than leaving it as a surprise: the
+// engine is built once per profile and the mode is read only on that miss, so
+// flipping [selfheal] mode in config has NO effect until the transition daemon
+// restarts. The engine must outlive the poll — the confirm and cap/breaker
+// windows accumulate inside it — so this is the accepted trade, documented for
+// operators in docs/self-heal.md. If this test starts failing because the engine
+// is rebuilt on a mode change, delete the test AND the doc paragraph together.
+func TestSelfHealRegistry_ModeChangeNeedsRestart(t *testing.T) {
+	r := newSelfHealRegistry()
+	first, _ := r.engineFor("p", selfheal.DefaultCaps(), "observe")
+	if first == nil {
+		t.Fatal("engineFor returned nil — the audit sink could not be opened")
+	}
+	second, exec := r.engineFor("p", selfheal.DefaultCaps(), "resume")
+	if second != first {
+		t.Fatal("the engine must be cached per profile — rebuilding it resets the confirm and cap windows")
+	}
+	if second.Mode() != selfheal.ModeObserve {
+		t.Fatalf("a cached engine keeps its original mode, got %q", second.Mode())
+	}
+	if exec != nil {
+		t.Fatal("no executor appears without a restart either")
 	}
 }
 ```
@@ -541,7 +599,15 @@ Expected: no output, exit 0.
 go test ./internal/session/ -run 'SelfHeal|ComposerHasDraft' -count=1 -v
 ```
 Expected: `ok  	github.com/asheshgoplani/agent-deck/internal/session`. Run-specific
-sentinel: `TestSelfHealRegistry_ResumeMode_ActingEngine` must appear as `--- PASS`.
+sentinel: `TestSelfHealRegistry_ResumeMode_BuildsActingEngine` must appear as
+`--- PASS`.
+
+Confirm the registry tests actually go through the construction path — a
+pre-injected engine makes them unfailable:
+```sh
+grep -n 'r.engines\[' internal/session/selfheal_pass_test.go
+```
+Expected: **no output**. No test may write `r.engines[...]` directly.
 
 ```sh
 go test ./internal/selfheal/ -count=1
@@ -587,6 +653,11 @@ transcript scan per 5s. And the composer is read only for the two substates that
 can produce a resume, failing safe: a capture that errors reads as \"there might
 be a draft\", never as \"the composer is empty\".
 
+The engine stays cached per profile, so the mode is read only when it is first
+built: changing [selfheal] mode takes effect on the next daemon restart, not the
+next poll. Rebuilding per pass would reset the two-read confirm and every cap and
+breaker window, so the caveat is documented rather than engineered away.
+
 No new timer, goroutine or unit — the existing 1-3s poll drives it."
 ```
 
@@ -600,6 +671,7 @@ No new timer, goroutine or unit — the existing 1-3s poll drives it."
 - `internal/send`: `send.ComposerHasDraft(raw string, strip func(string) string) bool`
 - `internal/tmux`: `tmux.StripANSI`, `(*tmux.Session).CapturePaneFresh() (string, error)`
 - `internal/session`: `GetSelfHealSettings()`, `SelfHealSettings`, `SelfHealAuditPath(profile)`, `GlobalFlickerDetector()`, `normalizeStatusString`, `hookFreshWindow`, `transitionEventOutputHash`, `HookStatus`, `(*statedb.StateDB).ReadLastSentAt`
+- `internal/session/testmain_test.go`: the package `TestMain` already calls `testutil.IsolateHome()`, which is what makes it safe for a test to drive the real `engineFor` construction path (it opens a real NDJSON sink under the sandboxed HOME). Do not add a second `TestMain`.
 
 ### produces
 - `internal/session/selfheal_pass.go`: **renamed** `func (d *TransitionDaemon) runSelfHealPass(...)` (was `runSelfHealObservePass`)
@@ -610,3 +682,72 @@ No new timer, goroutine or unit — the existing 1-3s poll drives it."
 - `internal/session/userconfig.go`: `SelfHealSettings.SelfHealMode()` now returns `"resume"` for that configured value
 
 ## Record (append-only)
+
+### 2026-08-07 — implemented
+
+- Files touched: `internal/session/selfheal_pass.go`,
+  `internal/session/selfheal_pass_test.go`,
+  `internal/session/transition_daemon.go`, `internal/session/userconfig.go`.
+- Implemented exactly as written; no deviations.
+- Preconditions checked: `ModeResume` in `selfheal.go` → 4, `NewResumeEngine` in
+  `engine.go` → 2, `NewResumeExecutor` in `selfheal_resume.go` → 2,
+  `UsageLimitNotBefore` in `usagelimit.go` → 2. All ≥ 1.
+- TDD: the replacement tests were written first and failed to build
+  (`assignment mismatch: 2 variables but r.engineFor returns 1 value`,
+  `too many arguments in call to r.engineFor`, `r.execs undefined`) before the
+  pass rewrite landed.
+- Verification:
+  `gofmt -l internal/session/ internal/selfheal/ cmd/agent-deck/` → empty.
+  `go build ./...` → `BUILD_EXIT=0`.
+  `go vet ./internal/session/ ./cmd/agent-deck/` → clean apart from the
+  pre-existing `issue1225_wake_nudge_wiring_test.go:217` noted in task 01.
+  `go test ./internal/session/ -run 'SelfHeal|ComposerHasDraft' -count=1 -v` →
+  `TEST_EXIT=0`, `ok  github.com/asheshgoplani/agent-deck/internal/session 0.462s`,
+  **21 `--- PASS`, 0 FAIL**; run-specific sentinel
+  `--- PASS: TestSelfHealRegistry_ResumeMode_BuildsActingEngine` present.
+  `grep -n 'r.engines\[' internal/session/selfheal_pass_test.go` → no output (the
+  registry tests go through the real `engineFor` MISS path).
+  `go test ./internal/selfheal/ -count=1` → `ok  …/internal/selfheal 0.187s`.
+  `grep -rn 'runSelfHealObservePass' --include='*.go' .` → no output (the old name
+  is fully gone).
+  `grep -n 'Enabled bool' -A2 internal/session/userconfig.go` →
+  `Enabled bool \`toml:"enabled,omitempty"\`` with no default-true anywhere, and
+  `TestSelfHealMode_AcceptsResume` PASS pins `SelfHealSettings{}` as disabled +
+  observe.
+- No concerns.
+
+### 2026-08-08 — amended by review round 2 (commits `225ff78f`, `7187cc75`)
+
+The Record above said "implemented exactly as written; no deviations", and its
+precondition list cites `UsageLimitNotBefore in usagelimit.go → 2`. Both have
+stopped being true; this amendment records why (round 3, finding 5).
+
+- **AC 3** names `(*Instance).UsageLimitNotBefore()` as the source of the
+  candidate's `NotBefore`. That method no longer exists. `buildSelfHealCandidate`
+  now reads `(*Instance).usageLimitedWithSchedule()`, which returns the
+  usage-limit VERDICT and its schedule together under one `RLock` — see task 04's
+  round-2 amendment for the torn-read argument. The precondition check quoted
+  above returns **0** today; the equivalent check is
+  `grep -c 'usageLimitedWithSchedule' internal/session/usagelimit.go`.
+- **The lift itself is unchanged and is still what AC 3 requires**: a
+  usage-limited session reaches self-heal as `SubstateUsageLimit` carrying its
+  schedule, pinned by
+  `TestBuildSelfHealCandidate_UsageLimited_LiftsSubstateAndSchedule` and
+  `TestUsageLimitedWithSchedule_ReportsMemo_RebindClearsIt`.
+- Everything else in this task is as written: the registry, `engineFor`'s
+  observe-by-default construction, the `!settings.Enabled` early return, the
+  shipped defaults (`Enabled bool` with no default-true) and the serial
+  per-instance pass.
+
+### 2026-08-08 — amended by review round 3 (this round)
+
+- No AC changed; no behaviour changed. Round 3 finding 6 was DECIDED as
+  "accepted as designed": the resume send stays SYNCHRONOUS inside
+  `Engine.ProcessRead`, driven from this task's serial per-instance loop, because
+  design F3 forbids a new watchdog layer or goroutine. A comment at the
+  `engine.ProcessRead(c, now)` call site in `selfheal_pass.go` now records the
+  accepted trade-off explicitly — a correlated outage can add tens of seconds to
+  ONE profile's poll, the empty-composer precondition makes the 10s guard hold
+  unlikely in the common case, and the bounded-worker alternative was considered
+  and deliberately not taken. Recorded as an open design question for after the
+  merge, not absorbed silently.

@@ -53,6 +53,26 @@ func ExpireStartupWindowForTest(t testing.TB, s *Session) {
 	s.mu.Unlock()
 }
 
+// SeedCachedSubstateForTest sets the cached Honest Status verdict without a
+// live pane capture. External-package render tests use this to exercise the
+// snapshot wiring rather than tmux process management.
+func SeedCachedSubstateForTest(t testing.TB, s *Session, sub Substate) {
+	t.Helper()
+	if s == nil {
+		t.Fatal("SeedCachedSubstateForTest: nil session")
+		return
+	}
+	s.mu.Lock()
+	orig := s.lastSubstate
+	s.lastSubstate = sub
+	s.mu.Unlock()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		s.lastSubstate = orig
+		s.mu.Unlock()
+	})
+}
+
 // ExpirePaneInfoCacheForTest leaves the cache contents intact but rewinds the
 // timestamp past the freshness threshold so GetCachedPaneInfo treats it as
 // stale. Used to model the case where backgroundStatusUpdate hasn't run for a

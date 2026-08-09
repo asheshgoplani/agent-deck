@@ -4078,8 +4078,12 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			continue
 		}
 		state := sessionRenderState{
-			status:   inst.GetStatusThreadSafe(),
-			substate: inst.CachedSubstate(),
+			status: inst.GetStatusThreadSafe(),
+			// DisplaySubstate, not CachedSubstate: the row glyph must show 🧊 for
+			// a pane holding a transport banner AND an unchanging operator draft.
+			// Self-heal deliberately keeps reading CachedSubstate (see the
+			// accessor's doc) — rendering is the only surface promoted here.
+			substate: inst.DisplaySubstate(),
 			tool:     inst.GetToolThreadSafe(),
 			// Label fields: read here, on the refresher's goroutine, so the
 			// render path never takes Instance.mu per row (#1753). Title goes
