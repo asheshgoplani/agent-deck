@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // A recorded session/conversation id is kept even after a session is archived
@@ -157,5 +158,26 @@ func TestRowStatusGlyph_DraftedAPIErrorRendersStalled(t *testing.T) {
 				t.Fatalf("rowStatusGlyph(%q, %q) icon = %q, want %q", tc.status, tc.substate, icon, tc.wantIcon)
 			}
 		})
+	}
+}
+
+// refreshSessionRenderSnapshot is the render boundary: independently testing
+// DisplaySubstate and rowStatusGlyph does not protect which accessor is stored
+// here. A drafted transport-error pane must enter the snapshot as stalled.
+func TestRefreshSessionRenderSnapshot_DraftedAPIErrorStoresStalled(t *testing.T) {
+	inst := &session.Instance{ID: "drafted-api-error", Title: "worker", Tool: "claude", Status: session.StatusIdle}
+	tmuxSess := tmux.ReconnectSessionLazy("drafted-api-error-tmux", inst.Title, t.TempDir(), "claude", "idle")
+	inst.SetTmuxSessionForTest(tmuxSess)
+	tmux.SeedCachedSubstateForTest(t, tmuxSess, tmux.SubstateAPIError)
+	inst.MarkComposerStalledForTest(t)
+
+	h := newHomeForSnapshotTest()
+	h.refreshSessionRenderSnapshot([]*session.Instance{inst})
+	state, ok := h.getSessionRenderSnapshot()[inst.ID]
+	if !ok {
+		t.Fatal("render snapshot missing drafted api-error instance")
+	}
+	if state.substate != session.SubstateStalled {
+		t.Fatalf("snapshot substate = %q, want %q from DisplaySubstate", state.substate, session.SubstateStalled)
 	}
 }

@@ -21,6 +21,11 @@ import (
 // delivery failure — there was nothing to deliver to.
 var errNoTmuxSessionForResume = errors.New("selfheal: instance has no tmux session")
 
+// selfHealExecuteSend is the package boundary seam for the registered wrapper.
+// Production uses executeSend; tests replace it to pin the exact safe tuning
+// without standing up a tmux pane.
+var selfHealExecuteSend = executeSend
+
 func init() {
 	session.SetSelfHealSender(sendForSelfHeal)
 }
@@ -36,6 +41,6 @@ func sendForSelfHeal(inst *session.Instance, message string) (string, error) {
 	if tmuxSess == nil {
 		return "", fmt.Errorf("%w: %s", errNoTmuxSessionForResume, inst.Title)
 	}
-	res, err := executeSend(tmuxSess, inst.Tool, message, false, defaultSendTuning())
+	res, err := selfHealExecuteSend(tmuxSess, inst.Tool, message, false, defaultSendTuning())
 	return res.delivery, err
 }
