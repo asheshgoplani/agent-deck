@@ -1656,6 +1656,13 @@ func extraArgsSupplyModel(extraArgs []string) bool {
 func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	var flags []string
 
+	// Claude Code 2.1.224+ exposes managed sessions to ListAgents/SendMessage
+	// by name. Give agent-deck sessions a stable, collision-resistant address,
+	// while preserving an operator's explicit --name from extra_args.
+	if !i.suppliesClaudeName() {
+		flags = append(flags, "--name "+shellescape.Quote(i.ClaudePeerName()))
+	}
+
 	// macOS Claude Code keys OAuth credentials by the literal
 	// CLAUDE_CONFIG_DIR. Pointing it at a worker scratch directory therefore
 	// forks the profile's rotating refresh token into a separate Keychain item.
@@ -8634,8 +8641,9 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 		opts = NewClaudeOptions(userConfig)
 	}
 
-	// Build extra flags from options (for fork, we use ToArgsForFork which excludes session mode)
-	extraFlags := i.buildClaudeExtraFlags(opts)
+	// Build flags from the TARGET so the fork receives its own deterministic
+	// Claude peer name rather than colliding with the parent in ListAgents.
+	extraFlags := target.buildClaudeExtraFlags(opts)
 
 	// Pre-generate UUID for forked session to avoid shell uuidgen dependency.
 	// CLAUDE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
@@ -8703,9 +8711,11 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 	// the fork they silently drop on the fork's first restart
 	// (buildClaudeResumeCommand reads the fork's own ExtraArgs) and a
 	// fork-of-a-fork never sees them at all. Mirrors how ClaudeOptions are
-	// persisted via SetClaudeOptions further down. Copied, not aliased.
+	// persisted via SetClaudeOptions further down. The parent's --name is the
+	// sole exception: a fork is a distinct peer and needs its own address.
+	// Copied, not aliased.
 	if len(i.ExtraArgs) > 0 {
-		forked.ExtraArgs = append([]string(nil), i.ExtraArgs...)
+		forked.ExtraArgs = extraArgsForFork(i.ExtraArgs)
 	}
 
 	cmd, err := i.buildClaudeForkCommandForTarget(forked, opts)

@@ -7,7 +7,33 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+func TestBuildChildRowsIncludesClaudePeerMetadata(t *testing.T) {
+	rows := buildChildRows([]*session.Instance{
+		{ID: "a1b2c3d4-1111-2222-3333-444455556666", Title: "Claude Child", Tool: "claude"},
+		{ID: "ffeeddcc-1111-2222-3333-444455556666", Title: "Codex Child", Tool: "codex"},
+	}, nil)
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded []map[string]interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if got := decoded[0]["peer_name"]; got != "claude-child-a1b2c3d4" {
+		t.Fatalf("Claude child peer name = %#v", got)
+	}
+	if got := decoded[0]["peer_messaging_candidate"]; got != true {
+		t.Fatalf("Claude child candidate = %#v", got)
+	}
+	if _, ok := decoded[1]["peer_name"]; ok {
+		t.Fatalf("Codex child unexpectedly has Claude peer metadata: %s", raw)
+	}
+}
 
 func TestDiffChildEvents(t *testing.T) {
 	running := func(id, title string) childRow {

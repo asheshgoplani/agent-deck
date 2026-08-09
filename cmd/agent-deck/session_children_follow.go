@@ -13,12 +13,14 @@ import (
 // childRow is one child in `session children` output — shared by the one-shot
 // listing and the --follow stream.
 type childRow struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Status      string `json:"status"`
-	DoneStatus  string `json:"done_status,omitempty"`
-	DoneSummary string `json:"done_summary,omitempty"`
-	DoneAt      string `json:"done_at,omitempty"`
+	ID                     string `json:"id"`
+	Title                  string `json:"title"`
+	Status                 string `json:"status"`
+	PeerName               string `json:"peer_name,omitempty"`
+	PeerMessagingCandidate bool   `json:"peer_messaging_candidate,omitempty"`
+	DoneStatus             string `json:"done_status,omitempty"`
+	DoneSummary            string `json:"done_summary,omitempty"`
+	DoneAt                 string `json:"done_at,omitempty"`
 	// DoneStale marks a completion that predates the last message we delivered
 	// to this child: the child asserted "done" for EARLIER work, then was given
 	// something new. Without it a parent polling the ledger reads the previous
@@ -40,19 +42,21 @@ type childRow struct {
 // followEvent is one JSONL line on the --follow stream. Consumers key off
 // .event: snapshot|added|status|done|removed|error.
 type followEvent struct {
-	Event         string `json:"event"`
-	ID            string `json:"id,omitempty"`
-	Title         string `json:"title,omitempty"`
-	Status        string `json:"status,omitempty"`
-	From          string `json:"from,omitempty"`
-	To            string `json:"to,omitempty"`
-	DoneStatus    string `json:"done_status,omitempty"`
-	DoneSummary   string `json:"done_summary,omitempty"`
-	DoneAt        string `json:"done_at,omitempty"`
-	DoneStale     bool   `json:"done_stale,omitempty"`
-	LastSentAt    string `json:"last_sent_at,omitempty"`
-	ContextTokens int    `json:"context_tokens,omitempty"`
-	Error         string `json:"error,omitempty"`
+	Event                  string `json:"event"`
+	ID                     string `json:"id,omitempty"`
+	Title                  string `json:"title,omitempty"`
+	Status                 string `json:"status,omitempty"`
+	PeerName               string `json:"peer_name,omitempty"`
+	PeerMessagingCandidate bool   `json:"peer_messaging_candidate,omitempty"`
+	From                   string `json:"from,omitempty"`
+	To                     string `json:"to,omitempty"`
+	DoneStatus             string `json:"done_status,omitempty"`
+	DoneSummary            string `json:"done_summary,omitempty"`
+	DoneAt                 string `json:"done_at,omitempty"`
+	DoneStale              bool   `json:"done_stale,omitempty"`
+	LastSentAt             string `json:"last_sent_at,omitempty"`
+	ContextTokens          int    `json:"context_tokens,omitempty"`
+	Error                  string `json:"error,omitempty"`
 }
 
 // followSummary is the heartbeat/complete line. Counts have no omitempty so a
@@ -186,6 +190,10 @@ func buildChildRows(kids []*session.Instance, db *statedb.StateDB) []childRow {
 	for _, k := range kids {
 		_ = k.UpdateStatus()
 		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status)}
+		if k.PeerMessagingCandidate() {
+			row.PeerName = k.ClaudePeerName()
+			row.PeerMessagingCandidate = true
+		}
 		lastSent := lastSentClock(db, k.ID)
 		if !lastSent.IsZero() {
 			row.LastSentAt = lastSent.Format(time.RFC3339)
@@ -224,6 +232,7 @@ func parentContextFields(tokens int, ok bool) (suffix string, emit bool) {
 func snapshotEvent(event string, r childRow) followEvent {
 	return followEvent{
 		Event: event, ID: r.ID, Title: r.Title, Status: r.Status,
+		PeerName: r.PeerName, PeerMessagingCandidate: r.PeerMessagingCandidate,
 		DoneStatus: r.DoneStatus, DoneSummary: r.DoneSummary, DoneAt: r.DoneAt,
 		DoneStale: r.DoneStale, LastSentAt: r.LastSentAt, ContextTokens: r.ContextTokens,
 	}

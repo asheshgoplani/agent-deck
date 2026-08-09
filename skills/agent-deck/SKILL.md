@@ -73,6 +73,7 @@ What agent-deck does, at the noun level (independent of which surface — CLI / 
 | **Remote sessions** | SSH-based remote register / list / attach across hosts | CLI ✅ |
 | **Session sharing** | Export / import a Claude conversation for handoff between developers | CLI ✅ |
 | **Consult another agent** | Launch a Codex / Gemini sub-agent for a second opinion | CLI ✅ |
+| **Claude peer messaging** | Deterministic peer names plus native `ListAgents`/`SendMessage` routing with `session send` fallback | Claude tool + CLI fallback ✅ |
 | **Profile-scoped operation** | `-p <profile>` separation between personal and work auth | CLI ✅ · TUI ✅ |
 | **Self-improvement** | Analyze your conductor's own transcripts → surface bugs / patterns / capabilities, file GH issues with privacy guards | CLI ✅ |
 
