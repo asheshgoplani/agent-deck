@@ -653,21 +653,26 @@ func handleLaunch(profile string, args []string) {
 	if initialMessage != "" && *noWait {
 		tmuxSess := newInstance.GetTmuxSession()
 		if tmuxSess != nil {
+			// #1777 provenance probe: a freshly launched session has an
+			// empty composer, so a "[Pasted text …]" marker appearing
+			// during verification is this prompt's own collapse and the
+			// Enter nudge stays attributable. If the probe cannot confirm
+			// that, the gate withholds the nudge. Captured once, before the
+			// send, and shared with the v1.7.64 recovery pass below — a
+			// multi-line prompt collapses behind that marker as its normal
+			// delivered form (#1855), so the recovery retry needs the same
+			// provenance or its attribution gate withholds it forever.
+			pasteFreeBeforeSend := composerPasteFree(tmuxSess)
 			if _, err := sendWithRetryTarget(tmuxSess, initialMessage, skipClaudeDeliveryVerify(newInstance.Tool), sendRetryOptions{
-				maxRetries: 8,
-				checkDelay: 150 * time.Millisecond,
-				// #1777 provenance probe: a freshly launched session has an
-				// empty composer, so a "[Pasted text …]" marker appearing
-				// during verification is this prompt's own collapse and the
-				// Enter nudge stays attributable. If the probe cannot confirm
-				// that, the gate withholds the nudge.
-				composerPasteFreeBeforeSend: composerPasteFree(tmuxSess),
+				maxRetries:                  8,
+				checkDelay:                  150 * time.Millisecond,
+				composerPasteFreeBeforeSend: pasteFreeBeforeSend,
 			}); err != nil {
 				out.Error(fmt.Sprintf("failed to send initial message: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
-			verifyPromptConsumedAfterLaunch(
-				tmuxSess, initialMessage,
+			verifyPromptConsumedAfterLaunchAttributed(
+				tmuxSess, initialMessage, pasteFreeBeforeSend,
 				10*time.Second, 250*time.Millisecond,
 				os.Stderr,
 			)

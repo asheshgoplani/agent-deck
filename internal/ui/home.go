@@ -10313,7 +10313,11 @@ func conductorComposerGuardOptions() send.ComposerGuardOptions {
 // to prevent; the saved draft is logged instead.
 func deliverToConductorPaneGuarded(p guardableConductorPane, msg string, guardOpts send.ComposerGuardOptions, maxChecks int, checkDelay time.Duration) error {
 	guard := send.GuardComposerDraft(p, guardOpts)
-	err := deliverToConductorPaneTuned(p, msg, maxChecks, checkDelay)
+	// guard.ComposerPasteMarkerFree is the #1777 provenance the verify loop
+	// needs: the guard's pre-send capture saw a composer with no
+	// "[Pasted text …]" marker, so a marker seen during verification is the
+	// collapsed rendering of OUR framed multi-line payload (issue #1855).
+	err := deliverToConductorPaneAttributed(p, msg, guard.ComposerPasteMarkerFree, maxChecks, checkDelay)
 	if guard.SavedDraft != "" {
 		if err == nil {
 			// Delivery confirmed: type the operator draft back. If the
@@ -10356,12 +10360,26 @@ type guardableConductorPane interface {
 // has since gone idle) is not spammed with empty submissions.
 const blindEnterCap = 3
 
-// deliverToConductorPaneTuned is deliverToConductorPane with the verify budget
-// exposed for tests; production callers use the default budget (~10s).
+// deliverToConductorPaneTuned is deliverToConductorPaneAttributed without
+// pre-send provenance: a paste marker in the composer counts as foreign —
+// never nudged, never read as submitted. Kept for callers with no guard
+// capture to attribute against.
 func deliverToConductorPaneTuned(p conductorPane, msg string, maxChecks int, checkDelay time.Duration) error {
+	return deliverToConductorPaneAttributed(p, msg, false, maxChecks, checkDelay)
+}
+
+// deliverToConductorPaneAttributed is deliverToConductorPane with the verify
+// budget exposed for tests and the #1777 paste-marker provenance explicit;
+// production callers use the default budget (~10s). ownPasteMarker carries
+// the caller's pre-send observation that the composer held no "[Pasted text …]"
+// marker, which is what makes a marker seen during verification attributable
+// to this delivery's own bracketed-paste collapse (issue #1855) rather than
+// to a foreign paste parked in the composer.
+func deliverToConductorPaneAttributed(p conductorPane, msg string, ownPasteMarker bool, maxChecks int, checkDelay time.Duration) error {
 	if err := p.SendKeysAndEnter(msg); err != nil {
 		return err
 	}
+	attrib := send.EnterAttribution{Message: msg, OwnPasteMarker: ownPasteMarker}
 	sawUnsent := false
 	blindEnters := 0
 	for i := 0; i < maxChecks; i++ {
@@ -10390,6 +10408,21 @@ func deliverToConductorPaneTuned(p conductorPane, msg string, maxChecks int, che
 			sawUnsent = true
 			if err := p.SendEnter(); err != nil {
 				return fmt.Errorf("retry enter: %w", err)
+			}
+		case send.ComposerHoldsPasteMarker(raw, tmux.StripANSI):
+			// The composer holds a "[Pasted text …]" marker instead of the
+			// message body. Since the transport frames every multi-line
+			// payload as a bracketed paste (issue #1855), this is the NORMAL
+			// delivered-but-unsubmitted shape of our own send — but only
+			// provenance can say so, because the marker hides the content.
+			// NudgeEnter presses Enter only when the collapse is attributable
+			// (ownPasteMarker, or a pane with no composer introspection);
+			// otherwise it withholds, this case confirms nothing, and the
+			// loop times out honestly instead of the old behavior of falling
+			// through to "a composer is rendered without our message" and
+			// reporting an unsent message as submitted.
+			if attrib.NudgeEnter(p, send.Captured(raw), tmux.StripANSI) {
+				sawUnsent = true
 			}
 		case sawUnsent || send.HasCurrentComposerPrompt(content):
 			// The composer previously held the message and is now clear, or a

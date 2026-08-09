@@ -5434,6 +5434,10 @@ func (s *Session) SendKeysChunked(content string) error {
 
 // sendKeysChunkedToTarget is SendKeysChunked against an explicit tmux target.
 //
+// CR handling: CRLF and bare-CR line breaks are normalized to LF before the
+// fork (see the comment in the body), so "multi-line" below means "contains
+// any line break", not "contains LF".
+//
 // The transport fork (issues #1793 + #1855):
 //
 //   - single-line, ≤ canonicalSafeBytes: one `send-keys -l`. Guaranteed to
@@ -5469,6 +5473,20 @@ func (s *Session) SendKeysChunked(content string) error {
 // to fall off the identical cliff (canonical_line.go). Only the refusal, and
 // the caller's post-send verification, make the outcome honest.
 func (s *Session) sendKeysChunkedToTarget(target, content string) error {
+	// A CR is a line break to everything downstream of this transport — the
+	// tty's ICRNL default turns an incoming CR into NL before the line
+	// discipline sees it (the same reason longestMessageLineBytes counts \r
+	// as a line terminator) — and to a bracketed-paste composer a CR inside
+	// the frame is a submit key. paste-buffer's -r flag only stops tmux's
+	// own LF→CR rewrite; it never removes CRs the payload already carries.
+	// So normalize here, before the transport fork: a CRLF body (a
+	// Windows-authored --message-file) and a bare-CR body both become LF
+	// line breaks, which routes them through the framed paste below and
+	// keeps the delivered frame CR-free.
+	if strings.Contains(content, "\r") {
+		content = strings.ReplaceAll(content, "\r\n", "\n")
+		content = strings.ReplaceAll(content, "\r", "\n")
+	}
 	if len(content) <= canonicalSafeBytes && !strings.Contains(content, "\n") {
 		return s.sendKeysToTarget(target, content)
 	}
@@ -5502,6 +5520,19 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 	// concatenate it in the composer. An ambiguous transport failure is
 	// reported, never retried.
 	if errors.Is(err, errPasteNotStaged) {
+		// Degrading is deliberate — a tmux build whose paste path is down has
+		// no framing transport at all, and refusing would fail sends that a
+		// cooked-mode consumer would have taken fine. But the degradation must
+		// not be silent: for a multi-line body the fallback is the unframed
+		// `send-keys -l` transport issue #1855 is about, so the lines can fuse
+		// in a bracketed-paste composer exactly as originally reported. Log it
+		// so a recurrence of #1855 behind a green exit is attributable to this
+		// path instead of looking like the fix regressed.
+		statusLog.Warn("paste_transport_unavailable_degraded_to_send_keys",
+			slog.String("session", s.Name),
+			slog.Bool("multiline", strings.Contains(content, "\n")),
+			slog.Int("payload_bytes", len(content)),
+			slog.String("error", err.Error()))
 		return s.sendKeysChunkedFallback(target, content)
 	}
 	return err
