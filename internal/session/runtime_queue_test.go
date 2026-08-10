@@ -40,6 +40,10 @@ func TestRuntimeQueueStore(t *testing.T) {
 	if !RuntimeQueueHasPending("worker") {
 		t.Fatal("populated queue not pending")
 	}
+	beforePeek, err := os.ReadFile(RuntimeQueuePathFor("worker"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, err := PeekRuntimeQueue("worker")
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +58,17 @@ func TestRuntimeQueueStore(t *testing.T) {
 	}
 	if got[0].ID == got[1].ID {
 		t.Fatalf("IDs are not unique: %q", got[0].ID)
+	}
+	afterPeek, err := os.ReadFile(RuntimeQueuePathFor("worker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	peekedAgain, err := PeekRuntimeQueue("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterPeek) != string(beforePeek) || len(peekedAgain) != len(got) || peekedAgain[0].ID != got[0].ID || peekedAgain[1].ID != got[1].ID {
+		t.Fatal("peek mutated the durable FIFO")
 	}
 	t.Run("failure atomic", testRuntimeQueueStoreFailureAtomic)
 }
@@ -218,8 +233,17 @@ func TestRuntimeQueueDiscard(t *testing.T) {
 	if err := os.WriteFile(inflight, []byte("staged"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	directorySyncs := 0
+	restore := SetFsyncHookForTest(func(*os.File) error {
+		directorySyncs++
+		return nil
+	})
+	defer restore()
 	if err := DiscardRuntimeQueue("gone"); err != nil {
 		t.Fatal(err)
+	}
+	if directorySyncs != 1 {
+		t.Fatalf("discard directory syncs = %d, want 1", directorySyncs)
 	}
 	if RuntimeQueueHasPending("gone") {
 		t.Fatal("discarded queue still pending")
@@ -238,10 +262,12 @@ func TestRuntimeQueueMalformed(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, content := range map[string][]byte{
-		"malformed":        []byte("not-json\n"),
-		"missing metadata": []byte(`{"message":"orphan"}` + "\n"),
-		"missing newline":  []byte(`{"id":"seed","message":"ok","queued_at":"2026-01-01T00:00:00Z","source":"session-send"}`),
-		"overlong":         []byte(strings.Repeat("x", MaxRuntimeQueueBytes+1)),
+		"malformed":         []byte("not-json\n"),
+		"empty ID":          []byte(`{"id":"","message":"orphan","queued_at":"2026-01-01T00:00:00Z","source":"session-send"}` + "\n"),
+		"zero timestamp":    []byte(`{"id":"seed","message":"orphan","queued_at":"0001-01-01T00:00:00Z","source":"session-send"}` + "\n"),
+		"unexpected source": []byte(`{"id":"seed","message":"orphan","queued_at":"2026-01-01T00:00:00Z","source":"other"}` + "\n"),
+		"missing newline":   []byte(`{"id":"seed","message":"ok","queued_at":"2026-01-01T00:00:00Z","source":"session-send"}`),
+		"overlong":          []byte(strings.Repeat("x", MaxRuntimeQueueBytes+1)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := os.WriteFile(path, content, 0o644); err != nil {
