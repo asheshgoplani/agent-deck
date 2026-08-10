@@ -9,16 +9,17 @@ import (
 
 func TestUpdateStatus_ArchivedStaysStopped(t *testing.T) {
 	tests := []struct {
-		name          string
-		archived      bool
-		tmuxSession   *tmux.Session
-		status        Status
-		added         bool
-		fresh         bool
-		exitCode      int
-		wantExitCode  bool
-		wantStatus    Status
-		wantAuthCheck bool
+		name            string
+		archived        bool
+		tmuxSession     *tmux.Session
+		status          Status
+		added           bool
+		fresh           bool
+		recentlyChecked bool
+		exitCode        int
+		wantExitCode    bool
+		wantStatus      Status
+		wantAuthCheck   bool
 	}{
 		{
 			name:       "archived with no tmux object",
@@ -70,6 +71,16 @@ func TestUpdateStatus_ArchivedStaysStopped(t *testing.T) {
 			wantStatus:   StatusStopped,
 		},
 		{
+			name:            "archived error with recently checked missing tmux pane",
+			archived:        true,
+			recentlyChecked: true,
+			tmuxSession:     &tmux.Session{Name: "recently-checked-archive-missing-pane"},
+			status:          StatusError,
+			exitCode:        1,
+			wantExitCode:    true,
+			wantStatus:      StatusStopped,
+		},
+		{
 			name:       "active never started",
 			status:     StatusIdle,
 			added:      true,
@@ -111,6 +122,9 @@ func TestUpdateStatus_ArchivedStaysStopped(t *testing.T) {
 			}
 			if tt.archived {
 				instance.ArchivedAt = time.Now().Add(-time.Hour)
+			}
+			if tt.recentlyChecked {
+				instance.lastErrorCheck = time.Now()
 			}
 
 			probeCalled := false
