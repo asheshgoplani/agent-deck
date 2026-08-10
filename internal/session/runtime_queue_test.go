@@ -559,12 +559,26 @@ func TestRuntimeQueueConcurrentOperationsUseIndependentLock(t *testing.T) {
 		t.Fatal("enqueue persistence did not hold the independent runtime lock")
 	}
 
+	stageEntered := make(chan struct{})
+	startStage := make(chan struct{})
 	stageErr := make(chan error, 1)
 	ackErr := make(chan error, 1)
 	go func() {
+		close(stageEntered)
+		<-startStage
 		_, err := StageRuntimeQueue(id)
 		stageErr <- err
 	}()
+	<-stageEntered
+	close(startStage)
+	select {
+	case err := <-stageErr:
+		close(releasePersist)
+		<-enqueueErr
+		t.Fatalf("stage returned before enqueue released runtime lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		// Stage reached its call boundary but remains blocked by runtimeQueueMu.
+	}
 	go func() { ackErr <- AcknowledgeRuntimeQueue(id, batch.Token) }()
 	close(releasePersist)
 	for name, result := range map[string]<-chan error{"enqueue": enqueueErr, "stage": stageErr, "acknowledge": ackErr} {
