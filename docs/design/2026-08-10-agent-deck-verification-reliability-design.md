@@ -34,7 +34,7 @@ Runtime sends use their own FIFO rather than the existing single launch-prompt r
 - An archived session retains the terminal `stopped` state instead of being reclassified as `error` because its tmux process is absent.
 - `session children` returns active children by default and gains `--include-archived` for explicit inspection.
 - Follow mode reports one `GONE` transition when an active child becomes archived.
-- The orchestration heartbeat filters archived children defensively, protecting users of older binaries as well as the current CLI.
+- The orchestration heartbeat filters archived rows only when archive metadata is present and never infers archive state from status fields; output from older binaries without archive metadata remains compatible but cannot be filtered by archive state.
 
 ### Worktree group inheritance
 
