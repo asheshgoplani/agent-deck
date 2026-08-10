@@ -38,7 +38,10 @@ Write the consolidated report atomically to `{{REPORT_PATH}}`. Include deployed
 version, revision and digest; environment and licensing state; authorized
 scope; each arm ID, question, evidence, and artifact-validation result;
 contradictions and their adjudication; reruns; provenance; timestamps; and an
-explicit completion field.
+explicit completion field. Set the completion field to true in the staged
+content only after report construction is complete, immediately before the
+final atomic rename. Successful publication of that staged document is
+producer completion.
 
 Record exactly one outcome: `pass`, `defect`, or `inconclusive`. A `pass` is
 terminal: make no edits, pull request, CI run, or deployment. A `defect` enters
