@@ -55,6 +55,57 @@ func TestRuntimeQueueStore(t *testing.T) {
 	if got[0].ID == got[1].ID {
 		t.Fatalf("IDs are not unique: %q", got[0].ID)
 	}
+	t.Run("failure atomic", testRuntimeQueueStoreFailureAtomic)
+}
+
+func testRuntimeQueueStoreFailureAtomic(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		inject func(t *testing.T)
+	}{
+		{
+			name: "write failure",
+			inject: func(t *testing.T) {
+				previous := runtimeQueuePersist
+				runtimeQueuePersist = func(string, []byte, os.FileMode) error {
+					return errors.New("injected write failure")
+				}
+				t.Cleanup(func() { runtimeQueuePersist = previous })
+			},
+		},
+		{
+			name: "sync failure",
+			inject: func(t *testing.T) {
+				restore := SetFsyncHookForTest(func(*os.File) error {
+					return errors.New("injected sync failure")
+				})
+				t.Cleanup(restore)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateRuntimeQueue(t)
+			if _, err := EnqueueRuntimeMessage("atomic", "existing"); err != nil {
+				t.Fatal(err)
+			}
+			path := RuntimeQueuePathFor("atomic")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.inject(t)
+			if _, err := EnqueueRuntimeMessage("atomic", "rejected"); err == nil {
+				t.Fatal("expected injected persistence failure")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatal("failed enqueue mutated durable queue")
+			}
+		})
+	}
 }
 
 func TestRuntimeQueueCapacity(t *testing.T) {
@@ -81,19 +132,52 @@ func TestRuntimeQueueCapacity(t *testing.T) {
 
 	t.Run("byte limit independently rejects without mutation", func(t *testing.T) {
 		isolateRuntimeQueue(t)
+		previousID, previousNow := runtimeQueueNewID, runtimeQueueNow
+		runtimeQueueNewID = func() string { return "next" }
+		runtimeQueueNow = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
+		t.Cleanup(func() {
+			runtimeQueueNewID, runtimeQueueNow = previousID, previousNow
+		})
 		path := RuntimeQueuePathFor("bytes")
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		seed := []byte(`{"id":"seed","message":"ok","queued_at":"2026-01-01T00:00:00Z","source":"session-send"}` + "\n")
+		next, err := jsonMarshalRuntimeMessage(RuntimeQueuedMessage{
+			ID: "next", Message: "accepted", QueuedAt: runtimeQueueNow().UTC(), Source: "session-send",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedRecord := RuntimeQueuedMessage{
+			ID: "seed", QueuedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Source: "session-send",
+		}
+		base, err := jsonMarshalRuntimeMessage(seedRecord)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedRecord.Message = strings.Repeat("x", MaxRuntimeQueueBytes-len(next)-len(base))
+		seed, err := jsonMarshalRuntimeMessage(seedRecord)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(path, seed, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := EnqueueRuntimeMessage("bytes", strings.Repeat("x", MaxRuntimeQueueBytes)); !errors.Is(err, ErrRuntimeQueueFull) {
+		if _, err := EnqueueRuntimeMessage("bytes", "accepted"); err != nil {
+			t.Fatalf("exact-limit enqueue: %v", err)
+		}
+		atLimit, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(atLimit) != MaxRuntimeQueueBytes {
+			t.Fatalf("queue size = %d, want exact limit %d", len(atLimit), MaxRuntimeQueueBytes)
+		}
+		if _, err := EnqueueRuntimeMessage("bytes", "x"); !errors.Is(err, ErrRuntimeQueueFull) {
 			t.Fatalf("byte overflow error = %v", err)
 		}
 		after, _ := os.ReadFile(path)
-		if string(after) != string(seed) {
+		if string(after) != string(atLimit) {
 			t.Fatal("rejected byte append mutated queue")
 		}
 	})
