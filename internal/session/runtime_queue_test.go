@@ -560,17 +560,16 @@ func TestRuntimeQueueConcurrentOperationsUseIndependentLock(t *testing.T) {
 	}
 
 	stageEntered := make(chan struct{})
-	startStage := make(chan struct{})
+	previousStageEnter := runtimeQueueStageEnter
+	runtimeQueueStageEnter = func() { close(stageEntered) }
+	t.Cleanup(func() { runtimeQueueStageEnter = previousStageEnter })
 	stageErr := make(chan error, 1)
 	ackErr := make(chan error, 1)
 	go func() {
-		close(stageEntered)
-		<-startStage
 		_, err := StageRuntimeQueue(id)
 		stageErr <- err
 	}()
 	<-stageEntered
-	close(startStage)
 	select {
 	case err := <-stageErr:
 		close(releasePersist)

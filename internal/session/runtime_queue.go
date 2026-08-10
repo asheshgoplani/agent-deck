@@ -39,6 +39,7 @@ type runtimeQueueCompletion struct {
 }
 
 func StageRuntimeQueue(id string) (RuntimeQueueBatch, error) {
+	runtimeQueueStageEnter()
 	runtimeQueueMu.Lock()
 	defer runtimeQueueMu.Unlock()
 
@@ -160,11 +161,12 @@ const (
 )
 
 var (
-	runtimeQueueMu      sync.Mutex
-	runtimeQueueNewID   = uuid.NewString
-	runtimeQueueNow     = time.Now
-	runtimeQueuePersist = writeFileDurable
-	runtimeQueueRemove  = os.Remove
+	runtimeQueueMu         sync.Mutex
+	runtimeQueueNewID      = uuid.NewString
+	runtimeQueueNow        = time.Now
+	runtimeQueuePersist    = writeFileDurable
+	runtimeQueueRemove     = os.Remove
+	runtimeQueueStageEnter = func() {}
 )
 
 func RuntimeQueueDir() string {
