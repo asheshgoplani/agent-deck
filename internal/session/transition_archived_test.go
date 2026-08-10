@@ -177,8 +177,10 @@ func TestTransitionArchivedRaceEmitsNoTransitionOrDoneEvent(t *testing.T) {
 		d.syncProfile(profile)
 		close(done)
 	}()
-	loaded := <-probeStarted
-	loaded.ArchivedAt = time.Now().UTC()
+	<-probeStarted
+	if err := storage.GetDB().SetArchived(id, time.Now().UTC()); err != nil {
+		t.Fatalf("persist archive while transition probe is blocked: %v", err)
+	}
 	close(archiveFinished)
 	<-done
 

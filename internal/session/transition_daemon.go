@@ -454,7 +454,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			continue
 		}
 		inst := byID[id]
-		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
+		if !notifyEnabled || !d.instanceAcceptsCurrentTransitionEvents(profile, inst) {
 			continue
 		}
 		event := TransitionNotificationEvent{
@@ -479,6 +479,29 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 
 	d.lastStatus[profile] = copyStatusMap(statuses)
 	return choosePollInterval(statuses)
+}
+
+// instanceAcceptsCurrentTransitionEvents revalidates mutable notification
+// gates from SQLite at the emission boundary. syncProfile's Instance values are
+// snapshots; archive and notification settings can be committed by another
+// process after the pass loads them. On lookup failure we fail closed for this
+// pass so a stale snapshot cannot emit an event after an archive commit.
+func (d *TransitionDaemon) instanceAcceptsCurrentTransitionEvents(profile string, inst *Instance) bool {
+	if !instanceAcceptsTransitionEvents(inst) {
+		return false
+	}
+	storage := d.getStorage(profile)
+	if storage == nil || storage.GetDB() == nil {
+		return false
+	}
+	row, err := storage.GetDB().LoadInstanceByID(inst.ID)
+	if err != nil || row == nil {
+		return false
+	}
+	return instanceAcceptsTransitionEvents(&Instance{
+		NoTransitionNotify: row.NoTransitionNotify,
+		ArchivedAt:         row.ArchivedAt,
+	})
 }
 
 // emitDoneSignals turns a worker-printed completion sentinel (persisted into
@@ -509,7 +532,7 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		}
 
 		inst := byID[id]
-		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
+		if !notifyEnabled || !d.instanceAcceptsCurrentTransitionEvents(profile, inst) {
 			continue
 		}
 
@@ -795,7 +818,7 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
 	for id, candidate := range candidates {
 		inst := byID[id]
-		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
+		if !notifyEnabled || !d.instanceAcceptsCurrentTransitionEvents(profile, inst) {
 			continue
 		}
 		// Issue #1214: the completion wrapper owns a task worker's terminal
