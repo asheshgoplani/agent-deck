@@ -1,6 +1,6 @@
 # Task 06 — Archived sessions emit no transition events
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** independent; safe with Groups A, C, D, E and task 07.
 
 ## Approved design extract (verbatim)
@@ -40,4 +40,3 @@ produces:
 - `syncProfile` invariant: all downstream instances are active
 
 ## Record (append-only)
-

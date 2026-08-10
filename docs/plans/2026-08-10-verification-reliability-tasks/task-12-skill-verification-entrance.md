@@ -1,6 +1,6 @@
 # Task 12 — Deployed-system verification entrance
 
-**tier: strong**  
+**tier: strong**
 **Parallelism:** Group D start; strictly before tasks 13 and 14.
 
 ## Approved design extract (verbatim)
@@ -50,4 +50,3 @@ produces:
 - `## Deployed-system verification`, sixth entrance routing, and contracts consumed by tasks 13–14
 
 ## Record (append-only)
-

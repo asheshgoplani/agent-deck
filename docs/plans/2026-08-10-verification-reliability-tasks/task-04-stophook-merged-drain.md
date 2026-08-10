@@ -1,6 +1,6 @@
 # Task 04 — Merge runtime queue into Stop-hook drain
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** after task 02; safe in parallel with task 03.
 
 ## Approved design extract (verbatim)
@@ -41,4 +41,3 @@ produces:
 - one-block contract consumed unchanged by `cmd/agent-deck/hook_handler.go`
 
 ## Record (append-only)
-

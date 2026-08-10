@@ -1,6 +1,6 @@
 # Task 11 — Linked-worktree group inheritance subprocess test
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** independent; production implementation remains unchanged.
 
 ## Approved design extract (verbatim)
@@ -38,4 +38,3 @@ produces:
 - `cmd/agent-deck/worktree_group_inheritance_test.go` regression test only
 
 ## Record (append-only)
-

@@ -1,6 +1,6 @@
 # Task 03 — `session send --queue-if-busy`
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** after task 02; safe in parallel with task 04.
 
 ## Approved design extract (verbatim)
@@ -47,4 +47,3 @@ produces:
 - CLI `--queue-if-busy`; receipt keys `queued`, `session_id`, `queue_depth`
 
 ## Record (append-only)
-

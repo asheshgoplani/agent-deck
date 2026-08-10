@@ -1,6 +1,6 @@
 # Task 08 — Active-only child snapshots
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** independent start; must finish before task 09 because both edit `session_children_follow.go`.
 
 ## Approved design extract (verbatim)
@@ -57,4 +57,3 @@ produces:
 - follow rows retaining archived children for task 09
 
 ## Record (append-only)
-

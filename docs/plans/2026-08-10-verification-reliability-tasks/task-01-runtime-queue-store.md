@@ -1,6 +1,6 @@
 # Task 01 — Runtime queue durable store
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** starts Group A; no prerequisite.
 
 ## Approved design extract (verbatim)
@@ -82,4 +82,3 @@ produces:
 - `RuntimeQueueDir() string`, `RuntimeQueuePathFor(string) string`, `EnqueueRuntimeMessage(string, string) (int, error)`, `RuntimeQueueHasPending(string) bool`, `PeekRuntimeQueue(string) ([]RuntimeQueuedMessage, error)`, `DiscardRuntimeQueue(string) error`
 
 ## Record (append-only)
-

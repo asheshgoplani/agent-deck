@@ -1,6 +1,6 @@
 # Task 10 — Defensive archived filter in `poll.sh`
 
-**tier: cheap**  
+**tier: cheap**
 **Parallelism:** independent and disjoint.
 
 ## Approved design extract (verbatim)
@@ -43,4 +43,3 @@ produces:
 - identical defensive jq filter in all three heartbeat paths
 
 ## Record (append-only)
-

@@ -1,6 +1,6 @@
 # Task 02 — Runtime queue two-phase drain
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** after task 01; unlocks tasks 03 and 04.
 
 ## Approved design extract (verbatim)
@@ -47,4 +47,3 @@ produces:
 - test seam `RuntimeQueueDrainStagePhaseForCrashTest`
 
 ## Record (append-only)
-

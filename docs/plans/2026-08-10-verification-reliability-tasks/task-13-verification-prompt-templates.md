@@ -1,6 +1,6 @@
 # Task 13 — Verification prompt templates
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** strictly after task 12 and before task 14.
 
 ## Approved design extract (verbatim)
@@ -37,4 +37,3 @@ produces:
 - exact placeholder sets specified above, consumed by task 14
 
 ## Record (append-only)
-

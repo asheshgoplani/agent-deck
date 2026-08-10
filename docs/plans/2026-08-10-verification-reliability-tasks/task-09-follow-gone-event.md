@@ -1,6 +1,6 @@
 # Task 09 — Follow emits one archived `gone` event
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** strictly serial after task 08.
 
 ## Approved design extract (verbatim)
@@ -46,4 +46,3 @@ produces:
 - active-only follow snapshot/aggregate/terminal semantics
 
 ## Record (append-only)
-

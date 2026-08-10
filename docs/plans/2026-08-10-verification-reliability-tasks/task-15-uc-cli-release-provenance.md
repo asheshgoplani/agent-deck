@@ -1,6 +1,6 @@
 # Task 15 — Verify and land uc-cli release provenance
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** **SERIAL / NEVER PARALLEL**; separate repo with in-flight edits.
 
 ## Approved design extract (verbatim)
@@ -50,4 +50,3 @@ produces:
 - no Agent Deck source changes
 
 ## Record (append-only)
-

@@ -1,6 +1,6 @@
 # Task 14 — Verification workflow documentation tests
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** strictly after tasks 12 and 13.
 
 ## Approved design extract (verbatim)
@@ -39,4 +39,3 @@ produces:
 - `cmd/agent-deck/orchestrate_verification_docs_test.go`
 
 ## Record (append-only)
-

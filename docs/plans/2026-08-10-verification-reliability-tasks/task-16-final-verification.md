@@ -1,6 +1,6 @@
 # Task 16 — Final cross-repository verification
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** last, after tasks 01–15 and final commits.
 
 ## Approved design extract (verbatim)
@@ -53,4 +53,3 @@ produces:
 - evidence keyed to exact SHAs, two independent diff reviews, explicit environmental gaps
 
 ## Record (append-only)
-

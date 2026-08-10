@@ -1,6 +1,6 @@
 # Verification reliability implementation plan
 
-**Approved design:** `docs/design/2026-08-10-agent-deck-verification-reliability-design.md`  
+**Approved design:** `docs/design/2026-08-10-agent-deck-verification-reliability-design.md`
 **Execution rule:** each linked task file is self-contained; implementers need read only their assigned file. Follow red/green/refactor for behavior changes. Do not implement from this overview when a task file exists.
 
 ## Delivery graph

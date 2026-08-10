@@ -1,6 +1,6 @@
 # Task 05 — Discard runtime queue on removal/archive
 
-**tier: cheap**  
+**tier: cheap**
 **Parallelism:** after task 01; disjoint from tasks 02–04 except consumed API.
 
 ## Approved design extract (verbatim)
@@ -42,4 +42,3 @@ produces:
 - lifecycle guarantee that no active/inflight runtime queue survives successful remove/archive
 
 ## Record (append-only)
-

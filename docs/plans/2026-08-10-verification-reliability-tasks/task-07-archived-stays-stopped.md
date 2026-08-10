@@ -1,6 +1,6 @@
 # Task 07 — Archived status stays stopped
 
-**tier: mid**  
+**tier: mid**
 **Parallelism:** independent; safe with task 06 and other groups.
 
 ## Approved design extract (verbatim)
@@ -36,4 +36,3 @@ produces:
 - `UpdateStatus` archive-first behavior in both vanished-pane branches
 
 ## Record (append-only)
-
