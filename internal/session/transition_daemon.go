@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 const (
@@ -81,6 +83,7 @@ type TransitionDaemon struct {
 	// Production leaves it nil; tests use it to prove a persisted gate prevents
 	// the notifier call itself rather than relying on the notifier's own guard.
 	observeTransitionEmission func(TransitionNotificationEvent)
+	loadTransitionInstanceRow func(string, string) (*statedb.InstanceRow, error)
 }
 
 func NewTransitionDaemon() *TransitionDaemon {
@@ -380,7 +383,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		if db != nil {
 			if rows, err := db.ReadAllStatuses(); err == nil {
 				for id, row := range rows {
-					statuses[id] = normalizeStatusString(row.Status)
+					if _, active := byID[id]; active {
+						statuses[id] = normalizeStatusString(row.Status)
+					}
 				}
 			}
 		}
@@ -444,7 +449,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 
 	if !d.initialized[profile] {
 		// Cover fast transitions that completed before we observed a running snapshot.
-		d.emitHookTransitionCandidates(profile, byID, nil, statuses, hookCandidates)
+		d.emitHookTransitionCandidates(profile, byID, nil, statuses, hookCandidates, nil)
 		d.emitDoneSignals(profile, byID, hookStatuses)
 		d.lastStatus[profile] = copyStatusMap(statuses)
 		d.initialized[profile] = true
@@ -452,6 +457,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	}
 
 	prev := d.lastStatus[profile]
+	revalidationFailures := map[string]bool{}
 	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
 	for id, to := range statuses {
 		from := normalizeStatusString(prev[id])
@@ -459,7 +465,15 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			continue
 		}
 		inst := byID[id]
-		if !notifyEnabled || !d.instanceAcceptsCurrentTransitionEvents(profile, inst) {
+		if !notifyEnabled {
+			continue
+		}
+		accepts, err := d.instanceAcceptsCurrentTransitionEvents(profile, inst)
+		if err != nil {
+			revalidationFailures[id] = true
+			continue
+		}
+		if !accepts {
 			continue
 		}
 		event := TransitionNotificationEvent{
@@ -482,10 +496,18 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		}
 		_ = d.notifier.NotifyTransition(event)
 	}
-	d.emitHookTransitionCandidates(profile, byID, prev, statuses, hookCandidates)
-	d.emitDoneSignals(profile, byID, hookStatuses)
+	d.emitHookTransitionCandidates(profile, byID, prev, statuses, hookCandidates, revalidationFailures)
+	d.emitDoneSignals(profile, byID, hookStatuses, revalidationFailures)
 
-	d.lastStatus[profile] = copyStatusMap(statuses)
+	nextStatus := copyStatusMap(statuses)
+	for id := range revalidationFailures {
+		if previous, ok := prev[id]; ok {
+			nextStatus[id] = previous
+		} else {
+			delete(nextStatus, id)
+		}
+	}
+	d.lastStatus[profile] = nextStatus
 	return choosePollInterval(statuses)
 }
 
@@ -494,22 +516,32 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 // snapshots; archive and notification settings can be committed by another
 // process after the pass loads them. On lookup failure we fail closed for this
 // pass so a stale snapshot cannot emit an event after an archive commit.
-func (d *TransitionDaemon) instanceAcceptsCurrentTransitionEvents(profile string, inst *Instance) bool {
+func (d *TransitionDaemon) instanceAcceptsCurrentTransitionEvents(profile string, inst *Instance) (bool, error) {
 	if !instanceAcceptsTransitionEvents(inst) {
-		return false
+		return false, nil
+	}
+	if d.loadTransitionInstanceRow != nil {
+		row, err := d.loadTransitionInstanceRow(profile, inst.ID)
+		if err != nil || row == nil {
+			return false, err
+		}
+		return instanceAcceptsTransitionEvents(&Instance{NoTransitionNotify: row.NoTransitionNotify, ArchivedAt: row.ArchivedAt}), nil
 	}
 	storage := d.getStorage(profile)
 	if storage == nil || storage.GetDB() == nil {
-		return false
+		return false, fmt.Errorf("transition storage unavailable")
 	}
 	row, err := storage.GetDB().LoadInstanceByID(inst.ID)
-	if err != nil || row == nil {
-		return false
+	if err != nil {
+		return false, err
+	}
+	if row == nil {
+		return false, nil
 	}
 	return instanceAcceptsTransitionEvents(&Instance{
 		NoTransitionNotify: row.NoTransitionNotify,
 		ArchivedAt:         row.ArchivedAt,
-	})
+	}), nil
 }
 
 // emitDoneSignals turns a worker-printed completion sentinel (persisted into
@@ -522,7 +554,7 @@ func (d *TransitionDaemon) instanceAcceptsCurrentTransitionEvents(profile string
 // completion. When the hook's own scan was inconclusive (transcript not
 // flushed at Stop time), the hook file carries the transcript path instead of
 // done fields and the daemon finishes the scan here — see doneSignalFor.
-func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Instance, hookStatuses map[string]*HookStatus) {
+func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Instance, hookStatuses map[string]*HookStatus, retryMaps ...map[string]bool) {
 	if len(hookStatuses) == 0 {
 		return
 	}
@@ -540,7 +572,17 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		}
 
 		inst := byID[id]
-		if !notifyEnabled || !d.instanceAcceptsCurrentTransitionEvents(profile, inst) {
+		if !notifyEnabled {
+			continue
+		}
+		accepts, err := d.instanceAcceptsCurrentTransitionEvents(profile, inst)
+		if err != nil {
+			if len(retryMaps) > 0 && retryMaps[0] != nil {
+				retryMaps[0][id] = true
+			}
+			continue
+		}
+		if !accepts {
 			continue
 		}
 
@@ -819,6 +861,7 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 	prev map[string]string,
 	current map[string]string,
 	candidates map[string]hookTransitionCandidate,
+	revalidationFailures map[string]bool,
 ) {
 	if len(candidates) == 0 {
 		return
@@ -826,7 +869,17 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
 	for id, candidate := range candidates {
 		inst := byID[id]
-		if !notifyEnabled || !d.instanceAcceptsCurrentTransitionEvents(profile, inst) {
+		if !notifyEnabled {
+			continue
+		}
+		accepts, err := d.instanceAcceptsCurrentTransitionEvents(profile, inst)
+		if err != nil {
+			if revalidationFailures != nil {
+				revalidationFailures[id] = true
+			}
+			continue
+		}
+		if !accepts {
 			continue
 		}
 		// Issue #1214: the completion wrapper owns a task worker's terminal

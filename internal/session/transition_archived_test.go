@@ -1,11 +1,44 @@
 package session
 
 import (
+	"errors"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
+
+func TestSyncProfile_LiveTUIArchivedStatusNeverReachesLastStatus(t *testing.T) {
+	const profile = "_test_transition_archived_live_tui"
+	d, storage := bootstrapDaemonProfile(t, profile)
+	active := &Instance{ID: "live-active", Title: "active", ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now()}
+	archived := &Instance{ID: "live-archived", Title: "archived", ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now(), ArchivedAt: time.Now().UTC()}
+	if err := storage.SaveWithGroups([]*Instance{active, archived}, nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	db := storage.GetDB()
+	if err := db.RegisterInstance(false); err != nil {
+		t.Fatalf("register TUI: %v", err)
+	}
+	if err := db.Heartbeat(); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if err := db.WriteStatus(active.ID, "running", active.Tool); err != nil {
+		t.Fatalf("active status: %v", err)
+	}
+	if err := db.WriteStatus(archived.ID, "waiting", archived.Tool); err != nil {
+		t.Fatalf("archived status: %v", err)
+	}
+	d.syncProfile(profile)
+	if _, ok := d.lastStatus[profile][archived.ID]; ok {
+		t.Fatal("archived live-TUI row reached lastStatus")
+	}
+	if got := d.lastStatus[profile][active.ID]; got != "running" {
+		t.Fatalf("active status = %q, want running", got)
+	}
+}
 
 func TestInstanceAcceptsTransitionEvents_ArchivedPredicate(t *testing.T) {
 	tests := []struct {
@@ -314,5 +347,66 @@ func TestTransitionPersistedDisableRaceEmitsNoEvent(t *testing.T) {
 	}
 	if emissionCount != 0 {
 		t.Fatalf("persisted notification disable reached daemon emission boundary %d time(s)", emissionCount)
+	}
+}
+
+func TestTransitionRevalidationErrorRetriesSnapshotHookAndDone(t *testing.T) {
+	tests := []struct {
+		name        string
+		hook        *HookStatus
+		probeStatus Status
+		wantDone    bool
+	}{
+		{name: "snapshot", probeStatus: StatusWaiting},
+		{name: "hook", hook: &HookStatus{Status: "waiting", Event: "Stop", UpdatedAt: time.Now()}, probeStatus: StatusRunning},
+		{name: "done", hook: &HookStatus{Status: "running", Event: "Stop", UpdatedAt: time.Now(), DoneStatus: "ok", DoneSummary: "finished"}, probeStatus: StatusRunning, wantDone: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := "_test_transition_revalidation_" + tt.name
+			id, parentID := "retry-"+tt.name, "retry-parent-"+tt.name
+			d, storage := bootstrapDaemonProfile(t, profile)
+			child := &Instance{ID: id, Title: id, ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, ParentSessionID: parentID, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour)}
+			parent := &Instance{ID: parentID, Title: "parent", ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour)}
+			if err := storage.SaveWithGroups([]*Instance{child, parent}, nil); err != nil {
+				t.Fatalf("save: %v", err)
+			}
+			d.initialized[profile] = true
+			d.lastStatus[profile] = map[string]string{id: "running"}
+			if tt.hook != nil {
+				d.hookWatcher = &StatusFileWatcher{statuses: map[string]*HookStatus{id: tt.hook}}
+			}
+			originalProbe := updateInstanceStatus.Load().(statusProbeFunc)
+			updateInstanceStatus.Store(statusProbeFunc(func(inst *Instance) error {
+				if inst.ID == id {
+					inst.SetStatusThreadSafe(tt.probeStatus)
+				}
+				return nil
+			}))
+			t.Cleanup(func() { updateInstanceStatus.Store(originalProbe) })
+			d.loadTransitionInstanceRow = func(string, string) (*statedb.InstanceRow, error) {
+				return nil, errors.New("temporary sqlite read failure")
+			}
+			d.syncProfile(profile)
+			if got := d.lastStatus[profile][id]; got != "running" {
+				t.Fatalf("failed revalidation advanced lastStatus to %q", got)
+			}
+			if tt.wantDone {
+				if _, ok := d.lastDone[profile][id]; ok {
+					t.Fatal("failed revalidation consumed done signal")
+				}
+			}
+			d.loadTransitionInstanceRow = nil
+			var emitted int
+			d.observeTransitionEmission = func(TransitionNotificationEvent) { emitted++ }
+			d.syncProfile(profile)
+			if tt.wantDone {
+				if _, ok := d.lastDone[profile][id]; !ok {
+					t.Fatal("done signal was not retried after revalidation recovered")
+				}
+			} else if emitted == 0 {
+				t.Fatal("transition was not retried after revalidation recovered")
+			}
+		})
 	}
 }
