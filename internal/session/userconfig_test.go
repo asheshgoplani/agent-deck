@@ -11,6 +11,17 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+func TestUserConfigParsesAlternateQuickCreateTool(t *testing.T) {
+	var cfg UserConfig
+	if _, err := toml.Decode("[quick_create]\nalternate_tool = \"codex\"\n", &cfg); err != nil {
+		t.Fatalf("decode quick_create config: %v", err)
+	}
+
+	if cfg.QuickCreate.AlternateTool != "codex" {
+		t.Fatalf("quick_create alternate tool = %q, want codex", cfg.QuickCreate.AlternateTool)
+	}
+}
+
 // isolateConfigHomeXDG redirects XDG_CONFIG_HOME at the test's already-set HOME
 // so XDG-aware config writes stay inside the same temp tree as HOME. Package
 // TestMain clears XDG by default so ordinary HOME-only tests track HOME; this
@@ -427,6 +438,9 @@ func TestCreateExampleConfigDocumentsCompatibleWith(t *testing.T) {
 	for _, want := range []string{
 		`compatible_with - Built-in compatibility to mirror ("claude" or "codex")`,
 		`compatible_with = "codex"`,
+		`[quick_create]`,
+		`alternate_tool = "codex"`,
+		`quick_create_alternate = "ctrl+n"`,
 	} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("example config missing %q", want)

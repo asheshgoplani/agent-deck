@@ -1071,6 +1071,14 @@ func (h *Home) actionKey(action string) string {
 	return actionHotkey(h.hotkeys, action)
 }
 
+func (h *Home) newSessionHotkeyLabels() string {
+	return joinHotkeyLabels(
+		h.actionKey(hotkeyNewSession),
+		h.actionKey(hotkeyQuickCreate),
+		h.actionKey(hotkeyQuickCreateAlt),
+	)
+}
+
 // deletedSessionEntry holds a deleted session for undo restore
 type deletedSessionEntry struct {
 	instance  *session.Instance
@@ -9226,7 +9234,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		// Quick create: auto-generated name, smart defaults from group context
-		return h, h.quickCreateSession()
+		return h, h.quickCreateSession(false)
+
+	case "quick_create_alternate":
+		if h.cursor >= 0 && h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
+				h.setError(fmt.Errorf("alternate quick-create is not supported for remote sessions"))
+				return h, nil
+			}
+		}
+		return h, h.quickCreateSession(true)
 
 	case "z":
 		h.zoxidePicker.SetSize(h.width, h.height)
@@ -11920,11 +11938,26 @@ func (h *Home) quickForkSession(source *session.Instance) tea.Cmd {
 	return result.cmd
 }
 
+func resolveAlternateQuickCreateTool(contextualTool, defaultTool, alternateTool string) (string, error) {
+	alternateTool = strings.TrimSpace(alternateTool)
+	if alternateTool == "" {
+		return "", fmt.Errorf("alternate quick-create tool is not configured; set [quick_create].alternate_tool")
+	}
+	defaultTool = strings.TrimSpace(defaultTool)
+	if defaultTool == "" {
+		defaultTool = "claude"
+	}
+	if contextualTool == alternateTool {
+		return defaultTool, nil
+	}
+	return alternateTool, nil
+}
+
 // quickCreateSession creates a session instantly with auto-generated name and smart defaults.
 // When the cursor is on a session, it inherits that session's path and tool settings
 // (duplicate-like behavior per community feedback). When on a group header, it uses
 // the group's default path and most recently created session's settings.
-func (h *Home) quickCreateSession() tea.Cmd {
+func (h *Home) quickCreateSession(alternate bool) tea.Cmd {
 	groupPath := ""
 	var sourceSession *session.Instance
 
@@ -12009,6 +12042,23 @@ func (h *Home) quickCreateSession() tea.Cmd {
 	}
 	if tool == "" {
 		tool = "claude"
+	}
+	if alternate {
+		resolvedTool, err := resolveAlternateQuickCreateTool(
+			tool,
+			session.GetDefaultTool(),
+			session.GetQuickCreateAlternateTool(),
+		)
+		if err != nil {
+			return func() tea.Msg {
+				return sessionCreatedMsg{err: err}
+			}
+		}
+		tool = resolvedTool
+		// A forced tool must not inherit another tool's command or options.
+		command = ""
+		toolOptionsJSON = nil
+		geminiYoloMode = false
 	}
 	if command == "" && tool != "shell" {
 		if tool == "cursor" {
@@ -15287,6 +15337,7 @@ func (h *Home) renderHelpBarMinimal() string {
 	var contextKeys string
 	newKey := h.actionKey(hotkeyNewSession)
 	quickKey := h.actionKey(hotkeyQuickCreate)
+	alternateQuickKey := h.actionKey(hotkeyQuickCreateAlt)
 	importKey := h.actionKey(hotkeyImport)
 	groupKey := h.actionKey(hotkeyCreateGroup)
 	restartKey := h.actionKey(hotkeyRestart)
@@ -15305,13 +15356,13 @@ func (h *Home) renderHelpBarMinimal() string {
 			contextKeys = bufStyle.Render(h.jumpBuffer+"…") + " " + contextKeys
 		}
 	} else if len(h.flatItems) == 0 {
-		contextKeys = renderKeys(newKey, quickKey, importKey, groupKey)
+		contextKeys = renderKeys(newKey, quickKey, alternateQuickKey, importKey, groupKey)
 	} else if h.cursor >= 0 && h.cursor < len(h.flatItems) {
 		item := h.flatItems[h.cursor]
 		if item.Type == session.ItemTypeGroup {
-			contextKeys = renderKeys("⏎", newKey, quickKey, groupKey)
+			contextKeys = renderKeys("⏎", newKey, quickKey, alternateQuickKey, groupKey)
 		} else {
-			contextKeys = renderKeys("⏎", newKey, quickKey, restartKey)
+			contextKeys = renderKeys("⏎", newKey, quickKey, alternateQuickKey, restartKey)
 			if item.Session != nil && item.Session.CanRestartFresh() {
 				freshRendered := renderKeys(restartFreshKey)
 				if freshRendered != "" {
@@ -15389,7 +15440,7 @@ func (h *Home) renderHelpBarCompact() string {
 
 	sepStyle := lipgloss.NewStyle().Foreground(ColorBorder)
 	sep := sepStyle.Render(" │ ")
-	newQuickKey := joinHotkeyLabels(h.actionKey(hotkeyNewSession), h.actionKey(hotkeyQuickCreate))
+	newQuickKey := h.newSessionHotkeyLabels()
 	restartFreshKey := h.actionKey(hotkeyRestartFresh)
 
 	// Abbreviated key+short desc
@@ -15530,7 +15581,7 @@ func (h *Home) renderHelpBarFull() string {
 	// Separator style for grouping related actions
 	sepStyle := lipgloss.NewStyle().Foreground(ColorBorder)
 	sep := sepStyle.Render(" │ ")
-	newQuickKey := joinHotkeyLabels(h.actionKey(hotkeyNewSession), h.actionKey(hotkeyQuickCreate))
+	newQuickKey := h.newSessionHotkeyLabels()
 	renameKey := h.actionKey(hotkeyRename)
 	restartKey := h.actionKey(hotkeyRestart)
 	restartFreshKey := h.actionKey(hotkeyRestartFresh)
@@ -15841,7 +15892,7 @@ func (h *Home) curatedContextHints(item session.Item) []footerHint {
 		}
 	}
 
-	newQuick := joinHotkeyLabels(h.actionKey(hotkeyNewSession), h.actionKey(hotkeyQuickCreate))
+	newQuick := h.newSessionHotkeyLabels()
 
 	switch item.Type {
 	case session.ItemTypeGroup:
@@ -15947,7 +15998,7 @@ func (h *Home) renderHelpBarCurated() string {
 				contextHints = append(contextHints, footerHint{key: key, label: label})
 			}
 		}
-		add(joinHotkeyLabels(h.actionKey(hotkeyNewSession), h.actionKey(hotkeyQuickCreate)), "new")
+		add(h.newSessionHotkeyLabels(), "new")
 		add(h.actionKey(hotkeyImport), "import")
 		add(h.actionKey(hotkeyCreateGroup), "group")
 	case h.cursor >= 0 && h.cursor < len(h.flatItems):

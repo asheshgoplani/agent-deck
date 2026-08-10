@@ -31,6 +31,96 @@ func TestNewHome(t *testing.T) {
 	}
 }
 
+func TestAlternateQuickCreateHotkeyDispatchesWithoutDialog(t *testing.T) {
+	home := NewHome()
+	home.setHotkeys(resolveHotkeys(map[string]string{
+		"quick_create_alternate": "ctrl+n",
+	}))
+
+	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyCtrlN})
+	updated := model.(*Home)
+	if cmd == nil {
+		t.Fatal("configured alternate quick-create hotkey returned no create command")
+	}
+	if updated.newDialog.IsVisible() {
+		t.Fatal("alternate quick-create opened the new-session dialog")
+	}
+}
+
+func TestAlternateQuickCreateUsesDefaultWhenContextIsAlternate(t *testing.T) {
+	homeDir := setXDGTestHome(t)
+	writeXDGTestConfig(t, homeDir, `
+default_tool = "primary-test"
+
+[quick_create]
+alternate_tool = "shell"
+
+[tools.primary-test]
+command = "sleep 30"
+`)
+
+	home := NewHome()
+	home.setHotkeys(resolveHotkeys(map[string]string{
+		"quick_create_alternate": "ctrl+n",
+	}))
+	source := session.NewInstanceWithGroupAndTool("source", t.TempDir(), "test", "shell")
+	home.instances = []*session.Instance{source}
+	home.flatItems = []session.Item{{Type: session.ItemTypeSession, Session: source}}
+	home.cursor = 0
+
+	_, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if cmd == nil {
+		t.Fatal("configured alternate quick-create hotkey returned no create command")
+	}
+	msg := cmd().(sessionCreatedMsg)
+	if msg.err != nil {
+		t.Fatalf("alternate quick-create: %v", msg.err)
+	}
+	t.Cleanup(func() {
+		if err := msg.instance.KillAndWait(); err != nil {
+			t.Errorf("cleanup alternate quick-created session: %v", err)
+		}
+	})
+	if got := msg.instance.Tool; got != "primary-test" {
+		t.Fatalf("alternate quick-create tool = %q, want primary-test", got)
+	}
+}
+
+func TestResolveAlternateQuickCreateTool(t *testing.T) {
+	tests := []struct {
+		name        string
+		contextual  string
+		defaultTool string
+		alternate   string
+		want        string
+		wantErr     bool
+	}{
+		{name: "primary context selects alternate", contextual: "claude", defaultTool: "claude", alternate: "codex", want: "codex"},
+		{name: "alternate context flips to default", contextual: "codex", defaultTool: "claude", alternate: "codex", want: "claude"},
+		{name: "unrelated context selects alternate", contextual: "gemini", defaultTool: "claude", alternate: "codex", want: "codex"},
+		{name: "empty default falls back to claude", contextual: "codex", alternate: "codex", want: "claude"},
+		{name: "missing alternate is rejected", contextual: "claude", defaultTool: "claude", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveAlternateQuickCreateTool(tt.contextual, tt.defaultTool, tt.alternate)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("resolve alternate quick-create tool returned no error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolve alternate quick-create tool: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("resolved tool = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNewHome_DisablesTmuxNotificationsWhenStatusInjectionDisabled(t *testing.T) {
 	homeDir := setXDGTestHome(t)
 	config := "[tmux]\ninject_status_line = false\n"
@@ -1634,6 +1724,28 @@ func TestRemoteSelectionQuickCreateStillRunsRemoteCommand(t *testing.T) {
 	}
 	if createMsg.err == nil {
 		t.Fatal("expected error when remote config is unavailable")
+	}
+}
+
+func TestRemoteSelectionAlternateQuickCreateIsRejected(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+	home.setHotkeys(resolveHotkeys(map[string]string{
+		"quick_create_alternate": "ctrl+n",
+	}))
+
+	remote := session.RemoteSessionInfo{ID: "remote-123", Title: "remote-session", RemoteName: "myserver"}
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
+	home.cursor = 0
+
+	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyCtrlN})
+	updated := model.(*Home)
+	if cmd != nil {
+		t.Fatal("alternate quick-create on a remote selection must not create a local session")
+	}
+	if updated.err == nil || !strings.Contains(updated.err.Error(), "not supported for remote") {
+		t.Fatalf("remote alternate quick-create error = %v, want unsupported explanation", updated.err)
 	}
 }
 

@@ -99,6 +99,8 @@ agent-deck web                    # Start web UI on http://127.0.0.1:8420
 |-----|--------|
 | `Enter` | Attach to session |
 | `n` | New session |
+| `N` | Contextual quick-create |
+| configured (for example `Ctrl+N`) | Alternate quick-create via `[quick_create].alternate_tool` |
 | `f` / `F` | Fork (quick / dialog) |
 | `A` / `Shift+U` | Archive / unarchive session |
 | `^` | Show archived sessions |

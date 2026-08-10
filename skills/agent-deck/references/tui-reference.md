@@ -20,6 +20,8 @@ Complete reference for agent-deck Terminal UI features.
 |-----|--------|
 | `Enter` | Attach to session OR toggle group |
 | `n` | New session (inherits current group) |
+| `N` | Contextual quick-create (inherits the selected session/recent group tool) |
+| Configured, for example `Ctrl+N` | Alternate quick-create; configure `[quick_create].alternate_tool` and `[hotkeys].quick_create_alternate` |
 | `r` | Rename session or group |
 | `R` | Restart session (reloads MCPs) |
 | `+` / `K` / `Shift+↑` | Move item up (auto-promotes a sub-session to top-level when at the parent's first child) |
@@ -95,6 +97,28 @@ Enter-advances is the default (`[ui].new_session_enter_advances = true`), so typ
 Pressing `n` on a remote group/session opens a remote-aware dialog (remote paths and group pre-filled); the session is created over SSH on the remote, never on localhost.
 
 Claude New Session defaults are remembered in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`) under `[claude]`, except start query and resume IDs, which are per-launch values.
+
+### Dynamic alternate quick-create
+
+Normal `N` quick-create remains contextual. An optional second action launches
+the configured alternate tool without opening a dialog. When the contextual
+tool is already the alternate, it flips back to `default_tool` (Claude when
+unset):
+
+```toml
+default_tool = "claude"
+
+[quick_create]
+alternate_tool = "codex"
+
+[hotkeys]
+quick_create_alternate = "ctrl+n"
+```
+
+With this example, `N` on Claude launches Claude and `Ctrl+N` launches Codex;
+on Codex, `N` launches Codex and `Ctrl+N` launches Claude. Binding `Ctrl+N`
+replaces overview move-down on that chord; `j` and Down Arrow remain available.
+Alternate quick-create is local-only.
 
 ### MCP Manager (`m`)
 

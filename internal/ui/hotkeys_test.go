@@ -26,6 +26,21 @@ func TestResolveHotkeysOverridesAndUnbinds(t *testing.T) {
 	}
 }
 
+func TestResolveHotkeysAlternateQuickCreateIsOptIn(t *testing.T) {
+	bindings := resolveHotkeys(nil)
+	if got := actionHotkey(bindings, "quick_create_alternate"); got != "" {
+		t.Fatalf("unconfigured alternate quick-create binding = %q, want unbound", got)
+	}
+
+	home := NewHome()
+	home.setHotkeys(resolveHotkeys(map[string]string{
+		"quick_create_alternate": "ctrl+n",
+	}))
+	if got := home.normalizeMainKey("ctrl+n"); got != "quick_create_alternate" {
+		t.Fatalf("ctrl+n normalized to %q, want quick_create_alternate action", got)
+	}
+}
+
 func TestResolveHotkeysPrefersCanonicalNameOverLegacyRename(t *testing.T) {
 	bindings := resolveHotkeys(map[string]string{
 		"toggle_gemini_yolo": "g",

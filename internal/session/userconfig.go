@@ -56,6 +56,9 @@ type UserConfig struct {
 	// If empty or invalid, defaults to "shell" (no pre-selection)
 	DefaultTool string `toml:"default_tool,omitempty"`
 
+	// QuickCreate configures the optional alternate quick-create tool.
+	QuickCreate QuickCreateSettings `toml:"quick_create,omitempty"`
+
 	// DefaultPath is the global fallback project directory for `agent-deck add`
 	// when no explicit path or group default_path is provided.
 	DefaultPath string `toml:"default_path,omitempty"`
@@ -352,6 +355,11 @@ type PerformanceSettings struct {
 	//	[performance]
 	//	claim_polling = true
 	ClaimPolling *bool `toml:"claim_polling,omitempty"`
+}
+
+// QuickCreateSettings controls the optional second quick-create action.
+type QuickCreateSettings struct {
+	AlternateTool string `toml:"alternate_tool,omitempty"`
 }
 
 // ClaimPollingEnabled reports whether claim-based polling is enabled.
@@ -3718,6 +3726,16 @@ func GetDefaultTool() string {
 	return config.DefaultTool
 }
 
+// GetQuickCreateAlternateTool returns the optional tool used by the
+// quick_create_alternate TUI action.
+func GetQuickCreateAlternateTool() string {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return ""
+	}
+	return strings.TrimSpace(config.QuickCreate.AlternateTool)
+}
+
 // GetWebMutationsEnabled returns whether `agent-deck web` should accept
 // mutating HTTP requests (POST/PATCH/DELETE). Defaults to true when the
 // `[web].mutations_enabled` key is omitted from config.toml.
@@ -4273,6 +4291,13 @@ func CreateExampleConfig() error {
 # Leave commented out or empty to default to shell (no pre-selection)
 # default_tool = "claude"
 
+# Dynamic alternate quick-create (optional)
+# Normal quick-create stays contextual. The alternate action launches this
+# tool, except when the contextual tool already matches it; then it launches
+# default_tool (or Claude when default_tool is empty).
+# [quick_create]
+# alternate_tool = "codex"
+
 # Hotkey overrides (optional)
 # Action names are defined by agent-deck. Value is the key string.
 # Set value to "" to unbind an action.
@@ -4280,6 +4305,7 @@ func CreateExampleConfig() error {
 # delete = "d"
 # close_session = "D"
 # restart = "R"
+# quick_create_alternate = "ctrl+n" # Opt-in; replaces Ctrl+N move-down in the overview.
 # detach = "ctrl+d"   # PTY-attach detach key, default ctrl+q (issue #434).
                       # Alias [tmux].detach_key exists; [hotkeys].detach wins.
 # Session switcher (cycle sessions without first detaching to the list).

@@ -70,6 +70,20 @@ func TestHelpOverlayShowsArchiveKeys(t *testing.T) {
 	}
 }
 
+func TestHelpOverlayShowsConfiguredAlternateQuickCreate(t *testing.T) {
+	overlay := NewHelpOverlay()
+	overlay.SetHotkeys(resolveHotkeys(map[string]string{
+		"quick_create_alternate": "ctrl+n",
+	}))
+	overlay.SetSize(100, 120)
+	overlay.Show()
+
+	view := overlay.View()
+	if !strings.Contains(view, "ctrl+n") {
+		t.Fatalf("help overlay missing configured alternate quick-create key, got %q", view)
+	}
+}
+
 func TestWrapWithHangingIndent_ShortText_NoWrap(t *testing.T) {
 	got := wrapWithHangingIndent("Short text", 40, "    ")
 	want := "Short text"
