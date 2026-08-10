@@ -491,6 +491,102 @@ func TestRuntimeQueueAcknowledgePersistenceFailureLeavesQueueAndWAL(t *testing.T
 	}
 }
 
+func TestRuntimeQueueAcknowledgeRecoversAfterActiveRewriteBeforeWALRemoval(t *testing.T) {
+	if os.Getenv("AGENT_DECK_RUNTIME_FINALIZE_RECOVERY_HELPER") == "1" {
+		t.Setenv("XDG_DATA_HOME", os.Getenv("AGENT_DECK_RUNTIME_FINALIZE_RECOVERY_DATA_HOME"))
+		batch, err := StageRuntimeQueue("finalize-crash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(os.Getenv("XDG_DATA_HOME"), "recovered-token"), []byte(batch.Token), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	for _, tc := range []struct {
+		name    string
+		recover func(t *testing.T, oldToken string) RuntimeQueueBatch
+	}{
+		{
+			name: "acknowledgment retry finishes removal",
+			recover: func(t *testing.T, oldToken string) RuntimeQueueBatch {
+				t.Helper()
+				if err := AcknowledgeRuntimeQueue("finalize-crash", oldToken); err != nil {
+					t.Fatalf("retry acknowledgment: %v", err)
+				}
+				return RuntimeQueueBatch{}
+			},
+		},
+		{
+			name: "restart staging finishes removal and stages remainder",
+			recover: func(t *testing.T, oldToken string) RuntimeQueueBatch {
+				t.Helper()
+				cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeQueueAcknowledgeRecoversAfterActiveRewriteBeforeWALRemoval$")
+				cmd.Env = append(os.Environ(),
+					"AGENT_DECK_RUNTIME_FINALIZE_RECOVERY_HELPER=1",
+					"AGENT_DECK_RUNTIME_FINALIZE_RECOVERY_DATA_HOME="+os.Getenv("XDG_DATA_HOME"),
+				)
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("stage recovery helper: %v\n%s", err, output)
+				}
+				token, err := os.ReadFile(filepath.Join(os.Getenv("XDG_DATA_HOME"), "recovered-token"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				batch, err := StageRuntimeQueue("finalize-crash")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if batch.Token != string(token) || batch.Token == oldToken || len(batch.Messages) != 1 || batch.Messages[0].Message != "later" {
+					t.Fatalf("remainder batch = %#v", batch)
+				}
+				return batch
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateRuntimeQueue(t)
+			for _, msg := range []string{"one", "two"} {
+				if _, err := EnqueueRuntimeMessage("finalize-crash", msg); err != nil {
+					t.Fatal(err)
+				}
+			}
+			staged, err := StageRuntimeQueue("finalize-crash")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := EnqueueRuntimeMessage("finalize-crash", "later"); err != nil {
+				t.Fatal(err)
+			}
+
+			previousRemove := runtimeQueueRemove
+			runtimeQueueRemove = func(path string) error {
+				if path == runtimeQueueInflightPathFor("finalize-crash") {
+					return errors.New("injected WAL removal failure")
+				}
+				return previousRemove(path)
+			}
+			if err := AcknowledgeRuntimeQueue("finalize-crash", staged.Token); err == nil {
+				t.Fatal("acknowledgment succeeded despite WAL removal failure")
+			}
+			runtimeQueueRemove = previousRemove
+			t.Cleanup(func() { runtimeQueueRemove = previousRemove })
+			if _, err := os.Stat(runtimeQueueInflightPathFor("finalize-crash")); err != nil {
+				t.Fatalf("failed removal did not retain WAL: %v", err)
+			}
+
+			recovered := tc.recover(t, staged.Token)
+			if _, err := os.Stat(runtimeQueueInflightPathFor("finalize-crash")); !errors.Is(err, os.ErrNotExist) && recovered.Token == "" {
+				t.Fatalf("completed WAL remains after recovery: %v", err)
+			}
+			left, err := PeekRuntimeQueue("finalize-crash")
+			if err != nil || len(left) != 1 || left[0].Message != "later" {
+				t.Fatalf("queue after recovery = %#v, %v", left, err)
+			}
+		})
+	}
+}
+
 func TestRuntimeQueueFormat(t *testing.T) {
 	tests := []struct {
 		name string

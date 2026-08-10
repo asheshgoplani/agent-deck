@@ -52,10 +52,19 @@ func StageRuntimeQueue(id string) (RuntimeQueueBatch, error) {
 	}
 	if exists {
 		messages, err := runtimeQueuePrefixForWAL(queued, wal)
-		if err != nil {
+		if err == nil {
+			return RuntimeQueueBatch{Token: wal.Token, Messages: messages}, nil
+		}
+		completed, completionErr := runtimeQueueWALCompletedLocked(id, wal.Token)
+		if completionErr != nil {
+			return RuntimeQueueBatch{}, completionErr
+		}
+		if !completed {
 			return RuntimeQueueBatch{}, err
 		}
-		return RuntimeQueueBatch{Token: wal.Token, Messages: messages}, nil
+		if err := removeRuntimeQueueWALLocked(id); err != nil {
+			return RuntimeQueueBatch{}, err
+		}
 	}
 	if len(queued) == 0 {
 		return RuntimeQueueBatch{}, nil
@@ -100,8 +109,15 @@ func AcknowledgeRuntimeQueue(id, token string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := runtimeQueuePrefixForWAL(queued, wal); err != nil {
-		return err
+	if _, prefixErr := runtimeQueuePrefixForWAL(queued, wal); prefixErr != nil {
+		completed, completionErr := runtimeQueueWALCompletedLocked(id, wal.Token)
+		if completionErr != nil {
+			return completionErr
+		}
+		if !completed {
+			return prefixErr
+		}
+		return removeRuntimeQueueWALLocked(id)
 	}
 	remaining := queued[len(wal.MessageIDs):]
 	var data []byte
@@ -118,11 +134,7 @@ func AcknowledgeRuntimeQueue(id, token string) error {
 	if err := runtimeQueuePersist(RuntimeQueuePathFor(id), data, 0o644); err != nil {
 		return err
 	}
-	if err := os.Remove(runtimeQueueInflightPathFor(id)); err != nil {
-		return err
-	}
-	fsyncDir(filepath.Dir(runtimeQueueInflightPathFor(id)))
-	return nil
+	return removeRuntimeQueueWALLocked(id)
 }
 
 func FormatRuntimeMessagesForInjection(msgs []RuntimeQueuedMessage) string {
@@ -152,6 +164,7 @@ var (
 	runtimeQueueNewID   = uuid.NewString
 	runtimeQueueNow     = time.Now
 	runtimeQueuePersist = writeFileDurable
+	runtimeQueueRemove  = os.Remove
 )
 
 func RuntimeQueueDir() string {
@@ -271,6 +284,23 @@ func readRuntimeQueueCompletionLocked(id string) (runtimeQueueCompletion, bool, 
 		return completion, true, errors.New("read runtime queue completion: empty token")
 	}
 	return completion, exists, nil
+}
+
+func runtimeQueueWALCompletedLocked(id, token string) (bool, error) {
+	completion, exists, err := readRuntimeQueueCompletionLocked(id)
+	if err != nil {
+		return false, err
+	}
+	return exists && completion.Token == token, nil
+}
+
+func removeRuntimeQueueWALLocked(id string) error {
+	path := runtimeQueueInflightPathFor(id)
+	if err := runtimeQueueRemove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	fsyncDir(filepath.Dir(path))
+	return nil
 }
 
 func readRuntimeQueueJSONLocked(path string, value any) (bool, error) {
