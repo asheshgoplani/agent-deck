@@ -1,17 +1,20 @@
 ---
 name: orchestrate
-description: End-to-end delivery pipeline for tasks/issues. Per task - dedicated worktree child implements + tests + verifies e2e (screenshots for UI), a fresh-reviewer fix loop runs until clean, then a PR is created and CI babysat to green, ending in one private report. Use when the user wants tasks or issues "orchestrated", taken "all the way to PRs", "implemented, reviewed and PR'd", wants one big issue split across sessions into a single branch and PR, or has an approved design/spec document or implementation plan to be executed in dedicated child sessions — including "I brainstormed a design, now finish the feature". For plain fan-out-and-supervise without the delivery pipeline, use the fleet skill instead.
+description: End-to-end delivery and deployed-system verification pipeline. Use it to verify a deployed system through independent evidence arms and a terminal pass, defect, or inconclusive report, or to take tasks/issues through dedicated implementation, tests, review, PR, and green CI. Also use it for approved designs/specs and implementation plans that should be executed in dedicated child sessions. For plain fan-out-and-supervise work, use the fleet skill instead.
 metadata:
   compatibility: "claude, opencode"
 ---
 
 # Orchestrate
 
-Turn a batch of tasks/issues into merge-ready pull requests that need zero
-touch-ups: per task — dedicated worktree, implement with tests, verify
-end-to-end (visually with screenshots for UI), independent review loop until
-clean, PR, CI babysat to green. The user gets one final report, and that
-report is the only place screenshots are ever referenced.
+Verify a deployed system or turn a batch of tasks/issues into merge-ready pull
+requests that need zero touch-ups. Deployed-system verification ends with
+exactly `pass`, `defect`, or `inconclusive`; a pass requires no edits, PR, CI,
+or deployment. Delivery work uses a dedicated worktree per task, implementation
+with tests, end-to-end verification (visually with screenshots for UI), an
+independent review loop until clean, a PR, and CI babysat to green. The user
+gets one final report, and that report is the only place screenshots are ever
+referenced.
 
 **Requires:** everything `fleet` requires. Delivery/PR entrances additionally
 require an authenticated `gh` for the target repo; verification-only work does
@@ -25,9 +28,11 @@ long-prompts-via-file all come from there.
 
 ## When to use
 
-The user wants tasks/issues taken end-to-end to green PRs. If they only want
-to fan out children and supervise them, use `fleet`. If they want one child
-for one job, use the sub-agent pattern in the `agent-deck` skill.
+The user wants deployed-system verification with a terminal `pass`, `defect`,
+or `inconclusive` report, or wants tasks/issues taken end-to-end to green PRs.
+A verification pass stops with no edits, PR, CI, or deployment. If they only
+want to fan out children and supervise them, use `fleet`. If they want one
+child for one job, use the sub-agent pattern in the `agent-deck` skill.
 
 ## Conductor rules
 
