@@ -233,13 +233,24 @@ func DiscardRuntimeQueue(id string) error {
 	runtimeQueueMu.Lock()
 	defer runtimeQueueMu.Unlock()
 
-	dir := RuntimeQueueDir()
+	dirsToSync := make(map[string]struct{})
+	syncRemovedDirs := func() {
+		for dir := range dirsToSync {
+			fsyncDir(dir)
+		}
+	}
 	for _, path := range []string{RuntimeQueuePathFor(id), runtimeQueueInflightPathFor(id), runtimeQueueCompletionPathFor(id)} {
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		err := os.Remove(path)
+		if err == nil {
+			dirsToSync[filepath.Dir(path)] = struct{}{}
+			continue
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			syncRemovedDirs()
 			return err
 		}
 	}
-	fsyncDir(dir)
+	syncRemovedDirs()
 	return nil
 }
 

@@ -232,28 +232,36 @@ func TestRuntimeQueueDiscard(t *testing.T) {
 		t.Fatal(err)
 	}
 	inflight := runtimeQueueInflightPathFor("gone")
-	if err := os.MkdirAll(filepath.Dir(inflight), 0o755); err != nil {
-		t.Fatal(err)
+	completion := runtimeQueueCompletionPathFor("gone")
+	for path, content := range map[string][]byte{
+		inflight:   []byte("staged"),
+		completion: []byte("completed"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(inflight, []byte("staged"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	directorySyncs := 0
-	restore := SetFsyncHookForTest(func(*os.File) error {
-		directorySyncs++
+	syncedDirs := make(map[string]int)
+	restore := SetFsyncHookForTest(func(f *os.File) error {
+		syncedDirs[f.Name()]++
 		return nil
 	})
 	defer restore()
 	if err := DiscardRuntimeQueue("gone"); err != nil {
 		t.Fatal(err)
 	}
-	if directorySyncs != 1 {
-		t.Fatalf("discard directory syncs = %d, want 1", directorySyncs)
+	for _, dir := range []string{filepath.Dir(RuntimeQueuePathFor("gone")), filepath.Dir(inflight), filepath.Dir(completion)} {
+		if syncedDirs[dir] != 1 {
+			t.Fatalf("discard sync count for %s = %d, want 1; all syncs: %#v", dir, syncedDirs[dir], syncedDirs)
+		}
 	}
 	if RuntimeQueueHasPending("gone") {
 		t.Fatal("discarded queue still pending")
 	}
-	for _, path := range []string{RuntimeQueuePathFor("gone"), inflight} {
+	for _, path := range []string{RuntimeQueuePathFor("gone"), inflight, completion} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("discard left %s: %v", path, err)
 		}
@@ -325,6 +333,60 @@ func TestRuntimeQueueStageLeavesActiveAndFreezesFIFO(t *testing.T) {
 	}
 	if again.Token != batch.Token || len(again.Messages) != 2 || again.Messages[0].ID != batch.Messages[0].ID || again.Messages[1].ID != batch.Messages[1].ID {
 		t.Fatalf("restaged batch = %#v, want frozen %#v", again, batch)
+	}
+}
+
+func TestRuntimeQueueStagePersistenceFailureLeavesActiveAndWALUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		inject func(t *testing.T, wal string)
+	}{
+		{
+			name: "write failure",
+			inject: func(t *testing.T, wal string) {
+				previous := runtimeQueuePersist
+				runtimeQueuePersist = func(path string, data []byte, perm os.FileMode) error {
+					if path == wal {
+						return errors.New("injected WAL write failure")
+					}
+					return previous(path, data, perm)
+				}
+				t.Cleanup(func() { runtimeQueuePersist = previous })
+			},
+		},
+		{
+			name: "fsync failure",
+			inject: func(t *testing.T, _ string) {
+				restore := SetFsyncHookForTest(func(*os.File) error {
+					return errors.New("injected WAL fsync failure")
+				})
+				t.Cleanup(restore)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateRuntimeQueue(t)
+			const id = "stage-fail"
+			if _, err := EnqueueRuntimeMessage(id, "queued"); err != nil {
+				t.Fatal(err)
+			}
+			active, wal := RuntimeQueuePathFor(id), runtimeQueueInflightPathFor(id)
+			before, err := os.ReadFile(active)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.inject(t, wal)
+			if batch, err := StageRuntimeQueue(id); err == nil {
+				t.Fatalf("stage succeeded without durable WAL: %#v", batch)
+			}
+			after, err := os.ReadFile(active)
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("active queue changed after failed stage: %v", err)
+			}
+			if _, err := os.Stat(wal); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed stage left usable WAL: %v", err)
+			}
+		})
 	}
 }
 
