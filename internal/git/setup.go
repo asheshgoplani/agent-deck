@@ -165,6 +165,21 @@ func CreateWorktreeWithSetupOptions(repoDir, worktreePath, branchName string, st
 	return RunWorktreeSetupAfterCreate(repoDir, worktreePath, stdout, stderr, setupTimeout), nil
 }
 
+// CreateWorktreeAtStartPointWithSetup creates a new branch at an explicit,
+// already-resolved commit, then runs the standard include and setup hooks.
+// It is intentionally separate from CreateWorktreeWithSetup: the latter's
+// fresh-branch policy starts at the remote default branch for safety, while an
+// explicit CLI base must be honored exactly.
+func CreateWorktreeAtStartPointWithSetup(repoDir, worktreePath, branchName, startPoint string, create WorktreeCreateOptions, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
+	if _, err = CreateWorktreeAtStartPointWithOptions(repoDir, worktreePath, branchName, startPoint, create); err != nil {
+		return nil, err
+	}
+	if inclErr := ProcessWorktreeInclude(repoDir, worktreePath, stderr); inclErr != nil {
+		fmt.Fprintf(stderr, "worktreeinclude: %v\n", inclErr)
+	}
+	return RunWorktreeSetupAfterCreate(repoDir, worktreePath, stdout, stderr, setupTimeout), nil
+}
+
 // RunWorktreeSetupAfterCreate runs the worktree setup script for an
 // already-created worktree. Extracted from CreateWorktreeWithStateAndSetup
 // so the fork-with-state path can sequence Create → Materialize → Setup

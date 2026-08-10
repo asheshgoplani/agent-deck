@@ -174,6 +174,7 @@ func handleLaunch(profile string, args []string) {
 	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
 	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
+	worktreeBase := fs.String("base", "", "Base revision for a new git worktree branch (requires -w and -b)")
 
 	// MCP flag
 	var mcpFlags []string
@@ -252,6 +253,7 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("  agent-deck launch . -c \"codex --dangerously-bypass-approvals-and-sandbox\"")
 		fmt.Println("  agent-deck launch . -g ard --no-parent -c claude -m \"Run review\"")
 		fmt.Println("  agent-deck launch . -c claude -w feature/new -b -m \"Start work\"")
+		fmt.Println("  agent-deck launch . -c codex -w feature/fix -b --base dev -m \"Fix issue\"")
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly
@@ -323,6 +325,10 @@ func handleLaunch(profile string, args []string) {
 		wtBranch = *worktreeBranchLong
 	}
 	createNewBranch := *newBranch || *newBranchLong
+	if *worktreeBase != "" && (wtBranch == "" || !createNewBranch) {
+		out.Error("--base requires -w/--worktree and -b/--new-branch", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	// Validate --resume-session requires Claude
 	if *resumeSession != "" {
@@ -400,9 +406,27 @@ func handleLaunch(profile string, args []string) {
 
 			// Sparse state is inherited from `path` (the directory the user
 			// launched from), never from backend.RepoDir() — see #1708.
-			setupErr, err := createWorktreeWithSetup(backend, worktreePath, wtBranch,
-				git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), path),
-				os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+			createOpts := git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), path)
+			var setupErr, err error
+			if *worktreeBase != "" {
+				if backend.Type() != vcs.TypeGit {
+					out.Error("--base is currently supported only for git worktrees", ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+				baseCommit, resolveErr := git.ResolveCommit(path, *worktreeBase)
+				if resolveErr != nil {
+					out.Error(fmt.Sprintf("invalid worktree base: %v", resolveErr), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+				setupErr, err = git.CreateWorktreeAtStartPointWithSetup(repoRoot, worktreePath, wtBranch, baseCommit,
+					createOpts, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+				if err == nil {
+					fmt.Fprintf(os.Stderr, "Verified worktree base: %s (%s)\n", *worktreeBase, baseCommit)
+				}
+			} else {
+				setupErr, err = createWorktreeWithSetup(backend, worktreePath, wtBranch,
+					createOpts, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+			}
 			if err != nil {
 				out.Error(fmt.Sprintf("failed to create worktree: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)

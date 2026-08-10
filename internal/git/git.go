@@ -529,13 +529,23 @@ func runWorktreeAdd(spec worktreeAddSpec) error {
 // HeadCommit returns the commit currently checked out at repoDir. Works for
 // normal repos, linked worktrees, and bare-repo project roots.
 func HeadCommit(repoDir string) (string, error) {
+	return ResolveCommit(repoDir, "HEAD")
+}
+
+// ResolveCommit resolves rev to an immutable commit ID. Callers that create a
+// worktree from an operator-supplied base use the returned ID both to avoid a
+// ref moving between validation and creation and to report the exact base.
+func ResolveCommit(repoDir, rev string) (string, error) {
 	repoDir = resolveGitInvocationDir(repoDir)
-	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "HEAD^{commit}")
+	if strings.TrimSpace(rev) == "" {
+		return "", errors.New("revision cannot be empty")
+	}
+	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "--verify", rev+"^{commit}")
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve HEAD commit: %s: %w", strings.TrimSpace(stderr.String()), err)
+		return "", fmt.Errorf("failed to resolve revision %q: %s: %w", rev, strings.TrimSpace(stderr.String()), err)
 	}
 	return strings.TrimSpace(string(output)), nil
 }
