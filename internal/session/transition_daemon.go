@@ -83,6 +83,9 @@ type TransitionDaemon struct {
 	// Production leaves it nil; tests use it to prove a persisted gate prevents
 	// the notifier call itself rather than relying on the notifier's own guard.
 	observeTransitionEmission func(TransitionNotificationEvent)
+	// beforeNotifierCommit is a test seam after daemon revalidation and before
+	// the notifier acquires the archive/event serialization boundary.
+	beforeNotifierCommit      func(TransitionNotificationEvent)
 	loadTransitionInstanceRow func(string, string) (*statedb.InstanceRow, error)
 }
 
@@ -494,6 +497,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		if d.observeTransitionEmission != nil {
 			d.observeTransitionEmission(event)
 		}
+		if d.beforeNotifierCommit != nil {
+			d.beforeNotifierCommit(event)
+		}
 		_ = d.notifier.NotifyTransition(event)
 	}
 	d.emitHookTransitionCandidates(profile, byID, prev, statuses, hookCandidates, revalidationFailures)
@@ -593,6 +599,9 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 			DoneStatus:     sig.Status,
 			DoneSummary:    sig.Summary,
 			Timestamp:      hs.UpdatedAt,
+		}
+		if d.beforeNotifierCommit != nil {
+			d.beforeNotifierCommit(event)
 		}
 		_ = d.notifier.NotifyFinished(event)
 
@@ -926,6 +935,9 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		}
 		if d.observeTransitionEmission != nil {
 			d.observeTransitionEmission(event)
+		}
+		if d.beforeNotifierCommit != nil {
+			d.beforeNotifierCommit(event)
 		}
 		_ = d.notifier.NotifyTransition(event)
 	}

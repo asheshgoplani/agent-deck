@@ -1612,13 +1612,15 @@ func (s *StateDB) SetAcknowledged(id string, ack bool) error {
 // a running TUI never reloads, and its next forced full-table save replays a
 // stale snapshot over this row, reverting the archive.
 func (s *StateDB) SetArchived(id string, at time.Time) error {
-	if err := withBusyRetry(func() error {
-		_, err := s.db.Exec("UPDATE instances SET archived_at = ? WHERE id = ?", archivedAtUnix(at), id)
-		return err
-	}); err != nil {
-		return err
-	}
-	return s.touchWithRetry()
+	return s.WithArchiveEventBoundary(func() error {
+		if err := withBusyRetry(func() error {
+			_, err := s.db.Exec("UPDATE instances SET archived_at = ? WHERE id = ?", archivedAtUnix(at), id)
+			return err
+		}); err != nil {
+			return err
+		}
+		return s.touchWithRetry()
+	})
 }
 
 // --- Heartbeat ---

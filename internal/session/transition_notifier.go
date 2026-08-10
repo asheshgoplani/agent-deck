@@ -314,7 +314,7 @@ func (n *TransitionNotifier) NotifyTransition(event TransitionNotificationEvent)
 
 	// Issue #1225: commit the transition to the parent's durable outbox instead
 	// of gating delivery on the parent being idle.
-	committed, transient, reason := n.commitEventToInbox(event)
+	committed, transient, reason := n.commitEventToInboxAtArchiveBoundary(event)
 	if committed {
 		n.markNotified(event)
 		event.DeliveryResult = transitionDeliveryCommitted
@@ -364,7 +364,7 @@ func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) T
 	// the removed pre-filter dropped both, silently killing legitimate parented
 	// completions.
 	// Issue #1225: commit the finished event to the parent's durable outbox.
-	committed, transient, reason := n.commitEventToInbox(event)
+	committed, transient, reason := n.commitEventToInboxAtArchiveBoundary(event)
 	if committed {
 		event.DeliveryResult = transitionDeliveryCommitted
 		return event

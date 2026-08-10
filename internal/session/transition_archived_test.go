@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,6 +38,71 @@ func TestSyncProfile_LiveTUIArchivedStatusNeverReachesLastStatus(t *testing.T) {
 	}
 	if got := d.lastStatus[profile][active.ID]; got != "running" {
 		t.Fatalf("active status = %q, want running", got)
+	}
+}
+
+func TestArchiveAtPreCommitSeamSuppressesSnapshotHookAndDone(t *testing.T) {
+	tests := []struct {
+		name        string
+		hook        *HookStatus
+		probeStatus Status
+	}{
+		{name: "snapshot", probeStatus: StatusWaiting},
+		{name: "hook", hook: &HookStatus{Status: "waiting", Event: "Stop", UpdatedAt: time.Now()}, probeStatus: StatusRunning},
+		{name: "done", hook: &HookStatus{Status: "running", Event: "Stop", UpdatedAt: time.Now(), DoneStatus: "ok", DoneSummary: "finished"}, probeStatus: StatusRunning},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := "_test_archive_precommit_" + tt.name
+			id, parentID := "precommit-"+tt.name, "precommit-parent-"+tt.name
+			d, storage := bootstrapDaemonProfile(t, profile)
+			child := &Instance{ID: id, Title: id, ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, ParentSessionID: parentID, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour)}
+			parent := &Instance{ID: parentID, Title: "parent", ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour)}
+			if err := storage.SaveWithGroups([]*Instance{child, parent}, nil); err != nil {
+				t.Fatalf("save: %v", err)
+			}
+			d.initialized[profile] = true
+			d.lastStatus[profile] = map[string]string{id: "running"}
+			if tt.hook != nil {
+				d.hookWatcher = &StatusFileWatcher{statuses: map[string]*HookStatus{id: tt.hook}}
+			}
+			originalProbe := updateInstanceStatus.Load().(statusProbeFunc)
+			updateInstanceStatus.Store(statusProbeFunc(func(inst *Instance) error {
+				if inst.ID == id {
+					inst.SetStatusThreadSafe(tt.probeStatus)
+				}
+				return nil
+			}))
+			t.Cleanup(func() { updateInstanceStatus.Store(originalProbe) })
+
+			var once sync.Once
+			var archiveErr error
+			var seamCalls int
+			d.beforeNotifierCommit = func(event TransitionNotificationEvent) {
+				if event.ChildSessionID != id {
+					return
+				}
+				seamCalls++
+				once.Do(func() {
+					archiveErr = storage.GetDB().SetArchived(id, time.Now().UTC())
+				})
+			}
+
+			d.syncProfile(profile)
+			if archiveErr != nil {
+				t.Fatalf("archive at pre-commit seam: %v", archiveErr)
+			}
+			if seamCalls != 1 {
+				t.Fatalf("pre-commit seam calls = %d, want 1", seamCalls)
+			}
+			events, err := DrainInboxForParent(parentID)
+			if err != nil {
+				t.Fatalf("drain parent inbox: %v", err)
+			}
+			if len(events) != 0 {
+				t.Fatalf("archive at %s pre-commit seam allowed %d durable event(s)", tt.name, len(events))
+			}
+		})
 	}
 }
 
