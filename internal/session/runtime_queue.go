@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +24,122 @@ type RuntimeQueuedMessage struct {
 	Source   string    `json:"source"`
 }
 
+type RuntimeQueueBatch struct {
+	Token    string
+	Messages []RuntimeQueuedMessage
+}
+
+type runtimeQueueWAL struct {
+	Token      string   `json:"token"`
+	MessageIDs []string `json:"message_ids"`
+}
+
+type runtimeQueueCompletion struct {
+	Token string `json:"token"`
+}
+
+func StageRuntimeQueue(id string) (RuntimeQueueBatch, error) {
+	runtimeQueueMu.Lock()
+	defer runtimeQueueMu.Unlock()
+
+	queued, _, err := readRuntimeQueueLocked(RuntimeQueuePathFor(id))
+	if err != nil {
+		return RuntimeQueueBatch{}, err
+	}
+	wal, exists, err := readRuntimeQueueWALLocked(id)
+	if err != nil {
+		return RuntimeQueueBatch{}, err
+	}
+	if exists {
+		messages, err := runtimeQueuePrefixForWAL(queued, wal)
+		if err != nil {
+			return RuntimeQueueBatch{}, err
+		}
+		return RuntimeQueueBatch{Token: wal.Token, Messages: messages}, nil
+	}
+	if len(queued) == 0 {
+		return RuntimeQueueBatch{}, nil
+	}
+
+	wal.Token = runtimeQueueNewID()
+	if wal.Token == "" {
+		return RuntimeQueueBatch{}, errors.New("generate runtime queue batch token: empty token")
+	}
+	wal.MessageIDs = make([]string, len(queued))
+	for i := range queued {
+		wal.MessageIDs[i] = queued[i].ID
+	}
+	if err := writeRuntimeQueueJSONLocked(runtimeQueueInflightPathFor(id), wal); err != nil {
+		return RuntimeQueueBatch{}, err
+	}
+	return RuntimeQueueBatch{Token: wal.Token, Messages: queued}, nil
+}
+
+func AcknowledgeRuntimeQueue(id, token string) error {
+	runtimeQueueMu.Lock()
+	defer runtimeQueueMu.Unlock()
+
+	wal, exists, err := readRuntimeQueueWALLocked(id)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		completion, completed, err := readRuntimeQueueCompletionLocked(id)
+		if err != nil {
+			return err
+		}
+		if completed && token != "" && completion.Token == token {
+			return nil
+		}
+		return errors.New("runtime queue acknowledgment has no matching staged batch")
+	}
+	if token == "" || token != wal.Token {
+		return errors.New("runtime queue acknowledgment token mismatch")
+	}
+	queued, _, err := readRuntimeQueueLocked(RuntimeQueuePathFor(id))
+	if err != nil {
+		return err
+	}
+	if _, err := runtimeQueuePrefixForWAL(queued, wal); err != nil {
+		return err
+	}
+	remaining := queued[len(wal.MessageIDs):]
+	var data []byte
+	for _, msg := range remaining {
+		line, err := jsonMarshalRuntimeMessage(msg)
+		if err != nil {
+			return err
+		}
+		data = append(data, line...)
+	}
+	if err := writeRuntimeQueueJSONLocked(runtimeQueueCompletionPathFor(id), runtimeQueueCompletion{Token: token}); err != nil {
+		return err
+	}
+	if err := runtimeQueuePersist(RuntimeQueuePathFor(id), data, 0o644); err != nil {
+		return err
+	}
+	if err := os.Remove(runtimeQueueInflightPathFor(id)); err != nil {
+		return err
+	}
+	fsyncDir(filepath.Dir(runtimeQueueInflightPathFor(id)))
+	return nil
+}
+
+func FormatRuntimeMessagesForInjection(msgs []RuntimeQueuedMessage) string {
+	if len(msgs) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	out.WriteString("## Queued runtime messages\n\n")
+	for i, msg := range msgs {
+		if i > 0 {
+			out.WriteByte('\n')
+		}
+		fmt.Fprintf(&out, "%d. %s", i+1, strings.ReplaceAll(msg.Message, "\n", "\n   "))
+	}
+	return out.String()
+}
+
 var ErrRuntimeQueueFull = errors.New("runtime message queue is full")
 
 const (
@@ -29,6 +148,7 @@ const (
 )
 
 var (
+	runtimeQueueMu      sync.Mutex
 	runtimeQueueNewID   = uuid.NewString
 	runtimeQueueNow     = time.Now
 	runtimeQueuePersist = writeFileDurable
@@ -49,8 +169,8 @@ func RuntimeQueuePathFor(id string) string {
 func EnqueueRuntimeMessage(id, msg string) (depth int, err error) {
 	path := RuntimeQueuePathFor(id)
 
-	inboxWriteMu.Lock()
-	defer inboxWriteMu.Unlock()
+	runtimeQueueMu.Lock()
+	defer runtimeQueueMu.Unlock()
 
 	existing, existingBytes, err := readRuntimeQueueLocked(path)
 	if err != nil {
@@ -88,18 +208,18 @@ func RuntimeQueueHasPending(id string) bool {
 }
 
 func PeekRuntimeQueue(id string) ([]RuntimeQueuedMessage, error) {
-	inboxWriteMu.Lock()
-	defer inboxWriteMu.Unlock()
+	runtimeQueueMu.Lock()
+	defer runtimeQueueMu.Unlock()
 	queued, _, err := readRuntimeQueueLocked(RuntimeQueuePathFor(id))
 	return queued, err
 }
 
 func DiscardRuntimeQueue(id string) error {
-	inboxWriteMu.Lock()
-	defer inboxWriteMu.Unlock()
+	runtimeQueueMu.Lock()
+	defer runtimeQueueMu.Unlock()
 
 	dir := RuntimeQueueDir()
-	for _, path := range []string{RuntimeQueuePathFor(id), runtimeQueueInflightPathFor(id)} {
+	for _, path := range []string{RuntimeQueuePathFor(id), runtimeQueueInflightPathFor(id), runtimeQueueCompletionPathFor(id)} {
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
@@ -109,7 +229,91 @@ func DiscardRuntimeQueue(id string) error {
 }
 
 func runtimeQueueInflightPathFor(id string) string {
-	return RuntimeQueuePathFor(id) + ".inflight"
+	dir, err := runtimeDataPath("runtime-queue-inflight")
+	if err != nil {
+		dir = tempAgentDeckPath("runtime", "runtime-queue-inflight")
+	}
+	return filepath.Join(dir, sanitizeInboxName(id)+".jsonl")
+}
+
+func runtimeQueueCompletionPathFor(id string) string {
+	dir, err := runtimeDataPath("runtime-queue-completed")
+	if err != nil {
+		dir = tempAgentDeckPath("runtime", "runtime-queue-completed")
+	}
+	return filepath.Join(dir, sanitizeInboxName(id)+".json")
+}
+
+func readRuntimeQueueWALLocked(id string) (runtimeQueueWAL, bool, error) {
+	var wal runtimeQueueWAL
+	exists, err := readRuntimeQueueJSONLocked(runtimeQueueInflightPathFor(id), &wal)
+	if err != nil {
+		return wal, exists, fmt.Errorf("read runtime queue WAL: %w", err)
+	}
+	if exists && (wal.Token == "" || len(wal.MessageIDs) == 0) {
+		return wal, true, errors.New("read runtime queue WAL: invalid token or message IDs")
+	}
+	for _, messageID := range wal.MessageIDs {
+		if messageID == "" {
+			return wal, true, errors.New("read runtime queue WAL: empty message ID")
+		}
+	}
+	return wal, exists, nil
+}
+
+func readRuntimeQueueCompletionLocked(id string) (runtimeQueueCompletion, bool, error) {
+	var completion runtimeQueueCompletion
+	exists, err := readRuntimeQueueJSONLocked(runtimeQueueCompletionPathFor(id), &completion)
+	if err != nil {
+		return completion, exists, fmt.Errorf("read runtime queue completion: %w", err)
+	}
+	if exists && completion.Token == "" {
+		return completion, true, errors.New("read runtime queue completion: empty token")
+	}
+	return completion, exists, nil
+}
+
+func readRuntimeQueueJSONLocked(path string, value any) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+		return true, errors.New("unterminated JSON record")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return true, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return true, errors.New("multiple JSON records")
+	}
+	return true, nil
+}
+
+func writeRuntimeQueueJSONLocked(path string, value any) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return runtimeQueuePersist(path, append(raw, '\n'), 0o644)
+}
+
+func runtimeQueuePrefixForWAL(queued []RuntimeQueuedMessage, wal runtimeQueueWAL) ([]RuntimeQueuedMessage, error) {
+	if len(queued) < len(wal.MessageIDs) {
+		return nil, errors.New("active runtime queue is shorter than staged prefix")
+	}
+	for i, messageID := range wal.MessageIDs {
+		if queued[i].ID != messageID {
+			return nil, fmt.Errorf("active runtime queue prefix mismatch at message %d", i+1)
+		}
+	}
+	return append([]RuntimeQueuedMessage(nil), queued[:len(wal.MessageIDs)]...), nil
 }
 
 func jsonMarshalRuntimeMessage(msg RuntimeQueuedMessage) ([]byte, error) {

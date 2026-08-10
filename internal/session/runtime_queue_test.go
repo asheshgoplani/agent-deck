@@ -229,7 +229,10 @@ func TestRuntimeQueueDiscard(t *testing.T) {
 	if _, err := EnqueueRuntimeMessage("gone", "active"); err != nil {
 		t.Fatal(err)
 	}
-	inflight := RuntimeQueuePathFor("gone") + ".inflight"
+	inflight := runtimeQueueInflightPathFor("gone")
+	if err := os.MkdirAll(filepath.Dir(inflight), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(inflight, []byte("staged"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -283,6 +286,225 @@ func TestRuntimeQueueMalformed(t *testing.T) {
 			after, _ := os.ReadFile(path)
 			if string(after) != string(before) {
 				t.Fatal("malformed queue was mutated")
+			}
+		})
+	}
+}
+
+func TestRuntimeQueueStageLeavesActiveAndFreezesFIFO(t *testing.T) {
+	isolateRuntimeQueue(t)
+	for _, msg := range []string{"first", "second"} {
+		if _, err := EnqueueRuntimeMessage("stage", msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	active := RuntimeQueuePathFor("stage")
+	before, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue("stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Token == "" || len(batch.Messages) != 2 || batch.Messages[0].Message != "first" || batch.Messages[1].Message != "second" {
+		t.Fatalf("staged batch = %#v", batch)
+	}
+	after, _ := os.ReadFile(active)
+	if string(after) != string(before) {
+		t.Fatal("stage changed active queue")
+	}
+	if _, err := EnqueueRuntimeMessage("stage", "later"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := StageRuntimeQueue("stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Token != batch.Token || len(again.Messages) != 2 || again.Messages[0].ID != batch.Messages[0].ID || again.Messages[1].ID != batch.Messages[1].ID {
+		t.Fatalf("restaged batch = %#v, want frozen %#v", again, batch)
+	}
+}
+
+func TestRuntimeQueueCrashRedeliversSameBatch(t *testing.T) {
+	if os.Getenv("AGENT_DECK_RUNTIME_STAGE_HELPER") == "1" {
+		t.Setenv("XDG_DATA_HOME", os.Getenv("AGENT_DECK_RUNTIME_STAGE_DATA_HOME"))
+		batch, err := StageRuntimeQueue("crash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(os.Getenv("AGENT_DECK_RUNTIME_STAGE_DATA_HOME"), "batch-token"), []byte(batch.Token), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	isolateRuntimeQueue(t)
+	if _, err := EnqueueRuntimeMessage("crash", "survive"); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeQueueCrashRedeliversSameBatch$")
+	cmd.Env = append(os.Environ(), "AGENT_DECK_RUNTIME_STAGE_HELPER=1", "AGENT_DECK_RUNTIME_STAGE_DATA_HOME="+os.Getenv("XDG_DATA_HOME"))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("stage helper: %v\n%s", err, output)
+	}
+	wantToken, err := os.ReadFile(filepath.Join(os.Getenv("XDG_DATA_HOME"), "batch-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue("crash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Token != string(wantToken) || len(batch.Messages) != 1 || batch.Messages[0].Message != "survive" {
+		t.Fatalf("recovered batch = %#v, token %q", batch, wantToken)
+	}
+}
+
+func TestRuntimeQueueAcknowledgeValidatesAndRemovesOnlyPrefix(t *testing.T) {
+	isolateRuntimeQueue(t)
+	for _, msg := range []string{"one", "two"} {
+		if _, err := EnqueueRuntimeMessage("ack", msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batch, err := StageRuntimeQueue("ack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnqueueRuntimeMessage("ack", "three"); err != nil {
+		t.Fatal(err)
+	}
+	active, wal := RuntimeQueuePathFor("ack"), runtimeQueueInflightPathFor("ack")
+	beforeActive, _ := os.ReadFile(active)
+	beforeWAL, _ := os.ReadFile(wal)
+	if err := AcknowledgeRuntimeQueue("ack", "wrong"); err == nil {
+		t.Fatal("mismatched token succeeded")
+	}
+	afterActive, _ := os.ReadFile(active)
+	afterWAL, _ := os.ReadFile(wal)
+	if string(afterActive) != string(beforeActive) || string(afterWAL) != string(beforeWAL) {
+		t.Fatal("failed acknowledgment changed durable files")
+	}
+	if err := AcknowledgeRuntimeQueue("ack", batch.Token); err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := PeekRuntimeQueue("ack")
+	if err != nil || len(remaining) != 1 || remaining[0].Message != "three" {
+		t.Fatalf("remaining = %#v, %v", remaining, err)
+	}
+	if _, err := os.Stat(wal); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("WAL remains: %v", err)
+	}
+	if err := AcknowledgeRuntimeQueue("ack", batch.Token); err != nil {
+		t.Fatalf("repeated ack: %v", err)
+	}
+	if err := AcknowledgeRuntimeQueue("ack", "unknown"); err == nil {
+		t.Fatal("unknown completed token succeeded")
+	}
+}
+
+func TestRuntimeQueueAcknowledgeRejectsChangedPrefix(t *testing.T) {
+	isolateRuntimeQueue(t)
+	if _, err := EnqueueRuntimeMessage("prefix", "original"); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue("prefix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := RuntimeQueuePathFor("prefix")
+	records, _, err := readRuntimeQueueLocked(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records[0].ID = "replacement"
+	line, _ := jsonMarshalRuntimeMessage(records[0])
+	if err := os.WriteFile(path, line, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wal := runtimeQueueInflightPathFor("prefix")
+	beforeWAL, _ := os.ReadFile(wal)
+	if err := AcknowledgeRuntimeQueue("prefix", batch.Token); err == nil {
+		t.Fatal("changed prefix acknowledged")
+	}
+	afterWAL, _ := os.ReadFile(wal)
+	if string(afterWAL) != string(beforeWAL) {
+		t.Fatal("prefix failure changed WAL")
+	}
+}
+
+func TestRuntimeQueueStageMalformedWALIsRetained(t *testing.T) {
+	for name, want := range map[string][]byte{
+		"invalid JSON":    []byte("not-json\n"),
+		"trailing record": []byte("{\"token\":\"batch\",\"message_ids\":[\"id\"]}\n{}\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			isolateRuntimeQueue(t)
+			if _, err := EnqueueRuntimeMessage("bad-wal", "queued"); err != nil {
+				t.Fatal(err)
+			}
+			wal := runtimeQueueInflightPathFor("bad-wal")
+			if err := os.MkdirAll(filepath.Dir(wal), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(wal, want, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := StageRuntimeQueue("bad-wal"); err == nil {
+				t.Fatal("malformed WAL staged")
+			}
+			got, _ := os.ReadFile(wal)
+			if string(got) != string(want) {
+				t.Fatal("malformed WAL was changed")
+			}
+		})
+	}
+}
+
+func TestRuntimeQueueAcknowledgePersistenceFailureLeavesQueueAndWAL(t *testing.T) {
+	isolateRuntimeQueue(t)
+	if _, err := EnqueueRuntimeMessage("ack-fail", "queued"); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue("ack-fail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, wal := RuntimeQueuePathFor("ack-fail"), runtimeQueueInflightPathFor("ack-fail")
+	beforeActive, _ := os.ReadFile(active)
+	beforeWAL, _ := os.ReadFile(wal)
+	previous := runtimeQueuePersist
+	runtimeQueuePersist = func(path string, data []byte, perm os.FileMode) error {
+		if path == runtimeQueueCompletionPathFor("ack-fail") {
+			return errors.New("injected completion failure")
+		}
+		return previous(path, data, perm)
+	}
+	t.Cleanup(func() { runtimeQueuePersist = previous })
+	if err := AcknowledgeRuntimeQueue("ack-fail", batch.Token); err == nil {
+		t.Fatal("acknowledgment persistence failure succeeded")
+	}
+	afterActive, _ := os.ReadFile(active)
+	afterWAL, _ := os.ReadFile(wal)
+	if string(afterActive) != string(beforeActive) || string(afterWAL) != string(beforeWAL) {
+		t.Fatal("failed acknowledgment changed active queue or WAL")
+	}
+}
+
+func TestRuntimeQueueFormat(t *testing.T) {
+	tests := []struct {
+		name string
+		msgs []RuntimeQueuedMessage
+		want string
+	}{
+		{name: "empty", want: ""},
+		{name: "single", msgs: []RuntimeQueuedMessage{{ID: "secret", Message: "hello", Source: "metadata"}}, want: "## Queued runtime messages\n\n1. hello"},
+		{name: "multiple multiline", msgs: []RuntimeQueuedMessage{{Message: "first\ncontinued"}, {Message: "second"}}, want: "## Queued runtime messages\n\n1. first\n   continued\n2. second"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FormatRuntimeMessagesForInjection(tc.msgs); got != tc.want {
+				t.Fatalf("format = %q, want %q", got, tc.want)
 			}
 		})
 	}
