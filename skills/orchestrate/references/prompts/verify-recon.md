@@ -23,6 +23,7 @@ Write one schema-consistent JSON document atomically to `{{ARTIFACT_PATH}}`.
 The JSON must contain the deployed identity and licensing details, environment,
 scope, claim, freshness cutoff, failure-classification rules, and the complete
 arm definitions above. Include provenance and timestamps plus an explicit
-completion field set to true only after all recon work and the atomic write are
-complete. Then report the artifact path and completion; do not begin an arm or
-implementation.
+completion field set to true in the staged content only after all recon work is
+complete, immediately before the final atomic rename. Successful publication
+of that staged document is producer completion. Then report the artifact path
+and completion; do not begin an arm or implementation.

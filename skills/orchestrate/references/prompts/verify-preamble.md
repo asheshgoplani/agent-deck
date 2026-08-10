@@ -4,8 +4,10 @@ request, run delivery CI, or deploy anything. The authorized scope is:
 
 {{SCOPE}}
 
-Write only the artifact path assigned by this prompt. All other investigation
-must be read-only. Evidence must be fresh at or after `{{FRESHNESS_CUTOFF}}`.
+Write only the artifact path assigned by this prompt and a temporary sibling
+used solely for atomic replacement of that artifact. Remove the temporary
+sibling if publication fails. All other investigation must be read-only.
+Evidence must be fresh at or after `{{FRESHNESS_CUTOFF}}`.
 
 Do not trust a machine-readable artifact merely because its path exists. Its
 consumer must first validate the expected schema, provenance, producer

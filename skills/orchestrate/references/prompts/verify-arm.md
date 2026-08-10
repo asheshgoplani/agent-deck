@@ -24,8 +24,9 @@ Populate and call out these deciding fields:
 
 The schema-valid artifact must include the arm ID and question, run and system
 provenance, producer identity, start and completion timestamps, command exits
-and evidence, and an explicit completion field that becomes true only after
-measurement and the atomic write are complete.
+and evidence. Set its explicit completion field to true in the staged content
+only after measurement is complete, immediately before the final atomic
+rename. Successful publication of that staged document is producer completion.
 
 If an external measurement fails, retain its first command, exit status, and
 evidence and diagnose product, harness, environment, or licensing causation

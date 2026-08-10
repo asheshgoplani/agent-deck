@@ -8,12 +8,25 @@ Arm artifacts:
 
 {{ARM_ARTIFACTS}}
 
-Before reading any deciding field, validate every artifact against the schema
-and provenance declared by recon. Confirm that its named producer completed,
-its completion field is true, and its evidence is fresh enough for recon's
-cutoff. Reject or classify as inconclusive any artifact that cannot pass these
-trust checks; do not infer success from a path or partial file. After validation,
-extract only the deciding fields where possible.
+The fixed recon artifact contract is a JSON object containing deployed identity
+(version, revision, and digest), environment, licensing state, authorized
+scope, claim, freshness cutoff, failure-classification rules, provenance,
+timestamps, a boolean completion field, and an arms array. Every arm entry must
+contain its stable arm ID, question, producer, artifact path, expected schema,
+deciding fields, and freshness requirement. Before consuming the arms array or
+any other recon value, validate this fixed contract, confirm provenance for the
+run identified in the preamble, require the completion field to be true,
+confirm successful producer publication, and enforce the preamble's freshness
+cutoff.
+
+Only after recon passes those checks, validate every required arm artifact
+against the schema and provenance declared by recon. Confirm that its named
+producer completed publication, its completion field is true, and its evidence
+meets the declared freshness requirement. If any required recon or arm artifact
+fails schema, provenance, producer-completion, or freshness validation, the
+report outcome must be `inconclusive`; it can never be `pass`. Do not infer
+success from a path or partial file. After validation, extract only the deciding
+fields where possible.
 
 Adjudicate conflicting arm evidence explicitly instead of selecting the
 convenient result. Record each first failure, its diagnosis, whether the single
