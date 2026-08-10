@@ -73,10 +73,12 @@ agent-deck launch . -c claude -m "Review this module"
 agent-deck launch . -g ard -c claude -m "Review dataset"
 agent-deck launch . -c "codex --dangerously-bypass-approvals-and-sandbox"
 agent-deck launch -g book-keeper -c claude   # no path: lands on the group's default_path
+agent-deck launch . -w feature/a -b --base dev -c claude  # new branch explicitly based on dev
 ```
 
 Notes:
 - `[path]` omitted: resolves the target group's `default_path`, then the global `default_path` config key, then cwd — the same chain as `add` (#1303). An explicit `.` always means the current directory.
+- `--base <revision>` requires `-w/--worktree` and `-b/--new-branch`. It resolves the revision to an immutable commit before creating the worktree and prints the verified base revision and sha.
 
 ### list - List sessions
 

@@ -352,6 +352,7 @@ Multiple agents can work on the same repo without conflicts. Each worktree is an
 
 - `agent-deck add . -c claude --worktree feature/a --new-branch` creates a session in a new worktree
 - `agent-deck add . --worktree feature/b -b --location subdirectory` places the worktree under `.worktrees/` inside the repo
+- `agent-deck launch . --worktree feature/c --new-branch --base dev -c claude` creates the branch from an explicit, resolved `dev` commit instead of the invoking checkout's current branch
 - `agent-deck worktree finish "My Session"` merges the branch, removes the worktree, and deletes the session
 - `agent-deck worktree cleanup` finds and removes orphaned worktrees
 

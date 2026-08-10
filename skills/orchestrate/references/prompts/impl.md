@@ -12,8 +12,10 @@ and tests — no plan, spec, or task document.
 
 Work strictly in this worktree on the current branch. Do, in order:
 1. Install dependencies from the frozen lockfile (never regenerate it).
-2. Run the FULL test suite once BEFORE changing anything and record the
-   baseline. If something already fails, note it and leave it alone — you
+2. Read `{{RUN_DIR}}/manifest.md` and its `## Verification contract`, execute its exact
+   baseline commands once BEFORE changing anything, and record only your
+   task-specific delta. Do not rediscover alternate commands or infrastructure
+   assumptions. If something already fails, note it and leave it alone — you
    are accountable only for introducing no NEW failures. List the baseline
    failures in your final summary ("baseline: none" if all green) — the
    reviewer will be given that list. If the repo has no test suite, say so

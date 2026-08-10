@@ -41,7 +41,7 @@ ground truth and can't see the ones around it.
 ## Sequential relay (default)
 
 1. Launch subtask 1's implementer with a fresh worktree for the whole issue:
-   `agent-deck launch <repo-root> -w <issue-branch> -c claude -t "impl-<issue-slug>-1" "${LEAN[@]}" --message-file ...`
+   `agent-deck launch <repo-root> -w <issue-branch> -b --base <base-branch> -c claude -t "impl-<issue-slug>-1" "${LEAN[@]}" --message-file ...`
    using the stage-1 prompt template with the subtask's mini-spec. Every
    launch here carries `"${LEAN[@]}"` like any other child (see "Child startup
    baseline" in SKILL.md) — drop it only for a subtask that drives a browser.
@@ -70,7 +70,9 @@ review runs once, after the final integration check (below).
 
 1. Create the integration branch and its worktree yourself (git plumbing is
    conductor work, not code editing):
-   `git -C <repo-root> worktree add .worktrees/<issue-slug> -b <issue-branch>`
+   `git -C <repo-root> worktree add .worktrees/<issue-slug> -b <issue-branch> <resolved-base-sha>`
+   then print and record its branch, HEAD and merge base as required by the
+   main skill before launching any child.
 2. For each subtask, create its worktree branched **off the integration
    branch**:
    `git -C <repo-root> worktree add .worktrees/<issue-slug>-<n> -b <issue-branch>-<n> <issue-branch>`
