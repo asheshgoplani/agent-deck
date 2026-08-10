@@ -5047,16 +5047,13 @@ func (i *Instance) UpdateStatus() error {
 		return nil
 	}
 
-	// Archive state is authoritative even when this ghost was checked recently.
-	// Normalize before the error/stopped cache can return the stale error.
-	if i.IsArchived() && i.Status == StatusError {
-		i.Status = StatusStopped
-	}
-
 	// Optimization: Skip expensive Exists() check for sessions already in error/stopped status
 	// Ghost sessions (in JSON but not in tmux) only get rechecked every 30 seconds
 	// This reduces subprocess spawns from 74/sec to ~5/sec for 28 ghost sessions
-	if (i.Status == StatusError || i.Status == StatusStopped) && !i.lastErrorCheck.IsZero() &&
+	// Archived errors bypass the cache so the live tmux state decides whether
+	// the existing missing-pane archive guard should normalize them to stopped.
+	if (i.Status == StatusError || i.Status == StatusStopped) &&
+		!(i.IsArchived() && i.Status == StatusError) && !i.lastErrorCheck.IsZero() &&
 		time.Since(i.lastErrorCheck) < errorRecheckInterval {
 		return nil // Skip - still in error/stopped, checked recently
 	}

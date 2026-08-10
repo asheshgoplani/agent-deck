@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -148,6 +149,54 @@ func TestUpdateStatus_ArchivedStaysStopped(t *testing.T) {
 				}
 			} else if tt.wantAuthCheck && instance.authHoldCheckedAt.IsZero() {
 				t.Error("active terminated instance did not refresh auth-hold death state")
+			}
+		})
+	}
+}
+
+func TestUpdateStatus_ArchivedLivePaneBypassesErrorCache(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	tests := []struct {
+		name           string
+		lastErrorCheck time.Time
+	}{
+		{
+			name:           "recent error check",
+			lastErrorCheck: time.Now(),
+		},
+		{
+			name:           "stale error check",
+			lastErrorCheck: time.Now().Add(-errorRecheckInterval - time.Second),
+		},
+	}
+
+	for n, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmuxSession := tmux.NewSession(fmt.Sprintf("archived-live-cache-%d-%d", n, time.Now().UnixNano()), t.TempDir())
+			if err := tmuxSession.Start("sleep 3600"); err != nil {
+				t.Fatalf("start live tmux session: %v", err)
+			}
+			t.Cleanup(func() { _ = tmuxSession.Kill() })
+
+			instance := &Instance{
+				ID:             fmt.Sprintf("archived-live-cache-%d", n),
+				Tool:           "shell",
+				Status:         StatusError,
+				CreatedAt:      time.Now().Add(-time.Minute),
+				ArchivedAt:     time.Now().Add(-time.Hour),
+				tmuxSession:    tmuxSession,
+				lastErrorCheck: tt.lastErrorCheck,
+			}
+
+			if err := instance.UpdateStatus(); err != nil {
+				t.Fatalf("UpdateStatus() error = %v", err)
+			}
+			if instance.Status == StatusStopped {
+				t.Errorf("live archived pane Status = %q, must be classified from the live pane", instance.Status)
+			}
+			if !instance.lastErrorCheck.IsZero() {
+				t.Errorf("lastErrorCheck = %v, want cleared after live-pane confirmation", instance.lastErrorCheck)
 			}
 		})
 	}
