@@ -54,6 +54,7 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 			},
 			requiredRendered: []string{
 				"deployed version", "source revision", "digest", "licensing state",
+				"Record the target environment and authorized scope, and state what evidence will distinguish product behavior from harness, environment, and licensing failures",
 				"stable arm ID and the exact question it answers",
 				"name its producer, artifact path, expected schema, deciding fields, and freshness requirement",
 				"Write one schema-consistent JSON document atomically",
@@ -79,6 +80,7 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 				"Set its explicit completion field to true in the staged content only after measurement is complete",
 				"Successful publication of that staged document is producer completion",
 				"retain its first command, exit status, and evidence", "Allow at most one clean rerun",
+				"Record both attempts without overwriting the first",
 				"repeated product-behavior failure is a defect", "repeated harness, environment, or licensing failure is inconclusive",
 			},
 		},
@@ -100,6 +102,9 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 				"completion field to true in the staged content only after report construction is complete, immediately before the final atomic rename",
 				"Successful publication of that staged document is producer completion",
 				"Record exactly one outcome: `pass`, `defect`, or `inconclusive`",
+				"A `pass` is terminal: make no edits, pull request, CI run, or deployment",
+				"A `defect` enters delivery only when it is inside the authorized scope",
+				"An `inconclusive` result is terminal and must state what prevented a trustworthy decision; do not claim success or retry indefinitely",
 			},
 		},
 	}
@@ -111,7 +116,8 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 	commonSafety := []string{
 		"Do not brainstorm, redesign, modify the product",
 		"temporary sibling used solely for atomic replacement",
-		"validate the expected schema, provenance, producer completion, and freshness",
+		"consumer must first validate the expected schema, provenance, producer completion, and freshness, and only then read the deciding fields where possible",
+		"preserve the complete first-failure evidence and diagnose whether it came from product behavior, the harness, the environment, or licensing",
 		"Permit at most one clean rerun by default",
 	}
 
