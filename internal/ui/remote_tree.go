@@ -28,6 +28,13 @@ import (
 // withheld — so the row stays on screen and can be reopened. Passing nil emits
 // the full tree, which is what every caller did before collapsing existed.
 func buildRemoteFlatItems(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool) []session.Item {
+	return buildRemoteFlatItemsOrdered(remoteName, sessions, collapsed, nil)
+}
+
+// buildRemoteFlatItemsOrdered is buildRemoteFlatItems with the manual
+// row-order overlay (#1875) applied. order is keyed by remoteOrderKey and may
+// be nil, in which case each bucket keeps the order the remote listed.
+func buildRemoteFlatItemsOrdered(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string) []session.Item {
 	items := make([]session.Item, 0, len(sessions)+2)
 
 	remoteRoot := "remotes/" + remoteName
@@ -103,7 +110,9 @@ func buildRemoteFlatItems(remoteName string, sessions []session.RemoteSessionInf
 
 		// Sessions sit one level below their owning group header.
 		sessionLevel := len(segments) + 1
-		idxs := buckets[gp]
+		// #1875: the user's manual order for this bucket, if any. Group
+		// headers keep their lexicographic order; only sessions move.
+		idxs := orderRemoteBucket(sessions, buckets[gp], order[remoteOrderKey(remoteName, gp)])
 		for j, idx := range idxs {
 			items = append(items, session.Item{
 				Type:          session.ItemTypeRemoteSession,
