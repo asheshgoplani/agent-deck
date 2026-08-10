@@ -31,7 +31,10 @@ func TestAllTestMainsIsolateTmuxSocket(t *testing.T) {
 
 	testMainRe := regexp.MustCompile(`(?m)^func TestMain\s*\(`)
 	isolateRe := regexp.MustCompile(`IsolateTmuxSocket`)
-	isolateHomeRe := regexp.MustCompile(`IsolateHome`)
+	// IsolatePackageHome is IsolateHome with a named prefix; both satisfy the
+	// requirement. Note "IsolatePackageHome" does NOT contain the substring
+	// "IsolateHome", so the alternation is load-bearing.
+	isolateHomeRe := regexp.MustCompile(`Isolate(Package)?Home`)
 
 	var offenders []string
 	var homeOffenders []string

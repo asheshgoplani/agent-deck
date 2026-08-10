@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // channelsCLIBuildOnce builds the agent-deck binary exactly once per test
@@ -15,6 +18,7 @@ import (
 // failing-test suite snappy while still catching real CLI regressions.
 var (
 	channelsCLIBinPath string
+	channelsCLIBinDir  string
 	channelsCLIBuildMu sync.Mutex
 	channelsCLIBuildOK bool
 )
@@ -28,11 +32,18 @@ func channelsCLIBinary(t *testing.T) string {
 		return channelsCLIBinPath
 	}
 
-	binDir, err := os.MkdirTemp("", "agent-deck-channels-bin-*")
+	// Assign straight into the package-level var — no local alias — so the dir
+	// is owned by removeChannelsCLIBinDir from the instant it exists, including
+	// on the t.Fatalf paths below. Before this, the build dir had no owner at
+	// all: a failed build stranded an empty agent-deck-channels-bin-* dir and a
+	// successful one stranded a 45 MB dir, every run (2026-08-10 temp-leak
+	// incident).
+	var err error
+	channelsCLIBinDir, err = os.MkdirTemp("", "agent-deck-channels-bin-*")
 	if err != nil {
 		t.Fatalf("mkdir bin tmp: %v", err)
 	}
-	bin := filepath.Join(binDir, "agent-deck-test")
+	bin := filepath.Join(channelsCLIBinDir, "agent-deck-test")
 
 	build := exec.Command("go", "build", "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -41,6 +52,24 @@ func channelsCLIBinary(t *testing.T) string {
 	channelsCLIBinPath = bin
 	channelsCLIBuildOK = true
 	return bin
+}
+
+// removeChannelsCLIBinDir deletes the shared CLI build dir. The binary is built
+// once per test binary and must outlive every individual test, so it cannot be
+// released with t.Cleanup; TestMain calls this after m.Run() instead. No-op
+// when no build was attempted.
+func removeChannelsCLIBinDir() {
+	channelsCLIBuildMu.Lock()
+	defer channelsCLIBuildMu.Unlock()
+	if channelsCLIBinDir == "" {
+		return
+	}
+	if err := testutil.RemoveTempTree(channelsCLIBinDir); err != nil {
+		fmt.Fprintf(os.Stderr, "cmd/agent-deck: LEAKED channels CLI build dir: %v\n", err)
+	}
+	channelsCLIBinDir = ""
+	channelsCLIBinPath = ""
+	channelsCLIBuildOK = false
 }
 
 // runAgentDeck invokes the built binary with isolated HOME so each test

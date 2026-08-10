@@ -29,15 +29,27 @@ func runTestMain(m *testing.M) int {
 	// NOT override HOME/XDG, so an un-sandboxed `go test ./internal/ui/...`
 	// resolved paths via the real $HOME and wiped the live profile index +
 	// config. See internal/testutil/homeenv.go for the postmortem.
-	cleanupHome := testutil.IsolateHome()
-	defer cleanupHome()
+	//
+	// Skipped when HOME is ALREADY sandboxed, which means this process is the
+	// re-exec'd child of TestOrphanWatchdog_ForceExitsHungProcess. That child
+	// inherits the parent's isolated env and then dies by os.Exit(2) — the
+	// behaviour under test — so its defers never run and a fresh ad-home-* dir
+	// would be stranded on every run (2026-08-10 temp-leak incident). See
+	// testutil.HomeAlreadyIsolated.
+	if !testutil.HomeAlreadyIsolated() {
+		cleanupHome := testutil.IsolateHome()
+		defer cleanupHome()
+	}
 
 	// Isolate the tmux socket. UI tests drive session-lifecycle flows end-to-end;
 	// without isolation they spawn tmux on the user's default socket and
 	// destabilize live agent-deck sessions (2026-04-17 incident).
 	// See internal/testutil/tmuxenv.go for the full postmortem.
-	cleanupTmux := testutil.IsolateTmuxSocket()
-	defer cleanupTmux()
+	// Skipped for the same inherited-sandbox reason as HOME above.
+	if !testutil.TmuxAlreadyIsolated() {
+		cleanupTmux := testutil.IsolateTmuxSocket()
+		defer cleanupTmux()
+	}
 
 	// Hard backstop against orphaned/interrupted ui.test binaries pinning a CPU
 	// core indefinitely (2026-06-21 incident: seven reparented ui.test processes

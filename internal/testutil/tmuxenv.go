@@ -14,6 +14,24 @@ import (
 // tmux server.
 const TestIsolationMarkerEnv = "AGENT_DECK_TEST_ISOLATED"
 
+// TmuxAlreadyIsolated reports whether the current process INHERITED a
+// TMUX_TMPDIR that IsolateTmuxSocket already pointed at a private directory.
+// The marker env var is set only by IsolateTmuxSocket, so its presence is proof
+// the environment cannot reach the user's default tmux server.
+//
+// Use it in a TestMain to skip re-isolation in a re-exec'd helper subprocess
+// (`exec.Command(os.Args[0], "-test.run=TestSomeHelperProcess")`). That helper
+// calls os.Exit to exercise a production exit path, so TestMain's deferred
+// cleanup never runs and its ad-tmux-* dir is stranded on every invocation —
+// 644 of them had accumulated under /tmp by the 2026-08-10 temp-leak incident,
+// 592 of them empty because the helper never even started a server.
+//
+// Skipping costs nothing: the inherited TMUX_TMPDIR is already private, and it
+// is the socket the parent staged for the child to use.
+func TmuxAlreadyIsolated() bool {
+	return os.Getenv(TestIsolationMarkerEnv) == "1"
+}
+
 // IsolateTmuxSocket makes it safe to spawn real tmux servers from tests
 // even when `go test` is invoked from inside a live tmux session (the
 // default on every developer host that uses agent-deck).
@@ -126,7 +144,7 @@ func IsolateTmuxSocket() func() {
 			_ = os.Setenv("TMUX_TMPDIR", tornDownTmuxTmpdir)
 		}
 		restoreEnv(TestIsolationMarkerEnv, origMarker, hadMarker)
-		_ = os.RemoveAll(dir)
+		reportTempTreeRemoval("isolated TMUX_TMPDIR", dir)
 	}
 }
 
@@ -267,7 +285,7 @@ func ShortTmuxSocket() (socket string, cleanup func()) {
 	// strands the server instead of ending it.
 	return filepath.Join(dir, "s"), func() {
 		KillTmuxServersUnder(dir)
-		_ = os.RemoveAll(dir)
+		reportTempTreeRemoval("short tmux socket", dir)
 	}
 }
 
