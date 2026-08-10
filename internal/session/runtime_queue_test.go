@@ -336,6 +336,21 @@ func TestRuntimeQueueStageLeavesActiveAndFreezesFIFO(t *testing.T) {
 	}
 }
 
+func TestRuntimeQueueStageEmptyQueueReturnsZeroBatchWithoutWAL(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "empty-stage"
+	batch, err := StageRuntimeQueue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Token != "" || len(batch.Messages) != 0 {
+		t.Fatalf("empty stage batch = %#v", batch)
+	}
+	if _, err := os.Stat(runtimeQueueInflightPathFor(id)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty stage created WAL: %v", err)
+	}
+}
+
 func TestRuntimeQueueStagePersistenceFailureLeavesActiveAndWALUnchanged(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -449,8 +464,18 @@ func TestRuntimeQueueAcknowledgeValidatesAndRemovesOnlyPrefix(t *testing.T) {
 	if string(afterActive) != string(beforeActive) || string(afterWAL) != string(beforeWAL) {
 		t.Fatal("failed acknowledgment changed durable files")
 	}
+	syncedDirs := make(map[string]int)
+	restoreFsync := SetFsyncHookForTest(func(f *os.File) error {
+		syncedDirs[f.Name()]++
+		return nil
+	})
+	defer restoreFsync()
 	if err := AcknowledgeRuntimeQueue("ack", batch.Token); err != nil {
 		t.Fatal(err)
+	}
+	inflightDir := filepath.Dir(wal)
+	if syncedDirs[inflightDir] != 1 {
+		t.Fatalf("acknowledgment WAL directory syncs = %d, want 1; all syncs: %#v", syncedDirs[inflightDir], syncedDirs)
 	}
 	remaining, err := PeekRuntimeQueue("ack")
 	if err != nil || len(remaining) != 1 || remaining[0].Message != "three" {
