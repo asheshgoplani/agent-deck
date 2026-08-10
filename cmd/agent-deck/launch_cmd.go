@@ -152,6 +152,7 @@ func handleLaunch(profile string, args []string) {
 	// detached from the parent. Opt-in so #972 (conductor children -> project
 	// group) is preserved by default. Used by the fleet skill.
 	inheritGroup := fs.Bool("inherit-group", false, "Place the child in the parent session's group instead of the cwd-derived group (auto-applied for git worktree children; use this to force it for non-worktree paths)")
+	allowCrossGroup := fs.Bool("allow-cross-group", false, "Allow a parented linked-worktree child to use an explicit group different from its parent")
 	noTransitionNotify := fs.Bool("no-transition-notify", false, "Suppress transition event notifications to parent session")
 	// #697: conductor-friendly title lock. Prevents Claude's session name
 	// from overwriting the agent-deck title. An explicit -t/--title already
@@ -483,6 +484,16 @@ func handleLaunch(profile string, args []string) {
 			sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, inheritParentGroup)
 		} else {
 			parentInstance = nil
+		}
+	}
+
+	if parentInstance != nil {
+		if err := validateWorktreeCrossGroup(
+			explicitGroupProvided, *allowCrossGroup, true, pathIsLinkedWorktree(),
+			sessionGroup, parentInstance.GroupPath,
+		); err != nil {
+			out.Error(err.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
 		}
 	}
 

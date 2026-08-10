@@ -393,6 +393,23 @@ func shouldInheritParentGroup(explicitGroupProvided, inheritGroupFlag bool, path
 	return pathIsLinkedWorktree()
 }
 
+// validateWorktreeCrossGroup rejects a likely agent-synthesized group path for
+// a parented linked-worktree child. Explicit placement remains authoritative in
+// every other launch shape, and --allow-cross-group is the deliberate escape
+// hatch for the rare linked-worktree child that belongs outside its parent.
+func validateWorktreeCrossGroup(explicitGroupProvided, allowCrossGroup, parentAttached, pathIsLinkedWorktree bool, requestedGroup, parentGroup string) error {
+	if !explicitGroupProvided || allowCrossGroup || !parentAttached || !pathIsLinkedWorktree {
+		return nil
+	}
+	if requestedGroup == parentGroup {
+		return nil
+	}
+	return fmt.Errorf(
+		"linked-worktree group %q conflicts with parent group %q; omit --group to inherit the parent group, or pass --allow-cross-group for deliberate cross-group placement",
+		requestedGroup, parentGroup,
+	)
+}
+
 // shouldWarnOrphanWorktreeGroup decides whether a `launch` should warn that a
 // linked-worktree child is about to land in its branch-leaf cwd-derived group,
 // detached from any conductor group. This happens when no parent attached (an

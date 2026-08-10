@@ -293,6 +293,19 @@ agent-deck remove "Codex Review" && agent-deck remove "Gemini Arch"
 
 **The default — sub-agent linkage:** `agent-deck launch` and `agent-deck add`, when invoked from *inside* an existing agent-deck session, automatically link the new session as a child of the calling session (sets `parent_session_id`, inherits the parent's group when `-g` is omitted, and grants `--add-dir` to the parent's project path). This is usually what you want for short-lived work sessions (plan / verify / release / consult).
 
+**Never synthesize a group from filesystem components.** For a linked-worktree
+child, pass `--parent <id>` and omit `--group`; agent-deck detects the worktree
+and inherits the parent's group. A conflicting explicit group is rejected unless
+the launch also passes `--allow-cross-group`, which is reserved for deliberate
+cross-group placement.
+
+After launch, verify the persisted relationship instead of assuming the command
+landed where intended:
+
+```bash
+agent-deck list --json | jq '.[] | select(.title=="task-name") | {group, parent_session_id}'
+```
+
 **When the default is wrong — root-level peer sessions:** if you are creating a session that should stand independently at the root — a peer conductor, a standalone project session, a session that should outlive the current one, or anything that semantically is NOT a child of the calling session — pass the `-no-parent` flag.
 
 | Use case | Parent linkage | Flag |
