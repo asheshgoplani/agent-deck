@@ -5020,7 +5020,9 @@ func (i *Instance) UpdateStatus() error {
 	if time.Since(graceTime) < 1500*time.Millisecond {
 		// Only skip if tmux session doesn't exist yet
 		if i.tmuxSession == nil || !i.tmuxSession.Exists() {
-			if i.Status != StatusRunning && i.Status != StatusIdle {
+			if i.IsArchived() {
+				i.Status = StatusStopped
+			} else if i.Status != StatusRunning && i.Status != StatusIdle {
 				i.Status = StatusStarting
 			}
 			return nil

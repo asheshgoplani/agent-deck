@@ -14,6 +14,7 @@ func TestUpdateStatus_ArchivedStaysStopped(t *testing.T) {
 		tmuxSession   *tmux.Session
 		status        Status
 		added         bool
+		fresh         bool
 		exitCode      int
 		wantExitCode  bool
 		wantStatus    Status
@@ -30,6 +31,23 @@ func TestUpdateStatus_ArchivedStaysStopped(t *testing.T) {
 			archived:     true,
 			tmuxSession:  &tmux.Session{Name: "archived-status-missing-pane"},
 			status:       StatusRunning,
+			exitCode:     1,
+			wantExitCode: true,
+			wantStatus:   StatusStopped,
+		},
+		{
+			name:       "fresh archived with no tmux object",
+			archived:   true,
+			fresh:      true,
+			status:     StatusError,
+			wantStatus: StatusStopped,
+		},
+		{
+			name:         "fresh archived with nonexistent tmux pane",
+			archived:     true,
+			fresh:        true,
+			tmuxSession:  &tmux.Session{Name: "fresh-archived-status-missing-pane"},
+			status:       StatusError,
 			exitCode:     1,
 			wantExitCode: true,
 			wantStatus:   StatusStopped,
@@ -62,11 +80,15 @@ func TestUpdateStatus_ArchivedStaysStopped(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			createdAt := time.Now().Add(-time.Minute)
+			if tt.fresh {
+				createdAt = time.Now()
+			}
 			instance := &Instance{
 				ID:               "update-status-archived-test",
 				Tool:             "claude",
 				Status:           tt.status,
-				CreatedAt:        time.Now().Add(-time.Minute),
+				CreatedAt:        createdAt,
 				tmuxSession:      tt.tmuxSession,
 				addedThisProcess: tt.added,
 			}
