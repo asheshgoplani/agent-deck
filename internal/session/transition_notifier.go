@@ -270,7 +270,7 @@ func instanceAcceptsTransitionEvents(inst *Instance) bool {
 	if inst == nil {
 		return false
 	}
-	if inst.NoTransitionNotify {
+	if inst.NoTransitionNotify || inst.IsArchived() {
 		return false
 	}
 	return true
