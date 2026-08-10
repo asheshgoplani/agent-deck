@@ -53,6 +53,23 @@ func TestUpdateStatus_ArchivedStaysStopped(t *testing.T) {
 			wantStatus:   StatusStopped,
 		},
 		{
+			name:       "fresh stopped archive with no tmux object",
+			archived:   true,
+			fresh:      true,
+			status:     StatusStopped,
+			wantStatus: StatusStopped,
+		},
+		{
+			name:         "fresh stopped archive with nonexistent tmux pane",
+			archived:     true,
+			fresh:        true,
+			tmuxSession:  &tmux.Session{Name: "fresh-stopped-archive-missing-pane"},
+			status:       StatusStopped,
+			exitCode:     1,
+			wantExitCode: true,
+			wantStatus:   StatusStopped,
+		},
+		{
 			name:       "active never started",
 			status:     StatusIdle,
 			added:      true,
