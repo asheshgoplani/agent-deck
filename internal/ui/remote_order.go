@@ -6,9 +6,9 @@ import "github.com/asheshgoplani/agent-deck/internal/session"
 //
 // Remote rows are RemoteSessionInfo values fetched over SSH, not Instances
 // living in groupTree, so groupTree.MoveSessionUp/Down has nothing to move.
-// The order is therefore kept as a purely local overlay: a
-// map[bucketKey][]sessionID on Home, applied when the flat item list is built
-// and persisted in ui_state next to the other view preferences. Nothing is
+// The order is therefore kept as a purely local overlay: a remoteOrder on
+// Home, applied when the flat item list is built and persisted in ui_state
+// next to the other view preferences. Nothing is
 // sent to the remote — ordering is a viewing preference of the machine doing
 // the viewing, and a remote-authoritative reorder would need a new subcommand
 // plus a wire protocol that silently breaks against older remote binaries.
@@ -24,13 +24,33 @@ import "github.com/asheshgoplani/agent-deck/internal/session"
 // The last rule is the important one: getting it wrong either duplicates a row
 // or makes one vanish, both worse than the no-op this fixes.
 
-// remoteOrderKey is the overlay bucket key: one ordering per remote per group
-// path. It matches the Path that buildRemoteFlatItems stamps on the rows of
-// that bucket ("remotes/<remote>/<group>"), so two remotes owning a same-named
-// group never share an ordering, and IDs — never titles — are the values, so
-// two identically titled sessions on different hosts cannot collide either.
-func remoteOrderKey(remoteName, groupPath string) string {
-	return "remotes/" + remoteName + "/" + groupPath
+// remoteOrder is the whole overlay: remote name -> group path -> session IDs.
+//
+// The nesting is the scoping, and it is nested rather than keyed by a joined
+// string on purpose. A flat "remotes/<remote>/<group>" key is ambiguous,
+// because neither half is free of separators: remote names are unrestricted
+// TOML map keys and group paths legitimately contain "/", so remote "dev/work"
+// + group "x" and remote "dev" + group "work/x" would produce the same key and
+// silently share an ordering. Two map levels cannot collide whatever the
+// names contain, and JSON object keys need no escaping either, so the
+// ui_state round trip is exact.
+//
+// Values are session IDs, never titles, so two identically titled sessions on
+// different hosts — or in different groups — stay independent.
+type remoteOrder map[string]map[string][]string
+
+// forRemote returns one remote's group -> session ID orderings. The nil map
+// reads fine, so callers need no nil check.
+func (o remoteOrder) forRemote(remoteName string) map[string][]string {
+	return o[remoteName]
+}
+
+// set records the order of one bucket, creating the remote's level on demand.
+func (o remoteOrder) set(remoteName, groupPath string, ids []string) {
+	if o[remoteName] == nil {
+		o[remoteName] = make(map[string][]string, 1)
+	}
+	o[remoteName][groupPath] = ids
 }
 
 // applyRemoteSessionOrder returns natural (session IDs in the order the remote

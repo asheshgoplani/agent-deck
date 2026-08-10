@@ -32,8 +32,9 @@ func buildRemoteFlatItems(remoteName string, sessions []session.RemoteSessionInf
 }
 
 // buildRemoteFlatItemsOrdered is buildRemoteFlatItems with the manual
-// row-order overlay (#1875) applied. order is keyed by remoteOrderKey and may
-// be nil, in which case each bucket keeps the order the remote listed.
+// row-order overlay (#1875) applied. order holds THIS remote's group path ->
+// session IDs (i.e. remoteOrder.forRemote(remoteName)) and may be nil, in
+// which case each bucket keeps the order the remote listed.
 func buildRemoteFlatItemsOrdered(remoteName string, sessions []session.RemoteSessionInfo, collapsed map[string]bool, order map[string][]string) []session.Item {
 	items := make([]session.Item, 0, len(sessions)+2)
 
@@ -112,7 +113,7 @@ func buildRemoteFlatItemsOrdered(remoteName string, sessions []session.RemoteSes
 		sessionLevel := len(segments) + 1
 		// #1875: the user's manual order for this bucket, if any. Group
 		// headers keep their lexicographic order; only sessions move.
-		idxs := orderRemoteBucket(sessions, buckets[gp], order[remoteOrderKey(remoteName, gp)])
+		idxs := orderRemoteBucket(sessions, buckets[gp], order[gp])
 		for j, idx := range idxs {
 			items = append(items, session.Item{
 				Type:          session.ItemTypeRemoteSession,

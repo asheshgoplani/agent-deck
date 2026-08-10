@@ -136,30 +136,28 @@ func TestRemoteOrderScoping_Issue1875(t *testing.T) {
 	}
 
 	// Only dev's "work" bucket is reordered.
-	order := map[string][]string{
-		remoteOrderKey("dev", "work"): {"dev-2", "dev-1"},
-	}
+	order := remoteOrder{"dev": {"work": {"dev-2", "dev-1"}}}
 
 	// Group buckets are emitted in lexicographic path order ("other" before
 	// "work"), which the session overlay must not disturb; inside "work" the
 	// overlay applies, and "other" keeps the fetched order.
-	devIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", devSessions, remoteHealth{}, order))
+	devIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", devSessions, remoteHealth{}, order.forRemote("dev")))
 	if strings.Join(devIDs, ",") != "dev-3,dev-4,dev-2,dev-1" {
 		t.Fatalf("dev order = %v, want [dev-3 dev-4 dev-2 dev-1]", devIDs)
 	}
 
-	prodIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("prod", prodSessions, remoteHealth{}, order))
+	prodIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("prod", prodSessions, remoteHealth{}, order.forRemote("prod")))
 	if strings.Join(prodIDs, ",") != "prod-1,prod-2" {
 		t.Fatalf("dev's overlay leaked onto prod: order = %v, want [prod-1 prod-2]", prodIDs)
 	}
 
 	// An overlay written against prod's same-named group must not move dev.
-	order[remoteOrderKey("prod", "work")] = []string{"prod-2", "prod-1"}
-	devIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", devSessions, remoteHealth{}, order))
+	order.set("prod", "work", []string{"prod-2", "prod-1"})
+	devIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", devSessions, remoteHealth{}, order.forRemote("dev")))
 	if strings.Join(devIDs, ",") != "dev-3,dev-4,dev-2,dev-1" {
 		t.Fatalf("prod's overlay leaked onto dev: order = %v", devIDs)
 	}
-	prodIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("prod", prodSessions, remoteHealth{}, order))
+	prodIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("prod", prodSessions, remoteHealth{}, order.forRemote("prod")))
 	if strings.Join(prodIDs, ",") != "prod-2,prod-1" {
 		t.Fatalf("prod order = %v, want [prod-2 prod-1]", prodIDs)
 	}
@@ -170,7 +168,7 @@ func TestRemoteOrderScoping_Issue1875(t *testing.T) {
 		t.Fatalf("emitted %d rows for %d sessions", len(devIDs), len(devSessions))
 	}
 	var headers []string
-	for _, it := range buildRemoteFlatItemsOrdered("dev", devSessions, remoteHealth{}, order) {
+	for _, it := range buildRemoteFlatItemsOrdered("dev", devSessions, remoteHealth{}, order.forRemote("dev")) {
 		if it.Type == session.ItemTypeRemoteGroup {
 			headers = append(headers, it.Path)
 		}
@@ -210,14 +208,14 @@ func TestRemoteOrderSurvivesRestart_Issue1875(t *testing.T) {
 		{ID: "s-beta", Title: "beta", Group: "work"},
 		{ID: "s-gamma", Title: "gamma", Group: "work"},
 	}
-	key := remoteOrderKey("dev", "work")
-
 	before := NewHome()
 	before.storage = storage
 	before.profile = "_i1875order"
 	before.storageWatcher = nil
-	before.remoteSessionOrder[key] = []string{"s-gamma", "s-alpha", "s-beta"}
-	before.saveUIState()
+	before.remoteSessionOrder.set("dev", "work", []string{"s-gamma", "s-alpha", "s-beta"})
+	if err := before.saveUIStateErr(); err != nil {
+		t.Fatalf("saveUIStateErr: %v", err)
+	}
 
 	// A fresh process: new Home, same on-disk state.
 	after := NewHome()
@@ -226,13 +224,13 @@ func TestRemoteOrderSurvivesRestart_Issue1875(t *testing.T) {
 	after.storageWatcher = nil
 	after.loadUIState()
 
-	got := after.remoteSessionOrder[key]
+	got := after.remoteSessionOrder.forRemote("dev")["work"]
 	if strings.Join(got, ",") != "s-gamma,s-alpha,s-beta" {
 		t.Fatalf("order did not survive the restart: %v, want [s-gamma s-alpha s-beta]", got)
 	}
 
 	// And it must still produce that order on screen.
-	ids := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", sessions, remoteHealth{}, after.remoteSessionOrder))
+	ids := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", sessions, remoteHealth{}, after.remoteSessionOrder.forRemote("dev")))
 	if strings.Join(ids, ",") != "s-gamma,s-alpha,s-beta" {
 		t.Fatalf("restored overlay did not reorder the rows: %v", ids)
 	}
@@ -270,8 +268,149 @@ func TestShiftUpOnRemoteSessionPersists_Issue1875(t *testing.T) {
 	reloaded.storageWatcher = nil
 	reloaded.loadUIState()
 
-	got := reloaded.remoteSessionOrder[remoteOrderKey("dev", "work")]
+	got := reloaded.remoteSessionOrder.forRemote("dev")["work"]
 	if strings.Join(got, ",") != "s-alpha,s-gamma,s-beta" {
 		t.Fatalf("the reorder was not persisted: %v, want [s-alpha s-gamma s-beta]", got)
+	}
+}
+
+// Review round 1, F1: the overlay was keyed by concatenating
+// "remotes/<remote>/<group>". Remote names are unrestricted TOML map keys and
+// group paths legitimately contain "/", so remote "dev/work" + group "x" and
+// remote "dev" + group "work/x" produced the same key and shared an ordering.
+// The nested map cannot alias whatever the names contain.
+func TestRemoteOrderKeysCannotAlias_Issue1875(t *testing.T) {
+	// Bucket A: a remote whose NAME contains a slash, group "x".
+	aSessions := []session.RemoteSessionInfo{
+		{ID: "a-1", Title: "one", Group: "x"},
+		{ID: "a-2", Title: "two", Group: "x"},
+	}
+	// Bucket B: a remote named "dev", group path "work/x". Under the old
+	// concatenated key both of these were "remotes/dev/work/x".
+	bSessions := []session.RemoteSessionInfo{
+		{ID: "b-1", Title: "one", Group: "work/x"},
+		{ID: "b-2", Title: "two", Group: "work/x"},
+	}
+
+	order := remoteOrder{}
+	order.set("dev/work", "x", []string{"a-2", "a-1"})
+
+	aIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev/work", aSessions, remoteHealth{}, order.forRemote("dev/work")))
+	if strings.Join(aIDs, ",") != "a-2,a-1" {
+		t.Fatalf("remote 'dev/work' group 'x' order = %v, want [a-2 a-1]", aIDs)
+	}
+
+	bIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", bSessions, remoteHealth{}, order.forRemote("dev")))
+	if strings.Join(bIDs, ",") != "b-1,b-2" {
+		t.Fatalf("the 'dev/work'+'x' ordering aliased onto 'dev'+'work/x': order = %v, want [b-1 b-2]", bIDs)
+	}
+
+	// And the reverse: an ordering on dev/work/x must not reach dev/work + x.
+	order.set("dev", "work/x", []string{"b-2", "b-1"})
+	aIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev/work", aSessions, remoteHealth{}, order.forRemote("dev/work")))
+	if strings.Join(aIDs, ",") != "a-2,a-1" {
+		t.Fatalf("the 'dev'+'work/x' ordering aliased onto 'dev/work'+'x': order = %v, want [a-2 a-1]", aIDs)
+	}
+	bIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", bSessions, remoteHealth{}, order.forRemote("dev")))
+	if strings.Join(bIDs, ",") != "b-2,b-1" {
+		t.Fatalf("remote 'dev' group 'work/x' order = %v, want [b-2 b-1]", bIDs)
+	}
+}
+
+// F1, persistence half: the separator-bearing names must also survive the
+// ui_state round trip as distinct buckets.
+func TestRemoteOrderSlashKeysRoundTrip_Issue1875(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", t.TempDir())
+	session.ClearUserConfigCache()
+	t.Cleanup(func() { os.Setenv("HOME", origHome); session.ClearUserConfigCache() })
+
+	storage, err := session.NewStorageWithProfile("_i1875slash")
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile: %v", err)
+	}
+	t.Cleanup(func() { storage.Close() })
+
+	before := NewHome()
+	before.storage = storage
+	before.profile = "_i1875slash"
+	before.storageWatcher = nil
+	before.remoteSessionOrder.set("dev/work", "x", []string{"a-2", "a-1"})
+	before.remoteSessionOrder.set("dev", "work/x", []string{"b-2", "b-1"})
+	if err := before.saveUIStateErr(); err != nil {
+		t.Fatalf("saveUIStateErr: %v", err)
+	}
+
+	after := NewHome()
+	after.storage = storage
+	after.profile = "_i1875slash"
+	after.storageWatcher = nil
+	after.loadUIState()
+
+	if got := after.remoteSessionOrder.forRemote("dev/work")["x"]; strings.Join(got, ",") != "a-2,a-1" {
+		t.Fatalf("remote 'dev/work' group 'x' = %v, want [a-2 a-1]", got)
+	}
+	if got := after.remoteSessionOrder.forRemote("dev")["work/x"]; strings.Join(got, ",") != "b-2,b-1" {
+		t.Fatalf("remote 'dev' group 'work/x' = %v, want [b-2 b-1]", got)
+	}
+	if got := after.remoteSessionOrder.forRemote("dev")["x"]; got != nil {
+		t.Fatalf("buckets merged across the round trip: dev/x = %v, want nothing", got)
+	}
+}
+
+// Review round 1, F2: saveUIState only logged SetMeta failures, so a reorder on
+// a locked, read-only or full database moved the rows on screen, said nothing,
+// and reverted at the next launch. The failure is injected by closing the
+// storage out from under the handler, which is what a dead DB handle looks like
+// to SetMeta.
+func TestRemoteReorderReportsSaveFailure_Issue1875(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", t.TempDir())
+	session.ClearUserConfigCache()
+	t.Cleanup(func() { os.Setenv("HOME", origHome); session.ClearUserConfigCache() })
+
+	storage, err := session.NewStorageWithProfile("_i1875savefail")
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile: %v", err)
+	}
+
+	h := armHomeForRemoteReorder(t)
+	h.storage = storage
+	h.profile = "_i1875savefail"
+	h.storageWatcher = nil
+
+	// Sanity: the same move succeeds quietly while the DB is alive.
+	putCursorOnRemoteSession(t, h, "s-beta")
+	h.moveRemoteItem(h.flatItems[h.cursor], -1)
+	if h.err != nil {
+		t.Fatalf("a healthy save reported an error: %v", h.err)
+	}
+
+	if err := storage.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := h.saveUIStateErr(); got == nil {
+		t.Fatal("precondition: saveUIStateErr returned nil against a closed database")
+	}
+
+	h.clearError()
+	putCursorOnRemoteSession(t, h, "s-gamma")
+	h.moveRemoteItem(h.flatItems[h.cursor], -1)
+
+	if h.err == nil {
+		t.Fatal("a reorder that could not be persisted reported success")
+	}
+	msg := strings.ToLower(h.err.Error())
+	if !strings.Contains(msg, "saved") && !strings.Contains(msg, "save") {
+		t.Fatalf("message does not say the order was not saved: %q", h.err.Error())
+	}
+	if !strings.Contains(msg, "restart") {
+		t.Fatalf("message does not warn that the order will not survive a restart: %q", h.err.Error())
+	}
+
+	// The move itself still happened on screen — the message explains that it
+	// is not durable, it does not pretend the keystroke was refused.
+	if got := visibleRemoteSessionIDs(h, "dev"); strings.Join(got, ",") != "s-beta,s-gamma,s-alpha" {
+		t.Fatalf("in-memory order = %v, want [s-beta s-gamma s-alpha]", got)
 	}
 }
