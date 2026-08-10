@@ -109,6 +109,22 @@ func applyRemoteSessionOrder(natural, order []string) []string {
 	return out
 }
 
+// firstDuplicateID reports the first session ID that appears more than once,
+// which is the exact condition under which orderRemoteBucket refuses to
+// reorder a bucket. A caller reordering on behalf of the user must ask this
+// before it changes anything, so an unaddressable bucket produces a message
+// rather than a move that silently does nothing.
+func firstDuplicateID(ids []string) (string, bool) {
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			return id, true
+		}
+		seen[id] = true
+	}
+	return "", false
+}
+
 // orderRemoteBucket permutes one group bucket's indices into sessions by the
 // overlay, leaving the caller's slice untouched.
 func orderRemoteBucket(sessions []session.RemoteSessionInfo, idxs []int, order []string) []int {
@@ -123,7 +139,10 @@ func orderRemoteBucket(sessions []session.RemoteSessionInfo, idxs []int, order [
 		byID[sessions[idx].ID] = idx
 	}
 	if len(byID) != len(idxs) {
-		return idxs // duplicate (or empty) IDs: not addressable, leave as fetched
+		// Duplicate IDs: not addressable, leave as fetched. Callers acting on a
+		// user keystroke must check firstDuplicateID first, or this bail-out
+		// looks to the user exactly like a move that did nothing.
+		return idxs
 	}
 
 	want := applyRemoteSessionOrder(natural, order)

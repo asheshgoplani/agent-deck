@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -412,5 +414,88 @@ func TestRemoteReorderReportsSaveFailure_Issue1875(t *testing.T) {
 	// is not durable, it does not pretend the keystroke was refused.
 	if got := visibleRemoteSessionIDs(h, "dev"); strings.Join(got, ",") != "s-beta,s-gamma,s-alpha" {
 		t.Fatalf("in-memory order = %v, want [s-beta s-gamma s-alpha]", got)
+	}
+}
+
+// Review round 2, F1: orderRemoteBucket deliberately refuses to permute a
+// bucket whose IDs are not unique, so a move there could never change the
+// screen. moveRemoteItem used to swap and save anyway — nothing moved, no
+// message, which is the same silent no-op this issue exists to fix, reached by
+// a different door. The bail-out is correct; treating it as success was not.
+//
+// This drives the key handler, not just the overlay function.
+func TestRemoteReorderReportsDuplicateIDs_Issue1875(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[remotes.dev]
+host = "user@dev.example"
+agent_deck_path = "/usr/local/bin/agent-deck"
+`)
+
+	newHome := func() *Home {
+		h := NewHome()
+		h.width, h.height = 160, 40
+		h.initialLoading = false
+		h.remoteSessions = map[string][]session.RemoteSessionInfo{
+			"dev": {
+				{ID: "dup", Title: "first", Status: "idle", Tool: "claude", Group: "work"},
+				{ID: "dup", Title: "second", Status: "idle", Tool: "claude", Group: "work"},
+				{ID: "s-b", Title: "third", Status: "idle", Tool: "claude", Group: "work"},
+			},
+		}
+		h.rebuildFlatItems()
+		return h
+	}
+
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{name: "shift+down", key: tea.KeyMsg{Type: tea.KeyShiftDown}},
+		{name: "shift+up", key: tea.KeyMsg{Type: tea.KeyShiftUp}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHome()
+			h.clearError()
+
+			before := visibleRemoteSessionIDs(h, "dev")
+			putCursorOnRemoteSession(t, h, "dup")
+			h.handleMainKey(tc.key)
+
+			// The overlay cannot express this bucket, so the rows must not move.
+			after := visibleRemoteSessionIDs(h, "dev")
+			if strings.Join(after, ",") != strings.Join(before, ",") {
+				t.Fatalf("rows moved in an unaddressable bucket: %v -> %v", before, after)
+			}
+			// ...and the user must be told why, rather than see a dead key.
+			if h.err == nil {
+				t.Fatal("silent no-op: a duplicate-id bucket produced no footer message")
+			}
+			msg := h.err.Error()
+			if !strings.Contains(msg, "dup") {
+				t.Fatalf("message does not name the duplicated id: %q", msg)
+			}
+			if !strings.Contains(strings.ToLower(msg), "more than one") {
+				t.Fatalf("message does not explain the duplication: %q", msg)
+			}
+			// Nothing may be written for a bucket that cannot be ordered.
+			if got := h.remoteSessionOrder.forRemote("dev")["work"]; got != nil {
+				t.Fatalf("an order was stored for an unaddressable bucket: %v", got)
+			}
+		})
+	}
+
+	// The third session in that group is equally stuck: any order stored for
+	// the bucket would be ignored by the builder, so it must report too rather
+	// than appear to work.
+	h := newHome()
+	h.clearError()
+	before := visibleRemoteSessionIDs(h, "dev")
+	putCursorOnRemoteSession(t, h, "s-b")
+	h.handleMainKey(tea.KeyMsg{Type: tea.KeyShiftUp})
+	if got := visibleRemoteSessionIDs(h, "dev"); strings.Join(got, ",") != strings.Join(before, ",") {
+		t.Fatalf("rows moved in an unaddressable bucket: %v -> %v", before, got)
+	}
+	if h.err == nil {
+		t.Fatal("silent no-op: moving a uniquely-named row in a duplicate-id bucket said nothing")
 	}
 }

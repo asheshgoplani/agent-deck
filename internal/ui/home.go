@@ -13785,6 +13785,17 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 	}
 	h.remoteSessionsMu.RUnlock()
 
+	// A bucket whose IDs are not unique cannot be reordered at all:
+	// orderRemoteBucket refuses to permute it, because the slot mapping is no
+	// longer 1:1 and a row could be dropped or doubled. Storing an order for it
+	// would change nothing on screen — a no-op dressed as success, which is the
+	// bug this issue is about. It also makes the row itself ambiguous: two rows
+	// answering to the same ID cannot be told apart. Report it instead.
+	if dup, ok := firstDuplicateID(natural); ok {
+		h.setError(fmt.Errorf("cannot move '%s' %s: %s lists more than one session with id %q in this group, so their order cannot be tracked", moved.Title, direction, item.RemoteName, dup))
+		return
+	}
+
 	// Start from what is actually on screen — the fetched list with the
 	// current overlay already applied — so a move is always relative to what
 	// the user sees, whatever has drifted since the overlay was written.
