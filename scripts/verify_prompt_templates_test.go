@@ -15,6 +15,29 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 	promptDir := filepath.Join(repoRoot, "skills", "orchestrate", "references", "prompts")
 	renderScript := filepath.Join(promptDir, "render.sh")
 	placeholderPattern := regexp.MustCompile(`\{\{([A-Z_]+)\}\}`)
+	placeholderNames := func(contents []byte) []string {
+		var names []string
+		for _, match := range placeholderPattern.FindAllSubmatch(contents, -1) {
+			names = append(names, string(match[1]))
+		}
+		slices.Sort(names)
+		return names
+	}
+
+	preamble, err := os.ReadFile(filepath.Join(promptDir, "verify-preamble.md"))
+	if err != nil {
+		t.Fatalf("read verification preamble: %v", err)
+	}
+	wantPreamblePlaceholders := []string{"FRESHNESS_CUTOFF", "RUN_ID", "SCOPE"}
+	if got := placeholderNames(preamble); !slices.Equal(got, wantPreamblePlaceholders) {
+		t.Fatalf("preamble placeholders = %v, want %v", got, wantPreamblePlaceholders)
+	}
+	const writeBoundary = "Write only the artifact path assigned by this prompt and a temporary sibling " +
+		"used solely for atomic replacement of that artifact. Remove the temporary sibling if publication " +
+		"fails. All other investigation must be read-only."
+	if normalized := strings.Join(strings.Fields(string(preamble)), " "); !strings.Contains(normalized, writeBoundary) {
+		t.Fatalf("preamble missing complete assigned-artifact write boundary %q", writeBoundary)
+	}
 
 	tests := []struct {
 		name             string
@@ -87,11 +110,7 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 				t.Fatal("operational template must start with the verification preamble include")
 			}
 
-			var gotPlaceholders []string
-			for _, match := range placeholderPattern.FindAllSubmatch(template, -1) {
-				gotPlaceholders = append(gotPlaceholders, string(match[1]))
-			}
-			slices.Sort(gotPlaceholders)
+			gotPlaceholders := placeholderNames(template)
 			if !slices.Equal(gotPlaceholders, tt.placeholders) {
 				t.Fatalf("source placeholders = %v, want %v", gotPlaceholders, tt.placeholders)
 			}
