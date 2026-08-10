@@ -8,12 +8,12 @@ import "testing"
 // '--model opus' (with an embedded space) — an unknown flag that makes claude
 // exit immediately, leaving a dead pane the registry still reports as running.
 //
-// ValidateClaudeExtraArgToken turns that silent failure into an actionable
+// ValidateExtraArgToken turns that silent failure into an actionable
 // error at spawn time: a token that looks like a flag (starts with '-') AND
 // contains whitespace is almost always a flag mashed together with its value
 // that the user meant as two separate --extra-arg tokens.
 
-func TestValidateClaudeExtraArgToken_RejectsFlagMashedWithValue(t *testing.T) {
+func TestValidateExtraArgToken_RejectsFlagMashedWithValue(t *testing.T) {
 	bad := []string{
 		"--model opus",
 		"--model claude-opus-4-8",
@@ -21,13 +21,13 @@ func TestValidateClaudeExtraArgToken_RejectsFlagMashedWithValue(t *testing.T) {
 		"--permission-mode auto",
 	}
 	for _, tok := range bad {
-		if err := ValidateClaudeExtraArgToken(tok); err == nil {
-			t.Errorf("ValidateClaudeExtraArgToken(%q) = nil, want error (flag mashed with value)", tok)
+		if err := ValidateExtraArgToken(tok); err == nil {
+			t.Errorf("ValidateExtraArgToken(%q) = nil, want error (flag mashed with value)", tok)
 		}
 	}
 }
 
-func TestValidateClaudeExtraArgToken_AllowsCleanTokens(t *testing.T) {
+func TestValidateExtraArgToken_AllowsCleanTokens(t *testing.T) {
 	good := []string{
 		"--model",                        // bare flag
 		"opus",                           // bare value
@@ -37,8 +37,8 @@ func TestValidateClaudeExtraArgToken_AllowsCleanTokens(t *testing.T) {
 		"",                               // empty (handled elsewhere; not a footgun)
 	}
 	for _, tok := range good {
-		if err := ValidateClaudeExtraArgToken(tok); err != nil {
-			t.Errorf("ValidateClaudeExtraArgToken(%q) = %v, want nil", tok, err)
+		if err := ValidateExtraArgToken(tok); err != nil {
+			t.Errorf("ValidateExtraArgToken(%q) = %v, want nil", tok, err)
 		}
 	}
 }

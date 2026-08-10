@@ -2139,30 +2139,25 @@ func TestHomeViewStackedLayout(t *testing.T) {
 		t.Fatalf("65-col mobile stacked layout rendered Preview:\n%s", view)
 	}
 
-	wideBelow := NewHome()
-	wideBelow.width = 100
-	wideBelow.height = 40
-	wideBelow.initialLoading = false
-	wideBelow.previewOrientation = PreviewOrientationBelow
-	wideBelow.instancesMu.Lock()
-	wideBelow.instances = []*session.Instance{inst}
-	wideBelow.instancesMu.Unlock()
-	wideBelow.groupTree = session.NewGroupTree(wideBelow.instances)
-	wideBelow.rebuildFlatItems()
-	if view := wideBelow.View(); !strings.Contains(view, "PREVIEW") {
-		t.Fatalf("wide below-orientation layout lost Preview:\n%s", view)
+}
+
+func TestWideTerminalUsesSideBySidePreview(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+
+	if got := home.getLayoutMode(); got != LayoutModeDual {
+		t.Fatalf("getLayoutMode() = %q, want %q; preview must only render beside sessions", got, LayoutModeDual)
 	}
 }
 
 func TestHomeViewUsesCachedPreviewDuringNavigationBursts(t *testing.T) {
 	tests := []struct {
-		name               string
-		width              int
-		height             int
-		previewOrientation string
+		name   string
+		width  int
+		height int
 	}{
 		{name: "dual layout", width: 100, height: 30},
-		{name: "wide stacked layout", width: 100, height: 50, previewOrientation: PreviewOrientationBelow},
+		{name: "tall dual layout", width: 100, height: 50},
 	}
 
 	for _, tt := range tests {
@@ -2170,7 +2165,6 @@ func TestHomeViewUsesCachedPreviewDuringNavigationBursts(t *testing.T) {
 			home := NewHome()
 			home.width = tt.width
 			home.height = tt.height
-			home.previewOrientation = tt.previewOrientation
 			home.initialLoading = false
 
 			inst := session.NewInstanceWithTool("Preview Session", "/tmp/project", "other")

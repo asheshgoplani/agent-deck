@@ -280,10 +280,10 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		syncPluginChannels(inst)
 
 	case FieldExtraArgs:
-		if inst.Tool != "claude" {
+		if !SupportsExtraArgs(inst.Tool) {
 			return "", nil, &MutationError{
 				Field: field,
-				Msg:   fmt.Sprintf("extra-args only supported for claude sessions (this session's tool is %q); claude is the only tool whose builder appends user extra args", inst.Tool),
+				Msg:   fmt.Sprintf("extra-args only supported for Claude- or Codex-compatible sessions (this session's tool is %q)", inst.Tool),
 			}
 		}
 		oldValue = strings.Join(inst.ExtraArgs, " ")

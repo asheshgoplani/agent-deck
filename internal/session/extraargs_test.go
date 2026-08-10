@@ -91,8 +91,8 @@ func TestExtraArgsCarryLeanMCPTokens(t *testing.T) {
 	// Each token must also pass the spawn-time validator the CLI applies, or
 	// `launch --extra-arg` would reject what the skill documents.
 	for _, tok := range []string{"--strict-mcp-config", "--mcp-config", mcpJSON} {
-		if err := ValidateClaudeExtraArgToken(tok); err != nil {
-			t.Fatalf("ValidateClaudeExtraArgToken(%q) rejected a token the orchestrate skill documents: %v", tok, err)
+		if err := ValidateExtraArgToken(tok); err != nil {
+			t.Fatalf("ValidateExtraArgToken(%q) rejected a token the orchestrate skill documents: %v", tok, err)
 		}
 	}
 

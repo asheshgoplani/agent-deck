@@ -1927,7 +1927,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 		fmt.Println("  channels           Comma-separated plugin channel ids (claude only)")
 		fmt.Printf("  plugins            Comma-separated plugin catalog names (claude only) — see [plugins.<name>] in %s\n", effectiveUserConfigPathForHelp())
-		fmt.Println("  extra-args         Extra claude CLI tokens (claude only; use `-- --flag value` for tokens starting with -; persisted plaintext — no secrets)")
+		fmt.Println("  extra-args         Extra Claude or Codex CLI tokens (use `-- --flag value` for tokens starting with -; persisted plaintext — no secrets)")
 		fmt.Println("  model              Per-session model override (e.g. opus/sonnet/haiku or a gemini model); persists across restart (#1436). Empty clears it.")
 		fmt.Println("  color              Optional TUI row tint: '#RRGGBB' or ANSI '0'..'255' or '' (issue #391)")
 		fmt.Println("  claude-session-id  Claude conversation ID")
@@ -3920,6 +3920,16 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 		}
 		if i < checks-1 {
 			time.Sleep(opts.checkDelay)
+		}
+	}
+
+	// The child can consume the composer between the final iteration's status
+	// sample and its pane capture. Take one closing status sample so that
+	// ordering does not turn a real idle-to-active transition into a false
+	// typed/unverified result merely because the tenth poll was the boundary.
+	if baseline.statusOK && !baseline.wasActive {
+		if status, err := target.GetStatus(); err == nil && status == "active" {
+			return deliverySubmitted, nil
 		}
 	}
 

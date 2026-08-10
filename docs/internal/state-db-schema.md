@@ -216,7 +216,7 @@ justify a column-per-field schema. The typed shape is defined by
 | `plugins` | string[] | Catalog-key plugin list (RFC `PLUGIN_ATTACH.md`) |
 | `plugin_channel_link_disabled` | bool | Suppress auto-linking of plugin channels |
 | `auto_linked_channels` | string[] | Channels added automatically — kept so reconciliation can clean them up later |
-| `extra_args` | string[] | Extra CLI tokens appended to `claude` start/resume/fork |
+| `extra_args` | string[] | Extra CLI tokens appended to supported Claude/Codex start/resume/fork commands |
 | `tool_options` | object | Tool-specific launch options (free-form) |
 | `sandbox` | object | Serialized `SandboxConfig` |
 | `sandbox_container` | string | Docker container name backing the sandbox |

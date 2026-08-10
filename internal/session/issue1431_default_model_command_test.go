@@ -119,7 +119,7 @@ func TestIssue1431_ExplicitModelBeatsDefault(t *testing.T) {
 }
 
 // Guard: when the operator supplies --model through --extra-arg (the form the
-// ValidateClaudeExtraArgToken error message recommends), the default_model
+// ValidateExtraArgToken error message recommends), the default_model
 // fallback must NOT also inject a second --model. claude is last-wins so the
 // duplicate is harmless, but the command must carry exactly one --model and it
 // must be the user's, not the default.

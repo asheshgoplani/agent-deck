@@ -84,6 +84,17 @@ func TestHelpOverlayShowsConfiguredAlternateQuickCreate(t *testing.T) {
 	}
 }
 
+func TestHelpOverlayOmitsRemovedPreviewOrientationShortcut(t *testing.T) {
+	overlay := NewHelpOverlay()
+	overlay.SetSize(100, 120)
+	overlay.Show()
+
+	view := overlay.View()
+	if strings.Contains(view, "Toggle preview orientation") || strings.Contains(view, "below-orientation") {
+		t.Fatalf("help overlay advertises removed preview orientation controls: %q", view)
+	}
+}
+
 func TestWrapWithHangingIndent_ShortText_NoWrap(t *testing.T) {
 	got := wrapWithHangingIndent("Short text", 40, "    ")
 	want := "Short text"

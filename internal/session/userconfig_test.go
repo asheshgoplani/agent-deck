@@ -971,6 +971,16 @@ show_analytics = false
 	}
 }
 
+func TestLegacyPreviewOrientationRemainsLoadable(t *testing.T) {
+	var config UserConfig
+	if _, err := toml.Decode("[ui]\npreview_orientation = \"below\"\npreview_pct = 60\n", &config); err != nil {
+		t.Fatalf("legacy preview_orientation must not break config loading: %v", err)
+	}
+	if got := config.UI.GetPreviewPct(); got != 60 {
+		t.Fatalf("GetPreviewPct() = %d, want 60; neighboring UI config was lost", got)
+	}
+}
+
 func TestPreviewSettingsDefaults(t *testing.T) {
 	cfg := &UserConfig{}
 

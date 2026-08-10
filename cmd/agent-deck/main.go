@@ -1368,14 +1368,13 @@ func handleAdd(profile string, args []string) {
 	})
 	noChannelLink := fs.Bool("no-channel-link", false, "Disable auto-link between --plugin entries with emits_channel=true and --channel (RFC §4.7)")
 
-	// Extra claude CLI tokens - repeatable; each invocation is one already-
+	// Extra Claude or Codex CLI tokens - repeatable; each invocation is one already-
 	// tokenised arg (e.g. --extra-arg --agent --extra-arg reviewer).
 	// Persisted on Instance.ExtraArgs (plaintext — do NOT pass secrets) and
-	// appended verbatim to every claude Start/Restart/Fork command via
-	// buildClaudeExtraFlags.
+	// appended safely to supported Claude/Codex lifecycle commands.
 	var extraArgFlags []string
-	fs.Func("extra-arg", "Extra claude CLI token (can specify multiple times); requires -c claude; persisted plaintext — no secrets", func(s string) error {
-		if err := session.ValidateClaudeExtraArgToken(s); err != nil {
+	fs.Func("extra-arg", "Extra Claude or Codex CLI token (can specify multiple times); persisted plaintext — no secrets", func(s string) error {
+		if err := session.ValidateExtraArgToken(s); err != nil {
 			return err
 		}
 		extraArgFlags = append(extraArgFlags, s)
@@ -1846,11 +1845,10 @@ func handleAdd(profile string, args []string) {
 		newInstance.PluginChannelLinkDisabled = true
 	}
 
-	// Apply --extra-arg flags (claude only for now — these are passed to the
-	// claude binary via buildClaudeExtraFlags; other tools have their own builders).
+	// Apply --extra-arg flags for builders that support persisted tokens.
 	if len(extraArgFlags) > 0 {
-		if newInstance.Tool != "claude" {
-			fmt.Println("Error: --extra-arg only supported for claude sessions (use -c claude); claude is the only tool whose builder appends user extra args")
+		if !session.SupportsExtraArgs(newInstance.Tool) {
+			fmt.Println("Error: --extra-arg only supported for Claude- or Codex-compatible sessions")
 			os.Exit(1)
 		}
 		newInstance.ExtraArgs = extraArgFlags

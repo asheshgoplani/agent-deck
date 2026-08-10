@@ -434,8 +434,8 @@ type Instance struct {
 	// for backwards compatibility with Claude fork targets.
 	ForkStartCommand string `json:"-"`
 
-	// ExtraArgs are user-supplied claude CLI tokens appended verbatim to every
-	// start/resume/fork command (e.g. ["--agent","reviewer","--model","opus"]).
+	// ExtraArgs are user-supplied Claude or Codex CLI tokens appended to every
+	// supported start/resume/fork command (e.g. ["--sandbox","read-only"]).
 	// Each token is shellescape-quoted on emission so values with spaces
 	// survive the bash -c wrapper.
 	ExtraArgs []string `json:"extra_args,omitempty"`
@@ -1626,7 +1626,7 @@ func (i *Instance) logClaudeConfigResolution() {
 	)
 }
 
-// ValidateClaudeExtraArgToken rejects a single --extra-arg token that looks
+// ValidateExtraArgToken rejects a single --extra-arg token that looks
 // like a flag mashed together with its value (issue #1431b). Each --extra-arg
 // is shell-quoted as ONE argument, so `--extra-arg "--model opus"` reaches
 // claude as the literal single arg '--model opus' (embedded space) — an
@@ -1635,7 +1635,7 @@ func (i *Instance) logClaudeConfigResolution() {
 // whitespace is almost always two tokens the user meant to pass separately;
 // surfacing it as an error at spawn time beats the silent tmux death. Clean
 // flags ("--model") and clean values ("opus", "be concise") pass.
-func ValidateClaudeExtraArgToken(token string) error {
+func ValidateExtraArgToken(token string) error {
 	if strings.HasPrefix(token, "-") && strings.ContainsAny(token, " \t\n\r") {
 		return fmt.Errorf(
 			"--extra-arg %q looks like a flag and its value combined; pass them as separate --extra-arg tokens (e.g. --extra-arg \"--model\" --extra-arg \"opus\"), or use the first-class --model flag",
@@ -1645,8 +1645,14 @@ func ValidateClaudeExtraArgToken(token string) error {
 	return nil
 }
 
+// SupportsExtraArgs reports whether tool has a command builder that emits
+// persisted ExtraArgs on every lifecycle path.
+func SupportsExtraArgs(tool string) bool {
+	return IsClaudeCompatible(tool) || IsCodexCompatible(tool)
+}
+
 // extraArgsSupplyModel reports whether the persisted --extra-arg tokens already
-// carry a `--model` override. ValidateClaudeExtraArgToken forces flag and value
+// carry a `--model` override. ValidateExtraArgToken forces flag and value
 // into separate tokens, so a user-supplied model appears as a bare "--model"
 // (or "--model=..." form) token. When present we must NOT also inject
 // [claude].default_model, or the launch command would carry two --model flags.
@@ -1719,7 +1725,7 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	// command delegates flag assembly here, this single point keeps them all
 	// in lockstep.
 	// A user-supplied --model via --extra-arg (the form the
-	// ValidateClaudeExtraArgToken error message recommends) is an explicit
+	// ValidateExtraArgToken error message recommends) is an explicit
 	// override that must stand alone: the extra-arg tokens are appended verbatim
 	// below, so emitting any resolved --model here too would produce a duplicate
 	// --model on the command line. claude is last-wins so it would be harmless,
@@ -2043,6 +2049,17 @@ func (i *Instance) resolveCodexReasoningEffortFlag() string {
 	return ""
 }
 
+func (i *Instance) resolveCodexExtraArgsFlag() string {
+	if len(i.ExtraArgs) == 0 {
+		return ""
+	}
+	quoted := make([]string, 0, len(i.ExtraArgs))
+	for _, tok := range i.ExtraArgs {
+		quoted = append(quoted, shellescape.Quote(tok))
+	}
+	return " " + strings.Join(quoted, " ")
+}
+
 func (i *Instance) resolveCodexCommand(baseCommand string) string {
 	command := strings.TrimSpace(baseCommand)
 	if i.Tool == "codex" && (command == "" || command == "codex") {
@@ -2188,6 +2205,7 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	yoloFlag := i.resolveCodexYoloFlag()
 	modelFlag := i.resolveCodexModelFlag()
 	reasoningFlag := i.resolveCodexReasoningEffortFlag()
+	extraArgsFlag := i.resolveCodexExtraArgsFlag()
 	command := i.resolveCodexCommand(baseCommand)
 	codexHome := getCodexHomeDirForCommand(command)
 
@@ -2225,16 +2243,16 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 			slog.String("instance_id", i.ID),
 			slog.String("title", i.Title),
 			slog.String("sid", i.CodexSessionID))
-		return envPrefix + fmt.Sprintf("%s%s%s%s fork %s",
-			command, yoloFlag, modelFlag, reasoningFlag, i.CodexSessionID)
+		return envPrefix + fmt.Sprintf("%s%s%s%s%s fork %s",
+			command, yoloFlag, modelFlag, reasoningFlag, extraArgsFlag, i.CodexSessionID)
 	}
 
 	if i.CodexSessionID != "" {
-		return envPrefix + fmt.Sprintf("%s%s%s%s resume %s",
-			command, yoloFlag, modelFlag, reasoningFlag, i.CodexSessionID)
+		return envPrefix + fmt.Sprintf("%s%s%s%s%s resume %s",
+			command, yoloFlag, modelFlag, reasoningFlag, extraArgsFlag, i.CodexSessionID)
 	}
 
-	return envPrefix + command + yoloFlag + modelFlag + reasoningFlag
+	return envPrefix + command + yoloFlag + modelFlag + reasoningFlag + extraArgsFlag
 }
 
 // buildCodexCommandWithPrompt builds the Codex launch command with an initial
@@ -8975,6 +8993,7 @@ func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand 
 	yoloFlag := target.resolveCodexYoloFlag()
 	modelFlag := target.resolveCodexModelFlag()
 	reasoningFlag := target.resolveCodexReasoningEffortFlag()
+	extraArgsFlag := target.resolveCodexExtraArgsFlag()
 	command := target.resolveCodexCommand(baseCommand)
 	if target.isCodexHomeExplicit() {
 		codexHome := strings.TrimSpace(target.getCodexHomeDir())
@@ -8987,7 +9006,7 @@ func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand 
 			envPrefix += "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
 		}
 	}
-	return envPrefix + fmt.Sprintf("%s%s%s%s fork %s", command, yoloFlag, modelFlag, reasoningFlag, shellescape.Quote(i.CodexSessionID)), nil
+	return envPrefix + fmt.Sprintf("%s%s%s%s%s fork %s", command, yoloFlag, modelFlag, reasoningFlag, extraArgsFlag, shellescape.Quote(i.CodexSessionID)), nil
 }
 
 // CreateForkedCodexInstanceWithOptions creates a forked Codex instance. Mirrors
@@ -9010,6 +9029,7 @@ func (i *Instance) CreateForkedCodexInstanceWithOptions(
 	}
 	forked.Tool = i.Tool
 	forked.Wrapper = i.Wrapper
+	forked.ExtraArgs = append([]string(nil), i.ExtraArgs...)
 
 	baseCommand := strings.TrimSpace(i.Command)
 	if baseCommand == "" {

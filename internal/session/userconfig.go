@@ -379,11 +379,8 @@ type UISettings struct {
 	// Adjustable at runtime via < and > keybindings (5% step).
 	PreviewPct int `toml:"preview_pct,omitzero"`
 
-	// PreviewOrientation controls where the PREVIEW pane sits relative to
-	// the SESSIONS list on wide terminals (>= 80 cols). "right" (default)
-	// keeps the historical side-by-side split; "below" stacks PREVIEW under
-	// SESSIONS (useful on tall/portrait monitors). Narrow terminals always
-	// stack regardless. Toggle at runtime with the `O` keybinding.
+	// PreviewOrientation is retained only so legacy preview_orientation keys
+	// remain loadable. Preview placement is now derived solely from width.
 	PreviewOrientation string `toml:"preview_orientation,omitempty"`
 
 	// ITermOpenAs controls whether Shift+Enter pops the focused session
@@ -527,15 +524,6 @@ const (
 	ShellSplitTmux  = "tmux"
 )
 
-// Preview-pane orientation modes for wide terminals (>= 80 cols).
-// "right" is the historical side-by-side split; "below" stacks the
-// PREVIEW pane under the SESSIONS list (portrait-monitor friendly).
-const (
-	PreviewOrientationRight   = "right"
-	PreviewOrientationBelow   = "below"
-	DefaultPreviewOrientation = PreviewOrientationRight
-)
-
 // Footer hint-bar styles. See UISettings.Footer.
 const (
 	FooterCurated = "curated"
@@ -605,20 +593,6 @@ func (u UISettings) GetShellSplit() string {
 		return ShellSplitTmux
 	}
 	return ""
-}
-
-// GetPreviewOrientation returns the configured preview-pane orientation
-// for wide terminals. Unknown or empty values fall through to the default
-// ("right"). Matching is case-insensitive so users can write "Below" or
-// "RIGHT" in TOML.
-func (u UISettings) GetPreviewOrientation() string {
-	switch strings.ToLower(strings.TrimSpace(u.PreviewOrientation)) {
-	case PreviewOrientationBelow:
-		return PreviewOrientationBelow
-	case PreviewOrientationRight:
-		return PreviewOrientationRight
-	}
-	return DefaultPreviewOrientation
 }
 
 // Remote session-list poll cadence bounds (issue #1170). The default is

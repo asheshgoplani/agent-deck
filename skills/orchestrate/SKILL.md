@@ -511,6 +511,18 @@ read-only enforcement for a **Codex** reviewer is
 which is Claude-only), and permission menus follow the per-connector rules
 in "Answering waiting children".
 
+Launch a Codex reviewer with its native read-only flags:
+
+```bash
+agent-deck launch <worktree-path> -c codex \
+  -t "review-<task-slug>-r<n>" \
+  --extra-arg --sandbox --extra-arg read-only \
+  --message-file "$RUN_DIR/<task-slug>/review-r<n>-prompt.md"
+```
+
+`LEAN` contains Claude CLI flags, so do not append `"${LEAN[@]}"` to a Codex
+launch. Keep the rendered reviewer's read-only rules as defense in depth.
+
 Baseline tier per session:
 
 | Session | Tier |

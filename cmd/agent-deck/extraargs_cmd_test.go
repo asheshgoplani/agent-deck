@@ -53,6 +53,48 @@ func TestAddExtraArgFlag(t *testing.T) {
 	}
 }
 
+func TestAddCodexExtraArgFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "codex-proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runAgentDeck(t, home,
+		"add", "-t", "ea-codex-test", "-c", "codex",
+		"--extra-arg", "--sandbox", "--extra-arg", "read-only",
+		"--no-parent", "--json", projectDir,
+	)
+	if code != 0 {
+		t.Fatalf("Codex add --extra-arg failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	var addResp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &addResp); err != nil {
+		t.Fatalf("parse Codex add response: %v\nstdout: %s", err, stdout)
+	}
+	listJSON := readSessionsJSON(t, home)
+	if !strings.Contains(listJSON, "--sandbox") || !strings.Contains(listJSON, "read-only") {
+		t.Fatalf("Codex extra args were not persisted:\n%s", listJSON)
+	}
+
+	stdout, stderr, code = runAgentDeck(t, home,
+		"session", "set", "--json", addResp.ID, "extra-args",
+		"--", "--model", "gpt-5.6-sol",
+	)
+	if code != 0 {
+		t.Fatalf("Codex session set extra-args failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	listJSON = readSessionsJSON(t, home)
+	if !strings.Contains(listJSON, "--model") || !strings.Contains(listJSON, "gpt-5.6-sol") {
+		t.Fatalf("Codex session-set extra args were not persisted:\n%s", listJSON)
+	}
+}
+
 // TestSessionSetExtraArgs asserts that
 // `agent-deck session set <id> extra-args <space-separated>` updates the field.
 func TestSessionSetExtraArgs(t *testing.T) {
@@ -164,13 +206,13 @@ func TestSessionSetExtraArgs(t *testing.T) {
 	}
 }
 
-// TestExtraArgsOnlyForClaude asserts the tool-restriction contract, same
+// TestExtraArgsOnlyForSupportedTools asserts the tool-restriction contract, same
 // shape as TestChannelsOnlyForClaude in channels_cmd_test.go:246.
 //
 // On main the field is universally rejected. Positive+negative arms are
 // required to prevent a false-PASS where the generic rejection trivially
 // satisfies a unilateral negative test.
-func TestExtraArgsOnlyForClaude(t *testing.T) {
+func TestExtraArgsOnlyForSupportedTools(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
@@ -242,13 +284,13 @@ func TestExtraArgsOnlyForClaude(t *testing.T) {
 			stdout, stderr,
 		)
 	}
-	mustMentionTool := strings.Contains(combined, "claude") &&
+	mustMentionTool := strings.Contains(combined, "claude") && strings.Contains(combined, "codex") &&
 		(strings.Contains(combined, "only") ||
 			strings.Contains(combined, "supported") ||
 			strings.Contains(combined, "requires"))
 	if !mustMentionTool {
 		t.Errorf(
-			"shell-session error must mention claude AND a restriction word "+
+			"shell-session error must mention claude/codex AND a restriction word "+
 				"(only/supported/requires); got:\nstdout: %s\nstderr: %s",
 			stdout, stderr,
 		)

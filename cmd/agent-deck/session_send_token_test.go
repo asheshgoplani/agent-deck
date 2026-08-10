@@ -141,6 +141,38 @@ func TestSendWithRetryTarget_VerifyDelivery_LargePromptBodyMatch(t *testing.T) {
 	}
 }
 
+// A non-Claude child can take the message up between the final status sample
+// and the final pane capture. In that ordering the tenth capture no longer
+// contains the body, but processing has genuinely started. Confirmation must
+// take one last status sample before classifying the send as merely typed.
+func TestVerifyContentArrival_ProcessingStartsDuringTenthPoll(t *testing.T) {
+	const body = "DELIVERY_TOKEN_FINAL_POLL"
+
+	statuses := []string{"waiting"} // pre-send baseline
+	for i := 0; i < arrivalVerifyChecks; i++ {
+		statuses = append(statuses, "waiting")
+	}
+	statuses = append(statuses, "active") // starts after poll 10's status read
+
+	panes := []string{""} // pre-send baseline
+	for i := 0; i < arrivalVerifyChecks-1; i++ {
+		panes = append(panes, body)
+	}
+	panes = append(panes, "processing...") // poll 10: composer consumed
+
+	mock := &mockSendRetryTarget{statuses: statuses, panes: panes}
+	delivery, err := sendWithRetryTarget(mock, body, true, sendRetryOptions{
+		maxRetries: arrivalVerifyChecks,
+		checkDelay: 0,
+	})
+	if err != nil {
+		t.Fatalf("processing after the final pane capture confirms submission: %v", err)
+	}
+	if delivery != deliverySubmitted {
+		t.Fatalf("delivery: want %q, got %q", deliverySubmitted, delivery)
+	}
+}
+
 // truncForLog avoids dumping a 100KB string in test failures. Returns
 // content-bearing prefix + length.
 func truncForLog(s string, n int) string {
