@@ -71,6 +71,11 @@ type TransitionDaemon struct {
 	// logs at most once per probeStallLogInterval instead of flooding the log
 	// every few seconds. Accessed only from the single-threaded Run loop.
 	lastProbeStall map[string]time.Time
+
+	// observeSelfHealInputs is a test seam for the exact instance slice handed
+	// to self-heal. Production leaves it nil; keeping it on the daemon avoids a
+	// package-global callback that could race with concurrent daemon tests.
+	observeSelfHealInputs func([]*Instance)
 }
 
 func NewTransitionDaemon() *TransitionDaemon {
@@ -427,6 +432,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// the first) so the dwell/confirm clocks start immediately. Reuses the
 	// instances/hookStatuses already loaded above — no new goroutine (F3).
 	// Disabled-by-config → cheap no-op.
+	if d.observeSelfHealInputs != nil {
+		d.observeSelfHealInputs(instances)
+	}
 	d.runSelfHealPass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
 
 	if !d.initialized[profile] {

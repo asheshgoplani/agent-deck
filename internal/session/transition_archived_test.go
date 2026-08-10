@@ -105,6 +105,37 @@ func TestSyncProfile_ArchivedVanishedTmuxIsNeverProbedOrEmitted(t *testing.T) {
 	}
 }
 
+func TestSyncProfile_ArchivedInstanceNeverReachesSelfHealInputs(t *testing.T) {
+	const profile = "_test_transition_archived_selfheal"
+	const archivedID = "archived-selfheal"
+	const activeID = "active-selfheal"
+	d, storage := bootstrapDaemonProfile(t, profile)
+	archived := &Instance{
+		ID: archivedID, Title: archivedID, ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath,
+		Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour), ArchivedAt: time.Now().UTC(),
+	}
+	active := &Instance{
+		ID: activeID, Title: activeID, ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath,
+		Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour),
+	}
+	if err := storage.SaveWithGroups([]*Instance{archived, active}, nil); err != nil {
+		t.Fatalf("save self-heal instances: %v", err)
+	}
+	withCountingTransitionProbe(t)
+
+	var observed []string
+	d.observeSelfHealInputs = func(instances []*Instance) {
+		for _, inst := range instances {
+			observed = append(observed, inst.ID)
+		}
+	}
+	d.syncProfile(profile)
+
+	if len(observed) != 1 || observed[0] != activeID {
+		t.Fatalf("self-heal inputs = %v, want only active instance %q", observed, activeID)
+	}
+}
+
 func TestTransitionArchivedRaceEmitsNoTransitionOrDoneEvent(t *testing.T) {
 	const profile = "_test_transition_archive_race"
 	const id = "archive-race"
