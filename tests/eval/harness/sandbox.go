@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // Sandbox is a per-test isolated environment: scratch HOME, dedicated tmux
@@ -184,9 +186,17 @@ func buildAgentDeck() (string, error) {
 // a build that fails after MkdirTemp but before producing the binary still gets
 // its temp dir reaped instead of leaking.
 func RemoveBuildArtifacts() {
-	if buildDir != "" {
-		_ = os.RemoveAll(buildDir)
+	if buildDir == "" {
+		return
 	}
+	// A silently discarded RemoveAll error is what let 130 GB of temp dirs
+	// accumulate unnoticed elsewhere in this repo (2026-08-10 temp-leak
+	// incident). There is no *testing.T left after m.Run(), so report loudly.
+	if err := testutil.RemoveTempTree(buildDir); err != nil {
+		fmt.Fprintf(os.Stderr, "eval harness: LEAKED build dir: %v\n", err)
+		return
+	}
+	buildDir = ""
 }
 
 // repoRoot walks up from the test's working directory until it finds go.mod.
