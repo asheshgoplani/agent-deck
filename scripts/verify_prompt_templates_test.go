@@ -98,6 +98,7 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 				"Include deployed version, revision and digest; environment and licensing state; authorized scope",
 				"each arm ID, question, evidence, and artifact-validation result; contradictions and their adjudication; reruns; provenance; timestamps",
 				"completion field to true in the staged content only after report construction is complete",
+				"immediately before the final atomic rename",
 				"Successful publication of that staged document is producer completion",
 				"Record exactly one outcome: `pass`, `defect`, or `inconclusive`",
 			},
