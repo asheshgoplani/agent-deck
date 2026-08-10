@@ -198,3 +198,121 @@ func TestTransitionArchivedRaceEmitsNoTransitionOrDoneEvent(t *testing.T) {
 		t.Fatal("archive racing a transition emitted a done event")
 	}
 }
+
+func TestHookTransitionArchivedRaceEmitsNoEvent(t *testing.T) {
+	const profile = "_test_hook_transition_archive_race"
+	const id = "hook-archive-race"
+	const parentID = "hook-archive-race-parent"
+	d, storage := bootstrapDaemonProfile(t, profile)
+	child := &Instance{
+		ID: id, Title: id, ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath,
+		ParentSessionID: parentID, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour),
+	}
+	parent := &Instance{
+		ID: parentID, Title: "parent", ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath,
+		Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour),
+	}
+	if err := storage.SaveWithGroups([]*Instance{child, parent}, nil); err != nil {
+		t.Fatalf("save hook-race instances: %v", err)
+	}
+	d.initialized[profile] = true
+	d.lastStatus[profile] = map[string]string{id: "running"}
+	d.hookWatcher = &StatusFileWatcher{statuses: map[string]*HookStatus{
+		id: {Status: "waiting", Event: "Stop", UpdatedAt: time.Now()},
+	}}
+
+	probeStarted := make(chan struct{})
+	archiveFinished := make(chan struct{})
+	original := updateInstanceStatus.Load().(statusProbeFunc)
+	updateInstanceStatus.Store(statusProbeFunc(func(loaded *Instance) error {
+		if loaded.ID == id {
+			close(probeStarted)
+			<-archiveFinished
+		}
+		return nil // cached status remains running: snapshot transition cannot emit
+	}))
+	t.Cleanup(func() { updateInstanceStatus.Store(original) })
+
+	done := make(chan struct{})
+	go func() {
+		d.syncProfile(profile)
+		close(done)
+	}()
+	<-probeStarted
+	if err := storage.GetDB().SetArchived(id, time.Now().UTC()); err != nil {
+		t.Fatalf("persist archive while hook-only probe is blocked: %v", err)
+	}
+	close(archiveFinished)
+	<-done
+
+	events, err := DrainInboxForParent(parentID)
+	if err != nil {
+		t.Fatalf("drain parent inbox: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("archive racing a hook-only transition committed %d event(s)", len(events))
+	}
+}
+
+func TestTransitionPersistedDisableRaceEmitsNoEvent(t *testing.T) {
+	const profile = "_test_transition_persisted_disable_race"
+	const id = "disable-race"
+	const parentID = "disable-race-parent"
+	d, storage := bootstrapDaemonProfile(t, profile)
+	child := &Instance{
+		ID: id, Title: id, ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath,
+		ParentSessionID: parentID, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour),
+	}
+	parent := &Instance{
+		ID: parentID, Title: "parent", ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath,
+		Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour),
+	}
+	if err := storage.SaveWithGroups([]*Instance{child, parent}, nil); err != nil {
+		t.Fatalf("save disable-race instances: %v", err)
+	}
+	d.initialized[profile] = true
+	d.lastStatus[profile] = map[string]string{id: "running"}
+	var emissionCount int
+	d.observeTransitionEmission = func(TransitionNotificationEvent) { emissionCount++ }
+
+	probeStarted := make(chan struct{})
+	disableFinished := make(chan struct{})
+	original := updateInstanceStatus.Load().(statusProbeFunc)
+	updateInstanceStatus.Store(statusProbeFunc(func(loaded *Instance) error {
+		if loaded.ID == id {
+			close(probeStarted)
+			<-disableFinished
+			loaded.SetStatusThreadSafe(StatusWaiting)
+		}
+		return nil
+	}))
+	t.Cleanup(func() { updateInstanceStatus.Store(original) })
+
+	done := make(chan struct{})
+	go func() {
+		d.syncProfile(profile)
+		close(done)
+	}()
+	<-probeStarted
+	row, err := storage.GetDB().LoadInstanceByID(id)
+	if err != nil || row == nil {
+		t.Fatalf("load persisted child row: row=%v err=%v", row, err)
+	}
+	row.NoTransitionNotify = true
+	if err := storage.GetDB().SaveInstance(row); err != nil {
+		t.Fatalf("persist transition notification disable: %v", err)
+	}
+	close(disableFinished)
+	<-done
+
+	events, err := DrainInboxForParent(parentID)
+	if err != nil {
+		t.Fatalf("drain parent inbox: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("persisted notification disable racing a transition committed %d event(s)", len(events))
+	}
+	if emissionCount != 0 {
+		t.Fatalf("persisted notification disable reached daemon emission boundary %d time(s)", emissionCount)
+	}
+}

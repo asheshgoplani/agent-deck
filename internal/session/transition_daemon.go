@@ -76,6 +76,11 @@ type TransitionDaemon struct {
 	// to self-heal. Production leaves it nil; keeping it on the daemon avoids a
 	// package-global callback that could race with concurrent daemon tests.
 	observeSelfHealInputs func([]*Instance)
+
+	// observeTransitionEmission is a test seam at the daemon/notifier boundary.
+	// Production leaves it nil; tests use it to prove a persisted gate prevents
+	// the notifier call itself rather than relying on the notifier's own guard.
+	observeTransitionEmission func(TransitionNotificationEvent)
 }
 
 func NewTransitionDaemon() *TransitionDaemon {
@@ -472,6 +477,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			// this hot path heavier than the transcript-stat dedup signal above.
 			Substate: string(inst.CachedSubstate()),
 		}
+		if d.observeTransitionEmission != nil {
+			d.observeTransitionEmission(event)
+		}
 		_ = d.notifier.NotifyTransition(event)
 	}
 	d.emitHookTransitionCandidates(profile, byID, prev, statuses, hookCandidates)
@@ -862,6 +870,9 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 			ToStatus:       to,
 			Timestamp:      candidate.Timestamp,
 			LastOutputHash: transitionEventOutputHash(inst),
+		}
+		if d.observeTransitionEmission != nil {
+			d.observeTransitionEmission(event)
 		}
 		_ = d.notifier.NotifyTransition(event)
 	}
