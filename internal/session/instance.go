@@ -5029,7 +5029,9 @@ func (i *Instance) UpdateStatus() error {
 	}
 
 	if i.tmuxSession == nil {
-		if i.neverStarted() {
+		if i.IsArchived() {
+			i.Status = StatusStopped
+		} else if i.neverStarted() {
 			// A session that was added but never started has no tmux yet; it is
 			// not an error, just not-yet-running. Keep it idle (✕ → ○).
 			i.Status = StatusIdle
@@ -5053,7 +5055,9 @@ func (i *Instance) UpdateStatus() error {
 
 	// Check if tmux session exists
 	if !i.tmuxSession.Exists() {
-		if i.neverStarted() {
+		if i.IsArchived() {
+			i.Status = StatusStopped
+		} else if i.neverStarted() {
 			// Added but never started: no tmux session was ever created, so an
 			// absent tmux is expected — classify as idle, not error (✕ → ○).
 			i.Status = StatusIdle
