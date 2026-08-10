@@ -43,16 +43,11 @@ ${POLL_CMD:-agent-deck session children --json} > "$RAW"
 # heartbeat still has to report.
 case "${1:-}" in
   ctx)
-    if [ -n "${2:-}" ]; then
-      jq -r --arg t "$2" '
-        .children[] | select(.title == $t)
-        | "\(.title) \((.context_tokens // 0) / 1000 | floor)k"' "$RAW"
-    else
-      jq -r '
-        [ .children[] | {t: .title, c: (.context_tokens // 0)} ]
-        | sort_by(-.c)[]
-        | "\(.t) \((.c / 1000) | floor)k"' "$RAW"
-    fi
+    jq -r --arg t "${2:-}" '
+      [ .children[] | select((.archived // false) | not)
+        | {t: .title, c: (.context_tokens // 0)} ]
+      | (if $t == "" then sort_by(-.c)[] else .[] | select(.t == $t) end)
+      | "\(.t) \((.c / 1000) | floor)k"' "$RAW"
     exit 0
     ;;
   id)
@@ -61,7 +56,8 @@ case "${1:-}" in
     # almost always consumed as $(poll.sh id X), and an empty substitution
     # turns `session send "$ID" ...` into a command that targets nothing.
     jq -er --arg t "$2" '
-      [ .children[] | select(.title == $t) | .id ] | first
+      [ .children[] | select((.archived // false) | not)
+        | select(.title == $t) | .id ] | first
       // ("poll.sh: no child titled \($t)\n" | halt_error(1))' "$RAW"
     exit 0
     ;;
@@ -71,6 +67,7 @@ esac
 
 jq --argjson soft "$SOFT" --argjson hard "$HARD" '
     [ .children[]
+      | select((.archived // false) | not)
       | { id, title, status,
           done: (if .done_stale then "stale" else (.done_status // "-") end),
           ctx:  (if   (.context_tokens // 0) >= $hard then "HARD"
