@@ -604,8 +604,9 @@ var (
 //
 // Flow (v1.9.x issue #1031 fix, parallel to #909's RemoveSessionAndVerify):
 //
-//  1. SaveInstance(row) — targeted INSERT OR REPLACE on the single new
-//     row only, NOT a full-table rewrite. This sidesteps the
+//  1. CreateInstance(row) — targeted INSERT OR REPLACE on the single new
+//     row only, NOT a full-table rewrite. This is the sole creation path with
+//     authority to clear a prior deletion tombstone, and sidesteps the
 //     load-modify-write race where a sibling launch's
 //     `DELETE FROM instances WHERE id NOT IN (...)` inside
 //     SaveInstances would silently delete this row.
@@ -634,7 +635,7 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 		return err
 	}
 
-	if err := s.saveSingleInstance(row); err != nil {
+	if err := s.createSingleInstance(row); err != nil {
 		return err
 	}
 
@@ -658,7 +659,7 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 		// Re-issue the targeted INSERT; races against the concurrent
 		// rewriter but eventually wins because every retry shrinks the
 		// window.
-		if err := s.saveSingleInstance(row); err != nil {
+		if err := s.createSingleInstance(row); err != nil {
 			return err
 		}
 	}
@@ -789,18 +790,34 @@ func swapAdditionalPath(toolData json.RawMessage, oldCwd, newCwd string) (json.R
 	return out, nil
 }
 
-// saveSingleInstance explicitly creates one row via CreateInstance. This is
+// createSingleInstance explicitly creates one row via CreateInstance. This is
 // the only normal creation path allowed to clear a durable deletion tombstone.
 // It is targeted (no DELETE-NOT-IN sweep) and wraps the
 // statedb call in the storage mutex and the nil-db guard so callers
 // stay symmetric with DeleteInstance.
-func (s *Storage) saveSingleInstance(row *statedb.InstanceRow) error {
+func (s *Storage) createSingleInstance(row *statedb.InstanceRow) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.db == nil {
 		return fmt.Errorf("storage database not initialized")
 	}
 	if err := s.db.CreateInstance(row); err != nil {
+		return fmt.Errorf("failed to save instance %s: %w", row.ID, err)
+	}
+	_ = s.db.Touch()
+	return nil
+}
+
+// saveSingleInstance persists a targeted update while respecting durable
+// deletion tombstones. Recovery and update paths must use this helper so a
+// stale captured row cannot recreate a session deleted after capture.
+func (s *Storage) saveSingleInstance(row *statedb.InstanceRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return fmt.Errorf("storage database not initialized")
+	}
+	if err := s.db.SaveInstance(row); err != nil {
 		return fmt.Errorf("failed to save instance %s: %w", row.ID, err)
 	}
 	_ = s.db.Touch()

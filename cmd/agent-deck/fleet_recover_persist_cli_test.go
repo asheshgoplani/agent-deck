@@ -6,6 +6,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/fleet"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,6 +20,27 @@ func newFleetCLIStorage(t *testing.T) *session.Storage {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 	return s
+}
+
+func TestPersistRecoveredInstances_DoesNotRecreateCapturedThenDeletedSession(t *testing.T) {
+	t.Setenv("AGENTDECK_PROFILE", "_test_fleet_recovery_tombstone")
+	sweepStorage := newFleetCLIStorage(t)
+	inst := fleetPersistInstance("captured-then-deleted", "captured", session.StatusError)
+	require.NoError(t, sweepStorage.InsertSessionAndVerify(inst, session.NewGroupTree([]*session.Instance{inst})))
+
+	captured, _, err := sweepStorage.LoadWithGroups()
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	captured[0].Status = session.StatusRunning
+
+	deleteStorage := newFleetCLIStorage(t)
+	require.NoError(t, deleteStorage.DeleteInstance(inst.ID))
+
+	err = sweepStorage.PersistRecoveredInstances(captured)
+	require.ErrorIs(t, err, statedb.ErrInstanceTombstoned)
+	exists, err := sweepStorage.InstanceExists(inst.ID)
+	require.NoError(t, err)
+	require.False(t, exists, "stale recovery persistence recreated a tombstoned session")
 }
 
 func fleetPersistInstance(id, title string, st session.Status) *session.Instance {
