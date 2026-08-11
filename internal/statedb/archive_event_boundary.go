@@ -27,6 +27,9 @@ func (s *StateDB) WithArchiveEventBoundary(fn func() error) error {
 		return fmt.Errorf("open archive/event boundary: %w", err)
 	}
 	defer f.Close()
+	if s.archiveEventBoundaryAttempt != nil {
+		s.archiveEventBoundaryAttempt()
+	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("lock archive/event boundary: %w", err)
 	}

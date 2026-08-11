@@ -118,6 +118,9 @@ type StateDB struct {
 	// large DELETE+re-insert sweep (S2 data-loss safeguard, 2026-06-04
 	// incident). Empty for in-memory databases (no file to back up).
 	path string
+	// archiveEventBoundaryAttempt is a test-only observation point immediately
+	// before this handle attempts the cross-process archive/event lock.
+	archiveEventBoundaryAttempt func()
 }
 
 // newOwnerToken builds a claim-ownership token unique to this process
