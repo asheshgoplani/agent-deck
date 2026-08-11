@@ -332,7 +332,7 @@ func readRuntimeQueueJSONLocked(path string, value any) (bool, error) {
 	if info.Size() > MaxRuntimeQueueBytes {
 		return true, fmt.Errorf("runtime queue sidecar %s exceeds %d bytes", path, MaxRuntimeQueueBytes)
 	}
-	raw, err := io.ReadAll(io.LimitReader(f, MaxRuntimeQueueBytes+1))
+	raw, err := readRuntimeQueueSidecar(f)
 	if err != nil {
 		return true, err
 	}
@@ -352,6 +352,10 @@ func readRuntimeQueueJSONLocked(path string, value any) (bool, error) {
 		return true, errors.New("multiple JSON records")
 	}
 	return true, nil
+}
+
+func readRuntimeQueueSidecar(r io.Reader) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(r, MaxRuntimeQueueBytes+1))
 }
 
 func writeRuntimeQueueJSONLocked(path string, value any) error {

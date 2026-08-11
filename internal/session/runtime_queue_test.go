@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -594,6 +595,53 @@ func TestRuntimeQueueAcknowledgeOversizedCompletionIsRetained(t *testing.T) {
 	if info.Size() != wantSize {
 		t.Fatalf("oversized completion size = %d, want %d", info.Size(), wantSize)
 	}
+}
+
+func TestRuntimeQueueSidecarStreamReadIsBoundedAfterStat(t *testing.T) {
+	source := &countingRuntimeQueueReader{Reader: strings.NewReader(strings.Repeat("x", MaxRuntimeQueueBytes+2))}
+	raw, err := readRuntimeQueueSidecar(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != MaxRuntimeQueueBytes+1 {
+		t.Fatalf("streamed sidecar bytes = %d, want %d", len(raw), MaxRuntimeQueueBytes+1)
+	}
+	if source.bytesRead != MaxRuntimeQueueBytes+1 {
+		t.Fatalf("source bytes read = %d, want bounded read of %d", source.bytesRead, MaxRuntimeQueueBytes+1)
+	}
+}
+
+func TestRuntimeQueueCompletionAtExactSizePassesSizeGuard(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "exact-limit-completion"
+	const prefix = `{"token":"`
+	const suffix = `"}` + "\n"
+	content := []byte(prefix + strings.Repeat("x", MaxRuntimeQueueBytes-len(prefix)-len(suffix)) + suffix)
+	if len(content) != MaxRuntimeQueueBytes {
+		t.Fatalf("completion fixture size = %d, want %d", len(content), MaxRuntimeQueueBytes)
+	}
+	completion := runtimeQueueCompletionPathFor(id)
+	if err := os.MkdirAll(filepath.Dir(completion), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(completion, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := AcknowledgeRuntimeQueue(id, "different-token")
+	if err == nil || strings.Contains(err.Error(), "exceeds") || !strings.Contains(err.Error(), "no matching staged batch") {
+		t.Fatalf("exact-limit completion error = %v, want normal acknowledgment validation", err)
+	}
+}
+
+type countingRuntimeQueueReader struct {
+	io.Reader
+	bytesRead int
+}
+
+func (r *countingRuntimeQueueReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.bytesRead += n
+	return n, err
 }
 
 func TestRuntimeQueueAcknowledgePersistenceFailureLeavesQueueAndWAL(t *testing.T) {
