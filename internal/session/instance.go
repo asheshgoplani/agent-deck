@@ -4994,6 +4994,10 @@ func (i *Instance) setCodexGenerationEvidence(status *HookStatus) {
 	if status == nil || !IsCodexCompatible(i.Tool) {
 		return
 	}
+	if status.CodexStartedGeneration == "" && status.CodexCompletedGeneration == "" &&
+		status.CodexStartedSessionID == "" && status.CodexCompletedSessionID == "" {
+		return
+	}
 	i.codexStartedGeneration = strings.TrimSpace(status.CodexStartedGeneration)
 	i.codexCompletedGeneration = strings.TrimSpace(status.CodexCompletedGeneration)
 	i.codexStartedSessionID = strings.TrimSpace(status.CodexStartedSessionID)
@@ -5012,6 +5016,10 @@ func (i *Instance) codexCompletionConverged() bool {
 		return false
 	}
 	return i.CodexSessionID != "" && i.codexStartedSessionID == i.CodexSessionID
+}
+
+func (i *Instance) shouldBypassCodexWaitingDebounce(derived Status) bool {
+	return derived == StatusWaiting && i.codexCompletionConverged()
 }
 
 // terminatedPaneStatus classifies a session whose tmux pane/session has
@@ -5190,7 +5198,7 @@ func (i *Instance) UpdateStatus() error {
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
+	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
@@ -5454,7 +5462,8 @@ func (i *Instance) UpdateStatus() error {
 	// this skip, each fresh CLI invocation (e.g. `agent-deck list --json`) sees
 	// tmuxFlipFromRunningPending = false and holds the status at running on the
 	// first sample, then exits before the second confirming sample can fire.
-	if shouldDebounceTmuxFlipForTool(i.Tool) && !i.codexCompletionConverged() {
+	bypassWaitingDebounce := i.shouldBypassCodexWaitingDebounce(i.Status)
+	if shouldDebounceTmuxFlipForTool(i.Tool) && !bypassWaitingDebounce {
 		if apply, nextPending, held := debounceFlipFromRunning(prevStatus, i.Status, status, i.hookStatus, i.tmuxFlipFromRunningPending); held {
 			i.tmuxFlipFromRunningPending = nextPending
 			i.Status = apply
@@ -5679,6 +5688,13 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	// it carried had already been written here and stuck, flipping this
 	// instance's status. See the candidate_has_no_conversation_data branch.
 	prevHookStatus, prevHookEvent, prevHookLastUpdate := i.hookStatus, i.hookEvent, i.hookLastUpdate
+	prevStartedGen, prevCompletedGen := i.codexStartedGeneration, i.codexCompletedGeneration
+	prevStartedSID, prevCompletedSID := i.codexStartedSessionID, i.codexCompletedSessionID
+	restoreHook := func() {
+		i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
+		i.codexStartedGeneration, i.codexCompletedGeneration = prevStartedGen, prevCompletedGen
+		i.codexStartedSessionID, i.codexCompletedSessionID = prevStartedSID, prevCompletedSID
+	}
 
 	// Detect whether this is genuinely new data (newer timestamp than last seen).
 	// Only reset acknowledgment on new events — not on re-application of the same
@@ -5750,7 +5766,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// cwd (legacy hook files, agents that send none) is not evidence and
 		// never blocks.
 		if i.hookCwdIsForeign(status.Cwd) {
-			i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
+			restoreHook()
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
@@ -5772,7 +5788,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 			// status must not stick either. Restore the pre-event status so the
 			// foreign hook is a no-op, not a flip. (A real /clear or fork carries
 			// conversation data and never reaches this branch.)
-			i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
+			restoreHook()
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,

@@ -18,7 +18,7 @@ func TestDefaultLoadHookStatuses(t *testing.T) {
 		t.Fatalf("mkdir hooks dir: %v", err)
 	}
 
-	valid := `{"status":"running","session_id":"claude-1","event":"UserPromptSubmit","ts":1735689600}`
+	valid := `{"status":"running","session_id":"claude-1","event":"UserPromptSubmit","ts":1735689600,"codex_started_generation":"s:t","codex_completed_generation":"s:t","codex_started_session_id":"s","codex_completed_session_id":"s"}`
 	if err := os.WriteFile(filepath.Join(hooksDir, "inst-1.json"), []byte(valid), 0o644); err != nil {
 		t.Fatalf("write valid hook file: %v", err)
 	}
@@ -43,6 +43,10 @@ func TestDefaultLoadHookStatuses(t *testing.T) {
 	}
 	if got.UpdatedAt.Unix() != 1735689600 {
 		t.Fatalf("expected timestamp 1735689600, got %d", got.UpdatedAt.Unix())
+	}
+	if got.CodexStartedGeneration != "s:t" || got.CodexCompletedGeneration != "s:t" ||
+		got.CodexStartedSessionID != "s" || got.CodexCompletedSessionID != "s" {
+		t.Fatalf("expected Codex evidence parity, got %#v", got)
 	}
 
 	if _, ok := statuses["broken"]; ok {

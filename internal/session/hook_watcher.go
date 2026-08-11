@@ -327,27 +327,35 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			continue
 		}
 		var raw struct {
-			Status         string `json:"status"`
-			SessionID      string `json:"session_id"`
-			Event          string `json:"event"`
-			Timestamp      int64  `json:"ts"`
-			DoneStatus     string `json:"done_status"`
-			DoneSummary    string `json:"done_summary"`
-			TranscriptPath string `json:"transcript_path"`
-			Cwd            string `json:"cwd"`
+			Status                   string `json:"status"`
+			SessionID                string `json:"session_id"`
+			Event                    string `json:"event"`
+			Timestamp                int64  `json:"ts"`
+			DoneStatus               string `json:"done_status"`
+			DoneSummary              string `json:"done_summary"`
+			TranscriptPath           string `json:"transcript_path"`
+			Cwd                      string `json:"cwd"`
+			CodexStartedGeneration   string `json:"codex_started_generation"`
+			CodexCompletedGeneration string `json:"codex_completed_generation"`
+			CodexStartedSessionID    string `json:"codex_started_session_id"`
+			CodexCompletedSessionID  string `json:"codex_completed_session_id"`
 		}
 		if uerr := json.Unmarshal(data, &raw); uerr != nil {
 			continue
 		}
 		out[instanceID] = &HookStatus{
-			Status:         raw.Status,
-			SessionID:      raw.SessionID,
-			Event:          raw.Event,
-			UpdatedAt:      time.Unix(raw.Timestamp, 0),
-			DoneStatus:     raw.DoneStatus,
-			DoneSummary:    raw.DoneSummary,
-			TranscriptPath: raw.TranscriptPath,
-			Cwd:            raw.Cwd,
+			Status:                   raw.Status,
+			SessionID:                raw.SessionID,
+			Event:                    raw.Event,
+			UpdatedAt:                time.Unix(raw.Timestamp, 0),
+			DoneStatus:               raw.DoneStatus,
+			DoneSummary:              raw.DoneSummary,
+			TranscriptPath:           raw.TranscriptPath,
+			Cwd:                      raw.Cwd,
+			CodexStartedGeneration:   raw.CodexStartedGeneration,
+			CodexCompletedGeneration: raw.CodexCompletedGeneration,
+			CodexStartedSessionID:    raw.CodexStartedSessionID,
+			CodexCompletedSessionID:  raw.CodexCompletedSessionID,
 		}
 	}
 }
@@ -469,14 +477,18 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 	}
 
 	var status struct {
-		Status         string `json:"status"`
-		SessionID      string `json:"session_id"`
-		Event          string `json:"event"`
-		Timestamp      int64  `json:"ts"`
-		DoneStatus     string `json:"done_status"`
-		DoneSummary    string `json:"done_summary"`
-		TranscriptPath string `json:"transcript_path"`
-		Cwd            string `json:"cwd"`
+		Status                   string `json:"status"`
+		SessionID                string `json:"session_id"`
+		Event                    string `json:"event"`
+		Timestamp                int64  `json:"ts"`
+		DoneStatus               string `json:"done_status"`
+		DoneSummary              string `json:"done_summary"`
+		TranscriptPath           string `json:"transcript_path"`
+		Cwd                      string `json:"cwd"`
+		CodexStartedGeneration   string `json:"codex_started_generation"`
+		CodexCompletedGeneration string `json:"codex_completed_generation"`
+		CodexStartedSessionID    string `json:"codex_started_session_id"`
+		CodexCompletedSessionID  string `json:"codex_completed_session_id"`
 	}
 	if err := json.Unmarshal(data, &status); err != nil {
 		hookLog.Warn("hook_file_corrupt",
@@ -489,14 +501,18 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 	}
 
 	hookStatus := &HookStatus{
-		Status:         status.Status,
-		SessionID:      status.SessionID,
-		Event:          status.Event,
-		UpdatedAt:      time.Unix(status.Timestamp, 0),
-		DoneStatus:     status.DoneStatus,
-		DoneSummary:    status.DoneSummary,
-		TranscriptPath: status.TranscriptPath,
-		Cwd:            status.Cwd,
+		Status:                   status.Status,
+		SessionID:                status.SessionID,
+		Event:                    status.Event,
+		UpdatedAt:                time.Unix(status.Timestamp, 0),
+		DoneStatus:               status.DoneStatus,
+		DoneSummary:              status.DoneSummary,
+		TranscriptPath:           status.TranscriptPath,
+		Cwd:                      status.Cwd,
+		CodexStartedGeneration:   status.CodexStartedGeneration,
+		CodexCompletedGeneration: status.CodexCompletedGeneration,
+		CodexStartedSessionID:    status.CodexStartedSessionID,
+		CodexCompletedSessionID:  status.CodexCompletedSessionID,
 	}
 
 	w.mu.Lock()

@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -146,7 +148,7 @@ func TestHandleCodexNotify_EmptyTailEventKeepsJSONEmptyAndPersistsAnchor(t *test
 	defer func() { os.Args = origArgs }()
 
 	// Seed sticky mapping with a thread_id-bearing event.
-	os.Args = []string{"agent-deck", "codex-notify", `{"event":"turn/started","thread_id":"thr-sticky"}`}
+	os.Args = []string{"agent-deck", "codex-notify", `{"event":"turn/started","thread_id":"thr-sticky","turn_id":"turn-main"}`}
 	handleCodexNotify()
 
 	// Tail event has no session_id/thread_id; should backfill from sticky store.
@@ -168,15 +170,15 @@ func TestHandleCodexNotify_EmptyTailEventKeepsJSONEmptyAndPersistsAnchor(t *test
 	if got := session.ReadHookSessionAnchor("inst-sticky"); got != "thr-sticky" {
 		t.Fatalf("session anchor = %q, want thr-sticky", got)
 	}
-	if hook.CodexStartedGeneration == "" || hook.CodexCompletedGeneration != hook.CodexStartedGeneration {
-		t.Fatalf("start/completion evidence did not converge: %#v", hook)
+	if hook.CodexStartedGeneration == "" || hook.CodexCompletedGeneration != "" {
+		t.Fatalf("identity-less completion must fail closed: %#v", hook)
 	}
 }
 
 func TestWriteCodexHookStatus_NewerStartSupersedesCompletedGeneration(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	writeCodexHookStatus("inst-generation", "running", "thread-1", "turn.started")
-	writeCodexHookStatus("inst-generation", "waiting", "thread-1", "turn.completed")
+	writeCodexHookStatus("inst-generation", "running", "thread-1", "turn.started", "turn-1")
+	writeCodexHookStatus("inst-generation", "waiting", "thread-1", "turn.completed", "turn-1")
 	path := filepath.Join(getHooksDir(), "inst-generation.json")
 	var completed hookStatusFile
 	data, err := os.ReadFile(path)
@@ -189,7 +191,7 @@ func TestWriteCodexHookStatus_NewerStartSupersedesCompletedGeneration(t *testing
 	if completed.CodexStartedGeneration != completed.CodexCompletedGeneration {
 		t.Fatal("matching completion was not retained")
 	}
-	writeCodexHookStatus("inst-generation", "running", "thread-1", "turn.started")
+	writeCodexHookStatus("inst-generation", "running", "thread-1", "turn.started", "turn-2")
 	var superseded hookStatusFile
 	data, err = os.ReadFile(path)
 	if err != nil {
@@ -200,6 +202,94 @@ func TestWriteCodexHookStatus_NewerStartSupersedesCompletedGeneration(t *testing
 	}
 	if superseded.CodexStartedGeneration == superseded.CodexCompletedGeneration {
 		t.Fatal("new start must supersede old completion evidence")
+	}
+}
+
+func TestWriteCodexHookStatus_CompletionMustMatchTurnIdentity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENTDECK_HOOKS_DIR", filepath.Join(t.TempDir(), "hooks"))
+
+	writeCodexHookStatus("turn-match", "running", "thread-1", "turn.started", "turn-2")
+	writeCodexHookStatus("turn-match", "waiting", "thread-1", "turn.completed", "turn-1")
+	data, err := os.ReadFile(filepath.Join(getHooksDir(), "turn-match.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got hookStatusFile
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CodexCompletedGeneration != "" {
+		t.Fatalf("out-of-order completion converged live turn: %#v", got)
+	}
+
+	writeCodexHookStatus("turn-match", "waiting", "thread-1", "turn.completed", "turn-2")
+	data, err = os.ReadFile(filepath.Join(getHooksDir(), "turn-match.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CodexCompletedGeneration == "" || got.CodexCompletedGeneration != got.CodexStartedGeneration {
+		t.Fatalf("matching completion did not converge: %#v", got)
+	}
+}
+
+func TestWriteCodexHookStatus_IdentityLessCompletionFailsClosed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENTDECK_HOOKS_DIR", filepath.Join(t.TempDir(), "hooks"))
+	writeCodexHookStatus("no-turn", "running", "thread-1", "turn.started", "turn-1")
+	writeCodexHookStatus("no-turn", "waiting", "thread-1", "agent-turn-complete", "")
+	data, err := os.ReadFile(filepath.Join(getHooksDir(), "no-turn.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got hookStatusFile
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CodexCompletedGeneration != "" {
+		t.Fatalf("identity-less completion converged: %#v", got)
+	}
+}
+
+func TestWriteCodexHookStatus_ConcurrentFleetPersistence(t *testing.T) {
+	for _, size := range []int{1, 20, 100} {
+		t.Run(fmt.Sprintf("fleet-%d", size), func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("AGENTDECK_HOOKS_DIR", filepath.Join(t.TempDir(), "hooks"))
+			for n := 0; n < size; n++ {
+				id := fmt.Sprintf("instance-%03d", n)
+				turn := fmt.Sprintf("turn-%03d", n)
+				writeCodexHookStatus(id, "running", id, "turn.started", turn)
+			}
+			var wg sync.WaitGroup
+			wg.Add(size)
+			for n := 0; n < size; n++ {
+				n := n
+				go func() {
+					defer wg.Done()
+					id := fmt.Sprintf("instance-%03d", n)
+					writeCodexHookStatus(id, "waiting", id, "turn.completed", fmt.Sprintf("turn-%03d", n))
+				}()
+			}
+			wg.Wait()
+			for n := 0; n < size; n++ {
+				id := fmt.Sprintf("instance-%03d", n)
+				data, err := os.ReadFile(filepath.Join(getHooksDir(), id+".json"))
+				if err != nil {
+					t.Fatalf("read %s: %v", id, err)
+				}
+				var got hookStatusFile
+				if err := json.Unmarshal(data, &got); err != nil {
+					t.Fatalf("decode %s: %v", id, err)
+				}
+				if got.CodexStartedGeneration == "" || got.CodexStartedGeneration != got.CodexCompletedGeneration {
+					t.Fatalf("%s did not converge: %#v", id, got)
+				}
+			}
+		})
 	}
 }
 

@@ -488,7 +488,7 @@ func cleanStaleHookFiles() {
 	cutoff := time.Now().Add(-24 * time.Hour)
 	for _, entry := range entries {
 		ext := filepath.Ext(entry.Name())
-		if entry.IsDir() || (ext != ".json" && ext != ".sid") {
+		if entry.IsDir() || (ext != ".json" && ext != ".sid" && !strings.HasSuffix(entry.Name(), ".codex.lock")) {
 			continue
 		}
 		info, err := entry.Info()

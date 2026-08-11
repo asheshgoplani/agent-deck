@@ -120,19 +120,25 @@ func TestCodexCompletionConvergenceRequiresMatchingGenerationAndSession(t *testi
 	}
 }
 
-func TestCodexCompletionConvergenceFleetSizes(t *testing.T) {
-	for _, size := range []int{1, 20, 100} {
-		instances := make([]*Instance, size)
-		for n := range instances {
-			instances[n] = &Instance{Tool: "codex", CodexSessionID: "s",
-				codexStartedGeneration: "g", codexCompletedGeneration: "g",
-				codexStartedSessionID: "s", codexCompletedSessionID: "s"}
-		}
-		for n, inst := range instances {
-			if !inst.codexCompletionConverged() {
-				t.Fatalf("size %d instance %d did not converge", size, n)
-			}
-		}
+func TestCodexCompletionBypassesWaitingOnly(t *testing.T) {
+	i := &Instance{Tool: "codex", CodexSessionID: "s",
+		codexStartedGeneration: "g", codexCompletedGeneration: "g",
+		codexStartedSessionID: "s", codexCompletedSessionID: "s"}
+	if !i.shouldBypassCodexWaitingDebounce(StatusWaiting) {
+		t.Fatal("converged completion must bypass waiting debounce")
+	}
+	if i.shouldBypassCodexWaitingDebounce(StatusError) {
+		t.Fatal("completion evidence must not bypass error debounce")
+	}
+}
+
+func TestSetCodexGenerationEvidence_EvidenceLessDoesNotErase(t *testing.T) {
+	i := &Instance{Tool: "codex", codexStartedGeneration: "g", codexCompletedGeneration: "g",
+		codexStartedSessionID: "s", codexCompletedSessionID: "s"}
+	i.setCodexGenerationEvidence(&HookStatus{Status: "waiting"})
+	if i.codexStartedGeneration != "g" || i.codexCompletedGeneration != "g" ||
+		i.codexStartedSessionID != "s" || i.codexCompletedSessionID != "s" {
+		t.Fatalf("evidence-less update erased valid evidence: %#v", i)
 	}
 }
 

@@ -345,10 +345,14 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 }
 
 type rawHookStatus struct {
-	Status    string `json:"status"`
-	SessionID string `json:"session_id"`
-	Event     string `json:"event"`
-	Timestamp int64  `json:"ts"`
+	Status                   string `json:"status"`
+	SessionID                string `json:"session_id"`
+	Event                    string `json:"event"`
+	Timestamp                int64  `json:"ts"`
+	CodexStartedGeneration   string `json:"codex_started_generation"`
+	CodexCompletedGeneration string `json:"codex_completed_generation"`
+	CodexStartedSessionID    string `json:"codex_started_session_id"`
+	CodexCompletedSessionID  string `json:"codex_completed_session_id"`
 }
 
 func defaultLoadHookStatuses() map[string]*session.HookStatus {
@@ -410,10 +414,14 @@ func defaultLoadHookStatuses() map[string]*session.HookStatus {
 		}
 
 		hooksByInstance[instanceID] = &session.HookStatus{
-			Status:    parsed.Status,
-			SessionID: parsed.SessionID,
-			Event:     parsed.Event,
-			UpdatedAt: updatedAt,
+			Status:                   parsed.Status,
+			SessionID:                parsed.SessionID,
+			Event:                    parsed.Event,
+			UpdatedAt:                updatedAt,
+			CodexStartedGeneration:   parsed.CodexStartedGeneration,
+			CodexCompletedGeneration: parsed.CodexCompletedGeneration,
+			CodexStartedSessionID:    parsed.CodexStartedSessionID,
+			CodexCompletedSessionID:  parsed.CodexCompletedSessionID,
 		}
 	}
 
