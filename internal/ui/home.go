@@ -5852,9 +5852,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("failed to delete session: %w", err))
 			return h, nil
 		}
-		// Save both instances AND groups (critical fix: was losing groups!)
-		// Use forceSave to bypass the external-change abort - delete MUST persist
-		h.forceSaveInstances()
+		if err := h.storage.SaveGroupsOnly(h.groupTree); err != nil {
+			h.setError(fmt.Errorf("failed to persist groups after deletion: %w", err))
+			return h, nil
+		}
 		if msg.queueTx != nil {
 			if err := msg.queueTx.Discard(); err != nil {
 				h.setError(fmt.Errorf("failed to discard runtime queue: %w", err))
@@ -6763,8 +6764,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Delete from database and save
 		if err := h.storage.DeleteInstance(msg.sessionID); err != nil {
 			uiLog.Warn("worktree_finish_delete_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
+			h.setError(fmt.Errorf("failed to finish worktree deletion: %w", err))
+			return h, nil
 		}
-		h.forceSaveInstances()
+		if err := h.storage.SaveGroupsOnly(h.groupTree); err != nil {
+			h.setError(fmt.Errorf("failed to persist groups after worktree finish: %w", err))
+			return h, nil
+		}
 		if msg.queueTx != nil {
 			if err := msg.queueTx.Discard(); err != nil {
 				h.setError(fmt.Errorf("failed to discard runtime queue: %w", err))

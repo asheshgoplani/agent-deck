@@ -226,11 +226,10 @@ func (m *WebMutator) DeleteSession(id string) error {
 	}
 	defer storage.Close()
 
-	if err := storage.DeleteInstance(id); err != nil {
-		return err
-	}
-	if err := queueTx.Discard(); err != nil {
-		return fmt.Errorf("discard runtime queue: %w", err)
+	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
+		return storage.DeleteInstance(id)
+	}); err != nil {
+		return fmt.Errorf("commit web deletion: %w", err)
 	}
 	m.pushUndo(inst)
 	return nil
@@ -282,11 +281,8 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	m.h.instancesMu.Lock()
 	inst.ArchivedAt = time.Now().UTC()
 	m.h.instancesMu.Unlock()
-	if err := m.persistAllInstances(); err != nil {
-		return err
-	}
-	if err := queueTx.Discard(); err != nil {
-		return fmt.Errorf("failed to discard runtime queue: %w", err)
+	if err := commitWebLifecycleAndDiscard(queueTx, m.persistAllInstances); err != nil {
+		return fmt.Errorf("commit web archive: %w", err)
 	}
 	return nil
 }
@@ -710,11 +706,10 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 	// the S1 empty-sweep guard AFTER the irreversible git steps, orphaning the
 	// row; since #1550 SaveWithGroups is upsert-only and would not delete the
 	// row at all. Either way, removal requires the targeted DELETE.
-	if sErr := storage.RemoveSessionAndVerify(id, existing, m.h.groupTree); sErr != nil {
-		return web.WorktreeFinishResult{}, fmt.Errorf("save session data: %w", sErr)
-	}
-	if err := queueTx.Discard(); err != nil {
-		return web.WorktreeFinishResult{}, fmt.Errorf("discard runtime queue: %w", err)
+	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
+		return storage.RemoveSessionAndVerify(id, existing, m.h.groupTree)
+	}); err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("commit worktree removal: %w", err)
 	}
 
 	// Issue #1576: sweep transition-notifier state (inbox JSONL lines +
@@ -735,6 +730,16 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		Merged:        !opts.NoMerge,
 		BranchDeleted: branchDeleted,
 	}, nil
+}
+
+func commitWebLifecycleAndDiscard(tx *session.RuntimeQueueTransaction, persistLifecycle func() error) error {
+	if err := persistLifecycle(); err != nil {
+		return fmt.Errorf("persist lifecycle: %w", err)
+	}
+	if err := tx.Discard(); err != nil {
+		return fmt.Errorf("discard runtime queue: %w", err)
+	}
+	return nil
 }
 
 // DeleteGroup deletes a group (and its subgroups), moving sessions to the default

@@ -113,12 +113,10 @@ func handleSessionRemove(profile string, args []string) {
 	}
 	defer queueTx.Release()
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
-	if err := storage.RemoveSessionAndVerify(inst.ID, instances, groupTree); err != nil {
+	if err := commitRuntimeQueueRemoval(queueTx, func() error {
+		return storage.RemoveSessionAndVerify(inst.ID, instances, groupTree)
+	}); err != nil {
 		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-	if err := queueTx.Discard(); err != nil {
-		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -230,12 +228,10 @@ func bulkRemoveSessions(
 		if pruneWorktree {
 			pruneSessionWorktree(inst)
 		}
-		if err := storage.DeleteInstance(inst.ID); err != nil {
+		if err := commitRuntimeQueueRemoval(queueTx, func() error {
+			return storage.DeleteInstance(inst.ID)
+		}); err != nil {
 			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-		if err := queueTx.Discard(); err != nil {
-			out.Error(fmt.Sprintf("failed to discard runtime queue for %s: %v", inst.ID, err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 		removedIDs = append(removedIDs, inst.ID)
@@ -265,6 +261,16 @@ func bulkRemoveSessions(
 		session.DiscardQueuedMessage(id)
 	}
 	return removed
+}
+
+func commitRuntimeQueueRemoval(tx *session.RuntimeQueueTransaction, persistRemoval func() error) error {
+	if err := persistRemoval(); err != nil {
+		return fmt.Errorf("persist removal: %w", err)
+	}
+	if err := tx.Discard(); err != nil {
+		return fmt.Errorf("discard runtime queue: %w", err)
+	}
+	return nil
 }
 
 // pruneSessionWorktree kills the session and removes its git worktree (if any).

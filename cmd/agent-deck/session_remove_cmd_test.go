@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,88 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+func seedRuntimeQueueLifecycleState(t *testing.T, id string) (completedToken, pendingToken string) {
+	t.Helper()
+	if _, err := session.EnqueueRuntimeMessage(id, "completed"); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := session.StageRuntimeQueue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, valid, err := session.BeginRuntimeQueueSubmission(id, completed.Token)
+	if err != nil || !valid {
+		t.Fatalf("begin completed submission = %v, %v", valid, err)
+	}
+	if err := lease.Acknowledge(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.EnqueueRuntimeMessage(id, "pending"); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := session.StageRuntimeQueue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return completed.Token, pending.Token
+}
+
+func TestCommitRuntimeQueueRemovalFailurePreservesStateAndReleasesTransaction(t *testing.T) {
+	dataRoot := filepath.Join(t.TempDir(), "data")
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+	const id = "single-remove-persist-failure"
+	_, pendingToken := seedRuntimeQueueLifecycleState(t, id)
+	completionPath := filepath.Join(dataRoot, "agent-deck", "runtime", "runtime-queue-completed", id+".json")
+	if _, err := os.Stat(completionPath); err != nil {
+		t.Fatalf("completion marker setup: %v", err)
+	}
+	tx, err := session.BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("forced registry persistence failure")
+	if err := commitRuntimeQueueRemoval(tx, func() error { return wantErr }); !errors.Is(err, wantErr) {
+		t.Fatalf("commit error = %v, want %v", err, wantErr)
+	}
+	tx.Release()
+	batch, err := session.StageRuntimeQueue(id)
+	if err != nil || batch.Token != pendingToken {
+		t.Fatalf("pending WAL after failed removal = %#v, %v", batch, err)
+	}
+	if _, err := os.Stat(completionPath); err != nil {
+		t.Fatalf("completion marker lost after failed removal: %v", err)
+	}
+	probe, err := session.BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		t.Fatalf("transaction retained after failed removal: %v", err)
+	}
+	probe.Release()
+}
+
+func TestCommitRuntimeQueueBulkRemovalDiscardsOnlyCommittedSessions(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	const failedID, committedID = "bulk-failed", "bulk-committed"
+	_, failedToken := seedRuntimeQueueLifecycleState(t, failedID)
+	_, _ = seedRuntimeQueueLifecycleState(t, committedID)
+	failedTx, _ := session.BeginRuntimeQueueTransaction(failedID)
+	committedTx, _ := session.BeginRuntimeQueueTransaction(committedID)
+	wantErr := errors.New("forced bulk persistence failure")
+	if err := commitRuntimeQueueRemoval(failedTx, func() error { return wantErr }); !errors.Is(err, wantErr) {
+		t.Fatalf("failed removal error = %v", err)
+	}
+	if err := commitRuntimeQueueRemoval(committedTx, func() error { return nil }); err != nil {
+		t.Fatalf("committed removal error = %v", err)
+	}
+	failedTx.Release()
+	committedTx.Release()
+	if batch, err := session.StageRuntimeQueue(failedID); err != nil || batch.Token != failedToken {
+		t.Fatalf("failed session queue not preserved: %#v, %v", batch, err)
+	}
+	if batch, err := session.StageRuntimeQueue(committedID); err != nil || batch.Token != "" || len(batch.Messages) != 0 {
+		t.Fatalf("committed session queue survived: %#v, %v", batch, err)
+	}
+}
 
 // addTestSession adds a session under the isolated HOME and returns its id.
 // Mirrors sessionMoveAddSession but without the claude-project seeding side

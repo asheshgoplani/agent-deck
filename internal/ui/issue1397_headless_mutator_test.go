@@ -139,6 +139,145 @@ func TestHeadlessDeleteStorageOpenFailurePreservesRuntimeQueue(t *testing.T) {
 	}
 }
 
+func TestWebDeletePersistenceFailurePreservesRowAndRuntimeQueue(t *testing.T) {
+	_, storage := newHeadlessHomeForTest(t, "_test_web_delete_commit_failure")
+	inst := seedSession(t, storage, nil, "web-delete-commit-failure", "preserve-row")
+	if _, err := session.EnqueueRuntimeMessage(inst.ID, "preserve failed delete"); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := session.StageRuntimeQueue(inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := session.BeginRuntimeQueueTransaction(inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantErr := fmt.Errorf("forced DeleteInstance failure")
+	if err := commitWebLifecycleAndDiscard(tx, func() error { return wantErr }); err == nil {
+		t.Fatal("web delete commit unexpectedly succeeded")
+	}
+	tx.Release()
+	rows, _, err := storage.LoadWithGroups()
+	if err != nil || len(rows) != 1 || rows[0].ID != inst.ID {
+		t.Fatalf("durable row lost after failed web delete: %#v, %v", rows, err)
+	}
+	if batch, err := session.StageRuntimeQueue(inst.ID); err != nil || batch.Token != pending.Token {
+		t.Fatalf("queue/WAL lost after failed web delete: %#v, %v", batch, err)
+	}
+}
+
+func TestWebArchivePersistenceFailurePreservesUnarchivedRowAndRuntimeQueue(t *testing.T) {
+	_, storage := newHeadlessHomeForTest(t, "_test_web_archive_commit_failure")
+	inst := seedSession(t, storage, nil, "web-archive-commit-failure", "preserve-unarchived")
+	if _, err := session.EnqueueRuntimeMessage(inst.ID, "preserve failed archive"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := session.BeginRuntimeQueueTransaction(inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst.ArchivedAt = time.Now().UTC()
+	if err := commitWebLifecycleAndDiscard(tx, func() error { return fmt.Errorf("forced archive persistence failure") }); err == nil {
+		t.Fatal("web archive commit unexpectedly succeeded")
+	}
+	tx.Release()
+	rows, _, err := storage.LoadWithGroups()
+	if err != nil || len(rows) != 1 || !rows[0].ArchivedAt.IsZero() {
+		t.Fatalf("durable lifecycle changed after failed web archive: %#v, %v", rows, err)
+	}
+	if !session.RuntimeQueueHasPending(inst.ID) {
+		t.Fatal("queue lost after failed web archive")
+	}
+}
+
+func TestTUIDeletePersistenceFailurePreservesRuntimeQueueAndReleasesTransaction(t *testing.T) {
+	h, storage := newHeadlessHomeForTest(t, "_test_tui_delete_failure")
+	inst := seedSession(t, storage, nil, "tui-delete-failure", "preserve-queue")
+	h.instances = []*session.Instance{inst}
+	h.instanceByID[inst.ID] = inst
+	h.groupTree = session.NewGroupTree(h.instances)
+	h.search = NewSearch()
+	if _, err := session.EnqueueRuntimeMessage(inst.ID, "must survive failed TUI delete"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.StageRuntimeQueue(inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := session.BeginRuntimeQueueTransaction(inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = h.updateInner(sessionDeletedMsg{deletedID: inst.ID, queueTx: tx})
+	if batch, err := session.StageRuntimeQueue(inst.ID); err != nil || batch.Token == "" {
+		t.Fatalf("failed TUI delete did not preserve queue/WAL: %#v, %v", batch, err)
+	}
+	probe, err := session.BeginRuntimeQueueTransaction(inst.ID)
+	if err != nil {
+		t.Fatalf("failed TUI delete retained transaction: %v", err)
+	}
+	probe.Release()
+}
+
+func TestTUIArchivePersistenceFailurePreservesRuntimeQueueAndReleasesTransaction(t *testing.T) {
+	h, storage := newHeadlessHomeForTest(t, "_test_tui_archive_failure")
+	inst := seedSession(t, storage, nil, "tui-archive-failure", "preserve-queue")
+	h.instances = []*session.Instance{inst}
+	h.instanceByID[inst.ID] = inst
+	h.groupTree = session.NewGroupTree(h.instances)
+	h.search = NewSearch()
+	if _, err := session.EnqueueRuntimeMessage(inst.ID, "must survive failed TUI archive"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := session.BeginRuntimeQueueTransaction(inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst.ArchivedAt = time.Now().UTC()
+	if err := storage.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = h.updateInner(sessionArchivedMsg{sessionID: inst.ID, queueTx: tx})
+	if !session.RuntimeQueueHasPending(inst.ID) {
+		t.Fatal("failed TUI archive discarded runtime queue")
+	}
+	probe, err := session.BeginRuntimeQueueTransaction(inst.ID)
+	if err != nil {
+		t.Fatalf("failed TUI archive retained transaction: %v", err)
+	}
+	probe.Release()
+}
+
+func TestTUIWorktreeFinishDeleteFailurePreservesRuntimeQueue(t *testing.T) {
+	h, storage := newHeadlessHomeForTest(t, "_test_tui_worktree_delete_failure")
+	inst := seedSession(t, storage, nil, "tui-worktree-delete-failure", "preserve-queue")
+	h.instances = []*session.Instance{inst}
+	h.instanceByID[inst.ID] = inst
+	h.groupTree = session.NewGroupTree(h.instances)
+	h.search = NewSearch()
+	h.worktreeFinishDialog = NewWorktreeFinishDialog()
+	if _, err := session.EnqueueRuntimeMessage(inst.ID, "must survive failed worktree finish"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.StageRuntimeQueue(inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := session.BeginRuntimeQueueTransaction(inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = h.updateInner(worktreeFinishResultMsg{sessionID: inst.ID, sessionTitle: inst.Title, queueTx: tx})
+	if batch, err := session.StageRuntimeQueue(inst.ID); err != nil || batch.Token == "" {
+		t.Fatalf("failed worktree finish did not preserve queue/WAL: %#v, %v", batch, err)
+	}
+}
+
 // TestIssue1397_HeadlessCreateGroupDoesNotTripGuard verifies that creating a
 // group while sessions exist in storage does not trip the empty-SaveInstances
 // data-loss guard. Pre-fix, persistAllInstances/SaveWithGroups ran with the
