@@ -3354,6 +3354,28 @@ func (h *Home) HydrateInstancesFromStorage() error {
 	return nil
 }
 
+func groupDataSnapshot(tree *session.GroupTree) []*session.GroupData {
+	if tree == nil {
+		return nil
+	}
+	copyForSave := tree.ShallowCopyForSave()
+	groups := make([]*session.GroupData, 0, len(copyForSave.GroupList))
+	for _, group := range copyForSave.GroupList {
+		if group == nil {
+			continue
+		}
+		groups = append(groups, &session.GroupData{
+			Name:          group.Name,
+			Path:          group.Path,
+			Expanded:      group.Expanded,
+			Order:         group.Order,
+			DefaultPath:   group.DefaultPath,
+			MaxConcurrent: group.MaxConcurrent,
+		})
+	}
+	return groups
+}
+
 // tick returns a command that sends a tick message at regular intervals
 // Status updates use time-based cooldown to prevent flickering
 func (h *Home) tick() tea.Cmd {
@@ -5804,6 +5826,24 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("warning: tmux session may still be running: %w", msg.killErr))
 		}
 
+		// Commit the durable row/group lifecycle before changing the live model.
+		// On failure the session must remain visible and actionable, and its undo,
+		// search, tree, and cache state must remain untouched.
+		h.instancesMu.RLock()
+		remaining := make([]*session.Instance, 0, len(h.instances))
+		for _, inst := range h.instances {
+			if inst.ID != msg.deletedID {
+				remaining = append(remaining, inst)
+			}
+		}
+		h.instancesMu.RUnlock()
+		groupTree := session.NewGroupTreeWithGroups(remaining, groupDataSnapshot(h.groupTree))
+		if err := h.storage.RemoveSessionAndVerify(msg.deletedID, remaining, groupTree); err != nil {
+			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
+			h.setError(fmt.Errorf("failed to delete session: %w", err))
+			return h, nil
+		}
+
 		// Find and remove from list
 		var deletedInstance *session.Instance
 		h.instancesMu.Lock()
@@ -5846,16 +5886,6 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		// Update search items
 		h.search.SetItems(h.instances)
-		// Explicitly delete from database to prevent resurrection on reload
-		if err := h.storage.DeleteInstance(msg.deletedID); err != nil {
-			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
-			h.setError(fmt.Errorf("failed to delete session: %w", err))
-			return h, nil
-		}
-		if err := h.storage.SaveGroupsOnly(h.groupTree); err != nil {
-			h.setError(fmt.Errorf("failed to persist groups after deletion: %w", err))
-			return h, nil
-		}
 		if msg.queueTx != nil {
 			if err := msg.queueTx.Discard(); err != nil {
 				h.setError(fmt.Errorf("failed to discard runtime queue: %w", err))
@@ -6724,7 +6754,29 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 
-		// Success: remove session from instances and clean up
+		// Commit row and group changes atomically before hiding the dialog or
+		// changing the live model. A failure leaves the durable session visible
+		// and gives the user the same dialog to retry or cancel.
+		h.instancesMu.RLock()
+		remaining := make([]*session.Instance, 0, len(h.instances))
+		for _, candidate := range h.instances {
+			if candidate.ID != msg.sessionID {
+				remaining = append(remaining, candidate)
+			}
+		}
+		h.instancesMu.RUnlock()
+		groupTree := session.NewGroupTreeWithGroups(remaining, groupDataSnapshot(h.groupTree))
+		if err := h.storage.RemoveSessionAndVerify(msg.sessionID, remaining, groupTree); err != nil {
+			uiLog.Warn("worktree_finish_delete_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
+			if h.worktreeFinishDialog.IsVisible() {
+				h.worktreeFinishDialog.SetError(fmt.Sprintf("failed to finish worktree deletion: %v", err))
+			} else {
+				h.setError(fmt.Errorf("failed to finish worktree deletion: %w", err))
+			}
+			return h, nil
+		}
+
+		// Success: remove session from instances and clean up.
 		h.worktreeFinishDialog.Hide()
 
 		h.instancesMu.Lock()
@@ -6761,16 +6813,6 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		h.search.SetItems(h.instances)
 
-		// Delete from database and save
-		if err := h.storage.DeleteInstance(msg.sessionID); err != nil {
-			uiLog.Warn("worktree_finish_delete_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
-			h.setError(fmt.Errorf("failed to finish worktree deletion: %w", err))
-			return h, nil
-		}
-		if err := h.storage.SaveGroupsOnly(h.groupTree); err != nil {
-			h.setError(fmt.Errorf("failed to persist groups after worktree finish: %w", err))
-			return h, nil
-		}
 		if msg.queueTx != nil {
 			if err := msg.queueTx.Discard(); err != nil {
 				h.setError(fmt.Errorf("failed to discard runtime queue: %w", err))

@@ -111,14 +111,15 @@ func handleSessionRemove(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	defer queueTx.Release()
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 	if err := commitRuntimeQueueRemoval(queueTx, func() error {
-		return storage.RemoveSessionAndVerify(inst.ID, instances, groupTree)
+		return sessionRemovePersist(storage, inst.ID, instances, groupTree)
 	}); err != nil {
+		queueTx.Release()
 		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	queueTx.Release()
 
 	// Best-effort transition-notifier cleanup for issue #910 — see the
 	// matching block in handleRemove for rationale.
@@ -217,7 +218,7 @@ func bulkRemoveSessions(
 	}
 
 	removed := make([]removedSessionRow, 0, len(doomed))
-	removedIDs := make([]string, 0, len(doomed))
+	remaining := append([]*session.Instance(nil), instances...)
 	for _, inst := range doomed {
 		_ = inst.KillAndWait()
 		queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
@@ -228,33 +229,21 @@ func bulkRemoveSessions(
 		if pruneWorktree {
 			pruneSessionWorktree(inst)
 		}
+		nextRemaining := dropInstance(remaining, inst.ID)
+		groupTree := session.NewGroupTreeWithGroups(nextRemaining, groups)
 		if err := commitRuntimeQueueRemoval(queueTx, func() error {
-			return storage.DeleteInstance(inst.ID)
+			return bulkSessionRemovePersist(storage, inst.ID, nextRemaining, groupTree)
 		}); err != nil {
+			queueTx.Release()
 			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		removedIDs = append(removedIDs, inst.ID)
+		remaining = nextRemaining
 		removed = append(removed, map[string]interface{}{"id": inst.ID, "title": inst.Title})
 		queueTx.Release()
 	}
 
-	remaining := make([]*session.Instance, 0, len(instances)-len(removedIDs))
-	for _, inst := range instances {
-		if !doomedIDs[inst.ID] {
-			remaining = append(remaining, inst)
-		}
-	}
-	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
-	if err := storage.SaveGroupsOnly(groupTree); err != nil {
-		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-
-	for _, id := range removedIDs {
-		if exists, _ := storage.InstanceExists(id); exists {
-			_ = storage.DeleteInstance(id)
-		}
+	for id := range doomedIDs {
 		// Best-effort transition-notifier cleanup (issue #910).
 		_, _ = session.SweepInboxesForChildSession(id)
 		_, _ = session.RemoveNotifyStateRecord(id)
@@ -262,6 +251,15 @@ func bulkRemoveSessions(
 	}
 	return removed
 }
+
+var (
+	sessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
+		return storage.RemoveSessionAndVerify(id, remaining, tree)
+	}
+	bulkSessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
+		return storage.RemoveSessionAndVerify(id, remaining, tree)
+	}
+)
 
 func commitRuntimeQueueRemoval(tx *session.RuntimeQueueTransaction, persistRemoval func() error) error {
 	if err := persistRemoval(); err != nil {

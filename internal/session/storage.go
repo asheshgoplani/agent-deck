@@ -518,13 +518,19 @@ var (
 // compute group sort_order / membership for SaveGroupsOnly. groupTree may
 // be nil if the caller doesn't care to persist groups.
 func (s *Storage) RemoveSessionAndVerify(id string, remainingInstances []*Instance, groupTree *GroupTree) error {
-	if err := s.DeleteInstance(id); err != nil {
-		return err
+	s.mu.Lock()
+	if s.db == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("storage database not initialized")
 	}
-	if groupTree != nil {
-		if err := s.SaveGroupsOnly(groupTree); err != nil {
-			return fmt.Errorf("failed to save groups during rm: %w", err)
-		}
+	groupRows := groupTreeRows(groupTree)
+	err := s.db.DeleteInstanceAndSaveGroups(id, groupRows)
+	if err == nil {
+		_ = s.db.Touch()
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("delete session and save groups: %w", err)
 	}
 
 	for attempt := 0; attempt < rmVerifyAttempts; attempt++ {
@@ -1014,6 +1020,19 @@ func (s *Storage) SaveGroupsOnly(groupTree *GroupTree) error {
 		return nil
 	}
 
+	groupRows := groupTreeRows(groupTree)
+
+	if err := s.db.SaveGroups(groupRows); err != nil {
+		return fmt.Errorf("failed to save groups: %w", err)
+	}
+
+	return nil
+}
+
+func groupTreeRows(groupTree *GroupTree) []*statedb.GroupRow {
+	if groupTree == nil {
+		return nil
+	}
 	groupRows := make([]*statedb.GroupRow, 0, len(groupTree.GroupList))
 	for _, g := range groupTree.GroupList {
 		groupRows = append(groupRows, &statedb.GroupRow{
@@ -1025,12 +1044,7 @@ func (s *Storage) SaveGroupsOnly(groupTree *GroupTree) error {
 			MaxConcurrent: g.MaxConcurrent,
 		})
 	}
-
-	if err := s.db.SaveGroups(groupRows); err != nil {
-		return fmt.Errorf("failed to save groups: %w", err)
-	}
-
-	return nil
+	return groupRows
 }
 
 // Load reads instances from SQLite

@@ -1086,6 +1086,43 @@ func (s *StateDB) DeleteInstance(id string) error {
 	})
 }
 
+// DeleteInstanceAndSaveGroups removes an instance and upserts the supplied
+// group rows in one SQLite transaction. A group persistence failure therefore
+// cannot leave callers with a deleted session row and an uncommitted group
+// lifecycle change.
+func (s *StateDB) DeleteInstanceAndSaveGroups(id string, groups []*GroupRow) error {
+	return withBusyRetry(func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
+			return err
+		}
+		for _, g := range groups {
+			expanded := 0
+			if g.Expanded {
+				expanded = 1
+			}
+			if _, err := tx.Exec(`
+				INSERT INTO groups (path, name, expanded, sort_order, default_path, max_concurrent)
+				VALUES (?, ?, ?, ?, ?, ?)
+				ON CONFLICT(path) DO UPDATE SET
+					name = excluded.name,
+					expanded = excluded.expanded,
+					sort_order = excluded.sort_order,
+					default_path = excluded.default_path,
+					max_concurrent = excluded.max_concurrent
+			`, g.Path, g.Name, expanded, g.Order, g.DefaultPath, g.MaxConcurrent); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	})
+}
+
 // UpdateTitleIfUnlocked sets an instance's title (and clears auto_name, since
 // a synced title replaces the auto-generated handle) with a single
 // conditional UPDATE, atomic at the SQL level: the WHERE clause is evaluated

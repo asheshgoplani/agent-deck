@@ -46,6 +46,16 @@ type webDeletedEntry struct {
 	deletedAt time.Time
 }
 
+// Lifecycle persistence seams are package variables so entry-point tests can
+// force failures after storage has opened. Production always uses the real
+// storage methods.
+var (
+	webDeleteInstance = func(storage *session.Storage, id string) error {
+		return storage.DeleteInstance(id)
+	}
+	webPersistArchive = func(m *WebMutator) error { return m.persistAllInstances() }
+)
+
 // NewWebMutator returns a WebMutator backed by the given Home. The undo
 // window defaults to web.DefaultUndoWindow (30s).
 func NewWebMutator(h *Home) *WebMutator {
@@ -227,7 +237,7 @@ func (m *WebMutator) DeleteSession(id string) error {
 	defer storage.Close()
 
 	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
-		return storage.DeleteInstance(id)
+		return webDeleteInstance(storage, id)
 	}); err != nil {
 		return fmt.Errorf("commit web deletion: %w", err)
 	}
@@ -279,9 +289,13 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	}
 	defer queueTx.Release()
 	m.h.instancesMu.Lock()
+	previousArchivedAt := inst.ArchivedAt
 	inst.ArchivedAt = time.Now().UTC()
 	m.h.instancesMu.Unlock()
-	if err := commitWebLifecycleAndDiscard(queueTx, m.persistAllInstances); err != nil {
+	if err := commitWebLifecycleAndDiscard(queueTx, func() error { return webPersistArchive(m) }); err != nil {
+		m.h.instancesMu.Lock()
+		inst.ArchivedAt = previousArchivedAt
+		m.h.instancesMu.Unlock()
 		return fmt.Errorf("commit web archive: %w", err)
 	}
 	return nil

@@ -4,12 +4,116 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+func TestSessionRemoveCommandPersistenceFailurePreservesLifecycleState(t *testing.T) {
+	if os.Getenv("AGENT_DECK_REMOVE_PERSIST_HELPER") == "single" {
+		original := sessionRemovePersist
+		sessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
+			_ = storage.Close()
+			return storage.RemoveSessionAndVerify(id, remaining, tree)
+		}
+		defer func() { sessionRemovePersist = original }()
+		handleSessionRemove("ch_support_test", []string{os.Getenv("AGENT_DECK_REMOVE_PERSIST_ID"), "--json"})
+		return
+	}
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	dataRoot := filepath.Join(home, ".local", "share")
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+	id := addTestSession(t, home, filepath.Join(home, "project"), "remove-persist-failure")
+	forceSetStatus(t, home, id, session.StatusStopped)
+	_, pendingToken := seedRuntimeQueueLifecycleState(t, id)
+	completionPath := filepath.Join(dataRoot, "agent-deck", "runtime", "runtime-queue-completed", id+".json")
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionRemoveCommandPersistenceFailurePreservesLifecycleState$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_DECK_TASK6_HELPER_PROCESS=1",
+		"AGENT_DECK_REMOVE_PERSIST_HELPER=single",
+		"AGENT_DECK_REMOVE_PERSIST_ID="+id,
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+dataRoot,
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+	)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("session remove unexpectedly succeeded with persistence failure")
+	}
+	if list := readSessionsJSON(t, home); !strings.Contains(list, id) {
+		t.Fatalf("failed removal lost durable row: %s", list)
+	}
+	if batch, err := session.StageRuntimeQueue(id); err != nil || batch.Token != pendingToken {
+		t.Fatalf("failed removal lost active/WAL state: %#v, %v", batch, err)
+	}
+	if _, err := os.Stat(completionPath); err != nil {
+		t.Fatalf("failed removal lost completion state: %v", err)
+	}
+	probe, err := session.BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		t.Fatalf("failed command retained queue transaction: %v", err)
+	}
+	probe.Release()
+}
+
+func TestSessionRemoveAllErroredPersistenceFailureDiscardsOnlyCommittedQueues(t *testing.T) {
+	if os.Getenv("AGENT_DECK_REMOVE_PERSIST_HELPER") == "bulk" {
+		failedID := os.Getenv("AGENT_DECK_REMOVE_PERSIST_ID")
+		original := bulkSessionRemovePersist
+		bulkSessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
+			if id == failedID {
+				_ = storage.Close()
+			}
+			return storage.RemoveSessionAndVerify(id, remaining, tree)
+		}
+		defer func() { bulkSessionRemovePersist = original }()
+		handleSessionRemove("ch_support_test", []string{"--all-errored", "--json"})
+		return
+	}
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	dataRoot := filepath.Join(home, ".local", "share")
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+	committedID := addTestSession(t, home, filepath.Join(home, "committed"), "bulk-committed-first")
+	failedID := addTestSession(t, home, filepath.Join(home, "failed"), "bulk-failed-second")
+	forceSetStatus(t, home, committedID, session.StatusError)
+	forceSetStatus(t, home, failedID, session.StatusError)
+	_, _ = seedRuntimeQueueLifecycleState(t, committedID)
+	_, failedToken := seedRuntimeQueueLifecycleState(t, failedID)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionRemoveAllErroredPersistenceFailureDiscardsOnlyCommittedQueues$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_DECK_TASK6_HELPER_PROCESS=1",
+		"AGENT_DECK_REMOVE_PERSIST_HELPER=bulk",
+		"AGENT_DECK_REMOVE_PERSIST_ID="+failedID,
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+dataRoot,
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+	)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("bulk removal unexpectedly succeeded with per-session persistence failure")
+	}
+	list := readSessionsJSON(t, home)
+	if strings.Contains(list, committedID) || !strings.Contains(list, failedID) {
+		t.Fatalf("bulk durable rows do not match committed prefix: %s", list)
+	}
+	if batch, err := session.StageRuntimeQueue(committedID); err != nil || batch.Token != "" || len(batch.Messages) != 0 {
+		t.Fatalf("committed queue survived: %#v, %v", batch, err)
+	}
+	if batch, err := session.StageRuntimeQueue(failedID); err != nil || batch.Token != failedToken {
+		t.Fatalf("failed queue was discarded: %#v, %v", batch, err)
+	}
+}
 
 func seedRuntimeQueueLifecycleState(t *testing.T, id string) (completedToken, pendingToken string) {
 	t.Helper()

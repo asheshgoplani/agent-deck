@@ -140,24 +140,37 @@ func TestHeadlessDeleteStorageOpenFailurePreservesRuntimeQueue(t *testing.T) {
 }
 
 func TestWebDeletePersistenceFailurePreservesRowAndRuntimeQueue(t *testing.T) {
-	_, storage := newHeadlessHomeForTest(t, "_test_web_delete_commit_failure")
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	h, storage := newHeadlessHomeForTest(t, "_test_web_delete_commit_failure")
 	inst := seedSession(t, storage, nil, "web-delete-commit-failure", "preserve-row")
-	if _, err := session.EnqueueRuntimeMessage(inst.ID, "preserve failed delete"); err != nil {
+	if _, err := session.EnqueueRuntimeMessage(inst.ID, "completed before failed delete"); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := session.StageRuntimeQueue(inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, valid, err := session.BeginRuntimeQueueSubmission(inst.ID, completed.Token)
+	if err != nil || !valid {
+		t.Fatalf("begin completion = %v, %v", valid, err)
+	}
+	if err := lease.Acknowledge(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.EnqueueRuntimeMessage(inst.ID, "active before failed delete"); err != nil {
 		t.Fatal(err)
 	}
 	pending, err := session.StageRuntimeQueue(inst.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tx, err := session.BeginRuntimeQueueTransaction(inst.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantErr := fmt.Errorf("forced DeleteInstance failure")
-	if err := commitWebLifecycleAndDiscard(tx, func() error { return wantErr }); err == nil {
+	completionPath := filepath.Join(os.Getenv("XDG_DATA_HOME"), "agent-deck", "runtime", "runtime-queue-completed", inst.ID+".json")
+	originalDelete := webDeleteInstance
+	webDeleteInstance = func(*session.Storage, string) error { return fmt.Errorf("forced DeleteInstance failure") }
+	t.Cleanup(func() { webDeleteInstance = originalDelete })
+	if err := NewWebMutator(h).DeleteSession(inst.ID); err == nil {
 		t.Fatal("web delete commit unexpectedly succeeded")
 	}
-	tx.Release()
 	rows, _, err := storage.LoadWithGroups()
 	if err != nil || len(rows) != 1 || rows[0].ID != inst.ID {
 		t.Fatalf("durable row lost after failed web delete: %#v, %v", rows, err)
@@ -165,29 +178,33 @@ func TestWebDeletePersistenceFailurePreservesRowAndRuntimeQueue(t *testing.T) {
 	if batch, err := session.StageRuntimeQueue(inst.ID); err != nil || batch.Token != pending.Token {
 		t.Fatalf("queue/WAL lost after failed web delete: %#v, %v", batch, err)
 	}
+	if _, err := os.Stat(completionPath); err != nil {
+		t.Fatalf("completion state lost after failed web delete: %v", err)
+	}
 }
 
 func TestWebArchivePersistenceFailurePreservesUnarchivedRowAndRuntimeQueue(t *testing.T) {
-	_, storage := newHeadlessHomeForTest(t, "_test_web_archive_commit_failure")
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	h, storage := newHeadlessHomeForTest(t, "_test_web_archive_commit_failure")
 	inst := seedSession(t, storage, nil, "web-archive-commit-failure", "preserve-unarchived")
 	if _, err := session.EnqueueRuntimeMessage(inst.ID, "preserve failed archive"); err != nil {
 		t.Fatal(err)
 	}
-	tx, err := session.BeginRuntimeQueueTransaction(inst.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inst.ArchivedAt = time.Now().UTC()
-	if err := commitWebLifecycleAndDiscard(tx, func() error { return fmt.Errorf("forced archive persistence failure") }); err == nil {
+	originalPersist := webPersistArchive
+	webPersistArchive = func(*WebMutator) error { return fmt.Errorf("forced archive persistence failure") }
+	t.Cleanup(func() { webPersistArchive = originalPersist })
+	if err := NewWebMutator(h).ArchiveSession(inst.ID); err == nil {
 		t.Fatal("web archive commit unexpectedly succeeded")
 	}
-	tx.Release()
 	rows, _, err := storage.LoadWithGroups()
 	if err != nil || len(rows) != 1 || !rows[0].ArchivedAt.IsZero() {
 		t.Fatalf("durable lifecycle changed after failed web archive: %#v, %v", rows, err)
 	}
 	if !session.RuntimeQueueHasPending(inst.ID) {
 		t.Fatal("queue lost after failed web archive")
+	}
+	if h.instanceByID[inst.ID].IsArchived() {
+		t.Fatal("failed web archive left the live model archived")
 	}
 }
 
@@ -198,6 +215,7 @@ func TestTUIDeletePersistenceFailurePreservesRuntimeQueueAndReleasesTransaction(
 	h.instanceByID[inst.ID] = inst
 	h.groupTree = session.NewGroupTree(h.instances)
 	h.search = NewSearch()
+	h.search.SetItems(h.instances)
 	if _, err := session.EnqueueRuntimeMessage(inst.ID, "must survive failed TUI delete"); err != nil {
 		t.Fatal(err)
 	}
@@ -212,6 +230,15 @@ func TestTUIDeletePersistenceFailurePreservesRuntimeQueueAndReleasesTransaction(
 		t.Fatal(err)
 	}
 	_, _ = h.updateInner(sessionDeletedMsg{deletedID: inst.ID, queueTx: tx})
+	if len(h.instances) != 1 || h.instanceByID[inst.ID] != inst || len(h.undoStack) != 0 {
+		t.Fatalf("failed TUI delete mutated live row/map/undo state: instances=%v mapped=%v undo=%d", h.instances, h.instanceByID[inst.ID], len(h.undoStack))
+	}
+	if len(h.search.allItems) != 1 || h.search.allItems[0].ID != inst.ID {
+		t.Fatalf("failed TUI delete removed search item: %#v", h.search.allItems)
+	}
+	if group := h.groupTree.Groups[inst.GroupPath]; group == nil || len(group.Sessions) != 1 || group.Sessions[0].ID != inst.ID {
+		t.Fatalf("failed TUI delete removed group-tree row: %#v", group)
+	}
 	if batch, err := session.StageRuntimeQueue(inst.ID); err != nil || batch.Token == "" {
 		t.Fatalf("failed TUI delete did not preserve queue/WAL: %#v, %v", batch, err)
 	}
@@ -259,6 +286,7 @@ func TestTUIWorktreeFinishDeleteFailurePreservesRuntimeQueue(t *testing.T) {
 	h.groupTree = session.NewGroupTree(h.instances)
 	h.search = NewSearch()
 	h.worktreeFinishDialog = NewWorktreeFinishDialog()
+	h.worktreeFinishDialog.Show(inst.ID, inst.Title, "feature", "/tmp/repo", "/tmp/worktree", "main")
 	if _, err := session.EnqueueRuntimeMessage(inst.ID, "must survive failed worktree finish"); err != nil {
 		t.Fatal(err)
 	}
@@ -273,6 +301,12 @@ func TestTUIWorktreeFinishDeleteFailurePreservesRuntimeQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = h.updateInner(worktreeFinishResultMsg{sessionID: inst.ID, sessionTitle: inst.Title, queueTx: tx})
+	if len(h.instances) != 1 || h.instanceByID[inst.ID] != inst {
+		t.Fatalf("failed worktree finish removed live session: instances=%v mapped=%v", h.instances, h.instanceByID[inst.ID])
+	}
+	if !h.worktreeFinishDialog.IsVisible() || h.worktreeFinishDialog.GetSessionID() != inst.ID || h.worktreeFinishDialog.errorMsg == "" {
+		t.Fatalf("failed worktree finish did not restore dialog state: %#v", h.worktreeFinishDialog)
+	}
 	if batch, err := session.StageRuntimeQueue(inst.ID); err != nil || batch.Token == "" {
 		t.Fatalf("failed worktree finish did not preserve queue/WAL: %#v, %v", batch, err)
 	}

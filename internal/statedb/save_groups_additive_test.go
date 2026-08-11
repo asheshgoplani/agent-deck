@@ -1,8 +1,35 @@
 package statedb
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 )
+
+func TestDeleteInstanceAndSaveGroupsRollsBackRowOnGroupFailure(t *testing.T) {
+	db := newTestDB(t)
+	const id = "atomic-delete-group-failure"
+	if err := db.SaveInstance(&InstanceRow{
+		ID: id, Title: "keep", ProjectPath: "/tmp", GroupPath: "g",
+		Tool: "shell", Status: "stopped", CreatedAt: time.Now(), ToolData: json.RawMessage("{}"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec(`CREATE TRIGGER force_group_failure
+		BEFORE INSERT ON groups BEGIN SELECT RAISE(FAIL, 'forced group failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeleteInstanceAndSaveGroups(id, []*GroupRow{{Path: "g", Name: "g"}}); err == nil {
+		t.Fatal("atomic lifecycle commit unexpectedly succeeded")
+	}
+	exists, err := db.InstanceExists(id)
+	if err != nil || !exists {
+		t.Fatalf("row deletion was not rolled back after group failure: exists=%v err=%v", exists, err)
+	}
+	if groups, err := db.LoadGroups(); err != nil || len(groups) != 0 {
+		t.Fatalf("group write survived failed transaction: %#v, %v", groups, err)
+	}
+}
 
 // loadGroupPaths is a small helper returning the set of persisted group paths.
 func loadGroupPaths(t *testing.T, db *StateDB) map[string]bool {
