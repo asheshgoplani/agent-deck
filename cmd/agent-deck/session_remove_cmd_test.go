@@ -197,6 +197,57 @@ func TestCommitRuntimeQueueBulkRemovalDiscardsOnlyCommittedSessions(t *testing.T
 	}
 }
 
+func TestBulkRemoveFinalSweepDeletesRowsResurrectedAfterPerItemVerification(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	storage, err := session.NewStorageWithProfile("_test_bulk_final_sweep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	first := session.NewInstanceWithTool("first", t.TempDir(), "shell")
+	second := session.NewInstanceWithTool("second", t.TempDir(), "shell")
+	first.Status = session.StatusError
+	second.Status = session.StatusError
+	instances := []*session.Instance{first, second}
+	tree := session.NewGroupTree(instances)
+	if err := storage.SaveWithGroups(instances, tree); err != nil {
+		t.Fatal(err)
+	}
+	for _, inst := range instances {
+		if _, err := session.EnqueueRuntimeMessage(inst.ID, "discard committed queue"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	originalPersist := bulkSessionRemovePersist
+	bulkSessionRemovePersist = func(s *session.Storage, id string, remaining []*session.Instance, groupTree *session.GroupTree) error {
+		if err := s.RemoveSessionAndVerify(id, remaining, groupTree); err != nil {
+			return err
+		}
+		if id == second.ID {
+			// Simulate a stale full-table writer landing after both per-item
+			// verification windows but before bulk removal returns.
+			return s.SaveWithGroups(instances, tree)
+		}
+		return nil
+	}
+	t.Cleanup(func() { bulkSessionRemovePersist = originalPersist })
+
+	removed := bulkRemoveSessions(NewCLIOutput(false, true), storage, instances, nil, instances, false)
+	if len(removed) != 2 {
+		t.Fatalf("removed rows = %#v", removed)
+	}
+	rows, _, err := storage.LoadWithGroups()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("final sweep left resurrected rows: %#v, %v", rows, err)
+	}
+	for _, inst := range instances {
+		if session.RuntimeQueueHasPending(inst.ID) {
+			t.Fatalf("committed queue survived for %s", inst.ID)
+		}
+	}
+}
+
 // addTestSession adds a session under the isolated HOME and returns its id.
 // Mirrors sessionMoveAddSession but without the claude-project seeding side
 // effect, so call sites that want a seeded transcript dir can do it

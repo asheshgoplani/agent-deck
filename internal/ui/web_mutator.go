@@ -54,6 +54,7 @@ var (
 		return storage.DeleteInstance(id)
 	}
 	webPersistArchive = func(m *WebMutator) error { return m.persistAllInstances() }
+	webDiscardQueue   = func(tx *session.RuntimeQueueTransaction) error { return tx.Discard() }
 )
 
 // NewWebMutator returns a WebMutator backed by the given Home. The undo
@@ -292,11 +293,16 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	previousArchivedAt := inst.ArchivedAt
 	inst.ArchivedAt = time.Now().UTC()
 	m.h.instancesMu.Unlock()
-	if err := commitWebLifecycleAndDiscard(queueTx, func() error { return webPersistArchive(m) }); err != nil {
+	if err := webPersistArchive(m); err != nil {
 		m.h.instancesMu.Lock()
 		inst.ArchivedAt = previousArchivedAt
 		m.h.instancesMu.Unlock()
-		return fmt.Errorf("commit web archive: %w", err)
+		return fmt.Errorf("commit web archive persistence: %w", err)
+	}
+	if err := webDiscardQueue(queueTx); err != nil {
+		// Persistence already committed. Keep the live lifecycle aligned with
+		// SQLite even though stale queue cleanup must be reported to the caller.
+		return fmt.Errorf("commit web archive queue discard: %w", err)
 	}
 	return nil
 }

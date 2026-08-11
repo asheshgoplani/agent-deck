@@ -31,6 +31,36 @@ func TestDeleteInstanceAndSaveGroupsRollsBackRowOnGroupFailure(t *testing.T) {
 	}
 }
 
+func TestDeleteInstanceAndSaveGroupsDeletesRowAndPersistsEveryGroupField(t *testing.T) {
+	db := newTestDB(t)
+	const id = "atomic-delete-group-success"
+	if err := db.SaveInstance(&InstanceRow{
+		ID: id, Title: "delete", ProjectPath: "/tmp", GroupPath: "team",
+		Tool: "shell", Status: "stopped", CreatedAt: time.Now(), ToolData: json.RawMessage("{}"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := &GroupRow{
+		Path: "team/nested", Name: "Nested Team", Expanded: true, Order: 7,
+		DefaultPath: "/projects/team", MaxConcurrent: 4,
+	}
+	if err := db.DeleteInstanceAndSaveGroups(id, []*GroupRow{want}); err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := db.InstanceExists(id); err != nil || exists {
+		t.Fatalf("row survived successful atomic delete: exists=%v err=%v", exists, err)
+	}
+	groups, err := db.LoadGroups()
+	if err != nil || len(groups) != 1 {
+		t.Fatalf("groups after atomic commit = %#v, %v", groups, err)
+	}
+	got := groups[0]
+	if got.Path != want.Path || got.Name != want.Name || got.Expanded != want.Expanded ||
+		got.Order != want.Order || got.DefaultPath != want.DefaultPath || got.MaxConcurrent != want.MaxConcurrent {
+		t.Fatalf("persisted group = %#v, want %#v", got, want)
+	}
+}
+
 // loadGroupPaths is a small helper returning the set of persisted group paths.
 func loadGroupPaths(t *testing.T, db *StateDB) map[string]bool {
 	t.Helper()

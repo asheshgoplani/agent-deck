@@ -212,12 +212,8 @@ func bulkRemoveSessions(
 	doomed []*session.Instance,
 	pruneWorktree bool,
 ) []removedSessionRow {
-	doomedIDs := make(map[string]bool, len(doomed))
-	for _, inst := range doomed {
-		doomedIDs[inst.ID] = true
-	}
-
 	removed := make([]removedSessionRow, 0, len(doomed))
+	removedIDs := make([]string, 0, len(doomed))
 	remaining := append([]*session.Instance(nil), instances...)
 	for _, inst := range doomed {
 		_ = inst.KillAndWait()
@@ -239,11 +235,25 @@ func bulkRemoveSessions(
 			os.Exit(1)
 		}
 		remaining = nextRemaining
+		removedIDs = append(removedIDs, inst.ID)
 		removed = append(removed, map[string]interface{}{"id": inst.ID, "title": inst.Title})
 		queueTx.Release()
 	}
 
-	for id := range doomedIDs {
+	// A concurrent full-table writer can resurrect an early removal after its
+	// per-item verification while later items are still being processed. Sweep
+	// only the successfully committed IDs once more against the final survivor
+	// set. Failed/unattempted sessions never enter removedIDs, so their queues
+	// and rows remain untouched.
+	finalGroupTree := session.NewGroupTreeWithGroups(remaining, groups)
+	for _, id := range removedIDs {
+		if err := bulkSessionReverifyPersist(storage, id, remaining, finalGroupTree); err != nil {
+			out.Error(fmt.Sprintf("failed to verify removed session %s: %v", id, err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+
+	for _, id := range removedIDs {
 		// Best-effort transition-notifier cleanup (issue #910).
 		_, _ = session.SweepInboxesForChildSession(id)
 		_, _ = session.RemoveNotifyStateRecord(id)
@@ -257,6 +267,9 @@ var (
 		return storage.RemoveSessionAndVerify(id, remaining, tree)
 	}
 	bulkSessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
+		return storage.RemoveSessionAndVerify(id, remaining, tree)
+	}
+	bulkSessionReverifyPersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
 		return storage.RemoveSessionAndVerify(id, remaining, tree)
 	}
 )

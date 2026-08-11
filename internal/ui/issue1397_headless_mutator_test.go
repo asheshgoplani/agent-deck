@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // newHeadlessHomeForTest builds a Home backed by a real (sandboxed, _test
@@ -208,6 +209,32 @@ func TestWebArchivePersistenceFailurePreservesUnarchivedRowAndRuntimeQueue(t *te
 	}
 }
 
+func TestWebArchiveDiscardFailureKeepsCommittedArchivedState(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	h, storage := newHeadlessHomeForTest(t, "_test_web_archive_discard_failure")
+	inst := seedSession(t, storage, nil, "web-archive-discard-failure", "keep-archived")
+	if _, err := session.EnqueueRuntimeMessage(inst.ID, "discard will fail"); err != nil {
+		t.Fatal(err)
+	}
+	originalDiscard := webDiscardQueue
+	webDiscardQueue = func(*session.RuntimeQueueTransaction) error { return fmt.Errorf("forced queue discard failure") }
+	t.Cleanup(func() { webDiscardQueue = originalDiscard })
+
+	if err := NewWebMutator(h).ArchiveSession(inst.ID); err == nil {
+		t.Fatal("web archive unexpectedly hid queue discard failure")
+	}
+	rows, _, err := storage.LoadWithGroups()
+	if err != nil || len(rows) != 1 || !rows[0].IsArchived() {
+		t.Fatalf("durable archive did not remain committed: %#v, %v", rows, err)
+	}
+	if live := h.instanceByID[inst.ID]; live == nil || !live.IsArchived() {
+		t.Fatalf("live archive rolled back after post-commit discard failure: %#v", live)
+	}
+	if !session.RuntimeQueueHasPending(inst.ID) {
+		t.Fatal("forced discard failure unexpectedly removed runtime queue")
+	}
+}
+
 func TestTUIDeletePersistenceFailurePreservesRuntimeQueueAndReleasesTransaction(t *testing.T) {
 	h, storage := newHeadlessHomeForTest(t, "_test_tui_delete_failure")
 	inst := seedSession(t, storage, nil, "tui-delete-failure", "preserve-queue")
@@ -309,6 +336,57 @@ func TestTUIWorktreeFinishDeleteFailurePreservesRuntimeQueue(t *testing.T) {
 	}
 	if batch, err := session.StageRuntimeQueue(inst.ID); err != nil || batch.Token == "" {
 		t.Fatalf("failed worktree finish did not preserve queue/WAL: %#v, %v", batch, err)
+	}
+}
+
+func TestTUISuccessfulRemovalPreservesPersistedGroupMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  func(*session.Instance) tea.Msg
+	}{
+		{name: "delete", msg: func(inst *session.Instance) tea.Msg {
+			return sessionDeletedMsg{deletedID: inst.ID}
+		}},
+		{name: "worktree finish", msg: func(inst *session.Instance) tea.Msg {
+			return worktreeFinishResultMsg{sessionID: inst.ID, sessionTitle: inst.Title}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+			h, storage := newHeadlessHomeForTest(t, "_test_tui_group_metadata_"+strings.ReplaceAll(tc.name, " ", "_"))
+			inst := seedSession(t, storage, nil, "tui-group-metadata-"+strings.ReplaceAll(tc.name, " ", "-"), "remove")
+			inst.GroupPath = "engineering/platform"
+			want := &session.GroupData{
+				Name: "Platform", Path: inst.GroupPath, Expanded: true, Order: 9,
+				DefaultPath: "/projects/platform", MaxConcurrent: 6,
+			}
+			tree := session.NewGroupTreeWithGroups([]*session.Instance{inst}, []*session.GroupData{want})
+			if err := storage.SaveWithGroups([]*session.Instance{inst}, tree); err != nil {
+				t.Fatal(err)
+			}
+			h.instances = []*session.Instance{inst}
+			h.instanceByID[inst.ID] = inst
+			h.groupTree = tree
+			h.search = NewSearch()
+			h.worktreeFinishDialog = NewWorktreeFinishDialog()
+
+			_, _ = h.updateInner(tc.msg(inst))
+			rows, groups, err := storage.LoadWithGroups()
+			if err != nil || len(rows) != 0 {
+				t.Fatalf("successful removal rows = %#v, %v", rows, err)
+			}
+			var got *session.GroupData
+			for _, group := range groups {
+				if group.Path == want.Path {
+					got = group
+					break
+				}
+			}
+			if got == nil || got.Name != want.Name || got.Expanded != want.Expanded || got.Order != want.Order ||
+				got.DefaultPath != want.DefaultPath || got.MaxConcurrent != want.MaxConcurrent {
+				t.Fatalf("persisted group = %#v, want %#v (all groups %#v)", got, want, groups)
+			}
+		})
 	}
 }
 
