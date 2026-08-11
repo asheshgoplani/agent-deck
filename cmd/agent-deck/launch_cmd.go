@@ -371,18 +371,41 @@ func handleLaunch(profile string, args []string) {
 		sessionTitle = filepath.Base(path)
 	}
 
-	// Check for duplicate and generate unique title
+	// Check for duplicate and generate unique title.
+	//
+	// Same read-decide-write window `add` has (see handleAdd): the list loaded
+	// above answers "is this (title, location) taken?" and the insert happens
+	// much later, so a concurrent registration can take the pair in between.
+	// The lock covers goroutines and separate processes; the re-read inside it
+	// is what makes the answer current. `launch` has no --ssh flag, so its
+	// location is always local — but it shares the predicate with `add` so the
+	// two can never disagree about what a duplicate is.
 	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
-	if !userProvidedTitle {
-		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
-	} else {
-		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
-			out.Error(
-				fmt.Sprintf("session already exists: %s (%s)", existingInst.Title, existingInst.ID),
-				ErrCodeAlreadyExists,
-			)
-			os.Exit(1)
+	launchRegLock, launchRegLockErr := session.AcquireRegistrationLock(profile)
+	if launchRegLockErr != nil {
+		out.Error(fmt.Sprintf("failed to acquire session registration lock: %v", launchRegLockErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	releaseLaunchRegistration := func() {
+		if launchRegLock != nil {
+			launchRegLock.Release()
+			launchRegLock = nil
 		}
+	}
+	defer releaseLaunchRegistration()
+	if freshInstances, freshGroups, loadErr := storage.LoadWithGroups(); loadErr == nil {
+		instances, groups = freshInstances, freshGroups
+	}
+
+	launchDecision := decideAddTitle(instances, sessionTitle, localLocation(path), userProvidedTitle)
+	if launchDecision.Duplicate != nil {
+		msg, code := launchDecision.DuplicateError()
+		out.ErrorWithData(msg, code, launchDecision.DuplicateJSONFields())
+		os.Exit(1)
+	}
+	sessionTitle = launchDecision.Title
+	if warning := launchDecision.RenameWarning(); warning != "" && !*jsonOutput && !quietMode {
+		fmt.Fprintln(os.Stderr, warning)
 	}
 
 	// Create new instance
@@ -543,6 +566,9 @@ func handleLaunch(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to save session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	// The (title, location) pair is now taken in the state db; the start and
+	// attach below must not hold the lock for other registrations.
+	releaseLaunchRegistration()
 
 	// Attach MCPs if specified
 	if len(mcpFlags) > 0 {

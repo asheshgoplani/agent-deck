@@ -1915,6 +1915,23 @@ func handleSessionSet(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// A title change takes a (title, location) pair exactly as `add` does, so it
+	// runs under the same profile registration lock and re-reads the instance
+	// list INSIDE it. Without that, two concurrent renames onto one title both
+	// see it free and both apply. Only the title field needs it; every other
+	// field is per-session state that cannot collide.
+	if field == session.FieldTitle {
+		regLock, regLockErr := session.AcquireRegistrationLock(profile)
+		if regLockErr != nil {
+			out.Error(fmt.Sprintf("failed to acquire session registration lock: %v", regLockErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		defer regLock.Release()
+		if freshInstances, freshGroups, loadErr := storage.LoadWithGroups(); loadErr == nil {
+			instances, groupsData = freshInstances, freshGroups
+		}
+	}
+
 	// Resolve session
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
@@ -1924,6 +1941,20 @@ func handleSessionSet(profile string, args []string) {
 		}
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
+	}
+
+	// #1853: `session set <id> title` had no collision check on either side of
+	// the SetField call, so it could rename a session onto a title another
+	// session already holds at the same location — the exact state `add` and
+	// `launch` refuse. Two sessions sharing a title at one location are then
+	// both unaddressable by title, because ResolveSession can only report
+	// ErrCodeAmbiguous. Same predicate and same ALREADY_EXISTS code as `add` and
+	// `rename`, naming the existing session's ID so the user can act on it.
+	if field == session.FieldTitle {
+		if msg, code := checkTitleConflict(instances, inst, value); msg != "" {
+			out.Error(msg, code)
+			os.Exit(1)
+		}
 	}
 
 	// #924 follow-up: the conversation follows the account. Capture the old
@@ -2093,14 +2124,11 @@ func findSessionByTmux(instances []*session.Instance) *session.Instance {
 		}
 	}
 
-	// Try to find by path (only for non-agentdeck tmux sessions)
-	for _, inst := range instances {
-		if inst.ProjectPath == currentPath {
-			return inst
-		}
-	}
-
-	return nil
+	// Try to find by path (only for non-agentdeck tmux sessions). The pane's cwd
+	// is a LOCAL path, so only a local session can own it — a remote session's
+	// ProjectPath is a placeholder that frequently equals the controller's
+	// working directory (#1852 site 4).
+	return localSessionForPaneCwd(instances, currentPath)
 }
 
 // showTmuxSessionInfo shows information about the current tmux session (unregistered)
@@ -4102,6 +4130,21 @@ func streamSessionSend(inst *session.Instance, sessionRef, profile string, sentA
 			session.NoteClaudeSessionIDFromOwnPane(inst)
 			inst.ClaudeDetectedAt = time.Now()
 		}
+	}
+
+	// A remote session's transcript is on the remote host, so the poll below can
+	// only ever time out. Say why now instead of after the full timeout with
+	// "transcript not found", which reads as "not written yet" and sends the
+	// user looking on the wrong machine (#1851).
+	if !resolvedInst.TranscriptIsResolvableLocally() {
+		errEv := map[string]interface{}{
+			"type":    "error",
+			"message": fmt.Sprintf("session runs on %s; its Claude transcript is not on this machine, so there is nothing to stream", resolvedInst.SSHHost),
+			"ts":      time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		b, _ := json.Marshal(errEv)
+		fmt.Println(string(b))
+		return fmt.Errorf("session runs on %s; its Claude transcript is not on this machine", resolvedInst.SSHHost)
 	}
 
 	var jsonlPath string

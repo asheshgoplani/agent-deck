@@ -554,11 +554,58 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 
 	var matches []*session.Instance
 
-	// Try exact title match first
+	// An identifier written in the explicit [user@]host:/path form is answered
+	// by where sessions RUN, ahead of every other rule.
+	//
+	// That form is what the ambiguity messages below print and tell the user to
+	// retype. A title is free text, so a session titled "bob@host-b:/opt/app-b"
+	// could shadow the session actually running at that location — the
+	// supposedly unambiguous answer selecting the wrong session. A session
+	// cannot occupy a location by accident, so the location is the stronger
+	// claim on this syntax.
+	//
+	// It yields when nothing runs at the named location: the identifier can then
+	// only have meant a title or an ID, so no existing session becomes
+	// unaddressable because of the precedence.
+	if want, explicit := session.ParseLocation(identifier); explicit {
+		var locationMatches []*session.Instance
+		for _, inst := range instances {
+			if session.LocationOf(inst) == want {
+				locationMatches = append(locationMatches, inst)
+			}
+		}
+		if len(locationMatches) == 1 {
+			return locationMatches[0], "", ""
+		}
+		if len(locationMatches) > 1 {
+			return nil, fmt.Sprintf("location '%s' has multiple sessions:\n  - %s\nUse title or ID to specify.",
+				identifier, strings.Join(describeLocations(locationMatches), "\n  - ")), ErrCodeAmbiguous
+		}
+	}
+
+	// Try exact title match.
+	//
+	// Every match is collected rather than returning the first: duplicate
+	// detection is location-aware, so one title at two DIFFERENT locations is a
+	// state the CLI creates by design (two `add --ssh` runs from one controller
+	// directory without -t keep the same directory-derived title). Returning the
+	// first holder made `session <title> stop` act on an arbitrary one of two
+	// sessions on two different hosts, silently. A title is what every
+	// documented workflow types, so it gets the same ambiguity report the
+	// location branch gives — naming each location, which is how the user
+	// addresses the one they meant.
+	var titleMatches []*session.Instance
 	for _, inst := range instances {
 		if inst.Title == identifier {
-			return inst, "", ""
+			titleMatches = append(titleMatches, inst)
 		}
+	}
+	if len(titleMatches) == 1 {
+		return titleMatches[0], "", ""
+	}
+	if len(titleMatches) > 1 {
+		return nil, fmt.Sprintf("title '%s' is held by multiple sessions:\n  - %s\nUse the session ID, or rename one of them.",
+			identifier, strings.Join(describeLocations(titleMatches), "\n  - ")), ErrCodeAmbiguous
 	}
 
 	// Try ID prefix match (minimum 6 chars for prefix to avoid too many matches)
@@ -583,12 +630,30 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 			identifier, strings.Join(names, "\n  - ")), ErrCodeAmbiguous
 	}
 
-	// Try path match - collect all sessions at this path
-	var pathMatches []*session.Instance
+	// Try location match - collect all sessions that RUN at this location.
+	// Location, not ProjectPath: an --ssh session stores a local placeholder in
+	// ProjectPath, so the remote path it really runs at was unaddressable while
+	// the placeholder matched every remote session at once (#1852 site 1).
+	var pathMatches, localPathMatches []*session.Instance
 	for _, inst := range instances {
-		if inst.ProjectPath == identifier {
+		if instanceAtLocationIdentifier(inst, identifier) {
 			pathMatches = append(pathMatches, inst)
+			if session.LocationOf(inst).IsLocal() {
+				localPathMatches = append(localPathMatches, inst)
+			}
 		}
+	}
+
+	// A BARE path resolves against local sessions first. Making a bare path
+	// match SSHRemotePath is what lets `agent-deck session /srv/app-a` reach the
+	// remote session running there (#1852 site 1), but remote paths routinely
+	// mirror local ones — and `agent-deck <path>` is the documented way to
+	// address the session in the current directory, so registering an unrelated
+	// remote session at the same absolute path must not take that away. A path
+	// typed on THIS machine means this machine; the remote session at it stays
+	// addressable through the explicit [user@]host:/path form handled above.
+	if len(localPathMatches) > 0 {
+		pathMatches = localPathMatches
 	}
 
 	if len(pathMatches) == 1 {
@@ -596,12 +661,8 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 	}
 
 	if len(pathMatches) > 1 {
-		var names []string
-		for _, m := range pathMatches {
-			names = append(names, fmt.Sprintf("%s (%s)", m.Title, m.ID[:12]))
-		}
 		return nil, fmt.Sprintf("path '%s' has multiple sessions:\n  - %s\nUse title or ID to specify.",
-			identifier, strings.Join(names, "\n  - ")), ErrCodeAmbiguous
+			identifier, strings.Join(describeLocations(pathMatches), "\n  - ")), ErrCodeAmbiguous
 	}
 
 	return nil, fmt.Sprintf("session '%s' not found", identifier), ErrCodeNotFound
