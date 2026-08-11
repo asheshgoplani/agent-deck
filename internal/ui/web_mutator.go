@@ -223,13 +223,13 @@ func (m *WebMutator) DeleteSession(id string) error {
 		return fmt.Errorf("session not found: %s", id)
 	}
 
-	// Kill the tmux session (ignore errors — may already be stopped)
-	_ = inst.Kill()
 	queueTx, err := session.BeginRuntimeQueueTransaction(id)
 	if err != nil {
 		return fmt.Errorf("discard runtime queue: %w", err)
 	}
 	defer queueTx.Release()
+	// Kill only after queue ownership guarantees the lifecycle can proceed.
+	_ = inst.Kill()
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {
@@ -281,14 +281,14 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	if err := inst.Kill(); err != nil {
-		return fmt.Errorf("failed to stop session: %w", err)
-	}
 	queueTx, err := session.BeginRuntimeQueueTransaction(id)
 	if err != nil {
 		return fmt.Errorf("failed to discard runtime queue: %w", err)
 	}
 	defer queueTx.Release()
+	if err := inst.Kill(); err != nil {
+		return fmt.Errorf("failed to stop session: %w", err)
+	}
 	m.h.instancesMu.Lock()
 	previousArchivedAt := inst.ArchivedAt
 	inst.ArchivedAt = time.Now().UTC()
@@ -669,6 +669,25 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		return web.WorktreeFinishResult{}, fmt.Errorf("cannot merge branch %q into itself", worktreeBranch)
 	}
 
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+	m.h.instancesMu.RLock()
+	existing := make([]*session.Instance, 0, len(m.h.instances))
+	for _, x := range m.h.instances {
+		if x.ID != id {
+			existing = append(existing, x)
+		}
+	}
+	m.h.instancesMu.RUnlock()
+	queueTx, err := session.BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("discard runtime queue: %w", err)
+	}
+	defer queueTx.Release()
+
 	if !opts.NoMerge {
 		// Checkout target in main repo, then merge.
 		checkout := exec.Command("git", "-C", repoRoot, "checkout", targetBranch)
@@ -702,25 +721,6 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		_ = inst.Kill()
 	}
 
-	storage, err := session.NewStorageWithProfile(m.h.profile)
-	if err != nil {
-		return web.WorktreeFinishResult{}, fmt.Errorf("open storage: %w", err)
-	}
-	defer storage.Close()
-
-	m.h.instancesMu.RLock()
-	existing := make([]*session.Instance, 0, len(m.h.instances))
-	for _, x := range m.h.instances {
-		if x.ID != id {
-			existing = append(existing, x)
-		}
-	}
-	m.h.instancesMu.RUnlock()
-	queueTx, err := session.BeginRuntimeQueueTransaction(id)
-	if err != nil {
-		return web.WorktreeFinishResult{}, fmt.Errorf("discard runtime queue: %w", err)
-	}
-	defer queueTx.Release()
 	// #1396: use the targeted RemoveSessionAndVerify path, NOT
 	// SaveWithGroups(existing, ...). Historically an empty `existing` tripped
 	// the S1 empty-sweep guard AFTER the irreversible git steps, orphaning the

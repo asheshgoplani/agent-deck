@@ -56,6 +56,63 @@ func TestWithInstancesAbsentBlockedStaleWriterCannotResurrectAfterCommit(t *test
 	}
 }
 
+func TestBlockedStaleWriterCannotOverwriteExplicitlyRecreatedIncarnation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	owner, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	if err := owner.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if err := writer.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	old := tombstoneTestRow("recreated-incarnation")
+	old.Title = "old incarnation"
+	if err := owner.CreateInstance(old); err != nil {
+		t.Fatal(err)
+	}
+	captured := *old
+	writerCaptured := make(chan struct{})
+	releaseWriter := make(chan struct{})
+	writer.beforeSaveInstancesWrite = func() {
+		close(writerCaptured)
+		<-releaseWriter
+	}
+	writerDone := make(chan error, 1)
+	go func() { writerDone <- writer.UpsertInstances([]*InstanceRow{&captured}) }()
+	<-writerCaptured
+
+	if err := owner.DeleteInstance(old.ID); err != nil {
+		t.Fatal(err)
+	}
+	newRow := tombstoneTestRow(old.ID)
+	newRow.Title = "new incarnation"
+	if err := owner.CreateInstance(newRow); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseWriter)
+	if err := <-writerDone; err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := owner.LoadInstances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Title != newRow.Title {
+		t.Fatalf("stale writer overwrote recreated incarnation: %#v", rows)
+	}
+}
+
 func TestDeletedInstanceTombstoneRejectsStaleWritesAndExplicitCreateClearsIt(t *testing.T) {
 	db := newTestDB(t)
 	row := tombstoneTestRow("reused-id")

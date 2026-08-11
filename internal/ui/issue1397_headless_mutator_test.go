@@ -295,6 +295,18 @@ func TestTUIArchivePersistenceFailurePreservesRuntimeQueueAndReleasesTransaction
 		t.Fatal(err)
 	}
 	_, _ = h.updateInner(sessionArchivedMsg{sessionID: inst.ID, queueTx: tx})
+	if !inst.ArchivedAt.IsZero() {
+		t.Fatalf("failed TUI archive left live ArchivedAt set: %v", inst.ArchivedAt)
+	}
+	verify, err := session.NewStorageWithProfile(h.profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := verify.LoadWithGroups()
+	_ = verify.Close()
+	if err != nil || len(rows) != 1 || !rows[0].ArchivedAt.IsZero() {
+		t.Fatalf("failed TUI archive changed durable lifecycle: %#v, %v", rows, err)
+	}
 	if !session.RuntimeQueueHasPending(inst.ID) {
 		t.Fatal("failed TUI archive discarded runtime queue")
 	}

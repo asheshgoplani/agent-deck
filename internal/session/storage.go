@@ -37,15 +37,16 @@ type StorageData struct {
 
 // InstanceData represents the serializable session data
 type InstanceData struct {
-	ID                 string `json:"id"`
-	Title              string `json:"title"`
-	ProjectPath        string `json:"project_path"`
-	GroupPath          string `json:"group_path"`
-	Order              int    `json:"order"`
-	ParentSessionID    string `json:"parent_session_id,omitempty"`    // Links to parent session (sub-session support)
-	IsConductor        bool   `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
-	NoTransitionNotify bool   `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch
-	TitleLocked        bool   `json:"title_locked,omitempty"`         // #697: block Claude session-name sync into Title
+	PersistenceGeneration int64  `json:"persistence_generation,omitempty"`
+	ID                    string `json:"id"`
+	Title                 string `json:"title"`
+	ProjectPath           string `json:"project_path"`
+	GroupPath             string `json:"group_path"`
+	Order                 int    `json:"order"`
+	ParentSessionID       string `json:"parent_session_id,omitempty"`    // Links to parent session (sub-session support)
+	IsConductor           bool   `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
+	NoTransitionNotify    bool   `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch
+	TitleLocked           bool   `json:"title_locked,omitempty"`         // #697: block Claude session-name sync into Title
 	// SubcommandPassthrough mirrors Instance.SubcommandPassthrough (#1821).
 	// Persisted via the tool_data extras zone (see
 	// WriteSubcommandPassthroughToToolData), not a dedicated SQL column, so
@@ -638,6 +639,7 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 	if err := s.createSingleInstance(row); err != nil {
 		return err
 	}
+	newInstance.PersistenceGeneration = row.PersistenceGeneration
 
 	if groupTree != nil {
 		if err := s.SaveGroupsOnly(groupTree); err != nil {
@@ -662,6 +664,7 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 		if err := s.createSingleInstance(row); err != nil {
 			return err
 		}
+		newInstance.PersistenceGeneration = row.PersistenceGeneration
 	}
 
 	exists, err := s.InstanceExists(newInstance.ID)
@@ -1005,32 +1008,33 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	toolData = WriteLastStartedAtToToolData(toolData, inst.LastStartedAt)
 
 	return &statedb.InstanceRow{
-		ID:                  inst.ID,
-		Title:               inst.Title,
-		ProjectPath:         inst.ProjectPath,
-		GroupPath:           inst.GroupPath,
-		Order:               inst.Order,
-		Command:             inst.Command,
-		Wrapper:             inst.Wrapper,
-		Tool:                inst.Tool,
-		Status:              string(inst.Status),
-		TmuxSession:         tmuxName,
-		TmuxSocketName:      inst.TmuxSocketName,
-		CreatedAt:           inst.CreatedAt,
-		LastAccessed:        inst.LastAccessedAt,
-		ParentSessionID:     inst.ParentSessionID,
-		IsConductor:         inst.IsConductor,
-		NoTransitionNotify:  inst.NoTransitionNotify,
-		TitleLocked:         inst.TitleLocked,
-		AutoName:            inst.GetAutoName(),
-		AutoNameDescription: inst.GetAutoNameDescription(),
-		WorktreePath:        inst.WorktreePath,
-		WorktreeRepo:        inst.WorktreeRepoRoot,
-		WorktreeBranch:      inst.WorktreeBranch,
-		Account:             inst.Account,
-		ArchivedAt:          inst.ArchivedAt,
-		Pin:                 string(inst.Pin),
-		ToolData:            toolData,
+		PersistenceGeneration: inst.PersistenceGeneration,
+		ID:                    inst.ID,
+		Title:                 inst.Title,
+		ProjectPath:           inst.ProjectPath,
+		GroupPath:             inst.GroupPath,
+		Order:                 inst.Order,
+		Command:               inst.Command,
+		Wrapper:               inst.Wrapper,
+		Tool:                  inst.Tool,
+		Status:                string(inst.Status),
+		TmuxSession:           tmuxName,
+		TmuxSocketName:        inst.TmuxSocketName,
+		CreatedAt:             inst.CreatedAt,
+		LastAccessed:          inst.LastAccessedAt,
+		ParentSessionID:       inst.ParentSessionID,
+		IsConductor:           inst.IsConductor,
+		NoTransitionNotify:    inst.NoTransitionNotify,
+		TitleLocked:           inst.TitleLocked,
+		AutoName:              inst.GetAutoName(),
+		AutoNameDescription:   inst.GetAutoNameDescription(),
+		WorktreePath:          inst.WorktreePath,
+		WorktreeRepo:          inst.WorktreeRepoRoot,
+		WorktreeBranch:        inst.WorktreeBranch,
+		Account:               inst.Account,
+		ArchivedAt:            inst.ArchivedAt,
+		Pin:                   string(inst.Pin),
+		ToolData:              toolData,
 	}, nil
 }
 
@@ -1351,6 +1355,7 @@ func (s *Storage) loadWithGroups(filterArchive, archived bool) ([]*Instance, []*
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
 		data.Instances[i] = &InstanceData{
+			PersistenceGeneration:     r.PersistenceGeneration,
 			ID:                        r.ID,
 			Title:                     r.Title,
 			ProjectPath:               r.ProjectPath,
@@ -1609,6 +1614,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 		projectPath := ExpandPath(fixMalformedTildePath(instData.ProjectPath))
 
 		inst := &Instance{
+			PersistenceGeneration:        instData.PersistenceGeneration,
 			ID:                           instData.ID,
 			Title:                        instData.Title,
 			ProjectPath:                  projectPath,

@@ -116,11 +116,14 @@ const (
 
 // Instance represents a single agent/shell session
 type Instance struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	ProjectPath string `json:"project_path"`
-	GroupPath   string `json:"group_path"` // e.g., "projects/devops"
-	Order       int    `json:"order"`      // Position within group (for reorder persistence)
+	// PersistenceGeneration is the durable incarnation observed when this row
+	// was loaded. Storage CAS writes use it to reject prior-incarnation snapshots.
+	PersistenceGeneration int64
+	ID                    string `json:"id"`
+	Title                 string `json:"title"`
+	ProjectPath           string `json:"project_path"`
+	GroupPath             string `json:"group_path"` // e.g., "projects/devops"
+	Order                 int    `json:"order"`      // Position within group (for reorder persistence)
 	// Pin anchors this session to the top or bottom of its group, exempt from
 	// the status/recency sort (pin-sessions feature). PinNone is the default.
 	Pin                PinMode `json:"pin,omitempty"`

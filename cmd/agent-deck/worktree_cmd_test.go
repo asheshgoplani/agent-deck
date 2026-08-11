@@ -7,8 +7,79 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
+
+func TestWorktreeFinishQueueLockFailureLeavesWorkspaceBranchRowAndQueue(t *testing.T) {
+	const profile = "_test_worktree_finish_queue_lock"
+	if os.Getenv("AGENT_DECK_WORKTREE_LOCK_HELPER") == "1" {
+		handleWorktreeFinish(profile, []string{"worktree-lock-failure", "--no-merge", "--force", "--json"})
+		return
+	}
+	repo := t.TempDir()
+	run := func(args ...string) string {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return string(out)
+	}
+	run("init", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "seed"), []byte("seed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "seed")
+	run("commit", "-m", "seed")
+	run("branch", "cli-lock-branch")
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	run("worktree", "add", worktree, "cli-lock-branch")
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := &session.Instance{ID: "worktree-lock-failure", Title: "worktree-lock-failure", ProjectPath: worktree, GroupPath: session.DefaultGroupPath, Tool: "shell", Command: "shell", Status: session.StatusStopped, WorktreeRepoRoot: repo, WorktreePath: worktree, WorktreeBranch: "cli-lock-branch"}
+	if err := storage.SaveWithGroups([]*session.Instance{inst}, session.NewGroupTree([]*session.Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	_ = storage.Close()
+	if _, err := session.EnqueueRuntimeMessage(inst.ID, "preserve"); err != nil {
+		t.Fatal(err)
+	}
+	lockDir := filepath.Join(filepath.Dir(filepath.Dir(session.RuntimeQueuePathFor(inst.ID))), "runtime-queue-locks")
+	if err := os.RemoveAll(lockDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockDir, []byte("blocked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWorktreeFinishQueueLockFailureLeavesWorkspaceBranchRowAndQueue$")
+	cmd.Env = append(os.Environ(), "AGENT_DECK_WORKTREE_LOCK_HELPER=1")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("worktree finish unexpectedly succeeded")
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("worktree changed: %v", err)
+	}
+	if got := run("branch", "--list", inst.WorktreeBranch); got == "" {
+		t.Fatal("branch deleted")
+	}
+	verify, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := verify.LoadWithGroups()
+	_ = verify.Close()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("row changed: %#v, %v", rows, err)
+	}
+	if !session.RuntimeQueueHasPending(inst.ID) {
+		t.Fatal("queue changed")
+	}
+}
 
 // TestMain is in testmain_test.go - sets AGENTDECK_PROFILE=_test
 

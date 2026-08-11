@@ -733,6 +733,12 @@ func handleWorktreeFinish(profile string, args []string) {
 		}
 		fmt.Println()
 	}
+	queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	defer queueTx.Release()
 
 	// Step 1: Merge (if requested)
 	if !*noMerge {
@@ -797,12 +803,6 @@ func handleWorktreeFinish(profile string, args []string) {
 	// row at all. Either way, removal requires the targeted DELETE.
 	remaining := dropInstance(instances, inst.ID)
 	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
-	queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
-	if err != nil {
-		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-	defer queueTx.Release()
 	if err := storage.RemoveSessionAndVerify(inst.ID, remaining, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save session data: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)

@@ -97,7 +97,7 @@ func withBusyRetry(op func() error) error {
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 14
+const SchemaVersion = 15
 
 // ErrInstanceTombstoned prevents stale persistence from recreating an ID whose
 // deletion has already committed. Only CreateInstance may explicitly reuse it.
@@ -125,6 +125,7 @@ type StateDB struct {
 	// beforeInstancesAbsentCommit is a deterministic concurrency-test seam.
 	// Production instances leave it nil.
 	beforeInstancesAbsentCommit func()
+	beforeSaveInstancesWrite    func()
 }
 
 // newOwnerToken builds a claim-ownership token unique to this process
@@ -146,21 +147,22 @@ const backupRowDropThreshold = 3
 
 // InstanceRow represents a session row in the database.
 type InstanceRow struct {
-	ID                 string
-	Title              string
-	ProjectPath        string
-	GroupPath          string
-	Order              int
-	Command            string
-	Wrapper            string
-	Tool               string
-	Status             string
-	TmuxSession        string
-	CreatedAt          time.Time
-	LastAccessed       time.Time
-	ParentSessionID    string
-	IsConductor        bool
-	NoTransitionNotify bool
+	PersistenceGeneration int64
+	ID                    string
+	Title                 string
+	ProjectPath           string
+	GroupPath             string
+	Order                 int
+	Command               string
+	Wrapper               string
+	Tool                  string
+	Status                string
+	TmuxSession           string
+	CreatedAt             time.Time
+	LastAccessed          time.Time
+	ParentSessionID       string
+	IsConductor           bool
+	NoTransitionNotify    bool
 	// TmuxSocketName mirrors Instance.TmuxSocketName (v1.7.50+, issue #687).
 	// Empty for pre-v1.7.50 rows — those keep targeting the default server
 	// after upgrade.
@@ -427,7 +429,9 @@ func (s *StateDB) Migrate() error {
 	if _, err := tx.Exec(`
 		CREATE TABLE IF NOT EXISTS instance_tombstones (
 			id TEXT PRIMARY KEY,
-			deleted_at INTEGER NOT NULL
+			deleted_at INTEGER NOT NULL,
+			generation INTEGER NOT NULL DEFAULT 1,
+			active INTEGER NOT NULL DEFAULT 1
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create instance tombstones: %w", err)
@@ -582,6 +586,8 @@ func (s *StateDB) Migrate() error {
 	// Each migration is idempotent: errors from "duplicate column" are silently ignored.
 	// See CLAUDE.md "Schema Migration Safety": every new column MUST have a corresponding ALTER TABLE.
 	alterMigrations := []string{
+		"ALTER TABLE instance_tombstones ADD COLUMN generation INTEGER NOT NULL DEFAULT 1",
+		"ALTER TABLE instance_tombstones ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE instances ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE watcher_events ADD COLUMN triage_session_id TEXT NOT NULL DEFAULT ''",
 		// Slack-truncation fix: full message text alongside the (first-line,
@@ -746,13 +752,16 @@ func archivedAtUnix(t time.Time) int64 {
 // SaveInstance inserts or replaces a single instance unless that ID has been
 // durably deleted. Use CreateInstance for an intentional ID reuse.
 func (s *StateDB) SaveInstance(inst *InstanceRow) error {
-	var tombstoned int
-	if err := s.db.QueryRow("SELECT 1 FROM instance_tombstones WHERE id = ?", inst.ID).Scan(&tombstoned); err == nil {
-		return fmt.Errorf("%w: %s", ErrInstanceTombstoned, inst.ID)
+	var generation int64
+	var active int
+	if err := s.db.QueryRow("SELECT generation, active FROM instance_tombstones WHERE id = ?", inst.ID).Scan(&generation, &active); err == nil {
+		if active != 0 {
+			return fmt.Errorf("%w: %s", ErrInstanceTombstoned, inst.ID)
+		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	return s.saveInstanceUnchecked(inst)
+	return s.saveInstanceUnchecked(inst, inst.PersistenceGeneration)
 }
 
 // CreateInstance explicitly creates or reuses an ID. Clearing a tombstone and
@@ -763,16 +772,27 @@ func (s *StateDB) CreateInstance(inst *InstanceRow) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec("DELETE FROM instance_tombstones WHERE id = ?", inst.ID); err != nil {
+	if _, err := tx.Exec(`
+		INSERT INTO instance_tombstones(id, deleted_at, generation, active) VALUES (?, 0, 1, 0)
+		ON CONFLICT(id) DO UPDATE SET generation = generation + 1, deleted_at = 0, active = 0
+	`, inst.ID); err != nil {
 		return err
 	}
-	if err := saveInstanceRow(tx, inst, nil, existingAutoNameFields{}); err != nil {
+	var generation int64
+	if err := tx.QueryRow("SELECT generation FROM instance_tombstones WHERE id = ?", inst.ID).Scan(&generation); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := saveInstanceRow(tx, inst, nil, existingAutoNameFields{}, generation); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	inst.PersistenceGeneration = generation
+	return nil
 }
 
-func (s *StateDB) saveInstanceUnchecked(inst *InstanceRow) error {
+func (s *StateDB) saveInstanceUnchecked(inst *InstanceRow, generation int64) error {
 	toolData := inst.ToolData
 	if len(toolData) == 0 {
 		toolData = json.RawMessage("{}")
@@ -792,14 +812,14 @@ func (s *StateDB) saveInstanceUnchecked(inst *InstanceRow) error {
 		existingAutoName.autoName = existingAutoNameInt != 0
 	}
 
-	return saveInstanceRow(s.db, inst, toolData, existingAutoName)
+	return saveInstanceRow(s.db, inst, toolData, existingAutoName, generation)
 }
 
 type instanceExecer interface {
 	Exec(query string, args ...any) (sql.Result, error)
 }
 
-func saveInstanceRow(exec instanceExecer, inst *InstanceRow, toolData json.RawMessage, existingAutoName existingAutoNameFields) error {
+func saveInstanceRow(exec instanceExecer, inst *InstanceRow, toolData json.RawMessage, existingAutoName existingAutoNameFields, generation int64) error {
 	if len(toolData) == 0 {
 		toolData = inst.ToolData
 	}
@@ -832,14 +852,17 @@ func saveInstanceRow(exec instanceExecer, inst *InstanceRow, toolData json.RawMe
 			worktree_path, worktree_repo, worktree_branch, account,
 			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
 		) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-		WHERE NOT EXISTS (SELECT 1 FROM instance_tombstones WHERE id = ?)
+		WHERE NOT EXISTS (
+			SELECT 1 FROM instance_tombstones
+			WHERE id = ? AND (active = 1 OR generation <> ?)
+		)
 	`,
 		inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 		inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 		inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-		archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin, inst.ID,
+		archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin, inst.ID, generation,
 	)
 	if err != nil {
 		return err
@@ -967,6 +990,9 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 			}
 		}
 	}
+	if s.beforeSaveInstancesWrite != nil {
+		s.beforeSaveInstancesWrite()
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1003,7 +1029,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 		}
 		// #nosec G202 -- placeholders is a fixed sequence of "?" tokens generated
 		// from len(insts); all values flow through args[], never the SQL string.
-		tombstoneQuery := "INSERT OR REPLACE INTO instance_tombstones(id, deleted_at) SELECT id, ? FROM instances WHERE id NOT IN (" + strings.Join(placeholders, ",") + ")"
+		tombstoneQuery := "INSERT INTO instance_tombstones(id, deleted_at, generation, active) SELECT id, ?, 1, 1 FROM instances WHERE id NOT IN (" + strings.Join(placeholders, ",") + ") ON CONFLICT(id) DO UPDATE SET generation = generation + 1, deleted_at = excluded.deleted_at, active = 1"
 		if _, err := tx.Exec(tombstoneQuery, append([]any{time.Now().Unix()}, args...)...); err != nil {
 			return err
 		}
@@ -1022,7 +1048,10 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 			worktree_path, worktree_repo, worktree_branch, account,
 			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
 		) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-		WHERE NOT EXISTS (SELECT 1 FROM instance_tombstones WHERE id = ?)
+		WHERE NOT EXISTS (
+			SELECT 1 FROM instance_tombstones
+			WHERE id = ? AND (active = 1 OR generation <> ?)
+		)
 	`)
 	if err != nil {
 		return err
@@ -1060,7 +1089,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 			inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin, inst.ID,
+			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin, inst.ID, inst.PersistenceGeneration,
 		); err != nil {
 			return err
 		}
@@ -1081,7 +1110,9 @@ func (s *StateDB) ClearAllInstances() error {
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec("INSERT OR REPLACE INTO instance_tombstones(id, deleted_at) SELECT id, ? FROM instances", time.Now().Unix()); err != nil {
+		if _, err := tx.Exec(`INSERT INTO instance_tombstones(id, deleted_at, generation, active)
+			SELECT id, ?, 1, 1 FROM instances WHERE true
+			ON CONFLICT(id) DO UPDATE SET generation = generation + 1, deleted_at = excluded.deleted_at, active = 1`, time.Now().Unix()); err != nil {
 			return err
 		}
 		if _, err := tx.Exec("DELETE FROM instances"); err != nil {
@@ -1114,7 +1145,8 @@ func (s *StateDB) loadInstances(where string) ([]*InstanceRow, error) {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
+			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin,
+			COALESCE((SELECT generation FROM instance_tombstones WHERE id = instances.id), 0)
 		FROM instances ` + where + ` ORDER BY sort_order
 	`
 	rows, err := s.db.Query(query)
@@ -1135,7 +1167,7 @@ func (s *StateDB) loadInstances(where string) ([]*InstanceRow, error) {
 			&createdUnix, &accessedUnix,
 			&r.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
 			&r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch, &r.Account,
-			&archivedUnix, &toolDataStr, &titleLockedInt, &autoNameInt, &r.AutoNameDescription, &r.Pin,
+			&archivedUnix, &toolDataStr, &titleLockedInt, &autoNameInt, &r.AutoNameDescription, &r.Pin, &r.PersistenceGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -1169,7 +1201,7 @@ func (s *StateDB) DeleteInstance(id string) error {
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec("INSERT OR REPLACE INTO instance_tombstones(id, deleted_at) VALUES (?, ?)", id, time.Now().Unix()); err != nil {
+		if err := tombstoneInstance(tx, id); err != nil {
 			return err
 		}
 		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
@@ -1177,6 +1209,14 @@ func (s *StateDB) DeleteInstance(id string) error {
 		}
 		return tx.Commit()
 	})
+}
+
+func tombstoneInstance(tx *sql.Tx, id string) error {
+	_, err := tx.Exec(`
+		INSERT INTO instance_tombstones(id, deleted_at, generation, active) VALUES (?, ?, 1, 1)
+		ON CONFLICT(id) DO UPDATE SET generation = generation + 1, deleted_at = excluded.deleted_at, active = 1
+	`, id, time.Now().Unix())
+	return err
 }
 
 // DeleteInstanceAndSaveGroups removes an instance and upserts the supplied
@@ -1191,7 +1231,7 @@ func (s *StateDB) DeleteInstanceAndSaveGroups(id string, groups []*GroupRow) err
 		}
 		defer func() { _ = tx.Rollback() }()
 
-		if _, err := tx.Exec("INSERT OR REPLACE INTO instance_tombstones(id, deleted_at) VALUES (?, ?)", id, time.Now().Unix()); err != nil {
+		if err := tombstoneInstance(tx, id); err != nil {
 			return err
 		}
 		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
@@ -1284,7 +1324,7 @@ func (s *StateDB) WithInstancesAbsent(ids []string, confirmed func() error) (boo
 	defer func() { _ = tx.Rollback() }()
 
 	for _, id := range ids {
-		if _, err := tx.Exec("INSERT OR REPLACE INTO instance_tombstones(id, deleted_at) VALUES (?, ?)", id, time.Now().Unix()); err != nil {
+		if err := tombstoneInstance(tx, id); err != nil {
 			return false, err
 		}
 		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {

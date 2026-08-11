@@ -5950,6 +5950,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// writers the full-table save aborts on external-change and reloads,
 			// silently discarding the archive (archived_at reverts to 0).
 			if err := h.persistArchived(inst); err != nil {
+				inst.ArchivedAt = msg.previousArchivedAt
 				h.setError(fmt.Errorf("failed to persist archive: %w", err))
 				return h, nil
 			}
@@ -12912,9 +12913,10 @@ type sessionClosedMsg struct {
 }
 
 type sessionArchivedMsg struct {
-	sessionID string
-	killErr   error
-	queueTx   *session.RuntimeQueueTransaction
+	sessionID          string
+	killErr            error
+	queueTx            *session.RuntimeQueueTransaction
+	previousArchivedAt time.Time
 }
 
 type sessionUnarchivedMsg struct {
@@ -12951,11 +12953,11 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 		h.instancesMu.RUnlock()
 	}
 	return func() tea.Msg {
-		killErr := inst.Kill()
 		queueTx, discardErr := session.BeginRuntimeQueueTransaction(id)
 		if discardErr != nil {
 			return sessionDeleteFailedMsg{err: discardErr}
 		}
+		killErr := inst.Kill()
 		if isWorktree && sharedWorktree {
 			// #1449: another live session still references this worktree; skip
 			// the destructive removal + branch delete and merely drop this
@@ -13069,15 +13071,17 @@ func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 	h.captureAutoNameBeforeStop(inst)
 	id := inst.ID
 	return func() tea.Msg {
-		if killErr := inst.Kill(); killErr != nil {
-			return sessionArchivedMsg{sessionID: id, killErr: killErr}
-		}
 		queueTx, discardErr := session.BeginRuntimeQueueTransaction(id)
 		if discardErr != nil {
 			return sessionArchivedMsg{sessionID: id, killErr: discardErr}
 		}
+		if killErr := inst.Kill(); killErr != nil {
+			queueTx.Release()
+			return sessionArchivedMsg{sessionID: id, killErr: killErr}
+		}
+		previousArchivedAt := inst.ArchivedAt
 		inst.ArchivedAt = time.Now().UTC()
-		return sessionArchivedMsg{sessionID: id, queueTx: queueTx}
+		return sessionArchivedMsg{sessionID: id, queueTx: queueTx, previousArchivedAt: previousArchivedAt}
 	}
 }
 
@@ -19580,6 +19584,14 @@ func (h *Home) runWorktreeSetup(inst *session.Instance) tea.Cmd {
 // merge branch, remove worktree, delete branch, kill session, remove from storage
 func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, branchName, repoRoot, worktreePath string, mergeEnabled bool, targetBranch string, keepBranch bool, sharedWorktree bool) tea.Cmd {
 	return func() tea.Msg {
+		queueTx, err := session.BeginRuntimeQueueTransaction(sessionID)
+		if err != nil {
+			return worktreeFinishResultMsg{sessionID: sessionID, sessionTitle: sessionTitle, err: fmt.Errorf("discard runtime queue: %v", err)}
+		}
+		fail := func(err error) tea.Msg {
+			queueTx.Release()
+			return worktreeFinishResultMsg{sessionID: sessionID, sessionTitle: sessionTitle, err: err}
+		}
 		merged := false
 
 		// Step 1: Merge (if requested). git.MergeBack handles both regular
@@ -19587,10 +19599,7 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 		// working tree, so checkout/merge cannot run there (#891).
 		if mergeEnabled {
 			if err := git.MergeBack(repoRoot, branchName, targetBranch); err != nil {
-				return worktreeFinishResultMsg{
-					sessionID: sessionID, sessionTitle: sessionTitle,
-					err: fmt.Errorf("merge failed: %v", err),
-				}
+				return fail(fmt.Errorf("merge failed: %v", err))
 			}
 			merged = true
 		}
@@ -19624,14 +19633,6 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 		if inst != nil && inst.Exists() {
 			_ = inst.Kill()
 		}
-		queueTx, err := session.BeginRuntimeQueueTransaction(sessionID)
-		if err != nil {
-			return worktreeFinishResultMsg{
-				sessionID: sessionID, sessionTitle: sessionTitle,
-				err: fmt.Errorf("discard runtime queue: %v", err),
-			}
-		}
-
 		return worktreeFinishResultMsg{
 			sessionID:    sessionID,
 			sessionTitle: sessionTitle,
