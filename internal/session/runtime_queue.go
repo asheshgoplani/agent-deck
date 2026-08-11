@@ -317,12 +317,27 @@ func removeRuntimeQueueWALLocked(id string) error {
 }
 
 func readRuntimeQueueJSONLocked(path string, value any) (bool, error) {
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return true, err
+	}
+	if info.Size() > MaxRuntimeQueueBytes {
+		return true, fmt.Errorf("runtime queue sidecar %s exceeds %d bytes", path, MaxRuntimeQueueBytes)
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, MaxRuntimeQueueBytes+1))
+	if err != nil {
+		return true, err
+	}
+	if len(raw) > MaxRuntimeQueueBytes {
+		return true, fmt.Errorf("runtime queue sidecar %s exceeds %d bytes", path, MaxRuntimeQueueBytes)
 	}
 	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
 		return true, errors.New("unterminated JSON record")

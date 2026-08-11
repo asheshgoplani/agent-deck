@@ -473,9 +473,10 @@ func TestRuntimeQueueAcknowledgeValidatesAndRemovesOnlyPrefix(t *testing.T) {
 	if err := AcknowledgeRuntimeQueue("ack", batch.Token); err != nil {
 		t.Fatal(err)
 	}
-	inflightDir := filepath.Dir(wal)
-	if syncedDirs[inflightDir] != 1 {
-		t.Fatalf("acknowledgment WAL directory syncs = %d, want 1; all syncs: %#v", syncedDirs[inflightDir], syncedDirs)
+	for _, dir := range []string{filepath.Dir(active), filepath.Dir(runtimeQueueCompletionPathFor("ack")), filepath.Dir(wal)} {
+		if syncedDirs[dir] != 1 {
+			t.Fatalf("acknowledgment directory syncs for %s = %d, want 1; all syncs: %#v", dir, syncedDirs[dir], syncedDirs)
+		}
 	}
 	remaining, err := PeekRuntimeQueue("ack")
 	if err != nil || len(remaining) != 1 || remaining[0].Message != "three" {
@@ -540,6 +541,9 @@ func TestRuntimeQueueStageMalformedWALIsRetained(t *testing.T) {
 		{name: "trailing record", content: func(id string) []byte {
 			return []byte(fmt.Sprintf("{\"token\":\"batch\",\"message_ids\":[%q]}\n{}\n", id))
 		}, wantErr: "multiple JSON records"},
+		{name: "oversized WAL", content: func(string) []byte {
+			return []byte(strings.Repeat("x", MaxRuntimeQueueBytes+1))
+		}, wantErr: "exceeds"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateRuntimeQueue(t)
@@ -566,6 +570,29 @@ func TestRuntimeQueueStageMalformedWALIsRetained(t *testing.T) {
 				t.Fatal("malformed WAL was changed")
 			}
 		})
+	}
+}
+
+func TestRuntimeQueueAcknowledgeOversizedCompletionIsRetained(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "oversized-completion"
+	completion := runtimeQueueCompletionPathFor(id)
+	if err := os.MkdirAll(filepath.Dir(completion), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantSize := int64(MaxRuntimeQueueBytes + 1)
+	if err := os.WriteFile(completion, []byte(strings.Repeat("x", int(wantSize))), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := AcknowledgeRuntimeQueue(id, "unknown"); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized completion error = %v", err)
+	}
+	info, err := os.Stat(completion)
+	if err != nil {
+		t.Fatalf("oversized completion was not retained: %v", err)
+	}
+	if info.Size() != wantSize {
+		t.Fatalf("oversized completion size = %d, want %d", info.Size(), wantSize)
 	}
 }
 
