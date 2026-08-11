@@ -1317,24 +1317,27 @@ func (s *StateDB) InstanceExists(id string) (bool, error) {
 // transaction. Irreversible cleanup runs only after that commit; stale writers
 // subsequently complete but their tombstone-aware upserts cannot resurrect IDs.
 func (s *StateDB) WithInstancesAbsent(ids []string, confirmed func() error) (bool, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	err := withBusyRetry(func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
 
-	for _, id := range ids {
-		if err := tombstoneInstance(tx, id); err != nil {
-			return false, err
+		for _, id := range ids {
+			if err := tombstoneInstance(tx, id); err != nil {
+				return err
+			}
+			if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
-			return false, err
+		if s.beforeInstancesAbsentCommit != nil {
+			s.beforeInstancesAbsentCommit()
 		}
-	}
-	if s.beforeInstancesAbsentCommit != nil {
-		s.beforeInstancesAbsentCommit()
-	}
-	if err := tx.Commit(); err != nil {
+		return tx.Commit()
+	})
+	if err != nil {
 		return false, err
 	}
 	return true, confirmed()

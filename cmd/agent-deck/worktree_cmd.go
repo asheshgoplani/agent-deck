@@ -739,6 +739,12 @@ func handleWorktreeFinish(profile string, args []string) {
 		os.Exit(1)
 	}
 	defer queueTx.Release()
+	remaining := dropInstance(instances, inst.ID)
+	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
+	if err := storage.RemoveSessionAndVerify(inst.ID, remaining, groupTree); err != nil {
+		out.Error(fmt.Sprintf("failed to save session data: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	// Step 1: Merge (if requested)
 	if !*noMerge {
@@ -801,12 +807,6 @@ func handleWorktreeFinish(profile string, args []string) {
 	// the S1 empty-sweep guard AFTER the irreversible git steps, orphaning the
 	// row; since #1550 SaveWithGroups is upsert-only and would not delete the
 	// row at all. Either way, removal requires the targeted DELETE.
-	remaining := dropInstance(instances, inst.ID)
-	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
-	if err := storage.RemoveSessionAndVerify(inst.ID, remaining, groupTree); err != nil {
-		out.Error(fmt.Sprintf("failed to save session data: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
 	if err := queueTx.Discard(); err != nil {
 		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)

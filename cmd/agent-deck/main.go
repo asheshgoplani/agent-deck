@@ -2452,12 +2452,35 @@ func handleRemove(profile string, args []string) {
 
 	removedID := inst.ID
 	removedTitle := inst.Title
+	queueTx, err := session.BeginRuntimeQueueTransaction(removedID)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to lock runtime queue for %s: %v", removedID, err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	defer queueTx.Release()
 
 	// Snapshot service-unit ownership BEFORE teardown (issue #1721): the
 	// pid of the tmux server generation this session belongs to is only
 	// observable while the session is still live, and it is what proves
 	// the unit we may stop later is the one we actually retired.
 	serviceUnitOwnership := inst.ServiceUnitOwnership()
+
+	// Rebuild and commit the durable lifecycle transition before teardown.
+	newInstances := make([]*session.Instance, 0, len(instances)-1)
+	for _, s := range instances {
+		if s.ID != removedID {
+			newInstances = append(newInstances, s)
+		}
+	}
+	groupTree := session.NewGroupTreeWithGroups(newInstances, groups)
+	if err := storage.RemoveSessionAndVerify(removedID, newInstances, groupTree); err != nil {
+		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := queueTx.Discard(); err != nil {
+		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	// Always attempt to kill the tmux session, even if Exists() returns false.
 	// The saved status may be stale (e.g., "error" in DB but tmux session still alive).
@@ -2500,7 +2523,7 @@ func handleRemove(profile string, args []string) {
 		}
 	}
 
-	// Rebuild instance list without the deleted session and persist groups.
+	// The row is already durably absent; teardown below cannot strand a live row.
 	// v1.9.1 (#909): the rm path now uses RemoveSessionAndVerify which
 	//   1. issues a targeted DELETE (busy-retried in statedb),
 	//   2. saves groups WITHOUT rewriting the instances table (SaveGroupsOnly,
@@ -2510,29 +2533,6 @@ func handleRemove(profile string, args []string) {
 	//      resurrection by a concurrent SaveInstances rewrite.
 	// On persistent failure the CLI exits 1 instead of falsely printing
 	// "✓ Removed".
-	newInstances := make([]*session.Instance, 0, len(instances)-1)
-	for _, s := range instances {
-		if s.ID != removedID {
-			newInstances = append(newInstances, s)
-		}
-	}
-	groupTree := session.NewGroupTreeWithGroups(newInstances, groups)
-
-	queueTx, err := session.BeginRuntimeQueueTransaction(removedID)
-	if err != nil {
-		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-	defer queueTx.Release()
-	if err := storage.RemoveSessionAndVerify(removedID, newInstances, groupTree); err != nil {
-		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-	if err := queueTx.Discard(); err != nil {
-		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-
 	// Best-effort post-removal cleanup for transition-notifier state
 	// (issue #910). Failures are warned but do not block the rm — the
 	// SQLite removal is the user-visible contract.

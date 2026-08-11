@@ -156,6 +156,7 @@ func FormatRuntimeMessagesForInjection(msgs []RuntimeQueuedMessage) string {
 
 var ErrRuntimeQueueFull = errors.New("runtime message queue is full")
 var ErrRuntimeQueueDeliveryInProgress = errors.New("runtime queue delivery in progress")
+var ErrRuntimeQueueTransactionReleased = errors.New("runtime queue transaction released")
 
 const (
 	MaxRuntimeQueueMessages = 100
@@ -202,8 +203,10 @@ func EnqueueRuntimeMessage(id, msg string) (depth int, err error) {
 }
 
 type RuntimeQueueTransaction struct {
-	id      string
-	release func()
+	id       string
+	release  func()
+	stateMu  sync.Mutex
+	released bool
 }
 
 func BeginRuntimeQueueTransaction(id string) (*RuntimeQueueTransaction, error) {
@@ -215,13 +218,27 @@ func BeginRuntimeQueueTransaction(id string) (*RuntimeQueueTransaction, error) {
 }
 
 func (tx *RuntimeQueueTransaction) Release() {
-	if tx != nil && tx.release != nil {
+	if tx == nil {
+		return
+	}
+	tx.stateMu.Lock()
+	defer tx.stateMu.Unlock()
+	if tx.release != nil {
 		tx.release()
 		tx.release = nil
+		tx.released = true
 	}
 }
 
 func (tx *RuntimeQueueTransaction) Enqueue(msg string) (depth int, err error) {
+	if tx == nil {
+		return 0, ErrRuntimeQueueTransactionReleased
+	}
+	tx.stateMu.Lock()
+	defer tx.stateMu.Unlock()
+	if tx.released || tx.release == nil {
+		return 0, ErrRuntimeQueueTransactionReleased
+	}
 	path := RuntimeQueuePathFor(tx.id)
 
 	runtimeQueueMu.Lock()
@@ -259,6 +276,14 @@ func (tx *RuntimeQueueTransaction) Enqueue(msg string) (depth int, err error) {
 }
 
 func (tx *RuntimeQueueTransaction) Discard() error {
+	if tx == nil {
+		return ErrRuntimeQueueTransactionReleased
+	}
+	tx.stateMu.Lock()
+	defer tx.stateMu.Unlock()
+	if tx.released || tx.release == nil {
+		return ErrRuntimeQueueTransactionReleased
+	}
 	runtimeQueueMu.Lock()
 	defer runtimeQueueMu.Unlock()
 	return discardRuntimeQueueFilesLocked(tx.id)

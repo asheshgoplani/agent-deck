@@ -1417,3 +1417,22 @@ func TestRuntimeQueueFormat(t *testing.T) {
 		})
 	}
 }
+
+func TestRuntimeQueueTransactionRejectsMutationAfterRelease(t *testing.T) {
+	isolateRuntimeQueue(t)
+	tx, err := BeginRuntimeQueueTransaction("released-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.Release()
+	if _, err := tx.Enqueue("must not appear"); !errors.Is(err, ErrRuntimeQueueTransactionReleased) {
+		t.Fatalf("Enqueue after release = %v", err)
+	}
+	if err := tx.Discard(); !errors.Is(err, ErrRuntimeQueueTransactionReleased) {
+		t.Fatalf("Discard after release = %v", err)
+	}
+	queued, err := PeekRuntimeQueue("released-owner")
+	if err != nil || len(queued) != 0 {
+		t.Fatalf("released transaction mutated queue: %#v, %v", queued, err)
+	}
+}

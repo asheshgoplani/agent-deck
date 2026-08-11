@@ -832,23 +832,58 @@ func handleConductorTeardown(_ string, args []string) {
 			fmt.Printf("Stopping conductor: %s (profile: %s)\n", meta.Name, meta.Profile)
 		}
 
-		// Stop the session
+		// Prepare lifecycle ownership before stopping the runtime or removing files.
 		storage, err := session.NewStorageWithProfile(meta.Profile)
+		var instances []*session.Instance
+		var groups []*session.GroupData
+		var ownedTxs []*session.RuntimeQueueTransaction
+		prepareFailed := err != nil
 		if err == nil {
-			instances, _, err := storage.LoadWithGroups()
+			instances, groups, err = storage.LoadWithGroups()
+			prepareFailed = err != nil
 			if err == nil {
 				for _, inst := range instances {
 					if inst.Title == sessionTitle {
-						if inst.Exists() {
-							_ = inst.Kill()
+						queueTx, lockErr := session.BeginRuntimeQueueTransaction(inst.ID)
+						if lockErr != nil {
+							prepareFailed = true
+							if !*jsonOutput {
+								fmt.Fprintf(os.Stderr, "  Warning: failed to lock runtime queue for '%s' (%s): %v\n", sessionTitle, inst.ID, lockErr)
+							}
+							break
 						}
-						if !*jsonOutput {
-							fmt.Printf("  [ok] %s stopped\n", sessionTitle)
+						ownedTxs = append(ownedTxs, queueTx)
+						if *removeAll {
+							filtered := dropInstance(instances, inst.ID)
+							groupTree := session.NewGroupTreeWithGroups(filtered, groups)
+							if rmErr := storage.RemoveSessionAndVerify(inst.ID, filtered, groupTree); rmErr != nil {
+								prepareFailed = true
+								if !*jsonOutput {
+									fmt.Fprintf(os.Stderr, "  Warning: failed to remove session '%s' (%s): %v\n", sessionTitle, inst.ID, rmErr)
+								}
+							}
 						}
 						break
 					}
 				}
 			}
+		}
+		if prepareFailed {
+			for _, tx := range ownedTxs {
+				tx.Release()
+			}
+			if storage != nil {
+				_ = storage.Close()
+			}
+			continue
+		}
+		for _, inst := range instances {
+			if inst.Title == sessionTitle && inst.Exists() {
+				_ = inst.Kill()
+			}
+		}
+		if !*jsonOutput {
+			fmt.Printf("  [ok] %s stopped\n", sessionTitle)
 		}
 
 		// Remove heartbeat timer
@@ -910,6 +945,17 @@ func handleConductorTeardown(_ string, args []string) {
 					}
 				}
 			}
+		}
+		for _, tx := range ownedTxs {
+			if *removeAll {
+				if discardErr := tx.Discard(); discardErr != nil && !*jsonOutput {
+					fmt.Fprintf(os.Stderr, "  Warning: failed to discard runtime queue for '%s': %v\n", sessionTitle, discardErr)
+				}
+			}
+			tx.Release()
+		}
+		if storage != nil {
+			_ = storage.Close()
 		}
 
 		removed = append(removed, meta.Name)

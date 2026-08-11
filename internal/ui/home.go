@@ -1289,6 +1289,7 @@ type worktreeFinishResultMsg struct {
 	merged       bool
 	err          error
 	queueTx      *session.RuntimeQueueTransaction
+	persisted    bool
 }
 
 // watcherEventMsg is produced by listenForWatcherEvent when a new event arrives from the engine.
@@ -5838,10 +5839,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		h.instancesMu.RUnlock()
 		groupTree := session.NewGroupTreeWithGroups(remaining, groupDataSnapshot(h.groupTree))
-		if err := h.storage.RemoveSessionAndVerify(msg.deletedID, remaining, groupTree); err != nil {
-			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
-			h.setError(fmt.Errorf("failed to delete session: %w", err))
-			return h, nil
+		if !msg.persisted {
+			if err := h.storage.RemoveSessionAndVerify(msg.deletedID, remaining, groupTree); err != nil {
+				uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
+				h.setError(fmt.Errorf("failed to delete session: %w", err))
+				return h, nil
+			}
 		}
 
 		// Find and remove from list
@@ -5949,10 +5952,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Persist via a targeted UPDATE, not saveInstances(): under concurrent
 			// writers the full-table save aborts on external-change and reloads,
 			// silently discarding the archive (archived_at reverts to 0).
-			if err := h.persistArchived(inst); err != nil {
-				inst.ArchivedAt = msg.previousArchivedAt
-				h.setError(fmt.Errorf("failed to persist archive: %w", err))
-				return h, nil
+			if !msg.persisted {
+				if err := h.persistArchived(inst); err != nil {
+					inst.ArchivedAt = msg.previousArchivedAt
+					h.cachedStatusCounts.valid.Store(false)
+					h.rebuildFlatItems()
+					h.search.SetItems(h.instances)
+					h.setError(fmt.Errorf("failed to persist archive: %w", err))
+					return h, nil
+				}
 			}
 			if msg.queueTx != nil {
 				if err := msg.queueTx.Discard(); err != nil {
@@ -6767,14 +6775,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		h.instancesMu.RUnlock()
 		groupTree := session.NewGroupTreeWithGroups(remaining, groupDataSnapshot(h.groupTree))
-		if err := h.storage.RemoveSessionAndVerify(msg.sessionID, remaining, groupTree); err != nil {
-			uiLog.Warn("worktree_finish_delete_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
-			if h.worktreeFinishDialog.IsVisible() {
-				h.worktreeFinishDialog.SetError(fmt.Sprintf("failed to finish worktree deletion: %v", err))
-			} else {
-				h.setError(fmt.Errorf("failed to finish worktree deletion: %w", err))
+		if !msg.persisted {
+			if err := h.storage.RemoveSessionAndVerify(msg.sessionID, remaining, groupTree); err != nil {
+				uiLog.Warn("worktree_finish_delete_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
+				if h.worktreeFinishDialog.IsVisible() {
+					h.worktreeFinishDialog.SetError(fmt.Sprintf("failed to finish worktree deletion: %v", err))
+				} else {
+					h.setError(fmt.Errorf("failed to finish worktree deletion: %w", err))
+				}
+				return h, nil
 			}
-			return h, nil
 		}
 
 		// Success: remove session from instances and clean up.
@@ -12894,6 +12904,7 @@ type sessionDeletedMsg struct {
 	deletedID string
 	killErr   error // Error from Kill() if any
 	queueTx   *session.RuntimeQueueTransaction
+	persisted bool
 }
 
 type sessionDeleteFailedMsg struct {
@@ -12917,6 +12928,7 @@ type sessionArchivedMsg struct {
 	killErr            error
 	queueTx            *session.RuntimeQueueTransaction
 	previousArchivedAt time.Time
+	persisted          bool
 }
 
 type sessionUnarchivedMsg struct {
@@ -12952,10 +12964,23 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 		)
 		h.instancesMu.RUnlock()
 	}
+	h.instancesMu.RLock()
+	remaining := make([]*session.Instance, 0, len(h.instances))
+	for _, candidate := range h.instances {
+		if candidate.ID != id {
+			remaining = append(remaining, candidate)
+		}
+	}
+	h.instancesMu.RUnlock()
+	groupTree := session.NewGroupTreeWithGroups(remaining, groupDataSnapshot(h.groupTree))
 	return func() tea.Msg {
 		queueTx, discardErr := session.BeginRuntimeQueueTransaction(id)
 		if discardErr != nil {
 			return sessionDeleteFailedMsg{err: discardErr}
+		}
+		if err := h.storage.RemoveSessionAndVerify(id, remaining, groupTree); err != nil {
+			queueTx.Release()
+			return sessionDeleteFailedMsg{err: err}
 		}
 		killErr := inst.Kill()
 		if isWorktree && sharedWorktree {
@@ -12992,7 +13017,7 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 				}
 			}
 		}
-		return sessionDeletedMsg{deletedID: id, killErr: killErr, queueTx: queueTx}
+		return sessionDeletedMsg{deletedID: id, killErr: killErr, queueTx: queueTx, persisted: true}
 	}
 }
 
@@ -13075,13 +13100,18 @@ func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 		if discardErr != nil {
 			return sessionArchivedMsg{sessionID: id, killErr: discardErr}
 		}
-		if killErr := inst.Kill(); killErr != nil {
-			queueTx.Release()
-			return sessionArchivedMsg{sessionID: id, killErr: killErr}
-		}
 		previousArchivedAt := inst.ArchivedAt
 		inst.ArchivedAt = time.Now().UTC()
-		return sessionArchivedMsg{sessionID: id, queueTx: queueTx, previousArchivedAt: previousArchivedAt}
+		if err := h.persistArchived(inst); err != nil {
+			inst.ArchivedAt = previousArchivedAt
+			queueTx.Release()
+			return sessionArchivedMsg{sessionID: id, killErr: fmt.Errorf("persist archive: %w", err)}
+		}
+		if killErr := inst.Kill(); killErr != nil {
+			queueTx.Release()
+			return sessionArchivedMsg{sessionID: id, killErr: fmt.Errorf("archive committed but stop failed: %w", killErr)}
+		}
+		return sessionArchivedMsg{sessionID: id, queueTx: queueTx, previousArchivedAt: previousArchivedAt, persisted: true}
 	}
 }
 
@@ -19583,6 +19613,15 @@ func (h *Home) runWorktreeSetup(inst *session.Instance) tea.Cmd {
 // finishWorktree performs the worktree finish operation asynchronously:
 // merge branch, remove worktree, delete branch, kill session, remove from storage
 func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, branchName, repoRoot, worktreePath string, mergeEnabled bool, targetBranch string, keepBranch bool, sharedWorktree bool) tea.Cmd {
+	h.instancesMu.RLock()
+	remaining := make([]*session.Instance, 0, len(h.instances))
+	for _, candidate := range h.instances {
+		if candidate.ID != sessionID {
+			remaining = append(remaining, candidate)
+		}
+	}
+	h.instancesMu.RUnlock()
+	groupTree := session.NewGroupTreeWithGroups(remaining, groupDataSnapshot(h.groupTree))
 	return func() tea.Msg {
 		queueTx, err := session.BeginRuntimeQueueTransaction(sessionID)
 		if err != nil {
@@ -19591,6 +19630,9 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 		fail := func(err error) tea.Msg {
 			queueTx.Release()
 			return worktreeFinishResultMsg{sessionID: sessionID, sessionTitle: sessionTitle, err: err}
+		}
+		if err := h.storage.RemoveSessionAndVerify(sessionID, remaining, groupTree); err != nil {
+			return fail(fmt.Errorf("persist finish transition: %w", err))
 		}
 		merged := false
 
@@ -19639,6 +19681,7 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 			targetBranch: targetBranch,
 			merged:       merged,
 			queueTx:      queueTx,
+			persisted:    true,
 		}
 	}
 }

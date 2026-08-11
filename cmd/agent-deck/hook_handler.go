@@ -328,10 +328,16 @@ func handleHookHandlerArgs(args []string) {
 }
 
 func emitStopHookDecision(instanceID string, stopHookActive bool, writer io.Writer) error {
-	dec, blocked, err := session.DrainForStopHook(instanceID, stopHookActive)
+	dec, blocked, err := session.StageForStopHook(instanceID, stopHookActive)
 	if err != nil || !blocked {
 		return err
 	}
+	deliveryCommitted := false
+	defer func() {
+		if !deliveryCommitted {
+			session.RollbackStopHookDelivery(instanceID, dec.StopBlockPrevious)
+		}
+	}()
 	out, err := marshalStopHookDecision(dec)
 	if err != nil {
 		return fmt.Errorf("marshal Stop-hook response: %w", err)
@@ -346,9 +352,13 @@ func emitStopHookDecision(instanceID string, stopHookActive bool, writer io.Writ
 		if err := writeStopHookResponse(writer, out); err != nil {
 			return err
 		}
+		if err := session.AcknowledgeStopHookDelivery(instanceID, dec.InboxAckToken, dec.StopBlockCount); err != nil {
+			return fmt.Errorf("acknowledge Stop-hook inbox/budget: %w", err)
+		}
 		if err := submission.Acknowledge(); err != nil {
 			return err
 		}
+		deliveryCommitted = true
 		return nil
 	}
 	if dec.InboxReason == "" {
@@ -362,18 +372,37 @@ func emitStopHookDecision(instanceID string, stopHookActive bool, writer io.Writ
 	if err := writeStopHookResponse(writer, append(out, '\n')); err != nil {
 		return err
 	}
+	if err := session.AcknowledgeStopHookDelivery(instanceID, dec.InboxAckToken, dec.StopBlockCount); err != nil {
+		return fmt.Errorf("acknowledge Stop-hook inbox/budget: %w", err)
+	}
+	deliveryCommitted = true
 	return nil
 }
 
+var stopHookWriteTimeout = 2 * time.Second
+
 func writeStopHookResponse(writer io.Writer, out []byte) error {
-	n, err := writer.Write(out)
-	if err != nil {
-		return fmt.Errorf("write Stop-hook response: %w", err)
+	result := make(chan error, 1)
+	go func() {
+		n, err := writer.Write(out)
+		if err != nil {
+			result <- fmt.Errorf("write Stop-hook response: %w", err)
+			return
+		}
+		if n != len(out) {
+			result <- fmt.Errorf("write Stop-hook response: %w", io.ErrShortWrite)
+			return
+		}
+		result <- nil
+	}()
+	timer := time.NewTimer(stopHookWriteTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-result:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("write Stop-hook response: timed out after %s", stopHookWriteTimeout)
 	}
-	if n != len(out) {
-		return fmt.Errorf("write Stop-hook response: %w", io.ErrShortWrite)
-	}
-	return nil
 }
 
 func hookSourceArg(args []string) string {

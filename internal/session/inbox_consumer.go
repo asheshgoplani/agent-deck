@@ -2,8 +2,10 @@ package session
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,6 +13,11 @@ import (
 	"sync"
 	"time"
 )
+
+type InboxDeliveryBatch struct {
+	Events []TransitionNotificationEvent
+	Token  string
+}
 
 // Issue #1225: the consumer side of the durable per-parent outbox. The parent
 // drains its inbox at its own turn boundary (Stop hook) and on heartbeat.
@@ -38,6 +45,7 @@ import (
 const consumedTurnsTTL = 14 * 24 * time.Hour
 
 var consumedTurnsMu sync.Mutex
+var inboxDrainMu sync.Mutex
 
 // ConsumedTurnsDir holds per-parent consumed-fingerprint ledgers.
 func ConsumedTurnsDir() string {
@@ -88,8 +96,24 @@ func saveConsumedTurnsLocked(parentID string, m map[string]int64) error {
 // before truncating the inbox, then finalize the consumed ledger and drop the
 // WAL. A crash between the two phases re-delivers from the WAL on the next call.
 func DrainInboxForParent(parentID string) ([]TransitionNotificationEvent, error) {
+	inboxDrainMu.Lock()
+	defer inboxDrainMu.Unlock()
+	batch, err := StageInboxForParent(parentID)
+	if err != nil || batch.Token == "" {
+		return batch.Events, err
+	}
+	if err := AcknowledgeInboxForParent(parentID, batch.Token); err != nil {
+		return batch.Events, err
+	}
+	return batch.Events, nil
+}
+
+// StageInboxForParent durably moves pending records to the in-flight WAL and
+// returns deliverable events without marking them consumed. Callers must
+// acknowledge only after their complete external delivery succeeds.
+func StageInboxForParent(parentID string) (InboxDeliveryBatch, error) {
 	if strings.TrimSpace(parentID) == "" {
-		return nil, errors.New("inbox drain: empty parent session id")
+		return InboxDeliveryBatch{}, errors.New("inbox stage: empty parent session id")
 	}
 
 	// Phase 1: recover prior in-flight records, read the current inbox, durably
@@ -97,15 +121,56 @@ func DrainInboxForParent(parentID string) ([]TransitionNotificationEvent, error)
 	// caller wins the inbox under inboxWriteMu.
 	staged, err := stageInboxDrainLocked(parentID)
 	if err != nil {
-		return nil, err
+		return InboxDeliveryBatch{}, err
 	}
 	if len(staged) == 0 {
-		return nil, nil
+		return InboxDeliveryBatch{}, nil
 	}
+	events := previewInboxDrain(parentID, staged)
+	return InboxDeliveryBatch{Events: events, Token: inboxBatchToken(staged)}, nil
+}
 
-	// Phase 2: dedup against the consumed ledger, mark the rest consumed (fsync),
-	// then drop the WAL.
-	return finalizeInboxDrain(parentID, staged)
+func previewInboxDrain(parentID string, staged []TransitionNotificationEvent) []TransitionNotificationEvent {
+	collapsed := collapseLastWins(staged)
+	consumedTurnsMu.Lock()
+	defer consumedTurnsMu.Unlock()
+	consumed := loadConsumedTurnsLocked(parentID)
+	out := make([]TransitionNotificationEvent, 0, len(collapsed))
+	for _, ev := range collapsed {
+		fp := ev.TurnFingerprint
+		if fp == "" {
+			fp = TurnFingerprint(ev)
+		}
+		if _, seen := consumed[fp]; !seen {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func inboxBatchToken(events []TransitionNotificationEvent) string {
+	raw, _ := json.Marshal(events)
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("%x", sum[:])
+}
+
+// AcknowledgeInboxForParent marks the currently staged WAL consumed and drops
+// it only when token still identifies that exact batch.
+func AcknowledgeInboxForParent(parentID, token string) error {
+	inboxWriteMu.Lock()
+	defer inboxWriteMu.Unlock()
+	staged, err := loadInflightLocked(parentID)
+	if err != nil {
+		return err
+	}
+	if len(staged) == 0 {
+		return nil
+	}
+	if token == "" || inboxBatchToken(staged) != token {
+		return errors.New("inbox acknowledgement token mismatch")
+	}
+	_, err = finalizeInboxDrainHeld(parentID, staged)
+	return err
 }
 
 // stageInboxDrainLocked is phase 1 of the crash-safe drain. It recovers any
@@ -148,7 +213,7 @@ func stageInboxDrainLocked(parentID string) ([]TransitionNotificationEvent, erro
 
 // finalizeInboxDrain is phase 2: collapse last-wins, dedup against the consumed
 // ledger, mark newly-delivered turns consumed (durable), then drop the WAL.
-func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) ([]TransitionNotificationEvent, error) {
+func finalizeInboxDrainHeld(parentID string, staged []TransitionNotificationEvent) ([]TransitionNotificationEvent, error) {
 	collapsed := collapseLastWins(staged)
 
 	consumedTurnsMu.Lock()
@@ -179,9 +244,7 @@ func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) (
 	}
 	// Consumed ledger durable (or nothing new to mark) — the records are now
 	// either delivered-and-recorded or already-consumed duplicates; drop the WAL.
-	inboxWriteMu.Lock()
 	removeInflightLocked(parentID)
-	inboxWriteMu.Unlock()
 	return out, nil
 }
 

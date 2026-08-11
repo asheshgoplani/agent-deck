@@ -228,9 +228,6 @@ func (m *WebMutator) DeleteSession(id string) error {
 		return fmt.Errorf("discard runtime queue: %w", err)
 	}
 	defer queueTx.Release()
-	// Kill only after queue ownership guarantees the lifecycle can proceed.
-	_ = inst.Kill()
-
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {
 		return fmt.Errorf("open storage: %w", err)
@@ -242,6 +239,7 @@ func (m *WebMutator) DeleteSession(id string) error {
 	}); err != nil {
 		return fmt.Errorf("commit web deletion: %w", err)
 	}
+	_ = inst.Kill()
 	m.pushUndo(inst)
 	return nil
 }
@@ -286,9 +284,6 @@ func (m *WebMutator) ArchiveSession(id string) error {
 		return fmt.Errorf("failed to discard runtime queue: %w", err)
 	}
 	defer queueTx.Release()
-	if err := inst.Kill(); err != nil {
-		return fmt.Errorf("failed to stop session: %w", err)
-	}
 	m.h.instancesMu.Lock()
 	previousArchivedAt := inst.ArchivedAt
 	inst.ArchivedAt = time.Now().UTC()
@@ -298,6 +293,9 @@ func (m *WebMutator) ArchiveSession(id string) error {
 		inst.ArchivedAt = previousArchivedAt
 		m.h.instancesMu.Unlock()
 		return fmt.Errorf("commit web archive persistence: %w", err)
+	}
+	if err := inst.Kill(); err != nil {
+		return fmt.Errorf("archive committed but failed to stop session: %w", err)
 	}
 	if err := webDiscardQueue(queueTx); err != nil {
 		// Persistence already committed. Keep the live lifecycle aligned with
@@ -687,6 +685,11 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		return web.WorktreeFinishResult{}, fmt.Errorf("discard runtime queue: %w", err)
 	}
 	defer queueTx.Release()
+	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
+		return storage.RemoveSessionAndVerify(id, existing, m.h.groupTree)
+	}); err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("commit worktree removal: %w", err)
+	}
 
 	if !opts.NoMerge {
 		// Checkout target in main repo, then merge.
@@ -726,12 +729,6 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 	// the S1 empty-sweep guard AFTER the irreversible git steps, orphaning the
 	// row; since #1550 SaveWithGroups is upsert-only and would not delete the
 	// row at all. Either way, removal requires the targeted DELETE.
-	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
-		return storage.RemoveSessionAndVerify(id, existing, m.h.groupTree)
-	}); err != nil {
-		return web.WorktreeFinishResult{}, fmt.Errorf("commit worktree removal: %w", err)
-	}
-
 	// Issue #1576: sweep transition-notifier state (inbox JSONL lines +
 	// runtime/transition-notify-state.json dedup record) for the removed
 	// session, mirroring the #910 cleanup on `agent-deck rm`. Best-effort —

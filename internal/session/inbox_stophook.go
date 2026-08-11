@@ -42,7 +42,10 @@ type StopHookDecision struct {
 	Decision             string `json:"decision,omitempty"`
 	Reason               string `json:"reason,omitempty"`
 	InboxReason          string `json:"-"`
+	InboxAckToken        string `json:"-"`
 	RuntimeQueueAckToken string `json:"-"`
+	StopBlockCount       int    `json:"-"`
+	StopBlockPrevious    int    `json:"-"`
 }
 
 func stopBlocksDir() string {
@@ -97,6 +100,21 @@ func saveStopBlockCountLocked(instanceID string, count int) error {
 // budget is exhausted it returns no-block WITHOUT draining, so pending records
 // are preserved for the heartbeat path (never lost to the guard).
 func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision, bool, error) {
+	dec, blocked, err := StageForStopHook(instanceID, stopHookActive)
+	if err != nil || !blocked || dec.InboxAckToken == "" {
+		return dec, blocked, err
+	}
+	if err := AcknowledgeInboxForParent(instanceID, dec.InboxAckToken); err != nil {
+		RollbackStopHookDelivery(instanceID, dec.StopBlockPrevious)
+		return StopHookDecision{}, false, err
+	}
+	dec.InboxAckToken = ""
+	return dec, blocked, nil
+}
+
+// StageForStopHook reserves the delivery without consuming its inbox records.
+// The hook writer acknowledges it only after the complete response is written.
+func StageForStopHook(instanceID string, stopHookActive bool) (StopHookDecision, bool, error) {
 	if strings.TrimSpace(instanceID) == "" {
 		return StopHookDecision{}, false, nil
 	}
@@ -125,31 +143,31 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	if count >= MaxStopHookBlocks {
 		return StopHookDecision{}, false, nil
 	}
-
-	// Audit B4: reserve the block slot durably BEFORE draining (which consumes
-	// the records). If the counter cannot be persisted we must neither block
-	// (an unpersistable counter would loop forever) nor drain (which would
-	// consume-and-lose the records). Fail safe: log, no block, records intact.
 	if err := saveStopBlockCountLocked(instanceID, count+1); err != nil {
-		commsLog.Warn("stop_block_count_persist_failed",
-			slog.String("instance", instanceID),
-			slog.String("error", err.Error()),
-		)
 		return StopHookDecision{}, false, err
 	}
 
 	batch, err := StageRuntimeQueue(instanceID)
 	if err != nil {
+		_ = saveStopBlockCountLocked(instanceID, count)
 		return StopHookDecision{}, false, err
 	}
-	events, err := DrainInboxForParent(instanceID)
+	inboxBatch, err := StageInboxForParent(instanceID)
 	if err != nil {
+		_ = saveStopBlockCountLocked(instanceID, count)
 		return StopHookDecision{}, false, err
 	}
+	events := inboxBatch.Events
 	if len(events) == 0 && len(batch.Messages) == 0 {
 		// Race: another drain (heartbeat) emptied the inbox between the peek and
 		// here. No block; reset the budget to 0 — a non-blocking idle Stop breaks
 		// the consecutive-block chain.
+		if inboxBatch.Token != "" {
+			if ackErr := AcknowledgeInboxForParent(instanceID, inboxBatch.Token); ackErr != nil {
+				_ = saveStopBlockCountLocked(instanceID, count)
+				return StopHookDecision{}, false, ackErr
+			}
+		}
 		if rbErr := saveStopBlockCountLocked(instanceID, 0); rbErr != nil {
 			commsLog.Warn("stop_block_count_reset_failed",
 				slog.String("instance", instanceID),
@@ -174,8 +192,30 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 		Decision:             "block",
 		Reason:               reason,
 		InboxReason:          inboxReason,
+		InboxAckToken:        inboxBatch.Token,
 		RuntimeQueueAckToken: batch.Token,
+		StopBlockCount:       count + 1,
+		StopBlockPrevious:    count,
 	}, true, nil
+}
+
+// AcknowledgeStopHookDelivery commits inbox consumption and advances the loop
+// budget only after the complete Stop-hook response was written.
+func AcknowledgeStopHookDelivery(instanceID, inboxToken string, count int) error {
+	stopBlockMu.Lock()
+	defer stopBlockMu.Unlock()
+	if inboxToken != "" {
+		if err := AcknowledgeInboxForParent(instanceID, inboxToken); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func RollbackStopHookDelivery(instanceID string, previous int) {
+	stopBlockMu.Lock()
+	defer stopBlockMu.Unlock()
+	_ = saveStopBlockCountLocked(instanceID, previous)
 }
 
 // FormatCompletionsForInjection renders drained completions as the human-

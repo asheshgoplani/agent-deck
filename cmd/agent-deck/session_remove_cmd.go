@@ -93,21 +93,6 @@ func handleSessionRemove(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	// Always kill the tmux scope + its process tree before deleting the
-	// registry row (issue #59, v1.7.68). Previously Kill() was only
-	// called inside pruneSessionWorktree, so `session remove --force`
-	// on a running session left the claude child running as an orphan
-	// — observed on the maintainer's host as a 33-hour orphan claude
-	// process with a since-deleted AGENTDECK_INSTANCE_ID.
-	//
-	// KillAndWait runs the SIGTERM→SIGKILL escalation synchronously so
-	// the kill completes before this short-lived CLI exits.
-	_ = inst.KillAndWait()
-
-	if *pruneWorktree {
-		pruneSessionWorktree(inst)
-	}
-
 	// v1.9.1 (#909): RemoveSessionAndVerify replaces the
 	// DeleteInstance+saveSessionData pair. The old pair would silently
 	// resurrect the row when a concurrent rewriter loaded the instance
@@ -123,6 +108,10 @@ func handleSessionRemove(profile string, args []string) {
 		os.Exit(1)
 	}
 	queueTx.Release()
+	_ = inst.KillAndWait()
+	if *pruneWorktree {
+		pruneSessionWorktree(inst)
+	}
 
 	// Best-effort transition-notifier cleanup for issue #910 — see the
 	// matching block in handleRemove for rationale.
@@ -226,10 +215,6 @@ func bulkRemoveSessions(
 			out.Error(fmt.Sprintf("failed to lock runtime queue for %s: %v", inst.ID, errors.Join(err, cleanupErr)), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		_ = inst.KillAndWait()
-		if pruneWorktree {
-			pruneSessionWorktree(inst)
-		}
 		nextRemaining := dropInstance(remaining, inst.ID)
 		groupTree := session.NewGroupTreeWithGroups(nextRemaining, groups)
 		if err := bulkSessionRemovePersist(storage, inst.ID, nextRemaining, groupTree); err != nil {
@@ -242,6 +227,10 @@ func bulkRemoveSessions(
 		removedIDs = append(removedIDs, inst.ID)
 		removed = append(removed, map[string]interface{}{"id": inst.ID, "title": inst.Title})
 		queueTxs = append(queueTxs, queueTx)
+		_ = inst.KillAndWait()
+		if pruneWorktree {
+			pruneSessionWorktree(inst)
+		}
 	}
 
 	// A concurrent full-table writer can resurrect an early removal after its
