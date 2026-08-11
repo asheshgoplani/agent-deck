@@ -79,10 +79,38 @@ func TestArchiveEventBoundarySubprocessHelper(t *testing.T) {
 }
 
 func archiveBoundaryFlockIsBlocked() bool {
-	stack := make([]byte, 64<<10)
-	n := runtime.Stack(stack, true)
-	trace := string(stack[:n])
+	trace := string(fullGoroutineStack(runtime.Stack))
 	return strings.Contains(trace, "syscall.Flock") && strings.Contains(trace, "WithArchiveEventBoundary")
+}
+
+func fullGoroutineStack(capture func([]byte, bool) int) []byte {
+	for size := 64 << 10; ; size *= 2 {
+		stack := make([]byte, size)
+		n := capture(stack, true)
+		if n < len(stack) {
+			return stack[:n]
+		}
+	}
+}
+
+func TestFullGoroutineStackGrowsAfterTruncation(t *testing.T) {
+	var sizes []int
+	stack := fullGoroutineStack(func(buf []byte, all bool) int {
+		if !all {
+			t.Fatal("capture did not request all goroutines")
+		}
+		sizes = append(sizes, len(buf))
+		if len(sizes) < 3 {
+			return len(buf)
+		}
+		return copy(buf, "complete-stack")
+	})
+	if got, want := fmt.Sprint(sizes), "[65536 131072 262144]"; got != want {
+		t.Fatalf("capture sizes = %s, want %s", got, want)
+	}
+	if got, want := string(stack), "complete-stack"; got != want {
+		t.Fatalf("stack = %q, want %q", got, want)
+	}
 }
 
 func archiveBoundaryHelperInvocation() (mode, token string, ok bool) {
