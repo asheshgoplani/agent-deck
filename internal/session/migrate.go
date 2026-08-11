@@ -54,6 +54,12 @@ func MigrateConversationFrom(inst *Instance, srcConfigDir, targetConfigDir strin
 	if inst.Tool != "claude" {
 		return "", fmt.Errorf("conversation migration is only supported for claude sessions (tool: %s)", inst.Tool)
 	}
+	// #1851: the file this would move is located through the local placeholder
+	// ProjectPath, so for an --ssh session it belongs to a LOCAL session. Moving
+	// it takes a conversation away from the session that owns it.
+	if !inst.TranscriptIsResolvableLocally() {
+		return "", nil
+	}
 	src := ExpandPath(strings.TrimSpace(srcConfigDir))
 	dst := ExpandPath(strings.TrimSpace(targetConfigDir))
 	if src == "" || dst == "" {
@@ -170,6 +176,12 @@ func copyDirVerified(src, dst string) error {
 // restored path (or "" for no-op) and any error.
 func RestoreOrphanedConversationBackup(inst *Instance, configDir string) (string, error) {
 	if inst == nil || inst.Tool != "claude" || inst.ClaudeSessionID == "" || strings.TrimSpace(configDir) == "" {
+		return "", nil
+	}
+	// #1851: the .bak- orphan this would restore lives in a LOCAL project dir
+	// keyed on the placeholder ProjectPath; for an --ssh session it is another
+	// session's residue, not this one's.
+	if !inst.TranscriptIsResolvableLocally() {
 		return "", nil
 	}
 

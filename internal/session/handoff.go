@@ -41,6 +41,14 @@ func BuildClaudeToCodexHandoffPrompt(inst *Instance, maxChars int) (string, Hand
 	if inst.ClaudeSessionID == "" {
 		return "", HandoffInfo{}, fmt.Errorf("session %q has no Claude session ID", inst.Title)
 	}
+	// `session handoff` is a conversation read, and an --ssh session's
+	// conversation is on the remote host (#1851). Resolving it here would not
+	// miss — it would hit, on whatever LOCAL session sits at the placeholder
+	// ProjectPath — and hand that session's entire transcript to another tool.
+	if !inst.TranscriptIsResolvableLocally() {
+		return "", HandoffInfo{}, fmt.Errorf("session %q runs on %s; its Claude transcript is not on this machine, so there is nothing here to hand off",
+			inst.Title, inst.SSHHost)
+	}
 
 	transcriptPath := locateHandoffTranscript(inst)
 	messages, err := readClaudeTranscriptMessages(transcriptPath)
@@ -100,6 +108,13 @@ func ClaudeTranscriptPathForInstance(inst *Instance) string {
 }
 
 func claudeTranscriptPathIn(configDir string, inst *Instance, sessionID string) string {
+	// The seam, not just the callers: this function ends with a CONSTRUCTED path
+	// when nothing is found, so for a remote session it never returns "not here"
+	// — it returns a controller path under the placeholder, which is a LOCAL
+	// session's transcript directory (#1851).
+	if !inst.TranscriptIsResolvableLocally() {
+		return ""
+	}
 	projectPath := inst.EffectiveWorkingDir()
 	if transcript := resolveClaudeTranscriptPath(configDir, projectPath, sessionID); transcript != "" {
 		return transcript
