@@ -1276,8 +1276,8 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	// target the same isolated server. Without this, the session would be
 	// minted on the default server while later Session.tmuxCmd calls —
 	// which DO carry -L — would probe the isolated server and find
-	// nothing. Empty SocketName preserves pre-v1.7.50 behavior exactly
-	// (buildInnerTmuxArgs returns the args unchanged).
+	// nothing. Empty SocketName emits no -L at all, so the spawn still lands
+	// on the user's default server exactly as it did pre-v1.7.50.
 	//
 	// #1694: -x/-y birth the window at the terminal agent-deck runs on
 	// (generous fallback when there is no TTY) so the tool's FIRST paint is
@@ -1285,6 +1285,12 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	// that fixes its layout on frame one stays clipped forever — see
 	// InitialWindowSize. Appended AFTER -c so the argv prefix that callers and
 	// fallback helpers key on is unchanged.
+	// buildInnerTmuxArgs also prepends tmux's global -u (#1867). That is
+	// unconditional and independent of the socket: it forces the CLIENT to
+	// UTF-8 so nothing agent-deck later reads back is "_"-mangled. It is
+	// spliced INSIDE the inner tmux argv here, after the literal "tmux" that
+	// systemd-run execs — a global flag placed before "tmux" would be
+	// systemd-run's, not tmux's.
 	cols, rows := InitialWindowSize()
 	tmuxArgs := buildInnerTmuxArgs(s.SocketName, "new-session", "-d", "-s", s.Name, "-c", workDir,
 		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))

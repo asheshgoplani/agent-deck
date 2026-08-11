@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmuxutf8"
 )
 
 // tmuxProbeTimeout bounds the plain-argv tmux probes the CLI fires to identify
@@ -25,13 +26,22 @@ import (
 // cadence pollers in internal/tmux did.
 const tmuxProbeTimeout = 3 * time.Second
 
-// tmuxProbeBounded runs `tmux <args…>` under tmuxProbeTimeout and returns
+// tmuxProbeBounded runs `tmux -u <args…>` under tmuxProbeTimeout and returns
 // stdout. exec.CommandContext SIGKILLs a wedged client at the deadline; the
 // WaitDelay bounds the post-kill stdio drain.
+//
+// The global `-u` is the #1867 fix, applied here for the same reason as in
+// internal/tmux's tmuxArgs: every caller of this helper PARSES the bytes it
+// returns. `#{pane_current_path}` in particular is arbitrary user text — a
+// working directory with a non-ASCII component comes back with each such byte
+// rewritten to "_" when the CLI's own locale is not UTF-8, which is the normal
+// state for a conductor-invoked `agent-deck` under systemd/launchd. Prepending
+// keeps the deliberate omission of -L (these probes auto-route via $TMUX; see
+// tmuxProbeTimeout above) intact.
 func tmuxProbeBounded(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxProbeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", args...)
+	cmd := exec.CommandContext(ctx, "tmux", tmuxutf8.Prepend(args)...)
 	cmd.WaitDelay = 2 * time.Second
 	return cmd.Output()
 }
