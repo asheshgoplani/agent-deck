@@ -2688,6 +2688,14 @@ func fetchHookDrivenStatus(profile, sessionRef string) (string, error) {
 	return StatusString(inst.Status), nil
 }
 
+func enqueueSessionMessageIfBusy(enabled bool, status, sessionID, message string, enqueue func(string, string) (int, error)) (bool, int, error) {
+	if !enabled || !send.StatusIsBusy(status) {
+		return false, 0, nil
+	}
+	depth, err := enqueue(sessionID, message)
+	return err == nil, depth, err
+}
+
 // handleSessionSend sends a message to a running session
 // Waits for the agent to be ready before sending (Claude, Gemini, etc.)
 func handleSessionSend(profile string, args []string) {
@@ -2809,14 +2817,18 @@ func handleSessionSend(profile string, args []string) {
 			out.Error(fmt.Sprintf("failed to determine whether session '%s' is busy: %v", inst.Title, statusErr), ErrCodeDeliveryFailed)
 			os.Exit(1)
 		}
+		queued, depth, enqueueErr := enqueueSessionMessageIfBusy(*queueIfBusy, status, inst.ID, message, session.EnqueueRuntimeMessage)
 		if send.StatusIsBusy(status) {
-			depth, enqueueErr := session.EnqueueRuntimeMessage(inst.ID, message)
 			if enqueueErr != nil {
 				if errors.Is(enqueueErr, session.ErrRuntimeQueueFull) {
 					out.Error(fmt.Sprintf("runtime message queue for '%s' is full", inst.Title), ErrCodeQueueFull)
 				} else {
 					out.Error(fmt.Sprintf("failed to queue message for '%s': %v", inst.Title, enqueueErr), ErrCodeDeliveryFailed)
 				}
+				os.Exit(1)
+			}
+			if !queued {
+				out.Error(fmt.Sprintf("failed to queue message for '%s'", inst.Title), ErrCodeDeliveryFailed)
 				os.Exit(1)
 			}
 			out.Success(fmt.Sprintf("Queued message for '%s'", inst.Title), map[string]interface{}{

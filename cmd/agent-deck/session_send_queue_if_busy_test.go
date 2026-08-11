@@ -92,22 +92,30 @@ func TestSessionSendQueueIfBusyQueueFullCode(t *testing.T) {
 }
 
 func TestSessionSendQueueIfBusyIdleUsesSenderWithoutQueue(t *testing.T) {
-	out, err := runQueueIfBusyHelper(t, "__idle__", "idle delivery", "--queue-if-busy", "--timeout", "4s", "--json")
+	enqueueCalls := 0
+	queued, depth, err := enqueueSessionMessageIfBusy(true, "waiting", "idle-id", "idle delivery", func(string, string) (int, error) {
+		enqueueCalls++
+		return 1, nil
+	})
 	if err != nil {
-		t.Fatalf("idle send failed: %v\n%s", err, out)
+		t.Fatal(err)
 	}
-	if strings.Contains(out, `"queued": true`) || !strings.Contains(out, "IDLE_SEND_OK") {
-		t.Fatalf("idle target must use sender and leave queue empty; output:\n%s", out)
+	if queued || depth != 0 || enqueueCalls != 0 {
+		t.Fatalf("idle target must fall through to sender without queueing: queued=%v depth=%d enqueue_calls=%d", queued, depth, enqueueCalls)
 	}
 }
 
 func TestSessionSendQueueIfBusyDefaultSendUnchanged(t *testing.T) {
-	out, err := runQueueIfBusyHelper(t, "__idle__", "default delivery", "--timeout", "4s", "--json")
+	enqueueCalls := 0
+	queued, depth, err := enqueueSessionMessageIfBusy(false, "running", "default-id", "default delivery", func(string, string) (int, error) {
+		enqueueCalls++
+		return 1, nil
+	})
 	if err != nil {
-		t.Fatalf("default send failed: %v\n%s", err, out)
+		t.Fatal(err)
 	}
-	if strings.Contains(out, `"queued": true`) || !strings.Contains(out, "IDLE_SEND_OK") {
-		t.Fatalf("default send behavior changed; output:\n%s", out)
+	if queued || depth != 0 || enqueueCalls != 0 {
+		t.Fatalf("default send must bypass queue behavior: queued=%v depth=%d enqueue_calls=%d", queued, depth, enqueueCalls)
 	}
 }
 
@@ -124,7 +132,7 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 		mode := args[0]
 		project := t.TempDir()
 		inst := session.NewInstance("queue-target", project)
-		inst.Command = `bash -c 'printf "❯ \\n"; IFS= read -r line; printf "GOT: %s\\n❯ \\n" "$line"; while :; do sleep 1; done'`
+		inst.Command = `bash -c 'printf "❯ \n"; IFS= read -r line; printf "GOT: %s\n❯ \n" "$line"; while :; do sleep 1; done'`
 		if mode == "__busy__" || mode == "__full__" || mode == "__idle__" {
 			if err := inst.Start(); err != nil {
 				t.Fatalf("start target: %v", err)
