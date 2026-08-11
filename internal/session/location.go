@@ -61,18 +61,43 @@ func normalizeLocalPath(p string) string {
 //	"~"   — what Location.String() prints, so it is what a user types back
 //	"~/"  — the same with a trailing slash
 //
-// All three canonicalize to "". Everything else keeps its ~-rooted or absolute
-// form with trailing slashes stripped: "~/work" is a real place under the
-// remote home and stays distinct from "" and from any local path.
+// All three canonicalize to "".
+//
+// A RELATIVE remote path is resolved the same way, for the same reason: `ssh
+// host <cmd>` starts in the remote home, so `--remote-path work` runs in
+// $HOME/work — the identical directory `--remote-path ~/work` names. They are
+// therefore ONE location and canonicalize to the ~-rooted form.
+//
+// Folding relative paths here rather than teaching ParseLocation to accept them
+// is what keeps Location.String() parseable (review round 1, finding F3):
+// String() used to render a relative path as "host:work", which ParseLocation
+// rejected, so an ambiguity message printed an identifier that then resolved to
+// NOT_FOUND. ParseLocation stays strict — accepting "host:relative" there would
+// let the explicit-location syntax shadow ordinary titles, which is the hazard
+// the strictness exists to prevent.
+//
+// Everything else keeps its absolute form with trailing slashes stripped.
 //
 // This is the identity half of the rule. RemoteCDPrefix is the execution half,
-// and they are tested against each other (see TestRemotePathIdentityAndExecutionAgree).
+// and they are tested against each other (see
+// TestRemoteCDPrefix_IdentityAndExecutionAgree).
 func CanonicalRemotePath(p string) string {
 	p = normalizeLocalPath(p)
-	if p == "~" {
+	if p == "~" || p == "" {
 		return ""
 	}
-	return p
+	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, "~") {
+		return p
+	}
+	// Relative to the remote home. Strip a leading "./" so "./work", "work" and
+	// "~/work" are one location, and fold a bare "." onto the home itself.
+	for strings.HasPrefix(p, "./") {
+		p = strings.TrimPrefix(p, "./")
+	}
+	if p == "" || p == "." {
+		return ""
+	}
+	return "~/" + p
 }
 
 // LocalLocation builds the location of a session that runs on this machine.
@@ -114,8 +139,13 @@ func (l Location) IsLocal() bool { return l.Host == "" }
 //
 // The rendered form round-trips: ParseLocation(l.String()) == l for every remote
 // location, so an ambiguity message hands the user an identifier that resolves.
-// That is why the empty remote path prints as "~" — and why CanonicalRemotePath
-// folds "~" back to "".
+// That is why the empty remote path prints as "~" (and why CanonicalRemotePath
+// folds "~" back to ""), and why a relative remote path is canonicalized to its
+// ~-rooted form before it ever reaches String(). The property is pinned by
+// TestLocationString_RoundTripsThroughParseLocation over every path shape.
+//
+// A LOCAL location renders as the bare path, which ParseLocation deliberately
+// does not accept — bare paths are answered by ResolveSession's path branch.
 func (l Location) String() string {
 	if l.IsLocal() {
 		return l.Path

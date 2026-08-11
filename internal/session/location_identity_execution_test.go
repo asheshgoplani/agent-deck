@@ -56,21 +56,89 @@ func TestCanonicalRemotePath_FoldsTheSpellingsOfTheRemoteHome(t *testing.T) {
 // TestLocationString_RoundTripsThroughParseLocation is the property the
 // ambiguity messages depend on: they print a location and tell the user to
 // retype it, so what they print has to resolve back to the same location.
+//
+// Review round 1, finding F3: this held for absolute and ~-rooted paths but not
+// for a RELATIVE one. `add --ssh host --remote-path work` was accepted and
+// String() rendered it as "host:work", which ParseLocation rejected — so the CLI
+// printed an identifier that answered NOT_FOUND. The table below covers every
+// shape a --remote-path can take, which is what stops the class recurring.
 func TestLocationString_RoundTripsThroughParseLocation(t *testing.T) {
-	for _, loc := range []Location{
-		RemoteLocation("alice@host-a", ""),
-		RemoteLocation("alice@host-a", "~"),
-		RemoteLocation("alice@host-a", "~/work"),
-		RemoteLocation("host-b", "/srv/app"),
-	} {
+	// Every spelling a user can give --remote-path, including the ones that
+	// canonicalize onto each other.
+	remotePaths := []string{
+		"",           // no --remote-path
+		"~",          // the remote home, as String() prints it
+		"~/",         //
+		"~/work",     // under the remote home
+		"~/work/",    //
+		"work",       // RELATIVE — F3
+		"./work",     //
+		"work/",      //
+		"deep/sub",   // relative, multi-segment
+		".",          // the remote home again
+		"/srv/app",   // absolute
+		"/srv/app/",  //
+		"/srv/app//", //
+		"/",          // remote root
+	}
+
+	for _, rp := range remotePaths {
+		loc := RemoteLocation("alice@host-a", rp)
 		rendered := loc.String()
+
 		parsed, ok := ParseLocation(rendered)
 		if !ok {
-			t.Errorf("ParseLocation(%q) refused a string Location.String() produced", rendered)
+			t.Errorf("--remote-path %q renders as %q, which ParseLocation REFUSES — the CLI would print an identifier that does not resolve", rp, rendered)
 			continue
 		}
 		if parsed != loc {
-			t.Errorf("round trip of %+v via %q produced %+v", loc, rendered, parsed)
+			t.Errorf("--remote-path %q: round trip via %q produced %+v, want %+v", rp, rendered, parsed, loc)
+		}
+	}
+
+	// The equivalences the canonical form asserts, spelled out.
+	home := RemoteLocation("alice@host-a", "")
+	for _, sameAsHome := range []string{"~", "~/", ".", "./"} {
+		if got := RemoteLocation("alice@host-a", sameAsHome); got != home {
+			t.Errorf("--remote-path %q = %+v, want the remote home %+v", sameAsHome, got, home)
+		}
+	}
+	underHome := RemoteLocation("alice@host-a", "~/work")
+	for _, sameAsUnderHome := range []string{"work", "./work", "work/", "~/work/"} {
+		if got := RemoteLocation("alice@host-a", sameAsUnderHome); got != underHome {
+			t.Errorf("--remote-path %q = %+v, want %+v — ssh starts in the remote home, so these are one directory", sameAsUnderHome, got, underHome)
+		}
+	}
+	// ...and an absolute path is emphatically NOT the same place.
+	if RemoteLocation("alice@host-a", "/work") == underHome {
+		t.Error("/work was folded onto ~/work")
+	}
+}
+
+// TestRelativeRemotePath_IdentityAndExecutionAgree is the F3 fix held to the
+// same standard as the `~` rule: folding "work" onto "~/work" for identity is
+// only correct if they also RUN in the same directory.
+func TestRelativeRemotePath_IdentityAndExecutionAgree(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "work"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	want := filepath.Join(home, "work")
+	for _, spelling := range []string{"work", "./work", "~/work", "work/"} {
+		script := RemoteCDPrefix(spelling) + `printf '%s' "$PWD"`
+		cmd := exec.Command("bash", "-c", script)
+		// The shell starts in $HOME, exactly as `ssh host <cmd>` does — which is
+		// why a relative remote path means "under the remote home" at all.
+		cmd.Dir = home
+		cmd.Env = append(os.Environ(), "HOME="+home)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Errorf("--remote-path %q: prefix %q failed: %v (%s)", spelling, RemoteCDPrefix(spelling), err, out)
+			continue
+		}
+		if got := strings.TrimSpace(string(out)); got != want {
+			t.Errorf("--remote-path %q ran in %q, want %q (prefix %q)", spelling, got, want, RemoteCDPrefix(spelling))
 		}
 	}
 }

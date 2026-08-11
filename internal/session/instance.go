@@ -6765,6 +6765,37 @@ func (i *Instance) ClaudeSessionIDCollidesWith(peers []*Instance) bool {
 	return false
 }
 
+// conversationIsResumable answers the question the spawn builders actually ask:
+// should this session be started with `--resume <id>` (continue the existing
+// conversation) or `--session-id <id>` (create a fresh one under that id)?
+//
+// For a LOCAL session that is the same question as "is there conversation data
+// on disk", so it delegates unchanged.
+//
+// For an --ssh session it is NOT. The transcript lives on the remote host, so
+// the controller cannot see it — and answering the local-disk question with a
+// hard false (which is the correct answer to *that* question, see
+// sessionHasConversationData) would make every remote restart emit
+// `--session-id <already-used-uuid>`, asking claude to CREATE a session that
+// already exists. That loses the conversation, or claude rejects the id
+// outright. Review round 1, finding F1.
+//
+// The controller's evidence for a remote session is the id it recorded when the
+// session last ran. A non-empty ClaudeSessionID means "this session previously
+// had this conversation", so `--resume` is the right instruction and the remote
+// claude resolves it against the remote disk — the only disk that can answer.
+// If the remote transcript is genuinely gone, claude reports that on the remote,
+// which is a far better failure than silently starting fresh over a live id.
+func conversationIsResumable(inst *Instance, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	if inst != nil && !inst.TranscriptIsResolvableLocally() {
+		return true
+	}
+	return sessionHasConversationData(inst, sessionID)
+}
+
 // TranscriptIsResolvableLocally reports whether this instance's conversation
 // transcript can be looked up in the CONTROLLER's filesystem.
 //
@@ -8433,7 +8464,7 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	safePath := logging.SanitizeValue(i.ProjectPath)
 
 	useResume := canResumeClaudeSession(i, i.ClaudeSessionID)
-	if !useResume && i.ClaudeSessionID != "" {
+	if !useResume && i.ClaudeSessionID != "" && i.TranscriptIsResolvableLocally() {
 		time.Sleep(resumeCheckRetryDelay)
 		useResume = canResumeClaudeSession(i, i.ClaudeSessionID)
 		sessionLog.Debug(
@@ -9812,6 +9843,9 @@ func (i *Instance) bindClaudeSessionFromHook(sessionID, hookSource, hookEvent, a
 // Returns false if:
 // - File doesn't exist (nothing to resume, use --session-id)
 // - File exists but has zero "sessionId" occurrences (never interacted)
+// It answers a LOCAL-DISK question. Callers deciding "start fresh or resume?"
+// must use conversationIsResumable instead — see its doc comment for why a hard
+// false is the wrong answer for a remote session.
 func sessionHasConversationData(inst *Instance, sessionID string) bool {
 	// #1851: for an --ssh session every path below is a directory on THIS
 	// machine, keyed on the local placeholder ProjectPath — so "yes, that id has

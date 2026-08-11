@@ -1727,9 +1727,15 @@ func handleAdd(profile string, args []string) {
 		}
 	}
 	defer releaseRegistration()
-	if freshInstances, freshGroups, loadErr := storage.LoadWithGroups(); loadErr == nil {
-		instances, groups = freshInstances, freshGroups
+	freshInstances, freshGroups, reloadErr := reloadForRegistration(storage)
+	if reloadErr != nil {
+		// Never fall back to the pre-lock snapshot: that is the stale list the
+		// lock exists to invalidate, and `add` would then rewrite the whole
+		// instances table from it, erasing any row registered in between.
+		out.Error(reloadErr.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
+	instances, groups = freshInstances, freshGroups
 
 	// Where the session will ACTUALLY run. For an --ssh session `path` is only a
 	// local placeholder (it defaults to the controller's working directory), so
@@ -2559,7 +2565,7 @@ func handleRename(profile string, args []string) {
 		os.Exit(1)
 	}
 	defer regLock.Release()
-	instances, groups, err := storage.LoadWithGroups()
+	instances, groups, err := reloadForRegistration(storage)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)

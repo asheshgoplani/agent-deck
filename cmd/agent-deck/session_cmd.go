@@ -1927,9 +1927,12 @@ func handleSessionSet(profile string, args []string) {
 			os.Exit(1)
 		}
 		defer regLock.Release()
-		if freshInstances, freshGroups, loadErr := storage.LoadWithGroups(); loadErr == nil {
-			instances, groupsData = freshInstances, freshGroups
+		freshInstances, freshGroups, reloadErr := reloadForRegistration(storage)
+		if reloadErr != nil {
+			out.Error(reloadErr.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
 		}
+		instances, groupsData = freshInstances, freshGroups
 	}
 
 	// Resolve session

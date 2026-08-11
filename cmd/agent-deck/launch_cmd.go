@@ -393,9 +393,12 @@ func handleLaunch(profile string, args []string) {
 		}
 	}
 	defer releaseLaunchRegistration()
-	if freshInstances, freshGroups, loadErr := storage.LoadWithGroups(); loadErr == nil {
-		instances, groups = freshInstances, freshGroups
+	freshInstances, freshGroups, reloadErr := reloadForRegistration(storage)
+	if reloadErr != nil {
+		out.Error(reloadErr.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
+	instances, groups = freshInstances, freshGroups
 
 	launchDecision := decideAddTitle(instances, sessionTitle, localLocation(path), userProvidedTitle)
 	if launchDecision.Duplicate != nil {

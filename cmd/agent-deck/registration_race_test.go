@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -382,4 +383,137 @@ func TestRegistrationLock_SerializesAndIsPerProfile(t *testing.T) {
 	// Release must be safe on a nil lock (the error paths return one).
 	var nilLock *session.RegistrationLock
 	nilLock.Release()
+}
+
+// --- Review round 1, finding F2: a failed re-read must abort ------------------
+//
+// The reload inside the lock used to be `if fresh, g, err := ...; err == nil`,
+// so a transient failure (SQLITE_BUSY) silently left the caller running on the
+// PRE-LOCK snapshot — the exact stale list the lock exists to invalidate. That
+// gives up the atomicity the lock was taken for, and in `add` the subsequent
+// whole-list SaveWithGroups rewrites the table from that stale slice, erasing
+// any row registered in between.
+
+// TestReloadForRegistration_PropagatesFailure pins the seam itself: a broken
+// storage handle must produce an error, never an empty-but-usable list that a
+// caller would mistake for "no sessions registered".
+func TestReloadForRegistration_PropagatesFailure(t *testing.T) {
+	profile := sandboxProfile(t)
+
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	// Closing the handle makes LoadWithGroups fail the way a transient
+	// SQLITE_BUSY would, without having to provoke real contention.
+	if err := storage.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	instances, groups, err := reloadForRegistration(storage)
+	if err == nil {
+		t.Fatalf("a failed re-read returned no error (instances=%v groups=%v); the caller would proceed on the stale pre-lock snapshot", instances, groups)
+	}
+	if instances != nil || groups != nil {
+		t.Errorf("a failed re-read must return no list at all, got instances=%v groups=%v", instances, groups)
+	}
+}
+
+// TestConcurrentAdd_FailedReloadNeverCreatesADuplicate is the racing test.
+//
+// Half the racers' in-lock re-reads fail. The invariant is not "every racer
+// succeeds" — it is that a racer which cannot see current state never
+// REGISTERS. So exactly one session may exist at the end, never two, and the
+// title must never be taken twice.
+func TestConcurrentAdd_FailedReloadNeverCreatesADuplicate(t *testing.T) {
+	profile := sandboxProfile(t)
+	loc := session.LocalLocation(t.TempDir())
+
+	var mu sync.Mutex
+	var reloadCalls int
+	orig := reloadForRegistrationFn
+	reloadForRegistrationFn = func(s *session.Storage) ([]*session.Instance, []*session.GroupData, error) {
+		mu.Lock()
+		reloadCalls++
+		fail := reloadCalls%2 == 0
+		mu.Unlock()
+		if fail {
+			return nil, nil, errors.New("statedb: wal mode: database is locked (5) (SQLITE_BUSY)")
+		}
+		return orig(s)
+	}
+	t.Cleanup(func() { reloadForRegistrationFn = orig })
+
+	const racers = 8
+	var created, aborted int
+	var start, done sync.WaitGroup
+	start.Add(1)
+
+	for i := 0; i < racers; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait()
+
+			lock, err := session.AcquireRegistrationLock(profile)
+			if err != nil {
+				t.Errorf("lock: %v", err)
+				return
+			}
+			defer lock.Release()
+
+			storage, err := session.NewStorageWithProfile(profile)
+			if err != nil {
+				t.Errorf("storage: %v", err)
+				return
+			}
+			defer func() { _ = storage.Close() }()
+
+			// This is the shape every registration path now has: abort on a
+			// failed re-read rather than fall back to a pre-lock snapshot.
+			instances, groups, err := reloadForRegistration(storage)
+			if err != nil {
+				mu.Lock()
+				aborted++
+				mu.Unlock()
+				return
+			}
+
+			d := decideAddTitle(instances, "dup", loc, true)
+			if d.Duplicate != nil {
+				return
+			}
+			instances = append(instances, session.NewInstance(d.Title, loc.Path))
+			if err := storage.SaveWithGroups(instances, session.NewGroupTreeWithGroups(instances, groups)); err != nil {
+				t.Errorf("save: %v", err)
+				return
+			}
+			mu.Lock()
+			created++
+			mu.Unlock()
+		}()
+	}
+
+	start.Done()
+	done.Wait()
+
+	if aborted == 0 {
+		t.Fatal("no racer hit the injected reload failure; this test is not exercising the path it claims to")
+	}
+	if created > 1 {
+		t.Fatalf("%d sessions were created for one (title, location); a racer registered on a stale snapshot after its re-read failed", created)
+	}
+
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	defer func() { _ = storage.Close() }()
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(instances) > 1 {
+		t.Fatalf("state db holds %d sessions, want at most 1", len(instances))
+	}
 }

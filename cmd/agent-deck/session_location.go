@@ -17,6 +17,38 @@ import (
 // detection, the visible auto-rename, title-conflict refusal, and the
 // local-only path queries.
 
+// reloadForRegistrationFn is the seam the registration paths read the instance
+// list through, indirected so tests can inject the transient failure this
+// function exists to handle.
+var reloadForRegistrationFn = defaultReloadForRegistration
+
+// reloadForRegistration re-reads the instance list while the caller holds the
+// profile registration lock.
+//
+// It returns an error rather than a stale list, and every caller must abort on
+// it. That is the whole point: the list loaded BEFORE the lock is the snapshot
+// the lock exists to invalidate, so continuing with it after a failed re-read
+// gives up exactly the atomicity the lock was taken for. Concretely (review
+// round 1, finding F2): process A loads the list, process B registers
+// (title, location), A takes the lock, A's re-read fails transiently with
+// SQLITE_BUSY — and if A proceeds on the pre-lock snapshot it accepts the same
+// (title, location) B just took. Worse, `add`'s whole-list SaveWithGroups then
+// rewrites the table from that stale slice and erases B's row.
+//
+// Failing the command is the right outcome: `add`/`launch`/`rename` are cheap to
+// retry, and a duplicate registration or a deleted sibling session is not.
+func reloadForRegistration(storage *session.Storage) ([]*session.Instance, []*session.GroupData, error) {
+	return reloadForRegistrationFn(storage)
+}
+
+func defaultReloadForRegistration(storage *session.Storage) ([]*session.Instance, []*session.GroupData, error) {
+	instances, groups, err := storage.LoadWithGroups()
+	if err != nil {
+		return nil, nil, fmt.Errorf("re-reading sessions under the registration lock: %w", err)
+	}
+	return instances, groups, nil
+}
+
 // locationOf returns where inst actually runs.
 func locationOf(inst *session.Instance) session.Location { return session.LocationOf(inst) }
 
