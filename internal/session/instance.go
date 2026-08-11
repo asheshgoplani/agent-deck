@@ -7851,49 +7851,53 @@ func (i *Instance) restart(env map[string]string) error {
 	}
 
 	// If custom tool with session resume support AND tmux session exists, use respawn-pane.
+	// Re-fetch toolDef after CanRestartGeneric: a concurrent config reload can
+	// drop the custom entry between GetToolDef calls — never deref nil.
 	if i.CanRestartGeneric() && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		toolDef := GetToolDef(i.Tool)
 		sessionID := i.GetGenericSessionID()
+		if toolDef != nil && toolDef.ResumeFlag != "" && sessionID != "" {
+			// The session ID env var is propagated via host-side SetEnvironment after tmux start.
+			// Same shape as buildGenericCommand (shared helper) so start/restart cannot drift.
+			dangerous := ""
+			if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
+				dangerous = toolDef.DangerousFlag
+			}
+			rawCmd := i.buildRestartEnvPrefix() + formatGenericResumeCommand(
+				i.Command, toolDef.ResumeFlag, sessionID, dangerous)
+			resumeCmd, containerName, err := i.prepareCommand(rawCmd)
+			if err != nil {
+				return err
+			}
+			if containerName != "" {
+				i.SandboxContainer = containerName
+			}
 
-		// The session ID env var is propagated via host-side SetEnvironment after tmux start.
-		// Same shape as buildGenericCommand (shared helper) so start/restart cannot drift.
-		dangerous := ""
-		if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
-			dangerous = toolDef.DangerousFlag
+			sessionLog.Info("restart_generic_respawn", slog.String("tool", i.Tool), slog.String("command", resumeCmd))
+
+			// #1822 F2: the generic resume command is a bare
+			// `<cmd> <resumeFlag> <sid>` with no inline AGENTDECK_PROFILE prefix,
+			// and this branch returns before the fallback recreate path. Must run
+			// BEFORE RespawnPane — see the Claude branch above for why.
+			i.ensureProfileEnv()
+			i.ensureClaudeConfigDirEnv()
+
+			if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
+				sessionLog.Info(
+					"restart_generic_respawn_failed",
+					slog.String("tool", i.Tool),
+					slog.String("error", err.Error()),
+				)
+				return fmt.Errorf("failed to restart %s session: %w", i.Tool, err)
+			}
+
+			sessionLog.Info("restart_generic_respawn_succeeded", slog.String("tool", i.Tool))
+
+			i.loadCustomPatternsFromConfig() // Reload custom patterns
+			i.Status = StatusWaiting
+			return nil
 		}
-		rawCmd := i.buildRestartEnvPrefix() + formatGenericResumeCommand(
-			i.Command, toolDef.ResumeFlag, sessionID, dangerous)
-		resumeCmd, containerName, err := i.prepareCommand(rawCmd)
-		if err != nil {
-			return err
-		}
-		if containerName != "" {
-			i.SandboxContainer = containerName
-		}
-
-		sessionLog.Info("restart_generic_respawn", slog.String("tool", i.Tool), slog.String("command", resumeCmd))
-
-		// #1822 F2: the generic resume command is a bare
-		// `<cmd> <resumeFlag> <sid>` with no inline AGENTDECK_PROFILE prefix,
-		// and this branch returns before the fallback recreate path. Must run
-		// BEFORE RespawnPane — see the Claude branch above for why.
-		i.ensureProfileEnv()
-		i.ensureClaudeConfigDirEnv()
-
-		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
-			sessionLog.Info(
-				"restart_generic_respawn_failed",
-				slog.String("tool", i.Tool),
-				slog.String("error", err.Error()),
-			)
-			return fmt.Errorf("failed to restart %s session: %w", i.Tool, err)
-		}
-
-		sessionLog.Info("restart_generic_respawn_succeeded", slog.String("tool", i.Tool))
-
-		i.loadCustomPatternsFromConfig() // Reload custom patterns
-		i.Status = StatusWaiting
-		return nil
+		// toolDef vanished or id emptied between checks — fall through to recreate.
 	}
 
 	mcpLog.Debug("restart_fallback_recreate")

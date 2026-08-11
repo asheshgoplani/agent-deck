@@ -344,6 +344,66 @@ func TestClearToolSessionID_SurvivesStickyMergeOnSave(t *testing.T) {
 	}
 }
 
+// TestClearToolSessionID_FlagConsumedAfterSave prevents a long-lived Instance
+// (TUI) that once cleared tool-session-id from re-emitting explicit empty on
+// every later full save — which would wipe a concurrent re-bind written via
+// WriteGenericSessionBinding (live capture or another process).
+func TestClearToolSessionID_FlagConsumedAfterSave(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	storage := newTestStorage(t)
+
+	inst := NewInstance("clear-consume", "/tmp/clear-consume")
+	inst.ID = "clear-consume"
+	inst.Tool = "shell"
+	inst.GenericSessionID = "first-id"
+	inst.GenericDetectedAt = time.Now()
+	if err := storage.SaveWithGroups([]*Instance{inst}, NewGroupTreeWithGroups([]*Instance{inst}, nil)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := SetField(inst, FieldToolSessionID, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !inst.genericSessionIDCleared {
+		t.Fatal("SetField clear must set genericSessionIDCleared")
+	}
+	if err := storage.SaveWithGroups([]*Instance{inst}, NewGroupTreeWithGroups([]*Instance{inst}, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if inst.genericSessionIDCleared {
+		t.Fatal("genericSessionIDCleared must be consumed after successful SaveWithGroups")
+	}
+
+	// Concurrent re-bind (live capture / other process) after our clear saved.
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "rebinding-id", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded[0].GenericSessionID != "rebinding-id" {
+		t.Fatalf("rebind failed: %q", loaded[0].GenericSessionID)
+	}
+
+	// Unrelated full-table save from the long-lived in-memory Instance that
+	// still has empty GenericSessionID (never reloaded). Must NOT wipe rebind.
+	inst.Title = "renamed-after-clear"
+	if err := storage.SaveWithGroups([]*Instance{inst}, NewGroupTreeWithGroups([]*Instance{inst}, nil)); err != nil {
+		t.Fatal(err)
+	}
+	loaded2, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded2[0].GenericSessionID; got != "rebinding-id" {
+		t.Fatalf("stale clear flag wiped concurrent rebind: got %q want rebinding-id", got)
+	}
+	if loaded2[0].Title != "renamed-after-clear" {
+		t.Fatalf("title=%q", loaded2[0].Title)
+	}
+}
+
 func TestSetField_ToolSessionID_TrimsWhitespace(t *testing.T) {
 	inst := &Instance{ID: "trim", Tool: "shell"}
 	if _, _, err := SetField(inst, FieldToolSessionID, "  sid-trim  ", nil); err != nil {

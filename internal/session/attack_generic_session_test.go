@@ -394,3 +394,74 @@ func TestAttack_ExplicitClearMergeUnit(t *testing.T) {
 		t.Fatalf("explicit clear must win: %s", merged)
 	}
 }
+
+// TestAttack_UnknownToolNoPanic — no resume_flag / unknown name must not panic.
+func TestAttack_UnknownToolNoPanic(t *testing.T) {
+	inst := &Instance{Tool: "no-such-tool-xyz", Command: "no-such-tool-xyz", GenericSessionID: "sid"}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("panic: %v", r)
+		}
+	}()
+	if inst.CanRestartGeneric() {
+		t.Fatal("unknown tool CanRestartGeneric")
+	}
+	cmd := inst.buildGenericCommand("no-such-tool-xyz")
+	if strings.Contains(cmd, "--resume") {
+		t.Fatalf("resume on unknown tool: %q", cmd)
+	}
+}
+
+// TestAttack_ConfigIsolationXDGWinsOverLegacy documents attack #4: when both
+// XDG and ~/.agent-deck configs exist, XDG resume_flag wins.
+func TestAttack_ConfigIsolationXDGWinsOverLegacy(t *testing.T) {
+	home, xdgConfig, _, _ := isolateConfigRoots(t)
+	writeConfigAt(t, xdgAgentDeckConfigDir(xdgConfig), `
+[tools.dual]
+command = "dual"
+resume_flag = "--from-xdg"
+`)
+	writeConfigAt(t, legacyAgentDeckConfigDir(home), `
+[tools.dual]
+command = "dual"
+resume_flag = "--from-legacy"
+`)
+	ClearUserConfigCache()
+	def := GetToolDef("dual")
+	if def == nil {
+		t.Fatal("GetToolDef nil")
+	}
+	if def.ResumeFlag != "--from-xdg" {
+		t.Fatalf("when both configs exist, XDG must win: got %q", def.ResumeFlag)
+	}
+	inst := &Instance{Tool: "dual", Command: "dual", GenericSessionID: "s"}
+	cmd := inst.buildGenericCommand("dual")
+	if !strings.Contains(cmd, "--from-xdg") {
+		t.Fatalf("cmd=%q", cmd)
+	}
+	if strings.Contains(cmd, "--from-legacy") {
+		t.Fatalf("legacy flag leaked: %q", cmd)
+	}
+}
+
+// TestAttack_NoResumeFlagNoInject — custom tool without resume_flag must not
+// inject resume argv even with a persisted GenericSessionID.
+func TestAttack_NoResumeFlagNoInject(t *testing.T) {
+	home := isolateToolConfigHome(t)
+	writeToolConfigTOML(t, home, `
+[tools.noflag]
+command = "noflag"
+`)
+	inst := &Instance{Tool: "noflag", Command: "noflag", GenericSessionID: "present"}
+	if inst.CanRestartGeneric() {
+		t.Fatal("CanRestartGeneric without resume_flag")
+	}
+	cmd := inst.buildGenericCommand("noflag")
+	if strings.Contains(cmd, "present") && strings.Contains(cmd, "--") {
+		// id may appear only if base command embeds it; ensure no resume flag form
+		t.Logf("cmd=%q", cmd)
+	}
+	if strings.Contains(cmd, "--resume") {
+		t.Fatalf("injected --resume without resume_flag: %q", cmd)
+	}
+}
