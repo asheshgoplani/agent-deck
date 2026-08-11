@@ -100,6 +100,11 @@ func handleSessionRemove(profile string, args []string) {
 	// reports success but row stays" failure noted in the bug report.
 	instances = dropInstance(instances, inst.ID)
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	if err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentRemove, ""); err != nil {
+		queueTx.Release()
+		out.Error(fmt.Sprintf("failed to prepare removal: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 	if err := commitRuntimeQueueRemoval(queueTx, func() error {
 		return sessionRemovePersist(storage, inst.ID, instances, groupTree)
 	}); err != nil {
@@ -108,6 +113,10 @@ func handleSessionRemove(profile string, args []string) {
 		os.Exit(1)
 	}
 	queueTx.Release()
+	if err := session.CompleteLifecycleIntent(storage, inst.ID); err != nil {
+		out.Error(fmt.Sprintf("failed to complete removal: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 	_ = inst.KillAndWait()
 	if *pruneWorktree {
 		pruneSessionWorktree(inst)
@@ -217,6 +226,12 @@ func bulkRemoveSessions(
 		}
 		nextRemaining := dropInstance(remaining, inst.ID)
 		groupTree := session.NewGroupTreeWithGroups(nextRemaining, groups)
+		if err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentRemove, ""); err != nil {
+			queueTx.Release()
+			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs)
+			out.Error(fmt.Sprintf("failed to prepare removal %s: %v", inst.ID, errors.Join(err, cleanupErr)), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 		if err := bulkSessionRemovePersist(storage, inst.ID, nextRemaining, groupTree); err != nil {
 			queueTx.Release()
 			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs)
@@ -274,7 +289,11 @@ func finalizeCommittedBulkRemovals(storage *session.Storage, removedIDs []string
 		}
 		if absent {
 			releaseRuntimeQueueTransactions(queueTxs)
-			return errors.Join(observeErr, cleanupCommittedBulkRemovals(removedIDs))
+			var intentErr error
+			for _, id := range removedIDs {
+				intentErr = errors.Join(intentErr, session.CompleteLifecycleIntent(storage, id))
+			}
+			return errors.Join(observeErr, intentErr, cleanupCommittedBulkRemovals(removedIDs))
 		}
 	}
 	releaseRuntimeQueueTransactions(queueTxs)

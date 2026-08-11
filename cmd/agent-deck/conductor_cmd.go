@@ -826,7 +826,9 @@ func handleConductorTeardown(_ string, args []string) {
 
 	// Step 2: Stop and optionally remove each conductor
 	var removed []string
+	var teardownErrors []string
 	for _, meta := range targets {
+		targetFailed := false
 		sessionTitle := session.ConductorSessionTitle(meta.Name)
 		if !*jsonOutput {
 			fmt.Printf("Stopping conductor: %s (profile: %s)\n", meta.Name, meta.Profile)
@@ -837,27 +839,38 @@ func handleConductorTeardown(_ string, args []string) {
 		var instances []*session.Instance
 		var groups []*session.GroupData
 		var ownedTxs []*session.RuntimeQueueTransaction
+		var ownedIDs []string
+		var prepareCause error
 		prepareFailed := err != nil
 		if err == nil {
 			instances, groups, err = storage.LoadWithGroups()
 			prepareFailed = err != nil
+			prepareCause = err
 			if err == nil {
 				for _, inst := range instances {
 					if inst.Title == sessionTitle {
 						queueTx, lockErr := session.BeginRuntimeQueueTransaction(inst.ID)
 						if lockErr != nil {
 							prepareFailed = true
+							prepareCause = lockErr
 							if !*jsonOutput {
 								fmt.Fprintf(os.Stderr, "  Warning: failed to lock runtime queue for '%s' (%s): %v\n", sessionTitle, inst.ID, lockErr)
 							}
 							break
 						}
 						ownedTxs = append(ownedTxs, queueTx)
+						ownedIDs = append(ownedIDs, inst.ID)
 						if *removeAll {
+							if intentErr := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentRemove, "conductor:"+meta.Name); intentErr != nil {
+								prepareFailed = true
+								prepareCause = intentErr
+								break
+							}
 							filtered := dropInstance(instances, inst.ID)
 							groupTree := session.NewGroupTreeWithGroups(filtered, groups)
 							if rmErr := storage.RemoveSessionAndVerify(inst.ID, filtered, groupTree); rmErr != nil {
 								prepareFailed = true
+								prepareCause = rmErr
 								if !*jsonOutput {
 									fmt.Fprintf(os.Stderr, "  Warning: failed to remove session '%s' (%s): %v\n", sessionTitle, inst.ID, rmErr)
 								}
@@ -869,6 +882,8 @@ func handleConductorTeardown(_ string, args []string) {
 			}
 		}
 		if prepareFailed {
+			targetFailed = true
+			teardownErrors = append(teardownErrors, fmt.Sprintf("%s: lifecycle prepare failed: %v", meta.Name, prepareCause))
 			for _, tx := range ownedTxs {
 				tx.Release()
 			}
@@ -879,7 +894,10 @@ func handleConductorTeardown(_ string, args []string) {
 		}
 		for _, inst := range instances {
 			if inst.Title == sessionTitle && inst.Exists() {
-				_ = inst.Kill()
+				if killErr := inst.Kill(); killErr != nil {
+					targetFailed = true
+					teardownErrors = append(teardownErrors, fmt.Sprintf("%s: stop runtime: %v", meta.Name, killErr))
+				}
 			}
 		}
 		if !*jsonOutput {
@@ -892,6 +910,8 @@ func handleConductorTeardown(_ string, args []string) {
 		// Optionally remove directory and session
 		if *removeAll {
 			if err := session.TeardownConductor(meta.Name); err != nil {
+				targetFailed = true
+				teardownErrors = append(teardownErrors, fmt.Sprintf("%s: remove directory: %v", meta.Name, err))
 				if !*jsonOutput {
 					fmt.Fprintf(os.Stderr, "  Warning: failed to remove dir for %s: %v\n", meta.Name, err)
 				}
@@ -946,23 +966,35 @@ func handleConductorTeardown(_ string, args []string) {
 				}
 			}
 		}
-		for _, tx := range ownedTxs {
+		for i, tx := range ownedTxs {
 			if *removeAll {
-				if discardErr := tx.Discard(); discardErr != nil && !*jsonOutput {
-					fmt.Fprintf(os.Stderr, "  Warning: failed to discard runtime queue for '%s': %v\n", sessionTitle, discardErr)
+				if discardErr := tx.Discard(); discardErr != nil {
+					targetFailed = true
+					teardownErrors = append(teardownErrors, fmt.Sprintf("%s: discard runtime queue: %v", meta.Name, discardErr))
+					if !*jsonOutput {
+						fmt.Fprintf(os.Stderr, "  Warning: failed to discard runtime queue for '%s': %v\n", sessionTitle, discardErr)
+					}
 				}
 			}
 			tx.Release()
+			if *removeAll && !targetFailed {
+				if completeErr := session.CompleteLifecycleIntent(storage, ownedIDs[i]); completeErr != nil {
+					targetFailed = true
+					teardownErrors = append(teardownErrors, fmt.Sprintf("%s: complete lifecycle intent: %v", meta.Name, completeErr))
+				}
+			}
 		}
 		if storage != nil {
 			_ = storage.Close()
 		}
 
-		removed = append(removed, meta.Name)
+		if !targetFailed {
+			removed = append(removed, meta.Name)
+		}
 	}
 
 	// Clean up shared files if removing all
-	if *allConductors && *removeAll {
+	if *allConductors && *removeAll && len(teardownErrors) == 0 && len(removed) == len(targets) {
 		condDir, _ := session.ConductorDir()
 		if condDir != "" {
 			_ = os.Remove(filepath.Join(condDir, "bridge.py"))
@@ -977,12 +1009,22 @@ func handleConductorTeardown(_ string, args []string) {
 
 	if *jsonOutput {
 		output, _ := json.MarshalIndent(map[string]any{
-			"success":  true,
+			"success":  len(teardownErrors) == 0,
 			"removed":  *removeAll,
 			"teardown": removed,
+			"errors":   teardownErrors,
 		}, "", "  ")
 		fmt.Println(string(output))
+		if len(teardownErrors) > 0 {
+			os.Exit(1)
+		}
 		return
+	}
+	if len(teardownErrors) > 0 {
+		for _, teardownErr := range teardownErrors {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", teardownErr)
+		}
+		os.Exit(1)
 	}
 
 	fmt.Println()

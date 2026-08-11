@@ -1436,3 +1436,35 @@ func TestRuntimeQueueTransactionRejectsMutationAfterRelease(t *testing.T) {
 		t.Fatalf("released transaction mutated queue: %#v, %v", queued, err)
 	}
 }
+
+func TestRuntimeQueueTransactionReleaseWinsSynchronizedMutation(t *testing.T) {
+	isolateRuntimeQueue(t)
+	tx, err := BeginRuntimeQueueTransaction("release-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		tx.Release()
+		close(released)
+	}()
+	<-released
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := tx.Enqueue("late"); !errors.Is(err, ErrRuntimeQueueTransactionReleased) {
+				t.Errorf("late Enqueue = %v", err)
+			}
+			if err := tx.Discard(); !errors.Is(err, ErrRuntimeQueueTransactionReleased) {
+				t.Errorf("late Discard = %v", err)
+			}
+			tx.Release()
+		}()
+	}
+	wg.Wait()
+	if RuntimeQueueHasPending("release-race") {
+		t.Fatal("post-release mutation reached queue")
+	}
+}

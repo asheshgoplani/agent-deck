@@ -146,7 +146,6 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID,
 		return "", fmt.Errorf("open storage: %w", err)
 	}
 	defer storage.Close()
-
 	m.h.instancesMu.RLock()
 	existing := make([]*session.Instance, len(m.h.instances))
 	copy(existing, m.h.instances)
@@ -233,11 +232,17 @@ func (m *WebMutator) DeleteSession(id string) error {
 		return fmt.Errorf("open storage: %w", err)
 	}
 	defer storage.Close()
+	if err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentRemove, ""); err != nil {
+		return fmt.Errorf("prepare web deletion: %w", err)
+	}
 
 	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
 		return webDeleteInstance(storage, id)
 	}); err != nil {
 		return fmt.Errorf("commit web deletion: %w", err)
+	}
+	if err := session.CompleteLifecycleIntent(storage, id); err != nil {
+		return fmt.Errorf("complete web deletion: %w", err)
 	}
 	_ = inst.Kill()
 	m.pushUndo(inst)
@@ -284,6 +289,14 @@ func (m *WebMutator) ArchiveSession(id string) error {
 		return fmt.Errorf("failed to discard runtime queue: %w", err)
 	}
 	defer queueTx.Release()
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return fmt.Errorf("open archive storage: %w", err)
+	}
+	defer storage.Close()
+	if err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentArchive, ""); err != nil {
+		return fmt.Errorf("prepare web archive: %w", err)
+	}
 	m.h.instancesMu.Lock()
 	previousArchivedAt := inst.ArchivedAt
 	inst.ArchivedAt = time.Now().UTC()
@@ -292,17 +305,27 @@ func (m *WebMutator) ArchiveSession(id string) error {
 		m.h.instancesMu.Lock()
 		inst.ArchivedAt = previousArchivedAt
 		m.h.instancesMu.Unlock()
+		_ = session.CompleteLifecycleIntent(storage, id)
 		return fmt.Errorf("commit web archive persistence: %w", err)
 	}
 	if err := inst.Kill(); err != nil {
-		return fmt.Errorf("archive committed but failed to stop session: %w", err)
+		m.h.instancesMu.Lock()
+		inst.ArchivedAt = previousArchivedAt
+		m.h.instancesMu.Unlock()
+		if rollbackErr := webPersistArchive(m); rollbackErr != nil {
+			return fmt.Errorf("stop archived session: %w; rollback archive: %v", err, rollbackErr)
+		}
+		if completeErr := session.CompleteLifecycleIntent(storage, id); completeErr != nil {
+			return fmt.Errorf("stop archived session: %w; complete rollback: %v", err, completeErr)
+		}
+		return fmt.Errorf("failed to stop session; archive rolled back: %w", err)
 	}
 	if err := webDiscardQueue(queueTx); err != nil {
 		// Persistence already committed. Keep the live lifecycle aligned with
 		// SQLite even though stale queue cleanup must be reported to the caller.
 		return fmt.Errorf("commit web archive queue discard: %w", err)
 	}
-	return nil
+	return session.CompleteLifecycleIntent(storage, id)
 }
 
 // UnarchiveSession clears the archive flag without starting tmux.
@@ -685,10 +708,8 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		return web.WorktreeFinishResult{}, fmt.Errorf("discard runtime queue: %w", err)
 	}
 	defer queueTx.Release()
-	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
-		return storage.RemoveSessionAndVerify(id, existing, m.h.groupTree)
-	}); err != nil {
-		return web.WorktreeFinishResult{}, fmt.Errorf("commit worktree removal: %w", err)
+	if err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentWorktreeFinish, worktreePath); err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("prepare worktree finish: %w", err)
 	}
 
 	if !opts.NoMerge {
@@ -722,6 +743,14 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 
 	if inst.Exists() {
 		_ = inst.Kill()
+	}
+	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
+		return storage.RemoveSessionAndVerify(id, existing, m.h.groupTree)
+	}); err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("commit worktree removal: %w", err)
+	}
+	if err := session.CompleteLifecycleIntent(storage, id); err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("complete worktree finish: %w", err)
 	}
 
 	// #1396: use the targeted RemoveSessionAndVerify path, NOT

@@ -2,8 +2,8 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +46,7 @@ type StopHookDecision struct {
 	RuntimeQueueAckToken string `json:"-"`
 	StopBlockCount       int    `json:"-"`
 	StopBlockPrevious    int    `json:"-"`
+	StopBlockToken       string `json:"-"`
 }
 
 func stopBlocksDir() string {
@@ -61,7 +62,9 @@ func stopBlocksPathFor(instanceID string) string {
 }
 
 type stopBlockState struct {
-	Count int `json:"count"`
+	Count        int    `json:"count"`
+	PendingCount int    `json:"pending_count,omitempty"`
+	PendingToken string `json:"pending_token,omitempty"`
 }
 
 func loadStopBlockCountLocked(instanceID string) int {
@@ -84,7 +87,21 @@ func loadStopBlockCountLocked(instanceID string) int {
 // forever, the exact token-burn loop the guard prevents. Callers fail safe on a
 // non-nil error (do not block).
 func saveStopBlockCountLocked(instanceID string, count int) error {
-	data, err := json.Marshal(stopBlockState{Count: count})
+	return saveStopBlockStateLocked(instanceID, stopBlockState{Count: count})
+}
+
+func loadStopBlockStateLocked(instanceID string) stopBlockState {
+	raw, err := os.ReadFile(stopBlocksPathFor(instanceID))
+	if err != nil {
+		return stopBlockState{}
+	}
+	var state stopBlockState
+	_ = json.Unmarshal(raw, &state)
+	return state
+}
+
+func saveStopBlockStateLocked(instanceID string, state stopBlockState) error {
+	data, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
@@ -101,11 +118,13 @@ func saveStopBlockCountLocked(instanceID string, count int) error {
 // are preserved for the heartbeat path (never lost to the guard).
 func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision, bool, error) {
 	dec, blocked, err := StageForStopHook(instanceID, stopHookActive)
-	if err != nil || !blocked || dec.InboxAckToken == "" {
+	if err != nil || !blocked {
 		return dec, blocked, err
 	}
-	if err := AcknowledgeInboxForParent(instanceID, dec.InboxAckToken); err != nil {
-		RollbackStopHookDelivery(instanceID, dec.StopBlockPrevious)
+	if err := AcknowledgeStopHookDelivery(instanceID, dec.InboxAckToken, dec.StopBlockToken, dec.StopBlockCount); err != nil {
+		if rbErr := RollbackStopHookDelivery(instanceID, dec.StopBlockToken); rbErr != nil {
+			return StopHookDecision{}, false, fmt.Errorf("acknowledge inbox: %w; rollback reservation: %v", err, rbErr)
+		}
 		return StopHookDecision{}, false, err
 	}
 	dec.InboxAckToken = ""
@@ -131,7 +150,8 @@ func StageForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	stopBlockMu.Lock()
 	defer stopBlockMu.Unlock()
 
-	count := loadStopBlockCountLocked(instanceID)
+	state := loadStopBlockStateLocked(instanceID)
+	count := state.Count
 	if !stopHookActive {
 		// Fresh user turn: reset the consecutive-block budget.
 		count = 0
@@ -143,18 +163,24 @@ func StageForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	if count >= MaxStopHookBlocks {
 		return StopHookDecision{}, false, nil
 	}
-	if err := saveStopBlockCountLocked(instanceID, count+1); err != nil {
+	reservationToken := runtimeQueueNewID()
+	state = stopBlockState{Count: count, PendingCount: count + 1, PendingToken: reservationToken}
+	if err := saveStopBlockStateLocked(instanceID, state); err != nil {
 		return StopHookDecision{}, false, err
 	}
 
 	batch, err := StageRuntimeQueue(instanceID)
 	if err != nil {
-		_ = saveStopBlockCountLocked(instanceID, count)
+		if rbErr := rollbackStopHookDeliveryLocked(instanceID, reservationToken); rbErr != nil {
+			return StopHookDecision{}, false, fmt.Errorf("stage runtime queue: %w; rollback reservation: %v", err, rbErr)
+		}
 		return StopHookDecision{}, false, err
 	}
 	inboxBatch, err := StageInboxForParent(instanceID)
 	if err != nil {
-		_ = saveStopBlockCountLocked(instanceID, count)
+		if rbErr := rollbackStopHookDeliveryLocked(instanceID, reservationToken); rbErr != nil {
+			return StopHookDecision{}, false, fmt.Errorf("stage inbox: %w; rollback reservation: %v", err, rbErr)
+		}
 		return StopHookDecision{}, false, err
 	}
 	events := inboxBatch.Events
@@ -164,15 +190,14 @@ func StageForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 		// the consecutive-block chain.
 		if inboxBatch.Token != "" {
 			if ackErr := AcknowledgeInboxForParent(instanceID, inboxBatch.Token); ackErr != nil {
-				_ = saveStopBlockCountLocked(instanceID, count)
+				if rbErr := rollbackStopHookDeliveryLocked(instanceID, reservationToken); rbErr != nil {
+					return StopHookDecision{}, false, fmt.Errorf("acknowledge empty inbox: %w; rollback reservation: %v", ackErr, rbErr)
+				}
 				return StopHookDecision{}, false, ackErr
 			}
 		}
-		if rbErr := saveStopBlockCountLocked(instanceID, 0); rbErr != nil {
-			commsLog.Warn("stop_block_count_reset_failed",
-				slog.String("instance", instanceID),
-				slog.String("error", rbErr.Error()),
-			)
+		if rbErr := saveStopBlockStateLocked(instanceID, stopBlockState{}); rbErr != nil {
+			return StopHookDecision{}, false, fmt.Errorf("reset empty Stop-hook reservation: %w", rbErr)
 		}
 		return StopHookDecision{}, false, nil
 	}
@@ -196,14 +221,22 @@ func StageForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 		RuntimeQueueAckToken: batch.Token,
 		StopBlockCount:       count + 1,
 		StopBlockPrevious:    count,
+		StopBlockToken:       reservationToken,
 	}, true, nil
 }
 
 // AcknowledgeStopHookDelivery commits inbox consumption and advances the loop
 // budget only after the complete Stop-hook response was written.
-func AcknowledgeStopHookDelivery(instanceID, inboxToken string, count int) error {
+func AcknowledgeStopHookDelivery(instanceID, inboxToken, reservationToken string, count int) error {
 	stopBlockMu.Lock()
 	defer stopBlockMu.Unlock()
+	state := loadStopBlockStateLocked(instanceID)
+	if reservationToken == "" || state.PendingToken != reservationToken || state.PendingCount != count {
+		return errors.New("Stop-hook budget reservation token mismatch")
+	}
+	if err := saveStopBlockStateLocked(instanceID, stopBlockState{Count: count}); err != nil {
+		return err
+	}
 	if inboxToken != "" {
 		if err := AcknowledgeInboxForParent(instanceID, inboxToken); err != nil {
 			return err
@@ -212,10 +245,18 @@ func AcknowledgeStopHookDelivery(instanceID, inboxToken string, count int) error
 	return nil
 }
 
-func RollbackStopHookDelivery(instanceID string, previous int) {
+func RollbackStopHookDelivery(instanceID, reservationToken string) error {
 	stopBlockMu.Lock()
 	defer stopBlockMu.Unlock()
-	_ = saveStopBlockCountLocked(instanceID, previous)
+	return rollbackStopHookDeliveryLocked(instanceID, reservationToken)
+}
+
+func rollbackStopHookDeliveryLocked(instanceID, reservationToken string) error {
+	state := loadStopBlockStateLocked(instanceID)
+	if reservationToken == "" || state.PendingToken != reservationToken {
+		return errors.New("Stop-hook budget rollback token mismatch")
+	}
+	return saveStopBlockStateLocked(instanceID, stopBlockState{Count: state.Count})
 }
 
 // FormatCompletionsForInjection renders drained completions as the human-

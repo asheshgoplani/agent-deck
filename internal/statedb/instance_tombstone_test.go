@@ -1,6 +1,7 @@
 package statedb
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,85 @@ import (
 
 func tombstoneTestRow(id string) *InstanceRow {
 	return &InstanceRow{ID: id, Title: id, ProjectPath: "/tmp", GroupPath: "my-sessions", Tool: "shell", Status: "stopped", CreatedAt: time.Now()}
+}
+
+func TestWithInstancesAbsentRetriesSQLiteWriterContention(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	guard, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer guard.Close()
+	if err := guard.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	row := tombstoneTestRow("busy-absence")
+	if err := guard.CreateInstance(row); err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+	if _, err := guard.db.Exec("PRAGMA busy_timeout=0"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := blocker.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("UPDATE metadata SET value=value WHERE key='schema_version'"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := guard.WithInstancesAbsent([]string{row.ID}, func() error { return nil })
+		done <- err
+	}()
+	time.Sleep(35 * time.Millisecond) // force at least two 0-timeout BUSY attempts
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := guard.InstanceExists(row.ID); err != nil || exists {
+		t.Fatalf("instance after retried absence = %v, %v", exists, err)
+	}
+}
+
+func TestLifecycleIntentPersistsAcrossReopenUntilCompleted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "intent-row", Kind: "worktree-finish", Payload: "/tmp/wt"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	intents, err := db.LifecycleIntents()
+	if err != nil || len(intents) != 1 || intents[0].InstanceID != "intent-row" || intents[0].Payload != "/tmp/wt" {
+		t.Fatalf("reloaded intents = %#v, %v", intents, err)
+	}
+	if err := db.CompleteLifecycleIntent("intent-row"); err != nil {
+		t.Fatal(err)
+	}
+	intents, err = db.LifecycleIntents()
+	if err != nil || len(intents) != 0 {
+		t.Fatalf("completed intents = %#v, %v", intents, err)
+	}
 }
 
 func TestWithInstancesAbsentBlockedStaleWriterCannotResurrectAfterCommit(t *testing.T) {

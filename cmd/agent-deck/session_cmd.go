@@ -547,16 +547,26 @@ func handleSessionArchive(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to lock runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	if err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentArchive, ""); err != nil {
+		queueTx.Release()
+		out.Error(fmt.Sprintf("failed to prepare archive: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	previousArchivedAt := inst.ArchivedAt
 	inst.ArchivedAt = time.Now().UTC()
 	if err := sessionArchivePersist(storage, inst, false); err != nil {
+		_ = session.CompleteLifecycleIntent(storage, inst.ID)
 		queueTx.Release()
 		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 	if inst.Exists() {
 		if err := inst.Kill(); err != nil {
+			inst.ArchivedAt = previousArchivedAt
+			rollbackErr := sessionArchivePersist(storage, inst, false)
+			completeErr := session.CompleteLifecycleIntent(storage, inst.ID)
 			queueTx.Release()
-			out.Error(fmt.Sprintf("session archived but failed to stop session: %v", err), ErrCodeInvalidOperation)
+			out.Error(fmt.Sprintf("failed to stop archived session (archive rollback=%v, intent completion=%v): %v", rollbackErr, completeErr, err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 	}
@@ -566,6 +576,10 @@ func handleSessionArchive(profile string, args []string) {
 		os.Exit(1)
 	}
 	queueTx.Release()
+	if err := session.CompleteLifecycleIntent(storage, inst.ID); err != nil {
+		out.Error(fmt.Sprintf("failed to complete archive intent: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	out.Success(fmt.Sprintf("Archived session: %s", inst.Title), map[string]interface{}{
 		"success":  true,
@@ -2087,6 +2101,10 @@ func loadSessionData(profile string) (*session.Storage, []*session.Instance, []*
 	instances, groupsData, err := storage.LoadWithGroups()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to load sessions: %w", err)
+	}
+	if err := session.RecoverLifecycleIntents(storage, instances); err != nil {
+		_ = storage.Close()
+		return nil, nil, nil, fmt.Errorf("recover lifecycle intents: %w", err)
 	}
 
 	// LoadWithGroups reconnects tmux sessions with lazy loading.

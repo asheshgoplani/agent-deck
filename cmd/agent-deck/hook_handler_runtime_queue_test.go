@@ -150,6 +150,84 @@ func TestStopHookRuntimeQueueAcknowledgmentFailureSurfaced(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+func (f writerFunc) Close() error                { return nil }
+
+type cancellableBlockingWriter struct {
+	started chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func (w *cancellableBlockingWriter) Write([]byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	<-w.closed
+	return 0, errors.New("writer closed")
+}
+
+func (w *cancellableBlockingWriter) Close() error {
+	select {
+	case <-w.closed:
+	default:
+		close(w.closed)
+	}
+	return nil
+}
+
+func TestStopHookBoundedWriterCancelsBeforeReturning(t *testing.T) {
+	previous := stopHookWriteTimeout
+	stopHookWriteTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { stopHookWriteTimeout = previous })
+	w := &cancellableBlockingWriter{started: make(chan struct{}), closed: make(chan struct{})}
+	before := time.Now()
+	err := writeStopHookResponse(w, []byte("response"))
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("bounded write error = %v", err)
+	}
+	if time.Since(before) > time.Second {
+		t.Fatal("bounded write retained blocked goroutine/lease")
+	}
+	select {
+	case <-w.closed:
+	default:
+		t.Fatal("timeout did not cancel writer")
+	}
+}
+
+func TestStopHookConcurrentInboxOnlyDeliveryEmitsOnce(t *testing.T) {
+	isolateStopHookRuntimeQueue(t)
+	const id = "concurrent-inbox-only"
+	if err := session.CommitToInbox(id, session.TransitionNotificationEvent{
+		ChildSessionID: "child-once", ChildTitle: "once", FromStatus: "running", ToStatus: "waiting", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var outputs [2]bytes.Buffer
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := range outputs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- emitStopHookDecision(id, false, &outputs[i])
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	emissions := 0
+	for i := range outputs {
+		if strings.Contains(outputs[i].String(), "child-once") {
+			emissions++
+		}
+	}
+	if emissions != 1 {
+		t.Fatalf("inbox batch emitted %d times: %q / %q", emissions, outputs[0].String(), outputs[1].String())
+	}
+}
 
 func TestStopHookArchivedRaceCannotEmitStaleRuntimeQueue(t *testing.T) {
 	isolateStopHookRuntimeQueue(t)
@@ -185,15 +263,22 @@ func TestStopHookArchivedRaceCannotEmitStaleRuntimeQueue(t *testing.T) {
 	emitErr := make(chan error, 1)
 	go func() { emitErr <- emitStopHookDecision(id, false, &out) }()
 	<-staged
-	if err := session.DiscardRuntimeQueue(id); err != nil {
-		t.Fatal(err)
+	discardDone := make(chan error, 1)
+	go func() { discardDone <- session.DiscardRuntimeQueue(id) }()
+	select {
+	case err := <-discardDone:
+		t.Fatalf("discard overtook owned delivery: %v", err)
+	case <-time.After(30 * time.Millisecond):
 	}
 	release()
 	if err := <-emitErr; err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); !strings.Contains(got, "child-preserved") || strings.Contains(got, "stale archived work") {
-		t.Fatalf("archive race response lost inbox or emitted stale runtime work: %q", got)
+	if err := <-discardDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "child-preserved") || !strings.Contains(got, "stale archived work") {
+		t.Fatalf("owned delivery response changed under rejected discard: %q", got)
 	}
 	if session.RuntimeQueueHasPending(id) {
 		t.Fatal("discarded message reappeared")
@@ -224,18 +309,25 @@ func TestStopHookRuntimeQueueReplacementTokenSuppressesStaleBatch(t *testing.T) 
 	emitErr := make(chan error, 1)
 	go func() { emitErr <- emitStopHookDecision(id, false, &out) }()
 	<-staged
-	if err := session.DiscardRuntimeQueue(id); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := session.EnqueueRuntimeMessage(id, "replacement batch"); err != nil {
-		t.Fatal(err)
+	discardDone := make(chan error, 1)
+	go func() { discardDone <- session.DiscardRuntimeQueue(id) }()
+	select {
+	case err := <-discardDone:
+		t.Fatalf("discard overtook owned delivery: %v", err)
+	case <-time.After(30 * time.Millisecond):
 	}
 	release()
 	if err := <-emitErr; err != nil {
 		t.Fatal(err)
 	}
-	if out.Len() != 0 {
-		t.Fatalf("replaced token emitted stale response: %q", out.String())
+	if err := <-discardDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.EnqueueRuntimeMessage(id, "replacement batch"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "stale batch") {
+		t.Fatalf("owned batch was not emitted: %q", out.String())
 	}
 	queued, err := session.PeekRuntimeQueue(id)
 	if err != nil || len(queued) != 1 || queued[0].Message != "replacement batch" {

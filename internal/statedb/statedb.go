@@ -97,7 +97,14 @@ func withBusyRetry(op func() error) error {
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 15
+const SchemaVersion = 16
+
+type LifecycleIntent struct {
+	InstanceID string
+	Kind       string
+	Payload    string
+	CreatedAt  int64
+}
 
 // ErrInstanceTombstoned prevents stale persistence from recreating an ID whose
 // deletion has already committed. Only CreateInstance may explicitly reuse it.
@@ -579,6 +586,16 @@ func (s *StateDB) Migrate() error {
 		ON watcher_events(watcher_id, created_at DESC)
 	`); err != nil {
 		return fmt.Errorf("statedb: create watcher_events index: %w", err)
+	}
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS lifecycle_intents (
+			instance_id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL,
+			payload TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL
+		)
+	`); err != nil {
+		return fmt.Errorf("statedb: create lifecycle_intents: %w", err)
 	}
 
 	// ALTER TABLE migrations for existing databases.
@@ -1341,6 +1358,43 @@ func (s *StateDB) WithInstancesAbsent(ids []string, confirmed func() error) (boo
 		return false, err
 	}
 	return true, confirmed()
+}
+
+func (s *StateDB) PrepareLifecycleIntent(intent LifecycleIntent) error {
+	if intent.InstanceID == "" || intent.Kind == "" {
+		return errors.New("statedb: lifecycle intent requires instance id and kind")
+	}
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(`INSERT INTO lifecycle_intents(instance_id, kind, payload, created_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(instance_id) DO UPDATE SET kind=excluded.kind, payload=excluded.payload, created_at=excluded.created_at`,
+			intent.InstanceID, intent.Kind, intent.Payload, time.Now().Unix())
+		return err
+	})
+}
+
+func (s *StateDB) CompleteLifecycleIntent(instanceID string) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("DELETE FROM lifecycle_intents WHERE instance_id = ?", instanceID)
+		return err
+	})
+}
+
+func (s *StateDB) LifecycleIntents() ([]LifecycleIntent, error) {
+	rows, err := s.db.Query("SELECT instance_id, kind, payload, created_at FROM lifecycle_intents ORDER BY created_at, instance_id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LifecycleIntent
+	for rows.Next() {
+		var intent LifecycleIntent
+		if err := rows.Scan(&intent.InstanceID, &intent.Kind, &intent.Payload, &intent.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, intent)
+	}
+	return out, rows.Err()
 }
 
 // --- Group CRUD ---
