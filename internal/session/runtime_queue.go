@@ -166,8 +166,15 @@ var (
 	runtimeQueueNow        = time.Now
 	runtimeQueuePersist    = writeFileDurable
 	runtimeQueueRemove     = os.Remove
+	runtimeQueueOpen       = func(path string) (runtimeQueueSidecarFile, error) { return os.Open(path) }
 	runtimeQueueStageEnter = func() {}
 )
+
+type runtimeQueueSidecarFile interface {
+	io.Reader
+	Stat() (fs.FileInfo, error)
+	Close() error
+}
 
 func RuntimeQueueDir() string {
 	dir, err := dataPath("runtime-queues", "runtime-queues")
@@ -317,7 +324,7 @@ func removeRuntimeQueueWALLocked(id string) error {
 }
 
 func readRuntimeQueueJSONLocked(path string, value any) (bool, error) {
-	f, err := os.Open(path)
+	f, err := runtimeQueueOpen(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
@@ -332,7 +339,7 @@ func readRuntimeQueueJSONLocked(path string, value any) (bool, error) {
 	if info.Size() > MaxRuntimeQueueBytes {
 		return true, fmt.Errorf("runtime queue sidecar %s exceeds %d bytes", path, MaxRuntimeQueueBytes)
 	}
-	raw, err := readRuntimeQueueSidecar(f)
+	raw, err := io.ReadAll(io.LimitReader(f, MaxRuntimeQueueBytes+1))
 	if err != nil {
 		return true, err
 	}
@@ -352,10 +359,6 @@ func readRuntimeQueueJSONLocked(path string, value any) (bool, error) {
 		return true, errors.New("multiple JSON records")
 	}
 	return true, nil
-}
-
-func readRuntimeQueueSidecar(r io.Reader) ([]byte, error) {
-	return io.ReadAll(io.LimitReader(r, MaxRuntimeQueueBytes+1))
 }
 
 func writeRuntimeQueueJSONLocked(path string, value any) error {

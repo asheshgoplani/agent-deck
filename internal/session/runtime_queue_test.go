@@ -597,17 +597,35 @@ func TestRuntimeQueueAcknowledgeOversizedCompletionIsRetained(t *testing.T) {
 	}
 }
 
-func TestRuntimeQueueSidecarStreamReadIsBoundedAfterStat(t *testing.T) {
-	source := &countingRuntimeQueueReader{Reader: strings.NewReader(strings.Repeat("x", MaxRuntimeQueueBytes+2))}
-	raw, err := readRuntimeQueueSidecar(source)
+func TestRuntimeQueueJSONReadBoundsGrowthAfterStat(t *testing.T) {
+	isolateRuntimeQueue(t)
+	statPath := filepath.Join(t.TempDir(), "below-limit")
+	if err := os.WriteFile(statPath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(statPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(raw) != MaxRuntimeQueueBytes+1 {
-		t.Fatalf("streamed sidecar bytes = %d, want %d", len(raw), MaxRuntimeQueueBytes+1)
+	source := &countingRuntimeQueueReader{Reader: io.LimitReader(runtimeQueueByteReader{}, MaxRuntimeQueueBytes+2)}
+	fake := &growingRuntimeQueueSidecar{Reader: source, info: info}
+	oldOpen := runtimeQueueOpen
+	runtimeQueueOpen = func(string) (runtimeQueueSidecarFile, error) { return fake, nil }
+	t.Cleanup(func() { runtimeQueueOpen = oldOpen })
+
+	var completion runtimeQueueCompletion
+	exists, err := readRuntimeQueueJSONLocked("growing-sidecar", &completion)
+	if !exists {
+		t.Fatal("growing sidecar reported missing")
+	}
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("growing sidecar error = %v, want size error", err)
 	}
 	if source.bytesRead != MaxRuntimeQueueBytes+1 {
 		t.Fatalf("source bytes read = %d, want bounded read of %d", source.bytesRead, MaxRuntimeQueueBytes+1)
+	}
+	if !fake.closed {
+		t.Fatal("growing sidecar was not closed")
 	}
 }
 
@@ -637,6 +655,24 @@ type countingRuntimeQueueReader struct {
 	io.Reader
 	bytesRead int
 }
+
+type runtimeQueueByteReader struct{}
+
+func (runtimeQueueByteReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	return len(p), nil
+}
+
+type growingRuntimeQueueSidecar struct {
+	io.Reader
+	info   os.FileInfo
+	closed bool
+}
+
+func (f *growingRuntimeQueueSidecar) Stat() (os.FileInfo, error) { return f.info, nil }
+func (f *growingRuntimeQueueSidecar) Close() error               { f.closed = true; return nil }
 
 func (r *countingRuntimeQueueReader) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
