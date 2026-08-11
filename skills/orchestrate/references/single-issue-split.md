@@ -40,8 +40,10 @@ ground truth and can't see the ones around it.
 
 ## Sequential relay (default)
 
-1. Launch subtask 1's implementer with a fresh worktree for the whole issue:
-   `agent-deck launch <repo-root> -w <issue-branch> -b --base <base-branch> -c claude -t "impl-<issue-slug>-1" "${LEAN[@]}" --message-file ...`
+1. Create subtask 1's worktree with `references/create-worktree.sh` using
+   `--task <issue-slug> --branch <issue-branch> --base <base-branch>`, then
+   launch its implementer at the returned path:
+   `agent-deck launch "$WT" -c claude -t "impl-<issue-slug>-1" "${LEAN[@]}" --message-file ...`
    using the stage-1 prompt template with the subtask's mini-spec. Every
    launch here carries `"${LEAN[@]}"` like any other child (see "Child startup
    baseline" in SKILL.md) — drop it only for a subtask that drives a browser.
@@ -68,24 +70,27 @@ review runs once, after the final integration check (below).
 
 ## Parallel worktrees + integration branch
 
-1. Create the integration branch and its worktree yourself (git plumbing is
-   conductor work, not code editing):
-   `git -C <repo-root> worktree add .worktrees/<issue-slug> -b <issue-branch> <resolved-base-sha>`
+1. Create the integration branch and worktree with
+   `references/create-worktree.sh --repo "$ROOT_WT" --run-dir "$RUN_DIR"
+   --run-id "$RUN_ID" --task <issue-slug>-integration --branch <issue-branch>
+   --base <resolved-base-sha>`
    then print and record its branch, HEAD and merge base as required by the
    main skill before launching any child.
 2. For each subtask, create its worktree branched **off the integration
    branch**:
-   `git -C <repo-root> worktree add .worktrees/<issue-slug>-<n> -b <issue-branch>-<n> <issue-branch>`
+   `references/create-worktree.sh --repo "$ROOT_WT" --run-dir "$RUN_DIR"
+   --run-id "$RUN_ID" --task <issue-slug>-<n> --branch <issue-branch>-<n>
+   --base <issue-branch>`
    then launch its implementer at that worktree path (plain path — the
    worktree already exists) and run stages 1–3. Cap: 3 concurrent subtasks.
 3. As each subtask's review comes back clean, merge it:
-   `git -C .worktrees/<issue-slug> merge <issue-branch>-<n>`
+   `git -C "$ROOT_WT/.worktrees/$RUN_ID-<issue-slug>-integration" merge <issue-branch>-<n>`
 4. On merge conflict, do not resolve it yourself — launch a session in the
    integration worktree: "Resolve the in-progress merge conflicts preserving
    the intent of both sides, run the full test suite, and commit the merge."
 5. As soon as a subtask is merged, clean up its now-redundant worktree and
    branch (the integration branch holds the commits):
-   `git -C <repo-root> worktree remove .worktrees/<issue-slug>-<n> && git -C <repo-root> branch -d <issue-branch>-<n>`
+   `git -C "$ROOT_WT" worktree remove "$ROOT_WT/.worktrees/$RUN_ID-<issue-slug>-<n>" && git -C "$ROOT_WT" branch -d <issue-branch>-<n>`
 6. Continue until every subtask is merged and only the integration worktree
    remains.
 

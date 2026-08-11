@@ -56,7 +56,8 @@ You (the session running this skill) are the **conductor**. Hard rules:
   or mid tier, or to a subagent. See "Model & connector tiering" for the
   ladder per connector and the table of jobs that belong on cheap.
 - **You never work in the main checkout.** Every task gets a dedicated
-  worktree (`launch -w <branch>`), including single-task relay mode.
+  repository-local worktree created by `references/create-worktree.sh`,
+  including single-task relay mode.
 - **You never block.** Supervise via the `poll.sh` heartbeat (never a raw
   `session children --json` dump — see "Context budget"); answer `waiting`
   children; poll `gh pr checks` on the same heartbeat.
@@ -83,16 +84,17 @@ You (the session running this skill) are the **conductor**. Hard rules:
 
 ## Run setup
 
-Everything this run writes — the manifest, prompts, plans, task files,
-screenshots, verdicts, handoffs — lives under **one** directory in the **root
-worktree**: `$ROOT_WT/.agent-deck/`, the main checkout of the target repo,
-never a child worktree. Nothing this skill produces goes anywhere else — no
-second location to remember, no `docs/` dir to keep clean:
+Keep coordination artifacts and source checkouts strictly separate. Put the
+manifest, prompts, plans, task files, screenshots, verdicts and handoffs under
+the global Agent Deck run directory. Put temporary source checkouts only under
+the target repository's `.worktrees/` directory:
 
 ```bash
 ROOT_WT=$(git -C <repo-root> worktree list --porcelain | awk '/^worktree /{print $2; exit}')
-AD_DIR="$ROOT_WT/.agent-deck"           # the one root; designs/ lives here too
-RUN_DIR="$AD_DIR/orchestrate/<run-id>"  # this run; everything else is under it
+AD_DIR="$HOME/.agent-deck"
+RUN_DIR="$AD_DIR/orchestrate/<run-id>"  # lightweight run artifacts only
+RUN_ID=<run-id>
+WORKTREES_DIR="$ROOT_WT/.worktrees"
 ```
 
 `git worktree list` prints the main worktree first — that first entry is the
@@ -102,7 +104,7 @@ The layout, one directory per task, so everything about a task is in one
 place:
 
 ```text
-$ROOT_WT/.agent-deck/
+$HOME/.agent-deck/
   designs/<date>-<topic>-design.md    approved specs (written by brainstorming)
   orchestrate/<run-id>/               = $RUN_DIR
     manifest.md  poll.sh  heartbeat.sh  prompts/
@@ -111,24 +113,10 @@ $ROOT_WT/.agent-deck/
       spec-block.md  impl-prompt.md  review-r1.md  *.png  handoff.md
 ```
 
-**`$AD_DIR` must be git-ignored before anything writes into it.** Inside the
-repo, "outside the diff" is a gitignore fact, not a naming convention. Check,
-and if the repo does not already ignore it, ignore it *locally* —
-`.git/info/exclude` is not tracked, applies to every worktree of the repo, and
-does not put a commit in the user's tree just to start a run:
-
-```bash
-git -C "$ROOT_WT" check-ignore -q "$AD_DIR/.probe" || \
-  printf '.agent-deck/\n' >> "$(git -C "$ROOT_WT" rev-parse --git-common-dir)/info/exclude"
-git -C "$ROOT_WT" check-ignore -q "$AD_DIR/.probe"
-```
-
-That last command must exit 0 before you launch anything. Probe with a
-**file path inside** the directory, never the directory itself: asked about a
-directory that has tracked files under it, `check-ignore` answers "not
-ignored" even when the pattern plainly matches, and you would append a
-duplicate rule and then fail your own gate. `.probe` need not exist —
-`check-ignore` answers on the path, not the file.
+Never create a worktree, clone, dependency tree or build directory under
+`$RUN_DIR`. Every checkout path is exactly
+`$ROOT_WT/.worktrees/$RUN_ID-<task-slug>` and is recorded in
+`$RUN_DIR/worktrees.tsv` by `references/create-worktree.sh`.
 
 Pick a run id (`run-<date>-<short-slug>`) and populate the run directory:
 
@@ -158,12 +146,9 @@ resume, and not a child worktree, where they are one `git add -A` away from a
 PR. Nothing under `$AD_DIR` is ever committed, pushed, uploaded, or mentioned
 in a PR or commit message.
 
-Two properties keep that true without anyone remembering it: the directory is
-ignored (checked above), and it lives in the **root** worktree, so a child
-working in its own worktree does not have it in its tree at all — it reaches
-its plan, task file and screenshots only by the absolute paths you hand it.
-`git clean -xdf` in the root worktree deletes a live run; don't run it, and
-tell the user if they are about to.
+The global run directory is outside every repository, so it cannot enter a
+diff or be deleted by `git clean`. Children reach plans, task files and
+screenshots only through the absolute paths handed to them.
 
 `poll.sh` is your heartbeat, `heartbeat.sh` is what makes sure the heartbeat
 keeps happening, and `rotate-conductor.sh` is how you replace yourself when
@@ -210,7 +195,7 @@ notifications and the turn-start snapshot route to the new conductor.
   123") → fetch the spec: `gh issue view <n> --json title,body,url`. Its PR
   body must include `Fixes #<n>`.
 - An argument that is a path to a **design/spec document** (e.g.
-  `.agent-deck/designs/<date>-<topic>-design.md`) → a spec-fed task: run the
+  `~/.agent-deck/designs/<date>-<topic>-design.md`) → a spec-fed task: run the
   **planning stage** below before any implementation; the resulting plan
   drives decomposition.
   A design/spec is the **expected** entrance for "I brainstormed this, now
@@ -243,7 +228,7 @@ implementation plan ───────→ plan review (if 2+ implementers) �
     (uncommon)               split. No planner child. One branch, one PR.
 ```
 
-**Input files live in the root worktree and are never committed.** A spec or
+**Input files live under `$AD_DIR/designs/` and are never committed.** A spec or
 plan is scaffolding for this run, not a deliverable — it must not show up in
 the branch, the diff, or the PR. Children reach it by **absolute path**, which
 works from any worktree and does not depend on what any branch contains. Every
@@ -253,17 +238,13 @@ launches:
 ```bash
 SPEC_PATH=$(cd "$(dirname <path>)" && printf '%s/%s\n' "$PWD" "$(basename <path>)")
 test -f "$SPEC_PATH"                              # must exist and be readable
-case "$SPEC_PATH" in "$ROOT_WT"/*) ;; *) echo "not in the root worktree" ;; esac
-git -C "$ROOT_WT" check-ignore -q "$SPEC_PATH"    # must match (exit 0)
+case "$SPEC_PATH" in "$AD_DIR/designs/"*) ;; *) echo "not in Agent Deck designs" ;; esac
 ```
 
-If the file is not under `$AD_DIR`, move it to `$AD_DIR/designs/` and use the
-new path — one location, no copies, and never a copy inside a child worktree.
-If it is tracked (`check-ignore` exits 1 and `git ls-files --error-unmatch`
-finds it), it was committed by an older process: leave the committed copy
-alone, and tell the user it is now stale scaffolding they can delete. A
-missing or unreadable path is a launch blocker — a child handed a path it
-cannot read improvises from an empty spec.
+If the file is elsewhere, move it to `$AD_DIR/designs/` and use the new path —
+one location, no copies, and never a copy inside a child worktree. A missing
+or unreadable path is a launch blocker — a child handed a path it cannot read
+improvises from an empty spec.
 
 Record `SPEC_PATH` in the manifest. Base every worktree explicitly on the base
 branch; nothing about the spec constrains it any more. Resolve the base once
@@ -407,15 +388,16 @@ user's session's:
 ```bash
 bash "$RUN_DIR/prompts/render.sh" plan "$RUN_DIR/<task-slug>/plan-prompt.md" \
   SPEC_PATH="$SPEC_PATH" TASK_DIR="$RUN_DIR/<task-slug>"
-agent-deck launch <repo-root> -w <branch> -b --base <base-branch> -c claude -t "plan-<task-slug>" "${LEAN[@]}" \
+WT=$("<agent-deck-repo>/skills/orchestrate/references/create-worktree.sh" \
+  --repo "$ROOT_WT" --run-dir "$RUN_DIR" --run-id "$RUN_ID" \
+  --task "<task-slug>-plan" --branch <branch> --base <base-branch>)
+agent-deck launch "$WT" -c claude -t "plan-<task-slug>" "${LEAN[@]}" \
   --message-file "$RUN_DIR/<task-slug>/plan-prompt.md"
 ```
 
 Immediately verify and record the launch before trusting the child:
 
 ```bash
-WT=$(git -C <repo-root> worktree list --porcelain | awk -v b="refs/heads/<branch>" \
-  '$1=="worktree"{p=$2} $1=="branch" && $2==b{print p}')
 git -C "$WT" status --short --branch
 git -C "$WT" rev-parse HEAD
 git -C "$WT" merge-base <base-branch> HEAD
@@ -619,8 +601,8 @@ Derive a short `<task-slug>` and branch name. Render the implementer prompt to
 never inline via `-m "$(cat ...)"`: the shell mangles backticks and `$`, and
 issue bodies are full of both.
 
-Every task — spec-fed, plan-fed or freeform — takes the same `launch -w`
-path onto a fresh worktree off the base branch. The task file is not in that
+Every task — spec-fed, plan-fed or freeform — takes the same explicit
+`create-worktree.sh` path onto a fresh worktree off the base branch. The task file is not in that
 worktree and does not need to be: the child reads it at its absolute path
 in its task directory, so no base commit can hide it. Verify the file exists
 before launch, and record the worktree path in the manifest:
@@ -630,7 +612,10 @@ test -f "$RUN_DIR/<task-slug>/tasks/task-NN-<name>.md"
 bash "$RUN_DIR/prompts/render.sh" impl "$RUN_DIR/<task-slug>/impl-prompt.md" \
   TASK_TITLE="<title>" SPEC_BLOCK@="$RUN_DIR/<task-slug>/spec-block.md" \
   RUN_DIR="$RUN_DIR" TASK_SLUG="<task-slug>"
-agent-deck launch <repo-root> -w <branch> -b --base <base-branch> -c claude -t "impl-<task-slug>" "${LEAN[@]}" \
+WT=$("<agent-deck-repo>/skills/orchestrate/references/create-worktree.sh" \
+  --repo "$ROOT_WT" --run-dir "$RUN_DIR" --run-id "$RUN_ID" \
+  --task "<task-slug>" --branch <branch> --base <base-branch>)
+agent-deck launch "$WT" -c claude -t "impl-<task-slug>" "${LEAN[@]}" \
   --message-file "$RUN_DIR/<task-slug>/impl-prompt.md"
 ```
 
@@ -1211,10 +1196,24 @@ git -C <repo-root> worktree remove <worktree-path>
 git -C <repo-root> branch -d <branch>
 ```
 
+Also sweep registered repository-local worktrees and disposable run artifacts
+deterministically after all task sessions have been archived:
+
+```bash
+"<agent-deck-repo>/skills/orchestrate/references/cleanup-runs.sh" \
+  --run "$RUN_DIR" --apply
+```
+
+The collector reads `$RUN_DIR/worktrees.tsv`, refuses runs with live sessions,
+preserves reports/screenshots, and skips worktrees with tracked or staged
+edits. For any task that needs human attention, create
+`$RUN_DIR/.needs-attention` before cleanup. A periodic host
+cleanup may run the same script with `--days 7 --apply`; active and marked runs
+remain protected. Run it without `--apply` to preview.
+
 Take `<worktree-path>` and the exact `<branch>` name from
-`git -C <repo-root> worktree list` — agent-deck may prefix the branch you
-passed to `-w` (e.g. `add-x` becomes `feature/add-x`), so never guess the
-path from the name you typed.
+`$RUN_DIR/worktrees.tsv`; verify either against `git -C <repo-root> worktree
+list` before manual cleanup.
 
 If review feedback arrives on the PR later, recreate a worktree from the
 remote branch. **Needs-attention tasks are the exception**: leave their
