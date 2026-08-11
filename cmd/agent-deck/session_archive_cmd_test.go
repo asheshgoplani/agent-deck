@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,9 @@ func TestSessionArchiveHoldsQueueLockThroughPersistence(t *testing.T) {
 	if os.Getenv("AGENT_DECK_ARCHIVE_PERSIST_HELPER") == "1" {
 		originalPersist := sessionArchivePersist
 		sessionArchivePersist = func(storage *session.Storage, inst *session.Instance, persistStatus bool) error {
+			if os.Getenv("AGENT_DECK_ARCHIVE_PERSIST_FAIL") == "1" {
+				return errors.New("forced archive persistence failure")
+			}
 			if err := os.WriteFile(os.Getenv("AGENT_DECK_ARCHIVE_PERSIST_READY"), []byte("ready"), 0o644); err != nil {
 				return err
 			}
@@ -114,6 +118,36 @@ func TestSessionArchiveHoldsQueueLockThroughPersistence(t *testing.T) {
 	}
 	if !archivedFlag(t, home, id) {
 		t.Fatal("archive lifecycle state was not persisted")
+	}
+}
+
+func TestSessionArchivePersistenceFailurePreservesRuntimeQueue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	id := addTestSession(t, home, filepath.Join(home, "project"), "archive-persist-failure")
+	if _, err := session.EnqueueRuntimeMessage(id, "must survive failed archive"); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionArchiveHoldsQueueLockThroughPersistence$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_DECK_TASK6_HELPER_PROCESS=1",
+		"AGENT_DECK_ARCHIVE_PERSIST_HELPER=1",
+		"AGENT_DECK_ARCHIVE_PERSIST_FAIL=1",
+		"AGENT_DECK_ARCHIVE_PERSIST_ID="+id,
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+	)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("archive unexpectedly succeeded with forced persistence failure")
+	}
+	if !session.RuntimeQueueHasPending(id) {
+		t.Fatal("failed archive discarded durable runtime queue")
+	}
+	if archivedFlag(t, home, id) {
+		t.Fatal("failed archive persisted archived lifecycle state")
 	}
 }
 

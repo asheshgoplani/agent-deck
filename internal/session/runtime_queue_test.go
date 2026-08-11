@@ -701,6 +701,69 @@ func TestRuntimeQueueSubprocessArchiveCannotOvertakeValidatedDelivery(t *testing
 	}
 }
 
+func TestRuntimeQueueSubprocessCanonicalAliasesShareProcessLock(t *testing.T) {
+	if os.Getenv("AGENT_DECK_RUNTIME_ALIAS_IPC_HELPER") == "1" {
+		t.Setenv("XDG_DATA_HOME", os.Getenv("AGENT_DECK_RUNTIME_ALIAS_IPC_DATA"))
+		tx, err := BeginRuntimeQueueTransaction("canonical/a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Release()
+		if err := os.WriteFile(os.Getenv("AGENT_DECK_RUNTIME_ALIAS_IPC_READY"), []byte("ready"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(os.Getenv("AGENT_DECK_RUNTIME_ALIAS_IPC_RELEASE")); err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("timed out waiting for alias release")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	isolateRuntimeQueue(t)
+	root := t.TempDir()
+	ready, release := filepath.Join(root, "ready"), filepath.Join(root, "release")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeQueueSubprocessCanonicalAliasesShareProcessLock$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_DECK_RUNTIME_ALIAS_IPC_HELPER=1",
+		"AGENT_DECK_RUNTIME_ALIAS_IPC_DATA="+os.Getenv("XDG_DATA_HOME"),
+		"AGENT_DECK_RUNTIME_ALIAS_IPC_READY="+ready,
+		"AGENT_DECK_RUNTIME_ALIAS_IPC_RELEASE="+release,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.WriteFile(release, []byte("release"), 0o644)
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("alias helper did not acquire process lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := TryDiscardRuntimeQueue("canonical_a"); !errors.Is(err, ErrRuntimeQueueDeliveryInProgress) {
+		t.Fatalf("colliding alias discard error = %v, want %v", err, ErrRuntimeQueueDeliveryInProgress)
+	}
+	if err := os.WriteFile(release, []byte("release"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRuntimeQueueSubprocessEnqueueCannotOutliveDiscard(t *testing.T) {
 	if os.Getenv("AGENT_DECK_RUNTIME_ENQUEUE_IPC_HELPER") == "1" {
 		t.Setenv("XDG_DATA_HOME", os.Getenv("AGENT_DECK_RUNTIME_ENQUEUE_IPC_DATA"))

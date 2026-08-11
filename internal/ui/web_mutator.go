@@ -214,7 +214,7 @@ func (m *WebMutator) DeleteSession(id string) error {
 
 	// Kill the tmux session (ignore errors — may already be stopped)
 	_ = inst.Kill()
-	queueTx, err := session.BeginRuntimeQueueDiscard(id)
+	queueTx, err := session.BeginRuntimeQueueTransaction(id)
 	if err != nil {
 		return fmt.Errorf("discard runtime queue: %w", err)
 	}
@@ -228,6 +228,9 @@ func (m *WebMutator) DeleteSession(id string) error {
 
 	if err := storage.DeleteInstance(id); err != nil {
 		return err
+	}
+	if err := queueTx.Discard(); err != nil {
+		return fmt.Errorf("discard runtime queue: %w", err)
 	}
 	m.pushUndo(inst)
 	return nil
@@ -271,7 +274,7 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	if err := inst.Kill(); err != nil {
 		return fmt.Errorf("failed to stop session: %w", err)
 	}
-	queueTx, err := session.BeginRuntimeQueueDiscard(id)
+	queueTx, err := session.BeginRuntimeQueueTransaction(id)
 	if err != nil {
 		return fmt.Errorf("failed to discard runtime queue: %w", err)
 	}
@@ -279,7 +282,13 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	m.h.instancesMu.Lock()
 	inst.ArchivedAt = time.Now().UTC()
 	m.h.instancesMu.Unlock()
-	return m.persistAllInstances()
+	if err := m.persistAllInstances(); err != nil {
+		return err
+	}
+	if err := queueTx.Discard(); err != nil {
+		return fmt.Errorf("failed to discard runtime queue: %w", err)
+	}
+	return nil
 }
 
 // UnarchiveSession clears the archive flag without starting tmux.
@@ -691,7 +700,7 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		}
 	}
 	m.h.instancesMu.RUnlock()
-	queueTx, err := session.BeginRuntimeQueueDiscard(id)
+	queueTx, err := session.BeginRuntimeQueueTransaction(id)
 	if err != nil {
 		return web.WorktreeFinishResult{}, fmt.Errorf("discard runtime queue: %w", err)
 	}
@@ -703,6 +712,9 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 	// row at all. Either way, removal requires the targeted DELETE.
 	if sErr := storage.RemoveSessionAndVerify(id, existing, m.h.groupTree); sErr != nil {
 		return web.WorktreeFinishResult{}, fmt.Errorf("save session data: %w", sErr)
+	}
+	if err := queueTx.Discard(); err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("discard runtime queue: %w", err)
 	}
 
 	// Issue #1576: sweep transition-notifier state (inbox JSONL lines +

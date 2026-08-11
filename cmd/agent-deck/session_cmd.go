@@ -550,7 +550,7 @@ func handleSessionArchive(profile string, args []string) {
 		}
 		killed = true
 	}
-	queueTx, err := session.BeginRuntimeQueueDiscard(inst.ID)
+	queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to lock runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -559,6 +559,10 @@ func handleSessionArchive(profile string, args []string) {
 	inst.ArchivedAt = time.Now().UTC()
 	if err := sessionArchivePersist(storage, inst, killed); err != nil {
 		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := queueTx.Discard(); err != nil {
+		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 

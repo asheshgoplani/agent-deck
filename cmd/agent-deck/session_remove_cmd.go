@@ -106,7 +106,7 @@ func handleSessionRemove(profile string, args []string) {
 	// list before our DELETE — exactly the "session remove --force
 	// reports success but row stays" failure noted in the bug report.
 	instances = dropInstance(instances, inst.ID)
-	queueTx, err := session.BeginRuntimeQueueDiscard(inst.ID)
+	queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -115,6 +115,10 @@ func handleSessionRemove(profile string, args []string) {
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 	if err := storage.RemoveSessionAndVerify(inst.ID, instances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := queueTx.Discard(); err != nil {
+		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -218,7 +222,7 @@ func bulkRemoveSessions(
 	removedIDs := make([]string, 0, len(doomed))
 	for _, inst := range doomed {
 		_ = inst.KillAndWait()
-		queueTx, err := session.BeginRuntimeQueueDiscard(inst.ID)
+		queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
 		if err != nil {
 			out.Error(fmt.Sprintf("failed to discard runtime queue for %s: %v", inst.ID, err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -228,6 +232,10 @@ func bulkRemoveSessions(
 		}
 		if err := storage.DeleteInstance(inst.ID); err != nil {
 			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		if err := queueTx.Discard(); err != nil {
+			out.Error(fmt.Sprintf("failed to discard runtime queue for %s: %v", inst.ID, err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 		removedIDs = append(removedIDs, inst.ID)

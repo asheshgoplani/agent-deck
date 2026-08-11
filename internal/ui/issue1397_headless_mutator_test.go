@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -61,6 +63,12 @@ func TestIssue1397_HeadlessDeleteFindsExistingSession(t *testing.T) {
 	_ = seedSession(t, storage, []*session.Instance{s1}, "issue1397-del-002", "existing2")
 
 	m := NewWebMutator(h)
+	if _, err := session.EnqueueRuntimeMessage("issue1397-del-001", "discard on committed delete"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.StageRuntimeQueue("issue1397-del-001"); err != nil {
+		t.Fatal(err)
+	}
 
 	// The Home's in-memory map is empty — this is the headless precondition.
 	if len(h.instanceByID) != 0 {
@@ -84,6 +92,12 @@ func TestIssue1397_HeadlessDeleteFindsExistingSession(t *testing.T) {
 	if len(remaining) != 1 {
 		t.Fatalf("expected 1 remaining session, got %d", len(remaining))
 	}
+	if session.RuntimeQueueHasPending("issue1397-del-001") {
+		t.Fatal("runtime queue survived committed web deletion")
+	}
+	if batch, err := session.StageRuntimeQueue("issue1397-del-001"); err != nil || batch.Token != "" || len(batch.Messages) != 0 {
+		t.Fatalf("runtime WAL survived committed web deletion: %#v, %v", batch, err)
+	}
 }
 
 // TestIssue1397_HeadlessDeleteUnknownStillErrors guards the inverse: deleting a
@@ -96,6 +110,32 @@ func TestIssue1397_HeadlessDeleteUnknownStillErrors(t *testing.T) {
 	m := NewWebMutator(h)
 	if err := m.DeleteSession("does-not-exist"); err == nil {
 		t.Fatal("deleting a non-existent session must still error")
+	}
+}
+
+func TestHeadlessDeleteStorageOpenFailurePreservesRuntimeQueue(t *testing.T) {
+	originalDataRoot := os.Getenv("XDG_DATA_HOME")
+	h, storage := newHeadlessHomeForTest(t, "_test_web_delete_failure")
+	_ = seedSession(t, storage, nil, "web-delete-failure", "preserve-queue")
+	if _, err := session.EnqueueRuntimeMessage("web-delete-failure", "must survive failed web delete"); err != nil {
+		t.Fatal(err)
+	}
+	m := NewWebMutator(h)
+	dataRoot := t.TempDir()
+	blockedProfiles := filepath.Join(dataRoot, "agent-deck", "profiles")
+	if err := os.MkdirAll(filepath.Dir(blockedProfiles), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blockedProfiles, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+	if err := m.DeleteSession("web-delete-failure"); err == nil {
+		t.Fatal("web delete unexpectedly succeeded with invalid storage profile")
+	}
+	t.Setenv("XDG_DATA_HOME", originalDataRoot)
+	if !session.RuntimeQueueHasPending("web-delete-failure") {
+		t.Fatal("failed web deletion discarded runtime queue")
 	}
 }
 

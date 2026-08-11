@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -23,6 +25,44 @@ func TestRemoveSessionBlocksLiveTmuxDespiteStoppedStatus(t *testing.T) {
 	msg := (&Home{}).removeSession(inst)()
 	if _, deleted := msg.(sessionDeletedMsg); deleted {
 		t.Fatal("registry-only removal deleted a session whose tmux process is still live")
+	}
+}
+
+func TestRegistryRemovalAbortsWhenQueueTransactionCannotStart(t *testing.T) {
+	dataRoot := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+	runtimeDir := filepath.Join(dataRoot, "agent-deck", "runtime")
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(runtimeDir, "runtime-queue-locks")
+	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inst := session.NewInstance("discard-failure", t.TempDir())
+	inst.Status = session.StatusStopped
+	msg := registryRemovalMsg(inst)
+	if _, ok := msg.(sessionDeleteFailedMsg); !ok {
+		t.Fatalf("registryRemovalMsg() = %T, want sessionDeleteFailedMsg", msg)
+	}
+}
+
+func TestDeleteSessionAbortsWhenQueueTransactionCannotStart(t *testing.T) {
+	dataRoot := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+	runtimeDir := filepath.Join(dataRoot, "agent-deck", "runtime")
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(runtimeDir, "runtime-queue-locks")
+	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inst := session.NewInstance("delete-discard-failure", t.TempDir())
+	inst.Status = session.StatusStopped
+	msg := (&Home{}).deleteSession(inst)()
+	if _, ok := msg.(sessionDeleteFailedMsg); !ok {
+		t.Fatalf("deleteSession() = %T, want sessionDeleteFailedMsg", msg)
 	}
 }
 

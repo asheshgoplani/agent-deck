@@ -5849,10 +5849,18 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Explicitly delete from database to prevent resurrection on reload
 		if err := h.storage.DeleteInstance(msg.deletedID); err != nil {
 			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
+			h.setError(fmt.Errorf("failed to delete session: %w", err))
+			return h, nil
 		}
 		// Save both instances AND groups (critical fix: was losing groups!)
 		// Use forceSave to bypass the external-change abort - delete MUST persist
 		h.forceSaveInstances()
+		if msg.queueTx != nil {
+			if err := msg.queueTx.Discard(); err != nil {
+				h.setError(fmt.Errorf("failed to discard runtime queue: %w", err))
+				return h, nil
+			}
+		}
 
 		// Show undo hint (using setError as a transient message)
 		if deletedInstance != nil {
@@ -5862,6 +5870,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.setError(fmt.Errorf("deleted '%s'", deletedInstance.Title))
 			}
 		}
+		return h, nil
+
+	case sessionDeleteFailedMsg:
+		h.setError(fmt.Errorf("failed to delete session: %w", msg.err))
 		return h, nil
 
 	case sessionRemoveBlockedMsg:
@@ -5909,6 +5921,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := h.persistArchived(inst); err != nil {
 				h.setError(fmt.Errorf("failed to persist archive: %w", err))
 				return h, nil
+			}
+			if msg.queueTx != nil {
+				if err := msg.queueTx.Discard(); err != nil {
+					h.setError(fmt.Errorf("failed to discard runtime queue: %w", err))
+					return h, nil
+				}
 			}
 			h.setError(fmt.Errorf("archived '%s' (^ to view)", inst.Title))
 		}
@@ -6747,6 +6765,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			uiLog.Warn("worktree_finish_delete_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
 		}
 		h.forceSaveInstances()
+		if msg.queueTx != nil {
+			if err := msg.queueTx.Discard(); err != nil {
+				h.setError(fmt.Errorf("failed to discard runtime queue: %w", err))
+				return h, nil
+			}
+		}
 
 		// Issue #1576: sweep transition-notifier state (inbox JSONL lines +
 		// runtime/transition-notify-state.json dedup record) for the removed
@@ -12823,6 +12847,10 @@ type sessionDeletedMsg struct {
 	queueTx   *session.RuntimeQueueTransaction
 }
 
+type sessionDeleteFailedMsg struct {
+	err error
+}
+
 // sessionRemoveBlockedMsg keeps a live tmux session registered when the TUI's
 // cached status was stale enough to make it look stopped or errored.
 type sessionRemoveBlockedMsg struct {
@@ -12876,9 +12904,9 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 	}
 	return func() tea.Msg {
 		killErr := inst.Kill()
-		queueTx, discardErr := session.BeginRuntimeQueueDiscard(id)
+		queueTx, discardErr := session.BeginRuntimeQueueTransaction(id)
 		if discardErr != nil {
-			return sessionDeletedMsg{deletedID: id, killErr: discardErr}
+			return sessionDeleteFailedMsg{err: discardErr}
 		}
 		if isWorktree && sharedWorktree {
 			// #1449: another live session still references this worktree; skip
@@ -12996,7 +13024,7 @@ func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 		if killErr := inst.Kill(); killErr != nil {
 			return sessionArchivedMsg{sessionID: id, killErr: killErr}
 		}
-		queueTx, discardErr := session.BeginRuntimeQueueDiscard(id)
+		queueTx, discardErr := session.BeginRuntimeQueueTransaction(id)
 		if discardErr != nil {
 			return sessionArchivedMsg{sessionID: id, killErr: discardErr}
 		}
@@ -13027,9 +13055,9 @@ func registryRemovalMsg(inst *session.Instance) tea.Msg {
 	if inst.Exists() {
 		return sessionRemoveBlockedMsg{title: inst.Title}
 	}
-	queueTx, err := session.BeginRuntimeQueueDiscard(inst.ID)
+	queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
 	if err != nil {
-		return sessionDeletedMsg{deletedID: inst.ID, killErr: err}
+		return sessionDeleteFailedMsg{err: err}
 	}
 	return sessionDeletedMsg{deletedID: inst.ID, queueTx: queueTx}
 }
@@ -19548,7 +19576,7 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 		if inst != nil && inst.Exists() {
 			_ = inst.Kill()
 		}
-		queueTx, err := session.BeginRuntimeQueueDiscard(sessionID)
+		queueTx, err := session.BeginRuntimeQueueTransaction(sessionID)
 		if err != nil {
 			return worktreeFinishResultMsg{
 				sessionID: sessionID, sessionTitle: sessionTitle,

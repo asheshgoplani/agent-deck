@@ -85,9 +85,16 @@ func TestSessionRemove_StoppedSessionSucceeds(t *testing.T) {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
 	home := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	workPath := filepath.Join(home, "proj")
 	id := addTestSession(t, home, workPath, "remove-basic")
 	forceSetStatus(t, home, id, session.StatusStopped)
+	if _, err := session.EnqueueRuntimeMessage(id, "discard after committed removal"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.StageRuntimeQueue(id); err != nil {
+		t.Fatal(err)
+	}
 
 	stdout, stderr, code := runAgentDeck(t, home,
 		"session", "remove", id, "--json",
@@ -98,6 +105,12 @@ func TestSessionRemove_StoppedSessionSucceeds(t *testing.T) {
 	listJSON := readSessionsJSON(t, home)
 	if strings.Contains(listJSON, id) {
 		t.Errorf("session %s still present after remove; list:\n%s", id, listJSON)
+	}
+	if session.RuntimeQueueHasPending(id) {
+		t.Fatal("runtime queue survived committed session removal")
+	}
+	if batch, err := session.StageRuntimeQueue(id); err != nil || batch.Token != "" || len(batch.Messages) != 0 {
+		t.Fatalf("runtime WAL survived committed session removal: %#v, %v", batch, err)
 	}
 }
 
@@ -148,8 +161,15 @@ func TestSessionRemove_AllErrored_RemovesOnlyErrored(t *testing.T) {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
 	home := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	errID := addTestSession(t, home, filepath.Join(home, "err-proj"), "err-one")
 	forceSetStatus(t, home, errID, session.StatusError)
+	if _, err := session.EnqueueRuntimeMessage(errID, "discard bulk removed queue"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.StageRuntimeQueue(errID); err != nil {
+		t.Fatal(err)
+	}
 	stoppedID := addTestSession(t, home, filepath.Join(home, "stop-proj"), "stopped-one")
 	forceSetStatus(t, home, stoppedID, session.StatusStopped)
 	idleID := addTestSession(t, home, filepath.Join(home, "idle-proj"), "idle-one")
@@ -162,6 +182,12 @@ func TestSessionRemove_AllErrored_RemovesOnlyErrored(t *testing.T) {
 	listJSON := readSessionsJSON(t, home)
 	if strings.Contains(listJSON, errID) {
 		t.Errorf("errored session was NOT removed; list:\n%s", listJSON)
+	}
+	if session.RuntimeQueueHasPending(errID) {
+		t.Fatal("runtime queue survived committed bulk removal")
+	}
+	if batch, err := session.StageRuntimeQueue(errID); err != nil || batch.Token != "" || len(batch.Messages) != 0 {
+		t.Fatalf("runtime WAL survived committed bulk removal: %#v, %v", batch, err)
 	}
 	if !strings.Contains(listJSON, stoppedID) {
 		t.Errorf("stopped session got removed by --all-errored (over-broad); list:\n%s", listJSON)

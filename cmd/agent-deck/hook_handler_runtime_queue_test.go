@@ -47,6 +47,42 @@ func TestStopHookRuntimeQueueSuccessfulWriteAcknowledges(t *testing.T) {
 	}
 }
 
+func TestHookHandlerStopEntryPointDeliversAndAcknowledgesRuntimeQueue(t *testing.T) {
+	isolateStopHookRuntimeQueue(t)
+	const id = "handler-entrypoint-runtime"
+	t.Setenv("AGENTDECK_INSTANCE_ID", id)
+	if _, err := session.EnqueueRuntimeMessage(id, "entrypoint delivery"); err != nil {
+		t.Fatal(err)
+	}
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalIn, originalOut := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = inR, outW
+	defer func() { os.Stdin, os.Stdout = originalIn, originalOut }()
+	if _, err := inW.Write([]byte(`{"hook_event_name":"Stop","stop_hook_active":false}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = inW.Close()
+	handleHookHandlerArgs([]string{"--source", "claude"})
+	_ = outW.Close()
+	out, err := io.ReadAll(outR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte("entrypoint delivery")) {
+		t.Fatalf("Stop entrypoint output = %q", out)
+	}
+	if session.RuntimeQueueHasPending(id) {
+		t.Fatal("Stop entrypoint did not acknowledge runtime queue")
+	}
+}
+
 func TestStopHookRuntimeQueueWriteFailureRedeliversIdentically(t *testing.T) {
 	isolateStopHookRuntimeQueue(t)
 	const id = "handler-runtime-write-fail"
