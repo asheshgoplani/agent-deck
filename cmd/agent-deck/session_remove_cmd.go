@@ -88,7 +88,8 @@ func handleSessionRemove(profile string, args []string) {
 
 	queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
 	if err != nil {
-		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
+		lockErr := fmt.Errorf("failed to lock runtime queue for %s: %w", inst.ID, err)
+		out.Error(lockErr.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 

@@ -103,8 +103,13 @@ func TestSessionRemoveQueueLockFailurePreservesLiveProcessRowQueueAndWorktree(t 
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionRemoveQueueLockFailurePreservesLiveProcessRowQueueAndWorktree$")
 	cmd.Env = append(os.Environ(), "AGENT_DECK_TASK6_HELPER_PROCESS=1", "AGENT_DECK_QUEUE_HANDLER=1", "AGENT_DECK_SINGLE_REMOVE_LOCK_HELPER=1")
-	if output, err := cmd.CombinedOutput(); err == nil {
+	output, childErr := cmd.CombinedOutput()
+	if childErr == nil {
 		t.Fatalf("remove succeeded: %s", output)
+	}
+	outputText := string(output)
+	if !strings.Contains(outputText, "failed to lock runtime queue for "+id) || strings.Contains(outputText, "failed to discard runtime queue") || !strings.Contains(outputText, "runtime-queue-locks") {
+		t.Fatalf("single remove lock error lost operation, identity, or wrapped cause: %v\n%s", childErr, output)
 	}
 	if !inst.Exists() {
 		t.Fatal("lock failure killed live process")
@@ -164,8 +169,13 @@ func TestSessionBulkRemoveQueueLockFailureFinalizesPrefixAndPreservesRemainder(t
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionBulkRemoveQueueLockFailureFinalizesPrefixAndPreservesRemainder$")
 	cmd.Env = append(os.Environ(), "AGENT_DECK_TASK6_HELPER_PROCESS=1", "AGENT_DECK_QUEUE_HANDLER=1", "AGENT_DECK_BULK_REMOVE_LOCK_HELPER=1")
-	if output, err := cmd.CombinedOutput(); err == nil {
+	output, childErr := cmd.CombinedOutput()
+	if childErr == nil {
 		t.Fatalf("bulk remove succeeded: %s", output)
+	}
+	outputText := string(output)
+	if !strings.Contains(outputText, "failed to lock runtime queue for "+ids[1]) || strings.Contains(outputText, "failed to discard runtime queue") || !strings.Contains(outputText, ids[1]+".lock") {
+		t.Fatalf("bulk remove lock error lost operation, identity, or wrapped cause: %v\n%s", childErr, output)
 	}
 	if instances[0].Exists() {
 		t.Fatal("committed prefix process was not finalized")
