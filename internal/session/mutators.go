@@ -28,6 +28,10 @@ const (
 	FieldGeminiSessionID    = "gemini-session-id"
 	FieldOpenCodeSessionID  = "opencode-session-id"
 	FieldCodexSessionID     = "codex-session-id"
+	// FieldToolSessionID binds a custom [tools.*] conversation id so restart
+	// after reboot can pass resume_flag <id>. Alias of the tool_data key
+	// generic_session_id.
+	FieldToolSessionID = "tool-session-id"
 	FieldTitleLocked        = "title-locked"
 	FieldNoTransitionNotify = "no-transition-notify"
 	FieldSkipPermissions    = "skip-permissions"
@@ -60,6 +64,7 @@ var ValidMutableFields = []string{
 	FieldGeminiSessionID,
 	FieldOpenCodeSessionID,
 	FieldCodexSessionID,
+	FieldToolSessionID,
 	FieldTitleLocked,
 	FieldNoTransitionNotify,
 	FieldSkipPermissions,
@@ -80,7 +85,9 @@ const (
 func RestartPolicyFor(field string) FieldRestartPolicy {
 	switch field {
 	case FieldCommand, FieldWrapper, FieldTool, FieldChannels, FieldPlugins, FieldExtraArgs, FieldPath,
-		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel:
+		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel,
+		// Resume flags are baked into the next spawn command.
+		FieldToolSessionID:
 		return FieldRestartRequired
 	default:
 		return FieldLive
@@ -345,6 +352,19 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		}
 		inst.CodexSessionID = normalized
 		inst.CodexDetectedAt = time.Now()
+
+	case FieldToolSessionID:
+		oldValue = inst.GenericSessionID
+		inst.GenericSessionID = value
+		if value == "" {
+			inst.GenericDetectedAt = time.Time{}
+		} else {
+			inst.GenericDetectedAt = time.Now()
+		}
+		// Publish into session_id_env when configured so a live pane sees it.
+		if toolDef := GetToolDef(inst.Tool); toolDef != nil && toolDef.SessionIDEnv != "" {
+			postCommit = makeSessionEnvPostCommit(inst, toolDef.SessionIDEnv, value)
+		}
 
 	case FieldTitleLocked:
 		oldValue = strconv.FormatBool(inst.TitleLocked)

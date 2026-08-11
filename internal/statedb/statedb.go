@@ -1442,6 +1442,42 @@ func (s *StateDB) WriteGeminiSessionBinding(id, sessionID string, detectedAt tim
 	})
 }
 
+// WriteGenericSessionBinding persists a custom-tool conversation id
+// (tools configured via [tools.*] with resume_flag) into tool_data.
+// Mirrors WriteClaudeSessionBinding's json_set / withBusyRetry shape so a
+// live-env capture or `session set tool-session-id` survives reboot when
+// tmux is gone. Empty sessionID clears the keys.
+func (s *StateDB) WriteGenericSessionBinding(id, sessionID string, detectedAt time.Time) error {
+	return withBusyRetry(func() error {
+		if sessionID == "" {
+			_, err := s.db.Exec(
+				`UPDATE instances
+				   SET tool_data = json_remove(
+				         COALESCE(tool_data, '{}'),
+				         '$.generic_session_id',
+				         '$.generic_detected_at')
+				 WHERE id = ?`,
+				id,
+			)
+			return err
+		}
+		at := detectedAt.Unix()
+		if detectedAt.IsZero() {
+			at = time.Now().Unix()
+		}
+		_, err := s.db.Exec(
+			`UPDATE instances
+			   SET tool_data = json_set(
+			         COALESCE(tool_data, '{}'),
+			         '$.generic_session_id', ?,
+			         '$.generic_detected_at', ?)
+			 WHERE id = ?`,
+			sessionID, at, id,
+		)
+		return err
+	})
+}
+
 // ReadAllStatuses returns status + acknowledged flag for every instance.
 func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
 	rows, err := s.db.Query("SELECT id, status, tool, acknowledged FROM instances")

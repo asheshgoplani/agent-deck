@@ -214,6 +214,13 @@ type Instance struct {
 	// never started) and callers MUST NOT treat zero as "just now".
 	LastStartedAt time.Time `json:"last_started_at,omitempty"`
 
+	// GenericSessionID is the conversation id for a custom [tools.*] tool
+	// that declares resume_flag. Persisted in tool_data so Restart can rebuild
+	// `<cmd> <resume_flag> <id>` after a reboot (when tmux session_id_env is
+	// gone). Live tmux env still wins when present (GetGenericSessionID).
+	GenericSessionID  string    `json:"generic_session_id,omitempty"`
+	GenericDetectedAt time.Time `json:"generic_detected_at,omitempty"`
+
 	// Claude Code integration
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
@@ -3381,8 +3388,9 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 		return envPrefix + baseCommand // No custom config, return with env prefix
 	}
 
-	// Check if tool supports session resume (needs both resume_flag and session_id_env)
-	if toolDef.ResumeFlag == "" || toolDef.SessionIDEnv == "" {
+	// Resume needs resume_flag; the conversation id may come from live
+	// session_id_env and/or persisted generic_session_id (reboot-safe).
+	if toolDef.ResumeFlag == "" {
 		// No session resume support, just add dangerous flag if configured
 		if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
 			return envPrefix + fmt.Sprintf("%s %s", baseCommand, toolDef.DangerousFlag)
@@ -3390,13 +3398,8 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 		return envPrefix + baseCommand
 	}
 
-	// Get existing session ID from tmux environment (for restart/resume)
-	existingSessionID := ""
-	if i.tmuxSession != nil {
-		if sid, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv); err == nil && sid != "" {
-			existingSessionID = sid
-		}
-	}
+	// Prefer live tmux env, else persisted generic_session_id (reboot-safe).
+	existingSessionID := i.GetGenericSessionID()
 
 	// Build dangerous flag if enabled
 	dangerousFlag := ""
@@ -3660,21 +3663,22 @@ func isLiteralToolInvocation(baseCommand, literalName string) bool {
 	return len(fields) > 0 && fields[0] == literalName
 }
 
-// GetGenericSessionID gets session ID from tmux environment for a custom tool
-// Uses the session_id_env field from tool config
+// GetGenericSessionID resolves the conversation id for a custom [tools.*]
+// tool. Preference order:
+//  1. Live tmux env named by [tools.X].session_id_env (when set and present)
+//  2. Persisted GenericSessionID from tool_data (survives reboot)
+//
+// When the live env yields a value that differs from the persisted field,
+// write-through so the next cold start still resumes the right chat.
 func (i *Instance) GetGenericSessionID() string {
 	toolDef := GetToolDef(i.Tool)
-	if toolDef == nil || toolDef.SessionIDEnv == "" {
-		return ""
+	if toolDef != nil && toolDef.SessionIDEnv != "" && i.tmuxSession != nil {
+		if sessionID, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv); err == nil && sessionID != "" {
+			i.persistGenericSessionIDIfChanged(sessionID)
+			return sessionID
+		}
 	}
-	if i.tmuxSession == nil {
-		return ""
-	}
-	sessionID, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv)
-	if err != nil {
-		return ""
-	}
-	return sessionID
+	return i.GenericSessionID
 }
 
 // DisplaySessionID returns the session ID the PREVIEW pane surfaces for this
@@ -3702,8 +3706,9 @@ func (i *Instance) CanRestartGeneric() bool {
 	if toolDef == nil {
 		return false
 	}
-	// Can restart if we have resume support AND an existing session ID
-	if toolDef.ResumeFlag == "" || toolDef.SessionIDEnv == "" {
+	// resume_flag is required; the id may come from live session_id_env OR
+	// from the persisted generic_session_id (post-reboot).
+	if toolDef.ResumeFlag == "" {
 		return false
 	}
 	return i.GetGenericSessionID() != ""
@@ -6199,6 +6204,12 @@ func (i *Instance) SyncSessionIDsToTmux() {
 	if i.CopilotSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("COPILOT_SESSION_ID", i.CopilotSessionID)
 	}
+
+	// Custom [tools.*] resume id: re-publish into the configured env var so a
+	// restart that still has the old pane (or a respawn) sees the same id.
+	if toolDef := GetToolDef(i.Tool); toolDef != nil && toolDef.SessionIDEnv != "" && i.GenericSessionID != "" {
+		_ = i.tmuxSession.SetEnvironment(toolDef.SessionIDEnv, i.GenericSessionID)
+	}
 }
 
 func (i *Instance) clearSessionBindingForFreshStart() {
@@ -6239,6 +6250,16 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		// Drop the captured resume ID so the next launch starts a new session
 		// and Restart() re-captures rather than resuming the old conversation.
 		i.HermesSessionID = ""
+	}
+
+	// Custom [tools.*]: drop any persisted conversation so a deliberate
+	// fresh start does not re-attach resume after reboot.
+	if i.GenericSessionID != "" || !i.GenericDetectedAt.IsZero() {
+		i.GenericSessionID = ""
+		i.GenericDetectedAt = time.Time{}
+		if db := statedb.GetGlobal(); db != nil {
+			_ = db.WriteGenericSessionBinding(i.ID, "", time.Time{})
+		}
 	}
 }
 
@@ -6310,6 +6331,13 @@ func (i *Instance) SyncSessionIDsFromTmux() {
 		i.CopilotSessionID = id
 		if i.CopilotDetectedAt.IsZero() {
 			i.CopilotDetectedAt = time.Now()
+		}
+	}
+
+	// Custom tool: pull session_id_env into GenericSessionID + tool_data.
+	if toolDef := GetToolDef(i.Tool); toolDef != nil && toolDef.SessionIDEnv != "" {
+		if id, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv); err == nil && id != "" {
+			i.persistGenericSessionIDIfChanged(id)
 		}
 	}
 }

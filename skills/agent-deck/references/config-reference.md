@@ -796,6 +796,9 @@ icon = "🧠"
 busy_patterns = ["thinking...", "processing..."]
 env_file = "~/.my-ai.env"
 env = { API_KEY = "token", BASE_URL = "https://api.example.com" }
+# Optional: resume the same conversation after restart / reboot
+resume_flag = "--resume"
+# session_id_env = "MY_AI_SESSION_ID"   # optional live capture into tmux env
 ```
 
 | Key | Type | Required | Description |
@@ -805,6 +808,13 @@ env = { API_KEY = "token", BASE_URL = "https://api.example.com" }
 | `busy_patterns` | array | No | Strings indicating busy state. |
 | `env_file` | string | No | A .env file sourced for this tool only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
 | `env` | map | No | Inline environment variables exported for this tool. These take highest priority, overriding both `[shell].env_files` and `env_file`. Values are single-quoted to prevent shell expansion. |
+| `resume_flag` | string | No | CLI flag used to resume a conversation (e.g. `"--resume"`). When set and a conversation id is known, restart emits `<command> <resume_flag> <id>`. |
+| `session_id_env` | string | No | Tmux environment variable that holds the live conversation id. When present, agent-deck reads it and **persists** it to `tool_data.generic_session_id` so resume still works after reboot (when tmux is gone). |
+| `output_format_flag` | string | No | Flag for headless JSON output used with `session_id_json_path` to capture an id on first start (optional; many TUIs need a manual bind instead). |
+| `session_id_json_path` | string | No | `jq` path extracting the session id from JSON output (pairs with `output_format_flag`). |
+| `dangerous_flag` / `dangerous_mode` | string / bool | No | Optional auto-approve flag (e.g. `"--always-approve"`). |
+
+**Reboot-safe resume.** Built-in tools (Claude, Gemini, Codex, OpenCode, Pi, Cursor, Hermes, …) store conversation ids in SQLite automatically. Custom `[tools.*]` tools previously only kept an id in live tmux env: set `resume_flag`, then bind once with `agent-deck session set <title> tool-session-id <id>` (or export `session_id_env` from the tool so agent-deck can write-through). After that, restart/reboot rebuilds `<command> <resume_flag> <id>` without re-picking a chat. Applies to every custom tool entry (not one vendor). Do **not** use bare “continue last in cwd” when many seats share one path — it attaches the wrong conversation.
 
 **Built-in icons:** claude=🤖, gemini=✨, opencode=🌐, codex=💻, copilot=🐙, hermes=☤, cursor=📝, shell=🐚
 

@@ -64,8 +64,11 @@ type InstanceData struct {
 	// not a typed SQL column. Zero means unknown (old record or never
 	// started).
 	LastStartedAt time.Time `json:"last_started_at,omitempty"`
-	ArchivedAt    time.Time `json:"archived_at,omitempty"`
-	TmuxSession   string    `json:"tmux_session"`
+	// GenericSessionID is the custom [tools.*] conversation id (extras zone).
+	GenericSessionID  string    `json:"generic_session_id,omitempty"`
+	GenericDetectedAt time.Time `json:"generic_detected_at,omitempty"`
+	ArchivedAt        time.Time `json:"archived_at,omitempty"`
+	TmuxSession       string    `json:"tmux_session"`
 	// TmuxSocketName is the tmux -L selector captured at Instance creation
 	// (issue #687, v1.7.50). Empty for pre-v1.7.50 rows — those keep hitting
 	// the default server after upgrade.
@@ -968,6 +971,8 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// `status --stale` (and ShouldSkipRestart's freshness guard) see a real
 	// value from a fresh CLI process instead of always-zero.
 	toolData = WriteLastStartedAtToToolData(toolData, inst.LastStartedAt)
+	// Custom [tools.*] conversation id — reboot-safe resume when resume_flag set.
+	toolData = WriteGenericSessionIDToToolData(toolData, inst.GenericSessionID, inst.GenericDetectedAt)
 
 	return &statedb.InstanceRow{
 		ID:                  inst.ID,
@@ -1142,6 +1147,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
+			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
+			GenericDetectedAt:         ReadGenericDetectedAtFromToolData(r.ToolData),
 		}
 	}
 
@@ -1264,6 +1271,8 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
+			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
+			GenericDetectedAt:         ReadGenericDetectedAtFromToolData(r.ToolData),
 		}
 	}
 
@@ -1513,6 +1522,8 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			IdleTimeoutSecs:              instData.IdleTimeoutSecs,
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
 			LastStartedAt:                instData.LastStartedAt,
+			GenericSessionID:             instData.GenericSessionID,
+			GenericDetectedAt:            instData.GenericDetectedAt,
 			Sandbox:                      instData.Sandbox,
 			SandboxContainer:             instData.SandboxContainer,
 			SSHHost:                      instData.SSHHost,
