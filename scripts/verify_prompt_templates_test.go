@@ -74,6 +74,7 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 				"DECIDING_FIELDS=outcome,status",
 			},
 			requiredRendered: []string{
+				"Answer only this question, without reading another arm's conclusions",
 				"For every command, record the exact command, exit status, timestamps, and the deciding evidence",
 				"The schema-valid artifact must include the arm ID and question, run and system provenance, producer identity",
 				"start and completion timestamps, command exits and evidence",
