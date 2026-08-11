@@ -12864,6 +12864,9 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 	}
 	return func() tea.Msg {
 		killErr := inst.Kill()
+		if discardErr := session.DiscardRuntimeQueue(id); discardErr != nil {
+			return sessionDeletedMsg{deletedID: id, killErr: discardErr}
+		}
 		if isWorktree && sharedWorktree {
 			// #1449: another live session still references this worktree; skip
 			// the destructive removal + branch delete and merely drop this
@@ -12980,6 +12983,9 @@ func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 		if killErr := inst.Kill(); killErr != nil {
 			return sessionArchivedMsg{sessionID: id, killErr: killErr}
 		}
+		if discardErr := session.DiscardRuntimeQueue(id); discardErr != nil {
+			return sessionArchivedMsg{sessionID: id, killErr: discardErr}
+		}
 		inst.ArchivedAt = time.Now().UTC()
 		return sessionArchivedMsg{sessionID: id}
 	}
@@ -13006,6 +13012,9 @@ func (h *Home) removeSession(inst *session.Instance) tea.Cmd {
 func registryRemovalMsg(inst *session.Instance) tea.Msg {
 	if inst.Exists() {
 		return sessionRemoveBlockedMsg{title: inst.Title}
+	}
+	if err := session.DiscardRuntimeQueue(inst.ID); err != nil {
+		return sessionDeletedMsg{deletedID: inst.ID, killErr: err}
 	}
 	return sessionDeletedMsg{deletedID: inst.ID}
 }
@@ -19523,6 +19532,12 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 		// Step 4: Kill tmux session
 		if inst != nil && inst.Exists() {
 			_ = inst.Kill()
+		}
+		if err := session.DiscardRuntimeQueue(sessionID); err != nil {
+			return worktreeFinishResultMsg{
+				sessionID: sessionID, sessionTitle: sessionTitle,
+				err: fmt.Errorf("discard runtime queue: %v", err),
+			}
 		}
 
 		return worktreeFinishResultMsg{

@@ -214,6 +214,9 @@ func (m *WebMutator) DeleteSession(id string) error {
 
 	// Kill the tmux session (ignore errors — may already be stopped)
 	_ = inst.Kill()
+	if err := session.DiscardRuntimeQueue(id); err != nil {
+		return fmt.Errorf("discard runtime queue: %w", err)
+	}
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {
@@ -265,6 +268,9 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	}
 	if err := inst.Kill(); err != nil {
 		return fmt.Errorf("failed to stop session: %w", err)
+	}
+	if err := session.DiscardRuntimeQueue(id); err != nil {
+		return fmt.Errorf("failed to discard runtime queue: %w", err)
 	}
 	m.h.instancesMu.Lock()
 	inst.ArchivedAt = time.Now().UTC()
@@ -681,6 +687,9 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		}
 	}
 	m.h.instancesMu.RUnlock()
+	if err := session.DiscardRuntimeQueue(id); err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("discard runtime queue: %w", err)
+	}
 	// #1396: use the targeted RemoveSessionAndVerify path, NOT
 	// SaveWithGroups(existing, ...). Historically an empty `existing` tripped
 	// the S1 empty-sweep guard AFTER the irreversible git steps, orphaning the

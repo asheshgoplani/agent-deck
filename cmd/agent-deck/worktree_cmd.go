@@ -797,6 +797,10 @@ func handleWorktreeFinish(profile string, args []string) {
 	// row at all. Either way, removal requires the targeted DELETE.
 	remaining := dropInstance(instances, inst.ID)
 	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
+	if err := session.DiscardRuntimeQueue(inst.ID); err != nil {
+		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 	if err := storage.RemoveSessionAndVerify(inst.ID, remaining, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save session data: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)

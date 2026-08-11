@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sys/unix"
 )
 
 type RuntimeQueuedMessage struct {
@@ -240,7 +241,10 @@ func PeekRuntimeQueue(id string) ([]RuntimeQueuedMessage, error) {
 }
 
 func DiscardRuntimeQueue(id string) error {
-	release := lockRuntimeQueueDelivery(id)
+	release, err := lockRuntimeQueueDelivery(id)
+	if err != nil {
+		return err
+	}
 	defer release()
 
 	runtimeQueueMu.Lock()
@@ -271,7 +275,10 @@ func discardRuntimeQueueFilesLocked(id string) error {
 }
 
 func TryDiscardRuntimeQueue(id string) error {
-	release, acquired := tryRuntimeQueueDeliveryLock(id)
+	release, acquired, err := tryRuntimeQueueDeliveryLock(id)
+	if err != nil {
+		return err
+	}
 	if !acquired {
 		return ErrRuntimeQueueDeliveryInProgress
 	}
@@ -312,25 +319,75 @@ func releaseRuntimeQueueDeliveryEntry(key string, entry *runtimeQueueDeliveryEnt
 	}
 }
 
-func lockRuntimeQueueDelivery(id string) func() {
-	key, entry := retainRuntimeQueueDeliveryEntry(id)
-	entry.mu.Lock()
-	return func() {
-		entry.mu.Unlock()
-		releaseRuntimeQueueDeliveryEntry(key, entry)
+func runtimeQueueDeliveryLockPath(id string) string {
+	dir, err := runtimeDataPath("runtime-queue-locks")
+	if err != nil {
+		dir = tempAgentDeckPath("runtime", "runtime-queue-locks")
 	}
+	return filepath.Join(dir, sanitizeInboxName(id)+".lock")
 }
 
-func tryRuntimeQueueDeliveryLock(id string) (func(), bool) {
+func openRuntimeQueueProcessLock(id string, nonblocking bool) (*os.File, error) {
+	path := runtimeQueueDeliveryLockPath(id)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	op := unix.LOCK_EX
+	if nonblocking {
+		op |= unix.LOCK_NB
+	}
+	if err := unix.Flock(int(file.Fd()), op); err != nil {
+		_ = file.Close()
+		if nonblocking && (errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN)) {
+			return nil, ErrRuntimeQueueDeliveryInProgress
+		}
+		return nil, err
+	}
+	return file, nil
+}
+
+func lockRuntimeQueueDelivery(id string) (func(), error) {
+	key, entry := retainRuntimeQueueDeliveryEntry(id)
+	entry.mu.Lock()
+	file, err := openRuntimeQueueProcessLock(id, false)
+	if err != nil {
+		entry.mu.Unlock()
+		releaseRuntimeQueueDeliveryEntry(key, entry)
+		return nil, err
+	}
+	return func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		_ = file.Close()
+		entry.mu.Unlock()
+		releaseRuntimeQueueDeliveryEntry(key, entry)
+	}, nil
+}
+
+func tryRuntimeQueueDeliveryLock(id string) (func(), bool, error) {
 	key, entry := retainRuntimeQueueDeliveryEntry(id)
 	if !entry.mu.TryLock() {
 		releaseRuntimeQueueDeliveryEntry(key, entry)
-		return nil, false
+		return nil, false, nil
 	}
-	return func() {
+	file, err := openRuntimeQueueProcessLock(id, true)
+	if err != nil {
 		entry.mu.Unlock()
 		releaseRuntimeQueueDeliveryEntry(key, entry)
-	}, true
+		if errors.Is(err, ErrRuntimeQueueDeliveryInProgress) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		_ = file.Close()
+		entry.mu.Unlock()
+		releaseRuntimeQueueDeliveryEntry(key, entry)
+	}, true, nil
 }
 
 type RuntimeQueueSubmission struct {
@@ -344,7 +401,10 @@ type RuntimeQueueSubmission struct {
 // that protects the external write through acknowledgment. The caller must
 // call Acknowledge after a complete write or Release on every failure path.
 func BeginRuntimeQueueSubmission(id, token string) (*RuntimeQueueSubmission, bool, error) {
-	release := lockRuntimeQueueDelivery(id)
+	release, err := lockRuntimeQueueDelivery(id)
+	if err != nil {
+		return nil, false, err
+	}
 
 	if token == "" {
 		return &RuntimeQueueSubmission{id: id, release: release}, true, nil

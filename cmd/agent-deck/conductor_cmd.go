@@ -883,6 +883,13 @@ func handleConductorTeardown(_ string, args []string) {
 						groupTree := session.NewGroupTreeWithGroups(filtered, groups)
 						removeFailed := false
 						for _, id := range removedIDs {
+							if discardErr := session.DiscardRuntimeQueue(id); discardErr != nil {
+								removeFailed = true
+								if !*jsonOutput {
+									fmt.Fprintf(os.Stderr, "  Warning: failed to discard runtime queue for '%s' (%s): %v\n", sessionTitle, id, discardErr)
+								}
+								continue
+							}
 							if rmErr := storage.RemoveSessionAndVerify(id, filtered, groupTree); rmErr != nil {
 								removeFailed = true
 								if !*jsonOutput {

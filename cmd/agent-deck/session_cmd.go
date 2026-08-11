@@ -550,6 +550,10 @@ func handleSessionArchive(profile string, args []string) {
 		}
 		killed = true
 	}
+	if err := session.DiscardRuntimeQueue(inst.ID); err != nil {
+		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	inst.ArchivedAt = time.Now().UTC()
 	if err := persistArchivedCLI(storage, inst, killed); err != nil {

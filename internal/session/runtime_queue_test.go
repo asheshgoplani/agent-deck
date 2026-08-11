@@ -607,6 +607,100 @@ func TestRuntimeQueueEmptyTokenSubmissionCoordinatesDiscard(t *testing.T) {
 	assertNoRuntimeQueueDeliveryEntry(t, id)
 }
 
+func TestRuntimeQueueSubprocessArchiveCannotOvertakeValidatedDelivery(t *testing.T) {
+	if os.Getenv("AGENT_DECK_RUNTIME_IPC_HELPER") == "1" {
+		t.Setenv("XDG_DATA_HOME", os.Getenv("AGENT_DECK_RUNTIME_IPC_DATA"))
+		id := os.Getenv("AGENT_DECK_RUNTIME_IPC_ID")
+		lease, valid, err := BeginRuntimeQueueSubmission(id, os.Getenv("AGENT_DECK_RUNTIME_IPC_TOKEN"))
+		if err != nil || !valid {
+			t.Fatalf("begin helper lease = valid %v, err %v", valid, err)
+		}
+		defer lease.Release()
+		if err := os.WriteFile(os.Getenv("AGENT_DECK_RUNTIME_IPC_READY"), []byte("ready"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(os.Getenv("AGENT_DECK_RUNTIME_IPC_RELEASE")); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("timed out waiting for release")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err := os.WriteFile(os.Getenv("AGENT_DECK_RUNTIME_IPC_OUTPUT"), []byte("staged message emitted"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := lease.Acknowledge(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	isolateRuntimeQueue(t)
+	const id = "subprocess-archive-race"
+	if _, err := EnqueueRuntimeMessage(id, "staged message"); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	ready := filepath.Join(root, "ready")
+	release := filepath.Join(root, "release")
+	output := filepath.Join(root, "output")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeQueueSubprocessArchiveCannotOvertakeValidatedDelivery$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_DECK_RUNTIME_IPC_HELPER=1",
+		"AGENT_DECK_RUNTIME_IPC_DATA="+os.Getenv("XDG_DATA_HOME"),
+		"AGENT_DECK_RUNTIME_IPC_ID="+id,
+		"AGENT_DECK_RUNTIME_IPC_TOKEN="+batch.Token,
+		"AGENT_DECK_RUNTIME_IPC_READY="+ready,
+		"AGENT_DECK_RUNTIME_IPC_RELEASE="+release,
+		"AGENT_DECK_RUNTIME_IPC_OUTPUT="+output,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("helper did not validate staged batch")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	discardDone := make(chan error, 1)
+	go func() { discardDone <- DiscardRuntimeQueue(id) }()
+	archivedBeforeWrite := false
+	select {
+	case err := <-discardDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+		archivedBeforeWrite = true
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := os.WriteFile(release, []byte("release"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if !archivedBeforeWrite {
+		if err := <-discardDone; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if emitted, _ := os.ReadFile(output); archivedBeforeWrite && len(emitted) > 0 {
+		t.Fatalf("archived session emitted stale runtime work: %q", emitted)
+	}
+}
+
 func TestRuntimeQueueStageEmptyQueueReturnsZeroBatchWithoutWAL(t *testing.T) {
 	isolateRuntimeQueue(t)
 	const id = "empty-stage"

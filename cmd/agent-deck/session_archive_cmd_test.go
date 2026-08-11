@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // archivedFlag parses the full inventory view and returns the archived flag
@@ -38,8 +40,13 @@ func TestSessionArchive_MarksArchived(t *testing.T) {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
 	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	workPath := filepath.Join(home, "proj")
 	id := addTestSession(t, home, workPath, "archive-basic")
+	if _, err := session.EnqueueRuntimeMessage(id, "must be discarded on archive"); err != nil {
+		t.Fatal(err)
+	}
 
 	if archivedFlag(t, home, id) {
 		t.Fatalf("session %s archived before archive command ran", id)
@@ -51,6 +58,9 @@ func TestSessionArchive_MarksArchived(t *testing.T) {
 	}
 	if !archivedFlag(t, home, id) {
 		t.Errorf("session %s not archived after archive command", id)
+	}
+	if session.RuntimeQueueHasPending(id) {
+		t.Errorf("session %s runtime queue survived archive", id)
 	}
 }
 
