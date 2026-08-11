@@ -58,8 +58,24 @@ func (s *StateDB) LoadInstanceByID(id string) (*InstanceRow, error) {
 	return row, nil
 }
 
-// LoadInstanceChildren returns rows whose parent_session_id matches the given id.
+// LoadInstanceChildren returns active rows whose parent_session_id matches the
+// given id. Fleet polling is active-only by default so archived sessions never
+// reach reconstruction, status probing, or transcript/context inspection.
 func (s *StateDB) LoadInstanceChildren(parentID string) ([]*InstanceRow, error) {
+	return s.loadInstanceChildren(parentID, false)
+}
+
+// LoadInstanceChildrenIncludingArchived returns every direct child for an
+// explicit inspection request.
+func (s *StateDB) LoadInstanceChildrenIncludingArchived(parentID string) ([]*InstanceRow, error) {
+	return s.loadInstanceChildren(parentID, true)
+}
+
+func (s *StateDB) loadInstanceChildren(parentID string, includeArchived bool) ([]*InstanceRow, error) {
+	archivePredicate := " AND archived_at = 0"
+	if includeArchived {
+		archivePredicate = ""
+	}
 	rows, err := s.db.Query(`
 		SELECT id, title, project_path, group_path, sort_order,
 			command, wrapper, tool, status, tmux_session, tmux_socket_name,
@@ -67,7 +83,7 @@ func (s *StateDB) LoadInstanceChildren(parentID string) ([]*InstanceRow, error) 
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
 			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
-		FROM instances WHERE parent_session_id = ? ORDER BY sort_order
+		FROM instances WHERE parent_session_id = ?`+archivePredicate+` ORDER BY sort_order
 	`, parentID)
 	if err != nil {
 		return nil, err
