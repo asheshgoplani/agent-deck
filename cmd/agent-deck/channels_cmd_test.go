@@ -21,7 +21,10 @@ var (
 	channelsCLIBuildOK bool
 )
 
-const agentDeckCLISubprocessTimeout = 30 * time.Second
+const (
+	agentDeckCLIBuildTimeout      = 2 * time.Minute
+	agentDeckCLISubprocessTimeout = 30 * time.Second
+)
 
 func channelsCLIBinary(t *testing.T) string {
 	t.Helper()
@@ -38,8 +41,14 @@ func channelsCLIBinary(t *testing.T) string {
 	}
 	bin := filepath.Join(binDir, "agent-deck-test")
 
-	build := exec.Command("go", "build", "-o", bin, ".")
+	ctx, cancel := context.WithTimeout(context.Background(), agentDeckCLIBuildTimeout)
+	defer cancel()
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, ".")
+	build.WaitDelay = 5 * time.Second
 	if out, err := build.CombinedOutput(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			t.Fatalf("go build timed out after %s\noutput: %s", agentDeckCLIBuildTimeout, out)
+		}
 		t.Fatalf("go build: %v\noutput: %s", err, out)
 	}
 	channelsCLIBinPath = bin
