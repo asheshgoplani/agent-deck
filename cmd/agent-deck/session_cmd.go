@@ -2293,21 +2293,11 @@ func handleSessionSetParent(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	// Validate: parent can't be a sub-session (single level only)
-	if parentInst.IsSubSession() {
-		out.Error("cannot set parent to a sub-session (single level only)", ErrCodeInvalidOperation)
+	// Parent links also carry orchestration ownership. Continuation conductors
+	// can therefore be nested, but the ancestry graph must remain acyclic.
+	if parentLinkWouldCycle(inst.ID, parentInst.ID, instances) {
+		out.Error("cannot set parent: parent link would create a cycle", ErrCodeInvalidOperation)
 		os.Exit(1)
-	}
-
-	// Validate: session can't already have sub-sessions
-	for _, other := range instances {
-		if other.ParentSessionID == inst.ID {
-			out.Error(
-				fmt.Sprintf("session '%s' already has sub-sessions, cannot become a sub-session", inst.Title),
-				ErrCodeInvalidOperation,
-			)
-			os.Exit(1)
-		}
 	}
 
 	// Set parent (with project path for --add-dir access). Group is only

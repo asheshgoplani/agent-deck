@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Continuation conductors can supervise children after a handoff.** Parent links may now be nested to any acyclic depth, so a conductor that is itself a sub-session can adopt or launch workers and use `session children` / the orchestrate heartbeat. Self-parenting and ancestor cycles remain rejected.
+
 ## [1.11.0] - 2026-08-01
 
 Security and correctness release. Repo-supplied worktree scripts now require explicit consent, path handling around the skills catalog and logs is hardened, `session send` tells the truth about delivery, restarted sessions can no longer resume the wrong conversation, and Ctrl+Q detach works on every session sharing a tmux socket.

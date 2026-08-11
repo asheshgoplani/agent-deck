@@ -536,17 +536,12 @@ func handleLaunch(profile string, args []string) {
 			out.Error(errMsg, ErrCodeNotFound)
 			os.Exit(1)
 		}
-		if parentInstance.IsSubSession() {
-			out.Error("cannot create sub-session of a sub-session (single level only)", ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
 		sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, inheritParentGroup)
 	} else if !*noParent {
 		parentInstance = resolveAutoParentInstance(instances)
-		if parentInstance != nil && !parentInstance.IsSubSession() {
+		if parentInstance != nil {
 			sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, inheritParentGroup)
 		} else {
-			parentInstance = nil
 			sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, "", explicitGroupProvided, inheritParentGroup)
 		}
 	} else {

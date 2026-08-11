@@ -410,6 +410,27 @@ func validateWorktreeCrossGroup(explicitGroupProvided, allowCrossGroup, parentAt
 	)
 }
 
+// parentLinkWouldCycle reports whether assigning childID's parent to parentID
+// would create (or enter) a cycle. Parent links are orchestration ownership as
+// well as UI hierarchy, so valid handoff chains may be deeper than one level.
+func parentLinkWouldCycle(childID, parentID string, instances []*session.Instance) bool {
+	parents := make(map[string]string, len(instances))
+	for _, inst := range instances {
+		if inst != nil {
+			parents[inst.ID] = inst.ParentSessionID
+		}
+	}
+
+	seen := make(map[string]bool, len(instances))
+	for id := parentID; id != ""; id = parents[id] {
+		if id == childID || seen[id] {
+			return true
+		}
+		seen[id] = true
+	}
+	return false
+}
+
 // shouldWarnOrphanWorktreeGroup decides whether a `launch` should warn that a
 // linked-worktree child is about to land in its branch-leaf cwd-derived group,
 // detached from any conductor group. This happens when no parent attached (an

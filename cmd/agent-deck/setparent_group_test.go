@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // Tests for issue #786: `session set-parent` must NOT silently rewrite the
@@ -251,5 +253,74 @@ func TestSetParent_HelpMentionsInheritGroup(t *testing.T) {
 	}
 	if strings.Contains(combined, "will inherit the parent's group") {
 		t.Errorf("set-parent --help still claims unconditional group inheritance:\n%s", combined)
+	}
+}
+
+// A continuation conductor may itself be parented by the session that handed
+// work off to it. It must still be able to adopt the live workers it now
+// supervises; session children and the orchestrate heartbeat are keyed by
+// these direct parent links.
+func TestSetParent_AllowsChildOfSubSessionWithoutCreatingCycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	projectDir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	predecessorID := addSessionInGroup(t, home, projectDir, "predecessor", "conductor")
+	continuationID := addSessionInGroup(t, home, projectDir, "continuation", "conductor")
+	workerID := addSessionInGroup(t, home, projectDir, "worker", "work")
+
+	if stdout, stderr, code := runAgentDeck(t, home,
+		"session", "set-parent", continuationID, predecessorID, "--json",
+	); code != 0 {
+		t.Fatalf("parent continuation failed (%d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if stdout, stderr, code := runAgentDeck(t, home,
+		"session", "set-parent", workerID, continuationID, "--json",
+	); code != 0 {
+		t.Fatalf("continuation could not adopt worker (%d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if got := showParent(t, home, workerID); got != continuationID {
+		t.Fatalf("worker parent_session_id = %q, want continuation %q", got, continuationID)
+	}
+
+	stdout, stderr, code := runAgentDeck(t, home,
+		"session", "set-parent", predecessorID, workerID, "--json",
+	)
+	if code == 0 {
+		t.Fatalf("cycle-forming set-parent unexpectedly succeeded\nstdout: %s\nstderr: %s", stdout, stderr)
+	}
+	if !strings.Contains(stdout+stderr, "cycle") {
+		t.Fatalf("cycle rejection did not explain the invariant\nstdout: %s\nstderr: %s", stdout, stderr)
+	}
+}
+
+func TestParentLinkWouldCycle(t *testing.T) {
+	instances := []*session.Instance{
+		{ID: "root"},
+		{ID: "continuation", ParentSessionID: "root"},
+		{ID: "worker", ParentSessionID: "continuation"},
+	}
+	tests := []struct {
+		name     string
+		childID  string
+		parentID string
+		want     bool
+	}{
+		{name: "deeper valid link", childID: "new-worker", parentID: "worker", want: false},
+		{name: "self parent", childID: "worker", parentID: "worker", want: true},
+		{name: "ancestor under descendant", childID: "root", parentID: "worker", want: true},
+		{name: "reparent sibling branch", childID: "worker", parentID: "root", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parentLinkWouldCycle(tt.childID, tt.parentID, instances); got != tt.want {
+				t.Fatalf("parentLinkWouldCycle(%q, %q) = %v, want %v", tt.childID, tt.parentID, got, tt.want)
+			}
+		})
 	}
 }

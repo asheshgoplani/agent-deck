@@ -1545,11 +1545,6 @@ func handleAdd(profile string, args []string) {
 			os.Exit(1)
 			return // unreachable, satisfies staticcheck SA5011
 		}
-		// Sub-sessions cannot have sub-sessions (single level only)
-		if parentInstance.IsSubSession() {
-			fmt.Printf("Error: cannot create sub-session of a sub-session (single level only)\n")
-			os.Exit(1)
-		}
 		// handleAdd resolves `path` AFTER this block (see below), so the
 		// cwd-derived group is not available here. Passing "" preserves
 		// handleAdd's existing behavior; the #972 cwd-over-parent priority
@@ -1557,10 +1552,8 @@ func handleAdd(profile string, args []string) {
 		sessionGroup = resolveGroupSelection(sessionGroup, "", parentInstance.GroupPath, explicitGroupProvided, false)
 	} else if !*noParent {
 		parentInstance = resolveAutoParentInstance(instances)
-		if parentInstance != nil && !parentInstance.IsSubSession() {
+		if parentInstance != nil {
 			sessionGroup = resolveGroupSelection(sessionGroup, "", parentInstance.GroupPath, explicitGroupProvided, false)
-		} else {
-			parentInstance = nil
 		}
 	}
 
