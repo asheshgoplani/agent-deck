@@ -232,12 +232,13 @@ notifications and the turn-start snapshot route to the new conductor.
   123") → fetch the spec: `gh issue view <n> --json title,body,url`. Its PR
   body must include `Fixes #<n>`.
 - An argument that is a path to a **design/spec document** (e.g.
-  `~/.agent-deck/designs/<date>-<topic>-design.md`) → a spec-fed task: run the
-  **planning stage** below before any implementation; the resulting plan
-  drives decomposition.
+  `~/.agent-deck/designs/<date>-<topic>-design.md`) → a spec-fed task: apply the
+  **focused-first gate** below. Launch one implementer unless a recorded
+  planning trigger requires coordination before implementation.
   A design/spec is the **expected** entrance for "I brainstormed this, now
-  finish it": hand off the design and stop there. The plan is not the user's
-  to write — a planner child writes it, against the codebase, in the worktree.
+  finish it": hand off the design and stop there. The user does not need to
+  write a plan; when the gate justifies one, a planner child writes a concise
+  coordination plan against the codebase in the worktree.
 - An argument that is already an **implementation plan** (ordered tasks with
   file paths and verification steps) → plan-fed: skip the planner child, then
   apply the fan-out gate in "Reviewing the plan" exactly as if a planner had
@@ -261,9 +262,9 @@ single big task, no spec ──→ split it: obvious decomposition → decompose
                              yourself (references/single-issue-split.md);
                              approach unclear → planner child first,
                              then plan-driven split. One branch, one PR.
-design/spec document ──────→ planning stage → plan-driven split.
-    (the usual "finish       One branch, one PR.
-     this feature" input)
+design/spec document ──────→ focused-first gate → one implementation worker
+    (the usual "finish       by default; plan only for recorded coordination,
+     this feature" input)    contract, risk, ordering, or context triggers.
 implementation plan ───────→ plan review (if 2+ implementers) → plan-driven
     (uncommon)               split. No planner child. One branch, one PR.
 deployed-system verification → recon → parallel measurement arms →
@@ -316,6 +317,35 @@ happens only when the user chooses it, and its output arrives here as just
 another input: the spec document, or the spec *and* a plan if the user's
 design session went on to write one. Either is a valid entrance; take the
 plan when it exists rather than re-deriving it, and never re-open the design.
+
+### Focused-first gate
+
+A design or specification defaults to one focused implementation worker.
+The existence of an approved design, the number of files it mentions, or a
+generic judgment that the work is "large" does not by itself justify a
+planner. One worker owning the change end to end avoids duplicating the design
+into a speculative implementation and lets stage 2 review real code.
+
+Planning requires a recorded trigger in `$RUN_DIR/manifest.md`. Record the
+specific trigger and the decision the plan must settle before launching a
+planner. At least one of these must be concrete and true:
+
+- two or more implementers need disjoint ownership boundaries or a shared
+  interface;
+- a database schema, migration, API, event, or cross-service contract must be
+  fixed before implementations can safely diverge;
+- the work is destructive, irreversible, security-sensitive, or unusually
+  difficult to recover, and needs an ordered safety/rollback contract;
+- several dependent changes have non-obvious ordering;
+- one implementation session would realistically exceed its context budget;
+- multiple technically meaningful implementation approaches remain after the
+  product design was approved.
+
+If none applies, skip planning and render one `impl` prompt whose spec block
+points at the approved design. Destructive work that otherwise fits one worker
+gets a concise execution checklist (target guard, snapshot or rollback, dry
+run where supported, apply, and verification); it does not automatically need
+a multi-task plan.
 
 ## Child prompt preamble (every child, every role)
 
@@ -392,11 +422,13 @@ so a half-rendered prompt never reaches a child.
 | `review-incremental` | `VERDICT_FILE` `SPEC_BLOCK` `REVIEWED_SHA` `PREVIOUS_FINDINGS` `BASELINE` `AGENT_DECK_REPO` |
 | `fix` | `ROUND` `FINDINGS` |
 
-`SPEC_BLOCK` is two lines for a planned task — write them once per task to
+`SPEC_BLOCK` identifies both sources for a planned task — write it once per task to
 `$RUN_DIR/<slug>/spec-block.md` and pass `SPEC_BLOCK@=`:
 
 ```text
-Your spec is this file — read it, and read nothing else for the spec:
+The approved design is the source of truth:
+<absolute-design-path>
+Your assigned coordination boundary is:
 <absolute-task-file-path>
 ```
 
@@ -417,9 +449,11 @@ never leaves it. Measured on a real run: 113 such calls, 434k characters,
 varying part only. It also stops the shell mangling backticks and `$` in a
 findings list, which is why `--message-file` existed in the first place.
 
-## Planning stage (spec-fed tasks, or any task you judge big)
+## Planning stage (only after the focused-first gate records a trigger)
 
-Design and plan are separate artifacts produced by separate roles: the
+Design and plan are separate artifacts produced by separate roles. Do not
+enter this stage merely because a design/spec was supplied. First apply the
+focused-first gate above and record its concrete trigger. The
 **design/spec** (what and why) is user-approved and arrives as input — if it
 doesn't exist yet, brainstorm it with the user *before* orchestrating; that
 part is interactive and never delegated. The **plan** (how, task by task) is
@@ -448,15 +482,17 @@ git -C "$WT" merge-base <base-branch> HEAD
 The printed HEAD must equal the resolved base sha for a newly created branch;
 otherwise archive the child and repair the worktree before any task work.
 
-The planner writes `$RUN_DIR/<task-slug>/plan.md` plus one self-contained
-task file per task under `$RUN_DIR/<task-slug>/tasks/`, each carrying its
-design extracts verbatim, exact paths and edits, verification commands, an
-`## Interfaces` block, and an empty `## Record (append-only)` section — the
-same task directory that will hold that task's prompts, verdicts and
-screenshots. It tags every task `tier: mid | strong` and sizes it to fit one
-fresh session. It implements nothing, and it commits nothing — the plan is
-scaffolding under `$AD_DIR`, not a change to the branch. Verify that after it
-finishes:
+The planner writes `$RUN_DIR/<task-slug>/plan.md` plus one concise task-boundary
+file per task under `$RUN_DIR/<task-slug>/tasks/`. The plan coordinates scope,
+paths, dependencies, ordering, interfaces, acceptance criteria, verification,
+and any safety/rollback steps. It does not embed production code, duplicate
+the approved design, or predict unobserved output. Short signatures, schemas,
+and pseudocode are allowed only when they are the shared interface the plan
+exists to settle. Each task file carries an `## Interfaces` block and an empty
+`## Record (append-only)` section. It tags every task `tier: mid | strong` and
+sizes it to fit one fresh session. It implements nothing, and it commits
+nothing — the plan is scaffolding under `$AD_DIR`, not a change to the branch.
+Verify that after it finishes:
 
 ```bash
 ls "$RUN_DIR/<task-slug>/tasks/"                  # task files exist
@@ -472,20 +508,19 @@ approach (most issues) goes straight into the per-task pipeline.
 
 ### Reviewing the plan
 
-**Review the plan only when it will feed 2+ implementer sessions** — whether a
-planner child wrote it or you decomposed the task yourself. One session
-implementing the whole thing needs no plan review: that task's stage-2
-reviewer holds the whole spec and the whole diff, so plan-vs-spec and
-code-vs-spec are the same check, done once on real code.
+**Review the plan only when it will feed 2+ implementer sessions or settle a
+recorded high-risk shared contract** — whether a planner child wrote it or you
+decomposed the task yourself. One session implementing ordinary work needs no
+plan review: that task's stage-2 reviewer holds the whole spec and the whole
+diff, so plan-vs-spec and code-vs-spec are the same check, done once on real
+code.
 
-Past a fan-out of 2 the plan stops being a suggestion and becomes **the spec
-for every implementer and every reviewer** — each reviewer is handed its own
-plan task as the thing to check compliance against, and never sees the spec
-the plan came from. Both sides then inherit the same error, so a wrong plan
-passes code review by construction, and a spec requirement that no plan task
-covers is invisible to every downstream reviewer because none of them can see
-the slice it should have been in. That is the whole reason for this gate;
-review the plan for exactly the failures that have nowhere else to be caught:
+Past a fan-out of 2 the plan becomes the coordination contract shared by every
+implementer and reviewer, while the approved design remains the requirements
+source of truth. Without a plan review, both sides can inherit the same wrong
+boundary or interface and a missing requirement can fall between tasks. That
+is the whole reason for this gate; review the plan for exactly the failures
+that have nowhere else to be caught:
 
 - **coverage** — every spec requirement maps to at least one task;
 - **placeholders** — TBD, "add error handling", "similar to task N";
@@ -495,15 +530,17 @@ review the plan for exactly the failures that have nowhere else to be caught:
   parallel-safe while sharing files with its sibling;
 - **tier tags** that are obviously wrong for the work described.
 
-Explicitly *not* in scope: code-quality opinions on the code the plan
-proposes. Stage 2 reviews the real diff — cheaper and more accurate there.
+Explicitly *not* in scope: code-quality opinions on hypothetical code, exact
+test-output predictions, or implementation details that do not change a
+cross-task contract. Stage 2 reviews the real diff — cheaper and more accurate
+there.
 
 Launch a fresh read-only reviewer in the same worktree (same
 `--disallowedTools` flags as stage 2 — it edits nothing), using the same
 findings format and verdict line as a code review.
 
-**One round, not a loop.** Findings → `session send` them to the planner to
-apply → proceed. On a **plan-fed** task there is no planner child: launch one
+**There is one review and at most one amendment, never a loop.** Findings →
+`session send` them to the planner to apply once → proceed. On a **plan-fed** task there is no planner child: launch one
 in the worktree scoped to *applying these findings to the plan document* (not
 re-planning), or — if the findings are design-level, or the user is still at
 the keyboard from handing you the plan — put them to the user instead. Never
@@ -514,21 +551,25 @@ loop-until-clean machinery belongs to code (stages 2–3) where it pays for
 itself. Then **archive the planner and plan-reviewer sessions** (see
 "Archiving finished sessions").
 
-Two exceptions to proceeding after one round: findings that invalidate the
+Two exceptions to proceeding after one amendment: findings that invalidate the
 **design** rather than the plan (the approved spec itself is unbuildable or
 self-contradictory) are the user's call — stop and surface them, don't have
-the planner improvise. And a plan whose review comes back with findings
-across most of its tasks is a mis-planned task, not a fixable document:
-relaunch the planner fresh with the findings as input rather than patching.
+the planner improvise. And if planning exhausts its context, emits an
+implementation-sized artifact, or receives findings across most tasks,
+do not launch or rotate to another planner. Collapse the work to one strong
+focused implementer. If the recorded coordination or safety trigger makes that
+unsafe, stop and ask the user to resolve the blocking architectural decision
+instead.
 
-The plan's task list now replaces your own decomposition: subtasks = plan
-tasks (see `references/single-issue-split.md`), each implementer is pointed
-at its own task file as its spec, and each reviewer is pointed at that same
-task file as the spec to check compliance against.
+The plan's task list now supplies your decomposition: subtasks = plan tasks
+(see `references/single-issue-split.md`). Each implementer and reviewer is
+pointed at both the approved design (the source of truth) and its concise task
+boundary (the ownership and coordination contract).
 
-**Implementers read only their own task file.** Do not hand a child the
-design doc or the full plan alongside it — a child that never reads the full
-design cannot drift from it, and the task file was written to be sufficient.
+**Implementers read the approved design and their own task boundary, not the
+full coordination plan or sibling task files.** This prevents a planning error
+from silently replacing the approved requirement while keeping sibling detail
+out of each worker's context.
 The `## Record (append-only)` section at the end of each task file is the
 child's audit trail: it appends its commits, the files it touched, and any
 concern it hit. It appends **in place**, to the file at its absolute path

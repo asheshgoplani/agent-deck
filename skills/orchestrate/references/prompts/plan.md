@@ -11,14 +11,21 @@ summary=<one line>` sentinel as the last line.
 
 Read the approved design at {{SPEC_PATH}} and explore the codebase as needed.
 Write an implementation plan to {{TASK_DIR}}/plan.md:
-ordered, bite-sized tasks; per task: exact file paths, the actual code or
-edit, verification commands with expected output, and the interfaces later
-tasks rely on. Mark any tasks that are safe to run in parallel (disjoint
-files). Tag every task with `tier: mid | strong` — mid when the task is
-transcription of code this plan already contains or needs only local
-judgment within a clear spec, strong when it makes design decisions. There
-is no tier below mid: every executor still has to run the verification
-commands and diagnose what the plan did not predict. Assume each task's executor has ZERO context beyond that one task.
+ordered, bite-sized tasks; per task: ownership and scope, relevant paths,
+dependencies and ordering, acceptance criteria, verification commands and
+required evidence, plus the interfaces later tasks rely on. Mark tasks that
+are safe to run in parallel only when ownership is disjoint. Tag every task
+with `tier: mid | strong` — mid when it needs only local judgment within a
+clear spec, strong when it settles a technical contract or makes a remaining
+implementation decision. There is no tier below mid: every executor still has
+to run verification and diagnose what the plan did not predict.
+
+This is a coordination plan, not a shadow implementation. Do not embed production code,
+complete test bodies, or speculative patches. Do not copy design passages verbatim; point
+each task at {{SPEC_PATH}} as the source of truth and summarize only the requirement needed
+to define its boundary. Short signatures, schemas, and pseudocode are allowed only when
+they are the shared interface this plan must settle. Do not predict exact command output
+that has not been observed.
 Size every task to fit comfortably in a single fresh session's context
 window: if completing it would require reading more than roughly 100k tokens
 of code, docs, and test output, split it further — a task that blows up its
@@ -26,11 +33,11 @@ executor's context costs a handoff mid-implementation.
 
 Then emit one self-contained task file per task at
 {{TASK_DIR}}/tasks/task-NN-<name>.md. Each task file must
-stand alone for a child that reads nothing else:
-- the relevant design-doc extracts EMBEDDED verbatim, never linked;
+stand alone alongside the approved design:
+- the absolute approved-design path and a concise requirement summary;
 - acceptance criteria;
-- exact file paths and the actual code or edit;
-- verification commands with expected output;
+- relevant file or subsystem paths and the intended responsibility;
+- verification commands and required evidence;
 - an `## Interfaces` block with `consumes:` and `produces:` — the exact
   names, signatures, and paths this task relies on and hands over, so a
   child that sees only its own file knows its neighbours' names;
