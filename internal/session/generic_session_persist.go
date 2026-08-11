@@ -11,6 +11,15 @@
 // without extending the positional MarshalToolData signature. MergeToolDataExtras
 // treats generic_session_id as sticky so a full-table save whose in-memory
 // snapshot has not yet observed the id cannot wipe a live mapping.
+//
+// Sticky vs intentional clear: omission of generic_session_id is treated as
+// "unaware writer — preserve". A deliberate clear (SetField tool-session-id "",
+// RestartFresh) must therefore either:
+//  1. set Instance.genericSessionIDCleared so instanceToRow writes an EXPLICIT
+//     empty string (sticky honors explicit empty), or
+//  2. call WriteGenericSessionBinding("", …) (json_remove) before Save.
+// Writing explicit empty on every empty GenericSessionID would break sticky
+// protection for concurrent full-table saves — do not do that.
 package session
 
 import (
@@ -26,22 +35,34 @@ const (
 )
 
 // WriteGenericSessionIDToToolData merges generic_session_id (+ detected_at)
-// into the given tool_data blob. An empty sessionID removes both keys so a
-// clear is distinguishable from "never set".
-func WriteGenericSessionIDToToolData(td json.RawMessage, sessionID string, detectedAt time.Time) json.RawMessage {
+// into the given tool_data blob.
+//
+//   - Non-empty sessionID: writes the id (and detected_at when non-zero).
+//   - Empty sessionID + intentionalClear: writes explicit "" / 0 so
+//     MergeToolDataExtras honors the clear (sticky only preserves on omission).
+//   - Empty sessionID + !intentionalClear: omits both keys so a stale full-table
+//     save cannot wipe a binding written concurrently via WriteGenericSessionBinding.
+func WriteGenericSessionIDToToolData(td json.RawMessage, sessionID string, detectedAt time.Time, intentionalClear bool) json.RawMessage {
 	m := map[string]json.RawMessage{}
 	if len(td) > 0 {
 		_ = json.Unmarshal(td, &m)
 	}
 	if sessionID == "" {
-		delete(m, toolDataGenericSessionIDKey)
-		delete(m, toolDataGenericDetectedAtKey)
+		if intentionalClear {
+			m[toolDataGenericSessionIDKey] = json.RawMessage(`""`)
+			m[toolDataGenericDetectedAtKey] = json.RawMessage(`0`)
+		} else {
+			delete(m, toolDataGenericSessionIDKey)
+			delete(m, toolDataGenericDetectedAtKey)
+		}
 	} else {
 		rawID, _ := json.Marshal(sessionID)
 		m[toolDataGenericSessionIDKey] = rawID
 		if !detectedAt.IsZero() {
 			rawAt, _ := json.Marshal(detectedAt.Unix())
 			m[toolDataGenericDetectedAtKey] = rawAt
+		} else {
+			delete(m, toolDataGenericDetectedAtKey)
 		}
 	}
 	out, _ := json.Marshal(m)
@@ -62,6 +83,8 @@ func ReadGenericSessionIDFromToolData(td json.RawMessage) string {
 }
 
 // ReadGenericDetectedAtFromToolData extracts generic_detected_at (unix seconds).
+// Values are stored as Unix epoch seconds (timezone-independent); the returned
+// time is UTC so Equal comparisons against time.Unix(...).UTC() round-trip.
 func ReadGenericDetectedAtFromToolData(td json.RawMessage) time.Time {
 	if len(td) == 0 {
 		return time.Time{}
@@ -76,6 +99,18 @@ func ReadGenericDetectedAtFromToolData(td json.RawMessage) time.Time {
 	return time.Unix(blob.GenericDetectedAt, 0).UTC()
 }
 
+// PersistGenericSessionBinding write-throughs generic_session_id to the given
+// StateDB. Used by CLI `session set tool-session-id` which may not have
+// registered statedb.SetGlobal. Empty GenericSessionID clears via json_remove;
+// non-empty sets/updates. Defense in depth alongside genericSessionIDCleared +
+// SaveWithGroups. Safe no-op when db or inst is nil.
+func PersistGenericSessionBinding(db *statedb.StateDB, inst *Instance) error {
+	if db == nil || inst == nil {
+		return nil
+	}
+	return db.WriteGenericSessionBinding(inst.ID, inst.GenericSessionID, inst.GenericDetectedAt)
+}
+
 // persistGenericSessionIDIfChanged writes through to StateDB when the
 // resolved custom-tool id differs from what is already on the instance.
 // Safe no-op when statedb.GetGlobal() is nil or the id is empty.
@@ -87,6 +122,7 @@ func (i *Instance) persistGenericSessionIDIfChanged(sessionID string) {
 		return
 	}
 	i.GenericSessionID = sessionID
+	i.genericSessionIDCleared = false
 	if i.GenericDetectedAt.IsZero() {
 		i.GenericDetectedAt = time.Now()
 	}

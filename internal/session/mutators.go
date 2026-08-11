@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -354,12 +355,24 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		inst.CodexDetectedAt = time.Now()
 
 	case FieldToolSessionID:
+		// Trim so whitespace-only is a clear; resume argv must not inject bare spaces.
+		value = strings.TrimSpace(value)
 		oldValue = inst.GenericSessionID
 		inst.GenericSessionID = value
 		if value == "" {
 			inst.GenericDetectedAt = time.Time{}
+			// Mark intentional clear so instanceToRow writes explicit empty
+			// into tool_data; sticky merge only preserves on key omission.
+			inst.genericSessionIDCleared = true
 		} else {
 			inst.GenericDetectedAt = time.Now()
+			inst.genericSessionIDCleared = false
+		}
+		// Optional write-through when TUI/long-lived process registered global DB.
+		// Full SaveWithGroups still works for CLI (GetGlobal nil) via the
+		// genericSessionIDCleared flag above.
+		if db := statedb.GetGlobal(); db != nil {
+			_ = db.WriteGenericSessionBinding(inst.ID, value, inst.GenericDetectedAt)
 		}
 		// Publish into session_id_env when configured so a live pane sees it.
 		if toolDef := GetToolDef(inst.Tool); toolDef != nil && toolDef.SessionIDEnv != "" {

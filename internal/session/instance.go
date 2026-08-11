@@ -220,6 +220,12 @@ type Instance struct {
 	// gone). Live tmux env still wins when present (GetGenericSessionID).
 	GenericSessionID  string    `json:"generic_session_id,omitempty"`
 	GenericDetectedAt time.Time `json:"generic_detected_at,omitempty"`
+	// genericSessionIDCleared is set by intentional clear paths (SetField
+	// tool-session-id "", clearSessionBindingForFreshStart). When true,
+	// instanceToRow writes an explicit empty generic_session_id so sticky
+	// MergeToolDataExtras does not resurrect a prior binding. Not persisted;
+	// a non-empty GenericSessionID always clears this flag.
+	genericSessionIDCleared bool
 
 	// Claude Code integration
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
@@ -3404,13 +3410,13 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 	// Build dangerous flag if enabled
 	dangerousFlag := ""
 	if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
-		dangerousFlag = " " + toolDef.DangerousFlag
+		dangerousFlag = toolDef.DangerousFlag
 	}
 
 	// If we have an existing session ID, just resume.
 	// The session ID env var is propagated via host-side SetEnvironment after tmux start.
 	if existingSessionID != "" {
-		return envPrefix + fmt.Sprintf("%s %s %s%s",
+		return envPrefix + formatGenericResumeCommand(
 			baseCommand, toolDef.ResumeFlag, existingSessionID, dangerousFlag)
 	}
 
@@ -3419,7 +3425,7 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 	if toolDef.OutputFormatFlag == "" || toolDef.SessionIDJsonPath == "" {
 		// Can't capture session ID, just start normally
 		if dangerousFlag != "" {
-			return envPrefix + baseCommand + dangerousFlag
+			return envPrefix + baseCommand + " " + dangerousFlag
 		}
 		return envPrefix + baseCommand
 	}
@@ -3430,15 +3436,61 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 	// 2. Extract ID using jq
 	// 3. Resume that session
 	// Note: session ID env var is set via host-side SyncSessionIDsToTmux() once detected.
-	// Fallback: If capture fails, start tool fresh
+	// Fallback: If capture fails, start tool fresh.
+	// Captured $session_id is shell-quoted via "$session_id"; resume_flag that
+	// ends with "=" glues without a space (equals-form CLIs).
+	resumeInvoke := formatGenericResumeShellVar(baseCommand, toolDef.ResumeFlag, "session_id", dangerousFlag)
+	freshInvoke := baseCommand
+	if dangerousFlag != "" {
+		freshInvoke += " " + dangerousFlag
+	}
 	return envPrefix + fmt.Sprintf(
 		`session_id=$(%s %s "." 2>/dev/null | jq -r '%s' 2>/dev/null) || session_id=""; `+
 			`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
-			`%s %s "$session_id"%s; `+
-			`else %s%s; fi`,
+			`%s; `+
+			`else %s; fi`,
 		baseCommand, toolDef.OutputFormatFlag, toolDef.SessionIDJsonPath,
-		baseCommand, toolDef.ResumeFlag, dangerousFlag,
-		baseCommand, dangerousFlag)
+		resumeInvoke, freshInvoke)
+}
+
+// formatGenericResumeCommand builds:
+//
+//	<base> <resume_flag> <quoted-id>[ <dangerous_flag>]
+//
+// When resume_flag ends with "=", the id is glued without a space
+// (`tool --session='id'`). The conversation id is always shellescape-quoted
+// because the resulting string is executed under bash -lc (tmux respawn /
+// start); operator-set or tool-exported ids may contain shell metacharacters.
+// Mirrors hermes/opencode/codex session-id quoting.
+func formatGenericResumeCommand(baseCommand, resumeFlag, sessionID, dangerousFlag string) string {
+	quotedID := shellescape.Quote(sessionID)
+	var cmd string
+	if strings.HasSuffix(resumeFlag, "=") {
+		cmd = fmt.Sprintf("%s %s%s", baseCommand, resumeFlag, quotedID)
+	} else {
+		cmd = fmt.Sprintf("%s %s %s", baseCommand, resumeFlag, quotedID)
+	}
+	if dangerousFlag != "" {
+		cmd += " " + dangerousFlag
+	}
+	return cmd
+}
+
+// formatGenericResumeShellVar is the capture-path variant that resumes using a
+// shell variable (already double-quoted by the caller template) rather than a
+// Go-side literal id.
+func formatGenericResumeShellVar(baseCommand, resumeFlag, varName, dangerousFlag string) string {
+	ref := "\"$" + varName + "\""
+	var cmd string
+	if strings.HasSuffix(resumeFlag, "=") {
+		cmd = fmt.Sprintf("%s %s%s", baseCommand, resumeFlag, ref)
+	} else {
+		cmd = fmt.Sprintf("%s %s %s", baseCommand, resumeFlag, ref)
+	}
+	if dangerousFlag != "" {
+		cmd += " " + dangerousFlag
+	}
+	return cmd
 }
 
 // buildShellPassthroughCommand builds the launch command for a Tool=="shell"
@@ -3670,15 +3722,19 @@ func isLiteralToolInvocation(baseCommand, literalName string) bool {
 //
 // When the live env yields a value that differs from the persisted field,
 // write-through so the next cold start still resumes the right chat.
+// Whitespace-only values are treated as empty (not resumable).
 func (i *Instance) GetGenericSessionID() string {
 	toolDef := GetToolDef(i.Tool)
 	if toolDef != nil && toolDef.SessionIDEnv != "" && i.tmuxSession != nil {
-		if sessionID, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv); err == nil && sessionID != "" {
-			i.persistGenericSessionIDIfChanged(sessionID)
-			return sessionID
+		if sessionID, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv); err == nil {
+			sessionID = strings.TrimSpace(sessionID)
+			if sessionID != "" {
+				i.persistGenericSessionIDIfChanged(sessionID)
+				return sessionID
+			}
 		}
 	}
-	return i.GenericSessionID
+	return strings.TrimSpace(i.GenericSessionID)
 }
 
 // DisplaySessionID returns the session ID the PREVIEW pane surfaces for this
@@ -6253,10 +6309,13 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 	}
 
 	// Custom [tools.*]: drop any persisted conversation so a deliberate
-	// fresh start does not re-attach resume after reboot.
-	if i.GenericSessionID != "" || !i.GenericDetectedAt.IsZero() {
+	// fresh start does not re-attach resume after reboot. Flag the clear so
+	// a subsequent SaveWithGroups writes explicit empty (sticky-safe) even
+	// when statedb.GetGlobal() is nil (CLI paths).
+	if i.GenericSessionID != "" || !i.GenericDetectedAt.IsZero() || i.genericSessionIDCleared {
 		i.GenericSessionID = ""
 		i.GenericDetectedAt = time.Time{}
+		i.genericSessionIDCleared = true
 		if db := statedb.GetGlobal(); db != nil {
 			_ = db.WriteGenericSessionBinding(i.ID, "", time.Time{})
 		}
@@ -7797,15 +7856,13 @@ func (i *Instance) restart(env map[string]string) error {
 		sessionID := i.GetGenericSessionID()
 
 		// The session ID env var is propagated via host-side SetEnvironment after tmux start.
-		var rawCmd string
+		// Same shape as buildGenericCommand (shared helper) so start/restart cannot drift.
+		dangerous := ""
 		if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
-			rawCmd = fmt.Sprintf("%s %s %s %s",
-				i.Command, toolDef.ResumeFlag, sessionID, toolDef.DangerousFlag)
-		} else {
-			rawCmd = fmt.Sprintf("%s %s %s",
-				i.Command, toolDef.ResumeFlag, sessionID)
+			dangerous = toolDef.DangerousFlag
 		}
-		rawCmd = i.buildRestartEnvPrefix() + rawCmd
+		rawCmd := i.buildRestartEnvPrefix() + formatGenericResumeCommand(
+			i.Command, toolDef.ResumeFlag, sessionID, dangerous)
 		resumeCmd, containerName, err := i.prepareCommand(rawCmd)
 		if err != nil {
 			return err

@@ -972,7 +972,9 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// value from a fresh CLI process instead of always-zero.
 	toolData = WriteLastStartedAtToToolData(toolData, inst.LastStartedAt)
 	// Custom [tools.*] conversation id — reboot-safe resume when resume_flag set.
-	toolData = WriteGenericSessionIDToToolData(toolData, inst.GenericSessionID, inst.GenericDetectedAt)
+	// intentionalClear makes sticky MergeToolDataExtras honor operator clears
+	// without breaking stale-empty full-table saves (see generic_session_persist.go).
+	toolData = WriteGenericSessionIDToToolData(toolData, inst.GenericSessionID, inst.GenericDetectedAt, inst.genericSessionIDCleared)
 
 	return &statedb.InstanceRow{
 		ID:                  inst.ID,

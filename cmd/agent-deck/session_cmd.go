@@ -1950,6 +1950,16 @@ func handleSessionSet(profile string, args []string) {
 	if field == session.FieldPath {
 		value = inst.ProjectPath
 	}
+	// Custom-tool conversation id: sticky MergeToolDataExtras preserves
+	// generic_session_id when a full Save omits the key. CLI does not always
+	// register statedb.SetGlobal, so write through the open Storage DB before
+	// SaveWithGroups (set and intentional clear).
+	if field == session.FieldToolSessionID {
+		if err := session.PersistGenericSessionBinding(storage.GetDB(), inst); err != nil {
+			out.Error(fmt.Sprintf("failed to persist tool-session-id: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
 	// CLI holds no lock — run tmux side effects inline. TUI defers them
 	// until after instancesMu.Unlock.
 	if postCommit != nil {
