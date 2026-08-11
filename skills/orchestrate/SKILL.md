@@ -103,15 +103,31 @@ dedicated `.worktrees/` directory:
 
 ```bash
 ROOT_WT=$(git -C <repo-root> worktree list --porcelain | awk '/^worktree /{print $2; exit}')
-RUN_ID=<run-id>
-RUN_DIR="$ROOT_WT/.agent-deck/$RUN_ID"
+# For an approved design, preserve the run id established by brainstorming.
+SPEC_PATH=<absolute-design-path-or-empty>
+if [ -n "$SPEC_PATH" ]; then
+  RUN_ROOT=$(cd "$(dirname "$SPEC_PATH")/.." && pwd)
+  RUN_ID=$(basename "$RUN_ROOT")
+else
+  RUN_ID=<date>-<slug>
+  RUN_ROOT="$ROOT_WT/.agent-deck/$RUN_ID"
+fi
+DESIGN_DIR="$RUN_ROOT/design"
+PLAN_ROOT="$RUN_ROOT/plan"
+RUN_DIR="$RUN_ROOT/orchestrate"
 WORKTREES_DIR="$ROOT_WT/.worktrees"
+
+case "$SPEC_PATH" in
+  "") ;;
+  "$DESIGN_DIR/design.md") ;;
+  *) echo "design must be $DESIGN_DIR/design.md" >&2; exit 2 ;;
+esac
 
 # Keep run state local without changing the repository's tracked .gitignore.
 EXCLUDE_FILE=$(git -C "$ROOT_WT" rev-parse --path-format=absolute --git-path info/exclude)
 grep -qxF '/.agent-deck/' "$EXCLUDE_FILE" || printf '/.agent-deck/\n' >> "$EXCLUDE_FILE"
-mkdir -p "$RUN_DIR"
-git -C "$ROOT_WT" check-ignore -q "$RUN_DIR"
+mkdir -p "$DESIGN_DIR" "$PLAN_ROOT" "$RUN_DIR"
+git -C "$ROOT_WT" check-ignore -q "$RUN_ROOT/.probe"
 ```
 
 Resolve the user's tool policy once, persist it with the run, and consult it
@@ -152,12 +168,15 @@ The layout keeps run metadata in one ignored tree and source checkouts in the
 repository's worktree tree:
 
 ```text
-<repo-root>/.agent-deck/<run-id>/      = $RUN_DIR
-  manifest.md  poll.sh  heartbeat.sh  prompts/  retro.md
-  inputs/                              approved specs and issue snapshots
-  <task-slug>/                         task artifacts
-    plan.md  tasks/task-NN-<name>.md   planner output
-    spec-block.md  impl-prompt.md  review-r1.md  *.png  handoff.md
+<repo-root>/.agent-deck/<run-id>/      = $RUN_ROOT
+  design/
+    design.md                           approved design
+  plan/                                 = $PLAN_ROOT
+    <task-slug>/
+      plan.md  tasks/task-NN-<name>.md  planner output
+  orchestrate/                          = $RUN_DIR
+    manifest.md  poll.sh  heartbeat.sh  prompts/  retro.md
+    <task-slug>/                        spec blocks, prompts, reviews, screenshots, handoffs
 
 <repo-root>/.worktrees/                = $WORKTREES_DIR
   <run-id>-<task-slug>/                run-owned source checkout
@@ -189,12 +208,12 @@ LEAN=(--extra-arg --strict-mcp-config --extra-arg --mcp-config
       --extra-arg '{"mcpServers":{}}')
 ```
 
-Everything any child captures goes under `$RUN_DIR/<task-slug>/`, and the
-plan, the task files and the prompt files you render for children live there
-too — not `/tmp`, where they collide across runs, vanish on reboot, and break
-resume, and not a child worktree, where they are one `git add -A` away from a
-PR. Nothing under `$RUN_DIR` is ever committed, pushed, uploaded, or mentioned
-in a PR or commit message.
+Everything any child captures goes under `$RUN_DIR/<task-slug>/`; planner
+output goes under `$PLAN_ROOT/<task-slug>/`; and the approved design is under
+`$DESIGN_DIR/`. These paths are not `/tmp`, where they collide across runs or
+vanish on reboot, and are not child worktrees, where they are one `git add -A`
+away from a PR. Nothing under `$RUN_ROOT` is ever committed, pushed, uploaded,
+or mentioned in a PR or commit message.
 
 The run directory is inside the repository root but excluded through Git's
 local `info/exclude`, so it cannot enter a diff and does not require a tracked
@@ -251,7 +270,8 @@ notifications and the turn-start snapshot route to the new conductor.
   write the sanitized spec plus a terminal `SAFE` or `BLOCKED` summary under
   `$RUN_DIR/<task-slug>/`. Its PR body must include `Fixes #<n>`.
 - An argument that is a path to a **design/spec document** (e.g.
-  `$RUN_DIR/inputs/<date>-<topic>-design.md`) → a spec-fed task: apply the
+  `$RUN_ROOT/design/design.md`) → derive `$RUN_ID` from its run-root parent and
+  apply the
   **focused-first gate** below. Launch one implementer unless a recorded
   planning trigger requires coordination before implementation.
   A design/spec is the **expected** entrance for "I brainstormed this, now
@@ -291,23 +311,25 @@ deployed-system verification → recon → parallel measurement arms →
                                conductor validation/adjudication → report
 ```
 
-**Input files live under `$RUN_DIR/inputs/` and are never committed.** A spec or
-plan is scaffolding for this run, not a deliverable — it must not show up in
-the branch, the diff, or the PR. Children reach it by **absolute path**, which
-works from any worktree and does not depend on what any branch contains. Every
-spec or plan you were handed gets normalised and checked before any child
-launches:
+**Inputs live in their typed run-root directories and are never committed.** A
+design belongs under `$DESIGN_DIR/design.md`; a supplied implementation plan
+belongs under `$PLAN_ROOT/<task-slug>/plan.md`. They are scaffolding, not
+deliverables — they must not show up in the branch, diff, or PR. Children reach
+them by **absolute path**, which works from any worktree and does not depend on
+what any branch contains. Every spec or plan gets normalised and checked before
+any child launches:
 
 ```bash
 SPEC_PATH=$(cd "$(dirname <path>)" && printf '%s/%s\n' "$PWD" "$(basename <path>)")
 test -f "$SPEC_PATH"                              # must exist and be readable
-case "$SPEC_PATH" in "$RUN_DIR/inputs/"*) ;; *) echo "not in run inputs" ;; esac
+case "$SPEC_PATH" in "$DESIGN_DIR/"*|"$PLAN_ROOT/"*) ;; *) echo "not in typed run input" ;; esac
 ```
 
-If the file is elsewhere, move it to `$RUN_DIR/inputs/` and use the new path —
-one location, no copies, and never a copy inside a child worktree. A missing
-or unreadable path is a launch blocker — a child handed a path it cannot read
-improvises from an empty spec.
+If the file is elsewhere, move a design to `$DESIGN_DIR/design.md` or a plan
+to `$PLAN_ROOT/<task-slug>/plan.md` and use the new path — one location, no
+copies, and never a copy inside a child worktree. A missing or unreadable path
+is a launch blocker — a child handed a path it cannot read improvises from an
+empty spec.
 
 Record `SPEC_PATH` in the manifest. Base every worktree explicitly on the base
 branch; nothing about the spec constrains it any more. Resolve the base once
@@ -464,7 +486,7 @@ Your assigned coordination boundary is:
 <absolute-task-file-path>
 ```
 
-Always the **absolute** path under `$RUN_DIR/<slug>/tasks/`. It is outside
+Always the **absolute** path under `$PLAN_ROOT/<slug>/tasks/`. It is outside
 the child's worktree by design: a relative path would resolve inside the
 worktree, find nothing, and the child would improvise.
 
@@ -494,7 +516,7 @@ user's session's:
 
 ```bash
 bash "$RUN_DIR/prompts/render.sh" plan "$RUN_DIR/<task-slug>/plan-prompt.md" \
-  SPEC_PATH="$SPEC_PATH" TASK_DIR="$RUN_DIR/<task-slug>"
+  SPEC_PATH="$SPEC_PATH" TASK_DIR="$PLAN_ROOT/<task-slug>"
 WT=$("<agent-deck-repo>/skills/orchestrate/references/create-worktree.sh" \
   --repo "$ROOT_WT" --run-dir "$RUN_DIR" --run-id "$RUN_ID" \
   --task "<task-slug>-plan" --branch <branch> --base <base-branch>)
@@ -513,8 +535,8 @@ git -C "$WT" merge-base <base-branch> HEAD
 The printed HEAD must equal the resolved base sha for a newly created branch;
 otherwise archive the child and repair the worktree before any task work.
 
-The planner writes `$RUN_DIR/<task-slug>/plan.md` plus one concise task-boundary
-file per task under `$RUN_DIR/<task-slug>/tasks/`. The plan coordinates scope,
+The planner writes `$PLAN_ROOT/<task-slug>/plan.md` plus one concise task-boundary
+file per task under `$PLAN_ROOT/<task-slug>/tasks/`. The plan coordinates scope,
 paths, dependencies, ordering, interfaces, acceptance criteria, verification,
 and any safety/rollback steps. It does not embed production code, duplicate
 the approved design, or predict unobserved output. Short signatures, schemas,
@@ -522,11 +544,11 @@ and pseudocode are allowed only when they are the shared interface the plan
 exists to settle. Each task file carries an `## Interfaces` block and an empty
 `## Record (append-only)` section. It tags every task `tier: mid | strong` and
 sizes it to fit one fresh session. It implements nothing, and it commits
-nothing — the plan is scaffolding under `$RUN_DIR`, not a change to the branch.
+nothing — the plan is scaffolding under `$PLAN_ROOT`, not a change to the branch.
 Verify that after it finishes:
 
 ```bash
-ls "$RUN_DIR/<task-slug>/tasks/"                  # task files exist
+ls "$PLAN_ROOT/<task-slug>/tasks/"                # task files exist
 git -C <planner-worktree> status --porcelain      # must be empty
 ```
 
@@ -604,7 +626,7 @@ out of each worker's context.
 The `## Record (append-only)` section at the end of each task file is the
 child's audit trail: it appends its commits, the files it touched, and any
 concern it hit. It appends **in place**, to the file at its absolute path
-under `$RUN_DIR/<task-slug>/tasks/` — never to a copy inside the worktree. Siblings each own a
+under `$PLAN_ROOT/<task-slug>/tasks/` — never to a copy inside the worktree. Siblings each own a
 different task file, so concurrent appends do not collide. That record costs
 you no context — you read it only when a task goes needs-attention.
 
@@ -761,7 +783,7 @@ in its task directory, so no base commit can hide it. Verify the file exists
 before launch, and record the worktree path in the manifest:
 
 ```bash
-test -f "$RUN_DIR/<task-slug>/tasks/task-NN-<name>.md"
+test -f "$PLAN_ROOT/<task-slug>/tasks/task-NN-<name>.md"
 bash "$RUN_DIR/prompts/render.sh" impl "$RUN_DIR/<task-slug>/impl-prompt.md" \
   TASK_TITLE="<title>" SPEC_BLOCK@="$RUN_DIR/<task-slug>/spec-block.md" \
   RUN_DIR="$RUN_DIR" TASK_SLUG="<task-slug>"

@@ -4,7 +4,7 @@ set -eu
 # Remove disposable git worktrees from inactive orchestrate runs while keeping
 # reports, prompts, screenshots, and other small run artifacts.
 
-root=${AGENTDECK_ORCHESTRATE_DIR:-"${HOME}/.agent-deck/orchestrate"}
+root=${AGENTDECK_ORCHESTRATE_DIR:-}
 days=7
 apply=false
 one_run=
@@ -26,6 +26,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$days" in *[!0-9]*|'') usage ;; esac
+[ -n "$root" ] || { echo "cleanup-runs: set AGENTDECK_ORCHESTRATE_DIR to <repo>/.agent-deck" >&2; exit 2; }
 [ -d "$root" ] || exit 0
 command -v sqlite3 >/dev/null 2>&1 || { echo "cleanup-runs: sqlite3 is required" >&2; exit 1; }
 
@@ -109,20 +110,22 @@ fi
 
 printf '%s\n' "$runs" | while IFS= read -r run; do
   [ -n "$run" ] || continue
-  [ ! -e "$run/.needs-attention" ] || { echo "KEEP needs-attention: $run"; continue; }
+  control="$run/orchestrate"
+  [ -d "$control" ] || { echo "SKIP unrecognized run layout: $run" >&2; continue; }
+  [ ! -e "$control/.needs-attention" ] || { echo "KEEP needs-attention: $run"; continue; }
   is_old_enough "$run" || continue
   if is_live_run "$run"; then
     echo "KEEP live: $run"
     continue
   fi
 
-  if [ -f "$run/worktrees.tsv" ]; then
+  if [ -f "$control/worktrees.tsv" ]; then
     while IFS="$(printf '\t')" read -r candidate branch repo; do
       [ -n "$candidate" ] || continue
       [ -n "$branch" ] || { echo "SKIP registry row without branch: $candidate" >&2; continue; }
       case "$candidate" in "$repo/.worktrees/"*) ;; *) echo "SKIP untrusted registered path: $candidate" >&2; continue ;; esac
       [ -d "$candidate" ] && remove_worktree "$candidate"
-    done <"$run/worktrees.tsv"
+    done <"$control/worktrees.tsv"
   fi
 
   # Select only outermost repositories so nested dependencies are never treated

@@ -1,6 +1,6 @@
 ---
 name: brainstorming
-description: Collaborative design and brainstorming before any code is written — explores project context, asks one clarifying question at a time, offers 2–3 approaches with trade-offs, and writes an approved design document to `.agent-deck/designs/` in the root worktree (git-ignored, never committed). Use before building a feature, adding functionality, or changing behavior, and whenever the user says "let's build", "I want to add", "how should we do X", or asks for a design or spec. Hard-gates implementation until the design is approved.
+description: Collaborative design and brainstorming before any code is written — explores project context, asks one clarifying question at a time, offers 2–3 approaches with trade-offs, and writes an approved design document to its repository-local `.agent-deck/<date>-<slug>/design/` directory (git-ignored, never committed). Use before building a feature, adding functionality, or changing behavior, and whenever the user says "let's build", "I want to add", "how should we do X", or asks for a design or spec. Hard-gates implementation until the design is approved.
 metadata:
   compatibility: "claude, opencode"
 ---
@@ -79,17 +79,18 @@ another approval.
 
 ## 6. Write the spec
 
-**Location: `.agent-deck/designs/` in the root worktree, git-ignored, never
-committed.** A design doc is scaffolding for the work, not a deliverable — it
-must not land in a branch, a diff, or a PR. It goes in the repo's **main
-checkout** (not a worktree you may be sitting in), in the one directory every
-agent skill here writes to, so `orchestrate` finds its plans, prompts and
-screenshots for the same work in the same place. Resolve the path and make the
-directory ignored *before* writing:
+**Location: `.agent-deck/<date>-<slug>/design/design.md` in the root worktree,
+git-ignored, never committed.** A design doc is scaffolding for the work, not a
+deliverable — it must not land in a branch, a diff, or a PR. Its run root
+groups the design with the later `plan/` and `orchestrate/` artifacts for the
+same work. It goes in the repo's **main checkout** (not a worktree you may be
+sitting in). Resolve the path and make the directory ignored *before* writing:
 
 ```bash
 ROOT_WT=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
-SPEC_PATH="$ROOT_WT/.agent-deck/designs/YYYY-MM-DD-<topic>-design.md"
+RUN_ID="YYYY-MM-DD-<topic>"
+RUN_ROOT="$ROOT_WT/.agent-deck/$RUN_ID"
+SPEC_PATH="$RUN_ROOT/design/design.md"
 git -C "$ROOT_WT" check-ignore -q "$ROOT_WT/.agent-deck/.probe" || \
   printf '.agent-deck/\n' >> "$(git -C "$ROOT_WT" rev-parse --git-common-dir)/info/exclude"
 git -C "$ROOT_WT" check-ignore -q "$ROOT_WT/.agent-deck/.probe"  # exit 0 before you write
@@ -105,8 +106,8 @@ still fail the gate. `.probe` need not exist.
 this costs the user no commit.
 
 A repo whose convention is a *tracked* design-doc directory (`docs/plans/`,
-`docs/rfcs/`) is the one case to raise: say you are writing to
-`.agent-deck/designs/` instead and why, and take the user's answer.
+`docs/rfcs/`) is the one case to raise: say you are writing to the ignored
+run-local `design/` directory instead and why, and take the user's answer.
 
 **Never `git add` the spec, and never verify it by looking for a commit.** Its
 absolute path is what makes it findable — downstream sessions in other

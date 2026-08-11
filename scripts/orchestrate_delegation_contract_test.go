@@ -26,8 +26,17 @@ func TestOrchestrateDelegatesAllTaskExecution(t *testing.T) {
 	if strings.Contains(normalizedSkill, "clean up yourself") {
 		t.Fatal("orchestrate skill still assigns cleanup execution to the conductor")
 	}
-	if !strings.Contains(normalizedSkill, `RUN_DIR="$ROOT_WT/.agent-deck/$RUN_ID"`) {
-		t.Fatal("orchestrate run directory is not repository-local")
+	if !strings.Contains(normalizedSkill, `RUN_ROOT="$ROOT_WT/.agent-deck/$RUN_ID"`) {
+		t.Fatal("orchestrate run root is not repository-local")
+	}
+	if !strings.Contains(normalizedSkill, `RUN_DIR="$RUN_ROOT/orchestrate"`) {
+		t.Fatal("orchestrate control-plane directory is not under the run root")
+	}
+	if !strings.Contains(normalizedSkill, `PLAN_ROOT="$RUN_ROOT/plan"`) {
+		t.Fatal("orchestrate plan directory is not under the run root")
+	}
+	if !strings.Contains(normalizedSkill, `RUN_ROOT=$(cd "$(dirname "$SPEC_PATH")/.." && pwd)`) {
+		t.Fatal("orchestrate does not derive the shared run root from an approved design")
 	}
 	if !strings.Contains(normalizedSkill, `WORKTREES_DIR="$ROOT_WT/.worktrees"`) {
 		t.Fatal("orchestrate worktrees directory is not rooted at repository .worktrees")
@@ -40,6 +49,15 @@ func TestOrchestrateDelegatesAllTaskExecution(t *testing.T) {
 	}
 	if !strings.Contains(normalizedSkill, `RETRO_PATH="$RUN_DIR/retro.md"`) {
 		t.Fatal("orchestrate retrospective is not stored with repository-local run artifacts")
+	}
+	if strings.Contains(normalizedSkill, `$RUN_DIR/inputs/`) {
+		t.Fatal("orchestrate still places design inputs in its control-plane directory")
+	}
+	if strings.Contains(normalizedSkill, `$RUN_DIR/<slug>/tasks/`) {
+		t.Fatal("orchestrate still places planner task files in its control-plane directory")
+	}
+	if !strings.Contains(normalizedSkill, `$PLAN_ROOT/<task-slug>/tasks/`) {
+		t.Fatal("orchestrate does not route planner task files through the plan directory")
 	}
 	if strings.Contains(normalizedSkill, `gh issue view <n> --json body -q .body >`) {
 		t.Fatal("orchestrate skill still assigns issue-body fetching to the conductor")
@@ -117,6 +135,40 @@ func TestOrchestrateDelegatesAllTaskExecution(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBrainstormingUsesTypedRepositoryLocalRunLayout(t *testing.T) {
+	repoRoot := filepath.Clean("..")
+	skillPath := filepath.Join(repoRoot, "skills", "brainstorming", "SKILL.md")
+	skill, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read brainstorming skill: %v", err)
+	}
+	normalizedSkill := strings.Join(strings.Fields(string(skill)), " ")
+	if !strings.Contains(normalizedSkill, `RUN_ROOT="$ROOT_WT/.agent-deck/$RUN_ID"`) {
+		t.Fatal("brainstorming does not establish a repository-local run root")
+	}
+	if !strings.Contains(normalizedSkill, `SPEC_PATH="$RUN_ROOT/design/design.md"`) {
+		t.Fatal("brainstorming design is not stored in the run's design directory")
+	}
+	if strings.Contains(normalizedSkill, `.agent-deck/designs/`) {
+		t.Fatal("brainstorming still uses the legacy global designs directory")
+	}
+}
+
+func TestCleanupRunsUsesTypedRepositoryRunLayout(t *testing.T) {
+	repoRoot := filepath.Clean("..")
+	scriptPath := filepath.Join(repoRoot, "skills", "orchestrate", "references", "cleanup-runs.sh")
+	script, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read cleanup script: %v", err)
+	}
+	if strings.Contains(string(script), `"${HOME}/.agent-deck/orchestrate"`) {
+		t.Fatal("cleanup script still defaults to the legacy global run root")
+	}
+	if !strings.Contains(string(script), `control="$run/orchestrate"`) {
+		t.Fatal("cleanup script does not locate control-plane files below each typed run root")
 	}
 }
 
