@@ -171,7 +171,7 @@ func StageForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	// writes. Only a completion target (a conductor/parent that children commit
 	// to) ever has a pending inbox, so the global Stop-hook sync flip is inert
 	// for non-conductor sessions. Cheap stat, no consume.
-	if !InboxHasPending(instanceID) && !RuntimeQueueHasPending(instanceID) {
+	if !InboxHasPending(instanceID) && !RuntimeQueueHasPending(instanceID) && !stopHookReservationPending(instanceID) {
 		return StopHookDecision{}, false, nil
 	}
 
@@ -190,6 +190,22 @@ func StageForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	// already at its persisted value, so no write is needed.
 	if count >= MaxStopHookBlocks {
 		return StopHookDecision{}, false, nil
+	}
+	if state.PendingToken != "" && state.AckPhase != "" && state.AckPhase != "prepared" {
+		inboxReason := ""
+		if state.InboxToken != "" {
+			inboxReason = "reserved inbox delivery"
+		}
+		return StopHookDecision{
+			Decision:                 "block",
+			InboxReason:              inboxReason,
+			InboxAckToken:            state.InboxToken,
+			RuntimeQueueAckToken:     state.RuntimeToken,
+			StopBlockCount:           state.PendingCount,
+			StopBlockPrevious:        state.Count,
+			StopBlockToken:           state.PendingToken,
+			StopBlockResponseWritten: true,
+		}, true, nil
 	}
 	reservationToken := state.PendingToken
 	reservedCount := state.PendingCount
@@ -268,6 +284,10 @@ func StageForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 		StopBlockToken:           reservationToken,
 		StopBlockResponseWritten: state.AckPhase == "response-written",
 	}, true, nil
+}
+
+func stopHookReservationPending(instanceID string) bool {
+	return loadStopBlockStateLocked(instanceID).PendingToken != ""
 }
 
 func MarkStopHookResponseWritten(instanceID, reservationToken string) error {

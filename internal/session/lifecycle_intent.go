@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/google/uuid"
 )
 
 type LifecycleOperationMetadata struct {
@@ -34,7 +35,13 @@ func PrepareLifecycleIntent(storage *Storage, instanceID, kind, payload string) 
 	if storage == nil || storage.db == nil {
 		return LifecycleIntentHandle{}, errors.New("prepare lifecycle intent: storage unavailable")
 	}
-	return storage.db.PrepareLifecycleIntent(statedb.LifecycleIntent{InstanceID: instanceID, Kind: kind, Payload: payload})
+	var metadata LifecycleOperationMetadata
+	_ = json.Unmarshal([]byte(payload), &metadata)
+	var generation int64
+	if metadata.Instance != nil {
+		generation = metadata.Instance.PersistenceGeneration
+	}
+	return storage.db.PrepareLifecycleIntent(statedb.LifecycleIntent{InstanceID: instanceID, Kind: kind, Payload: payload, Generation: generation})
 }
 
 func AdvanceLifecycleIntent(storage *Storage, intent LifecycleIntentHandle, phase, payload string) error {
@@ -67,22 +74,48 @@ func RecoverLifecycleIntents(storage *Storage, instances []*Instance) error {
 		byID[inst.ID] = inst
 	}
 	var recoveryErr error
+	recoveryOwner := uuid.NewString()
 	for _, intent := range intents {
 		inst := byID[intent.InstanceID]
 		var metadata LifecycleOperationMetadata
 		_ = json.Unmarshal([]byte(intent.Payload), &metadata)
+		if intent.Kind == LifecycleIntentArchive && (inst == nil || !inst.IsArchived()) {
+			continue
+		}
+		if (intent.Kind == LifecycleIntentRemove || intent.Kind == LifecycleIntentWorktreeFinish) && inst != nil && intent.Phase == "prepared" {
+			continue
+		}
+		claimed, claimErr := storage.db.ClaimLifecycleIntent(intent.InstanceID, intent.Token, recoveryOwner)
+		if claimErr != nil {
+			recoveryErr = errors.Join(recoveryErr, claimErr)
+			continue
+		}
+		if !claimed {
+			continue
+		}
+		if inst != nil && intent.Generation != 0 && inst.PersistenceGeneration != intent.Generation {
+			// The ID now belongs to a newer incarnation. Never touch its row or
+			// queue; only retire the payload-owned runtime from the old operation.
+			if metadata.Instance != nil && metadata.Instance.Exists() {
+				if killErr := metadata.Instance.KillAndWait(); killErr != nil && metadata.Instance.Exists() {
+					recoveryErr = errors.Join(recoveryErr, fmt.Errorf("retire stale lifecycle runtime %s: %w", intent.InstanceID, killErr))
+					continue
+				}
+			}
+			if completeErr := CompleteLifecycleIntent(storage, intent); completeErr != nil {
+				recoveryErr = errors.Join(recoveryErr, completeErr)
+			}
+			continue
+		}
 		switch intent.Kind {
 		case LifecycleIntentArchive:
-			if inst == nil || !inst.IsArchived() {
-				continue
-			}
 			tx, lockErr := BeginRuntimeQueueTransaction(intent.InstanceID)
 			if lockErr != nil {
 				recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover archive %s: %w", intent.InstanceID, lockErr))
 				continue
 			}
 			if inst.Exists() {
-				if killErr := inst.Kill(); killErr != nil {
+				if killErr := inst.KillAndWait(); killErr != nil && inst.Exists() {
 					tx.Release()
 					recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover archive stop %s: %w", intent.InstanceID, killErr))
 					continue
@@ -98,9 +131,6 @@ func RecoverLifecycleIntents(storage *Storage, instances []*Instance) error {
 				recoveryErr = errors.Join(recoveryErr, completeErr)
 			}
 		case LifecycleIntentRemove, LifecycleIntentWorktreeFinish:
-			if intent.Kind == LifecycleIntentWorktreeFinish && inst != nil && intent.Phase == "prepared" {
-				continue
-			}
 			if intent.Kind == LifecycleIntentWorktreeFinish && inst != nil && intent.Phase == "merged" && metadata.Instance != nil {
 				if _, removeErr := RemoveSessionWorktree(metadata.Instance); removeErr != nil {
 					recoveryErr = errors.Join(recoveryErr, removeErr)

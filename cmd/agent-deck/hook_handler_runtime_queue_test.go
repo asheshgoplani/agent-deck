@@ -177,6 +177,44 @@ func TestStopHookRuntimeAckFailureRetriesAckWithoutReemission(t *testing.T) {
 	}
 }
 
+func TestStopHookPartialAckRetryPreservesLaterArrivals(t *testing.T) {
+	isolateStopHookRuntimeQueue(t)
+	const id = "partial-ack-later-arrivals"
+	if err := session.CommitToInbox(id, session.TransitionNotificationEvent{ChildSessionID: "old-child", ToStatus: "waiting", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.EnqueueRuntimeMessage(id, "old runtime"); err != nil {
+		t.Fatal(err)
+	}
+	restore := session.SetStopHookRuntimeAcknowledgerForTest(func(string, string) error { return errors.New("forced partial ack") })
+	var first bytes.Buffer
+	if err := emitStopHookDecision(id, false, &first); err == nil {
+		t.Fatal("partial acknowledgement unexpectedly succeeded")
+	}
+	restore()
+	if err := session.CommitToInbox(id, session.TransitionNotificationEvent{ChildSessionID: "new-child", ToStatus: "waiting", Timestamp: time.Now().Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.EnqueueRuntimeMessage(id, "new runtime"); err != nil {
+		t.Fatal(err)
+	}
+	var retry bytes.Buffer
+	if err := emitStopHookDecision(id, true, &retry); err != nil {
+		t.Fatal(err)
+	}
+	if retry.Len() != 0 {
+		t.Fatalf("partial ack retry emitted again: %q", retry.String())
+	}
+	queued, err := session.PeekRuntimeQueue(id)
+	if err != nil || len(queued) != 1 || queued[0].Message != "new runtime" {
+		t.Fatalf("later runtime arrival = %#v, %v", queued, err)
+	}
+	events, err := session.DrainInboxForParent(id)
+	if err != nil || len(events) != 1 || events[0].ChildSessionID != "new-child" {
+		t.Fatalf("later inbox arrival = %#v, %v", events, err)
+	}
+}
+
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

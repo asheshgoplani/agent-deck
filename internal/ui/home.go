@@ -13019,7 +13019,7 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 			queueTx.Release()
 			return sessionDeleteFailedMsg{err: err}
 		}
-		killErr := inst.Kill()
+		killErr := inst.KillAndWait()
 		if isWorktree && sharedWorktree {
 			// #1449: another live session still references this worktree; skip
 			// the destructive removal + branch delete and merely drop this
@@ -13154,7 +13154,7 @@ func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 			queueTx.Release()
 			return sessionArchivedMsg{sessionID: id, killErr: err}
 		}
-		if killErr := inst.Kill(); killErr != nil {
+		if killErr := inst.KillAndWait(); killErr != nil {
 			inst.ArchivedAt = previousArchivedAt
 			rollbackErr := h.persistArchived(inst)
 			var completeErr error
@@ -19734,7 +19734,7 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 
 		// Step 4: Kill tmux session
 		if inst != nil && inst.Exists() {
-			if killErr := inst.Kill(); killErr != nil && inst.Exists() {
+			if killErr := inst.KillAndWait(); killErr != nil && inst.Exists() {
 				return fail(fmt.Errorf("worktree finalized but process teardown failed: %w", killErr))
 			}
 		}

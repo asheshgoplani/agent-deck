@@ -804,7 +804,7 @@ func handleWorktreeFinish(profile string, args []string) {
 
 	// Step 4: Kill tmux session
 	if inst.Exists() {
-		if err := inst.Kill(); err != nil {
+		if err := inst.KillAndWait(); err != nil {
 			if inst.Exists() {
 				out.Error(fmt.Sprintf("worktree finalized but process teardown failed: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)

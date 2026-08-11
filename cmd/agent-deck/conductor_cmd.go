@@ -899,7 +899,7 @@ func handleConductorTeardown(_ string, args []string) {
 		}
 		for _, inst := range instances {
 			if inst.Title == sessionTitle && inst.Exists() {
-				if killErr := inst.Kill(); killErr != nil {
+				if killErr := inst.KillAndWait(); killErr != nil {
 					targetFailed = true
 					teardownErrors = append(teardownErrors, fmt.Sprintf("%s: stop runtime: %v", meta.Name, killErr))
 				}

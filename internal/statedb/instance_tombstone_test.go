@@ -101,6 +101,9 @@ func TestLifecycleIntentRejectsOverlapAndStaleOwnership(t *testing.T) {
 	if err := db.Migrate(); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.CreateInstance(tombstoneTestRow("owned")); err != nil {
+		t.Fatal(err)
+	}
 	first, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "owned", Kind: "remove", Payload: "metadata"})
 	if err != nil || first.Token == "" || first.Generation == 0 || first.Phase != "prepared" {
 		t.Fatalf("first prepare = %#v, %v", first, err)
@@ -127,6 +130,16 @@ func TestLifecycleIntentRejectsOverlapAndStaleOwnership(t *testing.T) {
 	}
 	if err := db.CompleteLifecycleIntent("owned", first.Token); err != nil {
 		t.Fatal(err)
+	}
+	newer, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "owned", Kind: "archive", Payload: "new metadata", Generation: first.Generation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newer.Token == first.Token {
+		t.Fatal("new lifecycle operation reused stale token")
+	}
+	if err := db.CompleteLifecycleIntent("owned", first.Token); !errors.Is(err, ErrLifecycleIntentOwnership) {
+		t.Fatalf("stale completion removed newer intent: %v", err)
 	}
 }
 

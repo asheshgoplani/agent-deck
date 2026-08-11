@@ -246,7 +246,7 @@ func (m *WebMutator) DeleteSession(id string) error {
 	if err := session.AdvanceLifecycleIntent(storage, removeIntent, "row-deleted", removePayload); err != nil {
 		return fmt.Errorf("advance web deletion: %w", err)
 	}
-	if killErr := inst.Kill(); killErr != nil && inst.Exists() {
+	if killErr := inst.KillAndWait(); killErr != nil && inst.Exists() {
 		return fmt.Errorf("web deletion committed but process teardown failed: %w", killErr)
 	}
 	if err := session.CompleteLifecycleIntent(storage, removeIntent); err != nil {
@@ -319,7 +319,7 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	if err := session.AdvanceLifecycleIntent(storage, archiveIntent, "archived", ""); err != nil {
 		return fmt.Errorf("advance web archive: %w", err)
 	}
-	if err := inst.Kill(); err != nil {
+	if err := inst.KillAndWait(); err != nil {
 		m.h.instancesMu.Lock()
 		inst.ArchivedAt = previousArchivedAt
 		m.h.instancesMu.Unlock()
@@ -761,7 +761,7 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 	}
 
 	if inst.Exists() {
-		if killErr := inst.Kill(); killErr != nil && inst.Exists() {
+		if killErr := inst.KillAndWait(); killErr != nil && inst.Exists() {
 			return web.WorktreeFinishResult{}, fmt.Errorf("worktree finalized but process teardown failed: %w", killErr)
 		}
 	}

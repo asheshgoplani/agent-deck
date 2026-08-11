@@ -100,14 +100,16 @@ func withBusyRetry(op func() error) error {
 const SchemaVersion = 16
 
 type LifecycleIntent struct {
-	InstanceID string
-	Kind       string
-	Payload    string
-	Phase      string
-	Token      string
-	Generation int64
-	CreatedAt  int64
-	UpdatedAt  int64
+	InstanceID        string
+	Kind              string
+	Payload           string
+	Phase             string
+	Token             string
+	Generation        int64
+	CreatedAt         int64
+	UpdatedAt         int64
+	RecoveryOwner     string
+	RecoveryClaimedAt int64
 }
 
 var ErrLifecycleIntentConflict = errors.New("statedb: incompatible lifecycle intent already active")
@@ -604,6 +606,8 @@ func (s *StateDB) Migrate() error {
 			generation INTEGER NOT NULL DEFAULT 1,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL DEFAULT 0
+			,recovery_owner TEXT NOT NULL DEFAULT ''
+			,recovery_claimed_at INTEGER NOT NULL DEFAULT 0
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create lifecycle_intents: %w", err)
@@ -618,6 +622,8 @@ func (s *StateDB) Migrate() error {
 		"ALTER TABLE lifecycle_intents ADD COLUMN token TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE lifecycle_intents ADD COLUMN generation INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE lifecycle_intents ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE lifecycle_intents ADD COLUMN recovery_owner TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE lifecycle_intents ADD COLUMN recovery_claimed_at INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE instance_tombstones ADD COLUMN generation INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE instance_tombstones ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE instances ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0",
@@ -1391,7 +1397,7 @@ func (s *StateDB) PrepareLifecycleIntent(intent LifecycleIntent) (LifecycleInten
 			FROM lifecycle_intents WHERE instance_id=?`, intent.InstanceID).
 			Scan(&current.InstanceID, &current.Kind, &current.Payload, &current.Phase, &current.Token, &current.Generation, &current.CreatedAt, &current.UpdatedAt)
 		if err == nil {
-			if current.Kind != intent.Kind || current.Payload != intent.Payload {
+			if current.Kind != intent.Kind || current.Payload != intent.Payload || (intent.Generation != 0 && current.Generation != intent.Generation) {
 				return ErrLifecycleIntentConflict
 			}
 			if current.Token == "" {
@@ -1407,7 +1413,11 @@ func (s *StateDB) PrepareLifecycleIntent(intent LifecycleIntent) (LifecycleInten
 			return err
 		}
 		now := time.Now().Unix()
-		prepared = LifecycleIntent{InstanceID: intent.InstanceID, Kind: intent.Kind, Payload: intent.Payload, Phase: "prepared", Token: uuid.NewString(), Generation: time.Now().UnixNano(), CreatedAt: now, UpdatedAt: now}
+		targetGeneration := intent.Generation
+		if targetGeneration == 0 {
+			_ = tx.QueryRow("SELECT COALESCE((SELECT generation FROM instance_tombstones WHERE id = ?), 0)", intent.InstanceID).Scan(&targetGeneration)
+		}
+		prepared = LifecycleIntent{InstanceID: intent.InstanceID, Kind: intent.Kind, Payload: intent.Payload, Phase: "prepared", Token: uuid.NewString(), Generation: targetGeneration, CreatedAt: now, UpdatedAt: now}
 		_, err = tx.Exec(`INSERT INTO lifecycle_intents(instance_id, kind, payload, phase, token, generation, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, prepared.InstanceID, prepared.Kind, prepared.Payload, prepared.Phase, prepared.Token, prepared.Generation, prepared.CreatedAt, prepared.UpdatedAt)
 		if err != nil {
@@ -1431,21 +1441,50 @@ func (s *StateDB) AdvanceLifecycleIntent(instanceID, token, phase, payload strin
 	})
 }
 
+func (s *StateDB) ClaimLifecycleIntent(instanceID, token, owner string) (bool, error) {
+	var claimed bool
+	err := withBusyRetry(func() error {
+		now := time.Now().Unix()
+		result, err := s.db.Exec(`UPDATE lifecycle_intents
+			SET recovery_owner=?, recovery_claimed_at=?, updated_at=?
+			WHERE instance_id=? AND token=?
+			AND (recovery_owner='' OR recovery_owner=? OR recovery_claimed_at<?)`,
+			owner, now, now, instanceID, token, owner, now-30)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		claimed = err == nil && n == 1
+		return err
+	})
+	return claimed, err
+}
+
 func (s *StateDB) CompleteLifecycleIntent(instanceID, token string) error {
 	return withBusyRetry(func() error {
 		result, err := s.db.Exec("DELETE FROM lifecycle_intents WHERE instance_id = ? AND token = ?", instanceID, token)
 		if err != nil {
 			return err
 		}
-		if n, err := result.RowsAffected(); err != nil || n != 1 {
-			return ErrLifecycleIntentOwnership
+		if n, rowsErr := result.RowsAffected(); rowsErr != nil {
+			return rowsErr
+		} else if n != 1 {
+			var currentToken string
+			err := s.db.QueryRow("SELECT token FROM lifecycle_intents WHERE instance_id = ?", instanceID).Scan(&currentToken)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil // same operation was already completed by a competing recovery sweep
+			}
+			if err != nil {
+				return err
+			}
+			return ErrLifecycleIntentOwnership // a newer active operation owns this ID
 		}
 		return nil
 	})
 }
 
 func (s *StateDB) LifecycleIntents() ([]LifecycleIntent, error) {
-	rows, err := s.db.Query("SELECT instance_id, kind, payload, phase, token, generation, created_at, updated_at FROM lifecycle_intents ORDER BY created_at, instance_id")
+	rows, err := s.db.Query("SELECT instance_id, kind, payload, phase, token, generation, created_at, updated_at, recovery_owner, recovery_claimed_at FROM lifecycle_intents ORDER BY created_at, instance_id")
 	if err != nil {
 		return nil, err
 	}
@@ -1453,7 +1492,7 @@ func (s *StateDB) LifecycleIntents() ([]LifecycleIntent, error) {
 	var out []LifecycleIntent
 	for rows.Next() {
 		var intent LifecycleIntent
-		if err := rows.Scan(&intent.InstanceID, &intent.Kind, &intent.Payload, &intent.Phase, &intent.Token, &intent.Generation, &intent.CreatedAt, &intent.UpdatedAt); err != nil {
+		if err := rows.Scan(&intent.InstanceID, &intent.Kind, &intent.Payload, &intent.Phase, &intent.Token, &intent.Generation, &intent.CreatedAt, &intent.UpdatedAt, &intent.RecoveryOwner, &intent.RecoveryClaimedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, intent)
