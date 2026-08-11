@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -270,6 +271,57 @@ func TestRunChildrenFollowStopsWhenAgentOwnerStopsRunning(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("follower did not exit after owner stopped running")
+	}
+}
+
+func TestRunChildrenFollowArchivedChildEmitsOneRemovalThenStaysGone(t *testing.T) {
+	restoreRows := pollChildRows
+	restoreOwner := pollFollowOwnerRunning
+	t.Cleanup(func() {
+		pollChildRows = restoreRows
+		pollFollowOwnerRunning = restoreOwner
+	})
+
+	polls := 0
+	pollChildRows = func(string, string) ([]childRow, error) {
+		polls++
+		switch polls {
+		case 1:
+			return []childRow{{ID: "child", Title: "archived-later", Status: "running", ContextTokens: 120000}}, nil
+		case 2:
+			return []childRow{{ID: "child", Title: "archived-later", Status: "error", Archived: true, ContextTokens: 900000}}, nil
+		default:
+			return []childRow{{ID: "child", Title: "archived-later", Status: "stopped", Archived: true, ContextTokens: 950000}}, nil
+		}
+	}
+	ownerPolls := 0
+	pollFollowOwnerRunning = func(string, string) (bool, error) {
+		ownerPolls++
+		return ownerPolls == 1, nil
+	}
+
+	var stream bytes.Buffer
+	if code := runChildrenFollow("p", "parent", "owner", time.Millisecond, 0, false, &stream); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	var events []followEvent
+	for _, line := range bytes.Split(bytes.TrimSpace(stream.Bytes()), []byte{'\n'}) {
+		var event followEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatalf("decode %q: %v", line, err)
+		}
+		events = append(events, event)
+	}
+	if len(events) != 2 || events[0].Event != "snapshot" || events[1].Event != "removed" {
+		t.Fatalf("events = %+v, want one snapshot then one removal", events)
+	}
+	if events[1].ID != "child" || events[1].Title != "archived-later" {
+		t.Fatalf("removal = %+v, want archived child identity", events[1])
+	}
+	for _, event := range events[1:] {
+		if event.Event == "status" || event.ContextTokens != 0 {
+			t.Fatalf("archived child leaked status/context after removal: %+v", event)
+		}
 	}
 }
 

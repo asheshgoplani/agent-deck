@@ -4797,12 +4797,17 @@ func isValidSessionColor(v string) bool {
 	return session.IsValidSessionColor(v)
 }
 
-// childrenOf returns the direct sub-sessions of parentID, preserving the input
-// order. Pure helper so the filtering is unit-testable without a live registry.
+// childrenOf returns the active direct sub-sessions of parentID, preserving
+// the input order. Archived children are absent from ordinary fleet snapshots
+// so conductor context and polling do not keep supervising retired work.
 func childrenOf(parentID string, instances []*session.Instance) []*session.Instance {
+	return childrenOfWithArchived(parentID, instances, false)
+}
+
+func childrenOfWithArchived(parentID string, instances []*session.Instance, includeArchived bool) []*session.Instance {
 	var out []*session.Instance
 	for _, inst := range instances {
-		if inst != nil && inst.ParentSessionID == parentID {
+		if inst != nil && inst.ParentSessionID == parentID && (includeArchived || !inst.IsArchived()) {
 			out = append(out, inst)
 		}
 	}
@@ -4823,6 +4828,7 @@ func handleSessionChildren(profile string, args []string) {
 	interval := durationFlag(fs, "interval", 2*time.Second, "Poll interval for --follow")
 	heartbeat := durationFlag(fs, "heartbeat", 60*time.Second, "Heartbeat event interval for --follow (0 disables)")
 	untilDone := fs.Bool("until-done", false, "With --follow: exit 0 once every child is terminal (done sentinel, error, or stopped)")
+	includeArchived := fs.Bool("include-archived", false, "Include archived children for inspection")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session children [id|title] [options]")
 		fmt.Println()
@@ -4892,10 +4898,10 @@ func handleSessionChildren(profile string, args []string) {
 		case "codex", "claude":
 			ownerID = strings.TrimSpace(os.Getenv("AGENTDECK_INSTANCE_ID"))
 		}
-		os.Exit(runChildrenFollow(profile, parent.ID, ownerID, *interval, *heartbeat, *untilDone, os.Stdout))
+		os.Exit(runChildrenFollowWithArchived(profile, parent.ID, ownerID, *interval, *heartbeat, *untilDone, *includeArchived, os.Stdout))
 	}
 
-	kids := childrenOf(parent.ID, instances)
+	kids := childrenOfWithArchived(parent.ID, instances, *includeArchived)
 	session.RefreshInstancesForCLIStatus(kids)
 
 	rows := buildChildRows(kids, storage.GetDB())
@@ -4922,7 +4928,11 @@ func handleSessionChildren(profile string, args []string) {
 		if row.ContextTokens > 0 {
 			ctx = fmt.Sprintf("  ctx=%dk", row.ContextTokens/1000)
 		}
-		fmt.Fprintf(&human, "  %s  %-20s  %-8s  done=%s%s  %s\n", row.ID, row.Title, row.Status, done, ctx, row.DoneSummary)
+		archived := ""
+		if row.Archived {
+			archived = "  archived"
+		}
+		fmt.Fprintf(&human, "  %s  %-20s  %-8s  done=%s%s%s  %s\n", row.ID, row.Title, row.Status, done, ctx, archived, row.DoneSummary)
 	}
 	if len(kids) == 0 {
 		human.WriteString("  (no sub-sessions)\n")

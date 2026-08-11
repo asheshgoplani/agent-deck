@@ -1177,6 +1177,16 @@ func (s *Storage) LoadActiveWithGroups() ([]*Instance, []*GroupData, error) {
 // monitors use this narrow path so a large unrelated fleet is not rebuilt on
 // every poll.
 func (s *Storage) LoadChildInstances(parentID string) ([]*Instance, bool, error) {
+	return s.loadChildInstances(parentID, false)
+}
+
+// LoadChildInstancesIncludingArchived loads every direct child for explicit
+// inspection. Ordinary fleet polling must use LoadChildInstances.
+func (s *Storage) LoadChildInstancesIncludingArchived(parentID string) ([]*Instance, bool, error) {
+	return s.loadChildInstances(parentID, true)
+}
+
+func (s *Storage) loadChildInstances(parentID string, includeArchived bool) ([]*Instance, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1190,7 +1200,12 @@ func (s *Storage) LoadChildInstances(parentID string) ([]*Instance, bool, error)
 	if parent == nil {
 		return nil, false, nil
 	}
-	rows, err := s.db.LoadInstanceChildren(parentID)
+	var rows []*statedb.InstanceRow
+	if includeArchived {
+		rows, err = s.db.LoadInstanceChildrenIncludingArchived(parentID)
+	} else {
+		rows, err = s.db.LoadInstanceChildren(parentID)
+	}
 	if err != nil {
 		return nil, true, fmt.Errorf("load child instances: %w", err)
 	}

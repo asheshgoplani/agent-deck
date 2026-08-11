@@ -111,6 +111,7 @@ func TestLoadChildInstancesLoadsOnlyDirectChildren(t *testing.T) {
 	instances := []*Instance{
 		{ID: "parent", Title: "parent", ProjectPath: "/tmp/parent", GroupPath: "g", Tool: "claude", Status: StatusIdle, CreatedAt: time.Now()},
 		{ID: "child", Title: "child", ProjectPath: "/tmp/child", GroupPath: "g", ParentSessionID: "parent", Tool: "claude", Status: StatusIdle, CreatedAt: time.Now()},
+		{ID: "archived-child", Title: "archived-child", ProjectPath: "/tmp/archived-child", GroupPath: "g", ParentSessionID: "parent", Tool: "claude", Status: StatusError, CreatedAt: time.Now(), ArchivedAt: time.Now()},
 		{ID: "other", Title: "other", ProjectPath: "/tmp/other", GroupPath: "g", Tool: "claude", Status: StatusIdle, CreatedAt: time.Now()},
 	}
 	if err := s.SaveWithGroups(instances, nil); err != nil {
