@@ -12,6 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -45,12 +48,26 @@ func TestArchiveEventBoundarySubprocessHelper(t *testing.T) {
 		}
 	case "archiver":
 		db := openArchiveBoundaryHelperDB(t)
-		db.archiveEventBoundaryAttempt = func() {
-			if _, err := fmt.Fprintln(os.Stdout, "boundary-attempt"); err != nil {
-				panic(fmt.Sprintf("signal boundary attempt: %v", err))
+		done := make(chan error, 1)
+		go func() { done <- db.SetArchived("child", time.Now().UTC()) }()
+		for {
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("archive child: %v", err)
+				}
+				t.Fatal("archive completed before blocking on the boundary")
+			default:
 			}
+			if archiveBoundaryFlockIsBlocked() {
+				break
+			}
+			runtime.Gosched()
 		}
-		if err := db.SetArchived("child", time.Now().UTC()); err != nil {
+		if _, err := fmt.Fprintln(os.Stdout, "boundary-blocked"); err != nil {
+			t.Fatalf("signal blocked boundary: %v", err)
+		}
+		if err := <-done; err != nil {
 			t.Fatalf("archive child: %v", err)
 		}
 		if _, err := fmt.Fprintln(os.Stdout, "archive-complete"); err != nil {
@@ -59,6 +76,13 @@ func TestArchiveEventBoundarySubprocessHelper(t *testing.T) {
 	default:
 		t.Fatalf("unknown subprocess helper mode %q", mode)
 	}
+}
+
+func archiveBoundaryFlockIsBlocked() bool {
+	stack := make([]byte, 64<<10)
+	n := runtime.Stack(stack, true)
+	trace := string(stack[:n])
+	return strings.Contains(trace, "syscall.Flock") && strings.Contains(trace, "WithArchiveEventBoundary")
 }
 
 func archiveBoundaryHelperInvocation() (mode, token string, ok bool) {
@@ -88,43 +112,79 @@ type archiveBoundaryProcess struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
-	stderr *bytes.Buffer
+	stderr *synchronizedBuffer
+	cancel context.CancelFunc
 }
 
-func startArchiveBoundaryProcess(t *testing.T, ctx context.Context, mode, dbPath string) *archiveBoundaryProcess {
+type synchronizedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+func startArchiveBoundaryProcess(t *testing.T, mode, dbPath string, needsStdin bool) *archiveBoundaryProcess {
 	t.Helper()
 	tokenBytes := make([]byte, 16)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		t.Fatalf("generate %s helper token: %v", mode, err)
 	}
 	token := hex.EncodeToString(tokenBytes)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestArchiveEventBoundarySubprocessHelper$", "--", archiveBoundaryHelperArg, mode, token)
 	cmd.Env = []string{archiveBoundaryHelperDBEnv + "=" + dbPath, archiveBoundaryHelperTokenEnv + "=" + token}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("%s stdin: %v", mode, err)
+	var stdin io.WriteCloser
+	if needsStdin {
+		var err error
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			cancel()
+			t.Fatalf("%s stdin: %v", mode, err)
+		}
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		cancel()
 		t.Fatalf("%s stdout: %v", mode, err)
 	}
-	stderr := &bytes.Buffer{}
+	stderr := &synchronizedBuffer{}
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		_ = stdout.Close()
+		cancel()
 		t.Fatalf("start %s: %v", mode, err)
 	}
-	p := &archiveBoundaryProcess{cmd: cmd, stdin: stdin, stdout: bufio.NewReader(stdout), stderr: stderr}
+	p := &archiveBoundaryProcess{cmd: cmd, stdin: stdin, stdout: bufio.NewReader(stdout), stderr: stderr, cancel: cancel}
 	t.Cleanup(func() {
-		_ = stdin.Close()
+		if stdin != nil {
+			_ = stdin.Close()
+		}
 		if cmd.ProcessState == nil {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 		}
+		cancel()
 	})
 	return p
 }
 
-func readArchiveBoundaryLine(t *testing.T, ctx context.Context, p *archiveBoundaryProcess) string {
+func readArchiveBoundaryLine(t *testing.T, p *archiveBoundaryProcess) string {
 	t.Helper()
 	type result struct {
 		line string
@@ -141,9 +201,25 @@ func readArchiveBoundaryLine(t *testing.T, ctx context.Context, p *archiveBounda
 			t.Fatalf("read subprocess output: %v; stderr=%s", result.err, p.stderr.String())
 		}
 		return result.line
-	case <-ctx.Done():
-		t.Fatalf("subprocess output deadline: %v; stderr=%s", ctx.Err(), p.stderr.String())
+	case <-time.After(5 * time.Second):
+		t.Fatalf("subprocess output deadline; stderr=%s", p.stderr.String())
 		return ""
+	}
+}
+
+func waitArchiveBoundaryProcess(t *testing.T, p *archiveBoundaryProcess) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- p.cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("wait for subprocess: %v; stderr=%s", err, p.stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		p.cancel()
+		<-done
+		t.Fatalf("subprocess exit deadline; stderr=%s", p.stderr.String())
 	}
 }
 
@@ -161,10 +237,8 @@ func TestSetArchivedSerializesAcrossProcesses(t *testing.T) {
 		t.Fatalf("save child: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	holder := startArchiveBoundaryProcess(t, ctx, "holder", dbPath)
-	if got := readArchiveBoundaryLine(t, ctx, holder); got != "boundary-held\n" {
+	holder := startArchiveBoundaryProcess(t, "holder", dbPath, true)
+	if got := readArchiveBoundaryLine(t, holder); got != "boundary-held\n" {
 		t.Fatalf("holder readiness = %q", got)
 	}
 
@@ -180,9 +254,9 @@ func TestSetArchivedSerializesAcrossProcesses(t *testing.T) {
 		t.Fatalf("inspect boundary lock state: %v", err)
 	}
 
-	archiver := startArchiveBoundaryProcess(t, ctx, "archiver", dbPath)
-	if got := readArchiveBoundaryLine(t, ctx, archiver); got != "boundary-attempt\n" {
-		t.Fatalf("archiver boundary attempt = %q", got)
+	archiver := startArchiveBoundaryProcess(t, "archiver", dbPath, false)
+	if got := readArchiveBoundaryLine(t, archiver); got != "boundary-blocked\n" {
+		t.Fatalf("archiver blocked signal = %q; stderr=%s", got, archiver.stderr.String())
 	}
 
 	row, err := db.LoadInstanceByID("child")
@@ -196,15 +270,11 @@ func TestSetArchivedSerializesAcrossProcesses(t *testing.T) {
 	if _, err := holder.stdin.Write([]byte{1}); err != nil {
 		t.Fatalf("release holder: %v", err)
 	}
-	if err := holder.cmd.Wait(); err != nil {
-		t.Fatalf("wait for holder: %v; stderr=%s", err, holder.stderr.String())
-	}
-	if got := readArchiveBoundaryLine(t, ctx, archiver); got != "archive-complete\n" {
+	waitArchiveBoundaryProcess(t, holder)
+	if got := readArchiveBoundaryLine(t, archiver); got != "archive-complete\n" {
 		t.Fatalf("archiver completion = %q", got)
 	}
-	if err := archiver.cmd.Wait(); err != nil {
-		t.Fatalf("wait for archiver: %v; stderr=%s", err, archiver.stderr.String())
-	}
+	waitArchiveBoundaryProcess(t, archiver)
 	row, err = db.LoadInstanceByID("child")
 	if err != nil || row == nil || row.ArchivedAt.IsZero() {
 		t.Fatalf("child was not archived after release: row=%v err=%v", row, err)
