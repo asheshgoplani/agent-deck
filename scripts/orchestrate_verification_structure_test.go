@@ -17,7 +17,6 @@ func TestOrchestrationSkillDeployedVerificationStructure(t *testing.T) {
 		t.Fatalf("read orchestration skill: %v", err)
 	}
 	skill := string(skillBytes)
-	normalizedSkill := strings.Join(strings.Fields(skill), " ")
 
 	entrance := strings.Index(skill, "- A **deployed-system verification** request")
 	verificationFlow := strings.Index(skill, "## Deployed-system verification")
@@ -27,6 +26,12 @@ func TestOrchestrationSkillDeployedVerificationStructure(t *testing.T) {
 	}
 	if !(entrance < verificationFlow && verificationFlow < deliveryPipeline) {
 		t.Fatalf("verification entrance and flow must precede delivery: entrance=%d verification=%d delivery=%d", entrance, verificationFlow, deliveryPipeline)
+	}
+	verificationSection := skill[verificationFlow:deliveryPipeline]
+	normalizedVerificationSection := strings.Join(strings.Fields(verificationSection), " ")
+	prerequisitesSection := strings.Join(strings.Fields(skill[:verificationFlow]), " ")
+	if !strings.Contains(prerequisitesSection, "verification-only work does not") {
+		t.Error("verification-only entrance no longer documents that GitHub authentication is unnecessary")
 	}
 
 	entrances := []string{
@@ -63,7 +68,6 @@ func TestOrchestrationSkillDeployedVerificationStructure(t *testing.T) {
 	}
 
 	requiredContracts := []string{
-		"verification-only work does not",
 		"with **no assumed edit**: do not enter implementation, pull-request, CI, or deployment stages unless the outcome and authorized scope explicitly permit delivery",
 		"Before reading even deciding fields, validate each artifact's expected schema, provenance, producer completion, and freshness against recon",
 		"Read only the deciding fields where possible",
@@ -76,7 +80,7 @@ func TestOrchestrationSkillDeployedVerificationStructure(t *testing.T) {
 		"verification-only `pass` and `inconclusive` outcomes stop before those stages",
 	}
 	for _, contract := range requiredContracts {
-		if !strings.Contains(normalizedSkill, contract) {
+		if !strings.Contains(normalizedVerificationSection, contract) {
 			t.Errorf("skill missing deployed-verification contract %q", contract)
 		}
 	}
