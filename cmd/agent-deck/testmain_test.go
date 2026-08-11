@@ -31,6 +31,7 @@ func runTestMain(m *testing.M) int {
 	// resolving to the wrong sandbox). The inherited env is already off the
 	// real home, so data-safety is preserved by NOT re-isolating.
 	isHelperProcess := os.Getenv("AGENT_DECK_TASK6_HELPER_PROCESS") != ""
+	isQueueHandler := os.Getenv("AGENT_DECK_QUEUE_HANDLER") == "1"
 
 	if !isHelperProcess {
 		// Isolate HOME+XDG so agent-deck path resolution lands in a temp dir,
@@ -52,7 +53,10 @@ func runTestMain(m *testing.M) int {
 	// sessions. 2026-04-17 incident: go test ./... killed every session in
 	// the personal profile when tests ran on a live host.
 	// See internal/testutil/tmuxenv.go for the full postmortem.
-	cleanupTmux := testutil.IsolateTmuxSocket()
+	cleanupTmux := func() {}
+	if !isQueueHandler {
+		cleanupTmux = testutil.IsolateTmuxSocket()
+	}
 	defer cleanupTmux()
 
 	// Force _test profile for all tests in this package

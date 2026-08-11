@@ -2671,6 +2671,26 @@ func fetchHookDrivenStatus(profile, sessionRef string) (string, error) {
 	if inst == nil {
 		return "", fmt.Errorf("%s", errMsg)
 	}
+	return hookDrivenStatus(inst), nil
+}
+
+// fetchHookDrivenInstanceStatus reloads a previously resolved target by its
+// immutable ID. Queue routing uses the returned instance for eligibility,
+// status, and destination so a concurrent rename or lifecycle update cannot
+// mix snapshots or redirect a title-based send to another session.
+func fetchHookDrivenInstanceStatus(profile, sessionID string) (*session.Instance, string, error) {
+	_, instances, _, err := loadSessionData(profile)
+	if err != nil {
+		return nil, "", err
+	}
+	inst, errMsg, _ := ResolveSession(sessionID, instances)
+	if inst == nil {
+		return nil, "", fmt.Errorf("%s", errMsg)
+	}
+	return inst, hookDrivenStatus(inst), nil
+}
+
+func hookDrivenStatus(inst *session.Instance) string {
 	// Cold-load the on-disk hook file into the instance — a fresh CLI process
 	// has no StatusFileWatcher, so the target's newest hook edge only reaches us
 	// by re-reading it from disk each poll.
@@ -2682,18 +2702,10 @@ func fetchHookDrivenStatus(profile, sessionRef string) (string, error) {
 	// a pane-diff heuristic. Fall back to the full list --json pipeline when no
 	// fresh hook signal exists (non-hook tools, or a stale/absent hook file).
 	if hs, fresh := inst.GetHookStatus(); fresh && hs != "" {
-		return hs, nil
+		return hs
 	}
 	_ = inst.UpdateStatus()
-	return StatusString(inst.Status), nil
-}
-
-func enqueueSessionMessageIfBusy(enabled bool, status, sessionID, message string, enqueue func(string, string) (int, error)) (bool, int, error) {
-	if !enabled || !send.StatusIsBusy(status) {
-		return false, 0, nil
-	}
-	depth, err := enqueue(sessionID, message)
-	return err == nil, depth, err
+	return StatusString(inst.Status)
 }
 
 // handleSessionSend sends a message to a running session
@@ -2733,6 +2745,7 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send my-project --message-file answer.md   # long reply from file")
 		fmt.Println("  git diff | agent-deck session send my-project --message-file -   # message from stdin")
 		fmt.Println("  agent-deck session send parent \"child done\" --defer-if-busy --defer-timeout 30m")
+		fmt.Println("  agent-deck session send parent \"follow-up\" --queue-if-busy   # queue only while parent is working")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -2797,6 +2810,14 @@ func handleSessionSend(profile string, args []string) {
 	}
 
 	if *queueIfBusy {
+		// Re-read by immutable ID and use this one snapshot for every queue
+		// decision. The title used at initial resolution may change concurrently.
+		queueInst, status, statusErr := fetchHookDrivenInstanceStatus(profile, inst.ID)
+		if statusErr != nil {
+			out.Error(fmt.Sprintf("failed to refresh session '%s' for queueing: %v", inst.Title, statusErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		inst = queueInst
 		switch {
 		case inst.IsArchived():
 			out.Error(fmt.Sprintf("session '%s' is archived", inst.Title), ErrCodeInvalidOperation)
@@ -2812,23 +2833,14 @@ func handleSessionSend(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		status, statusErr := fetchHookDrivenStatus(profile, sessionRef)
-		if statusErr != nil {
-			out.Error(fmt.Sprintf("failed to determine whether session '%s' is busy: %v", inst.Title, statusErr), ErrCodeDeliveryFailed)
-			os.Exit(1)
-		}
-		queued, depth, enqueueErr := enqueueSessionMessageIfBusy(*queueIfBusy, status, inst.ID, message, session.EnqueueRuntimeMessage)
 		if send.StatusIsBusy(status) {
+			depth, enqueueErr := session.EnqueueRuntimeMessage(inst.ID, message)
 			if enqueueErr != nil {
 				if errors.Is(enqueueErr, session.ErrRuntimeQueueFull) {
 					out.Error(fmt.Sprintf("runtime message queue for '%s' is full", inst.Title), ErrCodeQueueFull)
 				} else {
 					out.Error(fmt.Sprintf("failed to queue message for '%s': %v", inst.Title, enqueueErr), ErrCodeDeliveryFailed)
 				}
-				os.Exit(1)
-			}
-			if !queued {
-				out.Error(fmt.Sprintf("failed to queue message for '%s'", inst.Title), ErrCodeDeliveryFailed)
 				os.Exit(1)
 			}
 			out.Success(fmt.Sprintf("Queued message for '%s'", inst.Title), map[string]interface{}{
