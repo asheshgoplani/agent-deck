@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -111,23 +112,40 @@ func TestSessionSendQueueIfBusyQueueFullCode(t *testing.T) {
 }
 
 func TestSessionSendQueueIfBusyIdleUsesSenderWithoutQueue(t *testing.T) {
-	out, err := runQueueIfBusyHelper(t, "__idle__", "idle delivery", "--queue-if-busy", "--timeout", "6s", "--json")
+	out, err := runQueueIfBusyHelper(t, "__idle__", "idle ping", "--queue-if-busy", "--timeout", "6s", "--json")
 	if err != nil {
 		t.Fatalf("idle queue-if-busy send failed: %v\n%s", err, out)
 	}
-	if strings.Contains(out, `"queued": true`) || !strings.Contains(out, `"delivery": "typed"`) || !strings.Contains(out, "IDLE_SEND_OK") {
+	receipt := decodeSendReceipt(t, out)
+	if !receipt.Success || receipt.Delivery != deliveryUnverified || receipt.Queued || !strings.Contains(out, "IDLE_SEND_OK") {
 		t.Fatalf("idle target must use sender and leave queue empty; output:\n%s", out)
 	}
 }
 
 func TestSessionSendQueueIfBusyDefaultSendUnchanged(t *testing.T) {
-	out, err := runQueueIfBusyHelper(t, "__idle__", "default delivery", "--no-wait", "--timeout", "6s", "--json")
+	out, err := runQueueIfBusyHelper(t, "__idle__", "plain ping", "--timeout", "6s", "--json")
 	if err != nil {
 		t.Fatalf("default send failed: %v\n%s", err, out)
 	}
-	if strings.Contains(out, `"queued": true`) || !strings.Contains(out, `"delivery": "typed"`) || !strings.Contains(out, "IDLE_SEND_OK") {
+	receipt := decodeSendReceipt(t, out)
+	if !receipt.Success || receipt.Delivery != deliveryUnverified || receipt.Queued || !strings.Contains(out, "IDLE_SEND_OK") {
 		t.Fatalf("default send behavior changed; output:\n%s", out)
 	}
+}
+
+type sendReceipt struct {
+	Success  bool   `json:"success"`
+	Delivery string `json:"delivery"`
+	Queued   bool   `json:"queued"`
+}
+
+func decodeSendReceipt(t *testing.T, out string) sendReceipt {
+	t.Helper()
+	var receipt sendReceipt
+	if err := json.NewDecoder(strings.NewReader(out)).Decode(&receipt); err != nil {
+		t.Fatalf("decode send receipt: %v; output:\n%s", err, out)
+	}
+	return receipt
 }
 
 func TestSessionSendQueueIfBusyHelper(t *testing.T) {
@@ -149,21 +167,32 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 		inst := session.NewInstance("queue-target", project)
 		fakeTUI := fakeClaudeWithDraft
 		if mode == "__idle__" {
-			fakeTUI = `bash -c '
-				printf "\033[2J\033[H\033[999B\r› "
-				while :; do
-					pane="$(tmux capture-pane -p -t "$TMUX_PANE")"
-					case "$pane" in
-						*"idle delivery"*) printf "\nGOT: idle delivery\n› "; break ;;
-						*"default delivery"*) printf "\nGOT: default delivery\n› "; break ;;
-					esac
-					sleep 0.05
-				done
-				sleep 15
-			'`
+			fakePath := filepath.Join(project, "fake-agent.sh")
+			fakeScript := `#!/usr/bin/env bash
+trap '' INT
+stty raw -echo
+printf '\033[2J\033[H\033[999B\r› '
+head -c ` + strconv.Itoa(len(args[1])+1) + ` > "$0.input"
+stty sane
+line="$(tr -d '\r' < "$0.input")"
+printf '\r\nThinking… ctrl+c to interrupt'
+sleep 2
+printf '\r\nGOT: %s\r\n› ' "$line"
+sleep 60
+`
+			if err := os.WriteFile(fakePath, []byte(fakeScript), 0o755); err != nil {
+				t.Fatalf("write fake agent: %v", err)
+			}
 		}
 		if mode == "__busy__" || mode == "__full__" || mode == "__idle__" {
-			if err := inst.GetTmuxSession().Start(fakeTUI); err != nil {
+			if mode == "__idle__" {
+				fakePath := filepath.Join(project, "fake-agent.sh")
+				cmd := exec.Command("tmux", "new-session", "-d", "-s", inst.GetTmuxSession().Name,
+					"-c", project, "-x", "80", "-y", "24", "bash", fakePath)
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("start raw fake target: %v (%s)", err, output)
+				}
+			} else if err := inst.GetTmuxSession().Start(fakeTUI); err != nil {
 				t.Fatalf("start target: %v", err)
 			}
 			if err := inst.GetTmuxSession().Resize(80, 24); err != nil {
@@ -232,10 +261,25 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 		)
 		commandOutput, commandErr := cmd.CombinedOutput()
 		_, _ = os.Stdout.Write(commandOutput)
-		if commandErr != nil && mode != "__idle__" {
-			t.Fatalf("session send command failed: %v", commandErr)
+		if commandErr != nil {
+			pane, _ := inst.GetTmuxSession().CapturePaneFresh()
+			t.Fatalf("session send command failed: %v\npane:\n%s", commandErr, pane)
 		}
 		if mode == "__idle__" {
+			wantInput := args[1] + "\r"
+			inputPath := filepath.Join(project, "fake-agent.sh.input")
+			deadline := time.Now().Add(3 * time.Second)
+			var input []byte
+			for time.Now().Before(deadline) {
+				input, _ = os.ReadFile(inputPath)
+				if len(input) >= len(wantInput) {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if string(input) != wantInput {
+				t.Fatalf("sender bytes = %q, want exact body plus carriage return %q", input, wantInput)
+			}
 			if session.RuntimeQueueHasPending(inst.ID) {
 				t.Fatal("idle send unexpectedly queued")
 			}
