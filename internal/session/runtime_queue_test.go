@@ -2,10 +2,13 @@ package session
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -229,26 +232,37 @@ func TestRuntimeQueueDiscard(t *testing.T) {
 	if _, err := EnqueueRuntimeMessage("gone", "active"); err != nil {
 		t.Fatal(err)
 	}
-	inflight := RuntimeQueuePathFor("gone") + ".inflight"
-	if err := os.WriteFile(inflight, []byte("staged"), 0o644); err != nil {
-		t.Fatal(err)
+	inflight := runtimeQueueInflightPathFor("gone")
+	completion := runtimeQueueCompletionPathFor("gone")
+	for path, content := range map[string][]byte{
+		inflight:   []byte("staged"),
+		completion: []byte("completed"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	directorySyncs := 0
-	restore := SetFsyncHookForTest(func(*os.File) error {
-		directorySyncs++
+	syncedDirs := make(map[string]int)
+	restore := SetFsyncHookForTest(func(f *os.File) error {
+		syncedDirs[f.Name()]++
 		return nil
 	})
 	defer restore()
 	if err := DiscardRuntimeQueue("gone"); err != nil {
 		t.Fatal(err)
 	}
-	if directorySyncs != 1 {
-		t.Fatalf("discard directory syncs = %d, want 1", directorySyncs)
+	for _, dir := range []string{filepath.Dir(RuntimeQueuePathFor("gone")), filepath.Dir(inflight), filepath.Dir(completion)} {
+		if syncedDirs[dir] != 1 {
+			t.Fatalf("discard sync count for %s = %d, want 1; all syncs: %#v", dir, syncedDirs[dir], syncedDirs)
+		}
 	}
 	if RuntimeQueueHasPending("gone") {
 		t.Fatal("discarded queue still pending")
 	}
-	for _, path := range []string{RuntimeQueuePathFor("gone"), inflight} {
+	for _, path := range []string{RuntimeQueuePathFor("gone"), inflight, completion} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("discard left %s: %v", path, err)
 		}
@@ -283,6 +297,608 @@ func TestRuntimeQueueMalformed(t *testing.T) {
 			after, _ := os.ReadFile(path)
 			if string(after) != string(before) {
 				t.Fatal("malformed queue was mutated")
+			}
+		})
+	}
+}
+
+func TestRuntimeQueueStageLeavesActiveAndFreezesFIFO(t *testing.T) {
+	isolateRuntimeQueue(t)
+	for _, msg := range []string{"first", "second"} {
+		if _, err := EnqueueRuntimeMessage("stage", msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	active := RuntimeQueuePathFor("stage")
+	before, err := os.ReadFile(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue("stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Token == "" || len(batch.Messages) != 2 || batch.Messages[0].Message != "first" || batch.Messages[1].Message != "second" {
+		t.Fatalf("staged batch = %#v", batch)
+	}
+	after, _ := os.ReadFile(active)
+	if string(after) != string(before) {
+		t.Fatal("stage changed active queue")
+	}
+	if _, err := EnqueueRuntimeMessage("stage", "later"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := StageRuntimeQueue("stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Token != batch.Token || len(again.Messages) != 2 || again.Messages[0].ID != batch.Messages[0].ID || again.Messages[1].ID != batch.Messages[1].ID {
+		t.Fatalf("restaged batch = %#v, want frozen %#v", again, batch)
+	}
+}
+
+func TestRuntimeQueueStageEmptyQueueReturnsZeroBatchWithoutWAL(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "empty-stage"
+	batch, err := StageRuntimeQueue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Token != "" || len(batch.Messages) != 0 {
+		t.Fatalf("empty stage batch = %#v", batch)
+	}
+	if _, err := os.Stat(runtimeQueueInflightPathFor(id)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty stage created WAL: %v", err)
+	}
+}
+
+func TestRuntimeQueueStagePersistenceFailureLeavesActiveAndWALUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		inject func(t *testing.T, wal string)
+	}{
+		{
+			name: "write failure",
+			inject: func(t *testing.T, wal string) {
+				previous := runtimeQueuePersist
+				runtimeQueuePersist = func(path string, data []byte, perm os.FileMode) error {
+					if path == wal {
+						return errors.New("injected WAL write failure")
+					}
+					return previous(path, data, perm)
+				}
+				t.Cleanup(func() { runtimeQueuePersist = previous })
+			},
+		},
+		{
+			name: "fsync failure",
+			inject: func(t *testing.T, _ string) {
+				restore := SetFsyncHookForTest(func(*os.File) error {
+					return errors.New("injected WAL fsync failure")
+				})
+				t.Cleanup(restore)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateRuntimeQueue(t)
+			const id = "stage-fail"
+			if _, err := EnqueueRuntimeMessage(id, "queued"); err != nil {
+				t.Fatal(err)
+			}
+			active, wal := RuntimeQueuePathFor(id), runtimeQueueInflightPathFor(id)
+			before, err := os.ReadFile(active)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.inject(t, wal)
+			if batch, err := StageRuntimeQueue(id); err == nil {
+				t.Fatalf("stage succeeded without durable WAL: %#v", batch)
+			}
+			after, err := os.ReadFile(active)
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("active queue changed after failed stage: %v", err)
+			}
+			if _, err := os.Stat(wal); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed stage left usable WAL: %v", err)
+			}
+		})
+	}
+}
+
+func TestRuntimeQueueCrashRedeliversSameBatch(t *testing.T) {
+	if os.Getenv("AGENT_DECK_RUNTIME_STAGE_HELPER") == "1" {
+		t.Setenv("XDG_DATA_HOME", os.Getenv("AGENT_DECK_RUNTIME_STAGE_DATA_HOME"))
+		batch, err := StageRuntimeQueue("crash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(os.Getenv("AGENT_DECK_RUNTIME_STAGE_DATA_HOME"), "batch-token"), []byte(batch.Token), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	isolateRuntimeQueue(t)
+	if _, err := EnqueueRuntimeMessage("crash", "survive"); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeQueueCrashRedeliversSameBatch$")
+	cmd.Env = append(os.Environ(), "AGENT_DECK_RUNTIME_STAGE_HELPER=1", "AGENT_DECK_RUNTIME_STAGE_DATA_HOME="+os.Getenv("XDG_DATA_HOME"))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("stage helper: %v\n%s", err, output)
+	}
+	wantToken, err := os.ReadFile(filepath.Join(os.Getenv("XDG_DATA_HOME"), "batch-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue("crash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Token != string(wantToken) || len(batch.Messages) != 1 || batch.Messages[0].Message != "survive" {
+		t.Fatalf("recovered batch = %#v, token %q", batch, wantToken)
+	}
+}
+
+func TestRuntimeQueueAcknowledgeValidatesAndRemovesOnlyPrefix(t *testing.T) {
+	isolateRuntimeQueue(t)
+	for _, msg := range []string{"one", "two"} {
+		if _, err := EnqueueRuntimeMessage("ack", msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batch, err := StageRuntimeQueue("ack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnqueueRuntimeMessage("ack", "three"); err != nil {
+		t.Fatal(err)
+	}
+	active, wal := RuntimeQueuePathFor("ack"), runtimeQueueInflightPathFor("ack")
+	beforeActive, _ := os.ReadFile(active)
+	beforeWAL, _ := os.ReadFile(wal)
+	if err := AcknowledgeRuntimeQueue("ack", "wrong"); err == nil {
+		t.Fatal("mismatched token succeeded")
+	}
+	afterActive, _ := os.ReadFile(active)
+	afterWAL, _ := os.ReadFile(wal)
+	if string(afterActive) != string(beforeActive) || string(afterWAL) != string(beforeWAL) {
+		t.Fatal("failed acknowledgment changed durable files")
+	}
+	syncedDirs := make(map[string]int)
+	restoreFsync := SetFsyncHookForTest(func(f *os.File) error {
+		syncedDirs[f.Name()]++
+		return nil
+	})
+	defer restoreFsync()
+	if err := AcknowledgeRuntimeQueue("ack", batch.Token); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{filepath.Dir(active), filepath.Dir(runtimeQueueCompletionPathFor("ack")), filepath.Dir(wal)} {
+		if syncedDirs[dir] != 1 {
+			t.Fatalf("acknowledgment directory syncs for %s = %d, want 1; all syncs: %#v", dir, syncedDirs[dir], syncedDirs)
+		}
+	}
+	remaining, err := PeekRuntimeQueue("ack")
+	if err != nil || len(remaining) != 1 || remaining[0].Message != "three" {
+		t.Fatalf("remaining = %#v, %v", remaining, err)
+	}
+	if _, err := os.Stat(wal); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("WAL remains: %v", err)
+	}
+	if err := AcknowledgeRuntimeQueue("ack", batch.Token); err != nil {
+		t.Fatalf("repeated ack: %v", err)
+	}
+	if err := AcknowledgeRuntimeQueue("ack", "unknown"); err == nil {
+		t.Fatal("unknown completed token succeeded")
+	}
+}
+
+func TestRuntimeQueueAcknowledgeRejectsChangedPrefix(t *testing.T) {
+	isolateRuntimeQueue(t)
+	if _, err := EnqueueRuntimeMessage("prefix", "original"); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue("prefix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := RuntimeQueuePathFor("prefix")
+	records, _, err := readRuntimeQueueLocked(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records[0].ID = "replacement"
+	line, _ := jsonMarshalRuntimeMessage(records[0])
+	if err := os.WriteFile(path, line, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wal := runtimeQueueInflightPathFor("prefix")
+	beforeWAL, _ := os.ReadFile(wal)
+	if err := AcknowledgeRuntimeQueue("prefix", batch.Token); err == nil {
+		t.Fatal("changed prefix acknowledged")
+	}
+	afterWAL, _ := os.ReadFile(wal)
+	if string(afterWAL) != string(beforeWAL) {
+		t.Fatal("prefix failure changed WAL")
+	}
+}
+
+func TestRuntimeQueueStageMalformedWALIsRetained(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content func(messageID string) []byte
+		wantErr string
+	}{
+		{name: "invalid JSON", content: func(string) []byte { return []byte("not-json\n") }, wantErr: "invalid character"},
+		{name: "empty token", content: func(id string) []byte { return []byte(fmt.Sprintf("{\"token\":\"\",\"message_ids\":[%q]}\n", id)) }, wantErr: "invalid token or message IDs"},
+		{name: "missing IDs", content: func(string) []byte { return []byte("{\"token\":\"batch\"}\n") }, wantErr: "invalid token or message IDs"},
+		{name: "empty IDs", content: func(string) []byte { return []byte("{\"token\":\"batch\",\"message_ids\":[]}\n") }, wantErr: "invalid token or message IDs"},
+		{name: "empty member ID", content: func(string) []byte { return []byte("{\"token\":\"batch\",\"message_ids\":[\"\"]}\n") }, wantErr: "empty message ID"},
+		{name: "unknown field", content: func(id string) []byte {
+			return []byte(fmt.Sprintf("{\"token\":\"batch\",\"message_ids\":[%q],\"extra\":true}\n", id))
+		}, wantErr: "unknown field"},
+		{name: "unterminated JSON", content: func(id string) []byte { return []byte(fmt.Sprintf("{\"token\":\"batch\",\"message_ids\":[%q]}", id)) }, wantErr: "unterminated JSON record"},
+		{name: "trailing record", content: func(id string) []byte {
+			return []byte(fmt.Sprintf("{\"token\":\"batch\",\"message_ids\":[%q]}\n{}\n", id))
+		}, wantErr: "multiple JSON records"},
+		{name: "oversized WAL", content: func(string) []byte {
+			return []byte(strings.Repeat("x", MaxRuntimeQueueBytes+1))
+		}, wantErr: "exceeds"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateRuntimeQueue(t)
+			if _, err := EnqueueRuntimeMessage("bad-wal", "queued"); err != nil {
+				t.Fatal(err)
+			}
+			queued, err := PeekRuntimeQueue("bad-wal")
+			if err != nil || len(queued) != 1 {
+				t.Fatalf("queued = %#v, %v", queued, err)
+			}
+			want := tc.content(queued[0].ID)
+			wal := runtimeQueueInflightPathFor("bad-wal")
+			if err := os.MkdirAll(filepath.Dir(wal), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(wal, want, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := StageRuntimeQueue("bad-wal"); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("malformed WAL error = %v, want containing %q", err, tc.wantErr)
+			}
+			got, _ := os.ReadFile(wal)
+			if string(got) != string(want) {
+				t.Fatal("malformed WAL was changed")
+			}
+		})
+	}
+}
+
+func TestRuntimeQueueAcknowledgeOversizedCompletionIsRetained(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "oversized-completion"
+	completion := runtimeQueueCompletionPathFor(id)
+	if err := os.MkdirAll(filepath.Dir(completion), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantSize := int64(MaxRuntimeQueueBytes + 1)
+	if err := os.WriteFile(completion, []byte(strings.Repeat("x", int(wantSize))), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := AcknowledgeRuntimeQueue(id, "unknown"); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized completion error = %v", err)
+	}
+	info, err := os.Stat(completion)
+	if err != nil {
+		t.Fatalf("oversized completion was not retained: %v", err)
+	}
+	if info.Size() != wantSize {
+		t.Fatalf("oversized completion size = %d, want %d", info.Size(), wantSize)
+	}
+}
+
+func TestRuntimeQueueJSONReadBoundsGrowthAfterStat(t *testing.T) {
+	isolateRuntimeQueue(t)
+	statPath := filepath.Join(t.TempDir(), "below-limit")
+	if err := os.WriteFile(statPath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(statPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &countingRuntimeQueueReader{Reader: io.LimitReader(runtimeQueueByteReader{}, MaxRuntimeQueueBytes+2)}
+	fake := &growingRuntimeQueueSidecar{Reader: source, info: info}
+	oldOpen := runtimeQueueOpen
+	runtimeQueueOpen = func(string) (runtimeQueueSidecarFile, error) { return fake, nil }
+	t.Cleanup(func() { runtimeQueueOpen = oldOpen })
+
+	var completion runtimeQueueCompletion
+	exists, err := readRuntimeQueueJSONLocked("growing-sidecar", &completion)
+	if !exists {
+		t.Fatal("growing sidecar reported missing")
+	}
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("growing sidecar error = %v, want size error", err)
+	}
+	if source.bytesRead != MaxRuntimeQueueBytes+1 {
+		t.Fatalf("source bytes read = %d, want bounded read of %d", source.bytesRead, MaxRuntimeQueueBytes+1)
+	}
+	if !fake.closed {
+		t.Fatal("growing sidecar was not closed")
+	}
+}
+
+func TestRuntimeQueueCompletionAtExactSizePassesSizeGuard(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "exact-limit-completion"
+	const prefix = `{"token":"`
+	const suffix = `"}` + "\n"
+	content := []byte(prefix + strings.Repeat("x", MaxRuntimeQueueBytes-len(prefix)-len(suffix)) + suffix)
+	if len(content) != MaxRuntimeQueueBytes {
+		t.Fatalf("completion fixture size = %d, want %d", len(content), MaxRuntimeQueueBytes)
+	}
+	completion := runtimeQueueCompletionPathFor(id)
+	if err := os.MkdirAll(filepath.Dir(completion), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(completion, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := AcknowledgeRuntimeQueue(id, "different-token")
+	if err == nil || strings.Contains(err.Error(), "exceeds") || !strings.Contains(err.Error(), "no matching staged batch") {
+		t.Fatalf("exact-limit completion error = %v, want normal acknowledgment validation", err)
+	}
+}
+
+type countingRuntimeQueueReader struct {
+	io.Reader
+	bytesRead int
+}
+
+type runtimeQueueByteReader struct{}
+
+func (runtimeQueueByteReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	return len(p), nil
+}
+
+type growingRuntimeQueueSidecar struct {
+	io.Reader
+	info   os.FileInfo
+	closed bool
+}
+
+func (f *growingRuntimeQueueSidecar) Stat() (os.FileInfo, error) { return f.info, nil }
+func (f *growingRuntimeQueueSidecar) Close() error               { f.closed = true; return nil }
+
+func (r *countingRuntimeQueueReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.bytesRead += n
+	return n, err
+}
+
+func TestRuntimeQueueAcknowledgePersistenceFailureLeavesQueueAndWAL(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		failPath func(id string) string
+	}{
+		{name: "completion marker", failPath: runtimeQueueCompletionPathFor},
+		{name: "active queue rewrite", failPath: RuntimeQueuePathFor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateRuntimeQueue(t)
+			const id = "ack-fail"
+			if _, err := EnqueueRuntimeMessage(id, "queued"); err != nil {
+				t.Fatal(err)
+			}
+			batch, err := StageRuntimeQueue(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			active, wal := RuntimeQueuePathFor(id), runtimeQueueInflightPathFor(id)
+			beforeActive, _ := os.ReadFile(active)
+			beforeWAL, _ := os.ReadFile(wal)
+			previous := runtimeQueuePersist
+			runtimeQueuePersist = func(path string, data []byte, perm os.FileMode) error {
+				if path == tc.failPath(id) {
+					return errors.New("injected persistence failure")
+				}
+				return previous(path, data, perm)
+			}
+			t.Cleanup(func() { runtimeQueuePersist = previous })
+			if err := AcknowledgeRuntimeQueue(id, batch.Token); err == nil {
+				t.Fatal("acknowledgment persistence failure succeeded")
+			}
+			afterActive, _ := os.ReadFile(active)
+			afterWAL, _ := os.ReadFile(wal)
+			if string(afterActive) != string(beforeActive) || string(afterWAL) != string(beforeWAL) {
+				t.Fatal("failed acknowledgment changed active queue or WAL")
+			}
+		})
+	}
+}
+
+func TestRuntimeQueueConcurrentOperationsUseIndependentLock(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "concurrent"
+	if _, err := EnqueueRuntimeMessage(id, "staged"); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enteredPersist := make(chan struct{})
+	releasePersist := make(chan struct{})
+	previous := runtimeQueuePersist
+	var once sync.Once
+	runtimeQueuePersist = func(path string, data []byte, perm os.FileMode) error {
+		if path == RuntimeQueuePathFor(id) && strings.Contains(string(data), "overlap") {
+			once.Do(func() { close(enteredPersist) })
+			<-releasePersist
+		}
+		return previous(path, data, perm)
+	}
+	t.Cleanup(func() { runtimeQueuePersist = previous })
+
+	enqueueErr := make(chan error, 1)
+	go func() {
+		_, err := EnqueueRuntimeMessage(id, "overlap")
+		enqueueErr <- err
+	}()
+	<-enteredPersist
+	if runtimeQueueMu.TryLock() {
+		runtimeQueueMu.Unlock()
+		close(releasePersist)
+		t.Fatal("enqueue persistence did not hold the independent runtime lock")
+	}
+
+	stageEntered := make(chan struct{})
+	previousStageEnter := runtimeQueueStageEnter
+	runtimeQueueStageEnter = func() { close(stageEntered) }
+	t.Cleanup(func() { runtimeQueueStageEnter = previousStageEnter })
+	stageErr := make(chan error, 1)
+	ackErr := make(chan error, 1)
+	go func() {
+		_, err := StageRuntimeQueue(id)
+		stageErr <- err
+	}()
+	<-stageEntered
+	select {
+	case err := <-stageErr:
+		close(releasePersist)
+		<-enqueueErr
+		t.Fatalf("stage returned before enqueue released runtime lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		// Stage reached its call boundary but remains blocked by runtimeQueueMu.
+	}
+	go func() { ackErr <- AcknowledgeRuntimeQueue(id, batch.Token) }()
+	close(releasePersist)
+	for name, result := range map[string]<-chan error{"enqueue": enqueueErr, "stage": stageErr, "acknowledge": ackErr} {
+		if err := <-result; err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	remaining, err := PeekRuntimeQueue(id)
+	if err != nil || len(remaining) != 1 || remaining[0].Message != "overlap" {
+		t.Fatalf("remaining queue = %#v, %v", remaining, err)
+	}
+}
+
+func TestRuntimeQueueAcknowledgeRecoversAfterActiveRewriteBeforeWALRemoval(t *testing.T) {
+	if os.Getenv("AGENT_DECK_RUNTIME_FINALIZE_RECOVERY_HELPER") == "1" {
+		t.Setenv("XDG_DATA_HOME", os.Getenv("AGENT_DECK_RUNTIME_FINALIZE_RECOVERY_DATA_HOME"))
+		batch, err := StageRuntimeQueue("finalize-crash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(os.Getenv("XDG_DATA_HOME"), "recovered-token"), []byte(batch.Token), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	for _, tc := range []struct {
+		name    string
+		recover func(t *testing.T, oldToken string) RuntimeQueueBatch
+	}{
+		{
+			name: "acknowledgment retry finishes removal",
+			recover: func(t *testing.T, oldToken string) RuntimeQueueBatch {
+				t.Helper()
+				if err := AcknowledgeRuntimeQueue("finalize-crash", oldToken); err != nil {
+					t.Fatalf("retry acknowledgment: %v", err)
+				}
+				return RuntimeQueueBatch{}
+			},
+		},
+		{
+			name: "restart staging finishes removal and stages remainder",
+			recover: func(t *testing.T, oldToken string) RuntimeQueueBatch {
+				t.Helper()
+				cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeQueueAcknowledgeRecoversAfterActiveRewriteBeforeWALRemoval$")
+				cmd.Env = append(os.Environ(),
+					"AGENT_DECK_RUNTIME_FINALIZE_RECOVERY_HELPER=1",
+					"AGENT_DECK_RUNTIME_FINALIZE_RECOVERY_DATA_HOME="+os.Getenv("XDG_DATA_HOME"),
+				)
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("stage recovery helper: %v\n%s", err, output)
+				}
+				token, err := os.ReadFile(filepath.Join(os.Getenv("XDG_DATA_HOME"), "recovered-token"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				batch, err := StageRuntimeQueue("finalize-crash")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if batch.Token != string(token) || batch.Token == oldToken || len(batch.Messages) != 1 || batch.Messages[0].Message != "later" {
+					t.Fatalf("remainder batch = %#v", batch)
+				}
+				return batch
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateRuntimeQueue(t)
+			for _, msg := range []string{"one", "two"} {
+				if _, err := EnqueueRuntimeMessage("finalize-crash", msg); err != nil {
+					t.Fatal(err)
+				}
+			}
+			staged, err := StageRuntimeQueue("finalize-crash")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := EnqueueRuntimeMessage("finalize-crash", "later"); err != nil {
+				t.Fatal(err)
+			}
+
+			previousRemove := runtimeQueueRemove
+			runtimeQueueRemove = func(path string) error {
+				if path == runtimeQueueInflightPathFor("finalize-crash") {
+					return errors.New("injected WAL removal failure")
+				}
+				return previousRemove(path)
+			}
+			if err := AcknowledgeRuntimeQueue("finalize-crash", staged.Token); err == nil {
+				t.Fatal("acknowledgment succeeded despite WAL removal failure")
+			}
+			runtimeQueueRemove = previousRemove
+			t.Cleanup(func() { runtimeQueueRemove = previousRemove })
+			if _, err := os.Stat(runtimeQueueInflightPathFor("finalize-crash")); err != nil {
+				t.Fatalf("failed removal did not retain WAL: %v", err)
+			}
+
+			recovered := tc.recover(t, staged.Token)
+			if _, err := os.Stat(runtimeQueueInflightPathFor("finalize-crash")); !errors.Is(err, os.ErrNotExist) && recovered.Token == "" {
+				t.Fatalf("completed WAL remains after recovery: %v", err)
+			}
+			left, err := PeekRuntimeQueue("finalize-crash")
+			if err != nil || len(left) != 1 || left[0].Message != "later" {
+				t.Fatalf("queue after recovery = %#v, %v", left, err)
+			}
+		})
+	}
+}
+
+func TestRuntimeQueueFormat(t *testing.T) {
+	tests := []struct {
+		name string
+		msgs []RuntimeQueuedMessage
+		want string
+	}{
+		{name: "empty", want: ""},
+		{name: "single", msgs: []RuntimeQueuedMessage{{ID: "secret", Message: "hello", Source: "metadata"}}, want: "## Queued runtime messages\n\n1. hello"},
+		{name: "multiple multiline", msgs: []RuntimeQueuedMessage{{Message: "first\ncontinued"}, {Message: "second"}}, want: "## Queued runtime messages\n\n1. first\n   continued\n2. second"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FormatRuntimeMessagesForInjection(tc.msgs); got != tc.want {
+				t.Fatalf("format = %q, want %q", got, tc.want)
 			}
 		})
 	}
