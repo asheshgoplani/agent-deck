@@ -23,6 +23,15 @@ Unavoidable control-plane actions such as rendering prompts, operating
 agent-deck, updating the run manifest, and managing the heartbeat remain with
 the conductor.
 
+## Run layout
+
+Every non-source run artifact lives under `<repo-root>/.agent-deck/<run-id>/`,
+including inputs, manifests, prompts, task artifacts, screenshots, verification
+results, and `retro.md`. Source worktrees remain under
+`<repo-root>/.worktrees/<run-id>-<task-slug>`. Run setup adds `/.agent-deck/` to
+Git's local `info/exclude` when needed, without changing the tracked
+`.gitignore`.
+
 ## Cleanup workflow
 
 Cleanup is serialized because worktrees and branches share repository-wide Git
