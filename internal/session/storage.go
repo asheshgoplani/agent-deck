@@ -472,6 +472,17 @@ func (s *Storage) InstanceExists(id string) (bool, error) {
 	return s.db.InstanceExists(id)
 }
 
+// WithInstancesAbsent atomically observes all ids and holds SQLite's writer
+// exclusion through confirmed. See statedb.StateDB.WithInstancesAbsent.
+func (s *Storage) WithInstancesAbsent(ids []string, confirmed func() error) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return false, fmt.Errorf("storage database not initialized")
+	}
+	return s.db.WithInstancesAbsent(ids, confirmed)
+}
+
 // ErrRemovalNotPersistent is returned by RemoveSessionAndVerify when, after
 // retries, the row is still observed in the database. The most likely cause
 // is a concurrent SaveInstances rewrite from another agent-deck process

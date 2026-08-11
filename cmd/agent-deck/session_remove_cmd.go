@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -220,7 +221,8 @@ func bulkRemoveSessions(
 		_ = inst.KillAndWait()
 		queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
 		if err != nil {
-			out.Error(fmt.Sprintf("failed to discard runtime queue for %s: %v", inst.ID, err), ErrCodeInvalidOperation)
+			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs)
+			out.Error(fmt.Sprintf("failed to lock runtime queue for %s: %v", inst.ID, errors.Join(err, cleanupErr)), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 		if pruneWorktree {
@@ -230,8 +232,8 @@ func bulkRemoveSessions(
 		groupTree := session.NewGroupTreeWithGroups(nextRemaining, groups)
 		if err := bulkSessionRemovePersist(storage, inst.ID, nextRemaining, groupTree); err != nil {
 			queueTx.Release()
-			releaseRuntimeQueueTransactions(queueTxs)
-			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, err), ErrCodeInvalidOperation)
+			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs)
+			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, errors.Join(err, cleanupErr)), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 		remaining = nextRemaining
@@ -242,59 +244,64 @@ func bulkRemoveSessions(
 
 	// A concurrent full-table writer can resurrect an early removal after its
 	// per-item verification while later items are still being processed. Sweep
-	// only the successfully committed IDs once more against the final survivor
-	// set. Failed/unattempted sessions never enter removedIDs, so their queues
-	// and rows remain untouched.
-	if err := verifyBulkRemovals(storage, removedIDs, remaining, groups); err != nil {
-		releaseRuntimeQueueTransactions(queueTxs)
+	// only the successfully committed IDs once more. Failed/unattempted sessions
+	// never enter removedIDs; a committed prefix is fully finalized even when a
+	// later item fails, so its now-unreachable queues cannot become orphans.
+	if err := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs); err != nil {
 		out.Error(fmt.Sprintf("failed to verify bulk session removal: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
-	}
-
-	for i, tx := range queueTxs {
-		if err := tx.Discard(); err != nil {
-			releaseRuntimeQueueTransactions(queueTxs[i:])
-			out.Error(fmt.Sprintf("failed to discard runtime queue for %s: %v", removedIDs[i], err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-		tx.Release()
-	}
-
-	for _, id := range removedIDs {
-		// Best-effort transition-notifier cleanup (issue #910).
-		_, _ = session.SweepInboxesForChildSession(id)
-		_, _ = session.RemoveNotifyStateRecord(id)
-		session.DiscardQueuedMessage(id)
 	}
 	return removed
 }
 
 const bulkFinalVerifyAttempts = 6
 
-func verifyBulkRemovals(storage *session.Storage, removedIDs []string, remaining []*session.Instance, groups []*session.GroupData) error {
-	finalGroupTree := session.NewGroupTreeWithGroups(remaining, groups)
+func finalizeCommittedBulkRemovals(storage *session.Storage, removedIDs []string, queueTxs []*session.RuntimeQueueTransaction) error {
+	if len(removedIDs) == 0 {
+		return nil
+	}
 	for pass := 0; pass < bulkFinalVerifyAttempts; pass++ {
 		for _, id := range removedIDs {
-			if err := bulkSessionReverifyPersist(storage, id, remaining, finalGroupTree); err != nil {
+			if err := bulkSessionReverifyPersist(storage, id, nil, nil); err != nil {
+				releaseRuntimeQueueTransactions(queueTxs)
 				return fmt.Errorf("reverify %s: %w", id, err)
 			}
 		}
 
-		allAbsent := true
-		for _, id := range removedIDs {
-			exists, err := storage.InstanceExists(id)
-			if err != nil {
-				return fmt.Errorf("observe %s: %w", id, err)
+		absent, observeErr := bulkObserveAbsent(storage, removedIDs, func() error {
+			var discardErr error
+			for i, tx := range queueTxs {
+				if err := bulkQueueDiscard(tx); err != nil {
+					discardErr = errors.Join(discardErr, fmt.Errorf("discard queue for %s: %w", removedIDs[i], err))
+				}
 			}
-			if exists {
-				allAbsent = false
-			}
+			return discardErr
+		})
+		if observeErr != nil && !absent {
+			releaseRuntimeQueueTransactions(queueTxs)
+			return fmt.Errorf("observe removed ids: %w", observeErr)
 		}
-		if allAbsent {
-			return nil
+		if absent {
+			releaseRuntimeQueueTransactions(queueTxs)
+			return errors.Join(observeErr, cleanupCommittedBulkRemovals(removedIDs))
 		}
 	}
+	releaseRuntimeQueueTransactions(queueTxs)
 	return fmt.Errorf("removed rows kept reappearing after %d verification passes", bulkFinalVerifyAttempts)
+}
+
+func cleanupCommittedBulkRemovals(ids []string) error {
+	var cleanupErr error
+	for _, id := range ids {
+		if _, err := bulkSweepInboxes(id); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("sweep inboxes for %s: %w", id, err))
+		}
+		if _, err := bulkRemoveNotifyState(id); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove notify state for %s: %w", id, err))
+		}
+		bulkDiscardQueuedMessage(id)
+	}
+	return cleanupErr
 }
 
 func releaseRuntimeQueueTransactions(txs []*session.RuntimeQueueTransaction) {
@@ -311,8 +318,15 @@ var (
 		return storage.RemoveSessionAndVerify(id, remaining, tree)
 	}
 	bulkSessionReverifyPersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
-		return storage.RemoveSessionAndVerify(id, remaining, tree)
+		return storage.DeleteInstance(id)
 	}
+	bulkObserveAbsent = func(storage *session.Storage, ids []string, confirmed func() error) (bool, error) {
+		return storage.WithInstancesAbsent(ids, confirmed)
+	}
+	bulkQueueDiscard         = func(tx *session.RuntimeQueueTransaction) error { return tx.Discard() }
+	bulkSweepInboxes         = session.SweepInboxesForChildSession
+	bulkRemoveNotifyState    = session.RemoveNotifyStateRecord
+	bulkDiscardQueuedMessage = session.DiscardQueuedMessage
 )
 
 func commitRuntimeQueueRemoval(tx *session.RuntimeQueueTransaction, persistRemoval func() error) error {

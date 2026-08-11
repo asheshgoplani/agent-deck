@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,7 +70,7 @@ func TestSessionRemoveAllErroredPersistenceFailureDiscardsOnlyCommittedQueues(t 
 		original := bulkSessionRemovePersist
 		bulkSessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
 			if id == failedID {
-				_ = storage.Close()
+				return errors.New("forced later-item persistence failure")
 			}
 			return storage.RemoveSessionAndVerify(id, remaining, tree)
 		}
@@ -89,6 +90,9 @@ func TestSessionRemoveAllErroredPersistenceFailureDiscardsOnlyCommittedQueues(t 
 	forceSetStatus(t, home, failedID, session.StatusError)
 	_, _ = seedRuntimeQueueLifecycleState(t, committedID)
 	_, failedToken := seedRuntimeQueueLifecycleState(t, failedID)
+	if err := session.SaveQueuedMessage(committedID, "cleanup committed prefix"); err != nil {
+		t.Fatal(err)
+	}
 
 	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionRemoveAllErroredPersistenceFailureDiscardsOnlyCommittedQueues$")
 	cmd.Env = append(os.Environ(),
@@ -107,8 +111,11 @@ func TestSessionRemoveAllErroredPersistenceFailureDiscardsOnlyCommittedQueues(t 
 	if strings.Contains(list, committedID) || !strings.Contains(list, failedID) {
 		t.Fatalf("bulk durable rows do not match committed prefix: %s", list)
 	}
-	if batch, err := session.StageRuntimeQueue(committedID); err != nil || batch.Token == "" {
-		t.Fatalf("aborted bulk operation discarded an earlier queue: %#v, %v", batch, err)
+	if batch, err := session.StageRuntimeQueue(committedID); err != nil || batch.Token != "" || len(batch.Messages) != 0 {
+		t.Fatalf("durably deleted prefix retained an orphan queue: %#v, %v", batch, err)
+	}
+	if _, ok := session.PeekQueuedMessage(committedID); ok {
+		t.Fatal("durably deleted prefix skipped lifecycle cleanup")
 	}
 	if batch, err := session.StageRuntimeQueue(failedID); err != nil || batch.Token != failedToken {
 		t.Fatalf("failed queue was discarded: %#v, %v", batch, err)
@@ -142,9 +149,34 @@ func TestSessionRemoveAllErroredTerminalVerification(t *testing.T) {
 				}
 				return nil
 			}
-		case "fail":
-			bulkSessionReverifyPersist = func(*session.Storage, string, []*session.Instance, *session.GroupTree) error {
-				return errors.New("forced terminal reverification failure")
+		case "observe-fail":
+			bulkObserveAbsent = func(*session.Storage, []string, func() error) (bool, error) {
+				return false, errors.New("forced atomic observation failure")
+			}
+		case "persistent-resurrection":
+			storage, err := session.NewStorageWithProfile("ch_support_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			instances, groups, err := storage.LoadWithGroups()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = storage.Close()
+			bulkObserveAbsent = func(s *session.Storage, _ []string, _ func() error) (bool, error) {
+				if err := s.SaveWithGroups(instances, session.NewGroupTreeWithGroups(instances, groups)); err != nil {
+					return false, err
+				}
+				return false, nil
+			}
+		case "discard-fail":
+			calls := 0
+			bulkQueueDiscard = func(tx *session.RuntimeQueueTransaction) error {
+				calls++
+				if calls == 2 {
+					return errors.New("forced second queue discard failure")
+				}
+				return tx.Discard()
 			}
 		}
 		handleSessionRemove("ch_support_test", []string{"--all-errored", "--json"})
@@ -157,9 +189,14 @@ func TestSessionRemoveAllErroredTerminalVerification(t *testing.T) {
 	for _, tc := range []struct {
 		mode        string
 		wantSuccess bool
+		wantQueues  []bool
+		wantCleanup bool
+		wantRows    int
 	}{
-		{mode: "resurrect", wantSuccess: true},
-		{mode: "fail", wantSuccess: false},
+		{mode: "resurrect", wantSuccess: true, wantQueues: []bool{false, false}, wantCleanup: true},
+		{mode: "observe-fail", wantQueues: []bool{true, true}},
+		{mode: "persistent-resurrection", wantQueues: []bool{true, true}, wantRows: 2},
+		{mode: "discard-fail", wantQueues: []bool{false, true}, wantCleanup: true},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			home := t.TempDir()
@@ -208,24 +245,21 @@ func TestSessionRemoveAllErroredTerminalVerification(t *testing.T) {
 			}
 			rows, _, loadErr := storage.LoadWithGroups()
 			_ = storage.Close()
-			if loadErr != nil || len(rows) != 0 {
-				t.Fatalf("terminal sweep left rows: %#v, %v", rows, loadErr)
+			if loadErr != nil || len(rows) != tc.wantRows {
+				t.Fatalf("terminal rows = %#v, %v; want %d", rows, loadErr, tc.wantRows)
 			}
-			for _, id := range []string{first.ID, second.ID} {
-				if tc.wantSuccess {
-					if session.RuntimeQueueHasPending(id) {
-						t.Fatalf("successful bulk queue survived for %s", id)
-					}
-					if _, ok := session.PeekQueuedMessage(id); ok {
-						t.Fatalf("successful bulk cleanup did not run for %s", id)
-					}
-				} else {
-					if !session.RuntimeQueueHasPending(id) {
-						t.Fatalf("failed terminal verification discarded queue for %s", id)
-					}
-					if got, ok := session.PeekQueuedMessage(id); !ok || got != "cleanup sentinel" {
-						t.Fatalf("cleanup ran after terminal abort for %s: %q, %v", id, got, ok)
-					}
+			for i, id := range []string{first.ID, second.ID} {
+				if got := session.RuntimeQueueHasPending(id); got != tc.wantQueues[i] {
+					t.Fatalf("queue pending for %s = %v, want %v", id, got, tc.wantQueues[i])
+				}
+				probe, probeErr := session.BeginRuntimeQueueTransaction(id)
+				if probeErr != nil {
+					t.Fatalf("terminal path retained queue transaction for %s: %v", id, probeErr)
+				}
+				probe.Release()
+				_, cleanupPending := session.PeekQueuedMessage(id)
+				if cleanupPending == tc.wantCleanup {
+					t.Fatalf("cleanup pending for %s = %v, want %v", id, cleanupPending, !tc.wantCleanup)
 				}
 			}
 		})
@@ -312,6 +346,131 @@ func TestCommitRuntimeQueueBulkRemovalDiscardsOnlyCommittedSessions(t *testing.T
 	if batch, err := session.StageRuntimeQueue(committedID); err != nil || batch.Token != "" || len(batch.Messages) != 0 {
 		t.Fatalf("committed session queue survived: %#v, %v", batch, err)
 	}
+}
+
+func TestBulkFinalizationDoesNotOverwriteConcurrentGroupUpdate(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	storage, err := session.NewStorageWithProfile("_test_bulk_group_finalization")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	const id = "bulk-group-finalization"
+	if _, err := session.EnqueueRuntimeMessage(id, "discard after finalization"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := session.BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := []*session.GroupData{{Path: "team", Name: "Old", Expanded: true, Order: 1, DefaultPath: "/old", MaxConcurrent: 1}}
+	if err := storage.SaveGroupsOnly(session.NewGroupTreeWithGroups(nil, initial)); err != nil {
+		t.Fatal(err)
+	}
+	original := bulkSessionReverifyPersist
+	updated := []*session.GroupData{{Path: "team", Name: "New", Expanded: false, Order: 8, DefaultPath: "/new", MaxConcurrent: 7}}
+	bulkSessionReverifyPersist = func(s *session.Storage, target string, _ []*session.Instance, _ *session.GroupTree) error {
+		if err := original(s, target, nil, nil); err != nil {
+			return err
+		}
+		return s.SaveGroupsOnly(session.NewGroupTreeWithGroups(nil, updated))
+	}
+	t.Cleanup(func() { bulkSessionReverifyPersist = original })
+	if err := finalizeCommittedBulkRemovals(storage, []string{id}, []*session.RuntimeQueueTransaction{tx}); err != nil {
+		t.Fatal(err)
+	}
+	_, groups, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *session.GroupData
+	for _, group := range groups {
+		if group.Path == "team" {
+			got = group
+		}
+	}
+	if got == nil || got.Name != "New" || got.Expanded || got.Order != 8 || got.DefaultPath != "/new" || got.MaxConcurrent != 7 {
+		t.Fatalf("concurrent group update was overwritten: %#v", got)
+	}
+}
+
+func TestCleanupCommittedBulkRemovalsContinuesAndCollectsErrors(t *testing.T) {
+	ids := []string{"cleanup-one", "cleanup-two"}
+	for _, id := range ids {
+		if err := session.SaveQueuedMessage(id, "sentinel"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	originalSweep, originalNotify := bulkSweepInboxes, bulkRemoveNotifyState
+	sweepCalls, notifyCalls := 0, 0
+	bulkSweepInboxes = func(id string) (int, error) {
+		sweepCalls++
+		return 0, fmt.Errorf("sweep %s", id)
+	}
+	bulkRemoveNotifyState = func(id string) (bool, error) {
+		notifyCalls++
+		return false, fmt.Errorf("notify %s", id)
+	}
+	t.Cleanup(func() {
+		bulkSweepInboxes, bulkRemoveNotifyState = originalSweep, originalNotify
+	})
+	err := cleanupCommittedBulkRemovals(ids)
+	if err == nil || !strings.Contains(err.Error(), "cleanup-one") || !strings.Contains(err.Error(), "cleanup-two") {
+		t.Fatalf("aggregated cleanup error = %v", err)
+	}
+	if sweepCalls != 2 || notifyCalls != 2 {
+		t.Fatalf("cleanup stopped early: sweep=%d notify=%d", sweepCalls, notifyCalls)
+	}
+	for _, id := range ids {
+		if _, ok := session.PeekQueuedMessage(id); ok {
+			t.Fatalf("queued-message cleanup skipped for %s", id)
+		}
+	}
+}
+
+func TestFinalizeCommittedBulkRemovalsPersistentResurrectionExhaustsAllPasses(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	storage, err := session.NewStorageWithProfile("_test_bulk_exhaustion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	const id = "persistent-resurrection-exhaustion"
+	if _, err := session.EnqueueRuntimeMessage(id, "must survive exhaustion"); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SaveQueuedMessage(id, "cleanup must not run"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := session.BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalObserve := bulkObserveAbsent
+	observeCalls := 0
+	bulkObserveAbsent = func(*session.Storage, []string, func() error) (bool, error) {
+		observeCalls++
+		return false, nil
+	}
+	t.Cleanup(func() { bulkObserveAbsent = originalObserve })
+	err = finalizeCommittedBulkRemovals(storage, []string{id}, []*session.RuntimeQueueTransaction{tx})
+	if err == nil || !strings.Contains(err.Error(), "kept reappearing") {
+		t.Fatalf("exhaustion error = %v", err)
+	}
+	if observeCalls != bulkFinalVerifyAttempts {
+		t.Fatalf("observation passes = %d, want %d", observeCalls, bulkFinalVerifyAttempts)
+	}
+	if !session.RuntimeQueueHasPending(id) {
+		t.Fatal("retry exhaustion discarded runtime queue")
+	}
+	if got, ok := session.PeekQueuedMessage(id); !ok || got != "cleanup must not run" {
+		t.Fatalf("retry exhaustion ran cleanup: %q, %v", got, ok)
+	}
+	probe, err := session.BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		t.Fatalf("retry exhaustion retained queue transaction: %v", err)
+	}
+	probe.Release()
 }
 
 func TestBulkRemoveFinalSweepDeletesRowsResurrectedAfterPerItemVerification(t *testing.T) {

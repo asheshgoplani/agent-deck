@@ -1177,6 +1177,45 @@ func (s *StateDB) InstanceExists(id string) (bool, error) {
 	return true, nil
 }
 
+// WithInstancesAbsent takes SQLite's writer lock, observes the complete ID set
+// in one transaction, and, only when every row is absent, runs confirmed while
+// competing full-table writers remain blocked. The callback may perform
+// irreversible external cleanup that must not race row resurrection.
+func (s *StateDB) WithInstancesAbsent(ids []string, confirmed func() error) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Even a no-op UPDATE acquires SQLite's writer reservation. In WAL mode this
+	// prevents another writer from resurrecting an instance until Commit.
+	if _, err := tx.Exec("UPDATE metadata SET value = value WHERE key = 'last_modified'"); err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		var one int
+		err := tx.QueryRow("SELECT 1 FROM instances WHERE id = ? LIMIT 1", id).Scan(&one)
+		switch {
+		case err == nil:
+			if err := tx.Commit(); err != nil {
+				return false, err
+			}
+			return false, nil
+		case errors.Is(err, sql.ErrNoRows):
+			continue
+		default:
+			return false, err
+		}
+	}
+
+	callbackErr := confirmed()
+	if err := tx.Commit(); err != nil {
+		return true, errors.Join(callbackErr, err)
+	}
+	return true, callbackErr
+}
+
 // --- Group CRUD ---
 
 // SaveGroups upserts the given groups in a single transaction. It is ADDITIVE:
