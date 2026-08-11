@@ -45,6 +45,8 @@ producer completion.
 
 Record exactly one outcome: `pass`, `defect`, or `inconclusive`. A `pass` is
 terminal: make no edits, pull request, CI run, or deployment. A `defect` enters
-delivery only when it is inside the authorized scope. An `inconclusive` result
-is terminal and must state what prevented a trustworthy decision; do not claim
-success or retry indefinitely. Report the completed report path and outcome.
+delivery only when it is inside the authorized scope. An out-of-scope `defect`
+is terminal: record it without edits, pull request, CI run, or deployment. An
+`inconclusive` result is terminal and must state what prevented a trustworthy
+decision; do not claim success or retry indefinitely. Report the completed
+report path and outcome.

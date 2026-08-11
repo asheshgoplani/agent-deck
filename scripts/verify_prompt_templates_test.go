@@ -104,6 +104,7 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 				"Record exactly one outcome: `pass`, `defect`, or `inconclusive`",
 				"A `pass` is terminal: make no edits, pull request, CI run, or deployment",
 				"A `defect` enters delivery only when it is inside the authorized scope",
+				"An out-of-scope `defect` is terminal: record it without edits, pull request, CI run, or deployment",
 				"An `inconclusive` result is terminal and must state what prevented a trustworthy decision; do not claim success or retry indefinitely",
 			},
 		},
@@ -120,6 +121,22 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 		"preserve the complete first-failure evidence and diagnose whether it came from product behavior, the harness, the environment, or licensing",
 		"Permit at most one clean rerun by default",
 	}
+
+	t.Run("verify-preamble", func(t *testing.T) {
+		outputPath := filepath.Join(t.TempDir(), "verify-preamble.md")
+		args := []string{renderScript, "verify-preamble", outputPath}
+		args = append(args, commonArgs...)
+		if output, err := exec.Command("bash", args...).CombinedOutput(); err != nil {
+			t.Fatalf("render preamble: %v\n%s", err, output)
+		}
+		rendered, err := os.ReadFile(outputPath)
+		if err != nil {
+			t.Fatalf("read rendered preamble: %v", err)
+		}
+		if strings.Contains(string(rendered), "{{include:") || placeholderPattern.Match(rendered) {
+			t.Fatalf("rendered preamble contains an unresolved include or placeholder:\n%s", rendered)
+		}
+	})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
