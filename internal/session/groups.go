@@ -566,24 +566,71 @@ func GetGroupLevel(path string) int {
 	return strings.Count(path, "/")
 }
 
+// ancestorsExpanded reports whether every ancestor on path's chain is expanded,
+// i.e. whether a group at that path is reachable in the rendered tree.
+//
+// Issue #1878: this used to be an immediate-parent check, so collapsing a
+// top-level group hid its children but not its grandchildren — CollapseGroup
+// flips only the targeted group's own Expanded flag and never cascades, so a
+// grandchild's parent still reported Expanded == true and the row leaked out at
+// the top level, disconnected from any visible parent. Visibility is a property
+// of the whole chain, so the whole chain has to be walked.
+//
+// memo carries results across every group in one Flatten pass and must be
+// non-nil. Each ancestor prefix is resolved at most once and then reused, so a
+// whole pass is O(number of distinct group prefixes) — linear in the tree, not
+// O(groups × depth) with a fresh string rescan per level. Recursion depth is
+// the path depth (a handful of segments).
+//
+// A path segment that does not resolve to an existing group (a dangling
+// intermediate, an empty segment from a malformed path like "a//b", or a
+// trailing separator) is treated as expanded rather than collapsed: that
+// preserves the pre-existing "unknown parent ⇒ still show it" tolerance, while
+// the walk continues upward so a real collapsed ancestor above the gap still
+// hides the subtree.
+func (t *GroupTree) ancestorsExpanded(path string, memo map[string]bool) bool {
+	if v, ok := memo[path]; ok {
+		return v
+	}
+
+	visible := true
+	// getParentPath strictly shortens the path, so this bottoms out at root.
+	if parent := getParentPath(path); parent != "" {
+		if g, exists := t.Groups[parent]; exists && !g.Expanded {
+			visible = false
+		} else {
+			visible = t.ancestorsExpanded(parent, memo)
+		}
+	}
+
+	memo[path] = visible
+	return visible
+}
+
 // Flatten returns a flat list of items for cursor navigation
 func (t *GroupTree) Flatten() []Item {
 	items := []Item{}
+
+	// Visibility memo shared by every group in this pass (see ancestorsExpanded).
+	// Flatten runs on every render, so it is only allocated when some group is
+	// actually collapsed: with nothing collapsed anywhere, every group is
+	// visible and the ancestor walk is skipped entirely.
+	var visibleMemo map[string]bool
+	for _, g := range t.GroupList {
+		if !g.Expanded {
+			visibleMemo = make(map[string]bool, len(t.GroupList))
+			break
+		}
+	}
 
 	for _, group := range t.GroupList {
 		// Calculate group nesting level from path
 		groupLevel := GetGroupLevel(group.Path)
 
-		// Check if parent group is collapsed - if so, skip this group
-		if groupLevel > 0 {
-			idx := strings.LastIndex(group.Path, "/")
-			if idx == -1 {
-				continue // Malformed path, skip
-			}
-			parentPath := group.Path[:idx]
-			if parentGroup, exists := t.Groups[parentPath]; exists && !parentGroup.Expanded {
-				continue // Parent is collapsed, skip this subgroup
-			}
+		// A group renders only when EVERY ancestor on its path is expanded —
+		// not just its immediate parent (issue #1878).
+		if groupLevel > 0 && visibleMemo != nil && !t.ancestorsExpanded(group.Path, visibleMemo) {
+			continue // An ancestor is collapsed; this group and its sessions stay hidden
 		}
 
 		// Add group header

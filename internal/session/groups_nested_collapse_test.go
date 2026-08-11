@@ -306,6 +306,46 @@ func TestFlattenMissingIntermediateGroupStaysVisible(t *testing.T) {
 	assertFlatKeys(t, tree, []string{"group:m"})
 }
 
+// BenchmarkFlattenDeepHierarchy keeps the render path honest: Flatten() runs on
+// every frame, and the ancestor-chain visibility check must stay linear in the
+// tree rather than becoming O(groups × depth) string rescanning.
+func BenchmarkFlattenDeepHierarchy(b *testing.B) {
+	tree := benchTree()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = tree.Flatten()
+	}
+}
+
+// BenchmarkFlattenDeepHierarchyCollapsed is the same tree with a collapsed
+// group, which is what actually engages the ancestor-chain walk.
+func BenchmarkFlattenDeepHierarchyCollapsed(b *testing.B) {
+	tree := benchTree()
+	tree.CollapseGroup("roota0/level1/level2")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = tree.Flatten()
+	}
+}
+
+func benchTree() *GroupTree {
+	tree := NewGroupTree([]*Instance{})
+	// 40 root branches × 6 levels deep = 240 groups, each with a session.
+	for r := 0; r < 40; r++ {
+		path := ""
+		for d := 0; d < 6; d++ {
+			if path == "" {
+				path = "root" + string(rune('a'+r%26)) + string(rune('0'+r/26))
+			} else {
+				path = path + "/level" + string(rune('0'+d))
+			}
+			tree.CreateGroupPath(path)
+			tree.AddSession(&Instance{ID: path + "/s", GroupPath: path})
+		}
+	}
+	return tree
+}
+
 // TestFlattenMalformedPathSegments covers group paths that the normal
 // create/rename entry points cannot produce (sanitizeGroupName strips "/" from
 // names) but that could arrive from hand-edited or legacy persisted state:
