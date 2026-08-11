@@ -337,6 +337,54 @@ func TestRuntimeQueueStageLeavesActiveAndFreezesFIFO(t *testing.T) {
 	}
 }
 
+func TestRuntimeQueueSubmissionContentionIsScopedPerInstance(t *testing.T) {
+	isolateRuntimeQueue(t)
+	for _, id := range []string{"blocked-instance", "independent-instance"} {
+		if _, err := EnqueueRuntimeMessage(id, "message for "+id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blockedBatch, err := StageRuntimeQueue("blocked-instance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	independentBatch, err := StageRuntimeQueue("independent-instance")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockedEntered := make(chan struct{})
+	releaseBlocked := make(chan struct{})
+	blockedDone := make(chan error, 1)
+	go func() {
+		_, err := SubmitRuntimeQueueBatch("blocked-instance", blockedBatch.Token, func() error {
+			close(blockedEntered)
+			<-releaseBlocked
+			return nil
+		})
+		blockedDone <- err
+	}()
+	<-blockedEntered
+
+	independentDone := make(chan error, 1)
+	go func() {
+		_, err := SubmitRuntimeQueueBatch("independent-instance", independentBatch.Token, func() error { return nil })
+		independentDone <- err
+	}()
+	select {
+	case err := <-independentDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("independent instance blocked behind unrelated submission")
+	}
+	close(releaseBlocked)
+	if err := <-blockedDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRuntimeQueueStageEmptyQueueReturnsZeroBatchWithoutWAL(t *testing.T) {
 	isolateRuntimeQueue(t)
 	const id = "empty-stage"

@@ -41,6 +41,7 @@ var stopBlockMu sync.Mutex
 type StopHookDecision struct {
 	Decision             string `json:"decision,omitempty"`
 	Reason               string `json:"reason,omitempty"`
+	InboxReason          string `json:"-"`
 	RuntimeQueueAckToken string `json:"-"`
 }
 
@@ -172,6 +173,7 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	return StopHookDecision{
 		Decision:             "block",
 		Reason:               reason,
+		InboxReason:          inboxReason,
 		RuntimeQueueAckToken: batch.Token,
 	}, true, nil
 }

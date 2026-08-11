@@ -337,18 +337,33 @@ func emitStopHookDecision(instanceID string, stopHookActive bool, writer io.Writ
 		return fmt.Errorf("marshal Stop-hook response: %w", err)
 	}
 	out = append(out, '\n')
-	_, err = session.SubmitRuntimeQueueBatch(instanceID, dec.RuntimeQueueAckToken, func() error {
-		n, writeErr := writer.Write(out)
-		if writeErr != nil {
-			return fmt.Errorf("write Stop-hook response: %w", writeErr)
-		}
-		if n != len(out) {
-			return fmt.Errorf("write Stop-hook response: %w", io.ErrShortWrite)
-		}
-		return nil
+	submitted, err := session.SubmitRuntimeQueueBatch(instanceID, dec.RuntimeQueueAckToken, func() error {
+		return writeStopHookResponse(writer, out)
 	})
 	if err != nil {
 		return fmt.Errorf("submit Stop-hook response: %w", err)
+	}
+	if submitted || dec.InboxReason == "" {
+		return nil
+	}
+	fallback := session.StopHookDecision{Decision: dec.Decision, Reason: dec.InboxReason}
+	out, err = marshalStopHookDecision(fallback)
+	if err != nil {
+		return fmt.Errorf("marshal inbox-only Stop-hook response: %w", err)
+	}
+	if err := writeStopHookResponse(writer, append(out, '\n')); err != nil {
+		return err
+	}
+	return nil
+}
+
+func writeStopHookResponse(writer io.Writer, out []byte) error {
+	n, err := writer.Write(out)
+	if err != nil {
+		return fmt.Errorf("write Stop-hook response: %w", err)
+	}
+	if n != len(out) {
+		return fmt.Errorf("write Stop-hook response: %w", io.ErrShortWrite)
 	}
 	return nil
 }

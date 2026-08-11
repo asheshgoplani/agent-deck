@@ -6,8 +6,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -119,6 +122,52 @@ func TestStopHookArchivedRaceCannotEmitStaleRuntimeQueue(t *testing.T) {
 	if _, err := session.EnqueueRuntimeMessage(id, "stale archived work"); err != nil {
 		t.Fatal(err)
 	}
+	if err := session.CommitToInbox(id, session.TransitionNotificationEvent{
+		ChildSessionID: "child-preserved", ChildTitle: "preserved child",
+		FromStatus: "running", ToStatus: "waiting", LastOutputHash: "archive-race",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	staged := make(chan struct{})
+	releaseMarshal := make(chan struct{})
+	previous := marshalStopHookDecision
+	var pauseOnce sync.Once
+	marshalStopHookDecision = func(v any) ([]byte, error) {
+		pauseOnce.Do(func() {
+			close(staged)
+			<-releaseMarshal
+		})
+		return previous(v)
+	}
+	t.Cleanup(func() { marshalStopHookDecision = previous })
+
+	var out bytes.Buffer
+	emitErr := make(chan error, 1)
+	go func() { emitErr <- emitStopHookDecision(id, false, &out) }()
+	<-staged
+	if err := session.DiscardRuntimeQueue(id); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseMarshal)
+	if err := <-emitErr; err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "child-preserved") || strings.Contains(got, "stale archived work") {
+		t.Fatalf("archive race response lost inbox or emitted stale runtime work: %q", got)
+	}
+	if session.RuntimeQueueHasPending(id) {
+		t.Fatal("discarded message reappeared")
+	}
+}
+
+func TestStopHookRuntimeQueueReplacementTokenSuppressesStaleBatch(t *testing.T) {
+	isolateStopHookRuntimeQueue(t)
+	const id = "handler-runtime-replaced-token"
+	if _, err := session.EnqueueRuntimeMessage(id, "stale batch"); err != nil {
+		t.Fatal(err)
+	}
 
 	staged := make(chan struct{})
 	releaseMarshal := make(chan struct{})
@@ -137,14 +186,61 @@ func TestStopHookArchivedRaceCannotEmitStaleRuntimeQueue(t *testing.T) {
 	if err := session.DiscardRuntimeQueue(id); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := session.EnqueueRuntimeMessage(id, "replacement batch"); err != nil {
+		t.Fatal(err)
+	}
 	close(releaseMarshal)
 	if err := <-emitErr; err != nil {
 		t.Fatal(err)
 	}
 	if out.Len() != 0 {
-		t.Fatalf("archived session emitted stale work: %q", out.String())
+		t.Fatalf("replaced token emitted stale response: %q", out.String())
 	}
-	if session.RuntimeQueueHasPending(id) {
-		t.Fatal("discarded message reappeared")
+	queued, err := session.PeekRuntimeQueue(id)
+	if err != nil || len(queued) != 1 || queued[0].Message != "replacement batch" {
+		t.Fatalf("replacement queue = %#v, %v", queued, err)
+	}
+}
+
+func TestStopHookRuntimeQueueDiscardDuringWriteWaitsForSubmission(t *testing.T) {
+	isolateStopHookRuntimeQueue(t)
+	const id = "handler-runtime-discard-during-write"
+	if _, err := session.EnqueueRuntimeMessage(id, "finish current delivery"); err != nil {
+		t.Fatal(err)
+	}
+
+	writeEntered := make(chan struct{})
+	releaseWrite := make(chan struct{})
+	var out bytes.Buffer
+	writer := writerFunc(func(p []byte) (int, error) {
+		close(writeEntered)
+		<-releaseWrite
+		return out.Write(p)
+	})
+	emitErr := make(chan error, 1)
+	go func() { emitErr <- emitStopHookDecision(id, false, writer) }()
+	<-writeEntered
+	discardStarted := make(chan struct{})
+	discardDone := make(chan error, 1)
+	go func() {
+		close(discardStarted)
+		discardDone <- session.DiscardRuntimeQueue(id)
+	}()
+	<-discardStarted
+	runtime.Gosched()
+	select {
+	case err := <-discardDone:
+		t.Fatalf("discard completed inside writer transaction: %v", err)
+	default:
+	}
+	close(releaseWrite)
+	if err := <-emitErr; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-discardDone; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "finish current delivery") {
+		t.Fatalf("response = %q", out.String())
 	}
 }

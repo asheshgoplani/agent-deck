@@ -162,7 +162,7 @@ const (
 
 var (
 	runtimeQueueMu         sync.Mutex
-	runtimeQueueDeliveryMu sync.Mutex
+	runtimeQueueDeliveryMu sync.Map
 	runtimeQueueNewID      = uuid.NewString
 	runtimeQueueNow        = time.Now
 	runtimeQueuePersist    = writeFileDurable
@@ -238,8 +238,9 @@ func PeekRuntimeQueue(id string) ([]RuntimeQueuedMessage, error) {
 }
 
 func DiscardRuntimeQueue(id string) error {
-	runtimeQueueDeliveryMu.Lock()
-	defer runtimeQueueDeliveryMu.Unlock()
+	deliveryMu := runtimeQueueDeliveryLock(id)
+	deliveryMu.Lock()
+	defer deliveryMu.Unlock()
 
 	runtimeQueueMu.Lock()
 	defer runtimeQueueMu.Unlock()
@@ -265,6 +266,11 @@ func DiscardRuntimeQueue(id string) error {
 	return nil
 }
 
+func runtimeQueueDeliveryLock(id string) *sync.Mutex {
+	lock, _ := runtimeQueueDeliveryMu.LoadOrStore(id, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
 // SubmitRuntimeQueueBatch revalidates a staged batch and keeps discard from
 // invalidating it across the externally visible submission and acknowledgment
 // boundary. A batch discarded before this transaction begins is not submitted.
@@ -276,8 +282,9 @@ func SubmitRuntimeQueueBatch(id, token string, submit func() error) (bool, error
 		return true, nil
 	}
 
-	runtimeQueueDeliveryMu.Lock()
-	defer runtimeQueueDeliveryMu.Unlock()
+	deliveryMu := runtimeQueueDeliveryLock(id)
+	deliveryMu.Lock()
+	defer deliveryMu.Unlock()
 
 	batch, err := StageRuntimeQueue(id)
 	if err != nil {
@@ -287,7 +294,7 @@ func SubmitRuntimeQueueBatch(id, token string, submit func() error) (bool, error
 		return false, nil
 	}
 	if batch.Token != token {
-		return false, errors.New("runtime queue staged batch changed before submission")
+		return false, nil
 	}
 	if err := submit(); err != nil {
 		return false, err
