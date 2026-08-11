@@ -701,6 +701,93 @@ func TestRuntimeQueueSubprocessArchiveCannotOvertakeValidatedDelivery(t *testing
 	}
 }
 
+func TestRuntimeQueueSubprocessEnqueueCannotOutliveDiscard(t *testing.T) {
+	if os.Getenv("AGENT_DECK_RUNTIME_ENQUEUE_IPC_HELPER") == "1" {
+		t.Setenv("XDG_DATA_HOME", os.Getenv("AGENT_DECK_RUNTIME_ENQUEUE_IPC_DATA"))
+		originalPersist := runtimeQueuePersist
+		runtimeQueuePersist = func(path string, data []byte, mode os.FileMode) error {
+			if err := os.WriteFile(os.Getenv("AGENT_DECK_RUNTIME_ENQUEUE_IPC_READY"), []byte("ready"), 0o644); err != nil {
+				return err
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if _, err := os.Stat(os.Getenv("AGENT_DECK_RUNTIME_ENQUEUE_IPC_RELEASE")); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					return errors.New("timed out waiting to persist enqueue")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			return originalPersist(path, data, mode)
+		}
+		defer func() { runtimeQueuePersist = originalPersist }()
+		if _, err := EnqueueRuntimeMessage(os.Getenv("AGENT_DECK_RUNTIME_ENQUEUE_IPC_ID"), "must not survive archive"); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	isolateRuntimeQueue(t)
+	const id = "subprocess-enqueue-archive-race"
+	root := t.TempDir()
+	ready := filepath.Join(root, "ready")
+	release := filepath.Join(root, "release")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeQueueSubprocessEnqueueCannotOutliveDiscard$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_DECK_RUNTIME_ENQUEUE_IPC_HELPER=1",
+		"AGENT_DECK_RUNTIME_ENQUEUE_IPC_DATA="+os.Getenv("XDG_DATA_HOME"),
+		"AGENT_DECK_RUNTIME_ENQUEUE_IPC_ID="+id,
+		"AGENT_DECK_RUNTIME_ENQUEUE_IPC_READY="+ready,
+		"AGENT_DECK_RUNTIME_ENQUEUE_IPC_RELEASE="+release,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.WriteFile(release, []byte("release"), 0o644)
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("enqueue helper did not reach durable write")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	discardDone := make(chan error, 1)
+	go func() { discardDone <- DiscardRuntimeQueue(id) }()
+	discardedBeforeEnqueue := false
+	select {
+	case err := <-discardDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+		discardedBeforeEnqueue = true
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := os.WriteFile(release, []byte("release"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if !discardedBeforeEnqueue {
+		if err := <-discardDone; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if RuntimeQueueHasPending(id) {
+		t.Fatal("enqueue persisted stale runtime work after discard completed")
+	}
+}
+
 func TestRuntimeQueueStageEmptyQueueReturnsZeroBatchWithoutWAL(t *testing.T) {
 	isolateRuntimeQueue(t)
 	const id = "empty-stage"

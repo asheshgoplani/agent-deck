@@ -194,6 +194,11 @@ func RuntimeQueuePathFor(id string) string {
 
 func EnqueueRuntimeMessage(id, msg string) (depth int, err error) {
 	path := RuntimeQueuePathFor(id)
+	release, err := lockRuntimeQueueDelivery(id)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 
 	runtimeQueueMu.Lock()
 	defer runtimeQueueMu.Unlock()
