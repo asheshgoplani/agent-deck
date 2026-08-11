@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -456,4 +457,26 @@ func PickerToolNames() []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// InferAlternateQuickCreateTool returns the first visible, installed picker
+// tool that differs from the configured default. Shell is not an agent
+// alternate and is therefore never selected.
+func InferAlternateQuickCreateTool(defaultTool string) (string, error) {
+	primary := strings.TrimSpace(defaultTool)
+	if primary == "" {
+		primary = "claude"
+	}
+
+	r := currentRegistry()
+	for _, name := range PickerToolNames() {
+		if name == "shell" || name == primary {
+			continue
+		}
+		def := r.Get(name)
+		if def != nil && probeInstalled(def.Command) {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("no installed alternate quick-create tool is available")
 }

@@ -50,29 +50,29 @@ group_sort   = "creation" # within-group order: "creation" (default) or "actiona
 | `sync_title` | bool | `true` | When `true`, agent-deck overwrites a session's title with the agent's own session-name (e.g. Claude's `--name` / `/rename`, issues #572/#697). Set `false` to keep the title you gave the session — globally, for every tool. A title you supply explicitly is already exempt: `add -t`, `launch -t`, the TUI New Session dialog, an explicit fork title, and `rename` all lock the title on creation (#1615/#1715), so only auto-derived folder-name titles follow the agent. The per-session title-lock (`agent-deck session set-title-lock <id> on|off`) remains as a finer-grained override. Also toggleable in the TUI Settings panel (`S`) under **SESSIONS**. |
 | `group_sort` | string | `"creation"` | Order of sessions within a group. `"creation"` (default) keeps the order sessions were created in, and respects the `K`/`J` manual reorder. `"actionable"` restores the issue #857 sort that surfaces the most recently actionable sessions (error → waiting → running → idle → stopped, then recency) to the top of each group. Pin and Maestro rows are unaffected by this setting. |
 
-## [quick_create] Section
+## Alternate quick-create
 
 Configures an optional second, no-dialog quick-create action. Normal
-`quick_create` (`N` by default) keeps its existing contextual behavior.
+quick-create (`N` by default) keeps its existing contextual behavior.
 
 ```toml
 default_tool = "claude"
-
-[quick_create]
-alternate_tool = "codex"
 
 [hotkeys]
 quick_create_alternate = "ctrl+n"
 ```
 
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `alternate_tool` | string | `""` | Tool selected by `quick_create_alternate` unless the contextual tool already matches it; in that case the action selects `default_tool`, falling back to Claude when unset. Built-in and custom tool names are supported. |
-
 `quick_create_alternate` is unbound by default. Binding `ctrl+n` replaces the
 overview's Emacs-style move-down chord; Down Arrow and `j` continue to navigate.
-The action reuses contextual path, group, and automatic naming, clears inherited
-tool-specific options, never opens the new-session dialog, and is local-only.
+The primary is `default_tool` (Claude when unset). The alternate is inferred as
+the first visible, installed, non-shell entry in the existing picker order that
+differs from the primary. If the context is already the alternate, the action
+selects the primary. It reuses contextual path, group, and automatic naming,
+clears inherited tool-specific options, never opens the new-session dialog, and
+is local-only.
+
+The deprecated `[quick_create].alternate_tool` key remains parseable but is
+ignored and produces a warning.
 
 ## [shell] Section
 

@@ -21,7 +21,7 @@ Complete reference for agent-deck Terminal UI features.
 | `Enter` | Attach to session OR toggle group |
 | `n` | New session (inherits current group) |
 | `N` | Contextual quick-create (inherits the selected session/recent group tool) |
-| Configured, for example `Ctrl+N` | Alternate quick-create; configure `[quick_create].alternate_tool` and `[hotkeys].quick_create_alternate` |
+| Configured, for example `Ctrl+N` | Inferred alternate quick-create; configure `[hotkeys].quick_create_alternate` |
 | `r` | Rename session or group |
 | `R` | Restart session (reloads MCPs) |
 | `+` / `K` / `Shift+↑` | Move item up (auto-promotes a sub-session to top-level when at the parent's first child) |
@@ -101,24 +101,22 @@ Claude New Session defaults are remembered in `$XDG_CONFIG_HOME/agent-deck/confi
 ### Dynamic alternate quick-create
 
 Normal `N` quick-create remains contextual. An optional second action launches
-the configured alternate tool without opening a dialog. When the contextual
-tool is already the alternate, it flips back to `default_tool` (Claude when
-unset):
+an inferred alternate without opening a dialog. The primary is `default_tool`
+(Claude when unset); the alternate is the first visible, installed, non-shell
+tool in the existing picker order that differs from the primary. When the
+contextual tool is already the alternate, the action flips back to the primary:
 
 ```toml
 default_tool = "claude"
-
-[quick_create]
-alternate_tool = "codex"
 
 [hotkeys]
 quick_create_alternate = "ctrl+n"
 ```
 
-With this example, `N` on Claude launches Claude and `Ctrl+N` launches Codex;
-on Codex, `N` launches Codex and `Ctrl+N` launches Claude. Binding `Ctrl+N`
-replaces overview move-down on that chord; `j` and Down Arrow remain available.
-Alternate quick-create is local-only.
+If Claude and Codex are the visible installed agents, `N` on Claude launches
+Claude and `Ctrl+N` launches Codex; on Codex, `N` launches Codex and `Ctrl+N`
+launches Claude. Binding `Ctrl+N` replaces overview move-down on that chord;
+`j` and Down Arrow remain available. Alternate quick-create is local-only.
 
 ### MCP Manager (`m`)
 

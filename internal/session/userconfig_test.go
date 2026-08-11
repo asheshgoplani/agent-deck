@@ -438,8 +438,6 @@ func TestCreateExampleConfigDocumentsCompatibleWith(t *testing.T) {
 	for _, want := range []string{
 		`compatible_with - Built-in compatibility to mirror ("claude" or "codex")`,
 		`compatible_with = "codex"`,
-		`[quick_create]`,
-		`alternate_tool = "codex"`,
 		`quick_create_alternate = "ctrl+n"`,
 	} {
 		if !strings.Contains(config, want) {

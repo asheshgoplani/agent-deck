@@ -366,8 +366,10 @@ type PerformanceSettings struct {
 	ClaimPolling *bool `toml:"claim_polling,omitempty"`
 }
 
-// QuickCreateSettings controls the optional second quick-create action.
+// QuickCreateSettings retains deprecated quick-create configuration so older
+// files remain parseable. Alternate selection is inferred from installed tools.
 type QuickCreateSettings struct {
+	// Deprecated: alternate quick-create ignores this value and infers a tool.
 	AlternateTool string `toml:"alternate_tool,omitempty"`
 }
 
@@ -3148,6 +3150,11 @@ func LoadUserConfig() (*UserConfig, error) {
 		userConfigCacheErr = fmt.Errorf("invalid [orchestrate].tool_strategy %q: must be \"default\" or \"auto\"", strategy)
 		return userConfigCache, userConfigCacheErr
 	}
+	if alternate := strings.TrimSpace(config.QuickCreate.AlternateTool); alternate != "" {
+		registryLog.Warn("ignored deprecated quick-create alternate_tool",
+			"configured_tool", alternate,
+			"hint", "alternate quick-create now infers the first visible installed tool")
+	}
 
 	if config.Tools == nil {
 		config.Tools = make(map[string]ToolDef)
@@ -3717,16 +3724,6 @@ func GetDefaultTool() string {
 	return config.DefaultTool
 }
 
-// GetQuickCreateAlternateTool returns the optional tool used by the
-// quick_create_alternate TUI action.
-func GetQuickCreateAlternateTool() string {
-	config, err := LoadUserConfig()
-	if err != nil || config == nil {
-		return ""
-	}
-	return strings.TrimSpace(config.QuickCreate.AlternateTool)
-}
-
 // GetWebMutationsEnabled returns whether `agent-deck web` should accept
 // mutating HTTP requests (POST/PATCH/DELETE). Defaults to true when the
 // `[web].mutations_enabled` key is omitted from config.toml.
@@ -4282,12 +4279,8 @@ func CreateExampleConfig() error {
 # Leave commented out or empty to default to shell (no pre-selection)
 # default_tool = "claude"
 
-# Dynamic alternate quick-create (optional)
-# Normal quick-create stays contextual. The alternate action launches this
-# tool, except when the contextual tool already matches it; then it launches
-# default_tool (or Claude when default_tool is empty).
-# [quick_create]
-# alternate_tool = "codex"
+# Dynamic alternate quick-create is inferred from the first visible, installed,
+# non-shell picker tool that differs from default_tool (Claude when unset).
 
 # Hotkey overrides (optional)
 # Action names are defined by agent-deck. Value is the key string.

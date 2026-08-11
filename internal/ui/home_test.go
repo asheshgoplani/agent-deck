@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -47,7 +48,19 @@ func TestAlternateQuickCreateHotkeyDispatchesWithoutDialog(t *testing.T) {
 	}
 }
 
-func TestAlternateQuickCreateUsesDefaultWhenContextIsAlternate(t *testing.T) {
+func TestAlternateQuickCreateInfersInstalledCustomTool(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatalf("find tmux: %v", err)
+	}
+	binDir := t.TempDir()
+	if err := os.Symlink(tmuxPath, filepath.Join(binDir, "tmux")); err != nil {
+		t.Fatalf("link tmux: %v", err)
+	}
+	if err := os.Symlink("/bin/sleep", filepath.Join(binDir, "sleep")); err != nil {
+		t.Fatalf("link sleep: %v", err)
+	}
+	t.Setenv("PATH", binDir)
 	homeDir := setXDGTestHome(t)
 	writeXDGTestConfig(t, homeDir, `
 default_tool = "primary-test"
@@ -57,13 +70,16 @@ alternate_tool = "shell"
 
 [tools.primary-test]
 command = "sleep 30"
+
+[tools.secondary-test]
+command = "sleep 30"
 `)
 
 	home := NewHome()
 	home.setHotkeys(resolveHotkeys(map[string]string{
 		"quick_create_alternate": "ctrl+n",
 	}))
-	source := session.NewInstanceWithGroupAndTool("source", t.TempDir(), "test", "shell")
+	source := session.NewInstanceWithGroupAndTool("source", t.TempDir(), "primary-test", "primary-test")
 	home.instances = []*session.Instance{source}
 	home.flatItems = []session.Item{{Type: session.ItemTypeSession, Session: source}}
 	home.cursor = 0
@@ -81,39 +97,27 @@ command = "sleep 30"
 			t.Errorf("cleanup alternate quick-created session: %v", err)
 		}
 	})
-	if got := msg.instance.Tool; got != "primary-test" {
-		t.Fatalf("alternate quick-create tool = %q, want primary-test", got)
+	if got := msg.instance.Tool; got != "secondary-test" {
+		t.Fatalf("alternate quick-create tool = %q, want inferred secondary-test", got)
 	}
 }
 
-func TestResolveAlternateQuickCreateTool(t *testing.T) {
+func TestSelectAlternateQuickCreateTool(t *testing.T) {
 	tests := []struct {
-		name        string
-		contextual  string
-		defaultTool string
-		alternate   string
-		want        string
-		wantErr     bool
+		name       string
+		contextual string
+		primary    string
+		alternate  string
+		want       string
 	}{
-		{name: "primary context selects alternate", contextual: "claude", defaultTool: "claude", alternate: "codex", want: "codex"},
-		{name: "alternate context flips to default", contextual: "codex", defaultTool: "claude", alternate: "codex", want: "claude"},
-		{name: "unrelated context selects alternate", contextual: "gemini", defaultTool: "claude", alternate: "codex", want: "codex"},
-		{name: "empty default falls back to claude", contextual: "codex", alternate: "codex", want: "claude"},
-		{name: "missing alternate is rejected", contextual: "claude", defaultTool: "claude", wantErr: true},
+		{name: "primary context selects alternate", contextual: "claude", primary: "claude", alternate: "codex", want: "codex"},
+		{name: "alternate context flips to primary", contextual: "codex", primary: "claude", alternate: "codex", want: "claude"},
+		{name: "unrelated context selects alternate", contextual: "gemini", primary: "claude", alternate: "codex", want: "codex"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveAlternateQuickCreateTool(tt.contextual, tt.defaultTool, tt.alternate)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("resolve alternate quick-create tool returned no error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("resolve alternate quick-create tool: %v", err)
-			}
+			got := selectAlternateQuickCreateTool(tt.contextual, tt.primary, tt.alternate)
 			if got != tt.want {
 				t.Fatalf("resolved tool = %q, want %q", got, tt.want)
 			}

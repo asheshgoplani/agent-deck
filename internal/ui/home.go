@@ -11876,19 +11876,23 @@ func (h *Home) quickForkSession(source *session.Instance) tea.Cmd {
 	return result.cmd
 }
 
-func resolveAlternateQuickCreateTool(contextualTool, defaultTool, alternateTool string) (string, error) {
-	alternateTool = strings.TrimSpace(alternateTool)
-	if alternateTool == "" {
-		return "", fmt.Errorf("alternate quick-create tool is not configured; set [quick_create].alternate_tool")
+func selectAlternateQuickCreateTool(contextualTool, primaryTool, alternateTool string) string {
+	if contextualTool == alternateTool {
+		return primaryTool
 	}
+	return alternateTool
+}
+
+func resolveAlternateQuickCreateTool(contextualTool, defaultTool string) (string, error) {
 	defaultTool = strings.TrimSpace(defaultTool)
 	if defaultTool == "" {
 		defaultTool = "claude"
 	}
-	if contextualTool == alternateTool {
-		return defaultTool, nil
+	alternateTool, err := session.InferAlternateQuickCreateTool(defaultTool)
+	if err != nil {
+		return "", err
 	}
-	return alternateTool, nil
+	return selectAlternateQuickCreateTool(contextualTool, defaultTool, alternateTool), nil
 }
 
 // quickCreateSession creates a session instantly with auto-generated name and smart defaults.
@@ -11985,7 +11989,6 @@ func (h *Home) quickCreateSession(alternate bool) tea.Cmd {
 		resolvedTool, err := resolveAlternateQuickCreateTool(
 			tool,
 			session.GetDefaultTool(),
-			session.GetQuickCreateAlternateTool(),
 		)
 		if err != nil {
 			return func() tea.Msg {

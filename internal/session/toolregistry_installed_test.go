@@ -307,3 +307,81 @@ func TestPickerToolNames_MapsShellAlias(t *testing.T) {
 		}
 	}
 }
+
+func TestInferAlternateQuickCreateTool(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	isolateConfigHomeXDG(t)
+
+	tests := []struct {
+		name        string
+		defaultTool string
+		installed   []string
+		hidden      []string
+		custom      map[string]ToolDef
+		want        string
+		wantErr     bool
+	}{
+		{
+			name:        "codex default selects first installed picker tool",
+			defaultTool: "codex",
+			installed:   []string{"claude", "gemini", "codex"},
+			want:        "claude",
+		},
+		{
+			name:        "hidden and unavailable tools are skipped",
+			defaultTool: "codex",
+			installed:   []string{"claude", "codex", "opencode"},
+			hidden:      []string{"claude"},
+			want:        "opencode",
+		},
+		{
+			name:      "empty default treats claude as primary",
+			installed: []string{"claude", "codex"},
+			want:      "codex",
+		},
+		{
+			name:        "custom tools follow builtins",
+			defaultTool: "primary-custom",
+			custom: map[string]ToolDef{
+				"primary-custom":   {Command: "primary-wrapper --run"},
+				"secondary-custom": {Command: "secondary-wrapper --run"},
+			},
+			want: "secondary-custom",
+		},
+		{
+			name:        "shell is not an alternate",
+			defaultTool: "claude",
+			installed:   []string{"claude"},
+			wantErr:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withStubbedProbe(t, tt.installed, func() {
+				if err := SaveUserConfig(&UserConfig{
+					DefaultTool: tt.defaultTool,
+					Tools:       tt.custom,
+					UI:          UISettings{HiddenTools: tt.hidden},
+				}); err != nil {
+					t.Fatalf("SaveUserConfig: %v", err)
+				}
+				ClearUserConfigCache()
+
+				got, err := InferAlternateQuickCreateTool(tt.defaultTool)
+				if tt.wantErr {
+					if err == nil {
+						t.Fatalf("InferAlternateQuickCreateTool() = %q, want error", got)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("InferAlternateQuickCreateTool: %v", err)
+				}
+				if got != tt.want {
+					t.Fatalf("InferAlternateQuickCreateTool() = %q, want %q", got, tt.want)
+				}
+			})
+		})
+	}
+}
