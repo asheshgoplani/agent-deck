@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,18 @@ func isolateRuntimeQueue(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+}
+
+func completeRuntimeQueueSubmissionForTest(id, token string, submit func() error) error {
+	lease, valid, err := BeginRuntimeQueueSubmission(id, token)
+	if err != nil || !valid {
+		return err
+	}
+	defer lease.Release()
+	if err := submit(); err != nil {
+		return err
+	}
+	return lease.Acknowledge()
 }
 
 func TestRuntimeQueueStore(t *testing.T) {
@@ -360,7 +373,7 @@ func TestRuntimeQueueSubmissionContentionIsScopedPerInstance(t *testing.T) {
 	defer release()
 	blockedDone := make(chan error, 1)
 	go func() {
-		_, err := SubmitRuntimeQueueBatch("blocked-instance", blockedBatch.Token, func() error {
+		err := completeRuntimeQueueSubmissionForTest("blocked-instance", blockedBatch.Token, func() error {
 			close(blockedEntered)
 			<-releaseBlocked
 			return nil
@@ -371,7 +384,7 @@ func TestRuntimeQueueSubmissionContentionIsScopedPerInstance(t *testing.T) {
 
 	independentDone := make(chan error, 1)
 	go func() {
-		_, err := SubmitRuntimeQueueBatch("independent-instance", independentBatch.Token, func() error { return nil })
+		err := completeRuntimeQueueSubmissionForTest("independent-instance", independentBatch.Token, func() error { return nil })
 		independentDone <- err
 	}()
 	select {
@@ -400,9 +413,12 @@ func TestRuntimeQueueDeliveryLockUsesCanonicalQueueIdentity(t *testing.T) {
 	}
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
 	done := make(chan error, 1)
 	go func() {
-		_, err := SubmitRuntimeQueueBatch(stagedID, batch.Token, func() error {
+		err := completeRuntimeQueueSubmissionForTest(stagedID, batch.Token, func() error {
 			close(entered)
 			<-release
 			return nil
@@ -410,9 +426,9 @@ func TestRuntimeQueueDeliveryLockUsesCanonicalQueueIdentity(t *testing.T) {
 		done <- err
 	}()
 	<-entered
-	err = DiscardRuntimeQueue(aliasID)
-	close(release)
-	if err == nil || !strings.Contains(err.Error(), "delivery in progress") {
+	err = TryDiscardRuntimeQueue(aliasID)
+	unblock()
+	if !errors.Is(err, ErrRuntimeQueueDeliveryInProgress) {
 		t.Fatalf("colliding alias discard error = %v, want delivery in progress", err)
 	}
 	if err := <-done; err != nil {
@@ -420,45 +436,44 @@ func TestRuntimeQueueDeliveryLockUsesCanonicalQueueIdentity(t *testing.T) {
 	}
 }
 
-func TestRuntimeQueueSubmissionRejectsReentrantDiscard(t *testing.T) {
+func TestRuntimeQueueDiscardWaitsForActiveSubmission(t *testing.T) {
 	isolateRuntimeQueue(t)
-	const id = "reentrant-discard"
-	if _, err := EnqueueRuntimeMessage(id, "reentrant"); err != nil {
+	const id = "blocking-discard"
+	if _, err := EnqueueRuntimeMessage(id, "blocking discard"); err != nil {
 		t.Fatal(err)
 	}
 	batch, err := StageRuntimeQueue(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	submitDone := make(chan error, 1)
 	go func() {
-		_, err := SubmitRuntimeQueueBatch(id, batch.Token, func() error {
-			return DiscardRuntimeQueue(id)
+		err := completeRuntimeQueueSubmissionForTest(id, batch.Token, func() error {
+			close(entered)
+			<-release
+			return nil
 		})
-		done <- err
+		submitDone <- err
 	}()
+	<-entered
+	discardDone := make(chan error, 1)
+	go func() { discardDone <- DiscardRuntimeQueue(id) }()
 	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "delivery in progress") {
-			t.Fatalf("reentrant discard error = %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("reentrant discard deadlocked")
+	case err := <-discardDone:
+		t.Fatalf("discard returned before submission completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
 	}
-}
-
-func TestRuntimeQueueSubmissionRejectsNilCallback(t *testing.T) {
-	isolateRuntimeQueue(t)
-	for _, token := range []string{"", "non-empty"} {
-		var gotErr error
-		panicked := func() (panicked bool) {
-			defer func() { panicked = recover() != nil }()
-			_, gotErr = SubmitRuntimeQueueBatch("nil-callback", token, nil)
-			return false
-		}()
-		if panicked || gotErr == nil {
-			t.Fatalf("token %q: panicked=%v error=%v, want non-panic error", token, panicked, gotErr)
-		}
+	unblock()
+	if err := <-submitDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-discardDone; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -471,13 +486,125 @@ func TestRuntimeQueueDeliveryLocksAreReleasedFromRegistry(t *testing.T) {
 		}
 	}
 	count := 0
-	runtimeQueueDeliveryMu.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
+	runtimeQueueRegistryMu.Lock()
+	count = len(runtimeQueueDeliveryMu)
+	runtimeQueueRegistryMu.Unlock()
 	if count != 0 {
 		t.Fatalf("delivery lock registry retained %d inactive entries", count)
 	}
+}
+
+func waitForRuntimeQueueDeliveryRefs(t *testing.T, id string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	key := sanitizeInboxName(id)
+	for time.Now().Before(deadline) {
+		runtimeQueueRegistryMu.Lock()
+		entry := runtimeQueueDeliveryMu[key]
+		got := 0
+		if entry != nil {
+			got = entry.refs
+		}
+		runtimeQueueRegistryMu.Unlock()
+		if got == want {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("delivery refs for %q did not reach %d", id, want)
+}
+
+func assertNoRuntimeQueueDeliveryEntry(t *testing.T, id string) {
+	t.Helper()
+	runtimeQueueRegistryMu.Lock()
+	_, exists := runtimeQueueDeliveryMu[sanitizeInboxName(id)]
+	runtimeQueueRegistryMu.Unlock()
+	if exists {
+		t.Fatalf("delivery registry retained %q", id)
+	}
+}
+
+func TestRuntimeQueueSameKeyWaiterRetainsSharedEntry(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "same-key-waiter"
+	owner, valid, err := BeginRuntimeQueueSubmission(id, "")
+	if err != nil || !valid {
+		t.Fatalf("begin owner = valid %v, err %v", valid, err)
+	}
+	defer owner.Release()
+	waiterReady := make(chan *RuntimeQueueSubmission, 1)
+	go func() {
+		lease, _, _ := BeginRuntimeQueueSubmission(id, "")
+		waiterReady <- lease
+	}()
+	waitForRuntimeQueueDeliveryRefs(t, id, 2)
+	owner.Release()
+	waiter := <-waiterReady
+	if err := TryDiscardRuntimeQueue(id); !errors.Is(err, ErrRuntimeQueueDeliveryInProgress) {
+		t.Fatalf("third caller bypassed retained waiter entry: %v", err)
+	}
+	waiter.Release()
+	assertNoRuntimeQueueDeliveryEntry(t, id)
+}
+
+func TestRuntimeQueueSubmissionReleasesRegistryOnEveryExit(t *testing.T) {
+	isolateRuntimeQueue(t)
+
+	t.Run("successful", func(t *testing.T) {
+		const id = "release-success"
+		lease, valid, err := BeginRuntimeQueueSubmission(id, "")
+		if err != nil || !valid {
+			t.Fatalf("begin = valid %v, err %v", valid, err)
+		}
+		if err := lease.Acknowledge(); err != nil {
+			t.Fatal(err)
+		}
+		assertNoRuntimeQueueDeliveryEntry(t, id)
+	})
+
+	t.Run("rejected token", func(t *testing.T) {
+		const id = "release-rejected"
+		lease, valid, err := BeginRuntimeQueueSubmission(id, "missing-token")
+		if err != nil || valid || lease != nil {
+			t.Fatalf("begin = lease %#v, valid %v, err %v", lease, valid, err)
+		}
+		assertNoRuntimeQueueDeliveryEntry(t, id)
+	})
+
+	t.Run("external failure release", func(t *testing.T) {
+		const id = "release-external-error"
+		lease, valid, err := BeginRuntimeQueueSubmission(id, "")
+		if err != nil || !valid {
+			t.Fatalf("begin = valid %v, err %v", valid, err)
+		}
+		lease.Release()
+		assertNoRuntimeQueueDeliveryEntry(t, id)
+	})
+}
+
+func TestRuntimeQueueEmptyTokenSubmissionCoordinatesDiscard(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "empty-token-discard"
+	lease, valid, err := BeginRuntimeQueueSubmission(id, "")
+	if err != nil || !valid {
+		t.Fatalf("begin = valid %v, err %v", valid, err)
+	}
+	defer lease.Release()
+	discardDone := make(chan error, 1)
+	go func() { discardDone <- DiscardRuntimeQueue(id) }()
+	waitForRuntimeQueueDeliveryRefs(t, id, 2)
+	select {
+	case err := <-discardDone:
+		t.Fatalf("discard bypassed empty-token submission: %v", err)
+	default:
+	}
+	if err := lease.Acknowledge(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-discardDone; err != nil {
+		t.Fatal(err)
+	}
+	assertNoRuntimeQueueDeliveryEntry(t, id)
 }
 
 func TestRuntimeQueueStageEmptyQueueReturnsZeroBatchWithoutWAL(t *testing.T) {

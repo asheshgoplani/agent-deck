@@ -235,12 +235,12 @@ func TestStopHookRuntimeQueueDiscardDuringWriteReturnsInProgress(t *testing.T) {
 	discardDone := make(chan error, 1)
 	go func() {
 		close(discardStarted)
-		discardDone <- session.DiscardRuntimeQueue(id)
+		discardDone <- session.TryDiscardRuntimeQueue(id)
 	}()
 	<-discardStarted
 	select {
 	case err := <-discardDone:
-		if err == nil || !strings.Contains(err.Error(), "delivery in progress") {
+		if !errors.Is(err, session.ErrRuntimeQueueDeliveryInProgress) {
 			t.Fatalf("discard during writer error = %v", err)
 		}
 	case <-time.After(2 * time.Second):

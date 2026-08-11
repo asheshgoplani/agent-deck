@@ -163,8 +163,8 @@ const (
 
 var (
 	runtimeQueueMu         sync.Mutex
-	runtimeQueueDeliveryMu sync.Map
 	runtimeQueueRegistryMu sync.Mutex
+	runtimeQueueDeliveryMu = make(map[string]*runtimeQueueDeliveryEntry)
 	runtimeQueueNewID      = uuid.NewString
 	runtimeQueueNow        = time.Now
 	runtimeQueuePersist    = writeFileDurable
@@ -240,15 +240,15 @@ func PeekRuntimeQueue(id string) ([]RuntimeQueuedMessage, error) {
 }
 
 func DiscardRuntimeQueue(id string) error {
-	release, acquired := tryRuntimeQueueDeliveryLock(id)
-	if !acquired {
-		return ErrRuntimeQueueDeliveryInProgress
-	}
+	release := lockRuntimeQueueDelivery(id)
 	defer release()
 
 	runtimeQueueMu.Lock()
 	defer runtimeQueueMu.Unlock()
+	return discardRuntimeQueueFilesLocked(id)
+}
 
+func discardRuntimeQueueFilesLocked(id string) error {
 	dirsToSync := make(map[string]struct{})
 	syncRemovedDirs := func() {
 		for dir := range dirsToSync {
@@ -270,6 +270,21 @@ func DiscardRuntimeQueue(id string) error {
 	return nil
 }
 
+func TryDiscardRuntimeQueue(id string) error {
+	release, acquired := tryRuntimeQueueDeliveryLock(id)
+	if !acquired {
+		return ErrRuntimeQueueDeliveryInProgress
+	}
+	defer release()
+	return discardRuntimeQueueLocked(id)
+}
+
+func discardRuntimeQueueLocked(id string) error {
+	runtimeQueueMu.Lock()
+	defer runtimeQueueMu.Unlock()
+	return discardRuntimeQueueFilesLocked(id)
+}
+
 type runtimeQueueDeliveryEntry struct {
 	mu   sync.Mutex
 	refs int
@@ -279,8 +294,11 @@ func retainRuntimeQueueDeliveryEntry(id string) (string, *runtimeQueueDeliveryEn
 	key := sanitizeInboxName(id)
 	runtimeQueueRegistryMu.Lock()
 	defer runtimeQueueRegistryMu.Unlock()
-	value, _ := runtimeQueueDeliveryMu.LoadOrStore(key, &runtimeQueueDeliveryEntry{})
-	entry := value.(*runtimeQueueDeliveryEntry)
+	entry := runtimeQueueDeliveryMu[key]
+	if entry == nil {
+		entry = &runtimeQueueDeliveryEntry{}
+		runtimeQueueDeliveryMu[key] = entry
+	}
 	entry.refs++
 	return key, entry
 }
@@ -290,7 +308,7 @@ func releaseRuntimeQueueDeliveryEntry(key string, entry *runtimeQueueDeliveryEnt
 	defer runtimeQueueRegistryMu.Unlock()
 	entry.refs--
 	if entry.refs == 0 {
-		runtimeQueueDeliveryMu.CompareAndDelete(key, entry)
+		delete(runtimeQueueDeliveryMu, key)
 	}
 }
 
@@ -315,40 +333,58 @@ func tryRuntimeQueueDeliveryLock(id string) (func(), bool) {
 	}, true
 }
 
-// SubmitRuntimeQueueBatch revalidates a staged batch and keeps discard from
-// invalidating it across the externally visible submission and acknowledgment
-// boundary. A batch discarded before this transaction begins is not submitted.
-func SubmitRuntimeQueueBatch(id, token string, submit func() error) (bool, error) {
-	if submit == nil {
-		return false, errors.New("runtime queue submission callback is nil")
-	}
+type RuntimeQueueSubmission struct {
+	id      string
+	token   string
+	release func()
+	once    sync.Once
+}
+
+// BeginRuntimeQueueSubmission validates a staged batch and returns a lease
+// that protects the external write through acknowledgment. The caller must
+// call Acknowledge after a complete write or Release on every failure path.
+func BeginRuntimeQueueSubmission(id, token string) (*RuntimeQueueSubmission, bool, error) {
 	release := lockRuntimeQueueDelivery(id)
-	defer release()
 
 	if token == "" {
-		if err := submit(); err != nil {
-			return false, err
-		}
-		return true, nil
+		return &RuntimeQueueSubmission{id: id, release: release}, true, nil
 	}
 
 	batch, err := StageRuntimeQueue(id)
 	if err != nil {
-		return false, err
+		release()
+		return nil, false, err
 	}
 	if batch.Token == "" {
-		return false, nil
+		release()
+		return nil, false, nil
 	}
 	if batch.Token != token {
-		return false, nil
+		release()
+		return nil, false, nil
 	}
-	if err := submit(); err != nil {
-		return false, err
+	return &RuntimeQueueSubmission{id: id, token: token, release: release}, true, nil
+}
+
+func (s *RuntimeQueueSubmission) Release() {
+	if s == nil {
+		return
 	}
-	if err := AcknowledgeRuntimeQueue(id, token); err != nil {
-		return false, fmt.Errorf("acknowledge runtime queue: %w", err)
+	s.once.Do(s.release)
+}
+
+func (s *RuntimeQueueSubmission) Acknowledge() error {
+	if s == nil {
+		return errors.New("runtime queue submission lease is nil")
 	}
-	return true, nil
+	defer s.Release()
+	if s.token == "" {
+		return nil
+	}
+	if err := AcknowledgeRuntimeQueue(s.id, s.token); err != nil {
+		return fmt.Errorf("acknowledge runtime queue: %w", err)
+	}
+	return nil
 }
 
 func runtimeQueueInflightPathFor(id string) string {

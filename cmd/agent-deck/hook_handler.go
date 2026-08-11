@@ -337,13 +337,21 @@ func emitStopHookDecision(instanceID string, stopHookActive bool, writer io.Writ
 		return fmt.Errorf("marshal Stop-hook response: %w", err)
 	}
 	out = append(out, '\n')
-	submitted, err := session.SubmitRuntimeQueueBatch(instanceID, dec.RuntimeQueueAckToken, func() error {
-		return writeStopHookResponse(writer, out)
-	})
+	submission, submitted, err := session.BeginRuntimeQueueSubmission(instanceID, dec.RuntimeQueueAckToken)
 	if err != nil {
-		return fmt.Errorf("submit Stop-hook response: %w", err)
+		return fmt.Errorf("begin Stop-hook submission: %w", err)
 	}
-	if submitted || dec.InboxReason == "" {
+	if submitted {
+		defer submission.Release()
+		if err := writeStopHookResponse(writer, out); err != nil {
+			return err
+		}
+		if err := submission.Acknowledge(); err != nil {
+			return err
+		}
+		return nil
+	}
+	if dec.InboxReason == "" {
 		return nil
 	}
 	fallback := session.StopHookDecision{Decision: dec.Decision, Reason: dec.InboxReason}
