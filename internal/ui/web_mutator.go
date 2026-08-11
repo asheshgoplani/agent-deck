@@ -232,7 +232,9 @@ func (m *WebMutator) DeleteSession(id string) error {
 		return fmt.Errorf("open storage: %w", err)
 	}
 	defer storage.Close()
-	if err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentRemove, ""); err != nil {
+	removePayload := session.LifecycleIntentPayload(inst, inst.WorktreePath, "")
+	removeIntent, err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentRemove, removePayload)
+	if err != nil {
 		return fmt.Errorf("prepare web deletion: %w", err)
 	}
 
@@ -241,10 +243,15 @@ func (m *WebMutator) DeleteSession(id string) error {
 	}); err != nil {
 		return fmt.Errorf("commit web deletion: %w", err)
 	}
-	if err := session.CompleteLifecycleIntent(storage, id); err != nil {
+	if err := session.AdvanceLifecycleIntent(storage, removeIntent, "row-deleted", removePayload); err != nil {
+		return fmt.Errorf("advance web deletion: %w", err)
+	}
+	if killErr := inst.Kill(); killErr != nil && inst.Exists() {
+		return fmt.Errorf("web deletion committed but process teardown failed: %w", killErr)
+	}
+	if err := session.CompleteLifecycleIntent(storage, removeIntent); err != nil {
 		return fmt.Errorf("complete web deletion: %w", err)
 	}
-	_ = inst.Kill()
 	m.pushUndo(inst)
 	return nil
 }
@@ -294,7 +301,8 @@ func (m *WebMutator) ArchiveSession(id string) error {
 		return fmt.Errorf("open archive storage: %w", err)
 	}
 	defer storage.Close()
-	if err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentArchive, ""); err != nil {
+	archiveIntent, err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentArchive, "")
+	if err != nil {
 		return fmt.Errorf("prepare web archive: %w", err)
 	}
 	m.h.instancesMu.Lock()
@@ -305,8 +313,11 @@ func (m *WebMutator) ArchiveSession(id string) error {
 		m.h.instancesMu.Lock()
 		inst.ArchivedAt = previousArchivedAt
 		m.h.instancesMu.Unlock()
-		_ = session.CompleteLifecycleIntent(storage, id)
+		_ = session.CompleteLifecycleIntent(storage, archiveIntent)
 		return fmt.Errorf("commit web archive persistence: %w", err)
+	}
+	if err := session.AdvanceLifecycleIntent(storage, archiveIntent, "archived", ""); err != nil {
+		return fmt.Errorf("advance web archive: %w", err)
 	}
 	if err := inst.Kill(); err != nil {
 		m.h.instancesMu.Lock()
@@ -315,7 +326,7 @@ func (m *WebMutator) ArchiveSession(id string) error {
 		if rollbackErr := webPersistArchive(m); rollbackErr != nil {
 			return fmt.Errorf("stop archived session: %w; rollback archive: %v", err, rollbackErr)
 		}
-		if completeErr := session.CompleteLifecycleIntent(storage, id); completeErr != nil {
+		if completeErr := session.CompleteLifecycleIntent(storage, archiveIntent); completeErr != nil {
 			return fmt.Errorf("stop archived session: %w; complete rollback: %v", err, completeErr)
 		}
 		return fmt.Errorf("failed to stop session; archive rolled back: %w", err)
@@ -325,7 +336,7 @@ func (m *WebMutator) ArchiveSession(id string) error {
 		// SQLite even though stale queue cleanup must be reported to the caller.
 		return fmt.Errorf("commit web archive queue discard: %w", err)
 	}
-	return session.CompleteLifecycleIntent(storage, id)
+	return session.CompleteLifecycleIntent(storage, archiveIntent)
 }
 
 // UnarchiveSession clears the archive flag without starting tmux.
@@ -708,7 +719,9 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		return web.WorktreeFinishResult{}, fmt.Errorf("discard runtime queue: %w", err)
 	}
 	defer queueTx.Release()
-	if err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentWorktreeFinish, worktreePath); err != nil {
+	finishPayload := session.LifecycleIntentPayload(inst, worktreePath, "")
+	finishIntent, err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentWorktreeFinish, finishPayload)
+	if err != nil {
 		return web.WorktreeFinishResult{}, fmt.Errorf("prepare worktree finish: %w", err)
 	}
 
@@ -724,6 +737,9 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 			}
 			return web.WorktreeFinishResult{}, fmt.Errorf("merge failed (aborted): %w", mErr)
 		}
+		if err := session.AdvanceLifecycleIntent(storage, finishIntent, "merged", finishPayload); err != nil {
+			return web.WorktreeFinishResult{}, fmt.Errorf("record merged worktree: %w", err)
+		}
 	}
 
 	if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
@@ -733,6 +749,9 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		_ = backend.RemoveWorktree(worktreePath, opts.Force)
 	}
 	_ = backend.PruneWorktrees()
+	if err := session.AdvanceLifecycleIntent(storage, finishIntent, "worktree-removed", finishPayload); err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("record worktree removal: %w", err)
+	}
 
 	branchDeleted := false
 	if !opts.KeepBranch {
@@ -742,14 +761,16 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 	}
 
 	if inst.Exists() {
-		_ = inst.Kill()
+		if killErr := inst.Kill(); killErr != nil && inst.Exists() {
+			return web.WorktreeFinishResult{}, fmt.Errorf("worktree finalized but process teardown failed: %w", killErr)
+		}
 	}
 	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
 		return storage.RemoveSessionAndVerify(id, existing, m.h.groupTree)
 	}); err != nil {
 		return web.WorktreeFinishResult{}, fmt.Errorf("commit worktree removal: %w", err)
 	}
-	if err := session.CompleteLifecycleIntent(storage, id); err != nil {
+	if err := session.CompleteLifecycleIntent(storage, finishIntent); err != nil {
 		return web.WorktreeFinishResult{}, fmt.Errorf("complete worktree finish: %w", err)
 	}
 

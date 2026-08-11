@@ -839,8 +839,8 @@ func handleConductorTeardown(_ string, args []string) {
 		var instances []*session.Instance
 		var groups []*session.GroupData
 		var ownedTxs []*session.RuntimeQueueTransaction
-		var ownedIDs []string
-		var prepareCause error
+		var ownedIntents []session.LifecycleIntentHandle
+		prepareCause := err
 		prepareFailed := err != nil
 		if err == nil {
 			instances, groups, err = storage.LoadWithGroups()
@@ -859,13 +859,15 @@ func handleConductorTeardown(_ string, args []string) {
 							break
 						}
 						ownedTxs = append(ownedTxs, queueTx)
-						ownedIDs = append(ownedIDs, inst.ID)
 						if *removeAll {
-							if intentErr := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentRemove, "conductor:"+meta.Name); intentErr != nil {
+							intentPayload := session.LifecycleIntentPayload(inst, inst.WorktreePath, meta.Name)
+							intent, intentErr := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentRemove, intentPayload)
+							if intentErr != nil {
 								prepareFailed = true
 								prepareCause = intentErr
 								break
 							}
+							ownedIntents = append(ownedIntents, intent)
 							filtered := dropInstance(instances, inst.ID)
 							groupTree := session.NewGroupTreeWithGroups(filtered, groups)
 							if rmErr := storage.RemoveSessionAndVerify(inst.ID, filtered, groupTree); rmErr != nil {
@@ -874,6 +876,9 @@ func handleConductorTeardown(_ string, args []string) {
 								if !*jsonOutput {
 									fmt.Fprintf(os.Stderr, "  Warning: failed to remove session '%s' (%s): %v\n", sessionTitle, inst.ID, rmErr)
 								}
+							} else if advanceErr := session.AdvanceLifecycleIntent(storage, intent, "row-deleted", intentPayload); advanceErr != nil {
+								prepareFailed = true
+								prepareCause = advanceErr
 							}
 						}
 						break
@@ -900,7 +905,7 @@ func handleConductorTeardown(_ string, args []string) {
 				}
 			}
 		}
-		if !*jsonOutput {
+		if !*jsonOutput && !targetFailed {
 			fmt.Printf("  [ok] %s stopped\n", sessionTitle)
 		}
 
@@ -915,8 +920,16 @@ func handleConductorTeardown(_ string, args []string) {
 				if !*jsonOutput {
 					fmt.Fprintf(os.Stderr, "  Warning: failed to remove dir for %s: %v\n", meta.Name, err)
 				}
-			} else if !*jsonOutput {
-				fmt.Printf("  [ok] Removed directory for %s\n", meta.Name)
+			} else {
+				for _, intent := range ownedIntents {
+					if advanceErr := session.AdvanceLifecycleIntent(storage, intent, "directory-removed", intent.Payload); advanceErr != nil {
+						targetFailed = true
+						teardownErrors = append(teardownErrors, fmt.Sprintf("%s: record directory removal: %v", meta.Name, advanceErr))
+					}
+				}
+				if !*jsonOutput {
+					fmt.Printf("  [ok] Removed directory for %s\n", meta.Name)
+				}
 			}
 
 			// Remove session from storage. #1550: SaveWithGroups is upsert-only
@@ -978,7 +991,7 @@ func handleConductorTeardown(_ string, args []string) {
 			}
 			tx.Release()
 			if *removeAll && !targetFailed {
-				if completeErr := session.CompleteLifecycleIntent(storage, ownedIDs[i]); completeErr != nil {
+				if completeErr := session.CompleteLifecycleIntent(storage, ownedIntents[i]); completeErr != nil {
 					targetFailed = true
 					teardownErrors = append(teardownErrors, fmt.Sprintf("%s: complete lifecycle intent: %v", meta.Name, completeErr))
 				}

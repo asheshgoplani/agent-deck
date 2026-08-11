@@ -100,7 +100,9 @@ func handleSessionRemove(profile string, args []string) {
 	// reports success but row stays" failure noted in the bug report.
 	instances = dropInstance(instances, inst.ID)
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
-	if err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentRemove, ""); err != nil {
+	removePayload := session.LifecycleIntentPayload(inst, inst.WorktreePath, "")
+	removeIntent, err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentRemove, removePayload)
+	if err != nil {
 		queueTx.Release()
 		out.Error(fmt.Sprintf("failed to prepare removal: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -112,12 +114,20 @@ func handleSessionRemove(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	if err := session.AdvanceLifecycleIntent(storage, removeIntent, "row-deleted", removePayload); err != nil {
+		queueTx.Release()
+		out.Error(fmt.Sprintf("failed to advance removal: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 	queueTx.Release()
-	if err := session.CompleteLifecycleIntent(storage, inst.ID); err != nil {
+	if err := inst.KillAndWait(); err != nil && inst.Exists() {
+		out.Error(fmt.Sprintf("session removed but process teardown failed: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := session.CompleteLifecycleIntent(storage, removeIntent); err != nil {
 		out.Error(fmt.Sprintf("failed to complete removal: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	_ = inst.KillAndWait()
 	if *pruneWorktree {
 		pruneSessionWorktree(inst)
 	}
@@ -216,32 +226,42 @@ func bulkRemoveSessions(
 	removed := make([]removedSessionRow, 0, len(doomed))
 	removedIDs := make([]string, 0, len(doomed))
 	queueTxs := make([]*session.RuntimeQueueTransaction, 0, len(doomed))
+	removeIntents := make([]session.LifecycleIntentHandle, 0, len(doomed))
 	remaining := append([]*session.Instance(nil), instances...)
 	for _, inst := range doomed {
 		queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
 		if err != nil {
-			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs)
+			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs, removeIntents)
 			out.Error(fmt.Sprintf("failed to lock runtime queue for %s: %v", inst.ID, errors.Join(err, cleanupErr)), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 		nextRemaining := dropInstance(remaining, inst.ID)
 		groupTree := session.NewGroupTreeWithGroups(nextRemaining, groups)
-		if err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentRemove, ""); err != nil {
+		removePayload := session.LifecycleIntentPayload(inst, inst.WorktreePath, "")
+		removeIntent, err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentRemove, removePayload)
+		if err != nil {
 			queueTx.Release()
-			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs)
+			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs, removeIntents)
 			out.Error(fmt.Sprintf("failed to prepare removal %s: %v", inst.ID, errors.Join(err, cleanupErr)), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 		if err := bulkSessionRemovePersist(storage, inst.ID, nextRemaining, groupTree); err != nil {
 			queueTx.Release()
-			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs)
+			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs, removeIntents)
 			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, errors.Join(err, cleanupErr)), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		if err := session.AdvanceLifecycleIntent(storage, removeIntent, "row-deleted", removePayload); err != nil {
+			queueTx.Release()
+			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs, removeIntents)
+			out.Error(fmt.Sprintf("failed to advance removal %s: %v", inst.ID, errors.Join(err, cleanupErr)), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 		remaining = nextRemaining
 		removedIDs = append(removedIDs, inst.ID)
 		removed = append(removed, map[string]interface{}{"id": inst.ID, "title": inst.Title})
 		queueTxs = append(queueTxs, queueTx)
+		removeIntents = append(removeIntents, removeIntent)
 		_ = inst.KillAndWait()
 		if pruneWorktree {
 			pruneSessionWorktree(inst)
@@ -253,7 +273,7 @@ func bulkRemoveSessions(
 	// only the successfully committed IDs once more. Failed/unattempted sessions
 	// never enter removedIDs; a committed prefix is fully finalized even when a
 	// later item fails, so its now-unreachable queues cannot become orphans.
-	if err := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs); err != nil {
+	if err := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs, removeIntents); err != nil {
 		out.Error(fmt.Sprintf("failed to verify bulk session removal: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -262,9 +282,13 @@ func bulkRemoveSessions(
 
 const bulkFinalVerifyAttempts = 6
 
-func finalizeCommittedBulkRemovals(storage *session.Storage, removedIDs []string, queueTxs []*session.RuntimeQueueTransaction) error {
+func finalizeCommittedBulkRemovals(storage *session.Storage, removedIDs []string, queueTxs []*session.RuntimeQueueTransaction, intentSets ...[]session.LifecycleIntentHandle) error {
 	if len(removedIDs) == 0 {
 		return nil
+	}
+	var intents []session.LifecycleIntentHandle
+	if len(intentSets) > 0 {
+		intents = intentSets[0]
 	}
 	for pass := 0; pass < bulkFinalVerifyAttempts; pass++ {
 		for _, id := range removedIDs {
@@ -290,8 +314,8 @@ func finalizeCommittedBulkRemovals(storage *session.Storage, removedIDs []string
 		if absent {
 			releaseRuntimeQueueTransactions(queueTxs)
 			var intentErr error
-			for _, id := range removedIDs {
-				intentErr = errors.Join(intentErr, session.CompleteLifecycleIntent(storage, id))
+			for _, intent := range intents {
+				intentErr = errors.Join(intentErr, session.CompleteLifecycleIntent(storage, intent))
 			}
 			return errors.Join(observeErr, intentErr, cleanupCommittedBulkRemovals(removedIDs))
 		}

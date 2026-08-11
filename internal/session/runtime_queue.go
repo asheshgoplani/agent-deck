@@ -203,10 +203,11 @@ func EnqueueRuntimeMessage(id, msg string) (depth int, err error) {
 }
 
 type RuntimeQueueTransaction struct {
-	id       string
-	release  func()
-	stateMu  sync.Mutex
-	released bool
+	id             string
+	release        func()
+	stateMu        sync.Mutex
+	released       bool
+	beforeMutation func()
 }
 
 func BeginRuntimeQueueTransaction(id string) (*RuntimeQueueTransaction, error) {
@@ -238,6 +239,9 @@ func (tx *RuntimeQueueTransaction) Enqueue(msg string) (depth int, err error) {
 	defer tx.stateMu.Unlock()
 	if tx.released || tx.release == nil {
 		return 0, ErrRuntimeQueueTransactionReleased
+	}
+	if tx.beforeMutation != nil {
+		tx.beforeMutation()
 	}
 	path := RuntimeQueuePathFor(tx.id)
 
@@ -283,6 +287,9 @@ func (tx *RuntimeQueueTransaction) Discard() error {
 	defer tx.stateMu.Unlock()
 	if tx.released || tx.release == nil {
 		return ErrRuntimeQueueTransactionReleased
+	}
+	if tx.beforeMutation != nil {
+		tx.beforeMutation()
 	}
 	runtimeQueueMu.Lock()
 	defer runtimeQueueMu.Unlock()

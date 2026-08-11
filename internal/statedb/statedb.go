@@ -103,8 +103,15 @@ type LifecycleIntent struct {
 	InstanceID string
 	Kind       string
 	Payload    string
+	Phase      string
+	Token      string
+	Generation int64
 	CreatedAt  int64
+	UpdatedAt  int64
 }
+
+var ErrLifecycleIntentConflict = errors.New("statedb: incompatible lifecycle intent already active")
+var ErrLifecycleIntentOwnership = errors.New("statedb: lifecycle intent ownership token mismatch")
 
 // ErrInstanceTombstoned prevents stale persistence from recreating an ID whose
 // deletion has already committed. Only CreateInstance may explicitly reuse it.
@@ -592,7 +599,11 @@ func (s *StateDB) Migrate() error {
 			instance_id TEXT PRIMARY KEY,
 			kind TEXT NOT NULL,
 			payload TEXT NOT NULL DEFAULT '',
-			created_at INTEGER NOT NULL
+			phase TEXT NOT NULL DEFAULT 'prepared',
+			token TEXT NOT NULL DEFAULT '',
+			generation INTEGER NOT NULL DEFAULT 1,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL DEFAULT 0
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create lifecycle_intents: %w", err)
@@ -603,6 +614,10 @@ func (s *StateDB) Migrate() error {
 	// Each migration is idempotent: errors from "duplicate column" are silently ignored.
 	// See CLAUDE.md "Schema Migration Safety": every new column MUST have a corresponding ALTER TABLE.
 	alterMigrations := []string{
+		"ALTER TABLE lifecycle_intents ADD COLUMN phase TEXT NOT NULL DEFAULT 'prepared'",
+		"ALTER TABLE lifecycle_intents ADD COLUMN token TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE lifecycle_intents ADD COLUMN generation INTEGER NOT NULL DEFAULT 1",
+		"ALTER TABLE lifecycle_intents ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE instance_tombstones ADD COLUMN generation INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE instance_tombstones ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE instances ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0",
@@ -1360,28 +1375,77 @@ func (s *StateDB) WithInstancesAbsent(ids []string, confirmed func() error) (boo
 	return true, confirmed()
 }
 
-func (s *StateDB) PrepareLifecycleIntent(intent LifecycleIntent) error {
+func (s *StateDB) PrepareLifecycleIntent(intent LifecycleIntent) (LifecycleIntent, error) {
 	if intent.InstanceID == "" || intent.Kind == "" {
-		return errors.New("statedb: lifecycle intent requires instance id and kind")
+		return LifecycleIntent{}, errors.New("statedb: lifecycle intent requires instance id and kind")
 	}
+	var prepared LifecycleIntent
+	err := withBusyRetry(func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		var current LifecycleIntent
+		err = tx.QueryRow(`SELECT instance_id, kind, payload, phase, token, generation, created_at, updated_at
+			FROM lifecycle_intents WHERE instance_id=?`, intent.InstanceID).
+			Scan(&current.InstanceID, &current.Kind, &current.Payload, &current.Phase, &current.Token, &current.Generation, &current.CreatedAt, &current.UpdatedAt)
+		if err == nil {
+			if current.Kind != intent.Kind || current.Payload != intent.Payload {
+				return ErrLifecycleIntentConflict
+			}
+			if current.Token == "" {
+				current.Token = uuid.NewString()
+				if _, err := tx.Exec("UPDATE lifecycle_intents SET token=?, updated_at=? WHERE instance_id=?", current.Token, time.Now().Unix(), current.InstanceID); err != nil {
+					return err
+				}
+			}
+			prepared = current
+			return tx.Commit()
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		now := time.Now().Unix()
+		prepared = LifecycleIntent{InstanceID: intent.InstanceID, Kind: intent.Kind, Payload: intent.Payload, Phase: "prepared", Token: uuid.NewString(), Generation: time.Now().UnixNano(), CreatedAt: now, UpdatedAt: now}
+		_, err = tx.Exec(`INSERT INTO lifecycle_intents(instance_id, kind, payload, phase, token, generation, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, prepared.InstanceID, prepared.Kind, prepared.Payload, prepared.Phase, prepared.Token, prepared.Generation, prepared.CreatedAt, prepared.UpdatedAt)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+	return prepared, err
+}
+
+func (s *StateDB) AdvanceLifecycleIntent(instanceID, token, phase, payload string) error {
 	return withBusyRetry(func() error {
-		_, err := s.db.Exec(`INSERT INTO lifecycle_intents(instance_id, kind, payload, created_at)
-			VALUES (?, ?, ?, ?)
-			ON CONFLICT(instance_id) DO UPDATE SET kind=excluded.kind, payload=excluded.payload, created_at=excluded.created_at`,
-			intent.InstanceID, intent.Kind, intent.Payload, time.Now().Unix())
-		return err
+		result, err := s.db.Exec("UPDATE lifecycle_intents SET phase=?, payload=?, updated_at=? WHERE instance_id=? AND token=?", phase, payload, time.Now().Unix(), instanceID, token)
+		if err != nil {
+			return err
+		}
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			return ErrLifecycleIntentOwnership
+		}
+		return nil
 	})
 }
 
-func (s *StateDB) CompleteLifecycleIntent(instanceID string) error {
+func (s *StateDB) CompleteLifecycleIntent(instanceID, token string) error {
 	return withBusyRetry(func() error {
-		_, err := s.db.Exec("DELETE FROM lifecycle_intents WHERE instance_id = ?", instanceID)
-		return err
+		result, err := s.db.Exec("DELETE FROM lifecycle_intents WHERE instance_id = ? AND token = ?", instanceID, token)
+		if err != nil {
+			return err
+		}
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			return ErrLifecycleIntentOwnership
+		}
+		return nil
 	})
 }
 
 func (s *StateDB) LifecycleIntents() ([]LifecycleIntent, error) {
-	rows, err := s.db.Query("SELECT instance_id, kind, payload, created_at FROM lifecycle_intents ORDER BY created_at, instance_id")
+	rows, err := s.db.Query("SELECT instance_id, kind, payload, phase, token, generation, created_at, updated_at FROM lifecycle_intents ORDER BY created_at, instance_id")
 	if err != nil {
 		return nil, err
 	}
@@ -1389,7 +1453,7 @@ func (s *StateDB) LifecycleIntents() ([]LifecycleIntent, error) {
 	var out []LifecycleIntent
 	for rows.Next() {
 		var intent LifecycleIntent
-		if err := rows.Scan(&intent.InstanceID, &intent.Kind, &intent.Payload, &intent.CreatedAt); err != nil {
+		if err := rows.Scan(&intent.InstanceID, &intent.Kind, &intent.Payload, &intent.Phase, &intent.Token, &intent.Generation, &intent.CreatedAt, &intent.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, intent)

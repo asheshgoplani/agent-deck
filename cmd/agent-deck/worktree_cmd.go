@@ -741,7 +741,9 @@ func handleWorktreeFinish(profile string, args []string) {
 	defer queueTx.Release()
 	remaining := dropInstance(instances, inst.ID)
 	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
-	if err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentWorktreeFinish, worktreePath); err != nil {
+	finishPayload := session.LifecycleIntentPayload(inst, worktreePath, "")
+	finishIntent, err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentWorktreeFinish, finishPayload)
+	if err != nil {
 		out.Error(fmt.Sprintf("failed to prepare worktree finish: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -769,6 +771,10 @@ func handleWorktreeFinish(profile string, args []string) {
 			os.Exit(1)
 		}
 		fmt.Printf("  %s Merged successfully\n", successSymbol)
+		if err := session.AdvanceLifecycleIntent(storage, finishIntent, "merged", finishPayload); err != nil {
+			out.Error(fmt.Sprintf("failed to record merged worktree: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 	}
 
 	// Step 2: Remove worktree
@@ -781,6 +787,10 @@ func handleWorktreeFinish(profile string, args []string) {
 		}
 	}
 	_ = finishBackend.PruneWorktrees()
+	if err := session.AdvanceLifecycleIntent(storage, finishIntent, "worktree-removed", finishPayload); err != nil {
+		out.Error(fmt.Sprintf("failed to record worktree removal: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	// Step 3: Delete branch (if not --keep-branch)
 	if !*keepBranch {
@@ -795,7 +805,10 @@ func handleWorktreeFinish(profile string, args []string) {
 	// Step 4: Kill tmux session
 	if inst.Exists() {
 		if err := inst.Kill(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to kill tmux session: %v\n", err)
+			if inst.Exists() {
+				out.Error(fmt.Sprintf("worktree finalized but process teardown failed: %v", err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
 		}
 	}
 
@@ -815,7 +828,7 @@ func handleWorktreeFinish(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	if err := session.CompleteLifecycleIntent(storage, inst.ID); err != nil {
+	if err := session.CompleteLifecycleIntent(storage, finishIntent); err != nil {
 		out.Error(fmt.Sprintf("failed to complete worktree finish intent: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}

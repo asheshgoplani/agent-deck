@@ -1468,3 +1468,42 @@ func TestRuntimeQueueTransactionReleaseWinsSynchronizedMutation(t *testing.T) {
 		t.Fatal("post-release mutation reached queue")
 	}
 }
+
+func TestRuntimeQueueTransactionReleaseWaitsForStartedMutation(t *testing.T) {
+	isolateRuntimeQueue(t)
+	tx, err := BeginRuntimeQueueTransaction("started-mutation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	allow := make(chan struct{})
+	tx.beforeMutation = func() {
+		close(entered)
+		<-allow
+	}
+	mutationDone := make(chan error, 1)
+	go func() {
+		_, err := tx.Enqueue("owned mutation")
+		mutationDone <- err
+	}()
+	<-entered
+	releaseDone := make(chan struct{})
+	go func() {
+		tx.Release()
+		close(releaseDone)
+	}()
+	select {
+	case <-releaseDone:
+		t.Fatal("Release returned while an owned mutation was in progress")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(allow)
+	if err := <-mutationDone; err != nil {
+		t.Fatal(err)
+	}
+	<-releaseDone
+	tx.Release()
+	if _, err := tx.Enqueue("late"); !errors.Is(err, ErrRuntimeQueueTransactionReleased) {
+		t.Fatalf("mutation after repeated release = %v", err)
+	}
+}

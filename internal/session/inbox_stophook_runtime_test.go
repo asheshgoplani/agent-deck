@@ -1,11 +1,77 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestStopHookReservationRejectsWrongTokenAndCount(t *testing.T) {
+	inboxTestHome(t)
+	const id = "reservation-validation"
+	if _, err := EnqueueRuntimeMessage(id, "validate"); err != nil {
+		t.Fatal(err)
+	}
+	dec, blocked, err := StageForStopHook(id, false)
+	if err != nil || !blocked {
+		t.Fatalf("stage = %+v, %v, %v", dec, blocked, err)
+	}
+	if err := AcknowledgeStopHookDelivery(id, dec.InboxAckToken, dec.RuntimeQueueAckToken, "wrong", dec.StopBlockCount); err == nil {
+		t.Fatal("wrong reservation token acknowledged")
+	}
+	if err := AcknowledgeStopHookDelivery(id, dec.InboxAckToken, dec.RuntimeQueueAckToken, dec.StopBlockToken, dec.StopBlockCount+1); err == nil {
+		t.Fatal("wrong reservation count acknowledged")
+	}
+	if err := RollbackStopHookDelivery(id, "wrong"); err == nil {
+		t.Fatal("wrong rollback token succeeded")
+	}
+	if err := RollbackStopHookDelivery(id, dec.StopBlockToken); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStopHookReservationRollbackPersistenceFailureSurfaced(t *testing.T) {
+	inboxTestHome(t)
+	const id = "reservation-persist-failure"
+	if _, err := EnqueueRuntimeMessage(id, "validate"); err != nil {
+		t.Fatal(err)
+	}
+	dec, blocked, err := StageForStopHook(id, false)
+	if err != nil || !blocked {
+		t.Fatalf("stage = %+v, %v, %v", dec, blocked, err)
+	}
+	previous := stopBlockPersist
+	stopBlockPersist = func(string, []byte, os.FileMode) error { return errors.New("forced reservation persistence failure") }
+	t.Cleanup(func() { stopBlockPersist = previous })
+	if err := RollbackStopHookDelivery(id, dec.StopBlockToken); err == nil || !strings.Contains(err.Error(), "forced reservation") {
+		t.Fatalf("rollback persistence error = %v", err)
+	}
+}
+
+func TestStopHookInboxAcknowledgementFailureRemainsRollbackable(t *testing.T) {
+	inboxTestHome(t)
+	const id = "inbox-ack-rollback"
+	commitForStop(t, id, "child", "turn")
+	dec, blocked, err := StageForStopHook(id, false)
+	if err != nil || !blocked {
+		t.Fatalf("stage = %+v, %v, %v", dec, blocked, err)
+	}
+	previous := stopHookAcknowledgeInbox
+	stopHookAcknowledgeInbox = func(string, string) error { return errors.New("forced inbox ack failure") }
+	if err := AcknowledgeStopHookDelivery(id, dec.InboxAckToken, dec.RuntimeQueueAckToken, dec.StopBlockToken, dec.StopBlockCount); err == nil {
+		t.Fatal("inbox acknowledgement failure was hidden")
+	}
+	stopHookAcknowledgeInbox = previous
+	t.Cleanup(func() { stopHookAcknowledgeInbox = previous })
+	if err := RollbackStopHookDelivery(id, dec.StopBlockToken); err != nil {
+		t.Fatalf("reservation no longer rollbackable: %v", err)
+	}
+	if got := loadStopBlockCountLocked(id); got != dec.StopBlockPrevious {
+		t.Fatalf("budget after rollback = %d, want %d", got, dec.StopBlockPrevious)
+	}
+}
 
 func TestDrainForStopHookRuntimeQueue(t *testing.T) {
 	t.Run("runtime only", func(t *testing.T) {

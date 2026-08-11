@@ -67,7 +67,8 @@ func TestLifecycleIntentPersistsAcrossReopenUntilCompleted(t *testing.T) {
 	if err := db.Migrate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "intent-row", Kind: "worktree-finish", Payload: "/tmp/wt"}); err != nil {
+	intent, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "intent-row", Kind: "worktree-finish", Payload: "/tmp/wt"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -82,12 +83,50 @@ func TestLifecycleIntentPersistsAcrossReopenUntilCompleted(t *testing.T) {
 	if err != nil || len(intents) != 1 || intents[0].InstanceID != "intent-row" || intents[0].Payload != "/tmp/wt" {
 		t.Fatalf("reloaded intents = %#v, %v", intents, err)
 	}
-	if err := db.CompleteLifecycleIntent("intent-row"); err != nil {
+	if err := db.CompleteLifecycleIntent("intent-row", intent.Token); err != nil {
 		t.Fatal(err)
 	}
 	intents, err = db.LifecycleIntents()
 	if err != nil || len(intents) != 0 {
 		t.Fatalf("completed intents = %#v, %v", intents, err)
+	}
+}
+
+func TestLifecycleIntentRejectsOverlapAndStaleOwnership(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	first, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "owned", Kind: "remove", Payload: "metadata"})
+	if err != nil || first.Token == "" || first.Generation == 0 || first.Phase != "prepared" {
+		t.Fatalf("first prepare = %#v, %v", first, err)
+	}
+	retry, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "owned", Kind: "remove", Payload: "metadata"})
+	if err != nil || retry.Token != first.Token || retry.Generation != first.Generation {
+		t.Fatalf("idempotent prepare = %#v, %v", retry, err)
+	}
+	if _, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "owned", Kind: "archive", Payload: "metadata"}); !errors.Is(err, ErrLifecycleIntentConflict) {
+		t.Fatalf("incompatible prepare = %v", err)
+	}
+	if err := db.AdvanceLifecycleIntent("owned", "stale-token", "row-deleted", "metadata"); !errors.Is(err, ErrLifecycleIntentOwnership) {
+		t.Fatalf("stale advance = %v", err)
+	}
+	if err := db.CompleteLifecycleIntent("owned", "stale-token"); !errors.Is(err, ErrLifecycleIntentOwnership) {
+		t.Fatalf("stale completion = %v", err)
+	}
+	if err := db.AdvanceLifecycleIntent("owned", first.Token, "row-deleted", "metadata"); err != nil {
+		t.Fatal(err)
+	}
+	active, err := db.LifecycleIntents()
+	if err != nil || len(active) != 1 || active[0].Phase != "row-deleted" || active[0].Token != first.Token || active[0].Generation != first.Generation {
+		t.Fatalf("advanced intent = %#v, %v", active, err)
+	}
+	if err := db.CompleteLifecycleIntent("owned", first.Token); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -1290,6 +1290,7 @@ type worktreeFinishResultMsg struct {
 	err          error
 	queueTx      *session.RuntimeQueueTransaction
 	persisted    bool
+	intent       session.LifecycleIntentHandle
 }
 
 // watcherEventMsg is produced by listenForWatcherEvent when a new event arrives from the engine.
@@ -5901,9 +5902,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return h, nil
 			}
 		}
-		if err := session.CompleteLifecycleIntent(h.storage, msg.deletedID); err != nil {
-			h.setError(fmt.Errorf("failed to complete deletion intent: %w", err))
-			return h, nil
+		if msg.intent.Token != "" && msg.killErr == nil {
+			if err := session.CompleteLifecycleIntent(h.storage, msg.intent); err != nil {
+				h.setError(fmt.Errorf("failed to complete deletion intent: %w", err))
+				return h, nil
+			}
 		}
 
 		// Show undo hint (using setError as a transient message)
@@ -5978,9 +5981,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return h, nil
 				}
 			}
-			if err := session.CompleteLifecycleIntent(h.storage, msg.sessionID); err != nil {
-				h.setError(fmt.Errorf("failed to complete archive intent: %w", err))
-				return h, nil
+			if msg.intent.Token != "" {
+				if err := session.CompleteLifecycleIntent(h.storage, msg.intent); err != nil {
+					h.setError(fmt.Errorf("failed to complete archive intent: %w", err))
+					return h, nil
+				}
 			}
 			h.setError(fmt.Errorf("archived '%s' (^ to view)", inst.Title))
 		}
@@ -6844,9 +6849,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return h, nil
 			}
 		}
-		if err := session.CompleteLifecycleIntent(h.storage, msg.sessionID); err != nil {
-			h.setError(fmt.Errorf("failed to complete worktree finish intent: %w", err))
-			return h, nil
+		if msg.intent.Token != "" {
+			if err := session.CompleteLifecycleIntent(h.storage, msg.intent); err != nil {
+				h.setError(fmt.Errorf("failed to complete worktree finish intent: %w", err))
+				return h, nil
+			}
 		}
 
 		// Issue #1576: sweep transition-notifier state (inbox JSONL lines +
@@ -12923,6 +12930,7 @@ type sessionDeletedMsg struct {
 	killErr   error // Error from Kill() if any
 	queueTx   *session.RuntimeQueueTransaction
 	persisted bool
+	intent    session.LifecycleIntentHandle
 }
 
 type sessionDeleteFailedMsg struct {
@@ -12947,6 +12955,7 @@ type sessionArchivedMsg struct {
 	queueTx            *session.RuntimeQueueTransaction
 	previousArchivedAt time.Time
 	persisted          bool
+	intent             session.LifecycleIntentHandle
 }
 
 type sessionUnarchivedMsg struct {
@@ -12996,11 +13005,17 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 		if discardErr != nil {
 			return sessionDeleteFailedMsg{err: discardErr}
 		}
-		if err := session.PrepareLifecycleIntent(h.storage, id, session.LifecycleIntentRemove, ""); err != nil {
+		removePayload := session.LifecycleIntentPayload(inst, worktreePath, "")
+		removeIntent, err := session.PrepareLifecycleIntent(h.storage, id, session.LifecycleIntentRemove, removePayload)
+		if err != nil {
 			queueTx.Release()
 			return sessionDeleteFailedMsg{err: err}
 		}
 		if err := h.storage.RemoveSessionAndVerify(id, remaining, groupTree); err != nil {
+			queueTx.Release()
+			return sessionDeleteFailedMsg{err: err}
+		}
+		if err := session.AdvanceLifecycleIntent(h.storage, removeIntent, "row-deleted", removePayload); err != nil {
 			queueTx.Release()
 			return sessionDeleteFailedMsg{err: err}
 		}
@@ -13039,7 +13054,7 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 				}
 			}
 		}
-		return sessionDeletedMsg{deletedID: id, killErr: killErr, queueTx: queueTx, persisted: true}
+		return sessionDeletedMsg{deletedID: id, killErr: killErr, queueTx: queueTx, persisted: true, intent: removeIntent}
 	}
 }
 
@@ -13122,7 +13137,8 @@ func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 		if discardErr != nil {
 			return sessionArchivedMsg{sessionID: id, killErr: discardErr}
 		}
-		if err := session.PrepareLifecycleIntent(h.storage, id, session.LifecycleIntentArchive, ""); err != nil {
+		archiveIntent, err := session.PrepareLifecycleIntent(h.storage, id, session.LifecycleIntentArchive, "")
+		if err != nil {
 			queueTx.Release()
 			return sessionArchivedMsg{sessionID: id, killErr: fmt.Errorf("prepare archive: %w", err)}
 		}
@@ -13130,18 +13146,25 @@ func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 		inst.ArchivedAt = time.Now().UTC()
 		if err := h.persistArchived(inst); err != nil {
 			inst.ArchivedAt = previousArchivedAt
-			_ = session.CompleteLifecycleIntent(h.storage, id)
+			_ = session.CompleteLifecycleIntent(h.storage, archiveIntent)
 			queueTx.Release()
 			return sessionArchivedMsg{sessionID: id, killErr: fmt.Errorf("persist archive: %w", err)}
+		}
+		if err := session.AdvanceLifecycleIntent(h.storage, archiveIntent, "archived", ""); err != nil {
+			queueTx.Release()
+			return sessionArchivedMsg{sessionID: id, killErr: err}
 		}
 		if killErr := inst.Kill(); killErr != nil {
 			inst.ArchivedAt = previousArchivedAt
 			rollbackErr := h.persistArchived(inst)
-			completeErr := session.CompleteLifecycleIntent(h.storage, id)
+			var completeErr error
+			if rollbackErr == nil {
+				completeErr = session.CompleteLifecycleIntent(h.storage, archiveIntent)
+			}
 			queueTx.Release()
 			return sessionArchivedMsg{sessionID: id, killErr: fmt.Errorf("stop archived session: %w (rollback=%v, intent=%v)", killErr, rollbackErr, completeErr)}
 		}
-		return sessionArchivedMsg{sessionID: id, queueTx: queueTx, previousArchivedAt: previousArchivedAt, persisted: true}
+		return sessionArchivedMsg{sessionID: id, queueTx: queueTx, previousArchivedAt: previousArchivedAt, persisted: true, intent: archiveIntent}
 	}
 }
 
@@ -19661,7 +19684,9 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 			queueTx.Release()
 			return worktreeFinishResultMsg{sessionID: sessionID, sessionTitle: sessionTitle, err: err}
 		}
-		if err := session.PrepareLifecycleIntent(h.storage, sessionID, session.LifecycleIntentWorktreeFinish, worktreePath); err != nil {
+		finishPayload := session.LifecycleIntentPayload(inst, worktreePath, "")
+		finishIntent, err := session.PrepareLifecycleIntent(h.storage, sessionID, session.LifecycleIntentWorktreeFinish, finishPayload)
+		if err != nil {
 			return fail(fmt.Errorf("prepare finish transition: %w", err))
 		}
 		merged := false
@@ -19674,6 +19699,12 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 				return fail(fmt.Errorf("merge failed: %v", err))
 			}
 			merged = true
+			if err := session.AdvanceLifecycleIntent(h.storage, finishIntent, "merged", finishPayload); err != nil {
+				return fail(fmt.Errorf("record merged worktree: %w", err))
+			}
+		}
+		if err := session.AdvanceLifecycleIntent(h.storage, finishIntent, "worktree-removed", finishPayload); err != nil {
+			return fail(fmt.Errorf("record worktree removal: %w", err))
 		}
 
 		// #1449: when other live sessions still share this worktree, the
@@ -19703,7 +19734,9 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 
 		// Step 4: Kill tmux session
 		if inst != nil && inst.Exists() {
-			_ = inst.Kill()
+			if killErr := inst.Kill(); killErr != nil && inst.Exists() {
+				return fail(fmt.Errorf("worktree finalized but process teardown failed: %w", killErr))
+			}
 		}
 		if err := h.storage.RemoveSessionAndVerify(sessionID, remaining, groupTree); err != nil {
 			return fail(fmt.Errorf("finalize finish transition: %w", err))
@@ -19715,6 +19748,7 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 			merged:       merged,
 			queueTx:      queueTx,
 			persisted:    true,
+			intent:       finishIntent,
 		}
 	}
 }

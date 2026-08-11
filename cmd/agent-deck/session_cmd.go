@@ -547,7 +547,8 @@ func handleSessionArchive(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to lock runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	if err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentArchive, ""); err != nil {
+	archiveIntent, err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentArchive, "")
+	if err != nil {
 		queueTx.Release()
 		out.Error(fmt.Sprintf("failed to prepare archive: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -555,16 +556,24 @@ func handleSessionArchive(profile string, args []string) {
 	previousArchivedAt := inst.ArchivedAt
 	inst.ArchivedAt = time.Now().UTC()
 	if err := sessionArchivePersist(storage, inst, false); err != nil {
-		_ = session.CompleteLifecycleIntent(storage, inst.ID)
+		_ = session.CompleteLifecycleIntent(storage, archiveIntent)
 		queueTx.Release()
 		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := session.AdvanceLifecycleIntent(storage, archiveIntent, "archived", ""); err != nil {
+		queueTx.Release()
+		out.Error(fmt.Sprintf("failed to record archive phase: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 	if inst.Exists() {
 		if err := inst.Kill(); err != nil {
 			inst.ArchivedAt = previousArchivedAt
 			rollbackErr := sessionArchivePersist(storage, inst, false)
-			completeErr := session.CompleteLifecycleIntent(storage, inst.ID)
+			var completeErr error
+			if rollbackErr == nil {
+				completeErr = session.CompleteLifecycleIntent(storage, archiveIntent)
+			}
 			queueTx.Release()
 			out.Error(fmt.Sprintf("failed to stop archived session (archive rollback=%v, intent completion=%v): %v", rollbackErr, completeErr, err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -576,7 +585,7 @@ func handleSessionArchive(profile string, args []string) {
 		os.Exit(1)
 	}
 	queueTx.Release()
-	if err := session.CompleteLifecycleIntent(storage, inst.ID); err != nil {
+	if err := session.CompleteLifecycleIntent(storage, archiveIntent); err != nil {
 		out.Error(fmt.Sprintf("failed to complete archive intent: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}

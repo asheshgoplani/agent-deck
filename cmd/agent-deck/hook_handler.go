@@ -339,8 +339,9 @@ func emitStopHookDecision(instanceID string, stopHookActive bool, writer io.Writ
 		return err
 	}
 	deliveryCommitted := false
+	responseWritten := dec.StopBlockResponseWritten
 	defer func() {
-		if !deliveryCommitted {
+		if !deliveryCommitted && !responseWritten {
 			if rollbackErr := session.RollbackStopHookDelivery(instanceID, dec.StopBlockToken); rollbackErr != nil {
 				retErr = errors.Join(retErr, fmt.Errorf("rollback Stop-hook reservation: %w", rollbackErr))
 			}
@@ -352,16 +353,19 @@ func emitStopHookDecision(instanceID string, stopHookActive bool, writer io.Writ
 	}
 	out = append(out, '\n')
 	if dec.RuntimeQueueAckToken != "" {
-		if err := writeStopHookResponse(writer, out); err != nil {
-			return err
+		if !responseWritten {
+			if err := writeStopHookResponse(writer, out); err != nil {
+				return err
+			}
+			if err := session.MarkStopHookResponseWritten(instanceID, dec.StopBlockToken); err != nil {
+				return fmt.Errorf("record Stop-hook response write: %w", err)
+			}
+			responseWritten = true
 		}
-		if err := session.AcknowledgeStopHookDelivery(instanceID, dec.InboxAckToken, dec.StopBlockToken, dec.StopBlockCount); err != nil {
+		if err := session.AcknowledgeStopHookDelivery(instanceID, dec.InboxAckToken, dec.RuntimeQueueAckToken, dec.StopBlockToken, dec.StopBlockCount); err != nil {
 			return fmt.Errorf("acknowledge Stop-hook inbox/budget: %w", err)
 		}
 		deliveryCommitted = true
-		if err := session.AcknowledgeRuntimeQueue(instanceID, dec.RuntimeQueueAckToken); err != nil {
-			return fmt.Errorf("acknowledge Stop-hook runtime queue: %w", err)
-		}
 		return nil
 	}
 	if dec.InboxReason == "" {
@@ -372,10 +376,16 @@ func emitStopHookDecision(instanceID string, stopHookActive bool, writer io.Writ
 	if err != nil {
 		return fmt.Errorf("marshal inbox-only Stop-hook response: %w", err)
 	}
-	if err := writeStopHookResponse(writer, append(out, '\n')); err != nil {
-		return err
+	if !responseWritten {
+		if err := writeStopHookResponse(writer, append(out, '\n')); err != nil {
+			return err
+		}
+		if err := session.MarkStopHookResponseWritten(instanceID, dec.StopBlockToken); err != nil {
+			return fmt.Errorf("record inbox-only Stop-hook response write: %w", err)
+		}
+		responseWritten = true
 	}
-	if err := session.AcknowledgeStopHookDelivery(instanceID, dec.InboxAckToken, dec.StopBlockToken, dec.StopBlockCount); err != nil {
+	if err := session.AcknowledgeStopHookDelivery(instanceID, dec.InboxAckToken, dec.RuntimeQueueAckToken, dec.StopBlockToken, dec.StopBlockCount); err != nil {
 		return fmt.Errorf("acknowledge Stop-hook inbox/budget: %w", err)
 	}
 	deliveryCommitted = true
@@ -402,35 +412,19 @@ func writeStopHookResponse(writer io.Writer, out []byte) error {
 			return writeAll()
 		}
 	}
-	// In-memory/test writers and regular files complete synchronously and do not
+	// In-memory/test writers complete synchronously and do not
 	// need a cancellation goroutine. Keeping them synchronous also makes it
 	// impossible for bytes to appear after this function returns.
+	type synchronousStopHookWriter interface{ StopHookSynchronousWriter() }
 	switch writer.(type) {
-	case *bytes.Buffer, *os.File:
+	case *bytes.Buffer, synchronousStopHookWriter:
 		return writeAll()
 	}
-	closer, ok := writer.(io.WriteCloser)
-	if !ok {
-		return errors.New("write Stop-hook response: writer is not deadline-capable or cancellable")
-	}
-	result := make(chan error, 1)
-	go func() {
-		result <- writeAll()
-	}()
-	timer := time.NewTimer(stopHookWriteTimeout)
-	defer timer.Stop()
-	select {
-	case err := <-result:
-		return err
-	case <-timer.C:
-		if err := closer.Close(); err != nil {
-			return fmt.Errorf("write Stop-hook response: timed out after %s; cancel writer: %w", stopHookWriteTimeout, err)
-		}
-		// Close is the cancellation contract: do not release the delivery lease
-		// until Write has stopped, so no late bytes can race a retry.
-		<-result
-		return fmt.Errorf("write Stop-hook response: timed out after %s", stopHookWriteTimeout)
-	}
+	// Arbitrary io.Writer implementations have no cancellation contract. Do not
+	// launch an unkillable goroutine: rejecting before Write guarantees neither
+	// a leak nor late bytes. Production stdout is *os.File and uses the OS write
+	// deadline above (including full pipes).
+	return errors.New("write Stop-hook response: writer is not deadline-capable")
 }
 
 func hookSourceArg(args []string) string {

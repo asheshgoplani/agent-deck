@@ -1,11 +1,26 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
+
+type LifecycleOperationMetadata struct {
+	Instance      *Instance `json:"instance,omitempty"`
+	WorktreePath  string    `json:"worktree_path,omitempty"`
+	ConductorName string    `json:"conductor_name,omitempty"`
+}
+
+func LifecycleIntentPayload(inst *Instance, worktreePath, conductorName string) string {
+	raw, err := json.Marshal(LifecycleOperationMetadata{Instance: inst, WorktreePath: worktreePath, ConductorName: conductorName})
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
 
 const (
 	LifecycleIntentRemove         = "remove"
@@ -13,18 +28,27 @@ const (
 	LifecycleIntentArchive        = "archive"
 )
 
-func PrepareLifecycleIntent(storage *Storage, instanceID, kind, payload string) error {
+type LifecycleIntentHandle = statedb.LifecycleIntent
+
+func PrepareLifecycleIntent(storage *Storage, instanceID, kind, payload string) (LifecycleIntentHandle, error) {
 	if storage == nil || storage.db == nil {
-		return errors.New("prepare lifecycle intent: storage unavailable")
+		return LifecycleIntentHandle{}, errors.New("prepare lifecycle intent: storage unavailable")
 	}
 	return storage.db.PrepareLifecycleIntent(statedb.LifecycleIntent{InstanceID: instanceID, Kind: kind, Payload: payload})
 }
 
-func CompleteLifecycleIntent(storage *Storage, instanceID string) error {
+func AdvanceLifecycleIntent(storage *Storage, intent LifecycleIntentHandle, phase, payload string) error {
+	if storage == nil || storage.db == nil {
+		return errors.New("advance lifecycle intent: storage unavailable")
+	}
+	return storage.db.AdvanceLifecycleIntent(intent.InstanceID, intent.Token, phase, payload)
+}
+
+func CompleteLifecycleIntent(storage *Storage, intent LifecycleIntentHandle) error {
 	if storage == nil || storage.db == nil {
 		return errors.New("complete lifecycle intent: storage unavailable")
 	}
-	return storage.db.CompleteLifecycleIntent(instanceID)
+	return storage.db.CompleteLifecycleIntent(intent.InstanceID, intent.Token)
 }
 
 // RecoverLifecycleIntents finishes only transitions whose durable state makes
@@ -45,6 +69,8 @@ func RecoverLifecycleIntents(storage *Storage, instances []*Instance) error {
 	var recoveryErr error
 	for _, intent := range intents {
 		inst := byID[intent.InstanceID]
+		var metadata LifecycleOperationMetadata
+		_ = json.Unmarshal([]byte(intent.Payload), &metadata)
 		switch intent.Kind {
 		case LifecycleIntentArchive:
 			if inst == nil || !inst.IsArchived() {
@@ -68,12 +94,41 @@ func RecoverLifecycleIntents(storage *Storage, instances []*Instance) error {
 				continue
 			}
 			tx.Release()
-			if completeErr := CompleteLifecycleIntent(storage, intent.InstanceID); completeErr != nil {
+			if completeErr := CompleteLifecycleIntent(storage, intent); completeErr != nil {
 				recoveryErr = errors.Join(recoveryErr, completeErr)
 			}
 		case LifecycleIntentRemove, LifecycleIntentWorktreeFinish:
-			if inst != nil {
+			if intent.Kind == LifecycleIntentWorktreeFinish && inst != nil && intent.Phase == "prepared" {
 				continue
+			}
+			if intent.Kind == LifecycleIntentWorktreeFinish && inst != nil && intent.Phase == "merged" && metadata.Instance != nil {
+				if _, removeErr := RemoveSessionWorktree(metadata.Instance); removeErr != nil {
+					recoveryErr = errors.Join(recoveryErr, removeErr)
+					continue
+				}
+			}
+			teardownInst := inst
+			if teardownInst == nil {
+				teardownInst = metadata.Instance
+			}
+			if teardownInst != nil && teardownInst.Exists() {
+				if killErr := teardownInst.KillAndWait(); killErr != nil && teardownInst.Exists() {
+					recoveryErr = errors.Join(recoveryErr, killErr)
+					continue
+				}
+			}
+			if metadata.ConductorName != "" {
+				if teardownErr := TeardownConductor(metadata.ConductorName); teardownErr != nil {
+					recoveryErr = errors.Join(recoveryErr, teardownErr)
+					continue
+				}
+				_ = UninstallHeartbeatDaemon(metadata.ConductorName)
+			}
+			if inst != nil && intent.Kind == LifecycleIntentWorktreeFinish {
+				if deleteErr := storage.db.DeleteInstance(intent.InstanceID); deleteErr != nil {
+					recoveryErr = errors.Join(recoveryErr, deleteErr)
+					continue
+				}
 			}
 			tx, lockErr := BeginRuntimeQueueTransaction(intent.InstanceID)
 			if lockErr != nil {
@@ -86,7 +141,7 @@ func RecoverLifecycleIntents(storage *Storage, instances []*Instance) error {
 				continue
 			}
 			tx.Release()
-			if completeErr := CompleteLifecycleIntent(storage, intent.InstanceID); completeErr != nil {
+			if completeErr := CompleteLifecycleIntent(storage, intent); completeErr != nil {
 				recoveryErr = errors.Join(recoveryErr, completeErr)
 			}
 		}

@@ -147,10 +147,40 @@ func TestStopHookRuntimeQueueAcknowledgmentFailureSurfaced(t *testing.T) {
 	}
 }
 
+func TestStopHookRuntimeAckFailureRetriesAckWithoutReemission(t *testing.T) {
+	isolateStopHookRuntimeQueue(t)
+	const id = "runtime-ack-recovery"
+	if _, err := session.EnqueueRuntimeMessage(id, "emit only once"); err != nil {
+		t.Fatal(err)
+	}
+	restore := session.SetStopHookRuntimeAcknowledgerForTest(func(string, string) error {
+		return errors.New("forced runtime ack failure")
+	})
+	var first bytes.Buffer
+	err := emitStopHookDecision(id, false, &first)
+	restore()
+	if err == nil || !strings.Contains(err.Error(), "forced runtime ack") {
+		t.Fatalf("runtime ack error = %v", err)
+	}
+	if !strings.Contains(first.String(), "emit only once") {
+		t.Fatalf("first response = %q", first.String())
+	}
+	var retry bytes.Buffer
+	if err := emitStopHookDecision(id, true, &retry); err != nil {
+		t.Fatal(err)
+	}
+	if retry.Len() != 0 {
+		t.Fatalf("ack retry re-emitted response: %q", retry.String())
+	}
+	if session.RuntimeQueueHasPending(id) {
+		t.Fatal("ack retry left runtime queue pending")
+	}
+}
+
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
-func (f writerFunc) Close() error                { return nil }
+func (f writerFunc) StopHookSynchronousWriter()  {}
 
 type cancellableBlockingWriter struct {
 	started chan struct{}
@@ -173,23 +203,44 @@ func (w *cancellableBlockingWriter) Close() error {
 	return nil
 }
 
-func TestStopHookBoundedWriterCancelsBeforeReturning(t *testing.T) {
+func TestStopHookBoundedWriterRejectsHostileWriterBeforeEmission(t *testing.T) {
 	previous := stopHookWriteTimeout
 	stopHookWriteTimeout = 20 * time.Millisecond
 	t.Cleanup(func() { stopHookWriteTimeout = previous })
 	w := &cancellableBlockingWriter{started: make(chan struct{}), closed: make(chan struct{})}
 	before := time.Now()
 	err := writeStopHookResponse(w, []byte("response"))
-	if err == nil || !strings.Contains(err.Error(), "timed out") {
+	if err == nil || !strings.Contains(err.Error(), "not deadline-capable") {
 		t.Fatalf("bounded write error = %v", err)
 	}
 	if time.Since(before) > time.Second {
 		t.Fatal("bounded write retained blocked goroutine/lease")
 	}
 	select {
-	case <-w.closed:
+	case <-w.started:
+		t.Fatal("hostile writer was started and can emit late")
 	default:
-		t.Fatal("timeout did not cancel writer")
+	}
+}
+
+func TestStopHookBoundedWriterFullOSPipeDeadline(t *testing.T) {
+	previous := stopHookWriteTimeout
+	stopHookWriteTimeout = 25 * time.Millisecond
+	t.Cleanup(func() { stopHookWriteTimeout = previous })
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	payload := bytes.Repeat([]byte("x"), 1<<20)
+	started := time.Now()
+	err = writeStopHookResponse(w, payload)
+	if err == nil {
+		t.Fatal("full stdout pipe write unexpectedly succeeded")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatalf("OS pipe deadline was not bounded: %v", time.Since(started))
 	}
 }
 
