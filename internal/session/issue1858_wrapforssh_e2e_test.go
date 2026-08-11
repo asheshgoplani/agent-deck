@@ -61,7 +61,12 @@ func runRemote(t *testing.T, inst *Instance, remoteHome, probe string) (output, 
 	out, _ := cmd.CombinedOutput()
 
 	recorded, _ := os.ReadFile(argvLog)
-	return string(out), strings.TrimSpace(string(recorded))
+	argv = strings.TrimSpace(string(recorded))
+	// Logged unconditionally, not just on failure: "the exact command line the
+	// remote host receives" is the artifact a reviewer wants to read for #1858,
+	// and `go test -v` is the cheapest way to hand it to them.
+	t.Logf("remote host received:\n  argv:   %s\n  output: %s", argv, strings.TrimSpace(string(out)))
+	return string(out), argv
 }
 
 // remoteClaudeInstance builds an --ssh claude instance with an explicit config
