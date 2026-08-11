@@ -37,6 +37,7 @@ SELF_ID="$(jq -r '(.data // .) | .id // empty' <<<"$SELF_JSON")"
 SELF_TITLE="$(jq -r '(.data // .) | .title // empty' <<<"$SELF_JSON")"
 REPO="$(jq -r '(.data // .) | .path // empty' <<<"$SELF_JSON")"
 GROUP="$(jq -r '(.data // .) | .group_path // empty' <<<"$SELF_JSON")"
+SELF_TOOL="$(jq -r '(.data // .) | .tool // empty' <<<"$SELF_JSON")"
 if [ -z "$SELF_ID" ] || [ -z "$REPO" ]; then
   echo "rotate-conductor: could not resolve this session (id=$SELF_ID path=$REPO)." >&2
   exit 2
@@ -81,8 +82,25 @@ output. Do not re-launch them. Do not redo work the manifest records as done.
 Your first action is the heartbeat, not a status sweep.
 EOF
 
-# 5. Launch the successor. --no-parent: a conductor is the root of its own tree.
-LAUNCH=(launch "$REPO" -t "$NEXT_TITLE" -c claude --no-parent
+# 5. Launch the successor. Under auto, retaining this conductor's connector
+# preserves continuity; under default, use the configured global default. An
+# empty strategy is legacy behavior and remains Claude.
+POLICY_JSON="$(agent-deck config orchestrate)"
+STRATEGY="$(jq -r '.strategy' <<<"$POLICY_JSON")"
+FALLBACK_TOOL="$(jq -r '.fallback_tool' <<<"$POLICY_JSON")"
+NEXT_TOOL="claude"
+if [ "$STRATEGY" = "default" ]; then
+  NEXT_TOOL="$FALLBACK_TOOL"
+elif [ "$STRATEGY" = "auto" ] && [ -n "$SELF_TOOL" ]; then
+  NEXT_TOOL="$SELF_TOOL"
+fi
+if [ -z "$NEXT_TOOL" ]; then
+  echo "rotate-conductor: resolved an empty successor tool." >&2
+  exit 2
+fi
+
+# --no-parent: a conductor is the root of its own tree.
+LAUNCH=(launch "$REPO" -t "$NEXT_TITLE" -c "$NEXT_TOOL" --no-parent
         --message-file "$PROMPT_FILE")
 [ -n "$GROUP" ] && LAUNCH+=(-g "$GROUP")
 NEW_JSON="$(agent-deck "${LAUNCH[@]}" --json)"

@@ -341,6 +341,9 @@ func main() {
 		case "conductor":
 			handleConductor(profile, args[1:])
 			return
+		case "config":
+			handleConfig(args[1:])
+			return
 		case "telegram-doctor":
 			handleTelegramDoctor(profile, args[1:])
 			return
@@ -3443,6 +3446,7 @@ func printHelp() {
 	fmt.Println("  web              Start TUI with web UI server running alongside")
 	fmt.Println("  remote           Manage remote agent-deck instances")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")
+	fmt.Println("  config           Inspect resolved configuration")
 	fmt.Println("  telegram-doctor  Audit channel-owning sessions for telegram drops (#1138)")
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")

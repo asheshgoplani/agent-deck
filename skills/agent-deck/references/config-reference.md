@@ -20,6 +20,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[worktree] Section](#worktree-section)
 - [[fork] Section](#fork-section)
 - [[conductor] Section](#conductor-section)
+- [[orchestrate] Section](#orchestrate-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
 - [[interval_hooks.*] Section](#interval_hooks-section)
@@ -514,6 +515,32 @@ dir = ""   # Override the base conductor directory (default: <data-dir>/conducto
 > **Note:** Each conductor's `heartbeat.sh` honors `[conductor].dir` and self-heals — when you change `dir`, the script content is auto-refreshed by the migration that runs on the next `agent-deck conductor list` / `status` / `setup` / `teardown`. The surface that goes **stale** is the daemon, not the script: the launchd heartbeat plist (and the Linux systemd unit) bakes absolute script/log paths at install time and is regenerated only by `agent-deck conductor setup`. After changing `dir`, re-run `agent-deck conductor setup <name>` per conductor to regenerate and reload the daemon. (A `conductor migrate-dir` helper to automate this is planned.) A `conductor list`/`status` after a dir change will flag a stale heartbeat daemon in its `[migrated]` output.
 
 > **Note:** The Telegram/Slack/Discord bridge daemon (`bridge.py`) now honors `[conductor].dir`: the Go side injects the resolved override into the daemon environment as `AGENT_DECK_CONDUCTOR_DIR`, and the bridge prefers it over its XDG/legacy resolver (#1350). Caveat: the daemon's environment is frozen at install time, so if you change `[conductor].dir` after the bridge is set up, regenerate the bridge daemon (re-run conductor setup, or the planned `conductor migrate-dir`) for the daemon to pick up the new directory.
+
+## [orchestrate] Section
+
+Controls how the `agent-deck:orchestrate` workflow chooses tools for child
+sessions.
+
+```toml
+default_tool = "codex"
+
+[orchestrate]
+tool_strategy = "auto"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `tool_strategy` | string | `""` (legacy) | `"default"` uses the top-level `default_tool` for every non-explicit orchestrated launch. `"auto"` lets the conductor mix locally installed, non-hidden tools by role and task, falling back to `default_tool` when no connector is clearly better. An omitted value preserves the workflow's historical explicit choices. |
+
+Inspect the policy and the locally available auto-selection candidates:
+
+```bash
+agent-deck config orchestrate
+```
+
+Tool availability reuses Agent Deck's existing registry and command lookup.
+It detects installation, not provider authentication. Explicit workflow tool
+choices continue to override this strategy.
 
 ## [logs] Section
 

@@ -97,6 +97,37 @@ RUN_ID=<run-id>
 WORKTREES_DIR="$ROOT_WT/.worktrees"
 ```
 
+Resolve the user's tool policy once, persist it with the run, and consult it
+before every child launch:
+
+```bash
+agent-deck config orchestrate > "$RUN_DIR/tool-policy.json"
+TOOL_STRATEGY=$(jq -r '.strategy' "$RUN_DIR/tool-policy.json")
+DEFAULT_TOOL=$(jq -r '.fallback_tool' "$RUN_DIR/tool-policy.json")
+AVAILABLE_TOOLS=$(jq -r '.available_tools | join(", ")' "$RUN_DIR/tool-policy.json")
+```
+
+- Empty strategy is the backwards-compatible legacy policy: keep the explicit
+  connector shown by the workflow recipe.
+- `default` means every non-explicit launch uses `$DEFAULT_TOOL`.
+- `auto` means choose separately for each role from `.available_tools`, using
+  the capability table in the `agent-deck` skill and the task's actual needs.
+  Use `$DEFAULT_TOOL` when it is available and there is no concrete reason to
+  prefer another connector. If it is unavailable, select an available tool and
+  record that fallback.
+- An explicit workflow choice (for example the cross-provider Codex reviewer)
+  overrides the policy.
+- Before launching, append `role=<role> tool=<tool> reason=<one line>` to
+  `$RUN_DIR/manifest.md`. Automatic selection that is not recorded is not a
+  selection; it is hidden drift.
+- Connector flags move with the connector. `LEAN` is Claude-only. Build a
+  role-specific argument array for another connector rather than passing
+  Claude flags to it. Set the recipe's role variable (`PLANNER_TOOL`,
+  `IMPLEMENTER_TOOL`, or `REVIEWER_TOOL`) and its matching `*_ARGS` array
+  immediately before the launch. For a Claude reviewer, `REVIEWER_ARGS`
+  includes the lean flags plus `--disallowedTools`; for a Codex reviewer it
+  uses `--sandbox read-only` instead, as shown under connector tiering.
+
 `git worktree list` prints the main worktree first — that first entry is the
 root worktree even when you are running inside a worktree yourself.
 
@@ -391,7 +422,7 @@ bash "$RUN_DIR/prompts/render.sh" plan "$RUN_DIR/<task-slug>/plan-prompt.md" \
 WT=$("<agent-deck-repo>/skills/orchestrate/references/create-worktree.sh" \
   --repo "$ROOT_WT" --run-dir "$RUN_DIR" --run-id "$RUN_ID" \
   --task "<task-slug>-plan" --branch <branch> --base <base-branch>)
-agent-deck launch "$WT" -c claude -t "plan-<task-slug>" "${LEAN[@]}" \
+agent-deck launch "$WT" -c "$PLANNER_TOOL" -t "plan-<task-slug>" "${PLANNER_ARGS[@]}" \
   --message-file "$RUN_DIR/<task-slug>/plan-prompt.md"
 ```
 
@@ -615,7 +646,7 @@ bash "$RUN_DIR/prompts/render.sh" impl "$RUN_DIR/<task-slug>/impl-prompt.md" \
 WT=$("<agent-deck-repo>/skills/orchestrate/references/create-worktree.sh" \
   --repo "$ROOT_WT" --run-dir "$RUN_DIR" --run-id "$RUN_ID" \
   --task "<task-slug>" --branch <branch> --base <base-branch>)
-agent-deck launch "$WT" -c claude -t "impl-<task-slug>" "${LEAN[@]}" \
+agent-deck launch "$WT" -c "$IMPLEMENTER_TOOL" -t "impl-<task-slug>" "${IMPLEMENTER_ARGS[@]}" \
   --message-file "$RUN_DIR/<task-slug>/impl-prompt.md"
 ```
 
@@ -656,8 +687,7 @@ bash "$RUN_DIR/prompts/render.sh" review-full "$RUN_DIR/<task-slug>/review-r1-pr
   SPEC_BLOCK@="$RUN_DIR/<task-slug>/spec-block.md" \
   BASE_BRANCH=<base-branch> AGENT_DECK_REPO=<agent-deck-repo> \
   BASELINE="<shared manifest baseline plus task-specific delta, or none>"
-agent-deck launch <worktree-path> -c claude -t "review-<task-slug>-r1" "${LEAN[@]}" \
-  --extra-arg --disallowedTools --extra-arg "Edit,Write,NotebookEdit" \
+agent-deck launch <worktree-path> -c "$REVIEWER_TOOL" -t "review-<task-slug>-r1" "${REVIEWER_ARGS[@]}" \
   --message-file "$RUN_DIR/<task-slug>/review-r1-prompt.md"
 ```
 
@@ -932,7 +962,7 @@ Three components, in the order worth attacking:
   globally-registered MCP server. In the sample, 106 of 120 children carried
   `finance-local`, 105 carried `claude-in-chrome`, and ~34 carried Gmail,
   Google Calendar and Google Drive — into backend implementer sessions that
-  could never use them. `"${LEAN[@]}"` (see "Run setup") drops all of it:
+  could never use them. The Claude `LEAN` array (see "Run setup") drops all of it:
   `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` disables file-based
   *and* plugin-supplied MCPs. Verified: 34,820 → 29,238 tokens at startup.
 - **The repo's `CLAUDE.md` — 1k to 8.4k/session.** One repo in the sample
@@ -942,11 +972,13 @@ Three components, in the order worth attacking:
 - **~29k harness floor** — system prompt, core tools, skill listings. Not
   yours to change.
 
-**Pass `"${LEAN[@]}"` on every child launch except one case: a child that must
-drive a browser.** `--strict-mcp-config` takes playwright and chrome-devtools
-with it. A UI implementer or a reviewer that reproduces UI behaviour launches
-without it; planners, reviewers of non-UI work, fix children, merge and
-integration children never need the browser MCPs at all.
+**For every Claude child, initialize its role-specific argument array from
+`"${LEAN[@]}"` except when it must drive a browser.** For other connectors,
+use that connector's equivalent flags when supported or an empty array.
+`--strict-mcp-config` takes playwright and chrome-devtools with it. A UI
+implementer or a reviewer that reproduces UI behaviour launches without it;
+planners, reviewers of non-UI work, fix children, merge and integration
+children never need the browser MCPs at all.
 
 ### Children
 

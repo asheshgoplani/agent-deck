@@ -200,6 +200,9 @@ type UserConfig struct {
 	// Conductor defines conductor (meta-agent orchestration) settings
 	Conductor ConductorSettings `toml:"conductor,omitempty"`
 
+	// Orchestrate defines tool-selection policy for the orchestrate workflow.
+	Orchestrate OrchestrateSettings `toml:"orchestrate,omitempty"`
+
 	// Tmux defines tmux option overrides applied to every session
 	Tmux TmuxSettings `toml:"tmux,omitempty"`
 
@@ -255,6 +258,12 @@ type UserConfig struct {
 
 	// Performance holds opt-in resource tuning for multi-instance setups.
 	Performance PerformanceSettings `toml:"performance,omitempty"`
+}
+
+// OrchestrateSettings controls how the orchestrate workflow chooses tools for
+// child sessions. An empty strategy preserves the workflow's legacy defaults.
+type OrchestrateSettings struct {
+	ToolStrategy string `toml:"tool_strategy,omitempty"`
 }
 
 // SelfHealSettings controls the self-heal supervision policy (SELF-HEAL-DESIGN.md
@@ -3129,6 +3138,14 @@ func LoadUserConfig() (*UserConfig, error) {
 		userConfigCacheMtime = currentMtime
 		SetGroupSortMode(fresh.GetGroupSort())
 		userConfigCacheErr = fmt.Errorf("config.toml parse error: %w", err)
+		return userConfigCache, userConfigCacheErr
+	}
+	if strategy := strings.TrimSpace(config.Orchestrate.ToolStrategy); strategy != "" && strategy != "default" && strategy != "auto" {
+		fresh := cloneDefaultUserConfig()
+		userConfigCache = &fresh
+		userConfigCacheMtime = currentMtime
+		SetGroupSortMode(fresh.GetGroupSort())
+		userConfigCacheErr = fmt.Errorf("invalid [orchestrate].tool_strategy %q: must be \"default\" or \"auto\"", strategy)
 		return userConfigCache, userConfigCacheErr
 	}
 

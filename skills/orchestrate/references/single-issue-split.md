@@ -43,10 +43,10 @@ ground truth and can't see the ones around it.
 1. Create subtask 1's worktree with `references/create-worktree.sh` using
    `--task <issue-slug> --branch <issue-branch> --base <base-branch>`, then
    launch its implementer at the returned path:
-   `agent-deck launch "$WT" -c claude -t "impl-<issue-slug>-1" "${LEAN[@]}" --message-file ...`
-   using the stage-1 prompt template with the subtask's mini-spec. Every
-   launch here carries `"${LEAN[@]}"` like any other child (see "Child startup
-   baseline" in SKILL.md) — drop it only for a subtask that drives a browser.
+   `agent-deck launch "$WT" -c "$IMPLEMENTER_TOOL" -t "impl-<issue-slug>-1" "${IMPLEMENTER_ARGS[@]}" --message-file ...`
+   using the stage-1 prompt template with the subtask's mini-spec. The role's
+   connector-specific argument array follows "Child startup baseline" in
+   SKILL.md; drop lean MCP flags for a subtask that drives a browser.
 2. Run stages 1–3 (implement, fresh review, fix loop) for subtask 1 in that
    worktree.
 3. When clean, record the worktree's HEAD sha in the manifest as subtask 2's
