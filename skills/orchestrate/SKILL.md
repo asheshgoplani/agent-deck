@@ -1,20 +1,24 @@
 ---
 name: orchestrate
-description: End-to-end delivery pipeline for tasks/issues. Per task - dedicated worktree child implements + tests + verifies e2e (screenshots for UI), a fresh-reviewer fix loop runs until clean, then a PR is created and CI babysat to green, ending in one private report. Use when the user wants tasks or issues "orchestrated", taken "all the way to PRs", "implemented, reviewed and PR'd", wants one big issue split across sessions into a single branch and PR, or has an approved design/spec document or implementation plan to be executed in dedicated child sessions — including "I brainstormed a design, now finish the feature". For plain fan-out-and-supervise without the delivery pipeline, use the fleet skill instead.
+description: End-to-end delivery and deployed-system verification pipeline. Use it to verify a deployed system through independent evidence arms and a terminal pass, defect, or inconclusive report, or to take tasks/issues through dedicated implementation, tests, review, PR, and green CI. Also use it for approved designs/specs and implementation plans that should be executed in dedicated child sessions. For plain fan-out-and-supervise work, use the fleet skill instead.
 metadata:
   compatibility: "claude, opencode"
 ---
 
 # Orchestrate
 
-Turn a batch of tasks/issues into merge-ready pull requests that need zero
-touch-ups: per task — dedicated worktree, implement with tests, verify
-end-to-end (visually with screenshots for UI), independent review loop until
-clean, PR, CI babysat to green. The user gets one final report, and that
-report is the only place screenshots are ever referenced.
+Verify a deployed system or turn a batch of tasks/issues into merge-ready pull
+requests that need zero touch-ups. Deployed-system verification ends with
+exactly `pass`, `defect`, or `inconclusive`; a pass requires no edits, PR, CI,
+or deployment. Delivery work uses a dedicated worktree per task, implementation
+with tests, end-to-end verification (visually with screenshots for UI), an
+independent review loop until clean, a PR, and CI babysat to green. The user
+gets one final report, and that report is the only place screenshots are ever
+referenced.
 
-**Requires:** everything `fleet` requires, plus an authenticated `gh` for the
-target repo.
+**Requires:** everything `fleet` requires. Delivery/PR entrances additionally
+require an authenticated `gh` for the target repo; verification-only work does
+not.
 
 **Read `skills/fleet/SKILL.md` first.** This skill builds on fleet and does
 not restate its mechanics: launch flags, the `--parent`-not-`-p` pitfall,
@@ -24,9 +28,11 @@ long-prompts-via-file all come from there.
 
 ## When to use
 
-The user wants tasks/issues taken end-to-end to green PRs. If they only want
-to fan out children and supervise them, use `fleet`. If they want one child
-for one job, use the sub-agent pattern in the `agent-deck` skill.
+The user wants deployed-system verification with a terminal `pass`, `defect`,
+or `inconclusive` report, or wants tasks/issues taken end-to-end to green PRs.
+A verification pass stops with no edits, PR, CI, or deployment. If they only
+want to fan out children and supervise them, use `fleet`. If they want one
+child for one job, use the sub-agent pattern in the `agent-deck` skill.
 
 ## Conductor rules
 
@@ -237,8 +243,11 @@ notifications and the turn-start snapshot route to the new conductor.
   apply the fan-out gate in "Reviewing the plan" exactly as if a planner had
   written it — a plan from the user's own session has still had no fresh eyes
   on it. Uncommon; prefer the design entrance.
+- A **deployed-system verification** request → establish the verification
+  contract in recon, then run the verification flow below before any
+  pull-request-specific stage.
 - Anything else → treat as a freeform task description.
-There is **one flow with five entrances** — planning and splitting are
+There is **one flow with six entrances** — planning and splitting are
 stages some entrances pass through, never a prerequisite. Pick by what you
 were given:
 
@@ -257,6 +266,8 @@ design/spec document ──────→ planning stage → plan-driven split.
      this feature" input)
 implementation plan ───────→ plan review (if 2+ implementers) → plan-driven
     (uncommon)               split. No planner child. One branch, one PR.
+deployed-system verification → recon → parallel measurement arms →
+                               conductor validation/adjudication → report
 ```
 
 **Input files live under `$AD_DIR/designs/` and are never committed.** A spec or
@@ -622,6 +633,45 @@ rest of that task:
 Record every session's connector + model in the manifest, escalations
 included — the final report surfaces them, and that record is the only way
 to tell whether tiering saved cost or just bought extra rounds.
+
+## Deployed-system verification
+
+A verification entrance establishes whether a deployed system satisfies a
+defined contract, with **no assumed edit**: do not enter implementation,
+pull-request, CI, or deployment stages unless the outcome and authorized scope
+explicitly permit delivery. Run these four phases before the per-task pipeline:
+
+1. **Recon.** Record the deployed version/revision/digest; target
+   environment/licensing state; authorized scope; stable arm IDs/questions
+   (the question each arm answers); exact artifact paths and schemas; and a
+   freshness cutoff. Define what evidence distinguishes product behavior from
+   harness, environment, and license failures.
+2. **Independent measurement arms.** Launch the arms in parallel so they do
+   not share conclusions or contaminate one another's evidence. Each producer
+   writes its machine-readable artifact, finishes, and reports the artifact
+   path; a path reported before producer completion is not ready for use.
+3. **Conductor validation and adjudication.** Before reading even deciding
+   fields, validate each artifact's expected schema, provenance, producer
+   completion, and freshness against recon. Read only the deciding fields where
+   possible. Adjudicate contradictions rather than selecting the convenient
+   result. For a flaky external measurement, preserve and diagnose the first
+   failure evidence, then permit at most **one clean rerun** by default. A
+   second failure is a product `defect` when it demonstrates product behavior,
+   or `inconclusive` when the harness, environment, or license prevents a
+   trustworthy decision.
+4. **Consolidated report.** Record deployed identity, environment, authorized
+   scope, arm questions and evidence, artifact-validation results,
+   contradictions and their adjudication, and exactly one outcome: `pass`,
+   `defect`, or `inconclusive`. A `pass` is terminal with no edits, pull
+   request, CI run, or deployment. A `defect` enters the delivery pipeline only
+   when the defect is within the authorized scope. An `inconclusive` result
+   terminates honestly with what blocked a trustworthy decision; do not claim
+   success or retry indefinitely.
+
+The existing child and conductor rotation/handoff rules apply throughout this
+flow. All downstream PR and CI language applies only when an in-scope `defect`
+enters delivery; verification-only `pass` and `inconclusive` outcomes stop
+before those stages.
 
 ## Per-task pipeline
 

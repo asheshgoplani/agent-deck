@@ -5020,7 +5020,9 @@ func (i *Instance) UpdateStatus() error {
 	if time.Since(graceTime) < 1500*time.Millisecond {
 		// Only skip if tmux session doesn't exist yet
 		if i.tmuxSession == nil || !i.tmuxSession.Exists() {
-			if i.Status != StatusRunning && i.Status != StatusIdle {
+			if i.IsArchived() {
+				i.Status = StatusStopped
+			} else if i.Status != StatusRunning && i.Status != StatusIdle {
 				i.Status = StatusStarting
 			}
 			return nil
@@ -5029,7 +5031,9 @@ func (i *Instance) UpdateStatus() error {
 	}
 
 	if i.tmuxSession == nil {
-		if i.neverStarted() {
+		if i.IsArchived() {
+			i.Status = StatusStopped
+		} else if i.neverStarted() {
 			// A session that was added but never started has no tmux yet; it is
 			// not an error, just not-yet-running. Keep it idle (✕ → ○).
 			i.Status = StatusIdle
@@ -5046,14 +5050,19 @@ func (i *Instance) UpdateStatus() error {
 	// Optimization: Skip expensive Exists() check for sessions already in error/stopped status
 	// Ghost sessions (in JSON but not in tmux) only get rechecked every 30 seconds
 	// This reduces subprocess spawns from 74/sec to ~5/sec for 28 ghost sessions
-	if (i.Status == StatusError || i.Status == StatusStopped) && !i.lastErrorCheck.IsZero() &&
+	// Archived errors bypass the cache so the live tmux state decides whether
+	// the existing missing-pane archive guard should normalize them to stopped.
+	if (i.Status == StatusError || i.Status == StatusStopped) &&
+		!(i.IsArchived() && i.Status == StatusError) && !i.lastErrorCheck.IsZero() &&
 		time.Since(i.lastErrorCheck) < errorRecheckInterval {
 		return nil // Skip - still in error/stopped, checked recently
 	}
 
 	// Check if tmux session exists
 	if !i.tmuxSession.Exists() {
-		if i.neverStarted() {
+		if i.IsArchived() {
+			i.Status = StatusStopped
+		} else if i.neverStarted() {
 			// Added but never started: no tmux session was ever created, so an
 			// absent tmux is expected — classify as idle, not error (✕ → ○).
 			i.Status = StatusIdle
