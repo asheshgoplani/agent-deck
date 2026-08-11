@@ -293,11 +293,15 @@ func TestResolveTmuxSession_NonzeroAgentDeckDoesNotAbortUnderSetE(t *testing.T) 
 }
 
 func TestScenario3_RestartFailureMarksFailure(t *testing.T) {
-	out, err := sourceAndRun(t, nil, `
+	// TMPROOT is injected from t.TempDir() rather than hardcoded as
+	// "$TMPDIR/adeck-verify-test-s3". A fixed shared name is created by every
+	// run, removed by none, and — being one path shared across runs — is also a
+	// collision between concurrent invocations. t.TempDir() is unique per test
+	// and removed automatically. Scenario 1 above already uses this pattern.
+	out, err := sourceAndRun(t, []string{"S3_TMPROOT=" + t.TempDir()}, `
 FAILED=0
 SESSION_PREFIX=verify-persist-test
-TMPROOT="${TMPDIR:-/tmp}/adeck-verify-test-s3"
-mkdir -p "${TMPROOT}"
+TMPROOT="${S3_TMPROOT}"
 ARGV_OUT="${TMPROOT}/argv.log"
 start_count=0
 agent-deck() {
@@ -327,10 +331,11 @@ func TestScenario5_ReviveFailureMarksFailure(t *testing.T) {
 	if err := os.WriteFile(counter, []byte("0"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := sourceAndRun(t, []string{"COUNT_FILE=" + counter}, `
+	// Same fixed-shared-name leak as scenario 3; inject a per-test dir instead.
+	out, err := sourceAndRun(t, []string{"COUNT_FILE=" + counter, "S5_TMPROOT=" + t.TempDir()}, `
 FAILED=0
 SESSION_PREFIX=verify-persist-test
-TMPROOT="${TMPDIR:-/tmp}/adeck-verify-test-s5"
+TMPROOT="${S5_TMPROOT}"
 ARGV_OUT="${TMPROOT}/argv.log"
 agent-deck() {
   if [[ "$1" == "session" && "$2" == "revive" ]]; then
