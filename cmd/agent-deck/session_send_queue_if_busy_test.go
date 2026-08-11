@@ -161,6 +161,17 @@ func TestSessionSendQueueIfBusyIdleUsesSenderWithoutQueue(t *testing.T) {
 	}
 }
 
+func TestSessionSendQueueIfBusyBecomesIdleDuringLockedRevalidation(t *testing.T) {
+	out, err := runQueueIfBusyHelper(t, "__busy_to_idle__", "became idle", "--queue-if-busy", "--timeout", "6s", "--json")
+	if err != nil {
+		t.Fatalf("busy-to-idle queue-if-busy send failed: %v\n%s", err, out)
+	}
+	receipt := decodeSendReceipt(t, out)
+	if !receipt.Success || receipt.Delivery != deliveryUnverified || receipt.Queued || !strings.Contains(out, "IDLE_SEND_OK") {
+		t.Fatalf("busy-to-idle target must use direct sender and leave queue empty; output:\n%s", out)
+	}
+}
+
 func TestSessionSendQueueIfBusyDefaultSendUnchanged(t *testing.T) {
 	out, err := runQueueIfBusyHelper(t, "__idle__", "plain ping", "--timeout", "6s", "--json")
 	if err != nil {
@@ -342,6 +353,19 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 			}
 			defer func() { sessionSendQueueStatus = originalStatus }()
 		}
+		if os.Getenv("AGENT_DECK_QUEUE_BUSY_TO_IDLE") == "1" {
+			originalStatus := sessionSendQueueStatus
+			calls := 0
+			sessionSendQueueStatus = func(profile, sessionID string) (*session.Instance, string, error) {
+				inst, _, err := originalStatus(profile, sessionID)
+				calls++
+				if calls == 1 {
+					return inst, "running", err
+				}
+				return inst, "waiting", err
+			}
+			defer func() { sessionSendQueueStatus = originalStatus }()
+		}
 		handleSessionSend(profile, args)
 		return
 	}
@@ -350,7 +374,7 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 		project := t.TempDir()
 		inst := session.NewInstance("queue-target", project)
 		fakeTUI := fakeClaudeWithDraft
-		if mode == "__idle__" {
+		if mode == "__idle__" || mode == "__busy_to_idle__" {
 			fakePath := filepath.Join(project, "fake-agent.sh")
 			fakeScript := `#!/usr/bin/env bash
 trap '' INT
@@ -368,8 +392,8 @@ sleep 60
 				t.Fatalf("write fake agent: %v", err)
 			}
 		}
-		if mode == "__busy__" || mode == "__full__" || mode == "__idle__" || mode == "__starting__" || mode == "__persist_error__" || mode == "__rename__" {
-			if mode == "__idle__" {
+		if mode == "__busy__" || mode == "__full__" || mode == "__idle__" || mode == "__busy_to_idle__" || mode == "__starting__" || mode == "__persist_error__" || mode == "__rename__" {
+			if mode == "__idle__" || mode == "__busy_to_idle__" {
 				fakePath := filepath.Join(project, "fake-agent.sh")
 				cmd := exec.Command("tmux", "new-session", "-d", "-s", inst.GetTmuxSession().Name,
 					"-c", project, "-x", "80", "-y", "24", "bash", fakePath)
@@ -385,7 +409,7 @@ sleep 60
 			t.Cleanup(func() { _ = inst.Kill() })
 		}
 		inst.Tool = "claude"
-		if mode == "__idle__" {
+		if mode == "__idle__" || mode == "__busy_to_idle__" {
 			inst.Tool = "cursor"
 		}
 		inst.Status = session.StatusRunning
@@ -470,13 +494,16 @@ sleep 60
 		if mode == "__rename__" {
 			cmd.Env = append(cmd.Env, "AGENT_DECK_QUEUE_RENAME_BEFORE_REFRESH=1")
 		}
+		if mode == "__busy_to_idle__" {
+			cmd.Env = append(cmd.Env, "AGENT_DECK_QUEUE_BUSY_TO_IDLE=1")
+		}
 		commandOutput, commandErr := cmd.CombinedOutput()
 		_, _ = os.Stdout.Write(commandOutput)
 		if commandErr != nil {
 			pane, _ := inst.GetTmuxSession().CapturePaneFresh()
 			t.Fatalf("session send command failed: %v\npane:\n%s", commandErr, pane)
 		}
-		if mode == "__idle__" {
+		if mode == "__idle__" || mode == "__busy_to_idle__" {
 			wantInput := args[1] + "\r"
 			inputPath := filepath.Join(project, "fake-agent.sh.input")
 			deadline := time.Now().Add(3 * time.Second)

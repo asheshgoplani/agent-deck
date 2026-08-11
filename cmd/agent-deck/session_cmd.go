@@ -557,7 +557,7 @@ func handleSessionArchive(profile string, args []string) {
 	}
 	defer queueTx.Release()
 	inst.ArchivedAt = time.Now().UTC()
-	if err := persistArchivedCLI(storage, inst, killed); err != nil {
+	if err := sessionArchivePersist(storage, inst, killed); err != nil {
 		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -639,6 +639,8 @@ func handleSessionUnarchive(profile string, args []string) {
 		"archived": false,
 	})
 }
+
+var sessionArchivePersist = persistArchivedCLI
 
 // persistArchivedCLI writes the archive timestamp (and, when persistStatus is
 // set, the post-kill Status) via targeted UPDATEs. It deliberately avoids
