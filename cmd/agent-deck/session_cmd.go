@@ -2683,9 +2683,15 @@ func fetchHookDrivenInstanceStatus(profile, sessionID string) (*session.Instance
 	if err != nil {
 		return nil, "", err
 	}
-	inst, errMsg, _ := ResolveSession(sessionID, instances)
+	var inst *session.Instance
+	for _, candidate := range instances {
+		if candidate.ID == sessionID {
+			inst = candidate
+			break
+		}
+	}
 	if inst == nil {
-		return nil, "", fmt.Errorf("%s", errMsg)
+		return nil, "", fmt.Errorf("session '%s' not found", sessionID)
 	}
 	return inst, hookDrivenStatus(inst), nil
 }

@@ -233,9 +233,14 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 					return nil, "", errors.New(errMsg)
 				}
 				inst.Title = "renamed-during-refresh"
-				if err := storage.Save(instances); err != nil {
+				collision := session.NewInstance(sessionID, inst.ProjectPath)
+				collision.Tool = "claude"
+				collision.Status = session.StatusRunning
+				collision.ClaudeSessionID = "queue-collision-session"
+				if err := storage.Save(append(instances, collision)); err != nil {
 					return nil, "", err
 				}
+				seedDeferHookFile(t, collision.ID, "UserPromptSubmit", collision.ClaudeSessionID, "running")
 				return originalStatus(profile, sessionID)
 			}
 			defer func() { sessionSendQueueStatus = originalStatus }()
@@ -395,6 +400,27 @@ sleep 60
 			t.Fatalf("queued messages = %#v", batch.Messages)
 		}
 		if mode == "__rename__" {
+			storage, instances, _, err := loadSessionData(profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer storage.Close()
+			var collision *session.Instance
+			for _, candidate := range instances {
+				if candidate.Title == inst.ID {
+					collision = candidate
+					break
+				}
+			}
+			if collision == nil {
+				t.Fatal("ID/title collision session not found")
+			}
+			if session.RuntimeQueueHasPending(collision.ID) {
+				t.Fatalf("message redirected to title-collision session %s", collision.ID)
+			}
+			if receipt := decodeQueuedReceipt(t, string(commandOutput)); receipt.SessionID != inst.ID {
+				t.Fatalf("queued destination ID = %q, want exact original ID %q", receipt.SessionID, inst.ID)
+			}
 			println("RENAME_DESTINATION_OK")
 			return
 		}
