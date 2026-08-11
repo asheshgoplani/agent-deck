@@ -150,7 +150,13 @@ func TestTUIWorktreeFinishLockFailureLeavesWorkspaceAndBranchUntouched(t *testin
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_DATA_HOME", blockedRoot)
-	inst := &session.Instance{ID: id, WorktreeRepoRoot: repo, WorktreePath: worktree, WorktreeBranch: "feature-lock-guard"}
+	inst := session.NewInstance("tui-worktree-lock-live", worktree)
+	inst.ID = id
+	inst.WorktreeRepoRoot, inst.WorktreePath, inst.WorktreeBranch = repo, worktree, "feature-lock-guard"
+	if err := inst.GetTmuxSession().Start("sleep 60"); err != nil {
+		t.Skipf("tmux unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = inst.GetTmuxSession().Kill() })
 	msg := (&Home{}).finishWorktree(inst, id, id, inst.WorktreeBranch, repo, worktree, false, "main", false, false)()
 	result, ok := msg.(worktreeFinishResultMsg)
 	if !ok || result.err == nil {
@@ -161,6 +167,9 @@ func TestTUIWorktreeFinishLockFailureLeavesWorkspaceAndBranchUntouched(t *testin
 	}
 	if got := runGitGuardTest(t, repo, "branch", "--list", inst.WorktreeBranch); !strings.Contains(got, inst.WorktreeBranch) {
 		t.Fatal("branch deleted on lock failure")
+	}
+	if !inst.Exists() {
+		t.Fatal("queue lock failure killed live TUI worktree session")
 	}
 	t.Setenv("XDG_DATA_HOME", queueRoot)
 	if !session.RuntimeQueueHasPending(id) {
@@ -247,8 +256,13 @@ func TestWebWorktreeFinishLockFailureLeavesWorkspaceBranchRowAndQueue(t *testing
 	dataRoot := filepath.Join(t.TempDir(), "data")
 	t.Setenv("XDG_DATA_HOME", dataRoot)
 	h, storage := newHeadlessHomeForTest(t, "_test_web_worktree_lock_failure")
-	inst := seedSession(t, storage, nil, "web-worktree-lock-failure", "worktree")
+	inst := session.NewInstance("web-worktree-lock-live", worktree)
+	inst.ID = "web-worktree-lock-failure"
 	inst.WorktreeRepoRoot, inst.WorktreePath, inst.WorktreeBranch = repo, worktree, "web-feature-lock-guard"
+	if err := inst.GetTmuxSession().Start("sleep 60"); err != nil {
+		t.Skipf("tmux unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = inst.GetTmuxSession().Kill() })
 	if err := storage.SaveWithGroups([]*session.Instance{inst}, session.NewGroupTree([]*session.Instance{inst})); err != nil {
 		t.Fatal(err)
 	}
@@ -272,6 +286,10 @@ func TestWebWorktreeFinishLockFailureLeavesWorkspaceBranchRowAndQueue(t *testing
 	}
 	if got := runGitGuardTest(t, repo, "branch", "--list", inst.WorktreeBranch); !strings.Contains(got, inst.WorktreeBranch) {
 		t.Fatal("branch deleted")
+	}
+	live := h.instanceByID[inst.ID]
+	if live == nil || !live.Exists() {
+		t.Fatal("queue lock failure killed live web worktree session")
 	}
 	t.Setenv("XDG_DATA_HOME", dataRoot)
 	if !session.RuntimeQueueHasPending(inst.ID) {

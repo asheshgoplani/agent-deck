@@ -17,6 +17,9 @@ func TestWorktreeFinishQueueLockFailureLeavesWorkspaceBranchRowAndQueue(t *testi
 		handleWorktreeFinish(profile, []string{"worktree-lock-failure", "--no-merge", "--force", "--json"})
 		return
 	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
 	repo := t.TempDir()
 	run := func(args ...string) string {
 		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
@@ -41,7 +44,13 @@ func TestWorktreeFinishQueueLockFailureLeavesWorkspaceBranchRowAndQueue(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	inst := &session.Instance{ID: "worktree-lock-failure", Title: "worktree-lock-failure", ProjectPath: worktree, GroupPath: session.DefaultGroupPath, Tool: "shell", Command: "shell", Status: session.StatusStopped, WorktreeRepoRoot: repo, WorktreePath: worktree, WorktreeBranch: "cli-lock-branch"}
+	inst := session.NewInstance("worktree-lock-failure-live", worktree)
+	inst.ID = "worktree-lock-failure"
+	inst.WorktreeRepoRoot, inst.WorktreePath, inst.WorktreeBranch = repo, worktree, "cli-lock-branch"
+	if err := inst.GetTmuxSession().Start("sleep 60"); err != nil {
+		t.Skipf("tmux unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = inst.GetTmuxSession().Kill() })
 	if err := storage.SaveWithGroups([]*session.Instance{inst}, session.NewGroupTree([]*session.Instance{inst})); err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +75,9 @@ func TestWorktreeFinishQueueLockFailureLeavesWorkspaceBranchRowAndQueue(t *testi
 	}
 	if got := run("branch", "--list", inst.WorktreeBranch); got == "" {
 		t.Fatal("branch deleted")
+	}
+	if !inst.Exists() {
+		t.Fatal("queue lock failure killed live CLI worktree session")
 	}
 	verify, err := session.NewStorageWithProfile(profile)
 	if err != nil {
