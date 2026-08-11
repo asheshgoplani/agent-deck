@@ -484,10 +484,14 @@ type Instance struct {
 	paneDeadExitStatusForTest func() (int, bool) // nil uses tmuxSession.PaneDeadExitStatus
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
-	hookStatus     string    // running, idle, waiting, dead (empty = no hook data)
-	hookEvent      string    // Hook event name that caused the last status (e.g. "PermissionRequest")
-	hookSessionID  string    // Session ID from hook payload
-	hookLastUpdate time.Time // When hook status was last received
+	hookStatus               string    // running, idle, waiting, dead (empty = no hook data)
+	hookEvent                string    // Hook event name that caused the last status (e.g. "PermissionRequest")
+	hookSessionID            string    // Session ID from hook payload
+	hookLastUpdate           time.Time // When hook status was last received
+	codexStartedGeneration   string
+	codexCompletedGeneration string
+	codexStartedSessionID    string
+	codexCompletedSessionID  string
 
 	// Durable last-activity record (issue #1846). Unlike hookLastUpdate this
 	// survives ClearHookStatus and, via tool_data.last_activity_at, TUI
@@ -4983,6 +4987,33 @@ func shouldDebounceTmuxFlipForTool(tool string) bool {
 		tool == "gemini" || tool == "hermes" || tool == "cursor"
 }
 
+// setCodexGenerationEvidence copies the durable notify edge pair into the
+// instance. Unlike tmuxFlipFromRunningPending, these fields survive a fresh
+// CLI process because they are retained in the hook status file.
+func (i *Instance) setCodexGenerationEvidence(status *HookStatus) {
+	if status == nil || !IsCodexCompatible(i.Tool) {
+		return
+	}
+	i.codexStartedGeneration = strings.TrimSpace(status.CodexStartedGeneration)
+	i.codexCompletedGeneration = strings.TrimSpace(status.CodexCompletedGeneration)
+	i.codexStartedSessionID = strings.TrimSpace(status.CodexStartedSessionID)
+	i.codexCompletedSessionID = strings.TrimSpace(status.CodexCompletedSessionID)
+}
+
+// codexCompletionConverged is deliberately fail-closed. Only the same retained
+// generation, for the same non-empty session bound to this instance, proves a
+// completed turn. Missing, mismatched, and superseded evidence stays subject
+// to the conservative running debounce.
+func (i *Instance) codexCompletionConverged() bool {
+	if !IsCodexCompatible(i.Tool) || i.codexStartedGeneration == "" ||
+		i.codexStartedGeneration != i.codexCompletedGeneration ||
+		i.codexStartedSessionID == "" ||
+		i.codexStartedSessionID != i.codexCompletedSessionID {
+		return false
+	}
+	return i.CodexSessionID != "" && i.codexStartedSessionID == i.CodexSessionID
+}
+
 // terminatedPaneStatus classifies a session whose tmux pane/session has
 // vanished (or gone dead under remain-on-exit) AFTER having been started.
 //
@@ -5168,6 +5199,7 @@ func (i *Instance) UpdateStatus() error {
 			// #1846: a disk-read hook sample is activity evidence too.
 			// Flushed by this function's persistLastActivity defer.
 			i.noteAgentActivityLocked(hs.UpdatedAt)
+			i.setCodexGenerationEvidence(hs)
 			// Reset stale acknowledged flag from ReconnectSessionLazy.
 			// Without this, sessions loaded from SQLite with previousStatus="idle"
 			// would report idle even when the hook file says waiting/running.
@@ -5422,7 +5454,7 @@ func (i *Instance) UpdateStatus() error {
 	// this skip, each fresh CLI invocation (e.g. `agent-deck list --json`) sees
 	// tmuxFlipFromRunningPending = false and holds the status at running on the
 	// first sample, then exits before the second confirming sample can fire.
-	if shouldDebounceTmuxFlipForTool(i.Tool) {
+	if shouldDebounceTmuxFlipForTool(i.Tool) && !i.codexCompletionConverged() {
 		if apply, nextPending, held := debounceFlipFromRunning(prevStatus, i.Status, status, i.hookStatus, i.tmuxFlipFromRunningPending); held {
 			i.tmuxFlipFromRunningPending = nextPending
 			i.Status = apply
@@ -5656,6 +5688,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	i.hookStatus = status.Status
 	i.hookEvent = status.Event
 	i.hookLastUpdate = status.UpdatedAt
+	i.setCodexGenerationEvidence(status)
 
 	// Permission-type events are always attention-needed, even if the user
 	// previously acknowledged this session. A mid-task permission block is new

@@ -63,10 +63,14 @@ func resolveStopHookActive(p hookPayload) bool {
 
 // hookStatusFile is the JSON written to ~/.agent-deck/hooks/{instance_id}.json
 type hookStatusFile struct {
-	Status    string `json:"status"`
-	SessionID string `json:"session_id,omitempty"`
-	Event     string `json:"event"`
-	Timestamp int64  `json:"ts"`
+	Status                   string `json:"status"`
+	SessionID                string `json:"session_id,omitempty"`
+	Event                    string `json:"event"`
+	Timestamp                int64  `json:"ts"`
+	CodexStartedGeneration   string `json:"codex_started_generation,omitempty"`
+	CodexCompletedGeneration string `json:"codex_completed_generation,omitempty"`
+	CodexStartedSessionID    string `json:"codex_started_session_id,omitempty"`
+	CodexCompletedSessionID  string `json:"codex_completed_session_id,omitempty"`
 	// DoneStatus/DoneSummary carry a worker-printed completion sentinel
 	// detected on the Stop edge (issue #1186). omitempty so ordinary Stops
 	// (no sentinel) leave the fields absent, which the daemon reads as
@@ -366,6 +370,16 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, s
 		statusFile.DoneSummary = scan.signal.Summary
 	}
 	statusFile.TranscriptPath = scan.pendingTranscript
+	writeHookStatusFile(instanceID, statusFile)
+
+	// Clear sticky session mapping when the upstream session is explicitly ended.
+	if isTerminalHookEvent(event) {
+		session.ClearHookSessionAnchor(instanceID)
+	}
+}
+
+func writeHookStatusFile(instanceID string, statusFile hookStatusFile) {
+	hooksDir := getHooksDir()
 
 	jsonData, err := json.Marshal(statusFile)
 	if err != nil {
@@ -398,10 +412,6 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, s
 		return
 	}
 
-	// Clear sticky session mapping when the upstream session is explicitly ended.
-	if isTerminalHookEvent(event) {
-		session.ClearHookSessionAnchor(instanceID)
-	}
 }
 
 func isTerminalHookEvent(event string) bool {

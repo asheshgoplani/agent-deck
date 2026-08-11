@@ -168,6 +168,39 @@ func TestHandleCodexNotify_EmptyTailEventKeepsJSONEmptyAndPersistsAnchor(t *test
 	if got := session.ReadHookSessionAnchor("inst-sticky"); got != "thr-sticky" {
 		t.Fatalf("session anchor = %q, want thr-sticky", got)
 	}
+	if hook.CodexStartedGeneration == "" || hook.CodexCompletedGeneration != hook.CodexStartedGeneration {
+		t.Fatalf("start/completion evidence did not converge: %#v", hook)
+	}
+}
+
+func TestWriteCodexHookStatus_NewerStartSupersedesCompletedGeneration(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeCodexHookStatus("inst-generation", "running", "thread-1", "turn.started")
+	writeCodexHookStatus("inst-generation", "waiting", "thread-1", "turn.completed")
+	path := filepath.Join(getHooksDir(), "inst-generation.json")
+	var completed hookStatusFile
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed.CodexStartedGeneration != completed.CodexCompletedGeneration {
+		t.Fatal("matching completion was not retained")
+	}
+	writeCodexHookStatus("inst-generation", "running", "thread-1", "turn.started")
+	var superseded hookStatusFile
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &superseded); err != nil {
+		t.Fatal(err)
+	}
+	if superseded.CodexStartedGeneration == superseded.CodexCompletedGeneration {
+		t.Fatal("new start must supersede old completion evidence")
+	}
 }
 
 func TestCodexHooksInstallUninstall(t *testing.T) {

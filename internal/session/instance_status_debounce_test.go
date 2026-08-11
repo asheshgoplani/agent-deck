@@ -97,6 +97,45 @@ func TestDebounceFlipFromRunning(t *testing.T) {
 	}
 }
 
+func TestCodexCompletionConvergenceRequiresMatchingGenerationAndSession(t *testing.T) {
+	tests := []struct {
+		name, started, completed, startedSession, completedSession, bound string
+		want                                                              bool
+	}{
+		{"matching", "g1", "g1", "s1", "s1", "s1", true},
+		{"missing completion", "g1", "", "s1", "", "s1", false},
+		{"mismatched completion", "g2", "g1", "s1", "s1", "s1", false},
+		{"newer start supersedes completion", "g2", "g1", "s1", "s1", "s1", false},
+		{"foreign session", "g1", "g1", "s1", "s1", "s2", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			i := &Instance{Tool: "codex", CodexSessionID: tc.bound,
+				codexStartedGeneration: tc.started, codexCompletedGeneration: tc.completed,
+				codexStartedSessionID: tc.startedSession, codexCompletedSessionID: tc.completedSession}
+			if got := i.codexCompletionConverged(); got != tc.want {
+				t.Fatalf("codexCompletionConverged() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCodexCompletionConvergenceFleetSizes(t *testing.T) {
+	for _, size := range []int{1, 20, 100} {
+		instances := make([]*Instance, size)
+		for n := range instances {
+			instances[n] = &Instance{Tool: "codex", CodexSessionID: "s",
+				codexStartedGeneration: "g", codexCompletedGeneration: "g",
+				codexStartedSessionID: "s", codexCompletedSessionID: "s"}
+		}
+		for n, inst := range instances {
+			if !inst.codexCompletionConverged() {
+				t.Fatalf("size %d instance %d did not converge", size, n)
+			}
+		}
+	}
+}
+
 // The canonical long-bash sequence: running, then two consecutive tmux "waiting"
 // reads. The first is held at running (no false completion), the second flips.
 func TestDebounceFlipFromRunning_LongBashSequence(t *testing.T) {

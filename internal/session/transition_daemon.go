@@ -740,14 +740,18 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		return nil
 	}
 	var raw struct {
-		Status         string `json:"status"`
-		SessionID      string `json:"session_id"`
-		Event          string `json:"event"`
-		Timestamp      int64  `json:"ts"`
-		DoneStatus     string `json:"done_status"`
-		DoneSummary    string `json:"done_summary"`
-		TranscriptPath string `json:"transcript_path"`
-		Cwd            string `json:"cwd"`
+		Status                   string `json:"status"`
+		SessionID                string `json:"session_id"`
+		Event                    string `json:"event"`
+		Timestamp                int64  `json:"ts"`
+		DoneStatus               string `json:"done_status"`
+		DoneSummary              string `json:"done_summary"`
+		TranscriptPath           string `json:"transcript_path"`
+		Cwd                      string `json:"cwd"`
+		CodexStartedGeneration   string `json:"codex_started_generation"`
+		CodexCompletedGeneration string `json:"codex_completed_generation"`
+		CodexStartedSessionID    string `json:"codex_started_session_id"`
+		CodexCompletedSessionID  string `json:"codex_completed_session_id"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
@@ -760,14 +764,18 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		updatedAt = time.Unix(raw.Timestamp, 0)
 	}
 	return &HookStatus{
-		Status:         raw.Status,
-		SessionID:      raw.SessionID,
-		Event:          raw.Event,
-		UpdatedAt:      updatedAt,
-		DoneStatus:     raw.DoneStatus,
-		DoneSummary:    raw.DoneSummary,
-		TranscriptPath: raw.TranscriptPath,
-		Cwd:            raw.Cwd,
+		Status:                   raw.Status,
+		SessionID:                raw.SessionID,
+		Event:                    raw.Event,
+		UpdatedAt:                updatedAt,
+		DoneStatus:               raw.DoneStatus,
+		DoneSummary:              raw.DoneSummary,
+		TranscriptPath:           raw.TranscriptPath,
+		Cwd:                      raw.Cwd,
+		CodexStartedGeneration:   raw.CodexStartedGeneration,
+		CodexCompletedGeneration: raw.CodexCompletedGeneration,
+		CodexStartedSessionID:    raw.CodexStartedSessionID,
+		CodexCompletedSessionID:  raw.CodexCompletedSessionID,
 	}
 }
 

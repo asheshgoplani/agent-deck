@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
+	"time"
 )
 
 const codexNotifyMarkerBegin = "# BEGIN AGENTDECK CODEX NOTIFY"
@@ -185,7 +187,66 @@ func handleCodexNotify() {
 		sessionID = strings.TrimSpace(os.Getenv("CODEX_SESSION_ID"))
 	}
 
-	writeHookStatus(instanceID, status, sessionID, event, "")
+	writeCodexHookStatus(instanceID, status, sessionID, event)
+}
+
+func codexTurnEdge(event string) (started, completed bool) {
+	canon := strings.NewReplacer(".", "/", "-", "/", "_", "/").Replace(strings.ToLower(strings.TrimSpace(event)))
+	if !strings.Contains(canon, "turn") {
+		return false, false
+	}
+	return strings.Contains(canon, "start"), strings.Contains(canon, "complete") ||
+		strings.Contains(canon, "fail") || strings.Contains(canon, "abort") || strings.Contains(canon, "cancel")
+}
+
+// writeCodexHookStatus retains both edges of the current turn under a file
+// lock. Notify invocations are separate processes and can overlap; serializing
+// the read/modify/write makes the generation proof deterministic.
+func writeCodexHookStatus(instanceID, status, sessionID, event string) {
+	if instanceID == "" || status == "" {
+		return
+	}
+	hooksDir := getHooksDir()
+	if err := os.MkdirAll(hooksDir, 0700); err != nil {
+		return
+	}
+	base := filepath.Base(instanceID)
+	lock, err := os.OpenFile(filepath.Join(hooksDir, base+".codex.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
+
+	path := filepath.Join(hooksDir, base+".json")
+	var prior hookStatusFile
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &prior)
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID != "" {
+		session.WriteHookSessionAnchor(instanceID, sessionID)
+	}
+	evidenceSessionID := sessionID
+	if evidenceSessionID == "" {
+		evidenceSessionID = session.ReadHookSessionAnchor(instanceID)
+	}
+	started, completed := codexTurnEdge(event)
+	if started {
+		prior.CodexStartedGeneration = fmt.Sprintf("%s:%d", evidenceSessionID, time.Now().UnixNano())
+		prior.CodexStartedSessionID = evidenceSessionID
+	}
+	if completed && prior.CodexStartedGeneration != "" && evidenceSessionID != "" && evidenceSessionID == prior.CodexStartedSessionID {
+		prior.CodexCompletedGeneration = prior.CodexStartedGeneration
+		prior.CodexCompletedSessionID = evidenceSessionID
+	}
+	prior.Status, prior.SessionID, prior.Event = status, sessionID, event
+	prior.Timestamp = time.Now().Unix()
+	prior.DoneStatus, prior.DoneSummary, prior.TranscriptPath, prior.Cwd = "", "", "", ""
+	writeHookStatusFile(instanceID, prior)
 }
 
 func handleCodexHooks(args []string) {

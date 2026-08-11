@@ -37,10 +37,14 @@ func readStatusFileNoFollow(path string) ([]byte, error) {
 
 // HookStatus holds the decoded status from a hook status file.
 type HookStatus struct {
-	Status    string    // running, idle, waiting, dead
-	SessionID string    // Claude session ID
-	Event     string    // Hook event name
-	UpdatedAt time.Time // When this status was received
+	Status                   string    // running, idle, waiting, dead
+	SessionID                string    // Claude session ID
+	Event                    string    // Hook event name
+	UpdatedAt                time.Time // When this status was received
+	CodexStartedGeneration   string
+	CodexCompletedGeneration string
+	CodexStartedSessionID    string
+	CodexCompletedSessionID  string
 	// DoneStatus/DoneSummary carry a worker-printed completion sentinel
 	// detected on the Stop edge (issue #1186). Empty for ordinary turns.
 	DoneStatus  string // "ok" or "fail" when a completion sentinel was seen
