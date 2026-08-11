@@ -20,6 +20,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/sessionstatus"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
@@ -2700,6 +2701,7 @@ func handleSessionSend(profile string, args []string) {
 	draft := fs.Bool("draft", false, "Pre-fill the prompt without submitting (incompatible with --wait/--stream/--no-wait)")
 	messageFile := fs.String("message-file", "", "Read the message from a file ('-' for stdin) instead of a positional argument; avoids shell quoting of long prompts")
 	deferIfBusy := fs.Bool("defer-if-busy", false, "Hold delivery until the target is idle (turn-finished, hook-driven) instead of interrupting a mid-generation turn (incompatible with --no-wait)")
+	queueIfBusy := fs.Bool("queue-if-busy", false, "Queue delivery when a hook-capable target is busy; otherwise send immediately")
 	deferTimeout := durationFlag(fs, "defer-timeout", 30*time.Minute, "Max time --defer-if-busy holds a busy target before dropping the message with a non-zero exit")
 	timeout := durationFlag(fs, "timeout", 10*time.Minute, "Max time to wait for the agent to become ready and (with --wait) to finish processing")
 	streamIdle := durationFlag(fs, "stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
@@ -2744,6 +2746,11 @@ func handleSessionSend(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	if *queueIfBusy && (*noWait || *wait || *stream || *draft || *deferIfBusy) {
+		out.Error("--queue-if-busy is incompatible with --no-wait, --wait, --stream, --draft, and --defer-if-busy", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	if *draft && (*wait || *stream || *noWait) {
 		out.Error("--draft is incompatible with --wait, --stream, and --no-wait", ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -2779,6 +2786,47 @@ func handleSessionSend(profile string, args []string) {
 		}
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
+	}
+
+	if *queueIfBusy {
+		switch {
+		case inst.IsArchived():
+			out.Error(fmt.Sprintf("session '%s' is archived", inst.Title), ErrCodeInvalidOperation)
+			os.Exit(1)
+		case inst.Status == session.StatusStopped:
+			out.Error(fmt.Sprintf("session '%s' is stopped", inst.Title), ErrCodeInvalidOperation)
+			os.Exit(1)
+		case !sessionstatus.IsHookEmittingTool(inst.Tool):
+			out.Error(fmt.Sprintf("session '%s' does not support hook-driven queueing", inst.Title), ErrCodeInvalidOperation)
+			os.Exit(1)
+		case !inst.Exists():
+			out.Error(fmt.Sprintf("session '%s' is not running", inst.Title), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+
+		status, statusErr := fetchHookDrivenStatus(profile, sessionRef)
+		if statusErr != nil {
+			out.Error(fmt.Sprintf("failed to determine whether session '%s' is busy: %v", inst.Title, statusErr), ErrCodeDeliveryFailed)
+			os.Exit(1)
+		}
+		if send.StatusIsBusy(status) {
+			depth, enqueueErr := session.EnqueueRuntimeMessage(inst.ID, message)
+			if enqueueErr != nil {
+				if errors.Is(enqueueErr, session.ErrRuntimeQueueFull) {
+					out.Error(fmt.Sprintf("runtime message queue for '%s' is full", inst.Title), ErrCodeQueueFull)
+				} else {
+					out.Error(fmt.Sprintf("failed to queue message for '%s': %v", inst.Title, enqueueErr), ErrCodeDeliveryFailed)
+				}
+				os.Exit(1)
+			}
+			out.Success(fmt.Sprintf("Queued message for '%s'", inst.Title), map[string]interface{}{
+				"success":     true,
+				"queued":      true,
+				"session_id":  inst.ID,
+				"queue_depth": depth,
+			})
+			return
+		}
 	}
 
 	// --stream is Claude-only in Phase 1. Non-Claude tools error cleanly
