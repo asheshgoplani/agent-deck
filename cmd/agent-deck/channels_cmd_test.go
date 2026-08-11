@@ -32,6 +32,18 @@ func channelsCLIBinary(t *testing.T) string {
 		return channelsCLIBinPath
 	}
 
+	// A previous call that failed its build left channelsCLIBuildOK false, so the
+	// NEXT test to need the binary arrives here and builds again. Overwriting
+	// channelsCLIBinDir at that point would orphan the earlier directory — it
+	// would no longer be reachable by removeChannelsCLIBinDir and would leak for
+	// good. Release it before taking ownership of a new one.
+	if channelsCLIBinDir != "" {
+		if err := testutil.RemoveTempTree(channelsCLIBinDir); err != nil {
+			fmt.Fprintf(os.Stderr, "cmd/agent-deck: LEAKED failed-build dir: %v\n", err)
+		}
+		channelsCLIBinDir = ""
+	}
+
 	// Assign straight into the package-level var — no local alias — so the dir
 	// is owned by removeChannelsCLIBinDir from the instant it exists, including
 	// on the t.Fatalf paths below. Before this, the build dir had no owner at

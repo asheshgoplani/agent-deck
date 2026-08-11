@@ -10,13 +10,40 @@ import (
 	"testing"
 )
 
-// leakPrefixes are every temp-dir prefix the isolation helpers create. A normal
-// test run must leave none of them behind.
+// leakPrefixes are every temp-dir prefix agent-deck's test helpers create. A
+// normal test run must leave none of them behind.
+//
+// THIS LIST IS LOAD-BEARING, and an omission is silent. leakedTempEntries only
+// reports names matching a prefix here, so a missing entry does not weaken an
+// assertion — it deletes it, and the guard reports success over a real leak.
+// The list was originally written for the fixture package alone and omitted
+// every prefix cmd/agent-deck creates, which made
+// TestHelperSubprocessesLeaveNoTempDirs vacuous for its cmd case: that package
+// leaks agent-deck-cmd-tests-home-*, never ad-home-*.
+//
+// So this enumerates EXACT prefixes for every package that isolates, not just
+// the generic helpers. Adding a package that isolates under a new prefix means
+// adding it here.
 var leakPrefixes = []string{
-	"agent-deck-leakfixture-home-", // IsolatePackageHome, from the fixture
-	"ad-home-",                     // IsolateHome
-	"ad-tmux-",                     // IsolateTmuxSocket
-	"ad-sock-",                     // ShortTmuxSocket
+	// Generic helpers.
+	"ad-home-",                       // IsolateHome
+	"ad-tmux-",                       // IsolateTmuxSocket
+	"ad-sock-",                       // ShortTmuxSocket
+	"agent-deck-test-sock-",          // ShortTmuxSocket's /tmp retry
+	"agent-deck-test-home-fallback-", // IsolatePackageHome's MkdirTemp fallback
+	// Per-package homes from IsolatePackageHome.
+	"agent-deck-leakfixture-home-",   // testdata/homeleakfixture
+	"agent-deck-cmd-tests-home-",     // cmd/agent-deck
+	"agent-deck-session-tests-home-", // internal/session
+	"agent-deck-unit-pkg-home-",      // internal/testutil's own IsolatePackageHome tests
+	// Shared build dirs released from TestMain after m.Run.
+	"agent-deck-channels-bin-", // cmd/agent-deck channelsCLIBinary
+	"agent-deck-eval-bin-",     // tests/eval/harness buildAgentDeck
+	// Production, not test isolation: internal/git's mergeback checks out a
+	// temporary worktree here and removes it in a defer. Listed because a test
+	// that exercises mergeback and leaves one behind is a genuine leak, and the
+	// sentinels are the only thing positioned to notice.
+	"agent-deck-mergeback-",
 }
 
 // TestPackageTestRunLeavesNoTempDirs is the end-to-end regression for the

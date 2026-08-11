@@ -71,8 +71,17 @@ func TestHelperSubprocessesLeaveNoTempDirs(t *testing.T) {
 
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				t.Skipf("%s did not complete cleanly (%v); the leak assertion is only "+
-					"meaningful for a successful run:\n%s", tc.pkg, err, out)
+				// FAIL, not Skip. A guard that skips itself whenever the thing it
+				// guards misbehaves reports success on exactly the runs that
+				// deserve attention, and a genuine regression that also breaks the
+				// child suite would disappear silently. Environmental
+				// unsupportedness is already handled up front (no `go` on PATH,
+				// -short, -race); anything reaching here is the child suite really
+				// failing, which is a finding.
+				t.Fatalf("%s failed to run to completion (%v), so its temp dirs cannot "+
+					"be assessed. Fix the child suite, or narrow -run %q if the selected "+
+					"tests no longer exist.\n\nchild output:\n%s",
+					tc.pkg, err, tc.run, out)
 			}
 
 			if leaked := leakedTempEntries(t, tmpdir); len(leaked) > 0 {

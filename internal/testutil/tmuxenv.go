@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Name of the marker env var set during test isolation. Runtime guards in
@@ -28,8 +29,135 @@ const TestIsolationMarkerEnv = "AGENT_DECK_TEST_ISOLATED"
 //
 // Skipping costs nothing: the inherited TMUX_TMPDIR is already private, and it
 // is the socket the parent staged for the child to use.
+//
+// THE MARKER ALONE IS NOT EVIDENCE. Because this DISABLES isolation, anything
+// that convinces it wrongly points the caller at the user's real tmux server —
+// and cmd/agent-deck's TestMain then runs cleanupTestSessions (`tmux
+// list-sessions` + `kill-session`) against it. That is the 2026-04-17 incident,
+// where `go test ./...` killed every session in the user's live profile. A
+// marker survives in any inherited environment: an exported shell var, a stale
+// value from a parent agent-deck session, an env captured before cleanup ran.
+//
+// So the claim is corroborated against the value it is a claim ABOUT:
+//
+//   - TMUX_TMPDIR must be set and non-empty. Unset or empty means tmux falls
+//     back to its default socket base — no isolation at all.
+//   - It must not BE the default base (isDefaultTmuxBase: /tmp, the tmp root,
+//     or a tmux-<uid> dir), the exact post-condition IsolateTmuxSocket asserts
+//     when it sets the value.
+//   - It must not be tornDownTmuxTmpdir. That value means cleanup already ran
+//     and parked the variable; isolation is OVER, so a caller must isolate
+//     afresh rather than inherit a dead directory.
+//   - TMUX must be unset. Tmux resolves `$TMUX → -S → -L → $TMUX_TMPDIR`, so an
+//     inherited TMUX reaches the user's server no matter what TMUX_TMPDIR says.
+//     This is precisely the cascade IsolateTmuxSocket's step 1 exists to break.
+//
+// Failing any of these returns false and the caller isolates as usual.
+// Isolating redundantly wastes a temp dir; skipping it wrongly kills live
+// user sessions.
 func TmuxAlreadyIsolated() bool {
-	return os.Getenv(TestIsolationMarkerEnv) == "1"
+	if os.Getenv(TestIsolationMarkerEnv) != "1" {
+		return false
+	}
+	if os.Getenv("TMUX") != "" {
+		return false
+	}
+	dir, ok := os.LookupEnv("TMUX_TMPDIR")
+	if !ok || strings.TrimSpace(dir) == "" {
+		return false
+	}
+	if filepath.Clean(dir) == filepath.Clean(tornDownTmuxTmpdir) {
+		return false
+	}
+	return !isDefaultTmuxBase(dir)
+}
+
+// tmuxTempPrefixes are the only names ReapStaleTmuxDirs will act on: the two
+// patterns IsolateTmuxSocket and ShortTmuxSocket create.
+var tmuxTempPrefixes = []string{"ad-tmux-", "ad-sock-"}
+
+// ReapStaleTmuxDirs removes socket directories left by test runs that were
+// killed before their cleanup could run, and returns how many it removed.
+//
+// WHY A SEPARATE JANITOR (2026-08-10 temp-leak incident):
+//
+// ReapStaleTempDirs only ever looks at os.TempDir(). These dirs are not there —
+// shortTmuxTmpBase() puts them under /tmp so the socket path fits darwin's
+// 104-byte sun_path limit regardless of how long $TMPDIR is. So the $TMPDIR
+// janitor could never see them, and 738 ad-tmux-* dirs accumulated under /tmp.
+//
+// The rule here is STRICTER than the $TMPDIR one, in one specific way: it
+// removes EMPTY directories only.
+//
+// That is not fastidiousness. Unlinking a live tmux socket does not kill its
+// server — the server keeps running, keeps its panes, keeps a pty each, and is
+// now unreachable by every socket path in existence, so nothing can ever reap
+// it again. ~50 servers accumulated exactly that way and took this machine's
+// pty pool to 507/511 on 2026-07-18, after which no process could attach to
+// anything. A non-empty dir is one that may hold such a server, so it is left
+// alone; an empty one is provably socket-free. Empties were 685 of the 738
+// observed, so the conservative rule still clears the overwhelming majority.
+//
+// Deliberately does NOT kill servers it finds. A janitor that runs from every
+// package's TestMain must not be able to take down a process it did not start.
+//
+// Guards, in addition to emptiness:
+//   - base is one explicit directory, never a recursive walk.
+//   - names must be <ad-tmux-|ad-sock-><digits>, os.MkdirTemp's exact shape, so
+//     a longer differently-named prefix is out of scope.
+//   - mtime older than maxAge, so a concurrently running suite's live dir is
+//     never touched.
+//
+// Set AGENT_DECK_TEST_NO_TEMP_REAP=1 to disable it while auditing leftovers.
+func ReapStaleTmuxDirs(base string, maxAge time.Duration) int {
+	if os.Getenv(noTempReapEnv) != "" {
+		return 0
+	}
+	if base == "" {
+		return 0
+	}
+
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return 0
+	}
+
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		matched := false
+		for _, prefix := range tmuxTempPrefixes {
+			if strings.HasPrefix(name, prefix) && isMkdirTempSuffix(name[len(prefix):]) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+
+		dir := filepath.Join(base, name)
+		// Emptiness is the live-server guard. Read it directly rather than
+		// trusting a stat: a dir holding <dir>/tmux-<uid>/<socket> is exactly
+		// the shape a live server leaves.
+		contents, err := os.ReadDir(dir)
+		if err != nil || len(contents) > 0 {
+			continue
+		}
+		if err := RemoveTempTree(dir); err == nil {
+			removed++
+		}
+	}
+	return removed
 }
 
 // IsolateTmuxSocket makes it safe to spawn real tmux servers from tests
@@ -82,6 +210,12 @@ func IsolateTmuxSocket() func() {
 	// ignored. This single line is the 2026-04-17 fix.
 	_ = os.Unsetenv("TMUX")
 	_ = os.Unsetenv("TMUX_PANE")
+
+	// Clear socket dirs from earlier runs that were killed before their cleanup
+	// could run. Bounded to this one base dir, to the ad-tmux-/ad-sock- prefixes,
+	// to EMPTY dirs (a non-empty one may hold a live server), and to dirs older
+	// than StaleTempDirAge — far longer than any test run. See ReapStaleTmuxDirs.
+	ReapStaleTmuxDirs(shortTmuxTmpBase(), StaleTempDirAge)
 
 	dir, err := os.MkdirTemp(shortTmuxTmpBase(), "ad-tmux-")
 	if err != nil {
