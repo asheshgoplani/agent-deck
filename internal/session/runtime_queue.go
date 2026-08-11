@@ -154,6 +154,7 @@ func FormatRuntimeMessagesForInjection(msgs []RuntimeQueuedMessage) string {
 }
 
 var ErrRuntimeQueueFull = errors.New("runtime message queue is full")
+var ErrRuntimeQueueDeliveryInProgress = errors.New("runtime queue delivery in progress")
 
 const (
 	MaxRuntimeQueueMessages = 100
@@ -163,6 +164,7 @@ const (
 var (
 	runtimeQueueMu         sync.Mutex
 	runtimeQueueDeliveryMu sync.Map
+	runtimeQueueRegistryMu sync.Mutex
 	runtimeQueueNewID      = uuid.NewString
 	runtimeQueueNow        = time.Now
 	runtimeQueuePersist    = writeFileDurable
@@ -238,9 +240,11 @@ func PeekRuntimeQueue(id string) ([]RuntimeQueuedMessage, error) {
 }
 
 func DiscardRuntimeQueue(id string) error {
-	deliveryMu := runtimeQueueDeliveryLock(id)
-	deliveryMu.Lock()
-	defer deliveryMu.Unlock()
+	release, acquired := tryRuntimeQueueDeliveryLock(id)
+	if !acquired {
+		return ErrRuntimeQueueDeliveryInProgress
+	}
+	defer release()
 
 	runtimeQueueMu.Lock()
 	defer runtimeQueueMu.Unlock()
@@ -266,25 +270,67 @@ func DiscardRuntimeQueue(id string) error {
 	return nil
 }
 
-func runtimeQueueDeliveryLock(id string) *sync.Mutex {
-	lock, _ := runtimeQueueDeliveryMu.LoadOrStore(id, &sync.Mutex{})
-	return lock.(*sync.Mutex)
+type runtimeQueueDeliveryEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func retainRuntimeQueueDeliveryEntry(id string) (string, *runtimeQueueDeliveryEntry) {
+	key := sanitizeInboxName(id)
+	runtimeQueueRegistryMu.Lock()
+	defer runtimeQueueRegistryMu.Unlock()
+	value, _ := runtimeQueueDeliveryMu.LoadOrStore(key, &runtimeQueueDeliveryEntry{})
+	entry := value.(*runtimeQueueDeliveryEntry)
+	entry.refs++
+	return key, entry
+}
+
+func releaseRuntimeQueueDeliveryEntry(key string, entry *runtimeQueueDeliveryEntry) {
+	runtimeQueueRegistryMu.Lock()
+	defer runtimeQueueRegistryMu.Unlock()
+	entry.refs--
+	if entry.refs == 0 {
+		runtimeQueueDeliveryMu.CompareAndDelete(key, entry)
+	}
+}
+
+func lockRuntimeQueueDelivery(id string) func() {
+	key, entry := retainRuntimeQueueDeliveryEntry(id)
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		releaseRuntimeQueueDeliveryEntry(key, entry)
+	}
+}
+
+func tryRuntimeQueueDeliveryLock(id string) (func(), bool) {
+	key, entry := retainRuntimeQueueDeliveryEntry(id)
+	if !entry.mu.TryLock() {
+		releaseRuntimeQueueDeliveryEntry(key, entry)
+		return nil, false
+	}
+	return func() {
+		entry.mu.Unlock()
+		releaseRuntimeQueueDeliveryEntry(key, entry)
+	}, true
 }
 
 // SubmitRuntimeQueueBatch revalidates a staged batch and keeps discard from
 // invalidating it across the externally visible submission and acknowledgment
 // boundary. A batch discarded before this transaction begins is not submitted.
 func SubmitRuntimeQueueBatch(id, token string, submit func() error) (bool, error) {
+	if submit == nil {
+		return false, errors.New("runtime queue submission callback is nil")
+	}
+	release := lockRuntimeQueueDelivery(id)
+	defer release()
+
 	if token == "" {
 		if err := submit(); err != nil {
 			return false, err
 		}
 		return true, nil
 	}
-
-	deliveryMu := runtimeQueueDeliveryLock(id)
-	deliveryMu.Lock()
-	defer deliveryMu.Unlock()
 
 	batch, err := StageRuntimeQueue(id)
 	if err != nil {

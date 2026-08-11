@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -132,6 +131,9 @@ func TestStopHookArchivedRaceCannotEmitStaleRuntimeQueue(t *testing.T) {
 
 	staged := make(chan struct{})
 	releaseMarshal := make(chan struct{})
+	var releaseMarshalOnce sync.Once
+	release := func() { releaseMarshalOnce.Do(func() { close(releaseMarshal) }) }
+	defer release()
 	previous := marshalStopHookDecision
 	var pauseOnce sync.Once
 	marshalStopHookDecision = func(v any) ([]byte, error) {
@@ -150,7 +152,7 @@ func TestStopHookArchivedRaceCannotEmitStaleRuntimeQueue(t *testing.T) {
 	if err := session.DiscardRuntimeQueue(id); err != nil {
 		t.Fatal(err)
 	}
-	close(releaseMarshal)
+	release()
 	if err := <-emitErr; err != nil {
 		t.Fatal(err)
 	}
@@ -171,6 +173,9 @@ func TestStopHookRuntimeQueueReplacementTokenSuppressesStaleBatch(t *testing.T) 
 
 	staged := make(chan struct{})
 	releaseMarshal := make(chan struct{})
+	var releaseMarshalOnce sync.Once
+	release := func() { releaseMarshalOnce.Do(func() { close(releaseMarshal) }) }
+	defer release()
 	previous := marshalStopHookDecision
 	marshalStopHookDecision = func(v any) ([]byte, error) {
 		close(staged)
@@ -189,7 +194,7 @@ func TestStopHookRuntimeQueueReplacementTokenSuppressesStaleBatch(t *testing.T) 
 	if _, err := session.EnqueueRuntimeMessage(id, "replacement batch"); err != nil {
 		t.Fatal(err)
 	}
-	close(releaseMarshal)
+	release()
 	if err := <-emitErr; err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +207,7 @@ func TestStopHookRuntimeQueueReplacementTokenSuppressesStaleBatch(t *testing.T) 
 	}
 }
 
-func TestStopHookRuntimeQueueDiscardDuringWriteWaitsForSubmission(t *testing.T) {
+func TestStopHookRuntimeQueueDiscardDuringWriteReturnsInProgress(t *testing.T) {
 	isolateStopHookRuntimeQueue(t)
 	const id = "handler-runtime-discard-during-write"
 	if _, err := session.EnqueueRuntimeMessage(id, "finish current delivery"); err != nil {
@@ -211,6 +216,12 @@ func TestStopHookRuntimeQueueDiscardDuringWriteWaitsForSubmission(t *testing.T) 
 
 	writeEntered := make(chan struct{})
 	releaseWrite := make(chan struct{})
+	releasedWrite := false
+	defer func() {
+		if !releasedWrite {
+			close(releaseWrite)
+		}
+	}()
 	var out bytes.Buffer
 	writer := writerFunc(func(p []byte) (int, error) {
 		close(writeEntered)
@@ -227,17 +238,17 @@ func TestStopHookRuntimeQueueDiscardDuringWriteWaitsForSubmission(t *testing.T) 
 		discardDone <- session.DiscardRuntimeQueue(id)
 	}()
 	<-discardStarted
-	runtime.Gosched()
 	select {
 	case err := <-discardDone:
-		t.Fatalf("discard completed inside writer transaction: %v", err)
-	default:
+		if err == nil || !strings.Contains(err.Error(), "delivery in progress") {
+			t.Fatalf("discard during writer error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("discard during writer did not return deterministically")
 	}
 	close(releaseWrite)
+	releasedWrite = true
 	if err := <-emitErr; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-discardDone; err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "finish current delivery") {

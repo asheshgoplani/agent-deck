@@ -355,6 +355,9 @@ func TestRuntimeQueueSubmissionContentionIsScopedPerInstance(t *testing.T) {
 
 	blockedEntered := make(chan struct{})
 	releaseBlocked := make(chan struct{})
+	var releaseBlockedOnce sync.Once
+	release := func() { releaseBlockedOnce.Do(func() { close(releaseBlocked) }) }
+	defer release()
 	blockedDone := make(chan error, 1)
 	go func() {
 		_, err := SubmitRuntimeQueueBatch("blocked-instance", blockedBatch.Token, func() error {
@@ -379,9 +382,101 @@ func TestRuntimeQueueSubmissionContentionIsScopedPerInstance(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("independent instance blocked behind unrelated submission")
 	}
-	close(releaseBlocked)
+	release()
 	if err := <-blockedDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRuntimeQueueDeliveryLockUsesCanonicalQueueIdentity(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const stagedID, aliasID = "collision/a", "collision_a"
+	if _, err := EnqueueRuntimeMessage(stagedID, "canonical collision"); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue(stagedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := SubmitRuntimeQueueBatch(stagedID, batch.Token, func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+		done <- err
+	}()
+	<-entered
+	err = DiscardRuntimeQueue(aliasID)
+	close(release)
+	if err == nil || !strings.Contains(err.Error(), "delivery in progress") {
+		t.Fatalf("colliding alias discard error = %v, want delivery in progress", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeQueueSubmissionRejectsReentrantDiscard(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "reentrant-discard"
+	if _, err := EnqueueRuntimeMessage(id, "reentrant"); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := SubmitRuntimeQueueBatch(id, batch.Token, func() error {
+			return DiscardRuntimeQueue(id)
+		})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "delivery in progress") {
+			t.Fatalf("reentrant discard error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reentrant discard deadlocked")
+	}
+}
+
+func TestRuntimeQueueSubmissionRejectsNilCallback(t *testing.T) {
+	isolateRuntimeQueue(t)
+	for _, token := range []string{"", "non-empty"} {
+		var gotErr error
+		panicked := func() (panicked bool) {
+			defer func() { panicked = recover() != nil }()
+			_, gotErr = SubmitRuntimeQueueBatch("nil-callback", token, nil)
+			return false
+		}()
+		if panicked || gotErr == nil {
+			t.Fatalf("token %q: panicked=%v error=%v, want non-panic error", token, panicked, gotErr)
+		}
+	}
+}
+
+func TestRuntimeQueueDeliveryLocksAreReleasedFromRegistry(t *testing.T) {
+	isolateRuntimeQueue(t)
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("ephemeral-%d", i)
+		if err := DiscardRuntimeQueue(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := 0
+	runtimeQueueDeliveryMu.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	if count != 0 {
+		t.Fatalf("delivery lock registry retained %d inactive entries", count)
 	}
 }
 
