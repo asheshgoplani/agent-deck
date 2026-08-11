@@ -472,8 +472,8 @@ func (s *Storage) InstanceExists(id string) (bool, error) {
 	return s.db.InstanceExists(id)
 }
 
-// WithInstancesAbsent atomically observes all ids and holds SQLite's writer
-// exclusion through confirmed. See statedb.StateDB.WithInstancesAbsent.
+// WithInstancesAbsent atomically tombstones and deletes all ids, commits that
+// durable barrier, then runs confirmed cleanup. See statedb.StateDB.
 func (s *Storage) WithInstancesAbsent(ids []string, confirmed func() error) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -789,8 +789,9 @@ func swapAdditionalPath(toolData json.RawMessage, oldCwd, newCwd string) (json.R
 	return out, nil
 }
 
-// saveSingleInstance writes one row via the targeted SaveInstance path
-// (single-row INSERT OR REPLACE — no DELETE-NOT-IN sweep). Wraps the
+// saveSingleInstance explicitly creates one row via CreateInstance. This is
+// the only normal creation path allowed to clear a durable deletion tombstone.
+// It is targeted (no DELETE-NOT-IN sweep) and wraps the
 // statedb call in the storage mutex and the nil-db guard so callers
 // stay symmetric with DeleteInstance.
 func (s *Storage) saveSingleInstance(row *statedb.InstanceRow) error {
@@ -799,7 +800,7 @@ func (s *Storage) saveSingleInstance(row *statedb.InstanceRow) error {
 	if s.db == nil {
 		return fmt.Errorf("storage database not initialized")
 	}
-	if err := s.db.SaveInstance(row); err != nil {
+	if err := s.db.CreateInstance(row); err != nil {
 		return fmt.Errorf("failed to save instance %s: %w", row.ID, err)
 	}
 	_ = s.db.Touch()

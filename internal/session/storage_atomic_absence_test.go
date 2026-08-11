@@ -1,12 +1,13 @@
 package session
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
-func TestWithInstancesAbsentBlocksResurrectionThroughConfirmedCallback(t *testing.T) {
+func TestWithInstancesAbsentLetsBlockedStaleWriterFinishWithoutResurrection(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	guard, err := NewStorageWithProfile("_test_atomic_absence_guard")
 	if err != nil {
@@ -30,21 +31,19 @@ func TestWithInstancesAbsentBlocksResurrectionThroughConfirmedCallback(t *testin
 		<-writerStarted
 		select {
 		case err := <-writerDone:
-			t.Fatalf("resurrection writer completed inside confirmed callback: %v", err)
-		case <-time.After(200 * time.Millisecond):
-			return nil
+			return err
+		case <-time.After(5 * time.Second):
+			return errors.New("stale writer did not finish after durable tombstone commit")
 		}
-		return nil
 	})
 	if err != nil || !absent {
 		t.Fatalf("WithInstancesAbsent = %v, %v", absent, err)
 	}
-	select {
-	case err := <-writerDone:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("resurrection writer remained blocked after callback transaction committed")
+	exists, err := guard.InstanceExists(resurrected.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("blocked stale writer resurrected tombstoned instance after lock release")
 	}
 }

@@ -64,6 +64,76 @@ func TestSessionRemoveCommandPersistenceFailurePreservesLifecycleState(t *testin
 	probe.Release()
 }
 
+func TestSessionRemoveCommitFailurePreservesQueueAndLifecycleState(t *testing.T) {
+	if os.Getenv("AGENT_DECK_REMOVE_COMMIT_FAILURE_HELPER") == "1" {
+		handleSessionRemove("ch_support_test", []string{os.Getenv("AGENT_DECK_REMOVE_PERSIST_ID"), "--json"})
+		return
+	}
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	t.Cleanup(func() {
+		_ = filepath.Walk(home, func(path string, info os.FileInfo, err error) error {
+			if err == nil {
+				_ = os.Chmod(path, info.Mode()|0700)
+			}
+			return nil
+		})
+	})
+	dataRoot := filepath.Join(home, ".local", "share")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+	t.Setenv("AGENTDECK_PROFILE", "ch_support_test")
+	const id = "commit-failure"
+	inst := &session.Instance{ID: id, Title: id, ProjectPath: filepath.Join(home, "project"), GroupPath: session.DefaultGroupPath, Tool: "shell", Command: "shell", Status: session.StatusStopped}
+	storage, err := session.NewStorageWithProfile("ch_support_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SaveWithGroups([]*session.Instance{inst}, session.NewGroupTree([]*session.Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	_, pendingToken := seedRuntimeQueueLifecycleState(t, id)
+	if err := session.SaveQueuedMessage(id, "lifecycle sentinel"); err != nil {
+		t.Fatal(err)
+	}
+	db := storage.GetDB().DB()
+	for _, stmt := range []string{
+		`CREATE TABLE commit_parent (id INTEGER PRIMARY KEY)`,
+		`CREATE TABLE commit_child (parent_id INTEGER, FOREIGN KEY(parent_id) REFERENCES commit_parent(id) DEFERRABLE INITIALLY DEFERRED)`,
+		`CREATE TRIGGER fail_tombstone_commit AFTER INSERT ON instance_tombstones BEGIN INSERT INTO commit_child(parent_id) VALUES (999); END`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = storage.Close()
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionRemoveCommitFailurePreservesQueueAndLifecycleState$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_DECK_TASK6_HELPER_PROCESS=1",
+		"AGENT_DECK_REMOVE_COMMIT_FAILURE_HELPER=1",
+		"AGENT_DECK_REMOVE_PERSIST_ID="+id,
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+dataRoot,
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+	)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("remove unexpectedly succeeded after tombstone transaction commit failure")
+	}
+	if list := readSessionsJSON(t, home); !strings.Contains(list, id) {
+		t.Fatalf("commit failure lost durable row: %s", list)
+	}
+	if batch, err := session.StageRuntimeQueue(id); err != nil || batch.Token != pendingToken {
+		t.Fatalf("commit failure changed runtime queue: %#v, %v", batch, err)
+	}
+	if got, ok := session.PeekQueuedMessage(id); !ok || got != "lifecycle sentinel" {
+		t.Fatalf("commit failure ran lifecycle cleanup: %q, %v", got, ok)
+	}
+}
+
 func TestSessionRemoveAllErroredPersistenceFailureDiscardsOnlyCommittedQueues(t *testing.T) {
 	if os.Getenv("AGENT_DECK_REMOVE_PERSIST_HELPER") == "bulk" {
 		failedID := os.Getenv("AGENT_DECK_REMOVE_PERSIST_ID")
@@ -195,7 +265,7 @@ func TestSessionRemoveAllErroredTerminalVerification(t *testing.T) {
 	}{
 		{mode: "resurrect", wantSuccess: true, wantQueues: []bool{false, false}, wantCleanup: true},
 		{mode: "observe-fail", wantQueues: []bool{true, true}},
-		{mode: "persistent-resurrection", wantQueues: []bool{true, true}, wantRows: 2},
+		{mode: "persistent-resurrection", wantQueues: []bool{true, true}},
 		{mode: "discard-fail", wantQueues: []bool{false, true}, wantCleanup: true},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {

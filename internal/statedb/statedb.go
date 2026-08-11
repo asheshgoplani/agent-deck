@@ -97,7 +97,11 @@ func withBusyRetry(op func() error) error {
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 13
+const SchemaVersion = 14
+
+// ErrInstanceTombstoned prevents stale persistence from recreating an ID whose
+// deletion has already committed. Only CreateInstance may explicitly reuse it.
+var ErrInstanceTombstoned = errors.New("statedb: instance id has a durable deletion tombstone")
 
 // StateDB wraps a SQLite database for session/group persistence.
 // Thread-safe for concurrent use from multiple goroutines within one process.
@@ -118,6 +122,9 @@ type StateDB struct {
 	// large DELETE+re-insert sweep (S2 data-loss safeguard, 2026-06-04
 	// incident). Empty for in-memory databases (no file to back up).
 	path string
+	// beforeInstancesAbsentCommit is a deterministic concurrency-test seam.
+	// Production instances leave it nil.
+	beforeInstancesAbsentCommit func()
 }
 
 // newOwnerToken builds a claim-ownership token unique to this process
@@ -416,6 +423,14 @@ func (s *StateDB) Migrate() error {
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create instances: %w", err)
+	}
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS instance_tombstones (
+			id TEXT PRIMARY KEY,
+			deleted_at INTEGER NOT NULL
+		)
+	`); err != nil {
+		return fmt.Errorf("statedb: create instance tombstones: %w", err)
 	}
 
 	// groups table.
@@ -728,8 +743,36 @@ func archivedAtUnix(t time.Time) int64 {
 	return t.UTC().Unix()
 }
 
-// SaveInstance inserts or replaces a single instance.
+// SaveInstance inserts or replaces a single instance unless that ID has been
+// durably deleted. Use CreateInstance for an intentional ID reuse.
 func (s *StateDB) SaveInstance(inst *InstanceRow) error {
+	var tombstoned int
+	if err := s.db.QueryRow("SELECT 1 FROM instance_tombstones WHERE id = ?", inst.ID).Scan(&tombstoned); err == nil {
+		return fmt.Errorf("%w: %s", ErrInstanceTombstoned, inst.ID)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	return s.saveInstanceUnchecked(inst)
+}
+
+// CreateInstance explicitly creates or reuses an ID. Clearing a tombstone and
+// inserting the row are one transaction, so stale writers never gain a window.
+func (s *StateDB) CreateInstance(inst *InstanceRow) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec("DELETE FROM instance_tombstones WHERE id = ?", inst.ID); err != nil {
+		return err
+	}
+	if err := saveInstanceRow(tx, inst, nil, existingAutoNameFields{}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *StateDB) saveInstanceUnchecked(inst *InstanceRow) error {
 	toolData := inst.ToolData
 	if len(toolData) == 0 {
 		toolData = json.RawMessage("{}")
@@ -749,6 +792,20 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 		existingAutoName.autoName = existingAutoNameInt != 0
 	}
 
+	return saveInstanceRow(s.db, inst, toolData, existingAutoName)
+}
+
+type instanceExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func saveInstanceRow(exec instanceExecer, inst *InstanceRow, toolData json.RawMessage, existingAutoName existingAutoNameFields) error {
+	if len(toolData) == 0 {
+		toolData = inst.ToolData
+	}
+	if len(toolData) == 0 {
+		toolData = json.RawMessage("{}")
+	}
 	isConductorInt := 0
 	if inst.IsConductor {
 		isConductorInt = 1
@@ -766,7 +823,7 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 	if autoName {
 		autoNameInt = 1
 	}
-	_, err := s.db.Exec(`
+	res, err := exec.Exec(`
 		INSERT OR REPLACE INTO instances (
 			id, title, project_path, group_path, sort_order,
 			command, wrapper, tool, status, tmux_session, tmux_socket_name,
@@ -774,16 +831,27 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
 			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE NOT EXISTS (SELECT 1 FROM instance_tombstones WHERE id = ?)
 	`,
 		inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 		inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 		inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-		archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin,
+		archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin, inst.ID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: %s", ErrInstanceTombstoned, inst.ID)
+	}
+	return nil
 }
 
 // SaveInstances inserts or replaces multiple instances in a single transaction.
@@ -935,6 +1003,10 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 		}
 		// #nosec G202 -- placeholders is a fixed sequence of "?" tokens generated
 		// from len(insts); all values flow through args[], never the SQL string.
+		tombstoneQuery := "INSERT OR REPLACE INTO instance_tombstones(id, deleted_at) SELECT id, ? FROM instances WHERE id NOT IN (" + strings.Join(placeholders, ",") + ")"
+		if _, err := tx.Exec(tombstoneQuery, append([]any{time.Now().Unix()}, args...)...); err != nil {
+			return err
+		}
 		query := "DELETE FROM instances WHERE id NOT IN (" + strings.Join(placeholders, ",") + ")"
 		if _, err := tx.Exec(query, args...); err != nil {
 			return err
@@ -949,7 +1021,8 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
 			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE NOT EXISTS (SELECT 1 FROM instance_tombstones WHERE id = ?)
 	`)
 	if err != nil {
 		return err
@@ -987,7 +1060,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 			inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin,
+			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin, inst.ID,
 		); err != nil {
 			return err
 		}
@@ -1003,8 +1076,18 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 // greppable. It is a no-op on an already-empty table.
 func (s *StateDB) ClearAllInstances() error {
 	return withBusyRetry(func() error {
-		_, err := s.db.Exec("DELETE FROM instances")
-		return err
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec("INSERT OR REPLACE INTO instance_tombstones(id, deleted_at) SELECT id, ? FROM instances", time.Now().Unix()); err != nil {
+			return err
+		}
+		if _, err := tx.Exec("DELETE FROM instances"); err != nil {
+			return err
+		}
+		return tx.Commit()
 	})
 }
 
@@ -1081,8 +1164,18 @@ func (s *StateDB) loadInstances(where string) ([]*InstanceRow, error) {
 // still reports success — the silent-loss half of issue #909.
 func (s *StateDB) DeleteInstance(id string) error {
 	return withBusyRetry(func() error {
-		_, err := s.db.Exec("DELETE FROM instances WHERE id = ?", id)
-		return err
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec("INSERT OR REPLACE INTO instance_tombstones(id, deleted_at) VALUES (?, ?)", id, time.Now().Unix()); err != nil {
+			return err
+		}
+		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
+			return err
+		}
+		return tx.Commit()
 	})
 }
 
@@ -1098,6 +1191,9 @@ func (s *StateDB) DeleteInstanceAndSaveGroups(id string, groups []*GroupRow) err
 		}
 		defer func() { _ = tx.Rollback() }()
 
+		if _, err := tx.Exec("INSERT OR REPLACE INTO instance_tombstones(id, deleted_at) VALUES (?, ?)", id, time.Now().Unix()); err != nil {
+			return err
+		}
 		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
 			return err
 		}
@@ -1177,10 +1273,9 @@ func (s *StateDB) InstanceExists(id string) (bool, error) {
 	return true, nil
 }
 
-// WithInstancesAbsent takes SQLite's writer lock, observes the complete ID set
-// in one transaction, and, only when every row is absent, runs confirmed while
-// competing full-table writers remain blocked. The callback may perform
-// irreversible external cleanup that must not race row resurrection.
+// WithInstancesAbsent durably tombstones and deletes the complete ID set in one
+// transaction. Irreversible cleanup runs only after that commit; stale writers
+// subsequently complete but their tombstone-aware upserts cannot resurrect IDs.
 func (s *StateDB) WithInstancesAbsent(ids []string, confirmed func() error) (bool, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1188,32 +1283,21 @@ func (s *StateDB) WithInstancesAbsent(ids []string, confirmed func() error) (boo
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Even a no-op UPDATE acquires SQLite's writer reservation. In WAL mode this
-	// prevents another writer from resurrecting an instance until Commit.
-	if _, err := tx.Exec("UPDATE metadata SET value = value WHERE key = 'last_modified'"); err != nil {
-		return false, err
-	}
 	for _, id := range ids {
-		var one int
-		err := tx.QueryRow("SELECT 1 FROM instances WHERE id = ? LIMIT 1", id).Scan(&one)
-		switch {
-		case err == nil:
-			if err := tx.Commit(); err != nil {
-				return false, err
-			}
-			return false, nil
-		case errors.Is(err, sql.ErrNoRows):
-			continue
-		default:
+		if _, err := tx.Exec("INSERT OR REPLACE INTO instance_tombstones(id, deleted_at) VALUES (?, ?)", id, time.Now().Unix()); err != nil {
+			return false, err
+		}
+		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
 			return false, err
 		}
 	}
-
-	callbackErr := confirmed()
-	if err := tx.Commit(); err != nil {
-		return true, errors.Join(callbackErr, err)
+	if s.beforeInstancesAbsentCommit != nil {
+		s.beforeInstancesAbsentCommit()
 	}
-	return true, callbackErr
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, confirmed()
 }
 
 // --- Group CRUD ---
