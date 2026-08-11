@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,6 +79,44 @@ func TestSessionSendQueueIfBusyBusyQueuesResolvedMessageFile(t *testing.T) {
 	}
 }
 
+func TestSessionSendQueueIfBusyStartingQueues(t *testing.T) {
+	out, err := runQueueIfBusyHelper(t, "__starting__", "starting message", "--queue-if-busy", "--timeout", "1ms", "--json")
+	if err != nil {
+		t.Fatalf("starting queue helper failed: %v\n%s", err, out)
+	}
+	receipt := decodeQueuedReceipt(t, out)
+	if !receipt.Success || !receipt.Queued || receipt.SessionID == "" || receipt.QueueDepth != 1 {
+		t.Fatalf("invalid starting receipt: %+v", receipt)
+	}
+	if !strings.Contains(out, "QUEUE_MESSAGE_OK") {
+		t.Fatalf("starting send was not persisted without invoking sender; output:\n%s", out)
+	}
+}
+
+func TestSessionSendQueueIfBusyPersistenceFailureCode(t *testing.T) {
+	out, err := runQueueIfBusyHelper(t, "__persist_error__", "will fail", "--queue-if-busy", "--json")
+	if err == nil {
+		t.Fatalf("forced persistence failure unexpectedly succeeded: %s", out)
+	}
+	if !strings.Contains(out, `"code": "`+ErrCodeDeliveryFailed+`"`) || !strings.Contains(out, "forced persistence failure") {
+		t.Fatalf("persistence failure should return %s; output:\n%s", ErrCodeDeliveryFailed, out)
+	}
+}
+
+func TestSessionSendQueueIfBusyRenameKeepsOriginalID(t *testing.T) {
+	out, err := runQueueIfBusyHelper(t, "__rename__", "rename message", "--queue-if-busy", "--timeout", "1ms", "--json")
+	if err != nil {
+		t.Fatalf("rename queue helper failed: %v\n%s", err, out)
+	}
+	receipt := decodeQueuedReceipt(t, out)
+	if !receipt.Success || !receipt.Queued || receipt.SessionID == "" || receipt.QueueDepth != 1 {
+		t.Fatalf("invalid rename receipt: %+v", receipt)
+	}
+	if !strings.Contains(out, "RENAME_DESTINATION_OK") {
+		t.Fatalf("renamed target was not queued by original immutable ID; output:\n%s", out)
+	}
+}
+
 func TestSessionSendQueueIfBusyRejectsInvalidTargets(t *testing.T) {
 	tests := []struct {
 		target string
@@ -139,6 +178,22 @@ type sendReceipt struct {
 	Queued   bool   `json:"queued"`
 }
 
+type queuedReceipt struct {
+	Success    bool   `json:"success"`
+	Queued     bool   `json:"queued"`
+	SessionID  string `json:"session_id"`
+	QueueDepth int    `json:"queue_depth"`
+}
+
+func decodeQueuedReceipt(t *testing.T, out string) queuedReceipt {
+	t.Helper()
+	var receipt queuedReceipt
+	if err := json.NewDecoder(strings.NewReader(out)).Decode(&receipt); err != nil {
+		t.Fatalf("decode queued receipt: %v; output:\n%s", err, out)
+	}
+	return receipt
+}
+
 func decodeSendReceipt(t *testing.T, out string) sendReceipt {
 	t.Helper()
 	var receipt sendReceipt
@@ -158,6 +213,33 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 	}
 	profile := "queue-if-busy-helper"
 	if os.Getenv("AGENT_DECK_QUEUE_HANDLER") == "1" {
+		if os.Getenv("AGENT_DECK_QUEUE_ENQUEUE_ERROR") == "1" {
+			originalEnqueue := sessionSendQueueEnqueue
+			sessionSendQueueEnqueue = func(string, string) (int, error) {
+				return 0, errors.New("forced persistence failure")
+			}
+			defer func() { sessionSendQueueEnqueue = originalEnqueue }()
+		}
+		if os.Getenv("AGENT_DECK_QUEUE_RENAME_BEFORE_REFRESH") == "1" {
+			originalStatus := sessionSendQueueStatus
+			sessionSendQueueStatus = func(profile, sessionID string) (*session.Instance, string, error) {
+				storage, instances, _, err := loadSessionData(profile)
+				if err != nil {
+					return nil, "", err
+				}
+				defer storage.Close()
+				inst, errMsg, _ := ResolveSession(sessionID, instances)
+				if inst == nil {
+					return nil, "", errors.New(errMsg)
+				}
+				inst.Title = "renamed-during-refresh"
+				if err := storage.Save(instances); err != nil {
+					return nil, "", err
+				}
+				return originalStatus(profile, sessionID)
+			}
+			defer func() { sessionSendQueueStatus = originalStatus }()
+		}
 		handleSessionSend(profile, args)
 		return
 	}
@@ -184,7 +266,7 @@ sleep 60
 				t.Fatalf("write fake agent: %v", err)
 			}
 		}
-		if mode == "__busy__" || mode == "__full__" || mode == "__idle__" {
+		if mode == "__busy__" || mode == "__full__" || mode == "__idle__" || mode == "__starting__" || mode == "__persist_error__" || mode == "__rename__" {
 			if mode == "__idle__" {
 				fakePath := filepath.Join(project, "fake-agent.sh")
 				cmd := exec.Command("tmux", "new-session", "-d", "-s", inst.GetTmuxSession().Name,
@@ -225,6 +307,9 @@ sleep 60
 		_ = storage.Close()
 		hookStatus := "running"
 		hookEvent := "UserPromptSubmit"
+		if mode == "__starting__" {
+			hookStatus = "starting"
+		}
 		if mode == "__idle__" {
 			hookStatus = "waiting"
 			hookEvent = "Stop"
@@ -259,6 +344,12 @@ sleep 60
 			"AGENT_DECK_TASK6_HELPER_PROCESS=1",
 			"AGENT_DECK_QUEUE_IF_BUSY_ARGS="+string(encodedArgs),
 		)
+		if mode == "__persist_error__" {
+			cmd.Env = append(cmd.Env, "AGENT_DECK_QUEUE_ENQUEUE_ERROR=1")
+		}
+		if mode == "__rename__" {
+			cmd.Env = append(cmd.Env, "AGENT_DECK_QUEUE_RENAME_BEFORE_REFRESH=1")
+		}
 		commandOutput, commandErr := cmd.CombinedOutput()
 		_, _ = os.Stdout.Write(commandOutput)
 		if commandErr != nil {
@@ -286,15 +377,26 @@ sleep 60
 			println("IDLE_SEND_OK")
 			return
 		}
-		if mode != "__busy__" {
+		if mode != "__busy__" && mode != "__starting__" && mode != "__rename__" {
 			return
 		}
 		batch, err := session.StageRuntimeQueue(inst.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(batch.Messages) != 1 || batch.Messages[0].Message != "resolved from file" {
+		wantMessage := "resolved from file"
+		if mode == "__starting__" {
+			wantMessage = "starting message"
+		}
+		if mode == "__rename__" {
+			wantMessage = "rename message"
+		}
+		if len(batch.Messages) != 1 || batch.Messages[0].Message != wantMessage {
 			t.Fatalf("queued messages = %#v", batch.Messages)
+		}
+		if mode == "__rename__" {
+			println("RENAME_DESTINATION_OK")
+			return
 		}
 		println("QUEUE_MESSAGE_OK")
 		return

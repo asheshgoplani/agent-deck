@@ -2690,6 +2690,9 @@ func fetchHookDrivenInstanceStatus(profile, sessionID string) (*session.Instance
 	return inst, hookDrivenStatus(inst), nil
 }
 
+var sessionSendQueueStatus = fetchHookDrivenInstanceStatus
+var sessionSendQueueEnqueue = session.EnqueueRuntimeMessage
+
 func hookDrivenStatus(inst *session.Instance) string {
 	// Cold-load the on-disk hook file into the instance — a fresh CLI process
 	// has no StatusFileWatcher, so the target's newest hook edge only reaches us
@@ -2812,7 +2815,7 @@ func handleSessionSend(profile string, args []string) {
 	if *queueIfBusy {
 		// Re-read by immutable ID and use this one snapshot for every queue
 		// decision. The title used at initial resolution may change concurrently.
-		queueInst, status, statusErr := fetchHookDrivenInstanceStatus(profile, inst.ID)
+		queueInst, status, statusErr := sessionSendQueueStatus(profile, inst.ID)
 		if statusErr != nil {
 			out.Error(fmt.Sprintf("failed to refresh session '%s' for queueing: %v", inst.Title, statusErr), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -2834,7 +2837,7 @@ func handleSessionSend(profile string, args []string) {
 		}
 
 		if send.StatusIsBusy(status) {
-			depth, enqueueErr := session.EnqueueRuntimeMessage(inst.ID, message)
+			depth, enqueueErr := sessionSendQueueEnqueue(inst.ID, message)
 			if enqueueErr != nil {
 				if errors.Is(enqueueErr, session.ErrRuntimeQueueFull) {
 					out.Error(fmt.Sprintf("runtime message queue for '%s' is full", inst.Title), ErrCodeQueueFull)
