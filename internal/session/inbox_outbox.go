@@ -415,6 +415,37 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	return true, false, ""
 }
 
+// commitEventToInboxAtArchiveBoundary holds the shared cross-process boundary
+// from the final archive-state read through the durable inbox commit. Boundary
+// acquisition is the linearization point shared with StateDB.SetArchived.
+func (n *TransitionNotifier) commitEventToInboxAtArchiveBoundary(event TransitionNotificationEvent) (committed bool, transient bool, reason string) {
+	storage, err := NewStorageWithProfile(event.Profile)
+	if err != nil || storage.GetDB() == nil {
+		return false, true, ""
+	}
+	defer storage.Close()
+	err = storage.GetDB().WithArchiveEventBoundary(func() error {
+		row, loadErr := storage.GetDB().LoadInstanceByID(event.ChildSessionID)
+		if loadErr != nil {
+			return loadErr
+		}
+		if row == nil {
+			reason = deadLetterReasonChildMissing
+			return nil
+		}
+		if !row.ArchivedAt.IsZero() || row.NoTransitionNotify {
+			reason = deadLetterReasonNoNotify
+			return nil
+		}
+		committed, transient, reason = n.commitEventToInbox(event)
+		return nil
+	})
+	if err != nil {
+		return false, true, ""
+	}
+	return committed, transient, reason
+}
+
 // ReadDeadLetter returns the dead-lettered records for a child (empty if none).
 //
 // Audit B3: corrupt lines are SKIPPED (matching ReadAndTruncateInbox), not
