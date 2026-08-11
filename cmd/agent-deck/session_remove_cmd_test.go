@@ -13,6 +13,189 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+func assertHelperPersistedLiveSessions(t *testing.T, profile string, ids ...string) {
+	t.Helper()
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instances, _, err := storage.LoadWithGroups()
+	_ = storage.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]*session.Instance, len(instances))
+	for _, inst := range instances {
+		byID[inst.ID] = inst
+	}
+	for _, id := range ids {
+		inst := byID[id]
+		if inst == nil || inst.GetTmuxSession() == nil || !inst.Exists() {
+			t.Fatalf("helper cannot observe persisted live tmux for %s: %#v", id, inst)
+		}
+	}
+}
+
+func runtimeQueueLockRootForTest(id string) string {
+	return filepath.Join(filepath.Dir(filepath.Dir(session.RuntimeQueuePathFor(id))), "runtime", "runtime-queue-locks")
+}
+
+func persistLiveCLIInstance(t *testing.T, storage *session.Storage, id, path string, order int) *session.Instance {
+	t.Helper()
+	inst := session.NewInstance(id+"-live", path)
+	inst.ID, inst.Order, inst.Status = id, order, session.StatusError
+	if err := inst.GetTmuxSession().Start("sleep 60"); err != nil {
+		t.Skipf("tmux unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = inst.GetTmuxSession().Kill() })
+	return inst
+}
+
+func TestSessionRemoveQueueLockFailurePreservesLiveProcessRowQueueAndWorktree(t *testing.T) {
+	const profile = "_test_single_remove_lock_failure"
+	const id = "single-remove-lock-failure"
+	if os.Getenv("AGENT_DECK_SINGLE_REMOVE_LOCK_HELPER") == "1" {
+		assertHelperPersistedLiveSessions(t, profile, id)
+		handleSessionRemove(profile, []string{id, "--force", "--prune-worktree", "--json"})
+		return
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	repo := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "seed"), []byte("seed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "seed")
+	run("commit", "-m", "seed")
+	run("branch", "remove-lock-branch")
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	run("worktree", "add", worktree, "remove-lock-branch")
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := persistLiveCLIInstance(t, storage, id, worktree, 0)
+	inst.WorktreeRepoRoot, inst.WorktreePath, inst.WorktreeBranch = repo, worktree, "remove-lock-branch"
+	if err := storage.SaveWithGroups([]*session.Instance{inst}, session.NewGroupTree([]*session.Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	_ = storage.Close()
+	if _, err := session.EnqueueRuntimeMessage(id, "preserve"); err != nil {
+		t.Fatal(err)
+	}
+	lockRoot := runtimeQueueLockRootForTest(id)
+	if err := os.RemoveAll(lockRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockRoot, []byte("blocked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionRemoveQueueLockFailurePreservesLiveProcessRowQueueAndWorktree$")
+	cmd.Env = append(os.Environ(), "AGENT_DECK_TASK6_HELPER_PROCESS=1", "AGENT_DECK_QUEUE_HANDLER=1", "AGENT_DECK_SINGLE_REMOVE_LOCK_HELPER=1")
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("remove succeeded: %s", output)
+	}
+	if !inst.Exists() {
+		t.Fatal("lock failure killed live process")
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("lock failure pruned worktree: %v", err)
+	}
+	verify, _ := session.NewStorageWithProfile(profile)
+	rows, _, loadErr := verify.LoadWithGroups()
+	_ = verify.Close()
+	if loadErr != nil || len(rows) != 1 || rows[0].ID != id {
+		t.Fatalf("row changed: %#v, %v", rows, loadErr)
+	}
+	if !session.RuntimeQueueHasPending(id) {
+		t.Fatal("queue changed")
+	}
+}
+
+func TestSessionBulkRemoveQueueLockFailureFinalizesPrefixAndPreservesRemainder(t *testing.T) {
+	const profile = "_test_bulk_remove_lock_failure"
+	ids := []string{"bulk-prefix", "bulk-failing", "bulk-unattempted"}
+	if os.Getenv("AGENT_DECK_BULK_REMOVE_LOCK_HELPER") == "1" {
+		assertHelperPersistedLiveSessions(t, profile, ids...)
+		handleSessionRemove(profile, []string{"--all-errored", "--force", "--json"})
+		return
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instances := make([]*session.Instance, 0, len(ids))
+	for i, id := range ids {
+		inst := persistLiveCLIInstance(t, storage, id, t.TempDir(), i)
+		instances = append(instances, inst)
+		if _, err := session.EnqueueRuntimeMessage(id, "preserve"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := storage.SaveWithGroups(instances, session.NewGroupTree(instances)); err != nil {
+		t.Fatal(err)
+	}
+	_ = storage.Close()
+	lockRoot := runtimeQueueLockRootForTest(ids[1])
+	if err := os.MkdirAll(lockRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	failingLock := filepath.Join(lockRoot, ids[1]+".lock")
+	if err := os.Remove(failingLock); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(failingLock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionBulkRemoveQueueLockFailureFinalizesPrefixAndPreservesRemainder$")
+	cmd.Env = append(os.Environ(), "AGENT_DECK_TASK6_HELPER_PROCESS=1", "AGENT_DECK_QUEUE_HANDLER=1", "AGENT_DECK_BULK_REMOVE_LOCK_HELPER=1")
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("bulk remove succeeded: %s", output)
+	}
+	if instances[0].Exists() {
+		t.Fatal("committed prefix process was not finalized")
+	}
+	for i := 1; i < len(instances); i++ {
+		if !instances[i].Exists() {
+			t.Fatalf("%s process was killed", ids[i])
+		}
+		if !session.RuntimeQueueHasPending(ids[i]) {
+			t.Fatalf("%s queue changed", ids[i])
+		}
+	}
+	if session.RuntimeQueueHasPending(ids[0]) {
+		t.Fatal("committed prefix queue survived")
+	}
+	verify, _ := session.NewStorageWithProfile(profile)
+	rows, _, loadErr := verify.LoadWithGroups()
+	_ = verify.Close()
+	if loadErr != nil || len(rows) != 2 {
+		t.Fatalf("rows after prefix finalization: %#v, %v", rows, loadErr)
+	}
+	remainingIDs := map[string]bool{}
+	for _, row := range rows {
+		remainingIDs[row.ID] = true
+	}
+	if remainingIDs[ids[0]] || !remainingIDs[ids[1]] || !remainingIDs[ids[2]] {
+		t.Fatalf("wrong durable rows after prefix finalization: %#v", remainingIDs)
+	}
+}
+
 func TestSessionRemoveCommandPersistenceFailurePreservesLifecycleState(t *testing.T) {
 	if os.Getenv("AGENT_DECK_REMOVE_PERSIST_HELPER") == "single" {
 		original := sessionRemovePersist

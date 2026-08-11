@@ -542,29 +542,32 @@ func handleSessionArchive(profile string, args []string) {
 	// populates. Late-discovered ids are dropped rather than saved via a
 	// non-targeted write that would reintroduce the archive-clobber race. The
 	// session's normal lifecycle already persists its tool ids.
-	killed := false
-	if inst.Exists() {
-		if err := inst.Kill(); err != nil {
-			out.Error(fmt.Sprintf("failed to stop session: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-		killed = true
-	}
 	queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to lock runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	defer queueTx.Release()
+	killed := false
+	if inst.Exists() {
+		if err := inst.Kill(); err != nil {
+			queueTx.Release()
+			out.Error(fmt.Sprintf("failed to stop session: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		killed = true
+	}
 	inst.ArchivedAt = time.Now().UTC()
 	if err := sessionArchivePersist(storage, inst, killed); err != nil {
+		queueTx.Release()
 		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 	if err := queueTx.Discard(); err != nil {
+		queueTx.Release()
 		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	queueTx.Release()
 
 	out.Success(fmt.Sprintf("Archived session: %s", inst.Title), map[string]interface{}{
 		"success":  true,

@@ -12,6 +12,56 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+func TestSessionArchiveQueueLockFailurePreservesLiveProcessRowAndQueue(t *testing.T) {
+	const profile = "_test_archive_lock_failure"
+	const id = "archive-lock-failure"
+	if os.Getenv("AGENT_DECK_ARCHIVE_LOCK_HELPER") == "1" {
+		assertHelperPersistedLiveSessions(t, profile, id)
+		handleSessionArchive(profile, []string{id, "--json"})
+		return
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := persistLiveCLIInstance(t, storage, id, t.TempDir(), 0)
+	if err := storage.SaveWithGroups([]*session.Instance{inst}, session.NewGroupTree([]*session.Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	_ = storage.Close()
+	if _, err := session.EnqueueRuntimeMessage(id, "preserve"); err != nil {
+		t.Fatal(err)
+	}
+	lockRoot := runtimeQueueLockRootForTest(id)
+	if err := os.RemoveAll(lockRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockRoot, []byte("blocked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionArchiveQueueLockFailurePreservesLiveProcessRowAndQueue$")
+	cmd.Env = append(os.Environ(), "AGENT_DECK_TASK6_HELPER_PROCESS=1", "AGENT_DECK_QUEUE_HANDLER=1", "AGENT_DECK_ARCHIVE_LOCK_HELPER=1")
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("archive succeeded: %s", output)
+	}
+	if !inst.Exists() {
+		t.Fatal("lock failure killed live archive process")
+	}
+	if !session.RuntimeQueueHasPending(id) {
+		t.Fatal("lock failure changed queue")
+	}
+	verify, _ := session.NewStorageWithProfile(profile)
+	rows, _, loadErr := verify.LoadWithGroups()
+	_ = verify.Close()
+	if loadErr != nil || len(rows) != 1 || rows[0].ID != id || !rows[0].ArchivedAt.IsZero() {
+		t.Fatalf("archive lock failure changed durable lifecycle: %#v, %v", rows, loadErr)
+	}
+}
+
 func TestSessionArchiveHoldsQueueLockThroughPersistence(t *testing.T) {
 	if os.Getenv("AGENT_DECK_ARCHIVE_PERSIST_HELPER") == "1" {
 		originalPersist := sessionArchivePersist

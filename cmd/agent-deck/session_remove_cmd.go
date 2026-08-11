@@ -86,6 +86,12 @@ func handleSessionRemove(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	// Always kill the tmux scope + its process tree before deleting the
 	// registry row (issue #59, v1.7.68). Previously Kill() was only
 	// called inside pruneSessionWorktree, so `session remove --force`
@@ -107,11 +113,6 @@ func handleSessionRemove(profile string, args []string) {
 	// list before our DELETE — exactly the "session remove --force
 	// reports success but row stays" failure noted in the bug report.
 	instances = dropInstance(instances, inst.ID)
-	queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
-	if err != nil {
-		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 	if err := commitRuntimeQueueRemoval(queueTx, func() error {
 		return sessionRemovePersist(storage, inst.ID, instances, groupTree)
@@ -218,13 +219,13 @@ func bulkRemoveSessions(
 	queueTxs := make([]*session.RuntimeQueueTransaction, 0, len(doomed))
 	remaining := append([]*session.Instance(nil), instances...)
 	for _, inst := range doomed {
-		_ = inst.KillAndWait()
 		queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
 		if err != nil {
 			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs)
 			out.Error(fmt.Sprintf("failed to lock runtime queue for %s: %v", inst.ID, errors.Join(err, cleanupErr)), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		_ = inst.KillAndWait()
 		if pruneWorktree {
 			pruneSessionWorktree(inst)
 		}
