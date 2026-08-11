@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
+)
 
 // TestLaunch_DerivesGroupFromCwdNotParent_RegressionFor972 pins the fix for
 // https://github.com/asheshgoplani/agent-deck/issues/972.
@@ -94,5 +99,26 @@ func TestLaunch_DerivesGroupFromCwdNotParent_RegressionFor972(t *testing.T) {
 					tt.currentGroup, tt.cwdDerivedGroup, tt.parentGroup, tt.explicitGroupProvided, tt.inheritGroup, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestLaunch_GroupRootUsesConfiguredDefaultPath pins the root-path variant of
+// #972. The legacy path heuristic maps /.../DoozyX/Uniqcast to its parent
+// directory ("DoozyX"), even when the deck explicitly declares that exact
+// path as the root of the "uniqcast" group. A child launched at the group root
+// must honor the declarative mapping before falling back to that heuristic.
+func TestLaunch_GroupRootUsesConfiguredDefaultPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "DoozyX", "Uniqcast")
+	groups := []*session.GroupData{
+		{Path: "doozyx", DefaultPath: filepath.Dir(root)},
+		{Path: "uniqcast"},
+	}
+	cfg := &session.UserConfig{Groups: map[string]session.GroupSettings{
+		"uniqcast": {DefaultPath: root},
+	}}
+
+	got := deriveLaunchGroup(root, nil, groups, cfg)
+	if got != "uniqcast" {
+		t.Fatalf("deriveLaunchGroup(%q) = %q, want configured root group %q", root, got, "uniqcast")
 	}
 }

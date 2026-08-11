@@ -173,6 +173,7 @@ func TestHandleCodexNotify_EmptyTailEventKeepsJSONEmptyAndPersistsAnchor(t *test
 func TestCodexHooksInstallUninstall(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
 
 	handleCodexHooksInstall()
 
@@ -182,8 +183,8 @@ func TestCodexHooksInstallUninstall(t *testing.T) {
 		t.Fatalf("read config: %v", err)
 	}
 	text := string(content)
-	if !strings.Contains(text, codexNotifyMarkerBegin) {
-		t.Fatalf("config missing marker begin")
+	if strings.Contains(text, codexNotifyMarkerBegin) {
+		t.Fatalf("new installs must not use a marker block that can capture Codex tables")
 	}
 	if !strings.Contains(text, codexNotifyLine) {
 		t.Fatalf("config missing notify line")
@@ -204,6 +205,7 @@ func TestCodexHooksInstallUninstall(t *testing.T) {
 func TestCodexHooksInstall_UpgradesLegacyTableWithoutMarkers(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
 
 	configPath := getCodexConfigPath()
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -221,8 +223,8 @@ func TestCodexHooksInstall_UpgradesLegacyTableWithoutMarkers(t *testing.T) {
 		t.Fatalf("read config: %v", err)
 	}
 	text := string(content)
-	if !strings.Contains(text, codexNotifyMarkerBegin) || !strings.Contains(text, codexNotifyLine) {
-		t.Fatalf("expected agent-deck notify block after upgrade, got: %q", text)
+	if strings.Contains(text, codexNotifyMarkerBegin) || !strings.Contains(text, codexNotifyLine) {
+		t.Fatalf("expected unmarked agent-deck notify line after upgrade, got: %q", text)
 	}
 	if strings.Contains(text, "[notify]") || strings.Contains(text, "program =") {
 		t.Fatalf("expected legacy notify table removed, got: %q", text)
@@ -232,12 +234,14 @@ func TestCodexHooksInstall_UpgradesLegacyTableWithoutMarkers(t *testing.T) {
 func TestCodexHooksInstall_UpgradesLegacyMarkerBlock(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
 
 	configPath := getCodexConfigPath()
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	legacy := codexNotifyMarkerBegin + "\n[notify]\nprogram = [\"agent-deck\", \"codex-notify\"]\n" + codexNotifyMarkerEnd + "\n"
+	legacy := codexNotifyMarkerBegin + "\n[notify]\nprogram = [\"agent-deck\", \"codex-notify\"]\n" +
+		"[plugins.\"agent-deck@agent-deck\"]\nenabled = true\n" + codexNotifyMarkerEnd + "\n"
 	if err := os.WriteFile(configPath, []byte(legacy), 0644); err != nil {
 		t.Fatalf("write legacy config: %v", err)
 	}
@@ -254,6 +258,12 @@ func TestCodexHooksInstall_UpgradesLegacyMarkerBlock(t *testing.T) {
 	}
 	if strings.Contains(text, "[notify]") || strings.Contains(text, "program =") {
 		t.Fatalf("expected legacy notify format removed, got: %q", text)
+	}
+	if !strings.Contains(text, `[plugins."agent-deck@agent-deck"]`) || !strings.Contains(text, "enabled = true") {
+		t.Fatalf("expected Codex plugin config between legacy markers to be preserved, got: %q", text)
+	}
+	if strings.Contains(text, codexNotifyMarkerBegin) || strings.Contains(text, codexNotifyMarkerEnd) {
+		t.Fatalf("expected dangerous legacy markers removed, got: %q", text)
 	}
 }
 

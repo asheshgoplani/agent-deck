@@ -225,16 +225,13 @@ func handleCodexHooksInstall() {
 	configPath := getCodexConfigPath()
 	content, _ := readFileOrEmpty(configPath)
 
-	block := codexNotifyMarkerBegin + "\n" +
-		codexNotifyLine + "\n" +
-		codexNotifyMarkerEnd + "\n"
+	block := codexNotifyLine + "\n"
 
 	if strings.Contains(content, codexNotifyMarkerBegin) {
-		begin := strings.Index(content, codexNotifyMarkerBegin)
-		endRel := strings.Index(content[begin:], codexNotifyMarkerEnd)
-		if endRel != -1 {
-			end := begin + endRel + len(codexNotifyMarkerEnd)
-			updated := strings.TrimSpace(content[:begin] + content[end:])
+		if strings.Contains(content, codexNotifyMarkerEnd) {
+			updated, _ := removeCodexNotifyMarkerLines(content)
+			updated, _ = removeLegacyCodexNotifyTable(updated)
+			updated, _ = removeExactCodexNotifyLine(updated)
 			updated = prependCodexNotifyBlock(block, updated)
 			if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 				fmt.Fprintf(os.Stderr, "Error creating codex config dir: %v\n", err)
@@ -303,13 +300,13 @@ func handleCodexHooksUninstall() {
 
 	begin := strings.Index(content, codexNotifyMarkerBegin)
 	if begin != -1 {
-		endRel := strings.Index(content[begin:], codexNotifyMarkerEnd)
-		if endRel == -1 {
+		if !strings.Contains(content[begin:], codexNotifyMarkerEnd) {
 			fmt.Fprintln(os.Stderr, "Error: malformed agent-deck Codex hook block in config.")
 			os.Exit(1)
 		}
-		end := begin + endRel + len(codexNotifyMarkerEnd)
-		updated := content[:begin] + content[end:]
+		updated, _ := removeCodexNotifyMarkerLines(content)
+		updated, _ = removeLegacyCodexNotifyTable(updated)
+		updated, _ = removeExactCodexNotifyLine(updated)
 		updated = strings.TrimSpace(updated)
 		if updated != "" {
 			updated += "\n"
@@ -394,6 +391,28 @@ func prependCodexNotifyBlock(block, content string) string {
 		return block
 	}
 	return strings.TrimRight(block, "\n") + "\n\n" + trimmed + "\n"
+}
+
+func removeCodexNotifyMarkerLines(content string) (string, bool) {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	removed := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == codexNotifyMarkerBegin || trimmed == codexNotifyMarkerEnd {
+			removed = true
+			continue
+		}
+		out = append(out, line)
+	}
+	if !removed {
+		return content, false
+	}
+	updated := strings.TrimSpace(strings.Join(out, "\n"))
+	if updated != "" {
+		updated += "\n"
+	}
+	return updated, true
 }
 
 func removeLegacyCodexNotifyTable(content string) (string, bool) {

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -112,17 +113,18 @@ func SyncGroupCodexPlugins(groupPath string) error {
 	}
 	env := filteredCodexHomeEnv(os.Environ())
 	env = append(env, "CODEX_HOME="+codexHome)
+	var syncErrs []error
 	for _, marketplace := range marketplaces {
 		if err := runCodexSyncCommand(argv, env, "plugin", "marketplace", "add", marketplace, "--json"); err != nil {
-			return fmt.Errorf("register Codex marketplace %q: %w", marketplace, err)
+			syncErrs = append(syncErrs, fmt.Errorf("register Codex marketplace %q: %w", marketplace, err))
 		}
 	}
 	for _, plugin := range plugins {
 		if err := runCodexSyncCommand(argv, env, "plugin", "add", plugin, "--json"); err != nil {
-			return fmt.Errorf("install Codex plugin %q: %w", plugin, err)
+			syncErrs = append(syncErrs, fmt.Errorf("install Codex plugin %q: %w", plugin, err))
 		}
 	}
-	return nil
+	return errors.Join(syncErrs...)
 }
 
 func runCodexSyncCommand(argv, env []string, subcommand ...string) error {

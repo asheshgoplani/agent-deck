@@ -42,6 +42,37 @@ plugins = ["agent-deck@team"]
 	}
 }
 
+func TestSyncGroupCodexPlugins_ContinuesAfterUnrelatedMarketplaceFailure(t *testing.T) {
+	home := t.TempDir()
+	codexHome := filepath.Join(home, "codex-work")
+	record := filepath.Join(home, "plugin-invocation.txt")
+	fakeCodex := filepath.Join(home, "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$CODEX_HOME $*\" >> " + record + "\n" +
+		"case \"$*\" in *missing-marketplace*) exit 1;; esac\n"
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	withIsolatedHomeAndConfig(t, `
+[groups."work".codex]
+config_dir = "`+codexHome+`"
+command = "`+fakeCodex+`"
+marketplaces = ["healthy-marketplace", "missing-marketplace"]
+plugins = ["agent-deck@healthy"]
+`)
+
+	err := SyncGroupCodexPlugins("work")
+	if err == nil || !strings.Contains(err.Error(), `register Codex marketplace "missing-marketplace"`) {
+		t.Fatalf("expected the failed marketplace error, got %v", err)
+	}
+	data, readErr := os.ReadFile(record)
+	if readErr != nil {
+		t.Fatalf("read plugin invocations: %v", readErr)
+	}
+	if !strings.Contains(string(data), "plugin add agent-deck@healthy --json") {
+		t.Fatalf("unrelated marketplace failure prevented plugin install:\n%s", data)
+	}
+}
+
 func TestGroupCodexPluginsHealthyRequiresEnabledPluginAndMarketplace(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.toml")
 	write := func(body string) {

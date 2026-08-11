@@ -100,6 +100,45 @@ func groupPathsFrom(instances []*session.Instance, groups []*session.GroupData) 
 	return paths
 }
 
+// deriveLaunchGroup resolves a project path through the deck's declarative
+// group roots before falling back to the legacy parent-folder heuristic.
+// Longest-path matching is intentional: a configured nested repository such
+// as uniqcast/content-manager must beat its enclosing uniqcast root.
+func deriveLaunchGroup(projectPath string, instances []*session.Instance, groups []*session.GroupData, cfg *session.UserConfig) string {
+	cleanProject, err := filepath.Abs(projectPath)
+	if err != nil {
+		cleanProject = filepath.Clean(projectPath)
+	}
+
+	bestGroup := ""
+	bestLen := -1
+	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	session.ReconcileDeclarativeGroups(groupTree, cfg)
+	for _, group := range groupTree.GroupList {
+		if group == nil || strings.TrimSpace(group.Path) == "" || strings.TrimSpace(group.DefaultPath) == "" {
+			continue
+		}
+		cleanRoot, absErr := filepath.Abs(group.DefaultPath)
+		if absErr != nil {
+			cleanRoot = filepath.Clean(group.DefaultPath)
+		}
+		rel, relErr := filepath.Rel(cleanRoot, cleanProject)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if len(cleanRoot) > bestLen {
+			bestGroup = group.Path
+			bestLen = len(cleanRoot)
+		}
+	}
+	if bestGroup != "" {
+		return bestGroup
+	}
+
+	return session.CanonicalizeGroupPath(
+		groupPathsFrom(instances, groups), session.GroupPathForProject(projectPath))
+}
+
 // assertDoneInstruction is appended to a child's initial message so it ends its
 // final turn with the #1186 completion sentinel. The completion ledger and the
 // parent inbox both key off this line; without it "done" is never trustworthy.
@@ -470,8 +509,8 @@ func handleLaunch(profile string, args []string) {
 	// the casing the group was declared with (~/DoozyX/Uniqcast → "Uniqcast"
 	// beside the real "uniqcast"). Snap it onto the existing group the same
 	// way an explicit -g selector is resolved above.
-	cwdDerivedGroup := session.CanonicalizeGroupPath(
-		groupPathsFrom(instances, groups), session.GroupPathForProject(path))
+	launchGroupCfg, _ := session.LoadUserConfig()
+	cwdDerivedGroup := deriveLaunchGroup(path, instances, groups, launchGroupCfg)
 	// A worktree child auto-inherits its parent's group (issue: fleets fanned
 	// into worktrees scattered into junk per-branch / `worktrees` groups, or
 	// a deliberately-named group, detached from the parent). `path` is already
@@ -508,7 +547,10 @@ func handleLaunch(profile string, args []string) {
 			sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, inheritParentGroup)
 		} else {
 			parentInstance = nil
+			sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, "", explicitGroupProvided, inheritParentGroup)
 		}
+	} else {
+		sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, "", explicitGroupProvided, inheritParentGroup)
 	}
 
 	if parentInstance != nil {
