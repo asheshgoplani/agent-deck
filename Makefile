@@ -149,7 +149,7 @@ dev:
 # Run tests (with race detector)
 test:
 	bash hooks/test-session-start.sh
-	go test -race -v ./...
+	scripts/run-tests.sh go test -race -v ./...
 
 # Run hard-gated walltime regression tests (Track B). Honors PERF_BUDGET_MULTIPLIER
 # (default 1.0 locally; CI sets 2.0). See docs/perf-budget-suite.md.
@@ -159,13 +159,13 @@ test:
 # the perf-smoke.yml CI gate which already runs the whole module.
 test-perf:
 	PERF_BUDGET_MULTIPLIER=$${PERF_BUDGET_MULTIPLIER:-1.0} \
-		go test -run '^TestPerf_' -race -v -count=1 -timeout 120s \
+		scripts/run-tests.sh go test -run '^TestPerf_' -race -v -count=1 -timeout 120s \
 		./...
 
 # Run advisory benchmarks (Track A). No -race — race overhead distorts ns/op.
 # Output is for trending; not a CI gate.
 bench:
-	go test -run '^$$' -bench '^Benchmark' -benchmem -benchtime=1x -count=3 -timeout 5m \
+	scripts/run-tests.sh go test -run '^$$' -bench '^Benchmark' -benchmem -benchtime=1x -count=3 -timeout 5m \
 		./cmd/agent-deck/... ./internal/tmux/...
 
 # Format code

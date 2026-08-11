@@ -30,9 +30,11 @@ Human request: "agent-deck repository fix"
 ## Architecture
 
 An official test wrapper creates a direct child of the resolved system
-temporary directory named with an `agent-deck-test-run-` prefix plus a
-timestamp, process ID, and random suffix. It writes a versioned marker that
-records the repository identity, creation time, and owning process ID.
+temporary directory named with a short `adtr-` prefix plus a process ID and
+random suffix. The short prefix preserves room under macOS's Unix-socket path
+limit; ownership comes from the marker rather than the directory name. The
+marker records its format version, repository identity, creation time, and
+owning process ID.
 
 The wrapper exports the run root through `TMPDIR`, `GOTMPDIR`, and the
 repository's browser/e2e artifact environment variables before executing the

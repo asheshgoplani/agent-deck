@@ -19,7 +19,7 @@ agent-deck has one human maintainer and a fleet of AI agents that do the heavy l
 1. **A targeted diff.** One problem per PR. Small diffs validate in one pass; a 3k-line diff without prior discussion gets flagged for a conversation first.
 2. **Tests.** New behavior needs a test. Run the suite sandboxed (this matters, see below):
    ```bash
-   HOME=$(mktemp -d) XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_CACHE_HOME= go test ./...
+   scripts/run-tests.sh go test ./...
    ```
 3. **Evidence.** For behavior changes, show real output: a terminal capture, logs, or before/after behavior. Mock-only proof is not enough for changes users will feel.
 4. **The human need behind the diff.** The single highest-signal thing you can write is one real sentence about what you were doing when you hit this. It is what separates a real fix from a speculative one, and it is the first thing a reviewer reads.
@@ -78,7 +78,7 @@ git remote add upstream https://github.com/asheshgoplani/agent-deck.git
 
 ```bash
 make build      # Build binary to ./build/agent-deck
-make test       # Run tests (sandbox HOME first; see above)
+make test       # Run tests in an automatically cleaned sandbox
 make lint       # Run linter (requires golangci-lint)
 make fmt        # Format code
 ```
