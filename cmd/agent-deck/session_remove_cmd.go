@@ -214,6 +214,7 @@ func bulkRemoveSessions(
 ) []removedSessionRow {
 	removed := make([]removedSessionRow, 0, len(doomed))
 	removedIDs := make([]string, 0, len(doomed))
+	queueTxs := make([]*session.RuntimeQueueTransaction, 0, len(doomed))
 	remaining := append([]*session.Instance(nil), instances...)
 	for _, inst := range doomed {
 		_ = inst.KillAndWait()
@@ -227,17 +228,16 @@ func bulkRemoveSessions(
 		}
 		nextRemaining := dropInstance(remaining, inst.ID)
 		groupTree := session.NewGroupTreeWithGroups(nextRemaining, groups)
-		if err := commitRuntimeQueueRemoval(queueTx, func() error {
-			return bulkSessionRemovePersist(storage, inst.ID, nextRemaining, groupTree)
-		}); err != nil {
+		if err := bulkSessionRemovePersist(storage, inst.ID, nextRemaining, groupTree); err != nil {
 			queueTx.Release()
+			releaseRuntimeQueueTransactions(queueTxs)
 			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 		remaining = nextRemaining
 		removedIDs = append(removedIDs, inst.ID)
 		removed = append(removed, map[string]interface{}{"id": inst.ID, "title": inst.Title})
-		queueTx.Release()
+		queueTxs = append(queueTxs, queueTx)
 	}
 
 	// A concurrent full-table writer can resurrect an early removal after its
@@ -245,12 +245,19 @@ func bulkRemoveSessions(
 	// only the successfully committed IDs once more against the final survivor
 	// set. Failed/unattempted sessions never enter removedIDs, so their queues
 	// and rows remain untouched.
-	finalGroupTree := session.NewGroupTreeWithGroups(remaining, groups)
-	for _, id := range removedIDs {
-		if err := bulkSessionReverifyPersist(storage, id, remaining, finalGroupTree); err != nil {
-			out.Error(fmt.Sprintf("failed to verify removed session %s: %v", id, err), ErrCodeInvalidOperation)
+	if err := verifyBulkRemovals(storage, removedIDs, remaining, groups); err != nil {
+		releaseRuntimeQueueTransactions(queueTxs)
+		out.Error(fmt.Sprintf("failed to verify bulk session removal: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	for i, tx := range queueTxs {
+		if err := tx.Discard(); err != nil {
+			releaseRuntimeQueueTransactions(queueTxs[i:])
+			out.Error(fmt.Sprintf("failed to discard runtime queue for %s: %v", removedIDs[i], err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		tx.Release()
 	}
 
 	for _, id := range removedIDs {
@@ -260,6 +267,40 @@ func bulkRemoveSessions(
 		session.DiscardQueuedMessage(id)
 	}
 	return removed
+}
+
+const bulkFinalVerifyAttempts = 6
+
+func verifyBulkRemovals(storage *session.Storage, removedIDs []string, remaining []*session.Instance, groups []*session.GroupData) error {
+	finalGroupTree := session.NewGroupTreeWithGroups(remaining, groups)
+	for pass := 0; pass < bulkFinalVerifyAttempts; pass++ {
+		for _, id := range removedIDs {
+			if err := bulkSessionReverifyPersist(storage, id, remaining, finalGroupTree); err != nil {
+				return fmt.Errorf("reverify %s: %w", id, err)
+			}
+		}
+
+		allAbsent := true
+		for _, id := range removedIDs {
+			exists, err := storage.InstanceExists(id)
+			if err != nil {
+				return fmt.Errorf("observe %s: %w", id, err)
+			}
+			if exists {
+				allAbsent = false
+			}
+		}
+		if allAbsent {
+			return nil
+		}
+	}
+	return fmt.Errorf("removed rows kept reappearing after %d verification passes", bulkFinalVerifyAttempts)
+}
+
+func releaseRuntimeQueueTransactions(txs []*session.RuntimeQueueTransaction) {
+	for _, tx := range txs {
+		tx.Release()
+	}
 }
 
 var (

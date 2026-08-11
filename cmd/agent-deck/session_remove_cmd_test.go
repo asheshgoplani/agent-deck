@@ -107,11 +107,128 @@ func TestSessionRemoveAllErroredPersistenceFailureDiscardsOnlyCommittedQueues(t 
 	if strings.Contains(list, committedID) || !strings.Contains(list, failedID) {
 		t.Fatalf("bulk durable rows do not match committed prefix: %s", list)
 	}
-	if batch, err := session.StageRuntimeQueue(committedID); err != nil || batch.Token != "" || len(batch.Messages) != 0 {
-		t.Fatalf("committed queue survived: %#v, %v", batch, err)
+	if batch, err := session.StageRuntimeQueue(committedID); err != nil || batch.Token == "" {
+		t.Fatalf("aborted bulk operation discarded an earlier queue: %#v, %v", batch, err)
 	}
 	if batch, err := session.StageRuntimeQueue(failedID); err != nil || batch.Token != failedToken {
 		t.Fatalf("failed queue was discarded: %#v, %v", batch, err)
+	}
+}
+
+func TestSessionRemoveAllErroredTerminalVerification(t *testing.T) {
+	mode := os.Getenv("AGENT_DECK_REMOVE_FINAL_HELPER")
+	if mode != "" {
+		original := bulkSessionReverifyPersist
+		defer func() { bulkSessionReverifyPersist = original }()
+		switch mode {
+		case "resurrect":
+			storage, err := session.NewStorageWithProfile("ch_support_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			instances, groups, err := storage.LoadWithGroups()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = storage.Close()
+			resurrected := false
+			bulkSessionReverifyPersist = func(s *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
+				if err := original(s, id, remaining, tree); err != nil {
+					return err
+				}
+				if !resurrected {
+					resurrected = true
+					return s.SaveWithGroups(instances, session.NewGroupTreeWithGroups(instances, groups))
+				}
+				return nil
+			}
+		case "fail":
+			bulkSessionReverifyPersist = func(*session.Storage, string, []*session.Instance, *session.GroupTree) error {
+				return errors.New("forced terminal reverification failure")
+			}
+		}
+		handleSessionRemove("ch_support_test", []string{"--all-errored", "--json"})
+		return
+	}
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+
+	for _, tc := range []struct {
+		mode        string
+		wantSuccess bool
+	}{
+		{mode: "resurrect", wantSuccess: true},
+		{mode: "fail", wantSuccess: false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			home := t.TempDir()
+			dataRoot := filepath.Join(home, ".local", "share")
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_DATA_HOME", dataRoot)
+			t.Setenv("AGENTDECK_PROFILE", "ch_support_test")
+			first := &session.Instance{ID: "terminal-first", Title: "terminal-first", ProjectPath: filepath.Join(home, "first"), GroupPath: session.DefaultGroupPath, Tool: "shell", Command: "shell", Status: session.StatusError}
+			second := &session.Instance{ID: "terminal-second", Title: "terminal-second", ProjectPath: filepath.Join(home, "second"), GroupPath: session.DefaultGroupPath, Tool: "shell", Command: "shell", Status: session.StatusError}
+			instances := []*session.Instance{first, second}
+			storage, err := session.NewStorageWithProfile("ch_support_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := storage.SaveWithGroups(instances, session.NewGroupTree(instances)); err != nil {
+				t.Fatal(err)
+			}
+			_ = storage.Close()
+			for _, id := range []string{first.ID, second.ID} {
+				_, _ = seedRuntimeQueueLifecycleState(t, id)
+				if err := session.SaveQueuedMessage(id, "cleanup sentinel"); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			cmd := exec.Command(os.Args[0], "-test.run=^TestSessionRemoveAllErroredTerminalVerification$")
+			cmd.Env = append(os.Environ(),
+				"AGENT_DECK_TASK6_HELPER_PROCESS=1",
+				"AGENT_DECK_REMOVE_FINAL_HELPER="+tc.mode,
+				"HOME="+home,
+				"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+				"XDG_DATA_HOME="+dataRoot,
+				"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+			)
+			err = cmd.Run()
+			if tc.wantSuccess && err != nil {
+				t.Fatalf("terminal resurrection recovery failed: %v", err)
+			}
+			if !tc.wantSuccess && err == nil {
+				t.Fatal("terminal reverification failure returned success")
+			}
+
+			storage, err = session.NewStorageWithProfile("ch_support_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows, _, loadErr := storage.LoadWithGroups()
+			_ = storage.Close()
+			if loadErr != nil || len(rows) != 0 {
+				t.Fatalf("terminal sweep left rows: %#v, %v", rows, loadErr)
+			}
+			for _, id := range []string{first.ID, second.ID} {
+				if tc.wantSuccess {
+					if session.RuntimeQueueHasPending(id) {
+						t.Fatalf("successful bulk queue survived for %s", id)
+					}
+					if _, ok := session.PeekQueuedMessage(id); ok {
+						t.Fatalf("successful bulk cleanup did not run for %s", id)
+					}
+				} else {
+					if !session.RuntimeQueueHasPending(id) {
+						t.Fatalf("failed terminal verification discarded queue for %s", id)
+					}
+					if got, ok := session.PeekQueuedMessage(id); !ok || got != "cleanup sentinel" {
+						t.Fatalf("cleanup ran after terminal abort for %s: %q, %v", id, got, ok)
+					}
+				}
+			}
+		})
 	}
 }
 
