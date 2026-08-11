@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // channelsCLIBuildOnce builds the agent-deck binary exactly once per test
@@ -18,6 +20,8 @@ var (
 	channelsCLIBuildMu sync.Mutex
 	channelsCLIBuildOK bool
 )
+
+const agentDeckCLISubprocessTimeout = 30 * time.Second
 
 func channelsCLIBinary(t *testing.T) string {
 	t.Helper()
@@ -53,7 +57,9 @@ func runAgentDeck(
 	t.Helper()
 
 	bin := channelsCLIBinary(t)
-	cmd := exec.Command(bin, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), agentDeckCLISubprocessTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
 
 	// Strip TMUX*/AGENTDECK_*/HOME from parent so the test isolation is
 	// total — same pattern used by TestLogCgroupIsolationDecision_*
@@ -105,6 +111,12 @@ func runAgentDeck(
 	cmd.Stderr = &errBuf
 
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			t.Fatalf(
+				"agent-deck %v timed out after %s\nstdout: %s\nstderr: %s",
+				args, agentDeckCLISubprocessTimeout, outBuf.String(), errBuf.String(),
+			)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
