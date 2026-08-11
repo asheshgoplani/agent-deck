@@ -19,6 +19,8 @@ import (
 
 var hookHandlerLog = logging.ForComponent(logging.CompSession)
 
+var marshalStopHookDecision = json.Marshal
+
 // maxHookPayloadSize limits the size of JSON payloads read from stdin
 // to prevent denial-of-service via oversized input.
 const maxHookPayloadSize = 1 << 20 // 1 MB
@@ -316,12 +318,38 @@ func handleHookHandlerArgs(args []string) {
 	// the maintainer note in the PR. Emitting here is harmless under the legacy
 	// async install (Claude ignores stdout) and activates once sync lands.
 	if isStopHookEvent(payload.HookEventName) {
-		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
-			if out, mErr := json.Marshal(dec); mErr == nil {
-				fmt.Println(string(out))
-			}
+		if err := emitStopHookDecision(instanceID, resolveStopHookActive(payload), os.Stdout); err != nil {
+			hookHandlerLog.Warn("stop_hook_delivery_failed",
+				slog.String("instance", instanceID),
+				slog.String("error", err.Error()),
+			)
 		}
 	}
+}
+
+func emitStopHookDecision(instanceID string, stopHookActive bool, writer io.Writer) error {
+	dec, blocked, err := session.DrainForStopHook(instanceID, stopHookActive)
+	if err != nil || !blocked {
+		return err
+	}
+	out, err := marshalStopHookDecision(dec)
+	if err != nil {
+		return fmt.Errorf("marshal Stop-hook response: %w", err)
+	}
+	out = append(out, '\n')
+	n, err := writer.Write(out)
+	if err != nil {
+		return fmt.Errorf("write Stop-hook response: %w", err)
+	}
+	if n != len(out) {
+		return fmt.Errorf("write Stop-hook response: %w", io.ErrShortWrite)
+	}
+	if dec.RuntimeQueueAckToken != "" {
+		if err := session.AcknowledgeRuntimeQueue(instanceID, dec.RuntimeQueueAckToken); err != nil {
+			return fmt.Errorf("acknowledge runtime queue: %w", err)
+		}
+	}
+	return nil
 }
 
 func hookSourceArg(args []string) string {

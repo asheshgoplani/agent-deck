@@ -39,8 +39,9 @@ var stopBlockMu sync.Mutex
 // StopHookDecision mirrors the Claude Code Stop-hook JSON contract. Decision
 // "block" keeps the turn alive and feeds Reason back as the next turn's input.
 type StopHookDecision struct {
-	Decision string `json:"decision,omitempty"`
-	Reason   string `json:"reason,omitempty"`
+	Decision             string `json:"decision,omitempty"`
+	Reason               string `json:"reason,omitempty"`
+	RuntimeQueueAckToken string `json:"-"`
 }
 
 func stopBlocksDir() string {
@@ -104,7 +105,7 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	// writes. Only a completion target (a conductor/parent that children commit
 	// to) ever has a pending inbox, so the global Stop-hook sync flip is inert
 	// for non-conductor sessions. Cheap stat, no consume.
-	if !InboxHasPending(instanceID) {
+	if !InboxHasPending(instanceID) && !RuntimeQueueHasPending(instanceID) {
 		return StopHookDecision{}, false, nil
 	}
 
@@ -136,11 +137,15 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 		return StopHookDecision{}, false, err
 	}
 
+	batch, err := StageRuntimeQueue(instanceID)
+	if err != nil {
+		return StopHookDecision{}, false, err
+	}
 	events, err := DrainInboxForParent(instanceID)
 	if err != nil {
 		return StopHookDecision{}, false, err
 	}
-	if len(events) == 0 {
+	if len(events) == 0 && len(batch.Messages) == 0 {
 		// Race: another drain (heartbeat) emptied the inbox between the peek and
 		// here. No block; reset the budget to 0 — a non-blocking idle Stop breaks
 		// the consecutive-block chain.
@@ -153,9 +158,21 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 		return StopHookDecision{}, false, nil
 	}
 
+	var inboxReason string
+	if len(events) > 0 {
+		inboxReason = FormatCompletionsForInjection(events)
+	}
+	runtimeReason := FormatRuntimeMessagesForInjection(batch.Messages)
+	reason := inboxReason
+	if inboxReason != "" && runtimeReason != "" {
+		reason = strings.TrimRight(inboxReason, "\n") + "\n\n" + runtimeReason
+	} else if runtimeReason != "" {
+		reason = runtimeReason
+	}
 	return StopHookDecision{
-		Decision: "block",
-		Reason:   FormatCompletionsForInjection(events),
+		Decision:             "block",
+		Reason:               reason,
+		RuntimeQueueAckToken: batch.Token,
 	}, true, nil
 }
 
