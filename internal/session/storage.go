@@ -358,6 +358,11 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 		return fmt.Errorf("failed to save instances: %w", err)
 	}
 
+	// Intentional generic_session_id clear is a one-shot for this save.
+	// Consume only after a successful write so a failed Upsert can retry
+	// with explicit empty still applied (see consumeGenericSessionIDCleared).
+	consumeGenericSessionIDCleared(instances...)
+
 	// Save groups (including empty ones)
 	if groupTree != nil {
 		groupRows := make([]*statedb.GroupRow, 0, len(groupTree.GroupList))
@@ -623,6 +628,7 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 	if err := s.saveSingleInstance(row); err != nil {
 		return err
 	}
+	consumeGenericSessionIDCleared(newInstance)
 
 	if groupTree != nil {
 		if err := s.SaveGroupsOnly(groupTree); err != nil {
@@ -875,9 +881,31 @@ func (s *Storage) PersistRecoveredInstances(instances []*Instance) error {
 		}
 		if err := s.saveSingleInstance(row); err != nil {
 			errs = append(errs, err)
+			continue
 		}
+		consumeGenericSessionIDCleared(inst)
 	}
 	return errors.Join(errs...)
+}
+
+// consumeGenericSessionIDCleared drops the one-shot intentional-clear flag
+// after a successful persistence of the corresponding tool_data write.
+//
+// Without this, a long-lived TUI Instance that once ran
+// `session set tool-session-id ""` keeps genericSessionIDCleared=true forever.
+// Every later SaveWithGroups (title rename, status tick, full table save)
+// would re-emit explicit empty generic_session_id and wipe a concurrent
+// WriteGenericSessionBinding / live-capture re-bind of a new conversation id.
+//
+// Must run only after the DB write succeeds: consuming before Upsert would
+// let a failed save + retry omit the key and sticky-merge resurrect the
+// pre-clear id when write-through (GetGlobal / Persist) was not used.
+func consumeGenericSessionIDCleared(insts ...*Instance) {
+	for _, inst := range insts {
+		if inst != nil {
+			inst.genericSessionIDCleared = false
+		}
+	}
 }
 
 // instanceToRow converts a session.Instance into the statedb row shape.
@@ -974,6 +1002,9 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// Custom [tools.*] conversation id — reboot-safe resume when resume_flag set.
 	// intentionalClear makes sticky MergeToolDataExtras honor operator clears
 	// without breaking stale-empty full-table saves (see generic_session_persist.go).
+	// The genericSessionIDCleared flag is consumed by the save caller after a
+	// successful DB write (consumeGenericSessionIDCleared), not here: converting
+	// without persisting must not drop clear intent.
 	toolData = WriteGenericSessionIDToToolData(toolData, inst.GenericSessionID, inst.GenericDetectedAt, inst.genericSessionIDCleared)
 
 	return &statedb.InstanceRow{

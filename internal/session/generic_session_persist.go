@@ -20,6 +20,12 @@
 //  2. call WriteGenericSessionBinding("", …) (json_remove) before Save.
 // Writing explicit empty on every empty GenericSessionID would break sticky
 // protection for concurrent full-table saves — do not do that.
+//
+// The clear flag is one-shot: SaveWithGroups / InsertSessionAndVerify /
+// PersistRecoveredInstances call consumeGenericSessionIDCleared after a
+// successful DB write so a later unrelated full save cannot keep emitting
+// explicit empty and wipe a concurrent re-bind. Do not clear the flag inside
+// instanceToRow alone — a failed Upsert must still retry with intentional clear.
 package session
 
 import (
