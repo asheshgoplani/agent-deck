@@ -193,12 +193,36 @@ func RuntimeQueuePathFor(id string) string {
 }
 
 func EnqueueRuntimeMessage(id, msg string) (depth int, err error) {
-	path := RuntimeQueuePathFor(id)
-	release, err := lockRuntimeQueueDelivery(id)
+	tx, err := BeginRuntimeQueueTransaction(id)
 	if err != nil {
 		return 0, err
 	}
-	defer release()
+	defer tx.Release()
+	return tx.Enqueue(msg)
+}
+
+type RuntimeQueueTransaction struct {
+	id      string
+	release func()
+}
+
+func BeginRuntimeQueueTransaction(id string) (*RuntimeQueueTransaction, error) {
+	release, err := lockRuntimeQueueDelivery(id)
+	if err != nil {
+		return nil, err
+	}
+	return &RuntimeQueueTransaction{id: id, release: release}, nil
+}
+
+func (tx *RuntimeQueueTransaction) Release() {
+	if tx != nil && tx.release != nil {
+		tx.release()
+		tx.release = nil
+	}
+}
+
+func (tx *RuntimeQueueTransaction) Enqueue(msg string) (depth int, err error) {
+	path := RuntimeQueuePathFor(tx.id)
 
 	runtimeQueueMu.Lock()
 	defer runtimeQueueMu.Unlock()
@@ -234,6 +258,12 @@ func EnqueueRuntimeMessage(id, msg string) (depth int, err error) {
 	return len(existing) + 1, nil
 }
 
+func (tx *RuntimeQueueTransaction) Discard() error {
+	runtimeQueueMu.Lock()
+	defer runtimeQueueMu.Unlock()
+	return discardRuntimeQueueFilesLocked(tx.id)
+}
+
 func RuntimeQueueHasPending(id string) bool {
 	return fileHasContent(RuntimeQueuePathFor(id))
 }
@@ -246,15 +276,24 @@ func PeekRuntimeQueue(id string) ([]RuntimeQueuedMessage, error) {
 }
 
 func DiscardRuntimeQueue(id string) error {
-	release, err := lockRuntimeQueueDelivery(id)
+	tx, err := BeginRuntimeQueueDiscard(id)
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer tx.Release()
+	return nil
+}
 
-	runtimeQueueMu.Lock()
-	defer runtimeQueueMu.Unlock()
-	return discardRuntimeQueueFilesLocked(id)
+func BeginRuntimeQueueDiscard(id string) (*RuntimeQueueTransaction, error) {
+	tx, err := BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Discard(); err != nil {
+		tx.Release()
+		return nil, err
+	}
+	return tx, nil
 }
 
 func discardRuntimeQueueFilesLocked(id string) error {

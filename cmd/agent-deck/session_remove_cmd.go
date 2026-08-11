@@ -106,10 +106,12 @@ func handleSessionRemove(profile string, args []string) {
 	// list before our DELETE — exactly the "session remove --force
 	// reports success but row stays" failure noted in the bug report.
 	instances = dropInstance(instances, inst.ID)
-	if err := session.DiscardRuntimeQueue(inst.ID); err != nil {
+	queueTx, err := session.BeginRuntimeQueueDiscard(inst.ID)
+	if err != nil {
 		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	defer queueTx.Release()
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 	if err := storage.RemoveSessionAndVerify(inst.ID, instances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
@@ -216,7 +218,8 @@ func bulkRemoveSessions(
 	removedIDs := make([]string, 0, len(doomed))
 	for _, inst := range doomed {
 		_ = inst.KillAndWait()
-		if err := session.DiscardRuntimeQueue(inst.ID); err != nil {
+		queueTx, err := session.BeginRuntimeQueueDiscard(inst.ID)
+		if err != nil {
 			out.Error(fmt.Sprintf("failed to discard runtime queue for %s: %v", inst.ID, err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -229,6 +232,7 @@ func bulkRemoveSessions(
 		}
 		removedIDs = append(removedIDs, inst.ID)
 		removed = append(removed, map[string]interface{}{"id": inst.ID, "title": inst.Title})
+		queueTx.Release()
 	}
 
 	remaining := make([]*session.Instance, 0, len(instances)-len(removedIDs))

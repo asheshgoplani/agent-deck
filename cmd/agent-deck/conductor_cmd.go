@@ -883,7 +883,8 @@ func handleConductorTeardown(_ string, args []string) {
 						groupTree := session.NewGroupTreeWithGroups(filtered, groups)
 						removeFailed := false
 						for _, id := range removedIDs {
-							if discardErr := session.DiscardRuntimeQueue(id); discardErr != nil {
+							queueTx, discardErr := session.BeginRuntimeQueueDiscard(id)
+							if discardErr != nil {
 								removeFailed = true
 								if !*jsonOutput {
 									fmt.Fprintf(os.Stderr, "  Warning: failed to discard runtime queue for '%s' (%s): %v\n", sessionTitle, id, discardErr)
@@ -896,6 +897,7 @@ func handleConductorTeardown(_ string, args []string) {
 									fmt.Fprintf(os.Stderr, "  Warning: failed to remove session '%s' (%s) from %s: %v\n", sessionTitle, id, meta.Profile, rmErr)
 								}
 							}
+							queueTx.Release()
 						}
 						if !removeFailed && !*jsonOutput {
 							fmt.Printf("  [ok] Removed session '%s' from %s\n", sessionTitle, meta.Profile)

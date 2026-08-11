@@ -1288,6 +1288,7 @@ type worktreeFinishResultMsg struct {
 	targetBranch string
 	merged       bool
 	err          error
+	queueTx      *session.RuntimeQueueTransaction
 }
 
 // watcherEventMsg is produced by listenForWatcherEvent when a new event arrives from the engine.
@@ -5786,6 +5787,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case sessionDeletedMsg:
+		if msg.queueTx != nil {
+			defer msg.queueTx.Release()
+		}
 		// CRITICAL FIX: Skip processing during reload to prevent state corruption
 		h.reloadMu.Lock()
 		reloading := h.isReloading
@@ -5888,6 +5892,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case sessionArchivedMsg:
+		if msg.queueTx != nil {
+			defer msg.queueTx.Release()
+		}
 		if msg.killErr != nil {
 			h.setError(fmt.Errorf("failed to archive: %w", msg.killErr))
 			return h, nil
@@ -6685,6 +6692,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case worktreeFinishResultMsg:
+		if msg.queueTx != nil {
+			defer msg.queueTx.Release()
+		}
 		if msg.err != nil {
 			// Show error in dialog (user can go back or cancel)
 			if h.worktreeFinishDialog.IsVisible() {
@@ -12810,6 +12820,7 @@ func forkWithStateWorkspaceJJ(parentPath, repoRoot, workspacePath, branch string
 type sessionDeletedMsg struct {
 	deletedID string
 	killErr   error // Error from Kill() if any
+	queueTx   *session.RuntimeQueueTransaction
 }
 
 // sessionRemoveBlockedMsg keeps a live tmux session registered when the TUI's
@@ -12827,6 +12838,7 @@ type sessionClosedMsg struct {
 type sessionArchivedMsg struct {
 	sessionID string
 	killErr   error
+	queueTx   *session.RuntimeQueueTransaction
 }
 
 type sessionUnarchivedMsg struct {
@@ -12864,7 +12876,8 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 	}
 	return func() tea.Msg {
 		killErr := inst.Kill()
-		if discardErr := session.DiscardRuntimeQueue(id); discardErr != nil {
+		queueTx, discardErr := session.BeginRuntimeQueueDiscard(id)
+		if discardErr != nil {
 			return sessionDeletedMsg{deletedID: id, killErr: discardErr}
 		}
 		if isWorktree && sharedWorktree {
@@ -12901,7 +12914,7 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 				}
 			}
 		}
-		return sessionDeletedMsg{deletedID: id, killErr: killErr}
+		return sessionDeletedMsg{deletedID: id, killErr: killErr, queueTx: queueTx}
 	}
 }
 
@@ -12983,11 +12996,12 @@ func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 		if killErr := inst.Kill(); killErr != nil {
 			return sessionArchivedMsg{sessionID: id, killErr: killErr}
 		}
-		if discardErr := session.DiscardRuntimeQueue(id); discardErr != nil {
+		queueTx, discardErr := session.BeginRuntimeQueueDiscard(id)
+		if discardErr != nil {
 			return sessionArchivedMsg{sessionID: id, killErr: discardErr}
 		}
 		inst.ArchivedAt = time.Now().UTC()
-		return sessionArchivedMsg{sessionID: id}
+		return sessionArchivedMsg{sessionID: id, queueTx: queueTx}
 	}
 }
 
@@ -13013,10 +13027,11 @@ func registryRemovalMsg(inst *session.Instance) tea.Msg {
 	if inst.Exists() {
 		return sessionRemoveBlockedMsg{title: inst.Title}
 	}
-	if err := session.DiscardRuntimeQueue(inst.ID); err != nil {
+	queueTx, err := session.BeginRuntimeQueueDiscard(inst.ID)
+	if err != nil {
 		return sessionDeletedMsg{deletedID: inst.ID, killErr: err}
 	}
-	return sessionDeletedMsg{deletedID: inst.ID}
+	return sessionDeletedMsg{deletedID: inst.ID, queueTx: queueTx}
 }
 
 // bulkRemoveErrored removes every session currently in the 'error' state.
@@ -19533,7 +19548,8 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 		if inst != nil && inst.Exists() {
 			_ = inst.Kill()
 		}
-		if err := session.DiscardRuntimeQueue(sessionID); err != nil {
+		queueTx, err := session.BeginRuntimeQueueDiscard(sessionID)
+		if err != nil {
 			return worktreeFinishResultMsg{
 				sessionID: sessionID, sessionTitle: sessionTitle,
 				err: fmt.Errorf("discard runtime queue: %v", err),
@@ -19545,6 +19561,7 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 			sessionTitle: sessionTitle,
 			targetBranch: targetBranch,
 			merged:       merged,
+			queueTx:      queueTx,
 		}
 	}
 }

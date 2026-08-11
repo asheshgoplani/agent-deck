@@ -2518,10 +2518,12 @@ func handleRemove(profile string, args []string) {
 	}
 	groupTree := session.NewGroupTreeWithGroups(newInstances, groups)
 
-	if err := session.DiscardRuntimeQueue(removedID); err != nil {
+	queueTx, err := session.BeginRuntimeQueueDiscard(removedID)
+	if err != nil {
 		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	defer queueTx.Release()
 	if err := storage.RemoveSessionAndVerify(removedID, newInstances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)

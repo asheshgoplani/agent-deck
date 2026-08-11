@@ -550,11 +550,12 @@ func handleSessionArchive(profile string, args []string) {
 		}
 		killed = true
 	}
-	if err := session.DiscardRuntimeQueue(inst.ID); err != nil {
-		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
+	queueTx, err := session.BeginRuntimeQueueDiscard(inst.ID)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to lock runtime queue: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-
+	defer queueTx.Release()
 	inst.ArchivedAt = time.Now().UTC()
 	if err := persistArchivedCLI(storage, inst, killed); err != nil {
 		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
@@ -2701,7 +2702,25 @@ func fetchHookDrivenInstanceStatus(profile, sessionID string) (*session.Instance
 }
 
 var sessionSendQueueStatus = fetchHookDrivenInstanceStatus
-var sessionSendQueueEnqueue = session.EnqueueRuntimeMessage
+var sessionSendQueueBegin = session.BeginRuntimeQueueTransaction
+var sessionSendQueueTxEnqueue = func(tx *session.RuntimeQueueTransaction, msg string) (int, error) {
+	return tx.Enqueue(msg)
+}
+
+func queueRuntimeEligibilityError(inst *session.Instance) string {
+	switch {
+	case inst.IsArchived():
+		return fmt.Sprintf("session '%s' is archived", inst.Title)
+	case inst.Status == session.StatusStopped:
+		return fmt.Sprintf("session '%s' is stopped", inst.Title)
+	case !sessionstatus.IsHookEmittingTool(inst.Tool):
+		return fmt.Sprintf("session '%s' does not support hook-driven queueing", inst.Title)
+	case !inst.Exists():
+		return fmt.Sprintf("session '%s' is not running", inst.Title)
+	default:
+		return ""
+	}
+}
 
 func hookDrivenStatus(inst *session.Instance) string {
 	// Cold-load the on-disk hook file into the instance — a fresh CLI process
@@ -2831,38 +2850,48 @@ func handleSessionSend(profile string, args []string) {
 			os.Exit(1)
 		}
 		inst = queueInst
-		switch {
-		case inst.IsArchived():
-			out.Error(fmt.Sprintf("session '%s' is archived", inst.Title), ErrCodeInvalidOperation)
-			os.Exit(1)
-		case inst.Status == session.StatusStopped:
-			out.Error(fmt.Sprintf("session '%s' is stopped", inst.Title), ErrCodeInvalidOperation)
-			os.Exit(1)
-		case !sessionstatus.IsHookEmittingTool(inst.Tool):
-			out.Error(fmt.Sprintf("session '%s' does not support hook-driven queueing", inst.Title), ErrCodeInvalidOperation)
-			os.Exit(1)
-		case !inst.Exists():
-			out.Error(fmt.Sprintf("session '%s' is not running", inst.Title), ErrCodeInvalidOperation)
+		if eligibilityErr := queueRuntimeEligibilityError(inst); eligibilityErr != "" {
+			out.Error(eligibilityErr, ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
 		if send.StatusIsBusy(status) {
-			depth, enqueueErr := sessionSendQueueEnqueue(inst.ID, message)
-			if enqueueErr != nil {
-				if errors.Is(enqueueErr, session.ErrRuntimeQueueFull) {
-					out.Error(fmt.Sprintf("runtime message queue for '%s' is full", inst.Title), ErrCodeQueueFull)
-				} else {
-					out.Error(fmt.Sprintf("failed to queue message for '%s': %v", inst.Title, enqueueErr), ErrCodeDeliveryFailed)
-				}
+			tx, beginErr := sessionSendQueueBegin(inst.ID)
+			if beginErr != nil {
+				out.Error(fmt.Sprintf("failed to lock runtime queue for '%s': %v", inst.Title, beginErr), ErrCodeDeliveryFailed)
 				os.Exit(1)
 			}
-			out.Success(fmt.Sprintf("Queued message for '%s'", inst.Title), map[string]interface{}{
-				"success":     true,
-				"queued":      true,
-				"session_id":  inst.ID,
-				"queue_depth": depth,
-			})
-			return
+			defer tx.Release()
+			queueInst, lockedStatus, statusErr := sessionSendQueueStatus(profile, inst.ID)
+			if statusErr != nil {
+				out.Error(fmt.Sprintf("failed to revalidate session '%s' for queueing: %v", inst.Title, statusErr), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+			inst = queueInst
+			if eligibilityErr := queueRuntimeEligibilityError(inst); eligibilityErr != "" {
+				out.Error(eligibilityErr, ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+			if !send.StatusIsBusy(lockedStatus) {
+				tx.Release()
+			} else {
+				depth, enqueueErr := sessionSendQueueTxEnqueue(tx, message)
+				if enqueueErr != nil {
+					if errors.Is(enqueueErr, session.ErrRuntimeQueueFull) {
+						out.Error(fmt.Sprintf("runtime message queue for '%s' is full", inst.Title), ErrCodeQueueFull)
+					} else {
+						out.Error(fmt.Sprintf("failed to queue message for '%s': %v", inst.Title, enqueueErr), ErrCodeDeliveryFailed)
+					}
+					os.Exit(1)
+				}
+				out.Success(fmt.Sprintf("Queued message for '%s'", inst.Title), map[string]interface{}{
+					"success":     true,
+					"queued":      true,
+					"session_id":  inst.ID,
+					"queue_depth": depth,
+				})
+				return
+			}
 		}
 	}
 
