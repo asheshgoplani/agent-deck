@@ -337,17 +337,18 @@ func emitStopHookDecision(instanceID string, stopHookActive bool, writer io.Writ
 		return fmt.Errorf("marshal Stop-hook response: %w", err)
 	}
 	out = append(out, '\n')
-	n, err := writer.Write(out)
-	if err != nil {
-		return fmt.Errorf("write Stop-hook response: %w", err)
-	}
-	if n != len(out) {
-		return fmt.Errorf("write Stop-hook response: %w", io.ErrShortWrite)
-	}
-	if dec.RuntimeQueueAckToken != "" {
-		if err := session.AcknowledgeRuntimeQueue(instanceID, dec.RuntimeQueueAckToken); err != nil {
-			return fmt.Errorf("acknowledge runtime queue: %w", err)
+	_, err = session.SubmitRuntimeQueueBatch(instanceID, dec.RuntimeQueueAckToken, func() error {
+		n, writeErr := writer.Write(out)
+		if writeErr != nil {
+			return fmt.Errorf("write Stop-hook response: %w", writeErr)
 		}
+		if n != len(out) {
+			return fmt.Errorf("write Stop-hook response: %w", io.ErrShortWrite)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("submit Stop-hook response: %w", err)
 	}
 	return nil
 }

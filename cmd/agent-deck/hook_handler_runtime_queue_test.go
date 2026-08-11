@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -51,7 +52,11 @@ func TestStopHookRuntimeQueueWriteFailureRedeliversIdentically(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := emitStopHookDecision(id, false, stopHookErrWriter{err: errors.New("broken stdout")})
+	var attempted bytes.Buffer
+	err := emitStopHookDecision(id, false, writerFunc(func(p []byte) (int, error) {
+		attempted.Write(p)
+		return 0, errors.New("broken stdout")
+	}))
 	if err == nil || !strings.Contains(err.Error(), "broken stdout") {
 		t.Fatalf("write error = %v", err)
 	}
@@ -62,8 +67,8 @@ func TestStopHookRuntimeQueueWriteFailureRedeliversIdentically(t *testing.T) {
 	if err := emitStopHookDecision(id, false, &retry); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(retry.String(), "survive write failure") {
-		t.Fatalf("retry response = %q", retry.String())
+	if got, want := retry.String(), attempted.String(); got != want {
+		t.Fatalf("retry response differs from first attempted line:\n got %q\nwant %q", got, want)
 	}
 }
 
@@ -93,7 +98,7 @@ func TestStopHookRuntimeQueueAcknowledgmentFailureSurfaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	writer := writerFunc(func(p []byte) (int, error) {
-		if err := session.DiscardRuntimeQueue(id); err != nil {
+		if err := os.WriteFile(session.RuntimeQueuePathFor(id), nil, 0o644); err != nil {
 			return 0, err
 		}
 		return len(p), nil
@@ -103,10 +108,6 @@ func TestStopHookRuntimeQueueAcknowledgmentFailureSurfaced(t *testing.T) {
 		t.Fatalf("acknowledgment error = %v", err)
 	}
 }
-
-type stopHookErrWriter struct{ err error }
-
-func (w stopHookErrWriter) Write([]byte) (int, error) { return 0, w.err }
 
 type writerFunc func([]byte) (int, error)
 
@@ -119,20 +120,25 @@ func TestStopHookArchivedRaceCannotEmitStaleRuntimeQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	discarded := make(chan struct{})
-	releaseStop := make(chan struct{})
-	go func() {
-		if err := session.DiscardRuntimeQueue(id); err != nil {
-			t.Errorf("discard: %v", err)
-		}
-		close(discarded)
-		<-releaseStop
-	}()
-	<-discarded
+	staged := make(chan struct{})
+	releaseMarshal := make(chan struct{})
+	previous := marshalStopHookDecision
+	marshalStopHookDecision = func(v any) ([]byte, error) {
+		close(staged)
+		<-releaseMarshal
+		return previous(v)
+	}
+	t.Cleanup(func() { marshalStopHookDecision = previous })
+
 	var out bytes.Buffer
-	err := emitStopHookDecision(id, false, &out)
-	close(releaseStop)
-	if err != nil {
+	emitErr := make(chan error, 1)
+	go func() { emitErr <- emitStopHookDecision(id, false, &out) }()
+	<-staged
+	if err := session.DiscardRuntimeQueue(id); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseMarshal)
+	if err := <-emitErr; err != nil {
 		t.Fatal(err)
 	}
 	if out.Len() != 0 {

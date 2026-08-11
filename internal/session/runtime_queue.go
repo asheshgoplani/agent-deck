@@ -162,6 +162,7 @@ const (
 
 var (
 	runtimeQueueMu         sync.Mutex
+	runtimeQueueDeliveryMu sync.Mutex
 	runtimeQueueNewID      = uuid.NewString
 	runtimeQueueNow        = time.Now
 	runtimeQueuePersist    = writeFileDurable
@@ -237,6 +238,9 @@ func PeekRuntimeQueue(id string) ([]RuntimeQueuedMessage, error) {
 }
 
 func DiscardRuntimeQueue(id string) error {
+	runtimeQueueDeliveryMu.Lock()
+	defer runtimeQueueDeliveryMu.Unlock()
+
 	runtimeQueueMu.Lock()
 	defer runtimeQueueMu.Unlock()
 
@@ -259,6 +263,39 @@ func DiscardRuntimeQueue(id string) error {
 	}
 	syncRemovedDirs()
 	return nil
+}
+
+// SubmitRuntimeQueueBatch revalidates a staged batch and keeps discard from
+// invalidating it across the externally visible submission and acknowledgment
+// boundary. A batch discarded before this transaction begins is not submitted.
+func SubmitRuntimeQueueBatch(id, token string, submit func() error) (bool, error) {
+	if token == "" {
+		if err := submit(); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	runtimeQueueDeliveryMu.Lock()
+	defer runtimeQueueDeliveryMu.Unlock()
+
+	batch, err := StageRuntimeQueue(id)
+	if err != nil {
+		return false, err
+	}
+	if batch.Token == "" {
+		return false, nil
+	}
+	if batch.Token != token {
+		return false, errors.New("runtime queue staged batch changed before submission")
+	}
+	if err := submit(); err != nil {
+		return false, err
+	}
+	if err := AcknowledgeRuntimeQueue(id, token); err != nil {
+		return false, fmt.Errorf("acknowledge runtime queue: %w", err)
+	}
+	return true, nil
 }
 
 func runtimeQueueInflightPathFor(id string) string {
