@@ -29,8 +29,13 @@ func TestOrchestrationSkillDeployedVerificationStructure(t *testing.T) {
 	}
 	verificationSection := skill[verificationFlow:deliveryPipeline]
 	normalizedVerificationSection := strings.Join(strings.Fields(verificationSection), " ")
-	prerequisitesSection := strings.Join(strings.Fields(skill[:verificationFlow]), " ")
-	if !strings.Contains(prerequisitesSection, "verification-only work does not") {
+	requiresStart := strings.Index(skill, "**Requires:**")
+	requiresEnd := strings.Index(skill, "**Read `skills/fleet/SKILL.md` first.**")
+	if requiresStart < 0 || requiresEnd < 0 || requiresStart >= requiresEnd || requiresEnd >= entrance {
+		t.Fatalf("missing or misplaced orchestration prerequisites: requires=%d end=%d entrance=%d", requiresStart, requiresEnd, entrance)
+	}
+	requiresSection := strings.Join(strings.Fields(skill[requiresStart:requiresEnd]), " ")
+	if !strings.Contains(requiresSection, "Delivery/PR entrances additionally require an authenticated `gh` for the target repo; verification-only work does not.") {
 		t.Error("verification-only entrance no longer documents that GitHub authentication is unnecessary")
 	}
 
