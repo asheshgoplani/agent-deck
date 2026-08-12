@@ -46,6 +46,17 @@ type webDeletedEntry struct {
 	deletedAt time.Time
 }
 
+// Lifecycle persistence seams are package variables so entry-point tests can
+// force failures after storage has opened. Production always uses the real
+// storage methods.
+var (
+	webDeleteInstance = func(storage *session.Storage, id, token string) error {
+		return storage.DeleteInstance(id, token)
+	}
+	webPersistArchive = func(m *WebMutator) error { return m.persistAllInstances() }
+	webDiscardQueue   = func(tx *session.RuntimeQueueTransaction) error { return tx.Discard() }
+)
+
 // NewWebMutator returns a WebMutator backed by the given Home. The undo
 // window defaults to web.DefaultUndoWindow (30s).
 func NewWebMutator(h *Home) *WebMutator {
@@ -135,7 +146,6 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID,
 		return "", fmt.Errorf("open storage: %w", err)
 	}
 	defer storage.Close()
-
 	m.h.instancesMu.RLock()
 	existing := make([]*session.Instance, len(m.h.instances))
 	copy(existing, m.h.instances)
@@ -212,17 +222,35 @@ func (m *WebMutator) DeleteSession(id string) error {
 		return fmt.Errorf("session not found: %s", id)
 	}
 
-	// Kill the tmux session (ignore errors — may already be stopped)
-	_ = inst.Kill()
-
+	queueTx, err := session.BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		return fmt.Errorf("discard runtime queue: %w", err)
+	}
+	defer queueTx.Release()
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {
 		return fmt.Errorf("open storage: %w", err)
 	}
 	defer storage.Close()
+	removePayload := session.LifecycleIntentPayload(inst, inst.WorktreePath, "")
+	removeIntent, err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentRemove, removePayload)
+	if err != nil {
+		return fmt.Errorf("prepare web deletion: %w", err)
+	}
 
-	if err := storage.DeleteInstance(id); err != nil {
-		return err
+	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
+		return webDeleteInstance(storage, id, removeIntent.Token)
+	}); err != nil {
+		return fmt.Errorf("commit web deletion: %w", err)
+	}
+	if err := session.AdvanceLifecycleIntent(storage, removeIntent, "row-deleted", removePayload); err != nil {
+		return fmt.Errorf("advance web deletion: %w", err)
+	}
+	if killErr := inst.KillAndWait(); killErr != nil && inst.Exists() {
+		return fmt.Errorf("web deletion committed but process teardown failed: %w", killErr)
+	}
+	if err := session.CompleteLifecycleIntent(storage, removeIntent); err != nil {
+		return fmt.Errorf("complete web deletion: %w", err)
 	}
 	m.pushUndo(inst)
 	return nil
@@ -263,13 +291,53 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	if err := inst.Kill(); err != nil {
-		return fmt.Errorf("failed to stop session: %w", err)
+	queueTx, err := session.BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		return fmt.Errorf("failed to discard runtime queue: %w", err)
 	}
+	defer queueTx.Release()
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return fmt.Errorf("open archive storage: %w", err)
+	}
+	defer storage.Close()
+	archiveIntent, err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentArchive, "")
+	if err != nil {
+		return fmt.Errorf("prepare web archive: %w", err)
+	}
+	inst.PersistenceGeneration = archiveIntent.Generation
 	m.h.instancesMu.Lock()
+	previousArchivedAt := inst.ArchivedAt
 	inst.ArchivedAt = time.Now().UTC()
 	m.h.instancesMu.Unlock()
-	return m.persistAllInstances()
+	if err := webPersistArchive(m); err != nil {
+		m.h.instancesMu.Lock()
+		inst.ArchivedAt = previousArchivedAt
+		m.h.instancesMu.Unlock()
+		_ = session.CompleteLifecycleIntent(storage, archiveIntent)
+		return fmt.Errorf("commit web archive persistence: %w", err)
+	}
+	if err := session.AdvanceLifecycleIntent(storage, archiveIntent, "archived", ""); err != nil {
+		return fmt.Errorf("advance web archive: %w", err)
+	}
+	if err := inst.KillAndWait(); err != nil {
+		m.h.instancesMu.Lock()
+		inst.ArchivedAt = previousArchivedAt
+		m.h.instancesMu.Unlock()
+		if rollbackErr := webPersistArchive(m); rollbackErr != nil {
+			return fmt.Errorf("stop archived session: %w; rollback archive: %v", err, rollbackErr)
+		}
+		if completeErr := session.CompleteLifecycleIntent(storage, archiveIntent); completeErr != nil {
+			return fmt.Errorf("stop archived session: %w; complete rollback: %v", err, completeErr)
+		}
+		return fmt.Errorf("failed to stop session; archive rolled back: %w", err)
+	}
+	if err := webDiscardQueue(queueTx); err != nil {
+		// Persistence already committed. Keep the live lifecycle aligned with
+		// SQLite even though stale queue cleanup must be reported to the caller.
+		return fmt.Errorf("commit web archive queue discard: %w", err)
+	}
+	return session.CompleteLifecycleIntent(storage, archiveIntent)
 }
 
 // UnarchiveSession clears the archive flag without starting tmux.
@@ -634,6 +702,30 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		return web.WorktreeFinishResult{}, fmt.Errorf("cannot merge branch %q into itself", worktreeBranch)
 	}
 
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+	m.h.instancesMu.RLock()
+	existing := make([]*session.Instance, 0, len(m.h.instances))
+	for _, x := range m.h.instances {
+		if x.ID != id {
+			existing = append(existing, x)
+		}
+	}
+	m.h.instancesMu.RUnlock()
+	queueTx, err := session.BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("discard runtime queue: %w", err)
+	}
+	defer queueTx.Release()
+	finishPayload := session.LifecycleIntentPayload(inst, worktreePath, "")
+	finishIntent, err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentWorktreeFinish, finishPayload)
+	if err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("prepare worktree finish: %w", err)
+	}
+
 	if !opts.NoMerge {
 		// Checkout target in main repo, then merge.
 		checkout := exec.Command("git", "-C", repoRoot, "checkout", targetBranch)
@@ -646,6 +738,9 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 			}
 			return web.WorktreeFinishResult{}, fmt.Errorf("merge failed (aborted): %w", mErr)
 		}
+		if err := session.AdvanceLifecycleIntent(storage, finishIntent, "merged", finishPayload); err != nil {
+			return web.WorktreeFinishResult{}, fmt.Errorf("record merged worktree: %w", err)
+		}
 	}
 
 	if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
@@ -655,6 +750,9 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		_ = backend.RemoveWorktree(worktreePath, opts.Force)
 	}
 	_ = backend.PruneWorktrees()
+	if err := session.AdvanceLifecycleIntent(storage, finishIntent, "worktree-removed", finishPayload); err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("record worktree removal: %w", err)
+	}
 
 	branchDeleted := false
 	if !opts.KeepBranch {
@@ -664,32 +762,24 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 	}
 
 	if inst.Exists() {
-		_ = inst.Kill()
-	}
-
-	storage, err := session.NewStorageWithProfile(m.h.profile)
-	if err != nil {
-		return web.WorktreeFinishResult{}, fmt.Errorf("open storage: %w", err)
-	}
-	defer storage.Close()
-
-	m.h.instancesMu.RLock()
-	existing := make([]*session.Instance, 0, len(m.h.instances))
-	for _, x := range m.h.instances {
-		if x.ID != id {
-			existing = append(existing, x)
+		if killErr := inst.KillAndWait(); killErr != nil && inst.Exists() {
+			return web.WorktreeFinishResult{}, fmt.Errorf("worktree finalized but process teardown failed: %w", killErr)
 		}
 	}
-	m.h.instancesMu.RUnlock()
+	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
+		return storage.RemoveSessionAndVerify(id, existing, m.h.groupTree, finishIntent.Token)
+	}); err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("commit worktree removal: %w", err)
+	}
+	if err := session.CompleteLifecycleIntent(storage, finishIntent); err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("complete worktree finish: %w", err)
+	}
+
 	// #1396: use the targeted RemoveSessionAndVerify path, NOT
 	// SaveWithGroups(existing, ...). Historically an empty `existing` tripped
 	// the S1 empty-sweep guard AFTER the irreversible git steps, orphaning the
 	// row; since #1550 SaveWithGroups is upsert-only and would not delete the
 	// row at all. Either way, removal requires the targeted DELETE.
-	if sErr := storage.RemoveSessionAndVerify(id, existing, m.h.groupTree); sErr != nil {
-		return web.WorktreeFinishResult{}, fmt.Errorf("save session data: %w", sErr)
-	}
-
 	// Issue #1576: sweep transition-notifier state (inbox JSONL lines +
 	// runtime/transition-notify-state.json dedup record) for the removed
 	// session, mirroring the #910 cleanup on `agent-deck rm`. Best-effort —
@@ -708,6 +798,16 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		Merged:        !opts.NoMerge,
 		BranchDeleted: branchDeleted,
 	}, nil
+}
+
+func commitWebLifecycleAndDiscard(tx *session.RuntimeQueueTransaction, persistLifecycle func() error) error {
+	if err := persistLifecycle(); err != nil {
+		return fmt.Errorf("persist lifecycle: %w", err)
+	}
+	if err := tx.Discard(); err != nil {
+		return fmt.Errorf("discard runtime queue: %w", err)
+	}
+	return nil
 }
 
 // DeleteGroup deletes a group (and its subgroups), moving sessions to the default

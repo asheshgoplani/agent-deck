@@ -5,10 +5,126 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
+
+func TestWorktreeFinishQueueLockFailureLeavesWorkspaceBranchRowAndQueue(t *testing.T) {
+	const profile = "_test_worktree_finish_queue_lock"
+	if os.Getenv("AGENT_DECK_WORKTREE_LOCK_HELPER") == "1" {
+		storage, err := session.NewStorageWithProfile(profile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		instances, _, err := storage.LoadWithGroups()
+		_ = storage.Close()
+		if err != nil || len(instances) != 1 {
+			t.Fatalf("helper persisted instances = %#v, %v", instances, err)
+		}
+		persisted := instances[0]
+		if persisted.GetTmuxSession() == nil {
+			t.Fatal("helper reloaded no persisted tmux identity")
+		}
+		if got, want := persisted.GetTmuxSession().Name, os.Getenv("AGENT_DECK_EXPECTED_TMUX"); got != want {
+			t.Fatalf("helper tmux identity = %q, want %q", got, want)
+		}
+		if !persisted.Exists() {
+			t.Fatalf("helper cannot observe persisted live tmux %q", persisted.GetTmuxSession().Name)
+		}
+		handleWorktreeFinish(profile, []string{"worktree-lock-failure", "--no-merge", "--force", "--json"})
+		return
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	repo := t.TempDir()
+	run := func(args ...string) string {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return string(out)
+	}
+	run("init", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "seed"), []byte("seed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "seed")
+	run("commit", "-m", "seed")
+	run("branch", "cli-lock-branch")
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	run("worktree", "add", worktree, "cli-lock-branch")
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := session.NewInstance("worktree-lock-failure-live", worktree)
+	inst.ID = "worktree-lock-failure"
+	inst.WorktreeRepoRoot, inst.WorktreePath, inst.WorktreeBranch = repo, worktree, "cli-lock-branch"
+	if err := inst.GetTmuxSession().Start("sleep 60"); err != nil {
+		t.Skipf("tmux unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = inst.GetTmuxSession().Kill() })
+	if err := storage.SaveWithGroups([]*session.Instance{inst}, session.NewGroupTree([]*session.Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	_ = storage.Close()
+	if _, err := session.EnqueueRuntimeMessage(inst.ID, "preserve"); err != nil {
+		t.Fatal(err)
+	}
+	lockDir := filepath.Join(filepath.Dir(filepath.Dir(session.RuntimeQueuePathFor(inst.ID))), "runtime", "runtime-queue-locks")
+	if err := os.RemoveAll(lockDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockDir, []byte("blocked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWorktreeFinishQueueLockFailureLeavesWorkspaceBranchRowAndQueue$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_DECK_TASK6_HELPER_PROCESS=1",
+		"AGENT_DECK_QUEUE_HANDLER=1",
+		"AGENT_DECK_WORKTREE_LOCK_HELPER=1",
+		"AGENT_DECK_EXPECTED_TMUX="+inst.GetTmuxSession().Name,
+	)
+	output, childErr := cmd.CombinedOutput()
+	if childErr == nil {
+		t.Fatal("worktree finish unexpectedly succeeded")
+	}
+	if !strings.Contains(string(output), "failed to discard runtime queue") {
+		t.Fatalf("helper failure did not surface queue-lock result (or a tmux kill/identity failure occurred): %v\n%s", childErr, output)
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("worktree changed: %v", err)
+	}
+	if got := run("branch", "--list", inst.WorktreeBranch); got == "" {
+		t.Fatal("branch deleted")
+	}
+	if !inst.Exists() {
+		t.Fatal("queue lock failure killed live CLI worktree session")
+	}
+	verify, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := verify.LoadWithGroups()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("row changed: %#v, %v", rows, err)
+	}
+	if rows[0].GetTmuxSession() == nil || rows[0].GetTmuxSession().Name != inst.GetTmuxSession().Name || !rows[0].Exists() {
+		t.Fatalf("persisted live tmux identity did not survive lock failure: %#v", rows[0].GetTmuxSession())
+	}
+	_ = verify.Close()
+	if !session.RuntimeQueueHasPending(inst.ID) {
+		t.Fatal("queue changed")
+	}
+}
 
 // TestMain is in testmain_test.go - sets AGENTDECK_PROFILE=_test
 

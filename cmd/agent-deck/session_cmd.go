@@ -542,18 +542,52 @@ func handleSessionArchive(profile string, args []string) {
 	// populates. Late-discovered ids are dropped rather than saved via a
 	// non-targeted write that would reintroduce the archive-clobber race. The
 	// session's normal lifecycle already persists its tool ids.
-	killed := false
+	queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to lock runtime queue: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	archiveIntent, err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentArchive, "")
+	if err != nil {
+		queueTx.Release()
+		out.Error(fmt.Sprintf("failed to prepare archive: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	inst.PersistenceGeneration = archiveIntent.Generation
+	previousArchivedAt := inst.ArchivedAt
+	inst.ArchivedAt = time.Now().UTC()
+	if err := sessionArchivePersist(storage, inst, false); err != nil {
+		_ = session.CompleteLifecycleIntent(storage, archiveIntent)
+		queueTx.Release()
+		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := session.AdvanceLifecycleIntent(storage, archiveIntent, "archived", ""); err != nil {
+		queueTx.Release()
+		out.Error(fmt.Sprintf("failed to record archive phase: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 	if inst.Exists() {
-		if err := inst.Kill(); err != nil {
-			out.Error(fmt.Sprintf("failed to stop session: %v", err), ErrCodeInvalidOperation)
+		if err := inst.KillAndWait(); err != nil {
+			inst.ArchivedAt = previousArchivedAt
+			rollbackErr := sessionArchivePersist(storage, inst, false)
+			var completeErr error
+			if rollbackErr == nil {
+				completeErr = session.CompleteLifecycleIntent(storage, archiveIntent)
+			}
+			queueTx.Release()
+			out.Error(fmt.Sprintf("failed to stop archived session (archive rollback=%v, intent completion=%v): %v", rollbackErr, completeErr, err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		killed = true
 	}
-
-	inst.ArchivedAt = time.Now().UTC()
-	if err := persistArchivedCLI(storage, inst, killed); err != nil {
-		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
+	if err := queueTx.Discard(); err != nil {
+		queueTx.Release()
+		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	queueTx.Release()
+	if err := session.CompleteLifecycleIntent(storage, archiveIntent); err != nil {
+		out.Error(fmt.Sprintf("failed to complete archive intent: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -635,13 +669,15 @@ func handleSessionUnarchive(profile string, args []string) {
 	})
 }
 
+var sessionArchivePersist = persistArchivedCLI
+
 // persistArchivedCLI writes the archive timestamp (and, when persistStatus is
 // set, the post-kill Status) via targeted UPDATEs. It deliberately avoids
 // saveSessionData: the full-save path has an external-change guard that aborts
 // and reloads under concurrent writers (a running TUI), which would silently
 // revert the archive. This mirrors home.go's persistArchived.
 //
-// persistStatus is true only when archive killed a live session: Kill() sets
+// persistStatus is true only when archive killed a live session: KillAndWait sets
 // Status=stopped in memory but writes nothing to the DB, so without this the
 // row keeps its pre-kill running/idle status and a later load misclassifies the
 // stopped session. PersistInstanceStatusesTx is the same targeted, abort-safe
@@ -2076,6 +2112,10 @@ func loadSessionData(profile string) (*session.Storage, []*session.Instance, []*
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to load sessions: %w", err)
 	}
+	if err := session.RecoverLifecycleIntents(storage, instances); err != nil {
+		_ = storage.Close()
+		return nil, nil, nil, fmt.Errorf("recover lifecycle intents: %w", err)
+	}
 
 	// LoadWithGroups reconnects tmux sessions with lazy loading.
 	// Status uses cached values from JSON; session IDs are not synced at load time.
@@ -2687,7 +2727,25 @@ func fetchHookDrivenInstanceStatus(profile, sessionID string) (*session.Instance
 }
 
 var sessionSendQueueStatus = fetchHookDrivenInstanceStatus
-var sessionSendQueueEnqueue = session.EnqueueRuntimeMessage
+var sessionSendQueueBegin = session.BeginRuntimeQueueTransaction
+var sessionSendQueueTxEnqueue = func(tx *session.RuntimeQueueTransaction, msg string) (int, error) {
+	return tx.Enqueue(msg)
+}
+
+func queueRuntimeEligibilityError(inst *session.Instance) string {
+	switch {
+	case inst.IsArchived():
+		return fmt.Sprintf("session '%s' is archived", inst.Title)
+	case inst.Status == session.StatusStopped:
+		return fmt.Sprintf("session '%s' is stopped", inst.Title)
+	case !sessionstatus.IsHookEmittingTool(inst.Tool):
+		return fmt.Sprintf("session '%s' does not support hook-driven queueing", inst.Title)
+	case !inst.Exists():
+		return fmt.Sprintf("session '%s' is not running", inst.Title)
+	default:
+		return ""
+	}
+}
 
 func hookDrivenStatus(inst *session.Instance) string {
 	// Cold-load the on-disk hook file into the instance — a fresh CLI process
@@ -2817,38 +2875,48 @@ func handleSessionSend(profile string, args []string) {
 			os.Exit(1)
 		}
 		inst = queueInst
-		switch {
-		case inst.IsArchived():
-			out.Error(fmt.Sprintf("session '%s' is archived", inst.Title), ErrCodeInvalidOperation)
-			os.Exit(1)
-		case inst.Status == session.StatusStopped:
-			out.Error(fmt.Sprintf("session '%s' is stopped", inst.Title), ErrCodeInvalidOperation)
-			os.Exit(1)
-		case !sessionstatus.IsHookEmittingTool(inst.Tool):
-			out.Error(fmt.Sprintf("session '%s' does not support hook-driven queueing", inst.Title), ErrCodeInvalidOperation)
-			os.Exit(1)
-		case !inst.Exists():
-			out.Error(fmt.Sprintf("session '%s' is not running", inst.Title), ErrCodeInvalidOperation)
+		if eligibilityErr := queueRuntimeEligibilityError(inst); eligibilityErr != "" {
+			out.Error(eligibilityErr, ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
 		if send.StatusIsBusy(status) {
-			depth, enqueueErr := sessionSendQueueEnqueue(inst.ID, message)
-			if enqueueErr != nil {
-				if errors.Is(enqueueErr, session.ErrRuntimeQueueFull) {
-					out.Error(fmt.Sprintf("runtime message queue for '%s' is full", inst.Title), ErrCodeQueueFull)
-				} else {
-					out.Error(fmt.Sprintf("failed to queue message for '%s': %v", inst.Title, enqueueErr), ErrCodeDeliveryFailed)
-				}
+			tx, beginErr := sessionSendQueueBegin(inst.ID)
+			if beginErr != nil {
+				out.Error(fmt.Sprintf("failed to lock runtime queue for '%s': %v", inst.Title, beginErr), ErrCodeDeliveryFailed)
 				os.Exit(1)
 			}
-			out.Success(fmt.Sprintf("Queued message for '%s'", inst.Title), map[string]interface{}{
-				"success":     true,
-				"queued":      true,
-				"session_id":  inst.ID,
-				"queue_depth": depth,
-			})
-			return
+			defer tx.Release()
+			queueInst, lockedStatus, statusErr := sessionSendQueueStatus(profile, inst.ID)
+			if statusErr != nil {
+				out.Error(fmt.Sprintf("failed to revalidate session '%s' for queueing: %v", inst.Title, statusErr), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+			inst = queueInst
+			if eligibilityErr := queueRuntimeEligibilityError(inst); eligibilityErr != "" {
+				out.Error(eligibilityErr, ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+			if !send.StatusIsBusy(lockedStatus) {
+				tx.Release()
+			} else {
+				depth, enqueueErr := sessionSendQueueTxEnqueue(tx, message)
+				if enqueueErr != nil {
+					if errors.Is(enqueueErr, session.ErrRuntimeQueueFull) {
+						out.Error(fmt.Sprintf("runtime message queue for '%s' is full", inst.Title), ErrCodeQueueFull)
+					} else {
+						out.Error(fmt.Sprintf("failed to queue message for '%s': %v", inst.Title, enqueueErr), ErrCodeDeliveryFailed)
+					}
+					os.Exit(1)
+				}
+				out.Success(fmt.Sprintf("Queued message for '%s'", inst.Title), map[string]interface{}{
+					"success":     true,
+					"queued":      true,
+					"session_id":  inst.ID,
+					"queue_depth": depth,
+				})
+				return
+			}
 		}
 	}
 

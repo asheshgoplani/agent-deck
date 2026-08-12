@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,18 @@ func isolateRuntimeQueue(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+}
+
+func completeRuntimeQueueSubmissionForTest(id, token string, submit func() error) error {
+	lease, valid, err := BeginRuntimeQueueSubmission(id, token)
+	if err != nil || !valid {
+		return err
+	}
+	defer lease.Release()
+	if err := submit(); err != nil {
+		return err
+	}
+	return lease.Acknowledge()
 }
 
 func TestRuntimeQueueStore(t *testing.T) {
@@ -334,6 +347,507 @@ func TestRuntimeQueueStageLeavesActiveAndFreezesFIFO(t *testing.T) {
 	}
 	if again.Token != batch.Token || len(again.Messages) != 2 || again.Messages[0].ID != batch.Messages[0].ID || again.Messages[1].ID != batch.Messages[1].ID {
 		t.Fatalf("restaged batch = %#v, want frozen %#v", again, batch)
+	}
+}
+
+func TestRuntimeQueueSubmissionContentionIsScopedPerInstance(t *testing.T) {
+	isolateRuntimeQueue(t)
+	for _, id := range []string{"blocked-instance", "independent-instance"} {
+		if _, err := EnqueueRuntimeMessage(id, "message for "+id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blockedBatch, err := StageRuntimeQueue("blocked-instance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	independentBatch, err := StageRuntimeQueue("independent-instance")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockedEntered := make(chan struct{})
+	releaseBlocked := make(chan struct{})
+	var releaseBlockedOnce sync.Once
+	release := func() { releaseBlockedOnce.Do(func() { close(releaseBlocked) }) }
+	defer release()
+	blockedDone := make(chan error, 1)
+	go func() {
+		err := completeRuntimeQueueSubmissionForTest("blocked-instance", blockedBatch.Token, func() error {
+			close(blockedEntered)
+			<-releaseBlocked
+			return nil
+		})
+		blockedDone <- err
+	}()
+	<-blockedEntered
+
+	independentDone := make(chan error, 1)
+	go func() {
+		err := completeRuntimeQueueSubmissionForTest("independent-instance", independentBatch.Token, func() error { return nil })
+		independentDone <- err
+	}()
+	select {
+	case err := <-independentDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("independent instance blocked behind unrelated submission")
+	}
+	release()
+	if err := <-blockedDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeQueueDeliveryLockUsesCanonicalQueueIdentity(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const stagedID, aliasID = "collision/a", "collision_a"
+	if _, err := EnqueueRuntimeMessage(stagedID, "canonical collision"); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue(stagedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	done := make(chan error, 1)
+	go func() {
+		err := completeRuntimeQueueSubmissionForTest(stagedID, batch.Token, func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+		done <- err
+	}()
+	<-entered
+	err = TryDiscardRuntimeQueue(aliasID)
+	unblock()
+	if !errors.Is(err, ErrRuntimeQueueDeliveryInProgress) {
+		t.Fatalf("colliding alias discard error = %v, want delivery in progress", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeQueueDiscardWaitsForActiveSubmission(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "blocking-discard"
+	if _, err := EnqueueRuntimeMessage(id, "blocking discard"); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	submitDone := make(chan error, 1)
+	go func() {
+		err := completeRuntimeQueueSubmissionForTest(id, batch.Token, func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+		submitDone <- err
+	}()
+	<-entered
+	discardDone := make(chan error, 1)
+	go func() { discardDone <- DiscardRuntimeQueue(id) }()
+	select {
+	case err := <-discardDone:
+		t.Fatalf("discard returned before submission completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	unblock()
+	if err := <-submitDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-discardDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeQueueDeliveryLocksAreReleasedFromRegistry(t *testing.T) {
+	isolateRuntimeQueue(t)
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("ephemeral-%d", i)
+		if err := DiscardRuntimeQueue(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := 0
+	runtimeQueueRegistryMu.Lock()
+	count = len(runtimeQueueDeliveryMu)
+	runtimeQueueRegistryMu.Unlock()
+	if count != 0 {
+		t.Fatalf("delivery lock registry retained %d inactive entries", count)
+	}
+}
+
+func waitForRuntimeQueueDeliveryRefs(t *testing.T, id string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	key := sanitizeInboxName(id)
+	for time.Now().Before(deadline) {
+		runtimeQueueRegistryMu.Lock()
+		entry := runtimeQueueDeliveryMu[key]
+		got := 0
+		if entry != nil {
+			got = entry.refs
+		}
+		runtimeQueueRegistryMu.Unlock()
+		if got == want {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("delivery refs for %q did not reach %d", id, want)
+}
+
+func assertNoRuntimeQueueDeliveryEntry(t *testing.T, id string) {
+	t.Helper()
+	runtimeQueueRegistryMu.Lock()
+	_, exists := runtimeQueueDeliveryMu[sanitizeInboxName(id)]
+	runtimeQueueRegistryMu.Unlock()
+	if exists {
+		t.Fatalf("delivery registry retained %q", id)
+	}
+}
+
+func TestRuntimeQueueSameKeyWaiterRetainsSharedEntry(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "same-key-waiter"
+	owner, valid, err := BeginRuntimeQueueSubmission(id, "")
+	if err != nil || !valid {
+		t.Fatalf("begin owner = valid %v, err %v", valid, err)
+	}
+	defer owner.Release()
+	waiterReady := make(chan *RuntimeQueueSubmission, 1)
+	go func() {
+		lease, _, _ := BeginRuntimeQueueSubmission(id, "")
+		waiterReady <- lease
+	}()
+	waitForRuntimeQueueDeliveryRefs(t, id, 2)
+	owner.Release()
+	waiter := <-waiterReady
+	if err := TryDiscardRuntimeQueue(id); !errors.Is(err, ErrRuntimeQueueDeliveryInProgress) {
+		t.Fatalf("third caller bypassed retained waiter entry: %v", err)
+	}
+	waiter.Release()
+	assertNoRuntimeQueueDeliveryEntry(t, id)
+}
+
+func TestRuntimeQueueSubmissionReleasesRegistryOnEveryExit(t *testing.T) {
+	isolateRuntimeQueue(t)
+
+	t.Run("successful", func(t *testing.T) {
+		const id = "release-success"
+		lease, valid, err := BeginRuntimeQueueSubmission(id, "")
+		if err != nil || !valid {
+			t.Fatalf("begin = valid %v, err %v", valid, err)
+		}
+		if err := lease.Acknowledge(); err != nil {
+			t.Fatal(err)
+		}
+		assertNoRuntimeQueueDeliveryEntry(t, id)
+	})
+
+	t.Run("rejected token", func(t *testing.T) {
+		const id = "release-rejected"
+		lease, valid, err := BeginRuntimeQueueSubmission(id, "missing-token")
+		if err != nil || valid || lease != nil {
+			t.Fatalf("begin = lease %#v, valid %v, err %v", lease, valid, err)
+		}
+		assertNoRuntimeQueueDeliveryEntry(t, id)
+	})
+
+	t.Run("external failure release", func(t *testing.T) {
+		const id = "release-external-error"
+		lease, valid, err := BeginRuntimeQueueSubmission(id, "")
+		if err != nil || !valid {
+			t.Fatalf("begin = valid %v, err %v", valid, err)
+		}
+		lease.Release()
+		assertNoRuntimeQueueDeliveryEntry(t, id)
+	})
+}
+
+func TestRuntimeQueueEmptyTokenSubmissionCoordinatesDiscard(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "empty-token-discard"
+	lease, valid, err := BeginRuntimeQueueSubmission(id, "")
+	if err != nil || !valid {
+		t.Fatalf("begin = valid %v, err %v", valid, err)
+	}
+	defer lease.Release()
+	discardDone := make(chan error, 1)
+	go func() { discardDone <- DiscardRuntimeQueue(id) }()
+	waitForRuntimeQueueDeliveryRefs(t, id, 2)
+	select {
+	case err := <-discardDone:
+		t.Fatalf("discard bypassed empty-token submission: %v", err)
+	default:
+	}
+	if err := lease.Acknowledge(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-discardDone; err != nil {
+		t.Fatal(err)
+	}
+	assertNoRuntimeQueueDeliveryEntry(t, id)
+}
+
+func TestRuntimeQueueSubprocessArchiveCannotOvertakeValidatedDelivery(t *testing.T) {
+	if os.Getenv("AGENT_DECK_RUNTIME_IPC_HELPER") == "1" {
+		t.Setenv("XDG_DATA_HOME", os.Getenv("AGENT_DECK_RUNTIME_IPC_DATA"))
+		id := os.Getenv("AGENT_DECK_RUNTIME_IPC_ID")
+		lease, valid, err := BeginRuntimeQueueSubmission(id, os.Getenv("AGENT_DECK_RUNTIME_IPC_TOKEN"))
+		if err != nil || !valid {
+			t.Fatalf("begin helper lease = valid %v, err %v", valid, err)
+		}
+		defer lease.Release()
+		if err := os.WriteFile(os.Getenv("AGENT_DECK_RUNTIME_IPC_READY"), []byte("ready"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(os.Getenv("AGENT_DECK_RUNTIME_IPC_RELEASE")); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("timed out waiting for release")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err := os.WriteFile(os.Getenv("AGENT_DECK_RUNTIME_IPC_OUTPUT"), []byte("staged message emitted"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := lease.Acknowledge(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	isolateRuntimeQueue(t)
+	const id = "subprocess-archive-race"
+	if _, err := EnqueueRuntimeMessage(id, "staged message"); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := StageRuntimeQueue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	ready := filepath.Join(root, "ready")
+	release := filepath.Join(root, "release")
+	output := filepath.Join(root, "output")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeQueueSubprocessArchiveCannotOvertakeValidatedDelivery$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_DECK_RUNTIME_IPC_HELPER=1",
+		"AGENT_DECK_RUNTIME_IPC_DATA="+os.Getenv("XDG_DATA_HOME"),
+		"AGENT_DECK_RUNTIME_IPC_ID="+id,
+		"AGENT_DECK_RUNTIME_IPC_TOKEN="+batch.Token,
+		"AGENT_DECK_RUNTIME_IPC_READY="+ready,
+		"AGENT_DECK_RUNTIME_IPC_RELEASE="+release,
+		"AGENT_DECK_RUNTIME_IPC_OUTPUT="+output,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("helper did not validate staged batch")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	discardDone := make(chan error, 1)
+	go func() { discardDone <- DiscardRuntimeQueue(id) }()
+	archivedBeforeWrite := false
+	select {
+	case err := <-discardDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+		archivedBeforeWrite = true
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := os.WriteFile(release, []byte("release"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if !archivedBeforeWrite {
+		if err := <-discardDone; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if emitted, _ := os.ReadFile(output); archivedBeforeWrite && len(emitted) > 0 {
+		t.Fatalf("archived session emitted stale runtime work: %q", emitted)
+	}
+}
+
+func TestRuntimeQueueSubprocessCanonicalAliasesShareProcessLock(t *testing.T) {
+	if os.Getenv("AGENT_DECK_RUNTIME_ALIAS_IPC_HELPER") == "1" {
+		t.Setenv("XDG_DATA_HOME", os.Getenv("AGENT_DECK_RUNTIME_ALIAS_IPC_DATA"))
+		tx, err := BeginRuntimeQueueTransaction("canonical/a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Release()
+		if err := os.WriteFile(os.Getenv("AGENT_DECK_RUNTIME_ALIAS_IPC_READY"), []byte("ready"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(os.Getenv("AGENT_DECK_RUNTIME_ALIAS_IPC_RELEASE")); err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("timed out waiting for alias release")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	isolateRuntimeQueue(t)
+	root := t.TempDir()
+	ready, release := filepath.Join(root, "ready"), filepath.Join(root, "release")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeQueueSubprocessCanonicalAliasesShareProcessLock$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_DECK_RUNTIME_ALIAS_IPC_HELPER=1",
+		"AGENT_DECK_RUNTIME_ALIAS_IPC_DATA="+os.Getenv("XDG_DATA_HOME"),
+		"AGENT_DECK_RUNTIME_ALIAS_IPC_READY="+ready,
+		"AGENT_DECK_RUNTIME_ALIAS_IPC_RELEASE="+release,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.WriteFile(release, []byte("release"), 0o644)
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("alias helper did not acquire process lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := TryDiscardRuntimeQueue("canonical_a"); !errors.Is(err, ErrRuntimeQueueDeliveryInProgress) {
+		t.Fatalf("colliding alias discard error = %v, want %v", err, ErrRuntimeQueueDeliveryInProgress)
+	}
+	if err := os.WriteFile(release, []byte("release"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeQueueSubprocessEnqueueCannotOutliveDiscard(t *testing.T) {
+	if os.Getenv("AGENT_DECK_RUNTIME_ENQUEUE_IPC_HELPER") == "1" {
+		t.Setenv("XDG_DATA_HOME", os.Getenv("AGENT_DECK_RUNTIME_ENQUEUE_IPC_DATA"))
+		originalPersist := runtimeQueuePersist
+		runtimeQueuePersist = func(path string, data []byte, mode os.FileMode) error {
+			if err := os.WriteFile(os.Getenv("AGENT_DECK_RUNTIME_ENQUEUE_IPC_READY"), []byte("ready"), 0o644); err != nil {
+				return err
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if _, err := os.Stat(os.Getenv("AGENT_DECK_RUNTIME_ENQUEUE_IPC_RELEASE")); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					return errors.New("timed out waiting to persist enqueue")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			return originalPersist(path, data, mode)
+		}
+		defer func() { runtimeQueuePersist = originalPersist }()
+		if _, err := EnqueueRuntimeMessage(os.Getenv("AGENT_DECK_RUNTIME_ENQUEUE_IPC_ID"), "must not survive archive"); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	isolateRuntimeQueue(t)
+	const id = "subprocess-enqueue-archive-race"
+	root := t.TempDir()
+	ready := filepath.Join(root, "ready")
+	release := filepath.Join(root, "release")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeQueueSubprocessEnqueueCannotOutliveDiscard$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_DECK_RUNTIME_ENQUEUE_IPC_HELPER=1",
+		"AGENT_DECK_RUNTIME_ENQUEUE_IPC_DATA="+os.Getenv("XDG_DATA_HOME"),
+		"AGENT_DECK_RUNTIME_ENQUEUE_IPC_ID="+id,
+		"AGENT_DECK_RUNTIME_ENQUEUE_IPC_READY="+ready,
+		"AGENT_DECK_RUNTIME_ENQUEUE_IPC_RELEASE="+release,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.WriteFile(release, []byte("release"), 0o644)
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("enqueue helper did not reach durable write")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	discardDone := make(chan error, 1)
+	go func() { discardDone <- DiscardRuntimeQueue(id) }()
+	discardedBeforeEnqueue := false
+	select {
+	case err := <-discardDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+		discardedBeforeEnqueue = true
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := os.WriteFile(release, []byte("release"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if !discardedBeforeEnqueue {
+		if err := <-discardDone; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if RuntimeQueueHasPending(id) {
+		t.Fatal("enqueue persisted stale runtime work after discard completed")
 	}
 }
 
@@ -901,5 +1415,95 @@ func TestRuntimeQueueFormat(t *testing.T) {
 				t.Fatalf("format = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRuntimeQueueTransactionRejectsMutationAfterRelease(t *testing.T) {
+	isolateRuntimeQueue(t)
+	tx, err := BeginRuntimeQueueTransaction("released-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.Release()
+	if _, err := tx.Enqueue("must not appear"); !errors.Is(err, ErrRuntimeQueueTransactionReleased) {
+		t.Fatalf("Enqueue after release = %v", err)
+	}
+	if err := tx.Discard(); !errors.Is(err, ErrRuntimeQueueTransactionReleased) {
+		t.Fatalf("Discard after release = %v", err)
+	}
+	queued, err := PeekRuntimeQueue("released-owner")
+	if err != nil || len(queued) != 0 {
+		t.Fatalf("released transaction mutated queue: %#v, %v", queued, err)
+	}
+}
+
+func TestRuntimeQueueTransactionReleaseWinsSynchronizedMutation(t *testing.T) {
+	isolateRuntimeQueue(t)
+	tx, err := BeginRuntimeQueueTransaction("release-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		tx.Release()
+		close(released)
+	}()
+	<-released
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := tx.Enqueue("late"); !errors.Is(err, ErrRuntimeQueueTransactionReleased) {
+				t.Errorf("late Enqueue = %v", err)
+			}
+			if err := tx.Discard(); !errors.Is(err, ErrRuntimeQueueTransactionReleased) {
+				t.Errorf("late Discard = %v", err)
+			}
+			tx.Release()
+		}()
+	}
+	wg.Wait()
+	if RuntimeQueueHasPending("release-race") {
+		t.Fatal("post-release mutation reached queue")
+	}
+}
+
+func TestRuntimeQueueTransactionReleaseWaitsForStartedMutation(t *testing.T) {
+	isolateRuntimeQueue(t)
+	tx, err := BeginRuntimeQueueTransaction("started-mutation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	allow := make(chan struct{})
+	tx.beforeMutation = func() {
+		close(entered)
+		<-allow
+	}
+	mutationDone := make(chan error, 1)
+	go func() {
+		_, err := tx.Enqueue("owned mutation")
+		mutationDone <- err
+	}()
+	<-entered
+	releaseDone := make(chan struct{})
+	go func() {
+		tx.Release()
+		close(releaseDone)
+	}()
+	select {
+	case <-releaseDone:
+		t.Fatal("Release returned while an owned mutation was in progress")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(allow)
+	if err := <-mutationDone; err != nil {
+		t.Fatal(err)
+	}
+	<-releaseDone
+	tx.Release()
+	if _, err := tx.Enqueue("late"); !errors.Is(err, ErrRuntimeQueueTransactionReleased) {
+		t.Fatalf("mutation after repeated release = %v", err)
 	}
 }

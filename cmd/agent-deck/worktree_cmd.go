@@ -733,6 +733,20 @@ func handleWorktreeFinish(profile string, args []string) {
 		}
 		fmt.Println()
 	}
+	queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	defer queueTx.Release()
+	remaining := dropInstance(instances, inst.ID)
+	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
+	finishPayload := session.LifecycleIntentPayload(inst, worktreePath, "")
+	finishIntent, err := session.PrepareLifecycleIntent(storage, inst.ID, session.LifecycleIntentWorktreeFinish, finishPayload)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to prepare worktree finish: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	// Step 1: Merge (if requested)
 	if !*noMerge {
@@ -757,6 +771,10 @@ func handleWorktreeFinish(profile string, args []string) {
 			os.Exit(1)
 		}
 		fmt.Printf("  %s Merged successfully\n", successSymbol)
+		if err := session.AdvanceLifecycleIntent(storage, finishIntent, "merged", finishPayload); err != nil {
+			out.Error(fmt.Sprintf("failed to record merged worktree: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 	}
 
 	// Step 2: Remove worktree
@@ -769,6 +787,10 @@ func handleWorktreeFinish(profile string, args []string) {
 		}
 	}
 	_ = finishBackend.PruneWorktrees()
+	if err := session.AdvanceLifecycleIntent(storage, finishIntent, "worktree-removed", finishPayload); err != nil {
+		out.Error(fmt.Sprintf("failed to record worktree removal: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	// Step 3: Delete branch (if not --keep-branch)
 	if !*keepBranch {
@@ -782,8 +804,11 @@ func handleWorktreeFinish(profile string, args []string) {
 
 	// Step 4: Kill tmux session
 	if inst.Exists() {
-		if err := inst.Kill(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to kill tmux session: %v\n", err)
+		if err := inst.KillAndWait(); err != nil {
+			if inst.Exists() {
+				out.Error(fmt.Sprintf("worktree finalized but process teardown failed: %v", err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
 		}
 	}
 
@@ -795,10 +820,16 @@ func handleWorktreeFinish(profile string, args []string) {
 	// the S1 empty-sweep guard AFTER the irreversible git steps, orphaning the
 	// row; since #1550 SaveWithGroups is upsert-only and would not delete the
 	// row at all. Either way, removal requires the targeted DELETE.
-	remaining := dropInstance(instances, inst.ID)
-	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
-	if err := storage.RemoveSessionAndVerify(inst.ID, remaining, groupTree); err != nil {
-		out.Error(fmt.Sprintf("failed to save session data: %v", err), ErrCodeInvalidOperation)
+	if err := storage.RemoveSessionAndVerify(inst.ID, remaining, groupTree, finishIntent.Token); err != nil {
+		out.Error(fmt.Sprintf("failed to finalize session removal: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := queueTx.Discard(); err != nil {
+		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := session.CompleteLifecycleIntent(storage, finishIntent); err != nil {
+		out.Error(fmt.Sprintf("failed to complete worktree finish intent: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 

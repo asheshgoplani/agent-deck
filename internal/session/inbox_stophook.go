@@ -2,8 +2,8 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,12 +35,28 @@ var commsLog = logging.ForComponent(logging.CompSession)
 const MaxStopHookBlocks = 3
 
 var stopBlockMu sync.Mutex
+var stopBlockPersist = writeFileDurable
+var stopHookAcknowledgeInbox = AcknowledgeInboxForParent
+var stopHookAcknowledgeRuntime = AcknowledgeRuntimeQueue
+
+func SetStopHookRuntimeAcknowledgerForTest(fn func(string, string) error) func() {
+	previous := stopHookAcknowledgeRuntime
+	stopHookAcknowledgeRuntime = fn
+	return func() { stopHookAcknowledgeRuntime = previous }
+}
 
 // StopHookDecision mirrors the Claude Code Stop-hook JSON contract. Decision
 // "block" keeps the turn alive and feeds Reason back as the next turn's input.
 type StopHookDecision struct {
-	Decision string `json:"decision,omitempty"`
-	Reason   string `json:"reason,omitempty"`
+	Decision                 string `json:"decision,omitempty"`
+	Reason                   string `json:"reason,omitempty"`
+	InboxReason              string `json:"-"`
+	InboxAckToken            string `json:"-"`
+	RuntimeQueueAckToken     string `json:"-"`
+	StopBlockCount           int    `json:"-"`
+	StopBlockPrevious        int    `json:"-"`
+	StopBlockToken           string `json:"-"`
+	StopBlockResponseWritten bool   `json:"-"`
 }
 
 func stopBlocksDir() string {
@@ -56,7 +72,12 @@ func stopBlocksPathFor(instanceID string) string {
 }
 
 type stopBlockState struct {
-	Count int `json:"count"`
+	Count        int    `json:"count"`
+	PendingCount int    `json:"pending_count,omitempty"`
+	PendingToken string `json:"pending_token,omitempty"`
+	InboxToken   string `json:"inbox_token,omitempty"`
+	RuntimeToken string `json:"runtime_token,omitempty"`
+	AckPhase     string `json:"ack_phase,omitempty"`
 }
 
 func loadStopBlockCountLocked(instanceID string) int {
@@ -79,11 +100,25 @@ func loadStopBlockCountLocked(instanceID string) int {
 // forever, the exact token-burn loop the guard prevents. Callers fail safe on a
 // non-nil error (do not block).
 func saveStopBlockCountLocked(instanceID string, count int) error {
-	data, err := json.Marshal(stopBlockState{Count: count})
+	return saveStopBlockStateLocked(instanceID, stopBlockState{Count: count})
+}
+
+func loadStopBlockStateLocked(instanceID string) stopBlockState {
+	raw, err := os.ReadFile(stopBlocksPathFor(instanceID))
+	if err != nil {
+		return stopBlockState{}
+	}
+	var state stopBlockState
+	_ = json.Unmarshal(raw, &state)
+	return state
+}
+
+func saveStopBlockStateLocked(instanceID string, state stopBlockState) error {
+	data, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
-	return writeFileDurable(stopBlocksPathFor(instanceID), data, 0o644)
+	return stopBlockPersist(stopBlocksPathFor(instanceID), data, 0o644)
 }
 
 // DrainForStopHook implements the conductor Stop-hook contract for one instance.
@@ -95,6 +130,38 @@ func saveStopBlockCountLocked(instanceID string, count int) error {
 // budget is exhausted it returns no-block WITHOUT draining, so pending records
 // are preserved for the heartbeat path (never lost to the guard).
 func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision, bool, error) {
+	dec, blocked, err := StageForStopHook(instanceID, stopHookActive)
+	if err != nil || !blocked {
+		return dec, blocked, err
+	}
+	if err := acknowledgeStopHookWithoutRuntime(instanceID, dec); err != nil {
+		if rbErr := RollbackStopHookDelivery(instanceID, dec.StopBlockToken); rbErr != nil {
+			return StopHookDecision{}, false, fmt.Errorf("acknowledge inbox: %w; rollback reservation: %v", err, rbErr)
+		}
+		return StopHookDecision{}, false, err
+	}
+	dec.InboxAckToken = ""
+	return dec, blocked, nil
+}
+
+func acknowledgeStopHookWithoutRuntime(instanceID string, dec StopHookDecision) error {
+	stopBlockMu.Lock()
+	defer stopBlockMu.Unlock()
+	state := loadStopBlockStateLocked(instanceID)
+	if state.PendingToken != dec.StopBlockToken || state.PendingCount != dec.StopBlockCount {
+		return errors.New("Stop-hook budget reservation token mismatch")
+	}
+	if dec.InboxAckToken != "" {
+		if err := AcknowledgeInboxForParent(instanceID, dec.InboxAckToken); err != nil {
+			return err
+		}
+	}
+	return saveStopBlockStateLocked(instanceID, stopBlockState{Count: dec.StopBlockCount})
+}
+
+// StageForStopHook reserves the delivery without consuming its inbox records.
+// The hook writer acknowledges it only after the complete response is written.
+func StageForStopHook(instanceID string, stopHookActive bool) (StopHookDecision, bool, error) {
 	if strings.TrimSpace(instanceID) == "" {
 		return StopHookDecision{}, false, nil
 	}
@@ -104,15 +171,16 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	// writes. Only a completion target (a conductor/parent that children commit
 	// to) ever has a pending inbox, so the global Stop-hook sync flip is inert
 	// for non-conductor sessions. Cheap stat, no consume.
-	if !InboxHasPending(instanceID) {
+	if !InboxHasPending(instanceID) && !RuntimeQueueHasPending(instanceID) && !stopHookReservationPending(instanceID) {
 		return StopHookDecision{}, false, nil
 	}
 
 	stopBlockMu.Lock()
 	defer stopBlockMu.Unlock()
 
-	count := loadStopBlockCountLocked(instanceID)
-	if !stopHookActive {
+	state := loadStopBlockStateLocked(instanceID)
+	count := state.Count
+	if !stopHookActive && state.PendingToken == "" {
 		// Fresh user turn: reset the consecutive-block budget.
 		count = 0
 	}
@@ -123,40 +191,158 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	if count >= MaxStopHookBlocks {
 		return StopHookDecision{}, false, nil
 	}
-
-	// Audit B4: reserve the block slot durably BEFORE draining (which consumes
-	// the records). If the counter cannot be persisted we must neither block
-	// (an unpersistable counter would loop forever) nor drain (which would
-	// consume-and-lose the records). Fail safe: log, no block, records intact.
-	if err := saveStopBlockCountLocked(instanceID, count+1); err != nil {
-		commsLog.Warn("stop_block_count_persist_failed",
-			slog.String("instance", instanceID),
-			slog.String("error", err.Error()),
-		)
-		return StopHookDecision{}, false, err
+	if state.PendingToken != "" && state.AckPhase != "" && state.AckPhase != "prepared" {
+		inboxReason := ""
+		if state.InboxToken != "" {
+			inboxReason = "reserved inbox delivery"
+		}
+		return StopHookDecision{
+			Decision:                 "block",
+			InboxReason:              inboxReason,
+			InboxAckToken:            state.InboxToken,
+			RuntimeQueueAckToken:     state.RuntimeToken,
+			StopBlockCount:           state.PendingCount,
+			StopBlockPrevious:        state.Count,
+			StopBlockToken:           state.PendingToken,
+			StopBlockResponseWritten: true,
+		}, true, nil
+	}
+	reservationToken := state.PendingToken
+	reservedCount := state.PendingCount
+	if reservationToken == "" {
+		reservationToken = runtimeQueueNewID()
+		reservedCount = count + 1
+		state = stopBlockState{Count: count, PendingCount: count + 1, PendingToken: reservationToken}
+		if err := saveStopBlockStateLocked(instanceID, state); err != nil {
+			return StopHookDecision{}, false, err
+		}
 	}
 
-	events, err := DrainInboxForParent(instanceID)
+	batch, err := StageRuntimeQueue(instanceID)
 	if err != nil {
+		if rbErr := rollbackStopHookDeliveryLocked(instanceID, reservationToken); rbErr != nil {
+			return StopHookDecision{}, false, fmt.Errorf("stage runtime queue: %w; rollback reservation: %v", err, rbErr)
+		}
 		return StopHookDecision{}, false, err
 	}
-	if len(events) == 0 {
+	inboxBatch, err := StageInboxForParent(instanceID)
+	if err != nil {
+		if rbErr := rollbackStopHookDeliveryLocked(instanceID, reservationToken); rbErr != nil {
+			return StopHookDecision{}, false, fmt.Errorf("stage inbox: %w; rollback reservation: %v", err, rbErr)
+		}
+		return StopHookDecision{}, false, err
+	}
+	events := inboxBatch.Events
+	if len(events) == 0 && len(batch.Messages) == 0 {
 		// Race: another drain (heartbeat) emptied the inbox between the peek and
 		// here. No block; reset the budget to 0 — a non-blocking idle Stop breaks
 		// the consecutive-block chain.
-		if rbErr := saveStopBlockCountLocked(instanceID, 0); rbErr != nil {
-			commsLog.Warn("stop_block_count_reset_failed",
-				slog.String("instance", instanceID),
-				slog.String("error", rbErr.Error()),
-			)
+		if inboxBatch.Token != "" {
+			if ackErr := AcknowledgeInboxForParent(instanceID, inboxBatch.Token); ackErr != nil {
+				if rbErr := rollbackStopHookDeliveryLocked(instanceID, reservationToken); rbErr != nil {
+					return StopHookDecision{}, false, fmt.Errorf("acknowledge empty inbox: %w; rollback reservation: %v", ackErr, rbErr)
+				}
+				return StopHookDecision{}, false, ackErr
+			}
+		}
+		if rbErr := saveStopBlockStateLocked(instanceID, stopBlockState{}); rbErr != nil {
+			return StopHookDecision{}, false, fmt.Errorf("reset empty Stop-hook reservation: %w", rbErr)
 		}
 		return StopHookDecision{}, false, nil
 	}
+	state.InboxToken = inboxBatch.Token
+	state.RuntimeToken = batch.Token
+	if state.AckPhase == "" {
+		state.AckPhase = "prepared"
+	}
+	if err := saveStopBlockStateLocked(instanceID, state); err != nil {
+		if rbErr := rollbackStopHookDeliveryLocked(instanceID, reservationToken); rbErr != nil {
+			return StopHookDecision{}, false, fmt.Errorf("persist Stop-hook delivery tokens: %w; rollback reservation: %v", err, rbErr)
+		}
+		return StopHookDecision{}, false, fmt.Errorf("persist Stop-hook delivery tokens: %w", err)
+	}
 
+	var inboxReason string
+	if len(events) > 0 {
+		inboxReason = FormatCompletionsForInjection(events)
+	}
+	runtimeReason := FormatRuntimeMessagesForInjection(batch.Messages)
+	reason := inboxReason
+	if inboxReason != "" && runtimeReason != "" {
+		reason = strings.TrimRight(inboxReason, "\n") + "\n\n" + runtimeReason
+	} else if runtimeReason != "" {
+		reason = runtimeReason
+	}
 	return StopHookDecision{
-		Decision: "block",
-		Reason:   FormatCompletionsForInjection(events),
+		Decision:                 "block",
+		Reason:                   reason,
+		InboxReason:              inboxReason,
+		InboxAckToken:            inboxBatch.Token,
+		RuntimeQueueAckToken:     batch.Token,
+		StopBlockCount:           reservedCount,
+		StopBlockPrevious:        count,
+		StopBlockToken:           reservationToken,
+		StopBlockResponseWritten: state.AckPhase == "response-written",
 	}, true, nil
+}
+
+func stopHookReservationPending(instanceID string) bool {
+	return loadStopBlockStateLocked(instanceID).PendingToken != ""
+}
+
+func MarkStopHookResponseWritten(instanceID, reservationToken string) error {
+	stopBlockMu.Lock()
+	defer stopBlockMu.Unlock()
+	state := loadStopBlockStateLocked(instanceID)
+	if state.PendingToken != reservationToken {
+		return errors.New("Stop-hook response token mismatch")
+	}
+	state.AckPhase = "response-written"
+	return saveStopBlockStateLocked(instanceID, state)
+}
+
+// AcknowledgeStopHookDelivery commits inbox consumption and advances the loop
+// budget only after the complete Stop-hook response was written.
+func AcknowledgeStopHookDelivery(instanceID, inboxToken, runtimeToken, reservationToken string, count int) error {
+	stopBlockMu.Lock()
+	defer stopBlockMu.Unlock()
+	state := loadStopBlockStateLocked(instanceID)
+	if reservationToken == "" || state.PendingToken != reservationToken || state.PendingCount != count || state.InboxToken != inboxToken || state.RuntimeToken != runtimeToken {
+		return errors.New("Stop-hook budget reservation token mismatch")
+	}
+	if (state.AckPhase == "prepared" || state.AckPhase == "response-written") && inboxToken != "" {
+		if err := stopHookAcknowledgeInbox(instanceID, inboxToken); err != nil {
+			return err
+		}
+		state.AckPhase = "inbox-acknowledged"
+		if err := saveStopBlockStateLocked(instanceID, state); err != nil {
+			return err
+		}
+	}
+	if state.AckPhase != "runtime-acknowledged" && runtimeToken != "" {
+		if err := stopHookAcknowledgeRuntime(instanceID, runtimeToken); err != nil {
+			return err
+		}
+		state.AckPhase = "runtime-acknowledged"
+		if err := saveStopBlockStateLocked(instanceID, state); err != nil {
+			return err
+		}
+	}
+	return saveStopBlockStateLocked(instanceID, stopBlockState{Count: count})
+}
+
+func RollbackStopHookDelivery(instanceID, reservationToken string) error {
+	stopBlockMu.Lock()
+	defer stopBlockMu.Unlock()
+	return rollbackStopHookDeliveryLocked(instanceID, reservationToken)
+}
+
+func rollbackStopHookDeliveryLocked(instanceID, reservationToken string) error {
+	state := loadStopBlockStateLocked(instanceID)
+	if reservationToken == "" || state.PendingToken != reservationToken {
+		return errors.New("Stop-hook budget rollback token mismatch")
+	}
+	return saveStopBlockStateLocked(instanceID, stopBlockState{Count: state.Count})
 }
 
 // FormatCompletionsForInjection renders drained completions as the human-

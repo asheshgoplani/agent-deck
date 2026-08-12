@@ -161,6 +161,17 @@ func TestSessionSendQueueIfBusyIdleUsesSenderWithoutQueue(t *testing.T) {
 	}
 }
 
+func TestSessionSendQueueIfBusyBecomesIdleDuringLockedRevalidation(t *testing.T) {
+	out, err := runQueueIfBusyHelper(t, "__busy_to_idle__", "became idle", "--queue-if-busy", "--timeout", "6s", "--json")
+	if err != nil {
+		t.Fatalf("busy-to-idle queue-if-busy send failed: %v\n%s", err, out)
+	}
+	receipt := decodeSendReceipt(t, out)
+	if !receipt.Success || receipt.Delivery != deliveryUnverified || receipt.Queued || !strings.Contains(out, "IDLE_SEND_OK") {
+		t.Fatalf("busy-to-idle target must use direct sender and leave queue empty; output:\n%s", out)
+	}
+}
+
 func TestSessionSendQueueIfBusyDefaultSendUnchanged(t *testing.T) {
 	out, err := runQueueIfBusyHelper(t, "__idle__", "plain ping", "--timeout", "6s", "--json")
 	if err != nil {
@@ -169,6 +180,78 @@ func TestSessionSendQueueIfBusyDefaultSendUnchanged(t *testing.T) {
 	receipt := decodeSendReceipt(t, out)
 	if !receipt.Success || receipt.Delivery != deliveryUnverified || receipt.Queued || !strings.Contains(out, "IDLE_SEND_OK") {
 		t.Fatalf("default send behavior changed; output:\n%s", out)
+	}
+}
+
+func TestSessionSendQueueIfBusyRejectsArchivePersistedAfterValidation(t *testing.T) {
+	root := t.TempDir()
+	metaPath := filepath.Join(root, "meta.json")
+	readyPath := filepath.Join(root, "ready")
+	releasePath := filepath.Join(root, "release")
+	args, err := json.Marshal([]string{"__busy__", "must not survive archive", "--queue-if-busy", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := exec.Command(os.Args[0], "-test.run=^TestSessionSendQueueIfBusyHelper$")
+	sender.Env = append(os.Environ(),
+		"AGENT_DECK_QUEUE_IF_BUSY_HELPER=1",
+		"AGENT_DECK_QUEUE_IF_BUSY_ARGS="+string(args),
+		"AGENT_DECK_QUEUE_RACE_META="+metaPath,
+		"AGENT_DECK_QUEUE_RACE_READY="+readyPath,
+		"AGENT_DECK_QUEUE_RACE_RELEASE="+releasePath,
+	)
+	var senderOut strings.Builder
+	sender.Stdout = &senderOut
+	sender.Stderr = &senderOut
+	if err := sender.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.WriteFile(releasePath, []byte("release"), 0o644)
+		if sender.ProcessState == nil {
+			_ = sender.Process.Kill()
+			_ = sender.Wait()
+		}
+	}()
+	waitForFile := func(path string) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if _, err := os.Stat(path); err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s; sender output: %s", filepath.Base(path), senderOut.String())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitForFile(metaPath)
+	waitForFile(readyPath)
+	var meta struct {
+		ID  string            `json:"id"`
+		Env map[string]string `json:"env"`
+	}
+	data, err := os.ReadFile(metaPath)
+	if err != nil || json.Unmarshal(data, &meta) != nil {
+		t.Fatalf("read sender metadata: %v (%s)", err, data)
+	}
+	archive := exec.Command(channelsCLIBinary(t), "-p", "queue-if-busy-helper", "session", "archive", meta.ID, "--json")
+	archive.Env = os.Environ()
+	for key, value := range meta.Env {
+		archive.Env = append(archive.Env, key+"="+value)
+	}
+	if out, err := archive.CombinedOutput(); err != nil {
+		t.Fatalf("archive during sender pause: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(releasePath, []byte("release"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := sender.Wait(); err == nil {
+		t.Fatalf("sender queued after archive persisted: %s", senderOut.String())
+	}
+	if !strings.Contains(senderOut.String(), "is archived") {
+		t.Fatalf("sender did not reject archived target: %s", senderOut.String())
 	}
 }
 
@@ -214,11 +297,11 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 	profile := "queue-if-busy-helper"
 	if os.Getenv("AGENT_DECK_QUEUE_HANDLER") == "1" {
 		if os.Getenv("AGENT_DECK_QUEUE_ENQUEUE_ERROR") == "1" {
-			originalEnqueue := sessionSendQueueEnqueue
-			sessionSendQueueEnqueue = func(string, string) (int, error) {
+			originalEnqueue := sessionSendQueueTxEnqueue
+			sessionSendQueueTxEnqueue = func(*session.RuntimeQueueTransaction, string) (int, error) {
 				return 0, errors.New("forced persistence failure")
 			}
-			defer func() { sessionSendQueueEnqueue = originalEnqueue }()
+			defer func() { sessionSendQueueTxEnqueue = originalEnqueue }()
 		}
 		if os.Getenv("AGENT_DECK_QUEUE_RENAME_BEFORE_REFRESH") == "1" {
 			originalStatus := sessionSendQueueStatus
@@ -245,6 +328,44 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 			}
 			defer func() { sessionSendQueueStatus = originalStatus }()
 		}
+		if ready := os.Getenv("AGENT_DECK_QUEUE_RACE_READY"); ready != "" {
+			originalStatus := sessionSendQueueStatus
+			calls := 0
+			sessionSendQueueStatus = func(profile, sessionID string) (*session.Instance, string, error) {
+				inst, status, err := originalStatus(profile, sessionID)
+				calls++
+				if calls == 1 && err == nil {
+					if err := os.WriteFile(ready, []byte("ready"), 0o644); err != nil {
+						return nil, "", err
+					}
+					deadline := time.Now().Add(60 * time.Second)
+					for {
+						if _, err := os.Stat(os.Getenv("AGENT_DECK_QUEUE_RACE_RELEASE")); err == nil {
+							break
+						}
+						if time.Now().After(deadline) {
+							return nil, "", errors.New("timed out waiting for archive")
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+				}
+				return inst, status, err
+			}
+			defer func() { sessionSendQueueStatus = originalStatus }()
+		}
+		if os.Getenv("AGENT_DECK_QUEUE_BUSY_TO_IDLE") == "1" {
+			originalStatus := sessionSendQueueStatus
+			calls := 0
+			sessionSendQueueStatus = func(profile, sessionID string) (*session.Instance, string, error) {
+				inst, _, err := originalStatus(profile, sessionID)
+				calls++
+				if calls == 1 {
+					return inst, "running", err
+				}
+				return inst, "waiting", err
+			}
+			defer func() { sessionSendQueueStatus = originalStatus }()
+		}
 		handleSessionSend(profile, args)
 		return
 	}
@@ -253,7 +374,7 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 		project := t.TempDir()
 		inst := session.NewInstance("queue-target", project)
 		fakeTUI := fakeClaudeWithDraft
-		if mode == "__idle__" {
+		if mode == "__idle__" || mode == "__busy_to_idle__" {
 			fakePath := filepath.Join(project, "fake-agent.sh")
 			fakeScript := `#!/usr/bin/env bash
 trap '' INT
@@ -271,8 +392,8 @@ sleep 60
 				t.Fatalf("write fake agent: %v", err)
 			}
 		}
-		if mode == "__busy__" || mode == "__full__" || mode == "__idle__" || mode == "__starting__" || mode == "__persist_error__" || mode == "__rename__" {
-			if mode == "__idle__" {
+		if mode == "__busy__" || mode == "__full__" || mode == "__idle__" || mode == "__busy_to_idle__" || mode == "__starting__" || mode == "__persist_error__" || mode == "__rename__" {
+			if mode == "__idle__" || mode == "__busy_to_idle__" {
 				fakePath := filepath.Join(project, "fake-agent.sh")
 				cmd := exec.Command("tmux", "new-session", "-d", "-s", inst.GetTmuxSession().Name,
 					"-c", project, "-x", "80", "-y", "24", "bash", fakePath)
@@ -288,7 +409,7 @@ sleep 60
 			t.Cleanup(func() { _ = inst.Kill() })
 		}
 		inst.Tool = "claude"
-		if mode == "__idle__" {
+		if mode == "__idle__" || mode == "__busy_to_idle__" {
 			inst.Tool = "cursor"
 		}
 		inst.Status = session.StatusRunning
@@ -310,6 +431,19 @@ sleep 60
 			t.Fatal(err)
 		}
 		_ = storage.Close()
+		if metaPath := os.Getenv("AGENT_DECK_QUEUE_RACE_META"); metaPath != "" {
+			meta := struct {
+				ID  string            `json:"id"`
+				Env map[string]string `json:"env"`
+			}{ID: inst.ID, Env: map[string]string{
+				"HOME": os.Getenv("HOME"), "XDG_CONFIG_HOME": os.Getenv("XDG_CONFIG_HOME"),
+				"XDG_DATA_HOME": os.Getenv("XDG_DATA_HOME"), "XDG_CACHE_HOME": os.Getenv("XDG_CACHE_HOME"),
+			}}
+			data, _ := json.Marshal(meta)
+			if err := os.WriteFile(metaPath, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
 		hookStatus := "running"
 		hookEvent := "UserPromptSubmit"
 		if mode == "__starting__" {
@@ -349,11 +483,19 @@ sleep 60
 			"AGENT_DECK_TASK6_HELPER_PROCESS=1",
 			"AGENT_DECK_QUEUE_IF_BUSY_ARGS="+string(encodedArgs),
 		)
+		for _, key := range []string{"AGENT_DECK_QUEUE_RACE_READY", "AGENT_DECK_QUEUE_RACE_RELEASE"} {
+			if value := os.Getenv(key); value != "" {
+				cmd.Env = append(cmd.Env, key+"="+value)
+			}
+		}
 		if mode == "__persist_error__" {
 			cmd.Env = append(cmd.Env, "AGENT_DECK_QUEUE_ENQUEUE_ERROR=1")
 		}
 		if mode == "__rename__" {
 			cmd.Env = append(cmd.Env, "AGENT_DECK_QUEUE_RENAME_BEFORE_REFRESH=1")
+		}
+		if mode == "__busy_to_idle__" {
+			cmd.Env = append(cmd.Env, "AGENT_DECK_QUEUE_BUSY_TO_IDLE=1")
 		}
 		commandOutput, commandErr := cmd.CombinedOutput()
 		_, _ = os.Stdout.Write(commandOutput)
@@ -361,7 +503,7 @@ sleep 60
 			pane, _ := inst.GetTmuxSession().CapturePaneFresh()
 			t.Fatalf("session send command failed: %v\npane:\n%s", commandErr, pane)
 		}
-		if mode == "__idle__" {
+		if mode == "__idle__" || mode == "__busy_to_idle__" {
 			wantInput := args[1] + "\r"
 			inputPath := filepath.Join(project, "fake-agent.sh.input")
 			deadline := time.Now().Add(3 * time.Second)

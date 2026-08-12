@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,8 @@ import (
 )
 
 var hookHandlerLog = logging.ForComponent(logging.CompSession)
+
+var marshalStopHookDecision = json.Marshal
 
 // maxHookPayloadSize limits the size of JSON payloads read from stdin
 // to prevent denial-of-service via oversized input.
@@ -316,12 +319,112 @@ func handleHookHandlerArgs(args []string) {
 	// the maintainer note in the PR. Emitting here is harmless under the legacy
 	// async install (Claude ignores stdout) and activates once sync lands.
 	if isStopHookEvent(payload.HookEventName) {
-		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
-			if out, mErr := json.Marshal(dec); mErr == nil {
-				fmt.Println(string(out))
-			}
+		if err := emitStopHookDecision(instanceID, resolveStopHookActive(payload), os.Stdout); err != nil {
+			hookHandlerLog.Warn("stop_hook_delivery_failed",
+				slog.String("instance", instanceID),
+				slog.String("error", err.Error()),
+			)
 		}
 	}
+}
+
+func emitStopHookDecision(instanceID string, stopHookActive bool, writer io.Writer) (retErr error) {
+	queueTx, err := session.BeginRuntimeQueueTransaction(instanceID)
+	if err != nil {
+		return fmt.Errorf("begin Stop-hook delivery lease: %w", err)
+	}
+	defer queueTx.Release()
+	dec, blocked, err := session.StageForStopHook(instanceID, stopHookActive)
+	if err != nil || !blocked {
+		return err
+	}
+	deliveryCommitted := false
+	responseWritten := dec.StopBlockResponseWritten
+	defer func() {
+		if !deliveryCommitted && !responseWritten {
+			if rollbackErr := session.RollbackStopHookDelivery(instanceID, dec.StopBlockToken); rollbackErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("rollback Stop-hook reservation: %w", rollbackErr))
+			}
+		}
+	}()
+	out, err := marshalStopHookDecision(dec)
+	if err != nil {
+		return fmt.Errorf("marshal Stop-hook response: %w", err)
+	}
+	out = append(out, '\n')
+	if dec.RuntimeQueueAckToken != "" {
+		if !responseWritten {
+			if err := writeStopHookResponse(writer, out); err != nil {
+				return err
+			}
+			if err := session.MarkStopHookResponseWritten(instanceID, dec.StopBlockToken); err != nil {
+				return fmt.Errorf("record Stop-hook response write: %w", err)
+			}
+			responseWritten = true
+		}
+		if err := session.AcknowledgeStopHookDelivery(instanceID, dec.InboxAckToken, dec.RuntimeQueueAckToken, dec.StopBlockToken, dec.StopBlockCount); err != nil {
+			return fmt.Errorf("acknowledge Stop-hook inbox/budget: %w", err)
+		}
+		deliveryCommitted = true
+		return nil
+	}
+	if dec.InboxReason == "" {
+		return nil
+	}
+	fallback := session.StopHookDecision{Decision: dec.Decision, Reason: dec.InboxReason}
+	out, err = marshalStopHookDecision(fallback)
+	if err != nil {
+		return fmt.Errorf("marshal inbox-only Stop-hook response: %w", err)
+	}
+	if !responseWritten {
+		if err := writeStopHookResponse(writer, append(out, '\n')); err != nil {
+			return err
+		}
+		if err := session.MarkStopHookResponseWritten(instanceID, dec.StopBlockToken); err != nil {
+			return fmt.Errorf("record inbox-only Stop-hook response write: %w", err)
+		}
+		responseWritten = true
+	}
+	if err := session.AcknowledgeStopHookDelivery(instanceID, dec.InboxAckToken, dec.RuntimeQueueAckToken, dec.StopBlockToken, dec.StopBlockCount); err != nil {
+		return fmt.Errorf("acknowledge Stop-hook inbox/budget: %w", err)
+	}
+	deliveryCommitted = true
+	return nil
+}
+
+var stopHookWriteTimeout = 2 * time.Second
+
+func writeStopHookResponse(writer io.Writer, out []byte) error {
+	writeAll := func() error {
+		n, err := writer.Write(out)
+		if err != nil {
+			return fmt.Errorf("write Stop-hook response: %w", err)
+		}
+		if n != len(out) {
+			return fmt.Errorf("write Stop-hook response: %w", io.ErrShortWrite)
+		}
+		return nil
+	}
+	type deadlineWriter interface{ SetWriteDeadline(time.Time) error }
+	if dw, ok := writer.(deadlineWriter); ok {
+		if err := dw.SetWriteDeadline(time.Now().Add(stopHookWriteTimeout)); err == nil {
+			defer func() { _ = dw.SetWriteDeadline(time.Time{}) }()
+			return writeAll()
+		}
+	}
+	// In-memory/test writers complete synchronously and do not
+	// need a cancellation goroutine. Keeping them synchronous also makes it
+	// impossible for bytes to appear after this function returns.
+	type synchronousStopHookWriter interface{ StopHookSynchronousWriter() }
+	switch writer.(type) {
+	case *bytes.Buffer, synchronousStopHookWriter:
+		return writeAll()
+	}
+	// Arbitrary io.Writer implementations have no cancellation contract. Do not
+	// launch an unkillable goroutine: rejecting before Write guarantees neither
+	// a leak nor late bytes. Production stdout is *os.File and uses the OS write
+	// deadline above (including full pipes).
+	return errors.New("write Stop-hook response: writer is not deadline-capable")
 }
 
 func hookSourceArg(args []string) string {

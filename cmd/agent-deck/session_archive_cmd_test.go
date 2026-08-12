@@ -2,9 +2,204 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+func TestSessionArchiveQueueLockFailurePreservesLiveProcessRowAndQueue(t *testing.T) {
+	const profile = "_test_archive_lock_failure"
+	const id = "archive-lock-failure"
+	if os.Getenv("AGENT_DECK_ARCHIVE_LOCK_HELPER") == "1" {
+		assertHelperPersistedLiveSessions(t, profile, id)
+		handleSessionArchive(profile, []string{id, "--json"})
+		return
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := persistLiveCLIInstance(t, storage, id, t.TempDir(), 0)
+	if err := storage.SaveWithGroups([]*session.Instance{inst}, session.NewGroupTree([]*session.Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	_ = storage.Close()
+	if _, err := session.EnqueueRuntimeMessage(id, "preserve"); err != nil {
+		t.Fatal(err)
+	}
+	lockRoot := runtimeQueueLockRootForTest(id)
+	if err := os.RemoveAll(lockRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockRoot, []byte("blocked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionArchiveQueueLockFailurePreservesLiveProcessRowAndQueue$")
+	cmd.Env = append(os.Environ(), "AGENT_DECK_TASK6_HELPER_PROCESS=1", "AGENT_DECK_QUEUE_HANDLER=1", "AGENT_DECK_ARCHIVE_LOCK_HELPER=1")
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("archive succeeded: %s", output)
+	}
+	if !inst.Exists() {
+		t.Fatal("lock failure killed live archive process")
+	}
+	if !session.RuntimeQueueHasPending(id) {
+		t.Fatal("lock failure changed queue")
+	}
+	verify, _ := session.NewStorageWithProfile(profile)
+	rows, _, loadErr := verify.LoadWithGroups()
+	_ = verify.Close()
+	if loadErr != nil || len(rows) != 1 || rows[0].ID != id || !rows[0].ArchivedAt.IsZero() {
+		t.Fatalf("archive lock failure changed durable lifecycle: %#v, %v", rows, loadErr)
+	}
+}
+
+func TestSessionArchiveHoldsQueueLockThroughPersistence(t *testing.T) {
+	if os.Getenv("AGENT_DECK_ARCHIVE_PERSIST_HELPER") == "1" {
+		originalPersist := sessionArchivePersist
+		sessionArchivePersist = func(storage *session.Storage, inst *session.Instance, persistStatus bool) error {
+			if os.Getenv("AGENT_DECK_ARCHIVE_PERSIST_FAIL") == "1" {
+				return errors.New("forced archive persistence failure")
+			}
+			if err := os.WriteFile(os.Getenv("AGENT_DECK_ARCHIVE_PERSIST_READY"), []byte("ready"), 0o644); err != nil {
+				return err
+			}
+			deadline := time.Now().Add(30 * time.Second)
+			for {
+				if _, err := os.Stat(os.Getenv("AGENT_DECK_ARCHIVE_PERSIST_RELEASE")); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("timed out waiting to persist archive")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			return originalPersist(storage, inst, persistStatus)
+		}
+		defer func() { sessionArchivePersist = originalPersist }()
+		handleSessionArchive("ch_support_test", []string{os.Getenv("AGENT_DECK_ARCHIVE_PERSIST_ID"), "--json"})
+		return
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	workPath := filepath.Join(home, "project")
+	id := addTestSession(t, home, workPath, "archive-lock-lifetime")
+	root := t.TempDir()
+	ready := filepath.Join(root, "ready")
+	release := filepath.Join(root, "release")
+	archive := exec.Command(os.Args[0], "-test.run=^TestSessionArchiveHoldsQueueLockThroughPersistence$")
+	archive.Env = append(os.Environ(),
+		"AGENT_DECK_TASK6_HELPER_PROCESS=1",
+		"AGENT_DECK_ARCHIVE_PERSIST_HELPER=1",
+		"AGENT_DECK_ARCHIVE_PERSIST_ID="+id,
+		"AGENT_DECK_ARCHIVE_PERSIST_READY="+ready,
+		"AGENT_DECK_ARCHIVE_PERSIST_RELEASE="+release,
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+	)
+	if err := archive.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.WriteFile(release, []byte("release"), 0o644)
+		if archive.ProcessState == nil {
+			_ = archive.Process.Kill()
+			_ = archive.Wait()
+		}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("archive did not reach persistence boundary")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	lockAcquired := make(chan *session.RuntimeQueueTransaction, 1)
+	lockErr := make(chan error, 1)
+	go func() {
+		tx, err := session.BeginRuntimeQueueTransaction(id)
+		if err != nil {
+			lockErr <- err
+			return
+		}
+		lockAcquired <- tx
+	}()
+	select {
+	case tx := <-lockAcquired:
+		tx.Release()
+		t.Fatal("competing enqueue transaction acquired before archive persistence")
+	case err := <-lockErr:
+		t.Fatal(err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if archivedFlag(t, home, id) {
+		t.Fatal("archive persisted before persistence pause was released")
+	}
+	if err := os.WriteFile(release, []byte("release"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case tx := <-lockAcquired:
+		tx.Release()
+	case err := <-lockErr:
+		t.Fatal(err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("competing transaction remained blocked after archive completed")
+	}
+	if !archivedFlag(t, home, id) {
+		t.Fatal("archive lifecycle state was not persisted")
+	}
+}
+
+func TestSessionArchivePersistenceFailurePreservesRuntimeQueue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	id := addTestSession(t, home, filepath.Join(home, "project"), "archive-persist-failure")
+	if _, err := session.EnqueueRuntimeMessage(id, "must survive failed archive"); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSessionArchiveHoldsQueueLockThroughPersistence$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_DECK_TASK6_HELPER_PROCESS=1",
+		"AGENT_DECK_ARCHIVE_PERSIST_HELPER=1",
+		"AGENT_DECK_ARCHIVE_PERSIST_FAIL=1",
+		"AGENT_DECK_ARCHIVE_PERSIST_ID="+id,
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+	)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("archive unexpectedly succeeded with forced persistence failure")
+	}
+	if !session.RuntimeQueueHasPending(id) {
+		t.Fatal("failed archive discarded durable runtime queue")
+	}
+	if archivedFlag(t, home, id) {
+		t.Fatal("failed archive persisted archived lifecycle state")
+	}
+}
 
 // archivedFlag parses the full inventory view and returns the archived flag
 // for the session with the given id. The default list intentionally omits
@@ -38,8 +233,13 @@ func TestSessionArchive_MarksArchived(t *testing.T) {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
 	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	workPath := filepath.Join(home, "proj")
 	id := addTestSession(t, home, workPath, "archive-basic")
+	if _, err := session.EnqueueRuntimeMessage(id, "must be discarded on archive"); err != nil {
+		t.Fatal(err)
+	}
 
 	if archivedFlag(t, home, id) {
 		t.Fatalf("session %s archived before archive command ran", id)
@@ -51,6 +251,9 @@ func TestSessionArchive_MarksArchived(t *testing.T) {
 	}
 	if !archivedFlag(t, home, id) {
 		t.Errorf("session %s not archived after archive command", id)
+	}
+	if session.RuntimeQueueHasPending(id) {
+		t.Errorf("session %s runtime queue survived archive", id)
 	}
 }
 

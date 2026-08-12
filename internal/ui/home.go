@@ -1288,6 +1288,9 @@ type worktreeFinishResultMsg struct {
 	targetBranch string
 	merged       bool
 	err          error
+	queueTx      *session.RuntimeQueueTransaction
+	persisted    bool
+	intent       session.LifecycleIntentHandle
 }
 
 // watcherEventMsg is produced by listenForWatcherEvent when a new event arrives from the engine.
@@ -3290,6 +3293,9 @@ func (h *Home) loadSessions() tea.Msg {
 	loadMtime, _ := h.storage.GetFileMtime()
 
 	instances, groups, err := h.storage.LoadWithGroups()
+	if err == nil {
+		err = session.RecoverLifecycleIntents(h.storage, instances)
+	}
 	msg := loadSessionsMsg{instances: instances, groups: groups, err: err, loadMtime: loadMtime}
 
 	// Initialize pool AFTER sessions are loaded
@@ -3336,6 +3342,9 @@ func (h *Home) HydrateInstancesFromStorage() error {
 	if err != nil {
 		return fmt.Errorf("hydrate instances from storage: %w", err)
 	}
+	if err := session.RecoverLifecycleIntents(h.storage, instances); err != nil {
+		return fmt.Errorf("recover lifecycle intents: %w", err)
+	}
 
 	h.instancesMu.Lock()
 	h.instances = instances
@@ -3351,6 +3360,28 @@ func (h *Home) HydrateInstancesFromStorage() error {
 		h.groupTree = session.NewGroupTree(instances)
 	}
 	return nil
+}
+
+func groupDataSnapshot(tree *session.GroupTree) []*session.GroupData {
+	if tree == nil {
+		return nil
+	}
+	copyForSave := tree.ShallowCopyForSave()
+	groups := make([]*session.GroupData, 0, len(copyForSave.GroupList))
+	for _, group := range copyForSave.GroupList {
+		if group == nil {
+			continue
+		}
+		groups = append(groups, &session.GroupData{
+			Name:          group.Name,
+			Path:          group.Path,
+			Expanded:      group.Expanded,
+			Order:         group.Order,
+			DefaultPath:   group.DefaultPath,
+			MaxConcurrent: group.MaxConcurrent,
+		})
+	}
+	return groups
 }
 
 // tick returns a command that sends a tick message at regular intervals
@@ -5786,6 +5817,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case sessionDeletedMsg:
+		if msg.queueTx != nil {
+			defer msg.queueTx.Release()
+		}
 		// CRITICAL FIX: Skip processing during reload to prevent state corruption
 		h.reloadMu.Lock()
 		reloading := h.isReloading
@@ -5798,6 +5832,26 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Report kill error if any (session may still be running in tmux)
 		if msg.killErr != nil {
 			h.setError(fmt.Errorf("warning: tmux session may still be running: %w", msg.killErr))
+		}
+
+		// Commit the durable row/group lifecycle before changing the live model.
+		// On failure the session must remain visible and actionable, and its undo,
+		// search, tree, and cache state must remain untouched.
+		h.instancesMu.RLock()
+		remaining := make([]*session.Instance, 0, len(h.instances))
+		for _, inst := range h.instances {
+			if inst.ID != msg.deletedID {
+				remaining = append(remaining, inst)
+			}
+		}
+		h.instancesMu.RUnlock()
+		groupTree := session.NewGroupTreeWithGroups(remaining, groupDataSnapshot(h.groupTree))
+		if !msg.persisted {
+			if err := h.storage.RemoveSessionAndVerify(msg.deletedID, remaining, groupTree); err != nil {
+				uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
+				h.setError(fmt.Errorf("failed to delete session: %w", err))
+				return h, nil
+			}
 		}
 
 		// Find and remove from list
@@ -5842,13 +5896,18 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		// Update search items
 		h.search.SetItems(h.instances)
-		// Explicitly delete from database to prevent resurrection on reload
-		if err := h.storage.DeleteInstance(msg.deletedID); err != nil {
-			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
+		if msg.queueTx != nil {
+			if err := msg.queueTx.Discard(); err != nil {
+				h.setError(fmt.Errorf("failed to discard runtime queue: %w", err))
+				return h, nil
+			}
 		}
-		// Save both instances AND groups (critical fix: was losing groups!)
-		// Use forceSave to bypass the external-change abort - delete MUST persist
-		h.forceSaveInstances()
+		if msg.intent.Token != "" && msg.killErr == nil {
+			if err := session.CompleteLifecycleIntent(h.storage, msg.intent); err != nil {
+				h.setError(fmt.Errorf("failed to complete deletion intent: %w", err))
+				return h, nil
+			}
+		}
 
 		// Show undo hint (using setError as a transient message)
 		if deletedInstance != nil {
@@ -5858,6 +5917,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.setError(fmt.Errorf("deleted '%s'", deletedInstance.Title))
 			}
 		}
+		return h, nil
+
+	case sessionDeleteFailedMsg:
+		h.setError(fmt.Errorf("failed to delete session: %w", msg.err))
 		return h, nil
 
 	case sessionRemoveBlockedMsg:
@@ -5888,6 +5951,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case sessionArchivedMsg:
+		if msg.queueTx != nil {
+			defer msg.queueTx.Release()
+		}
 		if msg.killErr != nil {
 			h.setError(fmt.Errorf("failed to archive: %w", msg.killErr))
 			return h, nil
@@ -5899,9 +5965,27 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Persist via a targeted UPDATE, not saveInstances(): under concurrent
 			// writers the full-table save aborts on external-change and reloads,
 			// silently discarding the archive (archived_at reverts to 0).
-			if err := h.persistArchived(inst); err != nil {
-				h.setError(fmt.Errorf("failed to persist archive: %w", err))
-				return h, nil
+			if !msg.persisted {
+				if err := h.persistArchived(inst); err != nil {
+					inst.ArchivedAt = msg.previousArchivedAt
+					h.cachedStatusCounts.valid.Store(false)
+					h.rebuildFlatItems()
+					h.search.SetItems(h.instances)
+					h.setError(fmt.Errorf("failed to persist archive: %w", err))
+					return h, nil
+				}
+			}
+			if msg.queueTx != nil {
+				if err := msg.queueTx.Discard(); err != nil {
+					h.setError(fmt.Errorf("failed to discard runtime queue: %w", err))
+					return h, nil
+				}
+			}
+			if msg.intent.Token != "" {
+				if err := session.CompleteLifecycleIntent(h.storage, msg.intent); err != nil {
+					h.setError(fmt.Errorf("failed to complete archive intent: %w", err))
+					return h, nil
+				}
 			}
 			h.setError(fmt.Errorf("archived '%s' (^ to view)", inst.Title))
 		}
@@ -6685,6 +6769,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case worktreeFinishResultMsg:
+		if msg.queueTx != nil {
+			defer msg.queueTx.Release()
+		}
 		if msg.err != nil {
 			// Show error in dialog (user can go back or cancel)
 			if h.worktreeFinishDialog.IsVisible() {
@@ -6695,7 +6782,31 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 
-		// Success: remove session from instances and clean up
+		// Commit row and group changes atomically before hiding the dialog or
+		// changing the live model. A failure leaves the durable session visible
+		// and gives the user the same dialog to retry or cancel.
+		h.instancesMu.RLock()
+		remaining := make([]*session.Instance, 0, len(h.instances))
+		for _, candidate := range h.instances {
+			if candidate.ID != msg.sessionID {
+				remaining = append(remaining, candidate)
+			}
+		}
+		h.instancesMu.RUnlock()
+		groupTree := session.NewGroupTreeWithGroups(remaining, groupDataSnapshot(h.groupTree))
+		if !msg.persisted {
+			if err := h.storage.RemoveSessionAndVerify(msg.sessionID, remaining, groupTree); err != nil {
+				uiLog.Warn("worktree_finish_delete_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
+				if h.worktreeFinishDialog.IsVisible() {
+					h.worktreeFinishDialog.SetError(fmt.Sprintf("failed to finish worktree deletion: %v", err))
+				} else {
+					h.setError(fmt.Errorf("failed to finish worktree deletion: %w", err))
+				}
+				return h, nil
+			}
+		}
+
+		// Success: remove session from instances and clean up.
 		h.worktreeFinishDialog.Hide()
 
 		h.instancesMu.Lock()
@@ -6732,11 +6843,18 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		h.search.SetItems(h.instances)
 
-		// Delete from database and save
-		if err := h.storage.DeleteInstance(msg.sessionID); err != nil {
-			uiLog.Warn("worktree_finish_delete_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
+		if msg.queueTx != nil {
+			if err := msg.queueTx.Discard(); err != nil {
+				h.setError(fmt.Errorf("failed to discard runtime queue: %w", err))
+				return h, nil
+			}
 		}
-		h.forceSaveInstances()
+		if msg.intent.Token != "" {
+			if err := session.CompleteLifecycleIntent(h.storage, msg.intent); err != nil {
+				h.setError(fmt.Errorf("failed to complete worktree finish intent: %w", err))
+				return h, nil
+			}
+		}
 
 		// Issue #1576: sweep transition-notifier state (inbox JSONL lines +
 		// runtime/transition-notify-state.json dedup record) for the removed
@@ -12813,6 +12931,13 @@ func forkWithStateWorkspaceJJ(parentPath, repoRoot, workspacePath, branch string
 type sessionDeletedMsg struct {
 	deletedID string
 	killErr   error // Error from Kill() if any
+	queueTx   *session.RuntimeQueueTransaction
+	persisted bool
+	intent    session.LifecycleIntentHandle
+}
+
+type sessionDeleteFailedMsg struct {
+	err error
 }
 
 // sessionRemoveBlockedMsg keeps a live tmux session registered when the TUI's
@@ -12828,8 +12953,12 @@ type sessionClosedMsg struct {
 }
 
 type sessionArchivedMsg struct {
-	sessionID string
-	killErr   error
+	sessionID          string
+	killErr            error
+	queueTx            *session.RuntimeQueueTransaction
+	previousArchivedAt time.Time
+	persisted          bool
+	intent             session.LifecycleIntentHandle
 }
 
 type sessionUnarchivedMsg struct {
@@ -12865,8 +12994,35 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 		)
 		h.instancesMu.RUnlock()
 	}
+	h.instancesMu.RLock()
+	remaining := make([]*session.Instance, 0, len(h.instances))
+	for _, candidate := range h.instances {
+		if candidate.ID != id {
+			remaining = append(remaining, candidate)
+		}
+	}
+	h.instancesMu.RUnlock()
+	groupTree := session.NewGroupTreeWithGroups(remaining, groupDataSnapshot(h.groupTree))
 	return func() tea.Msg {
-		killErr := inst.Kill()
+		queueTx, discardErr := session.BeginRuntimeQueueTransaction(id)
+		if discardErr != nil {
+			return sessionDeleteFailedMsg{err: discardErr}
+		}
+		removePayload := session.LifecycleIntentPayload(inst, worktreePath, "")
+		removeIntent, err := session.PrepareLifecycleIntent(h.storage, id, session.LifecycleIntentRemove, removePayload)
+		if err != nil {
+			queueTx.Release()
+			return sessionDeleteFailedMsg{err: err}
+		}
+		if err := h.storage.RemoveSessionAndVerify(id, remaining, groupTree, removeIntent.Token); err != nil {
+			queueTx.Release()
+			return sessionDeleteFailedMsg{err: err}
+		}
+		if err := session.AdvanceLifecycleIntent(h.storage, removeIntent, "row-deleted", removePayload); err != nil {
+			queueTx.Release()
+			return sessionDeleteFailedMsg{err: err}
+		}
+		killErr := inst.KillAndWait()
 		if isWorktree && sharedWorktree {
 			// #1449: another live session still references this worktree; skip
 			// the destructive removal + branch delete and merely drop this
@@ -12901,7 +13057,7 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 				}
 			}
 		}
-		return sessionDeletedMsg{deletedID: id, killErr: killErr}
+		return sessionDeletedMsg{deletedID: id, killErr: killErr, queueTx: queueTx, persisted: true, intent: removeIntent}
 	}
 }
 
@@ -12980,11 +13136,39 @@ func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 	h.captureAutoNameBeforeStop(inst)
 	id := inst.ID
 	return func() tea.Msg {
-		if killErr := inst.Kill(); killErr != nil {
-			return sessionArchivedMsg{sessionID: id, killErr: killErr}
+		queueTx, discardErr := session.BeginRuntimeQueueTransaction(id)
+		if discardErr != nil {
+			return sessionArchivedMsg{sessionID: id, killErr: discardErr}
 		}
+		archiveIntent, err := session.PrepareLifecycleIntent(h.storage, id, session.LifecycleIntentArchive, "")
+		if err != nil {
+			queueTx.Release()
+			return sessionArchivedMsg{sessionID: id, killErr: fmt.Errorf("prepare archive: %w", err)}
+		}
+		inst.PersistenceGeneration = archiveIntent.Generation
+		previousArchivedAt := inst.ArchivedAt
 		inst.ArchivedAt = time.Now().UTC()
-		return sessionArchivedMsg{sessionID: id}
+		if err := h.persistArchived(inst); err != nil {
+			inst.ArchivedAt = previousArchivedAt
+			_ = session.CompleteLifecycleIntent(h.storage, archiveIntent)
+			queueTx.Release()
+			return sessionArchivedMsg{sessionID: id, killErr: fmt.Errorf("persist archive: %w", err)}
+		}
+		if err := session.AdvanceLifecycleIntent(h.storage, archiveIntent, "archived", ""); err != nil {
+			queueTx.Release()
+			return sessionArchivedMsg{sessionID: id, killErr: err}
+		}
+		if killErr := inst.KillAndWait(); killErr != nil {
+			inst.ArchivedAt = previousArchivedAt
+			rollbackErr := h.persistArchived(inst)
+			var completeErr error
+			if rollbackErr == nil {
+				completeErr = session.CompleteLifecycleIntent(h.storage, archiveIntent)
+			}
+			queueTx.Release()
+			return sessionArchivedMsg{sessionID: id, killErr: fmt.Errorf("stop archived session: %w (rollback=%v, intent=%v)", killErr, rollbackErr, completeErr)}
+		}
+		return sessionArchivedMsg{sessionID: id, queueTx: queueTx, previousArchivedAt: previousArchivedAt, persisted: true, intent: archiveIntent}
 	}
 }
 
@@ -13010,7 +13194,11 @@ func registryRemovalMsg(inst *session.Instance) tea.Msg {
 	if inst.Exists() {
 		return sessionRemoveBlockedMsg{title: inst.Title}
 	}
-	return sessionDeletedMsg{deletedID: inst.ID}
+	queueTx, err := session.BeginRuntimeQueueTransaction(inst.ID)
+	if err != nil {
+		return sessionDeleteFailedMsg{err: err}
+	}
+	return sessionDeletedMsg{deletedID: inst.ID, queueTx: queueTx}
 }
 
 // bulkRemoveErrored removes every session currently in the 'error' state.
@@ -19482,7 +19670,29 @@ func (h *Home) runWorktreeSetup(inst *session.Instance) tea.Cmd {
 // finishWorktree performs the worktree finish operation asynchronously:
 // merge branch, remove worktree, delete branch, kill session, remove from storage
 func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, branchName, repoRoot, worktreePath string, mergeEnabled bool, targetBranch string, keepBranch bool, sharedWorktree bool) tea.Cmd {
+	h.instancesMu.RLock()
+	remaining := make([]*session.Instance, 0, len(h.instances))
+	for _, candidate := range h.instances {
+		if candidate.ID != sessionID {
+			remaining = append(remaining, candidate)
+		}
+	}
+	h.instancesMu.RUnlock()
+	groupTree := session.NewGroupTreeWithGroups(remaining, groupDataSnapshot(h.groupTree))
 	return func() tea.Msg {
+		queueTx, err := session.BeginRuntimeQueueTransaction(sessionID)
+		if err != nil {
+			return worktreeFinishResultMsg{sessionID: sessionID, sessionTitle: sessionTitle, err: fmt.Errorf("discard runtime queue: %v", err)}
+		}
+		fail := func(err error) tea.Msg {
+			queueTx.Release()
+			return worktreeFinishResultMsg{sessionID: sessionID, sessionTitle: sessionTitle, err: err}
+		}
+		finishPayload := session.LifecycleIntentPayload(inst, worktreePath, "")
+		finishIntent, err := session.PrepareLifecycleIntent(h.storage, sessionID, session.LifecycleIntentWorktreeFinish, finishPayload)
+		if err != nil {
+			return fail(fmt.Errorf("prepare finish transition: %w", err))
+		}
 		merged := false
 
 		// Step 1: Merge (if requested). git.MergeBack handles both regular
@@ -19490,12 +19700,15 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 		// working tree, so checkout/merge cannot run there (#891).
 		if mergeEnabled {
 			if err := git.MergeBack(repoRoot, branchName, targetBranch); err != nil {
-				return worktreeFinishResultMsg{
-					sessionID: sessionID, sessionTitle: sessionTitle,
-					err: fmt.Errorf("merge failed: %v", err),
-				}
+				return fail(fmt.Errorf("merge failed: %v", err))
 			}
 			merged = true
+			if err := session.AdvanceLifecycleIntent(h.storage, finishIntent, "merged", finishPayload); err != nil {
+				return fail(fmt.Errorf("record merged worktree: %w", err))
+			}
+		}
+		if err := session.AdvanceLifecycleIntent(h.storage, finishIntent, "worktree-removed", finishPayload); err != nil {
+			return fail(fmt.Errorf("record worktree removal: %w", err))
 		}
 
 		// #1449: when other live sessions still share this worktree, the
@@ -19525,14 +19738,21 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 
 		// Step 4: Kill tmux session
 		if inst != nil && inst.Exists() {
-			_ = inst.Kill()
+			if killErr := inst.KillAndWait(); killErr != nil && inst.Exists() {
+				return fail(fmt.Errorf("worktree finalized but process teardown failed: %w", killErr))
+			}
 		}
-
+		if err := h.storage.RemoveSessionAndVerify(sessionID, remaining, groupTree, finishIntent.Token); err != nil {
+			return fail(fmt.Errorf("finalize finish transition: %w", err))
+		}
 		return worktreeFinishResultMsg{
 			sessionID:    sessionID,
 			sessionTitle: sessionTitle,
 			targetBranch: targetBranch,
 			merged:       merged,
+			queueTx:      queueTx,
+			persisted:    true,
+			intent:       finishIntent,
 		}
 	}
 }

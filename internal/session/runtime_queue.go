@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sys/unix"
 )
 
 type RuntimeQueuedMessage struct {
@@ -154,6 +155,8 @@ func FormatRuntimeMessagesForInjection(msgs []RuntimeQueuedMessage) string {
 }
 
 var ErrRuntimeQueueFull = errors.New("runtime message queue is full")
+var ErrRuntimeQueueDeliveryInProgress = errors.New("runtime queue delivery in progress")
+var ErrRuntimeQueueTransactionReleased = errors.New("runtime queue transaction released")
 
 const (
 	MaxRuntimeQueueMessages = 100
@@ -162,6 +165,8 @@ const (
 
 var (
 	runtimeQueueMu         sync.Mutex
+	runtimeQueueRegistryMu sync.Mutex
+	runtimeQueueDeliveryMu = make(map[string]*runtimeQueueDeliveryEntry)
 	runtimeQueueNewID      = uuid.NewString
 	runtimeQueueNow        = time.Now
 	runtimeQueuePersist    = writeFileDurable
@@ -189,7 +194,56 @@ func RuntimeQueuePathFor(id string) string {
 }
 
 func EnqueueRuntimeMessage(id, msg string) (depth int, err error) {
-	path := RuntimeQueuePathFor(id)
+	tx, err := BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Release()
+	return tx.Enqueue(msg)
+}
+
+type RuntimeQueueTransaction struct {
+	id             string
+	release        func()
+	stateMu        sync.Mutex
+	released       bool
+	beforeMutation func()
+}
+
+func BeginRuntimeQueueTransaction(id string) (*RuntimeQueueTransaction, error) {
+	release, err := lockRuntimeQueueDelivery(id)
+	if err != nil {
+		return nil, err
+	}
+	return &RuntimeQueueTransaction{id: id, release: release}, nil
+}
+
+func (tx *RuntimeQueueTransaction) Release() {
+	if tx == nil {
+		return
+	}
+	tx.stateMu.Lock()
+	defer tx.stateMu.Unlock()
+	if tx.release != nil {
+		tx.release()
+		tx.release = nil
+		tx.released = true
+	}
+}
+
+func (tx *RuntimeQueueTransaction) Enqueue(msg string) (depth int, err error) {
+	if tx == nil {
+		return 0, ErrRuntimeQueueTransactionReleased
+	}
+	tx.stateMu.Lock()
+	defer tx.stateMu.Unlock()
+	if tx.released || tx.release == nil {
+		return 0, ErrRuntimeQueueTransactionReleased
+	}
+	if tx.beforeMutation != nil {
+		tx.beforeMutation()
+	}
+	path := RuntimeQueuePathFor(tx.id)
 
 	runtimeQueueMu.Lock()
 	defer runtimeQueueMu.Unlock()
@@ -225,6 +279,23 @@ func EnqueueRuntimeMessage(id, msg string) (depth int, err error) {
 	return len(existing) + 1, nil
 }
 
+func (tx *RuntimeQueueTransaction) Discard() error {
+	if tx == nil {
+		return ErrRuntimeQueueTransactionReleased
+	}
+	tx.stateMu.Lock()
+	defer tx.stateMu.Unlock()
+	if tx.released || tx.release == nil {
+		return ErrRuntimeQueueTransactionReleased
+	}
+	if tx.beforeMutation != nil {
+		tx.beforeMutation()
+	}
+	runtimeQueueMu.Lock()
+	defer runtimeQueueMu.Unlock()
+	return discardRuntimeQueueFilesLocked(tx.id)
+}
+
 func RuntimeQueueHasPending(id string) bool {
 	return fileHasContent(RuntimeQueuePathFor(id))
 }
@@ -237,9 +308,27 @@ func PeekRuntimeQueue(id string) ([]RuntimeQueuedMessage, error) {
 }
 
 func DiscardRuntimeQueue(id string) error {
-	runtimeQueueMu.Lock()
-	defer runtimeQueueMu.Unlock()
+	tx, err := BeginRuntimeQueueDiscard(id)
+	if err != nil {
+		return err
+	}
+	defer tx.Release()
+	return nil
+}
 
+func BeginRuntimeQueueDiscard(id string) (*RuntimeQueueTransaction, error) {
+	tx, err := BeginRuntimeQueueTransaction(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Discard(); err != nil {
+		tx.Release()
+		return nil, err
+	}
+	return tx, nil
+}
+
+func discardRuntimeQueueFilesLocked(id string) error {
 	dirsToSync := make(map[string]struct{})
 	syncRemovedDirs := func() {
 		for dir := range dirsToSync {
@@ -258,6 +347,179 @@ func DiscardRuntimeQueue(id string) error {
 		}
 	}
 	syncRemovedDirs()
+	return nil
+}
+
+func TryDiscardRuntimeQueue(id string) error {
+	release, acquired, err := tryRuntimeQueueDeliveryLock(id)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return ErrRuntimeQueueDeliveryInProgress
+	}
+	defer release()
+	return discardRuntimeQueueLocked(id)
+}
+
+func discardRuntimeQueueLocked(id string) error {
+	runtimeQueueMu.Lock()
+	defer runtimeQueueMu.Unlock()
+	return discardRuntimeQueueFilesLocked(id)
+}
+
+type runtimeQueueDeliveryEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func retainRuntimeQueueDeliveryEntry(id string) (string, *runtimeQueueDeliveryEntry) {
+	key := sanitizeInboxName(id)
+	runtimeQueueRegistryMu.Lock()
+	defer runtimeQueueRegistryMu.Unlock()
+	entry := runtimeQueueDeliveryMu[key]
+	if entry == nil {
+		entry = &runtimeQueueDeliveryEntry{}
+		runtimeQueueDeliveryMu[key] = entry
+	}
+	entry.refs++
+	return key, entry
+}
+
+func releaseRuntimeQueueDeliveryEntry(key string, entry *runtimeQueueDeliveryEntry) {
+	runtimeQueueRegistryMu.Lock()
+	defer runtimeQueueRegistryMu.Unlock()
+	entry.refs--
+	if entry.refs == 0 {
+		delete(runtimeQueueDeliveryMu, key)
+	}
+}
+
+func runtimeQueueDeliveryLockPath(id string) string {
+	dir, err := runtimeDataPath("runtime-queue-locks")
+	if err != nil {
+		dir = tempAgentDeckPath("runtime", "runtime-queue-locks")
+	}
+	return filepath.Join(dir, sanitizeInboxName(id)+".lock")
+}
+
+func openRuntimeQueueProcessLock(id string, nonblocking bool) (*os.File, error) {
+	path := runtimeQueueDeliveryLockPath(id)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	op := unix.LOCK_EX
+	if nonblocking {
+		op |= unix.LOCK_NB
+	}
+	if err := unix.Flock(int(file.Fd()), op); err != nil {
+		_ = file.Close()
+		if nonblocking && (errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN)) {
+			return nil, ErrRuntimeQueueDeliveryInProgress
+		}
+		return nil, err
+	}
+	return file, nil
+}
+
+func lockRuntimeQueueDelivery(id string) (func(), error) {
+	key, entry := retainRuntimeQueueDeliveryEntry(id)
+	entry.mu.Lock()
+	file, err := openRuntimeQueueProcessLock(id, false)
+	if err != nil {
+		entry.mu.Unlock()
+		releaseRuntimeQueueDeliveryEntry(key, entry)
+		return nil, err
+	}
+	return func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		_ = file.Close()
+		entry.mu.Unlock()
+		releaseRuntimeQueueDeliveryEntry(key, entry)
+	}, nil
+}
+
+func tryRuntimeQueueDeliveryLock(id string) (func(), bool, error) {
+	key, entry := retainRuntimeQueueDeliveryEntry(id)
+	if !entry.mu.TryLock() {
+		releaseRuntimeQueueDeliveryEntry(key, entry)
+		return nil, false, nil
+	}
+	file, err := openRuntimeQueueProcessLock(id, true)
+	if err != nil {
+		entry.mu.Unlock()
+		releaseRuntimeQueueDeliveryEntry(key, entry)
+		if errors.Is(err, ErrRuntimeQueueDeliveryInProgress) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		_ = file.Close()
+		entry.mu.Unlock()
+		releaseRuntimeQueueDeliveryEntry(key, entry)
+	}, true, nil
+}
+
+type RuntimeQueueSubmission struct {
+	id      string
+	token   string
+	release func()
+	once    sync.Once
+}
+
+// BeginRuntimeQueueSubmission validates a staged batch and returns a lease
+// that protects the external write through acknowledgment. The caller must
+// call Acknowledge after a complete write or Release on every failure path.
+func BeginRuntimeQueueSubmission(id, token string) (*RuntimeQueueSubmission, bool, error) {
+	release, err := lockRuntimeQueueDelivery(id)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if token == "" {
+		return &RuntimeQueueSubmission{id: id, release: release}, true, nil
+	}
+
+	batch, err := StageRuntimeQueue(id)
+	if err != nil {
+		release()
+		return nil, false, err
+	}
+	if batch.Token == "" {
+		release()
+		return nil, false, nil
+	}
+	if batch.Token != token {
+		release()
+		return nil, false, nil
+	}
+	return &RuntimeQueueSubmission{id: id, token: token, release: release}, true, nil
+}
+
+func (s *RuntimeQueueSubmission) Release() {
+	if s == nil {
+		return
+	}
+	s.once.Do(s.release)
+}
+
+func (s *RuntimeQueueSubmission) Acknowledge() error {
+	if s == nil {
+		return errors.New("runtime queue submission lease is nil")
+	}
+	defer s.Release()
+	if s.token == "" {
+		return nil
+	}
+	if err := AcknowledgeRuntimeQueue(s.id, s.token); err != nil {
+		return fmt.Errorf("acknowledge runtime queue: %w", err)
+	}
 	return nil
 }
 

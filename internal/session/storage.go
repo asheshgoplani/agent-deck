@@ -37,15 +37,16 @@ type StorageData struct {
 
 // InstanceData represents the serializable session data
 type InstanceData struct {
-	ID                 string `json:"id"`
-	Title              string `json:"title"`
-	ProjectPath        string `json:"project_path"`
-	GroupPath          string `json:"group_path"`
-	Order              int    `json:"order"`
-	ParentSessionID    string `json:"parent_session_id,omitempty"`    // Links to parent session (sub-session support)
-	IsConductor        bool   `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
-	NoTransitionNotify bool   `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch
-	TitleLocked        bool   `json:"title_locked,omitempty"`         // #697: block Claude session-name sync into Title
+	PersistenceGeneration int64  `json:"persistence_generation,omitempty"`
+	ID                    string `json:"id"`
+	Title                 string `json:"title"`
+	ProjectPath           string `json:"project_path"`
+	GroupPath             string `json:"group_path"`
+	Order                 int    `json:"order"`
+	ParentSessionID       string `json:"parent_session_id,omitempty"`    // Links to parent session (sub-session support)
+	IsConductor           bool   `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
+	NoTransitionNotify    bool   `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch
+	TitleLocked           bool   `json:"title_locked,omitempty"`         // #697: block Claude session-name sync into Title
 	// SubcommandPassthrough mirrors Instance.SubcommandPassthrough (#1821).
 	// Persisted via the tool_data extras zone (see
 	// WriteSubcommandPassthroughToToolData), not a dedicated SQL column, so
@@ -403,7 +404,7 @@ func (s *Storage) UpdateTitleIfUnlocked(id, title string) (applied bool, err err
 
 // DeleteInstance removes a single instance from the database by ID.
 // This ensures the row is immediately removed, preventing resurrection on reload.
-func (s *Storage) DeleteInstance(id string) error {
+func (s *Storage) DeleteInstance(id string, lifecycleToken ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -411,7 +412,7 @@ func (s *Storage) DeleteInstance(id string) error {
 		return fmt.Errorf("storage database not initialized")
 	}
 
-	if err := s.db.DeleteInstance(id); err != nil {
+	if err := s.db.DeleteInstance(id, lifecycleToken...); err != nil {
 		return fmt.Errorf("failed to delete instance %s: %w", id, err)
 	}
 
@@ -472,6 +473,17 @@ func (s *Storage) InstanceExists(id string) (bool, error) {
 	return s.db.InstanceExists(id)
 }
 
+// WithInstancesAbsent atomically tombstones and deletes all ids, commits that
+// durable barrier, then runs confirmed cleanup. See statedb.StateDB.
+func (s *Storage) WithInstancesAbsent(ids []string, confirmed func() error, lifecycleTokens ...string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return false, fmt.Errorf("storage database not initialized")
+	}
+	return s.db.WithInstancesAbsent(ids, confirmed, lifecycleTokens...)
+}
+
 // ErrRemovalNotPersistent is returned by RemoveSessionAndVerify when, after
 // retries, the row is still observed in the database. The most likely cause
 // is a concurrent SaveInstances rewrite from another agent-deck process
@@ -517,14 +529,20 @@ var (
 // remainingInstances is the post-removal session list, used only to
 // compute group sort_order / membership for SaveGroupsOnly. groupTree may
 // be nil if the caller doesn't care to persist groups.
-func (s *Storage) RemoveSessionAndVerify(id string, remainingInstances []*Instance, groupTree *GroupTree) error {
-	if err := s.DeleteInstance(id); err != nil {
-		return err
+func (s *Storage) RemoveSessionAndVerify(id string, remainingInstances []*Instance, groupTree *GroupTree, lifecycleToken ...string) error {
+	s.mu.Lock()
+	if s.db == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("storage database not initialized")
 	}
-	if groupTree != nil {
-		if err := s.SaveGroupsOnly(groupTree); err != nil {
-			return fmt.Errorf("failed to save groups during rm: %w", err)
-		}
+	groupRows := groupTreeRows(groupTree)
+	err := s.db.DeleteInstanceAndSaveGroups(id, groupRows, lifecycleToken...)
+	if err == nil {
+		_ = s.db.Touch()
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("delete session and save groups: %w", err)
 	}
 
 	for attempt := 0; attempt < rmVerifyAttempts; attempt++ {
@@ -540,7 +558,7 @@ func (s *Storage) RemoveSessionAndVerify(id string, remainingInstances []*Instan
 		}
 		// Re-issue the targeted DELETE; this races against the resurrecting
 		// writer but eventually wins because every retry shrinks the window.
-		if err := s.DeleteInstance(id); err != nil {
+		if err := s.DeleteInstance(id, lifecycleToken...); err != nil {
 			return err
 		}
 	}
@@ -587,8 +605,9 @@ var (
 //
 // Flow (v1.9.x issue #1031 fix, parallel to #909's RemoveSessionAndVerify):
 //
-//  1. SaveInstance(row) — targeted INSERT OR REPLACE on the single new
-//     row only, NOT a full-table rewrite. This sidesteps the
+//  1. CreateInstance(row) — targeted INSERT OR REPLACE on the single new
+//     row only, NOT a full-table rewrite. This is the sole creation path with
+//     authority to clear a prior deletion tombstone, and sidesteps the
 //     load-modify-write race where a sibling launch's
 //     `DELETE FROM instances WHERE id NOT IN (...)` inside
 //     SaveInstances would silently delete this row.
@@ -617,9 +636,10 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 		return err
 	}
 
-	if err := s.saveSingleInstance(row); err != nil {
+	if err := s.createSingleInstance(row); err != nil {
 		return err
 	}
+	newInstance.PersistenceGeneration = row.PersistenceGeneration
 
 	if groupTree != nil {
 		if err := s.SaveGroupsOnly(groupTree); err != nil {
@@ -641,9 +661,10 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 		// Re-issue the targeted INSERT; races against the concurrent
 		// rewriter but eventually wins because every retry shrinks the
 		// window.
-		if err := s.saveSingleInstance(row); err != nil {
+		if err := s.createSingleInstance(row); err != nil {
 			return err
 		}
+		newInstance.PersistenceGeneration = row.PersistenceGeneration
 	}
 
 	exists, err := s.InstanceExists(newInstance.ID)
@@ -772,10 +793,27 @@ func swapAdditionalPath(toolData json.RawMessage, oldCwd, newCwd string) (json.R
 	return out, nil
 }
 
-// saveSingleInstance writes one row via the targeted SaveInstance path
-// (single-row INSERT OR REPLACE — no DELETE-NOT-IN sweep). Wraps the
+// createSingleInstance explicitly creates one row via CreateInstance. This is
+// the only normal creation path allowed to clear a durable deletion tombstone.
+// It is targeted (no DELETE-NOT-IN sweep) and wraps the
 // statedb call in the storage mutex and the nil-db guard so callers
 // stay symmetric with DeleteInstance.
+func (s *Storage) createSingleInstance(row *statedb.InstanceRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return fmt.Errorf("storage database not initialized")
+	}
+	if err := s.db.CreateInstance(row); err != nil {
+		return fmt.Errorf("failed to save instance %s: %w", row.ID, err)
+	}
+	_ = s.db.Touch()
+	return nil
+}
+
+// saveSingleInstance persists a targeted update while respecting durable
+// deletion tombstones. Recovery and update paths must use this helper so a
+// stale captured row cannot recreate a session deleted after capture.
 func (s *Storage) saveSingleInstance(row *statedb.InstanceRow) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -970,32 +1008,33 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	toolData = WriteLastStartedAtToToolData(toolData, inst.LastStartedAt)
 
 	return &statedb.InstanceRow{
-		ID:                  inst.ID,
-		Title:               inst.Title,
-		ProjectPath:         inst.ProjectPath,
-		GroupPath:           inst.GroupPath,
-		Order:               inst.Order,
-		Command:             inst.Command,
-		Wrapper:             inst.Wrapper,
-		Tool:                inst.Tool,
-		Status:              string(inst.Status),
-		TmuxSession:         tmuxName,
-		TmuxSocketName:      inst.TmuxSocketName,
-		CreatedAt:           inst.CreatedAt,
-		LastAccessed:        inst.LastAccessedAt,
-		ParentSessionID:     inst.ParentSessionID,
-		IsConductor:         inst.IsConductor,
-		NoTransitionNotify:  inst.NoTransitionNotify,
-		TitleLocked:         inst.TitleLocked,
-		AutoName:            inst.GetAutoName(),
-		AutoNameDescription: inst.GetAutoNameDescription(),
-		WorktreePath:        inst.WorktreePath,
-		WorktreeRepo:        inst.WorktreeRepoRoot,
-		WorktreeBranch:      inst.WorktreeBranch,
-		Account:             inst.Account,
-		ArchivedAt:          inst.ArchivedAt,
-		Pin:                 string(inst.Pin),
-		ToolData:            toolData,
+		PersistenceGeneration: inst.PersistenceGeneration,
+		ID:                    inst.ID,
+		Title:                 inst.Title,
+		ProjectPath:           inst.ProjectPath,
+		GroupPath:             inst.GroupPath,
+		Order:                 inst.Order,
+		Command:               inst.Command,
+		Wrapper:               inst.Wrapper,
+		Tool:                  inst.Tool,
+		Status:                string(inst.Status),
+		TmuxSession:           tmuxName,
+		TmuxSocketName:        inst.TmuxSocketName,
+		CreatedAt:             inst.CreatedAt,
+		LastAccessed:          inst.LastAccessedAt,
+		ParentSessionID:       inst.ParentSessionID,
+		IsConductor:           inst.IsConductor,
+		NoTransitionNotify:    inst.NoTransitionNotify,
+		TitleLocked:           inst.TitleLocked,
+		AutoName:              inst.GetAutoName(),
+		AutoNameDescription:   inst.GetAutoNameDescription(),
+		WorktreePath:          inst.WorktreePath,
+		WorktreeRepo:          inst.WorktreeRepoRoot,
+		WorktreeBranch:        inst.WorktreeBranch,
+		Account:               inst.Account,
+		ArchivedAt:            inst.ArchivedAt,
+		Pin:                   string(inst.Pin),
+		ToolData:              toolData,
 	}, nil
 }
 
@@ -1014,6 +1053,19 @@ func (s *Storage) SaveGroupsOnly(groupTree *GroupTree) error {
 		return nil
 	}
 
+	groupRows := groupTreeRows(groupTree)
+
+	if err := s.db.SaveGroups(groupRows); err != nil {
+		return fmt.Errorf("failed to save groups: %w", err)
+	}
+
+	return nil
+}
+
+func groupTreeRows(groupTree *GroupTree) []*statedb.GroupRow {
+	if groupTree == nil {
+		return nil
+	}
 	groupRows := make([]*statedb.GroupRow, 0, len(groupTree.GroupList))
 	for _, g := range groupTree.GroupList {
 		groupRows = append(groupRows, &statedb.GroupRow{
@@ -1025,12 +1077,7 @@ func (s *Storage) SaveGroupsOnly(groupTree *GroupTree) error {
 			MaxConcurrent: g.MaxConcurrent,
 		})
 	}
-
-	if err := s.db.SaveGroups(groupRows); err != nil {
-		return fmt.Errorf("failed to save groups: %w", err)
-	}
-
-	return nil
+	return groupRows
 }
 
 // Load reads instances from SQLite
@@ -1323,6 +1370,7 @@ func (s *Storage) loadWithGroups(filterArchive, archived bool) ([]*Instance, []*
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
 		data.Instances[i] = &InstanceData{
+			PersistenceGeneration:     r.PersistenceGeneration,
 			ID:                        r.ID,
 			Title:                     r.Title,
 			ProjectPath:               r.ProjectPath,
@@ -1581,6 +1629,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 		projectPath := ExpandPath(fixMalformedTildePath(instData.ProjectPath))
 
 		inst := &Instance{
+			PersistenceGeneration:        instData.PersistenceGeneration,
 			ID:                           instData.ID,
 			Title:                        instData.Title,
 			ProjectPath:                  projectPath,

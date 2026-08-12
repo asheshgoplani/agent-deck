@@ -2448,6 +2448,12 @@ func handleRemove(profile string, args []string) {
 
 	removedID := inst.ID
 	removedTitle := inst.Title
+	queueTx, err := session.BeginRuntimeQueueTransaction(removedID)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to lock runtime queue for %s: %v", removedID, err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	defer queueTx.Release()
 
 	// Snapshot service-unit ownership BEFORE teardown (issue #1721): the
 	// pid of the tmux server generation this session belongs to is only
@@ -2455,18 +2461,40 @@ func handleRemove(profile string, args []string) {
 	// the unit we may stop later is the one we actually retired.
 	serviceUnitOwnership := inst.ServiceUnitOwnership()
 
-	// Always attempt to kill the tmux session, even if Exists() returns false.
-	// The saved status may be stale (e.g., "error" in DB but tmux session still alive).
-	// KillAndWait is safe to call on non-existent sessions (returns error which we handle).
-	// Uses the synchronous variant so the SIGTERM→SIGKILL escalation finishes
-	// before this short-lived CLI exits — otherwise SIGHUP-immune claude
-	// processes survive as orphans (issue #59, v1.7.68).
-	if err := inst.KillAndWait(); err != nil {
-		// Only warn if the session actually existed (ignore "not found" errors)
-		if inst.Exists() && !*jsonOutput {
-			fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
-			fmt.Println("Session removed from Agent Deck but may still be running in tmux")
+	// Rebuild and commit the durable lifecycle transition before teardown.
+	newInstances := make([]*session.Instance, 0, len(instances)-1)
+	for _, s := range instances {
+		if s.ID != removedID {
+			newInstances = append(newInstances, s)
 		}
+	}
+	groupTree := session.NewGroupTreeWithGroups(newInstances, groups)
+	removePayload := session.LifecycleIntentPayload(inst, inst.WorktreePath, "")
+	removeIntent, err := session.PrepareLifecycleIntent(storage, removedID, session.LifecycleIntentRemove, removePayload)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to prepare removal: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := storage.RemoveSessionAndVerify(removedID, newInstances, groupTree, removeIntent.Token); err != nil {
+		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := queueTx.Discard(); err != nil {
+		out.Error(fmt.Sprintf("failed to discard runtime queue: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := session.AdvanceLifecycleIntent(storage, removeIntent, "row-deleted", removePayload); err != nil {
+		out.Error(fmt.Sprintf("failed to advance removal: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	// Keep the intent live until process teardown is confirmed below.
+	if err := inst.KillAndWait(); err != nil && inst.Exists() {
+		out.Error(fmt.Sprintf("session removed but process teardown failed: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if err := session.CompleteLifecycleIntent(storage, removeIntent); err != nil {
+		out.Error(fmt.Sprintf("failed to complete removal: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
 
 	// v1.7.21+: if this session was spawned via LaunchAs=service, the
@@ -2496,7 +2524,7 @@ func handleRemove(profile string, args []string) {
 		}
 	}
 
-	// Rebuild instance list without the deleted session and persist groups.
+	// The row is already durably absent; teardown below cannot strand a live row.
 	// v1.9.1 (#909): the rm path now uses RemoveSessionAndVerify which
 	//   1. issues a targeted DELETE (busy-retried in statedb),
 	//   2. saves groups WITHOUT rewriting the instances table (SaveGroupsOnly,
@@ -2506,19 +2534,6 @@ func handleRemove(profile string, args []string) {
 	//      resurrection by a concurrent SaveInstances rewrite.
 	// On persistent failure the CLI exits 1 instead of falsely printing
 	// "✓ Removed".
-	newInstances := make([]*session.Instance, 0, len(instances)-1)
-	for _, s := range instances {
-		if s.ID != removedID {
-			newInstances = append(newInstances, s)
-		}
-	}
-	groupTree := session.NewGroupTreeWithGroups(newInstances, groups)
-
-	if err := storage.RemoveSessionAndVerify(removedID, newInstances, groupTree); err != nil {
-		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-
 	// Best-effort post-removal cleanup for transition-notifier state
 	// (issue #910). Failures are warned but do not block the rm — the
 	// SQLite removal is the user-visible contract.
