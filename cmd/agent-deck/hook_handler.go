@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
@@ -71,6 +72,9 @@ type hookStatusFile struct {
 	CodexCompletedGeneration string `json:"codex_completed_generation,omitempty"`
 	CodexStartedSessionID    string `json:"codex_started_session_id,omitempty"`
 	CodexCompletedSessionID  string `json:"codex_completed_session_id,omitempty"`
+	HookGeneration           string `json:"hook_generation,omitempty"`
+	Sequence                 uint64 `json:"sequence,omitempty"`
+	InitialMessagePending    bool   `json:"initial_message_pending,omitempty"`
 	// DoneStatus/DoneSummary carry a worker-printed completion sentinel
 	// detected on the Stop edge (issue #1186). omitempty so ordinary Stops
 	// (no sentinel) leave the fields absent, which the daemon reads as
@@ -380,6 +384,48 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, s
 
 func writeHookStatusFile(instanceID string, statusFile hookStatusFile) {
 	hooksDir := getHooksDir()
+	generation := strings.TrimSpace(os.Getenv("AGENTDECK_HOOK_GENERATION"))
+	if generation != "" {
+		lockPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".lock")
+		lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			return
+		}
+		defer lock.Close()
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+			return
+		}
+		defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		controlPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".generation.json")
+		var control struct {
+			Generation   string `json:"generation"`
+			NextSequence uint64 `json:"next_sequence"`
+		}
+		data, err := os.ReadFile(controlPath)
+		if err != nil || json.Unmarshal(data, &control) != nil || control.Generation != generation {
+			return
+		}
+		// StartWithMessage stays running until the agent-level completion edge.
+		if normalizeHookEventKey(statusFile.Event) == "onsessionstart" {
+			var prior hookStatusFile
+			if b, err := os.ReadFile(filepath.Join(hooksDir, filepath.Base(instanceID)+".json")); err == nil && json.Unmarshal(b, &prior) == nil && prior.HookGeneration == generation && prior.InitialMessagePending {
+				return
+			}
+		}
+		control.NextSequence++
+		statusFile.HookGeneration, statusFile.Sequence = generation, control.NextSequence
+		completionEvent := normalizeHookEventKey(statusFile.Event)
+		if completionEvent != "postllmcall" && completionEvent != "onsessionend" {
+			var prior hookStatusFile
+			if b, err := os.ReadFile(filepath.Join(hooksDir, filepath.Base(instanceID)+".json")); err == nil && json.Unmarshal(b, &prior) == nil && prior.HookGeneration == generation {
+				statusFile.InitialMessagePending = prior.InitialMessagePending
+			}
+		}
+		b, err := json.Marshal(control)
+		if err != nil || atomicHookWrite(controlPath, b) != nil {
+			return
+		}
+	}
 
 	jsonData, err := json.Marshal(statusFile)
 	if err != nil {
@@ -391,27 +437,33 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile) {
 	}
 
 	filePath := filepath.Join(hooksDir, filepath.Base(instanceID)+".json")
-	tmpPath := filePath + ".tmp"
-	if err := os.WriteFile(tmpPath, jsonData, 0600); err != nil {
+	if err := atomicHookWrite(filePath, jsonData); err != nil {
 		hookHandlerLog.Warn("hook_status_write_failed",
-			slog.String("path", tmpPath),
+			slog.String("path", filePath),
 			slog.String("instance", instanceID),
 			slog.String("error", err.Error()),
 		)
 		return
 	}
-	if err := os.Rename(tmpPath, filePath); err != nil {
-		hookHandlerLog.Warn("hook_status_rename_failed",
-			slog.String("from", tmpPath),
-			slog.String("to", filePath),
-			slog.String("instance", instanceID),
-			slog.String("error", err.Error()),
-		)
-		// Best-effort cleanup of the orphaned temp file.
-		_ = os.Remove(tmpPath)
-		return
-	}
+}
 
+func atomicHookWrite(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err = f.Chmod(0600); err == nil {
+		_, err = f.Write(data)
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func isTerminalHookEvent(event string) bool {
@@ -424,7 +476,7 @@ func isTerminalHookEvent(event string) bool {
 	// sidecar on ordinary non-terminal "Stop"/turn-complete style events.
 	switch norm {
 	case "sessionend", "sessionended", "sessionclose", "sessionclosed", "sessiondone", "sessionexit", "sessionexited",
-		"onsessionend", // Hermes: on_session_end normalized
+		"onsessionfinalize", // Hermes final process/session event
 		"threadend", "threadended", "threadterminate", "threadterminated", "threadclose", "threadclosed",
 		"threaddone", "threadexit", "threadexited":
 		return true

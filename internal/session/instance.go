@@ -299,7 +299,8 @@ type Instance struct {
 	// persisted (json:"-"): it is re-captured on every restart, so it needs no
 	// lifetime beyond a single Restart() call — which also keeps it out of the
 	// JSON marshaling that could otherwise race the restart-time write.
-	HermesSessionID string `json:"-"`
+	HermesSessionID      string `json:"-"`
+	HermesHookGeneration string `json:"-"`
 	// restartEnv contains one-shot environment overrides while RestartWithEnv is
 	// building the replacement process. It is cleared before the call returns.
 	restartEnv map[string]string
@@ -4342,7 +4343,9 @@ func (i *Instance) Start() error {
 		// fires only at the first turn), so seed the "waiting" baseline the
 		// prompt represents — otherwise a fresh session has no status icon
 		// until the user types.
-		i.seedHermesHookBaseline()
+		if _, err := i.seedHermesHookGeneration("waiting", false); err != nil {
+			return err
+		}
 		command = i.buildHermesCommand(i.Command)
 	default:
 		// Check if this is a custom tool with session resume config
@@ -4629,7 +4632,9 @@ func (i *Instance) StartWithMessage(message string) error {
 		// fires only at the first turn), so seed the "waiting" baseline the
 		// prompt represents — otherwise a fresh session has no status icon
 		// until the user types.
-		i.seedHermesHookBaseline()
+		if _, err := i.seedHermesHookGeneration("running", true); err != nil {
+			return err
+		}
 		command = i.buildHermesCommand(i.Command)
 	default:
 		// Check if this is a custom tool with session resume config
@@ -6033,6 +6038,10 @@ func (i *Instance) ClearHookStatus() {
 	// this evidence has no other way to survive. Outside i.mu: the SQLite
 	// write can stall on SQLITE_BUSY (see persistLastActivity).
 	i.persistLastActivity(true)
+	if i.Tool == "hermes" {
+		i.clearHermesHookArtifacts()
+		return
+	}
 
 	// Remove the persisted status file. Sandbox sessions bridge a PER-INSTANCE
 	// scoped subdir (…/hooks/sandbox/<id>/<id>.json) from the container, and the
@@ -7631,6 +7640,9 @@ func (i *Instance) killInternal(sync bool) error {
 	i.mu.Unlock()
 	// (gen already bumped at the top of killInternal, before the tmux kill —
 	// see the comment there for why it must happen first, not here.)
+	if i.Tool == "hermes" {
+		i.clearHermesHookArtifacts()
+	}
 
 	// Clean up sandbox container (only if name matches our prefix convention).
 	// Runs regardless of tmux kill result to avoid orphaned containers.
@@ -7747,6 +7759,14 @@ func (i *Instance) restart(env map[string]string) error {
 			i.restartEnv[key] = value
 		}
 		defer func() { i.restartEnv = nil }()
+	}
+	// Generation publication is the restart invalidation boundary. Commit it
+	// before any signal/kill reaches the old Hermes process, so its delayed
+	// hooks cannot overwrite the replacement's starting seed.
+	if i.Tool == "hermes" {
+		if _, err := i.seedHermesHookGeneration("starting", false); err != nil {
+			return fmt.Errorf("seed hermes restart generation: %w", err)
+		}
 	}
 
 	mcpLog.Debug(

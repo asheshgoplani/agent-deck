@@ -735,7 +735,8 @@ func readHookStatusFile(instanceID string) *HookStatus {
 	// No-follow + size-bounded read for both the scoped (sandbox) and flat
 	// (non-sandbox) paths: a container could symlink or oversize its <id>.json
 	// to read a host file or OOM the shared notify-daemon that polls this.
-	data, err := readStatusFileNoFollow(hookStatusFilePath(instanceID))
+	statusPath := hookStatusFilePath(instanceID)
+	data, err := readStatusFileNoFollow(statusPath)
 	if err != nil || len(data) == 0 {
 		return nil
 	}
@@ -752,12 +753,24 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		CodexCompletedGeneration string `json:"codex_completed_generation"`
 		CodexStartedSessionID    string `json:"codex_started_session_id"`
 		CodexCompletedSessionID  string `json:"codex_completed_session_id"`
+		HookGeneration           string `json:"hook_generation"`
+		Sequence                 uint64 `json:"sequence"`
+		InitialMessagePending    bool   `json:"initial_message_pending"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
 	}
 	if strings.TrimSpace(raw.Status) == "" {
 		return nil
+	}
+	controlPath := filepath.Join(filepath.Dir(statusPath), instanceID+".generation.json")
+	if controlData, controlErr := readStatusFileNoFollow(controlPath); controlErr == nil {
+		var control struct {
+			Generation string `json:"generation"`
+		}
+		if json.Unmarshal(controlData, &control) != nil || control.Generation == "" || raw.HookGeneration != control.Generation {
+			return nil
+		}
 	}
 	updatedAt := time.Now()
 	if raw.Timestamp > 0 {
@@ -776,6 +789,9 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		CodexCompletedGeneration: raw.CodexCompletedGeneration,
 		CodexStartedSessionID:    raw.CodexStartedSessionID,
 		CodexCompletedSessionID:  raw.CodexCompletedSessionID,
+		HookGeneration:           raw.HookGeneration,
+		Sequence:                 raw.Sequence,
+		InitialMessagePending:    raw.InitialMessagePending,
 	}
 }
 
@@ -875,6 +891,10 @@ func terminalHookTransitionCandidate(tool string, hs *HookStatus) (hookTransitio
 		if event == "stop" {
 			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt}, true
 		}
+	case "hermes":
+		if event == "post_llm_call" || event == "postllmcall" || event == "onsessionend" || event == "on_session_end" {
+			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt}, true
+		}
 	}
 	return hookTransitionCandidate{}, false
 }
@@ -894,7 +914,7 @@ func isTerminalHookEvent(event string) bool {
 	norm = strings.NewReplacer(".", "", "-", "", "_", "", "/", "", " ", "").Replace(norm)
 	switch norm {
 	case "sessionend", "sessionended", "sessionclose", "sessionclosed", "sessiondone", "sessionexit", "sessionexited",
-		"onsessionend",
+		"onsessionfinalize",
 		"threadend", "threadended", "threadterminate", "threadterminated", "threadclose", "threadclosed",
 		"threaddone", "threadexit", "threadexited":
 		return true

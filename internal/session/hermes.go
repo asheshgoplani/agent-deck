@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -17,6 +18,91 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
+
+type hermesHookControl struct {
+	Generation   string `json:"generation"`
+	NextSequence uint64 `json:"next_sequence"`
+}
+type hermesHookSeed struct {
+	Status                string `json:"status"`
+	Event                 string `json:"event"`
+	Timestamp             int64  `json:"ts"`
+	HookGeneration        string `json:"hook_generation"`
+	Sequence              uint64 `json:"sequence"`
+	InitialMessagePending bool   `json:"initial_message_pending,omitempty"`
+}
+
+func hermesHookScope(instanceID string, sandboxed bool) string {
+	if sandboxed {
+		return filepath.Join(GetHooksDir(), "sandbox", instanceID)
+	}
+	return GetHooksDir()
+}
+
+func atomicHermesJSON(path string, value any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err = f.Chmod(0600); err == nil {
+		_, err = f.Write(b)
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func (i *Instance) seedHermesHookGeneration(status string, pending bool) (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	generation := fmt.Sprintf("%x", raw[:])
+	scope := hermesHookScope(i.ID, i.IsSandboxed())
+	if err := atomicHermesJSON(filepath.Join(scope, i.ID+".generation.json"), hermesHookControl{Generation: generation}); err != nil {
+		return "", err
+	}
+	seed := hermesHookSeed{Status: status, Event: "agentdeck_spawn_seed", Timestamp: time.Now().Unix(), HookGeneration: generation, InitialMessagePending: pending}
+	if err := atomicHermesJSON(filepath.Join(scope, i.ID+".json"), seed); err != nil {
+		return "", err
+	}
+	i.HermesHookGeneration = generation
+	return generation, nil
+}
+
+func hermesHookArtifactPaths(instanceID string) []string {
+	root := GetHooksDir()
+	var out []string
+	for _, dir := range []string{root, filepath.Join(root, "sandbox", instanceID)} {
+		out = append(out, filepath.Join(dir, instanceID+".json"), filepath.Join(dir, instanceID+".generation.json"), filepath.Join(dir, instanceID+".lock"))
+	}
+	return out
+}
+
+func (i *Instance) clearHermesHookArtifacts() {
+	for _, p := range hermesHookArtifactPaths(i.ID) {
+		_ = os.Remove(p)
+	}
+	for _, dir := range []string{GetHooksDir(), filepath.Join(GetHooksDir(), "sandbox", i.ID)} {
+		matches, _ := filepath.Glob(filepath.Join(dir, "."+i.ID+"*.tmp-*"))
+		for _, p := range matches {
+			_ = os.Remove(p)
+		}
+	}
+}
 
 // hermesSessionIDPattern matches a hermes session ID (e.g. "20260720_143254_a3db50"):
 // {YYYYMMDD}_{HHMMSS}_{hex}. Used to pick the ID column out of `hermes sessions
@@ -166,6 +252,9 @@ func (i *Instance) buildHermesCommand(baseCommand string) string {
 	}
 
 	envPrefix := i.buildEnvSourceCommand()
+	if i.HermesHookGeneration != "" {
+		envPrefix += "export AGENTDECK_HOOK_GENERATION=" + shellescape.Quote(i.HermesHookGeneration) + "; "
+	}
 
 	// AGENTDECK_* env injection is required for the shell hooks Hermes spawns
 	// (pre_llm_call / pre_tool_call / … → `agent-deck hook-handler`) to identify
