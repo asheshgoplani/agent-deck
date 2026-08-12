@@ -29,6 +29,7 @@ var leakPrefixes = []string{
 	"ad-home-",                       // IsolateHome
 	"ad-tmux-",                       // IsolateTmuxSocket
 	"ad-sock-",                       // ShortTmuxSocket
+	"agent-deck-ssh-",                 // internal/session stale SSH socket fixture
 	"agent-deck-test-sock-",          // ShortTmuxSocket's /tmp retry
 	"agent-deck-test-home-fallback-", // IsolatePackageHome's MkdirTemp fallback
 	// Per-package homes from IsolatePackageHome.
