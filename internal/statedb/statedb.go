@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -1649,13 +1650,13 @@ func (s *StateDB) AdvanceClaimedLifecycleIntent(instanceID, token, owner, phase,
 func (s *StateDB) ClaimLifecycleIntent(instanceID, token, owner string) (bool, error) {
 	var claimed bool
 	err := withBusyRetry(func() error {
-		now := time.Now().Unix()
-		leaseCutoff := now - int64(LifecycleRecoveryClaimLease/time.Second)
+		claimedAt := time.Now().UnixNano()
+		leaseCutoff := claimedAt - LifecycleRecoveryClaimLease.Nanoseconds()
 		result, err := s.db.Exec(`UPDATE lifecycle_intents
 			SET recovery_owner=?, recovery_claimed_at=?, updated_at=?
 			WHERE instance_id=? AND token=?
 			AND (recovery_owner='' OR recovery_owner=? OR recovery_claimed_at<?)`,
-			owner, now, now, instanceID, token, owner, leaseCutoff)
+			owner, claimedAt, time.Now().Unix(), instanceID, token, owner, leaseCutoff)
 		if err != nil {
 			return err
 		}
@@ -1669,8 +1670,9 @@ func (s *StateDB) ClaimLifecycleIntent(instanceID, token, owner string) (bool, e
 func (s *StateDB) RenewLifecycleIntentClaim(instanceID, token, owner string) (bool, error) {
 	var renewed bool
 	err := withBusyRetry(func() error {
+		claimedAt := time.Now().UnixNano()
 		result, err := s.db.Exec(`UPDATE lifecycle_intents SET recovery_claimed_at=?, updated_at=?
-			WHERE instance_id=? AND token=? AND recovery_owner=?`, time.Now().Unix(), time.Now().Unix(), instanceID, token, owner)
+			WHERE instance_id=? AND token=? AND recovery_owner=?`, claimedAt, time.Now().Unix(), instanceID, token, owner)
 		if err != nil {
 			return err
 		}
@@ -1804,83 +1806,160 @@ func (s *StateDB) CompleteLifecycleIntent(instanceID, token string) error {
 	})
 }
 
-// CompleteLifecycleIntentGuarded validates and retires an intent while holding
-// SQLite's write reservation. The callback runs only for the durable intent
-// that owns instanceID/token, so external cleanup cannot race a replacement
-// intent or a reused instance generation.
+// CompleteLifecycleIntentGuarded validates and retires an intent around an
+// external cleanup callback. It claims the exact durable intent before the
+// callback, but deliberately does not keep a SQLite write transaction open
+// while the callback mutates the filesystem. A short-lived claim plus renewal
+// protects the ownership boundary without starving unrelated lifecycle writes.
 func (s *StateDB) CompleteLifecycleIntentGuarded(instanceID, token string, guarded func(LifecycleIntent) error) error {
-	return withBusyRetry(func() error {
-		conn, err := s.db.Conn(context.Background())
+	owner := uuid.NewString()
+	claimed, err := s.ClaimLifecycleIntent(instanceID, token, owner)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		claimed, err = s.completeLifecycleIntentClaimMiss(instanceID, token, owner)
 		if err != nil {
 			return err
 		}
-		defer conn.Close()
-		if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		if !claimed {
+			return nil
+		}
+	}
+	completed := false
+	defer func() {
+		if !completed {
+			_ = s.releaseLifecycleIntentClaim(instanceID, token, owner)
+		}
+	}()
+
+	intent, found, err := s.lifecycleIntentForClaim(instanceID, token, owner)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrLifecycleIntentOwnership
+	}
+	if err := s.ValidateLifecycleClaim(instanceID, token, owner, intent.Generation, false); err != nil {
+		return err
+	}
+
+	stopRenew := make(chan struct{})
+	renewDone := make(chan struct{})
+	var claimLost atomic.Bool
+	var renewalErr error
+	var renewalErrMu sync.Mutex
+	renewInterval := LifecycleRecoveryClaimLease / 3
+	if renewInterval <= 0 {
+		renewInterval = time.Millisecond
+	}
+	go func() {
+		defer close(renewDone)
+		ticker := time.NewTicker(renewInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				renewed, err := s.RenewLifecycleIntentClaim(instanceID, token, owner)
+				if err != nil || !renewed {
+					if err == nil {
+						err = ErrLifecycleIntentOwnership
+					}
+					renewalErrMu.Lock()
+					renewalErr = err
+					renewalErrMu.Unlock()
+					claimLost.Store(true)
+					return
+				}
+			case <-stopRenew:
+				return
+			}
+		}
+	}()
+	defer func() {
+		close(stopRenew)
+		<-renewDone
+	}()
+
+	if guarded != nil {
+		if err := guarded(intent); err != nil {
 			return err
 		}
-		committed := false
-		defer func() {
-			if !committed {
-				_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
-			}
-		}()
+	}
+	if claimLost.Load() {
+		renewalErrMu.Lock()
+		err := renewalErr
+		renewalErrMu.Unlock()
+		if err == nil {
+			err = ErrLifecycleIntentOwnership
+		}
+		return err
+	}
+	if err := s.ValidateLifecycleClaim(instanceID, token, owner, intent.Generation, false); err != nil {
+		return err
+	}
+	if err := s.CompleteClaimedLifecycleIntent(instanceID, token, owner); err != nil {
+		return err
+	}
+	completed = true
+	return nil
+}
 
-		var intent LifecycleIntent
-		err = conn.QueryRowContext(context.Background(), `SELECT instance_id, kind, payload, phase, token, generation, created_at, updated_at
-			FROM lifecycle_intents WHERE instance_id=? AND token=?`, instanceID, token).
-			Scan(&intent.InstanceID, &intent.Kind, &intent.Payload, &intent.Phase, &intent.Token, &intent.Generation, &intent.CreatedAt, &intent.UpdatedAt)
-		if errors.Is(err, sql.ErrNoRows) {
-			var currentToken string
-			err = conn.QueryRowContext(context.Background(), "SELECT token FROM lifecycle_intents WHERE instance_id=?", instanceID).Scan(&currentToken)
+func (s *StateDB) lifecycleIntentForClaim(instanceID, token, owner string) (LifecycleIntent, bool, error) {
+	var intent LifecycleIntent
+	err := s.db.QueryRow(`SELECT instance_id, kind, payload, phase, token, generation, created_at, updated_at, recovery_owner, recovery_claimed_at
+		FROM lifecycle_intents WHERE instance_id=? AND token=? AND recovery_owner=?`, instanceID, token, owner).
+		Scan(&intent.InstanceID, &intent.Kind, &intent.Payload, &intent.Phase, &intent.Token, &intent.Generation, &intent.CreatedAt, &intent.UpdatedAt, &intent.RecoveryOwner, &intent.RecoveryClaimedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return LifecycleIntent{}, false, nil
+	}
+	return intent, err == nil, err
+}
+
+// completeLifecycleIntentClaimMiss waits for the existing owner to finish or
+// reclaims the same durable intent after that owner releases or expires. It
+// only reports idempotent success after observing the intent row absent.
+func (s *StateDB) completeLifecycleIntentClaimMiss(instanceID, token, owner string) (bool, error) {
+	retryDelay := 10 * time.Millisecond
+	for {
+		var currentToken string
+		found := false
+		err := withBusyRetry(func() error {
+			err := s.db.QueryRow("SELECT token FROM lifecycle_intents WHERE instance_id=?", instanceID).Scan(&currentToken)
 			if errors.Is(err, sql.ErrNoRows) {
-				if _, commitErr := conn.ExecContext(context.Background(), "COMMIT"); commitErr != nil {
-					return commitErr
-				}
-				committed = true
 				return nil
 			}
-			if err != nil {
-				return err
+			if err == nil {
+				found = true
 			}
-			return ErrLifecycleIntentOwnership
-		}
-		if err != nil {
 			return err
+		})
+		if err != nil {
+			return false, err
+		}
+		if !found {
+			return false, nil
+		}
+		if currentToken != token {
+			return false, ErrLifecycleIntentOwnership
 		}
 
-		var liveGeneration int64
-		err = conn.QueryRowContext(context.Background(), "SELECT COALESCE((SELECT generation FROM instance_tombstones WHERE id=instances.id), 0) FROM instances WHERE id=?", instanceID).Scan(&liveGeneration)
-		if err == nil {
-			if liveGeneration == 0 {
-				liveGeneration = 1
-			}
-			if intent.Generation == 0 || intent.Generation != liveGeneration {
-				return ErrLifecycleIntentOwnership
-			}
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-
-		if guarded != nil {
-			if err := guarded(intent); err != nil {
-				return err
-			}
-		}
-		result, err := conn.ExecContext(context.Background(), "DELETE FROM lifecycle_intents WHERE instance_id=? AND token=?", instanceID, token)
+		claimed, err := s.ClaimLifecycleIntent(instanceID, token, owner)
 		if err != nil {
-			return err
+			return false, err
 		}
-		if n, err := result.RowsAffected(); err != nil || n != 1 {
-			if err != nil {
-				return err
-			}
-			return ErrLifecycleIntentOwnership
+		if claimed {
+			return true, nil
 		}
-		if _, err := conn.ExecContext(context.Background(), "COMMIT"); err != nil {
-			return err
-		}
-		committed = true
-		return nil
+		time.Sleep(retryDelay)
+	}
+}
+
+func (s *StateDB) releaseLifecycleIntentClaim(instanceID, token, owner string) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(`UPDATE lifecycle_intents SET recovery_owner='', recovery_claimed_at=0, updated_at=?
+			WHERE instance_id=? AND token=? AND recovery_owner=?`, time.Now().Unix(), instanceID, token, owner)
+		return err
 	})
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -89,6 +90,213 @@ func TestLifecycleIntentPersistsAcrossReopenUntilCompleted(t *testing.T) {
 	intents, err = db.LifecycleIntents()
 	if err != nil || len(intents) != 0 {
 		t.Fatalf("completed intents = %#v, %v", intents, err)
+	}
+}
+
+func TestCompleteLifecycleIntentGuardedDoesNotHoldWriterDuringCallback(t *testing.T) {
+	db := newTestDB(t)
+	first, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "complete-without-lock", Kind: "remove", Payload: "payload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	complete := make(chan error, 1)
+	var releaseOnce sync.Once
+	completeJoined := false
+	releaseCallback := func() { releaseOnce.Do(func() { close(release) }) }
+	waitForComplete := func() error {
+		select {
+		case err := <-complete:
+			completeJoined = true
+			return err
+		case <-time.After(time.Second):
+			return errors.New("guarded lifecycle completion did not exit")
+		}
+	}
+	go func() {
+		complete <- db.CompleteLifecycleIntentGuarded(first.InstanceID, first.Token, func(LifecycleIntent) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	t.Cleanup(func() {
+		releaseCallback()
+		if completeJoined {
+			return
+		}
+		if err := waitForComplete(); err != nil {
+			t.Error(err)
+		}
+	})
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("guarded lifecycle callback did not start")
+	}
+
+	writeFinished := make(chan error, 1)
+	go func() {
+		_, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "unrelated-writer", Kind: "remove", Payload: "payload"})
+		writeFinished <- err
+	}()
+	waitForWrite := func() error {
+		select {
+		case err := <-writeFinished:
+			return err
+		case <-time.After(time.Second):
+			return errors.New("unrelated lifecycle writer did not exit")
+		}
+	}
+
+	var writeErr error
+	select {
+	case writeErr = <-writeFinished:
+	case <-time.After(250 * time.Millisecond):
+		releaseCallback()
+		if err := waitForComplete(); err != nil {
+			t.Fatalf("complete lifecycle intent: %v", err)
+		}
+		if err := waitForWrite(); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal("unrelated lifecycle write waited for guarded callback")
+	}
+	if writeErr != nil {
+		releaseCallback()
+		if err := waitForComplete(); err != nil {
+			t.Fatalf("complete lifecycle intent: %v", err)
+		}
+		t.Fatalf("unrelated lifecycle write: %v", writeErr)
+	}
+	releaseCallback()
+	if err := waitForComplete(); err != nil {
+		t.Fatalf("complete lifecycle intent: %v", err)
+	}
+}
+
+func TestCompleteLifecycleIntentGuardedWaitsForClaimedIntentToComplete(t *testing.T) {
+	db := newTestDB(t)
+	intent, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "wait-for-claimed-intent", Kind: "remove", Payload: "payload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := db.ClaimLifecycleIntent(intent.InstanceID, intent.Token, "startup-recovery")
+	if err != nil || !claimed {
+		t.Fatalf("startup recovery claim = %v, %v", claimed, err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- db.CompleteLifecycleIntentGuarded(intent.InstanceID, intent.Token, nil) }()
+	select {
+	case err := <-done:
+		t.Fatalf("completion returned before claimed intent was removed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := db.CompleteClaimedLifecycleIntent(intent.InstanceID, intent.Token, "startup-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("completion after claimed intent removal: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completion did not observe durable intent removal")
+	}
+}
+
+func TestCompleteLifecycleIntentGuardedClaimMissRequiresIntentAbsence(t *testing.T) {
+	db := newTestDB(t)
+	intent, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "empty-token-is-not-absence", Kind: "remove", Payload: "payload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec("UPDATE lifecycle_intents SET token='' WHERE instance_id=?", intent.InstanceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CompleteLifecycleIntentGuarded(intent.InstanceID, intent.Token, nil); !errors.Is(err, ErrLifecycleIntentOwnership) {
+		t.Fatalf("completion against present empty-token intent = %v, want ownership error", err)
+	}
+}
+
+func TestCompleteLifecycleIntentGuardedRenewsShortClaimDuringCallback(t *testing.T) {
+	db := newTestDB(t)
+	intent, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "renew-guarded-short-claim", Kind: "remove", Payload: "payload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldLease := LifecycleRecoveryClaimLease
+	LifecycleRecoveryClaimLease = 60 * time.Millisecond
+	t.Cleanup(func() { LifecycleRecoveryClaimLease = oldLease })
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	var releaseOnce sync.Once
+	doneJoined := false
+	releaseCallback := func() { releaseOnce.Do(func() { close(release) }) }
+	waitForDone := func() error {
+		select {
+		case err := <-done:
+			doneJoined = true
+			return err
+		case <-time.After(time.Second):
+			return errors.New("renewing guarded completion did not exit")
+		}
+	}
+	go func() {
+		done <- db.CompleteLifecycleIntentGuarded(intent.InstanceID, intent.Token, func(LifecycleIntent) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	t.Cleanup(func() {
+		releaseCallback()
+		if doneJoined {
+			return
+		}
+		if err := waitForDone(); err != nil {
+			t.Error(err)
+		}
+	})
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("renewing guarded callback did not start")
+	}
+	intents, err := db.LifecycleIntents()
+	if err != nil || len(intents) != 1 {
+		t.Fatalf("claimed intents = %#v, %v", intents, err)
+	}
+	firstClaimedAt := intents[0].RecoveryClaimedAt
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for {
+		intents, err = db.LifecycleIntents()
+		if err != nil || len(intents) != 1 {
+			t.Fatalf("renewing intents = %#v, %v", intents, err)
+		}
+		if intents[0].RecoveryClaimedAt > firstClaimedAt {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("guarded callback did not renew its short claim")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(2 * LifecycleRecoveryClaimLease)
+	claimed, err := db.ClaimLifecycleIntent(intent.InstanceID, intent.Token, "competing-owner")
+	if err != nil || claimed {
+		t.Fatalf("competing owner stole renewed claim = %v, %v", claimed, err)
+	}
+	releaseCallback()
+	if err := waitForDone(); err != nil {
+		t.Fatalf("renewed guarded completion: %v", err)
 	}
 }
 
