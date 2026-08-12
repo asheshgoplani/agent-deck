@@ -70,7 +70,8 @@ func TestRecoveredAdapterContainsHealthPanicAndSanitizesLog(t *testing.T) {
 	for panicking.checks.Load() < 3 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	// A successful check ends the episode, so a later panic transition is logged once.
+	// A successful check ends the episode, but a quick later transition remains
+	// inside the stack-log rate cap.
 	panicking.panics.Store(false)
 	deadline = time.Now().Add(time.Second)
 	for panicking.passes.Load() == 0 && time.Now().Before(deadline) {
@@ -99,8 +100,49 @@ func TestRecoveredAdapterContainsHealthPanicAndSanitizesLog(t *testing.T) {
 	if strings.Contains(out, "secret-health-panic-value") {
 		t.Fatalf("panic value leaked to log: %s", out)
 	}
-	if got := strings.Count(out, `"stack"`); got != 2 {
-		t.Fatalf("stack log count across two panic episodes = %d, want 2: %s", got, out)
+	if got := strings.Count(out, `"stack"`); got != 1 {
+		t.Fatalf("stack log count across two quick panic episodes = %d, want 1: %s", got, out)
+	}
+}
+
+func TestRecoveredAdapterRateLimitsFlappingHealthPanicStacks(t *testing.T) {
+	var logs bytes.Buffer
+	adapter := &healthPanicAdapter{}
+	adapter.panics.Store(true)
+	now := time.Date(2026, time.August, 12, 0, 0, 0, 0, time.UTC)
+	wrapped := newRecoveredAdapter(adapter, AdapterConfig{Name: "flapping", Type: "test"}, slog.New(slog.NewJSONHandler(&logs, nil))).(*recoveredAdapter)
+	wrapped.now = func() time.Time { return now }
+
+	checkPanic := func() {
+		t.Helper()
+		if err := wrapped.HealthCheck(); err == nil {
+			t.Fatal("HealthCheck unexpectedly succeeded")
+		}
+	}
+	checkSuccess := func() {
+		t.Helper()
+		adapter.panics.Store(false)
+		if err := wrapped.HealthCheck(); err != nil {
+			t.Fatalf("HealthCheck: %v", err)
+		}
+		adapter.panics.Store(true)
+	}
+
+	checkPanic() // The first transition logs immediately.
+	checkSuccess()
+	checkPanic() // A quick flap is suppressed.
+	if got := strings.Count(logs.String(), `"stack"`); got != 1 {
+		t.Fatalf("stack log count inside rate window = %d, want 1", got)
+	}
+
+	now = now.Add(healthPanicStackLogInterval)
+	checkSuccess()
+	checkPanic()
+	if got := strings.Count(logs.String(), `"stack"`); got != 2 {
+		t.Fatalf("stack log count after rate window = %d, want 2", got)
+	}
+	if strings.Contains(logs.String(), "secret-health-panic-value") {
+		t.Fatalf("panic value leaked to log: %s", logs.String())
 	}
 }
 
@@ -116,22 +158,6 @@ func wantStates(t *testing.T, states <-chan HealthState, want map[string]HealthS
 			}
 		case <-timer.C:
 			t.Fatalf("missing health states: %v", want)
-		}
-	}
-}
-
-func wantState(t *testing.T, states <-chan HealthState, name string, status HealthStatus) {
-	t.Helper()
-	timer := time.NewTimer(2 * time.Second)
-	defer timer.Stop()
-	for {
-		select {
-		case state := <-states:
-			if state.WatcherName == name && state.Status == status {
-				return
-			}
-		case <-timer.C:
-			t.Fatalf("no %s state for %s", status, name)
 		}
 	}
 }

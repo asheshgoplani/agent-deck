@@ -67,20 +67,17 @@ func (*partialSetupAdapter) HealthCheck() error { return nil }
 
 func TestRecoveredAdapterCleansPartialSetupExactlyOnce(t *testing.T) {
 	raw := &partialSetupAdapter{}
-	engine := NewEngine(EngineConfig{Logger: slog.Default()})
+	engine, _ := newTestEngine(t, nil)
 	engine.RegisterAdapter("partial-id", raw, AdapterConfig{Name: "partial", Type: "test"}, 0)
-	wrapped := engine.adapters[0].adapter
 
-	if err := wrapped.Setup(context.Background(), AdapterConfig{}); err == nil {
-		t.Fatal("Setup unexpectedly succeeded")
+	if err := engine.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
 	if got := raw.teardowns.Load(); got != 1 {
 		t.Fatalf("Teardown calls after failed Setup = %d, want 1", got)
 	}
-	if err := wrapped.Teardown(); err != nil {
-		t.Fatalf("later Teardown: %v", err)
-	}
+	engine.Stop()
 	if got := raw.teardowns.Load(); got != 1 {
-		t.Fatalf("Teardown calls after later Stop-style cleanup = %d, want 1", got)
+		t.Fatalf("Teardown calls after Stop = %d, want 1", got)
 	}
 }
