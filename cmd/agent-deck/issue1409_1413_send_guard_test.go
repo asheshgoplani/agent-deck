@@ -275,6 +275,34 @@ func TestExecuteSend_SaveClearRestoreAroundBusyComposer(t *testing.T) {
 	}
 }
 
+func TestExecuteSend_DiscardsSavedDuplicateAutomatedDraft(t *testing.T) {
+	// A prior automated nudge can remain typed in the composer after Claude
+	// swallows Enter. When the next identical nudge succeeds, restoring that
+	// stale text keeps the composer polluted forever. An exact duplicate is
+	// deliberately discarded; non-matching operator drafts stay protected by
+	// TestExecuteSend_SaveClearRestoreAroundBusyComposer.
+	const msg = "Heartbeat: run the orchestrator poll script"
+	mock := &guardedSendMock{
+		draftPane:        claudeComposer(msg),
+		postSendPanes:    []string{""},
+		postSendStatuses: []string{"active", "active"},
+	}
+	tun := testGuardTuning(sendRetryOptions{maxRetries: 5, checkDelay: 0, verifyDelivery: true})
+	res, err := executeSend(mock, "claude", msg, false, tun)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.draftSaved != msg {
+		t.Fatalf("saved draft: want %q, got %q", msg, res.draftSaved)
+	}
+	if res.draftRestored {
+		t.Fatal("a stale draft matching the automated message must not be restored")
+	}
+	if got := atomic.LoadInt32(&mock.chunkedCalls); got != 0 {
+		t.Fatalf("duplicate automated draft must leave the composer clear, got %d restore calls", got)
+	}
+}
+
 func TestExecuteSend_NoRestoreWhenTypedNotSubmitted(t *testing.T) {
 	// If the automated message itself ends typed-but-unsubmitted, restoring
 	// the operator draft would merge it into the stuck composer — exactly the
