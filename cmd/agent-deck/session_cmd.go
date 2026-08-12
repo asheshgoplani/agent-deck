@@ -553,6 +553,7 @@ func handleSessionArchive(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to prepare archive: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	inst.PersistenceGeneration = archiveIntent.Generation
 	previousArchivedAt := inst.ArchivedAt
 	inst.ArchivedAt = time.Now().UTC()
 	if err := sessionArchivePersist(storage, inst, false); err != nil {
@@ -567,7 +568,7 @@ func handleSessionArchive(profile string, args []string) {
 		os.Exit(1)
 	}
 	if inst.Exists() {
-		if err := inst.Kill(); err != nil {
+		if err := inst.KillAndWait(); err != nil {
 			inst.ArchivedAt = previousArchivedAt
 			rollbackErr := sessionArchivePersist(storage, inst, false)
 			var completeErr error
@@ -676,7 +677,7 @@ var sessionArchivePersist = persistArchivedCLI
 // and reloads under concurrent writers (a running TUI), which would silently
 // revert the archive. This mirrors home.go's persistArchived.
 //
-// persistStatus is true only when archive killed a live session: Kill() sets
+// persistStatus is true only when archive killed a live session: KillAndWait sets
 // Status=stopped in memory but writes nothing to the DB, so without this the
 // row keeps its pre-kill running/idle status and a later load misclassifies the
 // stopped session. PersistInstanceStatusesTx is the same targeted, abort-safe

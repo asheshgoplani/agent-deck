@@ -305,6 +305,7 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	if err != nil {
 		return fmt.Errorf("prepare web archive: %w", err)
 	}
+	inst.PersistenceGeneration = archiveIntent.Generation
 	m.h.instancesMu.Lock()
 	previousArchivedAt := inst.ArchivedAt
 	inst.ArchivedAt = time.Now().UTC()

@@ -143,6 +143,118 @@ func TestLifecycleIntentRejectsOverlapAndStaleOwnership(t *testing.T) {
 	}
 }
 
+func TestDeleteAtomicallyAdvancesPreparedRemoval(t *testing.T) {
+	db := newTestDB(t)
+	row := tombstoneTestRow("atomic-remove-phase")
+	if err := db.CreateInstance(row); err != nil {
+		t.Fatal(err)
+	}
+	intent, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: row.ID, Kind: "remove", Payload: "payload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeleteInstance(row.ID); err != nil {
+		t.Fatal(err)
+	}
+	intents, err := db.LifecycleIntents()
+	if err != nil || len(intents) != 1 || intents[0].Token != intent.Token || intents[0].Phase != "row-deleted" {
+		t.Fatalf("delete/phase commit = %#v, %v", intents, err)
+	}
+}
+
+func TestForegroundDeletePublishesPhaseBeforeRecoveryCanObserve(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "foreground-recovery.db")
+	foreground, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer foreground.Close()
+	if err := foreground.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovery.Close()
+	row := tombstoneTestRow("foreground-window")
+	if err := foreground.CreateInstance(row); err != nil {
+		t.Fatal(err)
+	}
+	intent, err := foreground.PrepareLifecycleIntent(LifecycleIntent{InstanceID: row.ID, Kind: "remove", Payload: "payload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := make(chan []LifecycleIntent, 1)
+	foreground.beforeDeleteCommit = func() {
+		intents, queryErr := recovery.LifecycleIntents()
+		if queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		exists, queryErr := recovery.InstanceExists(row.ID)
+		if queryErr != nil || !exists || len(intents) != 1 || intents[0].Phase != "prepared" {
+			t.Fatalf("uncommitted boundary row=%v intents=%#v err=%v", exists, intents, queryErr)
+		}
+		observed <- intents
+	}
+	if err := foreground.DeleteInstance(row.ID); err != nil {
+		t.Fatal(err)
+	}
+	<-observed
+	got, err := recovery.LifecycleIntents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Token != intent.Token || got[0].Phase != "row-deleted" {
+		t.Fatalf("first observable lifecycle state=%#v", got)
+	}
+}
+
+func TestArchiveIntentEmptyPayloadBindsLiveGeneration(t *testing.T) {
+	db := newTestDB(t)
+	row := tombstoneTestRow("archive-live-generation")
+	if err := db.CreateInstance(row); err != nil {
+		t.Fatal(err)
+	}
+	intent, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: row.ID, Kind: "archive"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.Generation == 0 || intent.Generation != row.PersistenceGeneration {
+		t.Fatalf("archive generation=%d row=%d", intent.Generation, row.PersistenceGeneration)
+	}
+}
+
+func TestRenewedRecoveryClaimCannotBeStolenPastLease(t *testing.T) {
+	db := newTestDB(t)
+	row := tombstoneTestRow("renewed-claim")
+	if err := db.CreateInstance(row); err != nil {
+		t.Fatal(err)
+	}
+	intent, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: row.ID, Kind: "remove", Payload: "payload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldLease := lifecycleRecoveryClaimLease
+	lifecycleRecoveryClaimLease = 2 * time.Second
+	t.Cleanup(func() { lifecycleRecoveryClaimLease = oldLease })
+	claimed, err := db.ClaimLifecycleIntent(row.ID, intent.Token, "first")
+	if err != nil || !claimed {
+		t.Fatalf("first claim=%v, %v", claimed, err)
+	}
+	for range 3 {
+		time.Sleep(time.Second)
+		renewed, err := db.RenewLifecycleIntentClaim(row.ID, intent.Token, "first")
+		if err != nil || !renewed {
+			t.Fatalf("renew=%v, %v", renewed, err)
+		}
+	}
+	claimed, err = db.ClaimLifecycleIntent(row.ID, intent.Token, "second")
+	if err != nil || claimed {
+		t.Fatalf("stolen claim=%v, %v", claimed, err)
+	}
+}
+
 func TestWithInstancesAbsentBlockedStaleWriterCannotResurrectAfterCommit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	guard, err := Open(path)

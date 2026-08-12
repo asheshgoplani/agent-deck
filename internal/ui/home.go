@@ -13142,6 +13142,7 @@ func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 			queueTx.Release()
 			return sessionArchivedMsg{sessionID: id, killErr: fmt.Errorf("prepare archive: %w", err)}
 		}
+		inst.PersistenceGeneration = archiveIntent.Generation
 		previousArchivedAt := inst.ArchivedAt
 		inst.ArchivedAt = time.Now().UTC()
 		if err := h.persistArchived(inst); err != nil {

@@ -97,7 +97,7 @@ func withBusyRetry(op func() error) error {
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 16
+const SchemaVersion = 17
 
 type LifecycleIntent struct {
 	InstanceID        string
@@ -114,6 +114,7 @@ type LifecycleIntent struct {
 
 var ErrLifecycleIntentConflict = errors.New("statedb: incompatible lifecycle intent already active")
 var ErrLifecycleIntentOwnership = errors.New("statedb: lifecycle intent ownership token mismatch")
+var lifecycleRecoveryClaimLease = 30 * time.Second
 
 // ErrInstanceTombstoned prevents stale persistence from recreating an ID whose
 // deletion has already committed. Only CreateInstance may explicitly reuse it.
@@ -141,6 +142,7 @@ type StateDB struct {
 	// beforeInstancesAbsentCommit is a deterministic concurrency-test seam.
 	// Production instances leave it nil.
 	beforeInstancesAbsentCommit func()
+	beforeDeleteCommit          func()
 	beforeSaveInstancesWrite    func()
 }
 
@@ -1245,8 +1247,25 @@ func (s *StateDB) DeleteInstance(id string) error {
 		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
 			return err
 		}
+		if err := advancePreparedRemovalAfterDelete(tx, id); err != nil {
+			return err
+		}
+		if s.beforeDeleteCommit != nil {
+			s.beforeDeleteCommit()
+		}
 		return tx.Commit()
 	})
+}
+
+// advancePreparedRemovalAfterDelete makes deletion itself the durable commit
+// point for a prepared remove. Recovery can therefore never mistake the small
+// foreground window between DELETE and a later phase update for an abandoned
+// operation.
+func advancePreparedRemovalAfterDelete(tx *sql.Tx, id string) error {
+	_, err := tx.Exec(`UPDATE lifecycle_intents
+		SET phase='row-deleted', updated_at=?
+		WHERE instance_id=? AND kind='remove' AND phase='prepared'`, time.Now().Unix(), id)
+	return err
 }
 
 func tombstoneInstance(tx *sql.Tx, id string) error {
@@ -1273,6 +1292,9 @@ func (s *StateDB) DeleteInstanceAndSaveGroups(id string, groups []*GroupRow) err
 			return err
 		}
 		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
+			return err
+		}
+		if err := advancePreparedRemovalAfterDelete(tx, id); err != nil {
 			return err
 		}
 		for _, g := range groups {
@@ -1369,6 +1391,9 @@ func (s *StateDB) WithInstancesAbsent(ids []string, confirmed func() error) (boo
 			if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
 				return err
 			}
+			if err := advancePreparedRemovalAfterDelete(tx, id); err != nil {
+				return err
+			}
 		}
 		if s.beforeInstancesAbsentCommit != nil {
 			s.beforeInstancesAbsentCommit()
@@ -1414,7 +1439,26 @@ func (s *StateDB) PrepareLifecycleIntent(intent LifecycleIntent) (LifecycleInten
 		}
 		now := time.Now().Unix()
 		targetGeneration := intent.Generation
-		if targetGeneration == 0 {
+		var liveGeneration int64
+		liveErr := tx.QueryRow(`SELECT COALESCE((SELECT generation FROM instance_tombstones WHERE id=instances.id), 0)
+			FROM instances WHERE id = ?`, intent.InstanceID).Scan(&liveGeneration)
+		if liveErr == nil {
+			if liveGeneration == 0 {
+				if _, err := tx.Exec(`INSERT INTO instance_tombstones(id, deleted_at, generation, active)
+					VALUES (?, 0, 1, 0) ON CONFLICT(id) DO NOTHING`, intent.InstanceID); err != nil {
+					return err
+				}
+				if err := tx.QueryRow("SELECT generation FROM instance_tombstones WHERE id=?", intent.InstanceID).Scan(&liveGeneration); err != nil {
+					return err
+				}
+			}
+			if targetGeneration != 0 && targetGeneration != liveGeneration {
+				return ErrLifecycleIntentConflict
+			}
+			targetGeneration = liveGeneration
+		} else if !errors.Is(liveErr, sql.ErrNoRows) {
+			return liveErr
+		} else if targetGeneration == 0 {
 			_ = tx.QueryRow("SELECT COALESCE((SELECT generation FROM instance_tombstones WHERE id = ?), 0)", intent.InstanceID).Scan(&targetGeneration)
 		}
 		prepared = LifecycleIntent{InstanceID: intent.InstanceID, Kind: intent.Kind, Payload: intent.Payload, Phase: "prepared", Token: uuid.NewString(), Generation: targetGeneration, CreatedAt: now, UpdatedAt: now}
@@ -1445,11 +1489,12 @@ func (s *StateDB) ClaimLifecycleIntent(instanceID, token, owner string) (bool, e
 	var claimed bool
 	err := withBusyRetry(func() error {
 		now := time.Now().Unix()
+		leaseCutoff := now - int64(lifecycleRecoveryClaimLease/time.Second)
 		result, err := s.db.Exec(`UPDATE lifecycle_intents
 			SET recovery_owner=?, recovery_claimed_at=?, updated_at=?
 			WHERE instance_id=? AND token=?
 			AND (recovery_owner='' OR recovery_owner=? OR recovery_claimed_at<?)`,
-			owner, now, now, instanceID, token, owner, now-30)
+			owner, now, now, instanceID, token, owner, leaseCutoff)
 		if err != nil {
 			return err
 		}
@@ -1458,6 +1503,34 @@ func (s *StateDB) ClaimLifecycleIntent(instanceID, token, owner string) (bool, e
 		return err
 	})
 	return claimed, err
+}
+
+func (s *StateDB) RenewLifecycleIntentClaim(instanceID, token, owner string) (bool, error) {
+	var renewed bool
+	err := withBusyRetry(func() error {
+		result, err := s.db.Exec(`UPDATE lifecycle_intents SET recovery_claimed_at=?, updated_at=?
+			WHERE instance_id=? AND token=? AND recovery_owner=?`, time.Now().Unix(), time.Now().Unix(), instanceID, token, owner)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		renewed = err == nil && n == 1
+		return err
+	})
+	return renewed, err
+}
+
+// LifecycleTargetGeneration re-reads the row while recovery owns the intent.
+// Callers must do this immediately before destructive cleanup.
+func (s *StateDB) LifecycleTargetGeneration(instanceID, token, owner string) (int64, bool, error) {
+	var generation int64
+	err := s.db.QueryRow(`SELECT COALESCE((SELECT generation FROM instance_tombstones WHERE id=i.id), 0) FROM lifecycle_intents l
+		JOIN instances i ON i.id=l.instance_id
+		WHERE l.instance_id=? AND l.token=? AND l.recovery_owner=?`, instanceID, token, owner).Scan(&generation)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	return generation, err == nil, err
 }
 
 func (s *StateDB) CompleteLifecycleIntent(instanceID, token string) error {

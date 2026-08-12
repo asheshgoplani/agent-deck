@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 func TestRecoverLifecycleIntentsFinalizesCommittedRemoval(t *testing.T) {
@@ -60,6 +62,7 @@ func TestRecoverLifecycleIntentsArchiveAndWorktreePhases(t *testing.T) {
 	}{
 		{name: "archive committed", kind: LifecycleIntentArchive, phase: "archived", archived: true, wantRow: true},
 		{name: "worktree prepared", kind: LifecycleIntentWorktreeFinish, phase: "prepared", wantRow: true, wantQueue: true, wantIntent: true},
+		{name: "worktree merged restart", kind: LifecycleIntentWorktreeFinish, phase: "merged"},
 		{name: "worktree removed", kind: LifecycleIntentWorktreeFinish, phase: "worktree-removed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,6 +156,63 @@ func TestRecoverLifecycleIntentsConcurrentCompletionIsIdempotent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+	intents, err := first.db.LifecycleIntents()
+	if err != nil || len(intents) != 0 {
+		t.Fatalf("concurrent recovery did not finalize exactly once: %#v, %v", intents, err)
+	}
+}
+
+func TestRecoverLifecycleIntentsRereadsGenerationAfterSnapshot(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	storage, err := NewStorageWithProfile("_test_snapshot_reuse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	old := NewInstance("old", t.TempDir())
+	old.ID = "snapshot-reuse"
+	if err := storage.InsertSessionAndVerify(old, NewGroupTree([]*Instance{old})); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := LifecycleIntentPayload(snapshot[0], "", "")
+	intent, err := PrepareLifecycleIntent(storage, old.ID, LifecycleIntentRemove, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.db.DeleteInstance(old.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := AdvanceLifecycleIntent(storage, intent, "row-deleted", payload); err != nil {
+		t.Fatal(err)
+	}
+	lifecycleBeforeRecoveryClaim = func(statedb.LifecycleIntent) {
+		lifecycleBeforeRecoveryClaim = nil
+		fresh := NewInstance("fresh", t.TempDir())
+		fresh.ID = old.ID
+		if err := storage.InsertSessionAndVerify(fresh, NewGroupTree([]*Instance{fresh})); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := EnqueueRuntimeMessage(fresh.ID, "fresh"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { lifecycleBeforeRecoveryClaim = nil })
+	if err := RecoverLifecycleIntents(storage, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := storage.InstanceExists(old.ID); err != nil || !exists {
+		t.Fatalf("reused row=%v, %v", exists, err)
+	}
+	queued, err := PeekRuntimeQueue(old.ID)
+	if err != nil || len(queued) != 1 || queued[0].Message != "fresh" {
+		t.Fatalf("reused queue=%#v, %v", queued, err)
 	}
 }
 

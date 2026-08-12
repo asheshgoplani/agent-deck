@@ -1952,6 +1952,50 @@ func TestInsertInstanceRow_ArchivedAtRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMigrateV16PreClaimLifecycleSchemaToV17(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v16.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = raw.Exec(`
+		CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+		INSERT INTO metadata(key,value) VALUES ('schema_version','16');
+		CREATE TABLE lifecycle_intents (
+			instance_id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '',
+			phase TEXT NOT NULL DEFAULT 'prepared', token TEXT NOT NULL DEFAULT '',
+			generation INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL DEFAULT 0
+		);
+		INSERT INTO lifecycle_intents(instance_id,kind,created_at) VALUES ('legacy','remove',1);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	var version string
+	if err := db.DB().QueryRow("SELECT value FROM metadata WHERE key='schema_version'").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != "17" {
+		t.Fatalf("schema version=%q", version)
+	}
+	intents, err := db.LifecycleIntents()
+	if err != nil || len(intents) != 1 || intents[0].RecoveryOwner != "" || intents[0].RecoveryClaimedAt != 0 {
+		t.Fatalf("migrated intents=%#v, %v", intents, err)
+	}
+}
+
 func createV9SchemaDB(t *testing.T) *StateDB {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "state.db")
