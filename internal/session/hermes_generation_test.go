@@ -141,10 +141,49 @@ func TestHermesGenerationAuthorityRejectsOppositeLegacyStatus(t *testing.T) {
 	if err := os.MkdirAll(scoped, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(scoped, id+".json"), []byte(`{"status":"waiting","event":"after_agent","ts":1}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(scoped, id+".json"), []byte(`{"status":"waiting","event":"post_llm_call","ts":1}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if got := readHookStatusFile(id); got != nil {
 		t.Fatalf("opposite legacy status accepted: %+v", got)
+	}
+}
+
+func TestHermesGenerationAuthorityAmbiguityFailsClosed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	id := "hermes-ambiguous"
+	root := GetHooksDir()
+	scoped := filepath.Join(root, "sandbox", id)
+	if err := os.MkdirAll(scoped, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicHermesJSON(filepath.Join(root, id+".generation.json"), hermesHookControl{Generation: "flat"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicHermesJSON(filepath.Join(scoped, id+".generation.json"), hermesHookControl{Generation: "scoped"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scoped, id+".json"), []byte(`{"status":"waiting","event":"post_llm_call","ts":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readHookStatusFile(id); got != nil {
+		t.Fatalf("ambiguous authority accepted status: %+v", got)
+	}
+}
+
+func TestHermesGenerationAuthorityMalformedFailsClosed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	id := "hermes-malformed"
+	if err := os.MkdirAll(GetHooksDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(GetHooksDir(), id+".generation.json"), []byte(`{"generation":`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(GetHooksDir(), id+".json"), []byte(`{"status":"waiting","event":"post_llm_call","ts":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readHookStatusFile(id); got != nil {
+		t.Fatalf("malformed authority accepted status: %+v", got)
 	}
 }

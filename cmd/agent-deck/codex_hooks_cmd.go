@@ -271,7 +271,7 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 	prior.Status, prior.SessionID, prior.Event = status, sessionID, event
 	prior.Timestamp = time.Now().Unix()
 	prior.DoneStatus, prior.DoneSummary, prior.TranscriptPath, prior.Cwd = "", "", "", ""
-	writeHookStatusFile(instanceID, prior)
+	writeHookStatusFile(instanceID, prior, false)
 }
 
 func handleCodexHooks(args []string) {

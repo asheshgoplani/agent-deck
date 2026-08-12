@@ -334,7 +334,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	hookStatuses := make(map[string]*HookStatus, len(instances))
 	for _, inst := range instances {
 		byID[inst.ID] = inst
-		if IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "cursor" {
+		if IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "cursor" || inst.Tool == "hermes" {
 			if hs := d.hookStatusForInstance(inst.ID); hs != nil {
 				// Issue #1349: only let a hook status rebind the session id when
 				// the instance is actually LIVE (running/waiting/idle with a real
@@ -762,7 +762,7 @@ func readHookStatusFile(instanceID string) *HookStatus {
 	if strings.TrimSpace(raw.Status) == "" {
 		return nil
 	}
-	if generation, controlled := hookGenerationForInstance(instanceID); controlled && raw.HookGeneration != generation {
+	if generation, authority := hookGenerationForInstance(instanceID); !hookGenerationRecordAccepted(raw.HookGeneration, generation, authority) {
 		return nil
 	}
 	updatedAt := time.Now()

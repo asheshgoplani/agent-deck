@@ -388,3 +388,15 @@ func TestGetCodexConfigPath_UsesCodexHome(t *testing.T) {
 		t.Fatalf("getCodexConfigPath() = %q, expected suffix codex-home/config.toml", got)
 	}
 }
+
+func TestCodexSharedStatusWriteNeverMutatesAnchor(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	id := "codex-anchor-owner"
+	session.WriteHookSessionAnchor(id, "thread-current")
+	if !writeHookStatusFile(id, hookStatusFile{Status: "dead", SessionID: "thread-stale", Event: "SessionEnd", Timestamp: 1}, false) {
+		t.Fatal("status write failed")
+	}
+	if got := session.ReadHookSessionAnchor(id); got != "thread-current" {
+		t.Fatalf("shared writer mutated Codex anchor: %q", got)
+	}
+}

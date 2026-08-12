@@ -66,27 +66,52 @@ type HookStatus struct {
 // whichever layout happened to contain a status file. A mode change leaves at
 // most one control (seed clears the opposite scope); conflicting controls fail
 // closed rather than selecting a stale layout.
-func hookGenerationForInstance(instanceID string) (string, bool) {
+type hookGenerationAuthority uint8
+
+const (
+	hookGenerationAbsent hookGenerationAuthority = iota
+	hookGenerationValid
+	hookGenerationAmbiguous
+)
+
+func hookGenerationForInstance(instanceID string) (string, hookGenerationAuthority) {
 	root := GetHooksDir()
 	paths := []string{filepath.Join(root, "sandbox", instanceID, instanceID+".generation.json"), filepath.Join(root, instanceID+".generation.json")}
 	found := ""
 	for _, path := range paths {
 		data, err := readStatusFileNoFollow(path)
 		if err != nil {
+			if _, statErr := os.Lstat(path); statErr == nil {
+				return "", hookGenerationAmbiguous
+			}
 			continue
 		}
 		var control struct {
 			Generation string `json:"generation"`
 		}
 		if json.Unmarshal(data, &control) != nil || control.Generation == "" {
-			return "", true
+			return "", hookGenerationAmbiguous
 		}
 		if found != "" && found != control.Generation {
-			return "", true
+			return "", hookGenerationAmbiguous
 		}
 		found = control.Generation
 	}
-	return found, found != ""
+	if found == "" {
+		return "", hookGenerationAbsent
+	}
+	return found, hookGenerationValid
+}
+
+func hookGenerationRecordAccepted(recordGeneration string, generation string, authority hookGenerationAuthority) bool {
+	switch authority {
+	case hookGenerationAbsent:
+		return recordGeneration == ""
+	case hookGenerationValid:
+		return recordGeneration == generation
+	default:
+		return false
+	}
 }
 
 // StatusFileWatcher watches ~/.agent-deck/hooks/ for status file changes
@@ -380,7 +405,7 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 		if uerr := json.Unmarshal(data, &raw); uerr != nil {
 			continue
 		}
-		if generation, controlled := hookGenerationForInstance(instanceID); controlled && raw.HookGeneration != generation {
+		if generation, authority := hookGenerationForInstance(instanceID); !hookGenerationRecordAccepted(raw.HookGeneration, generation, authority) {
 			continue
 		}
 		out[instanceID] = &HookStatus{
@@ -543,7 +568,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		)
 		return
 	}
-	if generation, controlled := hookGenerationForInstance(instanceID); controlled && status.HookGeneration != generation {
+	if generation, authority := hookGenerationForInstance(instanceID); !hookGenerationRecordAccepted(status.HookGeneration, generation, authority) {
 		return
 	}
 

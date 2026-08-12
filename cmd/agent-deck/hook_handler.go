@@ -95,6 +95,12 @@ type hookStatusFile struct {
 	Cwd string `json:"cwd,omitempty"`
 }
 
+type hookGenerationControl struct {
+	Generation            string `json:"generation"`
+	NextSequence          uint64 `json:"next_sequence"`
+	InitialMessagePending bool   `json:"initial_message_pending,omitempty"`
+}
+
 // normalizeHookEventKey folds hook event names from Claude (PascalCase), Cursor
 // (camelCase), Hermes (snake_case), and Codex into a single lookup key.
 func normalizeHookEventKey(event string) string {
@@ -369,10 +375,10 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, s
 		statusFile.DoneSummary = scan.signal.Summary
 	}
 	statusFile.TranscriptPath = scan.pendingTranscript
-	writeHookStatusFile(instanceID, statusFile)
+	writeHookStatusFile(instanceID, statusFile, true)
 }
 
-func writeHookStatusFile(instanceID string, statusFile hookStatusFile) bool {
+func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnchor bool) bool {
 	hooksDir := getHooksDir()
 	generation := strings.TrimSpace(os.Getenv("AGENTDECK_HOOK_GENERATION"))
 	if generation != "" {
@@ -387,30 +393,22 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile) bool {
 		}
 		defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 		controlPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".generation.json")
-		var control struct {
-			Generation   string `json:"generation"`
-			NextSequence uint64 `json:"next_sequence"`
-		}
+		var control hookGenerationControl
 		data, err := readHookFileBounded(controlPath)
 		if err != nil || json.Unmarshal(data, &control) != nil || control.Generation != generation {
 			return false
 		}
 		// StartWithMessage stays running until the agent-level completion edge.
-		if normalizeHookEventKey(statusFile.Event) == "onsessionstart" {
-			var prior hookStatusFile
-			if b, err := readHookFileBounded(filepath.Join(hooksDir, filepath.Base(instanceID)+".json")); err == nil && json.Unmarshal(b, &prior) == nil && prior.HookGeneration == generation && prior.InitialMessagePending {
-				return false
-			}
+		if normalizeHookEventKey(statusFile.Event) == "onsessionstart" && control.InitialMessagePending {
+			return false
 		}
 		control.NextSequence++
 		statusFile.HookGeneration, statusFile.Sequence = generation, control.NextSequence
 		completionEvent := normalizeHookEventKey(statusFile.Event)
-		if completionEvent != "postllmcall" && completionEvent != "onsessionend" {
-			var prior hookStatusFile
-			if b, err := readHookFileBounded(filepath.Join(hooksDir, filepath.Base(instanceID)+".json")); err == nil && json.Unmarshal(b, &prior) == nil && prior.HookGeneration == generation {
-				statusFile.InitialMessagePending = prior.InitialMessagePending
-			}
+		if completionEvent == "postllmcall" || completionEvent == "onsessionend" {
+			control.InitialMessagePending = false
 		}
+		statusFile.InitialMessagePending = control.InitialMessagePending
 		b, err := json.Marshal(control)
 		if err != nil || atomicHookWrite(controlPath, b) != nil {
 			return false
@@ -438,26 +436,24 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile) bool {
 	// Keep anchor mutation in the same generation-locked critical section as
 	// acceptance and status publication. Restart cannot rotate generations in
 	// between these operations.
-	if statusFile.SessionID != "" {
+	if mutateAnchor && statusFile.SessionID != "" {
 		session.WriteHookSessionAnchor(instanceID, statusFile.SessionID)
 	}
-	if isTerminalHookEvent(statusFile.Event) {
+	if mutateAnchor && isTerminalHookEvent(statusFile.Event) {
 		session.ClearHookSessionAnchor(instanceID)
 	}
 	return true
 }
 
 func readHookFileBounded(path string) ([]byte, error) {
-	info, err := os.Lstat(path)
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("unsafe hook file: symlink")
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
+	f := os.NewFile(uintptr(fd), path)
+	if f == nil {
+		_ = syscall.Close(fd)
+		return nil, errors.New("open hook file")
 	}
 	defer f.Close()
 	return io.ReadAll(io.LimitReader(f, 64<<10))
@@ -555,8 +551,32 @@ func cleanStaleHookFiles() {
 
 	cutoff := time.Now().Add(-24 * time.Hour)
 	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".generation.json") || (strings.HasSuffix(entry.Name(), ".lock") && !strings.HasSuffix(entry.Name(), ".codex.lock")) {
-			continue // live generation controls/locks are never age-reaped
+		if strings.HasSuffix(entry.Name(), ".generation.json") {
+			continue // generation controls are never age-reaped
+		}
+		if strings.HasSuffix(entry.Name(), ".lock") && !strings.HasSuffix(entry.Name(), ".codex.lock") {
+			info, err := entry.Info()
+			if err != nil || !info.ModTime().Before(cutoff) {
+				continue
+			}
+			id := strings.TrimSuffix(entry.Name(), ".lock")
+			if _, err := os.Stat(filepath.Join(hooksDir, id+".json")); err == nil {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(hooksDir, id+".generation.json")); err == nil {
+				continue
+			}
+			path := filepath.Join(hooksDir, entry.Name())
+			f, err := os.OpenFile(path, os.O_RDWR, 0600)
+			if err != nil {
+				continue
+			}
+			if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+				_ = os.Remove(path)
+				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+			}
+			_ = f.Close()
+			continue
 		}
 		ext := filepath.Ext(entry.Name())
 		if entry.IsDir() || (ext != ".json" && ext != ".sid" && !strings.HasSuffix(entry.Name(), ".codex.lock")) {

@@ -65,6 +65,25 @@ func TestCleanStaleHookFilesPreservesLiveGenerationControlAndLock(t *testing.T) 
 	}
 }
 
+func TestCleanStaleHookFilesReapsOnlyUnlockedAbandonedHermesLock(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(getHooksDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(getHooksDir(), "hermes-abandoned.lock")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	cleanStaleHookFiles()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("abandoned lock survived: %v", err)
+	}
+}
+
 func TestHermesDelayedOldGenerationWriteRejected(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	id := "hermes-delayed"
@@ -110,5 +129,32 @@ func TestHermesConcurrentWritersUseMonotonicSequenceAndNoTemps(t *testing.T) {
 	}
 	if temps, _ := filepath.Glob(filepath.Join(getHooksDir(), "."+id+"*.tmp-*")); len(temps) != 0 {
 		t.Fatalf("orphan temps: %v", temps)
+	}
+}
+
+func TestHermesAttachClearPreservesInitialMessagePending(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENTDECK_HOOK_GENERATION", "g")
+	id := "hermes-pending"
+	b, _ := json.Marshal(hookGenerationControl{Generation: "g", InitialMessagePending: true})
+	if err := os.MkdirAll(getHooksDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(getHooksDir(), id+".generation.json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if writeHookStatusFile(id, hookStatusFile{Status: "waiting", Event: "on_session_start", Timestamp: 1}, true) {
+		t.Fatal("on_session_start downgraded pending initial message")
+	}
+	if !writeHookStatusFile(id, hookStatusFile{Status: "waiting", Event: "post_llm_call", Timestamp: 2}, true) {
+		t.Fatal("post_llm_call rejected")
+	}
+	controlData, err := os.ReadFile(filepath.Join(getHooksDir(), id+".generation.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var control hookGenerationControl
+	if json.Unmarshal(controlData, &control) != nil || control.InitialMessagePending {
+		t.Fatalf("completion did not clear pending: %+v", control)
 	}
 }

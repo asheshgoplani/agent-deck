@@ -21,8 +21,9 @@ import (
 )
 
 type hermesHookControl struct {
-	Generation   string `json:"generation"`
-	NextSequence uint64 `json:"next_sequence"`
+	Generation            string `json:"generation"`
+	NextSequence          uint64 `json:"next_sequence"`
+	InitialMessagePending bool   `json:"initial_message_pending,omitempty"`
 }
 type hermesHookSeed struct {
 	Status                string `json:"status"`
@@ -110,6 +111,9 @@ func atomicHermesJSON(path string, value any) error {
 }
 
 func (i *Instance) seedHermesHookGeneration(status string, pending bool) (string, error) {
+	if !hermesHookInstanceIDPattern.MatchString(i.ID) || strings.Contains(i.ID, "..") {
+		return "", fmt.Errorf("invalid instance id %q", i.ID)
+	}
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
@@ -123,8 +127,8 @@ func (i *Instance) seedHermesHookGeneration(status string, pending bool) (string
 	if err != nil {
 		return "", err
 	}
-	defer locks.release()
 	opposite := hermesHookScope(i.ID, !i.IsSandboxed())
+	defer func() { locks.release(); pruneHermesAbandonedScope(i.ID, opposite) }()
 	clearHermesHookScope(i.ID, opposite, false)
 	seed := hermesHookSeed{Status: status, Event: "agentdeck_spawn_seed", Timestamp: time.Now().Unix(), HookGeneration: generation, InitialMessagePending: pending}
 	if err := atomicHermesJSON(filepath.Join(scope, i.ID+".json"), seed); err != nil {
@@ -132,7 +136,7 @@ func (i *Instance) seedHermesHookGeneration(status string, pending bool) (string
 	}
 	// The control rename is the invalidation boundary. The seed is already
 	// durable and both possible writer scopes are locked when it becomes live.
-	if err := atomicHermesJSON(filepath.Join(scope, i.ID+".generation.json"), hermesHookControl{Generation: generation}); err != nil {
+	if err := atomicHermesJSON(filepath.Join(scope, i.ID+".generation.json"), hermesHookControl{Generation: generation, InitialMessagePending: pending}); err != nil {
 		return "", err
 	}
 	i.HermesHookGeneration = generation
@@ -153,8 +157,40 @@ func clearHermesHookScope(instanceID, dir string, preserveControl bool) {
 // clearHermesHookStatuses is safe during attach-return: it removes stale
 // status snapshots but preserves the live process's control and lock inodes.
 func (i *Instance) clearHermesHookStatuses() {
+	if !hermesHookInstanceIDPattern.MatchString(i.ID) || strings.Contains(i.ID, "..") {
+		return
+	}
+	locks, err := acquireHermesHookLocks(i.ID)
+	if err != nil {
+		return
+	}
+	defer locks.release()
 	for _, dir := range []string{GetHooksDir(), filepath.Join(GetHooksDir(), "sandbox", i.ID)} {
 		clearHermesHookScope(i.ID, dir, true)
+	}
+}
+
+func pruneHermesAbandonedScope(instanceID, dir string) {
+	if _, err := os.Stat(filepath.Join(dir, instanceID+".json")); err == nil {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(dir, instanceID+".generation.json")); err == nil {
+		return
+	}
+	lockPath := filepath.Join(dir, instanceID+".lock")
+	f, err := os.OpenFile(lockPath, os.O_RDWR, 0600)
+	if err != nil {
+		return
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return
+	}
+	_ = os.Remove(lockPath)
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
+	if dir != GetHooksDir() {
+		_ = os.Remove(dir)
 	}
 }
 
