@@ -269,7 +269,7 @@ func StageForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	runtimeReason := FormatRuntimeMessagesForInjection(batch.Messages)
 	reason := inboxReason
 	if inboxReason != "" && runtimeReason != "" {
-		reason = strings.TrimRight(inboxReason, "\n") + "\n\n" + runtimeReason
+		reason = runtimeReason
 	} else if runtimeReason != "" {
 		reason = runtimeReason
 	}
