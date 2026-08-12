@@ -15,9 +15,8 @@ import (
 )
 
 // TestParity_WebActionMatchesDirectMutator covers the runtime sync invariant
-// that the WebUI overhaul plan (documentation/webui-overhaul-plan.md) lists
-// as failure mode #2 — "state drift: web and TUI disagree about session
-// status, group membership."
+// that prevents state drift: web and TUI disagreeing about session status or
+// group membership.
 //
 // For each lifecycle action exposed by the web HTTP API, we fire the action
 // twice in parallel test cases:

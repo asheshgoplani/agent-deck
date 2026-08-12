@@ -216,7 +216,7 @@ release-local:
 # Web UI test targets
 # Vitest (unit) + Playwright (e2e + screenshot regression). Both run against
 # the in-memory web fixture binary at tests/web/fixtures/cmd/web-fixture/.
-# See documentation/webui-overhaul-plan.md for the parity strategy.
+# The parity strategy is enforced by internal/web/parity_test.go.
 
 # One-shot install for fresh clones / CI. Installs npm deps + chromium browser.
 test-web-install:

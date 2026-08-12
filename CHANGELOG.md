@@ -2146,7 +2146,7 @@ This is a **consolidated batch release**. It ships three new fixes (#678, #680, 
 - In-product feedback feature: CLI `agent-deck feedback`, TUI `Ctrl+E`, three-tier submit (GraphQL, clipboard, browser).
 
 ### Fixed
-- Session persistence: tmux servers now survive SSH logout on Linux+systemd hosts via `launch_in_user_scope` default (v1.5.2 hotfix). ([docs/SESSION-PERSISTENCE-SPEC.md](docs/SESSION-PERSISTENCE-SPEC.md))
+- Session persistence: tmux servers now survive SSH logout on Linux+systemd hosts via `launch_in_user_scope` default (v1.5.2 hotfix).
 - Custom-command Claude sessions (conductors) now resume from latest JSONL on restart.
 
 ## [1.6.0] - 2026-04-16
