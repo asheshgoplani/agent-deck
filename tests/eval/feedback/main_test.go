@@ -14,7 +14,10 @@ import (
 // individual test), so t.Cleanup can't own it — the temp dir would otherwise
 // leak on every `go test` run.
 func TestMain(m *testing.M) {
-	code := m.Run()
-	harness.RemoveBuildArtifacts()
-	os.Exit(code)
+	os.Exit(runTestMain(m))
+}
+
+func runTestMain(m *testing.M) int {
+	defer harness.RemoveBuildArtifacts()
+	return m.Run()
 }

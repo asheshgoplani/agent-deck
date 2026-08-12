@@ -28,13 +28,16 @@ import (
 // guard never trips. Mirrors the isolation 98730b2a added to
 // internal/session and cmd/agent-deck.
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+func runTestMain(m *testing.M) int {
 	cleanupHome := testutil.IsolateHome()
+	defer cleanupHome()
 	// Isolate the tmux socket too: required by TestAllTestMainsIsolateTmuxSocket
 	// so `go test ./...` on a host running agent-deck can't spawn sessions on
 	// the user's default socket (2026-04-17 incident).
 	cleanupTmux := testutil.IsolateTmuxSocket()
-	code := m.Run()
-	cleanupTmux()
-	cleanupHome()
-	os.Exit(code)
+	defer cleanupTmux()
+	return m.Run()
 }

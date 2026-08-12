@@ -69,29 +69,50 @@ func TestPackageTestRunLeavesNoTempDirs(t *testing.T) {
 		t.Skip("POSIX permission semantics; the leak and its fix are Unix-only")
 	}
 
-	tmpdir := t.TempDir()
-	fixturePkg := "./testdata/homeleakfixture"
-
-	cmd := exec.Command(goToolPath(t), "test", "-count=1", fixturePkg)
-	cmd.Dir = testutilPackageDir(t)
-	// Only TMPDIR is redirected. Everything else — GOCACHE, GOMODCACHE, PATH —
-	// is inherited, so the subprocess reuses the parent's build cache instead of
-	// downloading a fresh module cache into the very directory under assertion.
-	cmd.Env = append(envWithout(os.Environ(), "TMPDIR"), "TMPDIR="+tmpdir)
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("fixture package failed (%v); the leak assertion below is only "+
-			"meaningful for a NORMAL, successful exit:\n%s", err, out)
+	// The fixture plants a read-only module cache and exercises the hard cleanup
+	// path. The two production packages use named isolated homes and are the
+	// largest historical leak sources. Their empty test selection still executes
+	// TestMain, which is exactly the lifecycle this regression protects.
+	testCases := []struct {
+		name string
+		pkg  string
+		run  string
+	}{
+		{name: "read-only fixture", pkg: "./testdata/homeleakfixture", run: "."},
+		{name: "command suite TestMain", pkg: "./cmd/agent-deck", run: "^$"},
+		{name: "session suite TestMain", pkg: "./internal/session", run: "^$"},
 	}
 
-	leaked := leakedTempEntries(t, tmpdir)
-	if len(leaked) > 0 {
-		t.Fatalf("a successful `go test` run stranded %d temp entr(ies) in TMPDIR:\n  - %s\n\n"+
-			"Every isolation helper must remove its temp dir on the normal exit path. "+
-			"See internal/testutil/tempcleanup.go (RemoveTempTree) and homeenv.go "+
-			"(IsolatePackageHome) for the 2026-08-10 postmortem.\n\nfixture output:\n%s",
-			len(leaked), strings.Join(leaked, "\n  - "), out)
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			tmpdir := t.TempDir()
+			cmd := exec.Command(goToolPath(t), "test", "-count=1", "-run", tc.run, tc.pkg)
+			cmd.Dir = filepath.Clean(filepath.Join(testutilPackageDir(t), "..", ".."))
+			if tc.pkg == "./testdata/homeleakfixture" {
+				cmd.Dir = testutilPackageDir(t)
+			}
+			// Only TMPDIR is redirected. Everything else — GOCACHE, GOMODCACHE,
+			// PATH — is inherited, so the subprocess reuses the parent's build
+			// cache instead of downloading a fresh module cache into the very
+			// directory under assertion.
+			cmd.Env = append(envWithout(os.Environ(), "TMPDIR"), "TMPDIR="+tmpdir)
+
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s failed (%v); the leak assertion below is only meaningful "+
+					"for a NORMAL, successful exit:\n%s", tc.pkg, err, out)
+			}
+
+			leaked := leakedTempEntries(t, tmpdir)
+			if len(leaked) > 0 {
+				t.Fatalf("a successful `go test %s` run stranded %d temp entr(ies) in TMPDIR:\n  - %s\n\n"+
+					"Every isolation helper must remove its temp dir on the normal exit path. "+
+					"See internal/testutil/tempcleanup.go (RemoveTempTree) and homeenv.go "+
+					"(IsolatePackageHome) for the 2026-08-10 postmortem.\n\nchild output:\n%s",
+					tc.pkg, len(leaked), strings.Join(leaked, "\n  - "), out)
+			}
+		})
 	}
 }
 

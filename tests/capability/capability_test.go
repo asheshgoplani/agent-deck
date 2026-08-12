@@ -38,16 +38,19 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+func runTestMain(m *testing.M) int {
 	// Isolate HOME+XDG at the process level too (per-test harness.Sandbox sets
 	// its own HOME, but a default-HOME path resolution before the first sandbox
 	// would still hit the real ~/.agent-deck). 2026-06-04 data-loss incident, S5.
 	// See internal/testutil/homeenv.go for the postmortem.
 	cleanupHome := testutil.IsolateHome()
+	defer cleanupHome()
 	cleanup := testutil.IsolateTmuxSocket()
-	code := m.Run()
-	cleanup()
-	cleanupHome()
-	os.Exit(code)
+	defer cleanup()
+	return m.Run()
 }
 
 // capSandbox wraps harness.Sandbox with a real-tmux shim installed and a
