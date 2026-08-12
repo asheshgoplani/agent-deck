@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -330,6 +331,58 @@ func TestRecoverLifecycleIntentsLostRenewalCancelsBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestRecoverLifecycleIntentsClaimedDeleteRejectsTakeoverAtBoundary(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	storage, err := NewStorageWithProfile("_test_claimed_delete_takeover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	inst := NewInstance("takeover", t.TempDir())
+	inst.ID = "claimed-delete-takeover"
+	if err := storage.InsertSessionAndVerify(inst, NewGroupTree([]*Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst = loaded[0]
+	payload := LifecycleIntentPayload(inst, inst.WorktreePath, "")
+	intent, err := PrepareLifecycleIntent(storage, inst.ID, LifecycleIntentWorktreeFinish, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := AdvanceLifecycleIntent(storage, intent, "worktree-removed", payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnqueueRuntimeMessage(inst.ID, "preserve"); err != nil {
+		t.Fatal(err)
+	}
+	var takeover atomic.Bool
+	lifecycleRecoveryMutation = func(name string) {
+		if name != "claimed-delete" || !takeover.CompareAndSwap(false, true) {
+			return
+		}
+		if _, err := storage.db.DB().Exec("UPDATE lifecycle_intents SET recovery_owner='new-owner' WHERE instance_id=?", inst.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { lifecycleRecoveryMutation = nil })
+	err = RecoverLifecycleIntents(storage, loaded)
+	if err == nil || !errors.Is(err, statedb.ErrLifecycleIntentOwnership) {
+		t.Fatalf("takeover error=%v", err)
+	}
+	if exists, err := storage.InstanceExists(inst.ID); err != nil || !exists {
+		t.Fatalf("claimed delete changed row: %v, %v", exists, err)
+	}
+	if !RuntimeQueueHasPending(inst.ID) {
+		t.Fatal("claimed delete takeover discarded queue")
+	}
+}
+
 func TestRecoverLifecycleIntentsRereadsGenerationAfterSnapshot(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
@@ -380,6 +433,60 @@ func TestRecoverLifecycleIntentsRereadsGenerationAfterSnapshot(t *testing.T) {
 	queued, err := PeekRuntimeQueue(old.ID)
 	if err != nil || len(queued) != 1 || queued[0].Message != "fresh" {
 		t.Fatalf("reused queue=%#v, %v", queued, err)
+	}
+}
+
+func TestRecoverLifecycleIntentsStaleGenerationSurfacesLiveOwnershipLoss(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	storage, err := NewStorageWithProfile("_test_stale_generation_owner_loss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	inst := NewInstance("stale-owner", t.TempDir())
+	inst.ID = "stale-owner-loss"
+	if err := storage.InsertSessionAndVerify(inst, NewGroupTree([]*Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst = loaded[0]
+	payload := LifecycleIntentPayload(inst, "", "")
+	intent, err := PrepareLifecycleIntent(storage, inst.ID, LifecycleIntentRemove, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := AdvanceLifecycleIntent(storage, intent, "row-deleted", payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.db.DB().Exec("UPDATE instance_tombstones SET generation=generation+1 WHERE id=?", inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _, err := storage.LoadWithGroups()
+	if err != nil || fresh[0].PersistenceGeneration == intent.Generation {
+		t.Fatalf("fresh=%#v, %v", fresh, err)
+	}
+	lifecycleAfterGenerationRead = func(statedb.LifecycleIntent) {
+		lifecycleAfterGenerationRead = nil
+		if _, err := storage.db.DB().Exec("UPDATE lifecycle_intents SET recovery_owner='stolen-owner' WHERE instance_id=?", inst.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { lifecycleAfterGenerationRead = nil })
+	originalExists := lifecycleInstanceExists
+	lifecycleInstanceExists = func(*Instance) bool { return true }
+	t.Cleanup(func() { lifecycleInstanceExists = originalExists })
+	err = RecoverLifecycleIntents(storage, fresh)
+	if err == nil || !errors.Is(err, statedb.ErrLifecycleIntentOwnership) {
+		t.Fatalf("live ownership loss error=%v", err)
+	}
+	intents, _ := storage.db.LifecycleIntents()
+	if len(intents) != 1 || intents[0].Token != intent.Token {
+		t.Fatalf("active stale intent disappeared: %#v", intents)
 	}
 }
 

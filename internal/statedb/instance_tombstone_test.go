@@ -287,6 +287,55 @@ func TestLifecycleDeleteVariantsRequireExactToken(t *testing.T) {
 	}
 }
 
+func TestDeleteClaimedLifecycleInstanceRequiresFullOwnershipTuple(t *testing.T) {
+	for _, mutate := range []struct {
+		name  string
+		apply func(token, owner string, generation int64, kind, phase string) (string, string, int64, string, string)
+	}{
+		{"token", func(_, owner string, generation int64, kind, phase string) (string, string, int64, string, string) {
+			return "wrong", owner, generation, kind, phase
+		}},
+		{"owner", func(token, _ string, generation int64, kind, phase string) (string, string, int64, string, string) {
+			return token, "wrong", generation, kind, phase
+		}},
+		{"generation", func(token, owner string, generation int64, kind, phase string) (string, string, int64, string, string) {
+			return token, owner, generation + 1, kind, phase
+		}},
+		{"kind", func(token, owner string, generation int64, _, phase string) (string, string, int64, string, string) {
+			return token, owner, generation, "remove", phase
+		}},
+		{"phase", func(token, owner string, generation int64, kind, _ string) (string, string, int64, string, string) {
+			return token, owner, generation, kind, "merged"
+		}},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			db := newTestDB(t)
+			row := tombstoneTestRow("claimed-tuple-" + mutate.name)
+			if err := db.CreateInstance(row); err != nil {
+				t.Fatal(err)
+			}
+			intent, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: row.ID, Kind: "worktree-finish", Payload: "payload"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AdvanceLifecycleIntent(row.ID, intent.Token, "worktree-removed", "payload"); err != nil {
+				t.Fatal(err)
+			}
+			claimed, err := db.ClaimLifecycleIntent(row.ID, intent.Token, "owner")
+			if err != nil || !claimed {
+				t.Fatalf("claim=%v, %v", claimed, err)
+			}
+			token, owner, generation, kind, phase := mutate.apply(intent.Token, "owner", intent.Generation, intent.Kind, "worktree-removed")
+			if err := db.DeleteClaimedLifecycleInstance(row.ID, token, owner, generation, kind, phase); !errors.Is(err, ErrLifecycleIntentOwnership) {
+				t.Fatalf("wrong tuple delete=%v", err)
+			}
+			if exists, err := db.InstanceExists(row.ID); err != nil || !exists {
+				t.Fatalf("wrong tuple changed row=%v, %v", exists, err)
+			}
+		})
+	}
+}
+
 func TestRenewedRecoveryClaimCannotBeStolenPastLease(t *testing.T) {
 	db := newTestDB(t)
 	row := tombstoneTestRow("renewed-claim")

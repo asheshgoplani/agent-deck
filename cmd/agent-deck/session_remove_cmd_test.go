@@ -619,6 +619,19 @@ func TestBulkFinalizationDoesNotOverwriteConcurrentGroupUpdate(t *testing.T) {
 	}
 	defer storage.Close()
 	const id = "bulk-group-finalization"
+	inst := session.NewInstance(id, t.TempDir())
+	inst.ID = id
+	if err := storage.InsertSessionAndVerify(inst, session.NewGroupTree([]*session.Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	payload := session.LifecycleIntentPayload(inst, "", "")
+	intent, err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentRemove, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.DeleteInstance(id, intent.Token); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := session.EnqueueRuntimeMessage(id, "discard after finalization"); err != nil {
 		t.Fatal(err)
 	}
@@ -639,7 +652,7 @@ func TestBulkFinalizationDoesNotOverwriteConcurrentGroupUpdate(t *testing.T) {
 		return s.SaveGroupsOnly(session.NewGroupTreeWithGroups(nil, updated))
 	}
 	t.Cleanup(func() { bulkSessionReverifyPersist = original })
-	if err := finalizeCommittedBulkRemovals(storage, []string{id}, []*session.RuntimeQueueTransaction{tx}); err != nil {
+	if err := finalizeCommittedBulkRemovals(storage, []string{id}, []*session.RuntimeQueueTransaction{tx}, []session.LifecycleIntentHandle{intent}); err != nil {
 		t.Fatal(err)
 	}
 	_, groups, err := storage.LoadWithGroups()
@@ -654,6 +667,18 @@ func TestBulkFinalizationDoesNotOverwriteConcurrentGroupUpdate(t *testing.T) {
 	}
 	if got == nil || got.Name != "New" || got.Expanded || got.Order != 8 || got.DefaultPath != "/new" || got.MaxConcurrent != 7 {
 		t.Fatalf("concurrent group update was overwritten: %#v", got)
+	}
+}
+
+func TestFinalizeCommittedBulkRemovalsRejectsMismatchedIntentSet(t *testing.T) {
+	storage, err := session.NewStorageWithProfile("_test_bulk_mismatched_intents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	err = finalizeCommittedBulkRemovals(storage, []string{"missing-intent"}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "one-to-one") {
+		t.Fatalf("mismatched lifecycle sets error=%v", err)
 	}
 }
 
@@ -699,6 +724,19 @@ func TestFinalizeCommittedBulkRemovalsPersistentResurrectionExhaustsAllPasses(t 
 	}
 	defer storage.Close()
 	const id = "persistent-resurrection-exhaustion"
+	inst := session.NewInstance(id, t.TempDir())
+	inst.ID = id
+	if err := storage.InsertSessionAndVerify(inst, session.NewGroupTree([]*session.Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	payload := session.LifecycleIntentPayload(inst, "", "")
+	intent, err := session.PrepareLifecycleIntent(storage, id, session.LifecycleIntentRemove, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.DeleteInstance(id, intent.Token); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := session.EnqueueRuntimeMessage(id, "must survive exhaustion"); err != nil {
 		t.Fatal(err)
 	}
@@ -716,7 +754,7 @@ func TestFinalizeCommittedBulkRemovalsPersistentResurrectionExhaustsAllPasses(t 
 		return false, nil
 	}
 	t.Cleanup(func() { bulkObserveAbsent = originalObserve })
-	err = finalizeCommittedBulkRemovals(storage, []string{id}, []*session.RuntimeQueueTransaction{tx})
+	err = finalizeCommittedBulkRemovals(storage, []string{id}, []*session.RuntimeQueueTransaction{tx}, []session.LifecycleIntentHandle{intent})
 	if err == nil || !strings.Contains(err.Error(), "kept reappearing") {
 		t.Fatalf("exhaustion error = %v", err)
 	}

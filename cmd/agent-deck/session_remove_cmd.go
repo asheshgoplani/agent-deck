@@ -282,25 +282,43 @@ func bulkRemoveSessions(
 
 const bulkFinalVerifyAttempts = 6
 
-func finalizeCommittedBulkRemovals(storage *session.Storage, removedIDs []string, queueTxs []*session.RuntimeQueueTransaction, intentSets ...[]session.LifecycleIntentHandle) error {
+func finalizeCommittedBulkRemovals(storage *session.Storage, removedIDs []string, queueTxs []*session.RuntimeQueueTransaction, intents []session.LifecycleIntentHandle) error {
+	if len(removedIDs) != len(queueTxs) || len(removedIDs) != len(intents) {
+		releaseRuntimeQueueTransactions(queueTxs)
+		return fmt.Errorf("bulk removal requires one-to-one ids, queue transactions, and lifecycle intents: ids=%d queues=%d intents=%d", len(removedIDs), len(queueTxs), len(intents))
+	}
+	intentByID := make(map[string]session.LifecycleIntentHandle, len(intents))
+	for _, intent := range intents {
+		if intent.InstanceID == "" || intent.Token == "" {
+			releaseRuntimeQueueTransactions(queueTxs)
+			return fmt.Errorf("bulk removal requires one-to-one lifecycle identity: empty instance id or token")
+		}
+		if _, duplicate := intentByID[intent.InstanceID]; duplicate {
+			releaseRuntimeQueueTransactions(queueTxs)
+			return fmt.Errorf("bulk removal requires one-to-one lifecycle identity: duplicate intent for %q", intent.InstanceID)
+		}
+		intentByID[intent.InstanceID] = intent
+	}
+	for _, id := range removedIDs {
+		if _, ok := intentByID[id]; !ok {
+			releaseRuntimeQueueTransactions(queueTxs)
+			return fmt.Errorf("bulk removal requires one-to-one lifecycle identity: no intent for %q", id)
+		}
+	}
 	if len(removedIDs) == 0 {
 		return nil
 	}
-	var intents []session.LifecycleIntentHandle
-	if len(intentSets) > 0 {
-		intents = intentSets[0]
-	}
 	for pass := 0; pass < bulkFinalVerifyAttempts; pass++ {
-		for i, id := range removedIDs {
-			if err := bulkSessionReverifyPersist(storage, id, nil, nil, intents[i].Token); err != nil {
+		for _, id := range removedIDs {
+			if err := bulkSessionReverifyPersist(storage, id, nil, nil, intentByID[id].Token); err != nil {
 				releaseRuntimeQueueTransactions(queueTxs)
 				return fmt.Errorf("reverify %s: %w", id, err)
 			}
 		}
 
-		tokens := make([]string, len(intents))
-		for i := range intents {
-			tokens[i] = intents[i].Token
+		tokens := make([]string, 0, len(removedIDs))
+		for _, id := range removedIDs {
+			tokens = append(tokens, intentByID[id].Token)
 		}
 		absent, observeErr := bulkObserveAbsent(storage, removedIDs, tokens, func() error {
 			var discardErr error

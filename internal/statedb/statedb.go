@@ -1243,27 +1243,63 @@ func (s *StateDB) loadInstances(where string) ([]*InstanceRow, error) {
 // still reports success — the silent-loss half of issue #909.
 func (s *StateDB) DeleteInstance(id string, lifecycleToken ...string) error {
 	return withBusyRetry(func() error {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if err := authorizeLifecycleDelete(tx, id, firstToken(lifecycleToken)); err != nil {
-			return err
-		}
-		if err := tombstoneInstance(tx, id); err != nil {
-			return err
-		}
-		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
-			return err
-		}
-		if err := advancePreparedRemovalAfterDelete(tx, id, firstToken(lifecycleToken)); err != nil {
-			return err
-		}
-		if s.beforeDeleteCommit != nil {
-			s.beforeDeleteCommit()
-		}
-		return tx.Commit()
+		return s.withImmediateWrite(func(tx lifecycleWriteExecutor) error {
+			if err := authorizeLifecycleDelete(tx, id, firstToken(lifecycleToken)); err != nil {
+				return err
+			}
+			if err := tombstoneInstance(tx, id); err != nil {
+				return err
+			}
+			if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
+				return err
+			}
+			if err := advancePreparedRemovalAfterDelete(tx, id, firstToken(lifecycleToken)); err != nil {
+				return err
+			}
+			if s.beforeDeleteCommit != nil {
+				s.beforeDeleteCommit()
+			}
+			return nil
+		})
+	})
+}
+
+// DeleteClaimedLifecycleInstance is the recovery-only deletion boundary. The
+// write reservation is acquired before checking every ownership dimension, so
+// a lease takeover cannot land between authorization and row deletion.
+func (s *StateDB) DeleteClaimedLifecycleInstance(id, token, owner string, generation int64, kind, phase string) error {
+	return withBusyRetry(func() error {
+		return s.withImmediateWrite(func(tx lifecycleWriteExecutor) error {
+			var liveGeneration int64
+			err := tx.QueryRow(`SELECT COALESCE((SELECT generation FROM instance_tombstones WHERE id=instances.id), 0)
+				FROM lifecycle_intents JOIN instances ON instances.id=lifecycle_intents.instance_id
+				WHERE lifecycle_intents.instance_id=? AND lifecycle_intents.token=? AND lifecycle_intents.recovery_owner=?
+				AND lifecycle_intents.generation=? AND lifecycle_intents.kind=? AND lifecycle_intents.phase=?`,
+				id, token, owner, generation, kind, phase).Scan(&liveGeneration)
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrLifecycleIntentOwnership
+			}
+			if err != nil {
+				return err
+			}
+			if liveGeneration == 0 {
+				liveGeneration = 1
+			}
+			if generation == 0 || liveGeneration != generation {
+				return ErrLifecycleIntentOwnership
+			}
+			if err := tombstoneInstance(tx, id); err != nil {
+				return err
+			}
+			result, err := tx.Exec("DELETE FROM instances WHERE id=?", id)
+			if err != nil {
+				return err
+			}
+			if n, err := result.RowsAffected(); err != nil || n != 1 {
+				return ErrLifecycleIntentOwnership
+			}
+			return nil
+		})
 	})
 }
 
@@ -1278,7 +1314,46 @@ func firstToken(tokens []string) string {
 	return tokens[0]
 }
 
-func authorizeLifecycleDelete(tx *sql.Tx, id, token string) error {
+type lifecycleWriteExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+type lifecycleConn struct{ conn *sql.Conn }
+
+func (c lifecycleConn) Exec(query string, args ...any) (sql.Result, error) {
+	return c.conn.ExecContext(context.Background(), query, args...)
+}
+func (c lifecycleConn) QueryRow(query string, args ...any) *sql.Row {
+	return c.conn.QueryRowContext(context.Background(), query, args...)
+}
+
+func (s *StateDB) withImmediateWrite(write func(lifecycleWriteExecutor) error) error {
+	conn, err := s.db.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	if err := write(lifecycleConn{conn: conn}); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(context.Background(), "COMMIT"); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func authorizeLifecycleDelete(tx lifecycleWriteExecutor, id, token string) error {
 	if token == "" {
 		var one int
 		err := tx.QueryRow("SELECT 1 FROM lifecycle_intents WHERE instance_id=?", id).Scan(&one)
@@ -1315,7 +1390,7 @@ func authorizeLifecycleDelete(tx *sql.Tx, id, token string) error {
 	return nil
 }
 
-func advancePreparedRemovalAfterDelete(tx *sql.Tx, id, token string) error {
+func advancePreparedRemovalAfterDelete(tx lifecycleWriteExecutor, id, token string) error {
 	if token == "" {
 		return nil
 	}
@@ -1336,7 +1411,7 @@ func advancePreparedRemovalAfterDelete(tx *sql.Tx, id, token string) error {
 	return nil
 }
 
-func tombstoneInstance(tx *sql.Tx, id string) error {
+func tombstoneInstance(tx lifecycleWriteExecutor, id string) error {
 	_, err := tx.Exec(`
 		INSERT INTO instance_tombstones(id, deleted_at, generation, active) VALUES (?, ?, 1, 1)
 		ON CONFLICT(id) DO UPDATE SET generation = generation + 1, deleted_at = excluded.deleted_at, active = 1
@@ -1350,30 +1425,25 @@ func tombstoneInstance(tx *sql.Tx, id string) error {
 // lifecycle change.
 func (s *StateDB) DeleteInstanceAndSaveGroups(id string, groups []*GroupRow, lifecycleToken ...string) error {
 	return withBusyRetry(func() error {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-
-		if err := authorizeLifecycleDelete(tx, id, firstToken(lifecycleToken)); err != nil {
-			return err
-		}
-		if err := tombstoneInstance(tx, id); err != nil {
-			return err
-		}
-		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
-			return err
-		}
-		if err := advancePreparedRemovalAfterDelete(tx, id, firstToken(lifecycleToken)); err != nil {
-			return err
-		}
-		for _, g := range groups {
-			expanded := 0
-			if g.Expanded {
-				expanded = 1
+		return s.withImmediateWrite(func(tx lifecycleWriteExecutor) error {
+			if err := authorizeLifecycleDelete(tx, id, firstToken(lifecycleToken)); err != nil {
+				return err
 			}
-			if _, err := tx.Exec(`
+			if err := tombstoneInstance(tx, id); err != nil {
+				return err
+			}
+			if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
+				return err
+			}
+			if err := advancePreparedRemovalAfterDelete(tx, id, firstToken(lifecycleToken)); err != nil {
+				return err
+			}
+			for _, g := range groups {
+				expanded := 0
+				if g.Expanded {
+					expanded = 1
+				}
+				if _, err := tx.Exec(`
 				INSERT INTO groups (path, name, expanded, sort_order, default_path, max_concurrent)
 				VALUES (?, ?, ?, ?, ?, ?)
 				ON CONFLICT(path) DO UPDATE SET
@@ -1383,10 +1453,11 @@ func (s *StateDB) DeleteInstanceAndSaveGroups(id string, groups []*GroupRow, lif
 					default_path = excluded.default_path,
 					max_concurrent = excluded.max_concurrent
 			`, g.Path, g.Name, expanded, g.Order, g.DefaultPath, g.MaxConcurrent); err != nil {
-				return err
+					return err
+				}
 			}
-		}
-		return tx.Commit()
+			return nil
+		})
 	})
 }
 
@@ -1452,34 +1523,30 @@ func (s *StateDB) WithInstancesAbsent(ids []string, confirmed func() error, life
 		return false, ErrLifecycleIntentOwnership
 	}
 	err := withBusyRetry(func() error {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-
-		for i, id := range ids {
-			token := ""
-			if len(lifecycleTokens) != 0 {
-				token = lifecycleTokens[i]
+		return s.withImmediateWrite(func(tx lifecycleWriteExecutor) error {
+			for i, id := range ids {
+				token := ""
+				if len(lifecycleTokens) != 0 {
+					token = lifecycleTokens[i]
+				}
+				if err := authorizeLifecycleDelete(tx, id, token); err != nil {
+					return err
+				}
+				if err := tombstoneInstance(tx, id); err != nil {
+					return err
+				}
+				if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
+					return err
+				}
+				if err := advancePreparedRemovalAfterDelete(tx, id, token); err != nil {
+					return err
+				}
 			}
-			if err := authorizeLifecycleDelete(tx, id, token); err != nil {
-				return err
+			if s.beforeInstancesAbsentCommit != nil {
+				s.beforeInstancesAbsentCommit()
 			}
-			if err := tombstoneInstance(tx, id); err != nil {
-				return err
-			}
-			if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
-				return err
-			}
-			if err := advancePreparedRemovalAfterDelete(tx, id, token); err != nil {
-				return err
-			}
-		}
-		if s.beforeInstancesAbsentCommit != nil {
-			s.beforeInstancesAbsentCommit()
-		}
-		return tx.Commit()
+			return nil
+		})
 	})
 	if err != nil {
 		return false, err

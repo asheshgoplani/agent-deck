@@ -39,6 +39,7 @@ var lifecycleBeforeRecoveryClaim func(statedb.LifecycleIntent)
 var lifecycleAfterGenerationRead func(statedb.LifecycleIntent)
 var lifecycleRecoveryMutation func(string)
 var lifecycleRemoveWorktree = RemoveSessionWorktree
+var lifecycleInstanceExists = func(inst *Instance) bool { return inst != nil && inst.Exists() }
 
 func PrepareLifecycleIntent(storage *Storage, instanceID, kind, payload string) (LifecycleIntentHandle, error) {
 	if storage == nil || storage.db == nil {
@@ -185,9 +186,10 @@ func RecoverLifecycleIntents(storage *Storage, instances []*Instance) error {
 		if rowExists && (intent.Generation == 0 || durableGeneration != intent.Generation) {
 			// The ID now belongs to a newer incarnation. Never touch its row or
 			// queue; only retire the payload-owned runtime from the old operation.
-			if metadata.Instance != nil && metadata.Instance.Exists() {
+			if lifecycleInstanceExists(metadata.Instance) {
 				if err := ensureOwned(false); err != nil {
 					finishClaim()
+					joinIntentErr(err)
 					continue
 				}
 				markMutation("stale-runtime-kill")
@@ -267,6 +269,7 @@ func RecoverLifecycleIntents(storage *Storage, instances []*Instance) error {
 					recoveryErr = errors.Join(recoveryErr, advanceErr)
 					continue
 				}
+				intent.Phase = "worktree-removed"
 			}
 			teardownInst := inst
 			if teardownInst == nil {
@@ -305,7 +308,8 @@ func RecoverLifecycleIntents(storage *Storage, instances []*Instance) error {
 					recoveryErr = errors.Join(recoveryErr, err)
 					continue
 				}
-				if deleteErr := storage.db.DeleteInstance(intent.InstanceID, intent.Token); deleteErr != nil {
+				markMutation("claimed-delete")
+				if deleteErr := storage.db.DeleteClaimedLifecycleInstance(intent.InstanceID, intent.Token, recoveryOwner, intent.Generation, intent.Kind, intent.Phase); deleteErr != nil {
 					finishClaim()
 					recoveryErr = errors.Join(recoveryErr, deleteErr)
 					continue
