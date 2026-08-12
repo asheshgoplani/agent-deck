@@ -151,13 +151,12 @@ func (r *Registry) runInstalledProbe() {
 			r.installed[name] = true // shell is always shown
 			continue
 		}
-		// Built-in probe uses the bare tool name, except Cursor: prefer the
-		// resolved [cursor].command. Stock defaults (`agent` / `cursor agent`)
-		// probe either entrypoint so a whitespace default does not spuriously
-		// count as installed via probeInstalled's wrapper heuristic.
+		// Built-in probe uses the bare tool name, except Cursor: honor an
+		// explicit [cursor].command override, otherwise accept either stock
+		// entrypoint (`agent` or `cursor`).
 		ok := false
 		if name == "cursor" {
-			ok = cursorCommandInstalled(GetToolCommand("cursor"))
+			ok = cursorCommandInstalled()
 		} else {
 			ok = probeInstalled(name)
 		}

@@ -6,6 +6,36 @@ import (
 	"testing"
 )
 
+func TestCursorCommandInstalled_OverrideProvenance(t *testing.T) {
+	withStubbedProbe(t, []string{"cursor"}, func() {
+		restore := resetUserConfigCache(t, &UserConfig{
+			Cursor: CursorSettings{Command: "agent"},
+		})
+		defer restore()
+		if cursorCommandInstalled() {
+			t.Fatal(`command="agent" with only cursor installed should be hidden`)
+		}
+	})
+
+	withStubbedProbe(t, []string{"agent"}, func() {
+		restore := resetUserConfigCache(t, &UserConfig{
+			Cursor: CursorSettings{Command: "cursor agent"},
+		})
+		defer restore()
+		if cursorCommandInstalled() {
+			t.Fatal(`command="cursor agent" with only agent installed should be hidden`)
+		}
+	})
+
+	withStubbedProbe(t, []string{"cursor"}, func() {
+		restore := resetUserConfigCache(t, &UserConfig{})
+		defer restore()
+		if !cursorCommandInstalled() {
+			t.Fatal("stock default with cursor on PATH should be visible")
+		}
+	})
+}
+
 func TestDefaultCursorCommand_PrefersAgent(t *testing.T) {
 	orig := lookPathFn
 	t.Cleanup(func() { lookPathFn = orig })

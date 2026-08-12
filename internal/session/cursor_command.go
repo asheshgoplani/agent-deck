@@ -30,14 +30,36 @@ func isDefaultCursorInvocation(cmd string) bool {
 	}
 }
 
-// cursorCommandInstalled reports whether a resolved Cursor launch command is
-// available for show_only_installed_tools. Stock defaults probe both
-// entrypoints; custom [cursor].command values probe that command directly.
+// cursorCommandInstalled reports whether Cursor is available for
+// show_only_installed_tools.
+//
+// When [cursor].command is unset, either stock entrypoint (`agent` or `cursor`)
+// counts. When the user set an explicit override, only that command is probed
+// so a stock-looking override like command = "agent" cannot be marked installed
+// just because the other entrypoint exists.
 // (env_file does not affect install presence.)
-func cursorCommandInstalled(resolved string) bool {
-	cmd := strings.TrimSpace(resolved)
-	if isDefaultCursorInvocation(cmd) {
+func cursorCommandInstalled() bool {
+	config, _ := LoadUserConfig()
+	override := ""
+	if config != nil {
+		override = strings.TrimSpace(config.Cursor.Command)
+	}
+	if override == "" {
 		return probeInstalled("agent") || probeInstalled("cursor")
+	}
+	return probeCursorOverride(override)
+}
+
+// probeCursorOverride probes an explicit [cursor].command. Multi-word values
+// probe the first token so "cursor agent" does not inherit probeInstalled's
+// whitespace-wrapper "always installed" heuristic.
+func probeCursorOverride(cmd string) bool {
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return false
+	}
+	if len(fields) > 1 {
+		return probeInstalled(fields[0])
 	}
 	return probeInstalled(cmd)
 }
