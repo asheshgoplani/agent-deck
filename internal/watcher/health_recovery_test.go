@@ -48,17 +48,10 @@ func TestRecoveredAdapterContainsHealthPanicAndSanitizesLog(t *testing.T) {
 	engine.RegisterAdapter("panic-id", panicking, AdapterConfig{Name: "panic-watch", Type: "test"}, 0)
 	engine.RegisterAdapter("sibling-id", sibling, AdapterConfig{Name: "sibling-watch", Type: "test"}, 0)
 
-	for i := range engine.adapters {
-		if err := engine.adapters[i].adapter.Setup(context.Background(), engine.adapters[i].config); err != nil {
-			t.Fatalf("Setup adapter %d: %v", i, err)
-		}
+	if err := engine.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
-	engine.wg.Add(1)
-	go engine.healthLoop()
-	t.Cleanup(func() {
-		engine.cancel()
-		engine.wg.Wait()
-	})
+	t.Cleanup(engine.Stop)
 
 	wantStates(t, engine.HealthCh(), map[string]HealthStatus{
 		"panic-watch":   HealthStatusError,
@@ -95,8 +88,7 @@ func TestRecoveredAdapterContainsHealthPanicAndSanitizesLog(t *testing.T) {
 	if panicking.checks.Load() == checksBeforeSecondEpisode {
 		t.Fatal("later panic did not start a new panic episode")
 	}
-	engine.cancel()
-	engine.wg.Wait()
+	engine.Stop()
 
 	out := logs.String()
 	for _, want := range []string{"adapter_health_panic", "panic-watch", "test", "panic_type", "stack"} {
