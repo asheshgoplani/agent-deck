@@ -1,6 +1,6 @@
 ---
 name: brainstorming
-description: Collaborative design and brainstorming before any code is written — explores project context, asks one clarifying question at a time, offers 2–3 approaches with trade-offs, and writes an approved design document to its repository-local `.agent-deck/<date>-<slug>/design/` directory (git-ignored, never committed). Use before building a feature, adding functionality, or changing behavior, and whenever the user says "let's build", "I want to add", "how should we do X", or asks for a design or spec. Hard-gates implementation until the design is approved.
+description: Collaborative design and brainstorming before any code is written — explores project context, asks one clarifying question at a time, offers 2–3 approaches with trade-offs, and writes an approved design document to its repository-local `.agent-deck/DATE-SLUG/design/` directory (git-ignored, never committed). Use before building a feature, adding functionality, or changing behavior, and whenever the user says "let's build", "I want to add", "how should we do X", or asks for a design or spec. Hard-gates implementation until the design is approved.
 metadata:
   compatibility: "claude, opencode"
 ---
@@ -28,8 +28,8 @@ wrong one-liner.
 ## 1. Explore project context first
 
 Before the first question: read the repo's `README`, `CLAUDE.md`/`AGENTS.md`,
-and `CONTRIBUTING.md`; find the existing design docs directory; look at how
-the nearest analogous feature is built. State what you found in a few lines.
+and `CONTRIBUTING.md`; look at how the nearest analogous feature is built.
+State what you found in a few lines.
 
 Questions asked without context waste the user's turns on things the repo
 already answers.
@@ -105,9 +105,9 @@ still fail the gate. `.probe` need not exist.
 `.git/info/exclude` is untracked and applies to every worktree of the repo, so
 this costs the user no commit.
 
-A repo whose convention is a *tracked* design-doc directory (`docs/plans/`,
-`docs/rfcs/`) is the one case to raise: say you are writing to the ignored
-run-local `design/` directory instead and why, and take the user's answer.
+Never create a design, plan, task file, prompt, review, report, or retrospective
+outside `$RUN_ROOT`. The sole exception is source code checkout material, which
+belongs in the repository's `.worktrees/` directory.
 
 **Never `git add` the spec, and never verify it by looking for a commit.** Its
 absolute path is what makes it findable — downstream sessions in other

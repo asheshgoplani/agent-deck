@@ -101,6 +101,36 @@ func TestSessionRemove_StoppedSessionSucceeds(t *testing.T) {
 	}
 }
 
+func TestSessionRemove_RemovesOwnedRepositorySessionTemp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	workPath := filepath.Join(home, "proj")
+	id := addTestSession(t, home, workPath, "remove-repo-temp")
+	forceSetStatus(t, home, id, session.StatusStopped)
+
+	root := filepath.Join(workPath, ".agent-deck", "tmp", id)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := "schema=1\nsession_id=" + id + "\n"
+	if err := os.WriteFile(filepath.Join(root, ".agent-deck-session-temp"), []byte(marker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "large-task.log"), []byte("owned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runAgentDeck(t, home, "session", "remove", id, "--json")
+	if code != 0 {
+		t.Fatalf("session remove failed (exit %d) stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Fatalf("owned repository session temp survived removal: %s", root)
+	}
+}
+
 // TestSessionRemove_RunningWithoutForce_Rejected enforces the safety gate.
 func TestSessionRemove_RunningWithoutForce_Rejected(t *testing.T) {
 	if testing.Short() {
@@ -168,6 +198,32 @@ func TestSessionRemove_AllErrored_RemovesOnlyErrored(t *testing.T) {
 	}
 	if !strings.Contains(listJSON, idleID) {
 		t.Errorf("idle session got removed by --all-errored (over-broad); list:\n%s", listJSON)
+	}
+}
+
+func TestSessionRemove_AllErroredRemovesOwnedRepositorySessionTemp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	workPath := filepath.Join(home, "bulk-temp-proj")
+	id := addTestSession(t, home, workPath, "bulk-temp")
+	forceSetStatus(t, home, id, session.StatusError)
+	root := filepath.Join(workPath, ".agent-deck", "tmp", id)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := "schema=1\nsession_id=" + id + "\n"
+	if err := os.WriteFile(filepath.Join(root, ".agent-deck-session-temp"), []byte(marker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runAgentDeck(t, home, "session", "remove", "--all-errored", "--json")
+	if code != 0 {
+		t.Fatalf("--all-errored failed (exit %d) stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Fatalf("owned repository session temp survived bulk removal: %s", root)
 	}
 }
 

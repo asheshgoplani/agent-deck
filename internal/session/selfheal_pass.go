@@ -100,20 +100,34 @@ func capsFromSettings(s SelfHealSettings) selfheal.Caps {
 // verdict is a throttled transcript read, and the composer check is a pane
 // capture. Every other session pays nothing.
 func isSelfHealResumeSubstate(s Substate) bool {
-	return s == SubstateAPIError || s == SubstateUsageLimit
+	return s == SubstateAPIError || s == SubstateUsageLimit || s == SubstateModelUnavailable
 }
 
 // buildSelfHealCandidate assembles the pure Candidate snapshot for one instance
-// from data the daemon already read this cycle, plus two narrowly-scoped extra
-// reads (see below). It does NO DB mutation — it reuses the cached substate, the
-// canonical status, the hook freshness, and the content signal the transition
-// path already computes.
+// from data the daemon already read this cycle, plus narrowly-scoped extra
+// reads (see below). It does NO DB mutation — it normally reuses the cached
+// substate, the canonical status, the hook freshness, and the content signal
+// the transition path already computes.
 //
 // hs is the instance's hook status (may be nil). lastSentAt is the last_sent_at
 // clock read from the DB (zero if never sent). optedOut folds the per-session and
 // group opt-out config.
 func buildSelfHealCandidate(inst *Instance, status string, hs *HookStatus, lastSentAt time.Time, optedOut bool) selfheal.Candidate {
 	sub := inst.CachedSubstate()
+	// When another live TUI owns status polling, the transition daemon reads the
+	// coarse status from SQLite into freshly reconstructed Instances. Substate is
+	// process-local and is not persisted, so that daemon-side cache is empty even
+	// when the TUI saw Codex's capacity banner. Refresh only non-running Codex
+	// sessions: that is the tool which emits this exact banner, and the narrow
+	// gate avoids pane captures for the active fleet on every daemon pass.
+	if sub == SubstateNone && IsCodexCompatible(inst.Tool) {
+		switch normalizeStatusString(status) {
+		case "idle", "waiting", "error":
+			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+				sub = tmuxSess.GetSubstate()
+			}
+		}
+	}
 	busy := sub == SubstateRunning
 	hookRunningFresh := hs != nil &&
 		normalizeStatusString(hs.Status) == "running" &&

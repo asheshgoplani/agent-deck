@@ -1,5 +1,12 @@
 # Agent guidance
 
+## Workflow artifacts
+
+Keep every workflow artifact under `.agent-deck/<run-id>/`. This includes
+designs, plans, task files, prompts, reviews, reports, and retrospectives.
+Source checkouts belong only in `.worktrees/`; do not create or use a tracked
+`docs/` design, plan, or retrospective directory.
+
 ## Test temporary files
 
 Agent Deck's package-level `TestMain` cleanup must make a normal bare `go test`

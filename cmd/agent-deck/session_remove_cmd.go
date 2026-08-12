@@ -95,6 +95,10 @@ func handleSessionRemove(profile string, args []string) {
 	// KillAndWait runs the SIGTERM→SIGKILL escalation synchronously so
 	// the kill completes before this short-lived CLI exits.
 	_ = inst.KillAndWait()
+	if err := inst.CleanupRepositorySessionTemp(); err != nil {
+		out.Error(fmt.Sprintf("failed to clean session temporary files: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	if *pruneWorktree {
 		pruneSessionWorktree(inst)

@@ -161,7 +161,7 @@ type Instance struct {
 	// handle (from a --quick / TUI-Q create). The TUI then displays the
 	// session's live Claude task description (tmux pane title) in place of the
 	// handle. Any explicit rename clears this so the user-chosen name is shown
-	// verbatim. See docs/superpowers/specs/2026-06-01-quick-session-claude-name-design.md.
+	// verbatim.
 	// Guarded by i.mu for runtime reads/writes; use GetAutoName/SetAutoName once
 	// an Instance is shared with background workers or the TUI render loop.
 	AutoName bool `json:"auto_name,omitempty"`
@@ -1373,6 +1373,10 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 // in both cases there is no alias downstream to defer to.
 func (i *Instance) buildBashExportPrefix(skipConfigDirForCustomCommand bool) string {
 	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; export AGENTDECK_PROFILE=%s; ", i.ID, shellescape.Quote(sessionProfileEnvValue()))
+	tempDir := i.repositorySessionTempDir()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP", "AGENT_DECK_SESSION_TMPDIR"} {
+		prefix += fmt.Sprintf("export %s=%s; ", name, shellescape.Quote(tempDir))
+	}
 	if IsClaudeConfigDirExplicitForInstance(i) && !skipConfigDirForCustomCommand {
 		// Issue #922 (reporter @bautrey): see applyWorkerScratchOverride.
 		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
@@ -10164,6 +10168,11 @@ func (i *Instance) wrapLaunchShell(command string) string {
 // All code paths that launch or respawn a tmux pane should use this instead of calling
 // applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
 func (i *Instance) prepareCommand(cmd string) (string, string, error) {
+	if !i.IsSSH() {
+		if err := i.prepareRepositorySessionTemp(); err != nil {
+			return "", "", fmt.Errorf("prepare repository session temp: %w", err)
+		}
+	}
 	if IsClaudeCompatible(i.Tool) {
 		if _, _, err := ResolveInstanceClaudeHomeSkills(i); err != nil {
 			return "", "", fmt.Errorf("unsafe Claude group skill loadout: %w", err)

@@ -186,7 +186,8 @@ Every checkout path is exactly
 `$WORKTREES_DIR/$RUN_ID-<task-slug>` and is recorded in
 `$RUN_DIR/worktrees.tsv` by `references/create-worktree.sh`. Never create a
 run artifact or retrospective outside `$RUN_DIR`. Never create a source
-checkout outside `$WORKTREES_DIR`.
+checkout outside `$WORKTREES_DIR`. Never create a design, plan, task file,
+prompt, review, report, or retrospective outside `$RUN_ROOT`.
 
 Populate the run directory:
 
@@ -287,6 +288,10 @@ notifications and the turn-start snapshot route to the new conductor.
   contract in recon, then run the verification flow below before any
   pull-request-specific stage.
 - Anything else → treat as a freeform task description.
+
+A file-based design or plan input must already be under `$RUN_ROOT`. Do not
+create, copy, or refer to workflow files in another repository location; use a
+freeform task description when the user has not supplied a run-local artifact.
 There is **one flow with six entrances** — planning and splitting are
 stages some entrances pass through, never a prerequisite. Pick by what you
 were given:

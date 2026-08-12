@@ -155,6 +155,52 @@ func TestBrainstormingUsesTypedRepositoryLocalRunLayout(t *testing.T) {
 	if strings.Contains(normalizedSkill, `.agent-deck/designs/`) {
 		t.Fatal("brainstorming still uses the legacy global designs directory")
 	}
+	for _, forbidden := range []string{"docs/", ".agent-deck/designs/"} {
+		if strings.Contains(normalizedSkill, forbidden) {
+			t.Fatalf("brainstorming still permits workflow artifacts outside .agent-deck: %q", forbidden)
+		}
+	}
+	if !strings.Contains(normalizedSkill, "Never create a design, plan, task file, prompt, review, report, or retrospective outside `$RUN_ROOT`.") {
+		t.Fatal("brainstorming does not state the run-artifact boundary")
+	}
+}
+
+func TestOrchestrateKeepsAllWorkflowArtifactsInRepositoryRunRoot(t *testing.T) {
+	repoRoot := filepath.Clean("..")
+	skillPath := filepath.Join(repoRoot, "skills", "orchestrate", "SKILL.md")
+	skill, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read orchestrate skill: %v", err)
+	}
+	normalizedSkill := strings.Join(strings.Fields(string(skill)), " ")
+	if !strings.Contains(normalizedSkill, "Never create a design, plan, task file, prompt, review, report, or retrospective outside `$RUN_ROOT`.") {
+		t.Fatal("orchestrate does not state the run-artifact boundary")
+	}
+	if !strings.Contains(normalizedSkill, "A file-based design or plan input must already be under `$RUN_ROOT`.") {
+		t.Fatal("orchestrate permits file-based workflow inputs outside the run root")
+	}
+	if strings.Contains(normalizedSkill, "docs/") {
+		t.Fatal("orchestrate still references a docs directory outside the run root")
+	}
+}
+
+func TestWorkflowArtifactsAreNotTrackedOutsideAgentDeck(t *testing.T) {
+	repoRoot := filepath.Clean("..")
+	for _, legacyDir := range []string{
+		"docs/design", "docs/plans", "docs/retros", "docs/superpowers",
+	} {
+		if _, err := os.Stat(filepath.Join(repoRoot, legacyDir)); err == nil || !os.IsNotExist(err) {
+			t.Fatalf("workflow artifacts must be ignored under .agent-deck/, not present at %s (stat error: %v)", legacyDir, err)
+		}
+	}
+
+	agents, err := os.ReadFile(filepath.Join(repoRoot, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read repository agent guidance: %v", err)
+	}
+	if !strings.Contains(string(agents), "Keep every workflow artifact under `.agent-deck/<run-id>/`.") {
+		t.Fatal("repository agent guidance does not state the workflow-artifact location")
+	}
 }
 
 func TestCleanupRunsUsesTypedRepositoryRunLayout(t *testing.T) {

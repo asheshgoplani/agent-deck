@@ -51,6 +51,28 @@ func TestClassifySubstate_ModelUnavailable(t *testing.T) {
 	}
 }
 
+// The capacity banner is emitted by Codex, so the classifier must not discard
+// it at the non-Claude tool gate before self-heal can see it.
+func TestClassifySubstate_CodexCapacity(t *testing.T) {
+	d := NewPromptDetector("codex")
+	content := "⚠ Selected model is at capacity. Please try a different model.\n\n" +
+		"› Summarize recent commits\n\n" +
+		"  gpt-5.6-luna max · Ready · Full Access"
+	if got := d.ClassifySubstate(content); got != SubstateModelUnavailable {
+		t.Fatalf("got %q, want %q", got, SubstateModelUnavailable)
+	}
+}
+
+func TestClassifySubstate_CodexWorkingWinsOverStaleCapacity(t *testing.T) {
+	d := NewPromptDetector("codex")
+	content := "⚠ Selected model is at capacity. Please try a different model.\n\n" +
+		"• Working (31s • esc to interrupt)\n\n" +
+		"› Implement feature"
+	if got := d.ClassifySubstate(content); got != SubstateRunning {
+		t.Fatalf("got %q, want %q", got, SubstateRunning)
+	}
+}
+
 func TestClassifySubstate_Auth401(t *testing.T) {
 	d := NewPromptDetector("claude")
 	cases := []struct {

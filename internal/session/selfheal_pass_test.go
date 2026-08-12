@@ -52,6 +52,29 @@ func TestBuildSelfHealCandidate_StoppedDetected(t *testing.T) {
 	}
 }
 
+// A live TUI makes the transition daemon consume coarse status from SQLite.
+// The freshly loaded daemon-side Instance therefore has no process-local
+// substate cache, so Codex capacity detection must fall back to the live pane.
+func TestBuildSelfHealCandidate_CodexCapacityWithoutCachedSubstate(t *testing.T) {
+	inst := NewInstanceWithTool("selfheal-codex-capacity", t.TempDir(), "codex")
+	inst.tmuxSession.SetCustomPatterns("codex", nil, nil, nil)
+	if err := inst.tmuxSession.Start("printf '\\n⚠ Selected model is at capacity. Please try a different model.\\n'; sleep 3600"); err != nil {
+		t.Fatalf("start capacity pane: %v", err)
+	}
+	t.Cleanup(func() { _ = inst.tmuxSession.Kill() })
+
+	if got := inst.CachedSubstate(); got != SubstateNone {
+		t.Fatalf("precondition: daemon-side cache must start empty, got %q", got)
+	}
+	c := buildSelfHealCandidate(inst, "idle", nil, time.Time{}, false)
+	if c.Substate != SubstateModelUnavailable {
+		t.Fatalf("candidate substate = %q, want %q", c.Substate, SubstateModelUnavailable)
+	}
+	if c.ComposerDraft == nil {
+		t.Fatal("capacity resume candidate must carry the deferred composer guard")
+	}
+}
+
 func TestCapsFromSettings_DefaultsAndOverrides(t *testing.T) {
 	def := capsFromSettings(SelfHealSettings{})
 	if def != selfheal.DefaultCaps() {
@@ -179,14 +202,14 @@ func TestSelfHealMode_AcceptsResume(t *testing.T) {
 	}
 }
 
-// The composer read is scoped to the two substates that can produce a resume.
+// The composer read is scoped to the substates that can produce a resume.
 func TestIsSelfHealResumeSubstate(t *testing.T) {
-	for _, s := range []Substate{SubstateAPIError, SubstateUsageLimit} {
+	for _, s := range []Substate{SubstateAPIError, SubstateUsageLimit, SubstateModelUnavailable} {
 		if !isSelfHealResumeSubstate(s) {
 			t.Fatalf("%q must be a resume substate", s)
 		}
 	}
-	for _, s := range []Substate{SubstateNone, SubstateRunning, SubstateIdleAtEmptyPrompt, SubstateAuth401, SubstateModelUnavailable, SubstateStalled} {
+	for _, s := range []Substate{SubstateNone, SubstateRunning, SubstateIdleAtEmptyPrompt, SubstateAuth401, SubstateStalled} {
 		if isSelfHealResumeSubstate(s) {
 			t.Fatalf("%q must NOT trigger a composer capture", s)
 		}

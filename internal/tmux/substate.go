@@ -103,8 +103,9 @@ var modelUnavailableSubstrings = []string{
 const crunchedNoopMarker = "Crunched for 0s"
 
 // ClassifySubstate returns the additive Substate for the given pane content.
-// Claude-only (the heuristics are Claude Code renderings); other tools return
-// SubstateNone.
+// Most heuristics are Claude-only. Codex additionally exposes the exact model
+// capacity banner and its unambiguous active-work cue so self-heal can safely
+// distinguish a current capacity stop from a stale banner after recovery.
 //
 // Precedence (most-actionable first). With only a fixed text window and no
 // timestamps, a stale line and a current line cannot be ordered perfectly; this
@@ -128,6 +129,15 @@ const crunchedNoopMarker = "Crunched for 0s"
 //  5. idle-at-empty-prompt — sitting at the prompt with nothing happening.
 //  6. none      — no distinct refinement.
 func (d *PromptDetector) ClassifySubstate(content string) Substate {
+	if d.tool == "codex" {
+		if d.hasClaudeBusyIndicator(content) {
+			return SubstateRunning
+		}
+		if hasModelUnavailableNoop(content) {
+			return SubstateModelUnavailable
+		}
+		return SubstateNone
+	}
 	if d.tool != "claude" {
 		return SubstateNone
 	}
