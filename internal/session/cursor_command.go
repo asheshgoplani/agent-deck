@@ -29,3 +29,15 @@ func isDefaultCursorInvocation(cmd string) bool {
 		return false
 	}
 }
+
+// cursorCommandInstalled reports whether a resolved Cursor launch command is
+// available for show_only_installed_tools. Stock defaults probe both
+// entrypoints; custom [cursor].command values probe that command directly.
+// (env_file does not affect install presence.)
+func cursorCommandInstalled(resolved string) bool {
+	cmd := strings.TrimSpace(resolved)
+	if isDefaultCursorInvocation(cmd) {
+		return probeInstalled("agent") || probeInstalled("cursor")
+	}
+	return probeInstalled(cmd)
+}
