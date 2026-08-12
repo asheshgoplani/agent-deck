@@ -856,6 +856,14 @@ type GroupCodexSettings struct {
 	// Command overrides [codex].command for sessions in this group.
 	Command string `toml:"command,omitempty"`
 
+	// Model overrides [codex].default_model for sessions in this group.
+	// An explicit per-session model still takes precedence.
+	Model string `toml:"model,omitempty"`
+
+	// ReasoningEffort overrides [codex].default_reasoning_effort for sessions
+	// in this group. An explicit per-session value still takes precedence.
+	ReasoningEffort string `toml:"reasoning_effort,omitempty"`
+
 	// Skills lists declarative skill-loadout entries attached to Codex
 	// sessions in this group at create and before every start.
 	Skills []string `toml:"skills,omitempty"`
@@ -1971,6 +1979,15 @@ type CodexSettings struct {
 	// Command is the Codex CLI command or alias to use (e.g., "codex", "codex-v2")
 	// Default: "codex"
 	Command string `toml:"command,omitempty"`
+
+	// DefaultModel is used when a Codex session does not have an explicit
+	// per-session model. Empty leaves the Codex CLI's own default in effect.
+	DefaultModel string `toml:"default_model,omitempty"`
+
+	// DefaultReasoningEffort is used when a Codex session does not have an
+	// explicit per-session reasoning effort. Empty leaves the CLI default in
+	// effect.
+	DefaultReasoningEffort string `toml:"default_reasoning_effort,omitempty"`
 
 	// ConfigDir is the path to Codex home directory.
 	// Default: ~/.codex (or CODEX_HOME env var)
@@ -4382,6 +4399,10 @@ func CreateExampleConfig() error {
 # config_dir = "~/.codex-work"
 # Enable --yolo (bypass approvals and sandbox) by default (default: false)
 # yolo_mode = true
+# Default model and reasoning effort for Codex sessions. These are reconciled
+# into Agent Deck-managed group CODEX_HOME/config.toml files.
+# default_model = "gpt-5.6"
+# default_reasoning_effort = "high"
 
 # Log file management
 # Agent-deck logs session output to ~/.agent-deck/logs/ for status detection

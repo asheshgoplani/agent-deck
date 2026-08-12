@@ -101,8 +101,19 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 	if IsCodexCompatible(inst.Tool) {
 		codexHome, err := ResolveInstanceCodexHome(inst)
 		if err != nil {
-			warn("Codex TUI defaults: %v", err)
+			warn("Codex managed settings: %v", err)
 		} else {
+			model := config.GetGroupCodexModel(inst.GroupPath)
+			if strings.TrimSpace(model) == "" {
+				model = config.Codex.DefaultModel
+			}
+			effort := config.GetGroupCodexReasoningEffort(inst.GroupPath)
+			if strings.TrimSpace(effort) == "" {
+				effort = config.Codex.DefaultReasoningEffort
+			}
+			if err := ApplyCodexManagedSettings(codexHome, model, effort); err != nil {
+				warn("Codex managed settings: %v", err)
+			}
 			if err := ApplyCodexTUISettings(codexHome, config.Codex.TUI); err != nil {
 				warn("Codex TUI defaults: %v", err)
 			}

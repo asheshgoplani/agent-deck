@@ -1,12 +1,5 @@
 # Agent guidance
 
-## Agent Deck-managed Codex homes
-
-Treat `~/.agent-deck/codex/*/config.toml` as generated runtime state. Do not
-edit these files directly. For Agent Deck configuration changes, identify and
-modify the source configuration or supported Agent Deck command first, then
-verify the generated group homes after reconciliation.
-
 ## Test temporary files
 
 Agent Deck's package-level `TestMain` cleanup must make a normal bare `go test`

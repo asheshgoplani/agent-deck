@@ -2033,17 +2033,54 @@ func (i *Instance) resolveCodexYoloFlag() string {
 }
 
 func (i *Instance) resolveCodexModelFlag() string {
+	if hasCodexExtraArgModel(i.ExtraArgs) {
+		return ""
+	}
 	opts := i.GetCodexOptions()
-	if opts != nil && strings.TrimSpace(opts.Model) != "" {
-		return " --model " + shellescape.Quote(strings.TrimSpace(opts.Model))
+	model := ""
+	if opts != nil {
+		model = strings.TrimSpace(opts.Model)
+	}
+	if model == "" {
+		if config, err := LoadUserConfig(); err == nil && config != nil {
+			model = strings.TrimSpace(config.GetGroupCodexModel(i.GroupPath))
+			if model == "" {
+				model = strings.TrimSpace(config.Codex.DefaultModel)
+			}
+		}
+	}
+	if model != "" {
+		return " --model " + shellescape.Quote(model)
 	}
 	return ""
 }
 
+func hasCodexExtraArgModel(args []string) bool {
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if arg == "--model" || strings.HasPrefix(arg, "--model=") {
+			return true
+		}
+	}
+	return false
+}
+
 func (i *Instance) resolveCodexReasoningEffortFlag() string {
 	opts := i.GetCodexOptions()
-	if opts != nil && strings.TrimSpace(opts.ReasoningEffort) != "" {
-		value := "model_reasoning_effort=" + strings.TrimSpace(opts.ReasoningEffort)
+	effort := ""
+	if opts != nil {
+		effort = strings.TrimSpace(opts.ReasoningEffort)
+	}
+	if effort == "" {
+		if config, err := LoadUserConfig(); err == nil && config != nil {
+			effort = strings.TrimSpace(config.GetGroupCodexReasoningEffort(i.GroupPath))
+			if effort == "" {
+				effort = strings.TrimSpace(config.Codex.DefaultReasoningEffort)
+			}
+		}
+	}
+	if effort != "" {
+		value := "model_reasoning_effort=" + effort
 		return " --config " + shellescape.Quote(value)
 	}
 	return ""

@@ -244,6 +244,8 @@ that home's `config.toml`:
 config_dir = "~/.agent-deck/codex/work"
 env_file = "~/.agent-deck/groups/work-codex.env"
 command = "codex"
+model = "gpt-5.6-terra"
+reasoning_effort = "medium"
 skills = ["team/review"]
 mcps = ["context7"]
 plugins = ["agent-deck@team"]
@@ -332,6 +334,8 @@ Codex CLI integration settings.
 [codex]
 command = "codex"  # Codex CLI command or alias
 yolo_mode = true   # Enable --yolo (bypass approvals and sandbox)
+default_model = "gpt-5.6"               # Used unless a session/group overrides it
+default_reasoning_effort = "high"       # Used unless a session/group overrides it
 env_file = "~/.codex.env"
 
 [codex.tui]
@@ -343,6 +347,8 @@ status_line_use_colors = true
 |-----|------|---------|-------------|
 | `command` | string | `codex` | Codex CLI command or alias to launch built-in Codex sessions. Examples: `codex-v2`, `CODEX_HOME=~/.codex-work codex`. |
 | `yolo_mode` | bool | `false` | Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`). Can be overridden per-session. |
+| `default_model` | string | `""` | Default passed to Codex as `--model` when no explicit session or group model is set. Agent Deck reconciles it into the selected group `CODEX_HOME/config.toml`. |
+| `default_reasoning_effort` | string | `""` | Default passed as `--config model_reasoning_effort=…` when no explicit session or group value is set. Agent Deck reconciles it into the selected group home. |
 | `env_file` | string | `""` | A .env file sourced for Codex sessions only. See [Path Resolution](#path-resolution). |
 | `tui.status_line` | array | unset | Ordered footer items merged into every resolved group `CODEX_HOME/config.toml`. Set `[]` to hide the footer. |
 | `tui.status_line_use_colors` | bool | unset | Enables or disables status-line colors in every resolved group home. |

@@ -17,6 +17,10 @@ type GroupCodexResolution struct {
 	EnvFileSource   string   `json:"env_file_source,omitempty"`
 	Command         string   `json:"command"`
 	CommandSource   string   `json:"command_source"`
+	Model           string   `json:"model,omitempty"`
+	ModelSource     string   `json:"model_source,omitempty"`
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	ReasoningSource string   `json:"reasoning_effort_source,omitempty"`
 	Skills          []string `json:"skills,omitempty"`
 	MCPs            []string `json:"mcps,omitempty"`
 	Marketplaces    []string `json:"marketplaces,omitempty"`
@@ -52,6 +56,16 @@ func (c *UserConfig) GetGroupCodexEnvFile(groupPath string) string {
 
 func (c *UserConfig) GetGroupCodexCommand(groupPath string) string {
 	v, _ := c.findGroupCodexSetting(groupPath, func(s GroupCodexSettings) string { return s.Command })
+	return v
+}
+
+func (c *UserConfig) GetGroupCodexModel(groupPath string) string {
+	v, _ := c.findGroupCodexSetting(groupPath, func(s GroupCodexSettings) string { return s.Model })
+	return v
+}
+
+func (c *UserConfig) GetGroupCodexReasoningEffort(groupPath string) string {
+	v, _ := c.findGroupCodexSetting(groupPath, func(s GroupCodexSettings) string { return s.ReasoningEffort })
 	return v
 }
 
@@ -307,6 +321,14 @@ func ResolveGroupCodex(groupPath string) GroupCodexResolution {
 	if command, matched := config.findGroupCodexSetting(groupPath, func(s GroupCodexSettings) string { return s.Command }); command != "" {
 		res.Command = command
 		res.CommandSource = "group:" + matched
+	}
+	if model, matched := config.findGroupCodexSetting(groupPath, func(s GroupCodexSettings) string { return s.Model }); model != "" {
+		res.Model = model
+		res.ModelSource = "group:" + matched
+	}
+	if effort, matched := config.findGroupCodexSetting(groupPath, func(s GroupCodexSettings) string { return s.ReasoningEffort }); effort != "" {
+		res.ReasoningEffort = effort
+		res.ReasoningSource = "group:" + matched
 	}
 	_, skills, skillsErr := ResolveGroupCodexHomeSkills(groupPath)
 	if skillsErr != nil {
