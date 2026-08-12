@@ -6039,7 +6039,7 @@ func (i *Instance) ClearHookStatus() {
 	// write can stall on SQLITE_BUSY (see persistLastActivity).
 	i.persistLastActivity(true)
 	if i.Tool == "hermes" {
-		i.clearHermesHookArtifacts()
+		i.clearHermesHookStatuses()
 		return
 	}
 

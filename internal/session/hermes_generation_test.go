@@ -88,3 +88,63 @@ func TestHermesTerminalClassification(t *testing.T) {
 		t.Fatal("on_session_end is per-turn, not session-terminal")
 	}
 }
+
+func TestHermesClearStatusPreservesLiveGeneration(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	inst := &Instance{ID: "hermes-attached", Tool: "hermes"}
+	if _, err := inst.seedHermesHookGeneration("waiting", false); err != nil {
+		t.Fatal(err)
+	}
+	control := filepath.Join(GetHooksDir(), inst.ID+".generation.json")
+	lock := filepath.Join(GetHooksDir(), inst.ID+".lock")
+	inst.ClearHookStatus()
+	if _, err := os.Stat(control); err != nil {
+		t.Fatalf("live control removed: %v", err)
+	}
+	if _, err := os.Stat(lock); err != nil {
+		t.Fatalf("live lock removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(GetHooksDir(), inst.ID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("status not cleared: %v", err)
+	}
+}
+
+func TestHermesSeedClearsOppositeLayout(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	inst := &Instance{ID: "hermes-mode-change", Tool: "hermes"}
+	scoped := filepath.Join(GetHooksDir(), "sandbox", inst.ID)
+	if err := os.MkdirAll(scoped, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{".json", ".generation.json"} {
+		if err := os.WriteFile(filepath.Join(scoped, inst.ID+suffix), []byte("{}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := inst.seedHermesHookGeneration("waiting", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{".json", ".generation.json"} {
+		if _, err := os.Stat(filepath.Join(scoped, inst.ID+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("opposite artifact survived: %s (%v)", suffix, err)
+		}
+	}
+}
+
+func TestHermesGenerationAuthorityRejectsOppositeLegacyStatus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	id := "hermes-authority"
+	if err := atomicHermesJSON(filepath.Join(GetHooksDir(), id+".generation.json"), hermesHookControl{Generation: "current"}); err != nil {
+		t.Fatal(err)
+	}
+	scoped := filepath.Join(GetHooksDir(), "sandbox", id)
+	if err := os.MkdirAll(scoped, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scoped, id+".json"), []byte(`{"status":"waiting","event":"after_agent","ts":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readHookStatusFile(id); got != nil {
+		t.Fatalf("opposite legacy status accepted: %+v", got)
+	}
+}

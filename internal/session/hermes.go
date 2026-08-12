@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"al.essio.dev/pkg/shellescape"
@@ -30,6 +31,49 @@ type hermesHookSeed struct {
 	HookGeneration        string `json:"hook_generation"`
 	Sequence              uint64 `json:"sequence"`
 	InitialMessagePending bool   `json:"initial_message_pending,omitempty"`
+}
+
+var hermesHookInstanceIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
+type hermesHookLocks struct{ files []*os.File }
+
+func (l *hermesHookLocks) release() {
+	for n := len(l.files) - 1; n >= 0; n-- {
+		_ = syscall.Flock(int(l.files[n].Fd()), syscall.LOCK_UN)
+		_ = l.files[n].Close()
+	}
+}
+
+func acquireHermesHookLocks(instanceID string) (*hermesHookLocks, error) {
+	if !hermesHookInstanceIDPattern.MatchString(instanceID) || strings.Contains(instanceID, "..") {
+		return nil, fmt.Errorf("invalid instance id %q", instanceID)
+	}
+	root := GetHooksDir()
+	dirs := []string{root, filepath.Join(root, "sandbox", instanceID)}
+	locks := &hermesHookLocks{}
+	for _, dir := range dirs {
+		if dir != root {
+			if _, err := os.Stat(dir); os.IsNotExist(err) {
+				continue
+			}
+		}
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			locks.release()
+			return nil, err
+		}
+		f, err := os.OpenFile(filepath.Join(dir, instanceID+".lock"), os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			locks.release()
+			return nil, err
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+			_ = f.Close()
+			locks.release()
+			return nil, err
+		}
+		locks.files = append(locks.files, f)
+	}
+	return locks, nil
 }
 
 func hermesHookScope(instanceID string, sandboxed bool) string {
@@ -72,35 +116,68 @@ func (i *Instance) seedHermesHookGeneration(status string, pending bool) (string
 	}
 	generation := fmt.Sprintf("%x", raw[:])
 	scope := hermesHookScope(i.ID, i.IsSandboxed())
-	if err := atomicHermesJSON(filepath.Join(scope, i.ID+".generation.json"), hermesHookControl{Generation: generation}); err != nil {
+	if err := os.MkdirAll(scope, 0700); err != nil {
 		return "", err
 	}
+	locks, err := acquireHermesHookLocks(i.ID)
+	if err != nil {
+		return "", err
+	}
+	defer locks.release()
+	opposite := hermesHookScope(i.ID, !i.IsSandboxed())
+	clearHermesHookScope(i.ID, opposite, false)
 	seed := hermesHookSeed{Status: status, Event: "agentdeck_spawn_seed", Timestamp: time.Now().Unix(), HookGeneration: generation, InitialMessagePending: pending}
 	if err := atomicHermesJSON(filepath.Join(scope, i.ID+".json"), seed); err != nil {
+		return "", err
+	}
+	// The control rename is the invalidation boundary. The seed is already
+	// durable and both possible writer scopes are locked when it becomes live.
+	if err := atomicHermesJSON(filepath.Join(scope, i.ID+".generation.json"), hermesHookControl{Generation: generation}); err != nil {
 		return "", err
 	}
 	i.HermesHookGeneration = generation
 	return generation, nil
 }
 
+func clearHermesHookScope(instanceID, dir string, preserveControl bool) {
+	_ = os.Remove(filepath.Join(dir, instanceID+".json"))
+	if !preserveControl {
+		_ = os.Remove(filepath.Join(dir, instanceID+".generation.json"))
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, "."+instanceID+"*.tmp-*"))
+	for _, p := range matches {
+		_ = os.Remove(p)
+	}
+}
+
+// clearHermesHookStatuses is safe during attach-return: it removes stale
+// status snapshots but preserves the live process's control and lock inodes.
+func (i *Instance) clearHermesHookStatuses() {
+	for _, dir := range []string{GetHooksDir(), filepath.Join(GetHooksDir(), "sandbox", i.ID)} {
+		clearHermesHookScope(i.ID, dir, true)
+	}
+}
+
 func hermesHookArtifactPaths(instanceID string) []string {
 	root := GetHooksDir()
 	var out []string
 	for _, dir := range []string{root, filepath.Join(root, "sandbox", instanceID)} {
-		out = append(out, filepath.Join(dir, instanceID+".json"), filepath.Join(dir, instanceID+".generation.json"), filepath.Join(dir, instanceID+".lock"))
+		out = append(out, filepath.Join(dir, instanceID+".json"), filepath.Join(dir, instanceID+".generation.json"))
 	}
 	return out
 }
 
 func (i *Instance) clearHermesHookArtifacts() {
-	for _, p := range hermesHookArtifactPaths(i.ID) {
-		_ = os.Remove(p)
+	if !hermesHookInstanceIDPattern.MatchString(i.ID) || strings.Contains(i.ID, "..") {
+		return
 	}
+	locks, err := acquireHermesHookLocks(i.ID)
+	if err != nil {
+		return
+	}
+	defer locks.release()
 	for _, dir := range []string{GetHooksDir(), filepath.Join(GetHooksDir(), "sandbox", i.ID)} {
-		matches, _ := filepath.Glob(filepath.Join(dir, "."+i.ID+"*.tmp-*"))
-		for _, p := range matches {
-			_ = os.Remove(p)
-		}
+		clearHermesHookScope(i.ID, dir, false)
 	}
 }
 

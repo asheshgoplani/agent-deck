@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func writeHermesControl(t *testing.T, id, generation string) {
@@ -17,6 +20,48 @@ func writeHermesControl(t *testing.T, id, generation string) {
 	b, _ := json.Marshal(map[string]any{"generation": generation, "next_sequence": 0})
 	if err := os.WriteFile(filepath.Join(getHooksDir(), id+".generation.json"), b, 0600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHermesStaleGenerationCannotMutateAnchor(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	id := "hermes-anchor"
+	writeHermesControl(t, id, "g2")
+	session.WriteHookSessionAnchor(id, "current-session")
+	t.Setenv("AGENTDECK_HOOK_GENERATION", "g1")
+	writeHookStatus(id, "dead", "old-session", "on_session_finalize", "")
+	if got := session.ReadHookSessionAnchor(id); got != "current-session" {
+		t.Fatalf("stale hook changed anchor to %q", got)
+	}
+}
+
+func TestCleanStaleHookFilesPreservesLiveGenerationControlAndLock(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	id := "hermes-long-lived"
+	writeHermesControl(t, id, "g")
+	status := filepath.Join(getHooksDir(), id+".json")
+	lock := filepath.Join(getHooksDir(), id+".lock")
+	control := filepath.Join(getHooksDir(), id+".generation.json")
+	if err := os.WriteFile(status, []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	for _, path := range []string{status, lock, control} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cleanStaleHookFiles()
+	if _, err := os.Stat(status); !os.IsNotExist(err) {
+		t.Fatalf("old status survived: %v", err)
+	}
+	for _, path := range []string{lock, control} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("live generation artifact reaped: %s: %v", path, err)
+		}
 	}
 }
 

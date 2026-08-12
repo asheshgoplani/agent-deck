@@ -47,7 +47,6 @@ type HookStatus struct {
 	CodexCompletedSessionID  string
 	HookGeneration           string
 	Sequence                 uint64
-	InitialMessagePending    bool
 	// DoneStatus/DoneSummary carry a worker-printed completion sentinel
 	// detected on the Stop edge (issue #1186). Empty for ordinary turns.
 	DoneStatus  string // "ok" or "fail" when a completion sentinel was seen
@@ -61,6 +60,33 @@ type HookStatus struct {
 	// id may bind — empty (legacy files, agents that send no cwd) means "no
 	// evidence either way" and never blocks.
 	Cwd string
+}
+
+// hookGenerationForInstance resolves generation authority by instance, not by
+// whichever layout happened to contain a status file. A mode change leaves at
+// most one control (seed clears the opposite scope); conflicting controls fail
+// closed rather than selecting a stale layout.
+func hookGenerationForInstance(instanceID string) (string, bool) {
+	root := GetHooksDir()
+	paths := []string{filepath.Join(root, "sandbox", instanceID, instanceID+".generation.json"), filepath.Join(root, instanceID+".generation.json")}
+	found := ""
+	for _, path := range paths {
+		data, err := readStatusFileNoFollow(path)
+		if err != nil {
+			continue
+		}
+		var control struct {
+			Generation string `json:"generation"`
+		}
+		if json.Unmarshal(data, &control) != nil || control.Generation == "" {
+			return "", true
+		}
+		if found != "" && found != control.Generation {
+			return "", true
+		}
+		found = control.Generation
+	}
+	return found, found != ""
 }
 
 // StatusFileWatcher watches ~/.agent-deck/hooks/ for status file changes
@@ -350,18 +376,12 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			CodexCompletedSessionID  string `json:"codex_completed_session_id"`
 			HookGeneration           string `json:"hook_generation"`
 			Sequence                 uint64 `json:"sequence"`
-			InitialMessagePending    bool   `json:"initial_message_pending"`
 		}
 		if uerr := json.Unmarshal(data, &raw); uerr != nil {
 			continue
 		}
-		if controlData, controlErr := readStatusFileNoFollow(filepath.Join(dir, instanceID+".generation.json")); controlErr == nil {
-			var control struct {
-				Generation string `json:"generation"`
-			}
-			if json.Unmarshal(controlData, &control) != nil || control.Generation == "" || raw.HookGeneration != control.Generation {
-				continue
-			}
+		if generation, controlled := hookGenerationForInstance(instanceID); controlled && raw.HookGeneration != generation {
+			continue
 		}
 		out[instanceID] = &HookStatus{
 			Status:                   raw.Status,
@@ -378,7 +398,6 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			CodexCompletedSessionID:  raw.CodexCompletedSessionID,
 			HookGeneration:           raw.HookGeneration,
 			Sequence:                 raw.Sequence,
-			InitialMessagePending:    raw.InitialMessagePending,
 		}
 	}
 }
@@ -514,7 +533,6 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		CodexCompletedSessionID  string `json:"codex_completed_session_id"`
 		HookGeneration           string `json:"hook_generation"`
 		Sequence                 uint64 `json:"sequence"`
-		InitialMessagePending    bool   `json:"initial_message_pending"`
 	}
 	if err := json.Unmarshal(data, &status); err != nil {
 		hookLog.Warn("hook_file_corrupt",
@@ -525,14 +543,8 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		)
 		return
 	}
-	controlPath := filepath.Join(filepath.Dir(filePath), instanceID+".generation.json")
-	if controlData, controlErr := readStatusFileNoFollow(controlPath); controlErr == nil {
-		var control struct {
-			Generation string `json:"generation"`
-		}
-		if json.Unmarshal(controlData, &control) != nil || control.Generation == "" || status.HookGeneration != control.Generation {
-			return
-		}
+	if generation, controlled := hookGenerationForInstance(instanceID); controlled && status.HookGeneration != generation {
+		return
 	}
 
 	hookStatus := &HookStatus{
@@ -550,7 +562,6 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		CodexCompletedSessionID:  status.CodexCompletedSessionID,
 		HookGeneration:           status.HookGeneration,
 		Sequence:                 status.Sequence,
-		InitialMessagePending:    status.InitialMessagePending,
 	}
 
 	w.mu.Lock()

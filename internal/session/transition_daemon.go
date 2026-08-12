@@ -755,7 +755,6 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		CodexCompletedSessionID  string `json:"codex_completed_session_id"`
 		HookGeneration           string `json:"hook_generation"`
 		Sequence                 uint64 `json:"sequence"`
-		InitialMessagePending    bool   `json:"initial_message_pending"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
@@ -763,14 +762,8 @@ func readHookStatusFile(instanceID string) *HookStatus {
 	if strings.TrimSpace(raw.Status) == "" {
 		return nil
 	}
-	controlPath := filepath.Join(filepath.Dir(statusPath), instanceID+".generation.json")
-	if controlData, controlErr := readStatusFileNoFollow(controlPath); controlErr == nil {
-		var control struct {
-			Generation string `json:"generation"`
-		}
-		if json.Unmarshal(controlData, &control) != nil || control.Generation == "" || raw.HookGeneration != control.Generation {
-			return nil
-		}
+	if generation, controlled := hookGenerationForInstance(instanceID); controlled && raw.HookGeneration != generation {
+		return nil
 	}
 	updatedAt := time.Now()
 	if raw.Timestamp > 0 {
@@ -791,7 +784,6 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		CodexCompletedSessionID:  raw.CodexCompletedSessionID,
 		HookGeneration:           raw.HookGeneration,
 		Sequence:                 raw.Sequence,
-		InitialMessagePending:    raw.InitialMessagePending,
 	}
 }
 
