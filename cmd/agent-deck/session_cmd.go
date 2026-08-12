@@ -3420,7 +3420,8 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 	delivery, err := sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), tun.retry)
 	res.delivery = delivery
 
-	if res.draftSaved != "" && delivery != deliveryTypedNotSubmitted {
+	if res.draftSaved != "" && delivery != deliveryTypedNotSubmitted &&
+		send.NormalizePromptText(res.draftSaved) != send.NormalizePromptText(message) {
 		if restoreErr := target.SendKeysChunked(res.draftSaved); restoreErr == nil {
 			res.draftRestored = true
 		} else {
