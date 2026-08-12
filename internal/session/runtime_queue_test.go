@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -594,6 +595,89 @@ func TestRuntimeQueueAcknowledgeOversizedCompletionIsRetained(t *testing.T) {
 	if info.Size() != wantSize {
 		t.Fatalf("oversized completion size = %d, want %d", info.Size(), wantSize)
 	}
+}
+
+func TestRuntimeQueueJSONReadBoundsGrowthAfterStat(t *testing.T) {
+	isolateRuntimeQueue(t)
+	statPath := filepath.Join(t.TempDir(), "below-limit")
+	if err := os.WriteFile(statPath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(statPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &countingRuntimeQueueReader{Reader: io.LimitReader(runtimeQueueByteReader{}, MaxRuntimeQueueBytes+2)}
+	fake := &growingRuntimeQueueSidecar{Reader: source, info: info}
+	oldOpen := runtimeQueueOpen
+	runtimeQueueOpen = func(string) (runtimeQueueSidecarFile, error) { return fake, nil }
+	t.Cleanup(func() { runtimeQueueOpen = oldOpen })
+
+	var completion runtimeQueueCompletion
+	exists, err := readRuntimeQueueJSONLocked("growing-sidecar", &completion)
+	if !exists {
+		t.Fatal("growing sidecar reported missing")
+	}
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("growing sidecar error = %v, want size error", err)
+	}
+	if source.bytesRead != MaxRuntimeQueueBytes+1 {
+		t.Fatalf("source bytes read = %d, want bounded read of %d", source.bytesRead, MaxRuntimeQueueBytes+1)
+	}
+	if !fake.closed {
+		t.Fatal("growing sidecar was not closed")
+	}
+}
+
+func TestRuntimeQueueCompletionAtExactSizePassesSizeGuard(t *testing.T) {
+	isolateRuntimeQueue(t)
+	const id = "exact-limit-completion"
+	const prefix = `{"token":"`
+	const suffix = `"}` + "\n"
+	content := []byte(prefix + strings.Repeat("x", MaxRuntimeQueueBytes-len(prefix)-len(suffix)) + suffix)
+	if len(content) != MaxRuntimeQueueBytes {
+		t.Fatalf("completion fixture size = %d, want %d", len(content), MaxRuntimeQueueBytes)
+	}
+	completion := runtimeQueueCompletionPathFor(id)
+	if err := os.MkdirAll(filepath.Dir(completion), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(completion, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := AcknowledgeRuntimeQueue(id, "different-token")
+	if err == nil || strings.Contains(err.Error(), "exceeds") || !strings.Contains(err.Error(), "no matching staged batch") {
+		t.Fatalf("exact-limit completion error = %v, want normal acknowledgment validation", err)
+	}
+}
+
+type countingRuntimeQueueReader struct {
+	io.Reader
+	bytesRead int
+}
+
+type runtimeQueueByteReader struct{}
+
+func (runtimeQueueByteReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	return len(p), nil
+}
+
+type growingRuntimeQueueSidecar struct {
+	io.Reader
+	info   os.FileInfo
+	closed bool
+}
+
+func (f *growingRuntimeQueueSidecar) Stat() (os.FileInfo, error) { return f.info, nil }
+func (f *growingRuntimeQueueSidecar) Close() error               { f.closed = true; return nil }
+
+func (r *countingRuntimeQueueReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.bytesRead += n
+	return n, err
 }
 
 func TestRuntimeQueueAcknowledgePersistenceFailureLeavesQueueAndWAL(t *testing.T) {

@@ -13,8 +13,12 @@ set -euo pipefail
 
 case "$*" in
   "session children --json")
-    cat <<'JSON'
-{"parent_context_tokens":1000,"children":[{"id":"archived-id","title":"archived-child","status":"running","context_tokens":9000,"archived":true},{"id":"false-id","title":"false-child","status":"waiting","context_tokens":8000,"archived":false},{"id":"legacy-id","title":"legacy-child","status":"archived","context_tokens":7000}]}
+    archived=true
+    if [ "${FIXTURE_PHASE:-archived}" = "active" ]; then
+      archived=false
+    fi
+    cat <<JSON
+{"parent_context_tokens":1000,"children":[{"id":"archived-id","title":"archived-child","status":"running","context_tokens":900000,"archived":${archived}},{"id":"false-id","title":"false-child","status":"waiting","context_tokens":8000,"archived":false},{"id":"legacy-id","title":"legacy-child","status":"archived","context_tokens":7000}]}
 JSON
     ;;
   "session show --json")
@@ -61,5 +65,16 @@ assert_absent "$main" "archived-child"
 assert_contains "$main" "false-child"
 assert_contains "$main" "legacy-child: archived/"
 assert_contains "$main" "2 children"
+
+active="$(FIXTURE_PHASE=active bash "$TMP/poll.sh")"
+assert_contains "$active" "archived-child=HARD"
+
+gone="$(FIXTURE_PHASE=archived bash "$TMP/poll.sh")"
+[ "$(printf '%s\n' "$gone" | awk '$0 == "GONE    archived-child" { n++ } END { print n+0 }')" -eq 1 ]
+assert_absent "$gone" "archived-child=HARD"
+
+stable="$(FIXTURE_PHASE=archived bash "$TMP/poll.sh")"
+assert_absent "$stable" "GONE    archived-child"
+assert_absent "$stable" "archived-child=HARD"
 
 printf '%s\n' 'poll archived filter fixture: ok'

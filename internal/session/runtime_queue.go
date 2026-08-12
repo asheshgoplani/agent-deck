@@ -166,8 +166,15 @@ var (
 	runtimeQueueNow        = time.Now
 	runtimeQueuePersist    = writeFileDurable
 	runtimeQueueRemove     = os.Remove
+	runtimeQueueOpen       = func(path string) (runtimeQueueSidecarFile, error) { return os.Open(path) }
 	runtimeQueueStageEnter = func() {}
 )
+
+type runtimeQueueSidecarFile interface {
+	io.Reader
+	Stat() (fs.FileInfo, error)
+	Close() error
+}
 
 func RuntimeQueueDir() string {
 	dir, err := dataPath("runtime-queues", "runtime-queues")
@@ -317,7 +324,7 @@ func removeRuntimeQueueWALLocked(id string) error {
 }
 
 func readRuntimeQueueJSONLocked(path string, value any) (bool, error) {
-	f, err := os.Open(path)
+	f, err := runtimeQueueOpen(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}

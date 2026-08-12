@@ -74,6 +74,7 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 				"DECIDING_FIELDS=outcome,status",
 			},
 			requiredRendered: []string{
+				"Answer only this question, without reading another arm's conclusions",
 				"For every command, record the exact command, exit status, timestamps, and the deciding evidence",
 				"The schema-valid artifact must include the arm ID and question, run and system provenance, producer identity",
 				"start and completion timestamps, command exits and evidence",
@@ -93,6 +94,7 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 			},
 			requiredRendered: []string{
 				"fixed recon artifact contract", "Before consuming the arms array",
+				"require the completion field to be true",
 				"report outcome must be `inconclusive`; it can never be `pass`",
 				"Adjudicate conflicting arm evidence explicitly instead of selecting the convenient result",
 				"Record each first failure, its diagnosis, whether the single allowed clean rerun occurred, both attempts' evidence, and the repeated-failure classification",
@@ -117,6 +119,7 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 	commonSafety := []string{
 		"Do not brainstorm, redesign, modify the product",
 		"temporary sibling used solely for atomic replacement",
+		"Evidence must be fresh at or after `2026-08-10T18:00:00Z`",
 		"consumer must first validate the expected schema, provenance, producer completion, and freshness, and only then read the deciding fields where possible",
 		"preserve the complete first-failure evidence and diagnose whether it came from product behavior, the harness, the environment, or licensing",
 		"Permit at most one clean rerun by default",

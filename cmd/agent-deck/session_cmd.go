@@ -20,6 +20,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/sessionstatus"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
@@ -2660,6 +2661,35 @@ func fetchHookDrivenStatus(profile, sessionRef string) (string, error) {
 	if inst == nil {
 		return "", fmt.Errorf("%s", errMsg)
 	}
+	return hookDrivenStatus(inst), nil
+}
+
+// fetchHookDrivenInstanceStatus reloads a previously resolved target by its
+// immutable ID. Queue routing uses the returned instance for eligibility,
+// status, and destination so a concurrent rename or lifecycle update cannot
+// mix snapshots or redirect a title-based send to another session.
+func fetchHookDrivenInstanceStatus(profile, sessionID string) (*session.Instance, string, error) {
+	_, instances, _, err := loadSessionData(profile)
+	if err != nil {
+		return nil, "", err
+	}
+	var inst *session.Instance
+	for _, candidate := range instances {
+		if candidate.ID == sessionID {
+			inst = candidate
+			break
+		}
+	}
+	if inst == nil {
+		return nil, "", fmt.Errorf("session '%s' not found", sessionID)
+	}
+	return inst, hookDrivenStatus(inst), nil
+}
+
+var sessionSendQueueStatus = fetchHookDrivenInstanceStatus
+var sessionSendQueueEnqueue = session.EnqueueRuntimeMessage
+
+func hookDrivenStatus(inst *session.Instance) string {
 	// Cold-load the on-disk hook file into the instance — a fresh CLI process
 	// has no StatusFileWatcher, so the target's newest hook edge only reaches us
 	// by re-reading it from disk each poll.
@@ -2671,10 +2701,10 @@ func fetchHookDrivenStatus(profile, sessionRef string) (string, error) {
 	// a pane-diff heuristic. Fall back to the full list --json pipeline when no
 	// fresh hook signal exists (non-hook tools, or a stale/absent hook file).
 	if hs, fresh := inst.GetHookStatus(); fresh && hs != "" {
-		return hs, nil
+		return hs
 	}
 	_ = inst.UpdateStatus()
-	return StatusString(inst.Status), nil
+	return StatusString(inst.Status)
 }
 
 // handleSessionSend sends a message to a running session
@@ -2690,6 +2720,7 @@ func handleSessionSend(profile string, args []string) {
 	draft := fs.Bool("draft", false, "Pre-fill the prompt without submitting (incompatible with --wait/--stream/--no-wait)")
 	messageFile := fs.String("message-file", "", "Read the message from a file ('-' for stdin) instead of a positional argument; avoids shell quoting of long prompts")
 	deferIfBusy := fs.Bool("defer-if-busy", false, "Hold delivery until the target is idle (turn-finished, hook-driven) instead of interrupting a mid-generation turn (incompatible with --no-wait)")
+	queueIfBusy := fs.Bool("queue-if-busy", false, "Queue delivery when a hook-capable target is busy; otherwise send immediately")
 	deferTimeout := durationFlag(fs, "defer-timeout", 30*time.Minute, "Max time --defer-if-busy holds a busy target before dropping the message with a non-zero exit")
 	timeout := durationFlag(fs, "timeout", 10*time.Minute, "Max time to wait for the agent to become ready and (with --wait) to finish processing")
 	streamIdle := durationFlag(fs, "stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
@@ -2713,6 +2744,7 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send my-project --message-file answer.md   # long reply from file")
 		fmt.Println("  git diff | agent-deck session send my-project --message-file -   # message from stdin")
 		fmt.Println("  agent-deck session send parent \"child done\" --defer-if-busy --defer-timeout 30m")
+		fmt.Println("  agent-deck session send parent \"follow-up\" --queue-if-busy   # queue only while parent is working")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -2731,6 +2763,11 @@ func handleSessionSend(profile string, args []string) {
 
 	if *stream && *wait {
 		out.Error("--stream and --wait are mutually exclusive", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	if *queueIfBusy && (*noWait || *wait || *stream || *draft || *deferIfBusy) {
+		out.Error("--queue-if-busy is incompatible with --no-wait, --wait, --stream, --draft, and --defer-if-busy", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -2769,6 +2806,50 @@ func handleSessionSend(profile string, args []string) {
 		}
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
+	}
+
+	if *queueIfBusy {
+		// Re-read by immutable ID and use this one snapshot for every queue
+		// decision. The title used at initial resolution may change concurrently.
+		queueInst, status, statusErr := sessionSendQueueStatus(profile, inst.ID)
+		if statusErr != nil {
+			out.Error(fmt.Sprintf("failed to refresh session '%s' for queueing: %v", inst.Title, statusErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		inst = queueInst
+		switch {
+		case inst.IsArchived():
+			out.Error(fmt.Sprintf("session '%s' is archived", inst.Title), ErrCodeInvalidOperation)
+			os.Exit(1)
+		case inst.Status == session.StatusStopped:
+			out.Error(fmt.Sprintf("session '%s' is stopped", inst.Title), ErrCodeInvalidOperation)
+			os.Exit(1)
+		case !sessionstatus.IsHookEmittingTool(inst.Tool):
+			out.Error(fmt.Sprintf("session '%s' does not support hook-driven queueing", inst.Title), ErrCodeInvalidOperation)
+			os.Exit(1)
+		case !inst.Exists():
+			out.Error(fmt.Sprintf("session '%s' is not running", inst.Title), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+
+		if send.StatusIsBusy(status) {
+			depth, enqueueErr := sessionSendQueueEnqueue(inst.ID, message)
+			if enqueueErr != nil {
+				if errors.Is(enqueueErr, session.ErrRuntimeQueueFull) {
+					out.Error(fmt.Sprintf("runtime message queue for '%s' is full", inst.Title), ErrCodeQueueFull)
+				} else {
+					out.Error(fmt.Sprintf("failed to queue message for '%s': %v", inst.Title, enqueueErr), ErrCodeDeliveryFailed)
+				}
+				os.Exit(1)
+			}
+			out.Success(fmt.Sprintf("Queued message for '%s'", inst.Title), map[string]interface{}{
+				"success":     true,
+				"queued":      true,
+				"session_id":  inst.ID,
+				"queue_depth": depth,
+			})
+			return
+		}
 	}
 
 	// --stream is Claude-only in Phase 1. Non-Claude tools error cleanly
@@ -4706,12 +4787,17 @@ func isValidSessionColor(v string) bool {
 	return session.IsValidSessionColor(v)
 }
 
-// childrenOf returns the direct sub-sessions of parentID, preserving the input
-// order. Pure helper so the filtering is unit-testable without a live registry.
+// childrenOf returns the active direct sub-sessions of parentID, preserving
+// the input order. Archived children are absent from ordinary fleet snapshots
+// so conductor context and polling do not keep supervising retired work.
 func childrenOf(parentID string, instances []*session.Instance) []*session.Instance {
+	return childrenOfWithArchived(parentID, instances, false)
+}
+
+func childrenOfWithArchived(parentID string, instances []*session.Instance, includeArchived bool) []*session.Instance {
 	var out []*session.Instance
 	for _, inst := range instances {
-		if inst != nil && inst.ParentSessionID == parentID {
+		if inst != nil && inst.ParentSessionID == parentID && (includeArchived || !inst.IsArchived()) {
 			out = append(out, inst)
 		}
 	}
@@ -4732,6 +4818,7 @@ func handleSessionChildren(profile string, args []string) {
 	interval := durationFlag(fs, "interval", 2*time.Second, "Poll interval for --follow")
 	heartbeat := durationFlag(fs, "heartbeat", 60*time.Second, "Heartbeat event interval for --follow (0 disables)")
 	untilDone := fs.Bool("until-done", false, "With --follow: exit 0 once every child is terminal (done sentinel, error, or stopped)")
+	includeArchived := fs.Bool("include-archived", false, "Include archived children for inspection")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session children [id|title] [options]")
 		fmt.Println()
@@ -4801,10 +4888,10 @@ func handleSessionChildren(profile string, args []string) {
 		case "codex", "claude":
 			ownerID = strings.TrimSpace(os.Getenv("AGENTDECK_INSTANCE_ID"))
 		}
-		os.Exit(runChildrenFollow(profile, parent.ID, ownerID, *interval, *heartbeat, *untilDone, os.Stdout))
+		os.Exit(runChildrenFollowWithArchived(profile, parent.ID, ownerID, *interval, *heartbeat, *untilDone, *includeArchived, os.Stdout))
 	}
 
-	kids := childrenOf(parent.ID, instances)
+	kids := childrenOfWithArchived(parent.ID, instances, *includeArchived)
 	session.RefreshInstancesForCLIStatus(kids)
 
 	rows := buildChildRows(kids, storage.GetDB())
@@ -4831,7 +4918,11 @@ func handleSessionChildren(profile string, args []string) {
 		if row.ContextTokens > 0 {
 			ctx = fmt.Sprintf("  ctx=%dk", row.ContextTokens/1000)
 		}
-		fmt.Fprintf(&human, "  %s  %-20s  %-8s  done=%s%s  %s\n", row.ID, row.Title, row.Status, done, ctx, row.DoneSummary)
+		archived := ""
+		if row.Archived {
+			archived = "  archived"
+		}
+		fmt.Fprintf(&human, "  %s  %-20s  %-8s  done=%s%s%s  %s\n", row.ID, row.Title, row.Status, done, ctx, archived, row.DoneSummary)
 	}
 	if len(kids) == 0 {
 		human.WriteString("  (no sub-sessions)\n")

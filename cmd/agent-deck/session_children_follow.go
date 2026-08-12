@@ -16,6 +16,7 @@ type childRow struct {
 	ID                     string `json:"id"`
 	Title                  string `json:"title"`
 	Status                 string `json:"status"`
+	Archived               bool   `json:"archived,omitempty"`
 	PeerName               string `json:"peer_name,omitempty"`
 	PeerMessagingCandidate bool   `json:"peer_messaging_candidate,omitempty"`
 	DoneStatus             string `json:"done_status,omitempty"`
@@ -46,6 +47,7 @@ type followEvent struct {
 	ID                     string `json:"id,omitempty"`
 	Title                  string `json:"title,omitempty"`
 	Status                 string `json:"status,omitempty"`
+	Archived               bool   `json:"archived,omitempty"`
 	PeerName               string `json:"peer_name,omitempty"`
 	PeerMessagingCandidate bool   `json:"peer_messaging_candidate,omitempty"`
 	From                   string `json:"from,omitempty"`
@@ -189,7 +191,7 @@ func buildChildRows(kids []*session.Instance, db *statedb.StateDB) []childRow {
 	rows := make([]childRow, 0, len(kids))
 	for _, k := range kids {
 		_ = k.UpdateStatus()
-		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status)}
+		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status), Archived: k.IsArchived()}
 		if k.PeerMessagingCandidate() {
 			row.PeerName = k.ClaudePeerName()
 			row.PeerMessagingCandidate = true
@@ -232,10 +234,24 @@ func parentContextFields(tokens int, ok bool) (suffix string, emit bool) {
 func snapshotEvent(event string, r childRow) followEvent {
 	return followEvent{
 		Event: event, ID: r.ID, Title: r.Title, Status: r.Status,
+		Archived: r.Archived,
 		PeerName: r.PeerName, PeerMessagingCandidate: r.PeerMessagingCandidate,
 		DoneStatus: r.DoneStatus, DoneSummary: r.DoneSummary, DoneAt: r.DoneAt,
 		DoneStale: r.DoneStale, LastSentAt: r.LastSentAt, ContextTokens: r.ContextTokens,
 	}
+}
+
+func filterChildRowsByArchive(rows []childRow, includeArchived bool) []childRow {
+	if includeArchived || len(rows) == 0 {
+		return rows
+	}
+	active := make([]childRow, 0, len(rows))
+	for _, row := range rows {
+		if !row.Archived {
+			active = append(active, row)
+		}
+	}
+	return active
 }
 
 // diffChildEvents computes the events between two polls. Order: current
@@ -333,6 +349,8 @@ func summarizeChildren(event string, rows []childRow) followSummary {
 // so tests can drive the loop without standing up storage.
 var pollChildRows = loadChildRows
 
+var pollChildRowsIncludingArchived = loadChildRowsIncludingArchived
+
 // pollFollowOwnerRunning reports whether the agent session that started a
 // follow stream is still executing a turn. Codex keeps subprocess pipes open
 // across completed turns, so stdout never closes and ordinary SIGPIPE cleanup
@@ -361,13 +379,27 @@ func loadFollowOwnerRunning(profile, ownerID string) (bool, error) {
 // status refresh, row build. Storage is closed before returning so the poll
 // loop never accumulates DB handles.
 func loadChildRows(profile, parentID string) ([]childRow, error) {
+	return loadChildRowsWithArchived(profile, parentID, false)
+}
+
+func loadChildRowsIncludingArchived(profile, parentID string) ([]childRow, error) {
+	return loadChildRowsWithArchived(profile, parentID, true)
+}
+
+func loadChildRowsWithArchived(profile, parentID string, includeArchived bool) ([]childRow, error) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = storage.Close() }()
 
-	kids, parentExists, err := storage.LoadChildInstances(parentID)
+	var kids []*session.Instance
+	var parentExists bool
+	if includeArchived {
+		kids, parentExists, err = storage.LoadChildInstancesIncludingArchived(parentID)
+	} else {
+		kids, parentExists, err = storage.LoadChildInstances(parentID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -392,6 +424,10 @@ func loadChildRows(profile, parentID string) ([]childRow, error) {
 // terminal" and completes immediately. Callers that mean to watch for children
 // yet to be spawned must attach after at least one child exists.
 func runChildrenFollow(profile, parentID, ownerID string, interval, heartbeat time.Duration, untilDone bool, w io.Writer) int {
+	return runChildrenFollowWithArchived(profile, parentID, ownerID, interval, heartbeat, untilDone, false, w)
+}
+
+func runChildrenFollowWithArchived(profile, parentID, ownerID string, interval, heartbeat time.Duration, untilDone, includeArchived bool, w io.Writer) int {
 	// emit reports whether the stream is still writable. A consumer that goes
 	// away mid-stream (`... | head -1`) makes every later write fail; without
 	// this the loop would keep polling the DB forever with nowhere to write.
@@ -410,9 +446,13 @@ func runChildrenFollow(profile, parentID, ownerID string, interval, heartbeat ti
 	failures := 0
 	ownerNotRunning := 0
 	lastHeartbeat := time.Now()
+	poll := pollChildRows
+	if includeArchived {
+		poll = pollChildRowsIncludingArchived
+	}
 
 	for {
-		rows, err := pollChildRows(profile, parentID)
+		rows, err := poll(profile, parentID)
 		if err != nil {
 			failures++
 			if !emit(followEvent{Event: "error", Error: err.Error()}) {
@@ -423,6 +463,7 @@ func runChildrenFollow(profile, parentID, ownerID string, interval, heartbeat ti
 			}
 		} else {
 			failures = 0
+			rows = filterChildRowsByArchive(rows, includeArchived)
 			if first {
 				for _, r := range rows {
 					if !emit(snapshotEvent("snapshot", r)) {

@@ -398,6 +398,52 @@ func TestMigrateConductorToProfile_MovesChildren(t *testing.T) {
 	}
 }
 
+func TestMigrateConductorToProfile_MovesArchivedChildAndPreservesArchiveTime(t *testing.T) {
+	src, dst := migrateTestSetup(t, "src", "dst")
+
+	conductor := makeRow("cond-archived", ConductorSessionTitle("archived-fleet"), DefaultGroupPath)
+	conductor.IsConductor = true
+	conductor.ParentSessionID = ""
+	seedSession(t, src.GetDB(), conductor)
+
+	archivedAt := time.Unix(1786464000, 0).UTC()
+	child := makeRow("worker-archived", "archived-worker", DefaultGroupPath)
+	child.ParentSessionID = conductor.ID
+	child.ArchivedAt = archivedAt
+	seedSession(t, src.GetDB(), child)
+
+	if err := SaveConductorMeta(&ConductorMeta{
+		Name:    "archived-fleet",
+		Agent:   ConductorAgentClaude,
+		Profile: "src",
+	}); err != nil {
+		t.Fatalf("seed conductor meta: %v", err)
+	}
+
+	result, err := MigrateConductorToProfile("archived-fleet", "src", "dst", ProfileMigrateOptions{})
+	if err != nil {
+		t.Fatalf("migrate conductor: %v", err)
+	}
+	if len(result.MovedSessionIDs) != 2 {
+		t.Fatalf("moved ids = %v, want conductor and archived child", result.MovedSessionIDs)
+	}
+	if got, err := src.GetDB().LoadInstanceByID(child.ID); err != nil {
+		t.Fatalf("load archived child from source: %v", err)
+	} else if got != nil {
+		t.Fatalf("archived child remained in source: %+v", got)
+	}
+	got, err := dst.GetDB().LoadInstanceByID(child.ID)
+	if err != nil {
+		t.Fatalf("load archived child from destination: %v", err)
+	}
+	if got == nil {
+		t.Fatal("destination missing archived child")
+	}
+	if !got.ArchivedAt.Equal(archivedAt) {
+		t.Fatalf("archived_at = %v, want %v", got.ArchivedAt, archivedAt)
+	}
+}
+
 func TestMigrateConductorToProfile_AtomicMetaWriteNoTempLeftover(t *testing.T) {
 	src, _ := migrateTestSetup(t, "src", "dst")
 

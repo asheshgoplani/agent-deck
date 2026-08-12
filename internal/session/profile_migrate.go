@@ -163,7 +163,7 @@ func MigrateConductorToProfile(name, sourceProfile, targetProfile string, opts P
 	// after the conductor row leaves src but before all workers do, a re-run
 	// hits the dstConductor != nil branch above with conductorID == dstConductor.ID
 	// and still sweeps the stranded workers.
-	srcChildren, err := src.LoadInstanceChildren(conductorID)
+	srcChildren, err := src.LoadInstanceChildrenIncludingArchived(conductorID)
 	if err != nil {
 		return nil, fmt.Errorf("load conductor children from src: %w", err)
 	}
