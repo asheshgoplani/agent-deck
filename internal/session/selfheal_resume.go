@@ -98,16 +98,23 @@ const (
 		"window was exhausted. The usage window may have reset. Continue exactly where you left off. " +
 		"IMPORTANT: if you had dispatched a subagent when the limit hit, that subagent was terminated " +
 		"by the limit and its work was NOT saved — re-dispatch it rather than assuming it finished."
+
+	resumePromptModelCapacity = "[agent-deck self-heal] Your selected model was at capacity. Capacity may have cleared. " +
+		"Continue exactly where you left off using the selected model."
 )
 
 // resumePromptFor picks the prompt for a candidate's substate. It reads the
 // substate rather than the audit's action_params so the executor cannot be
 // steered by a malformed params map.
 func resumePromptFor(s tmux.Substate) string {
-	if s == tmux.SubstateUsageLimit {
+	switch s {
+	case tmux.SubstateUsageLimit:
 		return resumePromptUsageLimit
+	case tmux.SubstateModelUnavailable:
+		return resumePromptModelCapacity
+	default:
+		return resumePromptTransport
 	}
-	return resumePromptTransport
 }
 
 // ResumeExecutor is the selfheal.ActionExecutor for ActionResume.

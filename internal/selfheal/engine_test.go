@@ -75,8 +75,8 @@ func TestObserve_ConfirmedCandidate_LogsWouldHave_NoAction(t *testing.T) {
 	if reads < 3 {
 		t.Fatalf("model_unavailable should need >=3 reads (dwell 90s + 2-read confirm), took %d", reads)
 	}
-	if act.WouldHave != ActionRestartModelSwitch {
-		t.Fatalf("would_have: want restart_model_switch, got %q", act.WouldHave)
+	if act.WouldHave != ActionResume {
+		t.Fatalf("would_have: want resume, got %q", act.WouldHave)
 	}
 	if act.Action != ActionNone {
 		t.Fatalf("OBSERVE MUST TAKE NO ACTION: action field = %q", act.Action)
@@ -245,7 +245,7 @@ func TestObserve_PerSubstate_WouldHave(t *testing.T) {
 		want Action
 		mk   func() Candidate
 	}{
-		{tmux.SubstateModelUnavailable, ActionRestartModelSwitch, func() Candidate {
+		{tmux.SubstateModelUnavailable, ActionResume, func() Candidate {
 			return Candidate{SessionID: "m", Substate: tmux.SubstateModelUnavailable, OutputSig: "x"}
 		}},
 		{tmux.SubstateAuth401, ActionRestartReassertCreds, func() Candidate {
@@ -267,6 +267,16 @@ func TestObserve_PerSubstate_WouldHave(t *testing.T) {
 		if ev.Action != ActionNone {
 			t.Fatalf("%s: observe took an action %q", tc.sub, ev.Action)
 		}
+	}
+}
+
+func TestActionParams_ModelUnavailable_RecordsCapacityRetry(t *testing.T) {
+	params := actionParams(tmux.SubstateModelUnavailable)
+	if params["reason"] != "model_capacity" {
+		t.Fatalf("reason = %q, want model_capacity", params["reason"])
+	}
+	if _, ok := params["model"]; ok {
+		t.Fatalf("capacity retry must not record a model switch: %#v", params)
 	}
 }
 

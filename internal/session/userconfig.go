@@ -281,8 +281,9 @@ type SelfHealSettings struct {
 	// Mode is the authority level:
 	//   "observe"       (DEFAULT) — logs would_have, takes no action.
 	//   "resume"                  — authorises exactly one path: deliver a single
-	//                               continuation prompt to a session wedged by a
-	//                               transport error (api-error) or an exhausted
+	//                               continuation prompt to a session whose model is
+	//                               at capacity (model-unavailable), is wedged by a
+	//                               transport error (api-error), or has an exhausted
 	//                               usage window (usage-limit). Every other action
 	//                               still refuses.
 	//   "single_action" / "full"  — Stages 2-3, DEFINED but GUARDED, refuse to act.
@@ -318,8 +319,9 @@ type SelfHealSettings struct {
 // engine. The string return matches selfheal.Mode values.
 //
 // "resume" is the ONE acting mode: it authorises exactly (resume mode × resume
-// action) — deliver a single continuation prompt to a session wedged by a
-// transport error or an exhausted usage window — and nothing else.
+// action) — deliver a single continuation prompt to a session whose model is
+// at capacity, is wedged by a transport error, or has an exhausted usage window
+// — and nothing else.
 // "single_action" / "full" remain DEFINED but GUARDED.
 func (s SelfHealSettings) SelfHealMode() string {
 	switch s.Mode {

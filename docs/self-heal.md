@@ -27,9 +27,11 @@ All keys live under `[selfheal]` in `config.toml`.
   done in the audit, and takes no action. The engine holds no executor at all,
   so "observe takes no action" is structural, not a runtime check.
 - **`resume`** — the one acting mode. It authorises exactly one thing: deliver a
-  single continuation prompt to a session wedged by a transport error
-  (`api-error`) or an exhausted usage window (`usage-limit`). Every other action
-  — including restarts — still refuses. The prompt goes through the same
+  single continuation prompt to a session whose selected model is at capacity
+  (`model-unavailable`), is wedged by a transport error (`api-error`), or has an
+  exhausted usage window (`usage-limit`). Capacity recovery keeps the selected
+  model; it never selects a fallback model or restarts the session. Every other
+  action — including restarts — still refuses. The prompt goes through the same
   verified send path `session nudge` uses, so it inherits that path's
   composer-draft guard, submit verification and Escape+Enter escalation.
 - **`single_action`, `full`** — defined but guarded. They refuse to act.

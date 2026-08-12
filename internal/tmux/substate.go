@@ -94,6 +94,7 @@ const (
 var modelUnavailableSubstrings = []string{
 	"is currently unavailable",
 	"model is currently unavailable",
+	"Selected model is at capacity",
 }
 
 // crunchedNoopMarker matches the "Crunched for 0s" zero-work completion the

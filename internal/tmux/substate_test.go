@@ -36,6 +36,11 @@ func TestClassifySubstate_ModelUnavailable(t *testing.T) {
 			name:    "model unavailable lowercase variant",
 			content: "The model is currently unavailable, retrying...\n❯ ",
 		},
+		{
+			name: "selected model at capacity banner",
+			content: "⚠ Selected model is at capacity. Please try a different model.\n" +
+				"\n❯ ",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

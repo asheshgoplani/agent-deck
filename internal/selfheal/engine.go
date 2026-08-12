@@ -491,7 +491,7 @@ func (e *Engine) executeIfAuthorized(c Candidate, would Action) (string, Action,
 func actionParams(s tmux.Substate) map[string]any {
 	switch s {
 	case tmux.SubstateModelUnavailable:
-		return map[string]any{"model": "opus", "reissue": true}
+		return map[string]any{"reason": "model_capacity"}
 	case tmux.SubstateAuth401:
 		return map[string]any{"reassert_creds": true}
 	case tmux.SubstateAPIError:

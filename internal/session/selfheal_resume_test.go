@@ -140,6 +140,28 @@ func TestSelfHealResume_PromptDiffersByReason(t *testing.T) {
 	}
 }
 
+func TestSelfHealResume_ModelCapacity_PreservesSelectedModel(t *testing.T) {
+	f := &fakeSend{delivery: "submitted"}
+	x := executorWith(t, f, &Instance{ID: "s1"})
+
+	if _, err := x.Execute(resumeCandidate("s1", tmux.SubstateModelUnavailable), selfheal.ActionResume); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("want one delivery, got %d", len(f.calls))
+	}
+	prompt := strings.ToLower(f.calls[0].message)
+	if !strings.Contains(prompt, "at capacity") {
+		t.Fatalf("capacity retry prompt must name the condition, got %q", f.calls[0].message)
+	}
+	if !strings.Contains(prompt, "selected model") {
+		t.Fatalf("capacity retry prompt must preserve the selected model, got %q", f.calls[0].message)
+	}
+	if strings.Contains(prompt, "different model") || strings.Contains(prompt, "switch model") {
+		t.Fatalf("capacity retry must not request a model change, got %q", f.calls[0].message)
+	}
+}
+
 // Neither prompt may assert recovery as FACT. Nothing on this path checks
 // reachability, and the schedule that released a usage-limit send is frequently
 // the flat backoff guess rather than a parsed reset — so a strong claim is

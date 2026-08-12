@@ -149,7 +149,7 @@ func TestEvaluate_IdleAfterSend_NotDwelled_Skips(t *testing.T) {
 // Each stuck substate maps to the correct would_have action (§2.4).
 func TestWouldHaveAction_PerSubstate(t *testing.T) {
 	cases := map[tmux.Substate]Action{
-		tmux.SubstateModelUnavailable:  ActionRestartModelSwitch,
+		tmux.SubstateModelUnavailable:  ActionResume,
 		tmux.SubstateAuth401:           ActionRestartReassertCreds,
 		tmux.SubstateIdleAtEmptyPrompt: ActionResend,
 	}

@@ -39,7 +39,7 @@ const (
 	// ModeResume is the ONE authorised acting mode: it permits exactly the pair
 	// (ModeResume, ActionResume) and nothing else. It exists so the owner can
 	// approve one narrow new path — deliver a single continuation prompt to a
-	// session wedged by a transport error or a usage limit — without reopening
+	// session wedged by model capacity, a transport error, or a usage limit — without reopening
 	// single_action / full, which stay HELD pending the §9 gap-fixes. Not the
 	// default: [selfheal] mode ships as "observe".
 	ModeResume Mode = "resume"
@@ -60,8 +60,8 @@ const (
 	// (idle_at_empty_prompt, §2.3).
 	ActionResend Action = "resend"
 	// ActionResume — deliver ONE continuation prompt through the verified
-	// `session nudge` send path (api-error, usage-limit). Params carry
-	// {"reason": "transport"} or {"reason": "usage_limit"}.
+	// `session nudge` send path (model-unavailable, api-error, usage-limit).
+	// Params identify the recovery reason.
 	//
 	// Deliberately not ActionResend: "resend" means replay the last intent,
 	// which can redo work when a turn partially completed and has nothing to
@@ -116,11 +116,11 @@ var stuckDwellThresholds = map[tmux.Substate]time.Duration{
 // actionForSubstate maps a confirmed stuck substate to the action self-heal
 // would take FIRST (§2.4). Observe mode records this as would_have.
 var actionForSubstate = map[tmux.Substate]Action{
-	tmux.SubstateModelUnavailable:  ActionRestartModelSwitch,
+	tmux.SubstateModelUnavailable:  ActionResume,
 	tmux.SubstateAuth401:           ActionRestartReassertCreds,
 	tmux.SubstateIdleAtEmptyPrompt: ActionResend,
-	// Both recover the same way: one continuation prompt through the verified
-	// send path. Only these two are ever executable, and only under ModeResume.
+	// These recover the same way: one continuation prompt through the verified
+	// send path. Only resume actions are executable, and only under ModeResume.
 	tmux.SubstateAPIError:   ActionResume,
 	tmux.SubstateUsageLimit: ActionResume,
 }
