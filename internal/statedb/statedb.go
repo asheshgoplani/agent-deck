@@ -1804,6 +1804,86 @@ func (s *StateDB) CompleteLifecycleIntent(instanceID, token string) error {
 	})
 }
 
+// CompleteLifecycleIntentGuarded validates and retires an intent while holding
+// SQLite's write reservation. The callback runs only for the durable intent
+// that owns instanceID/token, so external cleanup cannot race a replacement
+// intent or a reused instance generation.
+func (s *StateDB) CompleteLifecycleIntentGuarded(instanceID, token string, guarded func(LifecycleIntent) error) error {
+	return withBusyRetry(func() error {
+		conn, err := s.db.Conn(context.Background())
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+			return err
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+			}
+		}()
+
+		var intent LifecycleIntent
+		err = conn.QueryRowContext(context.Background(), `SELECT instance_id, kind, payload, phase, token, generation, created_at, updated_at
+			FROM lifecycle_intents WHERE instance_id=? AND token=?`, instanceID, token).
+			Scan(&intent.InstanceID, &intent.Kind, &intent.Payload, &intent.Phase, &intent.Token, &intent.Generation, &intent.CreatedAt, &intent.UpdatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			var currentToken string
+			err = conn.QueryRowContext(context.Background(), "SELECT token FROM lifecycle_intents WHERE instance_id=?", instanceID).Scan(&currentToken)
+			if errors.Is(err, sql.ErrNoRows) {
+				if _, commitErr := conn.ExecContext(context.Background(), "COMMIT"); commitErr != nil {
+					return commitErr
+				}
+				committed = true
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			return ErrLifecycleIntentOwnership
+		}
+		if err != nil {
+			return err
+		}
+
+		var liveGeneration int64
+		err = conn.QueryRowContext(context.Background(), "SELECT COALESCE((SELECT generation FROM instance_tombstones WHERE id=instances.id), 0) FROM instances WHERE id=?", instanceID).Scan(&liveGeneration)
+		if err == nil {
+			if liveGeneration == 0 {
+				liveGeneration = 1
+			}
+			if intent.Generation == 0 || intent.Generation != liveGeneration {
+				return ErrLifecycleIntentOwnership
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+
+		if guarded != nil {
+			if err := guarded(intent); err != nil {
+				return err
+			}
+		}
+		result, err := conn.ExecContext(context.Background(), "DELETE FROM lifecycle_intents WHERE instance_id=? AND token=?", instanceID, token)
+		if err != nil {
+			return err
+		}
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			if err != nil {
+				return err
+			}
+			return ErrLifecycleIntentOwnership
+		}
+		if _, err := conn.ExecContext(context.Background(), "COMMIT"); err != nil {
+			return err
+		}
+		committed = true
+		return nil
+	})
+}
+
 func (s *StateDB) CompleteClaimedLifecycleIntent(instanceID, token, owner string) error {
 	return withBusyRetry(func() error {
 		result, err := s.db.Exec("DELETE FROM lifecycle_intents WHERE instance_id=? AND token=? AND recovery_owner=?", instanceID, token, owner)

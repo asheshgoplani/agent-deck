@@ -133,7 +133,7 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 		if d.hasClaudeBusyIndicator(content) {
 			return SubstateRunning
 		}
-		if hasModelUnavailableNoop(content) {
+		if hasCodexCapacityBanner(content) {
 			return SubstateModelUnavailable
 		}
 		return SubstateNone
@@ -181,6 +181,27 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 	}
 
 	return SubstateNone
+}
+
+// hasCodexCapacityBanner recognizes the rendered capacity banner without
+// treating user input or quoted scrollback as a live outage.
+func hasCodexCapacityBanner(content string) bool {
+	lines := strings.Split(content, "\n")
+	checked := 0
+	for i := len(lines) - 1; i >= 0 && checked < 15; i-- {
+		line := strings.TrimSpace(StripANSI(lines[i]))
+		if line == "" {
+			continue
+		}
+		checked++
+		if hasAnyPrefix(line, append(claudeQuotedLinePrefixes, "›")) {
+			continue
+		}
+		if strings.Contains(strings.ToLower(line), "selected model is at capacity") {
+			return true
+		}
+	}
+	return false
 }
 
 // hasClaudeBusyIndicator reports whether the recent pane tail shows Claude

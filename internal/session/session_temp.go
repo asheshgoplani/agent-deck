@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,11 +10,14 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"al.essio.dev/pkg/shellescape"
 )
 
 const (
 	repositorySessionTempMarker = ".agent-deck-session-temp"
 	repositoryGitExcludeRule    = ".agent-deck/"
+	sandboxSessionTempDir       = "/agent-deck-session-tmp"
 )
 
 var repositoryGitExcludeMu sync.Mutex
@@ -24,6 +28,25 @@ func (i *Instance) repositorySessionTempDir() string {
 		root = i.ProjectPath
 	}
 	return filepath.Join(root, ".agent-deck", "tmp", i.ID)
+}
+
+func (i *Instance) commandSessionTempDir() string {
+	if i.IsSandboxed() {
+		return sandboxSessionTempDir
+	}
+	return i.repositorySessionTempDir()
+}
+
+func (i *Instance) buildSessionTempExportPrefix() string {
+	if i == nil || i.IsSSH() {
+		return ""
+	}
+	tempDir := shellescape.Quote(i.commandSessionTempDir())
+	var prefix strings.Builder
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP", "AGENT_DECK_SESSION_TMPDIR"} {
+		fmt.Fprintf(&prefix, "export %s=%s; ", name, tempDir)
+	}
+	return prefix.String()
 }
 
 func (i *Instance) repositorySessionProjectRoot() (string, error) {
@@ -72,6 +95,10 @@ func (i *Instance) prepareRepositorySessionTemp() error {
 		return fmt.Errorf("open repository temp parent: %w", err)
 	}
 	defer tempParent.Close()
+	tempParentInfo, err := tempParent.Stat(".")
+	if err != nil || !ownedByCurrentUser(tempParentInfo) {
+		return fmt.Errorf("repository temp parent is not owned by the current user")
+	}
 	if _, err := tempParent.Lstat(i.ID); os.IsNotExist(err) {
 		if err := tempParent.Mkdir(i.ID, 0o700); err != nil {
 			return fmt.Errorf("create session temp root: %w", err)
@@ -84,6 +111,10 @@ func (i *Instance) prepareRepositorySessionTemp() error {
 		return fmt.Errorf("open session temp root: %w", err)
 	}
 	defer sessionRoot.Close()
+	sessionRootInfo, err := sessionRoot.Stat(".")
+	if err != nil || !ownedByCurrentUser(sessionRootInfo) {
+		return fmt.Errorf("session temp root is not owned by the current user")
+	}
 	if err := sessionRoot.Chmod(".", 0o700); err != nil {
 		return fmt.Errorf("secure session temp root: %w", err)
 	}
@@ -91,7 +122,7 @@ func (i *Instance) prepareRepositorySessionTemp() error {
 	marker := []byte("schema=1\nsession_id=" + i.ID + "\n")
 	markerInfo, err := sessionRoot.Lstat(repositorySessionTempMarker)
 	if err == nil {
-		if markerInfo.Mode()&os.ModeSymlink != 0 || !markerInfo.Mode().IsRegular() {
+		if markerInfo.Mode()&os.ModeSymlink != 0 || !markerInfo.Mode().IsRegular() || !ownedByCurrentUser(markerInfo) {
 			return fmt.Errorf("refusing non-regular session temp marker")
 		}
 		markerFile, err := sessionRoot.Open(repositorySessionTempMarker)
@@ -134,6 +165,9 @@ func (i *Instance) CleanupRepositorySessionTemp() error {
 	}
 	projectRoot, err := i.repositorySessionProjectRoot()
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		return err
 	}
 	pinnedProject, err := openProjectRoot(projectRoot)
@@ -187,8 +221,44 @@ func (i *Instance) CleanupRepositorySessionTemp() error {
 	if string(marker) != want {
 		return fmt.Errorf("session temp marker does not belong to session %s", i.ID)
 	}
+	if err := makePinnedTreeOwnerWritable(pinnedProject, tempParent, i.ID); err != nil {
+		return fmt.Errorf("make session temp root writable: %w", err)
+	}
 	if err := pinnedProject.removePinned(tempParent, i.ID); err != nil {
 		return fmt.Errorf("remove session temp root: %w", err)
+	}
+	return nil
+}
+
+func makePinnedTreeOwnerWritable(project *projectRoot, parent *os.Root, name string) error {
+	info, err := parent.Lstat(name)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil
+	}
+	child, err := project.openPinnedChildDir(parent, name, false)
+	if err != nil {
+		return err
+	}
+	defer child.Close()
+	if err := child.Chmod(".", info.Mode().Perm()|0o700); err != nil {
+		return err
+	}
+	dir, err := child.Open(".")
+	if err != nil {
+		return err
+	}
+	entries, err := dir.ReadDir(-1)
+	_ = dir.Close()
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := makePinnedTreeOwnerWritable(project, child, entry.Name()); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -245,9 +315,15 @@ func ensureRepositoryGitExclude() error {
 }
 
 func repositoryGlobalGitExcludePath() (string, error) {
-	if out, err := exec.Command("git", "config", "--global", "--path", "--get", "core.excludesFile").Output(); err == nil {
+	cmd := exec.Command("git", "config", "--global", "--path", "--get", "core.excludesFile")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
 		if path := strings.TrimSpace(string(out)); path != "" {
 			return path, nil
+		}
+	} else if !errors.Is(err, exec.ErrNotFound) {
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 1 {
+			return "", fmt.Errorf("resolve global Git excludes: %s: %w", strings.TrimSpace(string(out)), err)
 		}
 	}
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {

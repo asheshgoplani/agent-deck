@@ -294,6 +294,21 @@ func WithHooksDir(hostDir string) ContainerConfigOption {
 	}
 }
 
+// WithSessionTemp mounts the session's repository-owned temporary directory
+// at a stable container-visible path. The host directory is prepared and
+// ownership-validated before container creation.
+func WithSessionTemp(hostDir, containerDir string) ContainerConfigOption {
+	return func(cfg *ContainerConfig) {
+		if hostDir == "" || containerDir == "" {
+			return
+		}
+		cfg.volumes = append(cfg.volumes, VolumeMount{
+			hostPath:      hostDir,
+			containerPath: containerDir,
+		})
+	}
+}
+
 // WithSSH mounts the host ~/.ssh directory read-only inside the container.
 func WithSSH(path string) ContainerConfigOption {
 	return func(cfg *ContainerConfig) {

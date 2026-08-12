@@ -28,8 +28,9 @@ var leakPrefixes = []string{
 	// Generic helpers.
 	"ad-home-",                       // IsolateHome
 	"ad-tmux-",                       // IsolateTmuxSocket
+	"ad-tmux-sentinel-",              // bootstrap leak sentinel's private base
 	"ad-sock-",                       // ShortTmuxSocket
-	"agent-deck-ssh-",                 // internal/session stale SSH socket fixture
+	"agent-deck-ssh-",                // internal/session stale SSH socket fixture
 	"agent-deck-test-sock-",          // ShortTmuxSocket's /tmp retry
 	"agent-deck-test-home-fallback-", // IsolatePackageHome's MkdirTemp fallback
 	// Per-package homes from IsolatePackageHome.

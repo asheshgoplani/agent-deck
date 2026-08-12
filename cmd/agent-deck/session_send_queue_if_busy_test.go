@@ -24,6 +24,7 @@ func runQueueIfBusyHelper(t *testing.T, args ...string) (string, error) {
 	cmd.Env = append(os.Environ(),
 		"AGENT_DECK_QUEUE_IF_BUSY_HELPER=1",
 		"AGENT_DECK_QUEUE_IF_BUSY_ARGS="+string(encoded),
+		"AGENT_DECK_QUEUE_PROFILE=queue-if-busy-helper-"+session.GenerateID(),
 	)
 	out, runErr := cmd.CombinedOutput()
 	return string(out), runErr
@@ -193,9 +194,11 @@ func TestSessionSendQueueIfBusyRejectsArchivePersistedAfterValidation(t *testing
 		t.Fatal(err)
 	}
 	sender := exec.Command(os.Args[0], "-test.run=^TestSessionSendQueueIfBusyHelper$")
+	profile := "queue-if-busy-helper-" + session.GenerateID()
 	sender.Env = append(os.Environ(),
 		"AGENT_DECK_QUEUE_IF_BUSY_HELPER=1",
 		"AGENT_DECK_QUEUE_IF_BUSY_ARGS="+string(args),
+		"AGENT_DECK_QUEUE_PROFILE="+profile,
 		"AGENT_DECK_QUEUE_RACE_META="+metaPath,
 		"AGENT_DECK_QUEUE_RACE_READY="+readyPath,
 		"AGENT_DECK_QUEUE_RACE_RELEASE="+releasePath,
@@ -236,7 +239,7 @@ func TestSessionSendQueueIfBusyRejectsArchivePersistedAfterValidation(t *testing
 	if err != nil || json.Unmarshal(data, &meta) != nil {
 		t.Fatalf("read sender metadata: %v (%s)", err, data)
 	}
-	archive := exec.Command(channelsCLIBinary(t), "-p", "queue-if-busy-helper", "session", "archive", meta.ID, "--json")
+	archive := exec.Command(channelsCLIBinary(t), "-p", profile, "session", "archive", meta.ID, "--json")
 	archive.Env = os.Environ()
 	for key, value := range meta.Env {
 		archive.Env = append(archive.Env, key+"="+value)
@@ -294,7 +297,10 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 	if err := json.Unmarshal([]byte(os.Getenv("AGENT_DECK_QUEUE_IF_BUSY_ARGS")), &args); err != nil {
 		t.Fatal(err)
 	}
-	profile := "queue-if-busy-helper"
+	profile := os.Getenv("AGENT_DECK_QUEUE_PROFILE")
+	if profile == "" {
+		profile = "queue-if-busy-helper"
+	}
 	if os.Getenv("AGENT_DECK_QUEUE_HANDLER") == "1" {
 		if os.Getenv("AGENT_DECK_QUEUE_ENQUEUE_ERROR") == "1" {
 			originalEnqueue := sessionSendQueueTxEnqueue
@@ -335,6 +341,8 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 				inst, status, err := originalStatus(profile, sessionID)
 				calls++
 				if calls == 1 && err == nil {
+					// This test owns the state transition: validation observes a
+					// busy target, then archive persists while the queue lock is held.
 					if err := os.WriteFile(ready, []byte("ready"), 0o644); err != nil {
 						return nil, "", err
 					}
@@ -348,6 +356,9 @@ func TestSessionSendQueueIfBusyHelper(t *testing.T) {
 						}
 						time.Sleep(10 * time.Millisecond)
 					}
+					// The archive completed while this status read was paused. Do
+					// not return the pre-archive instance snapshot to the sender.
+					return originalStatus(profile, sessionID)
 				}
 				return inst, status, err
 			}

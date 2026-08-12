@@ -124,10 +124,6 @@ func handleSessionRemove(profile string, args []string) {
 		out.Error(fmt.Sprintf("session removed but process teardown failed: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	if err := inst.CleanupRepositorySessionTemp(); err != nil {
-		out.Error(fmt.Sprintf("failed to clean session temporary files: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
 	if err := session.CompleteLifecycleIntent(storage, removeIntent); err != nil {
 		out.Error(fmt.Sprintf("failed to complete removal: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -262,14 +258,14 @@ func bulkRemoveSessions(
 			os.Exit(1)
 		}
 		remaining = nextRemaining
-		removedIDs = append(removedIDs, inst.ID)
-		removed = append(removed, map[string]interface{}{"id": inst.ID, "title": inst.Title})
-		queueTxs = append(queueTxs, queueTx)
-		removeIntents = append(removeIntents, removeIntent)
 		_ = inst.KillAndWait()
 		if pruneWorktree {
 			pruneSessionWorktree(inst)
 		}
+		removedIDs = append(removedIDs, inst.ID)
+		removed = append(removed, map[string]interface{}{"id": inst.ID, "title": inst.Title})
+		queueTxs = append(queueTxs, queueTx)
+		removeIntents = append(removeIntents, removeIntent)
 	}
 
 	// A concurrent full-table writer can resurrect an early removal after its

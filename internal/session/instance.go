@@ -1376,10 +1376,6 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 // in both cases there is no alias downstream to defer to.
 func (i *Instance) buildBashExportPrefix(skipConfigDirForCustomCommand bool) string {
 	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; export AGENTDECK_PROFILE=%s; ", i.ID, shellescape.Quote(sessionProfileEnvValue()))
-	tempDir := i.repositorySessionTempDir()
-	for _, name := range []string{"TMPDIR", "TMP", "TEMP", "AGENT_DECK_SESSION_TMPDIR"} {
-		prefix += fmt.Sprintf("export %s=%s; ", name, shellescape.Quote(tempDir))
-	}
 	if IsClaudeConfigDirExplicitForInstance(i) && !skipConfigDirForCustomCommand {
 		// Issue #922 (reporter @bautrey): see applyWorkerScratchOverride.
 		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
@@ -1470,6 +1466,23 @@ func (i *Instance) ensureProfileEnv() {
 	}
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_PROFILE", sessionProfileEnvValue()); err != nil {
 		sessionLog.Warn("set_profile_failed", slog.String("error", err.Error()))
+	}
+	i.ensureSessionTempEnv()
+}
+
+// ensureSessionTempEnv makes shells and later tmux windows inherit the same
+// repository-owned temp root as the initial process command. The root itself
+// was prepared fail-closed before tmux startup; these host-side assignments are
+// the persistence complement to the inline export prefix.
+func (i *Instance) ensureSessionTempEnv() {
+	if i.tmuxSession == nil || i.IsSSH() {
+		return
+	}
+	tempDir := i.commandSessionTempDir()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP", "AGENT_DECK_SESSION_TMPDIR"} {
+		if err := i.tmuxSession.SetEnvironment(name, tempDir); err != nil {
+			sessionLog.Warn("set_session_temp_env_failed", slog.String("name", name), slog.String("error", err.Error()))
+		}
 	}
 }
 
@@ -10171,11 +10184,6 @@ func (i *Instance) wrapLaunchShell(command string) string {
 // All code paths that launch or respawn a tmux pane should use this instead of calling
 // applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
 func (i *Instance) prepareCommand(cmd string) (string, string, error) {
-	if !i.IsSSH() {
-		if err := i.prepareRepositorySessionTemp(); err != nil {
-			return "", "", fmt.Errorf("prepare repository session temp: %w", err)
-		}
-	}
 	if IsClaudeCompatible(i.Tool) {
 		if _, _, err := ResolveInstanceClaudeHomeSkills(i); err != nil {
 			return "", "", fmt.Errorf("unsafe Claude group skill loadout: %w", err)
@@ -10184,6 +10192,11 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	if IsCodexCompatible(i.Tool) {
 		if _, _, err := ResolveInstanceCodexHomeSkills(i); err != nil {
 			return "", "", fmt.Errorf("unsafe Codex group skill loadout: %w", err)
+		}
+	}
+	if !i.IsSSH() {
+		if err := i.prepareRepositorySessionTemp(); err != nil {
+			return "", "", fmt.Errorf("prepare repository session temp: %w", err)
 		}
 	}
 	// Exit-to-shell wrap FIRST, on the bare agent command, so the agent's own
@@ -10210,6 +10223,11 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	// The temp environment belongs to the complete host-side launch command,
+	// not the placeholder substituted into a user wrapper. Prefixing before
+	// applyWrapper makes executable wrappers such as
+	// "agent-deck run-task -- {command}" receive "export" as their command.
+	wrapped = i.buildSessionTempExportPrefix() + wrapped
 
 	// Wrap the fully-substituted command under bash -c when a wrapper is
 	// configured. This keeps shell metacharacters (&&, $(), inline env) in the
@@ -10362,11 +10380,16 @@ func ensureContainerRunning(
 	// container once if those paths are not writable.
 	cacheWritable := sandboxCacheDirsWritable(ctx, ctr)
 	tmpExecutable := sandboxTmpExecutable(ctx, ctr)
-	if !cacheWritable || !tmpExecutable {
+	sessionTempMounted, mountErr := ctr.HasMount(ctx, sandboxSessionTempDir)
+	if mountErr != nil {
+		return fmt.Errorf("checking sandbox session temp mount: %w", mountErr)
+	}
+	if !cacheWritable || !tmpExecutable || !sessionTempMounted {
 		sessionLog.Warn(
 			"sandbox_recreating_for_runtime_compat",
 			slog.Bool("cache_writable", cacheWritable),
 			slog.Bool("tmp_executable", tmpExecutable),
+			slog.Bool("session_temp_mounted", sessionTempMounted),
 		)
 		if rmErr := ctr.Remove(ctx, true); rmErr != nil {
 			return fmt.Errorf("removing incompatible sandbox container: %w", rmErr)
@@ -10428,6 +10451,7 @@ func buildSandboxConfig(
 		docker.WithCPULimit(cpuLimit),
 		docker.WithMemoryLimit(memLimit),
 		docker.WithAgentConfigs(bindMounts, homeMounts),
+		docker.WithSessionTemp(inst.repositorySessionTempDir(), sandboxSessionTempDir),
 	}
 
 	// Bridge in-container hook-handler status writes to a PER-INSTANCE host dir.

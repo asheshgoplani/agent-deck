@@ -73,6 +73,16 @@ func TestClassifySubstate_CodexWorkingWinsOverStaleCapacity(t *testing.T) {
 	}
 }
 
+func TestClassifySubstate_CodexCapacityIgnoresPromptAndQuotedHistory(t *testing.T) {
+	d := NewPromptDetector("codex")
+	content := "⎿ Earlier output: Selected model is at capacity.\n" +
+		"› selected model is at capacity\n" +
+		"  gpt-5.6-luna max · Ready · Full Access"
+	if got := d.ClassifySubstate(content); got != SubstateNone {
+		t.Fatalf("prompt or quoted capacity prose must not be an outage: got %q", got)
+	}
+}
+
 func TestClassifySubstate_Auth401(t *testing.T) {
 	d := NewPromptDetector("claude")
 	cases := []struct {

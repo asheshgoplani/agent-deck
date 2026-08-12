@@ -65,7 +65,24 @@ func CompleteLifecycleIntent(storage *Storage, intent LifecycleIntentHandle) err
 	if storage == nil || storage.db == nil {
 		return errors.New("complete lifecycle intent: storage unavailable")
 	}
-	return storage.db.CompleteLifecycleIntent(intent.InstanceID, intent.Token)
+	return storage.db.CompleteLifecycleIntentGuarded(intent.InstanceID, intent.Token, func(durable LifecycleIntentHandle) error {
+		if durable.Kind != LifecycleIntentRemove && durable.Kind != LifecycleIntentWorktreeFinish {
+			return nil
+		}
+		var metadata LifecycleOperationMetadata
+		if err := json.Unmarshal([]byte(durable.Payload), &metadata); err != nil {
+			return fmt.Errorf("complete lifecycle intent: decode removal metadata: %w", err)
+		}
+		if metadata.Instance != nil && metadata.Instance.ID != durable.InstanceID {
+			return fmt.Errorf("complete lifecycle intent: payload instance %q does not own intent %q", metadata.Instance.ID, durable.InstanceID)
+		}
+		if metadata.Instance != nil {
+			if err := metadata.Instance.CleanupRepositorySessionTemp(); err != nil {
+				return fmt.Errorf("complete lifecycle intent: clean repository session temp: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 // RecoverLifecycleIntents finishes only transitions whose durable state makes
@@ -335,6 +352,19 @@ func RecoverLifecycleIntents(storage *Storage, instances []*Instance) error {
 				continue
 			}
 			tx.Release()
+			if (intent.Kind == LifecycleIntentRemove || intent.Kind == LifecycleIntentWorktreeFinish) && metadata.Instance != nil {
+				if err := ensureOwned(false); err != nil {
+					finishClaim()
+					joinIntentErr(err)
+					continue
+				}
+				markMutation("repository-temp-cleanup")
+				if cleanupErr := metadata.Instance.CleanupRepositorySessionTemp(); cleanupErr != nil {
+					finishClaim()
+					recoveryErr = errors.Join(recoveryErr, cleanupErr)
+					continue
+				}
+			}
 			if completeErr := storage.db.CompleteClaimedLifecycleIntent(intent.InstanceID, intent.Token, recoveryOwner); completeErr != nil {
 				recoveryErr = errors.Join(recoveryErr, completeErr)
 			}

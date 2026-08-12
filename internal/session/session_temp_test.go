@@ -10,7 +10,7 @@ import (
 	"al.essio.dev/pkg/shellescape"
 )
 
-func TestBuildBashExportPrefixIncludesRepositorySessionTemp(t *testing.T) {
+func TestBuildSessionTempExportPrefixIncludesRepositorySessionTemp(t *testing.T) {
 	project := t.TempDir()
 	inst := NewInstanceWithTool("repo-temp", project, "claude")
 	inst.ID = "session-temp-123"
@@ -20,12 +20,76 @@ func TestBuildBashExportPrefixIncludesRepositorySessionTemp(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantPath := filepath.Join(projectRoot, ".agent-deck", "tmp", inst.ID)
-	prefix := inst.buildBashExportPrefix(false)
+	prefix := inst.buildSessionTempExportPrefix()
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP", "AGENT_DECK_SESSION_TMPDIR"} {
 		want := "export " + name + "=" + shellescape.Quote(wantPath) + "; "
 		if !strings.Contains(prefix, want) {
-			t.Errorf("buildBashExportPrefix() missing %q in %q", want, prefix)
+			t.Errorf("buildSessionTempExportPrefix() missing %q in %q", want, prefix)
 		}
+	}
+}
+
+func TestBuildSessionTempExportPrefixOmitsRepositorySessionTempForSSH(t *testing.T) {
+	inst := NewInstanceWithTool("remote-temp", "/remote/project", "claude")
+	inst.ID = "remote-session"
+	inst.SSHHost = "build.example"
+	prefix := inst.buildSessionTempExportPrefix()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP", "AGENT_DECK_SESSION_TMPDIR"} {
+		if strings.Contains(prefix, "export "+name+"=") {
+			t.Fatalf("remote command unexpectedly exports host repository temp variable %s: %q", name, prefix)
+		}
+	}
+}
+
+func TestBuildSessionTempExportPrefixUsesSandboxVisibleRepositorySessionTemp(t *testing.T) {
+	project := t.TempDir()
+	inst := NewInstanceWithTool("sandbox-temp", project, "claude")
+	inst.ID = "sandbox-session"
+	inst.Sandbox = &SandboxConfig{Enabled: true}
+	prefix := inst.buildSessionTempExportPrefix()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP", "AGENT_DECK_SESSION_TMPDIR"} {
+		want := "export " + name + "=/agent-deck-session-tmp; "
+		if !strings.Contains(prefix, want) {
+			t.Fatalf("sandbox command missing container-visible %s: %q", name, prefix)
+		}
+	}
+	if strings.Contains(prefix, project) {
+		t.Fatalf("sandbox command leaks host-only temp path: %q", prefix)
+	}
+}
+
+func TestPrepareCommandAppliesSessionTempToEveryLocalTool(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+	for _, tool := range []string{"claude", "codex", "gemini", "opencode", "shell", "custom-tool"} {
+		t.Run(tool, func(t *testing.T) {
+			project := t.TempDir()
+			inst := NewInstanceWithTool("all-tools-temp", project, tool)
+			inst.ID = "all-tools-" + tool
+			got, _, err := inst.prepareCommand("tool-command")
+			if err != nil {
+				t.Fatalf("prepareCommand() error: %v", err)
+			}
+			for _, name := range []string{"TMPDIR", "TMP", "TEMP", "AGENT_DECK_SESSION_TMPDIR"} {
+				if !strings.Contains(got, "export "+name+"=") {
+					t.Fatalf("prepared %s command missing %s: %q", tool, name, got)
+				}
+			}
+		})
+	}
+}
+
+func TestPrepareCommandRefusesMissingLocalProjectWithoutFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+	missing := filepath.Join(t.TempDir(), "missing-project")
+	inst := NewInstanceWithTool("missing-project", missing, "shell")
+	if _, _, err := inst.prepareCommand("true"); err == nil {
+		t.Fatal("prepareCommand() accepted a missing local project instead of failing without fallback")
 	}
 }
 
@@ -152,5 +216,64 @@ func TestPrepareCommandCreatesMarkedRepositorySessionTempAndGlobalExclude(t *tes
 	}
 	if got := string(ignore); got != ".agent-deck/\n" {
 		t.Errorf("global Git excludes = %q, want %q", got, ".agent-deck/\n")
+	}
+}
+
+func TestEnsureRepositoryGitExcludePreservesExistingRulesAndIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	xdgConfig := filepath.Join(home, "xdg-config")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+	ignorePath := filepath.Join(xdgConfig, "git", "ignore")
+	if err := os.MkdirAll(filepath.Dir(ignorePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ignorePath, []byte("*.local\n.agent-deck/\n!important.local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureRepositoryGitExclude(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureRepositoryGitExclude(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(ignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "*.local\n.agent-deck/\n!important.local\n"
+	if string(got) != want {
+		t.Fatalf("global excludes changed unexpectedly: got %q, want %q", got, want)
+	}
+}
+
+func TestCleanupRepositorySessionTempRemovesReadOnlyArtifacts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+	project := t.TempDir()
+	inst := NewInstanceWithTool("readonly-temp", project, "shell")
+	inst.ID = "readonly-temp"
+	if err := inst.prepareRepositorySessionTemp(); err != nil {
+		t.Fatal(err)
+	}
+	root := inst.repositorySessionTempDir()
+	nested := filepath.Join(root, "cache")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "artifact"), []byte("owned"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(nested, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.CleanupRepositorySessionTemp(); err != nil {
+		t.Fatalf("CleanupRepositorySessionTemp() error: %v", err)
+	}
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Fatalf("read-only artifacts survived cleanup: %s", root)
 	}
 }

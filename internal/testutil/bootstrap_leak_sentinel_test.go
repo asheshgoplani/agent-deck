@@ -56,7 +56,12 @@ func TestTestMainDoesNotLeakBootstrapServer(t *testing.T) {
 	for _, pkg := range []string{"./internal/tmux/", "./internal/session/"} {
 		pkg := pkg
 		t.Run(pkg, func(t *testing.T) {
-			before := snapshotADTmuxDirs()
+			base, err := os.MkdirTemp("/tmp", "ad-tmux-sentinel-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(base) })
+			before := snapshotADTmuxDirs(base)
 
 			// Bound the child run so a hung child (e.g. a stalled tmux call)
 			// fails this guard with a clear message instead of pinning the
@@ -68,7 +73,7 @@ func TestTestMainDoesNotLeakBootstrapServer(t *testing.T) {
 			cmd := exec.CommandContext(ctx, "go", "test", "-count=1", "-timeout", "60s",
 				"-run", "TestTmuxBootstrap_ServerIsRunning", pkg)
 			cmd.Dir = repoRoot
-			cmd.Env = os.Environ()
+			cmd.Env = append(os.Environ(), "AGENT_DECK_TEST_TMUX_TMP_BASE="+base)
 			out, err := cmd.CombinedOutput()
 			if ctx.Err() == context.DeadlineExceeded {
 				t.Fatalf("child `go test %s` did not finish within 2m (hung?); output:\n%s", pkg, out)
@@ -81,7 +86,7 @@ func TestTestMainDoesNotLeakBootstrapServer(t *testing.T) {
 			// exited. The bootstrap tmux server is a separate daemon: if the
 			// kill-server defer ran it is gone; if os.Exit skipped it, it is
 			// still alive on its isolated socket.
-			newDirs := diffDirs(before, snapshotADTmuxDirs())
+			newDirs := diffDirs(before, snapshotADTmuxDirs(base))
 
 			// Defense-in-depth: strip TMUX/TMUX_PANE from the probe/kill calls.
 			// `-S <path>` already pins the socket (verified: it is NOT overridden
@@ -137,26 +142,13 @@ func envWithoutTmux() []string {
 	return out
 }
 
-// adTmuxBases returns the candidate base dirs where IsolateTmuxSocket creates
-// its per-run TMUX_TMPDIR (shortTmuxTmpBase prefers /tmp, else os.TempDir()).
-func adTmuxBases() []string {
-	bases := map[string]struct{}{"/tmp": {}, os.TempDir(): {}}
-	out := make([]string, 0, len(bases))
-	for b := range bases {
-		out = append(out, b)
-	}
-	return out
-}
-
 // snapshotADTmuxDirs returns the set of existing ad-tmux-* dirs across the
 // candidate bases.
-func snapshotADTmuxDirs() map[string]struct{} {
+func snapshotADTmuxDirs(base string) map[string]struct{} {
 	set := map[string]struct{}{}
-	for _, base := range adTmuxBases() {
-		matches, _ := filepath.Glob(filepath.Join(base, "ad-tmux-*"))
-		for _, m := range matches {
-			set[m] = struct{}{}
-		}
+	matches, _ := filepath.Glob(filepath.Join(base, "ad-tmux-*"))
+	for _, m := range matches {
+		set[m] = struct{}{}
 	}
 	return set
 }

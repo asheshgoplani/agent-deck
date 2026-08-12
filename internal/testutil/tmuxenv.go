@@ -438,6 +438,11 @@ func ShortTmuxSocket() (socket string, cleanup func()) {
 // back to os.TempDir() (preserving the prior behavior on hosts that remap
 // TMPDIR but leave /tmp unwritable — rare under sandboxes/SELinux/AppArmor).
 func shortTmuxTmpBase() string {
+	if configured := os.Getenv("AGENT_DECK_TEST_TMUX_TMP_BASE"); configured != "" {
+		if info, err := os.Stat(configured); err == nil && info.IsDir() {
+			return configured
+		}
+	}
 	const candidate = "/tmp"
 	info, err := os.Stat(candidate)
 	if err != nil || !info.IsDir() {

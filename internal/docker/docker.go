@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -123,6 +124,21 @@ func (c *Container) IsRunning(ctx context.Context) (bool, error) {
 			return false, nil
 		}
 		return false, fmt.Errorf("inspecting container %s: %w", c.name, err)
+	}
+	return strings.TrimSpace(string(out)) == "true", nil
+}
+
+// HasMount reports whether the existing container has a mount at destination.
+// It is used by compatibility migrations because bind mounts cannot be added
+// to an already-created container.
+func (c *Container) HasMount(ctx context.Context, destination string) (bool, error) {
+	template := "{{range .Mounts}}{{if eq .Destination " + strconv.Quote(destination) + "}}true{{end}}{{end}}"
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", template, c.name).CombinedOutput()
+	if err != nil {
+		if isExitError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspecting mounts for container %s: %s: %w", c.name, strings.TrimSpace(string(out)), err)
 	}
 	return strings.TrimSpace(string(out)) == "true", nil
 }

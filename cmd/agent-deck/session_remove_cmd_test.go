@@ -177,11 +177,11 @@ func TestSessionBulkRemoveQueueLockFailureFinalizesPrefixAndPreservesRemainder(t
 	if !strings.Contains(outputText, "failed to lock runtime queue for "+ids[1]) || strings.Contains(outputText, "failed to discard runtime queue") || !strings.Contains(outputText, ids[1]+".lock") {
 		t.Fatalf("bulk remove lock error lost operation, identity, or wrapped cause: %v\n%s", childErr, output)
 	}
-	if instances[0].Exists() {
+	if _, err := instances[0].GetTmuxSession().CapturePaneFresh(); err == nil {
 		t.Fatal("committed prefix process was not finalized")
 	}
 	for i := 1; i < len(instances); i++ {
-		if !instances[i].Exists() {
+		if _, err := instances[i].GetTmuxSession().CapturePaneFresh(); err != nil {
 			t.Fatalf("%s process was killed", ids[i])
 		}
 		if !session.RuntimeQueueHasPending(ids[i]) {

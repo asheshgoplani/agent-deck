@@ -4562,7 +4562,7 @@ func TestPrepareCommand_AppliesWrapperBeforeBashWrap(t *testing.T) {
 		t.Fatalf("prepareCommand returned error: %v", err)
 	}
 
-	want := `bash -c 'tool --extra1 --extra2'`
+	want := `bash -c '` + inst.buildSessionTempExportPrefix() + `tool --extra1 --extra2'`
 	if got != want {
 		t.Fatalf("prepareCommand output shape wrong.\n  got:  %q\n  want: %q", got, want)
 	}
@@ -4571,6 +4571,65 @@ func TestPrepareCommand_AppliesWrapperBeforeBashWrap(t *testing.T) {
 	badShape := regexp.MustCompile(`^bash -c '[^']*' --extra`)
 	if badShape.MatchString(got) {
 		t.Fatalf("flags leaked outside bash -c quotes (issue #601 regression):\n  got: %q", got)
+	}
+}
+
+func TestPrepareCommand_TempEnvPrecedesExecutableWrapper(t *testing.T) {
+	inst := NewInstance("temp-env-wrapper", t.TempDir())
+	inst.Tool = "shell"
+	inst.Wrapper = "agent-deck run-task -- {command}"
+
+	got, _, err := inst.prepareCommand("tool")
+	if err != nil {
+		t.Fatalf("prepareCommand returned error: %v", err)
+	}
+
+	want := `bash -c '` + inst.buildSessionTempExportPrefix() + `agent-deck run-task -- tool'`
+	if got != want {
+		t.Fatalf("temp environment must precede the executable wrapper.\n  got:  %q\n  want: %q", got, want)
+	}
+}
+
+func TestEnsureContainerRunningRecreatesExistingContainerMissingSessionTempMount(t *testing.T) {
+	fakeBin := t.TempDir()
+	events := filepath.Join(t.TempDir(), "docker-events")
+	fakeDocker := filepath.Join(fakeBin, "docker")
+	if err := os.WriteFile(fakeDocker, []byte(`#!/bin/sh
+set -eu
+case "$1" in
+inspect)
+  case "$3" in
+    *Mounts*) printf 'false\n' ;;
+    *State.Running*) printf 'true\n' ;;
+    *) printf 'running\n' ;;
+  esac
+  ;;
+exec) exit 0 ;;
+rm|create|start) printf '%s\n' "$1" >> "$FAKE_DOCKER_EVENTS" ;;
+*) echo "unexpected docker invocation: $*" >&2; exit 2 ;;
+esac
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_DOCKER_EVENTS", events)
+	project := t.TempDir()
+	inst := NewInstance("sandbox-upgrade", project)
+	inst.ID = "sandbox-upgrade"
+	inst.Sandbox = &SandboxConfig{Enabled: true}
+	if err := inst.prepareRepositorySessionTemp(); err != nil {
+		t.Fatal(err)
+	}
+	ctr := docker.NewContainer("agent-deck-sandbox-upgrade", "test-image")
+	if err := ensureContainerRunning(context.Background(), inst, ctr, &UserConfig{}, t.TempDir(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(events)
+	if err != nil {
+		t.Fatalf("existing container was not recreated: %v", err)
+	}
+	if got, want := string(data), "rm\ncreate\nstart\n"; got != want {
+		t.Fatalf("sandbox upgrade actions=%q, want %q", got, want)
 	}
 }
 
@@ -4587,14 +4646,15 @@ func TestPrepareCommand_WrapperWithSingleQuoteInCmd_QuotesSafely(t *testing.T) {
 		t.Fatalf("prepareCommand returned error: %v", err)
 	}
 
-	want := `bash -c 'echo it'"'"'s-fine --trailing'`
+	want := `bash -c '` + inst.buildSessionTempExportPrefix() + `echo it'"'"'s-fine --trailing'`
 	if got != want {
 		t.Fatalf("quoting escape wrong.\n  got:  %q\n  want: %q", got, want)
 	}
 }
 
 // TestPrepareCommand_NoWrapper_Unchanged guards against the reorder breaking
-// the no-wrapper path: prepareCommand must still return cmd unchanged.
+// the no-wrapper path: aside from the required temp environment, the command
+// must still pass through unchanged.
 func TestPrepareCommand_NoWrapper_Unchanged(t *testing.T) {
 	inst := NewInstance("issue-601-nowrap", "/tmp")
 	inst.Tool = "shell"
@@ -4604,8 +4664,9 @@ func TestPrepareCommand_NoWrapper_Unchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareCommand returned error: %v", err)
 	}
-	if got != "echo hi" {
-		t.Fatalf("no-wrapper path should pass cmd through unchanged.\n  got:  %q\n  want: %q", got, "echo hi")
+	want := inst.buildSessionTempExportPrefix() + "echo hi"
+	if got != want {
+		t.Fatalf("no-wrapper path should pass cmd through unchanged.\n  got:  %q\n  want: %q", got, want)
 	}
 }
 
@@ -4624,7 +4685,7 @@ func TestPrepareCommand_Issue601_ReporterRepro(t *testing.T) {
 		t.Fatalf("prepareCommand returned error: %v", err)
 	}
 
-	if !strings.Contains(got, `'my-claude-wrapper --session-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --dangerously-skip-permissions'`) {
+	if !strings.Contains(got, inst.buildSessionTempExportPrefix()+`my-claude-wrapper --session-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --dangerously-skip-permissions'`) {
 		t.Fatalf("issue #601 repro: flags not inside bash -c single-quoted payload.\n  got: %q", got)
 	}
 	if strings.Contains(got, `'my-claude-wrapper' --session-id`) {

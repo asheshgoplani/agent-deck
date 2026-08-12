@@ -622,6 +622,16 @@ func TestNewContainerConfig_Worktree(t *testing.T) {
 	require.Equal(t, "/workspace/worktrees/feature-x", cfg.workingDir)
 }
 
+func TestNewContainerConfig_SessionTemp(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewContainerConfig("/project", WithSessionTemp("/repo/.agent-deck/tmp/id", "/agent-deck-session-tmp"))
+	require.Len(t, cfg.volumes, 2)
+	require.Equal(t, "/repo/.agent-deck/tmp/id", cfg.volumes[1].hostPath)
+	require.Equal(t, "/agent-deck-session-tmp", cfg.volumes[1].containerPath)
+	require.False(t, cfg.volumes[1].readOnly)
+}
+
 func TestNewContainerConfig_Worktree_NoRelativePath(t *testing.T) {
 	t.Parallel()
 

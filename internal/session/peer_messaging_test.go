@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,11 +39,16 @@ func TestClaudeCommandPreservesExplicitPeerName(t *testing.T) {
 }
 
 func TestClaudeCommandPreservesExplicitPeerNameFromWrapper(t *testing.T) {
+	project := filepath.Join(t.TempDir(), "project")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	inst := &Instance{
-		ID:      "a1b2c3d4-1111-2222-3333-444455556666",
-		Title:   "Payments Review!",
-		Tool:    "claude",
-		Wrapper: "{command} --name operator-choice",
+		ID:          "a1b2c3d4-1111-2222-3333-444455556666",
+		Title:       "Payments Review!",
+		Tool:        "claude",
+		Wrapper:     "{command} --name operator-choice",
+		ProjectPath: project,
 	}
 	base := inst.buildClaudeCommand("claude")
 	if strings.Contains(base, "--name payments-review-a1b2c3d4") {

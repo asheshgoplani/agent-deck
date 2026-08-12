@@ -14,9 +14,12 @@ import (
 
 func TestRecoverLifecycleIntentsFinalizesCommittedRemoval(t *testing.T) {
 	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
 	storage, err := NewStorageWithProfile("_test_lifecycle_recovery")
 	if err != nil {
 		t.Fatal(err)
@@ -24,6 +27,10 @@ func TestRecoverLifecycleIntentsFinalizesCommittedRemoval(t *testing.T) {
 	defer storage.Close()
 	inst := NewInstance("recover-remove", t.TempDir())
 	inst.ID = "recover-remove"
+	if err := inst.prepareRepositorySessionTemp(); err != nil {
+		t.Fatal(err)
+	}
+	tempRoot := inst.repositorySessionTempDir()
 	if err := storage.SaveWithGroups([]*Instance{inst}, NewGroupTree([]*Instance{inst})); err != nil {
 		t.Fatal(err)
 	}
@@ -47,9 +54,229 @@ func TestRecoverLifecycleIntentsFinalizesCommittedRemoval(t *testing.T) {
 	if RuntimeQueueHasPending(inst.ID) {
 		t.Fatal("startup recovery left committed removal queue")
 	}
+	if _, err := os.Lstat(tempRoot); !os.IsNotExist(err) {
+		t.Fatalf("startup recovery left repository session temp: %s", tempRoot)
+	}
 	intents, err := storage.db.LifecycleIntents()
 	if err != nil || len(intents) != 0 {
 		t.Fatalf("startup recovery left intents %#v, %v", intents, err)
+	}
+}
+
+func TestCompleteRemovalLifecycleCleansRepositorySessionTemp(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inst := NewInstance("complete-remove-temp", project)
+	inst.ID = "complete-remove-temp"
+	if err := inst.prepareRepositorySessionTemp(); err != nil {
+		t.Fatal(err)
+	}
+	tempRoot := inst.repositorySessionTempDir()
+	if err := os.WriteFile(filepath.Join(tempRoot, "owned.log"), []byte("owned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	storage, err := NewStorageWithProfile("_test_complete_remove_temp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	payload := LifecycleIntentPayload(inst, "", "")
+	intent, err := PrepareLifecycleIntent(storage, inst.ID, LifecycleIntentRemove, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CompleteLifecycleIntent(storage, intent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(tempRoot); !os.IsNotExist(err) {
+		t.Fatalf("repository session temp survived completed removal lifecycle: %s", tempRoot)
+	}
+}
+
+func TestCompleteLifecycleIntentStaleTokenDoesNotCleanNewerTemp(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inst := NewInstance("stale-complete", project)
+	inst.ID = "stale-complete"
+	if err := inst.prepareRepositorySessionTemp(); err != nil {
+		t.Fatal(err)
+	}
+	tempRoot := inst.repositorySessionTempDir()
+	storage, err := NewStorageWithProfile("_test_stale_complete_temp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	payload := LifecycleIntentPayload(inst, "", "")
+	stale, err := PrepareLifecycleIntent(storage, inst.ID, LifecycleIntentRemove, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.db.CompleteLifecycleIntent(stale.InstanceID, stale.Token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareLifecycleIntent(storage, inst.ID, LifecycleIntentRemove, payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := CompleteLifecycleIntent(storage, stale); !errors.Is(err, statedb.ErrLifecycleIntentOwnership) {
+		t.Fatalf("stale completion error=%v, want ownership error", err)
+	}
+	if _, err := os.Lstat(tempRoot); err != nil {
+		t.Fatalf("stale completion removed newer temp root: %v", err)
+	}
+}
+
+func TestCompleteLifecycleIntentRejectsReusedIDBeforeTempCleanup(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := NewInstance("old", project)
+	old.ID = "reused-complete"
+	storage, err := NewStorageWithProfile("_test_reused_complete_temp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	if err := storage.InsertSessionAndVerify(old, NewGroupTree([]*Instance{old})); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old = loaded[0]
+	stale, err := PrepareLifecycleIntent(storage, old.ID, LifecycleIntentRemove, LifecycleIntentPayload(old, "", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.db.DeleteInstance(old.ID, stale.Token); err != nil {
+		t.Fatal(err)
+	}
+	fresh := NewInstance("fresh", project)
+	fresh.ID = old.ID
+	if err := fresh.prepareRepositorySessionTemp(); err != nil {
+		t.Fatal(err)
+	}
+	tempRoot := fresh.repositorySessionTempDir()
+	if err := storage.InsertSessionAndVerify(fresh, NewGroupTree([]*Instance{fresh})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareLifecycleIntent(storage, fresh.ID, LifecycleIntentRemove, LifecycleIntentPayload(fresh, "", "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := CompleteLifecycleIntent(storage, stale); !errors.Is(err, statedb.ErrLifecycleIntentOwnership) {
+		t.Fatalf("reused ID completion error=%v, want ownership error", err)
+	}
+	if _, err := os.Lstat(tempRoot); err != nil {
+		t.Fatalf("stale generation removed fresh temp root: %v", err)
+	}
+}
+
+func TestCompleteLifecycleIntentRejectsMismatchedPayloadBeforeTempCleanup(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := NewInstance("target", project)
+	target.ID = "completion-target"
+	other := NewInstance("other", project)
+	other.ID = "completion-other"
+	if err := other.prepareRepositorySessionTemp(); err != nil {
+		t.Fatal(err)
+	}
+	tempRoot := other.repositorySessionTempDir()
+	storage, err := NewStorageWithProfile("_test_mismatched_complete_temp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	intent, err := PrepareLifecycleIntent(storage, target.ID, LifecycleIntentRemove, LifecycleIntentPayload(target, "", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := AdvanceLifecycleIntent(storage, intent, "row-deleted", LifecycleIntentPayload(other, "", "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := CompleteLifecycleIntent(storage, intent); err == nil {
+		t.Fatal("mismatched payload completion succeeded")
+	}
+	if _, err := os.Lstat(tempRoot); err != nil {
+		t.Fatalf("mismatched payload removed other temp root: %v", err)
+	}
+}
+
+func TestRecoverLifecycleIntentsCleansWorktreeFinishTemp(t *testing.T) {
+	for _, phase := range []string{"merged", "worktree-removed"} {
+		t.Run(phase, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+			project := filepath.Join(root, "project")
+			if err := os.MkdirAll(project, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			storage, err := NewStorageWithProfile("_test_worktree_finish_temp_" + phase)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer storage.Close()
+			inst := NewInstance("worktree-temp", project)
+			inst.ID = "worktree-temp-" + phase
+			inst.WorktreePath = filepath.Join(root, "worktree")
+			inst.WorktreeRepoRoot = filepath.Join(root, "repo")
+			if err := inst.prepareRepositorySessionTemp(); err != nil {
+				t.Fatal(err)
+			}
+			tempRoot := inst.repositorySessionTempDir()
+			if err := storage.InsertSessionAndVerify(inst, NewGroupTree([]*Instance{inst})); err != nil {
+				t.Fatal(err)
+			}
+			loaded, _, err := storage.LoadWithGroups()
+			if err != nil {
+				t.Fatal(err)
+			}
+			inst = loaded[0]
+			payload := LifecycleIntentPayload(inst, inst.WorktreePath, "")
+			intent, err := PrepareLifecycleIntent(storage, inst.ID, LifecycleIntentWorktreeFinish, payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := AdvanceLifecycleIntent(storage, intent, phase, payload); err != nil {
+				t.Fatal(err)
+			}
+			if phase == "merged" {
+				original := lifecycleRemoveWorktree
+				lifecycleRemoveWorktree = func(*Instance) (bool, error) { return true, nil }
+				t.Cleanup(func() { lifecycleRemoveWorktree = original })
+			}
+			if err := RecoverLifecycleIntents(storage, loaded); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(tempRoot); !os.IsNotExist(err) {
+				t.Fatalf("recovered %s worktree finish left session temp: %v", phase, err)
+			}
+		})
 	}
 }
 
