@@ -288,12 +288,16 @@ Cursor Agent CLI integration settings.
 
 ```toml
 [cursor]
-hooks_enabled = false  # Disable automatic Cursor hook injection on TUI startup
+command = "agent"          # Override launch command (default: prefer `agent`, else `cursor agent`)
+env_file = "~/.cursor.env"
+hooks_enabled = false      # Disable automatic Cursor hook injection on TUI startup
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `hooks_enabled` | bool | `true` | When `true`, TUI startup silently injects agent-deck lifecycle hooks into `~/.cursor/hooks.json` whenever the `cursor` binary is on `PATH` (real-time status detection). Set `false` to durably opt out; `agent-deck cursor-hooks uninstall` writes this automatically so the uninstall survives TUI restarts (issue #1672). Re-enable with `agent-deck cursor-hooks install` or by removing the key. Mirrors `[claude] hooks_enabled`. |
+| `command` | string | host-resolved | Override the binary/invocation. When unset, prefers standalone `agent` when on `PATH`, otherwise `cursor agent`. |
+| `env_file` | string | `""` | A .env file sourced for Cursor sessions only. See [Path Resolution](#path-resolution). |
+| `hooks_enabled` | bool | `true` | When `true`, TUI startup silently injects agent-deck lifecycle hooks into `~/.cursor/hooks.json` whenever the resolved Cursor CLI binary is on `PATH` (real-time status detection). Set `false` to durably opt out; `agent-deck cursor-hooks uninstall` writes this automatically so the uninstall survives TUI restarts (issue #1672). Re-enable with `agent-deck cursor-hooks install` or by removing the key. Mirrors `[claude] hooks_enabled`. |
 
 ## [hermes] Section
 

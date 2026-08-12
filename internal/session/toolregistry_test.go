@@ -58,6 +58,8 @@ func TestRegistry_MatchAllBranches(t *testing.T) {
 		{"crush bare", "crush", "crush"},
 		// cursor
 		{"cursor agent subcommand", "cursor agent", "cursor"},
+		{"standalone agent binary", "agent", "cursor"},
+		{"standalone agent with flags", "agent --continue", "cursor"},
 		// hermes
 		{"hermes bare", "hermes", "hermes"},
 		// aider has NO detect arm — commands containing "aider" map to shell

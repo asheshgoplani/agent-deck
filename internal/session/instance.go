@@ -2274,9 +2274,12 @@ func (i *Instance) preAcceptCursorWorkspaceTrust() {
 	}
 }
 
-// buildCursorCommand builds the command for the Cursor CLI (`cursor agent`).
+// buildCursorCommand builds the command for the Cursor Agent CLI.
 // continuePrev adds --continue so Restart resumes the previous chat in the workspace.
 // Env files from [shell].env_files are applied via buildEnvSourceCommand.
+//
+// Default entrypoint resolution prefers the standalone `agent` binary when it is
+// on PATH, falling back to `cursor agent`. See DefaultCursorCommand.
 func (i *Instance) buildCursorCommand(baseCommand string, continuePrev bool) string {
 	if i.Tool != "cursor" {
 		return baseCommand
@@ -2284,8 +2287,8 @@ func (i *Instance) buildCursorCommand(baseCommand string, continuePrev bool) str
 
 	envPrefix := i.buildEnvSourceCommand()
 	cmd := strings.TrimSpace(baseCommand)
-	if cmd == "" || strings.EqualFold(cmd, "cursor") {
-		cmd = "cursor agent"
+	if isDefaultCursorInvocation(cmd) {
+		cmd = GetToolCommand("cursor")
 	}
 
 	out := envPrefix + cmd

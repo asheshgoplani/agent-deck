@@ -1676,11 +1676,11 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		}
 	}
 
-	// Cursor Agent CLI hooks: auto-inject silently when the cursor binary is
-	// available, unless the user opted out via [cursor] hooks_enabled = false
-	// (set durably by `agent-deck cursor-hooks uninstall`, issue #1672).
-	// The opt-out gates the watcher too, matching the [claude] hooks_enabled
-	// gate above.
+	// Cursor Agent CLI hooks: auto-inject silently when the resolved Cursor CLI
+	// binary (`agent` or `cursor`) is available, unless the user opted out via
+	// [cursor] hooks_enabled = false (set durably by `agent-deck cursor-hooks
+	// uninstall`, issue #1672). The opt-out gates the watcher too, matching the
+	// [claude] hooks_enabled gate above.
 	cursorCmd := strings.TrimSpace(session.GetToolCommand("cursor"))
 	if shouldAutoInstallCursorHooks(userConfig, cursorCmd) {
 		if cursorFields := strings.Fields(cursorCmd); len(cursorFields) > 0 {
@@ -11682,7 +11682,7 @@ func createSessionTool(command string) (string, string) {
 		tool = "crush"
 	case "cursor":
 		tool = "cursor"
-		command = "cursor agent"
+		command = session.GetToolCommand("cursor")
 	case "hermes":
 		tool = "hermes"
 	default:
@@ -11936,7 +11936,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 	}
 	if command == "" && tool != "shell" {
 		if tool == "cursor" {
-			command = "cursor agent"
+			command = session.GetToolCommand("cursor")
 		} else {
 			command = tool
 		}

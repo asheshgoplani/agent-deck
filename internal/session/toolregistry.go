@@ -151,8 +151,15 @@ func (r *Registry) runInstalledProbe() {
 			r.installed[name] = true // shell is always shown
 			continue
 		}
-		// A built-in's command is its bare name (matches Registry.All / detectTool).
-		ok := probeInstalled(name)
+		// Built-in probe uses the bare tool name, except Cursor: the CLI may be
+		// installed as standalone `agent` or as the IDE shim `cursor`.
+		probeName := name
+		ok := false
+		if name == "cursor" {
+			ok = probeInstalled("agent") || probeInstalled("cursor")
+		} else {
+			ok = probeInstalled(probeName)
+		}
 		r.installed[name] = ok
 		if ok {
 			nonShellInstalled++

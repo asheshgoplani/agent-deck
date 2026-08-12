@@ -639,6 +639,8 @@ func TestDetectToolFromCommand(t *testing.T) {
 		{name: "codex", command: "codex --dangerously-bypass-approvals-and-sandbox", want: "codex"},
 		{name: "pi", command: "pi --model fast", want: "pi"},
 		{name: "cursor", command: "cursor agent", want: "cursor"},
+		{name: "standalone agent", command: "agent", want: "cursor"},
+		{name: "standalone agent flags", command: "agent --continue", want: "cursor"},
 		{name: "shell command", command: "npm run dev", want: ""},
 		{name: "empty", command: "", want: ""},
 	}

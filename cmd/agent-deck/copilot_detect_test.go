@@ -34,6 +34,8 @@ func TestDetectTool_Cursor(t *testing.T) {
 	}{
 		{"agent subcommand", "cursor agent", "cursor"},
 		{"bare binary", "cursor", "cursor"},
+		{"standalone agent", "agent", "cursor"},
+		{"standalone agent flags", "agent --continue", "cursor"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

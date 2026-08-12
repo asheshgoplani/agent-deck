@@ -406,8 +406,8 @@ func TestRenderLaunchModelInfoLines_ShowsModelAndVersion(t *testing.T) {
 }
 
 func TestDisplayCommandPreset(t *testing.T) {
-	if got := displayCommandPreset("cursor"); got != "cursor agent" {
-		t.Errorf("cursor → %q, want cursor agent", got)
+	if got := displayCommandPreset("cursor"); got != session.DefaultCursorCommand() {
+		t.Errorf("cursor → %q, want %q", got, session.DefaultCursorCommand())
 	}
 	if got := displayCommandPreset("claude"); got != "claude" {
 		t.Errorf("claude passthrough: got %q", got)
