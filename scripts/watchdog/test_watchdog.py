@@ -736,6 +736,123 @@ class TestWaitingTooLong(unittest.TestCase):
         self.assertTrue(found_send, f"expected session send call, got: {call_args}")
 
 
+class TestApiOverloadRecovery(unittest.TestCase):
+    def _claude_session(self, sid="ordinary-529", status="idle"):
+        return {
+            "id": sid,
+            "title": "review-worker",
+            "profile": "default",
+            "status": status,
+            "tool": "claude",
+        }
+
+    def test_terminal_529_resumes_an_ordinary_claude_session_after_backoff(self):
+        watchdog = wd_mod.Watchdog(dry_run=True)
+        session = self._claude_session()
+        pane = "API Error: 529 Overloaded. Try again in a moment.\n❯ "
+
+        with mock.patch.object(wd_mod, "list_all_sessions", return_value=[session]), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value=pane):
+            detected = watchdog.check_api_overload_recovery(now=1000.0)
+            recovered = watchdog.check_api_overload_recovery(
+                now=1000.0 + wd_mod.API_429_BACKOFF_S)
+
+        self.assertEqual(detected, [])
+        self.assertEqual(recovered, ["ordinary-529"])
+
+    def test_in_progress_529_retries_are_left_to_claude(self):
+        watchdog = wd_mod.Watchdog(dry_run=True)
+        pane = "API Error: 529 Overloaded\n✻ 529 Overloaded · Retrying in 37s · attempt 8/10"
+
+        with mock.patch.object(wd_mod, "list_all_sessions", return_value=[self._claude_session()]), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value=pane):
+            recovered = watchdog.check_api_overload_recovery(now=1000.0)
+
+        self.assertEqual(recovered, [])
+
+    def test_overload_without_an_idle_prompt_is_not_resumed(self):
+        watchdog = wd_mod.Watchdog(dry_run=True)
+        pane = "API Error: 529 Overloaded\n✻ Working on the next tool call"
+
+        with mock.patch.object(wd_mod, "list_all_sessions", return_value=[self._claude_session(status="running")]), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value=pane):
+            watchdog.check_api_overload_recovery(now=1000.0)
+            recovered = watchdog.check_api_overload_recovery(
+                now=1000.0 + wd_mod.API_429_BACKOFF_S)
+
+        self.assertEqual(recovered, [])
+
+    def test_terminal_529_recovers_a_non_stopped_session_regardless_of_status(self):
+        watchdog = wd_mod.Watchdog(dry_run=True)
+        pane = "API Error: 529 Overloaded. Try again in a moment.\n❯ "
+
+        with mock.patch.object(wd_mod, "list_all_sessions", return_value=[self._claude_session(status="running")]), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value=pane):
+            watchdog.check_api_overload_recovery(now=1000.0)
+            recovered = watchdog.check_api_overload_recovery(
+                now=1000.0 + wd_mod.API_429_BACKOFF_S)
+
+        self.assertEqual(recovered, ["ordinary-529"])
+
+    def test_same_terminal_overload_is_only_resumed_once(self):
+        watchdog = wd_mod.Watchdog(dry_run=True)
+        pane = "API Error: 529 Overloaded. Try again in a moment.\n❯ "
+        session = self._claude_session()
+
+        with mock.patch.object(wd_mod, "list_all_sessions", return_value=[session]), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value=pane):
+            detected = watchdog.check_api_overload_recovery(now=1000.0)
+            first = watchdog.check_api_overload_recovery(
+                now=1000.0 + wd_mod.API_429_BACKOFF_S)
+            second = watchdog.check_api_overload_recovery(
+                now=1001.0 + wd_mod.API_429_BACKOFF_S)
+
+        self.assertEqual(detected, [])
+        self.assertEqual(first, ["ordinary-529"])
+        self.assertEqual(second, [])
+
+    def test_stopped_and_non_claude_sessions_are_excluded(self):
+        watchdog = wd_mod.Watchdog(dry_run=True)
+        sessions = [
+            self._claude_session(sid="stopped", status="stopped"),
+            {**self._claude_session(sid="codex"), "tool": "codex"},
+        ]
+
+        with mock.patch.object(wd_mod, "list_all_sessions", return_value=sessions), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot") as snapshot:
+            recovered = watchdog.check_api_overload_recovery(now=1000.0)
+
+        self.assertEqual(recovered, [])
+        snapshot.assert_not_called()
+
+    def test_live_recovery_uses_a_session_nudge(self):
+        watchdog = wd_mod.Watchdog(dry_run=False)
+        pane = "API Error: 529 Overloaded. Try again in a moment.\n❯ "
+
+        with mock.patch.object(wd_mod, "list_all_sessions", return_value=[self._claude_session()]), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value=pane), \
+             mock.patch.object(wd_mod, "run_cmd", return_value=(0, "", "")) as run:
+            watchdog.check_api_overload_recovery(now=1000.0)
+            recovered = watchdog.check_api_overload_recovery(
+                now=1000.0 + wd_mod.API_429_BACKOFF_S)
+
+        self.assertEqual(recovered, ["ordinary-529"])
+        args = run.call_args[0][0]
+        self.assertEqual(args[-4:-1], ["session", "nudge", "ordinary-529"])
+        self.assertEqual(args[-1], wd_mod.API_OVERLOAD_RESUME_TEXT)
+
+    def test_active_circuit_breaker_does_not_resume_overloads(self):
+        watchdog = wd_mod.Watchdog(dry_run=True)
+        watchdog.circuit_breaker_until = 2000.0
+        pane = "API Error: 529 Overloaded. Try again in a moment.\n❯ "
+
+        with mock.patch.object(wd_mod, "list_all_sessions", return_value=[self._claude_session()]), \
+             mock.patch.object(wd_mod, "fetch_pane_snapshot", return_value=pane):
+            recovered = watchdog.check_api_overload_recovery(now=1000.0)
+
+        self.assertEqual(recovered, [])
+
+
 class TestLivenessConfirmation(unittest.TestCase):
     """Issue #1705: a conductor was restarted mid-turn while its agent was alive
     and working. A restart tears the pane down, so the last thing the watchdog does

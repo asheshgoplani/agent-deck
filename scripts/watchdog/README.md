@@ -9,7 +9,7 @@ See `DESIGN.md` for architecture.
 
 1. **Auto-restart** critical sessions (conductors, `meeting-watcher`, `gmail-watcher`,
    `agent-deck`, explicit opt-ins) when they flip to `error` — with per-session
-   rate limit (3 per 10 min), global cascade guard, 429 detection, and Telegram
+   rate limit (3 per 10 min), global cascade guard, API-overload detection, and Telegram
    escalation.
 2. **Poller-existence check (v1.7.63)** — for each conductor session with
    `plugin:telegram@claude-plugins-official` attached, verify a matching
@@ -41,6 +41,12 @@ See `DESIGN.md` for architecture.
    dead session. Both that alert and the auth-hold one fire once per error
    episode, not once per poll; the counter resets when the session is next seen
    healthy.
+5. **Claude API-overload recovery** — scans every non-stopped Claude session for a
+   terminal 429 or `API Error: 529 Overloaded` response. Claude's built-in retry
+   loop is left alone. Once it returns to an idle prompt, the watchdog waits 180
+   seconds, then sends one `session nudge` to resume the existing conversation.
+   The recovery is deduplicated by pane digest and shares the global serialization
+   and circuit breaker with restarts; it never restarts the tmux pane.
 
 ## Install
 

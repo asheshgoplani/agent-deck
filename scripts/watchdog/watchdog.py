@@ -73,8 +73,8 @@ WAITING_PATROL_THRESHOLD_S = 600        # 10 min
 WAITING_PATROL_NUDGE_DEDUP_S = 3600     # 1 hour — don't re-nudge within this
 WAITING_PATROL_NUDGE_TEXT = "report status?"
 
-# --- API rate-limit (429) handling ---
-# When claude itself returns 429, we must NOT count it as a crash (that escalates
+# --- API overload (429/529) handling ---
+# When claude itself returns a rate-limit or overload response, we must NOT count it as a crash (that escalates
 # to telegram and eventually removes the session). Instead, pause the specific
 # session for API_429_BACKOFF_S, and if 429s keep piling up globally, trip a
 # circuit breaker so we stop hammering the API entirely.
@@ -113,7 +113,10 @@ RATE_LIMIT_PATTERNS = (
     re.compile(r"\bHTTP[/ ]?429\b", re.IGNORECASE),
     re.compile(r"\(429\)"),
     re.compile(r"exceed.*rate.*limit", re.IGNORECASE),
+    re.compile(r"API Error:\s*529\s+Overloaded", re.IGNORECASE),
 )
+API_OVERLOAD_RETRYING_PATTERN = re.compile(r"\bRetrying in\b.*\battempt\b", re.IGNORECASE)
+IDLE_PROMPT_PATTERN = re.compile(r"(?m)^❯\s*$")
 DEFERRED_MARKER_PATTERN = re.compile(r"deferred tool marker", re.IGNORECASE)
 
 # Profile → CLAUDE_CONFIG_DIR mapping. Used only for the prompt-resume fallback
@@ -125,6 +128,10 @@ PROFILE_CONFIG_DIRS = {
 PROMPT_RESUME_TEXT = (
     "continue — your tmux session was stopped unexpectedly; "
     "check your state and report a one-line status"
+)
+API_OVERLOAD_RESUME_TEXT = (
+    "continue — the previous turn was interrupted by a temporary API overload; "
+    "resume the existing task from the saved instructions and prior progress"
 )
 
 # --- critical-session allow-list ---
@@ -242,6 +249,18 @@ def detect_rate_limit(text):
     return any(p.search(text) for p in RATE_LIMIT_PATTERNS)
 
 
+def has_terminal_api_overload(text):
+    """Return true only when the latest API-overload marker is no longer retrying."""
+    if not text:
+        return False
+    matches = [match for pattern in RATE_LIMIT_PATTERNS for match in pattern.finditer(text)]
+    if not matches:
+        return False
+    latest = max(matches, key=lambda match: match.start())
+    tail = text[latest.start():]
+    return not API_OVERLOAD_RETRYING_PATTERN.search(tail) and bool(IDLE_PROMPT_PATTERN.search(tail))
+
+
 def detect_deferred_marker(text):
     if not text:
         return False
@@ -264,6 +283,22 @@ def send_continuity_message(instance_id, profile, dry_run=False):
         log.warning("continuity send failed %s rc=%d err=%s", instance_id, rc, err.strip())
         return False
     log.info("continuity sent to %s", instance_id)
+    return True
+
+
+def send_api_overload_resume_message(instance_id, profile, dry_run=False):
+    if dry_run:
+        log.info("[DRY] overload-resume→ %s", instance_id)
+        return True
+    args = [AGENT_DECK_BIN]
+    if profile:
+        args += ["-p", profile]
+    args += ["session", "nudge", instance_id, API_OVERLOAD_RESUME_TEXT]
+    rc, _, err = run_cmd(args, timeout=15)
+    if rc != 0:
+        log.warning("overload-resume nudge failed %s rc=%d err=%s", instance_id, rc, err.strip()[:200])
+        return False
+    log.info("overload-resume nudge sent to %s", instance_id)
     return True
 
 
@@ -486,6 +521,8 @@ class Watchdog:
         self.recent_429s = deque()                # timestamps of recent 429 detections
         self.circuit_breaker_until = 0.0          # if > now, pause ALL restarts
         self.circuit_breaker_notified = False     # avoid re-telegramming the same trip
+        self.overload_recovery_hashes = {}        # id -> terminal-overload pane digest
+        self.overload_pending_hashes = {}         # id -> terminal overload awaiting backoff
         # v1.7.63 capability A: one restart per conductor per POLLER_RESTART_DEDUP_S
         self.last_poller_restart_at = {}          # sid -> ts
         # v1.7.63 capability B: per-waiting-child {first_seen_at, pane_hash, last_nudge_at}
@@ -550,11 +587,12 @@ class Watchdog:
 
     # ---- rate-limit (429) state machine ----
 
-    def _note_429(self, sid):
+    def _note_429(self, sid, now=None):
         """Record a 429 hit for `sid`. Pauses that session for API_429_BACKOFF_S
         and (if the threshold is crossed) trips the global circuit breaker.
         Must be called with self.lock held."""
-        now = time.time()
+        if now is None:
+            now = time.time()
         self.rate_limited_until[sid] = now + API_429_BACKOFF_S
         self.recent_429s.append(now)
         while self.recent_429s and now - self.recent_429s[0] > CIRCUIT_BREAKER_429_WINDOW_S:
@@ -772,6 +810,20 @@ class Watchdog:
         if status2.lower() == "error":
             return False, status2, "fallback start returned success but status still error after 15s", False
         return True, status2, None, False
+
+    def _send_api_overload_resume(self, sid, profile):
+        """Serialize recovery nudges with restarts to avoid an API retry storm."""
+        with self.restart_lock:
+            wait = (self.last_global_restart_at + MIN_GLOBAL_RESTART_INTERVAL_S) - time.time()
+            if wait > 0:
+                log.info("serialize: waiting %.1fs before overload-resume of %s", wait, sid)
+                self.stop_event.wait(wait)
+                if self.stop_event.is_set():
+                    return False
+            ok = send_api_overload_resume_message(sid, profile, dry_run=self.dry_run)
+            if ok:
+                self.last_global_restart_at = time.time()
+            return ok
 
     def _prompt_resume_personal(self, sid, profile):
         """One-shot `claude --resume <claude_sid> -p "continue..."` to burn a
@@ -1085,6 +1137,56 @@ class Watchdog:
         threading.Thread(target=_batch_revive, name="cascade-revive", daemon=True).start()
         return True
 
+    # ---- API-overload recovery ----
+
+    def check_api_overload_recovery(self, now=None, sessions=None):
+        """Nudge every non-stopped Claude session whose latest API error is terminal.
+
+        Claude handles its own retries first. Once it returns to an idle prompt,
+        send one continuation message and record the pane digest so the same
+        scrollback error cannot queue duplicate work.
+        """
+        if now is None:
+            now = time.time()
+        if sessions is None:
+            sessions = list_all_sessions()
+        recovered = []
+        for session in sessions:
+            sid = session.get("id")
+            if not sid or session.get("tool") != "claude":
+                continue
+            if (session.get("status") or "").lower() == "stopped":
+                continue
+            pane = fetch_pane_snapshot(sid, session.get("profile"))
+            if not has_terminal_api_overload(pane):
+                self.overload_pending_hashes.pop(sid, None)
+                self.overload_recovery_hashes.pop(sid, None)
+                continue
+            pane_hash = digest_pane(pane)
+            if self.overload_recovery_hashes.get(sid) == pane_hash:
+                continue
+            with self.lock:
+                if self.overload_pending_hashes.get(sid) != pane_hash:
+                    self.overload_pending_hashes[sid] = pane_hash
+                    self._note_429(sid, now=now)
+                    self._audit(RESTART_LOG, {
+                        "ts": now, "id": sid, "title": session.get("title") or "?",
+                        "profile": session.get("profile"), "action": "api-overload-detected",
+                        "backoff_s": API_429_BACKOFF_S,
+                    })
+                if self._circuit_broken(now) or self._session_rate_limited(sid, now):
+                    continue
+            if not self._send_api_overload_resume(sid, session.get("profile")):
+                continue
+            self.overload_recovery_hashes[sid] = pane_hash
+            self.overload_pending_hashes.pop(sid, None)
+            self._audit(RESTART_LOG, {
+                "ts": now, "id": sid, "title": session.get("title") or "?",
+                "profile": session.get("profile"), "action": "api-overload-resume",
+            })
+            recovered.append(sid)
+        return recovered
+
     # ---- triggers ----
 
     def inotify_listener(self):
@@ -1183,6 +1285,7 @@ class Watchdog:
                                 self.event_q.put_nowait(("poll", s))
                             except queue.Full:
                                 pass
+                    self.check_api_overload_recovery(sessions=sessions)
                 now = time.time()
                 if now - last_stale_scan > STALE_CLEANUP_SCAN_INTERVAL_S:
                     self._stale_cleanup_scan()
@@ -1348,11 +1451,13 @@ def main():
             log.info("cascade triggered; waiting for batch revive to finish")
             time.sleep(CASCADE_WAIT_S + 10)
         else:
-            for s in list_all_sessions():
+            sessions = list_all_sessions()
+            for s in sessions:
                 if is_critical(s):
                     log.info("critical candidate: %s (%s) profile=%s",
                              s.get("id"), s.get("title"), s.get("profile"))
                     wd.maybe_restart(s)
+            wd.check_api_overload_recovery(sessions=sessions)
             # give continuity-send threads a moment
             time.sleep(3)
         return 0

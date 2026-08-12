@@ -74,6 +74,21 @@ Call `agent-deck session restart <id>` — this preserves ClaudeSessionID via `r
 
 When agent-deck answers that call with `skipped: true`, a guard inside agent-deck declined on purpose (an auth hold, or the freshness guard from #30). The watchdog stops there: it does **not** escalate to `session start`, which would defeat the guard that just fired.
 
+### API-overload recovery
+
+The watchdog also scans every non-stopped Claude session rather than only the
+critical-session allow-list. A pane is eligible when its latest API marker is a
+429 or `API Error: 529 Overloaded`, it is not in Claude's own `Retrying in …
+attempt …` loop, and the idle `❯` prompt follows that marker. This excludes a
+live retry and an old overload that is merely present in pane scrollback.
+
+On first observation, the watchdog starts the normal 180-second per-session
+API backoff. When it expires, it sends one `agent-deck session nudge` to the
+same conversation; it does not restart tmux or invoke a second `claude`
+process. Pane digests deduplicate recovery within the overload episode. The
+resume nudge shares the global 60-second serialization lock and API circuit
+breaker with restarts, so a provider outage cannot create a retry storm.
+
 ## Guardrails
 
 ### Liveness confirmation immediately before the restart (#1705)

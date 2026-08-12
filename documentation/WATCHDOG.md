@@ -63,6 +63,18 @@ Pane change resets the timer. A status change (e.g. `waiting` → `running`) evi
 
 This catches the other quiet failure mode: a child that finished its work, asked the user a yes-or-no question via Claude, and now sits invisibly in `waiting` status because no one is looking at its pane. The nudge makes the child speak up in its output, which the conductor or its watcher will pick up.
 
+### Capability 4: API-overload recovery
+
+For every non-stopped Claude session, the watchdog looks for a terminal 429 or
+`API Error: 529 Overloaded` response followed by Claude's idle prompt. It leaves
+Claude's own `Retrying in … attempt …` loop alone. After a 180-second per-session
+backoff, it sends one continuation nudge to the existing session; it does not
+restart the tmux pane or create a second Claude process.
+
+Recovery is deduplicated by the pane digest and shares the watchdog's global
+serialization and circuit breaker. Three overload detections in ten minutes pause
+further recovery for ten minutes, avoiding an outage-driven request storm.
+
 ## What the watchdog will not do
 
 - Create sessions. It only operates on sessions agent-deck already knows about.
