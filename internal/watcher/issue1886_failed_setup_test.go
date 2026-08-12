@@ -1,8 +1,10 @@
 package watcher
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -30,15 +32,84 @@ func newHealthLoopEngine(t *testing.T, interval time.Duration) *Engine {
 	return NewEngine(cfg)
 }
 
-// TestEngine_HealthLoop_SkipsAdapterWithFailedSetup reproduces #1886: an ntfy
-// watcher registered without a topic fails Setup, and the next health tick used
-// to panic with a nil-pointer dereference inside net/http.(*Client).do. The
-// engine must report the watcher as unhealthy instead of probing it.
+// failedSetupAdapter fails Setup and counts every call the engine makes into it
+// afterwards. The counters are what tell "healthLoop skipped this adapter" apart
+// from "healthLoop called it and got an error back" — a status assertion alone
+// cannot, because the adapter-level nil-client guard also yields an error.
+// HealthCheck returns nil on purpose: a call that did happen would flip the
+// tracker to healthy, so it would fail the status assertion as well.
+type failedSetupAdapter struct {
+	healthChecks atomic.Int64
+	teardowns    atomic.Int64
+}
+
+func (a *failedSetupAdapter) Setup(context.Context, AdapterConfig) error {
+	return errors.New("setup failed")
+}
+
+func (a *failedSetupAdapter) Listen(ctx context.Context, _ chan<- Event) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (a *failedSetupAdapter) Teardown() error {
+	a.teardowns.Add(1)
+	return nil
+}
+
+func (a *failedSetupAdapter) HealthCheck() error {
+	a.healthChecks.Add(1)
+	return nil
+}
+
+// TestEngine_HealthLoop_SkipsAdapterWithFailedSetup asserts the actual contract:
+// the health loop must not call into an adapter whose Setup failed, and must
+// still report that watcher as unhealthy.
 func TestEngine_HealthLoop_SkipsAdapterWithFailedSetup(t *testing.T) {
 	engine := newHealthLoopEngine(t, 20*time.Millisecond)
 
-	// No "topic" setting: NtfyAdapter.Setup returns an error before it assigns
-	// a.client, which is exactly the state the panicking watcher was left in.
+	adapter := &failedSetupAdapter{}
+	engine.RegisterAdapter("w1", adapter, AdapterConfig{Type: "mock", Name: "broken"}, 60)
+
+	if err := engine.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for a state, then let several more ticks pass so a health loop that
+	// probes unconditionally has every chance to call the adapter.
+	select {
+	case state := <-engine.HealthCh():
+		if state.WatcherName != "broken" {
+			t.Errorf("health state for %q, want %q", state.WatcherName, "broken")
+		}
+		if state.Status != HealthStatusError {
+			t.Errorf("status = %q, want %q (setup failed)", state.Status, HealthStatusError)
+		}
+	case <-time.After(2 * time.Second):
+		engine.Stop()
+		t.Fatal("no health state emitted for the watcher whose Setup failed")
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	if n := adapter.healthChecks.Load(); n != 0 {
+		t.Errorf("HealthCheck called %d times on an adapter whose Setup failed, want 0", n)
+	}
+
+	engine.Stop()
+
+	if n := adapter.teardowns.Load(); n != 0 {
+		t.Errorf("Teardown called %d times on an adapter whose Setup failed, want 0", n)
+	}
+}
+
+// TestEngine_HealthLoop_NtfyWithFailedSetupDoesNotPanic is the #1886 regression
+// case itself: an ntfy watcher registered without a topic fails Setup before it
+// assigns a.client, and the next health tick used to panic with a nil-pointer
+// dereference inside net/http.(*Client).do, killing the process. Kept alongside
+// the skip test above because only this one exercises the real adapter.
+func TestEngine_HealthLoop_NtfyWithFailedSetupDoesNotPanic(t *testing.T) {
+	engine := newHealthLoopEngine(t, 20*time.Millisecond)
+
 	engine.RegisterAdapter("w1", &NtfyAdapter{}, AdapterConfig{
 		Type:     "ntfy",
 		Name:     "test-ntfy",
