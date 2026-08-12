@@ -65,7 +65,7 @@ func CompleteLifecycleIntent(storage *Storage, intent LifecycleIntentHandle) err
 	if storage == nil || storage.db == nil {
 		return errors.New("complete lifecycle intent: storage unavailable")
 	}
-	return storage.db.CompleteLifecycleIntentGuarded(intent.InstanceID, intent.Token, func(durable LifecycleIntentHandle) error {
+	err := storage.db.CompleteLifecycleIntentGuarded(intent.InstanceID, intent.Token, func(durable LifecycleIntentHandle) error {
 		if durable.Kind != LifecycleIntentRemove && durable.Kind != LifecycleIntentWorktreeFinish {
 			return nil
 		}
@@ -83,6 +83,13 @@ func CompleteLifecycleIntent(storage *Storage, intent LifecycleIntentHandle) err
 		}
 		return nil
 	})
+	if errors.Is(err, statedb.ErrLifecycleIntentInProgress) {
+		// A recovery sweep already owns this exact durable operation. Leave the
+		// intent in place for that owner (or a later recovery) to finish rather
+		// than blocking the foreground command on filesystem work.
+		return nil
+	}
+	return err
 }
 
 // RecoverLifecycleIntents finishes only transitions whose durable state makes

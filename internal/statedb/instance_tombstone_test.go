@@ -177,7 +177,7 @@ func TestCompleteLifecycleIntentGuardedDoesNotHoldWriterDuringCallback(t *testin
 	}
 }
 
-func TestCompleteLifecycleIntentGuardedWaitsForClaimedIntentToComplete(t *testing.T) {
+func TestCompleteLifecycleIntentGuardedReportsClaimedIntentInProgress(t *testing.T) {
 	db := newTestDB(t)
 	intent, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: "wait-for-claimed-intent", Kind: "remove", Payload: "payload"})
 	if err != nil {
@@ -188,24 +188,15 @@ func TestCompleteLifecycleIntentGuardedWaitsForClaimedIntentToComplete(t *testin
 		t.Fatalf("startup recovery claim = %v, %v", claimed, err)
 	}
 
-	done := make(chan error, 1)
-	go func() { done <- db.CompleteLifecycleIntentGuarded(intent.InstanceID, intent.Token, nil) }()
-	select {
-	case err := <-done:
-		t.Fatalf("completion returned before claimed intent was removed: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	if err := db.CompleteLifecycleIntentGuarded(intent.InstanceID, intent.Token, nil); !errors.Is(err, ErrLifecycleIntentInProgress) {
+		t.Fatalf("completion against claimed intent = %v, want in-progress error", err)
 	}
 
 	if err := db.CompleteClaimedLifecycleIntent(intent.InstanceID, intent.Token, "startup-recovery"); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("completion after claimed intent removal: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("completion did not observe durable intent removal")
+	if err := db.CompleteLifecycleIntentGuarded(intent.InstanceID, intent.Token, nil); err != nil {
+		t.Fatalf("completion after claimed intent removal: %v", err)
 	}
 }
 

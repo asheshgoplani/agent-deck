@@ -116,6 +116,7 @@ type LifecycleIntent struct {
 
 var ErrLifecycleIntentConflict = errors.New("statedb: incompatible lifecycle intent already active")
 var ErrLifecycleIntentOwnership = errors.New("statedb: lifecycle intent ownership token mismatch")
+var ErrLifecycleIntentInProgress = errors.New("statedb: lifecycle intent completion already in progress")
 var LifecycleRecoveryClaimLease = 30 * time.Second
 
 // ErrInstanceTombstoned prevents stale persistence from recreating an ID whose
@@ -1818,13 +1819,7 @@ func (s *StateDB) CompleteLifecycleIntentGuarded(instanceID, token string, guard
 		return err
 	}
 	if !claimed {
-		claimed, err = s.completeLifecycleIntentClaimMiss(instanceID, token, owner)
-		if err != nil {
-			return err
-		}
-		if !claimed {
-			return nil
-		}
+		return s.completeLifecycleIntentClaimMiss(instanceID, token)
 	}
 	completed := false
 	defer func() {
@@ -1916,43 +1911,22 @@ func (s *StateDB) lifecycleIntentForClaim(instanceID, token, owner string) (Life
 	return intent, err == nil, err
 }
 
-// completeLifecycleIntentClaimMiss waits for the existing owner to finish or
-// reclaims the same durable intent after that owner releases or expires. It
-// only reports idempotent success after observing the intent row absent.
-func (s *StateDB) completeLifecycleIntentClaimMiss(instanceID, token, owner string) (bool, error) {
-	retryDelay := 10 * time.Millisecond
-	for {
-		var currentToken string
-		found := false
-		err := withBusyRetry(func() error {
-			err := s.db.QueryRow("SELECT token FROM lifecycle_intents WHERE instance_id=?", instanceID).Scan(&currentToken)
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil
-			}
-			if err == nil {
-				found = true
-			}
-			return err
-		})
-		if err != nil {
-			return false, err
-		}
-		if !found {
-			return false, nil
-		}
-		if currentToken != token {
-			return false, ErrLifecycleIntentOwnership
-		}
-
-		claimed, err := s.ClaimLifecycleIntent(instanceID, token, owner)
-		if err != nil {
-			return false, err
-		}
-		if claimed {
-			return true, nil
-		}
-		time.Sleep(retryDelay)
+// completeLifecycleIntentClaimMiss distinguishes an already completed intent
+// from one still owned by another finisher. It never reports completion while
+// a durable row remains.
+func (s *StateDB) completeLifecycleIntentClaimMiss(instanceID, token string) error {
+	var currentToken string
+	err := s.db.QueryRow("SELECT token FROM lifecycle_intents WHERE instance_id=?", instanceID).Scan(&currentToken)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
 	}
+	if err != nil {
+		return err
+	}
+	if currentToken == token {
+		return ErrLifecycleIntentInProgress
+	}
+	return ErrLifecycleIntentOwnership
 }
 
 func (s *StateDB) releaseLifecycleIntentClaim(instanceID, token, owner string) error {
