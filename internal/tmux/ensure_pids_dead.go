@@ -34,10 +34,47 @@ import (
 // Callers in CLI processes should use this instead of scheduling
 // ensureProcessesDead on a goroutine — see issue #59.
 //
-// The PID-reuse guard in isOurProcess is preserved: if a captured PID
-// has been recycled into an unrelated process, it's skipped.
+// Each PID is identified by the process start time captured when this function
+// begins. A caller that captures identities before tearing down a tmux session
+// should use EnsureProcessIdentitiesDead so it also covers the small interval
+// between the tmux kill and this cleanup.
 func EnsurePIDsDead(pids []int, timeout time.Duration) {
-	if len(pids) == 0 {
+	EnsureProcessIdentitiesDead(CaptureProcessIdentities(pids), timeout)
+}
+
+// ProcessIdentity is a PID together with the start time reported by ps. The
+// pairing lets teardown distinguish the original pane descendant from an
+// unrelated process that reused its PID.
+type ProcessIdentity struct {
+	PID       int
+	StartedAt string
+}
+
+// CaptureProcessIdentities snapshots the identities of the supplied PIDs.
+// Missing PIDs are omitted; they are already gone and need no cleanup.
+func CaptureProcessIdentities(pids []int) []ProcessIdentity {
+	identities := make([]ProcessIdentity, 0, len(pids))
+	seen := make(map[int]struct{}, len(pids))
+	for _, pid := range pids {
+		if pid <= 0 {
+			continue
+		}
+		if _, duplicate := seen[pid]; duplicate {
+			continue
+		}
+		seen[pid] = struct{}{}
+		if startedAt := processStartTime(pid); startedAt != "" {
+			identities = append(identities, ProcessIdentity{PID: pid, StartedAt: startedAt})
+		}
+	}
+	return identities
+}
+
+// EnsureProcessIdentitiesDead blocks until every captured process is gone or
+// the timeout elapses. It only signals a PID while its start time still matches
+// the original snapshot, so it never kills a recycled unrelated PID.
+func EnsureProcessIdentitiesDead(identities []ProcessIdentity, timeout time.Duration) {
+	if len(identities) == 0 {
 		return
 	}
 	if timeout <= 0 {
@@ -50,16 +87,16 @@ func EnsurePIDsDead(pids []int, timeout time.Duration) {
 	// `tmux kill-session`) a chance to take effect before we escalate.
 	sleepUntilOrDuration(deadline, 250*time.Millisecond)
 
-	alive := filterAliveOurProcesses(pids)
+	alive := filterAliveProcessIdentities(identities)
 	if len(alive) == 0 {
 		return
 	}
 
 	respawnLog.Info("ensure_pids_dead_sigterm",
 		slog.Int("count", len(alive)),
-		slog.Any("pids", alive))
-	for _, pid := range alive {
-		if proc, err := os.FindProcess(pid); err == nil {
+		slog.Any("pids", identityPIDs(alive)))
+	for _, process := range alive {
+		if proc, err := os.FindProcess(process.PID); err == nil {
 			_ = proc.Signal(syscall.SIGTERM)
 		}
 	}
@@ -67,16 +104,16 @@ func EnsurePIDsDead(pids []int, timeout time.Duration) {
 	// Stage 2: give SIGTERM time to propagate.
 	sleepUntilOrDuration(deadline, 750*time.Millisecond)
 
-	stubborn := filterAliveOurProcesses(alive)
+	stubborn := filterAliveProcessIdentities(alive)
 	if len(stubborn) == 0 {
 		return
 	}
 
 	respawnLog.Info("ensure_pids_dead_sigkill",
 		slog.Int("count", len(stubborn)),
-		slog.Any("pids", stubborn))
-	for _, pid := range stubborn {
-		if proc, err := os.FindProcess(pid); err == nil {
+		slog.Any("pids", identityPIDs(stubborn)))
+	for _, process := range stubborn {
+		if proc, err := os.FindProcess(process.PID); err == nil {
 			_ = proc.Signal(syscall.SIGKILL)
 		}
 	}
@@ -84,7 +121,7 @@ func EnsurePIDsDead(pids []int, timeout time.Duration) {
 	// Stage 3: wait for SIGKILL to complete, polling signal-0 so we
 	// return as soon as they're all gone rather than sleeping blindly.
 	for time.Now().Before(deadline) {
-		if len(filterAliveOurProcesses(stubborn)) == 0 {
+		if len(filterAliveProcessIdentities(stubborn)) == 0 {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -105,53 +142,46 @@ func sleepUntilOrDuration(deadline time.Time, d time.Duration) {
 	time.Sleep(d)
 }
 
-// filterAliveOurProcesses returns the subset of `pids` that are still
-// alive AND match one of our known-process binaries (PID reuse guard).
-func filterAliveOurProcesses(pids []int) []int {
-	var alive []int
-	for _, pid := range pids {
-		if pid <= 0 {
+// filterAliveProcessIdentities returns process identities that still refer to
+// the original live process. No executable-name allowlist is needed: callers
+// only pass descendants captured from the session pane tree.
+func filterAliveProcessIdentities(identities []ProcessIdentity) []ProcessIdentity {
+	var alive []ProcessIdentity
+	for _, process := range identities {
+		if process.PID <= 0 || process.StartedAt == "" {
 			continue
 		}
-		proc, err := os.FindProcess(pid)
+		proc, err := os.FindProcess(process.PID)
 		if err != nil {
 			continue
 		}
 		if err := proc.Signal(syscall.Signal(0)); err != nil {
 			continue // already dead
 		}
-		if !isOurProcessLoose(pid) {
+		if processStartTime(process.PID) != process.StartedAt {
 			continue
 		}
-		alive = append(alive, pid)
+		alive = append(alive, process)
 	}
 	return alive
 }
 
-// isOurProcessLoose mirrors isOurProcess (tmux.go) with a broader
-// allowlist so EnsurePIDsDead can reap any pane-descendant process the
-// callers hand it (the existing tmux.go guard is narrower because it
-// runs on a hot-path during respawn). Includes "dash" / "sleep" so the
-// test harness (sh -c 'trap "" HUP; sleep …', where /bin/sh is dash
-// on Debian/Ubuntu) exercises the real primitive.
-//
-// The PID-reuse concern is bounded by the short capture→kill window;
-// callers that care about stricter filtering can pre-filter before
-// handing PIDs in.
-func isOurProcessLoose(pid int) bool {
+func processStartTime(pid int) string {
 	// #nosec G204 -- "ps" is a fixed binary and the only varying arg is
 	// strconv.Itoa(int), never external input.
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
 	if err != nil {
-		return false
+		return ""
 	}
-	name := strings.ToLower(strings.TrimSpace(string(out)))
-	for _, known := range []string{"claude", "node", "zsh", "bash", "sh", "dash", "ash", "fish", "cat", "npm", "bun", "uv", "python", "sleep"} {
-		if strings.Contains(name, known) {
-			return true
-		}
+	return strings.TrimSpace(string(out))
+}
+
+func identityPIDs(identities []ProcessIdentity) []int {
+	pids := make([]int, 0, len(identities))
+	for _, process := range identities {
+		pids = append(pids, process.PID)
 	}
-	return false
+	return pids
 }
 
 // KillAndWait is the synchronous variant of Session.Kill. When it
@@ -168,6 +198,7 @@ func (s *Session) KillAndWait() error {
 	_ = os.Remove(s.LogFile())
 
 	_, oldPIDs := s.getPaneProcessTree()
+	oldProcesses := CaptureProcessIdentities(oldPIDs)
 
 	// Bounded — see tmuxMutationTimeout. This is the CLI path (`agent-deck
 	// remove`), where an unbounded wedge hangs the user's terminal outright
@@ -179,8 +210,8 @@ func (s *Session) KillAndWait() error {
 	defer cancelKill()
 	killErr := execCommandContext(killCtx, "tmux", "kill-session", "-t", s.Name).Run()
 
-	if len(oldPIDs) > 0 {
-		EnsurePIDsDead(oldPIDs, 3*time.Second)
+	if len(oldProcesses) > 0 {
+		EnsureProcessIdentitiesDead(oldProcesses, 3*time.Second)
 	}
 
 	// Killing an already-dead session is success (see Session.Kill): tmux
