@@ -1,8 +1,10 @@
 package session
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,7 +31,7 @@ func TestRecoverLifecycleIntentsFinalizesCommittedRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.db.DeleteInstance(inst.ID); err != nil {
+	if err := storage.db.DeleteInstance(inst.ID, intent.Token); err != nil {
 		t.Fatal(err)
 	}
 	if err := AdvanceLifecycleIntent(storage, intent, "row-deleted", payload); err != nil {
@@ -76,8 +78,20 @@ func TestRecoverLifecycleIntentsArchiveAndWorktreePhases(t *testing.T) {
 			defer storage.Close()
 			inst := NewInstance(tc.name, t.TempDir())
 			inst.ID = "phase-id"
-			inst.WorktreePath = filepath.Join(root, "already-removed-worktree")
+			inst.WorktreePath = filepath.Join(root, "worktree")
 			inst.WorktreeRepoRoot = filepath.Join(root, "repo")
+			var removals atomic.Int32
+			if tc.phase == "merged" {
+				if err := os.MkdirAll(inst.WorktreePath, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				original := lifecycleRemoveWorktree
+				lifecycleRemoveWorktree = func(target *Instance) (bool, error) {
+					removals.Add(1)
+					return true, os.RemoveAll(target.WorktreePath)
+				}
+				t.Cleanup(func() { lifecycleRemoveWorktree = original })
+			}
 			if tc.archived {
 				inst.ArchivedAt = time.Now().UTC()
 			}
@@ -113,6 +127,14 @@ func TestRecoverLifecycleIntentsArchiveAndWorktreePhases(t *testing.T) {
 			if got := len(intents) == 1; got != tc.wantIntent {
 				t.Fatalf("intent retained = %v, want %v (%#v)", got, tc.wantIntent, intents)
 			}
+			if tc.phase == "merged" {
+				if removals.Load() != 1 {
+					t.Fatalf("worktree removals=%d", removals.Load())
+				}
+				if _, err := os.Stat(inst.WorktreePath); !os.IsNotExist(err) {
+					t.Fatalf("worktree survived: %v", err)
+				}
+			}
 		})
 	}
 }
@@ -133,14 +155,29 @@ func TestRecoverLifecycleIntentsConcurrentCompletionIsIdempotent(t *testing.T) {
 	defer second.Close()
 	inst := NewInstance("concurrent", t.TempDir())
 	inst.ID = "concurrent-recovery"
+	if err := first.InsertSessionAndVerify(inst, NewGroupTree([]*Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := first.LoadWithGroups()
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("load=%#v, %v", loaded, err)
+	}
+	inst = loaded[0]
 	payload := LifecycleIntentPayload(inst, "", "")
 	intent, err := PrepareLifecycleIntent(first, inst.ID, LifecycleIntentRemove, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := AdvanceLifecycleIntent(first, intent, "row-deleted", payload); err != nil {
+	if err := first.db.DeleteInstance(inst.ID, intent.Token); err != nil {
 		t.Fatal(err)
 	}
+	var cleanupCount atomic.Int32
+	lifecycleRecoveryMutation = func(name string) {
+		if name == "queue-discard" {
+			cleanupCount.Add(1)
+		}
+	}
+	t.Cleanup(func() { lifecycleRecoveryMutation = nil })
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	for _, storage := range []*Storage{first, second} {
@@ -160,6 +197,136 @@ func TestRecoverLifecycleIntentsConcurrentCompletionIsIdempotent(t *testing.T) {
 	intents, err := first.db.LifecycleIntents()
 	if err != nil || len(intents) != 0 {
 		t.Fatalf("concurrent recovery did not finalize exactly once: %#v, %v", intents, err)
+	}
+	if cleanupCount.Load() != 1 {
+		t.Fatalf("destructive cleanup count=%d", cleanupCount.Load())
+	}
+}
+
+func TestRecoverLifecycleIntentsRenewsBlockedClaimAndCleansExactlyOnce(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	first, err := NewStorageWithProfile("_test_blocked_claim_renewal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := NewStorageWithProfile("_test_blocked_claim_renewal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	inst := NewInstance("blocked", t.TempDir())
+	inst.ID = "blocked-renewal"
+	if err := first.InsertSessionAndVerify(inst, NewGroupTree([]*Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, _ := first.LoadWithGroups()
+	payload := LifecycleIntentPayload(loaded[0], "", "")
+	intent, err := PrepareLifecycleIntent(first, inst.ID, LifecycleIntentRemove, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.db.DeleteInstance(inst.ID, intent.Token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnqueueRuntimeMessage(inst.ID, "cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	oldLease, oldInterval := statedb.LifecycleRecoveryClaimLease, lifecycleClaimRenewInterval
+	statedb.LifecycleRecoveryClaimLease, lifecycleClaimRenewInterval = time.Second, 100*time.Millisecond
+	t.Cleanup(func() { statedb.LifecycleRecoveryClaimLease, lifecycleClaimRenewInterval = oldLease, oldInterval })
+	entered, release := make(chan struct{}), make(chan struct{})
+	lifecycleAfterGenerationRead = func(statedb.LifecycleIntent) {
+		lifecycleAfterGenerationRead = nil
+		close(entered)
+		<-release
+	}
+	t.Cleanup(func() { lifecycleAfterGenerationRead = nil })
+	var cleanups atomic.Int32
+	lifecycleRecoveryMutation = func(name string) {
+		if name == "queue-discard" {
+			cleanups.Add(1)
+		}
+	}
+	t.Cleanup(func() { lifecycleRecoveryMutation = nil })
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- RecoverLifecycleIntents(first, nil) }()
+	<-entered
+	claimedBefore, err := first.db.LifecycleIntents()
+	if err != nil || len(claimedBefore) != 1 || claimedBefore[0].RecoveryOwner == "" {
+		t.Fatalf("initial claim=%#v, %v", claimedBefore, err)
+	}
+	time.Sleep(2200 * time.Millisecond)
+	claimedAfter, err := first.db.LifecycleIntents()
+	if err != nil || len(claimedAfter) != 1 || claimedAfter[0].RecoveryOwner != claimedBefore[0].RecoveryOwner || claimedAfter[0].RecoveryClaimedAt <= claimedBefore[0].RecoveryClaimedAt {
+		t.Fatalf("blocked claim was not renewed: before=%#v after=%#v err=%v", claimedBefore, claimedAfter, err)
+	}
+	if err := RecoverLifecycleIntents(second, nil); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if cleanups.Load() != 1 {
+		t.Fatalf("cleanup count=%d", cleanups.Load())
+	}
+	intents, _ := first.db.LifecycleIntents()
+	if len(intents) != 0 || RuntimeQueueHasPending(inst.ID) {
+		t.Fatalf("recovery incomplete intents=%#v", intents)
+	}
+}
+
+func TestRecoverLifecycleIntentsLostRenewalCancelsBeforeMutation(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	storage, err := NewStorageWithProfile("_test_lost_renewal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	inst := NewInstance("lost", t.TempDir())
+	inst.ID = "lost-renewal"
+	if err := storage.InsertSessionAndVerify(inst, NewGroupTree([]*Instance{inst})); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, _ := storage.LoadWithGroups()
+	payload := LifecycleIntentPayload(loaded[0], "", "")
+	intent, err := PrepareLifecycleIntent(storage, inst.ID, LifecycleIntentRemove, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.db.DeleteInstance(inst.ID, intent.Token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnqueueRuntimeMessage(inst.ID, "preserve"); err != nil {
+		t.Fatal(err)
+	}
+	oldInterval := lifecycleClaimRenewInterval
+	lifecycleClaimRenewInterval = 50 * time.Millisecond
+	t.Cleanup(func() { lifecycleClaimRenewInterval = oldInterval })
+	entered, release := make(chan struct{}), make(chan struct{})
+	lifecycleAfterGenerationRead = func(statedb.LifecycleIntent) { lifecycleAfterGenerationRead = nil; close(entered); <-release }
+	t.Cleanup(func() { lifecycleAfterGenerationRead = nil })
+	var mutations atomic.Int32
+	lifecycleRecoveryMutation = func(string) { mutations.Add(1) }
+	t.Cleanup(func() { lifecycleRecoveryMutation = nil })
+	done := make(chan error, 1)
+	go func() { done <- RecoverLifecycleIntents(storage, nil) }()
+	<-entered
+	if _, err := storage.db.DB().Exec("UPDATE lifecycle_intents SET recovery_owner='stolen' WHERE instance_id=?", inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	close(release)
+	if err := <-done; err == nil {
+		t.Fatal("lost ownership was not surfaced")
+	}
+	if mutations.Load() != 0 || !RuntimeQueueHasPending(inst.ID) {
+		t.Fatalf("mutation=%d queue=%v", mutations.Load(), RuntimeQueueHasPending(inst.ID))
 	}
 }
 
@@ -186,14 +353,14 @@ func TestRecoverLifecycleIntentsRereadsGenerationAfterSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.db.DeleteInstance(old.ID); err != nil {
+	if err := storage.db.DeleteInstance(old.ID, intent.Token); err != nil {
 		t.Fatal(err)
 	}
 	if err := AdvanceLifecycleIntent(storage, intent, "row-deleted", payload); err != nil {
 		t.Fatal(err)
 	}
-	lifecycleBeforeRecoveryClaim = func(statedb.LifecycleIntent) {
-		lifecycleBeforeRecoveryClaim = nil
+	lifecycleAfterGenerationRead = func(statedb.LifecycleIntent) {
+		lifecycleAfterGenerationRead = nil
 		fresh := NewInstance("fresh", t.TempDir())
 		fresh.ID = old.ID
 		if err := storage.InsertSessionAndVerify(fresh, NewGroupTree([]*Instance{fresh})); err != nil {
@@ -203,7 +370,7 @@ func TestRecoverLifecycleIntentsRereadsGenerationAfterSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() { lifecycleBeforeRecoveryClaim = nil })
+	t.Cleanup(func() { lifecycleAfterGenerationRead = nil })
 	if err := RecoverLifecycleIntents(storage, snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +445,7 @@ func TestRecoverLifecycleIntentsDoesNotTouchReusedIDGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.db.DeleteInstance(old.ID); err != nil {
+	if err := storage.db.DeleteInstance(old.ID, intent.Token); err != nil {
 		t.Fatal(err)
 	}
 	if err := AdvanceLifecycleIntent(storage, intent, "row-deleted", payload); err != nil {

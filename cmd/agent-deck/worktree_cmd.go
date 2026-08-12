@@ -820,7 +820,7 @@ func handleWorktreeFinish(profile string, args []string) {
 	// the S1 empty-sweep guard AFTER the irreversible git steps, orphaning the
 	// row; since #1550 SaveWithGroups is upsert-only and would not delete the
 	// row at all. Either way, removal requires the targeted DELETE.
-	if err := storage.RemoveSessionAndVerify(inst.ID, remaining, groupTree); err != nil {
+	if err := storage.RemoveSessionAndVerify(inst.ID, remaining, groupTree, finishIntent.Token); err != nil {
 		out.Error(fmt.Sprintf("failed to finalize session removal: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}

@@ -50,8 +50,8 @@ type webDeletedEntry struct {
 // force failures after storage has opened. Production always uses the real
 // storage methods.
 var (
-	webDeleteInstance = func(storage *session.Storage, id string) error {
-		return storage.DeleteInstance(id)
+	webDeleteInstance = func(storage *session.Storage, id, token string) error {
+		return storage.DeleteInstance(id, token)
 	}
 	webPersistArchive = func(m *WebMutator) error { return m.persistAllInstances() }
 	webDiscardQueue   = func(tx *session.RuntimeQueueTransaction) error { return tx.Discard() }
@@ -239,7 +239,7 @@ func (m *WebMutator) DeleteSession(id string) error {
 	}
 
 	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
-		return webDeleteInstance(storage, id)
+		return webDeleteInstance(storage, id, removeIntent.Token)
 	}); err != nil {
 		return fmt.Errorf("commit web deletion: %w", err)
 	}
@@ -767,7 +767,7 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		}
 	}
 	if err := commitWebLifecycleAndDiscard(queueTx, func() error {
-		return storage.RemoveSessionAndVerify(id, existing, m.h.groupTree)
+		return storage.RemoveSessionAndVerify(id, existing, m.h.groupTree, finishIntent.Token)
 	}); err != nil {
 		return web.WorktreeFinishResult{}, fmt.Errorf("commit worktree removal: %w", err)
 	}

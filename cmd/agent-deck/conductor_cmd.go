@@ -870,7 +870,7 @@ func handleConductorTeardown(_ string, args []string) {
 							ownedIntents = append(ownedIntents, intent)
 							filtered := dropInstance(instances, inst.ID)
 							groupTree := session.NewGroupTreeWithGroups(filtered, groups)
-							if rmErr := storage.RemoveSessionAndVerify(inst.ID, filtered, groupTree); rmErr != nil {
+							if rmErr := storage.RemoveSessionAndVerify(inst.ID, filtered, groupTree, intent.Token); rmErr != nil {
 								prepareFailed = true
 								prepareCause = rmErr
 								if !*jsonOutput {

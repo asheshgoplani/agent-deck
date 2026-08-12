@@ -108,7 +108,7 @@ func handleSessionRemove(profile string, args []string) {
 		os.Exit(1)
 	}
 	if err := commitRuntimeQueueRemoval(queueTx, func() error {
-		return sessionRemovePersist(storage, inst.ID, instances, groupTree)
+		return sessionRemovePersist(storage, inst.ID, instances, groupTree, removeIntent.Token)
 	}); err != nil {
 		queueTx.Release()
 		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
@@ -245,7 +245,7 @@ func bulkRemoveSessions(
 			out.Error(fmt.Sprintf("failed to prepare removal %s: %v", inst.ID, errors.Join(err, cleanupErr)), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		if err := bulkSessionRemovePersist(storage, inst.ID, nextRemaining, groupTree); err != nil {
+		if err := bulkSessionRemovePersist(storage, inst.ID, nextRemaining, groupTree, removeIntent.Token); err != nil {
 			queueTx.Release()
 			cleanupErr := finalizeCommittedBulkRemovals(storage, removedIDs, queueTxs, removeIntents)
 			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, errors.Join(err, cleanupErr)), ErrCodeInvalidOperation)
@@ -291,14 +291,18 @@ func finalizeCommittedBulkRemovals(storage *session.Storage, removedIDs []string
 		intents = intentSets[0]
 	}
 	for pass := 0; pass < bulkFinalVerifyAttempts; pass++ {
-		for _, id := range removedIDs {
-			if err := bulkSessionReverifyPersist(storage, id, nil, nil); err != nil {
+		for i, id := range removedIDs {
+			if err := bulkSessionReverifyPersist(storage, id, nil, nil, intents[i].Token); err != nil {
 				releaseRuntimeQueueTransactions(queueTxs)
 				return fmt.Errorf("reverify %s: %w", id, err)
 			}
 		}
 
-		absent, observeErr := bulkObserveAbsent(storage, removedIDs, func() error {
+		tokens := make([]string, len(intents))
+		for i := range intents {
+			tokens[i] = intents[i].Token
+		}
+		absent, observeErr := bulkObserveAbsent(storage, removedIDs, tokens, func() error {
 			var discardErr error
 			for i, tx := range queueTxs {
 				if err := bulkQueueDiscard(tx); err != nil {
@@ -345,17 +349,17 @@ func releaseRuntimeQueueTransactions(txs []*session.RuntimeQueueTransaction) {
 }
 
 var (
-	sessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
-		return storage.RemoveSessionAndVerify(id, remaining, tree)
+	sessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree, token string) error {
+		return storage.RemoveSessionAndVerify(id, remaining, tree, token)
 	}
-	bulkSessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
-		return storage.RemoveSessionAndVerify(id, remaining, tree)
+	bulkSessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree, token string) error {
+		return storage.RemoveSessionAndVerify(id, remaining, tree, token)
 	}
-	bulkSessionReverifyPersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
-		return storage.DeleteInstance(id)
+	bulkSessionReverifyPersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree, token string) error {
+		return storage.DeleteInstance(id, token)
 	}
-	bulkObserveAbsent = func(storage *session.Storage, ids []string, confirmed func() error) (bool, error) {
-		return storage.WithInstancesAbsent(ids, confirmed)
+	bulkObserveAbsent = func(storage *session.Storage, ids, tokens []string, confirmed func() error) (bool, error) {
+		return storage.WithInstancesAbsent(ids, confirmed, tokens...)
 	}
 	bulkQueueDiscard         = func(tx *session.RuntimeQueueTransaction) error { return tx.Discard() }
 	bulkSweepInboxes         = session.SweepInboxesForChildSession

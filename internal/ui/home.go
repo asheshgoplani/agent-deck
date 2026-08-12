@@ -13011,7 +13011,7 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 			queueTx.Release()
 			return sessionDeleteFailedMsg{err: err}
 		}
-		if err := h.storage.RemoveSessionAndVerify(id, remaining, groupTree); err != nil {
+		if err := h.storage.RemoveSessionAndVerify(id, remaining, groupTree, removeIntent.Token); err != nil {
 			queueTx.Release()
 			return sessionDeleteFailedMsg{err: err}
 		}
@@ -19739,7 +19739,7 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 				return fail(fmt.Errorf("worktree finalized but process teardown failed: %w", killErr))
 			}
 		}
-		if err := h.storage.RemoveSessionAndVerify(sessionID, remaining, groupTree); err != nil {
+		if err := h.storage.RemoveSessionAndVerify(sessionID, remaining, groupTree, finishIntent.Token); err != nil {
 			return fail(fmt.Errorf("finalize finish transition: %w", err))
 		}
 		return worktreeFinishResultMsg{

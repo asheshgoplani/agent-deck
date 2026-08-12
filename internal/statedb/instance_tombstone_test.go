@@ -153,7 +153,7 @@ func TestDeleteAtomicallyAdvancesPreparedRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.DeleteInstance(row.ID); err != nil {
+	if err := db.DeleteInstance(row.ID, intent.Token); err != nil {
 		t.Fatal(err)
 	}
 	intents, err := db.LifecycleIntents()
@@ -197,7 +197,7 @@ func TestForegroundDeletePublishesPhaseBeforeRecoveryCanObserve(t *testing.T) {
 		}
 		observed <- intents
 	}
-	if err := foreground.DeleteInstance(row.ID); err != nil {
+	if err := foreground.DeleteInstance(row.ID, intent.Token); err != nil {
 		t.Fatal(err)
 	}
 	<-observed
@@ -225,6 +225,68 @@ func TestArchiveIntentEmptyPayloadBindsLiveGeneration(t *testing.T) {
 	}
 }
 
+func TestEmptyArchiveIntentCannotCrossIDReuse(t *testing.T) {
+	db := newTestDB(t)
+	old := tombstoneTestRow("archive-reuse")
+	if err := db.CreateInstance(old); err != nil {
+		t.Fatal(err)
+	}
+	oldIntent, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: old.ID, Kind: "archive"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := tombstoneTestRow(old.ID)
+	if err := db.CreateInstance(fresh); err != nil {
+		t.Fatal(err)
+	}
+	intent, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: fresh.ID, Kind: "archive"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.Token == oldIntent.Token || intent.Generation == oldIntent.Generation || intent.Generation != fresh.PersistenceGeneration {
+		t.Fatalf("stale archive authority survived reuse: old=%#v fresh=%#v rowgen=%d", oldIntent, intent, fresh.PersistenceGeneration)
+	}
+}
+
+func TestLifecycleDeleteVariantsRequireExactToken(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remove func(*StateDB, string, string) error
+	}{
+		{"delete", func(db *StateDB, id, token string) error { return db.DeleteInstance(id, token) }},
+		{"delete groups", func(db *StateDB, id, token string) error { return db.DeleteInstanceAndSaveGroups(id, nil, token) }},
+		{"absence", func(db *StateDB, id, token string) error {
+			_, err := db.WithInstancesAbsent([]string{id}, func() error { return nil }, token)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newTestDB(t)
+			row := tombstoneTestRow("token-bound-" + tc.name)
+			if err := db.CreateInstance(row); err != nil {
+				t.Fatal(err)
+			}
+			intent, err := db.PrepareLifecycleIntent(LifecycleIntent{InstanceID: row.ID, Kind: "remove", Payload: "payload"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.remove(db, row.ID, "wrong-token"); !errors.Is(err, ErrLifecycleIntentOwnership) {
+				t.Fatalf("wrong token=%v", err)
+			}
+			if exists, _ := db.InstanceExists(row.ID); !exists {
+				t.Fatal("wrong token deleted row")
+			}
+			if err := tc.remove(db, row.ID, intent.Token); err != nil {
+				t.Fatal(err)
+			}
+			intents, _ := db.LifecycleIntents()
+			if len(intents) != 1 || intents[0].Token != intent.Token || intents[0].Phase != "row-deleted" {
+				t.Fatalf("phase=%#v", intents)
+			}
+		})
+	}
+}
+
 func TestRenewedRecoveryClaimCannotBeStolenPastLease(t *testing.T) {
 	db := newTestDB(t)
 	row := tombstoneTestRow("renewed-claim")
@@ -235,9 +297,9 @@ func TestRenewedRecoveryClaimCannotBeStolenPastLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldLease := lifecycleRecoveryClaimLease
-	lifecycleRecoveryClaimLease = 2 * time.Second
-	t.Cleanup(func() { lifecycleRecoveryClaimLease = oldLease })
+	oldLease := LifecycleRecoveryClaimLease
+	LifecycleRecoveryClaimLease = 2 * time.Second
+	t.Cleanup(func() { LifecycleRecoveryClaimLease = oldLease })
 	claimed, err := db.ClaimLifecycleIntent(row.ID, intent.Token, "first")
 	if err != nil || !claimed {
 		t.Fatalf("first claim=%v, %v", claimed, err)

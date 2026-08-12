@@ -404,7 +404,7 @@ func (s *Storage) UpdateTitleIfUnlocked(id, title string) (applied bool, err err
 
 // DeleteInstance removes a single instance from the database by ID.
 // This ensures the row is immediately removed, preventing resurrection on reload.
-func (s *Storage) DeleteInstance(id string) error {
+func (s *Storage) DeleteInstance(id string, lifecycleToken ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -412,7 +412,7 @@ func (s *Storage) DeleteInstance(id string) error {
 		return fmt.Errorf("storage database not initialized")
 	}
 
-	if err := s.db.DeleteInstance(id); err != nil {
+	if err := s.db.DeleteInstance(id, lifecycleToken...); err != nil {
 		return fmt.Errorf("failed to delete instance %s: %w", id, err)
 	}
 
@@ -475,13 +475,13 @@ func (s *Storage) InstanceExists(id string) (bool, error) {
 
 // WithInstancesAbsent atomically tombstones and deletes all ids, commits that
 // durable barrier, then runs confirmed cleanup. See statedb.StateDB.
-func (s *Storage) WithInstancesAbsent(ids []string, confirmed func() error) (bool, error) {
+func (s *Storage) WithInstancesAbsent(ids []string, confirmed func() error, lifecycleTokens ...string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.db == nil {
 		return false, fmt.Errorf("storage database not initialized")
 	}
-	return s.db.WithInstancesAbsent(ids, confirmed)
+	return s.db.WithInstancesAbsent(ids, confirmed, lifecycleTokens...)
 }
 
 // ErrRemovalNotPersistent is returned by RemoveSessionAndVerify when, after
@@ -529,14 +529,14 @@ var (
 // remainingInstances is the post-removal session list, used only to
 // compute group sort_order / membership for SaveGroupsOnly. groupTree may
 // be nil if the caller doesn't care to persist groups.
-func (s *Storage) RemoveSessionAndVerify(id string, remainingInstances []*Instance, groupTree *GroupTree) error {
+func (s *Storage) RemoveSessionAndVerify(id string, remainingInstances []*Instance, groupTree *GroupTree, lifecycleToken ...string) error {
 	s.mu.Lock()
 	if s.db == nil {
 		s.mu.Unlock()
 		return fmt.Errorf("storage database not initialized")
 	}
 	groupRows := groupTreeRows(groupTree)
-	err := s.db.DeleteInstanceAndSaveGroups(id, groupRows)
+	err := s.db.DeleteInstanceAndSaveGroups(id, groupRows, lifecycleToken...)
 	if err == nil {
 		_ = s.db.Touch()
 	}
@@ -558,7 +558,7 @@ func (s *Storage) RemoveSessionAndVerify(id string, remainingInstances []*Instan
 		}
 		// Re-issue the targeted DELETE; this races against the resurrecting
 		// writer but eventually wins because every retry shrinks the window.
-		if err := s.DeleteInstance(id); err != nil {
+		if err := s.DeleteInstance(id, lifecycleToken...); err != nil {
 			return err
 		}
 	}

@@ -2479,7 +2479,7 @@ func handleRemove(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to prepare removal: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	if err := storage.RemoveSessionAndVerify(removedID, newInstances, groupTree); err != nil {
+	if err := storage.RemoveSessionAndVerify(removedID, newInstances, groupTree, removeIntent.Token); err != nil {
 		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}

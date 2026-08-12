@@ -1,6 +1,7 @@
 package statedb
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -114,7 +115,7 @@ type LifecycleIntent struct {
 
 var ErrLifecycleIntentConflict = errors.New("statedb: incompatible lifecycle intent already active")
 var ErrLifecycleIntentOwnership = errors.New("statedb: lifecycle intent ownership token mismatch")
-var lifecycleRecoveryClaimLease = 30 * time.Second
+var LifecycleRecoveryClaimLease = 30 * time.Second
 
 // ErrInstanceTombstoned prevents stale persistence from recreating an ID whose
 // deletion has already committed. Only CreateInstance may explicitly reuse it.
@@ -812,6 +813,12 @@ func (s *StateDB) CreateInstance(inst *InstanceRow) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Explicit ID reuse starts a new incarnation and atomically retires any
+	// lifecycle authority belonging to the prior incarnation. In-flight
+	// recovery will fail its next token/owner validation before mutation.
+	if _, err := tx.Exec("DELETE FROM lifecycle_intents WHERE instance_id=?", inst.ID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`
 		INSERT INTO instance_tombstones(id, deleted_at, generation, active) VALUES (?, 0, 1, 0)
 		ON CONFLICT(id) DO UPDATE SET generation = generation + 1, deleted_at = 0, active = 0
@@ -1234,20 +1241,23 @@ func (s *StateDB) loadInstances(where string) ([]*InstanceRow, error) {
 // (e.g. xargs -P 14) all contend on the same WAL writer slot. Without
 // retry, transient SQLITE_BUSY silently drops the DELETE while the CLI
 // still reports success — the silent-loss half of issue #909.
-func (s *StateDB) DeleteInstance(id string) error {
+func (s *StateDB) DeleteInstance(id string, lifecycleToken ...string) error {
 	return withBusyRetry(func() error {
 		tx, err := s.db.Begin()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
+		if err := authorizeLifecycleDelete(tx, id, firstToken(lifecycleToken)); err != nil {
+			return err
+		}
 		if err := tombstoneInstance(tx, id); err != nil {
 			return err
 		}
 		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
 			return err
 		}
-		if err := advancePreparedRemovalAfterDelete(tx, id); err != nil {
+		if err := advancePreparedRemovalAfterDelete(tx, id, firstToken(lifecycleToken)); err != nil {
 			return err
 		}
 		if s.beforeDeleteCommit != nil {
@@ -1261,11 +1271,69 @@ func (s *StateDB) DeleteInstance(id string) error {
 // point for a prepared remove. Recovery can therefore never mistake the small
 // foreground window between DELETE and a later phase update for an abandoned
 // operation.
-func advancePreparedRemovalAfterDelete(tx *sql.Tx, id string) error {
-	_, err := tx.Exec(`UPDATE lifecycle_intents
+func firstToken(tokens []string) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+	return tokens[0]
+}
+
+func authorizeLifecycleDelete(tx *sql.Tx, id, token string) error {
+	if token == "" {
+		var one int
+		err := tx.QueryRow("SELECT 1 FROM lifecycle_intents WHERE instance_id=?", id).Scan(&one)
+		if err == nil {
+			return ErrLifecycleIntentOwnership
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	var kind, phase string
+	var intentGeneration, liveGeneration int64
+	err := tx.QueryRow(`SELECT kind, phase, generation FROM lifecycle_intents WHERE instance_id=? AND token=?`, id, token).Scan(&kind, &phase, &intentGeneration)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrLifecycleIntentOwnership
+	}
+	if err != nil {
+		return err
+	}
+	if (kind != "remove" || (phase != "prepared" && phase != "row-deleted")) && (kind != "worktree-finish" || phase != "worktree-removed") {
+		return ErrLifecycleIntentOwnership
+	}
+	err = tx.QueryRow(`SELECT COALESCE((SELECT generation FROM instance_tombstones WHERE id=instances.id), 0) FROM instances WHERE id=?`, id).Scan(&liveGeneration)
+	if err == nil && liveGeneration == 0 {
+		liveGeneration = 1
+	}
+	if err == nil && liveGeneration != intentGeneration {
+		return ErrLifecycleIntentOwnership
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	return nil
+}
+
+func advancePreparedRemovalAfterDelete(tx *sql.Tx, id, token string) error {
+	if token == "" {
+		return nil
+	}
+	result, err := tx.Exec(`UPDATE lifecycle_intents
 		SET phase='row-deleted', updated_at=?
-		WHERE instance_id=? AND kind='remove' AND phase='prepared'`, time.Now().Unix(), id)
-	return err
+		WHERE instance_id=? AND token=? AND kind='remove' AND phase='prepared'`, time.Now().Unix(), id, token)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		var kind, phase string
+		if err := tx.QueryRow("SELECT kind, phase FROM lifecycle_intents WHERE instance_id=? AND token=?", id, token).Scan(&kind, &phase); err != nil || (kind == "remove" && phase != "row-deleted") || (kind != "remove" && kind != "worktree-finish") {
+			return ErrLifecycleIntentOwnership
+		}
+	}
+	return nil
 }
 
 func tombstoneInstance(tx *sql.Tx, id string) error {
@@ -1280,7 +1348,7 @@ func tombstoneInstance(tx *sql.Tx, id string) error {
 // group rows in one SQLite transaction. A group persistence failure therefore
 // cannot leave callers with a deleted session row and an uncommitted group
 // lifecycle change.
-func (s *StateDB) DeleteInstanceAndSaveGroups(id string, groups []*GroupRow) error {
+func (s *StateDB) DeleteInstanceAndSaveGroups(id string, groups []*GroupRow, lifecycleToken ...string) error {
 	return withBusyRetry(func() error {
 		tx, err := s.db.Begin()
 		if err != nil {
@@ -1288,13 +1356,16 @@ func (s *StateDB) DeleteInstanceAndSaveGroups(id string, groups []*GroupRow) err
 		}
 		defer func() { _ = tx.Rollback() }()
 
+		if err := authorizeLifecycleDelete(tx, id, firstToken(lifecycleToken)); err != nil {
+			return err
+		}
 		if err := tombstoneInstance(tx, id); err != nil {
 			return err
 		}
 		if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
 			return err
 		}
-		if err := advancePreparedRemovalAfterDelete(tx, id); err != nil {
+		if err := advancePreparedRemovalAfterDelete(tx, id, firstToken(lifecycleToken)); err != nil {
 			return err
 		}
 		for _, g := range groups {
@@ -1376,7 +1447,10 @@ func (s *StateDB) InstanceExists(id string) (bool, error) {
 // WithInstancesAbsent durably tombstones and deletes the complete ID set in one
 // transaction. Irreversible cleanup runs only after that commit; stale writers
 // subsequently complete but their tombstone-aware upserts cannot resurrect IDs.
-func (s *StateDB) WithInstancesAbsent(ids []string, confirmed func() error) (bool, error) {
+func (s *StateDB) WithInstancesAbsent(ids []string, confirmed func() error, lifecycleTokens ...string) (bool, error) {
+	if len(lifecycleTokens) != 0 && len(lifecycleTokens) != len(ids) {
+		return false, ErrLifecycleIntentOwnership
+	}
 	err := withBusyRetry(func() error {
 		tx, err := s.db.Begin()
 		if err != nil {
@@ -1384,14 +1458,21 @@ func (s *StateDB) WithInstancesAbsent(ids []string, confirmed func() error) (boo
 		}
 		defer func() { _ = tx.Rollback() }()
 
-		for _, id := range ids {
+		for i, id := range ids {
+			token := ""
+			if len(lifecycleTokens) != 0 {
+				token = lifecycleTokens[i]
+			}
+			if err := authorizeLifecycleDelete(tx, id, token); err != nil {
+				return err
+			}
 			if err := tombstoneInstance(tx, id); err != nil {
 				return err
 			}
 			if _, err := tx.Exec("DELETE FROM instances WHERE id = ?", id); err != nil {
 				return err
 			}
-			if err := advancePreparedRemovalAfterDelete(tx, id); err != nil {
+			if err := advancePreparedRemovalAfterDelete(tx, id, token); err != nil {
 				return err
 			}
 		}
@@ -1417,12 +1498,23 @@ func (s *StateDB) PrepareLifecycleIntent(intent LifecycleIntent) (LifecycleInten
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
+		var liveGeneration int64
+		liveErr := tx.QueryRow(`SELECT COALESCE((SELECT generation FROM instance_tombstones WHERE id=instances.id), 0)
+			FROM instances WHERE id = ?`, intent.InstanceID).Scan(&liveGeneration)
+		if liveErr == nil && liveGeneration == 0 {
+			// Legacy rows predate durable incarnation records. Their first live
+			// incarnation is generation 1; binding without an eager backfill
+			// avoids a read-to-write upgrade race among parallel removers.
+			liveGeneration = 1
+		} else if liveErr != nil && !errors.Is(liveErr, sql.ErrNoRows) {
+			return liveErr
+		}
 		var current LifecycleIntent
 		err = tx.QueryRow(`SELECT instance_id, kind, payload, phase, token, generation, created_at, updated_at
 			FROM lifecycle_intents WHERE instance_id=?`, intent.InstanceID).
 			Scan(&current.InstanceID, &current.Kind, &current.Payload, &current.Phase, &current.Token, &current.Generation, &current.CreatedAt, &current.UpdatedAt)
 		if err == nil {
-			if current.Kind != intent.Kind || current.Payload != intent.Payload || (intent.Generation != 0 && current.Generation != intent.Generation) {
+			if current.Kind != intent.Kind || current.Payload != intent.Payload || (intent.Generation != 0 && current.Generation != intent.Generation) || (liveErr == nil && current.Generation != liveGeneration) {
 				return ErrLifecycleIntentConflict
 			}
 			if current.Token == "" {
@@ -1439,19 +1531,7 @@ func (s *StateDB) PrepareLifecycleIntent(intent LifecycleIntent) (LifecycleInten
 		}
 		now := time.Now().Unix()
 		targetGeneration := intent.Generation
-		var liveGeneration int64
-		liveErr := tx.QueryRow(`SELECT COALESCE((SELECT generation FROM instance_tombstones WHERE id=instances.id), 0)
-			FROM instances WHERE id = ?`, intent.InstanceID).Scan(&liveGeneration)
 		if liveErr == nil {
-			if liveGeneration == 0 {
-				if _, err := tx.Exec(`INSERT INTO instance_tombstones(id, deleted_at, generation, active)
-					VALUES (?, 0, 1, 0) ON CONFLICT(id) DO NOTHING`, intent.InstanceID); err != nil {
-					return err
-				}
-				if err := tx.QueryRow("SELECT generation FROM instance_tombstones WHERE id=?", intent.InstanceID).Scan(&liveGeneration); err != nil {
-					return err
-				}
-			}
 			if targetGeneration != 0 && targetGeneration != liveGeneration {
 				return ErrLifecycleIntentConflict
 			}
@@ -1485,11 +1565,25 @@ func (s *StateDB) AdvanceLifecycleIntent(instanceID, token, phase, payload strin
 	})
 }
 
+func (s *StateDB) AdvanceClaimedLifecycleIntent(instanceID, token, owner, phase, payload string) error {
+	return withBusyRetry(func() error {
+		result, err := s.db.Exec(`UPDATE lifecycle_intents SET phase=?, payload=?, updated_at=?
+			WHERE instance_id=? AND token=? AND recovery_owner=?`, phase, payload, time.Now().Unix(), instanceID, token, owner)
+		if err != nil {
+			return err
+		}
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			return ErrLifecycleIntentOwnership
+		}
+		return nil
+	})
+}
+
 func (s *StateDB) ClaimLifecycleIntent(instanceID, token, owner string) (bool, error) {
 	var claimed bool
 	err := withBusyRetry(func() error {
 		now := time.Now().Unix()
-		leaseCutoff := now - int64(lifecycleRecoveryClaimLease/time.Second)
+		leaseCutoff := now - int64(LifecycleRecoveryClaimLease/time.Second)
 		result, err := s.db.Exec(`UPDATE lifecycle_intents
 			SET recovery_owner=?, recovery_claimed_at=?, updated_at=?
 			WHERE instance_id=? AND token=?
@@ -1530,7 +1624,94 @@ func (s *StateDB) LifecycleTargetGeneration(instanceID, token, owner string) (in
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}
+	if err == nil && generation == 0 {
+		generation = 1
+	}
 	return generation, err == nil, err
+}
+
+// ValidateLifecycleClaim is the destructive-operation guard. It verifies the
+// exact intent token, recovery owner, and target incarnation in one durable
+// read immediately before an external or queue mutation.
+func (s *StateDB) ValidateLifecycleClaim(instanceID, token, owner string, generation int64, requireRow bool) error {
+	var currentGeneration int64
+	var rowCount int
+	err := s.db.QueryRow(`SELECT
+		COALESCE((SELECT generation FROM instance_tombstones WHERE id=instances.id), 0),
+		1 FROM lifecycle_intents JOIN instances ON instances.id=lifecycle_intents.instance_id
+		WHERE lifecycle_intents.instance_id=? AND lifecycle_intents.token=? AND lifecycle_intents.recovery_owner=?`, instanceID, token, owner).
+		Scan(&currentGeneration, &rowCount)
+	if err == nil && currentGeneration == 0 {
+		currentGeneration = 1
+	}
+	if errors.Is(err, sql.ErrNoRows) && !requireRow {
+		var one int
+		err = s.db.QueryRow(`SELECT 1 FROM lifecycle_intents WHERE instance_id=? AND token=? AND recovery_owner=?`, instanceID, token, owner).Scan(&one)
+		if err == nil {
+			return nil
+		}
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrLifecycleIntentOwnership
+	}
+	if err != nil {
+		return err
+	}
+	if generation == 0 || currentGeneration != generation {
+		return ErrLifecycleIntentOwnership
+	}
+	return nil
+}
+
+// WithLifecycleClaimGuard holds SQLite's write reservation across a
+// non-database commit such as runtime-queue discard. Explicit ID recreation
+// and lifecycle replacement cannot cross this boundary between validation and
+// the guarded callback.
+func (s *StateDB) WithLifecycleClaimGuard(instanceID, token, owner string, generation int64, requireRow bool, guarded func() error) error {
+	conn, err := s.db.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	var currentGeneration int64
+	err = conn.QueryRowContext(context.Background(), `SELECT COALESCE((SELECT generation FROM instance_tombstones WHERE id=instances.id), 0)
+		FROM lifecycle_intents JOIN instances ON instances.id=lifecycle_intents.instance_id
+		WHERE lifecycle_intents.instance_id=? AND lifecycle_intents.token=? AND lifecycle_intents.recovery_owner=?`, instanceID, token, owner).
+		Scan(&currentGeneration)
+	if err == nil && currentGeneration == 0 {
+		currentGeneration = 1
+	}
+	if errors.Is(err, sql.ErrNoRows) && !requireRow {
+		var one int
+		err = conn.QueryRowContext(context.Background(), `SELECT 1 FROM lifecycle_intents WHERE instance_id=? AND token=? AND recovery_owner=?`, instanceID, token, owner).Scan(&one)
+		currentGeneration = generation
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrLifecycleIntentOwnership
+	}
+	if err != nil {
+		return err
+	}
+	if generation == 0 || currentGeneration != generation {
+		return ErrLifecycleIntentOwnership
+	}
+	if err := guarded(); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(context.Background(), "COMMIT"); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (s *StateDB) CompleteLifecycleIntent(instanceID, token string) error {
@@ -1553,6 +1734,29 @@ func (s *StateDB) CompleteLifecycleIntent(instanceID, token string) error {
 			return ErrLifecycleIntentOwnership // a newer active operation owns this ID
 		}
 		return nil
+	})
+}
+
+func (s *StateDB) CompleteClaimedLifecycleIntent(instanceID, token, owner string) error {
+	return withBusyRetry(func() error {
+		result, err := s.db.Exec("DELETE FROM lifecycle_intents WHERE instance_id=? AND token=? AND recovery_owner=?", instanceID, token, owner)
+		if err != nil {
+			return err
+		}
+		if n, err := result.RowsAffected(); err != nil {
+			return err
+		} else if n == 1 {
+			return nil
+		}
+		var currentToken string
+		err = s.db.QueryRow("SELECT token FROM lifecycle_intents WHERE instance_id=?", instanceID).Scan(&currentToken)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return ErrLifecycleIntentOwnership
 	})
 }
 

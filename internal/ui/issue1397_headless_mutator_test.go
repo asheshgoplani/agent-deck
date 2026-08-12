@@ -167,7 +167,7 @@ func TestWebDeletePersistenceFailurePreservesRowAndRuntimeQueue(t *testing.T) {
 	}
 	completionPath := filepath.Join(os.Getenv("XDG_DATA_HOME"), "agent-deck", "runtime", "runtime-queue-completed", inst.ID+".json")
 	originalDelete := webDeleteInstance
-	webDeleteInstance = func(*session.Storage, string) error { return fmt.Errorf("forced DeleteInstance failure") }
+	webDeleteInstance = func(*session.Storage, string, string) error { return fmt.Errorf("forced DeleteInstance failure") }
 	t.Cleanup(func() { webDeleteInstance = originalDelete })
 	if err := NewWebMutator(h).DeleteSession(inst.ID); err == nil {
 		t.Fatal("web delete commit unexpectedly succeeded")

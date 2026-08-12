@@ -209,9 +209,9 @@ func TestSessionBulkRemoveQueueLockFailureFinalizesPrefixAndPreservesRemainder(t
 func TestSessionRemoveCommandPersistenceFailurePreservesLifecycleState(t *testing.T) {
 	if os.Getenv("AGENT_DECK_REMOVE_PERSIST_HELPER") == "single" {
 		original := sessionRemovePersist
-		sessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
+		sessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree, token string) error {
 			_ = storage.Close()
-			return storage.RemoveSessionAndVerify(id, remaining, tree)
+			return storage.RemoveSessionAndVerify(id, remaining, tree, token)
 		}
 		defer func() { sessionRemovePersist = original }()
 		handleSessionRemove("ch_support_test", []string{os.Getenv("AGENT_DECK_REMOVE_PERSIST_ID"), "--json"})
@@ -331,11 +331,11 @@ func TestSessionRemoveAllErroredPersistenceFailureDiscardsOnlyCommittedQueues(t 
 	if os.Getenv("AGENT_DECK_REMOVE_PERSIST_HELPER") == "bulk" {
 		failedID := os.Getenv("AGENT_DECK_REMOVE_PERSIST_ID")
 		original := bulkSessionRemovePersist
-		bulkSessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
+		bulkSessionRemovePersist = func(storage *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree, token string) error {
 			if id == failedID {
 				return errors.New("forced later-item persistence failure")
 			}
-			return storage.RemoveSessionAndVerify(id, remaining, tree)
+			return storage.RemoveSessionAndVerify(id, remaining, tree, token)
 		}
 		defer func() { bulkSessionRemovePersist = original }()
 		handleSessionRemove("ch_support_test", []string{"--all-errored", "--json"})
@@ -402,8 +402,8 @@ func TestSessionRemoveAllErroredTerminalVerification(t *testing.T) {
 			}
 			_ = storage.Close()
 			resurrected := false
-			bulkSessionReverifyPersist = func(s *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree) error {
-				if err := original(s, id, remaining, tree); err != nil {
+			bulkSessionReverifyPersist = func(s *session.Storage, id string, remaining []*session.Instance, tree *session.GroupTree, token string) error {
+				if err := original(s, id, remaining, tree, token); err != nil {
 					return err
 				}
 				if !resurrected {
@@ -413,7 +413,7 @@ func TestSessionRemoveAllErroredTerminalVerification(t *testing.T) {
 				return nil
 			}
 		case "observe-fail":
-			bulkObserveAbsent = func(*session.Storage, []string, func() error) (bool, error) {
+			bulkObserveAbsent = func(*session.Storage, []string, []string, func() error) (bool, error) {
 				return false, errors.New("forced atomic observation failure")
 			}
 		case "persistent-resurrection":
@@ -426,7 +426,7 @@ func TestSessionRemoveAllErroredTerminalVerification(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = storage.Close()
-			bulkObserveAbsent = func(s *session.Storage, _ []string, _ func() error) (bool, error) {
+			bulkObserveAbsent = func(s *session.Storage, _ []string, _ []string, _ func() error) (bool, error) {
 				if err := s.SaveWithGroups(instances, session.NewGroupTreeWithGroups(instances, groups)); err != nil {
 					return false, err
 				}
@@ -632,8 +632,8 @@ func TestBulkFinalizationDoesNotOverwriteConcurrentGroupUpdate(t *testing.T) {
 	}
 	original := bulkSessionReverifyPersist
 	updated := []*session.GroupData{{Path: "team", Name: "New", Expanded: false, Order: 8, DefaultPath: "/new", MaxConcurrent: 7}}
-	bulkSessionReverifyPersist = func(s *session.Storage, target string, _ []*session.Instance, _ *session.GroupTree) error {
-		if err := original(s, target, nil, nil); err != nil {
+	bulkSessionReverifyPersist = func(s *session.Storage, target string, _ []*session.Instance, _ *session.GroupTree, token string) error {
+		if err := original(s, target, nil, nil, token); err != nil {
 			return err
 		}
 		return s.SaveGroupsOnly(session.NewGroupTreeWithGroups(nil, updated))
@@ -711,7 +711,7 @@ func TestFinalizeCommittedBulkRemovalsPersistentResurrectionExhaustsAllPasses(t 
 	}
 	originalObserve := bulkObserveAbsent
 	observeCalls := 0
-	bulkObserveAbsent = func(*session.Storage, []string, func() error) (bool, error) {
+	bulkObserveAbsent = func(*session.Storage, []string, []string, func() error) (bool, error) {
 		observeCalls++
 		return false, nil
 	}
@@ -759,8 +759,8 @@ func TestBulkRemoveFinalSweepDeletesRowsResurrectedAfterPerItemVerification(t *t
 	}
 
 	originalPersist := bulkSessionRemovePersist
-	bulkSessionRemovePersist = func(s *session.Storage, id string, remaining []*session.Instance, groupTree *session.GroupTree) error {
-		if err := s.RemoveSessionAndVerify(id, remaining, groupTree); err != nil {
+	bulkSessionRemovePersist = func(s *session.Storage, id string, remaining []*session.Instance, groupTree *session.GroupTree, token string) error {
+		if err := s.RemoveSessionAndVerify(id, remaining, groupTree, token); err != nil {
 			return err
 		}
 		if id == second.ID {
