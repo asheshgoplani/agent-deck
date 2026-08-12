@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -231,6 +232,13 @@ func TestWatcherCreate_FailedSourceWriteLeavesNoWatcher(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("create succeeded despite an unwritable watcher dir; output:\n%s", out)
+	}
+	// handleWatcherCreate exits non-zero from several earlier steps too (db open,
+	// dir resolution). Match the message the [source] write emits, so a sandbox
+	// that broke one of those steps fails this test instead of passing it for
+	// the wrong reason.
+	if !strings.Contains(string(out), "Error writing watcher config") {
+		t.Fatalf("create failed before the [source] write, so this proves nothing; output:\n%s", out)
 	}
 
 	// The DB may not exist at all, which also satisfies "no watcher published".
