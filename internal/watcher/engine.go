@@ -68,6 +68,13 @@ type adapterEntry struct {
 	watcherID string
 	tracker   *HealthTracker
 	cancel    context.CancelFunc
+
+	// setupOK is true once Setup returned nil. An adapter whose Setup failed is
+	// half-constructed — NtfyAdapter and SlackAdapter, for instance, only build
+	// their *http.Client after validating the topic — so calling any other
+	// method on it can panic (#1886). Only Start writes this field, before
+	// healthLoop is launched, so the later reads are race-free.
+	setupOK bool
 }
 
 // Engine orchestrates the watcher event pipeline: adapter goroutines produce Events,
@@ -211,8 +218,13 @@ func (e *Engine) Start() error {
 				slog.String("type", entry.config.Type),
 				slog.String("error", err.Error()),
 			)
+			// The entry stays registered so the TUI still sees the watcher, but
+			// it is marked unhealthy and left with setupOK=false: healthLoop and
+			// Stop must not call into an adapter that never finished Setup.
+			entry.tracker.SetAdapterHealth(false)
 			continue
 		}
+		entry.setupOK = true
 
 		// #nosec G118 -- adapterCancel is preserved on entry.cancel; the parent
 		// context e.ctx is canceled by Stop() (see line 594), which propagates
@@ -570,11 +582,17 @@ func (e *Engine) healthLoop() {
 			for i := range e.adapters {
 				entry := &e.adapters[i]
 
-				if err := entry.adapter.HealthCheck(); err != nil {
-					entry.tracker.SetAdapterHealth(false)
-					entry.tracker.RecordError()
-				} else {
-					entry.tracker.SetAdapterHealth(true)
+				// Adapters whose Setup failed are already marked unhealthy in
+				// Start; probing them would call into a half-constructed adapter
+				// and take the whole process down (#1886). Still emit their state
+				// so the TUI keeps reporting the watcher as errored.
+				if entry.setupOK {
+					if err := entry.adapter.HealthCheck(); err != nil {
+						entry.tracker.SetAdapterHealth(false)
+						entry.tracker.RecordError()
+					} else {
+						entry.tracker.SetAdapterHealth(true)
+					}
 				}
 
 				state := entry.tracker.Check()
@@ -605,9 +623,14 @@ func (e *Engine) Stop() {
 		// Cancel root context, which propagates to all derived adapter contexts.
 		e.cancel()
 
-		// Best-effort teardown of all adapters.
+		// Best-effort teardown of every adapter that was actually set up.
+		// Teardown releases what Setup allocated, so an entry that never got
+		// past Setup has nothing to release and must not be called into (#1886).
 		for i := range e.adapters {
 			entry := &e.adapters[i]
+			if !entry.setupOK {
+				continue
+			}
 			if err := entry.adapter.Teardown(); err != nil {
 				e.log.Warn("adapter_teardown_error",
 					slog.String("watcher", entry.config.Name),
