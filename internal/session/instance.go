@@ -7851,9 +7851,10 @@ func (i *Instance) restart(env map[string]string) error {
 	}
 
 	// If custom tool with session resume support AND tmux session exists, use respawn-pane.
-	// Re-fetch toolDef after CanRestartGeneric: a concurrent config reload can
-	// drop the custom entry between GetToolDef calls — never deref nil.
-	if i.CanRestartGeneric() && i.tmuxSession != nil && i.tmuxSession.Exists() {
+	// Resolve id and ToolDef once (avoid double GetGenericSessionID / env races
+	// that could produce an empty --resume '' argv). Concurrent config reload
+	// can drop the custom entry — never deref nil.
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
 		toolDef := GetToolDef(i.Tool)
 		sessionID := i.GetGenericSessionID()
 		if toolDef != nil && toolDef.ResumeFlag != "" && sessionID != "" {

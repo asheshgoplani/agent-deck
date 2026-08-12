@@ -100,29 +100,38 @@ func TestAttack_BashLcShellInjection(t *testing.T) {
 func assertBashLcArgv(t *testing.T, flag, sid string) {
 	t.Helper()
 	cmdStr := formatGenericResumeCommand("_tool", flag, sid, "")
-	full := `_tool(){ echo ARGC:$#; i=1; for a; do printf 'ARGV%d:%s\n' "$i" "$a"; i=$((i+1)); done; }; ` + cmdStr
+	// Null-delimited argv dump so we can DeepEqual complete arguments
+	// (CodeRabbit: partial "starts with --session=" is too weak).
+	full := `_tool(){ printf '%s\0' "$@"; }; ` + cmdStr
 	out, err := exec.Command("bash", "-lc", full).CombinedOutput()
 	if err != nil {
 		t.Fatalf("bash -lc failed: %v\ncmd=%q\nout=%s", err, cmdStr, out)
 	}
-	got := string(out)
+	raw := string(out)
+	// Drop trailing empty from final NUL
+	parts := strings.Split(strings.TrimSuffix(raw, "\x00"), "\x00")
+	if len(parts) == 1 && parts[0] == "" {
+		parts = nil
+	}
+	var want []string
 	if strings.HasSuffix(flag, "=") {
-		if !strings.Contains(got, "ARGC:1") {
-			t.Fatalf("equals form want ARGC:1, out:\n%s\ncmd=%q", got, cmdStr)
-		}
-		if !strings.Contains(got, "ARGV1:"+flag) {
-			t.Fatalf("equals form missing glued flag in:\n%s", got)
-		}
+		want = []string{flag + sid}
 	} else {
-		if !strings.Contains(got, "ARGC:2") {
-			t.Fatalf("space form want ARGC:2, out:\n%s\ncmd=%q", got, cmdStr)
-		}
-		if !strings.Contains(got, "ARGV2:"+sid) {
-			t.Fatalf("space form ARGV2 mismatch, out:\n%s\ncmd=%q", got, cmdStr)
+		want = []string{flag, sid}
+	}
+	if len(parts) != len(want) {
+		t.Fatalf("argv count=%d want %d\nparts=%q\ncmd=%q", len(parts), len(want), parts, cmdStr)
+	}
+	for i := range want {
+		if parts[i] != want[i] {
+			t.Fatalf("argv[%d]=%q want %q\nall=%q\ncmd=%q", i, parts[i], want[i], parts, cmdStr)
 		}
 	}
-	if strings.Contains(sid, "PWNED") && strings.Contains(got, "PWNED") && !strings.Contains(got, "$(echo PWNED)") {
-		t.Fatalf("command substitution executed:\n%s", got)
+	if strings.Contains(sid, "PWNED") && strings.Contains(raw, "PWNED") && !strings.Contains(cmdStr, "$(echo PWNED)") {
+		// PWNED may appear only as literal payload in argv, not as expansion result alone
+		if !strings.Contains(cmdStr, shellescape.Quote(sid)) && strings.ContainsAny(sid, "$(`") {
+			t.Fatalf("command substitution may have executed:\n%s", raw)
+		}
 	}
 	if strings.ContainsAny(sid, ";$`\n'\"") {
 		if !strings.Contains(cmdStr, shellescape.Quote(sid)) {
@@ -397,6 +406,7 @@ func TestAttack_ExplicitClearMergeUnit(t *testing.T) {
 
 // TestAttack_UnknownToolNoPanic — no resume_flag / unknown name must not panic.
 func TestAttack_UnknownToolNoPanic(t *testing.T) {
+	isolateConfigRoots(t) // no host config can invent this tool
 	inst := &Instance{Tool: "no-such-tool-xyz", Command: "no-such-tool-xyz", GenericSessionID: "sid"}
 	defer func() {
 		if r := recover(); r != nil {
@@ -447,19 +457,23 @@ resume_flag = "--from-legacy"
 // TestAttack_NoResumeFlagNoInject — custom tool without resume_flag must not
 // inject resume argv even with a persisted GenericSessionID.
 func TestAttack_NoResumeFlagNoInject(t *testing.T) {
-	home := isolateToolConfigHome(t)
-	writeToolConfigTOML(t, home, `
+	home, xdgConfig, _, _ := isolateConfigRoots(t)
+	// Prefer XDG path; write only there so AGENTDECK_PROFILE / legacy cannot
+	// resurrect a resume_flag from host config.
+	writeConfigAt(t, xdgAgentDeckConfigDir(xdgConfig), `
 [tools.noflag]
 command = "noflag"
 `)
+	_ = home
+	ClearUserConfigCache()
 	inst := &Instance{Tool: "noflag", Command: "noflag", GenericSessionID: "present"}
 	if inst.CanRestartGeneric() {
 		t.Fatal("CanRestartGeneric without resume_flag")
 	}
 	cmd := inst.buildGenericCommand("noflag")
-	if strings.Contains(cmd, "present") && strings.Contains(cmd, "--") {
-		// id may appear only if base command embeds it; ensure no resume flag form
-		t.Logf("cmd=%q", cmd)
+	// Fail if the session id leaked into the command in any form.
+	if strings.Contains(cmd, "present") {
+		t.Fatalf("generic session ID leaked into command: %q", cmd)
 	}
 	if strings.Contains(cmd, "--resume") {
 		t.Fatalf("injected --resume without resume_flag: %q", cmd)

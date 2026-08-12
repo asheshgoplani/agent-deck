@@ -628,7 +628,16 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 	if err := s.saveSingleInstance(row); err != nil {
 		return err
 	}
+	// Consume one-shot clear intent after the first successful write, then
+	// rebuild row so verify-retries do not re-emit the explicit empty
+	// generic_session_id snapshot. A concurrent WriteGenericSessionBinding
+	// re-bind between attempts must be preserved by sticky merge (omission),
+	// not clobbered by a stale pre-consume row (CodeRabbit #1885).
 	consumeGenericSessionIDCleared(newInstance)
+	row, err = instanceToRow(newInstance)
+	if err != nil {
+		return err
+	}
 
 	if groupTree != nil {
 		if err := s.SaveGroupsOnly(groupTree); err != nil {
@@ -649,7 +658,12 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 		}
 		// Re-issue the targeted INSERT; races against the concurrent
 		// rewriter but eventually wins because every retry shrinks the
-		// window.
+		// window. Rebuild row each retry so we never replay a stale
+		// intentional-clear snapshot after a concurrent re-bind.
+		row, err = instanceToRow(newInstance)
+		if err != nil {
+			return err
+		}
 		if err := s.saveSingleInstance(row); err != nil {
 			return err
 		}
