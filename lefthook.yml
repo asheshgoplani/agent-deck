@@ -42,6 +42,11 @@ pre-push:
 pre-commit:
   parallel: true
   commands:
+    plugin-skill-version:
+      # Published-skill payload changes must carry a distinct marketplace
+      # version. The script reads the staged index and stages one patch bump.
+      run: python3 scripts/bump-plugin-skill-version.py
+      tags: [quality, plugin]
     fmt-check:
       run: test -z "$(gofmt -l . | grep -v -E '^(\.worktrees/|\.claude/worktrees/)')" || (echo "Run 'go fmt ./...' to fix formatting" && gofmt -l . | grep -v -E '^(\.worktrees/|\.claude/worktrees/)' && exit 1)
       tags: [quality]
