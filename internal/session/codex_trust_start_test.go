@@ -11,6 +11,7 @@ import (
 func TestPreAcceptCodexWorkspaceTrust_SeedsHostConfig(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
 	codexHome := filepath.Join(tmpHome, ".codex")
 	if err := os.MkdirAll(codexHome, 0o755); err != nil {
 		t.Fatalf("mkdir codex home: %v", err)

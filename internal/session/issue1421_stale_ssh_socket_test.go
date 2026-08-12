@@ -18,7 +18,14 @@ import (
 // bound the Unix-socket dial. The sweep removes the dead socket so the next ssh
 // opens a fresh master instead of blocking.
 func TestIssue1421_CleanStaleSSHSockets(t *testing.T) {
-	dir := t.TempDir()
+	// Darwin caps Unix-domain socket paths at 104 bytes; t.TempDir can be
+	// longer than that under /var/folders. /tmp keeps this fixture portable
+	// across the supported Unix hosts and below the cap.
+	dir, err := os.MkdirTemp("/tmp", "agent-deck-ssh-")
+	if err != nil {
+		t.Fatalf("create short socket directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	// (a) Stale socket: a leftover socket inode with no listener — exactly the
 	// on-disk state a crashed/killed SSH master leaves behind. SetUnlinkOnClose

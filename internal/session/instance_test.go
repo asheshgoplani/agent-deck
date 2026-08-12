@@ -1447,6 +1447,7 @@ func TestBuildCodexCommand_CustomWrapperPreservesToolIdentity(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	t.Setenv("CODEX_HOME", "")
 	isolateConfigHomeXDG(t)
 	ClearUserConfigCache()
 

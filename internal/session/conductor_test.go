@@ -3097,6 +3097,7 @@ func TestSetupConductorWithAgent_NoClaudeTrustForCodex(t *testing.T) {
 func TestSetupConductorWithAgent_PreAcceptsCodexTrust(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", "")
 
 	name := "trust-codex"
 	if err := SetupConductorWithAgent(name, "default", ConductorAgentCodex, true, true, "", "", "", "", nil, ""); err != nil {

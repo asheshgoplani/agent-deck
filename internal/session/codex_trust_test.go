@@ -156,6 +156,7 @@ func TestPreAcceptCodexTrust_ConcurrentTrustEntries(t *testing.T) {
 func TestApplyMultiRepoCodexContext_CodexOnly(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	t.Setenv("CODEX_HOME", "")
 	codexHome := filepath.Join(dir, ".codex")
 	if err := os.MkdirAll(codexHome, 0o755); err != nil {
 		t.Fatalf("mkdir codex home: %v", err)
