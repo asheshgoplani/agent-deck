@@ -69,6 +69,11 @@ func TestSession_Exists_ProtocolMismatchIsNotTreatedAsAbsent(t *testing.T) {
 	hasSessionProbeTimeout = 2 * time.Second
 	t.Cleanup(func() { hasSessionProbeTimeout = restore })
 
+	// The mismatch verdict is cached per socket; start from a clean slate so
+	// this test's socket cannot inherit a verdict from a sibling test.
+	resetSocketMismatchCacheForTest()
+	t.Cleanup(resetSocketMismatchCacheForTest)
+
 	// Non-default socket skips the session cache; a unique name guarantees no
 	// live pipe connection — so Exists() reaches the subprocess probe.
 	s := &Session{Name: "mismatch-session", SocketName: "agent-deck-mismatch-test"}
@@ -98,6 +103,11 @@ func TestSession_Exists_AuthoritativeAbsentStillReportsFalse(t *testing.T) {
 	hasSessionProbeTimeout = 2 * time.Second
 	t.Cleanup(func() { hasSessionProbeTimeout = restore })
 
+	// The mismatch verdict is cached per socket; start from a clean slate so
+	// this test's socket cannot inherit a verdict from a sibling test.
+	resetSocketMismatchCacheForTest()
+	t.Cleanup(resetSocketMismatchCacheForTest)
+
 	s := &Session{Name: "gone-session", SocketName: "agent-deck-gone-test"}
 
 	if s.Exists() {
@@ -126,6 +136,11 @@ func TestSession_Exists_AbsentSessionNamedLikeMarkerReportsFalse(t *testing.T) {
 	restore := hasSessionProbeTimeout
 	hasSessionProbeTimeout = 2 * time.Second
 	t.Cleanup(func() { hasSessionProbeTimeout = restore })
+
+	// The mismatch verdict is cached per socket; start from a clean slate so
+	// this test's socket cannot inherit a verdict from a sibling test.
+	resetSocketMismatchCacheForTest()
+	t.Cleanup(resetSocketMismatchCacheForTest)
 
 	s := &Session{Name: "protocol version mismatch", SocketName: "agent-deck-named-marker-test"}
 
