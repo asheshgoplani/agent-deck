@@ -166,8 +166,16 @@ func TestSession_Exists_ClassificationIsAmortizedAcrossSessionsOnASocket(t *test
 	resetSocketMismatchCacheForTest()
 	t.Cleanup(resetSocketMismatchCacheForTest)
 
+	// Unique names: Exists() short-circuits on a live PipeManager connection, and
+	// that manager is package-level state shared with every other test in
+	// internal/tmux. A generic name that a sibling test happens to register would
+	// skip the subprocess probe and break the count below for an unrelated reason.
 	const socket = "agent-deck-amortized-test"
-	for _, name := range []string{"alpha", "beta", "gamma"} {
+	for _, name := range []string{
+		"agent-deck-amortized-alpha",
+		"agent-deck-amortized-beta",
+		"agent-deck-amortized-gamma",
+	} {
 		s := &Session{Name: name, SocketName: socket}
 		if !s.Exists() {
 			t.Fatalf("Exists() reported %q gone on a mismatched socket; a refusal from the "+
