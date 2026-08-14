@@ -355,6 +355,12 @@ func TestWatcherCreate_DuplicateNameRejectedBeforeDBMutation(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("re-creating an existing watcher succeeded; the name is not fresh and its config cannot be updated by create\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
+	// A create exits non-zero from earlier steps too (flag parsing, db open,
+	// dir resolution). Match the message the freshness check emits so a broken
+	// sandbox fails this test instead of passing it for the wrong reason.
+	if !strings.Contains(stderr, "already exists (type:") {
+		t.Fatalf("create failed before the freshness check, so this proves nothing\nstdout: %s\nstderr: %s", stdout, stderr)
+	}
 
 	if strings.Contains(stdout+stderr, secondTopic) {
 		t.Errorf("the rejected topic was echoed to the terminal; an ntfy/slack topic is a bearer capability "+
@@ -419,6 +425,11 @@ group = "client-a/inbox"
 		"-p", watcherCLIProfile, "watcher", "create", "slack", "--name", watcherName, "--topic", rejectedTopic)
 	if code == 0 {
 		t.Fatalf("create succeeded over a watcher.toml it did not write, so the row and the config disagree\nstdout: %s\nstderr: %s", stdout, stderr)
+	}
+	// As above: pin the step that refused, not just the exit status. This one
+	// must fail on the config claim, not on the db lookup — there is no row.
+	if !strings.Contains(stderr, "already exists and was left untouched") {
+		t.Fatalf("create failed before the config claim, so this proves nothing\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 
 	if strings.Contains(stdout+stderr, rejectedTopic) {

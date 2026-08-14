@@ -155,6 +155,11 @@ func handleWatcherCreate(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Types: webhook, ntfy, github, slack")
 		fmt.Println()
+		fmt.Println("Creates a watcher under a name it does not already hold. If the name is")
+		fmt.Println("already registered, or a watcher.toml for it already exists, this command")
+		fmt.Println("fails: agent-deck never overwrites a watcher config. Edit that file to")
+		fmt.Println("change an existing watcher's settings.")
+		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
 	}
