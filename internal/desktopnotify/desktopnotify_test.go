@@ -1,12 +1,15 @@
 package desktopnotify
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -151,6 +154,189 @@ func TestConcurrentStoresRetainEverySessionState(t *testing.T) {
 	}
 	if got, want := len(restarted.data.Events), 2*perStore; got != want {
 		t.Fatalf("persisted event count = %d, want %d; concurrent store writes lost state", got, want)
+	}
+}
+
+const (
+	helperStoreWriterStateEnv = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_STATE"
+	helperStoreWriterStartEnv = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_START"
+	helperStoreLockPathEnv    = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_PATH"
+	helperStoreLockReadyEnv   = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_READY"
+	helperStoreLockReleaseEnv = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_RELEASE"
+)
+
+// TestDesktopNotificationHelperStoreWriter is re-executed in a separate test
+// process by TestHelperStoreSubprocessAndDaemonStoreRetainEveryState. It uses
+// ShouldDeliver, the same Store write path used by the GUI helper, while the
+// parent executes daemon-style Baseline writes against the same state file.
+func TestDesktopNotificationHelperStoreWriter(t *testing.T) {
+	statePath := os.Getenv(helperStoreWriterStateEnv)
+	if statePath == "" {
+		return
+	}
+	startPath := os.Getenv(helperStoreWriterStartEnv)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(startPath); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat writer start signal: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for writer start signal")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	store, err := OpenStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 120; i++ {
+		event := Event{Class: Error, SessionID: fmt.Sprintf("helper-%d", i), Timestamp: time.Unix(int64(i), 0)}
+		if deliver, err := store.ShouldDeliver(event); err != nil || !deliver {
+			t.Fatalf("helper write %s: deliver=%v err=%v", event.SessionID, deliver, err)
+		}
+	}
+}
+
+func TestHelperStoreSubprocessAndDaemonStoreRetainEveryState(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	startPath := filepath.Join(t.TempDir(), "start")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDesktopNotificationHelperStoreWriter$", "-test.count=1")
+	cmd.Env = append(os.Environ(), helperStoreWriterStateEnv+"="+statePath, helperStoreWriterStartEnv+"="+startPath)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper writer: %v", err)
+	}
+	if err := os.WriteFile(startPath, nil, 0o600); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("release helper writer: %v", err)
+	}
+
+	store, err := OpenStore(statePath)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatal(err)
+	}
+	for i := 0; i < 120; i++ {
+		event := Event{Class: Attention, SessionID: fmt.Sprintf("daemon-%d", i), Timestamp: time.Unix(int64(i), 0)}
+		if err := store.Baseline(event); err != nil {
+			_ = cmd.Process.Kill()
+			t.Fatalf("daemon baseline %s: %v", event.SessionID, err)
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("helper writer failed: %v\n%s", err, output.String())
+	}
+
+	restarted, err := OpenStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(restarted.data.Events), 240; got != want {
+		t.Fatalf("persisted event count = %d, want %d; cross-process writes lost state", got, want)
+	}
+}
+
+// TestDesktopNotificationHelperStoreLockHolder is the separate helper process
+// used to hold the advisory lock while the daemon-side Store attempts its
+// read-modify-write transaction.
+func TestDesktopNotificationHelperStoreLockHolder(t *testing.T) {
+	lockPath := os.Getenv(helperStoreLockPathEnv)
+	if lockPath == "" {
+		return
+	}
+	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	readyPath := os.Getenv(helperStoreLockReadyEnv)
+	if err := os.WriteFile(readyPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	releasePath := os.Getenv(helperStoreLockReleaseEnv)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(releasePath); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for lock release")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestHelperStoreSubprocessBlocksDaemonStoreOnAdvisoryLock(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	readyPath := filepath.Join(t.TempDir(), "lock-ready")
+	releasePath := filepath.Join(t.TempDir(), "lock-release")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDesktopNotificationHelperStoreLockHolder$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		helperStoreLockPathEnv+"="+statePath+".lock",
+		helperStoreLockReadyEnv+"="+readyPath,
+		helperStoreLockReleaseEnv+"="+releasePath,
+	)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper lock holder: %v", err)
+	}
+	if err := waitForDesktopNotifyTestFile(readyPath); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("wait for helper lock: %v\n%s", err, output.String())
+	}
+
+	store, err := OpenStore(statePath)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- store.Baseline(Event{Class: Attention, SessionID: "daemon-during-helper-lock", Timestamp: time.Now()})
+	}()
+	select {
+	case err := <-done:
+		_ = cmd.Process.Kill()
+		t.Fatalf("daemon write bypassed helper advisory lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := os.WriteFile(releasePath, nil, 0o600); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("helper lock holder failed: %v\n%s", err, output.String())
+	}
+}
+
+func waitForDesktopNotifyTestFile(path string) error {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for %s", path)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
