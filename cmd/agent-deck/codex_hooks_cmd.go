@@ -230,7 +230,11 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 	if err != nil {
 		return
 	}
-	defer lock.Close()
+	defer func() {
+		if err := lock.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "agent-deck: close Codex hook lock: %v\n", err)
+		}
+	}()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		return
 	}
@@ -254,17 +258,28 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 	if len(turnIDs) > 0 {
 		turnID = strings.TrimSpace(turnIDs[0])
 	}
-	if started && evidenceSessionID != "" && turnID != "" {
-		prior.CodexStartedGeneration = fmt.Sprintf("%s:%s", evidenceSessionID, turnID)
-		prior.CodexStartedSessionID = evidenceSessionID
+	if started {
 		prior.CodexCompletedGeneration = ""
 		prior.CodexCompletedSessionID = ""
+		if evidenceSessionID != "" && turnID != "" {
+			prior.CodexStartedGeneration = fmt.Sprintf("%s:%s", evidenceSessionID, turnID)
+			prior.CodexStartedSessionID = evidenceSessionID
+		} else {
+			prior.CodexStartedGeneration = ""
+			prior.CodexStartedSessionID = ""
+		}
 	}
 	completionGeneration := ""
 	if evidenceSessionID != "" && turnID != "" {
 		completionGeneration = fmt.Sprintf("%s:%s", evidenceSessionID, turnID)
 	}
-	if completed && completionGeneration != "" && completionGeneration == prior.CodexStartedGeneration && evidenceSessionID == prior.CodexStartedSessionID {
+	// Codex's legacy notify contract emits only agent-turn-complete. A complete
+	// thread/turn identity therefore supplies both sides of the generation
+	// proof; waiting must not depend on a start notification that never occurs.
+	if completed && completionGeneration != "" &&
+		(prior.Status != "running" || prior.CodexStartedGeneration == "" || completionGeneration == prior.CodexStartedGeneration) {
+		prior.CodexStartedGeneration = completionGeneration
+		prior.CodexStartedSessionID = evidenceSessionID
 		prior.CodexCompletedGeneration = completionGeneration
 		prior.CodexCompletedSessionID = evidenceSessionID
 	}
