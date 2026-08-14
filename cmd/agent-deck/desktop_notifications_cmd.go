@@ -16,6 +16,7 @@ import (
 )
 
 var desktopNotificationsOS = runtime.GOOS
+var desktopNotificationsNativePresentationAvailable = desktopnotify.NativePresentationAvailable
 
 func handleDesktopNotifications(args []string) {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
@@ -46,6 +47,11 @@ func desktopNotificationsDoctor() {
 	fmt.Printf("desktop notifications: %s\n", map[bool]string{true: "enabled", false: "disabled"}[settings.Enabled])
 	if !settings.Enabled {
 		fmt.Println("remediation: add [desktop_notifications] enabled = true to config.toml")
+	}
+	if !desktopNotificationsNativePresentationAvailable() {
+		fmt.Println("native presentation: unavailable (this Agent Deck build requires cgo on macOS)")
+		fmt.Println("remediation: install or rebuild Agent Deck for macOS with cgo enabled")
+		return
 	}
 	if socketErr != nil {
 		fmt.Printf("helper endpoint: unavailable (%v)\n", socketErr)
@@ -109,6 +115,9 @@ func runDesktopNotificationHelper() {
 func desktopNotificationHelperPrerequisite() error {
 	if desktopNotificationsOS != "darwin" {
 		return errors.New("desktop notification helper is supported on macOS only")
+	}
+	if !desktopNotificationsNativePresentationAvailable() {
+		return errors.New("desktop notification helper requires a macOS build with cgo enabled; install or rebuild Agent Deck with cgo enabled")
 	}
 	return nil
 }

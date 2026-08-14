@@ -41,6 +41,9 @@ func TestDesktopNotificationsDispatchAndDoctorRemediation(t *testing.T) {
 	originalOS := desktopNotificationsOS
 	desktopNotificationsOS = "darwin"
 	t.Cleanup(func() { desktopNotificationsOS = originalOS })
+	originalNativePresentationAvailable := desktopNotificationsNativePresentationAvailable
+	desktopNotificationsNativePresentationAvailable = func() bool { return true }
+	t.Cleanup(func() { desktopNotificationsNativePresentationAvailable = originalNativePresentationAvailable })
 	configRoot := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configRoot)
 	t.Setenv("HOME", t.TempDir())

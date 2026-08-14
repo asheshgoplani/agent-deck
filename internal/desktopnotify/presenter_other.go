@@ -4,6 +4,8 @@ package desktopnotify
 
 import "fmt"
 
+func NativePresentationAvailable() bool { return false }
+
 // NativePresent is intentionally unavailable away from macOS. The protocol,
 // state store, and socket remain portable so regular CI validates them.
 func NativePresent(Event) error {

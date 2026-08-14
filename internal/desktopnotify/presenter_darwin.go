@@ -85,6 +85,11 @@ import (
 	"unsafe"
 )
 
+// NativePresentationAvailable reports whether this build can submit macOS
+// UserNotifications. The helper rejects unsupported variants before accepting
+// socket events that would otherwise retry forever.
+func NativePresentationAvailable() bool { return true }
+
 func NativePresent(event Event) error {
 	title, body := message(event)
 	command := FocusCommand(event.BinaryPath, event)
