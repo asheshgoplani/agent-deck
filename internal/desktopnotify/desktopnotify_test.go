@@ -158,11 +158,12 @@ func TestConcurrentStoresRetainEverySessionState(t *testing.T) {
 }
 
 const (
-	helperStoreWriterStateEnv = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_STATE"
-	helperStoreWriterStartEnv = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_START"
-	helperStoreLockPathEnv    = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_PATH"
-	helperStoreLockReadyEnv   = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_READY"
-	helperStoreLockReleaseEnv = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_RELEASE"
+	helperStoreWriterStateEnv   = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_STATE"
+	helperStoreWriterReadyEnv   = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_READY"
+	helperStoreWriterReleaseEnv = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_RELEASE"
+	helperStoreLockPathEnv      = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_PATH"
+	helperStoreLockReadyEnv     = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_READY"
+	helperStoreLockReleaseEnv   = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_RELEASE"
 )
 
 // TestDesktopNotificationHelperStoreWriter is re-executed in a separate test
@@ -174,22 +175,14 @@ func TestDesktopNotificationHelperStoreWriter(t *testing.T) {
 	if statePath == "" {
 		return
 	}
-	startPath := os.Getenv(helperStoreWriterStartEnv)
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, err := os.Stat(startPath); err == nil {
-			break
-		} else if !os.IsNotExist(err) {
-			t.Fatalf("stat writer start signal: %v", err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for writer start signal")
-		}
-		time.Sleep(time.Millisecond)
-	}
-
 	store, err := OpenStore(statePath)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv(helperStoreWriterReadyEnv), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForDesktopNotifyTestFile(os.Getenv(helperStoreWriterReleaseEnv)); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 120; i++ {
@@ -202,18 +195,23 @@ func TestDesktopNotificationHelperStoreWriter(t *testing.T) {
 
 func TestHelperStoreSubprocessAndDaemonStoreRetainEveryState(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
-	startPath := filepath.Join(t.TempDir(), "start")
+	readyPath := filepath.Join(t.TempDir(), "writer-ready")
+	releasePath := filepath.Join(t.TempDir(), "writer-release")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestDesktopNotificationHelperStoreWriter$", "-test.count=1")
-	cmd.Env = append(os.Environ(), helperStoreWriterStateEnv+"="+statePath, helperStoreWriterStartEnv+"="+startPath)
+	cmd.Env = append(os.Environ(),
+		helperStoreWriterStateEnv+"="+statePath,
+		helperStoreWriterReadyEnv+"="+readyPath,
+		helperStoreWriterReleaseEnv+"="+releasePath,
+	)
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start helper writer: %v", err)
 	}
-	if err := os.WriteFile(startPath, nil, 0o600); err != nil {
+	if err := waitForDesktopNotifyTestFile(readyPath); err != nil {
 		_ = cmd.Process.Kill()
-		t.Fatalf("release helper writer: %v", err)
+		t.Fatalf("wait for helper writer readiness: %v\n%s", err, output.String())
 	}
 
 	store, err := OpenStore(statePath)
@@ -221,12 +219,30 @@ func TestHelperStoreSubprocessAndDaemonStoreRetainEveryState(t *testing.T) {
 		_ = cmd.Process.Kill()
 		t.Fatal(err)
 	}
-	for i := 0; i < 120; i++ {
-		event := Event{Class: Attention, SessionID: fmt.Sprintf("daemon-%d", i), Timestamp: time.Unix(int64(i), 0)}
-		if err := store.Baseline(event); err != nil {
-			_ = cmd.Process.Kill()
-			t.Fatalf("daemon baseline %s: %v", event.SessionID, err)
+	parentWriterReady := make(chan struct{})
+	parentWriterRelease := make(chan struct{})
+	parentWriterDone := make(chan error, 1)
+	go func() {
+		close(parentWriterReady)
+		<-parentWriterRelease
+		for i := 0; i < 120; i++ {
+			event := Event{Class: Attention, SessionID: fmt.Sprintf("daemon-%d", i), Timestamp: time.Unix(int64(i), 0)}
+			if err := store.Baseline(event); err != nil {
+				parentWriterDone <- fmt.Errorf("daemon baseline %s: %w", event.SessionID, err)
+				return
+			}
 		}
+		parentWriterDone <- nil
+	}()
+	<-parentWriterReady
+	if err := os.WriteFile(releasePath, nil, 0o600); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("release concurrent writers: %v", err)
+	}
+	close(parentWriterRelease)
+	if err := <-parentWriterDone; err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatal(err)
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("helper writer failed: %v\n%s", err, output.String())
@@ -236,8 +252,15 @@ func TestHelperStoreSubprocessAndDaemonStoreRetainEveryState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(restarted.data.Events), 240; got != want {
-		t.Fatalf("persisted event count = %d, want %d; cross-process writes lost state", got, want)
+	for i := 0; i < 120; i++ {
+		for _, event := range []Event{
+			{Class: Error, SessionID: fmt.Sprintf("helper-%d", i), Timestamp: time.Unix(int64(i), 0)},
+			{Class: Attention, SessionID: fmt.Sprintf("daemon-%d", i), Timestamp: time.Unix(int64(i), 0)},
+		} {
+			if got := restarted.data.Events[event.SessionID]; got != eventKey(event) {
+				t.Fatalf("persisted state for %q = %q, want %q", event.SessionID, got, eventKey(event))
+			}
+		}
 	}
 }
 
@@ -304,9 +327,13 @@ func TestHelperStoreSubprocessBlocksDaemonStoreOnAdvisoryLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
+	entered := make(chan struct{})
+	event := Event{Class: Attention, SessionID: "daemon-during-helper-lock", Timestamp: time.Now()}
 	go func() {
-		done <- store.Baseline(Event{Class: Attention, SessionID: "daemon-during-helper-lock", Timestamp: time.Now()})
+		close(entered)
+		done <- store.Baseline(event)
 	}()
+	<-entered
 	select {
 	case err := <-done:
 		_ = cmd.Process.Kill()
@@ -322,6 +349,13 @@ func TestHelperStoreSubprocessBlocksDaemonStoreOnAdvisoryLock(t *testing.T) {
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("helper lock holder failed: %v\n%s", err, output.String())
+	}
+	restarted, err := OpenStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restarted.data.Events[event.SessionID]; got != eventKey(event) {
+		t.Fatalf("daemon event persisted after lock release = %q, want %q", got, eventKey(event))
 	}
 }
 
