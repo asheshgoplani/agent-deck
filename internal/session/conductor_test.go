@@ -478,9 +478,9 @@ func TestSlackSettings_TOML(t *testing.T) {
 func TestDiscordSettings_TOML(t *testing.T) {
 	discord := DiscordSettings{
 		BotToken:              "discord-bot-token",
-		GuildID:               12345,
-		ChannelID:             67890,
-		UserID:                24680,
+		GuildID:               NewConductorID(12345),
+		ChannelID:             NewConductorID(67890),
+		UserID:                NewConductorID(24680),
 		ListenMode:            "mentions",
 		IgnoreRepliesToOthers: true,
 	}
@@ -488,14 +488,14 @@ func TestDiscordSettings_TOML(t *testing.T) {
 	if discord.BotToken != "discord-bot-token" {
 		t.Errorf("bot_token mismatch: got %q", discord.BotToken)
 	}
-	if discord.GuildID != 12345 {
-		t.Errorf("guild_id mismatch: got %d", discord.GuildID)
+	if discord.GuildID != "12345" {
+		t.Errorf("guild_id mismatch: got %q", discord.GuildID)
 	}
-	if discord.ChannelID != 67890 {
-		t.Errorf("channel_id mismatch: got %d", discord.ChannelID)
+	if discord.ChannelID != "67890" {
+		t.Errorf("channel_id mismatch: got %q", discord.ChannelID)
 	}
-	if discord.UserID != 24680 {
-		t.Errorf("user_id mismatch: got %d", discord.UserID)
+	if discord.UserID != "24680" {
+		t.Errorf("user_id mismatch: got %q", discord.UserID)
 	}
 	if discord.ListenMode != "mentions" {
 		t.Errorf("listen_mode mismatch: got %q", discord.ListenMode)

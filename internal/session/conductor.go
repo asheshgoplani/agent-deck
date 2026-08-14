@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,13 +107,172 @@ type ConductorSettings struct {
 	Dir string `toml:"dir,omitempty"`
 }
 
+// ConductorID is a Telegram/Discord bot identifier used by the conductor
+// bridge — a user, guild, or channel ID. It holds the identifier's ORIGINAL
+// TEXT as written in config.toml rather than an int64, which buys two things:
+//
+//  1. Tolerant load. As a plain int64, one non-numeric value (e.g.
+//     user_id = "not-a-number") made toml.DecodeFile return an error, which made
+//     LoadUserConfig fail, which took down completely unrelated commands (e.g.
+//     `remote list`) and surfaced a spurious "loadout inactive" warning on every
+//     session launch. Decoding a ConductorID never fails.
+//
+//  2. Lossless save. The bridge resolves these fields through _resolve_secret,
+//     so "$TELEGRAM_USER_ID" / "${DISCORD_USER_ID}" / "keychain:name" are
+//     supported values (conductor_bridge.py). Because the fields are omitempty,
+//     normalizing an unparseable value to 0 in memory meant the next unrelated
+//     SaveUserConfig DELETED the key from disk — a config-data-loss bug traded
+//     for a config-load-failure bug. Keeping the text makes
+//     load → save → reload a no-op for every value shape.
+//
+// The numeric conversion lives at the consumer boundary instead: Int64 for Go
+// callers, and NewConductorID for the `conductor setup` writers, which validate
+// the operator's input as an integer before storing it. Nothing in Go consumes
+// these IDs numerically today — the bridge parses config.toml itself.
+type ConductorID string
+
+// NewConductorID renders an already-validated numeric ID as its canonical
+// decimal text. Configs written by `conductor setup` therefore stay
+// byte-identical to what the pre-ConductorID int64 encoder produced: a bare
+// TOML integer.
+func NewConductorID(id int64) ConductorID {
+	return ConductorID(strconv.FormatInt(id, 10))
+}
+
+// Int64 is the numeric view of the stored text. ok is false when the text is
+// not a base-10 integer — unset, an unresolved indirection such as
+// "$TELEGRAM_USER_ID", or malformed — mirroring the bridge, which only applies
+// int() to a value that resolved to something non-empty and treats the rest
+// as 0/unset.
+func (c ConductorID) Int64() (int64, bool) {
+	n, err := strconv.ParseInt(strings.TrimSpace(string(c)), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// conductorIDIndirection reports whether the text is one of the indirection
+// forms the bridge's _resolve_secret understands, so those are not warned about
+// as malformed.
+func conductorIDIndirection(s string) bool {
+	return strings.HasPrefix(s, "$") || strings.HasPrefix(s, "keychain:")
+}
+
+// canonicalConductorIDInt reports whether the text is exactly how the TOML
+// encoder would render its own integer value. Anything else (leading zeros, a
+// leading +, underscores, surrounding whitespace) must be emitted as a quoted
+// string: `user_id = 0123` is not valid TOML, so re-emitting it bare would
+// write a config that no longer parses.
+func canonicalConductorIDInt(s string) bool {
+	n, err := strconv.ParseInt(s, 10, 64)
+	return err == nil && strconv.FormatInt(n, 10) == s
+}
+
+// UnmarshalTOML implements toml.Unmarshaler. It accepts a bare TOML integer or
+// a string and stores the text; a value that is neither a usable integer nor a
+// bridge indirection form is kept verbatim and warned about, rather than
+// failing the whole config load (the old int64 behavior) or being normalized
+// away (which the save path would then write back as a deletion).
+func (c *ConductorID) UnmarshalTOML(v interface{}) error {
+	switch val := v.(type) {
+	case int64:
+		*c = NewConductorID(val)
+	case string:
+		*c = ConductorID(val)
+		s := strings.TrimSpace(val)
+		switch {
+		case s == "":
+			// Explicitly empty. Same "treated as unset" outcome as a
+			// malformed value, so it warns the same way.
+			sessionLog.Warn("conductor_id_empty",
+				slog.String("effect", "treated as unset"))
+		case conductorIDIndirection(s), canonicalConductorIDInt(s):
+			// Supported: an env-var/keychain reference the bridge resolves,
+			// or a plain integer written as a quoted string.
+		default:
+			if _, ok := c.Int64(); !ok {
+				sessionLog.Warn("conductor_id_unparseable",
+					slog.String("value", sanitizeLoadoutWarning(val)),
+					slog.String("effect", "preserved verbatim, treated as unset"))
+			}
+		}
+	default:
+		// A TOML float, bool, or datetime. There is no source text to keep,
+		// so render the decoded value rather than dropping the key on the
+		// next save.
+		*c = ConductorID(fmt.Sprintf("%v", v))
+		sessionLog.Warn("conductor_id_unexpected_type",
+			slog.String("type", fmt.Sprintf("%T", v)),
+			slog.String("effect", "preserved as text, treated as unset"))
+	}
+	return nil
+}
+
+// MarshalTOML implements toml.Marshaler. It re-emits a bare TOML integer when
+// the stored text is exactly one, and a quoted basic string otherwise: an
+// existing `user_id = 12345` stays byte-identical, and everything a plain int64
+// could not represent — `user_id = "$TELEGRAM_USER_ID"`, a keychain reference, a
+// malformed value — survives the save verbatim.
+//
+// The one shape that is normalized rather than preserved is a quoted numeric:
+// `user_id = "12345"` is re-emitted as `user_id = 12345`, because text alone
+// cannot carry "was quoted at the source" alongside the value. The value is
+// unchanged and the bridge coerces both shapes with int(), so this is a
+// representation normalization, not data loss.
+func (c ConductorID) MarshalTOML() ([]byte, error) {
+	s := string(c)
+	if canonicalConductorIDInt(s) {
+		return []byte(s), nil
+	}
+	return []byte(`"` + escapeTOMLBasicString(s) + `"`), nil
+}
+
+// escapeTOMLBasicString escapes s for inclusion in a TOML basic string, which
+// permits only the \b \t \n \f \r \" \\ \uXXXX escapes — notably not Go's \x
+// or \a forms, so strconv.Quote cannot be used here.
+func escapeTOMLBasicString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\u%04X`, r)
+				continue
+			}
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // TelegramSettings defines Telegram bot configuration for the conductor bridge
 type TelegramSettings struct {
 	// Token is the Telegram bot token from @BotFather
 	Token string `toml:"token,omitempty"`
 
-	// UserID is the authorized Telegram user ID from @userinfobot
-	UserID int64 `toml:"user_id,omitzero"`
+	// UserID is the authorized Telegram user ID from @userinfobot.
+	//
+	// omitempty, not omitzero: the encoder's omitzero only recognizes zero ints
+	// and floats, so on a text-backed ConductorID it would never fire and every
+	// save would write `user_id = ""` into configs that never set one. omitempty
+	// keys off an empty string, which is what "unset" is now.
+	UserID ConductorID `toml:"user_id,omitempty"`
 }
 
 // SlackSettings defines Slack bot configuration for the conductor bridge
@@ -142,13 +302,13 @@ type DiscordSettings struct {
 	BotToken string `toml:"bot_token,omitempty"`
 
 	// GuildID is the Discord server (guild) where the bot operates
-	GuildID int64 `toml:"guild_id,omitzero"`
+	GuildID ConductorID `toml:"guild_id,omitempty"`
 
 	// ChannelID is the Discord channel where the bot listens and posts
-	ChannelID int64 `toml:"channel_id,omitzero"`
+	ChannelID ConductorID `toml:"channel_id,omitempty"`
 
 	// UserID is the authorized Discord user ID
-	UserID int64 `toml:"user_id,omitzero"`
+	UserID ConductorID `toml:"user_id,omitempty"`
 
 	// ListenMode controls when the bot responds: "mentions" (only @mentions) or "all" (all channel messages)
 	// Default: "all"
