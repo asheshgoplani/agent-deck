@@ -1,6 +1,6 @@
 module github.com/asheshgoplani/agent-deck
 
-go 1.25.12
+go 1.25.13
 
 require (
 	al.essio.dev/pkg/shellescape v1.6.0
