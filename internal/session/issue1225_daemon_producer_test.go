@@ -19,6 +19,7 @@ import (
 
 func TestB13_DaemonSyncProfile_InteractiveTransitionCommitsToInbox(t *testing.T) {
 	inboxTestHome(t)
+	setDesktopNotificationsEnabled(t, true)
 	originalDesktopSender := desktopNotificationSender
 	var desktopEvents []desktopnotify.SourceEvent
 	desktopNotificationSender = func(event desktopnotify.SourceEvent) error {

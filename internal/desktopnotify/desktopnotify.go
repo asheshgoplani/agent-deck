@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -95,6 +96,48 @@ type Store struct {
 	data storeData
 }
 
+// storeLocks covers Store instances in the same process; the sibling advisory
+// lock file below extends that critical section to the daemon and GUI helper.
+// Both processes read-modify-write the same JSON state, so a Store-local mutex
+// alone cannot prevent one writer from replacing another writer's new key.
+var storeLocks sync.Map // map[string]*sync.Mutex
+
+type storeLock struct {
+	inProc *sync.Mutex
+	file   *os.File
+}
+
+func (l *storeLock) release() {
+	if l.file != nil {
+		_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+		_ = l.file.Close()
+	}
+	if l.inProc != nil {
+		l.inProc.Unlock()
+	}
+}
+
+func acquireStoreLock(path string) (*storeLock, error) {
+	mIface, _ := storeLocks.LoadOrStore(path, &sync.Mutex{})
+	m := mIface.(*sync.Mutex)
+	m.Lock()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		m.Unlock()
+		return nil, fmt.Errorf("ensure notification state dir: %w", err)
+	}
+	f, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		m.Unlock()
+		return nil, fmt.Errorf("open notification state lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		m.Unlock()
+		return nil, fmt.Errorf("flock notification state: %w", err)
+	}
+	return &storeLock{inProc: m, file: f}, nil
+}
+
 func OpenStore(path string) (*Store, error) {
 	s := &Store{path: path, data: storeData{Events: map[string]string{}}}
 	if err := s.reload(); err != nil {
@@ -131,6 +174,11 @@ func eventKey(event Event) string {
 func (s *Store) Baseline(event Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	lock, err := acquireStoreLock(s.path)
+	if err != nil {
+		return err
+	}
+	defer lock.release()
 	if err := s.reload(); err != nil {
 		return err
 	}
@@ -144,6 +192,11 @@ func (s *Store) Baseline(event Event) error {
 func (s *Store) ShouldDeliver(event Event) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	lock, err := acquireStoreLock(s.path)
+	if err != nil {
+		return false, err
+	}
+	defer lock.release()
 	if err := s.reload(); err != nil {
 		return false, err
 	}
@@ -186,6 +239,8 @@ func (s *Store) persist() error {
 
 type Listener struct{ listener *net.UnixListener }
 
+const socketReadDeadline = 250 * time.Millisecond
+
 var errMalformedPayload = errors.New("malformed desktop notification payload")
 
 func Listen(path string) (*Listener, error) {
@@ -225,9 +280,15 @@ func (l *Listener) Receive() (Event, error) {
 		return Event{}, err
 	}
 	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(socketReadDeadline)); err != nil {
+		return Event{}, fmt.Errorf("set desktop notification read deadline: %w", err)
+	}
 	var event Event
 	if err := json.NewDecoder(conn).Decode(&event); err != nil {
 		return Event{}, fmt.Errorf("%w: %v", errMalformedPayload, err)
+	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil { // clear after decoding for future protocol extensions
+		return Event{}, fmt.Errorf("clear desktop notification read deadline: %w", err)
 	}
 	return event, nil
 }

@@ -2,7 +2,9 @@ package session
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +13,21 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/desktopnotify"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
+
+func setDesktopNotificationsEnabled(t *testing.T, enabled bool) {
+	t.Helper()
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("config path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("[desktop_notifications]\nenabled = "+strconv.FormatBool(enabled)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	ClearUserConfigCache()
+}
 
 func TestSyncProfile_LiveTUIArchivedStatusNeverReachesLastStatus(t *testing.T) {
 	const profile = "_test_transition_archived_live_tui"
@@ -45,6 +62,7 @@ func TestSyncProfile_LiveTUIArchivedStatusNeverReachesLastStatus(t *testing.T) {
 func TestSyncProfile_InitialActionableStateSeedsDesktopBaseline(t *testing.T) {
 	const profile = "_test_desktop_baseline"
 	d, storage := bootstrapDaemonProfile(t, profile)
+	setDesktopNotificationsEnabled(t, true)
 	originalBaseline := desktopNotificationBaseline
 	var baselines []desktopnotify.SourceEvent
 	desktopNotificationBaseline = func(event desktopnotify.SourceEvent) error {
@@ -77,6 +95,7 @@ func TestSyncProfile_InitialActionableStateSeedsDesktopBaseline(t *testing.T) {
 func TestSyncProfile_RetainsDesktopBaselinePersistenceFailure(t *testing.T) {
 	const profile = "_test_desktop_baseline_error"
 	d, storage := bootstrapDaemonProfile(t, profile)
+	setDesktopNotificationsEnabled(t, true)
 	wantErr := errors.New("state unavailable")
 	originalBaseline := desktopNotificationBaseline
 	desktopNotificationBaseline = func(desktopnotify.SourceEvent) error { return wantErr }
@@ -97,8 +116,117 @@ func TestSyncProfile_RetainsDesktopBaselinePersistenceFailure(t *testing.T) {
 	}
 
 	d.syncProfile(profile)
-	if !errors.Is(d.desktopNotificationBaselineErr, wantErr) {
-		t.Fatalf("desktop baseline error = %v, want %v", d.desktopNotificationBaselineErr, wantErr)
+	if !errors.Is(d.desktopNotificationBaselineErr[profile], wantErr) {
+		t.Fatalf("desktop baseline error = %v, want %v", d.desktopNotificationBaselineErr[profile], wantErr)
+	}
+}
+
+func TestSyncProfile_EnablingDesktopNotificationsSeedsFreshHookWithoutAlert(t *testing.T) {
+	const profile = "_test_desktop_enable_hook_baseline"
+	d, storage := bootstrapDaemonProfile(t, profile)
+	setDesktopNotificationsEnabled(t, false)
+
+	originalBaseline := desktopNotificationBaseline
+	originalSender := desktopNotificationSender
+	var baselines, delivered []desktopnotify.SourceEvent
+	desktopNotificationBaseline = func(event desktopnotify.SourceEvent) error {
+		baselines = append(baselines, event)
+		return nil
+	}
+	desktopNotificationSender = func(event desktopnotify.SourceEvent) error {
+		delivered = append(delivered, event)
+		return nil
+	}
+	t.Cleanup(func() {
+		desktopNotificationBaseline = originalBaseline
+		desktopNotificationSender = originalSender
+	})
+
+	_, child := seedStaleRowFixture(t, storage, "enable-hook-child", "enable-hook-parent", "running")
+	d.syncProfile(profile)
+	if len(baselines) != 0 {
+		t.Fatalf("disabled desktop notifications seeded %+v", baselines)
+	}
+
+	setDesktopNotificationsEnabled(t, true)
+	seedHookStatusFile(t, child.ID, "Stop", "99999999-9999-9999-9999-999999999999", "waiting")
+	d.syncProfile(profile)
+
+	foundWaitingBaseline := false
+	for _, event := range baselines {
+		if event.SessionID == child.ID && event.ToStatus == "waiting" {
+			foundWaitingBaseline = true
+		}
+	}
+	if !foundWaitingBaseline {
+		t.Fatalf("enable baseline = %+v, want fresh hook waiting state", baselines)
+	}
+	if len(delivered) != 0 {
+		t.Fatalf("enable pass delivered stale desktop events %+v", delivered)
+	}
+}
+
+func TestSyncProfile_RetriesDesktopBaselineAndWithholdsDispatchUntilReady(t *testing.T) {
+	const profile = "_test_desktop_baseline_retry"
+	d, storage := bootstrapDaemonProfile(t, profile)
+	setDesktopNotificationsEnabled(t, true)
+
+	originalBaseline := desktopNotificationBaseline
+	originalSender := desktopNotificationSender
+	defer func() {
+		desktopNotificationBaseline = originalBaseline
+		desktopNotificationSender = originalSender
+	}()
+	wantErr := errors.New("state unavailable")
+	fail := true
+	desktopNotificationBaseline = func(desktopnotify.SourceEvent) error {
+		if fail {
+			return wantErr
+		}
+		return nil
+	}
+	var delivered []desktopnotify.SourceEvent
+	desktopNotificationSender = func(event desktopnotify.SourceEvent) error {
+		delivered = append(delivered, event)
+		return nil
+	}
+
+	inst := &Instance{ID: "baseline-retry", Title: "baseline", ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now()}
+	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	db := storage.GetDB()
+	if err := db.RegisterInstance(false); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := db.Heartbeat(); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if err := db.WriteStatus(inst.ID, "running", inst.Tool); err != nil {
+		t.Fatalf("initial status: %v", err)
+	}
+
+	d.syncProfile(profile)
+	if !errors.Is(d.desktopNotificationBaselineErr[profile], wantErr) {
+		t.Fatalf("first baseline error = %v, want %v", d.desktopNotificationBaselineErr[profile], wantErr)
+	}
+	if err := db.WriteStatus(inst.ID, "error", inst.Tool); err != nil {
+		t.Fatalf("error status: %v", err)
+	}
+	fail = false
+	d.syncProfile(profile)
+	if d.desktopNotificationBaselineErr[profile] != nil {
+		t.Fatalf("successful retry retained error: %v", d.desktopNotificationBaselineErr[profile])
+	}
+	if len(delivered) != 0 {
+		t.Fatalf("baseline retry pass delivered %+v", delivered)
+	}
+	if err := db.WriteStatus(inst.ID, "waiting", inst.Tool); err != nil {
+		t.Fatalf("waiting status: %v", err)
+	}
+	d.syncProfile(profile)
+	if len(delivered) != 1 || delivered[0].ToStatus != "waiting" {
+		t.Fatalf("post-baseline transition delivered %+v, want one waiting event", delivered)
 	}
 }
 

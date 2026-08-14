@@ -77,6 +77,7 @@ func seedStaleRowFixture(t *testing.T, storage *Storage, childID, parentID, rowS
 func TestSyncOnce_StaleRunningRowDoesNotVetoFreshTerminalHook(t *testing.T) {
 	const profile = "_test_stalerow_veto"
 	d, storage := bootstrapDaemonProfile(t, profile)
+	setDesktopNotificationsEnabled(t, true)
 	originalDesktopSender := desktopNotificationSender
 	var desktopEvents []desktopnotify.SourceEvent
 	desktopNotificationSender = func(event desktopnotify.SourceEvent) error {

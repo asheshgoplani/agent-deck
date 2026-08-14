@@ -1,10 +1,12 @@
 package desktopnotify
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -109,6 +111,46 @@ func TestPersistedBaselineSuppressesRestartBacklog(t *testing.T) {
 	}
 	if deliver, err := restarted.ShouldDeliver(event); err != nil || deliver {
 		t.Fatalf("restarted store delivered baseline event: deliver=%v err=%v", deliver, err)
+	}
+}
+
+func TestConcurrentStoresRetainEverySessionState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	left, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const perStore = 80
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	write := func(store *Store, prefix string) {
+		defer wg.Done()
+		<-start
+		for i := 0; i < perStore; i++ {
+			event := Event{Class: Attention, SessionID: fmt.Sprintf("%s-%d", prefix, i), Timestamp: time.Unix(int64(i), 0)}
+			if err := store.Baseline(event); err != nil {
+				t.Errorf("baseline %s: %v", event.SessionID, err)
+				return
+			}
+		}
+	}
+	wg.Add(2)
+	go write(left, "left")
+	go write(right, "right")
+	close(start)
+	wg.Wait()
+
+	restarted, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(restarted.data.Events), 2*perStore; got != want {
+		t.Fatalf("persisted event count = %d, want %d; concurrent store writes lost state", got, want)
 	}
 }
 
@@ -245,5 +287,57 @@ func TestHelperDropsMalformedPayloadAndContinuesServing(t *testing.T) {
 		t.Fatalf("helper stopped after malformed payload: %v", err)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for valid payload after malformed input")
+	}
+}
+
+func TestHelperDropsIncompletePayloadWithoutEOFAndContinuesServing(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-incomplete-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan Event, 1)
+	helper := Helper{Listener: listener, Store: store, Present: func(event Event) error { delivered <- event; return nil }}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+
+	stalled, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stalled.Close()
+	if _, err := stalled.Write([]byte(`{"class":"error"`)); err != nil {
+		t.Fatal(err)
+	}
+
+	want := Event{Class: Attention, SessionID: "valid-after-incomplete", Timestamp: time.Now()}
+	if err := Send(socket, want); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-delivered:
+		if got.Class != want.Class || got.SessionID != want.SessionID || !got.Timestamp.Equal(want.Timestamp) {
+			t.Fatalf("delivered %#v, want %#v", got, want)
+		}
+	case err := <-serveDone:
+		t.Fatalf("helper stopped after incomplete payload: %v", err)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("incomplete client blocked a later valid payload")
 	}
 }

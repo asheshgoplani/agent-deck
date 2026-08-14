@@ -60,11 +60,18 @@ type TransitionDaemon struct {
 	// next poll retries.
 	lastDoneScan map[string]map[string]time.Time
 
-	// desktopNotificationBaselineErr preserves the most recent persistence
-	// error from the initial-state seed. SyncOnce's public polling signature
-	// cannot return an error, so retaining it makes the failure observable to
-	// diagnostics and tests instead of silently treating it as a baseline.
-	desktopNotificationBaselineErr error
+	// desktopNotificationBaselineReady tracks each enabled lifecycle. Desktop
+	// dispatch is withheld until the current lifecycle has successfully stored
+	// its observed baseline, preventing old state from becoming a backlog.
+	desktopNotificationBaselineReady map[string]bool
+	// desktopNotificationBaselineSeededThisPass suppresses delivery on the
+	// exact pass that establishes a baseline (including false → true config
+	// changes). A transition observed at that boundary is indistinguishable
+	// from existing state and must remain quiet.
+	desktopNotificationBaselineSeededThisPass map[string]bool
+	// desktopNotificationBaselineErr is retained per profile for diagnostics;
+	// failures are also logged and retried on every subsequent poll.
+	desktopNotificationBaselineErr map[string]error
 
 	// lastInboxTTLSweep tracks the most recent SweepInboxByTTL call so
 	// the daemon runs it at most once per inboxTTLSweepInterval. Zero
@@ -99,13 +106,16 @@ type TransitionDaemon struct {
 
 func NewTransitionDaemon() *TransitionDaemon {
 	return &TransitionDaemon{
-		notifier:       NewTransitionNotifier(),
-		storages:       map[string]*Storage{},
-		lastStatus:     map[string]map[string]string{},
-		initialized:    map[string]bool{},
-		lastDone:       map[string]map[string]DoneSignal{},
-		lastDoneScan:   map[string]map[string]time.Time{},
-		lastProbeStall: map[string]time.Time{},
+		notifier:                         NewTransitionNotifier(),
+		storages:                         map[string]*Storage{},
+		lastStatus:                       map[string]map[string]string{},
+		initialized:                      map[string]bool{},
+		lastDone:                         map[string]map[string]DoneSignal{},
+		lastDoneScan:                     map[string]map[string]time.Time{},
+		lastProbeStall:                   map[string]time.Time{},
+		desktopNotificationBaselineReady: map[string]bool{},
+		desktopNotificationBaselineSeededThisPass: map[string]bool{},
+		desktopNotificationBaselineErr:            map[string]error{},
 	}
 }
 
@@ -458,11 +468,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	}
 	d.runSelfHealPass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
 
+	d.prepareDesktopNotificationBaseline(profile, byID, statuses, hookCandidates, hookStatuses)
+
 	if !d.initialized[profile] {
-		// Persist every already-observed actionable state before emitting the
-		// legacy fast-transition paths. Desktop delivery is deliberately quiet
-		// for this first pass so enabling/restarting the daemon has no backlog.
-		d.desktopNotificationBaselineErr = d.seedDesktopNotificationBaseline(profile, byID, statuses, hookCandidates, hookStatuses)
 		// Cover fast transitions that completed before we observed a running snapshot.
 		d.emitHookTransitionCandidates(profile, byID, nil, statuses, hookCandidates, nil)
 		d.emitDoneSignals(profile, byID, hookStatuses)
@@ -480,7 +488,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		// Desktop alerts intentionally do not share the legacy parent-notifier
 		// predicate: an already-waiting session can transition to error and
 		// must still raise an actionable desktop alert.
-		if from != normalizeStatusString(to) && inst != nil {
+		if d.desktopNotificationDispatchReady(profile) && from != normalizeStatusString(to) && inst != nil {
 			_ = desktopNotificationSender(desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
 				ToStatus: to, Timestamp: time.Now(),
@@ -536,6 +544,30 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	}
 	d.lastStatus[profile] = nextStatus
 	return choosePollInterval(statuses)
+}
+
+func (d *TransitionDaemon) prepareDesktopNotificationBaseline(profile string, byID map[string]*Instance, statuses map[string]string, candidates map[string]hookTransitionCandidate, hookStatuses map[string]*HookStatus) {
+	d.desktopNotificationBaselineSeededThisPass[profile] = false
+	if !GetDesktopNotificationsSettings().Enabled {
+		d.desktopNotificationBaselineReady[profile] = false
+		delete(d.desktopNotificationBaselineErr, profile)
+		return
+	}
+	if d.desktopNotificationBaselineReady[profile] {
+		return
+	}
+	if err := d.seedDesktopNotificationBaseline(profile, byID, statuses, candidates, hookStatuses); err != nil {
+		d.desktopNotificationBaselineErr[profile] = err
+		sessionLog.Warn("desktop_notification_baseline_failed", "profile", profile, "error", err)
+		return
+	}
+	d.desktopNotificationBaselineReady[profile] = true
+	d.desktopNotificationBaselineSeededThisPass[profile] = true
+	delete(d.desktopNotificationBaselineErr, profile)
+}
+
+func (d *TransitionDaemon) desktopNotificationDispatchReady(profile string) bool {
+	return d.desktopNotificationBaselineReady[profile] && !d.desktopNotificationBaselineSeededThisPass[profile]
 }
 
 func (d *TransitionDaemon) seedDesktopNotificationBaseline(profile string, byID map[string]*Instance, statuses map[string]string, candidates map[string]hookTransitionCandidate, hookStatuses map[string]*HookStatus) error {
@@ -626,7 +658,7 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		}
 
 		inst := byID[id]
-		if d.initialized[profile] {
+		if d.initialized[profile] && d.desktopNotificationDispatchReady(profile) {
 			_ = desktopNotificationSender(desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
 				Kind: transitionKindFinished, DoneStatus: sig.Status, Summary: sig.Summary, Timestamp: hs.UpdatedAt,
@@ -970,7 +1002,7 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		// This fresh hook candidate bypassed the snapshot transition path, so
 		// send its equivalent desktop event here. The snapshot duplicate guard
 		// above keeps each transition to one alert source.
-		if d.initialized[profile] {
+		if d.initialized[profile] && d.desktopNotificationDispatchReady(profile) {
 			_ = desktopNotificationSender(desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
 				ToStatus: to, Timestamp: candidate.Timestamp,
