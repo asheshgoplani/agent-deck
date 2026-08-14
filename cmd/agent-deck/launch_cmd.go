@@ -321,7 +321,7 @@ func handleLaunch(profile string, args []string) {
 	}
 
 	// Load sessions
-	storage, instances, groups, err := loadSessionData(profile)
+	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -371,18 +371,45 @@ func handleLaunch(profile string, args []string) {
 		sessionTitle = filepath.Base(path)
 	}
 
-	// Check for duplicate and generate unique title
+	// Check for duplicate and generate unique title.
+	//
+	// Same read-decide-write window `add` has (see handleAdd): the list loaded
+	// above answers "is this (title, location) taken?" and the insert happens
+	// much later, so a concurrent registration can take the pair in between.
+	// The lock covers goroutines and separate processes; the re-read inside it
+	// is what makes the answer current. `launch` has no --ssh flag, so its
+	// location is always local — but it shares the predicate with `add` so the
+	// two can never disagree about what a duplicate is.
 	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
-	if !userProvidedTitle {
-		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
-	} else {
-		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
-			out.Error(
-				fmt.Sprintf("session already exists: %s (%s)", existingInst.Title, existingInst.ID),
-				ErrCodeAlreadyExists,
-			)
-			os.Exit(1)
+	launchRegLock, launchRegLockErr := session.AcquireRegistrationLock(profile)
+	if launchRegLockErr != nil {
+		out.Error(fmt.Sprintf("failed to acquire session registration lock: %v", launchRegLockErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	releaseLaunchRegistration := func() {
+		if launchRegLock != nil {
+			launchRegLock.Release()
+			launchRegLock = nil
 		}
+	}
+	defer releaseLaunchRegistration()
+	freshInstances, freshGroups, reloadErr := reloadForRegistration(storage)
+	if reloadErr != nil {
+		out.Error(reloadErr.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	instances = freshInstances
+	groups := freshGroups
+
+	launchDecision := decideAddTitle(instances, sessionTitle, localLocation(path), userProvidedTitle)
+	if launchDecision.Duplicate != nil {
+		msg, code := launchDecision.DuplicateError()
+		out.ErrorWithData(msg, code, launchDecision.DuplicateJSONFields())
+		os.Exit(1)
+	}
+	sessionTitle = launchDecision.Title
+	if warning := launchDecision.RenameWarning(); warning != "" && !*jsonOutput && !quietMode {
+		fmt.Fprintln(os.Stderr, warning)
 	}
 
 	// Create new instance
@@ -543,6 +570,9 @@ func handleLaunch(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to save session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	// The (title, location) pair is now taken in the state db; the start and
+	// attach below must not hold the lock for other registrations.
+	releaseLaunchRegistration()
 
 	// Attach MCPs if specified
 	if len(mcpFlags) > 0 {
@@ -653,21 +683,26 @@ func handleLaunch(profile string, args []string) {
 	if initialMessage != "" && *noWait {
 		tmuxSess := newInstance.GetTmuxSession()
 		if tmuxSess != nil {
+			// #1777 provenance probe: a freshly launched session has an
+			// empty composer, so a "[Pasted text …]" marker appearing
+			// during verification is this prompt's own collapse and the
+			// Enter nudge stays attributable. If the probe cannot confirm
+			// that, the gate withholds the nudge. Captured once, before the
+			// send, and shared with the v1.7.64 recovery pass below — a
+			// multi-line prompt collapses behind that marker as its normal
+			// delivered form (#1855), so the recovery retry needs the same
+			// provenance or its attribution gate withholds it forever.
+			pasteFreeBeforeSend := composerPasteFree(tmuxSess)
 			if _, err := sendWithRetryTarget(tmuxSess, initialMessage, skipClaudeDeliveryVerify(newInstance.Tool), sendRetryOptions{
-				maxRetries: 8,
-				checkDelay: 150 * time.Millisecond,
-				// #1777 provenance probe: a freshly launched session has an
-				// empty composer, so a "[Pasted text …]" marker appearing
-				// during verification is this prompt's own collapse and the
-				// Enter nudge stays attributable. If the probe cannot confirm
-				// that, the gate withholds the nudge.
-				composerPasteFreeBeforeSend: composerPasteFree(tmuxSess),
+				maxRetries:                  8,
+				checkDelay:                  150 * time.Millisecond,
+				composerPasteFreeBeforeSend: pasteFreeBeforeSend,
 			}); err != nil {
 				out.Error(fmt.Sprintf("failed to send initial message: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
-			verifyPromptConsumedAfterLaunch(
-				tmuxSess, initialMessage,
+			verifyPromptConsumedAfterLaunchAttributed(
+				tmuxSess, initialMessage, pasteFreeBeforeSend,
 				10*time.Second, 250*time.Millisecond,
 				os.Stderr,
 			)

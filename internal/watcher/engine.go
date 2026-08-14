@@ -182,7 +182,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 func (e *Engine) RegisterAdapter(watcherID string, adapter WatcherAdapter, config AdapterConfig, maxSilenceMinutes int) {
 	tracker := NewHealthTracker(config.Name, maxSilenceMinutes)
 	e.adapters = append(e.adapters, adapterEntry{
-		adapter:   adapter,
+		adapter:   newRecoveredAdapter(adapter, config, e.log),
 		config:    config,
 		watcherID: watcherID,
 		tracker:   tracker,

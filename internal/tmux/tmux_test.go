@@ -3032,7 +3032,7 @@ func TestStartCommandSpec_Default(t *testing.T) {
 
 	launcher, args := s.startCommandSpec("/tmp/project", "")
 	assert.Equal(t, "tmux", launcher)
-	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project",
+	assert.Equal(t, []string{"-u", "new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project",
 		"-x", "173", "-y", "41"}, args)
 }
 
@@ -3050,7 +3050,7 @@ func TestStartCommandSpec_UserScope(t *testing.T) {
 	require.GreaterOrEqual(t, len(args), 8)
 	assert.Equal(t, []string{"--user", "--scope", "--quiet", "--collect", "--unit"}, args[:5])
 	assert.Equal(t, "agentdeck-tmux-agentdeck-test-session-1234abcd", args[5])
-	assert.Equal(t, []string{"tmux", "new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project",
+	assert.Equal(t, []string{"tmux", "-u", "new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project",
 		"-x", "173", "-y", "41"}, args[6:])
 }
 
@@ -3107,10 +3107,10 @@ func TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent(t *testing
 			// #1567/#1580: the command is delivered as SEPARATE argv tokens
 			// (bash, -c, COMMAND) so tmux execvp()s bash directly instead of
 			// wrapping the string through the server default-shell. With the
-			// #1694 birth size that is 13 args total:
-			// new-session -d -s NAME -c DIR -x COLS -y ROWS bash -c COMMAND.
-			require.Equal(t, 13, len(args),
-				"expected 13 args (new-session -d -s NAME -c DIR -x COLS -y ROWS bash -c COMMAND)")
+			// #1694 birth size and #1867 global -u that is 14 args total:
+			// -u new-session -d -s NAME -c DIR -x COLS -y ROWS bash -c COMMAND.
+			require.Equal(t, 14, len(args),
+				"expected 14 args (-u new-session -d -s NAME -c DIR -x COLS -y ROWS bash -c COMMAND)")
 
 			require.Equal(t, "bash", args[len(args)-3],
 				"command must be exec'd under bash for fish/zsh/bash compatibility")

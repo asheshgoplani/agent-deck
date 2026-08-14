@@ -183,7 +183,7 @@ func canResumeClaudeSession(inst *Instance, sessionID string) bool {
 		inst.logResumeRefusal(sessionID, decision.Reason)
 		return false
 	}
-	return sessionHasConversationData(inst, sessionID)
+	return conversationIsResumable(inst, sessionID)
 }
 
 // ResumeIdentityAllowed exposes the identity half of the chokepoint to

@@ -100,7 +100,7 @@ func OpenKeySender(socket, target string) (KeySender, error) {
 	// <socket>` selector, and the lint test in tmux_exec_lint_test.go
 	// enforces this. Plain `exec.Command("tmux", ...)` would silently
 	// defeat socket isolation when the user has opted in (#687).
-	cmd := tmuxExec(socket, "-C", "-u", "attach-session", "-t", target)
+	cmd := tmuxExec(socket, "-u", "-C", "attach-session", "-t", target)
 	// Own process group so Close can take down the whole subtree, matching
 	// ControlPipe. Without it a wedged child's descendants outlive Close.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

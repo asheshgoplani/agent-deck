@@ -141,12 +141,32 @@ func (a EnterAttribution) EnterWouldSubmitForeignDraft(c PaneCapture, strip func
 // composer to scope it to, yields no usable provenance and must not be
 // reported as clear.
 func ComposerHoldsPasteMarker(raw string, strip func(string) string) bool {
+	return ComposerPasteMarkerCount(raw, strip) > 0
+}
+
+// ComposerPasteMarkerCount is ComposerHoldsPasteMarker's count: how many
+// "[Pasted text …]" markers the VISIBLE COMPOSER holds, with the identical
+// scoping rule (and the identical whole-pane fallback when no composer can be
+// introspected at all, where the scrollback is the only thing there is to
+// look at).
+//
+// Both scopings matter to a caller measuring a delta across a send, and they
+// fix different halves of the same problem (issue #1855):
+//
+//   - COMPOSER scope separates "our paste collapsed in the composer, unsent"
+//     from "our paste collapsed in the transcript, submitted" — the latter
+//     being the normal shape of a SUCCESSFUL multi-line send, which a
+//     whole-pane look reports as unsubmitted text.
+//   - COUNTING keeps the signal alive on the panes where no composer can be
+//     scoped to and the fallback sees the whole pane, whose earlier markers
+//     never go away: one more than before is still this send's.
+func ComposerPasteMarkerCount(raw string, strip func(string) string) int {
 	strip = orIdentity(strip)
 	draft, visible := ComposerDraft(raw, strip)
 	if !visible {
-		return HasUnsentPastedPrompt(strip(raw))
+		return CountPasteMarkers(strip(raw))
 	}
-	return HasUnsentPastedPrompt(draft)
+	return CountPasteMarkers(draft)
 }
 
 func orIdentity(strip func(string) string) func(string) string {

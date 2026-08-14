@@ -106,7 +106,16 @@ func configDeclaresTelegram(cfg *UserConfig) bool {
 //
 // When multiple reasons fire, EnsureWorkerScratchConfigDir combines the
 // deny+allow lists.
+// Never true for an --ssh session (issue #1858): the scratch is a LOCAL tree —
+// a settings.json plus plugin symlinks under this machine's data dir — and the
+// remote spawn would be handed a path built from the LOCAL home. When the remote
+// user differs from the local one that path does not exist and is not creatable
+// there, so claude exits immediately (~250ms, the reported symptom). A remote
+// session runs under the remote host's own config dir.
 func (i *Instance) NeedsWorkerScratchConfigDir() bool {
+	if i != nil && i.IsSSH() {
+		return false
+	}
 	return needsScratchForTelegram(i) ||
 		needsScratchForExplicitPlugins(i) ||
 		needsScratchForGlobalChannelConflict(i) ||
@@ -752,6 +761,20 @@ func (i *Instance) CleanupWorkerScratchConfigDir() {
 // this the only place the swap can happen.
 func (i *Instance) applyWorkerScratchOverride(resolvedConfigDir string) string {
 	if i.WorkerScratchConfigDir == "" {
+		return resolvedConfigDir
+	}
+	// Issue #1858, defense in depth: the scratch path is built from the LOCAL
+	// home and the remote host cannot use it. NeedsWorkerScratchConfigDir
+	// already refuses to prepare one for a remote session; this makes the swap
+	// itself impossible even if the field was set some other way (an older
+	// state.db row, a profile migration).
+	if i.IsSSH() {
+		sessionLog.Info("worker_scratch_override_skipped_remote",
+			slog.String("instance_id", i.ID),
+			slog.String("ssh_host", i.SSHHost),
+			slog.String("resolved_config_dir", resolvedConfigDir),
+			slog.String("worker_scratch_config_dir", i.WorkerScratchConfigDir),
+		)
 		return resolvedConfigDir
 	}
 	sessionLog.Info("worker_scratch_override",

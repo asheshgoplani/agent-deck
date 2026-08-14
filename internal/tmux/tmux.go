@@ -1276,8 +1276,8 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	// target the same isolated server. Without this, the session would be
 	// minted on the default server while later Session.tmuxCmd calls —
 	// which DO carry -L — would probe the isolated server and find
-	// nothing. Empty SocketName preserves pre-v1.7.50 behavior exactly
-	// (buildInnerTmuxArgs returns the args unchanged).
+	// nothing. Empty SocketName emits no -L at all, so the spawn still lands
+	// on the user's default server exactly as it did pre-v1.7.50.
 	//
 	// #1694: -x/-y birth the window at the terminal agent-deck runs on
 	// (generous fallback when there is no TTY) so the tool's FIRST paint is
@@ -1285,6 +1285,12 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	// that fixes its layout on frame one stays clipped forever — see
 	// InitialWindowSize. Appended AFTER -c so the argv prefix that callers and
 	// fallback helpers key on is unchanged.
+	// buildInnerTmuxArgs also prepends tmux's global -u (#1867). That is
+	// unconditional and independent of the socket: it forces the CLIENT to
+	// UTF-8 so nothing agent-deck later reads back is "_"-mangled. It is
+	// spliced INSIDE the inner tmux argv here, after the literal "tmux" that
+	// systemd-run execs — a global flag placed before "tmux" would be
+	// systemd-run's, not tmux's.
 	cols, rows := InitialWindowSize()
 	tmuxArgs := buildInnerTmuxArgs(s.SocketName, "new-session", "-d", "-s", s.Name, "-c", workDir,
 		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
@@ -5365,10 +5371,14 @@ func (s *Session) SendNamedKey(key string) error {
 }
 
 // SendKeysAndEnter sends literal text followed by Enter as two separate tmux
-// calls with a short delay between them. The delay is necessary because tmux
-// 3.2+ wraps send-keys -l in bracketed paste sequences (\e[200~...\e[201~).
-// Without the delay, Enter arrives in the same PTY buffer as the paste-end
-// marker and gets swallowed by async TUI frameworks (Ink/Node.js, curses).
+// calls with a short delay between them. The delay gives async TUI frameworks
+// (Ink/Node.js, curses) time to finish processing the body — in particular a
+// bracketed-paste end marker (\e[201~), which `paste-buffer -p` emits for
+// multi-line and large payloads — before the Enter arrives in the PTY buffer;
+// without it the Enter lands in the same read as the paste-end marker and is
+// swallowed. (Measured on tmux 3.7b: `send-keys -l` is NOT wrapped in
+// bracketed paste, contrary to what this comment previously claimed — only
+// `paste-buffer -p` frames, and only when the pane app has enabled it.)
 func (s *Session) SendKeysAndEnter(keys string) error {
 	return s.sendKeysAndEnterToTarget(s.Name, keys)
 }
@@ -5418,23 +5428,42 @@ func (s *Session) sendKeysAndEnterToTarget(target, keys string) error {
 }
 
 // SendKeysChunked delivers content to the tmux session's active window.
-// Payloads at or below canonicalSafeBytes go out as a single `send-keys -l`,
-// exactly as before. Larger payloads take the paste transport (load-buffer
-// from stdin + paste-buffer) after the pane's line discipline has been
-// checked; see sendKeysChunkedToTarget and canonical_line.go.
+// Single-line payloads at or below canonicalSafeBytes go out as one
+// `send-keys -l`, exactly as before. Multi-line payloads of any size, and
+// larger single-line payloads, take the paste transport (load-buffer from
+// stdin + paste-buffer -p -r) — the only transport that preserves line
+// structure into a TUI composer; see sendKeysChunkedToTarget, pasteToTarget
+// and canonical_line.go.
 func (s *Session) SendKeysChunked(content string) error {
 	return s.sendKeysChunkedToTarget(s.Name, content)
 }
 
 // sendKeysChunkedToTarget is SendKeysChunked against an explicit tmux target.
 //
-// Three sizes of payload, three behaviors (issue #1793):
+// CR handling: CRLF and bare-CR line breaks are normalized to LF before the
+// fork (see the comment in the body), so "multi-line" below means "contains
+// any line break", not "contains LF".
 //
-//   - ≤ canonicalSafeBytes: one `send-keys -l`. Guaranteed to fit any line
-//     discipline, so nothing is inspected and nothing costs extra. This is
-//     the overwhelming majority of sends and is byte-for-byte unchanged.
+// The transport fork (issues #1793 + #1855):
 //
-//   - larger, pane readable and canonical: refuse with
+//   - single-line, ≤ canonicalSafeBytes: one `send-keys -l`. Guaranteed to
+//     fit any line discipline, so nothing is inspected and nothing costs
+//     extra. This is the overwhelming majority of sends and is byte-for-byte
+//     unchanged.
+//
+//   - multi-line, any size: the paste transport (issue #1855). A body with
+//     embedded LFs cannot go out as `send-keys -l`: the bytes arrive intact
+//     but UNFRAMED, and to a bracketed-paste TUI composer (Claude Code's
+//     Ink prompt) an unframed bare LF is a keystroke, not text — the
+//     composer drops it and the lines fuse. Only `paste-buffer -p -r`
+//     delivers both properties a multi-line body needs: literal LF (-r,
+//     without which tmux rewrites LF to CR, and CR is a submit key) and a
+//     bracketed-paste frame (-p) so the composer inserts the newlines as
+//     text. Short multi-line bodies skip the line-discipline probe below —
+//     every line of a ≤canonicalSafeBytes payload fits any canonical
+//     buffer, so there is nothing to refuse.
+//
+//   - single-line, larger, pane readable and canonical: refuse with
 //     *CanonicalOverflowError when the longest line does not fit the pane's
 //     canonical buffer. The kernel would discard the overflow AND the
 //     submitting Enter, so typing it would leave a half-line in the composer
@@ -5450,19 +5479,38 @@ func (s *Session) SendKeysChunked(content string) error {
 // to fall off the identical cliff (canonical_line.go). Only the refusal, and
 // the caller's post-send verification, make the outcome honest.
 func (s *Session) sendKeysChunkedToTarget(target, content string) error {
-	if len(content) <= canonicalSafeBytes {
+	// A CR is a line break to everything downstream of this transport — the
+	// tty's ICRNL default turns an incoming CR into NL before the line
+	// discipline sees it (the same reason longestMessageLineBytes counts \r
+	// as a line terminator) — and to a bracketed-paste composer a CR inside
+	// the frame is a submit key. paste-buffer's -r flag only stops tmux's
+	// own LF→CR rewrite; it never removes CRs the payload already carries.
+	// So normalize here, before the transport fork: a CRLF body (a
+	// Windows-authored --message-file) and a bare-CR body both become LF
+	// line breaks, which routes them through the framed paste below and
+	// keeps the delivered frame CR-free.
+	if strings.Contains(content, "\r") {
+		content = strings.ReplaceAll(content, "\r\n", "\n")
+		content = strings.ReplaceAll(content, "\r", "\n")
+	}
+	if len(content) <= canonicalSafeBytes && !strings.Contains(content, "\n") {
 		return s.sendKeysToTarget(target, content)
 	}
 
 	// Above the always-safe size the pane itself decides. An unreadable
 	// discipline is "unknown", not "unsafe": deliver and let the caller
-	// verify rather than refusing a send that would have worked.
-	if ld, err := s.paneLineDiscipline(target); err == nil && ld.Canonical && ld.MaxLine > 0 {
-		if longest := longestLineBytes(content); longest > ld.MaxLine-1 {
-			return &CanonicalOverflowError{
-				LineBytes:  longest,
-				LimitBytes: ld.MaxLine,
-				TTY:        ld.TTY,
+	// verify rather than refusing a send that would have worked. Payloads at
+	// or below canonicalSafeBytes (multi-line ones reaching here for the
+	// paste framing) are safe per line by construction and are never probed
+	// nor refused.
+	if len(content) > canonicalSafeBytes {
+		if ld, err := s.paneLineDiscipline(target); err == nil && ld.Canonical && ld.MaxLine > 0 {
+			if longest := longestLineBytes(content); longest > ld.MaxLine-1 {
+				return &CanonicalOverflowError{
+					LineBytes:  longest,
+					LimitBytes: ld.MaxLine,
+					TTY:        ld.TTY,
+				}
 			}
 		}
 	}
@@ -5478,6 +5526,19 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 	// concatenate it in the composer. An ambiguous transport failure is
 	// reported, never retried.
 	if errors.Is(err, errPasteNotStaged) {
+		// Degrading is deliberate — a tmux build whose paste path is down has
+		// no framing transport at all, and refusing would fail sends that a
+		// cooked-mode consumer would have taken fine. But the degradation must
+		// not be silent: for a multi-line body the fallback is the unframed
+		// `send-keys -l` transport issue #1855 is about, so the lines can fuse
+		// in a bracketed-paste composer exactly as originally reported. Log it
+		// so a recurrence of #1855 behind a green exit is attributable to this
+		// path instead of looking like the fix regressed.
+		statusLog.Warn("paste_transport_unavailable_degraded_to_send_keys",
+			slog.String("session", s.Name),
+			slog.Bool("multiline", strings.Contains(content, "\n")),
+			slog.Int("payload_bytes", len(content)),
+			slog.String("error", err.Error()))
 		return s.sendKeysChunkedFallback(target, content)
 	}
 	return err
@@ -5519,7 +5580,21 @@ func pasteBufferName() string {
 
 // pasteToTarget delivers content through tmux's paste path: `load-buffer -`
 // reads the body from this process's stdin (no argv size limit, no shell
-// quoting), then `paste-buffer -d` writes it to the pane and drops the buffer.
+// quoting), then `paste-buffer -p -r -d` writes it to the pane and drops the
+// buffer.
+//
+// The two paste flags are load-bearing for multi-line bodies (issue #1855),
+// measured on tmux 3.7b against a raw-mode pane with bracketed paste enabled:
+//
+//	-r  keeps embedded LFs as LF. Without it tmux rewrites every LF to CR,
+//	    and CR is a submit key — a multi-line message gets chopped into N
+//	    premature submissions.
+//	-p  frames the body in bracketed-paste markers (\e[200~…\e[201~) IF the
+//	    pane's application has requested bracketed paste. A TUI composer
+//	    only inserts an LF as text inside a paste frame; unframed it is a
+//	    keystroke and the lines fuse. Apps that never requested bracketed
+//	    paste (a cooked-mode shell) receive the bare body unchanged, so the
+//	    flag is safe for every consumer.
 func (s *Session) pasteToTarget(target, content string) error {
 	s.invalidateCache()
 
@@ -5536,7 +5611,7 @@ func (s *Session) pasteToTarget(target, content string) error {
 		return fmt.Errorf("load-buffer: %v: %w", err, errPasteNotStaged)
 	}
 
-	paste := keySenderExec(s.SocketName, "paste-buffer", "-d", "-b", buf, "-t", target)
+	paste := keySenderExec(s.SocketName, "paste-buffer", "-p", "-r", "-d", "-b", buf, "-t", target)
 	if err := runSendKeysBounded(paste); err != nil {
 		// -d never ran, so the staged buffer would linger. Drop it before
 		// falling back, otherwise the fallback's content and this stale copy

@@ -1,13 +1,18 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -112,6 +117,55 @@ var hermesHookEvents = []string{
 	"on_session_finalize",
 }
 
+var hermesLegacyHookEvents = []string{"pre_tool_call", "post_tool_call", "on_session_start", "on_session_end"}
+var hermesCalendarVersion = regexp.MustCompile(`(?:v)?(20[0-9]{2})\.([0-9]{1,2})\.([0-9]{1,2})`)
+var hermesVocabularyCache sync.Map // configured command -> bool
+
+// hermesExtendedHookVocabularySupported fails closed for unknown/old Hermes
+// versions: those installs receive only the legacy four keys, avoiding a
+// strict-schema config break. v2026.8.3 is the pinned vocabulary floor.
+var hermesExtendedHookVocabularySupported = func() bool {
+	if override := strings.TrimSpace(os.Getenv("AGENTDECK_HERMES_HOOK_VOCABULARY")); override != "" {
+		return override == "v2026.8.3" || override == "extended"
+	}
+	fields := strings.Fields(GetToolCommand("hermes"))
+	if len(fields) == 0 {
+		return false
+	}
+	cacheKey := strings.Join(fields, "\x00")
+	if cached, ok := hermesVocabularyCache.Load(cacheKey); ok {
+		return cached.(bool)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// #nosec G204 -- the executable and argv come from the operator-configured
+	// Hermes tool command and are passed directly without shell evaluation.
+	cmd := exec.CommandContext(ctx, fields[0], append(fields[1:], "--version")...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		hermesVocabularyCache.Store(cacheKey, false)
+		return false
+	}
+	m := hermesCalendarVersion.FindStringSubmatch(string(out))
+	if len(m) != 4 {
+		hermesVocabularyCache.Store(cacheKey, false)
+		return false
+	}
+	year, _ := strconv.Atoi(m[1])
+	month, _ := strconv.Atoi(m[2])
+	day, _ := strconv.Atoi(m[3])
+	supported := year > 2026 || (year == 2026 && (month > 8 || (month == 8 && day >= 3)))
+	hermesVocabularyCache.Store(cacheKey, supported)
+	return supported
+}
+
+func hermesHookEventsForInstall() []string {
+	if hermesExtendedHookVocabularySupported() {
+		return hermesHookEvents
+	}
+	return hermesLegacyHookEvents
+}
+
 // GetHermesConfigDir returns the Hermes config directory (~/.hermes).
 func GetHermesConfigDir() string {
 	home, err := os.UserHomeDir()
@@ -156,11 +210,12 @@ func InjectHermesHooks(configDir string) (bool, error) {
 		}
 	}
 
-	if hermesHooksAlreadyInstalled(raw) {
+	events := hermesHookEventsForInstall()
+	if hermesHooksAlreadyInstalled(raw, events) {
 		return false, nil
 	}
 
-	mergeHermesHookEntries(raw)
+	mergeHermesHookEntries(raw, events)
 
 	out, err := yaml.Marshal(raw)
 	if err != nil {
@@ -289,17 +344,17 @@ func CheckHermesHooksInstalled(configDir string) bool {
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return false
 	}
-	return hermesHooksAlreadyInstalled(raw)
+	return hermesHooksAlreadyInstalled(raw, hermesHookEventsForInstall())
 }
 
 // hermesHooksAlreadyInstalled checks that every required event has an
 // agent-deck hook entry.
-func hermesHooksAlreadyInstalled(raw map[string]interface{}) bool {
+func hermesHooksAlreadyInstalled(raw map[string]interface{}, events []string) bool {
 	hooksSection, _ := raw["hooks"].(map[string]interface{})
 	if hooksSection == nil {
 		return false
 	}
-	for _, event := range hermesHookEvents {
+	for _, event := range events {
 		eventHooks, _ := hooksSection[event].([]interface{})
 		found := false
 		for _, h := range eventHooks {
@@ -321,13 +376,13 @@ func hermesHooksAlreadyInstalled(raw map[string]interface{}) bool {
 }
 
 // mergeHermesHookEntries appends agent-deck hook entries for any missing events.
-func mergeHermesHookEntries(raw map[string]interface{}) {
+func mergeHermesHookEntries(raw map[string]interface{}, events []string) {
 	hooksSection, _ := raw["hooks"].(map[string]interface{})
 	if hooksSection == nil {
 		hooksSection = make(map[string]interface{})
 	}
 
-	for _, event := range hermesHookEvents {
+	for _, event := range events {
 		eventHooks, _ := hooksSection[event].([]interface{})
 		alreadyPresent := false
 		for _, h := range eventHooks {

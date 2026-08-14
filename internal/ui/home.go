@@ -371,6 +371,19 @@ type Home struct {
 	// Window toggle state — sessions with collapsed window sub-items
 	windowsCollapsed map[string]bool // sessionID -> true if windows hidden
 
+	// Remote tree fold state — headers the user collapsed, keyed by Item.Path
+	// ("remotes/<name>" or "remotes/<name>/<group>"). Remote groups are
+	// synthetic UI buckets, not rows in groupTree, so they need their own
+	// store rather than groupTree's expanded flags.
+	remoteGroupsCollapsed map[string]bool
+
+	// Manual order of remote session rows (#1875): remote -> group path ->
+	// session IDs. Remote rows are not Instances in groupTree, so shift+up/down
+	// cannot move them there; this local overlay carries the order instead and
+	// is persisted in ui_state (see applyRemoteSessionOrder for the drift
+	// rules and remoteOrder for why the scoping is nested).
+	remoteSessionOrder remoteOrder
+
 	// Worktree dirty status cache (lazy, 10s TTL)
 	worktreeDirtyCache   map[string]bool      // sessionID -> isDirty
 	worktreeDirtyCacheTs map[string]time.Time // sessionID -> cache timestamp
@@ -722,6 +735,17 @@ type uiState struct {
 	PreviewMode     int    `json:"preview_mode"`
 	StatusFilter    string `json:"status_filter,omitempty"`
 	GroupViewMode   int    `json:"group_view_mode,omitempty"`
+	// Collapsed remote headers, keyed like Item.Path. Local group folds live in
+	// groupTree, which is persisted separately by saveGroupState; remote groups
+	// are synthetic UI rows and have no home there.
+	RemoteGroupsCollapsed []string `json:"remote_groups_collapsed,omitempty"`
+
+	// RemoteSessionOrder is the manual order of remote session rows (#1875):
+	// remote -> group path -> session IDs. It rides in ui_state because it is
+	// a view preference of this machine, exactly like the preview mode and
+	// status filter above. Nested rather than flat-keyed so a remote name or
+	// group path containing "/" cannot alias another bucket (see remoteOrder).
+	RemoteSessionOrder map[string]map[string][]string `json:"remote_session_order,omitempty"`
 }
 
 type selectedItemIdentity struct {
@@ -1004,6 +1028,17 @@ func (h *Home) collapseOrNavUp() {
 			}
 		}
 		collapsed = true
+	} else if item.Type == session.ItemTypeRemoteGroup {
+		// Fold shut if open; if already shut, walk to the parent header so the
+		// key keeps behaving like "collapse or go up" on the remote side too.
+		if !h.setRemoteGroupCollapsed(item.RemoteName, item.Path, true) {
+			if parent := remoteGroupParentPath(item.Path); parent != "" {
+				h.moveCursorToRemoteGroup(item.RemoteName, parent)
+			}
+		}
+	} else if item.Type == session.ItemTypeRemoteSession {
+		// Item.Path is the owning group header's path.
+		h.setRemoteGroupCollapsed(item.RemoteName, item.Path, true)
 	}
 	if collapsed {
 		h.saveGroupState()
@@ -1419,6 +1454,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		creatingSessions:          make(map[string]*CreatingSession),
 		lastLogActivity:           make(map[string]time.Time),
 		windowsCollapsed:          make(map[string]bool),
+		remoteGroupsCollapsed:     make(map[string]bool),
+		remoteSessionOrder:        make(remoteOrder),
 		worktreeDirtyCache:        make(map[string]bool),
 		worktreeDirtyCacheTs:      make(map[string]time.Time),
 		statusTrigger:             make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
@@ -1483,7 +1520,11 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// Interval-hook runner. Constructed unconditionally (cheap); Start() is a
 	// no-op when no [interval_hooks] are configured, and hooks are re-read from
 	// config each tick so they can be added/removed without a restart.
+	// Registered globally so the signal-exit path in cmd/agent-deck/main.go
+	// can stop in-flight hook runs before os.Exit (#1829); the in-app quit
+	// path stops it via performFinalShutdown.
 	h.intervalHookRunner = intervalhook.New(uiLog)
+	intervalhook.SetGlobal(h.intervalHookRunner)
 
 	// Keep settings panel profile-aware so profile overrides (e.g., Claude config dir)
 	// are displayed and edited in the correct scope.
@@ -2222,6 +2263,65 @@ func (h *Home) moveCursorToGroup(path string) {
 	}
 }
 
+// moveCursorToRemoteGroup parks the cursor on a remote header after a rebuild.
+// Remote headers are identified by RemoteName+Path, the same pair that
+// cursor-identity restore matches on.
+func (h *Home) moveCursorToRemoteGroup(remoteName, path string) {
+	for i, fi := range h.flatItems {
+		if fi.Type == session.ItemTypeRemoteGroup && fi.RemoteName == remoteName && fi.Path == path {
+			h.cursor = i
+			return
+		}
+	}
+}
+
+// isRemoteGroupCollapsed reports whether a remote header is folded shut.
+func (h *Home) isRemoteGroupCollapsed(path string) bool {
+	return h.remoteGroupsCollapsed[path]
+}
+
+// setRemoteGroupCollapsed folds a remote header open or shut, rebuilds the tree
+// and keeps the cursor on the header the user acted on. Returns false when the
+// state was already what was asked for, so callers can fall through to
+// navigation instead of repainting for nothing.
+func (h *Home) setRemoteGroupCollapsed(remoteName, path string, collapsed bool) bool {
+	if h.remoteGroupsCollapsed == nil {
+		h.remoteGroupsCollapsed = make(map[string]bool)
+	}
+	if h.remoteGroupsCollapsed[path] == collapsed {
+		return false
+	}
+	if collapsed {
+		h.remoteGroupsCollapsed[path] = true
+	} else {
+		delete(h.remoteGroupsCollapsed, path)
+	}
+	h.rebuildFlatItems()
+	h.moveCursorToRemoteGroup(remoteName, path)
+	h.saveUIState()
+	return true
+}
+
+// toggleRemoteGroup flips a remote header's fold state.
+func (h *Home) toggleRemoteGroup(remoteName, path string) {
+	h.setRemoteGroupCollapsed(remoteName, path, !h.remoteGroupsCollapsed[path])
+}
+
+// remoteGroupParentPath returns the header one level up from a remote path, or
+// "" for the Level-0 remote root. "remotes/<name>/a/b" -> "remotes/<name>/a",
+// "remotes/<name>/a" -> "remotes/<name>".
+func remoteGroupParentPath(path string) string {
+	idx := strings.LastIndex(path, "/")
+	if idx < 0 {
+		return ""
+	}
+	parent := path[:idx]
+	if parent == "remotes" {
+		return ""
+	}
+	return parent
+}
+
 func (h *Home) captureSelectedItemIdentity() selectedItemIdentity {
 	if h.cursor < 0 || h.cursor >= len(h.flatItems) {
 		return selectedItemIdentity{windowIndex: -1}
@@ -2485,7 +2585,8 @@ func (h *Home) rebuildFlatItems() {
 		for _, remoteName := range remoteNames {
 			// #1553: nest each remote's sessions under their Group paths
 			// instead of dumping them flat at Level 1.
-			h.flatItems = append(h.flatItems, buildRemoteFlatItems(remoteName, remotes[remoteName])...)
+			// #1875: apply the user's manual row order for this remote.
+			h.flatItems = append(h.flatItems, buildRemoteFlatItemsOrdered(remoteName, remotes[remoteName], h.remoteGroupsCollapsed, h.remoteSessionOrder.forRemote(remoteName))...)
 		}
 	}
 
@@ -8144,6 +8245,8 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 				h.saveGroupState()
 				h.noteGroupToggled(groupPath)
+			} else if item.Type == session.ItemTypeRemoteGroup {
+				h.toggleRemoteGroup(item.RemoteName, item.Path)
 			}
 			return h, nil
 		}
@@ -8521,6 +8624,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				h.saveGroupState()
 				h.noteGroupToggled(groupPath)
+			} else if item.Type == session.ItemTypeRemoteGroup {
+				// Enter on a remote header folds it, mirroring local groups.
+				// There is nothing to attach to on a header row.
+				h.toggleRemoteGroup(item.RemoteName, item.Path)
 			} else if item.Type == session.ItemTypeWindow {
 				// Find parent session by WindowSessionID
 				var parentInst *session.Instance
@@ -8583,6 +8690,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				h.saveGroupState()
 				h.noteGroupToggled(groupPath)
+			} else if item.Type == session.ItemTypeRemoteGroup {
+				h.toggleRemoteGroup(item.RemoteName, item.Path)
 			} else if item.Type == session.ItemTypeSession && h.sessionHasWindows(item) {
 				sid := item.Session.ID
 				h.windowsCollapsed[sid] = !h.windowsCollapsed[sid]
@@ -8602,6 +8711,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			switch item.Type {
+			case session.ItemTypeRemoteSession, session.ItemTypeRemoteGroup:
+				// #1875: remote rows are not Instances in groupTree, so they
+				// carry a local order overlay instead. Returning here also
+				// skips the forceSaveInstances below, which has nothing to do
+				// with a remote reorder.
+				h.moveRemoteItem(item, -1)
+				return h, nil
 			case session.ItemTypeGroup:
 				h.groupTree.MoveGroupUp(item.Path)
 				h.rebuildFlatItems()
@@ -8635,6 +8751,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			switch item.Type {
+			case session.ItemTypeRemoteSession, session.ItemTypeRemoteGroup:
+				// #1875 — see the shift+up twin above.
+				h.moveRemoteItem(item, 1)
+				return h, nil
 			case session.ItemTypeGroup:
 				h.groupTree.MoveGroupDown(item.Path)
 				h.rebuildFlatItems()
@@ -10220,7 +10340,11 @@ func conductorComposerGuardOptions() send.ComposerGuardOptions {
 // to prevent; the saved draft is logged instead.
 func deliverToConductorPaneGuarded(p guardableConductorPane, msg string, guardOpts send.ComposerGuardOptions, maxChecks int, checkDelay time.Duration) error {
 	guard := send.GuardComposerDraft(p, guardOpts)
-	err := deliverToConductorPaneTuned(p, msg, maxChecks, checkDelay)
+	// guard.ComposerPasteMarkerFree is the #1777 provenance the verify loop
+	// needs: the guard's pre-send capture saw a composer with no
+	// "[Pasted text …]" marker, so a marker seen during verification is the
+	// collapsed rendering of OUR framed multi-line payload (issue #1855).
+	err := deliverToConductorPaneAttributed(p, msg, guard.ComposerPasteMarkerFree, maxChecks, checkDelay)
 	if guard.SavedDraft != "" {
 		if err == nil {
 			// Delivery confirmed: type the operator draft back. If the
@@ -10263,12 +10387,26 @@ type guardableConductorPane interface {
 // has since gone idle) is not spammed with empty submissions.
 const blindEnterCap = 3
 
-// deliverToConductorPaneTuned is deliverToConductorPane with the verify budget
-// exposed for tests; production callers use the default budget (~10s).
+// deliverToConductorPaneTuned is deliverToConductorPaneAttributed without
+// pre-send provenance: a paste marker in the composer counts as foreign —
+// never nudged, never read as submitted. Kept for callers with no guard
+// capture to attribute against.
 func deliverToConductorPaneTuned(p conductorPane, msg string, maxChecks int, checkDelay time.Duration) error {
+	return deliverToConductorPaneAttributed(p, msg, false, maxChecks, checkDelay)
+}
+
+// deliverToConductorPaneAttributed is deliverToConductorPane with the verify
+// budget exposed for tests and the #1777 paste-marker provenance explicit;
+// production callers use the default budget (~10s). ownPasteMarker carries
+// the caller's pre-send observation that the composer held no "[Pasted text …]"
+// marker, which is what makes a marker seen during verification attributable
+// to this delivery's own bracketed-paste collapse (issue #1855) rather than
+// to a foreign paste parked in the composer.
+func deliverToConductorPaneAttributed(p conductorPane, msg string, ownPasteMarker bool, maxChecks int, checkDelay time.Duration) error {
 	if err := p.SendKeysAndEnter(msg); err != nil {
 		return err
 	}
+	attrib := send.EnterAttribution{Message: msg, OwnPasteMarker: ownPasteMarker}
 	sawUnsent := false
 	blindEnters := 0
 	for i := 0; i < maxChecks; i++ {
@@ -10297,6 +10435,21 @@ func deliverToConductorPaneTuned(p conductorPane, msg string, maxChecks int, che
 			sawUnsent = true
 			if err := p.SendEnter(); err != nil {
 				return fmt.Errorf("retry enter: %w", err)
+			}
+		case send.ComposerHoldsPasteMarker(raw, tmux.StripANSI):
+			// The composer holds a "[Pasted text …]" marker instead of the
+			// message body. Since the transport frames every multi-line
+			// payload as a bracketed paste (issue #1855), this is the NORMAL
+			// delivered-but-unsubmitted shape of our own send — but only
+			// provenance can say so, because the marker hides the content.
+			// NudgeEnter presses Enter only when the collapse is attributable
+			// (ownPasteMarker, or a pane with no composer introspection);
+			// otherwise it withholds, this case confirms nothing, and the
+			// loop times out honestly instead of the old behavior of falling
+			// through to "a composer is rendered without our message" and
+			// reporting an unsent message as submitted.
+			if attrib.NudgeEnter(p, send.Captured(raw), tmux.StripANSI) {
+				sawUnsent = true
 			}
 		case sawUnsent || send.HasCurrentComposerPrompt(content):
 			// The composer previously held the message and is now clear, or a
@@ -11291,19 +11444,47 @@ func (h *Home) saveGroupState() {
 }
 
 // saveUIState persists cursor position, preview mode, and status filter to SQLite metadata.
+// Failures are logged only; use saveUIStateErr when the caller has to tell the
+// user that their action did not stick.
 func (h *Home) saveUIState() {
+	_ = h.saveUIStateErr()
+}
+
+// saveUIStateErr is saveUIState with the write outcome returned.
+//
+// The periodic and incidental callers do not care — a dropped autosave is
+// recoverable on the next tick. An explicit user action does care: #1875 exists
+// because a remote row silently swallowed a keystroke, and "the rows moved but
+// the order was never written" is the same lie one layer down. A nil storage or
+// DB is not a failure: that is the headless/no-persistence configuration, not a
+// write that went wrong.
+func (h *Home) saveUIStateErr() error {
 	if h.storage == nil {
-		return
+		return nil
 	}
 	db := h.storage.GetDB()
 	if db == nil {
-		return
+		return nil
 	}
 
 	state := uiState{
-		PreviewMode:   int(h.previewMode),
-		StatusFilter:  string(h.statusFilter),
-		GroupViewMode: int(h.groupViewMode),
+		PreviewMode:        int(h.previewMode),
+		StatusFilter:       string(h.statusFilter),
+		GroupViewMode:      int(h.groupViewMode),
+		RemoteSessionOrder: h.remoteSessionOrder,
+	}
+
+	// Sorted so an unchanged fold state marshals byte-identically and doesn't
+	// churn the metadata row on every save.
+	if len(h.remoteGroupsCollapsed) > 0 {
+		paths := make([]string, 0, len(h.remoteGroupsCollapsed))
+		for path, isCollapsed := range h.remoteGroupsCollapsed {
+			if isCollapsed {
+				paths = append(paths, path)
+			}
+		}
+		sort.Strings(paths)
+		state.RemoteGroupsCollapsed = paths
 	}
 
 	// Capture cursor position
@@ -11324,11 +11505,13 @@ func (h *Home) saveUIState() {
 	data, err := json.Marshal(state)
 	if err != nil {
 		uiLog.Warn("save_ui_state_marshal_failed", slog.String("error", err.Error()))
-		return
+		return err
 	}
 	if err := db.SetMeta("ui_state", string(data)); err != nil {
 		uiLog.Warn("save_ui_state_failed", slog.String("error", err.Error()))
+		return err
 	}
+	return nil
 }
 
 // loadUIState reads persisted UI state from SQLite metadata.
@@ -11354,12 +11537,33 @@ func (h *Home) loadUIState() {
 		return
 	}
 
+	// Remote fold state applies immediately: rebuildFlatItems reads the map on
+	// the first paint, before any remote sessions have even been fetched.
+	if h.remoteGroupsCollapsed == nil {
+		h.remoteGroupsCollapsed = make(map[string]bool)
+	}
+	for _, path := range state.RemoteGroupsCollapsed {
+		h.remoteGroupsCollapsed[path] = true
+	}
+
 	// Apply preview mode, status filter, and group view mode immediately
 	h.previewMode = PreviewMode(state.PreviewMode)
 	h.statusFilter = session.Status(state.StatusFilter)
 	h.groupViewMode = session.GroupViewMode(state.GroupViewMode)
 	if h.groupViewMode < session.GroupViewNormal || h.groupViewMode >= session.GroupViewModeCount {
 		h.groupViewMode = session.GroupViewNormal
+	}
+
+	// #1875: restore the manual remote row order. Entries for remotes that no
+	// longer exist are harmless — a bucket key nobody builds is never read —
+	// and stale session IDs inside a live bucket are skipped when applied.
+	h.remoteSessionOrder = make(remoteOrder, len(state.RemoteSessionOrder))
+	for remoteName, groups := range state.RemoteSessionOrder {
+		for groupPath, ids := range groups {
+			if len(ids) > 0 {
+				h.remoteSessionOrder.set(remoteName, groupPath, ids)
+			}
+		}
 	}
 
 	// Defer cursor restoration until flatItems are populated
@@ -13560,6 +13764,111 @@ func (a attachWindowCmd) Run() error {
 func (a attachWindowCmd) SetStdin(r io.Reader)  {}
 func (a attachWindowCmd) SetStdout(w io.Writer) {}
 func (a attachWindowCmd) SetStderr(w io.Writer) {}
+
+// moveRemoteItem handles shift+up/down (and the +/-/K/J aliases) on a remote
+// row (#1875). delta is -1 for up and +1 for down.
+//
+// The move rewrites this bucket's entry in the local order overlay and saves
+// it; nothing is sent to the remote. Every path through here either changes
+// the order or reports why it could not, because a silent no-op is the bug
+// being fixed — a remote row that swallows the keystroke is indistinguishable
+// from a stuck key.
+//
+// Remote GROUP headers deliberately do not reorder. buildRemoteFlatItems emits
+// them by walking the bucket paths in lexicographic order, which is what makes
+// a parent header land immediately before its descendants and lets the
+// intermediate headers of "a/b/c" be synthesized on the fly; a manual group
+// order would have to replace that walk with a real tree. Remote groups also
+// have no identity of their own — they exist only as the Group strings of the
+// sessions inside them, so a group with no sessions cannot even be addressed.
+// The header therefore says so instead of going quiet.
+func (h *Home) moveRemoteItem(item session.Item, delta int) {
+	direction := "up"
+	edge := "first"
+	if delta > 0 {
+		direction = "down"
+		edge = "last"
+	}
+
+	if item.Type == session.ItemTypeRemoteGroup {
+		h.setError(fmt.Errorf("cannot move %s: remote group rows are ordered by name — reorder the sessions inside instead", direction))
+		return
+	}
+	if item.RemoteSession == nil || item.RemoteName == "" {
+		h.setError(fmt.Errorf("cannot move %s: this remote session row is malformed", direction))
+		return
+	}
+	moved := item.RemoteSession
+	if moved.ID == "" {
+		h.setError(fmt.Errorf("cannot move '%s' %s: %s did not report an id for it", moved.Title, direction, item.RemoteName))
+		return
+	}
+
+	// The bucket is the one buildRemoteFlatItems put this row in: same remote,
+	// same normalized group path.
+	groupPath := normalizeRemoteGroupPath(moved.Group)
+
+	h.remoteSessionsMu.RLock()
+	fetched := h.remoteSessions[item.RemoteName]
+	natural := make([]string, 0, len(fetched))
+	for i := range fetched {
+		if normalizeRemoteGroupPath(fetched[i].Group) == groupPath {
+			natural = append(natural, fetched[i].ID)
+		}
+	}
+	h.remoteSessionsMu.RUnlock()
+
+	// A bucket whose IDs are not unique cannot be reordered at all:
+	// orderRemoteBucket refuses to permute it, because the slot mapping is no
+	// longer 1:1 and a row could be dropped or doubled. Storing an order for it
+	// would change nothing on screen — a no-op dressed as success, which is the
+	// bug this issue is about. It also makes the row itself ambiguous: two rows
+	// answering to the same ID cannot be told apart. Report it instead.
+	if dup, ok := firstDuplicateID(natural); ok {
+		h.setError(fmt.Errorf("cannot move '%s' %s: %s lists more than one session with id %q in this group, so their order cannot be tracked", moved.Title, direction, item.RemoteName, dup))
+		return
+	}
+
+	// Start from what is actually on screen — the fetched list with the
+	// current overlay already applied — so a move is always relative to what
+	// the user sees, whatever has drifted since the overlay was written.
+	current := applyRemoteSessionOrder(natural, h.remoteSessionOrder.forRemote(item.RemoteName)[groupPath])
+	pos := -1
+	for i, id := range current {
+		if id == moved.ID {
+			pos = i
+			break
+		}
+	}
+	if pos < 0 {
+		h.setError(fmt.Errorf("cannot move '%s' %s: it is no longer listed on %s", moved.Title, direction, item.RemoteName))
+		return
+	}
+
+	target := pos + delta
+	if target < 0 || target >= len(current) {
+		h.setError(fmt.Errorf("'%s' is already %s in its group on %s", moved.Title, edge, item.RemoteName))
+		return
+	}
+	current[pos], current[target] = current[target], current[pos]
+
+	// current lists exactly the sessions present in this bucket right now, so
+	// storing it whole keeps the overlay complete and the next move stable.
+	if h.remoteSessionOrder == nil {
+		h.remoteSessionOrder = make(remoteOrder)
+	}
+	h.remoteSessionOrder.set(item.RemoteName, groupPath, current)
+
+	h.clearError()
+	h.rebuildFlatItemsPreservingSelection(h.captureSelectedItemIdentity())
+
+	// A move that cannot be written is a move that will be gone at the next
+	// launch. Say so: the rows visibly moved, so staying quiet here would be
+	// the same silent lie this issue is about, one layer down.
+	if err := h.saveUIStateErr(); err != nil {
+		h.setError(fmt.Errorf("moved '%s' %s, but the order could not be saved and will not survive a restart: %w", moved.Title, direction, err))
+	}
+}
 
 // attachRemoteSession attaches to a remote session via SSH, suspending the TUI.
 func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
@@ -16562,7 +16871,7 @@ func (h *Home) renderSessionItem(
 			hookStatus = h.hookWatcher.GetHookStatus(inst.ID)
 		}
 		confirmedTs, confirmedObserved := inst.LastObservedActivity()
-		ts := pickBadgeTime(inst.CreatedAt, inst.LastStartedAt, hookStatus, confirmedTs, confirmedObserved)
+		ts := sessionActivityTime(inst.CreatedAt, inst.LastStartedAt, inst.LastActivityAt(), inst.LastAccessedAt, confirmedTs, confirmedObserved, hookStatus)
 		timestampBadge = tsStyle.Render(" " + formatRelativeTime(ts))
 	}
 
@@ -16850,6 +17159,9 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true) // yellow
 	countStyle := DimStyle
 	expandIcon := "▾"
+	if h.isRemoteGroupCollapsed(item.Path) {
+		expandIcon = "▸" // same glyph pair the local group rows use
+	}
 	if selected {
 		nameStyle = GroupNameSelStyle
 		countStyle = GroupCountSelStyle
@@ -17510,11 +17822,17 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	b.WriteString(infoStyle.Render("📁 " + pathStr))
 	b.WriteString("\n")
 
-	// Activity time - shows when session was last active. Uses the display-
-	// oriented accessor so sessions with no confirmed activity (error/idle/
-	// stopped) fall back to the persisted last-accessed time — matching the
-	// web — instead of leaking the tmux tracker's ~load-time seed.
-	activityTime := selected.DisplayLastActivityTime()
+	// Activity time - shows when session was last active. Composed with
+	// sessionActivityTime — the SAME formula as the row badge (issue #1846:
+	// the preview used to read DisplayLastActivityTime while the badge used
+	// pickBadgeTime, so the two surfaces showed different ages for the same
+	// session; both were stale once the underlying evidence was destroyed).
+	var previewHookStatus *session.HookStatus
+	if h.hookWatcher != nil {
+		previewHookStatus = h.hookWatcher.GetHookStatus(selected.ID)
+	}
+	confirmedTs, confirmedObserved := selected.LastObservedActivity()
+	activityTime := sessionActivityTime(selected.CreatedAt, selected.LastStartedAt, selected.LastActivityAt(), selected.LastAccessedAt, confirmedTs, confirmedObserved, previewHookStatus)
 	activityStr := formatRelativeTime(activityTime)
 	if selectedStatus == session.StatusRunning {
 		activityStr = "active now"
@@ -18773,14 +19091,19 @@ func truncatePath(path string, maxLen int) string {
 	return string(runes[:startLen]) + "..." + string(runes[len(runes)-endLen:])
 }
 
-// pickBadgeTime returns the most recent of the four signals the session-row
+// pickBadgeTime returns the most recent of the five signals the session-row
 // timestamp badge layers over, ignoring any signal that is unset / not
-// observed. Pure function — kept out of renderSessionItem so the 4-layer
+// observed. Pure function — kept out of renderSessionItem so the 5-layer
 // composition can be unit-tested without faking renderer dependencies.
 //
+// lastActivityAt is the durable record from tool_data.last_activity_at
+// (issue #1846): hook-evidenced activity that survives attach-return
+// deleting the hook file and TUI restarts losing the tmux tracker.
+//
 // LastAccessedAt is deliberately not a parameter: peeking at a quiet
-// session isn't an "update".
-func pickBadgeTime(createdAt, lastStartedAt time.Time, hookEvent *session.HookStatus, confirmedActivity time.Time, confirmedObserved bool) time.Time {
+// session isn't an "update". (sessionActivityTime layers it in as a
+// fallback when no activity evidence exists at all.)
+func pickBadgeTime(createdAt, lastStartedAt time.Time, hookEvent *session.HookStatus, lastActivityAt time.Time, confirmedActivity time.Time, confirmedObserved bool) time.Time {
 	ts := createdAt
 	if lastStartedAt.After(ts) {
 		ts = lastStartedAt
@@ -18788,8 +19111,28 @@ func pickBadgeTime(createdAt, lastStartedAt time.Time, hookEvent *session.HookSt
 	if hookEvent != nil && hookEvent.UpdatedAt.After(ts) {
 		ts = hookEvent.UpdatedAt
 	}
+	if lastActivityAt.After(ts) {
+		ts = lastActivityAt
+	}
 	if confirmedObserved && confirmedActivity.After(ts) {
 		ts = confirmedActivity
+	}
+	return ts
+}
+
+// sessionActivityTime is the single "last activity" composition BOTH the
+// session-row badge and the preview's "⏱" line render from (issue #1846:
+// the two surfaces used different formulas over different stale fallbacks
+// and showed two different wrong ages for the same session).
+//
+// Layering: pickBadgeTime's activity evidence wins outright; LastAccessedAt
+// participates only as a fallback when no evidence beyond CreatedAt exists —
+// a TUI attach is a better floor than creation time, but a peek at a quiet
+// session must never override recorded activity.
+func sessionActivityTime(createdAt, lastStartedAt, lastActivityAt, lastAccessedAt, confirmedActivity time.Time, confirmedObserved bool, hookEvent *session.HookStatus) time.Time {
+	ts := pickBadgeTime(createdAt, lastStartedAt, hookEvent, lastActivityAt, confirmedActivity, confirmedObserved)
+	if ts.Equal(createdAt) && lastAccessedAt.After(ts) {
+		return lastAccessedAt
 	}
 	return ts
 }

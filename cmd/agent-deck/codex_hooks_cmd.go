@@ -8,6 +8,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 const codexNotifyMarkerBegin = "# BEGIN AGENTDECK CODEX NOTIFY"
@@ -27,6 +31,8 @@ type codexNotifyPayload struct {
 	SessionID    string `json:"session_id"`
 	ThreadID     string `json:"thread_id"`
 	ThreadIDDash string `json:"thread-id"`
+	TurnID       string `json:"turn_id"`
+	TurnIDDash   string `json:"turn-id"`
 	Params       map[string]json.RawMessage
 	Payload      map[string]json.RawMessage
 }
@@ -89,10 +95,10 @@ func decodeStringField(raw map[string]json.RawMessage, keys ...string) string {
 	return ""
 }
 
-func parseCodexNotifyPayload(data []byte) (event, sessionID string) {
+func parseCodexNotifyPayload(data []byte) (event, sessionID, turnID string) {
 	var payload codexNotifyPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return "", ""
+		return "", "", ""
 	}
 
 	event = strings.TrimSpace(payload.Type)
@@ -122,8 +128,18 @@ func parseCodexNotifyPayload(data []byte) (event, sessionID string) {
 	if sessionID == "" {
 		sessionID = decodeStringField(payload.Payload, "session_id", "thread_id", "thread-id", "id")
 	}
+	turnID = strings.TrimSpace(payload.TurnID)
+	if turnID == "" {
+		turnID = strings.TrimSpace(payload.TurnIDDash)
+	}
+	if turnID == "" {
+		turnID = decodeStringField(payload.Params, "turn_id", "turn-id")
+	}
+	if turnID == "" {
+		turnID = decodeStringField(payload.Payload, "turn_id", "turn-id")
+	}
 
-	return event, sessionID
+	return event, sessionID, turnID
 }
 
 // handleCodexNotify processes Codex notify payloads.
@@ -164,8 +180,9 @@ func handleCodexNotify() {
 
 	event := ""
 	sessionID := ""
+	turnID := ""
 	if len(data) > 0 {
-		event, sessionID = parseCodexNotifyPayload(data)
+		event, sessionID, turnID = parseCodexNotifyPayload(data)
 		if event == "" {
 			trimmed := strings.TrimSpace(string(data))
 			if !strings.HasPrefix(trimmed, "{") {
@@ -185,7 +202,76 @@ func handleCodexNotify() {
 		sessionID = strings.TrimSpace(os.Getenv("CODEX_SESSION_ID"))
 	}
 
-	writeHookStatus(instanceID, status, sessionID, event, "")
+	writeCodexHookStatus(instanceID, status, sessionID, event, turnID)
+}
+
+func codexTurnEdge(event string) (started, completed bool) {
+	canon := strings.NewReplacer(".", "/", "-", "/", "_", "/").Replace(strings.ToLower(strings.TrimSpace(event)))
+	if !strings.Contains(canon, "turn") {
+		return false, false
+	}
+	return strings.Contains(canon, "start"), strings.Contains(canon, "complete") ||
+		strings.Contains(canon, "fail") || strings.Contains(canon, "abort") || strings.Contains(canon, "cancel")
+}
+
+// writeCodexHookStatus retains both edges of the current turn under a file
+// lock. Notify invocations are separate processes and can overlap; serializing
+// the read/modify/write makes the generation proof deterministic.
+func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs ...string) {
+	if instanceID == "" || status == "" {
+		return
+	}
+	hooksDir := getHooksDir()
+	if err := os.MkdirAll(hooksDir, 0700); err != nil {
+		return
+	}
+	base := filepath.Base(instanceID)
+	lock, err := os.OpenFile(filepath.Join(hooksDir, base+".codex.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
+
+	path := filepath.Join(hooksDir, base+".json")
+	var prior hookStatusFile
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &prior)
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID != "" {
+		session.WriteHookSessionAnchor(instanceID, sessionID)
+	}
+	evidenceSessionID := sessionID
+	if evidenceSessionID == "" {
+		evidenceSessionID = session.ReadHookSessionAnchor(instanceID)
+	}
+	started, completed := codexTurnEdge(event)
+	turnID := ""
+	if len(turnIDs) > 0 {
+		turnID = strings.TrimSpace(turnIDs[0])
+	}
+	if started && evidenceSessionID != "" && turnID != "" {
+		prior.CodexStartedGeneration = fmt.Sprintf("%s:%s", evidenceSessionID, turnID)
+		prior.CodexStartedSessionID = evidenceSessionID
+		prior.CodexCompletedGeneration = ""
+		prior.CodexCompletedSessionID = ""
+	}
+	completionGeneration := ""
+	if evidenceSessionID != "" && turnID != "" {
+		completionGeneration = fmt.Sprintf("%s:%s", evidenceSessionID, turnID)
+	}
+	if completed && completionGeneration != "" && completionGeneration == prior.CodexStartedGeneration && evidenceSessionID == prior.CodexStartedSessionID {
+		prior.CodexCompletedGeneration = completionGeneration
+		prior.CodexCompletedSessionID = evidenceSessionID
+	}
+	prior.Status, prior.SessionID, prior.Event = status, sessionID, event
+	prior.Timestamp = time.Now().Unix()
+	prior.DoneStatus, prior.DoneSummary, prior.TranscriptPath, prior.Cwd = "", "", "", ""
+	writeHookStatusFile(instanceID, prior, false)
 }
 
 func handleCodexHooks(args []string) {

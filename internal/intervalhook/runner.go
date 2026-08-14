@@ -23,8 +23,10 @@
 package intervalhook
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -43,14 +45,50 @@ const defaultRescanInterval = 15 * time.Second
 
 // waitDelay bounds how long we wait for a hook's pipes to close after its
 // context is cancelled (i.e. after the timeout kill). Without this, a command
-// that forks a daemon holding stdout/stderr open would block CombinedOutput
+// that forks a daemon holding stdout/stderr open would block the run
 // forever even after the parent is killed.
 const waitDelay = 3 * time.Second
+
+// maxCapturedOutput bounds how much combined stdout+stderr of a hook run is
+// retained in memory. Only the first 500 chars ever reach a log line (see
+// truncate below); the rest is headroom so the boundary isn't mid-word on
+// the log path. Everything past the cap is drained and discarded so a hook
+// that spews output (a stray `find /`, a lost redirect) can't grow a
+// multi-GB buffer inside the TUI process (#1829).
+const maxCapturedOutput = 4 * 1024
+
+// boundedBuffer retains the first max bytes written and silently discards the
+// rest, always reporting a full write so the child's stdout/stderr never
+// blocks or errors. Handed to exec.Cmd as both Stdout and Stderr (same value,
+// so the exec package serializes Writes onto it — no locking needed here).
+// Deliberately NOT logging.RingBuffer: that keeps the LAST n bytes, while the
+// log contract here has always been a head truncation of the output.
+type boundedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if remaining := b.max - b.buf.Len(); remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		b.buf.Write(p)
+	}
+	return n, nil
+}
 
 // configLoader returns the current set of interval hooks. It is called by the
 // supervisor each rescan and by each hook loop each tick so config.toml edits
 // are picked up live. Injected for testability.
 type configLoader func() map[string]session.IntervalHookSettings
+
+// defaultTickInterval is the production cadence: the hook's configured
+// interval_seconds, clamped by GetIntervalSeconds.
+func defaultTickInterval(cfg session.IntervalHookSettings) time.Duration {
+	return time.Duration(cfg.GetIntervalSeconds()) * time.Second
+}
 
 // defaultLoader reads the hooks from the on-disk user config (mtime-cached by
 // session.LoadUserConfig, so frequent calls are cheap).
@@ -70,23 +108,37 @@ type Runner struct {
 	// and never mutated after Start, so the supervisor goroutine reads it
 	// race-free. Tests set it on their instance before calling Start.
 	rescanInterval time.Duration
+	// tickInterval derives a hook loop's cadence from its settings. Production
+	// (New) uses the clamped GetIntervalSeconds; tests inject sub-second
+	// cadences to exercise ticker-path behavior without >=5s waits. Set once
+	// before Start, never mutated after — same discipline as rescanInterval.
+	tickInterval func(session.IntervalHookSettings) time.Duration
 
 	// rootCtx is the parent of every hook run's timeout context; rootCancel
-	// cancels it. Stop() calls rootCancel so an in-flight CombinedOutput is
-	// killed (via the per-run process-group kill + WaitDelay) as soon as the
-	// app quits, instead of continuing to run detached until its own timeout.
+	// cancels it. Stop() calls rootCancel so an in-flight run is killed (via
+	// the per-run process-group kill + WaitDelay) as soon as the app quits,
+	// instead of continuing to run detached until its own timeout.
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
 
+	// inFlight counts hook runs currently executing; Stop waits (bounded) on
+	// it before returning — see Stop for why that wait is load-bearing.
+	// Adds happen under mu with a stopCh check, so no Add can race a Wait
+	// that saw zero.
+	inFlight sync.WaitGroup
+
 	mu     sync.Mutex
 	stopCh chan struct{}
-	// running guards against overlapping runs of the SAME hook: if a hook's
-	// previous invocation is still executing when its next tick fires, the
-	// tick is skipped rather than piling up. Keyed by hook name.
-	running map[string]bool
 	// supervised tracks which hooks currently have a live loop goroutine, so
 	// the supervisor starts a loop only for newly-enabled hooks. Keyed by name.
 	supervised map[string]bool
+	// startupRan tracks which hooks have already fired their run_at_startup
+	// command in this process. It deliberately outlives loop lifecycles: a
+	// transient config-load failure kills a loop and the supervisor relaunches
+	// it once config recovers, and without this map that relaunch would
+	// re-fire the startup command (#1829) — "once on TUI start" must mean once
+	// per process, not once per loop. Keyed by hook name.
+	startupRan map[string]bool
 	started    bool
 }
 
@@ -98,11 +150,12 @@ func New(logger *slog.Logger) *Runner {
 		logger:         logger,
 		load:           defaultLoader,
 		rescanInterval: defaultRescanInterval,
+		tickInterval:   defaultTickInterval,
 		rootCtx:        ctx,
 		rootCancel:     cancel,
 		stopCh:         make(chan struct{}),
-		running:        make(map[string]bool),
 		supervised:     make(map[string]bool),
+		startupRan:     make(map[string]bool),
 	}
 }
 
@@ -134,14 +187,29 @@ func (r *Runner) Start() {
 	})
 }
 
+// stopWaitTimeout bounds how long Stop blocks for in-flight runs to die after
+// their context is cancelled. A cancelled run returns within waitDelay (the
+// pipe-close bound) of the group kill, so this only trips if the system is
+// wedged; it keeps Stop from hanging shutdown indefinitely and matches the 5s
+// worker-drain bounds in performFinalShutdown.
+const stopWaitTimeout = 5 * time.Second
+
 // Stop terminates the supervisor and all hook loops, and cancels any in-flight
 // hook run: closing stopCh ends the loops, and rootCancel cancels the shared
 // context every runOnce derives its timeout from, so a command mid-execution is
 // killed (via its process-group kill + WaitDelay) rather than left running
-// detached until its own TimeoutSeconds. Safe to call once; idempotent.
+// detached until its own TimeoutSeconds.
+//
+// Stop then WAITS (bounded by stopWaitTimeout) for in-flight runs to finish.
+// The wait is what makes Stop safe to call immediately before os.Exit, as the
+// signal handler in cmd/agent-deck/main.go does: context cancellation only
+// schedules the group SIGKILL on an exec watchdog goroutine, and an os.Exit
+// right after a non-waiting Stop would preempt that goroutine, orphaning the
+// hook's process group until its own timeout (#1829).
+//
+// Safe to call multiple times; concurrent callers each wait.
 func (r *Runner) Stop() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	select {
 	case <-r.stopCh:
 		// already closed
@@ -150,6 +218,20 @@ func (r *Runner) Stop() {
 	}
 	if r.rootCancel != nil {
 		r.rootCancel()
+	}
+	r.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		r.inFlight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(stopWaitTimeout):
+		if r.logger != nil {
+			r.logger.Warn("interval_hook_stop_wait_timeout")
+		}
 	}
 }
 
@@ -190,9 +272,22 @@ func (r *Runner) runLoop(name string, runAtStartup bool) {
 		r.mu.Unlock()
 	}()
 
+	// The startupRan check comes before the currentHook config load so a
+	// relaunched loop (config flap recovery, disable/re-enable) skips the
+	// load entirely instead of fetching a cfg it will discard. The flag is
+	// set only once the hook is confirmed live, so a hook that vanished
+	// between reconcile and here keeps its startup slot for later.
 	if runAtStartup {
-		if cfg, ok := r.currentHook(name); ok {
-			r.runOnce(name, cfg)
+		r.mu.Lock()
+		already := r.startupRan[name]
+		r.mu.Unlock()
+		if !already {
+			if cfg, ok := r.currentHook(name); ok {
+				r.mu.Lock()
+				r.startupRan[name] = true
+				r.mu.Unlock()
+				r.runOnce(name, cfg)
+			}
 		}
 	}
 
@@ -200,7 +295,7 @@ func (r *Runner) runLoop(name string, runAtStartup bool) {
 	if !ok {
 		return
 	}
-	interval := time.Duration(cfg.GetIntervalSeconds()) * time.Second
+	interval := r.tickInterval(cfg)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -216,7 +311,21 @@ func (r *Runner) runLoop(name string, runAtStartup bool) {
 				return
 			}
 			r.runOnce(name, cfg)
-			if newInterval := time.Duration(cfg.GetIntervalSeconds()) * time.Second; newInterval != interval {
+			// A run that outlasted its interval left one pending tick in the
+			// ticker's buffer; consuming it in the next select iteration would
+			// start a back-to-back run. Drop it instead, and log the drop —
+			// the documented behavior ("tick is dropped, logged, not
+			// stacked"). Each hook runs synchronously on this one loop
+			// goroutine, so this drain is the only place an overlapping tick
+			// can ever be observed (#1829).
+			select {
+			case <-ticker.C:
+				if r.logger != nil {
+					r.logger.Warn("interval_hook_overlap_skipped", slog.String("hook", name))
+				}
+			default:
+			}
+			if newInterval := r.tickInterval(cfg); newInterval != interval {
 				interval = newInterval
 				ticker.Reset(interval)
 			}
@@ -235,26 +344,24 @@ func (r *Runner) currentHook(name string) (session.IntervalHookSettings, bool) {
 	return cfg, true
 }
 
-// runOnce executes the hook's command once, bounded by its timeout. Overlapping
-// runs of the same hook are skipped: if the previous invocation is still going
-// when this tick fires, we log and return rather than stack processes.
+// runOnce executes the hook's command once, bounded by its timeout. Overlap of
+// the same hook cannot happen here: each hook is driven synchronously by its
+// single loop goroutine, and runLoop drops (and logs) any tick that fired
+// mid-run.
 func (r *Runner) runOnce(name string, cfg session.IntervalHookSettings) {
 	r.mu.Lock()
-	if r.running[name] {
+	select {
+	case <-r.stopCh:
+		// Shutting down — never start new work after Stop began, so Stop's
+		// inFlight.Wait can't miss a late Add.
 		r.mu.Unlock()
-		if r.logger != nil {
-			r.logger.Warn("interval_hook_overlap_skipped", slog.String("hook", name))
-		}
 		return
+	default:
 	}
-	r.running[name] = true
+	r.inFlight.Add(1)
 	r.mu.Unlock()
 
-	defer func() {
-		r.mu.Lock()
-		delete(r.running, name)
-		r.mu.Unlock()
-	}()
+	defer r.inFlight.Done()
 
 	timeout := time.Duration(cfg.GetTimeoutSeconds()) * time.Second
 	// Derive from the Runner's root context (set in New) so Stop() cancels an
@@ -278,9 +385,8 @@ func (r *Runner) runOnce(name string, cfg session.IntervalHookSettings) {
 		if cmd.Process == nil {
 			return nil
 		}
-		// Kill the process GROUP (negative pgid). Falls back to the single
-		// process if the group signal fails.
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		// Falls back to the single process if the group signal fails.
+		if err := killGroup(cmd.Process); err != nil {
 			return cmd.Process.Kill()
 		}
 		return nil
@@ -289,9 +395,27 @@ func (r *Runner) runOnce(name string, cfg session.IntervalHookSettings) {
 	// forked daemon holding stdout/stderr open cannot block us forever.
 	cmd.WaitDelay = waitDelay
 
+	// Capture combined output through a bounded buffer instead of
+	// CombinedOutput: the latter accumulates the entire stream in memory
+	// before the log-time truncation, so a hook that unexpectedly spews
+	// output could OOM the TUI (#1829). Stdout and Stderr share the one
+	// writer, which the exec package serializes, preserving CombinedOutput's
+	// interleaving semantics.
+	capture := &boundedBuffer{max: maxCapturedOutput}
+	cmd.Stdout = capture
+	cmd.Stderr = capture
+
 	start := time.Now()
-	out, err := cmd.CombinedOutput()
+	err := cmd.Run()
 	elapsed := time.Since(start)
+
+	// Enforce the documented slot contract ("a hook that forks children can't
+	// outlive its slot") on EVERY completion: cmd.Cancel's group kill fires
+	// only on the timeout/cancel path, so a hook that backgrounds a child and
+	// exits 0 would leak it — one fresh orphan per interval (#1829). The pgid
+	// equals the just-reaped leader's pid and stays reserved while any group
+	// member lives; if the group is already empty this is a no-op ESRCH.
+	_ = killGroup(cmd.Process)
 
 	if r.logger != nil {
 		switch {
@@ -300,7 +424,7 @@ func (r *Runner) runOnce(name string, cfg session.IntervalHookSettings) {
 				slog.String("hook", name),
 				slog.Duration("elapsed", elapsed),
 				slog.Any("error", err),
-				slog.String("output", truncate(string(out), 500)),
+				slog.String("output", truncate(capture.buf.String(), 500)),
 			)
 		default:
 			// INFO (not DEBUG): a periodic exec primitive should leave a
@@ -311,6 +435,40 @@ func (r *Runner) runOnce(name string, cfg session.IntervalHookSettings) {
 			)
 		}
 	}
+}
+
+// Global runner registry, mirroring tmux.SetPipeManager/GetPipeManager: the
+// TUI (internal/ui.Home) registers its Runner here so the signal-exit path in
+// cmd/agent-deck/main.go — which has no access to the Home value — can stop
+// in-flight hooks before os.Exit (#1829).
+var (
+	globalRunner   *Runner
+	globalRunnerMu sync.RWMutex
+)
+
+// SetGlobal records the process-wide Runner (called once at TUI startup).
+func SetGlobal(r *Runner) {
+	globalRunnerMu.Lock()
+	globalRunner = r
+	globalRunnerMu.Unlock()
+}
+
+// GetGlobal returns the process-wide Runner, or nil if none was registered
+// (e.g. headless web mode, which never starts interval hooks).
+func GetGlobal() *Runner {
+	globalRunnerMu.RLock()
+	defer globalRunnerMu.RUnlock()
+	return globalRunner
+}
+
+// killGroup SIGKILLs p's process group (negative pgid — every hook command
+// runs as a group leader via Setpgid). Nil-safe; returns the kill error so
+// callers can fall back or ignore ESRCH as fits their path.
+func killGroup(p *os.Process) error {
+	if p == nil {
+		return nil
+	}
+	return syscall.Kill(-p.Pid, syscall.SIGKILL)
 }
 
 // bashPath resolves the bash binary, falling back to the conventional path.

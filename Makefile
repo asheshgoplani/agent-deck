@@ -10,7 +10,7 @@ TAILWIND_VERSION=v4.2.2
 TAILWIND_BIN=$(HOME)/.local/bin/tailwindcss
 
 # Keep local and CI builds on the version required by go.mod.
-export GOTOOLCHAIN=go1.25.12
+export GOTOOLCHAIN=go1.25.13
 
 # Build the binary (requires compiled CSS via `make css`)
 build: css
