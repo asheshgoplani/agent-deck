@@ -85,7 +85,8 @@ func FocusCommand(binaryPath string, event Event) []string {
 }
 
 type storeData struct {
-	Events map[string]string `json:"events"`
+	Events  map[string]string `json:"events"`
+	Pending map[string]string `json:"pending,omitempty"`
 }
 
 // Store persists the current notification identity per session. The first
@@ -139,7 +140,7 @@ func acquireStoreLock(path string) (*storeLock, error) {
 }
 
 func OpenStore(path string) (*Store, error) {
-	s := &Store{path: path, data: storeData{Events: map[string]string{}}}
+	s := &Store{path: path, data: storeData{Events: map[string]string{}, Pending: map[string]string{}}}
 	if err := s.reload(); err != nil {
 		return nil, err
 	}
@@ -165,7 +166,7 @@ func OpenStore(path string) (*Store, error) {
 func (s *Store) reload() error {
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
-		s.data = storeData{Events: map[string]string{}}
+		s.data = storeData{Events: map[string]string{}, Pending: map[string]string{}}
 		return nil
 	}
 	if err != nil {
@@ -176,6 +177,9 @@ func (s *Store) reload() error {
 	}
 	if s.data.Events == nil {
 		s.data.Events = map[string]string{}
+	}
+	if s.data.Pending == nil {
+		s.data.Pending = map[string]string{}
 	}
 	return nil
 }
@@ -191,19 +195,23 @@ const dedupRetention = 30 * 24 * time.Hour
 func (s *Store) pruneExpired(now time.Time) bool {
 	cutoff := now.Add(-dedupRetention)
 	pruned := false
-	for sessionID, key := range s.data.Events {
-		parts := strings.SplitN(key, "\x00", 4)
-		if len(parts) < 3 {
-			delete(s.data.Events, sessionID)
-			pruned = true
-			continue
-		}
-		timestamp, err := time.Parse(time.RFC3339Nano, parts[2])
-		if err != nil || timestamp.Before(cutoff) {
-			delete(s.data.Events, sessionID)
-			pruned = true
+	prune := func(events map[string]string) {
+		for sessionID, key := range events {
+			parts := strings.SplitN(key, "\x00", 4)
+			if len(parts) < 3 {
+				delete(events, sessionID)
+				pruned = true
+				continue
+			}
+			timestamp, err := time.Parse(time.RFC3339Nano, parts[2])
+			if err != nil || timestamp.Before(cutoff) {
+				delete(events, sessionID)
+				pruned = true
+			}
 		}
 	}
+	prune(s.data.Events)
+	prune(s.data.Pending)
 	return pruned
 }
 
@@ -222,6 +230,9 @@ func (s *Store) Baseline(event Event) error {
 		return err
 	}
 	s.pruneExpired(time.Now())
+	if _, pending := s.data.Pending[event.SessionID]; pending {
+		return s.persist()
+	}
 	s.data.Events[event.SessionID] = eventKey(event)
 	return s.persist()
 }
@@ -241,6 +252,9 @@ func (s *Store) ShouldDeliver(event Event) (bool, error) {
 		return false, err
 	}
 	s.pruneExpired(time.Now())
+	if pending, exists := s.data.Pending[event.SessionID]; exists && pending == eventKey(event) {
+		return true, nil
+	}
 	key := eventKey(event)
 	previous, exists := s.data.Events[event.SessionID]
 	s.data.Events[event.SessionID] = key
@@ -283,6 +297,24 @@ func (s *Store) MarkDelivered(event Event) error {
 	}
 	s.pruneExpired(time.Now())
 	s.data.Events[event.SessionID] = eventKey(event)
+	delete(s.data.Pending, event.SessionID)
+	return s.persist()
+}
+
+// MarkPending preserves retry eligibility across daemon baseline seeding.
+func (s *Store) MarkPending(event Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, err := acquireStoreLock(s.path)
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	if err := s.reload(); err != nil {
+		return err
+	}
+	s.pruneExpired(time.Now())
+	s.data.Pending[event.SessionID] = eventKey(event)
 	return s.persist()
 }
 
@@ -491,6 +523,10 @@ func (h Helper) Serve() error {
 		work := &retry{event: event, key: key, cancel: make(chan struct{})}
 		state.pending[event.SessionID] = work
 		state.Unlock()
+		if err := h.Store.MarkPending(event); err != nil {
+			recordFatal(work, err)
+			return
+		}
 
 		go func() {
 			defer func() {

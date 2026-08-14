@@ -145,6 +145,28 @@ func TestStorePrunesEventsOlderThanThirtyDays(t *testing.T) {
 	}
 }
 
+func TestBaselinePreservesPendingRetryAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	event := Event{Class: Complete, SessionID: "retrying", Summary: "original", Timestamp: time.Now()}
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkPending(event); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Baseline(Event{Class: Complete, SessionID: event.SessionID, Summary: "restart baseline", Timestamp: event.Timestamp.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if deliver, err := restarted.NeedsDelivery(event); err != nil || !deliver {
+		t.Fatalf("pending retry eligibility = deliver=%v err=%v, want true", deliver, err)
+	}
+}
+
 func TestPersistedBaselineSuppressesRestartBacklog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	event := Event{Class: Complete, SessionID: "completed-before-restart", Timestamp: time.Now()}
