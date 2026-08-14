@@ -17185,6 +17185,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		sessions := h.remoteSessions[item.RemoteName]
 		groupPath := strings.TrimPrefix(item.Path, "remotes/"+item.RemoteName+"/")
 		count := remoteSubGroupCount(sessions, groupPath)
+		running, waiting := remoteStatusCounts(sessions, groupPath)
 		h.remoteSessionsMu.RUnlock()
 
 		segName := groupPath
@@ -17192,12 +17193,13 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 			segName = groupPath[idx+1:]
 		}
 
-		b.WriteString(fmt.Sprintf("%s%s%s %s%s\n",
+		b.WriteString(fmt.Sprintf("%s%s%s %s%s%s\n",
 			remoteRowGutter(selected),        // align with group hotkey gutter
 			strings.Repeat("  ", item.Level), // nest under the remote header
 			expandIcon,
 			nameStyle.Render(segName),
 			countStyle.Render(fmt.Sprintf(" (%d)", count)),
+			remoteStatusSuffix(running, waiting),
 		))
 		return
 	}
@@ -17205,18 +17207,34 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	// Level 0: the remote host header. Count all sessions for this remote.
 	h.remoteSessionsMu.RLock()
 	count := 0
+	running, waiting := 0, 0
 	if sessions, ok := h.remoteSessions[item.RemoteName]; ok {
 		count = len(sessions)
+		running, waiting = remoteStatusCounts(sessions, "")
 	}
 	h.remoteSessionsMu.RUnlock()
 
-	b.WriteString(fmt.Sprintf("%s%s %s%s%s\n",
+	b.WriteString(fmt.Sprintf("%s%s %s%s%s%s\n",
 		remoteRowGutter(selected), // align with group hotkey gutter (flush with local root groups)
 		expandIcon,
 		nameStyle.Render("remotes/"+item.RemoteName),
 		countStyle.Render(fmt.Sprintf(" (%d)", count)),
+		remoteStatusSuffix(running, waiting),
 		h.renderRemoteLatencyMarker(item.RemoteName, selected),
 	))
+}
+
+// remoteStatusSuffix renders the same running/waiting glyph counts local
+// group headers show, for remote host and sub-group headers.
+func remoteStatusSuffix(running, waiting int) string {
+	out := ""
+	if running > 0 {
+		out += " " + GroupStatusRunning.Render(fmt.Sprintf("● %d", running))
+	}
+	if waiting > 0 {
+		out += " " + GroupStatusWaiting.Render(fmt.Sprintf("◐ %d", waiting))
+	}
+	return out
 }
 
 // renderRemoteLatencyMarker returns the colored ` — Xms` (or ` — offline`)
