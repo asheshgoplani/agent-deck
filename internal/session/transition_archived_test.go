@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/desktopnotify"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
@@ -38,6 +39,66 @@ func TestSyncProfile_LiveTUIArchivedStatusNeverReachesLastStatus(t *testing.T) {
 	}
 	if got := d.lastStatus[profile][active.ID]; got != "running" {
 		t.Fatalf("active status = %q, want running", got)
+	}
+}
+
+func TestSyncProfile_InitialActionableStateSeedsDesktopBaseline(t *testing.T) {
+	const profile = "_test_desktop_baseline"
+	d, storage := bootstrapDaemonProfile(t, profile)
+	originalBaseline := desktopNotificationBaseline
+	var baselines []desktopnotify.SourceEvent
+	desktopNotificationBaseline = func(event desktopnotify.SourceEvent) error {
+		baselines = append(baselines, event)
+		return nil
+	}
+	t.Cleanup(func() { desktopNotificationBaseline = originalBaseline })
+
+	inst := &Instance{ID: "baseline-error", Title: "baseline", ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, Tool: "claude", Status: StatusError, CreatedAt: time.Now()}
+	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	db := storage.GetDB()
+	if err := db.RegisterInstance(false); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := db.Heartbeat(); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if err := db.WriteStatus(inst.ID, "error", inst.Tool); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+
+	d.syncProfile(profile)
+	if len(baselines) != 1 || baselines[0].SessionID != inst.ID || baselines[0].ToStatus != "error" {
+		t.Fatalf("initial desktop baselines = %+v, want one error state for %q", baselines, inst.ID)
+	}
+}
+
+func TestSyncProfile_RetainsDesktopBaselinePersistenceFailure(t *testing.T) {
+	const profile = "_test_desktop_baseline_error"
+	d, storage := bootstrapDaemonProfile(t, profile)
+	wantErr := errors.New("state unavailable")
+	originalBaseline := desktopNotificationBaseline
+	desktopNotificationBaseline = func(desktopnotify.SourceEvent) error { return wantErr }
+	t.Cleanup(func() { desktopNotificationBaseline = originalBaseline })
+	inst := &Instance{ID: "baseline-error", Title: "baseline", ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, Tool: "claude", Status: StatusError, CreatedAt: time.Now()}
+	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	db := storage.GetDB()
+	if err := db.RegisterInstance(false); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := db.Heartbeat(); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if err := db.WriteStatus(inst.ID, "error", inst.Tool); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+
+	d.syncProfile(profile)
+	if !errors.Is(d.desktopNotificationBaselineErr, wantErr) {
+		t.Fatalf("desktop baseline error = %v, want %v", d.desktopNotificationBaselineErr, wantErr)
 	}
 }
 

@@ -97,20 +97,28 @@ type Store struct {
 
 func OpenStore(path string) (*Store, error) {
 	s := &Store{path: path, data: storeData{Events: map[string]string{}}}
-	data, err := os.ReadFile(path)
+	if err := s.reload(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) reload() error {
+	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
+		s.data = storeData{Events: map[string]string{}}
+		return nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read notification state: %w", err)
+		return fmt.Errorf("read notification state: %w", err)
 	}
 	if err := json.Unmarshal(data, &s.data); err != nil {
-		return nil, fmt.Errorf("parse notification state: %w", err)
+		return fmt.Errorf("parse notification state: %w", err)
 	}
 	if s.data.Events == nil {
 		s.data.Events = map[string]string{}
 	}
-	return s, nil
+	return nil
 }
 
 func eventKey(event Event) string {
@@ -120,26 +128,32 @@ func eventKey(event Event) string {
 // Baseline records a currently-observed session state without creating an
 // alert. The transition daemon calls this during its first pass after enabling
 // notifications, so historical states never become a notification backlog.
-func (s *Store) Baseline(event Event) {
+func (s *Store) Baseline(event Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.reload(); err != nil {
+		return err
+	}
 	s.data.Events[event.SessionID] = eventKey(event)
-	_ = s.persist()
+	return s.persist()
 }
 
 // ShouldDeliver atomically records event and reports whether it differs from
 // the established baseline/current event for its session. An unseen event is a
 // genuine post-baseline transition and is therefore delivered.
-func (s *Store) ShouldDeliver(event Event) bool {
+func (s *Store) ShouldDeliver(event Event) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.reload(); err != nil {
+		return false, err
+	}
 	key := eventKey(event)
 	previous, exists := s.data.Events[event.SessionID]
 	s.data.Events[event.SessionID] = key
 	if err := s.persist(); err != nil {
-		return false
+		return false, err
 	}
-	return !exists || previous != key
+	return !exists || previous != key, nil
 }
 
 func (s *Store) persist() error {
@@ -171,6 +185,8 @@ func (s *Store) persist() error {
 }
 
 type Listener struct{ listener *net.UnixListener }
+
+var errMalformedPayload = errors.New("malformed desktop notification payload")
 
 func Listen(path string) (*Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -211,7 +227,7 @@ func (l *Listener) Receive() (Event, error) {
 	defer conn.Close()
 	var event Event
 	if err := json.NewDecoder(conn).Decode(&event); err != nil {
-		return Event{}, err
+		return Event{}, fmt.Errorf("%w: %v", errMalformedPayload, err)
 	}
 	return event, nil
 }
@@ -250,7 +266,11 @@ func (h Helper) ServeOne() error {
 	if err != nil {
 		return err
 	}
-	if !h.Store.ShouldDeliver(event) {
+	deliver, err := h.Store.ShouldDeliver(event)
+	if err != nil {
+		return err
+	}
+	if !deliver {
 		return nil
 	}
 	return h.Present(event)
@@ -258,7 +278,7 @@ func (h Helper) ServeOne() error {
 
 func (h Helper) Serve() error {
 	for {
-		if err := h.ServeOne(); err != nil && !errors.Is(err, io.EOF) {
+		if err := h.ServeOne(); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, errMalformedPayload) {
 			return err
 		}
 	}

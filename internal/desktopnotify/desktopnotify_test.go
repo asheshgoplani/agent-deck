@@ -1,6 +1,7 @@
 package desktopnotify
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -53,16 +54,18 @@ func TestStoreBaselineAndDeduplicatesPersistently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.Baseline(event)
-	if store.ShouldDeliver(event) {
+	if err := store.Baseline(event); err != nil {
+		t.Fatal(err)
+	}
+	if deliver, err := store.ShouldDeliver(event); err != nil || deliver {
 		t.Fatal("baseline event must not alert")
 	}
-	if store.ShouldDeliver(event) {
+	if deliver, err := store.ShouldDeliver(event); err != nil || deliver {
 		t.Fatal("same event must be deduplicated")
 	}
 	changed := event
 	changed.Timestamp = now.Add(time.Second)
-	if !store.ShouldDeliver(changed) {
+	if deliver, err := store.ShouldDeliver(changed); err != nil || !deliver {
 		t.Fatal("a new event must deliver after the baseline")
 	}
 
@@ -70,7 +73,7 @@ func TestStoreBaselineAndDeduplicatesPersistently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.ShouldDeliver(changed) {
+	if deliver, err := store.ShouldDeliver(changed); err != nil || deliver {
 		t.Fatal("persisted state must deduplicate after restart")
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -84,8 +87,28 @@ func TestStoreDeliversFirstNewEventAfterDaemonBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	event := Event{Class: Complete, SessionID: "worker-1", Timestamp: time.Now()}
-	if !store.ShouldDeliver(event) {
+	if deliver, err := store.ShouldDeliver(event); err != nil || !deliver {
 		t.Fatal("a post-baseline event must be delivered")
+	}
+}
+
+func TestPersistedBaselineSuppressesRestartBacklog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	event := Event{Class: Complete, SessionID: "completed-before-restart", Timestamp: time.Now()}
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Baseline(event); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deliver, err := restarted.ShouldDeliver(event); err != nil || deliver {
+		t.Fatalf("restarted store delivered baseline event: deliver=%v err=%v", deliver, err)
 	}
 }
 
@@ -169,5 +192,58 @@ func TestHelperDeliversOnlyDistinctEvents(t *testing.T) {
 	}
 	if len(delivered) != 1 {
 		t.Fatalf("delivered %d events, want one", len(delivered))
+	}
+}
+
+func TestHelperDropsMalformedPayloadAndContinuesServing(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-malformed-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan Event, 1)
+	helper := Helper{Listener: listener, Store: store, Present: func(event Event) error { delivered <- event; return nil }}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+
+	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("not-json\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	want := Event{Class: Attention, SessionID: "valid-after-malformed", Timestamp: time.Now()}
+	if err := Send(socket, want); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-delivered:
+		if got.Class != want.Class || got.SessionID != want.SessionID || !got.Timestamp.Equal(want.Timestamp) {
+			t.Fatalf("delivered %#v, want %#v", got, want)
+		}
+	case err := <-serveDone:
+		t.Fatalf("helper stopped after malformed payload: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for valid payload after malformed input")
 	}
 }

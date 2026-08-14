@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,6 +59,12 @@ type TransitionDaemon struct {
 	// UNRESOLVED (still-unflushed) scan is deliberately not recorded so the
 	// next poll retries.
 	lastDoneScan map[string]map[string]time.Time
+
+	// desktopNotificationBaselineErr preserves the most recent persistence
+	// error from the initial-state seed. SyncOnce's public polling signature
+	// cannot return an error, so retaining it makes the failure observable to
+	// diagnostics and tests instead of silently treating it as a baseline.
+	desktopNotificationBaselineErr error
 
 	// lastInboxTTLSweep tracks the most recent SweepInboxByTTL call so
 	// the daemon runs it at most once per inboxTTLSweepInterval. Zero
@@ -452,6 +459,10 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	d.runSelfHealPass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
 
 	if !d.initialized[profile] {
+		// Persist every already-observed actionable state before emitting the
+		// legacy fast-transition paths. Desktop delivery is deliberately quiet
+		// for this first pass so enabling/restarting the daemon has no backlog.
+		d.desktopNotificationBaselineErr = d.seedDesktopNotificationBaseline(profile, byID, statuses, hookCandidates, hookStatuses)
 		// Cover fast transitions that completed before we observed a running snapshot.
 		d.emitHookTransitionCandidates(profile, byID, nil, statuses, hookCandidates, nil)
 		d.emitDoneSignals(profile, byID, hookStatuses)
@@ -465,17 +476,19 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
 	for id, to := range statuses {
 		from := normalizeStatusString(prev[id])
+		inst := byID[id]
+		// Desktop alerts intentionally do not share the legacy parent-notifier
+		// predicate: an already-waiting session can transition to error and
+		// must still raise an actionable desktop alert.
+		if from != normalizeStatusString(to) && inst != nil {
+			_ = desktopNotificationSender(desktopnotify.SourceEvent{
+				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
+				ToStatus: to, Timestamp: time.Now(),
+			})
+		}
 		if !ShouldNotifyTransition(from, to) {
 			continue
 		}
-		inst := byID[id]
-		// Desktop alerts are independent from the legacy parent-session
-		// transition stream. The latter is an orchestration control channel;
-		// this is an explicitly opt-in user-facing alert channel.
-		_ = desktopNotificationSender(desktopnotify.SourceEvent{
-			SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
-			ToStatus: to, Timestamp: time.Now(),
-		})
 		if !notifyEnabled {
 			continue
 		}
@@ -523,6 +536,33 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	}
 	d.lastStatus[profile] = nextStatus
 	return choosePollInterval(statuses)
+}
+
+func (d *TransitionDaemon) seedDesktopNotificationBaseline(profile string, byID map[string]*Instance, statuses map[string]string, candidates map[string]hookTransitionCandidate, hookStatuses map[string]*HookStatus) error {
+	var baselineErr error
+	baseline := func(source desktopnotify.SourceEvent) {
+		if err := desktopNotificationBaseline(source); err != nil {
+			baselineErr = errors.Join(baselineErr, err)
+		}
+	}
+	for id, status := range statuses {
+		if inst := byID[id]; inst != nil {
+			baseline(desktopnotify.SourceEvent{SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath, ToStatus: status})
+		}
+	}
+	for id, candidate := range candidates {
+		if inst := byID[id]; inst != nil {
+			baseline(desktopnotify.SourceEvent{SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath, ToStatus: candidate.ToStatus, Timestamp: candidate.Timestamp})
+		}
+	}
+	for id, hook := range hookStatuses {
+		if inst := byID[id]; inst != nil {
+			if signal, ok := d.doneSignalFor(profile, id, hook); ok {
+				baseline(desktopnotify.SourceEvent{SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath, Kind: transitionKindFinished, DoneStatus: signal.Status, Summary: signal.Summary, Timestamp: hook.UpdatedAt})
+			}
+		}
+	}
+	return baselineErr
 }
 
 // instanceAcceptsCurrentTransitionEvents revalidates mutable notification
@@ -586,10 +626,12 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		}
 
 		inst := byID[id]
-		_ = desktopNotificationSender(desktopnotify.SourceEvent{
-			SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
-			Kind: transitionKindFinished, DoneStatus: sig.Status, Summary: sig.Summary, Timestamp: hs.UpdatedAt,
-		})
+		if d.initialized[profile] {
+			_ = desktopNotificationSender(desktopnotify.SourceEvent{
+				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
+				Kind: transitionKindFinished, DoneStatus: sig.Status, Summary: sig.Summary, Timestamp: hs.UpdatedAt,
+			})
+		}
 		if !notifyEnabled {
 			continue
 		}
@@ -890,17 +932,7 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
 	for id, candidate := range candidates {
 		inst := byID[id]
-		if !notifyEnabled {
-			continue
-		}
-		accepts, err := d.instanceAcceptsCurrentTransitionEvents(profile, inst)
-		if err != nil {
-			if revalidationFailures != nil {
-				revalidationFailures[id] = true
-			}
-			continue
-		}
-		if !accepts {
+		if inst == nil {
 			continue
 		}
 		// Issue #1214: the completion wrapper owns a task worker's terminal
@@ -933,6 +965,28 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		}
 		// Snapshot transition path already handled this case.
 		if ShouldNotifyTransition(fromSnapshot, normalizeStatusString(current[id])) {
+			continue
+		}
+		// This fresh hook candidate bypassed the snapshot transition path, so
+		// send its equivalent desktop event here. The snapshot duplicate guard
+		// above keeps each transition to one alert source.
+		if d.initialized[profile] {
+			_ = desktopNotificationSender(desktopnotify.SourceEvent{
+				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
+				ToStatus: to, Timestamp: candidate.Timestamp,
+			})
+		}
+		if !notifyEnabled {
+			continue
+		}
+		accepts, err := d.instanceAcceptsCurrentTransitionEvents(profile, inst)
+		if err != nil {
+			if revalidationFailures != nil {
+				revalidationFailures[id] = true
+			}
+			continue
+		}
+		if !accepts {
 			continue
 		}
 

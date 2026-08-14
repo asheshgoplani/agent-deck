@@ -108,4 +108,15 @@ func TestB13_DaemonSyncProfile_InteractiveTransitionCommitsToInbox(t *testing.T)
 	if len(desktopEvents) != 1 || desktopEvents[0].ToStatus != "waiting" || desktopEvents[0].SessionID != child.ID {
 		t.Fatalf("desktop notification = %+v, want one waiting event for %q", desktopEvents, child.ID)
 	}
+
+	// A session can fail after it has already become waiting. This is not a
+	// legacy running→terminal transition, but it is still a desktop error.
+	desktopEvents = nil
+	if err := db.WriteStatus(child.ID, "error", "claude"); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+	d.syncProfile(profile)
+	if len(desktopEvents) != 1 || desktopEvents[0].ToStatus != "error" || desktopEvents[0].SessionID != child.ID {
+		t.Fatalf("desktop notification = %+v, want one error event for %q", desktopEvents, child.ID)
+	}
 }

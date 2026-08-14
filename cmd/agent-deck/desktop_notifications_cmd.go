@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,9 +10,12 @@ import (
 	"runtime"
 	"syscall"
 
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/desktopnotify"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+var desktopNotificationsOS = runtime.GOOS
 
 func handleDesktopNotifications(args []string) {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
@@ -32,7 +36,7 @@ func handleDesktopNotifications(args []string) {
 }
 
 func desktopNotificationsDoctor() {
-	if runtime.GOOS != "darwin" {
+	if desktopNotificationsOS != "darwin" {
 		fmt.Println("desktop notifications: unavailable (macOS only)")
 		return
 	}
@@ -64,8 +68,8 @@ func desktopNotificationsDoctor() {
 }
 
 func runDesktopNotificationHelper() {
-	if runtime.GOOS != "darwin" {
-		fmt.Fprintln(os.Stderr, "desktop notification helper is supported on macOS only")
+	if err := desktopNotificationHelperPrerequisite(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	if os.Getenv("AGENT_DECK_DESKTOP_BUNDLED") != "1" {
@@ -100,6 +104,13 @@ func runDesktopNotificationHelper() {
 		fmt.Fprintf(os.Stderr, "desktop notification helper: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func desktopNotificationHelperPrerequisite() error {
+	if desktopNotificationsOS != "darwin" {
+		return errors.New("desktop notification helper is supported on macOS only")
+	}
+	return nil
 }
 
 // relaunchDesktopNotificationHelperBundled gives UserNotifications a genuine
@@ -139,7 +150,7 @@ func relaunchDesktopNotificationHelperBundled() error {
 	if err := copyDesktopHelper(router, bundledExecutable); err != nil {
 		return err
 	}
-	env := append(os.Environ(), "AGENT_DECK_DESKTOP_BUNDLED=1", "AGENT_DECK_DESKTOP_ROUTER="+router)
+	env := append(childenv.ForLaunch(""), "AGENT_DECK_DESKTOP_BUNDLED=1", "AGENT_DECK_DESKTOP_ROUTER="+router)
 	return syscall.Exec(bundledExecutable, []string{bundledExecutable, "desktop-notifications", "helper"}, env)
 }
 

@@ -14,6 +14,9 @@ import (
 // needing a GUI user session.
 var desktopNotificationSender = SendDesktopNotification
 
+// desktopNotificationBaseline is a daemon seam for initial-state persistence.
+var desktopNotificationBaseline = BaselineDesktopNotification
+
 // DesktopNotificationSocketPath is intentionally short: macOS limits Unix
 // socket pathnames to about 104 bytes, while an XDG data directory can exceed
 // that on managed machines. The UID-scoped socket is mode 0600 and /tmp's
@@ -47,4 +50,26 @@ func SendDesktopNotification(source desktopnotify.SourceEvent) error {
 		return err
 	}
 	return desktopnotify.Send(socket, event)
+}
+
+// BaselineDesktopNotification persists an observed state without producing an
+// alert. It is called during the transition daemon's initial snapshot so a
+// daemon restart cannot turn existing actionable sessions into a backlog.
+func BaselineDesktopNotification(source desktopnotify.SourceEvent) error {
+	if runtime.GOOS != "darwin" || !GetDesktopNotificationsSettings().Enabled {
+		return nil
+	}
+	event, ok := desktopnotify.Normalize(source)
+	if !ok {
+		return nil
+	}
+	statePath, err := DesktopNotificationStatePath()
+	if err != nil {
+		return err
+	}
+	store, err := desktopnotify.OpenStore(statePath)
+	if err != nil {
+		return err
+	}
+	return store.Baseline(event)
 }
