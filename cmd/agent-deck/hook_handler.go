@@ -391,7 +391,7 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 			return false
 		}
-		defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
 		controlPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".generation.json")
 		var control hookGenerationControl
 		data, err := readHookFileBounded(controlPath)
@@ -592,12 +592,19 @@ func cleanStaleHookFiles() {
 	}
 	// Crash-orphaned unique temp files are safe to reap by age. WalkDir does
 	// not follow symlinked directories, preserving sandbox scope boundaries.
+	root, rootErr := os.OpenRoot(hooksDir)
+	if rootErr != nil {
+		return
+	}
+	defer func() { _ = root.Close() }()
 	_ = filepath.WalkDir(hooksDir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil || entry.IsDir() || !strings.Contains(entry.Name(), ".tmp-") {
 			return nil
 		}
 		if info, err := entry.Info(); err == nil && info.ModTime().Before(cutoff) {
-			_ = os.Remove(path)
+			if rel, err := filepath.Rel(hooksDir, path); err == nil {
+				_ = root.Remove(rel)
+			}
 		}
 		return nil
 	})

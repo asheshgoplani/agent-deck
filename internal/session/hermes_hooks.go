@@ -138,6 +138,8 @@ var hermesExtendedHookVocabularySupported = func() bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	// #nosec G204 -- the executable and argv come from the operator-configured
+	// Hermes tool command and are passed directly without shell evaluation.
 	cmd := exec.CommandContext(ctx, fields[0], append(fields[1:], "--version")...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
