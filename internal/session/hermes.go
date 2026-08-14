@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
