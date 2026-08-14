@@ -485,19 +485,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	for id, to := range statuses {
 		from := normalizeStatusString(prev[id])
 		inst := byID[id]
-		// Desktop alerts intentionally do not share the legacy parent-notifier
-		// predicate: an already-waiting session can transition to error and
-		// must still raise an actionable desktop alert.
-		if d.desktopNotificationDispatchReady(profile) && from != normalizeStatusString(to) && inst != nil {
-			_ = desktopNotificationSender(desktopnotify.SourceEvent{
-				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
-				ToStatus: to, Timestamp: time.Now(),
-			})
-		}
-		if !ShouldNotifyTransition(from, to) {
-			continue
-		}
-		if !notifyEnabled {
+		desktopDispatch := d.desktopNotificationDispatchReady(profile) && from != normalizeStatusString(to) && inst != nil
+		legacyDispatch := ShouldNotifyTransition(from, to) && notifyEnabled
+		if !desktopDispatch && !legacyDispatch {
 			continue
 		}
 		accepts, err := d.instanceAcceptsCurrentTransitionEvents(profile, inst)
@@ -506,6 +496,18 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			continue
 		}
 		if !accepts {
+			continue
+		}
+		// Desktop alerts intentionally do not share the legacy parent-notifier
+		// predicate: an already-waiting session can transition to error and
+		// must still raise an actionable desktop alert.
+		if desktopDispatch {
+			_ = desktopNotificationSender(desktopnotify.SourceEvent{
+				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
+				ToStatus: to, Timestamp: time.Now(),
+			})
+		}
+		if !legacyDispatch {
 			continue
 		}
 		event := TransitionNotificationEvent{
@@ -658,13 +660,9 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		}
 
 		inst := byID[id]
-		if d.initialized[profile] && d.desktopNotificationDispatchReady(profile) {
-			_ = desktopNotificationSender(desktopnotify.SourceEvent{
-				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
-				Kind: transitionKindFinished, DoneStatus: sig.Status, Summary: sig.Summary, Timestamp: hs.UpdatedAt,
-			})
-		}
-		if !notifyEnabled {
+		desktopDispatch := d.initialized[profile] && d.desktopNotificationDispatchReady(profile)
+		legacyDispatch := notifyEnabled
+		if !desktopDispatch && !legacyDispatch {
 			continue
 		}
 		accepts, err := d.instanceAcceptsCurrentTransitionEvents(profile, inst)
@@ -675,6 +673,15 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 			continue
 		}
 		if !accepts {
+			continue
+		}
+		if desktopDispatch {
+			_ = desktopNotificationSender(desktopnotify.SourceEvent{
+				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
+				Kind: transitionKindFinished, DoneStatus: sig.Status, Summary: sig.Summary, Timestamp: hs.UpdatedAt,
+			})
+		}
+		if !legacyDispatch {
 			continue
 		}
 
@@ -999,16 +1006,9 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		if ShouldNotifyTransition(fromSnapshot, normalizeStatusString(current[id])) {
 			continue
 		}
-		// This fresh hook candidate bypassed the snapshot transition path, so
-		// send its equivalent desktop event here. The snapshot duplicate guard
-		// above keeps each transition to one alert source.
-		if d.initialized[profile] && d.desktopNotificationDispatchReady(profile) {
-			_ = desktopNotificationSender(desktopnotify.SourceEvent{
-				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
-				ToStatus: to, Timestamp: candidate.Timestamp,
-			})
-		}
-		if !notifyEnabled {
+		desktopDispatch := d.initialized[profile] && d.desktopNotificationDispatchReady(profile)
+		legacyDispatch := notifyEnabled
+		if !desktopDispatch && !legacyDispatch {
 			continue
 		}
 		accepts, err := d.instanceAcceptsCurrentTransitionEvents(profile, inst)
@@ -1019,6 +1019,18 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 			continue
 		}
 		if !accepts {
+			continue
+		}
+		// This fresh hook candidate bypassed the snapshot transition path, so
+		// send its equivalent desktop event here. The snapshot duplicate guard
+		// above keeps each transition to one alert source.
+		if desktopDispatch {
+			_ = desktopNotificationSender(desktopnotify.SourceEvent{
+				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
+				ToStatus: to, Timestamp: candidate.Timestamp,
+			})
+		}
+		if !legacyDispatch {
 			continue
 		}
 

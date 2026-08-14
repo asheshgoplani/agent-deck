@@ -295,6 +295,70 @@ func TestArchiveAtPreCommitSeamSuppressesSnapshotHookAndDone(t *testing.T) {
 	}
 }
 
+func TestDesktopDispatchRevalidatesNoTransitionNotifyAndArchiveForEverySource(t *testing.T) {
+	sources := []struct {
+		name        string
+		hook        *HookStatus
+		probeStatus Status
+	}{
+		{name: "snapshot", probeStatus: StatusWaiting},
+		{name: "hook", hook: &HookStatus{Status: "waiting", Event: "Stop", UpdatedAt: time.Now()}, probeStatus: StatusRunning},
+		{name: "done", hook: &HookStatus{Status: "running", Event: "Stop", UpdatedAt: time.Now(), DoneStatus: "ok", DoneSummary: "finished"}, probeStatus: StatusRunning},
+	}
+	for _, guard := range []string{"no-transition-notify", "archived-at-dispatch"} {
+		for _, source := range sources {
+			t.Run(guard+"/"+source.name, func(t *testing.T) {
+				profile := "_test_desktop_revalidate_" + guard + "_" + source.name
+				id, parentID := "desktop-"+guard+"-"+source.name, "desktop-parent-"+guard+"-"+source.name
+				d, storage := bootstrapDaemonProfile(t, profile)
+				setDesktopNotificationsEnabled(t, true)
+				child := &Instance{ID: id, Title: id, ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, ParentSessionID: parentID, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour), NoTransitionNotify: guard == "no-transition-notify"}
+				parent := &Instance{ID: parentID, Title: "parent", ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour)}
+				if err := storage.SaveWithGroups([]*Instance{child, parent}, nil); err != nil {
+					t.Fatalf("save: %v", err)
+				}
+				d.initialized[profile] = true
+				d.desktopNotificationBaselineReady[profile] = true
+				d.lastStatus[profile] = map[string]string{id: "running"}
+				if source.hook != nil {
+					d.hookWatcher = &StatusFileWatcher{statuses: map[string]*HookStatus{id: source.hook}}
+				}
+				originalSender := desktopNotificationSender
+				var desktopEvents []desktopnotify.SourceEvent
+				desktopNotificationSender = func(event desktopnotify.SourceEvent) error {
+					desktopEvents = append(desktopEvents, event)
+					return nil
+				}
+				t.Cleanup(func() { desktopNotificationSender = originalSender })
+				if guard == "archived-at-dispatch" {
+					var once sync.Once
+					d.loadTransitionInstanceRow = func(_ string, instanceID string) (*statedb.InstanceRow, error) {
+						if instanceID == id {
+							once.Do(func() { _ = storage.GetDB().SetArchived(instanceID, time.Now().UTC()) })
+						}
+						return storage.GetDB().LoadInstanceByID(instanceID)
+					}
+				}
+				originalProbe := updateInstanceStatus.Load().(statusProbeFunc)
+				updateInstanceStatus.Store(statusProbeFunc(func(inst *Instance) error {
+					if inst.ID == id {
+						inst.SetStatusThreadSafe(source.probeStatus)
+					}
+					return nil
+				}))
+				t.Cleanup(func() { updateInstanceStatus.Store(originalProbe) })
+
+				d.syncProfile(profile)
+				for _, event := range desktopEvents {
+					if event.SessionID == id {
+						t.Fatalf("desktop %s %s dispatch emitted %+v", guard, source.name, desktopEvents)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestInstanceAcceptsTransitionEvents_ArchivedPredicate(t *testing.T) {
 	tests := []struct {
 		name string

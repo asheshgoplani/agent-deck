@@ -209,6 +209,40 @@ func (s *Store) ShouldDeliver(event Event) (bool, error) {
 	return !exists || previous != key, nil
 }
 
+// NeedsDelivery reports whether event differs from the established state
+// without recording it. The helper uses this before native presentation so a
+// rejected notification remains eligible for retry.
+func (s *Store) NeedsDelivery(event Event) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, err := acquireStoreLock(s.path)
+	if err != nil {
+		return false, err
+	}
+	defer lock.release()
+	if err := s.reload(); err != nil {
+		return false, err
+	}
+	previous, exists := s.data.Events[event.SessionID]
+	return !exists || previous != eventKey(event), nil
+}
+
+// MarkDelivered persists an event only after the presenter has accepted it.
+func (s *Store) MarkDelivered(event Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, err := acquireStoreLock(s.path)
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	if err := s.reload(); err != nil {
+		return err
+	}
+	s.data.Events[event.SessionID] = eventKey(event)
+	return s.persist()
+}
+
 func (s *Store) persist() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
@@ -317,6 +351,32 @@ type Helper struct {
 	Listener *Listener
 	Store    *Store
 	Present  func(Event) error
+	// RetryDelay is injectable for tests. Zero uses a conservative retry delay
+	// so a temporarily unresolved macOS authorization does not lose its event.
+	RetryDelay time.Duration
+}
+
+var errPresentationRejected = errors.New("desktop notification presentation rejected")
+
+func (h Helper) presentEvent(event Event) error {
+	deliver, err := h.Store.NeedsDelivery(event)
+	if err != nil {
+		return err
+	}
+	if !deliver {
+		return nil
+	}
+	if err := h.Present(event); err != nil {
+		return fmt.Errorf("%w: %v", errPresentationRejected, err)
+	}
+	return h.Store.MarkDelivered(event)
+}
+
+func (h Helper) retryDelay() time.Duration {
+	if h.RetryDelay > 0 {
+		return h.RetryDelay
+	}
+	return time.Second
 }
 
 func (h Helper) ServeOne() error {
@@ -327,20 +387,30 @@ func (h Helper) ServeOne() error {
 	if err != nil {
 		return err
 	}
-	deliver, err := h.Store.ShouldDeliver(event)
-	if err != nil {
-		return err
-	}
-	if !deliver {
-		return nil
-	}
-	return h.Present(event)
+	return h.presentEvent(event)
 }
 
 func (h Helper) Serve() error {
 	for {
-		if err := h.ServeOne(); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, errMalformedPayload) {
+		if h.Listener == nil || h.Store == nil || h.Present == nil {
+			return errors.New("desktop notification helper is not configured")
+		}
+		event, err := h.Listener.Receive()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, errMalformedPayload) {
+				continue
+			}
 			return err
+		}
+		for {
+			err := h.presentEvent(event)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, errPresentationRejected) {
+				return err
+			}
+			time.Sleep(h.retryDelay())
 		}
 	}
 }

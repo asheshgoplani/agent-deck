@@ -2,6 +2,7 @@ package desktopnotify
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -434,7 +435,6 @@ func TestHelperDeliversOnlyDistinctEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
 	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -457,8 +457,8 @@ func TestHelperDeliversOnlyDistinctEvents(t *testing.T) {
 	}
 }
 
-func TestHelperDropsMalformedPayloadAndContinuesServing(t *testing.T) {
-	socketFile, err := os.CreateTemp("", "adn-malformed-*")
+func TestHelperFailedPresenterEventCanBeAcceptedOnRetry(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-presenter-retry-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,10 +479,135 @@ func TestHelperDropsMalformedPayloadAndContinuesServing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attempts := 0
+	helper := Helper{Listener: listener, Store: store, Present: func(Event) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("native submission failed")
+		}
+		return nil
+	}}
+	event := Event{Class: Error, SessionID: "retry-after-failed-presenter", Timestamp: time.Now()}
+
+	first := make(chan error, 1)
+	go func() { first <- helper.ServeOne() }()
+	if err := Send(socket, event); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-first; err == nil {
+		t.Fatal("failed presenter was reported as success")
+	}
+	second := make(chan error, 1)
+	go func() { second <- helper.ServeOne() }()
+	if err := Send(socket, event); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("retry after presenter failure: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("presenter attempts = %d, want 2", attempts)
+	}
+}
+
+func TestHelperServeRetriesInitialAuthorizationUntilAccepted(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-authorization-retry-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan Event, 1)
+	attempts := 0
+	helper := Helper{Listener: listener, Store: store, RetryDelay: time.Millisecond, Present: func(event Event) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("authorization unresolved")
+		}
+		accepted <- event
+		return nil
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("helper did not stop after listener close")
+		}
+	}()
+	want := Event{Class: Attention, SessionID: "retry-initial-authorization", Timestamp: time.Now()}
+	if err := Send(socket, want); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-accepted:
+		if got.Class != want.Class || got.SessionID != want.SessionID || !got.Timestamp.Equal(want.Timestamp) {
+			t.Fatalf("accepted event = %#v, want %#v", got, want)
+		}
+	case err := <-serveDone:
+		t.Fatalf("helper stopped before authorization resolved: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("helper did not retry initial authorization")
+	}
+	if attempts < 2 {
+		t.Fatalf("authorization attempts = %d, want retry", attempts)
+	}
+}
+
+func TestHelperDropsMalformedPayloadAndContinuesServing(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-malformed-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	delivered := make(chan Event, 1)
 	helper := Helper{Listener: listener, Store: store, Present: func(event Event) error { delivered <- event; return nil }}
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- helper.Serve() }()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("helper did not stop after listener close")
+		}
+	}()
 
 	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
 	if err != nil {
@@ -527,7 +652,6 @@ func TestHelperDropsIncompletePayloadWithoutEOFAndContinuesServing(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
 	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -536,6 +660,16 @@ func TestHelperDropsIncompletePayloadWithoutEOFAndContinuesServing(t *testing.T)
 	helper := Helper{Listener: listener, Store: store, Present: func(event Event) error { delivered <- event; return nil }}
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- helper.Serve() }()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("helper did not stop after listener close")
+		}
+	}()
 
 	stalled, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
 	if err != nil {

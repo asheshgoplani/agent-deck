@@ -6,6 +6,7 @@ package desktopnotify
 #cgo CFLAGS: -x objective-c -fblocks
 #cgo LDFLAGS: -framework Foundation -framework UserNotifications
 #include <stdlib.h>
+#include <dispatch/dispatch.h>
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
 
@@ -53,9 +54,25 @@ static int ad_desktop_notify(const char *title, const char *body, const char *bi
         content.sound = [UNNotificationSound defaultSound];
         content.userInfo = @{@"agent_deck_binary": [NSString stringWithUTF8String:binary], @"agent_deck_arguments": arguments};
         UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:[[NSUUID UUID] UUIDString] content:content trigger:nil];
-        [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound) completionHandler:^(BOOL granted, NSError *error) {}];
-        [center addNotificationRequest:request withCompletionHandler:^(NSError *error) {}];
-        return 1;
+        __block BOOL granted = NO;
+        __block NSError *authorizationError = nil;
+        dispatch_semaphore_t authorizationDone = dispatch_semaphore_create(0);
+        [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound) completionHandler:^(BOOL authorizationGranted, NSError *error) {
+            granted = authorizationGranted;
+            authorizationError = error;
+            dispatch_semaphore_signal(authorizationDone);
+        }];
+        dispatch_semaphore_wait(authorizationDone, DISPATCH_TIME_FOREVER);
+        if (!granted || authorizationError != nil) return 0;
+
+        __block NSError *submissionError = nil;
+        dispatch_semaphore_t submissionDone = dispatch_semaphore_create(0);
+        [center addNotificationRequest:request withCompletionHandler:^(NSError *error) {
+            submissionError = error;
+            dispatch_semaphore_signal(submissionDone);
+        }];
+        dispatch_semaphore_wait(submissionDone, DISPATCH_TIME_FOREVER);
+        return submissionError == nil ? 1 : 0;
     }
 }
 */
