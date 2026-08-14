@@ -960,13 +960,24 @@ func softKillProcessGroup(pgid int, grace time.Duration) bool {
 // The probe is bounded by hasSessionProbeTimeout: a tmux server that is briefly
 // busy can make `has-session` stall, and a stalled probe is indeterminate — we
 // assume the session still exists (return true) rather than blocking the caller
-// or reporting a live session as gone. A probe that completes is trusted.
+// or reporting a live session as gone. A probe that completes is trusted, unless
+// the client could not reach the server at all (see below).
 func tmuxSessionExistsOnSocket(socketName, name string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
 	err := tmuxExecContext(ctx, socketName, "has-session", "-t", name).Run()
 	if ctx.Err() == context.DeadlineExceeded {
 		return true // probe timed out: indeterminate, assume the session still exists
+	}
+	// Same mismatch caveat as Session.Exists: a client/server protocol version
+	// mismatch refuses every command on this socket with a non-zero exit, which
+	// is not evidence of absence — the refusal came FROM the server. This probe
+	// backs the watchPipe reconnect loop and public HasSession/HasSessionOnSocket,
+	// so reading a mismatch as absence here tears control pipes down for sessions
+	// that are alive. The verdict is cached per socket, so consulting it adds no
+	// subprocess per call.
+	if err != nil && socketHasProtocolMismatch(socketName) {
+		return true
 	}
 	return err == nil
 }

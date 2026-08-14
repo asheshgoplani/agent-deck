@@ -214,11 +214,21 @@ body[data-rail="hidden"] .rightrail { display: none; }
   display: flex; align-items: center; gap: 6px; min-width: 0;
 }
 .sess .tt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
-.sess .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
-.sess .dot.running { background: var(--status-running); box-shadow: 0 0 6px rgba(115,218,202,0.7); animation: pulse 2s ease-in-out infinite; }
-.sess .dot.waiting { background: var(--status-waiting); box-shadow: 0 0 6px rgba(224,175,104,0.7); animation: pulse 1.2s ease-in-out infinite; }
-.sess .dot.error   { background: var(--status-error);   box-shadow: 0 0 6px rgba(247,118,142,0.7); }
-.sess .dot.idle    { background: var(--status-idle); }
+/* Status dots. Scoped to both the sidebar (.sess) and the archived pane (.sr):
+   .sr rows previously matched no .dot rule at all, so their dot rendered as an
+   unstyled square-less span. Every session.Status value needs a rule here — an
+   unmatched status silently renders an invisible dot. */
+.sess .dot,
+.sr .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.sess .dot.running, .sr .dot.running { background: var(--status-running); box-shadow: 0 0 6px rgba(115,218,202,0.7); animation: pulse 2s ease-in-out infinite; }
+.sess .dot.waiting, .sr .dot.waiting { background: var(--status-waiting); box-shadow: 0 0 6px rgba(224,175,104,0.7); animation: pulse 1.2s ease-in-out infinite; }
+.sess .dot.error,   .sr .dot.error   { background: var(--status-error);   box-shadow: 0 0 6px rgba(247,118,142,0.7); }
+.sess .dot.idle,    .sr .dot.idle    { background: var(--status-idle); }
+/* stopped/starting/queued had no rule and rendered invisible. The TUI paints a
+   dim ■ for stopped (and archived rows are forced to it), so match that. */
+.sess .dot.stopped, .sr .dot.stopped { background: var(--status-stopped); }
+.sess .dot.starting, .sr .dot.starting { background: var(--status-start); animation: pulse 1.2s ease-in-out infinite; }
+.sess .dot.queued,  .sr .dot.queued  { background: var(--status-idle); opacity: 0.6; }
 
 .sess .meta { display: flex; align-items: center; gap: 6px; }
 .sess .tag {
