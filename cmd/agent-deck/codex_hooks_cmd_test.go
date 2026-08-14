@@ -254,6 +254,45 @@ func TestWriteCodexHookStatus_IdentityLessCompletionFailsClosed(t *testing.T) {
 	}
 }
 
+func TestWriteCodexHookStatus_LegacyCompletionConvergesWithoutStart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENTDECK_HOOKS_DIR", filepath.Join(t.TempDir(), "hooks"))
+	writeCodexHookStatus("legacy-complete", "waiting", "thread-1", "agent-turn-complete", "turn-1")
+	data, err := os.ReadFile(filepath.Join(getHooksDir(), "legacy-complete.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got hookStatusFile
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CodexStartedGeneration == "" || got.CodexStartedGeneration != got.CodexCompletedGeneration {
+		t.Fatalf("completion-only notify did not converge: %#v", got)
+	}
+	if got.CodexStartedSessionID != "thread-1" || got.CodexCompletedSessionID != "thread-1" {
+		t.Fatalf("completion-only notify lost session identity: %#v", got)
+	}
+}
+
+func TestWriteCodexHookStatus_IdentityLessStartClearsPriorCompletion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENTDECK_HOOKS_DIR", filepath.Join(t.TempDir(), "hooks"))
+	writeCodexHookStatus("stale-pair", "waiting", "thread-1", "agent-turn-complete", "turn-1")
+	writeCodexHookStatus("stale-pair", "running", "", "turn.started", "")
+	data, err := os.ReadFile(filepath.Join(getHooksDir(), "stale-pair.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got hookStatusFile
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CodexStartedGeneration != "" || got.CodexCompletedGeneration != "" ||
+		got.CodexStartedSessionID != "" || got.CodexCompletedSessionID != "" {
+		t.Fatalf("identity-less start retained stale completion evidence: %#v", got)
+	}
+}
+
 func TestWriteCodexHookStatus_ConcurrentFleetPersistence(t *testing.T) {
 	for _, size := range []int{1, 20, 100} {
 		t.Run(fmt.Sprintf("fleet-%d", size), func(t *testing.T) {

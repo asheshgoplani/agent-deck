@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"al.essio.dev/pkg/shellescape"
@@ -76,6 +77,21 @@ func TestNeedsWorkerScratchConfigDir_NeverForRemoteSessions(t *testing.T) {
 	remote.SSHHost = "cloudlydr@remote-host"
 	if remote.NeedsWorkerScratchConfigDir() {
 		t.Fatal("a remote session was given a LOCAL worker-scratch config dir; the remote host cannot create a path under the local home (#1858)")
+	}
+}
+
+func TestRemotePluginSetupWarningIsExplicit(t *testing.T) {
+	remote := NewInstanceWithTool("remote", t.TempDir(), "claude")
+	remote.SSHHost = "cloudlydr@remote-host"
+	remote.Plugins = []string{"telegram"}
+	warning := remote.remotePluginSetupWarning()
+	if !strings.Contains(warning, "unavailable over SSH") || !strings.Contains(warning, "remote Claude profile") {
+		t.Fatalf("warning is not actionable: %q", warning)
+	}
+	local := NewInstanceWithTool("local", t.TempDir(), "claude")
+	local.Plugins = []string{"telegram"}
+	if got := local.remotePluginSetupWarning(); got != "" {
+		t.Fatalf("local plugin setup warned: %q", got)
 	}
 }
 

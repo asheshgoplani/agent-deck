@@ -4868,7 +4868,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 		paneNow := send.CaptureOutcome(captured, captureErr)
 		if paneNow.OK {
 			content := tmux.StripANSI(captured)
-			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
+			unsentPromptDetected = send.ComposerHoldsPasteMarker(captured, tmux.StripANSI) || send.HasUnsentComposerPrompt(content, message)
 		}
 		verifiedStatus, statusErr := i.tmuxSession.GetStatus()
 
@@ -8305,8 +8305,9 @@ func (i *Instance) restart(env map[string]string) error {
 		// error ✕ for the whole freshness window, and without the seed the
 		// session shows no state at all. The freshly respawned process sits at
 		// its prompt, which is exactly "waiting".
-		i.ClearHookStatus()
-		i.seedHermesHookBaseline()
+		if _, err := i.seedHermesHookGeneration("waiting", false); err != nil {
+			return fmt.Errorf("seed hermes restart baseline: %w", err)
+		}
 		command = i.buildHermesCommand(i.Command)
 	} else {
 		// Route to appropriate command builder based on tool

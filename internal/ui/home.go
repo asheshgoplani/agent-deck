@@ -13818,6 +13818,16 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 	}
 	h.remoteSessionsMu.RUnlock()
 
+	// Empty IDs cannot be represented in the persisted order overlay. A swap
+	// across one would be discarded by applyRemoteSessionOrder on the immediate
+	// rebuild, making a successful-looking move a silent no-op.
+	for _, id := range natural {
+		if id == "" {
+			h.setError(fmt.Errorf("cannot move '%s' %s: %s lists a session without an id in this group, so its order cannot be tracked", moved.Title, direction, item.RemoteName))
+			return
+		}
+	}
+
 	// A bucket whose IDs are not unique cannot be reordered at all:
 	// orderRemoteBucket refuses to permute it, because the slot mapping is no
 	// longer 1:1 and a row could be dropped or doubled. Storing an order for it

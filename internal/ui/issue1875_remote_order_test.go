@@ -499,3 +499,34 @@ agent_deck_path = "/usr/local/bin/agent-deck"
 		t.Fatal("silent no-op: moving a uniquely-named row in a duplicate-id bucket said nothing")
 	}
 }
+
+func TestRemoteReorderRejectsBucketWithMissingID(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[remotes.dev]
+host = "user@dev.example"
+agent_deck_path = "/usr/local/bin/agent-deck"
+`)
+	h := NewHome()
+	h.width, h.height = 160, 40
+	h.initialLoading = false
+	h.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"dev": {
+			{ID: "s-a", Title: "first", Status: "idle", Tool: "claude", Group: "work"},
+			{ID: "", Title: "legacy", Status: "idle", Tool: "claude", Group: "work"},
+			{ID: "s-b", Title: "third", Status: "idle", Tool: "claude", Group: "work"},
+		},
+	}
+	h.rebuildFlatItems()
+	before := visibleRemoteSessionIDs(h, "dev")
+	putCursorOnRemoteSession(t, h, "s-b")
+	h.handleMainKey(tea.KeyMsg{Type: tea.KeyShiftUp})
+	if got := visibleRemoteSessionIDs(h, "dev"); strings.Join(got, ",") != strings.Join(before, ",") {
+		t.Fatalf("rows moved across an ID-less row: %v -> %v", before, got)
+	}
+	if h.err == nil || !strings.Contains(strings.ToLower(h.err.Error()), "without an id") {
+		t.Fatalf("missing explicit ID-less-row error: %v", h.err)
+	}
+	if got := h.remoteSessionOrder.forRemote("dev")["work"]; got != nil {
+		t.Fatalf("stored unrepresentable order: %v", got)
+	}
+}
