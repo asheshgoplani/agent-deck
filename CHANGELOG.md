@@ -30,6 +30,10 @@ Stability and correctness release: 30 commits, 21 pull requests and 19 closed is
 - The composer never submits content not attributable to the operator ([#1777](https://github.com/asheshgoplani/agent-deck/issues/1777), [#1778](https://github.com/asheshgoplani/agent-deck/pull/1778)).
 - Web link-opening honors a trusted-domains allowlist ([#1682](https://github.com/asheshgoplani/agent-deck/pull/1682)).
 
+### Changed
+
+- MiniMax model pricing refreshed: M3 added, M2.7 rates reduced — affects cost estimates shown during upgrade ([#1839](https://github.com/asheshgoplani/agent-deck/pull/1839)).
+
 ### Security
 
 - Go toolchain bumped to 1.25.13 across the repo, clearing four stdlib vulnerabilities flagged by govulncheck ([#1895](https://github.com/asheshgoplani/agent-deck/pull/1895)).
