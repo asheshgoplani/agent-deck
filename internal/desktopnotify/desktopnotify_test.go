@@ -651,6 +651,237 @@ func TestHelperServeAcceptsLaterEventWhileEarlierPresentationRetries(t *testing.
 	}
 }
 
+func TestHelperServeSupersedesOlderRetryForSession(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-supersede-retry-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRejected := make(chan struct{}, 1)
+	newDelivered := make(chan struct{}, 1)
+	var oldAttempts atomic.Int32
+	helper := Helper{Listener: listener, Store: store, RetryDelay: 20 * time.Millisecond, Present: func(event Event) error {
+		if event.Summary == "old" {
+			if oldAttempts.Add(1) == 1 {
+				oldRejected <- struct{}{}
+				return errors.New("old presentation rejected")
+			}
+			return nil
+		}
+		newDelivered <- struct{}{}
+		return nil
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("helper did not stop after listener close")
+		}
+	}()
+
+	old := Event{Class: Error, SessionID: "same-session", Summary: "old", Timestamp: time.Now()}
+	if err := Send(socket, old); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-oldRejected:
+	case <-time.After(time.Second):
+		t.Fatal("old presentation was not attempted")
+	}
+	newer := Event{Class: Attention, SessionID: old.SessionID, Summary: "new", Timestamp: old.Timestamp.Add(time.Millisecond)}
+	if err := Send(socket, newer); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-newDelivered:
+	case <-time.After(time.Second):
+		t.Fatal("newer presentation was not delivered")
+	}
+	time.Sleep(3 * helper.RetryDelay)
+	if got := oldAttempts.Load(); got != 1 {
+		t.Fatalf("old presentation attempts = %d, want 1 after supersession", got)
+	}
+	needsDelivery, err := store.NeedsDelivery(newer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if needsDelivery {
+		t.Fatal("newer event was not retained as the persisted delivery state")
+	}
+}
+
+func TestHelperServeShutdownDoesNotWaitForBlockedPresenter(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-blocked-presenter-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	finished := make(chan struct{}, 1)
+	helper := Helper{Listener: listener, Store: store, Present: func(Event) error {
+		entered <- struct{}{}
+		<-release
+		finished <- struct{}{}
+		return nil
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	event := Event{Class: Error, SessionID: "blocked", Timestamp: time.Now()}
+	if err := Send(socket, event); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("presenter did not block")
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-serveDone:
+	case <-time.After(250 * time.Millisecond):
+		close(release)
+		<-finished
+		<-serveDone
+		t.Fatal("helper shutdown waited for blocked presenter")
+	}
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("blocked presenter did not finish after release")
+	}
+	needsDelivery, err := store.NeedsDelivery(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !needsDelivery {
+		t.Fatal("shutdown-cancelled presentation persisted delivery")
+	}
+}
+
+func TestHelperServeSerializesConcurrentPresentations(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-serialized-presenter-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstEntered := make(chan struct{}, 1)
+	secondEntered := make(chan struct{}, 1)
+	releaseFirst := make(chan struct{})
+	var active atomic.Int32
+	var maximum atomic.Int32
+	helper := Helper{Listener: listener, Store: store, Present: func(event Event) error {
+		current := active.Add(1)
+		for {
+			previous := maximum.Load()
+			if current <= previous || maximum.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		defer active.Add(-1)
+		if event.SessionID == "first" {
+			firstEntered <- struct{}{}
+			<-releaseFirst
+		} else {
+			secondEntered <- struct{}{}
+		}
+		return nil
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("helper did not stop after listener close")
+		}
+	}()
+	if err := Send(socket, Event{Class: Error, SessionID: "first", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first presentation did not start")
+	}
+	if err := Send(socket, Event{Class: Attention, SessionID: "second", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	concurrent := false
+	select {
+	case <-secondEntered:
+		concurrent = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+	if !concurrent {
+		select {
+		case <-secondEntered:
+		case <-time.After(time.Second):
+			t.Fatal("second presentation did not start after first completed")
+		}
+	}
+	if concurrent || maximum.Load() != 1 {
+		t.Fatalf("presentations overlapped: concurrent=%v maximum=%d", concurrent, maximum.Load())
+	}
+}
+
 func TestHelperDropsMalformedPayloadAndContinuesServing(t *testing.T) {
 	socketFile, err := os.CreateTemp("", "adn-malformed-*")
 	if err != nil {

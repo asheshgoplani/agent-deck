@@ -394,55 +394,106 @@ func (h Helper) Serve() error {
 	if h.Listener == nil || h.Store == nil || h.Present == nil {
 		return errors.New("desktop notification helper is not configured")
 	}
+	type retry struct {
+		event  Event
+		key    string
+		cancel chan struct{}
+	}
 	type retryState struct {
 		sync.Mutex
-		pending  map[string]struct{}
+		pending  map[string]*retry
 		fatalErr error
+		stopped  bool
 	}
-	state := retryState{pending: make(map[string]struct{})}
-	stopped := make(chan struct{})
-	var retries sync.WaitGroup
-	defer retries.Wait()
-	defer close(stopped)
+	state := retryState{pending: make(map[string]*retry)}
+	var presenterMu sync.Mutex
+	defer func() {
+		state.Lock()
+		state.stopped = true
+		for _, work := range state.pending {
+			close(work.cancel)
+		}
+		state.pending = make(map[string]*retry)
+		state.Unlock()
+	}()
+
+	isCurrent := func(work *retry) bool {
+		state.Lock()
+		defer state.Unlock()
+		return !state.stopped && state.pending[work.event.SessionID] == work
+	}
+	recordFatal := func(work *retry, err error) {
+		state.Lock()
+		shouldStop := !state.stopped && state.pending[work.event.SessionID] == work && state.fatalErr == nil
+		if shouldStop {
+			state.fatalErr = err
+		}
+		state.Unlock()
+		if shouldStop {
+			_ = h.Listener.Close()
+		}
+	}
 
 	startRetry := func(event Event) {
 		key := eventKey(event)
 		state.Lock()
-		if _, alreadyRetrying := state.pending[key]; alreadyRetrying {
+		previous := state.pending[event.SessionID]
+		if previous != nil && previous.key == key {
 			state.Unlock()
 			return
 		}
-		state.pending[key] = struct{}{}
+		if previous != nil {
+			close(previous.cancel)
+		}
+		work := &retry{event: event, key: key, cancel: make(chan struct{})}
+		state.pending[event.SessionID] = work
 		state.Unlock()
 
-		retries.Add(1)
 		go func() {
-			defer retries.Done()
 			defer func() {
 				state.Lock()
-				delete(state.pending, key)
+				if state.pending[event.SessionID] == work {
+					delete(state.pending, event.SessionID)
+				}
 				state.Unlock()
 			}()
 			for {
-				err := h.presentEvent(event)
-				if err == nil {
+				if !isCurrent(work) {
 					return
 				}
-				if !errors.Is(err, errPresentationRejected) {
+				deliver, err := h.Store.NeedsDelivery(event)
+				if err != nil {
+					recordFatal(work, err)
+					return
+				}
+				if !deliver || !isCurrent(work) {
+					return
+				}
+
+				presenterMu.Lock()
+				if !isCurrent(work) {
+					presenterMu.Unlock()
+					return
+				}
+				err = h.Present(event)
+				presenterMu.Unlock()
+				if !isCurrent(work) {
+					return
+				}
+				if err == nil {
 					state.Lock()
-					shouldStop := state.fatalErr == nil
-					if shouldStop {
-						state.fatalErr = err
+					if !state.stopped && state.pending[event.SessionID] == work {
+						err = h.Store.MarkDelivered(event)
 					}
 					state.Unlock()
-					if shouldStop {
-						_ = h.Listener.Close()
+					if err != nil {
+						recordFatal(work, err)
 					}
 					return
 				}
 				timer := time.NewTimer(h.retryDelay())
 				select {
-				case <-stopped:
+				case <-work.cancel:
 					if !timer.Stop() {
 						select {
 						case <-timer.C:
