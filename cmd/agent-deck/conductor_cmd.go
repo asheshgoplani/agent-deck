@@ -349,7 +349,7 @@ func handleConductorSetup(profile string, args []string) {
 						os.Exit(1)
 					}
 
-					settings.Telegram = session.TelegramSettings{Token: token, UserID: userID}
+					settings.Telegram = session.TelegramSettings{Token: token, UserID: session.NewConductorID(userID)}
 					configChanged = true
 				}
 			}
@@ -448,7 +448,7 @@ func handleConductorSetup(profile string, args []string) {
 						os.Exit(1)
 					}
 
-					settings.Discord = session.DiscordSettings{BotToken: dcBotToken, GuildID: dcGuildID, ChannelID: dcChannelID, UserID: dcUserID}
+					settings.Discord = session.DiscordSettings{BotToken: dcBotToken, GuildID: session.NewConductorID(dcGuildID), ChannelID: session.NewConductorID(dcChannelID), UserID: session.NewConductorID(dcUserID)}
 					configChanged = true
 				}
 			}

@@ -86,8 +86,58 @@ func warnUnsafeTestPathOnce(resolved string) {
 	})
 }
 
+// isolationRootEnvs are the base-dir env vars testutil.IsolateHome manages.
+// It swaps HOME to a fresh tempdir and clears the XDG_* vars; individual tests
+// then point specific XDG dirs at their own t.TempDir(), which lives under
+// TMPDIR rather than under the isolated HOME. Both shapes have to count.
+var isolationRootEnvs = []string{
+	"HOME",
+	"XDG_CONFIG_HOME",
+	"XDG_DATA_HOME",
+	"XDG_CACHE_HOME",
+	"XDG_STATE_HOME",
+}
+
+// underIsolatedRoot reports whether resolved sits inside one of the currently
+// configured isolation roots, ignoring any root that IS the passwd home (that
+// is the un-isolated case the guard exists to catch).
+func underIsolatedRoot(resolved string) bool {
+	realHome := osUserRealHome()
+	for _, env := range isolationRootEnvs {
+		root := strings.TrimSpace(os.Getenv(env))
+		if root == "" || !filepath.IsAbs(root) {
+			continue
+		}
+		root = filepath.Clean(root)
+		if root == realHome {
+			continue
+		}
+		if pathUnderRealHome(resolved, root) {
+			return true
+		}
+	}
+	return false
+}
+
 func ensureSafeForTest(resolved string) error {
 	if !testing.Testing() {
+		return nil
+	}
+	// Honor the marker testutil.IsolateHome (internal/testutil/homeenv.go)
+	// sets once it has swapped HOME+XDG — but only for a path that actually
+	// resolves inside one of those isolated roots.
+	//
+	// The guard compares against user.Current().HomeDir, read from
+	// /etc/passwd. In some build sandboxes the isolated dirs NEST inside that
+	// home: the Nix sandbox puts nixbld's passwd home and TMPDIR both under
+	// /build, so an isolated HOME of /build/tmp.XXXX — and any t.TempDir()
+	// a test points XDG_CACHE_HOME at — is "under the real home" by prefix,
+	// and every correctly-isolated test is refused.
+	//
+	// Checking the roots rather than trusting the marker alone keeps the guard
+	// honest: a test that points HOME back at the real home to exercise the
+	// refusal path is NOT isolated, marker or not, and must still be refused.
+	if os.Getenv("AGENT_DECK_TEST_HOME_ISOLATED") == "1" && underIsolatedRoot(resolved) {
 		return nil
 	}
 	if realHome := osUserRealHome(); pathUnderRealHome(resolved, realHome) {
