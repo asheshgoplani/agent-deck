@@ -73,6 +73,7 @@ func TestNotifyDesktop_SuppressedWhenDisabled(t *testing.T) {
 	rec := &recordingBackend{}
 	d := &TransitionDaemon{deskNotifier: desknotify.NewWithBackends(rec)}
 	d.notifyDesktop("default", &Instance{ID: "a", Title: "flow"}, string(StatusWaiting))
+	d.waitDesktopNotifications()
 
 	if len(rec.titles) != 0 {
 		t.Errorf("delivered %d notifications with desktop disabled, want 0", len(rec.titles))
@@ -85,6 +86,7 @@ func TestNotifyDesktop_DeliversWaitingWhenEnabled(t *testing.T) {
 	rec := &recordingBackend{}
 	d := &TransitionDaemon{deskNotifier: desknotify.NewWithBackends(rec)}
 	d.notifyDesktop("default", &Instance{ID: "a", Title: "flow"}, string(StatusWaiting))
+	d.waitDesktopNotifications()
 
 	if len(rec.titles) != 1 {
 		t.Fatalf("delivered %d notifications, want 1", len(rec.titles))
@@ -108,6 +110,7 @@ func TestNotifyDesktop_HonorsPerSessionOptOut(t *testing.T) {
 	d.notifyDesktop("default", &Instance{
 		ID: "a", Title: "flow", NoTransitionNotify: true,
 	}, string(StatusWaiting))
+	d.waitDesktopNotifications()
 
 	if len(rec.titles) != 0 {
 		t.Errorf("delivered %d notifications for a session with NoTransitionNotify, want 0", len(rec.titles))
@@ -121,6 +124,7 @@ func TestNotifyDesktop_IgnoresIdle(t *testing.T) {
 	rec := &recordingBackend{}
 	d := &TransitionDaemon{deskNotifier: desknotify.NewWithBackends(rec)}
 	d.notifyDesktop("default", &Instance{ID: "a", Title: "flow"}, string(StatusIdle))
+	d.waitDesktopNotifications()
 
 	if len(rec.titles) != 0 {
 		t.Errorf("delivered %d notifications for idle, want 0", len(rec.titles))
@@ -146,6 +150,7 @@ func TestNotifyDesktop_OnlyOncePerStatusEntry(t *testing.T) {
 	// Ten poll passes with the session parked in waiting.
 	for i := 0; i < 10; i++ {
 		d.notifyDesktop("default", inst, string(StatusWaiting))
+		d.waitDesktopNotifications()
 	}
 
 	if len(rec.titles) != 1 {
@@ -167,8 +172,11 @@ func TestNotifyDesktop_StatusChangeStillAlerts(t *testing.T) {
 	inst := &Instance{ID: "a", Title: "flow"}
 
 	d.notifyDesktop("default", inst, string(StatusWaiting))
+	d.waitDesktopNotifications()
 	d.notifyDesktop("default", inst, string(StatusWaiting))
+	d.waitDesktopNotifications()
 	d.notifyDesktop("default", inst, string(StatusError))
+	d.waitDesktopNotifications()
 
 	if len(rec.bodies) != 2 {
 		t.Fatalf("delivered %d notifications, want 2 (waiting then error)", len(rec.bodies))
@@ -190,7 +198,9 @@ func TestNotifyDesktop_PerSessionNotGlobal(t *testing.T) {
 	}
 
 	d.notifyDesktop("default", &Instance{ID: "a", Title: "flow"}, string(StatusWaiting))
+	d.waitDesktopNotifications()
 	d.notifyDesktop("default", &Instance{ID: "b", Title: "natera"}, string(StatusWaiting))
+	d.waitDesktopNotifications()
 
 	if len(rec.titles) != 2 {
 		t.Fatalf("delivered %d notifications for two distinct sessions, want 2", len(rec.titles))
@@ -209,7 +219,9 @@ func TestNotifyDesktop_PerProfile(t *testing.T) {
 	inst := &Instance{ID: "a", Title: "flow"}
 
 	d.notifyDesktop("default", inst, string(StatusWaiting))
+	d.waitDesktopNotifications()
 	d.notifyDesktop("work", inst, string(StatusWaiting))
+	d.waitDesktopNotifications()
 
 	if len(rec.titles) != 2 {
 		t.Fatalf("delivered %d notifications across two profiles, want 2", len(rec.titles))
@@ -233,8 +245,10 @@ func TestNotifyDesktop_ReAlertsAfterSessionResumes(t *testing.T) {
 
 	// First prompt, answered, second prompt: two alerts.
 	d.notifyDesktop("default", inst, string(StatusWaiting))
+	d.waitDesktopNotifications()
 	d.clearDesktopEdgeIfRunning("default", inst.ID, string(StatusRunning))
 	d.notifyDesktop("default", inst, string(StatusWaiting))
+	d.waitDesktopNotifications()
 
 	if len(rec.titles) != 2 {
 		t.Fatalf("delivered %d notifications, want 2: a session that resumed and then "+
@@ -244,19 +258,61 @@ func TestNotifyDesktop_ReAlertsAfterSessionResumes(t *testing.T) {
 
 // Only a return to running releases the edge. Any other status must leave it
 // intact, or the suppression it provides evaporates.
-func TestClearDesktopEdgeIfRunning_OnlyOnRunning(t *testing.T) {
+// The attention statuses must NOT release the edge: holding it while a session
+// sits in waiting or error is what prevents per-poll spam.
+func TestClearDesktopEdge_AttentionStatusesDoNotRelease(t *testing.T) {
 	d := &TransitionDaemon{lastDesktopNotify: map[string]string{"default|a": "waiting"}}
 
-	for _, s := range []string{"waiting", "error", "idle", "stopped", ""} {
+	for _, s := range []string{"waiting", "error", "stopped", ""} {
 		d.clearDesktopEdgeIfRunning("default", "a", s)
 		if got := d.lastDesktopNotify["default|a"]; got != "waiting" {
-			t.Fatalf("status %q cleared the edge record (now %q); only running may clear it", s, got)
+			t.Fatalf("status %q released the edge record (now %q); it must be held so a "+
+				"session parked in an attention status does not re-alert every poll", s, got)
 		}
 	}
+}
 
-	d.clearDesktopEdgeIfRunning("default", "a", string(StatusRunning))
-	if _, present := d.lastDesktopNotify["default|a"]; present {
-		t.Error("running did not clear the edge record")
+// Every status meaning "this turn is over" must release the edge. Re-arming on
+// running ALONE is insufficient: the hook-candidate dispatch site exists for
+// turns too fast for a running snapshot to be observed, so waiting -> idle ->
+// waiting can happen with running never seen. Keyed on running only, the second
+// genuine prompt is silently suppressed.
+func TestClearDesktopEdge_ProgressStatusesRelease(t *testing.T) {
+	for _, s := range []string{
+		string(StatusRunning), string(StatusIdle), string(StatusStarting),
+	} {
+		d := &TransitionDaemon{lastDesktopNotify: map[string]string{"default|a": "waiting"}}
+		d.clearDesktopEdgeIfRunning("default", "a", s)
+		if _, present := d.lastDesktopNotify["default|a"]; present {
+			t.Errorf("status %q did not release the edge record; the session has moved on, "+
+				"so its next prompt must alert again", s)
+		}
+	}
+}
+
+// The regression this closes, at the level the operator experiences it: a
+// session prompts, the answer is handled fast enough that no running snapshot
+// is observed, and it prompts again. Both prompts must alert.
+func TestNotifyDesktop_ReAlertsWhenOnlyIdleSeenBetweenPrompts(t *testing.T) {
+	writeDesktopNotifyConfig(t, "desktop = true")
+
+	rec := &recordingBackend{}
+	d := &TransitionDaemon{
+		deskNotifier:      desknotify.NewWithBackends(rec),
+		lastDesktopNotify: map[string]string{},
+	}
+	inst := &Instance{ID: "a", Title: "flow"}
+
+	d.notifyDesktop("default", inst, string(StatusWaiting))
+	d.waitDesktopNotifications()
+	// The daemon never observes running: the turn completed between polls.
+	d.clearDesktopEdgeIfRunning("default", inst.ID, string(StatusIdle))
+	d.notifyDesktop("default", inst, string(StatusWaiting))
+	d.waitDesktopNotifications()
+
+	if len(rec.titles) != 2 {
+		t.Fatalf("delivered %d notifications, want 2: a second genuine prompt was "+
+			"suppressed because only idle, not running, was seen in between", len(rec.titles))
 	}
 }
 
@@ -269,6 +325,7 @@ func TestNotifyDesktop_NilMapDoesNotPanic(t *testing.T) {
 	rec := &recordingBackend{}
 	d := &TransitionDaemon{deskNotifier: desknotify.NewWithBackends(rec)} // lastDesktopNotify nil
 	d.notifyDesktop("default", &Instance{ID: "a", Title: "flow"}, string(StatusWaiting))
+	d.waitDesktopNotifications()
 
 	if len(rec.titles) != 1 {
 		t.Errorf("delivered %d notifications with a nil edge map, want 1", len(rec.titles))
@@ -285,7 +342,9 @@ func TestNotifyDesktop_NilSafe(t *testing.T) {
 	rec := &recordingBackend{}
 	d := &TransitionDaemon{deskNotifier: desknotify.NewWithBackends(rec)}
 	d.notifyDesktop("default", nil, string(StatusWaiting))
+	d.waitDesktopNotifications()
 
 	var nilDaemon *TransitionDaemon
 	nilDaemon.notifyDesktop("default", &Instance{ID: "a"}, string(StatusWaiting))
+	d.waitDesktopNotifications()
 }

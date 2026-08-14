@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -96,6 +97,11 @@ type TransitionDaemon struct {
 	//
 	// Accessed only from the single-threaded Run loop, like lastProbeStall.
 	lastDesktopNotify map[string]string
+
+	// desktopWG tracks in-flight desktop notifications, which are dispatched
+	// off the poll loop so a wedged notifier binary cannot stall session
+	// monitoring. Only tests wait on it.
+	desktopWG sync.WaitGroup
 }
 
 func NewTransitionDaemon() *TransitionDaemon {
@@ -955,8 +961,9 @@ func isCodexTerminalHookEvent(event string) bool {
 		strings.Contains(canon, "cancel")
 }
 
-// clearDesktopEdgeIfRunning drops a session's desktop edge record once it is
-// back to running, so its NEXT prompt notifies again.
+// clearDesktopEdgeIfRunning drops a session's desktop edge record once it has
+// moved on from the state the operator was alerted about, so its NEXT prompt
+// notifies again. See releasesDesktopEdge for which statuses count.
 //
 // Without this the edge record set by notifyDesktop would persist for the life
 // of the process and the FIRST prompt in a session would be the only one that
@@ -966,10 +973,35 @@ func (d *TransitionDaemon) clearDesktopEdgeIfRunning(profile, instanceID, toStat
 	if d == nil || d.lastDesktopNotify == nil {
 		return
 	}
-	if normalizeStatusString(toStatus) != string(StatusRunning) {
+	if !releasesDesktopEdge(toStatus) {
 		return
 	}
 	delete(d.lastDesktopNotify, profile+"|"+instanceID)
+}
+
+// releasesDesktopEdge reports whether a status means the session has moved on
+// from whatever the operator was last alerted about, so its next prompt should
+// alert again.
+//
+// Re-arming on running alone is not enough. The hook-candidate dispatch site
+// exists precisely for turns too fast for a running snapshot to be observed, so
+// the sequence waiting -> (answered, agent finishes fast) -> idle -> waiting can
+// occur with the daemon never seeing running. Keyed on running only, the edge
+// record stays pinned at "waiting" and the SECOND genuine prompt is suppressed:
+// a silently dropped alert, which is the exact failure this feature exists to
+// remove, and a worse outcome than the banner spam the edge prevents.
+//
+// idle and starting are therefore releases too: both mean "not currently
+// asking the operator for anything". The attention statuses (waiting, error)
+// are deliberately NOT releases, because holding the edge while a session sits
+// in one of them is what stops per-poll spam.
+func releasesDesktopEdge(status string) bool {
+	switch normalizeStatusString(status) {
+	case string(StatusRunning), string(StatusIdle), string(StatusStarting):
+		return true
+	default:
+		return false
+	}
 }
 
 // notifyDesktop raises an OS notification for a session that needs the
@@ -1004,14 +1036,39 @@ func (d *TransitionDaemon) notifyDesktop(profile string, inst *Instance, toStatu
 	}
 	d.lastDesktopNotify[key] = toStatus
 
-	if backend := d.deskNotifier.Notify(desknotify.Notification{
+	// Dispatch OFF the poll loop. Notify shells out to a notifier binary and
+	// bounds itself at 3s, but that bound is per invocation and nothing wraps
+	// this call: statusProbeBudget and syncPassBudget cover status probes, not
+	// this. N sessions transitioning in one pass would otherwise serialize into
+	// N x 3s of blocking in a single-threaded loop that has a documented freeze
+	// history (see statusProbeBudget). Fire-and-forget is safe because the
+	// result is already advisory: Notify never returns an error, and no caller
+	// branches on whether a banner appeared. The edge record above is written
+	// BEFORE the goroutine starts, so suppression does not depend on it.
+	notif := desknotify.Notification{
 		SessionTitle: inst.Title,
 		Profile:      profile,
 		ToStatus:     toStatus,
-	}); backend != "" {
-		sessionLog.Debug("desktop_notification_sent",
-			slog.String("instance_id", inst.ID),
-			slog.String("to_status", toStatus),
-			slog.String("backend", backend))
 	}
+	instanceID := inst.ID
+	d.desktopWG.Add(1)
+	go func() {
+		defer d.desktopWG.Done()
+		if backend := d.deskNotifier.Notify(notif); backend != "" {
+			sessionLog.Debug("desktop_notification_sent",
+				slog.String("instance_id", instanceID),
+				slog.String("to_status", toStatus),
+				slog.String("backend", backend))
+		}
+	}()
+}
+
+// waitDesktopNotifications blocks until every in-flight desktop notification
+// has finished. Exists so tests can assert on delivery without racing the
+// fire-and-forget dispatch; production never needs to wait.
+func (d *TransitionDaemon) waitDesktopNotifications() {
+	if d == nil {
+		return
+	}
+	d.desktopWG.Wait()
 }
