@@ -722,6 +722,12 @@ type RemoteConfig struct {
 
 	// Profile is the remote profile to use (default: "default")
 	Profile string `toml:"profile,omitempty"`
+
+	// CommandTimeoutSeconds bounds each remote agent-deck command (default 30).
+	// Raise it for remotes whose session fleets make `list --json` slow; the
+	// old hardcoded 10s silently killed fetches from hosts with many sessions,
+	// making the whole remote look unavailable (#1859 family).
+	CommandTimeoutSeconds int `toml:"command_timeout_seconds,omitempty"`
 }
 
 // GetAgentDeckPath returns the agent-deck binary path, defaulting to "agent-deck".
@@ -730,6 +736,15 @@ func (rc RemoteConfig) GetAgentDeckPath() string {
 		return rc.AgentDeckPath
 	}
 	return "agent-deck"
+}
+
+// GetCommandTimeout returns the per-command timeout for this remote,
+// defaulting to 30s and rejecting non-positive values.
+func (rc RemoteConfig) GetCommandTimeout() time.Duration {
+	if rc.CommandTimeoutSeconds > 0 {
+		return time.Duration(rc.CommandTimeoutSeconds) * time.Second
+	}
+	return 30 * time.Second
 }
 
 // GetProfile returns the remote profile, defaulting to "default".

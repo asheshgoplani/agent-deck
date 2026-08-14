@@ -172,6 +172,9 @@ func tmuxArgs(socketName string, args ...string) []string {
 		out = make([]string, len(args))
 		copy(out, args)
 	} else {
+		if len(args) > int(^uint(0)>>1)-2 {
+			panic("tmux argument list too large")
+		}
 		out = make([]string, 0, len(args)+2)
 		out = append(out, "-L", name)
 		out = append(out, args...)
