@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`[notifications] desktop` raises an OS notification when a session needs input or errors.** The existing signals could not reach an unattended operator: the tmux notification bar is only visible while you are looking at the TUI, and `transition_events` routes a child's transition to its *parent* session, so a top-level session with no parent reached nobody. A background agent blocking on a permission prompt while you worked elsewhere surfaced nowhere. Delivery prefers the cmux notification panel when the `cmux` CLI is present (which also records the alert in its sidebar), falls back to a macOS banner, and is a silent no-op when neither exists. Fires once per transition into `waiting` or `error`; `idle` is excluded as a resting state rather than an event. Honours the per-session `set-transition-notify off` opt-out. Off by default.
+
 ## [1.11.0] - 2026-08-01
 
 Security and correctness release. Repo-supplied worktree scripts now require explicit consent, path handling around the skills catalog and logs is hardened, `session send` tells the truth about delivery, restarted sessions can no longer resume the wrong conversation, and Ctrl+Q detach works on every session sharing a tmux socket.

@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/desknotify"
 )
 
 const (
@@ -33,6 +36,11 @@ type hookTransitionCandidate struct {
 
 type TransitionDaemon struct {
 	notifier *TransitionNotifier
+
+	// deskNotifier alerts the OPERATOR (not a parent session) when a session
+	// needs input. Distinct from notifier above, which is parent-keyed and so
+	// cannot reach a top-level session. Opt-in via [notifications] desktop.
+	deskNotifier *desknotify.Notifier
 
 	hookWatcher *StatusFileWatcher
 
@@ -71,17 +79,37 @@ type TransitionDaemon struct {
 	// logs at most once per probeStallLogInterval instead of flooding the log
 	// every few seconds. Accessed only from the single-threaded Run loop.
 	lastProbeStall map[string]time.Time
+
+	// lastDesktopNotify records the status a desktop notification was last
+	// raised for, per (profile, instance), so the notification is EDGE
+	// triggered rather than level triggered.
+	//
+	// The snapshot path is naturally edge-triggered: ShouldNotifyTransition
+	// requires from==running and prev is refreshed each pass, so a session that
+	// stays waiting is skipped. The hook-candidate path is NOT.
+	// terminalHookTransitionCandidate accepts any hook file updated within
+	// hookFreshWindow (45s), so a session that stops and stays waiting yields a
+	// candidate on every poll for that whole window. The transition notifier's
+	// own 90s dedup sits DOWNSTREAM in NotifyTransition and cannot cover a
+	// desktop call placed before it. Without this map one answered prompt would
+	// raise roughly 15-22 banners at a 2-3s poll interval.
+	//
+	// Accessed only from the single-threaded Run loop, like lastProbeStall.
+	lastDesktopNotify map[string]string
 }
 
 func NewTransitionDaemon() *TransitionDaemon {
 	return &TransitionDaemon{
 		notifier:       NewTransitionNotifier(),
+		deskNotifier:   desknotify.New(),
 		storages:       map[string]*Storage{},
 		lastStatus:     map[string]map[string]string{},
 		initialized:    map[string]bool{},
 		lastDone:       map[string]map[string]DoneSignal{},
 		lastDoneScan:   map[string]map[string]time.Time{},
 		lastProbeStall: map[string]time.Time{},
+
+		lastDesktopNotify: map[string]string{},
 	}
 }
 
@@ -438,11 +466,21 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	prev := d.lastStatus[profile]
 	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
 	for id, to := range statuses {
+		d.clearDesktopEdgeIfRunning(profile, id, to)
+
 		from := normalizeStatusString(prev[id])
 		if !ShouldNotifyTransition(from, to) {
 			continue
 		}
 		inst := byID[id]
+
+		// Desktop notification runs BEFORE (and independently of) the
+		// parent-routing gate below. That gate drops a session with no
+		// ParentSessionID, which is exactly the top-level session whose
+		// operator has no other out-of-TUI signal. Gating the two together
+		// would reproduce the hole this exists to close.
+		d.notifyDesktop(profile, inst, to)
+
 		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
 			continue
 		}
@@ -820,6 +858,13 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 			continue
 		}
 
+		// Desktop-notify here too, AFTER the veto above so the two emission
+		// paths cannot double-fire for one transition. This path covers a
+		// transition fast enough that no `running` snapshot was ever observed
+		// (a short prompt answered between polls), which is the common case
+		// for an interactive agent, so omitting it would miss most alerts.
+		d.notifyDesktop(profile, inst, to)
+
 		event := TransitionNotificationEvent{
 			ChildSessionID: id,
 			ChildTitle:     inst.Title,
@@ -908,4 +953,65 @@ func isCodexTerminalHookEvent(event string) bool {
 		strings.Contains(canon, "fail") ||
 		strings.Contains(canon, "abort") ||
 		strings.Contains(canon, "cancel")
+}
+
+// clearDesktopEdgeIfRunning drops a session's desktop edge record once it is
+// back to running, so its NEXT prompt notifies again.
+//
+// Without this the edge record set by notifyDesktop would persist for the life
+// of the process and the FIRST prompt in a session would be the only one that
+// ever alerted, which is a worse failure than the banner spam the edge record
+// exists to prevent.
+func (d *TransitionDaemon) clearDesktopEdgeIfRunning(profile, instanceID, toStatus string) {
+	if d == nil || d.lastDesktopNotify == nil {
+		return
+	}
+	if normalizeStatusString(toStatus) != string(StatusRunning) {
+		return
+	}
+	delete(d.lastDesktopNotify, profile+"|"+instanceID)
+}
+
+// notifyDesktop raises an OS notification for a session that needs the
+// operator. No-op unless [notifications] desktop is enabled, and best-effort
+// after that: a status poll must never fail or stall because a notifier did.
+func (d *TransitionDaemon) notifyDesktop(profile string, inst *Instance, toStatus string) {
+	if d == nil || d.deskNotifier == nil || inst == nil {
+		return
+	}
+	if !GetNotificationsSettings().GetDesktopEnabled() {
+		return
+	}
+	// Narrower than the parent-routing status set: see desknotify.ShouldNotify.
+	if !desknotify.ShouldNotify(toStatus) {
+		return
+	}
+	// Honour the per-session opt-out the parent path already respects, so one
+	// noisy session can be silenced without disabling notifications globally.
+	if inst.NoTransitionNotify {
+		return
+	}
+	// Edge-trigger: notify once per entry into a status, not once per poll
+	// while the session sits in it. Required because the hook-candidate call
+	// site re-derives a candidate for the whole 45s hookFreshWindow. Keyed on
+	// the status too, so waiting -> error still alerts.
+	key := profile + "|" + inst.ID
+	if d.lastDesktopNotify[key] == toStatus {
+		return
+	}
+	if d.lastDesktopNotify == nil {
+		d.lastDesktopNotify = map[string]string{}
+	}
+	d.lastDesktopNotify[key] = toStatus
+
+	if backend := d.deskNotifier.Notify(desknotify.Notification{
+		SessionTitle: inst.Title,
+		Profile:      profile,
+		ToStatus:     toStatus,
+	}); backend != "" {
+		sessionLog.Debug("desktop_notification_sent",
+			slog.String("instance_id", inst.ID),
+			slog.String("to_status", toStatus),
+			slog.String("backend", backend))
+	}
 }
