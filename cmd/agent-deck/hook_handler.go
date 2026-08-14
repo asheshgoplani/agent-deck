@@ -387,7 +387,7 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 		if err != nil {
 			return false
 		}
-		defer lock.Close()
+		defer closeChecked(lock)
 		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 			return false
 		}

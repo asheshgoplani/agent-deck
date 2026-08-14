@@ -2622,7 +2622,7 @@ func (i *Instance) queryOpenCodeSession() string {
 		sessions, err = i.queryOpenCodeSessionsHTTP(port, projectPath)
 		if err != nil {
 			sessionLog.Debug("opencode_http_query_failed",
-				slog.String("dir", projectPath),
+				slog.String("dir", logging.SanitizeValue(projectPath)),
 				slog.Int("port", port),
 				slog.String("error", err.Error()),
 			)
@@ -2754,13 +2754,13 @@ func (i *Instance) runOpenCodeSessionsCLI(projectPath string) []openCodeSessionM
 	cmd.Dir = projectPath
 	cmd.WaitDelay = 500 * time.Millisecond
 
-	sessionLog.Debug("opencode_query_sessions", slog.String("dir", projectPath))
+	sessionLog.Debug("opencode_query_sessions", slog.String("dir", logging.SanitizeValue(projectPath)))
 
 	output, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			sessionLog.Warn("opencode_query_timeout",
-				slog.String("dir", projectPath),
+				slog.String("dir", logging.SanitizeValue(projectPath)),
 				slog.String("instance_id", i.ID),
 			)
 		} else {
