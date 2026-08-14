@@ -3,6 +3,7 @@ package watcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -41,10 +42,12 @@ func newHealthLoopEngine(t *testing.T, interval time.Duration) *Engine {
 //
 // failSetups bounds how many Setup attempts fail, so one adapter can model a
 // retry that eventually succeeds. panicOnTeardown makes Teardown panic, which
-// is the half-constructed behaviour cleanup has to survive.
+// is the half-constructed behaviour cleanup has to survive. healthDelay slows
+// HealthCheck down so a test can keep healthLoop inside its per-entry loop.
 type failedSetupAdapter struct {
 	failSetups      int64 // negative means: fail every attempt
 	panicOnTeardown bool
+	healthDelay     time.Duration
 
 	setups       atomic.Int64
 	healthChecks atomic.Int64
@@ -74,6 +77,9 @@ func (a *failedSetupAdapter) Teardown() error {
 
 func (a *failedSetupAdapter) HealthCheck() error {
 	a.healthChecks.Add(1)
+	if a.healthDelay > 0 {
+		time.Sleep(a.healthDelay)
+	}
 	return nil
 }
 
@@ -257,6 +263,39 @@ func TestEngine_TeardownPanic_IsContained(t *testing.T) {
 	if !healthy.teardownCalled {
 		t.Error("Teardown was not called on the live adapter during Stop")
 	}
+}
+
+// TestEngine_Stop_DoesNotRaceWithHealthLoopOverSetupOK pins the shutdown half of
+// the setupOK invariant. Stop's teardown pass runs after e.cancel() but before
+// e.wg.Wait() returns, so healthLoop can still be mid-iteration reading setupOK
+// while Stop walks the same entries: Stop must only read the field, never write
+// it. stopOnce is what makes the pass run at most once, not clearing the flag.
+//
+// Deliberately shaped to make the window wide instead of hoping to hit it: each
+// adapter's HealthCheck blocks for a millisecond, so with a 1ms tick healthLoop
+// is inside its per-entry loop for tens of milliseconds while Stop's loop runs
+// to completion in microseconds. Fails under -race if Stop writes setupOK.
+func TestEngine_Stop_DoesNotRaceWithHealthLoopOverSetupOK(t *testing.T) {
+	engine := newHealthLoopEngine(t, time.Millisecond)
+
+	const adapters = 32
+	for i := 0; i < adapters; i++ {
+		engine.RegisterAdapter(
+			fmt.Sprintf("w%d", i),
+			&failedSetupAdapter{healthDelay: time.Millisecond}, // failSetups == 0: Setup succeeds
+			AdapterConfig{Type: "mock", Name: fmt.Sprintf("live-%d", i)},
+			60,
+		)
+	}
+
+	if err := engine.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Let healthLoop get into an iteration before shutdown starts.
+	time.Sleep(5 * time.Millisecond)
+
+	engine.Stop()
 }
 
 // TestNtfy_HealthCheck_WithoutSetup pins the adapter-level guard: HealthCheck on

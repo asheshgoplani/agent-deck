@@ -74,8 +74,13 @@ type adapterEntry struct {
 	// their *http.Client after validating the topic — so probing it can panic
 	// (#1886). It also decides who owns cleanup: a failed attempt is torn down
 	// immediately by setupAdapter, so Stop only tears down entries that are
-	// still holding a successful Setup. Only Start writes this field, before
-	// healthLoop is launched, so the later reads are race-free.
+	// still holding a successful Setup.
+	//
+	// setupAdapter is the only writer, and Start calls it before healthLoop is
+	// launched, so the later reads are race-free. Stop must keep it that way:
+	// its teardown pass runs after cancel() but before wg.Wait() returns, so
+	// healthLoop may still be reading this field, and stopOnce — not clearing
+	// the flag — is what makes that pass run at most once.
 	setupOK bool
 }
 
@@ -676,13 +681,13 @@ func (e *Engine) Stop() {
 		// Entries whose Setup failed were already torn down by setupAdapter at
 		// the moment they failed, so skipping them here is what makes cleanup
 		// exactly-once rather than twice (#1886). stopOnce keeps a second Stop
-		// from repeating this pass.
+		// from repeating this pass — this loop only reads setupOK, because
+		// healthLoop may still be reading it until wg.Wait() below returns.
 		for i := range e.adapters {
 			entry := &e.adapters[i]
 			if !entry.setupOK {
 				continue
 			}
-			entry.setupOK = false
 			e.teardownAdapter(entry, "stop")
 		}
 
