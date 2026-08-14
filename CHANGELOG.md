@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-08-14
+
+Stability and correctness release: 30 commits, 21 pull requests and 19 closed issues, with major community contributions.
+
+### Fixed
+
+- **Multiline sends preserve line structure end-to-end**, verified via scoped paste-marker evidence ([#1855](https://github.com/asheshgoplani/agent-deck/issues/1855), [#1897](https://github.com/asheshgoplani/agent-deck/pull/1897)).
+- **Remote session identity is location-aware** — the same directory on different hosts no longer collides ([#1850](https://github.com/asheshgoplani/agent-deck/issues/1850)–[#1854](https://github.com/asheshgoplani/agent-deck/issues/1854), [#1858](https://github.com/asheshgoplani/agent-deck/issues/1858), [#1901](https://github.com/asheshgoplani/agent-deck/pull/1901)).
+- Codex completion converges across CLI polls ([#1792](https://github.com/asheshgoplani/agent-deck/issues/1792), [#1896](https://github.com/asheshgoplani/agent-deck/pull/1896)); hook status binds to spawn generations ([#1825](https://github.com/asheshgoplani/agent-deck/issues/1825), [#1903](https://github.com/asheshgoplani/agent-deck/pull/1903)).
+- Durable last-activity records keep timestamps consistent across restarts ([#1846](https://github.com/asheshgoplani/agent-deck/issues/1846), [#1847](https://github.com/asheshgoplani/agent-deck/pull/1847)).
+- OpenCode sessions preserve launch options on restart ([#1843](https://github.com/asheshgoplani/agent-deck/pull/1843)) and no longer leak CLI session polls ([#1848](https://github.com/asheshgoplani/agent-deck/issues/1848), [#1849](https://github.com/asheshgoplani/agent-deck/pull/1849)).
+- Watcher adapter recovery failures are contained instead of crashing the engine ([#1886](https://github.com/asheshgoplani/agent-deck/issues/1886), [#1900](https://github.com/asheshgoplani/agent-deck/pull/1900)); interval hooks get bounded output capture and reliable shutdown ([#1829](https://github.com/asheshgoplani/agent-deck/issues/1829), [#1845](https://github.com/asheshgoplani/agent-deck/pull/1845)).
+- tmux client/server protocol version mismatch is treated as alive ([#1723](https://github.com/asheshgoplani/agent-deck/pull/1723)); non-numeric telegram/discord IDs no longer hard-fail config load ([#1726](https://github.com/asheshgoplani/agent-deck/pull/1726)).
+- Unicode output is preserved for locale-free tmux clients ([#1867](https://github.com/asheshgoplani/agent-deck/issues/1867), [#1902](https://github.com/asheshgoplani/agent-deck/pull/1902)).
+- Attach no longer eats a keypress after session exit, on local and SSH paths ([#1783](https://github.com/asheshgoplani/agent-deck/issues/1783), [#1835](https://github.com/asheshgoplani/agent-deck/pull/1835)).
+- Archived sessions no longer leak into the web sidebar ([#1844](https://github.com/asheshgoplani/agent-deck/pull/1844)); isolated-tree paths honor the IsolateHome marker ([#1861](https://github.com/asheshgoplani/agent-deck/pull/1861)); stale-session output routes by transcript cwd ([#1727](https://github.com/asheshgoplani/agent-deck/issues/1727)); claude flags are no longer injected before subcommands ([#1821](https://github.com/asheshgoplani/agent-deck/issues/1821)).
+
+### Added
+
+- Remote sessions reorder with shift+up/down ([#1875](https://github.com/asheshgoplani/agent-deck/issues/1875), [#1898](https://github.com/asheshgoplani/agent-deck/pull/1898)); remote group headers collapse ([#1874](https://github.com/asheshgoplani/agent-deck/pull/1874)) and descendants of collapsed ancestors stay hidden ([#1878](https://github.com/asheshgoplani/agent-deck/issues/1878), [#1899](https://github.com/asheshgoplani/agent-deck/pull/1899)).
+- The composer never submits content not attributable to the operator ([#1777](https://github.com/asheshgoplani/agent-deck/issues/1777), [#1778](https://github.com/asheshgoplani/agent-deck/pull/1778)).
+- Web link-opening honors a trusted-domains allowlist ([#1682](https://github.com/asheshgoplani/agent-deck/pull/1682)).
+
+### Security
+
+- Go toolchain bumped to 1.25.13 across the repo, clearing four stdlib vulnerabilities flagged by govulncheck ([#1895](https://github.com/asheshgoplani/agent-deck/pull/1895)).
+
 ## [1.11.0] - 2026-08-01
 
 Security and correctness release. Repo-supplied worktree scripts now require explicit consent, path handling around the skills catalog and logs is hardened, `session send` tells the truth about delivery, restarted sessions can no longer resume the wrong conversation, and Ctrl+Q detach works on every session sharing a tmux socket.
