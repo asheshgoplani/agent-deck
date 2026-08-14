@@ -109,6 +109,31 @@ func TestHermesClearStatusPreservesLiveGeneration(t *testing.T) {
 	}
 }
 
+func TestHermesRestartWaitingSeedCarriesCurrentGeneration(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	inst := &Instance{ID: "hermes-restart", Tool: "hermes"}
+	if _, err := inst.seedHermesHookGeneration("starting", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inst.seedHermesHookGeneration("waiting", false); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(GetHooksDir(), inst.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seed hermesHookSeed
+	if err := json.Unmarshal(b, &seed); err != nil {
+		t.Fatal(err)
+	}
+	if seed.Status != "waiting" || seed.HookGeneration == "" || seed.HookGeneration != inst.HermesHookGeneration {
+		t.Fatalf("restart baseline is not generation-aware: %+v current=%q", seed, inst.HermesHookGeneration)
+	}
+	if command := inst.buildHermesCommand("hermes"); !strings.Contains(command, "AGENTDECK_HOOK_GENERATION="+seed.HookGeneration) {
+		t.Fatalf("replacement command does not export baseline generation: %s", command)
+	}
+}
+
 func TestHermesSeedClearsOppositeLayout(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	inst := &Instance{ID: "hermes-mode-change", Tool: "hermes"}

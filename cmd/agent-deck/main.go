@@ -1408,6 +1408,9 @@ func handleAdd(profile string, args []string) {
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
+	if *sshHost != "" && len(pluginFlags) > 0 {
+		fmt.Fprintln(os.Stderr, "Warning: --plugin is persisted but cannot be installed or enabled automatically over SSH; configure the selected plugins in the remote Claude profile.")
+	}
 
 	// Path argument is optional; if omitted with -g/--group, we'll try group default_path.
 	// Fix: sanitize input to remove surrounding quotes that cause issues.

@@ -45,8 +45,8 @@ register_session() {
     local profile="$1" dir="$2" title="$3"
     local out rc code
 
-    out="$(agent-deck -p "${profile}" add "${dir}" -t "${title}" -c claude -g "infra" --json 2>&1)"
-    rc=$?
+    rc=0
+    out="$(agent-deck -p "${profile}" add "${dir}" -t "${title}" -c claude -g "infra" --json 2>&1)" || rc=$?
 
     if [[ ${rc} -eq 0 ]]; then
         ok "  Session ${title} registered in ${profile}"

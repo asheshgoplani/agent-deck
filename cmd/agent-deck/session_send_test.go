@@ -500,6 +500,27 @@ func TestSendWithRetryTarget_RetriesOnUnsentPasteMarker(t *testing.T) {
 	}
 }
 
+func TestSendWithRetryTarget_TranscriptPasteMarkerDoesNotBecomeTypedNotSubmitted(t *testing.T) {
+	// `paste-buffer -p` leaves this marker in transcript scrollback after the
+	// agent accepts the message. The live composer below it is empty. Whole-pane
+	// matching used to keep nudging Enter and classify the accepted send as
+	// typed_not_submitted.
+	pane := "assistant response\n[Pasted text #1 +89 lines]\n────────────\n❯ \n────────────\n"
+	mock := &mockSendRetryTarget{
+		statuses: []string{"active", "active"},
+		panes:    []string{pane, pane},
+	}
+	delivery, err := sendWithRetryTarget(mock, "first line\nsecond line", false, sendRetryOptions{
+		maxRetries: 2, checkDelay: 0, verifyDelivery: true, composerPasteFreeBeforeSend: true,
+	})
+	if err != nil || delivery != deliverySubmitted {
+		t.Fatalf("accepted multiline send misclassified: delivery=%q err=%v", delivery, err)
+	}
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 0 {
+		t.Fatalf("transcript marker caused %d spurious Enter nudges", got)
+	}
+}
+
 // TestSendWithRetryTarget_DetectsPasteMarkerAfterInitialWaiting locks in the
 // post-#876 contract: an active-status transition (and a paste marker en
 // route) IS positive evidence, so verifyDelivery returns nil. State-machine

@@ -808,6 +808,14 @@ func (i *Instance) prepareWorkerScratchConfigDirForSpawn() {
 	// re-arm needsScratchForTelegramChannelOwner on this very spawn
 	// (telegram_reliability.go, telegram-channel-restore).
 	reconcileConductorTelegramChannel(i)
+	if warning := i.remotePluginSetupWarning(); warning != "" {
+		sessionLog.Warn("ssh_plugin_setup_skipped",
+			slog.String("instance_id", i.ID),
+			slog.String("ssh_host", i.SSHHost),
+			slog.Any("plugins", i.Plugins),
+			slog.String("guidance", warning),
+		)
+	}
 	if !i.NeedsWorkerScratchConfigDir() {
 		return
 	}
@@ -866,6 +874,13 @@ func (i *Instance) prepareWorkerScratchConfigDirForSpawn() {
 	if result := VerifyTelegramChannelEnabled(effectiveDir, i.Channels); !result.OK {
 		EmitTelegramChannelDriftWarning(i.Title, i.ID, effectiveDir, i.Channels, result)
 	}
+}
+
+func (i *Instance) remotePluginSetupWarning() string {
+	if i == nil || !i.IsSSH() || len(i.Plugins) == 0 {
+		return ""
+	}
+	return "per-session plugin installation and enablement are unavailable over SSH; configure these plugins in the remote Claude profile"
 }
 
 // macOSScratchWarningEmitter is the package-level seam that lets tests

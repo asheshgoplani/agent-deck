@@ -79,6 +79,21 @@ func TestNeedsWorkerScratchConfigDir_NeverForRemoteSessions(t *testing.T) {
 	}
 }
 
+func TestRemotePluginSetupWarningIsExplicit(t *testing.T) {
+	remote := NewInstanceWithTool("remote", t.TempDir(), "claude")
+	remote.SSHHost = "cloudlydr@remote-host"
+	remote.Plugins = []string{"telegram"}
+	warning := remote.remotePluginSetupWarning()
+	if !strings.Contains(warning, "unavailable over SSH") || !strings.Contains(warning, "remote Claude profile") {
+		t.Fatalf("warning is not actionable: %q", warning)
+	}
+	local := NewInstanceWithTool("local", t.TempDir(), "claude")
+	local.Plugins = []string{"telegram"}
+	if got := local.remotePluginSetupWarning(); got != "" {
+		t.Fatalf("local plugin setup warned: %q", got)
+	}
+}
+
 // TestApplyWorkerScratchOverride_RemoteKeepsResolvedDir is defense in depth: even
 // if WorkerScratchConfigDir is somehow already set (an older state.db row, a
 // profile migration), the swap must not happen for a remote session.

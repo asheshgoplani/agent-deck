@@ -66,7 +66,7 @@ func runRegisterSession(t *testing.T, exitCode int, stdoutText string) string {
 
 	body := extractShellFunc(t, "setup.sh", "register_session")
 	script := `#!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 GREEN=''; YELLOW=''; NC=''
 ok()   { echo "[ok] $*"; }
 warn() { echo "[warn] $*"; }
