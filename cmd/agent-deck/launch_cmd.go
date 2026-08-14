@@ -321,7 +321,7 @@ func handleLaunch(profile string, args []string) {
 	}
 
 	// Load sessions
-	storage, instances, groups, err := loadSessionData(profile)
+	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -398,7 +398,8 @@ func handleLaunch(profile string, args []string) {
 		out.Error(reloadErr.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	instances, groups = freshInstances, freshGroups
+	instances = freshInstances
+	groups := freshGroups
 
 	launchDecision := decideAddTitle(instances, sessionTitle, localLocation(path), userProvidedTitle)
 	if launchDecision.Duplicate != nil {
