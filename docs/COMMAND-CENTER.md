@@ -21,5 +21,5 @@ requires authentication; `--token` also protects API and WebSocket access on a
 loopback bind. Use `agent-deck web --read-only` to hide write controls and reject
 mutating requests. The [CLI reference](../skills/agent-deck/references/cli-reference.md#web-command) lists the current flags.
 
-For general web configuration, including `listen_addr`, `auth_token`, and
-`mutations_enabled`, see the [configuration reference](../skills/agent-deck/references/config-reference.md#web-configuration).
+For persisted `[web]` settings such as `mutations_enabled`, `trusted_domains`,
+and `confirm_link_open`, see the [configuration reference](../skills/agent-deck/references/config-reference.md#web-section).
