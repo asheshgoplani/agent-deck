@@ -224,33 +224,77 @@ func handleWatcherCreate(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// A watcher is published as two artifacts that have to describe the same
+	// command: the watcher.toml the engine reads its [source] settings from, and
+	// the state db row that makes the watcher visible. So the name is rejected
+	// unless it is fresh in both, before either is touched (review on #1888).
+	//
+	// Without this check a duplicate create wrote one and not the other:
+	// SaveWatcher is INSERT OR REPLACE over a UNIQUE name, so the second create
+	// swapped in a row carrying a fresh id — orphaning that watcher's
+	// watcher_events rows, which key on the old id — while the config kept the
+	// first create's settings, and still printed "Created watcher" at the caller
+	// whose settings had been dropped.
+	existing, err := db.LoadWatcherByName(*name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error checking for an existing watcher: %v\n", err)
+		os.Exit(1)
+	}
+	if existing != nil {
+		fmt.Fprintf(os.Stderr,
+			"Error: watcher %q already exists (type: %s). Edit %s to change its settings, or pick another --name.\n",
+			*name, existing.Type, filepath.Join(existing.ConfigPath, "watcher.toml"))
+		os.Exit(1)
+	}
+
 	// Persist the adapter settings the runtime engine reads back from
 	// watcher.toml [source] (see internal/ui/home.go loadWatcherSourceSettings)
 	// BEFORE the watcher is published to the state db. Anything only held in a
 	// flag here is lost: the engine never sees it, the adapter's Setup fails at
 	// startup, and the watcher silently never runs. Writing first means a failed
 	// write exits without leaving a registered watcher that can never start
-	// (review on #1888). The worst case becomes an unreferenced config dir,
-	// which a later `watcher create` for the same name reuses.
+	// (review on #1888).
+	//
+	// This write is also what claims the name against a create racing this one:
+	// the db check above cannot, because two concurrent creates of a fresh name
+	// both see no row. Creating watcher.toml is atomic and fails if the file
+	// exists, so at most one of them reaches the db and the surviving config and
+	// row always come from the same command. (webhook writes no [source] file
+	// and so has nothing that can disagree with its row.)
+	claimedName := true
 	switch adapterType {
 	case "github":
 		// Audit M2: persist the resolved HMAC secret at 0600, never to a
 		// process arg / state.db.
-		if err := writeGithubWatcherSecret(configPath, githubSecret, *port); err != nil {
+		claimedName, err = writeGithubWatcherSecret(configPath, githubSecret, *port)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing watcher secret: %v\n", err)
 			os.Exit(1)
 		}
 	case "ntfy", "slack":
-		written, err := writeTopicWatcherSource(configPath, adapterType, *topic)
+		claimedName, err = writeTopicWatcherSource(configPath, adapterType, *topic)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing watcher config: %v\n", err)
 			os.Exit(1)
 		}
-		if !written {
-			fmt.Fprintf(os.Stderr,
-				"Note: %s already exists and was left untouched; set topic = %q under [source] there to apply --topic\n",
-				filepath.Join(configPath, "watcher.toml"), *topic)
-		}
+	}
+	if !claimedName {
+		// A config with no row behind it: left by `watcher import`, by an
+		// interrupted create, or by a create that raced this one and won. The
+		// name is not fresh either way, and the existing file is never
+		// overwritten — it may carry hand-written [routing] — so registering the
+		// row now would publish a watcher that runs settings this command never
+		// supplied.
+		//
+		// The rejected value is deliberately not echoed: an ntfy/slack topic is
+		// a bearer capability (anyone who learns it can read and publish to it)
+		// and stderr outlives the command in scrollback, CI logs and terminal
+		// recordings (review on #1888).
+		fmt.Fprintf(os.Stderr,
+			"Error: %s already exists and was left untouched; agent-deck never overwrites a watcher config.\n"+
+				"Set this watcher's values under [source] in that file, or remove the file and re-run to generate it.\n",
+			filepath.Join(configPath, "watcher.toml"))
+		os.Exit(1)
 	}
 
 	now := time.Now()
@@ -325,15 +369,18 @@ func readSecretFile(path string) (string, error) {
 
 // writeGithubWatcherSecret writes the HMAC secret into the [source] table of
 // the effective watcher/<name>/watcher.toml at 0600, which is the location the
-// runtime engine loads it from (internal/ui/home.go loadWatcherSourceSettings). Written
-// atomically (temp + rename). Port is stored as a TOML string so it decodes into
-// the engine's map[string]string Settings. Audit M2.
-func writeGithubWatcherSecret(dir, secret string, port int) error {
+// runtime engine loads it from (internal/ui/home.go loadWatcherSourceSettings).
+// Port is stored as a TOML string so it decodes into the engine's
+// map[string]string Settings. Audit M2.
+//
+// Reports false when a watcher.toml is already there: see
+// createWatcherSourceToml for why the file is never replaced.
+func writeGithubWatcherSecret(dir, secret string, port int) (bool, error) {
 	settings := [][2]string{{"secret", secret}}
 	if port != 0 {
 		settings = append(settings, [2]string{"port", fmt.Sprintf("%d", port)})
 	}
-	return writeWatcherSourceToml(dir,
+	return createWatcherSourceToml(dir,
 		"# Auto-generated by: agent-deck watcher create github\n"+
 			"# Secret is stored here (chmod 600), never passed as a CLI arg.\n",
 		settings)
@@ -343,26 +390,34 @@ func writeGithubWatcherSecret(dir, secret string, port int) error {
 // table of watcher/<name>/watcher.toml. Without it the topic given on the
 // command line never reaches the engine, whose adapters require
 // Settings["topic"] and fail Setup without it.
+func writeTopicWatcherSource(dir, adapterType, topic string) (bool, error) {
+	return createWatcherSourceToml(dir,
+		fmt.Sprintf("# Auto-generated by: agent-deck watcher create %s\n", adapterType),
+		[][2]string{{"topic", topic}})
+}
+
+// createWatcherSourceToml writes a [source] table to watcher/<name>/watcher.toml
+// at 0600 and only ever creates that file, reporting false when the name is
+// already held so the caller can refuse rather than publish over it.
 //
 // An existing watcher.toml is never overwritten: `agent-deck watcher import`
 // and hand-edited configs keep [watcher] and [routing] tables in the same file,
-// and clobbering them would lose a user's routing. It reports false in that
-// case so the caller can say what to set by hand.
+// and clobbering them would lose a user's routing (and, on the github path, the
+// secret a running watcher is verifying signatures with).
 //
 // The no-overwrite guarantee is enforced by os.Link rather than a stat-then-write
 // (review on #1888): a stat only proves the file was absent a moment ago, so a
 // racing writer could still be clobbered. Linking the fully-written temp file
 // into place is a single atomic operation that fails with EEXIST if anything
 // already holds the name, which also means a concurrent reader never observes a
-// half-written config.
-func writeTopicWatcherSource(dir, adapterType, topic string) (bool, error) {
+// half-written config. That atomicity is what makes this file usable as the
+// name claim two concurrent `watcher create` runs contend for.
+func createWatcherSourceToml(dir, header string, settings [][2]string) (bool, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return false, fmt.Errorf("create watcher dir: %w", err)
 	}
 
-	content := renderWatcherSourceToml(
-		fmt.Sprintf("# Auto-generated by: agent-deck watcher create %s\n", adapterType),
-		[][2]string{{"topic", topic}})
+	content := renderWatcherSourceToml(header, settings)
 
 	// os.CreateTemp guarantees a name no other writer holds — including another
 	// goroutine in this same process, which a pid-derived name would not.
@@ -402,25 +457,6 @@ func renderWatcherSourceToml(header string, settings [][2]string) string {
 		fmt.Fprintf(&b, "%s = %q\n", setting[0], setting[1])
 	}
 	return b.String()
-}
-
-// writeWatcherSourceToml writes a [source] table to watcher/<name>/watcher.toml
-// at 0600, atomically (temp + rename). Unlike writeTopicWatcherSource this
-// replaces an existing file, which is what the github secret path wants.
-func writeWatcherSourceToml(dir, header string, settings [][2]string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create watcher dir: %w", err)
-	}
-	finalPath := filepath.Join(dir, "watcher.toml")
-	tmpPath := finalPath + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(renderWatcherSourceToml(header, settings)), 0o600); err != nil {
-		return fmt.Errorf("write watcher.toml.tmp: %w", err)
-	}
-	if err := os.Rename(tmpPath, finalPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("rename watcher.toml: %w", err)
-	}
-	return nil
 }
 
 // handleWatcherStart marks a watcher as running in statedb.

@@ -109,8 +109,12 @@ func TestResolveGithubWebhookSecret_RequiresASource(t *testing.T) {
 // map[string]string Settings.
 func TestWriteGithubWatcherSecret_PersistsTo0600Toml(t *testing.T) {
 	dir := t.TempDir()
-	if err := writeGithubWatcherSecret(dir, "top-secret-hmac", 9000); err != nil {
+	written, err := writeGithubWatcherSecret(dir, "top-secret-hmac", 9000)
+	if err != nil {
 		t.Fatalf("writeGithubWatcherSecret: %v", err)
+	}
+	if !written {
+		t.Fatal("written = false for a directory with no watcher.toml")
 	}
 
 	path := filepath.Join(dir, "watcher.toml")
