@@ -205,7 +205,6 @@ func NewServer(cfg Config) *Server {
 	if s.remoteFleet == nil {
 		s.remoteFleet = session.NewRemoteFleetScanner()
 	}
-	s.remoteFleet = newRemoteFleetCache(s.remoteFleet)
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	webLog := logging.ForComponent(logging.CompWeb)
 	if pushSvc, err := newPushService(cfg, menuData); err != nil {
@@ -323,6 +322,9 @@ func (s *Server) Start() error {
 	// address even if a caller bypassed the CLI flag check. See report #1.
 	if err := s.checkBindSecurity(); err != nil {
 		return err
+	}
+	if s.remoteFleet != nil {
+		s.remoteFleet.Start(s.baseCtx)
 	}
 
 	webLog := logging.ForComponent(logging.CompWeb)

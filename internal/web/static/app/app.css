@@ -817,6 +817,7 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .group-card.error::before   { background: var(--tn-red); }
 .fleet-remote-state { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--tn-green); }
 .fleet-remote-state.offline { color: var(--tn-red); }
+.fleet-remote-age { padding: 0 12px 10px; font-family: var(--mono); font-size: 9.5px; color: var(--tn-amber); }
 .fleet-remote-empty, .fleet-remote-error {
   padding: 10px; border: 1px dashed var(--border); border-radius: 4px;
   font-family: var(--mono); font-size: 10.5px; color: var(--muted);

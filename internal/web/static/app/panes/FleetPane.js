@@ -27,6 +27,13 @@ function remoteHealth(remote) {
   return 'idle'
 }
 
+function remoteAge(remote) {
+  const seconds = Math.max(0, Number(remote?.ageSeconds) || 0)
+  if (seconds < 60) return `${seconds}s ago`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
+  return `${Math.floor(seconds / 3600)}h ago`
+}
+
 function RemoteCard({ remote }) {
   const sessions = remoteSessions(remote)
   const health = remoteHealth(remote)
@@ -40,10 +47,10 @@ function RemoteCard({ remote }) {
         <span class="t">${remote.name}</span>
         <span class="health"><span class=${`d ${health}`}/></span>
         <span class=${`fleet-remote-state ${remote.online ? 'online' : 'offline'}`}>
-          ${remote.online ? (remote.latencyMs ? `${remote.latencyMs}ms` : 'online') : 'offline'}
+          ${remote.stale ? 'stale' : remote.online ? (remote.latencyMs ? `${remote.latencyMs}ms` : 'online') : 'offline'}
         </span>
       </div>
-      ${!remote.online
+      ${!remote.online && sessions.length === 0
         ? html`<div class="fleet-remote-empty">Remote unavailable</div>`
         : sessions.length === 0
           ? html`<div class="fleet-remote-empty">Online · no sessions</div>`
@@ -66,6 +73,9 @@ function RemoteCard({ remote }) {
           ${sessions.length} session${sessions.length === 1 ? '' : 's'}
         </span>
       </div>
+      ${remote.stale && html`<div class="fleet-remote-age" data-testid="fleet-remote-age">
+        Last known state · ${remoteAge(remote)}
+      </div>`}
     </article>
   `
 }
@@ -189,7 +199,7 @@ export function FleetPane() {
       <div class="fleet-section">
         <div class="fleet-section-head">
           <span class="kicker">GROUPS</span>
-          <span class="sub-kicker">${groups.length} group${groups.length === 1 ? '' : 's'} · ${sessions.length} local session${sessions.length === 1 ? '' : 's'}</span>
+          <span class="sub-kicker">${groups.length} group${groups.length === 1 ? '' : 's'} · ${sessions.length} ${remoteTotal > 0 ? 'local ' : ''}session${sessions.length === 1 ? '' : 's'}</span>
         </div>
         ${groups.length === 0 || sessions.length === 0
           ? html`<div style="font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 16px;">
