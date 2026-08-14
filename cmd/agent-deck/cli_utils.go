@@ -41,6 +41,8 @@ const tmuxProbeTimeout = 3 * time.Second
 func tmuxProbeBounded(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxProbeTimeout)
 	defer cancel()
+	// #nosec G204 -- "tmux" is a fixed binary and args are passed as an argv
+	// slice, never through a shell; callers supply only internal tmux probes.
 	cmd := exec.CommandContext(ctx, "tmux", tmuxutf8.Prepend(args)...)
 	cmd.WaitDelay = 2 * time.Second
 	return cmd.Output()
