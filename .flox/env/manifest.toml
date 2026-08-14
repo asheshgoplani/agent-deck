@@ -6,7 +6,7 @@ schema-version = "1.12.0"
 # .github/workflows/*.yml, Makefile + lefthook.yml, and tests/eval/harness/.
 #
 # Go: nixpkgs has no 1.25.12, so we provide a 1.26.x base and redirect via
-# GOTOOLCHAIN=go1.25.12 (set in [vars] so BOTH `make` and lefthook's bare-`go`
+# GOTOOLCHAIN=go1.25.13 (set in [vars] so BOTH `make` and lefthook's bare-`go`
 # pre-push hook agree on the toolchain). go.mod floor is >=1.25.12.
 
 [install]
@@ -60,7 +60,7 @@ opencode.pkg-group     = "agents"
 
 [vars]
 # Feeds BOTH make AND lefthook's bare-`go` pre-push hook the same toolchain.
-GOTOOLCHAIN = "go1.25.12"
+GOTOOLCHAIN = "go1.25.13"
 
 
 [hook]

@@ -32,7 +32,7 @@ export default async function globalSetup() {
   execFileSync('go', ['build', '-o', BIN_PATH, FIXTURE_PKG], {
     cwd: REPO_ROOT,
     stdio: 'inherit',
-    env: { ...process.env, GOTOOLCHAIN: 'go1.25.12' },
+    env: { ...process.env, GOTOOLCHAIN: 'go1.25.13' },
   })
 
   // Spawn the binary detached so we can kill it via PID file in teardown.
