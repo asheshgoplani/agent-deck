@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-08-14
+
+### Added
+
+- **Federated remote TUI navigation now mirrors local groups.** Remote sessions are nested under their remote group paths; remote host and subgroup rows can be collapsed with the normal group keys. Sessions can be reordered within their remote group with the existing reorder keys. This order is a persisted preference on the viewing machine; it does not rewrite the remote host, and remote group headers remain name-sorted. Remote rows expose coarse status; local substates and the federated tree are not yet available in the Web UI.
+
+### Security
+
+- **Go toolchain updated to 1.25.13** for the latest standard-library security fixes.
+
 ## [1.11.0] - 2026-08-01
 
 Security and correctness release. Repo-supplied worktree scripts now require explicit consent, path handling around the skills catalog and logs is hardened, `session send` tells the truth about delivery, restarted sessions can no longer resume the wrong conversation, and Ctrl+Q detach works on every session sharing a tmux socket.

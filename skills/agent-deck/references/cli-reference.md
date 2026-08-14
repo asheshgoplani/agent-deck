@@ -15,6 +15,7 @@ Complete reference for all agent-deck CLI commands.
 - [Group Commands](#group-commands)
 - [Profile Commands](#profile-commands)
 - [Remote Commands](#remote-commands)
+- [Codex Hook Commands](#codex-hook-commands)
 - [Conductor Commands](#conductor-commands)
 
 ## Global Options
@@ -43,6 +44,8 @@ agent-deck add [path] [options]
 | `--no-parent` | Disable automatic parent linking |
 | `--mcp` | Attach MCP (repeatable) |
 | `--attach` | Start and attach to the session immediately after creating it (requires an interactive terminal; not supported with `--ssh`/`--json`) |
+| `--ssh <user@host>` | Run the session over SSH; this is a destination, not a registered remote name |
+| `--remote-path <absolute-path>` | Working directory on the SSH host; an absolute positional path with `--ssh` is equivalent |
 
 ```bash
 agent-deck add -t "My Project" -c claude .
@@ -59,6 +62,7 @@ Notes:
 - `--parent` and `--no-parent` are mutually exclusive.
 - Explicit `-g/--group` overrides inherited parent group.
 - If `--cmd` contains extra args and no explicit `--wrapper` is provided, agent-deck auto-generates a wrapper to preserve those args.
+- SSH session identity is the SSH destination plus remote working directory. Configure key selection with `IdentityFile`/`Host` in `~/.ssh/config` or use `ssh-agent`; agent-deck has no private-key flag.
 
 ### launch - Create + start (+ optional message)
 
@@ -254,7 +258,15 @@ Setting `account` auto-migrates the Claude conversation into the target account'
 ### session send
 
 ```bash
-agent-deck session send <id|title> "message" [--no-wait] [-q] [--json]
+agent-deck session send <id|title> "message" [--wait|--stream|--no-wait] [-q] [--json]
+agent-deck session send <id|title> --message-file <file|-> [--wait|--stream|--no-wait] [-q] [--json]
+```
+
+Use `--message-file` for long or multiline messages, or `--message-file -` for stdin. Do not combine it with an inline message.
+
+```bash
+git diff | agent-deck session send my-project --message-file -
+agent-deck session send my-project --message-file task.md --wait
 ```
 
 Default behavior:
@@ -281,7 +293,7 @@ approval: that path sends composer text followed by Enter.
 agent-deck session output [id|title] [--json] [-q]
 ```
 
-Get last response from Claude/Gemini session.
+Get the last response from a session. Transcript-backed extraction is tool-dependent; use `--pane` for a raw tmux capture when structured output is unavailable.
 
 ### session set-parent / unset-parent
 
@@ -573,6 +585,8 @@ agent-deck conductor list [--profile <name>]
 
 Manage agent-deck instances running on remote SSH servers. Remote sessions appear alongside local sessions in the TUI and CLI.
 
+Registered remotes are named fleet endpoints. They are separate from the per-session SSH destination used by `agent-deck add --ssh`.
+
 Remote configuration is stored in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`) under the `[remotes]` map.
 
 ### remote add
@@ -612,7 +626,9 @@ Lists all configured remotes. Use `--json` for scripting.
 agent-deck remote sessions [name] [--json]
 ```
 
-Fetches active sessions from all remotes, or from a specific remote if `name` is provided. Displays title, tool, status, and session ID. Use `--json` for scripting.
+Fetches active sessions from all remotes, or from a specific remote if `name` is provided. Displays title, tool, live status, and session ID. Use `--json` for scripting.
+
+In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
 
 ### remote attach
 
@@ -650,6 +666,18 @@ agent-deck remote rename dev my-session new-name
 agent-deck remote update          # update all remotes
 agent-deck remote update dev      # update specific remote
 ```
+
+SSH uses OpenSSH host-key verification and `BatchMode=yes`; unknown or changed hosts fail instead of prompting. Authenticate with an SSH agent or configured key and establish trust in `known_hosts` before registering a remote. `remote update` verifies the downloaded archive against the release checksums before deployment.
+
+## Codex Hook Commands
+
+```bash
+agent-deck codex-hooks install
+agent-deck codex-hooks status
+agent-deck codex-hooks uninstall
+```
+
+Codex turn-level status uses its notify hook. Install it once per Codex home; if `CODEX_HOME` is set, use the same environment for installation and Codex sessions.
 
 ## Session Resolution
 
