@@ -143,23 +143,23 @@ func TestRemoteOrderScoping_Issue1875(t *testing.T) {
 	// Group buckets are emitted in lexicographic path order ("other" before
 	// "work"), which the session overlay must not disturb; inside "work" the
 	// overlay applies, and "other" keeps the fetched order.
-	devIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", devSessions, remoteHealth{}, order.forRemote("dev")))
+	devIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", devSessions, nil, order.forRemote("dev")))
 	if strings.Join(devIDs, ",") != "dev-3,dev-4,dev-2,dev-1" {
 		t.Fatalf("dev order = %v, want [dev-3 dev-4 dev-2 dev-1]", devIDs)
 	}
 
-	prodIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("prod", prodSessions, remoteHealth{}, order.forRemote("prod")))
+	prodIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("prod", prodSessions, nil, order.forRemote("prod")))
 	if strings.Join(prodIDs, ",") != "prod-1,prod-2" {
 		t.Fatalf("dev's overlay leaked onto prod: order = %v, want [prod-1 prod-2]", prodIDs)
 	}
 
 	// An overlay written against prod's same-named group must not move dev.
 	order.set("prod", "work", []string{"prod-2", "prod-1"})
-	devIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", devSessions, remoteHealth{}, order.forRemote("dev")))
+	devIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", devSessions, nil, order.forRemote("dev")))
 	if strings.Join(devIDs, ",") != "dev-3,dev-4,dev-2,dev-1" {
 		t.Fatalf("prod's overlay leaked onto dev: order = %v", devIDs)
 	}
-	prodIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("prod", prodSessions, remoteHealth{}, order.forRemote("prod")))
+	prodIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("prod", prodSessions, nil, order.forRemote("prod")))
 	if strings.Join(prodIDs, ",") != "prod-2,prod-1" {
 		t.Fatalf("prod order = %v, want [prod-2 prod-1]", prodIDs)
 	}
@@ -170,7 +170,7 @@ func TestRemoteOrderScoping_Issue1875(t *testing.T) {
 		t.Fatalf("emitted %d rows for %d sessions", len(devIDs), len(devSessions))
 	}
 	var headers []string
-	for _, it := range buildRemoteFlatItemsOrdered("dev", devSessions, remoteHealth{}, order.forRemote("dev")) {
+	for _, it := range buildRemoteFlatItemsOrdered("dev", devSessions, nil, order.forRemote("dev")) {
 		if it.Type == session.ItemTypeRemoteGroup {
 			headers = append(headers, it.Path)
 		}
@@ -232,7 +232,7 @@ func TestRemoteOrderSurvivesRestart_Issue1875(t *testing.T) {
 	}
 
 	// And it must still produce that order on screen.
-	ids := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", sessions, remoteHealth{}, after.remoteSessionOrder.forRemote("dev")))
+	ids := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", sessions, nil, after.remoteSessionOrder.forRemote("dev")))
 	if strings.Join(ids, ",") != "s-gamma,s-alpha,s-beta" {
 		t.Fatalf("restored overlay did not reorder the rows: %v", ids)
 	}
@@ -297,23 +297,23 @@ func TestRemoteOrderKeysCannotAlias_Issue1875(t *testing.T) {
 	order := remoteOrder{}
 	order.set("dev/work", "x", []string{"a-2", "a-1"})
 
-	aIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev/work", aSessions, remoteHealth{}, order.forRemote("dev/work")))
+	aIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev/work", aSessions, nil, order.forRemote("dev/work")))
 	if strings.Join(aIDs, ",") != "a-2,a-1" {
 		t.Fatalf("remote 'dev/work' group 'x' order = %v, want [a-2 a-1]", aIDs)
 	}
 
-	bIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", bSessions, remoteHealth{}, order.forRemote("dev")))
+	bIDs := remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", bSessions, nil, order.forRemote("dev")))
 	if strings.Join(bIDs, ",") != "b-1,b-2" {
 		t.Fatalf("the 'dev/work'+'x' ordering aliased onto 'dev'+'work/x': order = %v, want [b-1 b-2]", bIDs)
 	}
 
 	// And the reverse: an ordering on dev/work/x must not reach dev/work + x.
 	order.set("dev", "work/x", []string{"b-2", "b-1"})
-	aIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev/work", aSessions, remoteHealth{}, order.forRemote("dev/work")))
+	aIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev/work", aSessions, nil, order.forRemote("dev/work")))
 	if strings.Join(aIDs, ",") != "a-2,a-1" {
 		t.Fatalf("the 'dev'+'work/x' ordering aliased onto 'dev/work'+'x': order = %v, want [a-2 a-1]", aIDs)
 	}
-	bIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", bSessions, remoteHealth{}, order.forRemote("dev")))
+	bIDs = remoteItemSessionIDs(buildRemoteFlatItemsOrdered("dev", bSessions, nil, order.forRemote("dev")))
 	if strings.Join(bIDs, ",") != "b-2,b-1" {
 		t.Fatalf("remote 'dev' group 'work/x' order = %v, want [b-2 b-1]", bIDs)
 	}
