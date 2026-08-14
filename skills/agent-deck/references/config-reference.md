@@ -28,6 +28,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[ui] Section](#ui-section)
 - [[global_search] Section](#global_search-section)
 - [[performance] Section](#performance-section)
+- [[desktop_notifications] Section](#desktop_notifications-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
 - [[mcps.*] Section](#mcps-section)
@@ -49,6 +50,21 @@ group_sort   = "creation" # within-group order: "creation" (default) or "actiona
 | `default_path` | string | `""` | Fallback project directory for `add` and `launch` when no path argument is given (#1303). Resolution chain: explicit path arg (including `.`, which always means the current directory) → target group's `default_path` (DB-resident, set via `group update` or the TUI) → this key → cwd. Supports `~` and `$VAR` expansion; silently skipped if the directory doesn't exist. |
 | `sync_title` | bool | `true` | When `true`, agent-deck overwrites a session's title with the agent's own session-name (e.g. Claude's `--name` / `/rename`, issues #572/#697). Set `false` to keep the title you gave the session — globally, for every tool. A title you supply explicitly is already exempt: `add -t`, `launch -t`, the TUI New Session dialog, an explicit fork title, and `rename` all lock the title on creation (#1615/#1715), so only auto-derived folder-name titles follow the agent. The per-session title-lock (`agent-deck session set-title-lock <id> on|off`) remains as a finer-grained override. Also toggleable in the TUI Settings panel (`S`) under **SESSIONS**. |
 | `group_sort` | string | `"creation"` | Order of sessions within a group. `"creation"` (default) keeps the order sessions were created in, and respects the `K`/`J` manual reorder. `"actionable"` restores the issue #857 sort that surfaces the most recently actionable sessions (error → waiting → running → idle → stopped, then recency) to the top of each group. Pin and Maestro rows are unaffected by this setting. |
+
+## [desktop_notifications] Section
+
+macOS-only actionable desktop notifications. This feature is disabled unless explicitly enabled. Agent Deck emits only completion, attention-needed, and error events; clicking a banner focuses and attaches the referenced session through the normal `session focus <id> --attach` command.
+
+```toml
+[desktop_notifications]
+enabled = true
+```
+
+Run `agent-deck desktop-notifications helper` from the logged-in GUI session, then use `agent-deck desktop-notifications doctor` to verify the private helper socket and action routing. Existing Claude hooks, `terminal-notifier` scripts, and LaunchAgents are never modified automatically.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | Enable the macOS desktop-notification transport. |
 
 ## Alternate quick-create
 

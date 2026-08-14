@@ -400,6 +400,9 @@ func main() {
 		case "notify-daemon":
 			handleNotifyDaemon(args[1:])
 			return
+		case "desktop-notifications":
+			handleDesktopNotifications(args[1:])
+			return
 		case "run-task":
 			handleRunTask(args[1:])
 			return
@@ -980,7 +983,8 @@ var globalFlagSubcommands = map[string]bool{
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "notify-daemon": true,
-	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true,
+	"desktop-notifications": true,
+	"run-task":              true, "inbox": true, "feedback": true, "creds-refresh": true,
 	"debug-dump": true, "version": true, "help": true,
 }
 

@@ -666,6 +666,24 @@ agent-deck session set-transition-notify worker on
 
 Suppression only affects dispatch — the parent link itself is unchanged. Deferred/retried events also honour the flag (guard is in `transition_notifier.dispatch` as well as both daemon entry points).
 
+### macOS actionable desktop notifications
+
+Desktop alerts are opt-in and independent of the parent-session notification stream. They notify only when a session completes, needs attention, or enters an error state; clicking a banner runs the existing `session focus <id> --attach` route for that session and profile.
+
+```toml
+[desktop_notifications]
+enabled = true
+```
+
+Start the native helper once from your logged-in macOS session, then inspect readiness with doctor:
+
+```bash
+agent-deck desktop-notifications helper
+agent-deck desktop-notifications doctor
+```
+
+The helper keeps a private local socket and persistent deduplication state. Enabling or restarting it does not replay older session states. Agent Deck never changes existing Claude hooks, `terminal-notifier` scripts, or LaunchAgents; after verifying banners and click routing, retire any old bridge manually to avoid duplicates.
+
 **Heartbeat-driven monitoring**: heartbeats still run on the configured interval (default 15 minutes) as a secondary safety net. If a conductor response includes `NEED:`, the bridge forwards that alert to Telegram and/or Slack.
 
 **Telegram conductor topology (v1.7.22+)**: each conductor bot must own exactly one channel-owning session. Activate telegram per-session via `--channels plugin:telegram@claude-plugins-official` and inject `TELEGRAM_STATE_DIR` via `[conductors.<name>.claude].env_file` in `$XDG_CONFIG_HOME/agent-deck/config.toml`. Do NOT set `enabledPlugins."telegram@claude-plugins-official"=true` in a profile's `settings.json` — that leaks a poller to every claude session under the profile. agent-deck emits warnings (`GLOBAL_ANTIPATTERN`, `DOUBLE_LOAD`, `WRAPPER_DEPRECATED`) when it detects these setups. Full guidance: [Telegram conductor topology](skills/agent-deck/SKILL.md#telegram-conductor-topology-v1722).

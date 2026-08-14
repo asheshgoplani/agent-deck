@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/desktopnotify"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
@@ -468,6 +469,13 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			continue
 		}
 		inst := byID[id]
+		// Desktop alerts are independent from the legacy parent-session
+		// transition stream. The latter is an orchestration control channel;
+		// this is an explicitly opt-in user-facing alert channel.
+		_ = desktopNotificationSender(desktopnotify.SourceEvent{
+			SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
+			ToStatus: to, Timestamp: time.Now(),
+		})
 		if !notifyEnabled {
 			continue
 		}
@@ -578,6 +586,10 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		}
 
 		inst := byID[id]
+		_ = desktopNotificationSender(desktopnotify.SourceEvent{
+			SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
+			Kind: transitionKindFinished, DoneStatus: sig.Status, Summary: sig.Summary, Timestamp: hs.UpdatedAt,
+		})
 		if !notifyEnabled {
 			continue
 		}
