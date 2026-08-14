@@ -26,7 +26,7 @@ export default async function globalSetup() {
 
   mkdirSync(dirname(BIN_PATH), { recursive: true })
 
-  // Build the fixture binary. Pin Go 1.25.12 to match go.mod and the project's
+  // Build the fixture binary. Pin Go 1.25.13 to match go.mod and the project's
   // CI workflows after the #1054 toolchain bump.
   console.log('[playwright] building web-fixture binary')
   execFileSync('go', ['build', '-o', BIN_PATH, FIXTURE_PKG], {
