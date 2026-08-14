@@ -143,6 +143,22 @@ func OpenStore(path string) (*Store, error) {
 	if err := s.reload(); err != nil {
 		return nil, err
 	}
+	if !s.pruneExpired(time.Now()) {
+		return s, nil
+	}
+	lock, err := acquireStoreLock(s.path)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.release()
+	if err := s.reload(); err != nil {
+		return nil, err
+	}
+	if s.pruneExpired(time.Now()) {
+		if err := s.persist(); err != nil {
+			return nil, err
+		}
+	}
 	return s, nil
 }
 
@@ -168,6 +184,29 @@ func eventKey(event Event) string {
 	return strings.Join([]string{string(event.Class), event.SessionID, event.Timestamp.UTC().Format(time.RFC3339Nano), event.Summary}, "\x00")
 }
 
+const dedupRetention = 30 * 24 * time.Hour
+
+// pruneExpired removes identities outside the bounded deduplication window.
+// Invalid legacy keys have no trustworthy age and are removed as well.
+func (s *Store) pruneExpired(now time.Time) bool {
+	cutoff := now.Add(-dedupRetention)
+	pruned := false
+	for sessionID, key := range s.data.Events {
+		parts := strings.SplitN(key, "\x00", 4)
+		if len(parts) < 3 {
+			delete(s.data.Events, sessionID)
+			pruned = true
+			continue
+		}
+		timestamp, err := time.Parse(time.RFC3339Nano, parts[2])
+		if err != nil || timestamp.Before(cutoff) {
+			delete(s.data.Events, sessionID)
+			pruned = true
+		}
+	}
+	return pruned
+}
+
 // Baseline records a currently-observed session state without creating an
 // alert. The transition daemon calls this during its first pass after enabling
 // notifications, so historical states never become a notification backlog.
@@ -182,6 +221,7 @@ func (s *Store) Baseline(event Event) error {
 	if err := s.reload(); err != nil {
 		return err
 	}
+	s.pruneExpired(time.Now())
 	s.data.Events[event.SessionID] = eventKey(event)
 	return s.persist()
 }
@@ -200,6 +240,7 @@ func (s *Store) ShouldDeliver(event Event) (bool, error) {
 	if err := s.reload(); err != nil {
 		return false, err
 	}
+	s.pruneExpired(time.Now())
 	key := eventKey(event)
 	previous, exists := s.data.Events[event.SessionID]
 	s.data.Events[event.SessionID] = key
@@ -223,6 +264,7 @@ func (s *Store) NeedsDelivery(event Event) (bool, error) {
 	if err := s.reload(); err != nil {
 		return false, err
 	}
+	s.pruneExpired(time.Now())
 	previous, exists := s.data.Events[event.SessionID]
 	return !exists || previous != eventKey(event), nil
 }
@@ -239,6 +281,7 @@ func (s *Store) MarkDelivered(event Event) error {
 	if err := s.reload(); err != nil {
 		return err
 	}
+	s.pruneExpired(time.Now())
 	s.data.Events[event.SessionID] = eventKey(event)
 	return s.persist()
 }

@@ -2,6 +2,7 @@ package desktopnotify
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -99,6 +100,51 @@ func TestStoreDeliversFirstNewEventAfterDaemonBaseline(t *testing.T) {
 	}
 }
 
+func TestStorePrunesEventsOlderThanThirtyDays(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	now := time.Now().UTC()
+	thirtyDays := 30 * 24 * time.Hour
+	expired := Event{Class: Complete, SessionID: "expired", Timestamp: now.Add(-thirtyDays - time.Second)}
+	recent := Event{Class: Attention, SessionID: "recent", Timestamp: now.Add(-thirtyDays + time.Second)}
+	current := Event{Class: Error, SessionID: "current", Timestamp: now}
+	persisted := storeData{Events: map[string]string{
+		expired.SessionID: eventKey(expired),
+		recent.SessionID:  eventKey(recent),
+		current.SessionID: eventKey(current),
+	}}
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := restarted.data.Events[expired.SessionID]; exists {
+		t.Fatal("expired event remained in persisted state")
+	}
+	for _, event := range []Event{recent, current} {
+		if got := restarted.data.Events[event.SessionID]; got != eventKey(event) {
+			t.Fatalf("persisted event for %q = %q, want %q", event.SessionID, got, eventKey(event))
+		}
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persistedOnDisk storeData
+	if err := json.Unmarshal(data, &persistedOnDisk); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := persistedOnDisk.Events[expired.SessionID]; exists {
+		t.Fatal("expired event remained in the state file")
+	}
+}
+
 func TestPersistedBaselineSuppressesRestartBacklog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	event := Event{Class: Complete, SessionID: "completed-before-restart", Timestamp: time.Now()}
@@ -131,13 +177,14 @@ func TestConcurrentStoresRetainEverySessionState(t *testing.T) {
 	}
 
 	const perStore = 80
+	baseTimestamp := time.Now().UTC()
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	write := func(store *Store, prefix string) {
 		defer wg.Done()
 		<-start
 		for i := 0; i < perStore; i++ {
-			event := Event{Class: Attention, SessionID: fmt.Sprintf("%s-%d", prefix, i), Timestamp: time.Unix(int64(i), 0)}
+			event := Event{Class: Attention, SessionID: fmt.Sprintf("%s-%d", prefix, i), Timestamp: baseTimestamp.Add(time.Duration(i) * time.Nanosecond)}
 			if err := store.Baseline(event); err != nil {
 				t.Errorf("baseline %s: %v", event.SessionID, err)
 				return
@@ -163,6 +210,7 @@ const (
 	helperStoreWriterStateEnv   = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_STATE"
 	helperStoreWriterReadyEnv   = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_READY"
 	helperStoreWriterReleaseEnv = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_RELEASE"
+	helperStoreWriterTimeEnv    = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_TIME"
 	helperStoreLockPathEnv      = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_PATH"
 	helperStoreLockReadyEnv     = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_READY"
 	helperStoreLockReleaseEnv   = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_RELEASE"
@@ -177,6 +225,10 @@ func TestDesktopNotificationHelperStoreWriter(t *testing.T) {
 	if statePath == "" {
 		return
 	}
+	baseTimestamp, err := time.Parse(time.RFC3339Nano, os.Getenv(helperStoreWriterTimeEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
 	store, err := OpenStore(statePath)
 	if err != nil {
 		t.Fatal(err)
@@ -188,7 +240,7 @@ func TestDesktopNotificationHelperStoreWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 120; i++ {
-		event := Event{Class: Error, SessionID: fmt.Sprintf("helper-%d", i), Timestamp: time.Unix(int64(i), 0)}
+		event := Event{Class: Error, SessionID: fmt.Sprintf("helper-%d", i), Timestamp: baseTimestamp.Add(time.Duration(i) * time.Nanosecond)}
 		if deliver, err := store.ShouldDeliver(event); err != nil || !deliver {
 			t.Fatalf("helper write %s: deliver=%v err=%v", event.SessionID, deliver, err)
 		}
@@ -199,11 +251,13 @@ func TestHelperStoreSubprocessAndDaemonStoreRetainEveryState(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	readyPath := filepath.Join(t.TempDir(), "writer-ready")
 	releasePath := filepath.Join(t.TempDir(), "writer-release")
+	baseTimestamp := time.Now().UTC()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestDesktopNotificationHelperStoreWriter$", "-test.count=1")
 	cmd.Env = append(os.Environ(),
 		helperStoreWriterStateEnv+"="+statePath,
 		helperStoreWriterReadyEnv+"="+readyPath,
 		helperStoreWriterReleaseEnv+"="+releasePath,
+		helperStoreWriterTimeEnv+"="+baseTimestamp.Format(time.RFC3339Nano),
 	)
 	var output bytes.Buffer
 	cmd.Stdout = &output
@@ -228,7 +282,7 @@ func TestHelperStoreSubprocessAndDaemonStoreRetainEveryState(t *testing.T) {
 		close(parentWriterReady)
 		<-parentWriterRelease
 		for i := 0; i < 120; i++ {
-			event := Event{Class: Attention, SessionID: fmt.Sprintf("daemon-%d", i), Timestamp: time.Unix(int64(i), 0)}
+			event := Event{Class: Attention, SessionID: fmt.Sprintf("daemon-%d", i), Timestamp: baseTimestamp.Add(time.Duration(i) * time.Nanosecond)}
 			if err := store.Baseline(event); err != nil {
 				parentWriterDone <- fmt.Errorf("daemon baseline %s: %w", event.SessionID, err)
 				return
@@ -256,8 +310,8 @@ func TestHelperStoreSubprocessAndDaemonStoreRetainEveryState(t *testing.T) {
 	}
 	for i := 0; i < 120; i++ {
 		for _, event := range []Event{
-			{Class: Error, SessionID: fmt.Sprintf("helper-%d", i), Timestamp: time.Unix(int64(i), 0)},
-			{Class: Attention, SessionID: fmt.Sprintf("daemon-%d", i), Timestamp: time.Unix(int64(i), 0)},
+			{Class: Error, SessionID: fmt.Sprintf("helper-%d", i), Timestamp: baseTimestamp.Add(time.Duration(i) * time.Nanosecond)},
+			{Class: Attention, SessionID: fmt.Sprintf("daemon-%d", i), Timestamp: baseTimestamp.Add(time.Duration(i) * time.Nanosecond)},
 		} {
 			if got := restarted.data.Events[event.SessionID]; got != eventKey(event) {
 				t.Fatalf("persisted state for %q = %q, want %q", event.SessionID, got, eventKey(event))
