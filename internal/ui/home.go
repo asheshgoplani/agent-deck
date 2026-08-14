@@ -3288,7 +3288,9 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 		wg.Add(1)
 		go func(name string, rc session.RemoteConfig) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(h.ctx, 15*time.Second)
+			// Honor the per-remote command_timeout_seconds: hosts with large
+			// session fleets legitimately need more than the old flat 15s.
+			ctx, cancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
 			defer cancel()
 
 			runner := session.NewSSHRunner(name, rc)
@@ -3797,7 +3799,7 @@ func (h *Home) fetchRemotePreview(remoteName, sessionID, key string) tea.Cmd {
 		}
 
 		runner := session.NewSSHRunner(remoteName, rc)
-		ctx, cancel := context.WithTimeout(h.ctx, 15*time.Second)
+		ctx, cancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
 		defer cancel()
 
 		// #1101: use FetchSessionPane (raw capture-pane content with ANSI +
@@ -13817,6 +13819,16 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) {
 		}
 	}
 	h.remoteSessionsMu.RUnlock()
+
+	// Empty IDs cannot be represented in the persisted order overlay. A swap
+	// across one would be discarded by applyRemoteSessionOrder on the immediate
+	// rebuild, making a successful-looking move a silent no-op.
+	for _, id := range natural {
+		if id == "" {
+			h.setError(fmt.Errorf("cannot move '%s' %s: %s lists a session without an id in this group, so its order cannot be tracked", moved.Title, direction, item.RemoteName))
+			return
+		}
+	}
 
 	// A bucket whose IDs are not unique cannot be reordered at all:
 	// orderRemoteBucket refuses to permute it, because the slot mapping is no

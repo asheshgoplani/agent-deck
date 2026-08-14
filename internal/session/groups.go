@@ -1781,19 +1781,55 @@ func refreshGroupDefaultPathCache(defaultPath string) {
 	defaultPathCacheMu.Unlock()
 }
 
-// DefaultPathForGroup returns the effective default path for creating new sessions
-// in the group: explicit configured default_path first, then most recent session path.
-func (t *GroupTree) DefaultPathForGroup(groupPath string) string {
+// ExplicitDefaultPathForGroup returns the group's explicitly configured
+// default_path (resolved), and whether one is set at all. It never falls back
+// to the most-recent-session heuristic.
+//
+// Issue #1879: DefaultPathForGroup collapses "the user configured this group's
+// default_path" and "nothing is configured, here's a guess from the group's
+// sessions" into one string, so a caller cannot tell them apart. Any CLI that
+// implements the documented resolution chain (group default_path → global
+// config default_path → cwd) must consult this, not DefaultPathForGroup —
+// otherwise a single session in the group makes the global default_path
+// unreachable.
+func (t *GroupTree) ExplicitDefaultPathForGroup(groupPath string) (string, bool) {
+	group, exists := t.Groups[groupPath]
+	if !exists || group.DefaultPath == "" {
+		return "", false
+	}
+
+	resolved := resolveGroupDefaultPath(group.DefaultPath)
+	if resolved == "" {
+		return "", false
+	}
+	return resolved, true
+}
+
+// RecentSessionPathForGroup returns the derived, non-authoritative default: the
+// project path (or worktree repo root) of the group's most recently accessed
+// session. It is a convenience guess, not a configured value — see
+// ExplicitDefaultPathForGroup.
+func (t *GroupTree) RecentSessionPathForGroup(groupPath string) string {
 	group, exists := t.Groups[groupPath]
 	if !exists {
 		return ""
 	}
 
-	if group.DefaultPath != "" {
-		return resolveGroupDefaultPath(group.DefaultPath)
+	return resolveGroupDefaultPath(mostRecentPathForSessions(group.Sessions))
+}
+
+// DefaultPathForGroup returns the effective default path for creating new sessions
+// in the group: explicit configured default_path first, then most recent session path.
+//
+// The two sources are indistinguishable in the return value, which is fine for
+// UI prefill (the TUI new-session dialog) but wrong for the CLI resolution
+// chain — see ExplicitDefaultPathForGroup / RecentSessionPathForGroup.
+func (t *GroupTree) DefaultPathForGroup(groupPath string) string {
+	if explicit, ok := t.ExplicitDefaultPathForGroup(groupPath); ok {
+		return explicit
 	}
 
-	return resolveGroupDefaultPath(mostRecentPathForSessions(group.Sessions))
+	return t.RecentSessionPathForGroup(groupPath)
 }
 
 // SetDefaultPathForGroup sets (or clears) an explicit default path for a group.
