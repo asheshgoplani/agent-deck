@@ -391,26 +391,85 @@ func (h Helper) ServeOne() error {
 }
 
 func (h Helper) Serve() error {
-	for {
-		if h.Listener == nil || h.Store == nil || h.Present == nil {
-			return errors.New("desktop notification helper is not configured")
+	if h.Listener == nil || h.Store == nil || h.Present == nil {
+		return errors.New("desktop notification helper is not configured")
+	}
+	type retryState struct {
+		sync.Mutex
+		pending  map[string]struct{}
+		fatalErr error
+	}
+	state := retryState{pending: make(map[string]struct{})}
+	stopped := make(chan struct{})
+	var retries sync.WaitGroup
+	defer retries.Wait()
+	defer close(stopped)
+
+	startRetry := func(event Event) {
+		key := eventKey(event)
+		state.Lock()
+		if _, alreadyRetrying := state.pending[key]; alreadyRetrying {
+			state.Unlock()
+			return
 		}
+		state.pending[key] = struct{}{}
+		state.Unlock()
+
+		retries.Add(1)
+		go func() {
+			defer retries.Done()
+			defer func() {
+				state.Lock()
+				delete(state.pending, key)
+				state.Unlock()
+			}()
+			for {
+				err := h.presentEvent(event)
+				if err == nil {
+					return
+				}
+				if !errors.Is(err, errPresentationRejected) {
+					state.Lock()
+					shouldStop := state.fatalErr == nil
+					if shouldStop {
+						state.fatalErr = err
+					}
+					state.Unlock()
+					if shouldStop {
+						_ = h.Listener.Close()
+					}
+					return
+				}
+				timer := time.NewTimer(h.retryDelay())
+				select {
+				case <-stopped:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					return
+				case <-timer.C:
+				}
+			}
+		}()
+	}
+
+	for {
 		event, err := h.Listener.Receive()
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, errMalformedPayload) {
 				continue
 			}
+			state.Lock()
+			fatalErr := state.fatalErr
+			state.Unlock()
+			if fatalErr != nil {
+				return fatalErr
+			}
 			return err
 		}
-		for {
-			err := h.presentEvent(event)
-			if err == nil {
-				break
-			}
-			if !errors.Is(err, errPresentationRejected) {
-				return err
-			}
-			time.Sleep(h.retryDelay())
-		}
+		startRetry(event)
 	}
 }

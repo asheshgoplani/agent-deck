@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -570,6 +571,83 @@ func TestHelperServeRetriesInitialAuthorizationUntilAccepted(t *testing.T) {
 	}
 	if attempts < 2 {
 		t.Fatalf("authorization attempts = %d, want retry", attempts)
+	}
+}
+
+func TestHelperServeAcceptsLaterEventWhileEarlierPresentationRetries(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-background-retry-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acceptRejected atomic.Bool
+	firstRejected := make(chan struct{}, 1)
+	delivered := make(chan Event, 1)
+	helper := Helper{Listener: listener, Store: store, RetryDelay: 20 * time.Millisecond, Present: func(event Event) error {
+		if event.SessionID == "rejected" && !acceptRejected.Load() {
+			select {
+			case firstRejected <- struct{}{}:
+			default:
+			}
+			return errors.New("native submission rejected")
+		}
+		if event.SessionID == "later" {
+			delivered <- event
+		}
+		return nil
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("helper did not stop after listener close")
+		}
+	}()
+
+	if err := Send(socket, Event{Class: Error, SessionID: "rejected", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstRejected:
+	case <-time.After(time.Second):
+		t.Fatal("rejected presentation was not attempted")
+	}
+	want := Event{Class: Attention, SessionID: "later", Timestamp: time.Now()}
+	if err := Send(socket, want); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-delivered:
+		if got.SessionID != want.SessionID || got.Class != want.Class || !got.Timestamp.Equal(want.Timestamp) {
+			t.Fatalf("delivered event = %#v, want %#v", got, want)
+		}
+	case <-time.After(250 * time.Millisecond):
+		acceptRejected.Store(true) // Let the old synchronous implementation drain before cleanup.
+		select {
+		case <-delivered:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("later event was blocked by a permanently rejected presentation")
 	}
 }
 
