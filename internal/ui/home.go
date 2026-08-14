@@ -594,6 +594,7 @@ type Home struct {
 
 	// Remote sessions (Phase 2: Agent-Deck Remotes)
 	remoteSessions     map[string][]session.RemoteSessionInfo // remoteName -> sessions
+	remoteFromCache    map[string]bool                        // remoteName -> data is a startup cache snapshot, not live yet
 	remoteSessionsMu   sync.RWMutex
 	lastRemoteFetch    time.Time // When remote sessions were last fetched
 	remotesFetchActive bool      // Prevents overlapping fetches
@@ -1532,6 +1533,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 
 	// Restore persisted UI state (preview mode, status filter, cursor position)
 	h.loadUIState()
+	h.loadRemoteSessionsCache()
 
 	// Apply default_filter from config if no filter was restored from persisted state.
 	// Auto-clears if no sessions match (handled in rebuildFlatItems).
@@ -6159,9 +6161,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// #1170: merge rather than wholesale-replace so a remote that errored
 		// this round keeps its last-good sessions instead of flickering out.
 		h.remoteSessions = mergeRemoteSessions(h.remoteSessions, msg.sessions, msg.failed)
+		for name := range msg.sessions {
+			if !msg.failed[name] {
+				delete(h.remoteFromCache, name)
+			}
+		}
 		h.lastRemoteFetch = time.Now()
 		h.remotesFetchActive = false
 		h.remoteSessionsMu.Unlock()
+		h.saveRemoteSessionsCache()
 		// #1101: store remote cost summaries so renderCostLine can fold them
 		// into the displayed totals on the next paint.
 		h.remoteCostsMu.Lock()
@@ -17214,7 +17222,14 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		count = len(sessions)
 		running, waiting = remoteStatusCounts(sessions, "")
 	}
+	fromCache := h.remoteFromCache[item.RemoteName]
 	h.remoteSessionsMu.RUnlock()
+
+	trailer := h.renderRemoteLatencyMarker(item.RemoteName, selected)
+	if fromCache {
+		// Honest staleness: this is the startup snapshot, not live state yet.
+		trailer = " " + DimStyle.Render("— cached, refreshing…")
+	}
 
 	b.WriteString(fmt.Sprintf("%s%s %s%s%s%s\n",
 		remoteRowGutter(selected), // align with group hotkey gutter (flush with local root groups)
@@ -17222,7 +17237,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		nameStyle.Render("remotes/"+item.RemoteName),
 		countStyle.Render(fmt.Sprintf(" (%d)", count)),
 		remoteStatusSuffix(running, waiting),
-		h.renderRemoteLatencyMarker(item.RemoteName, selected),
+		trailer,
 	))
 }
 
