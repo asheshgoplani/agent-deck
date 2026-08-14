@@ -63,6 +63,9 @@
   --status-waiting: var(--tn-yellow);
   --status-error:   var(--tn-red);
   --status-idle:    var(--tn-muted-2);
+  /* Mirrors the TUI's SessionStatusStopped (ColorTextDim, styles.go) — the
+     glyph an archived or deliberately-stopped row gets there. */
+  --status-stopped: var(--tn-muted);
   --status-start:   var(--tn-purple);
   --phosphor:       var(--tn-green);
   --amber:          var(--tn-yellow);
