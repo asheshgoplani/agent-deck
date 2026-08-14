@@ -53,7 +53,7 @@ func runRemote(t *testing.T, inst *Instance, remoteHome, probe string) (output, 
 	t.Helper()
 
 	binDir, argvLog := fakeSSHDir(t, remoteHome)
-	payload := inst.buildBashExportPrefix() + probe
+	payload := inst.buildBashExportPrefix(false) + probe
 	composed := inst.wrapForSSH(payload)
 
 	cmd := exec.Command("bash", "-c", composed)
