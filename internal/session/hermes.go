@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,8 +15,6 @@ import (
 	"time"
 
 	"al.essio.dev/pkg/shellescape"
-
-	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
 
 type hermesHookControl struct {
@@ -416,41 +413,6 @@ func (i *Instance) buildHermesCommand(baseCommand string) string {
 	}
 
 	return envPrefix + cmd
-}
-
-// seedHermesHookBaseline records a synthetic "waiting" hook status, in memory
-// and in the persisted hook file, for a freshly (re)spawned hermes process
-// sitting at its prompt. Needed because hermes emits no lifecycle event at
-// process launch — on_session_start fires only at the first turn of a
-// brand-new session — so without this seed a restarted session has no hook
-// state at all until the user types. The first real hook event overwrites it.
-func (i *Instance) seedHermesHookBaseline() {
-	now := time.Now()
-	i.mu.Lock()
-	i.hookStatus = "waiting"
-	i.hookEvent = "agentdeck_restart_baseline"
-	i.hookLastUpdate = now
-	i.mu.Unlock()
-
-	payload, err := json.Marshal(map[string]interface{}{
-		"status": "waiting",
-		"event":  "agentdeck_restart_baseline",
-		"ts":     now.Unix(),
-		"cwd":    i.EffectiveWorkingDir(),
-	})
-	if err != nil {
-		return
-	}
-	hooksDir := GetHooksDir()
-	if err := os.MkdirAll(hooksDir, 0700); err != nil {
-		return
-	}
-	if err := atomicfile.WriteFile(filepath.Join(hooksDir, i.ID+".json"), payload, 0600); err != nil {
-		sessionLog.Debug("hermes_hook_baseline_write_failed",
-			slog.String("instance", i.ID),
-			slog.String("error", err.Error()),
-		)
-	}
 }
 
 // IsHermesGatewayReachable performs a basic reachable check against the

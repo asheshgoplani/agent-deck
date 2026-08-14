@@ -137,7 +137,8 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("Combines: add + session start + session send")
 		fmt.Println()
 		fmt.Println("Arguments:")
-		fmt.Println("  [path]    Project directory (default: group default_path, then global default_path, then current directory)")
+		fmt.Println("  [path]    Project directory (default: group default_path, then global default_path,")
+		fmt.Println("            then the group's most recent session path, then current directory)")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -768,18 +769,25 @@ func handleLaunch(profile string, args []string) {
 // "right here" meaning (resolved like add's positional arg). When no path is
 // given, the resolution chain matches `add` (#1303): the target group's
 // default_path first, then the global config default_path, then cwd.
+//
+// #1879: only an *explicitly configured* group default_path short-circuits the
+// chain. The group's most-recently-accessed session path is a derived guess and
+// is applied after the global config default_path, not instead of it.
 func resolveLaunchPath(rawPathArg, groupSelector, profile string) (string, error) {
 	if rawPathArg != "" {
 		return resolveAddPath(rawPathArg)
 	}
 
+	var recentSessionPath string
 	if grp := strings.TrimSpace(groupSelector); grp != "" {
 		if storage, instances, groups, err := loadSessionData(profile); err == nil {
 			groupTree := session.NewGroupTreeWithGroups(instances, groups)
-			path := groupTree.DefaultPathForGroup(resolveGroupPathForAdd(groupTree, grp))
+			resolvedGroup := resolveGroupPathForAdd(groupTree, grp)
+			explicitPath, hasExplicit := groupTree.ExplicitDefaultPathForGroup(resolvedGroup)
+			recentSessionPath = groupTree.RecentSessionPathForGroup(resolvedGroup)
 			_ = storage.Close()
-			if path != "" {
-				return path, nil
+			if hasExplicit {
+				return explicitPath, nil
 			}
 		}
 	}
@@ -788,6 +796,10 @@ func resolveLaunchPath(rawPathArg, groupSelector, profile string) (string, error
 		if path := resolveConfiguredDefaultPath(userCfg.DefaultPath); path != "" {
 			return path, nil
 		}
+	}
+
+	if recentSessionPath != "" {
+		return recentSessionPath, nil
 	}
 
 	return os.Getwd()

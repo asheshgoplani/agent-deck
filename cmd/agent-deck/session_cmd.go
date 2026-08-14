@@ -3491,7 +3491,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		paneNow := send.CaptureOutcome(captured, captureErr)
 		if paneNow.OK {
 			content := tmux.StripANSI(captured)
-			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
+			unsentPromptDetected = send.ComposerHoldsPasteMarker(captured, tmux.StripANSI) || send.HasUnsentComposerPrompt(content, message)
 			if !sawDeliveryEvidence && deliveryToken != "" && strings.Contains(content, deliveryToken) {
 				sawDeliveryEvidence = true
 			}
@@ -3601,7 +3601,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	if opts.verifyDelivery {
 		if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil {
 			content := tmux.StripANSI(rawContent)
-			if send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message) {
+			if send.ComposerHoldsPasteMarker(rawContent, tmux.StripANSI) || send.HasUnsentComposerPrompt(content, message) {
 				return deliveryTypedNotSubmitted, fmt.Errorf(
 					"message typed but not submitted after %d verification checks (issue #1413): "+
 						"the composer still holds the message despite bounded Enter retries. "+
