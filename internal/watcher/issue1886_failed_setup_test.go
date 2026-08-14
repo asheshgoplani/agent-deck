@@ -38,13 +38,25 @@ func newHealthLoopEngine(t *testing.T, interval time.Duration) *Engine {
 // cannot, because the adapter-level nil-client guard also yields an error.
 // HealthCheck returns nil on purpose: a call that did happen would flip the
 // tracker to healthy, so it would fail the status assertion as well.
+//
+// failSetups bounds how many Setup attempts fail, so one adapter can model a
+// retry that eventually succeeds. panicOnTeardown makes Teardown panic, which
+// is the half-constructed behaviour cleanup has to survive.
 type failedSetupAdapter struct {
+	failSetups      int64 // negative means: fail every attempt
+	panicOnTeardown bool
+
+	setups       atomic.Int64
 	healthChecks atomic.Int64
 	teardowns    atomic.Int64
 }
 
 func (a *failedSetupAdapter) Setup(context.Context, AdapterConfig) error {
-	return errors.New("setup failed")
+	n := a.setups.Add(1)
+	if a.failSetups < 0 || n <= a.failSetups {
+		return errors.New("setup failed")
+	}
+	return nil
 }
 
 func (a *failedSetupAdapter) Listen(ctx context.Context, _ chan<- Event) error {
@@ -54,6 +66,9 @@ func (a *failedSetupAdapter) Listen(ctx context.Context, _ chan<- Event) error {
 
 func (a *failedSetupAdapter) Teardown() error {
 	a.teardowns.Add(1)
+	if a.panicOnTeardown {
+		panic("teardown on a half-constructed adapter")
+	}
 	return nil
 }
 
@@ -68,7 +83,7 @@ func (a *failedSetupAdapter) HealthCheck() error {
 func TestEngine_HealthLoop_SkipsAdapterWithFailedSetup(t *testing.T) {
 	engine := newHealthLoopEngine(t, 20*time.Millisecond)
 
-	adapter := &failedSetupAdapter{}
+	adapter := &failedSetupAdapter{failSetups: -1}
 	engine.RegisterAdapter("w1", adapter, AdapterConfig{Type: "mock", Name: "broken"}, 60)
 
 	if err := engine.Start(); err != nil {
@@ -94,11 +109,17 @@ func TestEngine_HealthLoop_SkipsAdapterWithFailedSetup(t *testing.T) {
 	if n := adapter.healthChecks.Load(); n != 0 {
 		t.Errorf("HealthCheck called %d times on an adapter whose Setup failed, want 0", n)
 	}
+	// The failed attempt is cleaned up at the moment it fails, not deferred to
+	// Stop: Setup is not transactional, so it may already hold resources.
+	if n := adapter.teardowns.Load(); n != 1 {
+		t.Errorf("Teardown called %d times after the failed Setup, want exactly 1", n)
+	}
 
 	engine.Stop()
 
-	if n := adapter.teardowns.Load(); n != 0 {
-		t.Errorf("Teardown called %d times on an adapter whose Setup failed, want 0", n)
+	// Stop must not tear the same failed attempt down a second time.
+	if n := adapter.teardowns.Load(); n != 1 {
+		t.Errorf("Teardown called %d times after Stop, want it to stay at 1 (exactly-once)", n)
 	}
 }
 
@@ -136,25 +157,105 @@ func TestEngine_HealthLoop_NtfyWithFailedSetupDoesNotPanic(t *testing.T) {
 	}
 }
 
-// TestEngine_Stop_SkipsTeardownForFailedSetup verifies the symmetric case:
-// Teardown releases what Setup allocated, so an adapter that never completed
-// Setup must not be torn down either.
-func TestEngine_Stop_SkipsTeardownForFailedSetup(t *testing.T) {
+// TestEngine_Stop_TearsDownSuccessfulSetupExactlyOnce covers the other side:
+// an adapter that did complete Setup is holding resources, so Stop must release
+// them — once, even if Stop is called again.
+func TestEngine_Stop_TearsDownSuccessfulSetupExactlyOnce(t *testing.T) {
 	engine, _ := newTestEngine(t, nil)
 
-	adapter := &MockAdapter{setupErr: errors.New("setup failed")}
-	engine.RegisterAdapter("w1", adapter, AdapterConfig{Type: "mock", Name: "broken"}, 60)
+	adapter := &failedSetupAdapter{} // failSetups == 0: every Setup succeeds
+	engine.RegisterAdapter("w1", adapter, AdapterConfig{Type: "mock", Name: "healthy"}, 60)
 
 	if err := engine.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	if n := adapter.teardowns.Load(); n != 0 {
+		t.Fatalf("Teardown called %d times while the adapter was live, want 0", n)
+	}
+
+	engine.Stop()
+	if n := adapter.teardowns.Load(); n != 1 {
+		t.Errorf("Teardown called %d times after Stop, want exactly 1", n)
+	}
+
+	engine.Stop()
+	if n := adapter.teardowns.Load(); n != 1 {
+		t.Errorf("Teardown called %d times after a second Stop, want it to stay at 1", n)
+	}
+}
+
+// TestEngine_SetupRetry_CleansUpEveryFailedAttempt is the retry case the review
+// asked for: Setup is not transactional, so every failed attempt has to release
+// what that attempt took, and a later success must leave exactly one live Setup
+// for Stop to release. Two failures then a success means three Teardowns in
+// total — one per failed attempt, one final.
+func TestEngine_SetupRetry_CleansUpEveryFailedAttempt(t *testing.T) {
+	engine, _ := newTestEngine(t, nil)
+
+	adapter := &failedSetupAdapter{failSetups: 2}
+	engine.RegisterAdapter("w1", adapter, AdapterConfig{Type: "mock", Name: "flaky"}, 60)
+	entry := &engine.adapters[0]
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		if ok := engine.setupAdapter(entry); ok {
+			t.Fatalf("attempt %d: Setup unexpectedly succeeded", attempt)
+		}
+		if entry.setupOK {
+			t.Errorf("attempt %d: setupOK is true after a failed Setup", attempt)
+		}
+		if n := adapter.teardowns.Load(); n != int64(attempt) {
+			t.Errorf("attempt %d: Teardown called %d times, want %d (one per failed attempt)",
+				attempt, n, attempt)
+		}
+	}
+
+	if ok := engine.setupAdapter(entry); !ok {
+		t.Fatal("third attempt: Setup should have succeeded")
+	}
+	if !entry.setupOK {
+		t.Error("setupOK is false after a successful Setup")
+	}
+	if n := adapter.teardowns.Load(); n != 2 {
+		t.Errorf("Teardown called %d times after the successful attempt, want it to stay at 2", n)
+	}
+
 	engine.Stop()
 
-	if !adapter.setupCalled {
-		t.Fatal("Setup was never called")
+	if n := adapter.teardowns.Load(); n != 3 {
+		t.Errorf("Teardown called %d times after Stop, want 3 (2 failed attempts + 1 final cleanup)", n)
 	}
-	if adapter.teardownCalled {
-		t.Error("Teardown called on an adapter whose Setup failed")
+}
+
+// TestEngine_TeardownPanic_IsContained pins the "panic-contained" half. Cleanup
+// runs on the failed-Setup path, where the adapter is half-constructed — the
+// exact state that panicked in #1886 — so a panicking Teardown must be
+// swallowed rather than take the process down, and must not stop the engine
+// from setting up the adapters that follow it.
+func TestEngine_TeardownPanic_IsContained(t *testing.T) {
+	engine, _ := newTestEngine(t, nil)
+
+	panicky := &failedSetupAdapter{failSetups: -1, panicOnTeardown: true}
+	healthy := &MockAdapter{}
+	engine.RegisterAdapter("w1", panicky, AdapterConfig{Type: "mock", Name: "panicky"}, 60)
+	engine.RegisterAdapter("w2", healthy, AdapterConfig{Type: "mock", Name: "healthy"}, 60)
+
+	// Start must survive the panicking cleanup of the first adapter.
+	if err := engine.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if n := panicky.teardowns.Load(); n != 1 {
+		t.Errorf("Teardown called %d times on the failed adapter, want 1", n)
+	}
+	if !healthy.setupCalled {
+		t.Error("the adapter after the panicking one was never set up")
+	}
+
+	// And Stop must still run to completion, tearing down the live adapter.
+	engine.Stop()
+
+	if !healthy.teardownCalled {
+		t.Error("Teardown was not called on the live adapter during Stop")
 	}
 }
 
