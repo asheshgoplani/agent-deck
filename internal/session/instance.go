@@ -485,14 +485,15 @@ type Instance struct {
 	paneDeadExitStatusForTest func() (int, bool) // nil uses tmuxSession.PaneDeadExitStatus
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
-	hookStatus               string    // running, idle, waiting, dead (empty = no hook data)
-	hookEvent                string    // Hook event name that caused the last status (e.g. "PermissionRequest")
-	hookSessionID            string    // Session ID from hook payload
-	hookLastUpdate           time.Time // When hook status was last received
-	codexStartedGeneration   string
-	codexCompletedGeneration string
-	codexStartedSessionID    string
-	codexCompletedSessionID  string
+	hookStatus                  string    // running, idle, waiting, dead (empty = no hook data)
+	hookEvent                   string    // Hook event name that caused the last status (e.g. "PermissionRequest")
+	hookSessionID               string    // Session ID from hook payload
+	hookLastUpdate              time.Time // When hook status was last received
+	codexStartedGeneration      string
+	codexCompletedGeneration    string
+	codexStartedSessionID       string
+	codexCompletedSessionID     string
+	codexInvalidatingGeneration string
 
 	// Durable last-activity record (issue #1846). Unlike hookLastUpdate this
 	// survives ClearHookStatus and, via tool_data.last_activity_at, TUI
@@ -5045,6 +5046,11 @@ func (i *Instance) setCodexGenerationEvidence(status *HookStatus) {
 	if status == nil || !IsCodexCompatible(i.Tool) {
 		return
 	}
+	if status.codexCompletionConsumed {
+		i.codexStartedGeneration, i.codexCompletedGeneration = "", ""
+		i.codexStartedSessionID, i.codexCompletedSessionID = "", ""
+		return
+	}
 	if status.CodexStartedGeneration == "" && status.CodexCompletedGeneration == "" &&
 		status.CodexStartedSessionID == "" && status.CodexCompletedSessionID == "" {
 		return
@@ -5053,6 +5059,9 @@ func (i *Instance) setCodexGenerationEvidence(status *HookStatus) {
 	i.codexCompletedGeneration = strings.TrimSpace(status.CodexCompletedGeneration)
 	i.codexStartedSessionID = strings.TrimSpace(status.CodexStartedSessionID)
 	i.codexCompletedSessionID = strings.TrimSpace(status.CodexCompletedSessionID)
+	if i.codexInvalidatingGeneration != i.codexStartedGeneration {
+		i.codexInvalidatingGeneration = ""
+	}
 }
 
 // codexCompletionConverged is deliberately fail-closed. Only the same retained
@@ -5061,6 +5070,7 @@ func (i *Instance) setCodexGenerationEvidence(status *HookStatus) {
 // to the conservative running debounce.
 func (i *Instance) codexCompletionConverged() bool {
 	if !IsCodexCompatible(i.Tool) || i.codexStartedGeneration == "" ||
+		i.codexInvalidatingGeneration == i.codexStartedGeneration ||
 		i.codexStartedGeneration != i.codexCompletedGeneration ||
 		i.codexStartedSessionID == "" ||
 		i.codexStartedSessionID != i.codexCompletedSessionID {
@@ -5071,6 +5081,42 @@ func (i *Instance) codexCompletionConverged() bool {
 
 func (i *Instance) shouldBypassCodexWaitingDebounce(derived Status) bool {
 	return derived == StatusWaiting && i.codexCompletionConverged()
+}
+
+// invalidateCodexCompletionOnRunning makes completion-only proof one-turn
+// evidence. Once tmux authoritatively observes newer running activity, turn
+// A's completion must not let a later transient waiting sample masquerade as
+// completion of turn B. Persist a host-owned consumption marker first, then
+// clear the warm instance only after that write succeeds.
+// Caller must hold i.mu. The method drops it around all durable coordination.
+func (i *Instance) invalidateCodexCompletionOnRunning() {
+	if !IsCodexCompatible(i.Tool) || i.codexStartedGeneration == "" ||
+		i.codexStartedGeneration != i.codexCompletedGeneration {
+		return
+	}
+	generation := i.codexCompletedGeneration
+	i.codexInvalidatingGeneration = generation
+	// The durable operation can briefly retry a non-blocking host lock and can
+	// perform filesystem I/O. Never expose Instance.mu across either operation.
+	i.mu.Unlock()
+	consumed, err := consumeCodexCompletionEvidence(i.ID, generation)
+	i.mu.Lock()
+	if err != nil {
+		sessionLog.Debug("consume_codex_completion_evidence_failed",
+			slog.String("instance", i.ID),
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+	if consumed {
+		if i.codexStartedGeneration == generation && i.codexCompletedGeneration == generation {
+			i.codexStartedGeneration, i.codexCompletedGeneration = "", ""
+			i.codexStartedSessionID, i.codexCompletedSessionID = "", ""
+		}
+		if i.codexInvalidatingGeneration == generation {
+			i.codexInvalidatingGeneration = ""
+		}
+	}
 }
 
 // terminatedPaneStatus classifies a session whose tmux pane/session has
@@ -5276,6 +5322,8 @@ func (i *Instance) UpdateStatus() error {
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		switch i.hookStatus {
+		case "starting":
+			i.Status = StatusStarting
 		case "running":
 			i.Status = StatusRunning
 			// Reset acknowledged: new activity means output not yet seen.
@@ -5495,6 +5543,9 @@ func (i *Instance) UpdateStatus() error {
 		i.applyTerminatedPaneStatus()
 	default:
 		i.Status = StatusError
+	}
+	if i.Status == StatusRunning {
+		i.invalidateCodexCompletionOnRunning()
 	}
 
 	// Reconcile the auth hold with this sample. Runs after the status mapping so

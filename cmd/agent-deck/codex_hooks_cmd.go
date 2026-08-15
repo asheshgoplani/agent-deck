@@ -226,12 +226,23 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 		return
 	}
 	base := filepath.Base(instanceID)
-	lock, err := os.OpenFile(filepath.Join(hooksDir, base+".codex.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	// This lock serializes notify writers only. It is intentionally distinct
+	// from the host-owned consumption lock: a sandbox may control this scoped
+	// directory, so host lifecycle code must never wait on it.
+	lock, err := os.OpenFile(filepath.Join(hooksDir, base+".codex-writer.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return
 	}
 	defer closeChecked(lock)
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	locked := false
+	for attempt := 0; attempt < 20; attempt++ {
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+			locked = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !locked {
 		return
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck

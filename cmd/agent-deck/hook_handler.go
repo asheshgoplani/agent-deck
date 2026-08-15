@@ -554,12 +554,15 @@ func cleanStaleHookFiles() {
 		if strings.HasSuffix(entry.Name(), ".generation.json") {
 			continue // generation controls are never age-reaped
 		}
-		if strings.HasSuffix(entry.Name(), ".lock") && !strings.HasSuffix(entry.Name(), ".codex.lock") {
+		if strings.HasSuffix(entry.Name(), ".lock") {
 			info, err := entry.Info()
 			if err != nil || !info.ModTime().Before(cutoff) {
 				continue
 			}
 			id := strings.TrimSuffix(entry.Name(), ".lock")
+			if strings.HasSuffix(entry.Name(), ".codex-writer.lock") {
+				id = strings.TrimSuffix(entry.Name(), ".codex-writer.lock")
+			}
 			if _, err := os.Stat(filepath.Join(hooksDir, id+".json")); err == nil {
 				continue
 			}
@@ -579,7 +582,7 @@ func cleanStaleHookFiles() {
 			continue
 		}
 		ext := filepath.Ext(entry.Name())
-		if entry.IsDir() || (ext != ".json" && ext != ".sid" && !strings.HasSuffix(entry.Name(), ".codex.lock")) {
+		if entry.IsDir() || (ext != ".json" && ext != ".sid") {
 			continue
 		}
 		info, err := entry.Info()
