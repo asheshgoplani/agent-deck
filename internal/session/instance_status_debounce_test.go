@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -183,6 +184,28 @@ func TestCodexCompletionEvidenceInvalidatedBySubsequentRunningTurn(t *testing.T)
 	}
 
 	// Turn B has no start hook; tmux is the authoritative newer-running edge.
+	// If the notify writer currently owns the lock, invalidation must return
+	// without blocking and retain the generation so the next running sample can
+	// retry the durable consume.
+	lockPath := filepath.Join(GetHooksDir(), instanceID+".codex.lock")
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	i.invalidateCodexCompletionOnRunning()
+	if !i.codexCompletionConverged() {
+		t.Fatal("contended durable consume discarded the in-memory retry generation")
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+
 	i.invalidateCodexCompletionOnRunning()
 	if i.codexCompletionConverged() {
 		t.Fatal("stale turn A evidence converged after turn B started")

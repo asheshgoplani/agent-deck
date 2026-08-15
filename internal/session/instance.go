@@ -5084,13 +5084,17 @@ func (i *Instance) invalidateCodexCompletionOnRunning() {
 		return
 	}
 	generation := i.codexCompletedGeneration
-	i.codexStartedGeneration, i.codexCompletedGeneration = "", ""
-	i.codexStartedSessionID, i.codexCompletedSessionID = "", ""
-	if err := consumeCodexCompletionEvidence(i.ID, generation); err != nil && !os.IsNotExist(err) {
+	consumed, err := consumeCodexCompletionEvidence(i.ID, generation)
+	if err != nil {
 		sessionLog.Debug("consume_codex_completion_evidence_failed",
 			slog.String("instance", i.ID),
 			slog.String("error", err.Error()),
 		)
+		return
+	}
+	if consumed {
+		i.codexStartedGeneration, i.codexCompletedGeneration = "", ""
+		i.codexStartedSessionID, i.codexCompletedSessionID = "", ""
 	}
 }
 

@@ -39,39 +39,45 @@ func readStatusFileNoFollow(path string) ([]byte, error) {
 // durable hook record only when it still matches the generation observed by
 // the caller. The Codex notify writer uses the same sibling lock, so a newer
 // completion cannot be overwritten by a concurrent tmux status sample.
-func consumeCodexCompletionEvidence(instanceID, generation string) (retErr error) {
+func consumeCodexCompletionEvidence(instanceID, generation string) (consumed bool, retErr error) {
 	if strings.TrimSpace(instanceID) == "" || strings.TrimSpace(generation) == "" {
-		return nil
+		return false, nil
 	}
 	statusPath := hookStatusFilePath(instanceID)
 	lockPath := filepath.Join(filepath.Dir(statusPath), filepath.Base(instanceID)+".codex.lock")
 	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() {
 		if err := lock.Close(); retErr == nil && err != nil {
 			retErr = err
 		}
 	}()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return err
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return false, nil
+		}
+		return false, err
 	}
 	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
 
 	data, err := readStatusFileNoFollow(statusPath)
 	if err != nil {
-		return err
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
+		return false, err
 	}
 	var started, completed string
 	_ = json.Unmarshal(raw["codex_started_generation"], &started)
 	_ = json.Unmarshal(raw["codex_completed_generation"], &completed)
 	if started != generation || completed != generation {
-		return nil
+		return true, nil
 	}
 	delete(raw, "codex_started_generation")
 	delete(raw, "codex_completed_generation")
@@ -79,9 +85,12 @@ func consumeCodexCompletionEvidence(instanceID, generation string) (retErr error
 	delete(raw, "codex_completed_session_id")
 	updated, err := json.Marshal(raw)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return atomicWriteFile(statusPath, updated, 0o600)
+	if err := atomicWriteFile(statusPath, updated, 0o600); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // HookStatus holds the decoded status from a hook status file.
