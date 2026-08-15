@@ -1,6 +1,7 @@
 package session
 
 import (
+	"regexp"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -59,12 +60,29 @@ func writeSpawnFailureRecord(rec SpawnFailureRecord) error {
 // time (see the comment on watchForFastDeath) rather than re-resolved here
 // from the live $HOME, which could have moved on by the time the watcher's
 // goroutine — never joined — actually gets to write.
+// envExportPattern matches shell export statements with single-quoted values
+// (including the '\'' escape produced by buildEnvExports) so persisted
+// commands never carry credential values. Only the value is redacted; the key
+// stays visible for diagnosis.
+var envExportPattern = regexp.MustCompile(`export ([A-Za-z_][A-Za-z0-9_]*)='(?:[^']*(?:'\\''[^']*)*)'`)
+
+// redactEnvValues strips env values from a persisted command or error string.
+// A restart --env API_KEY=... that fails during prepare would otherwise write
+// the literal secret into a sidecar that session show exposes.
+func redactEnvValues(s string) string {
+	return envExportPattern.ReplaceAllString(s, "export $1='[redacted]'")
+}
+
 func writeSpawnFailureRecordTo(rec SpawnFailureRecord, dir string) error {
 	if rec.Timestamp == 0 {
 		rec.Timestamp = time.Now().Unix()
 	}
+	// Single choke point: every writer funnels through here, so redaction and
+	// tight permissions cannot be forgotten at a call site.
+	rec.Command = redactEnvValues(rec.Command)
+	rec.DyingOutput = redactEnvValues(rec.DyingOutput)
 	path := filepath.Join(dir, rec.InstanceID+".json")
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create spawn-failure dir: %w", err)
 	}
 	data, err := json.MarshalIndent(rec, "", "  ")
@@ -73,7 +91,7 @@ func writeSpawnFailureRecordTo(rec SpawnFailureRecord, dir string) error {
 	}
 	// SkipBackup: these sidecars are transient and self-clearing; a .bak would
 	// just be noise. RefuseEmpty is irrelevant (data is never empty).
-	return safeio.SafeOverwrite(path, data, safeio.Options{Perm: 0o644, SkipBackup: true})
+	return safeio.SafeOverwrite(path, data, safeio.Options{Perm: 0o600, SkipBackup: true})
 }
 
 // readSpawnFailureRecord loads the sidecar for an instance, or (nil, nil) when
