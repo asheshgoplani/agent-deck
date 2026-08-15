@@ -206,11 +206,12 @@ func TestCodexCompletionEvidenceInvalidatedBySubsequentRunningTurn(t *testing.T)
 		i.mu.Unlock()
 		close(done)
 	}()
-	muLive := make(chan struct{})
+	muLive := make(chan Status)
 	go func() {
 		i.mu.Lock()
+		status := i.Status
 		i.mu.Unlock()
-		close(muLive)
+		muLive <- status
 	}()
 	select {
 	case <-muLive:
