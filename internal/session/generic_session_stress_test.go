@@ -83,11 +83,11 @@ func TestStress_ExplicitClearViaBindingThenLoad(t *testing.T) {
 	}
 
 	// Stale save after clear must not resurrect: DB keys are gone, so sticky
-	// has nothing to preserve.
-	stale := *inst
-	stale.GenericSessionID = ""
-	stale.GenericDetectedAt = time.Time{}
-	if err := storage.SaveWithGroups([]*Instance{&stale}, NewGroupTreeWithGroups([]*Instance{&stale}, nil)); err != nil {
+	// has nothing to preserve. New Instance (do not copy *inst — it holds a mutex).
+	stale := NewInstance(inst.Title, inst.ProjectPath)
+	stale.ID = inst.ID
+	stale.Tool = inst.Tool
+	if err := storage.SaveWithGroups([]*Instance{stale}, NewGroupTreeWithGroups([]*Instance{stale}, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -208,9 +208,9 @@ func TestStress_WriteBindingDoesNotClobberOtherToolDataKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	for k, want := range map[string]string{
-		"claude_session_id": `"claude-uuid-keep"`,
+		"claude_session_id":  `"claude-uuid-keep"`,
 		"generic_session_id": `"generic-1"`,
-		"color":             `"#abcdef"`,
+		"color":              `"#abcdef"`,
 	} {
 		if string(m[k]) != want {
 			t.Errorf("%s = %s, want %s (full blob: %s)", k, m[k], want, raw.String)

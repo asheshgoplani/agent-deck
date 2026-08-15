@@ -18,6 +18,7 @@
 //  1. set Instance.genericSessionIDCleared so instanceToRow writes an EXPLICIT
 //     empty string (sticky honors explicit empty), or
 //  2. call WriteGenericSessionBinding("", …) (json_remove) before Save.
+//
 // Writing explicit empty on every empty GenericSessionID would break sticky
 // protection for concurrent full-table saves — do not do that.
 //
