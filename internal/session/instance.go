@@ -8068,8 +8068,11 @@ func (i *Instance) restart(env map[string]string) error {
 					slog.String("reason", "orphan_bak_restore_restart"))
 			}
 		}
-		resumeCmd, containerName, err := i.prepareCommand(i.buildClaudeResumeCommand())
+		prepInput := i.buildClaudeResumeCommand()
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
+			// #1924: a restart that fails here left StatusError with no reason.
+			i.recordPrepareFailure(prepInput, err)
 			return err
 		}
 		if containerName != "" {
@@ -8121,8 +8124,11 @@ func (i *Instance) restart(env map[string]string) error {
 
 	// If Gemini session with known ID AND tmux session exists, use respawn-pane.
 	if i.Tool == "gemini" && i.GeminiSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
-		resumeCmd, containerName, err := i.prepareCommand(i.buildGeminiCommand("gemini"))
+		prepInput := i.buildGeminiCommand("gemini")
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
+			// #1924: a restart that fails here left StatusError with no reason.
+			i.recordPrepareFailure(prepInput, err)
 			return err
 		}
 		if containerName != "" {
@@ -8177,8 +8183,11 @@ func (i *Instance) restart(env map[string]string) error {
 		// Reuse the canonical builder so live-pane respawns retain the same
 		// configured command, model, agent, and SSE flags as every other start.
 		rawCmd := i.buildOpenCodeCommand("opencode")
-		resumeCmd, containerName, err := i.prepareCommand(rawCmd)
+		prepInput := rawCmd
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
+			// #1924: a restart that fails here left StatusError with no reason.
+			i.recordPrepareFailure(prepInput, err)
 			return err
 		}
 		if containerName != "" {
@@ -8248,8 +8257,11 @@ func (i *Instance) restart(env map[string]string) error {
 		if i.CodexSessionID == "" {
 			i.CodexStartedAt = time.Now().UnixMilli()
 		}
-		resumeCmd, containerName, err := i.prepareCommand(i.buildCodexCommand(i.Command))
+		prepInput := i.buildCodexCommand(i.Command)
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
+			// #1924: a restart that fails here left StatusError with no reason.
+			i.recordPrepareFailure(prepInput, err)
 			return err
 		}
 		if containerName != "" {
@@ -8288,8 +8300,11 @@ func (i *Instance) restart(env map[string]string) error {
 
 	// If Cursor session AND tmux session exists, use respawn-pane.
 	if i.Tool == "cursor" && i.tmuxSession != nil && i.tmuxSession.Exists() {
-		resumeCmd, containerName, err := i.prepareCommand(i.buildCursorCommand(i.Command, true))
+		prepInput := i.buildCursorCommand(i.Command, true)
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
+			// #1924: a restart that fails here left StatusError with no reason.
+			i.recordPrepareFailure(prepInput, err)
 			return err
 		}
 		if containerName != "" {
@@ -8329,8 +8344,11 @@ func (i *Instance) restart(env map[string]string) error {
 				i.Command, toolDef.ResumeFlag, sessionID)
 		}
 		rawCmd = i.buildRestartEnvPrefix() + rawCmd
-		resumeCmd, containerName, err := i.prepareCommand(rawCmd)
+		prepInput := rawCmd
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
+			// #1924: a restart that fails here left StatusError with no reason.
+			i.recordPrepareFailure(prepInput, err)
 			return err
 		}
 		if containerName != "" {
@@ -8479,6 +8497,11 @@ func (i *Instance) restart(env map[string]string) error {
 
 	if err := i.tmuxSession.Start(command); err != nil {
 		mcpLog.Debug("restart_start_failed", slog.String("error", err.Error()))
+		// #1924: Start() and its sister path have recorded this since #1580,
+		// but restart() never did — so the one case where the user has just
+		// changed something and is most likely to ask "why?" was the one that
+		// set StatusError with nothing to show for it.
+		i.recordTmuxStartFailure(command, err)
 		i.Status = StatusError
 		return fmt.Errorf("failed to restart tmux session: %w", err)
 	}
