@@ -88,10 +88,17 @@ func checkFlagValueNotFlag(fs *flag.FlagSet, args []string) error {
 		if strings.Contains(name, "=") || boolFlags[name] || !known[name] {
 			continue
 		}
-		if i+1 >= len(args) {
-			continue // flag.Parse reports the missing value itself
+		// Read the following token, if there is one. Assigned inside the bounds
+		// check rather than after it so the indexing is locally provable — an
+		// `i+1 >= len(args)` guard followed by args[i+1] reads as an unchecked
+		// index to gosec (G602).
+		next := ""
+		if i+1 < len(args) {
+			next = args[i+1]
 		}
-		next := args[i+1]
+		if next == "" {
+			continue // nothing follows; flag.Parse reports the missing value
+		}
 		if !strings.HasPrefix(next, "-") || next == "-" {
 			i++ // ordinary value; skip it so it is not re-examined as a flag
 			continue
