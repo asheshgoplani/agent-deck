@@ -1663,6 +1663,15 @@ func handleSessionShow(profile string, args []string) {
 		jsonData["command"] = inst.Command
 	}
 
+	// #1924: always present, even when empty. `session set <id> wrapper …` is
+	// the natural thing to verify with `session show --json`, and this key was
+	// missing entirely — so `.wrapper` read back as null and a write that had
+	// in fact persisted looked like silent data loss. Same reasoning the
+	// channels field states below: omitting when empty makes absence-of-field
+	// ambiguous with absence-of-value, and here that ambiguity cost a user a
+	// bug report against the wrong component.
+	jsonData["wrapper"] = inst.Wrapper
+
 	if session.IsClaudeCompatible(inst.Tool) {
 		jsonData["claude_session_id"] = inst.ClaudeSessionID
 		jsonData["can_fork"] = inst.CanFork()
