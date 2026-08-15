@@ -2088,11 +2088,56 @@ func getCodexHomeDirForCommand(command string) string {
 	return getCodexHomeDir()
 }
 
+// accountCodexHomeDir returns the CODEX_HOME mapped to this session's account
+// slot via [profiles.<account>.codex].config_dir, or "" when the session has no
+// account or the account names no codex block.
+//
+// Mirrors the account level of resolveClaudeConfigDir (#924): the per-session
+// account is the most specific thing the user can say about which credentials a
+// session runs under, so it outranks the process-wide CODEX_HOME and the
+// profile/global config. An account with no matching block falls through
+// silently, matching the permissive style of the Claude chain.
+func (i *Instance) accountCodexHomeDir() string {
+	if i == nil || strings.TrimSpace(i.Account) == "" {
+		return ""
+	}
+	cfg, err := LoadUserConfig()
+	if err != nil || cfg == nil {
+		return ""
+	}
+	return cfg.GetProfileCodexConfigDir(i.Account)
+}
+
+// codexHomeToExport returns the CODEX_HOME this session must launch with, or ""
+// when nothing should be exported and codex may use its own default.
+//
+// Both codex launch paths (normal and fork) call this so they cannot drift: a
+// session that resolves its home one way and launches another is exactly the
+// #1922 failure — the account was recorded and reported, but the process ran
+// against ~/.codex.
+func (i *Instance) codexHomeToExport() string {
+	if accountHome := strings.TrimSpace(i.accountCodexHomeDir()); accountHome != "" {
+		return accountHome
+	}
+	if isCodexHomeExplicit() {
+		return strings.TrimSpace(getCodexHomeDir())
+	}
+	return ""
+}
+
 func (i *Instance) getCodexHomeDir() string {
 	if i == nil {
 		return getCodexHomeDir()
 	}
-	return getCodexHomeDirForCommand(i.resolveCodexCommand(i.Command))
+	// A CODEX_HOME= embedded in the session's own command is the user typing it
+	// by hand for this session, so it stays the most explicit signal of all.
+	if codexHome := codexHomeFromCommand(i.resolveCodexCommand(i.Command)); codexHome != "" {
+		return codexHome
+	}
+	if accountHome := i.accountCodexHomeDir(); accountHome != "" {
+		return accountHome
+	}
+	return getCodexHomeDir()
 }
 
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
@@ -2122,14 +2167,11 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	if i.Tool == "codex" && trimmed != "codex" && trimmed != "" {
 		return envPrefix + trimmed
 	}
-	if isCodexHomeExplicit() {
-		codexHome := strings.TrimSpace(getCodexHomeDir())
-		if codexHome != "" {
-			if err := os.MkdirAll(codexHome, 0o755); err != nil {
-				sessionLog.Warn("codex_home_mkdir_failed",
-					slog.String("path", codexHome),
-					slog.String("error", err.Error()))
-			}
+	if codexHome := i.codexHomeToExport(); codexHome != "" {
+		if err := os.MkdirAll(codexHome, 0o755); err != nil {
+			sessionLog.Warn("codex_home_mkdir_failed",
+				slog.String("path", codexHome),
+				slog.String("error", err.Error()))
 		}
 		envPrefix += "CODEX_HOME=" + codexHome + " "
 	}
@@ -9305,16 +9347,13 @@ func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand 
 	modelFlag := target.resolveCodexModelFlag()
 	reasoningFlag := target.resolveCodexReasoningEffortFlag()
 	command := target.resolveCodexCommand(baseCommand)
-	if isCodexHomeExplicit() {
-		codexHome := strings.TrimSpace(getCodexHomeDir())
-		if codexHome != "" {
-			if err := os.MkdirAll(codexHome, 0o755); err != nil {
-				sessionLog.Warn("codex_home_mkdir_failed",
-					slog.String("path", codexHome),
-					slog.String("error", err.Error()))
-			}
-			envPrefix += "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
+	if codexHome := target.codexHomeToExport(); codexHome != "" {
+		if err := os.MkdirAll(codexHome, 0o755); err != nil {
+			sessionLog.Warn("codex_home_mkdir_failed",
+				slog.String("path", codexHome),
+				slog.String("error", err.Error()))
 		}
+		envPrefix += "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
 	}
 	return envPrefix + fmt.Sprintf("%s%s%s%s fork %s", command, yoloFlag, modelFlag, reasoningFlag, shellescape.Quote(i.CodexSessionID)), nil
 }
