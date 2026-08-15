@@ -163,6 +163,37 @@ func TestHermesGenerationSeedRefreshesInMemoryBaseline(t *testing.T) {
 	}
 }
 
+func TestHermesRestartStartingHookOverridesStaleError(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	t.Setenv("HOME", t.TempDir())
+
+	// Use a harmless shell command to provide the live tmux session that
+	// UpdateStatus requires, then model the Hermes restart capture window.
+	inst := NewInstanceWithTool("hermes-restart-starting", t.TempDir(), "shell")
+	inst.Command = "sleep 30"
+	if err := inst.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = inst.Kill() }()
+
+	inst.mu.Lock()
+	inst.Tool = "hermes"
+	inst.Status = StatusError
+	inst.hookStatus = "dead"
+	inst.hookLastUpdate = time.Now()
+	inst.mu.Unlock()
+
+	if _, err := inst.seedHermesHookGeneration("starting", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.UpdateStatus(); err != nil {
+		t.Fatal(err)
+	}
+	if inst.Status != StatusStarting {
+		t.Fatalf("restart status = %q, want %q", inst.Status, StatusStarting)
+	}
+}
+
 func TestHermesSeedClearsOppositeLayout(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	inst := &Instance{ID: "hermes-mode-change", Tool: "hermes"}

@@ -5276,6 +5276,8 @@ func (i *Instance) UpdateStatus() error {
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		switch i.hookStatus {
+		case "starting":
+			i.Status = StatusStarting
 		case "running":
 			i.Status = StatusRunning
 			// Reset acknowledged: new activity means output not yet seen.
