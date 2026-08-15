@@ -27,7 +27,7 @@ type SpawnFailureRecord struct {
 	InstanceID  string `json:"instance_id"`
 	Tool        string `json:"tool"`
 	Command     string `json:"command,omitempty"`
-	Reason      string `json:"reason"`                 // tmux_start_failed | spawn_died_fast
+	Reason      string `json:"reason"`                 // tmux_start_failed | spawn_died_fast | prepare_failed
 	DyingOutput string `json:"dying_output,omitempty"` // last pane snapshot captured while alive
 	ElapsedMs   int64  `json:"elapsed_ms"`             // ms from spawn to observed death (0 for tmux_start_failed)
 	Timestamp   int64  `json:"ts"`
@@ -125,6 +125,10 @@ func (r *SpawnFailureRecord) FormatForDisplay() string {
 		b.WriteString("The terminal session could not be created.\n")
 	case "spawn_died_fast":
 		fmt.Fprintf(&b, "The command exited almost immediately (after %dms).\n", r.ElapsedMs)
+	case "prepare_failed":
+		// Nothing was launched, so the default arm's "ended unexpectedly
+		// during startup" would be actively misleading here.
+		b.WriteString("The command could not be prepared, so nothing was launched.\n")
 	default:
 		b.WriteString("The session ended unexpectedly during startup.\n")
 	}
@@ -305,6 +309,43 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 			slog.String("dying_output", logging.SanitizeValue(lastSnapshot)))
 		return
 	}
+}
+
+// recordPrepareFailure persists a record for a start that failed BEFORE tmux
+// was ever asked to do anything — command/wrapper assembly, sandbox setup,
+// config regeneration (#1924).
+//
+// These paths returned a bare error, so the session landed on StatusError with
+// no tmux session, no spawn-failure record and nothing in `session show`: an
+// error state with no reason, which is a guess rendered as fact. They are also
+// the paths most likely to be hit right after a user edits a wrapper or command,
+// which is exactly when a reason is worth the most.
+func (i *Instance) recordPrepareFailure(command string, prepErr error) {
+	if prepErr == nil {
+		return
+	}
+	rec := SpawnFailureRecord{
+		InstanceID: i.ID,
+		Tool:       i.Tool,
+		Command:    command,
+		Reason:     "prepare_failed",
+		// Reusing DyingOutput for the error string, as recordTmuxStartFailure
+		// already does: there is no pane to snapshot, so the error IS the
+		// diagnostic.
+		DyingOutput: prepErr.Error(),
+	}
+	if err := writeSpawnFailureRecord(rec); err != nil {
+		sessionLog.Warn("spawn_failure_record_write_failed",
+			slog.String("instance_id", i.ID),
+			slog.String("error", err.Error()))
+	}
+	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+		InstanceID: i.ID,
+		Tool:       i.Tool,
+		Action:     "spawn_failed",
+		Source:     "prepare_command",
+		Reason:     prepErr.Error(),
+	})
 }
 
 // recordTmuxStartFailure persists a record for the case where tmux itself

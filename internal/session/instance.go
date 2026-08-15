@@ -4452,6 +4452,9 @@ func (i *Instance) Start() error {
 	var err error
 	command, containerName, err = i.prepareCommand(command)
 	if err != nil {
+		// #1924: leave a reason behind. Without this the session sits on
+		// StatusError with no tmux session and nothing to diagnose from.
+		i.recordPrepareFailure(command, err)
 		return err
 	}
 	if containerName != "" {
@@ -4741,6 +4744,9 @@ func (i *Instance) StartWithMessage(message string) error {
 	var err error
 	command, containerName, err = i.prepareCommand(command)
 	if err != nil {
+		// #1924: leave a reason behind. Without this the session sits on
+		// StatusError with no tmux session and nothing to diagnose from.
+		i.recordPrepareFailure(command, err)
 		return err
 	}
 	if containerName != "" {
@@ -8449,6 +8455,7 @@ func (i *Instance) restart(env map[string]string) error {
 	}
 	command, containerName, err := i.prepareCommand(command)
 	if err != nil {
+		i.recordPrepareFailure(command, err) // #1924, sister path
 		return err
 	}
 	if containerName != "" {
