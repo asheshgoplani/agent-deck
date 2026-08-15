@@ -35,6 +35,55 @@ func readStatusFileNoFollow(path string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, maxHookStatusFileSize))
 }
 
+// consumeCodexCompletionEvidence clears a completed generation from the
+// durable hook record only when it still matches the generation observed by
+// the caller. The Codex notify writer uses the same sibling lock, so a newer
+// completion cannot be overwritten by a concurrent tmux status sample.
+func consumeCodexCompletionEvidence(instanceID, generation string) (retErr error) {
+	if strings.TrimSpace(instanceID) == "" || strings.TrimSpace(generation) == "" {
+		return nil
+	}
+	statusPath := hookStatusFilePath(instanceID)
+	lockPath := filepath.Join(filepath.Dir(statusPath), filepath.Base(instanceID)+".codex.lock")
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := lock.Close(); retErr == nil && err != nil {
+			retErr = err
+		}
+	}()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+
+	data, err := readStatusFileNoFollow(statusPath)
+	if err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var started, completed string
+	_ = json.Unmarshal(raw["codex_started_generation"], &started)
+	_ = json.Unmarshal(raw["codex_completed_generation"], &completed)
+	if started != generation || completed != generation {
+		return nil
+	}
+	delete(raw, "codex_started_generation")
+	delete(raw, "codex_completed_generation")
+	delete(raw, "codex_started_session_id")
+	delete(raw, "codex_completed_session_id")
+	updated, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	return atomicWriteFile(statusPath, updated, 0o600)
+}
+
 // HookStatus holds the decoded status from a hook status file.
 type HookStatus struct {
 	Status                   string    // running, idle, waiting, dead

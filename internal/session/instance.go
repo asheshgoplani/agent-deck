@@ -5073,6 +5073,27 @@ func (i *Instance) shouldBypassCodexWaitingDebounce(derived Status) bool {
 	return derived == StatusWaiting && i.codexCompletionConverged()
 }
 
+// invalidateCodexCompletionOnRunning makes completion-only proof one-turn
+// evidence. Once tmux authoritatively observes newer running activity, turn
+// A's completion must not let a later transient waiting sample masquerade as
+// completion of turn B. Clear both the warm instance and the durable hook file
+// used by fresh CLI processes.
+func (i *Instance) invalidateCodexCompletionOnRunning() {
+	if !IsCodexCompatible(i.Tool) || i.codexStartedGeneration == "" ||
+		i.codexStartedGeneration != i.codexCompletedGeneration {
+		return
+	}
+	generation := i.codexCompletedGeneration
+	i.codexStartedGeneration, i.codexCompletedGeneration = "", ""
+	i.codexStartedSessionID, i.codexCompletedSessionID = "", ""
+	if err := consumeCodexCompletionEvidence(i.ID, generation); err != nil && !os.IsNotExist(err) {
+		sessionLog.Debug("consume_codex_completion_evidence_failed",
+			slog.String("instance", i.ID),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
 // terminatedPaneStatus classifies a session whose tmux pane/session has
 // vanished (or gone dead under remain-on-exit) AFTER having been started.
 //
@@ -5495,6 +5516,9 @@ func (i *Instance) UpdateStatus() error {
 		i.applyTerminatedPaneStatus()
 	default:
 		i.Status = StatusError
+	}
+	if i.Status == StatusRunning {
+		i.invalidateCodexCompletionOnRunning()
 	}
 
 	// Reconcile the auth hold with this sample. Runs after the status mapping so

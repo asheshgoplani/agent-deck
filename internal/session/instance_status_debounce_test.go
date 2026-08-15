@@ -1,6 +1,12 @@
 package session
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
 
 func TestShouldDebounceTmuxFlipForTool(t *testing.T) {
 	tests := map[string]bool{
@@ -139,6 +145,55 @@ func TestSetCodexGenerationEvidence_EvidenceLessDoesNotErase(t *testing.T) {
 	if i.codexStartedGeneration != "g" || i.codexCompletedGeneration != "g" ||
 		i.codexStartedSessionID != "s" || i.codexCompletedSessionID != "s" {
 		t.Fatalf("evidence-less update erased valid evidence: %#v", i)
+	}
+}
+
+func TestCodexCompletionEvidenceInvalidatedBySubsequentRunningTurn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	instanceID := "codex-next-turn"
+	sessionID := "thread-1"
+	generation := sessionID + ":turn-a"
+	path := filepath.Join(GetHooksDir(), instanceID+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := map[string]any{
+		"status":                     "waiting",
+		"session_id":                 sessionID,
+		"event":                      "agent-turn-complete",
+		"ts":                         time.Now().Unix(),
+		"codex_started_generation":   generation,
+		"codex_completed_generation": generation,
+		"codex_started_session_id":   sessionID,
+		"codex_completed_session_id": sessionID,
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	i := &Instance{ID: instanceID, Tool: "codex", CodexSessionID: sessionID,
+		codexStartedGeneration: generation, codexCompletedGeneration: generation,
+		codexStartedSessionID: sessionID, codexCompletedSessionID: sessionID}
+	if !i.codexCompletionConverged() {
+		t.Fatal("completed turn A must initially converge")
+	}
+
+	// Turn B has no start hook; tmux is the authoritative newer-running edge.
+	i.invalidateCodexCompletionOnRunning()
+	if i.codexCompletionConverged() {
+		t.Fatal("stale turn A evidence converged after turn B started")
+	}
+	got := readHookStatusFile(instanceID)
+	if got == nil {
+		t.Fatal("hook status record disappeared")
+	}
+	if got.CodexStartedGeneration != "" || got.CodexCompletedGeneration != "" ||
+		got.CodexStartedSessionID != "" || got.CodexCompletedSessionID != "" {
+		t.Fatalf("durable stale completion evidence was not consumed: %#v", got)
 	}
 }
 
