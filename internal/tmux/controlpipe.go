@@ -434,8 +434,11 @@ func reapWithEOFGrace(reap func(), proc *os.Process, eofGrace, killGrace time.Du
 			_ = softKillProcessGroup(pgid, killGrace)
 		} else {
 			// Pgid lookup failed (process already exited or not a group
-			// leader) — fall back to single-pid soft-kill.
-			_ = softKillProcess(proc.Pid, killGrace)
+			// leader) — fall back to soft-killing the child itself. Through
+			// its handle, not its pid: this is our own child and Wait may
+			// already have reaped it, so a bare pid here could name whoever
+			// inherited the number.
+			_ = softKillProcessHandle(proc, killGrace)
 		}
 	}
 	<-reapDone

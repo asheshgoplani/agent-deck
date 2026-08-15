@@ -260,7 +260,7 @@ func TestKillStaleControlClients_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 		<-waitDone
 	})
 
-	_ = softKillProcess(pid, 500*time.Millisecond)
+	_ = softKillProcessHandle(cmd.Process, 500*time.Millisecond)
 
 	// Let the reaper goroutine finish before asserting on the marker.
 	select {
@@ -270,7 +270,7 @@ func TestKillStaleControlClients_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 
 	// Marker must exist — proves the child actually ran its SIGTERM
 	// handler. SIGKILL cannot be trapped, so a missing marker means
-	// softKillProcess skipped SIGTERM and went straight to SIGKILL —
+	// softKillProcessHandle skipped SIGTERM and went straight to SIGKILL —
 	// exactly the #737 regression we're guarding against.
 	//
 	// We deliberately do NOT assert on softKillProcess's return value
@@ -328,7 +328,7 @@ func TestKillStaleControlClients_FallsBackToSIGKILL(t *testing.T) {
 	})
 
 	start := time.Now()
-	usedSIGKILL := softKillProcess(pid, 500*time.Millisecond)
+	usedSIGKILL := softKillProcessHandle(cmd.Process, 500*time.Millisecond)
 	elapsed := time.Since(start)
 
 	select {
@@ -336,10 +336,10 @@ func TestKillStaleControlClients_FallsBackToSIGKILL(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 	}
 
-	assert.True(t, usedSIGKILL, "softKillProcess must escalate to SIGKILL when TERM is ignored")
+	assert.True(t, usedSIGKILL, "softKillProcessHandle must escalate to SIGKILL when TERM is ignored")
 	// Allow generous slack for scheduler jitter — the important
 	// invariant is that it didn't hang for seconds.
-	assert.Less(t, elapsed, 1500*time.Millisecond, "softKillProcess should return promptly after grace")
+	assert.Less(t, elapsed, 1500*time.Millisecond, "softKillProcessHandle should return promptly after grace")
 
 	// Confirm the child is actually dead.
 	err := syscall.Kill(pid, 0)
@@ -347,7 +347,7 @@ func TestKillStaleControlClients_FallsBackToSIGKILL(t *testing.T) {
 }
 
 // TestSoftKillProcess_AlreadyDeadIsNoop asserts that calling
-// softKillProcess on a PID that is already gone returns false (no
+// softKillProcessHandle on a child that is already gone returns false (no
 // SIGKILL needed) and does not panic.
 func TestSoftKillProcess_AlreadyDeadIsNoop(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "exit 0")
@@ -356,9 +356,10 @@ func TestSoftKillProcess_AlreadyDeadIsNoop(t *testing.T) {
 	pid := cmd.Process.Pid
 	_, _ = cmd.Process.Wait() // fully reap
 
-	// Race: pid may be recycled on extremely fast systems, but for a
-	// freshly-reaped pid within the same goroutine this is stable.
-	usedSIGKILL := softKillProcess(pid, 100*time.Millisecond)
+	// No recycling race to reason about: the handle refuses to signal once
+	// the child has been waited on, whoever holds the number by then.
+	_ = pid
+	usedSIGKILL := softKillProcessHandle(cmd.Process, 100*time.Millisecond)
 	assert.False(t, usedSIGKILL, "already-dead pid should not trigger SIGKILL")
 }
 

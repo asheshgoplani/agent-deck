@@ -255,10 +255,11 @@ func TestSweepOrphanCandidates_KillsAnIdentifiedOrphan(t *testing.T) {
 	require.True(t, ok)
 	stubLiveTmuxIdentity(t, func(context.Context, int, []string) (bool, bool) { return false, true })
 
-	killed, skipped, unexamined := sweepOrphanCandidates(context.Background(), []orphanCandidate{c})
+	killed, unclassifiable, notSignalled, unexamined := sweepOrphanCandidates(context.Background(), []orphanCandidate{c})
 
 	assert.Equal(t, 1, killed, "an identified orphan must still be reaped")
-	assert.Equal(t, 0, skipped)
+	assert.Equal(t, 0, unclassifiable)
+	assert.Equal(t, 0, notSignalled)
 	assert.Equal(t, 0, unexamined)
 	assert.NoError(t, waitForFile(marker, 5*time.Second),
 		"the victim must have received the SIGTERM its handler writes the marker from")
@@ -297,14 +298,81 @@ func TestSweepOrphanCandidates_RefusesWhenPIDChangesHandsDuringTheLiveQuery(t *t
 		return false, true
 	})
 
-	killed, skipped, unexamined := sweepOrphanCandidates(context.Background(), []orphanCandidate{c})
+	killed, unclassifiable, notSignalled, unexamined := sweepOrphanCandidates(context.Background(), []orphanCandidate{c})
 
 	assert.Equal(t, 0, killed, "a pid that changed hands during classification must not be killed")
-	assert.Equal(t, 1, skipped, "the refusal must be counted, not silent")
+	assert.Equal(t, 1, notSignalled, "the refusal must be counted, not silent")
+	assert.Equal(t, 0, unclassifiable)
 	assert.Equal(t, 0, unexamined)
 
 	processIdentityOf = original
 	time.Sleep(300 * time.Millisecond)
 	assert.NoError(t, syscall.Kill(pid, 0),
 		"the new occupant of the pid was signalled; it is not this sweep's to kill")
+}
+
+// TestReapStaleControlClients_RefusesAPIDRecycledDuringAnEarlierVictimsGrace
+// covers the other sweep's snapshot-to-signal window, which is the widest one
+// in this file: reapStaleControlClients kills sequentially and each victim can
+// hold the loop for a full controlClientKillGrace, so the last pid in a
+// `list-clients` snapshot is acted on N × grace after tmux reported it.
+//
+// That sweep has no comm check and no live-server query — the checks the orphan
+// sweep leans on — so if the identity were captured at each pid's turn rather
+// than up front, a pid recycled during an earlier victim's grace would be
+// identified as its NEW occupant, agree with itself at signal time, and be
+// killed on the strength of a `list-clients` line that described someone else.
+// isControlClientOrphan does not stop that: it says "orphan" for anything not
+// parented to an agent-deck binary, which a stranger process generally is not.
+//
+// The seam plays the recycle: the second victim's identity changes as soon as
+// the first victim's kill begins. With the capture up front the change lands
+// after the identity was taken, so the pre-signal check refuses; with the
+// capture inline it would land BEFORE, and the sweep would kill the stranger.
+func TestReapStaleControlClients_RefusesAPIDRecycledDuringAnEarlierVictimsGrace(t *testing.T) {
+	firstVictim := fakeTmuxCandidate(t, "ignore")  // ignores SIGTERM: holds the loop for a full grace
+	secondVictim := fakeTmuxCandidate(t, "ignore") // must survive
+
+	realFirst, err := readProcessIdentity(context.Background(), firstVictim)
+	require.NoError(t, err)
+	realSecond, err := readProcessIdentity(context.Background(), secondVictim)
+	require.NoError(t, err)
+
+	original := processIdentityOf
+	t.Cleanup(func() { processIdentityOf = original })
+
+	// Keyed on which pid is being read and how far the sweep has got, not on a
+	// raw call count: the second read of the FIRST victim is its pre-signal
+	// check, which can only happen once the capture phase is over.
+	firstVictimReads := 0
+	recycled := false
+	processIdentityOf = func(_ context.Context, p int) (string, error) {
+		switch p {
+		case firstVictim:
+			firstVictimReads++
+			if firstVictimReads >= 2 {
+				recycled = true
+			}
+			return realFirst, nil
+		case secondVictim:
+			if recycled {
+				return "identity-of-the-new-occupant", nil
+			}
+			return realSecond, nil
+		}
+		return original(context.Background(), p)
+	}
+
+	snapshot := fmt.Sprintf("1 %d\n1 %d\n", firstVictim, secondVictim)
+	killCount := reapStaleControlClients(snapshot, "(test)")
+
+	assert.Equal(t, 1, killCount, "only the victim whose identity held may be counted as killed")
+	assert.True(t, recycled, "the first victim's kill must have run, or this test proves nothing")
+	// The first victim ignores SIGTERM, so it dies to the escalation's SIGKILL;
+	// its subreaper needs a moment to reap it before the pid stops answering.
+	require.Eventually(t, func() bool { return syscall.Kill(firstVictim, 0) != nil },
+		5*time.Second, 10*time.Millisecond,
+		"the first victim's identity never changed; it must have been killed")
+	assert.NoError(t, syscall.Kill(secondVictim, 0),
+		"a pid recycled during an earlier victim's grace must not be signalled")
 }

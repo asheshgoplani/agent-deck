@@ -148,14 +148,17 @@ func TestSoftKillProcessChecked_RefusesWhenIdentityUnknown(t *testing.T) {
 	assert.Error(t, statErr, "no SIGTERM may reach a pid the caller could not identify")
 }
 
-// TestSoftKillProcess_RefusesWhenIdentityUnreadable is the same rule one level
-// up, where the identity is captured by the helper itself rather than handed
-// in. A host on which neither /proc nor `ps` answers must lose the kill, not
-// the guard.
-func TestSoftKillProcess_RefusesWhenIdentityUnreadable(t *testing.T) {
+// TestSoftKillProcessChecked_RefusesWhenTheCurrentIdentityCannotBeRead is the
+// same rule on the other side of the comparison: the caller has an identity,
+// but the live process can no longer be read to check it against. A host on
+// which neither /proc nor `ps` answers must lose the kill, not the guard.
+func TestSoftKillProcessChecked_RefusesWhenTheCurrentIdentityCannotBeRead(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "term-handled")
 	cmd := spawnHelper(t, "clean", "MARKER="+marker)
 	exited := waitForExit(t, cmd)
+
+	identity, err := readProcessIdentity(context.Background(), cmd.Process.Pid)
+	require.NoError(t, err)
 
 	original := processIdentityOf
 	t.Cleanup(func() { processIdentityOf = original })
@@ -163,9 +166,10 @@ func TestSoftKillProcess_RefusesWhenIdentityUnreadable(t *testing.T) {
 		return "", errors.New("no /proc and no ps on this host")
 	}
 
-	usedSIGKILL := softKillProcess(cmd.Process.Pid, 100*time.Millisecond)
+	usedSIGKILL, signalled := softKillProcessChecked(context.Background(), cmd.Process.Pid, identity, 100*time.Millisecond)
 
-	assert.False(t, usedSIGKILL, "an unidentifiable pid must not be escalated to SIGKILL")
+	assert.False(t, signalled, "a pid that cannot be re-identified must not be signalled")
+	assert.False(t, usedSIGKILL, "nor escalated to SIGKILL")
 	select {
 	case <-exited:
 		t.Fatal("a pid whose identity could not be read was signalled anyway")
@@ -175,7 +179,7 @@ func TestSoftKillProcess_RefusesWhenIdentityUnreadable(t *testing.T) {
 	assert.Error(t, statErr, "no SIGTERM may reach a pid whose identity could not be read")
 }
 
-// TestSoftKillProcess_SkipsEscalationWhenPIDRecycledDuringGrace covers the
+// TestSoftKillProcessChecked_SkipsEscalationWhenPIDRecycledDuringGrace covers the
 // second window, which no caller can close for itself: the victim accepted the
 // SIGTERM, exited inside the grace period, and its number was reissued before
 // the escalation. kill(pid, 0) still succeeds, so the unguarded code reads that
@@ -185,7 +189,7 @@ func TestSoftKillProcess_RefusesWhenIdentityUnreadable(t *testing.T) {
 // one afterwards, which is what a PID handed to a new process looks like from
 // here. The "ignore" helper drains SIGTERM and blocks forever, so it survives
 // to the escalation and its death would be unambiguous evidence of a SIGKILL.
-func TestSoftKillProcess_SkipsEscalationWhenPIDRecycledDuringGrace(t *testing.T) {
+func TestSoftKillProcessChecked_SkipsEscalationWhenPIDRecycledDuringGrace(t *testing.T) {
 	cmd := spawnHelper(t, "ignore")
 	pid := cmd.Process.Pid
 
@@ -195,14 +199,14 @@ func TestSoftKillProcess_SkipsEscalationWhenPIDRecycledDuringGrace(t *testing.T)
 	original := processIdentityOf
 	t.Cleanup(func() { processIdentityOf = original })
 
-	// Two reads happen before the SIGTERM — softKillProcess captures the
-	// identity, then the pre-signal check confirms it — and both must agree or
-	// the SIGTERM never goes out and the escalation is never reached. Every
-	// read after that is the escalation check, which must see a stranger.
+	// One read happens before the SIGTERM — the pre-signal check — and it must
+	// agree with the captured identity or the SIGTERM never goes out and the
+	// escalation is never reached. Every read after that is the escalation
+	// check, which must see a stranger.
 	calls := 0
 	processIdentityOf = func(ctx context.Context, p int) (string, error) {
 		calls++
-		if calls <= 2 {
+		if calls <= 1 {
 			return live, nil
 		}
 		return "recycled-during-grace", nil
@@ -210,16 +214,17 @@ func TestSoftKillProcess_SkipsEscalationWhenPIDRecycledDuringGrace(t *testing.T)
 
 	exited := waitForExit(t, cmd)
 
-	usedSIGKILL := softKillProcess(pid, 100*time.Millisecond)
+	usedSIGKILL, signalled := softKillProcessChecked(context.Background(), pid, live, 100*time.Millisecond)
 
 	assert.False(t, usedSIGKILL, "escalation must not fire once the pid changed hands")
+	assert.True(t, signalled, "the SIGTERM half did go out; only the escalation was refused")
 	// Without this, the test passes just as happily when the SIGTERM never went
 	// out at all — a pre-signal check that started failing would skip straight
 	// past the escalation this test exists to cover, and usedSIGKILL would be
-	// false for the wrong reason. The third read IS the escalation check, so
+	// false for the wrong reason. The second read IS the escalation check, so
 	// reaching it proves the guarded path ran end to end.
-	assert.GreaterOrEqual(t, calls, 3,
-		"the escalation check must have been reached (capture, pre-signal check, then escalation)")
+	assert.GreaterOrEqual(t, calls, 2,
+		"the escalation check must have been reached (pre-signal check, then escalation)")
 	select {
 	case <-exited:
 		t.Fatal("the new occupant of the pid was SIGKILL'd by the escalation")

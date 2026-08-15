@@ -35,10 +35,11 @@ func TestSweepOrphanCandidates_StopsAndReportsWhenTheBudgetIsSpent(t *testing.T)
 		{pid: 1<<30 + 1, comm: "tmux: client", cmdline: cadenceCmdline("b"), identity: "id-b"},
 	}
 
-	killed, skipped, unexamined := sweepOrphanCandidates(spent, candidates)
+	killed, unclassifiable, notSignalled, unexamined := sweepOrphanCandidates(spent, candidates)
 
 	assert.Equal(t, 0, killed)
-	assert.Equal(t, 0, skipped)
+	assert.Equal(t, 0, unclassifiable)
+	assert.Equal(t, 0, notSignalled)
 	assert.Equal(t, len(candidates), unexamined, "every unjudged candidate must be reported")
 	assert.Equal(t, 0, queries, "a spent budget must stop the queries, not just the kills")
 }
@@ -73,7 +74,7 @@ func TestSweepOrphanCandidates_BudgetIsAggregateNotPerCandidate(t *testing.T) {
 		}
 	}
 
-	killed, _, unexamined := sweepOrphanCandidates(budget, candidates)
+	killed, _, _, unexamined := sweepOrphanCandidates(budget, candidates)
 
 	assert.Equal(t, 0, killed)
 	assert.Positive(t, unexamined,
@@ -160,4 +161,34 @@ func cadenceCmdline(session string) string {
 		out += f + "\x00"
 	}
 	return out
+}
+
+// TestKillStaleControlClients_LaunchesTheOrphanSweep pins the wiring itself.
+// The launcher is only reached from killStaleControlClients, and every test
+// above drives the sweep's internals directly, so without this one the call at
+// the top of killStaleControlClients could be deleted and the whole suite would
+// still pass — the sweep would simply never run in production again, which is
+// the exact shape of the bug this code was written to fix.
+func TestKillStaleControlClients_LaunchesTheOrphanSweep(t *testing.T) {
+	originalFn := orphanReapFn
+	originalStarted := orphanReapStarted.Load()
+	t.Cleanup(func() {
+		orphanReapFn = originalFn
+		orphanReapStarted.Store(originalStarted)
+	})
+
+	launched := make(chan struct{})
+	orphanReapFn = func() { close(launched) }
+	orphanReapStarted.Store(false)
+
+	// The tmux half of killStaleControlClients fails fast against a socket with
+	// no server and is not what this asserts; the launch must happen first and
+	// regardless.
+	killStaleControlClients("no-such-session", "no-such-socket-for-the-launch-test")
+
+	select {
+	case <-launched:
+	case <-time.After(5 * time.Second):
+		t.Fatal("killStaleControlClients no longer launches the orphan sweep")
+	}
 }
