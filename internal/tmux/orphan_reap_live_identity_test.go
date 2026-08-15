@@ -141,9 +141,11 @@ func reparentedControlClient(t *testing.T, socket, session string, verbArgs ...s
 	script := strings.Join(quoted, " ") +
 		" < " + shQuote(fifoPath) + " > " + shQuote(logPath) + " 2>&1 & echo $! > " + shQuote(pidPath) + "; exit 0"
 
-	if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil {
+	wrapper := exec.Command("sh", "-c", script)
+	if out, err := wrapper.CombinedOutput(); err != nil {
 		t.Fatalf("sh wrapper: %v: %s", err, out)
 	}
+	wrapperPID := wrapper.Process.Pid
 
 	var pidBytes []byte
 	deadline := time.Now().Add(2 * time.Second)
@@ -166,15 +168,51 @@ func reparentedControlClient(t *testing.T, socket, session string, verbArgs ...s
 	// otherwise a slow kernel scheduler could let a test proceed against a
 	// pid that is still parented to the wrapper's own shell, silently
 	// weakening the guarantee the test exists to establish.
+	//
+	// "Reparented" means "no longer the wrapper's child", not "ppid == 1": the
+	// kernel hands an orphan to the nearest SUBREAPER, and under a
+	// `systemd --user` session — the normal shape of a Linux desktop, and of
+	// this repo's own dev hosts — that is the user manager, not init. Requiring
+	// pid 1 makes this helper fail everywhere except a CI runner that happens
+	// not to have one, and it proves nothing extra: what the test needs is a
+	// parent that is not an agent-deck-shaped binary, which is exactly what
+	// isControlClientOrphan goes on to check.
 	deadline = time.Now().Add(2 * time.Second)
+	reparented := false
 	for time.Now().Before(deadline) {
 		ppid, err := readParentPID(pid)
-		if err == nil && ppid <= 1 {
-			return pid
+		if err == nil && ppid != wrapperPID {
+			reparented = true
+			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("pid %d never reparented to init within the deadline — cannot prove this is a genuine orphan", pid)
+	if !reparented {
+		t.Fatalf("pid %d never left the wrapper shell within the deadline — cannot prove this is a genuine orphan", pid)
+	}
+
+	// Wait for the server to actually register the client before handing the
+	// pid back. Registration happens asynchronously after exec — which is the
+	// whole reason isLiveTmuxClientOrServer asks the server instead of reading
+	// argv — so a caller that queried immediately could see a not-yet-registered
+	// client and read it as "not live", failing for a timing reason rather than
+	// a classification one. (Setup, not the assertion: what the tests check is
+	// that the aliased/abbreviated spellings resolve to a real attach at all.)
+	deadline = time.Now().Add(5 * time.Second)
+	target := strconv.Itoa(pid)
+	for time.Now().Before(deadline) {
+		out, err := exec.Command("tmux", "-L", socket, "list-clients", "-F", "#{client_pid}").Output()
+		if err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				if strings.TrimSpace(line) == target {
+					return pid
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	logContents, _ := os.ReadFile(logPath)
+	t.Fatalf("client pid %d never registered with the server on socket %s (log: %s)", pid, socket, logContents)
 	return 0
 }
 
