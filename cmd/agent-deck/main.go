@@ -1151,6 +1151,10 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"ssh":            true,
 		"remote-path":    true,
 		"tmux-socket":    true,
+		// #928 follow-up: account was missing here, so `--account work` had its
+		// value stripped off as a positional and reordered away from the flag.
+		// That mis-parse predates the #1923 guard; the guard only made it loud.
+		"account": true,
 	}
 
 	var flags []string
@@ -1404,17 +1408,21 @@ func handleAdd(profile string, args []string) {
 	// Reorder args: move path to end so flags are parsed correctly
 	// Go's flag package stops parsing at first non-flag argument
 	// This allows: "add . -c claude" to work same as "add -c claude ."
-	args = reorderArgsForFlagParsing(args)
-
-	// #1923: catch a value-taking flag that swallowed the next flag because its
-	// own value was omitted. Checked before Parse so the report names the real
-	// mistake — `add` stores --account verbatim and never rejects an unknown
-	// name, so without this the session is created against a bogus account and
-	// only surfaces later as a quota error the user cannot trace back to here.
+	// #1923: catch --account swallowing the next flag because its own value was
+	// omitted. `add` stores the account verbatim and never rejects an unknown
+	// name, so otherwise the session is created against a bogus account and only
+	// surfaces later as a quota error the user cannot trace back to here.
+	//
+	// Runs on the ORIGINAL argv, before reordering. reorderArgsForFlagParsing
+	// moves a flag's value when it does not recognise the flag as value-taking,
+	// which can leave two flags adjacent that the user never wrote that way —
+	// so checking after it reports a mistake the user did not make (#1928).
 	if err := checkFlagValueNotFlag(fs, args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	args = reorderArgsForFlagParsing(args)
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
