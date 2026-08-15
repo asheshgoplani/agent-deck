@@ -769,7 +769,7 @@ func readHookStatusFile(instanceID string) *HookStatus {
 	if raw.Timestamp > 0 {
 		updatedAt = time.Unix(raw.Timestamp, 0)
 	}
-	return &HookStatus{
+	hookStatus := &HookStatus{
 		Status:                   raw.Status,
 		SessionID:                raw.SessionID,
 		Event:                    raw.Event,
@@ -785,6 +785,8 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		HookGeneration:           raw.HookGeneration,
 		Sequence:                 raw.Sequence,
 	}
+	maskConsumedCodexCompletion(instanceID, hookStatus)
+	return hookStatus
 }
 
 func (d *TransitionDaemon) emitHookTransitionCandidates(

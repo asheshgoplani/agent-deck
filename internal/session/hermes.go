@@ -127,7 +127,8 @@ func (i *Instance) seedHermesHookGeneration(status string, pending bool) (string
 	opposite := hermesHookScope(i.ID, !i.IsSandboxed())
 	defer func() { locks.release(); pruneHermesAbandonedScope(i.ID, opposite) }()
 	clearHermesHookScope(i.ID, opposite, false)
-	seed := hermesHookSeed{Status: status, Event: "agentdeck_spawn_seed", Timestamp: time.Now().Unix(), HookGeneration: generation, InitialMessagePending: pending}
+	now := time.Now()
+	seed := hermesHookSeed{Status: status, Event: "agentdeck_spawn_seed", Timestamp: now.Unix(), HookGeneration: generation, InitialMessagePending: pending}
 	if err := atomicHermesJSON(filepath.Join(scope, i.ID+".json"), seed); err != nil {
 		return "", err
 	}
@@ -136,7 +137,16 @@ func (i *Instance) seedHermesHookGeneration(status string, pending bool) (string
 	if err := atomicHermesJSON(filepath.Join(scope, i.ID+".generation.json"), hermesHookControl{Generation: generation, InitialMessagePending: pending}); err != nil {
 		return "", err
 	}
+	// Keep the synchronous status path aligned with the committed seed. The
+	// watcher will observe the same file later, but UpdateStatus may run first;
+	// leaving the previous process's fresh running/dead sample in memory would
+	// temporarily override the restart baseline until fsnotify catches up.
+	i.mu.Lock()
 	i.HermesHookGeneration = generation
+	i.hookStatus = status
+	i.hookEvent = seed.Event
+	i.hookLastUpdate = now
+	i.mu.Unlock()
 	return generation, nil
 }
 

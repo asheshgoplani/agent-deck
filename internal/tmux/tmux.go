@@ -2222,7 +2222,7 @@ func (s *Session) Start(command string) error {
 		if launcher == "tmux" {
 			if recovered, recoverErr := recoverFromStaleDefaultSocketIfNeeded(string(output)); recoverErr != nil {
 				statusLog.Warn("tmux_stale_socket_recovery_failed",
-					slog.String("session", s.Name),
+					slog.String("session", logging.SanitizeValue(s.Name)),
 					slog.String("error", recoverErr.Error()),
 				)
 			} else if recovered {
@@ -3067,7 +3067,7 @@ func (s *Session) Kill() error {
 	// Capture process tree BEFORE killing so we can verify they die
 	_, oldPIDs := s.getPaneProcessTree()
 	if len(oldPIDs) > 0 {
-		respawnLog.Info("pre_kill_process_tree", slog.String("session", s.Name), slog.Any("pids", oldPIDs))
+		respawnLog.Info("pre_kill_process_tree", slog.String("session", logging.SanitizeValue(s.Name)), slog.Any("pids", oldPIDs))
 	}
 
 	// Kill the tmux session. Bounded — see tmuxMutationTimeout. A client
@@ -3110,7 +3110,7 @@ func (s *Session) getPaneProcessTree() (panePID int, allPIDs []int) {
 		// must not be silent: on a loaded box this is how a SIGHUP-immune agent
 		// survives a Kill() as an orphan.
 		statusLog.Warn("pane_process_tree_probe_failed",
-			slog.String("session", s.Name),
+			slog.String("session", logging.SanitizeValue(s.Name)),
 			slog.String("error", err.Error()))
 		return 0, nil
 	}
@@ -5535,7 +5535,7 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 		// so a recurrence of #1855 behind a green exit is attributable to this
 		// path instead of looking like the fix regressed.
 		statusLog.Warn("paste_transport_unavailable_degraded_to_send_keys",
-			slog.String("session", s.Name),
+			slog.String("session", logging.SanitizeValue(s.Name)),
 			slog.Bool("multiline", strings.Contains(content, "\n")),
 			slog.Int("payload_bytes", len(content)),
 			slog.String("error", err.Error()))

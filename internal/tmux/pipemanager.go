@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
 // PipeManager manages ControlPipes for all active tmux sessions.
@@ -143,7 +145,7 @@ func (pm *PipeManager) Disconnect(sessionName string) {
 	if pipe != nil {
 		pipe.Close()
 	}
-	pipeLog.Debug("pipe_disconnected", slog.String("session", sessionName))
+	pipeLog.Debug("pipe_disconnected", slog.String("session", logging.SanitizeValue(sessionName)))
 }
 
 // GetPipe returns the ControlPipe for a session, or nil if not connected.

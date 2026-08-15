@@ -154,3 +154,24 @@ func remoteSubGroupCount(sessions []session.RemoteSessionInfo, groupPath string)
 	}
 	return count
 }
+
+// remoteStatusCounts aggregates running/waiting session counts for a remote
+// group header, mirroring the local group-header status glyphs (#1864 parity).
+// An empty groupPath aggregates the whole remote (the Level-0 host header).
+func remoteStatusCounts(sessions []session.RemoteSessionInfo, groupPath string) (running, waiting int) {
+	for i := range sessions {
+		if groupPath != "" {
+			g := normalizeRemoteGroupPath(sessions[i].Group)
+			if g != groupPath && !strings.HasPrefix(g, groupPath+"/") {
+				continue
+			}
+		}
+		switch sessions[i].Status {
+		case "running":
+			running++
+		case "waiting":
+			waiting++
+		}
+	}
+	return running, waiting
+}

@@ -113,4 +113,18 @@ test.describe('fleet pane', () => {
     await expect(page.locator('[data-testid="fleet-stat-running"] .num')).toHaveText('1')
     await expect(page.locator('[data-testid="fleet-stat-sessions"] .num')).toHaveText('4')
   })
+
+  test('configured remotes render through the production API alongside local groups', async ({ page, request }) => {
+    await request.post('/__fixture/remotes')
+    await page.goto('/')
+    await expect(page.locator('[data-testid="fleet-remote-card"]')).toHaveCount(2)
+    await expect(page.locator('[data-testid="fleet-remote-card"][data-remote-name="build"]'))
+      .toContainText('24ms')
+    await expect(page.locator('[data-testid="fleet-remote-session-tile"]')).toHaveCount(3)
+    await expect(page.locator('[data-testid="fleet-remote-card"][data-remote-name="offline"]')).toContainText('last-known')
+    await expect(page.locator('[data-testid="fleet-remote-age"]')).toHaveText('Last known state · 37s ago')
+    await expect(page.locator('[data-testid="fleet-stat-remotes"]')).toHaveText('1/2 remotes online')
+    await expect(page.locator('[data-testid="fleet-stat-sessions"] .num')).toHaveText('7')
+    await expect(page.locator('[data-testid="fleet-group-card"]')).toHaveCount(3)
+  })
 })

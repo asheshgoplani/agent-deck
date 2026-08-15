@@ -134,6 +134,66 @@ func TestHermesRestartWaitingSeedCarriesCurrentGeneration(t *testing.T) {
 	}
 }
 
+func TestHermesGenerationSeedRefreshesInMemoryBaseline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	staleAt := time.Now().Add(-time.Minute)
+	inst := &Instance{
+		ID:             "hermes-memory-baseline",
+		Tool:           "hermes",
+		hookStatus:     "dead",
+		hookEvent:      "on_session_finalize",
+		hookLastUpdate: staleAt,
+	}
+	started := time.Now()
+	if _, err := inst.seedHermesHookGeneration("waiting", false); err != nil {
+		t.Fatal(err)
+	}
+	status, fresh := inst.GetHookStatus()
+	if status != "waiting" || !fresh {
+		t.Fatalf("immediate hook status = %q fresh=%v, want waiting/true", status, fresh)
+	}
+	inst.mu.RLock()
+	event, updated := inst.hookEvent, inst.hookLastUpdate
+	inst.mu.RUnlock()
+	if event != "agentdeck_spawn_seed" {
+		t.Fatalf("hook event = %q, want spawn seed", event)
+	}
+	if updated.Before(started) || !updated.After(staleAt) {
+		t.Fatalf("hook timestamp was not refreshed: got %v, started %v, stale %v", updated, started, staleAt)
+	}
+}
+
+func TestHermesRestartStartingHookOverridesStaleError(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	t.Setenv("HOME", t.TempDir())
+
+	// Use a harmless shell command to provide the live tmux session that
+	// UpdateStatus requires, then model the Hermes restart capture window.
+	inst := NewInstanceWithTool("hermes-restart-starting", t.TempDir(), "shell")
+	inst.Command = "sleep 30"
+	if err := inst.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = inst.Kill() }()
+
+	inst.mu.Lock()
+	inst.Tool = "hermes"
+	inst.Status = StatusError
+	inst.hookStatus = "dead"
+	inst.hookLastUpdate = time.Now()
+	inst.mu.Unlock()
+
+	if _, err := inst.seedHermesHookGeneration("starting", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.UpdateStatus(); err != nil {
+		t.Fatal(err)
+	}
+	if inst.Status != StatusStarting {
+		t.Fatalf("restart status = %q, want %q", inst.Status, StatusStarting)
+	}
+}
+
 func TestHermesSeedClearsOppositeLayout(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	inst := &Instance{ID: "hermes-mode-change", Tool: "hermes"}
