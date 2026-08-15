@@ -128,6 +128,16 @@ func (h *Home) applyRemoteSessionsSnapshot(snap remoteSessionsCache) {
 		if fetched.IsZero() || time.Since(fetched) > remoteSessionsCacheMaxAge {
 			continue
 		}
+		// RemoteSessionInfo.RemoteName is `json:"-"` — it is assigned locally
+		// from the remote's config name, never carried in the payload (see
+		// internal/session/ssh.go). It therefore does not survive this
+		// snapshot's own round trip either, so restore it the same way the
+		// live fetch path does. Without this, every cached session renders
+		// and routes with an empty remote name until live data lands, which
+		// is exactly the startup window this cache exists to cover.
+		for i := range sessions {
+			sessions[i].RemoteName = name
+		}
 		h.remoteSessions[name] = sessions
 		h.remoteFromCache[name] = true
 		h.remoteFetchedAt[name] = fetched

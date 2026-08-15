@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -96,8 +97,9 @@ func TestRemoteSessionsCache_SaveLoadRoundTrip(t *testing.T) {
 	writer.remoteSessionsMu.Unlock()
 	writer.saveRemoteSessionsCache(live)
 
-	reader := &Home{storage: writer.storage}
-	reader.loadRemoteSessionsCache()
+	// Read it back through the real startup constructor, not a hand-built
+	// Home: this has to fail if NewHome ever stops loading the cache.
+	reader := NewHome()
 
 	got := reader.remoteSessions["g14"]
 	if len(got) != 1 || got[0].ID != "r1" {
@@ -105,5 +107,43 @@ func TestRemoteSessionsCache_SaveLoadRoundTrip(t *testing.T) {
 	}
 	if !reader.remoteFromCache["g14"] {
 		t.Errorf("a remote seeded from disk must be flagged as cached")
+	}
+	// RemoteName is `json:"-"`, so it does not survive the snapshot on its
+	// own and has to be restored from the map key. An empty one here means
+	// cached sessions render and route nameless until the first live fetch.
+	if got[0].RemoteName != "g14" {
+		t.Errorf("RemoteName = %q, want \"g14\" — it is json:\"-\" and must be restored on load", got[0].RemoteName)
+	}
+}
+
+// The expiry tests above call applyRemoteSessionsSnapshot directly, so they
+// would still pass if loadRemoteSessionsCache dropped its half of the
+// contract. This one drives expiry through the production startup path.
+func TestRemoteSessionsCache_ExpiredSnapshotIgnoredOnStartup(t *testing.T) {
+	remoteSessionsCacheEnabled = true
+	t.Cleanup(func() { remoteSessionsCacheEnabled = false })
+
+	seed := NewHome()
+	if seed.storage == nil || seed.storage.GetDB() == nil {
+		t.Skip("no storage backend in this environment")
+	}
+	db := seed.storage.GetDB()
+	t.Cleanup(func() { _ = db.SetMeta(remoteSessionsCacheKey, "") })
+
+	stale := remoteSessionsCache{
+		SavedAt:   time.Now(),
+		Sessions:  map[string][]session.RemoteSessionInfo{"g14": {{ID: "old"}}},
+		FetchedAt: map[string]time.Time{"g14": time.Now().Add(-25 * time.Hour)},
+	}
+	data, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatalf("marshal seed snapshot: %v", err)
+	}
+	if err := db.SetMeta(remoteSessionsCacheKey, string(data)); err != nil {
+		t.Fatalf("seed meta: %v", err)
+	}
+
+	if got := NewHome().remoteSessions["g14"]; len(got) != 0 {
+		t.Errorf("startup applied a remote whose last live fetch was 25h ago: %+v", got)
 	}
 }
