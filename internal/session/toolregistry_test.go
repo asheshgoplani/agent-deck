@@ -60,6 +60,13 @@ func TestRegistry_MatchAllBranches(t *testing.T) {
 		{"cursor agent subcommand", "cursor agent", "cursor"},
 		{"standalone agent binary", "agent", "cursor"},
 		{"standalone agent with flags", "agent --continue", "cursor"},
+		// The "agent" arm is a whitespace-token match for exactly this reason:
+		// as a substring it would swallow agent-deck's own commands and label
+		// every one of them a Cursor session. builtinTools says so in a comment;
+		// these cases are what stop a later change from folding "agent" back
+		// into detectSubstrings with every test still green.
+		{"cursor no false match in agent-deck", "agent-deck", "shell"},
+		{"cursor no false match in agent-deck subcommand", "agent-deck session send x", "shell"},
 		// hermes
 		{"hermes bare", "hermes", "hermes"},
 		// aider has NO detect arm — commands containing "aider" map to shell
