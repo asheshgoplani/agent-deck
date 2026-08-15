@@ -20,6 +20,16 @@ const remoteSessionsCacheKey = "remote_sessions_cache"
 // is ignored: a week-old fleet is more misleading than an empty group.
 const remoteSessionsCacheMaxAge = 24 * time.Hour
 
+// remoteSessionsCacheEnabled gates the on-disk half of the cache (the save on
+// fetch completion and the load in NewHome). Every test in this package shares
+// one storage profile, so a test that pumps a remote fetch persists a snapshot
+// that every later NewHome() silently inherits — those phantom remotes then
+// land in countSessionStatuses and inflate the status counters of unrelated
+// tests. TestMain turns this off, in the same spirit as
+// homeBackgroundWorkersEnabled; the round-trip test re-enables it for its own
+// scope. Production never flips it.
+var remoteSessionsCacheEnabled = true
+
 type remoteSessionsCache struct {
 	// SavedAt is kept for backward compatibility with early snapshots; the
 	// authoritative freshness signal is per-remote FetchedAt.
@@ -37,7 +47,7 @@ type remoteSessionsCache struct {
 // cycle — only their freshness stamps advance. Failed or merely-carried-over
 // remotes keep their previous stamp so stale data still ages out.
 func (h *Home) saveRemoteSessionsCache(liveFetched map[string][]session.RemoteSessionInfo) {
-	if h.storage == nil {
+	if !remoteSessionsCacheEnabled || h.storage == nil {
 		return
 	}
 	db := h.storage.GetDB()
@@ -70,7 +80,7 @@ func (h *Home) saveRemoteSessionsCache(liveFetched map[string][]session.RemoteSe
 // loadRemoteSessionsCache seeds the remote session map from the last-known
 // snapshot so remotes render on the first paint. Live fetches overwrite it.
 func (h *Home) loadRemoteSessionsCache() {
-	if h.storage == nil {
+	if !remoteSessionsCacheEnabled || h.storage == nil {
 		return
 	}
 	db := h.storage.GetDB()

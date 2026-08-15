@@ -70,3 +70,40 @@ func TestRemoteSessionsCache_LegacySnapshotUsesSavedAt(t *testing.T) {
 		t.Fatalf("expired legacy snapshot must not be applied")
 	}
 }
+
+// The tests above exercise applyRemoteSessionsSnapshot in isolation. The
+// on-disk half — save on fetch completion, load on the next startup — is
+// gated off for the rest of the package by TestMain (see the comment there),
+// so this test owns its only coverage. It re-enables the gate for its own
+// scope and clears the key on the way out, so no later NewHome() inherits
+// these remotes and miscounts them.
+func TestRemoteSessionsCache_SaveLoadRoundTrip(t *testing.T) {
+	remoteSessionsCacheEnabled = true
+	t.Cleanup(func() { remoteSessionsCacheEnabled = false })
+
+	writer := NewHome()
+	if writer.storage == nil || writer.storage.GetDB() == nil {
+		t.Skip("no storage backend in this environment")
+	}
+	db := writer.storage.GetDB()
+	t.Cleanup(func() { _ = db.SetMeta(remoteSessionsCacheKey, "") })
+
+	live := map[string][]session.RemoteSessionInfo{
+		"g14": {{ID: "r1", Title: "build", Tool: "claude", Status: "running", RemoteName: "g14"}},
+	}
+	writer.remoteSessionsMu.Lock()
+	writer.remoteSessions = live
+	writer.remoteSessionsMu.Unlock()
+	writer.saveRemoteSessionsCache(live)
+
+	reader := &Home{storage: writer.storage}
+	reader.loadRemoteSessionsCache()
+
+	got := reader.remoteSessions["g14"]
+	if len(got) != 1 || got[0].ID != "r1" {
+		t.Fatalf("save/load round trip lost the snapshot: %+v", reader.remoteSessions)
+	}
+	if !reader.remoteFromCache["g14"] {
+		t.Errorf("a remote seeded from disk must be flagged as cached")
+	}
+}
