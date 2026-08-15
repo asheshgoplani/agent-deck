@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,7 +205,7 @@ func TestIsLiveTmuxClientOrServer_ChainedAliasRepro(t *testing.T) {
 	pid := reparentedControlClient(t, socket, session,
 		"attach", "-t", session, ";", "set-option", "status", "on")
 
-	live, ok := isLiveTmuxClientOrServer(pid, []string{
+	live, ok := isLiveTmuxClientOrServer(context.Background(), pid, []string{
 		"tmux", "-L", socket, "-C", "attach", "-t", session, ";", "set-option", "status", "on",
 	})
 	if !ok {
@@ -230,7 +231,7 @@ func TestIsLiveTmuxClientOrServer_AbbreviatedAttach(t *testing.T) {
 
 	pid := reparentedControlClient(t, socket, session, "a", "-t", session)
 
-	live, ok := isLiveTmuxClientOrServer(pid, []string{"tmux", "-L", socket, "-C", "a", "-t", session})
+	live, ok := isLiveTmuxClientOrServer(context.Background(), pid, []string{"tmux", "-L", socket, "-C", "a", "-t", session})
 	if !ok {
 		t.Fatalf("isLiveTmuxClientOrServer could not classify pid %d", pid)
 	}
@@ -251,7 +252,7 @@ func TestIsLiveTmuxClientOrServer_FullVerbAttach(t *testing.T) {
 
 	pid := reparentedControlClient(t, socket, session, "attach-session", "-t", session)
 
-	live, ok := isLiveTmuxClientOrServer(pid, []string{"tmux", "-L", socket, "-C", "attach-session", "-t", session})
+	live, ok := isLiveTmuxClientOrServer(context.Background(), pid, []string{"tmux", "-L", socket, "-C", "attach-session", "-t", session})
 	if !ok {
 		t.Fatalf("isLiveTmuxClientOrServer could not classify pid %d", pid)
 	}
@@ -280,7 +281,7 @@ func TestIsLiveTmuxClientOrServer_ServerItself(t *testing.T) {
 		t.Fatalf("parse server pid: %v", err)
 	}
 
-	live, ok := isLiveTmuxClientOrServer(serverPID, []string{"tmux", "-L", socket, "new-session", "-d", "-s", session})
+	live, ok := isLiveTmuxClientOrServer(context.Background(), serverPID, []string{"tmux", "-L", socket, "new-session", "-d", "-s", session})
 	if !ok {
 		t.Fatalf("isLiveTmuxClientOrServer could not classify the server pid %d", serverPID)
 	}
@@ -327,7 +328,7 @@ func TestIsLiveTmuxClientOrServer_OneShotClient_NotLive(t *testing.T) {
 		t.Fatalf("SIGSTOP one-shot client: %v", err)
 	}
 
-	live, ok := isLiveTmuxClientOrServer(pid, []string{"tmux", "-L", socket, "list-clients", "-F", "#{client_pid}"})
+	live, ok := isLiveTmuxClientOrServer(context.Background(), pid, []string{"tmux", "-L", socket, "list-clients", "-F", "#{client_pid}"})
 	if !ok {
 		t.Fatalf("isLiveTmuxClientOrServer could not classify the frozen one-shot client %d", pid)
 	}
@@ -349,7 +350,7 @@ func TestIsLiveTmuxClientOrServer_NoServerAtSocket(t *testing.T) {
 		socket = socket[:40]
 	}
 
-	live, ok := isLiveTmuxClientOrServer(999999, []string{"tmux", "-L", socket, "list-clients"})
+	live, ok := isLiveTmuxClientOrServer(context.Background(), 999999, []string{"tmux", "-L", socket, "list-clients"})
 	if ok {
 		t.Fatalf("isLiveTmuxClientOrServer against a nonexistent server returned ok=true (live=%v) — "+
 			"want ok=false (unclassifiable)", live)

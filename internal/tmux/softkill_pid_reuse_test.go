@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -35,13 +36,13 @@ import (
 // rests on: reading the same live process twice yields the same identity, so a
 // mismatch means the PID changed hands rather than that the read is noisy.
 func TestReadProcessIdentity_StableForOneIncarnation(t *testing.T) {
-	first, err := readProcessIdentity(os.Getpid())
+	first, err := readProcessIdentity(context.Background(), os.Getpid())
 	require.NoError(t, err, "own identity must be readable")
 	require.NotEmpty(t, first, "identity must not be empty for a live process")
 
 	time.Sleep(20 * time.Millisecond)
 
-	second, err := readProcessIdentity(os.Getpid())
+	second, err := readProcessIdentity(context.Background(), os.Getpid())
 	require.NoError(t, err)
 	assert.Equal(t, first, second, "identity must not drift while the process lives")
 }
@@ -55,7 +56,7 @@ func TestReadProcessIdentity_FailsForDeadProcess(t *testing.T) {
 	require.NoError(t, cmd.Process.Kill())
 	_, _ = cmd.Process.Wait()
 
-	_, err := readProcessIdentity(pid)
+	_, err := readProcessIdentity(context.Background(), pid)
 	assert.Error(t, err, "a reaped pid must not report an identity")
 }
 
@@ -72,10 +73,10 @@ func TestSoftKillProcessChecked_SignalsWhenIdentityMatches(t *testing.T) {
 	// zombie — production has tmux reaping its own clients.
 	waitForExit(t, cmd)
 
-	identity, err := readProcessIdentity(pid)
+	identity, err := readProcessIdentity(context.Background(), pid)
 	require.NoError(t, err)
 
-	_, signalled := softKillProcessChecked(pid, identity, 500*time.Millisecond)
+	_, signalled := softKillProcessChecked(context.Background(), pid, identity, 500*time.Millisecond)
 
 	assert.True(t, signalled, "a matching identity must report the kill as delivered")
 	assert.NoError(t, waitForFile(marker, 5*time.Second),
@@ -102,7 +103,7 @@ func TestSoftKillProcessChecked_SkipsSignalWhenIdentityChanged(t *testing.T) {
 	// pass against the unguarded code and prove nothing.
 	exited := waitForExit(t, cmd)
 
-	usedSIGKILL, signalled := softKillProcessChecked(pid, "not-the-identity-we-validated", 100*time.Millisecond)
+	usedSIGKILL, signalled := softKillProcessChecked(context.Background(), pid, "not-the-identity-we-validated", 100*time.Millisecond)
 
 	assert.False(t, usedSIGKILL, "a process we refused to signal cannot have been SIGKILL'd")
 	// The caller counts kills and logs one line per victim from this flag, so a
@@ -134,7 +135,7 @@ func TestSoftKillProcessChecked_RefusesWhenIdentityUnknown(t *testing.T) {
 	cmd := spawnHelper(t, "clean", "MARKER="+marker)
 	exited := waitForExit(t, cmd)
 
-	usedSIGKILL, signalled := softKillProcessChecked(cmd.Process.Pid, "", 500*time.Millisecond)
+	usedSIGKILL, signalled := softKillProcessChecked(context.Background(), cmd.Process.Pid, "", 500*time.Millisecond)
 
 	assert.False(t, signalled, "an unidentified pid must not be reported as signalled")
 	assert.False(t, usedSIGKILL, "an unidentified pid must not be escalated to SIGKILL")
@@ -158,7 +159,7 @@ func TestSoftKillProcess_RefusesWhenIdentityUnreadable(t *testing.T) {
 
 	original := processIdentityOf
 	t.Cleanup(func() { processIdentityOf = original })
-	processIdentityOf = func(int) (string, error) {
+	processIdentityOf = func(context.Context, int) (string, error) {
 		return "", errors.New("no /proc and no ps on this host")
 	}
 
@@ -188,7 +189,7 @@ func TestSoftKillProcess_SkipsEscalationWhenPIDRecycledDuringGrace(t *testing.T)
 	cmd := spawnHelper(t, "ignore")
 	pid := cmd.Process.Pid
 
-	live, err := readProcessIdentity(pid)
+	live, err := readProcessIdentity(context.Background(), pid)
 	require.NoError(t, err)
 
 	original := processIdentityOf
@@ -199,7 +200,7 @@ func TestSoftKillProcess_SkipsEscalationWhenPIDRecycledDuringGrace(t *testing.T)
 	// the SIGTERM never goes out and the escalation is never reached. Every
 	// read after that is the escalation check, which must see a stranger.
 	calls := 0
-	processIdentityOf = func(p int) (string, error) {
+	processIdentityOf = func(ctx context.Context, p int) (string, error) {
 		calls++
 		if calls <= 2 {
 			return live, nil

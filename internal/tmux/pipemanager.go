@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -568,8 +569,8 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 func killStaleControlClients(sessionName, socketName string) {
 	// Once per run, also sweep orphaned one-shot *command* clients (poll/query/
 	// status set-option) that this function's control-mode-only filter can never
-	// reach. See reapOrphanedPollClients.
-	orphanReapOnce.Do(reapOrphanedPollClients)
+	// reach. Off this goroutine — see startOrphanReapOnce.
+	startOrphanReapOnce()
 
 	// Bounded — see tmuxPollTimeout. This is the sweep that reaps stale
 	// clients; if its own enumeration hangs on an fd-exhausted client, the
@@ -659,7 +660,7 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 		// ends together. Capturing it afterwards would defeat the guard in the
 		// exact case it exists for — the reads would describe the old process
 		// and the identity the new one, and they would agree at signal time.
-		identity, err := processIdentityOf(pid)
+		identity, err := processIdentityOf(context.Background(), pid)
 		if err != nil {
 			// Fail closed: a pid we cannot identify is not signalled. See
 			// stillSameIncarnation.
@@ -686,7 +687,7 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 		// the entire tmux server, wiping every agent-deck session. A SIGTERM
 		// lets the client drain and exit cleanly; SIGKILL is retained as a
 		// 500ms fallback for clients that ignore TERM.
-		usedSIGKILL, signalled := softKillProcessChecked(pid, identity, controlClientKillGrace)
+		usedSIGKILL, signalled := softKillProcessChecked(context.Background(), pid, identity, controlClientKillGrace)
 		if !signalled {
 			// Nothing was sent, so nothing is counted — the burst metric below
 			// exists to observe real kill cascades. Two causes share this
@@ -716,10 +717,52 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 	return killCount
 }
 
-// orphanReapOnce ensures the process-wide orphaned-poll-client sweep runs at
-// most once per agent-deck run (on the first session Connect after startup),
-// instead of re-scanning all of /proc on every Connect.
-var orphanReapOnce sync.Once
+// orphanReapStarted ensures the process-wide orphaned-poll-client sweep is
+// launched at most once per agent-deck run (on the first session Connect after
+// startup), instead of re-scanning all of /proc on every Connect.
+var orphanReapStarted atomic.Bool
+
+// orphanReapFn is the seam the launcher tests swap. The sweep itself walks all
+// of /proc and signals processes; a test of "is it launched once, and off the
+// caller's goroutine" has no business doing either.
+var orphanReapFn = reapOrphanedPollClients
+
+// startOrphanReapOnce launches the orphan sweep in the background, at most once
+// per run.
+//
+// In the background because it sits on Connect, and Connect is the fleet-restore
+// path: every session opened at startup goes through it. The sweep used to be
+// pure /proc reads — microseconds — but it now asks a tmux server about each
+// surviving candidate, and those queries are slowest exactly when the host is
+// unhealthy, which is the same condition that produces the orphans. Run inline
+// behind a once-guard, every other session's Connect blocks on the slowest
+// candidate set: two orphans cost seconds, twenty cost a startup nobody would
+// describe as working. Nothing on the Connect path consumes the sweep's result,
+// so there is nothing to wait for.
+//
+// A run that exits before the sweep finishes simply leaves the remaining
+// orphans for the next launch, which is what a missed sweep has always meant.
+func startOrphanReapOnce() {
+	if orphanReapStarted.CompareAndSwap(false, true) {
+		go orphanReapFn()
+	}
+}
+
+// orphanSweepBudget is the ONE deadline the whole orphan sweep runs under:
+// every external probe it makes — each candidate's identity reads, each tmux
+// server query — derives from it, so the sweep's total cost is bounded no
+// matter how many candidates /proc offers or how wedged the host is.
+//
+// The per-probe caps (processProbeTimeout, tmuxLiveQueryTimeout) are nested
+// inside it rather than being separate budgets of their own: each probe expires
+// at whichever comes first, so one wedged probe cannot eat the whole budget and
+// starve every later candidate, and the sum still cannot exceed this.
+//
+// 20s buys roughly five fully-wedged candidates at the per-probe caps, or many
+// hundreds of healthy ones — a live server answers `#{pid}` in milliseconds.
+// Overrunning it is not a failure: the remaining candidates are logged as
+// unexamined and swept on the next run.
+var orphanSweepBudget = 20 * time.Second
 
 // isReapableTmuxClientComm reports whether a /proc/<pid>/comm value identifies
 // a tmux CLIENT — the only process class reapOrphanedPollClients may kill.
@@ -862,12 +905,14 @@ func isKnownCadenceArgv(cmdline string) bool {
 	return false
 }
 
-// tmuxLiveQueryTimeout bounds each server-identity query
-// isLiveTmuxClientOrServer issues while classifying an orphan-sweep
-// candidate. Short and per-call, not shared: a wedged server on one socket
-// must not delay the verdict for candidates on any other socket, and the
-// sweep already treats a timeout as "cannot classify, refuse to kill" so
-// there is no correctness reason to wait longer.
+// tmuxLiveQueryTimeout caps each server-identity query isLiveTmuxClientOrServer
+// issues while classifying an orphan-sweep candidate. It is a cap nested inside
+// the sweep's single budget (orphanSweepBudget), not an allowance of its own:
+// each query expires at whichever comes first, so a wedged server on one socket
+// cannot delay the verdict for candidates on other sockets, and the sweep's
+// total cost still cannot exceed the budget however many candidates there are.
+// A timeout is already treated as "cannot classify, refuse to kill", so there
+// is no correctness reason to wait longer.
 var tmuxLiveQueryTimeout = 2 * time.Second
 
 // candidateSocketName extracts the -L <name> (or default) socket selector
@@ -925,13 +970,13 @@ func candidateSocketName(cmdlineFields []string) (name string, ok bool) {
 // MUST treat ok=false as unclassifiable and refuse to kill — the same
 // fail-closed rule isTruncatedTmuxComm already established for an unreadable
 // comm value.
-func isLiveTmuxClientOrServer(pid int, cmdlineFields []string) (live bool, ok bool) {
+func isLiveTmuxClientOrServer(budget context.Context, pid int, cmdlineFields []string) (live bool, ok bool) {
 	socketName, resolvable := candidateSocketName(cmdlineFields)
 	if !resolvable {
 		return false, false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), tmuxLiveQueryTimeout)
+	ctx, cancel := context.WithTimeout(budget, tmuxLiveQueryTimeout)
 	defer cancel()
 	serverPIDOut, err := tmuxExecContext(ctx, socketName, "display-message", "-p", "#{pid}").Output()
 	if err != nil {
@@ -945,7 +990,7 @@ func isLiveTmuxClientOrServer(pid int, cmdlineFields []string) (live bool, ok bo
 		return true, true // pid IS the server
 	}
 
-	ctx2, cancel2 := context.WithTimeout(context.Background(), tmuxLiveQueryTimeout)
+	ctx2, cancel2 := context.WithTimeout(budget, tmuxLiveQueryTimeout)
 	defer cancel2()
 	clientsOut, err := tmuxExecContext(ctx2, socketName, "list-clients", "-F", "#{client_pid}").Output()
 	if err != nil {
@@ -1013,13 +1058,16 @@ func reapOrphanedPollClients() {
 		return
 	}
 	start := time.Now()
-	candidates, unidentifiable := collectOrphanCandidates()
-	killed, skipped := sweepOrphanCandidates(candidates)
-	if killed > 0 || skipped > 0 || unidentifiable > 0 {
+	budget, cancel := context.WithTimeout(context.Background(), orphanSweepBudget)
+	defer cancel()
+	candidates, unidentifiable := collectOrphanCandidates(budget)
+	killed, skipped, unexamined := sweepOrphanCandidates(budget, candidates)
+	if killed > 0 || skipped > 0 || unidentifiable > 0 || unexamined > 0 {
 		pipeLog.Info("orphaned_poll_clients_reaped",
 			slog.Int("kill_count", killed),
 			slog.Int("skipped_unclassifiable", skipped),
 			slog.Int("skipped_unidentifiable", unidentifiable),
+			slog.Int("unexamined_out_of_budget", unexamined),
 			slog.Duration("duration", time.Since(start)))
 	}
 }
@@ -1051,7 +1099,7 @@ type orphanCandidate struct {
 // than pass over: no identity could be read, or the two reads disagreed. Both
 // mean a process that might be a leak was left alone, and a sweep quietly
 // narrowing itself back toward inert is the original failure of this code.
-func readOrphanCandidate(pid int) (c orphanCandidate, identifiable, ok bool) {
+func readOrphanCandidate(budget context.Context, pid int) (c orphanCandidate, identifiable, ok bool) {
 	// Cheap pre-filter first. /proc holds every process on the host and only a
 	// handful can ever be tmux clients, so the two identity reads below are
 	// paid for only the few entries that get past this. This read carries no
@@ -1064,7 +1112,7 @@ func readOrphanCandidate(pid int) (c orphanCandidate, identifiable, ok bool) {
 		return c, true, false
 	}
 
-	before, err := processIdentityOf(pid)
+	before, err := processIdentityOf(budget, pid)
 	if err != nil {
 		return c, false, false
 	}
@@ -1076,7 +1124,7 @@ func readOrphanCandidate(pid int) (c orphanCandidate, identifiable, ok bool) {
 	if err != nil {
 		return c, true, false
 	}
-	after, err := processIdentityOf(pid)
+	after, err := processIdentityOf(budget, pid)
 	if err != nil || after != before {
 		return c, false, false
 	}
@@ -1097,7 +1145,7 @@ func readOrphanCandidate(pid int) (c orphanCandidate, identifiable, ok bool) {
 // half queries a tmux server per candidate and can block for as long as the
 // sweep's budget allows, and holding a directory listing of every process on
 // the host open across that is pointless.
-func collectOrphanCandidates() (candidates []orphanCandidate, unidentifiable int) {
+func collectOrphanCandidates(budget context.Context) (candidates []orphanCandidate, unidentifiable int) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, 0
@@ -1108,7 +1156,7 @@ func collectOrphanCandidates() (candidates []orphanCandidate, unidentifiable int
 		if err != nil || pid == myPID {
 			continue
 		}
-		c, identifiable, ok := readOrphanCandidate(pid)
+		c, identifiable, ok := readOrphanCandidate(budget, pid)
 		if !identifiable {
 			unidentifiable++
 			pipeLog.Warn("orphan_sweep_skipped_unidentifiable_pid",
@@ -1136,8 +1184,21 @@ var liveTmuxIdentityOf = isLiveTmuxClientOrServer
 // sweepOrphanCandidates runs the kill gauntlet over already-read candidates and
 // returns how many were killed and how many were refused for want of a definite
 // classification. Every refusal is logged; none is silent.
-func sweepOrphanCandidates(candidates []orphanCandidate) (killed, skipped int) {
-	for _, c := range candidates {
+func sweepOrphanCandidates(budget context.Context, candidates []orphanCandidate) (killed, skipped, unexamined int) {
+	for i, c := range candidates {
+		if err := budget.Err(); err != nil {
+			// Out of budget. Report what was left unexamined rather than
+			// returning counts that read like a clean sweep — this whole area
+			// exists because a sweep that quietly did nothing looked exactly
+			// like one that found nothing.
+			unexamined = len(candidates) - i
+			pipeLog.Warn("orphan_sweep_budget_exhausted",
+				slog.Int("unexamined", unexamined),
+				slog.Int("examined", i),
+				slog.String("reason", "the sweep's total deadline (orphanSweepBudget) passed before every "+
+					"candidate was judged; the remaining ones are left for the next run"))
+			break
+		}
 		reapable := isReapableTmuxClientComm(c.comm)
 		// A comm whose role token was truncated away cannot be classified as
 		// client or server. It is not killed; it is carried to the end of the
@@ -1165,7 +1226,7 @@ func sweepOrphanCandidates(candidates []orphanCandidate) (killed, skipped int) {
 		// THE safety check: ask the tmux server itself, not argv text, whether
 		// this pid is live. live==true or ok==false both mean "do not kill".
 		cmdlineFields := strings.Split(strings.TrimRight(c.cmdline, "\x00"), "\x00")
-		live, ok := liveTmuxIdentityOf(c.pid, cmdlineFields)
+		live, ok := liveTmuxIdentityOf(budget, c.pid, cmdlineFields)
 		if !ok {
 			skipped++
 			pipeLog.Warn("orphan_sweep_skipped_unclassifiable_tmux",
@@ -1199,7 +1260,7 @@ func sweepOrphanCandidates(candidates []orphanCandidate) (killed, skipped int) {
 		// it immediately before each signal, so a pid that changed hands while
 		// the gauntlet was running is refused here rather than killed on the
 		// strength of facts that belong to a process which no longer exists.
-		usedSIGKILL, signalled := softKillProcessChecked(c.pid, c.identity, controlClientKillGrace)
+		usedSIGKILL, signalled := softKillProcessChecked(budget, c.pid, c.identity, controlClientKillGrace)
 		if !signalled {
 			skipped++
 			pipeLog.Debug("orphan_sweep_candidate_not_signalled",
@@ -1213,7 +1274,7 @@ func sweepOrphanCandidates(candidates []orphanCandidate) (killed, skipped int) {
 			slog.Int("pid", c.pid),
 			slog.Bool("used_sigkill", usedSIGKILL))
 	}
-	return killed, skipped
+	return killed, skipped, unexamined
 }
 
 // isControlClientOrphan reports whether the control-mode client pid is a
@@ -1351,7 +1412,7 @@ func readProcessExe(pid int) (string, error) {
 // the caller's signal that the guard cannot be armed, which is a different
 // state from "the identity changed" and is handled differently — see
 // softKillProcessChecked.
-func readProcessIdentity(pid int) (string, error) {
+func readProcessIdentity(budget context.Context, pid int) (string, error) {
 	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
 		// Same parse as readParentPID: the comm field can contain ')', so
 		// split after the LAST one. Fields then start at state (field 3), so
@@ -1367,12 +1428,10 @@ func readProcessIdentity(pid int) (string, error) {
 		}
 		return fields[startTimeIndex], nil
 	}
-	// Bounded, unlike the sibling ps probes: this one runs once per candidate
-	// pid on the boot path, where SweepStaleControlClients already refuses to
-	// let a hung query stall startup (staleControlSweepTimeout). A deadline
-	// miss surfaces as an error, which leaves the guard unarmed — the sweep
-	// keeps working, it just stops being able to detect reuse.
-	ctx, cancel := context.WithTimeout(context.Background(), processProbeTimeout)
+	// Bounded, unlike the sibling ps probes, and bounded by the CALLER's budget
+	// as well as by its own cap. A deadline miss surfaces as an error, which
+	// fails closed: the pid is not signalled, and the caller reports it.
+	ctx, cancel := context.WithTimeout(budget, processProbeTimeout)
 	defer cancel()
 	// #nosec G204 -- "ps" is a fixed binary; only arg is strconv.Itoa(int).
 	out, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
@@ -1391,8 +1450,10 @@ func readProcessIdentity(pid int) (string, error) {
 // wrap inside a 100ms window.
 var processIdentityOf = readProcessIdentity
 
-// processProbeTimeout bounds the `ps` fallback in readProcessIdentity so a
-// wedged probe cannot stall the boot-path sweep that calls it. Matches
+// processProbeTimeout caps the `ps` fallback in readProcessIdentity. Like
+// tmuxLiveQueryTimeout it nests inside whatever budget the caller passes — the
+// sweep's single deadline, or a background context for callers that have none —
+// so one wedged probe can spend at most this much of it. Matches
 // staleControlSweepTimeout, which bounds the list-clients query feeding the
 // same sweep.
 var processProbeTimeout = 2 * time.Second
@@ -1406,13 +1467,19 @@ const controlClientKillGrace = 500 * time.Millisecond
 // process to exit, and escalates to SIGKILL if it doesn't. Returns true iff
 // SIGKILL was ultimately used. A non-existent pid (ESRCH) is treated as
 // already-dead and returns false without escalation.
+//
 // A pid whose identity cannot be established is not signalled at all: see
 // stillSameIncarnation for why this fails closed rather than proceeding with an
 // unarmed guard. In practice an unreadable identity for a live process means
 // neither /proc nor `ps` works on the host; a process that is simply gone reads
 // the same way, and refusing to signal it costs nothing.
+//
+// This is the entry point for callers with no budget of their own: its identity
+// probes get the plain per-probe cap (processProbeTimeout). The sweep does not
+// come through here — it captures the identity itself, long before the kill, and
+// calls softKillProcessChecked under its own budget.
 func softKillProcess(pid int, grace time.Duration) bool {
-	identity, err := processIdentityOf(pid)
+	identity, err := processIdentityOf(context.Background(), pid)
 	if err != nil {
 		pipeLog.Warn("skipped_kill_unidentifiable_pid",
 			slog.Int("pid", pid),
@@ -1420,7 +1487,7 @@ func softKillProcess(pid int, grace time.Duration) bool {
 				"cannot be shown to still be the process the caller judged; refusing to signal it"))
 		return false
 	}
-	usedSIGKILL, _ := softKillProcessChecked(pid, identity, grace)
+	usedSIGKILL, _ := softKillProcessChecked(context.Background(), pid, identity, grace)
 	return usedSIGKILL
 }
 
@@ -1442,11 +1509,11 @@ func softKillProcess(pid int, grace time.Duration) bool {
 //     rather than silent.
 //   - A read that fails now means the process is gone or has become
 //     unreadable, and there is nothing worth signalling either way.
-func stillSameIncarnation(pid int, identity string) bool {
+func stillSameIncarnation(budget context.Context, pid int, identity string) bool {
 	if identity == "" {
 		return false
 	}
-	current, err := processIdentityOf(pid)
+	current, err := processIdentityOf(budget, pid)
 	if err != nil {
 		return false
 	}
@@ -1482,8 +1549,8 @@ func stillSameIncarnation(pid int, identity string) bool {
 // log one line per victim, and a pid the guard refused to touch is not a
 // victim — reporting it as one would make the sweep's burst metric, which
 // exists to observe the kill cascade, count kills that never happened.
-func softKillProcessChecked(pid int, identity string, grace time.Duration) (usedSIGKILL, signalled bool) {
-	if !stillSameIncarnation(pid, identity) {
+func softKillProcessChecked(budget context.Context, pid int, identity string, grace time.Duration) (usedSIGKILL, signalled bool) {
+	if !stillSameIncarnation(budget, pid, identity) {
 		return false, false
 	}
 
@@ -1514,7 +1581,7 @@ func softKillProcessChecked(pid int, identity string, grace time.Duration) (used
 
 	// Something still holds the number after grace. Escalate only if it is
 	// still the process we signalled.
-	if !stillSameIncarnation(pid, identity) {
+	if !stillSameIncarnation(budget, pid, identity) {
 		return false, true
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)

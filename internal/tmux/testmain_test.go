@@ -114,6 +114,16 @@ func runTestMain(m *testing.M) int {
 	cleanupBootstrap := bootstrapTmuxServer()
 	defer cleanupBootstrap()
 
+	// Keep the process-wide orphan sweep from firing implicitly. Every
+	// PipeManager.Connect calls startOrphanReapOnce, and the sweep walks all of
+	// /proc and SIGTERMs what it judges — against the developer's real process
+	// table, since /proc has no isolated equivalent of TMUX_TMPDIR. Inline that
+	// was at least ordered; launched in the background it would also race the
+	// tests that swap its seams. Marking it already-started means no Connect
+	// launches one, and both halves are covered directly instead
+	// (orphan_reap_identity_test.go, orphan_reap_budget_test.go).
+	orphanReapStarted.Store(true)
+
 	// Force _test profile for all tests in this package
 	os.Setenv("AGENTDECK_PROFILE", "_test")
 

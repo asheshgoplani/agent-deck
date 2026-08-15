@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -169,7 +170,7 @@ func fakeTmuxCandidate(t *testing.T, role string, extraEnv ...string) int {
 // orphan_reap_live_identity_test.go; what these tests are about is what the
 // gauntlet does with the answer, and what happens to the pid while it is being
 // fetched.
-func stubLiveTmuxIdentity(t *testing.T, fn func(pid int, cmdlineFields []string) (live, ok bool)) {
+func stubLiveTmuxIdentity(t *testing.T, fn func(budget context.Context, pid int, cmdlineFields []string) (live, ok bool)) {
 	t.Helper()
 	original := liveTmuxIdentityOf
 	t.Cleanup(func() { liveTmuxIdentityOf = original })
@@ -183,13 +184,13 @@ func stubLiveTmuxIdentity(t *testing.T, fn func(pid int, cmdlineFields []string)
 func TestReadOrphanCandidate_AcceptsAStableCandidate(t *testing.T) {
 	pid := fakeTmuxCandidate(t, "ignore")
 
-	c, identifiable, ok := readOrphanCandidate(pid)
+	c, identifiable, ok := readOrphanCandidate(context.Background(), pid)
 
 	require.True(t, ok, "a live tmux-shaped orphan must be collected as a candidate")
 	assert.True(t, identifiable)
 	assert.Equal(t, pid, c.pid)
 	assert.Contains(t, c.cmdline, SessionPrefix, "the candidate must carry the argv its verdict rests on")
-	identity, err := readProcessIdentity(pid)
+	identity, err := readProcessIdentity(context.Background(), pid)
 	require.NoError(t, err)
 	assert.Equal(t, identity, c.identity, "the candidate must carry this incarnation's identity")
 }
@@ -206,15 +207,15 @@ func TestReadOrphanCandidate_DropsWhenIdentityChangesBetweenReads(t *testing.T) 
 	original := processIdentityOf
 	t.Cleanup(func() { processIdentityOf = original })
 	calls := 0
-	processIdentityOf = func(p int) (string, error) {
+	processIdentityOf = func(ctx context.Context, p int) (string, error) {
 		calls++
 		if calls == 1 {
 			return "identity-of-the-process-that-died", nil
 		}
-		return original(p)
+		return original(ctx, p)
 	}
 
-	_, identifiable, ok := readOrphanCandidate(pid)
+	_, identifiable, ok := readOrphanCandidate(context.Background(), pid)
 
 	assert.False(t, ok, "facts spanning two incarnations must not become a candidate")
 	assert.False(t, identifiable, "the drop must be reported, not silent")
@@ -230,11 +231,11 @@ func TestReadOrphanCandidate_DropsWhenIdentityUnreadable(t *testing.T) {
 
 	original := processIdentityOf
 	t.Cleanup(func() { processIdentityOf = original })
-	processIdentityOf = func(int) (string, error) {
+	processIdentityOf = func(context.Context, int) (string, error) {
 		return "", errors.New("no /proc and no ps on this host")
 	}
 
-	_, identifiable, ok := readOrphanCandidate(pid)
+	_, identifiable, ok := readOrphanCandidate(context.Background(), pid)
 
 	assert.False(t, ok)
 	assert.False(t, identifiable, "an unidentifiable candidate must be reported, not silently skipped")
@@ -250,14 +251,15 @@ func TestSweepOrphanCandidates_KillsAnIdentifiedOrphan(t *testing.T) {
 	marker := filepath.Join(dir, "term-handled")
 	pid := fakeTmuxCandidate(t, "clean", "MARKER="+marker)
 
-	c, _, ok := readOrphanCandidate(pid)
+	c, _, ok := readOrphanCandidate(context.Background(), pid)
 	require.True(t, ok)
-	stubLiveTmuxIdentity(t, func(int, []string) (bool, bool) { return false, true })
+	stubLiveTmuxIdentity(t, func(context.Context, int, []string) (bool, bool) { return false, true })
 
-	killed, skipped := sweepOrphanCandidates([]orphanCandidate{c})
+	killed, skipped, unexamined := sweepOrphanCandidates(context.Background(), []orphanCandidate{c})
 
 	assert.Equal(t, 1, killed, "an identified orphan must still be reaped")
 	assert.Equal(t, 0, skipped)
+	assert.Equal(t, 0, unexamined)
 	assert.NoError(t, waitForFile(marker, 5*time.Second),
 		"the victim must have received the SIGTERM its handler writes the marker from")
 }
@@ -283,22 +285,23 @@ func TestSweepOrphanCandidates_KillsAnIdentifiedOrphan(t *testing.T) {
 func TestSweepOrphanCandidates_RefusesWhenPIDChangesHandsDuringTheLiveQuery(t *testing.T) {
 	pid := fakeTmuxCandidate(t, "ignore")
 
-	c, _, ok := readOrphanCandidate(pid)
+	c, _, ok := readOrphanCandidate(context.Background(), pid)
 	require.True(t, ok)
 
 	original := processIdentityOf
 	t.Cleanup(func() { processIdentityOf = original })
-	stubLiveTmuxIdentity(t, func(int, []string) (bool, bool) {
+	stubLiveTmuxIdentity(t, func(context.Context, int, []string) (bool, bool) {
 		// The pid changes hands mid-query: every identity read from here on
 		// belongs to whoever holds the number now.
-		processIdentityOf = func(int) (string, error) { return "identity-of-the-new-occupant", nil }
+		processIdentityOf = func(context.Context, int) (string, error) { return "identity-of-the-new-occupant", nil }
 		return false, true
 	})
 
-	killed, skipped := sweepOrphanCandidates([]orphanCandidate{c})
+	killed, skipped, unexamined := sweepOrphanCandidates(context.Background(), []orphanCandidate{c})
 
 	assert.Equal(t, 0, killed, "a pid that changed hands during classification must not be killed")
 	assert.Equal(t, 1, skipped, "the refusal must be counted, not silent")
+	assert.Equal(t, 0, unexamined)
 
 	processIdentityOf = original
 	time.Sleep(300 * time.Millisecond)
