@@ -3288,7 +3288,9 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 		wg.Add(1)
 		go func(name string, rc session.RemoteConfig) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(h.ctx, 15*time.Second)
+			// Honor the per-remote command_timeout_seconds: hosts with large
+			// session fleets legitimately need more than the old flat 15s.
+			ctx, cancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
 			defer cancel()
 
 			runner := session.NewSSHRunner(name, rc)
@@ -3302,7 +3304,12 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 			for i := range sessions {
 				sessions[i].RemoteName = name
 			}
-			summary, costErr := runner.FetchCostSummary(ctx)
+			// #1912 follow-up: the session-list fetch may have consumed most
+			// of the shared budget on a slow remote, which silently dropped
+			// that remote's spend from the totals. Give costs their own bound.
+			costCtx, costCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
+			summary, costErr := runner.FetchCostSummary(costCtx)
+			costCancel()
 
 			mu.Lock()
 			results[name] = sessions
@@ -3797,7 +3804,7 @@ func (h *Home) fetchRemotePreview(remoteName, sessionID, key string) tea.Cmd {
 		}
 
 		runner := session.NewSSHRunner(remoteName, rc)
-		ctx, cancel := context.WithTimeout(h.ctx, 15*time.Second)
+		ctx, cancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
 		defer cancel()
 
 		// #1101: use FetchSessionPane (raw capture-pane content with ANSI +
@@ -17185,6 +17192,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		sessions := h.remoteSessions[item.RemoteName]
 		groupPath := strings.TrimPrefix(item.Path, "remotes/"+item.RemoteName+"/")
 		count := remoteSubGroupCount(sessions, groupPath)
+		running, waiting := remoteStatusCounts(sessions, groupPath)
 		h.remoteSessionsMu.RUnlock()
 
 		segName := groupPath
@@ -17192,12 +17200,13 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 			segName = groupPath[idx+1:]
 		}
 
-		b.WriteString(fmt.Sprintf("%s%s%s %s%s\n",
+		b.WriteString(fmt.Sprintf("%s%s%s %s%s%s\n",
 			remoteRowGutter(selected),        // align with group hotkey gutter
 			strings.Repeat("  ", item.Level), // nest under the remote header
 			expandIcon,
 			nameStyle.Render(segName),
 			countStyle.Render(fmt.Sprintf(" (%d)", count)),
+			remoteStatusSuffix(running, waiting),
 		))
 		return
 	}
@@ -17205,18 +17214,34 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	// Level 0: the remote host header. Count all sessions for this remote.
 	h.remoteSessionsMu.RLock()
 	count := 0
+	running, waiting := 0, 0
 	if sessions, ok := h.remoteSessions[item.RemoteName]; ok {
 		count = len(sessions)
+		running, waiting = remoteStatusCounts(sessions, "")
 	}
 	h.remoteSessionsMu.RUnlock()
 
-	b.WriteString(fmt.Sprintf("%s%s %s%s%s\n",
+	b.WriteString(fmt.Sprintf("%s%s %s%s%s%s\n",
 		remoteRowGutter(selected), // align with group hotkey gutter (flush with local root groups)
 		expandIcon,
 		nameStyle.Render("remotes/"+item.RemoteName),
 		countStyle.Render(fmt.Sprintf(" (%d)", count)),
+		remoteStatusSuffix(running, waiting),
 		h.renderRemoteLatencyMarker(item.RemoteName, selected),
 	))
+}
+
+// remoteStatusSuffix renders the same running/waiting glyph counts local
+// group headers show, for remote host and sub-group headers.
+func remoteStatusSuffix(running, waiting int) string {
+	out := ""
+	if running > 0 {
+		out += " " + GroupStatusRunning.Render(fmt.Sprintf("● %d", running))
+	}
+	if waiting > 0 {
+		out += " " + GroupStatusWaiting.Render(fmt.Sprintf("◐ %d", waiting))
+	}
+	return out
 }
 
 // renderRemoteLatencyMarker returns the colored ` — Xms` (or ` — offline`)

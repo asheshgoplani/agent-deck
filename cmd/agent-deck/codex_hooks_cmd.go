@@ -226,12 +226,23 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 		return
 	}
 	base := filepath.Base(instanceID)
-	lock, err := os.OpenFile(filepath.Join(hooksDir, base+".codex.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	// This lock serializes notify writers only. It is intentionally distinct
+	// from the host-owned consumption lock: a sandbox may control this scoped
+	// directory, so host lifecycle code must never wait on it.
+	lock, err := os.OpenFile(filepath.Join(hooksDir, base+".codex-writer.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return
 	}
-	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	defer closeChecked(lock)
+	locked := false
+	for attempt := 0; attempt < 20; attempt++ {
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+			locked = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !locked {
 		return
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
@@ -254,17 +265,28 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 	if len(turnIDs) > 0 {
 		turnID = strings.TrimSpace(turnIDs[0])
 	}
-	if started && evidenceSessionID != "" && turnID != "" {
-		prior.CodexStartedGeneration = fmt.Sprintf("%s:%s", evidenceSessionID, turnID)
-		prior.CodexStartedSessionID = evidenceSessionID
+	if started {
 		prior.CodexCompletedGeneration = ""
 		prior.CodexCompletedSessionID = ""
+		if evidenceSessionID != "" && turnID != "" {
+			prior.CodexStartedGeneration = fmt.Sprintf("%s:%s", evidenceSessionID, turnID)
+			prior.CodexStartedSessionID = evidenceSessionID
+		} else {
+			prior.CodexStartedGeneration = ""
+			prior.CodexStartedSessionID = ""
+		}
 	}
 	completionGeneration := ""
 	if evidenceSessionID != "" && turnID != "" {
 		completionGeneration = fmt.Sprintf("%s:%s", evidenceSessionID, turnID)
 	}
-	if completed && completionGeneration != "" && completionGeneration == prior.CodexStartedGeneration && evidenceSessionID == prior.CodexStartedSessionID {
+	// Codex's legacy notify contract emits only agent-turn-complete. A complete
+	// thread/turn identity therefore supplies both sides of the generation
+	// proof; waiting must not depend on a start notification that never occurs.
+	if completed && completionGeneration != "" &&
+		(prior.Status != "running" || prior.CodexStartedGeneration == "" || completionGeneration == prior.CodexStartedGeneration) {
+		prior.CodexStartedGeneration = completionGeneration
+		prior.CodexStartedSessionID = evidenceSessionID
 		prior.CodexCompletedGeneration = completionGeneration
 		prior.CodexCompletedSessionID = evidenceSessionID
 	}
