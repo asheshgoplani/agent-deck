@@ -1406,6 +1406,16 @@ func handleAdd(profile string, args []string) {
 	// This allows: "add . -c claude" to work same as "add -c claude ."
 	args = reorderArgsForFlagParsing(args)
 
+	// #1923: catch a value-taking flag that swallowed the next flag because its
+	// own value was omitted. Checked before Parse so the report names the real
+	// mistake — `add` stores --account verbatim and never rejects an unknown
+	// name, so without this the session is created against a bogus account and
+	// only surfaces later as a quota error the user cannot trace back to here.
+	if err := checkFlagValueNotFlag(fs, args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
