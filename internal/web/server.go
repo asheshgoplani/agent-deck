@@ -349,6 +349,9 @@ func (s *Server) Start() error {
 		s.hookWatcher = nil
 	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if s.cancelBase != nil {
+			s.cancelBase()
+		}
 		return err
 	}
 	return nil

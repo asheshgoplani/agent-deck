@@ -3,9 +3,11 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -66,4 +68,30 @@ func TestRemotesAPIOnlyReadsSnapshot(t *testing.T) {
 	}
 	// The loader has no request-aware method: this test protects the security
 	// boundary that authenticated requests cannot initiate background work.
+}
+
+func TestServerStartCancelsRemoteFleetWhenListenFails(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer listener.Close()
+
+	started := make(chan context.Context, 1)
+	loader := &fakeRemoteFleetLoader{started: started}
+	srv := NewServer(Config{ListenAddr: listener.Addr().String(), RemoteFleet: loader})
+	if err := srv.Start(); err == nil {
+		t.Fatal("Start succeeded with occupied listen address")
+	}
+
+	select {
+	case scannerCtx := <-started:
+		select {
+		case <-scannerCtx.Done():
+		case <-time.After(time.Second):
+			t.Fatal("remote fleet context was not canceled after listen failure")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("remote fleet did not start")
+	}
 }

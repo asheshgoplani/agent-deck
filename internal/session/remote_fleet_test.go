@@ -160,11 +160,15 @@ func TestRemoteFleetScannerBoundsConcurrencyAndHonorsLifecycleCancellation(t *te
 }
 
 type sequenceFleetRunner struct {
-	mu    *sync.Mutex
-	calls *int
+	mu      *sync.Mutex
+	calls   *int
+	onFetch func()
 }
 
 func (f sequenceFleetRunner) FetchSessions(context.Context) ([]RemoteSessionInfo, error) {
+	if f.onFetch != nil {
+		f.onFetch()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	*f.calls++
@@ -172,6 +176,33 @@ func (f sequenceFleetRunner) FetchSessions(context.Context) ([]RemoteSessionInfo
 		return nil, errors.New("offline")
 	}
 	return []RemoteSessionInfo{{ID: "kept", Status: "waiting"}}, nil
+}
+
+func TestRemoteFleetScannerStartsFailureBackoffAfterScanCompletes(t *testing.T) {
+	scanner := NewRemoteFleetScanner()
+	startedAt := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	current := startedAt
+	scanner.now = func() time.Time { return current }
+	scanner.loadConfig = func() (*UserConfig, error) {
+		return &UserConfig{Remotes: map[string]RemoteConfig{"slow": {Host: "slow"}}}, nil
+	}
+	var mu sync.Mutex
+	calls := 1 // sequence runner fails when calls advances above one
+	scanner.newRunner = func(string, RemoteConfig) remoteFleetRunner {
+		return sequenceFleetRunner{
+			mu: &mu, calls: &calls,
+			onFetch: func() { current = current.Add(10 * time.Second) },
+		}
+	}
+
+	scanner.refreshOnce(context.Background())
+	scanner.mu.RLock()
+	state := scanner.states["slow"]
+	scanner.mu.RUnlock()
+	want := startedAt.Add(10*time.Second + defaultRemoteFleetRefresh)
+	if !state.nextAttempt.Equal(want) {
+		t.Fatalf("next attempt = %v, want scan completion + backoff = %v", state.nextAttempt, want)
+	}
 }
 
 func (sequenceFleetRunner) MeasureLatency(context.Context) (time.Duration, error) { return 0, nil }

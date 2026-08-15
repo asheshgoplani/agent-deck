@@ -239,6 +239,10 @@ func (s *RemoteFleetScanner) scanRemote(ctx context.Context, name string, config
 		if backoff > maxBackoff {
 			backoff = maxBackoff
 		}
+		completedAt := time.Now().UTC()
+		if s.now != nil {
+			completedAt = s.now().UTC()
+		}
 		remote := RemoteFleetRemote{Name: name, Issue: "unavailable", Sessions: make([]RemoteSessionInfo, 0), ObservedAt: observedAt}
 		if hadPrior {
 			remote = prior.remote
@@ -246,7 +250,7 @@ func (s *RemoteFleetScanner) scanRemote(ctx context.Context, name string, config
 			remote.Issue = "unavailable"
 			remote.Stale = true
 		}
-		return remoteFleetState{remote: remote, backoff: backoff, nextAttempt: observedAt.Add(backoff)}
+		return remoteFleetState{remote: remote, backoff: backoff, nextAttempt: completedAt.Add(backoff)}
 	}
 	for i := range sessions {
 		sessions[i].RemoteName = name
