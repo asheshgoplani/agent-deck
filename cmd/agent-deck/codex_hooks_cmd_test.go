@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -329,6 +330,33 @@ func TestWriteCodexHookStatus_ConcurrentFleetPersistence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCleanStaleHookFilesPreservesCodexWriterLockForLiveStatus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(getHooksDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	instanceID := "codex-live-writer"
+	statusPath := filepath.Join(getHooksDir(), instanceID+".json")
+	lockPath := filepath.Join(getHooksDir(), instanceID+".codex-writer.lock")
+	if err := os.WriteFile(statusPath, []byte(`{"status":"running"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeChecked(lock)
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(lockPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanStaleHookFiles()
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("writer lock for live status was reaped: %v", err)
 	}
 }
 

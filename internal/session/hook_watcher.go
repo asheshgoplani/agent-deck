@@ -2,8 +2,10 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -89,17 +91,26 @@ func consumeCodexCompletionEvidence(instanceID, generation string) (consumed boo
 	if err != nil {
 		return false, err
 	}
-	if err := atomicWriteFile(filepath.Join(root, base+".json"), updated, 0o600); err != nil {
+	generationDir := filepath.Join(root, base)
+	if err := os.MkdirAll(generationDir, 0o700); err != nil {
+		return false, err
+	}
+	if err := atomicWriteFile(codexConsumedGenerationPath(instanceID, generation), updated, 0o600); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+func codexConsumedGenerationPath(instanceID, generation string) string {
+	digest := sha256.Sum256([]byte(generation))
+	return filepath.Join(GetHooksDir(), ".codex-consumed", filepath.Base(instanceID), fmt.Sprintf("%x.json", digest))
 }
 
 func codexCompletionEvidenceConsumed(instanceID, generation string) bool {
 	if strings.TrimSpace(instanceID) == "" || strings.TrimSpace(generation) == "" {
 		return false
 	}
-	path := filepath.Join(GetHooksDir(), ".codex-consumed", filepath.Base(instanceID)+".json")
+	path := codexConsumedGenerationPath(instanceID, generation)
 	data, err := readStatusFileNoFollow(path)
 	if err != nil {
 		return false
@@ -532,8 +543,18 @@ func (w *StatusFileWatcher) Stop() {
 // GetHookStatus returns the hook status for an instance, or nil if not available.
 func (w *StatusFileWatcher) GetHookStatus(instanceID string) *HookStatus {
 	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.statuses[instanceID]
+	status := w.statuses[instanceID]
+	if status == nil {
+		w.mu.RUnlock()
+		return nil
+	}
+	copy := *status
+	w.mu.RUnlock()
+	// Consumption writes do not touch the sandbox-owned hook JSON and therefore
+	// do not produce an fsnotify event. Re-mask a copy on every retrieval so a
+	// cached completed generation cannot be fed back into an Instance.
+	maskConsumedCodexCompletion(instanceID, &copy)
+	return &copy
 }
 
 // ClearHookStatus removes the cached hook status for an instance.

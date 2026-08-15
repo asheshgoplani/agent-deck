@@ -250,12 +250,25 @@ func TestCodexCompletionEvidenceInvalidatedBySubsequentRunningTurn(t *testing.T)
 		got.CodexStartedSessionID != "" || got.CodexCompletedSessionID != "" {
 		t.Fatalf("durable stale completion evidence was not consumed: %#v", got)
 	}
+
+	// The watcher cached the unmasked hook record before consumption and sees
+	// no event when the host-only marker lands. Polling must re-mask that cached
+	// copy instead of rehydrating turn A into the warm Instance.
+	watcher := &StatusFileWatcher{statuses: map[string]*HookStatus{instanceID: {
+		Status: "waiting", SessionID: sessionID,
+		CodexStartedGeneration: generation, CodexCompletedGeneration: generation,
+		CodexStartedSessionID: sessionID, CodexCompletedSessionID: sessionID,
+	}}}
+	i.UpdateHookStatus(watcher.GetHookStatus(instanceID))
+	if i.codexCompletionConverged() {
+		t.Fatal("polling loop rehydrated consumed completion from watcher cache")
+	}
 }
 
 func TestCodexCompletionInvalidationRetriesAfterDurableWriteFailure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	instanceID, generation := "codex-retry", "thread-1:turn-a"
-	consumedPath := filepath.Join(GetHooksDir(), ".codex-consumed", instanceID+".json")
+	consumedPath := codexConsumedGenerationPath(instanceID, generation)
 	if err := os.MkdirAll(consumedPath, 0o700); err != nil { // force atomic rename failure
 		t.Fatal(err)
 	}
@@ -280,6 +293,23 @@ func TestCodexCompletionInvalidationRetriesAfterDurableWriteFailure(t *testing.T
 	i.mu.Unlock()
 	if i.codexStartedGeneration != "" || i.codexCompletedGeneration != "" {
 		t.Fatal("retry did not clear memory after durable consume succeeded")
+	}
+}
+
+func TestCodexConsumedGenerationsCannotOverwriteEachOther(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	instanceID := "codex-ordered-consume"
+	newer := "thread-1:turn-b"
+	older := "thread-1:turn-a"
+	if consumed, err := consumeCodexCompletionEvidence(instanceID, newer); err != nil || !consumed {
+		t.Fatalf("consume newer generation: consumed=%v err=%v", consumed, err)
+	}
+	// Simulate a delayed process persisting stale A after B already landed.
+	if consumed, err := consumeCodexCompletionEvidence(instanceID, older); err != nil || !consumed {
+		t.Fatalf("consume older generation: consumed=%v err=%v", consumed, err)
+	}
+	if !codexCompletionEvidenceConsumed(instanceID, newer) || !codexCompletionEvidenceConsumed(instanceID, older) {
+		t.Fatal("delayed stale consume replaced another consumed generation")
 	}
 }
 

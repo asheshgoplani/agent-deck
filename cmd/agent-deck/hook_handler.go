@@ -560,6 +560,9 @@ func cleanStaleHookFiles() {
 				continue
 			}
 			id := strings.TrimSuffix(entry.Name(), ".lock")
+			if strings.HasSuffix(entry.Name(), ".codex-writer.lock") {
+				id = strings.TrimSuffix(entry.Name(), ".codex-writer.lock")
+			}
 			if _, err := os.Stat(filepath.Join(hooksDir, id+".json")); err == nil {
 				continue
 			}
