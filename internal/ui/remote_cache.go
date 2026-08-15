@@ -21,13 +21,22 @@ const remoteSessionsCacheKey = "remote_sessions_cache"
 const remoteSessionsCacheMaxAge = 24 * time.Hour
 
 type remoteSessionsCache struct {
+	// SavedAt is kept for backward compatibility with early snapshots; the
+	// authoritative freshness signal is per-remote FetchedAt.
 	SavedAt  time.Time                              `json:"saved_at"`
 	Sessions map[string][]session.RemoteSessionInfo `json:"sessions"`
+	// FetchedAt records when each remote's sessions last came from a LIVE
+	// fetch. Without it, every save cycle re-stamped the whole snapshot, so a
+	// continuously-failing remote's stale sessions never hit the age cutoff.
+	FetchedAt map[string]time.Time `json:"fetched_at,omitempty"`
 }
 
 // saveRemoteSessionsCache persists the current remote session map. Called from
 // the fetch-completion path; a dropped save is recoverable on the next fetch.
-func (h *Home) saveRemoteSessionsCache() {
+// liveFetched names the remotes whose data came from a successful fetch THIS
+// cycle — only their freshness stamps advance. Failed or merely-carried-over
+// remotes keep their previous stamp so stale data still ages out.
+func (h *Home) saveRemoteSessionsCache(liveFetched map[string][]session.RemoteSessionInfo) {
 	if h.storage == nil {
 		return
 	}
@@ -36,7 +45,17 @@ func (h *Home) saveRemoteSessionsCache() {
 		return
 	}
 	h.remoteSessionsMu.RLock()
-	snap := remoteSessionsCache{SavedAt: time.Now(), Sessions: h.remoteSessions}
+	if h.remoteFetchedAt == nil {
+		h.remoteFetchedAt = make(map[string]time.Time)
+	}
+	for name := range liveFetched {
+		h.remoteFetchedAt[name] = time.Now()
+	}
+	snap := remoteSessionsCache{
+		SavedAt:   time.Now(),
+		Sessions:  h.remoteSessions,
+		FetchedAt: h.remoteFetchedAt,
+	}
 	data, err := json.Marshal(snap)
 	h.remoteSessionsMu.RUnlock()
 	if err != nil {
@@ -67,9 +86,6 @@ func (h *Home) loadRemoteSessionsCache() {
 		uiLog.Warn("load_remote_cache_unmarshal_failed", slog.String("error", err.Error()))
 		return
 	}
-	if snap.SavedAt.IsZero() || time.Since(snap.SavedAt) > remoteSessionsCacheMaxAge {
-		return
-	}
 	if len(snap.Sessions) == 0 {
 		return
 	}
@@ -86,11 +102,25 @@ func (h *Home) applyRemoteSessionsSnapshot(snap remoteSessionsCache) {
 	if h.remoteFromCache == nil {
 		h.remoteFromCache = make(map[string]bool)
 	}
+	if h.remoteFetchedAt == nil {
+		h.remoteFetchedAt = make(map[string]time.Time)
+	}
 	for name, sessions := range snap.Sessions {
-		if _, live := h.remoteSessions[name]; !live {
-			h.remoteSessions[name] = sessions
-			h.remoteFromCache[name] = true
+		if _, live := h.remoteSessions[name]; live {
+			continue
 		}
+		// Per-remote freshness: fall back to the snapshot stamp for early
+		// caches written before FetchedAt existed.
+		fetched := snap.FetchedAt[name]
+		if fetched.IsZero() {
+			fetched = snap.SavedAt
+		}
+		if fetched.IsZero() || time.Since(fetched) > remoteSessionsCacheMaxAge {
+			continue
+		}
+		h.remoteSessions[name] = sessions
+		h.remoteFromCache[name] = true
+		h.remoteFetchedAt[name] = fetched
 	}
 	h.remoteSessionsMu.Unlock()
 }

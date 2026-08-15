@@ -595,6 +595,7 @@ type Home struct {
 	// Remote sessions (Phase 2: Agent-Deck Remotes)
 	remoteSessions     map[string][]session.RemoteSessionInfo // remoteName -> sessions
 	remoteFromCache    map[string]bool                        // remoteName -> data is a startup cache snapshot, not live yet
+	remoteFetchedAt    map[string]time.Time                   // remoteName -> when its sessions last came from a live fetch
 	remoteSessionsMu   sync.RWMutex
 	lastRemoteFetch    time.Time // When remote sessions were last fetched
 	remotesFetchActive bool      // Prevents overlapping fetches
@@ -6169,7 +6170,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.lastRemoteFetch = time.Now()
 		h.remotesFetchActive = false
 		h.remoteSessionsMu.Unlock()
-		h.saveRemoteSessionsCache()
+		h.saveRemoteSessionsCache(msg.sessions)
 		// #1101: store remote cost summaries so renderCostLine can fold them
 		// into the displayed totals on the next paint.
 		h.remoteCostsMu.Lock()

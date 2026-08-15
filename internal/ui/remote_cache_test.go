@@ -37,15 +37,36 @@ func TestRemoteSessionsCache_LiveDataWins(t *testing.T) {
 	}
 }
 
-func TestRemoteSessionsCache_ExpiredSnapshotIgnored(t *testing.T) {
+func TestRemoteSessionsCache_ExpiredRemoteIgnored(t *testing.T) {
+	h := &Home{}
+	snap := remoteSessionsCache{
+		SavedAt: time.Now(), // snapshot stamp is fresh — must NOT rescue stale remotes
+		Sessions: map[string][]session.RemoteSessionInfo{
+			"stale": {{ID: "x"}},
+			"fresh": {{ID: "y"}},
+		},
+		FetchedAt: map[string]time.Time{
+			"stale": time.Now().Add(-25 * time.Hour),
+			"fresh": time.Now().Add(-1 * time.Hour),
+		},
+	}
+	h.applyRemoteSessionsSnapshot(snap)
+	if _, ok := h.remoteSessions["stale"]; ok {
+		t.Fatalf("remote with a 25h-old live fetch must not be applied")
+	}
+	if _, ok := h.remoteSessions["fresh"]; !ok {
+		t.Fatalf("fresh remote should have been applied")
+	}
+}
+
+func TestRemoteSessionsCache_LegacySnapshotUsesSavedAt(t *testing.T) {
 	h := &Home{}
 	snap := remoteSessionsCache{
 		SavedAt:  time.Now().Add(-25 * time.Hour),
 		Sessions: map[string][]session.RemoteSessionInfo{"g14": {{ID: "x"}}},
 	}
-	if snap.SavedAt.IsZero() || time.Since(snap.SavedAt) > remoteSessionsCacheMaxAge {
-		return // expected path: caller skips applying
-	}
 	h.applyRemoteSessionsSnapshot(snap)
-	t.Fatalf("expired snapshot should not have been applied")
+	if _, ok := h.remoteSessions["g14"]; ok {
+		t.Fatalf("expired legacy snapshot must not be applied")
+	}
 }
