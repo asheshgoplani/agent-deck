@@ -3006,6 +3006,10 @@ func handleProfileList(out *CLIOutput, jsonMode bool) {
 			profileList = append(profileList, map[string]interface{}{
 				"name":       p,
 				"is_default": p == defaultProfile,
+				// #1926: let tooling filter the underscore-prefixed profiles
+				// (test fixtures, scratch) without re-deriving the convention.
+				// Additive — nothing is removed from the payload.
+				"internal": isInternalProfileName(p),
 			})
 		}
 		out.Success("", map[string]interface{}{
@@ -3023,15 +3027,53 @@ func handleProfileList(out *CLIOutput, jsonMode bool) {
 		return
 	}
 
-	fmt.Println("Profiles:")
+	// #1926: underscore-prefixed profiles are test fixtures and scratch state.
+	// Listed flat they bury the real ones — the report had seven of them ahead
+	// of the profiles the user actually cared about. Separated, not hidden:
+	// hiding by default would make a profile someone deliberately named with a
+	// leading underscore vanish with no way to notice.
+	var normal, internal []string
 	for _, p := range profiles {
+		if isInternalProfileName(p) {
+			internal = append(internal, p)
+			continue
+		}
+		normal = append(normal, p)
+	}
+
+	printProfile := func(p string) {
 		if p == defaultProfile {
 			fmt.Printf("  * %s (default)\n", p)
-		} else {
-			fmt.Printf("    %s\n", p)
+			return
+		}
+		fmt.Printf("    %s\n", p)
+	}
+
+	fmt.Println("Profiles:")
+	for _, p := range normal {
+		printProfile(p)
+	}
+	if len(normal) == 0 {
+		fmt.Println("    (none)")
+	}
+
+	if len(internal) > 0 {
+		fmt.Printf("\nInternal (test fixtures and scratch, '_' prefix): %d\n", len(internal))
+		for _, p := range internal {
+			printProfile(p)
 		}
 	}
+
 	fmt.Printf("\nTotal: %d profiles\n", len(profiles))
+}
+
+// isInternalProfileName reports whether a profile name follows the project's
+// underscore convention for test fixtures and scratch state (_test, _baseline,
+// …). Purely a display concern: nothing about the profile behaves differently,
+// and the listing separates rather than hides so an unexpected one is still
+// visible (#1926).
+func isInternalProfileName(name string) bool {
+	return strings.HasPrefix(name, "_")
 }
 
 func handleProfileCreate(out *CLIOutput, name string) {
