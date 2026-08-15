@@ -3304,7 +3304,12 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 			for i := range sessions {
 				sessions[i].RemoteName = name
 			}
-			summary, costErr := runner.FetchCostSummary(ctx)
+			// #1912 follow-up: the session-list fetch may have consumed most
+			// of the shared budget on a slow remote, which silently dropped
+			// that remote's spend from the totals. Give costs their own bound.
+			costCtx, costCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
+			summary, costErr := runner.FetchCostSummary(costCtx)
+			costCancel()
 
 			mu.Lock()
 			results[name] = sessions
