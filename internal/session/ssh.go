@@ -496,6 +496,53 @@ func (r *SSHRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, err
 	return sessions, nil
 }
 
+// FetchPendingRecords retrieves the remote host's completion and transition
+// records over the SAME ssh path every other remote fetch uses (issue #1948).
+//
+// Read-only on the remote: `inbox export` consumes, truncates and marks
+// nothing, so draining the same host from two conductors gives both the full
+// set and leaves the host's own conductor's inbox untouched.
+//
+// A remote running an agent-deck older than the one that added `inbox export`
+// answers with a usage error rather than a JSON array; that is reported as an
+// explicit version error instead of being read as "no records".
+func (r *SSHRunner) FetchPendingRecords(ctx context.Context) ([]TransitionNotificationEvent, error) {
+	output, err := r.Run(ctx, "inbox", "export", "--json")
+	if err != nil {
+		return nil, err
+	}
+
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+	if trimmed[0] != '[' {
+		return nil, fmt.Errorf("remote agent-deck did not return a record array "+
+			"(it is likely older than `inbox export`; run `agent-deck remote update`): %s",
+			firstLineOf(trimmed))
+	}
+
+	var records []TransitionNotificationEvent
+	if err := json.Unmarshal(trimmed, &records); err != nil {
+		return nil, fmt.Errorf("failed to parse remote records: %w", err)
+	}
+	return records, nil
+}
+
+// firstLineOf trims a remote reply to its first line, bounded, so an error
+// message quotes the remote's complaint without pasting a whole usage screen.
+func firstLineOf(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	const max = 200
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return s
+}
+
 type remoteSessionOutputJSON struct {
 	Content string `json:"content"`
 }

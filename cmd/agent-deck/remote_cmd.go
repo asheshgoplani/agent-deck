@@ -30,6 +30,8 @@ func handleRemote(profile string, args []string) {
 		handleRemoteList(args[1:])
 	case "sessions":
 		handleRemoteSessions(args[1:])
+	case "drain":
+		handleRemoteDrain(args[1:])
 	case "attach":
 		handleRemoteAttach(args[1:])
 	case "rename":
@@ -53,6 +55,8 @@ func printRemoteUsage() {
 	fmt.Println("  remove <name>             Remove a remote")
 	fmt.Println("  list                      List configured remotes")
 	fmt.Println("  sessions [name]           Fetch sessions from remote(s)")
+	fmt.Println("  drain <name|user@host>    Pull completion/transition records from a remote")
+	fmt.Println("                            into this machine's inbox (read-only on the remote)")
 	fmt.Println("  attach <name> <session>   Attach to a remote session")
 	fmt.Println("  rename <name> <session> <new-title>  Rename a remote session")
 	fmt.Println("  update [name]             Install/update agent-deck on remote(s)")
@@ -62,6 +66,7 @@ func printRemoteUsage() {
 	fmt.Println("  agent-deck remote add prod user@prod-server --agent-deck-path /usr/local/bin/agent-deck")
 	fmt.Println("  agent-deck remote list")
 	fmt.Println("  agent-deck remote sessions dev")
+	fmt.Println("  agent-deck remote drain dev       # pull finished/stalled reports from dev")
 	fmt.Println("  agent-deck remote attach dev my-session")
 	fmt.Println("  agent-deck remote rename dev my-session new-name")
 	fmt.Println("  agent-deck remote update          # Update all remotes")
