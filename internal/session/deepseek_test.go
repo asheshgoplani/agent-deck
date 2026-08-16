@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -551,10 +552,21 @@ func TestBuildDeepSeekCommand_ExportsDshHome(t *testing.T) {
 //	<home>/sessions/<slug>/<session-id>/session.jsonl.zstd
 func writeDshHome(t *testing.T, workspace string, sessionIDs []string, bodies []string) string {
 	t.Helper()
+	return writeDshHomeArchived(t, workspace, sessionIDs, bodies, nil)
+}
+
+// writeDshHomeArchived is writeDshHome with an explicit archived-id list, the
+// shape upstream records under global.archivedSessionIds.
+func writeDshHomeArchived(t *testing.T, workspace string, sessionIDs, bodies, archived []string) string {
+	t.Helper()
 	home := t.TempDir()
 
+	if archived == nil {
+		archived = []string{}
+	}
 	doc := map[string]any{
-		"unit": map[string]any{"name": "workspace", "version": 2},
+		"unit":   map[string]any{"name": "workspace", "version": 2},
+		"global": map[string]any{"initialized": true, "archivedSessionIds": archived},
 		"tables": map[string]any{
 			"workspaces": map[string]any{
 				"06ce661c-81ca-4f4c-a9cd-2c57a941c800": map[string]any{
@@ -1051,5 +1063,147 @@ func TestDeepSeekPromptDelivery_PassthroughIsNeverJudgedByProfile(t *testing.T) 
 				t.Error("CanRestart() = false for a passthrough command")
 			}
 		})
+	}
+}
+
+// --- adversarial review findings on PR #1942 --------------------------------
+
+// TestDeepSeekCommand_ShellQuotesTitle covers the SHELL INJECTION blocker.
+//
+// The env prefix used `AGENTDECK_TITLE=%q`. Go's %q produces a DOUBLE-quoted
+// string, and a shell expands $(…) and backticks inside double quotes — so a
+// session title carrying either executed when the pane launched. Confirmed
+// empirically: `AGENTDECK_TITLE="x$(touch /tmp/f)"` creates the file.
+//
+// A title is not trusted input: it can be set from a CLI flag, renamed in the
+// TUI, or derived from content an agent read. This repo already pinned the rule
+// in #1299 (instance_codex_fork_test.go) — shellescape.Quote, never %q — and
+// this integration copied the wrong sibling, in two places.
+func TestDeepSeekCommand_ShellQuotesTitle(t *testing.T) {
+	withConfig(t, &UserConfig{DeepSeek: DeepSeekSettings{Profile: "web"}})
+
+	evil := "pwn $(touch /tmp/agentdeck-deepseek-pwn) `id`"
+	inst := &Instance{Tool: "deepseek", ID: "abc", Title: evil}
+
+	for name, cmd := range map[string]string{
+		"launch":  inst.buildDeepSeekCommand("deepseek"),
+		"restart": inst.buildDeepSeekResumeCommand(),
+	} {
+		want := "AGENTDECK_TITLE=" + shellescape.Quote(evil)
+		if !strings.Contains(cmd, want) {
+			t.Errorf("%s: AGENTDECK_TITLE must be shell-quoted via shellescape.Quote (the #1299 rule); got:\n%s", name, cmd)
+		}
+		// The Go-%q rendering is what was wrong; it must not appear.
+		if strings.Contains(cmd, `AGENTDECK_TITLE="`+evil) {
+			t.Errorf("%s: title is Go-%%q quoted, which a shell still expands:\n%s", name, cmd)
+		}
+	}
+
+	// Substring checks only go so far — `$(touch …)` legitimately appears INSIDE
+	// the single-quoted word, which is what correct escaping looks like. So run
+	// the real thing: hand the generated assignment to bash and prove both that
+	// the title survives literally and that nothing executed.
+	marker := filepath.Join(t.TempDir(), "pwned")
+	payload := "pwn $(touch " + marker + ") `touch " + marker + "`"
+	live := &Instance{Tool: "deepseek", ID: "abc", Title: payload}
+	assignment := "AGENTDECK_TITLE=" + shellescape.Quote(live.Title)
+
+	// The prefix form agent-deck actually emits: `VAR=value <command>`. A nested
+	// shell is the command, so it reads the value out of its own inherited
+	// environment — reading "$AGENTDECK_TITLE" in the OUTER shell would expand
+	// before the assignment is in scope and always come back empty.
+	out, err := exec.Command("bash", "-c", assignment+` sh -c 'printf %s "$AGENTDECK_TITLE"'`).Output()
+	if err != nil {
+		t.Fatalf("bash: %v", err)
+	}
+	if string(out) != payload {
+		t.Errorf("title did not survive the shell literally:\n got: %q\nwant: %q", out, payload)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("SHELL INJECTION: the title executed and created %s", marker)
+	}
+}
+
+// TestDeepSeekInstalled_RejectsUnrelatedDsh covers the binary-identity finding.
+//
+// `dsh` is not a name DeepSeek coined: Debian and Ubuntu ship a `dsh` package
+// ("dancer's shell, or distributed shell") that runs commands on a group of
+// machines over remote shell. Finding one on PATH therefore says nothing about
+// DeepSeek Harness being present — and launching `dsh --profile web` against a
+// remote-execution tool is a much worse outcome than reporting nothing found.
+func TestDeepSeekInstalled_RejectsUnrelatedDsh(t *testing.T) {
+	withConfig(t, &UserConfig{})
+
+	dir := t.TempDir()
+	// A stand-in for dancer's dsh: real, executable, on PATH, and does not
+	// identify itself as DeepSeek Harness.
+	imposter := filepath.Join(dir, "dsh")
+	if err := os.WriteFile(imposter, []byte("#!/bin/sh\necho \"dsh: dancer's shell, or distributed shell\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// And a stand-in for the real thing, which does.
+	harnessDir := t.TempDir()
+	harness := filepath.Join(harnessDir, "dsh")
+	if err := os.WriteFile(harness, []byte("#!/bin/sh\necho 'dsh: boot a DeepSeek Harness profile'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldLookPath := lookPathFn
+	t.Cleanup(func() { lookPathFn = oldLookPath })
+
+	resolve := imposter
+	lookPathFn = func(name string) (string, error) {
+		if name == "dsh" {
+			return resolve, nil
+		}
+		return "", os.ErrNotExist
+	}
+
+	if DeepSeekInstalled("dsh") {
+		t.Error("DeepSeekInstalled = true for an unrelated program named dsh; agent-deck would launch a remote-execution tool")
+	}
+
+	resolve = harness
+	if !DeepSeekInstalled("dsh") {
+		t.Error("DeepSeekInstalled = false for a binary that identifies itself as DeepSeek Harness")
+	}
+
+	// A command the user configured explicitly is taken at its word: a wrapper
+	// is under no obligation to reproduce upstream's help text, and second-
+	// guessing it would break a legitimate setup.
+	wrapper := filepath.Join(dir, "my-dsh-wrapper")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\ntrue\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !DeepSeekInstalled(wrapper) {
+		t.Error("DeepSeekInstalled = false for an explicitly configured absolute-path command")
+	}
+
+	// Nothing on PATH at all.
+	lookPathFn = func(string) (string, error) { return "", os.ErrNotExist }
+	if DeepSeekInstalled("dsh") {
+		t.Error("DeepSeekInstalled = true with no dsh on PATH")
+	}
+}
+
+// TestDiscoverDeepSeekSessionID_SkipsArchived covers the archived-session gap.
+//
+// Archiving a session in dsh adds it to global.archivedSessionIds but leaves it
+// in its workspace's sessionIds, so "newest entry wins" would reopen a
+// conversation the user deliberately put away.
+func TestDiscoverDeepSeekSessionID_SkipsArchived(t *testing.T) {
+	workspace := t.TempDir()
+	ids := []string{"session-keep", "session-archived"}
+	home := writeDshHomeArchived(t, workspace, ids, ids, []string{"session-archived"})
+
+	if got := DiscoverDeepSeekSessionID(home, workspace); got != "session-keep" {
+		t.Errorf("DiscoverDeepSeekSessionID = %q, want %q (the newest NON-archived session)", got, "session-keep")
+	}
+
+	// Everything archived means nothing to resume — a fresh boot, not a
+	// resurrection of the most recently archived conversation.
+	allArchived := writeDshHomeArchived(t, workspace, ids, ids, ids)
+	if got := DiscoverDeepSeekSessionID(allArchived, workspace); got != "" {
+		t.Errorf("DiscoverDeepSeekSessionID = %q with every session archived, want \"\"", got)
 	}
 }

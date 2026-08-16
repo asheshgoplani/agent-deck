@@ -1,6 +1,9 @@
 package tmux
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // Auth-failure detection (fleet-death hardening).
 //
@@ -59,22 +62,41 @@ func IsAuthFailureContent(tool, content string) bool {
 	}
 }
 
-// deepSeekCredentialMarkers are the fragments dsh prints when it cannot resolve
-// a provider credential. Captured verbatim from @deepseek-ai/dsh 0.1.0-rc.6 in a
-// sandboxed HOME with DEEPSEEK_API_KEY unset:
+// deepSeekCredentialLine matches dsh's own fail-loud rendering of a CREDENTIAL
+// error code.
 //
-//	dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route
-//	"deepseek-official"; store DEEPSEEK_API_KEY through the credentials service
-//	(the web Models page writes it), or export DEEPSEEK_API_KEY in the launching
-//	environment
+// The shape is structural, not prose. dsh renders a terminal error as
+// `dsh: <CODE>: <message>` (@deepseek-ai/dsh-headless, lib/index.js:97:
+// `io.stderr.write(\`dsh: ${outcome.reason.error.code}: ${...message}\`)`), and
+// the codes are declared constants in @deepseek-ai/dsh-llm
+// (lib/types/error.js). Keying on the code rather than the message means a
+// reworded message cannot silently disable the hold — which is exactly the
+// failure mode an earlier version of this file had, when it required a prose
+// fragment AND the code on one line.
 //
-// Both markers must be present on one line. MISSING_CREDENTIAL alone is a stable
-// machine code an agent could plausibly print while discussing this very failure;
-// pairing it with the provider-route phrase means only dsh's own emission
-// matches. This is exactly the case the auth hold exists for: restarting cannot
-// help until the user supplies a key, and dsh exits 1 immediately, so an
-// unheld session would restart-loop.
-var deepSeekCredentialMarkers = []string{"MISSING_CREDENTIAL", "no API key for provider route"}
+// Only the two CREDENTIAL codes are matched:
+//
+//	MISSING_CREDENTIAL   no key resolved anywhere (also what a blank key yields)
+//	INVALID_CREDENTIAL   a key was found but cannot be used (malformed, or
+//	                     carrying characters no HTTP header can hold)
+//
+// The other declared codes — CONTEXT_WINDOW_EXCEEDED, QUOTA, EMPTY_RESPONSE —
+// are deliberately ABSENT. The auth hold exists for failures a restart cannot
+// fix; a context overflow or a transient quota trip is not that, and sweeping
+// them in here would park sessions that only needed to be re-run. Same reasoning
+// that keeps "socket connection closed" out of the Claude list above.
+//
+// Anchored at line start so a line that merely mentions a code — an agent
+// discussing this failure, a conductor quoting a child — cannot match: it takes
+// dsh's own `dsh: CODE: ` prefix.
+//
+// All three renderings were captured from @deepseek-ai/dsh 0.1.0-rc.6 driven in
+// a sandboxed HOME:
+//
+//	DEEPSEEK_API_KEY unset  -> dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"; store …
+//	DEEPSEEK_API_KEY=""     -> dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"; store …
+//	malformed key           -> dsh: INVALID_CREDENTIAL: llm-deepseek: the API key resolved from DEEPSEEK_API_KEY contains characters no HTTP header can carry; …
+var deepSeekCredentialLine = regexp.MustCompile(`^dsh: (MISSING_CREDENTIAL|INVALID_CREDENTIAL): `)
 
 // scanDeepSeekCredentialLines reports whether the pane tail carries dsh's
 // credential failure. Uses the same last-15-non-empty-lines window as the Claude
@@ -89,21 +111,11 @@ func scanDeepSeekCredentialLines(content string) bool {
 			continue
 		}
 		checked++
-		if containsAll(line, deepSeekCredentialMarkers) {
+		if deepSeekCredentialLine.MatchString(line) {
 			return true
 		}
 	}
 	return false
-}
-
-// containsAll reports whether s contains every one of subs.
-func containsAll(s string, subs []string) bool {
-	for _, sub := range subs {
-		if !strings.Contains(s, sub) {
-			return false
-		}
-	}
-	return true
 }
 
 // IsAuthFailure reports whether this detector's tool would render the given

@@ -1,13 +1,17 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"al.essio.dev/pkg/shellescape"
 )
@@ -160,6 +164,88 @@ func GetDeepSeekCommand() string {
 		return strings.TrimSpace(userConfig.DeepSeek.Command)
 	}
 	return deepSeekBinary
+}
+
+// --- binary identity ---------------------------------------------------------
+//
+// `dsh` is NOT a name DeepSeek coined. Debian and Ubuntu have shipped a `dsh`
+// since long before this harness existed:
+//
+//	Package: dsh — "dancer's shell, or distributed shell"
+//	executes specified command on a group of computers using remote shell
+//	(universe/net, maintainer Junichi Uekawa <dancer@debian.org>)
+//
+// So a bare `dsh` on PATH is not evidence of DeepSeek Harness. Without a check,
+// a host with that package and no harness would report DeepSeek as installed and
+// then run `dsh --profile web` against a REMOTE-EXECUTION tool. The other
+// DeepSeek-named projects this integration declines to support collide on the
+// PACKAGE name and are therefore harmless; this one collides on the COMMAND
+// name, which is the one that actually gets executed.
+
+// deepSeekIdentityMarker is the string DeepSeek Harness prints in its own
+// launcher help. Captured from 0.1.0-rc.6:
+//
+//	dsh: boot a DeepSeek Harness profile — an ordered stack of plugin-bundle
+//	patch layers under your own overrides.
+//
+// Dancer's dsh prints distributed-shell usage and cannot contain it.
+const deepSeekIdentityMarker = "DeepSeek Harness"
+
+// deepSeekIdentityTimeout bounds the identity probe. --help neither boots a
+// profile nor touches the network, so this only guards a wedged or unrelated
+// binary that never returns.
+var deepSeekIdentityTimeout = 3 * time.Second
+
+// deepSeekIdentityCache memoizes the verdict per resolved path for the process
+// lifetime. The probe runs at registry construction (only when
+// show_only_installed_tools is on), and a binary does not change identity under
+// us; re-execing it on every dialog open would be a visible cost for no answer.
+var deepSeekIdentityCache sync.Map // resolved path -> bool
+
+// deepSeekBinaryIsHarness reports whether the binary at path is DeepSeek Harness
+// rather than some other program named dsh.
+//
+// Returns false when the binary cannot be run, times out, or prints help that
+// does not identify itself — "cannot confirm" is reported as "not it", because
+// the whole point is to stop agent-deck from launching an unidentified `dsh`.
+func deepSeekBinaryIsHarness(path string) bool {
+	if cached, ok := deepSeekIdentityCache.Load(path); ok {
+		return cached.(bool)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deepSeekIdentityTimeout)
+	defer cancel()
+	// #nosec G204 -- path is the PATH-resolved default binary name, not runtime
+	// user input, and the only argument is a fixed literal.
+	cmd := exec.CommandContext(ctx, path, "--help")
+	// WaitDelay force-closes the pipes shortly after the context is cancelled so
+	// a wedged binary holding stdout cannot keep Output() blocked past the
+	// timeout (same guard as captureHermesSessionID).
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	ok := err == nil && strings.Contains(string(out), deepSeekIdentityMarker)
+	deepSeekIdentityCache.Store(path, ok)
+	return ok
+}
+
+// DeepSeekInstalled reports whether a usable DeepSeek Harness is on this host.
+//
+// When the configured command is the bare default, the binary's identity is
+// verified (see above). When the user has configured their own command, it is
+// taken at its word: they named that program deliberately, and a wrapper is not
+// obliged to reproduce upstream's help text.
+func DeepSeekInstalled(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return false
+	}
+	if trimmed != deepSeekBinary {
+		return probeInstalled(trimmed)
+	}
+	path, err := lookPathFn(trimmed)
+	if err != nil {
+		return false
+	}
+	return deepSeekBinaryIsHarness(path)
 }
 
 // defaultDeepSeekHome returns ~/.dsh, the upstream default when $DSH_HOME is
@@ -450,6 +536,13 @@ func UnmarshalDeepSeekOptions(data json.RawMessage) (*DeepSeekOptions, error) {
 // keeps `tables.workspaces[].path/sessionIds` shaped the same must not silently
 // disable resume.
 type deepSeekWorkspaceDoc struct {
+	// Global.ArchivedSessionIDs lists sessions the user archived. They stay in
+	// their workspace's sessionIds, so resuming the "newest" entry without
+	// consulting this list can reopen a conversation the user deliberately put
+	// away (PR #1942 adversarial review).
+	Global struct {
+		ArchivedSessionIDs []string `json:"archivedSessionIds"`
+	} `json:"global"`
 	Tables struct {
 		Workspaces map[string]struct {
 			Path       string   `json:"path"`
@@ -457,6 +550,18 @@ type deepSeekWorkspaceDoc struct {
 			UpdatedAt  string   `json:"updatedAt"`
 		} `json:"workspaces"`
 	} `json:"tables"`
+}
+
+// archivedSet indexes the archived ids for lookup.
+func (d *deepSeekWorkspaceDoc) archivedSet() map[string]bool {
+	if len(d.Global.ArchivedSessionIDs) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(d.Global.ArchivedSessionIDs))
+	for _, id := range d.Global.ArchivedSessionIDs {
+		out[strings.TrimSpace(id)] = true
+	}
+	return out
 }
 
 // DiscoverDeepSeekSessionID returns the most recent dsh session ID recorded for
@@ -490,14 +595,17 @@ func DiscoverDeepSeekSessionID(home, workspace string) string {
 	// it booted in, and agent-deck's EffectiveWorkingDir may reach the same
 	// directory through a symlink (multi-repo sessions do exactly that).
 	wantPath := resolvedPathKey(workspace)
+	archived := doc.archivedSet()
 	for _, ws := range doc.Tables.Workspaces {
 		if resolvedPathKey(ws.Path) != wantPath {
 			continue
 		}
-		// sessionIds is append-ordered, so the last entry is the newest.
+		// sessionIds is append-ordered, so the last entry is the newest — but
+		// archiving does not remove it, so walk past any archived entry rather
+		// than reopening a conversation the user put away.
 		for idx := len(ws.SessionIDs) - 1; idx >= 0; idx-- {
 			id := strings.TrimSpace(ws.SessionIDs[idx])
-			if id == "" {
+			if id == "" || archived[id] {
 				continue
 			}
 			if deepSeekSessionDirExists(home, ws.Path, id) {
@@ -608,8 +716,8 @@ func (i *Instance) buildDeepSeekCommand(baseCommand string) string {
 	}
 
 	envPrefix := i.buildEnvSourceCommand()
-	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
-		i.ID, i.Title, i.Tool, shellescape.Quote(sessionProfileEnvValue()))
+	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%s AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
+		i.ID, shellescape.Quote(i.Title), i.Tool, shellescape.Quote(sessionProfileEnvValue()))
 
 	// Passthrough: a custom command from the CLI or config that is not the bare
 	// binary name owns its own flags entirely.
@@ -848,8 +956,8 @@ func (i *Instance) buildDeepSeekResumeCommand() string {
 	}
 
 	envPrefix := i.buildEnvSourceCommand()
-	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
-		i.ID, i.Title, i.Tool, shellescape.Quote(sessionProfileEnvValue()))
+	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%s AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
+		i.ID, shellescape.Quote(i.Title), i.Tool, shellescape.Quote(sessionProfileEnvValue()))
 
 	if trimmed := strings.TrimSpace(i.Command); isDeepSeekPassthroughCommand(trimmed) {
 		return envPrefix + i.deepSeekHomeExport() + trimmed

@@ -93,9 +93,19 @@ func printDeepSeekUsage(w io.Writer) {
 
 // deepSeekStatusReport is the --json payload of `deepseek status`.
 type deepSeekStatusReport struct {
-	Command        string `json:"command"`
-	Resolved       string `json:"resolved_path,omitempty"`
-	Installed      bool   `json:"installed"`
+	Command   string `json:"command"`
+	Resolved  string `json:"resolved_path,omitempty"`
+	Installed bool   `json:"installed"`
+	// IdentityVerified reports that agent-deck actually RAN the identity check
+	// and it passed. It is false for an explicitly configured command, which is
+	// taken at its word and never probed — reporting "verified" there would be a
+	// claim agent-deck did not earn.
+	IdentityVerified bool `json:"identity_verified"`
+	// WrongDsh is set when something named dsh resolved but is NOT DeepSeek
+	// Harness. Reported as its own state rather than folded into
+	// installed:false, because "you have a different dsh" needs a different fix
+	// from "you have no dsh".
+	WrongDsh       bool   `json:"wrong_dsh_on_path,omitempty"`
 	Version        string `json:"version,omitempty"`
 	Home           string `json:"home"`
 	HomeExists     bool   `json:"home_exists"`
@@ -128,8 +138,14 @@ func handleDeepSeekStatus(jsonOut bool) {
 	if fields := strings.Fields(command); len(fields) > 0 {
 		if path, err := exec.LookPath(fields[0]); err == nil {
 			report.Resolved = path
-			report.Installed = true
 			report.Version = deepSeekVersion(path, fields[1:])
+			report.Installed = session.DeepSeekInstalled(command)
+			// The identity check only runs for the bare default name; a
+			// configured command is trusted, not probed.
+			isBareDefault := strings.TrimSpace(command) == "dsh"
+			report.IdentityVerified = isBareDefault && report.Installed
+			// Something answers to the name but is not the harness.
+			report.WrongDsh = isBareDefault && !report.Installed
 		}
 	}
 	if info, err := os.Stat(report.Home); err == nil && info.IsDir() {
@@ -146,12 +162,31 @@ func handleDeepSeekStatus(jsonOut bool) {
 	}
 
 	fmt.Printf("Command:   %s\n", report.Command)
-	if report.Installed {
+	switch {
+	case report.Installed:
 		fmt.Printf("Resolved:  %s\n", report.Resolved)
 		if report.Version != "" {
 			fmt.Printf("Version:   %s\n", report.Version)
 		}
-	} else {
+		if report.IdentityVerified {
+			fmt.Println("Identity:  confirmed as DeepSeek Harness")
+		} else {
+			fmt.Println("Identity:  not checked — [deepseek].command is configured explicitly,")
+			fmt.Println("           so agent-deck takes it at its word")
+		}
+	case report.WrongDsh:
+		// The collision that actually matters: Debian/Ubuntu ship a `dsh`
+		// ("dancer's shell") that executes commands on a group of machines over
+		// remote shell. Launching a session against THAT would be considerably
+		// worse than reporting nothing installed.
+		fmt.Printf("Resolved:  %s\n", report.Resolved)
+		fmt.Println("           ⚠  this is NOT DeepSeek Harness — it did not identify itself.")
+		fmt.Println("           Debian/Ubuntu ship an unrelated `dsh` (\"dancer's shell\", a")
+		fmt.Println("           distributed shell that runs commands on remote machines).")
+		fmt.Println("           agent-deck will not launch it.")
+		fmt.Println("           Install the harness (npm install -g @deepseek-ai/dsh), then")
+		fmt.Println("           point [deepseek].command at it if both are on PATH.")
+	default:
 		fmt.Println("Resolved:  NOT FOUND on PATH")
 		fmt.Println("           Install with: npm install -g @deepseek-ai/dsh")
 	}

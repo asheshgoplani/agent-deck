@@ -31,6 +31,41 @@ Separately, agent-deck already ships a `codewhale` **pattern preset** for a
 third-party TUI that runs DeepSeek *models*. That is a status-detection preset
 for someone else's binary; this page is about the vendor's own harness.
 
+### The collision that actually matters: `dsh`
+
+Those are all collisions on the *package* name, which nothing executes. The one
+on the **command** name is more serious, and it predates DeepSeek Harness by two
+decades:
+
+| | |
+|---|---|
+| Package | `dsh` — *"dancer's shell, or distributed shell"* |
+| Ships in | Debian and Ubuntu (`universe/net`), e.g. `0.25.10-1.6build1` |
+| Does | executes a command on a **group of machines** over remote shell |
+
+A `dsh` on `PATH` is therefore not evidence of DeepSeek Harness. Without a check,
+a host carrying that package and no harness would report DeepSeek as installed
+and then run `dsh --profile web …` against a remote-execution tool.
+
+agent-deck verifies identity before claiming DeepSeek is available: when the
+configured command is the bare default `dsh`, the resolved binary must identify
+itself as DeepSeek Harness (it prints *"boot a DeepSeek Harness profile"* in its
+own `--help`). A command you configure explicitly is taken at its word — a
+wrapper is under no obligation to reproduce upstream's help text.
+
+`agent-deck deepseek status` names the situation directly:
+
+```
+Resolved:  /usr/bin/dsh
+           ⚠  this is NOT DeepSeek Harness — it did not identify itself.
+           Debian/Ubuntu ship an unrelated `dsh` ("dancer's shell", a
+           distributed shell that runs commands on remote machines).
+           agent-deck will not launch it.
+```
+
+If you need both, install the harness and point `[deepseek].command` at its
+absolute path.
+
 ## Command grammar
 
 ```
@@ -144,14 +179,35 @@ comes from pane content plus process liveness:
   pattern, never a busy one: a server that is up must not spin forever.
 * `ctrl+c to interrupt` / `esc to interrupt` — **busy**. Busy is checked before
   prompt, so a working turn is never masked by the ready banner.
-* `MISSING_CREDENTIAL … no API key for provider route` — a **credential
+* `dsh: MISSING_CREDENTIAL: …` or `dsh: INVALID_CREDENTIAL: …` — a **credential
   failure**, which holds the session out of automatic restart paths. Restarting
-  cannot fix a missing key, and `dsh` exits 1 immediately, so an unheld session
-  would restart-loop. Both fragments must appear on one line, so an agent
-  *discussing* the error does not put its own session on hold.
+  cannot fix a key that is absent or unusable, and `dsh` exits 1 immediately, so
+  an unheld session would restart-loop.
+
+  Detection keys on the **error code**, not the message wording. `dsh` renders a
+  terminal error as `dsh: <CODE>: <message>`, and the codes are declared
+  constants upstream, so a reworded message cannot silently disable the hold.
+  The match is anchored at line start, so a line that merely mentions a code —
+  an agent discussing this failure, a conductor quoting a child's pane — does
+  not qualify.
+
+  The other declared codes (`CONTEXT_WINDOW_EXCEEDED`, `QUOTA`,
+  `EMPTY_RESPONSE`) are deliberately **not** held: those are worth re-running,
+  and parking them would be the same mistake as sweeping a dropped socket into
+  the auth hold.
+
+  | Situation | What `dsh` prints |
+  |---|---|
+  | `DEEPSEEK_API_KEY` unset | `dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"; …` |
+  | `DEEPSEEK_API_KEY=""` | same as above |
+  | key present but malformed | `dsh: INVALID_CREDENTIAL: llm-deepseek: the API key resolved from DEEPSEEK_API_KEY contains characters no HTTP header can carry; …` |
 
 A custom profile that installs a terminal app brings its own vocabulary; extend
 detection through `[tools.<name>]` `busy_patterns` / `prompt_patterns`.
+
+Note that `Usage: dsh …` is the **help screen** (printed on `--help`, exit 0),
+not a failure — a real usage error prints `error: a task is required, …` or
+`error: unknown option '…'`. It is deliberately not treated as a waiting state.
 
 ## Prompt delivery — the profiles are not interchangeable
 
@@ -203,6 +259,10 @@ Restart re-boots the same profile, in the same workspace, against the same
 `DSH_HOME`. Because `dsh` persists its own sessions there, no conversation is
 lost by a restart even though the process is new. For the `headless` profile a
 restart replays the recorded task (see above).
+
+Session discovery skips sessions listed in `global.archivedSessionIds`:
+archiving leaves the id in its workspace's `sessionIds`, so "newest entry wins"
+would otherwise reopen a conversation you deliberately put away.
 
 Reopening a *specific* conversation is a separate matter. **Neither shipped
 profile accepts a resume flag in 0.1.0-rc.6** — `dsh --profile headless --help`

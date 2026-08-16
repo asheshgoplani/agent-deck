@@ -13,6 +13,13 @@ const (
 	dshLauncherHelp    = "dsh: boot a DeepSeek Harness profile — an ordered stack of plugin-bundle patch\nlayers under your own overrides."
 	dshHeadlessUsage   = "Usage: dsh --profile headless [options] [task...]"
 	dshMissingCredLine = `dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY in the launching environment`
+	// A key that IS present but unusable. Captured by exporting a
+	// DEEPSEEK_API_KEY containing a space and a newline.
+	dshInvalidCredLine = `dsh: INVALID_CREDENTIAL: llm-deepseek: the API key resolved from DEEPSEEK_API_KEY contains characters no HTTP header can carry; set DEEPSEEK_API_KEY to the raw key alone (the web Models page writes it)`
+	// Codes that are NOT credential failures. A restart or a re-run can fix
+	// these, so they must stay outside the auth hold.
+	dshQuotaLine   = `dsh: QUOTA: llm-deepseek: provider quota exhausted`
+	dshContextLine = `dsh: CONTEXT_WINDOW_EXCEEDED: llm-deepseek: the request exceeds the model context window`
 )
 
 func TestDetectToolFromCommand_DeepSeek(t *testing.T) {
@@ -94,6 +101,73 @@ func TestDetectToolFromContent_DeepSeek_DoesNotStealModelMentions(t *testing.T) 
 	}
 }
 
+// TestDefaultRawPatterns_DeepSeek_HelpIsNotAPrompt pins the review finding that
+// "Usage: dsh" described a state that never occurs: it is the HELP screen (dsh
+// prints it on --help and exits 0), while a real usage failure prints
+// `error: a task is required, …` or `error: unknown option '…'`.
+func TestDefaultRawPatterns_DeepSeek_HelpIsNotAPrompt(t *testing.T) {
+	raw := DefaultRawPatterns("deepseek")
+	if raw == nil {
+		t.Fatal("no deepseek preset")
+	}
+	for _, p := range raw.PromptPatterns {
+		if containsFold(p, "usage") {
+			t.Errorf("prompt pattern %q matches the help screen, not a waiting state", p)
+		}
+	}
+	resolved, err := CompilePatterns(raw)
+	if err != nil {
+		t.Fatalf("CompilePatterns: %v", err)
+	}
+	for _, usage := range []string{
+		"Usage: dsh --profile headless [options] [task...]",
+		`error: a task is required, for example: dsh --profile headless "run the tests"`,
+		"error: unknown option '--bogus'",
+	} {
+		for _, re := range resolved.PromptRegexps {
+			if re.MatchString(usage) {
+				t.Errorf("prompt regex %q matched a non-waiting line %q", re, usage)
+			}
+		}
+		for _, s := range resolved.PromptStrings {
+			if containsFold(usage, s) {
+				t.Errorf("prompt string %q matched a non-waiting line %q", s, usage)
+			}
+		}
+	}
+}
+
+// TestPromptDetector_DeepSeek pins the dedicated detector arm. Without it
+// deepseek fell through to the generic shell detector, which looks for "$ ",
+// "# " and "% " — glyphs a dsh pane never prints.
+func TestPromptDetector_DeepSeek(t *testing.T) {
+	d := NewPromptDetector("deepseek")
+
+	if !d.HasPrompt(dshWebReadyBanner) {
+		t.Error("a served-and-idle dsh web pane is not detected as waiting")
+	}
+	// Busy wins over the banner: the server can still be mid-turn.
+	if d.HasPrompt(dshWebReadyBanner + "\nworking... (esc to interrupt)") {
+		t.Error("a busy pane was reported as waiting")
+	}
+	// A headless run's answer line is not a waiting state.
+	if d.HasPrompt("answered: run the tests") {
+		t.Error("a completed one-shot was reported as waiting")
+	}
+	// The arm ADDS to the previous behaviour rather than replacing it: an
+	// installed interactive profile has a prompt glyph agent-deck cannot know,
+	// so anything the banner does not explain still falls through to the generic
+	// heuristic. Answering a hard "not ready" there would deny the
+	// startup-window fast path forever — strictly worse than having no arm.
+	if !d.HasPrompt("user@host:~/proj$ ") {
+		t.Error("the generic fallback was lost; an installed profile would never be seen as ready")
+	}
+	// ...but busy still wins over that fallback.
+	if d.HasPrompt("user@host:~/proj$ working (esc to interrupt)") {
+		t.Error("busy did not win over the generic fallback")
+	}
+}
+
 func TestDefaultRawPatterns_DeepSeek(t *testing.T) {
 	raw := DefaultRawPatterns("deepseek")
 	if raw == nil {
@@ -132,8 +206,16 @@ func TestDefaultRawPatterns_DeepSeek(t *testing.T) {
 }
 
 func TestIsAuthFailureContent_DeepSeek(t *testing.T) {
-	if !IsAuthFailureContent("deepseek", dshMissingCredLine) {
-		t.Error("dsh's MISSING_CREDENTIAL line is not detected as a credential failure")
+	// Both CREDENTIAL codes hold the session. The adversarial review on #1942
+	// caught that only one of them was covered: an earlier version required a
+	// prose fragment AND the code on one line, which meant a reworded message
+	// would have silently disabled the hold, and INVALID_CREDENTIAL — a real,
+	// reachable failure for a key that is present but malformed — was missed
+	// entirely.
+	for _, line := range []string{dshMissingCredLine, dshInvalidCredLine} {
+		if !IsAuthFailureContent("deepseek", line) {
+			t.Errorf("credential failure not detected:\n%s", line)
+		}
 	}
 
 	// A restart cannot fix a missing key, but it CAN fix these — they must stay
@@ -142,9 +224,17 @@ func TestIsAuthFailureContent_DeepSeek(t *testing.T) {
 		"dsh web: http://127.0.0.1:3080",
 		"dsh: boot failure: ECONNRESET",
 		"Error: socket connection closed",
-		// The code alone, without dsh's own provider-route phrase: an agent
+		// Real dsh error codes that are NOT credential problems: a quota trip
+		// or a context overflow is worth re-running, not parking.
+		dshQuotaLine,
+		dshContextLine,
+		// The code alone, outside dsh's own `dsh: CODE: ` rendering: an agent
 		// discussing this failure must not put its own session on hold.
 		"the run failed with MISSING_CREDENTIAL, let me check the key",
+		"see INVALID_CREDENTIAL in the docs",
+		// Indented or quoted by a conductor relaying a child's pane — the
+		// anchor requires the line to START with dsh's own prefix.
+		"  > dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route",
 	}
 	for _, content := range nonCredential {
 		if IsAuthFailureContent("deepseek", content) {
@@ -155,6 +245,14 @@ func TestIsAuthFailureContent_DeepSeek(t *testing.T) {
 	// Tool-scoped: the same line under another tool is not this tool's verdict.
 	if IsAuthFailureContent("codex", dshMissingCredLine) {
 		t.Error("dsh's credential line was attributed to codex")
+	}
+
+	// The rendering is structural — `dsh: <CODE>: <message>` — so a message
+	// reworded upstream still holds the session. This is the property the
+	// prose-fragment version did not have.
+	reworded := "dsh: MISSING_CREDENTIAL: llm-deepseek: completely different wording here"
+	if !IsAuthFailureContent("deepseek", reworded) {
+		t.Error("a reworded credential message stopped matching; detection must key on the code, not the prose")
 	}
 
 	// Found in a realistic pane tail, not just as the whole content.

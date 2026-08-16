@@ -155,17 +155,19 @@ func (r *Registry) runInstalledProbe() {
 		// explicit [cursor].command override, otherwise accept either stock
 		// entrypoint (`agent` or `cursor`).
 		//
-		// DeepSeek is the same shape of exception: the tool is named for the
-		// vendor and the binary it launches is `dsh`, so probing the bare name
-		// would report it uninstalled on a host that has it and hide it from
-		// every dialog. Probe what the launcher would actually exec — the
-		// configured [deepseek].command, else `dsh`.
+		// DeepSeek is the same shape of exception, twice over. The tool is named
+		// for the vendor and the binary it launches is `dsh`, so probing the
+		// bare name would hide it on a host that has it — and `dsh` is ALSO a
+		// long-standing Debian/Ubuntu command ("dancer's shell", a distributed
+		// shell), so merely finding one on PATH is not evidence of DeepSeek
+		// Harness. DeepSeekInstalled resolves the configured command and, for
+		// the bare default name, confirms the binary identifies itself.
 		ok := false
 		switch name {
 		case "cursor":
 			ok = cursorCommandInstalled()
 		case "deepseek":
-			ok = probeInstalled(GetToolCommand("deepseek"))
+			ok = DeepSeekInstalled(GetToolCommand("deepseek"))
 		default:
 			ok = probeInstalled(name)
 		}
