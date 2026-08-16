@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
 // Issue #1948 — `agent-deck remote drain <remote>`: the conductor-side PULL.
@@ -70,11 +71,41 @@ func handleRemoteDrain(args []string) {
 
 // fetchRemoteRecordsOverSSH is the real transport: the same SSHRunner every
 // other remote command uses, running the remote's read-only `inbox export`.
+//
+// On failure it asks the remote for its VERSION before reporting, because the
+// most likely cause — a remote too old to have `inbox export` — is invisible in
+// the failure itself: that binary rejects `--json` and exits non-zero with a
+// flag error. `remote add` already probes `--version` this way. The extra round
+// trip happens only on a path that has already failed.
 func fetchRemoteRecordsOverSSH(ctx context.Context, name string, rc session.RemoteConfig) ([]session.TransitionNotificationEvent, error) {
 	// #1421: a ControlMaster socket left behind by a dead master hangs the
 	// reuse path forever. `remote sessions` sweeps first for the same reason.
 	session.CleanStaleSSHSockets()
-	return session.NewSSHRunner(name, rc).FetchPendingRecords(ctx)
+	runner := session.NewSSHRunner(name, rc)
+	records, err := runner.FetchPendingRecords(ctx)
+	if err == nil {
+		return records, nil
+	}
+	remoteVersion, versionFound := runner.CheckBinary(ctx)
+	if hint := staleRemoteBinaryHint(name, remoteVersion, versionFound); hint != "" {
+		return nil, fmt.Errorf("%w\n  %s", err, hint)
+	}
+	return nil, err
+}
+
+// staleRemoteBinaryHint explains a failed fetch when the remote's own version
+// accounts for it. It says nothing when the remote is current — a wrong guess
+// about the cause is worse than no guess, which is exactly how the previous
+// stdout-shape diagnosis misfired in both directions.
+func staleRemoteBinaryHint(remoteName, remoteVersion string, found bool) string {
+	if !found {
+		return fmt.Sprintf("No agent-deck answered `--version` on that host. Install it with `agent-deck remote update %s`.", remoteName)
+	}
+	if update.CompareVersions(remoteVersion, Version) < 0 {
+		return fmt.Sprintf("The remote runs v%s, older than this build (v%s). `inbox export` — the read this drain performs — exists only in newer builds; update it with `agent-deck remote update %s`.",
+			remoteVersion, Version, remoteName)
+	}
+	return ""
 }
 
 // remoteDrainResult is the --json shape, for a conductor that consumes the
@@ -193,9 +224,20 @@ func ingestRemoteRecords(remoteName, targetID string, records []session.Transiti
 	stored = make([]session.TransitionNotificationEvent, 0, len(records))
 	for _, ev := range records {
 		ev.SourceRemote = remoteName
+		// Review round 2 (blocking): a child id is caller-chosen and only unique
+		// on the host that minted it, so two hosts running the same named task
+		// mint the same id. Everything downstream keys identity on the child id
+		// — collapseLastWins, TurnFingerprint, EventFingerprint, the sweeps — so
+		// unscoped ids make one host's record silently destroy the other's while
+		// the drain reports "1 new". Namespacing here fixes all of them at once,
+		// in the repo's existing `<remote>:<session>` spelling.
+		ev.ChildSessionID = session.RemoteScopedChildID(remoteName, ev.ChildSessionID)
+		// The remote derived its TurnFingerprint from the UNSCOPED id, so it
+		// carries the same collision into the consumed-turn ledger. Re-derive it
+		// from the scoped record.
+		ev.TurnFingerprint = session.TurnFingerprint(ev)
 		// The record now belongs to THIS conductor's inbox; the remote's own
-		// target id is meaningless on this machine. Neither field feeds the
-		// fingerprints, so re-stamping cannot affect idempotence.
+		// target id is meaningless on this machine.
 		ev.TargetSessionID = targetID
 		ev.TargetKind = "parent"
 		stored = append(stored, ev)
