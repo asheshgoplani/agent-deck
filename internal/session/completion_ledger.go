@@ -82,13 +82,8 @@ func ReadLedgerEntry(childID string) (CompletionLedgerEntry, bool) {
 	if err != nil {
 		return CompletionLedgerEntry{}, false
 	}
-	data, err := os.ReadFile(path)
-	if err != nil || len(data) == 0 {
-		return CompletionLedgerEntry{}, false
-	}
-	var e CompletionLedgerEntry
-	if err := json.Unmarshal(data, &e); err != nil {
-		return CompletionLedgerEntry{}, false
-	}
-	return e, true
+	// readLedgerFile (inbox_export.go) is the single parse of this format,
+	// shared with the #1948 export walk which addresses the same files by
+	// directory entry instead of by child id.
+	return readLedgerFile(path)
 }

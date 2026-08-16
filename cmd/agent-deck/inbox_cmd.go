@@ -120,16 +120,23 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 	if len(args) > 0 && args[0] == "drain" {
 		return runInboxDrain(stdout, args[1:], explicitProfile)
 	}
+	if len(args) > 0 && args[0] == "export" {
+		return runInboxExport(stdout, args[1:])
+	}
 
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(stdout, "Usage: agent-deck inbox <session-id>")
 		fmt.Fprintln(stdout, "       agent-deck inbox drain [--json] <session-id>")
+		fmt.Fprintln(stdout, "       agent-deck inbox export [--json]")
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, "Drain pending completion events from the parent's durable outbox.")
 		fmt.Fprintln(stdout, "The `drain` form (issue #1225) collapses last-wins per child and")
 		fmt.Fprintln(stdout, "dedups re-delivery via turn_fingerprint; run it first on every")
 		fmt.Fprintln(stdout, "heartbeat. Reading clears the inbox.")
+		fmt.Fprintln(stdout, "The `export` form (issue #1948) READS this host's completion and")
+		fmt.Fprintln(stdout, "transition records without consuming anything; it is what a")
+		fmt.Fprintln(stdout, "conductor on another machine runs over ssh via `remote drain`.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return err
@@ -360,13 +367,64 @@ func resolveSelfSessionID() (string, error) {
 		"(set AGENTDECK_INSTANCE_ID, run inside an agent-deck tmux session, or pass an explicit id)")
 }
 
+// runInboxExport is the issue #1948 remote-side READ: it prints this host's
+// completion and transition records WITHOUT consuming them, so a conductor on
+// another machine can pull them over ssh (`agent-deck remote drain <remote>`)
+// and write them into its own inbox.
+//
+// Non-destructive is the contract, not a side effect: two conductors draining
+// this host must both get the records, and this host's own conductor must still
+// find its inbox exactly as it left it.
+func runInboxExport(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("inbox export", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "emit the records as a JSON array")
+	fs.Usage = func() {
+		fmt.Fprintln(stdout, "Usage: agent-deck inbox export [--json]")
+		fmt.Fprintln(stdout, "Print this host's completion/transition records without consuming them.")
+	}
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return fmt.Errorf("inbox export takes no positional arguments")
+	}
+
+	records, err := session.ExportPendingRecords()
+	if err != nil {
+		return fmt.Errorf("export inbox records: %w", err)
+	}
+
+	if *asJSON {
+		if records == nil {
+			records = []session.TransitionNotificationEvent{}
+		}
+		return json.NewEncoder(stdout).Encode(records)
+	}
+
+	if len(records) == 0 {
+		fmt.Fprintln(stdout, "No records.")
+		return nil
+	}
+	printInboxEventLines(stdout, records)
+	fmt.Fprintf(stdout, "\nExported %d record(s). Nothing was consumed.\n", len(records))
+	return nil
+}
+
 func printInboxEvents(stdout io.Writer, events []session.TransitionNotificationEvent) {
 	if len(events) == 0 {
 		fmt.Fprintln(stdout, "No pending events.")
 		return
 	}
+	printInboxEventLines(stdout, events)
+	fmt.Fprintf(stdout, "\nDrained %d event(s).\n", len(events))
+}
+
+// printInboxEventLines renders one line per event. Shared by the drain and the
+// #1948 export so the two never drift into two spellings of one record.
+func printInboxEventLines(stdout io.Writer, events []session.TransitionNotificationEvent) {
 	for _, ev := range events {
-		fmt.Fprintf(stdout, "%s  child=%s title=%q profile=%s %s→%s\n",
+		fmt.Fprintf(stdout, "%s  child=%s title=%q profile=%s %s→%s",
 			ev.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
 			ev.ChildSessionID,
 			ev.ChildTitle,
@@ -374,6 +432,14 @@ func printInboxEvents(stdout io.Writer, events []session.TransitionNotificationE
 			ev.FromStatus,
 			ev.ToStatus,
 		)
+		if ev.Kind != "" {
+			fmt.Fprintf(stdout, " kind=%s status=%s", ev.Kind, ev.DoneStatus)
+		}
+		// #1948: a pulled record's host is the one fact a cross-machine record
+		// would otherwise lose.
+		if ev.SourceRemote != "" {
+			fmt.Fprintf(stdout, " remote=%s", ev.SourceRemote)
+		}
+		fmt.Fprintln(stdout)
 	}
-	fmt.Fprintf(stdout, "\nDrained %d event(s).\n", len(events))
 }
