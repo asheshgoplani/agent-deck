@@ -23,6 +23,19 @@ var tmuxInstallDirs = []string{
 // a tmux binary, when tmux is not already resolvable on path. It never
 // duplicates a dir already present and is a no-op when tmux is resolvable or no
 // candidate has it. Pure (deps injected) so it is unit-testable.
+//
+// The candidate dir is APPENDED, never prepended, and that is load-bearing.
+// The mutated PATH is inherited by everything agent-deck spawns afterwards —
+// tmux, but also the agent CLIs launched into sessions and the ps/pgrep probes.
+// Prepending a broad dir like /usr/bin would put it ahead of a user's own
+// resolution order inside those sessions, so a version-managed node, a
+// ~/.local/bin python, or their own agent CLI would silently resolve to a
+// different binary than it does in their shell.
+//
+// Appending cannot do that: this function only runs when tmux does not resolve
+// at all, so the appended dir wins only for names that were already
+// unresolvable. That makes `tmux` work without reordering anything that
+// already worked.
 func resolveTmuxPATH(path string, tmuxResolvable bool, candidates []string, hasTmux func(dir string) bool) string {
 	if tmuxResolvable {
 		return path
@@ -38,7 +51,7 @@ func resolveTmuxPATH(path string, tmuxResolvable bool, candidates []string, hasT
 		if path == "" {
 			return dir
 		}
-		return dir + string(os.PathListSeparator) + path
+		return path + string(os.PathListSeparator) + dir
 	}
 	return path
 }

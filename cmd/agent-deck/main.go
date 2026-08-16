@@ -4118,7 +4118,9 @@ func ensureTmuxInPathOrExit() {
 // (common when the Go binary inherits a minimal PATH from a desktop launcher,
 // systemd unit, or non-login shell), it probes well-known installation
 // directories. When tmux is found via fallback, the containing directory is
-// prepended to PATH so every subsequent exec.Command("tmux", …) succeeds.
+// appended to PATH so every subsequent exec.Command("tmux", …) succeeds
+// without reordering resolution for anything that already resolved — see
+// resolveTmuxPATH for why the direction matters.
 func ensureTmuxInPath() error {
 	ensureTmuxOnPath()
 	if _, err := exec.LookPath("tmux"); err != nil {
