@@ -169,6 +169,112 @@ func TestAuthTokenIsNeverPersistedToWebStorage(t *testing.T) {
 	}
 }
 
+// TestAppScriptsUseTheSharedAuthenticatedFetch is the regression gate for the
+// MCP pane breaking against an authenticated server.
+//
+// The bearer token exists only in authTokenSignal, so a call site that
+// hand-rolls fetch() silently omits Authorization and 401s the moment the
+// server runs with --token or --token-file. McpPane.js shipped exactly that:
+// a private copy of the fetch helper that never grew the header, which made
+// the whole MCP pane unusable through the UI while every server-side test
+// passed. AppShell.js and SettingsPanel.js carried the same shape.
+//
+// Rule: inside static/app, only api.js may call fetch() without authHeaders().
+// The check reads the whole balanced call expression rather than one line,
+// because the call that actually broke was `fetch(path, {` — a variable URL
+// spread over several lines, which a line-oriented or URL-matching check walks
+// straight past. (sw.js is a service worker outside static/app; it proxies
+// requests it did not originate and is correctly out of scope.)
+func TestAppScriptsUseTheSharedAuthenticatedFetch(t *testing.T) {
+	var scripts []string
+	err := fs.WalkDir(embeddedStaticFiles, "static/app", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ".js") {
+			scripts = append(scripts, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk app scripts: %v", err)
+	}
+	if len(scripts) == 0 {
+		t.Fatal("no app scripts found; the guard would pass vacuously")
+	}
+
+	checked := 0
+	for _, path := range scripts {
+		// api.js is the shared helper itself: the one place allowed to call
+		// fetch() directly, because it is what adds the header.
+		if path == "static/app/api.js" {
+			continue
+		}
+		body, err := embeddedStaticFiles.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		src := string(body)
+		for _, call := range fetchCallExpressions(src) {
+			checked++
+			if !strings.Contains(call.args, "authHeaders") {
+				t.Errorf("%s:%d calls fetch() without authHeaders(); it will 401 against a "+
+					"server started with --token/--token-file:\n\t%s",
+					path, 1+strings.Count(src[:call.offset], "\n"), strings.TrimSpace(call.args))
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no fetch() call sites found outside api.js; the guard has gone stale")
+	}
+}
+
+type fetchCall struct {
+	offset int
+	args   string
+}
+
+// fetchCallExpressions returns the balanced argument text of every fetch(...)
+// call in src, skipping `apiFetch(`/`jsonFetch(`-style wrappers whose name
+// merely ends in "fetch".
+func fetchCallExpressions(src string) []fetchCall {
+	var out []fetchCall
+	for i := 0; i+6 <= len(src); i++ {
+		if src[i:i+6] != "fetch(" {
+			continue
+		}
+		// Require a non-identifier character before "fetch" so apiFetch( and
+		// jsonFetch( (which do carry the header, or are the helper itself)
+		// are not double-counted.
+		if i > 0 && isJSIdentByte(src[i-1]) {
+			continue
+		}
+		depth, j := 0, i+5
+		for ; j < len(src); j++ {
+			switch src[j] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			if depth == 0 {
+				break
+			}
+		}
+		if j >= len(src) {
+			break
+		}
+		out = append(out, fetchCall{offset: i, args: src[i : j+1]})
+		i = j
+	}
+	return out
+}
+
+func isJSIdentByte(b byte) bool {
+	return b == '_' || b == '$' ||
+		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
 // TestAddonCanvasDeleted is the regression gate for Phase 8 / Plan 03
 // (PERF-C). xterm v6 never references the canvas renderer, so the 94 KB
 // vendor file was dead weight. This test ensures the file stays deleted:

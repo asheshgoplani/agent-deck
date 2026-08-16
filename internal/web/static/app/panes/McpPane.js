@@ -14,19 +14,36 @@ import { useEffect, useState, useCallback } from 'preact/hooks'
 import { menuModelSignal } from '../dataModel.js'
 import { selectedIdSignal, mutationsEnabledSignal } from '../state.js'
 import { addToast } from '../Toast.js'
+import { authHeaders } from '../api.js'
 
 const SCOPES = ['local', 'global', 'user']
 
+// Whether a session's tool has any MCP store is decided server-side and
+// delivered as `mcpSupported` on the menu session (see MenuSession in
+// internal/web/session_data_service.go). Do NOT reimplement the predicate
+// here: session.ToolSupportsMCPManager is config-driven, so a user tool
+// declaring compatible_with = "claude" is supported even though its name is
+// not in any hardcoded list.
+function toolSupportsMCP(session) {
+  return session.mcpSupported !== false
+}
+
+// jsonFetch keeps this pane's 204 handling and error shaping, but the headers
+// (and therefore the bearer token) come from the shared helper. Building them
+// locally is what made every MCP call 401 against an authenticated server.
 async function jsonFetch(path, opts = {}) {
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
     ...opts,
+    headers: authHeaders(opts.headers),
   })
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`
     try {
       const body = await res.json()
-      if (body && body.error) msg = body.error
+      // The API error envelope is {error: {code, message}}; reading
+      // body.error directly rendered "[object Object]" and hid the reason.
+      const apiMsg = body && body.error && body.error.message
+      if (apiMsg) msg = apiMsg
     } catch (_) { /* ignore */ }
     throw new Error(msg)
   }
@@ -46,7 +63,10 @@ export function McpPane() {
   const [error, setError] = useState('')
 
   const refresh = useCallback(async () => {
-    if (!session) return
+    // Hooks must run unconditionally, so guard here rather than relying on the
+    // unsupported-tool early return below: without this the pane would fire a
+    // request the server is obliged to refuse.
+    if (!session || !toolSupportsMCP(session)) return
     setLoading(true)
     setError('')
     try {
@@ -126,6 +146,23 @@ export function McpPane() {
           <div class="title" style="font-size: 16px;">MCP Manager</div>
           <div style="font-family: var(--mono); font-size: 12px; color: var(--text-dim); padding-top: 8px;">
             Select a session in the sidebar to manage MCPs.
+          </div>
+        </div>
+      </div>
+    `
+  }
+
+  // Say so rather than rendering a catalog whose buttons the server will
+  // refuse. The tool decides which MCP store exists; a shell session has none.
+  if (!toolSupportsMCP(session)) {
+    return html`
+      <div class="costs" data-testid="mcp-pane">
+        <div class="chart-card" style="text-align: center; padding: 48px 24px;">
+          <div class="title" style="font-size: 16px;">MCP Manager</div>
+          <div data-testid="mcp-unsupported-tool"
+               style="font-family: var(--mono); font-size: 12px; color: var(--text-dim); padding-top: 8px;">
+            MCP management is not available for ${session.tool || 'this'} sessions.
+            Supported tools: Claude, Codex, Gemini, Cursor, OpenCode.
           </div>
         </div>
       </div>

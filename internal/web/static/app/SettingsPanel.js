@@ -3,6 +3,7 @@
 import { html } from 'htm/preact'
 import { useState, useEffect } from 'preact/hooks'
 import { settingsSignal } from './state.js'
+import { authHeaders } from './api.js'
 
 export function SettingsPanel() {
   const [error, setError] = useState(null)
@@ -10,7 +11,7 @@ export function SettingsPanel() {
 
   useEffect(() => {
     if (settings) return
-    fetch('/api/settings')
+    fetch('/api/settings', { headers: authHeaders() })
       .then(r => { if (!r.ok) throw new Error('Settings request failed: ' + r.status); return r.json() })
       .then(data => { settingsSignal.value = data })
       .catch(err => setError(err.message || 'Failed to load settings'))

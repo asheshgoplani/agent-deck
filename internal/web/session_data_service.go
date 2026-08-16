@@ -57,13 +57,19 @@ type MenuGroup struct {
 
 // MenuSession contains metadata for a session item.
 type MenuSession struct {
-	ID           string         `json:"id"`
-	Title        string         `json:"title"`
-	Tool         string         `json:"tool"`
-	ModelID      string         `json:"modelId,omitempty"`
-	Model        string         `json:"model,omitempty"`
-	ModelVersion string         `json:"modelVersion,omitempty"`
-	CanFork      bool           `json:"canFork"`
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Tool         string `json:"tool"`
+	ModelID      string `json:"modelId,omitempty"`
+	Model        string `json:"model,omitempty"`
+	ModelVersion string `json:"modelVersion,omitempty"`
+	CanFork      bool   `json:"canFork"`
+	// MCPSupported mirrors session.ToolSupportsMCPManager for this session's
+	// tool. It is computed server-side on purpose: the predicate is
+	// config-driven (a user tool can declare compatible_with = "claude"), so a
+	// duplicated client-side list would be wrong for custom tools and would
+	// drift. The web MCP pane reads this instead of guessing from the name.
+	MCPSupported bool           `json:"mcpSupported"`
 	Status       session.Status `json:"status"`
 	// Substate is the additive Honest-Status-v2 refinement of Status
 	// (e.g. "model-unavailable", "auth-401", "idle-at-empty-prompt"). It
@@ -300,6 +306,7 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		Model:              modelInfo.Model,
 		ModelVersion:       modelInfo.Version,
 		CanFork:            inst.CanFork(),
+		MCPSupported:       session.ToolSupportsMCPManager(inst.GetToolThreadSafe()),
 		Status:             inst.GetStatusThreadSafe(),
 		Substate:           string(inst.CachedSubstate()),
 		GroupPath:          inst.GroupPath,
