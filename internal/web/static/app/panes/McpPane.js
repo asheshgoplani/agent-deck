@@ -35,6 +35,53 @@ function toolSupportsMCP(session) {
   return session.mcpSupported !== false
 }
 
+// createRefreshGate decides, for every async refresh, two things: may this
+// refresh start, and may its result still be applied?
+//
+// A plain session-id check answers neither fully. It cannot reject a STALE
+// response for the session the user is still on: two refreshes for the same
+// session (a switch and an attach, say) both pass the id check, so whichever
+// resolves last wins even when it is the older request, reinstating a
+// pre-mutation scope list.
+//
+// The tokens are keyed BY SESSION, and begin() refuses — without touching any
+// token — when the refresh belongs to a session that is no longer active. A
+// single shared counter would be worse than none here: an attach on session A
+// that resolves after the user switches to B calls refresh() for A, and a
+// shared counter would advance past B's in-flight token, discarding B's
+// legitimate response and leaving B with empty scopes and the spinner stuck on.
+// That is a stale refresh POISONING a newer session's, which is a different
+// failure from a stale response merely winning, and is not fixed by the same
+// check. Checking before advancing, and keying per session, prevents both.
+//
+// Exported for tests: rendering preact components under vitest is broken in
+// this repo (see unit/archivedPane.test.js), so the logic is asserted directly.
+export function createRefreshGate() {
+  const tokens = new Map()
+  return {
+    // begin returns a token, or null when this refresh must not run at all.
+    // Callers that get null must return immediately: no fetch, no loading
+    // state, no token consumed.
+    begin(forSessionId, activeSessionId) {
+      if (!forSessionId || forSessionId !== activeSessionId) return null
+      const token = (tokens.get(forSessionId) || 0) + 1
+      tokens.set(forSessionId, token)
+      return token
+    },
+    // mayApply is true only for the newest refresh of the still-active session.
+    mayApply(forSessionId, activeSessionId, token) {
+      if (token == null || forSessionId !== activeSessionId) return false
+      return tokens.get(forSessionId) === token
+    },
+    // forget drops a session's token so the map cannot grow for the lifetime of
+    // the tab. A refresh still in flight for that session then fails mayApply,
+    // which is correct: the user is no longer looking at it.
+    forget(sessionId) {
+      tokens.delete(sessionId)
+    },
+  }
+}
+
 // jsonFetch keeps this pane's 204 handling and error shaping, but the headers
 // (and therefore the bearer token) come from the shared helper. Building them
 // locally is what made every MCP call 401 against an authenticated server.
@@ -71,10 +118,9 @@ export function McpPane() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  // Monotonic request id. Only the newest in-flight refresh may write state:
-  // a slower earlier request landing later would otherwise overwrite the newer
-  // session's answer with the previous session's.
-  const refreshSeq = useRef(0)
+  // One gate per mounted pane; see createRefreshGate.
+  const gateRef = useRef(null)
+  if (gateRef.current === null) gateRef.current = createRefreshGate()
 
   const refresh = useCallback(async () => {
     // Hooks must run unconditionally, so guard here rather than relying on the
@@ -82,11 +128,10 @@ export function McpPane() {
     // request the server is obliged to refuse.
     if (!session || !toolSupportsMCP(session)) return
     const forId = session.id
-    const seq = ++refreshSeq.current
-    // Still the current request AND still the selected session. Both checks
-    // are needed: the seq guard drops an out-of-order response, the id guard
-    // drops the last response for a session the user has already left.
-    const isCurrent = () => refreshSeq.current === seq && selectedIdSignal.value === forId
+    // Asked BEFORE any shared state is touched. A refresh for a session the
+    // user has already left must not consume a token, set loading, or fetch.
+    const token = gateRef.current.begin(forId, selectedIdSignal.value)
+    if (token === null) return
     setLoading(true)
     setError('')
     try {
@@ -94,7 +139,7 @@ export function McpPane() {
         jsonFetch('/api/mcps'),
         jsonFetch(`/api/sessions/${encodeURIComponent(forId)}/mcps`),
       ])
-      if (!isCurrent()) return
+      if (!gateRef.current.mayApply(forId, selectedIdSignal.value, token)) return
       setCatalog(catalogResp.mcps || [])
       setAttached({
         local: attachedResp.local || [],
@@ -105,10 +150,12 @@ export function McpPane() {
       // Fall back to every scope only if an older server omits the field.
       setScopes(attachedResp.scopes && attachedResp.scopes.length ? attachedResp.scopes : ALL_SCOPES)
     } catch (err) {
-      if (!isCurrent()) return
+      if (!gateRef.current.mayApply(forId, selectedIdSignal.value, token)) return
       setError(err.message)
     } finally {
-      if (isCurrent()) setLoading(false)
+      // Only the newest refresh owns the spinner; an older one clearing it
+      // would show "done" while the current request is still in flight.
+      if (gateRef.current.mayApply(forId, selectedIdSignal.value, token)) setLoading(false)
     }
   }, [session && session.id])
 
@@ -119,7 +166,16 @@ export function McpPane() {
   // Claude MCP globally when it belonged in the project (which silently puts
   // it in the wrong store). Empty scopes also disables the Attach buttons
   // until the server has said what this tool actually supports.
+  const previousSessionRef = useRef(session && session.id)
   useEffect(() => {
+    const current = session && session.id
+    // Release the token of the session being left, so the map cannot grow for
+    // the lifetime of the tab. Only the session we are LEAVING is forgotten;
+    // the incoming session's token, if a refresh already began for it, stays.
+    const previous = previousSessionRef.current
+    if (previous && previous !== current) gateRef.current.forget(previous)
+    previousSessionRef.current = current
+
     setAttached(EMPTY_ATTACHED)
     setScopes([])
     setError('')

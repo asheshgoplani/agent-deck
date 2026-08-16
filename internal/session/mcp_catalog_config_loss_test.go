@@ -8,23 +8,28 @@ import (
 	"testing"
 )
 
-// Regression tests for issue #1956.
+// Regression tests for issue #1956, at the session layer.
 //
-// WriteProjectMCP performs a read-modify-write over the user's Claude
-// configuration — a file agent-deck does not own, carrying the user's other
-// project entries and unrelated settings. Before the fix, a read failure or a
-// parse failure was treated as "there is no configuration": the document was
-// initialised to an empty map and WRITTEN BACK, erasing everything else.
+// SCOPE NOTE (rebase onto #1957): #1957 landed the fail-closed read and a
+// drop-guard on the write, and covers the MALFORMED-JSON shape thoroughly at
+// the web layer — internal/web/handlers_mcps_corrupt_config_test.go walks every
+// scope × operation and asserts the file is byte-identical. That shape is
+// deliberately NOT duplicated here.
 //
-// Every test below asserts the same two things, because either one alone is
-// insufficient:
+// What remains uncovered there, and is pinned here:
 //
-//  1. the operation reports an error (a silent success teaches the caller the
-//     configuration is fine), and
-//  2. the file on disk is byte-for-byte unchanged (an error return after the
-//     damage is done is no better than no error at all).
+//   - a file that exists but cannot be READ (permission / transient I/O). A
+//     parse guard does not fire when the parse never happens.
+//   - a root that is not a JSON object.
+//   - a `projects` value that is not an object. #1957's drop-guard compares
+//     top-level KEY SETS, so replacing the VALUE of an existing key is invisible
+//     to it, and every project entry is still silently lost.
+//   - concurrent writers. Atomic replacement and a drop-guard both operate on a
+//     single write; neither makes a read-modify-write safe against another
+//     writer that read the same starting document.
 //
-// All four fail against fb6cf40a.
+// Each asserts the same two things, because either alone is insufficient: the
+// operation must report an error, AND the file must be byte-for-byte unchanged.
 
 // seededClaudeConfig is a realistic user configuration: three project entries,
 // only one of which is the project being attached to, plus unrelated top-level
@@ -97,24 +102,14 @@ func assertRefusedAndUnchanged(t *testing.T, configFile string, before []byte, e
 	}
 }
 
-// TestWriteProjectMCP_MalformedJSONIsNotAnEmptyConfig covers the file being
-// temporarily malformed — a truncated or half-written document. Before the fix
-// the parse error was swallowed and the truncated file was replaced by a
-// document containing only the attached MCP.
-func TestWriteProjectMCP_MalformedJSONIsNotAnEmptyConfig(t *testing.T) {
-	configFile := claudeConfigSandbox(t)
-	truncated := []byte(seededClaudeConfig[:len(seededClaudeConfig)/2])
-	if err := os.WriteFile(configFile, truncated, 0o600); err != nil {
-		t.Fatalf("seed malformed config: %v", err)
-	}
-
-	err := WriteProjectMCP(attachProject, []string{"ctx7"})
-	assertRefusedAndUnchanged(t, configFile, truncated, err)
-}
-
-// TestWriteProjectMCP_NonObjectRootIsNotAnEmptyConfig covers a root that parses
-// but is not an object. json.Unmarshal into a map errors for an array, and
-// returns a nil map WITHOUT an error for `null` — so both shapes are checked.
+// TestWriteProjectMCP_NonObjectRootIsNotAnEmptyConfig covers a root that is not
+// a JSON object. json.Unmarshal into a map reports an error for an array or a
+// string, so these are the shapes a parse guard catches.
+//
+// A literal `null` root is deliberately NOT asserted here: it unmarshals into a
+// nil map WITHOUT an error, and #1957 chose to treat that as an empty document
+// and write. A file containing `null` holds no user data, so nothing is lost by
+// that choice; it is flagged in the PR rather than reversed here.
 func TestWriteProjectMCP_NonObjectRootIsNotAnEmptyConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -122,7 +117,6 @@ func TestWriteProjectMCP_NonObjectRootIsNotAnEmptyConfig(t *testing.T) {
 	}{
 		{"array root", `["not", "an", "object"]`},
 		{"string root", `"just a string"`},
-		{"null root", `null`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			configFile := claudeConfigSandbox(t)
@@ -137,11 +131,41 @@ func TestWriteProjectMCP_NonObjectRootIsNotAnEmptyConfig(t *testing.T) {
 	}
 }
 
+// TestWriteProjectMCP_NonObjectNestedValueIsNotAnEmptyConfig covers a document
+// that parses fine but whose `projects` value is not an object.
+//
+// This is the gap a top-level drop-guard cannot see. The guard compares the KEY
+// SETS of the old and new documents; "projects" is present in both, so replacing
+// its value with a fresh map containing only the attached project reads as no
+// dropped keys — while every project entry the user had is gone.
+func TestWriteProjectMCP_NonObjectNestedValueIsNotAnEmptyConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"projects is a string", `{"numStartups": 412, "projects": "corrupted by a bad merge"}`},
+		{"projects is an array", `{"numStartups": 412, "projects": [{"/home/user/projects/beta": {}}]}`},
+		{"project entry is a string", `{"projects": {"/home/user/projects/alpha": "corrupted"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			configFile := claudeConfigSandbox(t)
+			body := []byte(tc.body)
+			if err := os.WriteFile(configFile, body, 0o600); err != nil {
+				t.Fatalf("seed config: %v", err)
+			}
+
+			err := WriteProjectMCP(attachProject, []string{"ctx7"})
+			assertRefusedAndUnchanged(t, configFile, body, err)
+		})
+	}
+}
+
 // TestWriteProjectMCP_UnreadableFileIsNotAnEmptyConfig covers the transient I/O
 // failure named in the issue, modelled as a permission error — the one I/O
 // failure a test can produce deterministically. The config here is perfectly
 // valid; only the read fails, which is exactly the case where rebuilding from
-// an empty document destroys the most.
+// an empty document destroys the most, and the case a parse guard never sees
+// because the parse never happens.
 func TestWriteProjectMCP_UnreadableFileIsNotAnEmptyConfig(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: mode 0000 does not deny reads")
@@ -175,18 +199,22 @@ func TestWriteProjectMCP_UnreadableFileIsNotAnEmptyConfig(t *testing.T) {
 	}
 }
 
-// TestWriteProjectMCP_ConcurrentWritesKeepEveryEntry is the web-plus-TUI race.
+// TestWriteProjectMCP_ConcurrentWritesKeepEveryEntry is the web-plus-TUI race
+// the issue calls for, and the one failure mode neither atomic replacement nor
+// a drop-guard addresses.
 //
-// Atomic file replacement does not make a read-modify-write safe: two writers
-// that each read, modify and rename produce last-writer-wins, and the loser's
-// project entry is gone. The web handler (internal/web/handlers_mcps.go) and
-// the TUI apply path (internal/session/instance.go) both land here, so this is
-// two goroutines in one binary as well as two processes.
+// Two writers each read, modify and replace. The rename is atomic and the key
+// sets match — both documents have "projects" — so the drop-guard sees nothing
+// wrong while the loser's project entry is silently gone. Only a lock held
+// across the whole read-modify-write prevents it.
+//
+// The web handler (internal/web/handlers_mcps.go) and the TUI apply path
+// (internal/session/instance.go) both land here, so this is two goroutines in
+// one binary as well as two processes.
 //
 // Rounds are repeated because the unlocked version loses an entry
-// probabilistically; one round is enough to fail it most of the time, and the
-// repeat makes that reliable without making the locked version any slower than
-// a few milliseconds.
+// probabilistically; the repeat makes the failure reliable without making the
+// locked version take more than a few milliseconds.
 func TestWriteProjectMCP_ConcurrentWritesKeepEveryEntry(t *testing.T) {
 	configFile := claudeConfigSandbox(t)
 
