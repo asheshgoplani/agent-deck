@@ -1740,8 +1740,19 @@ func softKillProcessChecked(budget context.Context, pid int, identity string, gr
 // It sends SIGTERM to the entire group (-pgid), polls every 5ms up to grace
 // for the group to drain, and escalates to SIGKILL if any process in the
 // group is still alive at the deadline. Returns true iff SIGKILL was
-// ultimately used. An empty group (ESRCH on initial SIGTERM) is treated as
-// already-dead and returns false without escalation.
+// ultimately used.
+//
+// A SIGTERM the kernel refuses ends the attempt; nothing is escalated and
+// nothing is reported as killed:
+//
+//   - ESRCH — the group is empty, i.e. already dead.
+//   - EPERM — not one member of that group is ours. This is what a recycled
+//     pgid looks like from here. The old code read it as a reason to try
+//     harder and sent a group-wide SIGKILL, which is the one response that
+//     cannot help: kill(2)'s permission check is identical for both signals,
+//     so the escalation either fails the same way or lands on a group this
+//     process has no business signalling. It then returned true, reporting a
+//     kill that never happened.
 //
 // Used by ControlPipe.Close() to tear down the agent-deck-owned
 // `tmux -C attach-session` child without racing tmux's control-mode
@@ -1752,13 +1763,18 @@ func softKillProcessChecked(budget context.Context, pid int, identity string, gr
 // only covered killStaleControlClients (the post-restart cleanup path);
 // the active-pipe close path still SIGKILL'd. This helper closes that gap.
 func softKillProcessGroup(pgid int, grace time.Duration) bool {
-	if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil {
-		if errors.Is(err, syscall.ESRCH) {
-			return false
-		}
-		// Permission or other error — fall back to SIGKILL on the group.
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		return true
+	return softKillProcessGroupWith(syscall.Kill, pgid, grace)
+}
+
+// softKillProcessGroupWith is the injectable core of softKillProcessGroup. kill
+// is syscall.Kill in production; a test passes its own so the errno branches can
+// be driven without a group this process genuinely may not signal (which needs a
+// second uid, i.e. a host the CI runners do not provide).
+func softKillProcessGroupWith(kill func(pid int, sig syscall.Signal) error, pgid int, grace time.Duration) bool {
+	if err := kill(-pgid, syscall.SIGTERM); err != nil {
+		// ESRCH (empty group) or EPERM (not ours) — either way there is
+		// nothing here this process both may and should kill.
+		return false
 	}
 
 	const pollInterval = 5 * time.Millisecond
@@ -1767,12 +1783,12 @@ func softKillProcessGroup(pgid int, grace time.Duration) bool {
 		time.Sleep(pollInterval)
 		// kill(-pgid, 0) returns ESRCH only when no process in the group
 		// remains; until then it returns nil (some member alive or zombie).
-		if err := syscall.Kill(-pgid, 0); err != nil && errors.Is(err, syscall.ESRCH) {
+		if err := kill(-pgid, 0); err != nil && errors.Is(err, syscall.ESRCH) {
 			return false
 		}
 	}
 
-	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	_ = kill(-pgid, syscall.SIGKILL)
 	return true
 }
 

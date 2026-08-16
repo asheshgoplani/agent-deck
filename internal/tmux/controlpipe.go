@@ -42,8 +42,12 @@ type ControlPipe struct {
 	sessionName string
 	socketName  string // tmux -L value; "" means user's default server
 	cmd         *exec.Cmd
-	stdin       io.WriteCloser
-	stdout      io.ReadCloser
+	// pgid is the process group cmd was given at spawn, captured while it was
+	// certainly unreaped. 0 means it leads no group of its own. See
+	// ownProcessGroupID and reapWithEOFGrace.
+	pgid   int
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
 
 	// Event channel: fires when the session produces output
 	outputEvents chan struct{}
@@ -111,6 +115,25 @@ func NewControlPipe(sessionName, socketName string) (*ControlPipe, error) {
 	return nil, lastErr
 }
 
+// ownProcessGroupID returns the process-group id a just-started child leads, or
+// 0 when it leads none of its own.
+//
+// Read once, here, while the child is certainly unreaped: a child started with
+// Setpgid and no explicit Pgid becomes the leader of a group whose id is its own
+// pid, so the group id is known at spawn and never has to be looked up from a
+// pid later — which is the lookup that can answer for a stranger. A child that
+// joined an existing group (Pgid != 0) leads nothing, and killing the group it
+// merely belongs to would reach processes this pipe never started.
+func ownProcessGroupID(cmd *exec.Cmd) int {
+	if cmd.Process == nil || cmd.SysProcAttr == nil {
+		return 0
+	}
+	if !cmd.SysProcAttr.Setpgid || cmd.SysProcAttr.Pgid != 0 {
+		return 0
+	}
+	return cmd.Process.Pid
+}
+
 func newControlPipeOnce(sessionName, socketName string) (*ControlPipe, error) {
 	cmd := tmuxExec(socketName, "-u", "-C", "attach-session", "-t", sessionName)
 	// Put in own process group so we can kill the entire group on shutdown
@@ -135,6 +158,7 @@ func newControlPipeOnce(sessionName, socketName string) (*ControlPipe, error) {
 		sessionName:  sessionName,
 		socketName:   socketName,
 		cmd:          cmd,
+		pgid:         ownProcessGroupID(cmd),
 		stdin:        stdin,
 		stdout:       stdout,
 		outputEvents: make(chan struct{}, 64),
@@ -393,7 +417,7 @@ func (cp *ControlPipe) Close() {
 		// timeout, while still routing the underlying cmd.Wait() through
 		// the waitOnce gate that protects against a concurrent Wait from
 		// reader() (#677).
-		usedFallback := reapWithEOFGrace(cp.reap, cp.cmd.Process, controlPipeEOFExitGrace, controlClientKillGrace)
+		usedFallback := reapWithEOFGrace(cp.reap, cp.cmd.Process, cp.pgid, controlPipeEOFExitGrace, controlClientKillGrace)
 		if usedFallback {
 			pipeLog.Warn("eof_fallback_fired",
 				slog.String("session", cp.sessionName),
@@ -418,7 +442,22 @@ func (cp *ControlPipe) Close() {
 // underlying cmd.Wait through their own once-guard — the production
 // caller (ControlPipe.Close) needs this to coordinate with reader()'s
 // concurrent reap (#677); the test caller passes a plain wrapper.
-func reapWithEOFGrace(reap func(), proc *os.Process, eofGrace, killGrace time.Duration) (usedFallback bool) {
+//
+// pgid is the process group the child was given AT SPAWN (0 if it leads no
+// group of its own). It is not looked up here on purpose: a lookup keyed on
+// proc.Pid answers for whoever holds that number NOW, and once the child has
+// been waited on that is not necessarily the child. That is the same recycled-
+// pid hazard the single-pid arm below is guarded against, but resolved into a
+// whole process group and then SIGTERMed and SIGKILLed — a strictly wider blast
+// radius on what used to be the unguarded arm.
+//
+// Both arms are gated on the handle. os.Process.Signal reports ErrProcessDone
+// once the process has been waited on, and only while it has NOT been waited on
+// is its pid — and therefore the pgid it leads — guaranteed still to name the
+// child. Reaching the fallback with a reaped handle is not hypothetical: reap
+// shares a once-guard with reader(), so reader() can complete the Wait while
+// this call is still waiting for its own turn to return.
+func reapWithEOFGrace(reap func(), proc *os.Process, pgid int, eofGrace, killGrace time.Duration) (usedFallback bool) {
 	reapDone := make(chan struct{})
 	go func() {
 		reap()
@@ -429,15 +468,12 @@ func reapWithEOFGrace(reap func(), proc *os.Process, eofGrace, killGrace time.Du
 		return false
 	case <-time.After(eofGrace):
 	}
-	if proc != nil {
-		if pgid, err := syscall.Getpgid(proc.Pid); err == nil {
+	if proc != nil && proc.Signal(syscall.Signal(0)) == nil {
+		if pgid > 0 {
 			_ = softKillProcessGroup(pgid, killGrace)
 		} else {
-			// Pgid lookup failed (process already exited or not a group
-			// leader) — fall back to soft-killing the child itself. Through
-			// its handle, not its pid: this is our own child and Wait may
-			// already have reaped it, so a bare pid here could name whoever
-			// inherited the number.
+			// The child leads no group of its own, so there is nothing wider to
+			// kill than the child. Through its handle, not its pid.
 			_ = softKillProcessHandle(proc, killGrace)
 		}
 	}

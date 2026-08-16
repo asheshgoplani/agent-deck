@@ -525,7 +525,7 @@ func TestReapWithEOFGrace_FastPathOnEOF(t *testing.T) {
 	// takes >200ms). The assertion that matters is usedFallback=false +
 	// antimarker-absence, not strict timing — those prove the EOF path
 	// completed without a signal.
-	usedFallback := reapWithEOFGrace(reap, cmd.Process, 5*time.Second, 500*time.Millisecond)
+	usedFallback := reapWithEOFGrace(reap, cmd.Process, cmd.Process.Pid, 5*time.Second, 500*time.Millisecond)
 
 	assert.False(t, usedFallback, "EOF-clean child must not trigger signal-driven fallback")
 
@@ -559,7 +559,7 @@ func TestReapWithEOFGrace_FallbackOnHungChild(t *testing.T) {
 
 	start := time.Now()
 	// Short eofGrace so the test runs fast; killGrace controls SIGTERM→SIGKILL.
-	usedFallback := reapWithEOFGrace(reap, cmd.Process, 50*time.Millisecond, 200*time.Millisecond)
+	usedFallback := reapWithEOFGrace(reap, cmd.Process, pgid, 50*time.Millisecond, 200*time.Millisecond)
 	elapsed := time.Since(start)
 
 	assert.True(t, usedFallback, "hung child must trigger signal-driven fallback")
@@ -593,7 +593,7 @@ func TestReapWithEOFGrace_AlreadyDeadIsNoop(t *testing.T) {
 		})
 	}
 
-	usedFallback := reapWithEOFGrace(reap, proc, 100*time.Millisecond, 100*time.Millisecond)
+	usedFallback := reapWithEOFGrace(reap, proc, proc.Pid, 100*time.Millisecond, 100*time.Millisecond)
 	assert.False(t, usedFallback, "already-exiting child should not trigger fallback")
 	assert.True(t, reaped, "reap function must have been called")
 }

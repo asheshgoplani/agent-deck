@@ -51,7 +51,10 @@ type KeySender interface {
 type localKeySender struct {
 	target string
 	cmd    *exec.Cmd
-	stdin  io.WriteCloser
+	// pgid is the process group cmd was given at spawn, captured while it was
+	// certainly unreaped. See ownProcessGroupID and reapWithEOFGrace.
+	pgid  int
+	stdin io.WriteCloser
 
 	waitOnce sync.Once
 
@@ -118,7 +121,7 @@ func OpenKeySender(socket, target string) (KeySender, error) {
 		_ = stdout.Close()
 		return nil, fmt.Errorf("keysender: start tmux -C -u attach-session: %w", err)
 	}
-	k := &localKeySender{target: target, cmd: cmd, stdin: stdin}
+	k := &localKeySender{target: target, cmd: cmd, pgid: ownProcessGroupID(cmd), stdin: stdin}
 
 	// Drain stdout so the OS pipe buffer never fills and blocks Send writes,
 	// and settle the attach handshake on the way past. tmux answers the
@@ -233,7 +236,7 @@ func (k *localKeySender) Close() error {
 	// v1.5.x cascade incident). Killing the GROUP — not just the pid — is
 	// what guarantees Close tears down everything Open spawned.
 	if cmd != nil && cmd.Process != nil {
-		_ = reapWithEOFGrace(k.reap, cmd.Process, keySenderEOFExitGrace, controlClientKillGrace)
+		_ = reapWithEOFGrace(k.reap, cmd.Process, k.pgid, keySenderEOFExitGrace, controlClientKillGrace)
 	}
 	return nil
 }
