@@ -13,6 +13,10 @@ import (
 func codexAccountHome(t *testing.T) (workHome string) {
 	t.Helper()
 	tmp := withTempHome(t)
+	// withTempHome isolates HOME/XDG but not CODEX_HOME, which outranks the
+	// config on the no-account fallback path — a developer with CODEX_HOME set
+	// would see this suite fail on their own environment.
+	t.Setenv("CODEX_HOME", "")
 	if err := os.MkdirAll(filepath.Join(tmp, ".agent-deck"), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}

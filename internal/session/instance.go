@@ -2081,13 +2081,6 @@ func nextShellWord(s string) (word string, remainder string, ok bool) {
 	return b.String(), "", true
 }
 
-func getCodexHomeDirForCommand(command string) string {
-	if codexHome := codexHomeFromCommand(command); codexHome != "" {
-		return codexHome
-	}
-	return getCodexHomeDir()
-}
-
 // accountCodexHomeDir returns the CODEX_HOME mapped to this session's account
 // slot via [profiles.<account>.codex].config_dir, or "" when the session has no
 // account or the account names no codex block.
@@ -2125,19 +2118,37 @@ func (i *Instance) codexHomeToExport() string {
 	return ""
 }
 
+// codexHomeForCommand returns the CODEX_HOME the launched process will actually
+// read and write under, for an already-resolved codex command line.
+//
+// This is the read-side mirror of codexHomeToExport and must stay in step with
+// it: whatever that exports, this resolves to. codexHomeToExport returns "" when
+// nothing needs exporting, in which case the process inherits the ambient
+// CODEX_HOME or falls back to ~/.codex — exactly what getCodexHomeDir resolves
+// to in that case.
+//
+// A resolver that disagrees with the launch is #1929: buildCodexCommand's
+// resume gate looked for the rollout in the DEFAULT home while the launch wrote
+// it under the ACCOUNT home, so the gate always missed, dropped the session id,
+// and every restart silently opened a fresh conversation.
+func (i *Instance) codexHomeForCommand(command string) string {
+	// A CODEX_HOME= embedded in the command is the user typing it by hand for
+	// this session, so it stays the most explicit signal of all — and the shell
+	// agrees, since it is emitted after any exported CODEX_HOME.
+	if codexHome := codexHomeFromCommand(command); codexHome != "" {
+		return codexHome
+	}
+	if accountHome := strings.TrimSpace(i.accountCodexHomeDir()); accountHome != "" {
+		return accountHome
+	}
+	return getCodexHomeDir()
+}
+
 func (i *Instance) getCodexHomeDir() string {
 	if i == nil {
 		return getCodexHomeDir()
 	}
-	// A CODEX_HOME= embedded in the session's own command is the user typing it
-	// by hand for this session, so it stays the most explicit signal of all.
-	if codexHome := codexHomeFromCommand(i.resolveCodexCommand(i.Command)); codexHome != "" {
-		return codexHome
-	}
-	if accountHome := i.accountCodexHomeDir(); accountHome != "" {
-		return accountHome
-	}
-	return getCodexHomeDir()
+	return i.codexHomeForCommand(i.resolveCodexCommand(i.Command))
 }
 
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
@@ -2180,7 +2191,10 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	modelFlag := i.resolveCodexModelFlag()
 	reasoningFlag := i.resolveCodexReasoningEffortFlag()
 	command := i.resolveCodexCommand(baseCommand)
-	codexHome := getCodexHomeDirForCommand(command)
+	// Must be the home this launch exports (above), not the process-wide one:
+	// the gates below decide whether a rollout exists, and looking in the wrong
+	// home destroys a live binding (#1929).
+	codexHome := i.codexHomeForCommand(command)
 
 	// Issue #756: Gate `codex resume <sid>` on rollout-file existence.
 	// If Codex died before flushing its rollout JSONL (tmux crash, kill -9
@@ -9408,6 +9422,12 @@ func (i *Instance) CreateForkedCodexInstanceWithOptions(
 	}
 	forked.Tool = i.Tool
 	forked.Wrapper = i.Wrapper
+	// #1929: a fork runs against the parent's thread, so it must run under the
+	// parent's account. Without this the fork resolves its own codex home
+	// through the default chain and `codex fork <parent-sid>` cannot find the
+	// rollout, which lives under the account's home — the fork starts empty and
+	// the account selection is lost from the record too.
+	forked.Account = i.Account
 
 	baseCommand := strings.TrimSpace(i.Command)
 	if baseCommand == "" {
