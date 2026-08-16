@@ -424,16 +424,18 @@ func printInboxEvents(stdout io.Writer, events []session.TransitionNotificationE
 // #1948 export so the two never drift into two spellings of one record.
 func printInboxEventLines(stdout io.Writer, events []session.TransitionNotificationEvent) {
 	for _, ev := range events {
-		fmt.Fprintf(stdout, "%s  child=%s title=%q profile=%s %s→%s",
+		fmt.Fprintf(stdout, "%s  child=%s title=%q profile=%s",
 			ev.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
 			ev.ChildSessionID,
 			ev.ChildTitle,
 			ev.Profile,
-			ev.FromStatus,
-			ev.ToStatus,
 		)
+		// A completion carries no from→to flip; printing a bare arrow for it
+		// (as this line always did) reads like a lost status.
 		if ev.Kind != "" {
-			fmt.Fprintf(stdout, " kind=%s status=%s", ev.Kind, ev.DoneStatus)
+			fmt.Fprintf(stdout, " %s=%s", ev.Kind, ev.DoneStatus)
+		} else {
+			fmt.Fprintf(stdout, " %s→%s", ev.FromStatus, ev.ToStatus)
 		}
 		// #1948: a pulled record's host is the one fact a cross-machine record
 		// would otherwise lose.
