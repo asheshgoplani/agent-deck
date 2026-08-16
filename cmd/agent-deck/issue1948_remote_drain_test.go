@@ -15,6 +15,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -353,6 +355,34 @@ func TestIssue1948_InboxExportCLI_EmptyIsAnEmptyArray(t *testing.T) {
 	}
 	if strings.TrimSpace(buf.String()) != "[]" {
 		t.Fatalf("want [], got %q", buf.String())
+	}
+}
+
+// Review P2c, CLI end: a host whose records cannot be read must make
+// `inbox export` FAIL, so the ssh call carries a non-zero exit and the draining
+// conductor reports a failed remote instead of an empty one.
+func TestIssue1948_InboxExportCLI_UnreadableRecordsFailLoudly(t *testing.T) {
+	drainTestHome(t)
+
+	if err := session.WriteLedgerEntry(session.CompletionLedgerEntry{
+		ChildID: "worker-ok", Profile: "default", Status: "ok", FinishedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	dir, err := session.CompletionLedgerDir()
+	if err != nil {
+		t.Fatalf("ledger dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "worker-corrupt.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write corrupt: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runInbox(&buf, []string{"export", "--json"}); err == nil {
+		t.Fatalf("export must fail when a record file cannot be read, printed: %s", buf.String())
+	}
+	if strings.TrimSpace(buf.String()) == "[]" {
+		t.Fatalf("an unreadable host must never print an empty record array")
 	}
 }
 

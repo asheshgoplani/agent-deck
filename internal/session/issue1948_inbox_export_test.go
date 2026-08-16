@@ -122,7 +122,7 @@ func TestIssue1948_Export_IsNonDestructive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read inbox: %v", err)
 	}
-	ledgerDir, err := completionLedgerDir()
+	ledgerDir, err := CompletionLedgerDir()
 	if err != nil {
 		t.Fatalf("ledger dir: %v", err)
 	}
@@ -164,6 +164,10 @@ func TestIssue1948_Export_IsNonDestructive(t *testing.T) {
 // The same logical completion held in BOTH the ledger and a pending inbox
 // record crosses the wire once — collapsed by the existing EventFingerprint
 // rule, not by a second one.
+//
+// The production case where the two copies carry DIFFERENT timestamps is
+// TestIssue1948P2b_LedgerAndInboxCopiesDedupeAcrossDifferentTimestamps; this
+// one keeps the simplest shape.
 func TestIssue1948_Export_DedupsLedgerAndInboxCopiesOfOneCompletion(t *testing.T) {
 	exportTestHome(t)
 

@@ -24,12 +24,15 @@ type CompletionLedgerEntry struct {
 	FinishedAt time.Time `json:"finished_at"`
 }
 
-func completionLedgerDir() (string, error) {
+// CompletionLedgerDir returns the directory holding per-child completion
+// ledger entries, mirroring the exported InboxDir(). The #1948 export walks it,
+// and the CLI-level tests address files inside it directly.
+func CompletionLedgerDir() (string, error) {
 	return runtimeDataPath("completion-ledger")
 }
 
 func completionLedgerPath(childID string) (string, error) {
-	dir, err := completionLedgerDir()
+	dir, err := CompletionLedgerDir()
 	if err != nil {
 		return "", err
 	}
@@ -84,6 +87,12 @@ func ReadLedgerEntry(childID string) (CompletionLedgerEntry, bool) {
 	}
 	// readLedgerFile (inbox_export.go) is the single parse of this format,
 	// shared with the #1948 export walk which addresses the same files by
-	// directory entry instead of by child id.
-	return readLedgerFile(path)
+	// directory entry instead of by child id. A lookup treats every failure the
+	// same way — no entry — while the export distinguishes missing from
+	// unreadable, which is why the shared parser returns the error.
+	entry, err := readLedgerFile(path)
+	if err != nil {
+		return CompletionLedgerEntry{}, false
+	}
+	return entry, true
 }
