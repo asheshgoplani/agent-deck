@@ -91,7 +91,7 @@ func TestGenericSessionID_SQLiteRoundTrip(t *testing.T) {
 	}
 
 	// Targeted write (live capture path) on the underlying StateDB.
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "new-sid", time.Now()); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "new-sid", inst.Tool, LocationOf(inst).String(), time.Now()); err != nil {
 		t.Fatalf("WriteGenericSessionBinding: %v", err)
 	}
 	loaded2, _, err := storage.LoadWithGroups()
@@ -298,7 +298,7 @@ func TestWriteGenericSessionBinding_Clear(t *testing.T) {
 	if err := storage.SaveWithGroups([]*Instance{inst}, NewGroupTreeWithGroups([]*Instance{inst}, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "", time.Time{}); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "", inst.Tool, LocationOf(inst).String(), time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, err := storage.LoadWithGroups()

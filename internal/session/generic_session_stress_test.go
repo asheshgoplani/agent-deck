@@ -34,7 +34,7 @@ func TestStress_StaleFullSavePreservesStickyGenericID(t *testing.T) {
 
 	// Live capture path: targeted write while in-memory snapshot stays empty.
 	detected := time.Unix(1_700_000_200, 0).UTC()
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "live-captured-id", detected); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "live-captured-id", inst.Tool, LocationOf(inst).String(), detected); err != nil {
 		t.Fatalf("WriteGenericSessionBinding: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func TestStress_ExplicitClearViaBindingThenLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "", time.Time{}); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "", inst.Tool, LocationOf(inst).String(), time.Time{}); err != nil {
 		t.Fatalf("clear binding: %v", err)
 	}
 
@@ -194,7 +194,7 @@ func TestStress_WriteBindingDoesNotClobberOtherToolDataKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "generic-1", time.Unix(1_700_000_100, 0).UTC()); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "generic-1", inst.Tool, LocationOf(inst).String(), time.Unix(1_700_000_100, 0).UTC()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -221,7 +221,7 @@ func TestStress_WriteBindingDoesNotClobberOtherToolDataKeys(t *testing.T) {
 	}
 
 	// Clear generic only — siblings must remain.
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "", time.Time{}); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "", inst.Tool, LocationOf(inst).String(), time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := storage.db.DB().QueryRow(`SELECT tool_data FROM instances WHERE id = ?`, inst.ID).Scan(&raw); err != nil {
@@ -253,7 +253,7 @@ func TestStress_DetectedAtZeroVsNonZero(t *testing.T) {
 	}
 
 	before := time.Now().Add(-2 * time.Second)
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "id-zero-at", time.Time{}); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "id-zero-at", inst.Tool, LocationOf(inst).String(), time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	after := time.Now().Add(2 * time.Second)
@@ -322,13 +322,13 @@ func TestStress_RapidAlternateWrites_LastWriteWins(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			if err := storage.db.WriteGenericSessionBinding(inst.ID, "id-A", time.Now()); err != nil {
+			if err := storage.db.WriteGenericSessionBinding(inst.ID, "id-A", inst.Tool, LocationOf(inst).String(), time.Now()); err != nil {
 				errs <- err
 			}
 		}()
 		go func() {
 			defer wg.Done()
-			if err := storage.db.WriteGenericSessionBinding(inst.ID, "id-B", time.Now()); err != nil {
+			if err := storage.db.WriteGenericSessionBinding(inst.ID, "id-B", inst.Tool, LocationOf(inst).String(), time.Now()); err != nil {
 				errs <- err
 			}
 		}()
@@ -417,7 +417,7 @@ func TestStress_ClaudeAndGenericIndependent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "generic-CCC", time.Unix(300, 0).UTC()); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "generic-CCC", inst.Tool, LocationOf(inst).String(), time.Unix(300, 0).UTC()); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, err := storage.LoadWithGroups()

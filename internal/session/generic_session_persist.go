@@ -31,8 +31,10 @@ package session
 
 import (
 	"encoding/json"
+	"log/slog"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
@@ -115,25 +117,70 @@ func PersistGenericSessionBinding(db *statedb.StateDB, inst *Instance) error {
 	if db == nil || inst == nil {
 		return nil
 	}
-	return db.WriteGenericSessionBinding(inst.ID, inst.GenericSessionID, inst.GenericDetectedAt)
+	return db.WriteGenericSessionBinding(
+		inst.ID, inst.GenericSessionID,
+		inst.GenericSessionTool, inst.GenericSessionLocation,
+		inst.GenericDetectedAt,
+	)
 }
 
-// persistGenericSessionIDIfChanged writes through to StateDB when the
-// resolved custom-tool id differs from what is already on the instance.
-// Safe no-op when statedb.GetGlobal() is nil or the id is empty.
+// persistGenericSessionIDIfChanged adopts a conversation id observed live and
+// writes it through to StateDB, together with the tool and execution location
+// it was observed under.
+//
+// A failed write is reported rather than dropped. It is not returned, because
+// every caller is a read path (GetGenericSessionID, SyncSessionIDsFromTmux)
+// that has a perfectly good in-memory answer and no way to act on a DB failure
+// — but silence here means the id is live in this process and absent from disk,
+// so the next cold start silently begins a new conversation and the operator is
+// left to work out why. The log line is what makes that diagnosable, and the
+// recorded error lets a caller that does have somewhere to put it say so.
 func (i *Instance) persistGenericSessionIDIfChanged(sessionID string) {
 	if i == nil || sessionID == "" {
 		return
 	}
-	if i.GenericSessionID == sessionID {
+	scope := i.currentGenericSessionScope()
+	if i.GenericSessionID == sessionID && i.recordedGenericSessionScope() == scope {
 		return
 	}
 	i.GenericSessionID = sessionID
+	i.GenericSessionTool = scope.Tool
+	i.GenericSessionLocation = scope.Location
 	i.genericSessionIDCleared = false
 	if i.GenericDetectedAt.IsZero() {
 		i.GenericDetectedAt = time.Now()
 	}
-	if db := statedb.GetGlobal(); db != nil {
-		_ = db.WriteGenericSessionBinding(i.ID, sessionID, i.GenericDetectedAt)
+	db := statedb.GetGlobal()
+	if db == nil {
+		return
 	}
+	err := db.WriteGenericSessionBinding(i.ID, sessionID, scope.Tool, scope.Location, i.GenericDetectedAt)
+	i.setGenericSessionPersistError(err)
+	if err != nil {
+		sessionLog.Warn("generic_session_bind_persist_failed",
+			slog.String("instance_id", logging.SanitizeValue(i.ID)),
+			slog.String("tool", logging.SanitizeValue(i.Tool)),
+			slog.String("session_id_fingerprint", fingerprintSessionID(sessionID)),
+			slog.String("error", logging.SanitizeValue(err.Error())))
+	}
+}
+
+// setGenericSessionPersistError records the outcome of the last write-through.
+func (i *Instance) setGenericSessionPersistError(err error) {
+	i.genericSessionPersistMu.Lock()
+	i.genericSessionPersistErr = err
+	i.genericSessionPersistMu.Unlock()
+}
+
+// GenericSessionPersistError reports why the last custom-tool conversation-id
+// write-through failed, or nil if the binding on this instance is durable.
+//
+// It exists so that "the id is bound" and "the id survives a reboot" can be
+// told apart by anything that cares — the whole value of this feature is the
+// second one, and a bind that only ever lived in memory is indistinguishable
+// from a working one until the machine restarts.
+func (i *Instance) GenericSessionPersistError() error {
+	i.genericSessionPersistMu.Lock()
+	defer i.genericSessionPersistMu.Unlock()
+	return i.genericSessionPersistErr
 }

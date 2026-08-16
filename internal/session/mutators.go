@@ -364,20 +364,36 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 			// Mark intentional clear so instanceToRow writes explicit empty
 			// into tool_data; sticky merge only preserves on key omission.
 			inst.genericSessionIDCleared = true
+			inst.GenericSessionTool = ""
+			inst.GenericSessionLocation = ""
 		} else {
 			inst.GenericDetectedAt = time.Now()
 			inst.genericSessionIDCleared = false
+			// An operator binding an id binds it for THIS tool at THIS
+			// location; the id stops being eligible if either changes.
+			scope := inst.currentGenericSessionScope()
+			inst.GenericSessionTool = scope.Tool
+			inst.GenericSessionLocation = scope.Location
 		}
 		// Optional write-through when TUI/long-lived process registered global DB.
 		// Full SaveWithGroups still works for CLI (GetGlobal nil) via the
-		// genericSessionIDCleared flag above.
+		// genericSessionIDCleared flag above. A failure is recorded rather than
+		// dropped: the CLI reports it, and nothing else can tell an id that
+		// reached disk from one that only ever lived in this process.
 		if db := statedb.GetGlobal(); db != nil {
-			_ = db.WriteGenericSessionBinding(inst.ID, value, inst.GenericDetectedAt)
+			err := db.WriteGenericSessionBinding(
+				inst.ID, value, inst.GenericSessionTool, inst.GenericSessionLocation, inst.GenericDetectedAt)
+			inst.setGenericSessionPersistError(err)
+			if err != nil {
+				return oldValue, nil, &MutationError{
+					Field: field,
+					Msg:   fmt.Sprintf("failed to persist tool-session-id: %v", err),
+				}
+			}
 		}
-		// Publish into session_id_env when configured so a live pane sees it.
-		if toolDef := GetToolDef(inst.Tool); toolDef != nil && toolDef.SessionIDEnv != "" {
-			postCommit = makeSessionEnvPostCommit(inst, toolDef.SessionIDEnv, value)
-		}
+		// Publish into the tool's env var when configured, and into the
+		// agent-deck-owned fallback either way, so a live pane sees it.
+		postCommit = makeGenericSessionEnvPostCommit(inst, value)
 
 	case FieldTitleLocked:
 		oldValue = strconv.FormatBool(inst.TitleLocked)
@@ -521,6 +537,27 @@ func makeSessionEnvPostCommit(inst *Instance, envName, value string) func() {
 	socket := inst.TmuxSocketName
 	return func() {
 		if tmuxSess.Exists() {
+			_ = tmux.Exec(socket, "set-environment", "-t", tmuxSess.Name, envName, value).Run()
+		}
+	}
+}
+
+// makeGenericSessionEnvPostCommit publishes a custom-tool conversation id into
+// every tmux variable that can carry it: the tool's own session_id_env when
+// configured, and always the agent-deck-owned fallback, so a pane restarted
+// without a config-declared variable can still surrender its id.
+func makeGenericSessionEnvPostCommit(inst *Instance, value string) func() {
+	tmuxSess := inst.GetTmuxSession()
+	if tmuxSess == nil {
+		return nil
+	}
+	names := inst.genericSessionEnvNames()
+	socket := inst.TmuxSocketName
+	return func() {
+		if !tmuxSess.Exists() {
+			return
+		}
+		for _, envName := range names {
 			_ = tmux.Exec(socket, "set-environment", "-t", tmuxSess.Name, envName, value).Run()
 		}
 	}

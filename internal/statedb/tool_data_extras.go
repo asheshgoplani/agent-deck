@@ -105,9 +105,12 @@ func stickyToolDataKeys() map[string]bool {
 		"opencode_detected_at": true,
 		"codex_session_id":     true,
 		"codex_detected_at":    true,
-		// Custom [tools.*] conversation id (survives reboot when resume_flag set).
-		"generic_session_id":  true,
-		"generic_detected_at": true,
+		// Custom [tools.*] conversation id (survives reboot when resume_flag set)
+		// and the tool/location scope it is only resumable under.
+		"generic_session_id":       true,
+		"generic_detected_at":      true,
+		"generic_session_tool":     true,
+		"generic_session_location": true,
 	}
 }
 

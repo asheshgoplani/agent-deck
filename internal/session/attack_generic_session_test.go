@@ -46,7 +46,7 @@ func TestAttack_ClearedFlagConsumedAfterSave(t *testing.T) {
 	}
 
 	// Concurrent writer re-binds while this process still holds the empty in-memory snapshot.
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "new-id", time.Now()); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "new-id", inst.Tool, LocationOf(inst).String(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, err := storage.LoadWithGroups()
@@ -238,7 +238,7 @@ func TestAttack_WhitespaceOnlyNoResume(t *testing.T) {
 	if err := storage.SaveWithGroups([]*Instance{inst}, NewGroupTreeWithGroups([]*Instance{inst}, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "   ", time.Now()); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "   ", inst.Tool, LocationOf(inst).String(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, err := storage.LoadWithGroups()
@@ -335,10 +335,10 @@ func TestAttack_PersistNilSafeAndSiblings(t *testing.T) {
 	if err := storage.SaveWithGroups([]*Instance{inst}, NewGroupTreeWithGroups([]*Instance{inst}, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "g1", time.Now()); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "g1", inst.Tool, LocationOf(inst).String(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "", time.Time{}); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "", inst.Tool, LocationOf(inst).String(), time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, err := storage.LoadWithGroups()

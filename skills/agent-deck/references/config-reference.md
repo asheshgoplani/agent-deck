@@ -820,6 +820,10 @@ resume_flag = "--resume"
 
 **Reboot-safe resume.** Built-in tools (Claude, Gemini, Codex, OpenCode, Pi, Cursor, Hermes, …) store conversation ids in SQLite automatically. Custom `[tools.*]` tools previously only kept an id in live tmux env: set `resume_flag`, then bind once with `agent-deck session set <title> tool-session-id <id>` (or export `session_id_env` from the tool so agent-deck can write-through). After that, restart/reboot rebuilds `<command> <resume_flag> <id>` without re-picking a chat. Applies to every custom tool entry (not one vendor). Do **not** use bare “continue last in cwd” when many seats share one path — it attaches the wrong conversation.
 
+**Where a stored conversation id applies.** The id is recorded together with the tool it was captured for and the location the session runs at (the project path, or `host:path` for an `--ssh` session). It is only replayed while both still match. Changing the session's tool, moving it to another directory, or pointing it at a remote host leaves the id stored but not eligible for resume — the tool starts a fresh conversation, and moving the session back makes the id usable again. This is deliberate: a conversation belongs to one tool on one machine, and replaying an id outside that would resume the wrong chat.
+
+**Tools that report an id but export nothing.** When a tool declares `output_format_flag` + `session_id_json_path` but no `session_id_env`, agent-deck captures the id inside the pane and publishes it into the tmux variable `AGENTDECK_TOOL_SESSION_ID`, from which it is persisted like any other. Nothing to configure; a tool that declares its own `session_id_env` keeps precedence.
+
 **Built-in icons:** claude=🤖, gemini=✨, opencode=🌐, codex=💻, copilot=🐙, hermes=☤, cursor=📝, shell=🐚
 
 ## Path Resolution

@@ -236,12 +236,24 @@ type Instance struct {
 	// gone). Live tmux env still wins when present (GetGenericSessionID).
 	GenericSessionID  string    `json:"generic_session_id,omitempty"`
 	GenericDetectedAt time.Time `json:"generic_detected_at,omitempty"`
+	// GenericSessionTool and GenericSessionLocation record the tool and the
+	// execution location the id above was captured under. A persisted id is
+	// only eligible for resume while both still match — see
+	// generic_session_scope.go for why an id that outlives a reboot must not
+	// outlive the tool or the host it belongs to.
+	GenericSessionTool     string `json:"generic_session_tool,omitempty"`
+	GenericSessionLocation string `json:"generic_session_location,omitempty"`
 	// genericSessionIDCleared is set by intentional clear paths (SetField
 	// tool-session-id "", clearSessionBindingForFreshStart). When true,
 	// instanceToRow writes an explicit empty generic_session_id so sticky
 	// MergeToolDataExtras does not resurrect a prior binding. Not persisted;
 	// a non-empty GenericSessionID always clears this flag.
 	genericSessionIDCleared bool
+	// genericSessionPersistErr holds why the last custom-tool conversation-id
+	// write-through failed, so a bind that never reached disk can be told from
+	// one that did. Read through GenericSessionPersistError.
+	genericSessionPersistMu  sync.Mutex
+	genericSessionPersistErr error
 
 	// Claude Code integration
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
@@ -3717,14 +3729,34 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 	if dangerousFlag != "" {
 		freshInvoke += " " + dangerousFlag
 	}
+	// Publish the captured id into the tmux environment before using it.
+	//
+	// Without this the id exists only as a shell variable inside the pane: it
+	// resumes this one launch and is gone, so a tool that reports its id in
+	// JSON but exports no env var of its own got no durability at all — the
+	// exact gap this feature is meant to close. SyncSessionIDsFromTmux and
+	// GetGenericSessionID read the variable back and write it to tool_data,
+	// so a reboot can still find the conversation.
+	//
+	// Failure is swallowed: publishing is bookkeeping, and a tmux hiccup must
+	// not stop the tool from starting. The id reaches the variable via the
+	// shell, never via string interpolation, so nothing here is injectable.
+	publish := fmt.Sprintf(`tmux set-environment %s "$session_id" >/dev/null 2>&1 || true; `,
+		genericCapturedSessionIDEnv)
 	return envPrefix + fmt.Sprintf(
 		`session_id=$(%s %s "." 2>/dev/null | jq -r '%s' 2>/dev/null) || session_id=""; `+
 			`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
-			`%s; `+
+			`%s%s; `+
 			`else %s; fi`,
 		baseCommand, toolDef.OutputFormatFlag, toolDef.SessionIDJsonPath,
-		resumeInvoke, freshInvoke)
+		publish, resumeInvoke, freshInvoke)
 }
+
+// genericCapturedSessionIDEnv is the tmux environment variable agent-deck owns
+// for a custom tool's conversation id. It is the fallback for tools that expose
+// an id in their JSON output but declare no session_id_env of their own; a tool
+// that declares one keeps precedence (see genericSessionEnvNames).
+const genericCapturedSessionIDEnv = "AGENTDECK_TOOL_SESSION_ID"
 
 // formatGenericResumeCommand builds:
 //
@@ -3991,23 +4023,56 @@ func isLiteralToolInvocation(baseCommand, literalName string) bool {
 // GetGenericSessionID resolves the conversation id for a custom [tools.*]
 // tool. Preference order:
 //  1. Live tmux env named by [tools.X].session_id_env (when set and present)
-//  2. Persisted GenericSessionID from tool_data (survives reboot)
+//  2. Live tmux env AGENTDECK_TOOL_SESSION_ID, which the capture path publishes
+//     for tools that expose an id in their JSON output but export no env var of
+//     their own (see buildGenericCommand)
+//  3. Persisted GenericSessionID from tool_data (survives reboot)
 //
-// When the live env yields a value that differs from the persisted field,
-// write-through so the next cold start still resumes the right chat.
+// A live value is written through, so the next cold start resumes the same
+// chat. A persisted value is only returned while its recorded tool and
+// execution location still match this session — see generic_session_scope.go.
 // Whitespace-only values are treated as empty (not resumable).
 func (i *Instance) GetGenericSessionID() string {
-	toolDef := GetToolDef(i.Tool)
-	if toolDef != nil && toolDef.SessionIDEnv != "" && i.tmuxSession != nil {
-		if sessionID, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv); err == nil {
-			sessionID = strings.TrimSpace(sessionID)
-			if sessionID != "" {
-				i.persistGenericSessionIDIfChanged(sessionID)
-				return sessionID
-			}
+	for _, envName := range i.genericSessionEnvNames() {
+		if i.tmuxSession == nil {
+			break
+		}
+		sessionID, err := i.tmuxSession.GetEnvironment(envName)
+		if err != nil {
+			continue
+		}
+		if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+			i.persistGenericSessionIDIfChanged(sessionID)
+			return sessionID
 		}
 	}
-	return strings.TrimSpace(i.GenericSessionID)
+
+	persisted := strings.TrimSpace(i.GenericSessionID)
+	if persisted == "" {
+		return ""
+	}
+	if reason := i.genericSessionScopeMismatch(); reason != "" {
+		i.logGenericResumeRefusal(reason)
+		return ""
+	}
+	return persisted
+}
+
+// genericSessionEnvNames lists the tmux environment variables that may carry a
+// custom tool's live conversation id, most specific first.
+//
+// The configured session_id_env is the tool's own variable and wins. The
+// agent-deck-owned fallback exists because a tool can declare
+// output_format_flag + session_id_json_path (so agent-deck can read an id out
+// of its JSON) while exporting nothing — before the fallback, that id was
+// captured inside the pane's shell, used once, and lost, which is a reboot away
+// from being no persistence at all.
+func (i *Instance) genericSessionEnvNames() []string {
+	names := make([]string, 0, 2)
+	if toolDef := GetToolDef(i.Tool); toolDef != nil && toolDef.SessionIDEnv != "" {
+		names = append(names, toolDef.SessionIDEnv)
+	}
+	return append(names, genericCapturedSessionIDEnv)
 }
 
 // DisplaySessionID returns the session ID the PREVIEW pane surfaces for this
@@ -6705,10 +6770,14 @@ func (i *Instance) SyncSessionIDsToTmux() {
 		_ = i.tmuxSession.SetEnvironment("COPILOT_SESSION_ID", i.CopilotSessionID)
 	}
 
-	// Custom [tools.*] resume id: re-publish into the configured env var so a
-	// restart that still has the old pane (or a respawn) sees the same id.
-	if toolDef := GetToolDef(i.Tool); toolDef != nil && toolDef.SessionIDEnv != "" && i.GenericSessionID != "" {
-		_ = i.tmuxSession.SetEnvironment(toolDef.SessionIDEnv, i.GenericSessionID)
+	// Custom [tools.*] resume id: re-publish so a restart that still has the
+	// old pane (or a respawn) sees the same id. The agent-deck-owned variable
+	// is written too, so a tool that exposes no env var of its own is still
+	// recoverable from the pane.
+	if i.GenericSessionID != "" {
+		for _, envName := range i.genericSessionEnvNames() {
+			_ = i.tmuxSession.SetEnvironment(envName, i.GenericSessionID)
+		}
 	}
 }
 
@@ -6756,12 +6825,28 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 	// fresh start does not re-attach resume after reboot. Flag the clear so
 	// a subsequent SaveWithGroups writes explicit empty (sticky-safe) even
 	// when statedb.GetGlobal() is nil (CLI paths).
-	if i.GenericSessionID != "" || !i.GenericDetectedAt.IsZero() || i.genericSessionIDCleared {
+	if i.GenericSessionID != "" || !i.GenericDetectedAt.IsZero() || i.genericSessionIDCleared ||
+		i.GenericSessionTool != "" || i.GenericSessionLocation != "" {
+		cleared := i.GenericSessionID
 		i.GenericSessionID = ""
 		i.GenericDetectedAt = time.Time{}
+		i.GenericSessionTool = ""
+		i.GenericSessionLocation = ""
 		i.genericSessionIDCleared = true
 		if db := statedb.GetGlobal(); db != nil {
-			_ = db.WriteGenericSessionBinding(i.ID, "", time.Time{})
+			// The flag above means a later save re-applies this clear, so the
+			// outcome is eventually right either way — but a write that keeps
+			// failing on a data path would otherwise never be visible, and
+			// this one deletes a binding the operator asked to be rid of.
+			err := db.WriteGenericSessionBinding(i.ID, "", "", "", time.Time{})
+			i.setGenericSessionPersistError(err)
+			if err != nil {
+				sessionLog.Warn("generic_session_clear_persist_failed",
+					slog.String("instance_id", logging.SanitizeValue(i.ID)),
+					slog.String("tool", logging.SanitizeValue(i.Tool)),
+					slog.String("session_id_fingerprint", fingerprintSessionID(cleared)),
+					slog.String("error", logging.SanitizeValue(err.Error())))
+			}
 		}
 	}
 }
@@ -6837,10 +6922,17 @@ func (i *Instance) SyncSessionIDsFromTmux() {
 		}
 	}
 
-	// Custom tool: pull session_id_env into GenericSessionID + tool_data.
-	if toolDef := GetToolDef(i.Tool); toolDef != nil && toolDef.SessionIDEnv != "" {
-		if id, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv); err == nil && id != "" {
+	// Custom tool: pull the live conversation id into GenericSessionID +
+	// tool_data, from the tool's own env var or the agent-deck-owned fallback
+	// the capture path publishes (see genericSessionEnvNames).
+	for _, envName := range i.genericSessionEnvNames() {
+		id, err := i.tmuxSession.GetEnvironment(envName)
+		if err != nil {
+			continue
+		}
+		if id = strings.TrimSpace(id); id != "" {
 			i.persistGenericSessionIDIfChanged(id)
+			break
 		}
 	}
 }
@@ -8442,7 +8534,12 @@ func (i *Instance) restart(env map[string]string) error {
 				i.SandboxContainer = containerName
 			}
 
-			sessionLog.Info("restart_generic_respawn", slog.String("tool", i.Tool), slog.String("command", resumeCmd))
+			// The resume command embeds the conversation id, so it is not
+			// logged; the fingerprint identifies the binding without
+			// disclosing it (see fingerprintSessionID).
+			sessionLog.Info("restart_generic_respawn",
+				slog.String("tool", logging.SanitizeValue(i.Tool)),
+				slog.String("session_id_fingerprint", fingerprintSessionID(sessionID)))
 
 			// #1822 F2: the generic resume command is a bare
 			// `<cmd> <resumeFlag> <sid>` with no inline AGENTDECK_PROFILE prefix,

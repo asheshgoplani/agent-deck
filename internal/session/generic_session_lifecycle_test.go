@@ -375,7 +375,7 @@ func TestClearToolSessionID_FlagConsumedAfterSave(t *testing.T) {
 	}
 
 	// Concurrent re-bind (live capture / other process) after our clear saved.
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "rebinding-id", time.Now()); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "rebinding-id", inst.Tool, LocationOf(inst).String(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, err := storage.LoadWithGroups()
