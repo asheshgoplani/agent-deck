@@ -141,7 +141,7 @@ func TestNotifySendBackend_FakeBinaryReceivesDeflaggedArgs(t *testing.T) {
 		t.Fatalf("read fake notify-send args: %v", err)
 	}
 	got := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
-	want := []string{deflagged("--help"), deflagged("-h")}
+	want := []string{"--", deflagged("--help"), deflagged("-h")}
 	if len(got) != len(want) {
 		t.Fatalf("notify-send args = %q, want %q", got, want)
 	}

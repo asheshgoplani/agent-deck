@@ -162,8 +162,9 @@ func (notifySendBackend) Available() bool {
 
 func (notifySendBackend) Notify(ctx context.Context, title, body string) error {
 	// #nosec G204 -- title/body are separate argv elements and no shell parses
-	// them. deflagged prevents exact help flags from suppressing the banner.
-	return exec.CommandContext(ctx, "notify-send", deflagged(title), deflagged(body)).Run()
+	// them. -- ends option parsing, while deflagged preserves the same defense
+	// in depth used by the cmux backend for exact help flags.
+	return exec.CommandContext(ctx, "notify-send", "--", deflagged(title), deflagged(body)).Run()
 }
 
 // osascriptBackend is the macOS fallback for a terminal that is not cmux. It
