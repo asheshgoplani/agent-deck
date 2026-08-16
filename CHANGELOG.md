@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **`mcp attach/detach --restart`, `skill attach/detach --restart` and `plugin ... --restart` now record the restarted session's tmux name.** A restart recreates the tmux session under a new name, and these commands never saved afterwards, so the stored name kept pointing at the killed session: the TUI showed the session as errored while its process ran fine, and the live tmux session was orphaned because nothing knew its name. `plugin` saved before the restart rather than after, so it had the same effect. The save is non-fatal in every case: the config change already succeeded and must not be reported as failed.
-
 ## [1.11.0] - 2026-08-01
 
 Security and correctness release. Repo-supplied worktree scripts now require explicit consent, path handling around the skills catalog and logs is hardened, `session send` tells the truth about delivery, restarted sessions can no longer resume the wrong conversation, and Ctrl+Q detach works on every session sharing a tmux socket.
