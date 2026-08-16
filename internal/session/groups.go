@@ -823,38 +823,68 @@ func (t *GroupTree) CollapseGroup(path string) {
 
 // MoveGroupUp moves a group up in the order (only within siblings at same level)
 func (t *GroupTree) MoveGroupUp(path string) {
-	parentPath := getParentPath(path)
-
-	for i, g := range t.GroupList {
-		if g.Path == path && i > 0 {
-			// Only swap if previous item is a sibling (same parent)
-			prevParent := getParentPath(t.GroupList[i-1].Path)
-			if prevParent == parentPath {
-				t.GroupList[i], t.GroupList[i-1] = t.GroupList[i-1], t.GroupList[i]
-				t.GroupList[i].Order = i
-				t.GroupList[i-1].Order = i - 1
-			}
-			break
-		}
-	}
+	t.moveGroupAmongSiblings(path, -1)
 }
 
 // MoveGroupDown moves a group down in the order (only within siblings at same level)
 func (t *GroupTree) MoveGroupDown(path string) {
-	parentPath := getParentPath(path)
+	t.moveGroupAmongSiblings(path, 1)
+}
 
-	for i, g := range t.GroupList {
-		if g.Path == path && i < len(t.GroupList)-1 {
-			// Only swap if next item is a sibling (same parent)
-			nextParent := getParentPath(t.GroupList[i+1].Path)
-			if nextParent == parentPath {
-				t.GroupList[i], t.GroupList[i+1] = t.GroupList[i+1], t.GroupList[i]
-				t.GroupList[i].Order = i
-				t.GroupList[i+1].Order = i + 1
-			}
-			break
+// moveGroupAmongSiblings swaps a group with the sibling delta positions away in
+// display order (-1 = up, +1 = down).
+//
+// It works over the group's siblings rather than over adjacent GroupList entries.
+// GroupList is a flattened depth-first tree, so the slot next to a root group is
+// usually one of some group's subgroups, not the next root group: with "todolist"
+// (two date subgroups) sitting above "ai", the entry before "ai" is
+// "todolist/<date>", whose parent is "todolist" and not "". The old adjacency
+// check saw a non-sibling there and gave up, which made "ai" impossible to move
+// above "todolist" no matter how many times the key was pressed.
+func (t *GroupTree) moveGroupAmongSiblings(path string, delta int) {
+	if _, exists := t.Groups[path]; !exists {
+		return
+	}
+
+	// GroupList is already in display order, so filtering it by parent yields the
+	// siblings in the order they appear on screen.
+	parentPath := getParentPath(path)
+	siblings := make([]*Group, 0, len(t.GroupList))
+	idx := -1
+	for _, g := range t.GroupList {
+		if getParentPath(g.Path) != parentPath {
+			continue
+		}
+		if g.Path == path {
+			idx = len(siblings)
+		}
+		siblings = append(siblings, g)
+	}
+
+	target := idx + delta
+	if idx < 0 || target < 0 || target >= len(siblings) {
+		return
+	}
+
+	// Negative Order is a pin (conductor, and the Maestro group above it); every
+	// rebuildGroupList re-applies it, so a group swapped past a pin would just snap
+	// back on the next redraw. Refuse the move instead.
+	if siblings[idx].Order < 0 || siblings[target].Order < 0 {
+		return
+	}
+
+	// Normalize sibling Order to current display positions before swapping.
+	// Groups routinely share an Order value (anything created before ordering
+	// existed is Order 0) and are then tie-broken by name, so swapping the Order
+	// values as-is would be a no-op for the whole equal-Order block.
+	for i, g := range siblings {
+		if g.Order >= 0 {
+			g.Order = i
 		}
 	}
+	siblings[idx].Order, siblings[target].Order = siblings[target].Order, siblings[idx].Order
+
+	t.rebuildGroupList()
 }
 
 // MoveSessionUp moves a session up among its visual siblings: top-level
