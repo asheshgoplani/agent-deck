@@ -2088,11 +2088,56 @@ func getCodexHomeDirForCommand(command string) string {
 	return getCodexHomeDir()
 }
 
+// accountCodexHomeDir returns the CODEX_HOME mapped to this session's account
+// slot via [profiles.<account>.codex].config_dir, or "" when the session has no
+// account or the account names no codex block.
+//
+// Mirrors the account level of resolveClaudeConfigDir (#924): the per-session
+// account is the most specific thing the user can say about which credentials a
+// session runs under, so it outranks the process-wide CODEX_HOME and the
+// profile/global config. An account with no matching block falls through
+// silently, matching the permissive style of the Claude chain.
+func (i *Instance) accountCodexHomeDir() string {
+	if i == nil || strings.TrimSpace(i.Account) == "" {
+		return ""
+	}
+	cfg, err := LoadUserConfig()
+	if err != nil || cfg == nil {
+		return ""
+	}
+	return cfg.GetProfileCodexConfigDir(i.Account)
+}
+
+// codexHomeToExport returns the CODEX_HOME this session must launch with, or ""
+// when nothing should be exported and codex may use its own default.
+//
+// Both codex launch paths (normal and fork) call this so they cannot drift: a
+// session that resolves its home one way and launches another is exactly the
+// #1922 failure — the account was recorded and reported, but the process ran
+// against ~/.codex.
+func (i *Instance) codexHomeToExport() string {
+	if accountHome := strings.TrimSpace(i.accountCodexHomeDir()); accountHome != "" {
+		return accountHome
+	}
+	if isCodexHomeExplicit() {
+		return strings.TrimSpace(getCodexHomeDir())
+	}
+	return ""
+}
+
 func (i *Instance) getCodexHomeDir() string {
 	if i == nil {
 		return getCodexHomeDir()
 	}
-	return getCodexHomeDirForCommand(i.resolveCodexCommand(i.Command))
+	// A CODEX_HOME= embedded in the session's own command is the user typing it
+	// by hand for this session, so it stays the most explicit signal of all.
+	if codexHome := codexHomeFromCommand(i.resolveCodexCommand(i.Command)); codexHome != "" {
+		return codexHome
+	}
+	if accountHome := i.accountCodexHomeDir(); accountHome != "" {
+		return accountHome
+	}
+	return getCodexHomeDir()
 }
 
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
@@ -2122,14 +2167,11 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	if i.Tool == "codex" && trimmed != "codex" && trimmed != "" {
 		return envPrefix + trimmed
 	}
-	if isCodexHomeExplicit() {
-		codexHome := strings.TrimSpace(getCodexHomeDir())
-		if codexHome != "" {
-			if err := os.MkdirAll(codexHome, 0o755); err != nil {
-				sessionLog.Warn("codex_home_mkdir_failed",
-					slog.String("path", codexHome),
-					slog.String("error", err.Error()))
-			}
+	if codexHome := i.codexHomeToExport(); codexHome != "" {
+		if err := os.MkdirAll(codexHome, 0o755); err != nil {
+			sessionLog.Warn("codex_home_mkdir_failed",
+				slog.String("path", codexHome),
+				slog.String("error", err.Error()))
 		}
 		envPrefix += "CODEX_HOME=" + codexHome + " "
 	}
@@ -2346,9 +2388,12 @@ func (i *Instance) preAcceptCursorWorkspaceTrust() {
 	}
 }
 
-// buildCursorCommand builds the command for the Cursor CLI (`cursor agent`).
+// buildCursorCommand builds the command for the Cursor Agent CLI.
 // continuePrev adds --continue so Restart resumes the previous chat in the workspace.
 // Env files from [shell].env_files are applied via buildEnvSourceCommand.
+//
+// Default entrypoint resolution prefers the standalone `agent` binary when it is
+// on PATH, falling back to `cursor agent`. See DefaultCursorCommand.
 func (i *Instance) buildCursorCommand(baseCommand string, continuePrev bool) string {
 	if i.Tool != "cursor" {
 		return baseCommand
@@ -2356,8 +2401,8 @@ func (i *Instance) buildCursorCommand(baseCommand string, continuePrev bool) str
 
 	envPrefix := i.buildEnvSourceCommand()
 	cmd := strings.TrimSpace(baseCommand)
-	if cmd == "" || strings.EqualFold(cmd, "cursor") {
-		cmd = "cursor agent"
+	if isDefaultCursorInvocation(cmd) {
+		cmd = GetToolCommand("cursor")
 	}
 
 	out := envPrefix + cmd
@@ -4407,6 +4452,9 @@ func (i *Instance) Start() error {
 	var err error
 	command, containerName, err = i.prepareCommand(command)
 	if err != nil {
+		// #1924: leave a reason behind. Without this the session sits on
+		// StatusError with no tmux session and nothing to diagnose from.
+		i.recordPrepareFailure(command, err)
 		return err
 	}
 	if containerName != "" {
@@ -4696,6 +4744,9 @@ func (i *Instance) StartWithMessage(message string) error {
 	var err error
 	command, containerName, err = i.prepareCommand(command)
 	if err != nil {
+		// #1924: leave a reason behind. Without this the session sits on
+		// StatusError with no tmux session and nothing to diagnose from.
+		i.recordPrepareFailure(command, err)
 		return err
 	}
 	if containerName != "" {
@@ -8017,8 +8068,11 @@ func (i *Instance) restart(env map[string]string) error {
 					slog.String("reason", "orphan_bak_restore_restart"))
 			}
 		}
-		resumeCmd, containerName, err := i.prepareCommand(i.buildClaudeResumeCommand())
+		prepInput := i.buildClaudeResumeCommand()
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
+			// #1924: a restart that fails here left StatusError with no reason.
+			i.recordPrepareFailure(prepInput, err)
 			return err
 		}
 		if containerName != "" {
@@ -8070,8 +8124,11 @@ func (i *Instance) restart(env map[string]string) error {
 
 	// If Gemini session with known ID AND tmux session exists, use respawn-pane.
 	if i.Tool == "gemini" && i.GeminiSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
-		resumeCmd, containerName, err := i.prepareCommand(i.buildGeminiCommand("gemini"))
+		prepInput := i.buildGeminiCommand("gemini")
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
+			// #1924: a restart that fails here left StatusError with no reason.
+			i.recordPrepareFailure(prepInput, err)
 			return err
 		}
 		if containerName != "" {
@@ -8126,8 +8183,11 @@ func (i *Instance) restart(env map[string]string) error {
 		// Reuse the canonical builder so live-pane respawns retain the same
 		// configured command, model, agent, and SSE flags as every other start.
 		rawCmd := i.buildOpenCodeCommand("opencode")
-		resumeCmd, containerName, err := i.prepareCommand(rawCmd)
+		prepInput := rawCmd
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
+			// #1924: a restart that fails here left StatusError with no reason.
+			i.recordPrepareFailure(prepInput, err)
 			return err
 		}
 		if containerName != "" {
@@ -8197,8 +8257,11 @@ func (i *Instance) restart(env map[string]string) error {
 		if i.CodexSessionID == "" {
 			i.CodexStartedAt = time.Now().UnixMilli()
 		}
-		resumeCmd, containerName, err := i.prepareCommand(i.buildCodexCommand(i.Command))
+		prepInput := i.buildCodexCommand(i.Command)
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
+			// #1924: a restart that fails here left StatusError with no reason.
+			i.recordPrepareFailure(prepInput, err)
 			return err
 		}
 		if containerName != "" {
@@ -8237,8 +8300,11 @@ func (i *Instance) restart(env map[string]string) error {
 
 	// If Cursor session AND tmux session exists, use respawn-pane.
 	if i.Tool == "cursor" && i.tmuxSession != nil && i.tmuxSession.Exists() {
-		resumeCmd, containerName, err := i.prepareCommand(i.buildCursorCommand(i.Command, true))
+		prepInput := i.buildCursorCommand(i.Command, true)
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
+			// #1924: a restart that fails here left StatusError with no reason.
+			i.recordPrepareFailure(prepInput, err)
 			return err
 		}
 		if containerName != "" {
@@ -8278,8 +8344,11 @@ func (i *Instance) restart(env map[string]string) error {
 				i.Command, toolDef.ResumeFlag, sessionID)
 		}
 		rawCmd = i.buildRestartEnvPrefix() + rawCmd
-		resumeCmd, containerName, err := i.prepareCommand(rawCmd)
+		prepInput := rawCmd
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
+			// #1924: a restart that fails here left StatusError with no reason.
+			i.recordPrepareFailure(prepInput, err)
 			return err
 		}
 		if containerName != "" {
@@ -8404,6 +8473,7 @@ func (i *Instance) restart(env map[string]string) error {
 	}
 	command, containerName, err := i.prepareCommand(command)
 	if err != nil {
+		i.recordPrepareFailure(command, err) // #1924, sister path
 		return err
 	}
 	if containerName != "" {
@@ -8427,6 +8497,11 @@ func (i *Instance) restart(env map[string]string) error {
 
 	if err := i.tmuxSession.Start(command); err != nil {
 		mcpLog.Debug("restart_start_failed", slog.String("error", err.Error()))
+		// #1924: Start() and its sister path have recorded this since #1580,
+		// but restart() never did — so the one case where the user has just
+		// changed something and is most likely to ask "why?" was the one that
+		// set StatusError with nothing to show for it.
+		i.recordTmuxStartFailure(command, err)
 		i.Status = StatusError
 		return fmt.Errorf("failed to restart tmux session: %w", err)
 	}
@@ -9302,16 +9377,13 @@ func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand 
 	modelFlag := target.resolveCodexModelFlag()
 	reasoningFlag := target.resolveCodexReasoningEffortFlag()
 	command := target.resolveCodexCommand(baseCommand)
-	if isCodexHomeExplicit() {
-		codexHome := strings.TrimSpace(getCodexHomeDir())
-		if codexHome != "" {
-			if err := os.MkdirAll(codexHome, 0o755); err != nil {
-				sessionLog.Warn("codex_home_mkdir_failed",
-					slog.String("path", codexHome),
-					slog.String("error", err.Error()))
-			}
-			envPrefix += "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
+	if codexHome := target.codexHomeToExport(); codexHome != "" {
+		if err := os.MkdirAll(codexHome, 0o755); err != nil {
+			sessionLog.Warn("codex_home_mkdir_failed",
+				slog.String("path", codexHome),
+				slog.String("error", err.Error()))
 		}
+		envPrefix += "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
 	}
 	return envPrefix + fmt.Sprintf("%s%s%s%s fork %s", command, yoloFlag, modelFlag, reasoningFlag, shellescape.Quote(i.CodexSessionID)), nil
 }

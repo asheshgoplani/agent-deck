@@ -822,6 +822,9 @@ func detectToolFromCommand(command string) string {
 			return "crush"
 		case "cursor":
 			return "cursor"
+		case "agent":
+			// Standalone Cursor Agent CLI binary (~/.local/bin/agent).
+			return "cursor"
 		case "hermes":
 			return "hermes"
 		case "pi":

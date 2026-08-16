@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -27,7 +28,7 @@ type SpawnFailureRecord struct {
 	InstanceID  string `json:"instance_id"`
 	Tool        string `json:"tool"`
 	Command     string `json:"command,omitempty"`
-	Reason      string `json:"reason"`                 // tmux_start_failed | spawn_died_fast
+	Reason      string `json:"reason"`                 // tmux_start_failed | spawn_died_fast | prepare_failed
 	DyingOutput string `json:"dying_output,omitempty"` // last pane snapshot captured while alive
 	ElapsedMs   int64  `json:"elapsed_ms"`             // ms from spawn to observed death (0 for tmux_start_failed)
 	Timestamp   int64  `json:"ts"`
@@ -54,6 +55,115 @@ func writeSpawnFailureRecord(rec SpawnFailureRecord) error {
 	return writeSpawnFailureRecordTo(rec, spawnFailureDir())
 }
 
+// envExportPattern matches shell export statements with single-quoted values
+// (including the quote escape produced by buildEnvExports) so persisted
+// commands never carry credential values. Only the value is redacted; the key
+// stays visible for diagnosis.
+var envExportPattern = regexp.MustCompile(`export ([A-Za-z_][A-Za-z0-9_]*)='(?:[^']*(?:'\\''[^']*)*)'`)
+
+// redactEnvValues strips env values from a persisted command or error string.
+// A restart --env API_KEY=... that fails during prepare would otherwise write
+// the literal secret into a sidecar that session show exposes.
+func redactEnvValues(s string) string {
+	return envExportPattern.ReplaceAllString(s, "export $1='[redacted]'")
+}
+
+// redactSidecarBytes redacts every string field of an already-persisted sidecar,
+// returning (redacted, true) only when something actually changed.
+//
+// It works on the decoded fields rather than the raw JSON text on purpose: a
+// value containing a quote carries the shell quote escape, which JSON in turn
+// escapes the backslash of, and envExportPattern would only half-match that —
+// a regex sweep over the raw bytes would leave part of such a secret on disk.
+// Decoding into
+// json.RawMessage (not into SpawnFailureRecord) keeps numbers byte-exact and
+// preserves fields written by a newer or older version of the struct, so a
+// rewrite never silently drops a record's contents.
+func redactSidecarBytes(data []byte) ([]byte, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, false
+	}
+	changed := false
+	for key, raw := range fields {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			continue // not a string: numbers and nested shapes stay verbatim
+		}
+		redacted := redactEnvValues(s)
+		if redacted == s {
+			continue
+		}
+		encoded, err := json.Marshal(redacted)
+		if err != nil {
+			continue
+		}
+		fields[key] = encoded
+		changed = true
+	}
+	if !changed {
+		return nil, false
+	}
+	out, err := json.MarshalIndent(fields, "", "  ")
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// ensureSpawnFailureDirSecure hardens a spawn-failure directory that already
+// exists. os.MkdirAll leaves an EXISTING directory's mode untouched, so an
+// install upgraded from a version that created the dir 0755 keeps it — and every
+// 0644 sidecar already in it, written before redaction existed — readable by
+// every other local user. Without this, the redaction above only ever protects
+// fresh installs, and the credentials that actually leaked stay leaked.
+//
+// So: tighten the directory, then sweep the sidecars already in it — chmod 0600
+// AND rewrite them through the redactor, so a stored credential is removed from
+// disk rather than merely hidden behind directory permissions.
+//
+// Best-effort by construction: every step ignores its error and moves on. This
+// runs on the spawn-failure path only (a handful of files, and only when a
+// session has already failed to start), and it must never be the reason a
+// failure record fails to be written.
+func ensureSpawnFailureDirSecure(dir string) {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return
+	}
+	if info.Mode().Perm() != 0o700 {
+		_ = os.Chmod(dir, 0o700)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		fi, err := entry.Info()
+		// Lstat semantics: a symlink is never a regular file here, so we can
+		// neither chmod nor rewrite through one into an unrelated target.
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if fi.Mode().Perm() != 0o600 {
+			_ = os.Chmod(path, 0o600)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		redacted, changed := redactSidecarBytes(data)
+		if !changed {
+			continue
+		}
+		_ = safeio.SafeOverwrite(path, redacted, safeio.Options{Perm: 0o600, SkipBackup: true})
+	}
+}
+
 // writeSpawnFailureRecordTo is the path-explicit variant, used by
 // watchForFastDeath. dir is resolved once by the caller at goroutine-spawn
 // time (see the comment on watchForFastDeath) rather than re-resolved here
@@ -63,17 +173,24 @@ func writeSpawnFailureRecordTo(rec SpawnFailureRecord, dir string) error {
 	if rec.Timestamp == 0 {
 		rec.Timestamp = time.Now().Unix()
 	}
+	// Single choke point: every writer funnels through here, so redaction and
+	// tight permissions cannot be forgotten at a call site.
+	rec.Command = redactEnvValues(rec.Command)
+	rec.DyingOutput = redactEnvValues(rec.DyingOutput)
 	path := filepath.Join(dir, rec.InstanceID+".json")
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create spawn-failure dir: %w", err)
 	}
+	// MkdirAll above only sets the mode on a directory it creates; upgraded
+	// installs come with a 0755 one full of world-readable pre-fix sidecars.
+	ensureSpawnFailureDirSecure(filepath.Dir(path))
 	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal spawn-failure record: %w", err)
 	}
 	// SkipBackup: these sidecars are transient and self-clearing; a .bak would
 	// just be noise. RefuseEmpty is irrelevant (data is never empty).
-	return safeio.SafeOverwrite(path, data, safeio.Options{Perm: 0o644, SkipBackup: true})
+	return safeio.SafeOverwrite(path, data, safeio.Options{Perm: 0o600, SkipBackup: true})
 }
 
 // readSpawnFailureRecord loads the sidecar for an instance, or (nil, nil) when
@@ -125,6 +242,10 @@ func (r *SpawnFailureRecord) FormatForDisplay() string {
 		b.WriteString("The terminal session could not be created.\n")
 	case "spawn_died_fast":
 		fmt.Fprintf(&b, "The command exited almost immediately (after %dms).\n", r.ElapsedMs)
+	case "prepare_failed":
+		// Nothing was launched, so the default arm's "ended unexpectedly
+		// during startup" would be actively misleading here.
+		b.WriteString("The command could not be prepared, so nothing was launched.\n")
 	default:
 		b.WriteString("The session ended unexpectedly during startup.\n")
 	}
@@ -305,6 +426,43 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 			slog.String("dying_output", logging.SanitizeValue(lastSnapshot)))
 		return
 	}
+}
+
+// recordPrepareFailure persists a record for a start that failed BEFORE tmux
+// was ever asked to do anything — command/wrapper assembly, sandbox setup,
+// config regeneration (#1924).
+//
+// These paths returned a bare error, so the session landed on StatusError with
+// no tmux session, no spawn-failure record and nothing in `session show`: an
+// error state with no reason, which is a guess rendered as fact. They are also
+// the paths most likely to be hit right after a user edits a wrapper or command,
+// which is exactly when a reason is worth the most.
+func (i *Instance) recordPrepareFailure(command string, prepErr error) {
+	if prepErr == nil {
+		return
+	}
+	rec := SpawnFailureRecord{
+		InstanceID: i.ID,
+		Tool:       i.Tool,
+		Command:    command,
+		Reason:     "prepare_failed",
+		// Reusing DyingOutput for the error string, as recordTmuxStartFailure
+		// already does: there is no pane to snapshot, so the error IS the
+		// diagnostic.
+		DyingOutput: prepErr.Error(),
+	}
+	if err := writeSpawnFailureRecord(rec); err != nil {
+		sessionLog.Warn("spawn_failure_record_write_failed",
+			slog.String("instance_id", i.ID),
+			slog.String("error", err.Error()))
+	}
+	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+		InstanceID: i.ID,
+		Tool:       i.Tool,
+		Action:     "spawn_failed",
+		Source:     "prepare_command",
+		Reason:     prepErr.Error(),
+	})
 }
 
 // recordTmuxStartFailure persists a record for the case where tmux itself

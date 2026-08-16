@@ -48,6 +48,72 @@ func tmuxProbeBounded(args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
+// checkFlagValueNotFlag reports a value-taking flag whose value was omitted and
+// which therefore swallows the NEXT flag as its value (issue #1923).
+//
+// Go's flag package takes the token after a non-boolean flag unconditionally —
+// it has no notion that the token is itself a flag — so `--account -q` binds
+// the string "-q" to --account and -q never takes effect. That is invisible
+// wherever the value is stored without validation: `add` records --account
+// "captured verbatim" and treats an unknown name as a silent fall-through, so
+// the session is created against the wrong account and only surfaces later as a
+// quota error on an account the user never chose.
+//
+// The check is deliberately narrow: it fires only when the consumed value
+// EXACTLY names a flag registered on this FlagSet. A value that merely starts
+// with "-" is left alone, because a legitimate value may (a path, a negative
+// number, a wrapper fragment); one that matches a real flag of this very
+// command effectively never is.
+//
+// Returns nil when args are fine, so callers can pass it straight through.
+func checkFlagValueNotFlag(fs *flag.FlagSet, args []string) error {
+	known := make(map[string]bool)
+	boolFlags := make(map[string]bool)
+	fs.VisitAll(func(f *flag.Flag) {
+		known[f.Name] = true
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			boolFlags[f.Name] = true
+		}
+	})
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return nil // everything after this is positional
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			continue
+		}
+		name := strings.TrimLeft(arg, "-")
+		if strings.Contains(name, "=") || boolFlags[name] || !known[name] {
+			continue
+		}
+		// Read the following token, if there is one. Assigned inside the bounds
+		// check rather than after it so the indexing is locally provable — an
+		// `i+1 >= len(args)` guard followed by args[i+1] reads as an unchecked
+		// index to gosec (G602).
+		next := ""
+		if i+1 < len(args) {
+			next = args[i+1]
+		}
+		if next == "" {
+			continue // nothing follows; flag.Parse reports the missing value
+		}
+		if !strings.HasPrefix(next, "-") || next == "-" {
+			i++ // ordinary value; skip it so it is not re-examined as a flag
+			continue
+		}
+		if nextName := strings.TrimLeft(next, "-"); known[nextName] {
+			return fmt.Errorf(
+				"-%s needs a value, but the next argument is the flag %s.\n"+
+					"  Either give -%s its value, or move %s elsewhere.\n"+
+					"  (If %q really is the value you want, pass -%s=%s.)",
+				name, next, name, next, next, name, next)
+		}
+	}
+	return nil
+}
+
 // normalizeArgs reorders args so flags come before positional arguments.
 // Go's flag package stops parsing at the first non-flag argument, which means
 // "session show my-title --json" silently ignores --json. This function

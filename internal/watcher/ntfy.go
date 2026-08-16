@@ -179,8 +179,13 @@ func (a *NtfyAdapter) Teardown() error {
 }
 
 // HealthCheck verifies the ntfy server is reachable by sending an HTTP HEAD request
-// with a 5-second timeout (per D-10).
+// with a 5-second timeout (per D-10). It reports an error instead of dereferencing
+// a nil client when Setup never completed (#1886).
 func (a *NtfyAdapter) HealthCheck() error {
+	if a.client == nil {
+		return errors.New("ntfy adapter is not set up")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
