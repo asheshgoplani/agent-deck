@@ -203,6 +203,13 @@ func paneGoneWithin(inst *Instance, window time.Duration) bool {
 }
 
 func TestMain(m *testing.M) {
+	// #1873 race tests re-execute this binary as a second agent-deck process to
+	// exercise the receipt's cross-process compare-and-swap. Dispatch before
+	// any isolation setup: the child must reach the SAME store directory the
+	// parent passed it, not a fresh isolated HOME of its own.
+	if payload := os.Getenv(ownershipChildEnv); payload != "" {
+		os.Exit(runOwnershipReceiptChild(payload))
+	}
 	os.Exit(runTestMain(m))
 }
 
