@@ -458,10 +458,13 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 		Reason:     fmt.Sprintf("generation %d, leader pid %d", receipt.Generation, receipt.Leader.PID),
 	})
 
-	// The store is resolved here, in the caller, for the same reason
-	// watchForFastDeath's paths are: this goroutine is never joined and can
-	// outlive a test that has since moved $HOME.
-	go i.attributeOwnedTree(receipt, store, gen, wake)
+	// The store, the prober and the logger are all resolved HERE, in the
+	// caller, and passed by value — the same discipline watchForFastDeath
+	// follows and for the same reason. This goroutine is never joined, so it
+	// can still be running after the test that started it has finished and
+	// swapped those package variables out from under it. Reading them from the
+	// goroutine is a data race the race detector will (and did) catch.
+	go i.attributeOwnedTree(receipt, store, ownershipProber, sessionLog, gen, wake)
 }
 
 // attributeOwnedTree records the leader's descendants, each with its own start
@@ -471,7 +474,7 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 // that still verifies against the receipt, and it stops the moment that leader
 // stops being ours. Nothing here can add a process that was not, at the instant
 // of a single stat read, a live descendant of a process this spawn owns.
-func (i *Instance) attributeOwnedTree(owned *procowner.Receipt, store *procowner.Store, gen uint64, wake <-chan struct{}) {
+func (i *Instance) attributeOwnedTree(owned *procowner.Receipt, store *procowner.Store, prober procowner.Prober, logger *slog.Logger, gen uint64, wake <-chan struct{}) {
 	start := time.Now()
 	deadline := start.Add(ownershipAttributeMaxWindow)
 	for {
@@ -512,7 +515,7 @@ func (i *Instance) attributeOwnedTree(owned *procowner.Receipt, store *procowner
 			if err := procowner.RequireGeneration(current, owned.Generation, owned.Leader); err != nil {
 				return err
 			}
-			added, err := procowner.Attribute(ownershipProber, current, nil)
+			added, err := procowner.Attribute(prober, current, nil)
 			if err != nil {
 				// The leader is gone, reused or unreadable. Whatever it left
 				// behind was either already attributed (and is still owned) or
@@ -528,7 +531,7 @@ func (i *Instance) attributeOwnedTree(owned *procowner.Receipt, store *procowner
 			// Every outcome here ends this pass: the window is over (a newer
 			// spawn owns the receipt, or it has been reconciled away), or the
 			// leader stopped being ours. Neither is a reason to keep scanning.
-			sessionLog.Debug("ownership_attribution_stopped",
+			logger.Debug("ownership_attribution_stopped",
 				slog.String("instance_id", logging.SanitizeValue(i.ID)),
 				slog.String("reason", logging.SanitizeValue(err.Error())))
 			return
