@@ -1,112 +1,192 @@
 // Regression guards for the CLI restart paths that recreate a tmux session.
 //
 // Instance.Restart recreates the tmux session under a NEW name, and that name
-// exists only on the in-memory Instance until something persists it. These CLI
-// commands restarted without saving afterwards, so the stored tmux_session
-// column kept naming the killed session: the TUI then reported the session as
-// errored while its process ran fine, and the live tmux session was orphaned
-// because nothing recorded its name.
+// is the only handle anything has on the live process. These CLI commands never
+// recorded it, so the stored tmux_session column kept naming the killed
+// session: agent-deck reported the session as errored while its process ran
+// fine, and the live tmux session was orphaned because nothing knew its name
+// (#1870).
+//
+// These tests drive the real command helper -- the same call `skill attach
+// --restart` and `skill detach --restart` make -- against a real tmux server on
+// the package's isolated socket, rather than swapping the tmux pointer by hand
+// and calling a save helper the commands no longer use.
 
 package main
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
-// TestRestartProjectSkillsSession_PersistsTmuxName pins that the skills restart
-// helper writes the post-restart tmux name. The helper takes storage precisely
-// so it can do this; before the fix it received only the Instance and had no
-// way to save.
-//
-// Restart() itself is not called here: it needs a live tmux server and would
-// mint an unpredictable name. Instead the test stands in for what Restart does
-// to the Instance (a new tmux session under a new name) and asserts the helper
-// persists whatever the Instance carries when it returns.
-func TestRestartProjectSkillsSession_PersistsTmuxName(t *testing.T) {
-	storage, inst, groups := newRestartPersistFixture(t, "_clirestartskill")
-	defer storage.Close()
-
-	const newName = "agentdeck_target_f00dcafe"
-	inst.SetTmuxSessionForTest(tmux.ReconnectSessionLazy(
-		newName, inst.ID, "/tmp/proj", "shell", "running",
-	))
-
-	instances := []*session.Instance{inst}
-	if err := saveSessionData(storage, instances, groups); err != nil {
-		t.Fatalf("save after simulated restart: %v", err)
-	}
-
-	if got := persistedTmuxNameForID(t, storage, inst.ID); got != newName {
-		t.Fatalf("persisted tmux name = %q, want %q: the restart's new tmux name was "+
-			"not written, so the stored name points at a killed session and the TUI "+
-			"reports a false error", got, newName)
+// skipIfNoTmuxBinaryCLI skips when tmux is absent; these tests drive a real
+// restart on the package's isolated tmux socket.
+func skipIfNoTmuxBinaryCLI(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available")
 	}
 }
 
-// TestRestartProjectSkillsSession_TakesStorage is a compile-time-shaped guard:
-// the helper must accept the storage handles it needs to persist the new name.
-// If a future refactor drops them, this fails to build, which is the point --
-// the old signature made the bug unfixable at the call site.
-func TestRestartProjectSkillsSession_TakesStorage(t *testing.T) {
-	storage, inst, groups := newRestartPersistFixture(t, "_clirestartsig")
-	defer storage.Close()
+// TestSkillRestartCommandPath_RecordsNewTmuxName is the regression guard. It
+// asserts the contract that matters: after the command path restarts a session,
+// the tmux name that survives a round-trip through storage is the new one.
+func TestSkillRestartCommandPath_RecordsNewTmuxName(t *testing.T) {
+	skipIfNoTmuxBinaryCLI(t)
 
-	// A tool that ShouldRestartProjectSkills rejects, so no real restart is
-	// attempted; this exercises the signature and the early return only.
-	inst.Tool = "shell"
-	if restarted := restartProjectSkillsSession(
-		inst, storage, []*session.Instance{inst}, groups, true, true,
-	); restarted {
-		t.Errorf("restarted = true for tool %q, want false", inst.Tool)
+	storage, inst := newCLIRestartFixture(t, "_test_cli_restart_records")
+
+	// Exactly what handleSkillAttach/handleSkillDetach do before restarting.
+	adoptStateDB(storage)
+	outcome := restartProjectSkillsSession(inst, false, true)
+	t.Cleanup(func() {
+		if sess := inst.GetTmuxSession(); sess != nil {
+			_ = sess.Kill()
+		}
+	})
+
+	if !outcome.Restarted {
+		t.Fatal("command path reported no restart for a restart-eligible session")
+	}
+	live := inst.GetTmuxSession()
+	if live == nil {
+		t.Fatal("restart left no tmux session")
+	}
+	if live.Name == cliRestartOldTmuxName {
+		t.Fatalf("restart reused %q instead of minting a new name; this test would prove nothing", cliRestartOldTmuxName)
+	}
+
+	if got := storedTmuxNameCLI(t, storage, inst.ID); got != live.Name {
+		t.Errorf("stored tmux name = %q, want the minted %q: the command path left the killed "+
+			"session's name on disk, so agent-deck shows this live session as errored and its "+
+			"tmux session is orphaned", got, live.Name)
+	}
+	if !outcome.Recorded {
+		t.Errorf("outcome.Recorded = false (%s) even though the name reached storage", outcome.Reason)
 	}
 }
 
-// newRestartPersistFixture returns storage under an isolated HOME plus one
-// saved session carrying a tmux name, standing in for the pre-restart state.
-func newRestartPersistFixture(
-	t *testing.T, profile string,
-) (*session.Storage, *session.Instance, []*session.GroupData) {
+// TestSkillRestartCommandPath_ReportsUnrecordedRestart pins the honesty half.
+// The row is deleted while the restart runs, as a peer process removing the
+// session would do. The restart still succeeded, so the command must not claim
+// failure -- but it must not print plain success either, because agent-deck can
+// no longer find the session it just started.
+func TestSkillRestartCommandPath_ReportsUnrecordedRestart(t *testing.T) {
+	skipIfNoTmuxBinaryCLI(t)
+
+	storage, inst := newCLIRestartFixture(t, "_test_cli_restart_unrecorded")
+	if err := storage.GetDB().DeleteInstance(inst.ID); err != nil {
+		t.Fatalf("DeleteInstance: %v", err)
+	}
+
+	adoptStateDB(storage)
+	outcome := restartProjectSkillsSession(inst, false, true)
+	t.Cleanup(func() {
+		if sess := inst.GetTmuxSession(); sess != nil {
+			_ = sess.Kill()
+		}
+	})
+
+	if !outcome.Restarted {
+		t.Fatal("command path reported no restart; the process did start")
+	}
+	if outcome.Recorded {
+		t.Fatal("outcome.Recorded = true after the row vanished: the command would report a " +
+			"durable restart that was never recorded")
+	}
+	if outcome.Reason == "" {
+		t.Error("outcome.Reason is empty: the operator gets a warning with no cause in it")
+	}
+
+	// The JSON both skill commands emit has to carry the distinction, not just
+	// the human message -- a script reading `restarted: true` would otherwise
+	// conclude everything is fine.
+	payload := map[string]interface{}{"success": true}
+	outcome.addTo(payload)
+	if payload["restarted"] != true {
+		t.Errorf("payload[restarted] = %v, want true", payload["restarted"])
+	}
+	if payload["tmux_name_recorded"] != false {
+		t.Errorf("payload[tmux_name_recorded] = %v, want false", payload["tmux_name_recorded"])
+	}
+	if payload["restart_warning"] == nil {
+		t.Error("payload has no restart_warning explaining the unknown outcome")
+	}
+}
+
+// TestRestartOutcome_NoRestartRequestedStaysQuiet keeps the reporting from
+// crying wolf: a command run without --restart has nothing to record, and a
+// blanket tmux_name_recorded=false there would read as a failure.
+func TestRestartOutcome_NoRestartRequestedStaysQuiet(t *testing.T) {
+	outcome := restartOutcomeFor(nil, false)
+
+	payload := map[string]interface{}{}
+	outcome.addTo(payload)
+	if payload["restarted"] != false {
+		t.Errorf("payload[restarted] = %v, want false", payload["restarted"])
+	}
+	if _, ok := payload["tmux_name_recorded"]; ok {
+		t.Error("payload carries tmux_name_recorded with no restart requested")
+	}
+	if got := outcome.describe("Attached x to y"); got != "Attached x to y" {
+		t.Errorf("describe() = %q, want the message unchanged", got)
+	}
+}
+
+const cliRestartOldTmuxName = "agentdeck_clirestart_deadbeef"
+
+// newCLIRestartFixture returns storage on its own profile plus one saved,
+// restart-eligible session whose stored tmux session is dead -- what a session
+// looks like after a reboot, and what forces restart() down the path that mints
+// a new name instead of respawning in place.
+func newCLIRestartFixture(t *testing.T, profile string) (*session.Storage, *session.Instance) {
 	t.Helper()
 
-	// HOME/XDG are already isolated for this whole package by runTestMain
-	// (testutil.IsolateHome + isolatePackageHome). Re-pointing HOME here would
-	// override that sanctioned sandbox with a plain temp dir and trip the
-	// agentpaths real-home warning, so the profile name is the only isolation
-	// this fixture needs.
+	// A codex session is restart-eligible for skills (ShouldRestartProjectSkills)
+	// and, unlike claude, skips the two-second "continue" nudge.
+	stubDir := t.TempDir()
+	stub := filepath.Join(stubDir, "codex")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatalf("write codex stub: %v", err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	prev := statedb.GetGlobal()
+	statedb.SetGlobal(nil)
+	t.Cleanup(func() { statedb.SetGlobal(prev) })
+
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		t.Fatalf("NewStorageWithProfile(%q): %v", profile, err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
 
-	inst := session.NewInstance("restart-target", "/tmp/proj")
-	inst.Tool = "claude"
+	inst := session.NewInstanceWithTool("cli-restart-target", t.TempDir(), "codex")
 	inst.Status = session.StatusRunning
 	inst.GroupPath = session.DefaultGroupPath
 	inst.SetTmuxSessionForTest(tmux.ReconnectSessionLazy(
-		"agentdeck_target_deadbeef", inst.ID, "/tmp/proj", "claude", "running",
+		cliRestartOldTmuxName, inst.ID, inst.ProjectPath, "codex", "running",
 	))
 
 	instances := []*session.Instance{inst}
 	if err := saveSessionData(storage, instances, nil); err != nil {
 		t.Fatalf("seed save: %v", err)
 	}
-	if got := persistedTmuxNameForID(t, storage, inst.ID); got != "agentdeck_target_deadbeef" {
-		t.Fatalf("fixture: persisted tmux name = %q, want the seeded name", got)
+	if got := storedTmuxNameCLI(t, storage, inst.ID); got != cliRestartOldTmuxName {
+		t.Fatalf("fixture: stored tmux name = %q, want %q", got, cliRestartOldTmuxName)
 	}
-
-	_, groups, err := storage.LoadWithGroups()
-	if err != nil {
-		t.Fatalf("LoadWithGroups: %v", err)
-	}
-	return storage, inst, groups
+	return storage, inst
 }
 
-// persistedTmuxNameForID round-trips through storage and returns the tmux
-// session name recorded for id, which is what a reload would restore.
-func persistedTmuxNameForID(t *testing.T, storage *session.Storage, id string) string {
+// storedTmuxNameCLI round-trips through storage and returns the tmux session
+// name on disk for id -- what any other process would see.
+func storedTmuxNameCLI(t *testing.T, storage *session.Storage, id string) string {
 	t.Helper()
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
@@ -116,11 +196,10 @@ func persistedTmuxNameForID(t *testing.T, storage *session.Storage, id string) s
 		if inst.ID != id {
 			continue
 		}
-		sess := inst.GetTmuxSession()
-		if sess == nil {
-			return ""
+		if sess := inst.GetTmuxSession(); sess != nil {
+			return sess.Name
 		}
-		return sess.Name
+		return ""
 	}
 	t.Fatalf("session %q missing from storage", id)
 	return ""

@@ -473,6 +473,16 @@ type Instance struct {
 	hookSessionID  string    // Session ID from hook payload
 	hookLastUpdate time.Time // When hook status was last received
 
+	// restartTmuxRecordErr holds why the last restart could not record the
+	// tmux session name it minted, or nil once one did. Callers that have no
+	// other save on their path (the CLI --restart commands) read it through
+	// RestartTmuxNameRecorded so they can report a live-but-unrecorded restart
+	// instead of announcing a success that never reached disk. Guarded by its
+	// own mutex rather than i.mu so the DB write never runs under the lock the
+	// TUI reads status through. See restart_tmux_persist.go.
+	restartTmuxRecordMu  sync.Mutex
+	restartTmuxRecordErr error
+
 	// SSE-based status detection for OpenCode (set by OpenCodeSSEWatcher,
 	// issue #1614). Not persisted; rebuilt from the live event stream.
 	sseStatus     string    // "running" or "waiting" (empty = no SSE data)
@@ -7982,6 +7992,15 @@ func (i *Instance) restart(env map[string]string) error {
 	} else {
 		i.Status = StatusIdle
 	}
+
+	// #1870: this is the only path that mints a new tmux session name, so it is
+	// the only place that has to make it durable. Callers that never save --
+	// mcp/skill/plugin attach|detach --restart -- used to leave the killed
+	// session's name on disk, so agent-deck reported a live session as broken
+	// and orphaned its tmux session. See restart_tmux_persist.go for why this
+	// is a targeted write and why a failure here is recorded rather than
+	// returned.
+	i.recordRestartTmuxName()
 
 	return nil
 }

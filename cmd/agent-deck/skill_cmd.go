@@ -17,35 +17,29 @@ func projectSkillsUnsupportedMessage() string {
 	return "project skills are supported for Claude, Gemini, Codex, and Pi sessions"
 }
 
-// restartProjectSkillsSession restarts inst so it picks up a skills change.
+// restartProjectSkillsSession restarts inst so it picks up a skills change and
+// reports what the restart actually achieved.
 //
-// storage/instances/groups are needed because a restart recreates the tmux
-// session under a NEW name that exists only on the in-memory Instance until
-// saved. Without persisting it the stored name points at a session that no
-// longer exists: the TUI reports the session as errored, and the live tmux
-// session is orphaned because nothing knows its name.
-func restartProjectSkillsSession(
-	inst *session.Instance,
-	storage *session.Storage,
-	instances []*session.Instance,
-	groups []*session.GroupData,
-	jsonOutput, quietMode bool,
-) bool {
+// It returns a restartOutcome rather than a bool because "restarted" and
+// "agent-deck can still find it" are separate facts. The restart mints a new
+// tmux session name; Instance.Restart records it at the chokepoint (#1870),
+// and when that record fails the session is live but untracked — which the
+// caller has to be able to say out loud instead of printing plain success.
+func restartProjectSkillsSession(inst *session.Instance, jsonOutput, quietMode bool) restartOutcome {
 	if inst == nil || !session.ShouldRestartProjectSkills(inst.Tool) {
-		return false
+		return restartOutcomeFor(nil, false)
 	}
 	if err := inst.Restart(); err != nil {
 		if !jsonOutput && !quietMode {
 			fmt.Fprintf(os.Stderr, "Warning: failed to restart session: %v\n", err)
 		}
-		return false
+		return restartOutcomeFor(inst, false)
 	}
-	// Warn rather than fail: the skills change already succeeded and must not
-	// be reported as failed, matching the restart-failure branch above.
-	if saveErr := saveSessionData(storage, instances, groups); saveErr != nil {
-		if !jsonOutput && !quietMode {
-			fmt.Fprintf(os.Stderr, "Warning: restarted, but saving the new tmux session name failed: %v\n", saveErr)
-		}
+	outcome := restartOutcomeFor(inst, true)
+	// Deliberately not gated on quietMode: quiet hides routine confirmations,
+	// and a restart nothing recorded is not routine.
+	if !jsonOutput {
+		outcome.warn(os.Stderr)
 	}
 	if session.IsClaudeCompatible(inst.Tool) {
 		time.Sleep(2 * time.Second)
@@ -53,7 +47,7 @@ func restartProjectSkillsSession(
 			_ = tmuxSess.SendKeysAndEnter("continue")
 		}
 	}
-	return true
+	return outcome
 }
 
 // handleSkill handles all skill subcommands.
@@ -356,7 +350,7 @@ func handleSkillAttach(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	instances, groupsData, err := storage.LoadWithGroups()
+	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
 		os.Exit(1)
@@ -394,27 +388,29 @@ func handleSkillAttach(profile string, args []string) {
 		}
 	}
 
-	restarted := false
+	// See adoptStateDB: the restart records its new tmux name through the
+	// process-wide StateDB, which a CLI process does not have until now.
+	adoptStateDB(storage)
+
+	outcome := restartOutcomeFor(nil, false)
 	if *restart {
-		restarted = restartProjectSkillsSession(inst, storage, instances, groupsData, *jsonOutput, quietMode)
+		outcome = restartProjectSkillsSession(inst, *jsonOutput, quietMode)
 	}
 
 	if *jsonOutput {
-		out.Print("", map[string]interface{}{
-			"success":   true,
-			"session":   inst.Title,
-			"skill":     attachment.Name,
-			"source":    attachment.Source,
-			"restarted": restarted,
-		})
+		payload := map[string]interface{}{
+			"success": true,
+			"session": inst.Title,
+			"skill":   attachment.Name,
+			"source":  attachment.Source,
+		}
+		outcome.addTo(payload)
+		out.Print("", payload)
 		return
 	}
 
 	message := fmt.Sprintf("Attached %s to %s", attachment.Name, inst.Title)
-	if restarted {
-		message += " - session restarted"
-	}
-	out.Success(message, nil)
+	out.Success(outcome.describe(message), nil)
 }
 
 func handleSkillDetach(profile string, args []string) {
@@ -458,7 +454,7 @@ func handleSkillDetach(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	instances, groupsData, err := storage.LoadWithGroups()
+	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
 		os.Exit(1)
@@ -485,27 +481,29 @@ func handleSkillDetach(profile string, args []string) {
 		}
 	}
 
-	restarted := false
+	// See adoptStateDB: the restart records its new tmux name through the
+	// process-wide StateDB, which a CLI process does not have until now.
+	adoptStateDB(storage)
+
+	outcome := restartOutcomeFor(nil, false)
 	if *restart {
-		restarted = restartProjectSkillsSession(inst, storage, instances, groupsData, *jsonOutput, quietMode)
+		outcome = restartProjectSkillsSession(inst, *jsonOutput, quietMode)
 	}
 
 	if *jsonOutput {
-		out.Print("", map[string]interface{}{
-			"success":   true,
-			"session":   inst.Title,
-			"skill":     removed.Name,
-			"source":    removed.Source,
-			"restarted": restarted,
-		})
+		payload := map[string]interface{}{
+			"success": true,
+			"session": inst.Title,
+			"skill":   removed.Name,
+			"source":  removed.Source,
+		}
+		outcome.addTo(payload)
+		out.Print("", payload)
 		return
 	}
 
 	message := fmt.Sprintf("Detached %s from %s", removed.Name, inst.Title)
-	if restarted {
-		message += " - session restarted"
-	}
-	out.Success(message, nil)
+	out.Success(outcome.describe(message), nil)
 }
 
 func handleSkillSource(args []string) {
