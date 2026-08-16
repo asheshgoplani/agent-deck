@@ -147,6 +147,9 @@ type SSHRunner struct {
 	AgentDeckPath string // Remote agent-deck binary path
 	Profile       string // Remote profile name
 
+	// commandTimeout bounds each remote command; zero means the 30s default.
+	commandTimeout time.Duration
+
 	// configuredPath is the raw agent_deck_path from config ("" if unset). It
 	// lets ResolveRemotePath decide whether to honor an explicit user path or
 	// probe the remote's real binary location via $PATH (#1171).
@@ -172,12 +175,17 @@ func NewSSHRunner(name string, rc RemoteConfig) *SSHRunner {
 		AgentDeckPath:  rc.GetAgentDeckPath(),
 		configuredPath: rc.AgentDeckPath,
 		Profile:        rc.GetProfile(),
+		commandTimeout: rc.GetCommandTimeout(),
 	}
 }
 
 // Run executes an agent-deck command on the remote host and returns stdout.
 func (r *SSHRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	timeout := r.commandTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return r.run(timeoutCtx, args...)
 }

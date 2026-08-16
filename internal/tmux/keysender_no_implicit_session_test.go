@@ -111,11 +111,18 @@ func TestOpenKeySender_CreatesNoImplicitSession(t *testing.T) {
 }
 
 // bareControlArgv matches an argv that is nothing but a control-mode tmux
-// invocation, with or without a socket selector: "tmux -C",
-// "tmux -L foo -C", "tmux -S /path -C". This is the shape the 2026-07-26
-// reaper matched with `pgrep -fx "tmux -C"` — on macOS a server auto-started
-// by such a client inherits the argv and becomes indistinguishable from it.
-var bareControlArgv = regexp.MustCompile(`^(\S*/)?tmux( -[LS] \S+)? -C$`)
+// invocation, with or without the global UTF-8 flag and a socket selector:
+// "tmux -C", "tmux -u -C", "tmux -u -L foo -C", "tmux -S /path -C". This is
+// the shape the 2026-07-26 reaper matched with `pgrep -fx "tmux -C"` — on
+// macOS a server auto-started by such a client inherits the argv and becomes
+// indistinguishable from it.
+//
+// The optional `-u` group is load-bearing, not cosmetic: since #1867 the
+// factory emits it on every parsed client, so a regression back to a bare
+// control invocation would produce "tmux -u -L foo -C". Without the group this
+// pattern would silently stop matching that and the guard would go green while
+// guarding nothing.
+var bareControlArgv = regexp.MustCompile(`^(\S*/)?tmux( -u)?( -[LS] \S+)? -C$`)
 
 // TestOpenKeySender_ArgvIsNeverBareControlMode is the 2026-07-26 regression.
 // The client this package spawns must carry its command in argv so no

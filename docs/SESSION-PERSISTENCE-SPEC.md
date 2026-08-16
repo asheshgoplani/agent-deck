@@ -145,7 +145,7 @@ This script is invoked in CI AND is referenced from the CLAUDE.md section (REQ-4
 
 ## Architecture notes
 
-Agent-deck is a Go 1.22+ CLI + Bubble Tea TUI. Relevant packages for this spec:
+Agent-deck is a Go 1.25.13 CLI + Bubble Tea TUI. Relevant packages for this spec:
 
 - `internal/tmux/` — low-level tmux server/session spawn (`tmux.go` line 814-837 holds the systemd-run wrap).
 - `internal/session/` — `Instance` struct, lifecycle (`instance.go`), user config (`userconfig.go`), storage (JSON on disk under `~/.agent-deck/<profile>/`).

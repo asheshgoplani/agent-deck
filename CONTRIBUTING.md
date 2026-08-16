@@ -62,7 +62,7 @@ Tell us **which model** in the PR's AI-disclosure section (`claude-opus-4-x`, `g
 
 ### Prerequisites
 
-- Go 1.24 or later (or Go 1.21+ with automatic toolchain download)
+- Go 1.25.13
 - tmux
 - Make
 

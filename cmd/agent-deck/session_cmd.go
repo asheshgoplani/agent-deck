@@ -1665,6 +1665,15 @@ func handleSessionShow(profile string, args []string) {
 		jsonData["command"] = inst.Command
 	}
 
+	// #1924: always present, even when empty. `session set <id> wrapper …` is
+	// the natural thing to verify with `session show --json`, and this key was
+	// missing entirely — so `.wrapper` read back as null and a write that had
+	// in fact persisted looked like silent data loss. Same reasoning the
+	// channels field states below: omitting when empty makes absence-of-field
+	// ambiguous with absence-of-value, and here that ambiguity cost a user a
+	// bug report against the wrong component.
+	jsonData["wrapper"] = inst.Wrapper
+
 	if session.IsClaudeCompatible(inst.Tool) {
 		jsonData["claude_session_id"] = inst.ClaudeSessionID
 		jsonData["can_fork"] = inst.CanFork()
@@ -1918,6 +1927,26 @@ func handleSessionSet(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// A title change takes a (title, location) pair exactly as `add` does, so it
+	// runs under the same profile registration lock and re-reads the instance
+	// list INSIDE it. Without that, two concurrent renames onto one title both
+	// see it free and both apply. Only the title field needs it; every other
+	// field is per-session state that cannot collide.
+	if field == session.FieldTitle {
+		regLock, regLockErr := session.AcquireRegistrationLock(profile)
+		if regLockErr != nil {
+			out.Error(fmt.Sprintf("failed to acquire session registration lock: %v", regLockErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		defer regLock.Release()
+		freshInstances, freshGroups, reloadErr := reloadForRegistration(storage)
+		if reloadErr != nil {
+			out.Error(reloadErr.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		instances, groupsData = freshInstances, freshGroups
+	}
+
 	// Resolve session
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
@@ -1927,6 +1956,20 @@ func handleSessionSet(profile string, args []string) {
 		}
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
+	}
+
+	// #1853: `session set <id> title` had no collision check on either side of
+	// the SetField call, so it could rename a session onto a title another
+	// session already holds at the same location — the exact state `add` and
+	// `launch` refuse. Two sessions sharing a title at one location are then
+	// both unaddressable by title, because ResolveSession can only report
+	// ErrCodeAmbiguous. Same predicate and same ALREADY_EXISTS code as `add` and
+	// `rename`, naming the existing session's ID so the user can act on it.
+	if field == session.FieldTitle {
+		if msg, code := checkTitleConflict(instances, inst, value); msg != "" {
+			out.Error(msg, code)
+			os.Exit(1)
+		}
 	}
 
 	// #924 follow-up: the conversation follows the account. Capture the old
@@ -2106,14 +2149,11 @@ func findSessionByTmux(instances []*session.Instance) *session.Instance {
 		}
 	}
 
-	// Try to find by path (only for non-agentdeck tmux sessions)
-	for _, inst := range instances {
-		if inst.ProjectPath == currentPath {
-			return inst
-		}
-	}
-
-	return nil
+	// Try to find by path (only for non-agentdeck tmux sessions). The pane's cwd
+	// is a LOCAL path, so only a local session can own it — a remote session's
+	// ProjectPath is a placeholder that frequently equals the controller's
+	// working directory (#1852 site 4).
+	return localSessionForPaneCwd(instances, currentPath)
 }
 
 // showTmuxSessionInfo shows information about the current tmux session (unregistered)
@@ -3473,7 +3513,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		paneNow := send.CaptureOutcome(captured, captureErr)
 		if paneNow.OK {
 			content := tmux.StripANSI(captured)
-			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
+			unsentPromptDetected = send.ComposerHoldsPasteMarker(captured, tmux.StripANSI) || send.HasUnsentComposerPrompt(content, message)
 			if !sawDeliveryEvidence && deliveryToken != "" && strings.Contains(content, deliveryToken) {
 				sawDeliveryEvidence = true
 			}
@@ -3583,7 +3623,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	if opts.verifyDelivery {
 		if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil {
 			content := tmux.StripANSI(rawContent)
-			if send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message) {
+			if send.ComposerHoldsPasteMarker(rawContent, tmux.StripANSI) || send.HasUnsentComposerPrompt(content, message) {
 				return deliveryTypedNotSubmitted, fmt.Errorf(
 					"message typed but not submitted after %d verification checks (issue #1413): "+
 						"the composer still holds the message despite bounded Enter retries. "+
@@ -3661,6 +3701,18 @@ type sendArrivalBaseline struct {
 	// off rather than defaulted to zero: a failed look would otherwise make
 	// a pre-existing copy of a repeated message read as a new arrival.
 	paneOK bool
+	// pasteMarkers is how many "[Pasted text …]" collapse markers the
+	// composer already held before the send. Only meaningful when paneOK is
+	// true — it comes from the same capture. Needed because the transport
+	// frames multi-line bodies as bracketed pastes (issue #1855), which a
+	// composer renders as that marker instead of the verbatim body.
+	//
+	// A COUNT, exactly like occurrences above, and for the same reason: a
+	// submitted paste leaves its marker on screen permanently, so a boolean
+	// "a marker was already there" is armed forever after the first
+	// multi-line send to a pane and kills the signal for every later one.
+	// Only "one more than before" is attributable to THIS send.
+	pasteMarkers int
 	// wasActive reports whether the agent was already working before the
 	// send, in which case "it is active now" proves nothing.
 	wasActive bool
@@ -3675,8 +3727,8 @@ type sendArrivalBaseline struct {
 // baseline is disabled, never guessed.
 func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalBaseline {
 	base := sendArrivalBaseline{}
-	if n, ok := countMessageInPane(target, message); ok {
-		base.occurrences, base.paneOK = n, true
+	if n, markers, ok := paneArrivalObservation(target, message); ok {
+		base.occurrences, base.pasteMarkers, base.paneOK = n, markers, true
 	}
 	if status, err := target.GetStatus(); err == nil {
 		base.wasActive, base.statusOK = status == "active", true
@@ -3762,10 +3814,31 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 			}
 		}
 		if baseline.paneOK {
-			if n, ok := countMessageInPane(target, message); ok && n > baseline.occurrences {
-				// Keep polling: the body is in, but the turn may still start
-				// within the budget and upgrade this to submitted.
-				sawBody = true
+			if n, markers, ok := paneArrivalObservation(target, message); ok {
+				if n > baseline.occurrences {
+					// Keep polling: the body is in, but the turn may still
+					// start within the budget and upgrade this to submitted.
+					sawBody = true
+				}
+				// A paste marker the COMPOSER did not hold before the send is
+				// the collapsed rendering of this send's own framed body
+				// (issue #1855) — codex-style composers render agent-deck's
+				// multi-line paste as "[Pasted text …]" too, so the verbatim
+				// token may never become visible. Same evidentiary strength
+				// as the body itself: bytes reached the composer, and nothing
+				// about the agent accepting them.
+				//
+				// Measured as `markers > baseline.pasteMarkers`, the same
+				// delta idiom as the body count above and for the same
+				// reason. A boolean here would be wrong twice over: a
+				// submitted paste leaves its marker on screen, so the
+				// baseline arms permanently after the first multi-line send
+				// to the pane, and a marker sitting in the TRANSCRIPT (the
+				// shape of a send that SUCCEEDED) is not a composer holding
+				// unsent bytes.
+				if markers > baseline.pasteMarkers {
+					sawBody = true
+				}
 			}
 		}
 		if i < checks-1 {
@@ -3841,20 +3914,40 @@ func maxDeliverableLineBytes(target sendRetryTarget) int {
 	return arrivalSafeLineBytes
 }
 
-// countMessageInPane reports how many times the message's distinctive token
-// appears in the pane right now. The bool reports whether the pane was
-// actually read: a failed look is not "zero occurrences", it is no
-// observation at all, and callers must not treat the two the same.
-func countMessageInPane(target sendRetryTarget, message string) (int, bool) {
+// paneArrivalObservation reads the pane ONCE and reports both arrival signals
+// the check compares against its baseline: how many times the message's
+// distinctive token is visible in the pane, and how many "[Pasted text …]"
+// collapse markers the COMPOSER holds. One capture serving both signals is
+// deliberate — they must describe the same instant, and the scripted-capture
+// test fakes index captures by call count. The final bool reports whether the
+// pane was actually read: a failed look is not "zero occurrences", it is no
+// observation at all, and callers must not treat the two the same. A message
+// too short to yield a token reports false without reading the pane.
+//
+// The two signals are scoped differently on purpose. The body token is looked
+// for across the WHOLE pane, because a body that scrolled out of the composer
+// into the transcript still arrived. The marker is scoped to the COMPOSER
+// (send.ComposerPasteMarkerCount, the counting form of the helper the sibling
+// paths at launch_verify_prompt.go:76 and internal/ui/home.go:10308 already
+// use), because a marker in the TRANSCRIPT is the ordinary trace of a
+// SUCCESSFUL multi-line send: reading it as this send's unsent bytes turns a
+// delivered message into a "submission was never confirmed" failure, and a
+// false negative is the input to the double-delivery class (#876). Only a
+// composer holding one more marker than before is unsubmitted payload.
+//
+// Both counts are raw observations; the caller compares them to its baseline.
+func paneArrivalObservation(target sendRetryTarget, message string) (int, int, bool) {
 	token := collapseWhitespace(messageDeliveryToken(message))
 	if token == "" {
-		return 0, false
+		return 0, 0, false
 	}
 	raw, err := target.CapturePaneFresh()
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
-	return strings.Count(collapseWhitespace(tmux.StripANSI(raw)), token), true
+	content := tmux.StripANSI(raw)
+	return strings.Count(collapseWhitespace(content), token),
+		send.ComposerPasteMarkerCount(raw, tmux.StripANSI), true
 }
 
 // collapseWhitespace removes every whitespace byte, so a comparison survives
@@ -4115,6 +4208,21 @@ func streamSessionSend(inst *session.Instance, sessionRef, profile string, sentA
 			session.NoteClaudeSessionIDFromOwnPane(inst)
 			inst.ClaudeDetectedAt = time.Now()
 		}
+	}
+
+	// A remote session's transcript is on the remote host, so the poll below can
+	// only ever time out. Say why now instead of after the full timeout with
+	// "transcript not found", which reads as "not written yet" and sends the
+	// user looking on the wrong machine (#1851).
+	if !resolvedInst.TranscriptIsResolvableLocally() {
+		errEv := map[string]interface{}{
+			"type":    "error",
+			"message": fmt.Sprintf("session runs on %s; its Claude transcript is not on this machine, so there is nothing to stream", resolvedInst.SSHHost),
+			"ts":      time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		b, _ := json.Marshal(errEv)
+		fmt.Println(string(b))
+		return fmt.Errorf("session runs on %s; its Claude transcript is not on this machine", resolvedInst.SSHHost)
 	}
 
 	var jsonlPath string

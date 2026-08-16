@@ -273,7 +273,8 @@ func TestIsTerminalHookEvent(t *testing.T) {
 	}{
 		{event: "SessionEnd", expect: true},
 		{event: "session_end", expect: true},
-		{event: "on_session_end", expect: true}, // Hermes shell hook terminal event
+		{event: "on_session_end", expect: false}, // Hermes per-turn event
+		{event: "on_session_finalize", expect: true},
 		{event: "session.closed", expect: true},
 		{event: "ThreadClosed", expect: true},
 		{event: "thread/terminated", expect: true},

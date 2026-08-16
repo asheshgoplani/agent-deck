@@ -722,6 +722,12 @@ type RemoteConfig struct {
 
 	// Profile is the remote profile to use (default: "default")
 	Profile string `toml:"profile,omitempty"`
+
+	// CommandTimeoutSeconds bounds each remote agent-deck command (default 30).
+	// Raise it for remotes whose session fleets make `list --json` slow; the
+	// old hardcoded 10s silently killed fetches from hosts with many sessions,
+	// making the whole remote look unavailable (#1859 family).
+	CommandTimeoutSeconds int `toml:"command_timeout_seconds,omitempty"`
 }
 
 // GetAgentDeckPath returns the agent-deck binary path, defaulting to "agent-deck".
@@ -730,6 +736,15 @@ func (rc RemoteConfig) GetAgentDeckPath() string {
 		return rc.AgentDeckPath
 	}
 	return "agent-deck"
+}
+
+// GetCommandTimeout returns the per-command timeout for this remote,
+// defaulting to 30s and rejecting non-positive values.
+func (rc RemoteConfig) GetCommandTimeout() time.Duration {
+	if rc.CommandTimeoutSeconds > 0 {
+		return time.Duration(rc.CommandTimeoutSeconds) * time.Second
+	}
+	return 30 * time.Second
 }
 
 // GetProfile returns the remote profile, defaulting to "default".
@@ -1856,6 +1871,16 @@ func (c *UserConfig) GetProfileCodexConfigDir(profile string) string {
 
 // CursorSettings defines Cursor Agent CLI integration configuration (Issue #1672).
 type CursorSettings struct {
+	// Command overrides the default binary/invocation for Cursor sessions.
+	// Supports flags (e.g., "agent --force", "cursor agent"). When empty,
+	// DefaultCursorCommand() prefers `agent` when present on PATH, else
+	// `cursor agent`.
+	Command string `toml:"command,omitempty"`
+
+	// EnvFile is a .env file specific to Cursor sessions (sourced before
+	// the agent command runs, like [gemini].env_file). Optional.
+	EnvFile string `toml:"env_file,omitempty"`
+
 	// HooksEnabled enables Cursor Agent CLI hooks for real-time status detection.
 	// When enabled, agent-deck silently injects lifecycle hooks into
 	// ~/.cursor/hooks.json on TUI startup whenever the cursor binary is on PATH.
@@ -3402,6 +3427,9 @@ func GetCustomToolNames() []string {
 func GetToolCommand(toolName string) string {
 	config, _ := LoadUserConfig()
 	if config == nil {
+		if toolName == "cursor" {
+			return DefaultCursorCommand()
+		}
 		return toolName
 	}
 	switch toolName {
@@ -3429,6 +3457,11 @@ func GetToolCommand(toolName string) string {
 		if config.Hermes.Command != "" {
 			return config.Hermes.Command
 		}
+	case "cursor":
+		if config.Cursor.Command != "" {
+			return config.Cursor.Command
+		}
+		return DefaultCursorCommand()
 	}
 	return toolName
 }

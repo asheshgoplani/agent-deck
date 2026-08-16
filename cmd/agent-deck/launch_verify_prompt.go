@@ -34,6 +34,29 @@ func verifyPromptConsumedAfterLaunch(
 	maxWait, pollInterval time.Duration,
 	warn io.Writer,
 ) {
+	verifyPromptConsumedAfterLaunchAttributed(target, message, false, maxWait, pollInterval, warn)
+}
+
+// verifyPromptConsumedAfterLaunchAttributed is verifyPromptConsumedAfterLaunch
+// with the #1777 provenance made explicit. ownPasteMarker carries the caller's
+// pre-send observation that the composer held no "[Pasted text …]" marker
+// (composerPasteFree, captured before the initial send): a marker seen now can
+// then only be the collapsed rendering of our own prompt.
+//
+// This matters because the transport frames every multi-line body as a
+// bracketed paste (issue #1855), so Claude collapsing the launch prompt behind
+// a paste marker is the NORMAL outcome for a multi-line `launch -m`, not a
+// rare foreign-paste event. Without the provenance, the attribution gate reads
+// our own marker as a foreign draft and permanently withholds the one recovery
+// retry this function exists to make — the v1.7.64 swallowed-Enter race would
+// leave every multi-line prompt sitting unsubmitted.
+func verifyPromptConsumedAfterLaunchAttributed(
+	target sendRetryTarget,
+	message string,
+	ownPasteMarker bool,
+	maxWait, pollInterval time.Duration,
+	warn io.Writer,
+) {
 	if pollPromptConsumed(target, message, maxWait, pollInterval) {
 		return
 	}
@@ -42,14 +65,23 @@ func verifyPromptConsumedAfterLaunch(
 	// attribute — a materialized autosuggestion, an operator draft — the
 	// retry would submit it with our prompt appended (#1777). Withhold it and
 	// let the warning below surface the unconsumed prompt instead.
-	attrib := send.EnterAttribution{Message: message}
-	if attrib.EnterWouldSubmitForeignDraft(send.CaptureOutcome(target.CapturePaneFresh()), tmux.StripANSI) {
+	attrib := send.EnterAttribution{Message: message, OwnPasteMarker: ownPasteMarker}
+	capture := send.CaptureOutcome(target.CapturePaneFresh())
+	if attrib.EnterWouldSubmitForeignDraft(capture, tmux.StripANSI) {
 		if warn != nil {
 			fmt.Fprintln(warn, "warning: launch prompt not consumed and the composer holds unattributable content; skipping the retry so nothing unauthored is submitted")
 		}
 		return
 	}
-	_ = target.SendKeysAndEnter(message)
+	if ownPasteMarker && capture.OK && send.ComposerHoldsPasteMarker(capture.Raw, tmux.StripANSI) {
+		// The composer holds our own collapsed paste marker: the body already
+		// arrived and only the Enter was lost. A bare Enter is the whole
+		// recovery — retyping the message would append a second copy of the
+		// prompt behind the marker and submit both.
+		_ = target.SendEnter()
+	} else {
+		_ = target.SendKeysAndEnter(message)
+	}
 	if pollPromptConsumed(target, message, maxWait, pollInterval) {
 		return
 	}

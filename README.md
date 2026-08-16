@@ -9,7 +9,7 @@
 
 [![GitHub Stars](https://img.shields.io/github/stars/asheshgoplani/agent-deck?style=for-the-badge&logo=github&color=yellow&labelColor=1a1b26)](https://github.com/asheshgoplani/agent-deck/stargazers)
 [![Downloads](https://img.shields.io/github/downloads/asheshgoplani/agent-deck/total?style=for-the-badge&logo=github&color=bb9af7&labelColor=1a1b26)](https://github.com/asheshgoplani/agent-deck/releases)
-[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=for-the-badge&logo=go&labelColor=1a1b26)](https://go.dev)
+[![Go Version](https://img.shields.io/badge/Go-1.25.13-00ADD8?style=for-the-badge&logo=go&labelColor=1a1b26)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-9ece6a?style=for-the-badge&labelColor=1a1b26)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20WSL-7aa2f7?style=for-the-badge&labelColor=1a1b26)](https://github.com/asheshgoplani/agent-deck)
 [![Latest Release](https://img.shields.io/github/v/release/asheshgoplani/agent-deck?style=for-the-badge&color=e0af68&labelColor=1a1b26)](https://github.com/asheshgoplani/agent-deck/releases)
@@ -85,6 +85,7 @@ See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#uninstalli
 agent-deck                        # Launch TUI
 agent-deck add . -c claude        # Add current dir with Claude
 agent-deck session fork my-proj   # Fork a supported session
+agent-deck session send my-proj --message-file task.md # Send a multiline prompt
 agent-deck session remove my-proj # Remove stopped/errored session from registry (transcripts preserved)
 agent-deck mcp attach my-proj exa # Attach MCP to session
 agent-deck skill attach my-proj docs --source pool --restart # Attach skill + restart
@@ -721,6 +722,15 @@ Agent Deck works with any terminal-based AI tool:
 | **Hermes Agent** | Organization, launch |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
+Codex status detection uses Codex's notify hook. Install and verify it once for each Codex home:
+
+```bash
+agent-deck codex-hooks install
+agent-deck codex-hooks status
+```
+
+If you set `CODEX_HOME`, use the same environment here and when launching Codex. Without the hook, turn-level running/waiting status cannot converge reliably.
+
 Hide tools you don't use from the new-session picker with `[ui].hidden_tools` (applies to TUI and web; `shell` is always available).
 
 ### Cost Tracking Dashboard
@@ -835,13 +845,12 @@ Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.co
 - Or run `agent-deck feedback` from the CLI (rating 1-5)
 - **Nothing is sent until you explicitly type `y` at the confirmation prompt.** Before the prompt, the CLI shows (1) the public URL the comment will land on, (2) that it posts via the `gh` CLI using your account, (3) your GitHub username as it will appear, and (4) the exact body that will be posted. Default answer is **N** — pressing Enter declines.
 - If `gh` fails (auth required, not installed, network), the CLI prints an error and exits non-zero. No clipboard or browser fallback is triggered on the CLI path.
-- A private/anonymous feedback channel is being designed for a future release — track in [#679](https://github.com/asheshgoplani/agent-deck/issues/679).
 
 **Feedback prompt frequency** (v1.7.41+): the TUI's auto-prompt is paced so brand-new users aren't asked on their first few launches. The first prompt appears only after **7 launches or 3 days** of use, whichever comes later. If you dismiss it, agent-deck waits **14 days** before asking again. You'll see at most **3 prompts per version**, and pressing `n` at any step opts you out permanently — use `agent-deck feedback` or `Ctrl+E` to re-enable on demand. Opt-out always wins over every pacing gate.
 
 ### Remote Instances
 
-Manage agent-deck instances running on remote SSH servers from your local terminal. Remote sessions appear alongside local sessions in the TUI and all CLI commands.
+Manage agent-deck instances running on remote SSH servers from your local terminal. Remote sessions report coarse live status and use the same nested group layout as local sessions; remote groups can be collapsed, and `K`/`J` reorder sessions within a remote group. Session identity includes its location, so the same title can safely exist locally and on different remote host/path pairs.
 
 ```bash
 # Register a remote
@@ -865,25 +874,9 @@ agent-deck remote update          # all remotes
 agent-deck remote update dev      # specific remote
 ```
 
-Remote configuration is stored under `[remotes]` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`). All `remote` subcommands support `--json` output for scripting. Run `agent-deck remote --help` for the full flag reference.
+Remote configuration is stored under `[remotes]` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`). `remote list` and `remote sessions` support `--json` output for scripting. See the [Remote Commands reference](skills/agent-deck/references/cli-reference.md#remote-commands) for flags, security behavior, and examples.
 
 Pressing `n` on a remote group or session opens the full new-session dialog in **remote mode**: path suggestions come from the remote host, the remote session's group is pre-filled, and the create routes over SSH with your chosen tool — sessions are never accidentally created on localhost.
-
-#### Security
-
-- **SSH host-key stance.** agent-deck verifies remote host keys against your `~/.ssh/known_hosts` using OpenSSH's secure default — it never sets `StrictHostKeyChecking=no` and never points `UserKnownHostsFile` at `/dev/null`. Every connection (list, attach, deploy) runs with `BatchMode=yes`, so an **unknown or changed host key fails fast** with a clear `Host key verification failed` error instead of silently trusting the host or hanging on a prompt. Add each remote to `known_hosts` first (e.g. `ssh user@host` once interactively, or `ssh-keyscan`), and authenticate with keys/an agent (BatchMode disables interactive password prompts). A changed host key is treated as a potential MITM and refused until you resolve it.
-- **Verified binary deploys.** `agent-deck remote update` downloads the GitHub release archive and verifies its **SHA-256 against the release's published `checksums.txt`** before deploying. A missing `checksums.txt`, a missing entry, or a hash mismatch aborts the deploy — an unverified or tampered artifact is never piped to a remote.
-
-### Reaching services running inside remote sessions
-
-If you run a dev server, REPL, or web UI inside a remote session and want to reach it from your local browser, use **[Tailscale](https://tailscale.com)** rather than ad-hoc SSH port forwarding. Tailscale gives every machine on your tailnet a direct IP, so a service on `localhost:3000` of your remote box is reachable at `http://<remote-tailnet-ip>:3000` from your laptop with no `-L`/`-R` setup, no port collisions when multiple sessions share a remote, and no ControlMaster edge cases.
-
-Setup once:
-1. Install Tailscale on your local machine and on each remote: `curl -fsSL https://tailscale.com/install.sh | sh`
-2. `sudo tailscale up` on both ends, sign in with the same account
-3. Use the remote's tailnet IP (or MagicDNS name) in your browser
-
-This is why agent-deck does not ship native SSH `-L`/`-R` forwarding: Tailscale solves the same problem more robustly with no per-session configuration.
 
 ## Web Mode
 
@@ -912,6 +905,8 @@ agent-deck web --token my-secret
 # then open: http://127.0.0.1:8420/?token=my-secret
 ```
 
+The browser UI includes the live Command Center, session terminal, costs, archive, and settings views. See [Command Center](docs/COMMAND-CENTER.md) for the fleet view; use `--read-only` when browser clients should not mutate sessions.
+
 ## Documentation
 
 **Onboarding** — five-minute walkthroughs for new users:
@@ -925,7 +920,6 @@ agent-deck web --token my-secret
 
 | Guide | What's Inside |
 |-------|---------------|
-| [Conductor](docs/conductor/) | What a conductor is, channel pairing, state files, multi-conductor setups |
 | [Skills](documentation/SKILLS.md) | User-level vs pool skills, authoring, attach/detach, when to use which tier |
 | [Watchdog](documentation/WATCHDOG.md) | Optional Python daemon that auto-restarts critical sessions and nudges stuck children |
 | [Watchers](documentation/WATCHERS.md) | Event-forwarding framework: doorbell model, built-in adapters, custom watchers, gotchas |

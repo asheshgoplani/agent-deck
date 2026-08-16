@@ -224,7 +224,7 @@ func TestSchemaExtrasZone_NoMigrationRequired(t *testing.T) {
 // behavior with modernc.org/sqlite JSON1:
 //   - Schema: tool_data TEXT NOT NULL DEFAULT '{}' — SQL NULL is rejected.
 //   - COALESCE(tool_data,'{}') covers hypothetical NULL (corrupt restore).
-//   - Empty string '' is NOT replaced by COALESCE and json_set fails
+//   - An empty tool_data string is NOT replaced by COALESCE and json_set fails
 //     ("malformed JSON") — same residual risk as Claude/Gemini bindings.
 //   - Binding onto '{}' works (happy path for fresh rows).
 func TestWriteGenericSessionBinding_EmptyObjectAndJSONNull(t *testing.T) {

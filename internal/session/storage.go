@@ -67,8 +67,13 @@ type InstanceData struct {
 	// GenericSessionID is the custom [tools.*] conversation id (extras zone).
 	GenericSessionID  string    `json:"generic_session_id,omitempty"`
 	GenericDetectedAt time.Time `json:"generic_detected_at,omitempty"`
-	ArchivedAt        time.Time `json:"archived_at,omitempty"`
-	TmuxSession       string    `json:"tmux_session"`
+	// LastActivityAt mirrors Instance.lastActivityAt (issue #1846): durable
+	// hook-evidenced activity, persisted via the tool_data extras zone (see
+	// last_activity_persist.go). Zero means unknown (old record or never
+	// active).
+	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
+	ArchivedAt     time.Time `json:"archived_at,omitempty"`
+	TmuxSession    string    `json:"tmux_session"`
 	// TmuxSocketName is the tmux -L selector captured at Instance creation
 	// (issue #687, v1.7.50). Empty for pre-v1.7.50 rows — those keep hitting
 	// the default server after upgrade.
@@ -1020,6 +1025,10 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// successful DB write (consumeGenericSessionIDCleared), not here: converting
 	// without persisting must not drop clear intent.
 	toolData = WriteGenericSessionIDToToolData(toolData, inst.GenericSessionID, inst.GenericDetectedAt, inst.genericSessionIDCleared)
+	// #1846: same treatment for the durable last-activity record, so the
+	// timestamp badge and preview survive a TUI restart instead of
+	// collapsing back to CreatedAt/LastAccessedAt.
+	toolData = WriteLastActivityAtToToolData(toolData, inst.LastActivityAt())
 
 	return &statedb.InstanceRow{
 		ID:                  inst.ID,
@@ -1196,6 +1205,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
 			GenericDetectedAt:         ReadGenericDetectedAtFromToolData(r.ToolData),
+			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
 		}
 	}
 
@@ -1320,6 +1330,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
 			GenericDetectedAt:         ReadGenericDetectedAtFromToolData(r.ToolData),
+			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
 		}
 	}
 
@@ -1571,14 +1582,19 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			LastStartedAt:                instData.LastStartedAt,
 			GenericSessionID:             instData.GenericSessionID,
 			GenericDetectedAt:            instData.GenericDetectedAt,
-			Sandbox:                      instData.Sandbox,
-			SandboxContainer:             instData.SandboxContainer,
-			SSHHost:                      instData.SSHHost,
-			SSHRemotePath:                instData.SSHRemotePath,
-			MultiRepoEnabled:             instData.MultiRepoEnabled,
-			AdditionalPaths:              instData.AdditionalPaths,
-			MultiRepoTempDir:             instData.MultiRepoTempDir,
-			tmuxSession:                  tmuxSess,
+			// #1846: the loaded value came from the DB, so it is by
+			// definition already persisted — seed both fields so the write
+			// throttle has an accurate baseline.
+			lastActivityAt:        instData.LastActivityAt,
+			lastActivityPersisted: instData.LastActivityAt,
+			Sandbox:               instData.Sandbox,
+			SandboxContainer:      instData.SandboxContainer,
+			SSHHost:               instData.SSHHost,
+			SSHRemotePath:         instData.SSHRemotePath,
+			MultiRepoEnabled:      instData.MultiRepoEnabled,
+			AdditionalPaths:       instData.AdditionalPaths,
+			MultiRepoTempDir:      instData.MultiRepoTempDir,
+			tmuxSession:           tmuxSess,
 		}
 		// Convert multi-repo worktree data
 		for _, wt := range instData.MultiRepoWorktrees {
