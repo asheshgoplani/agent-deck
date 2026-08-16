@@ -9,6 +9,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { EmptyStateDashboard } from './EmptyStateDashboard.js'
 import { terminalKeymap } from './terminalKeys.js'
+import { createPasteHandler } from './terminalPaste.js'
 import { createTerminalLinkHandler } from './terminalLinks.js'
 
 // Mobile detection: pointer:coarse for touch devices
@@ -284,22 +285,15 @@ export function TerminalPanel() {
 
     // WSL2+Chrome paste fix: xterm.js 6.0's default paste path can fail and
     // destroy the system clipboard when focus is not on .xterm-helper-textarea.
-    // Capture the paste on the container first, read clipboardData directly,
-    // and forward through the same path as terminal.onData.
+    // Capture the paste on the container first and read clipboardData directly,
+    // then hand the text to terminal.paste() so xterm still owns the ENCODING
+    // (CR line breaks + bracketed-paste markers) and the bytes reach sendInput
+    // through onData like any other input. See createPasteHandler.
     if (!mobile) {
-      container.addEventListener('paste', (event) => {
-        if (readOnlySignal.value) return
-        if (!ctx.ws || ctx.ws.readyState !== WebSocket.OPEN || !ctx.terminalAttached) return
-        const cd = event.clipboardData
-        if (!cd) return
-        let text = cd.getData('text/plain')
-        if (!text) return
-        // Normalize CRLF/CR to LF; shells expect LF, bare CR re-runs input.
-        text = text.replace(/\r\n?/g, '\n')
-        event.preventDefault()
-        event.stopPropagation()
-        sendInput(text)
-      }, { capture: true, signal: controller.signal })
+      container.addEventListener('paste', createPasteHandler(terminal), {
+        capture: true,
+        signal: controller.signal,
+      })
     }
 
     terminal.writeln('Connecting to terminal...')
