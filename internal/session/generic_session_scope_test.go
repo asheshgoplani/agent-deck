@@ -90,6 +90,27 @@ func TestGenericSessionScope_RefusesAfterToolChange(t *testing.T) {
 	}
 }
 
+// TestGenericSessionScope_RefusesAfterCommandChange pins the command half of
+// the scope at READ time, independently of the invalidation that SetField
+// performs. The tool NAME is unchanged here; only the executable behind it
+// moved, which is the case a tool-plus-location scope calls eligible. This is
+// the guard for a row whose command changed without going through SetField —
+// an older build, or a field written directly.
+func TestGenericSessionScope_RefusesAfterCommandChange(t *testing.T) {
+	_, inst := newScopedGenericInstance(t, "sid-owned-by-first-command")
+
+	inst.Command = "mytool-next --flag"
+
+	if id := inst.GetGenericSessionID(); id != "" {
+		t.Errorf("GetGenericSessionID() = %q after the command changed, want \"\": the id belongs "+
+			"to the executable that captured it, not to the tool name in front of it", id)
+	}
+	if inst.GenericSessionCommand != "" {
+		t.Errorf("recorded command scope = %q, want the original binding left intact",
+			inst.GenericSessionCommand)
+	}
+}
+
 // TestGenericSessionScope_RefusesAfterLocationChange is the other half. A
 // remote session's tool runs against the remote host's conversation store;
 // comparing project paths cannot tell that apart from a local one, which is the
