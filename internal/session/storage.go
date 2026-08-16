@@ -69,6 +69,7 @@ type InstanceData struct {
 	GenericSessionID       string    `json:"generic_session_id,omitempty"`
 	GenericDetectedAt      time.Time `json:"generic_detected_at,omitempty"`
 	GenericSessionTool     string    `json:"generic_session_tool,omitempty"`
+	GenericSessionCommand  string    `json:"generic_session_command,omitempty"`
 	GenericSessionLocation string    `json:"generic_session_location,omitempty"`
 	// LastActivityAt mirrors Instance.lastActivityAt (issue #1846): durable
 	// hook-evidenced activity, persisted via the tool_data extras zone (see
@@ -1030,7 +1031,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// The scope travels with the id, under the same omission/explicit-empty
 	// protocol: a writer that has not observed the binding must not state a
 	// scope for it either.
-	toolData = WriteGenericSessionScopeToToolData(toolData, inst.GenericSessionTool, inst.GenericSessionLocation, inst.genericSessionIDCleared)
+	toolData = WriteGenericSessionScopeToToolData(toolData, inst.GenericSessionTool, inst.GenericSessionCommand, inst.GenericSessionLocation, inst.genericSessionIDCleared)
 	// #1846: same treatment for the durable last-activity record, so the
 	// timestamp badge and preview survive a TUI restart instead of
 	// collapsing back to CreatedAt/LastAccessedAt.
@@ -1212,6 +1213,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
 			GenericDetectedAt:         ReadGenericDetectedAtFromToolData(r.ToolData),
 			GenericSessionTool:        genericScopeTool(r.ToolData),
+			GenericSessionCommand:     genericScopeCommand(r.ToolData),
 			GenericSessionLocation:    genericScopeLocation(r.ToolData),
 			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
 		}
@@ -1339,6 +1341,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
 			GenericDetectedAt:         ReadGenericDetectedAtFromToolData(r.ToolData),
 			GenericSessionTool:        genericScopeTool(r.ToolData),
+			GenericSessionCommand:     genericScopeCommand(r.ToolData),
 			GenericSessionLocation:    genericScopeLocation(r.ToolData),
 			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
 		}
@@ -1593,6 +1596,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			GenericSessionID:             instData.GenericSessionID,
 			GenericDetectedAt:            instData.GenericDetectedAt,
 			GenericSessionTool:           instData.GenericSessionTool,
+			GenericSessionCommand:        instData.GenericSessionCommand,
 			GenericSessionLocation:       instData.GenericSessionLocation,
 			// #1846: the loaded value came from the DB, so it is by
 			// definition already persisted — seed both fields so the write

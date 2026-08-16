@@ -1453,7 +1453,7 @@ func (s *StateDB) WriteGeminiSessionBinding(id, sessionID string, detectedAt tim
 // id that reached disk while its scope did not would be resumed under the
 // wrong tool or on the wrong host, which is the failure the scope exists to
 // prevent (see internal/session/generic_session_scope.go).
-func (s *StateDB) WriteGenericSessionBinding(id, sessionID, tool, location string, detectedAt time.Time) error {
+func (s *StateDB) WriteGenericSessionBinding(id, sessionID, tool, command, location string, detectedAt time.Time) error {
 	return withBusyRetry(func() error {
 		if sessionID == "" {
 			_, err := s.db.Exec(
@@ -1463,6 +1463,7 @@ func (s *StateDB) WriteGenericSessionBinding(id, sessionID, tool, location strin
 				         '$.generic_session_id',
 				         '$.generic_detected_at',
 				         '$.generic_session_tool',
+				         '$.generic_session_command',
 				         '$.generic_session_location')
 				 WHERE id = ?`,
 				id,
@@ -1480,9 +1481,10 @@ func (s *StateDB) WriteGenericSessionBinding(id, sessionID, tool, location strin
 			         '$.generic_session_id', ?,
 			         '$.generic_detected_at', ?,
 			         '$.generic_session_tool', ?,
+			         '$.generic_session_command', ?,
 			         '$.generic_session_location', ?)
 			 WHERE id = ?`,
-			sessionID, at, tool, location, id,
+			sessionID, at, tool, command, location, id,
 		)
 		return err
 	})

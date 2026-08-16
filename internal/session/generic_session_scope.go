@@ -10,6 +10,11 @@
 //     conversation id captured from one CLI into a different one resumes
 //     someone else's conversation, or fails in a way that looks like data loss.
 //
+//   - The COMMAND. `command` is independently mutable and restart-required, so
+//     one custom CLI can replace another while the tool NAME stays the same.
+//     The tool name alone would still match, and the old conversation id would
+//     be handed to the new executable.
+//
 //   - The EXECUTION LOCATION. An --ssh session runs its tool on a remote host
 //     whose conversation store is not the controller's. Comparing project paths
 //     does not tell local and remote apart — that mistake is the root cause
@@ -48,15 +53,21 @@ import (
 const (
 	toolDataGenericSessionToolKey     = "generic_session_tool"
 	toolDataGenericSessionLocationKey = "generic_session_location"
+	toolDataGenericSessionCommandKey  = "generic_session_command"
 )
 
 // genericSessionScope is the (tool, location) pair a conversation id was bound
 // under.
 type genericSessionScope struct {
 	Tool     string
+	Command  string
 	Location string
 }
 
+// complete reports whether a scope says enough to be checked against. Command
+// is not required: a session can legitimately carry an empty command (the tool
+// definition supplies it), and demanding one would refuse bindings that are
+// perfectly well scoped by tool and location.
 func (s genericSessionScope) complete() bool {
 	return s.Tool != "" && s.Location != ""
 }
@@ -65,6 +76,7 @@ func (s genericSessionScope) complete() bool {
 func (i *Instance) currentGenericSessionScope() genericSessionScope {
 	return genericSessionScope{
 		Tool:     strings.TrimSpace(i.Tool),
+		Command:  strings.TrimSpace(i.Command),
 		Location: LocationOf(i).String(),
 	}
 }
@@ -73,6 +85,7 @@ func (i *Instance) currentGenericSessionScope() genericSessionScope {
 func (i *Instance) recordedGenericSessionScope() genericSessionScope {
 	return genericSessionScope{
 		Tool:     strings.TrimSpace(i.GenericSessionTool),
+		Command:  strings.TrimSpace(i.GenericSessionCommand),
 		Location: strings.TrimSpace(i.GenericSessionLocation),
 	}
 }
@@ -91,6 +104,9 @@ func (i *Instance) genericSessionScopeMismatch() string {
 	current := i.currentGenericSessionScope()
 	if recorded.Tool != current.Tool {
 		return "conversation id was captured for tool " + recorded.Tool + ", session now runs " + current.Tool
+	}
+	if recorded.Command != current.Command {
+		return "conversation id was captured for command " + recorded.Command + ", session now runs " + current.Command
 	}
 	if recorded.Location != current.Location {
 		return "conversation id was captured at " + recorded.Location + ", session now runs at " + current.Location
@@ -140,7 +156,7 @@ func fingerprintSessionID(id string) string {
 // so that a writer that knows the id also always states the scope — a single
 // call that wrote the id but left the scope stale is exactly the failure this
 // guards against.
-func WriteGenericSessionScopeToToolData(td json.RawMessage, tool, location string, intentionalClear bool) json.RawMessage {
+func WriteGenericSessionScopeToToolData(td json.RawMessage, tool, command, location string, intentionalClear bool) json.RawMessage {
 	m := map[string]json.RawMessage{}
 	if len(td) > 0 {
 		_ = json.Unmarshal(td, &m)
@@ -148,17 +164,21 @@ func WriteGenericSessionScopeToToolData(td json.RawMessage, tool, location strin
 	if tool == "" && location == "" {
 		if intentionalClear {
 			m[toolDataGenericSessionToolKey] = json.RawMessage(`""`)
+			m[toolDataGenericSessionCommandKey] = json.RawMessage(`""`)
 			m[toolDataGenericSessionLocationKey] = json.RawMessage(`""`)
 		} else {
 			delete(m, toolDataGenericSessionToolKey)
+			delete(m, toolDataGenericSessionCommandKey)
 			delete(m, toolDataGenericSessionLocationKey)
 		}
 		out, _ := json.Marshal(m)
 		return out
 	}
 	rawTool, _ := json.Marshal(tool)
+	rawCmd, _ := json.Marshal(command)
 	rawLoc, _ := json.Marshal(location)
 	m[toolDataGenericSessionToolKey] = rawTool
+	m[toolDataGenericSessionCommandKey] = rawCmd
 	m[toolDataGenericSessionLocationKey] = rawLoc
 	out, _ := json.Marshal(m)
 	return out
@@ -166,26 +186,33 @@ func WriteGenericSessionScopeToToolData(td json.RawMessage, tool, location strin
 
 // ReadGenericSessionScopeFromToolData extracts the recorded scope. Missing,
 // malformed or legacy blobs read as empty, which is not resumable.
-func ReadGenericSessionScopeFromToolData(td json.RawMessage) (tool, location string) {
+func ReadGenericSessionScopeFromToolData(td json.RawMessage) (tool, command, location string) {
 	if len(td) == 0 {
-		return "", ""
+		return "", "", ""
 	}
 	var blob struct {
 		Tool     string `json:"generic_session_tool"`
+		Command  string `json:"generic_session_command"`
 		Location string `json:"generic_session_location"`
 	}
 	_ = json.Unmarshal(td, &blob)
-	return blob.Tool, blob.Location
+	return blob.Tool, blob.Command, blob.Location
 }
 
-// genericScopeTool and genericScopeLocation are single-value accessors for the
-// two load paths, which build their structs field-by-field.
+// genericScopeTool, genericScopeCommand and genericScopeLocation are
+// single-value accessors for the two load paths, which build their structs
+// field-by-field.
 func genericScopeTool(td json.RawMessage) string {
-	tool, _ := ReadGenericSessionScopeFromToolData(td)
+	tool, _, _ := ReadGenericSessionScopeFromToolData(td)
 	return tool
 }
 
+func genericScopeCommand(td json.RawMessage) string {
+	_, command, _ := ReadGenericSessionScopeFromToolData(td)
+	return command
+}
+
 func genericScopeLocation(td json.RawMessage) string {
-	_, location := ReadGenericSessionScopeFromToolData(td)
+	_, _, location := ReadGenericSessionScopeFromToolData(td)
 	return location
 }

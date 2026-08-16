@@ -242,6 +242,7 @@ type Instance struct {
 	// generic_session_scope.go for why an id that outlives a reboot must not
 	// outlive the tool or the host it belongs to.
 	GenericSessionTool     string `json:"generic_session_tool,omitempty"`
+	GenericSessionCommand  string `json:"generic_session_command,omitempty"`
 	GenericSessionLocation string `json:"generic_session_location,omitempty"`
 	// genericSessionIDCleared is set by intentional clear paths (SetField
 	// tool-session-id "", clearSessionBindingForFreshStart). When true,
@@ -3790,8 +3791,17 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 	// Failure is swallowed: publishing is bookkeeping, and a tmux hiccup must
 	// not stop the tool from starting. The id reaches the variable via the
 	// shell, never via string interpolation, so nothing here is injectable.
-	publish := fmt.Sprintf(`tmux set-environment %s "$session_id" >/dev/null 2>&1 || true; `,
-		genericCapturedSessionIDEnv)
+	//
+	// Only for a LOCAL session. prepareCommand hands this whole fragment to
+	// wrapForSSH for an --ssh session, so the tmux call would run on the remote
+	// host, find no tmux server there, and be swallowed by the `|| true` -- a
+	// silent no-op dressed as durability. The controller's tmux is the one that
+	// has to hold the value, and nothing inside the remote shell can reach it.
+	publish := ""
+	if !i.IsSSH() {
+		publish = fmt.Sprintf(`tmux set-environment %s "$session_id" >/dev/null 2>&1 || true; `,
+			genericCapturedSessionIDEnv)
+	}
 	return envPrefix + fmt.Sprintf(
 		`session_id=$(%s %s "." 2>/dev/null | jq -r '%s' 2>/dev/null) || session_id=""; `+
 			`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
@@ -4082,6 +4092,21 @@ func isLiteralToolInvocation(baseCommand, literalName string) bool {
 // execution location still match this session — see generic_session_scope.go.
 // Whitespace-only values are treated as empty (not resumable).
 func (i *Instance) GetGenericSessionID() string {
+	// The scope check comes FIRST, before the live pane is consulted at all.
+	//
+	// A pane outlives the settings it was launched under: change the tool, the
+	// command, the project path or the SSH destination on a running session and
+	// the pane keeps exporting the id the OLD tool captured. Reading the pane
+	// first and adopting whatever it says rebinds that id to the new scope, and
+	// one poll later an id this function had just refused is indistinguishable
+	// from a legitimate one. Refusing before reading closes that laundering
+	// path: while a recorded binding disagrees with the session as it stands,
+	// nothing about this session is a source of conversation identity.
+	if reason := i.genericSessionScopeMismatch(); reason != "" {
+		i.logGenericResumeRefusal(reason)
+		return ""
+	}
+
 	for _, envName := range i.genericSessionEnvNames() {
 		if i.tmuxSession == nil {
 			break
@@ -4096,15 +4121,7 @@ func (i *Instance) GetGenericSessionID() string {
 		}
 	}
 
-	persisted := strings.TrimSpace(i.GenericSessionID)
-	if persisted == "" {
-		return ""
-	}
-	if reason := i.genericSessionScopeMismatch(); reason != "" {
-		i.logGenericResumeRefusal(reason)
-		return ""
-	}
-	return persisted
+	return strings.TrimSpace(i.GenericSessionID)
 }
 
 // genericSessionEnvNames lists the tmux environment variables that may carry a
@@ -4117,8 +4134,25 @@ func (i *Instance) GetGenericSessionID() string {
 // captured inside the pane's shell, used once, and lost, which is a reboot away
 // from being no persistence at all.
 func (i *Instance) genericSessionEnvNames() []string {
-	names := make([]string, 0, 2)
-	if toolDef := GetToolDef(i.Tool); toolDef != nil && toolDef.SessionIDEnv != "" {
+	return i.genericSessionEnvNamesFor(i.Tool)
+}
+
+// genericSessionEnvNamesFor is genericSessionEnvNames over a set of tools,
+// deduplicated and always including the agent-deck-owned fallback.
+//
+// Erasing a binding needs the variables the tool that CAPTURED it declared, not
+// only the ones the session's current tool declares — after a tool change those
+// are different names, and the one left behind is the one the pane would hand
+// back on the next read.
+func (i *Instance) genericSessionEnvNamesFor(tools ...string) []string {
+	names := make([]string, 0, len(tools)+1)
+	seen := make(map[string]bool, len(tools)+1)
+	for _, tool := range tools {
+		toolDef := GetToolDef(strings.TrimSpace(tool))
+		if toolDef == nil || toolDef.SessionIDEnv == "" || seen[toolDef.SessionIDEnv] {
+			continue
+		}
+		seen[toolDef.SessionIDEnv] = true
 		names = append(names, toolDef.SessionIDEnv)
 	}
 	return append(names, genericCapturedSessionIDEnv)
@@ -6823,7 +6857,12 @@ func (i *Instance) SyncSessionIDsToTmux() {
 	// old pane (or a respawn) sees the same id. The agent-deck-owned variable
 	// is written too, so a tool that exposes no env var of its own is still
 	// recoverable from the pane.
-	if i.GenericSessionID != "" {
+	//
+	// Gated on the scope check for the same reason the read side is. The pane
+	// env is read back as a live ownership signal, so publishing an id that
+	// resume has refused would launder it into acceptance on the next poll --
+	// the refusal has to hold on both sides of the loop or it holds on neither.
+	if i.GenericSessionID != "" && i.genericSessionScopeMismatch() == "" {
 		for _, envName := range i.genericSessionEnvNames() {
 			_ = i.tmuxSession.SetEnvironment(envName, i.GenericSessionID)
 		}
@@ -6875,11 +6914,12 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 	// a subsequent SaveWithGroups writes explicit empty (sticky-safe) even
 	// when statedb.GetGlobal() is nil (CLI paths).
 	if i.GenericSessionID != "" || !i.GenericDetectedAt.IsZero() || i.genericSessionIDCleared ||
-		i.GenericSessionTool != "" || i.GenericSessionLocation != "" {
+		i.GenericSessionTool != "" || i.GenericSessionCommand != "" || i.GenericSessionLocation != "" {
 		cleared := i.GenericSessionID
 		i.GenericSessionID = ""
 		i.GenericDetectedAt = time.Time{}
 		i.GenericSessionTool = ""
+		i.GenericSessionCommand = ""
 		i.GenericSessionLocation = ""
 		i.genericSessionIDCleared = true
 		if db := statedb.GetGlobal(); db != nil {
@@ -6887,7 +6927,7 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 			// outcome is eventually right either way — but a write that keeps
 			// failing on a data path would otherwise never be visible, and
 			// this one deletes a binding the operator asked to be rid of.
-			err := db.WriteGenericSessionBinding(i.ID, "", "", "", time.Time{})
+			err := db.WriteGenericSessionBinding(i.ID, "", "", "", "", time.Time{})
 			i.setGenericSessionPersistError(err)
 			if err != nil {
 				sessionLog.Warn("generic_session_clear_persist_failed",

@@ -58,7 +58,7 @@ func TestWriteGenericSessionBinding_NoClobberSiblings(t *testing.T) {
 		"last_started_at":123
 	}`))
 
-	if err := db.WriteGenericSessionBinding("i1", "g-1", "mytool", "local:/tmp/proj", time.Unix(50, 0).UTC()); err != nil {
+	if err := db.WriteGenericSessionBinding("i1", "g-1", "mytool", "mytool --flag", "local:/tmp/proj", time.Unix(50, 0).UTC()); err != nil {
 		t.Fatal(err)
 	}
 	m := readToolData(t, db, "i1")
@@ -75,7 +75,7 @@ func TestWriteGenericSessionBinding_NoClobberSiblings(t *testing.T) {
 		t.Fatalf("last_started_at clobbered: %s", m["last_started_at"])
 	}
 
-	if err := db.WriteGenericSessionBinding("i1", "", "mytool", "local:/tmp/proj", time.Time{}); err != nil {
+	if err := db.WriteGenericSessionBinding("i1", "", "mytool", "mytool --flag", "local:/tmp/proj", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	m = readToolData(t, db, "i1")
@@ -94,7 +94,7 @@ func TestWriteGenericSessionBinding_ZeroDetectedAtStampsNow(t *testing.T) {
 	db := openTestDB(t)
 	seedInstance(t, db, "i1", json.RawMessage(`{}`))
 	before := time.Now().Add(-2 * time.Second).Unix()
-	if err := db.WriteGenericSessionBinding("i1", "sid", "mytool", "local:/tmp/proj", time.Time{}); err != nil {
+	if err := db.WriteGenericSessionBinding("i1", "sid", "mytool", "mytool --flag", "local:/tmp/proj", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	after := time.Now().Add(2 * time.Second).Unix()
@@ -119,13 +119,13 @@ func TestWriteGenericSessionBinding_ConcurrentLastWins(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			if err := db.WriteGenericSessionBinding("i1", "A", "mytool", "local:/tmp/proj", time.Now()); err != nil {
+			if err := db.WriteGenericSessionBinding("i1", "A", "mytool", "mytool --flag", "local:/tmp/proj", time.Now()); err != nil {
 				errCh <- err
 			}
 		}()
 		go func() {
 			defer wg.Done()
-			if err := db.WriteGenericSessionBinding("i1", "B", "mytool", "local:/tmp/proj", time.Now()); err != nil {
+			if err := db.WriteGenericSessionBinding("i1", "B", "mytool", "mytool --flag", "local:/tmp/proj", time.Now()); err != nil {
 				errCh <- err
 			}
 		}()
@@ -215,7 +215,7 @@ func TestSchemaExtrasZone_NoMigrationRequired(t *testing.T) {
 	// Opening + Migrate on a fresh DB succeeds without special generic migration.
 	db := openTestDB(t)
 	seedInstance(t, db, "x", json.RawMessage(`{}`))
-	if err := db.WriteGenericSessionBinding("x", "ok", "mytool", "local:/tmp/proj", time.Now()); err != nil {
+	if err := db.WriteGenericSessionBinding("x", "ok", "mytool", "mytool --flag", "local:/tmp/proj", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -230,7 +230,7 @@ func TestSchemaExtrasZone_NoMigrationRequired(t *testing.T) {
 func TestWriteGenericSessionBinding_EmptyObjectAndJSONNull(t *testing.T) {
 	db := openTestDB(t)
 	seedInstance(t, db, "empty-obj", json.RawMessage(`{}`))
-	if err := db.WriteGenericSessionBinding("empty-obj", "from-empty", "mytool", "local:/tmp/proj", time.Unix(42, 0).UTC()); err != nil {
+	if err := db.WriteGenericSessionBinding("empty-obj", "from-empty", "mytool", "mytool --flag", "local:/tmp/proj", time.Unix(42, 0).UTC()); err != nil {
 		t.Fatalf("WriteGenericSessionBinding on '{}': %v", err)
 	}
 	m := readToolData(t, db, "empty-obj")
@@ -247,7 +247,7 @@ func TestWriteGenericSessionBinding_EmptyObjectAndJSONNull(t *testing.T) {
 	if _, err := db.DB().Exec(`UPDATE instances SET tool_data = '' WHERE id = ?`, "empty-obj"); err != nil {
 		t.Fatalf("set empty string tool_data: %v", err)
 	}
-	if err := db.WriteGenericSessionBinding("empty-obj", "nope", "mytool", "local:/tmp/proj", time.Now()); err == nil {
+	if err := db.WriteGenericSessionBinding("empty-obj", "nope", "mytool", "mytool --flag", "local:/tmp/proj", time.Now()); err == nil {
 		t.Fatal("expected error writing binding onto empty-string tool_data")
 	}
 }

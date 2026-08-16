@@ -53,12 +53,16 @@ func TestGenericCapture_PublishesIDForDurability(t *testing.T) {
 // live truth, and the agent-deck-owned one can only ever be a copy.
 func TestGenericSessionEnvNames_PrefersToolOwnVariable(t *testing.T) {
 	_, xdgConfig, _, _ := isolateConfigRoots(t)
+	// BOTH tables, so the second assertion exercises a configured tool that
+	// declares no session_id_env rather than an unknown tool. They return the
+	// same list today; writing only one would let a future change that reads
+	// other ToolDef fields pass unnoticed.
 	writeConfigAt(t, xdgAgentDeckConfigDir(xdgConfig), `
 [tools.envtool]
 command = "envtool"
 resume_flag = "--resume"
 session_id_env = "ENVTOOL_SESSION_ID"
-`)
+`+captureOnlyToolConfig)
 
 	inst := NewInstance("env-target", "/tmp/proj")
 	inst.Tool = "envtool"

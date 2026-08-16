@@ -119,7 +119,7 @@ func PersistGenericSessionBinding(db *statedb.StateDB, inst *Instance) error {
 	}
 	return db.WriteGenericSessionBinding(
 		inst.ID, inst.GenericSessionID,
-		inst.GenericSessionTool, inst.GenericSessionLocation,
+		inst.GenericSessionTool, inst.GenericSessionCommand, inst.GenericSessionLocation,
 		inst.GenericDetectedAt,
 	)
 }
@@ -145,6 +145,7 @@ func (i *Instance) persistGenericSessionIDIfChanged(sessionID string) {
 	}
 	i.GenericSessionID = sessionID
 	i.GenericSessionTool = scope.Tool
+	i.GenericSessionCommand = scope.Command
 	i.GenericSessionLocation = scope.Location
 	i.genericSessionIDCleared = false
 	if i.GenericDetectedAt.IsZero() {
@@ -154,7 +155,7 @@ func (i *Instance) persistGenericSessionIDIfChanged(sessionID string) {
 	if db == nil {
 		return
 	}
-	err := db.WriteGenericSessionBinding(i.ID, sessionID, scope.Tool, scope.Location, i.GenericDetectedAt)
+	err := db.WriteGenericSessionBinding(i.ID, sessionID, scope.Tool, scope.Command, scope.Location, i.GenericDetectedAt)
 	i.setGenericSessionPersistError(err)
 	if err != nil {
 		sessionLog.Warn("generic_session_bind_persist_failed",
@@ -183,4 +184,66 @@ func (i *Instance) GenericSessionPersistError() error {
 	i.genericSessionPersistMu.Lock()
 	defer i.genericSessionPersistMu.Unlock()
 	return i.genericSessionPersistErr
+}
+
+// invalidateGenericSessionBindingOnScopeChange drops a custom-tool conversation
+// binding whose scope no longer describes this session, and returns a
+// post-commit that erases the live copies from the pane.
+//
+// Refusing to RESUME a mismatched id is not enough on its own. The id also
+// lives in the pane's environment, and the pane outlives the settings it was
+// launched under: after `session set <id> tool other`, the old tool's variable
+// is still set, still readable, and still the first thing consulted for a live
+// value. Leaving it there means the binding comes back the moment anything
+// reads the pane, which is the same as never having refused it.
+//
+// So a scope-changing mutation invalidates rather than merely disqualifies:
+// the stored binding is cleared with intent (so sticky merge does not
+// resurrect it), and every variable that could carry the id is unset in the
+// pane. Nothing is lost that the operator has not already replaced — they
+// changed which tool, which executable, or which machine this session is.
+//
+// Returns nil when there is no binding to invalidate or the scope still
+// matches, so callers can chain it without checking.
+func (i *Instance) invalidateGenericSessionBindingOnScopeChange() func() {
+	if i == nil {
+		return nil
+	}
+	recorded := i.recordedGenericSessionScope()
+	if i.GenericSessionID == "" && !recorded.complete() {
+		return nil
+	}
+	if recorded.complete() && recorded == i.currentGenericSessionScope() {
+		return nil
+	}
+
+	dropped := i.GenericSessionID
+	// The variables to erase include the ones the RECORDED tool declared: after
+	// a tool change the current tool's name list no longer mentions them, and
+	// an unerased variable is exactly what the pane would hand back.
+	stale := i.genericSessionEnvNamesFor(recorded.Tool, i.Tool)
+	i.GenericSessionID = ""
+	i.GenericDetectedAt = time.Time{}
+	i.GenericSessionTool = ""
+	i.GenericSessionCommand = ""
+	i.GenericSessionLocation = ""
+	i.genericSessionIDCleared = true
+
+	if db := statedb.GetGlobal(); db != nil {
+		err := db.WriteGenericSessionBinding(i.ID, "", "", "", "", time.Time{})
+		i.setGenericSessionPersistError(err)
+		if err != nil {
+			sessionLog.Warn("generic_session_invalidate_persist_failed",
+				slog.String("instance_id", logging.SanitizeValue(i.ID)),
+				slog.String("session_id_fingerprint", fingerprintSessionID(dropped)),
+				slog.String("error", logging.SanitizeValue(err.Error())))
+		}
+	}
+	sessionLog.Info("generic_session_binding_invalidated",
+		slog.String("instance_id", logging.SanitizeValue(i.ID)),
+		slog.String("session_id_fingerprint", fingerprintSessionID(dropped)),
+		slog.String("reason", "tool, command or execution location changed"))
+
+	// Unset in the pane too, or the next read re-adopts what was just dropped.
+	return makeGenericSessionEnvPostCommit(i, "", stale)
 }

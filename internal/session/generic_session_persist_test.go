@@ -91,7 +91,7 @@ func TestGenericSessionID_SQLiteRoundTrip(t *testing.T) {
 	}
 
 	// Targeted write (live capture path) on the underlying StateDB.
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "new-sid", inst.Tool, LocationOf(inst).String(), time.Now()); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "new-sid", inst.Tool, inst.Command, LocationOf(inst).String(), time.Now()); err != nil {
 		t.Fatalf("WriteGenericSessionBinding: %v", err)
 	}
 	loaded2, _, err := storage.LoadWithGroups()
@@ -298,7 +298,7 @@ func TestWriteGenericSessionBinding_Clear(t *testing.T) {
 	if err := storage.SaveWithGroups([]*Instance{inst}, NewGroupTreeWithGroups([]*Instance{inst}, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "", inst.Tool, LocationOf(inst).String(), time.Time{}); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "", inst.Tool, inst.Command, LocationOf(inst).String(), time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, err := storage.LoadWithGroups()
@@ -593,9 +593,11 @@ func TestBuildGenericCommand_ShellInjectionInSessionID(t *testing.T) {
 	if !strings.Contains(cmd, quoted) {
 		t.Fatalf("session id must be shell-quoted; cmd=%q quoted=%q", cmd, quoted)
 	}
-	// Unquoted form would allow the shell to see `;` as a statement separator
-	// after --resume. Ensure the raw unquoted payload is not present as a token.
-	if strings.Contains(cmd, "--resume "+hostile) && !strings.Contains(cmd, quoted) {
+	// Unquoted form would let the shell read `;` as a statement separator after
+	// --resume. The raw payload must never follow the flag directly. (The
+	// earlier Fatalf already established that the quoted form is present, so
+	// this has to stand on its own rather than be conditioned on its absence.)
+	if strings.Contains(cmd, "--resume "+hostile) {
 		t.Fatalf("unquoted hostile id in command: %q", cmd)
 	}
 	// The metacharacter must sit inside single quotes (shellescape style).

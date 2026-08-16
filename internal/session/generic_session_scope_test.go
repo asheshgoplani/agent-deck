@@ -28,6 +28,7 @@ func newScopedGenericInstance(t *testing.T, id string) (*Storage, *Instance) {
 	inst.GenericDetectedAt = time.Unix(1_700_000_000, 0).UTC()
 	scope := inst.currentGenericSessionScope()
 	inst.GenericSessionTool = scope.Tool
+	inst.GenericSessionCommand = scope.Command
 	inst.GenericSessionLocation = scope.Location
 
 	if err := storage.SaveWithGroups([]*Instance{inst}, NewGroupTreeWithGroups([]*Instance{inst}, nil)); err != nil {
@@ -130,9 +131,9 @@ func TestGenericSessionScope_FreshStartClearsScope(t *testing.T) {
 	if inst.GenericSessionID != "" {
 		t.Errorf("id = %q after a fresh start, want cleared", inst.GenericSessionID)
 	}
-	if inst.GenericSessionTool != "" || inst.GenericSessionLocation != "" {
-		t.Errorf("scope survived the clear: tool=%q location=%q",
-			inst.GenericSessionTool, inst.GenericSessionLocation)
+	if inst.GenericSessionTool != "" || inst.GenericSessionCommand != "" || inst.GenericSessionLocation != "" {
+		t.Errorf("scope survived the clear: tool=%q command=%q location=%q",
+			inst.GenericSessionTool, inst.GenericSessionCommand, inst.GenericSessionLocation)
 	}
 	if !inst.genericSessionIDCleared {
 		t.Error("intentional-clear flag not set, so a later save would let sticky merge resurrect the binding")
@@ -144,13 +145,13 @@ func TestGenericSessionScope_FreshStartClearsScope(t *testing.T) {
 // has not observed the binding either wipe the scope of a live one or leave a
 // stale scope attached to a new id.
 func TestGenericSessionScope_ToolDataProtocol(t *testing.T) {
-	bound := WriteGenericSessionScopeToToolData(nil, "mytool", "local:/tmp/proj", false)
-	tool, location := ReadGenericSessionScopeFromToolData(bound)
-	if tool != "mytool" || location != "local:/tmp/proj" {
-		t.Fatalf("round trip = (%q, %q), want (mytool, local:/tmp/proj)", tool, location)
+	bound := WriteGenericSessionScopeToToolData(nil, "mytool", "mytool --flag", "local:/tmp/proj", false)
+	tool, command, location := ReadGenericSessionScopeFromToolData(bound)
+	if tool != "mytool" || command != "mytool --flag" || location != "local:/tmp/proj" {
+		t.Fatalf("round trip = (%q, %q, %q), want (mytool, mytool --flag, local:/tmp/proj)", tool, command, location)
 	}
 
-	unaware := WriteGenericSessionScopeToToolData(bound, "", "", false)
+	unaware := WriteGenericSessionScopeToToolData(bound, "", "", "", false)
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(unaware, &m); err != nil {
 		t.Fatal(err)
@@ -159,7 +160,7 @@ func TestGenericSessionScope_ToolDataProtocol(t *testing.T) {
 		t.Errorf("an unaware writer stated a scope: %s", unaware)
 	}
 
-	cleared := WriteGenericSessionScopeToToolData(bound, "", "", true)
+	cleared := WriteGenericSessionScopeToToolData(bound, "", "", "", true)
 	if err := json.Unmarshal(cleared, &m); err != nil {
 		t.Fatal(err)
 	}

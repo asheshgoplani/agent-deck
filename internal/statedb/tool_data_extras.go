@@ -110,6 +110,7 @@ func stickyToolDataKeys() map[string]bool {
 		"generic_session_id":       true,
 		"generic_detected_at":      true,
 		"generic_session_tool":     true,
+		"generic_session_command":  true,
 		"generic_session_location": true,
 	}
 }

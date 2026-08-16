@@ -46,7 +46,7 @@ func TestAttack_ClearedFlagConsumedAfterSave(t *testing.T) {
 	}
 
 	// Concurrent writer re-binds while this process still holds the empty in-memory snapshot.
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "new-id", inst.Tool, LocationOf(inst).String(), time.Now()); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "new-id", inst.Tool, inst.Command, LocationOf(inst).String(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, err := storage.LoadWithGroups()
@@ -103,7 +103,11 @@ func assertBashLcArgv(t *testing.T, flag, sid string) {
 	// Null-delimited argv dump so we can DeepEqual complete arguments
 	// (CodeRabbit: partial "starts with --session=" is too weak).
 	full := `_tool(){ printf '%s\0' "$@"; }; ` + cmdStr
-	out, err := exec.Command("bash", "-lc", full).CombinedOutput()
+	// Output(), not CombinedOutput(): `bash -lc` is a LOGIN shell and sources
+	// profile scripts, so anything they print to stderr would land in the
+	// NUL-delimited argv dump this test parses and read as an injection defect
+	// rather than an environment one.
+	out, err := exec.Command("bash", "-lc", full).Output()
 	if err != nil {
 		t.Fatalf("bash -lc failed: %v\ncmd=%q\nout=%s", err, cmdStr, out)
 	}
@@ -238,7 +242,7 @@ func TestAttack_WhitespaceOnlyNoResume(t *testing.T) {
 	if err := storage.SaveWithGroups([]*Instance{inst}, NewGroupTreeWithGroups([]*Instance{inst}, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "   ", inst.Tool, LocationOf(inst).String(), time.Now()); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "   ", inst.Tool, inst.Command, LocationOf(inst).String(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, err := storage.LoadWithGroups()
@@ -335,10 +339,10 @@ func TestAttack_PersistNilSafeAndSiblings(t *testing.T) {
 	if err := storage.SaveWithGroups([]*Instance{inst}, NewGroupTreeWithGroups([]*Instance{inst}, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "g1", inst.Tool, LocationOf(inst).String(), time.Now()); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "g1", inst.Tool, inst.Command, LocationOf(inst).String(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.db.WriteGenericSessionBinding(inst.ID, "", inst.Tool, LocationOf(inst).String(), time.Time{}); err != nil {
+	if err := storage.db.WriteGenericSessionBinding(inst.ID, "", inst.Tool, inst.Command, LocationOf(inst).String(), time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	loaded, _, err := storage.LoadWithGroups()
