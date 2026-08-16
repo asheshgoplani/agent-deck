@@ -201,7 +201,8 @@ func mentionsReadFailure(err error) bool {
 	for _, want := range []string{
 		"not valid json", "failed to parse", "invalid character",
 		"permission denied", "is a directory", "root is null",
-		"is unreadable", "is not an object",
+		"is unreadable", "is not an object", "unparseable",
+		"refusing to overwrite",
 	} {
 		if strings.Contains(msg, want) {
 			return true
@@ -316,23 +317,35 @@ func TestEmptyConfigStartsFreshRatherThanFailing(t *testing.T) {
 // Nothing pinned that guard, which is how it survived the sweep: reverting the
 // fail-closed read broke no test.
 func TestMalformedMcpJSONIsNeverRewritten(t *testing.T) {
+	// Each tool keeps its project-local MCPs in a DIFFERENT file: Claude in
+	// <project>/.mcp.json, Cursor in <project>/.cursor/mcp.json, OpenCode in
+	// <project>/opencode.json. An earlier version of this test corrupted
+	// .mcp.json for all three and "passed" for Cursor and OpenCode only because
+	// it had corrupted a file they never read. Ask the production helper for
+	// the path so the fixture cannot drift from the code again.
 	for _, tool := range []string{"claude", "cursor", "opencode"} {
 		t.Run(tool, func(t *testing.T) {
 			mcpStoreEnv(t)
 			project := t.TempDir()
-			mcpFile := filepath.Join(project, ".mcp.json")
+			localFile := session.MCPLocalConfigPathForTool(tool, project)
+			if localFile == "" {
+				t.Skipf("%s has no project-local MCP file", tool)
+			}
+			if err := os.MkdirAll(filepath.Dir(localFile), 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
 			corrupt := []byte(`{"mcpServers":{"beta":{"command":"b"}} "trailing":"no comma"}`)
-			if err := os.WriteFile(mcpFile, corrupt, 0o644); err != nil {
-				t.Fatalf("seed: %v", err)
+			if err := os.WriteFile(localFile, corrupt, 0o644); err != nil {
+				t.Fatalf("seed %s: %v", localFile, err)
 			}
 
 			err := NewDefaultMCPManager().Attach(MCPTarget{Tool: tool, ProjectPath: project}, "alpha", "local")
 			if err == nil {
-				t.Errorf("attach against a malformed .mcp.json silently succeeded; it must fail closed")
+				t.Errorf("attach against a malformed %s silently succeeded; it must fail closed", localFile)
 			} else if !mentionsReadFailure(err) {
 				t.Errorf("error does not name why the read failed: %v", err)
 			}
-			assertByteIdentical(t, mcpFile, corrupt, "local attach against a malformed .mcp.json")
+			assertByteIdentical(t, localFile, corrupt, "local attach against a malformed "+filepath.Base(localFile))
 		})
 	}
 }
