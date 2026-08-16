@@ -248,10 +248,10 @@ type dialogSnapshot struct {
 
 // displayCommandPreset returns the visible label for a built-in preset slot.
 // The stored preset for Cursor remains "cursor" (tool id); the pill shows the
-// actual CLI users run ("cursor agent").
+// host-resolved CLI entrypoint (`agent` or `cursor agent`).
 func displayCommandPreset(cmd string) string {
 	if cmd == "cursor" {
-		return "cursor agent"
+		return session.DefaultCursorCommand()
 	}
 	return cmd
 }

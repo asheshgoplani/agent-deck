@@ -1871,6 +1871,16 @@ func (c *UserConfig) GetProfileCodexConfigDir(profile string) string {
 
 // CursorSettings defines Cursor Agent CLI integration configuration (Issue #1672).
 type CursorSettings struct {
+	// Command overrides the default binary/invocation for Cursor sessions.
+	// Supports flags (e.g., "agent --force", "cursor agent"). When empty,
+	// DefaultCursorCommand() prefers `agent` when present on PATH, else
+	// `cursor agent`.
+	Command string `toml:"command,omitempty"`
+
+	// EnvFile is a .env file specific to Cursor sessions (sourced before
+	// the agent command runs, like [gemini].env_file). Optional.
+	EnvFile string `toml:"env_file,omitempty"`
+
 	// HooksEnabled enables Cursor Agent CLI hooks for real-time status detection.
 	// When enabled, agent-deck silently injects lifecycle hooks into
 	// ~/.cursor/hooks.json on TUI startup whenever the cursor binary is on PATH.
@@ -3417,6 +3427,9 @@ func GetCustomToolNames() []string {
 func GetToolCommand(toolName string) string {
 	config, _ := LoadUserConfig()
 	if config == nil {
+		if toolName == "cursor" {
+			return DefaultCursorCommand()
+		}
 		return toolName
 	}
 	switch toolName {
@@ -3444,6 +3457,11 @@ func GetToolCommand(toolName string) string {
 		if config.Hermes.Command != "" {
 			return config.Hermes.Command
 		}
+	case "cursor":
+		if config.Cursor.Command != "" {
+			return config.Cursor.Command
+		}
+		return DefaultCursorCommand()
 	}
 	return toolName
 }

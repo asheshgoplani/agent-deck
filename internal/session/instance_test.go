@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1862,11 +1863,22 @@ func TestCanRestartCursor_ProbeNoticesImmediateExit(t *testing.T) {
 }
 
 func TestBuildCursorCommand(t *testing.T) {
+	orig := lookPathFn
+	t.Cleanup(func() { lookPathFn = orig })
+	lookPathFn = func(file string) (string, error) {
+		if file == "agent" {
+			return "/bin/agent", nil
+		}
+		return "", errors.New("not found")
+	}
+	restore := resetUserConfigCache(t, &UserConfig{})
+	defer restore()
+
 	inst := NewInstanceWithTool("c1", "/tmp/c1", "cursor")
 	inst.Command = ""
 	got := inst.buildCursorCommand(inst.Command, false)
-	if !strings.Contains(got, "cursor agent") {
-		t.Fatalf("fresh session: want cursor agent in command, got %q", got)
+	if !strings.Contains(got, "agent") {
+		t.Fatalf("fresh session: want agent in command, got %q", got)
 	}
 	if strings.Contains(strings.ToLower(got), "--continue") {
 		t.Fatalf("fresh session: should not add --continue, got %q", got)
@@ -1876,8 +1888,11 @@ func TestBuildCursorCommand(t *testing.T) {
 	if !strings.Contains(strings.ToLower(got), "--continue") {
 		t.Fatalf("restart: want --continue, got %q", got)
 	}
+	if !strings.Contains(got, "agent") || strings.Contains(got, "cursor agent") {
+		t.Fatalf("restart: want default rewritten to agent, got %q", got)
+	}
 
-	inst.Command = "cursor agent --continue"
+	inst.Command = "agent --continue"
 	got = inst.buildCursorCommand(inst.Command, true)
 	if strings.Count(strings.ToLower(got), "--continue") != 1 {
 		t.Fatalf("duplicate --continue: got %q", got)
