@@ -91,6 +91,8 @@ func handleSession(profile string, args []string) {
 		handleSessionOutput(profile, args[1:])
 	case "children":
 		handleSessionChildren(profile, args[1:])
+	case "ownership":
+		handleSessionOwnership(profile, args[1:])
 	case "search":
 		handleSessionSearch(profile, args[1:])
 	case "help", "--help", "-h":
@@ -130,6 +132,7 @@ func printSessionHelp() {
 	fmt.Println("  approve <id> [choice]   Resolve a visible Codex approval prompt")
 	fmt.Println("  output <id>             Get the last response from a session")
 	fmt.Println("  children [id]           List sub-sessions with status + last completion")
+	fmt.Println("  ownership <cmd> <id>    Inspect/reconcile the processes a session owns (#1873)")
 	fmt.Println("  search <query>          Search message content across Claude sessions")
 	fmt.Println("  set-parent <id> <parent>  Link session as sub-session of parent")
 	fmt.Println("  unset-parent <id>       Remove sub-session link")
