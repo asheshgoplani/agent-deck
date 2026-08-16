@@ -677,7 +677,7 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 			// Fail closed: a pid we cannot identify is not signalled. See
 			// stillSameIncarnation.
 			pipeLog.Warn("skipped_unidentifiable_control_client_pid",
-				slog.String("session", sessionLabel),
+				slog.String("session", logging.SanitizeValue(sessionLabel)),
 				slog.Int("pid", pid),
 				slog.String("reason", "could not read a start-time identity for this pid; "+
 					"refusing to signal a pid that cannot be tied to the client tmux reported"))
@@ -698,7 +698,7 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 			// two concurrent agent-deck TUIs (allow_multiple=true) would
 			// SIGTERM each other's control clients on every reconnect (#927).
 			pipeLog.Debug("preserved_live_sibling_control_client",
-				slog.String("session", sessionLabel),
+				slog.String("session", logging.SanitizeValue(sessionLabel)),
 				slog.Int("pid", pid))
 			continue
 		}
@@ -719,20 +719,20 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 			// the first is a recycled pid, and from here they are not
 			// distinguishable.
 			pipeLog.Debug("skipped_control_client_not_signalled",
-				slog.String("session", sessionLabel),
+				slog.String("session", logging.SanitizeValue(sessionLabel)),
 				slog.Int("pid", pid))
 			continue
 		}
 		killCount++
 		pipeLog.Debug("killed_stale_control_client",
-			slog.String("session", sessionLabel),
+			slog.String("session", logging.SanitizeValue(sessionLabel)),
 			slog.Int("pid", pid),
 			slog.Bool("used_sigkill", usedSIGKILL))
 	}
 
 	if killCount > 0 {
 		pipeLog.Info("stale_control_clients_swept",
-			slog.String("session", sessionLabel),
+			slog.String("session", logging.SanitizeValue(sessionLabel)),
 			slog.Int("kill_count", killCount),
 			slog.Duration("duration", time.Since(burstStart)))
 	}

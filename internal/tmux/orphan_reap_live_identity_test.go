@@ -86,7 +86,7 @@ func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// reparentedControlClient spawns `tmux -S <socket> -C <verbArgs...>` — control
+// reparentedControlClient spawns `tmux -L <socket> -C <verbArgs...>` — control
 // mode, so no real tty is required — via an intermediate `sh -c "... & echo
 // $!; exit 0"` wrapper that backgrounds the tmux invocation and exits
 // immediately. When sh exits, the kernel reparents the still-running tmux
