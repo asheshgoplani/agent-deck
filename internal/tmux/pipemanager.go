@@ -693,7 +693,21 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 	// immediately before each signal, and a pid that changed hands is refused.
 	for _, c := range candidates {
 		pid, identity := c.pid, c.identity
-		if !isControlClientOrphan(pid) {
+		orphan, known := controlClientOrphanOf(pid)
+		if !known {
+			// This sweep has no comm filter and no live-server query, so the
+			// parentage check is the only thing between a list-clients line and
+			// a SIGTERM. An indeterminate answer is not a licence to send one.
+			pipeLog.Warn("skipped_unknown_parentage",
+				slog.String("session", logging.SanitizeValue(sessionLabel)),
+				slog.Int("pid", pid),
+				slog.String("reason", "could not establish whether a live agent-deck TUI owns "+
+					"this control client (its parent pid, that parent's liveness, or that "+
+					"parent's executable could not be read); refusing to signal rather than "+
+					"assume the owner is gone"))
+			continue
+		}
+		if !orphan {
 			// Live sibling TUI — leave its pipe alone. Without this guard
 			// two concurrent agent-deck TUIs (allow_multiple=true) would
 			// SIGTERM each other's control clients on every reconnect (#927).
@@ -1106,8 +1120,8 @@ func reapOrphanedPollClients() {
 	budget, cancel := context.WithTimeout(context.Background(), orphanSweepBudget)
 	defer cancel()
 	candidates, unidentifiable := collectOrphanCandidates(budget)
-	killed, unclassifiable, notSignalled, unexamined := sweepOrphanCandidates(budget, candidates)
-	if killed > 0 || unclassifiable > 0 || notSignalled > 0 || unidentifiable > 0 || unexamined > 0 {
+	killed, unclassifiable, notSignalled, unknownParent, unexamined := sweepOrphanCandidates(budget, candidates)
+	if killed > 0 || unclassifiable > 0 || notSignalled > 0 || unidentifiable > 0 || unknownParent > 0 || unexamined > 0 {
 		// One line per sweep that did anything at all, kills included or not:
 		// the counters are the only place a run that refused everything is
 		// visible at Info level, and "the sweep went inert and nobody noticed"
@@ -1117,6 +1131,7 @@ func reapOrphanedPollClients() {
 			slog.Int("skipped_unclassifiable", unclassifiable),
 			slog.Int("skipped_not_signalled", notSignalled),
 			slog.Int("skipped_unidentifiable", unidentifiable),
+			slog.Int("skipped_unknown_parentage", unknownParent),
 			slog.Int("unexamined_out_of_budget", unexamined),
 			slog.Duration("duration", time.Since(start)))
 	}
@@ -1241,7 +1256,7 @@ var liveTmuxIdentityOf = isLiveTmuxClientOrServer
 // routine ones, Warn for the ones that mean the sweep is losing ground — and
 // every one of them reaches Info level through the caller's summary, so a run
 // that refused everything can never look like a run that found nothing.
-func sweepOrphanCandidates(budget context.Context, candidates []orphanCandidate) (killed, unclassifiable, notSignalled, unexamined int) {
+func sweepOrphanCandidates(budget context.Context, candidates []orphanCandidate) (killed, unclassifiable, notSignalled, unknownParent, unexamined int) {
 	for i, c := range candidates {
 		if err := budget.Err(); err != nil {
 			// Out of budget. Report what was left unexamined rather than
@@ -1301,7 +1316,18 @@ func sweepOrphanCandidates(budget context.Context, candidates []orphanCandidate)
 				slog.String("comm", logging.SanitizeValue(strings.TrimSpace(c.comm))))
 			continue
 		}
-		if !isControlClientOrphan(c.pid) {
+		orphan, parentageKnown := controlClientOrphanOf(c.pid)
+		if !parentageKnown {
+			unknownParent++
+			pipeLog.Warn("orphan_sweep_skipped_unknown_parentage",
+				slog.Int("pid", c.pid),
+				slog.String("comm", logging.SanitizeValue(strings.TrimSpace(c.comm))),
+				slog.String("reason", "could not establish whether a live agent-deck TUI owns "+
+					"this client (its parent pid, that parent's liveness, or that parent's "+
+					"executable could not be read); refusing to kill rather than guess"))
+			continue
+		}
+		if !orphan {
 			continue // owned by a live agent-deck TUI (incl. a sibling) — keep
 		}
 		if commUnclassifiable {
@@ -1332,7 +1358,7 @@ func sweepOrphanCandidates(budget context.Context, candidates []orphanCandidate)
 			slog.Int("pid", c.pid),
 			slog.Bool("used_sigkill", usedSIGKILL))
 	}
-	return killed, unclassifiable, notSignalled, unexamined
+	return killed, unclassifiable, notSignalled, unknownParent, unexamined
 }
 
 // isControlClientOrphan reports whether the control-mode client pid is a
@@ -1348,37 +1374,77 @@ func sweepOrphanCandidates(budget context.Context, candidates []orphanCandidate)
 // subreaper such as `systemd --user` / `launchd` — none of which match
 // agent-deck.
 //
-// Conservative: any error reading parent metadata returns true (treat as
-// orphan, sweep it). The prior behaviour was "kill anything that isn't me",
-// so falling back to that on metadata-read failures preserves cleanup
-// behaviour for #595's stale-client class without regressing.
+// known=false means the parentage could not be established at all, and the
+// caller MUST refuse to signal. This gate used to answer "orphan, sweep it" for
+// every read failure, on the reasoning that the behaviour it replaced was "kill
+// anything that isn't me" so falling back to it regressed nothing. That reads
+// the failure the wrong way round: an unreadable parent is exactly as
+// consistent with a live sibling TUI as with a dead one, and the sweeps break
+// that tie by killing. It is also the same fail-closed rule the rest of this
+// gauntlet already follows — isTruncatedTmuxComm for an unreadable comm,
+// isLiveTmuxClientOrServer's ok=false for an unreachable server,
+// stillSameIncarnation for an unreadable identity. Refusing costs a leaked
+// client that the next sweep re-examines; guessing costs a live client.
+//
+// Two verdicts are determinations rather than read failures and stay orphan, or
+// the #595 cleanup this function exists for goes inert:
+//
+//   - PPID <= 1: the kernel has already reparented the client to init.
+//   - ESRCH from the liveness probe: the kernel confirming the parent is gone,
+//     i.e. the client is being orphaned right now. Any OTHER probe error is a
+//     read failure — EPERM in particular means the parent EXISTS and belongs to
+//     someone else, which is the opposite of what this branch used to conclude.
 //
 // Why not a heartbeat file: would need TUI-startup wiring + a refresh
 // goroutine + lifecycle cleanup. The PPID+exe check is zero-state and
 // agrees on the same answer.
-func isControlClientOrphan(pid int) bool {
-	ppid, err := readParentPID(pid)
-	if err != nil || ppid <= 1 {
+func isControlClientOrphan(pid int) (orphan bool, known bool) {
+	return isControlClientOrphanFor(readParentPID, probeProcessAlive, readProcessExe, pid)
+}
+
+// controlClientOrphanOf is the seam both sweeps call through, so their handling
+// of an indeterminate verdict can be tested without a host on which /proc reads
+// genuinely fail. isControlClientOrphanFor covers the decision itself.
+var controlClientOrphanOf = isControlClientOrphan
+
+// probeProcessAlive asks the kernel whether pid still exists, without signalling
+// it. Split out so isControlClientOrphanFor can be driven through every errno
+// that matters.
+func probeProcessAlive(pid int) error { return syscall.Kill(pid, 0) }
+
+// isControlClientOrphanFor is the injectable core of isControlClientOrphan.
+func isControlClientOrphanFor(
+	parentPID func(int) (int, error),
+	probeAlive func(int) error,
+	processExe func(int) (string, error),
+	pid int,
+) (orphan bool, known bool) {
+	ppid, err := parentPID(pid)
+	if err != nil {
+		return false, false
+	}
+	if ppid <= 1 {
 		// PPID == 1 means the kernel has already reparented the client to
 		// init — definitively an orphan.
-		return true
+		return true, true
 	}
-	// Liveness double-check on the parent. If the parent died between the
-	// list-clients call and now, the client is in the process of being
-	// orphaned right now — sweep it.
-	if err := syscall.Kill(ppid, 0); err != nil {
-		return true
+	// Liveness check on the parent. If the parent died between the list-clients
+	// call and now, the client is in the process of being orphaned right now.
+	if err := probeAlive(ppid); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return true, true
+		}
+		// The parent is there and we cannot look at it (EPERM), or the probe
+		// failed for a reason we cannot name. Neither says "orphan".
+		return false, false
 	}
-	parentExe, err := readProcessExe(ppid)
+	parentExe, err := processExe(ppid)
 	if err != nil {
-		// On Linux without /proc-read permission, or macOS with `ps`
-		// failing, we can't verify the parent. Fall back to "treat as
-		// orphan" so #595 cleanup still happens; the cost is that this
-		// regresses the #927 behaviour only on hosts where /proc is
-		// inaccessible AND `ps` doesn't work — which is essentially never.
-		return true
+		// Linux without /proc-read permission, or macOS with `ps` failing. The
+		// parent is alive; we simply cannot tell whose it is.
+		return false, false
 	}
-	return !looksLikeAgentDeckBinary(parentExe)
+	return !looksLikeAgentDeckBinary(parentExe), true
 }
 
 // looksLikeAgentDeckBinary returns true when exePath plausibly refers to an

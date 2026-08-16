@@ -159,7 +159,10 @@ func fakeTmuxCandidate(t *testing.T, role string, extraEnv ...string) int {
 	require.NoError(t, err)
 	require.True(t, isReapableTmuxClientComm(string(comm)),
 		"the symlink must give the helper a tmux client's comm, got %q", strings.TrimSpace(string(comm)))
-	require.True(t, isControlClientOrphan(pid),
+	orphan, known := isControlClientOrphan(pid)
+	require.True(t, known,
+		"the helper's parentage must be readable, or the sweep would refuse it for the wrong reason")
+	require.True(t, orphan,
 		"the helper must be a genuine parentage orphan, or the sweep would preserve it for the wrong reason")
 
 	return pid
@@ -255,11 +258,12 @@ func TestSweepOrphanCandidates_KillsAnIdentifiedOrphan(t *testing.T) {
 	require.True(t, ok)
 	stubLiveTmuxIdentity(t, func(context.Context, int, []string) (bool, bool) { return false, true })
 
-	killed, unclassifiable, notSignalled, unexamined := sweepOrphanCandidates(context.Background(), []orphanCandidate{c})
+	killed, unclassifiable, notSignalled, unknownParent, unexamined := sweepOrphanCandidates(context.Background(), []orphanCandidate{c})
 
 	assert.Equal(t, 1, killed, "an identified orphan must still be reaped")
 	assert.Equal(t, 0, unclassifiable)
 	assert.Equal(t, 0, notSignalled)
+	assert.Equal(t, 0, unknownParent)
 	assert.Equal(t, 0, unexamined)
 	assert.NoError(t, waitForFile(marker, 5*time.Second),
 		"the victim must have received the SIGTERM its handler writes the marker from")
@@ -298,11 +302,12 @@ func TestSweepOrphanCandidates_RefusesWhenPIDChangesHandsDuringTheLiveQuery(t *t
 		return false, true
 	})
 
-	killed, unclassifiable, notSignalled, unexamined := sweepOrphanCandidates(context.Background(), []orphanCandidate{c})
+	killed, unclassifiable, notSignalled, unknownParent, unexamined := sweepOrphanCandidates(context.Background(), []orphanCandidate{c})
 
 	assert.Equal(t, 0, killed, "a pid that changed hands during classification must not be killed")
 	assert.Equal(t, 1, notSignalled, "the refusal must be counted, not silent")
 	assert.Equal(t, 0, unclassifiable)
+	assert.Equal(t, 0, unknownParent)
 	assert.Equal(t, 0, unexamined)
 
 	processIdentityOf = original
