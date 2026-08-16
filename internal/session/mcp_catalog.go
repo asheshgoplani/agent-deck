@@ -3,7 +3,9 @@ package session
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/mcppool"
+	"github.com/asheshgoplani/agent-deck/internal/safeio"
 )
 
 var mcpCatLog = logging.ForComponent(logging.CompMCP)
@@ -164,6 +167,15 @@ func writeJSONFileAtomic(path string, data []byte, perm os.FileMode) error {
 // config.toml. When pluginPinClaudeProfile is non-empty (Claude project .mcp.json),
 // refreshes stale plugin version pins before merging (#960).
 func WriteMergedMcpJSONFile(mcpFile string, enabledNames []string, pluginPinClaudeProfile string) error {
+	// Same read-modify-write class as the .claude.json writers: this reads the
+	// existing servers, merges, and writes the whole file back. The web local
+	// scope and the TUI both reach it, so it takes the same per-path lock.
+	lock, lockErr := AcquireConfigFileLock(mcpFile)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer lock.Release()
+
 	availableMCPs := GetAvailableMCPs()
 	pool := GetGlobalPool()
 
@@ -267,20 +279,107 @@ func WriteMCPJsonFromConfig(projectPath string, enabledNames []string) error {
 	return WriteMergedMcpJSONFile(mcpFile, enabledNames, GetClaudeConfigDir())
 }
 
+// ---------------------------------------------------------------------------
+// Fail-closed reading and writing of Claude-style JSON configs.
+//
+// .claude.json holds the user's entire Claude configuration: settings, every
+// project entry, and the root mcpServers map. The MCP writers below are
+// read-modify-write, so a parse failure that degrades to an empty map does not
+// merely lose the MCP list — the next write persists that empty map and the
+// whole file is gone. A transiently malformed file (a half-finished manual
+// edit, a truncated write from another process) is exactly when this triggers.
+//
+// HARD RULE: a config derived from a failed parse is never written. A parse
+// failure aborts the mutation and names the problem. Only a missing or empty
+// file legitimately starts from a fresh map.
+// ---------------------------------------------------------------------------
+
+// readJSONObjectConfig loads a JSON object config, failing closed on a parse
+// error rather than substituting an empty map.
+func readJSONObjectConfig(path string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return map[string]interface{}{}, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return map[string]interface{}{}, nil
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("refusing to modify %s: it is not valid JSON (%w). "+
+			"Writing would replace its current contents — fix or restore the file first", path, err)
+	}
+	if cfg == nil {
+		cfg = map[string]interface{}{}
+	}
+	return cfg, nil
+}
+
+// refuseDroppingTopLevelKeys is the second net under readJSONObjectConfig: even
+// if some future path reconstructs a config from nothing, the write is refused
+// when it would remove top-level keys the file already has. Every MCP writer
+// here only ever sets "mcpServers" or "projects" on a config it just read, so a
+// dropped key means the read did not happen.
+func refuseDroppingTopLevelKeys(path string) func(old, updated []byte) error {
+	return func(old, updated []byte) error {
+		if len(bytes.TrimSpace(old)) == 0 {
+			return nil
+		}
+		var oldDoc map[string]json.RawMessage
+		if err := json.Unmarshal(old, &oldDoc); err != nil {
+			return fmt.Errorf("refusing to overwrite %s: the file on disk is not valid JSON (%w)", path, err)
+		}
+		var newDoc map[string]json.RawMessage
+		if err := json.Unmarshal(updated, &newDoc); err != nil {
+			return fmt.Errorf("refusing to write %s: generated content is not valid JSON (%w)", path, err)
+		}
+		var dropped []string
+		for k := range oldDoc {
+			if _, ok := newDoc[k]; !ok {
+				dropped = append(dropped, k)
+			}
+		}
+		if len(dropped) > 0 {
+			sort.Strings(dropped)
+			return fmt.Errorf("refusing to write %s: it would drop top-level keys %v that are on disk", path, dropped)
+		}
+		return nil
+	}
+}
+
+// writeJSONObjectConfig marshals cfg and writes it through safeio, which keeps
+// a .bak, refuses an empty payload over a populated file, and runs the
+// drop-a-key guard before touching anything.
+func writeJSONObjectConfig(path string, cfg map[string]interface{}) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		data = append(data, '\n')
+	}
+	return safeio.SafeOverwrite(path, data, safeio.Options{
+		Perm:        0600,
+		RefuseEmpty: true,
+		Guard:       refuseDroppingTopLevelKeys(path),
+	})
+}
+
 // WriteGlobalMCP adds or removes MCPs from Claude's global config
 // This modifies ~/.claude-work/.claude.json → mcpServers
-func WriteGlobalMCP(enabledNames []string) error {
+func writeGlobalMCPLocked(enabledNames []string) error {
 	configDir := GetClaudeConfigDir()
 	configFile := filepath.Join(configDir, ".claude.json")
 
 	// Read existing config (preserve other fields like projects, settings, etc.)
-	var rawConfig map[string]interface{}
-	if data, err := os.ReadFile(configFile); err == nil {
-		if err := json.Unmarshal(data, &rawConfig); err != nil {
-			rawConfig = make(map[string]interface{})
-		}
-	} else {
-		rawConfig = make(map[string]interface{})
+	// A parse failure aborts the mutation: degrading to an empty map here and
+	// writing it back would delete the user's entire Claude configuration.
+	rawConfig, err := readJSONObjectConfig(configFile)
+	if err != nil {
+		return err
 	}
 
 	availableMCPs := GetAvailableMCPs()
@@ -300,17 +399,86 @@ func WriteGlobalMCP(enabledNames []string) error {
 	}
 	rawConfig["mcpServers"] = mergedMCPs
 
-	// Write atomically
-	data, err := json.MarshalIndent(rawConfig, "", "  ")
+	return writeJSONObjectConfig(configFile, rawConfig)
+}
+
+// ---------------------------------------------------------------------------
+// Public writers. Each takes the shared config-file lock for the WHOLE
+// read-modify-write cycle, then delegates to the *Locked body.
+//
+// The lock is not reentrant, so anything needing several writes under one lock
+// calls the *Locked variants directly after acquiring once — see
+// WriteGlobalMCPAndClearProjectMCPs.
+// ---------------------------------------------------------------------------
+
+func claudeConfigFilePath() string {
+	return filepath.Join(GetClaudeConfigDir(), ".claude.json")
+}
+
+// WriteGlobalMCP adds or removes MCPs from Claude's global config
+// (CLAUDE_CONFIG_DIR/.claude.json → mcpServers).
+func WriteGlobalMCP(enabledNames []string) error {
+	lock, err := AcquireConfigFileLock(claudeConfigFilePath())
 	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
+		return err
 	}
+	defer lock.Release()
+	return writeGlobalMCPLocked(enabledNames)
+}
 
-	if err := writeJSONFileAtomic(configFile, data, 0600); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+// WriteProjectMCP writes enabled catalog MCPs into
+// projects[projectPath].mcpServers of Claude's config.
+func WriteProjectMCP(projectPath string, enabledNames []string) error {
+	lock, err := AcquireConfigFileLock(claudeConfigFilePath())
+	if err != nil {
+		return err
 	}
+	defer lock.Release()
+	return writeProjectMCPLocked(projectPath, enabledNames)
+}
 
-	return nil
+// WriteUserMCP writes MCPs to ~/.claude.json (the ROOT config Claude always
+// reads). This is a different file from the CLAUDE_CONFIG_DIR one, so it takes
+// its own lock.
+func WriteUserMCP(enabledNames []string) error {
+	lock, err := AcquireConfigFileLock(GetUserMCPRootPath())
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	return writeUserMCPLocked(enabledNames)
+}
+
+// ClearProjectMCPs removes all MCPs from projects[path].mcpServers in Claude's
+// config.
+func ClearProjectMCPs(projectPath string) error {
+	lock, err := AcquireConfigFileLock(claudeConfigFilePath())
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	return clearProjectMCPsLocked(projectPath)
+}
+
+// WriteGlobalMCPAndClearProjectMCPs performs the TUI's global-apply as ONE
+// serialized unit: rewrite the root mcpServers map, then clear the project half
+// that the global view merges in.
+//
+// These are two writes to the same file that must not be interleaved with any
+// other writer. Done as separate public calls they take and drop the lock
+// twice, leaving a window where another process sees the config with the new
+// global set but the stale project set still merged in — which reads as MCPs
+// the user just removed still being attached.
+func WriteGlobalMCPAndClearProjectMCPs(projectPath string, enabledNames []string) error {
+	lock, err := AcquireConfigFileLock(claudeConfigFilePath())
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	if err := writeGlobalMCPLocked(enabledNames); err != nil {
+		return err
+	}
+	return clearProjectMCPsLocked(projectPath)
 }
 
 // GetGlobalMCPNames returns the names of MCPs currently in Claude's global config
@@ -425,20 +593,18 @@ func buildManagedMCPServers(enabledNames []string, scope string) map[string]MCPS
 // which silently moved servers between scopes.
 //
 // Entries not defined in config.toml are preserved (#146).
-func WriteProjectMCP(projectPath string, enabledNames []string) error {
+func writeProjectMCPLocked(projectPath string, enabledNames []string) error {
 	if projectPath == "" {
 		return fmt.Errorf("project MCP write: empty project path")
 	}
 	configDir := GetClaudeConfigDir()
 	configFile := filepath.Join(configDir, ".claude.json")
 
-	var rawConfig map[string]interface{}
-	if data, err := os.ReadFile(configFile); err == nil {
-		if err := json.Unmarshal(data, &rawConfig); err != nil {
-			rawConfig = make(map[string]interface{})
-		}
-	} else {
-		rawConfig = make(map[string]interface{})
+	// A parse failure aborts the mutation: degrading to an empty map here and
+	// writing it back would delete the user's entire Claude configuration.
+	rawConfig, err := readJSONObjectConfig(configFile)
+	if err != nil {
+		return err
 	}
 
 	projects, _ := rawConfig["projects"].(map[string]interface{})
@@ -469,30 +635,20 @@ func WriteProjectMCP(projectPath string, enabledNames []string) error {
 	projects[projectPath] = proj
 	rawConfig["projects"] = projects
 
-	data, err := json.MarshalIndent(rawConfig, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-	if err := writeJSONFileAtomic(configFile, data, 0600); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
-	}
-	return nil
+	return writeJSONObjectConfig(configFile, rawConfig)
 }
 
 // ClearProjectMCPs removes all MCPs from projects[path].mcpServers in Claude's config
-func ClearProjectMCPs(projectPath string) error {
-	configDir := GetClaudeConfigDir()
-	configFile := filepath.Join(configDir, ".claude.json")
+func clearProjectMCPsLocked(projectPath string) error {
+	configFile := claudeConfigFilePath()
 
-	// Read existing config
-	data, err := os.ReadFile(configFile)
+	// Through the shared reader, not a hand-rolled copy. The inline version
+	// this replaces failed closed on a bad parse (correct) but ALSO errored on
+	// a genuinely absent file — the inverted bug: nothing to clear is success,
+	// not failure. readJSONObjectConfig draws that line once, for every caller.
+	rawConfig, err := readJSONObjectConfig(configFile)
 	if err != nil {
-		return fmt.Errorf("failed to read config: %w", err)
-	}
-
-	var rawConfig map[string]interface{}
-	if err := json.Unmarshal(data, &rawConfig); err != nil {
-		return fmt.Errorf("failed to parse config: %w", err)
+		return err
 	}
 
 	// Get projects map
@@ -510,17 +666,7 @@ func ClearProjectMCPs(projectPath string) error {
 	// Clear mcpServers for this project
 	proj["mcpServers"] = map[string]interface{}{}
 
-	// Write atomically
-	newData, err := json.MarshalIndent(rawConfig, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	if err := writeJSONFileAtomic(configFile, newData, 0600); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
-	}
-
-	return nil
+	return writeJSONObjectConfig(configFile, rawConfig)
 }
 
 // GetUserMCPRootPath returns the path to ~/.claude.json (ROOT config, always read by Claude)
@@ -537,20 +683,18 @@ func GetUserMCPRootPath() string {
 // WriteUserMCP writes MCPs to ~/.claude.json (ROOT config)
 // Uses socket proxies if pool is running, otherwise falls back to stdio
 // WARNING: MCPs written here affect ALL Claude sessions regardless of profile!
-func WriteUserMCP(enabledNames []string) error {
+func writeUserMCPLocked(enabledNames []string) error {
 	configFile := GetUserMCPRootPath()
 	if configFile == "" {
 		return fmt.Errorf("could not determine home directory")
 	}
 
 	// Read existing config (preserve other fields like numStartups, projects, etc.)
-	var rawConfig map[string]interface{}
-	if data, err := os.ReadFile(configFile); err == nil {
-		if err := json.Unmarshal(data, &rawConfig); err != nil {
-			rawConfig = make(map[string]interface{})
-		}
-	} else {
-		rawConfig = make(map[string]interface{})
+	// A parse failure aborts the mutation: degrading to an empty map here and
+	// writing it back would delete the user's entire Claude configuration.
+	rawConfig, err := readJSONObjectConfig(configFile)
+	if err != nil {
+		return err
 	}
 
 	// Build new mcpServers from enabled names using config.toml definitions
@@ -621,17 +765,7 @@ func WriteUserMCP(enabledNames []string) error {
 	}
 	rawConfig["mcpServers"] = mergedMCPs
 
-	// Write atomically
-	data, err := json.MarshalIndent(rawConfig, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	if err := writeJSONFileAtomic(configFile, data, 0600); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
-	}
-
-	return nil
+	return writeJSONObjectConfig(configFile, rawConfig)
 }
 
 // GetUserMCPNames returns the names of MCPs in ~/.claude.json (ROOT config)
@@ -661,4 +795,10 @@ func GetUserMCPNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// RefuseDroppingTopLevelKeysForTest exposes the safeio guard so tests in other
+// packages can assert the second net directly. Not used in production paths.
+func RefuseDroppingTopLevelKeysForTest(path string) func(old, updated []byte) error {
+	return refuseDroppingTopLevelKeys(path)
 }

@@ -660,15 +660,13 @@ func (m *MCPDialog) Apply() error {
 			enabledNames[i] = item.Name
 		}
 
-		// Write to Claude's global config
-		if err := session.WriteGlobalMCP(enabledNames); err != nil {
-			m.err = err
-			return err
-		}
-
-		// Also clear project-specific MCPs (they were shown in global view)
-		// This ensures removed MCPs are actually removed
-		if err := session.ClearProjectMCPs(m.projectPath); err != nil {
+		// Write the global set and clear the project half under ONE lock. The
+		// global view merges projects[path].mcpServers into what it shows, so
+		// these two writes are a single logical change: run as separate calls
+		// they take and drop the lock twice, and another writer landing in
+		// between sees the new global set with the stale project set still
+		// merged in — MCPs the user just removed reading as still attached.
+		if err := session.WriteGlobalMCPAndClearProjectMCPs(m.projectPath, enabledNames); err != nil {
 			m.err = err
 			return err
 		}

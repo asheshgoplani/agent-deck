@@ -10,7 +10,7 @@
 //   DELETE /api/sessions/{id}/mcps/{name}         -> detach (scope in body)
 //   PATCH  /api/sessions/{id}/mcps/{name}         -> move scope (toggle pooled ↔ local)
 import { html } from 'htm/preact'
-import { useEffect, useState, useCallback } from 'preact/hooks'
+import { useEffect, useState, useCallback, useRef } from 'preact/hooks'
 import { menuModelSignal } from '../dataModel.js'
 import { selectedIdSignal, mutationsEnabledSignal } from '../state.js'
 import { addToast } from '../Toast.js'
@@ -33,6 +33,38 @@ const EMPTY_ATTACHED = { local: [], project: [], global: [], user: [] }
 // not in any hardcoded list.
 function toolSupportsMCP(session) {
   return session.mcpSupported !== false
+}
+
+
+// mcpStateForResponse reduces a completed refresh into pane state, or returns
+// null when the response belongs to a session the user has already navigated
+// away from.
+//
+// Refreshes are async, so switching sessions mid-flight used to let the old
+// session's catalog, attachments and — worst — its SCOPE LIST land on the new
+// session. The next attach then used a scope the new session's tool may not
+// have. Responses are keyed by session id and mismatches are discarded.
+//
+// Exported for tests: rendering preact components under vitest is broken in
+// this repo (see unit/archivedPane.test.js), so the logic that matters is
+// asserted directly.
+export function mcpStateForResponse({ forSessionId, activeSessionId, catalogResp, attachedResp }) {
+  if (!forSessionId || forSessionId !== activeSessionId) return null
+  const scopes = attachedResp && attachedResp.scopes && attachedResp.scopes.length
+    ? attachedResp.scopes
+    : ALL_SCOPES
+  return {
+    sessionId: forSessionId,
+    catalog: (catalogResp && catalogResp.mcps) || [],
+    attached: {
+      local: (attachedResp && attachedResp.local) || [],
+      project: (attachedResp && attachedResp.project) || [],
+      global: (attachedResp && attachedResp.global) || [],
+      user: (attachedResp && attachedResp.user) || [],
+    },
+    scopes,
+    defaultScope: scopes[0] || '',
+  }
 }
 
 // jsonFetch keeps this pane's 204 handling and error shaping, but the headers
@@ -58,101 +90,20 @@ async function jsonFetch(path, opts = {}) {
   return res.json()
 }
 
+// McpPane resolves the selected session and hands off to a child keyed by
+// session id.
+//
+// The key is the fix for the stale-frame window: resetting per-session state in
+// a useEffect runs AFTER the render commits, so the first frame of a new
+// session painted the previous session's catalog, attachments and scopes while
+// the mutation callbacks were already bound to the new session. A click landing
+// in that frame mutated the new session using the old session's data. Keying
+// the child means switching sessions unmounts it and mounts a fresh one, so the
+// old state cannot be painted at all — the reset is structural, not deferred.
 export function McpPane() {
   const { sessions } = menuModelSignal.value
   const selectedId = selectedIdSignal.value
-  const mutationsEnabled = mutationsEnabledSignal.value
   const session = sessions.find(s => s.id === selectedId)
-
-  const [catalog, setCatalog] = useState([])
-  const [attached, setAttached] = useState(EMPTY_ATTACHED)
-  // Scopes this session's tool actually has, as reported by the server.
-  const [scopes, setScopes] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  const refresh = useCallback(async () => {
-    // Hooks must run unconditionally, so guard here rather than relying on the
-    // unsupported-tool early return below: without this the pane would fire a
-    // request the server is obliged to refuse.
-    if (!session || !toolSupportsMCP(session)) return
-    setLoading(true)
-    setError('')
-    try {
-      const [catalogResp, attachedResp] = await Promise.all([
-        jsonFetch('/api/mcps'),
-        jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps`),
-      ])
-      setCatalog(catalogResp.mcps || [])
-      setAttached({
-        local: attachedResp.local || [],
-        project: attachedResp.project || [],
-        global: attachedResp.global || [],
-        user: attachedResp.user || [],
-      })
-      // Fall back to every scope only if an older server omits the field.
-      setScopes(attachedResp.scopes && attachedResp.scopes.length ? attachedResp.scopes : ALL_SCOPES)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }, [session && session.id])
-
-  useEffect(() => { refresh() }, [refresh])
-
-  const findScope = (name) => {
-    for (const s of ALL_SCOPES) {
-      if ((attached[s] || []).includes(name)) return s
-    }
-    return null
-  }
-
-  // The scope a fresh attach lands in: the tool's most specific store.
-  const defaultScope = scopes[0] || ''
-
-  const attach = async (name, scope) => {
-    if (!session) return
-    try {
-      await jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps/${encodeURIComponent(name)}`, {
-        method: 'POST',
-        body: JSON.stringify({ scope }),
-      })
-      addToast(`Attached ${name} (${scope})`, 'success')
-      await refresh()
-    } catch (err) {
-      addToast(`Attach failed: ${err.message}`, 'error')
-    }
-  }
-
-  const detach = async (name) => {
-    if (!session) return
-    const scope = findScope(name)
-    try {
-      await jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps/${encodeURIComponent(name)}`, {
-        method: 'DELETE',
-        body: scope ? JSON.stringify({ scope }) : '',
-      })
-      addToast(`Detached ${name}`, 'success')
-      await refresh()
-    } catch (err) {
-      addToast(`Detach failed: ${err.message}`, 'error')
-    }
-  }
-
-  const moveScope = async (name, toScope) => {
-    if (!session) return
-    try {
-      await jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps/${encodeURIComponent(name)}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ scope: toScope }),
-      })
-      addToast(`Moved ${name} → ${toScope}`, 'success')
-      await refresh()
-    } catch (err) {
-      addToast(`Move failed: ${err.message}`, 'error')
-    }
-  }
 
   if (!session) {
     return html`
@@ -171,7 +122,7 @@ export function McpPane() {
   // refuse. The tool decides which MCP store exists; a shell session has none.
   if (!toolSupportsMCP(session)) {
     return html`
-      <div class="costs" data-testid="mcp-pane">
+      <div class="costs" data-testid="mcp-pane" data-session-id=${session.id}>
         <div class="chart-card" style="text-align: center; padding: 48px 24px;">
           <div class="title" style="font-size: 16px;">MCP Manager</div>
           <div data-testid="mcp-unsupported-tool"
@@ -184,8 +135,111 @@ export function McpPane() {
     `
   }
 
+  return html`<${McpPaneForSession} key=${session.id} session=${session}/>`
+}
+
+// McpPaneForSession owns all per-session state. It is mounted fresh for each
+// session (see the key above), so every useState below starts empty and no
+// value can leak across a switch.
+function McpPaneForSession({ session }) {
+  const mutationsEnabled = mutationsEnabledSignal.value
+  const sessionId = session.id
+  // Still keyed defensively: a refresh in flight when this instance unmounts
+  // must not apply, and mcpStateForResponse is the tested seam for that.
+  const activeSessionRef = useRef(sessionId)
+
+  const [catalog, setCatalog] = useState([])
+  const [attached, setAttached] = useState(EMPTY_ATTACHED)
+  // Scopes this session's tool actually has, as reported by the server.
+  const [scopes, setScopes] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const refresh = useCallback(async () => {
+    const forSession = sessionId
+    setLoading(true)
+    setError('')
+    try {
+      const [catalogResp, attachedResp] = await Promise.all([
+        jsonFetch('/api/mcps'),
+        jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps`),
+      ])
+      const next = mcpStateForResponse({
+        forSessionId: forSession,
+        activeSessionId: activeSessionRef.current,
+        catalogResp,
+        attachedResp,
+      })
+      // Stale: the user switched sessions while this was in flight.
+      if (!next) return
+      setCatalog(next.catalog)
+      setAttached(next.attached)
+      setScopes(next.scopes)
+    } catch (err) {
+      if (activeSessionRef.current === forSession) setError(err.message)
+    } finally {
+      if (activeSessionRef.current === forSession) setLoading(false)
+    }
+  }, [sessionId])
+
+  useEffect(() => {
+    activeSessionRef.current = sessionId
+    refresh()
+    return () => { activeSessionRef.current = null }
+  }, [sessionId, refresh])
+
+  const findScope = (name) => {
+    for (const s of ALL_SCOPES) {
+      if ((attached[s] || []).includes(name)) return s
+    }
+    return null
+  }
+
+  // The scope a fresh attach lands in: the tool's most specific store.
+  const defaultScope = scopes[0] || ''
+
+  const attach = async (name, scope) => {
+    try {
+      await jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps/${encodeURIComponent(name)}`, {
+        method: 'POST',
+        body: JSON.stringify({ scope }),
+      })
+      addToast(`Attached ${name} (${scope})`, 'success')
+      await refresh()
+    } catch (err) {
+      addToast(`Attach failed: ${err.message}`, 'error')
+    }
+  }
+
+  const detach = async (name) => {
+    const scope = findScope(name)
+    try {
+      await jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+        body: scope ? JSON.stringify({ scope }) : '',
+      })
+      addToast(`Detached ${name}`, 'success')
+      await refresh()
+    } catch (err) {
+      addToast(`Detach failed: ${err.message}`, 'error')
+    }
+  }
+
+  const moveScope = async (name, toScope) => {
+    try {
+      await jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps/${encodeURIComponent(name)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ scope: toScope }),
+      })
+      addToast(`Moved ${name} → ${toScope}`, 'success')
+      await refresh()
+    } catch (err) {
+      addToast(`Move failed: ${err.message}`, 'error')
+    }
+  }
+
   return html`
-    <div class="costs" data-testid="mcp-pane">
+    <div class="costs" data-testid="mcp-pane" data-session-id=${sessionId}>
       <div class="chart-card" style="padding: 24px;">
         <div class="title" style="font-size: 16px; margin-bottom: 4px;">MCP Manager</div>
         <div style="font-family: var(--mono); font-size: 11px; color: var(--text-dim); margin-bottom: 16px;">
