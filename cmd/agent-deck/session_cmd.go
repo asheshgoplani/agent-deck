@@ -2792,6 +2792,16 @@ func handleSessionSend(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// PR #1942 review (P1a): refuse a send the target cannot receive. A DeepSeek
+	// web-profile pane runs an HTTP server with no terminal prompt, so keystrokes
+	// go to the server process's stdin and vanish while this command reports
+	// success. Silent message loss is the worst failure class here, so it is a
+	// hard refusal rather than a warning. Every other tool returns nil.
+	if err := inst.PromptDeliveryError(); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	if shouldSkipConductorHeartbeatSend(inst, message) {
 		out.Success(fmt.Sprintf("Skipped heartbeat for '%s'", inst.Title), map[string]interface{}{
 			"success":       true,

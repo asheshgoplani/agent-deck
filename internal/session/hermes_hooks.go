@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -19,58 +18,16 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
 
-// hermesConfigMu serializes mutations to a given Hermes config.yaml within
-// this process. Keyed by absolute config-file path so two writers in the same
-// process wait for each other instead of racing the read-modify-write.
+// acquireHermesConfigLock serializes mutations to a given Hermes config.yaml
+// across goroutines and across processes, so TUI auto-inject cannot interleave
+// its read-modify-write with `agent-deck hermes-hooks` running in another
+// shell.
 //
-// Cross-process serialization is provided by advisory flock on a sibling
-// `.lock` file (see acquireHermesConfigLock). Together they cover both cases
-// that matter: TUI auto-inject racing with `agent-deck hermes-hooks` in
-// another shell, or `-race` tests inside one binary.
-var hermesConfigMu sync.Map // map[string]*sync.Mutex
-
-// hermesConfigLock holds both lock layers; Release() unwinds them in reverse.
-type hermesConfigLock struct {
-	inProc *sync.Mutex
-	file   *os.File
-}
-
-func (l *hermesConfigLock) Release() {
-	if l.file != nil {
-		// Best-effort: LOCK_UN errors are non-actionable; Close drops the fd
-		// either way, which also releases the lock.
-		_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
-		_ = l.file.Close()
-	}
-	if l.inProc != nil {
-		l.inProc.Unlock()
-	}
-}
-
-// acquireHermesConfigLock takes the in-process mutex for this config path,
-// then an exclusive advisory file lock on `<configPath>.lock`. Both must
-// release before another writer can proceed.
-func acquireHermesConfigLock(configPath string) (*hermesConfigLock, error) {
-	mIface, _ := hermesConfigMu.LoadOrStore(configPath, &sync.Mutex{})
-	m := mIface.(*sync.Mutex)
-	m.Lock()
-
-	lockPath := configPath + ".lock"
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
-		m.Unlock()
-		return nil, fmt.Errorf("ensure hermes config lock dir: %w", err)
-	}
-	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		m.Unlock()
-		return nil, fmt.Errorf("open hermes config lock file: %w", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		_ = f.Close()
-		m.Unlock()
-		return nil, fmt.Errorf("flock hermes config: %w", err)
-	}
-	return &hermesConfigLock{inProc: m, file: f}, nil
+// The mechanism lives in config_file_lock.go and is shared with the Codex and
+// Claude config writers. This is a naming wrapper, not a second copy — Hermes
+// was the last of the three still carrying a private one.
+func acquireHermesConfigLock(configPath string) (*ConfigFileLock, error) {
+	return AcquireConfigFileLock(configPath)
 }
 
 // agentDeckHermesHookCommand is the exact command string we write into

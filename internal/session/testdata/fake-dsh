@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# fake-dsh — a stand-in for the DeepSeek Harness launcher (@deepseek-ai/dsh).
+#
+# WHY THIS EXISTS
+#
+# The real `dsh` needs a DEEPSEEK_API_KEY to answer anything: without one it
+# exits 1 on the first turn with MISSING_CREDENTIAL. agent-deck's CI has no key,
+# so the lifecycle proof (launch -> prompt round-trip -> status transitions ->
+# send delivery -> restart-with-context) runs against this emulator instead.
+#
+# WHAT IT IS AND IS NOT
+#
+# It reproduces the parts of the real CLI's CONTRACT that agent-deck depends on,
+# each verified against @deepseek-ai/dsh 0.1.0-rc.6 in a sandboxed HOME:
+#
+#   * launcher flags come first and end at the first unrecognized token;
+#     --profile <name> and repeatable --patch <path> are the launcher's own
+#   * `--profile web` prints exactly `dsh web: http://<host>:<port>` and stays up
+#   * `--profile headless <task...>` answers once, prints it, and exits
+#     (0 when the turn completed, 1 otherwise); no task is a usage error
+#   * a missing credential exits 1 with dsh's MISSING_CREDENTIAL wording
+#   * SIGTERM drains and exits 0; SIGINT exits 130
+#   * $DSH_HOME holds profiles/, storages/workspace.json, and
+#     sessions/<slug>/<session-id>/session.jsonl.zstd
+#   * `--version` prints a bare version; `--help` prints the launcher's own help
+#
+# It ALSO implements `--profile tui`, an interactive surface the published
+# package does not ship. That is not invention: the real launcher's own --help
+# advertises `dsh --profile tui --resume <session>` as the shape of a profile a
+# user installs with `dsh plugin --profile tui add <package>`, and it is the only
+# way to exercise send delivery and resume end to end. Everything agent-deck
+# emits for that profile is configuration-gated ([deepseek].profile and
+# [deepseek].resume_flag), so this proves the wiring, not a shipped feature.
+#
+# It is NOT a DeepSeek client. It calls no model and needs no network.
+
+set -uo pipefail
+
+VERSION="0.1.0-rc.6+agent-deck-fake"
+
+die_usage() { printf 'error: %s\n' "$1" >&2; exit 1; }
+
+# --- launcher flag parsing (mirrors apps/cli/src/args.ts) --------------------
+#
+# The launcher stops owning tokens at the first one it does not recognize;
+# everything from there is the booted app's.
+profile=""
+patches=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -V|--version) printf '%s\n' "$VERSION"; exit 0 ;;
+    --profile)
+      shift; [ $# -gt 0 ] || die_usage "--profile needs a name"
+      profile="$1"; shift ;;
+    --patch)
+      shift; [ $# -gt 0 ] || die_usage "--patch needs a path"
+      patches+=("$1"); shift ;;
+    web)   profile="web"; shift; break ;;
+    plugin) die_usage "fake-dsh does not emulate plugin management" ;;
+    -h|--help)
+      if [ -z "$profile" ]; then
+        cat <<'EOF'
+Usage: dsh [options] [command] [args...]
+
+dsh: boot a DeepSeek Harness profile — an ordered stack of plugin-bundle patch
+layers under your own overrides.
+EOF
+        exit 0
+      fi
+      break ;;
+    *) break ;;
+  esac
+done
+
+[ -n "$profile" ] || die_usage "--profile <name> is required"
+
+: "${DSH_HOME:=$HOME/.dsh}"
+mkdir -p "$DSH_HOME/profiles/$profile" "$DSH_HOME/storages" || exit 1
+
+# --- credential gate (the real binary's first failure) -----------------------
+# Only the profiles that actually talk to a model check this; `web` serves its UI
+# and defers the failure to the first turn, exactly like upstream.
+require_credential() {
+  if [ -z "${DEEPSEEK_API_KEY:-}" ] && [ ! -f "$DSH_HOME/.credentials.yaml" ]; then
+    printf 'dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY in the launching environment\n' >&2
+    exit 1
+  fi
+}
+
+# --- session persistence (the shape agent-deck discovers resume from) --------
+#
+# Slug rule: upstream's own encoding is not re-derived here, and agent-deck does
+# not re-derive it either (it scans the sessions root). Any stable slug is
+# therefore a faithful stand-in.
+workspace="$PWD"
+slug="$(printf '%s' "$workspace" | tr -c 'A-Za-z0-9' '-')"
+
+new_session_id() {
+  printf 'session-%s\n' "$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n' || date +%s%N)"
+}
+
+record_session() {
+  local id="$1"
+  mkdir -p "$DSH_HOME/sessions/$slug/$id"
+  : > "$DSH_HOME/sessions/$slug/$id/session.jsonl.zstd"
+
+  local index="$DSH_HOME/storages/workspace.json"
+  DSH_INDEX="$index" DSH_WS="$workspace" DSH_SID="$id" python3 - <<'PY'
+import json, os
+
+index, workspace, sid = os.environ["DSH_INDEX"], os.environ["DSH_WS"], os.environ["DSH_SID"]
+try:
+    with open(index) as fh:
+        doc = json.load(fh)
+except (OSError, ValueError):
+    doc = {"unit": {"name": "workspace", "version": 2},
+           "global": {"initialized": True, "workspaceIds": [], "archivedSessionIds": []},
+           "tables": {"workspaces": {}}}
+
+workspaces = doc.setdefault("tables", {}).setdefault("workspaces", {})
+for entry in workspaces.values():
+    if entry.get("path") == workspace:
+        entry.setdefault("sessionIds", []).append(sid)
+        break
+else:
+    wid = "00000000-0000-4000-8000-%012d" % (len(workspaces) + 1)
+    workspaces[wid] = {"path": workspace,
+                       "title": os.path.basename(workspace),
+                       "sessionIds": [sid]}
+    doc.setdefault("global", {}).setdefault("workspaceIds", []).append(wid)
+
+tmp = index + ".tmp"
+with open(tmp, "w") as fh:
+    json.dump(doc, fh)
+os.replace(tmp, index)
+PY
+}
+
+# --- shutdown contract -------------------------------------------------------
+# SIGTERM is a supervisor's ordinary stop and exits 0; SIGINT is a user
+# interrupt and reports 130. Both drain first.
+on_term() { exit 0; }
+on_int()  { exit 130; }
+trap on_term TERM
+trap on_int INT
+
+case "$profile" in
+  web)
+    host="127.0.0.1"
+    port="3080"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --host) shift; host="${1:-}"; shift ;;
+        --port) shift; port="${1:-}"; shift ;;
+        --trusted-host) shift; shift ;;
+        -h|--help)
+          printf 'Usage: dsh --profile web [options]\n\nServe the DeepSeek Harness browser UI.\n'
+          exit 0 ;;
+        *) die_usage "unknown web option $1" ;;
+      esac
+    done
+    record_session "$(new_session_id)"
+    printf 'dsh web: http://%s:%s\n' "$host" "$port"
+    # Serve forever; the launcher's shutdown handlers own exit.
+    while true; do sleep 1; done
+    ;;
+
+  headless)
+    if [ $# -eq 0 ] || [ -z "${1// /}" ]; then
+      printf 'Usage: dsh --profile headless [options] [task...]\n' >&2
+      die_usage "a task is required"
+    fi
+    if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+      printf 'Usage: dsh --profile headless [options] [task...]\n\nAnswer one task, print the final assistant message, and exit.\n'
+      exit 0
+    fi
+    require_credential
+    record_session "$(new_session_id)"
+    printf 'answered: %s\n' "$*"
+    exit 0
+    ;;
+
+  *)
+    # An installed interactive profile. Accepts the app-owned --resume the
+    # launcher's help advertises for exactly this shape.
+    resume=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --resume) shift; resume="${1:-}"; shift ;;
+        -h|--help)
+          printf 'Usage: dsh --profile %s [options]\n\n  --resume <session>  reopen a previous conversation\n' "$profile"
+          exit 0 ;;
+        *) shift ;;
+      esac
+    done
+    require_credential
+
+    if [ -n "$resume" ]; then
+      session_id="$resume"
+      printf 'resumed session %s\n' "$session_id"
+    else
+      session_id="$(new_session_id)"
+      record_session "$session_id"
+      printf 'DeepSeek Harness %s (profile %s)\n' "$VERSION" "$profile"
+      printf 'new session %s\n' "$session_id"
+    fi
+
+    # Read a line, look busy for a beat, answer, return to the prompt. The busy
+    # marker is "esc to interrupt", the phrase agent-deck's deepseek preset
+    # treats as busy.
+    while IFS= read -r line; do
+      [ -n "${line// /}" ] || { printf 'dsh> '; continue; }
+      case "$line" in
+        /exit|/quit) printf 'bye\n'; exit 0 ;;
+      esac
+      # The busy marker lives on a FOOTER line that is erased when the turn
+      # ends, exactly as a real TUI redraws its status bar. Printing it with a
+      # newline instead would leave "esc to interrupt" in the scrollback and the
+      # session would read as busy forever — which is precisely the bug this
+      # shape guards against.
+      printf 'working... (esc to interrupt)'
+      sleep 2
+      printf '\r\033[K'
+      printf 'answered: %s\n' "$line"
+      printf 'dsh> '
+    done
+    exit 0
+    ;;
+esac

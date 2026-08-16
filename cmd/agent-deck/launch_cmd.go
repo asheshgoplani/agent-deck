@@ -640,7 +640,26 @@ func handleLaunch(profile string, args []string) {
 	throttle.Acquire()
 	defer throttle.Release()
 
-	if initialMessage != "" && !*noWait {
+	// PR #1942 review (P1a): refuse a message the target has no way to receive
+	// BEFORE spawning anything. The DeepSeek web profile serves a browser UI and
+	// has no terminal prompt, so the pane-send paths below would type the prompt
+	// into a server's stdin and report success. Every other tool returns nil.
+	if initialMessage != "" {
+		if err := newInstance.PromptDeliveryError(); err != nil {
+			out.Error(err.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+
+	// PR #1942 review (P1b): when the prompt rides the command line, --no-wait's
+	// "start now, send asynchronously" shape cannot work — the task IS the
+	// invocation, so a Start() without it launches something the tool rejects
+	// outright. Embed it instead. There is nothing to wait for in that case
+	// either: the process is already answering by the time it exists, so
+	// --no-wait loses nothing.
+	promptRidesArgv := initialMessage != "" && newInstance.PromptRidesCommandLine()
+
+	if initialMessage != "" && (!*noWait || promptRidesArgv) {
 		if err := newInstance.StartWithMessage(initialMessage); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -682,7 +701,7 @@ func handleLaunch(profile string, args []string) {
 	// sendWithRetryTarget pass, run verifyPromptConsumedAfterLaunch to catch
 	// the welcome-screen race where claude eats the first Enter. 10s budget
 	// per window + single retry + stderr warning on persistent no-op.
-	if initialMessage != "" && *noWait {
+	if initialMessage != "" && *noWait && !promptRidesArgv {
 		tmuxSess := newInstance.GetTmuxSession()
 		if tmuxSess != nil {
 			// #1777 provenance probe: a freshly launched session has an

@@ -6420,6 +6420,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("session %q is not running; start it before prompting", inst.Title))
 			return h, nil
 		}
+		// PR #1942 review (P1a): the same refusal the CLI send path applies.
+		// A pane that runs a server rather than an agent has no prompt to type
+		// into, and the delivery below would report success while the text went
+		// to the server's stdin. Surfaced through setError so the user sees it
+		// instead of watching a prompt disappear. Nil for every other tool.
+		if err := inst.PromptDeliveryError(); err != nil {
+			h.setError(err)
+			return h, nil
+		}
 		text := msg.text
 		tmuxName := ts.Name
 		go func() {

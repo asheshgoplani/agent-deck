@@ -14,6 +14,7 @@ import (
 // pickerToolNames lists built-in tools shown in the new-session picker (shell excluded).
 var pickerToolNames = []string{
 	"claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes",
+	"deepseek",
 }
 
 // ToolVisibilityPanel edits [ui].hidden_tools via a checklist overlay.
@@ -79,7 +80,7 @@ func (p *ToolVisibilityPanel) LoadConfig(config *session.UserConfig) {
 		builtins := map[string]bool{
 			"claude": true, "gemini": true, "opencode": true, "codex": true,
 			"pi": true, "copilot": true, "crush": true, "cursor": true, "hermes": true,
-			"shell": true, "aider": true,
+			"deepseek": true, "shell": true, "aider": true,
 		}
 		var custom []string
 		for name := range config.Tools {

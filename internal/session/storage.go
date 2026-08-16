@@ -172,6 +172,11 @@ type InstanceData struct {
 
 	// IdleTimeoutSecs mirrors Instance.IdleTimeoutSecs (#1143). 0 = disabled.
 	IdleTimeoutSecs int64 `json:"idle_timeout_secs,omitempty"`
+
+	// DeepSeekTask mirrors Instance.DeepSeekTask (PR #1942 review, P1c).
+	// Persisted via the tool_data extras zone (see deepseek_task_persist.go).
+	// Empty for every profile but headless.
+	DeepSeekTask string `json:"deepseek_task,omitempty"`
 }
 
 // GroupData represents serializable group data
@@ -1036,6 +1041,10 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// timestamp badge and preview survive a TUI restart instead of
 	// collapsing back to CreatedAt/LastAccessedAt.
 	toolData = WriteLastActivityAtToToolData(toolData, inst.LastActivityAt())
+	// PR #1942 review (P1c): the DeepSeek headless task rides the same extras
+	// zone. For a one-shot the task IS the invocation, so a row that forgets it
+	// can only ever be "restarted" into dsh's usage error.
+	toolData = WriteDeepSeekTaskToToolData(toolData, inst.DeepSeekTask)
 
 	return &statedb.InstanceRow{
 		ID:                  inst.ID,
@@ -1216,6 +1225,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			GenericSessionCommand:     genericScopeCommand(r.ToolData),
 			GenericSessionLocation:    genericScopeLocation(r.ToolData),
 			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
+			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 		}
 	}
 
@@ -1344,6 +1354,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			GenericSessionCommand:     genericScopeCommand(r.ToolData),
 			GenericSessionLocation:    genericScopeLocation(r.ToolData),
 			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
+			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 		}
 	}
 
@@ -1591,6 +1602,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			AutoLinkedChannels:           instData.AutoLinkedChannels,
 			Color:                        instData.Color,
 			IdleTimeoutSecs:              instData.IdleTimeoutSecs,
+			DeepSeekTask:                 instData.DeepSeekTask,
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
 			LastStartedAt:                instData.LastStartedAt,
 			GenericSessionID:             instData.GenericSessionID,

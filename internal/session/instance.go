@@ -327,6 +327,21 @@ type Instance struct {
 	// JSON marshaling that could otherwise race the restart-time write.
 	HermesSessionID      string `json:"-"`
 	HermesHookGeneration string `json:"-"`
+
+	// DeepSeek Harness integration. dsh exports no session ID (no env var, no
+	// hook, no `sessions list` subcommand), so agent-deck discovers it from the
+	// on-disk workspace index under $DSH_HOME at restart time. Not persisted
+	// (json:"-") for the same reason as HermesSessionID: it is re-discovered on
+	// every restart, so it needs no lifetime beyond a single Restart() call.
+	DeepSeekSessionID string `json:"-"`
+
+	// DeepSeekTask is the positional task a headless-profile session was
+	// launched with. Unlike DeepSeekSessionID this IS persisted (tool_data
+	// extras zone, see deepseek_task_persist.go): for a one-shot the task is the
+	// whole invocation, so a restart that forgot it would rebuild
+	// `dsh --profile headless` — a usage error that replaces the retained answer
+	// (PR #1942 review, P1c). Empty for every other profile.
+	DeepSeekTask string `json:"deepseek_task,omitempty"`
 	// restartEnv contains one-shot environment overrides while RestartWithEnv is
 	// building the replacement process. It is cleared before the call returns.
 	restartEnv map[string]string
@@ -4263,7 +4278,12 @@ func (i *Instance) buildTmuxOptionOverrides() map[string]string {
 	}
 	// Sandbox sessions need remain-on-exit so dead-pane detection works.
 	// Non-sandbox sessions use default tmux behaviour (pane closes on exit).
-	if i.IsSandboxed() {
+	//
+	// A documented one-shot needs it for a different reason: the process prints
+	// its answer and exits BY DESIGN, and without remain-on-exit tmux tears the
+	// pane down with the answer still in it — the user asked a question and got
+	// a closed window. Keeping the pane is what makes a one-shot readable.
+	if i.IsSandboxed() || i.expectsFastExit() {
 		if overrides == nil {
 			overrides = make(map[string]string)
 		}
@@ -4658,6 +4678,16 @@ func (i *Instance) Start() error {
 			return err
 		}
 		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "deepseek":
+		// The headless profile answers one task and exits, so a plain Start()
+		// must replay a recorded task or refuse — `dsh --profile headless` with
+		// no positional is a usage error dsh rejects before anything could be
+		// delivered (PR #1942 review, P1b/P1c).
+		dsCommand, dsErr := i.deepSeekStartCommand()
+		if dsErr != nil {
+			return dsErr
+		}
+		command = dsCommand
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -4722,7 +4752,16 @@ func (i *Instance) Start() error {
 	// pane is still alive and records it if the session vanishes early. The
 	// watcher is handed value snapshots + a supersede generation so it never
 	// touches i's mutex-guarded fields from its own goroutine.
-	if command != "" {
+	//
+	// A documented one-shot is exempt: `dsh --profile headless "<task>"` answers
+	// once and exits, so a short life is SUCCESS, not a spawn failure. Without
+	// the exemption every completed one-shot would be recorded as died-fast and
+	// the preview would paint "⚠ session failed to start" over its answer.
+	//
+	// The ownership claim above is NOT exempt: a one-shot still spawns a tree
+	// this session owns, and a wrapper that detaches from one escapes exactly
+	// the same way. Its receipt simply verifies clear as soon as the tree exits.
+	if command != "" && !i.expectsFastExit() {
 		// Resolve both write targets HERE, synchronously in the caller, not
 		// inside the goroutine: GetSessionIDLifecycleLogPath()/spawnFailureDir()
 		// read the live $HOME, and watchForFastDeath's goroutine is never
@@ -4846,11 +4885,31 @@ func (i *Instance) StartWithMessage(message string) error {
 		return fmt.Errorf("tmux session not initialized")
 	}
 
+	// Refuse a message this session has no way to receive, BEFORE spawning
+	// anything (PR #1942 review, P1a). The DeepSeek web profile is an HTTP
+	// server with no terminal prompt: the post-start send path below would type
+	// the message into the server process's stdin and report success, which is
+	// silent data loss — the worst failure class here. Every other tool returns
+	// nil from this check, so nothing else changes.
+	//
+	// Refusing before the spawn matters as much as refusing at all: reporting
+	// failure while leaving a running server behind is its own trap.
+	if message != "" {
+		if err := i.PromptDeliveryError(); err != nil {
+			return err
+		}
+	}
+
 	// #1873: same fail-closed ownership gate as Start(), in the same position
 	// relative to the spawn stamp. A second spawn path is still a second tree.
+	// It runs after the deliverability check because that one is a local,
+	// no-probe validation: an undeliverable message should say so rather than
+	// be masked by an ownership refusal.
 	if err := i.guardOwnedProcessesBeforeSpawn("start"); err != nil {
 		return err
 	}
+	// Neither refusal above started anything, so neither may leave a spawn
+	// stamp — a concurrent caller reads that stamp as "a spawn already won".
 	defer recordInstanceSpawn(i.ID)
 
 	// #1580 diagnosability: clear any stale spawn-failure sidecar and drop a
@@ -4866,8 +4925,10 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Priority: built-in tools (claude, gemini, opencode, codex) → custom tools from config.toml → raw command
 	var command string
 	// Codex takes its initial prompt as a positional argument instead of having it
-	// typed into the TUI; when that happens there is nothing left to send.
-	codexPromptEmbedded := false
+	// typed into the TUI; when that happens there is nothing left to send. The
+	// DeepSeek headless profile is the same shape — `dsh --profile headless
+	// "<task>"` IS the whole invocation — so the flag is tool-neutral.
+	promptEmbeddedInCommand := false
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		// #745 fork guard: mirrors the Start() branch above. A fork target
@@ -4936,7 +4997,7 @@ func (i *Instance) StartWithMessage(message string) error {
 				slog.String("reason", "fork_awaiting_start"))
 			break
 		}
-		command, codexPromptEmbedded = i.buildCodexCommandWithPrompt(i.Command, message)
+		command, promptEmbeddedInCommand = i.buildCodexCommandWithPrompt(i.Command, message)
 		i.CodexStartedAt = time.Now().UnixMilli()
 	case i.Tool == "pi":
 		if i.IsForkAwaitingStart {
@@ -4963,6 +5024,22 @@ func (i *Instance) StartWithMessage(message string) error {
 			return err
 		}
 		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "deepseek":
+		// Only the headless profile takes a task positionally; an installed
+		// interactive profile gets the prompt typed into its pane by the
+		// post-start send path below. The web profile has no prompt at all and
+		// was rejected above, before any spawn.
+		if message == "" {
+			// StartWithMessage with no message is an ordinary start, and
+			// headless still needs its recorded task.
+			dsCommand, dsErr := i.deepSeekStartCommand()
+			if dsErr != nil {
+				return dsErr
+			}
+			command = dsCommand
+			break
+		}
+		command, promptEmbeddedInCommand = i.buildDeepSeekCommandWithPrompt(i.Command, message)
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -5084,7 +5161,7 @@ func (i *Instance) StartWithMessage(message string) error {
 
 	// Send message synchronously (CLI will wait). Codex may already carry the
 	// prompt as a launch argument, in which case there is nothing to type.
-	if message != "" && !codexPromptEmbedded {
+	if message != "" && !promptEmbeddedInCommand {
 		return i.sendMessageWhenReady(message)
 	}
 
@@ -6938,6 +7015,18 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		i.HermesSessionID = ""
 	}
 
+	if i.Tool == "deepseek" {
+		// Same contract as hermes: drop the discovered resume ID so the next
+		// launch boots a new dsh session instead of reopening the old one.
+		//
+		// DeepSeekTask is deliberately KEPT. It is not a conversation binding —
+		// it is the invocation itself for a one-shot, and a "fresh" restart of
+		// `dsh --profile headless "<task>"` still means running that task in a
+		// new session. Clearing it here would turn fresh-restart into an
+		// unlaunchable command (PR #1942 review, P1c).
+		i.DeepSeekSessionID = ""
+	}
+
 	// Custom [tools.*]: drop any persisted conversation so a deliberate
 	// fresh start does not re-attach resume after reboot. Flag the clear so
 	// a subsequent SaveWithGroups writes explicit empty (sticky-safe) even
@@ -8758,6 +8847,22 @@ func (i *Instance) restart(env map[string]string) error {
 			return fmt.Errorf("seed hermes restart baseline: %w", err)
 		}
 		command = i.buildHermesCommand(i.Command)
+	} else if i.Tool == "deepseek" {
+		// Re-discover the workspace's newest dsh session on EVERY restart, for
+		// the same self-healing reason as hermes: a pruned session yields the
+		// current newest, or "" — in which case the launch boots fresh instead
+		// of resuming a dead ID forever. A no-op when [deepseek].resume_flag is
+		// unset (the default), where restart is a plain re-boot and dsh's own
+		// persistence under $DSH_HOME keeps the conversation reachable.
+		i.refreshDeepSeekSessionID()
+		// A headless restart replays the recorded task; every other profile
+		// re-boots as before. deepSeekRestartCommand refuses rather than
+		// rebuilding a taskless one-shot invocation.
+		dsCommand, dsErr := i.deepSeekRestartCommand()
+		if dsErr != nil {
+			return dsErr
+		}
+		command = dsCommand
 	} else {
 		// Route to appropriate command builder based on tool
 		switch {
@@ -9226,6 +9331,24 @@ func (i *Instance) CanRestart() bool {
 		return true
 	}
 
+	// DeepSeek Harness is restartable: a restart re-boots the same profile in
+	// the same workspace against the same $DSH_HOME, so every conversation dsh
+	// persisted stays reachable whether or not the configured profile's app
+	// accepts a resume flag. Gating this on "dead or errored" would leave a live
+	// dsh session silently un-restartable, the exact hermes bug above.
+	//
+	// The headless profile is the exception, and it is a REAL one rather than a
+	// conservative guess: a one-shot's task is its whole invocation, so without
+	// a recorded task there is nothing to restart INTO — the rebuild would be
+	// `dsh --profile headless`, which dsh rejects. Claiming restartability there
+	// promises an action that can only fail (PR #1942 review, P1c).
+	if i.Tool == "deepseek" {
+		if i.deepSeekPromptDelivery() == DeepSeekPromptCommandLine {
+			return strings.TrimSpace(i.DeepSeekTask) != ""
+		}
+		return true
+	}
+
 	// Custom tools: check if they have session resume support
 	if i.CanRestartGeneric() {
 		return true
@@ -9254,6 +9377,13 @@ func (i *Instance) CanRestartFresh() bool {
 	if i.Tool == "hermes" {
 		return true
 	}
+	// DeepSeek fresh-restart is only meaningful when there is a resume binding
+	// to discard. With [deepseek].resume_flag unset (the default) every restart
+	// is already fresh, so offering "restart fresh" as a distinct action would
+	// promise a difference that does not exist.
+	if i.Tool == "deepseek" {
+		return DeepSeekSupportsResume()
+	}
 	return i.CanRestartGeneric()
 }
 
@@ -9261,6 +9391,15 @@ func (i *Instance) CanRestartFresh() bool {
 func (i *Instance) CanFork() bool {
 	// Gemini CLI doesn't support forking
 	if i.Tool == "gemini" {
+		return false
+	}
+
+	// DeepSeek Harness 0.1.0-rc.6 has no fork/branch command: the launcher owns
+	// --profile/--patch/the dumps, and neither shipped app exposes one. Falling
+	// through to the Claude branch below would also return false, but only by
+	// accident (empty ClaudeSessionID) — say it explicitly so a future Claude
+	// change cannot silently start offering a fork dsh cannot perform.
+	if i.Tool == "deepseek" {
 		return false
 	}
 
@@ -10458,19 +10597,46 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 		if err != nil {
 			primaryStatErr = err.Error()
 		}
-		// File doesn't exist at expected location - try cross-project search
-		// This handles path hash mismatches (e.g., session created from different directory)
+		// File doesn't exist at expected location - try cross-project search.
+		// This handles ENCODING mismatches that still denote the same real
+		// directory (symlinked project paths: the primary lookup encodes the
+		// resolved path, while Claude may have filed under the unresolved
+		// spelling, or vice versa).
+		//
+		// It must NOT accept a jsonl belonging to a genuinely different
+		// project. `claude --resume` only consults the project dir derived
+		// from its own cwd, so a foreign-directory hit is not evidence that
+		// --resume will succeed — it guarantees the opposite: Claude prints
+		// "No conversation found with session ID: <id>" and exits within a
+		// second, flapping the session to `error` on every restart forever.
+		// Returning false instead routes to --session-id, which starts
+		// cleanly in the correct project dir.
 		fallbackTried = true
-		if fallbackPath := findSessionFileInAllProjects(inst, sessionID); fallbackPath != "" {
+		fallbackPath := findSessionFileInAllProjects(inst, sessionID)
+		foreignHit := fallbackPath != "" &&
+			!encodesSameWorkingDir(filepath.Base(filepath.Dir(fallbackPath)), projectPath, resolvedPath)
+		if fallbackPath != "" {
 			fallbackPathFound = fallbackPath
-			sessionLog.Debug("session_data_cross_project_found", slog.String("path", fallbackPath))
-			sessionFile = fallbackPath
-		} else {
+		}
+		switch {
+		case foreignHit:
+			sessionLog.Debug(
+				"session_data_cross_project_rejected",
+				slog.String("found_path", logging.SanitizeValue(fallbackPath)),
+				slog.String("instance_working_dir", logging.SanitizeValue(projectPath)),
+				slog.String("result", "use_session_id"),
+			)
+			emitDecision(false, "foreign_project_dir_resume_would_fail")
+			return false
+		case fallbackPath == "":
 			// File doesn't exist anywhere - use --session-id to create fresh session
 			// (there's nothing to resume if the file doesn't exist)
 			sessionLog.Debug("session_data_file_not_found", slog.String("result", "use_session_id"))
 			emitDecision(false, "file_not_found")
 			return false
+		default:
+			sessionLog.Debug("session_data_cross_project_found", slog.String("path", logging.SanitizeValue(fallbackPath)))
+			sessionFile = fallbackPath
 		}
 	}
 
@@ -10523,10 +10689,44 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 	return false
 }
 
+// encodesSameWorkingDir reports whether encodedDir — a directory name found
+// under {config_dir}/projects — is a plausible Claude encoding of this
+// instance's own working directory, given both its literal and
+// symlink-resolved spellings.
+//
+// This gates the cross-project fallback in sessionHasConversationData. The
+// fallback globs every project dir, so it happily returns a jsonl belonging to
+// an unrelated session. That is worse than not finding one: `claude --resume`
+// derives its project dir from its own cwd, so acting on a foreign hit makes
+// Claude exit immediately with "No conversation found with session ID: <id>".
+// Only an encoding that denotes the SAME real directory (the symlinked-path
+// case the fallback exists for) is safe to accept.
+func encodesSameWorkingDir(encodedDir, projectPath, resolvedPath string) bool {
+	if encodedDir == "" {
+		return false
+	}
+	for _, candidate := range []string{projectPath, resolvedPath} {
+		if candidate == "" {
+			continue
+		}
+		if encodedDir == ConvertToClaudeDirName(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 // findSessionFileInAllProjects searches all Claude project directories for a session file
 // This handles path hash mismatches when agent-deck runs from a different directory
 // than where the Claude session was originally created.
 // Returns the full path to the session file, or empty string if not found.
+//
+// CAUTION: a hit here means "this jsonl exists somewhere", NOT "Claude can
+// resume it". `claude --resume` only consults the project dir derived from its
+// own cwd. Callers deciding between --resume and --session-id must therefore
+// gate this result through encodesSameWorkingDir; callers that merely need the
+// file's size or mtime (sessionConversationByteSize, sessionConversationMtime)
+// can use it unguarded.
 // Uses the PER-INSTANCE config dir (via GetClaudeConfigDirForInstance) when
 // inst is non-nil so sessions with conductor/group config_dir overrides find
 // their own JSONLs. Passing inst == nil degrades to the global lookup.

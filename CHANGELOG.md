@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-08-16
+
+Remote visibility, restart persistence, and a large correctness wave: ~40 merged PRs including 13 community contributions.
+
+### Added
+
+- **Remote fleets are first-class in the TUI**: per-remote `command_timeout_seconds` so large fleets stop timing out ([#1912](https://github.com/asheshgoplani/agent-deck/pull/1912)); remote group headers show running/waiting status counts like local groups ([#1913](https://github.com/asheshgoplani/agent-deck/pull/1913)); remotes render instantly on startup from a per-remote-aged cache labeled "cached, refreshing…" ([#1914](https://github.com/asheshgoplani/agent-deck/pull/1914)); the cost fetch gets its own timeout budget ([#1916](https://github.com/asheshgoplani/agent-deck/pull/1916)).
+- The web Fleet shows configured remotes with a hardened shared scanner ([#1915](https://github.com/asheshgoplani/agent-deck/pull/1915), builds on [#1869](https://github.com/asheshgoplani/agent-deck/pull/1869)); scanner lifecycle gaps closed ([#1920](https://github.com/asheshgoplani/agent-deck/pull/1920)).
+- OS notifications when a session needs attention, macOS backend ([#1893](https://github.com/asheshgoplani/agent-deck/pull/1893)); custom-tool conversation ids persist across reboot ([#1949](https://github.com/asheshgoplani/agent-deck/pull/1949), builds on [#1885](https://github.com/asheshgoplani/agent-deck/pull/1885)).
+- Sessions resume with the agent leading the pane via exec ([#1786](https://github.com/asheshgoplani/agent-deck/pull/1786)).
+- `profile list` separates internal test profiles ([#1932](https://github.com/asheshgoplani/agent-deck/pull/1932)).
+
+### Fixed
+
+- **Restart persistence made coherent**: restarted sessions no longer show a permanent false error, the tmux name persists after `--restart`, and a restart save can never clobber concurrent CLI changes ([#1868](https://github.com/asheshgoplani/agent-deck/pull/1868), [#1871](https://github.com/asheshgoplani/agent-deck/pull/1871) family); start/restart failures always record a reason ([#1931](https://github.com/asheshgoplani/agent-deck/pull/1931), [#1933](https://github.com/asheshgoplani/agent-deck/pull/1933)); Hermes restarts show a starting state instead of stale errors ([#1911](https://github.com/asheshgoplani/agent-deck/pull/1911), [#1918](https://github.com/asheshgoplani/agent-deck/pull/1918)).
+- **Codex sessions**: account-scoped codex homes are honoured at launch and on the resume gate — restarts no longer silently fork a fresh conversation ([#1929](https://github.com/asheshgoplani/agent-deck/pull/1929), [#1939](https://github.com/asheshgoplani/agent-deck/pull/1939)); completion evidence converges across CLI polls without stale or sandbox-lockable state ([#1908](https://github.com/asheshgoplani/agent-deck/pull/1908), [#1919](https://github.com/asheshgoplani/agent-deck/pull/1919), [#1921](https://github.com/asheshgoplani/agent-deck/pull/1921)).
+- **Web MCP manager**: authenticated requests send the token, scopes are modeled honestly per tool, moves are transactional, and a corrupt config can never be rewritten as empty ([#1954](https://github.com/asheshgoplani/agent-deck/pull/1954), [#1955](https://github.com/asheshgoplani/agent-deck/pull/1955), [#1957](https://github.com/asheshgoplani/agent-deck/pull/1957) chain).
+- CLI: `add` flag values can no longer swallow a following flag, with valid pass-through shapes preserved ([#1928](https://github.com/asheshgoplani/agent-deck/pull/1928), [#1935](https://github.com/asheshgoplani/agent-deck/pull/1935)); `session show --json` reports wrappers ([#1930](https://github.com/asheshgoplani/agent-deck/pull/1930)); tmux resolves before tmux-dependent commands ([#1943](https://github.com/asheshgoplani/agent-deck/pull/1943), builds on [#1841](https://github.com/asheshgoplani/agent-deck/pull/1841)).
+- Watchers: ntfy/slack topics persist ([#1888](https://github.com/asheshgoplani/agent-deck/pull/1888)); failed-Setup adapters are skipped with per-attempt cleanup ([#1887](https://github.com/asheshgoplani/agent-deck/pull/1887)); a live control pipe with no socket returns an error instead of panicking ([#1940](https://github.com/asheshgoplani/agent-deck/pull/1940)).
+- TUI: remote sessions use the same status indicators as local ones ([#1944](https://github.com/asheshgoplani/agent-deck/pull/1944), builds on [#1865](https://github.com/asheshgoplani/agent-deck/pull/1865)); mouse-wheel routes to the preview in stacked layout ([#1782](https://github.com/asheshgoplani/agent-deck/pull/1782)); cursor sessions prefer the standalone agent CLI ([#1890](https://github.com/asheshgoplani/agent-deck/pull/1890)).
+
+### Security
+
+- **Spawn-failure sidecars never persist env credential values**, are written 0600, and pre-existing world-readable records are hardened on upgrade ([#1934](https://github.com/asheshgoplani/agent-deck/pull/1934)).
+- Headless MCP web access hardened with fail-closed auth ([#1953](https://github.com/asheshgoplani/agent-deck/pull/1953), builds on [#1840](https://github.com/asheshgoplani/agent-deck/pull/1840)); log-injection and unchecked-close CodeQL findings resolved ([#1909](https://github.com/asheshgoplani/agent-deck/pull/1909)).
+
 ### Fixed
 
 - **A restarted session no longer shows a permanent false error while its tmux process runs fine.** A restart recreates the tmux session under a newly minted name, and nothing recorded that name: the TUI polled a session that no longer existed, reported `error` for a healthy process, and `Enter`/`R` could not clear it because every retry aborted the same way and leaked another orphaned tmux session. The name and the status a restart ends in are now written where they are produced, by a targeted two-column update, so they survive whether or not the save that follows succeeds — and the TUI no longer mistakes its own restart write for another process's change ([#1868](https://github.com/asheshgoplani/agent-deck/pull/1868), [#1871](https://github.com/asheshgoplani/agent-deck/pull/1871)).

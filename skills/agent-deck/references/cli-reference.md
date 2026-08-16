@@ -16,6 +16,7 @@ Complete reference for all agent-deck CLI commands.
 - [Profile Commands](#profile-commands)
 - [Remote Commands](#remote-commands)
 - [Codex Hook Commands](#codex-hook-commands)
+- [DeepSeek Commands](#deepseek-commands)
 - [Conductor Commands](#conductor-commands)
 
 ## Global Options
@@ -678,6 +679,29 @@ agent-deck codex-hooks uninstall
 ```
 
 Codex turn-level status uses its notify hook. Install it once per Codex home; if `CODEX_HOME` is set, use the same environment for installation and Codex sessions.
+
+## DeepSeek Commands
+
+Inspect the DeepSeek Harness (`dsh`) integration. Read-only; every subcommand takes `--json`.
+
+```bash
+agent-deck deepseek status              # resolved binary, version, DSH_HOME, profile, resume/fork support
+agent-deck deepseek profiles            # profiles under $DSH_HOME/profiles, with their bundle layers
+agent-deck deepseek sessions [path]     # dsh sessions recorded for a workspace (default: cwd)
+```
+
+The tool is named for the vendor; the binary it launches is `dsh`
+(`npm install -g @deepseek-ai/dsh`). Launch a session with
+`agent-deck launch -c deepseek`.
+
+`status --json` reports `resume_supported` and `fork_supported` as explicit booleans:
+`dsh` has no fork command, and neither shipped profile (`web`, `headless`) accepts a
+resume flag, so both are false on a default install. Configure with `[deepseek]`
+(`command`, `config_dir` → `DSH_HOME`, `profile`, `patches`, `host`/`port`/
+`trusted_hosts`, `resume_flag`, `extra_args`, `env_file`) and give each account its own
+harness home with `[profiles.<account>.deepseek].config_dir`.
+
+See [docs/tools/deepseek.md](../../../docs/tools/deepseek.md) for the full guide.
 
 ## Session Resolution
 

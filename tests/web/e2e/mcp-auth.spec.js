@@ -165,6 +165,116 @@ test.describe('MCP management — authenticated browser path', () => {
     expect(body.scopes).toEqual(['global'])
   })
 
+  test('switching sessions mid-refresh never paints a stale frame', async ({ page }) => {
+    // Give the Claude session something visible to go stale: an attached row.
+    await fetch(`${baseURL}/api/sessions/${SESSION_ID}/mcps/exa`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json', Origin: baseURL },
+      body: JSON.stringify({ scope: 'local' }),
+    })
+
+    // Hold the Codex session's response open, so the new pane sits in flight
+    // and any stale frame would be on screen for a long, observable window.
+    await page.route('**/api/sessions/sess-003/mcps', async route => {
+      await new Promise(r => setTimeout(r, 2500))
+      await route.continue()
+    })
+
+    await page.goto(`${baseURL}/s/${SESSION_ID}?token=${TOKEN}`)
+    await page.getByRole('button', { name: 'MCPs', exact: true }).click()
+    await expect(page.getByTestId('mcp-attached-exa')).toBeVisible()
+
+    // Record EVERY DOM state from here on. A MutationObserver sees each commit,
+    // so a stale frame lasting a single render is still captured — a poll-based
+    // assertion could sail straight past it.
+    await page.evaluate(() => {
+      window.__mcpFrames = []
+      const sample = () => {
+        const pane = document.querySelector('[data-testid="mcp-pane"]')
+        if (!pane) return
+        const rows = Array.from(document.querySelectorAll('[data-testid^="mcp-attached-"]'))
+          .map(el => el.getAttribute('data-testid').slice('mcp-attached-'.length))
+          .filter(Boolean)
+        window.__mcpFrames.push({ sid: pane.getAttribute('data-session-id'), rows })
+      }
+      sample()
+      new MutationObserver(sample).observe(document.body, {
+        subtree: true, childList: true, attributes: true, characterData: true,
+      })
+    })
+
+    // Switch the selected session WITHOUT leaving the MCP tab.
+    //
+    // Neither shipped navigation path can do this today: Sidebar.onSelect and
+    // the command palette both set activeTab to 'terminal', which unmounts the
+    // pane and hides the defect. Driving the signal directly is therefore the
+    // only way to reach the scenario, and it is the component's real contract:
+    // the pane must be correct for whatever session is selected while it is
+    // mounted. Importing the module by URL returns the same instance the app
+    // is already using (ESM modules are cached per URL).
+    await page.evaluate(async () => {
+      const state = await import('/static/app/state.js')
+      state.selectedIdSignal.value = 'sess-003'
+    })
+
+    // Wait until the pane is showing the Codex session.
+    await expect(page.locator('[data-testid="mcp-pane"][data-session-id="sess-003"]')).toBeVisible()
+    await page.waitForTimeout(3000) // past the delayed response
+
+    const frames = await page.evaluate(() => window.__mcpFrames)
+    expect(frames.length).toBeGreaterThan(0)
+
+    // The assertion: no frame ever showed the Codex session holding the Claude
+    // session's attachment. One such frame is a click away from mutating the
+    // wrong thing, because the callbacks are already bound to sess-003.
+    const stale = frames.filter(f => f.sid === 'sess-003' && f.rows.includes('exa'))
+    expect(stale, `stale frames painted sess-003 with sess-001 data: ${JSON.stringify(stale)}`).toEqual([])
+
+    // And the Codex session really is empty, so the check above was not vacuous.
+    const codex = await (await page.request.get(`${baseURL}/api/sessions/sess-003/mcps`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).json()
+    expect(codex.global).not.toContain('exa')
+    expect(codex.scopes).toEqual(['global'])
+  })
+
+  test('after a mid-flight switch an attach lands in the NEW session\'s scope', async ({ page }) => {
+    await page.route('**/api/sessions/sess-001/mcps', async route => {
+      await new Promise(r => setTimeout(r, 2000))
+      await route.continue()
+    })
+
+    await page.goto(`${baseURL}/s/${SESSION_ID}?token=${TOKEN}`)
+    await page.getByRole('button', { name: 'MCPs', exact: true }).click()
+
+    // Switch to the Codex session while the Claude refresh is still in flight,
+    // staying on the MCP tab (see the note in the stale-frame test above).
+    await page.evaluate(async () => {
+      const state = await import('/static/app/state.js')
+      state.selectedIdSignal.value = 'sess-003'
+    })
+    await expect(page.locator('[data-testid="mcp-pane"][data-session-id="sess-003"]')).toBeVisible()
+
+    const attachButton = page.getByTestId('mcp-attach-exa')
+    await expect(attachButton).toBeVisible()
+    await attachButton.click()
+    await expect(page.getByTestId('mcp-attached-exa')).toBeVisible()
+
+    await page.waitForTimeout(2500) // let the stale Claude response arrive late
+    await expect(page.getByTestId('mcp-error')).toBeHidden()
+
+    const codex = await (await page.request.get(`${baseURL}/api/sessions/sess-003/mcps`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).json()
+    expect(codex.global).toContain('exa')
+    expect(codex.local).not.toContain('exa')
+
+    const claude = await (await page.request.get(`${baseURL}/api/sessions/${SESSION_ID}/mcps`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).json()
+    expect(claude.local).not.toContain('exa')
+  })
+
   test('a session whose tool has no MCP store says so instead of offering buttons', async ({ page }) => {
     // sess-004 is a shell session. The server refuses MCP routes for it, so the
     // pane must not render a catalog whose every button would fail.
