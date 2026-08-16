@@ -54,9 +54,26 @@ var (
 	ownershipSignaler procowner.Signaler = procowner.OSSignaler{}
 )
 
-// ownershipStores caches one Store per directory. The Store serializes its own
-// writes, so sharing the instance is what makes that lock mean anything.
+// ownershipStores caches one Store per directory.
 var ownershipStores sync.Map // dir -> *procowner.Store
+
+// ownershipReceiptLock is the cross-process serialization for a receipt's whole
+// load → check → write cycle.
+//
+// It delegates to AcquireConfigFileLock, the tree's ONE implementation of
+// "serialize a read-modify-write over a file two processes can both touch"
+// (in-process mutex keyed by path, plus an advisory flock on a sibling .lock).
+// A second, private lock here would be worse than none: two cross-process locks
+// that do not know about each other serialize nothing between them, and the
+// same defect has reappeared in this repository every time a shared rule was
+// copied instead of called.
+func ownershipReceiptLock(path string) (func(), error) {
+	lock, err := AcquireConfigFileLock(path)
+	if err != nil {
+		return nil, err
+	}
+	return lock.Release, nil
+}
 
 // ownershipDir returns <data>/runtime/ownership, mirroring spawnFailureDir's
 // fallback so an unresolvable data dir degrades to a temp path instead of
@@ -74,7 +91,7 @@ func ownershipStoreAt(dir string) *procowner.Store {
 	if existing, ok := ownershipStores.Load(dir); ok {
 		return existing.(*procowner.Store)
 	}
-	created := procowner.NewStore(dir)
+	created := procowner.NewStore(dir, ownershipReceiptLock)
 	actual, _ := ownershipStores.LoadOrStore(dir, created)
 	return actual.(*procowner.Store)
 }
@@ -394,40 +411,43 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 			slog.String("error", logging.SanitizeValue(errString(err))))
 		return
 	}
-	generation, err := store.NextGeneration(i.ID)
-	if err != nil {
-		sessionLog.Warn("ownership_receipt_generation_failed",
-			slog.String("instance_id", logging.SanitizeValue(i.ID)),
-			slog.String("error", logging.SanitizeValue(err.Error())))
-		return
-	}
-	receipt, err := procowner.Claim(ownershipProber, procowner.ClaimInput{
-		InstanceID: i.ID,
-		Generation: generation,
-		PanePID:    panePID,
-		TmuxName:   i.tmuxSession.Name,
-		TmuxSocket: i.TmuxSocketName,
-		Command:    redactEnvValues(command),
+	// Choosing the generation and writing the receipt are ONE critical section.
+	// Split apart, two spawns can read the same predecessor and both conclude
+	// they are its successor — an atomic write of a decision made on stale
+	// state is just a reliable way to persist the wrong answer.
+	receipt, err := store.Commit(i.ID, func(existing *procowner.Receipt) (*procowner.Receipt, error) {
+		var generation uint64 = 1
+		if existing != nil {
+			generation = existing.Generation + 1
+		}
+		claimed, claimErr := procowner.Claim(ownershipProber, procowner.ClaimInput{
+			InstanceID: i.ID,
+			Generation: generation,
+			PanePID:    panePID,
+			TmuxName:   i.tmuxSession.Name,
+			TmuxSocket: i.TmuxSocketName,
+			Command:    redactEnvValues(command),
+		})
+		if claimErr != nil {
+			// Unsupported platform, or a pane process that exited between the
+			// tmux start and this probe. Either way: no claim, and the abort
+			// leaves whatever was on disk untouched.
+			return nil, claimErr
+		}
+		// Attribute once inside the same critical section so a wrapper that
+		// forks and exits before the first tick is still caught, and so the
+		// receipt reaches disk complete rather than in two writes.
+		if _, attrErr := procowner.Attribute(ownershipProber, claimed, nil); attrErr != nil {
+			sessionLog.Debug("ownership_attribution_initial_skipped",
+				slog.String("instance_id", logging.SanitizeValue(i.ID)),
+				slog.String("reason", logging.SanitizeValue(attrErr.Error())))
+		}
+		return claimed, nil
 	})
 	if err != nil {
-		// Unsupported platform, or a pane process that exited between the tmux
-		// start and this probe. Either way: no claim.
 		sessionLog.Info("ownership_receipt_not_claimed",
 			slog.String("instance_id", logging.SanitizeValue(i.ID)),
 			slog.String("reason", logging.SanitizeValue(err.Error())))
-		return
-	}
-	// Attribute once synchronously so a wrapper that forks and exits inside the
-	// first tick is still caught, then commit receipt + members in one write.
-	if _, attrErr := procowner.Attribute(ownershipProber, receipt, nil); attrErr != nil {
-		sessionLog.Debug("ownership_attribution_initial_skipped",
-			slog.String("instance_id", logging.SanitizeValue(i.ID)),
-			slog.String("reason", logging.SanitizeValue(attrErr.Error())))
-	}
-	if err := store.Save(receipt); err != nil {
-		sessionLog.Warn("ownership_receipt_write_failed",
-			slog.String("instance_id", logging.SanitizeValue(i.ID)),
-			slog.String("error", logging.SanitizeValue(err.Error())))
 		return
 	}
 	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
@@ -451,7 +471,7 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 // that still verifies against the receipt, and it stops the moment that leader
 // stops being ours. Nothing here can add a process that was not, at the instant
 // of a single stat read, a live descendant of a process this spawn owns.
-func (i *Instance) attributeOwnedTree(receipt *procowner.Receipt, store *procowner.Store, gen uint64, wake <-chan struct{}) {
+func (i *Instance) attributeOwnedTree(owned *procowner.Receipt, store *procowner.Store, gen uint64, wake <-chan struct{}) {
 	start := time.Now()
 	deadline := start.Add(ownershipAttributeMaxWindow)
 	for {
@@ -472,24 +492,48 @@ func (i *Instance) attributeOwnedTree(receipt *procowner.Receipt, store *procown
 		if i.spawnGen.Load() != gen {
 			return
 		}
-		added, err := procowner.Attribute(ownershipProber, receipt, nil)
-		if err != nil {
-			// The leader is gone, reused or unreadable. Whatever it left behind
-			// was either already attributed (and is still owned) or was never
-			// attributable at all; either way this pass has nothing more to
-			// contribute and must not start guessing.
+
+		// Attribution runs INSIDE the store's critical section, against the
+		// receipt that is actually on disk — never against a private copy
+		// written back afterwards. A copy-and-write-back would erase whatever
+		// another writer recorded in the meantime: a member added by a
+		// concurrent pass, or the recovery_required state a teardown just set.
+		if err := store.Update(i.ID, func(current *procowner.Receipt) error {
+			// Cancellation, checked AFTER the lock has been won rather than
+			// before we queued for it. A stop that lands while this call waits
+			// on the lock has to disarm this write, not merely stop the next
+			// tick — otherwise a cleared receipt is resurrected by work that
+			// was already in flight when it was cleared.
+			if i.spawnGen.Load() != gen {
+				return procowner.ErrWindowClosed
+			}
+			// Still the receipt this pass belongs to? Same rule Commit and
+			// Clear enforce, called rather than restated.
+			if err := procowner.RequireGeneration(current, owned.Generation, owned.Leader); err != nil {
+				return err
+			}
+			added, err := procowner.Attribute(ownershipProber, current, nil)
+			if err != nil {
+				// The leader is gone, reused or unreadable. Whatever it left
+				// behind was either already attributed (and is still owned) or
+				// was never attributable at all; either way this pass has
+				// nothing more to contribute and must not start guessing.
+				return err
+			}
+			if len(added) == 0 {
+				return procowner.ErrNoChange
+			}
+			return nil
+		}); err != nil {
+			// Every outcome here ends this pass: the window is over (a newer
+			// spawn owns the receipt, or it has been reconciled away), or the
+			// leader stopped being ours. Neither is a reason to keep scanning.
+			sessionLog.Debug("ownership_attribution_stopped",
+				slog.String("instance_id", logging.SanitizeValue(i.ID)),
+				slog.String("reason", logging.SanitizeValue(err.Error())))
 			return
 		}
-		if len(added) > 0 {
-			if saveErr := store.Save(receipt); saveErr != nil {
-				if errors.Is(saveErr, procowner.ErrGenerationConflict) {
-					return // a newer spawn owns the receipt
-				}
-				sessionLog.Warn("ownership_attribution_write_failed",
-					slog.String("instance_id", logging.SanitizeValue(i.ID)),
-					slog.String("error", logging.SanitizeValue(saveErr.Error())))
-			}
-		}
+
 		if time.Now().After(deadline) {
 			return
 		}
@@ -557,12 +601,21 @@ func (i *Instance) clearOwnershipAfterTeardown(sync bool) {
 }
 
 // markOwnershipRecoveryRequired records why a receipt could not be retired.
-// Best-effort: failing to annotate must not lose the receipt itself.
+//
+// An in-place update, not a write-back: annotating a receipt that something
+// else has already cleared would recreate it, and annotating a private copy
+// would erase members another writer added while this reap was running.
+// Best-effort otherwise — failing to annotate must not lose the receipt itself.
 func markOwnershipRecoveryRequired(store *procowner.Store, receipt *procowner.Receipt, reason string) {
-	receipt.State = procowner.StateRecoveryRequired
-	receipt.Note = reason
-	receipt.UpdatedAt = time.Now().Unix()
-	_ = store.Save(receipt)
+	_ = store.Update(receipt.InstanceID, func(current *procowner.Receipt) error {
+		if err := procowner.RequireGeneration(current, receipt.Generation, receipt.Leader); err != nil {
+			return err
+		}
+		current.State = procowner.StateRecoveryRequired
+		current.Note = reason
+		current.UpdatedAt = time.Now().Unix()
+		return nil
+	})
 }
 
 // OwnershipStatus reports what this instance owns, for `session ownership

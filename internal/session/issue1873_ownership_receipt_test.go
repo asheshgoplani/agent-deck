@@ -381,7 +381,10 @@ func writeTestReceipt(t *testing.T, instanceID string, leader procowner.Member) 
 		CreatedAt:  time.Now().Unix(),
 		Leader:     leader,
 	}
-	require.NoError(t, store.Save(receipt))
+	_, err := store.Commit(instanceID, func(*procowner.Receipt) (*procowner.Receipt, error) {
+		return receipt, nil
+	})
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.ForceClear(instanceID) })
 }
 
