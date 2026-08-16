@@ -99,6 +99,7 @@ func handleFleetStatus(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	groupByCredential := fs.Bool("group-by-credential", false, groupByCredentialFlagHelp())
 	det := registerFleetDetectorFlags(fs)
 
 	fs.Usage = func() {
@@ -106,6 +107,12 @@ func handleFleetStatus(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Report sessions the registry believes are alive whose tmux session is")
 		fmt.Println("gone. Read-only: no restarts, no writes.")
+		fmt.Println()
+		fmt.Println("With --group-by-credential the report additionally groups every")
+		fmt.Println("auth-401-held session by WHICH credential is dead, so one dead token")
+		fmt.Println("reads as one line instead of N per-session failures. Opt-in: without")
+		fmt.Println("the flag the output is exactly the per-session view it has always been.")
+		fmt.Println("The grouping is computed locally and never leaves the machine.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -126,10 +133,84 @@ func handleFleetStatus(profile string, args []string) {
 
 	as := det.detector().Assess(instances)
 	if *jsonOutput {
-		out.Success("", fleetStatusJSON(as))
+		payload := fleetStatusJSON(as)
+		// Added ONLY under the flag: a conductor polling the default payload
+		// must keep seeing the exact keys it sees today.
+		if *groupByCredential {
+			payload["auth_credentials"] = fleetAuthCredentialsJSON(authCredentialSummary(instances))
+		}
+		out.Success("", payload)
 		return
 	}
 	fmt.Print(formatFleetStatus(as))
+	// Printed after the assessment, and independent of it: an auth-held session
+	// whose pane is still up showing the banner is NOT "down", so a fleet with
+	// zero down sessions can still have a dead credential behind it.
+	if *groupByCredential {
+		fmt.Print("\n" + authCredentialSummary(instances).Format())
+	}
+}
+
+// groupByCredentialFlagHelp is shared by `fleet status` and `fleet recover` so
+// the two cannot describe the same opt-in differently.
+//
+// A function rather than a const because gosec's G101 matches any identifier
+// containing "cred" that is assigned a string literal. This one is flag help
+// text, not a credential — a function return sidesteps the rule honestly
+// instead of suppressing it.
+func groupByCredentialFlagHelp() string {
+	return "Group auth-401-held sessions by which credential is dead and report one escalation per credential (opt-in, local-only; off by default the per-session view is unchanged)"
+}
+
+// authCredentialSummary is the one place the CLI builds the credential view, so
+// the human and --json paths can never group differently.
+func authCredentialSummary(instances []*session.Instance) fleet.AuthCredentialSummary {
+	return fleet.NewAuthCredentialGrouper().Group(instances)
+}
+
+// fleetAuthCredentialsJSON renders the credential grouping.
+//
+// Only identifiers are emitted: account slot names and the resolved config
+// directory. No token, no credential file content, and nothing derived from
+// either — see internal/fleet/authcred.go for the boundary this holds.
+func fleetAuthCredentialsJSON(sum fleet.AuthCredentialSummary) map[string]interface{} {
+	groups := make([]map[string]interface{}, 0, len(sum.Groups))
+	for _, g := range sum.Groups {
+		sessions := make([]map[string]interface{}, 0, len(g.Sessions))
+		for _, s := range g.Sessions {
+			entry := map[string]interface{}{
+				"id":    s.ID,
+				"title": s.Title,
+			}
+			if s.Account != "" {
+				entry["account"] = s.Account
+			}
+			if s.Reason != "" {
+				entry["reason"] = s.Reason
+			}
+			sessions = append(sessions, entry)
+		}
+		group := map[string]interface{}{
+			"key":        g.Credential.Key,
+			"attributed": g.Credential.Attributed,
+			"accounts":   g.Accounts,
+			"held":       len(g.Sessions),
+			"recovered":  g.Recovered,
+			"escalation": g.Escalation(),
+			"sessions":   sessions,
+		}
+		if g.Credential.Attributed {
+			group["config_dir"] = g.Credential.ConfigDir
+		}
+		groups = append(groups, group)
+	}
+	return map[string]interface{}{
+		"held":         sum.Held,
+		"credentials":  sum.Credentials,
+		"unattributed": sum.Unattributed,
+		"recovered":    sum.Recovered,
+		"groups":       groups,
+	}
 }
 
 // handleFleetRecover plans (default) or runs the recovery sweep.
@@ -149,6 +230,7 @@ func handleFleetRecover(profile string, args []string) {
 	maxDeadBoots := fs.Int("max-dead-boots", fleet.DefaultMaxDeadBoots,
 		"Halt after this many consecutive sessions restart and then die immediately (pane gone; 0 disables)")
 	authHaltAfter := fs.Int("auth-halt-after", fleet.DefaultAuthHaltAfter, "Halt after this many sessions boot into an auth failure (0 disables the auth breaker)")
+	groupByCredential := fs.Bool("group-by-credential", false, groupByCredentialFlagHelp())
 	det := registerFleetDetectorFlags(fs)
 
 	fs.Usage = func() {
@@ -167,6 +249,10 @@ func handleFleetRecover(profile string, args []string) {
 		fmt.Println("then die immediately (--max-dead-boots), or sessions booting into an auth")
 		fmt.Println("failure (--auth-halt-after) — restarting the rest of the fleet against a")
 		fmt.Println("broken credential only deepens the cascade.")
+		fmt.Println()
+		fmt.Println("With --group-by-credential the auth halt names WHICH credential is dead")
+		fmt.Println("and reports one escalation per credential instead of one count for the")
+		fmt.Println("sweep. Opt-in: without the flag the halt message is unchanged.")
 		fmt.Println()
 		fmt.Println("Sessions the operator stopped or queued, and archived sessions, are")
 		fmt.Println("never touched.")
@@ -194,19 +280,24 @@ func handleFleetRecover(profile string, args []string) {
 	as := det.detector().Assess(instances)
 
 	cfg := fleetRecoverConfig{
-		plan:          *dryRun || !*yes,
-		spacing:       *spacing,
-		jitter:        *jitter,
-		limit:         *limit,
-		maxFailures:   *maxFailures,
-		maxDeadBoots:  *maxDeadBoots,
-		authHaltAfter: *authHaltAfter,
-		verifyTimeout: *verifyTimeout,
-		verifyPoll:    *verifyPoll,
+		plan:              *dryRun || !*yes,
+		spacing:           *spacing,
+		jitter:            *jitter,
+		limit:             *limit,
+		maxFailures:       *maxFailures,
+		maxDeadBoots:      *maxDeadBoots,
+		authHaltAfter:     *authHaltAfter,
+		groupByCredential: *groupByCredential,
+		verifyTimeout:     *verifyTimeout,
+		verifyPoll:        *verifyPoll,
 	}
 	plan := cfg.plan
 	rec := cfg.recoverer()
 	rec.Persist = storage.PersistRecoveredInstances
+	// Kept so the credential grouping the gate collected during the sweep can be
+	// reported structurally, instead of leaving a machine caller to parse it out
+	// of halt_reason. nil when the operator disabled the breaker.
+	authGate, _ := rec.AuthGate.(*fleet.SubstateAuthGate)
 	if !plan && !*jsonOutput && !quietMode {
 		rec.Progress = func(index, total int, c fleet.Candidate) {
 			fmt.Printf("[%d/%d] restarting %s...\n", index, total, c.Title())
@@ -215,13 +306,28 @@ func handleFleetRecover(profile string, args []string) {
 
 	summary := rec.Recover(as)
 
+	// Opt-in only, and empty unless the gate actually observed auth failures.
+	var credentials fleet.AuthCredentialSummary
+	if *groupByCredential && authGate != nil {
+		credentials = authGate.AuthFailuresByCredential()
+	}
+
 	switch {
 	case *jsonOutput:
-		out.Success("", fleetRecoverJSON(summary, plan))
+		payload := fleetRecoverJSON(summary, plan)
+		if *groupByCredential && authGate != nil {
+			payload["auth_credentials"] = fleetAuthCredentialsJSON(credentials)
+		}
+		out.Success("", payload)
 	case quietMode:
 		fmt.Println(summary.Format())
 	default:
 		fmt.Print(formatFleetRecover(summary, plan))
+		// A sweep can end with auth failures that never reached the halt
+		// threshold, so this must not be left to HALTED: alone.
+		if credentials.Held > 0 {
+			fmt.Print("\n" + credentials.Format())
+		}
 	}
 	// A halted sweep is not a success: exit non-zero so a wrapper script or
 	// conductor notices without parsing anything. This deliberately covers the
@@ -238,15 +344,16 @@ func handleFleetRecover(profile string, args []string) {
 // "no --yes means plan only" and "--spacing 0 is the explicit opt-out") is a
 // pure function the tests can assert on.
 type fleetRecoverConfig struct {
-	plan          bool
-	spacing       time.Duration
-	jitter        float64
-	limit         int
-	maxFailures   int
-	maxDeadBoots  int
-	authHaltAfter int
-	verifyTimeout time.Duration
-	verifyPoll    time.Duration
+	plan              bool
+	spacing           time.Duration
+	jitter            float64
+	limit             int
+	maxFailures       int
+	maxDeadBoots      int
+	authHaltAfter     int
+	groupByCredential bool
+	verifyTimeout     time.Duration
+	verifyPoll        time.Duration
 }
 
 func (c fleetRecoverConfig) recoverer() *fleet.Recoverer {
@@ -270,9 +377,16 @@ func (c fleetRecoverConfig) recoverer() *fleet.Recoverer {
 		rec.MaxDeadBoots = c.maxDeadBoots
 	}
 	if c.authHaltAfter <= 0 {
+		// --auth-halt-after 0 disables the breaker outright, so there is no
+		// gate left to group on. Asking for grouping does NOT resurrect it:
+		// re-enabling a safety brake the operator explicitly turned off would
+		// be a surprising side effect of a reporting flag.
 		rec.AuthGate = nil
 	} else {
-		rec.AuthGate = &fleet.SubstateAuthGate{HaltAfter: c.authHaltAfter}
+		rec.AuthGate = &fleet.SubstateAuthGate{
+			HaltAfter:         c.authHaltAfter,
+			GroupByCredential: c.groupByCredential,
+		}
 	}
 	verifier := fleet.NewVerifier()
 	verifier.Timeout = c.verifyTimeout
