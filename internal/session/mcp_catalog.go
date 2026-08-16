@@ -131,18 +131,33 @@ func tryPoolSocket(pool *mcppool.Pool, name, scope string) (MCPServerConfig, boo
 
 // readExistingLocalMCPServers reads mcpServers from an existing .mcp.json file.
 // Returns nil if the file doesn't exist or can't be parsed.
-func readExistingLocalMCPServers(mcpFile string) map[string]json.RawMessage {
-	data, err := os.ReadFile(mcpFile)
+// readExistingLocalMCPServers returns the mcpServers map from a .mcp.json-style
+// file, and the surrounding document so unknown top-level keys survive the
+// write.
+//
+// This used to swallow both read and parse errors and return nil, which is the
+// same read-fail-then-write-anyway shape as the Claude config writers had: a
+// malformed .mcp.json read as "no servers", and the save then replaced the file
+// with only the managed entries, dropping everything the user had in it. It
+// fails closed through the shared reader now.
+func readExistingLocalMCPServers(mcpFile string) (map[string]json.RawMessage, map[string]interface{}, error) {
+	doc, err := readJSONObjectConfig(mcpFile)
 	if err != nil {
-		return nil
+		return nil, nil, err
 	}
-	var config struct {
-		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	servers := map[string]json.RawMessage{}
+	raw, ok := doc["mcpServers"]
+	if !ok {
+		return servers, doc, nil
 	}
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("refusing to modify %s: its mcpServers section is unreadable (%w)", mcpFile, err)
 	}
-	return config.MCPServers
+	if err := json.Unmarshal(encoded, &servers); err != nil {
+		return nil, nil, fmt.Errorf("refusing to modify %s: its mcpServers section is not an object (%w)", mcpFile, err)
+	}
+	return servers, doc, nil
 }
 
 // writeJSONFileAtomic writes JSON data to path atomically (symlink-preserving,
@@ -185,7 +200,10 @@ func WriteMergedMcpJSONFile(mcpFile string, enabledNames []string, pluginPinClau
 		}
 	}
 
-	existingServers := readExistingLocalMCPServers(mcpFile)
+	existingServers, doc, readErr := readExistingLocalMCPServers(mcpFile)
+	if readErr != nil {
+		return readErr
+	}
 	agentDeckServers := make(map[string]MCPServerConfig)
 
 	for _, name := range enabledNames {
@@ -249,22 +267,15 @@ func WriteMergedMcpJSONFile(mcpFile string, enabledNames []string, pluginPinClau
 		mergedServers[name] = raw
 	}
 
-	finalConfig := struct {
-		MCPServers map[string]json.RawMessage `json:"mcpServers"`
-	}{
-		MCPServers: mergedServers,
-	}
+	// Replace only the mcpServers section, keeping any other top-level keys the
+	// user has. The previous save rebuilt the file from just that one field and
+	// dropped the rest.
+	doc["mcpServers"] = mergedServers
 
-	data, err := json.MarshalIndent(finalConfig, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal mcp json: %w", err)
-	}
-
-	if err := writeJSONFileAtomic(mcpFile, data, 0644); err != nil {
-		return fmt.Errorf("failed to save mcp json: %w", err)
-	}
-
-	return nil
+	// Through safeio under the same guard as the Claude configs: refuse an
+	// empty payload over a populated file, refuse anything that would drop a
+	// top-level key, and keep a .bak.
+	return writeJSONObjectConfigWithPerm(mcpFile, doc, 0644)
 }
 
 // WriteMCPJsonFromConfig writes enabled MCPs from config.toml to project's .mcp.json
@@ -312,8 +323,13 @@ func readJSONObjectConfig(path string) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("refusing to modify %s: it is not valid JSON (%w). "+
 			"Writing would replace its current contents — fix or restore the file first", path, err)
 	}
+	// A literal `null` root unmarshals WITHOUT error and leaves cfg nil. Left
+	// alone it falls into the fresh-start branch and the file is silently
+	// replaced — the one input that walks past the parse check. A non-empty
+	// file whose root is not an object is a refusal, same as a syntax error.
 	if cfg == nil {
-		cfg = map[string]interface{}{}
+		return nil, fmt.Errorf("refusing to modify %s: its root is null, not a JSON object. "+
+			"Writing would replace its current contents — fix or restore the file first", path)
 	}
 	return cfg, nil
 }
@@ -354,6 +370,13 @@ func refuseDroppingTopLevelKeys(path string) func(old, updated []byte) error {
 // a .bak, refuses an empty payload over a populated file, and runs the
 // drop-a-key guard before touching anything.
 func writeJSONObjectConfig(path string, cfg map[string]interface{}) error {
+	return writeJSONObjectConfigWithPerm(path, cfg, 0600)
+}
+
+// writeJSONObjectConfigWithPerm is writeJSONObjectConfig with an explicit mode.
+// .mcp.json is committed alongside project sources and is conventionally 0644;
+// the Claude configs hold credentials-adjacent state and stay 0600.
+func writeJSONObjectConfigWithPerm(path string, cfg map[string]interface{}, perm os.FileMode) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
@@ -362,7 +385,7 @@ func writeJSONObjectConfig(path string, cfg map[string]interface{}) error {
 		data = append(data, '\n')
 	}
 	return safeio.SafeOverwrite(path, data, safeio.Options{
-		Perm:        0600,
+		Perm:        perm,
 		RefuseEmpty: true,
 		Guard:       refuseDroppingTopLevelKeys(path),
 	})

@@ -1,6 +1,8 @@
 package session
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,18 +71,29 @@ func (l *ConfigFileLock) Release() {
 	}
 }
 
-// resolveConfigLockPath normalizes configPath and derives the sibling `.lock`
-// path, refusing anything that would escape the config's own directory.
+// resolveConfigLockPath normalizes configPath and returns the lock file that
+// guards it.
 //
-// Callers are all internal (a profile's Claude config, ~/.claude.json, a
-// project's .mcp.json, a Codex config.toml), so this is defence in depth rather
-// than a live injection vector — but the path is still assembled from values
-// that trace back to configuration, and a lock file is created wherever it
-// points. Cleaning and containment-checking here is cheap and removes the
-// question. It also normalizes the mutex key, so two spellings of the same file
-// share one lock instead of silently getting two.
+// Lock files live in the agent-deck data directory (locks/config), NOT beside
+// the config they guard. The sibling-file scheme this replaces dropped a
+// .mcp.json.lock into every managed project — untracked litter appearing inside
+// users' repositories, which is user-visible and not ours to put there. One
+// central directory keeps the whole scheme in a place agent-deck owns.
 //
-// Returns the resolved config path (the mutex key) and the lock path.
+// The file name is a hash of the resolved config path, so the lock path
+// contains no caller-supplied path component at all. That is also why the
+// CodeQL path-injection finding is gone structurally rather than by a check:
+// there is nothing left to inject into.
+//
+// Caveat, deliberate: paths are normalized with Abs(Clean(...)) and NOT
+// EvalSymlinks, so two symlinked spellings of one config would hash differently
+// and take two different mutexes. That is unreachable today because every call
+// site derives its path the same way (GetClaudeConfigDir, GetUserMCPRootPath,
+// a project's .mcp.json, GetCodexConfigPath) — resolving symlinks on every
+// acquisition would cost a syscall per write to close a hole nothing opens.
+// Revisit if a caller ever accepts a user-supplied config path.
+//
+// Returns the resolved config path (the mutex key) and the lock file path.
 func resolveConfigLockPath(configPath string) (resolved, lockPath string, err error) {
 	if strings.TrimSpace(configPath) == "" {
 		return "", "", fmt.Errorf("config file lock: empty path")
@@ -89,20 +102,18 @@ func resolveConfigLockPath(configPath string) (resolved, lockPath string, err er
 	if err != nil {
 		return "", "", fmt.Errorf("config file lock: resolve %q: %w", configPath, err)
 	}
-
-	dir := filepath.Dir(resolved)
 	base := filepath.Base(resolved)
 	if base == "." || base == string(os.PathSeparator) {
 		return "", "", fmt.Errorf("config file lock: %q has no file name component", configPath)
 	}
 
-	lockPath = filepath.Join(dir, base+".lock")
-	// The lock must sit beside the config it guards. After cleaning this can
-	// only fail on a crafted name, but checking it is what makes the property
-	// explicit rather than incidental.
-	if !strings.HasPrefix(lockPath, dir+string(os.PathSeparator)) || filepath.Dir(lockPath) != dir {
-		return "", "", fmt.Errorf("config file lock: refusing lock path %q outside config directory %q", lockPath, dir)
+	dataDir, err := GetAgentDeckDir()
+	if err != nil {
+		// Better to refuse the write than to perform it unserialized.
+		return "", "", fmt.Errorf("config file lock: locate lock directory: %w", err)
 	}
+	sum := sha256.Sum256([]byte(resolved))
+	lockPath = filepath.Join(dataDir, "locks", "config", hex.EncodeToString(sum[:])+".lock")
 	return resolved, lockPath, nil
 }
 

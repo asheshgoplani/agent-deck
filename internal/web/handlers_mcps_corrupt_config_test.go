@@ -1,10 +1,12 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -187,11 +189,19 @@ func TestSafeioRefusesDroppingTopLevelKeys(t *testing.T) {
 // mentionsReadFailure accepts any error that names why the config could not be
 // read — a parse problem or an I/O one. Named for the boundary, not for the one
 // failure mode the first version of these tests happened to build.
+var readPathErr = regexp.MustCompile(`read [^ ]+:`)
+
 func mentionsReadFailure(err error) bool {
 	msg := strings.ToLower(err.Error())
+	// Matches the read-failure wrapper `read <path>: ...` specifically; the
+	// bare substring "read " used to match almost any error text.
+	if readPathErr.MatchString(msg) {
+		return true
+	}
 	for _, want := range []string{
 		"not valid json", "failed to parse", "invalid character",
-		"permission denied", "is a directory", "read ",
+		"permission denied", "is a directory", "root is null",
+		"is unreadable", "is not an object",
 	} {
 		if strings.Contains(msg, want) {
 			return true
@@ -294,5 +304,111 @@ func TestEmptyConfigStartsFreshRatherThanFailing(t *testing.T) {
 				t.Errorf("a %s config should start fresh, not fail: %v", tc.name, err)
 			}
 		})
+	}
+}
+
+// TestMalformedMcpJSONIsNeverRewritten closes the gap the re-review found: the
+// local scope writes <project>/.mcp.json through a DIFFERENT read path
+// (readExistingLocalMCPServers), which swallowed read and parse errors and
+// returned nil. A malformed .mcp.json therefore read as "no servers" and the
+// save replaced the file with only the managed entries.
+//
+// Nothing pinned that guard, which is how it survived the sweep: reverting the
+// fail-closed read broke no test.
+func TestMalformedMcpJSONIsNeverRewritten(t *testing.T) {
+	for _, tool := range []string{"claude", "cursor", "opencode"} {
+		t.Run(tool, func(t *testing.T) {
+			mcpStoreEnv(t)
+			project := t.TempDir()
+			mcpFile := filepath.Join(project, ".mcp.json")
+			corrupt := []byte(`{"mcpServers":{"beta":{"command":"b"}} "trailing":"no comma"}`)
+			if err := os.WriteFile(mcpFile, corrupt, 0o644); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+
+			err := NewDefaultMCPManager().Attach(MCPTarget{Tool: tool, ProjectPath: project}, "alpha", "local")
+			if err == nil {
+				t.Errorf("attach against a malformed .mcp.json silently succeeded; it must fail closed")
+			} else if !mentionsReadFailure(err) {
+				t.Errorf("error does not name why the read failed: %v", err)
+			}
+			assertByteIdentical(t, mcpFile, corrupt, "local attach against a malformed .mcp.json")
+		})
+	}
+}
+
+// TestMcpJSONWritePreservesUnknownTopLevelKeys pins the other half of routing
+// that save through safeio: the old one rebuilt the file from the mcpServers
+// field alone and dropped anything else the user had in it.
+func TestMcpJSONWritePreservesUnknownTopLevelKeys(t *testing.T) {
+	mcpStoreEnv(t)
+	project := t.TempDir()
+	mcpFile := filepath.Join(project, ".mcp.json")
+	if err := os.WriteFile(mcpFile, []byte(`{"mcpServers":{},"$schema":"https://example/schema.json"}`), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := NewDefaultMCPManager().Attach(MCPTarget{Tool: "claude", ProjectPath: project}, "alpha", "local"); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	data, err := os.ReadFile(mcpFile)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("result is not valid JSON: %s", data)
+	}
+	if doc["$schema"] == nil {
+		t.Errorf("the write dropped an unrelated top-level key: %s", data)
+	}
+	servers, _ := doc["mcpServers"].(map[string]any)
+	if _, ok := servers["alpha"]; !ok {
+		t.Errorf("attach did not land: %s", data)
+	}
+}
+
+// TestNullRootConfigIsRefused covers the one input that walks past the parse
+// check: json.Unmarshal("null", &map) succeeds and leaves a nil map, which the
+// fresh-start branch would treat as "no config yet" and overwrite. There is no
+// user data in a null root, so the stakes are low — but it is the single hole
+// in the guard, so it gets a test.
+func TestNullRootConfigIsRefused(t *testing.T) {
+	for _, body := range []string{"null", "  null\n"} {
+		t.Run(strings.TrimSpace(body), func(t *testing.T) {
+			home := mcpStoreEnv(t)
+			project := t.TempDir()
+			path := filepath.Join(home, ".claude-cfg", ".claude.json")
+			original := []byte(body)
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+
+			err := NewDefaultMCPManager().Attach(MCPTarget{Tool: "claude", ProjectPath: project}, "alpha", "global")
+			if err == nil {
+				t.Error("a null root should be refused, not treated as a fresh config")
+			}
+			assertByteIdentical(t, path, original, "attach against a null-root config")
+		})
+	}
+}
+
+// TestClearProjectMCPsRefusesMalformedConfig — the re-review noted the malformed
+// case was covered for attach/detach/move but not for the clear path, which is
+// the one that used to hand-roll its own read.
+func TestClearProjectMCPsRefusesMalformedConfig(t *testing.T) {
+	home := mcpStoreEnv(t)
+	project := t.TempDir()
+	paths, originals := writeCorruptClaudeConfig(t, home)
+
+	err := session.ClearProjectMCPs(project)
+	if err == nil {
+		t.Error("ClearProjectMCPs silently succeeded against a malformed config")
+	} else if !mentionsReadFailure(err) {
+		t.Errorf("error does not name why the read failed: %v", err)
+	}
+	for i, path := range paths {
+		assertByteIdentical(t, path, originals[i], "ClearProjectMCPs against a malformed config")
 	}
 }

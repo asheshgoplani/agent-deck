@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -276,6 +277,49 @@ func TestClearProjectMCPsOnAbsentConfigIsANoOp(t *testing.T) {
 	}
 }
 
+// TestConfigLockLivesOutsideTheProject pins where lock files go.
+//
+// The sibling-file scheme this replaces created <project>/.mcp.json.lock inside
+// the user's repository: untracked litter in every managed project. Locks now
+// live in the agent-deck data directory, keyed by a hash of the resolved config
+// path, so nothing is ever written into a project tree.
+func TestConfigLockLivesOutsideTheProject(t *testing.T) {
+	_, project := concurrentWriteEnv(t)
+	mcpFile := filepath.Join(project, ".mcp.json")
+
+	resolved, lockPath, err := resolveConfigLockPath(mcpFile)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if resolved != mcpFile {
+		t.Errorf("resolved = %q, want %q", resolved, mcpFile)
+	}
+	if strings.HasPrefix(lockPath, project+string(os.PathSeparator)) {
+		t.Errorf("lock file %q is inside the project tree %q — that is untracked litter in the "+
+			"user's repository", lockPath, project)
+	}
+	if !strings.HasSuffix(lockPath, ".lock") {
+		t.Errorf("lock file %q should end in .lock", lockPath)
+	}
+
+	// Actually take the lock and confirm nothing appeared in the project.
+	lock, err := AcquireConfigFileLock(mcpFile)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	lock.Release()
+
+	entries, err := os.ReadDir(project)
+	if err != nil {
+		t.Fatalf("read project dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".lock") {
+			t.Errorf("acquiring a lock created %q inside the project", e.Name())
+		}
+	}
+}
+
 // TestResolveConfigLockPathRejectsEscapes pins the lock-path derivation. The
 // lock must always land beside the config it guards, whatever spelling the
 // caller used, and equivalent spellings must resolve to the same mutex key so
@@ -287,11 +331,12 @@ func TestResolveConfigLockPathRejectsEscapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plain path: %v", err)
 	}
-	if want := filepath.Join(dir, ".claude.json.lock"); lockPath != want {
-		t.Errorf("lockPath = %q, want %q", lockPath, want)
+	if lockPath == "" || !strings.HasSuffix(lockPath, ".lock") {
+		t.Errorf("lockPath = %q, want a .lock file", lockPath)
 	}
-	if filepath.Dir(lockPath) != filepath.Dir(resolved) {
-		t.Errorf("lock %q is not beside its config %q", lockPath, resolved)
+	// The lock name carries no caller-supplied path component.
+	if strings.Contains(filepath.Base(lockPath), ".claude") {
+		t.Errorf("lock name %q leaks the config path; it should be a hash", filepath.Base(lockPath))
 	}
 
 	// A path with traversal segments must normalize to the same place, not
