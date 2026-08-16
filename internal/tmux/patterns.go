@@ -96,6 +96,33 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			BusyPatterns:   []string{"waiting for deepseek", "working (", "idle timeout"},
 			PromptPatterns: []string{"Write a task or use"},
 		}
+	case "deepseek":
+		// DeepSeek Harness (`dsh`, npm @deepseek-ai/dsh), verified against
+		// 0.1.0-rc.6 in a sandboxed HOME. The shipped profiles are not a REPL,
+		// so these patterns describe what those two surfaces actually print:
+		//
+		//   web      one ready line, then silence:  "dsh web: http://127.0.0.1:3080"
+		//            The server is idle-but-alive from that line onward, which
+		//            is "waiting" — a prompt pattern, not a busy one.
+		//   headless streams nothing until it prints the final assistant text;
+		//            the whole run is busy, and the pane's own liveness is the
+		//            authoritative signal. "MISSING_CREDENTIAL" is the one
+		//            terminal line worth naming (see authFailurePatterns).
+		//
+		// Busy is checked before prompt in the detector, so the ready banner
+		// cannot mask a run that is still working. A custom profile that
+		// installs a terminal app brings its own vocabulary; users extend this
+		// through [tools.<name>] busy_patterns, which merge over this default.
+		return &RawPatterns{
+			BusyPatterns: []string{
+				"ctrl+c to interrupt",
+				"esc to interrupt",
+			},
+			PromptPatterns: []string{
+				`re:(?mi)^dsh web:\s+https?://`,
+				"Usage: dsh",
+			},
+		}
 	case "pi":
 		return &RawPatterns{
 			BusyPatterns: []string{

@@ -49,10 +49,61 @@ var authFailureBannerPatterns = []string{
 // Claude-compatible renderings only; any other tool returns false. Callers pass
 // the tool name as resolved for prompt detection (see inferToolFromSessionFields).
 func IsAuthFailureContent(tool, content string) bool {
-	if strings.ToLower(strings.TrimSpace(tool)) != "claude" {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "claude":
+		return scanClaudeBannerLines(content, authFailureBannerPatterns)
+	case "deepseek":
+		return scanDeepSeekCredentialLines(content)
+	default:
 		return false
 	}
-	return scanClaudeBannerLines(content, authFailureBannerPatterns)
+}
+
+// deepSeekCredentialMarkers are the fragments dsh prints when it cannot resolve
+// a provider credential. Captured verbatim from @deepseek-ai/dsh 0.1.0-rc.6 in a
+// sandboxed HOME with DEEPSEEK_API_KEY unset:
+//
+//	dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route
+//	"deepseek-official"; store DEEPSEEK_API_KEY through the credentials service
+//	(the web Models page writes it), or export DEEPSEEK_API_KEY in the launching
+//	environment
+//
+// Both markers must be present on one line. MISSING_CREDENTIAL alone is a stable
+// machine code an agent could plausibly print while discussing this very failure;
+// pairing it with the provider-route phrase means only dsh's own emission
+// matches. This is exactly the case the auth hold exists for: restarting cannot
+// help until the user supplies a key, and dsh exits 1 immediately, so an
+// unheld session would restart-loop.
+var deepSeekCredentialMarkers = []string{"MISSING_CREDENTIAL", "no API key for provider route"}
+
+// scanDeepSeekCredentialLines reports whether the pane tail carries dsh's
+// credential failure. Uses the same last-15-non-empty-lines window as the Claude
+// scanner, but none of its banner-structure guards: dsh writes a plain stderr
+// line with no TUI chrome to anchor on.
+func scanDeepSeekCredentialLines(content string) bool {
+	lines := strings.Split(content, "\n")
+	checked := 0
+	for i := len(lines) - 1; i >= 0 && checked < 15; i-- {
+		line := strings.TrimSpace(StripANSI(lines[i]))
+		if line == "" {
+			continue
+		}
+		checked++
+		if containsAll(line, deepSeekCredentialMarkers) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAll reports whether s contains every one of subs.
+func containsAll(s string, subs []string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }
 
 // IsAuthFailure reports whether this detector's tool would render the given

@@ -301,6 +301,13 @@ type Instance struct {
 	// JSON marshaling that could otherwise race the restart-time write.
 	HermesSessionID      string `json:"-"`
 	HermesHookGeneration string `json:"-"`
+
+	// DeepSeek Harness integration. dsh exports no session ID (no env var, no
+	// hook, no `sessions list` subcommand), so agent-deck discovers it from the
+	// on-disk workspace index under $DSH_HOME at restart time. Not persisted
+	// (json:"-") for the same reason as HermesSessionID: it is re-discovered on
+	// every restart, so it needs no lifetime beyond a single Restart() call.
+	DeepSeekSessionID string `json:"-"`
 	// restartEnv contains one-shot environment overrides while RestartWithEnv is
 	// building the replacement process. It is cleared before the call returns.
 	restartEnv map[string]string
@@ -4054,7 +4061,12 @@ func (i *Instance) buildTmuxOptionOverrides() map[string]string {
 	}
 	// Sandbox sessions need remain-on-exit so dead-pane detection works.
 	// Non-sandbox sessions use default tmux behaviour (pane closes on exit).
-	if i.IsSandboxed() {
+	//
+	// A documented one-shot needs it for a different reason: the process prints
+	// its answer and exits BY DESIGN, and without remain-on-exit tmux tears the
+	// pane down with the answer still in it — the user asked a question and got
+	// a closed window. Keeping the pane is what makes a one-shot readable.
+	if i.IsSandboxed() || i.expectsFastExit() {
 		if overrides == nil {
 			overrides = make(map[string]string)
 		}
@@ -4439,6 +4451,8 @@ func (i *Instance) Start() error {
 			return err
 		}
 		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "deepseek":
+		command = i.buildDeepSeekCommand(i.Command)
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -4491,7 +4505,12 @@ func (i *Instance) Start() error {
 	// pane is still alive and records it if the session vanishes early. The
 	// watcher is handed value snapshots + a supersede generation so it never
 	// touches i's mutex-guarded fields from its own goroutine.
-	if command != "" {
+	//
+	// A documented one-shot is exempt: `dsh --profile headless "<task>"` answers
+	// once and exits, so a short life is SUCCESS, not a spawn failure. Without
+	// the exemption every completed one-shot would be recorded as died-fast and
+	// the preview would paint "⚠ session failed to start" over its answer.
+	if command != "" && !i.expectsFastExit() {
 		// gen AND the wake channel are both produced here, in the caller, so no
 		// bump can slip into the gap before the watcher subscribes (see
 		// newSpawnGenWatch).
@@ -4634,8 +4653,10 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Priority: built-in tools (claude, gemini, opencode, codex) → custom tools from config.toml → raw command
 	var command string
 	// Codex takes its initial prompt as a positional argument instead of having it
-	// typed into the TUI; when that happens there is nothing left to send.
-	codexPromptEmbedded := false
+	// typed into the TUI; when that happens there is nothing left to send. The
+	// DeepSeek headless profile is the same shape — `dsh --profile headless
+	// "<task>"` IS the whole invocation — so the flag is tool-neutral.
+	promptEmbeddedInCommand := false
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		// #745 fork guard: mirrors the Start() branch above. A fork target
@@ -4704,7 +4725,7 @@ func (i *Instance) StartWithMessage(message string) error {
 				slog.String("reason", "fork_awaiting_start"))
 			break
 		}
-		command, codexPromptEmbedded = i.buildCodexCommandWithPrompt(i.Command, message)
+		command, promptEmbeddedInCommand = i.buildCodexCommandWithPrompt(i.Command, message)
 		i.CodexStartedAt = time.Now().UnixMilli()
 	case i.Tool == "pi":
 		if i.IsForkAwaitingStart {
@@ -4731,6 +4752,12 @@ func (i *Instance) StartWithMessage(message string) error {
 			return err
 		}
 		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "deepseek":
+		// Only the headless profile takes a task positionally; for web (and any
+		// custom profile whose grammar agent-deck does not know) the builder
+		// reports the prompt as NOT embedded and it is typed into the pane by
+		// the ordinary post-start send path below.
+		command, promptEmbeddedInCommand = i.buildDeepSeekCommandWithPrompt(i.Command, message)
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -4846,7 +4873,7 @@ func (i *Instance) StartWithMessage(message string) error {
 
 	// Send message synchronously (CLI will wait). Codex may already carry the
 	// prompt as a launch argument, in which case there is nothing to type.
-	if message != "" && !codexPromptEmbedded {
+	if message != "" && !promptEmbeddedInCommand {
 		return i.sendMessageWhenReady(message)
 	}
 
@@ -6684,6 +6711,12 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		// and Restart() re-captures rather than resuming the old conversation.
 		i.HermesSessionID = ""
 	}
+
+	if i.Tool == "deepseek" {
+		// Same contract as hermes: drop the discovered resume ID so the next
+		// launch boots a new dsh session instead of reopening the old one.
+		i.DeepSeekSessionID = ""
+	}
 }
 
 func (i *Instance) recreateTmuxSession() {
@@ -8429,6 +8462,15 @@ func (i *Instance) restart(env map[string]string) error {
 			return fmt.Errorf("seed hermes restart baseline: %w", err)
 		}
 		command = i.buildHermesCommand(i.Command)
+	} else if i.Tool == "deepseek" {
+		// Re-discover the workspace's newest dsh session on EVERY restart, for
+		// the same self-healing reason as hermes: a pruned session yields the
+		// current newest, or "" — in which case the launch boots fresh instead
+		// of resuming a dead ID forever. A no-op when [deepseek].resume_flag is
+		// unset (the default), where restart is a plain re-boot and dsh's own
+		// persistence under $DSH_HOME keeps the conversation reachable.
+		i.refreshDeepSeekSessionID()
+		command = i.buildDeepSeekResumeCommand()
 	} else {
 		// Route to appropriate command builder based on tool
 		switch {
@@ -8888,6 +8930,16 @@ func (i *Instance) CanRestart() bool {
 		return true
 	}
 
+	// DeepSeek Harness is always restartable. A restart re-boots the same
+	// profile in the same workspace against the same $DSH_HOME, so every
+	// conversation dsh persisted stays reachable whether or not the configured
+	// profile's app accepts a resume flag. Gating this on "dead or errored"
+	// would leave a live dsh session silently un-restartable, the exact hermes
+	// bug above.
+	if i.Tool == "deepseek" {
+		return true
+	}
+
 	// Custom tools: check if they have session resume support
 	if i.CanRestartGeneric() {
 		return true
@@ -8916,6 +8968,13 @@ func (i *Instance) CanRestartFresh() bool {
 	if i.Tool == "hermes" {
 		return true
 	}
+	// DeepSeek fresh-restart is only meaningful when there is a resume binding
+	// to discard. With [deepseek].resume_flag unset (the default) every restart
+	// is already fresh, so offering "restart fresh" as a distinct action would
+	// promise a difference that does not exist.
+	if i.Tool == "deepseek" {
+		return DeepSeekSupportsResume()
+	}
 	return i.CanRestartGeneric()
 }
 
@@ -8923,6 +8982,15 @@ func (i *Instance) CanRestartFresh() bool {
 func (i *Instance) CanFork() bool {
 	// Gemini CLI doesn't support forking
 	if i.Tool == "gemini" {
+		return false
+	}
+
+	// DeepSeek Harness 0.1.0-rc.6 has no fork/branch command: the launcher owns
+	// --profile/--patch/the dumps, and neither shipped app exposes one. Falling
+	// through to the Claude branch below would also return false, but only by
+	// accident (empty ClaudeSessionID) — say it explicitly so a future Claude
+	// change cannot silently start offering a fork dsh cannot perform.
+	if i.Tool == "deepseek" {
 		return false
 	}
 

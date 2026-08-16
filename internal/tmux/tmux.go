@@ -747,7 +747,7 @@ func SupportsHyperlinks() bool {
 }
 
 // Tool detection patterns (used by DetectTool for initial tool identification)
-var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "pi"}
+var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "deepseek", "pi"}
 
 var toolDetectionPatterns = map[string][]*regexp.Regexp{
 	"claude": {
@@ -785,6 +785,20 @@ var toolDetectionPatterns = map[string][]*regexp.Regexp{
 		// Hermes Agent CLI (github.com/NousResearch/hermes-agent).
 		regexp.MustCompile(`(?i)\bhermes\s+agent\b`),
 		regexp.MustCompile(`(?i)\bnous\s*research\b`),
+	},
+	"deepseek": {
+		// DeepSeek Harness (`dsh`, npm @deepseek-ai/dsh). Captured live from
+		// 0.1.0-rc.6 in a sandboxed HOME:
+		//   web ready banner: "dsh web: http://127.0.0.1:39949"
+		//   launcher help:    "dsh: boot a DeepSeek Harness profile"
+		//   headless usage:   "Usage: dsh --profile headless [options] [task...]"
+		//   credential error: "dsh: MISSING_CREDENTIAL: llm-deepseek: ..."
+		// Every pattern anchors on the "dsh" prefix or the product name, so the
+		// bare word "deepseek" in a model name (a codex pane running a DeepSeek
+		// model, say) cannot claim the pane.
+		regexp.MustCompile(`(?i)\bdeepseek\s+harness\b`),
+		regexp.MustCompile(`(?mi)^dsh(\s+web)?:\s`),
+		regexp.MustCompile(`(?i)\bdsh\s+--profile\b`),
 	},
 	"pi": {
 		regexp.MustCompile(`(?mi)^\s*pi>\s*`),
@@ -827,6 +841,10 @@ func detectToolFromCommand(command string) string {
 			return "cursor"
 		case "hermes":
 			return "hermes"
+		case "dsh":
+			// DeepSeek Harness. The binary is `dsh`; the agent-deck tool is
+			// named for the vendor.
+			return "deepseek"
 		case "pi":
 			return "pi"
 		}
@@ -849,11 +867,62 @@ func detectToolFromCommand(command string) string {
 		return "cursor"
 	case strings.Contains(cmdLower, "hermes"):
 		return "hermes"
+	case isDeepSeekCommand(fields) ||
+		strings.Contains(cmdLower, "@deepseek-ai/dsh") ||
+		strings.Contains(cmdLower, "dsh --profile") ||
+		strings.Contains(cmdLower, "dsh web") ||
+		strings.Contains(cmdLower, "dsh plugin"):
+		// Deliberately NOT a bare Contains on "dsh": those three letters appear
+		// in "dshell", "dshboard", and any path containing them, and — unlike
+		// the permissive arms above — `grep dsh README.md` is an entirely
+		// ordinary thing to see in a pane. Detection therefore needs the token
+		// in COMMAND position (isDeepSeekCommand, which sees through the
+		// `DSH_HOME=… dsh` env prefix agent-deck itself emits), the documented
+		// npx spelling, or a dsh subcommand/launcher flag right after it.
+		return "deepseek"
 	case strings.Contains(cmdLower, " pi ") || strings.HasPrefix(cmdLower, "pi "):
 		return "pi"
 	default:
 		return ""
 	}
+}
+
+// isDeepSeekCommand reports whether the first COMMAND-position token of a
+// command line is the dsh binary. Leading `VAR=value` assignments are skipped:
+// agent-deck's own launch string is `DSH_HOME=… AGENTDECK_…=… dsh --profile …`,
+// so fields[0] is an assignment, not the program.
+//
+// This is the precise half of DeepSeek detection; the substring arms beside it
+// cover the npx spelling and subcommand forms.
+func isDeepSeekCommand(fields []string) bool {
+	for _, field := range fields {
+		if isShellAssignmentToken(field) {
+			continue
+		}
+		base := filepath.Base(strings.Trim(field, `"'`))
+		base = strings.TrimSuffix(strings.TrimSuffix(base, ".exe"), ".cmd")
+		return base == "dsh"
+	}
+	return false
+}
+
+// isShellAssignmentToken reports whether a token is a `NAME=value` environment
+// assignment rather than a program name.
+func isShellAssignmentToken(token string) bool {
+	idx := strings.IndexByte(token, '=')
+	if idx <= 0 {
+		return false
+	}
+	for i, r := range token[:idx] {
+		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
+		if i == 0 && !isAlpha {
+			return false
+		}
+		if i > 0 && !isAlpha && !(r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func detectToolFromContent(cleanContent string) string {

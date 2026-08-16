@@ -154,10 +154,19 @@ func (r *Registry) runInstalledProbe() {
 		// Built-in probe uses the bare tool name, except Cursor: honor an
 		// explicit [cursor].command override, otherwise accept either stock
 		// entrypoint (`agent` or `cursor`).
+		//
+		// DeepSeek is the same shape of exception: the tool is named for the
+		// vendor and the binary it launches is `dsh`, so probing the bare name
+		// would report it uninstalled on a host that has it and hide it from
+		// every dialog. Probe what the launcher would actually exec — the
+		// configured [deepseek].command, else `dsh`.
 		ok := false
-		if name == "cursor" {
+		switch name {
+		case "cursor":
 			ok = cursorCommandInstalled()
-		} else {
+		case "deepseek":
+			ok = probeInstalled(GetToolCommand("deepseek"))
+		default:
 			ok = probeInstalled(name)
 		}
 		r.installed[name] = ok
@@ -442,7 +451,7 @@ func ConfiguredHiddenToolNames() []string {
 }
 
 // pickerPresetOrder matches buildPresetCommands in internal/ui/newdialog.go.
-var pickerPresetOrder = []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes"}
+var pickerPresetOrder = []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek"}
 
 // PickerToolNames returns tool names for the new-session picker after applying
 // hidden_tools and show_only_installed_tools. The empty command "" is mapped

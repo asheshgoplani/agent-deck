@@ -719,7 +719,17 @@ Agent Deck works with any terminal-based AI tool:
 | **Crush** (charmbracelet/crush) | Status detection, organization, launch |
 | **Cursor** (terminal) | Status detection, organization |
 | **Hermes Agent** | Organization, launch |
+| **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
+
+DeepSeek Harness is the `dsh` binary from [`@deepseek-ai/dsh`](https://github.com/deepseek-ai/deepseek-harness)
+(`npm install -g @deepseek-ai/dsh`). It boots *profiles*: `web` (a browser UI served
+from the pane) and `headless` (answer one task, print it, exit) ship in the box, and
+`dsh plugin --profile <name> add <package>` installs others. Pick the profile with
+`[deepseek].profile`, give each account its own `DSH_HOME` with
+`[profiles.<account>.deepseek].config_dir`, and run `agent-deck deepseek status --json`
+to see exactly what agent-deck resolved. dsh has no fork command, and neither shipped
+profile takes a resume flag — see [docs/tools/deepseek.md](docs/tools/deepseek.md).
 
 Hide tools you don't use from the new-session picker with `[ui].hidden_tools` (applies to TUI and web; `shell` is always available).
 

@@ -381,6 +381,9 @@ func main() {
 		case "cursor-hooks":
 			handleCursorHooks(args[1:])
 			return
+		case "deepseek":
+			handleDeepSeek(args[1:])
+			return
 		case "notify-daemon":
 			handleNotifyDaemon(args[1:])
 			return
@@ -974,7 +977,7 @@ var globalFlagSubcommands = map[string]bool{
 	"remote": true, "worktree": true, "wt": true, "costs": true, "web": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
-	"hermes-hooks": true, "cursor-hooks": true, "notify-daemon": true,
+	"hermes-hooks": true, "cursor-hooks": true, "deepseek": true, "notify-daemon": true,
 	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true,
 	"debug-dump": true, "version": true, "help": true,
 }
@@ -3490,6 +3493,7 @@ func printHelp() {
 	fmt.Println("  gemini-hooks     Manage Gemini hook integration")
 	fmt.Println("  hermes-hooks     Manage Hermes Agent hook integration")
 	fmt.Println("  cursor-hooks     Manage Cursor Agent CLI hook integration")
+	fmt.Println("  deepseek         Inspect the DeepSeek Harness (dsh) integration")
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
 	fmt.Println("  web              Start TUI with web UI server running alongside")
@@ -3542,6 +3546,9 @@ func printHelp() {
 	fmt.Println("  cursor-hooks install      Install Cursor hooks")
 	fmt.Println("  cursor-hooks uninstall    Remove Cursor hooks")
 	fmt.Println("  cursor-hooks status       Show Cursor hooks install status")
+	fmt.Println("  deepseek status           Show resolved dsh binary, DSH_HOME, profile")
+	fmt.Println("  deepseek profiles         List profiles under $DSH_HOME/profiles")
+	fmt.Println("  deepseek sessions [path]  List dsh sessions recorded for a workspace")
 	fmt.Println()
 	fmt.Println("Group Commands:")
 	fmt.Println("  group list                List all groups")

@@ -1,0 +1,222 @@
+# DeepSeek Harness (`dsh`)
+
+agent-deck's `deepseek` tool launches **DeepSeek Harness**, the coding-agent CLI
+published by DeepSeek itself.
+
+| | |
+|---|---|
+| Repository | <https://github.com/deepseek-ai/deepseek-harness> (MIT) |
+| Package | `@deepseek-ai/dsh` — `npm install -g @deepseek-ai/dsh` |
+| Binary | `dsh` (note: **not** `deepseek`) |
+| Version verified | `0.1.0-rc.6`, published 2026-08-13 |
+| Status upstream | developer preview — "rapid iteration and potential breaking changes" |
+| Credentials | `DEEPSEEK_API_KEY`, or `$DSH_HOME/.credentials.yaml` |
+
+Everything on this page was captured from the real binary in a sandboxed `HOME`.
+Where agent-deck declines to support something, the reason is a property of
+`dsh` 0.1.0-rc.6, not an omission.
+
+## Which DeepSeek CLI this is
+
+Several unrelated CLIs carry the DeepSeek name. agent-deck integrates the one
+published by the vendor's own GitHub organisation and npm scope:
+
+| Project | Publisher | Why not this one |
+|---|---|---|
+| **`@deepseek-ai/dsh`** | `deepseek-ai` org, maintainer `@deepseek.com` | **this is the one agent-deck supports** |
+| `@vegamo/deepcode-cli` (Deep Code) | `lessweb`, third party | Listed as an integration in DeepSeek's API docs, but community-maintained; DeepSeek support does not troubleshoot it |
+| `holasoymalva/deepseek-cli`, `PierrunoYT/deepseek-cli`, `@kavienw/deepseek-cli`, `reasonix` | individuals | Unaffiliated wrappers over the DeepSeek API |
+
+Separately, agent-deck already ships a `codewhale` **pattern preset** for a
+third-party TUI that runs DeepSeek *models*. That is a status-detection preset
+for someone else's binary; this page is about the vendor's own harness.
+
+## Command grammar
+
+```
+dsh --profile <name> [--patch <path>]... [app args...]
+dsh web [app args...]                       # hardcoded alias of --profile web
+dsh --profile headless "<task>"             # answer once, print it, exit
+dsh plugin --profile <name> <pnpm args...>  # forwards to pnpm
+dsh --dump-config | --dump-default-config   # print the composed tree, boot nothing
+```
+
+The launcher owns **only** `--profile`, `--patch`, and the dumps. The first
+token it does not recognise starts the booted app's own argument list. agent-deck
+therefore always emits launcher flags first; a `--patch` placed after an app flag
+would be handed to the app, which rejects it.
+
+### Shipped profiles
+
+| Profile | Arguments | Shape |
+|---|---|---|
+| `web` | `--host`, `--port`, repeatable `--trusted-host` | Long-lived HTTP server. Prints one line — `dsh web: http://127.0.0.1:3080` — then serves. |
+| `headless` | the task text, positionally | One-shot. Prints the final assistant message and exits 0 (turn completed) or 1. |
+
+Both auto-initialise from shipped templates on first use. Any other profile must
+be created with `dsh plugin --profile <name> add <package>`, and the launcher's
+own help documents that shape as `dsh --profile tui --resume <session>`.
+
+## Config home
+
+`$DSH_HOME` (default `~/.dsh`) is the single user-data root:
+
+```
+$DSH_HOME/profiles/<name>/{package.json,cordis.yml,cordis.patch.yml}
+$DSH_HOME/cordis.patch.yml                  machine-local patch layer
+$DSH_HOME/.credentials.yaml, $DSH_HOME/.env
+$DSH_HOME/storages/workspace.json           workspace path -> ordered sessionIds
+$DSH_HOME/sessions/<slug>/<session-id>/session.jsonl.zstd
+```
+
+Pointing `DSH_HOME` at different directories is how one machine runs several
+DeepSeek accounts, exactly as `CODEX_HOME` does for Codex.
+
+## Configuration
+
+```toml
+[deepseek]
+command = "dsh"                 # or a wrapper / absolute path
+config_dir = "~/.dsh"           # exported as DSH_HOME
+profile = "web"                 # web | headless | any installed profile
+env_file = "~/.config/deepseek.env"
+patches = ["~/.dsh/extra.cordis.yml"]
+
+# web profile only
+host = "127.0.0.1"
+port = 3080
+trusted_hosts = ["deck.local:8080"]
+
+# See "Restart and resume" — leave unset on a default install.
+resume_flag = ""
+
+extra_args = []
+
+# One DSH_HOME per account slot.
+[profiles.work.deepseek]
+config_dir = "~/.dsh-work"
+
+# Per-group and per-conductor overrides (command, env_file, config_dir, profile).
+[groups."clients/acme".deepseek]
+profile = "headless"
+
+[conductors.boss.deepseek]
+config_dir = "~/.dsh-boss"
+```
+
+`DSH_HOME` resolution, most specific first:
+
+1. `[profiles.<account>.deepseek].config_dir` — the session's account slot
+2. `[conductors.<name>.deepseek].config_dir`
+3. `[groups."<path>".deepseek].config_dir` (walks ancestors)
+4. `$DSH_HOME` from the launching environment
+5. `[deepseek].config_dir`
+
+When none is set, agent-deck exports nothing and lets `dsh` resolve `~/.dsh`
+itself.
+
+## CLI
+
+```
+agent-deck deepseek status [--json]      # binary, version, DSH_HOME, profile, resume, key
+agent-deck deepseek profiles [--json]    # profiles under $DSH_HOME/profiles, with bundles
+agent-deck deepseek sessions [path] [--json]   # dsh sessions recorded for a workspace
+agent-deck launch -c deepseek            # launch a session
+```
+
+`deepseek status --json` is the machine-readable answer to "what would agent-deck
+actually run", including `resume_supported` and `fork_supported` as explicit
+booleans so an agent can tell *unsupported* from *unknown*.
+
+## Status detection
+
+`dsh` enables no hooks by default (the bundled `dsh-hooks-claude-code` /
+`dsh-hooks-codex` bridges are plugins a user mounts in a patch layer), so status
+comes from pane content plus process liveness:
+
+* `dsh web: http://…` — served and idle, i.e. **waiting**. It is a prompt
+  pattern, never a busy one: a server that is up must not spin forever.
+* `ctrl+c to interrupt` / `esc to interrupt` — **busy**. Busy is checked before
+  prompt, so a working turn is never masked by the ready banner.
+* `MISSING_CREDENTIAL … no API key for provider route` — a **credential
+  failure**, which holds the session out of automatic restart paths. Restarting
+  cannot fix a missing key, and `dsh` exits 1 immediately, so an unheld session
+  would restart-loop. Both fragments must appear on one line, so an agent
+  *discussing* the error does not put its own session on hold.
+
+A custom profile that installs a terminal app brings its own vocabulary; extend
+detection through `[tools.<name>]` `busy_patterns` / `prompt_patterns`.
+
+## One-shot handling
+
+A `headless` session is expected to exit as soon as it has answered. agent-deck
+recognises that:
+
+* the fast-death watcher is skipped, so a completed run is not recorded as a
+  spawn failure and the preview does not paint "⚠ session failed to start" over
+  the answer;
+* tmux `remain-on-exit` is set, so the pane — and the answer in it — survives the
+  process that printed it.
+
+Launching with an initial prompt puts the task on the command line
+(`dsh --profile headless "<task>"`), and agent-deck then does **not** also type
+it into the pane. For every other profile the prompt is delivered the ordinary
+way, after the pane is ready.
+
+## Restart and resume
+
+Restart re-boots the same profile, in the same workspace, against the same
+`DSH_HOME`. Because `dsh` persists its own sessions there, no conversation is
+lost by a restart even though the process is new.
+
+Reopening a *specific* conversation is a separate matter. **Neither shipped
+profile accepts a resume flag in 0.1.0-rc.6** — `dsh --profile headless --help`
+lists only `-h`, and the web app only `--host`/`--port`/`--trusted-host`.
+Emitting `--resume` at one of them would make `dsh` exit with a usage error
+instead of booting, so agent-deck emits nothing by default.
+
+If you install a profile whose app documents a resume flag — the shape the
+launcher's own help advertises — turn it on:
+
+```toml
+[deepseek]
+profile = "tui"
+resume_flag = "--resume"
+```
+
+agent-deck then discovers the workspace's newest session from
+`$DSH_HOME/storages/workspace.json`, verifies its body still exists under
+`$DSH_HOME/sessions/`, and appends `--resume <session-id>` as an app argument.
+Discovery re-runs on every restart rather than caching: a pruned session yields
+the current newest, or nothing — in which case the launch starts fresh instead of
+resuming a dead ID forever.
+
+## Not supported (and why)
+
+| Capability | Status |
+|---|---|
+| Fork | `dsh` 0.1.0-rc.6 has no fork or branch command. `CanFork` is explicitly false. |
+| MCP management | `dsh` ships `@deepseek-ai/dsh-mcp-client` but enables no server by default, because each server command is trusted code outside the agent sandbox. agent-deck does not write its config. |
+| Hook-based status | The Claude Code / Codex hook bridges exist upstream but are opt-in plugins. agent-deck does not auto-install them; it uses pane detection. |
+| Cost tracking | No token accounting is exported by the CLI. |
+
+## Process contract
+
+`SIGTERM` starts a graceful drain and exits 0 (a supervisor's ordinary stop);
+`SIGINT` reports 130; a second signal forces immediate exit. The plugin tree gets
+up to five seconds to dispose.
+
+## Testing
+
+* `internal/session/deepseek_test.go` — command building, the `DSH_HOME`
+  priority chain, on-disk session discovery, capability gates.
+* `internal/tmux/deepseek_test.go` — tool detection and status patterns, all
+  asserted against pane text captured verbatim from the real binary.
+* `internal/session/deepseek_lifecycle_test.go` — a real tmux pane through
+  launch → send delivery → prompt round-trip → status transitions →
+  restart-with-context, for all three profile shapes.
+
+The lifecycle tests run against `internal/session/testdata/fake-dsh`, an
+emulator of the CLI contract, because the real launcher answers nothing without
+a `DEEPSEEK_API_KEY` that CI does not have. That file's header records exactly
+which behaviours it reproduces and where each was captured from.
