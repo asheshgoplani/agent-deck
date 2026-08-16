@@ -965,6 +965,60 @@ var tmuxLiveQueryTimeout = 2 * time.Second
 // package's -L-only tmuxExecContext funnel, and per the "refuse anything
 // ambiguous" rule, unresolvable is not reapable rather than a case worth
 // widening the tmux-exec factory for.
+// candidateSocketPath resolves the socket the CANDIDATE is talking to, out of
+// the candidate's own environment and its own argv — the two inputs tmux itself
+// used when it picked a socket.
+//
+// This exists because a socket NAME is not a socket. `-L work` resolves to
+// $TMUX_TMPDIR/tmux-<uid>/work, so the same name under two bases is two
+// different servers, and the name alone cannot tell them apart. Reading the
+// candidate's TMUX/TMUX_TMPDIR is the only way to say which one it meant.
+//
+// ok=false means the environment could not be read, which includes a pid that
+// has exited, a zombie (whose environ reads back empty rather than failing), and
+// another user's process. All of them are refusals: a socket that cannot be
+// established is not a socket that can be compared.
+//
+// The uid is this process's, deliberately. A candidate belonging to another uid
+// resolves its own -L name under tmux-<theirs>, so the comparison this feeds
+// cannot match and the candidate is refused — which is the right answer for a
+// process this sweep has no business killing anyway.
+func candidateSocketPath(pid int, cmdlineFields []string) (path string, ok bool) {
+	lookupEnv, err := readProcessEnviron(pid)
+	if err != nil {
+		return "", false
+	}
+	var args []string
+	if len(cmdlineFields) > 1 {
+		args = cmdlineFields[1:]
+	}
+	return normalizeTmpPath(resolveTmuxSocketPath(lookupEnv, os.Getuid(), "", args)), true
+}
+
+// readProcessEnviron reads pid's environment out of procfs as a lookup function
+// shaped for resolveTmuxSocketPath.
+//
+// An empty read is an error, not an empty environment: /proc/<pid>/environ comes
+// back empty with no error for a zombie, and treating that as "this process has
+// no TMUX_TMPDIR" would resolve it to the default socket — a confident answer
+// about a process that no longer has an environment to have.
+func readProcessEnviron(pid int) (func(string) string, error) {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("empty environment for pid %d", pid)
+	}
+	env := make(map[string]string, 32)
+	for _, entry := range strings.Split(string(raw), "\x00") {
+		if key, value, found := strings.Cut(entry, "="); found {
+			env[key] = value
+		}
+	}
+	return func(key string) string { return env[key] }, nil
+}
+
 func candidateSocketName(cmdlineFields []string) (name string, ok bool) {
 	if len(cmdlineFields) == 0 {
 		return "", true
@@ -1002,7 +1056,19 @@ func candidateSocketName(cmdlineFields []string) (name string, ok bool) {
 //     on the same server come back empty — so absence here rules out an
 //     attach specifically, not just "any client-shaped process".
 //
-// ok=false means neither fact could be established (no server at the resolved
+// Before either query is issued, the candidate's OWN socket is resolved from
+// its own environment and argv (candidateSocketPath) and compared against the
+// socket the query will reach. A tmux socket NAME is not a server: `-L work`
+// means $TMUX_TMPDIR/tmux-<uid>/work, and this package resolves that name
+// through ITS environment, not the candidate's. Same name, different base,
+// different server — and asking the wrong server is not a failure that
+// announces itself. Both queries succeed, neither the server pid nor any client
+// pid matches, and the answer comes back "not live" with full confidence about
+// a client that is attached and alive on its own server. A socket that differs,
+// or that cannot be established at all, is ok=false.
+//
+// ok=false means the candidate's server could not be identified as ours, or
+// neither fact could be established against it (no server at the resolved
 // socket, a -S-path candidate the package's -L-only exec funnel cannot resolve,
 // connection refused, or the query ran past tmuxLiveQueryTimeout). The caller
 // MUST treat ok=false as unclassifiable and refuse to kill — the same
@@ -1014,12 +1080,9 @@ func candidateSocketName(cmdlineFields []string) (name string, ok bool) {
 // queries with "no current target", because each needs a target session to
 // resolve against. That is ok=false, so orphans left behind on a server whose
 // sessions have all closed are never reaped — precisely the incident-shaped
-// host. Refusing is still the right verdict, because from here "cannot reach a
-// server" is indistinguishable from "reached the wrong server": this package
-// resolves -L names through its own TMUX_TMPDIR, which need not be the
-// candidate's. Widening it means finding a query that identifies a server
-// without a session, and that is a change to make deliberately, not by relaxing
-// a kill guard.
+// host. Widening it means finding a query that identifies a server without a
+// session, and that is a change to make deliberately, not by relaxing a kill
+// guard.
 //
 // A second, narrower window is inherent to asking the server at all: a user's
 // own interactive client that has started but not yet registered reads as
@@ -1032,6 +1095,22 @@ func candidateSocketName(cmdlineFields []string) (name string, ok bool) {
 func isLiveTmuxClientOrServer(budget context.Context, pid int, cmdlineFields []string) (live bool, ok bool) {
 	socketName, resolvable := candidateSocketName(cmdlineFields)
 	if !resolvable {
+		return false, false
+	}
+
+	// Establish that the server about to be asked is the candidate's server.
+	// Without this the two are only assumed to be the same, and when they are
+	// not, both queries succeed against a stranger's server, neither pid
+	// matches, and the confident answer is "not live" — the kill verdict —
+	// about a client that is attached and alive on its own.
+	candidateSocket, resolved := candidateSocketPath(pid, cmdlineFields)
+	if !resolved {
+		return false, false
+	}
+	// What tmuxExecContext will actually reach: the same -L name, resolved
+	// through THIS process's environment, which is the whole asymmetry.
+	querySocket := normalizeTmpPath(resolveTmuxSocketPath(os.Getenv, os.Getuid(), socketName, nil))
+	if candidateSocket != querySocket {
 		return false, false
 	}
 

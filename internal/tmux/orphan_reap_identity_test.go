@@ -58,6 +58,23 @@ import (
 // makes prompt.
 func fakeTmuxCandidate(t *testing.T, role string, extraEnv ...string) int {
 	t.Helper()
+	// argv the sweep must recognise: an agent-deck session target
+	// (SessionPrefix) and a cadence verb from reapableOneShotVerbs.
+	return fakeTmuxCandidateArgv(t, role,
+		[]string{"-L", "orphan-identity-test", "list-clients", "-t", SessionPrefix + "identity_probe"},
+		extraEnv...)
+}
+
+// fakeTmuxCandidateArgv is fakeTmuxCandidate with the tmux argv left to the
+// caller, for the tests that need a candidate the sweep must NOT act on:
+// proving a scope guard holds needs a live process the guard is the only thing
+// protecting, and a guard is only pinned by an argv that fails it.
+//
+// tmuxArgs are the arguments after argv[0]; the "-test.run" guard is inserted
+// here and keeps the child out of the test framework even if the TestMain
+// helper dispatch is ever reordered.
+func fakeTmuxCandidateArgv(t *testing.T, role string, tmuxArgs []string, extraEnv ...string) int {
+	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("candidate collection reads procfs; linux-only by construction")
 	}
@@ -75,12 +92,7 @@ func fakeTmuxCandidate(t *testing.T, role string, extraEnv ...string) int {
 	}
 	env = append(env, extraEnv...)
 
-	// argv the sweep must recognise: an agent-deck session target
-	// (SessionPrefix) and a cadence verb from reapableOneShotVerbs. The
-	// -test.run guard keeps the child out of the test framework even if the
-	// TestMain helper dispatch is ever reordered.
-	argv := []string{link, "-test.run=^$", "-L", "orphan-identity-test",
-		"list-clients", "-t", SessionPrefix + "identity_probe"}
+	argv := append([]string{link, "-test.run=^$"}, tmuxArgs...)
 
 	quoted := make([]string, 0, len(env)+len(argv))
 	for _, kv := range env {
