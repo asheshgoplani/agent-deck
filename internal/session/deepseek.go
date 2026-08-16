@@ -125,8 +125,35 @@ func DeepSeekProfileMode(profile string) DeepSeekMode {
 	}
 }
 
-// GetDeepSeekCommand returns the configured dsh command/alias, falling back to
-// the bare binary name. Mirrors GetCodexCommand/GetCrushCommand.
+// resolveDeepSeekCommand returns the dsh command this SESSION launches:
+// the conductor override, then the group override (ancestor-walking), then the
+// process-wide value.
+//
+// The scoped levels exist because [groups.<path>.deepseek].command and
+// [conductors.<name>.deepseek].command are configurable; before PR #1942's
+// review they were parsed and then ignored in favor of the global command,
+// which is worse than not offering them — a per-group wrapper looked configured
+// and never ran. Every other scoped DeepSeek setting (profile, config_dir,
+// env_file) already walks this chain, so the command must too.
+func (i *Instance) resolveDeepSeekCommand() string {
+	cfg, _ := LoadUserConfig()
+	if cfg != nil && i != nil {
+		if name := conductorNameFromInstance(i); name != "" {
+			if cmd := strings.TrimSpace(cfg.GetConductorDeepSeekCommand(name)); cmd != "" {
+				return cmd
+			}
+		}
+		if cmd := strings.TrimSpace(cfg.GetGroupDeepSeekCommand(i.GroupPath)); cmd != "" {
+			return cmd
+		}
+	}
+	return GetDeepSeekCommand()
+}
+
+// GetDeepSeekCommand returns the process-wide dsh command/alias, falling back to
+// the bare binary name. Session-scoped resolution goes through
+// Instance.resolveDeepSeekCommand; this is the "no instance in hand" answer that
+// backs the installed-tools probe and `agent-deck deepseek status`.
 func GetDeepSeekCommand() string {
 	userConfig, _ := LoadUserConfig()
 	if userConfig != nil && strings.TrimSpace(userConfig.DeepSeek.Command) != "" {
@@ -586,12 +613,140 @@ func (i *Instance) buildDeepSeekCommand(baseCommand string) string {
 
 	// Passthrough: a custom command from the CLI or config that is not the bare
 	// binary name owns its own flags entirely.
-	trimmed := strings.TrimSpace(baseCommand)
-	if trimmed != "" && trimmed != deepSeekBinary && trimmed != "deepseek" {
+	if trimmed := strings.TrimSpace(baseCommand); isDeepSeekPassthroughCommand(trimmed) {
 		return envPrefix + i.deepSeekHomeExport() + trimmed
 	}
 
 	return envPrefix + i.deepSeekHomeExport() + i.deepSeekInvocation("")
+}
+
+// --- prompt delivery ---------------------------------------------------------
+//
+// The three profile shapes do not share a delivery channel, and treating them as
+// one is what produced all three P1s on PR #1942's review. This type is the
+// single answer to "how does a prompt reach this session", and every send path
+// consults it.
+
+// DeepSeekPromptDelivery describes how an initial prompt reaches a session.
+type DeepSeekPromptDelivery string
+
+const (
+	// DeepSeekPromptCommandLine — the task IS the invocation. `dsh --profile
+	// headless "<task>"` answers it and exits; there is no prompt to type into,
+	// and launching without one is a usage error.
+	DeepSeekPromptCommandLine DeepSeekPromptDelivery = "command-line"
+
+	// DeepSeekPromptPane — the booted app owns a terminal prompt, so the
+	// ordinary "wait for ready, then type" path is correct. This is what an
+	// installed interactive profile gets.
+	DeepSeekPromptPane DeepSeekPromptDelivery = "pane"
+
+	// DeepSeekPromptUnsupported — there is no prompt at all. The web profile is
+	// an HTTP server: text typed into its pane goes to the server process's
+	// stdin and is gone. Accepting a message for it and "delivering" it that way
+	// is silent data loss, so callers must refuse instead.
+	DeepSeekPromptUnsupported DeepSeekPromptDelivery = "unsupported"
+)
+
+// deepSeekCommandIsPassthrough reports whether this session's own command is a
+// user-supplied invocation rather than the bare binary. agent-deck injects no
+// flags into one and, crucially, cannot reason about its SHAPE either: a wrapper
+// named in [deepseek].command or typed at the CLI may ignore the configured
+// profile entirely.
+func (i *Instance) deepSeekCommandIsPassthrough() bool {
+	return isDeepSeekPassthroughCommand(strings.TrimSpace(i.Command))
+}
+
+// isDeepSeekPassthroughCommand reports whether a command string is a
+// user-supplied invocation rather than the bare binary (or the tool name, which
+// GetToolCommand maps onto it).
+func isDeepSeekPassthroughCommand(trimmed string) bool {
+	return trimmed != "" && trimmed != deepSeekBinary && trimmed != "deepseek"
+}
+
+// deepSeekPromptDelivery classifies this session's profile.
+//
+// A custom-command passthrough is classified as pane delivery regardless of the
+// configured profile: agent-deck did not build that invocation and has no
+// grounds to claim the wrapper serves a browser UI or needs a positional task.
+// Treating it like any other custom command is the honest default — refusing a
+// prompt or demanding a task on the strength of a profile the wrapper may never
+// pass through would be a guess dressed up as a contract.
+func (i *Instance) deepSeekPromptDelivery() DeepSeekPromptDelivery {
+	if i.deepSeekCommandIsPassthrough() {
+		return DeepSeekPromptPane
+	}
+	switch DeepSeekProfileMode(i.resolveDeepSeekProfile()) {
+	case deepSeekModeHeadless:
+		return DeepSeekPromptCommandLine
+	case deepSeekModeWeb:
+		return DeepSeekPromptUnsupported
+	default:
+		return DeepSeekPromptPane
+	}
+}
+
+// PromptDeliveryError returns a non-nil error when this session cannot receive a
+// prompt at all, and nil when some channel exists (pane or command line).
+//
+// It is tool-agnostic by design: send paths call it without knowing about
+// DeepSeek, and every other tool returns nil, so nothing else changes behavior.
+// The message names the profile, the reason, and the two ways forward, because
+// "refused" without a route out is only marginally better than losing the
+// message.
+func (i *Instance) PromptDeliveryError() error {
+	if i == nil || i.Tool != "deepseek" {
+		return nil
+	}
+	if i.deepSeekPromptDelivery() != DeepSeekPromptUnsupported {
+		return nil
+	}
+	profile := i.resolveDeepSeekProfile()
+	return fmt.Errorf(
+		"deepseek profile %q serves a browser UI and has no terminal prompt, so a message sent to its pane would be silently discarded; "+
+			"use the headless profile for one-shot tasks ([deepseek].profile = \"headless\", or a per-group override), "+
+			"or open the URL the pane prints and ask there",
+		profile)
+}
+
+// PromptRidesCommandLine reports whether an initial prompt must be embedded in
+// the launch command rather than typed after start. Callers that would otherwise
+// Start() first and send asynchronously (`launch --no-wait`) have to know this,
+// or the task never reaches the process at all.
+func (i *Instance) PromptRidesCommandLine() bool {
+	if i == nil || i.Tool != "deepseek" {
+		return false
+	}
+	return i.deepSeekPromptDelivery() == DeepSeekPromptCommandLine
+}
+
+// deepSeekHeadlessTaskRequiredError is the refusal for a headless launch with no
+// task. Spawning `dsh --profile headless` instead would exit with dsh's own
+// usage error and leave a failed pane to explain.
+func (i *Instance) deepSeekHeadlessTaskRequiredError() error {
+	return fmt.Errorf(
+		"deepseek profile %q answers one task and exits, so it cannot be launched without one; "+
+			"pass a task (agent-deck launch -c deepseek -m \"<task>\"), "+
+			"or choose a profile that stays up ([deepseek].profile = \"web\", or an installed interactive profile)",
+		i.resolveDeepSeekProfile())
+}
+
+// deepSeekStartCommand builds the launch command for a start or restart, with no
+// caller-supplied prompt in hand.
+//
+// For the headless profile it replays the recorded task: that is what makes a
+// restart reproduce the one-shot instead of rebuilding a taskless invocation dsh
+// rejects. With no recorded task it refuses rather than spawning that invocation.
+func (i *Instance) deepSeekStartCommand() (string, error) {
+	if i.deepSeekPromptDelivery() != DeepSeekPromptCommandLine {
+		return i.buildDeepSeekCommand(i.Command), nil
+	}
+	task := strings.TrimSpace(i.DeepSeekTask)
+	if task == "" {
+		return "", i.deepSeekHeadlessTaskRequiredError()
+	}
+	command, _ := i.buildDeepSeekCommandWithPrompt(i.Command, task)
+	return command, nil
 }
 
 // buildDeepSeekCommandWithPrompt builds the launch command carrying an initial
@@ -599,6 +754,9 @@ func (i *Instance) buildDeepSeekCommand(baseCommand string) string {
 // profile the prompt cannot ride the command line (the web app rejects unknown
 // positionals, a custom app owns its own grammar), so the caller is told the
 // prompt was NOT embedded and delivers it through the ordinary pane-send path.
+//
+// When the prompt IS embedded the task is recorded on the instance, so a later
+// restart can replay the same one-shot (PR #1942 review, P1c).
 //
 // Returns (command, promptEmbedded), mirroring buildCodexCommandWithPrompt.
 func (i *Instance) buildDeepSeekCommandWithPrompt(baseCommand, prompt string) (string, bool) {
@@ -609,13 +767,13 @@ func (i *Instance) buildDeepSeekCommandWithPrompt(baseCommand, prompt string) (s
 	}
 	// A custom-command passthrough owns its own grammar — appending a bare
 	// positional could land anywhere.
-	trimmedBase := strings.TrimSpace(baseCommand)
-	if trimmedBase != "" && trimmedBase != deepSeekBinary && trimmedBase != "deepseek" {
+	if isDeepSeekPassthroughCommand(strings.TrimSpace(baseCommand)) {
 		return command, false
 	}
 	if DeepSeekProfileMode(i.resolveDeepSeekProfile()) != deepSeekModeHeadless {
 		return command, false
 	}
+	i.DeepSeekTask = trimmedPrompt
 	return command + " " + shellescape.Quote(trimmedPrompt), true
 }
 
@@ -640,7 +798,7 @@ func (i *Instance) deepSeekHomeExport() string {
 // resumeID, when non-empty AND [deepseek].resume_flag is set, is appended as an
 // app argument.
 func (i *Instance) deepSeekInvocation(resumeID string) string {
-	cmd := GetDeepSeekCommand()
+	cmd := i.resolveDeepSeekCommand()
 	profile := i.resolveDeepSeekProfile()
 	mode := DeepSeekProfileMode(profile)
 
@@ -693,12 +851,28 @@ func (i *Instance) buildDeepSeekResumeCommand() string {
 	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
 		i.ID, i.Title, i.Tool, shellescape.Quote(sessionProfileEnvValue()))
 
-	trimmed := strings.TrimSpace(i.Command)
-	if trimmed != "" && trimmed != deepSeekBinary && trimmed != "deepseek" {
+	if trimmed := strings.TrimSpace(i.Command); isDeepSeekPassthroughCommand(trimmed) {
 		return envPrefix + i.deepSeekHomeExport() + trimmed
 	}
 
 	return envPrefix + i.deepSeekHomeExport() + i.deepSeekInvocation(i.DeepSeekSessionID)
+}
+
+// deepSeekRestartCommand builds the restart command. The headless profile
+// replays its recorded task — for a one-shot that IS the restart — while every
+// other profile re-boots through the ordinary resume builder. With no recorded
+// task it refuses instead of rebuilding an invocation dsh rejects; CanRestart
+// reports the same fact up front, so this is the backstop, not the only guard.
+func (i *Instance) deepSeekRestartCommand() (string, error) {
+	if i.deepSeekPromptDelivery() != DeepSeekPromptCommandLine {
+		return i.buildDeepSeekResumeCommand(), nil
+	}
+	task := strings.TrimSpace(i.DeepSeekTask)
+	if task == "" {
+		return "", i.deepSeekHeadlessTaskRequiredError()
+	}
+	command, _ := i.buildDeepSeekCommandWithPrompt(i.Command, task)
+	return command, nil
 }
 
 // refreshDeepSeekSessionID re-discovers the workspace's newest dsh session on

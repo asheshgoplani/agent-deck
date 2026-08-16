@@ -1973,6 +1973,33 @@ func (c *UserConfig) GetGroupDeepSeekEnvFile(groupPath string) string {
 	return ""
 }
 
+// GetGroupDeepSeekCommand returns the group-specific dsh command, walking
+// ancestor groups. No expansion — a command may be a bare name, a wrapper, or an
+// absolute path, and the spawn builder treats a non-bare value as passthrough.
+func (c *UserConfig) GetGroupDeepSeekCommand(groupPath string) string {
+	if c == nil || groupPath == "" || c.Groups == nil {
+		return ""
+	}
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if groupCfg, ok := c.Groups[p]; ok && groupCfg.DeepSeek.Command != "" {
+			return groupCfg.DeepSeek.Command
+		}
+	}
+	return ""
+}
+
+// GetConductorDeepSeekCommand returns the conductor-specific dsh command.
+func (c *UserConfig) GetConductorDeepSeekCommand(name string) string {
+	if c == nil || name == "" || c.Conductors == nil {
+		return ""
+	}
+	conductorCfg, ok := c.Conductors[name]
+	if !ok {
+		return ""
+	}
+	return conductorCfg.DeepSeek.Command
+}
+
 // GetConductorDeepSeekConfigDir returns the conductor-specific DSH_HOME.
 func (c *UserConfig) GetConductorDeepSeekConfigDir(name string) string {
 	if c == nil || name == "" || c.Conductors == nil {
@@ -4446,6 +4473,7 @@ func CreateExampleConfig() error {
 # Full guide: docs/tools/deepseek.md
 # [deepseek]
 # The dsh command or a wrapper/absolute path (default: "dsh" — NOT "deepseek")
+# Overridable per group/conductor, like profile/config_dir/env_file
 # command = "dsh"
 # DSH_HOME: the single user-data root holding profiles, credentials, and sessions
 # Default: "" (dsh resolves $DSH_HOME, then ~/.dsh, itself)
@@ -4473,6 +4501,10 @@ func CreateExampleConfig() error {
 # Optional per-account override — one DSH_HOME per account slot
 # [profiles.work.deepseek]
 # config_dir = "~/.dsh-work"
+# Per-group / per-conductor overrides resolve conductor -> group -> global:
+# [groups."clients/acme".deepseek]
+# command = "/opt/acme/bin/dsh-wrapper"
+# profile = "headless"
 
 # Log file management
 # Agent-deck logs session output to ~/.agent-deck/logs/ for status detection

@@ -806,3 +806,250 @@ func TestDeepSeekProfileChain(t *testing.T) {
 		t.Errorf("per-session profile: got %q", got)
 	}
 }
+
+// TestDeepSeekCommand_ScopedOverrides covers P2 from the PR #1942 review.
+//
+// [groups.<path>.deepseek].command and [conductors.<name>.deepseek].command are
+// exposed in config, and the scoped profile / config_dir / env_file siblings all
+// work — but the invocation used to call the process-wide GetDeepSeekCommand(),
+// which reads only the global [deepseek].command. The scoped values were
+// therefore accepted and silently ignored, which is worse than not offering
+// them: a per-group wrapper looks configured and never runs.
+func TestDeepSeekCommand_ScopedOverrides(t *testing.T) {
+	cfg := &UserConfig{
+		DeepSeek: DeepSeekSettings{Command: "global-dsh"},
+		Conductors: map[string]ConductorOverrides{
+			"boss": {DeepSeek: ConductorDeepSeekSettings{Command: "conductor-dsh"}},
+		},
+		Groups: map[string]GroupSettings{
+			"team": {DeepSeek: GroupDeepSeekSettings{Command: "group-dsh"}},
+		},
+	}
+
+	tests := []struct {
+		name string
+		inst *Instance
+		want string
+	}{
+		{
+			name: "conductor beats group and global",
+			inst: &Instance{Tool: "deepseek", GroupPath: "team", Title: "conductor-boss"},
+			want: "conductor-dsh",
+		},
+		{
+			name: "group beats global",
+			inst: &Instance{Tool: "deepseek", GroupPath: "team", Title: "plain"},
+			want: "group-dsh",
+		},
+		{
+			// Ancestor walk, matching every other group-scoped setting.
+			name: "nested group inherits its ancestor",
+			inst: &Instance{Tool: "deepseek", GroupPath: "team/sub", Title: "plain"},
+			want: "group-dsh",
+		},
+		{
+			name: "global when nothing is scoped",
+			inst: &Instance{Tool: "deepseek", GroupPath: "other", Title: "plain"},
+			want: "global-dsh",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withConfig(t, cfg)
+			if got := tt.inst.resolveDeepSeekCommand(); got != tt.want {
+				t.Errorf("resolveDeepSeekCommand() = %q, want %q", got, tt.want)
+			}
+			// And it must actually reach the emitted command, not just resolve.
+			tt.inst.ID = "abc"
+			cmd := tt.inst.buildDeepSeekCommand("deepseek")
+			if !strings.Contains(cmd, tt.want+" --profile") {
+				t.Errorf("built command %q does not invoke %q", cmd, tt.want)
+			}
+		})
+	}
+
+	// With no config at all the bare binary name is still the answer.
+	withConfig(t, &UserConfig{})
+	inst := &Instance{Tool: "deepseek", GroupPath: "team"}
+	if got := inst.resolveDeepSeekCommand(); got != "dsh" {
+		t.Errorf("resolveDeepSeekCommand() with empty config = %q, want %q", got, "dsh")
+	}
+}
+
+// TestDeepSeekPromptDelivery pins which channel each profile's prompt travels
+// through — the distinction the three P1s all turned on.
+func TestDeepSeekPromptDelivery(t *testing.T) {
+	tests := []struct {
+		profile string
+		want    DeepSeekPromptDelivery
+	}{
+		{"web", DeepSeekPromptUnsupported},      // an HTTP server has no prompt to type into
+		{"headless", DeepSeekPromptCommandLine}, // the task IS the invocation
+		{"tui", DeepSeekPromptPane},             // an installed app owns a terminal prompt
+	}
+	for _, tt := range tests {
+		t.Run(tt.profile, func(t *testing.T) {
+			withConfig(t, &UserConfig{DeepSeek: DeepSeekSettings{Profile: tt.profile}})
+			inst := &Instance{Tool: "deepseek", ID: "abc", Title: "ds"}
+			if got := inst.deepSeekPromptDelivery(); got != tt.want {
+				t.Errorf("deepSeekPromptDelivery() = %q, want %q", got, tt.want)
+			}
+
+			err := inst.PromptDeliveryError()
+			if tt.want == DeepSeekPromptUnsupported && err == nil {
+				t.Error("PromptDeliveryError() = nil for a profile that cannot receive a prompt")
+			}
+			if tt.want != DeepSeekPromptUnsupported && err != nil {
+				t.Errorf("PromptDeliveryError() = %v for a profile that can receive a prompt", err)
+			}
+
+			if got := inst.PromptRidesCommandLine(); got != (tt.want == DeepSeekPromptCommandLine) {
+				t.Errorf("PromptRidesCommandLine() = %v for %q", got, tt.profile)
+			}
+		})
+	}
+
+	// Every other tool is unaffected: pane delivery stays the default and no
+	// tool-agnostic caller starts refusing sends.
+	withConfig(t, &UserConfig{})
+	for _, tool := range []string{"claude", "codex", "shell", "hermes"} {
+		inst := &Instance{Tool: tool}
+		if err := inst.PromptDeliveryError(); err != nil {
+			t.Errorf("PromptDeliveryError() = %v for tool %q", err, tool)
+		}
+		if inst.PromptRidesCommandLine() {
+			t.Errorf("PromptRidesCommandLine() = true for tool %q", tool)
+		}
+	}
+}
+
+// TestDeepSeekHeadlessTaskRoundTrip pins the persistence half of P1c: the task
+// travels in the tool_data extras zone, so a restart in a fresh process still
+// knows what to replay.
+func TestDeepSeekHeadlessTaskRoundTrip(t *testing.T) {
+	blob := WriteDeepSeekTaskToToolData(nil, "run the tests")
+	if got := ReadDeepSeekTaskFromToolData(blob); got != "run the tests" {
+		t.Errorf("round-trip = %q, want %q", got, "run the tests")
+	}
+
+	// An empty task removes the key rather than storing "" — there is no
+	// meaningful difference between "no task" and "empty task" for an
+	// invocation dsh would reject either way.
+	cleared := WriteDeepSeekTaskToToolData(blob, "")
+	if got := ReadDeepSeekTaskFromToolData(cleared); got != "" {
+		t.Errorf("cleared task = %q, want empty", got)
+	}
+
+	// Legacy and malformed rows read as "no task", which is what makes
+	// CanRestart honest for sessions written before this field existed.
+	if got := ReadDeepSeekTaskFromToolData(nil); got != "" {
+		t.Errorf("nil blob = %q, want empty", got)
+	}
+	if got := ReadDeepSeekTaskFromToolData([]byte("{not json")); got != "" {
+		t.Errorf("malformed blob = %q, want empty", got)
+	}
+
+	// Unrelated keys survive the merge.
+	withOther := WriteDeepSeekTaskToToolData([]byte(`{"idle_timeout_secs":42}`), "x")
+	if !strings.Contains(string(withOther), "idle_timeout_secs") {
+		t.Errorf("writing the task dropped a sibling key: %s", withOther)
+	}
+}
+
+// TestDeepSeekHeadlessTaskRecordedOnEmbed pins that embedding the task also
+// RECORDS it. Without that, restart has nothing to replay and CanRestart would
+// be reporting on a value nothing ever wrote (PR #1942 review, P1c).
+func TestDeepSeekHeadlessTaskRecordedOnEmbed(t *testing.T) {
+	withConfig(t, &UserConfig{DeepSeek: DeepSeekSettings{Profile: "headless"}})
+
+	inst := &Instance{Tool: "deepseek", ID: "abc", Title: "ds"}
+	if _, embedded := inst.buildDeepSeekCommandWithPrompt("deepseek", "  run the tests  "); !embedded {
+		t.Fatal("headless prompt was not embedded")
+	}
+	if inst.DeepSeekTask != "run the tests" {
+		t.Errorf("DeepSeekTask = %q, want the trimmed task", inst.DeepSeekTask)
+	}
+
+	// A profile that types into a pane must NOT record a task: replaying it on
+	// restart would re-ask a question the user already had answered.
+	withConfig(t, &UserConfig{DeepSeek: DeepSeekSettings{Profile: "tui"}})
+	pane := &Instance{Tool: "deepseek", ID: "abc", Title: "ds"}
+	if _, embedded := pane.buildDeepSeekCommandWithPrompt("deepseek", "hello"); embedded {
+		t.Fatal("a pane-delivery profile embedded the prompt")
+	}
+	if pane.DeepSeekTask != "" {
+		t.Errorf("DeepSeekTask = %q for a pane-delivery profile, want empty", pane.DeepSeekTask)
+	}
+}
+
+// TestDeepSeekStartCommand_HeadlessRequiresTask pins the refusal and the replay
+// at the builder level, where both Start() and Restart() consume them.
+func TestDeepSeekStartCommand_HeadlessRequiresTask(t *testing.T) {
+	withConfig(t, &UserConfig{DeepSeek: DeepSeekSettings{Profile: "headless"}})
+
+	inst := &Instance{Tool: "deepseek", ID: "abc", Title: "ds"}
+	if _, err := inst.deepSeekStartCommand(); err == nil {
+		t.Error("deepSeekStartCommand() = nil error with no task; dsh rejects a taskless headless invocation")
+	}
+	if _, err := inst.deepSeekRestartCommand(); err == nil {
+		t.Error("deepSeekRestartCommand() = nil error with no task")
+	}
+
+	inst.DeepSeekTask = "run the tests"
+	for name, build := range map[string]func() (string, error){
+		"start":   inst.deepSeekStartCommand,
+		"restart": inst.deepSeekRestartCommand,
+	} {
+		cmd, err := build()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !strings.Contains(cmd, "--profile headless 'run the tests'") {
+			t.Errorf("%s command %q does not replay the recorded task", name, cmd)
+		}
+	}
+
+	// A profile that stays up needs no task and must never be refused.
+	withConfig(t, &UserConfig{DeepSeek: DeepSeekSettings{Profile: "web"}})
+	web := &Instance{Tool: "deepseek", ID: "abc", Title: "ds"}
+	if _, err := web.deepSeekStartCommand(); err != nil {
+		t.Errorf("web start refused: %v", err)
+	}
+}
+
+// TestDeepSeekPromptDelivery_PassthroughIsNeverJudgedByProfile pins the
+// correction found while fixing the review: agent-deck did not build a
+// custom-command invocation and cannot claim to know its shape. A wrapper may
+// ignore [deepseek].profile entirely, so refusing its prompt (because the
+// profile says "web") or demanding a task (because it says "headless") would be
+// a guess presented as a contract.
+func TestDeepSeekPromptDelivery_PassthroughIsNeverJudgedByProfile(t *testing.T) {
+	for _, profile := range []string{"web", "headless", "tui"} {
+		t.Run(profile, func(t *testing.T) {
+			withConfig(t, &UserConfig{DeepSeek: DeepSeekSettings{Profile: profile}})
+			inst := &Instance{Tool: "deepseek", ID: "abc", Title: "ds", Command: "my-dsh-wrapper --thing"}
+
+			if got := inst.deepSeekPromptDelivery(); got != DeepSeekPromptPane {
+				t.Errorf("deepSeekPromptDelivery() = %q for a passthrough command, want %q", got, DeepSeekPromptPane)
+			}
+			if err := inst.PromptDeliveryError(); err != nil {
+				t.Errorf("PromptDeliveryError() = %v for a passthrough command", err)
+			}
+			if inst.PromptRidesCommandLine() {
+				t.Error("PromptRidesCommandLine() = true for a passthrough command")
+			}
+			// And it starts without demanding a task it cannot place.
+			cmd, err := inst.deepSeekStartCommand()
+			if err != nil {
+				t.Fatalf("deepSeekStartCommand() refused a passthrough command: %v", err)
+			}
+			if !strings.HasSuffix(cmd, "my-dsh-wrapper --thing") {
+				t.Errorf("command %q is not the user's own invocation", cmd)
+			}
+			if !inst.CanRestart() {
+				t.Error("CanRestart() = false for a passthrough command")
+			}
+		})
+	}
+}

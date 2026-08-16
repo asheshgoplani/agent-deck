@@ -76,7 +76,7 @@ DeepSeek accounts, exactly as `CODEX_HOME` does for Codex.
 
 ```toml
 [deepseek]
-command = "dsh"                 # or a wrapper / absolute path
+command = "dsh"                 # or a wrapper / absolute path (group/conductor overridable)
 config_dir = "~/.dsh"           # exported as DSH_HOME
 profile = "web"                 # web | headless | any installed profile
 env_file = "~/.config/deepseek.env"
@@ -97,12 +97,18 @@ extra_args = []
 config_dir = "~/.dsh-work"
 
 # Per-group and per-conductor overrides (command, env_file, config_dir, profile).
+# All four are resolved conductor -> group (ancestor-walking) -> global.
 [groups."clients/acme".deepseek]
 profile = "headless"
+command = "/opt/acme/bin/dsh-wrapper"
 
 [conductors.boss.deepseek]
 config_dir = "~/.dsh-boss"
 ```
+
+`command`, `profile`, `config_dir`, and `env_file` all resolve the same way:
+conductor override, then group override (walking ancestors), then the global
+`[deepseek]` value.
 
 `DSH_HOME` resolution, most specific first:
 
@@ -147,6 +153,23 @@ comes from pane content plus process liveness:
 A custom profile that installs a terminal app brings its own vocabulary; extend
 detection through `[tools.<name>]` `busy_patterns` / `prompt_patterns`.
 
+## Prompt delivery — the profiles are not interchangeable
+
+Each profile has a different answer to "how does a prompt reach this session",
+and agent-deck refuses rather than guessing:
+
+| Profile | Channel | What agent-deck does |
+|---|---|---|
+| `headless` | **command line** — the task *is* the invocation | Embeds the task: `dsh --profile headless "<task>"`. It is not also typed into the pane. Launching with no task is **refused**, because `dsh --profile headless` alone is a usage error. |
+| installed interactive | **pane** — the app owns a terminal prompt | Waits for readiness, then types the prompt, as with every other tool. |
+| `web` | **none** — it is an HTTP server | **Refused.** There is no terminal prompt; text typed into that pane goes to the server process's stdin and is gone. |
+
+The `web` refusal is deliberate and applies to `agent-deck launch -c deepseek -m
+…`, `session send`, and the TUI alike, *before* anything is spawned. Reporting
+success while discarding a request is the worst failure class in this codebase;
+so is reporting failure while leaving a running server behind. To ask a question,
+use the `headless` profile, or open the URL the pane prints.
+
 ## One-shot handling
 
 A `headless` session is expected to exit as soon as it has answered. agent-deck
@@ -158,16 +181,28 @@ recognises that:
 * tmux `remain-on-exit` is set, so the pane — and the answer in it — survives the
   process that printed it.
 
-Launching with an initial prompt puts the task on the command line
-(`dsh --profile headless "<task>"`), and agent-deck then does **not** also type
-it into the pane. For every other profile the prompt is delivered the ordinary
-way, after the pane is ready.
+`agent-deck launch -m "<task>" --no-wait` also embeds the task rather than
+starting first and sending afterwards: with no task there would be no process to
+send *to*. Nothing is lost by that, since the run is already under way the moment
+it exists.
+
+The task is **persisted** (in the `tool_data` extras zone), so restarting a
+headless session replays the same one-shot. A session whose task is not recorded
+— a row written before this field existed — reports `CanRestart() == false`
+rather than promising a restart that could only land on a usage error.
+
+One consequence worth knowing: once the run exits, tmux's `remain-on-exit`
+banner (`Pane is dead (status 0, …)`) occupies the last line, and the session
+list's short preview shows that rather than the answer. The answer is not lost —
+it is in the pane buffer; attach to the session, or use `agent-deck session
+output`, to read it. `status 0` there means the task completed.
 
 ## Restart and resume
 
 Restart re-boots the same profile, in the same workspace, against the same
 `DSH_HOME`. Because `dsh` persists its own sessions there, no conversation is
-lost by a restart even though the process is new.
+lost by a restart even though the process is new. For the `headless` profile a
+restart replays the recorded task (see above).
 
 Reopening a *specific* conversation is a separate matter. **Neither shipped
 profile accepts a resume flag in 0.1.0-rc.6** — `dsh --profile headless --help`

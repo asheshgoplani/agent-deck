@@ -43,6 +43,30 @@ func fakeDshPath(t *testing.T) string {
 	return path
 }
 
+// waitForPaneFull polls the pane's WHOLE buffer until want appears.
+//
+// Use this for anything a one-shot printed. Preview() returns only the last
+// three lines, and once a headless run exits, tmux's remain-on-exit banner
+// ("Pane is dead (status 0, …)") occupies the tail — so asserting through
+// Preview() is a race against that banner, not a check on the output.
+func waitForPaneFull(t *testing.T, inst *Instance, want string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	last := ""
+	for time.Now().Before(deadline) {
+		content, err := inst.PreviewFull()
+		if err == nil {
+			last = content
+			if strings.Contains(content, want) {
+				return content
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("pane buffer never showed %q within %s; buffer:\n%s", want, timeout, last)
+	return ""
+}
+
 // waitForPane polls the pane until want appears, and fails with the captured
 // content when it does not. Polling (rather than one sleep) keeps the test both
 // fast on a quick box and stable on a loaded one.
@@ -60,7 +84,13 @@ func waitForPane(t *testing.T, inst *Instance, want string, timeout time.Duratio
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("pane never showed %q within %s; last content:\n%s", want, timeout, last)
+	// Preview() is the last few lines only; on failure dump the whole buffer,
+	// which is where a respawned one-shot's output actually lives.
+	full, fullErr := inst.PreviewFull()
+	if fullErr != nil {
+		full = "(PreviewFull: " + fullErr.Error() + ")"
+	}
+	t.Fatalf("pane never showed %q within %s;\nlast preview:\n%s\nfull buffer:\n%s", want, timeout, last, full)
 	return ""
 }
 
@@ -205,13 +235,13 @@ func TestDeepSeekLifecycle_HeadlessOneShot(t *testing.T) {
 	if err := inst.StartWithMessage("run the tests"); err != nil {
 		t.Fatalf("StartWithMessage(): %v", err)
 	}
-	waitForPane(t, inst, "answered: run the tests", 20*time.Second)
+	waitForPaneFull(t, inst, "answered: run the tests", 20*time.Second)
 
 	// One answer only: the embedded prompt must not ALSO be typed into the pane
 	// after start, which would run the task twice.
-	content, err := inst.Preview()
+	content, err := inst.PreviewFull()
 	if err != nil {
-		t.Fatalf("Preview(): %v", err)
+		t.Fatalf("PreviewFull(): %v", err)
 	}
 	if strings.Count(content, "answered: run the tests") != 1 {
 		t.Errorf("the task ran more than once (prompt both embedded and typed):\n%s", content)
@@ -308,5 +338,165 @@ func waitForDeepSeekStatusOtherThan(t *testing.T, inst *Instance, unwanted Statu
 			return false
 		}
 		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// --- review findings on PR #1942 -------------------------------------------
+//
+// Three P1s and one P2 from the adversarial review, each reproduced here before
+// being fixed. The shared theme of the P1s: the DeepSeek profiles are not
+// interchangeable, and treating them as one shape either loses a user's prompt
+// or launches an invocation dsh rejects.
+
+// TestDeepSeekLifecycle_WebProfileRefusesInitialPrompt covers P1a — the worst
+// class in this repo: silent message loss.
+//
+// The web profile is an HTTP server. It has no terminal prompt, so a message
+// "delivered" by typing into its pane goes to the server process's stdin and is
+// gone. Before the fix, `agent-deck launch -c deepseek -m ...` on the DEFAULT
+// profile reported success and discarded the request. Refusing loudly is the
+// only honest option here: agent-deck cannot submit through dsh's browser API
+// without reimplementing its trust fence.
+func TestDeepSeekLifecycle_WebProfileRefusesInitialPrompt(t *testing.T) {
+	// New test: uses TestMain's bootstrapped server on the isolated socket, so
+	// the binary check is the right gate (skipIfNoTmuxServer is the legacy one).
+	skipIfNoTmuxBinary(t)
+
+	fake := fakeDshPath(t)
+	workspace := t.TempDir()
+	dshHome := filepath.Join(t.TempDir(), ".dsh")
+
+	t.Setenv("DSH_HOME", "")
+	withConfig(t, &UserConfig{DeepSeek: DeepSeekSettings{
+		Command:   fake,
+		ConfigDir: dshHome,
+		Profile:   "web", // the default
+	}})
+
+	inst := NewInstanceWithTool("deepseek-web-refuse-e2e", workspace, "deepseek")
+	t.Cleanup(func() { _ = inst.Kill() })
+
+	err := inst.StartWithMessage("please refactor the parser")
+	if err == nil {
+		t.Fatal("StartWithMessage on the web profile returned nil — the prompt was accepted and then silently discarded")
+	}
+	// The error has to name the cause and the way out, or the user just sees a
+	// failure they cannot act on.
+	for _, want := range []string{"web", "profile"} {
+		if !strings.Contains(strings.ToLower(err.Error()), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+
+	// Refusal must happen BEFORE the spawn: leaving a running server behind
+	// after reporting failure is its own trap.
+	if inst.Exists() {
+		t.Error("a session was spawned despite the refusal")
+	}
+}
+
+// TestDeepSeekLifecycle_HeadlessStartWithoutTaskRefuses covers P1b.
+//
+// `dsh --profile headless` with no positional task is a usage error — the app
+// rejects it before any prompt could be delivered. Every plain Start() built
+// exactly that: an ordinary TUI launch, and `launch -m --no-wait`, which
+// deliberately calls Start() before its asynchronous pane send.
+func TestDeepSeekLifecycle_HeadlessStartWithoutTaskRefuses(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	fake := fakeDshPath(t)
+	workspace := t.TempDir()
+	dshHome := filepath.Join(t.TempDir(), ".dsh")
+
+	t.Setenv("DSH_HOME", "")
+	withConfig(t, &UserConfig{DeepSeek: DeepSeekSettings{
+		Command:   fake,
+		ConfigDir: dshHome,
+		Profile:   "headless",
+	}})
+
+	inst := NewInstanceWithTool("deepseek-headless-notask-e2e", workspace, "deepseek")
+	t.Cleanup(func() { _ = inst.Kill() })
+
+	err := inst.Start()
+	if err == nil {
+		t.Fatal("Start() on the headless profile with no task returned nil — dsh exits with a usage error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "task") {
+		t.Errorf("error %q does not say a task is required", err)
+	}
+	if inst.Exists() {
+		t.Error("a doomed pane was spawned instead of refusing up front")
+	}
+}
+
+// TestDeepSeekLifecycle_HeadlessRestartReplaysTask covers P1c.
+//
+// A one-shot's task IS its invocation, so a restart that forgets the task
+// rebuilds `dsh --profile headless` and replaces the retained answer with a
+// usage error. Restart must replay the same task.
+func TestDeepSeekLifecycle_HeadlessRestartReplaysTask(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+
+	fake := fakeDshPath(t)
+	home := t.TempDir()
+	workspace := t.TempDir()
+	dshHome := filepath.Join(home, ".dsh")
+	if err := os.MkdirAll(dshHome, 0o755); err != nil {
+		t.Fatalf("mkdir DSH_HOME: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dshHome, ".credentials.yaml"), []byte("deepseek: test\n"), 0o600); err != nil {
+		t.Fatalf("write credentials: %v", err)
+	}
+
+	t.Setenv("DSH_HOME", "")
+	withConfig(t, &UserConfig{DeepSeek: DeepSeekSettings{
+		Command:   fake,
+		ConfigDir: dshHome,
+		Profile:   "headless",
+	}})
+
+	inst := NewInstanceWithTool("deepseek-headless-restart-e2e", workspace, "deepseek")
+	t.Cleanup(func() { _ = inst.Kill() })
+
+	if err := inst.StartWithMessage("run the tests"); err != nil {
+		t.Fatalf("StartWithMessage(): %v", err)
+	}
+	waitForPaneFull(t, inst, "answered: run the tests", 20*time.Second)
+
+	// The task is what makes this session restartable at all.
+	if inst.DeepSeekTask != "run the tests" {
+		t.Fatalf("DeepSeekTask = %q, want the launched task", inst.DeepSeekTask)
+	}
+	if !inst.CanRestart() {
+		t.Fatal("CanRestart() = false for a headless session whose task is known")
+	}
+
+	if err := inst.Restart(); err != nil {
+		t.Fatalf("Restart(): %v", err)
+	}
+	// Replayed, not a usage error. The answer lives in the buffer; the 3-line
+	// preview tail belongs to tmux's dead-pane banner once the one-shot exits.
+	content := waitForPaneFull(t, inst, "answered: run the tests", 20*time.Second)
+	if strings.Contains(content, "a task is required") || strings.Contains(content, "Usage: dsh") {
+		t.Errorf("restart rebuilt a taskless invocation:\n%s", content)
+	}
+}
+
+// TestDeepSeekLifecycle_HeadlessRestartWithoutTaskIsRefused pins the other half
+// of P1c: a headless session with no recorded task (a row written before the
+// task was persisted) must report that it cannot restart rather than promise a
+// restart that lands on a usage error.
+func TestDeepSeekLifecycle_HeadlessRestartWithoutTaskIsRefused(t *testing.T) {
+	withConfig(t, &UserConfig{DeepSeek: DeepSeekSettings{Profile: "headless"}})
+
+	inst := &Instance{Tool: "deepseek", ID: "abc", Title: "ds"}
+	if inst.CanRestart() {
+		t.Error("CanRestart() = true for a headless session with no recorded task")
+	}
+
+	inst.DeepSeekTask = "run the tests"
+	if !inst.CanRestart() {
+		t.Error("CanRestart() = false once the task is known")
 	}
 }

@@ -308,6 +308,14 @@ type Instance struct {
 	// (json:"-") for the same reason as HermesSessionID: it is re-discovered on
 	// every restart, so it needs no lifetime beyond a single Restart() call.
 	DeepSeekSessionID string `json:"-"`
+
+	// DeepSeekTask is the positional task a headless-profile session was
+	// launched with. Unlike DeepSeekSessionID this IS persisted (tool_data
+	// extras zone, see deepseek_task_persist.go): for a one-shot the task is the
+	// whole invocation, so a restart that forgot it would rebuild
+	// `dsh --profile headless` — a usage error that replaces the retained answer
+	// (PR #1942 review, P1c). Empty for every other profile.
+	DeepSeekTask string `json:"deepseek_task,omitempty"`
 	// restartEnv contains one-shot environment overrides while RestartWithEnv is
 	// building the replacement process. It is cleared before the call returns.
 	restartEnv map[string]string
@@ -4452,7 +4460,15 @@ func (i *Instance) Start() error {
 		}
 		command = i.buildHermesCommand(i.Command)
 	case i.Tool == "deepseek":
-		command = i.buildDeepSeekCommand(i.Command)
+		// The headless profile answers one task and exits, so a plain Start()
+		// must replay a recorded task or refuse — `dsh --profile headless` with
+		// no positional is a usage error dsh rejects before anything could be
+		// delivered (PR #1942 review, P1b/P1c).
+		dsCommand, dsErr := i.deepSeekStartCommand()
+		if dsErr != nil {
+			return dsErr
+		}
+		command = dsCommand
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -4640,6 +4656,21 @@ func (i *Instance) StartWithMessage(message string) error {
 		return fmt.Errorf("tmux session not initialized")
 	}
 
+	// Refuse a message this session has no way to receive, BEFORE spawning
+	// anything (PR #1942 review, P1a). The DeepSeek web profile is an HTTP
+	// server with no terminal prompt: the post-start send path below would type
+	// the message into the server process's stdin and report success, which is
+	// silent data loss — the worst failure class here. Every other tool returns
+	// nil from this check, so nothing else changes.
+	//
+	// Refusing before the spawn matters as much as refusing at all: reporting
+	// failure while leaving a running server behind is its own trap.
+	if message != "" {
+		if err := i.PromptDeliveryError(); err != nil {
+			return err
+		}
+	}
+
 	// #1580 diagnosability: clear any stale spawn-failure sidecar and drop a
 	// spawn_attempt trace (same as Start()).
 	i.recordSpawnAttempt()
@@ -4753,10 +4784,20 @@ func (i *Instance) StartWithMessage(message string) error {
 		}
 		command = i.buildHermesCommand(i.Command)
 	case i.Tool == "deepseek":
-		// Only the headless profile takes a task positionally; for web (and any
-		// custom profile whose grammar agent-deck does not know) the builder
-		// reports the prompt as NOT embedded and it is typed into the pane by
-		// the ordinary post-start send path below.
+		// Only the headless profile takes a task positionally; an installed
+		// interactive profile gets the prompt typed into its pane by the
+		// post-start send path below. The web profile has no prompt at all and
+		// was rejected above, before any spawn.
+		if message == "" {
+			// StartWithMessage with no message is an ordinary start, and
+			// headless still needs its recorded task.
+			dsCommand, dsErr := i.deepSeekStartCommand()
+			if dsErr != nil {
+				return dsErr
+			}
+			command = dsCommand
+			break
+		}
 		command, promptEmbeddedInCommand = i.buildDeepSeekCommandWithPrompt(i.Command, message)
 	default:
 		// Check if this is a custom tool with session resume config
@@ -6715,6 +6756,12 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 	if i.Tool == "deepseek" {
 		// Same contract as hermes: drop the discovered resume ID so the next
 		// launch boots a new dsh session instead of reopening the old one.
+		//
+		// DeepSeekTask is deliberately KEPT. It is not a conversation binding —
+		// it is the invocation itself for a one-shot, and a "fresh" restart of
+		// `dsh --profile headless "<task>"` still means running that task in a
+		// new session. Clearing it here would turn fresh-restart into an
+		// unlaunchable command (PR #1942 review, P1c).
 		i.DeepSeekSessionID = ""
 	}
 }
@@ -8470,7 +8517,14 @@ func (i *Instance) restart(env map[string]string) error {
 		// unset (the default), where restart is a plain re-boot and dsh's own
 		// persistence under $DSH_HOME keeps the conversation reachable.
 		i.refreshDeepSeekSessionID()
-		command = i.buildDeepSeekResumeCommand()
+		// A headless restart replays the recorded task; every other profile
+		// re-boots as before. deepSeekRestartCommand refuses rather than
+		// rebuilding a taskless one-shot invocation.
+		dsCommand, dsErr := i.deepSeekRestartCommand()
+		if dsErr != nil {
+			return dsErr
+		}
+		command = dsCommand
 	} else {
 		// Route to appropriate command builder based on tool
 		switch {
@@ -8930,13 +8984,21 @@ func (i *Instance) CanRestart() bool {
 		return true
 	}
 
-	// DeepSeek Harness is always restartable. A restart re-boots the same
-	// profile in the same workspace against the same $DSH_HOME, so every
-	// conversation dsh persisted stays reachable whether or not the configured
-	// profile's app accepts a resume flag. Gating this on "dead or errored"
-	// would leave a live dsh session silently un-restartable, the exact hermes
-	// bug above.
+	// DeepSeek Harness is restartable: a restart re-boots the same profile in
+	// the same workspace against the same $DSH_HOME, so every conversation dsh
+	// persisted stays reachable whether or not the configured profile's app
+	// accepts a resume flag. Gating this on "dead or errored" would leave a live
+	// dsh session silently un-restartable, the exact hermes bug above.
+	//
+	// The headless profile is the exception, and it is a REAL one rather than a
+	// conservative guess: a one-shot's task is its whole invocation, so without
+	// a recorded task there is nothing to restart INTO — the rebuild would be
+	// `dsh --profile headless`, which dsh rejects. Claiming restartability there
+	// promises an action that can only fail (PR #1942 review, P1c).
 	if i.Tool == "deepseek" {
+		if i.deepSeekPromptDelivery() == DeepSeekPromptCommandLine {
+			return strings.TrimSpace(i.DeepSeekTask) != ""
+		}
 		return true
 	}
 
