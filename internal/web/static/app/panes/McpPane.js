@@ -10,7 +10,7 @@
 //   DELETE /api/sessions/{id}/mcps/{name}         -> detach (scope in body)
 //   PATCH  /api/sessions/{id}/mcps/{name}         -> move scope (toggle pooled ↔ local)
 import { html } from 'htm/preact'
-import { useEffect, useState, useCallback } from 'preact/hooks'
+import { useEffect, useState, useCallback, useRef } from 'preact/hooks'
 import { menuModelSignal } from '../dataModel.js'
 import { selectedIdSignal, mutationsEnabledSignal } from '../state.js'
 import { addToast } from '../Toast.js'
@@ -33,6 +33,38 @@ const EMPTY_ATTACHED = { local: [], project: [], global: [], user: [] }
 // not in any hardcoded list.
 function toolSupportsMCP(session) {
   return session.mcpSupported !== false
+}
+
+
+// mcpStateForResponse reduces a completed refresh into pane state, or returns
+// null when the response belongs to a session the user has already navigated
+// away from.
+//
+// Refreshes are async, so switching sessions mid-flight used to let the old
+// session's catalog, attachments and — worst — its SCOPE LIST land on the new
+// session. The next attach then used a scope the new session's tool may not
+// have. Responses are keyed by session id and mismatches are discarded.
+//
+// Exported for tests: rendering preact components under vitest is broken in
+// this repo (see unit/archivedPane.test.js), so the logic that matters is
+// asserted directly.
+export function mcpStateForResponse({ forSessionId, activeSessionId, catalogResp, attachedResp }) {
+  if (!forSessionId || forSessionId !== activeSessionId) return null
+  const scopes = attachedResp && attachedResp.scopes && attachedResp.scopes.length
+    ? attachedResp.scopes
+    : ALL_SCOPES
+  return {
+    sessionId: forSessionId,
+    catalog: (catalogResp && catalogResp.mcps) || [],
+    attached: {
+      local: (attachedResp && attachedResp.local) || [],
+      project: (attachedResp && attachedResp.project) || [],
+      global: (attachedResp && attachedResp.global) || [],
+      user: (attachedResp && attachedResp.user) || [],
+    },
+    scopes,
+    defaultScope: scopes[0] || '',
+  }
 }
 
 // jsonFetch keeps this pane's 204 handling and error shaping, but the headers
@@ -64,6 +96,11 @@ export function McpPane() {
   const mutationsEnabled = mutationsEnabledSignal.value
   const session = sessions.find(s => s.id === selectedId)
 
+  // The session the pane is currently showing. Async refreshes compare against
+  // this so a response for a previous session cannot overwrite the new one.
+  const sessionId = session ? session.id : null
+  const activeSessionRef = useRef(sessionId)
+
   const [catalog, setCatalog] = useState([])
   const [attached, setAttached] = useState(EMPTY_ATTACHED)
   // Scopes this session's tool actually has, as reported by the server.
@@ -76,6 +113,7 @@ export function McpPane() {
     // unsupported-tool early return below: without this the pane would fire a
     // request the server is obliged to refuse.
     if (!session || !toolSupportsMCP(session)) return
+    const forSession = session.id
     setLoading(true)
     setError('')
     try {
@@ -83,23 +121,35 @@ export function McpPane() {
         jsonFetch('/api/mcps'),
         jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps`),
       ])
-      setCatalog(catalogResp.mcps || [])
-      setAttached({
-        local: attachedResp.local || [],
-        project: attachedResp.project || [],
-        global: attachedResp.global || [],
-        user: attachedResp.user || [],
+      const next = mcpStateForResponse({
+        forSessionId: forSession,
+        activeSessionId: activeSessionRef.current,
+        catalogResp,
+        attachedResp,
       })
-      // Fall back to every scope only if an older server omits the field.
-      setScopes(attachedResp.scopes && attachedResp.scopes.length ? attachedResp.scopes : ALL_SCOPES)
+      // Stale: the user switched sessions while this was in flight.
+      if (!next) return
+      setCatalog(next.catalog)
+      setAttached(next.attached)
+      setScopes(next.scopes)
     } catch (err) {
-      setError(err.message)
+      if (activeSessionRef.current === forSession) setError(err.message)
     } finally {
-      setLoading(false)
+      if (activeSessionRef.current === forSession) setLoading(false)
     }
   }, [session && session.id])
 
-  useEffect(() => { refresh() }, [refresh])
+  // Re-key every piece of per-session state the moment the selection changes,
+  // so nothing from the previous session is on screen (or usable) while the
+  // new session's refresh is in flight.
+  useEffect(() => {
+    activeSessionRef.current = sessionId
+    setCatalog([])
+    setAttached(EMPTY_ATTACHED)
+    setScopes([])
+    setError('')
+    refresh()
+  }, [sessionId, refresh])
 
   const findScope = (name) => {
     for (const s of ALL_SCOPES) {

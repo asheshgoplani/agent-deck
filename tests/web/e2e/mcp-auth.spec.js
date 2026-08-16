@@ -165,6 +165,49 @@ test.describe('MCP management — authenticated browser path', () => {
     expect(body.scopes).toEqual(['global'])
   })
 
+  test('switching sessions mid-refresh lands the attach in the NEW session\'s scope', async ({ page }) => {
+    // Hold the Claude session's MCP response open so the switch happens while
+    // it is genuinely in flight. Only that one route is delayed; everything
+    // else, including both sessions' real handlers, runs untouched.
+    await page.route(`**/api/sessions/${SESSION_ID}/mcps`, async route => {
+      await new Promise(r => setTimeout(r, 2500))
+      await route.continue()
+    })
+
+    await page.goto(`${baseURL}/s/${SESSION_ID}?token=${TOKEN}`)
+    await page.getByRole('button', { name: 'MCPs', exact: true }).click()
+
+    // Switch to the Codex session (global-only) before the Claude response
+    // resolves. The stale response must be discarded rather than installing
+    // Claude's scope list — which would make the next attach send "local".
+
+    await page.goto(`${baseURL}/s/sess-003?token=${TOKEN}`)
+    await page.getByRole('button', { name: 'MCPs', exact: true }).click()
+    await expect(page.getByTestId('mcp-pane')).toBeVisible()
+
+    const attachButton = page.getByTestId('mcp-attach-exa')
+    await expect(attachButton).toBeVisible()
+    await attachButton.click()
+    await expect(page.getByTestId('mcp-attached-exa')).toBeVisible()
+
+    // Wait past the delayed response so a late arrival would have had its
+    // chance to corrupt the state.
+    await page.waitForTimeout(3000)
+    await expect(page.getByTestId('mcp-error')).toBeHidden()
+
+    const codex = await (await page.request.get(`${baseURL}/api/sessions/sess-003/mcps`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).json()
+    expect(codex.global).toContain('exa')
+    expect(codex.local).not.toContain('exa')
+
+    // And nothing was written to the session we navigated away from.
+    const claude = await (await page.request.get(`${baseURL}/api/sessions/${SESSION_ID}/mcps`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })).json()
+    expect(claude.local).not.toContain('exa')
+  })
+
   test('a session whose tool has no MCP store says so instead of offering buttons', async ({ page }) => {
     // sess-004 is a shell session. The server refuses MCP routes for it, so the
     // pane must not render a catalog whose every button would fail.
