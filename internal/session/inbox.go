@@ -172,7 +172,14 @@ func WriteInboxEvent(parentSessionID string, event TransitionNotificationEvent) 
 	return err
 }
 
-// WriteInboxEventIfNew is WriteInboxEvent with the dedup decision exposed.
+// WriteInboxEventIfNew is WriteInboxEvent with the dedup decision reported:
+// written is false exactly when the event's EventFingerprint is already
+// persisted in the file and the append was therefore skipped.
+//
+// Issue #1948's `remote drain` is the caller that needs the answer — it reports
+// "N new, M already present" so a second drain of the same remote is visibly a
+// no-op. It reads the outcome of the dedup that already exists rather than
+// re-deciding duplication with a rule of its own.
 func WriteInboxEventIfNew(parentSessionID string, event TransitionNotificationEvent) (bool, error) {
 	if strings.TrimSpace(parentSessionID) == "" {
 		return false, errors.New("inbox: empty parent session id")

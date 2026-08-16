@@ -89,6 +89,17 @@ type TransitionNotificationEvent struct {
 	// the old dropped_no_target ~1/sec runaway to a terminal state.
 	Attempts int `json:"attempts,omitempty"`
 
+	// SourceRemote names the configured remote a record was PULLED from by
+	// `agent-deck remote drain` (issue #1948). Empty for every locally produced
+	// record, so a conductor draining two hosts can still tell which machine a
+	// child ran on — the one thing a cross-machine record loses.
+	//
+	// Deliberately outside EventFingerprint/TurnFingerprint: the label is
+	// applied by the receiving conductor, so hashing it would make the same
+	// remote record hash differently per drain and break the idempotence the
+	// pull depends on.
+	SourceRemote string `json:"source_remote,omitempty"`
+
 	// DeadLetterReason records WHY a record was terminally undeliverable (audit
 	// B5): orphan, child_removed, parent_removed (incl. cross-profile),
 	// no_notify, self_conductor, or unresolvable. Empty for delivered records.

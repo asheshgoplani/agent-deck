@@ -631,6 +631,28 @@ Fetches active sessions from all remotes, or from a specific remote if `name` is
 
 In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
 
+### remote drain
+
+```bash
+agent-deck remote drain <name|user@host> [--into <session-id>] [--json]
+```
+
+Pulls the completion and transition records a remote agent-deck instance holds and writes them into **this** machine's inbox, so a conductor that launched workers on another host learns they finished without tmux-scraping or file polling (issue #1948).
+
+Transition notifications are parent-linked, and a `parent_session_id` cannot point across machines — so a remote worker's completion never reaches a conductor on a different host. `remote drain` closes that gap by pulling: the conductor's own command is the delivery event, so there is no delivery handshake, no ack, and nothing to replay.
+
+| Flag | Description |
+| --- | --- |
+| `--into <session-id>` | Local session whose inbox receives the records (default: the calling session, same resolution as `inbox drain self`) |
+| `--json` | Emit `{remote, host, target_session_id, fetched, written, duplicates, records}` for a conductor heartbeat |
+
+- **Read-only on the remote.** It runs the remote's `agent-deck inbox export`, which consumes, truncates and marks nothing. Two conductors draining the same host both receive the records, and the host's own conductor still drains its inbox normally.
+- **Safe to repeat.** Records are written through the inbox's existing fingerprint dedup, so a second drain reports `0 new` and adds no duplicate line. Across a consumption boundary the `turn_fingerprint` consumed ledger collapses a re-pulled record instead.
+- **Honest about failure.** Exit `0` = drained (a reachable remote with nothing pending says so explicitly), `2` = unknown remote / none configured, `3` = the remote could not be reached. An ssh failure never reads as "nothing to report".
+- The remote must run a build that has `inbox export`; an older one is reported as a version error pointing at `agent-deck remote update`.
+
+Narrowing a drain to one conductor's children (`--parent <conductor-id>@<host>`) is deferred; it is sugar over this pull.
+
 ### remote attach
 
 ```bash
