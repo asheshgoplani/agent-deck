@@ -10,7 +10,7 @@
 //   DELETE /api/sessions/{id}/mcps/{name}         -> detach (scope in body)
 //   PATCH  /api/sessions/{id}/mcps/{name}         -> move scope (toggle pooled ↔ local)
 import { html } from 'htm/preact'
-import { useEffect, useState, useCallback } from 'preact/hooks'
+import { useEffect, useState, useCallback, useRef } from 'preact/hooks'
 import { menuModelSignal } from '../dataModel.js'
 import { selectedIdSignal, mutationsEnabledSignal } from '../state.js'
 import { addToast } from '../Toast.js'
@@ -71,18 +71,30 @@ export function McpPane() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  // Monotonic request id. Only the newest in-flight refresh may write state:
+  // a slower earlier request landing later would otherwise overwrite the newer
+  // session's answer with the previous session's.
+  const refreshSeq = useRef(0)
+
   const refresh = useCallback(async () => {
     // Hooks must run unconditionally, so guard here rather than relying on the
     // unsupported-tool early return below: without this the pane would fire a
     // request the server is obliged to refuse.
     if (!session || !toolSupportsMCP(session)) return
+    const forId = session.id
+    const seq = ++refreshSeq.current
+    // Still the current request AND still the selected session. Both checks
+    // are needed: the seq guard drops an out-of-order response, the id guard
+    // drops the last response for a session the user has already left.
+    const isCurrent = () => refreshSeq.current === seq && selectedIdSignal.value === forId
     setLoading(true)
     setError('')
     try {
       const [catalogResp, attachedResp] = await Promise.all([
         jsonFetch('/api/mcps'),
-        jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps`),
+        jsonFetch(`/api/sessions/${encodeURIComponent(forId)}/mcps`),
       ])
+      if (!isCurrent()) return
       setCatalog(catalogResp.mcps || [])
       setAttached({
         local: attachedResp.local || [],
@@ -93,10 +105,24 @@ export function McpPane() {
       // Fall back to every scope only if an older server omits the field.
       setScopes(attachedResp.scopes && attachedResp.scopes.length ? attachedResp.scopes : ALL_SCOPES)
     } catch (err) {
+      if (!isCurrent()) return
       setError(err.message)
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
+  }, [session && session.id])
+
+  // Drop the previous session's answers the moment the selection changes,
+  // BEFORE the refresh for the new session lands. `scopes` decides which scope
+  // a fresh attach targets, so carrying it over across a switch would send
+  // Claude's `local` to a global-only Codex session (which fails) or attach a
+  // Claude MCP globally when it belonged in the project (which silently puts
+  // it in the wrong store). Empty scopes also disables the Attach buttons
+  // until the server has said what this tool actually supports.
+  useEffect(() => {
+    setAttached(EMPTY_ATTACHED)
+    setScopes([])
+    setError('')
   }, [session && session.id])
 
   useEffect(() => { refresh() }, [refresh])

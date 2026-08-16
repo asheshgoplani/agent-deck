@@ -3,7 +3,9 @@ package session
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -127,19 +129,83 @@ func tryPoolSocket(pool *mcppool.Pool, name, scope string) (MCPServerConfig, boo
 }
 
 // readExistingLocalMCPServers reads mcpServers from an existing .mcp.json file.
-// Returns nil if the file doesn't exist or can't be parsed.
-func readExistingLocalMCPServers(mcpFile string) map[string]json.RawMessage {
+//
+// Returns (nil, nil) only when the file genuinely does not exist. A file that
+// exists but cannot be read or parsed returns an error, because the caller's
+// next move is to rewrite the file from what it got back — and answering
+// "no servers" to "I could not read it" is what erases the user's own entries.
+// Same rule as readJSONObjectForUpdate; .mcp.json is likewise a file the user
+// owns and commits (#1956).
+func readExistingLocalMCPServers(mcpFile string) (map[string]json.RawMessage, error) {
 	data, err := os.ReadFile(mcpFile)
 	if err != nil {
-		return nil
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w (refusing to overwrite a file that could not be read)", mcpFile, err)
 	}
 	var config struct {
 		MCPServers map[string]json.RawMessage `json:"mcpServers"`
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
-		return nil
+		return nil, fmt.Errorf("parse %s: %w (refusing to overwrite a file that could not be parsed)", mcpFile, err)
 	}
-	return config.MCPServers
+	return config.MCPServers, nil
+}
+
+// readJSONObjectForUpdate reads path as the first half of a read-modify-write
+// over a JSON config file agent-deck does not own.
+//
+// The rule it enforces: "I could not read it" is never "there is nothing
+// there". Only a genuinely absent file yields an empty document. A permission
+// error, a transient I/O error, malformed JSON, a non-object root and a literal
+// `null` root all return an error, and every caller must abort WITHOUT writing.
+//
+// Why this is its own function rather than three inline reads: the inline
+// version swallowed the parse error and substituted an empty map (#1956).
+// The caller then merged its handful of managed servers into that empty map and
+// atomically replaced the file, erasing every other project entry and every
+// unrelated setting in the user's Claude configuration. The write is the
+// dangerous half, so the failure has to stop the sequence before it.
+func readJSONObjectForUpdate(path string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// The one safe case: there is genuinely no document to lose.
+			return make(map[string]interface{}), nil
+		}
+		return nil, fmt.Errorf("read %s: %w (refusing to overwrite a config that could not be read)", path, err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse %s: %w (refusing to overwrite a config that could not be parsed)", path, err)
+	}
+	if raw == nil {
+		// `null` is valid JSON and unmarshals into a nil map WITHOUT an error,
+		// so the parse check above does not catch it. It is not an object, and
+		// treating it as an empty one would write a fresh config over whatever
+		// the user has there.
+		return nil, fmt.Errorf("parse %s: JSON root is null, not an object (refusing to overwrite)", path)
+	}
+	return raw, nil
+}
+
+// objectFieldForUpdate returns obj[key] as a JSON object for merging.
+//
+// Absent and explicit-null both mean "nothing to preserve" and yield a fresh
+// empty map. A value of any other type means the document is not shaped the way
+// this writer assumes, and overwriting it would discard whatever it holds — so
+// that returns an error, for the same reason readJSONObjectForUpdate does.
+func objectFieldForUpdate(obj map[string]interface{}, key, describe string) (map[string]interface{}, error) {
+	v, present := obj[key]
+	if !present || v == nil {
+		return make(map[string]interface{}), nil
+	}
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s is %T, not a JSON object (refusing to overwrite)", describe, v)
+	}
+	return m, nil
 }
 
 // writeJSONFileAtomic writes JSON data to path atomically (symlink-preserving,
@@ -173,7 +239,16 @@ func WriteMergedMcpJSONFile(mcpFile string, enabledNames []string, pluginPinClau
 		}
 	}
 
-	existingServers := readExistingLocalMCPServers(mcpFile)
+	// NOT serialized with acquireConfigFileLock, unlike the Claude config
+	// writers. That helper puts its lockfile next to the file it guards, and
+	// mcpFile is <project>/.mcp.json — a sibling `.mcp.json.lock` would appear
+	// as an untracked file in the user's own repository. The read-error fix
+	// below stands on its own; closing the .mcp.json write race needs a lock
+	// kept outside the project tree, which is its own change.
+	existingServers, err := readExistingLocalMCPServers(mcpFile)
+	if err != nil {
+		return fmt.Errorf("mcp json write: %w", err)
+	}
 	agentDeckServers := make(map[string]MCPServerConfig)
 
 	for _, name := range enabledNames {
@@ -273,26 +348,34 @@ func WriteGlobalMCP(enabledNames []string) error {
 	configDir := GetClaudeConfigDir()
 	configFile := filepath.Join(configDir, ".claude.json")
 
-	// Read existing config (preserve other fields like projects, settings, etc.)
-	var rawConfig map[string]interface{}
-	if data, err := os.ReadFile(configFile); err == nil {
-		if err := json.Unmarshal(data, &rawConfig); err != nil {
-			rawConfig = make(map[string]interface{})
-		}
-	} else {
-		rawConfig = make(map[string]interface{})
-	}
-
+	// Built before the lock: reads config.toml, may start HTTP servers.
 	availableMCPs := GetAvailableMCPs()
 	mcpServers := buildManagedMCPServers(enabledNames, "global")
 
+	// This writes the SAME file as WriteProjectMCP, so they must take the same
+	// lock or a global attach and a project attach can lose each other's work.
+	lock, err := acquireConfigFileLock(configFile, "claude config")
+	if err != nil {
+		return fmt.Errorf("global MCP write: %w", err)
+	}
+	defer lock.Release()
+
+	// Read existing config (preserve other fields like projects, settings, etc.).
+	// A read or parse failure aborts: see readJSONObjectForUpdate (#1956).
+	rawConfig, err := readJSONObjectForUpdate(configFile)
+	if err != nil {
+		return fmt.Errorf("global MCP write: %w", err)
+	}
+	existingMCPs, err := objectFieldForUpdate(rawConfig, "mcpServers", fmt.Sprintf("%s: mcpServers", configFile))
+	if err != nil {
+		return fmt.Errorf("global MCP write: %w", err)
+	}
+
 	// Merge: preserve non-agent-deck entries from existing config (#146)
 	mergedMCPs := make(map[string]interface{})
-	if existingMCPs, ok := rawConfig["mcpServers"].(map[string]interface{}); ok {
-		for name, cfg := range existingMCPs {
-			if _, managed := availableMCPs[name]; !managed {
-				mergedMCPs[name] = cfg
-			}
+	for name, cfg := range existingMCPs {
+		if _, managed := availableMCPs[name]; !managed {
+			mergedMCPs[name] = cfg
 		}
 	}
 	for name, cfg := range mcpServers {
@@ -432,33 +515,42 @@ func WriteProjectMCP(projectPath string, enabledNames []string) error {
 	configDir := GetClaudeConfigDir()
 	configFile := filepath.Join(configDir, ".claude.json")
 
-	var rawConfig map[string]interface{}
-	if data, err := os.ReadFile(configFile); err == nil {
-		if err := json.Unmarshal(data, &rawConfig); err != nil {
-			rawConfig = make(map[string]interface{})
-		}
-	} else {
-		rawConfig = make(map[string]interface{})
-	}
-
-	projects, _ := rawConfig["projects"].(map[string]interface{})
-	if projects == nil {
-		projects = make(map[string]interface{})
-	}
-	proj, _ := projects[projectPath].(map[string]interface{})
-	if proj == nil {
-		proj = make(map[string]interface{})
-	}
-
+	// Computed before the lock is taken: this reads config.toml and may start
+	// HTTP servers, neither of which touches the file being serialized. Doing
+	// it inside the lock would hold the whole configuration hostage to a slow
+	// server start.
 	availableMCPs := GetAvailableMCPs()
 	managed := buildManagedMCPServers(enabledNames, "project")
 
+	// Held across read → modify → write. Atomic replacement alone leaves the
+	// window in which a concurrent writer's read is already stale.
+	lock, err := acquireConfigFileLock(configFile, "claude config")
+	if err != nil {
+		return fmt.Errorf("project MCP write: %w", err)
+	}
+	defer lock.Release()
+
+	rawConfig, err := readJSONObjectForUpdate(configFile)
+	if err != nil {
+		return fmt.Errorf("project MCP write: %w", err)
+	}
+	projects, err := objectFieldForUpdate(rawConfig, "projects", fmt.Sprintf("%s: projects", configFile))
+	if err != nil {
+		return fmt.Errorf("project MCP write: %w", err)
+	}
+	proj, err := objectFieldForUpdate(projects, projectPath, fmt.Sprintf("%s: projects[%q]", configFile, projectPath))
+	if err != nil {
+		return fmt.Errorf("project MCP write: %w", err)
+	}
+	existing, err := objectFieldForUpdate(proj, "mcpServers", fmt.Sprintf("%s: projects[%q].mcpServers", configFile, projectPath))
+	if err != nil {
+		return fmt.Errorf("project MCP write: %w", err)
+	}
+
 	merged := make(map[string]interface{})
-	if existing, ok := proj["mcpServers"].(map[string]interface{}); ok {
-		for name, cfg := range existing {
-			if _, isManaged := availableMCPs[name]; !isManaged {
-				merged[name] = cfg
-			}
+	for name, cfg := range existing {
+		if _, isManaged := availableMCPs[name]; !isManaged {
+			merged[name] = cfg
 		}
 	}
 	for name, cfg := range managed {
@@ -483,6 +575,13 @@ func WriteProjectMCP(projectPath string, enabledNames []string) error {
 func ClearProjectMCPs(projectPath string) error {
 	configDir := GetClaudeConfigDir()
 	configFile := filepath.Join(configDir, ".claude.json")
+
+	// Same file and same read-modify-write as WriteProjectMCP, so same lock.
+	lock, err := acquireConfigFileLock(configFile, "claude config")
+	if err != nil {
+		return fmt.Errorf("clear project MCPs: %w", err)
+	}
+	defer lock.Release()
 
 	// Read existing config
 	data, err := os.ReadFile(configFile)
@@ -543,17 +642,8 @@ func WriteUserMCP(enabledNames []string) error {
 		return fmt.Errorf("could not determine home directory")
 	}
 
-	// Read existing config (preserve other fields like numStartups, projects, etc.)
-	var rawConfig map[string]interface{}
-	if data, err := os.ReadFile(configFile); err == nil {
-		if err := json.Unmarshal(data, &rawConfig); err != nil {
-			rawConfig = make(map[string]interface{})
-		}
-	} else {
-		rawConfig = make(map[string]interface{})
-	}
-
-	// Build new mcpServers from enabled names using config.toml definitions
+	// Build new mcpServers from enabled names using config.toml definitions.
+	// Done before the lock: reads config.toml, may start HTTP servers.
 	availableMCPs := GetAvailableMCPs()
 	pool := GetGlobalPool() // Get pool instance (may be nil)
 	mcpServers := make(map[string]MCPServerConfig)
@@ -607,13 +697,31 @@ func WriteUserMCP(enabledNames []string) error {
 		}
 	}
 
+	// Held across read → modify → write, for the same reason as the other two
+	// Claude config writers.
+	lock, err := acquireConfigFileLock(configFile, "claude user config")
+	if err != nil {
+		return fmt.Errorf("user MCP write: %w", err)
+	}
+	defer lock.Release()
+
+	// Read existing config (preserve other fields like numStartups, projects,
+	// etc.). A read or parse failure aborts rather than starting from an empty
+	// document: see readJSONObjectForUpdate (#1956).
+	rawConfig, err := readJSONObjectForUpdate(configFile)
+	if err != nil {
+		return fmt.Errorf("user MCP write: %w", err)
+	}
+	existingMCPs, err := objectFieldForUpdate(rawConfig, "mcpServers", fmt.Sprintf("%s: mcpServers", configFile))
+	if err != nil {
+		return fmt.Errorf("user MCP write: %w", err)
+	}
+
 	// Merge: preserve non-agent-deck entries from existing config (#146)
 	mergedMCPs := make(map[string]interface{})
-	if existingMCPs, ok := rawConfig["mcpServers"].(map[string]interface{}); ok {
-		for name, cfg := range existingMCPs {
-			if _, managed := availableMCPs[name]; !managed {
-				mergedMCPs[name] = cfg
-			}
+	for name, cfg := range existingMCPs {
+		if _, managed := availableMCPs[name]; !managed {
+			mergedMCPs[name] = cfg
 		}
 	}
 	for name, cfg := range mcpServers {
