@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -68,20 +69,58 @@ func (l *ConfigFileLock) Release() {
 	}
 }
 
+// resolveConfigLockPath normalizes configPath and derives the sibling `.lock`
+// path, refusing anything that would escape the config's own directory.
+//
+// Callers are all internal (a profile's Claude config, ~/.claude.json, a
+// project's .mcp.json, a Codex config.toml), so this is defence in depth rather
+// than a live injection vector — but the path is still assembled from values
+// that trace back to configuration, and a lock file is created wherever it
+// points. Cleaning and containment-checking here is cheap and removes the
+// question. It also normalizes the mutex key, so two spellings of the same file
+// share one lock instead of silently getting two.
+//
+// Returns the resolved config path (the mutex key) and the lock path.
+func resolveConfigLockPath(configPath string) (resolved, lockPath string, err error) {
+	if strings.TrimSpace(configPath) == "" {
+		return "", "", fmt.Errorf("config file lock: empty path")
+	}
+	resolved, err = filepath.Abs(filepath.Clean(configPath))
+	if err != nil {
+		return "", "", fmt.Errorf("config file lock: resolve %q: %w", configPath, err)
+	}
+
+	dir := filepath.Dir(resolved)
+	base := filepath.Base(resolved)
+	if base == "." || base == string(os.PathSeparator) {
+		return "", "", fmt.Errorf("config file lock: %q has no file name component", configPath)
+	}
+
+	lockPath = filepath.Join(dir, base+".lock")
+	// The lock must sit beside the config it guards. After cleaning this can
+	// only fail on a crafted name, but checking it is what makes the property
+	// explicit rather than incidental.
+	if !strings.HasPrefix(lockPath, dir+string(os.PathSeparator)) || filepath.Dir(lockPath) != dir {
+		return "", "", fmt.Errorf("config file lock: refusing lock path %q outside config directory %q", lockPath, dir)
+	}
+	return resolved, lockPath, nil
+}
+
 // AcquireConfigFileLock blocks until this process and this host both hold
 // exclusive access to configPath. The returned lock must be released.
 func AcquireConfigFileLock(configPath string) (*ConfigFileLock, error) {
-	if configPath == "" {
-		return nil, fmt.Errorf("config file lock: empty path")
+	resolved, lockPath, err := resolveConfigLockPath(configPath)
+	if err != nil {
+		return nil, err
 	}
-	mIface, _ := configFileMu.LoadOrStore(configPath, &sync.Mutex{})
+
+	mIface, _ := configFileMu.LoadOrStore(resolved, &sync.Mutex{})
 	m := mIface.(*sync.Mutex)
 	m.Lock()
 
-	lockPath := configPath + ".lock"
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		m.Unlock()
-		return nil, fmt.Errorf("ensure config lock dir for %s: %w", configPath, err)
+		return nil, fmt.Errorf("ensure config lock dir for %s: %w", resolved, err)
 	}
 	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -91,7 +130,7 @@ func AcquireConfigFileLock(configPath string) (*ConfigFileLock, error) {
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		_ = f.Close()
 		m.Unlock()
-		return nil, fmt.Errorf("flock config %s: %w", configPath, err)
+		return nil, fmt.Errorf("flock config %s: %w", resolved, err)
 	}
 	configLockAcquisitions.Add(1)
 	return &ConfigFileLock{inProc: m, file: f}, nil

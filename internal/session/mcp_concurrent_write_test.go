@@ -275,3 +275,43 @@ func TestClearProjectMCPsOnAbsentConfigIsANoOp(t *testing.T) {
 		t.Error("clearing an absent config created one; it should not have written anything")
 	}
 }
+
+// TestResolveConfigLockPathRejectsEscapes pins the lock-path derivation. The
+// lock must always land beside the config it guards, whatever spelling the
+// caller used, and equivalent spellings must resolve to the same mutex key so
+// two callers cannot each get "their own" lock on one file.
+func TestResolveConfigLockPathRejectsEscapes(t *testing.T) {
+	dir := t.TempDir()
+
+	resolved, lockPath, err := resolveConfigLockPath(filepath.Join(dir, ".claude.json"))
+	if err != nil {
+		t.Fatalf("plain path: %v", err)
+	}
+	if want := filepath.Join(dir, ".claude.json.lock"); lockPath != want {
+		t.Errorf("lockPath = %q, want %q", lockPath, want)
+	}
+	if filepath.Dir(lockPath) != filepath.Dir(resolved) {
+		t.Errorf("lock %q is not beside its config %q", lockPath, resolved)
+	}
+
+	// A path with traversal segments must normalize to the same place, not
+	// escape it, and must share the resolved key.
+	messy := filepath.Join(dir, "sub", "..", ".claude.json")
+	resolved2, lockPath2, err := resolveConfigLockPath(messy)
+	if err != nil {
+		t.Fatalf("traversal path: %v", err)
+	}
+	if resolved2 != resolved || lockPath2 != lockPath {
+		t.Errorf("equivalent spellings resolved differently: %q/%q vs %q/%q",
+			resolved2, lockPath2, resolved, lockPath)
+	}
+
+	for _, bad := range []string{"", "   "} {
+		if _, _, err := resolveConfigLockPath(bad); err == nil {
+			t.Errorf("resolveConfigLockPath(%q) should be refused", bad)
+		}
+	}
+	if _, _, err := resolveConfigLockPath("/"); err == nil {
+		t.Error("a path with no file name component should be refused")
+	}
+}
