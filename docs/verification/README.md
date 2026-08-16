@@ -1,8 +1,7 @@
 # Capability Verification
 
 This directory holds the **user-level capability verification** artifacts for agent-deck:
-the checklist that tracks whether each capability in the
-[v2 Capability Spec](../../) (229 stable `CAP-<AREA>-NNN` IDs) has been verified
+the checklist that tracks whether each of the 229 stable `CAP-<AREA>-NNN` capabilities has been verified
 **as a user would experience it** — by driving the real binary on each surface it
 supports and capturing visual evidence — not merely by unit tests.
 
