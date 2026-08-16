@@ -39,6 +39,7 @@ func TestInjectHermesHooks_Idempotent(t *testing.T) {
 }
 
 func TestInjectHermesHooks_AllEventsPresent(t *testing.T) {
+	t.Setenv("AGENTDECK_HERMES_HOOK_VOCABULARY", "extended")
 	dir := t.TempDir()
 	if _, err := session.InjectHermesHooks(dir); err != nil {
 		t.Fatalf("install: %v", err)
@@ -81,6 +82,7 @@ func TestInjectHermesHooks_AllEventsPresent(t *testing.T) {
 // working even if InjectHermesHooks ever grows an "already installed"
 // fast path keyed on something weaker than the full event set.
 func TestInjectHermesHooks_UpgradesLegacyInstall(t *testing.T) {
+	t.Setenv("AGENTDECK_HERMES_HOOK_VOCABULARY", "extended")
 	dir := t.TempDir()
 	legacy := []byte(`hooks:
   pre_tool_call:
@@ -134,6 +136,28 @@ func TestInjectHermesHooks_UpgradesLegacyInstall(t *testing.T) {
 
 	if !strings.Contains(string(data), "/usr/local/bin/my-hook.sh") {
 		t.Error("user hook was dropped during upgrade")
+	}
+}
+
+func TestInjectHermesHooks_OldVersionUsesLegacyVocabulary(t *testing.T) {
+	t.Setenv("AGENTDECK_HERMES_HOOK_VOCABULARY", "legacy")
+	dir := t.TempDir()
+	if _, err := session.InjectHermesHooks(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	hooks, _ := raw["hooks"].(map[string]interface{})
+	for _, event := range []string{"pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "on_session_finalize"} {
+		if _, exists := hooks[event]; exists {
+			t.Fatalf("unsupported event %q injected", event)
+		}
 	}
 }
 

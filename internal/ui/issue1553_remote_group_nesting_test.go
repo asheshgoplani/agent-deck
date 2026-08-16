@@ -31,7 +31,7 @@ func TestIssue1553_RemoteSessionsNestUnderGroups(t *testing.T) {
 		{ID: "c", Title: "loose", Group: "", Status: "waiting"}, // -> my-sessions
 	}
 
-	items := buildRemoteFlatItems("dev", sessions)
+	items := buildRemoteFlatItems("dev", sessions, nil)
 
 	// Level-0 remote header comes first, path "remotes/dev".
 	if len(items) == 0 || items[0].Type != session.ItemTypeRemoteGroup || items[0].Level != 0 || items[0].Path != "remotes/dev" {
@@ -79,7 +79,7 @@ func TestIssue1553_RegressionGuard_NoFlatLevelOneDump(t *testing.T) {
 		{ID: "a", Title: "grouped", Group: "work"},
 		{ID: "b", Title: "loose", Group: ""},
 	}
-	items := buildRemoteFlatItems("dev", sessions)
+	items := buildRemoteFlatItems("dev", sessions, nil)
 	for _, it := range items {
 		if it.Type != session.ItemTypeRemoteSession {
 			continue
@@ -99,7 +99,7 @@ func TestIssue1553_DeepPathEmitsIntermediateHeaders(t *testing.T) {
 	sessions := []session.RemoteSessionInfo{
 		{ID: "deep", Title: "deep", Group: "a/b/c"},
 	}
-	items := buildRemoteFlatItems("dev", sessions)
+	items := buildRemoteFlatItems("dev", sessions, nil)
 
 	want := []struct {
 		path  string

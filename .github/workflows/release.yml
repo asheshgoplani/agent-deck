@@ -186,7 +186,7 @@ jobs:
       - name: Run eval harness (full tier)
         timeout-minutes: 10
         env:
-          GOTOOLCHAIN: go1.25.12
+          GOTOOLCHAIN: go1.25.13
         run: |
           go test -tags 'eval_smoke eval_full' -race -count=1 -timeout 6m ./tests/eval/... ./internal/ui/...
 

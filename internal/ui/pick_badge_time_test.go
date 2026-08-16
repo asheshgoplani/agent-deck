@@ -7,7 +7,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// pickBadgeTime composes the 4-layer "most recent" formula that drives the
+// pickBadgeTime composes the 5-layer "most recent" formula that drives the
 // session-row timestamp badge. Extracting it from renderSessionItem lets
 // us pin the composition without faking unexported Home/Instance fields.
 // Layers, in newest-wins order:
@@ -15,11 +15,12 @@ import (
 //	1. CreatedAt              (always set)
 //	2. LastStartedAt          (zero if never started)
 //	3. hookEvent.UpdatedAt    (nil if no hooks installed)
-//	4. confirmedActivity      (bool gates use — false means "ignore")
+//	4. lastActivityAt         (persisted durable activity, zero for legacy rows)
+//	5. confirmedActivity      (bool gates use — false means "ignore")
 
 func TestPickBadgeTime_PicksCreatedAtFloor(t *testing.T) {
 	created := time.Now().Add(-2 * time.Hour)
-	got := pickBadgeTime(created, time.Time{}, nil, time.Time{}, false)
+	got := pickBadgeTime(created, time.Time{}, nil, time.Time{}, time.Time{}, false)
 	if !got.Equal(created) {
 		t.Errorf("with only CreatedAt set, expected %v, got %v", created, got)
 	}
@@ -28,7 +29,7 @@ func TestPickBadgeTime_PicksCreatedAtFloor(t *testing.T) {
 func TestPickBadgeTime_LastStartedBeatsCreatedAt(t *testing.T) {
 	created := time.Now().Add(-5 * 24 * time.Hour)
 	started := time.Now().Add(-10 * time.Minute)
-	got := pickBadgeTime(created, started, nil, time.Time{}, false)
+	got := pickBadgeTime(created, started, nil, time.Time{}, time.Time{}, false)
 	if !got.Equal(started) {
 		t.Errorf("LastStartedAt should beat older CreatedAt, expected %v, got %v", started, got)
 	}
@@ -40,7 +41,7 @@ func TestPickBadgeTime_HookEventBeatsLifecycle(t *testing.T) {
 	hookAt := time.Now().Add(-30 * time.Second)
 	hook := &session.HookStatus{UpdatedAt: hookAt}
 
-	got := pickBadgeTime(created, started, hook, time.Time{}, false)
+	got := pickBadgeTime(created, started, hook, time.Time{}, time.Time{}, false)
 	if !got.Equal(hookAt) {
 		t.Errorf("newer hook event should beat lifecycle floor, expected %v, got %v", hookAt, got)
 	}
@@ -49,7 +50,7 @@ func TestPickBadgeTime_HookEventBeatsLifecycle(t *testing.T) {
 func TestPickBadgeTime_NilHookIgnored(t *testing.T) {
 	created := time.Now().Add(-2 * time.Hour)
 	started := time.Now().Add(-1 * time.Hour)
-	got := pickBadgeTime(created, started, nil, time.Time{}, false)
+	got := pickBadgeTime(created, started, nil, time.Time{}, time.Time{}, false)
 	if !got.Equal(started) {
 		t.Errorf("nil hookEvent must be ignored, expected %v, got %v", started, got)
 	}
@@ -63,7 +64,7 @@ func TestPickBadgeTime_StaleHookIgnored(t *testing.T) {
 	started := time.Now().Add(-5 * time.Minute)
 	staleHook := &session.HookStatus{UpdatedAt: time.Now().Add(-3 * time.Hour)}
 
-	got := pickBadgeTime(created, started, staleHook, time.Time{}, false)
+	got := pickBadgeTime(created, started, staleHook, time.Time{}, time.Time{}, false)
 	if !got.Equal(started) {
 		t.Errorf("stale hook older than LastStartedAt must not win, expected %v, got %v", started, got)
 	}
@@ -75,7 +76,7 @@ func TestPickBadgeTime_ConfirmedActivityBeatsHook(t *testing.T) {
 	hook := &session.HookStatus{UpdatedAt: time.Now().Add(-1 * time.Minute)}
 	confirmed := time.Now().Add(-3 * time.Second)
 
-	got := pickBadgeTime(created, started, hook, confirmed, true)
+	got := pickBadgeTime(created, started, hook, time.Time{}, confirmed, true)
 	if !got.Equal(confirmed) {
 		t.Errorf("newer tmux-confirmed activity should beat hook event, expected %v, got %v", confirmed, got)
 	}
@@ -91,7 +92,7 @@ func TestPickBadgeTime_ConfirmedActivityBeatsLifecycleWithoutHooks(t *testing.T)
 	started := time.Now().Add(-2 * time.Hour)
 	confirmed := time.Now().Add(-15 * time.Second)
 
-	got := pickBadgeTime(created, started, nil, confirmed, true)
+	got := pickBadgeTime(created, started, nil, time.Time{}, confirmed, true)
 	if !got.Equal(confirmed) {
 		t.Errorf("with no hook installed, tmux confirmed activity should beat LastStartedAt, "+
 			"expected %v, got %v", confirmed, got)
@@ -107,7 +108,7 @@ func TestPickBadgeTime_UnobservedConfirmedIgnored(t *testing.T) {
 	started := time.Now().Add(-1 * time.Hour)
 	confirmedButUnobserved := time.Now() // would dominate if not gated
 
-	got := pickBadgeTime(created, started, nil, confirmedButUnobserved, false)
+	got := pickBadgeTime(created, started, nil, time.Time{}, confirmedButUnobserved, false)
 	if !got.Equal(started) {
 		t.Fatalf("confirmedObserved=false must cause the timestamp to be ignored, "+
 			"expected %v (LastStartedAt), got %v", started, got)
@@ -115,8 +116,36 @@ func TestPickBadgeTime_UnobservedConfirmedIgnored(t *testing.T) {
 }
 
 func TestPickBadgeTime_AllLayersZero(t *testing.T) {
-	got := pickBadgeTime(time.Time{}, time.Time{}, nil, time.Time{}, false)
+	got := pickBadgeTime(time.Time{}, time.Time{}, nil, time.Time{}, time.Time{}, false)
 	if !got.IsZero() {
 		t.Errorf("with no signals at all, the function must return the zero time, got %v", got)
+	}
+}
+
+func TestPickBadgeTime_PersistedActivityBeatsLifecycle(t *testing.T) {
+	// Issue #1846: the durable last_activity_at record is what survives a
+	// TUI restart after attach-return deleted the hook file. It must move
+	// the badge past the lifecycle floor exactly like a live hook event
+	// would have.
+	created := time.Now().Add(-5 * 24 * time.Hour)
+	started := time.Now().Add(-2 * time.Hour)
+	persisted := time.Now().Add(-90 * time.Minute)
+
+	got := pickBadgeTime(created, started, nil, persisted, time.Time{}, false)
+	if !got.Equal(persisted) {
+		t.Errorf("persisted activity should beat older lifecycle floor, expected %v, got %v", persisted, got)
+	}
+}
+
+func TestPickBadgeTime_StalePersistedActivityIgnored(t *testing.T) {
+	// A restart after the last recorded activity must win — the persisted
+	// record can only move the badge forward, never backward.
+	created := time.Now().Add(-5 * 24 * time.Hour)
+	persisted := time.Now().Add(-3 * time.Hour)
+	started := time.Now().Add(-5 * time.Minute)
+
+	got := pickBadgeTime(created, started, nil, persisted, time.Time{}, false)
+	if !got.Equal(started) {
+		t.Errorf("persisted activity older than LastStartedAt must not win, expected %v, got %v", started, got)
 	}
 }

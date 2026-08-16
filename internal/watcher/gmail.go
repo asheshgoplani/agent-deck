@@ -386,24 +386,29 @@ func (a *GmailAdapter) HealthCheck() error {
 	if lastErr != nil {
 		return lastErr
 	}
-	if a.tokenSrc != nil {
-		if _, err := a.tokenSrc.Token(); err != nil {
-			return fmt.Errorf("gmail: token source: %w", err)
-		}
+	if a.tokenSrc == nil {
+		return fmt.Errorf("gmail: adapter is not initialized: token source is unavailable")
 	}
-	if a.subscription != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		exists, err := a.subscription.Exists(ctx)
-		if err != nil {
-			return fmt.Errorf("gmail: subscription check: %w", err)
-		}
-		if !exists {
-			return fmt.Errorf("gmail: subscription %s does not exist", a.subscr)
-		}
+	if _, err := a.tokenSrc.Token(); err != nil {
+		return fmt.Errorf("gmail: token source: %w", err)
 	}
-	if !expiry.IsZero() && expiry.Before(time.Now()) {
+	if expiry.IsZero() {
+		return fmt.Errorf("gmail: adapter is not initialized: watch expiry is unavailable")
+	}
+	if expiry.Before(time.Now()) {
 		return fmt.Errorf("gmail: watch expiry has lapsed at %s", expiry.Format(time.RFC3339))
+	}
+	if a.pubsubClient == nil || a.subscription == nil {
+		return fmt.Errorf("gmail: adapter is not initialized: subscription is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	exists, err := a.subscription.Exists(ctx)
+	if err != nil {
+		return fmt.Errorf("gmail: subscription check: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("gmail: subscription %s does not exist", a.subscr)
 	}
 	return nil
 }

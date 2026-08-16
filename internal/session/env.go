@@ -609,6 +609,8 @@ func (i *Instance) getToolEnvFile() string {
 		return config.Copilot.EnvFile
 	case "crush":
 		return config.Crush.EnvFile
+	case "cursor":
+		return config.Cursor.EnvFile
 	case "hermes":
 		if name := conductorNameFromInstance(i); name != "" {
 			if conductorEnv := config.GetConductorHermesEnvFile(name); conductorEnv != "" {

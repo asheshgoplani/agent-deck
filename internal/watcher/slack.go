@@ -223,8 +223,13 @@ func (a *SlackAdapter) Teardown() error {
 }
 
 // HealthCheck verifies the ntfy server is reachable by sending an HTTP HEAD request
-// with a 5-second timeout.
+// with a 5-second timeout. It reports an error instead of dereferencing a nil
+// client when Setup never completed (#1886).
 func (a *SlackAdapter) HealthCheck() error {
+	if a.client == nil {
+		return errors.New("slack adapter is not set up")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

@@ -432,19 +432,20 @@ func handleGroupShow(profile string, args []string) {
 		}
 	}
 
+	defaultPathReport := describeGroupDefaultPath(groupTree, groupPath)
 	jsonData := map[string]interface{}{
 		"success":        true,
 		"name":           g.Name,
 		"path":           groupPath,
-		"default_path":   groupTree.DefaultPathForGroup(groupPath),
 		"max_concurrent": g.MaxConcurrent,
 		"sessions":       sessionCount,
 	}
+	defaultPathReport.addTo(jsonData)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Group: %s\n", groupPath)
 	fmt.Fprintf(&b, "  Name:           %s\n", g.Name)
-	fmt.Fprintf(&b, "  Default path:   %s\n", orNone(groupTree.DefaultPathForGroup(groupPath)))
+	fmt.Fprintf(&b, "  Default path:   %s\n", defaultPathReport.Display())
 	fmt.Fprintf(&b, "  Max concurrent: %d\n", g.MaxConcurrent)
 	fmt.Fprintf(&b, "  Sessions:       %d\n", sessionCount)
 
@@ -505,6 +506,59 @@ func orNone(s string) string {
 		return "(none)"
 	}
 	return s
+}
+
+// Sources reported in the `default_path_source` JSON field.
+const (
+	defaultPathSourceExplicit      = "explicit"
+	defaultPathSourceRecentSession = "recent_session"
+	defaultPathSourceNone          = "none"
+)
+
+// groupDefaultPathReport describes a group's effective default path together
+// with where it came from.
+//
+// Issue #1879: `group show`/`create`/`update` printed
+// GroupTree.DefaultPathForGroup, which silently substitutes the group's
+// most-recently-accessed session path when no default_path is configured. The
+// output was then indistinguishable from a real per-group override — including
+// right after `group update --clear-default-path`, which reported the derived
+// path as the group's "default path". Explicit is empty unless Source is
+// "explicit".
+type groupDefaultPathReport struct {
+	Effective string
+	Explicit  string
+	Source    string
+}
+
+// describeGroupDefaultPath splits the effective default path into its
+// authoritative and derived cases.
+func describeGroupDefaultPath(tree *session.GroupTree, groupPath string) groupDefaultPathReport {
+	if explicit, ok := tree.ExplicitDefaultPathForGroup(groupPath); ok {
+		return groupDefaultPathReport{Effective: explicit, Explicit: explicit, Source: defaultPathSourceExplicit}
+	}
+	if recent := tree.RecentSessionPathForGroup(groupPath); recent != "" {
+		return groupDefaultPathReport{Effective: recent, Source: defaultPathSourceRecentSession}
+	}
+	return groupDefaultPathReport{Source: defaultPathSourceNone}
+}
+
+// Display renders the effective path for human-readable output, annotating the
+// derived case so it can't be mistaken for a configured default_path.
+func (r groupDefaultPathReport) Display() string {
+	if r.Source == defaultPathSourceRecentSession {
+		return r.Effective + "  (derived from most recent session; no default_path set)"
+	}
+	return orNone(r.Effective)
+}
+
+// addTo writes the report's fields into a CLI JSON payload. default_path keeps
+// its established meaning (the effective path) for compatibility; the new
+// fields let a caller tell the two sources apart.
+func (r groupDefaultPathReport) addTo(jsonData map[string]interface{}) {
+	jsonData["default_path"] = r.Effective
+	jsonData["default_path_source"] = r.Source
+	jsonData["explicit_default_path"] = r.Explicit
 }
 
 // handleGroupCreate creates a new group
@@ -615,23 +669,20 @@ func handleGroupCreate(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	defaultPathReport := describeGroupDefaultPath(groupTree, fullPath)
+	createJSON := map[string]interface{}{
+		"success":        true,
+		"name":           newGroup.Name,
+		"path":           fullPath,
+		"max_concurrent": newGroup.MaxConcurrent,
+	}
+	defaultPathReport.addTo(createJSON)
+
 	if existingGroup {
-		out.Success(fmt.Sprintf("Group already exists: %s", fullPath), map[string]interface{}{
-			"success":        true,
-			"name":           newGroup.Name,
-			"path":           fullPath,
-			"default_path":   groupTree.DefaultPathForGroup(fullPath),
-			"max_concurrent": newGroup.MaxConcurrent,
-			"existed":        true,
-		})
+		createJSON["existed"] = true
+		out.Success(fmt.Sprintf("Group already exists: %s", fullPath), createJSON)
 	} else {
-		out.Success(fmt.Sprintf("Created group: %s (max_concurrent=%d)", fullPath, newGroup.MaxConcurrent), map[string]interface{}{
-			"success":        true,
-			"name":           newGroup.Name,
-			"path":           fullPath,
-			"default_path":   groupTree.DefaultPathForGroup(fullPath),
-			"max_concurrent": newGroup.MaxConcurrent,
-		})
+		out.Success(fmt.Sprintf("Created group: %s (max_concurrent=%d)", fullPath, newGroup.MaxConcurrent), createJSON)
 	}
 }
 
@@ -735,28 +786,25 @@ func handleGroupUpdate(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	currentDefaultPath := groupTree.DefaultPathForGroup(groupPath)
+	defaultPathReport := describeGroupDefaultPath(groupTree, groupPath)
 	currentMax := 0
 	if g := groupTree.Groups[groupPath]; g != nil {
 		currentMax = g.MaxConcurrent
 	}
+	updateJSON := map[string]interface{}{
+		"success":        true,
+		"path":           groupPath,
+		"max_concurrent": currentMax,
+	}
+	defaultPathReport.addTo(updateJSON)
+
 	if *clearDefaultPath && !maxFlagSet {
-		out.Success(fmt.Sprintf("Cleared default path for group: %s", groupPath), map[string]interface{}{
-			"success":        true,
-			"path":           groupPath,
-			"default_path":   currentDefaultPath,
-			"max_concurrent": currentMax,
-			"cleared":        true,
-		})
+		updateJSON["cleared"] = true
+		out.Success(fmt.Sprintf("Cleared default path for group: %s", groupPath), updateJSON)
 		return
 	}
 
-	out.Success(fmt.Sprintf("Updated group: %s", groupPath), map[string]interface{}{
-		"success":        true,
-		"path":           groupPath,
-		"default_path":   currentDefaultPath,
-		"max_concurrent": currentMax,
-	})
+	out.Success(fmt.Sprintf("Updated group: %s", groupPath), updateJSON)
 }
 
 // handleGroupDelete deletes a group

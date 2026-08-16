@@ -234,10 +234,15 @@ func handleWorktreeList(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	// Build session map: path -> session title
+	// Build session map: LOCAL path -> session. A remote session contributes
+	// nothing: its ProjectPath is a placeholder, not a checkout, so listing it
+	// here labels a local worktree with a session running on another host
+	// (#1852 site 2).
 	sessionByPath := make(map[string]*session.Instance)
 	for _, inst := range instances {
-		sessionByPath[inst.ProjectPath] = inst
+		if loc := locationOf(inst); loc.IsLocal() && loc.Path != "" {
+			sessionByPath[loc.Path] = inst
+		}
 		if inst.WorktreePath != "" {
 			sessionByPath[inst.WorktreePath] = inst
 		}
@@ -451,14 +456,11 @@ func handleWorktreeCleanup(profile string, args []string) {
 		cleanupBackend = backend
 		worktrees, wErr := cleanupBackend.ListWorktrees()
 		if wErr == nil {
-			// Build set of paths that sessions use
-			sessionPaths := make(map[string]bool)
-			for _, inst := range instances {
-				sessionPaths[inst.ProjectPath] = true
-				if inst.WorktreePath != "" {
-					sessionPaths[inst.WorktreePath] = true
-				}
-			}
+			// Build the set of LOCAL paths that sessions occupy. This is the
+			// harmful direction of #1852 site 3: a remote session's placeholder
+			// inserted here makes a genuinely orphaned worktree look in-use, so
+			// cleanup silently skips it forever.
+			sessionPaths := localSessionPaths(instances)
 
 			// Check each worktree (skip the first one which is usually the main repo)
 			for i, wt := range worktrees {

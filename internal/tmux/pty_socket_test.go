@@ -26,14 +26,15 @@ import (
 func TestSession_AttachCmd_WithSocket_PrependsDashL(t *testing.T) {
 	s := &Session{Name: "agentdeck_iso_abc", SocketName: "agentdeck"}
 	cmd := s.attachCmd(context.Background())
-	wantArgs := []string{"tmux", "-L", "agentdeck", "-u", "attach-session", "-t", s.Name}
+	wantArgs := []string{"tmux", "-u", "-L", "agentdeck", "attach-session", "-t", s.Name}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("attach must route through tmuxCmdContext so -L lands before subcommand\n got:  %v\n want: %v", cmd.Args, wantArgs)
 	}
 }
 
-// TestSession_AttachCmd_EmptySocket_NoDashL: opt-in contract. No config means
-// no -L; the required UTF-8 flag is independent of socket isolation.
+// TestSession_AttachCmd_EmptySocket_NoDashL: opt-in contract. No config =
+// no -L. The global -u is independent of socket selection and preserves the
+// shipped #1789 attach contract when agent-deck itself has no UTF-8 locale.
 func TestSession_AttachCmd_EmptySocket_NoDashL(t *testing.T) {
 	s := &Session{Name: "agentdeck_default_abc"}
 	cmd := s.attachCmd(context.Background())
@@ -50,7 +51,7 @@ func TestSession_AttachCmd_EmptySocket_NoDashL(t *testing.T) {
 func TestSession_AttachReadOnlyCmd_WithSocket_PrependsDashL(t *testing.T) {
 	s := &Session{Name: "agentdeck_ro_abc", SocketName: "agentdeck"}
 	cmd := s.attachReadOnlyCmd(context.Background())
-	wantArgs := []string{"tmux", "-L", "agentdeck", "-u", "attach-session", "-r", "-t", s.Name}
+	wantArgs := []string{"tmux", "-u", "-L", "agentdeck", "attach-session", "-r", "-t", s.Name}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("read-only attach must include -L <socket>\n got:  %v\n want: %v", cmd.Args, wantArgs)
 	}
@@ -62,7 +63,7 @@ func TestSession_AttachReadOnlyCmd_WithSocket_PrependsDashL(t *testing.T) {
 func TestSession_ResizeCmd_WithSocket_PrependsDashL(t *testing.T) {
 	s := &Session{Name: "agentdeck_rsz_abc", SocketName: "agentdeck"}
 	cmd := s.resizeCmd(80, 24)
-	wantArgs := []string{"tmux", "-L", "agentdeck", "resize-window", "-t", s.Name, "-x", "80", "-y", "24"}
+	wantArgs := []string{"tmux", "-u", "-L", "agentdeck", "resize-window", "-t", s.Name, "-x", "80", "-y", "24"}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("resize must carry -L <socket>\n got:  %v\n want: %v", cmd.Args, wantArgs)
 	}
@@ -75,7 +76,7 @@ func TestSession_ResizeCmd_WithSocket_PrependsDashL(t *testing.T) {
 func TestSession_AttachWindowSelectCmd_WithSocket_PrependsDashL(t *testing.T) {
 	s := &Session{Name: "agentdeck_win_abc", SocketName: "agentdeck"}
 	cmd := s.selectWindowCmd(2)
-	wantArgs := []string{"tmux", "-L", "agentdeck", "select-window", "-t", "agentdeck_win_abc:2"}
+	wantArgs := []string{"tmux", "-u", "-L", "agentdeck", "select-window", "-t", "agentdeck_win_abc:2"}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("select-window must carry -L <socket>\n got:  %v\n want: %v", cmd.Args, wantArgs)
 	}
@@ -87,7 +88,7 @@ func TestSession_AttachWindowSelectCmd_WithSocket_PrependsDashL(t *testing.T) {
 func TestSession_StreamOutputCmd_WithSocket_PrependsDashL(t *testing.T) {
 	s := &Session{Name: "agentdeck_stream_abc", SocketName: "agentdeck"}
 	cmd := s.pipePaneStartCmd(context.Background())
-	wantArgs := []string{"tmux", "-L", "agentdeck", "pipe-pane", "-t", s.Name, "-o", "cat"}
+	wantArgs := []string{"tmux", "-u", "-L", "agentdeck", "pipe-pane", "-t", s.Name, "-o", "cat"}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("pipe-pane start must carry -L <socket>\n got:  %v\n want: %v", cmd.Args, wantArgs)
 	}
@@ -98,7 +99,7 @@ func TestSession_StreamOutputCmd_WithSocket_PrependsDashL(t *testing.T) {
 func TestSession_StreamOutputStopCmd_WithSocket_PrependsDashL(t *testing.T) {
 	s := &Session{Name: "agentdeck_stream_abc", SocketName: "agentdeck"}
 	cmd := s.pipePaneStopCmd()
-	wantArgs := []string{"tmux", "-L", "agentdeck", "pipe-pane", "-t", s.Name}
+	wantArgs := []string{"tmux", "-u", "-L", "agentdeck", "pipe-pane", "-t", s.Name}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("pipe-pane stop must carry -L <socket>\n got:  %v\n want: %v", cmd.Args, wantArgs)
 	}

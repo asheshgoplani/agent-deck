@@ -21,15 +21,23 @@ func TestStatusFileWatcher_ProcessFile(t *testing.T) {
 
 	// Write a status file
 	status := struct {
-		Status    string `json:"status"`
-		SessionID string `json:"session_id"`
-		Event     string `json:"event"`
-		Timestamp int64  `json:"ts"`
+		Status                   string `json:"status"`
+		SessionID                string `json:"session_id"`
+		Event                    string `json:"event"`
+		Timestamp                int64  `json:"ts"`
+		CodexStartedGeneration   string `json:"codex_started_generation"`
+		CodexCompletedGeneration string `json:"codex_completed_generation"`
+		CodexStartedSessionID    string `json:"codex_started_session_id"`
+		CodexCompletedSessionID  string `json:"codex_completed_session_id"`
 	}{
-		Status:    "running",
-		SessionID: "abc-123",
-		Event:     "UserPromptSubmit",
-		Timestamp: time.Now().Unix(),
+		Status:                   "running",
+		SessionID:                "abc-123",
+		Event:                    "UserPromptSubmit",
+		Timestamp:                time.Now().Unix(),
+		CodexStartedGeneration:   "thread:turn",
+		CodexCompletedGeneration: "thread:turn",
+		CodexStartedSessionID:    "thread",
+		CodexCompletedSessionID:  "thread",
 	}
 	data, _ := json.Marshal(status)
 	filePath := filepath.Join(hooksDir, "instance-001.json")
@@ -51,6 +59,10 @@ func TestStatusFileWatcher_ProcessFile(t *testing.T) {
 	}
 	if hs.Event != "UserPromptSubmit" {
 		t.Errorf("Event = %q, want UserPromptSubmit", hs.Event)
+	}
+	if hs.CodexStartedGeneration != "thread:turn" || hs.CodexCompletedGeneration != "thread:turn" ||
+		hs.CodexStartedSessionID != "thread" || hs.CodexCompletedSessionID != "thread" {
+		t.Fatalf("Codex evidence not propagated: %#v", hs)
 	}
 }
 

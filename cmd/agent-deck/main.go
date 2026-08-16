@@ -28,6 +28,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/intervalhook"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -38,7 +39,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.11.0" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.12.0" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -534,6 +535,17 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sigChan
+		// Stop interval hooks and wait for their kill to land. Hook commands
+		// run in their own process groups — intentionally detached from the
+		// terminal's hangup safety net — and only the in-app quit path
+		// (performFinalShutdown) stopped the runner, so a hook mid-run when
+		// the terminal closed or the process was signalled kept running until
+		// its own timeout, stacking one orphan per launch/close cycle (#1829).
+		// Stop blocks (bounded) until in-flight runs are reaped, which is
+		// what makes it safe to os.Exit below.
+		if hooks := intervalhook.GetGlobal(); hooks != nil {
+			hooks.Stop()
+		}
 		// Close control-mode pipes so their tmux clients detach cleanly instead
 		// of orphaning. PipeManager.Close drives the staged EOF teardown, which
 		// avoids the signal-driven detach that races tmux/tmux#4980. The clean
@@ -1172,58 +1184,11 @@ func reorderArgsForFlagParsing(args []string) []string {
 	return append(flags, positional...)
 }
 
-// isDuplicateSession checks if a session with the same title AND path already exists.
-// Returns (isDuplicate, existingInstance)
-// Paths are normalized by removing trailing slashes for comparison.
-func isDuplicateSession(instances []*session.Instance, title, path string) (bool, *session.Instance) {
-	// Normalize path by removing trailing slash (except for root "/")
-	normalizedPath := strings.TrimSuffix(path, "/")
-	if normalizedPath == "" {
-		normalizedPath = "/"
-	}
-
-	for _, inst := range instances {
-		// Normalize existing path for comparison
-		existingPath := strings.TrimSuffix(inst.ProjectPath, "/")
-		if existingPath == "" {
-			existingPath = "/"
-		}
-
-		if existingPath == normalizedPath && inst.Title == title {
-			return true, inst
-		}
-	}
-	return false, nil
-}
-
-// generateUniqueTitle generates a unique title for sessions at the same path.
-// If "project" exists at path, returns "project (2)", then "project (3)", etc.
-func generateUniqueTitle(instances []*session.Instance, baseTitle, path string) string {
-	// Check if base title is available at this path
-	titleExists := func(title string) bool {
-		for _, inst := range instances {
-			if inst.ProjectPath == path && inst.Title == title {
-				return true
-			}
-		}
-		return false
-	}
-
-	if !titleExists(baseTitle) {
-		return baseTitle
-	}
-
-	// Find next available number
-	for i := 2; i <= 100; i++ { // Cap at 100 to prevent infinite loop
-		candidate := fmt.Sprintf("%s (%d)", baseTitle, i)
-		if !titleExists(candidate) {
-			return candidate
-		}
-	}
-
-	// Fallback: use timestamp
-	return fmt.Sprintf("%s (%d)", baseTitle, time.Now().Unix())
-}
+// isDuplicateSession and generateUniqueTitle moved to session_location.go, where
+// they compare WHERE A SESSION RUNS instead of its ProjectPath string. For an
+// --ssh session ProjectPath is only a local placeholder, so the old string
+// comparison reported every remote session registered from one directory as
+// co-located with every other one (#1850, #1852).
 
 // isWorktreeAlreadyExistsError detects whether git worktree creation failed because
 // the destination path already exists. This preserves friendly UX while avoiding
@@ -1400,7 +1365,8 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("Add a new session to Agent Deck.")
 		fmt.Println()
 		fmt.Println("Arguments:")
-		fmt.Println("  [path]    Project directory (defaults to the group or global default_path, else current directory)")
+		fmt.Println("  [path]    Project directory (default: group default_path, then global default_path,")
+		fmt.Println("            then the group's most recent session path, then current directory)")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -1440,8 +1406,21 @@ func handleAdd(profile string, args []string) {
 	// This allows: "add . -c claude" to work same as "add -c claude ."
 	args = reorderArgsForFlagParsing(args)
 
+	// #1923: catch a value-taking flag that swallowed the next flag because its
+	// own value was omitted. Checked before Parse so the report names the real
+	// mistake — `add` stores --account verbatim and never rejects an unknown
+	// name, so without this the session is created against a bogus account and
+	// only surfaces later as a quota error the user cannot trace back to here.
+	if err := checkFlagValueNotFlag(fs, args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
+	}
+	if *sshHost != "" && len(pluginFlags) > 0 {
+		fmt.Fprintln(os.Stderr, "Warning: --plugin is persisted but cannot be installed or enabled automatically over SSH; configure the selected plugins in the remote Claude profile.")
 	}
 
 	// Path argument is optional; if omitted with -g/--group, we'll try group default_path.
@@ -1560,15 +1539,28 @@ func handleAdd(profile string, args []string) {
 			os.Exit(1)
 		}
 	} else {
-		// No explicit path provided: use group default path first, then global
-		// config default_path, then cwd fallback.
+		// No explicit path provided: use the group's explicitly configured
+		// default_path first, then global config default_path, then the
+		// group's most-recent-session path, then cwd.
+		//
+		// #1879: the most-recent-session path is derived, not configured — it
+		// must not shadow the global config default_path the way an explicit
+		// per-group default_path does.
+		var recentSessionPath string
 		if sessionGroup != "" {
-			path = groupTree.DefaultPathForGroup(sessionGroup)
+			if explicitPath, hasExplicit := groupTree.ExplicitDefaultPathForGroup(sessionGroup); hasExplicit {
+				path = explicitPath
+			} else {
+				recentSessionPath = groupTree.RecentSessionPathForGroup(sessionGroup)
+			}
 		}
 		if path == "" {
 			if userCfg, cfgErr := session.LoadUserConfig(); cfgErr == nil {
 				path = resolveConfiguredDefaultPath(userCfg.DefaultPath)
 			}
+		}
+		if path == "" {
+			path = recentSessionPath
 		}
 		if path == "" {
 			path, err = os.Getwd()
@@ -1735,17 +1727,73 @@ func handleAdd(profile string, args []string) {
 	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
 	isQuick := *quickCreate || *quickCreateShort
 
+	quietMode := *quiet || *quietShort
+	out := NewCLIOutput(*jsonOutput, quietMode)
+
+	// Registration is a read-decide-write window: the instance list loaded at
+	// the top of this function answers "is this (title, location) taken?", and
+	// the INSERT happens hundreds of lines later. A concurrent `add`/`launch`
+	// can take the pair in between, so two racing `add -t dup <path>` runs would
+	// both see "free" and both create — the exact state #1850 makes `add`
+	// refuse — and two racing bumps would pick the same "(2)".
+	//
+	// The lock closes that window for goroutines AND for separate processes; the
+	// re-read below is the half that matters, because a list loaded before the
+	// lock is the stale snapshot the lock exists to invalidate. Released
+	// explicitly right after the save so an interactive `--attach` does not hold
+	// it for the length of the attach.
+	regLock, regLockErr := session.AcquireRegistrationLock(profile)
+	if regLockErr != nil {
+		out.Error(fmt.Sprintf("failed to acquire session registration lock: %v", regLockErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	releaseRegistration := func() {
+		if regLock != nil {
+			regLock.Release()
+			regLock = nil
+		}
+	}
+	defer releaseRegistration()
+	freshInstances, freshGroups, reloadErr := reloadForRegistration(storage)
+	if reloadErr != nil {
+		// Never fall back to the pre-lock snapshot: that is the stale list the
+		// lock exists to invalidate, and `add` would then rewrite the whole
+		// instances table from it, erasing any row registered in between.
+		out.Error(reloadErr.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	instances, groups = freshInstances, freshGroups
+
+	// Where the session will ACTUALLY run. For an --ssh session `path` is only a
+	// local placeholder (it defaults to the controller's working directory), so
+	// deciding identity from it makes every remote session registered from one
+	// directory look co-located with every other one (#1850 case 3). These are
+	// the same two flag values assigned verbatim to the instance below, so the
+	// decision and what gets stored cannot skew.
+	addLocation := localLocation(path)
+	if *sshHost != "" {
+		addLocation = remoteLocation(*sshHost, *sshRemotePath)
+	}
+
 	if isQuick && !userProvidedTitle {
 		// Quick mode: use auto-generated adjective-noun name
 		sessionTitle = session.GenerateUniqueSessionName(instances, sessionGroup)
-	} else if !userProvidedTitle {
-		// User didn't provide title - auto-generate unique title for this path
-		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
 	} else {
-		// User provided explicit title - check for exact duplicate (same title AND path)
-		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
-			fmt.Printf("Session already exists with same title and path: %s (%s)\n", existingInst.Title, existingInst.ID)
-			os.Exit(0)
+		decision := decideAddTitle(instances, sessionTitle, addLocation, userProvidedTitle)
+		if decision.Duplicate != nil {
+			// #1850 case 1: this used to print a line and exit 0, with --json
+			// ignored entirely, so a script could not tell "created" from
+			// "already existed". Same ALREADY_EXISTS contract as `launch`.
+			msg, code := decision.DuplicateError()
+			out.ErrorWithData(msg, code, decision.DuplicateJSONFields())
+			os.Exit(1)
+		}
+		sessionTitle = decision.Title
+		// #1850 case 2: the rename stays (two agents on one checkout is a real
+		// workflow) but it leaves a trace. stderr keeps stdout and the exit code
+		// unchanged; --json and -q suppress it.
+		if warning := decision.RenameWarning(); warning != "" && !*jsonOutput && !quietMode {
+			fmt.Fprintln(os.Stderr, warning)
 		}
 	}
 
@@ -1931,6 +1979,9 @@ func handleAdd(profile string, args []string) {
 		fmt.Printf("Error: failed to save session: %v\n", err)
 		os.Exit(1)
 	}
+	// The (title, location) pair is now taken in the state db; everything below
+	// is per-session setup that no other registration can race with.
+	releaseRegistration()
 
 	// Attach MCPs if specified
 	if len(mcpFlags) > 0 {
@@ -1954,8 +2005,8 @@ func handleAdd(profile string, args []string) {
 		}
 	}
 
-	quietMode := *quiet || *quietShort
-	out := NewCLIOutput(*jsonOutput, quietMode)
+	// quietMode / out are established before the registration decision above,
+	// which is the first place `add` can refuse.
 
 	// --attach: create → start → attach, so `add --attach` "instantly opens"
 	// the new session in one step. Refused loudly (never silently) under
@@ -2526,7 +2577,22 @@ func handleRename(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	storage, instances, groups, err := loadSessionData(profile)
+	storage, _, _, err := loadSessionData(profile)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	// A rename takes a (title, location) pair, exactly as `add` does, so it runs
+	// under the same lock and reads the instance list INSIDE it — otherwise two
+	// concurrent renames onto one title both see it free.
+	regLock, regLockErr := session.AcquireRegistrationLock(profile)
+	if regLockErr != nil {
+		out.Error(fmt.Sprintf("failed to acquire session registration lock: %v", regLockErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	defer regLock.Release()
+	instances, groups, err := reloadForRegistration(storage)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -2543,15 +2609,14 @@ func handleRename(profile string, args []string) {
 
 	oldTitle := inst.Title
 
-	// Check for duplicate title at the same path (but allow renaming to same title)
-	if newTitle != oldTitle {
-		if isDup, existing := isDuplicateSession(instances, newTitle, inst.ProjectPath); isDup {
-			out.Error(
-				fmt.Sprintf("session with title %q already exists at path %q (id: %s)", newTitle, inst.ProjectPath, existing.ID),
-				ErrCodeInvalidOperation,
-			)
-			os.Exit(1)
-		}
+	// Refuse a title another session already holds at the SAME LOCATION (but
+	// allow renaming to the title this session already has). checkTitleConflict
+	// is shared with `add` and `session set <id> title` so all three answer
+	// ALREADY_EXISTS; this call site used to answer INVALID_OPERATION for the
+	// identical condition, forcing --json consumers to special-case `rename`.
+	if msg, code := checkTitleConflict(instances, inst, newTitle); msg != "" {
+		out.Error(msg, code)
+		os.Exit(1)
 	}
 
 	// Route through SetField so the rename also sets TitleLocked — a direct
@@ -2941,6 +3006,10 @@ func handleProfileList(out *CLIOutput, jsonMode bool) {
 			profileList = append(profileList, map[string]interface{}{
 				"name":       p,
 				"is_default": p == defaultProfile,
+				// #1926: let tooling filter the underscore-prefixed profiles
+				// (test fixtures, scratch) without re-deriving the convention.
+				// Additive — nothing is removed from the payload.
+				"internal": isInternalProfileName(p),
 			})
 		}
 		out.Success("", map[string]interface{}{
@@ -2958,15 +3027,53 @@ func handleProfileList(out *CLIOutput, jsonMode bool) {
 		return
 	}
 
-	fmt.Println("Profiles:")
+	// #1926: underscore-prefixed profiles are test fixtures and scratch state.
+	// Listed flat they bury the real ones — the report had seven of them ahead
+	// of the profiles the user actually cared about. Separated, not hidden:
+	// hiding by default would make a profile someone deliberately named with a
+	// leading underscore vanish with no way to notice.
+	var normal, internal []string
 	for _, p := range profiles {
+		if isInternalProfileName(p) {
+			internal = append(internal, p)
+			continue
+		}
+		normal = append(normal, p)
+	}
+
+	printProfile := func(p string) {
 		if p == defaultProfile {
 			fmt.Printf("  * %s (default)\n", p)
-		} else {
-			fmt.Printf("    %s\n", p)
+			return
+		}
+		fmt.Printf("    %s\n", p)
+	}
+
+	fmt.Println("Profiles:")
+	for _, p := range normal {
+		printProfile(p)
+	}
+	if len(normal) == 0 {
+		fmt.Println("    (none)")
+	}
+
+	if len(internal) > 0 {
+		fmt.Printf("\nInternal (test fixtures and scratch, '_' prefix): %d\n", len(internal))
+		for _, p := range internal {
+			printProfile(p)
 		}
 	}
+
 	fmt.Printf("\nTotal: %d profiles\n", len(profiles))
+}
+
+// isInternalProfileName reports whether a profile name follows the project's
+// underscore convention for test fixtures and scratch state (_test, _baseline,
+// …). Purely a display concern: nothing about the profile behaves differently,
+// and the listing separates rather than hides so an unexpected one is still
+// visible (#1926).
+func isInternalProfileName(name string) bool {
+	return strings.HasPrefix(name, "_")
 }
 
 func handleProfileCreate(out *CLIOutput, name string) {

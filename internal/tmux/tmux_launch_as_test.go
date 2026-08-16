@@ -57,7 +57,7 @@ func TestStartCommandSpec_LaunchAs_Service_UsesServiceForm(t *testing.T) {
 	// The tmux args shape after the systemd-run prefix must match the scope
 	// form's tmux args shape exactly. We use stripSystemdRunPrefix to verify.
 	tmuxArgs := stripSystemdRunPrefix(args)
-	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-service_1234abcd", "-c", "/tmp/project",
+	assert.Equal(t, []string{"-u", "new-session", "-d", "-s", "agentdeck_test-service_1234abcd", "-c", "/tmp/project",
 		"-x", "173", "-y", "41"}, tmuxArgs)
 }
 
@@ -101,7 +101,7 @@ func TestStartCommandSpec_LaunchAs_Direct_UsesDirectTmux(t *testing.T) {
 
 	launcher, args := s.startCommandSpec("/tmp/project", "")
 	assert.Equal(t, "tmux", launcher, "LaunchAs=direct must override LaunchInUserScope=true")
-	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-direct_1234abcd", "-c", "/tmp/project",
+	assert.Equal(t, []string{"-u", "new-session", "-d", "-s", "agentdeck_test-direct_1234abcd", "-c", "/tmp/project",
 		"-x", "173", "-y", "41"}, args)
 }
 

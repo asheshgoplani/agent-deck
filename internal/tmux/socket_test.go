@@ -6,13 +6,18 @@ import (
 )
 
 // TestTmuxArgs_EmptySocketName_LeavesArgsUntouched is the default-socket
-// contract (scope decision 1): socket_name="" means zero behavior change
-// for existing users. The factory must NOT inject -L in that case.
+// contract (scope decision 1): socket_name="" means the factory must NOT
+// inject -L, so users who never opted into socket isolation keep reaching
+// their default server.
+//
+// The leading -u is unconditional and orthogonal (#1867): it forces UTF-8 on
+// the CLIENT and says nothing about which server the client talks to. See
+// tmuxArgs / internal/tmuxutf8.
 func TestTmuxArgs_EmptySocketName_LeavesArgsUntouched(t *testing.T) {
 	got := tmuxArgs("", "list-sessions", "-F", "#{session_name}")
-	want := []string{"list-sessions", "-F", "#{session_name}"}
+	want := []string{"-u", "list-sessions", "-F", "#{session_name}"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("empty socket must pass args through unchanged\n got:  %v\n want: %v", got, want)
+		t.Fatalf("empty socket must pass args through with no -L\n got:  %v\n want: %v", got, want)
 	}
 }
 
@@ -21,7 +26,7 @@ func TestTmuxArgs_EmptySocketName_LeavesArgsUntouched(t *testing.T) {
 // socket via the tmux `-L <name>` flag placed before the subcommand.
 func TestTmuxArgs_WithSocketName_PrependsDashL(t *testing.T) {
 	got := tmuxArgs("agent-deck", "has-session", "-t", "foo")
-	want := []string{"-L", "agent-deck", "has-session", "-t", "foo"}
+	want := []string{"-u", "-L", "agent-deck", "has-session", "-t", "foo"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("socket name must be injected as leading -L <name>\n got:  %v\n want: %v", got, want)
 	}
@@ -40,13 +45,13 @@ func TestTmuxArgs_WithSocketName_DoesNotMutateCallerSlice(t *testing.T) {
 }
 
 // TestTmuxArgs_WithSocketName_EmptyArgs handles the degenerate case. A
-// bare `tmux -L agent-deck` would print help/exit non-zero; still, the
-// factory must not crash or drop the -L flag.
+// bare `tmux -u -L agent-deck` would print help/exit non-zero; still, the
+// factory must not crash or drop either global flag.
 func TestTmuxArgs_WithSocketName_EmptyArgs(t *testing.T) {
 	got := tmuxArgs("agent-deck")
-	want := []string{"-L", "agent-deck"}
+	want := []string{"-u", "-L", "agent-deck"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("zero-arg call must still inject -L\n got:  %v\n want: %v", got, want)
+		t.Fatalf("zero-arg call must still inject -u and -L\n got:  %v\n want: %v", got, want)
 	}
 }
 
@@ -56,21 +61,23 @@ func TestTmuxArgs_WithSocketName_EmptyArgs(t *testing.T) {
 // create an unreachable server).
 func TestTmuxArgs_WhitespaceOnlySocketName_TreatedAsEmpty(t *testing.T) {
 	got := tmuxArgs("   ", "list-sessions")
-	want := []string{"list-sessions"}
+	want := []string{"-u", "list-sessions"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("whitespace-only socket must be treated as empty\n got:  %v\n want: %v", got, want)
 	}
 }
 
 // TestSession_TmuxCmd_EmptySocket_NoDashL: on an un-configured session
-// (new install, no config, no CLI flag), tmuxCmd must produce a plain
-// `tmux …` invocation — preserving pre-v1.7.50 behavior byte-for-byte.
+// (new install, no config, no CLI flag), tmuxCmd must emit no -L at all, so
+// the call still lands on the user's default server exactly as it did
+// pre-v1.7.50. The global -u is present regardless (#1867) — it selects the
+// client's charset, not the server.
 func TestSession_TmuxCmd_EmptySocket_NoDashL(t *testing.T) {
 	s := &Session{Name: "agentdeck-x"}
 	cmd := s.tmuxCmd("has-session", "-t", s.Name)
-	wantArgs := []string{"tmux", "has-session", "-t", s.Name}
+	wantArgs := []string{"tmux", "-u", "has-session", "-t", s.Name}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
-		t.Fatalf("empty SocketName must produce plain tmux invocation\n got:  %v\n want: %v", cmd.Args, wantArgs)
+		t.Fatalf("empty SocketName must produce a tmux invocation with no -L\n got:  %v\n want: %v", cmd.Args, wantArgs)
 	}
 }
 
@@ -80,7 +87,7 @@ func TestSession_TmuxCmd_EmptySocket_NoDashL(t *testing.T) {
 func TestSession_TmuxCmd_WithSocket_PrependsDashL(t *testing.T) {
 	s := &Session{Name: "agentdeck-x", SocketName: "agent-deck"}
 	cmd := s.tmuxCmd("has-session", "-t", s.Name)
-	wantArgs := []string{"tmux", "-L", "agent-deck", "has-session", "-t", s.Name}
+	wantArgs := []string{"tmux", "-u", "-L", "agent-deck", "has-session", "-t", s.Name}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("non-empty SocketName must inject -L in front of subcommand\n got:  %v\n want: %v", cmd.Args, wantArgs)
 	}

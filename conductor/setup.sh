@@ -24,6 +24,53 @@ ok()    { echo -e "${GREEN}[ok]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[warn]${NC}  $*"; }
 fail()  { echo -e "${RED}[fail]${NC}  $*"; exit 1; }
 
+# register_session <profile> <dir> <title>
+#
+# Issue #1854: this used to be
+#
+#   agent-deck add … 2>/dev/null && ok "registered" || warn "Could not register"
+#
+# and the warn branch told the user to do something that would fail. The python
+# existence check above it exits non-zero both when the session genuinely does
+# not exist AND when the probe itself could not run, so `add` is reached in two
+# very different situations. Since #1850 an exact duplicate exits non-zero with
+# an ALREADY_EXISTS payload, which took the warn branch; `2>/dev/null` then
+# discarded the message that said so, leaving no way to tell the outcomes apart.
+#
+# --json carries the distinction directly, so branch on the code. stderr is kept
+# on the failure path — discarding it on the one branch whose job is reporting a
+# failure is how the original message got lost. Like the original, this never
+# fails the script.
+register_session() {
+    local profile="$1" dir="$2" title="$3"
+    local out rc code
+
+    rc=0
+    out="$(agent-deck -p "${profile}" add "${dir}" -t "${title}" -c claude -g "infra" --json 2>&1)" || rc=$?
+
+    if [[ ${rc} -eq 0 ]]; then
+        ok "  Session ${title} registered in ${profile}"
+        return 0
+    fi
+
+    code="$(printf '%s' "${out}" | python3 -c "
+import sys, json
+try:
+    print(json.loads(sys.stdin.read()).get('code', ''))
+except Exception:
+    print('')
+" 2>/dev/null)"
+
+    if [[ "${code}" == "ALREADY_EXISTS" ]]; then
+        ok "  Session ${title} already registered in ${profile}"
+        return 0
+    fi
+
+    warn "  Could not register ${title} (add manually from TUI)"
+    warn "    ${out}"
+    return 0
+}
+
 # --------------------------------------------------------------------------
 # Preflight checks
 # --------------------------------------------------------------------------
@@ -159,9 +206,7 @@ sys.exit(0 if found else 1)
 " 2>/dev/null; then
         ok "  Session ${SESSION_TITLE} already registered in ${PROFILE}"
     else
-        agent-deck -p "${PROFILE}" add "${PROFILE_DIR}" -t "${SESSION_TITLE}" -c claude -g "infra" 2>/dev/null && \
-            ok "  Session ${SESSION_TITLE} registered in ${PROFILE}" || \
-            warn "  Could not register ${SESSION_TITLE} (add manually from TUI)"
+        register_session "${PROFILE}" "${PROFILE_DIR}" "${SESSION_TITLE}"
     fi
 done
 
