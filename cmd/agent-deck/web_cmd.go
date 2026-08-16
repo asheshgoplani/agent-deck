@@ -4,9 +4,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -48,7 +50,7 @@ func parseWebCommandOptions(args []string) (webCommandOptions, error) {
 	fs.StringVar(&options.listenAddr, "listen", "127.0.0.1:8420", "Listen address for web server")
 	fs.BoolVar(&options.readOnly, "read-only", false, "Run in read-only mode (input disabled)")
 	fs.StringVar(&options.token, "token", "", "Bearer token for API/WS access")
-	fs.StringVar(&options.tokenFile, "token-file", "", "Read bearer token for API/WS access from file")
+	fs.StringVar(&options.tokenFile, "token-file", "", "Read bearer token for API/WS access from a 0600 file (keeps the secret out of the process argv)")
 	fs.BoolVar(&options.insecureBind, "insecure-bind", false, "Allow binding a non-loopback address with no --token or --token-file (UNSAFE: exposes an unauthenticated RCE surface to the network)")
 	fs.BoolVar(&options.pushEnabled, "push", false, "Enable web push notifications (auto-generates VAPID keys per profile)")
 	fs.StringVar(&options.pushVAPIDSubject, "push-vapid-subject", "mailto:agentdeck@localhost", "VAPID subject used for web push notifications")
@@ -70,12 +72,17 @@ func parseWebCommandOptions(args []string) (webCommandOptions, error) {
 		fmt.Println("  agent-deck web --push --push-test-every 10s")
 		fmt.Println("  agent-deck web --no-tui                 # headless, perf win")
 		fmt.Println("  agent-deck web --no-tui --listen 127.0.0.1:9000")
+		fmt.Println("  agent-deck web --listen 0.0.0.0:8420 --token secret  # expose to LAN (token REQUIRED)")
 		fmt.Println("  agent-deck web --listen 0.0.0.0:8420 --token-file ~/.config/agent-deck/web-token")
 		fmt.Println()
 		fmt.Println("Security: the server binds loopback (127.0.0.1) by default. Binding a")
-		fmt.Println("non-loopback address without --token or --token-file is refused — it would expose an")
-		fmt.Println("unauthenticated remote-code-execution surface. Override with --insecure-bind")
-		fmt.Println("(unsafe) only when you understand the risk.")
+		fmt.Println("non-loopback address without --token or --token-file is refused — it would")
+		fmt.Println("expose an unauthenticated remote-code-execution surface. Override with")
+		fmt.Println("--insecure-bind (unsafe) only when you understand the risk.")
+		fmt.Println("--token-file must be a regular file that is not group- or world-accessible")
+		fmt.Println("(chmod 600); it keeps the secret out of argv, where any local user can read")
+		fmt.Println("it from /proc. MCP administration over HTTP is only wired when a token is")
+		fmt.Println("configured — an unauthenticated server keeps those routes unavailable.")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -155,6 +162,16 @@ func buildWebServerFromOptions(profile string, options webCommandOptions, menuDa
 	if mutator != nil {
 		server.SetMutator(mutator)
 	}
+	// The MCP routes (/api/mcps and /api/sessions/{id}/mcps...) read and
+	// rewrite .mcp.json and the Claude configs, i.e. they change which
+	// programs an agent session will launch. Server.authorize() short-circuits
+	// to "allowed" whenever no token is configured, so the ONLY thing keeping
+	// those routes off an unauthenticated listener is refusing to wire the
+	// production manager here. Keep this gate token-conditioned: with no
+	// token — loopback default or --insecure-bind alike — the routes stay
+	// registered but answer 503, which is the pre-existing behaviour and adds
+	// no unauthenticated surface. See TestBuildWebServer_MCPRoutesAuth for the
+	// endpoint-by-endpoint regression matrix.
 	if resolvedToken != "" {
 		server.SetMCPManager(web.NewDefaultMCPManager())
 	}
@@ -162,6 +179,18 @@ func buildWebServerFromOptions(profile string, options webCommandOptions, menuDa
 	return server, nil
 }
 
+// maxWebTokenFileSize bounds a --token-file read. A bearer token is a short
+// single-line secret; refusing to slurp an arbitrarily large file keeps a
+// mistyped path (a log, a core dump, /dev/zero) from being read into memory
+// and silently installed as the credential.
+const maxWebTokenFileSize = 4096
+
+// resolveWebToken folds --token and --token-file into the single bearer token
+// the server authorizes against. Every failure path returns an error rather
+// than an empty token: an empty token disables authorization entirely
+// (Server.authorize allows everything when Config.Token is ""), so anything
+// less than a clean read has to fail closed and stop the server from booting.
+// Errors name the offending path but never echo file contents.
 func resolveWebToken(token, tokenFile string) (string, error) {
 	if token != "" && tokenFile != "" {
 		return "", fmt.Errorf("--token and --token-file are mutually exclusive")
@@ -169,13 +198,53 @@ func resolveWebToken(token, tokenFile string) (string, error) {
 	if tokenFile == "" {
 		return token, nil
 	}
-	data, err := os.ReadFile(tokenFile)
+
+	f, err := os.Open(tokenFile)
 	if err != nil {
 		return "", fmt.Errorf("read --token-file: %w", err)
 	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("read --token-file: %w", err)
+	}
+	// Reject directories, devices and FIFOs: a non-regular source has no
+	// stable contents to authorize against, and reading one can block the
+	// whole boot.
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("--token-file %s is not a regular file", tokenFile)
+	}
+	// The point of --token-file is to keep the secret off argv, where any
+	// local user can read it from /proc. A group- or world-accessible file
+	// gives that away again, so refuse it with an actionable fix.
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return "", fmt.Errorf("--token-file %s is group- or world-accessible (mode %#o); restrict it with: chmod 600 %s", tokenFile, perm, tokenFile)
+	}
+	if info.Size() > maxWebTokenFileSize {
+		return "", fmt.Errorf("--token-file %s is larger than %d bytes; expected a single-line bearer token", tokenFile, maxWebTokenFileSize)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxWebTokenFileSize+1))
+	if err != nil {
+		return "", fmt.Errorf("read --token-file: %w", err)
+	}
+	if len(data) > maxWebTokenFileSize {
+		return "", fmt.Errorf("--token-file %s is larger than %d bytes; expected a single-line bearer token", tokenFile, maxWebTokenFileSize)
+	}
+
 	resolved := strings.TrimSpace(string(data))
 	if resolved == "" {
 		return "", fmt.Errorf("--token-file %s is empty", tokenFile)
+	}
+	// A token carrying interior whitespace or control bytes can never match a
+	// Bearer header (headers cannot carry them), so it would boot a server
+	// nobody can authenticate to while still satisfying the non-loopback bind
+	// check — a lockout that looks like working auth. Reject it up front.
+	if strings.ContainsFunc(resolved, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) {
+		return "", fmt.Errorf("--token-file %s must contain a single line with no whitespace or control characters", tokenFile)
 	}
 	return resolved, nil
 }

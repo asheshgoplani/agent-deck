@@ -905,6 +905,23 @@ agent-deck web --token my-secret
 # then open: http://127.0.0.1:8420/?token=my-secret
 ```
 
+For headless deployments, read the token from a file instead so it never
+appears in the process arguments, where any local user can read it from
+`/proc`. The file must be a regular file that is not group- or world-readable,
+and must hold the token on a single line:
+
+```bash
+install -m 600 /dev/null ~/.config/agent-deck/web-token
+printf '%s' "$(openssl rand -hex 32)" > ~/.config/agent-deck/web-token
+agent-deck web --no-tui --listen 0.0.0.0:8420 --token-file ~/.config/agent-deck/web-token
+```
+
+`--token` and `--token-file` are mutually exclusive. Binding a non-loopback
+address without one of them is refused, because it would expose an
+unauthenticated remote-code-execution surface. MCP administration over the
+HTTP API is only available when a token is configured; without one those
+routes stay unavailable.
+
 The browser UI includes the live Command Center, session terminal, costs, archive, and settings views. See [Command Center](docs/COMMAND-CENTER.md) for the fleet view; use `--read-only` when browser clients should not mutate sessions.
 
 ## Documentation
