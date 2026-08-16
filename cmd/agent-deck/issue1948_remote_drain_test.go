@@ -89,7 +89,9 @@ func TestIssue1948_RemoteDrain_WritesRemoteCompletionIntoLocalInbox(t *testing.T
 	if err != nil {
 		t.Fatalf("read inbox: %v", err)
 	}
-	if len(pending) != 1 || pending[0].ChildSessionID != "worker-on-b" {
+	// The stored id names its host (review round 2): a bare child id is unique
+	// only on the machine that minted it.
+	if len(pending) != 1 || pending[0].ChildSessionID != "boxb:worker-on-b" {
 		t.Fatalf("remote completion did not reach the local inbox: %+v", pending)
 	}
 	if pending[0].SourceRemote != "boxb" {

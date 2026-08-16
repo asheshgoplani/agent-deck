@@ -503,9 +503,19 @@ func (r *SSHRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, err
 // nothing, so draining the same host from two conductors gives both the full
 // set and leaves the host's own conductor's inbox untouched.
 //
-// A remote running an agent-deck older than the one that added `inbox export`
-// answers with a usage error rather than a JSON array; that is reported as an
-// explicit version error instead of being read as "no records".
+// `[]` is the contract for "nothing pending", so ANY other answer is a failure
+// to report, never a quiet zero (review round 2, findings 1 and 2):
+//
+//   - a remote too old for `inbox export` exits NON-ZERO (its flag parser
+//     rejects --json), so it surfaces through r.Run's error. Diagnosing that as
+//     a version problem needs the remote's version, which this layer does not
+//     have; the caller probes it (staleRemoteBinaryHint) rather than guessing
+//     from stdout shape. An earlier revision guessed here and got it backwards:
+//     the guess never fired for a real old binary, and did fire for a current
+//     one whose shell printed a banner.
+//   - empty stdout with exit 0 means the remote said NOTHING, which is not the
+//     same as saying "[]". Reporting it as "no records" is the same silent-zero
+//     conflation the corrupt-ledger path forbids.
 func (r *SSHRunner) FetchPendingRecords(ctx context.Context) ([]TransitionNotificationEvent, error) {
 	output, err := r.Run(ctx, "inbox", "export", "--json")
 	if err != nil {
@@ -514,12 +524,10 @@ func (r *SSHRunner) FetchPendingRecords(ctx context.Context) ([]TransitionNotifi
 
 	trimmed := bytes.TrimSpace(output)
 	if len(trimmed) == 0 {
-		return nil, nil
+		return nil, fmt.Errorf("remote returned no output at all; `inbox export --json` prints `[]` when it has nothing, so this is a failed read, not an empty host")
 	}
 	if trimmed[0] != '[' {
-		return nil, fmt.Errorf("remote agent-deck did not return a record array "+
-			"(it is likely older than `inbox export`; run `agent-deck remote update`): %s",
-			firstLineOf(trimmed))
+		return nil, fmt.Errorf("remote did not return a record array: %s", firstLineOf(trimmed))
 	}
 
 	var records []TransitionNotificationEvent
