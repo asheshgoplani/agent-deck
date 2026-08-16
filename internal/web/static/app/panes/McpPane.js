@@ -90,15 +90,62 @@ async function jsonFetch(path, opts = {}) {
   return res.json()
 }
 
+// McpPane resolves the selected session and hands off to a child keyed by
+// session id.
+//
+// The key is the fix for the stale-frame window: resetting per-session state in
+// a useEffect runs AFTER the render commits, so the first frame of a new
+// session painted the previous session's catalog, attachments and scopes while
+// the mutation callbacks were already bound to the new session. A click landing
+// in that frame mutated the new session using the old session's data. Keying
+// the child means switching sessions unmounts it and mounts a fresh one, so the
+// old state cannot be painted at all — the reset is structural, not deferred.
 export function McpPane() {
   const { sessions } = menuModelSignal.value
   const selectedId = selectedIdSignal.value
-  const mutationsEnabled = mutationsEnabledSignal.value
   const session = sessions.find(s => s.id === selectedId)
 
-  // The session the pane is currently showing. Async refreshes compare against
-  // this so a response for a previous session cannot overwrite the new one.
-  const sessionId = session ? session.id : null
+  if (!session) {
+    return html`
+      <div class="costs">
+        <div class="chart-card" style="text-align: center; padding: 48px 24px;">
+          <div class="title" style="font-size: 16px;">MCP Manager</div>
+          <div style="font-family: var(--mono); font-size: 12px; color: var(--text-dim); padding-top: 8px;">
+            Select a session in the sidebar to manage MCPs.
+          </div>
+        </div>
+      </div>
+    `
+  }
+
+  // Say so rather than rendering a catalog whose buttons the server will
+  // refuse. The tool decides which MCP store exists; a shell session has none.
+  if (!toolSupportsMCP(session)) {
+    return html`
+      <div class="costs" data-testid="mcp-pane" data-session-id=${session.id}>
+        <div class="chart-card" style="text-align: center; padding: 48px 24px;">
+          <div class="title" style="font-size: 16px;">MCP Manager</div>
+          <div data-testid="mcp-unsupported-tool"
+               style="font-family: var(--mono); font-size: 12px; color: var(--text-dim); padding-top: 8px;">
+            MCP management is not available for ${session.tool || 'this'} sessions.
+            Supported tools: Claude, Codex, Gemini, Cursor, OpenCode.
+          </div>
+        </div>
+      </div>
+    `
+  }
+
+  return html`<${McpPaneForSession} key=${session.id} session=${session}/>`
+}
+
+// McpPaneForSession owns all per-session state. It is mounted fresh for each
+// session (see the key above), so every useState below starts empty and no
+// value can leak across a switch.
+function McpPaneForSession({ session }) {
+  const mutationsEnabled = mutationsEnabledSignal.value
+  const sessionId = session.id
+  // Still keyed defensively: a refresh in flight when this instance unmounts
+  // must not apply, and mcpStateForResponse is the tested seam for that.
   const activeSessionRef = useRef(sessionId)
 
   const [catalog, setCatalog] = useState([])
@@ -109,11 +156,7 @@ export function McpPane() {
   const [error, setError] = useState('')
 
   const refresh = useCallback(async () => {
-    // Hooks must run unconditionally, so guard here rather than relying on the
-    // unsupported-tool early return below: without this the pane would fire a
-    // request the server is obliged to refuse.
-    if (!session || !toolSupportsMCP(session)) return
-    const forSession = session.id
+    const forSession = sessionId
     setLoading(true)
     setError('')
     try {
@@ -137,18 +180,12 @@ export function McpPane() {
     } finally {
       if (activeSessionRef.current === forSession) setLoading(false)
     }
-  }, [session && session.id])
+  }, [sessionId])
 
-  // Re-key every piece of per-session state the moment the selection changes,
-  // so nothing from the previous session is on screen (or usable) while the
-  // new session's refresh is in flight.
   useEffect(() => {
     activeSessionRef.current = sessionId
-    setCatalog([])
-    setAttached(EMPTY_ATTACHED)
-    setScopes([])
-    setError('')
     refresh()
+    return () => { activeSessionRef.current = null }
   }, [sessionId, refresh])
 
   const findScope = (name) => {
@@ -162,7 +199,6 @@ export function McpPane() {
   const defaultScope = scopes[0] || ''
 
   const attach = async (name, scope) => {
-    if (!session) return
     try {
       await jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps/${encodeURIComponent(name)}`, {
         method: 'POST',
@@ -176,7 +212,6 @@ export function McpPane() {
   }
 
   const detach = async (name) => {
-    if (!session) return
     const scope = findScope(name)
     try {
       await jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps/${encodeURIComponent(name)}`, {
@@ -191,7 +226,6 @@ export function McpPane() {
   }
 
   const moveScope = async (name, toScope) => {
-    if (!session) return
     try {
       await jsonFetch(`/api/sessions/${encodeURIComponent(session.id)}/mcps/${encodeURIComponent(name)}`, {
         method: 'PATCH',
@@ -204,38 +238,8 @@ export function McpPane() {
     }
   }
 
-  if (!session) {
-    return html`
-      <div class="costs">
-        <div class="chart-card" style="text-align: center; padding: 48px 24px;">
-          <div class="title" style="font-size: 16px;">MCP Manager</div>
-          <div style="font-family: var(--mono); font-size: 12px; color: var(--text-dim); padding-top: 8px;">
-            Select a session in the sidebar to manage MCPs.
-          </div>
-        </div>
-      </div>
-    `
-  }
-
-  // Say so rather than rendering a catalog whose buttons the server will
-  // refuse. The tool decides which MCP store exists; a shell session has none.
-  if (!toolSupportsMCP(session)) {
-    return html`
-      <div class="costs" data-testid="mcp-pane">
-        <div class="chart-card" style="text-align: center; padding: 48px 24px;">
-          <div class="title" style="font-size: 16px;">MCP Manager</div>
-          <div data-testid="mcp-unsupported-tool"
-               style="font-family: var(--mono); font-size: 12px; color: var(--text-dim); padding-top: 8px;">
-            MCP management is not available for ${session.tool || 'this'} sessions.
-            Supported tools: Claude, Codex, Gemini, Cursor, OpenCode.
-          </div>
-        </div>
-      </div>
-    `
-  }
-
   return html`
-    <div class="costs" data-testid="mcp-pane">
+    <div class="costs" data-testid="mcp-pane" data-session-id=${sessionId}>
       <div class="chart-card" style="padding: 24px;">
         <div class="title" style="font-size: 16px; margin-bottom: 4px;">MCP Manager</div>
         <div style="font-family: var(--mono); font-size: 11px; color: var(--text-dim); margin-bottom: 16px;">
