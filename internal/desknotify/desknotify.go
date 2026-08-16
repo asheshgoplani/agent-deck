@@ -145,6 +145,27 @@ func deflagged(s string) string {
 	}
 }
 
+// notifySendBackend is the Linux fallback for a terminal that is not cmux.
+// It raises a desktop notification through the freedesktop.org notification
+// service when the notify-send client is installed.
+type notifySendBackend struct{}
+
+func (notifySendBackend) Name() string { return "notify-send" }
+
+func (notifySendBackend) Available() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	_, err := exec.LookPath("notify-send")
+	return err == nil
+}
+
+func (notifySendBackend) Notify(ctx context.Context, title, body string) error {
+	// #nosec G204 -- title/body are separate argv elements and no shell parses
+	// them. deflagged prevents exact help flags from suppressing the banner.
+	return exec.CommandContext(ctx, "notify-send", deflagged(title), deflagged(body)).Run()
+}
+
 // osascriptBackend is the macOS fallback for a terminal that is not cmux. It
 // raises a Notification Center banner with no persistent record.
 type osascriptBackend struct{}
@@ -182,9 +203,9 @@ type Notifier struct {
 	backends []Backend
 }
 
-// New returns a Notifier preferring cmux, falling back to macOS notifications.
+// New returns a Notifier preferring cmux, then platform-native notifications.
 func New() *Notifier {
-	return &Notifier{backends: []Backend{cmuxBackend{}, osascriptBackend{}}}
+	return &Notifier{backends: []Backend{cmuxBackend{}, notifySendBackend{}, osascriptBackend{}}}
 }
 
 // NewWithBackends builds a Notifier over an explicit backend list. Tests use

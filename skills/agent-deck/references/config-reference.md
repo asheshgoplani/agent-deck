@@ -630,7 +630,7 @@ desktop = false        # OS notification when a session needs input
 
 The other two signals only reach you in specific places: the notification bar is visible while you are looking at the TUI, and `transition_events` routes to a session's parent, so a top-level session with no parent reaches nobody. A background agent that blocks on a permission prompt while you work elsewhere therefore surfaces nowhere. `desktop = true` closes that gap.
 
-Delivery prefers the [cmux](https://cmux.com) terminal's notification panel when the `cmux` CLI is on `PATH`, which both raises a system banner and records the alert in cmux's sidebar so one missed while away is still discoverable. Otherwise it falls back to a macOS Notification Center banner via `osascript`. With neither available it is a silent no-op.
+Delivery prefers the [cmux](https://cmux.com) terminal's notification panel when the `cmux` CLI is on `PATH`, which both raises a system banner and records the alert in cmux's sidebar so one missed while away is still discoverable. Without cmux, Linux falls back to `notify-send` and macOS falls back to a Notification Center banner via `osascript`. On Linux without either cmux or `notify-send`, desktop notifications are a silent no-op.
 
 Notifications fire on the transition into `waiting` or `error`, once per transition rather than once per poll. `idle` is deliberately excluded: for a long-lived interactive agent it is the resting state, not an event, and alerting on it trains you to ignore the banners. The per-session `set-transition-notify off` opt-out is honoured here too, so a single noisy session can be muted without turning the feature off globally.
 

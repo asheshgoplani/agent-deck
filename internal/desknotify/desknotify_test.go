@@ -3,9 +3,27 @@ package desknotify
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+const notifySendHelperEnv = "AGENT_DECK_NOTIFY_SEND_HELPER"
+
+func TestMain(m *testing.M) {
+	if os.Getenv(notifySendHelperEnv) == "1" {
+		argsFile := os.Getenv("NOTIFY_SEND_ARGS_FILE")
+		if err := os.WriteFile(argsFile, []byte(strings.Join(os.Args[1:], "\n")+"\n"), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 // fakeBackend records what it was asked to deliver.
 type fakeBackend struct {
@@ -73,6 +91,79 @@ func TestNotify_NoBackendAvailableIsSilent(t *testing.T) {
 
 	if got != "" {
 		t.Errorf("backend = %q, want empty when nothing is available", got)
+	}
+}
+
+func TestNew_PrefersCmuxThenPlatformFallbacks(t *testing.T) {
+	backends := New().backends
+	names := make([]string, 0, len(backends))
+	for _, backend := range backends {
+		names = append(names, backend.Name())
+	}
+
+	if got, want := strings.Join(names, ","), "cmux,notify-send,osascript"; got != want {
+		t.Errorf("backend order = %q, want %q", got, want)
+	}
+}
+
+func TestNotifySendBackend_UnavailableWithoutBinary(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	if (notifySendBackend{}).Available() {
+		t.Error("notify-send backend is available with no notify-send binary on PATH")
+	}
+}
+
+// No desktop session or libnotify daemon is needed to cover delivery. A copy
+// of this test binary acts as notify-send and records the real argv it receives.
+func TestNotifySendBackend_FakeBinaryReceivesDeflaggedArgs(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	fakePath := filepath.Join(dir, "notify-send")
+	if runtime.GOOS == "windows" {
+		fakePath += ".exe"
+	}
+	copyTestExecutable(t, fakePath)
+	t.Setenv("PATH", dir)
+	t.Setenv("NOTIFY_SEND_ARGS_FILE", argsFile)
+	t.Setenv(notifySendHelperEnv, "1")
+
+	backend := notifySendBackend{}
+	if got, want := backend.Available(), runtime.GOOS == "linux"; got != want {
+		t.Fatalf("Available() = %v on %s with a fake binary, want %v", got, runtime.GOOS, want)
+	}
+	if err := backend.Notify(context.Background(), "--help", "-h"); err != nil {
+		t.Fatalf("Notify() with fake notify-send: %v", err)
+	}
+
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read fake notify-send args: %v", err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+	want := []string{deflagged("--help"), deflagged("-h")}
+	if len(got) != len(want) {
+		t.Fatalf("notify-send args = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("notify-send arg %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func copyTestExecutable(t *testing.T, dst string) {
+	t.Helper()
+	src, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test executable: %v", err)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read test executable: %v", err)
+	}
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		t.Fatalf("write fake notify-send: %v", err)
 	}
 }
 
