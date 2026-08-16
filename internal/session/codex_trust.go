@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"syscall"
 
 	"github.com/BurntSushi/toml"
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
@@ -17,47 +15,14 @@ import (
 
 const codexTrustLevelTrusted = "trusted"
 
-// codexConfigMu serializes mutations to a given Codex config.toml within this
-// process. Cross-process serialization uses advisory flock on a sibling
-// `.lock` file (see acquireCodexConfigLock), matching hermes_hooks.go.
-var codexConfigMu sync.Map // map[string]*sync.Mutex
-
-type codexConfigLock struct {
-	inProc *sync.Mutex
-	file   *os.File
-}
-
-func (l *codexConfigLock) Release() {
-	if l.file != nil {
-		_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
-		_ = l.file.Close()
-	}
-	if l.inProc != nil {
-		l.inProc.Unlock()
-	}
-}
-
-func acquireCodexConfigLock(configPath string) (*codexConfigLock, error) {
-	mIface, _ := codexConfigMu.LoadOrStore(configPath, &sync.Mutex{})
-	m := mIface.(*sync.Mutex)
-	m.Lock()
-
-	lockPath := configPath + ".lock"
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
-		m.Unlock()
-		return nil, fmt.Errorf("ensure codex config lock dir: %w", err)
-	}
-	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		m.Unlock()
-		return nil, fmt.Errorf("open codex config lock file: %w", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		_ = f.Close()
-		m.Unlock()
-		return nil, fmt.Errorf("flock codex config: %w", err)
-	}
-	return &codexConfigLock{inProc: m, file: f}, nil
+// acquireCodexConfigLock serializes mutations to a Codex config.toml.
+//
+// This is an alias over the shared AcquireConfigFileLock (config_file_lock.go),
+// not a second implementation. It used to be a private copy of the same
+// mutex-plus-flock rule; the copy is what let the MCP writers ship without any
+// serialization at all, because there was no obvious shared thing to reach for.
+func acquireCodexConfigLock(configPath string) (*ConfigFileLock, error) {
+	return AcquireConfigFileLock(configPath)
 }
 
 // GetCodexConfigPath returns the path to Codex's user-level config.toml under codexHome.

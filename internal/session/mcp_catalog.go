@@ -167,6 +167,15 @@ func writeJSONFileAtomic(path string, data []byte, perm os.FileMode) error {
 // config.toml. When pluginPinClaudeProfile is non-empty (Claude project .mcp.json),
 // refreshes stale plugin version pins before merging (#960).
 func WriteMergedMcpJSONFile(mcpFile string, enabledNames []string, pluginPinClaudeProfile string) error {
+	// Same read-modify-write class as the .claude.json writers: this reads the
+	// existing servers, merges, and writes the whole file back. The web local
+	// scope and the TUI both reach it, so it takes the same per-path lock.
+	lock, lockErr := AcquireConfigFileLock(mcpFile)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer lock.Release()
+
 	availableMCPs := GetAvailableMCPs()
 	pool := GetGlobalPool()
 
@@ -361,7 +370,7 @@ func writeJSONObjectConfig(path string, cfg map[string]interface{}) error {
 
 // WriteGlobalMCP adds or removes MCPs from Claude's global config
 // This modifies ~/.claude-work/.claude.json → mcpServers
-func WriteGlobalMCP(enabledNames []string) error {
+func writeGlobalMCPLocked(enabledNames []string) error {
 	configDir := GetClaudeConfigDir()
 	configFile := filepath.Join(configDir, ".claude.json")
 
@@ -391,6 +400,85 @@ func WriteGlobalMCP(enabledNames []string) error {
 	rawConfig["mcpServers"] = mergedMCPs
 
 	return writeJSONObjectConfig(configFile, rawConfig)
+}
+
+// ---------------------------------------------------------------------------
+// Public writers. Each takes the shared config-file lock for the WHOLE
+// read-modify-write cycle, then delegates to the *Locked body.
+//
+// The lock is not reentrant, so anything needing several writes under one lock
+// calls the *Locked variants directly after acquiring once — see
+// WriteGlobalMCPAndClearProjectMCPs.
+// ---------------------------------------------------------------------------
+
+func claudeConfigFilePath() string {
+	return filepath.Join(GetClaudeConfigDir(), ".claude.json")
+}
+
+// WriteGlobalMCP adds or removes MCPs from Claude's global config
+// (CLAUDE_CONFIG_DIR/.claude.json → mcpServers).
+func WriteGlobalMCP(enabledNames []string) error {
+	lock, err := AcquireConfigFileLock(claudeConfigFilePath())
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	return writeGlobalMCPLocked(enabledNames)
+}
+
+// WriteProjectMCP writes enabled catalog MCPs into
+// projects[projectPath].mcpServers of Claude's config.
+func WriteProjectMCP(projectPath string, enabledNames []string) error {
+	lock, err := AcquireConfigFileLock(claudeConfigFilePath())
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	return writeProjectMCPLocked(projectPath, enabledNames)
+}
+
+// WriteUserMCP writes MCPs to ~/.claude.json (the ROOT config Claude always
+// reads). This is a different file from the CLAUDE_CONFIG_DIR one, so it takes
+// its own lock.
+func WriteUserMCP(enabledNames []string) error {
+	lock, err := AcquireConfigFileLock(GetUserMCPRootPath())
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	return writeUserMCPLocked(enabledNames)
+}
+
+// ClearProjectMCPs removes all MCPs from projects[path].mcpServers in Claude's
+// config.
+func ClearProjectMCPs(projectPath string) error {
+	lock, err := AcquireConfigFileLock(claudeConfigFilePath())
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	return clearProjectMCPsLocked(projectPath)
+}
+
+// WriteGlobalMCPAndClearProjectMCPs performs the TUI's global-apply as ONE
+// serialized unit: rewrite the root mcpServers map, then clear the project half
+// that the global view merges in.
+//
+// These are two writes to the same file that must not be interleaved with any
+// other writer. Done as separate public calls they take and drop the lock
+// twice, leaving a window where another process sees the config with the new
+// global set but the stale project set still merged in — which reads as MCPs
+// the user just removed still being attached.
+func WriteGlobalMCPAndClearProjectMCPs(projectPath string, enabledNames []string) error {
+	lock, err := AcquireConfigFileLock(claudeConfigFilePath())
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	if err := writeGlobalMCPLocked(enabledNames); err != nil {
+		return err
+	}
+	return clearProjectMCPsLocked(projectPath)
 }
 
 // GetGlobalMCPNames returns the names of MCPs currently in Claude's global config
@@ -505,7 +593,7 @@ func buildManagedMCPServers(enabledNames []string, scope string) map[string]MCPS
 // which silently moved servers between scopes.
 //
 // Entries not defined in config.toml are preserved (#146).
-func WriteProjectMCP(projectPath string, enabledNames []string) error {
+func writeProjectMCPLocked(projectPath string, enabledNames []string) error {
 	if projectPath == "" {
 		return fmt.Errorf("project MCP write: empty project path")
 	}
@@ -551,19 +639,16 @@ func WriteProjectMCP(projectPath string, enabledNames []string) error {
 }
 
 // ClearProjectMCPs removes all MCPs from projects[path].mcpServers in Claude's config
-func ClearProjectMCPs(projectPath string) error {
-	configDir := GetClaudeConfigDir()
-	configFile := filepath.Join(configDir, ".claude.json")
+func clearProjectMCPsLocked(projectPath string) error {
+	configFile := claudeConfigFilePath()
 
-	// Read existing config
-	data, err := os.ReadFile(configFile)
+	// Through the shared reader, not a hand-rolled copy. The inline version
+	// this replaces failed closed on a bad parse (correct) but ALSO errored on
+	// a genuinely absent file — the inverted bug: nothing to clear is success,
+	// not failure. readJSONObjectConfig draws that line once, for every caller.
+	rawConfig, err := readJSONObjectConfig(configFile)
 	if err != nil {
-		return fmt.Errorf("failed to read config: %w", err)
-	}
-
-	var rawConfig map[string]interface{}
-	if err := json.Unmarshal(data, &rawConfig); err != nil {
-		return fmt.Errorf("failed to parse config: %w", err)
+		return err
 	}
 
 	// Get projects map
@@ -598,7 +683,7 @@ func GetUserMCPRootPath() string {
 // WriteUserMCP writes MCPs to ~/.claude.json (ROOT config)
 // Uses socket proxies if pool is running, otherwise falls back to stdio
 // WARNING: MCPs written here affect ALL Claude sessions regardless of profile!
-func WriteUserMCP(enabledNames []string) error {
+func writeUserMCPLocked(enabledNames []string) error {
 	configFile := GetUserMCPRootPath()
 	if configFile == "" {
 		return fmt.Errorf("could not determine home directory")

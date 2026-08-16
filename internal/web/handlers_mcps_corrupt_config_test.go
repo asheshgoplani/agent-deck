@@ -3,6 +3,7 @@ package web
 import (
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,8 +12,15 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// Data-loss guard: a temporarily malformed .claude.json must never be replaced
-// by a config reconstructed from a failed parse.
+// Data-loss guard: a config that could not be READ must never be replaced by
+// one reconstructed from that failure.
+//
+// The first version of this file said "parse", and so did its fixtures: the
+// only degraded input it built was malformed JSON. That narrowness was the
+// tell. A parse error is one way a read fails; an unreadable file (permissions,
+// a directory where a file belongs, an I/O error) is another, and every one of
+// them must abort the mutation rather than produce an empty document to write
+// back. The cases below cover the whole read boundary.
 //
 // .claude.json holds the user's whole Claude configuration — settings, every
 // project entry, and the root mcpServers map. The MCP writers are
@@ -21,7 +29,7 @@ import (
 // gone. A half-finished manual edit or a truncated write from another process
 // is exactly when this fires.
 //
-// The rule these tests pin: parse failure aborts the mutation, names the
+// The rule these tests pin: ANY read failure aborts the mutation, names the
 // problem, and leaves the file byte-identical.
 
 const corruptClaudeConfig = `{
@@ -101,8 +109,8 @@ func TestMalformedClaudeConfigIsNeverRewritten(t *testing.T) {
 				if err == nil {
 					t.Errorf("%s in scope %q silently succeeded against a malformed config; "+
 						"it must fail closed", op, scope)
-				} else if !mentionsParseFailure(err) {
-					t.Errorf("%s in scope %q failed, but the error does not name the parse problem: %v",
+				} else if !mentionsReadFailure(err) {
+					t.Errorf("%s in scope %q failed, but the error does not name why the read failed: %v",
 						op, scope, err)
 				}
 
@@ -136,8 +144,8 @@ func TestMalformedClaudeConfigLeavesUserScopeAlone(t *testing.T) {
 	writeErr := session.WriteUserMCP([]string{"alpha"})
 	if writeErr == nil {
 		t.Error("WriteUserMCP silently succeeded against a malformed ~/.claude.json")
-	} else if !mentionsParseFailure(writeErr) {
-		t.Errorf("WriteUserMCP error does not name the parse problem: %v", writeErr)
+	} else if !mentionsReadFailure(writeErr) {
+		t.Errorf("WriteUserMCP error does not name why the read failed: %v", writeErr)
 	}
 	assertByteIdentical(t, userConfig, original, "WriteUserMCP")
 }
@@ -176,9 +184,115 @@ func TestSafeioRefusesDroppingTopLevelKeys(t *testing.T) {
 	assertByteIdentical(t, path, populated, "empty SafeOverwrite")
 }
 
-func mentionsParseFailure(err error) bool {
+// mentionsReadFailure accepts any error that names why the config could not be
+// read — a parse problem or an I/O one. Named for the boundary, not for the one
+// failure mode the first version of these tests happened to build.
+func mentionsReadFailure(err error) bool {
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not valid json") ||
-		strings.Contains(msg, "failed to parse") ||
-		strings.Contains(msg, "invalid character")
+	for _, want := range []string{
+		"not valid json", "failed to parse", "invalid character",
+		"permission denied", "is a directory", "read ",
+	} {
+		if strings.Contains(msg, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestUnreadableClaudeConfigIsNeverRewritten widens the guard past malformed
+// JSON: a config that cannot be read at all must abort the mutation too, not
+// fall through to a fresh document.
+func TestUnreadableClaudeConfigIsNeverRewritten(t *testing.T) {
+	if u, err := user.Current(); err == nil && u.Uid == "0" {
+		t.Skip("running as root: file permissions would not block the read")
+	}
+	for _, scope := range []string{"project", "global"} {
+		t.Run(scope, func(t *testing.T) {
+			home := mcpStoreEnv(t)
+			project := t.TempDir()
+			path := filepath.Join(home, ".claude-cfg", ".claude.json")
+			populated := []byte(`{"numStartups":9,"theme":"dark","mcpServers":{"beta":{"command":"b"}}}`)
+			if err := os.WriteFile(path, populated, 0o600); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			// Unreadable, but present and non-empty.
+			if err := os.Chmod(path, 0o000); err != nil {
+				t.Fatalf("chmod: %v", err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+			err := NewDefaultMCPManager().Attach(MCPTarget{Tool: "claude", ProjectPath: project}, "alpha", scope)
+			if err == nil {
+				t.Fatalf("attach in scope %q silently succeeded against an unreadable config", scope)
+			}
+
+			if err := os.Chmod(path, 0o600); err != nil {
+				t.Fatalf("restore perms: %v", err)
+			}
+			assertByteIdentical(t, path, populated, "attach against an unreadable config")
+		})
+	}
+}
+
+// TestConfigDirectoryInPlaceOfFileIsNeverRewritten covers the other read
+// failure: something that is not a regular file where the config belongs.
+func TestConfigDirectoryInPlaceOfFileIsNeverRewritten(t *testing.T) {
+	home := mcpStoreEnv(t)
+	project := t.TempDir()
+	path := filepath.Join(home, ".claude-cfg", ".claude.json")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir in place of config: %v", err)
+	}
+	marker := filepath.Join(path, "keep-me")
+	if err := os.WriteFile(marker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	if err := NewDefaultMCPManager().Attach(MCPTarget{Tool: "claude", ProjectPath: project}, "alpha", "global"); err == nil {
+		t.Error("attach silently succeeded with a directory where the config belongs")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("the directory standing in for the config was clobbered: %v", err)
+	}
+}
+
+// TestEmptyConfigStartsFreshRatherThanFailing draws the other side of the line:
+// a missing or empty file is NOT a read failure. Refusing there would make a
+// first-ever attach impossible, which is the inverted bug the hand-rolled
+// ClearProjectMCPs copy had.
+func TestEmptyConfigStartsFreshRatherThanFailing(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, path string)
+	}{
+		{"absent", func(t *testing.T, path string) {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove: %v", err)
+			}
+		}},
+		{"empty", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatalf("truncate: %v", err)
+			}
+		}},
+		{"whitespace only", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("\n  \n"), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := mcpStoreEnv(t)
+			project := t.TempDir()
+			tc.setup(t, filepath.Join(home, ".claude-cfg", ".claude.json"))
+
+			if err := NewDefaultMCPManager().Attach(MCPTarget{Tool: "claude", ProjectPath: project}, "alpha", "global"); err != nil {
+				t.Errorf("a %s config should start fresh, not fail: %v", tc.name, err)
+			}
+		})
+	}
 }
