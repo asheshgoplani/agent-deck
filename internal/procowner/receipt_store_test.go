@@ -67,14 +67,14 @@ func mutate(t *testing.T, data []byte, fn func(map[string]any)) []byte {
 }
 
 func TestStore_SaveLoadClear(t *testing.T) {
-	store := NewStore(t.TempDir())
+	store := NewStore(t.TempDir(), NoCrossProcessLock)
 	receipt := liveReceipt("inst-1", Member{PID: 100, StartID: "5000", UID: 1000, Role: RoleLeader})
 
 	loaded, err := store.Load("inst-1")
 	require.NoError(t, err)
 	assert.Nil(t, loaded, "no receipt is not an error")
 
-	require.NoError(t, store.Save(receipt))
+	require.NoError(t, commit(store, receipt))
 	loaded, err = store.Load("inst-1")
 	require.NoError(t, err)
 	require.NotNil(t, loaded)
@@ -88,8 +88,8 @@ func TestStore_SaveLoadClear(t *testing.T) {
 
 func TestStore_ReceiptsAreWrittenPrivate(t *testing.T) {
 	dir := t.TempDir()
-	store := NewStore(filepath.Join(dir, "ownership"))
-	require.NoError(t, store.Save(liveReceipt("inst-1", Member{PID: 100, StartID: "5000", UID: 1000, Role: RoleLeader})))
+	store := NewStore(filepath.Join(dir, "ownership"), NoCrossProcessLock)
+	require.NoError(t, commit(store, liveReceipt("inst-1", Member{PID: 100, StartID: "5000", UID: 1000, Role: RoleLeader})))
 
 	path, err := store.Path("inst-1")
 	require.NoError(t, err)
@@ -101,14 +101,14 @@ func TestStore_ReceiptsAreWrittenPrivate(t *testing.T) {
 // Two restarts racing: the loser's write must not land on top of the winner's
 // receipt, and its late clear must not delete the winner's.
 func TestStore_GenerationConflictsAreRefused(t *testing.T) {
-	store := NewStore(t.TempDir())
+	store := NewStore(t.TempDir(), NoCrossProcessLock)
 	newer := liveReceipt("inst-1", Member{PID: 200, StartID: "6000", UID: 1000, Role: RoleLeader})
 	newer.Generation = 5
-	require.NoError(t, store.Save(newer))
+	require.NoError(t, commit(store, newer))
 
 	stale := liveReceipt("inst-1", Member{PID: 100, StartID: "5000", UID: 1000, Role: RoleLeader})
 	stale.Generation = 4
-	err := store.Save(stale)
+	err := commit(store, stale)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrGenerationConflict))
 
@@ -120,7 +120,12 @@ func TestStore_GenerationConflictsAreRefused(t *testing.T) {
 	// already reaped and replaced must not overwrite or delete the live one.
 	sameGen := liveReceipt("inst-1", Member{PID: 300, StartID: "7000", UID: 1000, Role: RoleLeader})
 	sameGen.Generation = 5
-	err = store.Save(sameGen)
+	err = commit(store, sameGen)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrGenerationConflict))
+	err = store.Update("inst-1", func(current *Receipt) error {
+		return RequireGeneration(current, sameGen.Generation, sameGen.Leader)
+	})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrGenerationConflict))
 	err = store.Clear(sameGen)
@@ -134,12 +139,14 @@ func TestStore_GenerationConflictsAreRefused(t *testing.T) {
 }
 
 func TestStore_SameGenerationMayAddMembers(t *testing.T) {
-	store := NewStore(t.TempDir())
+	store := NewStore(t.TempDir(), NoCrossProcessLock)
 	receipt := liveReceipt("inst-1", Member{PID: 100, StartID: "5000", UID: 1000, Role: RoleLeader})
-	require.NoError(t, store.Save(receipt))
+	require.NoError(t, commit(store, receipt))
 
-	receipt.Members = append(receipt.Members, Member{PID: 101, StartID: "5100", UID: 1000, Role: RoleDescendant})
-	require.NoError(t, store.Save(receipt))
+	require.NoError(t, store.Update("inst-1", func(current *Receipt) error {
+		current.Members = append(current.Members, Member{PID: 101, StartID: "5100", UID: 1000, Role: RoleDescendant})
+		return nil
+	}))
 
 	loaded, err := store.Load("inst-1")
 	require.NoError(t, err)
@@ -148,7 +155,7 @@ func TestStore_SameGenerationMayAddMembers(t *testing.T) {
 
 func TestStore_CorruptReceiptSurfacesAsAnError(t *testing.T) {
 	dir := t.TempDir()
-	store := NewStore(dir)
+	store := NewStore(dir, NoCrossProcessLock)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "inst-1.json"), []byte(`{"version":1,"inst`), 0o600))
 
 	_, err := store.Load("inst-1")
@@ -157,10 +164,14 @@ func TestStore_CorruptReceiptSurfacesAsAnError(t *testing.T) {
 
 	// A fresh spawn still gets a usable generation, and its write replaces the
 	// unreadable file rather than being blocked by it.
-	gen, err := store.NextGeneration("inst-1")
+	var seen *Receipt
+	fresh, err := store.Commit("inst-1", func(existing *Receipt) (*Receipt, error) {
+		seen = existing
+		return liveReceipt("inst-1", Member{PID: 100, StartID: "5000", UID: 1000, Role: RoleLeader}), nil
+	})
 	require.NoError(t, err)
-	assert.Equal(t, uint64(1), gen)
-	require.NoError(t, store.Save(liveReceipt("inst-1", Member{PID: 100, StartID: "5000", UID: 1000, Role: RoleLeader})))
+	assert.Nil(t, seen, "an unreadable receipt cannot claim a generation")
+	assert.Equal(t, uint64(1), fresh.Generation)
 	loaded, err := store.Load("inst-1")
 	require.NoError(t, err)
 	require.NotNil(t, loaded)
@@ -168,7 +179,7 @@ func TestStore_CorruptReceiptSurfacesAsAnError(t *testing.T) {
 
 func TestStore_ReceiptForAnotherInstanceIsRefused(t *testing.T) {
 	dir := t.TempDir()
-	store := NewStore(dir)
+	store := NewStore(dir, NoCrossProcessLock)
 	data, err := Encode(liveReceipt("inst-2", Member{PID: 100, StartID: "5000", UID: 1000, Role: RoleLeader}))
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "inst-1.json"), data, 0o600))
@@ -179,7 +190,7 @@ func TestStore_ReceiptForAnotherInstanceIsRefused(t *testing.T) {
 }
 
 func TestStore_RefusesInstanceIDsThatEscapeTheDirectory(t *testing.T) {
-	store := NewStore(t.TempDir())
+	store := NewStore(t.TempDir(), NoCrossProcessLock)
 	for _, id := range []string{"", "..", "../escape", "a/b", `a\b`, "."} {
 		_, err := store.Path(id)
 		require.Error(t, err, "id %q must be refused", id)
@@ -187,19 +198,44 @@ func TestStore_RefusesInstanceIDsThatEscapeTheDirectory(t *testing.T) {
 	}
 }
 
-func TestStore_NextGenerationIncrements(t *testing.T) {
-	store := NewStore(t.TempDir())
-	gen, err := store.NextGeneration("inst-1")
-	require.NoError(t, err)
-	assert.Equal(t, uint64(1), gen)
+// Commit hands the builder whatever is on disk and writes what it returns, all
+// inside one critical section — so a generation is chosen against state that
+// cannot change before the write lands.
+func TestStore_CommitSeesTheCurrentReceipt(t *testing.T) {
+	store := NewStore(t.TempDir(), NoCrossProcessLock)
 
-	receipt := liveReceipt("inst-1", Member{PID: 100, StartID: "5000", UID: 1000, Role: RoleLeader})
-	receipt.Generation = gen
-	require.NoError(t, store.Save(receipt))
-
-	gen, err = store.NextGeneration("inst-1")
+	first, err := store.Commit("inst-1", func(existing *Receipt) (*Receipt, error) {
+		assert.Nil(t, existing)
+		return liveReceipt("inst-1", Member{PID: 100, StartID: "5000", UID: 1000, Role: RoleLeader}), nil
+	})
 	require.NoError(t, err)
-	assert.Equal(t, uint64(2), gen)
+	assert.Equal(t, uint64(1), first.Generation)
+
+	second, err := store.Commit("inst-1", func(existing *Receipt) (*Receipt, error) {
+		require.NotNil(t, existing)
+		next := liveReceipt("inst-1", Member{PID: 200, StartID: "6000", UID: 1000, Role: RoleLeader})
+		next.Generation = existing.Generation + 1
+		return next, nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, uint64(2), second.Generation)
+
+	// A builder that declines leaves the receipt untouched: no claim is always
+	// safer than a claim that could not be substantiated.
+	_, err = store.Commit("inst-1", func(*Receipt) (*Receipt, error) {
+		return nil, errors.New("cannot substantiate this claim")
+	})
+	require.Error(t, err)
+	loaded, err := store.Load("inst-1")
+	require.NoError(t, err)
+	assert.Equal(t, 200, loaded.Leader.PID)
+}
+
+// commit writes a prepared receipt through the commit path, for tests that care
+// about the CAS rules rather than about generation selection.
+func commit(store *Store, r *Receipt) error {
+	_, err := store.Commit(r.InstanceID, func(*Receipt) (*Receipt, error) { return r, nil })
+	return err
 }
 
 func TestClaim_RecordsLeaderIdentityAtSpawn(t *testing.T) {
