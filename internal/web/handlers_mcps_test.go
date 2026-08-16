@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -521,5 +522,84 @@ func TestMCPTargetCarriesTheSessionTool(t *testing.T) {
 	last := mgr.targets[len(mgr.targets)-1]
 	if last.Tool != "gemini" || last.ProjectPath != "/srv/beta" {
 		t.Errorf("manager got target %+v, want tool=gemini path=/srv/beta", last)
+	}
+}
+
+// TestAttachDefaultsToTheToolsOwnScope is the regression test for the pane
+// hardcoding "local".
+//
+// Codex and Gemini are global-only, so a bodyless attach that defaulted to
+// "local" was refused every time — the primary MCP workflow was unusable for
+// both tools. The default now comes from the tool's capability, and the
+// response reports the scope actually used so the client can show it.
+func TestAttachDefaultsToTheToolsOwnScope(t *testing.T) {
+	for _, tc := range []struct {
+		sessionID string
+		tool      string
+		wantScope string
+	}{
+		{"sess-001", "claude", "local"},
+		{"sess-002", "gemini", "global"},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			mgr := newFakeMCPManager()
+			srv := newMCPTestServer(t, mgr, true)
+
+			// No body at all: the server must pick the scope, not the caller.
+			req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+tc.sessionID+"/mcps/exa", nil)
+			req.Header.Set("Origin", "http://"+req.Host)
+			rr := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+			}
+			var resp map[string]string
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp["scope"] != tc.wantScope {
+				t.Errorf("attach for %q used scope %q, want %q", tc.tool, resp["scope"], tc.wantScope)
+			}
+			if len(mgr.attachCalls) != 1 || mgr.attachCalls[0].Scope != tc.wantScope {
+				t.Errorf("manager saw %+v, want a single attach in %q", mgr.attachCalls, tc.wantScope)
+			}
+		})
+	}
+}
+
+// TestSessionMCPsResponseReportsScopesAndProject pins the contract the pane
+// depends on: the server states which scopes exist, so the client never
+// hardcodes one, and Claude's project map is its own field.
+func TestSessionMCPsResponseReportsScopesAndProject(t *testing.T) {
+	mgr := newFakeMCPManager()
+	srv := newMCPTestServer(t, mgr, true)
+
+	for _, tc := range []struct {
+		sessionID  string
+		tool       string
+		wantScopes []string
+	}{
+		{"sess-001", "claude", []string{"local", "project", "global", "user"}},
+		{"sess-002", "gemini", []string{"global"}},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+tc.sessionID+"/mcps", nil)
+			rr := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+			}
+			var resp SessionMCPsResponse
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if !slices.Equal(resp.Scopes, tc.wantScopes) {
+				t.Errorf("scopes = %v, want %v", resp.Scopes, tc.wantScopes)
+			}
+			if resp.Project == nil {
+				t.Error("project must be present (empty array, not null) so clients can render it")
+			}
+		})
 	}
 }

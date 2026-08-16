@@ -41,7 +41,7 @@ func (f *fixtureMCPManager) ListAttached(target web.MCPTarget) (map[string][]str
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make(map[string][]string, 3)
-	for _, scope := range []string{"local", "global", "user"} {
+	for _, scope := range []string{"local", "project", "global", "user"} {
 		names := f.attached[target.ProjectPath][scope]
 		cp := append([]string(nil), names...)
 		sort.Strings(cp)

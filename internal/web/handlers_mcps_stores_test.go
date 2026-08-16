@@ -169,11 +169,24 @@ func TestNonClaudeToolDoesNotTouchClaudeConfig(t *testing.T) {
 	// Codex is supported by the MCP manager but keeps its servers in its own
 	// config, so this must not write Claude's file.
 	target := MCPTarget{Tool: "codex", ProjectPath: project}
-	_ = mgr.Attach(target, "beta", "global")
+	if err := mgr.Attach(target, "beta", "global"); err != nil {
+		t.Fatalf("attach beta in codex global scope: %v", err)
+	}
 
-	after, err := os.ReadFile(claudeConfig)
+	// Confirm the write actually landed in Codex's own store. Without this the
+	// two assertions below would hold trivially for a no-op attach, and the
+	// test would pass for the wrong reason.
+	attached, err := mgr.ListAttached(target)
 	if err != nil {
-		t.Fatalf("read claude config: %v", err)
+		t.Fatalf("ListAttached: %v", err)
+	}
+	if !slices.Contains(attached["global"], "beta") {
+		t.Fatalf("codex attach did not reach the codex store; global=%v", attached["global"])
+	}
+
+	after, readErr := os.ReadFile(claudeConfig)
+	if readErr != nil {
+		t.Fatalf("read claude config: %v", readErr)
 	}
 	if string(after) != string(seed) {
 		t.Errorf("a codex session's MCP attach modified Claude's config.\nbefore: %s\nafter:  %s", seed, after)
@@ -212,11 +225,16 @@ func TestScopesAreRefusedWhenTheToolDoesNotHaveThem(t *testing.T) {
 	}
 }
 
-// TestClaudeGlobalScopeCoversProjectEntries documents where the Claude config's
-// projects[path].mcpServers entries belong. They are part of the GLOBAL bucket,
-// exactly as the TUI dialog groups them; treating them as "local" is what
-// crossed the stores in the first place.
-func TestClaudeGlobalScopeCoversProjectEntries(t *testing.T) {
+// TestClaudeProjectEntriesAreTheirOwnScope replaces an earlier test that
+// asserted projects[path].mcpServers belonged to the GLOBAL bucket, mirroring
+// how the TUI dialog merges the two for display.
+//
+// That grouping was wrong for a read/write API: the global write path only
+// touches the root mcpServers map, so a "global" detach of a project entry
+// reported success and left it attached. The scopes are modelled separately
+// now, and each is written where it is reported. See
+// TestClaudeProjectScopeIsWrittenWhereItIsReported for the write half.
+func TestClaudeProjectEntriesAreTheirOwnScope(t *testing.T) {
 	home := mcpStoreEnv(t)
 	project := t.TempDir()
 
@@ -239,11 +257,14 @@ func TestClaudeGlobalScopeCoversProjectEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAttached: %v", err)
 	}
-	if !slices.Contains(attached["global"], "gamma") {
-		t.Errorf("Claude projects[path] entries belong to the global scope, got global=%v local=%v",
-			attached["global"], attached["local"])
+	if !slices.Contains(attached["project"], "gamma") {
+		t.Errorf("projects[path] entries belong to the project scope, got project=%v", attached["project"])
+	}
+	if slices.Contains(attached["global"], "gamma") {
+		t.Errorf("project entries must not be folded into global (the global write path cannot "+
+			"remove them), got global=%v", attached["global"])
 	}
 	if slices.Contains(attached["local"], "gamma") {
-		t.Errorf("Claude projects[path] entries must NOT be reported as local (.mcp.json), got %v", attached["local"])
+		t.Errorf("project entries must not be reported as local (.mcp.json), got %v", attached["local"])
 	}
 }

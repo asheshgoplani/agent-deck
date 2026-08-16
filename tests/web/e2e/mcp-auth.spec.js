@@ -140,6 +140,31 @@ test.describe('MCP management — authenticated browser path', () => {
     await expect(page.getByTestId('mcp-error')).toBeHidden()
   })
 
+  test('attaching for a global-only tool uses that tool\'s scope, not a hardcoded local', async ({ page }) => {
+    // sess-003 is a Codex session. Codex has no project-local MCP store, so a
+    // pane that hardcoded scope "local" had every attach rejected. The pane
+    // now takes the scope list from the server and defaults to the tool's own
+    // most-specific store.
+    await page.goto(`${baseURL}/s/sess-003?token=${TOKEN}`)
+    await page.getByRole('button', { name: 'MCPs', exact: true }).click()
+    await expect(page.getByTestId('mcp-pane')).toBeVisible()
+
+    await page.getByTestId('mcp-attach-exa').click()
+    await expect(page.getByTestId('mcp-attached-exa')).toBeVisible()
+    await expect(page.getByTestId('mcp-error')).toBeHidden()
+
+    // It must have landed in Codex's global scope.
+    const list = await page.request.get(`${baseURL}/api/sessions/sess-003/mcps`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })
+    const body = await list.json()
+    expect(body.global).toContain('exa')
+    expect(body.local).not.toContain('exa')
+    // And the server tells the client Codex is global-only, so the scope
+    // dropdown cannot offer an unsupported destination.
+    expect(body.scopes).toEqual(['global'])
+  })
+
   test('a session whose tool has no MCP store says so instead of offering buttons', async ({ page }) => {
     // sess-004 is a shell session. The server refuses MCP routes for it, so the
     // pane must not render a catalog whose every button would fail.
