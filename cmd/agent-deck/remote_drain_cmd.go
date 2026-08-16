@@ -138,7 +138,10 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 	records, err := fetch(context.Background(), name, rc)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: remote '%s' (%s) could not be drained: %v\n", name, rc.Host, err)
-		fmt.Fprintln(stderr, "Nothing was pulled. This is NOT an empty inbox — the remote never answered.")
+		// True for both shapes of failure: a host that never answered, and a
+		// host that answered "I cannot read my own records" (review P2c). The
+		// underlying error above says which.
+		fmt.Fprintln(stderr, "Nothing was pulled. This is a FAILED drain, NOT an empty inbox.")
 		return drainExitUnreachable
 	}
 

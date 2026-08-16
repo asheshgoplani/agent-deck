@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -60,6 +61,15 @@ import (
 //   - the pending per-parent inbox files (inboxes/*.jsonl) — the transition
 //     records (running→waiting, quota-stalled) already committed on this host
 //     and not yet consumed.
+//   - the reserved _unowned ledger among those files (unowned_inbox.go) — the
+//     transitions of sessions with NO parent on this machine, which is the
+//     steady state for a worker whose conductor is on another host. Without it
+//     a drain returns completions but never the stall that the field report is
+//     actually about (review P1).
+//
+// Records for sessions that opted out of transition notifications are dropped
+// (review P2a), and an unreadable record file is an error rather than a shorter
+// list (review P2c).
 //
 // Records are ordered oldest-first (Timestamp, then child id) so the output is
 // stable across calls.
@@ -77,6 +87,10 @@ func ExportPendingRecords() ([]TransitionNotificationEvent, error) {
 	out = append(out, ledger...)
 	out = append(out, pending...)
 	out = dedupByEventFingerprint(out)
+	out, err = dropSuppressedChildren(out)
+	if err != nil {
+		return nil, err
+	}
 
 	sort.SliceStable(out, func(i, j int) bool {
 		if !out[i].Timestamp.Equal(out[j].Timestamp) {
@@ -106,11 +120,74 @@ func dedupByEventFingerprint(events []TransitionNotificationEvent) []TransitionN
 	return out
 }
 
+// dropSuppressedChildren removes records for sessions that opted OUT of
+// transition notifications (review P2a).
+//
+// RunTaskWorker writes a completion ledger entry BEFORE DeliverCompletion
+// rejects delivery with no_notify, so a suppressed session still leaves a
+// ledger entry behind. Exporting it would hand a remote conductor the very
+// completion the user explicitly silenced — suppression is a choice, and ssh is
+// not a way around it.
+//
+// The predicate is instanceAcceptsTransitionEvents, the same one the emission
+// path uses, so "is this session accepting transition events" has one answer in
+// this repo and not two.
+//
+// A child that is no longer in the registry cannot be proven suppressed, and its
+// completion is exactly the report a conductor is waiting for, so it is kept.
+func dropSuppressedChildren(events []TransitionNotificationEvent) ([]TransitionNotificationEvent, error) {
+	if len(events) == 0 {
+		return events, nil
+	}
+	profiles := map[string]struct{}{}
+	for _, ev := range events {
+		if p := strings.TrimSpace(ev.Profile); p != "" {
+			profiles[p] = struct{}{}
+		}
+	}
+
+	suppressed := map[string]bool{} // "<profile>\x00<child>" -> true
+	for profile := range profiles {
+		storage, err := NewStorageWithProfile(profile)
+		if err != nil {
+			// The registry is unavailable, so suppression is UNKNOWN. Failing is
+			// the honest answer: silently exporting could override an opt-out,
+			// and silently dropping could hide a completion.
+			return nil, fmt.Errorf("export: cannot read the %q registry to honor notification opt-outs: %w", profile, err)
+		}
+		instances, _, err := storage.LoadWithGroups()
+		storage.Close()
+		if err != nil {
+			return nil, fmt.Errorf("export: cannot read the %q registry to honor notification opt-outs: %w", profile, err)
+		}
+		for _, inst := range instances {
+			if !instanceAcceptsTransitionEvents(inst) {
+				suppressed[profile+"\x00"+inst.ID] = true
+			}
+		}
+	}
+
+	out := make([]TransitionNotificationEvent, 0, len(events))
+	for _, ev := range events {
+		if suppressed[strings.TrimSpace(ev.Profile)+"\x00"+strings.TrimSpace(ev.ChildSessionID)] {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out, nil
+}
+
 // exportLedgerRecords reads the completion ledger and synthesizes one finished
 // event per entry. Read-only: the ledger is explicitly the store a parent may
 // query "without consuming any delivery event" (see completion_ledger.go).
+//
+// An unreadable or corrupt entry is an ERROR, never a silent omission (review
+// P2c): swallowing it would let a host whose records cannot be read answer a
+// drain with "nothing to report", which is the same lie as reporting an
+// unreachable host as empty. The export is small and rarely-failing; when it
+// does fail the operator gets the file name.
 func exportLedgerRecords() ([]TransitionNotificationEvent, error) {
-	dir, err := completionLedgerDir()
+	dir, err := CompletionLedgerDir()
 	if err != nil {
 		return nil, err
 	}
@@ -127,9 +204,15 @@ func exportLedgerRecords() ([]TransitionNotificationEvent, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		entry, ok := readLedgerFile(filepath.Join(dir, e.Name()))
-		if !ok {
-			continue // unreadable or corrupt entry: skip, don't fail the export
+		path := filepath.Join(dir, e.Name())
+		entry, err := readLedgerFile(path)
+		if err != nil {
+			// A file that vanished between ReadDir and open is a benign race
+			// (the ledger is rewritten atomically), not an unreadable record.
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("export: unreadable completion ledger entry %s: %w", e.Name(), err)
 		}
 		out = append(out, completionLedgerEvent(entry))
 	}
@@ -159,7 +242,15 @@ func completionLedgerEvent(e CompletionLedgerEntry) TransitionNotificationEvent 
 }
 
 // exportInboxRecords reads every per-parent inbox file without consuming any of
-// them. The dead-letter subdirectory is skipped by the IsDir check.
+// them — including the reserved _unowned ledger, which is where a transition
+// whose parent is not on this machine is kept (review P1). The dead-letter
+// subdirectory is skipped by the IsDir check.
+//
+// As in exportLedgerRecords, an unreadable file is an error rather than a
+// silent omission (review P2c). Individual unparseable LINES are still skipped,
+// matching every other reader of this format (ReadAndTruncateInbox,
+// readInboxEventsLocked): a torn tail line from a crash must not make a host
+// undrainable, and a scanner-level failure still surfaces here.
 func exportInboxRecords() ([]TransitionNotificationEvent, error) {
 	dir := InboxDir()
 	entries, err := os.ReadDir(dir)
@@ -183,8 +274,7 @@ func exportInboxRecords() ([]TransitionNotificationEvent, error) {
 		}
 		events, err := readInboxEventsLocked(filepath.Join(dir, e.Name()))
 		if err != nil {
-			// One unreadable inbox must not hide every other host record.
-			continue
+			return nil, fmt.Errorf("export: unreadable inbox %s: %w", e.Name(), err)
 		}
 		out = append(out, events...)
 	}
@@ -206,14 +296,24 @@ func ReadInboxEvents(parentSessionID string) ([]TransitionNotificationEvent, err
 // readLedgerFile parses one completion-ledger file. Shared by ReadLedgerEntry
 // (which addresses it by child id) and the export walk (which addresses it by
 // directory entry), so there is exactly one parse of this format.
-func readLedgerFile(path string) (CompletionLedgerEntry, bool) {
+//
+// It returns the error rather than a bool because its two callers need
+// different answers: a lookup treats every failure as "no entry", while the
+// export must distinguish a missing file from an unreadable one (review P2c).
+func readLedgerFile(path string) (CompletionLedgerEntry, error) {
 	data, err := os.ReadFile(path)
-	if err != nil || len(data) == 0 {
-		return CompletionLedgerEntry{}, false
+	if err != nil {
+		return CompletionLedgerEntry{}, err
+	}
+	if len(data) == 0 {
+		return CompletionLedgerEntry{}, fmt.Errorf("empty ledger file")
 	}
 	var e CompletionLedgerEntry
 	if err := json.Unmarshal(data, &e); err != nil {
-		return CompletionLedgerEntry{}, false
+		return CompletionLedgerEntry{}, err
 	}
-	return e, true
+	if strings.TrimSpace(e.ChildID) == "" {
+		return CompletionLedgerEntry{}, fmt.Errorf("ledger entry has no child id")
+	}
+	return e, nil
 }
