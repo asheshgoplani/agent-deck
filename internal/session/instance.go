@@ -480,8 +480,9 @@ type Instance struct {
 	// instead of announcing a success that never reached disk. Guarded by its
 	// own mutex rather than i.mu so the DB write never runs under the lock the
 	// TUI reads status through. See restart_tmux_persist.go.
-	restartTmuxRecordMu  sync.Mutex
-	restartTmuxRecordErr error
+	restartTmuxRecordMu     sync.Mutex
+	restartTmuxRecordErr    error
+	restartTmuxRecordStamps statedb.WriteStamps
 
 	// SSE-based status detection for OpenCode (set by OpenCodeSSEWatcher,
 	// issue #1614). Not persisted; rebuilt from the live event stream.
@@ -7997,10 +7998,10 @@ func (i *Instance) restart(env map[string]string) error {
 	// the only place that has to make it durable. Callers that never save --
 	// mcp/skill/plugin attach|detach --restart -- used to leave the killed
 	// session's name on disk, so agent-deck reported a live session as broken
-	// and orphaned its tmux session. See restart_tmux_persist.go for why this
-	// is a targeted write and why a failure here is recorded rather than
-	// returned.
-	i.recordRestartTmuxName()
+	// and orphaned its tmux session. Status travels with it because the two are
+	// one fact about the restart. See restart_tmux_persist.go for why this is a
+	// targeted write and why a failure here is recorded rather than returned.
+	i.recordRestartOutcome()
 
 	return nil
 }

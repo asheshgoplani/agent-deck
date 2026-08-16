@@ -65,7 +65,7 @@ func storedTmuxName(t *testing.T, storage *Storage, id string) string {
 	return ""
 }
 
-// TestRestartRecordsTheTmuxNameItMints drives the real Instance.Restart against
+// TestRestartRecordsWhatItProduced drives the real Instance.Restart against
 // a real tmux server (TestMain's isolated TMUX_TMPDIR keeps the host's sessions
 // untouched) and asserts the name it mints reaches the state DB.
 //
@@ -80,7 +80,7 @@ func storedTmuxName(t *testing.T, storage *Storage, id string) string {
 // looks like after a reboot or a tmux server restart, and it is what forces
 // restart() down the fallback-recreate path instead of a respawn-in-place fast
 // path (which keeps the name and so needs no write).
-func TestRestartRecordsTheTmuxNameItMints(t *testing.T) {
+func TestRestartRecordsWhatItProduced(t *testing.T) {
 	skipIfNoTmuxBinary(t)
 
 	const oldName = "agentdeck_restartpersist_deadbeef"
@@ -113,6 +113,29 @@ func TestRestartRecordsTheTmuxNameItMints(t *testing.T) {
 	recorded, err := inst.RestartTmuxNameRecorded()
 	if !recorded || err != nil {
 		t.Errorf("RestartTmuxNameRecorded() = (%v, %v), want (true, nil)", recorded, err)
+	}
+
+	// The status the restart ended in travels with the name: a row naming a
+	// live pane but still marked error misreports the session just as badly.
+	rows, err := storage.GetDB().LoadInstances()
+	if err != nil {
+		t.Fatalf("LoadInstances: %v", err)
+	}
+	for _, r := range rows {
+		if r.ID == inst.ID && r.Status != string(inst.Status) {
+			t.Errorf("stored status = %q, want %q", r.Status, inst.Status)
+		}
+	}
+
+	// The write has to be identifiable as ours, or a TUI reads its own restart
+	// as an external change and abandons the save carrying the rest of it.
+	stamps := inst.RestartRecordStamps()
+	current, err := storage.GetDB().LastModified()
+	if err != nil {
+		t.Fatalf("LastModified: %v", err)
+	}
+	if !stamps.SoleWriterSince(stamps.Before, current) {
+		t.Errorf("restart write is not recognisable as our own: stamps=%+v current=%d", stamps, current)
 	}
 }
 

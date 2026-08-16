@@ -12,8 +12,9 @@ import (
 // restart's new tmux session name could not be recorded anywhere.
 var errNoStateDB = errors.New("no state database open in this process")
 
-// recordRestartTmuxName durably records the tmux session name the restart just
-// minted, at the one place that mints it.
+// recordRestartOutcome durably records what the restart just produced — the
+// tmux session name it minted and the status it ended in — at the one place
+// that produces them.
 //
 // restart()'s fallback-recreate path calls recreateTmuxSession, whose
 // tmux.NewSession appends a fresh short id unconditionally, so the name that
@@ -42,42 +43,44 @@ var errNoStateDB = errors.New("no state database open in this process")
 // and leak another tmux session, which is the original bug's own failure mode.
 // It is recorded instead, and RestartTmuxNameRecorded lets callers with no
 // other save on their path say plainly that the outcome is unknown.
-func (i *Instance) recordRestartTmuxName() {
-	err := i.writeRestartTmuxName()
+func (i *Instance) recordRestartOutcome() {
+	stamps, err := i.writeRestartOutcome()
 
 	i.restartTmuxRecordMu.Lock()
 	i.restartTmuxRecordErr = err
+	i.restartTmuxRecordStamps = stamps
 	i.restartTmuxRecordMu.Unlock()
 
 	if err != nil {
-		sessionLog.Warn("restart_tmux_name_persist_failed",
+		sessionLog.Warn("restart_outcome_persist_failed",
 			slog.String("instance_id", i.ID),
 			slog.String("error", err.Error()))
 	}
 }
 
-// writeRestartTmuxName performs the targeted write and reports what stopped it.
-func (i *Instance) writeRestartTmuxName() error {
+// writeRestartOutcome performs the targeted write and reports what stopped it.
+func (i *Instance) writeRestartOutcome() (statedb.WriteStamps, error) {
 	name := ""
 	if i.tmuxSession != nil {
 		name = i.tmuxSession.Name
 	}
 	if name == "" {
-		return errors.New("restart left no tmux session name to record")
+		return statedb.WriteStamps{}, errors.New("restart left no tmux session name to record")
 	}
 
 	db := statedb.GetGlobal()
 	if db == nil {
-		return errNoStateDB
+		return statedb.WriteStamps{}, errNoStateDB
 	}
-	if err := db.WriteTmuxSession(i.ID, name); err != nil {
-		return fmt.Errorf("record tmux session name %q: %w", name, err)
+	stamps, err := db.WriteRestartOutcome(i.ID, name, string(i.Status), i.Tool)
+	if err != nil {
+		return statedb.WriteStamps{}, fmt.Errorf("record restart outcome for tmux session %q: %w", name, err)
 	}
-	return nil
+	return stamps, nil
 }
 
 // RestartTmuxNameRecorded reports whether the last restart of this instance
-// managed to record the tmux session name it minted, and if not, why.
+// managed to record what it produced, and if not, why.
 //
 // It answers a question a CLI command cannot otherwise answer: the restart
 // returned nil, so the process is live, but is agent-deck able to find it
@@ -91,4 +94,20 @@ func (i *Instance) RestartTmuxNameRecorded() (bool, error) {
 	i.restartTmuxRecordMu.Lock()
 	defer i.restartTmuxRecordMu.Unlock()
 	return i.restartTmuxRecordErr == nil, i.restartTmuxRecordErr
+}
+
+// RestartRecordStamps returns the last_modified values the last restart's
+// targeted write replaced and wrote, or the zero value if it recorded nothing.
+//
+// A process that both wrote and reads this database needs them to tell its own
+// bump apart from another process's change. Without that, the TUI reads the
+// write its own restart just made as an external change and abandons the save
+// that would have persisted the rest of the restart.
+func (i *Instance) RestartRecordStamps() statedb.WriteStamps {
+	i.restartTmuxRecordMu.Lock()
+	defer i.restartTmuxRecordMu.Unlock()
+	if i.restartTmuxRecordErr != nil {
+		return statedb.WriteStamps{}
+	}
+	return i.restartTmuxRecordStamps
 }
