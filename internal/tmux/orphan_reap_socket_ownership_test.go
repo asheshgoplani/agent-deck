@@ -214,3 +214,100 @@ func TestCandidateSocketPath_RefusesAnUnreadableEnvironment(t *testing.T) {
 
 	assert.False(t, ok, "an unreadable environment must not resolve to a socket")
 }
+
+// TestCandidateSocketPath_RefusesAnEmptyEnvironment pins the branch that
+// separates "no environment" from "an environment with nothing in it". A read
+// that succeeds with zero bytes leaves every lookup returning "", which
+// resolves confidently to the DEFAULT socket — and then judges the candidate
+// against a server it was never shown to be on.
+//
+// Measured on this kernel rather than assumed: a ZOMBIE's environ does not do
+// this, it fails outright (EPERM, or ENOENT once reaped) and is refused by the
+// error path above. What actually reads back empty-and-successful is a live
+// process exec'd with a genuinely empty environment, which is what this
+// constructs. agent-deck's own cadence clients inherit os.Environ(), so a
+// candidate with no environment at all is not one of ours to begin with.
+func TestCandidateSocketPath_RefusesAnEmptyEnvironment(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reads /proc/<pid>/environ")
+	}
+	cmd := exec.Command("sleep", "300")
+	cmd.Env = []string{} // exec'd with no environment at all
+	require.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+
+	// The premise. If this ever stops reading back empty-and-successful, the
+	// guard under test is dead code and this test must say so rather than keep
+	// passing for a different reason.
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/environ")
+	require.NoError(t, err, "the read must SUCCEED, or this pins the error path instead")
+	require.Empty(t, raw, "the environment must read back EMPTY, or this test pins nothing")
+
+	_, ok := candidateSocketPath(pid, []string{"tmux", "-L", "work", "list-clients"})
+
+	assert.False(t, ok, "an empty environment must not resolve to the default socket")
+}
+
+// TestCandidateSocketPath_RefusesACandidateInAnotherMountNamespace covers the
+// false-match direction, which is the dangerous one: a refusal only costs a
+// leaked client, a false match costs a live one.
+//
+// Same uid, same socket name, same resolved path STRING — and a different mount
+// namespace, so that string names a different file. String equality says "our
+// server", the query goes to ours, the candidate is unknown there, and the
+// verdict is a kill against a client attached and alive on the server it can
+// actually see.
+func TestCandidateSocketPath_RefusesACandidateInAnotherMountNamespace(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("mount namespaces are linux-only")
+	}
+	if _, err := exec.LookPath("unshare"); err != nil {
+		t.Skip("unshare(1) not available")
+	}
+
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	// -U -r: an unprivileged user namespace mapping us to root inside, which is
+	// what makes -m (a new mount namespace) available without real privilege.
+	cmd := exec.Command("unshare", "-Umr", "sh", "-c",
+		"echo ready > "+shQuote(ready)+"; exec sleep 300")
+	// The candidate's socket must resolve to the SAME STRING as ours, or this
+	// test would pass on a path mismatch and prove nothing about namespaces.
+	cmd.Env = append(os.Environ(), "TMUX_TMPDIR="+os.Getenv("TMUX_TMPDIR"), "TMUX=")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot create an unprivileged mount namespace here: %v", err)
+	}
+	pid := cmd.Process.Pid
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+	require.NoError(t, waitForFile(ready, 5*time.Second), "namespaced child never started")
+
+	// Premises: a different mount namespace, and an identical path string.
+	ourNS, err := os.Readlink("/proc/self/ns/mnt")
+	require.NoError(t, err)
+	theirNS, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/ns/mnt")
+	if err != nil {
+		t.Skipf("cannot read the child's mount namespace: %v", err)
+	}
+	require.NotEqual(t, ourNS, theirNS, "the child did not get its own mount namespace")
+
+	args := []string{"tmux", "-L", "nsprobe", "list-clients"}
+	lookupEnv, err := readProcessEnviron(pid)
+	require.NoError(t, err)
+	require.Equal(t,
+		normalizeTmpPath(resolveTmuxSocketPath(os.Getenv, os.Getuid(), "nsprobe", nil)),
+		normalizeTmpPath(resolveTmuxSocketPath(lookupEnv, os.Getuid(), "", args[1:])),
+		"the two paths must be the same STRING, or this test proves nothing about namespaces")
+
+	_, ok := candidateSocketPath(pid, args)
+
+	assert.False(t, ok,
+		"a candidate in another mount namespace resolves to the same path string but a "+
+			"different file; treating that as our socket is a kill verdict on a live client")
+}

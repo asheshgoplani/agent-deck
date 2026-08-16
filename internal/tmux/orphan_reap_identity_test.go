@@ -171,11 +171,8 @@ func fakeTmuxCandidateArgv(t *testing.T, role string, tmuxArgs []string, extraEn
 	require.NoError(t, err)
 	require.True(t, isReapableTmuxClientComm(string(comm)),
 		"the symlink must give the helper a tmux client's comm, got %q", strings.TrimSpace(string(comm)))
-	orphan, known := isControlClientOrphan(pid)
-	require.True(t, known,
-		"the helper's parentage must be readable, or the sweep would refuse it for the wrong reason")
-	require.True(t, orphan,
-		"the helper must be a genuine parentage orphan, or the sweep would preserve it for the wrong reason")
+	require.Equal(t, parentageOrphaned, isControlClientOrphan(pid),
+		"the helper must be a genuine parentage orphan, or the sweep would spare it for the wrong reason")
 
 	return pid
 }

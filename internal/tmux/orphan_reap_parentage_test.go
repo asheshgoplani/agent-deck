@@ -34,20 +34,36 @@ func TestIsControlClientOrphanFor_FailsClosedWhenParentageIsUnreadable(t *testin
 	strangerExe := func(int) (string, error) { return "/usr/bin/tmux", nil }
 
 	cases := []struct {
-		name       string
-		parentPID  func(int) (int, error)
-		probeAlive func(int) error
-		processExe func(int) (string, error)
-		wantOrphan bool
-		wantKnown  bool
+		name        string
+		parentPID   func(int) (int, error)
+		probeAlive  func(int) error
+		processExe  func(int) (string, error)
+		wantVerdict parentageVerdict
 	}{
 		{
-			name:      "parent pid unreadable",
+			name:      "parent pid unreadable while the candidate is still there",
 			parentPID: func(int) (int, error) { return 0, errors.New("no /proc, and ps failed too") },
 			// A host that cannot report parentage says nothing about whether a
 			// live TUI owns this client.
 			probeAlive: alive, processExe: agentDeckExe,
-			wantOrphan: false, wantKnown: false,
+			wantVerdict: parentageUnknown,
+		},
+		{
+			// The ordinary churn case, and NOT a refusal: candidates die during
+			// the gauntlet all the time (an earlier victim's grace runs in
+			// between). Reporting it as "could not establish whether a live TUI
+			// owns this client" would put a Warn about a safety-relevant
+			// failure on every normal sweep, and bury the ones that matter.
+			name:      "the candidate itself is gone",
+			parentPID: func(int) (int, error) { return 0, errors.New("no such process") },
+			probeAlive: func(probed int) error {
+				if probed == clientPID {
+					return syscall.ESRCH
+				}
+				return nil
+			},
+			processExe:  agentDeckExe,
+			wantVerdict: parentageCandidateGone,
 		},
 		{
 			name:      "parent liveness probe refused",
@@ -56,21 +72,21 @@ func TestIsControlClientOrphanFor_FailsClosedWhenParentageIsUnreadable(t *testin
 			// opposite of "the parent died", which is what this branch used to
 			// conclude from any error at all.
 			probeAlive: func(int) error { return syscall.EPERM }, processExe: agentDeckExe,
-			wantOrphan: false, wantKnown: false,
+			wantVerdict: parentageUnknown,
 		},
 		{
-			name:       "parent exe unreadable",
-			parentPID:  parentIs(parentPID),
-			probeAlive: alive,
-			processExe: func(int) (string, error) { return "", errors.New("permission denied") },
-			wantOrphan: false, wantKnown: false,
+			name:        "parent exe unreadable",
+			parentPID:   parentIs(parentPID),
+			probeAlive:  alive,
+			processExe:  func(int) (string, error) { return "", errors.New("permission denied") },
+			wantVerdict: parentageUnknown,
 		},
 		{
 			// Determinations, not read failures. These must keep saying orphan,
 			// or #595 cleanup goes inert and the pty table fills up again.
 			name:      "reparented to init",
 			parentPID: parentIs(1), probeAlive: alive, processExe: agentDeckExe,
-			wantOrphan: true, wantKnown: true,
+			wantVerdict: parentageOrphaned,
 		},
 		{
 			name:      "parent confirmed gone",
@@ -78,52 +94,39 @@ func TestIsControlClientOrphanFor_FailsClosedWhenParentageIsUnreadable(t *testin
 			// ESRCH is the kernel confirming there is no such process. The
 			// client is being orphaned right now.
 			probeAlive: func(int) error { return syscall.ESRCH }, processExe: agentDeckExe,
-			wantOrphan: true, wantKnown: true,
+			wantVerdict: parentageOrphaned,
 		},
 		{
 			name:      "live agent-deck parent",
 			parentPID: parentIs(parentPID), probeAlive: alive, processExe: agentDeckExe,
-			wantOrphan: false, wantKnown: true,
+			wantVerdict: parentageOwned,
 		},
 		{
 			name:      "live parent that is not agent-deck",
 			parentPID: parentIs(parentPID), probeAlive: alive, processExe: strangerExe,
-			wantOrphan: true, wantKnown: true,
+			wantVerdict: parentageOrphaned,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			orphan, known := isControlClientOrphanFor(tc.parentPID, tc.probeAlive, tc.processExe, clientPID)
-			assert.Equal(t, tc.wantKnown, known, "known")
-			assert.Equal(t, tc.wantOrphan, orphan, "orphan")
-			if !known {
-				assert.False(t, orphan,
-					"an unknown verdict must never also read as orphan: every caller "+
-						"that ignores `known` would then signal on a guess")
-			}
+			got := isControlClientOrphanFor(tc.parentPID, tc.probeAlive, tc.processExe, clientPID)
+			assert.Equal(t, tc.wantVerdict, got)
+			assert.Equal(t, tc.wantVerdict == parentageOrphaned, got.reapable(),
+				"only a positive orphan determination may authorise a signal")
 		})
 	}
 }
 
 // stubControlClientOrphan swaps the parentage seam for the duration of a test.
-func stubControlClientOrphan(t *testing.T, fn func(int) (bool, bool)) {
+func stubControlClientOrphan(t *testing.T, fn func(int) parentageVerdict) {
 	t.Helper()
 	original := controlClientOrphanOf
 	t.Cleanup(func() { controlClientOrphanOf = original })
 	controlClientOrphanOf = fn
 }
 
-// unknownParentage is the verdict the two call-site tests below stub in:
-// known=false, and orphan=true underneath it.
-//
-// isControlClientOrphanFor never produces that pair — the unit test above pins
-// that it cannot — and that is exactly why it is the right stub here. A caller
-// that reads `orphan` and ignores `known` sends the signal; a caller that checks
-// `known` first refuses. Stubbing known=false with orphan=false instead would
-// pass either way, since both gates end in "leave it alone", and would pin
-// nothing.
-func unknownParentage(int) (bool, bool) { return true, false }
+func alwaysUnknownParentage(int) parentageVerdict { return parentageUnknown }
 
 // TestSweepOrphanCandidates_RefusesUnknownParentage pins the orphan sweep's call
 // site: an indeterminate verdict must stop the gauntlet before the signal and be
@@ -134,7 +137,7 @@ func TestSweepOrphanCandidates_RefusesUnknownParentage(t *testing.T) {
 	c, _, ok := readOrphanCandidate(context.Background(), pid)
 	require.True(t, ok)
 	stubLiveTmuxIdentity(t, func(context.Context, int, []string) (bool, bool) { return false, true })
-	stubControlClientOrphan(t, unknownParentage)
+	stubControlClientOrphan(t, alwaysUnknownParentage)
 
 	killed, unclassifiable, notSignalled, unknownParent, unexamined :=
 		sweepOrphanCandidates(context.Background(), []orphanCandidate{c})
@@ -151,13 +154,37 @@ func TestSweepOrphanCandidates_RefusesUnknownParentage(t *testing.T) {
 	assert.NoError(t, syscall.Kill(pid, 0), "the candidate was signalled despite an unknown verdict")
 }
 
+// TestSweepOrphanCandidates_DoesNotReportAVanishedCandidateAsARefusal separates
+// the two things that used to share one answer. A candidate that exited during
+// the gauntlet is ordinary churn — earlier victims' grace periods run in between
+// — and counting it as "could not establish whether a live TUI owns this"
+// would put a safety-shaped Warn on routine sweeps and bury the real ones.
+func TestSweepOrphanCandidates_DoesNotReportAVanishedCandidateAsARefusal(t *testing.T) {
+	pid := fakeTmuxCandidate(t, "ignore")
+
+	c, _, ok := readOrphanCandidate(context.Background(), pid)
+	require.True(t, ok)
+	stubLiveTmuxIdentity(t, func(context.Context, int, []string) (bool, bool) { return false, true })
+	stubControlClientOrphan(t, func(int) parentageVerdict { return parentageCandidateGone })
+
+	killed, unclassifiable, notSignalled, unknownParent, unexamined :=
+		sweepOrphanCandidates(context.Background(), []orphanCandidate{c})
+
+	assert.Equal(t, 0, killed, "there is nothing left to kill")
+	assert.Equal(t, 0, unknownParent,
+		"a candidate that simply exited is not a refusal to establish its parentage")
+	assert.Equal(t, 0, unclassifiable)
+	assert.Equal(t, 0, notSignalled)
+	assert.Equal(t, 0, unexamined)
+}
+
 // TestReapStaleControlClients_RefusesUnknownParentage pins the same gate in the
 // other sweep. This one has no comm filter and no live-server query, so the
 // parentage check is the ONLY thing standing between a `list-clients` line and a
 // SIGTERM — a fail-open answer here is signalled immediately.
 func TestReapStaleControlClients_RefusesUnknownParentage(t *testing.T) {
 	pid := fakeTmuxCandidate(t, "ignore")
-	stubControlClientOrphan(t, unknownParentage)
+	stubControlClientOrphan(t, alwaysUnknownParentage)
 
 	killed := reapStaleControlClients(fmt.Sprintf("1 %d\n", pid), "(test)")
 

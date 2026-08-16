@@ -38,6 +38,13 @@ func TestCandidateSocketName(t *testing.T) {
 		{"bundled booleans before a separated -L", []string{"tmux", "-uL", "ad1031-xxx", "list-clients"}, "ad1031-xxx", true},
 		{"attached -S path is unresolvable via the -L-only factory", []string{"tmux", "-S/tmp/some/sock", "list-clients"}, "", false},
 		{"-C bundled with an attached -S", []string{"tmux", "-CS/tmp/some/sock", "attach-session"}, "", false},
+		// Repeated flags: tmux keeps the last. Reading the first names a server
+		// the candidate is not on — and since the query side would mis-read it
+		// the SAME way, the socket comparison in isLiveTmuxClientOrServer would
+		// agree with itself and prove nothing.
+		{"the LAST of a repeated -L wins", []string{"tmux", "-L", "first", "-L", "second", "list-clients"}, "second", true},
+		{"a -S anywhere in the run is still unresolvable", []string{"tmux", "-L", "name", "-S", "/tmp/s", "list-clients"}, "", false},
+		{"-- ends the global flags", []string{"tmux", "--", "-Lfoo", "list-clients"}, "", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -200,18 +200,39 @@ const tmuxValueFlags = "cfLST"
 // isolated, and for the orphan sweep a client that is alive on its own server
 // reads as not-live. So the scan walks each word one flag character at a time.
 //
-// Scanning still stops at the first argument that is not a flag, i.e. at the
-// tmux command itself. That boundary is load-bearing: `-S` means "socket path"
-// only as a global, and means "start line" to capture-pane
-// (`capture-pane -p -S -2000`, or `-S-2000`) and "status line" to
-// refresh-client. Treating a command-level -S as a socket would mistake "-2000"
-// for a socket path.
+// A repeated flag keeps its LAST value, because that is what getopt leaves
+// behind: tmux assigns as it parses, so the second `-L` overwrites the first.
+// Verified live on tmux 3.0a — `tmux -L zzza1 -L zzzb2 ls` reports "error
+// connecting to /tmp/tmux-1000/zzzb2", and `-S` behaves the same. Answering
+// with the FIRST value is not a harmless imprecision: it names a server tmux
+// will not talk to, so `-S <isolated> -S <the user's default>` reads as an
+// isolated spawn to assertTmuxSpawnIsolated while tmux kill-servers the user's
+// real fleet. It is also invisible to a socket comparison, since both sides of
+// that comparison would mis-read the same argv the same way and agree.
+//
+// Scanning stops at `--`, and at the first argument that is not a flag, i.e. at
+// the tmux command itself. Both boundaries are load-bearing:
+//
+//   - `--` ends the globals for getopt, so `tmux -- -Lfoo ls` treats -Lfoo as
+//     the COMMAND ("unknown command: -Lfoo" on 3.0a). Reading a selector out of
+//     it invents a server that was never named.
+//   - `-S` means "socket path" only as a global; it means "start line" to
+//     capture-pane (`capture-pane -p -S -2000`, or `-S-2000`) and "status line"
+//     to refresh-client. Treating a command-level -S as a socket would mistake
+//     "-2000" for a socket path.
+//
+// Values are returned verbatim. tmux does not trim them — `tmux -L ' name' ls`
+// really does resolve to a socket whose name begins with a space — and a parser
+// that trims names a different server than the one the argv asks for.
 func leadingFlagValue(args []string, flag byte) string {
+	value := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if arg == "--" {
+			return value // getopt stops here; the rest is the command
+		}
 		if len(arg) < 2 || arg[0] != '-' {
-			// The tmux command. Anything after this belongs to it.
-			return ""
+			return value // the tmux command; anything after belongs to it
 		}
 		for j := 1; j < len(arg); j++ {
 			c := arg[j]
@@ -220,23 +241,23 @@ func leadingFlagValue(args []string, flag byte) string {
 			}
 			// Everything after the flag letter is its value; an empty
 			// remainder means the value is the next word.
-			value := arg[j+1:]
-			if value == "" {
+			v := arg[j+1:]
+			if v == "" {
 				if i+1 >= len(args) {
-					return ""
+					return value
 				}
-				value = args[i+1]
+				v = args[i+1]
 				i++
 			}
 			if c == flag {
-				return strings.TrimSpace(value)
+				value = v // last occurrence wins, as getopt's assignment does
 			}
 			// A different value flag. Its value is consumed either way, so it
 			// can never be mistaken for a flag or for the command.
 			break
 		}
 	}
-	return ""
+	return value
 }
 
 // socketPathFromTmuxEnv extracts the socket path from a $TMUX value, which tmux

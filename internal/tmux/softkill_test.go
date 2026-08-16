@@ -395,7 +395,7 @@ func TestControlPipeClose_TerminatesCleanlyOnSIGTERM(t *testing.T) {
 		<-waitDone
 	})
 
-	_ = softKillProcessGroup(pgid, 500*time.Millisecond)
+	_ = softKillProcessGroup(pgid, 500*time.Millisecond, alwaysOurs)
 
 	select {
 	case <-waitDone:
@@ -444,7 +444,7 @@ func TestControlPipeClose_FallsBackToSIGKILL(t *testing.T) {
 	})
 
 	start := time.Now()
-	usedSIGKILL := softKillProcessGroup(pgid, 500*time.Millisecond)
+	usedSIGKILL := softKillProcessGroup(pgid, 500*time.Millisecond, alwaysOurs)
 	elapsed := time.Since(start)
 
 	select {
@@ -613,6 +613,6 @@ func TestSoftKillProcessGroup_AlreadyDeadIsNoop(t *testing.T) {
 	require.NoError(t, err)
 	_, _ = cmd.Process.Wait() // fully reap; group is now empty
 
-	usedSIGKILL := softKillProcessGroup(pgid, 100*time.Millisecond)
+	usedSIGKILL := softKillProcessGroup(pgid, 100*time.Millisecond, alwaysOurs)
 	assert.False(t, usedSIGKILL, "already-empty pgroup should not trigger SIGKILL")
 }

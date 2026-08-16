@@ -693,8 +693,8 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 	// immediately before each signal, and a pid that changed hands is refused.
 	for _, c := range candidates {
 		pid, identity := c.pid, c.identity
-		orphan, known := controlClientOrphanOf(pid)
-		if !known {
+		switch verdict := controlClientOrphanOf(pid); verdict {
+		case parentageUnknown:
 			// This sweep has no comm filter and no live-server query, so the
 			// parentage check is the only thing between a list-clients line and
 			// a SIGTERM. An indeterminate answer is not a licence to send one.
@@ -706,14 +706,28 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 					"parent's executable could not be read); refusing to signal rather than "+
 					"assume the owner is gone"))
 			continue
-		}
-		if !orphan {
+		case parentageCandidateGone:
+			pipeLog.Debug("skipped_control_client_already_gone",
+				slog.String("session", logging.SanitizeValue(sessionLabel)),
+				slog.Int("pid", pid))
+			continue
+		case parentageOwned:
 			// Live sibling TUI — leave its pipe alone. Without this guard
 			// two concurrent agent-deck TUIs (allow_multiple=true) would
 			// SIGTERM each other's control clients on every reconnect (#927).
 			pipeLog.Debug("preserved_live_sibling_control_client",
 				slog.String("session", logging.SanitizeValue(sessionLabel)),
 				slog.Int("pid", pid))
+			continue
+		case parentageOrphaned:
+			// The only verdict that reaches a signal. Fall through.
+		default:
+			// A verdict added later and not handled here must never reach the
+			// kill by default.
+			pipeLog.Warn("skipped_unhandled_parentage_verdict",
+				slog.String("session", logging.SanitizeValue(sessionLabel)),
+				slog.Int("pid", pid),
+				slog.Int("verdict", int(verdict)))
 			continue
 		}
 		// Soft-kill the stale control-mode client process.
@@ -953,18 +967,6 @@ func isKnownCadenceArgv(cmdline string) bool {
 // is no correctness reason to wait longer.
 var tmuxLiveQueryTimeout = 2 * time.Second
 
-// candidateSocketName extracts the -L <name> (or default) socket selector
-// from a poll-sweep candidate's OWN argv — cmdlineFields[0] is the program
-// name (e.g. "tmux"); a leading `-L <name>` may follow it, mirroring exactly
-// what tmuxArgs would have inserted to produce this argv in the first place.
-//
-// A leading `-S <path>` returns ok=false. agent-deck itself never spawns tmux
-// that way (tmuxArgs only ever emits -L; grep the package), so a candidate
-// carrying -S was not spawned by agent-deck's own factory — meaning the
-// isLiveTmuxClientOrServer caller cannot safely resolve it through the
-// package's -L-only tmuxExecContext funnel, and per the "refuse anything
-// ambiguous" rule, unresolvable is not reapable rather than a case worth
-// widening the tmux-exec factory for.
 // candidateSocketPath resolves the socket the CANDIDATE is talking to, out of
 // the candidate's own environment and its own argv — the two inputs tmux itself
 // used when it picked a socket.
@@ -974,9 +976,12 @@ var tmuxLiveQueryTimeout = 2 * time.Second
 // different servers, and the name alone cannot tell them apart. Reading the
 // candidate's TMUX/TMUX_TMPDIR is the only way to say which one it meant.
 //
-// ok=false means the environment could not be read, which includes a pid that
-// has exited, a zombie (whose environ reads back empty rather than failing), and
-// another user's process. All of them are refusals: a socket that cannot be
+// ok=false means the candidate's socket could not be established: a different
+// mount namespace, or an environment that could not be read — a pid that has
+// exited, a zombie (measured on this kernel: the read FAILS with EPERM, or
+// ENOENT once reaped), another user's process, or a live process exec'd with a
+// genuinely empty environment, which is the one case that reads back
+// successfully with nothing in it. All are refusals: a socket that cannot be
 // established is not a socket that can be compared.
 //
 // The uid is this process's, deliberately. A candidate belonging to another uid
@@ -984,6 +989,15 @@ var tmuxLiveQueryTimeout = 2 * time.Second
 // cannot match and the candidate is refused — which is the right answer for a
 // process this sweep has no business killing anyway.
 func candidateSocketPath(pid int, cmdlineFields []string) (path string, ok bool) {
+	// A path is only a name for a file within one mount namespace. A candidate
+	// in another one — a container on the same host, same uid — resolves its
+	// -L name to a path that is character-for-character ours and names a
+	// different socket on a different filesystem. String equality would then
+	// call it our server and judge it there, which is the false-match direction:
+	// a wrong refusal costs a leaked client, a wrong match costs a live one.
+	if !sameMountNamespace(pid) {
+		return "", false
+	}
 	lookupEnv, err := readProcessEnviron(pid)
 	if err != nil {
 		return "", false
@@ -995,13 +1009,38 @@ func candidateSocketPath(pid int, cmdlineFields []string) (path string, ok bool)
 	return normalizeTmpPath(resolveTmuxSocketPath(lookupEnv, os.Getuid(), "", args)), true
 }
 
+// sameMountNamespace reports whether pid resolves filesystem paths the same way
+// this process does. Anything else — including a namespace that cannot be read —
+// is a no.
+//
+// This costs no reach that candidateSocketPath does not already need:
+// /proc/<pid>/ns/mnt and /proc/<pid>/environ are gated by the same
+// PTRACE_MODE_READ check, so a candidate whose environment is readable has a
+// readable namespace link too (verified on this host under yama
+// ptrace_scope=1, for a same-uid process that is not a descendant).
+func sameMountNamespace(pid int) bool {
+	theirs, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/mnt", pid))
+	if err != nil {
+		return false
+	}
+	ours, err := os.Readlink("/proc/self/ns/mnt")
+	if err != nil {
+		return false
+	}
+	return theirs == ours
+}
+
 // readProcessEnviron reads pid's environment out of procfs as a lookup function
 // shaped for resolveTmuxSocketPath.
 //
-// An empty read is an error, not an empty environment: /proc/<pid>/environ comes
-// back empty with no error for a zombie, and treating that as "this process has
-// no TMUX_TMPDIR" would resolve it to the default socket — a confident answer
-// about a process that no longer has an environment to have.
+// An empty read is an error, not an empty environment. Treating zero bytes as
+// "this process has no TMUX_TMPDIR" would leave every lookup returning "" and
+// resolve the candidate to the DEFAULT socket — a confident answer built from
+// nothing, which is then used to pick which server to judge it on. Measured
+// rather than assumed: a zombie does NOT reach here (its environ read fails),
+// and what does read back empty-and-successful is a live process exec'd with no
+// environment at all — never one of agent-deck's own clients, which inherit
+// os.Environ().
 func readProcessEnviron(pid int) (func(string) string, error) {
 	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
 	if err != nil {
@@ -1019,6 +1058,18 @@ func readProcessEnviron(pid int) (func(string) string, error) {
 	return func(key string) string { return env[key] }, nil
 }
 
+// candidateSocketName extracts the -L <name> (or default) socket selector
+// from a poll-sweep candidate's OWN argv — cmdlineFields[0] is the program
+// name (e.g. "tmux"); a leading `-L <name>` may follow it, mirroring exactly
+// what tmuxArgs would have inserted to produce this argv in the first place.
+//
+// A leading `-S <path>` returns ok=false. agent-deck itself never spawns tmux
+// that way (tmuxArgs only ever emits -L; grep the package), so a candidate
+// carrying -S was not spawned by agent-deck's own factory — meaning the
+// isLiveTmuxClientOrServer caller cannot safely resolve it through the
+// package's -L-only tmuxExecContext funnel, and per the "refuse anything
+// ambiguous" rule, unresolvable is not reapable rather than a case worth
+// widening the tmux-exec factory for.
 func candidateSocketName(cmdlineFields []string) (name string, ok bool) {
 	if len(cmdlineFields) == 0 {
 		return "", true
@@ -1384,9 +1435,13 @@ func sweepOrphanCandidates(budget context.Context, candidates []orphanCandidate)
 				slog.Int("pid", c.pid),
 				slog.String("comm", logging.SanitizeValue(strings.TrimSpace(c.comm))),
 				slog.String("reason", "could not confirm via the tmux server itself whether this "+
-					"pid is live (no server at the resolved socket, a running server holding no "+
-					"sessions — which cannot answer either query on tmux 3.0a — an unresolvable -S "+
-					"candidate, or the query timed out); refusing to kill rather than guess"))
+					"pid is live (the candidate's own socket is not the one this process "+
+					"resolves that name to — a changed TMUX_TMPDIR does this, and every orphan "+
+					"from the old base stays unreapable until it is restored; the candidate's "+
+					"environment or mount namespace could not be read; no server at the resolved "+
+					"socket; a running server holding no sessions, which cannot answer either "+
+					"query on tmux 3.0a; an unresolvable -S candidate; or the query timed out); "+
+					"refusing to kill rather than guess"))
 			continue
 		}
 		if live {
@@ -1395,8 +1450,8 @@ func sweepOrphanCandidates(budget context.Context, candidates []orphanCandidate)
 				slog.String("comm", logging.SanitizeValue(strings.TrimSpace(c.comm))))
 			continue
 		}
-		orphan, parentageKnown := controlClientOrphanOf(c.pid)
-		if !parentageKnown {
+		switch verdict := controlClientOrphanOf(c.pid); verdict {
+		case parentageUnknown:
 			unknownParent++
 			pipeLog.Warn("orphan_sweep_skipped_unknown_parentage",
 				slog.Int("pid", c.pid),
@@ -1405,9 +1460,20 @@ func sweepOrphanCandidates(budget context.Context, candidates []orphanCandidate)
 					"this client (its parent pid, that parent's liveness, or that parent's "+
 					"executable could not be read); refusing to kill rather than guess"))
 			continue
-		}
-		if !orphan {
+		case parentageCandidateGone:
+			// Not a refusal: it exited while the gauntlet ran, which is routine.
+			pipeLog.Debug("orphan_sweep_candidate_already_gone", slog.Int("pid", c.pid))
+			continue
+		case parentageOwned:
 			continue // owned by a live agent-deck TUI (incl. a sibling) — keep
+		case parentageOrphaned:
+			// The only verdict that reaches a signal. Fall through.
+		default:
+			unknownParent++
+			pipeLog.Warn("orphan_sweep_skipped_unhandled_parentage_verdict",
+				slog.Int("pid", c.pid),
+				slog.Int("verdict", int(verdict)))
+			continue
 		}
 		if commUnclassifiable {
 			unclassifiable++
@@ -1477,9 +1543,34 @@ func sweepOrphanCandidates(budget context.Context, candidates []orphanCandidate)
 // Why not a heartbeat file: would need TUI-startup wiring + a refresh
 // goroutine + lifecycle cleanup. The PPID+exe check is zero-state and
 // agrees on the same answer.
-func isControlClientOrphan(pid int) (orphan bool, known bool) {
+func isControlClientOrphan(pid int) parentageVerdict {
 	return isControlClientOrphanFor(readParentPID, probeProcessAlive, readProcessExe, pid)
 }
+
+// parentageVerdict is what the parentage gate can conclude. Four answers rather
+// than a bool, because three of them mean "do not signal" for reasons an
+// operator must be able to tell apart: only one of them is a failure.
+type parentageVerdict int
+
+const (
+	// parentageUnknown: the facts could not be read. Refuse, and say so loudly —
+	// this is the one that means something is wrong with the host or with us.
+	parentageUnknown parentageVerdict = iota
+	// parentageOrphaned: the owning TUI is gone. The only verdict that
+	// authorises a signal.
+	parentageOrphaned
+	// parentageOwned: a live agent-deck TUI (possibly a sibling) owns it.
+	parentageOwned
+	// parentageCandidateGone: the candidate itself no longer exists. Ordinary
+	// churn — candidates die during the gauntlet all the time, because earlier
+	// victims' grace periods run in between — and NOT a failure to establish
+	// anything. Reporting it as unknown would put a safety-shaped Warn on
+	// routine sweeps and bury the ones that matter.
+	parentageCandidateGone
+)
+
+// reapable reports whether this verdict authorises a signal. Exactly one does.
+func (v parentageVerdict) reapable() bool { return v == parentageOrphaned }
 
 // controlClientOrphanOf is the seam both sweeps call through, so their handling
 // of an indeterminate verdict can be tested without a host on which /proc reads
@@ -1497,33 +1588,43 @@ func isControlClientOrphanFor(
 	probeAlive func(int) error,
 	processExe func(int) (string, error),
 	pid int,
-) (orphan bool, known bool) {
+) parentageVerdict {
 	ppid, err := parentPID(pid)
 	if err != nil {
-		return false, false
+		// Before calling this a failure, ask the cheaper question: is the
+		// CANDIDATE still there? A pid that exited has no parent to report, and
+		// that is a determination about a process with nothing left to kill —
+		// not a host that cannot answer.
+		if errors.Is(probeAlive(pid), syscall.ESRCH) {
+			return parentageCandidateGone
+		}
+		return parentageUnknown
 	}
 	if ppid <= 1 {
 		// PPID == 1 means the kernel has already reparented the client to
 		// init — definitively an orphan.
-		return true, true
+		return parentageOrphaned
 	}
 	// Liveness check on the parent. If the parent died between the list-clients
 	// call and now, the client is in the process of being orphaned right now.
 	if err := probeAlive(ppid); err != nil {
 		if errors.Is(err, syscall.ESRCH) {
-			return true, true
+			return parentageOrphaned
 		}
 		// The parent is there and we cannot look at it (EPERM), or the probe
 		// failed for a reason we cannot name. Neither says "orphan".
-		return false, false
+		return parentageUnknown
 	}
 	parentExe, err := processExe(ppid)
 	if err != nil {
 		// Linux without /proc-read permission, or macOS with `ps` failing. The
 		// parent is alive; we simply cannot tell whose it is.
-		return false, false
+		return parentageUnknown
 	}
-	return !looksLikeAgentDeckBinary(parentExe), true
+	if looksLikeAgentDeckBinary(parentExe) {
+		return parentageOwned
+	}
+	return parentageOrphaned
 }
 
 // looksLikeAgentDeckBinary returns true when exePath plausibly refers to an
@@ -1841,16 +1942,23 @@ func softKillProcessChecked(budget context.Context, pid int, identity string, gr
 // server — wiping every agent-deck session. The mitigation in #739
 // only covered killStaleControlClients (the post-restart cleanup path);
 // the active-pipe close path still SIGKILL'd. This helper closes that gap.
-func softKillProcessGroup(pgid int, grace time.Duration) bool {
-	return softKillProcessGroupWith(syscall.Kill, pgid, grace)
-}
+// groupKillSyscall is the seam softKillProcessGroup signals through. A test
+// swaps it to drive the errno branches, which otherwise need a second uid to
+// reach. It is deliberately a package var rather than a parameter of an
+// injectable core: a core-only test leaves the exported behaviour free to drift
+// away from it, and the escalation this function refuses to make is exactly the
+// kind of thing that gets pasted back in.
+var groupKillSyscall = syscall.Kill
 
-// softKillProcessGroupWith is the injectable core of softKillProcessGroup. kill
-// is syscall.Kill in production; a test passes its own so the errno branches can
-// be driven without a group this process genuinely may not signal (which needs a
-// second uid, i.e. a host the CI runners do not provide).
-func softKillProcessGroupWith(kill func(pid int, sig syscall.Signal) error, pgid int, grace time.Duration) bool {
-	if err := kill(-pgid, syscall.SIGTERM); err != nil {
+// stillOurs is re-asked immediately before the escalation. The pgid was
+// captured when the child was certainly unreaped, but that was a full grace ago
+// and the child can exit and be reaped inside it — by the concurrent reap this
+// path exists to outrun — which frees its pid, and the pgid is that same
+// number. softKillProcessChecked re-verifies incarnation before ITS escalation
+// for the same reason; without this the group arm was the last signal on this
+// path still resting on a name that may have changed hands.
+func softKillProcessGroup(pgid int, grace time.Duration, stillOurs func() bool) bool {
+	if err := groupKillSyscall(-pgid, syscall.SIGTERM); err != nil {
 		// ESRCH (empty group) or EPERM (not ours) — either way there is
 		// nothing here this process both may and should kill.
 		return false
@@ -1862,12 +1970,24 @@ func softKillProcessGroupWith(kill func(pid int, sig syscall.Signal) error, pgid
 		time.Sleep(pollInterval)
 		// kill(-pgid, 0) returns ESRCH only when no process in the group
 		// remains; until then it returns nil (some member alive or zombie).
-		if err := kill(-pgid, 0); err != nil && errors.Is(err, syscall.ESRCH) {
+		if err := groupKillSyscall(-pgid, 0); err != nil && errors.Is(err, syscall.ESRCH) {
+			return false
+		}
+		if !stillOurs() {
+			// The child was reaped while we waited. Whatever answers to this
+			// pgid now, we can no longer show it is ours. Its remaining members
+			// are left behind — a leak the next sweep can see — rather than
+			// SIGKILLing a group on the strength of a recycled number.
+			pipeLog.Warn("skipped_group_escalation_pgid_changed_hands",
+				slog.Int("pgid", pgid),
+				slog.String("reason", "the child was reaped during the kill grace, so its pid — "+
+					"and the process group id that is the same number — may name a stranger; "+
+					"refusing the group-wide SIGKILL rather than guess"))
 			return false
 		}
 	}
 
-	_ = kill(-pgid, syscall.SIGKILL)
+	_ = groupKillSyscall(-pgid, syscall.SIGKILL)
 	return true
 }
 

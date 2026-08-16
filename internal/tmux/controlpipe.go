@@ -468,9 +468,13 @@ func reapWithEOFGrace(reap func(), proc *os.Process, pgid int, eofGrace, killGra
 		return false
 	case <-time.After(eofGrace):
 	}
-	if proc != nil && proc.Signal(syscall.Signal(0)) == nil {
+	stillOurs := func() bool { return proc != nil && proc.Signal(syscall.Signal(0)) == nil }
+	if stillOurs() {
 		if pgid > 0 {
-			_ = softKillProcessGroup(pgid, killGrace)
+			// stillOurs is re-asked inside, immediately before the escalation:
+			// this check is only true of the instant it runs in, and the
+			// escalation is a whole grace later.
+			_ = softKillProcessGroup(pgid, killGrace, stillOurs)
 		} else {
 			// The child leads no group of its own, so there is nothing wider to
 			// kill than the child. Through its handle, not its pid.
