@@ -860,6 +860,8 @@ resume_flag = "--resume"
 
 **Tools that report an id but export nothing.** When a tool declares `output_format_flag` + `session_id_json_path` but no `session_id_env`, agent-deck captures the id inside the pane and publishes it into the tmux variable `AGENTDECK_TOOL_SESSION_ID`, from which it is persisted like any other. Nothing to configure; a tool that declares its own `session_id_env` keeps precedence.
 
+**Not covered: `--ssh` sessions that rely only on the capture path.** The capture runs on the remote host, and the tmux variable it would publish into lives on the controller, which nothing inside the remote shell can reach — so the publish is not emitted for remote sessions at all, rather than emitted and silently lost. A remote custom tool therefore persists its conversation only if it exports `session_id_env` (which agent-deck reads back through the pane) or if you bind it once with `agent-deck session set <title> tool-session-id <id>`. Resume itself works normally either way; it is the automatic capture that does not survive a reboot here.
+
 **Built-in icons:** claude=🤖, gemini=✨, opencode=🌐, codex=💻, copilot=🐙, hermes=☤, cursor=📝, shell=🐚
 
 ## Path Resolution
