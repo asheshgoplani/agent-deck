@@ -81,6 +81,7 @@ func handleRunTask(args []string) {
 		runTaskUsage()
 		os.Exit(2)
 	}
+	ensureTmuxInPathOrExit()
 
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...) //nolint:gosec // wrapper deliberately runs the operator-provided one-shot command
 	cmd.Stdin = os.Stdin

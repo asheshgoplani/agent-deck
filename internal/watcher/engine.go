@@ -68,6 +68,20 @@ type adapterEntry struct {
 	watcherID string
 	tracker   *HealthTracker
 	cancel    context.CancelFunc
+
+	// setupOK is true once Setup returned nil. An adapter whose Setup failed is
+	// half-constructed — NtfyAdapter and SlackAdapter, for instance, only build
+	// their *http.Client after validating the topic — so probing it can panic
+	// (#1886). It also decides who owns cleanup: a failed attempt is torn down
+	// immediately by setupAdapter, so Stop only tears down entries that are
+	// still holding a successful Setup.
+	//
+	// setupAdapter is the only writer, and Start calls it before healthLoop is
+	// launched, so the later reads are race-free. Stop must keep it that way:
+	// its teardown pass runs after cancel() but before wg.Wait() returns, so
+	// healthLoop may still be reading this field, and stopOnce — not clearing
+	// the flag — is what makes that pass run at most once.
+	setupOK bool
 }
 
 // Engine orchestrates the watcher event pipeline: adapter goroutines produce Events,
@@ -182,7 +196,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 func (e *Engine) RegisterAdapter(watcherID string, adapter WatcherAdapter, config AdapterConfig, maxSilenceMinutes int) {
 	tracker := NewHealthTracker(config.Name, maxSilenceMinutes)
 	e.adapters = append(e.adapters, adapterEntry{
-		adapter:   adapter,
+		adapter:   newRecoveredAdapter(adapter, config, e.log),
 		config:    config,
 		watcherID: watcherID,
 		tracker:   tracker,
@@ -205,12 +219,7 @@ func (e *Engine) Start() error {
 	for i := range e.adapters {
 		entry := &e.adapters[i]
 
-		if err := entry.adapter.Setup(e.ctx, entry.config); err != nil {
-			e.log.Warn("adapter_setup_failed",
-				slog.String("watcher", entry.config.Name),
-				slog.String("type", entry.config.Type),
-				slog.String("error", err.Error()),
-			)
+		if !e.setupAdapter(entry) {
 			continue
 		}
 
@@ -250,6 +259,63 @@ func (e *Engine) Start() error {
 	go e.reaper.loop()
 
 	return nil
+}
+
+// setupAdapter runs Setup for one entry and reports whether it succeeded.
+//
+// A failed Setup is cleaned up here, immediately and exactly once for that
+// attempt: Setup is not transactional, so an adapter can bind a listener, open
+// a client, or start a goroutine and then fail a later step, and skipping
+// Teardown would leak whatever it had already taken. The entry stays registered
+// (so the TUI still lists the watcher) but is marked unhealthy and left with
+// setupOK=false, which keeps healthLoop from probing a half-constructed adapter
+// and tells Stop that this entry's cleanup is already done.
+//
+// Calling setupAdapter again on the same entry is a retry: each failed attempt
+// gets its own cleanup, and a later success leaves exactly one live Setup for
+// Stop to release.
+func (e *Engine) setupAdapter(entry *adapterEntry) bool {
+	entry.setupOK = false
+
+	if err := entry.adapter.Setup(e.ctx, entry.config); err != nil {
+		e.log.Warn("adapter_setup_failed",
+			slog.String("watcher", entry.config.Name),
+			slog.String("type", entry.config.Type),
+			slog.String("error", err.Error()),
+		)
+		entry.tracker.SetAdapterHealth(false)
+		e.teardownAdapter(entry, "setup_failed")
+		return false
+	}
+
+	entry.setupOK = true
+	return true
+}
+
+// teardownAdapter calls Teardown once and contains anything it throws. A
+// half-constructed adapter is precisely the thing that panicked in #1886, and
+// cleanup runs on the failed-Setup path where that state is expected, so a
+// panicking Teardown must be logged and swallowed rather than allowed to take
+// the process down with it.
+func (e *Engine) teardownAdapter(entry *adapterEntry, reason string) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.log.Error("adapter_teardown_panic",
+				slog.String("watcher", entry.config.Name),
+				slog.String("type", entry.config.Type),
+				slog.String("reason", reason),
+				slog.Any("panic", r),
+			)
+		}
+	}()
+
+	if err := entry.adapter.Teardown(); err != nil {
+		e.log.Warn("adapter_teardown_error",
+			slog.String("watcher", entry.config.Name),
+			slog.String("reason", reason),
+			slog.String("error", err.Error()),
+		)
+	}
 }
 
 // runAdapter runs a single adapter's Listen loop in its own goroutine.
@@ -570,11 +636,17 @@ func (e *Engine) healthLoop() {
 			for i := range e.adapters {
 				entry := &e.adapters[i]
 
-				if err := entry.adapter.HealthCheck(); err != nil {
-					entry.tracker.SetAdapterHealth(false)
-					entry.tracker.RecordError()
-				} else {
-					entry.tracker.SetAdapterHealth(true)
+				// Adapters whose Setup failed are already marked unhealthy in
+				// Start; probing them would call into a half-constructed adapter
+				// and take the whole process down (#1886). Still emit their state
+				// so the TUI keeps reporting the watcher as errored.
+				if entry.setupOK {
+					if err := entry.adapter.HealthCheck(); err != nil {
+						entry.tracker.SetAdapterHealth(false)
+						entry.tracker.RecordError()
+					} else {
+						entry.tracker.SetAdapterHealth(true)
+					}
 				}
 
 				state := entry.tracker.Check()
@@ -605,15 +677,18 @@ func (e *Engine) Stop() {
 		// Cancel root context, which propagates to all derived adapter contexts.
 		e.cancel()
 
-		// Best-effort teardown of all adapters.
+		// Best-effort teardown of every adapter still holding a successful Setup.
+		// Entries whose Setup failed were already torn down by setupAdapter at
+		// the moment they failed, so skipping them here is what makes cleanup
+		// exactly-once rather than twice (#1886). stopOnce keeps a second Stop
+		// from repeating this pass — this loop only reads setupOK, because
+		// healthLoop may still be reading it until wg.Wait() below returns.
 		for i := range e.adapters {
 			entry := &e.adapters[i]
-			if err := entry.adapter.Teardown(); err != nil {
-				e.log.Warn("adapter_teardown_error",
-					slog.String("watcher", entry.config.Name),
-					slog.String("error", err.Error()),
-				)
+			if !entry.setupOK {
+				continue
 			}
+			e.teardownAdapter(entry, "stop")
 		}
 
 		// Wait for all goroutines (adapters + writer + health + triage) to exit.

@@ -151,8 +151,15 @@ func (r *Registry) runInstalledProbe() {
 			r.installed[name] = true // shell is always shown
 			continue
 		}
-		// A built-in's command is its bare name (matches Registry.All / detectTool).
-		ok := probeInstalled(name)
+		// Built-in probe uses the bare tool name, except Cursor: honor an
+		// explicit [cursor].command override, otherwise accept either stock
+		// entrypoint (`agent` or `cursor`).
+		ok := false
+		if name == "cursor" {
+			ok = cursorCommandInstalled()
+		} else {
+			ok = probeInstalled(name)
+		}
 		r.installed[name] = ok
 		if ok {
 			nonShellInstalled++

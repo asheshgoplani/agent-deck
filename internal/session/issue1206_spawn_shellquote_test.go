@@ -120,7 +120,7 @@ func TestBuildBashExportPrefix_ConfigDirIsShellQuoted(t *testing.T) {
 		t.Fatalf("precondition: explicit config_dir must resolve for this fixture")
 	}
 
-	prefix := inst.buildBashExportPrefix()
+	prefix := inst.buildBashExportPrefix(false)
 
 	if !strings.Contains(prefix, "CLAUDE_CONFIG_DIR=") {
 		t.Fatalf("precondition: CLAUDE_CONFIG_DIR must be exported; got:\n%s", prefix)

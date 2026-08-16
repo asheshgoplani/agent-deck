@@ -892,6 +892,26 @@ rm "$TARGET.old"
 
 Kernel tracks inodes, not names. Running processes keep a reference to the renamed inode; new invocations resolve through the original name to the new inode.
 
+### `-c "claude <subcommand> ..."` silently rewritten — injected flags demote the subcommand (#1800)
+
+> **This is a known bug, not intended behaviour.** Tracked as [#1800](https://github.com/asheshgoplani/agent-deck/issues/1800); a fix is in flight. Delete this entire section once that fix ships — the workaround below is a stopgap, not the supported way to run claude subcommands.
+
+Passing a claude **subcommand** as the session command — e.g. `-c "claude remote-control --name X"` or `-c "claude mcp serve"` — does not run the command you gave. Tool detection splits it into `claude` + extra args and re-appends the extras *after* agent-deck's injected flags, so the pane runs:
+
+```
+claude --session-id <uuid> --dangerously-skip-permissions remote-control --name X
+```
+
+The subcommand becomes a positional argument of plain interactive claude; no Remote Control server (or MCP server, etc.) ever starts. This affects any claude subcommand. See [#1800](https://github.com/asheshgoplani/agent-deck/issues/1800).
+
+**Workaround — wrap in a shell so tool detection treats the command as opaque:**
+
+```bash
+agent-deck add -t rc-server -c "bash -c 'exec claude remote-control --name X'" /path
+```
+
+The wrapped form injects nothing and runs the command verbatim. Trade-off: the session is opaque to claude session-id tracking / resume-on-restart — fine for server-style subcommands, which have no conversation to resume. Extra *flags* (e.g. `-c "claude --model opus"`) are unaffected — the wrapper-suffix path handles those correctly.
+
 ### Cross-machine config drift (macOS ↔ Linux)
 
 If `~/.agent-deck/skills/sources.toml` (or other config files) were copied verbatim from a macOS machine, paths like `/Users/<name>/` won't exist on Linux (should be `/home/<user>/`). The symptom: `agent-deck skill list` returns "No skills found" while the pool directory is clearly populated.

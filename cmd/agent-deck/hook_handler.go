@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
@@ -63,10 +64,17 @@ func resolveStopHookActive(p hookPayload) bool {
 
 // hookStatusFile is the JSON written to ~/.agent-deck/hooks/{instance_id}.json
 type hookStatusFile struct {
-	Status    string `json:"status"`
-	SessionID string `json:"session_id,omitempty"`
-	Event     string `json:"event"`
-	Timestamp int64  `json:"ts"`
+	Status                   string `json:"status"`
+	SessionID                string `json:"session_id,omitempty"`
+	Event                    string `json:"event"`
+	Timestamp                int64  `json:"ts"`
+	CodexStartedGeneration   string `json:"codex_started_generation,omitempty"`
+	CodexCompletedGeneration string `json:"codex_completed_generation,omitempty"`
+	CodexStartedSessionID    string `json:"codex_started_session_id,omitempty"`
+	CodexCompletedSessionID  string `json:"codex_completed_session_id,omitempty"`
+	HookGeneration           string `json:"hook_generation,omitempty"`
+	Sequence                 uint64 `json:"sequence,omitempty"`
+	InitialMessagePending    bool   `json:"initial_message_pending,omitempty"`
 	// DoneStatus/DoneSummary carry a worker-printed completion sentinel
 	// detected on the Stop edge (issue #1186). omitempty so ordinary Stops
 	// (no sentinel) leave the fields absent, which the daemon reads as
@@ -85,6 +93,12 @@ type hookStatusFile struct {
 	// inherited AGENTDECK_INSTANCE_ID) must never bind. omitempty keeps legacy
 	// files byte-identical when the agent sends no cwd.
 	Cwd string `json:"cwd,omitempty"`
+}
+
+type hookGenerationControl struct {
+	Generation            string `json:"generation"`
+	NextSequence          uint64 `json:"next_sequence"`
+	InitialMessagePending bool   `json:"initial_message_pending,omitempty"`
 }
 
 // normalizeHookEventKey folds hook event names from Claude (PascalCase), Cursor
@@ -348,11 +362,6 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, s
 	}
 
 	sessionID = strings.TrimSpace(sessionID)
-	// Preserve legacy hook JSON semantics: empty stays empty.
-	// Persist non-empty session IDs in a sidecar, to be used only when reading.
-	if sessionID != "" {
-		session.WriteHookSessionAnchor(instanceID, sessionID)
-	}
 
 	statusFile := hookStatusFile{
 		Status:    status,
@@ -366,6 +375,45 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, s
 		statusFile.DoneSummary = scan.signal.Summary
 	}
 	statusFile.TranscriptPath = scan.pendingTranscript
+	writeHookStatusFile(instanceID, statusFile, true)
+}
+
+func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnchor bool) bool {
+	hooksDir := getHooksDir()
+	generation := strings.TrimSpace(os.Getenv("AGENTDECK_HOOK_GENERATION"))
+	if generation != "" {
+		lockPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".lock")
+		lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			return false
+		}
+		defer closeChecked(lock)
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+			return false
+		}
+		defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+		controlPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".generation.json")
+		var control hookGenerationControl
+		data, err := readHookFileBounded(controlPath)
+		if err != nil || json.Unmarshal(data, &control) != nil || control.Generation != generation {
+			return false
+		}
+		// StartWithMessage stays running until the agent-level completion edge.
+		if normalizeHookEventKey(statusFile.Event) == "onsessionstart" && control.InitialMessagePending {
+			return false
+		}
+		control.NextSequence++
+		statusFile.HookGeneration, statusFile.Sequence = generation, control.NextSequence
+		completionEvent := normalizeHookEventKey(statusFile.Event)
+		if completionEvent == "postllmcall" || completionEvent == "onsessionend" {
+			control.InitialMessagePending = false
+		}
+		statusFile.InitialMessagePending = control.InitialMessagePending
+		b, err := json.Marshal(control)
+		if err != nil || atomicHookWrite(controlPath, b) != nil {
+			return false
+		}
+	}
 
 	jsonData, err := json.Marshal(statusFile)
 	if err != nil {
@@ -373,35 +421,61 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, s
 			slog.String("instance", instanceID),
 			slog.String("error", err.Error()),
 		)
-		return
+		return false
 	}
 
 	filePath := filepath.Join(hooksDir, filepath.Base(instanceID)+".json")
-	tmpPath := filePath + ".tmp"
-	if err := os.WriteFile(tmpPath, jsonData, 0600); err != nil {
+	if err := atomicHookWrite(filePath, jsonData); err != nil {
 		hookHandlerLog.Warn("hook_status_write_failed",
-			slog.String("path", tmpPath),
+			slog.String("path", filePath),
 			slog.String("instance", instanceID),
 			slog.String("error", err.Error()),
 		)
-		return
+		return false
 	}
-	if err := os.Rename(tmpPath, filePath); err != nil {
-		hookHandlerLog.Warn("hook_status_rename_failed",
-			slog.String("from", tmpPath),
-			slog.String("to", filePath),
-			slog.String("instance", instanceID),
-			slog.String("error", err.Error()),
-		)
-		// Best-effort cleanup of the orphaned temp file.
-		_ = os.Remove(tmpPath)
-		return
+	// Keep anchor mutation in the same generation-locked critical section as
+	// acceptance and status publication. Restart cannot rotate generations in
+	// between these operations.
+	if mutateAnchor && statusFile.SessionID != "" {
+		session.WriteHookSessionAnchor(instanceID, statusFile.SessionID)
 	}
-
-	// Clear sticky session mapping when the upstream session is explicitly ended.
-	if isTerminalHookEvent(event) {
+	if mutateAnchor && isTerminalHookEvent(statusFile.Event) {
 		session.ClearHookSessionAnchor(instanceID)
 	}
+	return true
+}
+
+func readHookFileBounded(path string) ([]byte, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), path)
+	if f == nil {
+		_ = syscall.Close(fd)
+		return nil, errors.New("open hook file")
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, 64<<10))
+}
+
+func atomicHookWrite(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err = f.Chmod(0600); err == nil {
+		_, err = f.Write(data)
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func isTerminalHookEvent(event string) bool {
@@ -414,7 +488,7 @@ func isTerminalHookEvent(event string) bool {
 	// sidecar on ordinary non-terminal "Stop"/turn-complete style events.
 	switch norm {
 	case "sessionend", "sessionended", "sessionclose", "sessionclosed", "sessiondone", "sessionexit", "sessionexited",
-		"onsessionend", // Hermes: on_session_end normalized
+		"onsessionfinalize", // Hermes final process/session event
 		"threadend", "threadended", "threadterminate", "threadterminated", "threadclose", "threadclosed",
 		"threaddone", "threadexit", "threadexited":
 		return true
@@ -477,6 +551,36 @@ func cleanStaleHookFiles() {
 
 	cutoff := time.Now().Add(-24 * time.Hour)
 	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".generation.json") {
+			continue // generation controls are never age-reaped
+		}
+		if strings.HasSuffix(entry.Name(), ".lock") {
+			info, err := entry.Info()
+			if err != nil || !info.ModTime().Before(cutoff) {
+				continue
+			}
+			id := strings.TrimSuffix(entry.Name(), ".lock")
+			if strings.HasSuffix(entry.Name(), ".codex-writer.lock") {
+				id = strings.TrimSuffix(entry.Name(), ".codex-writer.lock")
+			}
+			if _, err := os.Stat(filepath.Join(hooksDir, id+".json")); err == nil {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(hooksDir, id+".generation.json")); err == nil {
+				continue
+			}
+			path := filepath.Join(hooksDir, entry.Name())
+			f, err := os.OpenFile(path, os.O_RDWR, 0600)
+			if err != nil {
+				continue
+			}
+			if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+				_ = os.Remove(path)
+				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+			}
+			_ = f.Close()
+			continue
+		}
 		ext := filepath.Ext(entry.Name())
 		if entry.IsDir() || (ext != ".json" && ext != ".sid") {
 			continue
@@ -489,6 +593,24 @@ func cleanStaleHookFiles() {
 			_ = os.Remove(filepath.Join(hooksDir, entry.Name()))
 		}
 	}
+	// Crash-orphaned unique temp files are safe to reap by age. WalkDir does
+	// not follow symlinked directories, preserving sandbox scope boundaries.
+	root, rootErr := os.OpenRoot(hooksDir)
+	if rootErr != nil {
+		return
+	}
+	defer func() { _ = root.Close() }()
+	_ = filepath.WalkDir(hooksDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() || !strings.Contains(entry.Name(), ".tmp-") {
+			return nil
+		}
+		if info, err := entry.Info(); err == nil && info.ModTime().Before(cutoff) {
+			if rel, err := filepath.Rel(hooksDir, path); err == nil {
+				_ = root.Remove(rel)
+			}
+		}
+		return nil
+	})
 }
 
 // handleHooks handles the "hooks" CLI subcommand for manual hook management.

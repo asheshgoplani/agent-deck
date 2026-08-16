@@ -42,6 +42,34 @@ func TestSetField_Title_LocksTitle(t *testing.T) {
 	}
 }
 
+// TestSetField_Command_ClearsSubcommandPassthrough is the regression test
+// for the Codex review follow-up on PR #1821: SubcommandPassthrough is a
+// provenance guarantee only resolveSessionCommand's CLI passthrough route
+// may set — SetField(FieldCommand, ...) never runs that validation, so any
+// direct command edit through it must clear the flag. Without this, a
+// session created via `-c "claude mcp list"` (SubcommandPassthrough=true)
+// whose command is later edited to something else entirely would keep
+// getting claude/codex account-routing treatment for a command nobody ever
+// checked.
+func TestSetField_Command_ClearsSubcommandPassthrough(t *testing.T) {
+	inst := &Instance{
+		Tool:                  "shell",
+		Command:               "claude mcp list",
+		SubcommandPassthrough: true,
+	}
+
+	if _, _, err := SetField(inst, FieldCommand, `claude "review this repo"`, nil); err != nil {
+		t.Fatalf("SetField returned error: %v", err)
+	}
+	if inst.SubcommandPassthrough {
+		t.Error("SubcommandPassthrough = true after a direct command edit, want false — " +
+			"this mutator never re-validates the command as a real subcommand invocation")
+	}
+	if inst.Command != `claude "review this repo"` {
+		t.Errorf("inst.Command = %q, want the edited value", inst.Command)
+	}
+}
+
 func TestSetField_Color_Valid(t *testing.T) {
 	cases := []struct {
 		name  string

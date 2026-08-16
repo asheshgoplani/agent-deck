@@ -500,6 +500,27 @@ func TestSendWithRetryTarget_RetriesOnUnsentPasteMarker(t *testing.T) {
 	}
 }
 
+func TestSendWithRetryTarget_TranscriptPasteMarkerDoesNotBecomeTypedNotSubmitted(t *testing.T) {
+	// `paste-buffer -p` leaves this marker in transcript scrollback after the
+	// agent accepts the message. The live composer below it is empty. Whole-pane
+	// matching used to keep nudging Enter and classify the accepted send as
+	// typed_not_submitted.
+	pane := "assistant response\n[Pasted text #1 +89 lines]\n────────────\n❯ \n────────────\n"
+	mock := &mockSendRetryTarget{
+		statuses: []string{"active", "active"},
+		panes:    []string{pane, pane},
+	}
+	delivery, err := sendWithRetryTarget(mock, "first line\nsecond line", false, sendRetryOptions{
+		maxRetries: 2, checkDelay: 0, verifyDelivery: true, composerPasteFreeBeforeSend: true,
+	})
+	if err != nil || delivery != deliverySubmitted {
+		t.Fatalf("accepted multiline send misclassified: delivery=%q err=%v", delivery, err)
+	}
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 0 {
+		t.Fatalf("transcript marker caused %d spurious Enter nudges", got)
+	}
+}
+
 // TestSendWithRetryTarget_DetectsPasteMarkerAfterInitialWaiting locks in the
 // post-#876 contract: an active-status transition (and a paste marker en
 // route) IS positive evidence, so verifyDelivery returns nil. State-machine
@@ -1537,10 +1558,17 @@ func TestSendWithRetryTarget_VerifyDelivery_AcceptsUnsentMarker(t *testing.T) {
 	}
 }
 
-func TestSendWithRetryTarget_VerifyDelivery_AcceptsMessageInPane(t *testing.T) {
+func TestSendWithRetryTarget_VerifyDelivery_MessageInPaneIsReceiptNotSubmission(t *testing.T) {
 	// If the message body itself shows up in the captured pane (e.g. behind a
 	// non-Claude composer that doesn't render an "unsent paste" marker), that
-	// is direct evidence the keystrokes were received. Must not error.
+	// is direct evidence the keystrokes were RECEIVED — so this must never be
+	// reported as the #876 silent drop.
+	//
+	// Updated for issue #1793: it is not evidence the message was SUBMITTED.
+	// This test previously asserted err == nil, which meant a body sitting in
+	// a composer whose Enter was swallowed exited 0 as "delivered" — the
+	// phantom success #1793 was filed about. Receipt and submission are now
+	// separate verdicts.
 	statuses := make([]string, 6)
 	panes := make([]string, 6)
 	for i := range statuses {
@@ -1548,11 +1576,20 @@ func TestSendWithRetryTarget_VerifyDelivery_AcceptsMessageInPane(t *testing.T) {
 		panes[i] = "DELIVERY_TOKEN_876 — verbatim message body in pane"
 	}
 	mock := &mockSendRetryTarget{statuses: statuses, panes: panes}
-	_, err := sendWithRetryTarget(mock, "DELIVERY_TOKEN_876", false, sendRetryOptions{
+	delivery, err := sendWithRetryTarget(mock, "DELIVERY_TOKEN_876", false, sendRetryOptions{
 		maxRetries: 6, checkDelay: 0, verifyDelivery: true,
 	})
-	if err != nil {
-		t.Fatalf("verifyDelivery must accept message-in-pane as receipt evidence: %v", err)
+	if delivery == deliveryNoEvidence {
+		t.Fatal("#876: a verbatim body in the pane is receipt evidence and must not be a silent drop")
+	}
+	if err != nil && strings.Contains(err.Error(), "dropped silently") {
+		t.Fatalf("#876: must not report a silent drop when the body is visible: %v", err)
+	}
+	if delivery != deliveryTyped {
+		t.Fatalf("delivery: want %q (received, submission unconfirmed), got %q", deliveryTyped, delivery)
+	}
+	if err == nil {
+		t.Fatal("issue #1793: received-but-not-submitted must not report success")
 	}
 }
 

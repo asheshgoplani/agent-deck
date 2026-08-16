@@ -9,13 +9,18 @@ import { archivedSessionsSignal, loadArchivedSessions } from '../state.js'
 import { apiFetch } from '../api.js'
 import { addToast } from '../Toast.js'
 
-function projectArchived(raw) {
+export function projectArchived(raw) {
   const s = raw || {}
   return {
     id: s.id || '',
     title: s.title || s.id,
     tool: s.tool || '',
-    status: s.status || 'idle',
+    // Archiving tears down the tmux pane but never resets Status, so the wire
+    // value is a stale last-known state — commonly 'error' (a vanished pane
+    // with no recoverable exit code classifies that way), which would paint a
+    // red dot on a row that is merely archived. The TUI masks this the same
+    // way in connection_status.go: `if archived { icon = "■", stopped }`.
+    status: 'stopped',
     group: s.groupPath || '',
     path: s.projectPath || '',
     archivedAt: s.archivedAt || null,

@@ -17,6 +17,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The link-open allowlist (issue #1682) is always serialized as an array,
+	// never null, so the client's `Array.isArray` hydration guard cannot be
+	// tripped by an unconfigured server.
+	trustedDomains := s.cfg.TrustedDomains
+	if trustedDomains == nil {
+		trustedDomains = []string{}
+	}
+
 	// Tool-visibility filter (issue #1259) is read from the process registry at
 	// request time, so it reflects the current config (re-probed only when config
 	// changes — see currentRegistry). It is a display filter only.
@@ -30,6 +38,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		ToolFilterFallback: session.ToolFilterFallbackActive(),
 		HiddenTools:        session.ConfiguredHiddenToolNames(),
 		PickerTools:        session.PickerToolNames(),
+		TrustedDomains:     trustedDomains,
+		ConfirmLinkOpen:    s.cfg.confirmLinkOpen(),
 	})
 }
 

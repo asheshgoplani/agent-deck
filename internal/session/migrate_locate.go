@@ -36,6 +36,15 @@ func LocateConversationConfigDir(cfg *UserConfig, inst *Instance, extraCandidate
 	if inst == nil || inst.Tool != "claude" || inst.ProjectPath == "" {
 		return "", "", 0
 	}
+	// Every candidate below is a directory on THIS machine, keyed on
+	// ConvertToClaudeDirName(inst.ProjectPath). For an --ssh session ProjectPath
+	// is a local placeholder, so the scan would name a LOCAL session's
+	// conversation — and this function's caller (switch-account) then MIGRATES
+	// the file it names, moving a transcript out from under the session that
+	// owns it (#1851).
+	if !inst.TranscriptIsResolvableLocally() {
+		return "", "", 0
+	}
 	candidates := conversationConfigDirCandidates(cfg, extraCandidates...)
 	projDirName := ConvertToClaudeDirName(inst.ProjectPath)
 

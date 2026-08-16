@@ -19,7 +19,27 @@ package session
 //
 // PR #989 (REQ-7 manifestation 3) addressed CanRestart() for the same
 // class of sessions (registry-level check), but the resume dispatch was
-// out of scope. This file pins the end-to-end contract.
+// out of scope. This file pinned the end-to-end contract.
+//
+// CONTRACT REVERSED BY #1815 — read this before "fixing" the test back.
+// The recovery above is indistinguishable, at the moment of resume, from the
+// incident #1815 reports: a session with no recorded conversation id was
+// restarted, disk discovery offered the newest transcript filed under the
+// working directory, and the restart resumed a conversation belonging to a
+// DIFFERENT session — bringing that session's context and authority up in
+// this pane. Discovery cannot tell "my lost transcript" from "the neighbour's
+// transcript": both are simply the newest jsonl in a shared directory.
+//
+// #1815 rules that the ambiguity must fail closed. A discovered id is a hint,
+// never proof of ownership, so it may not authorize --resume. The cost is
+// exactly the #956 recovery: a custom-wrapper session whose id was never
+// captured now starts fresh instead of re-attaching its own history. Losing
+// one conversation's history is recoverable; adopting another session's
+// conversation is not.
+//
+// What survives from #956: the restart still routes through the claude spawn
+// path with an explicit session id rather than blindly re-running the wrapper.
+// What this test now pins is the refusal.
 //
 // See ~/.claude/projects/-home-ashesh-goplani--agent-deck/memory/
 // conductor_restart_history_loss.md for the structural background.
@@ -34,25 +54,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestConductor_Restart_PreservesChatHistory_RegressionFor956 pins the
-// contract: when a custom-command Claude session has empty ClaudeSessionID
-// at Restart() time and a JSONL transcript exists on disk (written during
-// the live conversation), Restart() MUST discover the latest JSONL and
-// resume from it (--resume <uuid>) rather than spawn a fresh wrapper that
-// loses history.
+// TestConductor_Restart_DoesNotAdoptDiscoveredTranscript_1815 is the #956
+// scenario under the #1815 ruling: a custom-command Claude session with an
+// empty ClaudeSessionID at Restart() time, and a JSONL transcript sitting in
+// its working directory that nothing can attribute to it.
 //
-// RED on main: Restart()'s fallback recreate path (instance.go:Restart)
-// dispatches through buildClaudeCommand(i.Command), running the wrapper
-// fresh. No --resume is emitted. The argv log shows wrapper invocation
-// without any --resume flag.
-//
-// GREEN with the fix: Restart() invokes the disk-discovery prelude before
-// dispatch (same logic as Start()'s ensureClaudeSessionIDFromDisk, but
-// bypassing the #608 brand-new-session gate because Restart() implies the
-// instance previously ran). ClaudeSessionID is populated from the latest
-// JSONL, the respawn-pane fast path engages, and `claude --resume <uuid>`
-// is spawned via buildClaudeResumeCommand.
-func TestConductor_Restart_PreservesChatHistory_RegressionFor956(t *testing.T) {
+// Post-#1815 contract: the restart must NOT emit `--resume <discovered
+// uuid>`, and must not claim the discovered uuid via --session-id either (a
+// shared id would also make the duplicate sweeper kill one of the pair). It
+// starts fresh, on the claude spawn path, with a newly minted id.
+func TestConductor_Restart_DoesNotAdoptDiscoveredTranscript_1815(t *testing.T) {
 	requireTmux(t)
 	home := isolatedHomeDir(t)
 	argvLog := setupStubClaudeOnPATH(t, home)
@@ -97,30 +108,30 @@ func TestConductor_Restart_PreservesChatHistory_RegressionFor956(t *testing.T) {
 	// Reset the argv log so the Restart's argv is the only entry we inspect.
 	require.NoError(t, os.WriteFile(argvLog, nil, 0o644))
 
-	// Restart: must discover the JSONL and resume rather than spawn fresh.
+	// Restart: discovery offers the transcript; the identity guard refuses it.
 	require.NoError(t, inst.Restart(), "Restart: must succeed")
 
 	argv := readCapturedClaudeArgv(t, argvLog, 3*time.Second)
 	joined := strings.Join(argv, " ")
 
-	// Contract assertion: post-restart, the spawned claude argv must contain
-	// --resume <jsonl-uuid>. On main this fails because Restart()'s
-	// fallback path runs the wrapper without --resume.
-	require.Contains(t, joined, "--resume",
-		"Issue #956 RED: Restart() of custom-command claude session with "+
-			"empty ClaudeSessionID and a JSONL transcript on disk must "+
-			"discover the JSONL and pass --resume to preserve chat history. "+
-			"Got argv: %v. The fix mirrors Start()'s ensureClaudeSessionIDFromDisk "+
-			"prelude but bypasses the #608 brand-new gate because Restart() "+
-			"implies the session previously ran.", argv)
-	require.Contains(t, joined, jsonlUUID,
-		"Issue #956 RED: Restart() must resume the newest JSONL uuid "+
-			"(%s), not mint a fresh id. Got argv: %v", jsonlUUID, argv)
+	require.NotContains(t, joined, "--resume",
+		"#1815: a transcript this session cannot be shown to own must not be "+
+			"resumed. Discovery cannot distinguish this session's lost "+
+			"transcript from a neighbour's in a shared directory, so the "+
+			"ambiguity fails closed. Got argv: %v", argv)
+	require.NotContains(t, joined, jsonlUUID,
+		"#1815: the refused id may belong to another session and must not be "+
+			"reused via --session-id either (a shared CLAUDE_SESSION_ID also "+
+			"trips the duplicate sweeper). Got argv: %v", argv)
+	require.Contains(t, joined, "--session-id",
+		"#1815: the refusal must still start the session on the claude spawn "+
+			"path with an explicit fresh id (that part of #956 survives). "+
+			"Got argv: %v", argv)
 
-	// Write-through assertion: after Restart(), the Instance MUST carry the
-	// discovered session id so subsequent Restart() / status reads see it.
-	require.Equal(t, jsonlUUID, inst.ClaudeSessionID,
-		"Issue #956: Restart() must persist the discovered JSONL uuid onto "+
-			"the Instance so the next operation sees a populated id. "+
-			"Mirrors PERSIST-12 write-through from the Start() path.")
+	// Write-through: the Instance carries the freshly minted id, not the
+	// discovered one, so nothing unverified reaches the save cycle.
+	require.NotEmpty(t, inst.ClaudeSessionID,
+		"#1815: the instance must carry the freshly minted conversation id")
+	require.NotEqual(t, jsonlUUID, inst.ClaudeSessionID,
+		"#1815: the instance must NOT keep the discovered (unowned) uuid")
 }

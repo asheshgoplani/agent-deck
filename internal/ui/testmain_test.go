@@ -52,6 +52,13 @@ func runTestMain(m *testing.M) int {
 	// checks. Their production workers are unrelated to those assertions and
 	// must not outlive each test.
 	homeBackgroundWorkersEnabled = false
+	// The remote-session startup cache is per-profile persistent state, and
+	// every test here shares the one _test profile. Left on, a test that pumps
+	// a remoteSessionsFetchedMsg writes a snapshot that every later NewHome()
+	// loads back, so its phantom remotes inflate the status counters of
+	// unrelated tests (issue #953's counter tests were the first casualty).
+	// TestRemoteSessionsCache_SaveLoadRoundTrip re-enables it for its own scope.
+	remoteSessionsCacheEnabled = false
 
 	// v1.7.38: stub syncOptOutToConfig to a no-op by default so feedback
 	// dialog tests that exercise stepRating 'n' / stepConfirm decline do

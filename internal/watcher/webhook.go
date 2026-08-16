@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -173,6 +174,9 @@ func (a *WebhookAdapter) HealthCheck() error {
 	a.mu.RLock()
 	addr := a.addr
 	a.mu.RUnlock()
+	if addr == "" {
+		return fmt.Errorf("webhook: adapter is not initialized")
+	}
 
 	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
 	if err != nil {

@@ -78,7 +78,16 @@ type pushSubscriptionFileStore struct {
 }
 
 func newPushSubscriptionFileStore(profile string) (*pushSubscriptionFileStore, error) {
-	profileDir, err := session.GetProfileDir(session.GetEffectiveProfile(profile))
+	// #1790/#1822 F1: route through the guarded resolver — this store's
+	// path lives under the profile dir and callers below persist to it
+	// (creating the dir as needed), so a bare GetEffectiveProfile would
+	// bypass the #1790 guard for a CLAUDE_CONFIG_DIR-inferred profile that
+	// doesn't exist yet.
+	resolvedProfile, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		return nil, fmt.Errorf("resolve profile: %w", err)
+	}
+	profileDir, err := session.GetProfileDir(resolvedProfile)
 	if err != nil {
 		return nil, fmt.Errorf("resolve profile dir: %w", err)
 	}

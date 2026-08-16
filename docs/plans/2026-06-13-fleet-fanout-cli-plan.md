@@ -6,7 +6,7 @@
 
 **Architecture:** Three changes in the existing Go CLI. (1) A new durable, non-destructive **completion ledger** file-store (mirroring the proven `CompletionRecord` pattern but in its own directory, so it does not collide with the task-worker claim-guard semantics) written at both the interactive done-signal emit site and the task-worker path. (2) A read-only `session children` subcommand that merges live status with ledger entries. (3) A `launch --assert-done` flag (default-on for Claude) that appends the completion-sentinel instruction to the child's initial message.
 
-**Tech Stack:** Go 1.24, standard library only. Tests via `go test`. Spec: `docs/superpowers/specs/2026-06-13-fleet-fanout-cli-design.md`.
+**Tech Stack at implementation:** Go, standard library only. Tests via `go test`. Spec: `docs/plans/2026-06-13-fleet-fanout-cli-design.md`.
 
 **Design refinement vs spec:** The spec said "persist completion on the session record." Implementation uses a dedicated ledger file-store instead of new `Instance` SQLite columns — lower risk (no schema migration) and avoids overloading the existing `completions/` claim store, whose presence makes the daemon stand down (`transition_daemon.go:311`). Same observable behavior: completion becomes a non-destructively queryable property.
 

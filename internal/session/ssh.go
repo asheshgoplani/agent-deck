@@ -147,6 +147,9 @@ type SSHRunner struct {
 	AgentDeckPath string // Remote agent-deck binary path
 	Profile       string // Remote profile name
 
+	// commandTimeout bounds each remote command; zero means the 30s default.
+	commandTimeout time.Duration
+
 	// configuredPath is the raw agent_deck_path from config ("" if unset). It
 	// lets ResolveRemotePath decide whether to honor an explicit user path or
 	// probe the remote's real binary location via $PATH (#1171).
@@ -172,12 +175,17 @@ func NewSSHRunner(name string, rc RemoteConfig) *SSHRunner {
 		AgentDeckPath:  rc.GetAgentDeckPath(),
 		configuredPath: rc.AgentDeckPath,
 		Profile:        rc.GetProfile(),
+		commandTimeout: rc.GetCommandTimeout(),
 	}
 }
 
 // Run executes an agent-deck command on the remote host and returns stdout.
 func (r *SSHRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	timeout := r.commandTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return r.run(timeoutCtx, args...)
 }
@@ -337,11 +345,46 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	}()
 
 	// Read stdin, intercept Ctrl+Q (all encodings), forward the rest.
+	//
+	// stdinReaderDone closes when this goroutine returns, and stdinReaderStop
+	// tells it to. Both are required because the remote process can exit on its
+	// own (the <-cmdDone branch below), and on that path nothing pressed Ctrl+Q
+	// — without a stop signal the reader stays parked in a blocking
+	// os.Stdin.Read that closing the PTY cannot interrupt. It would then be
+	// queued on the same tty as Bubble Tea's reader when Attach returns, win the
+	// next keystroke on FIFO wakeup order, and swallow it. Same defect and same
+	// fix as the local tmux attach path (internal/tmux.attachStdinPump).
+	stdinReaderDone := make(chan struct{})
+	stdinReaderStop := make(chan struct{})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(stdinReaderDone)
 		buf := make([]byte, 256)
+		fd := int(os.Stdin.Fd()) // #nosec G115 -- an OS file descriptor is a small positive int
 		for {
+			// Poll before reading so the stop signal is observable; a blocking
+			// read on a tty inherited from the shell is not interruptible.
+			select {
+			case <-stdinReaderStop:
+				return
+			default:
+			}
+			if !tmux.PollFdReady(fd, tmux.AttachStdinPollInterval) {
+				continue
+			}
+			// Re-check the stop signal: it can fire while this goroutine was
+			// parked inside poll, and a keystroke can land in that same window.
+			// Reading it here isn't user-visible today only because the
+			// unconditional flush in QuiesceAttachInput discards it moments
+			// later — an incidental backstop, not a reason to read stdin after
+			// the caller already asked us to stop.
+			select {
+			case <-stdinReaderStop:
+				return
+			default:
+			}
+
 			n, err := os.Stdin.Read(buf)
 			if err != nil {
 				break
@@ -377,6 +420,11 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	}
 
 	// Cleanup: close PTY and wait for output to drain.
+	// Stop the stdin reader first, before the PTY closes: a keystroke that
+	// lands during the drain would otherwise be consumed and written to a
+	// closed PTY, losing it. Mirrors cleanupAttach in internal/tmux/pty.go,
+	// which cancels the pump before closing the PTY.
+	close(stdinReaderStop)
 	_ = ptmx.Close()
 	if cmd.Process != nil {
 		_ = cmd.Process.Kill()
@@ -385,7 +433,18 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	case <-outputDone:
 	case <-time.After(50 * time.Millisecond):
 	}
-	termreply.QuarantineFor(sshAttachReplyQuarantine)
+	// Hand stdin back to the TUI: drop whatever the remote's teardown left in
+	// the input queue and arm the reply quarantine. The join-before-flush
+	// ordering is the load-bearing invariant here, so this calls the same
+	// tmux.QuiesceAttachInput the local attach path uses rather than
+	// re-implementing it — that function's mutation-checked tests are what
+	// protect the ordering, and an inline copy here would inherit none of them.
+	tmux.QuiesceAttachInput(
+		stdinReaderDone,
+		tmux.AttachStdinReaderStopTimeout,
+		func() { _ = tmux.FlushInput(int(os.Stdin.Fd())) }, // #nosec G115 -- fd is a small positive int
+		func() { termreply.QuarantineFor(sshAttachReplyQuarantine) },
+	)
 
 	// Reset terminal styles that may have leaked from the remote session.
 	_, _ = os.Stdout.WriteString("\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m")
@@ -908,6 +967,16 @@ type RemoteSessionInfo struct {
 	Tool      string `json:"tool"`
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
+
+	// Substate and Archived are what the local row needs to pick the same
+	// status glyph a local session would get: the ⚡/🔒 substate refinements
+	// and the archived override (an archived session keeps a live Status, so
+	// without this flag it renders as still running). `list --json` on the
+	// remote has always emitted both; they were simply dropped here. A remote
+	// too old to send them omits the keys, which unmarshal to ""/false and
+	// degrade to the coarse-status glyph.
+	Substate string `json:"substate"`
+	Archived bool   `json:"archived"`
 
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`

@@ -27,12 +27,27 @@ type Config struct {
 	// InsecureBind explicitly acknowledges binding a non-loopback address
 	// with no auth token (an unauthenticated RCE surface). Without it the
 	// server refuses to start in that configuration. See bind.go / report #1.
-	InsecureBind        bool
+	InsecureBind bool
+	// TrustedDomains lists hosts (already normalized by
+	// session.NormalizeTrustedDomains) whose links open from the web
+	// terminal without a confirm. Issue #1682.
+	TrustedDomains []string
+	// ConfirmLinkOpen gates the web terminal's link-open confirm for hosts
+	// that are NOT trusted. nil means "confirm" — the safe default, so a
+	// Config built without this field never silently disables the prompt.
+	ConfirmLinkOpen     *bool
 	MenuData            MenuDataLoader
 	PushVAPIDPublicKey  string
 	PushVAPIDPrivateKey string
 	PushVAPIDSubject    string
 	PushTestInterval    time.Duration
+	RemoteFleet         RemoteFleetLoader
+}
+
+// confirmLinkOpen resolves Config.ConfirmLinkOpen, defaulting to true so an
+// omitted field keeps the confirm prompt rather than removing it.
+func (c Config) confirmLinkOpen() bool {
+	return c.ConfirmLinkOpen == nil || *c.ConfirmLinkOpen
 }
 
 // DefaultUndoWindow is the default Chrome-style undo grace period for
@@ -153,6 +168,7 @@ type Server struct {
 	mutator         SessionMutator
 	skills          SkillsService
 	mcpMgr          MCPManager
+	remoteFleet     RemoteFleetLoader
 	mutationLimiter *rate.Limiter
 
 	// hookStatusLoader returns the latest hook payload for every instance
@@ -181,9 +197,13 @@ func NewServer(cfg Config) *Server {
 	s := &Server{
 		cfg:              cfg,
 		menuData:         menuData,
+		remoteFleet:      cfg.RemoteFleet,
 		menuSubscribers:  make(map[chan struct{}]struct{}),
 		mutationLimiter:  mutationLimiter,
 		hookStatusLoader: defaultLoadHookStatuses,
+	}
+	if s.remoteFleet == nil {
+		s.remoteFleet = session.NewRemoteFleetScanner()
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	webLog := logging.ForComponent(logging.CompWeb)
@@ -224,6 +244,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/menu", s.handleMenu)
 	mux.HandleFunc("/api/session/", s.handleSessionByID)
 	mux.HandleFunc("/api/sessions", s.handleSessionsCollection)
+	mux.HandleFunc("/api/remotes", s.handleRemotes)
 	// /api/sessions/undelete is a collection-level action (Chrome-style
 	// ctrl+z undo). Register before the subtree pattern so Go 1.22+
 	// ServeMux precedence routes it cleanly instead of treating
@@ -302,6 +323,9 @@ func (s *Server) Start() error {
 	if err := s.checkBindSecurity(); err != nil {
 		return err
 	}
+	if s.remoteFleet != nil {
+		s.remoteFleet.Start(s.baseCtx)
+	}
 
 	webLog := logging.ForComponent(logging.CompWeb)
 	if watcher, err := session.NewStatusFileWatcher(func() {
@@ -325,6 +349,9 @@ func (s *Server) Start() error {
 		s.hookWatcher = nil
 	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if s.cancelBase != nil {
+			s.cancelBase()
+		}
 		return err
 	}
 	return nil

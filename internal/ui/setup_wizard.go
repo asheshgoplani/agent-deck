@@ -393,7 +393,7 @@ func (w *SetupWizard) View() string {
 			"pi":       "Pi CLI - lightweight coding assistant",
 			"crush":    "Crush - Charm's terminal-first AI coding assistant",
 			"shell":    "Shell - No AI tool (plain terminal)",
-			"cursor":   "Cursor Agent - Cursor CLI (cursor agent)",
+			"cursor":   "Cursor Agent - Cursor CLI (agent / cursor agent)",
 		}
 
 		for i, tool := range w.toolOptions {

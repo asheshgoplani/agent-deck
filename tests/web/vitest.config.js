@@ -45,10 +45,17 @@ export default defineConfig({
     // straight to the installed file. Sub-imports inside those files
     // (e.g. signals.module.js → preact/hooks) re-resolve via the same
     // alias map, so transitive resolution works without breakage.
+    //
+    // ORDER MATTERS. Vite keeps object aliases in insertion order and matches a
+    // string `find` by prefix (`importee === find || importee.startsWith(find +
+    // '/')`), so a bare 'preact' listed first also swallows 'preact/hooks' and
+    // rewrites it to <abs>/preact.mjs/hooks — a path that does not exist. Every
+    // subpath entry must precede its bare parent. This stayed latent until the
+    // first test imported a module that pulls in preact/hooks.
     alias: {
-      'preact': aliasFor('preact'),
       'preact/hooks': aliasFor('preact/hooks'),
       'preact/jsx-runtime': aliasFor('preact/jsx-runtime'),
+      'preact': aliasFor('preact'),
       'htm/preact': aliasFor('htm/preact'),
       '@preact/signals': aliasFor('@preact/signals'),
       '@preact/signals-core': aliasFor('@preact/signals-core'),

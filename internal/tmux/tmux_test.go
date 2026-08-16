@@ -639,6 +639,8 @@ func TestDetectToolFromCommand(t *testing.T) {
 		{name: "codex", command: "codex --dangerously-bypass-approvals-and-sandbox", want: "codex"},
 		{name: "pi", command: "pi --model fast", want: "pi"},
 		{name: "cursor", command: "cursor agent", want: "cursor"},
+		{name: "standalone agent", command: "agent", want: "cursor"},
+		{name: "standalone agent flags", command: "agent --continue", want: "cursor"},
 		{name: "shell command", command: "npm run dev", want: ""},
 		{name: "empty", command: "", want: ""},
 	}
@@ -2851,6 +2853,10 @@ func TestBuildStatusBarArgs(t *testing.T) {
 }
 
 func TestBuildStatusBarArgs_InjectDisabled(t *testing.T) {
+	// Disabling injection must emit `status off` — not nil — so a bar already on
+	// the server (tmux's `status on` default, user config, or a prior enabled
+	// run) is actually removed. The real-tmux guard for this is
+	// tests/eval/session TestEval_Session_BarOff_RealTmux (#687).
 	s := &Session{
 		Name:             "test-sess",
 		DisplayName:      "proj",
@@ -2858,7 +2864,22 @@ func TestBuildStatusBarArgs_InjectDisabled(t *testing.T) {
 		injectStatusLine: false,
 	}
 	args := s.buildStatusBarArgs()
-	assert.Nil(t, args, "args should be nil when injectStatusLine is false")
+	assert.Equal(t, []string{"set-option", "-t", "test-sess", "status", "off"}, args,
+		"disabling injection must turn the status bar off")
+}
+
+func TestBuildStatusBarArgs_InjectDisabled_UserStatusOverride(t *testing.T) {
+	// An explicit user `status` in [tmux].options wins: agent-deck must not
+	// force it off.
+	s := &Session{
+		Name:             "test-sess",
+		DisplayName:      "proj",
+		WorkDir:          "/tmp",
+		injectStatusLine: false,
+		OptionOverrides:  map[string]string{"status": "on"},
+	}
+	assert.Nil(t, s.buildStatusBarArgs(),
+		"user status override must not be overridden when injection is disabled")
 }
 
 func TestBuildTerminalTitleArgs(t *testing.T) {
@@ -3013,7 +3034,7 @@ func TestStartCommandSpec_Default(t *testing.T) {
 
 	launcher, args := s.startCommandSpec("/tmp/project", "")
 	assert.Equal(t, "tmux", launcher)
-	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project",
+	assert.Equal(t, []string{"-u", "new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project",
 		"-x", "173", "-y", "41"}, args)
 }
 
@@ -3031,7 +3052,7 @@ func TestStartCommandSpec_UserScope(t *testing.T) {
 	require.GreaterOrEqual(t, len(args), 8)
 	assert.Equal(t, []string{"--user", "--scope", "--quiet", "--collect", "--unit"}, args[:5])
 	assert.Equal(t, "agentdeck-tmux-agentdeck-test-session-1234abcd", args[5])
-	assert.Equal(t, []string{"tmux", "new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project",
+	assert.Equal(t, []string{"tmux", "-u", "new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project",
 		"-x", "173", "-y", "41"}, args[6:])
 }
 
@@ -3088,10 +3109,10 @@ func TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent(t *testing
 			// #1567/#1580: the command is delivered as SEPARATE argv tokens
 			// (bash, -c, COMMAND) so tmux execvp()s bash directly instead of
 			// wrapping the string through the server default-shell. With the
-			// #1694 birth size that is 13 args total:
-			// new-session -d -s NAME -c DIR -x COLS -y ROWS bash -c COMMAND.
-			require.Equal(t, 13, len(args),
-				"expected 13 args (new-session -d -s NAME -c DIR -x COLS -y ROWS bash -c COMMAND)")
+			// #1694 birth size and #1867 global -u that is 14 args total:
+			// -u new-session -d -s NAME -c DIR -x COLS -y ROWS bash -c COMMAND.
+			require.Equal(t, 14, len(args),
+				"expected 14 args (-u new-session -d -s NAME -c DIR -x COLS -y ROWS bash -c COMMAND)")
 
 			require.Equal(t, "bash", args[len(args)-3],
 				"command must be exec'd under bash for fish/zsh/bash compatibility")

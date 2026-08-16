@@ -150,6 +150,14 @@ agent-deck watcher create ntfy --name phone-alerts --topic <random-long-string>
 agent-deck watcher create slack --name team-slack --topic <random-long-string>
 ```
 
+> **`create` never edits an existing watcher.** The settings you pass live in
+> `watcher/<name>/watcher.toml`, and create only ever writes that file for a
+> name it is registering for the first time. Re-running create for a name that
+> already exists fails instead of half-applying the new flags — the config on
+> disk (which may carry your hand-edited `[routing]`) would otherwise disagree
+> with what create just told you it had set. To change a watcher's settings,
+> edit its `watcher.toml`.
+
 > **Conversational shortcut.** If picking flags feels heavy, install the
 > assistant skill once: `agent-deck watcher install-skill watcher-creator`.
 > Then inside any agent-deck Claude session: *"Use the watcher-creator

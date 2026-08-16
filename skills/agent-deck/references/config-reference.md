@@ -21,9 +21,11 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[conductor] Section](#conductor-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
+- [[interval_hooks.*] Section](#interval_hooks-section)
 - [[display] Section](#display-section)
 - [[ui] Section](#ui-section)
 - [[global_search] Section](#global_search-section)
+- [[notifications] Section](#notifications-section)
 - [[performance] Section](#performance-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -287,12 +289,16 @@ Cursor Agent CLI integration settings.
 
 ```toml
 [cursor]
-hooks_enabled = false  # Disable automatic Cursor hook injection on TUI startup
+command = "agent"          # Override launch command (default: prefer `agent`, else `cursor agent`)
+env_file = "~/.cursor.env"
+hooks_enabled = false      # Disable automatic Cursor hook injection on TUI startup
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `hooks_enabled` | bool | `true` | When `true`, TUI startup silently injects agent-deck lifecycle hooks into `~/.cursor/hooks.json` whenever the `cursor` binary is on `PATH` (real-time status detection). Set `false` to durably opt out; `agent-deck cursor-hooks uninstall` writes this automatically so the uninstall survives TUI restarts (issue #1672). Re-enable with `agent-deck cursor-hooks install` or by removing the key. Mirrors `[claude] hooks_enabled`. |
+| `command` | string | host-resolved | Override the binary/invocation. When unset, prefers standalone `agent` when on `PATH`, otherwise `cursor agent`. |
+| `env_file` | string | `""` | A .env file sourced for Cursor sessions only. See [Path Resolution](#path-resolution). |
+| `hooks_enabled` | bool | `true` | When `true`, TUI startup silently injects agent-deck lifecycle hooks into `~/.cursor/hooks.json` whenever the resolved Cursor CLI binary is on `PATH` (real-time status detection). Set `false` to durably opt out; `agent-deck cursor-hooks uninstall` writes this automatically so the uninstall survives TUI restarts (issue #1672). Re-enable with `agent-deck cursor-hooks install` or by removing the key. Mirrors `[claude] hooks_enabled`. |
 
 ## [hermes] Section
 
@@ -473,6 +479,40 @@ notify_in_cli = true          # Show in CLI commands
 | `check_interval_hours` | int | `24` | Hours between checks. |
 | `notify_in_cli` | bool | `true` | Show updates in CLI (not just TUI). |
 
+## [interval_hooks.*] Section
+
+Run shell commands on a wall-clock interval while the TUI is running,
+independent of session activity — a general-purpose "cron inside the TUI."
+Each hook is a named table under `[interval_hooks]`. The command runs via
+`bash -lc`. Typical uses: a periodic sync, a health probe, or a poll that
+dispatches work to sessions with `agent-deck session send` / `session start`.
+
+```toml
+[interval_hooks.heartbeat]
+command = "echo tick >> ~/agentdeck-heartbeat.log"
+interval_seconds = 60         # cadence between runs (clamped 5..86400)
+
+[interval_hooks.dispatch]
+command = "~/bin/route-ready-tasks.sh"
+interval_seconds = 30
+timeout_seconds = 20          # kill a run exceeding this (clamped 1..interval)
+run_at_startup = true         # also run once immediately on TUI start
+enabled = true                # set false to keep the config but pause it
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | `""` | Shell command run each tick via `bash -lc`. A hook with no command never runs. |
+| `interval_seconds` | int | `60` | Seconds between runs. Clamped to `[5, 86400]`. Re-read each tick, so edits apply live. |
+| `timeout_seconds` | int | `min(30, interval)` | Per-run timeout; a run exceeding it is killed so a wedged command can't pile up. Clamped to `[1, interval_seconds]`. The command runs in its own process group, so on timeout the whole group is killed — a hook that forks children (or daemonizes) can't outlive its slot. |
+| `run_at_startup` | bool | `false` | Run the command once immediately on TUI start, before the first interval. |
+| `enabled` | bool | `true` when `command` set | Gate the hook. Set `false` to keep the config but pause it. |
+
+Notes:
+- Overlapping runs of the *same* hook are skipped: if a run is still going when the next tick fires, that tick is dropped (logged, not stacked).
+- **Live config changes:** a supervisor rescans `config.toml` about every 15s, so you can add, remove, pause (`enabled = false`), or re-enable a hook without restarting the TUI — changes take effect within one rescan. A live hook's own `command` / `interval_seconds` edits are picked up on its next tick. (No restart is required for any of these.)
+- Each run is logged: failures (non-zero exit) at WARN with truncated output, successes at INFO. A hook is never allowed to crash the TUI (each runs in a panic-recovering goroutine).
+
 ## [display] Section
 
 Rendering and display settings.
@@ -519,6 +559,29 @@ attach_on_create = true                       # Opt IN: instantly attach to a ne
 
 Filters compose: `hidden_tools` is applied first, then `show_only_installed_tools` (when enabled).
 
+## [web] Section
+
+`agent-deck web` HTTP server settings.
+
+```toml
+[web]
+mutations_enabled = true                      # Accept POST/PATCH/DELETE from the web UI
+trusted_domains = [                           # Links to these hosts open without a confirm
+  "gitlab.mycorp.example",
+  "gerrit.mycorp.example",
+  "*.ci.mycorp.example",                      # subdomains of ci.mycorp.example
+]
+confirm_link_open = true                      # Confirm before opening any OTHER host
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mutations_enabled` | bool | `true` | When `false`, mutating endpoints (POST/PATCH/DELETE) return HTTP 403 and the web UI hides its write affordances. `--read-only` forces this off regardless of the config value. |
+| `trusted_domains` | []string | `[]` | Hosts whose links open straight from the web terminal, skipping the "this link could potentially be dangerous" confirm. Everything not listed still confirms. Matching is on **host** only: case-insensitive, port- and path-independent. An entry may be a bare host (`gitlab.corp.example`), a pasted URL (reduced to its host), or `*.base.example` to match **subdomains** of `base.example` (not the bare base itself). Only `http`/`https` links are ever auto-opened. Unusable entries (`*`, `*.example`, blanks) are dropped. |
+| `confirm_link_open` | bool | `true` | Confirm before opening a web-terminal link whose host is **not** in `trusted_domains`. Set `false` to accept the risk and open every link directly — prefer `trusted_domains`, which keeps the safety net for arbitrary links. |
+
+Both link keys are read at server start and served to the browser by `GET /api/settings`; the web Settings drawer shows the active values.
+
 ## [global_search] Section
 
 Search across all Claude conversations.
@@ -539,6 +602,41 @@ index_rate_limit = 20       # Files/second for indexing
 | `memory_limit_mb` | int | `100` | Max memory for balanced tier. |
 | `recent_days` | int | `90` | Only search recent conversations. |
 | `index_rate_limit` | int | `20` | Indexing speed (reduce for less CPU). |
+
+## [notifications] Section
+
+How agent-deck tells you a session wants attention.
+
+```toml
+[notifications]
+enabled = true         # tmux status-bar notification bar
+max_shown = 6
+show_all = false
+minimal = false
+transition_events = true
+desktop = false        # OS notification when a session needs input
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Show the notification bar in the tmux status line. |
+| `max_shown` | int | `6` | Maximum sessions listed in the bar. |
+| `show_all` | bool | `false` | List every session with a status icon instead of only waiting ones. |
+| `minimal` | bool | `false` | Compact icon+count summary instead of names. Disables the `Ctrl+b 1-6` jump bindings and ignores `show_all`. |
+| `transition_events` | bool | `true` | Send a tmux message to a session's **parent** when a child transitions (e.g. running → waiting). Per-session override: `agent-deck session set-transition-notify <id> off`. |
+| `desktop` | bool | `false` | Raise an **OS notification** when a session starts waiting for input or errors out. |
+
+### desktop
+
+The other two signals only reach you in specific places: the notification bar is visible while you are looking at the TUI, and `transition_events` routes to a session's parent, so a top-level session with no parent reaches nobody. A background agent that blocks on a permission prompt while you work elsewhere therefore surfaces nowhere. `desktop = true` closes that gap.
+
+Delivery prefers the [cmux](https://cmux.com) terminal's notification panel when the `cmux` CLI is on `PATH`, which both raises a system banner and records the alert in cmux's sidebar so one missed while away is still discoverable. Otherwise it falls back to a macOS Notification Center banner via `osascript`. With neither available it is a silent no-op.
+
+Notifications fire on the transition into `waiting` or `error`, once per transition rather than once per poll. `idle` is deliberately excluded: for a long-lived interactive agent it is the resting state, not an event, and alerting on it trains you to ignore the banners. The per-session `set-transition-notify off` opt-out is honoured here too, so a single noisy session can be muted without turning the feature off globally.
+
+Off by default because it is the only agent-deck signal that interrupts you outside the TUI.
+
+One thing to know before enabling it: the notification carries the session **title**. Titles can be generated by the agent itself (Claude's conversation-name sync), so a title derived from content the agent read is displayed in a banner, and on the cmux path it is also recorded in cmux's notification history. Nothing is executed: a title is escaped before it reaches the notifier, and is passed as a separate argument where the notifier supports one. But if you run sessions whose titles could echo sensitive strings, that text persists in the notification record. `agent-deck session set-title-lock <id> on` pins a title you chose and stops the sync from replacing it.
 
 ## [performance] Section
 

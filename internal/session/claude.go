@@ -24,6 +24,17 @@ var uuidSessionFileRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]
 // command string before we trust them as the explicit session id.
 var uuidBareRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// IsBareClaudeSessionUUID reports whether s is a well-formed bare UUID (no
+// surrounding whitespace or suffix). Exported so callers outside this
+// package that accept a free-text conversation id from an operator (e.g. the
+// TUI's "resume by session ID" panel field) can reject shell-metacharacter
+// or otherwise malformed input before treating it as an ownership
+// declaration and baking it into an unquoted `--resume %s` command (review
+// finding on #1830).
+func IsBareClaudeSessionUUID(s string) bool {
+	return uuidBareRegex.MatchString(s)
+}
+
 // extractExplicitClaudeSessionID parses the user-supplied wrapper command
 // string and returns the literal UUID argument of `--session-id <uuid>`
 // (or `--session-id=<uuid>`) if exactly one is present and well-formed.
@@ -46,6 +57,39 @@ var uuidBareRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 //     (e.g. `--session-id "$VAR"`) — the user is doing dynamic id
 //     resolution; we cannot safely declare the id without expansion.
 func extractExplicitClaudeSessionID(command string) (string, bool) {
+	return extractExplicitClaudeIDForFlags(command, "--session-id")
+}
+
+// extractExplicitClaudeResumeID is the `--resume <uuid>` counterpart (#1815).
+// A conversation id the operator baked into this session's OWN command is an
+// ownership declaration exactly like `--session-id`; without reading it, a
+// custom command carrying `claude --resume <id>` would execute verbatim and
+// never meet the resume-time chokepoint at all.
+func extractExplicitClaudeResumeID(command string) (string, bool) {
+	return extractExplicitClaudeIDForFlags(command, "--resume")
+}
+
+// commandHasToken reports whether `command`, tokenized the same coarse way
+// as extractExplicitClaudeIDForFlags, contains the literal token `flag`
+// (bare, or as its `flag=...` form). Used to gate the `--resume` ownership
+// fallback: presence of ANY `--session-id` or `--fork-session` token means
+// this command matches the fork builder's shape (`--resume <SOURCE id>
+// --fork-session`), where the resume id names the PARENT's conversation, not
+// this session's own — that id must never be adopted as this instance's
+// verified identity (review finding on #1830).
+func commandHasToken(command, flag string) bool {
+	if command == "" {
+		return false
+	}
+	for _, f := range strings.Fields(command) {
+		if f == flag || strings.HasPrefix(f, flag+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func extractExplicitClaudeIDForFlags(command, flag string) (string, bool) {
 	if command == "" {
 		return "", false
 	}
@@ -60,13 +104,13 @@ func extractExplicitClaudeSessionID(command string) (string, bool) {
 	for idx, f := range fields {
 		var candidate string
 		switch {
-		case f == "--session-id":
+		case f == flag:
 			if idx+1 >= len(fields) {
 				return "", false
 			}
 			candidate = fields[idx+1]
-		case strings.HasPrefix(f, "--session-id="):
-			candidate = strings.TrimPrefix(f, "--session-id=")
+		case strings.HasPrefix(f, flag+"="):
+			candidate = strings.TrimPrefix(f, flag+"=")
 		default:
 			continue
 		}
@@ -376,7 +420,13 @@ func resolveClaudeConfigDir(opts resolveOpts) (path, source string) {
 	}
 
 	if userConfig != nil {
-		profile := GetEffectiveProfile("")
+		// #1822 F1-class: route through the process's resolved profile
+		// (the same #1790 guard/fallback the host storage layer used) so
+		// this last-resort per-profile config_dir lookup keys off the
+		// profile this process actually opened, not a raw
+		// GetEffectiveProfile("") recomputation that can still return an
+		// inferred-but-rejected CLAUDE_CONFIG_DIR-derived name.
+		profile := resolvedProcessProfile()
 		if profileDir := userConfig.GetProfileClaudeConfigDir(profile); profileDir != "" {
 			return profileDir, "profile"
 		}

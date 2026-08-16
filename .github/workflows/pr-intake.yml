@@ -13,7 +13,10 @@ name: PR Intake Gate (observe-only)
 
 on:
   pull_request_target:
-    types: [opened, edited, ready_for_review]
+    # synchronize/reopened matter because the ruleset requires `intake` on the
+    # CURRENT tip: without them, any PR whose last event was a push could never
+    # satisfy the merge gate (observed on real PRs blocked indefinitely).
+    types: [opened, edited, ready_for_review, synchronize, reopened]
 
 permissions:
   contents: read

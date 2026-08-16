@@ -81,7 +81,8 @@ func NewPricer(cfg PricerConfig) *Pricer {
 			"o3":                priceFromUSD(2.0, 8.0, 0, 0),
 			"o4-mini":           priceFromUSD(1.10, 4.40, 0, 0),
 			// MiniMax models (https://www.minimaxi.com/en/pricing)
-			"MiniMax-M2.7":           priceFromUSD(0.70, 2.80, 0, 0),
+			"MiniMax-M3":             priceFromUSD(0.60, 2.40, 0.12, 0),
+			"MiniMax-M2.7":           priceFromUSD(0.30, 1.20, 0.06, 0.375),
 			"MiniMax-M2.7-highspeed": priceFromUSD(0.35, 1.40, 0, 0),
 			"MiniMax-M2.5":           priceFromUSD(0.50, 2.00, 0, 0),
 			"MiniMax-M2.5-highspeed": priceFromUSD(0.15, 0.60, 0, 0),

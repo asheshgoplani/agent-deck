@@ -26,7 +26,16 @@ type pushVAPIDKeysFile struct {
 // EnsurePushVAPIDKeys returns a persisted VAPID keypair for the given profile.
 // If no key file exists yet, it generates one via webpush.GenerateVAPIDKeys().
 func EnsurePushVAPIDKeys(profile, subject string) (publicKey, privateKey string, generated bool, err error) {
-	profileDir, err := session.GetProfileDir(session.GetEffectiveProfile(profile))
+	// #1790/#1822 F1: route through the guarded resolver — this writes a
+	// keyfile (MkdirAll included) into the profile dir below, so a bare
+	// GetEffectiveProfile would materialise a CLAUDE_CONFIG_DIR-inferred
+	// profile that doesn't exist yet, ahead of and independent from any
+	// storage-layer guard.
+	resolvedProfile, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		return "", "", false, fmt.Errorf("resolve profile: %w", err)
+	}
+	profileDir, err := session.GetProfileDir(resolvedProfile)
 	if err != nil {
 		return "", "", false, fmt.Errorf("resolve profile dir: %w", err)
 	}

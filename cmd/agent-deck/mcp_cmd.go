@@ -465,6 +465,10 @@ func handleMCPAttach(profile string, args []string) {
 
 	inst.InvalidateProjectMCPIntegrationsCache()
 
+	// The restart below records its new tmux name through the process-wide
+	// StateDB, which a CLI process does not have until now.
+	adoptStateDB(storage)
+
 	// Restart if requested
 	restarted := false
 	if *restart && inst.SupportsMCPAgentRestart() {
@@ -484,21 +488,29 @@ func handleMCPAttach(profile string, args []string) {
 		}
 	}
 
+	// The restart minted a new tmux session name and recorded it itself, at the
+	// chokepoint in Instance.restart (#1870). Nothing is saved here on purpose:
+	// this command loaded its snapshot before a restart that can take seconds,
+	// so writing that snapshot back would overwrite whatever another process
+	// changed meanwhile. All that is left is to report the outcome honestly.
+	outcome := restartOutcomeFor(inst, restarted)
+	if !*jsonOutput {
+		outcome.warn(os.Stderr)
+	}
+
 	// Output result
 	if *jsonOutput {
-		out.Print("", map[string]interface{}{
-			"success":   true,
-			"session":   inst.Title,
-			"mcp":       mcpName,
-			"scope":     scope,
-			"restarted": restarted,
-		})
+		payload := map[string]interface{}{
+			"success": true,
+			"session": inst.Title,
+			"mcp":     mcpName,
+			"scope":   scope,
+		}
+		outcome.addTo(payload)
+		out.Print("", payload)
 	} else {
 		message := fmt.Sprintf("Attached %s to %s (%s)", mcpName, inst.Title, scope)
-		if restarted {
-			message += " - session restarted"
-		}
-		out.Success(message, nil)
+		out.Success(outcome.describe(message), nil)
 	}
 }
 
@@ -626,6 +638,10 @@ func handleMCPDetach(profile string, args []string) {
 
 	inst.InvalidateProjectMCPIntegrationsCache()
 
+	// The restart below records its new tmux name through the process-wide
+	// StateDB, which a CLI process does not have until now.
+	adoptStateDB(storage)
+
 	// Restart if requested
 	restarted := false
 	if *restart && inst.SupportsMCPAgentRestart() {
@@ -645,21 +661,26 @@ func handleMCPDetach(profile string, args []string) {
 		}
 	}
 
+	// See handleMCPAttach: the new tmux name is recorded at the restart
+	// chokepoint, not by writing this command's stale snapshot back.
+	outcome := restartOutcomeFor(inst, restarted)
+	if !*jsonOutput {
+		outcome.warn(os.Stderr)
+	}
+
 	// Output result
 	if *jsonOutput {
-		out.Print("", map[string]interface{}{
-			"success":   true,
-			"session":   inst.Title,
-			"mcp":       mcpName,
-			"scope":     scope,
-			"restarted": restarted,
-		})
+		payload := map[string]interface{}{
+			"success": true,
+			"session": inst.Title,
+			"mcp":     mcpName,
+			"scope":   scope,
+		}
+		outcome.addTo(payload)
+		out.Print("", payload)
 	} else {
 		message := fmt.Sprintf("Detached %s from %s (%s)", mcpName, inst.Title, scope)
-		if restarted {
-			message += " - session restarted"
-		}
-		out.Success(message, nil)
+		out.Success(outcome.describe(message), nil)
 	}
 }
 

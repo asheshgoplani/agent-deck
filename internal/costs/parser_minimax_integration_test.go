@@ -10,6 +10,22 @@ import (
 // Integration tests verify the full cost pipeline for MiniMax models:
 // output parsing → token extraction → pricing lookup → cost computation.
 
+func TestMiniMaxEndToEnd_M3(t *testing.T) {
+	pricer := NewPricer(PricerConfig{})
+	collector := NewCollector(pricer)
+
+	input := "MiniMax usage: 1,000,000 input tokens, 500,000 output tokens (MiniMax-M3)"
+	events, err := collector.Collect("minimax", "integration-m3", input)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	ev := events[0]
+	assert.Equal(t, "integration-m3", ev.SessionID)
+	assert.Equal(t, "MiniMax-M3", ev.Model)
+	// 1M input at $0.60/Mtok plus 500K output at $2.40/Mtok totals $1.80.
+	assert.Equal(t, int64(1_800_000), ev.CostMicrodollars)
+}
+
 func TestMiniMaxEndToEnd_M27(t *testing.T) {
 	pricer := NewPricer(PricerConfig{})
 	collector := NewCollector(pricer)
@@ -24,10 +40,8 @@ func TestMiniMaxEndToEnd_M27(t *testing.T) {
 	assert.Equal(t, "MiniMax-M2.7", ev.Model)
 	assert.Equal(t, int64(500_000), ev.InputTokens)
 	assert.Equal(t, int64(100_000), ev.OutputTokens)
-	// 500K input at $0.70/Mtok = $0.35 = 350,000 microdollars
-	// 100K output at $2.80/Mtok = $0.28 = 280,000 microdollars
-	// Total = 630,000 microdollars
-	assert.Equal(t, int64(630_000), ev.CostMicrodollars)
+	// 500K input at $0.30/Mtok plus 100K output at $1.20/Mtok totals $0.27.
+	assert.Equal(t, int64(270_000), ev.CostMicrodollars)
 }
 
 func TestMiniMaxEndToEnd_M25Highspeed(t *testing.T) {
