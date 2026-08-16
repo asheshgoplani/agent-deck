@@ -4724,11 +4724,21 @@ func (i *Instance) Start() error {
 	if spawnedSince(i.ID, beforeLock) {
 		return nil
 	}
-	defer recordInstanceSpawn(i.ID)
-
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
+
+	// #1873: refuse to spawn while this instance still owns a process tree from
+	// an earlier spawn. Runs before anything is mutated or launched, so a
+	// refusal leaves the session exactly as it was and signals nothing — and
+	// before recordInstanceSpawn is deferred, so a refusal does not stamp a
+	// spawn that never happened. That stamp is what a concurrent caller reads
+	// to decide it can return "already started"; a refusal must not hand it
+	// that answer.
+	if err := i.guardOwnedProcessesBeforeSpawn("start"); err != nil {
+		return err
+	}
+	defer recordInstanceSpawn(i.ID)
 
 	// #1580 diagnosability: clear any stale spawn-failure sidecar and drop a
 	// spawn_attempt trace so a spawn that dies before anything else runs still
@@ -4912,6 +4922,18 @@ func (i *Instance) Start() error {
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
 
+	// gen AND the wake channel are both produced here, in the caller, so no
+	// bump can slip into the gap before the watcher subscribes (see
+	// newSpawnGenWatch). The ownership claim below shares the same pair: it
+	// belongs to this spawn, and a second bump would supersede the very watcher
+	// this call starts.
+	gen, wake := i.newSpawnGenWatch()
+
+	// #1873: record the durable ownership receipt — the pane process's pid
+	// bound to its start identity — before anything can die. This is the only
+	// moment at which the claim is provable.
+	i.claimOwnershipAtSpawn(command, gen, wake)
+
 	// #1580: watch for a fast death of the initial process (broken command,
 	// bad PATH, immediate non-zero exit). tmux tears the pane down on exit for
 	// non-remain-on-exit sessions, so this captures the dying output while the
@@ -4924,7 +4946,16 @@ func (i *Instance) Start() error {
 	// the exemption every completed one-shot would be recorded as died-fast and
 	// the preview would paint "⚠ session failed to start" over its answer.
 	if command != "" && !i.expectsFastExit() {
-		i.startFastDeathWatcher(command, i.tmuxSession, i.ID, i.Tool, sessionLog)
+		// Resolve both write targets HERE, synchronously in the caller, not
+		// inside the goroutine: GetSessionIDLifecycleLogPath()/spawnFailureDir()
+		// read the live $HOME, and watchForFastDeath's goroutine is never
+		// joined — it can still be sleeping on its ticker when a later test
+		// changes $HOME out from under it. Capturing the resolved paths as
+		// plain values at spawn time (Go evaluates `go` call arguments in the
+		// calling goroutine) makes the watcher's writes land in the HOME that
+		// was live when this session started, never whichever HOME happens to
+		// be live when the ticker next fires.
+		go i.watchForFastDeath(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -5034,8 +5065,6 @@ func (i *Instance) StartWithMessage(message string) error {
 	if spawnedSince(i.ID, beforeLock) {
 		return nil
 	}
-	defer recordInstanceSpawn(i.ID)
-
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
@@ -5054,6 +5083,13 @@ func (i *Instance) StartWithMessage(message string) error {
 			return err
 		}
 	}
+
+	// #1873: same fail-closed ownership gate as Start(), in the same position
+	// relative to the spawn stamp. A second spawn path is still a second tree.
+	if err := i.guardOwnedProcessesBeforeSpawn("start"); err != nil {
+		return err
+	}
+	defer recordInstanceSpawn(i.ID)
 
 	// #1580 diagnosability: clear any stale spawn-failure sidecar and drop a
 	// spawn_attempt trace (same as Start()).
@@ -5227,9 +5263,18 @@ func (i *Instance) StartWithMessage(message string) error {
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
 
+	// One generation for this spawn, shared by the ownership claim and the
+	// fast-death watcher (sister path to Start()).
+	gen, wake := i.newSpawnGenWatch()
+
+	// #1873: claim the ownership receipt at spawn (sister path to Start()).
+	i.claimOwnershipAtSpawn(command, gen, wake)
+
 	// #1580: fast-death watcher (sister path to Start()).
 	if command != "" && !i.expectsFastExit() {
-		i.startFastDeathWatcher(command, i.tmuxSession, i.ID, i.Tool, sessionLog)
+		// See the matching comment in Start(): resolve the write targets — and
+		// subscribe to the wake — here, not inside the never-joined goroutine.
+		go i.watchForFastDeath(command, gen, wake, i.tmuxSession, i.ID, i.Tool, sessionLog, GetSessionIDLifecycleLogPath(), spawnFailureDir())
 	}
 
 	// CFG-07: emit a single-shot log line documenting which priority level
@@ -8455,6 +8500,14 @@ func (i *Instance) killInternal(sync bool) error {
 		}
 	}
 
+	// #1873: reap whatever the spawn-time ownership receipt still owns, then
+	// clear it. tmux teardown does not reach a tree that has already escaped
+	// the pane — that is the whole report — and a deliberate stop is exactly
+	// the intent that authorises terminating this session's processes. Only
+	// identity-matched processes are signalled; anything unverifiable is left
+	// alone and the receipt is kept so it stays visible.
+	i.clearOwnershipAfterTeardown(sync)
+
 	// Remove the scratch CLAUDE_CONFIG_DIR prepared at spawn time for
 	// this worker (issue #59, v1.7.68). Best-effort — leaking a scratch
 	// dir on an unclean shutdown is harmless, just wasteful.
@@ -8509,7 +8562,24 @@ func (i *Instance) restart(env map[string]string) error {
 	if spawnedSince(i.ID, beforeLock) && len(env) == 0 {
 		return nil
 	}
+	// #1873: the case this issue reports IS a restart — a pane that died during
+	// startup, a wrapped tree that escaped it, and a later legitimate restart
+	// that spawns a second one. The gate runs before the generation bump and
+	// before any tmux work, so a refusal changes nothing at all: no kill, no
+	// respawn, no signal, and the receipt left intact for inspection.
+	if err := i.guardOwnedProcessesBeforeSpawn("restart"); err != nil {
+		return err
+	}
+	// Deferred only once the gate has passed: a refused restart started nothing,
+	// so it must not leave a spawn stamp that makes a concurrent caller believe
+	// a replacement is already running.
 	defer recordInstanceSpawn(i.ID)
+	// Registered AFTER the gate and BEFORE the tmux work, so it runs on every
+	// exit of this function — including each per-tool respawn-pane fast path —
+	// while the spawn lock is still held (deferred release() was registered
+	// first, so it runs last). A replacement pane that kept the previous
+	// receipt would be an unowned tree.
+	defer func() { i.commitOwnershipAfterRestart(i.Command) }()
 
 	// #1775: supersede the fast-death watcher from the PREVIOUS spawn here, at
 	// the single entry point, rather than deeper down. restart() has several
