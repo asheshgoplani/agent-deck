@@ -48,6 +48,18 @@ func tmuxProbeBounded(args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
+// guardedValueFlags are the flags checkFlagValueNotFlag will police: those whose
+// value is a plain name and can never legitimately look like a flag.
+//
+// It is an ALLOWLIST on purpose. The first version of this check policed every
+// value-taking flag, which broke the documented `--extra-arg --model
+// --extra-arg opus` pass-through — for --extra-arg a flag-shaped value is the
+// entire point, not a mistake (#1928). Only add a flag here when a leading dash
+// in its value is always a user error.
+var guardedValueFlags = map[string]bool{
+	"account": true,
+}
+
 // checkFlagValueNotFlag reports a value-taking flag whose value was omitted and
 // which therefore swallows the NEXT flag as its value (issue #1923).
 //
@@ -86,6 +98,9 @@ func checkFlagValueNotFlag(fs *flag.FlagSet, args []string) error {
 		}
 		name := strings.TrimLeft(arg, "-")
 		if strings.Contains(name, "=") || boolFlags[name] || !known[name] {
+			continue
+		}
+		if !guardedValueFlags[name] {
 			continue
 		}
 		// Read the following token, if there is one. Assigned inside the bounds

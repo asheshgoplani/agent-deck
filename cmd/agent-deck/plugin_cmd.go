@@ -240,10 +240,24 @@ func pluginAttachOrDetach(profile string, args []string, op string) {
 			return
 		}
 		fmt.Println("Restarting session to apply enabledPlugins...")
+		// See adoptStateDB: the restart records its new tmux name through the
+		// process-wide StateDB, which a CLI process does not have until now.
+		adoptStateDB(storage)
 		if err := inst.Restart(); err != nil {
 			out.Error(fmt.Sprintf("restart failed: %s", err.Error()), ErrCodeNotFound)
 			os.Exit(1)
 		}
+		// The save above ran BEFORE the restart, so it recorded the tmux name
+		// the restart then killed. The replacement name is recorded at the
+		// chokepoint in Instance.restart (#1870) rather than by repeating that
+		// whole-snapshot save, which would push rows loaded before a
+		// seconds-long restart back over another process's concurrent edits.
+		//
+		// An unrecorded name is reported, not fatal: the plugin change and the
+		// restart both succeeded, and exiting non-zero here would invite a
+		// retry that leaks another tmux session.
+		outcome := restartOutcomeFor(inst, true)
+		outcome.warn(os.Stderr)
 	}
 }
 

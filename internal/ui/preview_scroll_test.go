@@ -205,3 +205,79 @@ func TestPreviewScroll_SingleLayoutMode_WheelMovesCursor(t *testing.T) {
 		t.Fatalf("single-layout WheelDown: previewScrollOffset=%d, want 0 (no preview scroll in single layout)", h.previewScrollOffset)
 	}
 }
+
+// Test 7: Stacked layout routes the wheel by Y, not X — the preview is the
+// lower region, below the horizontal divider. A wheel event at/below
+// stackedPreviewTopY() scrolls the preview and leaves the cursor alone; the
+// divider row immediately above it falls through to list-scroll semantics
+// (cursor moves, offset resets).
+//
+// The boundary is cross-checked against the actual rendered frame first: the
+// preview region's top row is renderStackedLayout's "PREVIEW" panel title, so
+// an off-by-one in contentChromeTop/stackedPreviewTopY fails here rather than
+// being silently baked into both the routing and the assertion.
+func TestPreviewScroll_StackedLayoutMode_WheelRoutesByY(t *testing.T) {
+	// width=120 would be dual by breakpoint; PreviewOrientationBelow forces stacked.
+	h, _ := previewScrollSessionWithLines(t, 120, 40, 50)
+	h.previewOrientation = PreviewOrientationBelow
+
+	// A second item gives the cursor somewhere to move. It's a RemoteSession
+	// deliberately: wheel routing is item-type agnostic (it decides by
+	// coordinates, then moves the cursor through skipDivider), so the
+	// fall-through path has to behave identically when the item it lands on is
+	// remote rather than local.
+	remote := session.RemoteSessionInfo{ID: "remote-1", Title: "remote-second", RemoteName: "myserver"}
+	h.flatItems = append(h.flatItems, session.Item{
+		Type:          session.ItemTypeRemoteSession,
+		RemoteSession: &remote,
+		RemoteName:    "myserver",
+	})
+
+	if got := h.getLayoutMode(); got != LayoutModeStacked {
+		t.Fatalf("layout mode = %q, want %q", got, LayoutModeStacked)
+	}
+
+	top := h.stackedPreviewTopY()
+	if rendered := stackedPreviewTitleY(h); rendered != top {
+		t.Fatalf("stackedPreviewTopY()=%d but the rendered PREVIEW title is on row %d — stacked geometry is off by %d", top, rendered, top-rendered)
+	}
+
+	// Wheel on the first preview row. X is deliberately inside what WOULD be
+	// the dual-layout list column, proving the route is by Y here, not X.
+	model, _ := h.Update(tea.MouseMsg{X: 10, Y: top, Button: tea.MouseButtonWheelUp})
+	h = model.(*Home)
+
+	if h.previewScrollOffset != 1 {
+		t.Fatalf("stacked WheelUp at Y=%d (preview region): previewScrollOffset=%d, want 1", top, h.previewScrollOffset)
+	}
+	if h.cursor != 0 {
+		t.Fatalf("stacked WheelUp at Y=%d (preview region): cursor=%d, want 0 (cursor should not move)", top, h.cursor)
+	}
+
+	// The divider row itself is above the boundary, so it belongs to the list.
+	// The cursor lands on the RemoteSession item here.
+	model, _ = h.Update(tea.MouseMsg{X: 100, Y: top - 1, Button: tea.MouseButtonWheelDown})
+	h = model.(*Home)
+
+	if h.cursor != 1 {
+		t.Fatalf("stacked WheelDown at Y=%d (list region): cursor=%d, want 1", top-1, h.cursor)
+	}
+	if got := h.flatItems[h.cursor].Type; got != session.ItemTypeRemoteSession {
+		t.Fatalf("cursor landed on item type %v, want ItemTypeRemoteSession (the remote fall-through case is the point of this assertion)", got)
+	}
+	if h.previewScrollOffset != 0 {
+		t.Fatalf("stacked WheelDown at Y=%d (list region): previewScrollOffset=%d, want 0 (should reset on cursor move)", top-1, h.previewScrollOffset)
+	}
+}
+
+// stackedPreviewTitleY returns the 0-based row of the "PREVIEW" panel title in
+// the rendered frame — the first row of the stacked preview region — or -1 if
+// it isn't found.
+func stackedPreviewTitleY(h *Home) int {
+	for i, line := range strings.Split(ansiRegex.ReplaceAllString(h.View(), ""), "\n") {
+		if strings.TrimSpace(line) == "PREVIEW" {
+			return i
+		}
+	}
+	return -1
+}

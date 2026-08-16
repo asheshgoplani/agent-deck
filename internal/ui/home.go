@@ -1122,6 +1122,56 @@ func (h *Home) getLayoutMode() string {
 	}
 }
 
+// contentChromeTop returns the number of rows rendered ABOVE the main content
+// area (the header line + filter bar + optional update/maintenance banners).
+// The debug footer is NOT included — it renders below the content, so it
+// doesn't shift the content's top edge. Kept in one place so mouse Y-routing
+// and the render path agree on where content starts.
+func (h *Home) contentChromeTop() int {
+	top := 1 // header line
+	top++    // filter bar (always shown, matches View())
+	if h.shouldRenderUpdateNudge() {
+		top++
+	}
+	if h.maintenanceMsg != "" {
+		top++
+	}
+	return top
+}
+
+// stackedPreviewTopY returns the screen Y (0-indexed) of the first row of the
+// PREVIEW region in the stacked layout, i.e. the row just below the horizontal
+// separator. A mouse-wheel event at or below this Y is over the preview and
+// should scroll it rather than move the list cursor. Returns -1 when the
+// current layout is not stacked. Mirrors renderStackedLayout's height split:
+//
+//	[content-top] SESSIONS title (panelTitleLines) + list (listHeight-title)
+//	              + separator (1)  <- divider
+//	[preview-top] PREVIEW title + preview content
+func (h *Home) stackedPreviewTopY() int {
+	if h.getLayoutMode() != LayoutModeStacked {
+		return -1
+	}
+	const helpBarHeight = 2
+	filterBarHeight := 1
+	updateBannerHeight := 0
+	if h.shouldRenderUpdateNudge() {
+		updateBannerHeight = 1
+	}
+	maintenanceBannerHeight := 0
+	if h.maintenanceMsg != "" {
+		maintenanceBannerHeight = 1
+	}
+	debugBarHeight := 0
+	if h.debugMode {
+		debugBarHeight = 1
+	}
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
+	listHeight := h.stackedListHeight(contentHeight)
+	// content top + full list block (title + body) + the 1-row separator.
+	return h.contentChromeTop() + listHeight + 1
+}
+
 // Messages
 type loadSessionsMsg struct {
 	instances    []*session.Instance
@@ -5367,15 +5417,24 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return h, nil
 			}
 			// Preview pane scroll (#574): when the wheel event lands in the
-			// preview region of the dual layout, scroll preview content
-			// instead of moving the list cursor. Other layouts keep the
-			// legacy list-scroll behaviour because they have no dedicated
-			// preview click-target (single = no preview; stacked = same-
-			// width column where Y-based routing is ambiguous enough to
-			// leave as list-scroll).
-			if h.getLayoutMode() == LayoutModeDual {
+			// preview region, scroll preview content instead of moving the
+			// list cursor. Dual layout routes by X (preview is the right
+			// column); stacked layout routes by Y (preview is the lower
+			// region, below the horizontal divider). Single layout has no
+			// preview target, so it keeps the legacy list-scroll behaviour.
+			switch h.getLayoutMode() {
+			case LayoutModeDual:
 				leftWidth := h.sessionsPaneWidth()
 				if msg.X >= leftWidth {
+					if msg.Button == tea.MouseButtonWheelUp {
+						h.previewScrollOffset++
+					} else if h.previewScrollOffset > 0 {
+						h.previewScrollOffset--
+					}
+					return h, nil
+				}
+			case LayoutModeStacked:
+				if top := h.stackedPreviewTopY(); top >= 0 && msg.Y >= top {
 					if msg.Button == tea.MouseButtonWheelUp {
 						h.previewScrollOffset++
 					} else if h.previewScrollOffset > 0 {
@@ -6122,7 +6181,23 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.cachedStatusCounts.valid.Store(false)
 				h.rebuildFlatItems()
 			}
-			// Save the updated session state (new tmux session name)
+			// The name and status this restart produced are already durable:
+			// Instance.restart records them with a targeted two-column write at
+			// the moment it mints them (#1870). This save is for the rest of the
+			// restart's in-memory state, and it stays a ROUTINE save on purpose.
+			//
+			// The first shape of this fix force-saved here, to stop the
+			// external-change abort from discarding the new tmux name. That cured
+			// a lost restart mutation with a much worse failure: a force save
+			// pushes this TUI's whole in-memory snapshot, so an archive, rename or
+			// group move another process made while this TUI was stale is silently
+			// reverted -- the lost-update shape behind this repository's data-loss
+			// incidents. A single wrong field is never worth a whole-snapshot write.
+			//
+			// adoptRestartRecord below keeps the abort from firing on this TUI's
+			// OWN restart write, which is what made the abort look like the
+			// problem in the first place.
+			h.adoptRestartRecord(msg.sessionID)
 			h.saveInstances()
 			if msg.warning != "" {
 				h.setError(fmt.Errorf("%s", msg.warning))
@@ -7555,8 +7630,11 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		// does not own. Only the identity half applies: the user's explicit
 		// pick must not be downgraded to a fresh session by the
 		// conversation-data heuristics.
+		//
+		// exec so the agent replaces the wrapper shell and leads the pane,
+		// matching buildClaudeResumeCommand and the fresh-start path
 		if allowed, _ := session.ResumeIdentityAllowed(inst, result.SessionID); allowed {
-			cmdBuilder.WriteString("claude --resume ")
+			cmdBuilder.WriteString("exec claude --resume ")
 			cmdBuilder.WriteString(result.SessionID)
 		} else {
 			freshID := session.NewClaudeSessionUUID()
@@ -7565,7 +7643,7 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 			// other minted-id writer (Instance.replaceRefusedClaudeSessionID,
 			// buildClaudeCommandWithMessage's own mint path).
 			session.MarkClaudeSessionIDVerified(inst)
-			cmdBuilder.WriteString("claude --session-id ")
+			cmdBuilder.WriteString("exec claude --session-id ")
 			cmdBuilder.WriteString(freshID)
 		}
 		if opts.SkipPermissions {
@@ -11440,6 +11518,58 @@ func (h *Home) saveInstancesWithForce(force bool) {
 				h.storageWatcher.TriggerReload()
 			}
 		}
+	}
+}
+
+// adoptRestartRecord accounts for the targeted write Instance.restart makes when
+// it records what a restart produced.
+//
+// That write moves the state DB's last_modified. This TUI's freshness marker
+// does not move with it, so the save that follows a restart would read the
+// TUI's OWN write as an external change, abort, and reload -- discarding the
+// rest of the restart's in-memory state (sandbox container, tool session ids,
+// the dedup pass) for no reason. That self-inflicted false positive is what
+// #1868 was really hitting.
+//
+// The marker is advanced only when the restart's write was the sole change
+// since this TUI loaded: nothing landed between the load and the write, and
+// nothing has landed since. Anything else means the database really has moved
+// on, the abort is correct, and it stays -- the reload picks up what the other
+// process wrote, and the restart's own outcome is durable either way because
+// the targeted write already landed.
+//
+// last_modified is a UnixNano stamp, so this is an exact identity test on our
+// own write rather than a time window that could swallow somebody else's.
+func (h *Home) adoptRestartRecord(sessionID string) {
+	if h.storage == nil {
+		return
+	}
+	inst := h.getInstanceByID(sessionID)
+	if inst == nil {
+		return
+	}
+	stamps := inst.RestartRecordStamps()
+	if stamps.After == 0 {
+		return
+	}
+	current, err := h.storage.GetFileMtime()
+	if err != nil || current.IsZero() {
+		return
+	}
+
+	h.reloadMu.Lock()
+	defer h.reloadMu.Unlock()
+	if !stamps.SoleWriterSince(h.lastLoadMtime.UnixNano(), current.UnixNano()) {
+		uiLog.Debug("restart_record_not_sole_writer",
+			slog.Int64("before", stamps.Before),
+			slog.Int64("after", stamps.After),
+			slog.Int64("current", current.UnixNano()))
+		return
+	}
+	h.lastLoadMtime = current
+	if h.storageWatcher != nil {
+		// Our own bump should not make the watcher schedule a reload either.
+		h.storageWatcher.NotifySave()
 	}
 }
 
@@ -17119,20 +17249,14 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	b.WriteString(nameStyle.Render(rs.Title))
 	b.WriteString("  ")
 
-	statusColor := ColorTextDim
-	statusIcon := "○"
-	switch rs.Status {
-	case "running":
-		statusIcon = "●"
-		statusColor = ColorGreen
-	case "waiting":
-		statusIcon = "◐"
-		statusColor = ColorYellow
-	case "error":
-		statusIcon = "✗"
-		statusColor = ColorRed
+	statusIcon, statusStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
+	// The archived override swaps the glyph to ■ regardless of the stale live
+	// Status, so the label has to follow it or the row reads "■ running".
+	statusLabel := rs.Status
+	if rs.Archived {
+		statusLabel = "archived"
 	}
-	b.WriteString(lipgloss.NewStyle().Foreground(statusColor).Render(statusIcon + " " + rs.Status))
+	b.WriteString(statusStyle.Render(statusIcon + " " + statusLabel))
 	b.WriteString("\n\n")
 
 	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
@@ -17318,24 +17442,7 @@ func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, se
 		return
 	}
 
-	statusIcon := "○"
-	statusColor := lipgloss.Color("8") // gray
-	switch rs.Status {
-	case "running":
-		statusIcon = "●"
-		statusColor = lipgloss.Color("2") // green
-	case "waiting":
-		statusIcon = "◉"
-		statusColor = lipgloss.Color("3") // yellow
-	case "idle":
-		statusIcon = "○"
-		statusColor = lipgloss.Color("8")
-	case "error":
-		statusIcon = "✗"
-		statusColor = lipgloss.Color("1") // red
-	}
-
-	sStyle := lipgloss.NewStyle().Foreground(statusColor)
+	statusIcon, sStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
 	titleStyle := lipgloss.NewStyle().Foreground(ColorText)
 	if selected {
 		sStyle = SessionStatusSelStyle

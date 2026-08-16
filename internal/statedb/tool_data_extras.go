@@ -27,16 +27,17 @@ import (
 //
 // EXCEPTION — sticky detected session-id keys (stickyToolDataKeys): the
 // per-tool conversation ids (claude_session_id / gemini_session_id /
-// opencode_session_id / codex_session_id and their *_detected_at) are
-// write-once-per-conversation identity, populated asynchronously after a
-// session starts. They are treated like extras for the ABSENCE case: when the
-// new blob OMITS them (omitempty zero-value) but the old row HAS them, the old
-// value is carried forward, so an unrelated full-table save whose in-memory
-// snapshot simply has not detected the id yet can no longer silently wipe a
-// live session's mapping (t-0133). A NON-EMPTY new value still wins (a real
-// resume/fork that changes the id), and an EXPLICIT empty value present in the
-// new blob (`"claude_session_id":""`) is honored as an intentional clear — only
-// outright OMISSION is treated as "unaware writer, preserve".
+// opencode_session_id / codex_session_id / generic_session_id and their
+// *_detected_at) are write-once-per-conversation identity, populated
+// asynchronously after a session starts. They are treated like extras for the
+// ABSENCE case: when the new blob OMITS them (omitempty zero-value) but the old
+// row HAS them, the old value is carried forward, so an unrelated full-table
+// save whose in-memory snapshot simply has not detected the id yet can no
+// longer silently wipe a live session's mapping (t-0133). A NON-EMPTY new
+// value still wins (a real resume/fork that changes the id), and an EXPLICIT
+// empty value present in the new blob (`"claude_session_id":""`) is honored as
+// an intentional clear — only outright OMISSION is treated as "unaware writer,
+// preserve".
 func MergeToolDataExtras(oldToolData, newToolData json.RawMessage) json.RawMessage {
 	if len(oldToolData) == 0 {
 		return newToolData
@@ -104,6 +105,13 @@ func stickyToolDataKeys() map[string]bool {
 		"opencode_detected_at": true,
 		"codex_session_id":     true,
 		"codex_detected_at":    true,
+		// Custom [tools.*] conversation id (survives reboot when resume_flag set)
+		// and the tool/location scope it is only resumable under.
+		"generic_session_id":       true,
+		"generic_detected_at":      true,
+		"generic_session_tool":     true,
+		"generic_session_command":  true,
+		"generic_session_location": true,
 	}
 }
 

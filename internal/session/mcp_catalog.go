@@ -283,59 +283,8 @@ func WriteGlobalMCP(enabledNames []string) error {
 		rawConfig = make(map[string]interface{})
 	}
 
-	// Build new mcpServers from enabled names using config.toml definitions
 	availableMCPs := GetAvailableMCPs()
-	pool := GetGlobalPool() // Get pool instance (may be nil)
-	mcpServers := make(map[string]MCPServerConfig)
-
-	for _, name := range enabledNames {
-		if def, ok := availableMCPs[name]; ok {
-			// Check if this is an HTTP/SSE MCP (has URL configured)
-			if def.URL != "" {
-				// Start HTTP server if configured
-				if def.HasAutoStartServer() {
-					if err := StartHTTPServer(name, &def); err != nil {
-						mcpCatLog.Warn("http_server_start_failed", slog.String("mcp", name), slog.String("scope", "global"), slog.Any("error", err))
-					}
-				}
-
-				transport := def.Transport
-				if transport == "" {
-					transport = "http" // default to http if URL is set
-				}
-				mcpServers[name] = MCPServerConfig{
-					Type:    transport,
-					URL:     def.URL,
-					Headers: def.Headers,
-				}
-				mcpCatLog.Info("transport_http", slog.String("mcp", name), slog.String("scope", "global"), slog.String("transport", transport), slog.String("url", def.URL))
-				continue
-			}
-
-			// Try to use pool socket for this MCP (stdio only)
-			if socketCfg, used := tryPoolSocket(pool, name, "global"); used {
-				mcpServers[name] = socketCfg
-				continue
-			}
-
-			// Fallback to stdio mode (pool disabled, excluded, or socket failed with fallback enabled)
-			args := def.Args
-			if args == nil {
-				args = []string{}
-			}
-			env := def.Env
-			if env == nil {
-				env = map[string]string{}
-			}
-			mcpServers[name] = MCPServerConfig{
-				Type:    "stdio",
-				Command: def.Command,
-				Args:    args,
-				Env:     env,
-			}
-			mcpCatLog.Info("transport_stdio", slog.String("mcp", name), slog.String("scope", "global"))
-		}
-	}
+	mcpServers := buildManagedMCPServers(enabledNames, "global")
 
 	// Merge: preserve non-agent-deck entries from existing config (#146)
 	mergedMCPs := make(map[string]interface{})
@@ -419,6 +368,115 @@ func GetProjectMCPNames(projectPath string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// buildManagedMCPServers turns catalog names into the mcpServers entries that
+// go into a Claude-style config, honouring HTTP/SSE definitions and the shared
+// stdio pool. scope is used only for log attribution.
+func buildManagedMCPServers(enabledNames []string, scope string) map[string]MCPServerConfig {
+	availableMCPs := GetAvailableMCPs()
+	pool := GetGlobalPool() // may be nil
+	mcpServers := make(map[string]MCPServerConfig)
+
+	for _, name := range enabledNames {
+		def, ok := availableMCPs[name]
+		if !ok {
+			continue
+		}
+		if def.URL != "" {
+			if def.HasAutoStartServer() {
+				if err := StartHTTPServer(name, &def); err != nil {
+					mcpCatLog.Warn("http_server_start_failed", slog.String("mcp", name), slog.String("scope", scope), slog.Any("error", err))
+				}
+			}
+			transport := def.Transport
+			if transport == "" {
+				transport = "http"
+			}
+			mcpServers[name] = MCPServerConfig{Type: transport, URL: def.URL, Headers: def.Headers}
+			mcpCatLog.Info("transport_http", slog.String("mcp", name), slog.String("scope", scope), slog.String("transport", transport), slog.String("url", def.URL))
+			continue
+		}
+		if socketCfg, used := tryPoolSocket(pool, name, scope); used {
+			mcpServers[name] = socketCfg
+			continue
+		}
+		args := def.Args
+		if args == nil {
+			args = []string{}
+		}
+		env := def.Env
+		if env == nil {
+			env = map[string]string{}
+		}
+		mcpServers[name] = MCPServerConfig{Type: "stdio", Command: def.Command, Args: args, Env: env}
+		mcpCatLog.Info("transport_stdio", slog.String("mcp", name), slog.String("scope", scope))
+	}
+	return mcpServers
+}
+
+// WriteProjectMCP writes enabled catalog MCPs into
+// projects[projectPath].mcpServers of Claude's config.
+//
+// This is the write counterpart to GetProjectMCPNames. Claude keeps
+// per-project servers there, distinct from the root mcpServers map that
+// WriteGlobalMCP owns and from the project's own .mcp.json. Without this,
+// anything reporting project entries had to write them through the root map,
+// which silently moved servers between scopes.
+//
+// Entries not defined in config.toml are preserved (#146).
+func WriteProjectMCP(projectPath string, enabledNames []string) error {
+	if projectPath == "" {
+		return fmt.Errorf("project MCP write: empty project path")
+	}
+	configDir := GetClaudeConfigDir()
+	configFile := filepath.Join(configDir, ".claude.json")
+
+	var rawConfig map[string]interface{}
+	if data, err := os.ReadFile(configFile); err == nil {
+		if err := json.Unmarshal(data, &rawConfig); err != nil {
+			rawConfig = make(map[string]interface{})
+		}
+	} else {
+		rawConfig = make(map[string]interface{})
+	}
+
+	projects, _ := rawConfig["projects"].(map[string]interface{})
+	if projects == nil {
+		projects = make(map[string]interface{})
+	}
+	proj, _ := projects[projectPath].(map[string]interface{})
+	if proj == nil {
+		proj = make(map[string]interface{})
+	}
+
+	availableMCPs := GetAvailableMCPs()
+	managed := buildManagedMCPServers(enabledNames, "project")
+
+	merged := make(map[string]interface{})
+	if existing, ok := proj["mcpServers"].(map[string]interface{}); ok {
+		for name, cfg := range existing {
+			if _, isManaged := availableMCPs[name]; !isManaged {
+				merged[name] = cfg
+			}
+		}
+	}
+	for name, cfg := range managed {
+		merged[name] = cfg
+	}
+
+	proj["mcpServers"] = merged
+	projects[projectPath] = proj
+	rawConfig["projects"] = projects
+
+	data, err := json.MarshalIndent(rawConfig, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	if err := writeJSONFileAtomic(configFile, data, 0600); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+	return nil
 }
 
 // ClearProjectMCPs removes all MCPs from projects[path].mcpServers in Claude's config

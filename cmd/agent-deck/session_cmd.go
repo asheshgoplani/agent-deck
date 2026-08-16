@@ -171,10 +171,12 @@ func printSessionHelp() {
 	fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 	fmt.Println("  claude-session-id  Claude conversation ID (for fork/resume)")
 	fmt.Println("  gemini-session-id  Gemini conversation ID (for resume)")
+	fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (resume_flag after reboot)")
 	fmt.Println()
 	fmt.Println("Set examples:")
 	fmt.Println("  agent-deck session set my-project title \"New Title\"")
 	fmt.Println("  agent-deck session set my-project claude-session-id \"abc123-def456\"")
+	fmt.Println("  agent-deck session set my-project tool-session-id \"019f683f-...\"")
 	fmt.Println("  agent-deck session set my-project tool claude")
 	fmt.Println("  agent-deck session set my-project wrapper \"nvim +'terminal {command}'\"")
 }
@@ -1881,6 +1883,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  color              Optional TUI row tint: '#RRGGBB' or ANSI '0'..'255' or '' (issue #391)")
 		fmt.Println("  claude-session-id  Claude conversation ID")
 		fmt.Println("  gemini-session-id  Gemini conversation ID")
+		fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (for resume_flag after reboot)")
 		fmt.Println("  account            Named account slot (#924) — resolves via [profiles.<account>.claude].config_dir; restart required")
 		fmt.Println("  idle-timeout       Auto-stop after no tmux output for this duration (#1143; Go duration: 30m, 1h, 24h; 0 disables)")
 		fmt.Println()
@@ -1989,6 +1992,16 @@ func handleSessionSet(profile string, args []string) {
 	// report what was actually stored rather than the raw argument.
 	if field == session.FieldPath {
 		value = inst.ProjectPath
+	}
+	// Custom-tool conversation id: sticky MergeToolDataExtras preserves
+	// generic_session_id when a full Save omits the key. CLI does not always
+	// register statedb.SetGlobal, so write through the open Storage DB before
+	// SaveWithGroups (set and intentional clear).
+	if field == session.FieldToolSessionID {
+		if err := session.PersistGenericSessionBinding(storage.GetDB(), inst); err != nil {
+			out.Error(fmt.Sprintf("failed to persist tool-session-id: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 	}
 	// CLI holds no lock — run tmux side effects inline. TUI defers them
 	// until after instancesMu.Unlock.

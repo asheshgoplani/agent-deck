@@ -215,6 +215,15 @@ func MigrateFromJSON(jsonPath string, db *StateDB) (int, int, error) {
 
 // MarshalToolData creates a tool_data JSON blob from individual fields.
 // This is the forward path: Instance fields -> JSON blob for SQLite storage.
+//
+// INVARIANT, load-bearing for every sticky key: this blob is merged on write by
+// MergeToolDataExtras, which reads OMISSION of a sticky key as "this writer has
+// not observed the value, preserve what is on disk" and an EXPLICIT empty value
+// as a deliberate clear. Anything that produces a tool_data blob has to keep
+// that distinction — writing an empty string for a value it simply does not
+// know wipes a live binding another process just recorded, and dropping a key
+// it does know resurrects a stale one. See stickyToolDataKeys and
+// tool_data_extras.go.
 // MultiRepoWorktreeData holds multi-repo worktree info for serialization.
 type MultiRepoWorktreeData struct {
 	OriginalPath string

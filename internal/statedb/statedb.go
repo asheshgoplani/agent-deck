@@ -1442,6 +1442,54 @@ func (s *StateDB) WriteGeminiSessionBinding(id, sessionID string, detectedAt tim
 	})
 }
 
+// WriteGenericSessionBinding persists a custom-tool conversation id
+// (tools configured via [tools.*] with resume_flag) into tool_data.
+// Mirrors WriteClaudeSessionBinding's json_set / withBusyRetry shape so a
+// live-env capture or `session set tool-session-id` survives reboot when
+// tmux is gone. Empty sessionID clears the keys.
+//
+// tool and location are the scope the id was captured under, written in the
+// SAME json_set as the id itself. They are not a separate write on purpose: an
+// id that reached disk while its scope did not would be resumed under the
+// wrong tool or on the wrong host, which is the failure the scope exists to
+// prevent (see internal/session/generic_session_scope.go).
+func (s *StateDB) WriteGenericSessionBinding(id, sessionID, tool, command, location string, detectedAt time.Time) error {
+	return withBusyRetry(func() error {
+		if sessionID == "" {
+			_, err := s.db.Exec(
+				`UPDATE instances
+				   SET tool_data = json_remove(
+				         COALESCE(tool_data, '{}'),
+				         '$.generic_session_id',
+				         '$.generic_detected_at',
+				         '$.generic_session_tool',
+				         '$.generic_session_command',
+				         '$.generic_session_location')
+				 WHERE id = ?`,
+				id,
+			)
+			return err
+		}
+		at := detectedAt.Unix()
+		if detectedAt.IsZero() {
+			at = time.Now().Unix()
+		}
+		_, err := s.db.Exec(
+			`UPDATE instances
+			   SET tool_data = json_set(
+			         COALESCE(tool_data, '{}'),
+			         '$.generic_session_id', ?,
+			         '$.generic_detected_at', ?,
+			         '$.generic_session_tool', ?,
+			         '$.generic_session_command', ?,
+			         '$.generic_session_location', ?)
+			 WHERE id = ?`,
+			sessionID, at, tool, command, location, id,
+		)
+		return err
+	})
+}
+
 // WriteLastActivityAt atomically rewrites tool_data.last_activity_at
 // (issue #1846's durable activity record) without touching any unrelated
 // keys — same json_set/withBusyRetry shape as WriteClaudeSessionBinding,

@@ -14,19 +14,43 @@ import { useEffect, useState, useCallback } from 'preact/hooks'
 import { menuModelSignal } from '../dataModel.js'
 import { selectedIdSignal, mutationsEnabledSignal } from '../state.js'
 import { addToast } from '../Toast.js'
+import { authHeaders } from '../api.js'
 
-const SCOPES = ['local', 'global', 'user']
+// Every scope the API can report, most specific first. Which of these a given
+// session actually has is decided server-side and returned as `scopes` on
+// GET /api/sessions/{id}/mcps — Codex and Gemini are global-only, Cursor and
+// OpenCode have no user scope, and `project` (Claude's
+// projects[path].mcpServers) is distinct from `local` (<project>/.mcp.json).
+// Never hardcode a scope: doing so made every Codex/Gemini attach fail.
+const ALL_SCOPES = ['local', 'project', 'global', 'user']
+const EMPTY_ATTACHED = { local: [], project: [], global: [], user: [] }
 
+// Whether a session's tool has any MCP store is decided server-side and
+// delivered as `mcpSupported` on the menu session (see MenuSession in
+// internal/web/session_data_service.go). Do NOT reimplement the predicate
+// here: session.ToolSupportsMCPManager is config-driven, so a user tool
+// declaring compatible_with = "claude" is supported even though its name is
+// not in any hardcoded list.
+function toolSupportsMCP(session) {
+  return session.mcpSupported !== false
+}
+
+// jsonFetch keeps this pane's 204 handling and error shaping, but the headers
+// (and therefore the bearer token) come from the shared helper. Building them
+// locally is what made every MCP call 401 against an authenticated server.
 async function jsonFetch(path, opts = {}) {
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
     ...opts,
+    headers: authHeaders(opts.headers),
   })
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`
     try {
       const body = await res.json()
-      if (body && body.error) msg = body.error
+      // The API error envelope is {error: {code, message}}; reading
+      // body.error directly rendered "[object Object]" and hid the reason.
+      const apiMsg = body && body.error && body.error.message
+      if (apiMsg) msg = apiMsg
     } catch (_) { /* ignore */ }
     throw new Error(msg)
   }
@@ -41,12 +65,17 @@ export function McpPane() {
   const session = sessions.find(s => s.id === selectedId)
 
   const [catalog, setCatalog] = useState([])
-  const [attached, setAttached] = useState({ local: [], global: [], user: [] })
+  const [attached, setAttached] = useState(EMPTY_ATTACHED)
+  // Scopes this session's tool actually has, as reported by the server.
+  const [scopes, setScopes] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
   const refresh = useCallback(async () => {
-    if (!session) return
+    // Hooks must run unconditionally, so guard here rather than relying on the
+    // unsupported-tool early return below: without this the pane would fire a
+    // request the server is obliged to refuse.
+    if (!session || !toolSupportsMCP(session)) return
     setLoading(true)
     setError('')
     try {
@@ -57,9 +86,12 @@ export function McpPane() {
       setCatalog(catalogResp.mcps || [])
       setAttached({
         local: attachedResp.local || [],
+        project: attachedResp.project || [],
         global: attachedResp.global || [],
         user: attachedResp.user || [],
       })
+      // Fall back to every scope only if an older server omits the field.
+      setScopes(attachedResp.scopes && attachedResp.scopes.length ? attachedResp.scopes : ALL_SCOPES)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -70,11 +102,14 @@ export function McpPane() {
   useEffect(() => { refresh() }, [refresh])
 
   const findScope = (name) => {
-    for (const s of SCOPES) {
-      if (attached[s].includes(name)) return s
+    for (const s of ALL_SCOPES) {
+      if ((attached[s] || []).includes(name)) return s
     }
     return null
   }
+
+  // The scope a fresh attach lands in: the tool's most specific store.
+  const defaultScope = scopes[0] || ''
 
   const attach = async (name, scope) => {
     if (!session) return
@@ -132,6 +167,23 @@ export function McpPane() {
     `
   }
 
+  // Say so rather than rendering a catalog whose buttons the server will
+  // refuse. The tool decides which MCP store exists; a shell session has none.
+  if (!toolSupportsMCP(session)) {
+    return html`
+      <div class="costs" data-testid="mcp-pane">
+        <div class="chart-card" style="text-align: center; padding: 48px 24px;">
+          <div class="title" style="font-size: 16px;">MCP Manager</div>
+          <div data-testid="mcp-unsupported-tool"
+               style="font-family: var(--mono); font-size: 12px; color: var(--text-dim); padding-top: 8px;">
+            MCP management is not available for ${session.tool || 'this'} sessions.
+            Supported tools: Claude, Codex, Gemini, Cursor, OpenCode.
+          </div>
+        </div>
+      </div>
+    `
+  }
+
   return html`
     <div class="costs" data-testid="mcp-pane">
       <div class="chart-card" style="padding: 24px;">
@@ -149,6 +201,7 @@ export function McpPane() {
         <div style="display: grid; grid-template-columns: 1fr; gap: 24px;">
           <${AttachedSection}
             attached=${attached}
+            scopes=${scopes}
             mutationsEnabled=${mutationsEnabled}
             onDetach=${detach}
             onMove=${moveScope}/>
@@ -156,6 +209,8 @@ export function McpPane() {
           <${CatalogSection}
             catalog=${catalog}
             attached=${attached}
+            scopes=${scopes}
+            defaultScope=${defaultScope}
             mutationsEnabled=${mutationsEnabled}
             onAttach=${attach}
             loading=${loading}/>
@@ -165,9 +220,9 @@ export function McpPane() {
   `
 }
 
-function AttachedSection({ attached, mutationsEnabled, onDetach, onMove }) {
-  const allAttached = SCOPES.flatMap(scope =>
-    attached[scope].map(name => ({ name, scope }))
+function AttachedSection({ attached, scopes, mutationsEnabled, onDetach, onMove }) {
+  const allAttached = ALL_SCOPES.flatMap(scope =>
+    (attached[scope] || []).map(name => ({ name, scope }))
   )
 
   return html`
@@ -195,7 +250,7 @@ function AttachedSection({ attached, mutationsEnabled, onDetach, onMove }) {
                     value=${scope}
                     onChange=${e => onMove(name, e.target.value)}
                     style="font-family: var(--mono); font-size: 11px; background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 2px 6px; border-radius: 3px;">
-              ${SCOPES.map(s => html`<option value=${s} key=${s}>${s}</option>`)}
+              ${(scopes.length ? scopes : ALL_SCOPES).map(s => html`<option value=${s} key=${s}>${s}</option>`)}
             </select>
             <button disabled=${!mutationsEnabled}
                     data-testid=${`mcp-detach-${name}`}
@@ -210,8 +265,8 @@ function AttachedSection({ attached, mutationsEnabled, onDetach, onMove }) {
   `
 }
 
-function CatalogSection({ catalog, attached, mutationsEnabled, onAttach, loading }) {
-  const isAttachedAnywhere = (name) => SCOPES.some(s => attached[s].includes(name))
+function CatalogSection({ catalog, attached, scopes, defaultScope, mutationsEnabled, onAttach, loading }) {
+  const isAttachedAnywhere = (name) => ALL_SCOPES.some(s => (attached[s] || []).includes(name))
 
   return html`
     <div data-testid="mcp-catalog">
@@ -236,9 +291,9 @@ function CatalogSection({ catalog, attached, mutationsEnabled, onAttach, loading
                 ${(entry.transport || 'stdio').toUpperCase()}${entry.command ? ` · ${entry.command}` : ''}
               </span>
             </div>
-            <button disabled=${!mutationsEnabled || attachedHere}
+            <button disabled=${!mutationsEnabled || attachedHere || !defaultScope}
                     data-testid=${`mcp-attach-${entry.name}`}
-                    onClick=${() => onAttach(entry.name, 'local')}
+                    onClick=${() => onAttach(entry.name, defaultScope)}
                     style="font-family: var(--mono); font-size: 11px; background: ${attachedHere ? 'transparent' : 'var(--accent)'}; color: ${attachedHere ? 'var(--muted)' : 'var(--bg)'}; border: 1px solid ${attachedHere ? 'var(--border)' : 'var(--accent)'}; padding: 4px 12px; border-radius: 3px; cursor: ${attachedHere ? 'default' : 'pointer'};">
               ${attachedHere ? 'Attached' : 'Attach'}
             </button>

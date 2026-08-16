@@ -230,6 +230,32 @@ type Instance struct {
 	// never started) and callers MUST NOT treat zero as "just now".
 	LastStartedAt time.Time `json:"last_started_at,omitempty"`
 
+	// GenericSessionID is the conversation id for a custom [tools.*] tool
+	// that declares resume_flag. Persisted in tool_data so Restart can rebuild
+	// `<cmd> <resume_flag> <id>` after a reboot (when tmux session_id_env is
+	// gone). Live tmux env still wins when present (GetGenericSessionID).
+	GenericSessionID  string    `json:"generic_session_id,omitempty"`
+	GenericDetectedAt time.Time `json:"generic_detected_at,omitempty"`
+	// GenericSessionTool and GenericSessionLocation record the tool and the
+	// execution location the id above was captured under. A persisted id is
+	// only eligible for resume while both still match — see
+	// generic_session_scope.go for why an id that outlives a reboot must not
+	// outlive the tool or the host it belongs to.
+	GenericSessionTool     string `json:"generic_session_tool,omitempty"`
+	GenericSessionCommand  string `json:"generic_session_command,omitempty"`
+	GenericSessionLocation string `json:"generic_session_location,omitempty"`
+	// genericSessionIDCleared is set by intentional clear paths (SetField
+	// tool-session-id "", clearSessionBindingForFreshStart). When true,
+	// instanceToRow writes an explicit empty generic_session_id so sticky
+	// MergeToolDataExtras does not resurrect a prior binding. Not persisted;
+	// a non-empty GenericSessionID always clears this flag.
+	genericSessionIDCleared bool
+	// genericSessionPersistErr holds why the last custom-tool conversation-id
+	// write-through failed, so a bind that never reached disk can be told from
+	// one that did. Read through GenericSessionPersistError.
+	genericSessionPersistMu  sync.Mutex
+	genericSessionPersistErr error
+
 	// Claude Code integration
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
@@ -519,6 +545,17 @@ type Instance struct {
 	lastActivityAt        time.Time
 	lastActivityPersisted time.Time
 	lastActivityPersistMu sync.Mutex
+
+	// restartTmuxRecordErr holds why the last restart could not record the
+	// tmux session name it minted, or nil once one did. Callers that have no
+	// other save on their path (the CLI --restart commands) read it through
+	// RestartTmuxNameRecorded so they can report a live-but-unrecorded restart
+	// instead of announcing a success that never reached disk. Guarded by its
+	// own mutex rather than i.mu so the DB write never runs under the lock the
+	// TUI reads status through. See restart_tmux_persist.go.
+	restartTmuxRecordMu     sync.Mutex
+	restartTmuxRecordErr    error
+	restartTmuxRecordStamps statedb.WriteStamps
 
 	// SSE-based status detection for OpenCode (set by OpenCodeSSEWatcher,
 	// issue #1614). Not persisted; rebuilt from the live event stream.
@@ -1297,14 +1334,14 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 			// through a point where the id can be non-empty, which is deferred
 			// as a follow-up rather than attempted blind here.
 			if recorded := i.recordedClaudeSessionID(); recorded != "" {
-				return fmt.Sprintf(`%s%s%s --resume %s%s`,
+				return fmt.Sprintf(`%sexec %s%s --resume %s%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, recorded, extraFlags)
 			}
 			sessionLog.Warn("resume: continue_mode_unverifiable",
 				slog.String("instance_id", logging.SanitizeValue(i.ID)),
 				slog.String("path", logging.SanitizeValue(i.ProjectPath)),
 				slog.String("reason", "continue_flag_picks_newest_conversation_in_dir"))
-			return fmt.Sprintf(`%s%s%s -c%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
+			return fmt.Sprintf(`%sexec %s%s -c%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
 
 		case "resume":
 			// Resume specific session by ID
@@ -1314,7 +1351,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				// behind canResumeClaudeSession.
 				if canResumeClaudeSession(i, opts.ResumeSessionID) {
 					// Session has conversation history - use normal --resume
-					return fmt.Sprintf(`%s%s%s --resume %s%s`,
+					return fmt.Sprintf(`%sexec %s%s --resume %s%s`,
 						bashExportPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
 				}
 				// Session was never interacted with - use --session-id with same UUID.
@@ -1329,11 +1366,11 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 					freshID = i.replaceRefusedClaudeSessionID()
 				}
 				return fmt.Sprintf(
-					`%s%s%s --session-id "%s"%s`,
+					`%sexec %s%s --session-id "%s"%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, freshID, extraFlags)
 			}
 			// No session ID provided - use -r flag for interactive picker
-			return fmt.Sprintf(`%s%s%s -r%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
+			return fmt.Sprintf(`%sexec %s%s -r%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
 		}
 
 		// Default: new session with capture-resume pattern
@@ -2096,13 +2133,6 @@ func nextShellWord(s string) (word string, remainder string, ok bool) {
 	return b.String(), "", true
 }
 
-func getCodexHomeDirForCommand(command string) string {
-	if codexHome := codexHomeFromCommand(command); codexHome != "" {
-		return codexHome
-	}
-	return getCodexHomeDir()
-}
-
 // accountCodexHomeDir returns the CODEX_HOME mapped to this session's account
 // slot via [profiles.<account>.codex].config_dir, or "" when the session has no
 // account or the account names no codex block.
@@ -2140,19 +2170,37 @@ func (i *Instance) codexHomeToExport() string {
 	return ""
 }
 
+// codexHomeForCommand returns the CODEX_HOME the launched process will actually
+// read and write under, for an already-resolved codex command line.
+//
+// This is the read-side mirror of codexHomeToExport and must stay in step with
+// it: whatever that exports, this resolves to. codexHomeToExport returns "" when
+// nothing needs exporting, in which case the process inherits the ambient
+// CODEX_HOME or falls back to ~/.codex — exactly what getCodexHomeDir resolves
+// to in that case.
+//
+// A resolver that disagrees with the launch is #1929: buildCodexCommand's
+// resume gate looked for the rollout in the DEFAULT home while the launch wrote
+// it under the ACCOUNT home, so the gate always missed, dropped the session id,
+// and every restart silently opened a fresh conversation.
+func (i *Instance) codexHomeForCommand(command string) string {
+	// A CODEX_HOME= embedded in the command is the user typing it by hand for
+	// this session, so it stays the most explicit signal of all — and the shell
+	// agrees, since it is emitted after any exported CODEX_HOME.
+	if codexHome := codexHomeFromCommand(command); codexHome != "" {
+		return codexHome
+	}
+	if accountHome := strings.TrimSpace(i.accountCodexHomeDir()); accountHome != "" {
+		return accountHome
+	}
+	return getCodexHomeDir()
+}
+
 func (i *Instance) getCodexHomeDir() string {
 	if i == nil {
 		return getCodexHomeDir()
 	}
-	// A CODEX_HOME= embedded in the session's own command is the user typing it
-	// by hand for this session, so it stays the most explicit signal of all.
-	if codexHome := codexHomeFromCommand(i.resolveCodexCommand(i.Command)); codexHome != "" {
-		return codexHome
-	}
-	if accountHome := i.accountCodexHomeDir(); accountHome != "" {
-		return accountHome
-	}
-	return getCodexHomeDir()
+	return i.codexHomeForCommand(i.resolveCodexCommand(i.Command))
 }
 
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
@@ -2195,7 +2243,10 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	modelFlag := i.resolveCodexModelFlag()
 	reasoningFlag := i.resolveCodexReasoningEffortFlag()
 	command := i.resolveCodexCommand(baseCommand)
-	codexHome := getCodexHomeDirForCommand(command)
+	// Must be the home this launch exports (above), not the process-wide one:
+	// the gates below decide whether a rollout exists, and looking in the wrong
+	// home destroys a live binding (#1929).
+	codexHome := i.codexHomeForCommand(command)
 
 	// Issue #756: Gate `codex resume <sid>` on rollout-file existence.
 	// If Codex died before flushing its rollout JSONL (tmux crash, kill -9
@@ -3319,7 +3370,9 @@ func parsePSParentChildMap(procTable []byte) map[int][]int {
 	scanner := bufio.NewScanner(bytes.NewReader(procTable))
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) != 2 {
+		// tolerant of trailing columns so the same snapshot can carry comm=
+		// for callers that also need to identify the pane leader
+		if len(fields) < 2 {
 			continue
 		}
 		pid, err := strconv.Atoi(fields[0])
@@ -3333,6 +3386,28 @@ func parsePSParentChildMap(procTable []byte) map[int][]int {
 		childrenByParent[ppid] = append(childrenByParent[ppid], pid)
 	}
 	return childrenByParent
+}
+
+// parsePSCommandNames reads `pid=,ppid=,comm=` output into pid -> command
+// name. Comm is the last column and may contain spaces, so everything from
+// the third field on is joined. macOS reports comm as an absolute path while
+// Linux reports the bare name, so the result is reduced to the base name to
+// give callers one shape to compare against.
+func parsePSCommandNames(procTable []byte) map[int]string {
+	commByPID := make(map[int]string)
+	scanner := bufio.NewScanner(bytes.NewReader(procTable))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		commByPID[pid] = filepath.Base(strings.Join(fields[2:], " "))
+	}
+	return commByPID
 }
 
 func collectProcessTreePIDsViaPgrep(rootPID int) []int {
@@ -3669,8 +3744,9 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 		return envPrefix + baseCommand // No custom config, return with env prefix
 	}
 
-	// Check if tool supports session resume (needs both resume_flag and session_id_env)
-	if toolDef.ResumeFlag == "" || toolDef.SessionIDEnv == "" {
+	// Resume needs resume_flag; the conversation id may come from live
+	// session_id_env and/or persisted generic_session_id (reboot-safe).
+	if toolDef.ResumeFlag == "" {
 		// No session resume support, just add dangerous flag if configured
 		if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
 			return envPrefix + fmt.Sprintf("%s %s", baseCommand, toolDef.DangerousFlag)
@@ -3678,24 +3754,19 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 		return envPrefix + baseCommand
 	}
 
-	// Get existing session ID from tmux environment (for restart/resume)
-	existingSessionID := ""
-	if i.tmuxSession != nil {
-		if sid, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv); err == nil && sid != "" {
-			existingSessionID = sid
-		}
-	}
+	// Prefer live tmux env, else persisted generic_session_id (reboot-safe).
+	existingSessionID := i.GetGenericSessionID()
 
 	// Build dangerous flag if enabled
 	dangerousFlag := ""
 	if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
-		dangerousFlag = " " + toolDef.DangerousFlag
+		dangerousFlag = toolDef.DangerousFlag
 	}
 
 	// If we have an existing session ID, just resume.
 	// The session ID env var is propagated via host-side SetEnvironment after tmux start.
 	if existingSessionID != "" {
-		return envPrefix + fmt.Sprintf("%s %s %s%s",
+		return envPrefix + formatGenericResumeCommand(
 			baseCommand, toolDef.ResumeFlag, existingSessionID, dangerousFlag)
 	}
 
@@ -3704,7 +3775,7 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 	if toolDef.OutputFormatFlag == "" || toolDef.SessionIDJsonPath == "" {
 		// Can't capture session ID, just start normally
 		if dangerousFlag != "" {
-			return envPrefix + baseCommand + dangerousFlag
+			return envPrefix + baseCommand + " " + dangerousFlag
 		}
 		return envPrefix + baseCommand
 	}
@@ -3715,15 +3786,90 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 	// 2. Extract ID using jq
 	// 3. Resume that session
 	// Note: session ID env var is set via host-side SyncSessionIDsToTmux() once detected.
-	// Fallback: If capture fails, start tool fresh
+	// Fallback: If capture fails, start tool fresh.
+	// Captured $session_id is shell-quoted via "$session_id"; resume_flag that
+	// ends with "=" glues without a space (equals-form CLIs).
+	resumeInvoke := formatGenericResumeShellVar(baseCommand, toolDef.ResumeFlag, "session_id", dangerousFlag)
+	freshInvoke := baseCommand
+	if dangerousFlag != "" {
+		freshInvoke += " " + dangerousFlag
+	}
+	// Publish the captured id into the tmux environment before using it.
+	//
+	// Without this the id exists only as a shell variable inside the pane: it
+	// resumes this one launch and is gone, so a tool that reports its id in
+	// JSON but exports no env var of its own got no durability at all — the
+	// exact gap this feature is meant to close. SyncSessionIDsFromTmux and
+	// GetGenericSessionID read the variable back and write it to tool_data,
+	// so a reboot can still find the conversation.
+	//
+	// Failure is swallowed: publishing is bookkeeping, and a tmux hiccup must
+	// not stop the tool from starting. The id reaches the variable via the
+	// shell, never via string interpolation, so nothing here is injectable.
+	//
+	// Only for a LOCAL session. prepareCommand hands this whole fragment to
+	// wrapForSSH for an --ssh session, so the tmux call would run on the remote
+	// host, find no tmux server there, and be swallowed by the `|| true` -- a
+	// silent no-op dressed as durability. The controller's tmux is the one that
+	// has to hold the value, and nothing inside the remote shell can reach it.
+	publish := ""
+	if !i.IsSSH() {
+		publish = fmt.Sprintf(`tmux set-environment %s "$session_id" >/dev/null 2>&1 || true; `,
+			genericCapturedSessionIDEnv)
+	}
 	return envPrefix + fmt.Sprintf(
 		`session_id=$(%s %s "." 2>/dev/null | jq -r '%s' 2>/dev/null) || session_id=""; `+
 			`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
-			`%s %s "$session_id"%s; `+
-			`else %s%s; fi`,
+			`%s%s; `+
+			`else %s; fi`,
 		baseCommand, toolDef.OutputFormatFlag, toolDef.SessionIDJsonPath,
-		baseCommand, toolDef.ResumeFlag, dangerousFlag,
-		baseCommand, dangerousFlag)
+		publish, resumeInvoke, freshInvoke)
+}
+
+// genericCapturedSessionIDEnv is the tmux environment variable agent-deck owns
+// for a custom tool's conversation id. It is the fallback for tools that expose
+// an id in their JSON output but declare no session_id_env of their own; a tool
+// that declares one keeps precedence (see genericSessionEnvNames).
+const genericCapturedSessionIDEnv = "AGENTDECK_TOOL_SESSION_ID"
+
+// formatGenericResumeCommand builds:
+//
+//	<base> <resume_flag> <quoted-id>[ <dangerous_flag>]
+//
+// When resume_flag ends with "=", the id is glued without a space
+// (`tool --session='id'`). The conversation id is always shellescape-quoted
+// because the resulting string is executed under bash -lc (tmux respawn /
+// start); operator-set or tool-exported ids may contain shell metacharacters.
+// Mirrors hermes/opencode/codex session-id quoting.
+func formatGenericResumeCommand(baseCommand, resumeFlag, sessionID, dangerousFlag string) string {
+	quotedID := shellescape.Quote(sessionID)
+	var cmd string
+	if strings.HasSuffix(resumeFlag, "=") {
+		cmd = fmt.Sprintf("%s %s%s", baseCommand, resumeFlag, quotedID)
+	} else {
+		cmd = fmt.Sprintf("%s %s %s", baseCommand, resumeFlag, quotedID)
+	}
+	if dangerousFlag != "" {
+		cmd += " " + dangerousFlag
+	}
+	return cmd
+}
+
+// formatGenericResumeShellVar is the capture-path variant that resumes using a
+// shell variable (already double-quoted by the caller template) rather than a
+// Go-side literal id.
+func formatGenericResumeShellVar(baseCommand, resumeFlag, varName, dangerousFlag string) string {
+	ref := "\"$" + varName + "\""
+	var cmd string
+	if strings.HasSuffix(resumeFlag, "=") {
+		cmd = fmt.Sprintf("%s %s%s", baseCommand, resumeFlag, ref)
+	} else {
+		cmd = fmt.Sprintf("%s %s %s", baseCommand, resumeFlag, ref)
+	}
+	if dangerousFlag != "" {
+		cmd += " " + dangerousFlag
+	}
+	return cmd
 }
 
 // buildShellPassthroughCommand builds the launch command for a Tool=="shell"
@@ -3948,21 +4094,83 @@ func isLiteralToolInvocation(baseCommand, literalName string) bool {
 	return len(fields) > 0 && fields[0] == literalName
 }
 
-// GetGenericSessionID gets session ID from tmux environment for a custom tool
-// Uses the session_id_env field from tool config
+// GetGenericSessionID resolves the conversation id for a custom [tools.*]
+// tool. Preference order:
+//  1. Live tmux env named by [tools.X].session_id_env (when set and present)
+//  2. Live tmux env AGENTDECK_TOOL_SESSION_ID, which the capture path publishes
+//     for tools that expose an id in their JSON output but export no env var of
+//     their own (see buildGenericCommand)
+//  3. Persisted GenericSessionID from tool_data (survives reboot)
+//
+// A live value is written through, so the next cold start resumes the same
+// chat. A persisted value is only returned while its recorded tool and
+// execution location still match this session — see generic_session_scope.go.
+// Whitespace-only values are treated as empty (not resumable).
 func (i *Instance) GetGenericSessionID() string {
-	toolDef := GetToolDef(i.Tool)
-	if toolDef == nil || toolDef.SessionIDEnv == "" {
+	// The scope check comes FIRST, before the live pane is consulted at all.
+	//
+	// A pane outlives the settings it was launched under: change the tool, the
+	// command, the project path or the SSH destination on a running session and
+	// the pane keeps exporting the id the OLD tool captured. Reading the pane
+	// first and adopting whatever it says rebinds that id to the new scope, and
+	// one poll later an id this function had just refused is indistinguishable
+	// from a legitimate one. Refusing before reading closes that laundering
+	// path: while a recorded binding disagrees with the session as it stands,
+	// nothing about this session is a source of conversation identity.
+	if reason := i.genericSessionScopeMismatch(); reason != "" {
+		i.logGenericResumeRefusal(reason)
 		return ""
 	}
-	if i.tmuxSession == nil {
-		return ""
+
+	for _, envName := range i.genericSessionEnvNames() {
+		if i.tmuxSession == nil {
+			break
+		}
+		sessionID, err := i.tmuxSession.GetEnvironment(envName)
+		if err != nil {
+			continue
+		}
+		if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+			i.persistGenericSessionIDIfChanged(sessionID)
+			return sessionID
+		}
 	}
-	sessionID, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv)
-	if err != nil {
-		return ""
+
+	return strings.TrimSpace(i.GenericSessionID)
+}
+
+// genericSessionEnvNames lists the tmux environment variables that may carry a
+// custom tool's live conversation id, most specific first.
+//
+// The configured session_id_env is the tool's own variable and wins. The
+// agent-deck-owned fallback exists because a tool can declare
+// output_format_flag + session_id_json_path (so agent-deck can read an id out
+// of its JSON) while exporting nothing — before the fallback, that id was
+// captured inside the pane's shell, used once, and lost, which is a reboot away
+// from being no persistence at all.
+func (i *Instance) genericSessionEnvNames() []string {
+	return i.genericSessionEnvNamesFor(i.Tool)
+}
+
+// genericSessionEnvNamesFor is genericSessionEnvNames over a set of tools,
+// deduplicated and always including the agent-deck-owned fallback.
+//
+// Erasing a binding needs the variables the tool that CAPTURED it declared, not
+// only the ones the session's current tool declares — after a tool change those
+// are different names, and the one left behind is the one the pane would hand
+// back on the next read.
+func (i *Instance) genericSessionEnvNamesFor(tools ...string) []string {
+	names := make([]string, 0, len(tools)+1)
+	seen := make(map[string]bool, len(tools)+1)
+	for _, tool := range tools {
+		toolDef := GetToolDef(strings.TrimSpace(tool))
+		if toolDef == nil || toolDef.SessionIDEnv == "" || seen[toolDef.SessionIDEnv] {
+			continue
+		}
+		seen[toolDef.SessionIDEnv] = true
+		names = append(names, toolDef.SessionIDEnv)
 	}
-	return sessionID
+	return append(names, genericCapturedSessionIDEnv)
 }
 
 // DisplaySessionID returns the session ID the PREVIEW pane surfaces for this
@@ -3990,8 +4198,9 @@ func (i *Instance) CanRestartGeneric() bool {
 	if toolDef == nil {
 		return false
 	}
-	// Can restart if we have resume support AND an existing session ID
-	if toolDef.ResumeFlag == "" || toolDef.SessionIDEnv == "" {
+	// resume_flag is required; the id may come from live session_id_env OR
+	// from the persisted generic_session_id (post-reboot).
+	if toolDef.ResumeFlag == "" {
 		return false
 	}
 	return i.GetGenericSessionID() != ""
@@ -6711,6 +6920,21 @@ func (i *Instance) SyncSessionIDsToTmux() {
 	if i.CopilotSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("COPILOT_SESSION_ID", i.CopilotSessionID)
 	}
+
+	// Custom [tools.*] resume id: re-publish so a restart that still has the
+	// old pane (or a respawn) sees the same id. The agent-deck-owned variable
+	// is written too, so a tool that exposes no env var of its own is still
+	// recoverable from the pane.
+	//
+	// Gated on the scope check for the same reason the read side is. The pane
+	// env is read back as a live ownership signal, so publishing an id that
+	// resume has refused would launder it into acceptance on the next poll --
+	// the refusal has to hold on both sides of the loop or it holds on neither.
+	if i.GenericSessionID != "" && i.genericSessionScopeMismatch() == "" {
+		for _, envName := range i.genericSessionEnvNames() {
+			_ = i.tmuxSession.SetEnvironment(envName, i.GenericSessionID)
+		}
+	}
 }
 
 func (i *Instance) clearSessionBindingForFreshStart() {
@@ -6763,6 +6987,36 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		// new session. Clearing it here would turn fresh-restart into an
 		// unlaunchable command (PR #1942 review, P1c).
 		i.DeepSeekSessionID = ""
+	}
+
+	// Custom [tools.*]: drop any persisted conversation so a deliberate
+	// fresh start does not re-attach resume after reboot. Flag the clear so
+	// a subsequent SaveWithGroups writes explicit empty (sticky-safe) even
+	// when statedb.GetGlobal() is nil (CLI paths).
+	if i.GenericSessionID != "" || !i.GenericDetectedAt.IsZero() || i.genericSessionIDCleared ||
+		i.GenericSessionTool != "" || i.GenericSessionCommand != "" || i.GenericSessionLocation != "" {
+		cleared := i.GenericSessionID
+		i.GenericSessionID = ""
+		i.GenericDetectedAt = time.Time{}
+		i.GenericSessionTool = ""
+		i.GenericSessionCommand = ""
+		i.GenericSessionLocation = ""
+		i.genericSessionIDCleared = true
+		if db := statedb.GetGlobal(); db != nil {
+			// The flag above means a later save re-applies this clear, so the
+			// outcome is eventually right either way — but a write that keeps
+			// failing on a data path would otherwise never be visible, and
+			// this one deletes a binding the operator asked to be rid of.
+			err := db.WriteGenericSessionBinding(i.ID, "", "", "", "", time.Time{})
+			i.setGenericSessionPersistError(err)
+			if err != nil {
+				sessionLog.Warn("generic_session_clear_persist_failed",
+					slog.String("instance_id", logging.SanitizeValue(i.ID)),
+					slog.String("tool", logging.SanitizeValue(i.Tool)),
+					slog.String("session_id_fingerprint", fingerprintSessionID(cleared)),
+					slog.String("error", logging.SanitizeValue(err.Error())))
+			}
+		}
 	}
 }
 
@@ -6834,6 +7088,20 @@ func (i *Instance) SyncSessionIDsFromTmux() {
 		i.CopilotSessionID = id
 		if i.CopilotDetectedAt.IsZero() {
 			i.CopilotDetectedAt = time.Now()
+		}
+	}
+
+	// Custom tool: pull the live conversation id into GenericSessionID +
+	// tool_data, from the tool's own env var or the agent-deck-owned fallback
+	// the capture path publishes (see genericSessionEnvNames).
+	for _, envName := range i.genericSessionEnvNames() {
+		id, err := i.tmuxSession.GetEnvironment(envName)
+		if err != nil {
+			continue
+		}
+		if id = strings.TrimSpace(id); id != "" {
+			i.persistGenericSessionIDIfChanged(id)
+			break
 		}
 	}
 }
@@ -8410,54 +8678,61 @@ func (i *Instance) restart(env map[string]string) error {
 	}
 
 	// If custom tool with session resume support AND tmux session exists, use respawn-pane.
-	if i.CanRestartGeneric() && i.tmuxSession != nil && i.tmuxSession.Exists() {
+	// Resolve id and ToolDef once (avoid double GetGenericSessionID / env races
+	// that could produce an empty --resume '' argv). Concurrent config reload
+	// can drop the custom entry — never deref nil.
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
 		toolDef := GetToolDef(i.Tool)
 		sessionID := i.GetGenericSessionID()
+		if toolDef != nil && toolDef.ResumeFlag != "" && sessionID != "" {
+			// The session ID env var is propagated via host-side SetEnvironment after tmux start.
+			// Same shape as buildGenericCommand (shared helper) so start/restart cannot drift.
+			dangerous := ""
+			if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
+				dangerous = toolDef.DangerousFlag
+			}
+			rawCmd := i.buildRestartEnvPrefix() + formatGenericResumeCommand(
+				i.Command, toolDef.ResumeFlag, sessionID, dangerous)
+			resumeCmd, containerName, err := i.prepareCommand(rawCmd)
+			if err != nil {
+				// #1924: a restart that fails here left StatusError with no reason.
+				i.recordPrepareFailure(rawCmd, err)
+				return err
+			}
+			if containerName != "" {
+				i.SandboxContainer = containerName
+			}
 
-		// The session ID env var is propagated via host-side SetEnvironment after tmux start.
-		var rawCmd string
-		if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
-			rawCmd = fmt.Sprintf("%s %s %s %s",
-				i.Command, toolDef.ResumeFlag, sessionID, toolDef.DangerousFlag)
-		} else {
-			rawCmd = fmt.Sprintf("%s %s %s",
-				i.Command, toolDef.ResumeFlag, sessionID)
+			// The resume command embeds the conversation id, so it is not
+			// logged; the fingerprint identifies the binding without
+			// disclosing it (see fingerprintSessionID).
+			sessionLog.Info("restart_generic_respawn",
+				slog.String("tool", logging.SanitizeValue(i.Tool)),
+				slog.String("session_id_fingerprint", fingerprintSessionID(sessionID)))
+
+			// #1822 F2: the generic resume command is a bare
+			// `<cmd> <resumeFlag> <sid>` with no inline AGENTDECK_PROFILE prefix,
+			// and this branch returns before the fallback recreate path. Must run
+			// BEFORE RespawnPane — see the Claude branch above for why.
+			i.ensureProfileEnv()
+			i.ensureClaudeConfigDirEnv()
+
+			if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
+				sessionLog.Info(
+					"restart_generic_respawn_failed",
+					slog.String("tool", i.Tool),
+					slog.String("error", err.Error()),
+				)
+				return fmt.Errorf("failed to restart %s session: %w", i.Tool, err)
+			}
+
+			sessionLog.Info("restart_generic_respawn_succeeded", slog.String("tool", i.Tool))
+
+			i.loadCustomPatternsFromConfig() // Reload custom patterns
+			i.Status = StatusWaiting
+			return nil
 		}
-		rawCmd = i.buildRestartEnvPrefix() + rawCmd
-		prepInput := rawCmd
-		resumeCmd, containerName, err := i.prepareCommand(prepInput)
-		if err != nil {
-			// #1924: a restart that fails here left StatusError with no reason.
-			i.recordPrepareFailure(prepInput, err)
-			return err
-		}
-		if containerName != "" {
-			i.SandboxContainer = containerName
-		}
-
-		sessionLog.Info("restart_generic_respawn", slog.String("tool", i.Tool), slog.String("command", resumeCmd))
-
-		// #1822 F2: the generic resume command is a bare
-		// `<cmd> <resumeFlag> <sid>` with no inline AGENTDECK_PROFILE prefix,
-		// and this branch returns before the fallback recreate path. Must run
-		// BEFORE RespawnPane — see the Claude branch above for why.
-		i.ensureProfileEnv()
-		i.ensureClaudeConfigDirEnv()
-
-		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
-			sessionLog.Info(
-				"restart_generic_respawn_failed",
-				slog.String("tool", i.Tool),
-				slog.String("error", err.Error()),
-			)
-			return fmt.Errorf("failed to restart %s session: %w", i.Tool, err)
-		}
-
-		sessionLog.Info("restart_generic_respawn_succeeded", slog.String("tool", i.Tool))
-
-		i.loadCustomPatternsFromConfig() // Reload custom patterns
-		i.Status = StatusWaiting
-		return nil
+		// toolDef vanished or id emptied between checks — fall through to recreate.
 	}
 
 	mcpLog.Debug("restart_fallback_recreate")
@@ -8655,6 +8930,15 @@ func (i *Instance) restart(env map[string]string) error {
 		i.Status = StatusIdle
 	}
 
+	// #1870: this is the only path that mints a new tmux session name, so it is
+	// the only place that has to make it durable. Callers that never save --
+	// mcp/skill/plugin attach|detach --restart -- used to leave the killed
+	// session's name on disk, so agent-deck reported a live session as broken
+	// and orphaned its tmux session. Status travels with it because the two are
+	// one fact about the restart. See restart_tmux_persist.go for why this is a
+	// targeted write and why a failure here is recorded rather than returned.
+	i.recordRestartOutcome()
+
 	return nil
 }
 
@@ -8803,11 +9087,11 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// after the tmux session is restarted. No inline tmux set-environment in the shell string
 	// (which silently fails inside Docker sandbox containers).
 	if useResume {
-		return fmt.Sprintf("%s%s%s --resume %s%s",
+		return fmt.Sprintf("%s%sexec %s --resume %s%s",
 			envPrefix, bashExportPrefix, claudeCmd, i.ClaudeSessionID, extraFlags)
 	}
 	// Session was never interacted with - use --session-id to create fresh session.
-	return fmt.Sprintf("%s%s%s --session-id %s%s",
+	return fmt.Sprintf("%s%sexec %s --session-id %s%s",
 		envPrefix, bashExportPrefix, claudeCmd, i.ClaudeSessionID, extraFlags)
 }
 
@@ -9538,6 +9822,12 @@ func (i *Instance) CreateForkedCodexInstanceWithOptions(
 	}
 	forked.Tool = i.Tool
 	forked.Wrapper = i.Wrapper
+	// #1929: a fork runs against the parent's thread, so it must run under the
+	// parent's account. Without this the fork resolves its own codex home
+	// through the default chain and `codex fork <parent-sid>` cannot find the
+	// rollout, which lives under the account's home — the fork starts empty and
+	// the account selection is lost from the record too.
+	forked.Account = i.Account
 
 	baseCommand := strings.TrimSpace(i.Command)
 	if baseCommand == "" {
@@ -10244,19 +10534,46 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 		if err != nil {
 			primaryStatErr = err.Error()
 		}
-		// File doesn't exist at expected location - try cross-project search
-		// This handles path hash mismatches (e.g., session created from different directory)
+		// File doesn't exist at expected location - try cross-project search.
+		// This handles ENCODING mismatches that still denote the same real
+		// directory (symlinked project paths: the primary lookup encodes the
+		// resolved path, while Claude may have filed under the unresolved
+		// spelling, or vice versa).
+		//
+		// It must NOT accept a jsonl belonging to a genuinely different
+		// project. `claude --resume` only consults the project dir derived
+		// from its own cwd, so a foreign-directory hit is not evidence that
+		// --resume will succeed — it guarantees the opposite: Claude prints
+		// "No conversation found with session ID: <id>" and exits within a
+		// second, flapping the session to `error` on every restart forever.
+		// Returning false instead routes to --session-id, which starts
+		// cleanly in the correct project dir.
 		fallbackTried = true
-		if fallbackPath := findSessionFileInAllProjects(inst, sessionID); fallbackPath != "" {
+		fallbackPath := findSessionFileInAllProjects(inst, sessionID)
+		foreignHit := fallbackPath != "" &&
+			!encodesSameWorkingDir(filepath.Base(filepath.Dir(fallbackPath)), projectPath, resolvedPath)
+		if fallbackPath != "" {
 			fallbackPathFound = fallbackPath
-			sessionLog.Debug("session_data_cross_project_found", slog.String("path", fallbackPath))
-			sessionFile = fallbackPath
-		} else {
+		}
+		switch {
+		case foreignHit:
+			sessionLog.Debug(
+				"session_data_cross_project_rejected",
+				slog.String("found_path", logging.SanitizeValue(fallbackPath)),
+				slog.String("instance_working_dir", logging.SanitizeValue(projectPath)),
+				slog.String("result", "use_session_id"),
+			)
+			emitDecision(false, "foreign_project_dir_resume_would_fail")
+			return false
+		case fallbackPath == "":
 			// File doesn't exist anywhere - use --session-id to create fresh session
 			// (there's nothing to resume if the file doesn't exist)
 			sessionLog.Debug("session_data_file_not_found", slog.String("result", "use_session_id"))
 			emitDecision(false, "file_not_found")
 			return false
+		default:
+			sessionLog.Debug("session_data_cross_project_found", slog.String("path", logging.SanitizeValue(fallbackPath)))
+			sessionFile = fallbackPath
 		}
 	}
 
@@ -10309,10 +10626,44 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 	return false
 }
 
+// encodesSameWorkingDir reports whether encodedDir — a directory name found
+// under {config_dir}/projects — is a plausible Claude encoding of this
+// instance's own working directory, given both its literal and
+// symlink-resolved spellings.
+//
+// This gates the cross-project fallback in sessionHasConversationData. The
+// fallback globs every project dir, so it happily returns a jsonl belonging to
+// an unrelated session. That is worse than not finding one: `claude --resume`
+// derives its project dir from its own cwd, so acting on a foreign hit makes
+// Claude exit immediately with "No conversation found with session ID: <id>".
+// Only an encoding that denotes the SAME real directory (the symlinked-path
+// case the fallback exists for) is safe to accept.
+func encodesSameWorkingDir(encodedDir, projectPath, resolvedPath string) bool {
+	if encodedDir == "" {
+		return false
+	}
+	for _, candidate := range []string{projectPath, resolvedPath} {
+		if candidate == "" {
+			continue
+		}
+		if encodedDir == ConvertToClaudeDirName(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 // findSessionFileInAllProjects searches all Claude project directories for a session file
 // This handles path hash mismatches when agent-deck runs from a different directory
 // than where the Claude session was originally created.
 // Returns the full path to the session file, or empty string if not found.
+//
+// CAUTION: a hit here means "this jsonl exists somewhere", NOT "Claude can
+// resume it". `claude --resume` only consults the project dir derived from its
+// own cwd. Callers deciding between --resume and --session-id must therefore
+// gate this result through encodesSameWorkingDir; callers that merely need the
+// file's size or mtime (sessionConversationByteSize, sessionConversationMtime)
+// can use it unguarded.
 // Uses the PER-INSTANCE config dir (via GetClaudeConfigDirForInstance) when
 // inst is non-nil so sessions with conductor/group config_dir overrides find
 // their own JSONLs. Passing inst == nil degrades to the global lookup.

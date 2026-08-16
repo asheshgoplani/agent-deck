@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A restarted session no longer shows a permanent false error while its tmux process runs fine.** A restart recreates the tmux session under a newly minted name, and nothing recorded that name: the TUI polled a session that no longer existed, reported `error` for a healthy process, and `Enter`/`R` could not clear it because every retry aborted the same way and leaked another orphaned tmux session. The name and the status a restart ends in are now written where they are produced, by a targeted two-column update, so they survive whether or not the save that follows succeeds — and the TUI no longer mistakes its own restart write for another process's change ([#1868](https://github.com/asheshgoplani/agent-deck/pull/1868), [#1871](https://github.com/asheshgoplani/agent-deck/pull/1871)).
+- **`mcp`, `skill` and `plugin` `--restart` record the restarted session's tmux name.** These paths recreated the tmux session and never wrote its new name, so the stored one kept pointing at the killed session: agent-deck showed the session as errored while its process ran, and the live tmux session was orphaned. Recording happens at the restart chokepoint, which covers `session move --restart`, `session start`/`restart`, fleet recovery and the web mutator too, and a restart whose bookkeeping fails now says so instead of reporting plain success ([#1870](https://github.com/asheshgoplani/agent-deck/issues/1870), [#1871](https://github.com/asheshgoplani/agent-deck/pull/1871)).
+
+### Added
+
+- **Custom `[tools.*]` conversation ids survive a reboot.** A tool with `resume_flag` set now stores its conversation id in SQLite the way built-ins do, so a restart rebuilds `<command> <resume_flag> <id>` instead of leaving every custom seat to be re-bound by hand. The id is recorded with the tool, the command and the execution location it was captured under, and changing any of those invalidates it rather than replaying someone else's conversation. Ids are kept out of the logs ([#1885](https://github.com/asheshgoplani/agent-deck/pull/1885), [#1949](https://github.com/asheshgoplani/agent-deck/pull/1949)).
+
 ## [1.12.0] - 2026-08-14
 
 Stability and correctness release: 30 commits, 21 pull requests and 19 closed issues, with major community contributions.
