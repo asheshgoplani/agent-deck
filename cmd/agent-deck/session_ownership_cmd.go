@@ -47,6 +47,7 @@ func printSessionOwnershipHelp() {
 	fmt.Println("Commands:")
 	fmt.Println("  inspect <id>     Show the ownership receipt and what it verifies to (read-only)")
 	fmt.Println("  reconcile <id>   Terminate every process the receipt owns, verify, and clear it")
+	fmt.Println("                   (--yes required only when the session's pane is still running)")
 	fmt.Println("  abandon <id>     Discard an unverifiable receipt WITHOUT signalling anything")
 	fmt.Println()
 	fmt.Println("A session records, at spawn, the pid of its pane process bound to that")
@@ -100,20 +101,39 @@ func handleSessionOwnershipInspect(profile string, args []string) {
 func handleSessionOwnershipReconcile(profile string, args []string) {
 	fs := flag.NewFlagSet("session ownership reconcile", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	yes := fs.Bool("yes", false, "Confirm reconciling a session whose pane is still running")
 	fs.Usage = func() {
-		fmt.Println("Usage: agent-deck session ownership reconcile <id|title> [--json]")
+		fmt.Println("Usage: agent-deck session ownership reconcile <id|title> [--yes] [--json]")
 		fmt.Println()
 		fmt.Println("Terminate every process this session's receipt owns — identity-checked,")
 		fmt.Println("SIGTERM then SIGKILL, death verified — and clear the receipt.")
 		fmt.Println()
-		fmt.Println("This includes a live pane process if the session is still running: it")
-		fmt.Println("reconciles the SESSION's ownership, not just its strays.")
+		fmt.Println("Reaping an escaped tree needs no confirmation: its pane is already gone,")
+		fmt.Println("which is why the restart was refused. --yes is required only when the")
+		fmt.Println("receipt's leader is still the live pane process, because reconciling then")
+		fmt.Println("stops the running session rather than cleaning up after a dead one.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
 	inst := resolveOwnershipTarget(profile, fs.Arg(0), out)
+
+	// Confirmation is asked exactly where the operator might not realise what
+	// they are ending. The recovery flow the refusal message points at — an
+	// escaped tree whose pane died — is not that case, and making it demand a
+	// flag would train people to pass --yes reflexively, which is how a
+	// confirmation gate stops being one.
+	if status := inst.OwnershipStatus(); status.PaneAttached && !*yes {
+		out.Error(fmt.Sprintf(
+			"session %s is still running: reconciling would stop its live pane process. "+
+				"Re-run with --yes, or use `agent-deck session stop %s`", inst.Title, inst.ID),
+			ErrCodeInvalidOperation)
+		if !*jsonOutput {
+			fmt.Fprintln(os.Stderr, renderOwnershipStatus(inst, status))
+		}
+		os.Exit(1)
+	}
 
 	report, err := inst.ReconcileOwnership()
 	if err != nil {

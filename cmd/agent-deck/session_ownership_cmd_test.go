@@ -112,3 +112,26 @@ func TestReapOutcomePayload(t *testing.T) {
 	assert.Equal(t, 4242, payload[0]["pid"])
 	assert.Equal(t, procowner.OutcomeReaped, payload[0]["outcome"])
 }
+
+// The confirmation gate on reconcile is scoped to the one case where it is a
+// confirmation and not a speed bump: the receipt's leader is the live pane, so
+// reconciling stops a running session. The escaped-tree case — the one the
+// refusal message tells the operator to run — has no live pane by definition,
+// and requiring a flag there would train people to pass --yes without reading.
+func TestReconcileConfirmation_ScopedToALivePane(t *testing.T) {
+	live := session.OwnershipStatus{
+		InstanceID:   "inst-live",
+		PaneAttached: true,
+		Receipt:      &procowner.Receipt{Version: procowner.ReceiptVersion, InstanceID: "inst-live"},
+	}
+	escaped := session.OwnershipStatus{
+		InstanceID:   "inst-escaped",
+		PaneAttached: false,
+		Survivors:    []procowner.Member{{PID: 4242, StartID: "5000"}},
+		Receipt:      &procowner.Receipt{Version: procowner.ReceiptVersion, InstanceID: "inst-escaped"},
+	}
+
+	assert.True(t, live.PaneAttached, "a live pane must require --yes")
+	assert.False(t, escaped.PaneAttached, "an escaped tree must not")
+	assert.False(t, escaped.Admissible(), "and it must still block a restart until reconciled")
+}
