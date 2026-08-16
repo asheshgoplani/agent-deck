@@ -31,12 +31,30 @@ import (
 //
 // # What identifies a credential (and what deliberately does not)
 //
-// The grouping key is the RESOLVED CLAUDE CONFIG DIRECTORY — the directory the
-// credential physically lives in, per session.GetClaudeConfigDirForInstance's
-// priority chain. It is an identifier, never token material: no token, no
-// refresh token, no credential file content, and no hash of any of them is read,
-// compared, logged, or persisted anywhere in this file. Grouping is computed in
-// memory, per invocation, and thrown away.
+// The grouping key is a CREDENTIAL STORE: the pair (host, resolved Claude config
+// directory). The directory comes from session.GetClaudeConfigDirForInstance's
+// priority chain; the host is the SSH destination, or "local". Both are
+// identifiers, never token material: no token, no refresh token, no credential
+// file content, and no hash of any of them is read, compared, logged, or
+// persisted anywhere in this file. Grouping is computed in memory, per
+// invocation, and thrown away.
+//
+// THE HOST IS PART OF THE IDENTITY, and leaving it out was a real defect. A
+// local session and an SSH session can resolve the SAME config path while
+// reading two completely different credential files on two different machines.
+// Keying on the path alone merged them, so one re-login would have been reported
+// as recovering sessions it cannot reach — the aggregation asserting a fix that
+// silently does not hold for half the fleet. Same rule as the unknown bucket,
+// arriving from the other side: there, one bucket was folded into another; here,
+// two genuinely different stores were folded into one. Both are the aggregation
+// lying about what it grouped, and on this feature that lie IS the product.
+//
+// What the host component does and does not claim: two sessions agreeing on both
+// host and path are on one credential store; two disagreeing on host are not.
+// The local resolution is NOT claimed to be the remote file's true location —
+// only to distinguish stores. When in doubt this splits rather than merges,
+// because over-aggregation is the direction that misleads an operator into
+// thinking one re-auth was enough.
 //
 // Keying on the directory rather than on Instance.Account is what makes the two
 // awkward shapes come out right, and both are real:
@@ -77,23 +95,63 @@ import (
 // that unattributable sessions get quietly swept into.
 const UnknownCredentialKey = "unknown"
 
-// credentialKeyPrefix namespaces the directory-derived key so a key can never
+// credentialKeyPrefix namespaces the store-derived key so a key can never
 // collide with UnknownCredentialKey, whatever a path looks like.
-const credentialKeyPrefix = "dir:"
+const credentialKeyPrefix = "store:"
 
-// CredentialRef identifies WHICH credential a set of held sessions runs under.
+// localHostScope is the key scope for a session running on this machine. It is
+// spelled out rather than left as the empty string so a local store and a
+// malformed/blank SSH destination can never produce the same key.
+const localHostScope = "local"
+
+// sshHostScopePrefix namespaces an SSH destination inside the key, so a host
+// literally named "local" cannot collide with localHostScope.
+const sshHostScopePrefix = "ssh:"
+
+// CredentialRef identifies WHICH credential store a set of held sessions runs
+// under.
 //
 // Every field is an identifier or a path. Nothing here is, or is derived from,
 // token material.
 type CredentialRef struct {
 	// Key is the stable grouping key. Two sessions with equal Keys share one
-	// credential file; UnknownCredentialKey means "not attributable".
+	// credential store; UnknownCredentialKey means "not attributable".
 	Key string
 	// ConfigDir is the resolved credential directory ("" when unattributed).
 	ConfigDir string
+	// Host is the SSH destination the store lives on, or "" for a store on this
+	// machine. Callers must use HostLabel rather than branching on "" directly.
+	Host string
 	// Attributed is false for the unknown bucket. Callers must branch on this
 	// rather than on ConfigDir being non-empty.
 	Attributed bool
+}
+
+// HostLabel names the machine the credential store lives on.
+func (c CredentialRef) HostLabel() string {
+	if strings.TrimSpace(c.Host) == "" {
+		return localHostScope
+	}
+	return c.Host
+}
+
+// IsRemote reports whether this store lives on another machine, which is what
+// makes "re-authenticate once" NOT reach it from here.
+func (c CredentialRef) IsRemote() bool { return strings.TrimSpace(c.Host) != "" }
+
+// hostScope renders the key's host component.
+//
+// An SSH destination is used verbatim after trimming — deliberately NOT
+// lowercased or otherwise canonicalised. "user@box" and "other@box" are
+// different home directories and so different stores, and DNS-style case folding
+// on the host half would risk merging two stores to save an operator one line.
+// Splitting costs an extra escalation; merging costs a fleet.
+func hostScope(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return localHostScope
+	}
+	return sshHostScopePrefix + host
 }
 
 // unknownCredential returns the unattributed bucket's identity.
@@ -130,15 +188,25 @@ type CredentialGroup struct {
 	Recovered bool
 }
 
-// Label names the credential the way an operator would have to refer to it.
+// Label names the credential store the way an operator would have to refer to
+// it.
+//
+// A remote store names its host, because that is the difference between an
+// operator running /login here and an operator needing a shell on another
+// machine. A local store keeps the pre-existing wording so the common case reads
+// exactly as it did.
 func (g CredentialGroup) Label() string {
 	if !g.Credential.Attributed {
 		return "an unattributable credential"
 	}
-	if len(g.Accounts) > 0 {
-		return fmt.Sprintf("account %s (%s)", strings.Join(g.Accounts, ", "), g.Credential.ConfigDir)
+	where := ""
+	if g.Credential.IsRemote() {
+		where = fmt.Sprintf(" on ssh://%s", g.Credential.Host)
 	}
-	return fmt.Sprintf("credential %s", g.Credential.ConfigDir)
+	if len(g.Accounts) > 0 {
+		return fmt.Sprintf("account %s%s (%s)", strings.Join(g.Accounts, ", "), where, g.Credential.ConfigDir)
+	}
+	return fmt.Sprintf("credential%s %s", where, g.Credential.ConfigDir)
 }
 
 // Escalation is the ONE operator-facing line this group replaces N per-session
@@ -161,6 +229,14 @@ func (g CredentialGroup) Escalation() string {
 		return fmt.Sprintf(
 			"auth-401: %d session(s) held on %s — these are NOT known to share one credential, so re-authenticating one may not recover the others; check them individually (%s)",
 			n, g.Label(), g.sessionList())
+	}
+	// A remote store cannot be repaired from here. Saying "re-authenticate that
+	// credential once" without naming where would be the same false promise the
+	// host dimension exists to prevent.
+	if g.Credential.IsRemote() {
+		return fmt.Sprintf(
+			"auth-401: %d session(s) held on %s — that credential store lives on %s, so re-authenticating locally will NOT reach it; re-authenticate on that host and every one of them can recover (%s)",
+			n, g.Label(), g.Credential.Host, g.sessionList())
 	}
 	return fmt.Sprintf(
 		"auth-401: %d session(s) held on %s — re-authenticate that credential once and every one of them can recover (%s)",
@@ -239,6 +315,17 @@ func (s AuthCredentialSummary) Format() string {
 // in this package: the tests drive the real grouping logic without a sidecar
 // file, a config.toml, or a tmux server.
 type AuthCredentialGrouper struct {
+	// Group, when set, restricts the view to that group path and its
+	// descendants — the SAME contract as Detector.Group, deliberately using the
+	// same inGroup predicate rather than a second copy of the rule.
+	//
+	// Without this, `fleet status --group X --group-by-credential` answered
+	// about the whole fleet while claiming to answer about X: wrong, and most
+	// confusing at exactly the moment an operator is narrowing down a problem.
+	// (`fleet recover` needs no equivalent: its sweep only ever hands the gate
+	// candidates the Detector already filtered.)
+	Group string
+
 	// Hold returns a session's auth hold, or nil when it is not currently held.
 	// nil uses authHoldOf, which asks the durable per-session record (#1743)
 	// through IsAuthHeld/AuthHold so this view and the automatic boot paths
@@ -275,6 +362,18 @@ func (g *AuthCredentialGrouper) hold(inst *session.Instance) *session.AuthHoldRe
 	return g.Hold(inst)
 }
 
+// inScope applies the --group filter. A nil instance is out of scope only when a
+// filter is set, so the unfiltered view keeps reaching Identify's nil handling.
+func (g *AuthCredentialGrouper) inScope(inst *session.Instance) bool {
+	if g == nil || g.Group == "" {
+		return true
+	}
+	if inst == nil {
+		return false
+	}
+	return inGroup(inst.GroupPath, g.Group)
+}
+
 func (g *AuthCredentialGrouper) configDir(inst *session.Instance) string {
 	if g == nil || g.ConfigDir == nil {
 		return session.GetClaudeConfigDirForInstance(inst)
@@ -294,7 +393,15 @@ func (g *AuthCredentialGrouper) Identify(inst *session.Instance) CredentialRef {
 	// The auth-hold model and the config-dir chain below are both Claude's.
 	// Another tool's session may genuinely be held one day; guessing a Claude
 	// credential for it would be attribution by wishful thinking.
-	if !strings.EqualFold(strings.TrimSpace(inst.Tool), "claude") {
+	//
+	// Asked through session.IsClaudeCompatible rather than by comparing the tool
+	// name to the literal "claude": a custom tool that wraps the Claude CLI (a
+	// path, an env-prefixed command, or an explicit compatible_with = "claude")
+	// reads the SAME credential file, so a literal comparison silently drops
+	// every aliased session out of the aggregation it belongs in. Matching a
+	// literal name where a predicate already answers the question is the same
+	// defect class as #1923.
+	if !session.IsClaudeCompatible(inst.Tool) {
 		return unknownCredential()
 	}
 	dir := strings.TrimSpace(g.configDir(inst))
@@ -306,19 +413,30 @@ func (g *AuthCredentialGrouper) Identify(inst *session.Instance) CredentialRef {
 		return unknownCredential()
 	}
 	dir = filepath.Clean(dir)
+	// A remote session's store lives on another machine; see the package doc for
+	// why the host is part of the identity and not a display detail.
+	host := strings.TrimSpace(inst.SSHHost)
 	return CredentialRef{
-		Key:        credentialKeyPrefix + dir,
+		Key:        credentialKeyPrefix + hostScope(host) + "|" + dir,
 		ConfigDir:  dir,
+		Host:       host,
 		Attributed: true,
 	}
 }
 
-// Group returns the credential-level view of every auth-held session in
-// instances. It reads state and writes nothing: no sidecar, no registry row, no
-// log line, and nothing leaves the machine.
-func (g *AuthCredentialGrouper) Group(instances []*session.Instance) AuthCredentialSummary {
+// Summarize returns the credential-level view of every auth-held session in
+// instances, honouring the Group filter. It reads state and writes nothing: no
+// sidecar, no registry row, no log line, and nothing leaves the machine.
+//
+// Named Summarize rather than Group because Group is the filter field above; a
+// method and a field cannot share a name, and the field matches Detector.Group
+// so the two scoping knobs read identically at their call sites.
+func (g *AuthCredentialGrouper) Summarize(instances []*session.Instance) AuthCredentialSummary {
 	acc := newCredAccumulator(g.Identify)
 	for _, inst := range instances {
+		if !g.inScope(inst) {
+			continue
+		}
 		rec := g.hold(inst)
 		if rec == nil {
 			continue

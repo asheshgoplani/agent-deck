@@ -19,7 +19,7 @@ import (
 func TestIssue1816_After_OneDeadCredentialProducesOneEscalation(t *testing.T) {
 	instances, credDir := setupIssue1816Fleet(t, 4)
 
-	sum := authCredentialSummary(instances)
+	sum := authCredentialSummary(instances, "")
 	escalations := sum.Escalations()
 
 	t.Logf("AFTER (--group-by-credential) — %d sessions on ONE credential produce %d escalation:",
@@ -94,7 +94,7 @@ func TestIssue1816_After_JSONExposesTheCredentialGrouping(t *testing.T) {
 	instances, credDir := setupIssue1816Fleet(t, 4)
 
 	payload := fleetStatusJSON(fleet.Assessment{Total: 4, Down: 4})
-	payload["auth_credentials"] = fleetAuthCredentialsJSON(authCredentialSummary(instances))
+	payload["auth_credentials"] = fleetAuthCredentialsJSON(authCredentialSummary(instances, ""))
 
 	raw, err := json.MarshalIndent(payload["auth_credentials"], "", "  ")
 	if err != nil {

@@ -66,7 +66,7 @@ func TestOneDeadCredentialProducesOneEscalation(t *testing.T) {
 		"charlie": "/home/u/.claude-work",
 	}, allHeld("alpha", "bravo", "charlie"))
 
-	sum := g.Group(insts)
+	sum := g.Summarize(insts)
 
 	if sum.Held != 3 {
 		t.Errorf("Held = %d, want 3", sum.Held)
@@ -100,7 +100,7 @@ func TestTwoCredentialsDyingAtOnceStayTwoEscalations(t *testing.T) {
 		"charlie": "/home/u/.claude-work",
 	}, allHeld("alpha", "bravo", "charlie"))
 
-	sum := g.Group(insts)
+	sum := g.Summarize(insts)
 
 	if sum.Credentials != 2 {
 		t.Fatalf("Credentials = %d, want 2", sum.Credentials)
@@ -134,7 +134,7 @@ func TestSameAccountNameUnderTwoConfigDirsIsTwoCredentials(t *testing.T) {
 		"bravo": "/home/u/.claude-b",
 	}, allHeld("alpha", "bravo"))
 
-	sum := g.Group(insts)
+	sum := g.Summarize(insts)
 
 	if sum.Credentials != 2 {
 		t.Fatalf("Credentials = %d, want 2 — the same account name over two config dirs is two credentials", sum.Credentials)
@@ -158,7 +158,7 @@ func TestTwoAccountNamesOverOneConfigDirIsOneCredential(t *testing.T) {
 		"bravo": "/home/u/.claude-shared",
 	}, allHeld("alpha", "bravo"))
 
-	sum := g.Group(insts)
+	sum := g.Summarize(insts)
 
 	if sum.Credentials != 1 {
 		t.Fatalf("Credentials = %d, want 1 — one config dir is one token file", sum.Credentials)
@@ -187,7 +187,7 @@ func TestUnattributableSessionGetsItsOwnBucket(t *testing.T) {
 		"orphan": "", // unresolvable
 	}, allHeld("alpha", "bravo", "orphan"))
 
-	sum := g.Group(insts)
+	sum := g.Summarize(insts)
 
 	if sum.Credentials != 1 {
 		t.Errorf("Credentials = %d, want 1 — the unknown bucket is not a credential", sum.Credentials)
@@ -236,7 +236,7 @@ func TestRelativeConfigDirNeverBecomesAGroupKey(t *testing.T) {
 		"bravo": ".claude",
 	}, allHeld("alpha", "bravo"))
 
-	sum := g.Group(insts)
+	sum := g.Summarize(insts)
 
 	if sum.Credentials != 0 {
 		t.Errorf("Credentials = %d, want 0 — a relative path does not identify a credential", sum.Credentials)
@@ -259,7 +259,7 @@ func TestNonClaudeToolIsUnattributed(t *testing.T) {
 	inst.Tool = "codex"
 	g := dirGrouper(map[string]string{"codex-one": "/home/u/.claude-work"}, allHeld("codex-one"))
 
-	sum := g.Group([]*session.Instance{inst})
+	sum := g.Summarize([]*session.Instance{inst})
 
 	if sum.Credentials != 0 || sum.Unattributed != 1 {
 		t.Fatalf("Credentials = %d, Unattributed = %d; want 0 and 1", sum.Credentials, sum.Unattributed)
@@ -269,7 +269,7 @@ func TestNonClaudeToolIsUnattributed(t *testing.T) {
 // A nil instance must not panic or create a phantom credential.
 func TestNilInstanceIsSkipped(t *testing.T) {
 	g := dirGrouper(map[string]string{"alpha": "/home/u/.claude-work"}, allHeld("alpha"))
-	sum := g.Group([]*session.Instance{nil, heldInstance("alpha", "work"), nil})
+	sum := g.Summarize([]*session.Instance{nil, heldInstance("alpha", "work"), nil})
 	if sum.Held != 1 || sum.Credentials != 1 {
 		t.Fatalf("Held = %d, Credentials = %d; want 1 and 1", sum.Held, sum.Credentials)
 	}
@@ -287,7 +287,7 @@ func TestUnheldSessionsAreNotGrouped(t *testing.T) {
 		"healthy": "/home/u/.claude-work",
 	}, allHeld("alpha")) // only alpha is held
 
-	sum := g.Group(insts)
+	sum := g.Summarize(insts)
 
 	if sum.Held != 1 {
 		t.Fatalf("Held = %d, want 1", sum.Held)
@@ -300,7 +300,7 @@ func TestUnheldSessionsAreNotGrouped(t *testing.T) {
 // Zero held sessions is a clean, non-alarming report — not an empty group.
 func TestNoHeldSessionsReportsNothingDead(t *testing.T) {
 	g := dirGrouper(map[string]string{"alpha": "/home/u/.claude-work"}, map[string]string{})
-	sum := g.Group([]*session.Instance{heldInstance("alpha", "work")})
+	sum := g.Summarize([]*session.Instance{heldInstance("alpha", "work")})
 
 	if sum.Held != 0 || sum.Credentials != 0 || len(sum.Groups) != 0 {
 		t.Fatalf("summary = %+v, want an empty view", sum)
@@ -328,7 +328,7 @@ func TestGroupOrderIsDeterministicWithUnknownLast(t *testing.T) {
 	}, allHeld("zulu", "alpha", "orphan"))
 
 	for i := 0; i < 5; i++ {
-		sum := g.Group(insts)
+		sum := g.Summarize(insts)
 		if len(sum.Groups) != 3 {
 			t.Fatalf("got %d groups, want 3", len(sum.Groups))
 		}
@@ -352,7 +352,7 @@ func TestHoldReasonIsCarriedPerSession(t *testing.T) {
 			"bravo": session.AuthHoldReasonDeath,
 		})
 
-	sum := g.Group(insts)
+	sum := g.Summarize(insts)
 
 	reasons := map[string]string{}
 	for _, s := range sum.Groups[0].Sessions {
@@ -371,7 +371,7 @@ func TestConfigDirIsCanonicalisedBeforeGrouping(t *testing.T) {
 		"bravo": "/home/u/./.claude-work/",
 	}, allHeld("alpha", "bravo"))
 
-	sum := g.Group(insts)
+	sum := g.Summarize(insts)
 
 	if sum.Credentials != 1 {
 		t.Fatalf("Credentials = %d, want 1 — the same directory written two ways is one credential", sum.Credentials)
@@ -393,7 +393,7 @@ func TestGroupingWritesNothingAndLeaksNoTokenMaterial(t *testing.T) {
 		"bravo": filepath.Join(home, ".claude-work"),
 	}, allHeld("alpha", "bravo"))
 
-	sum := g.Group(insts)
+	sum := g.Summarize(insts)
 	rendered := sum.Format() + strings.Join(sum.Escalations(), "\n")
 
 	if after := snapshotTree(t, home); after != before {
@@ -422,4 +422,285 @@ func snapshotTree(t *testing.T, root string) string {
 		t.Fatalf("walk %s: %v", root, err)
 	}
 	return strings.Join(paths, "\n")
+}
+
+// ---------------------------------------------------------------------------
+// PR #1963 review findings P2a / P2b / P2c.
+// ---------------------------------------------------------------------------
+
+// sshInstance is a held session running on a remote host.
+func sshInstance(title, account, sshHost string) *session.Instance {
+	inst := heldInstance(title, account)
+	inst.SSHHost = sshHost
+	return inst
+}
+
+// P2a — THE STORE IS (host, path), NOT path. A local session and an SSH session
+// resolving the same config path read two different credential files on two
+// different machines. Merging them would report one re-auth as recovering
+// sessions it cannot reach.
+func TestLocalAndSSHSessionOnSamePathAreSeparateCredentials(t *testing.T) {
+	insts := []*session.Instance{
+		heldInstance("local-one", "work"),
+		sshInstance("remote-one", "work", "box-b"),
+	}
+	g := dirGrouper(map[string]string{
+		"local-one":  "/home/u/.claude-work",
+		"remote-one": "/home/u/.claude-work", // SAME path, different machine
+	}, allHeld("local-one", "remote-one"))
+
+	sum := g.Summarize(insts)
+
+	if sum.Credentials != 2 {
+		t.Fatalf("Credentials = %d, want 2 — same path on two hosts is two credential stores", sum.Credentials)
+	}
+	if len(sum.Groups) != 2 {
+		t.Fatalf("got %d groups, want 2", len(sum.Groups))
+	}
+	for _, grp := range sum.Groups {
+		if len(grp.Sessions) != 1 {
+			t.Errorf("group %q holds %d sessions, want 1 — the two hosts were merged", grp.Credential.Key, len(grp.Sessions))
+		}
+	}
+
+	// And the remote one must not tell the operator a local re-login fixes it.
+	var remote *CredentialGroup
+	for i := range sum.Groups {
+		if sum.Groups[i].Credential.IsRemote() {
+			remote = &sum.Groups[i]
+		}
+	}
+	if remote == nil {
+		t.Fatal("no remote credential group produced")
+	}
+	if remote.Credential.Host != "box-b" || remote.Credential.HostLabel() != "box-b" {
+		t.Errorf("remote host = %q / %q, want box-b", remote.Credential.Host, remote.Credential.HostLabel())
+	}
+	esc := remote.Escalation()
+	if !strings.Contains(esc, "re-authenticating locally will NOT reach it") {
+		t.Errorf("remote escalation must not promise a local fix: %s", esc)
+	}
+	if !strings.Contains(esc, "box-b") {
+		t.Errorf("remote escalation must name the host: %s", esc)
+	}
+}
+
+// P2a, follow-up shape: the SAME account reached over TWO different ssh
+// destinations is two stores, not one.
+func TestSameAccountOverTwoSSHDestinationsIsTwoCredentials(t *testing.T) {
+	insts := []*session.Instance{
+		sshInstance("r1", "work", "box-b"),
+		sshInstance("r2", "work", "box-c"),
+		sshInstance("r3", "work", "box-b"),
+	}
+	g := dirGrouper(map[string]string{
+		"r1": "/home/u/.claude-work",
+		"r2": "/home/u/.claude-work",
+		"r3": "/home/u/.claude-work",
+	}, allHeld("r1", "r2", "r3"))
+
+	sum := g.Summarize(insts)
+
+	if sum.Credentials != 2 {
+		t.Fatalf("Credentials = %d, want 2 (box-b, box-c)", sum.Credentials)
+	}
+	byHost := map[string]int{}
+	for _, grp := range sum.Groups {
+		byHost[grp.Credential.Host] = len(grp.Sessions)
+	}
+	if byHost["box-b"] != 2 || byHost["box-c"] != 1 {
+		t.Errorf("sessions by host = %v, want box-b:2 box-c:1", byHost)
+	}
+}
+
+// P2a, the merge direction still has to work: two sessions on the SAME ssh
+// destination and path are one store, so the host dimension has not simply
+// disabled aggregation for remote sessions.
+func TestSameSSHDestinationAndPathIsOneCredential(t *testing.T) {
+	insts := []*session.Instance{
+		sshInstance("r1", "work", "box-b"),
+		sshInstance("r2", "work", "box-b"),
+	}
+	g := dirGrouper(map[string]string{
+		"r1": "/home/u/.claude-work",
+		"r2": "/home/u/.claude-work",
+	}, allHeld("r1", "r2"))
+
+	sum := g.Summarize(insts)
+
+	if sum.Credentials != 1 {
+		t.Fatalf("Credentials = %d, want 1 — one host + one path is one store", sum.Credentials)
+	}
+	if len(sum.Groups[0].Sessions) != 2 {
+		t.Errorf("group holds %d sessions, want 2", len(sum.Groups[0].Sessions))
+	}
+}
+
+// P2a, key hygiene: a host literally named "local" must not collide with the
+// local scope, and a blank/whitespace SSHHost is local rather than a distinct
+// phantom host.
+func TestHostScopeCannotCollideWithLocal(t *testing.T) {
+	insts := []*session.Instance{
+		heldInstance("plain-local", "work"),
+		sshInstance("named-local", "work", "local"),
+		sshInstance("blank-host", "work", "   "),
+	}
+	g := dirGrouper(map[string]string{
+		"plain-local": "/home/u/.claude-work",
+		"named-local": "/home/u/.claude-work",
+		"blank-host":  "/home/u/.claude-work",
+	}, allHeld("plain-local", "named-local", "blank-host"))
+
+	sum := g.Summarize(insts)
+
+	// plain-local and blank-host are both local (one store); "local" the
+	// hostname is a second, separate store.
+	if sum.Credentials != 2 {
+		t.Fatalf("Credentials = %d, want 2 — a host named \"local\" is not the local machine", sum.Credentials)
+	}
+
+	var localGroup, sshNamedLocal *CredentialGroup
+	for i := range sum.Groups {
+		if sum.Groups[i].Credential.IsRemote() {
+			sshNamedLocal = &sum.Groups[i]
+		} else {
+			localGroup = &sum.Groups[i]
+		}
+	}
+	if localGroup == nil || sshNamedLocal == nil {
+		t.Fatalf("groups = %+v, want one local store and one ssh store", sum.Groups)
+	}
+	// A blank/whitespace SSHHost is local, not a phantom third store.
+	if len(localGroup.Sessions) != 2 {
+		t.Errorf("local store holds %d sessions, want 2 (a whitespace SSHHost is local)", len(localGroup.Sessions))
+	}
+	if len(sshNamedLocal.Sessions) != 1 {
+		t.Errorf("ssh://local store holds %d sessions, want 1", len(sshNamedLocal.Sessions))
+	}
+	// The load-bearing property: the keys are distinct even though both render
+	// their host as the word "local".
+	if localGroup.Credential.Key == sshNamedLocal.Credential.Key {
+		t.Errorf("key collision: a host named %q produced the same key as the local machine (%s)",
+			"local", localGroup.Credential.Key)
+	}
+}
+
+// P2b — the --group filter must narrow the credential view, like every other
+// view. Asking about one group and getting fleet-wide credential state is wrong
+// exactly when an operator is narrowing down a problem.
+func TestGroupFilterNarrowsTheCredentialSummary(t *testing.T) {
+	inGroupA := heldInstance("a-one", "work")
+	inGroupA.GroupPath = "team-a"
+	nested := heldInstance("a-nested", "work")
+	nested.GroupPath = "team-a/sub"
+	other := heldInstance("b-one", "personal")
+	other.GroupPath = "team-b"
+
+	dirs := map[string]string{
+		"a-one":    "/home/u/.claude-work",
+		"a-nested": "/home/u/.claude-work",
+		"b-one":    "/home/u/.claude-personal",
+	}
+	held := allHeld("a-one", "a-nested", "b-one")
+
+	t.Run("unfiltered sees the whole fleet", func(t *testing.T) {
+		g := dirGrouper(dirs, held)
+		sum := g.Summarize([]*session.Instance{inGroupA, nested, other})
+		if sum.Held != 3 || sum.Credentials != 2 {
+			t.Fatalf("summary = %+v, want 3 held across 2 credentials", sum)
+		}
+	})
+
+	t.Run("--group narrows to that group and its descendants", func(t *testing.T) {
+		g := dirGrouper(dirs, held)
+		g.Group = "team-a"
+		sum := g.Summarize([]*session.Instance{inGroupA, nested, other})
+
+		if sum.Held != 2 {
+			t.Fatalf("Held = %d, want 2 — team-b leaked into a --group team-a view", sum.Held)
+		}
+		if sum.Credentials != 1 {
+			t.Fatalf("Credentials = %d, want 1", sum.Credentials)
+		}
+		for _, s := range sum.Groups[0].Sessions {
+			if s.Title == "b-one" {
+				t.Error("a session outside --group appeared in the credential summary")
+			}
+		}
+	})
+
+	t.Run("--group with no members reports an empty view, not the fleet", func(t *testing.T) {
+		g := dirGrouper(dirs, held)
+		g.Group = "team-zzz"
+		sum := g.Summarize([]*session.Instance{inGroupA, nested, other})
+		if sum.Held != 0 || len(sum.Groups) != 0 {
+			t.Fatalf("summary = %+v, want an empty view for a group with no held sessions", sum)
+		}
+	})
+}
+
+// P2c — attribution must use the IsClaudeCompatible predicate, not a literal
+// "claude" comparison. A custom tool wrapping the Claude CLI reads the SAME
+// credential file, so a literal match silently drops every aliased session out
+// of the group it belongs in.
+func TestClaudeCompatibleAliasAggregatesWithClaude(t *testing.T) {
+	// A custom tool declaring compatible_with = "claude".
+	cfg, err := session.LoadUserConfig()
+	if err != nil || cfg == nil {
+		t.Skipf("LoadUserConfig unavailable: %v", err)
+	}
+	if cfg.Tools == nil {
+		cfg.Tools = map[string]session.ToolDef{}
+	}
+	cfg.Tools["claude_wrapper"] = session.ToolDef{
+		Command:        "claude-wrapper",
+		CompatibleWith: "claude",
+	}
+	if err := session.SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	if !session.IsClaudeCompatible("claude_wrapper") {
+		t.Fatal("fixture is wrong: claude_wrapper is not Claude-compatible")
+	}
+
+	plain := heldInstance("plain", "work")
+	aliased := heldInstance("aliased", "work")
+	aliased.Tool = "claude_wrapper"
+
+	g := dirGrouper(map[string]string{
+		"plain":   "/home/u/.claude-work",
+		"aliased": "/home/u/.claude-work",
+	}, allHeld("plain", "aliased"))
+
+	sum := g.Summarize([]*session.Instance{plain, aliased})
+
+	if sum.Unattributed != 0 {
+		t.Fatalf("Unattributed = %d, want 0 — the aliased session was dropped out of the aggregation", sum.Unattributed)
+	}
+	if sum.Credentials != 1 {
+		t.Fatalf("Credentials = %d, want 1", sum.Credentials)
+	}
+	if len(sum.Groups[0].Sessions) != 2 {
+		t.Fatalf("group holds %d sessions, want 2 — the alias did not aggregate with claude", len(sum.Groups[0].Sessions))
+	}
+	if len(sum.Escalations()) != 1 {
+		t.Errorf("got %d escalations, want 1", len(sum.Escalations()))
+	}
+}
+
+// P2c, the other half: a tool that is NOT Claude-compatible still goes to the
+// unknown bucket. The predicate must not have widened attribution to everything.
+func TestNonCompatibleCustomToolStaysUnattributed(t *testing.T) {
+	inst := heldInstance("codexish", "work")
+	inst.Tool = "some-other-tool"
+	g := dirGrouper(map[string]string{"codexish": "/home/u/.claude-work"}, allHeld("codexish"))
+
+	sum := g.Summarize([]*session.Instance{inst})
+
+	if sum.Credentials != 0 || sum.Unattributed != 1 {
+		t.Fatalf("Credentials = %d, Unattributed = %d; want 0 and 1", sum.Credentials, sum.Unattributed)
+	}
 }

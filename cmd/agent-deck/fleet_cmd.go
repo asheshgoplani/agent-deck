@@ -137,7 +137,7 @@ func handleFleetStatus(profile string, args []string) {
 		// Added ONLY under the flag: a conductor polling the default payload
 		// must keep seeing the exact keys it sees today.
 		if *groupByCredential {
-			payload["auth_credentials"] = fleetAuthCredentialsJSON(authCredentialSummary(instances))
+			payload["auth_credentials"] = fleetAuthCredentialsJSON(authCredentialSummary(instances, *det.group))
 		}
 		out.Success("", payload)
 		return
@@ -147,7 +147,7 @@ func handleFleetStatus(profile string, args []string) {
 	// whose pane is still up showing the banner is NOT "down", so a fleet with
 	// zero down sessions can still have a dead credential behind it.
 	if *groupByCredential {
-		fmt.Print("\n" + authCredentialSummary(instances).Format())
+		fmt.Print("\n" + authCredentialSummary(instances, *det.group).Format())
 	}
 }
 
@@ -164,8 +164,15 @@ func groupByCredentialFlagHelp() string {
 
 // authCredentialSummary is the one place the CLI builds the credential view, so
 // the human and --json paths can never group differently.
-func authCredentialSummary(instances []*session.Instance) fleet.AuthCredentialSummary {
-	return fleet.NewAuthCredentialGrouper().Group(instances)
+//
+// group is the --group filter, threaded through so the credential view honours
+// the same scoping contract as the assessment printed above it. Reporting
+// fleet-wide credential state under `--group X` would be wrong in exactly the
+// situation the operator reached for --group to clarify.
+func authCredentialSummary(instances []*session.Instance, group string) fleet.AuthCredentialSummary {
+	g := fleet.NewAuthCredentialGrouper()
+	g.Group = group
+	return g.Summarize(instances)
 }
 
 // fleetAuthCredentialsJSON renders the credential grouping.
@@ -201,6 +208,11 @@ func fleetAuthCredentialsJSON(sum fleet.AuthCredentialSummary) map[string]interf
 		}
 		if g.Credential.Attributed {
 			group["config_dir"] = g.Credential.ConfigDir
+			// host is always present for an attributed store ("local" or the
+			// SSH destination) so a machine consumer never has to infer
+			// locality from a missing key.
+			group["host"] = g.Credential.HostLabel()
+			group["remote"] = g.Credential.IsRemote()
 		}
 		groups = append(groups, group)
 	}

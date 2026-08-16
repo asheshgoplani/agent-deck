@@ -263,3 +263,154 @@ func TestGroupedMessageFallsBackWhenNothingWasCollected(t *testing.T) {
 		t.Errorf("empty grouped gate should fall back to the ungrouped wording: %s", emptyReason)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The shape the P2a/P2b/P2c tests still did not build: the host dimension
+// crossed with the SWEEP path, and with the recovered-mid-sweep map.
+//
+// P2a was reported and fixed against the query (AuthCredentialGrouper). The gate
+// resolves identity through the same Identify, so it inherits the fix — but the
+// gate is the higher-stakes surface (it is what HALTS a fleet recovery), and
+// "inherits it" was not proven anywhere. The crossing below is the one that
+// would actually hurt: g.recovered is keyed by credential key, so if local and
+// remote stores ever shared a key again, a LOCAL boot authenticating would
+// silently mark a REMOTE dead credential as recovered and drop it out of the
+// halt message. That is the original defect re-entering through a second door.
+// ---------------------------------------------------------------------------
+
+func sshGateInstance(title, account, sshHost string) *session.Instance {
+	inst := heldInstance(title, account)
+	inst.SSHHost = sshHost
+	return inst
+}
+
+// The sweep's halt message must separate a local store from a remote one on the
+// same path, and must not tell the operator a local re-auth covers both.
+func TestSweepHaltSeparatesLocalAndRemoteStores(t *testing.T) {
+	g := credGate(2, true, map[string]string{
+		"local-one":  "/home/u/.claude-work",
+		"remote-one": "/home/u/.claude-work",
+	})
+
+	g.Observe(heldInstance("local-one", "work"), auth401Report(), nil)
+	g.Observe(sshGateInstance("remote-one", "work", "box-b"), auth401Report(), nil)
+
+	sum := g.AuthFailuresByCredential()
+	if sum.Credentials != 2 {
+		t.Fatalf("Credentials = %d, want 2 — the sweep merged a local and a remote store", sum.Credentials)
+	}
+
+	_, reason := g.Allow()
+	if !strings.Contains(reason, "2 credential(s) dead") {
+		t.Errorf("halt should report 2 dead credentials: %s", reason)
+	}
+	if !strings.Contains(reason, "box-b") {
+		t.Errorf("halt must name the remote host: %s", reason)
+	}
+	if !strings.Contains(reason, "re-authenticating locally will NOT reach it") {
+		t.Errorf("halt must not imply a local re-auth fixes the remote store: %s", reason)
+	}
+}
+
+// THE CROSSING: a local credential recovering mid-sweep must NOT clear a remote
+// credential that happens to share the same config path. If it did, the fleet
+// recovery would resume against a still-dead remote token.
+func TestLocalRecoveryDoesNotClearRemoteDeadCredential(t *testing.T) {
+	g := credGate(2, true, map[string]string{
+		"local-one":  "/home/u/.claude-work",
+		"local-two":  "/home/u/.claude-work",
+		"remote-one": "/home/u/.claude-work",
+	})
+
+	// Both stores fail...
+	g.Observe(heldInstance("local-one", "work"), auth401Report(), nil)
+	g.Observe(sshGateInstance("remote-one", "work", "box-b"), auth401Report(), nil)
+	// ...then the LOCAL one is repaired.
+	g.Observe(heldInstance("local-two", "work"), healthyReport(), nil)
+
+	sum := g.AuthFailuresByCredential()
+
+	if sum.Recovered != 1 {
+		t.Errorf("Recovered = %d, want 1 (the local store only)", sum.Recovered)
+	}
+	if sum.Credentials != 1 {
+		t.Fatalf("Credentials = %d, want 1 — the remote store is still dead", sum.Credentials)
+	}
+	// The surviving dead credential must be the REMOTE one.
+	var stillDead *CredentialGroup
+	for i := range sum.Groups {
+		if !sum.Groups[i].Recovered {
+			stillDead = &sum.Groups[i]
+		}
+	}
+	if stillDead == nil {
+		t.Fatal("a local recovery cleared every credential, including the remote one")
+	}
+	if !stillDead.Credential.IsRemote() || stillDead.Credential.Host != "box-b" {
+		t.Errorf("still-dead credential = %+v, want the box-b remote store", stillDead.Credential)
+	}
+}
+
+// And the mirror: a remote recovery must not clear the local store.
+func TestRemoteRecoveryDoesNotClearLocalDeadCredential(t *testing.T) {
+	g := credGate(2, true, map[string]string{
+		"local-one":  "/home/u/.claude-work",
+		"remote-one": "/home/u/.claude-work",
+		"remote-two": "/home/u/.claude-work",
+	})
+
+	g.Observe(heldInstance("local-one", "work"), auth401Report(), nil)
+	g.Observe(sshGateInstance("remote-one", "work", "box-b"), auth401Report(), nil)
+	g.Observe(sshGateInstance("remote-two", "work", "box-b"), healthyReport(), nil)
+
+	sum := g.AuthFailuresByCredential()
+	if sum.Recovered != 1 || sum.Credentials != 1 {
+		t.Fatalf("summary = %+v, want 1 recovered (remote) and 1 still dead (local)", sum)
+	}
+	for _, grp := range sum.Groups {
+		if !grp.Recovered && grp.Credential.IsRemote() {
+			t.Error("the remote store recovered but is still reported dead")
+		}
+		if grp.Recovered && !grp.Credential.IsRemote() {
+			t.Error("a remote recovery cleared the local store")
+		}
+	}
+}
+
+// An aliased Claude-compatible tool must aggregate in the SWEEP too, not only in
+// the query — otherwise the halt message under-counts a dead credential's blast
+// radius by silently dropping the aliased sessions.
+func TestSweepAggregatesClaudeCompatibleAlias(t *testing.T) {
+	cfg, err := session.LoadUserConfig()
+	if err != nil || cfg == nil {
+		t.Skipf("LoadUserConfig unavailable: %v", err)
+	}
+	if cfg.Tools == nil {
+		cfg.Tools = map[string]session.ToolDef{}
+	}
+	cfg.Tools["claude_wrapper"] = session.ToolDef{Command: "claude-wrapper", CompatibleWith: "claude"}
+	if err := session.SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	g := credGate(2, true, map[string]string{
+		"plain":   "/home/u/.claude-work",
+		"aliased": "/home/u/.claude-work",
+	})
+
+	aliased := heldInstance("aliased", "work")
+	aliased.Tool = "claude_wrapper"
+
+	g.Observe(heldInstance("plain", "work"), auth401Report(), nil)
+	g.Observe(aliased, auth401Report(), nil)
+
+	sum := g.AuthFailuresByCredential()
+	if sum.Unattributed != 0 {
+		t.Fatalf("Unattributed = %d, want 0 — the sweep dropped the aliased session", sum.Unattributed)
+	}
+	if sum.Credentials != 1 || len(sum.Groups[0].Sessions) != 2 {
+		t.Fatalf("summary = %+v, want one credential holding both sessions", sum)
+	}
+}

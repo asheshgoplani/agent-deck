@@ -163,3 +163,90 @@ func TestUnattributedGroupOmitsConfigDir(t *testing.T) {
 		t.Errorf("escalation = %v", group["escalation"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// PR #1963 review findings, CLI surface.
+// ---------------------------------------------------------------------------
+
+// P2b — the CLI must thread --group into the credential view. This asserts the
+// wiring, not just that the grouper is capable of filtering: the defect was the
+// CLI handing the grouper an unfiltered instance list.
+func TestAuthCredentialSummaryHonoursGroupArgument(t *testing.T) {
+	// Real auth holds, real config-dir resolution — the same fixture the
+	// reproduce uses, so this exercises the CLI helper end to end rather than
+	// re-asserting that a struct field holds what was just assigned to it.
+	instances, _ := setupIssue1816Fleet(t, 4)
+	instances[0].GroupPath = "team-a"
+	instances[1].GroupPath = "team-a/sub"
+	instances[2].GroupPath = "team-b"
+	instances[3].GroupPath = "team-b"
+
+	all := authCredentialSummary(instances, "")
+	if all.Held != 4 {
+		t.Fatalf("unfiltered Held = %d, want 4", all.Held)
+	}
+
+	scoped := authCredentialSummary(instances, "team-a")
+	if scoped.Held != 2 {
+		t.Fatalf("--group team-a Held = %d, want 2 — the CLI handed the grouper an unfiltered list", scoped.Held)
+	}
+	for _, g := range scoped.Groups {
+		for _, s := range g.Sessions {
+			if s.Title == instances[2].Title || s.Title == instances[3].Title {
+				t.Errorf("session %s from team-b appeared under --group team-a", s.Title)
+			}
+		}
+	}
+
+	empty := authCredentialSummary(instances, "team-nonexistent")
+	if empty.Held != 0 || len(empty.Groups) != 0 {
+		t.Errorf("--group with no members = %+v, want an empty view rather than the whole fleet", empty)
+	}
+}
+
+// P2a — an attributed group always reports its host, so a machine consumer never
+// has to infer locality from a missing key, and a remote store is flagged.
+func TestFleetAuthCredentialsJSONCarriesHost(t *testing.T) {
+	sum := fleet.AuthCredentialSummary{
+		Held:        2,
+		Credentials: 2,
+		Groups: []fleet.CredentialGroup{
+			{
+				Credential: fleet.CredentialRef{Key: "store:local|/home/u/.claude-work", ConfigDir: "/home/u/.claude-work", Attributed: true},
+				Accounts:   []string{"work"},
+				Sessions:   []fleet.HeldSession{{ID: "id-a", Title: "local-one"}},
+			},
+			{
+				Credential: fleet.CredentialRef{Key: "store:ssh:box-b|/home/u/.claude-work", ConfigDir: "/home/u/.claude-work", Host: "box-b", Attributed: true},
+				Accounts:   []string{"work"},
+				Sessions:   []fleet.HeldSession{{ID: "id-b", Title: "remote-one"}},
+			},
+		},
+	}
+
+	raw, err := json.Marshal(fleetAuthCredentialsJSON(sum))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	groups := got["groups"].([]interface{})
+	if len(groups) != 2 {
+		t.Fatalf("got %d groups, want 2", len(groups))
+	}
+
+	local := groups[0].(map[string]interface{})
+	if local["host"] != "local" || local["remote"].(bool) {
+		t.Errorf("local group host=%v remote=%v, want \"local\"/false", local["host"], local["remote"])
+	}
+	remote := groups[1].(map[string]interface{})
+	if remote["host"] != "box-b" || !remote["remote"].(bool) {
+		t.Errorf("remote group host=%v remote=%v, want \"box-b\"/true", remote["host"], remote["remote"])
+	}
+	// The two must be distinguishable by key even though the path is identical.
+	if local["key"] == remote["key"] {
+		t.Errorf("local and remote stores share a key %v — same path on two hosts must not merge", local["key"])
+	}
+}
