@@ -28,6 +28,16 @@ func TestCandidateSocketName(t *testing.T) {
 		{"-S wins over -L per tmux's own precedence, still unresolvable", []string{"tmux", "-S", "/tmp/some/sock", "-L", "name", "list-clients"}, "", false},
 		{"empty argv", []string{}, "", true},
 		{"argv0 only", []string{"tmux"}, "", true},
+		// getopt's attached and bundled spellings. A candidate that carries
+		// one of these is talking to a socket this parser cannot see: the
+		// separated-form-only reader answers "no selector", the live-identity
+		// query then goes to the DEFAULT server, and a client that is alive on
+		// its own server reads as not-live — the kill verdict.
+		{"attached -L name", []string{"tmux", "-Lad1031-xxx", "list-clients", "-t", "agentdeck_x"}, "ad1031-xxx", true},
+		{"-C bundled with an attached -L", []string{"tmux", "-CLad1031-xxx", "attach-session", "-t", "agentdeck_x"}, "ad1031-xxx", true},
+		{"bundled booleans before a separated -L", []string{"tmux", "-uL", "ad1031-xxx", "list-clients"}, "ad1031-xxx", true},
+		{"attached -S path is unresolvable via the -L-only factory", []string{"tmux", "-S/tmp/some/sock", "list-clients"}, "", false},
+		{"-C bundled with an attached -S", []string{"tmux", "-CS/tmp/some/sock", "attach-session"}, "", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

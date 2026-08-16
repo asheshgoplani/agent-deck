@@ -162,44 +162,78 @@ func isExistingSocket(path string) bool {
 	return info.Mode()&os.ModeSocket != 0
 }
 
-// socketPathFlag returns the value of a leading global `-S <path>` flag.
-//
-// Scanning stops at the first argument that is not a flag, i.e. at the tmux
-// command itself. That boundary is load-bearing: `-S` means "socket path" only
-// as a server flag, and means "start line" to capture-pane
-// (`capture-pane -p -S -2000`) and "status line" to refresh-client. Treating a
-// command-level -S as a socket would mistake "-2000" for a socket path.
+// socketPathFlag returns the value of a leading global `-S <path>` flag, in any
+// of the spellings tmux's getopt accepts. See leadingFlagValue for those, and
+// for why the scan stops at the tmux command.
 func socketPathFlag(args []string) string {
-	return leadingFlagValue(args, "-S")
+	return leadingFlagValue(args, 'S')
 }
 
 // socketNameFlag returns the value of a leading global `-L <name>` flag. The
 // factory inserts -L from its socketName argument, but a call site may also
 // pass one through directly.
 func socketNameFlag(args []string) string {
-	return leadingFlagValue(args, "-L")
+	return leadingFlagValue(args, 'L')
 }
 
-// leadingFlagValue finds `flag <value>` within the run of global flags that
-// precedes the tmux command.
-func leadingFlagValue(args []string, flag string) string {
+// tmuxValueFlags are the global flags that consume a value: `-c shell-command`,
+// `-f file`, `-L socket-name`, `-S socket-path`, `-T features`. Every other
+// global tmux accepts (-2 -C -l -N -q -u -v) is a boolean.
+const tmuxValueFlags = "cfLST"
+
+// leadingFlagValue finds the value of a single-letter global flag within the
+// run of global flags that precedes the tmux command.
+//
+// tmux parses its globals with getopt(3), so one flag has three spellings that
+// all mean the same thing, and the socket flags reach this function in all of
+// them:
+//
+//	tmux -L work ls      separated
+//	tmux -Lwork ls       attached
+//	tmux -CLwork attach  bundled behind booleans, then attached
+//
+// Verified live on tmux 3.0a: all three report the same "error connecting to
+// /tmp/tmux-1000/work". Matching whole argv words (`arg == "-L"`) sees only the
+// first, and answers "no socket selector" for the other two — which resolves to
+// the DEFAULT socket. That is the wrong server for both callers: for
+// assertTmuxSpawnIsolated a spawn aimed at the user's real server reads as
+// isolated, and for the orphan sweep a client that is alive on its own server
+// reads as not-live. So the scan walks each word one flag character at a time.
+//
+// Scanning still stops at the first argument that is not a flag, i.e. at the
+// tmux command itself. That boundary is load-bearing: `-S` means "socket path"
+// only as a global, and means "start line" to capture-pane
+// (`capture-pane -p -S -2000`, or `-S-2000`) and "status line" to
+// refresh-client. Treating a command-level -S as a socket would mistake "-2000"
+// for a socket path.
+func leadingFlagValue(args []string, flag byte) string {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if !strings.HasPrefix(arg, "-") {
+		if len(arg) < 2 || arg[0] != '-' {
 			// The tmux command. Anything after this belongs to it.
 			return ""
 		}
-		if arg == flag {
-			if i+1 < len(args) {
-				return strings.TrimSpace(args[i+1])
+		for j := 1; j < len(arg); j++ {
+			c := arg[j]
+			if !strings.ContainsRune(tmuxValueFlags, rune(c)) {
+				continue // a boolean; keep reading the bundle
 			}
-			return ""
-		}
-		// Global flags that themselves take a value; skip the value so it is
-		// never mistaken for a flag or for the command.
-		switch arg {
-		case "-f", "-L", "-S", "-T", "-c":
-			i++
+			// Everything after the flag letter is its value; an empty
+			// remainder means the value is the next word.
+			value := arg[j+1:]
+			if value == "" {
+				if i+1 >= len(args) {
+					return ""
+				}
+				value = args[i+1]
+				i++
+			}
+			if c == flag {
+				return strings.TrimSpace(value)
+			}
+			// A different value flag. Its value is consumed either way, so it
+			// can never be mistaken for a flag or for the command.
+			break
 		}
 	}
 	return ""
