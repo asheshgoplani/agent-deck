@@ -24,9 +24,10 @@ import (
 // shell.
 //
 // The mechanism lives in config_file_lock.go and is shared with the Codex and
-// Claude config writers. This is a naming wrapper, not a second copy.
-func acquireHermesConfigLock(configPath string) (*configFileLock, error) {
-	return acquireConfigFileLock(configPath, "hermes config")
+// Claude config writers. This is a naming wrapper, not a second copy — Hermes
+// was the last of the three still carrying a private one.
+func acquireHermesConfigLock(configPath string) (*ConfigFileLock, error) {
+	return AcquireConfigFileLock(configPath)
 }
 
 // agentDeckHermesHookCommand is the exact command string we write into

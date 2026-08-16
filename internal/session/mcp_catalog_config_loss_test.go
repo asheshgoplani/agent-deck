@@ -10,23 +10,28 @@ import (
 
 // Regression tests for issue #1956, at the session layer.
 //
-// SCOPE NOTE (rebase onto #1957): #1957 landed the fail-closed read and a
-// drop-guard on the write, and covers the MALFORMED-JSON shape thoroughly at
-// the web layer — internal/web/handlers_mcps_corrupt_config_test.go walks every
-// scope × operation and asserts the file is byte-identical. That shape is
-// deliberately NOT duplicated here.
+// SCOPE (after #1957 landed as 9d330898). #1957 fixed the fail-closed read for
+// the four .claude.json writers, added the shared config-file lock, and covers
+// the MALFORMED-JSON shape at the web layer across every scope × operation
+// (internal/web/handlers_mcps_corrupt_config_test.go). None of that is
+// duplicated here.
 //
-// What remains uncovered there, and is pinned here:
+// What was still live on main after it, and is pinned here:
 //
-//   - a file that exists but cannot be READ (permission / transient I/O). A
-//     parse guard does not fire when the parse never happens.
-//   - a root that is not a JSON object.
-//   - a `projects` value that is not an object. #1957's drop-guard compares
-//     top-level KEY SETS, so replacing the VALUE of an existing key is invisible
-//     to it, and every project entry is still silently lost.
-//   - concurrent writers. Atomic replacement and a drop-guard both operate on a
-//     single write; neither makes a read-modify-write safe against another
-//     writer that read the same starting document.
+//   - `<project>/.mcp.json`, the FIFTH writer path. readExistingLocalMCPServers
+//     returned nil for a read error and a parse error alike and the caller wrote
+//     the file back from that nil — the original defect, untouched, in the one
+//     file that lives in the user's own repository.
+//   - a `null` root, the single input that walks past the parse check because
+//     json.Unmarshal("null", &map) succeeds and yields a nil map.
+//   - a `projects` value that is not an object. refuseDroppingTopLevelKeys
+//     compares top-level KEY SETS, so rewriting the VALUE of a key present in
+//     both documents is invisible to it while every entry under it is lost.
+//   - a file that exists but cannot be READ. Covered by #1957's read helper but
+//     untested there, so pinned rather than assumed.
+//   - concurrent writers. Covered by #1957's lock; pinned here because the end
+//     state cannot distinguish a lock held across the whole read-modify-write
+//     from one taken and dropped per write.
 //
 // Each asserts the same two things, because either alone is insufficient: the
 // operation must report an error, AND the file must be byte-for-byte unchanged.
@@ -106,10 +111,8 @@ func assertRefusedAndUnchanged(t *testing.T, configFile string, before []byte, e
 // a JSON object. json.Unmarshal into a map reports an error for an array or a
 // string, so these are the shapes a parse guard catches.
 //
-// A literal `null` root is deliberately NOT asserted here: it unmarshals into a
-// nil map WITHOUT an error, and #1957 chose to treat that as an empty document
-// and write. A file containing `null` holds no user data, so nothing is lost by
-// that choice; it is flagged in the PR rather than reversed here.
+// The `null` root has its own test below: it unmarshals into a nil map WITHOUT
+// an error, so it is the one shape a parse check cannot catch.
 func TestWriteProjectMCP_NonObjectRootIsNotAnEmptyConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -288,4 +291,97 @@ func countPresent(projects map[string]interface{}, want []string) int {
 		}
 	}
 	return n
+}
+
+// --- pins for guards that were live but unpinned after #1957 ---------------
+
+// TestWriteProjectMCP_NullRootIsNotAnEmptyConfig pins the one input that walks
+// past the parse check: json.Unmarshal("null", &map) SUCCEEDS and yields a nil
+// map, so a `null` root reaches the "start fresh" branch without ever looking
+// like a parse failure. Low severity — a `null` document holds no user data —
+// but it is the single hole in the fail-closed read, and nothing failed when
+// the branch was reverted.
+func TestWriteProjectMCP_NullRootIsNotAnEmptyConfig(t *testing.T) {
+	configFile := claudeConfigSandbox(t)
+	body := []byte("null")
+	if err := os.WriteFile(configFile, body, 0o600); err != nil {
+		t.Fatalf("seed null config: %v", err)
+	}
+
+	err := WriteProjectMCP(attachProject, []string{"ctx7"})
+	assertRefusedAndUnchanged(t, configFile, body, err)
+}
+
+// TestWriteLocalMCPJSON_UnreadableOrUnparseableIsNotEmpty covers the FIFTH
+// writer path, `<project>/.mcp.json`, which kept the original defect after
+// #1957 fixed the four .claude.json writers: readExistingLocalMCPServers
+// returned nil for a read error and for a parse error alike, and the caller
+// wrote the whole file back from that nil.
+//
+// This one lands in the user's own repository — .mcp.json is a file they
+// commit — so a transient I/O failure or a half-written file silently deleted
+// every server they had declared.
+func TestWriteLocalMCPJSON_UnreadableOrUnparseableIsNotEmpty(t *testing.T) {
+	const seeded = `{
+  "mcpServers": {
+    "hand-written-one": {"command": "one-server"},
+    "hand-written-two": {"command": "two-server"}
+  }
+}
+`
+	t.Run("malformed", func(t *testing.T) {
+		claudeConfigSandbox(t)
+		dir := t.TempDir()
+		mcpFile := filepath.Join(dir, ".mcp.json")
+		body := []byte(seeded[:len(seeded)/2])
+		if err := os.WriteFile(mcpFile, body, 0o644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		err := WriteMergedMcpJSONFile(mcpFile, []string{"ctx7"}, "")
+		if err == nil {
+			t.Errorf("WriteMergedMcpJSONFile silently succeeded against a malformed .mcp.json")
+		}
+		after, readErr := os.ReadFile(mcpFile)
+		if readErr != nil {
+			t.Fatalf("read back: %v", readErr)
+		}
+		if string(after) != string(body) {
+			t.Errorf(".mcp.json was rewritten from a failed parse.\n--- before (%d) ---\n%s\n--- after (%d) ---\n%s",
+				len(body), body, len(after), after)
+		}
+	})
+
+	t.Run("unreadable", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("running as root: mode 0000 does not deny reads")
+		}
+		claudeConfigSandbox(t)
+		dir := t.TempDir()
+		mcpFile := filepath.Join(dir, ".mcp.json")
+		body := []byte(seeded)
+		if err := os.WriteFile(mcpFile, body, 0o644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if err := os.Chmod(mcpFile, 0o000); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(mcpFile, 0o644) })
+
+		err := WriteMergedMcpJSONFile(mcpFile, []string{"ctx7"}, "")
+		if err == nil {
+			t.Errorf("WriteMergedMcpJSONFile silently succeeded against an unreadable .mcp.json")
+		}
+		if err := os.Chmod(mcpFile, 0o644); err != nil {
+			t.Fatalf("chmod back: %v", err)
+		}
+		after, readErr := os.ReadFile(mcpFile)
+		if readErr != nil {
+			t.Fatalf("read back: %v", readErr)
+		}
+		if string(after) != string(body) {
+			t.Errorf(".mcp.json was rewritten from a failed read — the user's own committed servers are gone.\n"+
+				"--- before (%d) ---\n%s\n--- after (%d) ---\n%s", len(body), body, len(after), after)
+		}
+	})
 }

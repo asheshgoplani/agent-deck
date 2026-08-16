@@ -9,11 +9,12 @@ import (
 // Deterministic companion to TestWriteProjectMCP_ConcurrentWritesKeepEveryEntry
 // (issue #1956).
 //
-// NOTE ON PROVING THIS AGAINST fb6cf40a: this test cannot run there. It names
-// acquireConfigFileLock, and the whole point of the finding is that no such
-// lock existed at that commit — there was nothing to serialize against. The
-// four tests in mcp_catalog_config_loss_test.go are the ones that compile and
-// fail at fb6cf40a; this one pins the mechanism that fixes them.
+// The lock itself now comes from main (#1957). This pins the property that
+// matters and that the end state cannot show: WriteProjectMCP and
+// WriteGlobalMCP write the SAME .claude.json, so they must contend on the SAME
+// lock. A per-function or per-profile lock would let a global attach and a
+// project attach run concurrently over one file and still lose each other's
+// work, and every assertion about the final file would still pass.
 
 // TestClaudeConfigWriters_ShareOneLock is the deterministic half of the
 // concurrency proof: rather than hoping a race fires, it holds the lock and
@@ -28,7 +29,7 @@ func TestClaudeConfigWriters_ShareOneLock(t *testing.T) {
 		t.Fatalf("seed config: %v", err)
 	}
 
-	lock, err := acquireConfigFileLock(configFile, "claude config")
+	lock, err := AcquireConfigFileLock(configFile)
 	if err != nil {
 		t.Fatalf("acquire lock: %v", err)
 	}

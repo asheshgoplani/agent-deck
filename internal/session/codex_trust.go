@@ -15,13 +15,14 @@ import (
 
 const codexTrustLevelTrusted = "trusted"
 
-// acquireCodexConfigLock serializes mutations to a given Codex config.toml
-// across goroutines and across processes.
+// acquireCodexConfigLock serializes mutations to a Codex config.toml.
 //
-// The mechanism lives in config_file_lock.go and is shared with the Hermes and
-// Claude config writers. This is a naming wrapper, not a second copy.
-func acquireCodexConfigLock(configPath string) (*configFileLock, error) {
-	return acquireConfigFileLock(configPath, "codex config")
+// This is an alias over the shared AcquireConfigFileLock (config_file_lock.go),
+// not a second implementation. It used to be a private copy of the same
+// mutex-plus-flock rule; the copy is what let the MCP writers ship without any
+// serialization at all, because there was no obvious shared thing to reach for.
+func acquireCodexConfigLock(configPath string) (*ConfigFileLock, error) {
+	return AcquireConfigFileLock(configPath)
 }
 
 // GetCodexConfigPath returns the path to Codex's user-level config.toml under codexHome.
