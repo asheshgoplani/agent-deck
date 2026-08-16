@@ -165,6 +165,7 @@ func handleLaunch(profile string, args []string) {
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
+	ensureTmuxInPathOrExit()
 
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)

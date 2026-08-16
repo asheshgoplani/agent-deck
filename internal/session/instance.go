@@ -530,6 +530,17 @@ type Instance struct {
 	lastActivityPersisted time.Time
 	lastActivityPersistMu sync.Mutex
 
+	// restartTmuxRecordErr holds why the last restart could not record the
+	// tmux session name it minted, or nil once one did. Callers that have no
+	// other save on their path (the CLI --restart commands) read it through
+	// RestartTmuxNameRecorded so they can report a live-but-unrecorded restart
+	// instead of announcing a success that never reached disk. Guarded by its
+	// own mutex rather than i.mu so the DB write never runs under the lock the
+	// TUI reads status through. See restart_tmux_persist.go.
+	restartTmuxRecordMu     sync.Mutex
+	restartTmuxRecordErr    error
+	restartTmuxRecordStamps statedb.WriteStamps
+
 	// SSE-based status detection for OpenCode (set by OpenCodeSSEWatcher,
 	// issue #1614). Not persisted; rebuilt from the live event stream.
 	sseStatus     string    // "running" or "waiting" (empty = no SSE data)
@@ -1307,14 +1318,14 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 			// through a point where the id can be non-empty, which is deferred
 			// as a follow-up rather than attempted blind here.
 			if recorded := i.recordedClaudeSessionID(); recorded != "" {
-				return fmt.Sprintf(`%s%s%s --resume %s%s`,
+				return fmt.Sprintf(`%sexec %s%s --resume %s%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, recorded, extraFlags)
 			}
 			sessionLog.Warn("resume: continue_mode_unverifiable",
 				slog.String("instance_id", logging.SanitizeValue(i.ID)),
 				slog.String("path", logging.SanitizeValue(i.ProjectPath)),
 				slog.String("reason", "continue_flag_picks_newest_conversation_in_dir"))
-			return fmt.Sprintf(`%s%s%s -c%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
+			return fmt.Sprintf(`%sexec %s%s -c%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
 
 		case "resume":
 			// Resume specific session by ID
@@ -1324,7 +1335,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				// behind canResumeClaudeSession.
 				if canResumeClaudeSession(i, opts.ResumeSessionID) {
 					// Session has conversation history - use normal --resume
-					return fmt.Sprintf(`%s%s%s --resume %s%s`,
+					return fmt.Sprintf(`%sexec %s%s --resume %s%s`,
 						bashExportPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
 				}
 				// Session was never interacted with - use --session-id with same UUID.
@@ -1339,11 +1350,11 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 					freshID = i.replaceRefusedClaudeSessionID()
 				}
 				return fmt.Sprintf(
-					`%s%s%s --session-id "%s"%s`,
+					`%sexec %s%s --session-id "%s"%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, freshID, extraFlags)
 			}
 			// No session ID provided - use -r flag for interactive picker
-			return fmt.Sprintf(`%s%s%s -r%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
+			return fmt.Sprintf(`%sexec %s%s -r%s`, bashExportPrefix, execEnvPrefix, claudeCmd, extraFlags)
 		}
 
 		// Default: new session with capture-resume pattern
@@ -2106,13 +2117,6 @@ func nextShellWord(s string) (word string, remainder string, ok bool) {
 	return b.String(), "", true
 }
 
-func getCodexHomeDirForCommand(command string) string {
-	if codexHome := codexHomeFromCommand(command); codexHome != "" {
-		return codexHome
-	}
-	return getCodexHomeDir()
-}
-
 // accountCodexHomeDir returns the CODEX_HOME mapped to this session's account
 // slot via [profiles.<account>.codex].config_dir, or "" when the session has no
 // account or the account names no codex block.
@@ -2150,19 +2154,37 @@ func (i *Instance) codexHomeToExport() string {
 	return ""
 }
 
+// codexHomeForCommand returns the CODEX_HOME the launched process will actually
+// read and write under, for an already-resolved codex command line.
+//
+// This is the read-side mirror of codexHomeToExport and must stay in step with
+// it: whatever that exports, this resolves to. codexHomeToExport returns "" when
+// nothing needs exporting, in which case the process inherits the ambient
+// CODEX_HOME or falls back to ~/.codex — exactly what getCodexHomeDir resolves
+// to in that case.
+//
+// A resolver that disagrees with the launch is #1929: buildCodexCommand's
+// resume gate looked for the rollout in the DEFAULT home while the launch wrote
+// it under the ACCOUNT home, so the gate always missed, dropped the session id,
+// and every restart silently opened a fresh conversation.
+func (i *Instance) codexHomeForCommand(command string) string {
+	// A CODEX_HOME= embedded in the command is the user typing it by hand for
+	// this session, so it stays the most explicit signal of all — and the shell
+	// agrees, since it is emitted after any exported CODEX_HOME.
+	if codexHome := codexHomeFromCommand(command); codexHome != "" {
+		return codexHome
+	}
+	if accountHome := strings.TrimSpace(i.accountCodexHomeDir()); accountHome != "" {
+		return accountHome
+	}
+	return getCodexHomeDir()
+}
+
 func (i *Instance) getCodexHomeDir() string {
 	if i == nil {
 		return getCodexHomeDir()
 	}
-	// A CODEX_HOME= embedded in the session's own command is the user typing it
-	// by hand for this session, so it stays the most explicit signal of all.
-	if codexHome := codexHomeFromCommand(i.resolveCodexCommand(i.Command)); codexHome != "" {
-		return codexHome
-	}
-	if accountHome := i.accountCodexHomeDir(); accountHome != "" {
-		return accountHome
-	}
-	return getCodexHomeDir()
+	return i.codexHomeForCommand(i.resolveCodexCommand(i.Command))
 }
 
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
@@ -2205,7 +2227,10 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	modelFlag := i.resolveCodexModelFlag()
 	reasoningFlag := i.resolveCodexReasoningEffortFlag()
 	command := i.resolveCodexCommand(baseCommand)
-	codexHome := getCodexHomeDirForCommand(command)
+	// Must be the home this launch exports (above), not the process-wide one:
+	// the gates below decide whether a rollout exists, and looking in the wrong
+	// home destroys a live binding (#1929).
+	codexHome := i.codexHomeForCommand(command)
 
 	// Issue #756: Gate `codex resume <sid>` on rollout-file existence.
 	// If Codex died before flushing its rollout JSONL (tmux crash, kill -9
@@ -3329,7 +3354,9 @@ func parsePSParentChildMap(procTable []byte) map[int][]int {
 	scanner := bufio.NewScanner(bytes.NewReader(procTable))
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) != 2 {
+		// tolerant of trailing columns so the same snapshot can carry comm=
+		// for callers that also need to identify the pane leader
+		if len(fields) < 2 {
 			continue
 		}
 		pid, err := strconv.Atoi(fields[0])
@@ -3343,6 +3370,28 @@ func parsePSParentChildMap(procTable []byte) map[int][]int {
 		childrenByParent[ppid] = append(childrenByParent[ppid], pid)
 	}
 	return childrenByParent
+}
+
+// parsePSCommandNames reads `pid=,ppid=,comm=` output into pid -> command
+// name. Comm is the last column and may contain spaces, so everything from
+// the third field on is joined. macOS reports comm as an absolute path while
+// Linux reports the bare name, so the result is reduced to the base name to
+// give callers one shape to compare against.
+func parsePSCommandNames(procTable []byte) map[int]string {
+	commByPID := make(map[int]string)
+	scanner := bufio.NewScanner(bytes.NewReader(procTable))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		commByPID[pid] = filepath.Base(strings.Join(fields[2:], " "))
+	}
+	return commByPID
 }
 
 func collectProcessTreePIDsViaPgrep(rootPID int) []int {
@@ -8745,6 +8794,15 @@ func (i *Instance) restart(env map[string]string) error {
 		i.Status = StatusIdle
 	}
 
+	// #1870: this is the only path that mints a new tmux session name, so it is
+	// the only place that has to make it durable. Callers that never save --
+	// mcp/skill/plugin attach|detach --restart -- used to leave the killed
+	// session's name on disk, so agent-deck reported a live session as broken
+	// and orphaned its tmux session. Status travels with it because the two are
+	// one fact about the restart. See restart_tmux_persist.go for why this is a
+	// targeted write and why a failure here is recorded rather than returned.
+	i.recordRestartOutcome()
+
 	return nil
 }
 
@@ -8893,11 +8951,11 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// after the tmux session is restarted. No inline tmux set-environment in the shell string
 	// (which silently fails inside Docker sandbox containers).
 	if useResume {
-		return fmt.Sprintf("%s%s%s --resume %s%s",
+		return fmt.Sprintf("%s%sexec %s --resume %s%s",
 			envPrefix, bashExportPrefix, claudeCmd, i.ClaudeSessionID, extraFlags)
 	}
 	// Session was never interacted with - use --session-id to create fresh session.
-	return fmt.Sprintf("%s%s%s --session-id %s%s",
+	return fmt.Sprintf("%s%sexec %s --session-id %s%s",
 		envPrefix, bashExportPrefix, claudeCmd, i.ClaudeSessionID, extraFlags)
 }
 
@@ -9594,6 +9652,12 @@ func (i *Instance) CreateForkedCodexInstanceWithOptions(
 	}
 	forked.Tool = i.Tool
 	forked.Wrapper = i.Wrapper
+	// #1929: a fork runs against the parent's thread, so it must run under the
+	// parent's account. Without this the fork resolves its own codex home
+	// through the default chain and `codex fork <parent-sid>` cannot find the
+	// rollout, which lives under the account's home — the fork starts empty and
+	// the account selection is lost from the record too.
+	forked.Account = i.Account
 
 	baseCommand := strings.TrimSpace(i.Command)
 	if baseCommand == "" {

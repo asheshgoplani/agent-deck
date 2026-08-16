@@ -1151,6 +1151,24 @@ type NotificationsConfig struct {
 	// Default: true (nil = true). Set to false to suppress dispatch globally.
 	// Per-session override: Instance.NoTransitionNotify
 	TransitionEvents *bool `toml:"transition_events,omitempty"`
+
+	// Desktop raises an OS notification (cmux's notification panel when
+	// available, otherwise a macOS banner) when a session starts waiting for
+	// input or errors out.
+	//
+	// Opt-in (default: false) because it is the only agent-deck signal that
+	// interrupts you outside the TUI, and the right cadence depends on how many
+	// sessions you run. TransitionEvents covers the agent-to-agent case and is
+	// on by default; this covers the operator, including TOP-LEVEL sessions with
+	// no parent, which the transition path cannot reach at all.
+	Desktop bool `toml:"desktop,omitempty"`
+}
+
+// GetDesktopEnabled reports whether desktop notifications are enabled.
+// Defaults to false: this is the one notification path that interrupts the
+// operator outside the TUI, so it must be asked for.
+func (n NotificationsConfig) GetDesktopEnabled() bool {
+	return n.Desktop
 }
 
 // GetTransitionEventsEnabled returns whether transition event dispatch is enabled.
