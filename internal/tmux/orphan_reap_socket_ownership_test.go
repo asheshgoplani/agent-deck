@@ -268,6 +268,16 @@ func TestCandidateSocketPath_RefusesACandidateInAnotherMountNamespace(t *testing
 	if _, err := exec.LookPath("unshare"); err != nil {
 		t.Skip("unshare(1) not available")
 	}
+	// Pre-flight, and not optional: a host can forbid unprivileged user
+	// namespaces outright — GitHub's Ubuntu runners do, via
+	// apparmor_restrict_unprivileged_userns=1 — and unshare reports that by
+	// failing AFTER exec. Start() therefore succeeds and the only symptom is
+	// the readiness wait below timing out, which would make an unavailable
+	// kernel feature look like a broken test.
+	if out, err := exec.Command("unshare", "-Umr", "true").CombinedOutput(); err != nil {
+		t.Skipf("unprivileged mount namespaces unavailable on this host (%v): %s",
+			err, strings.TrimSpace(string(out)))
+	}
 
 	dir := t.TempDir()
 	ready := filepath.Join(dir, "ready")
