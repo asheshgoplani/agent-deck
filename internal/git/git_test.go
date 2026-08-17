@@ -246,6 +246,7 @@ func TestValidateBranchName(t *testing.T) {
 			"bugfix-123",
 			"release-v1.0.0",
 			"user/feature",
+			"feature/a/b/c", // multiple components, all valid
 		}
 
 		for _, name := range validNames {
@@ -281,6 +282,11 @@ func TestValidateBranchName(t *testing.T) {
 			"feature/",        // trailing slash
 			"feature/thing.",  // ends with a dot
 			"feature/a-/.b",   // invalid char before a dot-leading component
+			// Same rules on a non-final component, so a pass that only
+			// inspected the last one would let these through.
+			"feature/.hidden/ok",    // dot-prefixed interior component
+			"feature/x.lock/ok",     // .lock-suffixed interior component
+			"feature/ok/.hidden/ok", // dot-prefixed component in the middle
 		}
 
 		for _, name := range invalidNames {
