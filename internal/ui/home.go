@@ -1129,27 +1129,6 @@ func (h *Home) getLayoutMode() string {
 	}
 }
 
-// stackedPreviewTopY returns the first row of the lower preview region for the
-// 50-79 column stacked layout.
-func (h *Home) stackedPreviewTopY() int {
-	if h.getLayoutMode() != LayoutModeStacked {
-		return -1
-	}
-	const headerAndFilter = 2
-	const helpBarHeight = 2
-	contentHeight := h.height - headerAndFilter - helpBarHeight
-	if h.shouldRenderUpdateNudge() {
-		contentHeight--
-	}
-	if h.maintenanceMsg != "" {
-		contentHeight--
-	}
-	if h.debugMode {
-		contentHeight--
-	}
-	return headerAndFilter + contentHeight/2 + 1
-}
-
 // hasPreviewPane reports whether the terminal is wide enough to render Preview
 // beside Sessions.
 func (h *Home) hasPreviewPane() bool {
