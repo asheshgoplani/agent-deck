@@ -553,6 +553,23 @@ func handleGroupCodex(profile string, args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("Synced configured Codex plugins for %s\n", groupPath)
+
+	// Home skills are otherwise attached only at session create/start, so a
+	// newly declared skill would stay absent until someone happened to start a
+	// session in this group. Sync the whole home in one command instead.
+	skillProblems, err := session.SyncGroupCodexHomeSkills(groupPath)
+	if err != nil {
+		fmt.Printf("failed to sync Codex home skills for %s: %v\n", groupPath, err)
+		os.Exit(1)
+	}
+	if len(skillProblems) > 0 {
+		fmt.Printf("Codex home skills for %s completed with %d problem(s):\n", groupPath, len(skillProblems))
+		for _, p := range skillProblems {
+			fmt.Printf("  - %s\n", p)
+		}
+	} else {
+		fmt.Printf("Synced configured Codex home skills for %s\n", groupPath)
+	}
 }
 
 // orNone renders an empty string as "(none)" for human-readable output.
