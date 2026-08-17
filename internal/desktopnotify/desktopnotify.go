@@ -185,7 +185,11 @@ func (s *Store) reload() error {
 }
 
 func eventKey(event Event) string {
-	return strings.Join([]string{string(event.Class), event.SessionID, event.Timestamp.UTC().Format(time.RFC3339Nano), event.Summary}, "\x00")
+	return strings.Join([]string{string(event.Class), eventIdentity(event), event.Timestamp.UTC().Format(time.RFC3339Nano), event.Summary}, "\x00")
+}
+
+func eventIdentity(event Event) string {
+	return fmt.Sprintf("%d:%s%s", len(event.Profile), event.Profile, event.SessionID)
 }
 
 const dedupRetention = 30 * 24 * time.Hour
@@ -230,10 +234,11 @@ func (s *Store) Baseline(event Event) error {
 		return err
 	}
 	s.pruneExpired(time.Now())
-	if _, pending := s.data.Pending[event.SessionID]; pending {
+	identity := eventIdentity(event)
+	if _, pending := s.data.Pending[identity]; pending {
 		return s.persist()
 	}
-	s.data.Events[event.SessionID] = eventKey(event)
+	s.data.Events[identity] = eventKey(event)
 	return s.persist()
 }
 
@@ -252,12 +257,13 @@ func (s *Store) ShouldDeliver(event Event) (bool, error) {
 		return false, err
 	}
 	s.pruneExpired(time.Now())
-	if pending, exists := s.data.Pending[event.SessionID]; exists && pending == eventKey(event) {
+	identity := eventIdentity(event)
+	if pending, exists := s.data.Pending[identity]; exists && pending == eventKey(event) {
 		return true, nil
 	}
 	key := eventKey(event)
-	previous, exists := s.data.Events[event.SessionID]
-	s.data.Events[event.SessionID] = key
+	previous, exists := s.data.Events[identity]
+	s.data.Events[identity] = key
 	if err := s.persist(); err != nil {
 		return false, err
 	}
@@ -279,7 +285,7 @@ func (s *Store) NeedsDelivery(event Event) (bool, error) {
 		return false, err
 	}
 	s.pruneExpired(time.Now())
-	previous, exists := s.data.Events[event.SessionID]
+	previous, exists := s.data.Events[eventIdentity(event)]
 	return !exists || previous != eventKey(event), nil
 }
 
@@ -296,8 +302,9 @@ func (s *Store) MarkDelivered(event Event) error {
 		return err
 	}
 	s.pruneExpired(time.Now())
-	s.data.Events[event.SessionID] = eventKey(event)
-	delete(s.data.Pending, event.SessionID)
+	identity := eventIdentity(event)
+	s.data.Events[identity] = eventKey(event)
+	delete(s.data.Pending, identity)
 	return s.persist()
 }
 
@@ -314,7 +321,7 @@ func (s *Store) MarkPending(event Event) error {
 		return err
 	}
 	s.pruneExpired(time.Now())
-	s.data.Pending[event.SessionID] = eventKey(event)
+	s.data.Pending[eventIdentity(event)] = eventKey(event)
 	return s.persist()
 }
 
@@ -402,12 +409,18 @@ func (l *Listener) Receive() (Event, error) {
 	return event, nil
 }
 
+const socketSendTimeout = 250 * time.Millisecond
+
 func Send(path string, event Event) error {
-	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: path, Net: "unix"})
+	dialer := net.Dialer{Timeout: socketSendTimeout}
+	conn, err := dialer.Dial("unix", path)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	if err := conn.SetWriteDeadline(time.Now().Add(socketSendTimeout)); err != nil {
+		return fmt.Errorf("set desktop notification write deadline: %w", err)
+	}
 	return json.NewEncoder(conn).Encode(event)
 }
 
@@ -429,9 +442,19 @@ type Helper struct {
 	// RetryDelay is injectable for tests. Zero uses a conservative retry delay
 	// so a temporarily unresolved macOS authorization does not lose its event.
 	RetryDelay time.Duration
+	// RetryMaxAttempts bounds transient native submission retries. Zero uses
+	// the production default.
+	RetryMaxAttempts int
+	// RetryExpiry bounds the lifetime of transient retry work. Zero uses the
+	// production default.
+	RetryExpiry time.Duration
 }
 
 var errPresentationRejected = errors.New("desktop notification presentation rejected")
+var ErrAuthorizationDenied = errors.New("desktop notification authorization denied")
+
+const defaultRetryMaxAttempts = 5
+const defaultRetryExpiry = 5 * time.Minute
 
 func (h Helper) presentEvent(event Event) error {
 	deliver, err := h.Store.NeedsDelivery(event)
@@ -454,6 +477,31 @@ func (h Helper) retryDelay() time.Duration {
 	return time.Second
 }
 
+func (h Helper) retryLimit() int {
+	if h.RetryMaxAttempts > 0 {
+		return h.RetryMaxAttempts
+	}
+	return defaultRetryMaxAttempts
+}
+
+func (h Helper) retryExpiry() time.Duration {
+	if h.RetryExpiry > 0 {
+		return h.RetryExpiry
+	}
+	return defaultRetryExpiry
+}
+
+func (h Helper) retryBackoff(attempt int) time.Duration {
+	delay := h.retryDelay()
+	for i := 1; i < attempt && delay < time.Minute; i++ {
+		delay *= 2
+	}
+	if delay > time.Minute {
+		return time.Minute
+	}
+	return delay
+}
+
 func (h Helper) ServeOne() error {
 	if h.Listener == nil || h.Store == nil || h.Present == nil {
 		return errors.New("desktop notification helper is not configured")
@@ -470,9 +518,10 @@ func (h Helper) Serve() error {
 		return errors.New("desktop notification helper is not configured")
 	}
 	type retry struct {
-		event  Event
-		key    string
-		cancel chan struct{}
+		event    Event
+		key      string
+		identity string
+		cancel   chan struct{}
 	}
 	type retryState struct {
 		sync.Mutex
@@ -495,11 +544,11 @@ func (h Helper) Serve() error {
 	isCurrent := func(work *retry) bool {
 		state.Lock()
 		defer state.Unlock()
-		return !state.stopped && state.pending[work.event.SessionID] == work
+		return !state.stopped && state.pending[work.identity] == work
 	}
 	recordFatal := func(work *retry, err error) {
 		state.Lock()
-		shouldStop := !state.stopped && state.pending[work.event.SessionID] == work && state.fatalErr == nil
+		shouldStop := !state.stopped && state.pending[work.identity] == work && state.fatalErr == nil
 		if shouldStop {
 			state.fatalErr = err
 		}
@@ -511,8 +560,9 @@ func (h Helper) Serve() error {
 
 	startRetry := func(event Event) {
 		key := eventKey(event)
+		identity := eventIdentity(event)
 		state.Lock()
-		previous := state.pending[event.SessionID]
+		previous := state.pending[identity]
 		if previous != nil && previous.key == key {
 			state.Unlock()
 			return
@@ -520,8 +570,8 @@ func (h Helper) Serve() error {
 		if previous != nil {
 			close(previous.cancel)
 		}
-		work := &retry{event: event, key: key, cancel: make(chan struct{})}
-		state.pending[event.SessionID] = work
+		work := &retry{event: event, key: key, identity: identity, cancel: make(chan struct{})}
+		state.pending[identity] = work
 		state.Unlock()
 		if err := h.Store.MarkPending(event); err != nil {
 			recordFatal(work, err)
@@ -531,12 +581,13 @@ func (h Helper) Serve() error {
 		go func() {
 			defer func() {
 				state.Lock()
-				if state.pending[event.SessionID] == work {
-					delete(state.pending, event.SessionID)
+				if state.pending[identity] == work {
+					delete(state.pending, identity)
 				}
 				state.Unlock()
 			}()
-			for {
+			started := time.Now()
+			for attempt := 1; ; attempt++ {
 				if !isCurrent(work) {
 					return
 				}
@@ -561,7 +612,7 @@ func (h Helper) Serve() error {
 				}
 				if err == nil {
 					state.Lock()
-					if !state.stopped && state.pending[event.SessionID] == work {
+					if !state.stopped && state.pending[identity] == work {
 						err = h.Store.MarkDelivered(event)
 					}
 					state.Unlock()
@@ -570,7 +621,13 @@ func (h Helper) Serve() error {
 					}
 					return
 				}
-				timer := time.NewTimer(h.retryDelay())
+				if errors.Is(err, ErrAuthorizationDenied) || attempt >= h.retryLimit() || time.Since(started) >= h.retryExpiry() {
+					if err := h.Store.MarkDelivered(event); err != nil {
+						recordFatal(work, err)
+					}
+					return
+				}
+				timer := time.NewTimer(h.retryBackoff(attempt))
 				select {
 				case <-work.cancel:
 					if !timer.Stop() {

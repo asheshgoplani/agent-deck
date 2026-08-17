@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -100,6 +101,32 @@ func TestStoreDeliversFirstNewEventAfterDaemonBaseline(t *testing.T) {
 	}
 }
 
+func TestStoreKeepsSameSessionIDIndependentAcrossProfiles(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	work := Event{Class: Attention, SessionID: "shared", Profile: "work", Timestamp: now}
+	personal := Event{Class: Attention, SessionID: "shared", Profile: "personal", Timestamp: now}
+	if err := store.Baseline(work); err != nil {
+		t.Fatal(err)
+	}
+	if deliver, err := store.ShouldDeliver(personal); err != nil || !deliver {
+		t.Fatalf("second profile delivery = %v, err = %v; want independent delivery", deliver, err)
+	}
+	work.Timestamp = now.Add(time.Second)
+	if err := store.MarkPending(work); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkDelivered(personal); err != nil {
+		t.Fatal(err)
+	}
+	if deliver, err := store.NeedsDelivery(work); err != nil || !deliver {
+		t.Fatalf("work retry after personal delivery = %v, err = %v; want pending retry preserved", deliver, err)
+	}
+}
+
 func TestStorePrunesEventsOlderThanThirtyDays(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	now := time.Now().UTC()
@@ -108,9 +135,9 @@ func TestStorePrunesEventsOlderThanThirtyDays(t *testing.T) {
 	recent := Event{Class: Attention, SessionID: "recent", Timestamp: now.Add(-thirtyDays + time.Second)}
 	current := Event{Class: Error, SessionID: "current", Timestamp: now}
 	persisted := storeData{Events: map[string]string{
-		expired.SessionID: eventKey(expired),
-		recent.SessionID:  eventKey(recent),
-		current.SessionID: eventKey(current),
+		eventIdentity(expired): eventKey(expired),
+		eventIdentity(recent):  eventKey(recent),
+		eventIdentity(current): eventKey(current),
 	}}
 	data, err := json.Marshal(persisted)
 	if err != nil {
@@ -124,11 +151,11 @@ func TestStorePrunesEventsOlderThanThirtyDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := restarted.data.Events[expired.SessionID]; exists {
+	if _, exists := restarted.data.Events[eventIdentity(expired)]; exists {
 		t.Fatal("expired event remained in persisted state")
 	}
 	for _, event := range []Event{recent, current} {
-		if got := restarted.data.Events[event.SessionID]; got != eventKey(event) {
+		if got := restarted.data.Events[eventIdentity(event)]; got != eventKey(event) {
 			t.Fatalf("persisted event for %q = %q, want %q", event.SessionID, got, eventKey(event))
 		}
 	}
@@ -140,7 +167,7 @@ func TestStorePrunesEventsOlderThanThirtyDays(t *testing.T) {
 	if err := json.Unmarshal(data, &persistedOnDisk); err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := persistedOnDisk.Events[expired.SessionID]; exists {
+	if _, exists := persistedOnDisk.Events[eventIdentity(expired)]; exists {
 		t.Fatal("expired event remained in the state file")
 	}
 }
@@ -335,7 +362,7 @@ func TestHelperStoreSubprocessAndDaemonStoreRetainEveryState(t *testing.T) {
 			{Class: Error, SessionID: fmt.Sprintf("helper-%d", i), Timestamp: baseTimestamp.Add(time.Duration(i) * time.Nanosecond)},
 			{Class: Attention, SessionID: fmt.Sprintf("daemon-%d", i), Timestamp: baseTimestamp.Add(time.Duration(i) * time.Nanosecond)},
 		} {
-			if got := restarted.data.Events[event.SessionID]; got != eventKey(event) {
+			if got := restarted.data.Events[eventIdentity(event)]; got != eventKey(event) {
 				t.Fatalf("persisted state for %q = %q, want %q", event.SessionID, got, eventKey(event))
 			}
 		}
@@ -432,7 +459,7 @@ func TestHelperStoreSubprocessBlocksDaemonStoreOnAdvisoryLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := restarted.data.Events[event.SessionID]; got != eventKey(event) {
+	if got := restarted.data.Events[eventIdentity(event)]; got != eventKey(event) {
 		t.Fatalf("daemon event persisted after lock release = %q, want %q", got, eventKey(event))
 	}
 }
@@ -492,6 +519,36 @@ func TestClientSendsEventToPrivateSocket(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for socket event")
+	}
+}
+
+func TestSendReturnsWhenAcceptedPeerDoesNotRead(t *testing.T) {
+	socket := shortTestSocket(t, "adn-blocked-*")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan *net.UnixConn, 1)
+	go func() {
+		conn, acceptErr := listener.AcceptUnix()
+		if acceptErr == nil {
+			accepted <- conn
+		}
+	}()
+	event := Event{Class: Error, SessionID: "blocked", Summary: strings.Repeat("x", 8<<20), Timestamp: time.Now()}
+	started := time.Now()
+	err = Send(socket, event)
+	if err == nil {
+		t.Fatal("Send unexpectedly completed to a peer that never reads")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Send blocked for %v; want bounded dial/write", elapsed)
+	}
+	select {
+	case conn := <-accepted:
+		_ = conn.Close()
+	default:
 	}
 }
 
@@ -648,6 +705,183 @@ func TestHelperServeRetriesInitialAuthorizationUntilAccepted(t *testing.T) {
 	if attempts < 2 {
 		t.Fatalf("authorization attempts = %d, want retry", attempts)
 	}
+}
+
+func TestHelperServeRetiresPermanentlyRejectedWork(t *testing.T) {
+	socket := shortTestSocket(t, "adn-retired-*")
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempts atomic.Int32
+	retired := make(chan struct{}, 1)
+	helper := Helper{Listener: listener, Store: store, RetryDelay: time.Millisecond, RetryMaxAttempts: 3, Present: func(Event) error {
+		if attempts.Add(1) == 3 {
+			retired <- struct{}{}
+		}
+		return errors.New("native submission rejected")
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() { _ = listener.Close(); <-serveDone }()
+	event := Event{Class: Error, SessionID: "permanent", Timestamp: time.Now()}
+	if err := Send(socket, event); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-retired:
+	case <-time.After(time.Second):
+		t.Fatal("rejected work did not reach its retry bound")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		deliver, deliveryErr := store.NeedsDelivery(event)
+		if deliveryErr != nil {
+			t.Fatal(deliveryErr)
+		}
+		if !deliver {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("rejected work was not retired from persistent state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("presentation attempts = %d, want bounded retirement at 3", got)
+	}
+	if deliver, err := store.NeedsDelivery(event); err != nil || deliver {
+		t.Fatalf("retired event delivery eligibility = %v, err = %v; want retired", deliver, err)
+	}
+}
+
+func TestHelperServeDoesNotRetryTerminalAuthorizationDenial(t *testing.T) {
+	socket := shortTestSocket(t, "adn-denied-*")
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempts atomic.Int32
+	helper := Helper{Listener: listener, Store: store, RetryDelay: time.Millisecond, Present: func(Event) error {
+		attempts.Add(1)
+		return ErrAuthorizationDenied
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() { _ = listener.Close(); <-serveDone }()
+	event := Event{Class: Attention, SessionID: "denied", Timestamp: time.Now()}
+	if err := Send(socket, event); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		deliver, deliveryErr := store.NeedsDelivery(event)
+		if deliveryErr != nil {
+			t.Fatal(deliveryErr)
+		}
+		if !deliver {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("authorization-denied work was not retired")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("authorization-denied attempts = %d, want 1", got)
+	}
+}
+
+func TestHelperServeKeepsRetriesIndependentAcrossProfiles(t *testing.T) {
+	socket := shortTestSocket(t, "adn-profile-retries-*")
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	attempts := map[string]int{}
+	workEntered := make(chan struct{})
+	releaseWork := make(chan struct{})
+	helper := Helper{Listener: listener, Store: store, RetryDelay: time.Millisecond, Present: func(event Event) error {
+		mu.Lock()
+		attempts[event.Profile]++
+		attempt := attempts[event.Profile]
+		mu.Unlock()
+		if event.Profile == "work" && attempt == 1 {
+			close(workEntered)
+			<-releaseWork
+			return errors.New("transient native submission failure")
+		}
+		return nil
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() { _ = listener.Close(); <-serveDone }()
+
+	work := Event{Class: Attention, SessionID: "shared", Profile: "work", Timestamp: time.Now()}
+	personal := Event{Class: Attention, SessionID: "shared", Profile: "personal", Timestamp: work.Timestamp}
+	if err := Send(socket, work); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-workEntered:
+	case <-time.After(time.Second):
+		t.Fatal("work profile presentation did not start")
+	}
+	if err := Send(socket, personal); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseWork)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		workPending, workErr := store.NeedsDelivery(work)
+		personalPending, personalErr := store.NeedsDelivery(personal)
+		if workErr != nil || personalErr != nil {
+			t.Fatalf("read delivery state: work=%v personal=%v", workErr, personalErr)
+		}
+		if !workPending && !personalPending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("same session ID did not deliver independently: work pending=%v personal pending=%v", workPending, personalPending)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts["work"] != 2 || attempts["personal"] != 1 {
+		t.Fatalf("presentation attempts = %v, want work retry plus one personal delivery", attempts)
+	}
+}
+
+func shortTestSocket(t *testing.T, pattern string) string {
+	t.Helper()
+	f, err := os.CreateTemp("", pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := f.Name()
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+	return path
 }
 
 func TestHelperServeAcceptsLaterEventWhileEarlierPresentationRetries(t *testing.T) {

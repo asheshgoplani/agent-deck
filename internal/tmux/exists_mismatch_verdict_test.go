@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -67,11 +68,16 @@ func TestSocketHasProtocolMismatch_SingleFlightsConcurrentCallers(t *testing.T) 
 
 	var mu sync.Mutex
 	calls := 0
+	entered := make(chan struct{})
 	release := make(chan struct{})
 	t.Cleanup(setSocketMismatchProbeForTest(func(string) bool {
 		mu.Lock()
 		calls++
 		mu.Unlock()
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
 		<-release // hold the winner inside the probe so the losers must queue
 		return true
 	}))
@@ -79,16 +85,24 @@ func TestSocketHasProtocolMismatch_SingleFlightsConcurrentCallers(t *testing.T) 
 	const callers = 16
 	var wg sync.WaitGroup
 	verdicts := make([]bool, callers)
-	for i := 0; i < callers; i++ {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		verdicts[0] = socketHasProtocolMismatch("busy-socket")
+	}()
+	<-entered
+	started := make(chan struct{}, callers-1)
+	for i := 1; i < callers; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			started <- struct{}{}
 			verdicts[i] = socketHasProtocolMismatch("busy-socket")
 		}(i)
 	}
-	// Give the goroutines time to pile up on the single-flight lock, then let the
-	// in-flight classification finish.
-	time.Sleep(50 * time.Millisecond)
+	for i := 1; i < callers; i++ {
+		<-started
+	}
 	close(release)
 	wg.Wait()
 
@@ -160,9 +174,6 @@ func TestSession_Exists_ClassificationIsAmortizedAcrossSessionsOnASocket(t *test
 		"echo 'protocol version mismatch (client 8, server 7)' >&2\n"+
 		"exit 1\n")
 
-	restoreTimeout := hasSessionProbeTimeout
-	hasSessionProbeTimeout = 2 * time.Second
-	t.Cleanup(func() { hasSessionProbeTimeout = restoreTimeout })
 	resetSocketMismatchCacheForTest()
 	t.Cleanup(resetSocketMismatchCacheForTest)
 
@@ -260,14 +271,16 @@ func TestSession_Exists_StaysInBudgetWithAChildHoldingTheOutputDescriptors(t *te
 	for i, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
-			// `sleep 30 &` inherits this script's stdout/stderr and keeps them open
-			// for 30s — far longer than tmuxSubprocessWaitDelay — so any pipe-backed
-			// capture in the code under test blocks on an EOF that never comes.
-			writeFakeTmux(t, dir, "sleep 30 &\n"+c.reply+c.exit)
+			ready := filepath.Join(dir, "child-ready")
+			hold := filepath.Join(dir, "child-hold")
+			if err := syscall.Mkfifo(hold, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The child announces that it inherited the descriptors, then blocks on
+			// a FIFO controlled by the test. Correct Run()-based probes return while
+			// it is blocked; pipe-backed probes wait for descriptor closure.
+			writeFakeTmux(t, dir, "(touch "+shellQuote(ready)+"; read x < "+shellQuote(hold)+") &\n"+c.reply+c.exit)
 
-			restoreTimeout := hasSessionProbeTimeout
-			hasSessionProbeTimeout = 2 * time.Second
-			t.Cleanup(func() { hasSessionProbeTimeout = restoreTimeout })
 			resetSocketMismatchCacheForTest()
 			t.Cleanup(resetSocketMismatchCacheForTest)
 
@@ -276,19 +289,42 @@ func TestSession_Exists_StaysInBudgetWithAChildHoldingTheOutputDescriptors(t *te
 				SocketName: "agent-deck-leaky-test-" + itoa(i),
 			}
 
-			start := time.Now()
-			got := s.Exists()
-			elapsed := time.Since(start)
+			result := make(chan bool, 1)
+			go func() { result <- s.Exists() }()
+			waitForProcessMarker(t, ready)
+			var got bool
+			select {
+			case got = <-result:
+			case <-time.After(5 * time.Second):
+				releaseFIFO(hold)
+				t.Fatal("Exists waited for a child-held output descriptor")
+			}
+			releaseFIFO(hold)
 
 			if got != c.wantExists {
 				t.Fatalf("Exists() = %v, want %v", got, c.wantExists)
 			}
-			if elapsed > budget {
-				t.Fatalf("Exists() took %v, over its %v budget, while a child held the "+
-					"output descriptors — liveness must not depend on that child closing them",
-					elapsed, budget)
-			}
 		})
+	}
+}
+
+func waitForProcessMarker(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("process boundary marker was not created: %s", path)
+}
+
+func releaseFIFO(path string) {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err == nil {
+		_, _ = f.WriteString("release\n")
+		_ = f.Close()
 	}
 }
 

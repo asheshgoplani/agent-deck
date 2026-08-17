@@ -63,7 +63,8 @@ static int ad_desktop_notify(const char *title, const char *body, const char *bi
             dispatch_semaphore_signal(authorizationDone);
         }];
         dispatch_semaphore_wait(authorizationDone, DISPATCH_TIME_FOREVER);
-        if (!granted || authorizationError != nil) return 0;
+        if (!granted && authorizationError == nil) return -1;
+        if (authorizationError != nil) return 0;
 
         __block NSError *submissionError = nil;
         dispatch_semaphore_t submissionDone = dispatch_semaphore_create(0);
@@ -105,7 +106,11 @@ func NativePresent(event Event) error {
 	defer C.free(unsafe.Pointer(cbody))
 	defer C.free(unsafe.Pointer(cbinary))
 	defer C.free(unsafe.Pointer(cargs))
-	if C.ad_desktop_notify(ctitle, cbody, cbinary, cargs) == 0 {
+	result := C.ad_desktop_notify(ctitle, cbody, cbinary, cargs)
+	if result < 0 {
+		return ErrAuthorizationDenied
+	}
+	if result == 0 {
 		return fmt.Errorf("could not submit native macOS notification")
 	}
 	return nil
