@@ -2,6 +2,7 @@ package session
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +26,35 @@ func newShellInstance(t *testing.T, tag string) *Instance {
 	title := uniqueShellTestTitle(tag)
 	inst := NewInstance(title, t.TempDir())
 	inst.Command = ""
+	t.Cleanup(func() {
+		_ = inst.KillAndWait()
+		_ = inst.CleanupRepositorySessionTemp()
+		cleanupShellSessions(inst.Title)
+	})
 	return inst
+}
+
+func TestNewShellInstanceCleanupStopsProcessBeforeTempDirRemoval(t *testing.T) {
+	var sessionName, projectPath string
+	if ok := t.Run("owned lifecycle", func(t *testing.T) {
+		inst := newShellInstance(t, "CleanupOwnership")
+		if err := inst.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+		if !waitForTmuxSession(inst.tmuxSession.Name, time.Second) {
+			t.Fatalf("tmux session %q never appeared after Start", inst.tmuxSession.Name)
+		}
+		sessionName = inst.tmuxSession.Name
+		projectPath = inst.ProjectPath
+	}); !ok {
+		t.Fatal("lifecycle subtest failed")
+	}
+	if exec.Command("tmux", "has-session", "-t", sessionName).Run() == nil {
+		t.Fatalf("newShellInstance cleanup left tmux session %q alive", sessionName)
+	}
+	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
+		t.Fatalf("newShellInstance cleanup left project temp path %q: %v", projectPath, err)
+	}
 }
 
 func TestStart_ParentedSession_ExportsChildRoleEnv(t *testing.T) {

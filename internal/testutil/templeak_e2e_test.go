@@ -83,6 +83,11 @@ func TestPackageTestRunLeavesNoTempDirs(t *testing.T) {
 		{name: "read-only fixture", pkg: "./testdata/homeleakfixture", run: "."},
 		{name: "command suite TestMain", pkg: "./cmd/agent-deck", run: "^$"},
 		{name: "session suite TestMain", pkg: "./internal/session", run: "^$"},
+		{
+			name: "session child-role process lifecycle",
+			pkg:  "./internal/session",
+			run:  "^TestNewShellInstanceCleanupStopsProcessBeforeTempDirRemoval$",
+		},
 	}
 
 	for _, tc := range testCases {

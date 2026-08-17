@@ -20,6 +20,7 @@ func TestTmuxAvailable(t *testing.T) {
 
 func TestHomeInit(t *testing.T) {
 	home := ui.NewHome()
+	t.Cleanup(home.Close)
 	if home == nil {
 		t.Fatal("NewHome() returned nil")
 	}
@@ -27,6 +28,7 @@ func TestHomeInit(t *testing.T) {
 
 func TestHomeView(t *testing.T) {
 	home := ui.NewHome()
+	t.Cleanup(home.Close)
 	view := home.View()
 	if view == "" {
 		t.Error("View() returned empty string")

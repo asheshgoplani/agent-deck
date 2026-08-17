@@ -17,6 +17,7 @@ import (
 
 var desktopNotificationsOS = runtime.GOOS
 var desktopNotificationsNativePresentationAvailable = desktopnotify.NativePresentationAvailable
+var desktopNotificationsExecutable = os.Executable
 
 func handleDesktopNotifications(args []string) {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
@@ -43,7 +44,7 @@ func desktopNotificationsDoctor() {
 	}
 	settings := session.GetDesktopNotificationsSettings()
 	socket, socketErr := session.DesktopNotificationSocketPath()
-	binary, binaryErr := os.Executable()
+	binary, binaryErr := desktopNotificationsExecutable()
 	fmt.Printf("desktop notifications: %s\n", map[bool]string{true: "enabled", false: "disabled"}[settings.Enabled])
 	if !settings.Enabled {
 		fmt.Println("remediation: add [desktop_notifications] enabled = true to config.toml")
@@ -63,7 +64,7 @@ func desktopNotificationsDoctor() {
 	}
 	if binaryErr != nil {
 		fmt.Printf("action routing: unavailable (%v)\n", binaryErr)
-	} else if info, err := os.Stat(binary); err != nil || !info.Mode().IsRegular() {
+	} else if info, err := os.Stat(binary); err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		fmt.Printf("action routing: unavailable (%v)\n", err)
 	} else {
 		fmt.Printf("action routing: ready (%s session focus <id> --attach)\n", binary)
@@ -128,7 +129,7 @@ func desktopNotificationHelperPrerequisite() error {
 // per-user background app; AGENT_DECK_DESKTOP_ROUTER preserves the original
 // installed Agent Deck path for notification click actions.
 func relaunchDesktopNotificationHelperBundled() error {
-	router, err := os.Executable()
+	router, err := desktopNotificationsExecutable()
 	if err != nil {
 		return fmt.Errorf("resolve Agent Deck executable: %w", err)
 	}
@@ -136,11 +137,19 @@ func relaunchDesktopNotificationHelperBundled() error {
 	if err != nil {
 		return fmt.Errorf("resolve helper directory: %w", err)
 	}
+	bundledExecutable, env, err := prepareDesktopNotificationBundle(router, dataDir)
+	if err != nil {
+		return err
+	}
+	return syscall.Exec(bundledExecutable, []string{bundledExecutable, "desktop-notifications", "helper"}, env)
+}
+
+func prepareDesktopNotificationBundle(router, dataDir string) (string, []string, error) {
 	bundle := filepath.Join(dataDir, "desktop-notifications", "Agent Deck Notifications.app")
 	contents := filepath.Join(bundle, "Contents")
 	macOSDir := filepath.Join(contents, "MacOS")
 	if err := os.MkdirAll(macOSDir, 0o700); err != nil {
-		return fmt.Errorf("create helper bundle: %w", err)
+		return "", nil, fmt.Errorf("create helper bundle: %w", err)
 	}
 	plist := `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -153,14 +162,14 @@ func relaunchDesktopNotificationHelperBundled() error {
 </dict></plist>
 `
 	if err := os.WriteFile(filepath.Join(contents, "Info.plist"), []byte(plist), 0o600); err != nil {
-		return fmt.Errorf("write helper bundle metadata: %w", err)
+		return "", nil, fmt.Errorf("write helper bundle metadata: %w", err)
 	}
 	bundledExecutable := filepath.Join(macOSDir, "agent-deck-notifications")
 	if err := copyDesktopHelper(router, bundledExecutable); err != nil {
-		return err
+		return "", nil, err
 	}
 	env := append(childenv.ForLaunch(""), "AGENT_DECK_DESKTOP_BUNDLED=1", "AGENT_DECK_DESKTOP_ROUTER="+router)
-	return syscall.Exec(bundledExecutable, []string{bundledExecutable, "desktop-notifications", "helper"}, env)
+	return bundledExecutable, env, nil
 }
 
 func copyDesktopHelper(source, destination string) error {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -63,6 +64,53 @@ func TestDesktopNotificationsDispatchAndDoctorRemediation(t *testing.T) {
 	help := captureDesktopNotificationsOutput(t, func() { handleDesktopNotifications(nil) })
 	if !strings.Contains(help, "Usage: agent-deck desktop-notifications <doctor|helper>") {
 		t.Fatalf("help output: %s", help)
+	}
+}
+
+func TestDesktopNotificationsDoctorRejectsNonExecutableRouter(t *testing.T) {
+	originalOS := desktopNotificationsOS
+	desktopNotificationsOS = "darwin"
+	t.Cleanup(func() { desktopNotificationsOS = originalOS })
+	originalNative := desktopNotificationsNativePresentationAvailable
+	desktopNotificationsNativePresentationAvailable = func() bool { return true }
+	t.Cleanup(func() { desktopNotificationsNativePresentationAvailable = originalNative })
+	router := filepath.Join(t.TempDir(), "agent-deck")
+	if err := os.WriteFile(router, []byte("binary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalExecutable := desktopNotificationsExecutable
+	desktopNotificationsExecutable = func() (string, error) { return router, nil }
+	t.Cleanup(func() { desktopNotificationsExecutable = originalExecutable })
+	out := captureDesktopNotificationsOutput(t, desktopNotificationsDoctor)
+	if !strings.Contains(out, "action routing: unavailable") || strings.Contains(out, "action routing: ready") {
+		t.Fatalf("doctor accepted non-executable router:\n%s", out)
+	}
+}
+
+func TestPrepareDesktopNotificationBundlePreservesMetadataAndRouter(t *testing.T) {
+	dir := t.TempDir()
+	router := filepath.Join(dir, "agent-deck")
+	if err := os.WriteFile(router, []byte("binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executable, env, err := prepareDesktopNotificationBundle(router, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plist, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(executable)), "Info.plist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"<key>CFBundleExecutable</key><string>" + filepath.Base(executable) + "</string>",
+		"<key>CFBundleIdentifier</key><string>com.agent-deck.desktop-notifications</string>",
+	} {
+		if !strings.Contains(string(plist), want) {
+			t.Fatalf("Info.plist missing %q:\n%s", want, plist)
+		}
+	}
+	if !slices.Contains(env, "AGENT_DECK_DESKTOP_BUNDLED=1") || !slices.Contains(env, "AGENT_DECK_DESKTOP_ROUTER="+router) {
+		t.Fatalf("bundle relaunch env does not preserve router: %v", env)
 	}
 }
 

@@ -346,6 +346,7 @@ type Home struct {
 	// Moves status updates to a separate goroutine, completely decoupling from UI
 	statusTrigger       chan statusUpdateRequest // Triggers background status update
 	statusWorkerDone    chan struct{}            // Signals worker has stopped
+	liveReconcilerDone  chan struct{}            // Signals live-pipe reconciler has stopped
 	lastFullStatusSweep atomic.Int64             // UnixNano timestamp of last full background status sweep
 	lastPersistedStatus map[string]string        // instanceID -> last status written to SQLite
 	// lastPersistedAutoNameDesc tracks the last auto-name description written to
@@ -1091,6 +1092,27 @@ func (h *Home) getLayoutMode() string {
 	}
 }
 
+// stackedPreviewTopY returns the first row of the lower preview region for the
+// 50-79 column stacked layout.
+func (h *Home) stackedPreviewTopY() int {
+	if h.getLayoutMode() != LayoutModeStacked {
+		return -1
+	}
+	const headerAndFilter = 2
+	const helpBarHeight = 2
+	contentHeight := h.height - headerAndFilter - helpBarHeight
+	if h.shouldRenderUpdateNudge() {
+		contentHeight--
+	}
+	if h.maintenanceMsg != "" {
+		contentHeight--
+	}
+	if h.debugMode {
+		contentHeight--
+	}
+	return headerAndFilter + contentHeight/2 + 1
+}
+
 // hasPreviewPane reports whether the terminal is wide enough to render Preview
 // beside Sessions.
 func (h *Home) hasPreviewPane() bool {
@@ -1538,6 +1560,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	h.liveSet = newPipeLiveSet(livePipeLRUCapacity)
 
 	if homeBackgroundWorkersEnabled {
+		h.liveReconcilerDone = make(chan struct{})
 		// Initialize event-driven status detection. The output callback is invoked
 		// when PipeManager detects output from a session.
 		outputCallback := func(sessionName string) {
@@ -2782,6 +2805,7 @@ func (h *Home) reconcileLivePipes() {
 // livePipeReconciler periodically reconciles live pipes. The tick interval
 // doubles as the focus debounce. Runs until h.ctx is cancelled (TUI exit).
 func (h *Home) livePipeReconciler() {
+	defer close(h.liveReconcilerDone)
 	ticker := time.NewTicker(livePipeReconcileInterval)
 	defer ticker.Stop()
 	for {
@@ -2791,6 +2815,35 @@ func (h *Home) livePipeReconciler() {
 		case <-ticker.C:
 			h.reconcileLivePipes()
 		}
+	}
+}
+
+// Close stops Home-owned background workers and resources. It is safe to use
+// for models constructed outside Bubble Tea, where performFinalShutdown is not
+// driven by the event loop.
+func (h *Home) Close() {
+	if h == nil {
+		return
+	}
+	h.cancel()
+	if h.liveReconcilerDone != nil {
+		<-h.liveReconcilerDone
+	}
+	if h.statusWorkerDone != nil {
+		<-h.statusWorkerDone
+	}
+	h.logWorkerWg.Wait()
+	if h.hookWatcher != nil {
+		h.hookWatcher.Stop()
+	}
+	if h.sseWatcher != nil {
+		h.sseWatcher.Stop()
+	}
+	if h.storageWatcher != nil {
+		_ = h.storageWatcher.Close()
+	}
+	if h.storage != nil {
+		_ = h.storage.Close()
 	}
 }
 
@@ -5292,16 +5345,22 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if h.newDialog.IsVisible() || h.forkDialog.IsVisible() {
 				return h, nil
 			}
-			// Preview pane scroll (#574): when the wheel event lands in the
-			// preview region of the dual layout, scroll preview content
-			// instead of moving the list cursor. Other layouts keep the
-			// legacy list-scroll behaviour because they have no dedicated
-			// preview click-target (single = no preview; stacked = same-
-			// width column where Y-based routing is ambiguous enough to
-			// leave as list-scroll).
-			if h.getLayoutMode() == LayoutModeDual {
+			// Preview pane scroll (#574): dual layouts route by X; the legacy
+			// 50-79-column stacked path routes by Y. Single layouts keep list
+			// scrolling because they have no preview click-target.
+			switch h.getLayoutMode() {
+			case LayoutModeDual:
 				leftWidth := h.sessionsPaneWidth()
 				if msg.X >= leftWidth {
+					if msg.Button == tea.MouseButtonWheelUp {
+						h.previewScrollOffset++
+					} else if h.previewScrollOffset > 0 {
+						h.previewScrollOffset--
+					}
+					return h, nil
+				}
+			case LayoutModeStacked:
+				if top := h.stackedPreviewTopY(); top >= 0 && msg.Y >= top {
 					if msg.Button == tea.MouseButtonWheelUp {
 						h.previewScrollOffset++
 					} else if h.previewScrollOffset > 0 {

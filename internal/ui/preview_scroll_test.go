@@ -205,3 +205,14 @@ func TestPreviewScroll_SingleLayoutMode_WheelMovesCursor(t *testing.T) {
 		t.Fatalf("single-layout WheelDown: previewScrollOffset=%d, want 0 (no preview scroll in single layout)", h.previewScrollOffset)
 	}
 }
+
+func TestPreviewScroll_StackedLayoutRoutesByPreviewY(t *testing.T) {
+	h, _ := previewScrollSessionWithLines(t, 60, 40, 50)
+	previewTop := h.stackedPreviewTopY()
+	msg := tea.MouseMsg{X: 30, Y: previewTop + 1, Button: tea.MouseButtonWheelUp}
+	model, _ := h.Update(msg)
+	h = model.(*Home)
+	if h.previewScrollOffset != 1 {
+		t.Fatalf("stacked preview WheelUp offset = %d, want 1", h.previewScrollOffset)
+	}
+}
