@@ -25,6 +25,12 @@ import (
 // The audit is the dataset a ≥1-week observe window is reconstructed from, so
 // the retained window has to cover ≥7 days at that rate: ≥3.4 GB of records.
 //
+// CollapsingSink now cuts the normal rate by ~99.8%, but these dials stay sized
+// for the uncollapsed rate on purpose: audit_full_records restores it outright,
+// and a fleet flapping between states approaches it without any config change.
+// Sizing for the collapsed rate would make the bound depend on how well the
+// collapse happens to work on a given fleet.
+//
 //	defaultMaxSegmentBytes = 128 MiB  ≈ 400k records ≈ 6.4 h at the measured rate.
 //	                         Small enough that compressing one takes ~1s and that
 //	                         a `zcat | jq` over a single segment is workable;

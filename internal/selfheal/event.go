@@ -45,6 +45,12 @@ type Event struct {
 	// WouldHave is present in observe mode: the action self-heal WOULD have taken
 	// had it been authorized. Empty when the decision was a skip.
 	WouldHave Action `json:"would_have,omitempty"`
+
+	// Repeat is how many consecutive IDENTICAL evaluations of this session were
+	// collapsed into this record (see CollapsingSink). 0/absent means the record
+	// stands for exactly the one read at TS. On a record that closes a run, TS is
+	// the last of those reads.
+	Repeat int `json:"repeat,omitempty"`
 }
 
 // EventSink is the durable audit destination. The default is an append-only

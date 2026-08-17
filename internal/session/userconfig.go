@@ -303,6 +303,14 @@ type SelfHealSettings struct {
 	// observe window before any Stage-2 re-approval.
 	AuditPath string `toml:"audit_path,omitempty"`
 
+	// AuditFullRecords writes one audit record per EVALUATION instead of one per
+	// session state change (plus a 15-minute heartbeat). The collapsed default
+	// exists because the per-evaluation stream measured 480 MB/day on a normal
+	// single-user machine, nearly all of it a healthy session re-recorded every
+	// poll. Turn this on only to debug the pass itself, and turn it back off:
+	// it restores the growth rate rotation then has to absorb.
+	AuditFullRecords bool `toml:"audit_full_records,omitempty"`
+
 	// PerSessionPerWindow overrides the per-session recovery cap (default 2 / 6h;
 	// auth_401 is always 1). 0 uses the default. Starting dial; tuned from
 	// observe data.
