@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 )
 
 // Continuation prompt sources, reported on ContinuationPrompt.Source.
@@ -30,20 +28,45 @@ type ContinuationPrompt struct {
 	Info HandoffInfo
 }
 
+// HandoffDir returns the per-session handoff directory,
+// <project-root>/.agent-deck/handoff/<id>.
+//
+// A handoff prompt describes work in one repository, so it lives in that
+// repository. It used to live in the machine-global data dir keyed by session
+// id alone, which left every project's wrap-ups piled together in
+// ~/.agent-deck/handoff with nothing tying a directory back to the project it
+// came from.
+//
+// Empty when the session has no ID or no resolvable project path — callers
+// treat that as "no curated prompt" and fall through to the transcript rebuild.
+func HandoffDir(inst *Instance) string {
+	if inst == nil || inst.ID == "" {
+		return ""
+	}
+	dir, err := ProjectDataPath(instanceProjectDir(inst), "handoff", inst.ID)
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
+// EnsureHandoffDir creates HandoffDir and keeps .agent-deck/ locally ignored.
+func EnsureHandoffDir(inst *Instance) (string, error) {
+	if inst == nil || inst.ID == "" {
+		return "", fmt.Errorf("handoff dir: session has no id")
+	}
+	return EnsureProjectDataPath(instanceProjectDir(inst), "handoff", inst.ID)
+}
+
 // HandoffPromptPath returns where the outgoing agent writes its curated
-// continuation prompt: <data-dir>/handoff/<id>/PROMPT.md.
+// continuation prompt: <project-root>/.agent-deck/handoff/<id>/PROMPT.md.
 //
 // It lives here, not in the UI, because the TUI writes this file and the
 // `session handoff` CLI reads it — if the two ever disagreed on the location,
-// the CLI would silently ignore every wrap-up the agent produced. The "handoff"
-// marker keeps a pre-XDG ~/.agent-deck/handoff in use where it already exists,
-// so sessions mid-handoff across the layout migration still resolve.
-func HandoffPromptPath(id string) string {
-	if id == "" {
-		return ""
-	}
-	dir, err := agentpaths.EffectiveDataPath(filepath.Join("handoff", id), "handoff")
-	if err != nil {
+// the CLI would silently ignore every wrap-up the agent produced.
+func HandoffPromptPath(inst *Instance) string {
+	dir := HandoffDir(inst)
+	if dir == "" {
 		return ""
 	}
 	return filepath.Join(dir, "PROMPT.md")

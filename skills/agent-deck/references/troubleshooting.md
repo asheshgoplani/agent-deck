@@ -372,6 +372,11 @@ curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/unins
 
 Use `--keep-data` to preserve your sessions and configuration.
 
+Uninstalling does **not** touch `<project-root>/.agent-deck/` in your
+repositories — handoff prompts, designs, and orchestrate run artifacts live
+with the project they describe. See `docs/data-locations.md` for the full split
+between project-local and machine-global paths.
+
 ## Critical Warnings
 
 **NEVER run these commands - they destroy ALL agent-deck sessions:**

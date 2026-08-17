@@ -10,10 +10,11 @@ import (
 )
 
 // handoffFixture stands up an isolated data/config layout plus a Claude
-// transcript on disk, and returns an Instance whose ID drives
+// transcript on disk, and returns an Instance whose project path drives
 // session.HandoffPromptPath. Mirrors writeHandoffFixture in the session
-// package but also pins XDG_DATA_HOME/HOME so HandoffPromptPath(inst.ID)
-// resolves under a temp dir the test controls.
+// package but also pins XDG_DATA_HOME/HOME, so a curated prompt resolving to
+// the machine-global layout instead of the project would fail the tests below
+// rather than silently pass on the developer's real ~/.agent-deck.
 func handoffFixture(t *testing.T, transcriptLines ...string) *session.Instance {
 	t.Helper()
 
@@ -46,13 +47,16 @@ func handoffFixture(t *testing.T, transcriptLines ...string) *session.Instance {
 }
 
 // writeCuratedPrompt drops a PROMPT.md at exactly the path the seam will
-// consult for inst — i.e. HandoffPromptPath(inst.ID). Writing it anywhere
-// else would not exercise the wiring under test.
+// consult for inst — i.e. HandoffPromptPath(inst). Writing it anywhere else
+// would not exercise the wiring under test.
 func writeCuratedPrompt(t *testing.T, inst *session.Instance, body string) {
 	t.Helper()
-	p := session.HandoffPromptPath(inst.ID)
+	p := session.HandoffPromptPath(inst)
 	if p == "" {
 		t.Fatal("HandoffPromptPath returned empty; fixture env not isolated")
+	}
+	if !strings.HasPrefix(p, inst.ProjectPath+string(filepath.Separator)) {
+		t.Fatalf("curated prompt path %q escaped the project %q", p, inst.ProjectPath)
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)

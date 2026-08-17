@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Handoff prompts live in the project, not the global data directory.** The autonomous context-budget wrap-up now writes `<project-root>/.agent-deck/handoff/<session-id>/PROMPT.md`, and `agent-deck session handoff` reads it from there. `<project-root>` is the repository's main worktree, so every worktree of a repo shares one `.agent-deck/` tree — the same root the `brainstorming` and `orchestrate` skills use. Prompts previously pooled in `~/.agent-deck/handoff/` are not read anymore and can be deleted; a session mid-wrap-up when you upgrade falls back to rebuilding its continuation prompt from the transcript. [`docs/data-locations.md`](docs/data-locations.md) states which artifacts are project-local and which are machine-global, and a lint test now fails the build when a project-scoped artifact is resolved through a global path.
+
 ### Fixed
 
 - **Continuation conductors can supervise children after a handoff.** Parent links may now be nested to any acyclic depth, so a conductor that is itself a sub-session can adopt or launch workers and use `session children` / the orchestrate heartbeat. Self-parenting and ancestor cycles remain rejected.
