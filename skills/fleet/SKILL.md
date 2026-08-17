@@ -250,6 +250,29 @@ response. Use it whenever you read output you expect to be a reply:
 agent-deck session output <child-id> --json --require-fresh   # exit 3 = not answered yet
 ```
 
+When the child has not produced a message at all — mid-turn, stuck on a
+permission prompt, sitting on a login screen, hung in a tool call — there is no
+response to read and `session output` will hand you an older one. Ask for the
+pane instead of reaching for `tmux capture-pane`:
+
+```bash
+agent-deck session output <child-id> --pane   # live pane render, full UI
+```
+
+Rule: `--pane` for what the child is **showing right now**, plain
+`session output` for what it **last said**.
+
+If a child's composer looks like it is holding an un-submitted message, do not
+send it a bare `Enter` through tmux. `session send` already retries and verifies
+submission, and reports `"delivery": "typed_not_submitted"` with a non-zero exit
+when it truly failed. For supervisor loops use `session nudge`, which refuses a
+stalled target (exit 1) and skips a busy one (exit 0, `"delivered": false`)
+instead of typing into it blind:
+
+```bash
+agent-deck session nudge <child-id> "<message>" --json
+```
+
 ## Worked example
 
 ```bash
@@ -325,8 +348,17 @@ All read-only / on-demand — none of them block your session:
   is terminal. Run it in the background for a completion wake-up, or attach a
   stream watcher for live events. Read-only like the plain form.
 - `agent-deck session output <id> --json` — a child's latest full response.
+  Add `--require-fresh` (exit 3) when you expect a reply to something you sent.
+- `agent-deck session output <id> --pane` — the child's live pane render, for
+  when it has produced no message yet: mid-turn, stuck on a prompt, hung tool
+  call. Use this rather than `tmux capture-pane`.
 - `agent-deck session send <id> "<msg>" [--wait|--stream|--no-wait|--draft]` —
-  send a follow-up / answer a `waiting` child.
+  send a follow-up / answer a `waiting` child. Submission is verified; a message
+  left in the composer is a non-zero exit with `"delivery": "typed_not_submitted"`,
+  so never chase it with a manual `tmux send-keys ... Enter`.
+- `agent-deck session nudge <id> "<msg>" [--json]` — a send with preconditions,
+  for supervisor loops: exit 1 when the target is stalled or unreachable, exit 0
+  with `"delivered": false` when it is merely busy.
 - `agent-deck session approve <id> [once|always|session|N]` — resolve one
   visibly active Codex approval menu. Do not use `session send <id> "1"`:
   Codex consumes the digit as a decision key, while `session send` adds a

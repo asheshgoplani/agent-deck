@@ -1093,9 +1093,14 @@ should answer:
   the newest response still predates your message, instead of handing you the
   previous turn's answer.
 - **Stall rule:** a child with no status change for ~20 minutes is stuck.
-  Read its `session output`, nudge it once with `session send`; if it is
-  still stuck on the next check, mark the task **needs-attention** instead of
-  polling forever.
+  A stuck child has usually produced no new message, so `session output` hands
+  you the previous turn — read `agent-deck session output <id> --pane` to see
+  what it is actually showing (permission prompt, login screen, hung tool call),
+  then nudge it once with `agent-deck session nudge <id> "<msg>"`, which refuses
+  a stalled target instead of typing into it. Never `tmux send-keys` an Enter at
+  a child: the send path already retries and verifies submission. If it is still
+  stuck on the next check, mark the task **needs-attention** instead of polling
+  forever.
 
 ## Context budget
 
@@ -1246,6 +1251,7 @@ the reasoning around them.
 | Child prompt of any kind | a `cat > prompt.md <<'EOF'` heredoc | `render.sh` (see "Rendering child prompts") — the template body never enters your transcript |
 | CI failure | `gh run view --log-failed` | inspection child writes `$RUN_DIR/<slug>/ci-<run-id>.log` plus a green/red summary; route the artifact path to the implementer |
 | Waiting child's question | `session output <id>` | `agent-deck session output <id> -q \| tail -40` — there is no `--tail` flag |
+| A stuck child's actual screen | `tmux capture-pane` | `agent-deck session output <id> --pane \| tail -40` — same content, no raw tmux, works for isolated-socket sessions |
 | Anything large or genuinely unclear | reading and reasoning yourself | dispatch a subagent — it burns its own context and hands you back a summary |
 
 Reuse the task's cheap inspection child for repeated heartbeat checks. Reserve

@@ -114,7 +114,10 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | `agent-deck session start/stop/restart <name>` | Control session |
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session send <name> --message-file <file>` | Send message from file (`-` = stdin); no shell quoting. Also on `launch`/`session start` |
+| `agent-deck session nudge <name> "message"` | Send only if the session can receive it; verifies submission (exit code is the contract) |
 | `agent-deck session output <name>` | Get last response |
+| `agent-deck session output <name> --pane` | Live pane render — what the session is showing *right now* |
+| `agent-deck session output <name> --json --require-fresh` | Exit 3 while the last response predates the last message sent |
 | `agent-deck session children --json` | Child sessions' live status + asserted completions (non-blocking, read-only) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
 | `agent-deck session fork <name>` | Fork Claude/Pi conversation |
@@ -146,6 +149,7 @@ The script auto-detects current session/profile and creates a child session.
 |------|---------|----------|
 | **Fire & forget** | (no --wait) | Default. Tell user: "Ask me to check when ready" |
 | **On-demand** | `agent-deck session output "Title"` | User asks to check |
+| **Mid-turn** | `agent-deck session output "Title" --pane` | Child is still working or stuck at a prompt — the last message is the previous turn's |
 | **Blocking** | `--wait` flag | Need immediate result |
 
 ### Fanning out several children?
@@ -870,24 +874,59 @@ agent-deck manages **interactive agent sessions**. It is not a supervisor for al
 
 ## Known Gotchas (v1.7.0+)
 
-Friction points discovered during real usage. Work around them per the patterns below.
+Friction points discovered during real usage. Some are covered by a supported
+command now — reach for that, not for raw tmux; the rest carry an explicit
+workaround.
 
-### `session send --no-wait` can leave prompts typed-but-not-submitted
+### Never `tmux send-keys` an Enter after `session send`
 
-On a freshly-launched Claude session, `agent-deck session send --no-wait <id> "..."` may paste the message into the input buffer before Claude is fully ready, leaving it TYPED but not SUBMITTED. Classic race.
+The typed-but-not-submitted race is handled inside the send path — do not
+hand-roll it. `session send` and `session nudge` share one verified pipeline:
+composer-draft guard ([#1409](https://github.com/asheshgoplani/agent-deck/issues/1409)),
+bounded Enter retries with submit verification
+([#1413](https://github.com/asheshgoplani/agent-deck/issues/1413)), and
+gated-composer `Escape`+`Enter` recovery. A message left sitting in the
+composer is reported as a **failure** (`"delivery": "typed_not_submitted"`,
+`"success": false`, non-zero exit), never as a success.
 
-**Workaround (always safe):**
 ```bash
-agent-deck -p <profile> session send <id> "..." --no-wait -q
-sleep 3
-# Get the tmux session name and send Enter to submit
-TMUX=$(agent-deck -p <profile> session show --json <id> | jq -r .tmux_session)
-tmux send-keys -t "$TMUX" Enter
+agent-deck session send <id> "..." --json      # .submitted / .delivery are the proof
+agent-deck session nudge <id> "..."            # supervisors: exit code is the contract
 ```
 
-The Enter is idempotent — if already submitted, it's just a no-op newline. Use this pattern every time you `session send --no-wait` to a freshly-launched session.
+A blind `tmux send-keys ... Enter` on top of that is worse than redundant: the
+send path may already have parked a draft or be mid-retry, so the extra Enter
+can submit a *foreign* composer draft or double-submit yours. Whatever the
+pane state, `session nudge` is the safe entry point — it refuses on a stalled
+or unreachable target (exit 1), skips a busy one (exit 0, `"delivered": false`),
+and only types when the session can actually accept a turn.
 
-**Alternative:** omit `--no-wait` so the built-in 60s readiness wait kicks in before submitting.
+If you genuinely need the raw pane — an interrupt (`C-c`), a composer clear
+(`C-u`), a dialog dismiss (`Escape`) — none of those are sends and none are
+covered here; attach with `session attach <id>` or drive tmux deliberately,
+knowing you are outside the verified path.
+
+### Reading a child mid-turn: `session output --pane`, not `tmux capture-pane`
+
+`session output <id>` returns the last completed **assistant message**. While a
+child is still working, or is sitting at an interactive prompt, that message is
+the *previous* turn's — on a session whose conversation was resumed it can be
+days old, with no visible hint that it is stale. Reaching for
+`tmux capture-pane` at that point is the usual reflex; the CLI already covers it:
+
+```bash
+agent-deck session output <id> --pane | tail -40      # live pane render, full UI
+agent-deck session output <id> --json --require-fresh # exit 3 = child has not answered yet
+```
+
+`--pane` returns up to 2000 lines of scrollback with ANSI intact, so pipe it to
+`tail -N` for the part you want — and it captures through the session's own tmux
+socket, which a bare `tmux capture-pane` cannot do for socket-isolated sessions.
+
+`--json` also carries `"stale": true` and `"last_sent_at"`, so a supervisor can
+tell "not answered yet" from "answered" without parsing pane text. Use `--pane`
+for *what the child is showing right now* (a permission prompt, a login screen,
+a hung tool call) and plain `session output` for *what the child last said*.
 
 ### Replacing the binary while agent-deck is running (`text file busy`)
 
