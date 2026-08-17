@@ -529,7 +529,6 @@ type Home struct {
 	previewPct          int       // 10-90, default 65
 	previewPctOverlayAt time.Time // when to hide the split overlay (zero = hidden)
 	draggingDivider     bool      // true while the mouse is dragging the Sessions/Preview divider
-	previewOrientation  string    // retained for legacy configuration compatibility
 
 	// footerMode selects the bottom hint-bar style (config.toml [ui] footer).
 	// One of session.FooterCurated (default), FooterFull, FooterCompact, or

@@ -216,16 +216,20 @@ func TestSession_Exists_ClassificationIsAmortizedAcrossSessionsOnASocket(t *test
 // reads true, a genuine mismatch still reads indeterminate (true), and an
 // authoritative "can't find session" still reads false.
 func TestSession_Exists_StaysInBudgetWithAChildHoldingTheOutputDescriptors(t *testing.T) {
-	// Half of tmuxSubprocessWaitDelay: comfortably above two shell forks even on
-	// a loaded CI runner, and strictly below the drain any pipe-backed capture
-	// would pay here. It is deliberately expressed against that constant — the
-	// point of the assertion is "no stdio drain", not a wall-clock number.
+	// Widen WaitDelay for this test so loaded race-test hosts still have a broad
+	// gap between ordinary shell scheduling and an actual pipe-drain wait.
+	originalWaitDelay := tmuxSubprocessWaitDelay
+	tmuxSubprocessWaitDelay = 5 * time.Second
+	t.Cleanup(func() { tmuxSubprocessWaitDelay = originalWaitDelay })
+
+	// Three seconds comfortably covers process startup under full-suite load
+	// while remaining strictly below the five-second drain penalty above.
 	//
 	// This budget applies to EVERY case, including the two that classify the
 	// socket. The classification is out of band and amortized, but it still runs
 	// on the caller's goroutine, so it captures tmux's stderr into an *os.File
 	// rather than a pipe and has nothing to drain either.
-	budget := tmuxSubprocessWaitDelay / 2
+	budget := 3 * time.Second
 
 	cases := []struct {
 		name       string

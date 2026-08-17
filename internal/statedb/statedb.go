@@ -1082,6 +1082,8 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow, sweep bool) error {
 		if _, err := tx.Exec(tombstoneQuery, append([]any{time.Now().Unix()}, args...)...); err != nil {
 			return err
 		}
+		// #nosec G202 -- placeholders contains only one generated "?" token per
+		// instance; all IDs are bound separately through args.
 		query := "DELETE FROM instances WHERE id NOT IN (" + strings.Join(placeholders, ",") + ")"
 		if _, err := tx.Exec(query, args...); err != nil {
 			return err
@@ -1188,6 +1190,8 @@ func (s *StateDB) LoadInstancesByArchive(archived bool) ([]*InstanceRow, error) 
 }
 
 func (s *StateDB) loadInstances(where string) ([]*InstanceRow, error) {
+	// #nosec G202 -- where is selected only from the two constant predicates in
+	// LoadInstancesByArchive (or empty in LoadInstances), never user input.
 	query := `
 		SELECT id, title, project_path, group_path, sort_order,
 			command, wrapper, tool, status, tmux_session, tmux_socket_name,

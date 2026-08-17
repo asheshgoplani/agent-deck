@@ -214,7 +214,8 @@ func TestParentNeedsStatusRefreshForCodexParent(t *testing.T) {
 		{"Codex parent", Instance{Title: "c", Tool: "codex"}, true},
 		{"ordinary leaf", Instance{Title: "worker", Tool: "claude"}, false},
 	}
-	for _, c := range cases {
+	for idx := range cases {
+		c := &cases[idx]
 		if got := parentNeedsStatusRefresh(&c.parent); got != c.want {
 			t.Errorf("parentNeedsStatusRefresh(%s) = %v, want %v", c.name, got, c.want)
 		}

@@ -134,8 +134,19 @@ func TestIssue1580_FastDeathWatcherCapturesDyingOutput(t *testing.T) {
 		"the dying pane output must be captured before tmux discards it")
 	assert.Greater(t, rec.ElapsedMs, int64(0), "elapsed time must be positive")
 
-	// The lifecycle log must carry the spawn_died_fast trace.
-	assert.Contains(t, readLifecycleLog(t), "spawn_died_fast")
+	// The sidecar is written immediately before the lifecycle entry. A reader
+	// can observe that first rename while the watcher is still appending the
+	// second file, so wait for the complete externally visible transaction.
+	var lifecycleLog string
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		lifecycleLog = readLifecycleLog(t)
+		if strings.Contains(lifecycleLog, "spawn_died_fast") {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	assert.Contains(t, lifecycleLog, "spawn_died_fast")
 
 	// PreviewFull falls back to the record now that the pane is gone.
 	preview, err := inst.PreviewFull()

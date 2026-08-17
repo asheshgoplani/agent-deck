@@ -104,6 +104,7 @@ test.describe('URL routing (/s/{id})', () => {
     const newPage = await pagePromise
 
     // The opened URL carries both the /s/ path and the #session= fragment.
+    await newPage.waitForURL(/#session=sess-002/)
     expect(new URL(newPage.url()).pathname).toBe('/s/sess-002')
     expect(newPage.url()).toContain('#session=sess-002')
 

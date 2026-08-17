@@ -99,6 +99,10 @@ func TestRemotePluginSetupWarningIsExplicit(t *testing.T) {
 // if WorkerScratchConfigDir is somehow already set (an older state.db row, a
 // profile migration), the swap must not happen for a remote session.
 func TestApplyWorkerScratchOverride_RemoteKeepsResolvedDir(t *testing.T) {
+	origGOOS := runtimeGOOS
+	runtimeGOOS = func() string { return "linux" }
+	t.Cleanup(func() { runtimeGOOS = origGOOS })
+
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	ClearUserConfigCache()

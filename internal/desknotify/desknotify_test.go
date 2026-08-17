@@ -22,7 +22,11 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	os.Exit(runTestMain(m))
+}
+
+func runTestMain(m *testing.M) int {
+	return m.Run()
 }
 
 // fakeBackend records what it was asked to deliver.

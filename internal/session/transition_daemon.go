@@ -377,7 +377,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	hookStatuses := make(map[string]*HookStatus, len(instances))
 	for _, inst := range instances {
 		byID[inst.ID] = inst
-		if IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "cursor" {
+		if IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "cursor" || inst.Tool == "hermes" {
 			if hs := d.hookStatusForInstance(inst.ID); hs != nil {
 				// Issue #1349: only let a hook status rebind the session id when
 				// the instance is actually LIVE (running/waiting/idle with a real
@@ -934,14 +934,20 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		return nil
 	}
 	var raw struct {
-		Status         string `json:"status"`
-		SessionID      string `json:"session_id"`
-		Event          string `json:"event"`
-		Timestamp      int64  `json:"ts"`
-		DoneStatus     string `json:"done_status"`
-		DoneSummary    string `json:"done_summary"`
-		TranscriptPath string `json:"transcript_path"`
-		Cwd            string `json:"cwd"`
+		Status                   string `json:"status"`
+		SessionID                string `json:"session_id"`
+		Event                    string `json:"event"`
+		Timestamp                int64  `json:"ts"`
+		DoneStatus               string `json:"done_status"`
+		DoneSummary              string `json:"done_summary"`
+		TranscriptPath           string `json:"transcript_path"`
+		Cwd                      string `json:"cwd"`
+		CodexStartedGeneration   string `json:"codex_started_generation"`
+		CodexCompletedGeneration string `json:"codex_completed_generation"`
+		CodexStartedSessionID    string `json:"codex_started_session_id"`
+		CodexCompletedSessionID  string `json:"codex_completed_session_id"`
+		HookGeneration           string `json:"hook_generation"`
+		Sequence                 uint64 `json:"sequence"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
@@ -949,20 +955,31 @@ func readHookStatusFile(instanceID string) *HookStatus {
 	if strings.TrimSpace(raw.Status) == "" {
 		return nil
 	}
+	if generation, authority := hookGenerationForInstance(instanceID); !hookGenerationRecordAccepted(raw.HookGeneration, generation, authority) {
+		return nil
+	}
 	updatedAt := time.Now()
 	if raw.Timestamp > 0 {
 		updatedAt = time.Unix(raw.Timestamp, 0)
 	}
-	return &HookStatus{
-		Status:         raw.Status,
-		SessionID:      raw.SessionID,
-		Event:          raw.Event,
-		UpdatedAt:      updatedAt,
-		DoneStatus:     raw.DoneStatus,
-		DoneSummary:    raw.DoneSummary,
-		TranscriptPath: raw.TranscriptPath,
-		Cwd:            raw.Cwd,
+	hookStatus := &HookStatus{
+		Status:                   raw.Status,
+		SessionID:                raw.SessionID,
+		Event:                    raw.Event,
+		UpdatedAt:                updatedAt,
+		DoneStatus:               raw.DoneStatus,
+		DoneSummary:              raw.DoneSummary,
+		TranscriptPath:           raw.TranscriptPath,
+		Cwd:                      raw.Cwd,
+		CodexStartedGeneration:   raw.CodexStartedGeneration,
+		CodexCompletedGeneration: raw.CodexCompletedGeneration,
+		CodexStartedSessionID:    raw.CodexStartedSessionID,
+		CodexCompletedSessionID:  raw.CodexCompletedSessionID,
+		HookGeneration:           raw.HookGeneration,
+		Sequence:                 raw.Sequence,
 	}
+	maskConsumedCodexCompletion(instanceID, hookStatus)
+	return hookStatus
 }
 
 func (d *TransitionDaemon) emitHookTransitionCandidates(
@@ -1139,6 +1156,10 @@ func terminalHookTransitionCandidate(tool string, hs *HookStatus) (hookTransitio
 		if event == "stop" {
 			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt}, true
 		}
+	case "hermes":
+		if event == "post_llm_call" || event == "postllmcall" || event == "onsessionend" || event == "on_session_end" {
+			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt}, true
+		}
 	}
 	return hookTransitionCandidate{}, false
 }
@@ -1158,7 +1179,7 @@ func isTerminalHookEvent(event string) bool {
 	norm = strings.NewReplacer(".", "", "-", "", "_", "", "/", "", " ", "").Replace(norm)
 	switch norm {
 	case "sessionend", "sessionended", "sessionclose", "sessionclosed", "sessiondone", "sessionexit", "sessionexited",
-		"onsessionend",
+		"onsessionfinalize",
 		"threadend", "threadended", "threadterminate", "threadterminated", "threadclose", "threadclosed",
 		"threaddone", "threadexit", "threadexited":
 		return true

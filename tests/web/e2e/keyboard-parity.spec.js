@@ -121,6 +121,7 @@ test.describe('keyboard parity (#780)', () => {
     await page.keyboard.up('Shift')
     const newPage = await pagePromise
     expect(newPage).not.toBeNull()
+    await newPage.waitForURL(/#session=/)
     expect(newPage.url()).toContain('#session=')
     await newPage.close()
   })

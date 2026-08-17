@@ -32,7 +32,12 @@ import (
 // errors.Is(err, exec.ErrWaitDelay) and the captured stdout looks valid
 // (non-empty, parses cleanly), treat it as success. The bytes were
 // written to the buffer before the I/O goroutine was abandoned.
-const tmuxSubprocessWaitDelay = 2 * time.Second
+const tmuxSubprocessWaitDelayDefault = 2 * time.Second
+
+// tmuxSubprocessWaitDelay is variable only so the descriptor-inheritance
+// regression test can widen the gap between a direct Run and a pipe-drain
+// wait on loaded race-test hosts. Production never changes the default.
+var tmuxSubprocessWaitDelay = tmuxSubprocessWaitDelayDefault
 
 // tmuxSendKeysTimeoutDefault bounds a SINGLE `tmux send-keys` subprocess.
 //

@@ -3201,18 +3201,6 @@ func isCodexHomeExplicit() bool {
 	return strings.TrimSpace(cfg.Codex.ConfigDir) != ""
 }
 
-func (i *Instance) isCodexHomeExplicit() bool {
-	if i != nil {
-		if codexHomeFromCommand(i.resolveCodexCommand(i.Command)) != "" {
-			return true
-		}
-		if cfg, err := LoadUserConfig(); err == nil && cfg != nil && cfg.GetGroupCodexConfigDir(i.GroupPath) != "" {
-			return true
-		}
-	}
-	return isCodexHomeExplicit()
-}
-
 // runWithTimeout runs op in a goroutine and waits up to timeout for it to
 // complete. Returns true if op finished, false if it timed out. The
 // abandoned goroutine continues running until op returns naturally; its

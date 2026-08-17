@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/BurntSushi/toml"
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 )
 
 var codexPluginSyncMu sync.Mutex
@@ -111,7 +112,7 @@ func SyncGroupCodexPlugins(groupPath string) error {
 	if err != nil {
 		return err
 	}
-	env := filteredCodexHomeEnv(os.Environ())
+	env := filteredCodexHomeEnv(childenv.ForLaunch(""))
 	env = append(env, "CODEX_HOME="+codexHome)
 	var syncErrs []error
 	for _, marketplace := range marketplaces {
@@ -129,6 +130,8 @@ func SyncGroupCodexPlugins(groupPath string) error {
 
 func runCodexSyncCommand(argv, env []string, subcommand ...string) error {
 	args := append(append([]string{}, argv[1:]...), subcommand...)
+	// #nosec G204 -- argv is parsed from the operator's configured Codex
+	// command and every plugin argument remains a distinct argv token.
 	cmd := exec.Command(argv[0], args...)
 	cmd.Env = env
 	output, err := cmd.CombinedOutput()

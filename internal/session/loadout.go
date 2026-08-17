@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -272,51 +271,6 @@ func sanitizeLoadoutWarning(value string) string {
 			return r
 		}
 	}, value)
-}
-
-// healthyManagedSkillAttachment verifies that ErrSkillAlreadyAttached came
-// from the manifest-managed target and, for symlink mode, that the link still
-// resolves to the recorded source. A foreign replacement must never be
-// accepted as a healthy declarative floor.
-func healthyManagedSkillAttachment(projectPath, skillID string) bool {
-	// The project path can reach here from operator input (the web
-	// create-session request body carries it). Instance project paths are
-	// always absolute and clean, so refuse relative or dot-dot forms
-	// outright before any filesystem access (CodeQL go/path-injection).
-	if !filepath.IsAbs(projectPath) || strings.Contains(projectPath, "..") {
-		return false
-	}
-	manifest, err := LoadProjectSkillsManifest(projectPath)
-	if err != nil {
-		return false
-	}
-	for _, attachment := range manifest.Skills {
-		if normalizeSkillToken(skillIDForAttachment(attachment)) != normalizeSkillToken(skillID) {
-			continue
-		}
-		// Same audit-M3 containment guard as safeRemoveManagedTarget: a
-		// tampered manifest TargetPath that is absolute, non-managed, or
-		// "../"-escaping is refused before any filesystem access.
-		target := resolveTargetPath(projectPath, attachment.TargetPath)
-		skillDir, dirOK := managedProjectSkillsDirForTarget(attachment.TargetPath)
-		if !dirOK {
-			return false
-		}
-		base := filepath.Join(projectPath, filepath.FromSlash(skillDir))
-		if !isContainedIn(base, target) {
-			return false
-		}
-		if _, err := os.Lstat(target); err != nil {
-			return false
-		}
-		if attachment.Mode != "symlink" {
-			return true
-		}
-		actual, actualErr := filepath.EvalSymlinks(target)
-		expected, expectedErr := filepath.EvalSymlinks(attachment.SourcePath)
-		return actualErr == nil && expectedErr == nil && actual == expected
-	}
-	return false
 }
 
 // unionLoadoutEntries merges loadout lists preserving order (group floor

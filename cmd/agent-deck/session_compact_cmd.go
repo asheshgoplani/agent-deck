@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/send"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // compactVerifyPoll is how often the transcript is re-read while waiting for the
@@ -275,6 +275,8 @@ func spawnCompactResumeWatcher(profile, sessionID, baselineUUID, resume string, 
 		"--resume", resume,
 		"--timeout", timeout.String())
 
+	// #nosec G702 -- exe is the current signed/running executable and args are
+	// passed as distinct tokens to the private compact-watch subcommand.
 	cmd := exec.Command(exe, args...)
 	// Setpgid detaches it from this process group, so the watcher survives the
 	// CLI exiting and is not killed along with the turn that started it. Same
