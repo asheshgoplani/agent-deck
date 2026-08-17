@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -88,20 +87,6 @@ func handoffAgentIdle(inst *session.Instance) bool {
 	return inst.Status == session.StatusWaiting || inst.Status == session.StatusIdle
 }
 
-// handoffDir returns the per-session handoff directory <data-dir>/handoff/<id>.
-// The "handoff" marker keeps a pre-XDG ~/.agent-deck/handoff in use when it
-// exists, so sessions mid-handoff across the layout migration still resolve.
-//
-// The PROMPT.md path inside it is derived by session.HandoffPromptPath, which
-// the CLI also uses; keep this in agreement with it.
-func handoffDir(id string) string {
-	dir, err := agentpaths.EffectiveDataPath(filepath.Join("handoff", id), "handoff")
-	if err != nil {
-		return ""
-	}
-	return dir
-}
-
 // fileExists reports whether the path exists (used to poll for PROMPT.md).
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
@@ -173,7 +158,7 @@ func (h *Home) evaluateContextBudgetHandoff(instances []*session.Instance) {
 
 		in := session.HandoffInputs{
 			Tokens:      a.CurrentContextTokens,
-			PromptReady: fileExists(filepath.Join(handoffDir(inst.ID), "PROMPT.md")),
+			PromptReady: fileExists(session.HandoffPromptPath(inst)),
 			AgentIdle:   handoffAgentIdle(inst),
 			Now:         time.Now(),
 			TriggeredAt: trig,
@@ -210,8 +195,14 @@ func (h *Home) evaluateContextBudgetHandoff(instances []*session.Instance) {
 // requestWrap creates the handoff dir and injects the wrap-up instruction,
 // telling the agent to finish, persist, and write a continuation PROMPT.md.
 func (h *Home) requestWrap(inst *session.Instance) {
-	dir := handoffDir(inst.ID)
-	_ = os.MkdirAll(dir, 0o755)
+	dir, err := session.EnsureHandoffDir(inst)
+	if err != nil {
+		uiLog.Warn("handoff_dir_unavailable",
+			slog.String("session", inst.Title),
+			slog.String("id", inst.ID),
+			slog.Any("err", err))
+		return
+	}
 	ts := inst.GetTmuxSession()
 	if ts == nil {
 		return
@@ -239,7 +230,7 @@ func (h *Home) requestWrap(inst *session.Instance) {
 // reason distinguishes the normal idle fork from the ceiling/timeout failsafe;
 // it only affects logging and alert loudness.
 func (h *Home) forkContinuation(inst *session.Instance, reason string) {
-	promptPath := filepath.Join(handoffDir(inst.ID), "PROMPT.md")
+	promptPath := session.HandoffPromptPath(inst)
 	cfg := session.GetContextBudgetSettings()
 	targetTool := effectiveHandoffTargetTool(inst, cfg)
 

@@ -724,6 +724,22 @@ For trivial mechanical actions where the action IS its own verification (and the
 
 The verifier requirement attaches to claims about external mutable state: PRs, releases, comments, deployments, bulk operations.
 
+## Where files live
+
+Two locations, split by one question: would this file still mean anything if the
+project were deleted tomorrow?
+
+- **Project artifacts** → `<project-root>/.agent-deck/` — handoff prompts
+  (`handoff/<session-id>/PROMPT.md`), designs, orchestrate runs, `skills.toml`,
+  per-session `tmp/`. `<project-root>` is the repository's **main worktree**, so
+  every worktree of a repo shares one tree. Kept out of `git status` via the
+  user's global git excludes; agent-deck never edits a tracked `.gitignore`.
+- **Machine state** → `$XDG_DATA_HOME/agent-deck/` — `state.db`, config, logs,
+  hooks, inboxes, locks, agent homes, conductor/watcher state. Keyed by session
+  id and read without a project checkout necessarily existing.
+
+Full table and the lint test that enforces it: `docs/data-locations.md`.
+
 ## Configuration
 
 **File:** `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`; legacy `~/.agent-deck/config.toml` still honored)

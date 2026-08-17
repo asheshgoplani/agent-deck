@@ -38,16 +38,47 @@ func writeHandoffFixture(t *testing.T, lines ...string) *Instance {
 // where it lives — a divergence would silently make `session handoff` ignore
 // every wrap-up the agent ever wrote.
 func TestHandoffPromptPath(t *testing.T) {
-	got := HandoffPromptPath("sess-42")
-	if got == "" {
-		t.Fatal("HandoffPromptPath returned empty")
+	project := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(project); err == nil {
+		project = resolved
 	}
-	wantSuffix := filepath.Join("handoff", "sess-42", "PROMPT.md")
-	if !strings.HasSuffix(got, wantSuffix) {
-		t.Errorf("HandoffPromptPath = %q, want suffix %q", got, wantSuffix)
+	inst := &Instance{ID: "sess-42", ProjectPath: project}
+
+	got := HandoffPromptPath(inst)
+	want := filepath.Join(project, ProjectDataDirName, "handoff", "sess-42", "PROMPT.md")
+	if got != want {
+		t.Errorf("HandoffPromptPath = %q, want %q", got, want)
 	}
-	if HandoffPromptPath("") != "" {
+
+	if HandoffPromptPath(&Instance{ProjectPath: project}) != "" {
 		t.Error("empty id should yield empty path, not a directory-level path")
+	}
+	if HandoffPromptPath(nil) != "" {
+		t.Error("nil instance should yield empty path")
+	}
+}
+
+// The prompt is a project artifact, so it must land inside the project and
+// never under the machine-global data dir — the whole point of the move.
+func TestHandoffPromptPathIsProjectLocalNotGlobal(t *testing.T) {
+	home := t.TempDir()
+	dataHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	project := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(project); err == nil {
+		project = resolved
+	}
+	got := HandoffPromptPath(&Instance{ID: "sess-42", ProjectPath: project})
+
+	if !strings.HasPrefix(got, project+string(filepath.Separator)) {
+		t.Errorf("HandoffPromptPath = %q, want it under the project %q", got, project)
+	}
+	for _, global := range []string{dataHome, filepath.Join(home, ".agent-deck")} {
+		if strings.HasPrefix(got, global+string(filepath.Separator)) {
+			t.Errorf("HandoffPromptPath = %q, must not live under the global dir %q", got, global)
+		}
 	}
 }
 

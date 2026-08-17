@@ -1340,7 +1340,8 @@ but your soft remedy is also the cheaper one (write two files, no rotation, no
 re-parenting), so you are not made to stop earlier. If agent-deck's own budget
 handler rotates you first, **check the handoff directory is actually non-empty
 before trusting it** — an automatic rotation has been observed producing an
-empty one. Note that handler only runs while the TUI is open
+empty one. It writes `$ROOT_WT/.agent-deck/handoff/<session-id>/PROMPT.md`, the
+same repository-local tree as `$RUN_ROOT`. Note that handler only runs while the TUI is open
 (`internal/ui/context_budget_ui.go`), so on a headless run these thresholds
 and `rotate-conductor.sh` are the only thing standing between you and a
 million-token conductor.

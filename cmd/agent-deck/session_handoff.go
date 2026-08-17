@@ -87,7 +87,7 @@ func handleSessionHandoff(profile string, args []string) {
 		fmt.Println(prompt)
 	}
 	if resolved.Source == session.ContinuationSourceAgent {
-		fmt.Fprintf(os.Stderr, "handoff: using the agent's curated prompt from %s (pass --ignore-agent-prompt to rebuild from the transcript)\n", session.HandoffPromptPath(inst.ID))
+		fmt.Fprintf(os.Stderr, "handoff: using the agent's curated prompt from %s (pass --ignore-agent-prompt to rebuild from the transcript)\n", session.HandoffPromptPath(inst))
 	} else {
 		fmt.Fprintf(os.Stderr, "handoff: %d/%d messages included (truncated=%v, max %d chars) from %s\n",
 			info.IncludedCount, info.MessageCount, info.Truncated, info.MaxChars, info.TranscriptPath)
@@ -109,7 +109,7 @@ func resolveSessionHandoff(inst *session.Instance, targetTool string, ignoreAgen
 	}
 	var promptPath string
 	if inst != nil && !ignoreAgentPrompt {
-		promptPath = session.HandoffPromptPath(inst.ID)
+		promptPath = session.HandoffPromptPath(inst)
 	}
 	resolved, err := session.ResolveContinuationPrompt(inst, targetTool, promptPath, maxChars)
 	if err != nil {
