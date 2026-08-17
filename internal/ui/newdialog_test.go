@@ -1543,6 +1543,11 @@ func TestNewDialog_ToggleWorktree_SanitizesBranchFromName(t *testing.T) {
 		{"sanitizes to a .lock suffix", "*.lock*", "feature/lock"},
 		{"sanitizes to a leading slash", "~/x", "feature/x"},
 		{"sanitizes to a leading dot", "*.foo", "feature/foo"},
+		// An interior component the sanitizer leaves invalid: git rejects
+		// "feature/a-/.b", so the prefill must be dropped rather than handed to
+		// `worktree add`.
+		{"interior dot-leading component", "a?/.b", ""},
+		{"interior empty component", "a//b", ""},
 	}
 
 	for _, tt := range tests {
@@ -1552,11 +1557,21 @@ func TestNewDialog_ToggleWorktree_SanitizesBranchFromName(t *testing.T) {
 
 			d.ToggleWorktree()
 
-			if got := d.branchInput.Value(); got != tt.wantBranch {
+			got := d.branchInput.Value()
+			if got != tt.wantBranch {
 				t.Errorf("branch = %q, want %q", got, tt.wantBranch)
 			}
-			if err := git.ValidateBranchName(d.branchInput.Value()); err != nil {
-				t.Errorf("prefilled branch %q is invalid: %v", d.branchInput.Value(), err)
+			// An empty want means the name yields nothing git would accept, so
+			// the field must be left empty and the refusal must be the dialog's
+			// own "branch required" rather than a late `worktree add` failure.
+			if tt.wantBranch == "" {
+				if msg := d.Validate(); msg != "Branch name required for worktree" {
+					t.Errorf("Validate() = %q, want the branch-required refusal", msg)
+				}
+				return
+			}
+			if err := git.ValidateBranchName(got); err != nil {
+				t.Errorf("prefilled branch %q is invalid: %v", got, err)
 			}
 			if msg := d.Validate(); msg != "" {
 				t.Errorf("dialog refused its own prefill: %s", msg)

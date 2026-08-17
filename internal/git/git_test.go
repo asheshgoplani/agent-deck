@@ -273,6 +273,14 @@ func TestValidateBranchName(t *testing.T) {
 			"branch\\name",   // contains backslash
 			"@",              // just @
 			"branch@{name",   // contains @{
+			// Per-component rules git applies but a whole-string check misses.
+			"feature/.hidden", // component starts with a dot
+			"feature/x.lock",  // component ends with .lock
+			"feature//thing",  // empty component
+			"/feature",        // leading slash: empty first component
+			"feature/",        // trailing slash
+			"feature/thing.",  // ends with a dot
+			"feature/a-/.b",   // invalid char before a dot-leading component
 		}
 
 		for _, name := range invalidNames {

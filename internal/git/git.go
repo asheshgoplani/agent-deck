@@ -327,6 +327,29 @@ func ValidateBranchName(name string) error {
 		return errors.New("branch name cannot be just '@'")
 	}
 
+	// git check-ref-format applies several rules per slash-separated component
+	// rather than to the ref as a whole, so "feature/.x", "feature/x.lock" and
+	// "feature//x" all pass the whole-string checks above while git still
+	// refuses them. Without this, an invalid name reaches `git worktree add`
+	// and fails there instead of at the input that produced it.
+	if strings.HasSuffix(name, "/") {
+		return errors.New("branch name cannot end with '/'")
+	}
+	if strings.HasSuffix(name, ".") {
+		return errors.New("branch name cannot end with '.'")
+	}
+	for _, component := range strings.Split(name, "/") {
+		if component == "" {
+			return errors.New("branch name cannot contain an empty path component")
+		}
+		if strings.HasPrefix(component, ".") {
+			return fmt.Errorf("branch name component %q cannot start with '.'", component)
+		}
+		if strings.HasSuffix(component, ".lock") {
+			return fmt.Errorf("branch name component %q cannot end with '.lock'", component)
+		}
+	}
+
 	return nil
 }
 
