@@ -185,6 +185,10 @@ type UserConfig struct {
 	// Notifications defines waiting session notification bar settings
 	Notifications NotificationsConfig `toml:"notifications,omitempty"`
 
+	// DesktopNotifications enables macOS actionable desktop alerts. It is
+	// deliberately opt-in: absence of this section must never send banners.
+	DesktopNotifications DesktopNotificationsSettings `toml:"desktop_notifications,omitempty"`
+
 	// ContextBudget defines context-token usage budget and autonomous fork handling
 	ContextBudget ContextBudgetSettings `toml:"context_budget,omitempty"`
 
@@ -1266,6 +1270,13 @@ type NotificationsConfig struct {
 // operator outside the TUI, so it must be asked for.
 func (n NotificationsConfig) GetDesktopEnabled() bool {
 	return n.Desktop
+}
+
+// DesktopNotificationsSettings configures the macOS GUI-helper integration.
+// Additional provider/platform switches are intentionally absent: the first
+// release has one native macOS implementation and one explicit kill switch.
+type DesktopNotificationsSettings struct {
+	Enabled bool `toml:"enabled,omitempty"`
 }
 
 // GetTransitionEventsEnabled returns whether transition event dispatch is enabled.
@@ -4384,6 +4395,16 @@ func GetNotificationsSettings() NotificationsConfig {
 	}
 
 	return settings
+}
+
+// GetDesktopNotificationsSettings returns the explicit desktop alert setting.
+// A missing or unreadable config stays safely disabled.
+func GetDesktopNotificationsSettings() DesktopNotificationsSettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return DesktopNotificationsSettings{}
+	}
+	return config.DesktopNotifications
 }
 
 // GetSelfHealSettings returns self-heal settings from config. The zero value

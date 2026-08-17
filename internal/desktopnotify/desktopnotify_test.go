@@ -1,0 +1,1082 @@
+package desktopnotify
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func TestNormalizeEvent(t *testing.T) {
+	now := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		input SourceEvent
+		want  Event
+		ok    bool
+	}{
+		{
+			name:  "completion",
+			input: SourceEvent{SessionID: "worker-1", Title: "Worker", Profile: "work", Project: "/src/app", Kind: "finished", DoneStatus: "ok", Timestamp: now},
+			want:  Event{Class: Complete, SessionID: "worker-1", Title: "Worker", Profile: "work", Project: "/src/app", Timestamp: now}, ok: true,
+		},
+		{
+			name:  "waiting needs attention",
+			input: SourceEvent{SessionID: "worker-1", Title: "Worker", ToStatus: "waiting", Timestamp: now},
+			want:  Event{Class: Attention, SessionID: "worker-1", Title: "Worker", Timestamp: now}, ok: true,
+		},
+		{
+			name:  "error",
+			input: SourceEvent{SessionID: "worker-1", Title: "Worker", ToStatus: "error", Timestamp: now},
+			want:  Event{Class: Error, SessionID: "worker-1", Title: "Worker", Timestamp: now}, ok: true,
+		},
+		{name: "running ignored", input: SourceEvent{SessionID: "worker-1", ToStatus: "running"}, ok: false},
+		{name: "missing session ignored", input: SourceEvent{ToStatus: "error"}, ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := Normalize(tt.input)
+			if ok != tt.ok || (ok && !reflect.DeepEqual(got, tt.want)) {
+				t.Fatalf("Normalize(%+v) = (%+v, %v), want (%+v, %v)", tt.input, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestStoreBaselineAndDeduplicatesPersistently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	now := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	event := Event{Class: Attention, SessionID: "worker-1", Title: "Worker", Timestamp: now}
+
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Baseline(event); err != nil {
+		t.Fatal(err)
+	}
+	if deliver, err := store.ShouldDeliver(event); err != nil || deliver {
+		t.Fatal("baseline event must not alert")
+	}
+	if deliver, err := store.ShouldDeliver(event); err != nil || deliver {
+		t.Fatal("same event must be deduplicated")
+	}
+	changed := event
+	changed.Timestamp = now.Add(time.Second)
+	if deliver, err := store.ShouldDeliver(changed); err != nil || !deliver {
+		t.Fatal("a new event must deliver after the baseline")
+	}
+
+	store, err = OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deliver, err := store.ShouldDeliver(changed); err != nil || deliver {
+		t.Fatal("persisted state must deduplicate after restart")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("state file was not persisted: %v", err)
+	}
+}
+
+func TestStoreDeliversFirstNewEventAfterDaemonBaseline(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := Event{Class: Complete, SessionID: "worker-1", Timestamp: time.Now()}
+	if deliver, err := store.ShouldDeliver(event); err != nil || !deliver {
+		t.Fatal("a post-baseline event must be delivered")
+	}
+}
+
+func TestStorePrunesEventsOlderThanThirtyDays(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	now := time.Now().UTC()
+	thirtyDays := 30 * 24 * time.Hour
+	expired := Event{Class: Complete, SessionID: "expired", Timestamp: now.Add(-thirtyDays - time.Second)}
+	recent := Event{Class: Attention, SessionID: "recent", Timestamp: now.Add(-thirtyDays + time.Second)}
+	current := Event{Class: Error, SessionID: "current", Timestamp: now}
+	persisted := storeData{Events: map[string]string{
+		expired.SessionID: eventKey(expired),
+		recent.SessionID:  eventKey(recent),
+		current.SessionID: eventKey(current),
+	}}
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := restarted.data.Events[expired.SessionID]; exists {
+		t.Fatal("expired event remained in persisted state")
+	}
+	for _, event := range []Event{recent, current} {
+		if got := restarted.data.Events[event.SessionID]; got != eventKey(event) {
+			t.Fatalf("persisted event for %q = %q, want %q", event.SessionID, got, eventKey(event))
+		}
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persistedOnDisk storeData
+	if err := json.Unmarshal(data, &persistedOnDisk); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := persistedOnDisk.Events[expired.SessionID]; exists {
+		t.Fatal("expired event remained in the state file")
+	}
+}
+
+func TestBaselinePreservesPendingRetryAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	event := Event{Class: Complete, SessionID: "retrying", Summary: "original", Timestamp: time.Now()}
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkPending(event); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Baseline(Event{Class: Complete, SessionID: event.SessionID, Summary: "restart baseline", Timestamp: event.Timestamp.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if deliver, err := restarted.NeedsDelivery(event); err != nil || !deliver {
+		t.Fatalf("pending retry eligibility = deliver=%v err=%v, want true", deliver, err)
+	}
+}
+
+func TestPersistedBaselineSuppressesRestartBacklog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	event := Event{Class: Complete, SessionID: "completed-before-restart", Timestamp: time.Now()}
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Baseline(event); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deliver, err := restarted.ShouldDeliver(event); err != nil || deliver {
+		t.Fatalf("restarted store delivered baseline event: deliver=%v err=%v", deliver, err)
+	}
+}
+
+func TestConcurrentStoresRetainEverySessionState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	left, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const perStore = 80
+	baseTimestamp := time.Now().UTC()
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	write := func(store *Store, prefix string) {
+		defer wg.Done()
+		<-start
+		for i := 0; i < perStore; i++ {
+			event := Event{Class: Attention, SessionID: fmt.Sprintf("%s-%d", prefix, i), Timestamp: baseTimestamp.Add(time.Duration(i) * time.Nanosecond)}
+			if err := store.Baseline(event); err != nil {
+				t.Errorf("baseline %s: %v", event.SessionID, err)
+				return
+			}
+		}
+	}
+	wg.Add(2)
+	go write(left, "left")
+	go write(right, "right")
+	close(start)
+	wg.Wait()
+
+	restarted, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(restarted.data.Events), 2*perStore; got != want {
+		t.Fatalf("persisted event count = %d, want %d; concurrent store writes lost state", got, want)
+	}
+}
+
+const (
+	helperStoreWriterStateEnv   = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_STATE"
+	helperStoreWriterReadyEnv   = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_READY"
+	helperStoreWriterReleaseEnv = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_RELEASE"
+	helperStoreWriterTimeEnv    = "AGENT_DECK_DESKTOP_NOTIFY_WRITER_TIME"
+	helperStoreLockPathEnv      = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_PATH"
+	helperStoreLockReadyEnv     = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_READY"
+	helperStoreLockReleaseEnv   = "AGENT_DECK_DESKTOP_NOTIFY_LOCK_RELEASE"
+)
+
+// TestDesktopNotificationHelperStoreWriter is re-executed in a separate test
+// process by TestHelperStoreSubprocessAndDaemonStoreRetainEveryState. It uses
+// ShouldDeliver, the same Store write path used by the GUI helper, while the
+// parent executes daemon-style Baseline writes against the same state file.
+func TestDesktopNotificationHelperStoreWriter(t *testing.T) {
+	statePath := os.Getenv(helperStoreWriterStateEnv)
+	if statePath == "" {
+		return
+	}
+	baseTimestamp, err := time.Parse(time.RFC3339Nano, os.Getenv(helperStoreWriterTimeEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv(helperStoreWriterReadyEnv), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForDesktopNotifyTestFile(os.Getenv(helperStoreWriterReleaseEnv)); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 120; i++ {
+		event := Event{Class: Error, SessionID: fmt.Sprintf("helper-%d", i), Timestamp: baseTimestamp.Add(time.Duration(i) * time.Nanosecond)}
+		if deliver, err := store.ShouldDeliver(event); err != nil || !deliver {
+			t.Fatalf("helper write %s: deliver=%v err=%v", event.SessionID, deliver, err)
+		}
+	}
+}
+
+func TestHelperStoreSubprocessAndDaemonStoreRetainEveryState(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	readyPath := filepath.Join(t.TempDir(), "writer-ready")
+	releasePath := filepath.Join(t.TempDir(), "writer-release")
+	baseTimestamp := time.Now().UTC()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDesktopNotificationHelperStoreWriter$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		helperStoreWriterStateEnv+"="+statePath,
+		helperStoreWriterReadyEnv+"="+readyPath,
+		helperStoreWriterReleaseEnv+"="+releasePath,
+		helperStoreWriterTimeEnv+"="+baseTimestamp.Format(time.RFC3339Nano),
+	)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper writer: %v", err)
+	}
+	if err := waitForDesktopNotifyTestFile(readyPath); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("wait for helper writer readiness: %v\n%s", err, output.String())
+	}
+
+	store, err := OpenStore(statePath)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatal(err)
+	}
+	parentWriterReady := make(chan struct{})
+	parentWriterRelease := make(chan struct{})
+	parentWriterDone := make(chan error, 1)
+	go func() {
+		close(parentWriterReady)
+		<-parentWriterRelease
+		for i := 0; i < 120; i++ {
+			event := Event{Class: Attention, SessionID: fmt.Sprintf("daemon-%d", i), Timestamp: baseTimestamp.Add(time.Duration(i) * time.Nanosecond)}
+			if err := store.Baseline(event); err != nil {
+				parentWriterDone <- fmt.Errorf("daemon baseline %s: %w", event.SessionID, err)
+				return
+			}
+		}
+		parentWriterDone <- nil
+	}()
+	<-parentWriterReady
+	if err := os.WriteFile(releasePath, nil, 0o600); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("release concurrent writers: %v", err)
+	}
+	close(parentWriterRelease)
+	if err := <-parentWriterDone; err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("helper writer failed: %v\n%s", err, output.String())
+	}
+
+	restarted, err := OpenStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 120; i++ {
+		for _, event := range []Event{
+			{Class: Error, SessionID: fmt.Sprintf("helper-%d", i), Timestamp: baseTimestamp.Add(time.Duration(i) * time.Nanosecond)},
+			{Class: Attention, SessionID: fmt.Sprintf("daemon-%d", i), Timestamp: baseTimestamp.Add(time.Duration(i) * time.Nanosecond)},
+		} {
+			if got := restarted.data.Events[event.SessionID]; got != eventKey(event) {
+				t.Fatalf("persisted state for %q = %q, want %q", event.SessionID, got, eventKey(event))
+			}
+		}
+	}
+}
+
+// TestDesktopNotificationHelperStoreLockHolder is the separate helper process
+// used to hold the advisory lock while the daemon-side Store attempts its
+// read-modify-write transaction.
+func TestDesktopNotificationHelperStoreLockHolder(t *testing.T) {
+	lockPath := os.Getenv(helperStoreLockPathEnv)
+	if lockPath == "" {
+		return
+	}
+	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	readyPath := os.Getenv(helperStoreLockReadyEnv)
+	if err := os.WriteFile(readyPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	releasePath := os.Getenv(helperStoreLockReleaseEnv)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(releasePath); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for lock release")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestHelperStoreSubprocessBlocksDaemonStoreOnAdvisoryLock(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	readyPath := filepath.Join(t.TempDir(), "lock-ready")
+	releasePath := filepath.Join(t.TempDir(), "lock-release")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDesktopNotificationHelperStoreLockHolder$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		helperStoreLockPathEnv+"="+statePath+".lock",
+		helperStoreLockReadyEnv+"="+readyPath,
+		helperStoreLockReleaseEnv+"="+releasePath,
+	)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper lock holder: %v", err)
+	}
+	if err := waitForDesktopNotifyTestFile(readyPath); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("wait for helper lock: %v\n%s", err, output.String())
+	}
+
+	store, err := OpenStore(statePath)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	entered := make(chan struct{})
+	event := Event{Class: Attention, SessionID: "daemon-during-helper-lock", Timestamp: time.Now()}
+	go func() {
+		close(entered)
+		done <- store.Baseline(event)
+	}()
+	<-entered
+	select {
+	case err := <-done:
+		_ = cmd.Process.Kill()
+		t.Fatalf("daemon write bypassed helper advisory lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := os.WriteFile(releasePath, nil, 0o600); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("helper lock holder failed: %v\n%s", err, output.String())
+	}
+	restarted, err := OpenStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restarted.data.Events[event.SessionID]; got != eventKey(event) {
+		t.Fatalf("daemon event persisted after lock release = %q, want %q", got, eventKey(event))
+	}
+}
+
+func waitForDesktopNotifyTestFile(path string) error {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for %s", path)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestFocusCommandIncludesStableBinaryAndProfile(t *testing.T) {
+	got := FocusCommand("/Applications/Agent Deck.app/Contents/MacOS/agent-deck", Event{SessionID: "session-1", Profile: "work"})
+	want := []string{"/Applications/Agent Deck.app/Contents/MacOS/agent-deck", "--profile", "work", "session", "focus", "session-1", "--attach"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("FocusCommand() = %#v, want %#v", got, want)
+	}
+}
+
+func TestClientSendsEventToPrivateSocket(t *testing.T) {
+	tmp, err := os.CreateTemp("", "adn-socket-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	want := Event{Class: Error, SessionID: "session-1", Title: "Worker"}
+	done := make(chan Event, 1)
+	go func() { got, _ := listener.Receive(); done <- got }()
+	if err := Send(socket, want); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("received %#v, want %#v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for socket event")
+	}
+}
+
+func TestHelperDeliversOnlyDistinctEvents(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-helper-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var delivered []Event
+	helper := Helper{Listener: listener, Store: store, Present: func(event Event) error { delivered = append(delivered, event); return nil }}
+	event := Event{Class: Error, SessionID: "session-1", Timestamp: time.Now()}
+	for i := 0; i < 2; i++ {
+		done := make(chan error, 1)
+		go func() { done <- helper.ServeOne() }()
+		if err := Send(socket, event); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(delivered) != 1 {
+		t.Fatalf("delivered %d events, want one", len(delivered))
+	}
+}
+
+func TestHelperFailedPresenterEventCanBeAcceptedOnRetry(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-presenter-retry-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	helper := Helper{Listener: listener, Store: store, Present: func(Event) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("native submission failed")
+		}
+		return nil
+	}}
+	event := Event{Class: Error, SessionID: "retry-after-failed-presenter", Timestamp: time.Now()}
+
+	first := make(chan error, 1)
+	go func() { first <- helper.ServeOne() }()
+	if err := Send(socket, event); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-first; err == nil {
+		t.Fatal("failed presenter was reported as success")
+	}
+	second := make(chan error, 1)
+	go func() { second <- helper.ServeOne() }()
+	if err := Send(socket, event); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("retry after presenter failure: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("presenter attempts = %d, want 2", attempts)
+	}
+}
+
+func TestHelperServeRetriesInitialAuthorizationUntilAccepted(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-authorization-retry-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan Event, 1)
+	attempts := 0
+	helper := Helper{Listener: listener, Store: store, RetryDelay: time.Millisecond, Present: func(event Event) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("authorization unresolved")
+		}
+		accepted <- event
+		return nil
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("helper did not stop after listener close")
+		}
+	}()
+	want := Event{Class: Attention, SessionID: "retry-initial-authorization", Timestamp: time.Now()}
+	if err := Send(socket, want); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-accepted:
+		if got.Class != want.Class || got.SessionID != want.SessionID || !got.Timestamp.Equal(want.Timestamp) {
+			t.Fatalf("accepted event = %#v, want %#v", got, want)
+		}
+	case err := <-serveDone:
+		t.Fatalf("helper stopped before authorization resolved: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("helper did not retry initial authorization")
+	}
+	if attempts < 2 {
+		t.Fatalf("authorization attempts = %d, want retry", attempts)
+	}
+}
+
+func TestHelperServeAcceptsLaterEventWhileEarlierPresentationRetries(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-background-retry-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acceptRejected atomic.Bool
+	firstRejected := make(chan struct{}, 1)
+	delivered := make(chan Event, 1)
+	helper := Helper{Listener: listener, Store: store, RetryDelay: 20 * time.Millisecond, Present: func(event Event) error {
+		if event.SessionID == "rejected" && !acceptRejected.Load() {
+			select {
+			case firstRejected <- struct{}{}:
+			default:
+			}
+			return errors.New("native submission rejected")
+		}
+		if event.SessionID == "later" {
+			delivered <- event
+		}
+		return nil
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("helper did not stop after listener close")
+		}
+	}()
+
+	if err := Send(socket, Event{Class: Error, SessionID: "rejected", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstRejected:
+	case <-time.After(time.Second):
+		t.Fatal("rejected presentation was not attempted")
+	}
+	want := Event{Class: Attention, SessionID: "later", Timestamp: time.Now()}
+	if err := Send(socket, want); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-delivered:
+		if got.SessionID != want.SessionID || got.Class != want.Class || !got.Timestamp.Equal(want.Timestamp) {
+			t.Fatalf("delivered event = %#v, want %#v", got, want)
+		}
+	case <-time.After(250 * time.Millisecond):
+		acceptRejected.Store(true) // Let the old synchronous implementation drain before cleanup.
+		select {
+		case <-delivered:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("later event was blocked by a permanently rejected presentation")
+	}
+}
+
+func TestHelperServeSupersedesOlderRetryForSession(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-supersede-retry-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRejected := make(chan struct{}, 1)
+	newDelivered := make(chan struct{}, 1)
+	var oldAttempts atomic.Int32
+	helper := Helper{Listener: listener, Store: store, RetryDelay: 20 * time.Millisecond, Present: func(event Event) error {
+		if event.Summary == "old" {
+			if oldAttempts.Add(1) == 1 {
+				oldRejected <- struct{}{}
+				return errors.New("old presentation rejected")
+			}
+			return nil
+		}
+		newDelivered <- struct{}{}
+		return nil
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("helper did not stop after listener close")
+		}
+	}()
+
+	old := Event{Class: Error, SessionID: "same-session", Summary: "old", Timestamp: time.Now()}
+	if err := Send(socket, old); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-oldRejected:
+	case <-time.After(time.Second):
+		t.Fatal("old presentation was not attempted")
+	}
+	newer := Event{Class: Attention, SessionID: old.SessionID, Summary: "new", Timestamp: old.Timestamp.Add(time.Millisecond)}
+	if err := Send(socket, newer); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-newDelivered:
+	case <-time.After(time.Second):
+		t.Fatal("newer presentation was not delivered")
+	}
+	time.Sleep(3 * helper.RetryDelay)
+	if got := oldAttempts.Load(); got != 1 {
+		t.Fatalf("old presentation attempts = %d, want 1 after supersession", got)
+	}
+	needsDelivery, err := store.NeedsDelivery(newer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if needsDelivery {
+		t.Fatal("newer event was not retained as the persisted delivery state")
+	}
+}
+
+func TestHelperServeShutdownDoesNotWaitForBlockedPresenter(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-blocked-presenter-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	finished := make(chan struct{}, 1)
+	helper := Helper{Listener: listener, Store: store, Present: func(Event) error {
+		entered <- struct{}{}
+		<-release
+		finished <- struct{}{}
+		return nil
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	event := Event{Class: Error, SessionID: "blocked", Timestamp: time.Now()}
+	if err := Send(socket, event); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("presenter did not block")
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-serveDone:
+	case <-time.After(250 * time.Millisecond):
+		close(release)
+		<-finished
+		<-serveDone
+		t.Fatal("helper shutdown waited for blocked presenter")
+	}
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("blocked presenter did not finish after release")
+	}
+	needsDelivery, err := store.NeedsDelivery(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !needsDelivery {
+		t.Fatal("shutdown-cancelled presentation persisted delivery")
+	}
+}
+
+func TestHelperServeSerializesConcurrentPresentations(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-serialized-presenter-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstEntered := make(chan struct{}, 1)
+	secondEntered := make(chan struct{}, 1)
+	releaseFirst := make(chan struct{})
+	var active atomic.Int32
+	var maximum atomic.Int32
+	helper := Helper{Listener: listener, Store: store, Present: func(event Event) error {
+		current := active.Add(1)
+		for {
+			previous := maximum.Load()
+			if current <= previous || maximum.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		defer active.Add(-1)
+		if event.SessionID == "first" {
+			firstEntered <- struct{}{}
+			<-releaseFirst
+		} else {
+			secondEntered <- struct{}{}
+		}
+		return nil
+	}}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("helper did not stop after listener close")
+		}
+	}()
+	if err := Send(socket, Event{Class: Error, SessionID: "first", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first presentation did not start")
+	}
+	if err := Send(socket, Event{Class: Attention, SessionID: "second", Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	concurrent := false
+	select {
+	case <-secondEntered:
+		concurrent = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+	if !concurrent {
+		select {
+		case <-secondEntered:
+		case <-time.After(time.Second):
+			t.Fatal("second presentation did not start after first completed")
+		}
+	}
+	if concurrent || maximum.Load() != 1 {
+		t.Fatalf("presentations overlapped: concurrent=%v maximum=%d", concurrent, maximum.Load())
+	}
+}
+
+func TestHelperDropsMalformedPayloadAndContinuesServing(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-malformed-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan Event, 1)
+	helper := Helper{Listener: listener, Store: store, Present: func(event Event) error { delivered <- event; return nil }}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("helper did not stop after listener close")
+		}
+	}()
+
+	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("not-json\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	want := Event{Class: Attention, SessionID: "valid-after-malformed", Timestamp: time.Now()}
+	if err := Send(socket, want); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-delivered:
+		if got.Class != want.Class || got.SessionID != want.SessionID || !got.Timestamp.Equal(want.Timestamp) {
+			t.Fatalf("delivered %#v, want %#v", got, want)
+		}
+	case err := <-serveDone:
+		t.Fatalf("helper stopped after malformed payload: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for valid payload after malformed input")
+	}
+}
+
+func TestHelperDropsIncompletePayloadWithoutEOFAndContinuesServing(t *testing.T) {
+	socketFile, err := os.CreateTemp("", "adn-incomplete-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(socket)
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan Event, 1)
+	helper := Helper{Listener: listener, Store: store, Present: func(event Event) error { delivered <- event; return nil }}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- helper.Serve() }()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("helper did not stop after listener close")
+		}
+	}()
+
+	stalled, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stalled.Close()
+	if _, err := stalled.Write([]byte(`{"class":"error"`)); err != nil {
+		t.Fatal(err)
+	}
+
+	want := Event{Class: Attention, SessionID: "valid-after-incomplete", Timestamp: time.Now()}
+	if err := Send(socket, want); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-delivered:
+		if got.Class != want.Class || got.SessionID != want.SessionID || !got.Timestamp.Equal(want.Timestamp) {
+			t.Fatalf("delivered %#v, want %#v", got, want)
+		}
+	case err := <-serveDone:
+		t.Fatalf("helper stopped after incomplete payload: %v", err)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("incomplete client blocked a later valid payload")
+	}
+}

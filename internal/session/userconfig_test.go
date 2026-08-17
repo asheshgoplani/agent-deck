@@ -446,6 +446,32 @@ func TestCreateExampleConfigDocumentsCompatibleWith(t *testing.T) {
 	}
 }
 
+func TestDesktopNotificationsConfigIsExplicitlyDisabledByDefault(t *testing.T) {
+	var config UserConfig
+	if config.DesktopNotifications.Enabled {
+		t.Fatal("desktop notifications must be disabled unless explicitly enabled")
+	}
+	_, err := toml.Decode(`[desktop_notifications]
+enabled = true
+`, &config)
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if !config.DesktopNotifications.Enabled {
+		t.Fatal("desktop_notifications.enabled was not decoded")
+	}
+}
+
+func TestDesktopNotificationSocketPathFitsMacOSUnixSocketLimit(t *testing.T) {
+	path, err := DesktopNotificationSocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(path) >= 104 {
+		t.Fatalf("socket path is %d bytes (%q), exceeding the macOS Unix-socket limit", len(path), path)
+	}
+}
+
 func TestGlobalSearchConfig(t *testing.T) {
 	// Create temp config with global search settings
 	tmpDir := t.TempDir()

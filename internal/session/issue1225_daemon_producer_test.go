@@ -1,5 +1,7 @@
 package session
 
+import "github.com/asheshgoplani/agent-deck/internal/desktopnotify"
+
 // Audit B13 / GAP §6 — the interactive running→waiting producer was wired but
 // never exercised end-to-end through the daemon's real entry point. A refactor
 // to the lastStatus tracking or the ShouldNotifyTransition guard could silently
@@ -17,6 +19,14 @@ import (
 
 func TestB13_DaemonSyncProfile_InteractiveTransitionCommitsToInbox(t *testing.T) {
 	inboxTestHome(t)
+	setDesktopNotificationsEnabled(t, true)
+	originalDesktopSender := desktopNotificationSender
+	var desktopEvents []desktopnotify.SourceEvent
+	desktopNotificationSender = func(event desktopnotify.SourceEvent) error {
+		desktopEvents = append(desktopEvents, event)
+		return nil
+	}
+	t.Cleanup(func() { desktopNotificationSender = originalDesktopSender })
 	profile := "_test-daemon-producer"
 
 	storage, err := NewStorageWithProfile(profile)
@@ -95,5 +105,19 @@ func TestB13_DaemonSyncProfile_InteractiveTransitionCommitsToInbox(t *testing.T)
 	}
 	if !found {
 		t.Fatalf("interactive running→waiting did NOT commit to the busy parent's inbox via the daemon; drained %+v", events)
+	}
+	if len(desktopEvents) != 1 || desktopEvents[0].ToStatus != "waiting" || desktopEvents[0].SessionID != child.ID {
+		t.Fatalf("desktop notification = %+v, want one waiting event for %q", desktopEvents, child.ID)
+	}
+
+	// A session can fail after it has already become waiting. This is not a
+	// legacy running→terminal transition, but it is still a desktop error.
+	desktopEvents = nil
+	if err := db.WriteStatus(child.ID, "error", "claude"); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+	d.syncProfile(profile)
+	if len(desktopEvents) != 1 || desktopEvents[0].ToStatus != "error" || desktopEvents[0].SessionID != child.ID {
+		t.Fatalf("desktop notification = %+v, want one error event for %q", desktopEvents, child.ID)
 	}
 }

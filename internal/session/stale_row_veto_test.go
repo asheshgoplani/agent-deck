@@ -19,6 +19,8 @@ package session
 import (
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/desktopnotify"
 )
 
 // seedStaleRowFixture saves a parent + claude child (status running) into the
@@ -75,14 +77,28 @@ func seedStaleRowFixture(t *testing.T, storage *Storage, childID, parentID, rowS
 func TestSyncOnce_StaleRunningRowDoesNotVetoFreshTerminalHook(t *testing.T) {
 	const profile = "_test_stalerow_veto"
 	d, storage := bootstrapDaemonProfile(t, profile)
+	setDesktopNotificationsEnabled(t, true)
+	originalDesktopSender := desktopNotificationSender
+	var desktopEvents []desktopnotify.SourceEvent
+	desktopNotificationSender = func(event desktopnotify.SourceEvent) error {
+		desktopEvents = append(desktopEvents, event)
+		return nil
+	}
+	t.Cleanup(func() { desktopNotificationSender = originalDesktopSender })
 	ResetInboxFingerprintCacheForTest()
 	t.Cleanup(ResetInboxFingerprintCacheForTest)
 
 	parent, child := seedStaleRowFixture(t, storage, "stalerow-child-1", "stalerow-parent-1", "running")
 
-	// The child's own runtime asserts a FRESH terminal status via its Stop hook.
-	seedHookStatusFile(t, child.ID, "Stop", "55555555-5555-5555-5555-555555555555", "waiting")
+	// First pass establishes the persisted desktop baseline with the stale
+	// running DB row; no hook candidate exists yet.
+	d.syncProfile(profile)
+	if inbox, err := DrainInboxForParent(parent.ID); err != nil || len(inbox) != 0 {
+		t.Fatalf("baseline pass emitted legacy events=%d err=%v", len(inbox), err)
+	}
 
+	// The child's own runtime now asserts a FRESH terminal status via its Stop hook.
+	seedHookStatusFile(t, child.ID, "Stop", "55555555-5555-5555-5555-555555555555", "waiting")
 	d.syncProfile(profile)
 
 	inbox, err := DrainInboxForParent(parent.ID)
@@ -94,6 +110,9 @@ func TestSyncOnce_StaleRunningRowDoesNotVetoFreshTerminalHook(t *testing.T) {
 	}
 	if inbox[0].ChildSessionID != child.ID || inbox[0].ToStatus != "waiting" {
 		t.Fatalf("wrong event committed: %+v", inbox[0])
+	}
+	if len(desktopEvents) != 1 || desktopEvents[0].SessionID != child.ID || desktopEvents[0].ToStatus != "waiting" {
+		t.Fatalf("hook candidate desktop event = %+v, want one waiting event for %q", desktopEvents, child.ID)
 	}
 }
 
