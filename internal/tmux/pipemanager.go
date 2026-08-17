@@ -582,7 +582,9 @@ func killStaleControlClients(sessionName, socketName string) {
 	if err != nil {
 		return // session may not exist or no clients attached
 	}
-	reapStaleControlClients(string(out), sessionName)
+	budget, cancel := context.WithTimeout(context.Background(), staleControlSweepBudget)
+	defer cancel()
+	reapStaleControlClients(budget, string(out), sessionName)
 }
 
 // SweepStaleControlClients reaps orphaned control-mode clients across EVERY
@@ -605,17 +607,45 @@ func killStaleControlClients(sessionName, socketName string) {
 // failed) list-clients is treated as best-effort and skipped — the next launch
 // sweeps again.
 func SweepStaleControlClients(socketName string) {
-	ctx, cancel := context.WithTimeout(context.Background(), staleControlSweepTimeout)
+	budget, cancel := context.WithTimeout(context.Background(), staleControlSweepBudget)
 	defer cancel()
-	out, err := tmuxExecContext(ctx, socketName,
+
+	// The query gets its own, tighter cap nested inside the budget: an
+	// unresponsive server must not spend the whole allowance before a single
+	// client has been looked at.
+	queryCtx, cancelQuery := context.WithTimeout(budget, staleControlSweepTimeout)
+	defer cancelQuery()
+	out, err := tmuxExecContext(queryCtx, socketName,
 		"list-clients",
 		"-F", "#{client_control_mode} #{client_pid}",
 	).Output()
 	if err != nil {
 		return // no server running, no clients attached, or the probe timed out
 	}
-	reapStaleControlClients(string(out), "(all-sessions)")
+	reapStaleControlClients(budget, string(out), "(all-sessions)")
 }
+
+// staleControlSweepBudget is the aggregate deadline for one stale-control-client
+// sweep: the identity reads AND the SIGTERM/grace of every victim, not just the
+// enumeration. It is deliberately far larger than staleControlSweepTimeout,
+// because the two bound different risks — the query cap stops one wedged server
+// from stalling the sweep, while this one stops the sweep as a whole from
+// stalling the boot path.
+//
+// Sized to clear a real backlog rather than to be tight. The dominant cost is
+// controlClientKillGrace per victim, and only for a client that ignores
+// SIGTERM: softKillProcessChecked polls and returns as soon as the pid is gone,
+// so the 176-client case this sweep exists for normally costs milliseconds of
+// /proc reads plus prompt exits. Ten seconds leaves that untouched and caps the
+// pathological host, where the remainder is reported and swept again next
+// launch.
+//
+// Why this sweep stays synchronous, unlike its sibling: main.go runs it
+// immediately BEFORE the TUI starts connecting its own pipes, precisely because
+// the failure it cleans up is an exhausted pty table. Backgrounding it would
+// let this process start claiming ptys while the backlog is still there, which
+// is the ordering the boot-path call exists to guarantee.
+var staleControlSweepBudget = 10 * time.Second
 
 // staleControlSweepTimeout bounds the boot-path server-wide list-clients query
 // in SweepStaleControlClients so an unresponsive tmux server can't hang startup.
@@ -625,8 +655,23 @@ var staleControlSweepTimeout = 2 * time.Second
 // #{client_pid}"` output and soft-kills each orphaned control-mode client.
 // sessionLabel identifies the sweep scope in the observability logs ("(all-
 // sessions)" for the server-wide startup sweep, otherwise the session name).
-// Returns the number of clients killed.
-func reapStaleControlClients(listOutput, sessionLabel string) int {
+// Returns the number of clients killed, and the number never examined because
+// the budget ran out.
+//
+// budget bounds the WHOLE sweep, not one probe of it. Before this, the only
+// deadline in this area was staleControlSweepTimeout on the `list-clients`
+// query that feeds this function; everything after it — one identity read per
+// listed pid, then a SIGTERM and up to controlClientKillGrace per victim — ran
+// unbounded and synchronously on the boot path. Over the backlog this function
+// exists for (176 orphaned clients, see SweepStaleControlClients) that is a
+// startup stall measured in minutes, on a host already in trouble. Commit
+// 3a5af543 makes this argument to get the orphan sweep off the Connect path;
+// the same reasoning applies here and was not applied.
+//
+// Candidates left unexamined are counted and logged rather than dropped
+// quietly: the next launch sweeps again, and a sweep that quietly narrows
+// itself toward inert is the original failure of this whole area.
+func reapStaleControlClients(budget context.Context, listOutput, sessionLabel string) (killed, unexamined int) {
 	myPID := os.Getpid()
 
 	// Track burst stats so production logs surface how often this fires N>0
@@ -637,7 +682,6 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 	// killed_stale_control_client log emits per-PID; the Info line below
 	// surfaces the cascade as a single observable event.
 	burstStart := time.Now()
-	killCount := 0
 
 	// Pass 1: identify every pid in the snapshot BEFORE anything is killed.
 	//
@@ -672,7 +716,11 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 		if pid == myPID {
 			continue // don't kill our own process
 		}
-		identity, err := processIdentityOf(context.Background(), pid)
+		if budget.Err() != nil {
+			unexamined++
+			continue
+		}
+		identity, err := processIdentityOf(budget, pid)
 		if err != nil {
 			// Fail closed: a pid we cannot identify is not signalled. See
 			// stillSameIncarnation.
@@ -693,6 +741,10 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 	// immediately before each signal, and a pid that changed hands is refused.
 	for _, c := range candidates {
 		pid, identity := c.pid, c.identity
+		if budget.Err() != nil {
+			unexamined++
+			continue
+		}
 		switch verdict := controlClientOrphanOf(pid); verdict {
 		case parentageUnknown:
 			// This sweep has no comm filter and no live-server query, so the
@@ -737,7 +789,7 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 		// the entire tmux server, wiping every agent-deck session. A SIGTERM
 		// lets the client drain and exit cleanly; SIGKILL is retained as a
 		// 500ms fallback for clients that ignore TERM.
-		usedSIGKILL, signalled := softKillProcessChecked(context.Background(), pid, identity, controlClientKillGrace)
+		usedSIGKILL, signalled := softKillProcessChecked(budget, pid, identity, controlClientKillGrace)
 		if !signalled {
 			// Nothing was sent, so nothing is counted — the burst metric below
 			// exists to observe real kill cascades. Two causes share this
@@ -751,20 +803,21 @@ func reapStaleControlClients(listOutput, sessionLabel string) int {
 				slog.Int("pid", pid))
 			continue
 		}
-		killCount++
+		killed++
 		pipeLog.Debug("killed_stale_control_client",
 			slog.String("session", logging.SanitizeValue(sessionLabel)),
 			slog.Int("pid", pid),
 			slog.Bool("used_sigkill", usedSIGKILL))
 	}
 
-	if killCount > 0 {
+	if killed > 0 || unexamined > 0 {
 		pipeLog.Info("stale_control_clients_swept",
 			slog.String("session", logging.SanitizeValue(sessionLabel)),
-			slog.Int("kill_count", killCount),
+			slog.Int("kill_count", killed),
+			slog.Int("unexamined_out_of_budget", unexamined),
 			slog.Duration("duration", time.Since(burstStart)))
 	}
-	return killCount
+	return killed, unexamined
 }
 
 // orphanReapStarted ensures the process-wide orphaned-poll-client sweep is

@@ -186,7 +186,7 @@ func TestReapStaleControlClients_RefusesUnknownParentage(t *testing.T) {
 	pid := fakeTmuxCandidate(t, "ignore")
 	stubControlClientOrphan(t, alwaysUnknownParentage)
 
-	killed := reapStaleControlClients(fmt.Sprintf("1 %d\n", pid), "(test)")
+	killed, _ := reapStaleControlClients(context.Background(), fmt.Sprintf("1 %d\n", pid), "(test)")
 
 	assert.Equal(t, 0, killed)
 	time.Sleep(300 * time.Millisecond)

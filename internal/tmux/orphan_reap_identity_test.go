@@ -378,7 +378,7 @@ func TestReapStaleControlClients_RefusesAPIDRecycledDuringAnEarlierVictimsGrace(
 	}
 
 	snapshot := fmt.Sprintf("1 %d\n1 %d\n", firstVictim, secondVictim)
-	killCount := reapStaleControlClients(snapshot, "(test)")
+	killCount, _ := reapStaleControlClients(context.Background(), snapshot, "(test)")
 
 	assert.Equal(t, 1, killCount, "only the victim whose identity held may be counted as killed")
 	assert.True(t, recycled, "the first victim's kill must have run, or this test proves nothing")
