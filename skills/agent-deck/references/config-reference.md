@@ -292,6 +292,70 @@ older versions are left intact because their original manual versus
 declarative intent is unknown; detach those explicitly after verifying the
 home-scoped copy.
 
+## Global loadout floors
+
+Entries that belong in every group can be declared once on `[claude]` or
+`[codex]` instead of repeated in each group stanza:
+
+```toml
+[claude]
+skills = ["shared/port-registry"]
+plugins = ["agent-deck"]
+mcps = ["context7"]
+
+[codex]
+skills = ["shared/port-registry"]
+marketplaces = ["/srv/marketplaces/team"]
+plugins = ["andrej-karpathy-skills@karpathy-skills"]
+```
+
+The global list resolves as the **outermost ancestor**, so the effective
+loadout is `(global ∪ root group ∪ … ∪ leaf group)`, root-first and
+deduplicated. Two consequences worth knowing:
+
+- Sessions with **no group at all** still receive the floor. That is the point
+  of a floor, and it is the one way a loadout reaches an ungrouped session.
+- A group **cannot subtract** from the floor. Omitting an entry from a group
+  list does not remove it, matching the existing attach-only rule that removing
+  an entry from config.toml never detaches it.
+
+Codex home skills still require an isolated `config_dir`. When only the global
+floor contributes skills and no group in the chain declares a `config_dir`, the
+skills are skipped quietly rather than failing the spawn — there would be no
+per-group home to materialize them into, and writing them to the shared default
+home would leak the floor across unrelated sessions.
+
+## Diagnosing drift: `config doctor`
+
+`config.toml` declares; the agent homes on disk contain. Those diverge silently,
+because provisioning is an attach-only floor applied at session create/start:
+a new entry does not materialize until the next session in that group starts,
+and a removed entry is never detached. `agent-deck config doctor` reports the
+gap:
+
+```bash
+agent-deck config doctor              # human-readable, grouped by check
+agent-deck config doctor --json       # machine-readable
+agent-deck config doctor --quiet      # errors and warnings only
+agent-deck config doctor --check tool-asymmetry
+```
+
+Checks, by severity:
+
+| Check | Severity | Catches |
+|---|---|---|
+| `codex-notify-missing` | error | A Codex home with no root-level `notify`, so sessions never report turn completion. Also catches a `notify` key nested inside another table (`[tui]`), which parses as `tui.notify` and silently never fires — grep cannot see TOML table scope. |
+| `unknown-catalog-ref` | error | A loadout naming an `[mcps.X]` / `[plugins.X]` key that does not exist. |
+| `home-unreadable` | error | A configured home that is missing or unparseable. An *inferred* `~/.claude` that does not exist is not reported — that just means Claude is unused here. |
+| `declared-not-materialized` | warn | Declared for a group but absent from the home. Expected right after a config edit; converges on next session start or `agent-deck group codex sync`. |
+| `tool-asymmetry` | warn | Declared for one tool but not the other in a group that declares both. A group declaring only one side has expressed no opinion about the other and stays quiet. |
+| `marketplace-source-conflict` | warn | One marketplace name resolving to different sources across homes, so the same plugin selector means different code. |
+| `undeclared-in-home` | info | Present in a home but declared nowhere. Hand-installing is legitimate; the doctor makes it visible rather than forbidding it. |
+
+The command is read-only and never repairs. Exit status is 1 when any
+error-severity finding is present, so it can gate a sync script; warnings and
+info never fail the run.
+
 ## [group_defaults] Section
 
 Defaults stamped onto **newly-created** groups. Existing groups are unaffected.
