@@ -1,6 +1,7 @@
 package session
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -347,5 +348,108 @@ func TestUsageLimitedWithSchedule_ReportsMemo_RebindClearsIt(t *testing.T) {
 	// surviving A-schedule on a B-verdict would be a resume with no gate at all.
 	if limited, nb := inst.usageLimitedWithSchedule(); limited || !nb.IsZero() {
 		t.Fatalf("a rebind must discard A's verdict and schedule, got limited=%v notBefore=%s", limited, nb)
+	}
+}
+
+// The daemon's audit sink must COLLAPSE by default. Wired wrong, the pass goes
+// straight back to one record per evaluation — the 480 MB/day this bounds.
+func TestNewSelfHealAuditSink_CollapsesByDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "selfheal-audit.ndjson")
+	sink, err := newSelfHealAuditSink(path, SelfHealSettings{})
+	if err != nil {
+		t.Fatalf("newSelfHealAuditSink: %v", err)
+	}
+	if _, ok := sink.(*selfheal.CollapsingSink); !ok {
+		t.Fatalf("default audit sink is %T, want *selfheal.CollapsingSink", sink)
+	}
+
+	// End to end through the real file: identical evaluations write once.
+	base := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
+	for i := 0; i < 100; i++ {
+		ev := selfheal.Event{
+			TS:        base.Add(time.Duration(i) * 2 * time.Second).Format(time.RFC3339),
+			SessionID: "s1",
+			Decision:  selfheal.DecisionSkipHealthy,
+			Stage:     selfheal.ModeObserve,
+		}
+		if err := sink.Append(ev); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	var n int
+	if err := selfheal.ForEachAuditEvent(path, func(selfheal.Event) error { n++; return nil }); err != nil {
+		t.Fatalf("ForEachAuditEvent: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("100 identical evaluations wrote %d audit records, want 1", n)
+	}
+}
+
+// The escape hatch must actually bypass the collapse.
+func TestNewSelfHealAuditSink_FullRecordsOptOut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "selfheal-audit.ndjson")
+	sink, err := newSelfHealAuditSink(path, SelfHealSettings{AuditFullRecords: true})
+	if err != nil {
+		t.Fatalf("newSelfHealAuditSink: %v", err)
+	}
+	if _, ok := sink.(*selfheal.NDJSONSink); !ok {
+		t.Fatalf("audit_full_records sink is %T, want the raw *selfheal.NDJSONSink", sink)
+	}
+}
+
+// A daemon shutdown must not truncate the last run of each session: the
+// collapsing sink owes a closing record with the suppressed count, and
+// flushSinks is what pays it. Nil registry is the no-daemon case.
+func TestSelfHealRegistry_FlushSinksWritesPendingClosingRecords(t *testing.T) {
+	(*selfHealRegistry)(nil).flushSinks() // must not panic
+
+	path := filepath.Join(t.TempDir(), "selfheal-audit.ndjson")
+	sink, err := newSelfHealAuditSink(path, SelfHealSettings{})
+	if err != nil {
+		t.Fatalf("newSelfHealAuditSink: %v", err)
+	}
+	r := newSelfHealRegistry()
+	r.sinks["p"] = sink
+
+	base := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
+	for i := 0; i < 10; i++ {
+		if err := sink.Append(selfheal.Event{
+			TS:        base.Add(time.Duration(i) * 2 * time.Second).Format(time.RFC3339),
+			SessionID: "s1",
+			Decision:  selfheal.DecisionSkipHealthy,
+			Stage:     selfheal.ModeObserve,
+		}); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+
+	var before []selfheal.Event
+	if err := selfheal.ForEachAuditEvent(path, func(e selfheal.Event) error {
+		before = append(before, e)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("before flush: %d records, want 1 open entry", len(before))
+	}
+
+	r.flushSinks()
+
+	var after []selfheal.Event
+	if err := selfheal.ForEachAuditEvent(path, func(e selfheal.Event) error {
+		after = append(after, e)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 2 {
+		t.Fatalf("after flush: %d records, want the entry plus its closing record", len(after))
+	}
+	if after[1].Repeat != 9 {
+		t.Fatalf("closing record repeat = %d, want the 9 suppressed reads", after[1].Repeat)
+	}
+	if want := base.Add(18 * time.Second).Format(time.RFC3339); after[1].TS != want {
+		t.Fatalf("closing record TS = %q, want the last suppressed read %q", after[1].TS, want)
 	}
 }

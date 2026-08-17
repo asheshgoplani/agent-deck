@@ -836,6 +836,10 @@ func (d *TransitionDaemon) shutdown() {
 	if d.notifier != nil {
 		d.notifier.Flush()
 	}
+	// Same reason for the self-heal audit: a collapsed run owes a closing record
+	// with its suppressed count, and exiting without it truncates each session's
+	// last run in the observe window.
+	d.selfheal.flushSinks()
 	for _, s := range d.storages {
 		if s != nil {
 			_ = s.Close()

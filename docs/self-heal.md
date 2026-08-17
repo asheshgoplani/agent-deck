@@ -20,6 +20,7 @@ All keys live under `[selfheal]` in `config.toml`.
 | `global_per_hour` | `5` | Fleet-wide hourly recovery cap. |
 | `opt_out_groups` | none | Group paths excluded entirely. |
 | `opt_out_sessions` | none | Session ids or titles excluded entirely. |
+| `audit_full_records` | `false` | Write one audit record per *evaluation* instead of per state change. Debugging only — it restores the ~480 MB/day growth rate. |
 
 ### Modes
 
@@ -36,7 +37,9 @@ All keys live under `[selfheal]` in `config.toml`.
   composer-draft guard, submit verification and Escape+Enter escalation.
 - **`single_action`, `full`** — defined but guarded. They refuse to act.
 
-**Changing `mode` requires restarting the transition daemon.** The engine is
+**Changing `mode` or `audit_full_records` requires restarting the transition
+daemon** — both are read once, when the profile's engine and audit sink are
+built. The engine is
 built once per profile and holds the two-read confirm plus every cap, backoff and
 breaker window; rebuilding it when config changed would silently reset all of
 them. Editing `mode` in `config.toml` therefore has no effect until the daemon
@@ -68,27 +71,45 @@ operator setting, not a new default — the shipped default stays 5.**
 - **Restart anything.** This feature only ever sends a message.
 - **Act on a session that is opted out, flapping, stopped, or past its caps.**
 
+## What gets recorded
+
+Self-heal evaluates **every session on every poll**. It records one NDJSON line
+per session **state**, not per evaluation:
+
+- the **first** read of a new state is written immediately — a live `tail` shows
+  a session changing state at once;
+- identical follow-up reads are suppressed but **counted**;
+- when the state changes, a **closing** copy of the run is written first,
+  stamped with the last suppressed read's timestamp and `"repeat": N`, so the
+  run's exact extent is on record before the next state opens;
+- an unchanged session is re-recorded every **15 minutes** (again with
+  `repeat`), so "self-heal recorded nothing" can never be confused with
+  "self-heal was not running";
+- a record where an action actually **ran** is never collapsed.
+
+So the audit still answers *what state was this session in, since when, and how
+many reads confirmed it*. It no longer answers *what was the output signature on
+read #17,432 of an unchanging run* — the data that cost 480 MB/day.
+
+Why: recording every evaluation measured **2.55 GB / 7.4M records in 5 days**
+(~480 MB/day, ~345 bytes/record) on one normal single-user machine
+(2026-08-12 → 2026-08-17), nearly all of it a healthy session re-recorded every
+2 seconds. The same 24 h of a 34-session fleet collapses to ~3.3k records
+(~1 MB/day), a 99.8% drop. Set `audit_full_records = true` to get the raw
+per-evaluation stream back while debugging the pass.
+
 ## Audit size, rotation and retention
 
-Self-heal evaluates **every session on every poll** and records one NDJSON line
-each time, candidate or not. Measured on one normal single-user machine
-(2026-08-12 → 2026-08-17): **2.55 GB / 7.4M records in 5 days**, ~480 MB/day,
-~345 bytes/record. The rate scales with fleet size × poll cadence.
-
-The live file is therefore size-bounded by rotation:
+The rate above is what rotation is sized for: the dials below assume the
+*uncollapsed* worst case (`audit_full_records = true`, or a fleet flapping
+between states on every poll), so they hold regardless of how much the collapse
+saves.
 
 | Dial | Value | Why |
 |---|---|---|
 | Segment threshold | 128 MiB | ≈400k records ≈6.4 h at the measured rate — a roll ~4×/day, and one segment is still `zcat \| jq`-able. |
 | Retained segments | 28 | 28 × 128 MiB = 3.5 GB of records ≈ **7.5 days**, so the ≥1-week observe window survives with margin. |
 | Compression | gzip on roll | Measured 11× on representative records → ~330 MB for the rolled window, ~460 MB worst case including the live segment. |
-
-**Open question — the rate itself.** Almost every one of those 7.4M records is
-the not-a-candidate branch: a healthy session re-recorded on every poll, which
-carries no information the previous 40,000 identical records did not. Emitting
-that branch only on a state change (plus a periodic heartbeat) would cut the
-volume by ~99%. That is a change to *what is recorded* and is deliberately not
-bundled with rotation.
 
 Rotation never truncates or rewrites: the live file is **renamed** to a stamped
 sibling (`selfheal-audit-<profile>.ndjson.20260817T131901Z.gz`) and gzipped in
@@ -98,8 +119,8 @@ which is still part of the window.
 
 ## Reading the audit
 
-**The window spans segments — reading only the live path shows you the last few
-hours, not the last week.** Oldest record first:
+**The window spans segments — reading only the live path misses every rolled
+segment.** Oldest record first:
 
 ```sh
 P=~/.agent-deck/runtime/selfheal/selfheal-audit-default.ndjson
@@ -110,8 +131,10 @@ P=~/.agent-deck/runtime/selfheal/selfheal-audit-default.ndjson
 In Go, `selfheal.ForEachAuditEvent(livePath, fn)` walks the same window in the
 same order (and `selfheal.AuditSegmentPaths` returns the files it would read).
 
-Every evaluation appends one NDJSON record to the audit path. The outcome field
-is the fastest way to answer "why was this session not resumed":
+A record with `"repeat": N` stands for itself plus N identical evaluations that
+were not written; its `ts` is the last of them. To count *evaluations* rather
+than records, sum `1 + (.repeat // 0)`. The outcome field is the fastest way to
+answer "why was this session not resumed":
 
 | `outcome` | Meaning |
 |---|---|

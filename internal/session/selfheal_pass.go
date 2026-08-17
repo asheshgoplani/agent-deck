@@ -62,7 +62,10 @@ func (r *selfHealRegistry) engineFor(profile string, caps selfheal.Caps, mode st
 	if err != nil {
 		return nil, nil
 	}
-	sink, err := selfheal.NewNDJSONSink(path)
+	// Settings are re-read here rather than threaded through the signature: this
+	// is the MISS path only (once per profile per daemon lifetime), and the sink
+	// is the one thing built from settings the caller does not already pass.
+	sink, err := newSelfHealAuditSink(path, GetSelfHealSettings())
 	if err != nil {
 		return nil, nil
 	}
@@ -80,6 +83,52 @@ func (r *selfHealRegistry) engineFor(profile string, caps selfheal.Caps, mode st
 		r.execs[profile] = exec
 	}
 	return e, exec
+}
+
+// newSelfHealAuditSink builds the profile's durable audit sink: the rotating
+// NDJSON file, wrapped by default in the collapsing sink that records one record
+// per session STATE rather than one per evaluation.
+//
+// The collapse is the default because the per-evaluation stream was measured at
+// 2.55 GB / 7.4M records in 5 days on a normal single-user machine, nearly all
+// of it a healthy session re-recorded on every 2-second poll. Nothing an
+// operator reconstructs from the audit is lost — runs are bracketed by an entry
+// and a closing record carrying the suppressed count, and an unchanged session
+// still beats every 15 minutes. `audit_full_records = true` restores the raw
+// per-evaluation stream for debugging the pass itself.
+func newSelfHealAuditSink(path string, settings SelfHealSettings) (selfheal.EventSink, error) {
+	sink, err := selfheal.NewNDJSONSink(path)
+	if err != nil {
+		return nil, err
+	}
+	if settings.AuditFullRecords {
+		return sink, nil
+	}
+	return selfheal.NewCollapsingSink(sink, selfheal.DefaultAuditHeartbeat), nil
+}
+
+// auditFlusher is the sink half that owes the audit a closing record. Declared
+// as an interface so the registry does not care which sink it wrapped.
+type auditFlusher interface{ Flush() error }
+
+// flushSinks writes the closing record every collapsed run still owes, so a
+// daemon shutdown does not leave each session's last run unaccounted for in the
+// audit. Safe to call on a registry with no sinks.
+func (r *selfHealRegistry) flushSinks() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	sinks := make([]selfheal.EventSink, 0, len(r.sinks))
+	for _, s := range r.sinks {
+		sinks = append(sinks, s)
+	}
+	r.mu.Unlock()
+	for _, s := range sinks {
+		if f, ok := s.(auditFlusher); ok {
+			_ = f.Flush()
+		}
+	}
 }
 
 // capsFromSettings maps the config dials onto selfheal.Caps, falling back to the
