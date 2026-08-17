@@ -1115,7 +1115,25 @@ func (d *NewDialog) autoBranchFromName() {
 	if name == "" {
 		return
 	}
-	branch := d.branchPrefix + name
+	// Run the name through the git sanitizer (same as the fork dialog) so a
+	// title with spaces or ':' doesn't prefill a branch the dialog's own
+	// ValidateBranchName then refuses. The prefix is user config and may
+	// legitimately contain '/', so only the name part is sanitized.
+	//
+	// The sanitizer can still leave a leading/trailing '.' or '/' (e.g. "*.foo"
+	// -> ".foo", "~/x" -> "/x"); git rejects a ref component starting with '.'
+	// and an empty one, so trim those before they reach `worktree add`.
+	slug := strings.Trim(git.SanitizeBranchName(name), "./")
+	branch := d.branchPrefix + slug
+	if slug == "" || git.ValidateBranchName(branch) != nil {
+		// Nothing usable came out. Clear rather than return, so the field can't
+		// keep a branch derived from an earlier name; an empty branch surfaces
+		// as "Branch name required for worktree" on submit instead of silently
+		// creating the worktree on the wrong branch.
+		d.branchInput.SetValue("")
+		d.branchAutoSet = true
+		return
+	}
 	d.branchInput.SetValue(branch)
 	d.branchAutoSet = true
 }
