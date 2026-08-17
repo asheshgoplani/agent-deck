@@ -1664,6 +1664,25 @@ type ClaudeSettings struct {
 	// (issue #1264). Off by default — only enable for sessions running Claude
 	// Code with vim editor mode. Other tools and non-vim Claude are unaffected.
 	VimMode bool `toml:"vim_mode,omitempty"`
+
+	// Skills, Plugins and MCPs declare a GLOBAL Claude loadout floor applied
+	// to every Claude session regardless of group, including ungrouped ones.
+	// The global list resolves as the outermost ancestor, so the effective
+	// loadout is (global ∪ root group ∪ … ∪ leaf group), root-first and
+	// deduplicated. Mirrors CodexSettings' loadout floor; see GroupLoadout.
+	Skills  []string `toml:"skills,omitempty"`
+	Plugins []string `toml:"plugins,omitempty"`
+	MCPs    []string `toml:"mcps,omitempty"`
+}
+
+// GroupLoadout projects the global [claude] loadout lists onto the group shape
+// so the group union helpers can treat it as one more ancestor.
+func (s ClaudeSettings) GroupLoadout() GroupClaudeSettings {
+	return GroupClaudeSettings{
+		Skills:  s.Skills,
+		Plugins: s.Plugins,
+		MCPs:    s.MCPs,
+	}
 }
 
 // GetVimMode reports whether vim-mode insert-guard sends are enabled. Off by
@@ -1822,16 +1841,24 @@ func (c *UserConfig) GetGroupClaudeMCPs(groupPath string) []string {
 }
 
 func (c *UserConfig) unionGroupClaudeList(groupPath string, get func(GroupClaudeSettings) []string) []string {
-	if c == nil || groupPath == "" || c.Groups == nil {
+	if c == nil {
 		return nil
 	}
 	var chain [][]string
-	for p := groupPath; p != ""; p = getParentPath(p) {
-		if groupCfg, ok := c.Groups[p]; ok {
-			if list := get(groupCfg.Claude); len(list) > 0 {
-				chain = append(chain, list)
+	if c.Groups != nil {
+		for p := groupPath; p != ""; p = getParentPath(p) {
+			if groupCfg, ok := c.Groups[p]; ok {
+				if list := get(groupCfg.Claude); len(list) > 0 {
+					chain = append(chain, list)
+				}
 			}
 		}
+	}
+	// Global [claude] loadout floor: outermost ancestor, so the root-first
+	// walk below emits it ahead of every group entry and an ungrouped session
+	// still receives it.
+	if list := get(c.Claude.GroupLoadout()); len(list) > 0 {
+		chain = append(chain, list)
 	}
 	if len(chain) == 0 {
 		return nil
@@ -2097,6 +2124,36 @@ type CodexSettings struct {
 	// TUI defines Agent Deck-managed defaults merged into every resolved
 	// CODEX_HOME/config.toml. Nil leaves the home's TUI settings unmanaged.
 	TUI *CodexTUISettings `toml:"tui,omitempty"`
+
+	// Skills, MCPs, Marketplaces and Plugins declare a GLOBAL Codex loadout
+	// floor. They carry the same attach-only semantics as their
+	// [groups.X.codex] counterparts, but apply to every Codex session
+	// regardless of group — including sessions with no group at all.
+	//
+	// Resolution treats the global list as the outermost ancestor, so the
+	// effective loadout is (global ∪ root group ∪ … ∪ leaf group), root-first
+	// and deduplicated. A group cannot subtract from the global floor; that is
+	// deliberate and matches the existing "removing an entry does not detach"
+	// rule in ApplyConfiguredLoadout.
+	//
+	// Use these for entries that belong everywhere (a house skill, a shared
+	// marketplace) instead of repeating them in every group stanza.
+	Skills       []string `toml:"skills,omitempty"`
+	MCPs         []string `toml:"mcps,omitempty"`
+	Marketplaces []string `toml:"marketplaces,omitempty"`
+	Plugins      []string `toml:"plugins,omitempty"`
+}
+
+// GroupLoadout projects the global [codex] loadout lists onto the group shape
+// so the group union helpers can treat it as one more ancestor. Keeping the
+// projection here means a new loadout field is added in exactly one place.
+func (s CodexSettings) GroupLoadout() GroupCodexSettings {
+	return GroupCodexSettings{
+		Skills:       s.Skills,
+		MCPs:         s.MCPs,
+		Marketplaces: s.Marketplaces,
+		Plugins:      s.Plugins,
+	}
 }
 
 // CodexTUISettings is the subset of Codex [tui] configuration that Agent Deck

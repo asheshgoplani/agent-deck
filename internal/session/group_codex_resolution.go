@@ -94,6 +94,15 @@ func ResolveGroupCodexHomeSkills(groupPath string) (string, []string, error) {
 		return home, nil, nil
 	}
 	if home == "" {
+		// Only the global [codex].skills floor contributed here — no group in
+		// the chain asked for these skills, so there is no per-group config_dir
+		// the user could add to satisfy the requirement. Materializing into the
+		// shared default home would leak a floor across every ungrouped
+		// session, so skip quietly instead of failing the spawn. A group that
+		// declares its own skills still gets the actionable error below.
+		if !config.anyGroupInChainDeclaresCodexSkills(groupPath) {
+			return "", nil, nil
+		}
 		return "", nil, fmt.Errorf("group %q has Codex skills but no config_dir", groupPath)
 	}
 
@@ -271,17 +280,41 @@ func (c *UserConfig) GetGroupCodexPlugins(groupPath string) []string {
 	return c.unionGroupCodexList(groupPath, func(s GroupCodexSettings) []string { return s.Plugins })
 }
 
+// anyGroupInChainDeclaresCodexSkills reports whether groupPath or any ancestor
+// declares [groups.X.codex].skills of its own. Distinguishes "this group asked
+// for skills" from "only the global [codex].skills floor applies", which the
+// no-config_dir path needs to keep its error actionable.
+func (c *UserConfig) anyGroupInChainDeclaresCodexSkills(groupPath string) bool {
+	if c == nil || c.Groups == nil {
+		return false
+	}
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if group, ok := c.Groups[p]; ok && len(group.Codex.Skills) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *UserConfig) unionGroupCodexList(groupPath string, get func(GroupCodexSettings) []string) []string {
-	if c == nil || groupPath == "" || c.Groups == nil {
+	if c == nil {
 		return nil
 	}
 	var chain [][]string
-	for p := groupPath; p != ""; p = getParentPath(p) {
-		if groupCfg, ok := c.Groups[p]; ok {
-			if entries := get(groupCfg.Codex); len(entries) > 0 {
-				chain = append(chain, entries)
+	if c.Groups != nil {
+		for p := groupPath; p != ""; p = getParentPath(p) {
+			if groupCfg, ok := c.Groups[p]; ok {
+				if entries := get(groupCfg.Codex); len(entries) > 0 {
+					chain = append(chain, entries)
+				}
 			}
 		}
+	}
+	// The global [codex] loadout is the outermost ancestor: appended last so
+	// the root-first walk below emits it before any group entry. A session
+	// with no group still inherits it — that is the point of a global floor.
+	if entries := get(c.Codex.GroupLoadout()); len(entries) > 0 {
+		chain = append(chain, entries)
 	}
 	seen := make(map[string]bool)
 	var union []string
