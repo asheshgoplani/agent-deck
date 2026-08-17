@@ -68,7 +68,47 @@ operator setting, not a new default — the shipped default stays 5.**
 - **Restart anything.** This feature only ever sends a message.
 - **Act on a session that is opted out, flapping, stopped, or past its caps.**
 
+## Audit size, rotation and retention
+
+Self-heal evaluates **every session on every poll** and records one NDJSON line
+each time, candidate or not. Measured on one normal single-user machine
+(2026-08-12 → 2026-08-17): **2.55 GB / 7.4M records in 5 days**, ~480 MB/day,
+~345 bytes/record. The rate scales with fleet size × poll cadence.
+
+The live file is therefore size-bounded by rotation:
+
+| Dial | Value | Why |
+|---|---|---|
+| Segment threshold | 128 MiB | ≈400k records ≈6.4 h at the measured rate — a roll ~4×/day, and one segment is still `zcat \| jq`-able. |
+| Retained segments | 28 | 28 × 128 MiB = 3.5 GB of records ≈ **7.5 days**, so the ≥1-week observe window survives with margin. |
+| Compression | gzip on roll | Measured 11× on representative records → ~330 MB for the rolled window, ~460 MB worst case including the live segment. |
+
+**Open question — the rate itself.** Almost every one of those 7.4M records is
+the not-a-candidate branch: a healthy session re-recorded on every poll, which
+carries no information the previous 40,000 identical records did not. Emitting
+that branch only on a state change (plus a periodic heartbeat) would cut the
+volume by ~99%. That is a change to *what is recorded* and is deliberately not
+bundled with rotation.
+
+Rotation never truncates or rewrites: the live file is **renamed** to a stamped
+sibling (`selfheal-audit-<profile>.ndjson.20260817T131901Z.gz`) and gzipped in
+the background, and only whole segments older than the retention count are
+removed. An interrupted compression leaves the plain rolled segment in place,
+which is still part of the window.
+
 ## Reading the audit
+
+**The window spans segments — reading only the live path shows you the last few
+hours, not the last week.** Oldest record first:
+
+```sh
+P=~/.agent-deck/runtime/selfheal/selfheal-audit-default.ndjson
+{ for f in $(ls -1 "$P".*Z "$P".*Z.gz 2>/dev/null | sort); do gzip -cdf "$f"; done
+  cat "$P"; } | jq -c 'select(.decision == "act")'
+```
+
+In Go, `selfheal.ForEachAuditEvent(livePath, fn)` walks the same window in the
+same order (and `selfheal.AuditSegmentPaths` returns the files it would read).
 
 Every evaluation appends one NDJSON record to the audit path. The outcome field
 is the fastest way to answer "why was this session not resumed":
