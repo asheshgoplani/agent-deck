@@ -123,6 +123,13 @@ func hermesHookEventsForInstall() []string {
 	return hermesLegacyHookEvents
 }
 
+// HermesHookEventsForInstall returns the lifecycle events an install would
+// write for the configured Hermes version. The copy is safe for callers to
+// retain and is used by consent UIs to disclose the exact proposed mutation.
+func HermesHookEventsForInstall() []string {
+	return append([]string(nil), hermesHookEventsForInstall()...)
+}
+
 // GetHermesConfigDir returns the Hermes config directory (~/.hermes).
 func GetHermesConfigDir() string {
 	home, err := os.UserHomeDir()

@@ -26,6 +26,7 @@ const (
 	ConfirmArchiveSession
 	ConfirmUnarchiveSession
 	ConfirmNotice // acknowledge-only message (single OK button), e.g. protected-action blocks
+	ConfirmInstallHermesHooks
 )
 
 // ConfirmDialog handles confirmation for destructive actions
@@ -39,6 +40,7 @@ type ConfirmDialog struct {
 	mcpCount    int  // Number of running MCPs (for quit confirmation)
 	sandboxed   bool // Whether the session uses a Docker sandbox.
 	worktree    bool // Whether the session has an associated git worktree.
+	hookEvents  []string
 
 	remoteName string // Remote name for remote session confirmations.
 
@@ -239,6 +241,17 @@ func (c *ConfirmDialog) ShowInstallHooks() {
 	c.focusedButton = 1
 }
 
+// ShowInstallHermesHooks shows the Hermes-specific hook consent boundary.
+func (c *ConfirmDialog) ShowInstallHermesHooks(configPath string, events []string) {
+	c.visible = true
+	c.confirmType = ConfirmInstallHermesHooks
+	c.targetID = configPath
+	c.targetName = ""
+	c.hookEvents = append(c.hookEvents[:0], events...)
+	c.buttonCount = 2
+	c.focusedButton = 1
+}
+
 // GetPendingSession returns the pending session creation data
 func (c *ConfirmDialog) GetPendingSession() (name, path, command, groupPath string, toolOptionsJSON json.RawMessage, claudeExtraArgs []string, claudeStartQuery, launchModelID string, parentSessionID, parentProjectPath string) {
 	return c.pendingSessionName, c.pendingSessionPath, c.pendingSessionCommand, c.pendingSessionGroupPath, c.pendingToolOptionsJSON, c.pendingClaudeExtraArgs, c.pendingClaudeStartQuery, c.pendingLaunchModelID, c.pendingParentSessionID, c.pendingParentProjectPath
@@ -253,6 +266,7 @@ func (c *ConfirmDialog) Hide() {
 	c.remoteName = ""
 	c.noticeTitle = ""
 	c.noticeBody = ""
+	c.hookEvents = nil
 }
 
 // IsVisible returns whether the dialog is visible
@@ -480,6 +494,17 @@ func (c *ConfirmDialog) View() string {
 		title = "Claude Code Hooks"
 		warning = "Agent-deck can install Claude Code lifecycle hooks\nfor real-time status detection (instant green/yellow/gray)."
 		details = "This writes to your Claude settings.json (preserves existing settings).\nNew/restarted sessions will use hooks; existing sessions continue unchanged.\nYou can disable later with: hooks_enabled = false in config.toml"
+		borderColor = ColorAccent
+		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
+			renderButton("Install", ColorGreen, c.focusedButton == 0), "  ",
+			renderButton("Skip", ColorAccent, c.focusedButton == 1))
+		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
+			hintStyle.Render("y install · n skip · ←/→ navigate · Enter select · Esc"))
+
+	case ConfirmInstallHermesHooks:
+		title = "Hermes Agent Hooks"
+		warning = "Agent-deck can install Hermes lifecycle hooks\nfor real-time status detection (instant green/yellow/gray)."
+		details = fmt.Sprintf("Config: %s\nCommand: agent-deck hook-handler\nEvents: %s\nHermes runs this command with your user permissions and sends each event as JSON on stdin.\nExisting settings and hooks are preserved.", c.targetID, strings.Join(c.hookEvents, ", "))
 		borderColor = ColorAccent
 		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
 			renderButton("Install", ColorGreen, c.focusedButton == 0), "  ",

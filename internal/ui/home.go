@@ -393,8 +393,9 @@ type Home struct {
 	lastCachePrune time.Time
 
 	// Hook-based status detection (Claude Code lifecycle hooks)
-	hookWatcher        *session.StatusFileWatcher
-	pendingHooksPrompt bool // True if user should be prompted to install hooks
+	hookWatcher              *session.StatusFileWatcher
+	pendingHooksPrompt       bool // True if user should be prompted to install Claude hooks
+	pendingHermesHooksPrompt bool // True if user should be prompted to install Hermes hooks
 
 	// SSE-based status detection for OpenCode sessions (issue #1614)
 	sseWatcher *session.OpenCodeSSEWatcher
@@ -1417,6 +1418,10 @@ func shouldAutoInstallCursorHooks(userConfig *session.UserConfig, cursorCmd stri
 	return homeBackgroundWorkersEnabled && cursorHooksEnabled && cursorCmd != ""
 }
 
+func shouldPromptHermesHooks(installed bool, decision string) bool {
+	return !installed && decision == ""
+}
+
 // NewHomeWithProfileAndMode creates a new Home with the specified profile.
 // All instances manage the notification bar equally via shared SQLite state.
 func NewHomeWithProfileAndMode(profile string) *Home {
@@ -1740,10 +1745,11 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		}
 	}
 
-	// Hermes shell hooks: auto-inject silently if the hermes binary is available.
-	// No user prompt needed — config.yaml is Hermes's own config file, not a
-	// shared settings file. The shared hook watcher (h.hookWatcher) covers all
-	// tools, so start it here if Claude hooks didn't already start it.
+	// Hermes shell hooks require their own consent because they mutate Hermes's
+	// config.yaml. An installed hook set predates (or embodies) consent and does
+	// not prompt. Any recorded decision suppresses future prompts; in particular,
+	// accepted hooks that are later removed stay removed because removal revokes
+	// consent rather than triggering a silent reinstall.
 	if hermesCmd := strings.TrimSpace(session.GetToolCommand("hermes")); homeBackgroundWorkersEnabled && hermesCmd != "" {
 		// GetToolCommand may return a full command string with arguments
 		// (e.g. "hermes --gateway-url=..."). LookPath needs the binary name only.
@@ -1753,14 +1759,15 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 			hermesBin := hermesFields[0]
 			if _, err := exec.LookPath(hermesBin); err == nil {
 				hermesConfigDir := session.GetHermesConfigDir()
-				if !session.CheckHermesHooksInstalled(hermesConfigDir) {
-					if _, err := session.InjectHermesHooks(hermesConfigDir); err != nil {
-						uiLog.Warn("hermes_hooks_inject_failed", slog.String("error", err.Error()))
-					} else {
-						uiLog.Info("hermes_hooks_installed", slog.String("config_dir", hermesConfigDir))
-					}
+				installed := session.CheckHermesHooksInstalled(hermesConfigDir)
+				decision := ""
+				if db := statedb.GetGlobal(); db != nil {
+					decision, _ = db.GetMeta("hermes_hooks_prompted")
 				}
-				if h.hookWatcher == nil {
+				if shouldPromptHermesHooks(installed, decision) {
+					h.pendingHermesHooksPrompt = true
+				}
+				if installed && h.hookWatcher == nil {
 					if hookWatcher, err := session.NewStatusFileWatcher(nil); err == nil {
 						h.hookWatcher = hookWatcher
 						go hookWatcher.Start()
@@ -5519,9 +5526,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.reloadHotkeysFromConfig()
 
 		// Show hooks installation prompt (after splash screen is gone)
-		if h.pendingHooksPrompt && !h.setupWizard.IsVisible() {
-			h.confirmDialog.ShowInstallHooks()
-			h.confirmDialog.SetSize(h.width, h.height)
+		if !h.setupWizard.IsVisible() {
+			h.showPendingHooksPrompt()
 		}
 
 		// Show feedback popup if user has a new version and hasn't rated yet (D-11/D-12).
@@ -10005,16 +10011,28 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case ConfirmInstallHooks:
+	case ConfirmInstallHooks, ConfirmInstallHermesHooks:
 		switch msg.String() {
 		case "y", "Y":
+			if h.confirmDialog.GetConfirmType() == ConfirmInstallHermesHooks {
+				return h, h.confirmInstallHermesHooks()
+			}
 			return h, h.confirmInstallHooks()
 		case "enter":
 			if h.confirmDialog.GetFocusedButton() == 0 {
+				if h.confirmDialog.GetConfirmType() == ConfirmInstallHermesHooks {
+					return h, h.confirmInstallHermesHooks()
+				}
 				return h, h.confirmInstallHooks()
+			}
+			if h.confirmDialog.GetConfirmType() == ConfirmInstallHermesHooks {
+				return h, h.declineInstallHermesHooks()
 			}
 			return h, h.declineInstallHooks()
 		case "n", "N", "esc":
+			if h.confirmDialog.GetConfirmType() == ConfirmInstallHermesHooks {
+				return h, h.declineInstallHermesHooks()
+			}
 			return h, h.declineInstallHooks()
 		}
 		return h, nil
@@ -10156,6 +10174,7 @@ func (h *Home) confirmInstallHooks() tea.Cmd {
 	if db := statedb.GetGlobal(); db != nil {
 		_ = db.SetMeta("hooks_prompted", "accepted")
 	}
+	h.showPendingHooksPrompt()
 	return nil
 }
 
@@ -10167,6 +10186,51 @@ func (h *Home) declineInstallHooks() tea.Cmd {
 	if db := statedb.GetGlobal(); db != nil {
 		_ = db.SetMeta("hooks_prompted", "declined")
 	}
+	h.showPendingHooksPrompt()
+	return nil
+}
+
+func (h *Home) showPendingHooksPrompt() {
+	if h.pendingHooksPrompt {
+		h.confirmDialog.ShowInstallHooks()
+	} else if h.pendingHermesHooksPrompt {
+		h.confirmDialog.ShowInstallHermesHooks(filepath.Join(session.GetHermesConfigDir(), "config.yaml"), session.HermesHookEventsForInstall())
+	} else {
+		return
+	}
+	h.confirmDialog.SetSize(h.width, h.height)
+}
+
+func (h *Home) confirmInstallHermesHooks() tea.Cmd {
+	h.confirmDialog.Hide()
+	h.pendingHermesHooksPrompt = false
+	configDir := session.GetHermesConfigDir()
+	if _, err := session.InjectHermesHooks(configDir); err != nil {
+		uiLog.Warn("hermes_hooks_install_failed", slog.String("error", err.Error()))
+		return nil
+	}
+	if db := statedb.GetGlobal(); db != nil {
+		_ = db.SetMeta("hermes_hooks_prompted", "accepted")
+	}
+	if h.hookWatcher == nil {
+		if hookWatcher, err := session.NewStatusFileWatcher(nil); err != nil {
+			uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
+		} else {
+			h.hookWatcher = hookWatcher
+			go hookWatcher.Start()
+		}
+	}
+	h.showPendingHooksPrompt()
+	return nil
+}
+
+func (h *Home) declineInstallHermesHooks() tea.Cmd {
+	h.confirmDialog.Hide()
+	h.pendingHermesHooksPrompt = false
+	if db := statedb.GetGlobal(); db != nil {
+		_ = db.SetMeta("hermes_hooks_prompted", "declined")
+	}
+	h.showPendingHooksPrompt()
 	return nil
 }
 
