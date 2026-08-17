@@ -59,11 +59,23 @@ func TestIssue662_HiddenDirInPath_EncodesToDoubleDash(t *testing.T) {
 }
 
 // TestIssue662_FindsFileViaFallback_WhenPrimaryPathMisses pins hypothesis (3):
-// when the primary encoded path has no matching jsonl but ANOTHER project dir
+// when the primary encoded path has no matching jsonl but another project dir
 // under the same configDir does have <sessionID>.jsonl, the fallback must
-// surface it. This mirrors real-world path-hash drift where Claude was
-// originally invoked from a slightly different cwd than the Instance records
-// today.
+// surface it.
+//
+// CORRECTED SETUP: this test originally used two unrelated directories
+// (/tmp/instance-cwd-A vs an -tmp-instance-cwd-B jsonl) to stand in for
+// "path-hash drift". That premise was invalid and actively harmful — see
+// TestCrossProjectJSONL_DoesNotJustifyResume in resume_cross_project_test.go.
+// `claude --resume` resolves its project dir from its OWN cwd, so a jsonl
+// belonging to a genuinely different directory can never be resumed; treating
+// it as resumable made real sessions exit instantly with "No conversation
+// found" and flap to `error` on every restart.
+//
+// The drift the fallback legitimately rescues is an ENCODING mismatch over the
+// SAME real directory — a symlinked project path, where the primary lookup
+// encodes the resolved spelling but Claude filed under the unresolved one.
+// That is what this test now exercises, preserving hypothesis (3) coverage.
 func TestIssue662_FindsFileViaFallback_WhenPrimaryPathMisses(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -79,8 +91,26 @@ func TestIssue662_FindsFileViaFallback_WhenPrimaryPathMisses(t *testing.T) {
 	})
 	ClearUserConfigCache()
 
-	instPath := "/tmp/instance-cwd-A"
-	actualEncoded := "-tmp-instance-cwd-B"
+	realPath := filepath.Join(tmpDir, "instance-cwd-real")
+	if err := os.MkdirAll(realPath, 0o755); err != nil {
+		t.Fatalf("mkdir real instance dir: %v", err)
+	}
+	instPath := filepath.Join(tmpDir, "instance-cwd-link")
+	if err := os.Symlink(realPath, instPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	resolved, err := filepath.EvalSymlinks(instPath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", instPath, err)
+	}
+	// The primary lookup encodes the resolved spelling; file the jsonl under
+	// the unresolved one so the primary stat misses and the fallback must run.
+	actualEncoded := ConvertToClaudeDirName(instPath)
+	if actualEncoded == ConvertToClaudeDirName(resolved) {
+		t.Skip("symlink did not produce a distinct encoding on this platform")
+	}
+
 	sessionID := "11111111-2222-3333-4444-555555555555"
 
 	actualDir := filepath.Join(tmpDir, "projects", actualEncoded)

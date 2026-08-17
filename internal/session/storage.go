@@ -65,8 +65,20 @@ type InstanceData struct {
 	// not a typed SQL column. Zero means unknown (old record or never
 	// started).
 	LastStartedAt time.Time `json:"last_started_at,omitempty"`
-	ArchivedAt    time.Time `json:"archived_at,omitempty"`
-	TmuxSession   string    `json:"tmux_session"`
+	// GenericSessionID is the custom [tools.*] conversation id (extras zone),
+	// with the tool/location scope it is only resumable under.
+	GenericSessionID       string    `json:"generic_session_id,omitempty"`
+	GenericDetectedAt      time.Time `json:"generic_detected_at,omitempty"`
+	GenericSessionTool     string    `json:"generic_session_tool,omitempty"`
+	GenericSessionCommand  string    `json:"generic_session_command,omitempty"`
+	GenericSessionLocation string    `json:"generic_session_location,omitempty"`
+	// LastActivityAt mirrors Instance.lastActivityAt (issue #1846): durable
+	// hook-evidenced activity, persisted via the tool_data extras zone (see
+	// last_activity_persist.go). Zero means unknown (old record or never
+	// active).
+	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
+	ArchivedAt     time.Time `json:"archived_at,omitempty"`
+	TmuxSession    string    `json:"tmux_session"`
 	// TmuxSocketName is the tmux -L selector captured at Instance creation
 	// (issue #687, v1.7.50). Empty for pre-v1.7.50 rows — those keep hitting
 	// the default server after upgrade.
@@ -161,6 +173,11 @@ type InstanceData struct {
 
 	// IdleTimeoutSecs mirrors Instance.IdleTimeoutSecs (#1143). 0 = disabled.
 	IdleTimeoutSecs int64 `json:"idle_timeout_secs,omitempty"`
+
+	// DeepSeekTask mirrors Instance.DeepSeekTask (PR #1942 review, P1c).
+	// Persisted via the tool_data extras zone (see deepseek_task_persist.go).
+	// Empty for every profile but headless.
+	DeepSeekTask string `json:"deepseek_task,omitempty"`
 }
 
 // GroupData represents serializable group data
@@ -355,6 +372,11 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 	if err := s.db.UpsertInstances(rows); err != nil {
 		return fmt.Errorf("failed to save instances: %w", err)
 	}
+
+	// Intentional generic_session_id clear is a one-shot for this save.
+	// Consume only after a successful write so a failed Upsert can retry
+	// with explicit empty still applied (see consumeGenericSessionIDCleared).
+	consumeGenericSessionIDCleared(instances...)
 
 	// Save groups (including empty ones)
 	if groupTree != nil {
@@ -640,6 +662,15 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 		return err
 	}
 	newInstance.PersistenceGeneration = row.PersistenceGeneration
+	// Consume one-shot clear intent after the first successful write, so
+	// verify-retries do not re-emit the explicit empty generic_session_id
+	// snapshot. A concurrent WriteGenericSessionBinding re-bind between
+	// attempts must be preserved by sticky merge (omission), not clobbered by
+	// a stale pre-consume row (CodeRabbit #1885). The retry loop below rebuilds
+	// the row from the instance each pass, so there is nothing to rebuild here
+	// — an extra conversion at this point would be written by no one (CodeQL
+	// go/useless-assignment-to-local).
+	consumeGenericSessionIDCleared(newInstance)
 
 	if groupTree != nil {
 		if err := s.SaveGroupsOnly(groupTree); err != nil {
@@ -660,7 +691,12 @@ func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *Group
 		}
 		// Re-issue the targeted INSERT; races against the concurrent
 		// rewriter but eventually wins because every retry shrinks the
-		// window.
+		// window. Rebuild row each retry so we never replay a stale
+		// intentional-clear snapshot after a concurrent re-bind.
+		row, err = instanceToRow(newInstance)
+		if err != nil {
+			return err
+		}
 		if err := s.createSingleInstance(row); err != nil {
 			return err
 		}
@@ -910,9 +946,31 @@ func (s *Storage) PersistRecoveredInstances(instances []*Instance) error {
 		}
 		if err := s.saveSingleInstance(row); err != nil {
 			errs = append(errs, err)
+			continue
 		}
+		consumeGenericSessionIDCleared(inst)
 	}
 	return errors.Join(errs...)
+}
+
+// consumeGenericSessionIDCleared drops the one-shot intentional-clear flag
+// after a successful persistence of the corresponding tool_data write.
+//
+// Without this, a long-lived TUI Instance that once ran
+// `session set tool-session-id ""` keeps genericSessionIDCleared=true forever.
+// Every later SaveWithGroups (title rename, status tick, full table save)
+// would re-emit explicit empty generic_session_id and wipe a concurrent
+// WriteGenericSessionBinding / live-capture re-bind of a new conversation id.
+//
+// Must run only after the DB write succeeds: consuming before Upsert would
+// let a failed save + retry omit the key and sticky-merge resurrect the
+// pre-clear id when write-through (GetGlobal / Persist) was not used.
+func consumeGenericSessionIDCleared(insts ...*Instance) {
+	for _, inst := range insts {
+		if inst != nil {
+			inst.genericSessionIDCleared = false
+		}
+	}
 }
 
 // instanceToRow converts a session.Instance into the statedb row shape.
@@ -1006,6 +1064,25 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// `status --stale` (and ShouldSkipRestart's freshness guard) see a real
 	// value from a fresh CLI process instead of always-zero.
 	toolData = WriteLastStartedAtToToolData(toolData, inst.LastStartedAt)
+	// Custom [tools.*] conversation id — reboot-safe resume when resume_flag set.
+	// intentionalClear makes sticky MergeToolDataExtras honor operator clears
+	// without breaking stale-empty full-table saves (see generic_session_persist.go).
+	// The genericSessionIDCleared flag is consumed by the save caller after a
+	// successful DB write (consumeGenericSessionIDCleared), not here: converting
+	// without persisting must not drop clear intent.
+	toolData = WriteGenericSessionIDToToolData(toolData, inst.GenericSessionID, inst.GenericDetectedAt, inst.genericSessionIDCleared)
+	// The scope travels with the id, under the same omission/explicit-empty
+	// protocol: a writer that has not observed the binding must not state a
+	// scope for it either.
+	toolData = WriteGenericSessionScopeToToolData(toolData, inst.GenericSessionTool, inst.GenericSessionCommand, inst.GenericSessionLocation, inst.genericSessionIDCleared)
+	// #1846: same treatment for the durable last-activity record, so the
+	// timestamp badge and preview survive a TUI restart instead of
+	// collapsing back to CreatedAt/LastAccessedAt.
+	toolData = WriteLastActivityAtToToolData(toolData, inst.LastActivityAt())
+	// PR #1942 review (P1c): the DeepSeek headless task rides the same extras
+	// zone. For a one-shot the task IS the invocation, so a row that forgets it
+	// can only ever be "restarted" into dsh's usage error.
+	toolData = WriteDeepSeekTaskToToolData(toolData, inst.DeepSeekTask)
 
 	return &statedb.InstanceRow{
 		PersistenceGeneration: inst.PersistenceGeneration,
@@ -1189,6 +1266,13 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
+			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
+			GenericDetectedAt:         ReadGenericDetectedAtFromToolData(r.ToolData),
+			GenericSessionTool:        genericScopeTool(r.ToolData),
+			GenericSessionCommand:     genericScopeCommand(r.ToolData),
+			GenericSessionLocation:    genericScopeLocation(r.ToolData),
+			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
+			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 		}
 	}
 
@@ -1428,6 +1512,13 @@ func (s *Storage) loadWithGroups(filterArchive, archived bool) ([]*Instance, []*
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
+			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
+			GenericDetectedAt:         ReadGenericDetectedAtFromToolData(r.ToolData),
+			GenericSessionTool:        genericScopeTool(r.ToolData),
+			GenericSessionCommand:     genericScopeCommand(r.ToolData),
+			GenericSessionLocation:    genericScopeLocation(r.ToolData),
+			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
+			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 		}
 	}
 
@@ -1676,16 +1767,27 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			AutoLinkedChannels:           instData.AutoLinkedChannels,
 			Color:                        instData.Color,
 			IdleTimeoutSecs:              instData.IdleTimeoutSecs,
+			DeepSeekTask:                 instData.DeepSeekTask,
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
 			LastStartedAt:                instData.LastStartedAt,
-			Sandbox:                      instData.Sandbox,
-			SandboxContainer:             instData.SandboxContainer,
-			SSHHost:                      instData.SSHHost,
-			SSHRemotePath:                instData.SSHRemotePath,
-			MultiRepoEnabled:             instData.MultiRepoEnabled,
-			AdditionalPaths:              instData.AdditionalPaths,
-			MultiRepoTempDir:             instData.MultiRepoTempDir,
-			tmuxSession:                  tmuxSess,
+			GenericSessionID:             instData.GenericSessionID,
+			GenericDetectedAt:            instData.GenericDetectedAt,
+			GenericSessionTool:           instData.GenericSessionTool,
+			GenericSessionCommand:        instData.GenericSessionCommand,
+			GenericSessionLocation:       instData.GenericSessionLocation,
+			// #1846: the loaded value came from the DB, so it is by
+			// definition already persisted — seed both fields so the write
+			// throttle has an accurate baseline.
+			lastActivityAt:        instData.LastActivityAt,
+			lastActivityPersisted: instData.LastActivityAt,
+			Sandbox:               instData.Sandbox,
+			SandboxContainer:      instData.SandboxContainer,
+			SSHHost:               instData.SSHHost,
+			SSHRemotePath:         instData.SSHRemotePath,
+			MultiRepoEnabled:      instData.MultiRepoEnabled,
+			AdditionalPaths:       instData.AdditionalPaths,
+			MultiRepoTempDir:      instData.MultiRepoTempDir,
+			tmuxSession:           tmuxSess,
 		}
 		// Convert multi-repo worktree data
 		for _, wt := range instData.MultiRepoWorktrees {

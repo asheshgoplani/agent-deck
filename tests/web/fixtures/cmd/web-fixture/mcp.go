@@ -37,12 +37,12 @@ func (f *fixtureMCPManager) ListCatalog() []web.MCPCatalogEntry {
 	return append([]web.MCPCatalogEntry(nil), f.catalog...)
 }
 
-func (f *fixtureMCPManager) ListAttached(projectPath string) (map[string][]string, error) {
+func (f *fixtureMCPManager) ListAttached(target web.MCPTarget) (map[string][]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make(map[string][]string, 3)
-	for _, scope := range []string{"local", "global", "user"} {
-		names := f.attached[projectPath][scope]
+	for _, scope := range []string{"local", "project", "global", "user"} {
+		names := f.attached[target.ProjectPath][scope]
 		cp := append([]string(nil), names...)
 		sort.Strings(cp)
 		if cp == nil {
@@ -53,43 +53,43 @@ func (f *fixtureMCPManager) ListAttached(projectPath string) (map[string][]strin
 	return out, nil
 }
 
-func (f *fixtureMCPManager) Attach(projectPath, name, scope string) error {
+func (f *fixtureMCPManager) Attach(target web.MCPTarget, name, scope string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.attached[projectPath] == nil {
-		f.attached[projectPath] = make(map[string][]string)
+	if f.attached[target.ProjectPath] == nil {
+		f.attached[target.ProjectPath] = make(map[string][]string)
 	}
-	for _, n := range f.attached[projectPath][scope] {
+	for _, n := range f.attached[target.ProjectPath][scope] {
 		if n == name {
 			return nil
 		}
 	}
-	f.attached[projectPath][scope] = append(f.attached[projectPath][scope], name)
+	f.attached[target.ProjectPath][scope] = append(f.attached[target.ProjectPath][scope], name)
 	return nil
 }
 
-func (f *fixtureMCPManager) Detach(projectPath, name, scope string) error {
+func (f *fixtureMCPManager) Detach(target web.MCPTarget, name, scope string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.attached[projectPath] == nil {
+	if f.attached[target.ProjectPath] == nil {
 		return nil
 	}
-	src := f.attached[projectPath][scope]
+	src := f.attached[target.ProjectPath][scope]
 	out := src[:0]
 	for _, n := range src {
 		if n != name {
 			out = append(out, n)
 		}
 	}
-	f.attached[projectPath][scope] = out
+	f.attached[target.ProjectPath][scope] = out
 	return nil
 }
 
-func (f *fixtureMCPManager) Move(projectPath, name, fromScope, toScope string) error {
-	if err := f.Detach(projectPath, name, fromScope); err != nil {
+func (f *fixtureMCPManager) Move(target web.MCPTarget, name, fromScope, toScope string) error {
+	if err := f.Detach(target, name, fromScope); err != nil {
 		return err
 	}
-	return f.Attach(projectPath, name, toScope)
+	return f.Attach(target, name, toScope)
 }
 
 // Reset clears all attached MCPs (called by /__fixture/reset).

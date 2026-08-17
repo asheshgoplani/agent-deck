@@ -112,7 +112,7 @@ func NewControlPipe(sessionName, socketName string) (*ControlPipe, error) {
 }
 
 func newControlPipeOnce(sessionName, socketName string) (*ControlPipe, error) {
-	cmd := tmuxExec(socketName, "-C", "-u", "attach-session", "-t", sessionName)
+	cmd := tmuxExec(socketName, "-u", "-C", "attach-session", "-t", sessionName)
 	// Put in own process group so we can kill the entire group on shutdown
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -294,7 +294,19 @@ func (cp *ControlPipe) SendCommand(command string) (string, error) {
 		cp.mu.RUnlock()
 		return "", fmt.Errorf("pipe not alive for session %s", cp.sessionName)
 	}
+	stdin := cp.stdin
 	cp.mu.RUnlock()
+
+	// alive and stdin are set together by the constructor, so a live pipe
+	// normally has one. Report it rather than trusting the pairing: writing to
+	// a nil stdin panics inside fmt, and every caller of this reaches it from
+	// backgroundStatusUpdate, whose deferred recover swallows the panic and
+	// abandons the whole status sweep — the TUI just stops updating, with one
+	// background_update_panic line as the only evidence. An error here is
+	// handled: RefreshAllActivities records it and moves to the next pipe.
+	if stdin == nil {
+		return "", fmt.Errorf("pipe has no stdin for session %s", cp.sessionName)
+	}
 
 	cp.cmdMu.Lock()
 	defer cp.cmdMu.Unlock()
@@ -306,7 +318,7 @@ func (cp *ControlPipe) SendCommand(command string) (string, error) {
 	}
 
 	// Send command through stdin
-	_, err := fmt.Fprintln(cp.stdin, command)
+	_, err := fmt.Fprintln(stdin, command)
 	if err != nil {
 		return "", fmt.Errorf("write to pipe: %w", err)
 	}

@@ -108,6 +108,7 @@ func handleTry(profile string, args []string) {
 		)
 		return
 	}
+	ensureTmuxInPathOrExit()
 
 	// Create and start session
 	storage, instances, groups, err := loadSessionData(profile)
@@ -116,9 +117,12 @@ func handleTry(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	// Check if session already exists for this path
-	for _, inst := range instances {
-		if inst.ProjectPath == exp.Path {
+	// Check if a session already exists for this path. localSessionsAtPath, not
+	// a ProjectPath comparison: `try` has no --ssh support, so it can only ever
+	// mean a LOCAL session, and a remote session whose placeholder happens to
+	// equal exp.Path would otherwise be adopted and started (#1852 site 5).
+	for _, inst := range localSessionsAtPath(instances, exp.Path) {
+		{
 			// Session exists - just start it if not running
 			if !inst.Exists() {
 				if err := inst.Start(); err != nil {

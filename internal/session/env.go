@@ -612,6 +612,8 @@ func (i *Instance) getToolEnvFile() string {
 		return config.Copilot.EnvFile
 	case "crush":
 		return config.Crush.EnvFile
+	case "cursor":
+		return config.Cursor.EnvFile
 	case "hermes":
 		if name := conductorNameFromInstance(i); name != "" {
 			if conductorEnv := config.GetConductorHermesEnvFile(name); conductorEnv != "" {
@@ -622,6 +624,16 @@ func (i *Instance) getToolEnvFile() string {
 			return groupEnv
 		}
 		return config.Hermes.EnvFile
+	case "deepseek":
+		if name := conductorNameFromInstance(i); name != "" {
+			if conductorEnv := config.GetConductorDeepSeekEnvFile(name); conductorEnv != "" {
+				return conductorEnv
+			}
+		}
+		if groupEnv := config.GetGroupDeepSeekEnvFile(i.GroupPath); groupEnv != "" {
+			return groupEnv
+		}
+		return config.DeepSeek.EnvFile
 	default:
 		// Check custom tools
 		if def := GetToolDef(i.Tool); def != nil {

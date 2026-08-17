@@ -14,6 +14,8 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmuxutf8"
 )
 
 var ErrTmuxSessionNotFound = errors.New("tmux session not found")
@@ -269,10 +271,20 @@ func tmuxCommand(socketName string, args ...string) *exec.Cmd {
 // tmuxCommandContext is the deadline-carrying variant of tmuxCommand. A context
 // with a timeout lets exec.CommandContext SIGKILL a tmux client that has wedged
 // on its own leaked fd table rather than blocking the caller forever.
+//
+// Every argv it builds carries tmux's global `-u` (#1867). This wrapper is the
+// web daemon's counterpart to internal/tmux's tmuxArgs, and the daemon is the
+// worst-affected process in the codebase: run under systemd or launchd it has
+// no LANG/LC_* at all, so without `-u` tmux rewrites every non-ASCII byte it
+// returns to "_". Unlike internal/tmux there is no interactive carve-out here,
+// because the web attach's terminal is not the user's — it is xterm.js in a
+// browser, which is unconditionally UTF-8. That is the same reasoning that
+// already pins TERM=xterm-256color in tmuxAttachCommand below.
 func tmuxCommandContext(ctx context.Context, socketName string, args ...string) *exec.Cmd {
+	utf8Args := tmuxutf8.Prepend(args)
 	// Explicit per-session socket name wins — this is the v1.7.50 path.
 	if trimmed := strings.TrimSpace(socketName); trimmed != "" {
-		finalArgs := append([]string{"-L", trimmed}, args...)
+		finalArgs := append([]string{tmuxutf8.Flag, "-L", trimmed}, utf8Args[1:]...)
 		cmd := exec.CommandContext(ctx, "tmux", finalArgs...)
 		// Unset TMUX so tmux-in-tmux guards don't trip: we are explicitly
 		// directing this to a different server than the one we're in.
@@ -282,9 +294,9 @@ func tmuxCommandContext(ctx context.Context, socketName string, args ...string) 
 
 	socketPath, hasSocket := tmuxSocketFromEnv()
 
-	finalArgs := args
+	finalArgs := utf8Args
 	if hasSocket {
-		finalArgs = append([]string{"-S", socketPath}, args...)
+		finalArgs = append([]string{tmuxutf8.Flag, "-S", socketPath}, utf8Args[1:]...)
 	}
 
 	cmd := exec.CommandContext(ctx, "tmux", finalArgs...)

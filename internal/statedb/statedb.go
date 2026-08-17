@@ -2389,6 +2389,47 @@ func (s *StateDB) ReadHandoffState(id string) (string, time.Time, error) {
 	return state.String, t, nil
 }
 
+// WriteGenericSessionBinding persists a custom-tool conversation id and its
+// execution scope without clobbering unrelated tool_data keys.
+func (s *StateDB) WriteGenericSessionBinding(id, sessionID, tool, command, location string, detectedAt time.Time) error {
+	return withBusyRetry(func() error {
+		if sessionID == "" {
+			_, err := s.db.Exec(
+				`UPDATE instances SET tool_data = json_remove(COALESCE(tool_data, '{}'),
+					'$.generic_session_id', '$.generic_detected_at', '$.generic_session_tool',
+					'$.generic_session_command', '$.generic_session_location') WHERE id = ?`, id)
+			return err
+		}
+		at := detectedAt.Unix()
+		if detectedAt.IsZero() {
+			at = time.Now().Unix()
+		}
+		_, err := s.db.Exec(
+			`UPDATE instances SET tool_data = json_set(COALESCE(tool_data, '{}'),
+				'$.generic_session_id', ?, '$.generic_detected_at', ?, '$.generic_session_tool', ?,
+				'$.generic_session_command', ?, '$.generic_session_location', ?) WHERE id = ?`,
+			sessionID, at, tool, command, location, id)
+		return err
+	})
+}
+
+// WriteLastActivityAt persists observed activity independently of full-row
+// saves, so concurrent session changes cannot discard it.
+func (s *StateDB) WriteLastActivityAt(id string, at time.Time) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(`UPDATE instances SET tool_data = json_set(COALESCE(tool_data, '{}'), '$.last_activity_at', ?) WHERE id = ?`, at.Unix(), id)
+		return err
+	})
+}
+
+// WriteLastAccessed persists an attach or detach timestamp without a full-row save.
+func (s *StateDB) WriteLastAccessed(id string, at time.Time) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(`UPDATE instances SET last_accessed = ? WHERE id = ?`, at.Unix(), id)
+		return err
+	})
+}
+
 // ReadAllStatuses returns status + acknowledged flag for every instance.
 func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
 	rows, err := s.db.Query("SELECT id, status, tool, acknowledged FROM instances")

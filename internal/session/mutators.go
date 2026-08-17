@@ -8,26 +8,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // Field names accepted by SetField. Kept as raw strings to match the
 // `agent-deck session set <field>` CLI surface verbatim.
 const (
-	FieldTitle              = "title"
-	FieldPath               = "path"
-	FieldCommand            = "command"
-	FieldTool               = "tool"
-	FieldWrapper            = "wrapper"
-	FieldChannels           = "channels"
-	FieldPlugins            = "plugins"
-	FieldExtraArgs          = "extra-args"
-	FieldColor              = "color"
-	FieldNotes              = "notes"
-	FieldClaudeSessionID    = "claude-session-id"
-	FieldGeminiSessionID    = "gemini-session-id"
-	FieldOpenCodeSessionID  = "opencode-session-id"
-	FieldCodexSessionID     = "codex-session-id"
+	FieldTitle             = "title"
+	FieldPath              = "path"
+	FieldCommand           = "command"
+	FieldTool              = "tool"
+	FieldWrapper           = "wrapper"
+	FieldChannels          = "channels"
+	FieldPlugins           = "plugins"
+	FieldExtraArgs         = "extra-args"
+	FieldColor             = "color"
+	FieldNotes             = "notes"
+	FieldClaudeSessionID   = "claude-session-id"
+	FieldGeminiSessionID   = "gemini-session-id"
+	FieldOpenCodeSessionID = "opencode-session-id"
+	FieldCodexSessionID    = "codex-session-id"
+	// FieldToolSessionID binds a custom [tools.*] conversation id so restart
+	// after reboot can pass resume_flag <id>. Alias of the tool_data key
+	// generic_session_id.
+	FieldToolSessionID      = "tool-session-id"
 	FieldTitleLocked        = "title-locked"
 	FieldNoTransitionNotify = "no-transition-notify"
 	FieldSkipPermissions    = "skip-permissions"
@@ -60,6 +65,7 @@ var ValidMutableFields = []string{
 	FieldGeminiSessionID,
 	FieldOpenCodeSessionID,
 	FieldCodexSessionID,
+	FieldToolSessionID,
 	FieldTitleLocked,
 	FieldNoTransitionNotify,
 	FieldSkipPermissions,
@@ -80,7 +86,9 @@ const (
 func RestartPolicyFor(field string) FieldRestartPolicy {
 	switch field {
 	case FieldCommand, FieldWrapper, FieldTool, FieldChannels, FieldPlugins, FieldExtraArgs, FieldPath,
-		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel:
+		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel,
+		// Resume flags are baked into the next spawn command.
+		FieldToolSessionID:
 		return FieldRestartRequired
 	default:
 		return FieldLive
@@ -346,6 +354,51 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		inst.CodexSessionID = normalized
 		inst.CodexDetectedAt = time.Now()
 
+	case FieldToolSessionID:
+		// Trim so whitespace-only is a clear; resume argv must not inject bare spaces.
+		value = strings.TrimSpace(value)
+		oldValue = inst.GenericSessionID
+		inst.GenericSessionID = value
+		if value == "" {
+			inst.GenericDetectedAt = time.Time{}
+			// Mark intentional clear so instanceToRow writes explicit empty
+			// into tool_data; sticky merge only preserves on key omission.
+			inst.genericSessionIDCleared = true
+			inst.GenericSessionTool = ""
+			inst.GenericSessionCommand = ""
+			inst.GenericSessionLocation = ""
+		} else {
+			inst.GenericDetectedAt = time.Now()
+			inst.genericSessionIDCleared = false
+			// An operator binding an id binds it for THIS tool running THIS
+			// command at THIS location; the id stops being eligible if any of
+			// the three changes.
+			scope := inst.currentGenericSessionScope()
+			inst.GenericSessionTool = scope.Tool
+			inst.GenericSessionCommand = scope.Command
+			inst.GenericSessionLocation = scope.Location
+		}
+		// Optional write-through when TUI/long-lived process registered global DB.
+		// Full SaveWithGroups still works for CLI (GetGlobal nil) via the
+		// genericSessionIDCleared flag above. A failure is recorded rather than
+		// dropped: the CLI reports it, and nothing else can tell an id that
+		// reached disk from one that only ever lived in this process.
+		if db := statedb.GetGlobal(); db != nil {
+			err := db.WriteGenericSessionBinding(
+				inst.ID, value, inst.GenericSessionTool, inst.GenericSessionCommand,
+				inst.GenericSessionLocation, inst.GenericDetectedAt)
+			inst.setGenericSessionPersistError(err)
+			if err != nil {
+				return oldValue, nil, &MutationError{
+					Field: field,
+					Msg:   fmt.Sprintf("failed to persist tool-session-id: %v", err),
+				}
+			}
+		}
+		// Publish into the tool's env var when configured, and into the
+		// agent-deck-owned fallback either way, so a live pane sees it.
+		postCommit = makeGenericSessionEnvPostCommit(inst, value, inst.genericSessionEnvNames())
+
 	case FieldTitleLocked:
 		oldValue = strconv.FormatBool(inst.TitleLocked)
 		b, perr := parseFieldBool(value)
@@ -441,7 +494,35 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 			Msg:   fmt.Sprintf("invalid field: %s\nValid fields: %s", field, strings.Join(ValidMutableFields, ", ")),
 		}
 	}
+
+	// A custom-tool conversation id belongs to one tool running one command at
+	// one location. The three fields above are exactly the ones that can move a
+	// live session out from under a binding it already holds, so the binding is
+	// dropped here rather than merely disqualified at read time: the id is also
+	// sitting in the pane's environment, and an id left there comes back the
+	// moment anything reads the pane. Checked after the switch so it sees the
+	// mutation that just happened, and skipped for tool-session-id itself,
+	// which is establishing a binding rather than invalidating one.
+	if field == FieldTool || field == FieldCommand || field == FieldPath {
+		if invalidate := inst.invalidateGenericSessionBindingOnScopeChange(); invalidate != nil {
+			postCommit = chainPostCommit(postCommit, invalidate)
+		}
+	}
 	return oldValue, postCommit, nil
+}
+
+// chainPostCommit runs two post-commit side effects in order, dropping nils.
+func chainPostCommit(first, second func()) func() {
+	switch {
+	case first == nil:
+		return second
+	case second == nil:
+		return first
+	}
+	return func() {
+		first()
+		second()
+	}
 }
 
 // setClaudeOptionBool flips a single bool inside the ClaudeOptions JSON
@@ -488,6 +569,34 @@ func makeSessionEnvPostCommit(inst *Instance, envName, value string) func() {
 	socket := inst.TmuxSocketName
 	return func() {
 		if tmuxSess.Exists() {
+			_ = tmux.Exec(socket, "set-environment", "-t", tmuxSess.Name, envName, value).Run()
+		}
+	}
+}
+
+// makeGenericSessionEnvPostCommit publishes a custom-tool conversation id into
+// every tmux variable that can carry it: the tool's own session_id_env when
+// configured, and always the agent-deck-owned fallback, so a pane restarted
+// without a config-declared variable can still surrender its id.
+func makeGenericSessionEnvPostCommit(inst *Instance, value string, names []string) func() {
+	tmuxSess := inst.GetTmuxSession()
+	if tmuxSess == nil || len(names) == 0 {
+		return nil
+	}
+	socket := inst.TmuxSocketName
+	return func() {
+		if !tmuxSess.Exists() {
+			return
+		}
+		for _, envName := range names {
+			// An empty value is a removal, not a variable set to "". Left set,
+			// the pane still answers "yes, I have an id" with an empty string,
+			// and the read side has to treat that as a value it must reason
+			// about rather than as an absence.
+			if value == "" {
+				_ = tmux.Exec(socket, "set-environment", "-u", "-t", tmuxSess.Name, envName).Run()
+				continue
+			}
 			_ = tmux.Exec(socket, "set-environment", "-t", tmuxSess.Name, envName, value).Run()
 		}
 	}

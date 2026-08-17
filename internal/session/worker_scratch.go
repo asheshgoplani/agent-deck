@@ -111,7 +111,16 @@ func configDeclaresTelegram(cfg *UserConfig) bool {
 //
 // When multiple reasons fire, EnsureWorkerScratchConfigDir combines the
 // deny+allow lists.
+// Never true for an --ssh session (issue #1858): the scratch is a LOCAL tree —
+// a settings.json plus plugin symlinks under this machine's data dir — and the
+// remote spawn would be handed a path built from the LOCAL home. When the remote
+// user differs from the local one that path does not exist and is not creatable
+// there, so claude exits immediately (~250ms, the reported symptom). A remote
+// session runs under the remote host's own config dir.
 func (i *Instance) NeedsWorkerScratchConfigDir() bool {
+	if i != nil && i.IsSSH() {
+		return false
+	}
 	return needsScratchForTelegram(i) ||
 		needsScratchForExplicitPlugins(i) ||
 		needsScratchForGlobalChannelConflict(i) ||
@@ -822,11 +831,17 @@ func (i *Instance) applyWorkerScratchOverride(resolvedConfigDir string) string {
 	if i.WorkerScratchConfigDir == "" {
 		return resolvedConfigDir
 	}
-	if runtimeGOOS() == "darwin" {
-		sessionLog.Info("worker_scratch_settings_overlay",
+	// Issue #1858, defense in depth: the scratch path is built from the LOCAL
+	// home and the remote host cannot use it. NeedsWorkerScratchConfigDir
+	// already refuses to prepare one for a remote session; this makes the swap
+	// itself impossible even if the field was set some other way (an older
+	// state.db row, a profile migration).
+	if i.IsSSH() {
+		sessionLog.Info("worker_scratch_override_skipped_remote",
 			slog.String("instance_id", i.ID),
+			slog.String("ssh_host", i.SSHHost),
 			slog.String("resolved_config_dir", resolvedConfigDir),
-			slog.String("settings_file", filepath.Join(i.WorkerScratchConfigDir, "settings.json")),
+			slog.String("worker_scratch_config_dir", i.WorkerScratchConfigDir),
 		)
 		return resolvedConfigDir
 	}
@@ -874,6 +889,14 @@ func (i *Instance) prepareWorkerScratchConfigDirForSpawn() {
 	if len(i.Plugins) > 0 {
 		_ = i.EnsurePluginsInstalled(sourceDir)
 	}
+	if warning := i.remotePluginSetupWarning(); warning != "" {
+		sessionLog.Warn("ssh_plugin_setup_skipped",
+			slog.String("instance_id", i.ID),
+			slog.String("ssh_host", i.SSHHost),
+			slog.Any("plugins", i.Plugins),
+			slog.String("guidance", warning),
+		)
+	}
 	if !i.NeedsWorkerScratchConfigDir() {
 		return
 	}
@@ -918,6 +941,94 @@ func (i *Instance) prepareWorkerScratchConfigDirForSpawn() {
 	if result := VerifyTelegramChannelEnabled(effectiveDir, i.Channels); !result.OK {
 		EmitTelegramChannelDriftWarning(i.Title, i.ID, effectiveDir, i.Channels, result)
 	}
+}
+
+func (i *Instance) remotePluginSetupWarning() string {
+	if i == nil || !i.IsSSH() || len(i.Plugins) == 0 {
+		return ""
+	}
+	return "per-session plugin installation and enablement are unavailable over SSH; configure these plugins in the remote Claude profile"
+}
+
+// macOSScratchWarningEmitter is the package-level seam that lets tests
+// observe and override the warning emission. Real callers go through
+// maybeEmitMacOSScratchWarning which is darwin-gated and state-cached.
+var macOSScratchWarningEmitter func(sourceProfileDir string) = emitMacOSScratchWarningToStderr
+
+// maybeEmitMacOSScratchWarning is a no-op on non-darwin and a one-shot
+// per-(host, sourceProfileDir) pair on darwin. Cache lives in
+// the effective data directory so a second session re-using the same
+// source profile silently skips the warning.
+//
+// Best-effort: state-file errors (read or write) do NOT block the
+// session. Worst case: warning is shown twice.
+func maybeEmitMacOSScratchWarning(sourceProfileDir string) {
+	if runtimeGOOS() != "darwin" {
+		return
+	}
+	already, _ := readMacOSScratchWarningFlag(sourceProfileDir)
+	if already {
+		return
+	}
+	macOSScratchWarningEmitter(sourceProfileDir)
+	_ = writeMacOSScratchWarningFlag(sourceProfileDir)
+}
+
+// macOSWarningStateFile records source profile paths which have already shown
+// the macOS plugin-scratch warning. Failures are deliberately best-effort.
+func macOSWarningStateFile() (string, error) {
+	return dataPath("macos-plugin-warning-state.json", "macos-plugin-warning-state.json")
+}
+
+type macosWarningState struct {
+	Shown map[string]bool `json:"shown"`
+}
+
+func readMacOSScratchWarningFlag(sourceProfileDir string) (bool, error) {
+	path, err := macOSWarningStateFile()
+	if err != nil {
+		return false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var state macosWarningState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return false, err
+	}
+	return state.Shown[sourceProfileDir], nil
+}
+
+func writeMacOSScratchWarningFlag(sourceProfileDir string) error {
+	path, err := macOSWarningStateFile()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	state := macosWarningState{Shown: map[string]bool{}}
+	if data, readErr := os.ReadFile(path); readErr == nil {
+		_ = json.Unmarshal(data, &state)
+		if state.Shown == nil {
+			state.Shown = map[string]bool{}
+		}
+	}
+	state.Shown[sourceProfileDir] = true
+	out, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWriteFile(path, out, 0o600)
+}
+
+func emitMacOSScratchWarningToStderr(sourceProfileDir string) {
+	fmt.Fprintln(os.Stderr, "NOTICE: per-session plugin scratch on macOS may require Claude authentication for the scratch config directory.")
+	sessionLog.Warn("macos_plugin_scratch_warning_shown", slog.String("source_profile_dir", sourceProfileDir))
 }
 
 // runtimeGOOS is exposed as a var so tests can pretend to be darwin

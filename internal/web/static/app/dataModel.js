@@ -34,6 +34,9 @@ function projectSession(item) {
     model: s.model || '',
     modelVersion: s.modelVersion || '',
     canFork: !!s.canFork,
+    // Server-computed (session.ToolSupportsMCPManager). Default true so a
+    // payload predating the field does not hide the MCP pane.
+    mcpSupported: s.mcpSupported !== false,
     status: s.status || 'idle',
     branch: s.branch || '—',
     path: s.projectPath || '',

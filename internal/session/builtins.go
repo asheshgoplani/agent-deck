@@ -62,8 +62,16 @@ func builtinTools() []builtinTool {
 		{Name: "pi", Icon: "π", detectTokens: []string{"pi"}},
 		{Name: "copilot", Icon: "🐙", detectSubstrings: []string{"copilot"}},
 		{Name: "crush", Icon: "💘", detectSubstrings: []string{"crush"}},
-		{Name: "cursor", Icon: "📝", detectSubstrings: []string{"cursor"}},
+		// detectTokens includes bare "agent" (standalone Cursor Agent CLI).
+		// Token match only: substring "agent" would false-match "agent-deck".
+		{Name: "cursor", Icon: "📝", detectSubstrings: []string{"cursor"}, detectTokens: []string{"agent"}},
 		{Name: "hermes", Icon: "☤", detectSubstrings: []string{"hermes"}},
+		// DeepSeek Harness. The tool is named for the vendor; the binary is
+		// `dsh`, so the substring alone would never match a real command line.
+		// "dsh" is a token match, not a substring: as a substring it would
+		// false-match "dshell", "fdsh", and any path containing those three
+		// letters — the same reason "pi" is token-matched.
+		{Name: "deepseek", Icon: "🐋", detectSubstrings: []string{"deepseek"}, detectTokens: []string{"dsh"}},
 		{Name: "aider", Icon: "🐚"},
 		{Name: "shell", Icon: "🐚"},
 	}

@@ -96,6 +96,56 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			BusyPatterns:   []string{"waiting for deepseek", "working (", "idle timeout"},
 			PromptPatterns: []string{"Write a task or use"},
 		}
+	case "deepseek":
+		// DeepSeek Harness (`dsh`, npm @deepseek-ai/dsh), verified against
+		// 0.1.0-rc.6 in a sandboxed HOME. The shipped profiles are not a REPL,
+		// so these patterns describe what those two surfaces actually print:
+		//
+		//   web      one ready line, then silence:  "dsh web: http://127.0.0.1:3080"
+		//            The server is idle-but-alive from that line onward, which
+		//            is "waiting" — a prompt pattern, not a busy one.
+		//   headless streams nothing until it prints the final assistant text;
+		//            the whole run is busy, and the pane's own liveness is the
+		//            authoritative signal. Its terminal failures are handled
+		//            elsewhere: credential codes by the auth-failure scanner,
+		//            usage errors by the process simply exiting.
+		//
+		// Deliberately NOT a prompt pattern: "Usage: dsh". That is the HELP
+		// screen, which dsh prints on --help and exits 0 — a real usage failure
+		// prints `error: a task is required, …` or `error: unknown option '…'`
+		// instead, so treating the help banner as a waiting prompt described a
+		// state that never occurs (PR #1942 adversarial review).
+		//
+		// Busy is checked before prompt in the detector, so the ready banner
+		// cannot mask a run that is still working.
+		//
+		// PROVENANCE — the two fields are not equally evidenced, and saying so is
+		// the point (PR #1942 adversarial review):
+		//
+		//   PromptPatterns  CAPTURED. `dsh web --port 0` printed exactly
+		//                   "dsh web: http://127.0.0.1:39949", then served.
+		//
+		//   BusyPatterns    INFERRED, not captured. Neither shipped profile prints
+		//                   them: web emits one line and goes quiet, headless
+		//                   streams nothing until its final answer. They are the
+		//                   near-universal convention among the terminal agents
+		//                   this repo already supports (claude, codex, copilot,
+		//                   cursor and pi all use one or both), carried here as a
+		//                   default for an INSTALLED interactive profile, whose
+		//                   vocabulary agent-deck cannot know in advance. They cost
+		//                   nothing when absent — a pane that never prints them
+		//                   relies on the liveness signal — and a user whose
+		//                   profile says something else overrides through
+		//                   [tools.<name>] busy_patterns, which merge over this.
+		return &RawPatterns{
+			BusyPatterns: []string{
+				"ctrl+c to interrupt",
+				"esc to interrupt",
+			},
+			PromptPatterns: []string{
+				`re:(?mi)^dsh web:\s+https?://`,
+			},
+		}
 	case "pi":
 		return &RawPatterns{
 			BusyPatterns: []string{

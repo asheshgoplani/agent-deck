@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -746,7 +747,7 @@ func SupportsHyperlinks() bool {
 }
 
 // Tool detection patterns (used by DetectTool for initial tool identification)
-var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "pi"}
+var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "deepseek", "pi"}
 
 var toolDetectionPatterns = map[string][]*regexp.Regexp{
 	"claude": {
@@ -785,6 +786,20 @@ var toolDetectionPatterns = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bhermes\s+agent\b`),
 		regexp.MustCompile(`(?i)\bnous\s*research\b`),
 	},
+	"deepseek": {
+		// DeepSeek Harness (`dsh`, npm @deepseek-ai/dsh). Captured live from
+		// 0.1.0-rc.6 in a sandboxed HOME:
+		//   web ready banner: "dsh web: http://127.0.0.1:39949"
+		//   launcher help:    "dsh: boot a DeepSeek Harness profile"
+		//   headless usage:   "Usage: dsh --profile headless [options] [task...]"
+		//   credential error: "dsh: MISSING_CREDENTIAL: llm-deepseek: ..."
+		// Every pattern anchors on the "dsh" prefix or the product name, so the
+		// bare word "deepseek" in a model name (a codex pane running a DeepSeek
+		// model, say) cannot claim the pane.
+		regexp.MustCompile(`(?i)\bdeepseek\s+harness\b`),
+		regexp.MustCompile(`(?mi)^dsh(\s+web)?:\s`),
+		regexp.MustCompile(`(?i)\bdsh\s+--profile\b`),
+	},
 	"pi": {
 		regexp.MustCompile(`(?mi)^\s*pi>\s*`),
 		regexp.MustCompile(`(?i)\bpi\s+cli\b`),
@@ -821,8 +836,15 @@ func detectToolFromCommand(command string) string {
 			return "crush"
 		case "cursor":
 			return "cursor"
+		case "agent":
+			// Standalone Cursor Agent CLI binary (~/.local/bin/agent).
+			return "cursor"
 		case "hermes":
 			return "hermes"
+		case "dsh":
+			// DeepSeek Harness. The binary is `dsh`; the agent-deck tool is
+			// named for the vendor.
+			return "deepseek"
 		case "pi":
 			return "pi"
 		}
@@ -845,11 +867,62 @@ func detectToolFromCommand(command string) string {
 		return "cursor"
 	case strings.Contains(cmdLower, "hermes"):
 		return "hermes"
+	case isDeepSeekCommand(fields) ||
+		strings.Contains(cmdLower, "@deepseek-ai/dsh") ||
+		strings.Contains(cmdLower, "dsh --profile") ||
+		strings.Contains(cmdLower, "dsh web") ||
+		strings.Contains(cmdLower, "dsh plugin"):
+		// Deliberately NOT a bare Contains on "dsh": those three letters appear
+		// in "dshell", "dshboard", and any path containing them, and — unlike
+		// the permissive arms above — `grep dsh README.md` is an entirely
+		// ordinary thing to see in a pane. Detection therefore needs the token
+		// in COMMAND position (isDeepSeekCommand, which sees through the
+		// `DSH_HOME=… dsh` env prefix agent-deck itself emits), the documented
+		// npx spelling, or a dsh subcommand/launcher flag right after it.
+		return "deepseek"
 	case strings.Contains(cmdLower, " pi ") || strings.HasPrefix(cmdLower, "pi "):
 		return "pi"
 	default:
 		return ""
 	}
+}
+
+// isDeepSeekCommand reports whether the first COMMAND-position token of a
+// command line is the dsh binary. Leading `VAR=value` assignments are skipped:
+// agent-deck's own launch string is `DSH_HOME=… AGENTDECK_…=… dsh --profile …`,
+// so fields[0] is an assignment, not the program.
+//
+// This is the precise half of DeepSeek detection; the substring arms beside it
+// cover the npx spelling and subcommand forms.
+func isDeepSeekCommand(fields []string) bool {
+	for _, field := range fields {
+		if isShellAssignmentToken(field) {
+			continue
+		}
+		base := filepath.Base(strings.Trim(field, `"'`))
+		base = strings.TrimSuffix(strings.TrimSuffix(base, ".exe"), ".cmd")
+		return base == "dsh"
+	}
+	return false
+}
+
+// isShellAssignmentToken reports whether a token is a `NAME=value` environment
+// assignment rather than a program name.
+func isShellAssignmentToken(token string) bool {
+	idx := strings.IndexByte(token, '=')
+	if idx <= 0 {
+		return false
+	}
+	for i, r := range token[:idx] {
+		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
+		if i == 0 && !isAlpha {
+			return false
+		}
+		if i > 0 && !isAlpha && !(r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func detectToolFromContent(cleanContent string) string {
@@ -1275,8 +1348,8 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	// target the same isolated server. Without this, the session would be
 	// minted on the default server while later Session.tmuxCmd calls —
 	// which DO carry -L — would probe the isolated server and find
-	// nothing. Empty SocketName preserves pre-v1.7.50 behavior exactly
-	// (buildInnerTmuxArgs returns the args unchanged).
+	// nothing. Empty SocketName emits no -L at all, so the spawn still lands
+	// on the user's default server exactly as it did pre-v1.7.50.
 	//
 	// #1694: -x/-y birth the window at the terminal agent-deck runs on
 	// (generous fallback when there is no TTY) so the tool's FIRST paint is
@@ -1284,6 +1357,12 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	// that fixes its layout on frame one stays clipped forever — see
 	// InitialWindowSize. Appended AFTER -c so the argv prefix that callers and
 	// fallback helpers key on is unchanged.
+	// buildInnerTmuxArgs also prepends tmux's global -u (#1867). That is
+	// unconditional and independent of the socket: it forces the CLIENT to
+	// UTF-8 so nothing agent-deck later reads back is "_"-mangled. It is
+	// spliced INSIDE the inner tmux argv here, after the literal "tmux" that
+	// systemd-run execs — a global flag placed before "tmux" would be
+	// systemd-run's, not tmux's.
 	cols, rows := InitialWindowSize()
 	tmuxArgs := buildInnerTmuxArgs(s.SocketName, "new-session", "-d", "-s", s.Name, "-c", workDir,
 		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
@@ -2230,7 +2309,7 @@ func (s *Session) Start(command string) error {
 		if launcher == "tmux" {
 			if recovered, recoverErr := recoverFromStaleDefaultSocketIfNeeded(string(output)); recoverErr != nil {
 				statusLog.Warn("tmux_stale_socket_recovery_failed",
-					slog.String("session", s.Name),
+					slog.String("session", logging.SanitizeValue(s.Name)),
 					slog.String("error", recoverErr.Error()),
 				)
 			} else if recovered {
@@ -2515,6 +2594,203 @@ func (s *Session) Start(command string) error {
 // tests.
 var hasSessionProbeTimeout = 2 * time.Second
 
+// isTmuxProtocolMismatch reports whether tmux output signals a client/server
+// protocol version mismatch. tmux prints "protocol version mismatch (client X,
+// server Y)" when a client binary of one protocol version talks to a server
+// started by a binary of a different version — common when the running server
+// uses a newer tmux (e.g. one installed under a Nix profile) while the client's
+// PATH resolves an older system tmux. Crucially, a mismatch response is proof
+// that the SERVER is alive and reachable: it answered with its version. The
+// failure is purely in the client binary, not in the session. Callers must
+// therefore treat a mismatch as indeterminate (assume alive), never as an
+// authoritative "session gone".
+//
+// An authoritative absence reply always wins over the mismatch marker. tmux
+// echoes the requested target in "can't find session: <name>", so a session
+// NAMED like the marker (e.g. "protocol version mismatch") would otherwise make
+// the bare substring test below fire on a genuine "gone" reply and wrongly keep
+// a dead session alive. A real mismatch means the client never reached the
+// server, so it can't also carry an authoritative absence — the two are
+// mutually exclusive, and giving absence precedence is safe.
+//
+// defaultProbeSocketProtocolMismatch, the only production caller, additionally
+// keeps operator-controlled session names out of the bytes handed here (it
+// classifies `list-sessions -F ""` stderr, which echoes no target). The
+// short-circuit above is therefore belt-and-braces for that path — and load-
+// bearing for any caller that ever classifies has-session output again.
+func isTmuxProtocolMismatch(output string) bool {
+	lower := strings.ToLower(output)
+	if strings.Contains(lower, "can't find session") {
+		return false
+	}
+	return strings.Contains(lower, "protocol version mismatch")
+}
+
+// socketMismatchCacheTTL bounds how long one socket's protocol-mismatch verdict
+// is reused. A mismatch is a property of the client/server BINARY PAIR — the
+// tmux on PATH versus the tmux that started the server on this socket — not of
+// an individual session, so it is stable for the lifetime of that pair.
+//
+// Keep the window short anyway. The direction that costs the user is a mismatch
+// appearing while a "no mismatch" verdict is still warm: sessions on that socket
+// keep reading gone for up to one TTL, exactly as they do today. Recovery in the
+// other direction (the operator fixes PATH, or the server restarts) is benign —
+// sessions merely stay "assume alive" for one more TTL. 5s matches
+// socketSessionCacheTTL and the negative-cache reasoning in #1728.
+const socketMismatchCacheTTL = 5 * time.Second
+
+// socketMismatchVerdict is one socket's cached classification.
+type socketMismatchVerdict struct {
+	mismatched bool
+	checkedAt  time.Time
+}
+
+var (
+	socketMismatchMu    sync.Mutex
+	socketMismatchCache = map[string]socketMismatchVerdict{}
+
+	// socketMismatchSf collapses a burst of classifications for the same socket
+	// into one, the way captureSf does for CapturePane: every session on a
+	// refusing socket reads "gone" in the same status pass, and that burst must
+	// cost ONE classification, not one per session.
+	socketMismatchSf singleflight.Group
+
+	// probeSocketProtocolMismatch is a package var so tests can drive the cache
+	// without a live tmux server. Read/written under socketMismatchMu.
+	probeSocketProtocolMismatch = defaultProbeSocketProtocolMismatch
+)
+
+// socketHasProtocolMismatch reports whether the tmux client agent-deck spawns
+// can talk to the server on socketName at all, or is refused for speaking a
+// different protocol version.
+//
+// This is the out-of-band half of the mismatch fix. The liveness probes
+// (Session.Exists, tmuxSessionExistsOnSocket) stay on cmd.Run() with no stdio to
+// capture, so nothing on the status hot path can block waiting for an EOF that a
+// forked child of tmux holds open (see tmuxSubprocessWaitDelay in socket.go).
+// The one exchange that has to READ tmux's error text to classify it happens
+// here instead: at most once per socket per TTL, and only after a probe has
+// already come back "gone".
+func socketHasProtocolMismatch(socketName string) bool {
+	socket := strings.TrimSpace(socketName)
+
+	if verdict, fresh := cachedSocketMismatch(socket); fresh {
+		return verdict
+	}
+
+	// Slow path: classify, deduplicating concurrent callers for this socket.
+	result, _, _ := socketMismatchSf.Do(socket, func() (any, error) {
+		// Double-check inside the singleflight: a caller that queued here just
+		// before the winner stored its verdict must reuse it, not re-classify.
+		if verdict, fresh := cachedSocketMismatch(socket); fresh {
+			return verdict, nil
+		}
+
+		socketMismatchMu.Lock()
+		probe := probeSocketProtocolMismatch
+		socketMismatchMu.Unlock()
+
+		mismatched := probe(socket)
+
+		socketMismatchMu.Lock()
+		socketMismatchCache[socket] = socketMismatchVerdict{mismatched: mismatched, checkedAt: time.Now()}
+		socketMismatchMu.Unlock()
+
+		return mismatched, nil
+	})
+
+	mismatched, _ := result.(bool)
+	return mismatched
+}
+
+// cachedSocketMismatch returns a socket's verdict and whether it is still fresh.
+func cachedSocketMismatch(socket string) (verdict, fresh bool) {
+	socketMismatchMu.Lock()
+	defer socketMismatchMu.Unlock()
+
+	entry, ok := socketMismatchCache[socket]
+	if !ok || time.Since(entry.checkedAt) >= socketMismatchCacheTTL {
+		return false, false
+	}
+	return entry.mismatched, true
+}
+
+// defaultProbeSocketProtocolMismatch settles one client/server exchange on
+// socketName. Every client command against a server of a different protocol
+// version is refused with tmux's "protocol version mismatch (client X, server
+// Y)" on stderr, so a single `list-sessions` decides it.
+//
+// Three deliberate choices:
+//
+//   - stderr is captured into a REAL FILE, never a pipe. os/exec hands an
+//     *os.File to the child as its fd 2 unchanged — no os.Pipe, no copy
+//     goroutine — so nothing here can wait on an EOF that a forked child of tmux
+//     is holding open (socket.go's tmuxSubprocessWaitDelay). Moving the capture
+//     off the liveness probes is what keeps that wait off the status hot path;
+//     using a pipe HERE would put the same bounded-but-real 2s drain back, once
+//     per socket per TTL, and `agent-deck status` under bridged stdio measurably
+//     pays it.
+//   - Only tmux's own stderr is classified, and `-F ""` makes tmux print an
+//     empty line per session instead of session names. Session names are
+//     operator-controlled text, so keeping them out of the classified bytes is
+//     what makes this probe structurally immune to the echo problem
+//     isTmuxProtocolMismatch has to guard against in has-session output.
+//   - Only a FAILED exchange can be a mismatch: a server that answers is by
+//     definition speaking our protocol. Anything else that fails (deadline,
+//     exec failure, an unwritable temp dir) reads as "no mismatch" — the
+//     conservative answer, since it leaves the caller's own verdict untouched.
+func defaultProbeSocketProtocolMismatch(socketName string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+
+	sink, err := os.CreateTemp("", "agent-deck-tmux-mismatch-*")
+	if err != nil {
+		return false
+	}
+	defer func() {
+		_ = sink.Close()
+		_ = os.Remove(sink.Name())
+	}()
+
+	cmd := tmuxExecContext(ctx, socketName, "list-sessions", "-F", "")
+	cmd.Stderr = sink // *os.File: passed through to the child, not proxied
+	if err := cmd.Run(); err == nil {
+		return false
+	}
+
+	if _, err := sink.Seek(0, io.SeekStart); err != nil {
+		return false
+	}
+	// tmux's refusal is one short line; cap the read so a pathological server
+	// cannot make this allocate.
+	stderr, err := io.ReadAll(io.LimitReader(sink, 4096))
+	if err != nil {
+		return false
+	}
+	return isTmuxProtocolMismatch(string(stderr))
+}
+
+// resetSocketMismatchCacheForTest clears every cached verdict.
+func resetSocketMismatchCacheForTest() {
+	socketMismatchMu.Lock()
+	defer socketMismatchMu.Unlock()
+	socketMismatchCache = map[string]socketMismatchVerdict{}
+}
+
+// setSocketMismatchProbeForTest swaps the classifier and returns a restore func.
+func setSocketMismatchProbeForTest(probe func(string) bool) func() {
+	socketMismatchMu.Lock()
+	defer socketMismatchMu.Unlock()
+
+	prev := probeSocketProtocolMismatch
+	probeSocketProtocolMismatch = probe
+	return func() {
+		socketMismatchMu.Lock()
+		defer socketMismatchMu.Unlock()
+		probeSocketProtocolMismatch = prev
+	}
+}
+
 // Exists checks if the tmux session exists
 // Uses cached session list when available (refreshed by RefreshExistingSessions)
 // Falls back to direct tmux call if cache is stale
@@ -2557,6 +2833,21 @@ func (s *Session) Exists() bool {
 	err := s.tmuxCmdContext(ctx, "has-session", "-t", s.Name).Run()
 	if ctx.Err() == context.DeadlineExceeded {
 		return true // probe timed out: indeterminate, assume still alive
+	}
+	// A completed non-zero exit is only AUTHORITATIVE if the client reached the
+	// server. A client/server protocol version mismatch fails every command on
+	// this socket fast with a non-zero exit, and the refusal itself proves the
+	// server — and therefore this session — is alive: only the client binary is
+	// wrong. Treating it as "gone" flipped live sessions to StatusError (via
+	// terminatedPaneStatus) even though nothing crashed. Assume alive, like the
+	// timeout branch, and let a later poll with a matching client resolve it.
+	//
+	// The verdict is a property of the client/server binary pair, not of this
+	// session, so it is settled out of band and cached per socket. That keeps
+	// this probe on Run() with nil stdio: no pipe, no copy goroutine, nothing
+	// for WaitDelay to bound on the status hot path.
+	if err != nil && socketHasProtocolMismatch(s.SocketName) {
+		return true
 	}
 	return err == nil
 }
@@ -2863,7 +3154,7 @@ func (s *Session) Kill() error {
 	// Capture process tree BEFORE killing so we can verify they die
 	_, oldPIDs := s.getPaneProcessTree()
 	if len(oldPIDs) > 0 {
-		respawnLog.Info("pre_kill_process_tree", slog.String("session", s.Name), slog.Any("pids", oldPIDs))
+		respawnLog.Info("pre_kill_process_tree", slog.String("session", logging.SanitizeValue(s.Name)), slog.Any("pids", oldPIDs))
 	}
 
 	// Kill the tmux session. Bounded — see tmuxMutationTimeout. A client
@@ -2908,7 +3199,7 @@ func (s *Session) getPaneProcessTree() (panePID int, allPIDs []int) {
 		// must not be silent: on a loaded box this is how a SIGHUP-immune agent
 		// survives a Kill() as an orphan.
 		statusLog.Warn("pane_process_tree_probe_failed",
-			slog.String("session", s.Name),
+			slog.String("session", logging.SanitizeValue(s.Name)),
 			slog.String("error", err.Error()))
 		return 0, nil
 	}
@@ -5169,10 +5460,14 @@ func (s *Session) SendNamedKey(key string) error {
 }
 
 // SendKeysAndEnter sends literal text followed by Enter as two separate tmux
-// calls with a short delay between them. The delay is necessary because tmux
-// 3.2+ wraps send-keys -l in bracketed paste sequences (\e[200~...\e[201~).
-// Without the delay, Enter arrives in the same PTY buffer as the paste-end
-// marker and gets swallowed by async TUI frameworks (Ink/Node.js, curses).
+// calls with a short delay between them. The delay gives async TUI frameworks
+// (Ink/Node.js, curses) time to finish processing the body — in particular a
+// bracketed-paste end marker (\e[201~), which `paste-buffer -p` emits for
+// multi-line and large payloads — before the Enter arrives in the PTY buffer;
+// without it the Enter lands in the same read as the paste-end marker and is
+// swallowed. (Measured on tmux 3.7b: `send-keys -l` is NOT wrapped in
+// bracketed paste, contrary to what this comment previously claimed — only
+// `paste-buffer -p` frames, and only when the pane app has enabled it.)
 func (s *Session) SendKeysAndEnter(keys string) error {
 	return s.sendKeysAndEnterToTarget(s.Name, keys)
 }
@@ -5222,23 +5517,42 @@ func (s *Session) sendKeysAndEnterToTarget(target, keys string) error {
 }
 
 // SendKeysChunked delivers content to the tmux session's active window.
-// Payloads at or below canonicalSafeBytes go out as a single `send-keys -l`,
-// exactly as before. Larger payloads take the paste transport (load-buffer
-// from stdin + paste-buffer) after the pane's line discipline has been
-// checked; see sendKeysChunkedToTarget and canonical_line.go.
+// Single-line payloads at or below canonicalSafeBytes go out as one
+// `send-keys -l`, exactly as before. Multi-line payloads of any size, and
+// larger single-line payloads, take the paste transport (load-buffer from
+// stdin + paste-buffer -p -r) — the only transport that preserves line
+// structure into a TUI composer; see sendKeysChunkedToTarget, pasteToTarget
+// and canonical_line.go.
 func (s *Session) SendKeysChunked(content string) error {
 	return s.sendKeysChunkedToTarget(s.Name, content)
 }
 
 // sendKeysChunkedToTarget is SendKeysChunked against an explicit tmux target.
 //
-// Three sizes of payload, three behaviors (issue #1793):
+// CR handling: CRLF and bare-CR line breaks are normalized to LF before the
+// fork (see the comment in the body), so "multi-line" below means "contains
+// any line break", not "contains LF".
 //
-//   - ≤ canonicalSafeBytes: one `send-keys -l`. Guaranteed to fit any line
-//     discipline, so nothing is inspected and nothing costs extra. This is
-//     the overwhelming majority of sends and is byte-for-byte unchanged.
+// The transport fork (issues #1793 + #1855):
 //
-//   - larger, pane readable and canonical: refuse with
+//   - single-line, ≤ canonicalSafeBytes: one `send-keys -l`. Guaranteed to
+//     fit any line discipline, so nothing is inspected and nothing costs
+//     extra. This is the overwhelming majority of sends and is byte-for-byte
+//     unchanged.
+//
+//   - multi-line, any size: the paste transport (issue #1855). A body with
+//     embedded LFs cannot go out as `send-keys -l`: the bytes arrive intact
+//     but UNFRAMED, and to a bracketed-paste TUI composer (Claude Code's
+//     Ink prompt) an unframed bare LF is a keystroke, not text — the
+//     composer drops it and the lines fuse. Only `paste-buffer -p -r`
+//     delivers both properties a multi-line body needs: literal LF (-r,
+//     without which tmux rewrites LF to CR, and CR is a submit key) and a
+//     bracketed-paste frame (-p) so the composer inserts the newlines as
+//     text. Short multi-line bodies skip the line-discipline probe below —
+//     every line of a ≤canonicalSafeBytes payload fits any canonical
+//     buffer, so there is nothing to refuse.
+//
+//   - single-line, larger, pane readable and canonical: refuse with
 //     *CanonicalOverflowError when the longest line does not fit the pane's
 //     canonical buffer. The kernel would discard the overflow AND the
 //     submitting Enter, so typing it would leave a half-line in the composer
@@ -5254,19 +5568,38 @@ func (s *Session) SendKeysChunked(content string) error {
 // to fall off the identical cliff (canonical_line.go). Only the refusal, and
 // the caller's post-send verification, make the outcome honest.
 func (s *Session) sendKeysChunkedToTarget(target, content string) error {
-	if len(content) <= canonicalSafeBytes {
+	// A CR is a line break to everything downstream of this transport — the
+	// tty's ICRNL default turns an incoming CR into NL before the line
+	// discipline sees it (the same reason longestMessageLineBytes counts \r
+	// as a line terminator) — and to a bracketed-paste composer a CR inside
+	// the frame is a submit key. paste-buffer's -r flag only stops tmux's
+	// own LF→CR rewrite; it never removes CRs the payload already carries.
+	// So normalize here, before the transport fork: a CRLF body (a
+	// Windows-authored --message-file) and a bare-CR body both become LF
+	// line breaks, which routes them through the framed paste below and
+	// keeps the delivered frame CR-free.
+	if strings.Contains(content, "\r") {
+		content = strings.ReplaceAll(content, "\r\n", "\n")
+		content = strings.ReplaceAll(content, "\r", "\n")
+	}
+	if len(content) <= canonicalSafeBytes && !strings.Contains(content, "\n") {
 		return s.sendKeysToTarget(target, content)
 	}
 
 	// Above the always-safe size the pane itself decides. An unreadable
 	// discipline is "unknown", not "unsafe": deliver and let the caller
-	// verify rather than refusing a send that would have worked.
-	if ld, err := s.paneLineDiscipline(target); err == nil && ld.Canonical && ld.MaxLine > 0 {
-		if longest := longestLineBytes(content); longest > ld.MaxLine-1 {
-			return &CanonicalOverflowError{
-				LineBytes:  longest,
-				LimitBytes: ld.MaxLine,
-				TTY:        ld.TTY,
+	// verify rather than refusing a send that would have worked. Payloads at
+	// or below canonicalSafeBytes (multi-line ones reaching here for the
+	// paste framing) are safe per line by construction and are never probed
+	// nor refused.
+	if len(content) > canonicalSafeBytes {
+		if ld, err := s.paneLineDiscipline(target); err == nil && ld.Canonical && ld.MaxLine > 0 {
+			if longest := longestLineBytes(content); longest > ld.MaxLine-1 {
+				return &CanonicalOverflowError{
+					LineBytes:  longest,
+					LimitBytes: ld.MaxLine,
+					TTY:        ld.TTY,
+				}
 			}
 		}
 	}
@@ -5282,6 +5615,19 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 	// concatenate it in the composer. An ambiguous transport failure is
 	// reported, never retried.
 	if errors.Is(err, errPasteNotStaged) {
+		// Degrading is deliberate — a tmux build whose paste path is down has
+		// no framing transport at all, and refusing would fail sends that a
+		// cooked-mode consumer would have taken fine. But the degradation must
+		// not be silent: for a multi-line body the fallback is the unframed
+		// `send-keys -l` transport issue #1855 is about, so the lines can fuse
+		// in a bracketed-paste composer exactly as originally reported. Log it
+		// so a recurrence of #1855 behind a green exit is attributable to this
+		// path instead of looking like the fix regressed.
+		statusLog.Warn("paste_transport_unavailable_degraded_to_send_keys",
+			slog.String("session", logging.SanitizeValue(s.Name)),
+			slog.Bool("multiline", strings.Contains(content, "\n")),
+			slog.Int("payload_bytes", len(content)),
+			slog.String("error", err.Error()))
 		return s.sendKeysChunkedFallback(target, content)
 	}
 	return err
@@ -5323,7 +5669,21 @@ func pasteBufferName() string {
 
 // pasteToTarget delivers content through tmux's paste path: `load-buffer -`
 // reads the body from this process's stdin (no argv size limit, no shell
-// quoting), then `paste-buffer -d` writes it to the pane and drops the buffer.
+// quoting), then `paste-buffer -p -r -d` writes it to the pane and drops the
+// buffer.
+//
+// The two paste flags are load-bearing for multi-line bodies (issue #1855),
+// measured on tmux 3.7b against a raw-mode pane with bracketed paste enabled:
+//
+//	-r  keeps embedded LFs as LF. Without it tmux rewrites every LF to CR,
+//	    and CR is a submit key — a multi-line message gets chopped into N
+//	    premature submissions.
+//	-p  frames the body in bracketed-paste markers (\e[200~…\e[201~) IF the
+//	    pane's application has requested bracketed paste. A TUI composer
+//	    only inserts an LF as text inside a paste frame; unframed it is a
+//	    keystroke and the lines fuse. Apps that never requested bracketed
+//	    paste (a cooked-mode shell) receive the bare body unchanged, so the
+//	    flag is safe for every consumer.
 func (s *Session) pasteToTarget(target, content string) error {
 	s.invalidateCache()
 
@@ -5340,7 +5700,7 @@ func (s *Session) pasteToTarget(target, content string) error {
 		return fmt.Errorf("load-buffer: %v: %w", err, errPasteNotStaged)
 	}
 
-	paste := keySenderExec(s.SocketName, "paste-buffer", "-d", "-b", buf, "-t", target)
+	paste := keySenderExec(s.SocketName, "paste-buffer", "-p", "-r", "-d", "-b", buf, "-t", target)
 	if err := runSendKeysBounded(paste); err != nil {
 		// -d never ran, so the staged buffer would linger. Drop it before
 		// falling back, otherwise the fallback's content and this stale copy

@@ -109,8 +109,12 @@ func TestResolveGithubWebhookSecret_RequiresASource(t *testing.T) {
 // map[string]string Settings.
 func TestWriteGithubWatcherSecret_PersistsTo0600Toml(t *testing.T) {
 	dir := t.TempDir()
-	if err := writeGithubWatcherSecret(dir, "top-secret-hmac", 9000); err != nil {
+	written, err := writeGithubWatcherSecret(dir, "top-secret-hmac", 9000)
+	if err != nil {
 		t.Fatalf("writeGithubWatcherSecret: %v", err)
+	}
+	if !written {
+		t.Fatal("written = false for a directory with no watcher.toml")
 	}
 
 	path := filepath.Join(dir, "watcher.toml")
@@ -133,5 +137,42 @@ func TestWriteGithubWatcherSecret_PersistsTo0600Toml(t *testing.T) {
 	}
 	if cfg.Source["port"] != "9000" {
 		t.Fatalf("expected [source].port=\"9000\" (string), got %q", cfg.Source["port"])
+	}
+}
+
+// TestWriteGithubWatcherSecret_KeepsExistingConfig pins the create-if-absent
+// semantics the maintainer asked for on #1888: the github path must behave like
+// the ntfy/slack one and never replace a watcher.toml it did not write. The
+// stakes are higher here than for a topic — replacing the file would swap the
+// secret a running watcher verifies signatures with, and take any hand-written
+// [routing] in the same file with it.
+func TestWriteGithubWatcherSecret_KeepsExistingConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "watcher.toml")
+	existing := `[source]
+secret = "the-secret-github-is-signing-with"
+
+[routing]
+conductor = "infra"
+group = "infra/alerts"
+`
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+		t.Fatalf("seed watcher.toml: %v", err)
+	}
+
+	written, err := writeGithubWatcherSecret(dir, "a-rotated-secret", 9000)
+	if err != nil {
+		t.Fatalf("writeGithubWatcherSecret: %v", err)
+	}
+	if written {
+		t.Error("written = true; an existing watcher.toml must be left alone")
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read watcher.toml: %v", err)
+	}
+	if string(got) != existing {
+		t.Errorf("watcher.toml was modified:\n--- got ---\n%s\n--- want ---\n%s", got, existing)
 	}
 }

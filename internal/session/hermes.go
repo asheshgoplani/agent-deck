@@ -2,21 +2,227 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"al.essio.dev/pkg/shellescape"
-
-	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
+
+type hermesHookControl struct {
+	Generation            string `json:"generation"`
+	NextSequence          uint64 `json:"next_sequence"`
+	InitialMessagePending bool   `json:"initial_message_pending,omitempty"`
+}
+type hermesHookSeed struct {
+	Status                string `json:"status"`
+	Event                 string `json:"event"`
+	Timestamp             int64  `json:"ts"`
+	HookGeneration        string `json:"hook_generation"`
+	Sequence              uint64 `json:"sequence"`
+	InitialMessagePending bool   `json:"initial_message_pending,omitempty"`
+}
+
+var hermesHookInstanceIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
+type hermesHookLocks struct{ files []*os.File }
+
+func (l *hermesHookLocks) release() {
+	for n := len(l.files) - 1; n >= 0; n-- {
+		_ = syscall.Flock(int(l.files[n].Fd()), syscall.LOCK_UN)
+		_ = l.files[n].Close()
+	}
+}
+
+func acquireHermesHookLocks(instanceID string) (*hermesHookLocks, error) {
+	if !hermesHookInstanceIDPattern.MatchString(instanceID) || strings.Contains(instanceID, "..") {
+		return nil, fmt.Errorf("invalid instance id %q", instanceID)
+	}
+	root := GetHooksDir()
+	dirs := []string{root, filepath.Join(root, "sandbox", instanceID)}
+	locks := &hermesHookLocks{}
+	for _, dir := range dirs {
+		if dir != root {
+			if _, err := os.Stat(dir); os.IsNotExist(err) {
+				continue
+			}
+		}
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			locks.release()
+			return nil, err
+		}
+		f, err := os.OpenFile(filepath.Join(dir, instanceID+".lock"), os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			locks.release()
+			return nil, err
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+			_ = f.Close()
+			locks.release()
+			return nil, err
+		}
+		locks.files = append(locks.files, f)
+	}
+	return locks, nil
+}
+
+func hermesHookScope(instanceID string, sandboxed bool) string {
+	if sandboxed {
+		return filepath.Join(GetHooksDir(), "sandbox", instanceID)
+	}
+	return GetHooksDir()
+}
+
+func atomicHermesJSON(path string, value any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err = f.Chmod(0600); err == nil {
+		_, err = f.Write(b)
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func (i *Instance) seedHermesHookGeneration(status string, pending bool) (string, error) {
+	if !hermesHookInstanceIDPattern.MatchString(i.ID) || strings.Contains(i.ID, "..") {
+		return "", fmt.Errorf("invalid instance id %q", i.ID)
+	}
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	generation := fmt.Sprintf("%x", raw[:])
+	scope := hermesHookScope(i.ID, i.IsSandboxed())
+	if err := os.MkdirAll(scope, 0700); err != nil {
+		return "", err
+	}
+	locks, err := acquireHermesHookLocks(i.ID)
+	if err != nil {
+		return "", err
+	}
+	opposite := hermesHookScope(i.ID, !i.IsSandboxed())
+	defer func() { locks.release(); pruneHermesAbandonedScope(i.ID, opposite) }()
+	clearHermesHookScope(i.ID, opposite, false)
+	now := time.Now()
+	seed := hermesHookSeed{Status: status, Event: "agentdeck_spawn_seed", Timestamp: now.Unix(), HookGeneration: generation, InitialMessagePending: pending}
+	if err := atomicHermesJSON(filepath.Join(scope, i.ID+".json"), seed); err != nil {
+		return "", err
+	}
+	// The control rename is the invalidation boundary. The seed is already
+	// durable and both possible writer scopes are locked when it becomes live.
+	if err := atomicHermesJSON(filepath.Join(scope, i.ID+".generation.json"), hermesHookControl{Generation: generation, InitialMessagePending: pending}); err != nil {
+		return "", err
+	}
+	// Keep the synchronous status path aligned with the committed seed. The
+	// watcher will observe the same file later, but UpdateStatus may run first;
+	// leaving the previous process's fresh running/dead sample in memory would
+	// temporarily override the restart baseline until fsnotify catches up.
+	i.mu.Lock()
+	i.HermesHookGeneration = generation
+	i.hookStatus = status
+	i.hookEvent = seed.Event
+	i.hookLastUpdate = now
+	i.mu.Unlock()
+	return generation, nil
+}
+
+func clearHermesHookScope(instanceID, dir string, preserveControl bool) {
+	_ = os.Remove(filepath.Join(dir, instanceID+".json"))
+	if !preserveControl {
+		_ = os.Remove(filepath.Join(dir, instanceID+".generation.json"))
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, "."+instanceID+"*.tmp-*"))
+	for _, p := range matches {
+		_ = os.Remove(p)
+	}
+}
+
+// clearHermesHookStatuses is safe during attach-return: it removes stale
+// status snapshots but preserves the live process's control and lock inodes.
+func (i *Instance) clearHermesHookStatuses() {
+	if !hermesHookInstanceIDPattern.MatchString(i.ID) || strings.Contains(i.ID, "..") {
+		return
+	}
+	locks, err := acquireHermesHookLocks(i.ID)
+	if err != nil {
+		return
+	}
+	defer locks.release()
+	for _, dir := range []string{GetHooksDir(), filepath.Join(GetHooksDir(), "sandbox", i.ID)} {
+		clearHermesHookScope(i.ID, dir, true)
+	}
+}
+
+func pruneHermesAbandonedScope(instanceID, dir string) {
+	if _, err := os.Stat(filepath.Join(dir, instanceID+".json")); err == nil {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(dir, instanceID+".generation.json")); err == nil {
+		return
+	}
+	lockPath := filepath.Join(dir, instanceID+".lock")
+	f, err := os.OpenFile(lockPath, os.O_RDWR, 0600)
+	if err != nil {
+		return
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return
+	}
+	_ = os.Remove(lockPath)
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
+	if dir != GetHooksDir() {
+		_ = os.Remove(dir)
+	}
+}
+
+func hermesHookArtifactPaths(instanceID string) []string {
+	root := GetHooksDir()
+	var out []string
+	for _, dir := range []string{root, filepath.Join(root, "sandbox", instanceID)} {
+		out = append(out, filepath.Join(dir, instanceID+".json"), filepath.Join(dir, instanceID+".generation.json"))
+	}
+	return out
+}
+
+func (i *Instance) clearHermesHookArtifacts() {
+	if !hermesHookInstanceIDPattern.MatchString(i.ID) || strings.Contains(i.ID, "..") {
+		return
+	}
+	locks, err := acquireHermesHookLocks(i.ID)
+	if err != nil {
+		return
+	}
+	defer locks.release()
+	for _, dir := range []string{GetHooksDir(), filepath.Join(GetHooksDir(), "sandbox", i.ID)} {
+		clearHermesHookScope(i.ID, dir, false)
+	}
+}
 
 // hermesSessionIDPattern matches a hermes session ID (e.g. "20260720_143254_a3db50"):
 // {YYYYMMDD}_{HHMMSS}_{hex}. Used to pick the ID column out of `hermes sessions
@@ -166,6 +372,9 @@ func (i *Instance) buildHermesCommand(baseCommand string) string {
 	}
 
 	envPrefix := i.buildEnvSourceCommand()
+	if i.HermesHookGeneration != "" {
+		envPrefix += "export AGENTDECK_HOOK_GENERATION=" + shellescape.Quote(i.HermesHookGeneration) + "; "
+	}
 
 	// AGENTDECK_* env injection is required for the shell hooks Hermes spawns
 	// (pre_llm_call / pre_tool_call / … → `agent-deck hook-handler`) to identify
@@ -214,41 +423,6 @@ func (i *Instance) buildHermesCommand(baseCommand string) string {
 	}
 
 	return envPrefix + cmd
-}
-
-// seedHermesHookBaseline records a synthetic "waiting" hook status, in memory
-// and in the persisted hook file, for a freshly (re)spawned hermes process
-// sitting at its prompt. Needed because hermes emits no lifecycle event at
-// process launch — on_session_start fires only at the first turn of a
-// brand-new session — so without this seed a restarted session has no hook
-// state at all until the user types. The first real hook event overwrites it.
-func (i *Instance) seedHermesHookBaseline() {
-	now := time.Now()
-	i.mu.Lock()
-	i.hookStatus = "waiting"
-	i.hookEvent = "agentdeck_restart_baseline"
-	i.hookLastUpdate = now
-	i.mu.Unlock()
-
-	payload, err := json.Marshal(map[string]interface{}{
-		"status": "waiting",
-		"event":  "agentdeck_restart_baseline",
-		"ts":     now.Unix(),
-		"cwd":    i.EffectiveWorkingDir(),
-	})
-	if err != nil {
-		return
-	}
-	hooksDir := GetHooksDir()
-	if err := os.MkdirAll(hooksDir, 0700); err != nil {
-		return
-	}
-	if err := atomicfile.WriteFile(filepath.Join(hooksDir, i.ID+".json"), payload, 0600); err != nil {
-		sessionLog.Debug("hermes_hook_baseline_write_failed",
-			slog.String("instance", i.ID),
-			slog.String("error", err.Error()),
-		)
-	}
 }
 
 // IsHermesGatewayReachable performs a basic reachable check against the

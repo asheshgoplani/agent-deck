@@ -160,26 +160,35 @@ func TestSessionTimestamp_HandlesNilTmuxSessionWithoutCrash(t *testing.T) {
 	}
 }
 
-// Regression pin: LastAccessedAt must NOT influence the badge. A session
-// created 5 days ago that the user just attached to is still "5d ago" by
-// the badge's definition of update — opening the session isn't itself
-// an update event.
-func TestSessionTimestamp_LastAccessedAtIgnored(t *testing.T) {
+// Regression pin: a peek must not override activity evidence. Opening a
+// session isn't itself an update event, so once ANY real evidence exists
+// (here: a restart 2h ago), a 30-second-old attach must not reset the
+// badge to "just now".
+//
+// #1846 note: this pin used to be stronger — LastAccessedAt was excluded
+// from the badge entirely, so a session with NO evidence beyond CreatedAt
+// showed the creation age while the preview showed the attach age: two
+// different answers for the same session, both wrong. sessionActivityTime
+// now uses LastAccessedAt as the no-evidence fallback (pinned by
+// TestSessionTimestamp_BadgeFallsBackToLastAccessed); this test keeps the
+// original principle for every case where evidence exists.
+func TestSessionTimestamp_PeekDoesNotOverrideEvidence(t *testing.T) {
 	now := time.Now()
 	inst := &session.Instance{
 		ID:             "sess-ts-attached",
 		Title:          "just-peeked",
 		CreatedAt:      now.Add(-5 * 24 * time.Hour),
-		LastAccessedAt: now.Add(-30 * time.Second), // would say "just now" if included
+		LastStartedAt:  now.Add(-2 * time.Hour),
+		LastAccessedAt: now.Add(-30 * time.Second), // would say "just now" if it won
 	}
 
 	row := renderRowWithTimestamps(t, inst, true)
 
 	if strings.Contains(row, "just now") {
 		t.Fatalf("attaching to a stale session must not reset the badge to 'just now'. "+
-			"LastAccessedAt was deliberately removed from the formula. Got: %q", row)
+			"A peek never overrides activity evidence. Got: %q", row)
 	}
-	if !strings.Contains(row, "5d ago") {
-		t.Fatalf("expected 5d ago (CreatedAt floor). Got: %q", row)
+	if !strings.Contains(row, "2h ago") {
+		t.Fatalf("expected 2h ago (LastStartedAt evidence). Got: %q", row)
 	}
 }

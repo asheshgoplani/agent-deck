@@ -214,11 +214,21 @@ body[data-rail="hidden"] .rightrail { display: none; }
   display: flex; align-items: center; gap: 6px; min-width: 0;
 }
 .sess .tt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
-.sess .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
-.sess .dot.running { background: var(--status-running); box-shadow: 0 0 6px rgba(115,218,202,0.7); animation: pulse 2s ease-in-out infinite; }
-.sess .dot.waiting { background: var(--status-waiting); box-shadow: 0 0 6px rgba(224,175,104,0.7); animation: pulse 1.2s ease-in-out infinite; }
-.sess .dot.error   { background: var(--status-error);   box-shadow: 0 0 6px rgba(247,118,142,0.7); }
-.sess .dot.idle    { background: var(--status-idle); }
+/* Status dots. Scoped to both the sidebar (.sess) and the archived pane (.sr):
+   .sr rows previously matched no .dot rule at all, so their dot rendered as an
+   unstyled square-less span. Every session.Status value needs a rule here — an
+   unmatched status silently renders an invisible dot. */
+.sess .dot,
+.sr .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.sess .dot.running, .sr .dot.running { background: var(--status-running); box-shadow: 0 0 6px rgba(115,218,202,0.7); animation: pulse 2s ease-in-out infinite; }
+.sess .dot.waiting, .sr .dot.waiting { background: var(--status-waiting); box-shadow: 0 0 6px rgba(224,175,104,0.7); animation: pulse 1.2s ease-in-out infinite; }
+.sess .dot.error,   .sr .dot.error   { background: var(--status-error);   box-shadow: 0 0 6px rgba(247,118,142,0.7); }
+.sess .dot.idle,    .sr .dot.idle    { background: var(--status-idle); }
+/* stopped/starting/queued had no rule and rendered invisible. The TUI paints a
+   dim ■ for stopped (and archived rows are forced to it), so match that. */
+.sess .dot.stopped, .sr .dot.stopped { background: var(--status-stopped); }
+.sess .dot.starting, .sr .dot.starting { background: var(--status-start); animation: pulse 1.2s ease-in-out infinite; }
+.sess .dot.queued,  .sr .dot.queued  { background: var(--status-idle); opacity: 0.6; }
 
 .sess .meta { display: flex; align-items: center; gap: 6px; }
 .sess .tag {
@@ -762,6 +772,7 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .fleet-stats .stat .num.error   { color: var(--tn-red); }
 .fleet-stats .stat .num.idle    { color: var(--text-dim); }
 .fleet-stats .stat .num.cost    { color: var(--accent); }
+.fleet-remotes-summary { font-family: var(--mono); font-size: 10px; color: var(--tn-cyan); }
 
 .fleet-section { display: flex; flex-direction: column; gap: 12px; }
 .fleet-section-head {
@@ -804,6 +815,16 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .group-card.running::before { background: var(--tn-green); }
 .group-card.waiting::before { background: var(--tn-yellow); }
 .group-card.error::before   { background: var(--tn-red); }
+.fleet-remote-state { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--tn-green); }
+.fleet-remote-state.offline { color: var(--tn-red); }
+.fleet-remote-age { padding: 0 12px 10px; font-family: var(--mono); font-size: 9.5px; color: var(--tn-amber); }
+.fleet-remote-empty, .fleet-remote-error {
+  padding: 10px; border: 1px dashed var(--border); border-radius: 4px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+}
+.fleet-remote-error { color: var(--tn-red); }
+.fleet-remote-session-tile { cursor: default; }
+.fleet-remote-session-tile:hover { border-color: var(--border); background: var(--card); }
 .gc-head { display: flex; align-items: center; gap: 10px; }
 .gc-head .t { font-family: var(--sans); font-weight: 600; color: var(--text-hi); font-size: 13px; letter-spacing: 0.02em; }
 .gc-head .health .d { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }

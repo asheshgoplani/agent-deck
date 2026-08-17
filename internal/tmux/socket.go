@@ -9,6 +9,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmuxutf8"
 )
 
 // tmuxSubprocessWaitDelay is the deadline cmd.Wait() waits for stdio I/O
@@ -137,27 +139,47 @@ func tmuxFmt(fields ...string) string {
 	return strings.Join(fields, tmuxFieldSep)
 }
 
-// tmuxArgs builds the full `tmux …` argv for a command, inserting the
-// `-L <name>` socket selector at the front when socketName is non-empty
-// and non-whitespace. An empty socket name is the pre-v1.7.50 default and
-// produces an unmodified argv — zero behavior change for users who do not
-// opt in to socket isolation (scope decision 1: empty default).
+// tmuxArgs builds the full `tmux …` argv for a command: tmux's global `-u`
+// (UTF-8) flag, then the `-L <name>` socket selector when socketName is
+// non-empty and non-whitespace, then the caller's subcommand. An empty socket
+// name is the pre-v1.7.50 default and produces no `-L` — zero behavior change
+// for users who do not opt in to socket isolation (scope decision 1: empty
+// default).
+//
+// The `-u` is the #1867 fix and is why this function, not the call sites, is
+// where the argv is assembled: a tmux client with no UTF-8 locale (systemd,
+// launchd, a bare container, CI) receives every non-ASCII byte rewritten to
+// "_", which destroys the braille spinner that the status fast path reads out
+// of `#{pane_title}`. Adding it here means a future call site is safe for
+// free. See internal/tmuxutf8 for the full rationale and for why forcing a
+// locale into the child environment was rejected instead.
 //
 // The returned slice is always freshly allocated; the caller's args slice
 // is never mutated or aliased.
 //
 // See CHANGELOG v1.7.50 and docs/README socket-isolation section.
 func tmuxArgs(socketName string, args ...string) []string {
-	name := strings.TrimSpace(socketName)
-	if name == "" {
-		out := make([]string, len(args))
-		copy(out, args)
-		return out
+	// Some attach call sites retain a literal leading -u because the repo-wide
+	// AST lint guards the shipped #1789 contract at each spawn. Remove it before
+	// inserting the socket selector; Prepend below restores exactly one global
+	// flag in the correct position.
+	if len(args) > 0 && args[0] == tmuxutf8.Flag {
+		args = args[1:]
 	}
-	out := make([]string, 0, len(args)+2)
-	out = append(out, "-L", name)
-	out = append(out, args...)
-	return out
+	name := strings.TrimSpace(socketName)
+	var out []string
+	if name == "" {
+		out = make([]string, len(args))
+		copy(out, args)
+	} else {
+		if len(args) > int(^uint(0)>>1)-2 {
+			panic("tmux argument list too large")
+		}
+		out = make([]string, 0, len(args)+2)
+		out = append(out, "-L", name)
+		out = append(out, args...)
+	}
+	return tmuxutf8.Prepend(out)
 }
 
 // tmuxExec constructs an *exec.Cmd that invokes `tmux` with the given
@@ -410,12 +432,12 @@ func ExecContext(ctx context.Context, socketName string, args ...string) *exec.C
 // session is launched via `systemd-run --user tmux <args…>`, the socket
 // selector has to live INSIDE the inner tmux argv — after the literal
 // "tmux" that systemd-run execs, before the subcommand. This helper
-// returns just the inner `[-L <name>] <args…>` slice; callers splice it
+// returns just the inner `-u [-L <name>] <args…>` slice; callers splice it
 // after "tmux" in their systemd-run argv (or use it directly when launcher
 // is "tmux").
 //
-// Empty / whitespace-only socket name returns the input args unchanged, so
-// pre-v1.7.50 call sites see byte-identical argv.
+// Empty / whitespace-only socket name omits only `-L`; `-u` remains because it
+// controls client encoding rather than server selection.
 func buildInnerTmuxArgs(socketName string, args ...string) []string {
 	// This argv is always spawned (directly, or spliced into a systemd-run
 	// argv), so it needs the same refusal as the exec factories — the layer of

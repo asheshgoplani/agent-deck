@@ -22,6 +22,30 @@ import (
 // previewPctStep is the percentage delta per < / > keystroke.
 const previewPctStep = 5
 
+const (
+	PreviewOrientationRight = "right"
+	PreviewOrientationBelow = "below"
+)
+
+// stackedListHeight resolves the SESSIONS-list height in the stacked layout.
+// It is shared by rendering, mouse routing, and visible-row calculations.
+func (h *Home) stackedListHeight(totalHeight int) int {
+	if totalHeight <= 0 {
+		return 0
+	}
+	listHeight := (totalHeight * (100 - h.getPreviewPct())) / 100
+	if listHeight < 5 {
+		listHeight = 5
+	}
+	if totalHeight-listHeight-1 < 3 {
+		listHeight = totalHeight - 4
+	}
+	if listHeight < 0 {
+		return 0
+	}
+	return listHeight
+}
+
 // previewPctOverlayDuration is how long the "Sessions / Preview ratio"
 // overlay stays visible after an adjustment.
 const previewPctOverlayDuration = 1500 * time.Millisecond

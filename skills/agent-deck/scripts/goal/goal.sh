@@ -73,9 +73,30 @@ PROMPT="${PROMPT//\{MAX_CYCLES\}/$MAX_CYCLES}"
 # capture the session id reliably (launch -m sometimes races with prompts).
 echo "[goal] spawning worker: $WORKER_TITLE in $WORKDIR" >&2
 
-# Create the session
-if ! agent-deck -p "$PROFILE" add "$WORKDIR" -t "$WORKER_TITLE" -c claude -g goal 2>&1 | grep -E "(Created|exists)" >&2; then
-    :  # add may exit non-zero on "already exists"; we tolerate that
+# Create the session.
+#
+# Since #1850 an exact duplicate exits non-zero with an ALREADY_EXISTS payload,
+# which is a fine outcome here — the worker session simply already exists. This
+# used to be `… 2>&1 | grep -E "(Created|exists)"`, which only appeared to work
+# because the new stderr text happens to contain the word "exists"; one wording
+# change would have turned a real failure into a silent success. Branch on the
+# structured code instead, and let anything else fail loudly.
+ADD_OUT="$(agent-deck -p "$PROFILE" add "$WORKDIR" -t "$WORKER_TITLE" -c claude -g goal --json 2>&1)"
+ADD_RC=$?
+if [[ $ADD_RC -ne 0 ]]; then
+    ADD_CODE="$(printf '%s' "$ADD_OUT" | python3 -c "
+import sys, json
+try:
+    print(json.loads(sys.stdin.read()).get('code', ''))
+except Exception:
+    print('')
+" 2>/dev/null)"
+    if [[ "$ADD_CODE" == "ALREADY_EXISTS" ]]; then
+        echo "[goal] worker session already exists: $WORKER_TITLE" >&2
+    else
+        echo "[goal] could not create worker session '$WORKER_TITLE': $ADD_OUT" >&2
+        exit 1
+    fi
 fi
 
 agent-deck -p "$PROFILE" session start "$WORKER_TITLE" >&2 || true

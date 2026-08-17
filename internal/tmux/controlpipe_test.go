@@ -523,3 +523,20 @@ func drainEvents(ch <-chan struct{}, duration time.Duration) {
 		}
 	}
 }
+
+// A ControlPipe can be marked alive without ever having been given a stdin —
+// the test seeder does exactly that, and a zero-value pipe would too. Writing
+// to that nil stdin used to panic inside fmt. Because every caller reaches
+// SendCommand from the TUI's background status sweep, whose deferred recover
+// swallows panics, the visible symptom was the sweep dying mid-flight and the
+// TUI quietly ceasing to update statuses. It must return an error instead, so
+// callers like RefreshAllActivities can skip the pipe and carry on.
+func TestSendCommand_NilStdinReturnsErrorInsteadOfPanicking(t *testing.T) {
+	cp := &ControlPipe{sessionName: "no-stdin", alive: true}
+
+	out, err := cp.SendCommand("list-windows")
+
+	require.Error(t, err, "a live pipe with no stdin must report an error")
+	assert.Empty(t, out)
+	assert.Contains(t, err.Error(), "no-stdin", "the error should name the session")
+}

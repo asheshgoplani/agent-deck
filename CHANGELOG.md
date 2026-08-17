@@ -11,6 +11,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Continuation conductors can supervise children after a handoff.** Parent links may now be nested to any acyclic depth, so a conductor that is itself a sub-session can adopt or launch workers and use `session children` / the orchestrate heartbeat. Self-parenting and ancestor cycles remain rejected.
 
+## [1.13.0] - 2026-08-16
+
+Remote visibility, restart persistence, and a large correctness wave: ~40 merged PRs including 13 community contributions.
+
+### Added
+
+- **Remote fleets are first-class in the TUI**: per-remote `command_timeout_seconds` so large fleets stop timing out ([#1912](https://github.com/asheshgoplani/agent-deck/pull/1912)); remote group headers show running/waiting status counts like local groups ([#1913](https://github.com/asheshgoplani/agent-deck/pull/1913)); remotes render instantly on startup from a per-remote-aged cache labeled "cached, refreshing…" ([#1914](https://github.com/asheshgoplani/agent-deck/pull/1914)); the cost fetch gets its own timeout budget ([#1916](https://github.com/asheshgoplani/agent-deck/pull/1916)).
+- The web Fleet shows configured remotes with a hardened shared scanner ([#1915](https://github.com/asheshgoplani/agent-deck/pull/1915), builds on [#1869](https://github.com/asheshgoplani/agent-deck/pull/1869)); scanner lifecycle gaps closed ([#1920](https://github.com/asheshgoplani/agent-deck/pull/1920)).
+- OS notifications when a session needs attention, macOS backend ([#1893](https://github.com/asheshgoplani/agent-deck/pull/1893)); custom-tool conversation ids persist across reboot ([#1949](https://github.com/asheshgoplani/agent-deck/pull/1949), builds on [#1885](https://github.com/asheshgoplani/agent-deck/pull/1885)).
+- Sessions resume with the agent leading the pane via exec ([#1786](https://github.com/asheshgoplani/agent-deck/pull/1786)).
+- `profile list` separates internal test profiles ([#1932](https://github.com/asheshgoplani/agent-deck/pull/1932)).
+
+### Fixed
+
+- **Restart persistence made coherent**: restarted sessions no longer show a permanent false error, the tmux name persists after `--restart`, and a restart save can never clobber concurrent CLI changes ([#1868](https://github.com/asheshgoplani/agent-deck/pull/1868), [#1871](https://github.com/asheshgoplani/agent-deck/pull/1871) family); start/restart failures always record a reason ([#1931](https://github.com/asheshgoplani/agent-deck/pull/1931), [#1933](https://github.com/asheshgoplani/agent-deck/pull/1933)); Hermes restarts show a starting state instead of stale errors ([#1911](https://github.com/asheshgoplani/agent-deck/pull/1911), [#1918](https://github.com/asheshgoplani/agent-deck/pull/1918)).
+- **Codex sessions**: account-scoped codex homes are honoured at launch and on the resume gate — restarts no longer silently fork a fresh conversation ([#1929](https://github.com/asheshgoplani/agent-deck/pull/1929), [#1939](https://github.com/asheshgoplani/agent-deck/pull/1939)); completion evidence converges across CLI polls without stale or sandbox-lockable state ([#1908](https://github.com/asheshgoplani/agent-deck/pull/1908), [#1919](https://github.com/asheshgoplani/agent-deck/pull/1919), [#1921](https://github.com/asheshgoplani/agent-deck/pull/1921)).
+- **Web MCP manager**: authenticated requests send the token, scopes are modeled honestly per tool, moves are transactional, and a corrupt config can never be rewritten as empty ([#1954](https://github.com/asheshgoplani/agent-deck/pull/1954), [#1955](https://github.com/asheshgoplani/agent-deck/pull/1955), [#1957](https://github.com/asheshgoplani/agent-deck/pull/1957) chain).
+- CLI: `add` flag values can no longer swallow a following flag, with valid pass-through shapes preserved ([#1928](https://github.com/asheshgoplani/agent-deck/pull/1928), [#1935](https://github.com/asheshgoplani/agent-deck/pull/1935)); `session show --json` reports wrappers ([#1930](https://github.com/asheshgoplani/agent-deck/pull/1930)); tmux resolves before tmux-dependent commands ([#1943](https://github.com/asheshgoplani/agent-deck/pull/1943), builds on [#1841](https://github.com/asheshgoplani/agent-deck/pull/1841)).
+- Watchers: ntfy/slack topics persist ([#1888](https://github.com/asheshgoplani/agent-deck/pull/1888)); failed-Setup adapters are skipped with per-attempt cleanup ([#1887](https://github.com/asheshgoplani/agent-deck/pull/1887)); a live control pipe with no socket returns an error instead of panicking ([#1940](https://github.com/asheshgoplani/agent-deck/pull/1940)).
+- TUI: remote sessions use the same status indicators as local ones ([#1944](https://github.com/asheshgoplani/agent-deck/pull/1944), builds on [#1865](https://github.com/asheshgoplani/agent-deck/pull/1865)); mouse-wheel routes to the preview in stacked layout ([#1782](https://github.com/asheshgoplani/agent-deck/pull/1782)); cursor sessions prefer the standalone agent CLI ([#1890](https://github.com/asheshgoplani/agent-deck/pull/1890)).
+
+### Security
+
+- **Spawn-failure sidecars never persist env credential values**, are written 0600, and pre-existing world-readable records are hardened on upgrade ([#1934](https://github.com/asheshgoplani/agent-deck/pull/1934)).
+- Headless MCP web access hardened with fail-closed auth ([#1953](https://github.com/asheshgoplani/agent-deck/pull/1953), builds on [#1840](https://github.com/asheshgoplani/agent-deck/pull/1840)); log-injection and unchecked-close CodeQL findings resolved ([#1909](https://github.com/asheshgoplani/agent-deck/pull/1909)).
+
+### Fixed
+
+- **A restarted session no longer shows a permanent false error while its tmux process runs fine.** A restart recreates the tmux session under a newly minted name, and nothing recorded that name: the TUI polled a session that no longer existed, reported `error` for a healthy process, and `Enter`/`R` could not clear it because every retry aborted the same way and leaked another orphaned tmux session. The name and the status a restart ends in are now written where they are produced, by a targeted two-column update, so they survive whether or not the save that follows succeeds — and the TUI no longer mistakes its own restart write for another process's change ([#1868](https://github.com/asheshgoplani/agent-deck/pull/1868), [#1871](https://github.com/asheshgoplani/agent-deck/pull/1871)).
+- **`mcp`, `skill` and `plugin` `--restart` record the restarted session's tmux name.** These paths recreated the tmux session and never wrote its new name, so the stored one kept pointing at the killed session: agent-deck showed the session as errored while its process ran, and the live tmux session was orphaned. Recording happens at the restart chokepoint, which covers `session move --restart`, `session start`/`restart`, fleet recovery and the web mutator too, and a restart whose bookkeeping fails now says so instead of reporting plain success ([#1870](https://github.com/asheshgoplani/agent-deck/issues/1870), [#1871](https://github.com/asheshgoplani/agent-deck/pull/1871)).
+
+### Added
+
+- **Custom `[tools.*]` conversation ids survive a reboot.** A tool with `resume_flag` set now stores its conversation id in SQLite the way built-ins do, so a restart rebuilds `<command> <resume_flag> <id>` instead of leaving every custom seat to be re-bound by hand. The id is recorded with the tool, the command and the execution location it was captured under, and changing any of those invalidates it rather than replaying someone else's conversation. Ids are kept out of the logs ([#1885](https://github.com/asheshgoplani/agent-deck/pull/1885), [#1949](https://github.com/asheshgoplani/agent-deck/pull/1949)).
+
+## [1.12.0] - 2026-08-14
+
+Stability and correctness release: 30 commits, 21 pull requests and 19 closed issues, with major community contributions.
+
+### Fixed
+
+- **Multiline sends preserve line structure end-to-end**, verified via scoped paste-marker evidence ([#1855](https://github.com/asheshgoplani/agent-deck/issues/1855), [#1897](https://github.com/asheshgoplani/agent-deck/pull/1897)).
+- **Remote session identity is location-aware** — the same directory on different hosts no longer collides ([#1850](https://github.com/asheshgoplani/agent-deck/issues/1850)–[#1854](https://github.com/asheshgoplani/agent-deck/issues/1854), [#1858](https://github.com/asheshgoplani/agent-deck/issues/1858), [#1901](https://github.com/asheshgoplani/agent-deck/pull/1901)).
+- Codex completion converges across CLI polls ([#1792](https://github.com/asheshgoplani/agent-deck/issues/1792), [#1896](https://github.com/asheshgoplani/agent-deck/pull/1896)); hook status binds to spawn generations ([#1825](https://github.com/asheshgoplani/agent-deck/issues/1825), [#1903](https://github.com/asheshgoplani/agent-deck/pull/1903)).
+- Durable last-activity records keep timestamps consistent across restarts ([#1846](https://github.com/asheshgoplani/agent-deck/issues/1846), [#1847](https://github.com/asheshgoplani/agent-deck/pull/1847)).
+- OpenCode sessions preserve launch options on restart ([#1843](https://github.com/asheshgoplani/agent-deck/pull/1843)) and no longer leak CLI session polls ([#1848](https://github.com/asheshgoplani/agent-deck/issues/1848), [#1849](https://github.com/asheshgoplani/agent-deck/pull/1849)).
+- Watcher adapter recovery failures are contained instead of crashing the engine ([#1886](https://github.com/asheshgoplani/agent-deck/issues/1886), [#1900](https://github.com/asheshgoplani/agent-deck/pull/1900)); interval hooks get bounded output capture and reliable shutdown ([#1829](https://github.com/asheshgoplani/agent-deck/issues/1829), [#1845](https://github.com/asheshgoplani/agent-deck/pull/1845)).
+- tmux client/server protocol version mismatch is treated as alive ([#1723](https://github.com/asheshgoplani/agent-deck/pull/1723)); non-numeric telegram/discord IDs no longer hard-fail config load ([#1726](https://github.com/asheshgoplani/agent-deck/pull/1726)).
+- Unicode output is preserved for locale-free tmux clients ([#1867](https://github.com/asheshgoplani/agent-deck/issues/1867), [#1902](https://github.com/asheshgoplani/agent-deck/pull/1902)).
+- Attach no longer eats a keypress after session exit, on local and SSH paths ([#1783](https://github.com/asheshgoplani/agent-deck/issues/1783), [#1835](https://github.com/asheshgoplani/agent-deck/pull/1835)).
+- Archived sessions no longer leak into the web sidebar ([#1844](https://github.com/asheshgoplani/agent-deck/pull/1844)); isolated-tree paths honor the IsolateHome marker ([#1861](https://github.com/asheshgoplani/agent-deck/pull/1861)); stale-session output routes by transcript cwd ([#1727](https://github.com/asheshgoplani/agent-deck/issues/1727)); claude flags are no longer injected before subcommands ([#1821](https://github.com/asheshgoplani/agent-deck/issues/1821)).
+
+### Added
+
+- Remote sessions reorder with shift+up/down ([#1875](https://github.com/asheshgoplani/agent-deck/issues/1875), [#1898](https://github.com/asheshgoplani/agent-deck/pull/1898)); remote group headers collapse ([#1874](https://github.com/asheshgoplani/agent-deck/pull/1874)) and descendants of collapsed ancestors stay hidden ([#1878](https://github.com/asheshgoplani/agent-deck/issues/1878), [#1899](https://github.com/asheshgoplani/agent-deck/pull/1899)).
+- The composer never submits content not attributable to the operator ([#1777](https://github.com/asheshgoplani/agent-deck/issues/1777), [#1778](https://github.com/asheshgoplani/agent-deck/pull/1778)).
+- Web link-opening honors a trusted-domains allowlist ([#1682](https://github.com/asheshgoplani/agent-deck/pull/1682)).
+
+### Changed
+
+- MiniMax model pricing refreshed: M3 added, M2.7 rates reduced — affects cost estimates shown during upgrade ([#1839](https://github.com/asheshgoplani/agent-deck/pull/1839)).
+
+### Security
+
+- Go toolchain bumped to 1.25.13 across the repo, clearing four stdlib vulnerabilities flagged by govulncheck ([#1895](https://github.com/asheshgoplani/agent-deck/pull/1895)).
+
 ## [1.11.0] - 2026-08-01
 
 Security and correctness release. Repo-supplied worktree scripts now require explicit consent, path handling around the skills catalog and logs is hardened, `session send` tells the truth about delivery, restarted sessions can no longer resume the wrong conversation, and Ctrl+Q detach works on every session sharing a tmux socket.

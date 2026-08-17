@@ -134,6 +134,22 @@ func TestBuildWebServer_WiresMutator(t *testing.T) {
 	}
 }
 
+// TestBuildWebServer_WiresMCPManagerWhenAuthenticated is a regression guard
+// for authenticated headless web MCP access. The server registers /api/mcps
+// unconditionally, but the production manager must only be available when a
+// bearer token protects the endpoint.
+func TestBuildWebServer_WiresMCPManagerWhenAuthenticated(t *testing.T) {
+	withTempHomeAndConfig(t, "")
+
+	server, err := buildWebServer("test-profile", []string{"--listen", "127.0.0.1:0", "--token", "secret"}, nil, noopMutator{})
+	if err != nil {
+		t.Fatalf("buildWebServer: %v", err)
+	}
+	if !server.HasMCPManager() {
+		t.Fatal("buildWebServer returned a Server with no MCP manager wired; /api/mcps will return 503")
+	}
+}
+
 // TestBuildWebServer_NilMutator_StaysUnwired verifies the test-only escape
 // hatch: passing nil leaves HasMutator() false. Documents that production
 // callers must pass a real mutator; the nil branch exists for tests that

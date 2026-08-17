@@ -50,6 +50,80 @@ func commands(defs []ToolDef) []string {
 // TestInstalled_FilterOffNoProbe pins the core guardrail: with the flag off the
 // probe never runs and All() is unchanged. We make EVERY LookPath/Stat fail; if
 // the probe leaked into the default path, All() would drop entries.
+func TestInstalled_CursorResolvedCommandOverride(t *testing.T) {
+	// Neither stock entrypoint on PATH, but [cursor].command points at a real binary.
+	withStubbedProbe(t, []string{"/opt/bin/custom-cursor-agent"}, func() {
+		restore := resetUserConfigCache(t, &UserConfig{
+			Cursor: CursorSettings{Command: "/opt/bin/custom-cursor-agent"},
+		})
+		defer restore()
+
+		r := InitFiltered(nil, true, nil)
+		if !r.IsVisible("cursor") {
+			t.Fatal("IsVisible(cursor) = false, want true when [cursor].command resolves")
+		}
+	})
+
+	// Override to a missing binary: cursor should stay hidden (unless empty-fallback).
+	withStubbedProbe(t, []string{"claude"}, func() {
+		restore := resetUserConfigCache(t, &UserConfig{
+			Cursor: CursorSettings{Command: "/opt/bin/missing-cursor-agent"},
+		})
+		defer restore()
+
+		r := InitFiltered(nil, true, nil)
+		if r.FilterFallback() {
+			t.Fatal("precondition: non-shell tools resolved, fallback should be off")
+		}
+		if r.IsVisible("cursor") {
+			t.Fatal("IsVisible(cursor) = true, want false when override binary is missing")
+		}
+	})
+
+	// Stock defaults: agent alone is enough.
+	withStubbedProbe(t, []string{"agent", "claude"}, func() {
+		restore := resetUserConfigCache(t, &UserConfig{})
+		defer restore()
+
+		r := InitFiltered(nil, true, nil)
+		if !r.IsVisible("cursor") {
+			t.Fatal("IsVisible(cursor) = false, want true when agent is on PATH")
+		}
+	})
+
+	// Explicit command = "agent" must not borrow visibility from cursor alone.
+	withStubbedProbe(t, []string{"cursor", "claude"}, func() {
+		restore := resetUserConfigCache(t, &UserConfig{
+			Cursor: CursorSettings{Command: "agent"},
+		})
+		defer restore()
+
+		r := InitFiltered(nil, true, nil)
+		if r.FilterFallback() {
+			t.Fatal("precondition: non-shell tools resolved, fallback should be off")
+		}
+		if r.IsVisible("cursor") {
+			t.Fatal(`IsVisible(cursor) = true with command="agent" and only cursor on PATH; want false`)
+		}
+	})
+
+	// Explicit command = "cursor agent" must not borrow visibility from agent alone.
+	withStubbedProbe(t, []string{"agent", "claude"}, func() {
+		restore := resetUserConfigCache(t, &UserConfig{
+			Cursor: CursorSettings{Command: "cursor agent"},
+		})
+		defer restore()
+
+		r := InitFiltered(nil, true, nil)
+		if r.FilterFallback() {
+			t.Fatal("precondition: non-shell tools resolved, fallback should be off")
+		}
+		if r.IsVisible("cursor") {
+			t.Fatal(`IsVisible(cursor) = true with command="cursor agent" and only agent on PATH; want false`)
+		}
+	})
+}
+
 func TestInstalled_FilterOffNoProbe(t *testing.T) {
 	probeCalls := 0
 	origLookPath, origStat := lookPathFn, statFn

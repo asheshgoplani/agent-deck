@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmuxutf8"
 )
 
 // tmuxProbeTimeout bounds the plain-argv tmux probes the CLI fires to identify
@@ -25,15 +26,107 @@ import (
 // cadence pollers in internal/tmux did.
 const tmuxProbeTimeout = 3 * time.Second
 
-// tmuxProbeBounded runs `tmux <args…>` under tmuxProbeTimeout and returns
+// tmuxProbeBounded runs `tmux -u <args…>` under tmuxProbeTimeout and returns
 // stdout. exec.CommandContext SIGKILLs a wedged client at the deadline; the
 // WaitDelay bounds the post-kill stdio drain.
+//
+// The global `-u` is the #1867 fix, applied here for the same reason as in
+// internal/tmux's tmuxArgs: every caller of this helper PARSES the bytes it
+// returns. `#{pane_current_path}` in particular is arbitrary user text — a
+// working directory with a non-ASCII component comes back with each such byte
+// rewritten to "_" when the CLI's own locale is not UTF-8, which is the normal
+// state for a conductor-invoked `agent-deck` under systemd/launchd. Prepending
+// keeps the deliberate omission of -L (these probes auto-route via $TMUX; see
+// tmuxProbeTimeout above) intact.
 func tmuxProbeBounded(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxProbeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", args...)
+	// #nosec G204 -- "tmux" is a fixed binary and args are passed as an argv
+	// slice, never through a shell; callers supply only internal tmux probes.
+	cmd := exec.CommandContext(ctx, "tmux", tmuxutf8.Prepend(args)...)
 	cmd.WaitDelay = 2 * time.Second
 	return cmd.Output()
+}
+
+// guardedValueFlags are the flags checkFlagValueNotFlag will police: those whose
+// value is a plain name and can never legitimately look like a flag.
+//
+// It is an ALLOWLIST on purpose. The first version of this check policed every
+// value-taking flag, which broke the documented `--extra-arg --model
+// --extra-arg opus` pass-through — for --extra-arg a flag-shaped value is the
+// entire point, not a mistake (#1928). Only add a flag here when a leading dash
+// in its value is always a user error.
+var guardedValueFlags = map[string]bool{
+	"account": true,
+}
+
+// checkFlagValueNotFlag reports a value-taking flag whose value was omitted and
+// which therefore swallows the NEXT flag as its value (issue #1923).
+//
+// Go's flag package takes the token after a non-boolean flag unconditionally —
+// it has no notion that the token is itself a flag — so `--account -q` binds
+// the string "-q" to --account and -q never takes effect. That is invisible
+// wherever the value is stored without validation: `add` records --account
+// "captured verbatim" and treats an unknown name as a silent fall-through, so
+// the session is created against the wrong account and only surfaces later as a
+// quota error on an account the user never chose.
+//
+// The check is deliberately narrow: it fires only when the consumed value
+// EXACTLY names a flag registered on this FlagSet. A value that merely starts
+// with "-" is left alone, because a legitimate value may (a path, a negative
+// number, a wrapper fragment); one that matches a real flag of this very
+// command effectively never is.
+//
+// Returns nil when args are fine, so callers can pass it straight through.
+func checkFlagValueNotFlag(fs *flag.FlagSet, args []string) error {
+	known := make(map[string]bool)
+	boolFlags := make(map[string]bool)
+	fs.VisitAll(func(f *flag.Flag) {
+		known[f.Name] = true
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			boolFlags[f.Name] = true
+		}
+	})
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return nil // everything after this is positional
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			continue
+		}
+		name := strings.TrimLeft(arg, "-")
+		if strings.Contains(name, "=") || boolFlags[name] || !known[name] {
+			continue
+		}
+		if !guardedValueFlags[name] {
+			continue
+		}
+		// Read the following token, if there is one. Assigned inside the bounds
+		// check rather than after it so the indexing is locally provable — an
+		// `i+1 >= len(args)` guard followed by args[i+1] reads as an unchecked
+		// index to gosec (G602).
+		next := ""
+		if i+1 < len(args) {
+			next = args[i+1]
+		}
+		if next == "" {
+			continue // nothing follows; flag.Parse reports the missing value
+		}
+		if !strings.HasPrefix(next, "-") || next == "-" {
+			i++ // ordinary value; skip it so it is not re-examined as a flag
+			continue
+		}
+		if nextName := strings.TrimLeft(next, "-"); known[nextName] {
+			return fmt.Errorf(
+				"-%s needs a value, but the next argument is the flag %s.\n"+
+					"  Either give -%s its value, or move %s elsewhere.\n"+
+					"  (If %q really is the value you want, pass -%s=%s.)",
+				name, next, name, next, next, name, next)
+		}
+	}
+	return nil
 }
 
 // normalizeArgs reorders args so flags come before positional arguments.
@@ -610,11 +703,58 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 
 	var matches []*session.Instance
 
-	// Try exact title match first
+	// An identifier written in the explicit [user@]host:/path form is answered
+	// by where sessions RUN, ahead of every other rule.
+	//
+	// That form is what the ambiguity messages below print and tell the user to
+	// retype. A title is free text, so a session titled "bob@host-b:/opt/app-b"
+	// could shadow the session actually running at that location — the
+	// supposedly unambiguous answer selecting the wrong session. A session
+	// cannot occupy a location by accident, so the location is the stronger
+	// claim on this syntax.
+	//
+	// It yields when nothing runs at the named location: the identifier can then
+	// only have meant a title or an ID, so no existing session becomes
+	// unaddressable because of the precedence.
+	if want, explicit := session.ParseLocation(identifier); explicit {
+		var locationMatches []*session.Instance
+		for _, inst := range instances {
+			if session.LocationOf(inst) == want {
+				locationMatches = append(locationMatches, inst)
+			}
+		}
+		if len(locationMatches) == 1 {
+			return locationMatches[0], "", ""
+		}
+		if len(locationMatches) > 1 {
+			return nil, fmt.Sprintf("location '%s' has multiple sessions:\n  - %s\nUse title or ID to specify.",
+				identifier, strings.Join(describeLocations(locationMatches), "\n  - ")), ErrCodeAmbiguous
+		}
+	}
+
+	// Try exact title match.
+	//
+	// Every match is collected rather than returning the first: duplicate
+	// detection is location-aware, so one title at two DIFFERENT locations is a
+	// state the CLI creates by design (two `add --ssh` runs from one controller
+	// directory without -t keep the same directory-derived title). Returning the
+	// first holder made `session <title> stop` act on an arbitrary one of two
+	// sessions on two different hosts, silently. A title is what every
+	// documented workflow types, so it gets the same ambiguity report the
+	// location branch gives — naming each location, which is how the user
+	// addresses the one they meant.
+	var titleMatches []*session.Instance
 	for _, inst := range instances {
 		if inst.Title == identifier {
-			return inst, "", ""
+			titleMatches = append(titleMatches, inst)
 		}
+	}
+	if len(titleMatches) == 1 {
+		return titleMatches[0], "", ""
+	}
+	if len(titleMatches) > 1 {
+		return nil, fmt.Sprintf("title '%s' is held by multiple sessions:\n  - %s\nUse the session ID, or rename one of them.",
+			identifier, strings.Join(describeLocations(titleMatches), "\n  - ")), ErrCodeAmbiguous
 	}
 
 	// Try ID prefix match (minimum 6 chars for prefix to avoid too many matches)
@@ -639,12 +779,30 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 			identifier, strings.Join(names, "\n  - ")), ErrCodeAmbiguous
 	}
 
-	// Try path match - collect all sessions at this path
-	var pathMatches []*session.Instance
+	// Try location match - collect all sessions that RUN at this location.
+	// Location, not ProjectPath: an --ssh session stores a local placeholder in
+	// ProjectPath, so the remote path it really runs at was unaddressable while
+	// the placeholder matched every remote session at once (#1852 site 1).
+	var pathMatches, localPathMatches []*session.Instance
 	for _, inst := range instances {
-		if inst.ProjectPath == identifier {
+		if instanceAtLocationIdentifier(inst, identifier) {
 			pathMatches = append(pathMatches, inst)
+			if session.LocationOf(inst).IsLocal() {
+				localPathMatches = append(localPathMatches, inst)
+			}
 		}
+	}
+
+	// A BARE path resolves against local sessions first. Making a bare path
+	// match SSHRemotePath is what lets `agent-deck session /srv/app-a` reach the
+	// remote session running there (#1852 site 1), but remote paths routinely
+	// mirror local ones — and `agent-deck <path>` is the documented way to
+	// address the session in the current directory, so registering an unrelated
+	// remote session at the same absolute path must not take that away. A path
+	// typed on THIS machine means this machine; the remote session at it stays
+	// addressable through the explicit [user@]host:/path form handled above.
+	if len(localPathMatches) > 0 {
+		pathMatches = localPathMatches
 	}
 
 	if len(pathMatches) == 1 {
@@ -652,12 +810,8 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 	}
 
 	if len(pathMatches) > 1 {
-		var names []string
-		for _, m := range pathMatches {
-			names = append(names, fmt.Sprintf("%s (%s)", m.Title, m.ID[:12]))
-		}
 		return nil, fmt.Sprintf("path '%s' has multiple sessions:\n  - %s\nUse title or ID to specify.",
-			identifier, strings.Join(names, "\n  - ")), ErrCodeAmbiguous
+			identifier, strings.Join(describeLocations(pathMatches), "\n  - ")), ErrCodeAmbiguous
 	}
 
 	return nil, fmt.Sprintf("session '%s' not found", identifier), ErrCodeNotFound
