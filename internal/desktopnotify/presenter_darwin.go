@@ -4,9 +4,10 @@ package desktopnotify
 
 /*
 #cgo CFLAGS: -x objective-c -fblocks
-#cgo LDFLAGS: -framework Foundation -framework UserNotifications
+#cgo LDFLAGS: -framework AppKit -framework Foundation -framework UserNotifications
 #include <stdlib.h>
 #include <dispatch/dispatch.h>
+#import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
 
@@ -36,6 +37,30 @@ package desktopnotify
 @end
 
 static ADDesktopNotificationDelegate *agentDeckDesktopNotificationDelegate;
+
+static void ad_desktop_notify_run_app(void) {
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+        [NSApp run];
+    }
+}
+
+static void ad_desktop_notify_stop_app(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSApp stop:nil];
+        NSEvent *wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                          location:NSZeroPoint
+                                     modifierFlags:0
+                                         timestamp:0
+                                      windowNumber:0
+                                           context:nil
+                                           subtype:0
+                                             data1:0
+                                             data2:0];
+        [NSApp postEvent:wake atStart:NO];
+    });
+}
 
 static int ad_desktop_notify(const char *title, const char *body, const char *binary, const char *argumentsJSON) {
     @autoreleasepool {
@@ -82,6 +107,7 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strings"
 	"unsafe"
 )
@@ -90,6 +116,21 @@ import (
 // UserNotifications. The helper rejects unsupported variants before accepting
 // socket events that would otherwise retry forever.
 func NativePresentationAvailable() bool { return true }
+
+// NativeServe keeps the helper registered as a responsive macOS application
+// while its socket server runs in the background. Launch Services otherwise
+// starts a second copy on notification clicks and reports the bundle hung.
+func NativeServe(serve func() error) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	done := make(chan error, 1)
+	go func() {
+		done <- serve()
+		C.ad_desktop_notify_stop_app()
+	}()
+	C.ad_desktop_notify_run_app()
+	return <-done
+}
 
 func NativePresent(event Event) error {
 	title, body := message(event)

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/asheshgoplani/agent-deck/internal/childenv"
@@ -18,6 +19,14 @@ import (
 var desktopNotificationsOS = runtime.GOOS
 var desktopNotificationsNativePresentationAvailable = desktopnotify.NativePresentationAvailable
 var desktopNotificationsExecutable = os.Executable
+var desktopNotificationsRunCommand = func(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).CombinedOutput()
+}
+
+const (
+	desktopNotificationBundleIdentifier = "com.agent-deck.desktop-notifications"
+	desktopNotificationLSRegisterPath   = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+)
 
 func handleDesktopNotifications(args []string) {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
@@ -107,7 +116,8 @@ func runDesktopNotificationHelper() {
 		fmt.Fprintf(os.Stderr, "desktop notification helper: %v\n", err)
 		os.Exit(1)
 	}
-	if err := (desktopnotify.Helper{Listener: listener, Store: store, Present: desktopnotify.NativePresent}).Serve(); err != nil {
+	helper := desktopnotify.Helper{Listener: listener, Store: store, Present: desktopnotify.NativePresent}
+	if err := desktopnotify.NativeServe(helper.Serve); err != nil {
 		fmt.Fprintf(os.Stderr, "desktop notification helper: %v\n", err)
 		os.Exit(1)
 	}
@@ -156,9 +166,11 @@ func prepareDesktopNotificationBundle(router, dataDir string) (string, []string,
 <plist version="1.0"><dict>
 <key>CFBundleDevelopmentRegion</key><string>en</string>
 <key>CFBundleExecutable</key><string>agent-deck-notifications</string>
-<key>CFBundleIdentifier</key><string>com.agent-deck.desktop-notifications</string>
+<key>CFBundleIdentifier</key><string>` + desktopNotificationBundleIdentifier + `</string>
 <key>CFBundleName</key><string>Agent Deck Notifications</string>
 <key>LSBackgroundOnly</key><true/>
+<key>LSMultipleInstancesProhibited</key><true/>
+<key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>
 `
 	if err := os.WriteFile(filepath.Join(contents, "Info.plist"), []byte(plist), 0o600); err != nil {
@@ -168,8 +180,38 @@ func prepareDesktopNotificationBundle(router, dataDir string) (string, []string,
 	if err := copyDesktopHelper(router, bundledExecutable); err != nil {
 		return "", nil, err
 	}
+	if err := signDesktopNotificationBundle(bundle); err != nil {
+		return "", nil, err
+	}
+	if err := registerDesktopNotificationBundle(bundle); err != nil {
+		return "", nil, err
+	}
 	env := append(childenv.ForLaunch(""), "AGENT_DECK_DESKTOP_BUNDLED=1", "AGENT_DECK_DESKTOP_ROUTER="+router)
 	return bundledExecutable, env, nil
+}
+
+func registerDesktopNotificationBundle(bundle string) error {
+	if desktopNotificationsOS != "darwin" {
+		return nil
+	}
+	if output, err := desktopNotificationsRunCommand(desktopNotificationLSRegisterPath, "-f", bundle); err != nil {
+		return fmt.Errorf("register helper bundle: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func signDesktopNotificationBundle(bundle string) error {
+	if desktopNotificationsOS != "darwin" {
+		return nil
+	}
+	args := []string{"--force", "--sign", "-", "--identifier", desktopNotificationBundleIdentifier, bundle}
+	if output, err := desktopNotificationsRunCommand("codesign", args...); err != nil {
+		return fmt.Errorf("sign helper bundle: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if output, err := desktopNotificationsRunCommand("codesign", "--verify", "--strict", bundle); err != nil {
+		return fmt.Errorf("verify helper bundle signature: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func copyDesktopHelper(source, destination string) error {

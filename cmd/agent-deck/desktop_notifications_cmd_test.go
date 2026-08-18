@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -89,6 +90,20 @@ func TestDesktopNotificationsDoctorRejectsNonExecutableRouter(t *testing.T) {
 
 func TestPrepareDesktopNotificationBundlePreservesMetadataAndRouter(t *testing.T) {
 	dir := t.TempDir()
+	type invocation struct {
+		name string
+		args []string
+	}
+	var invocations []invocation
+	originalRunCommand := desktopNotificationsRunCommand
+	desktopNotificationsRunCommand = func(name string, args ...string) ([]byte, error) {
+		invocations = append(invocations, invocation{name: name, args: slices.Clone(args)})
+		return nil, nil
+	}
+	t.Cleanup(func() { desktopNotificationsRunCommand = originalRunCommand })
+	originalOS := desktopNotificationsOS
+	desktopNotificationsOS = "darwin"
+	t.Cleanup(func() { desktopNotificationsOS = originalOS })
 	router := filepath.Join(dir, "agent-deck")
 	if err := os.WriteFile(router, []byte("binary"), 0o700); err != nil {
 		t.Fatal(err)
@@ -104,6 +119,8 @@ func TestPrepareDesktopNotificationBundlePreservesMetadataAndRouter(t *testing.T
 	for _, want := range []string{
 		"<key>CFBundleExecutable</key><string>" + filepath.Base(executable) + "</string>",
 		"<key>CFBundleIdentifier</key><string>com.agent-deck.desktop-notifications</string>",
+		"<key>LSMultipleInstancesProhibited</key><true/>",
+		"<key>NSPrincipalClass</key><string>NSApplication</string>",
 	} {
 		if !strings.Contains(string(plist), want) {
 			t.Fatalf("Info.plist missing %q:\n%s", want, plist)
@@ -111,6 +128,17 @@ func TestPrepareDesktopNotificationBundlePreservesMetadataAndRouter(t *testing.T
 	}
 	if !slices.Contains(env, "AGENT_DECK_DESKTOP_BUNDLED=1") || !slices.Contains(env, "AGENT_DECK_DESKTOP_ROUTER="+router) {
 		t.Fatalf("bundle relaunch env does not preserve router: %v", env)
+	}
+	bundle := filepath.Dir(filepath.Dir(filepath.Dir(executable)))
+	wantInvocations := []invocation{
+		{name: "codesign", args: []string{"--force", "--sign", "-", "--identifier", "com.agent-deck.desktop-notifications", bundle}},
+		{name: "codesign", args: []string{"--verify", "--strict", bundle}},
+		{name: "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", args: []string{"-f", bundle}},
+	}
+	if !slices.EqualFunc(invocations, wantInvocations, func(got, want invocation) bool {
+		return got.name == want.name && slices.Equal(got.args, want.args)
+	}) {
+		t.Fatalf("packaging commands = %#v, want %#v", invocations, wantInvocations)
 	}
 }
 
@@ -120,6 +148,46 @@ func TestDesktopNotificationsRejectHelperOutsideMacOS(t *testing.T) {
 	t.Cleanup(func() { desktopNotificationsOS = originalOS })
 	if err := desktopNotificationHelperPrerequisite(); err == nil || !strings.Contains(err.Error(), "macOS only") {
 		t.Fatalf("non-macOS helper prerequisite = %v, want macOS-only error", err)
+	}
+}
+
+func TestDesktopNotificationPackagingSkipsMacOSToolsOutsideDarwin(t *testing.T) {
+	originalOS := desktopNotificationsOS
+	desktopNotificationsOS = "linux"
+	t.Cleanup(func() { desktopNotificationsOS = originalOS })
+	originalRunCommand := desktopNotificationsRunCommand
+	desktopNotificationsRunCommand = func(name string, args ...string) ([]byte, error) {
+		t.Fatalf("unexpected command outside Darwin: %s %v", name, args)
+		return nil, nil
+	}
+	t.Cleanup(func() { desktopNotificationsRunCommand = originalRunCommand })
+
+	if err := signDesktopNotificationBundle("helper.app"); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerDesktopNotificationBundle("helper.app"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSignDesktopNotificationBundleRequiresStrictVerification(t *testing.T) {
+	originalOS := desktopNotificationsOS
+	desktopNotificationsOS = "darwin"
+	t.Cleanup(func() { desktopNotificationsOS = originalOS })
+	originalRunCommand := desktopNotificationsRunCommand
+	call := 0
+	desktopNotificationsRunCommand = func(_ string, _ ...string) ([]byte, error) {
+		call++
+		if call == 2 {
+			return []byte("Info.plist is not bound"), errors.New("invalid signature")
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() { desktopNotificationsRunCommand = originalRunCommand })
+
+	err := signDesktopNotificationBundle("helper.app")
+	if err == nil || !strings.Contains(err.Error(), "verify helper bundle signature") || !strings.Contains(err.Error(), "Info.plist is not bound") {
+		t.Fatalf("signature readiness error = %v", err)
 	}
 }
 
