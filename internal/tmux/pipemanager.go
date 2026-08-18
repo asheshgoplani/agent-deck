@@ -1134,6 +1134,53 @@ func candidateSocketName(cmdlineFields []string) (name string, ok bool) {
 	return socketNameFlag(rest), true
 }
 
+// unreachableSockets memoizes, for the duration of ONE sweep, the sockets whose
+// tmux server could not be reached. It is reset at the start of every sweep.
+//
+// Caching the ANSWERS to the two identity queries is rejected on purpose (see
+// reapOrphanedPollClients' notes): a cached client list goes stale inside a
+// sweep, and a client that connects mid-sweep would be absent from it and
+// eligible to be killed. Freshness is the safety property there.
+//
+// Caching the REFUSAL is a different thing. "This socket could not be reached"
+// only ever produces more refusals, never a kill, so it is fail-closed by
+// construction — and it is the expensive case: an unreachable or wedged server
+// is exactly what makes a query ride its full tmuxLiveQueryTimeout, twice per
+// candidate. On the incident host that is the difference between judging every
+// candidate and spending the whole budget on the first handful, and it saves a
+// spawn per skipped query — each of which is another client against a server
+// that leaks an fd per client.
+//
+// It also closes a window rather than opening one: without it, a server that
+// appears mid-sweep can answer for a candidate whose absence was judged against
+// the socket being empty, and that answer is a kill verdict.
+var (
+	unreachableSocketsMu sync.Mutex
+	unreachableSockets   = map[string]struct{}{}
+)
+
+// resetUnreachableSockets clears the memo. Called at the start of each sweep:
+// carrying it across sweeps would make a socket that was briefly unreachable
+// permanently unreapable, which is the inert-sweep failure this area began with.
+func resetUnreachableSockets() {
+	unreachableSocketsMu.Lock()
+	defer unreachableSocketsMu.Unlock()
+	unreachableSockets = map[string]struct{}{}
+}
+
+func markSocketUnreachable(socket string) {
+	unreachableSocketsMu.Lock()
+	defer unreachableSocketsMu.Unlock()
+	unreachableSockets[socket] = struct{}{}
+}
+
+func socketKnownUnreachable(socket string) bool {
+	unreachableSocketsMu.Lock()
+	defer unreachableSocketsMu.Unlock()
+	_, ok := unreachableSockets[socket]
+	return ok
+}
+
 // isLiveTmuxClientOrServer authoritatively asks the tmux server that the
 // candidate's OWN argv targets whether pid IS that server, or is one of its
 // currently-connected clients — the two process classes reapOrphanedPollClients
@@ -1218,10 +1265,15 @@ func isLiveTmuxClientOrServer(budget context.Context, pid int, cmdlineFields []s
 		return false, false
 	}
 
+	if socketKnownUnreachable(querySocket) {
+		return false, false
+	}
+
 	ctx, cancel := context.WithTimeout(budget, tmuxLiveQueryTimeout)
 	defer cancel()
 	serverPIDOut, err := tmuxExecContext(ctx, socketName, "display-message", "-p", "#{pid}").Output()
 	if err != nil {
+		markSocketUnreachable(querySocket)
 		return false, false
 	}
 	serverPID, err := strconv.Atoi(strings.TrimSpace(string(serverPIDOut)))
@@ -1236,6 +1288,7 @@ func isLiveTmuxClientOrServer(budget context.Context, pid int, cmdlineFields []s
 	defer cancel2()
 	clientsOut, err := tmuxExecContext(ctx2, socketName, "list-clients", "-F", "#{client_pid}").Output()
 	if err != nil {
+		markSocketUnreachable(querySocket)
 		return false, false
 	}
 	target := strconv.Itoa(pid)
@@ -1300,6 +1353,7 @@ func reapOrphanedPollClients() {
 		return
 	}
 	start := time.Now()
+	resetUnreachableSockets()
 	budget, cancel := context.WithTimeout(context.Background(), orphanSweepBudget)
 	defer cancel()
 	candidates, unidentifiable := collectOrphanCandidates(budget)
@@ -1478,6 +1532,26 @@ func sweepOrphanCandidates(budget context.Context, candidates []orphanCandidate)
 		if !isKnownCadenceArgv(c.cmdline) {
 			continue
 		}
+		if commUnclassifiable {
+			// Decided already, so decide it here rather than after the tmux
+			// query: this candidate can never be killed, and the query is the
+			// most expensive step in the gauntlet — up to 2 × tmuxLiveQueryTimeout
+			// against exactly the wedged server that produces these candidates.
+			// Spending a fifth of the sweep's whole budget on an answer that is
+			// then discarded starves the candidates that could still be judged,
+			// and on a host whose tmux is invoked under a longer name (the
+			// measured "tmux-3.5a:" case) there can be a handful of these.
+			//
+			// The reporting is unchanged, which is the point of refusing here
+			// rather than skipping silently.
+			unclassifiable++
+			pipeLog.Warn("orphan_sweep_skipped_unclassifiable_tmux",
+				slog.Int("pid", c.pid),
+				slog.String("comm", logging.SanitizeValue(strings.TrimSpace(c.comm))),
+				slog.String("reason", "comm lost its role token to truncation; "+
+					"cannot prove this is a client rather than a server, so it is left alone"))
+			continue
+		}
 		// THE safety check: ask the tmux server itself, not argv text, whether
 		// this pid is live. live==true or ok==false both mean "do not kill".
 		cmdlineFields := strings.Split(strings.TrimRight(c.cmdline, "\x00"), "\x00")
@@ -1526,15 +1600,6 @@ func sweepOrphanCandidates(budget context.Context, candidates []orphanCandidate)
 			pipeLog.Warn("orphan_sweep_skipped_unhandled_parentage_verdict",
 				slog.Int("pid", c.pid),
 				slog.Int("verdict", int(verdict)))
-			continue
-		}
-		if commUnclassifiable {
-			unclassifiable++
-			pipeLog.Warn("orphan_sweep_skipped_unclassifiable_tmux",
-				slog.Int("pid", c.pid),
-				slog.String("comm", logging.SanitizeValue(strings.TrimSpace(c.comm))),
-				slog.String("reason", "comm lost its role token to truncation; "+
-					"cannot prove this is a client rather than a server, so it is left alone"))
 			continue
 		}
 		// The identity was captured before any of the above ran, and the tmux
