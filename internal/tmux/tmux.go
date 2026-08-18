@@ -465,6 +465,15 @@ func isEmptyTmuxServerResult(err error) bool {
 // single background refresh for that socket (at most one in flight per socket)
 // and answers from whatever it currently knows: false when cold.
 func sessionExistsOnSocketCached(socketName, name string) bool {
+	exists, _ := socketSessionsCachedLiveness(socketName, name)
+	return exists
+}
+
+// socketSessionsCachedLiveness is sessionExistsOnSocketCached with the cache's
+// confidence exposed: known reports whether a probe for this socket has ever
+// completed. A cold entry answers (false, false) — "no evidence", NOT "dead" —
+// so callers that act on absence can tell the two apart.
+func socketSessionsCachedLiveness(socketName, name string) (alive, known bool) {
 	socket := strings.TrimSpace(socketName)
 
 	socketSessionCacheMu.Lock()
@@ -485,7 +494,32 @@ func sessionExistsOnSocketCached(socketName, name string) bool {
 	}
 
 	_, exists := entry.names[name]
-	return exists
+	return exists, entry.warm
+}
+
+// SessionLivenessCached answers "is <name> live on <socketName>?" from the
+// non-blocking caches only. Like ExistsCached() it NEVER spawns a subprocess
+// and never blocks, so it is safe in loops that walk every session on every
+// tick — the property that keeps the reconciler off the has-session storm path.
+//
+// The second return separates "known dead" from "no evidence yet": known=false
+// means no warm cache has answered for that socket. Callers MUST NOT read that
+// as death — the same indeterminate rule ListSessionNamesOnSocket documents.
+//
+// A known=true negative is still only as good as the cache behind it. For the
+// default socket that cache can transiently miss a live session when agent-deck
+// sessions span multiple sockets (see the note on Session.Exists), so callers
+// should use "known dead" to throttle work, not to abandon a session forever.
+func SessionLivenessCached(socketName, name string) (alive, known bool) {
+	// A live control pipe is proof, whatever the caches say.
+	if pm := GetPipeManager(); pm != nil && pm.IsConnected(name) {
+		return true, true
+	}
+	if strings.TrimSpace(socketName) == DefaultSocketName() {
+		exists, cacheValid := sessionExistsFromCache(name)
+		return exists, cacheValid
+	}
+	return socketSessionsCachedLiveness(socketName, name)
 }
 
 // refreshSocketSessionCache re-lists one socket off the caller's goroutine and

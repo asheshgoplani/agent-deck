@@ -241,7 +241,7 @@ func (f *fakeConnector) ConnectedSessions() []string {
 
 func TestReconcilePipes_ConnectsAndDisconnects(t *testing.T) {
 	f := newFakeConnector("old1", "old2", "keep")
-	reconcilePipes(f, []string{"keep", "new1"}, func(string) string { return "" })
+	reconcilePipes(f, []string{"keep", "new1"}, func(string) string { return "" }, pipeReconcileGate{})
 
 	sort.Strings(f.connects)
 	sort.Strings(f.disconns)
@@ -256,7 +256,7 @@ func TestReconcilePipes_ConnectsAndDisconnects(t *testing.T) {
 
 func TestReconcilePipes_IgnoresEmptyDesired(t *testing.T) {
 	f := newFakeConnector()
-	reconcilePipes(f, []string{"", "a"}, func(string) string { return "sock" })
+	reconcilePipes(f, []string{"", "a"}, func(string) string { return "sock" }, pipeReconcileGate{})
 	if len(f.connects) != 1 || f.connects[0] != "a" {
 		t.Fatalf("empty desired entry must be skipped; connects=%v", f.connects)
 	}
@@ -278,7 +278,7 @@ func TestReconcile_AttachedIsolatedSocketKeptAcrossTicks(t *testing.T) {
 
 	// Tick 1: focus "focused"; "attached-iso" is attached on its isolated socket.
 	desired := desiredLivePipes(ls, "focused", []string{"attached-iso"}, socketByName)
-	reconcilePipes(f, desired, socketOf)
+	reconcilePipes(f, desired, socketOf, pipeReconcileGate{})
 	if !f.IsConnected("attached-iso") {
 		t.Fatalf("attached isolated-socket session must be connected on tick 1; connects=%v", f.connects)
 	}
@@ -286,7 +286,7 @@ func TestReconcile_AttachedIsolatedSocketKeptAcrossTicks(t *testing.T) {
 	// Tick 2: same focus + attach. The isolated-socket pipe must be retained.
 	f.connects, f.disconns = nil, nil
 	desired = desiredLivePipes(ls, "focused", []string{"attached-iso"}, socketByName)
-	reconcilePipes(f, desired, socketOf)
+	reconcilePipes(f, desired, socketOf, pipeReconcileGate{})
 	if len(f.disconns) != 0 {
 		t.Fatalf("steady tick must not disconnect anything, got %v", f.disconns)
 	}

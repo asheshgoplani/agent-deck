@@ -626,6 +626,27 @@ type Instance struct {
 	lastIdleCheck     time.Time // When we last did a full check for an idle session
 	lastKnownActivity int64     // Last window_activity timestamp seen
 
+	// settledPoll gates the expensive tail of UpdateStatus (GetStatus's pane
+	// capture + the session-metadata sync) for sessions that are settled and
+	// producing nothing. See settled_poll.go.
+	settledPoll settledPollState
+
+	// lastMetaSyncActivity is the window_activity value the last session-metadata
+	// sync was based on. Unchanged activity means the tmux environment and the
+	// transcript tail cannot have moved, so the sync can wait.
+	lastMetaSyncActivity int64
+
+	// deadCheckStreak counts consecutive confirmations that this session's tmux
+	// session is gone. It escalates the recheck interval so a permanently dead
+	// session settles into a cheap steady state instead of paying a full probe
+	// on every 2s sweep forever.
+	deadCheckStreak int
+
+	// archivedErrorNormalizedAt records the ArchivedAt stamp whose archived+error
+	// state has already been reconciled against live tmux. The recheck-cache
+	// bypass for archived errors is a one-time normalization, not a per-tick job.
+	archivedErrorNormalizedAt time.Time
+
 	// lastStartTime tracks when Start() was called
 	// Used to provide grace period for tmux session creation (prevents error flash)
 	// Not serialized - only relevant for current TUI session
@@ -5727,11 +5748,15 @@ func classifyTerminatedPane(exitCode int, haveExitCode bool, tool string) Status
 }
 
 func (i *Instance) UpdateStatus() error {
+	// Phase attribution for the background sweep's slow_sessions entries.
+	// Emits nothing unless this call exceeded updateStatusSlowThreshold.
+	trace := newUpdateStatusTrace()
+	defer trace.finish(i.ID, i.Title)
 	// #1846: flush any unpersisted last-activity evidence once the lock is
 	// released (declared before Lock so it runs after the Unlock defer).
 	// Cheap no-op unless the cold-load fold below (or an earlier
 	// UpdateHookStatus within the throttle window) left something behind.
-	defer i.persistLastActivity(false)
+	defer func() { done := trace.phase(&trace.persist); i.persistLastActivity(false); done() }()
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
@@ -5745,7 +5770,7 @@ func (i *Instance) UpdateStatus() error {
 	// Don't block status detection once tmux session exists
 	if time.Since(graceTime) < 1500*time.Millisecond {
 		// Only skip if tmux session doesn't exist yet
-		if i.tmuxSession == nil || !i.tmuxSession.Exists() {
+		if i.tmuxSession == nil || !i.traceExists(trace) {
 			if i.IsArchived() {
 				i.Status = StatusStopped
 			} else if i.Status != StatusRunning && i.Status != StatusIdle {
@@ -5776,16 +5801,33 @@ func (i *Instance) UpdateStatus() error {
 	// Optimization: Skip expensive Exists() check for sessions already in error/stopped status
 	// Ghost sessions (in JSON but not in tmux) only get rechecked every 30 seconds
 	// This reduces subprocess spawns from 74/sec to ~5/sec for 28 ghost sessions
+	// The interval ESCALATES with each confirmation that the session is gone
+	// (30s -> 5min, deadRecheckDelay). A session whose pane has been confirmed
+	// dead for an hour cannot become interesting by being probed 120 times an
+	// hour; the escalation gives it a cheap steady state while a freshly dead
+	// session still rechecks quickly.
+	//
 	// Archived errors bypass the cache so the live tmux state decides whether
 	// the existing missing-pane archive guard should normalize them to stopped.
+	// That is a ONE-TIME reconciliation per archive event, not a per-tick job:
+	// it is keyed on the ArchivedAt stamp, so archiving (or re-archiving) re-arms
+	// it exactly once and the session then rechecks on the normal escalating
+	// cadence. Before this, an archived+error session paid a full probe on every
+	// sweep, forever.
 	if (i.Status == StatusError || i.Status == StatusStopped) &&
-		!(i.IsArchived() && i.Status == StatusError) && !i.lastErrorCheck.IsZero() &&
-		time.Since(i.lastErrorCheck) < errorRecheckInterval {
+		!i.archivedErrorNormalizationDueLocked() && !i.lastErrorCheck.IsZero() &&
+		time.Since(i.lastErrorCheck) < deadRecheckDelay(i.deadCheckStreak) {
 		return nil // Skip - still in error/stopped, checked recently
 	}
 
+	// Reaching here means the full probe is running, which is exactly what the
+	// archived+error bypass above exists to reach. Stamp it now, whatever the
+	// probe concludes: the reconciliation is owed once per archive event, not
+	// once per sweep.
+	i.archivedErrorNormalizedAt = i.ArchivedAt
+
 	// Check if tmux session exists
-	if !i.tmuxSession.Exists() {
+	if !i.traceExists(trace) {
 		if i.IsArchived() {
 			i.Status = StatusStopped
 		} else if i.neverStarted() {
@@ -5796,6 +5838,7 @@ func (i *Instance) UpdateStatus() error {
 			// tmux session is non-nil here, so the exit-status probe can block;
 			// applyTerminatedPaneStatus drops i.mu for the query and keeps the
 			// stopped-state guard on write.
+			done := trace.phase(&trace.terminated)
 			i.applyTerminatedPaneStatus()
 			// Attribute the death to authentication when the pane's last live
 			// sample showed a credential banner: the fleet-death case, which no
@@ -5803,8 +5846,10 @@ func (i *Instance) UpdateStatus() error {
 			// exit-code verdict above — a 401 exit can be a clean exit(0), and it
 			// still must not be auto-restarted.
 			i.refreshAuthHoldOnDeathLocked()
+			done()
 		}
 		i.lastErrorCheck = time.Now() // Record when we confirmed error/stopped
+		i.deadCheckStreak++           // escalate the recheck for a session that stays gone
 		return nil
 	}
 
@@ -5813,8 +5858,10 @@ func (i *Instance) UpdateStatus() error {
 		i.Status = StatusRunning
 	}
 
-	// Session exists - clear error check timestamp
+	// Session exists - clear error check timestamp and the dead-recheck
+	// escalation, so a session that dies again rechecks promptly.
 	i.lastErrorCheck = time.Time{}
+	i.deadCheckStreak = 0
 
 	// Tiered polling: skip expensive checks for idle sessions with no new activity
 	if i.Status == StatusIdle {
@@ -5831,7 +5878,10 @@ func (i *Instance) UpdateStatus() error {
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
 	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
-		if hs := readHookStatusFile(i.ID); hs != nil {
+		hookRead := trace.phase(&trace.hookFile)
+		hs := readHookStatusFile(i.ID)
+		hookRead()
+		if hs != nil {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
 			i.hookLastUpdate = hs.UpdatedAt
@@ -5889,7 +5939,9 @@ func (i *Instance) UpdateStatus() error {
 				bgWorkPending := false
 				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) {
 					i.mu.Unlock()
+					done := trace.phase(&trace.bgWork)
 					bgWorkPending = i.tmuxSession.BackgroundWorkPending()
+					done()
 					i.mu.Lock()
 					if i.Status == StatusStopped {
 						return nil
@@ -5953,7 +6005,9 @@ func (i *Instance) UpdateStatus() error {
 			if gatewayURL := GetHermesGatewayURL(); gatewayURL != "" {
 				if time.Since(i.hermesGatewayCheckedAt) > 30*time.Second {
 					i.mu.Unlock()
+					done := trace.phase(&trace.gateway)
 					reachable := IsHermesGatewayReachable(gatewayURL)
+					done()
 					i.mu.Lock()
 					// Mirror the stale-stop guard from the tmux path: a concurrent
 					// Kill() may have published StatusStopped while we were unlocked.
@@ -6003,9 +6057,32 @@ func (i *Instance) UpdateStatus() error {
 		}
 	}
 
+	// SETTLED-SESSION GATE. Everything below this point is the expensive tail of
+	// UpdateStatus: GetStatus captures the pane and classifies it, and the
+	// session-metadata sync at the end reads the tmux environment and tails the
+	// transcript. Measured across a live 43-session profile those two are 13%
+	// and 78% of all UpdateStatus time, and both ran on every 2s sweep for every
+	// running/waiting session — which is why a completed agent parked at
+	// "waiting" cost 190-570ms per sweep indefinitely.
+	//
+	// Placed AFTER the hook and SSE fast paths on purpose: those carry the live
+	// status transitions and must never be delayed. What is gated here is only
+	// the tmux-derived sample, and it is gated on signal rather than on a timer —
+	// new pane output or the user attaching opens it on the very next call.
+	// See settled_poll.go.
+	if i.Status == StatusIdle || i.Status == StatusWaiting {
+		if i.settledPoll.shouldSkip(i.tmuxSession.GetCachedWindowActivity(), i.tmuxSession.IsAcknowledged(), time.Now()) {
+			return nil
+		}
+	} else {
+		i.settledPoll.reset()
+	}
+
 	// Release lock for potentially slow tmux calls (GetStatus calls CapturePane)
 	i.mu.Unlock()
+	done := trace.phase(&trace.getStatus)
 	status, err := i.tmuxSession.GetStatus()
+	done()
 	i.mu.Lock()
 
 	// Issue #953: a concurrent Kill() may have published StatusStopped
@@ -6165,23 +6242,28 @@ func (i *Instance) UpdateStatus() error {
 	// rate-limit it to reduce intermittent render/key handling stalls under load.
 	if i.Status == StatusRunning || i.Status == StatusWaiting {
 		interval := 2 * time.Second
-		// Bootstrap unknown IDs faster for newly-started sessions.
+		// Bootstrap unknown IDs faster for newly-started sessions. A bootstrapping
+		// session also bypasses the no-new-output gate below: it has to resolve
+		// its id before there is any activity to correlate against.
+		bootstrap := false
 		switch {
 		case IsClaudeCompatible(i.Tool):
 			if i.ClaudeSessionID == "" {
 				interval = 500 * time.Millisecond
+				bootstrap = true
 			}
 		case i.Tool == "gemini":
 			if i.GeminiSessionID == "" {
 				interval = 500 * time.Millisecond
+				bootstrap = true
 			}
 		case IsCodexCompatible(i.Tool):
 			if i.CodexSessionID == "" {
 				interval = 500 * time.Millisecond
+				bootstrap = true
 			}
 		}
-		if i.lastSessionMetaSync.IsZero() || time.Since(i.lastSessionMetaSync) >= interval {
-			i.lastSessionMetaSync = time.Now()
+		if i.sessionMetaSyncDueLocked(interval, bootstrap, time.Now()) {
 
 			// Update Claude session tracking (non-blocking, best-effort)
 			i.UpdateClaudeSession(nil)

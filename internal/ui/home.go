@@ -228,10 +228,11 @@ type Home struct {
 	instancesMu        sync.RWMutex                 // Protects instances slice for thread-safe background access
 	storage            *session.Storage
 	groupTree          *session.GroupTree
-	flatItems          []session.Item // Flattened view for cursor navigation
-	liveSet            *pipeLiveSet   // sessions that should hold a live control pipe
-	focusedSessionName string         // tmux name of the cursor-selected session (focusMu)
-	focusMu            sync.Mutex     // protects focusedSessionName for the reconciler goroutine
+	flatItems          []session.Item      // Flattened view for cursor navigation
+	liveSet            *pipeLiveSet        // sessions that should hold a live control pipe
+	pipeBackoff        *pipeConnectBackoff // per-session control-pipe dial throttle
+	focusedSessionName string              // tmux name of the cursor-selected session (focusMu)
+	focusMu            sync.Mutex          // protects focusedSessionName for the reconciler goroutine
 
 	// headless is true when running `web --no-tui`: no bubbletea loop ever
 	// boots, so the in-memory instances/groupTree are never populated by the
@@ -1632,6 +1633,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	_ = tmux.BindMouseStatusRightDetach()
 
 	h.liveSet = newPipeLiveSet(livePipeLRUCapacity)
+	h.pipeBackoff = newPipeConnectBackoff(nil)
 
 	if homeBackgroundWorkersEnabled {
 		h.liveReconcilerDone = make(chan struct{})
@@ -2944,7 +2946,16 @@ func (h *Home) reconcileLivePipes() {
 
 	attached := tmux.GetAttachedSessionsOnSockets(sockets...)
 	desired := desiredLivePipes(h.liveSet, focused, attached, socketByName)
-	reconcilePipes(pm, desired, func(name string) string { return socketByName[name] })
+	socketOf := func(name string) string { return socketByName[name] }
+	reconcilePipes(pm, desired, socketOf, pipeReconcileGate{
+		// Cache-only liveness. tmux.SessionLivenessCached never spawns and never
+		// blocks, so this stays off the has-session storm path even though it
+		// runs for every desired session on a 500ms tick.
+		liveness: func(name string) (bool, bool) {
+			return tmux.SessionLivenessCached(socketOf(name), name)
+		},
+		backoff: h.pipeBackoff,
+	})
 }
 
 // livePipeReconciler periodically reconciles live pipes. The tick interval
@@ -5532,24 +5543,19 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Main session list scroll (cursor movement also resets any
 			// stale preview offset so the new session starts at its tail).
+			// listWheelScrollRows per notch matches the scrollback pager above;
+			// one row per notch made trackpad scrolling of the list crawl.
+			dir := 1
 			if msg.Button == tea.MouseButtonWheelUp {
-				if h.cursor > 0 {
-					h.cursor--
-					h.skipDivider(-1)
-					h.previewScrollOffset = 0
-					h.syncViewport()
-					h.markNavigationActivity()
-					return h, h.fetchSelectedPreview()
-				}
-			} else {
-				if h.cursor < len(h.flatItems)-1 {
-					h.cursor++
-					h.skipDivider(1)
-					h.previewScrollOffset = 0
-					h.syncViewport()
-					h.markNavigationActivity()
-					return h, h.fetchSelectedPreview()
-				}
+				dir = -1
+			}
+			if next := wheelListCursor(h.cursor, len(h.flatItems), dir, listWheelScrollRows); next != h.cursor {
+				h.cursor = next
+				h.skipDivider(dir)
+				h.previewScrollOffset = 0
+				h.syncViewport()
+				h.markNavigationActivity()
+				return h, h.fetchSelectedPreview()
 			}
 			return h, nil
 		default:
