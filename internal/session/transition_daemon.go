@@ -686,6 +686,13 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		if currentInst == nil {
 			continue
 		}
+		// The completion has now crossed every freshness and persisted-instance
+		// gate. Record it even when desktop routing suppresses a parented child,
+		// so changing the parent relationship cannot replay stale work later.
+		if d.lastDone[profile] == nil {
+			d.lastDone[profile] = map[string]DoneSignal{}
+		}
+		d.lastDone[profile][id] = sig
 		if desktopDispatch {
 			dispatchDesktopNotification(currentInst, desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
@@ -708,11 +715,6 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 			d.beforeNotifierCommit(event)
 		}
 		_ = d.notifier.NotifyFinished(event)
-
-		if d.lastDone[profile] == nil {
-			d.lastDone[profile] = map[string]DoneSignal{}
-		}
-		d.lastDone[profile][id] = sig
 
 		// Record the completion to the non-destructive ledger so a parent can
 		// query `session children` without consuming the delivery event.
@@ -1133,7 +1135,7 @@ func desktopNotificationAllowed(inst *Instance) bool {
 		return false
 	}
 	parentID := strings.TrimSpace(inst.ParentSessionID)
-	return parentID == "" || parentID == inst.ID
+	return parentID == "" || parentID == strings.TrimSpace(inst.ID)
 }
 
 func dispatchDesktopNotification(inst *Instance, event desktopnotify.SourceEvent) {

@@ -370,7 +370,7 @@ func TestDesktopDispatchRevalidatesEligibilityForEverySource(t *testing.T) {
 	}
 }
 
-func TestDesktopDoneSignalSuppressesParentedChildWithLegacyNotificationsOff(t *testing.T) {
+func TestDesktopDoneSignalSuppressedChildDoesNotReplayAfterPromotion(t *testing.T) {
 	configPath, err := GetUserConfigPath()
 	if err != nil {
 		t.Fatal(err)
@@ -399,8 +399,9 @@ func TestDesktopDoneSignalSuppressesParentedChildWithLegacyNotificationsOff(t *t
 	d.initialized[profile] = true
 	d.desktopNotificationBaselineReady[profile] = true
 	child := &Instance{ID: id, Title: "worker", ParentSessionID: "parent"}
+	parentID := "parent"
 	d.loadTransitionInstanceRow = func(string, string) (*statedb.InstanceRow, error) {
-		return &statedb.InstanceRow{ID: id, ParentSessionID: "parent"}, nil
+		return &statedb.InstanceRow{ID: id, ParentSessionID: parentID}, nil
 	}
 	originalSender := desktopNotificationSender
 	var desktopEvents []desktopnotify.SourceEvent
@@ -410,12 +411,22 @@ func TestDesktopDoneSignalSuppressesParentedChildWithLegacyNotificationsOff(t *t
 	}
 	t.Cleanup(func() { desktopNotificationSender = originalSender })
 
-	d.emitDoneSignals(profile, map[string]*Instance{id: child}, map[string]*HookStatus{
+	hookStatuses := map[string]*HookStatus{
 		id: {Event: "Stop", UpdatedAt: time.Now(), DoneStatus: "ok", DoneSummary: "finished"},
-	})
+	}
+	d.emitDoneSignals(profile, map[string]*Instance{id: child}, hookStatuses)
 
 	if len(desktopEvents) != 0 {
 		t.Fatalf("parented done signal produced desktop events: %+v", desktopEvents)
+	}
+
+	// Promotion changes only the parent relationship; the already-observed
+	// completion must not become a delayed top-level desktop notification.
+	parentID = ""
+	child.ParentSessionID = ""
+	d.emitDoneSignals(profile, map[string]*Instance{id: child}, hookStatuses)
+	if len(desktopEvents) != 0 {
+		t.Fatalf("suppressed completion replayed after promotion: %+v", desktopEvents)
 	}
 }
 

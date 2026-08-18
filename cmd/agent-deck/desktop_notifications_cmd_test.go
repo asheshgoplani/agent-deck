@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/desktopnotify"
 )
@@ -172,21 +173,56 @@ func TestDesktopNotificationPackagingSkipsMacOSToolsOutsideDarwin(t *testing.T) 
 	}
 }
 
-func TestServeDesktopNotificationHelperRunsHelperLifecycleThroughNativeServe(t *testing.T) {
+func TestServeDesktopNotificationHelperRunsCompletePathThroughNativeServe(t *testing.T) {
+	dir, err := os.MkdirTemp("/private/tmp", "ad-sock-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "helper.sock")
+	state := filepath.Join(dir, "state.json")
+	wantEvent := desktopnotify.Event{Class: desktopnotify.Attention, SessionID: "session-1", Title: "worker", Timestamp: time.Now()}
+
 	originalNativeServe := desktopNotificationsNativeServe
+	originalNativePresent := desktopNotificationsNativePresent
+	presented := make(chan desktopnotify.Event, 1)
+	desktopNotificationsNativePresent = func(event desktopnotify.Event) error {
+		presented <- event
+		return nil
+	}
 	wantErr := errors.New("native event loop stopped")
+	callbackDone := make(chan error, 1)
 	desktopNotificationsNativeServe = func(serve func() error) error {
-		err := serve()
-		if err == nil || !strings.Contains(err.Error(), "helper is not configured") {
-			t.Fatalf("helper lifecycle callback error = %v, want unconfigured helper error", err)
+		go func() { callbackDone <- serve() }()
+		if err := desktopnotify.Send(socket, wantEvent); err != nil {
+			t.Fatalf("send helper event: %v", err)
+		}
+		select {
+		case got := <-presented:
+			if got.SessionID != wantEvent.SessionID || got.Class != wantEvent.Class {
+				t.Fatalf("presented event = %+v, want %+v", got, wantEvent)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("complete helper path did not present the event")
 		}
 		return wantErr
 	}
-	t.Cleanup(func() { desktopNotificationsNativeServe = originalNativeServe })
+	t.Cleanup(func() {
+		desktopNotificationsNativeServe = originalNativeServe
+		desktopNotificationsNativePresent = originalNativePresent
+	})
 
-	err := serveDesktopNotificationHelper((desktopnotify.Helper{}).Serve)
+	err = serveDesktopNotificationHelper(socket, state)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("serveDesktopNotificationHelper() error = %v, want %v", err, wantErr)
+	}
+	select {
+	case err := <-callbackDone:
+		if err == nil {
+			t.Fatal("helper Serve returned nil after its listener closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("helper Serve did not stop after lifecycle returned")
 	}
 }
 

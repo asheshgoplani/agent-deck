@@ -117,15 +117,17 @@ func TestNotifyDesktop_AllowsBlankAndSelfPointingRoots(t *testing.T) {
 
 	for _, tc := range []struct {
 		name     string
+		id       string
 		parentID string
 	}{
-		{name: "blank parent"},
-		{name: "self parent", parentID: "root"},
+		{name: "blank parent", id: "root"},
+		{name: "self parent", id: "root", parentID: "root"},
+		{name: "whitespace-padded self parent", id: "  root\t", parentID: "  root\t"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &recordingBackend{}
 			d := &TransitionDaemon{deskNotifier: desknotify.NewWithBackends(rec)}
-			d.notifyDesktop("default", &Instance{ID: "root", Title: "root", ParentSessionID: tc.parentID}, string(StatusWaiting))
+			d.notifyDesktop("default", &Instance{ID: tc.id, Title: "root", ParentSessionID: tc.parentID}, string(StatusWaiting))
 			d.waitDesktopNotifications()
 			if len(rec.titles) != 1 {
 				t.Fatalf("root delivered %d desktop notifications, want 1", len(rec.titles))
