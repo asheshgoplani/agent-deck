@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/desktopnotify"
 )
 
 func TestCopyDesktopHelperCreatesPrivateExecutable(t *testing.T) {
@@ -170,27 +172,19 @@ func TestDesktopNotificationPackagingSkipsMacOSToolsOutsideDarwin(t *testing.T) 
 	}
 }
 
-func TestRunDesktopNotificationHelperUsesNativeServeSeam(t *testing.T) {
-	raw, err := os.ReadFile("desktop_notifications_cmd.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := string(raw)
-	if !strings.Contains(source, "var desktopNotificationsNativeServe = desktopnotify.NativeServe") {
-		t.Fatal("desktop notification helper has no injectable NativeServe seam")
-	}
-	if !strings.Contains(source, "serveDesktopNotificationHelper(helper.Serve)") {
-		t.Fatal("runDesktopNotificationHelper does not route Helper.Serve through the NativeServe seam")
-	}
-}
-
-func TestServeDesktopNotificationHelperRunsInjectedCallback(t *testing.T) {
+func TestServeDesktopNotificationHelperRunsHelperLifecycleThroughNativeServe(t *testing.T) {
 	originalNativeServe := desktopNotificationsNativeServe
-	desktopNotificationsNativeServe = func(serve func() error) error { return serve() }
+	wantErr := errors.New("native event loop stopped")
+	desktopNotificationsNativeServe = func(serve func() error) error {
+		err := serve()
+		if err == nil || !strings.Contains(err.Error(), "helper is not configured") {
+			t.Fatalf("helper lifecycle callback error = %v, want unconfigured helper error", err)
+		}
+		return wantErr
+	}
 	t.Cleanup(func() { desktopNotificationsNativeServe = originalNativeServe })
 
-	wantErr := errors.New("server stopped")
-	err := serveDesktopNotificationHelper(func() error { return wantErr })
+	err := serveDesktopNotificationHelper((desktopnotify.Helper{}).Serve)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("serveDesktopNotificationHelper() error = %v, want %v", err, wantErr)
 	}

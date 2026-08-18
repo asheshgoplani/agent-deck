@@ -170,14 +170,14 @@ const doubleClickThreshold = 500 * time.Millisecond
 // Layout mode breakpoints for responsive design
 const (
 	layoutBreakpointSingle  = 50 // Below: single column, no preview
-	layoutBreakpointStacked = 80 // Below: stacked layout (list above preview)
+	layoutBreakpointStacked = 80 // Below: medium-width sessions-only layout
 	// At or above 80: dual column (current side-by-side layout)
 )
 
 // Layout mode names
 const (
 	LayoutModeSingle  = "single"  // <50 cols: list only
-	LayoutModeStacked = "stacked" // 50-79 cols: vertical stack
+	LayoutModeStacked = "stacked" // 50-79 cols: sessions only (legacy mode name)
 	LayoutModeDual    = "dual"    // 80+ cols: side-by-side
 )
 
@@ -1130,34 +1130,10 @@ func (h *Home) getLayoutMode() string {
 	}
 }
 
-// hasPreviewPane reports whether the terminal is wide enough to render Preview.
+// hasPreviewPane reports whether the terminal is wide enough to render Preview
+// beside Sessions.
 func (h *Home) hasPreviewPane() bool {
-	switch h.getLayoutMode() {
-	case LayoutModeDual:
-		return true
-	case LayoutModeStacked:
-		return h.stackedPreviewAvailable(h.mainContentHeight())
-	default:
-		return false
-	}
-}
-
-func (h *Home) mainContentHeight() int {
-	height := h.height - 1 - 2 - 1 // header, help bar, filter bar
-	if h.shouldRenderUpdateNudge() {
-		height--
-	}
-	if h.maintenanceMsg != "" {
-		height--
-	}
-	if h.debugMode {
-		height--
-	}
-	return height
-}
-
-func (h *Home) stackedPreviewAvailable(contentHeight int) bool {
-	return h.getLayoutMode() == LayoutModeStacked && contentHeight >= stackedMinContentHeight
+	return h.width >= layoutBreakpointStacked
 }
 
 // contentChromeTop returns the number of rows rendered ABOVE the main content
@@ -1187,10 +1163,24 @@ func (h *Home) contentChromeTop() int {
 //	              + separator (1)  <- divider
 //	[preview-top] PREVIEW title + preview content
 func (h *Home) stackedPreviewTopY() int {
-	contentHeight := h.mainContentHeight()
-	if !h.stackedPreviewAvailable(contentHeight) {
+	if h.getLayoutMode() != LayoutModeStacked {
 		return -1
 	}
+	const helpBarHeight = 2
+	filterBarHeight := 1
+	updateBannerHeight := 0
+	if h.shouldRenderUpdateNudge() {
+		updateBannerHeight = 1
+	}
+	maintenanceBannerHeight := 0
+	if h.maintenanceMsg != "" {
+		maintenanceBannerHeight = 1
+	}
+	debugBarHeight := 0
+	if h.debugMode {
+		debugBarHeight = 1
+	}
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
 	listHeight := h.stackedListHeight(contentHeight)
 	// content top + full list block (title + body) + the 1-row separator.
 	return h.contentChromeTop() + listHeight + 1
@@ -2766,23 +2756,30 @@ func (h *Home) syncViewport() {
 	// - Help bar: 2 lines (border + content)
 	// Panel title within content: 2 lines (title + underline)
 	// Panel content: contentHeight - 2 lines
+	helpBarHeight := 2
 	panelTitleLines := 2 // SESSIONS title + underline (matches View())
+
+	// Filter bar is always shown for consistent layout (matches View())
+	filterBarHeight := 1
+	updateBannerHeight := 0
+	if h.shouldRenderUpdateNudge() {
+		updateBannerHeight = 1
+	}
+	maintenanceBannerHeight := 0
+	if h.maintenanceMsg != "" {
+		maintenanceBannerHeight = 1
+	}
+	debugBarHeight := 0
+	if h.debugMode {
+		debugBarHeight = 1
+	}
 
 	// contentHeight = total height for main content area
 	// MUST match View(): subtract debugBarHeight when the debug footer is rendered.
-	contentHeight := h.mainContentHeight()
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
 
-	var panelContentHeight int
-	switch h.getLayoutMode() {
-	case LayoutModeStacked:
-		if h.stackedPreviewAvailable(contentHeight) {
-			panelContentHeight = h.stackedListHeight(contentHeight) - panelTitleLines
-		} else {
-			panelContentHeight = contentHeight - panelTitleLines
-		}
-	default:
-		panelContentHeight = contentHeight - panelTitleLines
-	}
+	// Preview, when visible, sits beside Sessions rather than consuming rows.
+	panelContentHeight := contentHeight - panelTitleLines
 
 	// maxVisible = how many items can be shown (reserving 1 for "more below" indicator)
 	maxVisible := panelContentHeight - 1
@@ -3022,21 +3019,25 @@ func (h *Home) cleanupNotifications() {
 // getVisibleHeight returns the number of visible items in the session list
 // Used for vi-style pagination (Ctrl+u/d/f/b)
 func (h *Home) getVisibleHeight() int {
+	helpBarHeight := 2
 	panelTitleLines := 2
-
-	contentHeight := h.mainContentHeight()
-
-	var panelContentHeight int
-	switch h.getLayoutMode() {
-	case LayoutModeStacked:
-		if h.stackedPreviewAvailable(contentHeight) {
-			panelContentHeight = h.stackedListHeight(contentHeight) - panelTitleLines
-		} else {
-			panelContentHeight = contentHeight - panelTitleLines
-		}
-	default:
-		panelContentHeight = contentHeight - panelTitleLines
+	filterBarHeight := 1
+	updateBannerHeight := 0
+	if h.shouldRenderUpdateNudge() {
+		updateBannerHeight = 1
 	}
+	maintenanceBannerHeight := 0
+	if h.maintenanceMsg != "" {
+		maintenanceBannerHeight = 1
+	}
+	debugBarHeight := 0
+	if h.debugMode {
+		debugBarHeight = 1
+	}
+
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
+
+	panelContentHeight := contentHeight - panelTitleLines
 
 	maxVisible := panelContentHeight - 1
 	if maxVisible < 1 {
@@ -14948,13 +14949,16 @@ func (h *Home) renderFrame() string {
 	// FILTER BAR (quick status filters)
 	// ═══════════════════════════════════════════════════════════════════
 	// Always show filter bar for consistent layout (prevents viewport jumping)
+	filterBarHeight := 1
 	b.WriteString(h.renderFilterBar())
 	b.WriteString("\n")
 
 	// ═══════════════════════════════════════════════════════════════════
 	// UPDATE BANNER (if update available)
 	// ═══════════════════════════════════════════════════════════════════
+	updateBannerHeight := 0
 	if h.shouldRenderUpdateNudge() {
+		updateBannerHeight = 1
 		updateStyle := lipgloss.NewStyle().
 			Foreground(ColorBg).
 			Background(ColorYellow).
@@ -14968,7 +14972,9 @@ func (h *Home) renderFrame() string {
 	// ═══════════════════════════════════════════════════════════════════
 	// MAINTENANCE BANNER (if maintenance completed recently)
 	// ═══════════════════════════════════════════════════════════════════
+	maintenanceBannerHeight := 0
 	if h.maintenanceMsg != "" {
+		maintenanceBannerHeight = 1
 		maintStyle := lipgloss.NewStyle().
 			Foreground(ColorBg).
 			Background(ColorCyan).
@@ -14982,7 +14988,13 @@ func (h *Home) renderFrame() string {
 	// ═══════════════════════════════════════════════════════════════════
 	// MAIN CONTENT AREA - Responsive layout based on terminal width
 	// ═══════════════════════════════════════════════════════════════════
-	contentHeight := h.mainContentHeight()
+	helpBarHeight := 2 // Help bar takes 2 lines (border + content)
+	debugBarHeight := 0
+	if h.debugMode {
+		debugBarHeight = 1
+	}
+	// Height breakdown: -1 header, -filterBarHeight filter, -updateBannerHeight banner, -maintenanceBannerHeight maintenance, -helpBarHeight help, -debugBarHeight debug
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
 
 	// Route to appropriate layout based on terminal width
 	layoutMode := h.getLayoutMode()
@@ -14992,11 +15004,7 @@ func (h *Home) renderFrame() string {
 	case LayoutModeSingle:
 		mainContent = h.renderSingleColumnLayout(contentHeight)
 	case LayoutModeStacked:
-		if h.stackedPreviewAvailable(contentHeight) {
-			mainContent = h.renderStackedLayout(contentHeight)
-		} else {
-			mainContent = h.renderSingleColumnLayout(contentHeight)
-		}
+		mainContent = h.renderSingleColumnLayout(contentHeight)
 	default: // LayoutModeDual
 		mainContent = h.renderDualColumnLayout(contentHeight)
 	}
@@ -15601,36 +15609,6 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	}
 
 	b.WriteString(mainContent)
-
-	return b.String()
-}
-
-// renderStackedLayout renders the session list above the preview for medium terminals.
-func (h *Home) renderStackedLayout(totalHeight int) string {
-	if !h.stackedPreviewAvailable(totalHeight) {
-		return h.renderSingleColumnLayout(totalHeight)
-	}
-	var b strings.Builder
-
-	listHeight := h.stackedListHeight(totalHeight)
-	previewHeight := totalHeight - listHeight - stackedSeparatorHeight
-
-	listTitle := h.renderPanelTitle("SESSIONS", h.width)
-	listContent := ensureExactHeight(h.renderSessionList(h.width, listHeight-2), listHeight-2)
-	b.WriteString(listTitle)
-	b.WriteString("\n")
-	b.WriteString(listContent)
-	b.WriteString("\n")
-
-	sepStyle := lipgloss.NewStyle().Foreground(ColorBorder)
-	b.WriteString(sepStyle.Render(strings.Repeat("─", max(0, h.width))))
-	b.WriteString("\n")
-
-	previewTitle := h.renderPanelTitle("PREVIEW", h.width)
-	previewContent := ensureExactHeight(h.renderPreviewPane(h.width, previewHeight-2), previewHeight-2)
-	b.WriteString(previewTitle)
-	b.WriteString("\n")
-	b.WriteString(previewContent)
 
 	return b.String()
 }
