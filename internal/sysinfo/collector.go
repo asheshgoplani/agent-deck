@@ -12,6 +12,7 @@ type Collector struct {
 	stats    Stats
 	interval time.Duration
 	stopCh   chan struct{}
+	stopOnce sync.Once
 	onUpdate func() // called after each collection cycle
 }
 
@@ -63,8 +64,17 @@ func (c *Collector) Start() {
 }
 
 // Stop terminates the background collection goroutine.
+//
+// Stop is idempotent and safe to call from multiple goroutines: the TUI's
+// shutdown path can run more than once (e.g. two queued quit messages), and a
+// second close of stopCh would panic and take the program down with it.
 func (c *Collector) Stop() {
-	close(c.stopCh)
+	if c == nil {
+		return
+	}
+	c.stopOnce.Do(func() {
+		close(c.stopCh)
+	})
 }
 
 // Get returns the latest cached stats snapshot.

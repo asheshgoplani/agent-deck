@@ -312,6 +312,7 @@ type Home struct {
 	isReloading         bool       // Visual feedback during auto-reload
 	initialLoading      bool       // True until first loadSessionsMsg received (shows splash screen)
 	isQuitting          bool       // True when user pressed q, shows quitting splash
+	shutdownStarted     bool       // True once performFinalShutdown has run; blocks a second pass
 	reloadVersion       uint64     // Incremented on each reload to prevent stale background saves
 	reloadMu            sync.Mutex // Protects reloadVersion, isReloading, and lastLoadMtime for thread-safe access
 	lastLoadMtime       time.Time  // File mtime when we last loaded (for external change detection)
@@ -5425,7 +5426,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case quitMsg:
-		// Execute final shutdown logic after splash delay
+		// Execute final shutdown logic after splash delay. Two quit messages can
+		// be queued (e.g. 'q' pressed twice before the splash resolves); running
+		// shutdown twice double-closes channels and panics the program.
+		if h.shutdownStarted {
+			return h, nil
+		}
+		h.shutdownStarted = true
 		return h, h.performFinalShutdown(bool(msg))
 
 	case tea.WindowSizeMsg:
@@ -10354,6 +10361,11 @@ func (h *Home) declineInstallHooks() tea.Cmd {
 
 // tryQuit checks if MCP pool is running and shows confirmation dialog, or quits directly
 func (h *Home) tryQuit() (tea.Model, tea.Cmd) {
+	// Already quitting: the splash is up and a quitMsg is in flight. Scheduling
+	// another one would run the shutdown path twice.
+	if h.isQuitting || h.shutdownStarted {
+		return h, nil
+	}
 	// Check if pool is enabled and has running MCPs
 	userConfig, _ := session.LoadUserConfig()
 	if userConfig != nil && userConfig.MCPPool.Enabled {
