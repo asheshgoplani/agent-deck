@@ -3517,6 +3517,9 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		time.Sleep(opts.checkDelay)
 
 		unsentPromptDetected := false
+		// bodyInPaneNow is this iteration's answer to "is the body on screen
+		// right now", deliberately not latched. See the resend branch below.
+		bodyInPaneNow := false
 		// paneNow is this iteration's observation (raw ANSI + whether the
 		// capture succeeded at all), and is what the attribution gate reads.
 		captured, captureErr := target.CapturePaneFresh()
@@ -3524,6 +3527,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		if paneNow.OK {
 			content := tmux.StripANSI(captured)
 			unsentPromptDetected = send.ComposerHoldsPasteMarker(captured, tmux.StripANSI) || send.HasUnsentComposerPrompt(content, message)
+			bodyInPaneNow = deliveryToken != "" && strings.Contains(content, deliveryToken)
 			if !sawDeliveryEvidence && deliveryToken != "" && strings.Contains(content, deliveryToken) {
 				sawDeliveryEvidence = true
 			}
@@ -3567,7 +3571,37 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				// Message may have been lost during TUI init: the prompt was
 				// visible but the input handler wasn't ready, so sent keys were
 				// discarded. Clear stale input and re-send the full message.
-				if waitingNoActivityChecks >= fullResendThreshold && fullResendCount < maxFullResends {
+				//
+				// Only when nothing is there NOW. bodyInPaneNow is recomputed
+				// every iteration on purpose: "a resend would duplicate" is a
+				// claim about the present, and the latched sawDeliveryEvidence
+				// cannot carry it. That flag also latches on the composer
+				// merely HOLDING the message, which is the first step of the
+				// very TUI-init loss this recovery exists for — gating on it
+				// would suppress the recovery exactly when it is needed, and
+				// (because the same flag suppresses the #876 error at the end
+				// of the budget) report the lost message as delivered. Compare
+				// sawUnsentMarker, which is tracked separately for the same
+				// provenance reason. A recovery for a body that is on screen
+				// right now can only duplicate it. paneNow.OK is required for the
+				// same reason one level down: bodyInPaneNow is only assigned when
+				// the capture succeeded, so without this it would read false by
+				// ABSENCE of an observation rather than by an observation of
+				// absence, and a failed CapturePaneFresh would re-authorize the
+				// Ctrl+C against a target that is working fine. A destructive
+				// branch should need positive evidence, not silence. Meanwhile
+				// the
+				// Ctrl+C that precedes it interrupts whatever the target is
+				// doing. That is #1979: a busy target with the message queued
+				// and a target that never received it both fail to report
+				// "active" — they are indistinguishable BY STATUS ALONE, which is
+				// why this reaches for pane evidence instead. This branch fired
+				// on the busy target and destroyed in-flight
+				// work at exit 0. #479 established the same double-send on the
+				// --no-wait path, which noWaitSendOptions disables outright;
+				// this keeps the recovery for the case it was written for.
+				if waitingNoActivityChecks >= fullResendThreshold && fullResendCount < maxFullResends &&
+					paneNow.OK && !bodyInPaneNow {
 					// The resend types the message and presses Enter, so it
 					// submits whatever the composer still holds. Ctrl+C is
 					// meant to empty it first — but a failed Ctrl+C, or one
