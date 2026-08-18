@@ -18,6 +18,8 @@ import (
 
 var desktopNotificationsOS = runtime.GOOS
 var desktopNotificationsNativePresentationAvailable = desktopnotify.NativePresentationAvailable
+var desktopNotificationsNativePresent = desktopnotify.NativePresent
+var desktopNotificationsNativeServe = desktopnotify.NativeServe
 var desktopNotificationsExecutable = os.Executable
 var desktopNotificationsRunCommand = func(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).CombinedOutput()
@@ -105,22 +107,24 @@ func runDesktopNotificationHelper() {
 		fmt.Fprintf(os.Stderr, "desktop notification helper: %v\n", err)
 		os.Exit(1)
 	}
-	listener, err := desktopnotify.Listen(socket)
-	if err != nil {
+	if err := serveDesktopNotificationHelper(socket, state); err != nil {
 		fmt.Fprintf(os.Stderr, "desktop notification helper: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func serveDesktopNotificationHelper(socket, state string) error {
+	listener, err := desktopnotify.Listen(socket)
+	if err != nil {
+		return err
 	}
 	defer listener.Close()
 	store, err := desktopnotify.OpenStore(state)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "desktop notification helper: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-	helper := desktopnotify.Helper{Listener: listener, Store: store, Present: desktopnotify.NativePresent}
-	if err := desktopnotify.NativeServe(helper.Serve); err != nil {
-		fmt.Fprintf(os.Stderr, "desktop notification helper: %v\n", err)
-		os.Exit(1)
-	}
+	helper := desktopnotify.Helper{Listener: listener, Store: store, Present: desktopNotificationsNativePresent}
+	return desktopNotificationsNativeServe(helper.Serve)
 }
 
 func desktopNotificationHelperPrerequisite() error {

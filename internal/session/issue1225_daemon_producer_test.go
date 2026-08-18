@@ -106,8 +106,8 @@ func TestB13_DaemonSyncProfile_InteractiveTransitionCommitsToInbox(t *testing.T)
 	if !found {
 		t.Fatalf("interactive running→waiting did NOT commit to the busy parent's inbox via the daemon; drained %+v", events)
 	}
-	if len(desktopEvents) != 1 || desktopEvents[0].ToStatus != "waiting" || desktopEvents[0].SessionID != child.ID {
-		t.Fatalf("desktop notification = %+v, want one waiting event for %q", desktopEvents, child.ID)
+	if len(desktopEvents) != 0 {
+		t.Fatalf("parented child produced desktop notifications: %+v", desktopEvents)
 	}
 
 	// A session can fail after it has already become waiting. This is not a
@@ -117,7 +117,7 @@ func TestB13_DaemonSyncProfile_InteractiveTransitionCommitsToInbox(t *testing.T)
 		t.Fatalf("write error: %v", err)
 	}
 	d.syncProfile(profile)
-	if len(desktopEvents) != 1 || desktopEvents[0].ToStatus != "error" || desktopEvents[0].SessionID != child.ID {
-		t.Fatalf("desktop notification = %+v, want one error event for %q", desktopEvents, child.ID)
+	if len(desktopEvents) != 0 {
+		t.Fatalf("parented child error produced desktop notifications: %+v", desktopEvents)
 	}
 }

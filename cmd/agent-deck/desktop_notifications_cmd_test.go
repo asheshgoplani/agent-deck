@@ -8,6 +8,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/desktopnotify"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func TestCopyDesktopHelperCreatesPrivateExecutable(t *testing.T) {
@@ -167,6 +171,55 @@ func TestDesktopNotificationPackagingSkipsMacOSToolsOutsideDarwin(t *testing.T) 
 	}
 	if err := registerDesktopNotificationBundle("helper.app"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServeDesktopNotificationHelperRunsCompletePathThroughNativeServe(t *testing.T) {
+	socket, cleanupSocket := testutil.ShortTmuxSocket()
+	t.Cleanup(cleanupSocket)
+	state := filepath.Join(filepath.Dir(socket), "state.json")
+	wantEvent := desktopnotify.Event{Class: desktopnotify.Attention, SessionID: "session-1", Title: "worker", Timestamp: time.Now()}
+
+	originalNativeServe := desktopNotificationsNativeServe
+	originalNativePresent := desktopNotificationsNativePresent
+	presented := make(chan desktopnotify.Event, 1)
+	desktopNotificationsNativePresent = func(event desktopnotify.Event) error {
+		presented <- event
+		return nil
+	}
+	wantErr := errors.New("native event loop stopped")
+	callbackDone := make(chan error, 1)
+	desktopNotificationsNativeServe = func(serve func() error) error {
+		go func() { callbackDone <- serve() }()
+		if err := desktopnotify.Send(socket, wantEvent); err != nil {
+			t.Fatalf("send helper event: %v", err)
+		}
+		select {
+		case got := <-presented:
+			if got.SessionID != wantEvent.SessionID || got.Class != wantEvent.Class {
+				t.Fatalf("presented event = %+v, want %+v", got, wantEvent)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("complete helper path did not present the event")
+		}
+		return wantErr
+	}
+	t.Cleanup(func() {
+		desktopNotificationsNativeServe = originalNativeServe
+		desktopNotificationsNativePresent = originalNativePresent
+	})
+
+	err := serveDesktopNotificationHelper(socket, state)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("serveDesktopNotificationHelper() error = %v, want %v", err, wantErr)
+	}
+	select {
+	case err := <-callbackDone:
+		if err == nil {
+			t.Fatal("helper Serve returned nil after its listener closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("helper Serve did not stop after lifecycle returned")
 	}
 }
 
