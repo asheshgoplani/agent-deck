@@ -45,6 +45,13 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .topbar {
   display: flex;
   align-items: stretch;
+  /* The legacy Tailwind sheet (styles.css, loaded before this one) still has
+     `.topbar { height: var(--topbar-height) }` with --topbar-height: 56px,
+     while the grid row above is sized from --topbar-h: 44px. Two variables for
+     one measurement: the header rendered 56px in a 44px row and, being
+     z-index 20, painted the 12px difference over .sidebar/.main/.rightrail.
+     Pin the height to the same token the row uses so the two cannot drift. */
+  height: var(--topbar-h);
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   z-index: 20;
