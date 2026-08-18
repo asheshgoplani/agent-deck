@@ -111,8 +111,8 @@ func TestSyncOnce_StaleRunningRowDoesNotVetoFreshTerminalHook(t *testing.T) {
 	if inbox[0].ChildSessionID != child.ID || inbox[0].ToStatus != "waiting" {
 		t.Fatalf("wrong event committed: %+v", inbox[0])
 	}
-	if len(desktopEvents) != 1 || desktopEvents[0].SessionID != child.ID || desktopEvents[0].ToStatus != "waiting" {
-		t.Fatalf("hook candidate desktop event = %+v, want one waiting event for %q", desktopEvents, child.ID)
+	if len(desktopEvents) != 0 {
+		t.Fatalf("parented hook candidate produced desktop events: %+v", desktopEvents)
 	}
 }
 

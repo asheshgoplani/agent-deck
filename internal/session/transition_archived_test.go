@@ -142,7 +142,7 @@ func TestSyncProfile_EnablingDesktopNotificationsSeedsFreshHookWithoutAlert(t *t
 		desktopNotificationSender = originalSender
 	})
 
-	_, child := seedStaleRowFixture(t, storage, "enable-hook-child", "enable-hook-parent", "running")
+	parent, child := seedStaleRowFixture(t, storage, "enable-hook-child", "enable-hook-parent", "running")
 	d.syncProfile(profile)
 	if len(baselines) != 0 {
 		t.Fatalf("disabled desktop notifications seeded %+v", baselines)
@@ -152,14 +152,17 @@ func TestSyncProfile_EnablingDesktopNotificationsSeedsFreshHookWithoutAlert(t *t
 	seedHookStatusFile(t, child.ID, "Stop", "99999999-9999-9999-9999-999999999999", "waiting")
 	d.syncProfile(profile)
 
-	foundWaitingBaseline := false
+	foundParentBaseline := false
 	for _, event := range baselines {
-		if event.SessionID == child.ID && event.ToStatus == "waiting" {
-			foundWaitingBaseline = true
+		if event.SessionID == child.ID {
+			t.Fatalf("parented child seeded desktop baseline: %+v", baselines)
+		}
+		if event.SessionID == parent.ID && event.ToStatus == "running" {
+			foundParentBaseline = true
 		}
 	}
-	if !foundWaitingBaseline {
-		t.Fatalf("enable baseline = %+v, want fresh hook waiting state", baselines)
+	if !foundParentBaseline {
+		t.Fatalf("enable baseline = %+v, want top-level parent running state", baselines)
 	}
 	if len(delivered) != 0 {
 		t.Fatalf("enable pass delivered stale desktop events %+v", delivered)

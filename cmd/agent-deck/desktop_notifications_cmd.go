@@ -18,6 +18,7 @@ import (
 
 var desktopNotificationsOS = runtime.GOOS
 var desktopNotificationsNativePresentationAvailable = desktopnotify.NativePresentationAvailable
+var desktopNotificationsNativeServe = desktopnotify.NativeServe
 var desktopNotificationsExecutable = os.Executable
 var desktopNotificationsRunCommand = func(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).CombinedOutput()
@@ -117,7 +118,7 @@ func runDesktopNotificationHelper() {
 		os.Exit(1)
 	}
 	helper := desktopnotify.Helper{Listener: listener, Store: store, Present: desktopnotify.NativePresent}
-	if err := desktopnotify.NativeServe(helper.Serve); err != nil {
+	if err := desktopNotificationsNativeServe(helper.Serve); err != nil {
 		fmt.Fprintf(os.Stderr, "desktop notification helper: %v\n", err)
 		os.Exit(1)
 	}

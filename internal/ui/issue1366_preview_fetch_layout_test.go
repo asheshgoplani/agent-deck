@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -32,24 +31,19 @@ func armHomeOneSessionForPreview(t *testing.T) *Home {
 }
 
 // Issue #1366: navigating in a layout with no preview pane must NOT schedule a
-// `tmux capture-pane` for a preview nobody renders. Mobile stacked layouts
-// (50-79 columns) are sessions-only just like single-column layouts.
+// `tmux capture-pane` for a preview nobody renders.
 func TestIssue1366_NoPreviewFetchInSingleColumnLayout(t *testing.T) {
-	for _, width := range []int{45, 65} {
-		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
-			h := armHomeOneSessionForPreview(t)
-			h.width = width
-			if cmd := h.fetchSelectedPreview(); cmd != nil {
-				t.Fatalf("width=%d: hidden Preview scheduled a fetch", width)
-			}
-		})
+	h := armHomeOneSessionForPreview(t)
+	h.width = 45
+	if cmd := h.fetchSelectedPreview(); cmd != nil {
+		t.Fatal("hidden Preview scheduled a fetch")
 	}
 }
 
 func TestIssue1366_HiddenPreviewFetchClearsInFlightMarker(t *testing.T) {
 	t.Run("local", func(t *testing.T) {
 		h := armHomeOneSessionForPreview(t)
-		h.width = 65
+		h.width = 45
 		inst, key, _ := h.selectedPreviewTarget()
 		if inst == nil || key == "" {
 			t.Fatal("setup: expected a selected local preview target")
@@ -72,7 +66,7 @@ func TestIssue1366_HiddenPreviewFetchClearsInFlightMarker(t *testing.T) {
 
 	t.Run("remote", func(t *testing.T) {
 		h := NewHome()
-		h.width = 65
+		h.width = 45
 		key := "remote:example:session"
 
 		h.previewCacheMu.Lock()
@@ -91,15 +85,13 @@ func TestIssue1366_HiddenPreviewFetchClearsInFlightMarker(t *testing.T) {
 	})
 }
 
-// Regression guard: when the preview pane IS visible (dual layout), navigation
-// must still schedule the fetch.
-func TestIssue1366_PreviewFetchInDualLayout(t *testing.T) {
-	h := armHomeOneSessionForPreview(t)
-	h.width = 120 // dual layout: preview pane visible
-	if got := h.getLayoutMode(); got != LayoutModeDual {
-		t.Fatalf("setup: layout = %q, want %q", got, LayoutModeDual)
-	}
-	if cmd := h.fetchSelectedPreview(); cmd == nil {
-		t.Fatal("fetchSelectedPreview must schedule a fetch when the preview pane is visible")
+// Regression guard: navigation schedules a fetch in both visible layouts.
+func TestIssue1366_PreviewFetchInVisibleLayouts(t *testing.T) {
+	for _, width := range []int{65, 120} {
+		h := armHomeOneSessionForPreview(t)
+		h.width = width
+		if cmd := h.fetchSelectedPreview(); cmd == nil {
+			t.Fatalf("width=%d: visible Preview did not schedule a fetch", width)
+		}
 	}
 }

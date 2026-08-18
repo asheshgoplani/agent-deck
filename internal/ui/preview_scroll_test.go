@@ -208,11 +208,45 @@ func TestPreviewScroll_SingleLayoutMode_WheelMovesCursor(t *testing.T) {
 
 func TestPreviewScroll_StackedLayoutRoutesByPreviewY(t *testing.T) {
 	h, _ := previewScrollSessionWithLines(t, 60, 40, 50)
+
+	inst2 := session.NewInstance("second", t.TempDir())
+	inst2.Status = session.StatusRunning
+	h.instancesMu.Lock()
+	h.instances = append(h.instances, inst2)
+	h.instanceByID[inst2.ID] = inst2
+	h.instancesMu.Unlock()
+	h.flatItems = append(h.flatItems, session.Item{Type: session.ItemTypeSession, Session: inst2})
+
 	previewTop := h.stackedPreviewTopY()
-	msg := tea.MouseMsg{X: 30, Y: previewTop + 1, Button: tea.MouseButtonWheelUp}
+	if renderedTop := stackedPreviewTitleY(h); renderedTop != previewTop {
+		t.Fatalf("stackedPreviewTopY() = %d, rendered PREVIEW row = %d", previewTop, renderedTop)
+	}
+
+	msg := tea.MouseMsg{X: 30, Y: previewTop, Button: tea.MouseButtonWheelUp}
 	model, _ := h.Update(msg)
 	h = model.(*Home)
 	if h.previewScrollOffset != 1 {
 		t.Fatalf("stacked preview WheelUp offset = %d, want 1", h.previewScrollOffset)
 	}
+	if h.cursor != 0 {
+		t.Fatalf("stacked preview WheelUp cursor = %d, want 0", h.cursor)
+	}
+
+	model, _ = h.Update(tea.MouseMsg{X: 30, Y: previewTop - 1, Button: tea.MouseButtonWheelDown})
+	h = model.(*Home)
+	if h.cursor != 1 {
+		t.Fatalf("stacked list WheelDown cursor = %d, want 1", h.cursor)
+	}
+	if h.previewScrollOffset != 0 {
+		t.Fatalf("stacked list WheelDown offset = %d, want 0", h.previewScrollOffset)
+	}
+}
+
+func stackedPreviewTitleY(h *Home) int {
+	for row, line := range strings.Split(ansiRegex.ReplaceAllString(h.View(), ""), "\n") {
+		if strings.TrimSpace(line) == "PREVIEW" {
+			return row
+		}
+	}
+	return -1
 }

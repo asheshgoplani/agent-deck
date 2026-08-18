@@ -170,6 +170,20 @@ func TestDesktopNotificationPackagingSkipsMacOSToolsOutsideDarwin(t *testing.T) 
 	}
 }
 
+func TestRunDesktopNotificationHelperUsesNativeServeSeam(t *testing.T) {
+	raw, err := os.ReadFile("desktop_notifications_cmd.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	if !strings.Contains(source, "var desktopNotificationsNativeServe = desktopnotify.NativeServe") {
+		t.Fatal("desktop notification helper has no injectable NativeServe seam")
+	}
+	if !strings.Contains(source, "desktopNotificationsNativeServe(helper.Serve)") {
+		t.Fatal("runDesktopNotificationHelper does not route Helper.Serve through the NativeServe seam")
+	}
+}
+
 func TestSignDesktopNotificationBundleRequiresStrictVerification(t *testing.T) {
 	originalOS := desktopNotificationsOS
 	desktopNotificationsOS = "darwin"

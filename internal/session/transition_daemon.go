@@ -510,7 +510,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		// predicate: an already-waiting session can transition to error and
 		// must still raise an actionable desktop alert.
 		if desktopDispatch {
-			_ = desktopNotificationSender(desktopnotify.SourceEvent{
+			dispatchDesktopNotification(inst, desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
 				ToStatus: to, Timestamp: time.Now(),
 			})
@@ -588,17 +588,17 @@ func (d *TransitionDaemon) seedDesktopNotificationBaseline(profile string, byID 
 		}
 	}
 	for id, status := range statuses {
-		if inst := byID[id]; inst != nil {
+		if inst := byID[id]; desktopNotificationAllowed(inst) {
 			baseline(desktopnotify.SourceEvent{SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath, ToStatus: status})
 		}
 	}
 	for id, candidate := range candidates {
-		if inst := byID[id]; inst != nil {
+		if inst := byID[id]; desktopNotificationAllowed(inst) {
 			baseline(desktopnotify.SourceEvent{SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath, ToStatus: candidate.ToStatus, Timestamp: candidate.Timestamp})
 		}
 	}
 	for id, hook := range hookStatuses {
-		if inst := byID[id]; inst != nil {
+		if inst := byID[id]; desktopNotificationAllowed(inst) {
 			if signal, ok := d.doneSignalFor(profile, id, hook); ok {
 				baseline(desktopnotify.SourceEvent{SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath, Kind: transitionKindFinished, DoneStatus: signal.Status, Summary: signal.Summary, Timestamp: hook.UpdatedAt})
 			}
@@ -684,7 +684,7 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 			continue
 		}
 		if desktopDispatch {
-			_ = desktopNotificationSender(desktopnotify.SourceEvent{
+			dispatchDesktopNotification(inst, desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
 				Kind: transitionKindFinished, DoneStatus: sig.Status, Summary: sig.Summary, Timestamp: hs.UpdatedAt,
 			})
@@ -1054,7 +1054,7 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		// send its equivalent desktop event here. The snapshot duplicate guard
 		// above keeps each transition to one alert source.
 		if desktopDispatch {
-			_ = desktopNotificationSender(desktopnotify.SourceEvent{
+			dispatchDesktopNotification(inst, desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
 				ToStatus: to, Timestamp: candidate.Timestamp,
 			})
@@ -1104,7 +1104,7 @@ func releasesDesktopEdge(status string) bool {
 }
 
 func (d *TransitionDaemon) notifyDesktop(profile string, inst *Instance, toStatus string) {
-	if d == nil || d.deskNotifier == nil || inst == nil || !GetNotificationsSettings().GetDesktopEnabled() || !desknotify.ShouldNotify(toStatus) || inst.NoTransitionNotify {
+	if d == nil || d.deskNotifier == nil || !desktopNotificationAllowed(inst) || !GetNotificationsSettings().GetDesktopEnabled() || !desknotify.ShouldNotify(toStatus) || inst.NoTransitionNotify {
 		return
 	}
 	key := profile + "|" + inst.ID
@@ -1123,6 +1123,16 @@ func (d *TransitionDaemon) notifyDesktop(profile string, inst *Instance, toStatu
 			sessionLog.Debug("desktop_notification_sent", slog.String("instance_id", inst.ID), slog.String("to_status", toStatus), slog.String("backend", backend))
 		}
 	}()
+}
+
+func desktopNotificationAllowed(inst *Instance) bool {
+	return inst != nil && strings.TrimSpace(inst.ParentSessionID) == ""
+}
+
+func dispatchDesktopNotification(inst *Instance, event desktopnotify.SourceEvent) {
+	if desktopNotificationAllowed(inst) {
+		_ = desktopNotificationSender(event)
+	}
 }
 
 func (d *TransitionDaemon) waitDesktopNotifications() {

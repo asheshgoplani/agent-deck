@@ -1092,10 +1092,10 @@ func TestGetLayoutMode(t *testing.T) {
 		previewVisible bool
 	}{
 		{"narrow phone", 45, "single", false},
-		{"phone landscape", 65, "stacked", false},
+		{"phone landscape", 65, "stacked", true},
 		{"tablet", 85, "dual", true},
 		{"desktop", 120, "dual", true},
-		{"exact boundary 50", 50, "stacked", false},
+		{"exact boundary 50", 50, "stacked", true},
 		{"exact boundary 80", 80, "dual", true},
 	}
 
@@ -2139,8 +2139,8 @@ func TestHomeViewStackedLayout(t *testing.T) {
 	if strings.Contains(view, "Terminal too small") {
 		t.Error("65-col terminal should not show 'too small' error")
 	}
-	if strings.Contains(view, "PREVIEW") {
-		t.Fatalf("65-col mobile stacked layout rendered Preview:\n%s", view)
+	if !strings.Contains(view, "PREVIEW") {
+		t.Fatalf("65-col stacked layout omitted Preview:\n%s", view)
 	}
 
 }
@@ -3045,17 +3045,17 @@ func TestMouseClickInMobileStackedSessionAreaSelectsItem(t *testing.T) {
 		}
 	}
 
-	// Mobile stacked layout: width 65, height 40. It has no Preview pane, so
-	// the session list uses the full content height and y=25 targets item 21.
+	// Mobile stacked layout: width 65, height 40. Keep the click inside the
+	// upper session-list region rather than the preview below it.
 	home := newTestHomeWithItems(65, 40, items)
 	home.cursor = 0
 
-	msg := tea.MouseMsg{X: 10, Y: 25, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+	msg := tea.MouseMsg{X: 10, Y: 10, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
 	model, _ := home.Update(msg)
 	h := model.(*Home)
 
-	if h.cursor != 21 {
-		t.Errorf("cursor = %d after click in mobile stacked session area, want 21", h.cursor)
+	if h.cursor != 6 {
+		t.Errorf("cursor = %d after click in mobile stacked session area, want 6", h.cursor)
 	}
 }
 

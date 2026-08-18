@@ -99,6 +99,19 @@ func TestNotifyDesktop_DeliversWaitingWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestNotifyDesktop_SuppressesParentedChild(t *testing.T) {
+	writeDesktopNotifyConfig(t, "desktop = true")
+
+	rec := &recordingBackend{}
+	d := &TransitionDaemon{deskNotifier: desknotify.NewWithBackends(rec)}
+	d.notifyDesktop("default", &Instance{ID: "child", Title: "worker", ParentSessionID: "parent"}, string(StatusWaiting))
+	d.waitDesktopNotifications()
+
+	if len(rec.titles) != 0 {
+		t.Fatalf("parented child delivered %d desktop notifications, want 0", len(rec.titles))
+	}
+}
+
 // A session with the per-session opt-out set must stay silent, so one noisy
 // session can be muted without disabling notifications globally. This mirrors
 // the gate the parent-routing path already honours.
