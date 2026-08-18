@@ -159,7 +159,10 @@ body[data-rail="hidden"] .rightrail { display: none; }
   display: flex; gap: 6px; align-items: center;
 }
 .side-filter input {
-  flex: 1; height: 28px;
+  /* min-width:0 is required here: a flex item defaults to min-width:auto, so
+     the input refuses to shrink below its intrinsic width and pushes the
+     status chips past the sidebar's right padding on narrow viewports. */
+  flex: 1; min-width: 0; height: 28px;
   background: var(--bg); border: 1px solid var(--border);
   color: var(--text); border-radius: var(--radius);
   padding: 0 8px; font: inherit; font-size: 12px;
