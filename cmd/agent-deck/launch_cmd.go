@@ -297,7 +297,7 @@ func handleLaunch(profile string, args []string) {
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly
-	args = reorderArgsForFlagParsing(args)
+	args = reorderArgsForFlagParsing(fs, args)
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)

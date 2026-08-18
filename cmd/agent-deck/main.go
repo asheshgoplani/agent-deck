@@ -1141,44 +1141,42 @@ func extractSelectFlag(args []string) (string, []string) {
 // and the wrong arg ended up as the parent value. We now match flag
 // names by their normalized form (dashes stripped from the left) so
 // `-parent` and `--parent` behave identically here too.
-func reorderArgsForFlagParsing(args []string) []string {
+//
+// Which flags take a value is read from fs, never from a hand-maintained
+// list. The list version was wrong for every flag nobody remembered to add
+// to it: `--base dev --title X` demoted "dev" to a positional, which left
+// `--base --title` adjacent, so flag.Parse bound --base="--title" and made
+// the title X the project path ("path does not exist: X"). --account had the
+// same bug (#1928) and --base/--idle-timeout inherited it; deriving the set
+// from the FlagSet that will parse these args makes the class impossible.
+func reorderArgsForFlagParsing(fs *flag.FlagSet, args []string) []string {
 	if len(args) == 0 {
 		return args
 	}
 
-	// Known flag *names* (no leading dashes) that take a value.
-	// Note: -b/--new-branch are boolean flags (no value), so not included here.
-	valueFlagNames := map[string]bool{
-		"t": true, "title": true,
-		"g": true, "group": true,
-		"c": true, "cmd": true,
-		"m": true, "message": true, "message-file": true,
-		"p": true, "parent": true,
-		"mcp":            true,
-		"channel":        true,
-		"plugin":         true,
-		"extra-arg":      true,
-		"wrapper":        true,
-		"model":          true,
-		"w":              true,
-		"worktree":       true,
-		"location":       true,
-		"resume-session": true,
-		"sandbox-image":  true,
-		"ssh":            true,
-		"remote-path":    true,
-		"tmux-socket":    true,
-		// #928 follow-up: account was missing here, so `--account work` had its
-		// value stripped off as a positional and reordered away from the flag.
-		// That mis-parse predates the #1923 guard; the guard only made it loud.
-		"account": true,
-	}
+	// A registered flag takes a value unless it is boolean. Names are stored
+	// without leading dashes, matching the normalization below.
+	takesValue := make(map[string]bool)
+	fs.VisitAll(func(f *flag.Flag) {
+		bf, ok := f.Value.(interface{ IsBoolFlag() bool })
+		takesValue[f.Name] = !(ok && bf.IsBoolFlag())
+	})
 
 	var flags []string
 	var positional []string
+	terminated := false
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+
+		// "--" ends flag processing; everything after it is positional. The
+		// separator is re-emitted below so a later pass (normalizeArgs, then
+		// flag.Parse) does not re-read a dash-leading positional as a flag.
+		if arg == "--" {
+			terminated = true
+			positional = append(positional, args[i+1:]...)
+			break
+		}
 
 		// Check if it's a flag
 		if strings.HasPrefix(arg, "-") && arg != "-" {
@@ -1191,7 +1189,7 @@ func reorderArgsForFlagParsing(args []string) []string {
 
 			// Normalize "-foo" / "--foo" to "foo" for lookup.
 			name := strings.TrimLeft(arg, "-")
-			if valueFlagNames[name] && i+1 < len(args) {
+			if takesValue[name] && i+1 < len(args) {
 				i++
 				flags = append(flags, args[i])
 			}
@@ -1202,6 +1200,9 @@ func reorderArgsForFlagParsing(args []string) []string {
 	}
 
 	// Return flags first, then positional args
+	if terminated {
+		flags = append(flags, "--")
+	}
 	return append(flags, positional...)
 }
 
@@ -1438,7 +1439,7 @@ func handleAdd(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	args = reorderArgsForFlagParsing(args)
+	args = reorderArgsForFlagParsing(fs, args)
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)

@@ -106,8 +106,12 @@ func TestNormalizeArgs(t *testing.T) {
 				fs.Bool("json", false, "")
 				return fs
 			},
+			// "--" is preserved, not dropped: the user wrote it so that
+			// "--json" is a positional (a session title) rather than the flag.
+			// Dropping it re-promoted "--json" to a flag at fs.Parse time,
+			// which is exactly what "--" exists to prevent.
 			args:     []string{"--", "--json", "title"},
-			expected: []string{"--json", "title"},
+			expected: []string{"--", "--json", "title"},
 		},
 		{
 			name: "session show with title containing special chars",
@@ -255,7 +259,13 @@ func TestReorderArgsForFlagParsing_CmdAndGroup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := reorderArgsForFlagParsing(tt.args)
+			fs := flag.NewFlagSet("add", flag.ContinueOnError)
+			fs.String("c", "", "")
+			fs.String("g", "", "")
+			fs.String("model", "", "")
+			fs.Bool("no-parent", false, "")
+
+			result := reorderArgsForFlagParsing(fs, tt.args)
 			if !reflect.DeepEqual(result, tt.expected) {
 				t.Errorf("reorderArgsForFlagParsing(%v) = %v, want %v", tt.args, result, tt.expected)
 			}
