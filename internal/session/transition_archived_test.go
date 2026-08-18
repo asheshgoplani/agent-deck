@@ -541,6 +541,43 @@ func TestDesktopDoneSignalTopLevelRetriesFailedSend(t *testing.T) {
 	}
 }
 
+func TestDesktopDoneSignalSameSentinelNewTimestampSendsAgain(t *testing.T) {
+	setDesktopOnlyNotificationsEnabled(t)
+
+	const profile = "_test_desktop_done_revision"
+	const id = "done-root-revision"
+	d := NewTransitionDaemon()
+	d.initialized[profile] = true
+	d.desktopNotificationBaselineReady[profile] = true
+	root := &Instance{ID: id, Title: "root"}
+	d.loadTransitionInstanceRow = func(string, string) (*statedb.InstanceRow, error) {
+		return &statedb.InstanceRow{ID: id}, nil
+	}
+	var delivered []desktopnotify.SourceEvent
+	originalSender := desktopNotificationSender
+	desktopNotificationSender = func(event desktopnotify.SourceEvent) error {
+		delivered = append(delivered, event)
+		return nil
+	}
+	t.Cleanup(func() { desktopNotificationSender = originalSender })
+
+	first := time.Now().Add(-time.Second).UTC()
+	hook := &HookStatus{Event: "Stop", UpdatedAt: first, DoneStatus: "ok", DoneSummary: "finished"}
+	hookStatuses := map[string]*HookStatus{id: hook}
+	d.emitDoneSignals(profile, map[string]*Instance{id: root}, hookStatuses)
+	d.emitDoneSignals(profile, map[string]*Instance{id: root}, hookStatuses)
+
+	hook.UpdatedAt = first.Add(time.Second)
+	d.emitDoneSignals(profile, map[string]*Instance{id: root}, hookStatuses)
+
+	if len(delivered) != 2 {
+		t.Fatalf("desktop completion deliveries = %d, want 2 for one repeated and one newer timestamp", len(delivered))
+	}
+	if !delivered[0].Timestamp.Equal(first) || !delivered[1].Timestamp.Equal(first.Add(time.Second)) {
+		t.Fatalf("desktop completion timestamps = [%v, %v], want [%v, %v]", delivered[0].Timestamp, delivered[1].Timestamp, first, first.Add(time.Second))
+	}
+}
+
 func TestDesktopDoneSignalDefaultConfigRetriesFailedDesktopWithoutRepeatingLegacy(t *testing.T) {
 	setDesktopNotificationsEnabled(t, true)
 

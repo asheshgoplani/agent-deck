@@ -38,6 +38,11 @@ type hookTransitionCandidate struct {
 	Timestamp time.Time
 }
 
+type desktopDoneObservation struct {
+	Signal    DoneSignal
+	UpdatedAt time.Time
+}
+
 type TransitionDaemon struct {
 	notifier     *TransitionNotifier
 	deskNotifier *desknotify.Notifier
@@ -53,8 +58,9 @@ type TransitionDaemon struct {
 	// from desktop delivery so one channel cannot consume the other's retry.
 	lastDone map[string]map[string]DoneSignal
 	// lastDesktopDone tracks desktop completions that were either delivered or
-	// intentionally suppressed for a parented child.
-	lastDesktopDone map[string]map[string]DoneSignal
+	// intentionally suppressed for a parented child. Unlike legacy delivery,
+	// desktop event identity includes the hook timestamp.
+	lastDesktopDone map[string]map[string]desktopDoneObservation
 
 	// lastDoneScan tracks, per (profile, instance), the hook-status timestamp
 	// whose pending transcript rescan (issue #1186 flush race) reached a
@@ -119,7 +125,7 @@ func NewTransitionDaemon() *TransitionDaemon {
 		lastStatus:                       map[string]map[string]string{},
 		initialized:                      map[string]bool{},
 		lastDone:                         map[string]map[string]DoneSignal{},
-		lastDesktopDone:                  map[string]map[string]DoneSignal{},
+		lastDesktopDone:                  map[string]map[string]desktopDoneObservation{},
 		lastDoneScan:                     map[string]map[string]time.Time{},
 		lastProbeStall:                   map[string]time.Time{},
 		desktopNotificationBaselineReady: map[string]bool{},
@@ -647,14 +653,15 @@ func (d *TransitionDaemon) currentTransitionInstance(profile string, inst *Insta
 
 // emitDoneSignals turns a worker-printed completion sentinel (persisted into
 // the hook status file by the Stop-hook handler, issue #1186) into a distinct
-// "finished" event delivered to the parent. Per-task idempotency is enforced
-// via d.lastDone: the same sentinel re-read across polls — or repeated on a
-// later identical Stop — fires at most once. A genuinely new completion
-// (different status/summary) fires again. Stale hook files (older than
-// hookFreshWindow) are ignored so a daemon restart doesn't replay a long-dead
-// completion. When the hook's own scan was inconclusive (transcript not
-// flushed at Stop time), the hook file carries the transcript path instead of
-// done fields and the daemon finishes the scan here — see doneSignalFor.
+// "finished" event delivered to the parent. Legacy per-task idempotency uses
+// the sentinel payload in d.lastDone. Desktop idempotency additionally uses
+// the hook timestamp, matching the persistent desktop event identity, so a
+// later completion may reuse the same status and summary. Stale hook files
+// (older than hookFreshWindow) are ignored so a daemon restart doesn't replay
+// a long-dead completion. When the hook's own scan was inconclusive
+// (transcript not flushed at Stop time), the hook file carries the transcript
+// path instead of done fields and the daemon finishes the scan here — see
+// doneSignalFor.
 func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Instance, hookStatuses map[string]*HookStatus, retryMaps ...map[string]bool) {
 	if len(hookStatuses) == 0 {
 		return
@@ -671,7 +678,7 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		inst := byID[id]
 		desktopDispatch := d.initialized[profile] && d.desktopNotificationDispatchReady(profile)
 		legacyDispatch := notifyEnabled
-		desktopObserved := doneSignalObserved(d.lastDesktopDone, profile, id, sig)
+		desktopObserved := d.desktopDoneObserved(profile, id, sig, hs.UpdatedAt)
 		legacyObserved := doneSignalObserved(d.lastDone, profile, id, sig)
 		if (!desktopDispatch || desktopObserved) && (!legacyDispatch || legacyObserved) {
 			continue
@@ -700,9 +707,9 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		if desktopSuppressed {
 			// Suppression is the terminal outcome for a parented child. Remember
 			// the completion now so promotion cannot replay it as top-level work.
-			d.recordDesktopDoneObserved(profile, id, sig)
+			d.recordDesktopDoneObserved(profile, id, sig, hs.UpdatedAt)
 		} else if desktopDispatch && desktopErr == nil {
-			d.recordDesktopDoneObserved(profile, id, sig)
+			d.recordDesktopDoneObserved(profile, id, sig, hs.UpdatedAt)
 		}
 		if !legacyDispatch || legacyObserved {
 			continue
@@ -746,14 +753,19 @@ func (d *TransitionDaemon) recordDoneObserved(profile, id string, sig DoneSignal
 	d.lastDone[profile][id] = sig
 }
 
-func (d *TransitionDaemon) recordDesktopDoneObserved(profile, id string, sig DoneSignal) {
+func (d *TransitionDaemon) recordDesktopDoneObserved(profile, id string, sig DoneSignal, updatedAt time.Time) {
 	if d.lastDesktopDone == nil {
-		d.lastDesktopDone = map[string]map[string]DoneSignal{}
+		d.lastDesktopDone = map[string]map[string]desktopDoneObservation{}
 	}
 	if d.lastDesktopDone[profile] == nil {
-		d.lastDesktopDone[profile] = map[string]DoneSignal{}
+		d.lastDesktopDone[profile] = map[string]desktopDoneObservation{}
 	}
-	d.lastDesktopDone[profile][id] = sig
+	d.lastDesktopDone[profile][id] = desktopDoneObservation{Signal: sig, UpdatedAt: updatedAt}
+}
+
+func (d *TransitionDaemon) desktopDoneObserved(profile, id string, sig DoneSignal, updatedAt time.Time) bool {
+	prev, ok := d.lastDesktopDone[profile][id]
+	return ok && prev.Signal == sig && prev.UpdatedAt.Equal(updatedAt)
 }
 
 func doneSignalObserved(observed map[string]map[string]DoneSignal, profile, id string, sig DoneSignal) bool {
