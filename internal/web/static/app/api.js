@@ -38,7 +38,12 @@ export async function apiFetch(method, path, body) {
     const msg = data?.error?.message || res.statusText
     // Only show toast for mutation errors (not GET requests, which are often background)
     if (method !== 'GET') addToast(msg)
-    throw new Error(msg)
+    // Carry the HTTP status so callers can tell "the server rejected our
+    // credentials" (401) apart from "the server is unreachable" (the network
+    // error above). Only the former should invalidate a remembered token.
+    const err = new Error(msg)
+    err.status = res.status
+    throw err
   }
   return data
 }

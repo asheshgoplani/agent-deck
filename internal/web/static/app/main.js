@@ -15,12 +15,50 @@ import { addToast } from './Toast.js'
 
 // ---------- Auth token extraction ----------
 
+// Where the bearer token is remembered between page loads.
+//
+// The token arrives once, in the URL, and is stripped immediately (see below).
+// Without somewhere to keep it, the app is authenticated for exactly one page
+// load: a reload, a hard refresh, or launching the installed PWA all land on a
+// tokenless URL and every /api/ call 401s with no way to recover but digging
+// the original ?token= link back out.
+//
+// This is not a hypothetical. manifest.webmanifest declares `"start_url": "/"`
+// and `"display": "standalone"`, so an installed instance ALWAYS starts without
+// a token -- the advertised install path cannot authenticate at all against a
+// server started with --token/--token-file.
+//
+// localStorage rather than sessionStorage is deliberate: sessionStorage is
+// cleared when the standalone window closes, which is the exact case this is
+// meant to fix. This does not widen the token's exposure much in practice --
+// it already travels in a URL query string, which is more readily copied,
+// shared and logged than an origin-scoped storage entry.
+const TOKEN_KEY = 'agentdeck.authToken'
+
+function loadStoredToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || '' } catch (_) { return '' }
+}
+function storeToken(token) {
+  try { localStorage.setItem(TOKEN_KEY, token) } catch (_) { /* private mode */ }
+}
+export function clearStoredToken() {
+  try { localStorage.removeItem(TOKEN_KEY) } catch (_) { /* private mode */ }
+  authTokenSignal.value = ''
+}
+
 ;(function extractAuthToken() {
   const params = new URLSearchParams(window.location.search)
   const token = params.get('token')
-  if (!token) return
+  if (!token) {
+    // No token in the URL: fall back to one saved by an earlier visit, so a
+    // reload or a PWA launch stays signed in. A token in the URL always wins
+    // over the stored one, so re-opening a fresh ?token= link rotates it.
+    authTokenSignal.value = loadStoredToken()
+    return
+  }
 
   authTokenSignal.value = token
+  storeToken(token)
 
   // Strip token from URL so it isn't logged by the server or leaked via Referer header
   params.delete('token')
@@ -149,7 +187,13 @@ export async function loadMenu() {
     sessionsLoadedSignal.value = true
     startSSE()
     startCommandCenterSSE()
-  } catch (_) {
+  } catch (err) {
+    // A remembered token that the server rejects would otherwise wedge the app
+    // in a permanent 401 -- every reload would replay the same dead token. Drop
+    // it so the next visit starts clean and a fresh ?token= link can take over.
+    // Only on an explicit 401: a network error means the server is down, and
+    // the token is probably still good.
+    if (err && err.status === 401) clearStoredToken()
     connectionSignal.value = 'disconnected'
     // Still start SSE so it can reconnect when server comes back
     startSSE()
