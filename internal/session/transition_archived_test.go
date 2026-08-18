@@ -146,7 +146,7 @@ func TestSyncProfile_RetainsDesktopBaselinePersistenceFailure(t *testing.T) {
 	}
 }
 
-func TestSyncProfile_EnablingDesktopNotificationsSeedsFreshHookWithoutAlert(t *testing.T) {
+func TestSyncProfile_EnablingDesktopNotificationsBaselinesParentedHookBeforePromotion(t *testing.T) {
 	const profile = "_test_desktop_enable_hook_baseline"
 	d, storage := bootstrapDaemonProfile(t, profile)
 	setDesktopNotificationsEnabled(t, false)
@@ -154,11 +154,19 @@ func TestSyncProfile_EnablingDesktopNotificationsSeedsFreshHookWithoutAlert(t *t
 	originalBaseline := desktopNotificationBaseline
 	originalSender := desktopNotificationSender
 	var baselines, delivered []desktopnotify.SourceEvent
+	observed := map[[5]string]bool{}
+	eventKey := func(event desktopnotify.SourceEvent) [5]string {
+		return [5]string{event.SessionID, event.ToStatus, event.Kind, event.DoneStatus, event.Summary}
+	}
 	desktopNotificationBaseline = func(event desktopnotify.SourceEvent) error {
 		baselines = append(baselines, event)
+		observed[eventKey(event)] = true
 		return nil
 	}
 	desktopNotificationSender = func(event desktopnotify.SourceEvent) error {
+		if observed[eventKey(event)] {
+			return nil
+		}
 		delivered = append(delivered, event)
 		return nil
 	}
@@ -178,9 +186,10 @@ func TestSyncProfile_EnablingDesktopNotificationsSeedsFreshHookWithoutAlert(t *t
 	d.syncProfile(profile)
 
 	foundParentBaseline := false
+	foundChildBaseline := false
 	for _, event := range baselines {
-		if event.SessionID == child.ID {
-			t.Fatalf("parented child seeded desktop baseline: %+v", baselines)
+		if event.SessionID == child.ID && event.ToStatus == "waiting" {
+			foundChildBaseline = true
 		}
 		if event.SessionID == parent.ID && event.ToStatus == "running" {
 			foundParentBaseline = true
@@ -189,8 +198,20 @@ func TestSyncProfile_EnablingDesktopNotificationsSeedsFreshHookWithoutAlert(t *t
 	if !foundParentBaseline {
 		t.Fatalf("enable baseline = %+v, want top-level parent running state", baselines)
 	}
+	if !foundChildBaseline {
+		t.Fatalf("enable baseline = %+v, want parented child waiting state", baselines)
+	}
 	if len(delivered) != 0 {
 		t.Fatalf("enable pass delivered stale desktop events %+v", delivered)
+	}
+
+	child.ParentSessionID = ""
+	if err := storage.SaveWithGroups([]*Instance{parent, child}, nil); err != nil {
+		t.Fatalf("promote child: %v", err)
+	}
+	d.syncProfile(profile)
+	if len(delivered) != 0 {
+		t.Fatalf("promotion replayed baseline child event %+v", delivered)
 	}
 }
 
@@ -471,6 +492,45 @@ func TestDesktopDoneSignalTopLevelRetriesFailedSend(t *testing.T) {
 	}
 	if len(delivered) != 1 {
 		t.Fatalf("delivered desktop completions = %d, want 1", len(delivered))
+	}
+}
+
+func TestDesktopDoneSignalDefaultConfigRetriesFailedDesktopWithoutRepeatingLegacy(t *testing.T) {
+	setDesktopNotificationsEnabled(t, true)
+
+	const profile = "_test_desktop_done_default_retry"
+	const id = "done-root-default"
+	d := NewTransitionDaemon()
+	d.initialized[profile] = true
+	d.desktopNotificationBaselineReady[profile] = true
+	root := &Instance{ID: id, Title: "root"}
+	d.loadTransitionInstanceRow = func(string, string) (*statedb.InstanceRow, error) {
+		return &statedb.InstanceRow{ID: id}, nil
+	}
+	var legacyAttempts int
+	d.beforeNotifierCommit = func(TransitionNotificationEvent) { legacyAttempts++ }
+	var attempts int
+	originalSender := desktopNotificationSender
+	desktopNotificationSender = func(desktopnotify.SourceEvent) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("helper unavailable")
+		}
+		return nil
+	}
+	t.Cleanup(func() { desktopNotificationSender = originalSender })
+
+	hookStatuses := map[string]*HookStatus{
+		id: {Event: "Stop", UpdatedAt: time.Now(), DoneStatus: "ok", DoneSummary: "finished"},
+	}
+	d.emitDoneSignals(profile, map[string]*Instance{id: root}, hookStatuses)
+	d.emitDoneSignals(profile, map[string]*Instance{id: root}, hookStatuses)
+
+	if attempts != 2 {
+		t.Fatalf("default-config desktop send attempts = %d, want 2 after one transient failure", attempts)
+	}
+	if legacyAttempts != 1 {
+		t.Fatalf("default-config legacy attempts = %d, want 1 while desktop retries independently", legacyAttempts)
 	}
 }
 

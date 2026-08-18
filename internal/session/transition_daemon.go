@@ -49,11 +49,12 @@ type TransitionDaemon struct {
 	lastStatus  map[string]map[string]string
 	initialized map[string]bool
 
-	// lastDone tracks the most recently emitted completion sentinel per
-	// (profile, instance) so a finished event (issue #1186) is emitted once
-	// per distinct completion. Re-reading the same done-bearing hook file
-	// across polls — or a later identical Stop — does not re-fire.
+	// lastDone tracks legacy parent-notifier completion delivery separately
+	// from desktop delivery so one channel cannot consume the other's retry.
 	lastDone map[string]map[string]DoneSignal
+	// lastDesktopDone tracks desktop completions that were either delivered or
+	// intentionally suppressed for a parented child.
+	lastDesktopDone map[string]map[string]DoneSignal
 
 	// lastDoneScan tracks, per (profile, instance), the hook-status timestamp
 	// whose pending transcript rescan (issue #1186 flush race) reached a
@@ -118,6 +119,7 @@ func NewTransitionDaemon() *TransitionDaemon {
 		lastStatus:                       map[string]map[string]string{},
 		initialized:                      map[string]bool{},
 		lastDone:                         map[string]map[string]DoneSignal{},
+		lastDesktopDone:                  map[string]map[string]DoneSignal{},
 		lastDoneScan:                     map[string]map[string]time.Time{},
 		lastProbeStall:                   map[string]time.Time{},
 		desktopNotificationBaselineReady: map[string]bool{},
@@ -588,17 +590,17 @@ func (d *TransitionDaemon) seedDesktopNotificationBaseline(profile string, byID 
 		}
 	}
 	for id, status := range statuses {
-		if inst := byID[id]; desktopNotificationAllowed(inst) {
+		if inst := byID[id]; inst != nil {
 			baseline(desktopnotify.SourceEvent{SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath, ToStatus: status})
 		}
 	}
 	for id, candidate := range candidates {
-		if inst := byID[id]; desktopNotificationAllowed(inst) {
+		if inst := byID[id]; inst != nil {
 			baseline(desktopnotify.SourceEvent{SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath, ToStatus: candidate.ToStatus, Timestamp: candidate.Timestamp})
 		}
 	}
 	for id, hook := range hookStatuses {
-		if inst := byID[id]; desktopNotificationAllowed(inst) {
+		if inst := byID[id]; inst != nil {
 			if signal, ok := d.doneSignalFor(profile, id, hook); ok {
 				baseline(desktopnotify.SourceEvent{SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath, Kind: transitionKindFinished, DoneStatus: signal.Status, Summary: signal.Summary, Timestamp: hook.UpdatedAt})
 			}
@@ -666,13 +668,14 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		if !ok {
 			continue
 		}
-		if prev, ok := d.lastDone[profile][id]; ok && prev == sig {
-			continue // already emitted this exact completion
-		}
-
 		inst := byID[id]
 		desktopDispatch := d.initialized[profile] && d.desktopNotificationDispatchReady(profile)
 		legacyDispatch := notifyEnabled
+		desktopObserved := doneSignalObserved(d.lastDesktopDone, profile, id, sig)
+		legacyObserved := doneSignalObserved(d.lastDone, profile, id, sig)
+		if (!desktopDispatch || desktopObserved) && (!legacyDispatch || legacyObserved) {
+			continue
+		}
 		if !desktopDispatch && !legacyDispatch {
 			continue
 		}
@@ -688,7 +691,7 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		}
 		desktopSuppressed := false
 		var desktopErr error
-		if desktopDispatch {
+		if desktopDispatch && !desktopObserved {
 			desktopSuppressed, desktopErr = sendDesktopNotification(currentInst, desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
 				Kind: transitionKindFinished, DoneStatus: sig.Status, Summary: sig.Summary, Timestamp: hs.UpdatedAt,
@@ -697,12 +700,11 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		if desktopSuppressed {
 			// Suppression is the terminal outcome for a parented child. Remember
 			// the completion now so promotion cannot replay it as top-level work.
-			d.recordDoneObserved(profile, id, sig)
+			d.recordDesktopDoneObserved(profile, id, sig)
+		} else if desktopDispatch && desktopErr == nil {
+			d.recordDesktopDoneObserved(profile, id, sig)
 		}
-		if !legacyDispatch {
-			if desktopErr == nil && !desktopSuppressed {
-				d.recordDoneObserved(profile, id, sig)
-			}
+		if !legacyDispatch || legacyObserved {
 			continue
 		}
 
@@ -735,10 +737,28 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 }
 
 func (d *TransitionDaemon) recordDoneObserved(profile, id string, sig DoneSignal) {
+	if d.lastDone == nil {
+		d.lastDone = map[string]map[string]DoneSignal{}
+	}
 	if d.lastDone[profile] == nil {
 		d.lastDone[profile] = map[string]DoneSignal{}
 	}
 	d.lastDone[profile][id] = sig
+}
+
+func (d *TransitionDaemon) recordDesktopDoneObserved(profile, id string, sig DoneSignal) {
+	if d.lastDesktopDone == nil {
+		d.lastDesktopDone = map[string]map[string]DoneSignal{}
+	}
+	if d.lastDesktopDone[profile] == nil {
+		d.lastDesktopDone[profile] = map[string]DoneSignal{}
+	}
+	d.lastDesktopDone[profile][id] = sig
+}
+
+func doneSignalObserved(observed map[string]map[string]DoneSignal, profile, id string, sig DoneSignal) bool {
+	prev, ok := observed[profile][id]
+	return ok && prev == sig
 }
 
 // doneSignalFor resolves a hook status into a completion sentinel, or reports

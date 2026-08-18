@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/desktopnotify"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func TestCopyDesktopHelperCreatesPrivateExecutable(t *testing.T) {
@@ -174,13 +175,9 @@ func TestDesktopNotificationPackagingSkipsMacOSToolsOutsideDarwin(t *testing.T) 
 }
 
 func TestServeDesktopNotificationHelperRunsCompletePathThroughNativeServe(t *testing.T) {
-	dir, err := os.MkdirTemp("/private/tmp", "ad-sock-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	socket := filepath.Join(dir, "helper.sock")
-	state := filepath.Join(dir, "state.json")
+	socket, cleanupSocket := testutil.ShortTmuxSocket()
+	t.Cleanup(cleanupSocket)
+	state := filepath.Join(filepath.Dir(socket), "state.json")
 	wantEvent := desktopnotify.Event{Class: desktopnotify.Attention, SessionID: "session-1", Title: "worker", Timestamp: time.Now()}
 
 	originalNativeServe := desktopNotificationsNativeServe
@@ -212,7 +209,7 @@ func TestServeDesktopNotificationHelperRunsCompletePathThroughNativeServe(t *tes
 		desktopNotificationsNativePresent = originalNativePresent
 	})
 
-	err = serveDesktopNotificationHelper(socket, state)
+	err := serveDesktopNotificationHelper(socket, state)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("serveDesktopNotificationHelper() error = %v, want %v", err, wantErr)
 	}
