@@ -3504,6 +3504,18 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// Take the first run of non-whitespace content, capped, to avoid false
 	// positives from matching common short strings.
 	deliveryToken := messageDeliveryToken(message)
+	// presenceNeedle answers "is this message on screen", which is a different
+	// question from deliveryToken's "is this a distinctive enough string to
+	// treat as proof of delivery". The token is empty below 12 bytes, so
+	// without a fallback a short queued message like "OK" would read as absent
+	// forever and take the Ctrl+C-and-resend this guard exists to prevent.
+	// Falling back to the trimmed body can over-match a common short string,
+	// but the consequence is declining to interrupt a live target, which is the
+	// safe direction: such a message still surfaces via the #876 check.
+	presenceNeedle := deliveryToken
+	if presenceNeedle == "" {
+		presenceNeedle = strings.TrimSpace(message)
+	}
 	// attrib is the #1777 attribution gate. EVERY bare Enter in this loop —
 	// including the unsent-prompt branch, which used to press unconditionally
 	// whenever a "[Pasted text …]" marker appeared anywhere in the pane —
@@ -3527,7 +3539,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		if paneNow.OK {
 			content := tmux.StripANSI(captured)
 			unsentPromptDetected = send.ComposerHoldsPasteMarker(captured, tmux.StripANSI) || send.HasUnsentComposerPrompt(content, message)
-			bodyInPaneNow = deliveryToken != "" && strings.Contains(content, deliveryToken)
+			bodyInPaneNow = presenceNeedle != "" && strings.Contains(content, presenceNeedle)
 			if !sawDeliveryEvidence && deliveryToken != "" && strings.Contains(content, deliveryToken) {
 				sawDeliveryEvidence = true
 			}

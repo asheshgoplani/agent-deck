@@ -162,3 +162,30 @@ func TestResendSuppressedWhenPaneCannotBeRead(t *testing.T) {
 			"an unreadable pane is not evidence that the message is absent (#1979)", n)
 	}
 }
+
+// TestResendSuppressedForShortQueuedMessage covers messages below the delivery
+// token's 12-byte floor. messageDeliveryToken returns "" for those, so
+// bodyInPaneNow can never become true no matter what is on screen — which would
+// leave a short queued message ("OK") firing the very Ctrl+C-and-resend this
+// change exists to prevent. With no usable needle we cannot distinguish arrival
+// from absence, so the destructive branch must not fire.
+func TestResendSuppressedForShortQueuedMessage(t *testing.T) {
+	const msg = "OK"
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{busyPaneWithBody(msg)},
+	}
+
+	_, _ = sendWithRetryTarget(mock, msg, false, sendRetryOptions{
+		maxRetries: 25,
+		checkDelay: 0,
+	})
+
+	if n := atomic.LoadInt32(&mock.sendCtrlCCalls); n != 0 {
+		t.Errorf("SendCtrlC called %d times for a short queued message, want 0 — "+
+			"a body below the delivery-token floor is still a body (#1979)", n)
+	}
+	if n := atomic.LoadInt32(&mock.sendKeysCalls); n != 1 {
+		t.Errorf("SendKeysAndEnter called %d times, want exactly 1 — a short message was duplicated", n)
+	}
+}
