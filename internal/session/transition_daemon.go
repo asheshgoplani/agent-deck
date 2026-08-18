@@ -686,20 +686,23 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		if currentInst == nil {
 			continue
 		}
-		// The completion has now crossed every freshness and persisted-instance
-		// gate. Record it even when desktop routing suppresses a parented child,
-		// so changing the parent relationship cannot replay stale work later.
-		if d.lastDone[profile] == nil {
-			d.lastDone[profile] = map[string]DoneSignal{}
-		}
-		d.lastDone[profile][id] = sig
+		desktopSuppressed := false
+		var desktopErr error
 		if desktopDispatch {
-			dispatchDesktopNotification(currentInst, desktopnotify.SourceEvent{
+			desktopSuppressed, desktopErr = sendDesktopNotification(currentInst, desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
 				Kind: transitionKindFinished, DoneStatus: sig.Status, Summary: sig.Summary, Timestamp: hs.UpdatedAt,
 			})
 		}
+		if desktopSuppressed {
+			// Suppression is the terminal outcome for a parented child. Remember
+			// the completion now so promotion cannot replay it as top-level work.
+			d.recordDoneObserved(profile, id, sig)
+		}
 		if !legacyDispatch {
+			if desktopErr == nil && !desktopSuppressed {
+				d.recordDoneObserved(profile, id, sig)
+			}
 			continue
 		}
 
@@ -715,6 +718,7 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 			d.beforeNotifierCommit(event)
 		}
 		_ = d.notifier.NotifyFinished(event)
+		d.recordDoneObserved(profile, id, sig)
 
 		// Record the completion to the non-destructive ledger so a parent can
 		// query `session children` without consuming the delivery event.
@@ -728,6 +732,13 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 			FinishedAt: hs.UpdatedAt,
 		})
 	}
+}
+
+func (d *TransitionDaemon) recordDoneObserved(profile, id string, sig DoneSignal) {
+	if d.lastDone[profile] == nil {
+		d.lastDone[profile] = map[string]DoneSignal{}
+	}
+	d.lastDone[profile][id] = sig
 }
 
 // doneSignalFor resolves a hook status into a completion sentinel, or reports
@@ -1139,9 +1150,14 @@ func desktopNotificationAllowed(inst *Instance) bool {
 }
 
 func dispatchDesktopNotification(inst *Instance, event desktopnotify.SourceEvent) {
-	if desktopNotificationAllowed(inst) {
-		_ = desktopNotificationSender(event)
+	_, _ = sendDesktopNotification(inst, event)
+}
+
+func sendDesktopNotification(inst *Instance, event desktopnotify.SourceEvent) (suppressed bool, err error) {
+	if !desktopNotificationAllowed(inst) {
+		return true, nil
 	}
+	return false, desktopNotificationSender(event)
 }
 
 func (d *TransitionDaemon) waitDesktopNotifications() {

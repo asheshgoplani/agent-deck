@@ -29,6 +29,31 @@ func setDesktopNotificationsEnabled(t *testing.T, enabled bool) {
 	ClearUserConfigCache()
 }
 
+func setDesktopOnlyNotificationsEnabled(t *testing.T) {
+	t.Helper()
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	originalConfig, originalErr := os.ReadFile(configPath)
+	t.Cleanup(func() {
+		if originalErr == nil {
+			_ = os.WriteFile(configPath, originalConfig, 0o600)
+		} else {
+			_ = os.Remove(configPath)
+		}
+		ClearUserConfigCache()
+	})
+	config := "[desktop_notifications]\nenabled = true\n[notifications]\ntransition_events = false\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+}
+
 func TestSyncProfile_LiveTUIArchivedStatusNeverReachesLastStatus(t *testing.T) {
 	const profile = "_test_transition_archived_live_tui"
 	d, storage := bootstrapDaemonProfile(t, profile)
@@ -371,27 +396,7 @@ func TestDesktopDispatchRevalidatesEligibilityForEverySource(t *testing.T) {
 }
 
 func TestDesktopDoneSignalSuppressedChildDoesNotReplayAfterPromotion(t *testing.T) {
-	configPath, err := GetUserConfigPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	originalConfig, originalErr := os.ReadFile(configPath)
-	t.Cleanup(func() {
-		if originalErr == nil {
-			_ = os.WriteFile(configPath, originalConfig, 0o600)
-		} else {
-			_ = os.Remove(configPath)
-		}
-		ClearUserConfigCache()
-	})
-	config := "[desktop_notifications]\nenabled = true\n[notifications]\ntransition_events = false\n"
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ClearUserConfigCache()
+	setDesktopOnlyNotificationsEnabled(t)
 
 	const profile = "_test_desktop_done_child"
 	const id = "done-child"
@@ -427,6 +432,45 @@ func TestDesktopDoneSignalSuppressedChildDoesNotReplayAfterPromotion(t *testing.
 	d.emitDoneSignals(profile, map[string]*Instance{id: child}, hookStatuses)
 	if len(desktopEvents) != 0 {
 		t.Fatalf("suppressed completion replayed after promotion: %+v", desktopEvents)
+	}
+}
+
+func TestDesktopDoneSignalTopLevelRetriesFailedSend(t *testing.T) {
+	setDesktopOnlyNotificationsEnabled(t)
+
+	const profile = "_test_desktop_done_retry"
+	const id = "done-root"
+	d := NewTransitionDaemon()
+	d.initialized[profile] = true
+	d.desktopNotificationBaselineReady[profile] = true
+	root := &Instance{ID: id, Title: "root"}
+	d.loadTransitionInstanceRow = func(string, string) (*statedb.InstanceRow, error) {
+		return &statedb.InstanceRow{ID: id}, nil
+	}
+	var attempts int
+	var delivered []desktopnotify.SourceEvent
+	originalSender := desktopNotificationSender
+	desktopNotificationSender = func(event desktopnotify.SourceEvent) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("helper unavailable")
+		}
+		delivered = append(delivered, event)
+		return nil
+	}
+	t.Cleanup(func() { desktopNotificationSender = originalSender })
+
+	hookStatuses := map[string]*HookStatus{
+		id: {Event: "Stop", UpdatedAt: time.Now(), DoneStatus: "ok", DoneSummary: "finished"},
+	}
+	d.emitDoneSignals(profile, map[string]*Instance{id: root}, hookStatuses)
+	d.emitDoneSignals(profile, map[string]*Instance{id: root}, hookStatuses)
+
+	if attempts != 2 {
+		t.Fatalf("desktop send attempts = %d, want 2 after one transient failure", attempts)
+	}
+	if len(delivered) != 1 {
+		t.Fatalf("delivered desktop completions = %d, want 1", len(delivered))
 	}
 }
 
