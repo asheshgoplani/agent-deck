@@ -45,6 +45,12 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .topbar {
   display: flex;
   align-items: stretch;
+  /* The legacy sheet (styles.css, loaded before this one) sets
+     `padding: 0 16px` here. That inset shifts .top-brand 16px right of the
+     sidebar it sits above, so the topbar's section dividers no longer line up
+     with the three columns below. The sections carry their own padding, so
+     dropping this does not push content against the window edge. */
+  padding: 0;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   z-index: 20;
@@ -113,8 +119,15 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .top-right {
   display: flex; align-items: center; gap: 6px;
   padding: 0 12px; border-left: 1px solid var(--border);
-  flex: 0 0 auto;
+  /* Match the right rail's width so this section's left border lands on the
+     same x as the rail's left edge. Sized by content it came out 292px against
+     the rail's 340px, putting the two dividers ~32px apart. .top-brand already
+     does the equivalent with `min-width: var(--sidebar-w)`. */
+  flex: 0 0 var(--rightrail-w);
+  justify-content: flex-end;
 }
+/* With the rail hidden there is no column to align to, so let it size itself. */
+body[data-rail="hidden"] .top-right { flex: 0 0 auto; }
 .top-mid { flex: 1 1 auto; min-width: 0; overflow: hidden; }
 .top-search { flex: 0 1 420px; min-width: 0; }
 @media (max-width: 1180px) {
@@ -938,7 +951,9 @@ body[data-rail="hidden"] .rightrail { display: none; }
   .top-mid { padding: 0 8px; gap: 6px; }
   .top-tabs { display: none; }
   .top-search { display: none; }
-  .top-right { padding: 0 8px; gap: 4px; }
+  /* The rail is display:none at this width, so there is no column to align to
+     — size this section by its content instead of reserving the rail's width. */
+  .top-right { padding: 0 8px; gap: 4px; flex: 0 0 auto; }
   .top-right select { display: none; }
 
   .work-head {
