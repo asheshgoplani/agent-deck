@@ -13,7 +13,7 @@ import {
   selectedIdSignal, mutationsEnabledSignal, confirmDialogSignal,
   createSessionDialogSignal, editSessionDialogSignal,
 } from './state.js'
-import { statusFiltersSignal, showColsSignal, activeTabSignal } from './uiState.js'
+import { statusFiltersSignal, showColsSignal, activeTabSignal, hideEmptyGroupsSignal } from './uiState.js'
 import { apiFetch } from './api.js'
 import { addToast } from './Toast.js'
 import { formatRelativeTime } from './timeFmt.js'
@@ -140,6 +140,7 @@ export function Sidebar() {
   const { groups, byGroup, sessions } = menuModelSignal.value
   const selected = selectedIdSignal.value
   const statusFilters = statusFiltersSignal.value
+  const hideEmptyGroups = hideEmptyGroupsSignal.value
   const showCols = showColsSignal.value
   const [filter, setFilter] = useState('')
   const [showMenu, setShowMenu] = useState(false)
@@ -223,7 +224,9 @@ export function Sidebar() {
       <div class="side-list">
         ${groups.map(g => {
           const members = (byGroup[g.path] || []).filter(matches)
-          if (filter && members.length === 0) return null
+          // members is post-filter, and the "(N)" badge below is rendered from
+          // it too, so this hides exactly the groups that would read "(0)".
+          if ((filter || hideEmptyGroups) && members.length === 0) return null
           const open = expanded[g.path] !== false
           return html`
             <div key=${g.path}>

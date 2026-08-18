@@ -53,6 +53,15 @@ persist(rightRailPanelsSignal, 'agentdeck.rightRailPanels')
 // Sidebar status filter chips (running/waiting/error/idle).
 export const statusFiltersSignal = signal([])
 
+// Hide sidebar groups that have no visible sessions.
+// A large board accumulates groups that are empty most of the time, and the
+// status chips make it worse: filtering to "error" still renders every
+// non-matching group as a "(0)" header, so the matches you asked for are
+// buried in headers for groups that have nothing in them. This is a layout
+// preference, so unlike statusFiltersSignal above it persists.
+export const hideEmptyGroupsSignal = signal(loadJSON('agentdeck.hideEmptyGroups', false))
+persist(hideEmptyGroupsSignal, 'agentdeck.hideEmptyGroups')
+
 // Mobile bottom tab (mirror of activeTab on phones).
 export const mobileTabSignal = signal('fleet')
 

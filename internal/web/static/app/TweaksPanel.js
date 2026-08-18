@@ -3,7 +3,7 @@
 import { html } from 'htm/preact'
 import { Icon, ICONS } from './icons.js'
 import {
-  tweaksOpenSignal, accentSignal, densitySignal, railSignal,
+  tweaksOpenSignal, accentSignal, densitySignal, railSignal, hideEmptyGroupsSignal,
 } from './uiState.js'
 
 const SWATCHES = [
@@ -18,6 +18,7 @@ export function TweaksPanel() {
   const accent = accentSignal.value
   const density = densitySignal.value
   const rail = railSignal.value
+  const hideEmpty = hideEmptyGroupsSignal.value
   const close = () => (tweaksOpenSignal.value = false)
 
   return html`
@@ -61,6 +62,17 @@ export function TweaksPanel() {
                  onClick=${() => (railSignal.value = rail === 'visible' ? 'hidden' : 'visible')}/>
             <span style="font-family: var(--mono); font-size: 11px; color: var(--text-dim);">
               ${rail === 'visible' ? 'visible' : 'hidden'}
+            </span>
+          </div>
+        </div>
+        <div>
+          <label>EMPTY GROUPS</label>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div class=${`switch ${hideEmpty ? 'on' : ''}`}
+                 data-testid="tweaks-hide-empty-groups-switch"
+                 onClick=${() => (hideEmptyGroupsSignal.value = !hideEmpty)}/>
+            <span style="font-family: var(--mono); font-size: 11px; color: var(--text-dim);">
+              ${hideEmpty ? 'hidden' : 'shown'}
             </span>
           </div>
         </div>
