@@ -1072,7 +1072,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 If Agent Deck saves you time, give us a star! It helps others discover the project.
 
-[![Star History Chart](https://api.star-history.com/svg?repos=asheshgoplani/agent-deck&type=Date)](https://star-history.com/#asheshgoplani/agent-deck&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=asheshgoplani/agent-deck&type=Date)](https://star-history.dera.page/#asheshgoplani/agent-deck&Date)
 
 ## License
 
