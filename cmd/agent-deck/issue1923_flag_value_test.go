@@ -146,7 +146,7 @@ func TestIssue1928_OriginalCaseStillRejected(t *testing.T) {
 // map, which separated them before any guard ran — a mis-parse that predates
 // the guard and would have mangled --account on its own.
 func TestIssue1928_ReorderKeepsAccountValue(t *testing.T) {
-	got := reorderArgsForFlagParsing([]string{".", "-t", "title", "--account", "work", "-q"})
+	got := reorderArgsForFlagParsing(issue1923FlagSet(), []string{".", "-t", "title", "--account", "work", "-q"})
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "--account work") {
 		t.Errorf("reorder separated --account from its value: %v", got)

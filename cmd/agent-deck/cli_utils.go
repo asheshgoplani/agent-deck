@@ -143,11 +143,16 @@ func normalizeArgs(fs *flag.FlagSet, args []string) []string {
 	})
 
 	var flags, positional []string
+	terminated := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 
-		// "--" terminates flag processing
+		// "--" terminates flag processing. It is re-emitted before the
+		// positionals below: dropping it made flag.Parse read a dash-leading
+		// positional (a filename like "-weird", a passthrough token) as an
+		// undefined flag, which is the very thing "--" was written to prevent.
 		if arg == "--" {
+			terminated = true
 			positional = append(positional, args[i+1:]...)
 			break
 		}
@@ -171,6 +176,9 @@ func normalizeArgs(fs *flag.FlagSet, args []string) []string {
 		} else {
 			positional = append(positional, arg)
 		}
+	}
+	if terminated {
+		flags = append(flags, "--")
 	}
 	return append(flags, positional...)
 }

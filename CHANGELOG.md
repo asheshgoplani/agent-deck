@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`launch --base dev --title "X"` no longer turns the title into the project path.** The arg reorder pass decided which flags take a value from a hand-maintained list, so any flag missing from it (`--base`, `--idle-timeout`) had its value demoted to a positional — leaving two flags adjacent, which made `flag.Parse` bind the following flag as the value. That is why `--title=X` worked while `--title X` did not. Value-taking flags are now read from the FlagSet that parses the args, so the class cannot recur when a flag is added, and `--` is preserved through both normalization passes.
+
 - **Continuation conductors can supervise children after a handoff.** Parent links may now be nested to any acyclic depth, so a conductor that is itself a sub-session can adopt or launch workers and use `session children` / the orchestrate heartbeat. Self-parenting and ancestor cycles remain rejected.
 
 ## [1.13.0] - 2026-08-16

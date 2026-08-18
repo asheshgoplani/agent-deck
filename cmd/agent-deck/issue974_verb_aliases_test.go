@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"reflect"
 	"testing"
 )
@@ -66,7 +67,7 @@ func TestCLI_VerbAliases_Accepted_RegressionFor974(t *testing.T) {
 
 	t.Run("launch_single_dash_parent_keeps_value_paired", func(t *testing.T) {
 		in := []string{"/some/path", "-t", "X", "-c", "claude", "-parent", "parent-id"}
-		got := reorderArgsForFlagParsing(in)
+		got := reorderArgsForFlagParsing(issue974LaunchFlagSet(), in)
 
 		// After reorder, `-parent` must be immediately followed by its value
 		// (`parent-id`), not by the path. Otherwise downstream parsing pairs
@@ -92,7 +93,7 @@ func TestCLI_VerbAliases_Accepted_RegressionFor974(t *testing.T) {
 	// Sanity: the canonical double-dash form must still pair correctly.
 	t.Run("launch_double_dash_parent_keeps_value_paired", func(t *testing.T) {
 		in := []string{"/some/path", "-t", "X", "-c", "claude", "--parent", "parent-id"}
-		got := reorderArgsForFlagParsing(in)
+		got := reorderArgsForFlagParsing(issue974LaunchFlagSet(), in)
 		idx := -1
 		for i, a := range got {
 			if a == "--parent" {
@@ -104,4 +105,15 @@ func TestCLI_VerbAliases_Accepted_RegressionFor974(t *testing.T) {
 			t.Errorf("launch --parent: expected value=parent-id immediately after flag, got %v", got)
 		}
 	})
+}
+
+// issue974LaunchFlagSet mirrors the launch flags these cases exercise. The
+// reorder pass now reads which flags take a value from the FlagSet that will
+// parse the args, so the test must supply one.
+func issue974LaunchFlagSet() *flag.FlagSet {
+	fs := flag.NewFlagSet("launch", flag.ContinueOnError)
+	fs.String("t", "", "")
+	fs.String("c", "", "")
+	fs.String("parent", "", "")
+	return fs
 }
