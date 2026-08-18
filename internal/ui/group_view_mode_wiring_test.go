@@ -319,13 +319,16 @@ func TestMouseWheelSkipsDividerRows(t *testing.T) {
 
 	home.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
 
-	// One notch moves listWheelScrollRows rows (matching the scrollback pager),
-	// clamped to the last row. From div-1 that is div+2 on a list long enough to
-	// hold it. The invariant the wheel owes either way is that it crosses the
-	// divider and never parks on it.
+	// One notch moves listWheelScrollRows rows, clamped to the last row; if that
+	// lands on the divider, skipDivider carries the cursor one further. The
+	// invariant the wheel owes at any step size is that it crosses the divider
+	// and never parks on it.
 	want := div - 1 + listWheelScrollRows
 	if last := len(home.flatItems) - 1; want > last {
 		want = last
+	}
+	if want == div {
+		want = div + 1
 	}
 	if home.cursor != want {
 		t.Fatalf("mouse wheel down across divider: cursor=%d, want %d", home.cursor, want)
