@@ -68,7 +68,13 @@ func TestParsePSCommandNames(t *testing.T) {
 
 	// the same snapshot must still yield a usable parent/child map, since both
 	// classifications are made against one ps call by design
-	children := parsePSParentChildMap(procTable)
+	// #1687 made this fail-closed: it now also reports malformed rows. A
+	// 3-column snapshot is well-formed by design here, so err must be nil --
+	// that is the assertion protecting the shared-snapshot contract above.
+	children, err := parsePSParentChildMap(procTable)
+	if err != nil {
+		t.Errorf("3-column ps output must parse cleanly, got: %v", err)
+	}
 	if len(children[100]) != 1 || children[100][0] != 200 {
 		t.Errorf("parent/child map lost entries on 3-column output: %#v", children)
 	}

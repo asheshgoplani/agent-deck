@@ -74,7 +74,7 @@ TUI picker; `--move` (delete source after verify); cross-machine transfer.
 
 - Copy-only with pre-overwrite backup; no destructive operation anywhere.
 - All tests run under sandboxed `HOME` + cleared `XDG_*`; no test may touch a real
-  config dir (`isolatePackageHome` pattern).
+  config dir (`testutil.IsolateHome` pattern).
 
 ## Tests
 

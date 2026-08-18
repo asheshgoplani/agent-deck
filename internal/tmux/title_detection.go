@@ -133,10 +133,7 @@ func RefreshPaneInfoCache() {
 		tmuxFmt("#{session_name}", "#{pane_current_command}", "#{pane_dead}", "#{window_index}", "#{pane_index}", "#{pane_title}"))
 	output, err := cmd.Output()
 	if err != nil {
-		paneCacheMu.Lock()
-		paneCacheData = nil
-		paneCacheTime = time.Time{}
-		paneCacheMu.Unlock()
+		statusLog.Debug("pane_cache_refresh_failed", "error", err)
 		return
 	}
 
