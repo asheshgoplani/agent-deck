@@ -5532,24 +5532,19 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Main session list scroll (cursor movement also resets any
 			// stale preview offset so the new session starts at its tail).
+			// listWheelScrollRows per notch matches the scrollback pager above;
+			// one row per notch made trackpad scrolling of the list crawl.
+			dir := 1
 			if msg.Button == tea.MouseButtonWheelUp {
-				if h.cursor > 0 {
-					h.cursor--
-					h.skipDivider(-1)
-					h.previewScrollOffset = 0
-					h.syncViewport()
-					h.markNavigationActivity()
-					return h, h.fetchSelectedPreview()
-				}
-			} else {
-				if h.cursor < len(h.flatItems)-1 {
-					h.cursor++
-					h.skipDivider(1)
-					h.previewScrollOffset = 0
-					h.syncViewport()
-					h.markNavigationActivity()
-					return h, h.fetchSelectedPreview()
-				}
+				dir = -1
+			}
+			if next := wheelListCursor(h.cursor, len(h.flatItems), dir, listWheelScrollRows); next != h.cursor {
+				h.cursor = next
+				h.skipDivider(dir)
+				h.previewScrollOffset = 0
+				h.syncViewport()
+				h.markNavigationActivity()
+				return h, h.fetchSelectedPreview()
 			}
 			return h, nil
 		default:
