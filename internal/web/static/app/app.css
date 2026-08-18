@@ -95,8 +95,27 @@ body[data-rail="hidden"] .rightrail { display: none; }
 }
 .top-search .kbd { font-family: var(--mono); font-size: 10.5px; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; }
 
-.top-tabs { display: flex; gap: 2px; margin-left: auto; flex: 0 0 auto; flex-wrap: nowrap; }
+.top-tabs {
+  display: flex; gap: 2px; margin-left: auto; flex-wrap: nowrap;
+  /* The strip needs ~700px for its ten tabs. `.top-mid` is what is left of the
+     row after the brand (300px) and the controls (~290px), so on anything short
+     of a wide desktop the strip is wider than its container. It sat in a parent
+     with `overflow: hidden` and no scroller of its own, so the tabs that did
+     not fit were simply clipped and unreachable — at 820px that left one tab of
+     ten usable.
+
+     `flex: 0 0 auto` is kept, so the search box still yields its width to the
+     tabs first. `max-width` is what clamps the box once even the whole row is
+     not enough, and that is what lets the scroller below engage. */
+  flex: 0 0 auto; min-width: 0; max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* old Edge */
+}
+.top-tabs::-webkit-scrollbar { display: none; }
 .top-tab {
+  flex: 0 0 auto;
   display: inline-flex; align-items: center; gap: 6px;
   padding: 5px 10px; border-radius: var(--radius);
   font-size: 12px; color: var(--text-dim);
@@ -116,14 +135,22 @@ body[data-rail="hidden"] .rightrail { display: none; }
   flex: 0 0 auto;
 }
 .top-mid { flex: 1 1 auto; min-width: 0; overflow: hidden; }
-.top-search { flex: 0 1 420px; min-width: 0; }
+/* Stop the search box shrinking into an unusable stub — it was landing at 21px
+   wide at 1300px, taking room from the tab strip and being useless itself. It
+   is hidden outright below the width where both it and the tabs fit (below). */
+.top-search { flex: 0 1 420px; min-width: 160px; }
 @media (max-width: 1180px) {
   .top-tab .badge { display: none; }
   .top-tab span.lbl-long { display: none; }
   .top-search .kbd { display: none; }
 }
-@media (max-width: 1000px) {
+/* The search box and the tab strip share one row. Below this width there is not
+   enough for both, and the tabs are the navigation — the search is a duplicate
+   of the command palette, which stays available on every width. */
+@media (max-width: 1440px) {
   .top-search { display: none; }
+}
+@media (max-width: 1000px) {
   .top-tab { padding: 5px 7px; }
 }
 
