@@ -99,13 +99,16 @@ func NewControlPipe(sessionName, socketName string) (*ControlPipe, error) {
 		if attempt == controlPipeConnectAttempts {
 			break
 		}
-		pipeLog.Debug(
-			"pipe_connect_retry",
-			slog.String("session", sessionName),
-			slog.String("socket", socketName),
-			slog.Int("attempt", attempt),
-			slog.String("error", err.Error()),
-		)
+		if emit, dropped := pipeEvents.sample("pipe_connect_retry", sessionName); emit {
+			pipeLog.Debug(
+				"pipe_connect_retry",
+				slog.String("session", sessionName),
+				slog.String("socket", socketName),
+				slog.Int("attempt", attempt),
+				slog.String("error", err.Error()),
+				slog.Int("suppressed", dropped),
+			)
+		}
 		time.Sleep(time.Duration(attempt) * controlPipeRetryBackoff)
 	}
 	return nil, lastErr
@@ -191,7 +194,11 @@ func (cp *ControlPipe) reader() {
 		// can rely on the process being fully torn down (#677).
 		cp.reap()
 		close(cp.done)
-		pipeLog.Debug("pipe_reader_exited", slog.String("session", cp.sessionName))
+		if emit, dropped := pipeEvents.sample("pipe_reader_exited", cp.sessionName); emit {
+			pipeLog.Debug("pipe_reader_exited",
+				slog.String("session", cp.sessionName),
+				slog.Int("suppressed", dropped))
+		}
 	}()
 
 	scanner := bufio.NewScanner(cp.stdout)
@@ -281,7 +288,12 @@ func (cp *ControlPipe) reader() {
 	}
 
 	if err := scanner.Err(); err != nil {
-		pipeLog.Debug("pipe_scanner_error", slog.String("session", cp.sessionName), slog.String("error", err.Error()))
+		if emit, dropped := pipeEvents.sample("pipe_scanner_error", cp.sessionName); emit {
+			pipeLog.Debug("pipe_scanner_error",
+				slog.String("session", cp.sessionName),
+				slog.String("error", err.Error()),
+				slog.Int("suppressed", dropped))
+		}
 	}
 }
 
@@ -412,7 +424,11 @@ func (cp *ControlPipe) Close() {
 				slog.Duration("eof_grace", controlPipeEOFExitGrace))
 		}
 
-		pipeLog.Debug("pipe_closed", slog.String("session", cp.sessionName))
+		if emit, dropped := pipeEvents.sample("pipe_closed", cp.sessionName); emit {
+			pipeLog.Debug("pipe_closed",
+				slog.String("session", cp.sessionName),
+				slog.Int("suppressed", dropped))
+		}
 	})
 }
 
