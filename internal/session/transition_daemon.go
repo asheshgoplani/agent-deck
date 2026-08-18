@@ -1090,10 +1090,21 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		// send its equivalent desktop event here. The snapshot duplicate guard
 		// above keeps each transition to one alert source.
 		if desktopDispatch {
-			dispatchDesktopNotification(currentInst, desktopnotify.SourceEvent{
+			event := desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
 				ToStatus: to, Timestamp: candidate.Timestamp,
-			})
+			}
+			suppressed, _ := sendDesktopNotification(currentInst, event)
+			if suppressed {
+				// Hook candidates remain fresh for 45 seconds. Persist a parented
+				// candidate as observed so promoting the session during that window
+				// cannot turn it into a delayed top-level alert.
+				if err := desktopNotificationBaseline(event); err != nil {
+					d.desktopNotificationBaselineReady[profile] = false
+					d.desktopNotificationBaselineErr[profile] = err
+					sessionLog.Warn("desktop_notification_suppressed_candidate_baseline_failed", "profile", profile, "instance_id", id, "error", err)
+				}
+			}
 		}
 		if !legacyDispatch {
 			continue

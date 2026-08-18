@@ -215,6 +215,52 @@ func TestSyncProfile_EnablingDesktopNotificationsBaselinesParentedHookBeforeProm
 	}
 }
 
+func TestSyncProfile_ParentedHookCandidateDoesNotReplayAfterPromotion(t *testing.T) {
+	const profile = "_test_desktop_parented_hook_promotion"
+	d, storage := bootstrapDaemonProfile(t, profile)
+	setDesktopNotificationsEnabled(t, true)
+
+	originalBaseline := desktopNotificationBaseline
+	originalSender := desktopNotificationSender
+	observed := map[[3]string]bool{}
+	key := func(event desktopnotify.SourceEvent) [3]string {
+		return [3]string{event.SessionID, event.ToStatus, event.Timestamp.UTC().Format(time.RFC3339Nano)}
+	}
+	desktopNotificationBaseline = func(event desktopnotify.SourceEvent) error {
+		observed[key(event)] = true
+		return nil
+	}
+	var delivered []desktopnotify.SourceEvent
+	desktopNotificationSender = func(event desktopnotify.SourceEvent) error {
+		if !observed[key(event)] {
+			delivered = append(delivered, event)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		desktopNotificationBaseline = originalBaseline
+		desktopNotificationSender = originalSender
+	})
+
+	parent, child := seedStaleRowFixture(t, storage, "parented-hook-child", "parented-hook-parent", "running")
+	d.syncProfile(profile)
+
+	seedHookStatusFile(t, child.ID, "Stop", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "waiting")
+	d.syncProfile(profile)
+	if len(delivered) != 0 {
+		t.Fatalf("parented hook candidate produced desktop events: %+v", delivered)
+	}
+
+	child.ParentSessionID = ""
+	if err := storage.SaveWithGroups([]*Instance{parent, child}, nil); err != nil {
+		t.Fatalf("promote child: %v", err)
+	}
+	d.syncProfile(profile)
+	if len(delivered) != 0 {
+		t.Fatalf("promotion replayed suppressed hook candidate: %+v", delivered)
+	}
+}
+
 func TestSyncProfile_RetriesDesktopBaselineAndWithholdsDispatchUntilReady(t *testing.T) {
 	const profile = "_test_desktop_baseline_retry"
 	d, storage := bootstrapDaemonProfile(t, profile)
