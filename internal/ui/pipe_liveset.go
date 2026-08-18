@@ -181,20 +181,62 @@ type pipeConnector interface {
 	ConnectedSessions() []string
 }
 
+// pipeReconcileGate carries the two throttles reconcilePipes applies before it
+// dials a session. Both fields are optional: the zero gate reconciles exactly
+// like the original unthrottled loop, which keeps alternate/test constructors
+// that never build a backoff working.
+//
+//   - liveness answers "is this tmux session alive?" from cache only, and must
+//     NEVER block or spawn (tmux.SessionLivenessCached). known=false means "no
+//     evidence", not "dead".
+//   - backoff bounds how often one session may be re-dialled.
+type pipeReconcileGate struct {
+	liveness func(name string) (alive, known bool)
+	backoff  *pipeConnectBackoff
+}
+
 // reconcilePipes makes pm's connected pipes match desired: it connects each
 // desired session not already connected, and disconnects each connected session
 // no longer desired. socketOf maps a session name to its tmux -L socket.
-func reconcilePipes(pm pipeConnector, desired []string, socketOf func(string) string) {
+//
+// Connecting is gated. desiredLivePipes keeps a name in the live set as long as
+// SOME instance record still carries that tmux session name — and a record can
+// outlive its tmux session. Ungated, this loop then dialled a session that does
+// not exist on any server, every 500ms, forever: ~20 tmux process spawns per
+// second per such session, which is what filled the debug log with 15k
+// pipe_closed / 10k pipe_connect_retry events in a 50-minute window.
+//
+// PipeManager.watchPipe already applies this discipline (exponential backoff +
+// a session-exists probe) to pipes that die on their own; the gate brings the
+// reconciler path to parity. It cannot use a blocking Exists()/has-session
+// probe: a subprocess per session per tick here is the exact freeze class this
+// repo has already fixed three times.
+func reconcilePipes(pm pipeConnector, desired []string, socketOf func(string) string, gate pipeReconcileGate) {
 	desiredSet := make(map[string]bool, len(desired))
 	for _, n := range desired {
 		if n != "" {
 			desiredSet[n] = true
 		}
 	}
+	gate.backoff.retain(desiredSet)
 	for n := range desiredSet {
-		if !pm.IsConnected(n) {
-			_ = pm.Connect(n, socketOf(n))
+		if pm.IsConnected(n) {
+			gate.backoff.observeConnected(n)
+			continue
 		}
+		if gate.liveness != nil {
+			if alive, known := gate.liveness(n); known && !alive {
+				// Confirmed absent from its own socket. Park rather than skip
+				// outright: the default-socket cache can transiently miss a
+				// live session (Session.Exists documents this), so a permanent
+				// veto could starve a healthy pipe.
+				gate.backoff.park(n, pipeConnectDeadDelay)
+			}
+		}
+		if !gate.backoff.allow(n) {
+			continue
+		}
+		_ = pm.Connect(n, socketOf(n))
 	}
 	for _, n := range pm.ConnectedSessions() {
 		if !desiredSet[n] {
