@@ -298,7 +298,7 @@ func TestArchiveAtPreCommitSeamSuppressesSnapshotHookAndDone(t *testing.T) {
 	}
 }
 
-func TestDesktopDispatchRevalidatesNoTransitionNotifyAndArchiveForEverySource(t *testing.T) {
+func TestDesktopDispatchRevalidatesEligibilityForEverySource(t *testing.T) {
 	sources := []struct {
 		name        string
 		hook        *HookStatus
@@ -308,14 +308,14 @@ func TestDesktopDispatchRevalidatesNoTransitionNotifyAndArchiveForEverySource(t 
 		{name: "hook", hook: &HookStatus{Status: "waiting", Event: "Stop", UpdatedAt: time.Now()}, probeStatus: StatusRunning},
 		{name: "done", hook: &HookStatus{Status: "running", Event: "Stop", UpdatedAt: time.Now(), DoneStatus: "ok", DoneSummary: "finished"}, probeStatus: StatusRunning},
 	}
-	for _, guard := range []string{"no-transition-notify", "archived-at-dispatch"} {
+	for _, guard := range []string{"no-transition-notify", "archived-at-dispatch", "parented-at-dispatch"} {
 		for _, source := range sources {
 			t.Run(guard+"/"+source.name, func(t *testing.T) {
 				profile := "_test_desktop_revalidate_" + guard + "_" + source.name
 				id, parentID := "desktop-"+guard+"-"+source.name, "desktop-parent-"+guard+"-"+source.name
 				d, storage := bootstrapDaemonProfile(t, profile)
 				setDesktopNotificationsEnabled(t, true)
-				child := &Instance{ID: id, Title: id, ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, ParentSessionID: parentID, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour), NoTransitionNotify: guard == "no-transition-notify"}
+				child := &Instance{ID: id, Title: id, ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour), NoTransitionNotify: guard == "no-transition-notify"}
 				parent := &Instance{ID: parentID, Title: "parent", ProjectPath: t.TempDir(), GroupPath: DefaultGroupPath, Tool: "claude", Status: StatusRunning, CreatedAt: time.Now().Add(-time.Hour)}
 				if err := storage.SaveWithGroups([]*Instance{child, parent}, nil); err != nil {
 					t.Fatalf("save: %v", err)
@@ -341,6 +341,14 @@ func TestDesktopDispatchRevalidatesNoTransitionNotifyAndArchiveForEverySource(t 
 						}
 						return storage.GetDB().LoadInstanceByID(instanceID)
 					}
+				} else if guard == "parented-at-dispatch" {
+					d.loadTransitionInstanceRow = func(_ string, instanceID string) (*statedb.InstanceRow, error) {
+						row, err := storage.GetDB().LoadInstanceByID(instanceID)
+						if row != nil {
+							row.ParentSessionID = parentID
+						}
+						return row, err
+					}
 				}
 				originalProbe := updateInstanceStatus.Load().(statusProbeFunc)
 				updateInstanceStatus.Store(statusProbeFunc(func(inst *Instance) error {
@@ -359,6 +367,55 @@ func TestDesktopDispatchRevalidatesNoTransitionNotifyAndArchiveForEverySource(t 
 				}
 			})
 		}
+	}
+}
+
+func TestDesktopDoneSignalSuppressesParentedChildWithLegacyNotificationsOff(t *testing.T) {
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	originalConfig, originalErr := os.ReadFile(configPath)
+	t.Cleanup(func() {
+		if originalErr == nil {
+			_ = os.WriteFile(configPath, originalConfig, 0o600)
+		} else {
+			_ = os.Remove(configPath)
+		}
+		ClearUserConfigCache()
+	})
+	config := "[desktop_notifications]\nenabled = true\n[notifications]\ntransition_events = false\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+
+	const profile = "_test_desktop_done_child"
+	const id = "done-child"
+	d := NewTransitionDaemon()
+	d.initialized[profile] = true
+	d.desktopNotificationBaselineReady[profile] = true
+	child := &Instance{ID: id, Title: "worker", ParentSessionID: "parent"}
+	d.loadTransitionInstanceRow = func(string, string) (*statedb.InstanceRow, error) {
+		return &statedb.InstanceRow{ID: id, ParentSessionID: "parent"}, nil
+	}
+	originalSender := desktopNotificationSender
+	var desktopEvents []desktopnotify.SourceEvent
+	desktopNotificationSender = func(event desktopnotify.SourceEvent) error {
+		desktopEvents = append(desktopEvents, event)
+		return nil
+	}
+	t.Cleanup(func() { desktopNotificationSender = originalSender })
+
+	d.emitDoneSignals(profile, map[string]*Instance{id: child}, map[string]*HookStatus{
+		id: {Event: "Stop", UpdatedAt: time.Now(), DoneStatus: "ok", DoneSummary: "finished"},
+	})
+
+	if len(desktopEvents) != 0 {
+		t.Fatalf("parented done signal produced desktop events: %+v", desktopEvents)
 	}
 }
 

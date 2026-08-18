@@ -1103,6 +1103,7 @@ func TestGetLayoutMode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			home := NewHome()
 			home.width = tt.width
+			home.height = 40
 			got := home.getLayoutMode()
 			if got != tt.expected {
 				t.Errorf("getLayoutMode() at width %d = %q, want %q", tt.width, got, tt.expected)

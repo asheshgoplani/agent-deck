@@ -118,10 +118,14 @@ func runDesktopNotificationHelper() {
 		os.Exit(1)
 	}
 	helper := desktopnotify.Helper{Listener: listener, Store: store, Present: desktopnotify.NativePresent}
-	if err := desktopNotificationsNativeServe(helper.Serve); err != nil {
+	if err := serveDesktopNotificationHelper(helper.Serve); err != nil {
 		fmt.Fprintf(os.Stderr, "desktop notification helper: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func serveDesktopNotificationHelper(serve func() error) error {
+	return desktopNotificationsNativeServe(serve)
 }
 
 func desktopNotificationHelperPrerequisite() error {

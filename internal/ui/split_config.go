@@ -25,6 +25,10 @@ const previewPctStep = 5
 const (
 	PreviewOrientationRight = "right"
 	PreviewOrientationBelow = "below"
+	stackedMinListHeight    = 5
+	stackedMinPreviewHeight = 3
+	stackedSeparatorHeight  = 1
+	stackedMinContentHeight = stackedMinListHeight + stackedMinPreviewHeight + stackedSeparatorHeight
 )
 
 // stackedListHeight resolves the SESSIONS-list height in the stacked layout.
@@ -34,11 +38,11 @@ func (h *Home) stackedListHeight(totalHeight int) int {
 		return 0
 	}
 	listHeight := (totalHeight * (100 - h.getPreviewPct())) / 100
-	if listHeight < 5 {
-		listHeight = 5
+	if listHeight < stackedMinListHeight {
+		listHeight = stackedMinListHeight
 	}
-	if totalHeight-listHeight-1 < 3 {
-		listHeight = totalHeight - 4
+	if totalHeight-listHeight-stackedSeparatorHeight < stackedMinPreviewHeight {
+		listHeight = totalHeight - stackedMinPreviewHeight - stackedSeparatorHeight
 	}
 	if listHeight < 0 {
 		return 0

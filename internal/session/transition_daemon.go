@@ -498,19 +498,19 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		if !desktopDispatch && !legacyDispatch {
 			continue
 		}
-		accepts, err := d.instanceAcceptsCurrentTransitionEvents(profile, inst)
+		currentInst, err := d.currentTransitionInstance(profile, inst)
 		if err != nil {
 			revalidationFailures[id] = true
 			continue
 		}
-		if !accepts {
+		if currentInst == nil {
 			continue
 		}
 		// Desktop alerts intentionally do not share the legacy parent-notifier
 		// predicate: an already-waiting session can transition to error and
 		// must still raise an actionable desktop alert.
 		if desktopDispatch {
-			dispatchDesktopNotification(inst, desktopnotify.SourceEvent{
+			dispatchDesktopNotification(currentInst, desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
 				ToStatus: to, Timestamp: time.Now(),
 			})
@@ -607,37 +607,40 @@ func (d *TransitionDaemon) seedDesktopNotificationBaseline(profile string, byID 
 	return baselineErr
 }
 
-// instanceAcceptsCurrentTransitionEvents revalidates mutable notification
-// gates from SQLite at the emission boundary. syncProfile's Instance values are
-// snapshots; archive and notification settings can be committed by another
-// process after the pass loads them. On lookup failure we fail closed for this
-// pass so a stale snapshot cannot emit an event after an archive commit.
-func (d *TransitionDaemon) instanceAcceptsCurrentTransitionEvents(profile string, inst *Instance) (bool, error) {
+// currentTransitionInstance revalidates mutable notification gates and parent
+// linkage from SQLite at the emission boundary. syncProfile's Instance values
+// are snapshots; on lookup failure we fail closed for this pass.
+func (d *TransitionDaemon) currentTransitionInstance(profile string, inst *Instance) (*Instance, error) {
 	if !instanceAcceptsTransitionEvents(inst) {
-		return false, nil
+		return nil, nil
 	}
+	var row *statedb.InstanceRow
+	var err error
 	if d.loadTransitionInstanceRow != nil {
-		row, err := d.loadTransitionInstanceRow(profile, inst.ID)
-		if err != nil || row == nil {
-			return false, err
+		row, err = d.loadTransitionInstanceRow(profile, inst.ID)
+	} else {
+		storage := d.getStorage(profile)
+		if storage == nil || storage.GetDB() == nil {
+			return nil, fmt.Errorf("transition storage unavailable")
 		}
-		return instanceAcceptsTransitionEvents(&Instance{NoTransitionNotify: row.NoTransitionNotify, ArchivedAt: row.ArchivedAt}), nil
+		row, err = storage.GetDB().LoadInstanceByID(inst.ID)
 	}
-	storage := d.getStorage(profile)
-	if storage == nil || storage.GetDB() == nil {
-		return false, fmt.Errorf("transition storage unavailable")
-	}
-	row, err := storage.GetDB().LoadInstanceByID(inst.ID)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if row == nil {
-		return false, nil
+		return nil, nil
 	}
-	return instanceAcceptsTransitionEvents(&Instance{
+	current := &Instance{
+		ID:                 inst.ID,
+		ParentSessionID:    row.ParentSessionID,
 		NoTransitionNotify: row.NoTransitionNotify,
 		ArchivedAt:         row.ArchivedAt,
-	}), nil
+	}
+	if !instanceAcceptsTransitionEvents(current) {
+		return nil, nil
+	}
+	return current, nil
 }
 
 // emitDoneSignals turns a worker-printed completion sentinel (persisted into
@@ -673,18 +676,18 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		if !desktopDispatch && !legacyDispatch {
 			continue
 		}
-		accepts, err := d.instanceAcceptsCurrentTransitionEvents(profile, inst)
+		currentInst, err := d.currentTransitionInstance(profile, inst)
 		if err != nil {
 			if len(retryMaps) > 0 && retryMaps[0] != nil {
 				retryMaps[0][id] = true
 			}
 			continue
 		}
-		if !accepts {
+		if currentInst == nil {
 			continue
 		}
 		if desktopDispatch {
-			dispatchDesktopNotification(inst, desktopnotify.SourceEvent{
+			dispatchDesktopNotification(currentInst, desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
 				Kind: transitionKindFinished, DoneStatus: sig.Status, Summary: sig.Summary, Timestamp: hs.UpdatedAt,
 			})
@@ -1040,21 +1043,21 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		if !desktopDispatch && !legacyDispatch {
 			continue
 		}
-		accepts, err := d.instanceAcceptsCurrentTransitionEvents(profile, inst)
+		currentInst, err := d.currentTransitionInstance(profile, inst)
 		if err != nil {
 			if revalidationFailures != nil {
 				revalidationFailures[id] = true
 			}
 			continue
 		}
-		if !accepts {
+		if currentInst == nil {
 			continue
 		}
 		// This fresh hook candidate bypassed the snapshot transition path, so
 		// send its equivalent desktop event here. The snapshot duplicate guard
 		// above keeps each transition to one alert source.
 		if desktopDispatch {
-			dispatchDesktopNotification(inst, desktopnotify.SourceEvent{
+			dispatchDesktopNotification(currentInst, desktopnotify.SourceEvent{
 				SessionID: id, Title: inst.Title, Profile: profile, Project: inst.ProjectPath,
 				ToStatus: to, Timestamp: candidate.Timestamp,
 			})
@@ -1126,7 +1129,11 @@ func (d *TransitionDaemon) notifyDesktop(profile string, inst *Instance, toStatu
 }
 
 func desktopNotificationAllowed(inst *Instance) bool {
-	return inst != nil && strings.TrimSpace(inst.ParentSessionID) == ""
+	if inst == nil {
+		return false
+	}
+	parentID := strings.TrimSpace(inst.ParentSessionID)
+	return parentID == "" || parentID == inst.ID
 }
 
 func dispatchDesktopNotification(inst *Instance, event desktopnotify.SourceEvent) {

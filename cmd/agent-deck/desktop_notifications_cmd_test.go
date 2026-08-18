@@ -179,8 +179,20 @@ func TestRunDesktopNotificationHelperUsesNativeServeSeam(t *testing.T) {
 	if !strings.Contains(source, "var desktopNotificationsNativeServe = desktopnotify.NativeServe") {
 		t.Fatal("desktop notification helper has no injectable NativeServe seam")
 	}
-	if !strings.Contains(source, "desktopNotificationsNativeServe(helper.Serve)") {
+	if !strings.Contains(source, "serveDesktopNotificationHelper(helper.Serve)") {
 		t.Fatal("runDesktopNotificationHelper does not route Helper.Serve through the NativeServe seam")
+	}
+}
+
+func TestServeDesktopNotificationHelperRunsInjectedCallback(t *testing.T) {
+	originalNativeServe := desktopNotificationsNativeServe
+	desktopNotificationsNativeServe = func(serve func() error) error { return serve() }
+	t.Cleanup(func() { desktopNotificationsNativeServe = originalNativeServe })
+
+	wantErr := errors.New("server stopped")
+	err := serveDesktopNotificationHelper(func() error { return wantErr })
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("serveDesktopNotificationHelper() error = %v, want %v", err, wantErr)
 	}
 }
 

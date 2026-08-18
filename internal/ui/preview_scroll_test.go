@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/update"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -249,4 +250,24 @@ func stackedPreviewTitleY(h *Home) int {
 		}
 	}
 	return -1
+}
+
+func TestStackedLayoutFallsBackWhenBannersLeaveTooLittleHeight(t *testing.T) {
+	h, _ := previewScrollSessionWithLines(t, 60, 12, 50)
+	h.updateInfo = &update.UpdateInfo{Available: true, ReleasesBehind: 6}
+	h.maintenanceMsg = "maintenance complete"
+
+	view := ansiRegex.ReplaceAllString(h.View(), "")
+	if strings.Contains(view, "PREVIEW") {
+		t.Fatalf("minimum-height stacked frame rendered a truncated preview:\n%s", view)
+	}
+	if h.hasPreviewPane() {
+		t.Fatal("minimum-height stacked frame reported a usable preview pane")
+	}
+	if cmd := h.fetchSelectedPreview(); cmd != nil {
+		t.Fatal("minimum-height stacked frame scheduled a hidden preview capture")
+	}
+	if top := h.stackedPreviewTopY(); top != -1 {
+		t.Fatalf("minimum-height stacked preview top = %d, want -1", top)
+	}
 }
