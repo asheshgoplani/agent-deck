@@ -167,6 +167,9 @@
   --footer-h:    26px;
   --sidebar-w:   300px;
   --rightrail-w: 340px;
+  /* Header strip at the top of each of the three columns (sidebar, work
+     surface, right rail). Shared so all three sit on one horizontal line. */
+  --colhead-h:   48px;
 
   /* === Density: row height + gap (override via [data-density]) === */
   --density-row: 30px;

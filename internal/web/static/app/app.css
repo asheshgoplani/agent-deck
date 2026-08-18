@@ -148,7 +148,11 @@ body[data-rail="hidden"] .rightrail { display: none; }
 
 /* ---------- sidebar ---------- */
 .sidebar { background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
-.side-head { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+/* Column header. Shares --colhead-h with .work-head and .rail-head so the
+   three columns' header rules land on one line. Vertical padding is 8px, not
+   10px, because this header carries 30px icon buttons: at 10px its natural
+   height is 50.7px, i.e. taller than the shared strip. */
+.side-head { display: flex; align-items: center; gap: 6px; padding: 8px 12px; min-height: var(--colhead-h); border-bottom: 1px solid var(--border); }
 .side-head .label { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; color: var(--muted); }
 .side-head .count { font-family: var(--mono); font-size: 10.5px; color: var(--text-dim); }
 .side-head .spacer { flex: 1; }
@@ -299,7 +303,7 @@ body[data-rail="hidden"] .rightrail { display: none; }
   padding: 8px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
-  min-height: 48px;
+  min-height: var(--colhead-h);
   flex-shrink: 0;
 }
 .work-head .path {
@@ -443,6 +447,10 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .rail-head {
   display: flex; align-items: center; gap: 6px;
   padding: 10px 12px;
+  /* Shares --colhead-h with .side-head and .work-head. This one holds only
+     text, so without the floor it renders 35.9px -- 12px shorter than the
+     work surface's header beside it. */
+  min-height: var(--colhead-h);
   border-bottom: 1px solid var(--border);
 }
 .rail-head .t { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; color: var(--muted); }
