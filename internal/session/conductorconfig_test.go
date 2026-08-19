@@ -493,10 +493,14 @@ config_dir = %q
 // (the F3 gate does not apply), while a config-level alias suppresses it.
 func TestBuildClaudeResumeCommand_CustomCommand(t *testing.T) {
 	tmpHome := setupConductorTest(t)
-	writeConductorConfig(t, tmpHome, `
+	configDir := filepath.Join(tmpHome, "claude-config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	writeConductorConfig(t, tmpHome, fmt.Sprintf(`
 [conductors.foo.claude]
-config_dir = "/tmp/x"
-`)
+config_dir = %q
+`, configDir))
 	projectPath := filepath.Join(tmpHome, "project")
 	if err := os.MkdirAll(projectPath, 0o755); err != nil {
 		t.Fatalf("mkdir project: %v", err)
@@ -505,7 +509,7 @@ config_dir = "/tmp/x"
 
 	// JSONL with conversation data so --resume (not --session-id) is used.
 	encoded := ConvertToClaudeDirName(projectPath)
-	projectsDir := filepath.Join("/tmp/x", "projects", encoded)
+	projectsDir := filepath.Join(configDir, "projects", encoded)
 	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
 		t.Fatalf("mkdir projects dir: %v", err)
 	}
@@ -529,22 +533,23 @@ config_dir = "/tmp/x"
 	}
 	// F3 gate does not apply for per-session custom commands — the export
 	// should be present, matching buildClaudeCommandWithMessage's custom branch.
-	if !strings.Contains(cmd, "export CLAUDE_CONFIG_DIR=/tmp/x;") {
-		t.Errorf("resume with per-session custom command should export CLAUDE_CONFIG_DIR; got %q", cmd)
+	expectedExport := "export CLAUDE_CONFIG_DIR=" + configDir + ";"
+	if !strings.Contains(cmd, expectedExport) {
+		t.Errorf("resume with per-session custom command should export %q; got %q", expectedExport, cmd)
 	}
 	if !strings.Contains(cmd, "--resume "+sessionID) {
 		t.Errorf("resume should contain --resume %s; got %q", sessionID, cmd)
 	}
 
 	// --- Config-level alias: used on resume, CLAUDE_CONFIG_DIR suppressed ---
-	writeConductorConfig(t, tmpHome, `
+	writeConductorConfig(t, tmpHome, fmt.Sprintf(`
 [conductors.foo.claude]
-config_dir = "/tmp/x"
+config_dir = %q
 command = "cdw"
-`)
+`, configDir))
 	inst2 := NewInstanceWithGroupAndTool("conductor-foo", projectPath, "conductor", "claude")
 	inst2.ClaudeSessionID = sessionID
-	inst2.Command = "" // no per-session custom command
+	inst2.Command = "claude" // default command — exercises the config-level alias path
 
 	cmd2 := inst2.buildClaudeResumeCommand()
 	if !strings.Contains(cmd2, "cdw") {
