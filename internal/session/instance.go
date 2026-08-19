@@ -2535,6 +2535,12 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 //     would not be the subcommand's prompt.
 //
 // In each of those cases the caller keeps the existing behaviour unchanged.
+//
+// A prompt too large to ride the tmux command line (tmuxCommandByteBudget) is
+// still embedded, but by reference: the body is spilled to a file and the
+// command reads it back at exec time. Inlining it would make tmux reject the
+// whole `new-session` with "command too long", which fails the launch outright
+// and leaves a dead session to archive.
 func (i *Instance) buildCodexCommandWithPrompt(baseCommand, prompt string) (string, bool) {
 	command := i.buildCodexCommand(baseCommand)
 	if strings.TrimSpace(prompt) == "" {
@@ -2553,7 +2559,82 @@ func (i *Instance) buildCodexCommandWithPrompt(baseCommand, prompt string) (stri
 	if i.CodexSessionID != "" {
 		return command, false
 	}
-	return command + " " + shellescape.Quote(prompt), true
+	inline := command + " " + shellescape.Quote(prompt)
+	if len(inline) <= tmuxCommandByteBudget {
+		return inline, true
+	}
+	// Over the budget the prompt cannot ride the tmux command line at all (see
+	// tmuxCommandByteBudget): tmux refuses the whole `new-session` with
+	// "command too long" and the launch fails, leaving a dead session behind.
+	// Hand the pane a path instead and let its shell read the body back at
+	// exec time, where the ceiling is ARG_MAX (~1 MB), not tmux's 16 KB.
+	if fileCommand, ok := i.codexPromptFileCommand(command, prompt); ok {
+		return fileCommand, true
+	}
+	// The prompt file could not be written (unwritable project, SSH pane whose
+	// shell would not see a host-side path). Typing is unreliable for a body
+	// this large, but it is the only transport left and it at least fails
+	// visibly rather than at the tmux boundary.
+	return command, false
+}
+
+// tmuxCommandByteBudget caps the command string a session may hand to
+// `tmux new-session`. tmux delivers a client command to its server as one imsg
+// and rejects anything over MAX_IMSGSIZE (16384 bytes, minus the imsg header
+// and the rest of the argv) with a bare "command too long" — measured on
+// tmux 3.x: a 16000-byte command is accepted, 17000 is refused. The budget sits
+// well under that line because prepareCommand still wraps this string
+// afterwards (env prefixes, `bash -c` quoting, SSH layering), and quoting a
+// command that already contains quotes can inflate it substantially.
+const tmuxCommandByteBudget = 12000
+
+// codexInitialPromptFile is the name of the oversize-prompt spill file inside
+// the session's repository temp root.
+const codexInitialPromptFile = "codex-initial-prompt.txt"
+
+// codexInitialPromptPath is where an oversize initial prompt is spilled. It
+// lives in the session's own repository temp root, which is git-excluded,
+// mode 0700, and removed with the session (CleanupRepositorySessionTemp).
+func (i *Instance) codexInitialPromptPath() string {
+	return filepath.Join(i.repositorySessionTempDir(), codexInitialPromptFile)
+}
+
+// codexPromptFileCommand spills prompt to codexInitialPromptPath and returns a
+// command that substitutes the file's contents as codex's positional prompt.
+// It reports false when the file cannot be used, leaving the caller on its
+// existing fallback.
+//
+// The pane-side form is `codex ... "$(cat '<path>')"`: the command substitution
+// is expanded by the shell tmux runs the command under, so the large body never
+// crosses the tmux socket. The double quotes keep it one operand, and
+// shellescape.Quote protects the path itself.
+//
+// A sandboxed session gets the in-container mount point
+// (commandSessionTempDir), which docker.WithSessionTemp binds to the same
+// directory this writes to. An SSH session gets nothing: the command runs on
+// another host where the path does not exist.
+func (i *Instance) codexPromptFileCommand(command, prompt string) (string, bool) {
+	if i == nil || i.IsSSH() {
+		return "", false
+	}
+	if err := i.prepareRepositorySessionTemp(); err != nil {
+		sessionLog.Warn("codex_prompt_file_temp_failed",
+			slog.String("instance_id", i.ID),
+			slog.String("error", err.Error()))
+		return "", false
+	}
+	if err := os.WriteFile(i.codexInitialPromptPath(), []byte(prompt), 0o600); err != nil {
+		sessionLog.Warn("codex_prompt_file_write_failed",
+			slog.String("instance_id", i.ID),
+			slog.String("error", err.Error()))
+		return "", false
+	}
+	panePath := filepath.Join(i.commandSessionTempDir(), codexInitialPromptFile)
+	sessionLog.Info("codex_prompt_spilled_to_file",
+		slog.String("instance_id", i.ID),
+		slog.Int("prompt_bytes", len(prompt)),
+		slog.String("path", logging.SanitizeValue(panePath)))
+	return command + ` "$(cat ` + shellescape.Quote(panePath) + `)"`, true
 }
 
 // piAgentDeckSessionDirExpr returns a target-shell expression for the Pi session

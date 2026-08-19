@@ -83,4 +83,16 @@ if leftover:
 with open(out_path, "w", encoding="utf-8") as fh:
     fh.write(text if text.endswith("\n") else text + "\n")
 print(f"rendered {out_path} ({len(text)} chars)")
+
+# A child prompt this large is almost always a spec or findings list pasted in
+# whole. It is not a hard error — agent-deck spills an oversize prompt to a file
+# rather than failing the launch — but every one of these characters is context
+# the child spends before it starts, so say so once, here, where the fix is one
+# argument away.
+if len(text) > 8000:
+    sys.stderr.write(
+        f"render.sh: WARNING {out_path} is {len(text)} chars (>8000). "
+        "Pass large specs and findings by PATH (a line the child reads itself) "
+        "instead of KEY@=path inlining, unless the child truly needs the body.\n"
+    )
 PY
