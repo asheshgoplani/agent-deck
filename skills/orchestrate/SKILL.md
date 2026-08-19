@@ -298,7 +298,7 @@ were given:
 
 ```text
 list of tasks/issues (2+) ─→ parallel per-task pipelines, one PR each
-                             (capped at 3 concurrent; rest queue up;
+                             (capped at 10 concurrent; rest queue up;
                               a big item in the list may still get its
                               own planner, per-task judgment)
 single small task ─────────→ one pipeline, one PR
