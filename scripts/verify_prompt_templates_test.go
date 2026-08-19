@@ -47,16 +47,18 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 	}{
 		{
 			name:         "verify-recon",
-			placeholders: []string{"ARTIFACT_PATH", "CLAIM", "ENVIRONMENT", "SYSTEM"},
+			placeholders: []string{"ARM_SCHEMA_PATH", "ARTIFACT_PATH", "CLAIM", "ENVIRONMENT", "SYSTEM"},
 			renderArgs: []string{
 				"SYSTEM=production", "CLAIM=service is healthy", "ENVIRONMENT=licensed production",
-				"ARTIFACT_PATH=/artifacts/recon.json",
+				"ARTIFACT_PATH=/artifacts/recon.json", "ARM_SCHEMA_PATH=/artifacts/arms/schema.md",
 			},
 			requiredRendered: []string{
 				"deployed version", "source revision", "digest", "licensing state",
 				"Record the target environment and authorized scope, and state what evidence will distinguish product behavior from harness, environment, and licensing failures",
 				"stable arm ID and the exact question it answers",
 				"name its producer, artifact path, expected schema, deciding fields, and freshness requirement",
+				"Write the arm schema you settled on to `/artifacts/arms/schema.md`",
+				"That file is the one authority every arm producer and the report child validates against",
 				"Write one schema-consistent JSON document atomically",
 				"completion field set to true in the staged content only after all recon work is complete",
 				"Successful publication of that staged document is producer completion",
@@ -87,15 +89,20 @@ func TestVerificationPromptTemplatesContract(t *testing.T) {
 		},
 		{
 			name:         "verify-report",
-			placeholders: []string{"ARM_ARTIFACTS", "RECON_ARTIFACT", "REPORT_PATH"},
+			placeholders: []string{"ARM_ARTIFACTS", "ARM_SCHEMA_PATH", "RECON_ARTIFACT", "REPORT_PATH"},
 			renderArgs: []string{
 				"RECON_ARTIFACT=/artifacts/recon.json", "ARM_ARTIFACTS=/artifacts/health.json",
-				"REPORT_PATH=/artifacts/report.json",
+				"REPORT_PATH=/artifacts/report.json", "ARM_SCHEMA_PATH=/artifacts/arms/schema.md",
 			},
 			requiredRendered: []string{
-				"fixed recon artifact contract", "Before consuming the arms array",
-				"require the completion field to be true",
+				"The arm schema declared by the conductor is authoritative",
+				"It is at `/artifacts/arms/schema.md`",
+				"Markdown arms are as valid as JSON arms if that is what it declares",
+				"require the completion marker to be set",
 				"report outcome must be `inconclusive`; it can never be `pass`",
+				"A shape mismatch is a question, not a verdict",
+				"that is a discrepancy to report to the conductor and resolve, NOT grounds for `inconclusive`",
+				"`inconclusive` is reserved for evidence that is missing, stale, unattributable, or contradictory",
 				"Adjudicate conflicting arm evidence explicitly instead of selecting the convenient result",
 				"Record each first failure, its diagnosis, whether the single allowed clean rerun occurred, both attempts' evidence, and the repeated-failure classification",
 				"Write the consolidated report atomically",

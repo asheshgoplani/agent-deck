@@ -189,12 +189,37 @@ run artifact or retrospective outside `$RUN_DIR`. Never create a source
 checkout outside `$WORKTREES_DIR`. Never create a design, plan, task file,
 prompt, review, report, or retrospective outside `$RUN_ROOT`.
 
+**No child of this run works in a primary checkout — including the ones that
+are not tasks.** Implementers get a worktree because the recipe hands them
+one; deploy, build, merge and cleanup children are launched ad hoc and will
+happily run wherever you point them, which is how a deploy child once
+fast-forwarded a repository's primary checkout 15 commits. That one was 0
+ahead so nothing was lost, but a primary checkout is the one place a person's
+uncommitted work lives, and it is not yours to move. Give every such child its
+own worktree from `create-worktree.sh` — a deploy child needs a tree to build
+from, not *the* tree — and pin the primary around it:
+
+```bash
+GUARD="$RUN_DIR/primary-checkout-guard.sh"   # copied in with poll.sh below
+sh "$GUARD" snapshot --repo <repo> --run-dir "$RUN_DIR" --label deploy-<repo>
+# ... launch the deploy/build/merge child, wait for it to report done ...
+sh "$GUARD" verify   --repo <repo> --run-dir "$RUN_DIR" --label deploy-<repo>
+```
+
+Verify **before archiving the child**, while its worktree and pane still exist
+to diagnose from. A non-zero verify is a run deviation: record what moved in
+the manifest, restore the primary, and find out which child did it before
+launching another. Merge children push with
+`git push HEAD:refs/heads/<branch>` from a detached merge worktree for the
+same reason — nothing needs a primary checkout checked out to land work.
+
 Populate the run directory:
 
 ```bash
 cp <agent-deck-repo>/skills/orchestrate/references/poll.sh "$RUN_DIR/"
 cp <agent-deck-repo>/skills/orchestrate/references/rotate-conductor.sh "$RUN_DIR/"
 cp <agent-deck-repo>/skills/orchestrate/references/heartbeat.sh "$RUN_DIR/"
+cp <agent-deck-repo>/skills/orchestrate/references/primary-checkout-guard.sh "$RUN_DIR/"
 cp -R <agent-deck-repo>/skills/orchestrate/references/prompts "$RUN_DIR/"
 
 # Arm the wall-clock watchdog. Do this before launching the first child, and
@@ -241,8 +266,28 @@ Launch an `inspect` child to read the target repo's `CLAUDE.md` and
 this skill cannot know: how work is expected to *land* there. Read only its
 deciding summary line. If the repository prescribes an endgame other than a
 GitHub PR, that changes stages 4–5 — see "When the repo prescribes its own
-endgame", and settle it with the user before any task reaches its finish line
-rather than after.
+endgame".
+
+**Then settle the landing policy with the user, at triage, before a single
+branch is cut, and record it in the manifest as a contract.** Two things, per
+repo, both of them decided and neither of them defaulted:
+
+- **Mechanism** — pull request, or direct merge into an integration branch?
+- **Target** — *which* branch, by name, for each repo in the run?
+
+Do not infer either from the inspect child's summary and proceed; that summary
+is input to the question, not an answer to it. A landing policy chosen by
+default is the cheapest decision in the run to get wrong and the most expensive
+to reverse: one run opened six pull requests across three repos on the inspect
+child's default before the user said "merge into the integration branch
+instead", and all eight open PRs had to be declined and re-landed. Rewriting an
+endgame costs a PR per task; asking one question costs one turn.
+
+Write the answer into the manifest next to the verification contract, as
+`## Landing policy`, with one line per repo: repo → mechanism → target branch.
+Every task in the run reads it from there. A task that wants to deviate (a
+finding that says a PR is the right endgame for this one change) is a conductor
+decision recorded as a deviation, not a silent per-task improvisation.
 
 Maintain a run manifest at `$RUN_DIR/manifest.md` and update it after every
 stage transition. Start it with one shared `## Verification contract` block:
@@ -744,15 +789,20 @@ explicitly permit delivery. Run these four phases before the per-task pipeline:
    environment/licensing state; authorized scope; stable arm IDs/questions
    (the question each arm answers); exact artifact paths and schemas; and a
    freshness cutoff. Define what evidence distinguishes product behavior from
-   harness, environment, and license failures.
+   harness, environment, and license failures. Recon writes the arm schema to
+   one file — `$RUN_DIR/arms/schema.md` unless you declare otherwise — in
+   whatever format the arms will actually produce. Pass that path as
+   `ARM_SCHEMA_PATH` to every arm and to the report child. One declared
+   schema file, named the same way for everyone, is what stops a downstream
+   child from validating against a shape it imagined.
 2. **Independent measurement arms.** Launch the arms in parallel so they do
    not share conclusions or contaminate one another's evidence. Each producer
    writes its machine-readable artifact, finishes, and reports the artifact
    path; a path reported before producer completion is not ready for use.
 3. **Conductor validation and adjudication.** Before reading even deciding
-   fields, validate each artifact's expected schema, provenance, producer
-   completion, and freshness against recon. Read only the deciding fields where
-   possible. Adjudicate contradictions rather than selecting the convenient
+   fields, validate each artifact against the declared schema file, plus its
+   provenance, producer completion, and freshness against recon. Read only
+   the deciding fields where possible. Adjudicate contradictions rather than selecting the convenient
    result. For a flaky external measurement, preserve and diagnose the first
    failure evidence, then permit at most **one clean rerun** by default. A
    second failure is a product `defect` when it demonstrates product behavior,
@@ -765,7 +815,12 @@ explicitly permit delivery. Run these four phases before the per-task pipeline:
    request, CI run, or deployment. A `defect` enters the delivery pipeline only
    when the defect is within the authorized scope. An `inconclusive` result
    terminates honestly with what blocked a trustworthy decision; do not claim
-   success or retry indefinitely.
+   success or retry indefinitely. `inconclusive` is for evidence that is
+   missing, stale, unattributable or contradictory — **never for packaging**.
+   A report child that rules against a run because the arms are Markdown and
+   it expected JSON, without challenging a single measurement, has answered
+   the wrong question; the declared schema file wins, and a shape mismatch
+   comes back to you as a question.
 
 The existing child and conductor rotation/handoff rules apply throughout this
 flow. All downstream PR and CI language applies only when an in-scope `defect`
@@ -912,7 +967,27 @@ path into every reviewer prompt.
 sed -n '/^## Merged findings/,$p' "$RUN_DIR/<slug>/review-r<n>.md" > "$RUN_DIR/<slug>/findings-r<n>.md"
 bash "$RUN_DIR/prompts/render.sh" fix "$RUN_DIR/<slug>/fix-r<n>.md" \
   ROUND=<n> FINDINGS@="$RUN_DIR/<slug>/findings-r<n>.md"
+agent-deck session send "impl-<task-slug>" \
+  --message-file "$RUN_DIR/<slug>/fix-r<n>.md" --defer-if-busy
 ```
+
+  **`--defer-if-busy` on every send to a working child, without exception.**
+  It holds delivery until the target's hook-driven status says the turn is
+  over, instead of typing into a composer that is mid-generation. Without it a
+  send into a busy child can be accepted by the CLI and still never arrive:
+  one run sent three fix rounds in a batch, two landed, and the third
+  (`impl-t3-enchash`, mid-turn) vanished with a zero exit — the pipeline sat
+  waiting on a fix that had never been asked for, and only a manual retry
+  recovered it. A dropped fan-out send fails a launch loudly; a dropped
+  fix-round send stalls one pipeline in silence, which is the failure you will
+  not notice.
+
+  **A zero exit is not arrival.** After any fix-round send, confirm the child
+  actually moved — `agent-deck session children <conductor-id>` showing that
+  target transition to `running`, or a fresh response in `session output` —
+  before you record the round as sent and move on. Record the confirmation
+  signal in the manifest next to the round. A send you never confirmed is an
+  open question, not a completed stage.
 
   A nonzero send result is not permission to send the same fix twice. If the
   child subsequently emits a response attributable to that message, or its

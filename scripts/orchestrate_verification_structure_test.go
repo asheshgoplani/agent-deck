@@ -74,7 +74,10 @@ func TestOrchestrationSkillDeployedVerificationStructure(t *testing.T) {
 
 	requiredContracts := []string{
 		"with **no assumed edit**: do not enter implementation, pull-request, CI, or deployment stages unless the outcome and authorized scope explicitly permit delivery",
-		"Before reading even deciding fields, validate each artifact's expected schema, provenance, producer completion, and freshness against recon",
+		"Before reading even deciding fields, validate each artifact against the declared schema file, plus its provenance, producer completion, and freshness against recon",
+		"Recon writes the arm schema to one file",
+		"Pass that path as `ARM_SCHEMA_PATH` to every arm and to the report child",
+		"`inconclusive` is for evidence that is missing, stale, unattributable or contradictory — **never for packaging**",
 		"Read only the deciding fields where possible",
 		"For a flaky external measurement, preserve and diagnose the first failure evidence, then permit at most **one clean rerun** by default",
 		"A second failure is a product `defect` when it demonstrates product behavior, or `inconclusive` when the harness, environment, or license prevents a trustworthy decision",
@@ -199,5 +202,86 @@ func TestExistingDeliveryPromptTemplatesStillRender(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestOrchestrationSkillRetroHardenedRules pins the run-safety rules added
+// after the 2026-08-19-ob-live-e2e retrospective. Each one exists because a
+// real run lost time to its absence: a fix-round send that was accepted and
+// never arrived, a landing policy that was defaulted and cost eight declined
+// PRs, and a deploy child that fast-forwarded a primary checkout.
+func TestOrchestrationSkillRetroHardenedRules(t *testing.T) {
+	repoRoot := filepath.Clean("..")
+	skillBytes, err := os.ReadFile(filepath.Join(repoRoot, "skills", "orchestrate", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read orchestration skill: %v", err)
+	}
+	skill := strings.Join(strings.Fields(string(skillBytes)), " ")
+
+	rules := []string{
+		// Silent send drop: never send into a mid-turn child unguarded, and
+		// never treat a zero exit as arrival.
+		"`--defer-if-busy` on every send to a working child, without exception",
+		"--message-file \"$RUN_DIR/<slug>/fix-r<n>.md\" --defer-if-busy",
+		"**A zero exit is not arrival.**",
+		// Landing policy is asked, not defaulted.
+		"Then settle the landing policy with the user, at triage, before a single branch is cut",
+		"**Mechanism** — pull request, or direct merge into an integration branch?",
+		"**Target** — *which* branch, by name, for each repo in the run?",
+		"Do not infer either from the inspect child's summary and proceed",
+		// No child touches a primary checkout.
+		"**No child of this run works in a primary checkout",
+		"sh \"$GUARD\" snapshot --repo <repo> --run-dir \"$RUN_DIR\" --label deploy-<repo>",
+		"sh \"$GUARD\" verify --repo <repo> --run-dir \"$RUN_DIR\" --label deploy-<repo>",
+		"Verify **before archiving the child**",
+	}
+	for _, rule := range rules {
+		if !strings.Contains(skill, strings.Join(strings.Fields(rule), " ")) {
+			t.Errorf("skill missing retro-hardened rule %q", rule)
+		}
+	}
+
+	if !strings.Contains(skill, `cp <agent-deck-repo>/skills/orchestrate/references/primary-checkout-guard.sh "$RUN_DIR/"`) {
+		t.Error("run setup no longer installs the primary-checkout guard")
+	}
+
+	guardPath := filepath.Join(repoRoot, "skills", "orchestrate", "references", "primary-checkout-guard.sh")
+	info, err := os.Stat(guardPath)
+	if err != nil {
+		t.Fatalf("read primary-checkout guard: %v", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Error("primary-checkout guard is not executable")
+	}
+
+	// The guard is only useful if it actually fails when the primary moves.
+	repo := t.TempDir()
+	runDir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", repo},
+		{"-C", repo, "commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	snapshot := exec.Command("sh", guardPath, "snapshot", "--repo", repo, "--run-dir", runDir, "--label", "deploy")
+	if out, err := snapshot.CombinedOutput(); err != nil {
+		t.Fatalf("guard snapshot: %v: %s", err, out)
+	}
+	verify := exec.Command("sh", guardPath, "verify", "--repo", repo, "--run-dir", runDir, "--label", "deploy")
+	if out, err := verify.CombinedOutput(); err != nil {
+		t.Fatalf("guard verify on an untouched primary must pass: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "moved").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	moved := exec.Command("sh", guardPath, "verify", "--repo", repo, "--run-dir", runDir, "--label", "deploy")
+	out, err := moved.CombinedOutput()
+	if err == nil {
+		t.Fatalf("guard verify must fail after the primary moved; got:\n%s", out)
+	}
+	if !strings.Contains(string(out), "PRIMARY MOVED: HEAD") {
+		t.Errorf("guard must name what moved; got:\n%s", out)
 	}
 }
