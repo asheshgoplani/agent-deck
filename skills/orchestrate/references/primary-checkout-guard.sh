@@ -16,7 +16,7 @@
 # dirty, into $run_dir/primary-<label>.snapshot. `verify` re-reads the same
 # three and exits non-zero on any difference, printing what moved. Run
 # snapshot immediately before launching such a child and verify when it
-# reports done, BEFORE archiving it — the worktree is still there to inspect.
+# reports done, BEFORE deleting it — the worktree is still there to inspect.
 set -eu
 
 mode=${1:-}

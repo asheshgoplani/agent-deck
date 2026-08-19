@@ -206,7 +206,7 @@ sh "$GUARD" snapshot --repo <repo> --run-dir "$RUN_DIR" --label deploy-<repo>
 sh "$GUARD" verify   --repo <repo> --run-dir "$RUN_DIR" --label deploy-<repo>
 ```
 
-Verify **before archiving the child**, while its worktree and pane still exist
+Verify **before deleting the child**, while its worktree and pane still exist
 to diagnose from. A non-zero verify is a run deviation: record what moved in
 the manifest, restore the primary, and find out which child did it before
 launching another. Merge children push with
@@ -583,7 +583,7 @@ git -C "$WT" merge-base <base-branch> HEAD
 ```
 
 The printed HEAD must equal the resolved base sha for a newly created branch;
-otherwise archive the child and repair the worktree before any task work.
+otherwise delete the child and repair the worktree before any task work.
 
 The planner writes `$PLAN_ROOT/<task-slug>/plan.md` plus one concise task-boundary
 file per task under `$PLAN_ROOT/<task-slug>/tasks/`. The plan coordinates scope,
@@ -651,8 +651,8 @@ edit the plan yourself; it is the spec every child will be held to, and the
 conductor doesn't author specs. No re-review and no fix-round budget: a plan is a document
 that gets rewritten in place, not a diff that can regress under you, so the
 loop-until-clean machinery belongs to code (stages 2–3) where it pays for
-itself. Then **archive the planner and plan-reviewer sessions** (see
-"Archiving finished sessions").
+itself. Then **delete the planner and plan-reviewer sessions** (see
+"Deleting finished sessions").
 
 Two exceptions to proceeding after one amendment: findings that invalidate the
 **design** rather than the plan (the approved spec itself is unbuildable or
@@ -1016,8 +1016,8 @@ bash "$RUN_DIR/prompts/render.sh" review-incremental "$RUN_DIR/<slug>/review-r<n
   review, but scopes the layers to `git diff <reviewed-sha>...HEAD` and makes
   every unfixed prior finding a new finding.
 
-  Once you have read the previous round's findings, **archive the
-  superseded reviewer** (see "Archiving finished sessions").
+  Once you have read the previous round's findings, **delete the
+  superseded reviewer** (see "Deleting finished sessions").
 - **Full-branch end gate: the loop only ends on a clean full-branch
   verdict.** A round-1 clean qualifies directly. A clean from an
   *incremental* round does not — launch one more fresh reviewer with the
@@ -1224,7 +1224,7 @@ every heartbeat and act on two thresholds:
   getting large: commit what's done, then write a handoff summary of what
   remains (decisions made, files touched, next steps) to
   `$RUN_DIR/<task-slug>/handoff.md`."
-- **Hard (~250k):** stop feeding it work. Archive the child and launch a
+- **Hard (~250k):** stop feeding it work. Delete the child and launch a
   **fresh session in the same worktree** — same move as the round-2
   escalation in "Model & connector tiering" — told to read `git log`, the
   branch diff, and the handoff summary before continuing. Record the rotation
@@ -1293,7 +1293,7 @@ state the next heartbeat needs:
 ```bash
 bash "$RUN_DIR/poll.sh" ctx                    # exact tokens, every child, largest first
 bash "$RUN_DIR/poll.sh" ctx impl-<task-slug>   # exact tokens, one child
-ID=$(bash "$RUN_DIR/poll.sh" id impl-<task-slug>)   # bare id for send/output/archive
+ID=$(bash "$RUN_DIR/poll.sh" id impl-<task-slug>)   # bare id for send/output/remove
 ```
 
 Reach for `ctx` when a child buckets to `soft` and you need the real number to
@@ -1429,32 +1429,39 @@ remaining, or cannot reach green CI after a few fix attempts is reported as
 **needs-attention**: leave its session and worktree fully intact for
 inspection, and never force-push, reset, or delete anything.
 
-## Archiving finished sessions
+## Deleting finished sessions
 
-The moment a child is no longer needed, **archive** it — don't leave it
-cluttering the active list, and don't hard-delete it either:
+The moment a child is no longer needed, **delete** it — don't archive it, and
+don't leave it cluttering the active list:
 
 ```bash
-agent-deck session archive <id>
+agent-deck session remove <id> --force
 ```
 
-`session archive` stops the session *and* hides it from active lists while
-retaining it in storage, so its history stays inspectable later. It replaces
-the old `stop && remove` pair — no separate stop is needed. Archive:
+`session remove --force` kills the pane and drops the session from the
+registry outright, whatever state it is in; no separate `stop` and no
+`archive` step. It is registry-only: the child's Claude transcript under
+`~/.claude/projects/` and its git worktree both survive, so the work stays
+inspectable — a run that archived every child instead accumulated 1845 dead
+rows in a single month, which is why this is a delete and not an archive.
+Delete:
 
 - a **reviewer** once you've read its verdict and are moving on (launching the
   next round, or proceeding to the PR);
 - a **planner** (and its plan-reviewer) once the plan review's findings have
   been applied — or, when the plan review is skipped as a single-implementer
   plan, as soon as the plan and its task files are in the task directory;
-- the **implementer** at task-done cleanup (below).
+- the **implementer** at task-done cleanup (below);
+- the **cleanup** and **verify-cleanup** children once their verdict is read.
 
-**Never archive a needs-attention task's sessions** — those stay visible and
-fully intact for inspection (see "Failure handling").
+**Never delete a needs-attention task's sessions** — those stay live and fully
+intact for inspection (see "Failure handling"). The rotating **conductor** is
+the one exception that still archives itself (`rotate-conductor.sh`), so the
+handoff chain stays readable after the run.
 
 ## Cleanup (successful tasks only)
 
-When a task reaches **done** (review clean, PR created, checks green), archive
+When a task reaches **done** (review clean, PR created, checks green), delete
 its finished sessions as an orchestration action. Delegate repository and run
 cleanup: render `cleanup-execute`, launch exactly one cleanup child from the
 task's `$RUN_DIR` directory, and give it the exact candidate list from
@@ -1463,7 +1470,7 @@ local is still needed. Cleanup stays serial because worktrees and branches
 share repository-wide Git metadata.
 
 ```bash
-agent-deck session archive <id>
+agent-deck session remove <id> --force
 bash "$RUN_DIR/prompts/render.sh" cleanup-execute \
   "$RUN_DIR/cleanup-execute-prompt.md" \
   REPO_ROOT=<repo-root> BASE_REF=<base-ref> \
@@ -1499,7 +1506,7 @@ agent-deck launch "$RUN_DIR" -c claude -t "verify-cleanup-<run-id>" \
 
 A separately scheduled host-maintenance job, outside the conductor, may sweep
 old run-owned worktrees and build caches after all task sessions have been
-archived. Configure the repository-local root explicitly:
+deleted. Configure the repository-local root explicitly:
 
 ```bash
 AGENTDECK_ORCHESTRATE_DIR="$ROOT_WT/.agent-deck" \
@@ -1550,7 +1557,7 @@ referenced. Per task:
 - Needs attention: <anything left, or omit>
 ```
 
-Close by listing what was cleaned up (archived sessions, removed worktrees
+Close by listing what was cleaned up (deleted sessions, removed worktrees
 and branches of successful tasks) and what was deliberately left in place for
 needs-attention tasks.
 

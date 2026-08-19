@@ -10,7 +10,7 @@
 # the two questions poll.sh could not answer:
 #   133x  the exact context number for one child (the heartbeat buckets it to
 #         ok/soft/HARD on purpose, so the bucket can't churn the diff)
-#    80x  the id for a title, needed by every send/output/archive
+#    80x  the id for a title, needed by every send/output/remove
 # Each raw dump re-imports every field of every child. These subcommands answer
 # the same questions in one line, so there is no longer a reason to reach past
 # the heartbeat:

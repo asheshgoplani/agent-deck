@@ -132,8 +132,9 @@ Lists your sub-sessions with, per child: `id`, `title`, live `status`
 the child's current context size from its Claude transcript (absent for
 non-Claude tools). Watch `context_tokens` on long-running children: past
 ~200k tell the child to wrap up and write a handoff; past ~250k rotate it —
-archive and relaunch fresh in the same working dir with the handoff — rather
-than letting it degrade into auto-compaction. Defaults to the current
+`agent-deck session remove <id> --force`, then relaunch fresh in the same
+working dir with the handoff — rather than letting it degrade into
+auto-compaction. Defaults to the current
 session; pass an id/title to inspect another parent. **Read-only** — it never
 clears the inbox, so you can poll it as often as you like from any chat without
 disturbing the conductor or other readers.
@@ -369,7 +370,10 @@ All read-only / on-demand — none of them block your session:
   completion events from your durable inbox (last-wins per child, deduped).
   Optional: `session children` already surfaces the same `done_status` without
   consuming anything, so only drain if you specifically want to clear the queue.
-- `agent-deck session stop <id>` / `agent-deck session remove <id>` — teardown.
+- `agent-deck session remove <id> --force` — teardown. **Delete a finished
+  child, never archive it**: the pane dies, the row leaves the registry, and
+  the child's transcript and worktree both stay on disk. Archiving instead
+  leaves a dead row per child forever.
 
 ### Native Claude peer messages
 
@@ -430,5 +434,8 @@ it with `AGENTDECK_NO_CHILDREN_CONTEXT=1` in its environment.
   To clean up phantom DBs from a past `-p` slip: the orphaned rows live under
   `profiles/<parent-id>/state.db`; back up and remove that dir (the child's
   worktree/branch stay on disk).
-- **Stopping / cleanup:** `agent-deck session stop <id>` and
-  `agent-deck session remove <id>` (add `--force` if needed) tear a child down.
+- **Stopping / cleanup:** `agent-deck session remove <id> --force` tears a
+  child down and drops it from the registry in one step (registry-only:
+  transcript and worktree survive). Use plain `session stop <id>` only when you
+  intend to restart that same session later; do not `session archive` finished
+  children.
