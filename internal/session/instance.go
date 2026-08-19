@@ -8981,16 +8981,28 @@ func (i *Instance) buildClaudeResumeCommand() string {
 
 	// Get the configured Claude command (e.g., "claude", "cdw", "cdp"),
 	// resolved per instance: conductor > group (ancestor-walk) > global.
+	// A per-session custom command (i.Command, e.g. from `launch -c
+	// claude-dbx`) takes precedence — mirroring buildClaudeCommandWithMessage,
+	// where the per-session Command field is a distinct axis that
+	// GetClaudeCommandForInstance never sees (see its doc comment). Without
+	// this, resume falls back to the literal "claude" binary and bypasses
+	// the wrapper script that sets up gateway env vars.
 	claudeCmd := GetClaudeCommandForInstance(i)
+	customCommand := i.Command != "" && i.Command != "claude"
+	if customCommand {
+		claudeCmd = i.Command
+	}
 
 	// #1791/#1822 F5: use the shared `export ...;` prefix, not a bare
 	// `KEY=val cmd` prefix — see the identical comment in
 	// buildClaudeCommandWithMessage for why (exit_to_shell's trailing
 	// `exec "$SHELL" -i` only inherits exported vars, not a single-command
 	// prefix scoped to the claude invocation alone). #1822 F3: skip the
-	// CLAUDE_CONFIG_DIR export when claudeCmd resolves to a custom alias —
-	// the alias handles it itself.
-	bashExportPrefix := i.buildBashExportPrefix(claudeCmd != "claude")
+	// CLAUDE_CONFIG_DIR export when claudeCmd resolves to a config-level
+	// alias — the alias handles it itself. A per-session custom command is
+	// the same axis as the fresh-start custom-command path, so the F3 gate
+	// does not apply there (pass false), matching buildClaudeCommandWithMessage.
+	bashExportPrefix := i.buildBashExportPrefix(!customCommand && claudeCmd != "claude")
 
 	// Get per-session permission settings (falls back to config if not persisted)
 	opts := i.GetClaudeOptions()
