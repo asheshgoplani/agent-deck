@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -119,6 +120,31 @@ func TestSessionHandoffOut_WritesPromptAndProtectsTranscript(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "--out refuses to overwrite the source transcript") {
 		t.Fatalf("overwrite guard message missing, got: %q", stderr)
+	}
+
+	linkPath := filepath.Join(home, "handoff-link.txt")
+	if err := os.Symlink(transcriptPath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	beforeTranscript, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		t.Fatalf("read source transcript before symlink guard: %v", err)
+	}
+	stdout, stderr, code = runAgentDeck(t, home,
+		"session", "handoff", id, "--out", linkPath,
+	)
+	if code != 1 {
+		t.Fatalf("expected symlink overwrite guard to exit 1, got %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "--out refuses to overwrite the source transcript") {
+		t.Fatalf("symlink overwrite guard message missing, got: %q", stderr)
+	}
+	afterTranscript, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		t.Fatalf("read source transcript after symlink guard: %v", err)
+	}
+	if !bytes.Equal(afterTranscript, beforeTranscript) {
+		t.Fatalf("symlink overwrite guard changed the source transcript")
 	}
 }
 
