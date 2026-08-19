@@ -82,7 +82,7 @@ review runs once, after the final integration check (below).
    --run-id "$RUN_ID" --task <issue-slug>-<n> --branch <issue-branch>-<n>
    --base <issue-branch>`
    then launch its implementer at that worktree path (plain path — the
-   worktree already exists) and run stages 1–3. Cap: 3 concurrent subtasks.
+   worktree already exists) and run stages 1–3. Cap: 10 concurrent subtasks.
 3. As each subtask's review comes back clean, merge it:
    `git -C "$ROOT_WT/.worktrees/$RUN_ID-<issue-slug>-integration" merge <issue-branch>-<n>`
 4. On merge conflict, do not resolve it yourself — launch a session in the
