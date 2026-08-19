@@ -130,6 +130,12 @@ func handleLaunch(profile string, args []string) {
 	// Issue #1143: auto-stop dormant child sessions.
 	idleTimeout := fs.String("idle-timeout", "", "Auto-stop session after this duration of no tmux output (Go duration: 30m, 1h, 24h). 0 or unset = disabled")
 
+	// Named account slot — TUI/CLI parity with `add --account`. Resolves via
+	// [profiles.<account>.<tool>] for whichever tool -c selects, so the same
+	// flag picks a CLAUDE_CONFIG_DIR for a claude session and a CODEX_HOME for
+	// a codex one.
+	account := fs.String("account", "", "Named account slot (see `agent-deck accounts list`)")
+
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck launch [path] [options]")
 		fmt.Println()
@@ -157,6 +163,18 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("  agent-deck launch . -c \"codex --dangerously-bypass-approvals-and-sandbox\"")
 		fmt.Println("  agent-deck launch . -g ard --no-parent -c claude -m \"Run review\"")
 		fmt.Println("  agent-deck launch . -c claude -w feature/new -b -m \"Start work\"")
+		// Opt-in by presence: the accounts block appears only for a user who
+		// has actually configured account homes. Zero-config users see the
+		// pre-feature help.
+		printAccountsHelpBlock()
+	}
+
+	// #1923 parity: catch `--account` swallowing the next flag because its own
+	// value was omitted. Runs on the ORIGINAL argv, before reordering, for the
+	// same reason `add` does (#1928).
+	if err := checkFlagValueNotFlag(fs, args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly
@@ -512,6 +530,26 @@ func handleLaunch(profile string, args []string) {
 		if err := applyCLIModelOverride(newInstance, selectedModelID); err != nil {
 			out.Error(err.Error(), ErrCodeInvalidOperation)
 			os.Exit(1)
+		}
+	}
+
+	// Named account slot: the flag is the explicit level, then
+	// [conductors.<n>].account, [groups."<p>"].account and default_account
+	// fill in when the flag is absent. Resolution is persisted on the record
+	// so `session show` and `accounts list` agree with what actually launched.
+	if trimmed := strings.TrimSpace(*account); trimmed != "" {
+		newInstance.Account = trimmed
+	}
+	if res := session.ApplyAccountDefault(newInstance); res.Account != "" {
+		if !res.Known() && !quietMode {
+			// Never fatal — `add` has always stored an unknown account
+			// verbatim and fallen through. But an account that names no home
+			// for THIS tool is almost always a typo or a codex name handed to
+			// a claude session, and silence is what makes it cost an hour.
+			fmt.Fprintf(os.Stderr, "Warning: account %q has no home configured for tool %q — the session will use %s's default home. Known: %s\n",
+				res.Account, newInstance.Tool, newInstance.Tool, accountNamesHint(newInstance.Tool))
+		} else if res.Source != session.AccountSourceExplicit && !quietMode && !*jsonOutput {
+			fmt.Fprintf(os.Stderr, "Using account %q (%s default) — %s=%s\n", res.Account, res.Source, res.EnvVar, res.Home)
 		}
 	}
 

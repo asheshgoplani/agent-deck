@@ -66,6 +66,7 @@ type ConfirmDialog struct {
 	pendingLaunchModelID     string          // Optional per-session model/version override.
 	pendingParentSessionID   string
 	pendingParentProjectPath string
+	pendingAccount           string // Named account slot picked in the new-session dialog.
 }
 
 // NewConfirmDialog creates a new confirmation dialog
@@ -212,6 +213,7 @@ func (c *ConfirmDialog) ShowCreateDirectory(
 	launchModelID string,
 	parentSessionID string,
 	parentProjectPath string,
+	account string,
 ) {
 	c.visible = true
 	c.confirmType = ConfirmCreateDirectory
@@ -227,6 +229,7 @@ func (c *ConfirmDialog) ShowCreateDirectory(
 	c.pendingLaunchModelID = launchModelID
 	c.pendingParentSessionID = parentSessionID
 	c.pendingParentProjectPath = parentProjectPath
+	c.pendingAccount = account
 	c.buttonCount = 2
 	c.focusedButton = 1
 }
@@ -253,8 +256,8 @@ func (c *ConfirmDialog) ShowInstallHermesHooks(configPath string, events []strin
 }
 
 // GetPendingSession returns the pending session creation data
-func (c *ConfirmDialog) GetPendingSession() (name, path, command, groupPath string, toolOptionsJSON json.RawMessage, claudeExtraArgs []string, claudeStartQuery, launchModelID string, parentSessionID, parentProjectPath string) {
-	return c.pendingSessionName, c.pendingSessionPath, c.pendingSessionCommand, c.pendingSessionGroupPath, c.pendingToolOptionsJSON, c.pendingClaudeExtraArgs, c.pendingClaudeStartQuery, c.pendingLaunchModelID, c.pendingParentSessionID, c.pendingParentProjectPath
+func (c *ConfirmDialog) GetPendingSession() (name, path, command, groupPath string, toolOptionsJSON json.RawMessage, claudeExtraArgs []string, claudeStartQuery, launchModelID string, parentSessionID, parentProjectPath, account string) {
+	return c.pendingSessionName, c.pendingSessionPath, c.pendingSessionCommand, c.pendingSessionGroupPath, c.pendingToolOptionsJSON, c.pendingClaudeExtraArgs, c.pendingClaudeStartQuery, c.pendingLaunchModelID, c.pendingParentSessionID, c.pendingParentProjectPath, c.pendingAccount
 }
 
 // Hide hides the dialog.

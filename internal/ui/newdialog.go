@@ -128,6 +128,7 @@ const (
 	focusCommand                     // tool/command picker.
 	focusModel                       // optional per-session model/version override.
 	focusReasoningEffort             // optional per-session reasoning/effort override.
+	focusAccount                     // named account slot (conditional — only when the tool has configured accounts).
 	focusWorktree                    // worktree checkbox.
 	focusSandbox                     // sandbox checkbox.
 	focusConductor                   // conducting parent dropdown (conditional — only when conductors exist).
@@ -216,6 +217,12 @@ type NewDialog struct {
 	// Conducting parent selector.
 	conductorSessions []*session.Instance // nil when no conductors; populated by ShowInGroup
 	conductorCursor   int                 // 0 = "None", 1..N index into conductorSessions
+
+	// Account selector (see newdialog_account.go). Rebuilt on every tool
+	// change; empty when the selected tool has no configured accounts, which
+	// is what keeps the field invisible for zero-config users.
+	accounts      []session.Account // accounts compatible with the selected tool
+	accountCursor int               // 0 = tool default, 1..N index into accounts
 
 	// enterAdvances mirrors config.toml [ui] new_session_enter_advances (PR
 	// #1295). False (default) preserves today's behavior: Enter on the free-text
@@ -342,6 +349,7 @@ type dialogSnapshot struct {
 	multiRepoEnabled bool
 	multiRepoPaths   []string
 	conductorCursor  int
+	accountCursor    int
 }
 
 // displayCommandPreset returns the visible label for a built-in preset slot.
@@ -858,6 +866,7 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		multiRepoEnabled: d.multiRepoEnabled,
 		multiRepoPaths:   append([]string{}, d.multiRepoPaths...),
 		conductorCursor:  d.conductorCursor,
+		accountCursor:    d.accountCursor,
 	}
 }
 
@@ -885,6 +894,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	d.multiRepoPathCursor = 0
 	d.multiRepoEditing = false
 	d.conductorCursor = s.conductorCursor
+	d.accountCursor = s.accountCursor
 	d.updateToolOptions()
 	d.rebuildFocusTargets()
 }
@@ -1559,6 +1569,12 @@ func (d *NewDialog) rebuildFocusTargets() {
 	if d.selectedToolSupportsReasoningEffort() {
 		targets = append(targets, focusReasoningEffort)
 	}
+	// Account sits with the tool group (it is tool-scoped) and before Path, so
+	// the hot path stays Name -> Tool -> Account -> Path for a multi-account
+	// user. Absent entirely when the tool has no configured accounts.
+	if d.hasAccountField() {
+		targets = append(targets, focusAccount)
+	}
 	if !d.multiRepoEnabled {
 		targets = append(targets, focusPath)
 	}
@@ -1618,6 +1634,9 @@ func (d *NewDialog) updateToolOptions() {
 	default:
 		d.toolOptions = nil
 	}
+	// Must run BEFORE rebuildFocusTargets: the Account field's presence in the
+	// focus ring is a function of the account list this call rebuilds.
+	d.refreshAccounts()
 	d.rebuildFocusTargets()
 }
 
@@ -1655,7 +1674,7 @@ func (d *NewDialog) updateFocus() {
 		}
 	case focusModel:
 		d.modelInput.Focus()
-	case focusReasoningEffort, focusWorktree, focusSandbox, focusConductor, focusInherited:
+	case focusReasoningEffort, focusAccount, focusWorktree, focusSandbox, focusConductor, focusInherited:
 		// Checkbox/toggle rows and conductor dropdown — no text input to focus.
 	case focusBranch:
 		d.branchInput.Focus()
@@ -2021,6 +2040,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					return d, nil
 				}
 			}
+			if cur == focusAccount && d.accountCursor < d.accountChoiceCount()-1 {
+				d.nextAccount()
+				return d, nil
+			}
 			if cur == focusMultiRepo && d.multiRepoEnabled && !d.multiRepoEditing {
 				if d.multiRepoPathCursor < len(d.multiRepoPaths)-1 {
 					d.multiRepoPathCursor++
@@ -2048,6 +2071,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				return d, nil
 			}
 			// Emacs fallback: retreat to previous form field (mirrors "shift+tab"/"up").
+			if cur == focusAccount && d.accountCursor > 0 {
+				d.prevAccount()
+				return d, nil
+			}
 			if cur == focusConductor {
 				if d.conductorCursor > 0 {
 					d.conductorCursor--
@@ -2115,6 +2142,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					return d, nil
 				}
 			}
+			if cur == focusAccount && d.accountCursor < d.accountChoiceCount()-1 {
+				d.nextAccount()
+				return d, nil
+			}
 			if cur == focusMultiRepo && d.multiRepoEnabled && !d.multiRepoEditing {
 				if d.multiRepoPathCursor < len(d.multiRepoPaths)-1 {
 					d.multiRepoPathCursor++
@@ -2130,6 +2161,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 
 		case "up":
+			if cur == focusAccount && d.accountCursor > 0 {
+				d.prevAccount()
+				return d, nil
+			}
 			if cur == focusConductor {
 				if d.conductorCursor > 0 {
 					d.conductorCursor--
@@ -2253,6 +2288,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.cycleReasoningEffort(-1)
 				return d, nil
 			}
+			if cur == focusAccount {
+				d.prevAccount()
+				return d, nil
+			}
 			if cur == focusOptions && d.toolOptions != nil {
 				return d, d.toolOptions.Update(msg)
 			}
@@ -2267,6 +2306,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 			if cur == focusReasoningEffort {
 				d.cycleReasoningEffort(1)
+				return d, nil
+			}
+			if cur == focusAccount {
+				d.nextAccount()
 				return d, nil
 			}
 			if cur == focusOptions && d.toolOptions != nil {
@@ -2363,6 +2406,12 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.cycleReasoningEffort(1)
 				return d, nil
 			}
+			// Space cycles the account pills forward and wraps, matching how
+			// Space cycles reasoning effort. ←→ clamp; Space wraps.
+			if cur == focusAccount {
+				d.accountCursor = (d.accountCursor + 1) % d.accountChoiceCount()
+				return d, nil
+			}
 			if cur == focusWorktree {
 				d.ToggleWorktree()
 				d.rebuildFocusTargets()
@@ -2442,7 +2491,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.filterPathSuggestions()
 			}
 		}
-	case focusWorktree, focusSandbox, focusConductor, focusInherited:
+	case focusWorktree, focusSandbox, focusConductor, focusInherited, focusAccount:
 		// Checkbox/toggle rows and conductor dropdown — no text input to update.
 	case focusBranch:
 		oldBranch := d.branchInput.Value()
@@ -2844,6 +2893,7 @@ func (d *NewDialog) View() string {
 	d.renderModelSection(&content, cur, dialogWidth)
 	markFocusedRow(focusReasoningEffort)
 	d.renderReasoningEffortSection(&content, cur)
+	d.renderAccountSection(&content, cur)
 	if !d.multiRepoEnabled {
 		markFocusedRow(focusPath)
 		d.renderSinglePathSection(&content, cur, dialogWidth)
@@ -3041,6 +3091,8 @@ func (d *NewDialog) View() string {
 		}
 	} else if cur == focusReasoningEffort {
 		helpText = "←→/Space choose effort │ Tab next │ Enter/^S create │ Esc cancel"
+	} else if cur == focusAccount {
+		helpText = "←→ choose account │ Tab next │ Enter/^S create │ Esc cancel"
 	} else if cur == focusConductor {
 		helpText = "↑↓ select parent │ Tab next │ Enter/^S create │ Esc cancel"
 	} else if cur == focusWorktree || cur == focusSandbox {

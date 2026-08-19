@@ -8,6 +8,7 @@ Complete reference for all agent-deck CLI commands.
 - [Basic Commands](#basic-commands)
 - [Web Command](#web-command)
 - [Session Commands](#session-commands)
+- [Account Commands](#account-commands)
 - [Fleet Recovery Commands](#fleet-recovery-commands)
 - [Worktree Commands](#worktree-commands)
 - [MCP Commands](#mcp-commands)
@@ -47,6 +48,7 @@ agent-deck add [path] [options]
 | `--attach` | Start and attach to the session immediately after creating it (requires an interactive terminal; not supported with `--ssh`/`--json`) |
 | `--ssh <user@host>` | Run the session over SSH; this is a destination, not a registered remote name |
 | `--remote-path <absolute-path>` | Working directory on the SSH host; an absolute positional path with `--ssh` is equivalent |
+| `--account <name>` | Named account slot — the config home the tool launches against (`agent-deck accounts list`) |
 
 ```bash
 agent-deck add -t "My Project" -c claude .
@@ -78,10 +80,12 @@ agent-deck launch . -c claude -m "Review this module"
 agent-deck launch . -g ard -c claude -m "Review dataset"
 agent-deck launch . -c "codex --dangerously-bypass-approvals-and-sandbox"
 agent-deck launch -g book-keeper -c claude   # no path: lands on the group's default_path
+agent-deck launch . -c codex --account codex-seminno    # run under a specific account
 ```
 
 Notes:
 - `[path]` omitted: resolves the target group's `default_path`, then the global `default_path` config key, then cwd — the same chain as `add` (#1303). An explicit `.` always means the current directory.
+- `--account <name>` selects the config home the tool launches against, same as `add --account`. Omitted, it falls through `[conductors.<n>].account` → `[groups."<p>"].account` → `default_account`. See [Account Selection](config-reference.md#account-selection-multi-account).
 
 ### list - List sessions
 
@@ -186,10 +190,12 @@ that do not own a Telegram channel remains in effect.
 ### session fork (Claude, OpenCode, Pi, Codex)
 
 ```bash
-agent-deck session fork <id|title> [-t "title"] [-g "group"]
+agent-deck session fork <id|title> [-t "title"] [-g "group"] [--account <name>]
 ```
 
 Creates a new session with the same conversation context for supported tools.
+
+A fork inherits the parent's account by default — the transcript it resumes lives in that account's config home. `--account <name>` overrides that; because the one-shot fork command is built against the parent's home, the override takes effect from the fork's first restart onward.
 
 In the TUI, quick fork (`f`) is comprehensive by default: it creates a new git worktree + branch, carries the parent's uncommitted state, matches Docker isolation, and inherits the Claude launch options. Defaults are configured in the `[fork]` section — see [config-reference.md](config-reference.md#fork-section). The Web/API fork is a plain tool-native fork and does not apply the `[fork]` defaults.
 
@@ -315,7 +321,27 @@ Moves a session — conversation included — to another configured Claude accou
 agent-deck session switch-account "My Project" work
 ```
 
-Accounts are the profiles named in `config.toml` (`[profiles.<name>.claude].config_dir`).
+Accounts are the profiles named in `config.toml` (`[profiles.<name>.claude].config_dir`). This command is claude-only because it migrates a Claude conversation file; to pick an account when a session is *created* (any tool), use `--account` or the TUI new-session dialog — see [Account Selection](config-reference.md#account-selection-multi-account).
+
+## Account Commands
+
+### accounts list
+
+```bash
+agent-deck accounts list [--json] [--tool <name>]
+```
+
+Lists every account slot configured in `config.toml`, grouped by tool family, with each account's config home, whether that home exists, a cheap on-disk login check, and which live sessions are currently bound to it.
+
+```bash
+agent-deck accounts list                      # human table
+agent-deck accounts list --json               # stable object for agents
+agent-deck accounts list --tool codex --json  # one family only
+```
+
+Login state is a file-presence check inside the home (`auth.json` for codex/deepseek, `.credentials.json` or an `oauthAccount` record for claude). It never makes a network call, so it can lag a token that expired server-side.
+
+Agents use this to choose an account before `launch --account`, and to spread a fleet across accounts instead of piling onto one. See [Account Selection](config-reference.md#account-selection-multi-account).
 
 ## Fleet Recovery Commands
 

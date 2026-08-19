@@ -60,6 +60,19 @@ type UserConfig struct {
 	// when no explicit path or group default_path is provided.
 	DefaultPath string `toml:"default_path,omitempty"`
 
+	// DefaultAccount is the global fallback account slot for new sessions.
+	// It is the least-specific level of the account chain (see
+	// ResolveSessionAccount): --account, then [conductors.<n>].account, then
+	// [groups."<p>"].account, then this. Empty (the default) means sessions
+	// launch against the tool's own default home, exactly as before account
+	// selection existed.
+	//
+	// The value is one [profiles.<name>] key. It is deliberately NOT
+	// per-tool: an account name that has no home in a given tool's family
+	// simply does not apply to that tool, so a single default can name a
+	// claude account without affecting codex sessions.
+	DefaultAccount string `toml:"default_account,omitempty"`
+
 	// Hotkeys overrides default keyboard shortcuts in the TUI.
 	// Keys are action names, values are key bindings (e.g., "delete" = "backspace").
 	// Set an action to "" to explicitly unbind it.
@@ -780,8 +793,24 @@ type ProfileClaudeSettings struct {
 
 // ProfileCodexSettings defines profile-specific Codex overrides.
 type ProfileCodexSettings struct {
-	// ConfigDir overrides [codex].config_dir for this profile only.
+	// CodexHome overrides [codex].config_dir (CODEX_HOME) for this profile
+	// only. This is the documented spelling: it names the env var codex
+	// actually reads, which is what makes a per-account home comprehensible
+	// ("this account IS this CODEX_HOME").
+	CodexHome string `toml:"codex_home,omitempty"`
+
+	// ConfigDir is the older spelling of CodexHome, kept so existing configs
+	// keep working. CodexHome wins when both are present.
 	ConfigDir string `toml:"config_dir,omitempty"`
+}
+
+// Home returns the configured codex home for this profile, preferring the
+// documented codex_home key over the legacy config_dir alias. Unexpanded.
+func (p ProfileCodexSettings) Home() string {
+	if h := strings.TrimSpace(p.CodexHome); h != "" {
+		return h
+	}
+	return strings.TrimSpace(p.ConfigDir)
 }
 
 // ProfileDeepSeekSettings defines profile-specific DeepSeek Harness overrides.
@@ -791,8 +820,23 @@ type ProfileCodexSettings struct {
 // plugin set) a session bound to that account launches against. Which dsh
 // profile to boot is [deepseek].profile.
 type ProfileDeepSeekSettings struct {
-	// ConfigDir overrides [deepseek].config_dir (DSH_HOME) for this profile only.
+	// DSHHome overrides [deepseek].config_dir (DSH_HOME) for this profile
+	// only. Documented spelling, named after the env var (see
+	// ProfileCodexSettings.CodexHome).
+	DSHHome string `toml:"dsh_home,omitempty"`
+
+	// ConfigDir is the older spelling of DSHHome, kept so existing configs
+	// keep working. DSHHome wins when both are present.
 	ConfigDir string `toml:"config_dir,omitempty"`
+}
+
+// Home returns the configured DSH_HOME for this profile, preferring the
+// documented dsh_home key over the legacy config_dir alias. Unexpanded.
+func (p ProfileDeepSeekSettings) Home() string {
+	if h := strings.TrimSpace(p.DSHHome); h != "" {
+		return h
+	}
+	return strings.TrimSpace(p.ConfigDir)
 }
 
 // GroupSettings defines per-group configuration overrides.
@@ -801,6 +845,12 @@ type GroupSettings struct {
 	Create bool `toml:"create,omitempty"`
 	// DefaultPath sets the default working directory for new sessions in this group.
 	DefaultPath string `toml:"default_path,omitempty"`
+	// Account is the default account slot for new sessions in this group,
+	// resolved against [profiles.<account>.<tool>] for whichever tool the
+	// session runs. Ancestor-walking: a child group inherits the nearest
+	// ancestor's value. Beaten by an explicit --account / TUI pick and by
+	// [conductors.<name>].account; beats the global default_account.
+	Account string `toml:"account,omitempty"`
 	// Claude defines Claude Code overrides for a specific group.
 	Claude GroupClaudeSettings `toml:"claude,omitempty"`
 	// Hermes defines Hermes overrides for a specific group.
@@ -901,6 +951,10 @@ type GroupDeepSeekSettings struct {
 // declared in conductor.go:49 (heartbeat, telegram, slack, discord).
 // Closes issue #602.
 type ConductorOverrides struct {
+	// Account is the default account slot for new sessions created under
+	// this conductor. Mirrors GroupSettings.Account and, like every other
+	// key in these two mirrored blocks, beats the group value.
+	Account string `toml:"account,omitempty"`
 	// Claude defines Claude Code overrides for a specific conductor.
 	Claude ConductorClaudeSettings `toml:"claude,omitempty"`
 	// Hermes defines Hermes overrides for a specific conductor.
@@ -1929,10 +1983,40 @@ func (c *UserConfig) GetProfileCodexConfigDir(profile string) string {
 		return ""
 	}
 	profileCfg, ok := c.Profiles[profile]
-	if !ok || profileCfg.Codex.ConfigDir == "" {
+	if !ok || profileCfg.Codex.Home() == "" {
 		return ""
 	}
-	return ExpandPath(profileCfg.Codex.ConfigDir)
+	return ExpandPath(profileCfg.Codex.Home())
+}
+
+// GetGroupAccount returns the account slot configured for a group, walking
+// ancestor groups when the exact path has no value. Mirrors
+// GetGroupClaudeConfigDir's inheritance semantics: a child group like
+// "work/clientx" inherits [groups."work"].account.
+func (c *UserConfig) GetGroupAccount(groupPath string) string {
+	if c == nil || groupPath == "" || c.Groups == nil {
+		return ""
+	}
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if groupCfg, ok := c.Groups[p]; ok {
+			if account := strings.TrimSpace(groupCfg.Account); account != "" {
+				return account
+			}
+		}
+	}
+	return ""
+}
+
+// GetConductorAccount returns the account slot configured for a conductor.
+// Conductors do not nest, so there is no ancestor walk.
+func (c *UserConfig) GetConductorAccount(name string) string {
+	if c == nil || name == "" || c.Conductors == nil {
+		return ""
+	}
+	if conductorCfg, ok := c.Conductors[name]; ok {
+		return strings.TrimSpace(conductorCfg.Account)
+	}
+	return ""
 }
 
 // GetProfileDeepSeekConfigDir returns the profile-specific DSH_HOME, if configured.
@@ -1941,10 +2025,10 @@ func (c *UserConfig) GetProfileDeepSeekConfigDir(profile string) string {
 		return ""
 	}
 	profileCfg, ok := c.Profiles[profile]
-	if !ok || profileCfg.DeepSeek.ConfigDir == "" {
+	if !ok || profileCfg.DeepSeek.Home() == "" {
 		return ""
 	}
-	return ExpandPath(profileCfg.DeepSeek.ConfigDir)
+	return ExpandPath(profileCfg.DeepSeek.Home())
 }
 
 // GetGroupDeepSeekConfigDir returns the group-specific DSH_HOME, walking

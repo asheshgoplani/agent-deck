@@ -9730,6 +9730,12 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 		forked.Tool = i.Tool
 	}
 	forked.Wrapper = i.Wrapper
+	// A fork continues the parent's conversation, so it must run under the
+	// parent's account — the transcript it resumes lives in that account's
+	// home, and a fork that resolved its own account through the config chain
+	// would look in the wrong one (the #1929 failure shape). An explicit
+	// --account on the fork overrides this afterwards at the call site.
+	forked.Account = i.Account
 
 	// #1407: persist the parent's ExtraArgs onto the fork record. The baked
 	// one-shot fork command below inherits them implicitly via the builder
@@ -9893,6 +9899,12 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	// would make a later restart re-run a missing file. Command holds a stable base
 	// ("opencode") that restart resumes from via OpenCodeSessionID.
 	forked.Command = "opencode"
+	// A fork continues the parent's conversation, so it must run under the
+	// parent's account — the transcript it resumes lives in that account's
+	// home, and a fork that resolved its own account through the config chain
+	// would look in the wrong one (the #1929 failure shape). An explicit
+	// --account on the fork overrides this afterwards at the call site.
+	forked.Account = i.Account
 	forked.ForkStartCommand = cmd
 	forked.IsForkAwaitingStart = true
 	forked.Tool = "opencode"
@@ -9938,6 +9950,12 @@ func (i *Instance) CreateForkedPiInstanceWithOptions(
 	}
 	forked.Tool = "pi"
 	forked.Wrapper = i.Wrapper
+	// A fork continues the parent's conversation, so it must run under the
+	// parent's account — the transcript it resumes lives in that account's
+	// home, and a fork that resolved its own account through the config chain
+	// would look in the wrong one (the #1929 failure shape). An explicit
+	// --account on the fork overrides this afterwards at the call site.
+	forked.Account = i.Account
 
 	baseCommand := strings.TrimSpace(i.Command)
 	if baseCommand == "" {

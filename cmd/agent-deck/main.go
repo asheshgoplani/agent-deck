@@ -334,6 +334,9 @@ func main() {
 		case "launch":
 			handleLaunch(profile, args[1:])
 			return
+		case "accounts":
+			handleAccounts(profile, args[1:])
+			return
 		case "conductor":
 			handleConductor(profile, args[1:])
 			return
@@ -1383,7 +1386,7 @@ func handleAdd(profile string, args []string) {
 	// [profiles.<account>.claude].config_dir in ~/.agent-deck/config.toml
 	// and becomes the most-specific level of CLAUDE_CONFIG_DIR resolution.
 	// Empty = fall through to conductor/group/env/profile/global/default.
-	account := fs.String("account", "", "Named account slot (resolves via [profiles.<account>.claude].config_dir; #924)")
+	account := fs.String("account", "", "Named account slot (see `agent-deck accounts list`)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck add [path] [options]")
@@ -1425,6 +1428,7 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("  agent-deck add --ssh user@host --remote-path /home/user/project -c claude")
 		fmt.Println("  agent-deck add /home/user/project --ssh user@host -c claude   # positional path shortcut for --remote-path; must be absolute")
 		fmt.Println("  agent-deck add --ssh user@host -c claude -t \"remote-dev\"")
+		printAccountsHelpBlock()
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly
@@ -1932,6 +1936,13 @@ func handleAdd(profile string, args []string) {
 	// block exists, so unknown names are never an error here.
 	if trimmed := strings.TrimSpace(*account); trimmed != "" {
 		newInstance.Account = trimmed
+	}
+	// With no explicit flag, fall through the config chain
+	// (conductor > group > default_account) so an account configured once in
+	// settings is applied to every session born after it.
+	if res := session.ApplyAccountDefault(newInstance); res.Account != "" && !res.Known() {
+		fmt.Fprintf(os.Stderr, "Warning: account %q has no home configured for tool %q — the session will use %s's default home. Known: %s\n",
+			res.Account, newInstance.Tool, newInstance.Tool, accountNamesHint(newInstance.Tool))
 	}
 
 	// Apply per-session model override after command/tool resolution so the
@@ -3548,6 +3559,12 @@ func printHelp() {
 	fmt.Println("  status           Show session status summary")
 	fmt.Println("  session          Manage session lifecycle")
 	fmt.Println("  fleet            Detect and recover from a fleet-wide session death")
+	// Opt-in by presence: a user with no [profiles.<name>.<tool>] account home
+	// configured has nothing for this command to list, so it stays out of the
+	// help entirely. The command itself still runs if typed.
+	if cfg, err := session.LoadUserConfig(); err == nil && session.HasAnyAccounts(cfg) {
+		fmt.Println("  accounts         List the configured account slots per tool")
+	}
 	fmt.Println("  mcp              Manage MCP servers")
 	fmt.Println("  skill            Manage project skills")
 	fmt.Println("  codex-hooks      Manage Codex notify hook integration")

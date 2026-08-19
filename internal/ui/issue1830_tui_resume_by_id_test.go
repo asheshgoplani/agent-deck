@@ -50,6 +50,7 @@ func TestIssue1830_TUICreateResumeByIDVouchesOwnership(t *testing.T) {
 		"", "",
 		"",
 		false,
+		"",
 	)().(sessionCreatedMsg)
 	if msg.err != nil {
 		t.Fatalf("create session: %v", msg.err)

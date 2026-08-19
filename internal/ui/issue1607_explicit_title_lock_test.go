@@ -74,6 +74,7 @@ func createIssue1607Session(t *testing.T, title string, autoName bool) *session.
 		"", "",
 		"",
 		autoName,
+		"",
 	)().(sessionCreatedMsg)
 	if msg.err != nil {
 		t.Fatalf("create session: %v", msg.err)

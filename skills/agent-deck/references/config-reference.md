@@ -7,6 +7,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [Top-Level](#top-level)
 - [[shell] Section](#shell-section)
 - [[claude] Section](#claude-section)
+- [Account Selection (multi-account)](#account-selection-multi-account)
 - [Per-group / per-conductor Claude overrides](#per-group--per-conductor-claude-overrides)
 - [[group_defaults] Section](#group_defaults-section)
 - [[gemini] Section](#gemini-section)
@@ -129,6 +130,12 @@ Config resolution order for Claude config dir:
 
 ### Multiple Claude accounts (per profile)
 
+> For per-session account selection — a picker in the new-session dialog,
+> `--account` on `add`/`launch`/`session fork`, and config-set defaults — see
+> [Account Selection (multi-account)](#account-selection-multi-account). The
+> profile-scoped form below switches the whole `agent-deck -p <profile>`
+> instance instead of one session.
+
 Use a global default, then override only profiles that need a different Claude account/config:
 
 ```toml
@@ -157,6 +164,182 @@ agent-deck hooks status
 agent-deck hooks status -p work
 agent-deck hooks status -p clientx
 ```
+
+## Account Selection (multi-account)
+
+One account = one config home. Everything else follows from that.
+
+Claude, codex and the DeepSeek harness each keep all of their state —
+credentials, history, config — under a single directory named by a single
+environment variable. Point the tool at a different directory and it is a
+different login. Agent Deck's account slots are exactly that: a name for a
+directory, selectable wherever a session is created.
+
+| Tool family | Env var | Profile block | Home key |
+|-------------|---------|---------------|----------|
+| `claude` (and any `compatible_with = "claude"` tool) | `CLAUDE_CONFIG_DIR` | `[profiles.<account>.claude]` | `config_dir` |
+| `codex` (and any `compatible_with = "codex"` tool) | `CODEX_HOME` | `[profiles.<account>.codex]` | `codex_home` (alias: `config_dir`) |
+| `deepseek` | `DSH_HOME` | `[profiles.<account>.deepseek]` | `dsh_home` (alias: `config_dir`) |
+
+**Opt-in by presence.** With no `[profiles.<name>.<tool>]` home configured you
+see nothing new: no Account field in the new-session dialog, no `Accounts:`
+block in `--help`, no `accounts` entry in the top-level command list. Configure
+one account and the surfaces appear for that tool only.
+
+### Quick start — N claude accounts + M codex accounts
+
+Copy-paste this into `~/.agent-deck/config.toml` and edit the names and paths.
+Keeping every home under one `~/.agent-accounts` tree is a convention, not a
+requirement — any path works.
+
+```toml
+# ---- claude accounts ----------------------------------------------------
+[profiles.personal.claude]
+config_dir = "~/.agent-accounts/claude/personal"
+
+[profiles.work.claude]
+config_dir = "~/.agent-accounts/claude/work"
+
+[profiles.buddii.claude]
+config_dir = "~/.agent-accounts/claude/buddii"
+
+[profiles.seminno.claude]
+config_dir = "~/.agent-accounts/claude/seminno"
+
+# ---- codex accounts -----------------------------------------------------
+[profiles.codex-gmail.codex]
+codex_home = "~/.agent-accounts/codex/gmail"
+
+[profiles.codex-seminno.codex]
+codex_home = "~/.agent-accounts/codex/semanticinnovations"
+```
+
+Each home starts empty. Log in once per account by starting a session on it and
+running that tool's login (`/login` for claude, `codex login` for codex); the
+credential lands in that account's home and stays there.
+
+Check what you have:
+
+```bash
+agent-deck accounts list
+```
+
+```
+CLAUDE  (CLAUDE_CONFIG_DIR)
+  ACCOUNT        HOME                                          LOGIN        SESSIONS
+  buddii         /home/you/.agent-accounts/claude/buddii       logged-in    api-refactor
+  personal       /home/you/.agent-accounts/claude/personal     logged-in    -
+  seminno        /home/you/.agent-accounts/claude/seminno      no home yet  -
+  work           /home/you/.agent-accounts/claude/work         logged-in    deck-triage, docs
+
+CODEX  (CODEX_HOME)
+  ACCOUNT        HOME                                          LOGIN        SESSIONS
+  codex-gmail    /home/you/.agent-accounts/codex/gmail         logged-out   -
+  codex-seminno  /home/you/.agent-accounts/codex/semanticinnovations  logged-in  nightly-sweep
+```
+
+`--json` gives an agent the same data as a stable object, including
+`session_ids`, so a fleet can spread itself across accounts instead of piling
+onto one and hitting a quota wall:
+
+```bash
+agent-deck accounts list --json
+agent-deck accounts list --tool codex --json
+```
+
+### Picking an account
+
+Three surfaces, one meaning.
+
+**TUI new-session dialog.** An `Account:` field appears between the tool
+selector and the path, listing only the accounts valid for the selected tool —
+switch the tool from claude to codex and the list is rebuilt. `←/→` choose,
+Space cycles. The line under the pills shows exactly what will be exported
+(`CODEX_HOME=/home/you/.agent-accounts/codex/gmail`), and an account whose home
+has no credential yet is marked `⚠`.
+
+**CLI.** Same flag on every command that creates a session:
+
+```bash
+agent-deck launch . -c codex  --account codex-seminno
+agent-deck add    . -c claude --account work
+agent-deck session fork my-project --account personal   # override the inherited account
+```
+
+A fork inherits its parent's account by default — its transcript lives in that
+account's home, so anything else would resume the wrong conversation.
+
+**Config, once.** Set a default and stop typing the flag:
+
+```toml
+default_account = "personal"          # global fallback
+
+[groups."work"]
+account = "work"                      # every new session in work/ and below
+
+[conductors.lilu]
+account = "buddii"                    # sessions this conductor creates
+```
+
+Resolution, most-specific first:
+
+1. `--account` / the TUI pick / a fork's inherited parent account
+2. `[conductors.<name>].account`
+3. `[groups."<path>".account]`, walking ancestor groups
+4. `default_account`
+5. nothing — the tool uses its own default home, exactly as before
+
+The resolved value is written onto the session record at create time, so
+`session show` and `accounts list` always agree with what actually launched, and
+editing the config later re-homes new sessions without moving live ones.
+
+An account that names no home for the session's tool (a typo, or a codex
+account handed to a claude session) is stored but warned about — it is never
+silently swapped for a different account.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `default_account` | string | `""` | Global fallback account slot for new sessions. Least-specific level of the chain above. |
+| `groups."<path>".account` | string | `""` | Default account for new sessions in this group subtree. Ancestor-walking. |
+| `conductors.<name>.account` | string | `""` | Default account for this conductor's sessions. Beats the group value, like every other key in these mirrored blocks. |
+| `profiles.<account>.claude.config_dir` | string | `""` | `CLAUDE_CONFIG_DIR` for this account. |
+| `profiles.<account>.codex.codex_home` | string | `""` | `CODEX_HOME` for this account. `config_dir` is accepted as an alias. |
+| `profiles.<account>.deepseek.dsh_home` | string | `""` | `DSH_HOME` for this account. `config_dir` is accepted as an alias. |
+
+One profile name may carry blocks for several tools. `[profiles.work.claude]`
+plus `[profiles.work.codex]` makes `--account work` mean "my work login" for
+both, and the TUI keeps the pick when you switch the tool between them.
+
+### Adding a new tool to account selection
+
+A tool qualifies when it stores everything under one directory named by one env
+var. To wire it up:
+
+1. Add a `ProfileXSettings` struct in `internal/session/userconfig.go` with the
+   home key named after the env var (`foo_home`), plus a `Home()` method, and
+   hang it off `ProfileSettings`.
+2. Add a getter that expands the path, mirroring `GetProfileCodexConfigDir`.
+3. Add one entry to `accountFamilies` in `internal/session/accounts.go`:
+
+```go
+{
+    Name:    "foo",                       // the [profiles.<acct>.foo] sub-table
+    EnvVar:  "FOO_HOME",                  // exported at launch
+    HomeKey: "foo_home",                  // documented TOML key
+    Matches: func(tool string) bool { return tool == "foo" },
+    Home:    func(cfg *UserConfig, account string) string { return cfg.GetProfileFooConfigDir(account) },
+    loginProbe: markerLoginState("auth.json"),  // or nil when there is no cheap marker
+},
+```
+
+4. Export the var in the tool's launch builder, mirroring
+   `Instance.codexHomeToExport` — and make the tool's resume/fork gate read the
+   SAME home the launch exports. A resolver that disagrees with the launch is
+   issue #1929: the gate looks in the default home, misses the transcript, and
+   every restart silently opens a fresh conversation.
+
+Nothing else in the feature is tool-aware. The CLI flag, the TUI picker,
+`accounts list`, the precedence chain and the docs table all read the registry.
 
 ## Per-group / per-conductor Claude overrides
 

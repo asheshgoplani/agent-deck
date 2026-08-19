@@ -910,6 +910,10 @@ func handleSessionFork(profile string, args []string) {
 	withStateGitignored := fs.Bool("with-state-and-gitignored", false, "Like --with-state, plus gitignored files (e.g. .env). Implies --with-state. Requires -w.")
 	sandbox := fs.Bool("sandbox", false, "Run forked session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
+	// A fork inherits the parent's account by default (its transcript lives in
+	// that account's home). This flag is the deliberate override, for moving a
+	// conversation's continuation onto a different login.
+	account := fs.String("account", "", "Run the fork under this account instead of inheriting the parent's (see `agent-deck accounts list`)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session fork <id|title> [options]")
@@ -927,6 +931,14 @@ func handleSessionFork(profile string, args []string) {
 		fmt.Println("  agent-deck session fork my-project -w fork/new-idea -b")
 		fmt.Println("  agent-deck session fork my-project -w fork/wip -b --with-state")
 		fmt.Println("  agent-deck session fork my-project -w fork/wip -b --with-state-and-gitignored")
+		printAccountsHelpBlock()
+	}
+
+	// #1923 parity: --account with its value omitted would otherwise swallow
+	// the next flag.
+	if err := checkFlagValueNotFlag(fs, args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -1256,6 +1268,19 @@ func handleSessionFork(profile string, args []string) {
 	}
 	if explicitTitle {
 		forkedInst.TitleLocked = true
+	}
+
+	// CreateForkedInstanceForTool already copied the parent's account onto the
+	// fork. An explicit --account overrides that inheritance; note that the
+	// baked one-shot fork command was built against the PARENT's home (that is
+	// where the transcript is), so the override takes effect from the fork's
+	// first restart onward, not on the fork launch itself.
+	if overrideAccount := strings.TrimSpace(*account); overrideAccount != "" {
+		forkedInst.Account = overrideAccount
+		if session.AccountHomeForTool(forkCfgForAccounts(), overrideAccount, forkedInst.Tool) == "" {
+			fmt.Fprintf(os.Stderr, "Warning: account %q has no home configured for tool %q. Known: %s\n",
+				overrideAccount, forkedInst.Tool, accountNamesHint(forkedInst.Tool))
+		}
 	}
 
 	if worktreeType != "" {
@@ -1674,6 +1699,24 @@ func handleSessionShow(profile string, args []string) {
 	// bug report against the wrong component.
 	jsonData["wrapper"] = inst.Wrapper
 
+	// Account slot, always present for the same reason wrapper is: the natural
+	// way to verify `--account` / `session set <id> account` is to read it back
+	// here, and an omitted key is indistinguishable from an empty value. The
+	// resolved home is included when the account maps to one for this tool, so
+	// an agent can confirm which credentials the session actually runs under
+	// without re-deriving the chain.
+	jsonData["account"] = inst.Account
+	if inst.Account != "" {
+		if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil {
+			if home := session.AccountHomeForTool(cfg, inst.Account, inst.Tool); home != "" {
+				jsonData["account_home"] = home
+				if family, ok := session.AccountFamilyForTool(inst.Tool); ok {
+					jsonData["account_env_var"] = family.EnvVar
+				}
+			}
+		}
+	}
+
 	if session.IsClaudeCompatible(inst.Tool) {
 		jsonData["claude_session_id"] = inst.ClaudeSessionID
 		jsonData["can_fork"] = inst.CanFork()
@@ -1884,7 +1927,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  claude-session-id  Claude conversation ID")
 		fmt.Println("  gemini-session-id  Gemini conversation ID")
 		fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (for resume_flag after reboot)")
-		fmt.Println("  account            Named account slot (#924) — resolves via [profiles.<account>.claude].config_dir; restart required")
+		fmt.Println("  account            Named account slot (#924) — resolves via [profiles.<account>.<tool>]; see `agent-deck accounts list`; restart required")
 		fmt.Println("  idle-timeout       Auto-stop after no tmux output for this duration (#1143; Go duration: 30m, 1h, 24h; 0 disables)")
 		fmt.Println()
 		fmt.Println("Options:")

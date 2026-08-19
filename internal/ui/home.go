@@ -7911,12 +7911,13 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		parentSessionID := h.newDialog.GetParentSessionID()
 		parentProjectPath := h.newDialog.GetParentProjectPath()
+		accountPick := h.newDialog.SelectedAccount()
 
 		// Only non-worktree sessions may need interactive "create directory" confirmation.
 		if !worktreeEnabled {
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				h.newDialog.Hide()
-				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, claudeExtraArgs, claudeStartQuery, launchModelID, parentSessionID, parentProjectPath)
+				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, claudeExtraArgs, claudeStartQuery, launchModelID, parentSessionID, parentProjectPath, accountPick)
 				return h, nil
 			}
 		}
@@ -7976,6 +7977,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			parentProjectPath,
 			tempID,
 			false, // not auto-named — user went through the full create dialog
+			accountPick,
 		)
 
 	case msg.String() == "esc":
@@ -10181,7 +10183,7 @@ func (h *Home) confirmAction() tea.Cmd {
 
 // confirmCreateDirectory handles the "yes" action for ConfirmCreateDirectory.
 func (h *Home) confirmCreateDirectory() tea.Cmd {
-	name, path, command, groupPath, pendingToolOpts, pendingExtraArgs, pendingStartQuery, pendingLaunchModelID, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
+	name, path, command, groupPath, pendingToolOpts, pendingExtraArgs, pendingStartQuery, pendingLaunchModelID, parentSessionID, parentProjectPath, pendingAccount := h.confirmDialog.GetPendingSession()
 	h.confirmDialog.Hide()
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		h.setError(fmt.Errorf("failed to create directory: %w", err))
@@ -10207,6 +10209,7 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 		parentProjectPath,
 		"",    // no placeholder — non-worktree sessions are fast
 		false, // not auto-named
+		pendingAccount,
 	)
 }
 
@@ -11861,6 +11864,10 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	parentSessionID, parentProjectPath string,
 	tempID string,
 	autoName bool,
+	// account is the explicitly-picked account slot from the new-session
+	// dialog, or "" to let the config chain decide (quick-create paths pass
+	// "" and still get [groups."x"].account / default_account applied).
+	account string,
 ) tea.Cmd {
 	return func() tea.Msg {
 		var setupWarning string // non-fatal worktree setup-script failure, if any
@@ -11916,6 +11923,14 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		}
 		inst.Command = command
 		inst.SetAutoName(autoName) // quick-create paths pass true; see render substitution
+
+		// Named account slot. The dialog pick is the explicit level; when it is
+		// empty the conductor/group/global chain fills in, so an account
+		// configured once in settings applies to quick-create too.
+		if trimmed := strings.TrimSpace(account); trimmed != "" {
+			inst.Account = trimmed
+		}
+		session.ApplyAccountDefault(inst)
 
 		// A title the user typed into the full create dialog (autoName=false) is
 		// explicit intent, so lock it against the Claude session-name sync (#572).
@@ -12450,6 +12465,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		"", "", // no parent
 		"",   // no placeholder
 		true, // quick-create → auto-named handle
+		"",   // no explicit account → config chain decides
 	)
 }
 
@@ -12574,6 +12590,7 @@ func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
 		"", "",
 		"",
 		true, // quick-create → auto-named handle
+		"",   // no explicit account → config chain decides
 	)
 }
 
