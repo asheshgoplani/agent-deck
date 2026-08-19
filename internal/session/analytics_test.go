@@ -59,7 +59,24 @@ func TestSessionAnalytics_ContextPercent_OpusModel(t *testing.T) {
 	assert.InDelta(t, 50.0, analytics.ContextPercent(0), 0.01)
 }
 
+func TestSessionAnalytics_ContextPercent_Fable5Model(t *testing.T) {
+	// Regression for the 100%-clamped context bar: a real Fable 5 session at
+	// ~494k context tokens is at ~49% of its 1M window, not 247% of 200k.
+	analytics := &SessionAnalytics{
+		CurrentContextTokens: 494561,
+		Model:                "claude-fable-5",
+	}
+
+	// 494561 / 1000000 (fable-5 context window) * 100 = 49.46%
+	assert.InDelta(t, 49.46, analytics.ContextPercent(0), 0.01)
+}
+
 func TestContextWindowForModel(t *testing.T) {
+	// Claude 5 family: 1M
+	assert.Equal(t, 1_000_000, contextWindowForModel("claude-fable-5"))
+	assert.Equal(t, 1_000_000, contextWindowForModel("claude-mythos-5"))
+	assert.Equal(t, 1_000_000, contextWindowForModel("claude-opus-5"))
+	assert.Equal(t, 1_000_000, contextWindowForModel("claude-sonnet-5"))
 	// 4.8 models: 1M (must match before 4.x fallback)
 	assert.Equal(t, 1_000_000, contextWindowForModel("claude-opus-4-8"))
 	assert.Equal(t, 1_000_000, contextWindowForModel("claude-opus-4-8-20260801"))
