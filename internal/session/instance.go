@@ -2236,7 +2236,7 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 				slog.String("path", codexHome),
 				slog.String("error", err.Error()))
 		}
-		envPrefix += "CODEX_HOME=" + codexHome + " "
+		envPrefix += "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
 	}
 
 	yoloFlag := i.resolveCodexYoloFlag()
