@@ -862,7 +862,7 @@ func (t *GroupTree) MoveSessionUp(inst *Instance) {
 			currentIdx = i
 			continue
 		}
-		if currentIdx < 0 && s.ParentSessionID == inst.ParentSessionID {
+		if currentIdx < 0 && s.ParentSessionID == inst.ParentSessionID && SameArchivePartition(s, inst) {
 			prevSiblingIdx = i
 		}
 		if inst.ParentSessionID != "" && s.ID == inst.ParentSessionID {
@@ -917,7 +917,7 @@ func (t *GroupTree) MoveSessionDown(inst *Instance) {
 			currentIdx = i
 			continue
 		}
-		if currentIdx >= 0 && s.ParentSessionID == inst.ParentSessionID && nextSiblingIdx < 0 {
+		if currentIdx >= 0 && s.ParentSessionID == inst.ParentSessionID && SameArchivePartition(s, inst) && nextSiblingIdx < 0 {
 			nextSiblingIdx = i
 		}
 	}
@@ -988,7 +988,7 @@ func (t *GroupTree) DemoteSession(inst *Instance) {
 			currentIdx = i
 			break
 		}
-		if s.ParentSessionID == "" {
+		if s.ParentSessionID == "" && SameArchivePartition(s, inst) {
 			prevTopIdx = i
 		}
 	}

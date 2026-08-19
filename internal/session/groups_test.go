@@ -2438,3 +2438,175 @@ func TestRenameTargetPath_MatchesRenameGroup(t *testing.T) {
 		}
 	}
 }
+
+// testArchivedAt is a fixed, non-zero archive timestamp for the reorder tests
+// below. The value never matters — only that IsArchived() reports true.
+var testArchivedAt = time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+
+// visibleTopLevel returns the top-level session IDs the deck actually renders
+// for one archive partition. It is the test-side equivalent of the archive
+// partitioning rebuildFlatItems applies to Flatten's output: the active list
+// never shows archived rows, and the archived view (^) never shows active ones.
+func visibleTopLevel(group *Group, archived bool) []string {
+	var ids []string
+	for _, s := range group.Sessions {
+		if s.ParentSessionID == "" && s.IsArchived() == archived {
+			ids = append(ids, s.ID)
+		}
+	}
+	return ids
+}
+
+func sessionByID(group *Group, id string) *Instance {
+	for _, s := range group.Sessions {
+		if s.ID == id {
+			return s
+		}
+	}
+	return nil
+}
+
+func sessionOrder(group *Group) []string {
+	ids := make([]string, 0, len(group.Sessions))
+	for _, s := range group.Sessions {
+		ids = append(ids, s.ID)
+	}
+	return ids
+}
+
+func assertOrder(t *testing.T, what string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s = %v, want %v", what, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s = %v, want %v", what, got, want)
+		}
+	}
+}
+
+// TestMoveSessionUp_SkipsArchivedNeighbour: with archived sessions sitting
+// between two active ones, one MoveSessionUp must swap the two *active* rows.
+// Swapping with an archived neighbour instead moves the session past a row the
+// active list does not render, so the deck shows no movement at all.
+func TestMoveSessionUp_SkipsArchivedNeighbour(t *testing.T) {
+	instances := []*Instance{
+		{ID: "a1", Title: "active1", GroupPath: "test"},
+		{ID: "z1", Title: "archived1", GroupPath: "test", ArchivedAt: testArchivedAt},
+		{ID: "z2", Title: "archived2", GroupPath: "test", ArchivedAt: testArchivedAt},
+		{ID: "z3", Title: "archived3", GroupPath: "test", ArchivedAt: testArchivedAt},
+		{ID: "a2", Title: "active2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	assertOrder(t, "active list before", visibleTopLevel(group, false), []string{"a1", "a2"})
+
+	tree.MoveSessionUp(sessionByID(group, "a2"))
+
+	assertOrder(t, "active list after one MoveSessionUp(a2)",
+		visibleTopLevel(group, false), []string{"a2", "a1"})
+}
+
+// TestMoveSessionDown_SkipsArchivedNeighbour is the mirror of the above.
+func TestMoveSessionDown_SkipsArchivedNeighbour(t *testing.T) {
+	instances := []*Instance{
+		{ID: "a1", Title: "active1", GroupPath: "test"},
+		{ID: "z1", Title: "archived1", GroupPath: "test", ArchivedAt: testArchivedAt},
+		{ID: "z2", Title: "archived2", GroupPath: "test", ArchivedAt: testArchivedAt},
+		{ID: "z3", Title: "archived3", GroupPath: "test", ArchivedAt: testArchivedAt},
+		{ID: "a2", Title: "active2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	tree.MoveSessionDown(sessionByID(group, "a1"))
+
+	assertOrder(t, "active list after one MoveSessionDown(a1)",
+		visibleTopLevel(group, false), []string{"a2", "a1"})
+}
+
+// TestMoveSessionUp_ArchivedRowMovesWithinArchivedList: reordering is a
+// same-partition operation, not "ignore archived". Rows in the archived view
+// (^) must reorder against each other, skipping the active rows between them.
+func TestMoveSessionUp_ArchivedRowMovesWithinArchivedList(t *testing.T) {
+	instances := []*Instance{
+		{ID: "z1", Title: "archived1", GroupPath: "test", ArchivedAt: testArchivedAt},
+		{ID: "a1", Title: "active1", GroupPath: "test"},
+		{ID: "a2", Title: "active2", GroupPath: "test"},
+		{ID: "z2", Title: "archived2", GroupPath: "test", ArchivedAt: testArchivedAt},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	tree.MoveSessionUp(sessionByID(group, "z2"))
+
+	assertOrder(t, "archived list after one MoveSessionUp(z2)",
+		visibleTopLevel(group, true), []string{"z2", "z1"})
+	assertOrder(t, "active list must be undisturbed",
+		visibleTopLevel(group, false), []string{"a1", "a2"})
+}
+
+// TestMoveSessionUp_FirstActiveAboveArchivedIsNoOp: the first row of the active
+// list has nowhere to go, even when archived rows sit above it in the slice.
+// Asserts the whole slice, because the pre-fix bug is invisible in the active
+// list alone: it silently shuffles the session past archived rows on every
+// press while the rendered order never changes.
+func TestMoveSessionUp_FirstActiveAboveArchivedIsNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "z1", Title: "archived1", GroupPath: "test", ArchivedAt: testArchivedAt},
+		{ID: "z2", Title: "archived2", GroupPath: "test", ArchivedAt: testArchivedAt},
+		{ID: "a1", Title: "active1", GroupPath: "test"},
+		{ID: "a2", Title: "active2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	tree.MoveSessionUp(sessionByID(group, "a1"))
+
+	assertOrder(t, "session order after no-op MoveSessionUp(a1)",
+		sessionOrder(group), []string{"z1", "z2", "a1", "a2"})
+}
+
+// TestDemoteSession_SkipsArchivedPeer: demoting nests a session under the
+// previous top-level peer *in the same partition*. Nesting it under an
+// archived peer would park an active session beneath a row the active list
+// does not render.
+func TestDemoteSession_SkipsArchivedPeer(t *testing.T) {
+	instances := []*Instance{
+		{ID: "a1", Title: "active1", GroupPath: "test"},
+		{ID: "z1", Title: "archived1", GroupPath: "test", ArchivedAt: testArchivedAt},
+		{ID: "a2", Title: "active2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	a2 := sessionByID(group, "a2")
+	tree.DemoteSession(a2)
+
+	if a2.ParentSessionID != "a1" {
+		t.Errorf("a2.ParentSessionID after demote = %q, want %q", a2.ParentSessionID, "a1")
+	}
+	assertOrder(t, "a1's children", childrenOf(group, "a1"), []string{"a2"})
+}
+
+// TestDemoteSession_FirstActiveAboveArchivedIsNoOp: the first row of the active
+// list has no peer to nest under, so demote is a no-op — an archived row above
+// it is not a candidate parent.
+func TestDemoteSession_FirstActiveAboveArchivedIsNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "z1", Title: "archived1", GroupPath: "test", ArchivedAt: testArchivedAt},
+		{ID: "a1", Title: "active1", GroupPath: "test"},
+		{ID: "a2", Title: "active2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	a1 := sessionByID(group, "a1")
+	tree.DemoteSession(a1)
+
+	if a1.ParentSessionID != "" {
+		t.Errorf("a1.ParentSessionID after no-op demote = %q, want %q", a1.ParentSessionID, "")
+	}
+}
