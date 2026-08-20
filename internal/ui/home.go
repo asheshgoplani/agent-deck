@@ -4242,6 +4242,26 @@ func sessionDisplayLabelsFromState(state sessionRenderState) (title, subtitle st
 
 // cleanPaneTitle strips spinner/done marker characters from a tmux pane title
 // and returns the task description. Returns "" for default/generic titles.
+//
+// instanceID, when non-empty, additionally rejects agent-deck's own `--name`
+// peer address. Claude Code renders its session name as the pane title, and
+// until it derives a task name that session name IS the address the deck
+// passed at launch — so the "live task description" for a freshly started
+// session is just its own random handle. Persisting that as the auto-name
+// description is what made auto-named rows show a handle forever (the stored
+// description then outlived the pane and became the fallback). See
+// session.IsClaudePeerNameEcho.
+func cleanPaneTitleFor(title, instanceID string) string {
+	cleaned := cleanPaneTitle(title)
+	if cleaned == "" {
+		return ""
+	}
+	if session.IsClaudePeerNameEcho(cleaned, instanceID) {
+		return ""
+	}
+	return cleaned
+}
+
 func cleanPaneTitle(title string) string {
 	if title == "" {
 		return ""
@@ -4314,7 +4334,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		// an even-older one back into the snapshot.
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
-				state.paneTitle = cleanPaneTitle(paneInfo.Title)
+				state.paneTitle = cleanPaneTitleFor(paneInfo.Title, inst.ID)
 			} else if prev := h.getSessionRenderSnapshot(); prev != nil {
 				if prevState, hadPrev := prev[inst.ID]; hadPrev {
 					state.paneTitle = prevState.paneTitle
@@ -13505,7 +13525,7 @@ func (h *Home) captureAutoNameBeforeStop(inst *session.Instance) {
 	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 		tmux.RefreshPaneInfoCache()
 		if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
-			live = cleanPaneTitle(paneInfo.Title)
+			live = cleanPaneTitleFor(paneInfo.Title, inst.ID)
 		}
 	}
 	if live == "" {

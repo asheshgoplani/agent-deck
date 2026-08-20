@@ -672,6 +672,15 @@ func handleLaunch(profile string, args []string) {
 		newInstance.TitleLocked = true
 	}
 
+	// The mirror of the lock: no explicit title means the handle is
+	// machine-generated, so the deck should display Claude's task description
+	// instead of it. Without this, every `launch`ed session (orchestrate
+	// children included) was stuck showing a folder/adjective-noun handle no
+	// matter what work it was doing. Same contract as `add`.
+	if !userProvidedTitle {
+		newInstance.SetAutoName(true)
+	}
+
 	// #1133: explicit opt-in for inheriting the conductor's telegram env.
 	if *inheritTelegramEnv {
 		newInstance.InheritTelegramEnv = true
