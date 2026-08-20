@@ -449,8 +449,13 @@ func toolHasScope(tool, scope string) bool {
 // to <project>/.mcp.json. Those are different files (MCPInfo keeps them as
 // Project vs LocalMCPs), so attaching one server rewrote .mcp.json from a list
 // that never contained the servers already in it, silently dropping them.
-// Claude's projects[path] entries belong to the GLOBAL bucket here, exactly as
-// the TUI groups them.
+// Claude's projects[path] entries are their OWN scope here ("project"), not part
+// of the global bucket. That matters because the global write path rewrites only
+// the root mcpServers and cannot remove a projects[path] entry: folding the two
+// together would report a server the global write can never detach, and any
+// attempt to "correct" that by clearing the project half on a global write would
+// delete project-scoped servers the user never touched.
+// TestClaudeProjectEntriesAreTheirOwnScope pins the separation.
 // scopeNames maps each scope a tool has to the names currently in that scope's
 // store. Every entry must be read from the exact file its writeScope
 // counterpart targets, or a read-modify-write crosses a store boundary.
