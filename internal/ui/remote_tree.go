@@ -166,6 +166,16 @@ func remoteStatusCounts(sessions []session.RemoteSessionInfo, groupPath string) 
 				continue
 			}
 		}
+		// #1945: archiving tears down the pane but does NOT reset Status, so an
+		// archived remote session keeps whatever it was doing when it was
+		// archived — commonly "running". Counting it here makes the header
+		// disagree with its own rows: #1944 gives the archived row the stopped
+		// glyph while this tally still calls it running. rowStatusGlyph applies
+		// the same override for exactly this reason; the counts have to follow
+		// the same rule or the number and the glyphs describe different sets.
+		if sessions[i].Archived {
+			continue
+		}
 		switch sessions[i].Status {
 		case "running":
 			running++
