@@ -191,12 +191,39 @@ const maxWebTokenFileSize = 4096
 // (Server.authorize allows everything when Config.Token is ""), so anything
 // less than a clean read has to fail closed and stop the server from booting.
 // Errors name the offending path but never echo file contents.
+// validateInlineWebToken applies to --token the checks --token-file already
+// performs. The two inputs feed the same field and deserve the same floor: a
+// token carrying whitespace or control bytes can never match a Bearer header,
+// so it boots a server nobody can authenticate to while still satisfying the
+// non-loopback bind check — a lockout that looks like working auth.
+//
+// An empty token is the documented "authorization disabled" setting and passes
+// through untouched. A token that TRIMS to empty is deliberately an error
+// rather than a fall-through to that setting: `--token "   "` is an operator
+// setting a token, and silently converting it into no-auth would be the one
+// outcome this function exists to prevent.
+func validateInlineWebToken(token string) (string, error) {
+	if token == "" {
+		return "", nil
+	}
+	resolved := strings.TrimSpace(token)
+	if resolved == "" {
+		return "", fmt.Errorf("--token is only whitespace; pass a real token, or omit the flag to run without authorization")
+	}
+	if strings.ContainsFunc(resolved, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) {
+		return "", fmt.Errorf("--token must be a single value with no whitespace or control characters")
+	}
+	return resolved, nil
+}
+
 func resolveWebToken(token, tokenFile string) (string, error) {
 	if token != "" && tokenFile != "" {
 		return "", fmt.Errorf("--token and --token-file are mutually exclusive")
 	}
 	if tokenFile == "" {
-		return token, nil
+		return validateInlineWebToken(token)
 	}
 
 	f, err := os.Open(tokenFile)
