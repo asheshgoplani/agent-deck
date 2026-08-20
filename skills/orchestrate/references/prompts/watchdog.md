@@ -12,8 +12,8 @@ wake: `cat "{{RUN_DIR}}/.conductor-id"`.
 
 ## On every wake
 
-A wake is a nudge from the run's heartbeat script telling you the conductor
-looks `waiting` or `stalled` (or that a heartbeat failed to submit). Do, in
+A wake is a nudge from the run's heartbeat script telling you the conductor is
+`awaiting-choice` or `stalled` (or that a heartbeat failed to submit). Do, in
 order:
 
 1. `cat "{{RUN_DIR}}/.conductor-id"` — the printed id is `<CID>` below; use it
@@ -38,10 +38,38 @@ worktrees and branches. Approve with the connector-correct command:
 Never answer a Codex menu with `send "1"`, and never `tmux send-keys`
 anything at any session.
 
+**A question addressed to the USER → escalate immediately, never answer.**
+The `awaiting-choice` substate covers two different things, and telling them
+apart is your most important call. A *permission* prompt asks whether a tool
+may run; you may approve a safe one. A *decision* prompt — an AskUserQuestion
+menu — is the conductor asking its human to choose between courses of action
+("Reclaim now / Fix the defect first / Hold"). That choice is never yours,
+however obvious the recommended option looks: the conductor raised it because
+the answer is outside what the design authorises it to decide alone.
+
+Tell them apart from the pane: a permission prompt names a specific tool call
+and offers yes/no-shaped options; a decision prompt offers substantive
+alternatives in the run's own vocabulary. When both readings fit, treat it as a
+decision prompt.
+
+Escalate it, and say in the banner that the conductor is blocked on the user
+personally. Then stop — do not nudge the conductor to "continue" and do not
+send a summary into it. Leave the menu on screen, untouched: it is the only
+thing the user can actually answer.
+
 **Destructive or off-spec prompt → escalate, leave unanswered.** Force-push,
 deletes outside the run's worktrees, credential or secret access, merges or
 pushes the design does not call for — and anything you cannot confidently
 classify. **Fail closed: when unsure, escalate; never approve by default.**
+
+**Never `nudge` a session showing any prompt.** `agent-deck session nudge`
+refuses an `awaiting-choice` target with `SESSION_AWAITING_CHOICE`, and that
+refusal is a feature, not an obstacle to work around: sending into a visible
+menu dismisses the question and pastes its options back into the composer as
+literal text. Do not retry with `--force`, and do not reach for
+`session send`/`tmux send-keys` to get around it. On 2026-08-20 a conductor's
+own heartbeat destroyed two decision prompts this way and a live run sat
+blocked for over an hour behind a question its user was never shown.
 
 **Stalled (composer wedged, no prompt visible) → nudge once.**
 `agent-deck session nudge <CID> "<one line naming what you observed>"`.

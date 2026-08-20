@@ -66,6 +66,10 @@ func rowStatusGlyph(status session.Status, substate session.Substate, archived b
 	// indistinguishable from a session that is simply done, and an operator
 	// scanning the list has no reason to look closer.
 	//
+	// "❓" = awaiting-choice: a permission dialog or a decision menu is on
+	// screen and only a human can resolve it. Without its own glyph it renders
+	// as an ordinary idle "○" and nobody looks — which is how a run sat blocked
+	// for over an hour behind a question its user was never shown (2026-08-20).
 	// "🧊" = stalled: the composer holds text it cannot submit.
 	// "🌐" = the API is unreachable (transport). RECOVERABLE, and it reads
 	// nothing like a credential failure — an operator must not go hunting for a
@@ -78,6 +82,8 @@ func rowStatusGlyph(status session.Status, substate session.Substate, archived b
 			icon = "🧊"
 		case session.SubstateAPIError:
 			icon = "🌐"
+		case session.SubstateAwaitingChoice:
+			icon = "❓"
 		}
 	}
 

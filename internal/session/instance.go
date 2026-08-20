@@ -87,6 +87,7 @@ const (
 	SubstateAuth401           = tmux.SubstateAuth401
 	SubstateAPIError          = tmux.SubstateAPIError
 	SubstateStalled           = tmux.SubstateStalled
+	SubstateAwaitingChoice    = tmux.SubstateAwaitingChoice
 	SubstateUsageLimit        = tmux.SubstateUsageLimit
 )
 

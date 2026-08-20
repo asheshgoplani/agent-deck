@@ -947,6 +947,8 @@ func SubstateLabel(sub session.Substate) string {
 		return "working"
 	case session.SubstateStalled:
 		return "stalled (composer not accepting Enter)"
+	case session.SubstateAwaitingChoice:
+		return "waiting on you (prompt on screen)"
 	default:
 		return ""
 	}

@@ -26,6 +26,10 @@ STOP_FILE="$D/.heartbeat-stop"
 # conductor can be legitimately unreachable for one or two beats (restart,
 # rotation in progress); a run of them means it is gone or wedged.
 MAX_MISSES="${HEARTBEAT_MAX_MISSES:-4}"
+# How long a decision prompt may sit before the user is bannered directly. The
+# watchdog is woken immediately; this is the backstop for when the watchdog is
+# absent, dead, or correctly decides the prompt is not its to answer.
+CHOICE_ESCALATE="${WATCHDOG_CHOICE_ESCALATE:-300}"
 
 MSG="Heartbeat. Run: bash \"$D/poll.sh\" — then act on whatever it reports. If it reports no change and no child is waiting on you, say so in one line and stop; do not re-read the manifest or sweep child output just because this beat fired."
 
@@ -36,28 +40,62 @@ if [ ! -s "$ID_FILE" ]; then
   exit 2
 fi
 
-# Detector: while the conductor is between beats, poll its substate every
-# DETECT seconds; `waiting` or `stalled` means it cannot help itself (nudge
-# refuses those targets), so wake the watchdog child to judge the situation.
-# No .watchdog-id file ⇒ no watchdog in this run ⇒ the detector is inert.
+# Detector: while the conductor is between beats, poll its state every DETECT
+# seconds and wake the watchdog child when the conductor cannot help itself.
+#
+# Three states qualify, and the difference between them is load-bearing:
+#
+#   awaiting-choice  a permission dialog or an AskUserQuestion decision menu is
+#                    on screen. The conductor is HEALTHY — it is waiting on a
+#                    person. Never nudge it (that dismisses the question and
+#                    pastes the options into the composer as text); wake the
+#                    watchdog to approve a safe permission prompt, and banner
+#                    the human directly for a decision only they can make.
+#   stalled          the composer is gated. Wedged; the watchdog judges it.
+#   nudge rc=1       reachable but the beat did not submit.
+#
+# This block used to match `waiting|stalled` against the SUBSTATE field. There
+# is no `waiting` substate — `waiting` is a coarse STATUS value — so only
+# `stalled` could ever fire, and a conductor sitting on a decision prompt was
+# invisible to the detector. It cost an hour of a live run on 2026-08-20: the
+# conductor asked its human twice, its own heartbeat destroyed the question
+# both times, and the watchdog was never woken to notice.
+#
+# No .watchdog-id file ⇒ no watchdog in this run ⇒ wakes are skipped, but the
+# direct user banner below still fires: escalation must not depend on an agent
+# being alive.
 detect_tick() {
   CID="$(cat "$ID_FILE" 2>/dev/null || true)"
+  [ -n "$CID" ] || return 0
   WID="$(cat "$WD_FILE" 2>/dev/null || true)"
-  [ -n "$CID" ] && [ -n "$WID" ] || return 0
 
-  out="$(agent-deck session show "$CID" --json 2>/dev/null || true)"
-  substate="$(printf '%s' "$out" | sed -n 's/.*"substate"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-  # A watchdog that exhausted its misses is dead; a *different* id in the
-  # file (respawn) starts fresh.
-  if [ "$WID" = "$wd_dead_id" ]; then
-    return 0
-  fi
+  # A watchdog that exhausted its misses is dead; a *different* id in the file
+  # (respawn) starts fresh.
   [ "$WID" = "$wd_miss_id" ] || { wd_misses=0; wd_miss_id="$WID"; }
 
   out="$(agent-deck session show "$CID" --json 2>/dev/null || true)"
   substate="$(printf '%s' "$out" | sed -n 's/.*"substate"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+
+  # A decision prompt is the human's to answer. Track how long it has been up
+  # so the user is told directly, whether or not a watchdog is alive.
+  if [ "$substate" = "awaiting-choice" ]; then
+    [ "$choice_since" -gt 0 ] || choice_since="$clock"
+    if [ $((clock - choice_since)) -ge "$CHOICE_ESCALATE" ] && [ "$clock" -ge "$choice_next_banner" ]; then
+      log "conductor has been awaiting a human choice for $((clock - choice_since))s — notifying the user."
+      command -v terminal-notifier >/dev/null 2>&1 && \
+        terminal-notifier -title "agent-deck orchestrate" \
+          -message "Conductor is waiting on YOUR answer ($((clock - choice_since))s). Run: agent-deck session attach $CID" || true
+      choice_next_banner=$((clock + INTERVAL))
+    fi
+  else
+    choice_since=0
+    choice_next_banner=0
+  fi
+
+  [ -n "$WID" ] && [ "$WID" != "$wd_dead_id" ] || return 0
+
   case "$substate" in
-    waiting|stalled)
+    awaiting-choice|stalled)
       # Debounce: one wake per INTERVAL for a persistent state. A state
       # *change* re-arms immediately; the watchdog's own "same state on next
       # wake → escalate" rule owns the follow-up within the window. Failed
@@ -101,6 +139,8 @@ wd_next_ok=0
 wd_misses=0
 wd_miss_id=""
 wd_dead_id=""
+choice_since=0
+choice_next_banner=0
 while :; do
   sleep "$DETECT"
   elapsed=$((elapsed + DETECT))
@@ -140,14 +180,29 @@ while :; do
         log "session not found (rc=2, miss $misses/$MAX_MISSES) id=$CID"
         ;;
       *)
-        # rc=1 is the one that matters: reachable but the message did not
-        # submit. That is the stalled-composer signature, not an absent session
-        # — exactly what the watchdog exists to judge, so wake it too.
-        misses=$((misses + 1))
-        log "NOT DELIVERED rc=$rc (miss $misses/$MAX_MISSES) $(printf '%s' "$out" | tr -d '\n' | cut -c1-200)"
-        WID="$(cat "$WD_FILE" 2>/dev/null || true)"
-        if [ -n "$WID" ] && [ "$WID" != "$wd_dead_id" ]; then
-          wake_watchdog "conductor nudge not submitted (rc=$rc) — stalled composer" || true
+        # A refusal because the conductor is showing a prompt only a human can
+        # answer is NOT a miss. The conductor is healthy and may legitimately
+        # wait hours; counting it would exhaust MAX_MISSES and kill the
+        # heartbeat of a live run — the loop must keep beating and keep
+        # escalating to the person instead. `session nudge` refuses this
+        # deliberately: sending would dismiss the prompt and paste its options
+        # into the composer as text.
+        if printf '%s' "$out" | grep -q 'SESSION_AWAITING_CHOICE'; then
+          log "beat withheld — conductor is waiting on a human choice (not a miss; misses stay at $misses)"
+          WID="$(cat "$WD_FILE" 2>/dev/null || true)"
+          if [ -n "$WID" ] && [ "$WID" != "$wd_dead_id" ]; then
+            wake_watchdog "conductor is showing a prompt only a human can answer" || true
+          fi
+        else
+          # rc=1 is the one that matters: reachable but the message did not
+          # submit. That is the stalled-composer signature, not an absent
+          # session — exactly what the watchdog exists to judge, so wake it too.
+          misses=$((misses + 1))
+          log "NOT DELIVERED rc=$rc (miss $misses/$MAX_MISSES) $(printf '%s' "$out" | tr -d '\n' | cut -c1-200)"
+          WID="$(cat "$WD_FILE" 2>/dev/null || true)"
+          if [ -n "$WID" ] && [ "$WID" != "$wd_dead_id" ]; then
+            wake_watchdog "conductor nudge not submitted (rc=$rc) — stalled composer" || true
+          fi
         fi
         ;;
     esac

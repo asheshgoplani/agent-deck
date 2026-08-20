@@ -21,9 +21,11 @@ case "\$1 \$2" in
     ;;
   "session nudge")
     printf 'nudge %s %s\n' "\$3" "\$4" >> "\$T/calls.log"
+    out_file="\$T/nudge_out_\$3"
+    [ -f "\$out_file" ] && cat "\$out_file"
     rc_file="\$T/nudge_rc_\$3"
     [ -f "\$rc_file" ] && exit "\$(cat "\$rc_file")"
-    printf '{"delivery":"delivered"}\n'
+    [ -f "\$out_file" ] || printf '{"delivery":"delivered"}\n'
     ;;
   *)
     printf 'unexpected agent-deck command: %s\n' "\$*" >&2
@@ -73,11 +75,14 @@ run_heartbeat() {
 printf 'cond-1\n' > "$TMP/.conductor-id"
 printf 'wd-1\n' > "$TMP/.watchdog-id"
 
-# 1. waiting substate -> the watchdog is nudged, not the conductor.
-printf 'waiting\n' > "$TMP/substate"
+# 1. awaiting-choice -> the watchdog is nudged, not the conductor.
+#    The detector used to match the SUBSTATE against `waiting`, but `waiting`
+#    is a coarse STATUS value and is never a substate — so only `stalled` could
+#    ever fire and a conductor sitting on a decision prompt was invisible.
+printf 'awaiting-choice\n' > "$TMP/substate"
 calls="$(run_heartbeat 3)"
-assert_contains "$calls" "nudge wd-1" "waiting nudges watchdog"
-assert_absent "$calls" "nudge cond-1" "waiting does not nudge conductor"
+assert_contains "$calls" "nudge wd-1" "awaiting-choice nudges watchdog"
+assert_absent "$calls" "nudge cond-1" "awaiting-choice does not nudge conductor"
 
 # 2. no .watchdog-id -> legacy behavior: conductor beats fire, no watchdog
 #    nudge, and the substate never gets polled into a wake.
@@ -89,7 +94,7 @@ printf 'wd-1\n' > "$TMP/.watchdog-id"
 
 # 3. debounce: a persistent substate yields one watchdog nudge per heartbeat
 #    window, but a substate CHANGE re-arms immediately.
-printf 'waiting\n' > "$TMP/substate"
+printf 'awaiting-choice\n' > "$TMP/substate"
 calls="$(run_heartbeat 4)"
 n="$(printf '%s\n' "$calls" | grep -c 'nudge wd-1' || true)"
 if [ "$n" -ne 1 ]; then
@@ -97,17 +102,17 @@ if [ "$n" -ne 1 ]; then
   exit 1
 fi
 
-printf 'waiting\n' > "$TMP/substate"
+printf 'awaiting-choice\n' > "$TMP/substate"
 ( sleep 2; printf 'stalled\n' > "$TMP/substate" ) &
 calls="$(run_heartbeat 4)"
 wait
-assert_contains "$calls" "substate=waiting" "first state nudged"
+assert_contains "$calls" "substate=awaiting-choice" "first state nudged"
 assert_contains "$calls" "substate=stalled" "changed state re-arms debounce"
 
 # 4. backstop: watchdog undeliverable for HEARTBEAT_MAX_MISSES detector ticks
 #    -> exactly MAX_MISSES attempts, then one terminal-notifier banner and no
 #    further attempts while the id is unchanged.
-printf 'waiting\n' > "$TMP/substate"
+printf 'awaiting-choice\n' > "$TMP/substate"
 printf '2\n' > "$TMP/nudge_rc_wd-1"
 calls="$(HEARTBEAT_MAX_MISSES=2 run_heartbeat 5)"
 rm -f "$TMP/nudge_rc_wd-1"
@@ -125,5 +130,28 @@ printf '1\n' > "$TMP/nudge_rc_cond-1"
 calls="$(HEARTBEAT_INTERVAL=2 run_heartbeat 3)"
 rm -f "$TMP/nudge_rc_cond-1"
 assert_contains "$calls" "nudge wd-1 Watchdog check: conductor nudge not submitted" "rc=1 wakes watchdog"
+
+# 6. a decision prompt the watchdog cannot answer must still reach the USER.
+#    The banner fires from the script, so escalation does not depend on a
+#    watchdog being alive — with no .watchdog-id at all it must still notify.
+rm -f "$TMP/.watchdog-id"
+printf 'awaiting-choice\n' > "$TMP/substate"
+calls="$(HEARTBEAT_INTERVAL=30 WATCHDOG_CHOICE_ESCALATE=2 run_heartbeat 5)"
+assert_contains "$calls" "notify" "awaiting-choice banners the user with no watchdog"
+assert_contains "$calls" "waiting on YOUR answer" "banner names the user as the blocker"
+printf 'wd-1\n' > "$TMP/.watchdog-id"
+
+# 7. a beat REFUSED because the conductor is awaiting a human choice is not a
+#    miss. Counting it would exhaust MAX_MISSES and kill the heartbeat of a
+#    healthy run that is simply waiting on a person — the exact opposite of
+#    what a supervisor should do.
+printf 'running\n' > "$TMP/substate"
+printf '1\n' > "$TMP/nudge_rc_cond-1"
+printf '{"outcome":"refused_awaiting_choice","error_code":"SESSION_AWAITING_CHOICE"}\n' > "$TMP/nudge_out_cond-1"
+calls="$(HEARTBEAT_INTERVAL=1 HEARTBEAT_MAX_MISSES=2 run_heartbeat 5)"
+rm -f "$TMP/nudge_rc_cond-1" "$TMP/nudge_out_cond-1"
+assert_contains "$(cat "$TMP/heartbeat.log")" "beat withheld" "awaiting-choice refusal is logged, not counted"
+assert_absent "$(cat "$TMP/heartbeat.log")" "FATAL" "heartbeat survives a run blocked on its human"
+assert_contains "$calls" "nudge wd-1 Watchdog check: conductor is showing a prompt" "refusal wakes the watchdog"
 
 printf '%s\n' 'heartbeat detector fixture: ok'
