@@ -229,6 +229,67 @@ func TestBuildPiCommand_WrongTool(t *testing.T) {
 	}
 }
 
+func seedLocalOMPSessionFile(t *testing.T, inst *Instance) {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("HOME"), ".omp", "agent-deck", inst.ID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir omp session dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write omp session file: %v", err)
+	}
+}
+
+func TestBuildOMPCommand_UsesInstanceScopedSessionDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	inst := &Instance{ID: "test-instance-id", Tool: "omp"}
+	got := inst.buildOMPCommand("omp")
+
+	wantSessionDir := "${HOME}/.omp/agent-deck/test-instance-id"
+	for _, want := range []string{
+		"session_dir=" + wantSessionDir,
+		"mkdir -p \"$session_dir\"",
+		"AGENTDECK_INSTANCE_ID=test-instance-id",
+		"omp --continue --session-dir \"$session_dir\"",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("buildOMPCommand() = %q, want to contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, tmpDir) {
+		t.Errorf("buildOMPCommand() must use target-side $HOME, got host path in %q", got)
+	}
+}
+
+func TestBuildOMPCommand_QuotesInstanceIDPathComponent(t *testing.T) {
+	inst := &Instance{ID: "test instance'id", Tool: "omp"}
+	got := inst.buildOMPCommand("omp")
+
+	wantSessionDir := `${HOME}/.omp/agent-deck/` + shellescape.Quote(inst.ID)
+	if !strings.Contains(got, "session_dir="+wantSessionDir) {
+		t.Errorf("buildOMPCommand() should quote instance ID path component %q, got %q", wantSessionDir, got)
+	}
+}
+
+func TestBuildOMPCommand_WrongTool(t *testing.T) {
+	inst := &Instance{Tool: "claude"}
+	got := inst.buildOMPCommand("some-command")
+	if got != "some-command" {
+		t.Errorf("buildOMPCommand with wrong tool = %q, want %q", got, "some-command")
+	}
+}
+
+func TestCanRestartOMP(t *testing.T) {
+	inst := &Instance{Tool: "omp", Status: StatusWaiting}
+	if !inst.CanRestart() {
+		t.Fatal("omp sessions should be restartable so Agent Deck can relaunch with --continue")
+	}
+}
+
 func TestCreateForkedPiInstance_UsesNativeForkAndPersistsBaseCommand(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	parent := NewInstanceWithTool("parent", "/tmp/project", "pi")

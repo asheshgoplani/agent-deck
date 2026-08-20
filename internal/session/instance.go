@@ -4843,6 +4843,16 @@ func (i *Instance) Start() error {
 			break
 		}
 		command = i.buildPiCommand(i.Command)
+	case i.Tool == "omp":
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
+		command = i.buildOMPCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
 	case i.Tool == "cursor":
@@ -5152,6 +5162,16 @@ func (i *Instance) StartWithMessage(message string) error {
 			break
 		}
 		command = i.buildPiCommand(i.Command)
+	case i.Tool == "omp":
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
+		command = i.buildOMPCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
 	case i.Tool == "crush":
@@ -8989,6 +9009,8 @@ func (i *Instance) restart(env map[string]string) error {
 			i.CodexStartedAt = time.Now().UnixMilli()
 		case i.Tool == "pi":
 			command = i.buildPiCommand(i.Command)
+		case i.Tool == "omp":
+			command = i.buildOMPCommand(i.Command)
 		case i.Tool == "copilot":
 			command = i.buildCopilotCommand(i.Command)
 		case i.Tool == "crush":
@@ -9453,6 +9475,13 @@ func (i *Instance) CanRestart() bool {
 	// Pi sessions are scoped to an Agent Deck instance-specific session dir and
 	// can always be relaunched with --continue.
 	if i.Tool == "pi" {
+		return true
+	}
+
+	// omp sessions are scoped to an Agent Deck instance-specific session dir
+	// and can always be relaunched with --continue (verified live: --continue
+	// on a fresh empty --session-dir starts a new session gracefully).
+	if i.Tool == "omp" {
 		return true
 	}
 
