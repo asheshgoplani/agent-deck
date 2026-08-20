@@ -63,6 +63,15 @@ const (
 // codes are provable without a network.
 type remoteRecordFetcher func(ctx context.Context, name string, rc session.RemoteConfig) ([]session.TransitionNotificationEvent, error)
 
+// remoteWriterProbe asks the remote whether anything is recording transitions
+// there. A package-level seam rather than a parameter so the existing drain
+// tests keep their signature; they leave it at the real implementation and are
+// unaffected because an unreachable stub host simply reports "unknown".
+var remoteWriterProbe = func(ctx context.Context, rc session.RemoteConfig, name string) (session.WriterStatus, bool) {
+	runner := session.NewSSHRunner(name, rc)
+	return runner.FetchWriterStatus(ctx)
+}
+
 func handleRemoteDrain(args []string) {
 	if code := runRemoteDrain(os.Stdout, os.Stderr, args, fetchRemoteRecordsOverSSH); code != 0 {
 		os.Exit(code)
@@ -111,13 +120,17 @@ func staleRemoteBinaryHint(remoteName, remoteVersion string, found bool) string 
 // remoteDrainResult is the --json shape, for a conductor that consumes the
 // drain programmatically on its heartbeat.
 type remoteDrainResult struct {
-	Remote          string                                `json:"remote"`
-	Host            string                                `json:"host"`
-	TargetSessionID string                                `json:"target_session_id"`
-	Fetched         int                                   `json:"fetched"`
-	Written         int                                   `json:"written"`
-	Duplicates      int                                   `json:"duplicates"`
-	Records         []session.TransitionNotificationEvent `json:"records"`
+	Remote          string `json:"remote"`
+	Host            string `json:"host"`
+	TargetSessionID string `json:"target_session_id"`
+	Fetched         int    `json:"fetched"`
+	Written         int    `json:"written"`
+	Duplicates      int    `json:"duplicates"`
+	// Writer reports whether the remote had anything recording transitions.
+	// Absent means the remote is too old to answer, which is reported as
+	// unknown rather than assumed healthy.
+	Writer  *session.WriterStatus                 `json:"writer,omitempty"`
+	Records []session.TransitionNotificationEvent `json:"records"`
 }
 
 func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordFetcher) int {
@@ -167,6 +180,14 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 	}
 
 	records, err := fetch(context.Background(), name, rc)
+
+	// Probed regardless of the fetch outcome and reported only where it changes
+	// the reading. nil means the remote could not answer — treated as unknown,
+	// never as healthy.
+	var writer *session.WriterStatus
+	if ws, ok := remoteWriterProbe(context.Background(), rc, name); ok {
+		writer = &ws
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: remote '%s' (%s) could not be drained: %v\n", name, rc.Host, err)
 		// True for both shapes of failure: a host that never answered, and a
@@ -193,6 +214,7 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 			Fetched:         len(records),
 			Written:         written,
 			Duplicates:      duplicates,
+			Writer:          writer,
 			Records:         records,
 		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
@@ -206,7 +228,20 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 	if len(records) == 0 {
 		// Reachable and empty is a real, distinct answer — say so, rather than
 		// printing nothing and letting it read like a failed call.
+		//
+		// But "empty" only means "all caught up" if something was WATCHING.
+		// Records are written solely by the remote's notify-daemon; with none
+		// running, every drain returns empty forever and reads as healthy. That
+		// ambiguity cost three rounds of the 2026-08-20 field test, so it gets
+		// said out loud rather than inferred.
 		fmt.Fprintln(stdout, "  Reachable: the remote holds no completion or transition records.")
+		if writer != nil && !writer.Running {
+			fmt.Fprintln(stdout)
+			fmt.Fprintln(stdout, "  ⚠ NOTHING IS RECORDING ON THAT HOST — this empty result is not evidence that its sessions are idle.")
+			fmt.Fprintf(stdout, "    %s\n", writer.Detail)
+		} else if writer == nil {
+			fmt.Fprintln(stdout, "  (That remote is too old to report whether a writer is running, so this empty result is unverified.)")
+		}
 		return 0
 	}
 	printInboxEventLines(stdout, records)
