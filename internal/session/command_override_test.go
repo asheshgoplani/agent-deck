@@ -32,7 +32,7 @@ func TestGetToolCommand_NoConfig(t *testing.T) {
 	ClearUserConfigCache()
 	defer ClearUserConfigCache()
 
-	tools := []string{"claude", "gemini", "opencode", "codex", "copilot", "hermes"}
+	tools := []string{"claude", "gemini", "opencode", "codex", "copilot", "hermes", "omp"}
 	for _, tool := range tools {
 		got := GetToolCommand(tool)
 		if got != tool {
@@ -49,6 +49,7 @@ func TestGetToolCommand_WithOverride(t *testing.T) {
 		Codex:    CodexSettings{Command: "codex --experimental"},
 		Copilot:  CopilotSettings{Command: "gh copilot"},
 		Hermes:   HermesSettings{Command: "hermes --model gpt-5.5-pro --provider openai"},
+		OMP:      OMPSettings{Command: "omp --smol haiku"},
 	}
 	restore := resetUserConfigCache(t, cfg)
 	defer restore()
@@ -63,13 +64,26 @@ func TestGetToolCommand_WithOverride(t *testing.T) {
 		{"codex", "codex --experimental"},
 		{"copilot", "gh copilot"},
 		{"hermes", "hermes --model gpt-5.5-pro --provider openai"},
+		{"omp", "omp --smol haiku"},
 	}
-
 	for _, tt := range tests {
 		got := GetToolCommand(tt.tool)
 		if got != tt.expected {
 			t.Errorf("GetToolCommand(%q) = %q, want %q", tt.tool, got, tt.expected)
 		}
+	}
+}
+
+func TestGetToolIcon_OMP(t *testing.T) {
+	icon := GetToolIcon("omp")
+	if icon == "" {
+		t.Error("GetToolIcon(\"omp\") returned empty")
+	}
+	if icon == GetToolIcon("shell") {
+		t.Errorf("GetToolIcon(\"omp\") = %q equals shell fallback (want a distinct icon)", icon)
+	}
+	if icon == GetToolIcon("pi") {
+		t.Errorf("GetToolIcon(\"omp\") = %q must not collide with the unrelated \"pi\" tool's icon", icon)
 	}
 }
 
