@@ -80,7 +80,7 @@ func (p *ToolVisibilityPanel) LoadConfig(config *session.UserConfig) {
 		builtins := map[string]bool{
 			"claude": true, "gemini": true, "opencode": true, "codex": true,
 			"pi": true, "copilot": true, "crush": true, "cursor": true, "hermes": true,
-			"deepseek": true, "shell": true, "aider": true,
+			"deepseek": true, "shell": true, "aider": true, "omp": true,
 		}
 		var custom []string
 		for name := range config.Tools {

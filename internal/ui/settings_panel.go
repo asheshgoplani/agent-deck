@@ -396,7 +396,7 @@ func (s *SettingsPanel) buildToolLists(config *session.UserConfig) {
 			"claude": true, "gemini": true, "opencode": true,
 			"codex": true, "pi": true, "crush": true, "copilot": true,
 			"shell": true, "cursor": true, "aider": true, "hermes": true,
-			"deepseek": true, "muse": true,
+			"deepseek": true, "muse": true, "omp": true,
 		}
 		var custom []string
 		for name := range config.Tools {
