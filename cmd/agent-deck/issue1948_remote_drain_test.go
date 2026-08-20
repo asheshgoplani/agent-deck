@@ -100,8 +100,12 @@ func TestIssue1948_RemoteDrain_WritesRemoteCompletionIntoLocalInbox(t *testing.T
 	if pending[0].TargetSessionID != conductor {
 		t.Fatalf("pulled record must be addressed to the draining conductor: %+v", pending[0])
 	}
-	if !strings.Contains(stdout.String(), "1 record(s) fetched, 1 new, 0 already present") {
+	if !strings.Contains(stdout.String(), "1 record(s) fetched, 1 new (shown above), 0 already present") {
 		t.Fatalf("drain report unclear:\n%s", stdout.String())
+	}
+	// The record itself is listed, because it is genuinely new on this run.
+	if !strings.Contains(stdout.String(), "worker-on-b") {
+		t.Fatalf("a newly committed record must be shown, not just counted:\n%s", stdout.String())
 	}
 
 	// And the conductor's normal consumption path surfaces it.
@@ -144,8 +148,15 @@ func TestIssue1948_RemoteDrain_SecondDrainIsIdempotent(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("second drain double-wrote: inbox holds %d records: %+v", len(pending), pending)
 	}
-	if !strings.Contains(out2.String(), "1 record(s) fetched, 0 new, 1 already present") {
+	if !strings.Contains(out2.String(), "1 record(s) fetched, nothing new — all already present") {
 		t.Fatalf("second drain must report the duplicate explicitly:\n%s", out2.String())
+	}
+	// Field finding 2026-08-20: a drain that committed nothing must not re-print
+	// the backlog as though it had just arrived. The remote is read-only, so it
+	// keeps serving the same records on every heartbeat, and listing them again
+	// made routine polling look like a stream of new work.
+	if strings.Contains(out2.String(), "worker-on-b") {
+		t.Fatalf("a drain that committed nothing must not re-list already-present records:\n%s", out2.String())
 	}
 }
 
