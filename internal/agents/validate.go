@@ -183,6 +183,15 @@ func credentialTokenShape(token string) (string, bool) {
 	if len(trimmed) < 12 || strings.ContainsAny(trimmed, structuralChars) || looksLikePath(trimmed) {
 		return "", false
 	}
+	// A slash-bearing token that draws on only one character class is a
+	// relative path, not a secret: "internal/agents/validate.go" is a
+	// perfectly ordinary thing to write on a line that also says "token".
+	// A base64 secret carrying a slash spans several classes — the canonical
+	// AWS key has lower, upper and digits — so this separates them without
+	// reintroducing the two-slash path rule that would have swallowed it.
+	if strings.Contains(trimmed, "/") && namedClasses(trimmed) < 2 {
+		return "", false
+	}
 	// Mostly alphanumeric, and containing at least one letter. A run of
 	// punctuation is not a secret however long it is.
 	if !mostlyAlphanumeric(trimmed) {
@@ -261,6 +270,15 @@ func selfEvidentSecretValue(token string) bool {
 //   - the identifier exemption, so a dash-separated passphrase
 //     ("Tr0ub4dor-and-3-horses") is caught while
 //     "release-candidate-verification-checklist-v2" in prose is not.
+//
+// The second exemption is a KNOWN, accepted trade rather than an oversight. A
+// passphrase password and a kebab-case document slug are the same shape —
+// "correct-horse-battery-staple" could be either — so a secret-named key
+// introducing a slug ("Secret runbook: quarterly-key-rotation-checklist") is
+// refused. Catching a real passphrase is worth occasionally declining to copy
+// a file, because that failure is LOUD: a warning naming the line plus an
+// unresolved item on the definition, never a silent drop. Narrowing this
+// further would reopen the passphrase miss, which is silent.
 func assignmentSecretValue(token string) bool {
 	trimmed := strings.Trim(token, `"'`+"`"+`.,;:()[]{}<>`)
 	if len(trimmed) < 16 || strings.ContainsAny(trimmed, structuralChars) || looksLikePath(trimmed) {

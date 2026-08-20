@@ -155,3 +155,64 @@ func TestScanForCredentialsRoundFourResiduals(t *testing.T) {
 		}
 	}
 }
+
+// Round 5 N1: a relative path on a line that also mentions a credential is
+// ordinary engineering documentation, not a leak.
+func TestScanForCredentialsRelativePaths(t *testing.T) {
+	mustCopy := []string{
+		"The API key is read from internal/agents/validate.go\n",
+		"Token handling lives in internal/session/userconfig.go\n",
+		"Password rules are in docs/policy/credentials.md\n",
+		"| secret | internal/session/userconfig.go |\n",
+		"The secret loader is cmd/agent-deck/agents_cmd.go\n",
+		"Logs live in /home/ashesh/.local/share/agent-deck/logs/transition.log\n",
+		"See https://github.com/asheshgoplani/agent-deck/pull/1996 for context.\n",
+		"Run ./scripts/overnight-manager.sh from the repo root.\n",
+	}
+	for _, line := range mustCopy {
+		if lines := ScanForCredentials(line); len(lines) != 0 {
+			t.Errorf("FALSE POSITIVE on a path: %q -> lines %v", line, lines)
+		}
+	}
+
+	// ...without reopening F2: a slash-bearing base64 secret spans several
+	// character classes and must still be caught.
+	mustRefuse := []string{
+		"aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+		"The AWS secret is wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+		"The API key is aGVsbG9Xb3JsZFRoaXNJc0/EzMkNoYXJz\n",
+	}
+	for _, line := range mustRefuse {
+		if len(ScanForCredentials(line)) == 0 {
+			t.Errorf("MISS a slash-bearing secret: %q", line)
+		}
+	}
+}
+
+// Round 5 N2 is an accepted trade, pinned here so the behaviour is deliberate
+// rather than accidental: a passphrase password and a kebab-case document slug
+// are indistinguishable by shape, so a secret-named key introducing a slug is
+// refused. The failure is loud (a warning plus an unresolved item), and the
+// alternative — missing a real passphrase — is silent.
+func TestScanForCredentialsPassphraseSlugAmbiguityIsDeliberate(t *testing.T) {
+	// The credential half of the trade must stay caught.
+	for _, line := range []string{
+		"password: Tr0ub4dor-and-3-horses\n",
+		"The app password is correct-horse-battery-staple\n",
+	} {
+		if len(ScanForCredentials(line)) == 0 {
+			t.Errorf("MISS a passphrase: %q", line)
+		}
+	}
+
+	// A slug in ordinary prose, with no secret-named key introducing it, is
+	// still copied — which is the common case.
+	for _, line := range []string{
+		"See workflow release-candidate-verification-checklist-v2.\n",
+		"The session is agent-deck-transition-notifier and it is healthy.\n",
+	} {
+		if lines := ScanForCredentials(line); len(lines) != 0 {
+			t.Errorf("FALSE POSITIVE on a slug in prose: %q -> %v", line, lines)
+		}
+	}
+}
