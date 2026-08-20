@@ -9581,6 +9581,12 @@ func (i *Instance) CanFork() bool {
 		return i.CanForkPi()
 	}
 
+	// omp sessions fork by source JSONL path under Agent Deck's per-instance
+	// omp session directory, identical shape to Pi's fork gate.
+	if i.Tool == "omp" {
+		return i.CanForkOMP()
+	}
+
 	// Codex-compatible sessions fork via `codex fork <sid>`, gated on a
 	// flushed on-disk rollout (same invariant as `codex resume`).
 	if IsCodexCompatible(i.Tool) {
@@ -9816,6 +9822,8 @@ func (i *Instance) CreateForkedInstanceForTool(newTitle, newGroupPath string, op
 		return i.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(newTitle, newGroupPath, nil, workDir, repoRoot, branch)
 	case i.Tool == "pi":
 		return i.CreateForkedPiInstanceWithOptions(newTitle, newGroupPath, opts)
+	case i.Tool == "omp":
+		return i.CreateForkedOMPInstanceWithOptions(newTitle, newGroupPath, opts)
 	case IsCodexCompatible(i.Tool):
 		return i.CreateForkedCodexInstanceWithOptions(newTitle, newGroupPath, opts)
 	default:

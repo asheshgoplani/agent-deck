@@ -374,6 +374,95 @@ func TestCanRestartPi(t *testing.T) {
 	}
 }
 
+func TestCreateForkedOMPInstance_UsesNativeForkAndPersistsBaseCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := NewInstanceWithTool("parent", "/tmp/project", "omp")
+	parent.ID = "parent-omp-id"
+	parent.GroupPath = "projects/omp"
+	parent.Command = "omp"
+	seedLocalOMPSessionFile(t, parent)
+
+	forked, cmd, err := parent.CreateForkedOMPInstanceWithOptions("forked", "", nil)
+	if err != nil {
+		t.Fatalf("CreateForkedOMPInstanceWithOptions() failed: %v", err)
+	}
+
+	if forked.Tool != "omp" {
+		t.Fatalf("forked.Tool = %q, want omp", forked.Tool)
+	}
+	if forked.GroupPath != "projects/omp" {
+		t.Fatalf("forked.GroupPath = %q, want inherited group", forked.GroupPath)
+	}
+	if forked.Command != "omp" {
+		t.Fatalf("forked.Command = %q, want base command for later --continue restarts", forked.Command)
+	}
+	if !forked.IsForkAwaitingStart {
+		t.Fatal("forked omp instance should carry IsForkAwaitingStart for first launch")
+	}
+	if forked.ForkStartCommand != cmd {
+		t.Fatalf("ForkStartCommand should hold the first-start fork command")
+	}
+
+	for _, want := range []string{
+		"parent_session_dir=${HOME}/.omp/agent-deck/parent-omp-id",
+		"session_dir=${HOME}/.omp/agent-deck/" + forked.ID,
+		`source_file=$(find "$parent_session_dir" -type f -name '*.jsonl' -exec ls -t {} +`,
+		`AGENTDECK_INSTANCE_ID=` + forked.ID,
+		`omp --fork "$source_file" --session-dir "$session_dir"`,
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("omp fork command = %q, want to contain %q", cmd, want)
+		}
+	}
+	if strings.Contains(cmd, "--continue") {
+		t.Fatalf("omp fork command must not include --continue: %s", cmd)
+	}
+
+	resumeCmd := forked.buildOMPCommand(forked.Command)
+	if !strings.Contains(resumeCmd, `omp --continue --session-dir "$session_dir"`) {
+		t.Fatalf("omp forked instance restart command should resume with --continue, got: %s", resumeCmd)
+	}
+	if strings.Contains(resumeCmd, "--fork") {
+		t.Fatalf("omp forked instance restart command must not replay --fork, got: %s", resumeCmd)
+	}
+}
+
+func TestCreateForkedOMPInstance_WorktreeOptions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := NewInstanceWithTool("parent", "/tmp/project", "omp")
+	parent.ID = "parent-omp-id"
+	seedLocalOMPSessionFile(t, parent)
+
+	opts := &ClaudeOptions{
+		WorkDir:          "/tmp/project-wt",
+		WorktreePath:     "/tmp/project-wt",
+		WorktreeRepoRoot: "/tmp/project",
+		WorktreeBranch:   "fork/omp",
+	}
+	forked, _, err := parent.CreateForkedOMPInstanceWithOptions("forked", "custom", opts)
+	if err != nil {
+		t.Fatalf("CreateForkedOMPInstanceWithOptions() failed: %v", err)
+	}
+	if forked.ProjectPath != "/tmp/project-wt" {
+		t.Fatalf("forked.ProjectPath = %q, want worktree path", forked.ProjectPath)
+	}
+	if forked.WorktreePath != "/tmp/project-wt" || forked.WorktreeRepoRoot != "/tmp/project" || forked.WorktreeBranch != "fork/omp" {
+		t.Fatalf("forked worktree fields not copied: %+v", forked)
+	}
+}
+
+func TestCanForkOMP_RequiresLocalSessionFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	inst := &Instance{ID: "no-session-omp", Tool: "omp"}
+	if inst.CanForkOMP() {
+		t.Fatal("CanForkOMP() should be false with no local session JSONL")
+	}
+	seedLocalOMPSessionFile(t, inst)
+	if !inst.CanForkOMP() {
+		t.Fatal("CanForkOMP() should be true once a local session JSONL exists")
+	}
+}
+
 func TestGetToolEnvFile_AllBuiltins(t *testing.T) {
 	cfg := &UserConfig{
 		Claude:   ClaudeSettings{EnvFile: "/tmp/claude.env"},
