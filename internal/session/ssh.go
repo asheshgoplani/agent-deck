@@ -537,6 +537,30 @@ func (r *SSHRunner) FetchPendingRecords(ctx context.Context) ([]TransitionNotifi
 	return records, nil
 }
 
+// FetchWriterStatus asks the remote whether anything is recording transitions
+// there. It is a SEPARATE call rather than a field on the export, so a remote
+// too old to know the command degrades to "unknown" instead of failing the whole
+// drain — the export's array contract is unchanged and older hosts keep working.
+//
+// Unknown is reported honestly rather than assumed healthy: this exists because
+// an empty result was being read as "all caught up", and swapping one silent
+// assumption for another would not be a fix.
+func (r *SSHRunner) FetchWriterStatus(ctx context.Context) (WriterStatus, bool) {
+	output, err := r.Run(ctx, "inbox", "writer-status", "--json")
+	if err != nil {
+		return WriterStatus{}, false
+	}
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return WriterStatus{}, false
+	}
+	var status WriterStatus
+	if err := json.Unmarshal(trimmed, &status); err != nil {
+		return WriterStatus{}, false
+	}
+	return status, true
+}
+
 // firstLineOf trims a remote reply to its first line, bounded, so an error
 // message quotes the remote's complaint without pasting a whole usage screen.
 func firstLineOf(b []byte) string {
