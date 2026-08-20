@@ -16540,15 +16540,34 @@ func (h *Home) buildGroupRenderStats(snapshot map[string]sessionRenderState) map
 		return stats
 	}
 
+	// #1987: count the partition being rendered, not the whole slice. A group's
+	// Sessions holds active and archived rows together while the deck renders
+	// exactly one partition at a time (rebuildFlatItems keeps only the rows whose
+	// IsArchived matches the current view), so a raw len() reports sessions the
+	// header is not heading — `demo (5)` above two rows, or `My Sessions (180)`
+	// above 19. The running/waiting tallies are wrong for a second reason that
+	// the same filter fixes: archiving does not reset Status and the status
+	// updater skips archived sessions (see shouldPollStatusInLoop), so an archived
+	// session contributes whatever it was doing when it was archived, forever.
+	//
+	// The rule is partition-aware rather than archive-excluding: in the archived
+	// view (^) the header must count archived rows, because those are the rows
+	// underneath it. Same shape as SameArchivePartition in the reorder path.
+	viewArchived := h.statusFilter == FilterModeArchived
+
 	for path, g := range h.groupTree.Groups {
 		if g == nil {
 			continue
 		}
 
-		directSessions := len(g.Sessions)
+		directSessions := 0
 		directRunning := 0
 		directWaiting := 0
 		for _, sess := range g.Sessions {
+			if sess.IsArchived() != viewArchived {
+				continue
+			}
+			directSessions++
 			state, ok := snapshot[sess.ID]
 			status := sess.Status
 			if ok {
