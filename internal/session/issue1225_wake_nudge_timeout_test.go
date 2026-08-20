@@ -36,9 +36,10 @@ func TestIssue1225_WakeNudgeSendHasTimeout(t *testing.T) {
 	}
 }
 
-// The resolved command line is the expected `[-p profile] session send <ref>
-// <msg> --no-wait -q` — proving the timeout wrapper didn't drop --no-wait (which
-// is what keeps the send fire-and-forget independent of the context bound).
+// The resolved command line is the expected `[-p profile] session nudge <ref>
+// <msg> -q` — `session nudge` (not blind `session send`) so the wake refuses an
+// awaiting-choice/stalled pane, restores any composer draft, and verifies
+// submission; the surrounding context deadline bounds the whole verification.
 func TestIssue1225_WakeNudgeSendCommandShape(t *testing.T) {
 	orig := wakeNudgeExec
 	t.Cleanup(func() { wakeNudgeExec = orig })
@@ -52,7 +53,7 @@ func TestIssue1225_WakeNudgeSendCommandShape(t *testing.T) {
 	if err := sendWakeNudgeNoWait("myprofile", "parent-y"); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	want := []string{"-p", "myprofile", "session", "send", "parent-y", wakeNudgeMessage, "--no-wait", "-q"}
+	want := []string{"-p", "myprofile", "session", "nudge", "parent-y", wakeNudgeMessage, "-q"}
 	if len(gotArgs) != len(want) {
 		t.Fatalf("args = %v, want %v", gotArgs, want)
 	}
