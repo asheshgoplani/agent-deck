@@ -380,17 +380,26 @@ func (ap *AgentsPanel) renderDetail(width int) string {
 	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorCyan)
 	valueStyle := lipgloss.NewStyle().Foreground(ColorText)
 
-	roleLine := row.Role
+	// Every field on this header comes from a definition file, so all of it
+	// is untrusted text. An unsanitized post id or role name could erase the
+	// panel border and forge a "link ok" line — the exact string this feature
+	// exists to make trustworthy.
+	roleLine := agents.SanitizeForDisplay(row.Role)
 	if row.RoleVersion != "" {
-		roleLine += " " + row.RoleVersion
+		roleLine += " " + agents.SanitizeForDisplay(row.RoleVersion)
 	}
-	sb.WriteString(titleStyle.Render(" " + row.Name))
+	sb.WriteString(titleStyle.Render(" " + agents.SanitizeForDisplay(row.Name)))
 	sb.WriteString(dimStyle.Render(fmt.Sprintf("  ·  role: %s  ·  %s  ·  %s",
-		roleLine, harnessLabel(row), row.Machine)))
+		roleLine, agents.SanitizeForDisplay(harnessLabel(row)), agents.SanitizeForDisplay(row.Machine))))
 	sb.WriteString("\n")
 	sb.WriteString(dimStyle.Render(fmt.Sprintf(" post %s  ·  reports to %s  ·  %s",
-		row.PostID, row.ReportsTo, row.State)))
+		agents.SanitizeForDisplay(row.PostID), agents.SanitizeForDisplay(row.ReportsTo), row.State)))
 	sb.WriteString("\n")
+	if row.ReportsToIssue != "" {
+		sb.WriteString(lipgloss.NewStyle().Foreground(ColorRed).
+			Render(" ! " + truncateStr(agents.SanitizeForDisplay(row.ReportsToIssue), width-4)))
+		sb.WriteString("\n")
+	}
 	sb.WriteString(strings.Repeat("─", width))
 	sb.WriteString("\n")
 
@@ -406,10 +415,11 @@ func (ap *AgentsPanel) renderDetail(width int) string {
 				owner = "ARMED HERE"
 			}
 			sb.WriteString(fmt.Sprintf("   %s %-20s %-14s %s\n",
-				triggerGlyph(t), truncateStr(t.Name, 20), truncateStr(t.NextDueText, 14),
+				triggerGlyph(t), truncateStr(agents.SanitizeForDisplay(t.Name), 20),
+				truncateStr(agents.SanitizeForDisplay(t.NextDueText), 14),
 				dimStyle.Render("["+owner+"]")))
 			if t.Note != "" {
-				sb.WriteString(dimStyle.Render("       " + truncateStr(t.Note, width-8)))
+				sb.WriteString(dimStyle.Render("       " + truncateStr(agents.SanitizeForDisplay(t.Note), width-8)))
 				sb.WriteString("\n")
 			}
 		}

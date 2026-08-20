@@ -39,9 +39,16 @@ type LaunchSource struct {
 	// ScheduleKey names which systemd key produced IntervalSeconds, so a
 	// report can say where the cadence came from.
 	ScheduleKey string `json:"schedule_key,omitempty"`
-	KeepAlive   bool   `json:"keep_alive,omitempty"`
-	RunAtLoad   bool   `json:"run_at_load,omitempty"`
-	RestartMode string `json:"restart_mode,omitempty"`
+	// HasUnrepresentableSchedule marks a source that demonstrably fires on a
+	// schedule which has no exact cron equivalent. The trigger is still
+	// recorded — as opaque — so the fleet view never shows an agent with
+	// nothing firing it when something plainly does.
+	HasUnrepresentableSchedule bool `json:"has_unrepresentable_schedule,omitempty"`
+	// RawScheduleText is the source's own spelling of that schedule.
+	RawScheduleText string `json:"raw_schedule_text,omitempty"`
+	KeepAlive       bool   `json:"keep_alive,omitempty"`
+	RunAtLoad       bool   `json:"run_at_load,omitempty"`
+	RestartMode     string `json:"restart_mode,omitempty"`
 	// Warnings record what could be seen but not understood.
 	Warnings []string `json:"warnings,omitempty"`
 }
@@ -97,6 +104,27 @@ func (s *LaunchSource) ProgramStatus() ProgramStatus {
 // literal. Everything else — %i, %n, %t, %S, %E, %C, %v, %m, %b — depends on
 // instance name or runtime context that is not knowable from the file, and
 // guessing at them is how a running service gets called debris.
+// isSystemScopeUnit reports whether a unit path is a system unit rather than
+// one of this user's.
+func isSystemScopeUnit(path string) bool {
+	cleaned := filepath.ToSlash(filepath.Clean(path))
+	for _, prefix := range []string{"/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system", "/run/systemd/system"} {
+		if strings.HasPrefix(cleaned, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// expandSystemdSpecifiersIf expands only when the adopting process's identity
+// is the identity the unit would run as.
+func expandSystemdSpecifiersIf(ourIdentity bool, value string) string {
+	if !ourIdentity {
+		return value
+	}
+	return expandSystemdSpecifiers(value)
+}
+
 func expandSystemdSpecifiers(value string) string {
 	if value == "" || !strings.Contains(value, "%") {
 		return value
@@ -174,6 +202,8 @@ func ParseLaunchdPlist(path string) (*LaunchSource, error) {
 	if cal, ok := root.dict["StartCalendarInterval"]; ok {
 		src.CalendarSpec = renderCalendarInterval(cal)
 		if src.CalendarSpec == "" {
+			src.HasUnrepresentableSchedule = true
+			src.RawScheduleText = describeCalendarInterval(cal)
 			src.Warnings = append(src.Warnings,
 				"StartCalendarInterval is present but has no exact cron equivalent "+
 					"(an array of intervals, or both Day and Weekday, which launchd ANDs and cron ORs); "+
@@ -401,12 +431,19 @@ func ParseSystemdUnit(path string) (*LaunchSource, error) {
 	}
 
 	service := sections["Service"]
+	// %h, %u and %U belong to the identity the unit RUNS AS. That is this
+	// process only for a user unit with no User= override. For a system unit,
+	// or one that sets User=, expanding with the adopting process's identity
+	// would resolve to the wrong path — and a wrong path resolves to
+	// "missing", which is how a running service got called debris in the
+	// first place. Leave them unexpanded so the answer stays UNKNOWN.
+	identityIsOurs := !isSystemScopeUnit(path) && firstValue(service, "User") == ""
 	if execStart := firstValue(service, "ExecStart"); execStart != "" {
 		argv := splitArgv(execStart)
 		if len(argv) > 0 {
 			// systemd allows a leading "-", "@", "+", "!" on ExecStart.
 			raw := strings.TrimLeft(argv[0], "-@+!:")
-			src.Program = expandSystemdSpecifiers(raw)
+			src.Program = expandSystemdSpecifiersIf(identityIsOurs, raw)
 			src.Arguments = argv
 			if src.Program != raw {
 				src.Warnings = append(src.Warnings,
@@ -419,7 +456,7 @@ func ParseSystemdUnit(path string) (*LaunchSource, error) {
 			}
 		}
 	}
-	src.WorkingDirectory = expandSystemdSpecifiers(firstValue(service, "WorkingDirectory"))
+	src.WorkingDirectory = expandSystemdSpecifiersIf(identityIsOurs, firstValue(service, "WorkingDirectory"))
 	src.RestartMode = firstValue(service, "Restart")
 	for _, env := range service["Environment"] {
 		// Split only far enough to learn the key. The value is discarded
@@ -523,6 +560,28 @@ func parseINI(path string) (map[string]map[string][]string, error) {
 // splitArgv splits a command line on whitespace, honoring quotes. It does not
 // expand variables, globs, or command substitution — introspection must never
 // evaluate shell.
+// describeCalendarInterval renders a StartCalendarInterval as readable text
+// for a trigger whose schedule has no cron equivalent, so the row shows the
+// real terms rather than nothing.
+func describeCalendarInterval(v plistValue) string {
+	if v.kind == "array" {
+		return fmt.Sprintf("launchd StartCalendarInterval (%d intervals)", len(v.array))
+	}
+	if v.kind != "dict" {
+		return "launchd StartCalendarInterval"
+	}
+	parts := make([]string, 0, len(v.order))
+	for _, key := range v.order {
+		if item, ok := v.dict[key]; ok && item.kind == "integer" {
+			parts = append(parts, fmt.Sprintf("%s=%d", key, item.num))
+		}
+	}
+	if len(parts) == 0 {
+		return "launchd StartCalendarInterval"
+	}
+	return "launchd " + strings.Join(parts, " ")
+}
+
 func splitArgv(line string) []string {
 	var args []string
 	var current strings.Builder

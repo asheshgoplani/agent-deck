@@ -455,6 +455,20 @@ func applyUnitToPost(post *Post, unit *LaunchSource) {
 		})
 		post.AddEvidence("spec.triggers."+base+"-keepalive", "KeepAlive", unit.Path, ConfidenceHigh,
 			"kept alive by the launcher rather than fired on a schedule")
+	case unit.HasUnrepresentableSchedule:
+		// The source demonstrably fires this post; we just cannot express its
+		// schedule. Declining the SCHEDULE is right, but dropping the TRIGGER
+		// would show an agent with nothing firing it — understating the fleet,
+		// which is the failure this phase exists to avoid. Same vocabulary the
+		// systemd path already uses for an inexpressible OnCalendar.
+		post.Spec.Triggers = append(post.Spec.Triggers, Trigger{
+			Name: base + "-calendar", Type: TriggerOpaque,
+			Schedule: unit.RawScheduleText,
+			Enabled:  false, External: true, ExternalSource: unit.Path,
+			Deliver: fixedDeliveryFor(post.Spec.Role.Name),
+		})
+		post.AddEvidence("spec.triggers."+base+"-calendar", unit.RawScheduleText, unit.Path, ConfidenceHigh,
+			"this fires on a schedule with no exact cron equivalent; no next-due time is computed")
 	}
 
 	if unit.RestartMode != "" {

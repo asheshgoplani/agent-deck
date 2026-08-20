@@ -38,6 +38,10 @@ func (h *Home) refreshAgentsPanel() {
 		// A registry that cannot be read is reported, not swallowed: the
 		// alternative is a deck that silently claims the user has no agents.
 		h.agentsLoadError = err.Error()
+		// A registry we could not read is not a registry with agents in it.
+		// Leaving the previous value would keep advertising a surface whose
+		// data just failed to load.
+		h.helpOverlay.SetHasAgents(false)
 		return
 	}
 	h.agentsLoadError = ""

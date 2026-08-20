@@ -223,3 +223,40 @@ func TestAgentsPanelNeverContactedMachineSaysSo(t *testing.T) {
 		t.Errorf("an uncontacted machine does not say so:\n%s", out)
 	}
 }
+
+// Round 2 R1: the DETAIL screen's header and trigger fields are definition
+// content too, and were not sanitized. An unsanitized post id could erase the
+// panel border and forge the "link ok" line this feature exists to make
+// trustworthy.
+func TestAgentsPanelDetailStripsControlSequences(t *testing.T) {
+	view := agents.View{
+		TotalAgents: 1,
+		Machines: []agents.Machine{{
+			Name: "g14", Link: agents.LinkLocal,
+			Agents: []agents.AgentRow{{
+				Name:      "ok-name",
+				Role:      "manager\x1b[2K\rlink ok, drained 2m ago",
+				PostID:    "post\x1b[2K\rforged",
+				ReportsTo: "human:root\x1b[31m",
+				Machine:   "g14\x1b[2K",
+				Class:     agents.ClassAgent,
+				State:     agents.RunIdle,
+				Triggers: []agents.TriggerRow{{
+					Name: "trig\x1b[2K\rDISABLED", Kind: agents.TriggerCron,
+					External: true, ExternalSource: "/x.plist",
+					NextDueText: "cron 5m\x1b[2K", Note: "note\x1b[2K",
+				}},
+			}},
+		}},
+	}
+	ap := NewAgentsPanel()
+	ap.SetSize(120, 40)
+	ap.Show()
+	ap.SetView(view, time.Now())
+	ap.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	out := ap.View()
+	if strings.Contains(out, "\x1b[2K") || strings.Contains(out, "\r") {
+		t.Errorf("detail screen passed a control sequence through:\n%q", out)
+	}
+}

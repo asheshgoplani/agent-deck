@@ -128,6 +128,9 @@ type AgentRow struct {
 	Violations []string `json:"violations,omitempty"`
 	// ReportsTo is the manager post or human principal.
 	ReportsTo string `json:"reports_to,omitempty"`
+	// ReportsToIssue is set when this post's escalation chain is broken —
+	// a cycle, an unknown parent, or a chain that never reaches a human.
+	ReportsToIssue string `json:"reports_to_issue,omitempty"`
 }
 
 // NextDue returns the soonest declared next-due across this row's triggers.
@@ -271,6 +274,12 @@ func BuildView(opts BuildOptions) View {
 		})
 	}
 
+	// The escalation graph can only be checked across the whole set, so it
+	// runs here rather than per row. Without this call the validator existed
+	// but nothing ever ran it, and a post reporting to a nonexistent manager
+	// rendered with no complaint anywhere.
+	applyReportsToFindings(&view, opts.Definitions)
+
 	for _, machine := range view.Machines {
 		for _, row := range machine.Agents {
 			view.TotalAgents++
@@ -280,6 +289,47 @@ func BuildView(opts BuildOptions) View {
 		}
 	}
 	return view
+}
+
+// applyReportsToFindings walks the reports_to graph and attaches each finding
+// to the row it concerns.
+func applyReportsToFindings(view *View, defs []*Definition) {
+	posts := make([]*Post, 0, len(defs))
+	byName := map[string]bool{}
+	for _, def := range defs {
+		if def != nil && def.Post != nil {
+			posts = append(posts, def.Post)
+			byName[def.Post.Metadata.Name] = true
+		}
+	}
+	if len(posts) == 0 {
+		return
+	}
+
+	issues := map[string]string{}
+	for _, finding := range ValidateReportsTo(posts) {
+		// Fields are of the form "post.<name>.spec.placement.reportsTo".
+		field := strings.TrimPrefix(finding.Field, "post.")
+		name := strings.TrimSuffix(field, ".spec.placement.reportsTo")
+		if name == "" || !byName[name] {
+			view.Notices = append(view.Notices, finding.Message)
+			continue
+		}
+		if _, seen := issues[name]; !seen {
+			issues[name] = finding.Message
+		}
+	}
+	if len(issues) == 0 {
+		return
+	}
+	for mi := range view.Machines {
+		for ri := range view.Machines[mi].Agents {
+			row := &view.Machines[mi].Agents[ri]
+			if issue, ok := issues[row.Name]; ok {
+				row.ReportsToIssue = issue
+			}
+		}
+	}
 }
 
 func buildRow(def *Definition, opts BuildOptions, now time.Time, localMachine string, recentLimit int) AgentRow {
@@ -384,16 +434,21 @@ func (r AgentRow) Armed() bool {
 // attentionFor decides whether a row should be loud, and why. Only proven
 // problems qualify: an unknown connector is not an alarm, it is an unknown.
 func attentionFor(row AgentRow) string {
+	// A broken invariant and a dead connector are separate problems. Reporting
+	// only the first found would hide a real outage behind a schema complaint,
+	// so both are named.
+	var reasons []string
 	if len(row.Violations) > 0 {
-		return "definition breaks a phase-1 invariant: " + row.Violations[0]
+		reasons = append(reasons, "definition breaks a phase-1 invariant: "+row.Violations[0])
 	}
 	for _, c := range row.Connectors {
 		switch c.State {
-		case HealthDown:
-			return fmt.Sprintf("connector %s: %s", c.Name, c.Detail)
-		case HealthStale:
-			return fmt.Sprintf("connector %s: %s", c.Name, c.Detail)
+		case HealthDown, HealthStale:
+			reasons = append(reasons, fmt.Sprintf("connector %s: %s", c.Name, c.Detail))
 		}
+	}
+	if len(reasons) > 0 {
+		return strings.Join(reasons, "; ")
 	}
 	switch row.State {
 	case RunNeedsYou:
@@ -451,6 +506,12 @@ func buildTriggerRow(t Trigger, now time.Time) TriggerRow {
 		row.NextDueText = "on request"
 	case t.Type == TriggerSessionTransition:
 		row.NextDueText = "on session event"
+	case t.Schedule != "":
+		// An opaque trigger that still carries the source's own spelling of
+		// its schedule shows that, rather than "unknown". The terms are
+		// knowable even when the next wall-clock time is not.
+		row.NextDueText = t.Schedule
+		row.Note = "this schedule has no exact cron equivalent, so no next-due time is computed"
 	default:
 		row.NextDueText = "unknown"
 		row.Note = "adoption could see that this fires but not on what terms"

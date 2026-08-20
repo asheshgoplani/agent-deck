@@ -60,8 +60,15 @@ var harnessTokens = []string{
 	"claude", "codex", "deepseek", "hermes", "gemini", "copilot", "tmux",
 }
 
-// secretWord names a line as being ABOUT a credential. On its own it proves
-// nothing — "never put a token in a role" is good policy prose, not a leak.
+// Credential detection is best-effort in BOTH directions and is documented as
+// such. It exists to stop the obvious leak — a token pasted into a conductor's
+// Markdown — not to be a proof. A miss puts a secret in the registry; a false
+// positive silently drops the file the role is built from. Both are real
+// costs, so the rules below ask for a credential-SHAPED value, and ask for
+// context whenever the shape alone is ambiguous.
+
+// secretWord names text as being ABOUT a credential. On its own it proves
+// nothing: "never put a token in a role directory" is good policy prose.
 var secretWord = regexp.MustCompile(`(?i)(api[_ -]?key|secret|token|password|passwd|passphrase|bearer|authorization|client[_ -]?secret|private[_ -]?key|credential)`)
 
 // credentialPrefix matches issued-credential shapes that are self-evident
@@ -71,43 +78,231 @@ var credentialPrefix = regexp.MustCompile(
 		`|gh[pousr]_[A-Za-z0-9]{16,}` +
 		`|xox[baprs]-[A-Za-z0-9\-]{10,}` +
 		`|AKIA[0-9A-Z]{12,}` +
-		`|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}` +
-		`|[A-Za-z0-9_\-]{40,})\b|-----BEGIN [A-Z ]*PRIVATE KEY-----`)
+		`|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})\b` +
+		`|-----BEGIN [A-Z ]*PRIVATE KEY-----`)
 
-// secretAssignment matches a secret-named key being given a value.
+// uriCredential matches a password embedded in a connection URI, e.g.
+// postgres://svc:hunter2@db.example.com:5432/app.
+var uriCredential = regexp.MustCompile(`\b[a-z][a-z0-9+.\-]*://[^\s:/@]+:[^\s@/]{3,}@`)
+
+// groupedToken matches a value transcribed in groups — "abcd efgh ijkl mnop",
+// "7f3a-91b2-cc40". Group length is 3-8 rather than exactly 4.
+var groupedToken = regexp.MustCompile(`\b[A-Za-z0-9]{3,8}(?:[ -][A-Za-z0-9]{3,8}){2,}\b`)
+
+// secretAssignment matches a secret-named key being given a value. The value
+// is checked separately: "token: use the connector store" is an assignment by
+// shape and prose by content.
 var secretAssignment = regexp.MustCompile(
-	`(?i)\b(api[_-]?key|secret|token|password|passwd|passphrase|bearer|client[_-]?secret|private[_-]?key|app[_-]?password)\b[^\n]{0,16}?[:=]\s*\S+`)
+	`(?i)\b(api[_-]?key|secret|token|password|passwd|passphrase|bearer|client[_-]?secret|private[_-]?key|app[_-]?password)\b[^\n]{0,24}?[:=]\s*(\S.*)$`)
 
-// groupedSecretValue matches the human-transcribed credential shapes that
-// carry no prefix and are too short to look like a blob: a Gmail app password
-// written as four groups of four letters, and a dash-grouped key. These are
-// only treated as credentials on a line that is also ABOUT a credential,
-// which is what keeps ordinary prose and hyphenated identifiers out.
-var groupedSecretValue = regexp.MustCompile(
-	`\b[A-Za-z0-9]{4}(?:[ -][A-Za-z0-9]{4}){2,}\b`)
+// pureHex matches a git SHA or a hash digest, which are not credentials and
+// are common in a LEARNINGS.md.
+var pureHex = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+
+// wordToken matches a single natural-language word.
+var wordToken = regexp.MustCompile(`^[A-Za-z]+$`)
+
+// charClasses counts which character classes a token draws on.
+func charClasses(token string) (lower, upper, digit, symbol bool) {
+	for _, r := range token {
+		switch {
+		case r >= 'a' && r <= 'z':
+			lower = true
+		case r >= 'A' && r <= 'Z':
+			upper = true
+		case r >= '0' && r <= '9':
+			digit = true
+		case r == '-' || r == '_' || r == '+' || r == '/' || r == '=' || r == '.':
+			symbol = true
+		}
+	}
+	return
+}
+
+// looksLikeIdentifier reports whether a token is a kebab/snake identifier —
+// several short all-alphabetic segments — rather than an issued secret.
+func looksLikeIdentifier(token string) bool {
+	segments := strings.FieldsFunc(token, func(r rune) bool { return r == '-' || r == '_' })
+	if len(segments) < 3 {
+		return false
+	}
+	for _, segment := range segments {
+		if len(segment) > 12 || !wordToken.MatchString(segment) {
+			return false
+		}
+	}
+	return true
+}
+
+// selfEvidentSecretValue reports whether a token is credential-shaped strongly
+// enough to flag with no surrounding context.
+func selfEvidentSecretValue(token string) bool {
+	trimmed := strings.Trim(token, `"'`+"`"+`.,;:()[]{}<>`)
+	if len(trimmed) < 24 || looksLikeIdentifier(trimmed) || pureHex.MatchString(trimmed) {
+		return false
+	}
+	lower, upper, digit, _ := charClasses(trimmed)
+	// Three classes in one unbroken 24+ character run is an issued secret far
+	// more often than it is anything else. A lowercase hex digest and a kebab
+	// identifier are both excluded above.
+	return lower && upper && digit
+}
+
+// contextualSecretValue reports whether a token is credential-shaped on a line
+// that is already ABOUT a credential, where a lower bar is appropriate.
+func contextualSecretValue(token string) bool {
+	trimmed := strings.Trim(token, `"'`+"`"+`.,;:()[]{}<>`)
+	if len(trimmed) < 12 || looksLikeIdentifier(trimmed) {
+		return false
+	}
+	if pureHex.MatchString(trimmed) && len(trimmed) >= 40 {
+		return false // a digest quoted next to the word "token"
+	}
+	lower, upper, digit, symbol := charClasses(trimmed)
+	classes := 0
+	for _, present := range []bool{lower, upper, digit, symbol} {
+		if present {
+			classes++
+		}
+	}
+	if classes >= 2 {
+		return true
+	}
+	// A single-class run this long is not a word: an app password written
+	// without its spaces looks exactly like this.
+	return len(trimmed) >= 14
+}
+
+// groupedSecretToken reports whether a grouped value is credential-shaped
+// enough to flag without context: at least one group mixes letters and
+// digits, which a date ("2026-08-20") or a hyphenated phrase never does.
+func groupedSecretToken(line string) bool {
+	for _, match := range groupedToken.FindAllString(line, -1) {
+		for _, group := range splitGroups(match) {
+			lower, upper, digit, _ := charClasses(group)
+			if digit && (lower || upper) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// uniformGroupedToken reports whether a line carries a value transcribed as
+// equal-length groups, e.g. "abcd efgh ijkl mnop".
+//
+// Uniformity is what separates a transcribed credential from ordinary prose.
+// Any three consecutive short words match a naive grouping pattern — "the
+// agent never" does — which is why an earlier version refused policy prose.
+// Real transcriptions come in equal blocks.
+func uniformGroupedToken(line string) bool {
+	for _, match := range groupedToken.FindAllString(line, -1) {
+		groups := splitGroups(match)
+		// Look for a uniform SUB-run rather than requiring the whole match to
+		// be uniform. The pattern is greedy, so a credential at the end of a
+		// sentence ("...the app password abcd efgh ijkl mnop") arrives as one
+		// long run whose leading prose breaks uniformity — which is exactly
+		// how the transcribed case slipped through.
+		run := 1
+		for i := 1; i <= len(groups); i++ {
+			if i < len(groups) && len(groups[i]) == len(groups[i-1]) {
+				run++
+				continue
+			}
+			if run >= 3 && len(groups[i-1]) >= 4 {
+				return true
+			}
+			run = 1
+		}
+	}
+	return false
+}
+
+func splitGroups(token string) []string {
+	return strings.FieldsFunc(token, func(r rune) bool { return r == ' ' || r == '-' })
+}
+
+// contextLines returns the recent non-empty lines that can supply "this is
+// about a credential" context for the line at index i.
+//
+// A heading followed by its value is the most natural way a credential ends up
+// in Markdown, and a strictly per-line scan cannot see it. Fence markers and
+// bare heading punctuation are skipped so a value inside a fenced block still
+// sees the heading above it.
+func contextLines(lines []string, i int) string {
+	var collected []string
+	for j := i - 1; j >= 0 && len(collected) < 3; j-- {
+		candidate := strings.TrimSpace(lines[j])
+		if candidate == "" || strings.HasPrefix(candidate, "```") || strings.Trim(candidate, "#-* ") == "" {
+			continue
+		}
+		collected = append(collected, candidate)
+	}
+	return strings.Join(collected, "\n")
+}
 
 // ScanForCredentials returns the 1-based line numbers of lines that look like
-// they carry a real credential.
-//
-// The shapes here are the ones that actually appear in a hand-written
-// conductor directory: an export line, a prefixed API token, and — the case a
-// prefix-only detector misses — a credential transcribed into prose, such as a
-// 16-character Gmail app password written as four spaced groups.
+// they carry a real credential. See the note at the top of this block: it is
+// best-effort, and deliberately asks for a credential-shaped VALUE rather than
+// firing on the mere mention of one.
 func ScanForCredentials(body string) []int {
-	var lines []int
-	for i, line := range strings.Split(body, "\n") {
+	lines := strings.Split(body, "\n")
+	var found []int
+
+	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
-		switch {
-		case credentialPrefix.MatchString(trimmed),
-			secretAssignment.MatchString(trimmed),
-			secretWord.MatchString(trimmed) && groupedSecretValue.MatchString(trimmed):
-			lines = append(lines, i+1)
+
+		// Self-evident: an issued token, a URI password, a PEM header, a
+		// grouped value that mixes letters and digits, or a long mixed-class
+		// run. None of these need context.
+		if credentialPrefix.MatchString(trimmed) || uriCredential.MatchString(trimmed) || groupedSecretToken(trimmed) {
+			found = append(found, i+1)
+			continue
+		}
+		selfEvident := false
+		for _, token := range strings.Fields(trimmed) {
+			if selfEvidentSecretValue(token) {
+				selfEvident = true
+				break
+			}
+		}
+		if selfEvident {
+			found = append(found, i+1)
+			continue
+		}
+
+		// Contextual: this line, or the few lines above it, is about a
+		// credential AND this line carries a credential-shaped value.
+		context := trimmed + "\n" + contextLines(lines, i)
+		if !secretWord.MatchString(context) {
+			continue
+		}
+		if assignment := secretAssignment.FindStringSubmatch(trimmed); assignment != nil {
+			value := strings.TrimSpace(assignment[2])
+			if uniformGroupedToken(value) {
+				found = append(found, i+1)
+				continue
+			}
+			if fields := strings.Fields(value); len(fields) > 0 && contextualSecretValue(fields[0]) {
+				found = append(found, i+1)
+				continue
+			}
+		}
+		if uniformGroupedToken(trimmed) {
+			found = append(found, i+1)
+			continue
+		}
+		for _, token := range strings.Fields(trimmed) {
+			if contextualSecretValue(token) {
+				found = append(found, i+1)
+				break
+			}
 		}
 	}
-	return lines
+	return found
 }
 
 // hostnamePattern catches machine-specific references in role content.

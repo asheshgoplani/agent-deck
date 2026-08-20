@@ -1075,3 +1075,123 @@ func TestSanitizeForDisplayStripsControlCharacters(t *testing.T) {
 		t.Errorf("SanitizeForDisplay dropped ordinary text: %q", got)
 	}
 }
+
+// --- regressions from review round 2 ---------------------------------------
+
+// A launchd schedule with no cron equivalent must still produce a trigger.
+// Declining the schedule is right; dropping the trigger understates the fleet.
+func TestLaunchdUnrepresentableScheduleStillEmitsOpaqueTrigger(t *testing.T) {
+	dir := t.TempDir()
+	plist := filepath.Join(dir, "com.ashesh.daywk.plist")
+	writeTestFile(t, plist, `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ashesh.daywk</string>
+  <key>ProgramArguments</key><array><string>/bin/true</string></array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Day</key><integer>1</integer>
+    <key>Weekday</key><integer>1</integer>
+    <key>Hour</key><integer>3</integer>
+  </dict>
+</dict>
+</plist>
+`)
+	plan, err := Adopt(Options{Target: plist, Machine: "testbox"})
+	if err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	triggers := plan.Definitions[0].Post.Spec.Triggers
+	if len(triggers) != 1 {
+		t.Fatalf("got %d triggers, want 1: a plist that demonstrably fires must not show as firing nothing", len(triggers))
+	}
+	if triggers[0].Type != TriggerOpaque {
+		t.Errorf("type = %q, want %q", triggers[0].Type, TriggerOpaque)
+	}
+	if !strings.Contains(triggers[0].Schedule, "Day=1") {
+		t.Errorf("schedule = %q, want the source's own terms", triggers[0].Schedule)
+	}
+	// And the row renders that, rather than an empty next-due.
+	view := BuildView(BuildOptions{
+		Definitions:  []*Definition{{Name: "daywk", Post: plan.Definitions[0].Post}},
+		LocalMachine: "testbox", Now: time.Now(), SkipHealth: true,
+	})
+	if got := FormatNextDue(view.Machines[0].Agents[0]); got == "" {
+		t.Error("the row shows no schedule at all for a post that is demonstrably fired")
+	}
+}
+
+// A system-scope unit's %h belongs to its User=, not to the adopting process.
+func TestSystemScopeUnitDoesNotExpandOurIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := t.TempDir()
+	userUnit := filepath.Join(dir, "mine.service")
+	writeTestFile(t, userUnit, "[Service]\nExecStart=%h/bin/tool\n")
+	src, err := ParseSystemdUnit(userUnit)
+	if err != nil {
+		t.Fatalf("ParseSystemdUnit: %v", err)
+	}
+	if !strings.HasPrefix(src.Program, home) {
+		t.Errorf("a user unit did not expand %%h: %q", src.Program)
+	}
+
+	// A unit that sets User= runs as someone else.
+	otherUser := filepath.Join(dir, "theirs.service")
+	writeTestFile(t, otherUser, "[Service]\nUser=svc\nExecStart=%h/bin/tool\n")
+	src, err = ParseSystemdUnit(otherUser)
+	if err != nil {
+		t.Fatalf("ParseSystemdUnit: %v", err)
+	}
+	if strings.HasPrefix(src.Program, home) {
+		t.Errorf("expanded %%h with OUR home for a unit that runs as another user: %q", src.Program)
+	}
+	if got := src.ProgramStatus(); got != ProgramUnknown {
+		t.Errorf("ProgramStatus = %q, want %q — and it must never be debris", got, ProgramUnknown)
+	}
+	if got := ClassifyLaunchSource(src); got.Class == ClassDebris {
+		t.Error("a unit running as another user was classified debris")
+	}
+}
+
+// A broken escalation chain must actually reach the user.
+func TestBuildViewSurfacesBrokenReportsToChain(t *testing.T) {
+	orphan := NewPost("worker", "post-w")
+	orphan.Spec.Classification = ClassAgent
+	orphan.Spec.Role = RoleRef{Name: RoleBuilder}
+	orphan.Spec.Placement.ReportsTo = "nobody-post"
+
+	view := BuildView(BuildOptions{
+		Definitions:  []*Definition{{Name: "worker", Post: orphan}},
+		LocalMachine: "g14", Now: time.Now(), SkipHealth: true,
+	})
+	row := view.Machines[0].Agents[0]
+	if row.ReportsToIssue == "" {
+		t.Error("a post reporting to a nonexistent manager rendered with no complaint")
+	}
+}
+
+// A schema complaint must not hide a dead connector.
+func TestAttentionNamesBothInvariantAndConnector(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "pid"), "999999\n")
+
+	post := NewPost("both", "post-b")
+	post.Spec.Classification = ClassAgent
+	post.Spec.Role = RoleRef{Name: RoleTriage}
+	post.Spec.Triggers = []Trigger{{Name: "t", Type: TriggerCron, Enabled: true, External: false}}
+	post.Spec.Connectors = []ConnectorRef{{Name: "mail", Kind: "mail", EvidencePath: dir}}
+
+	view := BuildView(BuildOptions{
+		Definitions:  []*Definition{{Name: "both", Post: post}},
+		LocalMachine: "g14", Now: time.Now(),
+	})
+	attention := view.Machines[0].Agents[0].Attention
+	if !strings.Contains(attention, "invariant") {
+		t.Errorf("attention %q does not mention the invariant", attention)
+	}
+	if !strings.Contains(attention, "connector") {
+		t.Errorf("attention %q hides the dead connector behind the schema complaint", attention)
+	}
+}

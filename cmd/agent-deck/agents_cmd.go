@@ -312,16 +312,22 @@ func printAgentsView(view agents.View) {
 }
 
 func printAgentDetail(row agents.AgentRow, def *agents.Definition) {
-	roleLine := row.Role
+	// Definition-sourced text, all of it untrusted.
+	roleLine := agents.SanitizeForDisplay(row.Role)
 	if row.RoleVersion != "" {
-		roleLine += " " + row.RoleVersion
+		roleLine += " " + agents.SanitizeForDisplay(row.RoleVersion)
 	}
-	fmt.Printf("%s  ·  role: %s  ·  %s", row.Name, roleLine, row.Harness)
+	fmt.Printf("%s  ·  role: %s  ·  %s",
+		agents.SanitizeForDisplay(row.Name), roleLine, agents.SanitizeForDisplay(row.Harness))
 	if row.Account != "" {
-		fmt.Printf(" / %s", row.Account)
+		fmt.Printf(" / %s", agents.SanitizeForDisplay(row.Account))
 	}
-	fmt.Printf("  ·  %s\n", row.Machine)
-	fmt.Printf("post: %s  ·  reports to: %s  ·  state: %s\n", row.PostID, row.ReportsTo, row.State)
+	fmt.Printf("  ·  %s\n", agents.SanitizeForDisplay(row.Machine))
+	fmt.Printf("post: %s  ·  reports to: %s  ·  state: %s\n",
+		agents.SanitizeForDisplay(row.PostID), agents.SanitizeForDisplay(row.ReportsTo), row.State)
+	if row.ReportsToIssue != "" {
+		fmt.Printf("!  %s\n", agents.SanitizeForDisplay(row.ReportsToIssue))
+	}
 
 	// The loudest facts about a row must not vanish when you drill into it.
 	if row.LoadError != "" {
@@ -331,7 +337,10 @@ func printAgentDetail(row agents.AgentRow, def *agents.Definition) {
 	for _, violation := range row.Violations {
 		fmt.Printf("\n!! %s\n", agents.SanitizeForDisplay(violation))
 	}
-	if row.Attention != "" {
+	// Attention restates whichever problem was already printed above — the
+	// load error or the first violation — so printing it again here would
+	// duplicate the line.
+	if row.Attention != "" && len(row.Violations) == 0 && row.LoadError == "" {
 		fmt.Printf("\n!  %s\n", agents.SanitizeForDisplay(row.Attention))
 	}
 
@@ -342,12 +351,13 @@ func printAgentDetail(row agents.AgentRow, def *agents.Definition) {
 			if !t.External {
 				owner = "ARMED HERE — phase 1 never emits this"
 			}
-			fmt.Printf("  %-24s %-18s %-16s [%s]\n", t.Name, t.Kind, t.NextDueText, owner)
+			fmt.Printf("  %-24s %-18s %-16s [%s]\n", agents.SanitizeForDisplay(t.Name),
+				agents.SanitizeForDisplay(t.Kind), agents.SanitizeForDisplay(t.NextDueText), owner)
 			if t.NextDue != nil {
 				fmt.Printf("      next due %s\n", t.NextDue.Format("Mon 15:04 MST"))
 			}
 			if t.Note != "" {
-				fmt.Printf("      %s\n", t.Note)
+				fmt.Printf("      %s\n", agents.SanitizeForDisplay(t.Note))
 			}
 		}
 	}
@@ -371,7 +381,7 @@ func printAgentDetail(row agents.AgentRow, def *agents.Definition) {
 		if len(def.Role.Spec.Policy) > 0 {
 			fmt.Println("\nRULES")
 			for _, policy := range def.Role.Spec.Policy {
-				fmt.Printf("  · %s\n", policy)
+				fmt.Printf("  · %s\n", agents.SanitizeForDisplay(policy))
 			}
 		}
 	}
