@@ -231,18 +231,23 @@ func handleAgentShow(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// Build the view from the WHOLE registry, not just this definition. The
+	// escalation graph can only be judged across the set: with one post in
+	// hand, every legitimate manager reference reads as unknown, so every post
+	// adopted with --manager — which is every post Amendment 02 describes —
+	// got warned about a manager sitting in the same registry.
 	view := agents.BuildView(agents.BuildOptions{
-		Definitions:   []*agents.Definition{match},
+		Definitions:   defs,
 		SessionStates: loadSessionStates(profile),
 		Ledger:        ledgerLookup(),
 		LocalMachine:  localMachineName(),
 		Now:           time.Now(),
 	})
-	if len(view.Machines) == 0 || len(view.Machines[0].Agents) == 0 {
+	row, found := findAgentRow(view, name)
+	if !found {
 		fmt.Fprintf(os.Stderr, "Error: %q could not be rendered\n", name)
 		os.Exit(1)
 	}
-	row := view.Machines[0].Agents[0]
 
 	if *jsonOutput {
 		emitJSON(row)
@@ -252,6 +257,18 @@ func handleAgentShow(profile string, args []string) {
 }
 
 // --- rendering ----------------------------------------------------------
+
+// findAgentRow locates one agent's row in a whole-fleet view.
+func findAgentRow(view agents.View, name string) (agents.AgentRow, bool) {
+	for _, machine := range view.Machines {
+		for _, row := range machine.Agents {
+			if row.Name == name {
+				return row, true
+			}
+		}
+	}
+	return agents.AgentRow{}, false
+}
 
 func printAgentsView(view agents.View) {
 	attention := ""
@@ -302,6 +319,9 @@ func printAgentsView(view agents.View) {
 			fmt.Println(line)
 			if row.Attention != "" {
 				fmt.Printf("     ! %s\n", agents.SanitizeForDisplay(row.Attention))
+			}
+			if row.ReportsToIssue != "" && !strings.Contains(row.Attention, row.ReportsToIssue) {
+				fmt.Printf("     ! %s\n", agents.SanitizeForDisplay(row.ReportsToIssue))
 			}
 		}
 	}

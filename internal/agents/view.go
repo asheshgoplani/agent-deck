@@ -325,8 +325,19 @@ func applyReportsToFindings(view *View, defs []*Definition) {
 	for mi := range view.Machines {
 		for ri := range view.Machines[mi].Agents {
 			row := &view.Machines[mi].Agents[ri]
-			if issue, ok := issues[row.Name]; ok {
-				row.ReportsToIssue = issue
+			issue, ok := issues[row.Name]
+			if !ok {
+				continue
+			}
+			row.ReportsToIssue = issue
+			// A broken escalation chain is the one error that makes
+			// escalation silently unreachable, so it belongs in the row's
+			// attention — and therefore in the "N need attention" count —
+			// rather than only in --json.
+			if row.Attention == "" {
+				row.Attention = issue
+			} else {
+				row.Attention += "; " + issue
 			}
 		}
 	}

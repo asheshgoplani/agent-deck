@@ -120,99 +120,179 @@ func charClasses(token string) (lower, upper, digit, symbol bool) {
 }
 
 // looksLikeIdentifier reports whether a token is a kebab/snake identifier —
-// several short all-alphabetic segments — rather than an issued secret.
+// several short segments — rather than an issued secret. Segments may contain
+// digits ("...-checklist-v2"), which an alphabetic-only test rejected.
 func looksLikeIdentifier(token string) bool {
 	segments := strings.FieldsFunc(token, func(r rune) bool { return r == '-' || r == '_' })
 	if len(segments) < 3 {
 		return false
 	}
 	for _, segment := range segments {
-		if len(segment) > 12 || !wordToken.MatchString(segment) {
+		if len(segment) > 14 || !alnumToken.MatchString(segment) {
 			return false
 		}
 	}
 	return true
 }
 
+var alnumToken = regexp.MustCompile(`^[A-Za-z0-9]+$`)
+
+// structuralChars are the characters that mark a token as markup, a path, or a
+// URL rather than a credential: a Markdown table rule, a file path and a
+// fenced code span are all long strings that are plainly not secrets.
+const structuralChars = "|/\\<>()[]{}~!?,;\"'" + "`" + "*"
+
+// credentialTokenShape reports whether a token could be a credential at all,
+// before any length or context rule is applied.
+func credentialTokenShape(token string) (string, bool) {
+	trimmed := strings.Trim(token, `"'`+"`"+`.,;:()[]{}<>`)
+	if len(trimmed) < 12 || strings.ContainsAny(trimmed, structuralChars) {
+		return "", false
+	}
+	alnum := 0
+	letters := 0
+	for _, r := range trimmed {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			letters++
+			alnum++
+		case r >= '0' && r <= '9':
+			alnum++
+		}
+	}
+	// Mostly alphanumeric, and containing at least one letter. A run of
+	// punctuation is not a secret however long it is.
+	if letters == 0 || alnum*100 < len(trimmed)*85 {
+		return "", false
+	}
+	if looksLikeIdentifier(trimmed) {
+		return "", false
+	}
+	return trimmed, true
+}
+
+// hasSeparators reports whether a token is broken up by - or _, which every
+// natural compound term is and an unbroken secret is not.
+func hasSeparators(token string) bool {
+	return strings.ContainsAny(token, "-_")
+}
+
+// namedClasses counts the character classes that carry information: symbols
+// are excluded, because "model-unavailable" is not a mixed-alphabet secret.
+func namedClasses(token string) int {
+	lower, upper, digit, _ := charClasses(token)
+	count := 0
+	for _, present := range []bool{lower, upper, digit} {
+		if present {
+			count++
+		}
+	}
+	return count
+}
+
 // selfEvidentSecretValue reports whether a token is credential-shaped strongly
 // enough to flag with no surrounding context.
 func selfEvidentSecretValue(token string) bool {
-	trimmed := strings.Trim(token, `"'`+"`"+`.,;:()[]{}<>`)
-	if len(trimmed) < 24 || looksLikeIdentifier(trimmed) || pureHex.MatchString(trimmed) {
+	trimmed, ok := credentialTokenShape(token)
+	if !ok || pureHex.MatchString(trimmed) {
+		// A hex digest needs context: a bare git SHA is not a credential,
+		// while "API key: <hex>" is — and that is the assignment path.
 		return false
 	}
-	lower, upper, digit, _ := charClasses(trimmed)
-	// Three classes in one unbroken 24+ character run is an issued secret far
-	// more often than it is anything else. A lowercase hex digest and a kebab
-	// identifier are both excluded above.
-	return lower && upper && digit
+	switch {
+	case len(trimmed) >= 24 && namedClasses(trimmed) >= 3:
+		return true
+	case len(trimmed) >= 28 && !hasSeparators(trimmed):
+		// A single-case unbroken run this long is not a word in any document:
+		// base32 seeds and lowercase-only keys land here.
+		return true
+	}
+	return false
+}
+
+// assignmentSecretValue reports whether a value given to a secret-named key is
+// credential-shaped.
+//
+// There is deliberately NO pure-hex exemption here. "API key: <40 hex>" is a
+// credential; the exemption that stops a bare git SHA from being flagged must
+// not also swallow an explicit assignment.
+func assignmentSecretValue(token string) bool {
+	trimmed, ok := credentialTokenShape(token)
+	return ok && len(trimmed) >= 16
 }
 
 // contextualSecretValue reports whether a token is credential-shaped on a line
 // that is already ABOUT a credential, where a lower bar is appropriate.
 func contextualSecretValue(token string) bool {
-	trimmed := strings.Trim(token, `"'`+"`"+`.,;:()[]{}<>`)
-	if len(trimmed) < 12 || looksLikeIdentifier(trimmed) {
+	trimmed, ok := credentialTokenShape(token)
+	if !ok {
 		return false
 	}
-	if pureHex.MatchString(trimmed) && len(trimmed) >= 40 {
-		return false // a digest quoted next to the word "token"
-	}
-	lower, upper, digit, symbol := charClasses(trimmed)
-	classes := 0
-	for _, present := range []bool{lower, upper, digit, symbol} {
-		if present {
-			classes++
-		}
-	}
-	if classes >= 2 {
+	if namedClasses(trimmed) >= 2 && !hasSeparators(trimmed) {
 		return true
 	}
-	// A single-class run this long is not a word: an app password written
-	// without its spaces looks exactly like this.
-	return len(trimmed) >= 14
+	// A single-class unbroken run: an app password with its spaces removed.
+	return len(trimmed) >= 14 && !hasSeparators(trimmed) && namedClasses(trimmed) >= 1
 }
 
-// groupedSecretToken reports whether a grouped value is credential-shaped
-// enough to flag without context: at least one group mixes letters and
-// digits, which a date ("2026-08-20") or a hyphenated phrase never does.
+// dashGroupedKey matches a key transcribed as dash-separated hex quads, e.g.
+// "7f3a-91b2-cc40".
+//
+// This is the ONLY grouped shape flagged without context, and it is
+// deliberately narrow. A previous version flagged any run of short chunks
+// where one chunk mixed a letter and a digit — which makes "g14", "60s",
+// "sha256", "utf8" and "x86" credentials, and refused this fleet's own
+// documents. Separator and alphabet both have to be right here.
+var dashGroupedKey = regexp.MustCompile(`\b[0-9a-fA-F]{4}(?:-[0-9a-fA-F]{4}){2,}\b`)
+
+// groupedSecretToken reports whether a line carries a dash-grouped hex key.
 func groupedSecretToken(line string) bool {
-	for _, match := range groupedToken.FindAllString(line, -1) {
-		for _, group := range splitGroups(match) {
-			lower, upper, digit, _ := charClasses(group)
-			if digit && (lower || upper) {
-				return true
-			}
+	return dashGroupedKey.MatchString(line)
+}
+
+// uniformGroupedToken reports whether a string is ENTIRELY a value
+// transcribed as equal-length groups, e.g. "abcd efgh ijkl mnop".
+//
+// Uniformity alone is not enough: "keep them safe from harm" is five equal
+// four-letter words of ordinary English. So this is only ever consulted for a
+// string that is either the whole line (under a credential heading) or the
+// remainder immediately after a secret word — never for a run buried in a
+// sentence.
+func uniformGroupedToken(line string) bool {
+	trimmed := strings.TrimSpace(strings.Trim(strings.TrimSpace(line), `"'`+"`"+`.,;:`))
+	if trimmed == "" || !groupedToken.MatchString(trimmed) {
+		return false
+	}
+	// The whole string must BE the run.
+	if groupedToken.FindString(trimmed) != trimmed {
+		return false
+	}
+	groups := splitGroups(trimmed)
+	if len(groups) < 3 {
+		return false
+	}
+	width := len(groups[0])
+	if width < 4 {
+		return false
+	}
+	for _, group := range groups {
+		if len(group) != width {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
-// uniformGroupedToken reports whether a line carries a value transcribed as
-// equal-length groups, e.g. "abcd efgh ijkl mnop".
-//
-// Uniformity is what separates a transcribed credential from ordinary prose.
-// Any three consecutive short words match a naive grouping pattern — "the
-// agent never" does — which is why an earlier version refused policy prose.
-// Real transcriptions come in equal blocks.
-func uniformGroupedToken(line string) bool {
-	for _, match := range groupedToken.FindAllString(line, -1) {
-		groups := splitGroups(match)
-		// Look for a uniform SUB-run rather than requiring the whole match to
-		// be uniform. The pattern is greedy, so a credential at the end of a
-		// sentence ("...the app password abcd efgh ijkl mnop") arrives as one
-		// long run whose leading prose breaks uniformity — which is exactly
-		// how the transcribed case slipped through.
-		run := 1
-		for i := 1; i <= len(groups); i++ {
-			if i < len(groups) && len(groups[i]) == len(groups[i-1]) {
-				run++
-				continue
-			}
-			if run >= 3 && len(groups[i-1]) >= 4 {
-				return true
-			}
-			run = 1
+// groupedAfterSecretWord reports whether a transcribed value immediately
+// follows a secret word on the same line, as in "...the app password abcd efgh
+// ijkl mnop". Anchoring to the secret word is what keeps ordinary prose out:
+// "Token handling rules follow" has a secret word too, but what follows it is
+// not a uniform transcription.
+func groupedAfterSecretWord(line string) bool {
+	for _, loc := range secretWord.FindAllStringIndex(line, -1) {
+		remainder := strings.TrimLeft(line[loc[1]:], " \t:=is")
+		if uniformGroupedToken(remainder) {
+			return true
 		}
 	}
 	return false
@@ -230,8 +310,13 @@ func splitGroups(token string) []string {
 // bare heading punctuation are skipped so a value inside a fenced block still
 // sees the heading above it.
 func contextLines(lines []string, i int) string {
+	// Bounded by DISTANCE, not by content-line count. Skipping blanks and
+	// fences "for free" gave a fenced, code-heavy file — which is exactly what
+	// a conductor CLAUDE.md is — an unbounded window, so any line could
+	// inherit credential context from far above it.
+	const window = 4
 	var collected []string
-	for j := i - 1; j >= 0 && len(collected) < 3; j-- {
+	for j := i - 1; j >= 0 && j >= i-window; j-- {
 		candidate := strings.TrimSpace(lines[j])
 		if candidate == "" || strings.HasPrefix(candidate, "```") || strings.Trim(candidate, "#-* ") == "" {
 			continue
@@ -286,12 +371,15 @@ func ScanForCredentials(body string) []int {
 				found = append(found, i+1)
 				continue
 			}
-			if fields := strings.Fields(value); len(fields) > 0 && contextualSecretValue(fields[0]) {
+			if fields := strings.Fields(value); len(fields) > 0 && assignmentSecretValue(fields[0]) {
 				found = append(found, i+1)
 				continue
 			}
 		}
-		if uniformGroupedToken(trimmed) {
+		// A transcription either IS the line (under a credential heading) or
+		// follows a secret word directly. A uniform run buried in a sentence
+		// is prose — "keep them safe from harm" is five equal four-letter words.
+		if uniformGroupedToken(trimmed) || groupedAfterSecretWord(trimmed) {
 			found = append(found, i+1)
 			continue
 		}

@@ -1195,3 +1195,53 @@ func TestAttentionNamesBothInvariantAndConnector(t *testing.T) {
 		t.Errorf("attention %q hides the dead connector behind the schema complaint", attention)
 	}
 }
+
+// --- regressions from review round 3 ---------------------------------------
+
+// A legitimate manager reference must not be reported as unknown, and a real
+// cycle must reach the row's attention (and therefore the "need attention"
+// count) rather than living only in --json.
+func TestReportsToFindingsNeedTheWholeSet(t *testing.T) {
+	mgr := NewPost("mgr", "post-mgr")
+	mgr.Spec.Classification = ClassAgent
+	mgr.Spec.Role = RoleRef{Name: RoleManager}
+	mgr.Spec.Placement.ReportsTo = PrincipalHuman
+
+	wrk := NewPost("wrk", "post-wrk")
+	wrk.Spec.Classification = ClassAgent
+	wrk.Spec.Role = RoleRef{Name: RoleBuilder}
+	wrk.Spec.Placement.ReportsTo = "mgr"
+
+	full := BuildView(BuildOptions{
+		Definitions:  []*Definition{{Name: "mgr", Post: mgr}, {Name: "wrk", Post: wrk}},
+		LocalMachine: "g14", Now: time.Now(), SkipHealth: true,
+	})
+	for _, row := range full.Machines[0].Agents {
+		if row.ReportsToIssue != "" {
+			t.Errorf("%s warned about a manager that is in the same registry: %s", row.Name, row.ReportsToIssue)
+		}
+	}
+
+	// A real cycle must be loud in the list, not just in JSON.
+	a := NewPost("cyc-a", "post-a")
+	a.Spec.Classification = ClassAgent
+	a.Spec.Role = RoleRef{Name: RoleTriage}
+	a.Spec.Placement.ReportsTo = "cyc-b"
+	b := NewPost("cyc-b", "post-b")
+	b.Spec.Classification = ClassAgent
+	b.Spec.Role = RoleRef{Name: RoleManager}
+	b.Spec.Placement.ReportsTo = "cyc-a"
+
+	cycle := BuildView(BuildOptions{
+		Definitions:  []*Definition{{Name: "cyc-a", Post: a}, {Name: "cyc-b", Post: b}},
+		LocalMachine: "g14", Now: time.Now(), SkipHealth: true,
+	})
+	if cycle.NeedAttention == 0 {
+		t.Error("a reports_to cycle produced no attention; the list would show nothing")
+	}
+	for _, row := range cycle.Machines[0].Agents {
+		if row.Attention == "" {
+			t.Errorf("%s: a cycle is invisible on the row", row.Name)
+		}
+	}
+}
