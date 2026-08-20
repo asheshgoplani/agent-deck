@@ -128,8 +128,8 @@ type SettingsPanel struct {
 // builtinToolNames and builtinToolValues are the built-in tools. Custom tools
 // from config are appended dynamically in LoadConfig.
 var (
-	builtinToolNames  = []string{"Claude", "Gemini", "OpenCode", "Codex", "Pi", "Copilot", "Crush", "Muse", "Cursor", "Hermes", "DeepSeek"}
-	builtinToolValues = []string{"claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek"}
+	builtinToolNames  = []string{"Claude", "Gemini", "OpenCode", "Codex", "Pi", "Copilot", "Crush", "Muse", "Cursor", "Hermes", "DeepSeek", "Oh My Pi"}
+	builtinToolValues = []string{"claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
 )
 
 // Search tier names for radio selection
