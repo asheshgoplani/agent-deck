@@ -17,7 +17,6 @@
 package tmux
 
 import (
-	"context"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -171,13 +170,21 @@ func (s *Session) KillAndWait() error {
 
 	// Bounded — see tmuxMutationTimeout. This is the CLI path (`agent-deck
 	// remove`), where an unbounded wedge hangs the user's terminal outright
-	// rather than a background goroutine. The argv stays plain (no -L): keeping
-	// the execCommand seam's exact shape is what the launcher-fallback tests
-	// assert on, and which server this targets is a separate question from
-	// whether it terminates.
-	killCtx, cancelKill := context.WithTimeout(context.Background(), tmuxMutationTimeout)
-	defer cancelKill()
-	killErr := execCommandContext(killCtx, "tmux", "kill-session", "-t", s.Name).Run()
+	// rather than a background goroutine.
+	//
+	// The argv MUST carry the session's own socket, exactly like Session.Kill.
+	// It used to be a bare `tmux kill-session` through the execCommandContext
+	// seam, which addressed the DEFAULT server: with `[tmux] socket_name` set,
+	// every kill exited 1 ("can't find session") while the session stood
+	// untouched on its real server. Callers read that as a failed stop —
+	// archiveSession rolled the archive back and reported "failed to archive:
+	// stop archived session: failed to kill tmux session: exit status 1", so
+	// archiving took several presses. (It appeared to work eventually only
+	// because the EnsurePIDsDead reap below IS socket-correct and tears the
+	// session down as a side effect, after which the already-gone branch
+	// applies.) A bare kill is also a cross-server hazard: a same-named session
+	// on the user's default server would be killed in its place.
+	killErr := s.runBoundedMutation("kill-session", "-t", s.Name)
 
 	if len(oldPIDs) > 0 {
 		EnsurePIDsDead(oldPIDs, 3*time.Second)
@@ -186,7 +193,15 @@ func (s *Session) KillAndWait() error {
 	// Killing an already-dead session is success (see Session.Kill): tmux
 	// `kill-session` exits non-zero for a session that no longer exists. CLI
 	// callers (`agent-deck remove` of a stopped session) must not fail on that.
-	if killErr != nil && !s.Exists() {
+	//
+	// The re-probe bypasses Session.Exists() for the same reason Session.Kill's
+	// does: Exists() trusts a positive session-cache entry (which can outlive
+	// the session it describes) and a PipeManager connection that the reconnect
+	// loop may have re-established since the Disconnect above. Either would
+	// report a successfully killed session as still alive and turn this into a
+	// spurious failure. tmuxSessionExistsOnSocket asks the session's own server
+	// directly.
+	if killErr != nil && !tmuxSessionExistsOnSocket(s.SocketName, s.Name) {
 		return nil
 	}
 

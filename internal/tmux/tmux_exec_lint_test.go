@@ -134,7 +134,7 @@ func TestNoRawTmuxExec_OutsideAllowlist(t *testing.T) {
 		}
 
 		unallowed = append(unallowed,
-			rel+":"+itoa(v.line)+": exec."+v.fn+"(\"tmux\", "+strings.Join(v.argv[1:], ", ")+")")
+			rel+":"+itoa(v.line)+": "+qualifyExecCallee(v.fn)+"(\"tmux\", "+strings.Join(v.argv[1:], ", ")+")")
 	}
 
 	sort.Strings(unallowed)
@@ -152,7 +152,7 @@ func TestNoRawTmuxExec_OutsideAllowlist(t *testing.T) {
 type tmuxExecSite struct {
 	file string
 	line int
-	fn   string   // "Command" or "CommandContext"
+	fn   string   // "Command"/"CommandContext" or the seam idents execCommand/execCommandContext
 	argv []string // argv[0] = "tmux"; rest are the literal string args (non-literals render as "<expr>")
 }
 
@@ -186,22 +186,8 @@ func scanForRawTmuxExec(t *testing.T, root string) []tmuxExecSite {
 			if !ok {
 				return true
 			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
+			callee, argStart, ok := rawExecCallee(call.Fun)
 			if !ok {
-				return true
-			}
-			pkgIdent, ok := sel.X.(*ast.Ident)
-			if !ok || pkgIdent.Name != "exec" {
-				return true
-			}
-
-			var argStart int
-			switch sel.Sel.Name {
-			case "Command":
-				argStart = 0
-			case "CommandContext":
-				argStart = 1 // skip ctx
-			default:
 				return true
 			}
 
@@ -226,7 +212,7 @@ func scanForRawTmuxExec(t *testing.T, root string) []tmuxExecSite {
 			sites = append(sites, tmuxExecSite{
 				file: path,
 				line: pos.Line,
-				fn:   sel.Sel.Name,
+				fn:   callee,
 				argv: argv,
 			})
 			return true
@@ -237,6 +223,52 @@ func scanForRawTmuxExec(t *testing.T, root string) []tmuxExecSite {
 		t.Fatalf("walk module: %v", err)
 	}
 	return sites
+}
+
+// qualifyExecCallee renders a callee name for the violation message: the
+// exec package's own functions get their package qualifier back, the
+// package-level seams are already fully spelled.
+func qualifyExecCallee(fn string) string {
+	if fn == "Command" || fn == "CommandContext" {
+		return "exec." + fn
+	}
+	return fn
+}
+
+// rawExecCallee classifies a call expression as a raw process spawn, returning
+// the callee's display name and the index of the argv[0] argument.
+//
+// It matches `exec.Command` / `exec.CommandContext` AND the package-level
+// swappable seams `execCommand` / `execCommandContext` (tmux.go: `var
+// execCommand = exec.Command`). The seams are plain identifiers, not selector
+// expressions, so scanning only for `exec.X` left them invisible to this lint —
+// and that blind spot is where a socket-blind `execCommandContext(ctx, "tmux",
+// "kill-session", …)` sat in Session.KillAndWait, sending every archive/remove
+// kill to the DEFAULT tmux server instead of the session's own. A seam that
+// bypasses the argv factory bypasses socket isolation exactly like a raw
+// exec.Command does; the lint must not care which spelling was used.
+func rawExecCallee(fun ast.Expr) (name string, argStart int, ok bool) {
+	switch fn := fun.(type) {
+	case *ast.SelectorExpr:
+		pkgIdent, isIdent := fn.X.(*ast.Ident)
+		if !isIdent || pkgIdent.Name != "exec" {
+			return "", 0, false
+		}
+		switch fn.Sel.Name {
+		case "Command":
+			return "Command", 0, true
+		case "CommandContext":
+			return "CommandContext", 1, true // skip ctx
+		}
+	case *ast.Ident:
+		switch fn.Name {
+		case "execCommand":
+			return "execCommand", 0, true
+		case "execCommandContext":
+			return "execCommandContext", 1, true // skip ctx
+		}
+	}
+	return "", 0, false
 }
 
 // moduleRoot climbs parent dirs from this test file looking for go.mod.
