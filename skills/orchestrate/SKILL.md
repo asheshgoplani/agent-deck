@@ -232,6 +232,23 @@ nohup bash "$RUN_DIR/heartbeat.sh" >> "$RUN_DIR/heartbeat.log" 2>&1 &
 # Drop them for a child that must drive a browser.
 LEAN=(--extra-arg --strict-mcp-config --extra-arg --mcp-config
       --extra-arg '{"mcpServers":{}}')
+
+# Spawn YOUR watchdog — a parked Haiku child that heartbeat.sh wakes when
+# your own substate goes `waiting`/`stalled` (a permission prompt or a wedged
+# composer stalls the whole run, and `session nudge` refuses those targets).
+# It approves safe prompts, escalates destructive ones to the user, and
+# nudges stalls — see "Supervision notes". Restricted allowlist, never a
+# permission bypass: it reads untrusted pane content. Writing .watchdog-id is
+# what arms the detector; without the file heartbeat.sh behaves as before.
+bash "$RUN_DIR/prompts/render.sh" watchdog "$RUN_DIR/watchdog-prompt.md" \
+  RUN_DIR="$RUN_DIR" DESIGN_PATH="$DESIGN_DIR/design.md"
+agent-deck launch "$RUN_DIR" -c claude -t "watchdog-<run-id>" \
+  --inherit-group --json "${LEAN[@]}" \
+  --extra-arg --model --extra-arg haiku \
+  --extra-arg --allowedTools --extra-arg \
+  'Bash(agent-deck:*),Bash(terminal-notifier:*),Bash(cat:*),Bash(printf:*),Bash(echo:*),Bash(date:*)' \
+  --message-file "$RUN_DIR/watchdog-prompt.md" \
+  | jq -r '.session_id // .id' > "$RUN_DIR/.watchdog-id"
 ```
 
 Everything any child captures goes under `$RUN_DIR/<task-slug>/`; planner
@@ -1153,6 +1170,21 @@ should answer:
     watching".
   - Tune with `HEARTBEAT_INTERVAL` (seconds) and `HEARTBEAT_MAX_MISSES`.
     Touch `$RUN_DIR/.heartbeat-stop` to shut it down cleanly at end of run.
+- **Someone also has to watch YOU.** The children's remedies all assume a
+  conductor able to act — but a conductor sitting on a permission prompt or a
+  wedged composer is `waiting`/`stalled`, and `session nudge` refuses those
+  targets, so heartbeats bounce and the run stalls with nobody watching.
+  heartbeat.sh therefore also polls *your* substate every
+  `WATCHDOG_DETECT_INTERVAL` seconds (default 90) and, on `waiting`/`stalled`
+  or an unsubmitted beat (nudge rc=1), wakes the **watchdog child** spawned at
+  run setup (`$RUN_DIR/.watchdog-id`). The watchdog runs no loop of its own:
+  each wake is one bounded turn — read your pane, then approve a safe
+  permission prompt, escalate a destructive one to the user
+  (terminal-notifier + `$RUN_DIR/watchdog.log`), or nudge a stall once. Wakes
+  are debounced to one per `HEARTBEAT_INTERVAL` unless your substate changes.
+  If the watchdog itself becomes unreachable, heartbeat.sh notifies the user
+  directly and keeps beating — read `$RUN_DIR/watchdog.log` and
+  `heartbeat.log` first when a run went quiet.
 - `agent-deck session children --json` returns an object
   `{"children": [...], "parent": "..."}` — iterate `.children[]`, not the
   root array.
@@ -1535,6 +1567,9 @@ until it times itself out:
 ```bash
 touch "$RUN_DIR/.heartbeat-stop"
 ```
+
+The same stop file retires the watchdog detector; delete the watchdog child
+with the other finished children (its id is in `$RUN_DIR/.watchdog-id`).
 
 Do this **last**, after the report. A run that stops its own heartbeat while
 work is still live has removed the only thing that would have noticed it going
