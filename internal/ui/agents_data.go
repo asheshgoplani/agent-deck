@@ -47,6 +47,7 @@ func (h *Home) refreshAgentsPanel() {
 		h.agentsView = agents.View{}
 		h.agentBySession = nil
 		h.agentsPanel.SetView(h.agentsView, now)
+		h.helpOverlay.SetHasAgents(false)
 		return
 	}
 
@@ -68,6 +69,22 @@ func (h *Home) refreshAgentsPanel() {
 
 	h.agentsView = view
 	h.agentsPanel.SetView(view, now)
+
+	// The RULES section shows the role's policy file names, which is what the
+	// role manifest actually asserts. A session-adopted post has no role
+	// package and therefore no rules, which the screen shows as absent rather
+	// than inventing.
+	rules := map[string][]string{}
+	for _, def := range defs {
+		if def.Role == nil {
+			continue
+		}
+		if len(def.Role.Spec.Policy) > 0 {
+			rules[def.Name] = append([]string(nil), def.Role.Spec.Policy...)
+		}
+	}
+	h.agentsPanel.SetRules(rules)
+	h.helpOverlay.SetHasAgents(h.agentsPanel.HasAgents())
 
 	// Index by session so the session list and preview pane can answer
 	// "does this row belong to an agent?" without rescanning the registry.
@@ -157,9 +174,15 @@ func (h *Home) renderAgentCard(row agents.AgentRow, width int) string {
 	valueStyle := lipgloss.NewStyle().Foreground(ColorText)
 	roleStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
 
-	roleText := row.Role
+	// Amendment 01 asks the card for role AND version. A session-adopted post
+	// has no role package, so there is genuinely no version to show; say that
+	// rather than rendering a bare role name that looks like the version was
+	// simply forgotten.
+	roleText := agents.SanitizeForDisplay(row.Role)
 	if row.RoleVersion != "" {
-		roleText += " " + row.RoleVersion
+		roleText += " " + agents.SanitizeForDisplay(row.RoleVersion)
+	} else {
+		roleText += " (no role package)"
 	}
 	b.WriteString(labelStyle.Render("Role:      "))
 	b.WriteString(roleStyle.Render(roleText))
@@ -167,7 +190,7 @@ func (h *Home) renderAgentCard(row agents.AgentRow, width int) string {
 
 	if row.ReportsTo != "" {
 		b.WriteString(labelStyle.Render("Reports:   "))
-		b.WriteString(valueStyle.Render(row.ReportsTo))
+		b.WriteString(valueStyle.Render(agents.SanitizeForDisplay(row.ReportsTo)))
 		b.WriteString("\n")
 	}
 
@@ -176,11 +199,11 @@ func (h *Home) renderAgentCard(row agents.AgentRow, width int) string {
 		b.WriteString(labelStyle.Render("Triggers:  "))
 		b.WriteString("\n")
 		for _, t := range row.Triggers {
-			owner := "agent-deck"
-			if t.External {
-				owner = "external"
+			owner := "external"
+			if !t.External {
+				owner = "ARMED HERE"
 			}
-			line := fmt.Sprintf("  %s %s", truncateStr(t.Name, 18), t.NextDueText)
+			line := fmt.Sprintf("  %s %s", truncateStr(agents.SanitizeForDisplay(t.Name), 18), t.NextDueText)
 			b.WriteString(valueStyle.Render(truncateStr(line, contentWidth-12)))
 			b.WriteString(" ")
 			b.WriteString(labelStyle.Render("[" + owner + "]"))
@@ -196,9 +219,9 @@ func (h *Home) renderAgentCard(row agents.AgentRow, width int) string {
 			b.WriteString("  ")
 			b.WriteString(healthDot(c.State))
 			b.WriteString(" ")
-			b.WriteString(valueStyle.Render(truncateStr(c.Name, 16)))
+			b.WriteString(valueStyle.Render(truncateStr(agents.SanitizeForDisplay(c.Name), 16)))
 			b.WriteString(" ")
-			b.WriteString(labelStyle.Render(truncateStr(c.Detail, contentWidth-22)))
+			b.WriteString(labelStyle.Render(truncateStr(agents.SanitizeForDisplay(c.Detail), contentWidth-22)))
 			b.WriteString("\n")
 		}
 	}
@@ -213,14 +236,14 @@ func (h *Home) renderAgentCard(row agents.AgentRow, width int) string {
 		}
 		for _, entry := range row.Recent[:limit] {
 			b.WriteString(labelStyle.Render("  " + entry.At.Format("15:04") + "  "))
-			b.WriteString(valueStyle.Render(truncateStr(entry.Summary, contentWidth-10)))
+			b.WriteString(valueStyle.Render(truncateStr(agents.SanitizeForDisplay(entry.Summary), contentWidth-10)))
 			b.WriteString("\n")
 		}
 	}
 
 	if row.Attention != "" {
 		b.WriteString(lipgloss.NewStyle().Foreground(ColorRed).
-			Render("  ! " + truncateStr(row.Attention, contentWidth-4)))
+			Render("  ! " + truncateStr(agents.SanitizeForDisplay(row.Attention), contentWidth-4)))
 		b.WriteString("\n")
 	}
 

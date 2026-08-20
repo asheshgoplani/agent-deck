@@ -31,6 +31,11 @@ type AgentsPanel struct {
 	// now is injected by the refresh so relative times in a single frame all
 	// agree with each other.
 	now time.Time
+	// rulesByAgent holds each agent's policy file names, so the detail screen
+	// can show the RULES section the mockup and the prompt both call for.
+	rulesByAgent map[string][]string
+	// rules is the selected agent's rules, resolved at render time.
+	rules []string
 }
 
 // agentPanelRow is one rendered line.
@@ -112,6 +117,14 @@ func (ap *AgentsPanel) SetView(view agents.View, now time.Time) {
 	if len(ap.rows) > 0 && ap.rows[ap.cursor].isHeader {
 		ap.moveCursor(1)
 	}
+}
+
+// SetRules supplies each agent's policy file names, keyed by agent name.
+func (ap *AgentsPanel) SetRules(rules map[string][]string) {
+	if ap == nil {
+		return
+	}
+	ap.rulesByAgent = rules
 }
 
 // HasAgents reports whether anything has been adopted. The Agents surfaces
@@ -278,7 +291,7 @@ func (ap *AgentsPanel) renderList(width int) string {
 		sb.WriteString("\n")
 
 		if row.agent.Attention != "" {
-			sb.WriteString(alertStyle.Render("   ! " + truncateStr(row.agent.Attention, width-6)))
+			sb.WriteString(alertStyle.Render("   ! " + truncateStr(agents.SanitizeForDisplay(row.agent.Attention), width-6)))
 			sb.WriteString("\n")
 		}
 	}
@@ -300,9 +313,11 @@ func (ap *AgentsPanel) linkNoteFor(row agentPanelRow) string {
 		return "— UNCONFIRMED: unreachable"
 	case agents.LinkOK:
 		if row.linkNote != "" {
-			return "— link ok, " + row.linkNote
+			return "— link ok, " + agents.SanitizeForDisplay(row.linkNote)
 		}
 		return "— link ok"
+	case agents.LinkNotContacted:
+		return "— not contacted; placement only"
 	default:
 		return ""
 	}
@@ -317,7 +332,8 @@ func (ap *AgentsPanel) renderAgentLine(row agents.AgentRow, width int) string {
 
 	nameWidth := 18
 	line := fmt.Sprintf(" %s %-*s %-11s %-10s",
-		glyph, nameWidth, truncateStr(row.Name, nameWidth), truncateStr(role, 11), truncateStr(string(row.State), 10))
+		glyph, nameWidth, truncateStr(agents.SanitizeForDisplay(row.Name), nameWidth),
+		truncateStr(agents.SanitizeForDisplay(role), 11), truncateStr(string(row.State), 10))
 
 	if last := agents.FormatLastDid(row, ap.now); last != "" {
 		line += "  last: " + truncateStr(last, 30)
@@ -325,8 +341,13 @@ func (ap *AgentsPanel) renderAgentLine(row agents.AgentRow, width int) string {
 	if next := agents.FormatNextDue(row); next != "" {
 		line += "  next: " + truncateStr(next, 14)
 	}
-	if len(line) > width {
-		line = truncateStr(line, width)
+	// Measure by display cells, not bytes: `line` starts with a lipgloss
+	// glyph carrying an SGR escape, so len() counted ~20 invisible bytes and
+	// truncated the row that much too early at every width. cellWidth and
+	// cellTruncate are the repo's ANSI-aware helpers, already used by the
+	// session-row renderer in home.go.
+	if cellWidth(line) > width {
+		line = cellTruncate(line, width, "…")
 	}
 	return line
 }
@@ -351,11 +372,13 @@ func (ap *AgentsPanel) renderDetail(width int) string {
 		return ap.renderList(width)
 	}
 	row := *selected
+	ap.rules = ap.rulesByAgent[row.Name]
 
 	var sb strings.Builder
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
 	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
 	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorCyan)
+	valueStyle := lipgloss.NewStyle().Foreground(ColorText)
 
 	roleLine := row.Role
 	if row.RoleVersion != "" {
@@ -378,9 +401,9 @@ func (ap *AgentsPanel) renderDetail(width int) string {
 		sb.WriteString("\n")
 	} else {
 		for _, t := range row.Triggers {
-			owner := "agent-deck"
-			if t.External {
-				owner = "external"
+			owner := "external"
+			if !t.External {
+				owner = "ARMED HERE"
 			}
 			sb.WriteString(fmt.Sprintf("   %s %-20s %-14s %s\n",
 				triggerGlyph(t), truncateStr(t.Name, 20), truncateStr(t.NextDueText, 14),
@@ -402,7 +425,7 @@ func (ap *AgentsPanel) renderDetail(width int) string {
 		for _, c := range row.Connectors {
 			sb.WriteString(fmt.Sprintf("   %s %-16s %s\n",
 				healthDot(c.State), truncateStr(c.Name, 16),
-				truncateStr(c.Detail, width-24)))
+				truncateStr(agents.SanitizeForDisplay(c.Detail), width-24)))
 		}
 	}
 	sb.WriteString("\n")
@@ -415,7 +438,18 @@ func (ap *AgentsPanel) renderDetail(width int) string {
 	} else {
 		for _, entry := range row.Recent {
 			sb.WriteString(fmt.Sprintf("   %s  %s\n",
-				entry.At.Format("15:04"), truncateStr(entry.Summary, width-12)))
+				entry.At.Format("15:04"), truncateStr(agents.SanitizeForDisplay(entry.Summary), width-12)))
+		}
+	}
+
+	if len(ap.rules) > 0 {
+		sb.WriteString("\n")
+		sb.WriteString(sectionStyle.Render(" RULES"))
+		sb.WriteString("\n")
+		for _, rule := range ap.rules {
+			sb.WriteString("   · ")
+			sb.WriteString(valueStyle.Render(truncateStr(agents.SanitizeForDisplay(rule), width-8)))
+			sb.WriteString("\n")
 		}
 	}
 
@@ -424,14 +458,20 @@ func (ap *AgentsPanel) renderDetail(width int) string {
 		sb.WriteString(sectionStyle.Render(" UNRESOLVED"))
 		sb.WriteString("\n")
 		for _, item := range row.Unresolved {
-			sb.WriteString(dimStyle.Render("   · " + truncateStr(item, width-6)))
+			sb.WriteString(dimStyle.Render("   · " + truncateStr(agents.SanitizeForDisplay(item), width-6)))
 			sb.WriteString("\n")
 		}
 	}
 
 	sb.WriteString(strings.Repeat("─", width))
 	sb.WriteString("\n")
-	sb.WriteString(dimStyle.Render("Read-only. agent-deck displays this; it does not run it.  [h/Esc] Back"))
+	footer := "Read-only. agent-deck displays this; it does not run it.  [h/Esc] Back"
+	if row.LoadError != "" {
+		footer = "This definition could not be read.  [h/Esc] Back"
+	} else if len(row.Violations) > 0 || row.Armed() {
+		footer = "This record claims to be ARMED, which phase 1 never emits.  [h/Esc] Back"
+	}
+	sb.WriteString(dimStyle.Render(footer))
 	return sb.String()
 }
 

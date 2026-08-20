@@ -226,12 +226,14 @@ func DescribeInterval(seconds int) string {
 		return ""
 	case seconds < 60:
 		return fmt.Sprintf("every %ds", seconds)
-	case seconds < 3600:
-		return fmt.Sprintf("every %dm", seconds/60)
 	case seconds%3600 == 0:
 		return fmt.Sprintf("every %dh", seconds/3600)
-	default:
+	case seconds%60 == 0:
 		return fmt.Sprintf("every %dm", seconds/60)
+	default:
+		// Not a whole number of minutes. Flooring turned a 90-second cadence
+		// into "every 1m", which is a WRONG cadence rather than a coarse one.
+		return fmt.Sprintf("every %dm%ds", seconds/60, seconds%60)
 	}
 }
 

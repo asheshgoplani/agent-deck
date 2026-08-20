@@ -754,3 +754,324 @@ func minimalPlist(label string) string {
 </plist>
 `
 }
+
+// --- regressions from the phase-1 adversarial review ------------------------
+
+// A running unit whose ExecStart uses %h must not be called debris. Three of
+// the six real user units on g14 do this, and debris is the one label that
+// invites a human to delete something.
+func TestSystemdSpecifierPathIsNotDebris(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	binDir := filepath.Join(home, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeTestFile(t, filepath.Join(binDir, "ios"), "#!/bin/sh\n")
+
+	dir := t.TempDir()
+	service := filepath.Join(dir, "go-ios-tunnel.service")
+	writeTestFile(t, service, "[Service]\nExecStart=%h/bin/ios tunnel start --userspace\n")
+
+	src, err := ParseSystemdUnit(service)
+	if err != nil {
+		t.Fatalf("ParseSystemdUnit: %v", err)
+	}
+	if src.Program != filepath.Join(home, "bin", "ios") {
+		t.Errorf("Program = %q, want %%h expanded to the home dir", src.Program)
+	}
+	if got := src.ProgramStatus(); got != ProgramPresent {
+		t.Errorf("ProgramStatus = %q, want %q", got, ProgramPresent)
+	}
+	if got := ClassifyLaunchSource(src); got.Class == ClassDebris {
+		t.Errorf("a running unit classified as debris: %+v", got)
+	}
+}
+
+// A specifier this reader does NOT expand leaves the path unresolved, and an
+// unresolved path is unknown — never missing.
+func TestUnexpandedSpecifierIsUnknownNotMissing(t *testing.T) {
+	dir := t.TempDir()
+	service := filepath.Join(dir, "tmpl@.service")
+	writeTestFile(t, service, "[Service]\nExecStart=%t/run/%i/helper\n")
+
+	src, err := ParseSystemdUnit(service)
+	if err != nil {
+		t.Fatalf("ParseSystemdUnit: %v", err)
+	}
+	if got := src.ProgramStatus(); got != ProgramUnknown {
+		t.Errorf("ProgramStatus = %q, want %q for an unexpanded specifier", got, ProgramUnknown)
+	}
+	if got := ClassifyLaunchSource(src); got.Class == ClassDebris {
+		t.Errorf("an unresolvable path classified as debris: %+v", got)
+	}
+}
+
+// Credentials in an adopted role body must never be copied into the registry,
+// including the shapes a prefix-only detector misses.
+func TestAdoptDoesNotCopyCredentialBearingRoleBody(t *testing.T) {
+	source := t.TempDir()
+	writeTestFile(t, filepath.Join(source, "CLAUDE.md"), strings.Join([]string{
+		"You are the release conductor.",
+		"Login to imap.gmail.com with the app password abcd efgh ijkl mnop",
+		"The API key for the bridge is 7f3a-91b2-cc40",
+		"GMAIL_APP_PASSWORD=abcd efgh ijkl mnop",
+		"export SLACK_TOKEN=xoxb-4242424242-abcdefgh",
+	}, "\n"))
+	writeTestFile(t, filepath.Join(source, "POLICY.md"),
+		"Never put a token or password in a role directory. Escalate on ambiguity.\n")
+
+	plan, err := Adopt(Options{Target: source, Machine: "testbox"})
+	if err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	def := plan.Definitions[0]
+
+	if _, copied := def.RoleFiles["INSTRUCTIONS.md"]; copied {
+		t.Error("a credential-bearing body was copied into the role")
+	}
+	// The policy file only TALKS about tokens; it must still be adopted.
+	if _, copied := def.RoleFiles["POLICY.md"]; !copied {
+		t.Error("prose about credentials was mistaken for a credential")
+	}
+	// Write it out and prove no secret material reaches disk.
+	root := t.TempDir()
+	if _, err := plan.WriteTo(root); err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+	var found []string
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		for _, secret := range []string{"xoxb-", "abcd efgh", "7f3a-91b2"} {
+			if strings.Contains(string(body), secret) {
+				found = append(found, path+" contains "+secret)
+			}
+		}
+		return nil
+	})
+	if len(found) > 0 {
+		t.Errorf("secret material reached the registry: %v", found)
+	}
+	// And the definition says why the file is absent.
+	if len(def.Post.Spec.Unresolved) == 0 ||
+		!strings.Contains(strings.Join(def.Post.Spec.Unresolved, " "), "credential") {
+		t.Errorf("no unresolved entry explains the missing file: %v", def.Post.Spec.Unresolved)
+	}
+}
+
+func TestScanForCredentialsShapes(t *testing.T) {
+	catches := []string{
+		"Login with the app password abcd efgh ijkl mnop",
+		"The API key for the bridge is 7f3a-91b2-cc40",
+		"GMAIL_APP_PASSWORD=abcd efgh ijkl mnop",
+		"export SLACK_TOKEN=xoxb-4242424242-abcdefgh",
+		"token: ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"-----BEGIN RSA PRIVATE KEY-----",
+	}
+	for _, line := range catches {
+		if len(ScanForCredentials(line)) == 0 {
+			t.Errorf("ScanForCredentials missed: %q", line)
+		}
+	}
+
+	// Policy prose must not be mistaken for a leak.
+	clean := []string{
+		"Never put a token or password in a role directory.",
+		"Ask the user for the API key rather than storing it.",
+		"Escalate to the human on ambiguity.",
+		"Run the pr-review workflow before merging.",
+	}
+	for _, line := range clean {
+		if lines := ScanForCredentials(line); len(lines) != 0 {
+			t.Errorf("ScanForCredentials false-positived on: %q", line)
+		}
+	}
+}
+
+// launchd ANDs Day and Weekday; cron ORs them. No cron string is correct, so
+// none is emitted.
+func TestLaunchdDayAndWeekdayProducesNoSchedule(t *testing.T) {
+	dir := t.TempDir()
+	plist := filepath.Join(dir, "monthly-monday.plist")
+	writeTestFile(t, plist, `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>monthly-monday</string>
+  <key>ProgramArguments</key><array><string>/bin/true</string></array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Day</key><integer>1</integer>
+    <key>Weekday</key><integer>1</integer>
+    <key>Hour</key><integer>3</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+</dict>
+</plist>
+`)
+	src, err := ParseLaunchdPlist(plist)
+	if err != nil {
+		t.Fatalf("ParseLaunchdPlist: %v", err)
+	}
+	if src.CalendarSpec != "" {
+		t.Errorf("CalendarSpec = %q, want empty: launchd ANDs Day and Weekday, cron ORs them", src.CalendarSpec)
+	}
+	if len(src.Warnings) == 0 {
+		t.Error("no warning explains why no schedule was produced")
+	}
+}
+
+// An uncontacted machine must not be reported as a healthy link, and a post
+// placed elsewhere must not be resolved against the LOCAL session index.
+func TestBuildViewNeverClaimsLinkOKForUncontactedMachine(t *testing.T) {
+	post := NewPost("mac-thing", "post-m")
+	post.Spec.Classification = ClassAgent
+	post.Spec.Role = RoleRef{Name: RoleTriage}
+	post.Spec.Placement.Machine = "mac-studio"
+	post.Spec.Runtime.AdoptedSessionID = "sess-elsewhere"
+
+	view := BuildView(BuildOptions{
+		Definitions:   []*Definition{{Name: "mac-thing", Post: post}},
+		SessionStates: map[string]SessionState{},
+		LocalMachine:  "g14",
+		Now:           time.Now(),
+		SkipHealth:    true,
+	})
+	if len(view.Machines) != 1 {
+		t.Fatalf("machines = %d, want 1", len(view.Machines))
+	}
+	if view.Machines[0].Link != LinkNotContacted {
+		t.Errorf("link = %q, want %q — nothing was contacted", view.Machines[0].Link, LinkNotContacted)
+	}
+	if got := view.Machines[0].Agents[0].State; got != RunUnknown {
+		t.Errorf("state = %q, want %q: a remote post cannot be resolved against the local session index", got, RunUnknown)
+	}
+}
+
+// The renderer must be told when a registry record breaks a phase-1 invariant.
+func TestBuildViewFlagsArmedRegistryRecord(t *testing.T) {
+	post := NewPost("armed", "post-a")
+	post.Spec.Classification = ClassAgent
+	post.Spec.Role = RoleRef{Name: RoleBuilder}
+	post.Spec.Triggers = []Trigger{{
+		Name: "cron", Type: TriggerCron, Schedule: "*/5 * * * *",
+		Enabled: true, External: false,
+	}}
+
+	view := BuildView(BuildOptions{
+		Definitions:  []*Definition{{Name: "armed", Post: post}},
+		LocalMachine: "g14",
+		Now:          time.Now(),
+		SkipHealth:   true,
+	})
+	row := view.Machines[0].Agents[0]
+	if len(row.Violations) == 0 {
+		t.Error("an armed registry record produced no violation")
+	}
+	if !row.Armed() {
+		t.Error("Armed() did not report an armed trigger")
+	}
+	if row.Attention == "" {
+		t.Error("an armed record is not called out for attention")
+	}
+}
+
+func TestValidateReportsToFlagsOrphanChain(t *testing.T) {
+	orphan := NewPost("a", "post-a")
+	orphan.Spec.Placement.ReportsTo = "b"
+	parent := NewPost("b", "post-b")
+	parent.Spec.Placement.ReportsTo = "c" // c does not exist
+
+	findings := ValidateReportsTo([]*Post{orphan, parent})
+	if len(findings) == 0 {
+		t.Fatal("a chain that never reaches a human principal produced no finding")
+	}
+}
+
+func TestPlaceholderPatternCatchesShellShapes(t *testing.T) {
+	for _, deliver := range []string{
+		"New mail from {{sender}}",
+		"File ${PATH} changed",
+		"Subject $SUBJECT arrived",
+		"Run $(whoami)",
+		"Run `id`",
+		"Path %(path)s changed",
+		"Got %s",
+	} {
+		post := validTestPost()
+		post.Spec.Triggers = []Trigger{{
+			Name: "t", Type: TriggerMailDoorbell, External: true,
+			ExternalSource: "/x.plist", Deliver: deliver,
+		}}
+		if !ValidatePost(post).HasErrors() {
+			t.Errorf("interpolated delivery accepted: %q", deliver)
+		}
+	}
+}
+
+func TestDescribeIntervalDoesNotFloorAwaySeconds(t *testing.T) {
+	if got := DescribeInterval(90); got == "every 1m" {
+		t.Errorf("DescribeInterval(90) = %q, which is a wrong cadence, not a coarse one", got)
+	}
+	if got := DescribeInterval(300); got != "every 5m" {
+		t.Errorf("DescribeInterval(300) = %q, want %q", got, "every 5m")
+	}
+	if got := DescribeInterval(7200); got != "every 2h" {
+		t.Errorf("DescribeInterval(7200) = %q, want %q", got, "every 2h")
+	}
+}
+
+func TestCheckHealthFutureMtimeIsNotFresh(t *testing.T) {
+	now := time.Now()
+	dir := t.TempDir()
+	seen := filepath.Join(dir, "seen.db")
+	writeTestFile(t, seen, "x")
+	future := now.Add(48 * time.Hour)
+	if err := os.Chtimes(seen, future, future); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+	got := CheckHealth("c", "mail", dir, 30*time.Minute, now)
+	if got.State == HealthOK {
+		t.Errorf("a file dated in the future reported %q; that is a clock problem, not proof of work", got.State)
+	}
+}
+
+func TestWriteToRefusesNonEmptyDirectory(t *testing.T) {
+	source := t.TempDir()
+	writeTestFile(t, filepath.Join(source, "CLAUDE.md"), "conductor\n")
+	plan, err := Adopt(Options{Target: source, Machine: "testbox"})
+	if err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+
+	root := t.TempDir()
+	// A directory holding role content but NO agent.yaml must still be safe.
+	occupied := filepath.Join(root, plan.Definitions[0].Name, RoleDirName)
+	if err := os.MkdirAll(occupied, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeTestFile(t, filepath.Join(occupied, "INSTRUCTIONS.md"), "someone's edit\n")
+
+	if _, err := plan.WriteTo(root); err == nil {
+		t.Fatal("WriteTo overwrote a non-empty directory that had no agent.yaml")
+	}
+	body, readErr := os.ReadFile(filepath.Join(occupied, "INSTRUCTIONS.md"))
+	if readErr != nil || string(body) != "someone's edit\n" {
+		t.Error("the existing file was modified")
+	}
+}
+
+func TestSanitizeForDisplayStripsControlCharacters(t *testing.T) {
+	got := SanitizeForDisplay("link\x1b[2K\rok\ttab\x07")
+	if strings.ContainsAny(got, "\x1b\r\x07") {
+		t.Errorf("SanitizeForDisplay left control characters: %q", got)
+	}
+	if !strings.Contains(got, "tab") {
+		t.Errorf("SanitizeForDisplay dropped ordinary text: %q", got)
+	}
+}

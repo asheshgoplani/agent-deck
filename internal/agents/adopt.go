@@ -195,9 +195,28 @@ func adoptConductorDir(dir string, opts Options) (*Plan, error) {
 		}
 		seenTargets[mapping.target] = true
 		sourcePaths = append(sourcePaths, sourcePath)
+
+		contentFindings := ValidateRoleContent("role/"+mapping.target, string(body))
+		if contentFindings.HasErrors() {
+			// The body carries something that looks like a credential. Copying
+			// it would put that secret in a second place on disk, so the file
+			// is left where it is and the definition records why it is absent.
+			// The source is not touched: fixing it is the user's call.
+			//
+			// The finding is downgraded to a warning here because it has been
+			// ACTED on — the leak cannot happen now. Leaving it fatal would
+			// refuse the whole definition and leave the user with no inventory
+			// of an agent that plainly exists, which is the opposite of what
+			// this phase is for.
+			findings = append(findings, handledCredentialFindings(contentFindings)...)
+			post.AddUnresolved(mapping.source + " was not copied into the role because it looks like it " +
+				"contains a credential; move the value to a connector's private store, then re-adopt")
+			continue
+		}
+		findings = append(findings, contentFindings...)
+
 		roleFiles[mapping.target] = body
 		role.Spec.Digests[mapping.target] = Digest(body)
-		findings = append(findings, ValidateRoleContent("role/"+mapping.target, string(body))...)
 
 		switch {
 		case mapping.target == "INSTRUCTIONS.md":
@@ -228,11 +247,20 @@ func adoptConductorDir(dir string, opts Options) (*Plan, error) {
 			}
 			rel := filepath.Join("workflows", entry.Name())
 			workflowName := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+			sourcePaths = append(sourcePaths, sourcePath)
+
+			contentFindings := ValidateRoleContent("role/"+rel, string(body))
+			if contentFindings.HasErrors() {
+				findings = append(findings, handledCredentialFindings(contentFindings)...)
+				post.AddUnresolved("workflows/" + entry.Name() + " was not copied into the role because it " +
+					"looks like it contains a credential; move the value to a connector's private store, then re-adopt")
+				continue
+			}
+			findings = append(findings, contentFindings...)
+
 			role.Spec.Workflows[workflowName] = rel
 			roleFiles[rel] = body
 			role.Spec.Digests[rel] = Digest(body)
-			sourcePaths = append(sourcePaths, sourcePath)
-			findings = append(findings, ValidateRoleContent("role/"+rel, string(body))...)
 		}
 	}
 
@@ -240,10 +268,15 @@ func adoptConductorDir(dir string, opts Options) (*Plan, error) {
 		post.AddUnresolved("no instruction file found; the role has no entry point yet")
 	}
 
+	// The role must be set before bindings run: applyConductorBindings folds
+	// in any unit that fires this post, and the trigger's fixed delivery
+	// string is chosen from the role name. Assigning it afterwards gave every
+	// adopted conductor the generic fallback string.
+	post.Spec.Role = RoleRef{Name: classified.Role, Path: "./" + RoleDirName, Version: role.Metadata.Version}
+
 	// Correlate the live runtime, the config block, and any unit that fires it.
 	applyConductorBindings(post, absDir, name, opts, &sourcePaths)
 
-	post.Spec.Role = RoleRef{Name: classified.Role, Path: "./" + RoleDirName, Version: role.Metadata.Version}
 	if classified.Role == RoleUnresolved {
 		post.AddUnresolved("role is unresolved; a human must say what this agent is for")
 	}
@@ -683,8 +716,13 @@ func (p *Plan) WriteTo(root string) ([]string, error) {
 	var written []string
 	for _, def := range p.Definitions {
 		dir := filepath.Join(root, def.Name)
-		if _, err := os.Stat(filepath.Join(dir, PostFileName)); err == nil {
-			return written, fmt.Errorf("definition %q already exists at %s; remove it or adopt under a different name", def.Name, dir)
+		// Guard on the whole directory, not just agent.yaml. A directory that
+		// already holds role/INSTRUCTIONS.md or ADOPTION-REPORT.md but no
+		// agent.yaml would otherwise have those files silently overwritten —
+		// which matters most for --output, where the root is arbitrary.
+		if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
+			return written, fmt.Errorf("refusing to write definition %q: %s already exists and is not empty; "+
+				"remove it or adopt under a different name", def.Name, dir)
 		}
 		if err := Write(dir, def.Post, def.Role, def.RoleFiles, def.Report); err != nil {
 			return written, err
@@ -695,6 +733,20 @@ func (p *Plan) WriteTo(root string) ([]string, error) {
 }
 
 // --- helpers ------------------------------------------------------------
+
+// handledCredentialFindings downgrades a credential error to a warning, for
+// the case where adoption has already prevented the leak by not copying the
+// file. The text still says what was found and what to do about it.
+func handledCredentialFindings(in Findings) Findings {
+	out := make(Findings, 0, len(in))
+	for _, f := range in {
+		if f.Severity == SeverityError {
+			f.Severity = SeverityWarn
+		}
+		out = append(out, f)
+	}
+	return out
+}
 
 func readCapped(path string) ([]byte, error) {
 	info, err := os.Stat(path)

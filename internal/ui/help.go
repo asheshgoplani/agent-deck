@@ -50,6 +50,18 @@ type HelpOverlay struct {
 	height       int
 	scrollOffset int // Current scroll position for small screens
 	hotkeys      map[string]string
+	// hasAgents gates the Agents row. The feature is opt-in by presence, and
+	// this overlay is part of the TUI: a user who has adopted nothing must not
+	// find a key here for a surface that does not exist for them.
+	hasAgents bool
+}
+
+// SetHasAgents records whether anything has been adopted.
+func (h *HelpOverlay) SetHasAgents(has bool) {
+	if h == nil {
+		return
+	}
+	h.hasAgents = has
 }
 
 // NewHelpOverlay creates a new help overlay
@@ -311,7 +323,6 @@ func (h *HelpOverlay) View() string {
 			title: "WATCHERS",
 			items: [][2]string{
 				{watcherPanelKey, "Watcher panel"},
-				{agentsPanelKey, "Agents"},
 			},
 		},
 		{
@@ -353,6 +364,19 @@ func (h *HelpOverlay) View() string {
 				{"--profile <name>", "Use specific profile"},
 			},
 		},
+	}
+
+	// The Agents row appears only once something has been adopted. The whole
+	// feature is opt-in by presence, and the help overlay is part of the TUI:
+	// a user with no agents must not find a key here for a surface that does
+	// not exist for them.
+	if h.hasAgents {
+		for i := range sections {
+			if sections[i].title == "WATCHERS" {
+				sections[i].items = append(sections[i].items, [2]string{agentsPanelKey, "Agents"})
+				break
+			}
+		}
 	}
 
 	for i := range sections {

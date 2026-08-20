@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -59,14 +60,55 @@ var harnessTokens = []string{
 	"claude", "codex", "deepseek", "hermes", "gemini", "copilot", "tmux",
 }
 
-// secretPattern catches the shapes of a credential that must never reach a
-// definition file. It is deliberately broad: a false warning costs a glance,
-// a missed token costs a credential.
-var secretPattern = regexp.MustCompile(`(?i)(api[_-]?key|secret|token|password|passwd|bearer|authorization|client[_-]?secret|private[_-]?key)`)
+// secretWord names a line as being ABOUT a credential. On its own it proves
+// nothing — "never put a token in a role" is good policy prose, not a leak.
+var secretWord = regexp.MustCompile(`(?i)(api[_ -]?key|secret|token|password|passwd|passphrase|bearer|authorization|client[_ -]?secret|private[_ -]?key|credential)`)
 
-// tokenishValue catches long opaque strings that look like real credentials
-// rather than the word "token" appearing in prose.
-var tokenishValue = regexp.MustCompile(`\b(sk-[A-Za-z0-9_\-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9\-]{10,}|[A-Za-z0-9_\-]{40,})\b`)
+// credentialPrefix matches issued-credential shapes that are self-evident
+// wherever they appear, with no surrounding context needed.
+var credentialPrefix = regexp.MustCompile(
+	`\b(sk-[A-Za-z0-9_\-]{16,}` +
+		`|gh[pousr]_[A-Za-z0-9]{16,}` +
+		`|xox[baprs]-[A-Za-z0-9\-]{10,}` +
+		`|AKIA[0-9A-Z]{12,}` +
+		`|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}` +
+		`|[A-Za-z0-9_\-]{40,})\b|-----BEGIN [A-Z ]*PRIVATE KEY-----`)
+
+// secretAssignment matches a secret-named key being given a value.
+var secretAssignment = regexp.MustCompile(
+	`(?i)\b(api[_-]?key|secret|token|password|passwd|passphrase|bearer|client[_-]?secret|private[_-]?key|app[_-]?password)\b[^\n]{0,16}?[:=]\s*\S+`)
+
+// groupedSecretValue matches the human-transcribed credential shapes that
+// carry no prefix and are too short to look like a blob: a Gmail app password
+// written as four groups of four letters, and a dash-grouped key. These are
+// only treated as credentials on a line that is also ABOUT a credential,
+// which is what keeps ordinary prose and hyphenated identifiers out.
+var groupedSecretValue = regexp.MustCompile(
+	`\b[A-Za-z0-9]{4}(?:[ -][A-Za-z0-9]{4}){2,}\b`)
+
+// ScanForCredentials returns the 1-based line numbers of lines that look like
+// they carry a real credential.
+//
+// The shapes here are the ones that actually appear in a hand-written
+// conductor directory: an export line, a prefixed API token, and — the case a
+// prefix-only detector misses — a credential transcribed into prose, such as a
+// 16-character Gmail app password written as four spaced groups.
+func ScanForCredentials(body string) []int {
+	var lines []int
+	for i, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		switch {
+		case credentialPrefix.MatchString(trimmed),
+			secretAssignment.MatchString(trimmed),
+			secretWord.MatchString(trimmed) && groupedSecretValue.MatchString(trimmed):
+			lines = append(lines, i+1)
+		}
+	}
+	return lines
+}
 
 // hostnamePattern catches machine-specific references in role content.
 var hostnamePattern = regexp.MustCompile(`(?i)\b([a-z0-9][a-z0-9\-]*\.(local|lan|internal|home|arpa))\b|\b\d{1,3}(\.\d{1,3}){3}\b`)
@@ -137,20 +179,18 @@ func ValidateRole(r *Role) Findings {
 	return fs
 }
 
-// ValidateRoleContent checks one copied role file body for the things a role
-// must never carry. Content is never rewritten — the user's Markdown is
-// authoritative — so every result here is a warning addressed to a human.
+// ValidateRoleContent checks one role file body for the things a role must
+// never carry.
+//
+// A credential is an ERROR, not a warning: the caller must not copy the body
+// into the registry, because doing so would put the secret in a second place
+// on disk. Portability rot — a hostname, an absolute home path — stays a
+// warning, because the user's Markdown is authoritative and is never rewritten.
 func ValidateRoleContent(field, body string) Findings {
 	var fs Findings
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if tokenishValue.MatchString(trimmed) && secretPattern.MatchString(trimmed) {
-			fs.warnf(field, "looks like it contains a credential; move it to a connector's private store")
-			break
-		}
+	if lines := ScanForCredentials(body); len(lines) > 0 {
+		fs.errorf(field, "line %s looks like it carries a credential; it was not copied into the role. "+
+			"Move the value into a connector's private store, then re-adopt", formatLineList(lines))
 	}
 	if hostnamePattern.MatchString(body) {
 		fs.warnf(field, "contains a hostname or IP; machine specifics belong on the post, not the role")
@@ -160,6 +200,25 @@ func ValidateRoleContent(field, body string) Findings {
 	}
 	return fs
 }
+
+// formatLineList renders line numbers for a message, bounded so a file full of
+// exports does not produce an unreadable finding.
+func formatLineList(lines []int) string {
+	const max = 5
+	parts := make([]string, 0, max+1)
+	for i, line := range lines {
+		if i == max {
+			parts = append(parts, fmt.Sprintf("and %d more", len(lines)-max))
+			break
+		}
+		parts = append(parts, strconv.Itoa(line))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// secretPattern names an identifier that refers to a credential. Used for
+// connector names and environment KEY names, where there is no value to scan.
+var secretPattern = secretWord
 
 // ValidatePost checks a post manifest.
 func ValidatePost(p *Post) Findings {
@@ -249,8 +308,20 @@ func ValidatePost(p *Post) Findings {
 }
 
 // placeholderPattern catches the convenient-but-forbidden templates from the
-// design: {{sender}}, ${SUBJECT}, %(path)s and friends.
-var placeholderPattern = regexp.MustCompile(`\{\{[^}]+\}\}|\$\{[A-Za-z_][A-Za-z0-9_]*\}|%\([A-Za-z_]+\)s`)
+// design, plus the shell-flavoured ones a hand-written definition reaches for:
+// {{sender}}, ${SUBJECT}, $SENDER, $(cmd), backticks, %(path)s and %s.
+//
+// Adoption cannot produce any of these — fixedDeliveryFor is a closed switch
+// over role constants — so this guards hand-authored and imported
+// definitions, which is exactly the population a validator exists for.
+var placeholderPattern = regexp.MustCompile(
+	`\{\{[^}]*\}\}` +
+		`|\$\{[A-Za-z_][A-Za-z0-9_]*\}` +
+		`|\$[A-Za-z_][A-Za-z0-9_]*` +
+		`|\$\([^)]*\)` +
+		"|`[^`]*`" +
+		`|%\([A-Za-z_]+\)s` +
+		`|%[sdvq]\b`)
 
 // ValidateDefinition validates a post together with its role.
 func ValidateDefinition(p *Post, r *Role) Findings {
@@ -287,10 +358,12 @@ func ValidateReportsTo(posts []*Post) Findings {
 		visited := map[string]bool{}
 		current := byName[name]
 		reachedHuman := false
+		alreadyReported := false
 		for current != nil {
 			if visited[current.Metadata.Name] {
 				fs.errorf("post."+name+".spec.placement.reportsTo",
 					"reports_to cycle through %q; escalation would never reach a human", current.Metadata.Name)
+				alreadyReported = true
 				break
 			}
 			visited[current.Metadata.Name] = true
@@ -303,12 +376,17 @@ func ValidateReportsTo(posts []*Post) Findings {
 			if !ok {
 				fs.warnf("post."+name+".spec.placement.reportsTo",
 					"reports to %q, which is not a known post or a human principal", next)
+				alreadyReported = true
 				break
 			}
 			current = parent
 		}
-		if !reachedHuman && !fs.HasErrors() {
-			continue
+		// A chain that ends without reaching a human principal is reported.
+		// The previous form computed reachedHuman and then discarded it, so
+		// an orphaned chain produced no finding at all.
+		if !reachedHuman && !alreadyReported {
+			fs.warnf("post."+name+".spec.placement.reportsTo",
+				"reports_to chain does not terminate at a human principal; escalation has no destination")
 		}
 	}
 	return fs

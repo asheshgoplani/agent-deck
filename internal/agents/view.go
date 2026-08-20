@@ -7,6 +7,30 @@ import (
 	"time"
 )
 
+// SanitizeForDisplay strips control characters from a string before it reaches
+// a terminal.
+//
+// Definition content and remote rows are DATA, not markup. Without this, an
+// adopted file or a compromised remote could embed escape sequences in a name
+// or a summary and repaint the fleet view — including forging a "link ok"
+// line. Tabs become spaces; everything else below 0x20, plus DEL and the C1
+// range, is dropped.
+func SanitizeForDisplay(value string) string {
+	var sb strings.Builder
+	sb.Grow(len(value))
+	for _, r := range value {
+		switch {
+		case r == '\t':
+			sb.WriteRune(' ')
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
+			continue
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
 // LinkState describes how much we know about a machine's data.
 type LinkState string
 
@@ -20,6 +44,11 @@ const (
 	// if they were current, and never silently dropped, which would make the
 	// fleet look smaller than it is.
 	LinkUnconfirmed LinkState = "unconfirmed"
+	// LinkNotContacted means this machine was never asked. It appears only
+	// because a local definition places a post there. Calling that "link ok"
+	// claims a round trip that never happened — the same dishonesty as
+	// LinkUnconfirmed pointing the other way, and the one a reader acts on.
+	LinkNotContacted LinkState = "not contacted"
 )
 
 // RunState is what an agent's runtime is doing now.
@@ -91,6 +120,12 @@ type AgentRow struct {
 	LinkState LinkState `json:"link_state"`
 	// LoadError marks a definition directory that could not be read.
 	LoadError string `json:"load_error,omitempty"`
+	// Violations are phase-1 invariants this record breaks. The registry is a
+	// directory a human, a later phase, or a synced dotfile can write into,
+	// so what adoption emits is not the same as what the renderer is handed.
+	// A row that claims to be armed says so instead of being painted under a
+	// blanket "this is disabled" footer.
+	Violations []string `json:"violations,omitempty"`
 	// ReportsTo is the manager post or human principal.
 	ReportsTo string `json:"reports_to,omitempty"`
 }
@@ -213,9 +248,11 @@ func BuildView(opts BuildOptions) View {
 	for _, name := range machineNames {
 		rows := byMachine[name]
 		sort.SliceStable(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+		// Only the local machine was actually read here; remotes that really
+		// answered are appended separately below with LinkOK.
 		link := LinkLocal
 		if name != localMachine {
-			link = LinkOK
+			link = LinkNotContacted
 		}
 		view.Machines = append(view.Machines, Machine{Name: name, Link: link, Agents: rows})
 	}
@@ -281,7 +318,12 @@ func buildRow(def *Definition, opts BuildOptions, now time.Time, localMachine st
 
 	// Live state comes from the existing session status, which stays
 	// authoritative. A post with no runtime says so rather than guessing.
+	// The session index is LOCAL. A post placed on another machine cannot be
+	// resolved against it — its session may well be running there — so its
+	// state is unknown rather than a confident "no runtime".
 	switch {
+	case row.Machine != localMachine:
+		row.State = RunUnknown
 	case row.SessionID == "":
 		row.State = RunNoRuntime
 	default:
@@ -317,13 +359,34 @@ func buildRow(def *Definition, opts BuildOptions, now time.Time, localMachine st
 		}
 	}
 
+	// Phase-1 invariants are checked on RENDER, not just on emit.
+	for _, finding := range ValidatePost(post) {
+		if finding.Severity == SeverityError {
+			row.Violations = append(row.Violations, finding.Field+": "+finding.Message)
+		}
+	}
+
 	row.Attention = attentionFor(row)
 	return row
+}
+
+// Armed reports whether any trigger on this row claims agent-deck owns its
+// firing. Nothing in phase 1 should ever be armed; a row that is says so.
+func (r AgentRow) Armed() bool {
+	for _, t := range r.Triggers {
+		if t.Enabled && !t.External {
+			return true
+		}
+	}
+	return false
 }
 
 // attentionFor decides whether a row should be loud, and why. Only proven
 // problems qualify: an unknown connector is not an alarm, it is an unknown.
 func attentionFor(row AgentRow) string {
+	if len(row.Violations) > 0 {
+		return "definition breaks a phase-1 invariant: " + row.Violations[0]
+	}
 	for _, c := range row.Connectors {
 		switch c.State {
 		case HealthDown:

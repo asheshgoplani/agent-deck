@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,21 +46,74 @@ type LaunchSource struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
-// ProgramExists reports whether the unit's program is present on this machine.
-// A unit pointing at a path that is gone is debris, and the inventory should
-// say so rather than list it as a candidate agent.
-func (s *LaunchSource) ProgramExists() bool {
+// ProgramStatus is what we can prove about a unit's program path.
+type ProgramStatus string
+
+const (
+	// ProgramPresent means the path resolves to something on this machine.
+	ProgramPresent ProgramStatus = "present"
+	// ProgramMissing means the path is fully resolved and is not there.
+	ProgramMissing ProgramStatus = "missing"
+	// ProgramUnknown means we cannot resolve the path well enough to ask.
+	ProgramUnknown ProgramStatus = "unknown"
+)
+
+// unexpandedSpecifier matches a systemd specifier this reader did not resolve.
+var unexpandedSpecifier = regexp.MustCompile(`%[a-zA-Z]`)
+
+// ProgramStatus reports what can be proven about the unit's program.
+//
+// The distinction matters more than it looks. "Missing" is the only verdict
+// that labels a unit as debris, which is the one label that invites a human to
+// delete something. A path we merely could not resolve — because it still
+// carries a systemd specifier this reader does not expand, such as %i or %t —
+// is UNKNOWN. Reporting an unresolved token as a missing file told the user
+// that running services were leftovers.
+func (s *LaunchSource) ProgramStatus() ProgramStatus {
 	program := strings.TrimSpace(s.Program)
 	if program == "" {
-		return false
+		return ProgramUnknown
+	}
+	if unexpandedSpecifier.MatchString(program) {
+		return ProgramUnknown
 	}
 	if !strings.ContainsAny(program, "/\\") {
 		// A bare command name resolved from PATH at launch time. We cannot
 		// prove absence, so we do not claim it.
-		return true
+		return ProgramUnknown
 	}
-	_, err := os.Stat(program)
-	return err == nil
+	if _, err := os.Stat(program); err == nil {
+		return ProgramPresent
+	}
+	return ProgramMissing
+}
+
+// expandSystemdSpecifiers resolves the specifiers whose values this process can
+// know for certain, and leaves every other one in place so ProgramStatus can
+// see that the path is unresolved.
+//
+// %h, %u, %U and %H are properties of the user and machine the unit would run
+// as, which for a user unit read on its own machine is this process. %% is
+// literal. Everything else — %i, %n, %t, %S, %E, %C, %v, %m, %b — depends on
+// instance name or runtime context that is not knowable from the file, and
+// guessing at them is how a running service gets called debris.
+func expandSystemdSpecifiers(value string) string {
+	if value == "" || !strings.Contains(value, "%") {
+		return value
+	}
+	replacements := []string{"%%", "\x00PERCENT\x00"}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		replacements = append(replacements, "%h", home)
+	}
+	if user := os.Getenv("USER"); user != "" {
+		replacements = append(replacements, "%u", user)
+	}
+	replacements = append(replacements, "%U", strconv.Itoa(os.Getuid()))
+	if host, err := os.Hostname(); err == nil && host != "" {
+		replacements = append(replacements, "%H", host)
+	}
+	expanded := strings.NewReplacer(replacements...).Replace(value)
+	return strings.ReplaceAll(expanded, "\x00PERCENT\x00", "%")
 }
 
 // --- launchd -----------------------------------------------------------
@@ -120,7 +174,10 @@ func ParseLaunchdPlist(path string) (*LaunchSource, error) {
 	if cal, ok := root.dict["StartCalendarInterval"]; ok {
 		src.CalendarSpec = renderCalendarInterval(cal)
 		if src.CalendarSpec == "" {
-			src.Warnings = append(src.Warnings, "StartCalendarInterval present but not representable as a single cron expression")
+			src.Warnings = append(src.Warnings,
+				"StartCalendarInterval is present but has no exact cron equivalent "+
+					"(an array of intervals, or both Day and Weekday, which launchd ANDs and cron ORs); "+
+					"no next-due time is computed")
 		}
 	}
 	if ka, ok := root.dict["KeepAlive"]; ok {
@@ -144,11 +201,20 @@ func ParseLaunchdPlist(path string) (*LaunchSource, error) {
 }
 
 // renderCalendarInterval renders a launchd StartCalendarInterval as a
-// five-field cron expression. launchd allows an array of intervals; a single
-// cron string cannot express that, so an array returns "" and the caller
-// records the trigger as opaque rather than inventing a schedule.
+// five-field cron expression, or "" when it cannot be expressed as one.
+//
+// Two cases return "": an ARRAY of intervals, which one cron string cannot
+// express, and a dict that sets BOTH Day and Weekday. launchd ANDs those two
+// (the 1st, but only when it is a Monday); cron ORs them (every 1st AND every
+// Monday). Emitting the cron spelling would render a next-due time that is
+// wrong for most months, at high confidence — worse than rendering none.
 func renderCalendarInterval(v plistValue) string {
 	if v.kind != "dict" {
+		return ""
+	}
+	_, hasDay := v.dict["Day"]
+	_, hasWeekday := v.dict["Weekday"]
+	if hasDay && hasWeekday {
 		return ""
 	}
 	field := func(key string) string {
@@ -339,11 +405,21 @@ func ParseSystemdUnit(path string) (*LaunchSource, error) {
 		argv := splitArgv(execStart)
 		if len(argv) > 0 {
 			// systemd allows a leading "-", "@", "+", "!" on ExecStart.
-			src.Program = strings.TrimLeft(argv[0], "-@+!:")
+			raw := strings.TrimLeft(argv[0], "-@+!:")
+			src.Program = expandSystemdSpecifiers(raw)
 			src.Arguments = argv
+			if src.Program != raw {
+				src.Warnings = append(src.Warnings,
+					"ExecStart specifier expanded: "+raw+" -> "+src.Program)
+			}
+			if unexpandedSpecifier.MatchString(src.Program) {
+				src.Warnings = append(src.Warnings,
+					"ExecStart contains a systemd specifier this reader does not expand; "+
+						"whether its program exists is unknown")
+			}
 		}
 	}
-	src.WorkingDirectory = firstValue(service, "WorkingDirectory")
+	src.WorkingDirectory = expandSystemdSpecifiers(firstValue(service, "WorkingDirectory"))
 	src.RestartMode = firstValue(service, "Restart")
 	for _, env := range service["Environment"] {
 		// Split only far enough to learn the key. The value is discarded

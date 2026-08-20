@@ -270,13 +270,16 @@ func printAgentsView(view agents.View) {
 			if detail == "" {
 				detail = "unreachable"
 			}
-			fmt.Printf("%s   — UNCONFIRMED: %s\n", header, detail)
+			fmt.Printf("%s   — UNCONFIRMED: %s\n", header, agents.SanitizeForDisplay(detail))
 		case agents.LinkOK:
 			if machine.LinkDetail != "" {
-				fmt.Printf("%s   — link ok, %s\n", header, machine.LinkDetail)
+				fmt.Printf("%s   — link ok, %s\n", header, agents.SanitizeForDisplay(machine.LinkDetail))
 			} else {
 				fmt.Printf("%s   — link ok\n", header)
 			}
+		case agents.LinkNotContacted:
+			// Never claim a round trip that did not happen.
+			fmt.Printf("%s   — not contacted; placement only\n", header)
 		default:
 			fmt.Println(header)
 		}
@@ -287,16 +290,18 @@ func printAgentsView(view agents.View) {
 			if row.Class != agents.ClassAgent {
 				role = string(row.Class)
 			}
-			line := fmt.Sprintf(" %s %-18s %-12s %-11s", glyph, truncateCell(row.Name, 18), truncateCell(role, 12), row.State)
+			line := fmt.Sprintf(" %s %-18s %-12s %-11s", glyph,
+				truncateCell(agents.SanitizeForDisplay(row.Name), 18),
+				truncateCell(agents.SanitizeForDisplay(role), 12), row.State)
 			if last := agents.FormatLastDid(row, now); last != "" {
-				line += "  last: " + truncateCell(last, 34)
+				line += "  last: " + truncateCell(agents.SanitizeForDisplay(last), 34)
 			}
 			if next := agents.FormatNextDue(row); next != "" {
 				line += "  next: " + next
 			}
 			fmt.Println(line)
 			if row.Attention != "" {
-				fmt.Printf("     ! %s\n", row.Attention)
+				fmt.Printf("     ! %s\n", agents.SanitizeForDisplay(row.Attention))
 			}
 		}
 	}
@@ -318,12 +323,24 @@ func printAgentDetail(row agents.AgentRow, def *agents.Definition) {
 	fmt.Printf("  ·  %s\n", row.Machine)
 	fmt.Printf("post: %s  ·  reports to: %s  ·  state: %s\n", row.PostID, row.ReportsTo, row.State)
 
+	// The loudest facts about a row must not vanish when you drill into it.
+	if row.LoadError != "" {
+		fmt.Printf("\n!! this definition could not be read: %s\n", agents.SanitizeForDisplay(row.LoadError))
+		fmt.Println("   nothing below is trustworthy.")
+	}
+	for _, violation := range row.Violations {
+		fmt.Printf("\n!! %s\n", agents.SanitizeForDisplay(violation))
+	}
+	if row.Attention != "" {
+		fmt.Printf("\n!  %s\n", agents.SanitizeForDisplay(row.Attention))
+	}
+
 	if len(row.Triggers) > 0 {
 		fmt.Println("\nTRIGGERS")
 		for _, t := range row.Triggers {
-			owner := "agent-deck"
-			if t.External {
-				owner = "external: " + filepath.Base(t.ExternalSource)
+			owner := "external: " + filepath.Base(t.ExternalSource)
+			if !t.External {
+				owner = "ARMED HERE — phase 1 never emits this"
 			}
 			fmt.Printf("  %-24s %-18s %-16s [%s]\n", t.Name, t.Kind, t.NextDueText, owner)
 			if t.NextDue != nil {
@@ -338,14 +355,15 @@ func printAgentDetail(row agents.AgentRow, def *agents.Definition) {
 	if len(row.Connectors) > 0 {
 		fmt.Println("\nCONNECTORS")
 		for _, c := range row.Connectors {
-			fmt.Printf("  %s %-20s %s\n", healthGlyph(c.State), c.Name, c.Detail)
+			fmt.Printf("  %s %-20s %s\n", healthGlyph(c.State),
+				agents.SanitizeForDisplay(c.Name), agents.SanitizeForDisplay(c.Detail))
 		}
 	}
 
 	if len(row.Recent) > 0 {
 		fmt.Println("\nRECENT WORK")
 		for _, entry := range row.Recent {
-			fmt.Printf("  %s  %s\n", entry.At.Format("15:04"), entry.Summary)
+			fmt.Printf("  %s  %s\n", entry.At.Format("15:04"), agents.SanitizeForDisplay(entry.Summary))
 		}
 	}
 
@@ -361,10 +379,20 @@ func printAgentDetail(row agents.AgentRow, def *agents.Definition) {
 	if len(row.Unresolved) > 0 {
 		fmt.Println("\nUNRESOLVED")
 		for _, item := range row.Unresolved {
-			fmt.Printf("  · %s\n", item)
+			fmt.Printf("  · %s\n", agents.SanitizeForDisplay(item))
 		}
 	}
-	fmt.Println("\nThis definition is disabled. agent-deck displays it; it does not run it.")
+	fmt.Println()
+	switch {
+	case row.LoadError != "":
+		fmt.Println("This definition could not be read. agent-deck is showing what little it parsed.")
+	case len(row.Violations) > 0 || row.Armed():
+		// Never print "this is disabled" over data that says otherwise.
+		fmt.Println("This definition claims to be ARMED, which phase 1 never emits.")
+		fmt.Println("agent-deck still does not run it — but the record is not what adoption writes.")
+	default:
+		fmt.Println("This definition is disabled. agent-deck displays it; it does not run it.")
+	}
 }
 
 func printAdoptPlan(plan *agents.Plan) {
@@ -438,6 +466,9 @@ func stateGlyph(state agents.RunState) string {
 	}
 }
 
+// healthGlyph must distinguish states by SHAPE. CLI output has no color, so
+// giving "ok" and "down" the same ● made a dead connector look healthy —
+// the worse of the two possible confusions.
 func healthGlyph(state agents.HealthState) string {
 	switch state {
 	case agents.HealthOK:
@@ -445,7 +476,7 @@ func healthGlyph(state agents.HealthState) string {
 	case agents.HealthStale:
 		return "◐"
 	case agents.HealthDown:
-		return "●"
+		return "✕"
 	default:
 		return "○"
 	}

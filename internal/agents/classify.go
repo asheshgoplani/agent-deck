@@ -156,7 +156,10 @@ func ClassifyLaunchSource(src *LaunchSource) ClassifyResult {
 		return ClassifyResult{Class: ClassExternal, Role: RoleUnresolved, Confidence: ConfidenceLow,
 			Reason: "no source to inspect"}
 	}
-	if strings.TrimSpace(src.Program) != "" && !src.ProgramExists() {
+	// Only a program we resolved AND found absent is debris. An unresolved
+	// path is unknown, and unknown must never be rendered as a leftover to
+	// delete.
+	if src.ProgramStatus() == ProgramMissing {
 		return ClassifyResult{
 			Class: ClassDebris, Role: RoleUnresolved, Confidence: ConfidenceHigh,
 			Reason: "its program path does not exist on this machine",

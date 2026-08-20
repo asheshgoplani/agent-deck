@@ -117,6 +117,15 @@ func CheckHealth(name, kind, evidencePath string, staleAfter time.Duration, now 
 	h.FreshnessFile = freshFile
 	age := now.Sub(freshTime)
 	ageText := fmt.Sprintf("%s ago", RoundDuration(age))
+	if age < 0 {
+		// A future timestamp is not proof of recent work, it is a clock
+		// problem. RoundDuration takes an absolute value, so without this a
+		// file dated next week would read as "5m ago" and count as fresh.
+		h.State = HealthUnknown
+		h.Detail = fmt.Sprintf("%s is dated %s in the future; clock or mtime is wrong",
+			filepath.Base(freshFile), RoundDuration(age))
+		return h
+	}
 
 	switch {
 	case age <= staleAfter:
