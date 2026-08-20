@@ -123,12 +123,16 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 	if len(args) > 0 && args[0] == "export" {
 		return runInboxExport(stdout, args[1:])
 	}
+	if len(args) > 0 && args[0] == "writer-status" {
+		return runInboxWriterStatus(stdout, args[1:])
+	}
 
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(stdout, "Usage: agent-deck inbox <session-id>")
 		fmt.Fprintln(stdout, "       agent-deck inbox drain [--json] <session-id>")
 		fmt.Fprintln(stdout, "       agent-deck inbox export [--json]")
+		fmt.Fprintln(stdout, "       agent-deck inbox writer-status [--json]")
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, "Drain pending completion events from the parent's durable outbox.")
 		fmt.Fprintln(stdout, "The `drain` form (issue #1225) collapses last-wins per child and")
@@ -137,6 +141,9 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 		fmt.Fprintln(stdout, "The `export` form (issue #1948) READS this host's completion and")
 		fmt.Fprintln(stdout, "transition records without consuming anything; it is what a")
 		fmt.Fprintln(stdout, "conductor on another machine runs over ssh via `remote drain`.")
+		fmt.Fprintln(stdout, "The `writer-status` form reports whether a notify-daemon is")
+		fmt.Fprintln(stdout, "actually recording transitions here — without it, an empty export")
+		fmt.Fprintln(stdout, "cannot be told apart from a host where nothing has been watching.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return err
@@ -408,6 +415,41 @@ func runInboxExport(stdout io.Writer, args []string) error {
 	}
 	printInboxEventLines(stdout, records)
 	fmt.Fprintf(stdout, "\nExported %d record(s). Nothing was consumed.\n", len(records))
+	return nil
+}
+
+// runInboxWriterStatus answers the question an empty export cannot: is anything
+// on this host actually recording session transitions?
+//
+// FINDING A of the 2026-08-20 field test. Records are written only by the
+// notify-daemon, so on a host without one every drain returns empty and reads as
+// "all caught up". Three field rounds were spent before anyone suspected the
+// writer rather than the reader.
+func runInboxWriterStatus(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("inbox writer-status", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "emit the status as JSON")
+	fs.Usage = func() {
+		fmt.Fprintln(stdout, "Usage: agent-deck inbox writer-status [--json]")
+		fmt.Fprintln(stdout, "Report whether a notify-daemon is recording transitions on this host.")
+	}
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return fmt.Errorf("inbox writer-status takes no positional arguments")
+	}
+
+	status := session.ReadWriterStatus()
+	if *asJSON {
+		return json.NewEncoder(stdout).Encode(status)
+	}
+	if status.Running {
+		fmt.Fprintf(stdout, "writer: RUNNING (heartbeat %ds ago)\n", status.AgeSeconds)
+	} else {
+		fmt.Fprintln(stdout, "writer: NOT RUNNING")
+	}
+	fmt.Fprintln(stdout, status.Detail)
 	return nil
 }
 
