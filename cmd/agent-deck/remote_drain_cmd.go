@@ -197,7 +197,7 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 		return drainExitUnreachable
 	}
 
-	records, written, duplicates, err := ingestRemoteRecords(name, targetID, records)
+	records, fresh, written, duplicates, err := ingestRemoteRecords(name, targetID, records)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: writing to local inbox %s: %v\n", targetID, err)
 		return 1
@@ -244,9 +244,18 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 		}
 		return 0
 	}
-	printInboxEventLines(stdout, records)
-	fmt.Fprintf(stdout, "\n  %d record(s) fetched, %d new, %d already present (deduped).\n",
-		len(records), written, duplicates)
+	// Print what actually arrived, not everything the remote still holds. The
+	// remote is read-only by design, so a steady-state heartbeat re-fetches the
+	// same backlog every time; listing all of it made each run look like fresh
+	// work and buried the one new record when there was one. Field finding,
+	// 2026-08-20.
+	if written > 0 {
+		printInboxEventLines(stdout, fresh)
+		fmt.Fprintf(stdout, "\n  %d record(s) fetched, %d new (shown above), %d already present.\n",
+			len(records), written, duplicates)
+	} else {
+		fmt.Fprintf(stdout, "  %d record(s) fetched, nothing new — all already present.\n", len(records))
+	}
 	return 0
 }
 
@@ -254,8 +263,12 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 // each with the remote it came from, and returns the records AS STORED so the
 // report shows what actually landed. The dedup decision is the inbox's own
 // (WriteInboxEventIfNew); this only counts the answers.
+// fresh carries the records that were ACTUALLY committed by this call, separate
+// from stored (everything fetched). The display needs the distinction: a drain
+// that commits nothing was re-printing the entire backlog as though it had just
+// arrived, which reads like new work on every heartbeat.
 func ingestRemoteRecords(remoteName, targetID string, records []session.TransitionNotificationEvent) (
-	stored []session.TransitionNotificationEvent, written, duplicates int, err error) {
+	stored, fresh []session.TransitionNotificationEvent, written, duplicates int, err error) {
 	stored = make([]session.TransitionNotificationEvent, 0, len(records))
 	for _, ev := range records {
 		ev.SourceRemote = remoteName
@@ -279,15 +292,16 @@ func ingestRemoteRecords(remoteName, targetID string, records []session.Transiti
 
 		isNew, werr := session.WriteInboxEventIfNew(targetID, ev)
 		if werr != nil {
-			return stored, written, duplicates, werr
+			return stored, fresh, written, duplicates, werr
 		}
 		if isNew {
 			written++
+			fresh = append(fresh, ev)
 			continue
 		}
 		duplicates++
 	}
-	return stored, written, duplicates, nil
+	return stored, fresh, written, duplicates, nil
 }
 
 // lookupRemoteFor resolves what the user typed to a configured remote: the
