@@ -12168,6 +12168,8 @@ func createSessionTool(command string) (string, string) {
 		tool = "opencode"
 	case "pi":
 		tool = "pi"
+	case "omp":
+		tool = "omp"
 	case "copilot":
 		tool = "copilot"
 	case "crush":

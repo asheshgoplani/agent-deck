@@ -191,6 +191,7 @@ const (
 	IconOpenCode = "🌐"
 	IconCodex    = "💻"
 	IconPi       = "π"
+	IconOMP      = "⌥"
 	IconShell    = "🐚"
 )
 
@@ -525,6 +526,7 @@ func initStyles() {
 		"hermes":   lipgloss.NewStyle().Foreground(ColorYellow),
 		"deepseek": lipgloss.NewStyle().Foreground(ColorCyan),
 		"pi":       lipgloss.NewStyle().Foreground(ColorAccent),
+		"omp":      lipgloss.NewStyle().Foreground(ColorAccent),
 		"aider":    lipgloss.NewStyle().Foreground(ColorRed),
 		"cursor":   lipgloss.NewStyle().Foreground(ColorAccent),
 		"shell":    lipgloss.NewStyle().Foreground(ColorText),
@@ -615,6 +617,8 @@ func ToolIcon(tool string) string {
 		return "🐋"
 	case "pi":
 		return IconPi
+	case "omp":
+		return IconOMP
 	case "shell":
 		return IconShell
 	default:
@@ -643,6 +647,8 @@ func ToolColor(tool string) lipgloss.Color {
 	case "deepseek":
 		return ColorCyan // DeepSeek Harness
 	case "pi":
+		return ColorAccent
+	case "omp":
 		return ColorAccent
 	case "aider":
 		return ColorRed // Red for Aider
