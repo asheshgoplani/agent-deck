@@ -496,6 +496,15 @@ type Instance struct {
 	// for backwards compatibility with Claude fork targets.
 	ForkStartCommand string `json:"-"`
 
+	// startedWithResume records whether the command the CURRENT start built
+	// resumes an existing conversation (`claude --resume <uuid>`, including
+	// the fork variant) rather than minting a fresh one. Only a resuming
+	// invocation can raise Claude's "Resume from summary" picker, so
+	// PostStartSync uses this to skip a 3s poll that a fresh session can
+	// never satisfy. Unexported and in-memory only: it describes one spawn,
+	// not the instance, and must never round-trip through storage.
+	startedWithResume bool
+
 	// ExtraArgs are user-supplied Claude or Codex CLI tokens appended to every
 	// supported start/resume/fork command (e.g. ["--sandbox","read-only"]).
 	// Each token is shellescape-quoted on emission so values with spaces
@@ -2711,6 +2720,9 @@ func (i *Instance) consumeForkStartCommand() string {
 		i.ForkStartCommand = ""
 	}
 	i.IsForkAwaitingStart = false
+	// A fork command carries `--resume <parent> --fork-session`, so it can
+	// raise the "Resume from summary" picker just like a plain resume.
+	i.startedWithResume = true
 	return command
 }
 
@@ -4826,6 +4838,9 @@ func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
 // SpawnAttempt helper) to preserve the structural-grep contract that
 // checks Start()'s body for the #745 IsForkAwaitingStart guard.
 func (i *Instance) Start() error {
+	// Clear the per-spawn resume marker before this start decides between a
+	// fresh and a resuming command (see shouldAutoConfirmResumePicker).
+	i.resetResumeMarker()
 	beforeLock := nowFn()
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
@@ -5150,6 +5165,9 @@ func (i *Instance) Start() error {
 // `launch -m "..."` racing with a poller-triggered Start() must not
 // produce two parallel tmux sessions.
 func (i *Instance) StartWithMessage(message string) error {
+	// Clear the per-spawn resume marker before this start decides between a
+	// fresh and a resuming command (see shouldAutoConfirmResumePicker).
+	i.resetResumeMarker()
 	beforeLock := nowFn()
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
@@ -7145,6 +7163,37 @@ func (i *Instance) PostStartSync(maxWait time.Duration) {
 	// OpenCode/Codex: async detection already started by Start(), skip here
 }
 
+// resetResumeMarker clears the per-spawn resume marker. Every start path
+// calls this before it decides between a fresh and a resuming command, so a
+// long-lived in-memory Instance that resumed once cannot leave the marker
+// set for a later fresh start.
+func (i *Instance) resetResumeMarker() {
+	i.startedWithResume = false
+}
+
+// markResumeIntent records whether the command just built actually resumes an
+// existing transcript. Note this is NOT the same as "buildClaudeResumeCommand
+// ran": every agent-deck launch mints a UUID up front and routes through that
+// helper, but it emits a bare `claude --session-id <uuid>` when no JSONL
+// exists yet. Only the `--resume` form can raise the summary picker.
+func (i *Instance) markResumeIntent(resumingExistingTranscript bool) {
+	i.startedWithResume = resumingExistingTranscript
+}
+
+// shouldAutoConfirmResumePicker reports whether the picker poll is worth
+// running for the start that just happened. autoResumeEnabled carries the
+// [claude].auto_resume_summary setting.
+//
+// The poll costs the full autoResumeOptions.Timeout whenever no picker shows
+// up, because autoResolveClaudeResumePicker only returns early on a match.
+// Claude raises that picker exclusively for `claude --resume` on a
+// long-running conversation, so a fresh session pays 3s of CapturePaneFresh
+// subprocesses for an outcome that is impossible by construction — on every
+// `agent-deck launch`. Gate on the marker so only resuming starts pay it.
+func (i *Instance) shouldAutoConfirmResumePicker(autoResumeEnabled bool) bool {
+	return autoResumeEnabled && i.startedWithResume
+}
+
 // autoConfirmClaudeResumePicker handles the "Resume from summary" picker that
 // claude --resume shows on long-running sessions (>~250k tokens). Without
 // this, an unattended conductor sits frozen on the picker indefinitely.
@@ -7154,7 +7203,8 @@ func (i *Instance) autoConfirmClaudeResumePicker() {
 		return
 	}
 	cfg, _ := LoadUserConfig()
-	if cfg != nil && !cfg.Claude.GetAutoResumeSummary() {
+	autoResumeEnabled := cfg == nil || cfg.Claude.GetAutoResumeSummary()
+	if !i.shouldAutoConfirmResumePicker(autoResumeEnabled) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -8696,6 +8746,7 @@ func (i *Instance) RestartWithEnv(env map[string]string) error {
 }
 
 func (i *Instance) restart(env map[string]string) error {
+	i.resetResumeMarker()
 	beforeLock := nowFn()
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
@@ -9465,6 +9516,13 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// buildClaudeResumeCommand call — NOT sync.Once'd. See CONTEXT Decision 2.
 	// Every Start / StartWithMessage / Restart dispatch that routes through
 	// this helper produces exactly one "resume: id=<id> reason=<why>" line.
+
+	// The picker can only appear when this command actually carries --resume
+	// over a transcript that exists; a `--session-id <uuid>` with no JSONL
+	// starts an empty conversation. Record which one this is so PostStartSync
+	// can skip a poll that cannot succeed.
+	i.markResumeIntent(useResume)
+
 	if useResume {
 		sessionLog.Info("resume: id="+safeSID+" reason=conversation_data_present",
 			slog.String("instance_id", safeInstID),
