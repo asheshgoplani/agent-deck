@@ -75,6 +75,27 @@ const (
 	// instead, where the text in the composer is known to be ours.
 	SubstateStalled Substate = "stalled"
 
+	// SubstateAwaitingChoice marks a pane showing a MODAL SELECTION that only a
+	// human can resolve: a tool permission dialog, or an AskUserQuestion
+	// decision menu the agent raised for its operator.
+	//
+	// It exists because such a pane is indistinguishable from a healthy empty
+	// prompt to every coarse observer — same "waiting" status, same
+	// idle-at-empty-prompt verdict — and that blindness is actively
+	// destructive rather than merely uninformative. An automated sender reads
+	// the menu's rendering out of the composer region as if it were an
+	// operator draft, Ctrl+C's it away (dismissing the question), sends, and
+	// types the option list back as literal text. Field evidence 2026-08-20:
+	// an orchestrate conductor's own heartbeat ate two decision prompts in 45
+	// minutes, so the run stalled for over an hour behind a question its human
+	// was never shown.
+	//
+	// Pairs with status "waiting"/"idle". Ranked ABOVE idle-at-empty-prompt,
+	// which would otherwise absorb it (hasClaudePrompt matches dialog text).
+	// Anything that sends unattended must refuse this substate and escalate to
+	// a human — the prompt is the human's to answer, not a supervisor's.
+	SubstateAwaitingChoice Substate = "awaiting-choice"
+
 	// SubstateUsageLimit marks a session whose plan usage window is exhausted:
 	// the pane is healthy and accepts input, but every submitted turn is
 	// rejected until the window resets. Pairs with status "idle"/"waiting" —
@@ -126,8 +147,11 @@ const crunchedNoopMarker = "Crunched for 0s"
 //     busy on purpose: a transport error is recoverable, so a live spinner means
 //     the session already came back and must not be prompted.
 //  4. model-unavailable — the Fable-down no-op loop with no live busy cue.
-//  5. idle-at-empty-prompt — sitting at the prompt with nothing happening.
-//  6. none      — no distinct refinement.
+//  5. awaiting-choice — a modal selection (permission dialog / AskUserQuestion)
+//     that only a human can resolve. Before idle-at-empty-prompt, which would
+//     otherwise absorb it: hasClaudePrompt matches dialog text as a prompt.
+//  6. idle-at-empty-prompt — sitting at the prompt with nothing happening.
+//  7. none      — no distinct refinement.
 func (d *PromptDetector) ClassifySubstate(content string) Substate {
 	if d.tool == "codex" {
 		if d.hasClaudeBusyIndicator(content) {
@@ -175,7 +199,14 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 		return SubstateModelUnavailable
 	}
 
-	// 5. Sitting at the input prompt with no busy/error signal = genuinely idle.
+	// 5. A modal selection waiting on a human. Checked BEFORE the idle prompt:
+	//    hasClaudePrompt matches permission-dialog text too, so idle would
+	//    swallow this verdict and leave "a human must answer" unobservable.
+	if PaneAwaitsChoice(content) {
+		return SubstateAwaitingChoice
+	}
+
+	// 6. Sitting at the input prompt with no busy/error signal = genuinely idle.
 	if d.hasClaudePrompt(content) {
 		return SubstateIdleAtEmptyPrompt
 	}

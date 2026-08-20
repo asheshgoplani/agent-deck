@@ -44,12 +44,26 @@ const (
 	nudgeDelivered = "delivered"
 	nudgeSkipped   = "skipped_busy"
 	nudgeRefused   = "refused_stalled"
+	nudgeAwaiting  = "refused_awaiting_choice"
 )
 
 // ErrCodeSessionStalled marks a target whose composer is gated: it accepts
 // keystrokes but does not submit them, so sending is pointless until a human
 // or `session send`'s Escape+Enter recovery releases it.
 const ErrCodeSessionStalled = "SESSION_STALLED"
+
+// ErrCodeSessionAwaitingChoice marks a target showing a modal selection — a
+// permission dialog or an AskUserQuestion decision menu — that only a human can
+// resolve. Sending into it is destructive: the composer guard reads the
+// rendered option list as an operator draft, Ctrl+C's the question away, and
+// types the menu back as literal text. Two orchestrate decision prompts died
+// that way in 45 minutes on 2026-08-20 while the run sat blocked behind them.
+//
+// Distinct from SESSION_STALLED on purpose. Stalled means WEDGED — a supervisor
+// should escalate or restart. This means WORKING AS DESIGNED and waiting on a
+// person, so a supervisor loop must keep beating rather than count it against a
+// miss budget and give up on a live run.
+const ErrCodeSessionAwaitingChoice = "SESSION_AWAITING_CHOICE"
 
 func handleSessionNudge(profile string, args []string) {
 	fs := flag.NewFlagSet("session nudge", flag.ExitOnError)
@@ -67,7 +81,8 @@ func handleSessionNudge(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Exit status is the contract:")
 		fmt.Println("  0  delivered, or skipped because the session is busy (outcome tells which)")
-		fmt.Println("  1  not delivered — stalled, undeliverable, or typed but never submitted")
+		fmt.Println("  1  not delivered — stalled, awaiting a human's answer, undeliverable, or")
+		fmt.Println("     typed but never submitted (error_code tells which)")
 		fmt.Println("  2  session not found")
 		fmt.Println()
 		fmt.Println("Never discard the exit code. `session send >/dev/null 2>&1` in a watchdog")
@@ -75,6 +90,11 @@ func handleSessionNudge(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println()
+		fmt.Println("A session showing a permission dialog or a decision menu is refused with")
+		fmt.Println("SESSION_AWAITING_CHOICE: sending would dismiss the prompt and paste its")
+		fmt.Println("options into the composer as text. That prompt is a human's to answer.")
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck session nudge orchestrator \"resume supervising\"")
@@ -127,10 +147,16 @@ func handleSessionNudge(profile string, args []string) {
 
 	switch gate.Action {
 	case nudgeActionRefuse:
+		outcome := nudgeRefused
+		if gate.Code == ErrCodeSessionAwaitingChoice {
+			outcome = nudgeAwaiting
+		}
+		fields := nudgeFields(inst, substate, outcome)
+		fields["delivered"] = false
 		out.ErrorWithData(
 			fmt.Sprintf("nudge to '%s' refused: %s", inst.Title, gate.Reason),
 			gate.Code,
-			nudgeFields(inst, substate, nudgeRefused),
+			fields,
 		)
 		os.Exit(1)
 	case nudgeActionSkip:
@@ -209,6 +235,20 @@ func evaluateNudgeGate(running bool, status string, substate session.Substate, f
 	// A gated composer accepts keystrokes and never submits them. Sending into
 	// it is exactly the operation that produced hours of phantom nudges, so
 	// refuse and say what actually fixes it.
+	// A modal selection is the human's to answer. Refusing preserves it; the
+	// old behaviour destroyed the question and left the run stalled behind a
+	// decision nobody was ever shown.
+	if substate == session.SubstateAwaitingChoice {
+		return nudgeGate{
+			Action: nudgeActionRefuse,
+			Code:   ErrCodeSessionAwaitingChoice,
+			Reason: "the session is showing a prompt that only a human can answer (permission dialog or " +
+				"decision menu). Nudging it would dismiss the prompt and paste its options into the " +
+				"composer as text. Escalate to the operator, or answer deliberately with `session send` " +
+				"(Claude menu) / `session approve` (Codex)",
+		}
+	}
+
 	if substate == session.SubstateStalled {
 		return nudgeGate{
 			Action: nudgeActionRefuse,

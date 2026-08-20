@@ -111,6 +111,13 @@ var stuckDwellThresholds = map[tmux.Substate]time.Duration{
 	// no dwell window can express it. The two-read confirm, the caps and the
 	// breaker all still apply on top.
 	tmux.SubstateUsageLimit: 0,
+	// tmux.SubstateAwaitingChoice is DELIBERATELY absent. A pane showing a
+	// permission dialog or a decision menu is not stuck — it is waiting on a
+	// person, and the only "heal" available (ActionResend) would send into the
+	// menu, dismissing the question and pasting its options back into the
+	// composer as text. Before this substate existed such a pane classified as
+	// idle-at-empty-prompt and became resend-eligible after 5 minutes; that was
+	// the bug, not the behaviour to preserve.
 }
 
 // actionForSubstate maps a confirmed stuck substate to the action self-heal

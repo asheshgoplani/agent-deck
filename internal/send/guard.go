@@ -3,6 +3,8 @@ package send
 import (
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // IsComposerPlaceholder reports whether the visible composer text is Claude's
@@ -38,6 +40,18 @@ func ComposerDraft(raw string, strip func(string) string) (draft string, compose
 	// Checked against the raw bytes: a suggestion is not content, so it is
 	// never saved, cleared or restored.
 	if ComposerBodyIsSuggestion(raw) {
+		return "", true
+	}
+	// A modal selection (permission dialog, AskUserQuestion menu) occupies the
+	// same screen region and parses as "❯ 1. <option>" — but it is UI, not
+	// typed text. Treating it as a draft is destructive twice over: the guard's
+	// Ctrl+C DISMISSES the question, and the restore types the rendered option
+	// list back into the composer as literal characters. Field evidence
+	// 2026-08-20: an orchestrate conductor's heartbeat ate two decision prompts
+	// this way in 45 minutes. Report it as no draft, so the guard neither
+	// clears nor restores it; senders that must not answer for a human refuse
+	// upstream on SubstateAwaitingChoice instead.
+	if tmux.PaneAwaitsChoice(strip(raw)) {
 		return "", true
 	}
 	body, ok := CurrentComposerPrompt(strip(raw))

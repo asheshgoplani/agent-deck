@@ -234,8 +234,8 @@ LEAN=(--extra-arg --strict-mcp-config --extra-arg --mcp-config
       --extra-arg '{"mcpServers":{}}')
 
 # Spawn YOUR watchdog — a parked Haiku child that heartbeat.sh wakes when
-# your own substate goes `waiting`/`stalled` (a permission prompt or a wedged
-# composer stalls the whole run, and `session nudge` refuses those targets).
+# your own substate goes `awaiting-choice`/`stalled` (a prompt on screen or a
+# wedged composer stalls the whole run, and `session nudge` refuses both).
 # It approves safe prompts, escalates destructive ones to the user, and
 # nudges stalls — see "Supervision notes". Restricted allowlist, never a
 # permission bypass: it reads untrusted pane content. Writing .watchdog-id is
@@ -1171,17 +1171,28 @@ should answer:
   - Tune with `HEARTBEAT_INTERVAL` (seconds) and `HEARTBEAT_MAX_MISSES`.
     Touch `$RUN_DIR/.heartbeat-stop` to shut it down cleanly at end of run.
 - **Someone also has to watch YOU.** The children's remedies all assume a
-  conductor able to act — but a conductor sitting on a permission prompt or a
-  wedged composer is `waiting`/`stalled`, and `session nudge` refuses those
-  targets, so heartbeats bounce and the run stalls with nobody watching.
-  heartbeat.sh therefore also polls *your* substate every
-  `WATCHDOG_DETECT_INTERVAL` seconds (default 90) and, on `waiting`/`stalled`
-  or an unsubmitted beat (nudge rc=1), wakes the **watchdog child** spawned at
-  run setup (`$RUN_DIR/.watchdog-id`). The watchdog runs no loop of its own:
-  each wake is one bounded turn — read your pane, then approve a safe
-  permission prompt, escalate a destructive one to the user
-  (terminal-notifier + `$RUN_DIR/watchdog.log`), or nudge a stall once. Wakes
-  are debounced to one per `HEARTBEAT_INTERVAL` unless your substate changes.
+  conductor able to act — but a conductor sitting on a prompt (`awaiting-choice`)
+  or a wedged composer (`stalled`) cannot act, `session nudge` refuses both
+  targets, and the run stalls with nobody watching. heartbeat.sh therefore also
+  polls *your* substate every `WATCHDOG_DETECT_INTERVAL` seconds (default 90)
+  and, on `awaiting-choice`/`stalled` or an unsubmitted beat (nudge rc=1), wakes
+  the **watchdog child** spawned at run setup (`$RUN_DIR/.watchdog-id`). The
+  watchdog runs no loop of its own: each wake is one bounded turn — read your
+  pane, then approve a safe permission prompt, escalate a destructive one or a
+  question meant for the user (terminal-notifier + `$RUN_DIR/watchdog.log`), or
+  nudge a stall once. Wakes are debounced to one per `HEARTBEAT_INTERVAL` unless
+  your substate changes.
+- **A question you raise for the USER blocks the run until they answer it.**
+  When you end a turn on an AskUserQuestion menu, your substate is
+  `awaiting-choice` and every automated sender refuses you on purpose: sending
+  would dismiss the menu and paste its options into your composer as literal
+  text. That is not hypothetical — on 2026-08-20 a conductor's own heartbeat
+  ate two decision prompts in 45 minutes and a live run sat over an hour behind
+  a question its user never saw. So: heartbeat.sh withholds the beat (it does
+  **not** count as a miss), wakes the watchdog, and after
+  `WATCHDOG_CHOICE_ESCALATE` seconds (default 300) banners the user directly —
+  with or without a live watchdog. Leave the menu on screen; it is the only
+  thing the user can answer.
   If the watchdog itself becomes unreachable, heartbeat.sh notifies the user
   directly and keeps beating — read `$RUN_DIR/watchdog.log` and
   `heartbeat.log` first when a run went quiet.
