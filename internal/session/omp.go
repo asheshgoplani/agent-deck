@@ -2,6 +2,8 @@ package session
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"al.essio.dev/pkg/shellescape"
@@ -99,4 +101,112 @@ func (i *Instance) buildOMPCommand(baseCommand string) string {
 		cmd,
 		ompApprovalModeFlag(),
 	)
+}
+
+func (i *Instance) buildOMPForkCommandForTarget(target *Instance, baseCommand string) (string, error) {
+	if target == nil {
+		return "", fmt.Errorf("cannot build omp fork command: target instance is nil")
+	}
+	if !i.CanForkOMP() {
+		return "", fmt.Errorf("cannot fork: no Agent Deck omp session directory")
+	}
+
+	envPrefix := target.buildEnvSourceCommand()
+	cmd := strings.TrimSpace(baseCommand)
+	if cmd == "" {
+		cmd = GetOMPCommand()
+	}
+
+	parentSessionDir := ompAgentDeckSessionDirExpr(i.ID)
+	sessionDir := ompAgentDeckSessionDirExpr(target.ID)
+	quotedInstanceID := shellescape.Quote(target.ID)
+	quotedProfile := shellescape.Quote(sessionProfileEnvValue())
+
+	return envPrefix + fmt.Sprintf(
+		"parent_session_dir=%s; session_dir=%s; mkdir -p \"$session_dir\" && source_file=$(find \"$parent_session_dir\" -type f -name '*.jsonl' -exec ls -t {} + 2>/dev/null | head -n 1); if [ -z \"$source_file\" ]; then echo \"No omp session file found in $parent_session_dir\" >&2; exit 1; fi; AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --fork \"$source_file\" --session-dir \"$session_dir\"%s",
+		parentSessionDir,
+		sessionDir,
+		quotedInstanceID,
+		quotedProfile,
+		cmd,
+		ompApprovalModeFlag(),
+	), nil
+}
+
+// CanForkOMP returns true if this omp session can be forked by Agent Deck.
+func (i *Instance) CanForkOMP() bool {
+	if i.Tool != "omp" || i.ID == "" {
+		return false
+	}
+	// For local non-sandboxed omp sessions, require an actual source JSONL so
+	// CLI/TUI fork attempts fail before creating an immediately-dead child tmux
+	// pane. Remote/sandboxed sessions use target-side $HOME, which this process
+	// cannot inspect, so the launch command performs the runtime validation.
+	if i.SSHHost == "" && !i.IsSandboxed() {
+		return i.hasLocalOMPSessionFile()
+	}
+	return true
+}
+
+func (i *Instance) hasLocalOMPSessionFile() bool {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	sessionDir := filepath.Join(home, ".omp", "agent-deck", i.ID)
+	found := false
+	_ = filepath.WalkDir(sessionDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(path), ".jsonl") {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+// CreateForkedOMPInstanceWithOptions creates a new Instance configured for
+// forking an omp session. The opts parameter is accepted for the shared fork
+// worktree flow; only WorkDir and Worktree* fields are consumed for omp.
+func (i *Instance) CreateForkedOMPInstanceWithOptions(
+	newTitle, newGroupPath string,
+	opts *ClaudeOptions,
+) (*Instance, string, error) {
+	projectPath := i.ProjectPath
+	if opts != nil && opts.WorkDir != "" {
+		projectPath = opts.WorkDir
+	}
+
+	forked := NewInstance(newTitle, projectPath)
+	if newGroupPath != "" {
+		forked.GroupPath = newGroupPath
+	} else {
+		forked.GroupPath = i.GroupPath
+	}
+	forked.Tool = "omp"
+	forked.Wrapper = i.Wrapper
+
+	baseCommand := strings.TrimSpace(i.Command)
+	if baseCommand == "" {
+		baseCommand = GetOMPCommand()
+	}
+	forked.Command = baseCommand
+
+	cmd, err := i.buildOMPForkCommandForTarget(forked, baseCommand)
+	if err != nil {
+		return nil, "", err
+	}
+	forked.ForkStartCommand = cmd
+	forked.IsForkAwaitingStart = true
+
+	if opts != nil && opts.WorktreePath != "" {
+		forked.WorktreePath = opts.WorktreePath
+		forked.WorktreeRepoRoot = opts.WorktreeRepoRoot
+		forked.WorktreeBranch = opts.WorktreeBranch
+	}
+
+	return forked, cmd, nil
 }
