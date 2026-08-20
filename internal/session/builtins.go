@@ -75,6 +75,11 @@ func builtinTools() []builtinTool {
 		{Name: "gemini", Icon: "✨", Color: "purple", detectSubstrings: []string{"gemini"}},
 		{Name: "codex", Icon: "💻", Color: "cyan", detectSubstrings: []string{"codex"}},
 		{Name: "pi", Icon: "π", Color: "accent", detectTokens: []string{"pi"}},
+		// Oh My Pi (github.com/can1357/oh-my-pi). Binary is `omp` (npm
+		// @oh-my-pi/pi-coding-agent, bin: "omp"). Token match only: "omp" as a
+		// substring would false-match "compass"/"accomplish"/"component" —
+		// the same reason "pi" and "dsh" are token-matched.
+		{Name: "omp", Icon: "⌥", Color: "accent", detectTokens: []string{"omp"}},
 		{Name: "copilot", Icon: "🐙", Color: "accent", detectSubstrings: []string{"copilot"}},
 		{Name: "crush", Icon: "💘", Color: "purple", detectSubstrings: []string{"crush"}},
 		// Executable-position token match only: substring "muse" would
