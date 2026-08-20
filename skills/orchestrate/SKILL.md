@@ -220,6 +220,7 @@ cp <agent-deck-repo>/skills/orchestrate/references/poll.sh "$RUN_DIR/"
 cp <agent-deck-repo>/skills/orchestrate/references/rotate-conductor.sh "$RUN_DIR/"
 cp <agent-deck-repo>/skills/orchestrate/references/heartbeat.sh "$RUN_DIR/"
 cp <agent-deck-repo>/skills/orchestrate/references/primary-checkout-guard.sh "$RUN_DIR/"
+cp <agent-deck-repo>/skills/orchestrate/references/teardown-gate.sh "$RUN_DIR/"
 cp -R <agent-deck-repo>/skills/orchestrate/references/prompts "$RUN_DIR/"
 
 # Arm the wall-clock watchdog. Do this before launching the first child, and
@@ -1585,6 +1586,43 @@ with the other finished children (its id is in `$RUN_DIR/.watchdog-id`).
 Do this **last**, after the report. A run that stops its own heartbeat while
 work is still live has removed the only thing that would have noticed it going
 quiet.
+
+## Teardown gate
+
+Before the final report, prove the run left nothing behind. Per-task cleanup
+covers the success path and deletes exactly the worktrees a task recorded, so
+by itself it is not evidence that the host is clean — it is evidence that the
+tasks that finished cleanly were cleaned up. Run the gate from the run
+directory:
+
+```bash
+bash "$RUN_DIR/teardown-gate.sh" --repo <repo-root>
+```
+
+It is read-only and it never deletes: it prints `VERDICT: clean` and exits 0,
+or lists every leftover and exits 1. Three things it looks for, each a leak
+that nothing else on the host collects:
+
+- **sessions** whose title ends in this run's id and are still unarchived —
+  a round abandoned mid-flight leaves children the per-role deletions never
+  reached;
+- **worktrees** under `$WORKTREES_DIR` whose name starts with this run's id.
+  It reads `git worktree list`, not `worktrees.tsv`, and says for each whether
+  the tsv knew about it. A checkout made outside `create-worktree.sh` is in no
+  tsv, so no cleanup child was ever given its path — that is how eight of nine
+  stale worktrees survived in agent-deck itself;
+- **session scratch** under `<repo>/.agent-deck/tmp/<session-id>` with no
+  registry row. That directory is removed by the session's remove lifecycle
+  intent; a killed pane or a pruned row skips it and the space is leaked for
+  good. `cleanup-runs.sh` cannot help — it only walks `<run>/orchestrate/`
+  layouts.
+
+On residue, hand the printed list to a cleanup child exactly as you would a
+`worktrees.tsv` — never delete anything yourself — then re-run the gate. Ship
+the report only on `VERDICT: clean`, or state the leftovers in the report as
+open items. For a run parked for a human, `touch
+"$RUN_DIR/.needs-attention"` first: the gate then prints its sessions,
+worktrees and scratch as `KEEP` and passes, because that residue is the point.
 
 ## Final report
 
