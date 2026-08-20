@@ -623,6 +623,8 @@ func (i *Instance) getToolEnvFile() string {
 		return config.Crush.EnvFile
 	case "muse":
 		return config.Muse.EnvFile
+	case "omp":
+		return config.OMP.EnvFile
 	case "cursor":
 		return config.Cursor.EnvFile
 	case "hermes":
