@@ -50,6 +50,17 @@ const (
 	hotkeyReload           = "reload"
 	hotkeyDetach           = "detach"
 	hotkeyWatcherPanel     = "watcher_panel"
+	// hotkeyAgentsPanel opens the Agents tab.
+	//
+	// The design mockup asks for "a". Every plain letter that reads as
+	// "agents" is already taken by a shipped binding — "a" is quick_approve,
+	// "A" is archive_session, and "G" is the hardcoded global-search case in
+	// updateInner — and rebinding one of those out from under existing muscle
+	// memory is not this feature's call to make. "alt+a" keeps the mockup's
+	// mnemonic on a chord that nothing else claims. A user who would rather
+	// have the bare key can set [hotkeys].agents_panel = "a" and move
+	// quick_approve.
+	hotkeyAgentsPanel = "agents_panel"
 	// Session switcher. While attached it is intercepted in the tmux attach
 	// loop (see internal/tmux/pty.go AttachOptions); on the home screen it is
 	// dispatched like any other hotkey. Must resolve to a "ctrl+<letter>" chord.
@@ -116,6 +127,7 @@ var hotkeyActionOrder = []string{
 	hotkeyReload,
 	hotkeyDetach,
 	hotkeyWatcherPanel,
+	hotkeyAgentsPanel,
 	hotkeySwitchSession,
 }
 
@@ -162,6 +174,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyReload:           "ctrl+r",
 	hotkeyDetach:           "ctrl+q",
 	hotkeyWatcherPanel:     "w",
+	hotkeyAgentsPanel:      "alt+a",
 	hotkeySwitchSession:    "ctrl+s",
 }
 

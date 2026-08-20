@@ -209,6 +209,7 @@ func (h *HelpOverlay) View() string {
 	worktreeSetupKey := h.key(hotkeyWorktreeSetup, "b")
 	worktreeKey := h.key(hotkeyWorktreeFinish, "W")
 	watcherPanelKey := h.key(hotkeyWatcherPanel, "w")
+	agentsPanelKey := h.key(hotkeyAgentsPanel, "alt+a")
 	groupKey := h.key(hotkeyCreateGroup, "g")
 	undoKey := h.key(hotkeyUndoDelete, "Ctrl+Z")
 	archiveKey := h.key(hotkeyArchiveSession, "A")
@@ -310,6 +311,7 @@ func (h *HelpOverlay) View() string {
 			title: "WATCHERS",
 			items: [][2]string{
 				{watcherPanelKey, "Watcher panel"},
+				{agentsPanelKey, "Agents"},
 			},
 		},
 		{

@@ -30,6 +30,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/agents"
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/docker"
@@ -280,8 +281,19 @@ type Home struct {
 	feedbackState        *feedback.State       // Loaded at first show, avoids repeated disk I/O
 	feedbackSender       *feedback.Sender      // Sender constructed once in NewHome (Phase 3, per D-05)
 	watcherPanel         *WatcherPanel         // For showing watcher status and events
-	toolVisibilityPanel  *ToolVisibilityPanel  // Edits [ui].hidden_tools
-	watcherEngine        *watcher.Engine       // nil until Init (D-07: lifecycle tied to TUI startup)
+	agentsPanel          *AgentsPanel          // Agents tab: adopted agents, grouped by machine
+	// agentsView is the last built fleet view; agentBySession indexes its
+	// rows by adopted session id so the session list can mark agent-owned
+	// rows and the preview pane can render their card. Both are empty for a
+	// user who has adopted nothing, which is what keeps those surfaces
+	// invisible by default.
+	agentsView          agents.View
+	agentBySession      map[string]agents.AgentRow
+	agentsLastRefresh   time.Time
+	agentsLoaded        bool
+	agentsLoadError     string
+	toolVisibilityPanel *ToolVisibilityPanel // Edits [ui].hidden_tools
+	watcherEngine       *watcher.Engine      // nil until Init (D-07: lifecycle tied to TUI startup)
 
 	// Configurable hotkeys
 	hotkeys        map[string]string // action -> configured key
@@ -1496,6 +1508,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		zoxidePicker:              NewZoxidePicker(),
 		feedbackSender:            feedback.NewSender(),
 		watcherPanel:              NewWatcherPanel(),
+		agentsPanel:               NewAgentsPanel(),
 		toolVisibilityPanel:       NewToolVisibilityPanel(),
 		insertBatchDuration:       defaultInsertBatchDuration,
 		insertOpenKeySender:       defaultInsertOpenKeySender,
@@ -5373,6 +5386,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.setupWizard.SetSize(msg.Width, msg.Height)
 		h.settingsPanel.SetSize(msg.Width, msg.Height)
 		h.watcherPanel.SetSize(msg.Width, msg.Height)
+		h.agentsPanel.SetSize(msg.Width, msg.Height)
 		if h.toolVisibilityPanel != nil {
 			h.toolVisibilityPanel.SetSize(msg.Width, msg.Height)
 		}
@@ -7038,6 +7052,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, tea.Batch(focusCmd, h.tick())
 		}
 
+		// Keep the agents index current so the ⚙ marker and the preview
+		// card reflect live state without the panel being open. Internally
+		// rate-limited, and a no-op when nothing has been adopted.
+		h.refreshAgentsPanel()
+
 		var remoteFetchCmd tea.Cmd
 		var remoteLatencyCmd tea.Cmd
 
@@ -7309,6 +7328,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Handle watcher panel (before settings panel)
+		if h.agentsPanel.IsVisible() {
+			var cmd tea.Cmd
+			h.agentsPanel, cmd = h.agentsPanel.Update(msg)
+			return h, cmd
+		}
 		if h.watcherPanel.IsVisible() {
 			var cmd tea.Cmd
 			h.watcherPanel, cmd = h.watcherPanel.Update(msg)
@@ -8221,6 +8245,7 @@ func (h *Home) hasModalVisible() bool {
 		h.setupWizard.IsVisible() || h.settingsPanel.IsVisible() ||
 		(h.toolVisibilityPanel != nil && h.toolVisibilityPanel.IsVisible()) ||
 		h.watcherPanel.IsVisible() || // hotkeyWatcherPanel overlay
+		h.agentsPanel.IsVisible() || // hotkeyAgentsPanel overlay
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
@@ -9251,6 +9276,18 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.refreshWatcherPanel()
 		h.watcherPanel.Show()
 		h.watcherPanel.SetSize(h.width, h.height)
+		return h, nil
+
+	case defaultHotkeyBindings[hotkeyAgentsPanel]:
+		// Open the Agents tab. Opt-in by presence: with nothing adopted there
+		// is no panel to open and the key stays inert, so a zero-config deck
+		// is unchanged.
+		h.refreshAgentsPanel()
+		if !h.agentsPanel.HasAgents() {
+			return h, nil
+		}
+		h.agentsPanel.Show()
+		h.agentsPanel.SetSize(h.width, h.height)
 		return h, nil
 
 	case "E":
@@ -14503,6 +14540,9 @@ func (h *Home) renderFrame() string {
 	}
 
 	// Watcher panel is modal (before settings panel)
+	if h.agentsPanel.IsVisible() {
+		return h.agentsPanel.View()
+	}
 	if h.watcherPanel.IsVisible() {
 		return h.watcherPanel.View()
 	}
@@ -17129,6 +17169,22 @@ func (h *Home) renderSessionItem(
 		sshBadge = sshStyle.Render(" [ssh:" + host + "]")
 	}
 
+	// Agent marker for a session owned by an adopted agent.
+	//
+	// Deliberately one glyph and nothing more. The role, its version, its
+	// triggers and its connector health belong in the preview panel's agent
+	// card, where there is room to be honest about them; crowding them onto
+	// the row would cost the scannability the list depends on. A deck with
+	// nothing adopted has an empty index, so no marker renders at all.
+	agentBadge := ""
+	if _, owned := h.agentRowForSession(inst.ID); owned {
+		agStyle := lipgloss.NewStyle().Foreground(ColorCyan)
+		if selected {
+			agStyle = SessionStatusSelStyle
+		}
+		agentBadge = agStyle.Render(" ⚙")
+	}
+
 	// Last-update timestamp badge — see pickBadgeTime for the formula.
 	// Selected rows reuse the selection-bar style instead of dim, so the
 	// badge stays legible inside the highlight.
@@ -17191,7 +17247,7 @@ func (h *Home) renderSessionItem(
 			cellWidth(status) + 1 /* space before title */ + cellWidth(tool) +
 			cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
 			cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
-			cellWidth(timestampBadge)
+			cellWidth(agentBadge) + cellWidth(timestampBadge)
 		budget := listWidth - reserved - 1 // -1 trailing margin
 		if budget > 0 && cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
@@ -17203,7 +17259,7 @@ func (h *Home) renderSessionItem(
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -17218,6 +17274,7 @@ func (h *Home) renderSessionItem(
 		sandboxBadge,
 		multiRepoBadge,
 		sshBadge,
+		agentBadge,
 		timestampBadge,
 	)
 
@@ -18128,6 +18185,15 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	b.WriteString(" ")
 	b.WriteString(groupBadge)
 	b.WriteString("\n")
+
+	// Agent card. When the selected session belongs to an adopted agent, its
+	// role, triggers, connector health and recent ledger entries render here
+	// — high in the preview, where there is room to be accurate — instead of
+	// being crushed into the session row, which carries only the ⚙ marker.
+	// Sessions with no agent, and decks with nothing adopted, render nothing.
+	if agentRow, owned := h.agentRowForSession(selected.ID); owned {
+		b.WriteString(h.renderAgentCard(agentRow, width))
+	}
 
 	// Worktree info section (for sessions running in git worktrees)
 	if selected.IsWorktree() {

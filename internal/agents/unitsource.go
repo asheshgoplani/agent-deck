@@ -1,0 +1,513 @@
+package agents
+
+import (
+	"encoding/xml"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// LaunchSource is the normalized reading of a launchd plist or a systemd
+// unit/timer pair.
+//
+// Introspection is textual. Nothing here executes, sources, or expands a
+// command, and environment VALUES are never read into this struct — only the
+// key names, so a report can say "this unit depends on GMAIL_APP_PASSWORD"
+// without the value ever entering a definition, a log, or an export.
+type LaunchSource struct {
+	Kind             string   `json:"kind"` // "launchd" | "systemd"
+	Path             string   `json:"path"`
+	Label            string   `json:"label"`
+	Program          string   `json:"program"`
+	Arguments        []string `json:"arguments,omitempty"`
+	WorkingDirectory string   `json:"working_directory,omitempty"`
+	// EnvKeys are names only. Values are deliberately not captured.
+	EnvKeys []string `json:"env_keys,omitempty"`
+	// EnvFiles are referenced env files, recorded as paths so a human can
+	// audit them. They are not opened.
+	EnvFiles        []string `json:"env_files,omitempty"`
+	IntervalSeconds int      `json:"interval_seconds,omitempty"`
+	// CalendarSpec is the source's own schedule spelling (a launchd
+	// StartCalendarInterval rendered to cron, or a systemd OnCalendar).
+	CalendarSpec string `json:"calendar_spec,omitempty"`
+	// ScheduleKey names which systemd key produced IntervalSeconds, so a
+	// report can say where the cadence came from.
+	ScheduleKey string `json:"schedule_key,omitempty"`
+	KeepAlive   bool   `json:"keep_alive,omitempty"`
+	RunAtLoad   bool   `json:"run_at_load,omitempty"`
+	RestartMode string `json:"restart_mode,omitempty"`
+	// Warnings record what could be seen but not understood.
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// ProgramExists reports whether the unit's program is present on this machine.
+// A unit pointing at a path that is gone is debris, and the inventory should
+// say so rather than list it as a candidate agent.
+func (s *LaunchSource) ProgramExists() bool {
+	program := strings.TrimSpace(s.Program)
+	if program == "" {
+		return false
+	}
+	if !strings.ContainsAny(program, "/\\") {
+		// A bare command name resolved from PATH at launch time. We cannot
+		// prove absence, so we do not claim it.
+		return true
+	}
+	_, err := os.Stat(program)
+	return err == nil
+}
+
+// --- launchd -----------------------------------------------------------
+
+// plistValue is a decoded plist node.
+type plistValue struct {
+	kind  string // "string" | "integer" | "bool" | "array" | "dict" | "other"
+	str   string
+	num   int
+	flag  bool
+	array []plistValue
+	dict  map[string]plistValue
+	// order preserves dict key order for stable rendering.
+	order []string
+}
+
+// ParseLaunchdPlist reads an XML launchd plist.
+func ParseLaunchdPlist(path string) (*LaunchSource, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read plist: %w", err)
+	}
+	root, err := decodePlist(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse plist %q: %w", path, err)
+	}
+	if root.kind != "dict" {
+		return nil, fmt.Errorf("parse plist %q: top level is %s, want dict", path, root.kind)
+	}
+
+	src := &LaunchSource{Kind: "launchd", Path: path}
+	src.Label = root.dict["Label"].str
+	if src.Label == "" {
+		src.Label = strings.TrimSuffix(filepath.Base(path), ".plist")
+	}
+
+	if program, ok := root.dict["Program"]; ok && program.kind == "string" {
+		src.Program = program.str
+	}
+	if args, ok := root.dict["ProgramArguments"]; ok && args.kind == "array" {
+		for _, item := range args.array {
+			src.Arguments = append(src.Arguments, item.str)
+		}
+		if src.Program == "" && len(src.Arguments) > 0 {
+			src.Program = src.Arguments[0]
+		}
+	}
+	if wd, ok := root.dict["WorkingDirectory"]; ok {
+		src.WorkingDirectory = wd.str
+	}
+	if env, ok := root.dict["EnvironmentVariables"]; ok && env.kind == "dict" {
+		src.EnvKeys = append(src.EnvKeys, env.order...)
+		sort.Strings(src.EnvKeys)
+	}
+	if interval, ok := root.dict["StartInterval"]; ok && interval.kind == "integer" {
+		src.IntervalSeconds = interval.num
+	}
+	if cal, ok := root.dict["StartCalendarInterval"]; ok {
+		src.CalendarSpec = renderCalendarInterval(cal)
+		if src.CalendarSpec == "" {
+			src.Warnings = append(src.Warnings, "StartCalendarInterval present but not representable as a single cron expression")
+		}
+	}
+	if ka, ok := root.dict["KeepAlive"]; ok {
+		// KeepAlive may be a bool or a dict of conditions. A dict means
+		// "restart under conditions we are not modelling in phase 1".
+		switch ka.kind {
+		case "bool":
+			src.KeepAlive = ka.flag
+		case "dict":
+			src.KeepAlive = true
+			src.Warnings = append(src.Warnings, "KeepAlive is conditional; its conditions are not interpreted")
+		}
+	}
+	if ral, ok := root.dict["RunAtLoad"]; ok && ral.kind == "bool" {
+		src.RunAtLoad = ral.flag
+	}
+	if src.KeepAlive {
+		src.RestartMode = "always"
+	}
+	return src, nil
+}
+
+// renderCalendarInterval renders a launchd StartCalendarInterval as a
+// five-field cron expression. launchd allows an array of intervals; a single
+// cron string cannot express that, so an array returns "" and the caller
+// records the trigger as opaque rather than inventing a schedule.
+func renderCalendarInterval(v plistValue) string {
+	if v.kind != "dict" {
+		return ""
+	}
+	field := func(key string) string {
+		if item, ok := v.dict[key]; ok && item.kind == "integer" {
+			return strconv.Itoa(item.num)
+		}
+		return "*"
+	}
+	return strings.Join([]string{
+		field("Minute"), field("Hour"), field("Day"), field("Month"), field("Weekday"),
+	}, " ")
+}
+
+// decodePlist walks the XML token stream. It intentionally supports only the
+// node kinds launchd actually uses.
+func decodePlist(data []byte) (plistValue, error) {
+	dec := xml.NewDecoder(strings.NewReader(string(data)))
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return plistValue{}, errors.New("no <plist> element")
+			}
+			return plistValue{}, err
+		}
+		start, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		if start.Name.Local == "plist" {
+			return decodePlistChild(dec)
+		}
+	}
+}
+
+// decodePlistChild reads the single value inside <plist>.
+func decodePlistChild(dec *xml.Decoder) (plistValue, error) {
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return plistValue{}, err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			return decodePlistValue(dec, t)
+		case xml.EndElement:
+			if t.Name.Local == "plist" {
+				return plistValue{}, errors.New("empty <plist>")
+			}
+		}
+	}
+}
+
+func decodePlistValue(dec *xml.Decoder, start xml.StartElement) (plistValue, error) {
+	switch start.Name.Local {
+	case "dict":
+		return decodePlistDict(dec)
+	case "array":
+		return decodePlistArray(dec)
+	case "true", "false":
+		if err := dec.Skip(); err != nil {
+			return plistValue{}, err
+		}
+		return plistValue{kind: "bool", flag: start.Name.Local == "true"}, nil
+	case "integer":
+		text, err := decodeText(dec, start)
+		if err != nil {
+			return plistValue{}, err
+		}
+		num, convErr := strconv.Atoi(strings.TrimSpace(text))
+		if convErr != nil {
+			return plistValue{kind: "other", str: text}, nil
+		}
+		return plistValue{kind: "integer", num: num}, nil
+	case "string", "real", "date":
+		text, err := decodeText(dec, start)
+		if err != nil {
+			return plistValue{}, err
+		}
+		return plistValue{kind: "string", str: text}, nil
+	default:
+		// <data> and anything else: record that it existed, never its bytes.
+		if err := dec.Skip(); err != nil {
+			return plistValue{}, err
+		}
+		return plistValue{kind: "other"}, nil
+	}
+}
+
+func decodeText(dec *xml.Decoder, start xml.StartElement) (string, error) {
+	var sb strings.Builder
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", err
+		}
+		switch t := tok.(type) {
+		case xml.CharData:
+			sb.Write(t)
+		case xml.EndElement:
+			if t.Name.Local == start.Name.Local {
+				return sb.String(), nil
+			}
+		}
+	}
+}
+
+func decodePlistDict(dec *xml.Decoder) (plistValue, error) {
+	result := plistValue{kind: "dict", dict: map[string]plistValue{}}
+	var pendingKey string
+	haveKey := false
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return plistValue{}, err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if t.Name.Local == "key" {
+				text, textErr := decodeText(dec, t)
+				if textErr != nil {
+					return plistValue{}, textErr
+				}
+				pendingKey = strings.TrimSpace(text)
+				haveKey = true
+				continue
+			}
+			value, valueErr := decodePlistValue(dec, t)
+			if valueErr != nil {
+				return plistValue{}, valueErr
+			}
+			if haveKey {
+				if _, exists := result.dict[pendingKey]; !exists {
+					result.order = append(result.order, pendingKey)
+				}
+				result.dict[pendingKey] = value
+				haveKey = false
+			}
+		case xml.EndElement:
+			if t.Name.Local == "dict" {
+				return result, nil
+			}
+		}
+	}
+}
+
+func decodePlistArray(dec *xml.Decoder) (plistValue, error) {
+	result := plistValue{kind: "array"}
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return plistValue{}, err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			value, valueErr := decodePlistValue(dec, t)
+			if valueErr != nil {
+				return plistValue{}, valueErr
+			}
+			result.array = append(result.array, value)
+		case xml.EndElement:
+			if t.Name.Local == "array" {
+				return result, nil
+			}
+		}
+	}
+}
+
+// --- systemd -----------------------------------------------------------
+
+// ParseSystemdUnit reads a .service or .timer file. When given a .service that
+// has a sibling .timer, the timer's schedule is folded in, because the pair is
+// what actually describes the firing.
+func ParseSystemdUnit(path string) (*LaunchSource, error) {
+	sections, err := parseINI(path)
+	if err != nil {
+		return nil, err
+	}
+
+	src := &LaunchSource{
+		Kind:  "systemd",
+		Path:  path,
+		Label: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+	}
+
+	service := sections["Service"]
+	if execStart := firstValue(service, "ExecStart"); execStart != "" {
+		argv := splitArgv(execStart)
+		if len(argv) > 0 {
+			// systemd allows a leading "-", "@", "+", "!" on ExecStart.
+			src.Program = strings.TrimLeft(argv[0], "-@+!:")
+			src.Arguments = argv
+		}
+	}
+	src.WorkingDirectory = firstValue(service, "WorkingDirectory")
+	src.RestartMode = firstValue(service, "Restart")
+	for _, env := range service["Environment"] {
+		// Split only far enough to learn the key. The value is discarded
+		// here and never stored.
+		if key, _, found := strings.Cut(env, "="); found {
+			src.EnvKeys = append(src.EnvKeys, strings.TrimSpace(strings.Trim(key, `"`)))
+		}
+	}
+	sort.Strings(src.EnvKeys)
+	src.EnvFiles = append(src.EnvFiles, service["EnvironmentFile"]...)
+
+	timerSection := sections["Timer"]
+	if len(timerSection) == 0 && strings.HasSuffix(path, ".service") {
+		timerPath := strings.TrimSuffix(path, ".service") + ".timer"
+		if timerSections, timerErr := parseINI(timerPath); timerErr == nil {
+			timerSection = timerSections["Timer"]
+			src.Warnings = append(src.Warnings, "schedule read from paired timer "+filepath.Base(timerPath))
+		}
+	}
+	if onCalendar := firstValue(timerSection, "OnCalendar"); onCalendar != "" {
+		src.CalendarSpec = onCalendar
+	}
+	// systemd has several monotonic cadence keys and a timer may set more
+	// than one. They are read in the order that best describes the repeating
+	// cadence: the gap after the last run (Active/Inactive) beats the one-off
+	// delays measured from boot or startup, which only say when the FIRST run
+	// happens. Reading only OnUnitActiveSec silently produced no cadence at
+	// all for a timer that used OnUnitInactiveSec.
+	for _, key := range []string{"OnUnitActiveSec", "OnUnitInactiveSec", "OnActiveSec", "OnBootSec", "OnStartupSec"} {
+		value := firstValue(timerSection, key)
+		if value == "" {
+			continue
+		}
+		seconds, ok := parseSystemdDuration(value)
+		if !ok {
+			src.Warnings = append(src.Warnings, key+"="+value+" is not a duration this reader understands")
+			continue
+		}
+		src.IntervalSeconds = seconds
+		src.ScheduleKey = key
+		if key == "OnBootSec" || key == "OnStartupSec" {
+			src.Warnings = append(src.Warnings,
+				key+" only sets when the first run happens; it is not a repeating cadence")
+		}
+		break
+	}
+	return src, nil
+}
+
+func firstValue(section map[string][]string, key string) string {
+	if values := section[key]; len(values) > 0 {
+		return values[len(values)-1]
+	}
+	return ""
+}
+
+// parseINI reads a systemd unit into section -> key -> values. Keys may repeat,
+// so values accumulate.
+func parseINI(path string) (map[string]map[string][]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read unit: %w", err)
+	}
+	sections := map[string]map[string][]string{}
+	current := ""
+	var continued strings.Builder
+
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimRight(rawLine, "\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			current = strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]")
+			if _, ok := sections[current]; !ok {
+				sections[current] = map[string][]string{}
+			}
+			continue
+		}
+		// systemd line continuations end with a backslash.
+		if strings.HasSuffix(trimmed, `\`) {
+			continued.WriteString(strings.TrimSuffix(trimmed, `\`))
+			continued.WriteString(" ")
+			continue
+		}
+		if continued.Len() > 0 {
+			trimmed = continued.String() + trimmed
+			continued.Reset()
+		}
+		key, value, found := strings.Cut(trimmed, "=")
+		if !found || current == "" {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		sections[current][key] = append(sections[current][key], strings.TrimSpace(value))
+	}
+	return sections, nil
+}
+
+// splitArgv splits a command line on whitespace, honoring quotes. It does not
+// expand variables, globs, or command substitution — introspection must never
+// evaluate shell.
+func splitArgv(line string) []string {
+	var args []string
+	var current strings.Builder
+	quote := rune(0)
+	for _, r := range line {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				current.WriteRune(r)
+			}
+		case r == '"' || r == '\'':
+			quote = r
+		case r == ' ' || r == '\t':
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+	return args
+}
+
+// parseSystemdDuration understands the common suffixed forms.
+func parseSystemdDuration(value string) (int, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, false
+	}
+	multipliers := []struct {
+		suffix string
+		factor int
+	}{
+		{"us", 0}, {"ms", 0},
+		{"seconds", 1}, {"second", 1}, {"sec", 1}, {"s", 1},
+		{"minutes", 60}, {"minute", 60}, {"min", 60}, {"m", 60},
+		{"hours", 3600}, {"hour", 3600}, {"hr", 3600}, {"h", 3600},
+		{"days", 86400}, {"day", 86400}, {"d", 86400},
+	}
+	for _, m := range multipliers {
+		if !strings.HasSuffix(trimmed, m.suffix) {
+			continue
+		}
+		if m.factor == 0 {
+			return 0, false
+		}
+		numPart := strings.TrimSpace(strings.TrimSuffix(trimmed, m.suffix))
+		num, err := strconv.Atoi(numPart)
+		if err != nil {
+			return 0, false
+		}
+		return num * m.factor, true
+	}
+	if num, err := strconv.Atoi(trimmed); err == nil {
+		return num, true
+	}
+	return 0, false
+}
