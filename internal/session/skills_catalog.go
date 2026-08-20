@@ -34,6 +34,13 @@ const (
 	defaultSkillSourceClaude = "claude-global"
 )
 
+// projectOMPSkillsDir is the project-local skills directory Oh My Pi
+// discovers on its own (`.omp/skills/<name>/SKILL.md` — a directory-per-skill
+// shape matching Claude's own convention, confirmed against the upstream
+// repo's own `.omp/skills/semantic-compression/SKILL.md` layout), distinct
+// from the flat AGENTS.md-adjacent dir gemini/codex/pi share.
+const projectOMPSkillsDir = ".omp/skills"
+
 var (
 	ErrSkillSourceExists    = errors.New("skill source already exists")
 	ErrSkillSourceNotFound  = errors.New("skill source not found")
@@ -131,7 +138,7 @@ func skillIDForAttachment(a ProjectSkillAttachment) string {
 }
 
 func knownProjectSkillsDirs() []string {
-	return []string{projectClaudeSkillsDir, projectAgentsSkillsDir, projectHermesSkillsDir}
+	return []string{projectClaudeSkillsDir, projectAgentsSkillsDir, projectHermesSkillsDir, projectOMPSkillsDir}
 }
 
 // SupportsProjectSkills reports whether the runtime supports project skill materialization.
@@ -155,6 +162,8 @@ func GetProjectSkillsDir(tool string) (string, bool) {
 		return projectAgentsSkillsDir, true
 	case tool == "hermes":
 		return projectHermesSkillsDir, true
+	case tool == "omp":
+		return projectOMPSkillsDir, true
 	default:
 		return "", false
 	}
