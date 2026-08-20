@@ -101,3 +101,35 @@ func extraArgsForFork(extraArgs []string) []string {
 	}
 	return out
 }
+
+// IsClaudePeerNameEcho reports whether name is agent-deck's own peer address
+// for this instance coming back at it, rather than a name a human or Claude
+// chose.
+//
+// agent-deck launches every Claude session with `--name <ClaudePeerName()>` so
+// ListAgents/SendMessage have a stable address (2.1.224+). Claude Code records
+// that value in ~/.claude/sessions/<pid>.json as `name` — indistinguishable, by
+// the JSON alone, from a `/rename`. Claude 2.1.19x stamped nameSource="derived"
+// on names it made up itself; 2.1.237 dropped the field entirely, so the
+// nameSource guard in ClaudeSessionNameIn no longer fires and every launch
+// address flowed back in as if the user had typed it. That overwrote Title with
+// the handle, cleared auto_name, and — because the next launch recomputed the
+// address from the already-suffixed Title — appended the id suffix again on
+// every restart ("pale-swallow-07cc4f4e-07cc4f4e").
+//
+// The tell is the suffix: agent-deck always ends the address with the
+// instance's own peerIDSuffix. A human name that happens to end in the same
+// eight characters is not worth defending against — treating it as an echo
+// only means the deck keeps the title the user already has.
+//
+// Matching on the suffix rather than on ClaudePeerName() equality is
+// deliberate: the address is baked into the pane's command line at launch, so
+// after a rename the live process still reports the OLD address, which no
+// longer equals the freshly computed one. The suffix survives the rename.
+func IsClaudePeerNameEcho(name, instanceID string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.TrimSpace(instanceID) == "" {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(name), "-"+peerIDSuffix(instanceID))
+}

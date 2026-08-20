@@ -123,6 +123,15 @@ func (i *Instance) ResolveTitleFromClaude(sessionID string) (string, bool) {
 	if name == "" || name == i.Title {
 		return "", false
 	}
+	// Never sync back the `--name` address agent-deck itself handed Claude at
+	// launch. Claude 2.1.237 stopped stamping nameSource, so the derived-name
+	// guard in ClaudeSessionNameIn no longer distinguishes the deck's own
+	// handle from a real /rename; without this check every session's title
+	// collapses to its peer address and grows an extra id suffix per restart.
+	// See IsClaudePeerNameEcho.
+	if IsClaudePeerNameEcho(name, i.ID) {
+		return "", false
+	}
 	return name, true
 }
 
