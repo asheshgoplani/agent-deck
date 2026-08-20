@@ -122,3 +122,36 @@ func TestScanForCredentialsRoundThreeMisses(t *testing.T) {
 		t.Errorf("git SHA flagged again: %v", lines)
 	}
 }
+
+// Round 4 residuals.
+func TestScanForCredentialsRoundFourResiduals(t *testing.T) {
+	mustRefuse := map[string]string{
+		"AWS key with slashes, assignment": "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+		"AWS key with slashes, prose":      "The AWS secret is wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+		"passphrase, assignment":           "password: Tr0ub4dor-and-3-horses\n",
+		"passphrase, prose":                "The app password is correct-horse-battery-staple\n",
+		"credential in a table cell":       "| GMAIL_APP_PASSWORD | abcd efgh ijkl mnop |\n",
+	}
+	for name, body := range mustRefuse {
+		if len(ScanForCredentials(body)) == 0 {
+			t.Errorf("MISS %s: %q", name, body)
+		}
+	}
+
+	mustCopy := map[string]string{
+		"go test name":          "The failure is TestVerifyTabAnchorBlockIsWrappedNotClipped and it predates this branch.\n",
+		"go test name 2":        "See TestContextPagerNilReceiverIsSafe for the panic.\n",
+		"long constructor name": "Call NewHomeWithProfileAndModeForTesting from the seam.\n",
+		"long type name":        "The struct is RemoteSessionTransitionNotificationEvent.\n",
+		"env var name":          "Set AGENT_DECK_ALLOW_OUTER_TMUX before launching the TUI.\n",
+		"absolute path":         "Logs land in /home/ashesh/.local/share/agent-deck/logs/notify.log today.\n",
+		"kebab workflow name":   "See workflow release-candidate-verification-checklist-v2.\n",
+		"markdown table rule":   "|--------|---------|-------------|\n",
+		"table row, no secret":  "| status | meaning | example |\n",
+	}
+	for name, body := range mustCopy {
+		if lines := ScanForCredentials(body); len(lines) != 0 {
+			t.Errorf("FALSE POSITIVE %s: %q -> lines %v", name, body, lines)
+		}
+	}
+}

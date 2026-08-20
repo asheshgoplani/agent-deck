@@ -345,7 +345,9 @@ func printAgentDetail(row agents.AgentRow, def *agents.Definition) {
 	fmt.Printf("  ·  %s\n", agents.SanitizeForDisplay(row.Machine))
 	fmt.Printf("post: %s  ·  reports to: %s  ·  state: %s\n",
 		agents.SanitizeForDisplay(row.PostID), agents.SanitizeForDisplay(row.ReportsTo), row.State)
-	if row.ReportsToIssue != "" {
+	// Attention now folds the escalation finding in, so guard against printing
+	// the same sentence twice — the same guard printAgentsView already has.
+	if row.ReportsToIssue != "" && !strings.Contains(row.Attention, row.ReportsToIssue) {
 		fmt.Printf("!  %s\n", agents.SanitizeForDisplay(row.ReportsToIssue))
 	}
 

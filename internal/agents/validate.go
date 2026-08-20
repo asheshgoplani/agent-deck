@@ -140,18 +140,65 @@ var alnumToken = regexp.MustCompile(`^[A-Za-z0-9]+$`)
 // structuralChars are the characters that mark a token as markup, a path, or a
 // URL rather than a credential: a Markdown table rule, a file path and a
 // fenced code span are all long strings that are plainly not secrets.
-const structuralChars = "|/\\<>()[]{}~!?,;\"'" + "`" + "*"
+// structuralChars mark a token as markup rather than a credential: a Markdown
+// table rule, a fenced span, a bracketed placeholder.
+//
+// "/" is deliberately NOT here. Base64 secrets carry "/" and "+" routinely —
+// the canonical AWS secret access key does — and excluding the whole token on
+// sight let one through in an explicit `aws_secret_access_key =` assignment.
+// Paths are excluded by shape instead, in looksLikePath.
+const structuralChars = "|\\<>()[]{}~!?,;\"'" + "`" + "*"
+
+// looksLikePath reports whether a slash-bearing token is a filesystem path or
+// URL rather than a base64 secret.
+func looksLikePath(token string) bool {
+	if strings.Contains(token, "://") || strings.HasPrefix(token, "/") || strings.HasPrefix(token, "~") || strings.HasPrefix(token, "./") {
+		return true
+	}
+	return strings.Count(token, "/") >= 3
+}
+
+// looksLikeMixedCaseIdentifier reports whether an all-alphabetic token is a
+// CamelCase identifier — a Go test or type name — rather than a secret.
+// Several case transitions in a row is what distinguishes
+// "TestContextPagerNilReceiverIsSafe" from an unbroken random run.
+func looksLikeMixedCaseIdentifier(token string) bool {
+	if !wordToken.MatchString(token) {
+		return false
+	}
+	transitions := 0
+	for i := 1; i < len(token); i++ {
+		prev, cur := token[i-1], token[i]
+		if prev >= 'a' && prev <= 'z' && cur >= 'A' && cur <= 'Z' {
+			transitions++
+		}
+	}
+	return transitions >= 3
+}
 
 // credentialTokenShape reports whether a token could be a credential at all,
 // before any length or context rule is applied.
 func credentialTokenShape(token string) (string, bool) {
 	trimmed := strings.Trim(token, `"'`+"`"+`.,;:()[]{}<>`)
-	if len(trimmed) < 12 || strings.ContainsAny(trimmed, structuralChars) {
+	if len(trimmed) < 12 || strings.ContainsAny(trimmed, structuralChars) || looksLikePath(trimmed) {
 		return "", false
 	}
-	alnum := 0
-	letters := 0
-	for _, r := range trimmed {
+	// Mostly alphanumeric, and containing at least one letter. A run of
+	// punctuation is not a secret however long it is.
+	if !mostlyAlphanumeric(trimmed) {
+		return "", false
+	}
+	if looksLikeIdentifier(trimmed) {
+		return "", false
+	}
+	return trimmed, true
+}
+
+// mostlyAlphanumeric reports whether a token is predominantly letters and
+// digits and contains at least one letter.
+func mostlyAlphanumeric(token string) bool {
+	alnum, letters := 0, 0
+	for _, r := range token {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
 			letters++
@@ -160,15 +207,7 @@ func credentialTokenShape(token string) (string, bool) {
 			alnum++
 		}
 	}
-	// Mostly alphanumeric, and containing at least one letter. A run of
-	// punctuation is not a secret however long it is.
-	if letters == 0 || alnum*100 < len(trimmed)*85 {
-		return "", false
-	}
-	if looksLikeIdentifier(trimmed) {
-		return "", false
-	}
-	return trimmed, true
+	return letters > 0 && alnum*100 >= len(token)*85
 }
 
 // hasSeparators reports whether a token is broken up by - or _, which every
@@ -202,9 +241,11 @@ func selfEvidentSecretValue(token string) bool {
 	switch {
 	case len(trimmed) >= 24 && namedClasses(trimmed) >= 3:
 		return true
-	case len(trimmed) >= 28 && !hasSeparators(trimmed):
+	case len(trimmed) >= 28 && !hasSeparators(trimmed) && !looksLikeMixedCaseIdentifier(trimmed):
 		// A single-case unbroken run this long is not a word in any document:
-		// base32 seeds and lowercase-only keys land here.
+		// base32 seeds and lowercase-only keys land here. A CamelCase symbol
+		// name is excluded — "TestContextPagerNilReceiverIsSafe" is exactly the
+		// kind of thing a LEARNINGS.md records.
 		return true
 	}
 	return false
@@ -213,12 +254,40 @@ func selfEvidentSecretValue(token string) bool {
 // assignmentSecretValue reports whether a value given to a secret-named key is
 // credential-shaped.
 //
-// There is deliberately NO pure-hex exemption here. "API key: <40 hex>" is a
-// credential; the exemption that stops a bare git SHA from being flagged must
-// not also swallow an explicit assignment.
+// Two exemptions are deliberately skipped here, because an explicit
+// `password: <value>` names the value for us and the shape heuristics no
+// longer have to carry the decision alone:
+//   - pure hex, so "API key: <40 hex>" is caught while a bare git SHA is not;
+//   - the identifier exemption, so a dash-separated passphrase
+//     ("Tr0ub4dor-and-3-horses") is caught while
+//     "release-candidate-verification-checklist-v2" in prose is not.
 func assignmentSecretValue(token string) bool {
-	trimmed, ok := credentialTokenShape(token)
-	return ok && len(trimmed) >= 16
+	trimmed := strings.Trim(token, `"'`+"`"+`.,;:()[]{}<>`)
+	if len(trimmed) < 16 || strings.ContainsAny(trimmed, structuralChars) || looksLikePath(trimmed) {
+		return false
+	}
+	return mostlyAlphanumeric(trimmed)
+}
+
+// introducedSecretValue reports whether a value introduced directly by a
+// secret word on the same line ("The app password is correct-horse-battery")
+// is credential-shaped. Same reasoning as assignmentSecretValue: the sentence
+// has already told us what the value is.
+func introducedSecretValue(line string) bool {
+	for _, loc := range secretWord.FindAllStringIndex(line, -1) {
+		remainder := strings.TrimSpace(line[loc[1]:])
+		for _, filler := range []string{"is", "was", "=", ":"} {
+			remainder = strings.TrimSpace(strings.TrimPrefix(remainder, filler))
+		}
+		fields := strings.Fields(remainder)
+		if len(fields) == 0 {
+			continue
+		}
+		if assignmentSecretValue(fields[0]) && hasSeparators(fields[0]) {
+			return true
+		}
+	}
+	return false
 }
 
 // contextualSecretValue reports whether a token is credential-shaped on a line
@@ -326,6 +395,37 @@ func contextLines(lines []string, i int) string {
 	return strings.Join(collected, "\n")
 }
 
+// scanTableRow tests each cell of a Markdown table row as if it were its own
+// line, so "| GMAIL_APP_PASSWORD | abcd efgh ijkl mnop |" is seen.
+func scanTableRow(row string) bool {
+	cells := strings.Split(strings.Trim(row, "| "), "|")
+	if len(cells) < 2 {
+		return false
+	}
+	var context string
+	for _, cell := range cells {
+		context += " " + strings.TrimSpace(cell)
+	}
+	if !secretWord.MatchString(context) {
+		return false
+	}
+	for _, cell := range cells {
+		cell = strings.TrimSpace(cell)
+		if cell == "" || secretWord.MatchString(cell) {
+			continue
+		}
+		if uniformGroupedToken(cell) {
+			return true
+		}
+		for _, token := range strings.Fields(cell) {
+			if contextualSecretValue(token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ScanForCredentials returns the 1-based line numbers of lines that look like
 // they carry a real credential. See the note at the top of this block: it is
 // best-effort, and deliberately asks for a credential-shaped VALUE rather than
@@ -338,6 +438,14 @@ func ScanForCredentials(body string) []int {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
+		}
+		// A Markdown table row holds independent cells; a value in one of them
+		// is not "the whole line", so scan each cell as its own line too.
+		if strings.Count(trimmed, "|") >= 2 {
+			if scanTableRow(trimmed) {
+				found = append(found, i+1)
+				continue
+			}
 		}
 
 		// Self-evident: an issued token, a URI password, a PEM header, a
@@ -379,7 +487,7 @@ func ScanForCredentials(body string) []int {
 		// A transcription either IS the line (under a credential heading) or
 		// follows a secret word directly. A uniform run buried in a sentence
 		// is prose — "keep them safe from harm" is five equal four-letter words.
-		if uniformGroupedToken(trimmed) || groupedAfterSecretWord(trimmed) {
+		if uniformGroupedToken(trimmed) || groupedAfterSecretWord(trimmed) || introducedSecretValue(trimmed) {
 			found = append(found, i+1)
 			continue
 		}
