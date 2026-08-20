@@ -283,6 +283,19 @@ func TestBuildOMPCommand_WrongTool(t *testing.T) {
 	}
 }
 
+func TestBuildOMPCommand_AppliesApprovalMode(t *testing.T) {
+	cfg := &UserConfig{OMP: OMPSettings{ApprovalMode: "yolo"}}
+	restore := resetUserConfigCache(t, cfg)
+	defer restore()
+
+	inst := &Instance{ID: "approval-test-id", Tool: "omp"}
+	got := inst.buildOMPCommand("omp")
+
+	if !strings.Contains(got, `--approval-mode yolo`) {
+		t.Errorf("buildOMPCommand() = %q, want to contain %q", got, "--approval-mode yolo")
+	}
+}
+
 func TestCanRestartOMP(t *testing.T) {
 	inst := &Instance{Tool: "omp", Status: StatusWaiting}
 	if !inst.CanRestart() {

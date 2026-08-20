@@ -117,7 +117,7 @@ func printSessionHelp() {
 	fmt.Println("  unarchive <id|title>    Restore an archived session (does not restart it)")
 	fmt.Println("  restart [id] [--all] [--env KEY=VALUE]  Restart session (Claude: reload MCPs)")
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
-	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, or Codex session with context")
+	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, Codex, or Oh My Pi session with context")
 	fmt.Println("  handoff <id>            Build a cross-tool handoff prompt from the session's conversation (read-only)")
 	fmt.Println("  attach <id>             Attach to session interactively")
 	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session")
@@ -914,7 +914,7 @@ func handleSessionFork(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session fork <id|title> [options]")
 		fmt.Println()
-		fmt.Println("Fork a Claude, OpenCode, Pi, or Codex session with conversation context.")
+		fmt.Println("Fork a Claude, OpenCode, Pi, Codex, or Oh My Pi session with conversation context.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()

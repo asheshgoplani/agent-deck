@@ -2126,9 +2126,10 @@ type DeepSeekSettings struct {
 // internal/session/omp.go for the full invocation grammar this block feeds.
 type OMPSettings struct {
 	// Command overrides the default binary/invocation for omp sessions.
-	// Supports flags (e.g., "omp --smol haiku"). A value other than the bare
-	// binary name is treated as a passthrough and receives no flag injection
-	// (mirrors buildCrushCommand/buildPiCommand). Default: "omp"
+	// Supports flags (e.g., "omp --smol haiku"). Unlike buildCrushCommand's
+	// true passthrough, buildOMPCommand always appends --continue
+	// --session-dir (mirroring buildPiCommand) regardless of this value —
+	// there is no passthrough branch for omp/pi. Default: "omp"
 	Command string `toml:"command,omitempty"`
 
 	// EnvFile is a .env file specific to omp sessions, sourced before the
