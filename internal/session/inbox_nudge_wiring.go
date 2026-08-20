@@ -95,19 +95,31 @@ func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNot
 	}
 }
 
-// parentIsNudgeableIdle reports whether parent is safe to wake with a send-keys
-// nudge: it must be a Claude conductor (which drains an inbox on Stop) or a
-// Codex parent (which receives a direct orchestration prompt), and it must be
-// currently idle/waiting, NOT mid-turn. A send-keys into a RUNNING pane only queues the keystroke
-// (issue #36326) — the exact failure the pull model was built to avoid — so a
-// busy conductor is left to drain at its own turn boundary.
+// parentIsNudgeableIdle reports whether parent is safe to wake with a pane
+// nudge: it must be an agent that can act on the wake — any Claude parent (the
+// Stop-hook inbox drain is title-agnostic: StageForStopHook keys on
+// InboxHasPending, not the title) or a Codex parent (which receives a direct
+// orchestration prompt) — and it must be currently idle/waiting, NOT mid-turn.
+// A keystroke into a RUNNING pane only queues (issue #36326) — the exact
+// failure the pull model was built to avoid — so a busy parent is left to
+// drain at its own turn boundary.
 //
-// parent.Status is read directly (not re-probed): the conductor branch of
-// resolveParentNotificationTarget freshly UpdateStatus()'d this same instance
-// moments earlier on the commit path, so a second tmux round-trip would add cost
-// without adding freshness.
+// This probe only ever runs for a RESOLVED commit target (a real parent some
+// child just durably delivered to), so it needs no leaf-vs-parent distinction.
+// The previous `conductor-` title gate silently excluded every Claude
+// orchestrator with any other title (e.g. an autonamed conductor): its inbox
+// was committed but nothing woke it, leaving the run inert until an external
+// heartbeat. The `conductor-` title still qualifies parents on other tools.
+//
+// parent.Status is read directly (not re-probed): the nudge itself
+// (`session nudge`) re-verifies deliverability — it refuses awaiting-choice /
+// stalled targets and confirms submission — so a marginally stale idle here
+// costs one harmless refused subprocess, never a clobbered pane.
 func parentIsNudgeableIdle(parent *Instance) bool {
-	if parent == nil || (!isConductorSessionTitle(parent.Title) && !IsCodexCompatible(parent.Tool)) {
+	if parent == nil {
+		return false
+	}
+	if !IsClaudeCompatible(parent.Tool) && !IsCodexCompatible(parent.Tool) && !isConductorSessionTitle(parent.Title) {
 		return false
 	}
 	switch parent.Status {
@@ -136,12 +148,14 @@ func sendWakeNudge(parent *Instance, profile string) error {
 	return nil
 }
 
-// wakeNudgeSendTimeout bounds the detached wake-nudge subprocess. --no-wait
-// already returns fast, so 5s is generous; the bound exists purely so a wedged
-// agent-deck binary (e.g. stuck on SQLite/tmux) is reaped instead of leaking the
-// dispatch goroutine indefinitely (PR #1230 audit). A timed-out send is harmless
-// like any dropped nudge — the record still drains on the next turn/heartbeat.
-const wakeNudgeSendTimeout = 5 * time.Second
+// wakeNudgeSendTimeout bounds the detached wake-nudge subprocess. The nudge
+// verifies submission and may hold while a composer draft is saved/restored
+// (observed ~13s under load), so the bound is generous; it exists purely so a
+// wedged agent-deck binary (e.g. stuck on SQLite/tmux) is reaped instead of
+// leaking the dispatch goroutine indefinitely (PR #1230 audit). A timed-out
+// send is harmless like any dropped nudge — the record still drains on the
+// next turn/heartbeat.
+const wakeNudgeSendTimeout = 30 * time.Second
 
 // wakeNudgeExec runs the resolved command under ctx. It is a package var so a
 // test can substitute a spy and assert the deadline/args without spawning a real
@@ -150,11 +164,15 @@ var wakeNudgeExec = func(ctx context.Context, bin string, args ...string) error 
 	return exec.CommandContext(ctx, bin, args...).Run()
 }
 
-// sendWakeNudgeNoWait shells out to `agent-deck [-p profile] session send <ref>
-// <msg> --no-wait -q`. --no-wait keeps it fire-and-forget: it neither blocks for
-// the agent's ready state nor waits for a reply, so it returns fast even if the
-// pane is wedged. The context deadline is a belt-and-suspenders backstop for the
-// case where even the subprocess itself hangs.
+// sendWakeNudgeNoWait shells out to `agent-deck [-p profile] session nudge <ref>
+// <msg> -q`. `session nudge` (not blind `session send`) is what makes waking an
+// arbitrary parent safe: it refuses a target that cannot receive (stalled pane,
+// or an AskUserQuestion menu on screen — sending there would dismiss the menu
+// and paste its options as literal text), saves/restores any composer draft,
+// and verifies the message was actually submitted. A refusal (exit 1) surfaces
+// as a benign dropped nudge; the durable record still drains on the parent's
+// next turn/heartbeat. The context deadline is a belt-and-suspenders backstop
+// for the case where the subprocess itself hangs.
 func sendWakeNudgeNoWait(profile, ref string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), wakeNudgeSendTimeout)
 	defer cancel()
@@ -163,6 +181,6 @@ func sendWakeNudgeNoWait(profile, ref string) error {
 	if profile != "" {
 		args = append(args, "-p", profile)
 	}
-	args = append(args, "session", "send", ref, wakeNudgeMessage, "--no-wait", "-q")
+	args = append(args, "session", "nudge", ref, wakeNudgeMessage, "-q")
 	return wakeNudgeExec(ctx, bin, args...)
 }
