@@ -912,8 +912,10 @@ func handleSessionFork(profile string, args []string) {
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
 	// A fork inherits the parent's account by default (its transcript lives in
 	// that account's home). This flag is the deliberate override, for moving a
-	// conversation's continuation onto a different login.
-	account := fs.String("account", "", "Run the fork under this account instead of inheriting the parent's (see `agent-deck accounts list`)")
+	// conversation's continuation onto a different login: the conversation is
+	// copied into the target account's home before the fork is launched there,
+	// so the fork resumes with its context under the new account.
+	account := fs.String("account", "", "Run the fork under this account instead of inheriting the parent's; copies the conversation into that account's home (see `agent-deck accounts list`)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session fork <id|title> [options]")
@@ -1271,15 +1273,42 @@ func handleSessionFork(profile string, args []string) {
 	}
 
 	// CreateForkedInstanceForTool already copied the parent's account onto the
-	// fork. An explicit --account overrides that inheritance; note that the
-	// baked one-shot fork command was built against the PARENT's home (that is
-	// where the transcript is), so the override takes effect from the fork's
-	// first restart onward, not on the fork launch itself.
+	// fork, and baked the one-shot fork command against that account's home —
+	// which is where the transcript the fork resumes lives.
+	//
+	// An explicit --account overrides that inheritance. Honouring it means
+	// carrying the conversation into the target account's home first and only
+	// then building the command that runs there, so the account on the record
+	// is the account the process launches under. Setting the field beside the
+	// already-baked command instead (what this did before) left the two
+	// disagreeing for the life of the process, with the override applying only
+	// on a later restart that drops --resume. session.ApplyForkAccountOverride
+	// carries the full reasoning.
+	//
+	// Every refusal below happens BEFORE the fork is started or saved, so a
+	// fork that cannot be moved onto the requested account is not created at
+	// all rather than created with a record that misreports it.
 	if overrideAccount := strings.TrimSpace(*account); overrideAccount != "" {
-		forkedInst.Account = overrideAccount
-		if session.AccountHomeForTool(forkCfgForAccounts(), overrideAccount, forkedInst.Tool) == "" {
-			fmt.Fprintf(os.Stderr, "Warning: account %q has no home configured for tool %q. Known: %s\n",
-				overrideAccount, forkedInst.Tool, accountNamesHint(forkedInst.Tool))
+		moved, moveErr := session.ApplyForkAccountOverride(inst, forkedInst, forkCfgForAccounts(), overrideAccount, opts)
+		if moveErr != nil {
+			out.Error(fmt.Sprintf("fork not created: %v", moveErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		if moved != nil && !quietMode && !*jsonOutput {
+			if moved.MigratedPath != "" {
+				fmt.Fprintf(os.Stderr, "Fork moved onto account %q (%s=%s); conversation copied to %s\n",
+					moved.Account, moved.EnvVar, moved.Home, moved.MigratedPath)
+			} else {
+				fmt.Fprintf(os.Stderr, "Fork moved onto account %q (%s=%s); conversation already present there\n",
+					moved.Account, moved.EnvVar, moved.Home)
+			}
+			if moved.LoggedOut {
+				fmt.Fprintf(os.Stderr, "Warning: %s has no credentials yet, so the fork will start in %s's login flow. %s relocates the tool's own config file, so each account home needs its own login.\n",
+					moved.Home, forkedInst.Tool, moved.EnvVar)
+			}
+			if moved.TrustWarning != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not pre-accept folder trust in %s: %v\n", moved.Home, moved.TrustWarning)
+			}
 		}
 	}
 
