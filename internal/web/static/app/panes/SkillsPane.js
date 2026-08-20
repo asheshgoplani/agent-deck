@@ -13,7 +13,7 @@ import { menuModelSignal } from '../dataModel.js'
 import { apiFetch } from '../api.js'
 import { addToast } from '../Toast.js'
 
-const TOOLS_WITH_SKILLS = new Set(['claude', 'gemini', 'codex', 'pi'])
+const TOOLS_WITH_SKILLS = new Set(['claude', 'gemini', 'codex', 'pi', 'omp'])
 
 export function SkillsPane() {
   const selectedId = selectedIdSignal.value
@@ -71,7 +71,7 @@ export function SkillsPane() {
         <div class="chart-card" style="padding: 32px; text-align: center;">
           <div class="title">Skills not supported for ${session.tool}</div>
           <div style="color: var(--text-dim); margin-top: 12px;">
-            Project-scoped skills are available for Claude, Gemini, Codex, and Pi sessions only.
+            Project-scoped skills are available for Claude, Gemini, Codex, Pi, and Oh My Pi sessions only.
           </div>
         </div>
       </div>`
