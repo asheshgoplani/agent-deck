@@ -20,3 +20,21 @@ func TestLifecycleConsumersRequireConfirmedKillAndWait(t *testing.T) {
 		}
 	}
 }
+
+// session stop is a short-lived CLI command.  It must not schedule the
+// process-tree reaper in a goroutine and then exit, because that leaves
+// detached descendants (such as an HLS ffmpeg encoder) alive after the
+// session is marked stopped.
+func TestSessionStopUsesConfirmedKillAndWait(t *testing.T) {
+	raw, err := os.ReadFile("session_cmd.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractFuncBody(string(raw), "handleSessionStop")
+	if body == "" {
+		t.Fatal("could not extract handleSessionStop body")
+	}
+	if !strings.Contains(body, "inst.KillAndWait()") {
+		t.Fatal("handleSessionStop must wait for process teardown before reporting success")
+	}
+}

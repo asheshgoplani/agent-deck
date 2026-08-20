@@ -3187,6 +3187,7 @@ func (s *Session) Kill() error {
 
 	// Capture process tree BEFORE killing so we can verify they die
 	_, oldPIDs := s.getPaneProcessTree()
+	oldProcesses := CaptureProcessIdentities(oldPIDs)
 	if len(oldPIDs) > 0 {
 		respawnLog.Info("pre_kill_process_tree", slog.String("session", logging.SanitizeValue(s.Name)), slog.Any("pids", oldPIDs))
 	}
@@ -3199,8 +3200,8 @@ func (s *Session) Kill() error {
 
 	// Verify old processes are dead; escalate to SIGKILL if needed. No new
 	// process exists on this path — the session is gone — so nothing is spared.
-	if len(oldPIDs) > 0 {
-		go s.ensureProcessesDead(oldPIDs, nil)
+	if len(oldProcesses) > 0 {
+		go EnsureProcessIdentitiesDead(oldProcesses, 3*time.Second)
 	}
 
 	// Killing a session that no longer exists is success, not failure: tmux

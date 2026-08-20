@@ -445,7 +445,7 @@ func handleSessionStop(profile string, args []string) {
 	inst.SyncSessionIDsFromTmux()
 
 	// Stop the session by killing the tmux session
-	if err := inst.Kill(); err != nil {
+	if err := inst.KillAndWait(); err != nil {
 		out.Error(fmt.Sprintf("failed to stop session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
