@@ -1178,9 +1178,19 @@ func (d *TransitionDaemon) notifyDesktop(profile string, inst *Instance, toStatu
 	d.desktopWG.Add(1)
 	go func() {
 		defer d.desktopWG.Done()
-		if backend := d.deskNotifier.Notify(notif); backend != "" {
+		backend := d.deskNotifier.Notify(notif)
+		if backend != "" {
 			sessionLog.Debug("desktop_notification_sent", slog.String("instance_id", inst.ID), slog.String("to_status", toStatus), slog.String("backend", backend))
 		}
+		decision, reason := "sent", backend
+		if backend == "" {
+			decision, reason = "skipped", "no_backend"
+		}
+		auditNotification(NotificationAuditRecord{
+			Src: "deck-desknotify", Decision: decision, Reason: reason,
+			IID: inst.ID, Name: inst.Title, Profile: profile,
+			Project: inst.ProjectPath, Parent: inst.ParentSessionID, ToStatus: toStatus,
+		})
 	}()
 }
 
@@ -1196,11 +1206,27 @@ func dispatchDesktopNotification(inst *Instance, event desktopnotify.SourceEvent
 	_, _ = sendDesktopNotification(inst, event)
 }
 
+// sendDesktopNotification is the single choke point for the GUI-helper
+// channel, so it is also where every decision is audited (see
+// notification_audit.go): a suppression that is never recorded is invisible
+// when the notification stream is reviewed later.
 func sendDesktopNotification(inst *Instance, event desktopnotify.SourceEvent) (suppressed bool, err error) {
 	if !desktopNotificationAllowed(inst) {
+		auditDesktopEvent("deck-desktop", inst, event, "suppressed", "parented_child", nil)
 		return true, nil
 	}
-	return false, desktopNotificationSender(event)
+	err = desktopNotificationSender(event)
+	decision, reason := "sent", ""
+	switch {
+	case err != nil:
+		decision = "error"
+	case !GetDesktopNotificationsSettings().Enabled:
+		// The transport no-ops when the feature is off; recording that as
+		// "sent" would make the audit lie about what reached the screen.
+		decision, reason = "skipped", "desktop_disabled"
+	}
+	auditDesktopEvent("deck-desktop", inst, event, decision, reason, err)
+	return false, err
 }
 
 func (d *TransitionDaemon) waitDesktopNotifications() {
