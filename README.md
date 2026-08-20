@@ -722,6 +722,7 @@ Agent Deck works with any terminal-based AI tool:
 | **Cursor** (terminal) | Status detection, organization |
 | **Hermes Agent** | Organization, launch |
 | **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |
+| **Oh My Pi** (`omp`) | Full (status, MCP, fork, resume) |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
 Codex status detection uses Codex's notify hook. Install and verify it once for each Codex home:
