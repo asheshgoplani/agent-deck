@@ -266,6 +266,44 @@ func TestCleanupConcurrentLoserSkipsMissingWorktree(t *testing.T) {
 	}
 }
 
+type cleanupRemovalSpyBackend struct {
+	vcs.Backend
+	removeCalls int
+}
+
+func (b *cleanupRemovalSpyBackend) RemoveWorktree(path string, force bool) error {
+	b.removeCalls++
+	return b.Backend.RemoveWorktree(path, force)
+}
+
+// Regression for E7: a session can claim a candidate while cleanup waits for
+// confirmation. Fresh canonical occupancy must veto the destructive backend
+// call even though the worktree itself is still clean and present.
+func TestCleanupDeletionTimeSessionOwnershipVeto(t *testing.T) {
+	main, _, _, _, worktrees := cleanupFixture(t)
+	backend, err := detectAndCreateBackend(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spy := &cleanupRemovalSpyBackend{Backend: backend}
+	candidate := worktrees[3]
+	removed, reason, err := removeCleanupCandidate(spy, candidate, func() (map[string]bool, error) {
+		return map[string]bool{canonicalPathKey(candidate.Path): true}, nil
+	})
+	if err != nil {
+		t.Fatalf("deletion-time ownership check: %v", err)
+	}
+	if removed {
+		t.Fatal("session-owned worktree reported removed")
+	}
+	if reason != "now associated with a session" {
+		t.Fatalf("reason = %q, want %q", reason, "now associated with a session")
+	}
+	if spy.removeCalls != 0 {
+		t.Fatalf("backend removal called %d time(s), want 0", spy.removeCalls)
+	}
+}
+
 func TestCleanupForceCannotOverrideRealityExclusions(t *testing.T) {
 	_, unpushed, busy, empty, worktrees := cleanupFixture(t)
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("cd %q && exec sleep 30", busy))
