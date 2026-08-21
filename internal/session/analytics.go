@@ -75,6 +75,12 @@ var modelContextWindowPrefixes = []struct {
 	prefix string
 	size   int
 }{
+	// 5 models: 1M context (must precede any future 5.x-with-suffix fallback,
+	// and checked before the 4.x block purely by convention — "-5" vs "-4"
+	// prefixes never collide, so ordering relative to that block doesn't matter)
+	{"claude-opus-5", 1_000_000},
+	{"claude-sonnet-5", 1_000_000},
+	{"claude-fable-5", 1_000_000},
 	// 4.8 models: 1M context (must precede 4.x fallback)
 	{"claude-opus-4-8", 1_000_000},
 	// 4.7 models: 1M context (must precede 4.x fallback)
