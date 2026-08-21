@@ -284,6 +284,7 @@ type Home struct {
 	codeBlockDialog      *CodeBlockDialog      // For copying a fenced code block from session output (#1412)
 	sessionSwitcher      *SessionSwitcher      // In-attach session switcher (Ctrl+Tab / Ctrl+S)
 	scrollbackPager      *ScrollbackPager      // In-attach scrollback pager for the deck's control-mode view (#1491)
+	contextPager         *ContextPager         // Full-context inspector overlay (what the agent is being sent)
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
 	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
 	telemetryDialog      *TelemetryDialog      // One-time opt-in telemetry consent prompt (TELEMETRY.md)
@@ -324,6 +325,12 @@ type Home struct {
 	analyticsCache         map[string]*session.SessionAnalytics       // TTL cache: sessionID -> analytics (Claude)
 	geminiAnalyticsCache   map[string]*session.GeminiSessionAnalytics // TTL cache: sessionID -> analytics (Gemini)
 	analyticsCacheTime     map[string]time.Time                       // TTL cache: sessionID -> cache timestamp
+
+	// Context-inspection cache (async, same 5s TTL as analytics). Inspection is
+	// a bounded head-read of the harness's own records, but it is still disk
+	// I/O and must never happen on the render path.
+	contextReportMu    sync.RWMutex
+	contextReportCache map[string]contextReportEntry
 
 	// State
 	cursor              int                    // Selected item index in flatItems
@@ -1867,6 +1874,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		codeBlockDialog:           NewCodeBlockDialog(),
 		sessionSwitcher:           NewSessionSwitcher(),
 		scrollbackPager:           NewScrollbackPager(),
+		contextPager:              NewContextPager(),
 		worktreeFinishDialog:      NewWorktreeFinishDialog(),
 		feedbackDialog:            NewFeedbackDialog(),
 		telemetryDialog:           NewTelemetryDialog(),
@@ -1895,6 +1903,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		analyticsCache:            make(map[string]*session.SessionAnalytics),
 		geminiAnalyticsCache:      make(map[string]*session.GeminiSessionAnalytics),
 		analyticsCacheTime:        make(map[string]time.Time),
+		contextReportCache:        make(map[string]contextReportEntry),
 		clearOnCompactSent:        make(map[string]time.Time),
 		launchingSessions:         make(map[string]time.Time),
 		resumingSessions:          make(map[string]time.Time),
@@ -7047,6 +7056,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.geminiModelDialog.SetSize(msg.Width, msg.Height)
 		h.promptInputDialog.SetSize(msg.Width, msg.Height)
 		h.scrollbackPager.SetSize(msg.Width, msg.Height)
+		h.contextPager.SetSize(msg.Width, msg.Height)
 		if h.embeddedMode && h.embeddedTerminal != nil {
 			h.syncEmbeddedTerminalGeometry()
 			return h, nil
@@ -7101,6 +7111,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 					h.scrollbackPager.ScrollUp(3)
 				} else {
 					h.scrollbackPager.ScrollDown(3)
+				}
+				return h, nil
+			}
+			if h.contextPager.IsVisible() {
+				// Wheel scrolls the inspector body without moving the
+				// selection, matching the scrollback pager above.
+				if msg.Button == tea.MouseButtonWheelUp {
+					h.contextPager.ScrollUp(3)
+				} else {
+					h.contextPager.ScrollDown(3)
 				}
 				return h, nil
 			}
@@ -7779,6 +7799,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(h.geminiAnalyticsCache, msg.deletedID)
 		delete(h.analyticsCacheTime, msg.deletedID)
 		h.analyticsCacheMu.Unlock()
+		h.invalidateContextReport(msg.deletedID)
 		h.logActivityMu.Lock()
 		delete(h.lastLogActivity, msg.deletedID)
 		h.logActivityMu.Unlock()
@@ -8863,6 +8884,30 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			captureCmd,
 		)
 
+	case contextReportMsg:
+		// Cache first, then install: a result that arrives after the user closed
+		// the overlay is still worth keeping for the next keypress, and the
+		// stale guard below is what stops it being shown for the wrong session.
+		h.storeContextReport(msg)
+		if h.contextPager.IsVisible() && h.contextPager.SessionID() == msg.sessionID {
+			if msg.err != nil {
+				h.contextPager.SetError(msg.err.Error())
+			} else {
+				h.contextPager.SetReport(msg.report, msg.warnings)
+			}
+		}
+		return h, nil
+
+	case contextLeverCopiedMsg:
+		if h.contextPager.IsVisible() {
+			h.contextPager.SetStatus(msg.statusLine())
+			return h, nil
+		}
+		if msg.err != nil {
+			h.setError(fmt.Errorf("clipboard: %w", msg.err))
+		}
+		return h, nil
+
 	case scrollbackContentMsg:
 		// Ignore a capture that finished after the pager closed or moved to a
 		// different session (stale guard).
@@ -9145,6 +9190,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(h.geminiAnalyticsCache, msg.sessionID)
 		delete(h.analyticsCacheTime, msg.sessionID)
 		h.analyticsCacheMu.Unlock()
+		h.invalidateContextReport(msg.sessionID)
 		h.worktreeDirtyMu.Lock()
 		delete(h.worktreeDirtyCache, msg.sessionID)
 		delete(h.worktreeDirtyCacheTs, msg.sessionID)
@@ -9701,6 +9747,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if h.scrollbackPager.IsVisible() {
 			return h.handleScrollbackPagerKey(msg)
+		}
+		if h.contextPager.IsVisible() {
+			return h.handleContextPagerKey(msg)
 		}
 		if h.sessionPickerDialog.IsVisible() {
 			return h.handleSessionPickerDialogKey(msg)
@@ -10559,7 +10608,7 @@ func (h *Home) hasModalVisible() bool {
 		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
 		h.geminiModelDialog.IsVisible() || h.promptInputDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
 		h.codeBlockDialog.IsVisible() ||
-		h.sessionSwitcher.IsVisible() || h.scrollbackPager.IsVisible() ||
+		h.sessionSwitcher.IsVisible() || h.scrollbackPager.IsVisible() || h.contextPager.IsVisible() ||
 		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible() ||
 		h.editSessionDialog.IsVisible() ||
 		(h.telemetryDialog != nil && h.telemetryDialog.IsVisible()) ||
@@ -12306,9 +12355,24 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case "C", "shift+c":
+	case defaultHotkeyBindings[hotkeyContextInspector]:
+		// Open the full-context inspector for the selected session: everything
+		// the harness is being sent, ranked by what it costs, with a lever per
+		// item. The key reaches this canonical case through the configurable
+		// hotkey lookup, so a user who rebinds context_inspector lands here too.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				return h, h.openContextInspector(item.Session)
+			}
+		}
+		return h, nil
+
+	case defaultHotkeyBindings[hotkeyCopyInfo]:
 		// Copy preview pane info (Repo / Path / Branch) to system clipboard (#791).
-		// Pairs with `c` (copy session output): same fallback chain, different payload.
+		// Pairs with `c` (copy session output): same fallback chain, different
+		// payload. It moved off "C" when the context inspector took that key and
+		// is rebindable via [hotkeys].copy_info.
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
@@ -18007,6 +18071,9 @@ func (h *Home) renderFrame() string {
 	}
 	if h.scrollbackPager.IsVisible() {
 		return h.scrollbackPager.View()
+	}
+	if h.contextPager.IsVisible() {
+		return h.contextPager.View()
 	}
 	if h.sessionPickerDialog.IsVisible() {
 		return h.sessionPickerDialog.View()
