@@ -1,0 +1,70 @@
+# G5 — the author's answer to every item the reviewer called broken.
+#
+# The gate's rule is that each one is either FIXED or knowingly ACCEPTED with a
+# written reason. There is no third state, and "we did not get to it" is spelled
+# `accepted` with the reason saying so — which is the point: an accepted finding
+# is a decision somebody signed, not an item that quietly fell off a list.
+#
+# READ THIS FIRST, because it is the most useful thing G5 produced.
+#
+# The reviewer was given a computer with one Claude session already on it and
+# three minutes. They never pressed C. They never saw the context inspector at
+# all. Every item below is about the deck the pager lives behind, not about the
+# pager — and that is not a failed review, it is the finding: the feature this
+# whole VERDICT is about is not discoverable in three minutes by somebody who
+# does not already know it exists. No amount of code reading produces that
+# sentence, and neither did G1, G2, G3 or G4, all of which press C because the
+# script told them to.
+#
+# So none of these four are fixed here. Fixing them would mean changing the
+# session-status model, the help text and the preview pane — surfaces this
+# feature does not own, on a branch that is frozen out of GitHub. Each is
+# accepted with the reason it is accepted, so it is attributable rather than
+# lost, and the scope boundary is stated instead of implied.
+
+version: 1
+items:
+  - quote: "One session had three contradictory states at once: error, connected, and no tmux session."
+    status: accepted
+    reason: >-
+      A real defect and the sharpest thing in the report: the row said `error`,
+      the preview said `Status: ● Connected`, and the same panel said `No tmux
+      session running`. Those come from three different sources — the stored
+      instance status, the adapter's connection line and a live tmux probe — and
+      the screen presents them as one fact about one session. It belongs to the
+      session-status surface, which the context inspector neither owns nor reads,
+      so it is not fixed by this work. It is recorded here because it is exactly
+      the class of thing this framework exists to surface, and losing it would be
+      worse than not having asked.
+    evidence: "reported at T+1:04; the reviewer named it their strongest first-minute signal"
+
+  - quote: "The application identified itself as `v1.10.11`, while a help section was titled `GROUP NAVIGATION (v1.7.60)`. That looked like stale UI text."
+    status: accepted
+    reason: >-
+      Correct observation, benign cause: the heading names the release a feature
+      arrived in, not the running version. It reads as staleness to anybody who
+      has not been told that, which makes it a real presentation defect in the
+      help overlay. Out of this feature's scope and not fixed here; the useful
+      part is that a cold reader cannot tell "arrived in" from "you are running".
+    evidence: "reported at T+1:39, while paging the help overlay"
+
+  - quote: "Toggling the preview mode twice changed only the footer label. The preview content appeared identical each time."
+    status: accepted
+    reason: >-
+      Reproducible and outside this feature: the preview modes differ only when
+      the selected session has output to show, and this one had none, so the
+      three modes render the same panel while the footer cycles. The behaviour is
+      defensible; the feedback is not, because from the outside it is
+      indistinguishable from a key that does nothing. Not fixed here — the
+      preview pane belongs to the session list.
+    evidence: "reported at T+2:19"
+
+  - quote: "The group-level preview initially consumed half the screen to repeat a count and error total already visible elsewhere. The useful detail appeared only after moving selection down to the session."
+    status: accepted
+    reason: >-
+      A layout judgement about the session list's group rows, made from outside
+      the design and worth keeping for that reason. It is not a malfunction and
+      it is not this feature's screen, so it is accepted rather than fixed. Worth
+      noting that the G0 journey's very first move is a Down press for the same
+      reason the reviewer discovered by accident.
+    evidence: "reported at T+0:39, before the reviewer moved the cursor"

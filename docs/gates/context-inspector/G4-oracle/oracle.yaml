@@ -1,0 +1,311 @@
+# G4 — ORACLE — context inspector
+#
+# The gate's rule: every number the software puts on screen ends in exactly one
+# of three places. It agrees with a number somebody else produced; it disagrees
+# and the disagreement is written down; or nobody produced a number for it, in
+# which case the screen must say the figure is an estimate — and G2 asserts that
+# it does, on the recorded frames, using the list this file's run emits.
+#
+# WHY THAT THIRD CASE IS THE POINT. Most of this pager's figures are character-
+# count estimates. That is defensible. What is not defensible is a screen full
+# of confident-looking numbers where the reader cannot tell which were counted
+# and which were guessed — that is the same failure as the blank percentage,
+# arriving in a nicer typeface. So an unoracled figure costs a permanent on-
+# screen label, mechanically enforced: `sixgate oracle compare` writes
+# must-label.json, `sixgate assert` turns each entry into an ordinary on-screen
+# assertion against the recorded frames, and `sixgate verdict --check` compares
+# the digest G2 obeyed against the file G4 wrote. Regenerating the oracle after
+# the assert run invalidates the assert run.
+#
+# WHAT IS AND IS NOT COLLECTED HERE, PLAINLY.
+#
+#   * The strong oracle for this feature is Claude Code's own /context panel:
+#     numbers produced by somebody else's software, for their own purposes.
+#     Reading it means typing a slash command into a LIVE, BILLED session. This
+#     host holds the maintainer's live fleet and is under a no-writes rule, so
+#     the panel was NOT collected. Case `claude-cold-context-panel` therefore
+#     declares its figures and grades every one of them `no-oracle`. That is the
+#     honest state, and it is expensive: all six join the must-label list.
+#
+#   * The oracle that IS collected is weaker and says so. The model provider
+#     wrote a usage block into the session transcript; the comparator reads it
+#     with its own regexps, adds the three prompt-token fields itself, and
+#     compares the total against what the gauge and the caveat put on screen.
+#     Its strength is `independent-extraction`, not `independent-authorship`:
+#     the file lives in this repository's recorded corpus. It proves the anchor
+#     arithmetic and the rounding, and it does not prove that agent-deck's idea
+#     of "prompt tokens" is Anthropic's. Nothing here pretends otherwise.
+#
+# To collect the strong oracle on a machine where that is appropriate:
+#
+#   sixgate oracle collect context-inspector -case claude-cold-context-panel --yes
+#
+# It refuses without --yes, refuses inside a matrix row, and runs only the argv
+# written below — no shell, so nothing can be smuggled past this diff.
+
+version: 1
+slug: context-inspector
+sentence: "Every figure on the context pager, checked against a number agent-deck did not produce — or, where no such number exists, forced to admit on screen that it is an estimate."
+
+# At least one figure must be genuinely compared. Without this floor, "unoracled
+# but labelled" would be a way to have no oracle at all and still pass.
+min_compared: 1
+
+cases:
+  # ---------------------------------------------------------------------------
+  - id: claude-cold-provider-usage
+    oracle:
+      name: "The model provider's own usage accounting, as recorded in the session transcript"
+      strength: independent-extraction
+      consent: none
+      collect: file
+      path: oracle-claude-cold-provider-usage.raw.txt
+      note: >-
+        The numbers were written by the provider, not by agent-deck, and this
+        comparator reads them with its own regexps and does its own arithmetic —
+        so the three prompt-token fields are added here, outside the code under
+        test. The limit is authorship: the file lives in this repository's
+        recorded corpus, so a mistake baked into the corpus would be invisible to
+        this comparison. It proves the anchor total and the printed rounding; it
+        does not prove that agent-deck's idea of a prompt token is Anthropic's.
+        That is what the /context panel below is for, and it was not collected.
+    ours:
+      kind: screen
+      fixture: claude-cold
+      step: 04-overview
+      also_fixtures: [pane-claude-cold]
+    figures:
+      - id: window_used_tokens
+        what: "the occupancy the gauge prints — how full the window is said to be"
+        ours:
+          patterns: ['^\s*\[[^\]]*\]\s+(\S+)\s*/']
+          humanize: true
+        theirs:
+          patterns:
+            - '"input_tokens"\s*:\s*(\d+)'
+            - '"cache_creation_input_tokens"\s*:\s*(\d+)'
+            - '"cache_read_input_tokens"\s*:\s*(\d+)'
+          reduce: sum
+        tolerance:
+          abs: 50
+          why: >-
+            The gauge prints one decimal place in thousands, so "27.0k" cannot
+            carry the last two digits of 27008. Fifty tokens is exactly that
+            printed rounding at this magnitude and not one token more; widening
+            it further would stop the gauge being checked at all.
+        on_missing: FAIL
+
+  # ---------------------------------------------------------------------------
+  # The exact anchor and its cache-read component moved screens on 2026-07-29:
+  # demoting info-severity caveats took them off the Overview, and the fix
+  # (6d618ac3) put them back as a dedicated block on the Verify tab — the frame
+  # the journey records as step 11-verify-tab. This case re-points the two
+  # exact-match probes at that frame. The RUN-2026-07-29.md failure prescribed
+  # exactly this: "put the exact anchor and its cache split back within reach
+  # of a captured frame, then re-run sixgate oracle compare and sixgate assert".
+  # The tolerances are untouched: still zero, still exact to the digit. The
+  # probes read the block itself (visible in the pager's first screenful), not
+  # the caveat list, which the 45-line pane clips below the fold.
+  - id: claude-cold-provider-usage-verify
+    oracle:
+      name: "The model provider's own usage accounting, as recorded in the session transcript"
+      strength: independent-extraction
+      consent: none
+      collect: file
+      path: oracle-claude-cold-provider-usage.raw.txt
+      note: >-
+        Same oracle file as claude-cold-provider-usage, same authorship limit:
+        the numbers were written by the provider, the comparator reads them with
+        its own regexps and sums the three prompt-token fields itself, and the
+        file lives in this repository's recorded corpus. This case exists
+        because the figures it checks live on the Verify tab, a different frame
+        from the gauge.
+    ours:
+      kind: screen
+      fixture: claude-cold
+      step: 11-verify-tab
+      also_fixtures: [pane-claude-cold]
+    figures:
+      - id: anchor_measured_tokens
+        what: "the measured prompt-token total the pager calls the anchor, stated to the digit"
+        ours:
+          patterns: ['(\d[\d,]*) tokens — the provider']
+          humanize: true
+        theirs:
+          patterns:
+            - '"input_tokens"\s*:\s*(\d+)'
+            - '"cache_creation_input_tokens"\s*:\s*(\d+)'
+            - '"cache_read_input_tokens"\s*:\s*(\d+)'
+          reduce: sum
+        tolerance:
+          abs: 0
+          why: >-
+            Exact, deliberately. This figure is the one thing on the screen the
+            pager calls measured rather than estimated, and a measured number
+            that needs a tolerance against the source it was measured from is not
+            measured. If this ever drifts by one token, the label is wrong.
+        on_missing: FAIL
+
+      - id: cache_read_tokens
+        what: "the share of the anchor the measured-figure block attributes to the provider's prompt cache"
+        ours:
+          patterns: ['cache read (\d[\d,]*)\)']
+          humanize: true
+        theirs:
+          patterns: ['"cache_read_input_tokens"\s*:\s*(\d+)']
+        tolerance:
+          abs: 0
+          why: >-
+            Also exact, and for a sharper reason: this number exists only to
+            explain the anchor to a reader who is surprised by it. A component
+            sum that quotes a figure the provider never recorded is worse than
+            no explanation, because it is reassuring.
+        on_missing: FAIL
+
+  # ---------------------------------------------------------------------------
+  - id: claude-cold-context-panel
+    oracle:
+      name: "Claude Code's own /context panel"
+      strength: independent-authorship
+      consent: required
+      collect: command
+      command:
+        - agent-deck
+        - session
+        - context
+        - fixture-cold
+        - --verify
+        - --json
+        - --yes
+      path: oracle-claude-cold-context-panel.raw.txt
+      note: >-
+        NOT COLLECTED ON THIS HOST, and the artifact says so on every row. The
+        panel is the real oracle for these figures — Claude Code counts them for
+        its own purposes and has no interest in agreeing with agent-deck — but
+        reading it means typing a slash command into a live, billed session, and
+        this machine holds the maintainer's live fleet under a no-writes rule.
+        Every figure below is therefore graded no-oracle and carries the price of
+        that: a permanent on-screen estimate marker, asserted by G2 on the
+        recorded frames of both the in-process driver and the shipped binary's
+        pane.
+    ours:
+      kind: screen
+      fixture: claude-cold
+      step: 04-overview
+      also_fixtures: [pane-claude-cold]
+    figures:
+      - id: system_tools_tokens
+        what: "the tokens attributed to the built-in tool names injected at startup"
+        ours:
+          patterns: ['^\s*(\d[\d,]*)\s+\S+\s+\S+\s+system tools']
+          humanize: true
+        theirs:
+          patterns: ['(?i)"label"\s*:\s*"system tools"[^}]*?"tokens"\s*:\s*(\d+)']
+        tolerance:
+          abs: 500
+          rel: 0.1
+          why: >-
+            Ten percent or five hundred tokens is the estimator's own published
+            honesty bound for a character-count heuristic, and it is the band
+            `session context --verify` already grades against. Tightening it
+            without replacing the estimator would only produce drift reports
+            about a known approximation.
+        on_missing: LABEL_ESTIMATE
+        label:
+          pattern: '^\s*\d[\d,]*\s+\S+\s+\S*~est\S*\s+system tools'
+          why: >-
+            Without the marker on the same row, a character-count estimate reads
+            exactly like the measured anchor two lines above it, and the reader
+            has no way to tell which number to trust.
+
+      - id: mcp_tools_tokens
+        what: "the tokens attributed to the MCP instructions injected at startup"
+        ours:
+          patterns: ['^\s*(\d[\d,]*)\s+\S+\s+\S+\s+MCP instructions']
+          humanize: true
+        theirs:
+          patterns: ['(?i)"label"\s*:\s*"mcp tools"[^}]*?"tokens"\s*:\s*(\d+)']
+        tolerance:
+          abs: 500
+          rel: 0.1
+          why: "the estimator's published honesty bound, as above; MCP schemas are negotiated at runtime and never written to disk, so this side is a floor rather than a count"
+        on_missing: LABEL_ESTIMATE
+        label:
+          pattern: '^\s*\d[\d,]*\s+\S+\s+\S*~est\S*\s+MCP instructions'
+          why: "the same reason as system tools, and more so: only the instructions are priced here, and the schemas are not, which a reader can only know if the row admits it is an estimate"
+
+      - id: memory_files_tokens
+        what: "the tokens attributed to the CLAUDE.md memory hierarchy (reworded)"
+        ours:
+          patterns: ['^\s*(\d[\d,]*)\s+\S+\s+\S+\s+memory files']
+          humanize: true
+        theirs:
+          patterns: ['(?i)"label"\s*:\s*"memory files"[^}]*?"tokens"\s*:\s*(\d+)']
+        tolerance:
+          abs: 500
+          rel: 0.1
+          why: "the estimator's published honesty bound; the memory text is injected into the system prompt and never written to the transcript, so this figure is rebuilt by re-walking Claude Code's discovery rules rather than read"
+        on_missing: LABEL_ESTIMATE
+        label:
+          pattern: '^\s*\d[\d,]*\s+\S+\s+\S*~est\S*\s+memory files'
+          why: >-
+            This is the row the journey drills into to find the fat file. A
+            reader deciding which memory file to delete is acting on this number,
+            and must be able to see that it is reconstructed rather than counted.
+
+      - id: skills_tokens
+        what: "the tokens the skill catalogue lines cost in the startup prefix"
+        ours:
+          patterns: ['^\s*(\d[\d,]*)\s+\S+\s+\S+\s+skills']
+          humanize: true
+        theirs:
+          patterns: ['(?i)"label"\s*:\s*"(?:custom )?skills"[^}]*?"tokens"\s*:\s*(\d+)']
+        tolerance:
+          abs: 500
+          rel: 0.1
+          why: "the estimator's published honesty bound; only the catalogue line is in the prefix and the body is deferred, so the two sides are counting related but not identical things"
+        on_missing: LABEL_ESTIMATE
+        label:
+          pattern: '^\s*\d[\d,]*\s+\S+\s+\S*~est\S*\s+skills'
+          why: "a skills figure that looks measured invites a reader to delete skills to save tokens they were never paying, since the body loads only on invocation"
+
+      - id: agents_tokens
+        what: "the tokens attributed to the agent definitions listed at startup"
+        ours:
+          patterns: ['^\s*(\d[\d,]*)\s+\S+\s+\S+\s+agents']
+          humanize: true
+        theirs:
+          patterns: ['(?i)"label"\s*:\s*"(?:custom )?agents"[^}]*?"tokens"\s*:\s*(\d+)']
+        tolerance:
+          abs: 500
+          rel: 0.1
+          why: "the estimator's published honesty bound, as for every other character-count row on this screen"
+        on_missing: LABEL_ESTIMATE
+        label:
+          pattern: '^\s*\d[\d,]*\s+\S+\s+\S*~est\S*\s+agents'
+          why: "most of these agents are built into the harness and cannot be removed, so a confident-looking figure beside them is an invitation to act on something the reader cannot change"
+
+      - id: residual_tokens
+        what: "the unattributed remainder: the system prompt and built-in tool schemas nobody can see"
+        ours:
+          patterns: ['^\s*(~[\d.,]+[kMG]?)\s+\S+\s+\S*residual']
+          humanize: true
+        theirs:
+          patterns: ['(?i)"label"\s*:\s*"system prompt"[^}]*?"tokens"\s*:\s*(\d+)']
+        tolerance:
+          abs: 500
+          rel: 0.1
+          why: >-
+            A wide band on purpose: our side is a subtraction (the measured
+            anchor minus everything attributed) and the panel's side is a
+            counted row, so they are close relatives rather than the same
+            quantity. Grading this tightly would produce a permanent, meaningless
+            disagreement, and a table that always shows a red row is a table
+            people stop reading.
+        on_missing: LABEL_ESTIMATE
+        label:
+          pattern: '^\s*~\S+\s+\S+\s+\S*residual\S*\s'
+          why: >-
+            This is the largest number on the screen — roughly ninety-eight
+            percent of the window — and it is a subtraction, not a measurement.
+            If anything on this pager must wear its provenance, it is this row.

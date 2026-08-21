@@ -1,0 +1,329 @@
+# G0 — SCRIPT — "what is in my context, and what can I remove"
+#
+# Written from Ashesh's own sentence:
+#
+#   "press C, see what is in my context — the skills, MCPs, memory files —
+#    see what is consuming it, drill in, and know what I can remove"
+#
+# WHY THIS SCRIPT EXISTS SEPARATELY FROM docs/gates/context-inspector.
+# That script drives the journey he described the first time he opened the
+# feature: press C, see how full it is, drill into memory files, find the fat
+# one, exit. This one drives the journey he described when asked what the
+# feature is FOR. They differ in three ways that matter:
+#
+#   1. It names three things by name — skills, MCPs, memory files — and asserts
+#      all three are visible on the first screen. "See what is in my context" is
+#      not satisfied by a screen that shows two of the three.
+#   2. Its drill goes through the BREAKDOWN tab, which ranks everything against
+#      everything ("what is consuming it"), rather than the Overview's category
+#      walk. Two tabs that disagree about what exists is a class of bug neither
+#      script alone can see.
+#   3. It ends on the question the other script never asks: having found the
+#      expensive thing, does the screen tell me what to DO about it? Every
+#      assertion on the lever exists because "know what I can remove" is a
+#      deliverable, not a nice-to-have, and a screen that ranks costs without
+#      naming a remedy answers a question nobody asked.
+#
+# THE ARRIVAL FAILURE THIS SCRIPT IS AIMED AT. The first thing Ashesh ever saw
+# from this feature was a blank percentage he had to ask about. agent-deck
+# refuses to invent a context-window size for a model identifier it has not been
+# taught, so on such a model the header prints the bare word "unknown" and the
+# gauge drops its percentage entirely. That is honest, and on arrival it is also
+# indistinguishable from broken. Two assertions on step 04 stand permanently on
+# that spot:
+#
+#   * the gauge must state how full the window is OR say in plain words that it
+#     cannot know the denominator — silence is not an acceptable third option;
+#   * the header's window must be a figure, or an "unknown" FOLLOWED BY ITS
+#     REASON in parentheses. The adapter already computes that reason —
+#     internal/ctxinspect/claude/window.go builds a Detail naming the model it
+#     did not recognise and the environment variable that supplies a window —
+#     and the header throws it away. An unexplained "unknown" is a dead end with
+#     the fix one line away.
+#
+# G1 drives this against the SHIPPED BINARY in a real terminal, in two worlds:
+# the recorded claude-cold session on a model the build knows, and the same
+# session on `claude-opus-5`, which the window table has never been taught. The
+# second world is not hypothetical: it is the model this repository's maintainer
+# is running today.
+#
+# WHAT THE FIRST DRIVE ESTABLISHED (2026-07-28, Driver B, shipped binary, two
+# worlds, 20 frames, 78 assertions, 1 failure).
+#
+# The failure is the one this script was aimed at, and it is real: on
+# `claude-opus-5` the header renders
+#
+#     ctx · fixture-cold · claude · claude-opus-5 · window unknown
+#
+# and the gauge renders
+#
+#     27.0k  fixed startup overhead (context window size unknown, so no percentage is shown)
+#
+# — no bar, no percentage, and an "unknown" that explains nothing. The reason
+# DOES exist on the same screen, twenty-five lines further down, inside the
+# caveats block, and is cut off by the right edge at 200 columns:
+#
+#     warn (window-unknown): the context-window size could not be established (no
+#     context-window size is known for model "claude-opus-5"; set
+#     AGENTDECK_CONTEXT_WINDOW to supply one), so no percentage i…
+#
+# So this is not a missing explanation; it is an explanation put where the
+# confused user will not look, truncated before its remedy. The CLI half of the
+# same feature already does better — cmd/agent-deck/session_context_render.go's
+# windowLine says "unknown — no window size could be established, so no
+# percentage is shown" — while internal/ui/context_pager.go's contextWindowLine
+# returns the bare word. The two surfaces disagree, and the one you reach by
+# pressing C is the worse one.
+#
+# The assertion stays as written. It fails today and it will pass the moment the
+# header carries its own reason.
+#
+#   validate: sixgate validate context-what-can-i-remove
+#   drive:    sixgate drive-b  context-what-can-i-remove -rows claude-cold,claude-unknown-model
+#   assert:   sixgate assert   context-what-can-i-remove
+
+version: 1
+slug: context-what-can-i-remove
+
+sentence: "Press C, see what is in my context — the skills, MCPs, memory files — see what is consuming it, drill in, and know what I can remove."
+
+# Wide enough that the breakdown table's seven columns and the 28-cell gauge
+# both render without clipping. Narrow terminals are a matrix row, not a reason
+# to weaken this script.
+term: {width: 200, height: 50}
+
+owns:
+  - internal/ui/context_inspector.go
+  - internal/ui/context_pager.go
+  - internal/ctxinspect/...
+  - cmd/agent-deck/session_context_cmd.go
+  - cmd/agent-deck/session_context_render.go
+  - cmd/agent-deck/session_context_json.go
+  - cmd/agent-deck/session_context_verify.go
+  - cmd/agent-deck/session_context_parity_render.go
+
+# One suppression, scoped to the three session-list frames, with the reason on
+# the record. On the deck the bare "%" is the filter hotkey printed in the
+# keyboard legend (internal/ui/home.go: FilterKeyActive = "%"), not a number
+# that failed to render. It is scoped rather than global because the blank
+# percentage this framework exists to catch shipped on the PAGER, and silencing
+# the rule journey-wide would disarm the guard on exactly those frames.
+banned_screen_patterns_allow:
+  - pattern: orphan-percent
+    steps: [01-home, 02-busy, 14-close]
+    justification: >-
+      On the session list the bare "%" is the filter hotkey printed in the
+      keyboard legend (internal/ui/home.go: FilterKeyActive = "%"), not a figure
+      that failed to render. Scoped to the three session-list frames so the rule
+      stays armed on every context-pager frame, which is where the blank
+      percentage actually shipped.
+
+steps:
+  - id: 01-home
+    note: "open the TUI and wait for the deck to paint"
+    do: {wait_for: "SESSIONS"}
+    capture: home
+    expect:
+      - screen_contains: "Agent Deck"
+        why: "the binary booted and painted its own chrome rather than dying into an empty alt-screen"
+      - screen_contains: "SESSIONS"
+        why: "the session list is present; without it there is nothing to press C on"
+
+  - id: 02-busy
+    note: "move onto a session that is actually doing something"
+    do: {key: "down"}
+    capture: busy-selected
+    expect:
+      - screen_matches: '(?i)\b(running|waiting)\b'
+        why: "a busy session is selected; a cold idle row would not exercise the token accounting at all"
+
+  - id: 03-press-c
+    note: "the key. This is the whole reason the framework exists: somebody presses it."
+    do: {key: "C"}
+
+  - id: 04-what-is-in-my-context
+    note: >-
+      "see what is in my context — the skills, MCPs, memory files". This frame is
+      the answer to the first half of the sentence, and most of its assertions
+      are literally the words he used.
+    do: {wait_for: "[ Overview ]"}
+    capture: whats-in-my-context
+    expect:
+      - screen_contains: " ctx · "
+        why: "C did something visible: the pager took the screen"
+      - screen_contains: "[ Overview ]"
+        why: "the overview is what opens, not the breakdown or the verify tab"
+      - screen_matches: 'memory files \(\d+ items?'
+        why: >-
+          MEMORY FILES, named and counted. He asked for them by name; a category
+          that names itself and counts nothing is the enumerator running without
+          the accountant.
+      - screen_matches: 'skills \(\d+ items?'
+        why: "SKILLS, named and counted — the second of the three things he asked to see"
+      - screen_matches: 'MCP \w+ \(\d+ items?'
+        why: >-
+          MCPs, named and counted — the third. All three on one screen is what
+          "see what is in my context" means; two of three is a different feature.
+      - screen_contains: "TOKENS"
+        why: "the cost column exists at all, so the screen can begin to answer 'what is consuming it'"
+      - screen_matches: '\(\d{1,3}(?:\.\d)?%\)|context window size unknown, so no percentage is shown'
+        why: >-
+          THE ARRIVAL FAILURE. The gauge must say how full the window is, or say
+          in plain words that it cannot know the denominator. A percentage of an
+          unknown total is the plausible-looking number this feature exists to
+          avoid, so the honest sentence is an acceptable answer — and silence is
+          not, because silence is what he saw and had to ask about.
+      - screen_not_matches: '\(\s*%\s*\)'
+        why: "the literal thing he saw: a percent sign with no number in front of it. Fails permanently, at any width."
+      - screen_matches: '%\)\s+fixed startup overhead|context window size unknown, so no percentage is shown'
+        why: >-
+          a percentage must sit beside the thing it is a percentage OF. This
+          gauge measures the fixed startup overhead, not the whole conversation,
+          and a bare "2.7%" floating over a session's context invites exactly the
+          wrong conclusion.
+      - screen_matches: 'window (?:[0-9]|unknown \()'
+        why: >-
+          THE SECOND ARRIVAL FAILURE, and the one this script adds. The header's
+          window is either a figure or an "unknown" followed by its reason in
+          parentheses. internal/ctxinspect/claude/window.go already computes that
+          reason — which model it did not recognise, and the environment variable
+          that would supply the window — and contextWindowLine drops it. A user
+          who reads "window unknown" cannot tell whether that means broken,
+          unsupported or fixable, and the fix is one line away.
+      - screen_matches: '(?i)\b(measured|estimat)'
+        why: "every figure on this screen is labelled measured or estimated; a number with no oracle and no label is a G2 failure, not a footnote"
+
+  - id: 05-what-is-consuming-it
+    note: >-
+      "see what is consuming it" — the Breakdown tab, where every item from every
+      category is ranked against every other. This is the screen that answers
+      "which is the fat one" without knowing which category to look in first.
+    do: {key: "2"}
+    capture: whats-consuming-it
+    expect:
+      - screen_contains: "[ Breakdown ]"
+        why: "the tab switched rather than silently swallowing the key"
+      - screen_contains: "ranked by what each costs right now, actionable items first"
+        why: >-
+          the screen states its own ordering. A ranked list that does not say what
+          it is ranked by is a list the user has to guess at.
+      - screen_matches: '(?m)^\s+[~≥]?\d+(?:\.\d)?[kM]?\s'
+        why: "the first column of the ranking carries a token figure; a list of names with no numbers cannot answer 'what is consuming it'"
+      - screen_contains: "memory-files"
+        why: "memory files appear in the flat ranking too, so the two tabs cannot disagree about what exists"
+      - screen_contains: "skills"
+        why: "so do skills"
+      - screen_contains: "mcp"
+        why: "and so do the MCPs — all three of his named things survive the tab switch"
+      - screen_matches: 'lever:\s+(?:edit |delete directory |run: |immovable)'
+        why: >-
+          "know what I can remove", asserted on the ranking screen itself: the
+          selected row names a concrete remedy or says plainly that there is
+          none. A blank lever is a cost with no exit.
+      - screen_not_matches: '\(\s*%\s*\)'
+        why: "the blank-percentage miss must not merely have moved to another tab"
+
+  - id: 06-drill-in
+    note: '"drill in" — open the most expensive thing in the whole session'
+    do: {key: "enter"}
+
+  - id: 07-what-can-i-remove
+    note: >-
+      the item's own page: where it came from, what it costs, whether it is
+      loaded, and what to do about it. This is the last clause of his sentence
+      and the only screen that can satisfy it.
+    do: {wait_for: "--- content"}
+    capture: what-can-i-remove
+    expect:
+      - screen_matches: '(?m)^\s+lever\s+(?:edit |delete directory |run: |immovable)'
+        why: >-
+          THE DELIVERABLE. Having drilled into the expensive item, the screen
+          names what the user can do about it — edit this file, delete this
+          directory, run this command — or says immovable. Anything else means
+          the feature ranked his context and left him holding a number.
+      - screen_matches: '(?m)^\s+tokens\s+\S'
+        why: "the item's cost is restated with its provenance at depth, so a figure never travels without its epistemic status"
+      - screen_matches: '(?m)^\s+origin\s+\S'
+        why: "where the item came from — nobody can decide to remove something without knowing whose it is"
+      - screen_contains: "--- content"
+        why: >-
+          the actual bytes, or a plain sentence saying why they cannot be shown.
+          "Trust me, it costs 169 tokens" is not a thing a user can act on.
+      - screen_not_matches: '\(\s*%\s*\)'
+        why: "the miss must not reappear at drill depth"
+
+  - id: 08-back
+    note: "climb back out to the ranking"
+    do: {key: "esc"}
+    capture: back-to-ranking
+    expect:
+      - screen_contains: "[ Breakdown ]"
+        why: "esc went up one level rather than closing the whole pager"
+      - screen_not_contains: "--- content"
+        why: "the item page was popped; a stale body would mean the drill stack leaked"
+
+  - id: 09-overview-tab
+    note: "back to the categories, to look at the skills specifically"
+    do: {key: "1"}
+    capture: back-to-overview
+    expect:
+      - screen_contains: "[ Overview ]"
+        why: "tab 1 returns to the overview"
+
+  - id: 10-select-skills
+    note: >-
+      walk down to the skills row. Three presses is a claim about the category
+      order; step 11 asserts which row is actually selected, so a wrong count
+      fails there rather than silently drilling into something else.
+    do: {keys: ["down", "down", "down"]}
+
+  - id: 11-skills-selected
+    note: "the skills row under the cursor, before anything is opened"
+    do: {wait_for: "skills ("}
+    capture: skills-selected
+    expect:
+      - screen_matches: 'skills \(\d+ items?, \d+ actionable'
+        why: >-
+          the category says how many of its items the user could actually act on.
+          "Actionable" is the whole of "know what I can remove", counted.
+      - screen_matches: 'row 4/\d+'
+        why: "the cursor is on the fourth row after three presses; this catches a changed category order before the drill opens the wrong thing"
+
+  - id: 12-drill-skills
+    note: "open the skills"
+    do: {key: "enter"}
+
+  - id: 13-skills-items
+    note: >-
+      the skills, ranked by what they cost. A skill's catalogue line is loaded
+      now; its body loads only if it is invoked — so this is the screen where
+      "what it costs" and "what it could cost" have to be told apart.
+    do: {wait_for: "› skills"}
+    capture: skills-drill
+    expect:
+      - screen_contains: "› skills"
+        why: "the breadcrumb proves we are inside the skills drill, not still on the category list"
+      - screen_contains: "POTENTIAL"
+        why: >-
+          the deferred cost has its own column. A skill that is cheap now and
+          expensive when invoked must not be presented as simply cheap.
+      - screen_matches: '(?m)^\s+[~≥]?\d+(?:\.\d)?[kM]?\s'
+        why: "each skill carries a token figure, so 'which skill is fat' has an answer"
+      - screen_matches: 'lever:\s+(?:edit |delete directory |run: |immovable)'
+        why: "and each one says what the user can do about it, or says plainly that there is nothing"
+      - screen_not_matches: '\(\s*%\s*\)'
+        why: "the miss must not reappear inside the skills drill"
+
+  - id: 14-close
+    note: "leave the drill, then leave the inspector"
+    do: {keys: ["esc", "esc"]}
+    capture: closed
+    expect:
+      - screen_contains: "SESSIONS"
+        why: "we are back on the deck the journey started from"
+      - screen_not_contains: " ctx · "
+        why: "the pager released the screen; a half-torn-down overlay is precisely how a TUI feels broken on arrival"
+
+  - id: 15-quit
+    note: "leave the TUI"
+    do: {key: "q"}
