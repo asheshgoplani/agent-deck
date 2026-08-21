@@ -21,6 +21,7 @@ func TestGetDirectoryCompletions(t *testing.T) {
 		"personal",
 		"work/agent-deck",
 		"work/other",
+		"Documents",
 	}
 	for _, d := range dirs {
 		err := os.MkdirAll(filepath.Join(tmpDir, d), 0755)
@@ -61,6 +62,16 @@ func TestGetDirectoryCompletions(t *testing.T) {
 			name:     "Exact match directory (should return itself and any subdirs starting with it)",
 			input:    filepath.Join(tmpDir, "projects"),
 			expected: []string{filepath.Join(tmpDir, "projects")},
+		},
+		{
+			name:     "Lowercase prefix matches capitalized directory",
+			input:    filepath.Join(tmpDir, "doc"),
+			expected: []string{filepath.Join(tmpDir, "Documents")},
+		},
+		{
+			name:     "Uppercase prefix matches lowercase directories",
+			input:    filepath.Join(tmpDir, "P"),
+			expected: []string{filepath.Join(tmpDir, "personal"), filepath.Join(tmpDir, "playground"), filepath.Join(tmpDir, "projects")},
 		},
 		{
 			name:     "Trailing slash lists directory contents",
