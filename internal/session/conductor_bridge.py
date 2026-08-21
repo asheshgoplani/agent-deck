@@ -398,6 +398,11 @@ def get_session_status(session: str, profile: str | None = None) -> str:
 
     Returns "unknown" on CLI failure or parse error — callers should treat
     this as a transient condition and retry rather than dropping state.
+
+    Codex's durable completion hook can leave ``session show`` at waiting/idle
+    while the live pane already shows the current turn's interrupt affordance.
+    The bridge must not send a second message into that turn or conclude that a
+    pending reply is complete, so promote that live pane evidence to active.
     """
     result = run_cli(
         "session", "show", session, "--json", profile=profile, timeout=30
@@ -406,9 +411,44 @@ def get_session_status(session: str, profile: str | None = None) -> str:
         return "unknown"  # transient CLI failure — not the same as conductor broken
     try:
         data = json.loads(result.stdout)
-        return data.get("status", "unknown")
+        status = data.get("status", "unknown")
+        tool = str(data.get("tool", "") or "").lower()
+        if tool == "codex" and status in ("waiting", "idle"):
+            pane = get_session_pane(session, profile=profile)
+            if _pane_reports_active(pane):
+                log.info(
+                    "Codex session %s: pane is active while session status is %s",
+                    session, status,
+                )
+                return "active"
+        return status
     except (json.JSONDecodeError, KeyError):
         return "unknown"
+
+
+def get_session_pane(session: str, profile: str | None = None) -> str:
+    """Capture the live visible pane without parsing it as an assistant reply."""
+    result = run_cli(
+        "session", "output", session, "--pane", profile=profile, timeout=30
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout
+
+
+def _pane_reports_active(content: str) -> bool:
+    """Return true for an explicit busy affordance in the visible pane.
+
+    Limit matching to recent visible lines so an old transcript mention does
+    not keep the session busy. These are the same interrupt affordances Codex
+    renders on an in-flight turn and Agent Deck's status detector recognizes.
+    """
+    recent = "\n".join(content.splitlines()[-40:]).lower()
+    return any(marker in recent for marker in (
+        "esc to interrupt",
+        "press esc to interrupt",
+        "ctrl+c to interrupt",
+    ))
 
 
 def get_session_output(session: str, profile: str | None = None) -> str:
@@ -447,6 +487,19 @@ def _is_still_running_timeout(stderr: str) -> bool:
     """
     s = stderr.lower()
     return "timeout waiting for completion" in s or "still running" in s
+
+
+def _is_unconfirmed_submission(stderr: str) -> bool:
+    """True for Agent Deck's fail-closed #1793 delivery verdict.
+
+    The verdict remains a genuine failure unless independent live-pane evidence
+    proves that Codex did begin processing the turn.
+    """
+    s = stderr.lower()
+    return (
+        ("never confirmed submitted" in s or "submission was never confirmed" in s)
+        and ("issue #1793" in s or "agent never began processing" in s)
+    )
 
 
 def send_to_conductor(
@@ -534,6 +587,20 @@ def send_to_conductor(
                 session, stderr,
             )
             return False, "", True
+        # Agent Deck deliberately fails closed when it saw the body reach the
+        # pane but did not observe submission in its short verification window
+        # (#1793). Codex can begin the turn just after that window while its
+        # hook-backed status still says waiting. Only explicit live busy evidence
+        # upgrades this ambiguous verdict; otherwise preserve the hard failure.
+        if _is_unconfirmed_submission(stderr):
+            status = get_session_status(session, profile=profile)
+            if status in ("running", "active", "starting"):
+                log.info(
+                    "Conductor %s: submission confirmation lagged but live pane "
+                    "proves the turn is active (reply pending): %s",
+                    session, stderr,
+                )
+                return False, "", True
         log.error("Failed to send to conductor: %s", stderr)
         return False, "", False
     return True, get_session_output(session, profile=profile), False
@@ -704,7 +771,32 @@ async def _drain_queue() -> None:
                     loop.create_task(_fire_callback(reply_callback, text))
             else:
                 stderr = result.stderr.strip()
-                if "timeout" in stderr.lower() or "not ready" in stderr.lower():
+                pending_reply = _is_still_running_timeout(stderr)
+                if _is_unconfirmed_submission(stderr):
+                    live_status = await loop.run_in_executor(
+                        None,
+                        functools.partial(
+                            get_session_status, session, profile=profile,
+                        ),
+                    )
+                    pending_reply = live_status in ("running", "active", "starting")
+
+                if pending_reply:
+                    # The queued message was accepted after all; remove it from
+                    # the delivery queue and switch to reply-only observation.
+                    # Re-sending here would process the user's request twice.
+                    items.popleft()
+                    remaining = len(items)
+                    if not remaining:
+                        _message_queue.pop(session, None)
+                    log.info(
+                        "Conductor %s accepted queued message but confirmation "
+                        "lagged (%d remaining); watching reply",
+                        session, remaining,
+                    )
+                    if reply_callback is not None:
+                        _register_pending_reply(session, profile, reply_callback)
+                elif "timeout" in stderr.lower() or "not ready" in stderr.lower():
                     log.info(
                         "Conductor %s busy again during drain, will retry",
                         session,
