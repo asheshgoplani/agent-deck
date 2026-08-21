@@ -2214,27 +2214,29 @@ func handleList(profile string, args []string) {
 	if *jsonOutput {
 		// JSON output for scripting
 		type sessionJSON struct {
-			ID            string    `json:"id"`
-			Title         string    `json:"title"`
-			Path          string    `json:"path"`
-			Group         string    `json:"group"`
-			Tool          string    `json:"tool"`
-			Command       string    `json:"command,omitempty"`
-			ModelID       string    `json:"model_id,omitempty"`
-			Model         string    `json:"model,omitempty"`
-			ModelVersion  string    `json:"model_version,omitempty"`
-			Status        string    `json:"status"`
-			Substate      string    `json:"substate,omitempty"` // Honest Status v2: additive refinement
-			TmuxSession   string    `json:"tmux_session,omitempty"`
-			Profile       string    `json:"profile"`
-			CreatedAt     time.Time `json:"created_at"`
-			SSHHost       string    `json:"ssh_host,omitempty"`
-			SSHRemotePath string    `json:"ssh_remote_path,omitempty"`
-			Channels      []string  `json:"channels,omitempty"`
-			ExtraArgs     []string  `json:"extra_args,omitempty"`
-			Color         string    `json:"color,omitempty"` // issue #391
-			Archived      bool      `json:"archived"`
-			ArchivedAt    time.Time `json:"archived_at,omitempty"`
+			ID                string    `json:"id"`
+			ParentSessionID   string    `json:"parent_session_id,omitempty"`
+			ParentProjectPath string    `json:"parent_project_path,omitempty"`
+			Title             string    `json:"title"`
+			Path              string    `json:"path"`
+			Group             string    `json:"group"`
+			Tool              string    `json:"tool"`
+			Command           string    `json:"command,omitempty"`
+			ModelID           string    `json:"model_id,omitempty"`
+			Model             string    `json:"model,omitempty"`
+			ModelVersion      string    `json:"model_version,omitempty"`
+			Status            string    `json:"status"`
+			Substate          string    `json:"substate,omitempty"` // Honest Status v2: additive refinement
+			TmuxSession       string    `json:"tmux_session,omitempty"`
+			Profile           string    `json:"profile"`
+			CreatedAt         time.Time `json:"created_at"`
+			SSHHost           string    `json:"ssh_host,omitempty"`
+			SSHRemotePath     string    `json:"ssh_remote_path,omitempty"`
+			Channels          []string  `json:"channels,omitempty"`
+			ExtraArgs         []string  `json:"extra_args,omitempty"`
+			Color             string    `json:"color,omitempty"` // issue #391
+			Archived          bool      `json:"archived"`
+			ArchivedAt        time.Time `json:"archived_at,omitempty"`
 		}
 		// Warm tmux pane-title cache + load hook statuses so the CLI
 		// reports the same Status the TUI and /api/menu do (issue #610).
@@ -2242,24 +2244,27 @@ func handleList(profile string, args []string) {
 		sessions := make([]sessionJSON, len(instances))
 		for i, inst := range instances {
 			_ = inst.UpdateStatus()
+			parentProjectPath := listParentProjectPath(inst, instances)
 			sj := sessionJSON{
-				ID:            inst.ID,
-				Title:         inst.Title,
-				Path:          inst.ProjectPath,
-				Group:         inst.GroupPath,
-				Tool:          inst.Tool,
-				Command:       inst.Command,
-				Status:        StatusString(inst.Status),
-				Substate:      string(inst.Substate()),
-				Profile:       storage.Profile(),
-				CreatedAt:     inst.CreatedAt,
-				SSHHost:       inst.SSHHost,
-				SSHRemotePath: inst.SSHRemotePath,
-				Channels:      inst.Channels,
-				ExtraArgs:     inst.ExtraArgs,
-				Color:         inst.Color,
-				Archived:      inst.IsArchived(),
-				ArchivedAt:    inst.ArchivedAt,
+				ID:                inst.ID,
+				ParentSessionID:   inst.ParentSessionID,
+				ParentProjectPath: parentProjectPath,
+				Title:             inst.Title,
+				Path:              inst.ProjectPath,
+				Group:             inst.GroupPath,
+				Tool:              inst.Tool,
+				Command:           inst.Command,
+				Status:            StatusString(inst.Status),
+				Substate:          string(inst.Substate()),
+				Profile:           storage.Profile(),
+				CreatedAt:         inst.CreatedAt,
+				SSHHost:           inst.SSHHost,
+				SSHRemotePath:     inst.SSHRemotePath,
+				Channels:          inst.Channels,
+				ExtraArgs:         inst.ExtraArgs,
+				Color:             inst.Color,
+				Archived:          inst.IsArchived(),
+				ArchivedAt:        inst.ArchivedAt,
 			}
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				sj.TmuxSession = tmuxSess.Name
@@ -2316,16 +2321,18 @@ func handleListAllProfiles(jsonOutput bool) {
 
 	if jsonOutput {
 		type sessionJSON struct {
-			ID            string    `json:"id"`
-			Title         string    `json:"title"`
-			Path          string    `json:"path"`
-			Group         string    `json:"group"`
-			Tool          string    `json:"tool"`
-			Command       string    `json:"command,omitempty"`
-			Profile       string    `json:"profile"`
-			CreatedAt     time.Time `json:"created_at"`
-			SSHHost       string    `json:"ssh_host,omitempty"`
-			SSHRemotePath string    `json:"ssh_remote_path,omitempty"`
+			ID                string    `json:"id"`
+			ParentSessionID   string    `json:"parent_session_id,omitempty"`
+			ParentProjectPath string    `json:"parent_project_path,omitempty"`
+			Title             string    `json:"title"`
+			Path              string    `json:"path"`
+			Group             string    `json:"group"`
+			Tool              string    `json:"tool"`
+			Command           string    `json:"command,omitempty"`
+			Profile           string    `json:"profile"`
+			CreatedAt         time.Time `json:"created_at"`
+			SSHHost           string    `json:"ssh_host,omitempty"`
+			SSHRemotePath     string    `json:"ssh_remote_path,omitempty"`
 		}
 		var allSessions []sessionJSON
 
@@ -2340,16 +2347,18 @@ func handleListAllProfiles(jsonOutput bool) {
 			}
 			for _, inst := range instances {
 				allSessions = append(allSessions, sessionJSON{
-					ID:            inst.ID,
-					Title:         inst.Title,
-					Path:          inst.ProjectPath,
-					Group:         inst.GroupPath,
-					Tool:          inst.Tool,
-					Command:       inst.Command,
-					Profile:       profileName,
-					CreatedAt:     inst.CreatedAt,
-					SSHHost:       inst.SSHHost,
-					SSHRemotePath: inst.SSHRemotePath,
+					ID:                inst.ID,
+					ParentSessionID:   inst.ParentSessionID,
+					ParentProjectPath: listParentProjectPath(inst, instances),
+					Title:             inst.Title,
+					Path:              inst.ProjectPath,
+					Group:             inst.GroupPath,
+					Tool:              inst.Tool,
+					Command:           inst.Command,
+					Profile:           profileName,
+					CreatedAt:         inst.CreatedAt,
+					SSHHost:           inst.SSHHost,
+					SSHRemotePath:     inst.SSHRemotePath,
 				})
 			}
 		}
@@ -2399,6 +2408,24 @@ func handleListAllProfiles(jsonOutput bool) {
 
 	fmt.Printf("\n═══════════════════════════════════════\n")
 	fmt.Printf("Total: %d sessions across %d profiles\n", totalSessions, len(profiles))
+}
+
+// listParentProjectPath reports the parent path represented by the stored
+// parent id. Older SQLite rows did not persist the denormalized path field, so
+// recover it from the parent row instead of falsely reporting no relationship.
+func listParentProjectPath(inst *session.Instance, instances []*session.Instance) string {
+	if inst == nil || inst.ParentSessionID == "" {
+		return ""
+	}
+	if inst.ParentProjectPath != "" {
+		return inst.ParentProjectPath
+	}
+	for _, candidate := range instances {
+		if candidate.ID == inst.ParentSessionID {
+			return candidate.ProjectPath
+		}
+	}
+	return ""
 }
 
 // handleRemove removes a session by ID or title
